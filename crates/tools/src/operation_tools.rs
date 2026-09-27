@@ -68,6 +68,23 @@ pub struct ProvidedOperation {
     pub note: String,
 }
 
+/// The providers the runtime itself supplies, next to the installed
+/// plugins (the bot's own hosted mail address). Shared by the registry,
+/// which turns them into operation tools, and the local mail app, which
+/// steps aside when a provider binds the send.
+pub type RuntimeProviders = Arc<std::sync::RwLock<Vec<Arc<dyn OperationProvider>>>>;
+
+/// The runtime providers that perform `operation`, by name.
+pub fn runtime_providers_of(providers: &RuntimeProviders, operation: &str) -> Vec<String> {
+    providers
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .filter(|p| p.operations().iter().any(|o| o.operation == operation))
+        .map(|p| p.provider().to_string())
+        .collect()
+}
+
 /// A provider and the operation it performs.
 type Provided = (Arc<dyn OperationProvider>, ProvidedOperation);
 

@@ -799,6 +799,8 @@
 		"viewUsageArrow": "Lihat Penggunaan →",
 		"botIdentity": "Identiti Bot",
 		"botIdentityDesc": "Identiti kekal bot anda yang unik di peringkat global. Ini tidak pernah berubah.",
+		"botEmail": "Alamat e-mel",
+		"botEmailDesc": "E-mel yang dihantar ke alamat ini sampai kepada bot anda. Tambah +pekerja sebelum @ untuk sampai kepada seorang pekerja, contohnya nama+penyambut@.",
 		"dangerZone": "Zon Bahaya",
 		"deleteAccountDesc": "Padamkan akaun anda dan semua data secara kekal. Ini tidak boleh dibuat asal."
 	},

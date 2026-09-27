@@ -799,6 +799,8 @@
 		"viewUsageArrow": "사용량 보기 →",
 		"botIdentity": "봇 아이덴티티",
 		"botIdentityDesc": "봇의 영구적이고 전역적으로 고유한 아이덴티티입니다. 절대 변경되지 않습니다.",
+		"botEmail": "이메일 주소",
+		"botEmailDesc": "이 주소로 보낸 메일은 봇에게 전달됩니다. @ 앞에 +직원을 붙이면 해당 직원에게 전달됩니다(예: name+receptionist@).",
 		"dangerZone": "위험 구역",
 		"deleteAccountDesc": "계정과 모든 데이터를 영구적으로 삭제합니다. 되돌릴 수 없습니다."
 	},

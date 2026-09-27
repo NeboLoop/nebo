@@ -799,6 +799,8 @@
 		"viewUsageArrow": "Kullanımı Görüntüle →",
 		"botIdentity": "Bot Kimliği",
 		"botIdentityDesc": "Botunuzun kalıcı, küresel olarak benzersiz kimliği. Bu asla değişmez.",
+		"botEmail": "E-posta adresi",
+		"botEmailDesc": "Bu adrese gönderilen e-postalar botunuza ulaşır. Bir çalışana ulaşmak için @ işaretinden önce +çalışan ekleyin, örneğin ad+resepsiyon@.",
 		"dangerZone": "Tehlikeli Bölge",
 		"deleteAccountDesc": "Hesabınızı ve tüm verileri kalıcı olarak silin. Bu geri alınamaz."
 	},

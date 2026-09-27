@@ -799,6 +799,8 @@
 		"viewUsageArrow": "Lihat Penggunaan →",
 		"botIdentity": "Identitas Bot",
 		"botIdentityDesc": "Identitas permanen bot Anda yang unik secara global. Ini tidak pernah berubah.",
+		"botEmail": "Alamat email",
+		"botEmailDesc": "Email yang dikirim ke alamat ini sampai ke bot Anda. Tambahkan +karyawan sebelum @ untuk menjangkau satu karyawan, misalnya nama+resepsionis@.",
 		"dangerZone": "Zona Berbahaya",
 		"deleteAccountDesc": "Hapus akun Anda dan semua data secara permanen. Tindakan ini tidak dapat dibatalkan."
 	},

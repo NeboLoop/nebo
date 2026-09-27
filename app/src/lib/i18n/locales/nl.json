@@ -799,6 +799,8 @@
 		"viewUsageArrow": "Verbruik bekijken →",
 		"botIdentity": "Botidentiteit",
 		"botIdentityDesc": "De permanente, wereldwijd unieke identiteit van je bot. Deze verandert nooit.",
+		"botEmail": "E-mailadres",
+		"botEmailDesc": "Mail naar dit adres komt bij je bot aan. Zet +medewerker vóór de @ om één medewerker te bereiken, zoals naam+receptie@.",
 		"dangerZone": "Gevarenzone",
 		"deleteAccountDesc": "Verwijder je account en alle gegevens permanent. Dit kan niet ongedaan worden gemaakt."
 	},

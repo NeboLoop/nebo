@@ -25,6 +25,9 @@ pub struct OsTool {
     /// To know whether a typed port (`mail.message.send`) has a provider:
     /// when it does, the local mail app steps aside.
     plugin_store: Option<Arc<napp::plugin::PluginStore>>,
+    /// The runtime's own providers of the same ports (the bot's hosted
+    /// address): the local mail app steps aside for them too.
+    runtime_providers: crate::operation_tools::RuntimeProviders,
 }
 
 impl OsTool {
@@ -38,7 +41,13 @@ impl OsTool {
             spotlight_tool: SpotlightTool::new(),
             store: None,
             plugin_store: None,
+            runtime_providers: Default::default(),
         }
+    }
+
+    pub fn with_runtime_providers(mut self, providers: crate::operation_tools::RuntimeProviders) -> Self {
+        self.runtime_providers = providers;
+        self
     }
 
     pub fn with_plugin_store(mut self, ps: Arc<napp::plugin::PluginStore>) -> Self {
@@ -961,14 +970,15 @@ impl DynTool for OsTool {
                             // desktop app is the way only when there is none. Which
                             // one is decided here, by what is connected — never by
                             // the model.
+                            let mut bound = crate::operation_tools::runtime_providers_of(&self.runtime_providers, "mail.message.send");
                             if let Some(ps) = self.plugin_store.as_deref() {
-                                let bound = crate::plugin_tool::bound_providers(ps, store, "mail.message.send");
-                                if !bound.is_empty() {
-                                    return ToolResult::error(format!(
-                                        "Not sent through Apple Mail: this business sends mail through {}. Call mail_message_send with to, subject, text and html — same message, the connected account.",
-                                        bound.join(", ")
-                                    ));
-                                }
+                                bound.extend(crate::plugin_tool::bound_providers(ps, store, "mail.message.send"));
+                            }
+                            if !bound.is_empty() {
+                                return ToolResult::error(format!(
+                                    "Not sent through Apple Mail: this business sends mail through {}. Call mail_message_send with to, subject, text and html — same message, the connected account.",
+                                    bound.join(", ")
+                                ));
                             }
                             let exact = serde_json::json!({
                                 "to": &parsed.to, "cc": &parsed.cc, "subject": &parsed.subject,

@@ -19,6 +19,7 @@ mod embeddings;
 mod employee_drafts;
 mod engine;
 mod event_dedup;
+mod inbound_mail;
 mod entity_config;
 mod license_keys;
 mod mcp_integrations;
@@ -44,6 +45,7 @@ mod temporary_work;
 mod upgrade;
 
 pub use agents::agent_slug;
+pub use inbound_mail::InboundMailRow;
 pub use assignments::{Assignment, NewAssignment};
 pub use cron_jobs::cron_ref;
 pub use employee_drafts::{EmployeeCeilingRow, EmployeeDraftRow, OWNER_MARK};

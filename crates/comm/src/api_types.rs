@@ -977,3 +977,45 @@ pub struct LinkedRoster {
     pub agents: Vec<LinkedAgent>,
     pub runtimes: Vec<LinkedRuntime>,
 }
+
+/// `GET /api/v1/bots/self/email`: the bot's own hosted address
+/// (`nanna-7kq@nebo.bot`) and whether it may send.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct BotEmailInfo {
+    pub address: String,
+    pub handle: String,
+    pub domain: String,
+    pub sending_enabled: bool,
+    pub daily_limit: i64,
+    pub sent_today: i64,
+}
+
+/// `POST /api/v1/bots/self/email`: one message from the bot's own address.
+/// `to_owner` sends to the owner's account email (then `to` is ignored);
+/// `inbound_email_id` answers mail the bot received. `employee` is the
+/// `+tag` that brings replies back to that employee; `agent_id`/`chat_id`
+/// name the conversation a reply continues.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct BotEmailSend {
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub to: String,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub to_owner: bool,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub subject: String,
+    pub body_text: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub body_html: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub employee: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub employee_name: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub inbound_email_id: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub agent_id: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub chat_id: String,
+}

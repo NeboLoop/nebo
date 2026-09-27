@@ -799,6 +799,8 @@
 		"viewUsageArrow": "Visa användning →",
 		"botIdentity": "Bot-identitet",
 		"botIdentityDesc": "Din bots permanenta, globalt unika identitet. Denna ändras aldrig.",
+		"botEmail": "E-postadress",
+		"botEmailDesc": "E-post som skickas till den här adressen når din bot. Lägg till +medarbetare före @ för att nå en medarbetare, till exempel namn+reception@.",
 		"dangerZone": "Farozon",
 		"deleteAccountDesc": "Radera ditt konto och all data permanent. Detta kan inte ångras."
 	},

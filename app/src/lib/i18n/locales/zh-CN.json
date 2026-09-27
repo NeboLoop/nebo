@@ -799,6 +799,8 @@
 		"viewUsageArrow": "查看用量 →",
 		"botIdentity": "机器人身份",
 		"botIdentityDesc": "你的机器人的永久全球唯一身份。永不改变。",
+		"botEmail": "电子邮件地址",
+		"botEmailDesc": "发送到此地址的邮件会送达你的机器人。在 @ 前加上 +员工名，即可发给某位员工，例如 name+receptionist@。",
 		"dangerZone": "危险区域",
 		"deleteAccountDesc": "永久删除你的账户和所有数据。此操作不可撤销。"
 	},

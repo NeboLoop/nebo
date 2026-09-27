@@ -514,7 +514,9 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
     let ask_channels = state.ask_channels.clone();
     let run_registry = state.run_registry.clone();
     let approvals_agent_id = config.agent_id.clone();
-    let comm_manager = if config.comm_reply.is_some() {
+    // The loop plugin serves loop conversations only: a reply routed to
+    // another channel (email) never reaches it, not even as a typing signal.
+    let comm_manager = if config.comm_reply.as_ref().is_some_and(|c| c.provider == "neboai") {
         Some(state.comm_manager.clone())
     } else {
         None
@@ -523,6 +525,18 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
         Some(state.channel_providers.clone())
     } else {
         None
+    };
+    // A channel that takes one message per turn (email) gets the whole
+    // answer once, at the end: no stream chunks, no mid-turn segments, no
+    // tool activity.
+    let whole_turn = match &config.comm_reply {
+        Some(cr) if cr.provider != "neboai" => state
+            .channel_providers
+            .read()
+            .await
+            .get(&cr.provider)
+            .is_some_and(|p| p.whole_turns()),
+        _ => false,
     };
 
     let sid = config.session_key.clone();
@@ -735,6 +749,9 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                 if comm_reply.is_some() {
                                     comm_buffer.push_str("\n\n");
                                 }
+                                if whole_turn {
+                                    comm_segment.push_str("\n\n");
+                                }
                             }
                             needs_separator = false;
                             full_response.push_str(&event.text);
@@ -767,6 +784,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                 // reply: it is held and sent once, scrubbed
                                 // (see the final segment below).
                                 let should_flush = !origin.is_outside()
+                                    && !whole_turn
                                     && match last_comm_flush {
                                         None => true,
                                         Some(t) => t.elapsed().as_millis() as u64 >= COMM_COALESCE_MS,
@@ -828,8 +846,9 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                 // above the prose that follows — interleaved like
                                 // the desktop. Only fires when the segment has
                                 // prose, so consecutive tool calls in one round
-                                // don't each rotate.
-                                if !comm_segment.trim().is_empty() {
+                                // don't each rotate. A whole-turn channel keeps
+                                // accumulating: its one message is the turn's end.
+                                if !whole_turn && !comm_segment.trim().is_empty() {
                                     let mut seg_meta = std::collections::HashMap::new();
                                     if !agent_display_name.is_empty() {
                                         seg_meta.insert(
@@ -872,7 +891,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                 );
                                 // Mirror the tool event to the loop so it shows live
                                 // activity, like the local app.
-                                if let Some(cfg) = &comm_reply {
+                                if let Some(cfg) = comm_reply.as_ref().filter(|_| !whole_turn) {
                                     let request = tc.input.to_string();
                                     send_comm_tool_activity(
                                         cfg,
@@ -954,7 +973,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                             // can show Request/Response like the local app —
                             // bounded by the same preview the desktop transcript
                             // gets, well under the 32KB frame.
-                            if let Some(cfg) = &comm_reply {
+                            if let Some(cfg) = comm_reply.as_ref().filter(|_| !whole_turn) {
                                 let response: String = event
                                     .text
                                     .trim()
@@ -1340,7 +1359,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                         };
 
                         // Flush any remaining streamed text
-                        if !comm_buffer.is_empty() && !origin.is_outside() {
+                        if !comm_buffer.is_empty() && !origin.is_outside() && !whole_turn {
                             let chunk = comm::CommMessage {
                                 id: comm_stream_id.clone(),
                                 from: String::new(),

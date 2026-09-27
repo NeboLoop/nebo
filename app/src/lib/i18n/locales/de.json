@@ -799,6 +799,8 @@
 		"viewUsageArrow": "Nutzung anzeigen →",
 		"botIdentity": "Bot-Identität",
 		"botIdentityDesc": "Die permanente, global eindeutige Identität deines Bots. Sie ändert sich nie.",
+		"botEmail": "E-Mail-Adresse",
+		"botEmailDesc": "E-Mails an diese Adresse erreichen deinen Bot. Füge +Mitarbeiter vor dem @ hinzu, um einen einzelnen Mitarbeiter zu erreichen, etwa name+empfang@.",
 		"dangerZone": "Gefahrenzone",
 		"deleteAccountDesc": "Lösche dein Konto und alle Daten dauerhaft. Das kann nicht rückgängig gemacht werden."
 	},

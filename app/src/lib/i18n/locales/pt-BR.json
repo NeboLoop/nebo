@@ -799,6 +799,8 @@
 		"viewUsageArrow": "Ver Uso →",
 		"botIdentity": "Identidade do Bot",
 		"botIdentityDesc": "A identidade permanente e globalmente única do seu bot. Ela nunca muda.",
+		"botEmail": "Endereço de e-mail",
+		"botEmailDesc": "E-mails enviados para este endereço chegam ao seu bot. Adicione +funcionario antes do @ para falar com um funcionário, como nome+recepcao@.",
 		"dangerZone": "Zona de Perigo",
 		"deleteAccountDesc": "Exclua permanentemente sua conta e todos os dados. Isso não pode ser desfeito."
 	},

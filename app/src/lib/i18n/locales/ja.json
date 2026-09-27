@@ -799,6 +799,8 @@
 		"viewUsageArrow": "使用状況を見る →",
 		"botIdentity": "ボットID",
 		"botIdentityDesc": "あなたのボットの永続的でグローバルに一意なIDです。これは変更されません。",
+		"botEmail": "メールアドレス",
+		"botEmailDesc": "このアドレス宛てのメールはボットに届きます。@ の前に +従業員名 を付けると、その従業員に届きます（例: name+receptionist@）。",
 		"dangerZone": "危険な操作",
 		"deleteAccountDesc": "アカウントとすべてのデータを完全に削除します。この操作は元に戻せません。"
 	},

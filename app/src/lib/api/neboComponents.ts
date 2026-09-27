@@ -275,6 +275,13 @@ export interface BillingSubscription {
 	currentPeriodEnd?: string
 }
 
+export interface BotEmailResponse {
+	address: string
+	sendingEnabled: boolean
+	dailyLimit: number
+	sentToday: number
+}
+
 export interface CaseDetail {
 	case: CaseSummary
 	turns: CaseTurn[]
