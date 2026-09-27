@@ -160,6 +160,30 @@ pub(crate) async fn finish_turn(
     hub.broadcast("chat_complete", payload);
 }
 
+/// The metadata key on the row a failed run leaves in its conversation.
+pub(crate) const RUN_ERROR_KEY: &str = "runError";
+
+/// A run that ended on an error keeps it in the conversation, stored like any
+/// message: one `system` row stamped `{"runError": true}` whose text is the
+/// error the live `chat_error` event carried. The event reaches only a page
+/// already listening; a hire's first greeting fails before its thread has
+/// opened, and a reload loses the event too. The row is what the chat reads
+/// when the thread opens, and it shows it on the same error banner. The model
+/// never reads it (`get_chat_messages_since_checkpoint` leaves it out).
+fn record_run_error(harness: &agent::Harness, session_key: &str, error: &str) {
+    if error.is_empty() {
+        return;
+    }
+    let sessions = harness.sessions();
+    let Ok(session_id) = sessions.resolve_session_id_by_key(session_key) else {
+        return;
+    };
+    let metadata = serde_json::json!({ RUN_ERROR_KEY: true }).to_string();
+    if let Err(e) = sessions.append_message(&session_id, "system", error, None, None, Some(&metadata)) {
+        warn!(error = %e, session_key, "could not keep the run's error in its conversation");
+    }
+}
+
 /// The reply-text fragment of a stream event: `Some` ONLY for `Text` events.
 /// This is the ONE gate for what accumulates into user-visible reply text
 /// (desktop `full_response`, comm buffers, channel replies). `ControlNotice`
@@ -613,6 +637,9 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                 // Carried on chat_complete so the UI can render a status line
                 // ("stopped: repeated tool calls") instead of prose.
                 let mut control_stop: Option<(String, String)> = None;
+                // The error the run ended on, kept in the conversation when
+                // the stream closes (`record_run_error`).
+                let mut run_error: Option<String> = None;
                 let mut text_buffer = String::new();
                 let mut last_flush = tokio::time::Instant::now();
                 // Tight coalesce window so text streams in small, token-smooth chunks
@@ -1031,12 +1058,14 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                             needs_separator = true;
                         }
                         StreamEventType::Error => {
+                            let error = event.error.unwrap_or_default();
                             hub.broadcast(
                                 "chat_error",
                                 ws_payload!(
-                                    "error": event.error.unwrap_or_default(),
+                                    "error": &error,
                                 ),
                             );
+                            run_error = Some(error);
                         }
                         // Kept on the stored reply by the harness; nothing to show.
                         StreamEventType::ThinkingBlock => {}
@@ -1586,6 +1615,12 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                         .collect(),
                 };
 
+                // Kept before chat_complete, so a page that reloads the thread
+                // on completion reads it.
+                if let Some(error) = &run_error {
+                    record_run_error(&harness, &sid, error);
+                }
+
                 // Always send chat_complete (with any run-produced artifacts so
                 // the app renders them). When the run ended via a typed
                 // ControlNotice, the payload also carries the typed stop reason
@@ -1648,12 +1683,14 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
             }
             Err(e) => {
                 warn!(error = %e, "agent run failed");
+                let error = e.to_string();
                 hub.broadcast(
                     "chat_error",
                     ws_payload!(
-                        "error": e.to_string(),
+                        "error": &error,
                     ),
                 );
+                record_run_error(&harness, &sid, &error);
                 finish_turn(
                     &hub,
                     &_run_handle,
@@ -2536,6 +2573,44 @@ mod tests {
         assert!(!other_session.is_cancelled(), "another conversation's helper runs on");
         drop(run); // the turn ended on its cancel
         assert!(!super::stop_session(&helpers, &runs, key).await, "nothing is running now");
+    }
+
+    /// A run that ended on an error keeps it in its conversation: one
+    /// `system` row stamped `runError`, carrying the error the live event
+    /// carried, in the owner's thread and never in the model's
+    /// conversation. An empty error leaves nothing.
+    #[test]
+    fn a_failed_run_keeps_its_error_in_the_thread() {
+        let path = std::env::temp_dir().join(format!("nebo-run-error-{}.db", uuid::Uuid::new_v4()));
+        let store = Arc::new(db::Store::new(&path.to_string_lossy()).expect("store"));
+        let tools = Arc::new(tools::Registry::new(Arc::new(agent::Check::new(store.clone()))));
+        let harness = agent::Harness::new(
+            store.clone(),
+            tools,
+            Vec::new(),
+            agent::selector::ModelSelector::new(Default::default()),
+            Arc::new(agent::ConcurrencyController::new(Some(2))),
+            Arc::new(napp::HookDispatcher::new()),
+            None,
+            Default::default(),
+            None,
+        );
+        let key = "agent:assistant:web";
+        let session = harness.sessions().get_or_create(key, "").expect("session");
+        harness.sessions().append_message(&session.id, "user", "Hello", None, None, None).expect("user row");
+
+        super::record_run_error(&harness, key, "");
+        assert_eq!(harness.sessions().get_messages(&session.id).unwrap().len(), 1, "an empty error leaves nothing");
+
+        super::record_run_error(&harness, key, "USAGE_LIMIT_EXCEEDED: no balance");
+        let thread = harness.sessions().get_messages(&session.id).unwrap();
+        let last = thread.last().expect("rows");
+        assert_eq!((last.role.as_str(), last.content.as_str()), ("system", "USAGE_LIMIT_EXCEEDED: no balance"));
+        let meta: serde_json::Value = serde_json::from_str(last.metadata.as_deref().unwrap()).unwrap();
+        assert_eq!(meta[super::RUN_ERROR_KEY], true);
+
+        let model = harness.sessions().get_messages_since_checkpoint(&session.id).unwrap();
+        assert_eq!(model.iter().map(|m| m.content.as_str()).collect::<Vec<_>>(), vec!["Hello"], "the model never reads it");
     }
 
     #[test]

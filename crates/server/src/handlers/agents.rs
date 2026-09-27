@@ -270,12 +270,13 @@ const PREVIEW_LOOKBACK: i64 = 6;
 
 /// A row the owner sees in the thread. Mirrors `last_visible_message_sql`
 /// in crates/db/src/queries/chats.rs (not a tool row, non-empty, not
-/// `"hidden":true`); `sql_visibility_rule_matches_thread_preview` fails if
+/// `"hidden":true`, not `"runError":true`); `sql_visibility_rule_matches_thread_preview` fails if
 /// that SQL changes without this predicate following.
 fn is_visible(m: &db::models::ChatMessage) -> bool {
     m.role != "tool"
         && !m.content.is_empty()
         && !m.metadata.as_deref().is_some_and(|raw| raw.contains("\"hidden\":true"))
+        && !m.metadata.as_deref().is_some_and(|raw| raw.contains("\"runError\":true"))
 }
 
 /// The thread's status line from its newest rows (oldest first, as the store
@@ -5592,6 +5593,7 @@ mod thread_preview_tests {
             msg("tool", "{...}", None),
             msg("assistant", "", None),
             msg("user", "steering", Some(r#"{"hidden":true}"#)),
+            msg("system", "USAGE_LIMIT_EXCEEDED: no balance", Some(r#"{"runError":true}"#)),
         ];
         let t = thread_preview(&rows);
         assert_eq!(t.preview.as_deref(), Some("Comparing fares now."));
@@ -5637,6 +5639,7 @@ mod thread_preview_tests {
         assert!(rule.contains("m2.role != 'tool'"), "tool rows are hidden: {rule}");
         assert!(rule.contains("m2.content != ''"), "empty rows are hidden: {rule}");
         assert!(rule.contains(r#"NOT LIKE '%\"hidden\":true%'"#), "hidden rows are hidden: {rule}");
+        assert!(rule.contains(r#"NOT LIKE '%\"runError\":true%'"#), "run errors are not a line: {rule}");
     }
 }
 
