@@ -41,6 +41,12 @@ const OPEN: &[&str] = &[
     "appdata/agents",
 ];
 
+/// The installed plugins, their programs and their data: open to a
+/// workflow's command step alone (`ToolContext::trusted_plugin_env`), which
+/// runs them with their auth env as the owner's own step. Their accounts
+/// (`nebo/plugin-profiles`) stay closed to it as to every command.
+const PLUGINS: &[&str] = &["nebo/plugins", "user/plugins", "appdata/plugins"];
+
 /// Nebo's folder, closed but for the parts one run works in.
 #[derive(Debug, Clone)]
 pub struct NeboFiles {
@@ -54,20 +60,24 @@ pub struct NeboFiles {
 }
 
 impl NeboFiles {
-    /// The fence for a run of session `session_id`, or `None` when Nebo's
-    /// folder can't be found.
-    pub fn of(session_id: &str) -> Option<Self> {
+    /// The fence for the run `ctx` belongs to, or `None` when Nebo's folder
+    /// can't be found. A workflow's command step also works in the
+    /// installed plugins (`PLUGINS`).
+    pub fn of(ctx: &crate::origin::ToolContext) -> Option<Self> {
         let root = config::data_dir().ok()?;
-        let session = crate::checkpoint::session_dir(session_id);
-        Some(Self::at(&root, &session))
+        let session = crate::checkpoint::session_dir(&ctx.session_id);
+        Some(Self::at(&root, &session, ctx.trusted_plugin_env))
     }
 
     /// The fence of the folder `root`, with `session` (a folder under it)
-    /// open as the run's own.
-    pub fn at(root: &Path, session: &Path) -> Self {
+    /// open as the run's own, and the installed plugins open when `plugins`.
+    pub fn at(root: &Path, session: &Path, plugins: bool) -> Self {
         let root = lexical(&absolute(root, None));
         let real = resolved(&root);
         let mut open: Vec<PathBuf> = OPEN.iter().map(PathBuf::from).collect();
+        if plugins {
+            open.extend(PLUGINS.iter().map(PathBuf::from));
+        }
         if let Ok(rel) = lexical(&absolute(session, None)).strip_prefix(&root)
             && rel.components().count() >= 2
         {
@@ -275,7 +285,7 @@ mod tests {
     #[test]
     fn the_folder_is_closed_but_for_the_parts_an_employee_works_in() {
         let (_d, root) = home();
-        let fence = NeboFiles::at(&root, &root.join("sessions/s1"));
+        let fence = NeboFiles::at(&root, &root.join("sessions/s1"), false);
         for closed in ["settings.json", "logs/nebo.log", "data/nebo.db", "sessions/s2/x", "nebo/plugin-profiles/a", "appdata/plugins/p/db", "bot_id", ""] {
             assert!(fence.closes(&root.join(closed), None), "{closed} must be closed");
         }
@@ -286,9 +296,23 @@ mod tests {
     }
 
     #[test]
+    fn a_workflow_step_also_works_in_the_installed_plugins_and_nothing_more() {
+        let (_d, root) = home();
+        let fence = NeboFiles::at(&root, &root.join("sessions/s1"), true);
+        for open in ["nebo/plugins/odoo/1.0.0/odoo", "user/plugins/mine/bin", "appdata/plugins/odoo/cache.db", "files/a.md"] {
+            assert!(!fence.closes(&root.join(open), None), "{open} must be open to a workflow step");
+        }
+        for closed in ["settings.json", "logs/nebo.log", "data/nebo.db", "nebo/plugin-profiles/gws/creds.json", "sessions/s2/x"] {
+            assert!(fence.closes(&root.join(closed), None), "{closed} must stay closed to a workflow step");
+        }
+        let model = NeboFiles::at(&root, &root.join("sessions/s1"), false);
+        assert!(model.closes(&root.join("appdata/plugins/odoo/cache.db"), None), "a model's command never reaches plugin data");
+    }
+
+    #[test]
     fn a_path_spelled_around_the_fence_is_still_closed() {
         let (_d, root) = home();
-        let fence = NeboFiles::at(&root, &root.join("sessions/s1"));
+        let fence = NeboFiles::at(&root, &root.join("sessions/s1"), false);
         assert!(fence.closes(&root.join("files/../settings.json"), None), "..");
         assert!(fence.closes(Path::new("../settings.json"), Some(&root.join("files"))), "relative to the run's folder");
         #[cfg(unix)]
@@ -303,7 +327,7 @@ mod tests {
     #[test]
     fn closed_entries_are_the_topmost_closed_ones() {
         let (_d, root) = home();
-        let fence = NeboFiles::at(&root, &root.join("sessions/s1"));
+        let fence = NeboFiles::at(&root, &root.join("sessions/s1"), false);
         let real = std::fs::canonicalize(&root).unwrap();
         let mut got: Vec<String> = fence
             .closed_entries()
@@ -317,7 +341,7 @@ mod tests {
     #[test]
     fn a_command_naming_a_closed_file_is_found() {
         let (_d, root) = home();
-        let fence = NeboFiles::at(&root, &root.join("sessions/s1"));
+        let fence = NeboFiles::at(&root, &root.join("sessions/s1"), false);
         let r = root.to_string_lossy();
         assert!(fence.named_in(&format!("cat {r}/settings.json | head"), None).is_some());
         assert!(fence.named_in(&format!("grep -r gmail \"{r}/logs\""), None).is_some());
@@ -326,7 +350,7 @@ mod tests {
         assert!(fence.named_in("cat /etc/hosts", None).is_none());
         let spaced = root.join("Application Support");
         std::fs::create_dir_all(spaced.join("files")).unwrap();
-        let fence = NeboFiles::at(&spaced, &spaced.join("sessions/s1"));
+        let fence = NeboFiles::at(&spaced, &spaced.join("sessions/s1"), false);
         let s = spaced.to_string_lossy();
         assert!(fence.named_in(&format!("cat {}/settings.json", s.replace(' ', "\\ ")), None).is_some(), "escaped spaces");
         assert!(fence.named_in(&format!("cat \"{s}/files/a.md\""), None).is_none());

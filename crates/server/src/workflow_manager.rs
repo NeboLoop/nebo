@@ -794,14 +794,7 @@ impl WorkflowManager for WorkflowManagerImpl {
                 let tool_defs = tools_registry.list().await;
                 let resolved_tools: Vec<Box<dyn DynTool>> = tool_defs
                     .iter()
-                    .map(|td| {
-                        Box::new(RegistryTool {
-                            tool_name: td.name.clone(),
-                            tool_desc: td.description.clone(),
-                            tool_schema: td.input_schema.clone(),
-                            registry: tools_registry.clone(),
-                        }) as Box<dyn DynTool>
-                    })
+                    .map(|td| Box::new(RegistryTool::new(td, tools_registry.clone())) as Box<dyn DynTool>)
                     .collect();
 
                 info!(
@@ -1591,14 +1584,7 @@ impl WorkflowManager for WorkflowManagerImpl {
 
                 let resolved_tools: Vec<Box<dyn tools::registry::DynTool>> = tool_defs
                     .iter()
-                    .map(|td| {
-                        Box::new(RegistryTool {
-                            tool_name: td.name.clone(),
-                            tool_desc: td.description.clone(),
-                            tool_schema: td.input_schema.clone(),
-                            registry: tools_registry.clone(),
-                        }) as Box<dyn tools::registry::DynTool>
-                    })
+                    .map(|td| Box::new(RegistryTool::new(td, tools_registry.clone())) as Box<dyn tools::registry::DynTool>)
                     .collect();
 
                 info!(
@@ -1955,11 +1941,23 @@ impl WorkflowManager for WorkflowManagerImpl {
 ///
 /// Snapshots tool metadata at construction time and delegates execution to the
 /// shared Registry. This avoids holding the Registry's RwLock across await points.
-struct RegistryTool {
+pub(crate) struct RegistryTool {
     tool_name: String,
     tool_desc: String,
     tool_schema: serde_json::Value,
     registry: Arc<tools::Registry>,
+}
+
+impl RegistryTool {
+    /// The registry's tool `td`, as a workflow run's roster holds it.
+    pub(crate) fn new(td: &ai::ToolDefinition, registry: Arc<tools::Registry>) -> Self {
+        Self {
+            tool_name: td.name.clone(),
+            tool_desc: td.description.clone(),
+            tool_schema: td.input_schema.clone(),
+            registry,
+        }
+    }
 }
 
 impl DynTool for RegistryTool {

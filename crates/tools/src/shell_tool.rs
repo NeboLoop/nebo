@@ -272,7 +272,7 @@ impl ShellTool {
             120
         };
         let started_at = std::time::SystemTime::now();
-        let started = match self.registry.spawn(cmd, &input.command, process::Spawn::Foreground, input.pty, &closed_ports).await {
+        let started = match self.registry.spawn(cmd, &input.command, process::Spawn::Foreground(ctx.stdin.clone()), input.pty, &closed_ports).await {
             Ok(s) => s,
             Err(e) => return spawn_failure(&input.command, &e),
         };
@@ -286,10 +286,14 @@ impl ShellTool {
             // run nobody started has nobody to tell: their timeout is the
             // end of the command.
             Err(_) if input.raw || caller.is_none() => {
-                return ToolResult::error(format!(
+                let mut stopped = ToolResult::error(format!(
                     "Command stopped at its timeout of {timeout_secs}s: `{}`",
                     crate::truncate_str(&input.command, 80)
                 ));
+                if input.raw {
+                    stopped.payload = Some(serde_json::json!({ "kind": COMMAND_EXIT, "timed_out": true }));
+                }
+                return stopped;
             }
             Err(_) => {
                 if self.registry.move_to_background(&started.session, caller) {
@@ -321,16 +325,23 @@ impl ShellTool {
         let (stdout, stderr) = started.session.drain_pending(false).await;
         let output = std::process::Output { status, stdout, stderr };
         if input.raw {
-            if !output.status.success() {
-                return ToolResult::error(format!(
-                    "{}\n{}",
-                    exit_header(&output.status),
-                    String::from_utf8_lossy(&output.stderr)
-                ));
-            }
-            return ToolResult::ok(
-                String::from_utf8_lossy(&output.stdout).into_owned(),
-            );
+            let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+            let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+            // A program reading the result (a hook runner) gets the exit
+            // status and both streams as they were written.
+            let exit = serde_json::json!({
+                "kind": COMMAND_EXIT,
+                "exit_code": output.status.code(),
+                "stdout": stdout,
+                "stderr": stderr,
+            });
+            let mut result = if output.status.success() {
+                ToolResult::ok(stdout)
+            } else {
+                ToolResult::error(format!("{}\n{}", exit_header(&output.status), stderr))
+            };
+            result.payload = Some(exit);
+            return result;
         }
         let mut result = String::new();
 
@@ -435,14 +446,11 @@ impl ShellTool {
     fn command(&self, input: &ShellInput, ctx: &ToolContext) -> Result<(tokio::process::Command, Vec<u16>), ToolResult> {
         let trusted_plugin_env = ctx.trusted_plugin_env;
         let default_cwd = ctx.cwd.as_deref();
-        // A workflow's command step runs installed plugins, which keep their
-        // data in Nebo's folder and may call its API: it is the owner's own
-        // step, not fenced.
-        let (fence, closed_ports) = if trusted_plugin_env {
-            (None, Vec::new())
-        } else {
-            (crate::nebo_files::NeboFiles::of(&ctx.session_id), types::own_ports::list())
-        };
+        // Every command is fenced, a workflow's command step included: it
+        // runs the installed plugins, so their programs and data are open to
+        // it (`NeboFiles::of`), and nothing else of Nebo's is.
+        let fence = crate::nebo_files::NeboFiles::of(ctx);
+        let closed_ports = types::own_ports::list();
         let prefix = crate::confine::Confinement { offline: ctx.offline, fence: fence.as_ref(), closed_ports: &closed_ports }
             .prefix()
             .map_err(|_| ToolResult::error(OFFLINE_UNAVAILABLE))?;
@@ -479,7 +487,7 @@ impl ShellTool {
         }
 
         cmd.env_clear();
-        for (k, v) in process::sanitized_env().into_iter().filter(|(k, _)| !nebo_own_env(k)) {
+        for (k, v) in process::command_env() {
             cmd.env(k, v);
         }
         // An unattended agent can never answer a credential prompt: a `git
@@ -915,14 +923,9 @@ impl Drop for KillOnDrop {
     }
 }
 
-/// Why the shell could not start the command.
-/// Nebo's own settings in its environment: the bot's tokens and keys, the
-/// server's secret, where its folder is. A command an employee runs never
-/// sees them (`env` would put them in its context).
-fn nebo_own_env(key: &str) -> bool {
-    let key = key.to_ascii_uppercase();
-    key.starts_with("NEBO_") || key.starts_with("NEBOAI_") || matches!(key.as_str(), "JWT_SECRET" | "MCP_ENCRYPTION_KEY")
-}
+/// The `payload` kind of a raw command's result: `exit_code` (null when a
+/// signal ended it), `stdout` and `stderr`, or `timed_out`.
+pub const COMMAND_EXIT: &str = "command_exit";
 
 /// Told after every command of a run whose web access is off.
 const OFFLINE_NOTE: &str = "\n\n(This ran with no network access: web access is off for this work, so nothing a command \

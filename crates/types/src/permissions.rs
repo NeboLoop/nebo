@@ -338,6 +338,16 @@ impl Door {
             Door::LocalApi => "local_api",
         }
     }
+
+    /// What the run through the door labelled `label` is called when it
+    /// can't wait for the owner's OK (`ToolContext::cannot_wait`).
+    pub fn unattended_words(label: &str) -> &'static str {
+        match label {
+            "schedule" => "a scheduled command",
+            "workflow" => "a workflow step",
+            _ => "this run",
+        }
+    }
 }
 
 /// Why a call was allowed or refused, recorded with every decision.

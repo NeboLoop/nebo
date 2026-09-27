@@ -210,10 +210,12 @@ pub struct Caller {
 /// to the background at its timeout, so a slow command is never killed for
 /// being slow; a background command
 /// returns its id at once. Either way its end reaches its caller, once it is
-/// in the background.
+/// in the background. A foreground command reads the bytes it is given on
+/// its standard input, then its end (a hook's payload); given none, it reads
+/// nothing.
 #[derive(Debug, Clone)]
 pub enum Spawn {
-    Foreground,
+    Foreground(Option<Vec<u8>>),
     Background(Option<Caller>),
 }
 
@@ -361,8 +363,8 @@ impl ProcessRegistry {
     /// since its call is waiting on it.
     /// `closed_ports`: ports it may not connect to (`confine::spawn_with`).
     pub async fn spawn(&self, mut cmd: Command, command: &str, spawn: Spawn, pty: bool, closed_ports: &[u16]) -> std::io::Result<Started> {
-        let (foreground, notify) = match spawn {
-            Spawn::Foreground => (true, None),
+        let (foreground, notify, input) = match spawn {
+            Spawn::Foreground(input) => (true, None, input),
             Spawn::Background(caller) => {
                 let running = self.running.lock().await;
                 let background: Vec<String> = running
@@ -378,7 +380,7 @@ impl ProcessRegistry {
                         ids.join(", ")
                     )));
                 }
-                (false, caller)
+                (false, caller, None)
             }
         };
         if pty {
@@ -389,8 +391,8 @@ impl ProcessRegistry {
         cmd.stderr(Stdio::piped());
         // A foreground command has nobody to type into it: input it waits
         // for would hold its call to the timeout. A background one takes
-        // send_input.
-        cmd.stdin(if foreground { Stdio::null() } else { Stdio::piped() });
+        // send_input, and one given its input reads it to its end.
+        cmd.stdin(if foreground && input.is_none() { Stdio::null() } else { Stdio::piped() });
         in_own_group(&mut cmd);
         let child = crate::confine::spawn_with(closed_ports, || cmd.spawn())?;
 
@@ -402,6 +404,15 @@ impl ProcessRegistry {
 
         let (stdin_tx, stdin_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(32);
         let (exit_tx, exited) = tokio::sync::oneshot::channel();
+        // Given input: written, and the sender dropped, so the pipe closes
+        // after it and the command sees the end of its input.
+        let stdin_tx = match input {
+            Some(bytes) => {
+                let _ = stdin_tx.try_send(bytes);
+                None
+            }
+            None => Some(stdin_tx),
+        };
 
         let session = Arc::new(BackgroundSession {
             id: session_id.clone(),
@@ -415,7 +426,7 @@ impl ProcessRegistry {
             pending_stderr: Arc::default(),
             pending_raw: Arc::default(),
             lifecycle: Arc::new(std::sync::Mutex::new(Lifecycle { foreground, notify, stopped: false, ended: false })),
-            stdin_tx: Some(stdin_tx),
+            stdin_tx,
             pty: None,
         });
 
@@ -860,6 +871,21 @@ pub fn sanitized_env() -> Vec<(String, String)> {
     napp::plugin_runtime::sanitized_env()
 }
 
+/// The environment every command an employee causes starts with (its
+/// shell, a skill's script, a hook around its calls): the sanitized
+/// environment without Nebo's own settings.
+pub fn command_env() -> Vec<(String, String)> {
+    sanitized_env().into_iter().filter(|(k, _)| !nebo_own_env(k)).collect()
+}
+
+/// Nebo's own settings in its environment: the bot's tokens and keys, the
+/// server's secret, where its folder is. A command an employee runs never
+/// sees them (`env` would put them in its context).
+fn nebo_own_env(key: &str) -> bool {
+    let key = key.to_ascii_uppercase();
+    key.starts_with("NEBO_") || key.starts_with("NEBOAI_") || matches!(key.as_str(), "JWT_SECRET" | "MCP_ENCRYPTION_KEY")
+}
+
 #[cfg(all(test, target_os = "windows"))]
 mod ps_stderr_tests {
     use super::clean_powershell_stderr;
@@ -1107,7 +1133,7 @@ mod group_tests {
         }
         let err = reg.spawn(sh("sleep 30"), "sleep 30", Spawn::Background(None), false, &[]).await.err().expect("capped");
         assert!(err.to_string().contains("stop one first"), "{err}");
-        let fg = reg.spawn(sh("echo still-runs"), "echo", Spawn::Foreground, false, &[]).await.expect("a foreground command is never capped");
+        let fg = reg.spawn(sh("echo still-runs"), "echo", Spawn::Foreground(None), false, &[]).await.expect("a foreground command is never capped");
         assert!(fg.exited.await.unwrap().is_some_and(|s| s.success()));
         for id in ids {
             reg.kill_session(&id).await.unwrap();
@@ -1166,11 +1192,23 @@ mod group_tests {
     #[tokio::test]
     async fn a_foreground_command_tells_nobody() {
         let (reg, mut rx) = reported();
-        let fg = reg.spawn(sh("echo done"), "echo done", Spawn::Foreground, false, &[]).await.unwrap();
+        let fg = reg.spawn(sh("echo done"), "echo done", Spawn::Foreground(None), false, &[]).await.unwrap();
         assert!(fg.exited.await.unwrap().is_some());
         assert!(reg.get_any_session(&fg.session.id).await.is_none(), "a foreground result is its call's alone");
         settle().await;
         assert!(rx.try_recv().is_err(), "nobody is told");
+    }
+
+    /// A foreground command given input reads it, then the end of it: a
+    /// reader of all of its input (`cat`, `jq`) finishes instead of waiting.
+    #[tokio::test]
+    async fn a_foreground_command_reads_its_given_input_to_the_end() {
+        let (reg, _rx) = reported();
+        let fg = reg.spawn(sh("cat; echo after"), "cat", Spawn::Foreground(Some(b"PAYLOAD".to_vec())), false, &[]).await.unwrap();
+        let status = tokio::time::timeout(Duration::from_secs(5), fg.exited).await.expect("it saw the end of its input");
+        assert!(status.unwrap().is_some_and(|s| s.success()));
+        let (stdout, _) = fg.session.drain_pending(false).await;
+        assert_eq!(String::from_utf8_lossy(&stdout), "PAYLOADafter\n");
     }
 
     /// A foreground command moved to the background at its timeout keeps
@@ -1178,7 +1216,7 @@ mod group_tests {
     #[tokio::test]
     async fn a_moved_command_is_reported_when_it_ends() {
         let (reg, mut rx) = reported();
-        let fg = reg.spawn(sh("sleep 0.5; echo finally"), "slow", Spawn::Foreground, false, &[]).await.unwrap();
+        let fg = reg.spawn(sh("sleep 0.5; echo finally"), "slow", Spawn::Foreground(None), false, &[]).await.unwrap();
         assert!(reg.list_running().await.is_empty(), "a foreground command is not listed as background work");
         assert!(reg.move_to_background(&fg.session, Some(caller())));
         let exit = tokio::time::timeout(Duration::from_secs(5), rx.recv()).await.expect("told in time").expect("told");

@@ -25,7 +25,7 @@ const FILE_KEYS: &[&str] = &[
 /// Some(error_message) if blocked.
 /// This check is unconditional — cannot be bypassed by any setting.
 pub fn check_safeguard(rule_key: &str, input: &serde_json::Value, ctx: &crate::origin::ToolContext) -> Option<String> {
-    let fence = NeboFiles::of(&ctx.session_id);
+    let fence = NeboFiles::of(ctx);
     let run = Run { fence: fence.as_ref(), cwd: ctx.cwd.as_deref().map(Path::new) };
     match rule_key {
         "run_command" => check_shell_safeguard(input, &run),
@@ -702,7 +702,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("nebo-home");
         std::fs::create_dir_all(root.join("files")).unwrap();
-        let fence = NeboFiles::at(&root, &root.join("sessions/s1"));
+        let fence = NeboFiles::at(&root, &root.join("sessions/s1"), false);
         let run = Run { fence: Some(&fence), cwd: None };
         let at = |rel: &str| root.join(rel).to_string_lossy().into_owned();
 

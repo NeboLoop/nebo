@@ -97,7 +97,7 @@ impl PermissionGate for Check {
             && ctx.cannot_wait
         {
             decision = Decision::Deny {
-                reason: ask::cannot_wait_text(&call.tool.activity(call.input), case),
+                reason: ask::cannot_wait_text(&call.tool.activity(call.input), case, &ctx.door),
                 why: Why::CannotWait { case: case.clone() },
             };
         }

@@ -1777,8 +1777,9 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     let hooks = Arc::new(napp::HookDispatcher::new());
     // Repo-level shell hooks (`.nebo/hooks.yaml`) ride the same dispatcher as
     // plugin hooks; exit 2 reaches the model, exit 0 attaches stdout. Which
-    // file applies is decided per call from the folder the call works in.
-    agent::shell_hooks::register_workspace_hooks(&hooks);
+    // file applies is decided per call from the folder the call works in, and
+    // its commands run through run_command as the call's employee.
+    agent::shell_hooks::register_workspace_hooks(&hooks, tool_registry.clone(), store.clone());
 
     // Per-run credentials for CLI providers' tool calls over /agent/mcp.
     let tool_credentials = agent::ToolCredentials::default();

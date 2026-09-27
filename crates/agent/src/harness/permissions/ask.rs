@@ -771,9 +771,10 @@ pub fn parked_text(sentence: &str, case: &AskCase) -> String {
 
 /// Why a call that needed the owner's OK didn't run in a run nothing can
 /// wait in (a scheduled command). The owner reads it in the job's failure.
-pub fn cannot_wait_text(sentence: &str, case: &AskCase) -> String {
+pub fn cannot_wait_text(sentence: &str, case: &AskCase, door: &Door) -> String {
     format!(
-        "Didn't run: {sentence}. It needs the owner's OK, and a scheduled command can't wait for one. {}",
+        "Didn't run: {sentence}. It needs the owner's OK, and {} can't wait for one. {}",
+        Door::unattended_words(door.label()),
         reason_of(case)
     )
 }
