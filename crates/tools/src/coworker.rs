@@ -40,11 +40,12 @@ pub struct CoworkerMessage {
     /// verbatim from `ToolContext.run_taint`). The rail seeds the target run
     /// with it, so multi-hop chains carry the union by construction.
     pub provenance: Vec<types::provenance::ProvenanceClass>,
-    /// Set when this message is a team post being delivered to a member: the
-    /// target's thread is the team thread (`agent:<to>:coworker:team:<id>`),
-    /// the briefing names the team, and the reply is posted back into the
-    /// team instead of returned to the sender. `act` = false delivers the
-    /// post as context only (no run).
+    /// Set when this message is a team post a member is asked to act on: the
+    /// member works in its seat for the team (`agent:<to>:coworker:team:<id>`),
+    /// the briefing names the team and carries the team's conversation read
+    /// from the team thread, and the reply is posted back into the team
+    /// instead of returned to the sender. A member not asked to act is sent
+    /// nothing: the team thread is the one record of the conversation.
     pub team: Option<TeamDelivery>,
 }
 
@@ -52,8 +53,9 @@ pub struct CoworkerMessage {
 #[derive(Debug, Clone)]
 pub struct TeamDelivery {
     pub team_id: String,
-    /// Whether the member is asked to act (run) or only receives the post.
-    pub act: bool,
+    /// The post's row in the team thread (`db::TeamMessage::id`): the
+    /// team's conversation the member is briefed with is what came before it.
+    pub post_id: String,
     /// The session that posted, when one did: the member's reply comes back
     /// to it as a notification as well as into the team.
     pub reply_to: Option<String>,
@@ -107,7 +109,8 @@ pub struct TeamPost {
 }
 
 /// Receipt for a team post: the post is in the thread and every listed
-/// member has been asked to act (the rest received it as context).
+/// member has been asked to act (the rest were sent nothing; the post is in
+/// the team thread they are briefed from when they are asked).
 #[derive(Debug, Clone)]
 pub struct TeamPostReceipt {
     pub team_id: String,

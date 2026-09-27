@@ -1,0 +1,11 @@
+id: sc49-a-team-conversation-stays-in-the-team-thread
+name: "SC49 — A team's conversation stays in the team thread"
+description: |
+  The owner posts to a team naming nobody and the lead answers in the team. A member nobody
+  asked is sent nothing: its seat and its own chat stay empty, and its direct turns never read
+  the team's words. A member the owner names answers in the team, briefed with the team's
+  earlier posts read from the team thread (2026-09-26: the exchange had shown up in Neighbor
+  Mail's own chat).
+target_component: staffed-company
+proof: staffed_proof::conversation::a_team_conversation_stays_in_the_team_thread
+conversation: []

@@ -51,3 +51,4 @@ fixtures:
   - ../fixtures/staffed-company/conversation/sc46-a-team-member-acknowledges-in-the-thread-before-it-works.yaml
   - ../fixtures/staffed-company/conversation/sc47-a-silent-team-member-is-announced-as-working.yaml
   - ../fixtures/staffed-company/conversation/sc48-a-linked-team-member-acknowledges-and-an-unreachable-one-says-so.yaml
+  - ../fixtures/staffed-company/conversation/sc49-a-team-conversation-stays-in-the-team-thread.yaml

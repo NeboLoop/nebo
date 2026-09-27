@@ -298,19 +298,18 @@ pub fn build_message_metadata(messages: &mut Vec<db::models::ChatMessage>) {
         }
     }
 
-    // Phase 1b: a team post relayed into a member's own thread is stored as
-    // the prompt the model read — "[Team \"Customer Support\" — mission]\n
-    // [Post from Owner]\n\n<text>". The model needs that envelope; a person
-    // does not, and every client was printing it raw. Derive the display
-    // fields here, at read time, in the one place both clients read, so old
-    // rows get them too and nothing has to be re-stored.
+    // Phase 1b: a team post a member was asked to act on is stored in its
+    // seat for the team as the prompt the model read — "[Team \"Customer
+    // Support\" — mission]\n[Post from Owner]\n\n<text>". The model needs
+    // that envelope; a person does not, and every client was printing it raw.
+    // Derive the display fields here, at read time, in the one place both
+    // clients read, so old rows get them too and nothing has to be re-stored.
     //
-    // The row's CONTENT decides — not a flag. Only one of the two writers ever
-    // set `teamPost: true` (the context-only relay); the lead's row and every
-    // addressed member's row are written by the runner from the same envelope
-    // with no flag at all, and those threads rendered the envelope raw
-    // (2026-09-19). The flag survives as the carrier of `teamId`, which the
-    // text does not hold.
+    // The row's CONTENT decides — not a flag. `teamPost: true` was only ever
+    // set by the retired context-only relay (migration 0187 took those copies
+    // out of members' threads; a copy whose team has no thread left keeps
+    // the flag as the carrier of `teamId`, which the text does not hold). The
+    // runner writes the asked member's row with no flag at all.
     for msg in messages.iter_mut() {
         if msg.role != "user" {
             continue;
@@ -909,10 +908,10 @@ mod transcript_metadata_tests {
     }
 
     /// A team post is unpacked for the clients whether or not the row carries
-    /// the `teamPost` flag. The flag is only ever set on the context-only
-    /// relay; the lead's row and an addressed member's row are written by the
-    /// runner from the same envelope with no metadata at all, and those
-    /// threads used to print "[Team \"…\" — …]" at the reader.
+    /// the `teamPost` flag. The flag was only ever set by the retired
+    /// context-only relay; the lead's row and an addressed member's row are
+    /// written by the runner from the same envelope with no metadata at all,
+    /// and those threads used to print "[Team \"…\" — …]" at the reader.
     #[test]
     fn a_team_post_is_unpacked_with_or_without_the_flag() {
         let envelope =

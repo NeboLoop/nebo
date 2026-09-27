@@ -767,6 +767,97 @@ Date
         assert_eq!(linked("none"), (None, None));
     }
 
+    /// The team-post copies stored in members' threads leave them (the
+    /// owner's case, 2026-09-26: Neighbor Mail's chat held the owner's post
+    /// to Marketing & Growth and the Social Media Manager's answer). A copy
+    /// whose post is in the team thread goes; a copy whose original is
+    /// missing moves into the team thread as the team row it copied; the
+    /// restart note a copy caused goes. The team thread keeps its whole
+    /// history, an asked member's own work in its seat stays, and so does
+    /// everything in the member's direct chat that is its own. Running it
+    /// again changes nothing.
+    #[test]
+    fn team_post_copies_leave_member_threads_and_the_team_history_keeps_them() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let conn = Connection::open(dir.path().join("team-copies.db")).unwrap();
+        run_migrations_to(&conn, 186).unwrap();
+        let envelope = |from: &str, text: &str| {
+            format!("[Team \"Marketing & Growth\" — Grow the pipeline]\n[Post from {from}]\n\n{text}")
+        };
+        let copy = r#"{"teamId":"t1","teamPost":true}"#;
+        let team_row = |from: &str, id: &str| format!(r#"{{"senderName":"{from}","fromAgentId":"{id}","teamId":"t1","attachments":[]}}"#);
+        conn.execute_batch(
+            "INSERT INTO agents (id, kind, name, description, agent_md, frontmatter) VALUES
+                ('smm', 'user', 'Social Media Manager', '', '', '{}'),
+                ('hermes', 'user', 'Hermes', '', '', '{}'),
+                ('nm', 'user', 'Neighbor Mail', '', '', '{}');
+             INSERT INTO sessions (id, name, active_chat_id, created_at, updated_at) VALUES
+                ('s-team', 'team:t1', 'team-chat', 0, 0),
+                ('s-seat-nm', 'agent:nm:coworker:team:t1', 'seat-nm', 0, 0),
+                ('s-seat-smm', 'agent:smm:coworker:team:t1', 'seat-smm', 0, 0),
+                ('s-direct', 'agent:nm:web', 'agent:nm:web', 0, 0);
+             INSERT INTO chats (id, title, session_name) VALUES
+                ('team-chat', 'Marketing & Growth', 'team:t1'),
+                ('seat-nm', 'Team: Marketing & Growth', 'agent:nm:coworker:team:t1'),
+                ('seat-smm', 'Team: Marketing & Growth', 'agent:smm:coworker:team:t1'),
+                ('agent:nm:web', 'USPS rates', 'agent:nm:web');",
+        )
+        .unwrap();
+        let insert = |id: &str, chat: &str, role: &str, content: &str, meta: Option<&str>, at: i64| {
+            conn.execute(
+                "INSERT INTO chat_messages (id, chat_id, role, content, metadata, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                rusqlite::params![id, chat, role, content, meta, at],
+            )
+            .unwrap();
+        };
+        // The team thread: the owner's post and the lead's answer.
+        insert("t-owner", "team-chat", "user", "add Hermes to this team", Some(&team_row("Owner", "")), 100);
+        insert("t-smm", "team-chat", "assistant", "I need to create Hermes first.", Some(&team_row("Social Media Manager", "smm")), 111);
+        // Neighbor Mail was never asked: copies of both, a copy of a Hermes
+        // post the team thread no longer has, and the restart note they caused.
+        insert("c-owner", "seat-nm", "user", &envelope("Owner", "add Hermes to this team"), Some(copy), 100);
+        insert("c-smm", "seat-nm", "user", &envelope("Social Media Manager", "I need to create Hermes first."), Some(copy), 112);
+        insert("c-hermes", "seat-nm", "user", &envelope("Hermes", "I'll research the landscape."), Some(copy), 200);
+        insert("c-note", "seat-nm", "assistant", "I was interrupted before I could finish.", Some(r#"{"restartNotice":true}"#), 5000);
+        // The lead was asked: its own work in its seat stays.
+        insert("l-ask", "seat-smm", "user", &envelope("Owner", "add Hermes to this team"), None, 101);
+        insert("l-reply", "seat-smm", "assistant", "I need to create Hermes first.", None, 110);
+        // Neighbor Mail's direct chat with the owner, plus one stray copy.
+        insert("d-ask", "agent:nm:web", "user", "what are the USPS rates?", None, 50);
+        insert("d-copy", "agent:nm:web", "user", &envelope("Owner", "add Hermes to this team"), Some(copy), 100);
+        insert("d-q", "agent:nm:web", "user", "and for flats?", None, 300);
+        insert("d-note", "agent:nm:web", "assistant", "I was interrupted before I could finish.", Some(r#"{"restartNotice":true}"#), 5000);
+
+        run_migrations(&conn).unwrap();
+
+        let ids = |chat: &str| -> Vec<String> {
+            let mut stmt = conn.prepare("SELECT id FROM chat_messages WHERE chat_id = ?1 ORDER BY created_at, rowid").unwrap();
+            stmt.query_map([chat], |r| r.get(0)).unwrap().map(|r| r.unwrap()).collect()
+        };
+        assert!(ids("seat-nm").is_empty(), "nothing of the team's is left in Neighbor Mail's seat: {:?}", ids("seat-nm"));
+        assert_eq!(ids("agent:nm:web"), ["d-ask", "d-q", "d-note"], "the direct chat keeps its own rows, and a real restart note");
+        assert_eq!(ids("seat-smm"), ["l-ask", "l-reply"], "an asked member's own work stays");
+        assert_eq!(ids("team-chat"), ["t-owner", "t-smm", "c-hermes"], "the team history keeps every post");
+        let (role, content, meta): (String, String, String) = conn
+            .query_row("SELECT role, content, metadata FROM chat_messages WHERE id = 'c-hermes'", [], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })
+            .unwrap();
+        assert_eq!(role, "assistant");
+        assert_eq!(content, "I'll research the landscape.", "unwrapped into the team row it copied");
+        let meta: serde_json::Value = serde_json::from_str(&meta).unwrap();
+        assert_eq!(meta["senderName"], "Hermes");
+        assert_eq!(meta["fromAgentId"], "hermes");
+        assert_eq!(meta["teamId"], "t1");
+        assert!(meta.get("teamPost").is_none(), "{meta}");
+
+        // Idempotent: the statements, run again, change nothing.
+        let count = || conn.query_row("SELECT COUNT(*) FROM chat_messages", [], |r| r.get::<_, i64>(0)).unwrap();
+        let before = count();
+        conn.execute_batch(&extract_goose_up(include_str!("../migrations/0187_team_posts_leave_member_threads.sql"))).unwrap();
+        assert_eq!(count(), before);
+    }
+
     /// A migration file without goose markers is applied verbatim — the
     /// whole file is the Up script, not silently skipped.
     #[test]

@@ -1,11 +1,14 @@
 //! Teams — the server leg of a team post. A team is a LOCAL object
 //! (`db::Team`, thread `team:<id>`); posting into one:
 //!
-//! 1. appends the post to the team's local thread and broadcasts it,
-//! 2. fans it out to every member through the ONE coworker rail
-//!    (`coworker::send_coworker_message` with a team leg): everyone receives
-//!    the post; the members asked to act run and their replies come back
-//!    here as posts,
+//! 1. appends the post to the team's local thread and broadcasts it — the
+//!    ONE record of the team's conversation,
+//! 2. asks the members who act on it through the ONE coworker rail
+//!    (`coworker::send_coworker_message` with a team leg): each runs in its
+//!    seat for the team, briefed with the conversation read from the team
+//!    thread, and its reply comes back here as a post. A member not asked is
+//!    sent nothing — no copy of the post lands in any of its threads, so its
+//!    own chat stays its conversation with the owner,
 //! 3. forwards it to the team's hub channel when the team is mirrored —
 //!    best effort, never on the critical path.
 //!
@@ -184,10 +187,12 @@ pub(crate) fn post(
             asked.push(name);
         }
 
-        // 2. Fan-out over the local rail. A remote member is not on it — it
-        // was asked through the hub above.
+        // 2. The asks over the local rail. A remote member is not on it — it
+        // was asked through the hub above. A member not asked is sent
+        // nothing: the post is in the team thread, which is where its
+        // briefing is read from the next time it is asked.
         for (member_id, member_name) in &roster {
-            if *member_id == post.from_agent_id {
+            if *member_id == post.from_agent_id || !act.contains(member_id) {
                 continue;
             }
             if team
@@ -197,7 +202,6 @@ pub(crate) fn post(
             {
                 continue;
             }
-            let act_now = act.contains(member_id);
             let msg = CoworkerMessage {
                 from_agent_id: post.from_agent_id.clone(),
                 sender_session_key: db::team_thread_key(&team.id),
@@ -208,21 +212,16 @@ pub(crate) fn post(
                 provenance: post.provenance.clone(),
                 team: Some(TeamDelivery {
                     team_id: team.id.clone(),
-                    act: act_now,
+                    post_id: message.id.clone(),
                     reply_to: post.reply_to.clone(),
                 }),
             };
             match crate::coworker::send_coworker_message(state.clone(), msg).await {
-                Ok(_) => {
-                    if act_now {
-                        asked.push(member_name.clone());
-                    }
-                }
+                Ok(_) => asked.push(member_name.clone()),
                 Err(e) => tracing::warn!(
                     error = %e,
                     team = %team.id,
                     member = %member_id,
-                    act = act_now,
                     "team: delivery to member failed"
                 ),
             }
