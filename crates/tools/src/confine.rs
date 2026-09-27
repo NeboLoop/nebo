@@ -47,9 +47,8 @@ use crate::nebo_files::NeboFiles;
 pub struct Confinement<'a> {
     /// The command may not reach the network: the run's web access is off.
     pub offline: bool,
-    /// Nebo's own files, closed to the command. `None`: not fenced (a
-    /// workflow's command step, which runs installed plugins that keep their
-    /// data in Nebo's folder).
+    /// Nebo's own files, closed to the command. `None`: Nebo's folder can't
+    /// be found, so there is nothing to fence.
     pub fence: Option<&'a NeboFiles>,
     /// Ports the command may not connect to, on any address: Nebo's own.
     /// On Linux the spawn carries it (`spawn_with`), not the prefix.
@@ -344,7 +343,7 @@ mod tests {
             return;
         }
         let (_d, root) = home();
-        let fence = NeboFiles::at(&root, &root.join("sessions/s1"));
+        let fence = NeboFiles::at(&root, &root.join("sessions/s1"), false);
         let c = Confinement { offline: false, fence: Some(&fence), closed_ports: &[] };
         let r = root.to_string_lossy();
         let (_, out) = run(&c, &format!("cat {r}/settings.json; cat {r}/logs/nebo.log; cd {r}/files && cat ../settings.json; cat {r}/sessions/s2/r.txt; grep -r SECRET {r}"));

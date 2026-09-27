@@ -265,9 +265,15 @@ pub struct ToolContext {
     /// content, never a recollection inferred from the transcript.
     pub skills_read: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
     /// Engine-set: nothing in this run can wait for the owner's answer (a
-    /// scheduled command). A call that would ask is refused instead, and
-    /// the refusal says why; it is never parked and never runs unchecked.
+    /// scheduled command, a workflow's command step, a hook around a call).
+    /// A call that would ask is refused instead, and the refusal says why;
+    /// it is never parked and never runs unchecked.
     pub cannot_wait: bool,
+    /// Engine-set only (a hook around a call, `shell_hooks`): what the
+    /// command reads on its standard input. A program reads what such a
+    /// command prints, so its result is its output as written with its exit
+    /// status (the shell's `raw` mode). Never set from tool input.
+    pub stdin: Option<Vec<u8>>,
     /// Set by the permission check for one call (`GateVerdict::Run`): the
     /// run's web access is off, so the command this call starts may not
     /// reach the network either (`confine`). Never set by a door.
@@ -323,10 +329,13 @@ pub struct ToolContext {
     pub memory_matter: Option<String>,
     /// Engine-set ONLY (workflow command nodes — owner-authored deterministic
     /// steps): shell exec additionally injects each installed plugin's
-    /// resolved auth env, so `${plugin.X_BIN}` invocations of env-auth
-    /// plugins (e.g. odoo) work in command nodes. NEVER set for model-driven
-    /// shell — that would hand every plugin credential to the model. Not
-    /// forgeable from tool input: it lives on the context, not the payload.
+    /// resolved auth env, and the installed plugins' programs and data are
+    /// open to the command (`NeboFiles::of`), so `${plugin.X_BIN}`
+    /// invocations of env-auth plugins (e.g. odoo) work in command nodes.
+    /// The rest of Nebo's folder and its ports stay closed, as for every
+    /// command. NEVER set for model-driven shell — that would hand every
+    /// plugin credential to the model. Not forgeable from tool input: it
+    /// lives on the context, not the payload.
     pub trusted_plugin_env: bool,
     /// Engine-stamped provenance snapshot of the run at this iteration — the
     /// classes of untrusted content the run has touched so far (accumulated by

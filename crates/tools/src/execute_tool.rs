@@ -322,6 +322,10 @@ impl ExecuteTool {
             cmd.arg(arg);
         }
         cmd.arg(&final_cmd);
+        // Nebo's own settings never reach a script, as they never reach a
+        // command (`process::command_env`); what it is given is added below.
+        cmd.env_clear();
+        cmd.envs(crate::process::command_env());
 
         // Pass args as environment variable
         if !args.is_null() {

@@ -628,10 +628,19 @@ async fn run_command<'a>(
         "command": command,
         "description": format!("Workflow step {}", activity.id),
     });
+    // The step runs as the employee that owns the workflow, through the one
+    // door every command takes (`run_command` in the registry): the
+    // permission check under that employee's grant (read from the session
+    // key), Nebo's own files, ports and settings closed to it, and no
+    // network when the employee's web access is off. Nobody waits on a
+    // command step, so one that needs the owner's OK is refused and the run
+    // fails with the reason, which reaches the owner as the run's failure.
     let mut tool_ctx = tools::ToolContext::new(tools::Origin::Workflow).with_session(
         tools::workflow_session_key(&ctx.agent_id, &ctx.run_id),
         ctx.run_id.clone(),
     );
+    tool_ctx.door = types::permissions::Door::Workflow;
+    tool_ctx.cannot_wait = true;
     tool_ctx.user_id = ctx.memory_user_id.clone();
     tool_ctx.memory_writes_disabled = ctx.memory_writes_disabled;
     // Owner-authored deterministic step: plugin auth env rides along so

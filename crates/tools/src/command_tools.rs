@@ -160,9 +160,10 @@ impl DynTool for RunCommandTool {
                 call["cwd"] = json!(cwd);
             }
             // A workflow's command step (the one context the engine trusts
-            // with plugin auth) is parsed by the next step, not read by a
-            // model: its output is stdout alone, and a failure carries stderr.
-            if ctx.trusted_plugin_env {
+            // with plugin auth) is parsed by the next step, and a hook's
+            // command by the hook runner, not read by a model: its output is
+            // stdout alone, and a failure carries stderr.
+            if ctx.trusted_plugin_env || ctx.stdin.is_some() {
                 call["raw"] = json!(true);
             }
             let cwd = str_arg(&input, "cwd").map(str::to_string).or_else(|| ctx.cwd.clone());

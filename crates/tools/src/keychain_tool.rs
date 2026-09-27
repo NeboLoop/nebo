@@ -287,26 +287,29 @@ async fn handle_add(input: &serde_json::Value) -> ToolResult {
     if !which("secret-tool") {
         return ToolResult::error("secret-tool not found. Do not retry \u{2014} this is an environment error. The libsecret-tools package must be installed on this system.");
     }
-    // secret-tool store reads the secret from stdin
-    let output = tokio::process::Command::new("sh")
-        .args([
-            "-c",
-            &format!(
-                "echo -n '{}' | secret-tool store --label '{}' service '{}' account '{}'",
-                password, label, service, account
-            ),
-        ])
-        .output()
-        .await;
+    // secret-tool store reads the secret from stdin. It is started
+    // directly, the values as its arguments: through a shell, a quote in any
+    // of them ended the string and ran the rest as a command of its own.
+    let output = async {
+        use tokio::io::AsyncWriteExt;
+        let mut child = tokio::process::Command::new("secret-tool")
+            .args(["store", "--label", label, "service", service, "account", account])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()?;
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin.write_all(password.as_bytes()).await?;
+        }
+        child.wait_with_output().await
+    }
+    .await;
     match output {
         Ok(out) if out.status.success() => ToolResult::ok(format!(
             "Credential stored for service '{}' account '{}'",
             service, account
         )),
-        Ok(out) => {
-            let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
-            ToolResult::error(command_failed("secret-tool store", &out))
-        }
+        Ok(out) => ToolResult::error(command_failed("secret-tool store", &out)),
         Err(e) => ToolResult::error(spawn_failed("secret-tool store", &e)),
     }
 }

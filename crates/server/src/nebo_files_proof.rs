@@ -307,3 +307,148 @@ async fn a_scheduled_command_meets_its_employee_limits() {
     assert!(refused.why.contains("cannot_wait"), "{}", refused.why);
     assert_eq!(refused.door, "schedule");
 }
+
+/// Runs `command` as the command step of a workflow `agent` owns: the
+/// production engine, the harness's workflow loop and the registry roster a
+/// run is given.
+async fn workflow_step(nebo: &Nebo, agent: &str, command: &str) -> Result<String, String> {
+    let def = workflow::parser::parse_workflow(
+        &json!({
+            "version": "1.0",
+            "id": "proof-step",
+            "name": "Proof step",
+            "activities": [{ "id": "step", "type": "command", "params": { "command": command } }],
+            "connections": [{ "from": "__trigger__", "to": "step" }, { "from": "step", "to": "__emit__" }],
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let roster: Vec<Box<dyn tools::registry::DynTool>> = nebo
+        .state
+        .tools
+        .list()
+        .await
+        .iter()
+        .map(|td| Box::new(crate::workflow_manager::RegistryTool::new(td, nebo.state.tools.clone())) as Box<dyn tools::registry::DynTool>)
+        .collect();
+    let looper = agent::harness::workflow_turn::WorkflowTurns::new(nebo.state.harness.clone());
+    workflow::engine::execute_workflow(
+        &def,
+        agent,
+        "",
+        false,
+        json!({}),
+        "manual",
+        None,
+        nebo.store(),
+        None,
+        &looper,
+        &roster,
+        None,
+        None,
+        None,
+        None,
+        None,
+        Vec::new(),
+        None,
+        None,
+        None,
+    )
+    .await
+    .map(|(_, output)| output)
+    .map_err(|e| e.to_string())
+}
+
+/// `workflow-command-step-meets-employee-limits`: a workflow's command step
+/// ran with plugin credentials and no fence: Nebo's own files, its ports and
+/// its local API were open to it, and a step that needed the owner's OK
+/// parked a card nobody waited on. It now runs through run_command as the
+/// employee that owns the workflow: web off means no network, Nebo's own
+/// files stay closed (the installed plugins it runs stay open), and a step
+/// that needs the owner's OK is refused and recorded, never parked.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_workflow_command_step_meets_its_employee_limits() {
+    use std::sync::atomic::Ordering;
+    let nebo = session().await;
+    let agent = format!("flow-{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
+    own_rule(&nebo, &agent, RuleKey::Capability("shell".into()), Effect::Allow);
+    own_rule(&nebo, &agent, RuleKey::Capability("web".into()), Effect::Deny);
+
+    // Web off: the step's curl reaches nothing.
+    let (port, hits) = page_server();
+    let said = match workflow_step(&nebo, &agent, &format!("curl -s -m 5 http://127.0.0.1:{port}/")).await {
+        Ok(out) | Err(out) => out,
+    };
+    assert!(!said.contains("Example Domain"), "a web-off employee's workflow step got the page: {said}");
+    assert!(!said.contains("AI provider"), "the step never reached the command door: {said}");
+    assert_eq!(hits.load(Ordering::SeqCst), 0, "the workflow step reached the server");
+
+    // Nebo's settings file: refused.
+    let settings = nebo.home.join("settings.json");
+    if !settings.exists() {
+        std::fs::write(&settings, "{\"accessSecret\": \"SECRET-accessSecret-canary\"}").unwrap();
+    }
+    let secret = std::fs::read_to_string(&settings).unwrap();
+    let err = workflow_step(&nebo, &agent, &format!("cat {}", settings.display())).await.unwrap_err();
+    assert!(err.contains("Nebo's own files"), "{err}");
+    assert!(!err.contains(secret.trim()));
+
+    // An employee whose web access is on: a command spelled around the
+    // text check still can't read Nebo's settings, and Nebo's own server
+    // isn't reached, where this computer confines commands.
+    let flow = format!("flowon-{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
+    own_rule(&nebo, &flow, RuleKey::Capability("shell".into()), Effect::Allow);
+    if tools::confine::available() {
+        std::fs::create_dir_all(nebo.home.join("files")).unwrap();
+        let around = format!("cd '{}' && cat ../settings.json", nebo.home.join("files").display());
+        let said = match workflow_step(&nebo, &flow, &around).await {
+            Ok(out) | Err(out) => out,
+        };
+        assert!(said.contains("settings.json"), "the command ran: {said}");
+        assert!(!said.contains(secret.trim()), "a workflow step read Nebo's settings: {said}");
+        let said = match workflow_step(&nebo, &flow, &format!("curl -s -m 5 -o /dev/null -w 'code=%{{http_code}}' http://127.0.0.1:{}/health", nebo.port)).await {
+            Ok(out) | Err(out) => out,
+        };
+        assert!(!said.contains("code=200"), "a workflow step reached Nebo's API: {said}");
+        // It ran, and could not connect (curl's 7), rather than being refused.
+        assert!(said.contains("exited with code 7") || said.contains("code=000"), "{said}");
+    } else {
+        eprintln!("no confinement on this computer: a workflow step's reach rests on the permission check and the text check");
+    }
+
+    // The installed plugins it runs, and their data, stay open to it.
+    let data = nebo.home.join("appdata/plugins/proofplug");
+    std::fs::create_dir_all(&data).unwrap();
+    std::fs::write(data.join("state.txt"), "PLUGIN-DATA").unwrap();
+    let bin_dir = nebo.home.join("nebo/plugins/proofplug/1.0.0");
+    std::fs::create_dir_all(&bin_dir).unwrap();
+    let bin = bin_dir.join("proofplug");
+    std::fs::write(&bin, format!("#!/bin/sh\necho PLUGIN-RAN; cat '{}'\n", data.join("state.txt").display())).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let out = workflow_step(&nebo, &flow, &bin.display().to_string()).await.expect("the plugin ran");
+    assert!(out.contains("PLUGIN-RAN") && out.contains("PLUGIN-DATA"), "{out}");
+
+    // A step that needs the owner's OK is refused, not parked, and recorded.
+    let careful = format!("flowask-{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
+    own_rule(&nebo, &careful, RuleKey::Capability("shell".into()), Effect::Allow);
+    own_rule(&nebo, &careful, RuleKey::Tool("run_command".into()), Effect::Ask);
+    let marker = nebo.home.join("files").join(format!("{careful}.marker"));
+    std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
+    let err = workflow_step(&nebo, &careful, &format!("touch {}", marker.display())).await.unwrap_err();
+    assert!(err.contains("needs the owner's OK") && err.contains("a workflow step can't wait"), "{err}");
+    assert!(!marker.exists(), "the step that needed an OK ran");
+    let open = nebo.state.permission_asks.open(None).unwrap();
+    assert!(open.iter().all(|a| a.agent_id != careful), "the step was parked on a card: {open:?}");
+    let (rows, _) = nebo
+        .store()
+        .permission_activity(&db::PermissionActivityFilter { agent_id: Some(careful.clone()), limit: 10, ..Default::default() })
+        .unwrap();
+    let refused = rows.iter().find(|r| r.tool == "run_command").expect("the decision is recorded");
+    assert_eq!(refused.decision, "deny");
+    assert!(refused.why.contains("cannot_wait"), "{}", refused.why);
+    assert_eq!(refused.door, "workflow");
+}

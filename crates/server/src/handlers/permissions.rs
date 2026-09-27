@@ -722,7 +722,7 @@ fn activity(store: &db::Store, q: &ActivityQuery) -> Result<ActivityPage, NeboEr
     let rows = rows
         .into_iter()
         .map(|r| {
-            let (why, why_unreviewed) = why_sentence(store, &r.decision, &r.why);
+            let (why, why_unreviewed) = why_sentence(store, &r.decision, &r.why, &r.door);
             let (decided_by, verdict) = review_sentences(r.judgement.as_deref());
             ActivityRow {
                 at: r.created_at,
@@ -748,7 +748,7 @@ fn action_sentence(activity: &str, key: &str) -> String {
 
 /// Why a recorded decision went the way it did, and whether it ran
 /// unreviewed.
-fn why_sentence(store: &db::Store, decision: &str, why: &str) -> (String, bool) {
+fn why_sentence(store: &db::Store, decision: &str, why: &str, door: &str) -> (String, bool) {
     if decision == "ask" {
         return match serde_json::from_str::<AskCase>(why) {
             Ok(case) => (ask_sentence(store, &case), false),
@@ -781,7 +781,8 @@ fn why_sentence(store: &db::Store, decision: &str, why: &str) -> (String, bool) 
         },
         Why::Ceiling => "It can't do more than the employee or run it works for".into(),
         Why::CannotWait { case } => format!(
-            "It needed your OK, and a scheduled command can't wait for one, so it didn't run: {}",
+            "It needed your OK, and {} can't wait for one, so it didn't run: {}",
+            types::permissions::Door::unattended_words(door),
             lower_first(&ask_sentence(store, &case))
         ),
     };
