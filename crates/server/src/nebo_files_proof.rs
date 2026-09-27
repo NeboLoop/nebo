@@ -3,9 +3,11 @@
 //! copies and its own conversation's saved results, and never the rest of
 //! Nebo's folder (the settings file with the server's secret, the logs, the
 //! database, other conversations' files), however the path is spelled.
-//! Nebo's own settings are not in its commands' environment, its commands
-//! never reach Nebo's own API, and a scheduled command meets every one of
-//! those limits and its employee's permissions.
+//! What Nebo hands an employee to read (the folder of a skill an installed
+//! plugin ships) it reads and never changes; every other Nebo folder on the
+//! computer is closed whole. Nebo's own settings are not in its commands'
+//! environment, its commands never reach Nebo's own API, and a scheduled
+//! command meets every one of those limits and its employee's permissions.
 
 use std::path::Path;
 
@@ -13,7 +15,7 @@ use serde_json::json;
 use tools::Origin;
 use types::permissions::{Effect, Rule, RuleKey, RuleSource, Scope, Writer};
 
-use crate::staffed_proof::{Nebo, session};
+use crate::staffed_proof::{Nebo, session, write_tree};
 
 /// `nebo-own-files-stay-closed`: on 2026-09-26 an employee asked to fix a
 /// mail sign-in ran `cat <nebo-home>/settings.json` and put the server's
@@ -133,6 +135,167 @@ async fn an_employee_never_reaches_nebo_own_files() {
         .await;
     assert!(!r.is_error && r.content.contains("built"), "a helper's copy: {}", r.content);
     assert!(Path::new(&copy.join("out.txt")).exists());
+}
+
+/// `use-skill-files-readable`: in the v0.16.0 release proof `use_skill`
+/// told the model "This skill's files are in: <nebo-home>/nebo/plugins/
+/// quickbooks/0.1.10/skills/…" and the fence refused that very folder
+/// (correction-plugin-discover-installed run 1, calls #15–16;
+/// plugin-many-skills-fan-out run 2, calls #8–9). A plugin installed as the
+/// marketplace lays it out, and its skill's own instructions followed
+/// through the real server: load it, read the folder `use_skill` names and
+/// the file the skill points to, run the script it says to run. The skill
+/// is never changed, and the plugin's program, its account and its data,
+/// Nebo's settings and logs stay closed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_employee_reads_what_use_skill_hands_it() {
+    let nebo = session().await;
+    let home = nebo.home.clone();
+    let agent = format!("books-{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
+    own_rule(&nebo, &agent, RuleKey::Capability("shell".into()), Effect::Allow);
+    own_rule(&nebo, &agent, RuleKey::Capability("file".into()), Effect::Allow);
+    let ctx = Nebo::ctx(&agent, Origin::User);
+
+    let name = "proofbooks-bills";
+    let package = home.join("nebo/plugins/proofbooks/0.1.0");
+    let skill_md = format!(
+        "---\nname: {name}\ndescription: How bills are entered in the proof ledger\n---\n\n\
+         1. Read ${{NEBO_SKILL_DIR}}/references/rates.md for the rates.\n\
+         2. Run `sh ${{NEBO_SKILL_DIR}}/scripts/total.sh` for the total.\n"
+    );
+    write_tree(
+        &package,
+        &[
+            ("plugin.json", r#"{"id":"proofbooks","slug":"proofbooks","name":"proofbooks","version":"0.1.0","platforms":{}}"#),
+            ("proofbooks", "#!/bin/sh\necho PROGRAM-canary\n"),
+            (&format!("skills/{name}/SKILL.md"), &skill_md),
+            (&format!("skills/{name}/references/rates.md"), "RATES-canary 7%"),
+            (&format!("skills/{name}/scripts/total.sh"), "echo TOTAL-canary 107"),
+        ],
+    );
+    write_tree(
+        &home,
+        &[("nebo/plugin-profiles/proofbooks/creds.json", "ACCOUNT-canary"), ("appdata/plugins/proofbooks/state.txt", "DATA-canary")],
+    );
+    nebo.state.skill_loader.reload_from_disk().await;
+
+    // The skill, loaded the way the model loads it.
+    let loaded = nebo.tool(&ctx, "use_skill", json!({ "name": name })).await;
+    assert!(!loaded.is_error, "{}", loaded.content);
+    let folder = loaded
+        .content
+        .lines()
+        .find_map(|l| l.strip_prefix("This skill's files are in: "))
+        .unwrap_or_else(|| panic!("use_skill names the skill's folder: {}", loaded.content))
+        .trim()
+        .to_string();
+    let rates = loaded
+        .content
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("1. Read "))
+        .and_then(|l| l.split_whitespace().next())
+        .unwrap_or_else(|| panic!("the skill's first step: {}", loaded.content))
+        .to_string();
+    let script = loaded
+        .content
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("2. Run `"))
+        .and_then(|l| l.split('`').next())
+        .unwrap_or_else(|| panic!("the skill's second step: {}", loaded.content))
+        .to_string();
+    assert!(rates.starts_with(&folder) && script.contains(&folder), "the steps name the skill's folder: {rates} / {script}");
+
+    // Followed as written, through the file tools and the shell.
+    let r = nebo.tool(&ctx, "read_file", json!({ "path": format!("{folder}/SKILL.md") })).await;
+    assert!(!r.is_error && r.content.contains("How bills are entered"), "the skill's folder: {}", r.content);
+    let r = nebo.tool(&ctx, "read_file", json!({ "path": rates })).await;
+    assert!(!r.is_error && r.content.contains("RATES-canary"), "step 1: {}", r.content);
+    let r = nebo.tool(&ctx, "run_command", json!({ "command": script, "description": "Total the bills" })).await;
+    assert!(!r.is_error && r.content.contains("TOTAL-canary"), "step 2: {}", r.content);
+    let r = nebo
+        .tool(&ctx, "run_command", json!({ "command": format!("ls '{folder}' && cat '{rates}'"), "description": "Look at the skill" }))
+        .await;
+    assert!(!r.is_error && r.content.contains("references") && r.content.contains("RATES-canary"), "{}", r.content);
+
+    // Never changed.
+    let guide = std::path::PathBuf::from(&folder).join("SKILL.md");
+    let r = nebo.tool(&ctx, "write_file", json!({ "path": guide.to_string_lossy(), "content": "rewritten" })).await;
+    assert!(r.is_error && r.content.contains("never changes it"), "write_file: {}", r.content);
+    let r = nebo
+        .tool(&ctx, "run_command", json!({ "command": format!("echo rewritten >> '{}'", guide.display()), "description": "Edit the skill" }))
+        .await;
+    if tools::confine::available() {
+        assert!(r.is_error, "the command changed a plugin's skill: {}", r.content);
+    } else {
+        eprintln!("no confinement on this computer: a command's writes to a plugin's skill rest on nothing");
+    }
+    assert_eq!(std::fs::read_to_string(&guide).unwrap(), skill_md, "the skill was changed");
+
+    // The rest of the plugin, and Nebo's own files, stay closed.
+    let leaked = |t: &str| ["PROGRAM-canary", "ACCOUNT-canary", "DATA-canary"].iter().any(|c| t.contains(c));
+    for path in [
+        package.join("proofbooks"),
+        package.join("plugin.json"),
+        home.join("nebo/plugin-profiles/proofbooks/creds.json"),
+        home.join("appdata/plugins/proofbooks/state.txt"),
+        home.join("settings.json"),
+    ] {
+        let r = nebo.tool(&ctx, "read_file", json!({ "path": path.to_string_lossy() })).await;
+        assert!(r.is_error && r.content.contains("Nebo's own files"), "read_file {}: {}", path.display(), r.content);
+        assert!(!leaked(&r.content), "{}", r.content);
+    }
+    let r = nebo
+        .tool(&ctx, "run_command", json!({ "command": format!("{} bills list", package.join("proofbooks").display()), "description": "Run the plugin" }))
+        .await;
+    assert!(r.is_error && r.content.contains("Nebo's own files") && !leaked(&r.content), "the plugin's program: {}", r.content);
+    let around = format!("cd '{folder}' && cat ../../proofbooks ../../../../plugin-profiles/proofbooks/creds.json; sh ../../proofbooks");
+    let r = nebo.tool(&ctx, "run_command", json!({ "command": around, "description": "Look around the plugin" })).await;
+    if tools::confine::available() {
+        assert!(!leaked(&r.content), "a confined command reached the plugin's program or account: {}", r.content);
+    }
+}
+
+/// `other-nebo-folders-closed`: in the v0.16.0 release proof
+/// (goal-persistence-across-segue run 1, calls #14–15) a run whose
+/// `NEBO_HOME` was fenced found and read a second Nebo's `settings.json`
+/// under `~/.local/share/nebo`, the platform-native folder. Every folder a
+/// Nebo on this computer may keep its settings in (`config::nebo_roots`:
+/// the platform-native one, the pre-v5 one, `~/.nebo`) is closed to an
+/// employee as this one's own files are, by every spelling a command uses.
+/// Only sizes and absent files are asked for: a proof never reads a real
+/// install's settings.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn another_nebo_on_this_computer_stays_closed() {
+    let nebo = session().await;
+    let agent = format!("snoop-{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
+    own_rule(&nebo, &agent, RuleKey::Capability("shell".into()), Effect::Allow);
+    own_rule(&nebo, &agent, RuleKey::Capability("file".into()), Effect::Allow);
+    let ctx = Nebo::ctx(&agent, Origin::User);
+    let own = std::fs::canonicalize(&nebo.home).unwrap();
+    let others: Vec<std::path::PathBuf> = config::nebo_roots()
+        .into_iter()
+        .filter(|root| std::fs::canonicalize(root).map_or(true, |real| real != own) && *root != nebo.home)
+        .collect();
+    assert!(others.len() >= 2, "the platform-native folder and ~/.nebo are other Nebos' here: {others:?}");
+    let home = dirs::home_dir().expect("a home folder");
+    for root in &others {
+        // A file no install has, so a broken fence reads nothing real.
+        let absent = root.join(format!("proof-{}.json", uuid::Uuid::new_v4().simple()));
+        let r = nebo.tool(&ctx, "read_file", json!({ "path": absent.to_string_lossy() })).await;
+        assert!(r.is_error && r.content.contains("Nebo's own files"), "read_file {}: {}", absent.display(), r.content);
+        let settings = root.join("settings.json");
+        let mut spellings = vec![settings.display().to_string()];
+        if let Ok(rest) = settings.strip_prefix(&home) {
+            spellings.push(format!("$HOME/{}", rest.display()));
+            spellings.push(format!("~/{}", rest.display()));
+        }
+        for spelled in spellings {
+            let r = nebo
+                .tool(&ctx, "run_command", json!({ "command": format!("wc -c \"{spelled}\""), "description": "Size the settings" }))
+                .await;
+            assert!(r.is_error && r.content.contains("Nebo's own files"), "{spelled}: {}", r.content);
+        }
+    }
 }
 
 /// An owner rule of `effect` on `key` in `agent`'s own scope.

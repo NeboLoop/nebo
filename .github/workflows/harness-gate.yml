@@ -57,7 +57,10 @@ name: Harness gate
 # Isolation. Every job gets its own directory (GATE_JOB) with an empty home,
 # /tmp, NEBO_HOME and working directory, and the server and the test runner
 # run in that view through scripts/gate-sandbox.sh (bubblewrap): no run sees
-# a file an earlier run left, another runner's work, or ~/harness-runs.
+# a file an earlier run left, another runner's work, or ~/harness-runs. The
+# server's view (where the model's commands run) leaves out the checkout and
+# the rest of the job directory too: no check, no earlier run's log or
+# traces, and not the runner's own Nebo folder (GATE_JOB/runner-home).
 # Every run of every fixture, replay thread or not, gets a fresh server with
 # an empty NEBO_HOME, home, /tmp and working directory (scripts/gate-run.sh,
 # through scripts/gate-server.sh fresh), so no run recalls another's memory,
@@ -229,7 +232,7 @@ jobs:
         run: |
           job="${{ runner.temp }}/gate"
           rm -rf "$job"
-          mkdir -p "$job"/{home,tmp,work,bin,nebo-home,traces}
+          mkdir -p "$job"/{home,tmp,work,bin,nebo-home,runner-home,traces}
           echo "GATE_JOB=$job" >> "$GITHUB_ENV"
 
       # The runner (and the fixtures and suites) always come from this commit.

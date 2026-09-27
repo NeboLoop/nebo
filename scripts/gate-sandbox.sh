@@ -19,10 +19,25 @@
 # fixtures build with, the claude CLI that judges, and the browsers.
 #
 # Both the server and `nebo-cli test run` go through here, so a fixture's
-# setup writes where the model looks. Usage: gate-sandbox.sh CMD [ARGS...]
-# with GATE_JOB set (the job directory the workflow made).
+# setup writes where the model looks. Usage: gate-sandbox.sh [--server] CMD
+# [ARGS...] with GATE_JOB set (the job directory the workflow made).
+#
+# Two views. The runner's (the default) keeps its checkout (the fixtures and
+# suites it runs) and the job directory (traces, replay sets). The server's
+# (--server) is where the model's commands run, so it keeps only what the
+# server runs from: GATE_JOB/bin, its NEBO_HOME, the working directory and
+# the build cache. The checkout (every check, and the source beside it) and
+# the rest of the job directory (every earlier run's server log and traces,
+# the runner's own Nebo folder) are not in it: the v0.16.0 release proof
+# found the model reading the checkout and the job directory
+# (replay-thread-c52ae090, agent-spawn-explore).
 set -euo pipefail
 
+server=""
+if [ "${1:-}" = "--server" ]; then
+  server=1
+  shift
+fi
 : "${GATE_JOB:?set GATE_JOB to the directory of this job}"
 for d in home tmp work; do
   [ -d "$GATE_JOB/$d" ] || { echo "gate-sandbox: $GATE_JOB/$d is missing" >&2; exit 1; }
@@ -31,9 +46,22 @@ done
 args=(--dev-bind / / --bind "$GATE_JOB/home" "$HOME" --bind "$GATE_JOB/tmp" /tmp)
 # What the job runs from, bound back at the same paths. Sources resolve in the
 # real filesystem, so these are reachable even though they live under $HOME.
-for keep in "${GITHUB_WORKSPACE:-}" "${RUNNER_TEMP:-}"; do
-  if [ -n "$keep" ] && [ -d "$keep" ]; then args+=(--bind "$keep" "$keep"); fi
-done
+if [ -n "$server" ]; then
+  # The checkout and the job directory covered, wherever they are, then the
+  # server's own parts bound back. The build cache stays where CARGO_TARGET_DIR
+  # says, so an employee's build in the working directory is as warm as before.
+  for hide in "${GITHUB_WORKSPACE:-}" "${RUNNER_TEMP:-}"; do
+    if [ -n "$hide" ] && [ -d "$hide" ]; then args+=(--tmpfs "$hide"); fi
+  done
+  args+=(--ro-bind "$GATE_JOB/bin" "$GATE_JOB/bin" --bind "$GATE_JOB/nebo-home" "$GATE_JOB/nebo-home" --bind "$GATE_JOB/work" "$GATE_JOB/work")
+  if [ -n "${CARGO_TARGET_DIR:-}" ] && [ -d "$CARGO_TARGET_DIR" ]; then
+    args+=(--bind "$CARGO_TARGET_DIR" "$CARGO_TARGET_DIR")
+  fi
+else
+  for keep in "${GITHUB_WORKSPACE:-}" "${RUNNER_TEMP:-}"; do
+    if [ -n "$keep" ] && [ -d "$keep" ]; then args+=(--bind "$keep" "$keep"); fi
+  done
+fi
 # cargo and rustup write their caches and locks when a proof builds.
 for tool in .cargo .rustup; do
   if [ -e "$HOME/$tool" ]; then args+=(--bind "$HOME/$tool" "$HOME/$tool"); fi

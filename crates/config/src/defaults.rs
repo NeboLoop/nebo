@@ -19,7 +19,12 @@ pub fn data_dir() -> Result<PathBuf, NeboError> {
     if let Some(dir) = data_dir_override() {
         return Ok(dir);
     }
+    default_data_dir()
+}
 
+/// The platform-native Nebo root, whatever `NEBO_HOME` says: where an
+/// install that relocates nothing keeps its settings.
+pub fn default_data_dir() -> Result<PathBuf, NeboError> {
     let base = dirs::data_dir()
         .ok_or_else(|| NeboError::DataDir("cannot determine data directory".into()))?;
 
@@ -30,6 +35,29 @@ pub fn data_dir() -> Result<PathBuf, NeboError> {
     };
 
     Ok(base.join(name))
+}
+
+/// Every folder a Nebo on this computer may keep its settings in, this
+/// one's root (`data_dir`) first: the platform-native root
+/// (`default_data_dir`, another install's when this one is relocated), the
+/// platform config folder of the pre-v5 layout (`legacy_data_dir`), and
+/// `~/.nebo`, every platform's root before 0.10.4. `tools::nebo_files`
+/// closes all of them to employees: another install's settings are never
+/// this one's employees' to read.
+pub fn nebo_roots() -> Vec<PathBuf> {
+    let candidates = [
+        data_dir().ok(),
+        default_data_dir().ok(),
+        legacy_data_dir(),
+        dirs::home_dir().map(|home| home.join(".nebo")),
+    ];
+    let mut roots: Vec<PathBuf> = Vec::new();
+    for root in candidates.into_iter().flatten() {
+        if !roots.contains(&root) {
+            roots.push(root);
+        }
+    }
+    roots
 }
 
 /// The Nebo root when the environment relocates it (`NEBO_HOME`, or the
