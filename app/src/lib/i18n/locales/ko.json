@@ -1730,7 +1730,7 @@
 			"emptyHint": "조직이 비공개로 공유한 항목이 여기에 표시됩니다."
 		},
 		"employeesHeadline": "AI 직원을 채용하세요",
-		"employeesLede": "부서별로 정리된, 바로 쓸 수 있는 직원입니다. 각자 로컬에서 기억을 유지하며 일하고, 채용하는 순간부터 일을 시작합니다.",
+		"employeesLede": "부서별로 정리된, 바로 쓸 수 있는 직원입니다. 각자 기억을 유지하며 일하고, 채용하는 순간부터 일을 시작합니다.",
 		"toolsHeadline": "도구",
 		"toolsLede": "이미 쓰고 있는 소프트웨어를 연결하세요 — 하는 일로 정리되어 있습니다.",
 		"searchAllPlaceholder": "직원, 도구, 컬렉션 검색…",
@@ -2519,7 +2519,7 @@
 		"business": "비즈니스",
 		"businessDesc": "업무를 정리하고 자동화합니다.",
 		"welcomeTitle": "함께하게 되어 반갑습니다.",
-		"welcomeBody": "저는 당신의 컴퓨터에 살면서 {noun} 정리하고 자동화하도록 돕습니다. 어디에 무엇이 있는지 빠르게 안내해 드릴게요.",
+		"welcomeBody": "저는 {noun} 정리하고 자동화하도록 돕습니다. 어디에 무엇이 있는지 빠르게 안내해 드릴게요.",
 		"nounPersonal": "일상을",
 		"nounBusiness": "비즈니스를",
 		"skipTour": "투어 건너뛰기",
@@ -2573,7 +2573,16 @@
 		"paymentAtCheckout": "결제 수단은 체크아웃에서 입력합니다",
 		"processingPaymentEllipsis": "결제 처리 중…",
 		"mayTakeMoment": "잠시 걸릴 수 있습니다",
-		"skipSetup": "설정 건너뛰기"
+		"skipSetup": "설정 건너뛰기",
+		"hireName": "{name} 채용",
+		"hired": "채용됨",
+		"hiringName": "{name} 채용 중…",
+		"hiredTitle": "{name} 채용 완료",
+		"hiredReady": "{name}이(가) 일할 준비가 되었습니다.",
+		"gettingReady": "{name} 준비 중…",
+		"skillsAndTools": "스킬 및 도구",
+		"hireFailedTitle": "채용을 완료하지 못했습니다",
+		"hireFailed": "{name}을(를) 채용하지 못했습니다. 다시 시도하세요."
 	},
 	"activity": {
 		"pageTitle": "활동 - Nebo",
@@ -2818,7 +2827,7 @@
 	},
 	"christen": {
 		"title": "첫 직원의 이름을 지어주세요",
-		"lede": "모든 채용은 이름에서 시작합니다. 이 직원은 당신의 컴퓨터에서 일하고, 가르친 것을 모두 기억하며, 오직 당신을 위해 일합니다.",
+		"lede": "모든 채용은 이름에서 시작합니다. 이 직원은 가르친 것을 모두 기억하며, 오직 당신을 위해 일합니다.",
 		"placeholder": "예: Jarvis, Piper, Ada…",
 		"create": "채용하기",
 		"creating": "{name}을(를) 만드는 중…",

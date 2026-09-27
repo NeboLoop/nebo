@@ -1739,7 +1739,7 @@
 			"emptyHint": "Items shared privately by an organization will appear here."
 		},
 		"employeesHeadline": "Hire your AI employees",
-		"employeesLede": "Pre-built employees, organized by department. Each one runs locally with persistent memory and starts working the moment you hire them.",
+		"employeesLede": "Pre-built employees, organized by department. Each one keeps a persistent memory and starts working the moment you hire them.",
 		"toolsHeadline": "Tools",
 		"toolsLede": "Connect the software you already use — organized by what it does.",
 		"searchAllPlaceholder": "Search employees, tools, collections…",
@@ -2536,7 +2536,7 @@
 		"business": "Business",
 		"businessDesc": "Organize and automate your work.",
 		"welcomeTitle": "Welcome aboard.",
-		"welcomeBody": "I live on your computer and help you organize and automate {noun}. Let me give you a quick tour so you know where everything is.",
+		"welcomeBody": "I'm here to help you organize and automate {noun}. Let me give you a quick tour so you know where everything is.",
 		"nounPersonal": "your life",
 		"nounBusiness": "your business",
 		"skipTour": "Skip tour",
@@ -2590,7 +2590,16 @@
 		"paymentAtCheckout": "Payment method will be collected at checkout",
 		"processingPaymentEllipsis": "Processing payment…",
 		"mayTakeMoment": "This may take a moment",
-		"skipSetup": "Skip setup"
+		"skipSetup": "Skip setup",
+		"hireName": "Hire {name}",
+		"hired": "Hired",
+		"hiringName": "Hiring {name}…",
+		"hiredTitle": "{name} is hired",
+		"hiredReady": "{name} is ready to work.",
+		"gettingReady": "Getting {name} ready…",
+		"skillsAndTools": "Skills and tools",
+		"hireFailedTitle": "Couldn't complete the hire",
+		"hireFailed": "{name} wasn't hired. Try again."
 	},
 	"activity": {
 		"pageTitle": "Activity - Nebo",
@@ -2838,7 +2847,7 @@
 	},
 	"christen": {
 		"title": "Name your first employee",
-		"lede": "Every hire starts with a name. This one runs on your machine, remembers everything you teach it, and works for you alone.",
+		"lede": "Every hire starts with a name. This one remembers everything you teach it and works for you alone.",
 		"placeholder": "e.g. Jarvis, Piper, Ada…",
 		"create": "Hire them",
 		"creating": "Creating {name}…",

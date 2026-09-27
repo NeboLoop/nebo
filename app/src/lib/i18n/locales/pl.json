@@ -1730,7 +1730,7 @@
 			"emptyHint": "Elementy udostępnione prywatnie przez organizację pojawią się tutaj."
 		},
 		"employeesHeadline": "Zatrudnij swoich pracowników AI",
-		"employeesLede": "Gotowi pracownicy, uporządkowani według działów. Każdy działa lokalnie z trwałą pamięcią i zaczyna pracę w chwili zatrudnienia.",
+		"employeesLede": "Gotowi pracownicy, uporządkowani według działów. Każdy ma trwałą pamięć i zaczyna pracę w chwili zatrudnienia.",
 		"toolsHeadline": "Narzędzia",
 		"toolsLede": "Podłącz oprogramowanie, którego już używasz — uporządkowane według tego, co robi.",
 		"searchAllPlaceholder": "Szukaj pracowników, narzędzi, kolekcji…",
@@ -2519,7 +2519,7 @@
 		"business": "Biznes",
 		"businessDesc": "Organizuj i automatyzuj swoją pracę.",
 		"welcomeTitle": "Witaj na pokładzie.",
-		"welcomeBody": "Mieszkam na Twoim komputerze i pomagam Ci organizować oraz automatyzować {noun}. Oprowadzę Cię szybko, żebyś wiedział, gdzie co jest.",
+		"welcomeBody": "Pomagam Ci organizować oraz automatyzować {noun}. Oprowadzę Cię szybko, żebyś wiedział, gdzie co jest.",
 		"nounPersonal": "Twoje życie",
 		"nounBusiness": "Twój biznes",
 		"skipTour": "Pomiń wycieczkę",
@@ -2573,7 +2573,16 @@
 		"paymentAtCheckout": "Metoda płatności zostanie pobrana przy finalizacji",
 		"processingPaymentEllipsis": "Przetwarzanie płatności…",
 		"mayTakeMoment": "To może chwilę potrwać",
-		"skipSetup": "Pomiń konfigurację"
+		"skipSetup": "Pomiń konfigurację",
+		"hireName": "Zatrudnij {name}",
+		"hired": "Zatrudniony",
+		"hiringName": "Zatrudnianie: {name}…",
+		"hiredTitle": "{name} — zatrudniony",
+		"hiredReady": "{name} jest gotowy do pracy.",
+		"gettingReady": "Przygotowywanie: {name}…",
+		"skillsAndTools": "Umiejętności i narzędzia",
+		"hireFailedTitle": "Nie udało się dokończyć zatrudnienia",
+		"hireFailed": "Nie udało się zatrudnić: {name}. Spróbuj ponownie."
 	},
 	"activity": {
 		"pageTitle": "Aktywność - Nebo",
@@ -2818,7 +2827,7 @@
 	},
 	"christen": {
 		"title": "Nadaj imię swojemu pierwszemu pracownikowi",
-		"lede": "Każde zatrudnienie zaczyna się od imienia. Ten pracownik działa na Twojej maszynie, pamięta wszystko, czego go nauczysz, i pracuje wyłącznie dla Ciebie.",
+		"lede": "Każde zatrudnienie zaczyna się od imienia. Ten pracownik pamięta wszystko, czego go nauczysz, i pracuje wyłącznie dla Ciebie.",
 		"placeholder": "np. Jarvis, Piper, Ada…",
 		"create": "Zatrudnij",
 		"creating": "Tworzymy {name}…",

@@ -1730,7 +1730,7 @@
 			"emptyHint": "Elemente, die eine Organisation privat teilt, erscheinen hier."
 		},
 		"employeesHeadline": "Stell deine KI-Mitarbeiter ein",
-		"employeesLede": "Fertige Mitarbeiter, nach Abteilung sortiert. Jeder läuft lokal mit dauerhaftem Gedächtnis und fängt an zu arbeiten, sobald du ihn einstellst.",
+		"employeesLede": "Fertige Mitarbeiter, nach Abteilung sortiert. Jeder hat ein dauerhaftes Gedächtnis und fängt an zu arbeiten, sobald du ihn einstellst.",
 		"toolsHeadline": "Werkzeuge",
 		"toolsLede": "Verbinde die Software, die du ohnehin nutzt — sortiert nach dem, was sie tut.",
 		"searchAllPlaceholder": "Mitarbeiter, Werkzeuge, Sammlungen suchen…",
@@ -2519,7 +2519,7 @@
 		"business": "Business",
 		"businessDesc": "Organisiere und automatisiere deine Arbeit.",
 		"welcomeTitle": "Willkommen an Bord.",
-		"welcomeBody": "Ich lebe auf deinem Computer und helfe dir, {noun} zu organisieren und zu automatisieren. Ich zeige dir kurz, wo alles ist.",
+		"welcomeBody": "Ich bin hier, um dir zu helfen, {noun} zu organisieren und zu automatisieren. Ich zeige dir kurz, wo alles ist.",
 		"nounPersonal": "dein Leben",
 		"nounBusiness": "dein Business",
 		"skipTour": "Tour überspringen",
@@ -2573,7 +2573,16 @@
 		"paymentAtCheckout": "Die Zahlungsmethode wird beim Checkout erfasst",
 		"processingPaymentEllipsis": "Zahlung wird verarbeitet…",
 		"mayTakeMoment": "Das kann einen Moment dauern",
-		"skipSetup": "Einrichtung überspringen"
+		"skipSetup": "Einrichtung überspringen",
+		"hireName": "{name} einstellen",
+		"hired": "Eingestellt",
+		"hiringName": "{name} wird eingestellt…",
+		"hiredTitle": "{name} ist eingestellt",
+		"hiredReady": "{name} ist bereit loszulegen.",
+		"gettingReady": "{name} wird vorbereitet…",
+		"skillsAndTools": "Fähigkeiten und Tools",
+		"hireFailedTitle": "Die Einstellung hat nicht geklappt",
+		"hireFailed": "{name} wurde nicht eingestellt. Versuch es noch einmal."
 	},
 	"activity": {
 		"pageTitle": "Aktivität - Nebo",
@@ -2818,7 +2827,7 @@
 	},
 	"christen": {
 		"title": "Gib deinem ersten Mitarbeiter einen Namen",
-		"lede": "Jede Einstellung fängt mit einem Namen an. Dieser läuft auf deinem Rechner, merkt sich alles, was du ihm beibringst, und arbeitet nur für dich.",
+		"lede": "Jede Einstellung fängt mit einem Namen an. Dieser merkt sich alles, was du ihm beibringst, und arbeitet nur für dich.",
 		"placeholder": "z. B. Jarvis, Piper, Ada…",
 		"create": "Einstellen",
 		"creating": "{name} wird erstellt…",

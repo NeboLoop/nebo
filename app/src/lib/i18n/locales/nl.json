@@ -1730,7 +1730,7 @@
 			"emptyHint": "Items die een organisatie privé deelt, verschijnen hier."
 		},
 		"employeesHeadline": "Neem je AI-medewerkers aan",
-		"employeesLede": "Kant-en-klare medewerkers, geordend per afdeling. Elk draait lokaal met blijvend geheugen en gaat aan de slag zodra je ze aanneemt.",
+		"employeesLede": "Kant-en-klare medewerkers, geordend per afdeling. Elk heeft een blijvend geheugen en gaat aan de slag zodra je ze aanneemt.",
 		"toolsHeadline": "Tools",
 		"toolsLede": "Verbind de software die je toch al gebruikt — geordend naar wat die doet.",
 		"searchAllPlaceholder": "Zoek medewerkers, tools, collecties…",
@@ -2519,7 +2519,7 @@
 		"business": "Zakelijk",
 		"businessDesc": "Organiseer en automatiseer je werk.",
 		"welcomeTitle": "Welkom aan boord.",
-		"welcomeBody": "Ik woon op je computer en help je {noun} te organiseren en te automatiseren. Ik geef je een korte rondleiding zodat je weet waar alles is.",
+		"welcomeBody": "Ik help je {noun} te organiseren en te automatiseren. Ik geef je een korte rondleiding zodat je weet waar alles is.",
 		"nounPersonal": "je leven",
 		"nounBusiness": "je bedrijf",
 		"skipTour": "Rondleiding overslaan",
@@ -2573,7 +2573,16 @@
 		"paymentAtCheckout": "Betaalmethode wordt bij het afrekenen gevraagd",
 		"processingPaymentEllipsis": "Betaling verwerken…",
 		"mayTakeMoment": "Dit kan even duren",
-		"skipSetup": "Installatie overslaan"
+		"skipSetup": "Installatie overslaan",
+		"hireName": "{name} aannemen",
+		"hired": "Aangenomen",
+		"hiringName": "{name} wordt aangenomen…",
+		"hiredTitle": "{name} is aangenomen",
+		"hiredReady": "{name} staat klaar om te werken.",
+		"gettingReady": "{name} wordt klaargezet…",
+		"skillsAndTools": "Vaardigheden en tools",
+		"hireFailedTitle": "De aanstelling is niet gelukt",
+		"hireFailed": "{name} is niet aangenomen. Probeer het opnieuw."
 	},
 	"activity": {
 		"pageTitle": "Activiteit - Nebo",
@@ -2818,7 +2827,7 @@
 	},
 	"christen": {
 		"title": "Geef je eerste medewerker een naam",
-		"lede": "Elke aanstelling begint met een naam. Deze draait op jouw machine, onthoudt alles wat je hem leert en werkt alleen voor jou.",
+		"lede": "Elke aanstelling begint met een naam. Deze onthoudt alles wat je hem leert en werkt alleen voor jou.",
 		"placeholder": "bijv. Jarvis, Piper, Ada…",
 		"create": "Neem ze aan",
 		"creating": "{name} wordt aangemaakt…",

@@ -1730,7 +1730,7 @@
 			"emptyHint": "Os itens partilhados de forma privada por uma organização aparecerão aqui."
 		},
 		"employeesHeadline": "Contrate os seus funcionários de IA",
-		"employeesLede": "Funcionários já prontos, organizados por departamento. Cada um corre na sua máquina com memória persistente e começa a trabalhar mal o contrate.",
+		"employeesLede": "Funcionários já prontos, organizados por departamento. Cada um tem memória persistente e começa a trabalhar mal o contrate.",
 		"toolsHeadline": "Ferramentas",
 		"toolsLede": "Ligue os programas que já usa — organizados por utilização.",
 		"searchAllPlaceholder": "Procurar funcionários, ferramentas, coleções…",
@@ -2519,7 +2519,7 @@
 		"business": "Empresarial",
 		"businessDesc": "Organize e automatize o seu trabalho.",
 		"welcomeTitle": "Bem-vindo a bordo.",
-		"welcomeBody": "Vivo no seu computador e ajudo-o a organizar e automatizar {noun}. Deixe-me fazer-lhe uma visita rápida para saber onde está tudo.",
+		"welcomeBody": "Estou aqui para o ajudar a organizar e automatizar {noun}. Deixe-me fazer-lhe uma visita rápida para saber onde está tudo.",
 		"nounPersonal": "a sua vida",
 		"nounBusiness": "o seu negócio",
 		"skipTour": "Saltar a visita",
@@ -2573,7 +2573,16 @@
 		"paymentAtCheckout": "O método de pagamento será recolhido no checkout",
 		"processingPaymentEllipsis": "A processar o pagamento…",
 		"mayTakeMoment": "Isto pode demorar um momento",
-		"skipSetup": "Saltar configuração"
+		"skipSetup": "Saltar configuração",
+		"hireName": "Contratar {name}",
+		"hired": "Contratado",
+		"hiringName": "A contratar {name}…",
+		"hiredTitle": "{name} foi contratado",
+		"hiredReady": "{name} está pronto para trabalhar.",
+		"gettingReady": "A preparar {name}…",
+		"skillsAndTools": "Competências e ferramentas",
+		"hireFailedTitle": "Não foi possível concluir a contratação",
+		"hireFailed": "{name} não foi contratado. Tente novamente."
 	},
 	"activity": {
 		"pageTitle": "Atividade - Nebo",
@@ -2818,7 +2827,7 @@
 	},
 	"christen": {
 		"title": "Dê um nome ao seu primeiro funcionário",
-		"lede": "Toda a contratação começa por um nome. Este corre na sua máquina, guarda tudo o que lhe ensinar e trabalha só para si.",
+		"lede": "Toda a contratação começa por um nome. Este guarda tudo o que lhe ensinar e trabalha só para si.",
 		"placeholder": "por ex. Jarvis, Piper, Ada…",
 		"create": "Contratá-lo",
 		"creating": "A criar {name}…",

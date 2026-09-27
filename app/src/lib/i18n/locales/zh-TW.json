@@ -1730,7 +1730,7 @@
 			"emptyHint": "組織私下共享的項目會顯示在這裡。"
 		},
 		"employeesHeadline": "僱用你的 AI 員工",
-		"employeesLede": "依部門整理的現成員工。每一位都在本機執行，帶著持續的記憶，僱用的那一刻就開始工作。",
+		"employeesLede": "依部門整理的現成員工。每一位都帶著持續的記憶，僱用的那一刻就開始工作。",
 		"toolsHeadline": "工具",
 		"toolsLede": "把你已經在用的軟體接進來 — 依用途整理。",
 		"searchAllPlaceholder": "搜尋員工、工具、合輯…",
@@ -2519,7 +2519,7 @@
 		"business": "商務",
 		"businessDesc": "整理並自動化你的工作。",
 		"welcomeTitle": "歡迎加入。",
-		"welcomeBody": "我住在你的電腦上，幫你整理並自動化{noun}。讓我帶你快速逛一圈，讓你知道每樣東西在哪裡。",
+		"welcomeBody": "我在這裡幫你整理並自動化{noun}。讓我帶你快速逛一圈，讓你知道每樣東西在哪裡。",
 		"nounPersonal": "你的生活",
 		"nounBusiness": "你的事業",
 		"skipTour": "略過導覽",
@@ -2573,7 +2573,16 @@
 		"paymentAtCheckout": "結帳時將收集付款方式",
 		"processingPaymentEllipsis": "處理付款中…",
 		"mayTakeMoment": "這可能需要一點時間",
-		"skipSetup": "略過設定"
+		"skipSetup": "略過設定",
+		"hireName": "僱用{name}",
+		"hired": "已僱用",
+		"hiringName": "正在僱用{name}…",
+		"hiredTitle": "{name}已到職",
+		"hiredReady": "{name}已準備好開始工作。",
+		"gettingReady": "正在為{name}做準備…",
+		"skillsAndTools": "技能與工具",
+		"hireFailedTitle": "無法完成僱用",
+		"hireFailed": "未能僱用{name}，請再試一次。"
 	},
 	"activity": {
 		"pageTitle": "活動 - Nebo",
@@ -2818,7 +2827,7 @@
 	},
 	"christen": {
 		"title": "為你的第一位員工取個名字",
-		"lede": "每一次僱用都從名字開始。這位員工在你的機器上執行，記得你教的每一件事，只為你工作。",
+		"lede": "每一次僱用都從名字開始。這位員工記得你教的每一件事，只為你工作。",
 		"placeholder": "例如 Jarvis、Piper、Ada…",
 		"create": "僱用他",
 		"creating": "正在建立 {name}…",

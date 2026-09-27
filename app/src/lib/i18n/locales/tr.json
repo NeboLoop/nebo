@@ -1730,7 +1730,7 @@
 			"emptyHint": "Bir kuruluş tarafından özel olarak paylaşılan öğeler burada görünecek."
 		},
 		"employeesHeadline": "Yapay zekâ çalışanlarınızı işe alın",
-		"employeesLede": "Departmana göre düzenlenmiş, hazır çalışanlar. Her biri kalıcı bellekle yerel olarak çalışır ve siz işe alır almaz işe koyulur.",
+		"employeesLede": "Departmana göre düzenlenmiş, hazır çalışanlar. Her birinin kalıcı belleği vardır ve siz işe alır almaz işe koyulur.",
 		"toolsHeadline": "Araçlar",
 		"toolsLede": "Zaten kullandığınız yazılımı bağlayın — ne işe yaradığına göre düzenlenmiştir.",
 		"searchAllPlaceholder": "Çalışan, araç, koleksiyon arayın…",
@@ -2519,7 +2519,7 @@
 		"business": "İş",
 		"businessDesc": "İşinizi düzenleyin ve otomatikleştirin.",
 		"welcomeTitle": "Aramıza hoş geldiniz.",
-		"welcomeBody": "Bilgisayarınızda yaşıyorum ve {noun} düzenleyip otomatikleştirmenize yardımcı oluyorum. Her şeyin nerede olduğunu bilmeniz için size hızlı bir tur attırayım.",
+		"welcomeBody": "{noun} düzenleyip otomatikleştirmenize yardımcı olmak için buradayım. Her şeyin nerede olduğunu bilmeniz için size hızlı bir tur attırayım.",
 		"nounPersonal": "hayatınızı",
 		"nounBusiness": "işinizi",
 		"skipTour": "Turu atla",
@@ -2573,7 +2573,16 @@
 		"paymentAtCheckout": "Ödeme yöntemi, ödeme sayfasında alınacak",
 		"processingPaymentEllipsis": "Ödeme işleniyor…",
 		"mayTakeMoment": "Bu biraz sürebilir",
-		"skipSetup": "Kurulumu atla"
+		"skipSetup": "Kurulumu atla",
+		"hireName": "İşe al: {name}",
+		"hired": "İşe alındı",
+		"hiringName": "İşe alınıyor: {name}…",
+		"hiredTitle": "{name} işe alındı",
+		"hiredReady": "{name} çalışmaya hazır.",
+		"gettingReady": "{name} hazırlanıyor…",
+		"skillsAndTools": "Beceriler ve araçlar",
+		"hireFailedTitle": "İşe alım tamamlanamadı",
+		"hireFailed": "{name} işe alınamadı. Tekrar deneyin."
 	},
 	"activity": {
 		"pageTitle": "Etkinlik - Nebo",
@@ -2818,7 +2827,7 @@
 	},
 	"christen": {
 		"title": "İlk çalışanınıza bir ad verin",
-		"lede": "Her işe alım bir adla başlar. Bu çalışan sizin makinenizde çalışır, ona öğrettiğiniz her şeyi hatırlar ve yalnızca sizin için çalışır.",
+		"lede": "Her işe alım bir adla başlar. Bu çalışan ona öğrettiğiniz her şeyi hatırlar ve yalnızca sizin için çalışır.",
 		"placeholder": "örneğin Jarvis, Piper, Ada…",
 		"create": "İşe al",
 		"creating": "{name} oluşturuluyor…",

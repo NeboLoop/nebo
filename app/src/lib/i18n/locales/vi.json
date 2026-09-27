@@ -1730,7 +1730,7 @@
 			"emptyHint": "Các mục được tổ chức chia sẻ riêng tư sẽ xuất hiện ở đây."
 		},
 		"employeesHeadline": "Tuyển nhân viên AI của bạn",
-		"employeesLede": "Nhân viên dựng sẵn, sắp xếp theo phòng ban. Mỗi người chạy tại máy bạn với bộ nhớ lâu dài và bắt tay vào việc ngay khi bạn tuyển.",
+		"employeesLede": "Nhân viên dựng sẵn, sắp xếp theo phòng ban. Mỗi người có bộ nhớ lâu dài và bắt tay vào việc ngay khi bạn tuyển.",
 		"toolsHeadline": "Công cụ",
 		"toolsLede": "Kết nối phần mềm bạn đang dùng — sắp xếp theo công dụng.",
 		"searchAllPlaceholder": "Tìm nhân viên, công cụ, bộ sưu tập…",
@@ -2519,7 +2519,7 @@
 		"business": "Công việc",
 		"businessDesc": "Tổ chức và tự động hóa công việc của bạn.",
 		"welcomeTitle": "Chào mừng bạn.",
-		"welcomeBody": "Tôi sống trên máy tính của bạn và giúp bạn tổ chức và tự động hóa {noun}. Hãy để tôi đưa bạn tham quan nhanh để bạn biết mọi thứ ở đâu.",
+		"welcomeBody": "Tôi ở đây để giúp bạn tổ chức và tự động hóa {noun}. Hãy để tôi đưa bạn tham quan nhanh để bạn biết mọi thứ ở đâu.",
 		"nounPersonal": "cuộc sống của bạn",
 		"nounBusiness": "công việc kinh doanh của bạn",
 		"skipTour": "Bỏ qua chuyến tham quan",
@@ -2573,7 +2573,16 @@
 		"paymentAtCheckout": "Phương thức thanh toán sẽ được thu thập khi thanh toán",
 		"processingPaymentEllipsis": "Đang xử lý thanh toán…",
 		"mayTakeMoment": "Việc này có thể mất một lúc",
-		"skipSetup": "Bỏ qua thiết lập"
+		"skipSetup": "Bỏ qua thiết lập",
+		"hireName": "Tuyển {name}",
+		"hired": "Đã tuyển",
+		"hiringName": "Đang tuyển {name}…",
+		"hiredTitle": "Đã tuyển {name}",
+		"hiredReady": "{name} đã sẵn sàng làm việc.",
+		"gettingReady": "Đang chuẩn bị {name}…",
+		"skillsAndTools": "Kỹ năng và công cụ",
+		"hireFailedTitle": "Không thể hoàn tất việc tuyển",
+		"hireFailed": "Chưa tuyển được {name}. Hãy thử lại."
 	},
 	"activity": {
 		"pageTitle": "Hoạt động - Nebo",
@@ -2818,7 +2827,7 @@
 	},
 	"christen": {
 		"title": "Đặt tên cho nhân viên đầu tiên của bạn",
-		"lede": "Mỗi lần tuyển người đều bắt đầu bằng một cái tên. Người này chạy trên máy bạn, nhớ mọi thứ bạn dạy, và chỉ làm việc cho bạn.",
+		"lede": "Mỗi lần tuyển người đều bắt đầu bằng một cái tên. Người này nhớ mọi thứ bạn dạy, và chỉ làm việc cho bạn.",
 		"placeholder": "vd. Jarvis, Piper, Ada…",
 		"create": "Tuyển họ",
 		"creating": "Đang tạo {name}…",

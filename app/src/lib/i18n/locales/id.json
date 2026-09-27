@@ -1730,7 +1730,7 @@
 			"emptyHint": "Item yang dibagikan secara privat oleh organisasi akan muncul di sini."
 		},
 		"employeesHeadline": "Rekrut karyawan AI Anda",
-		"employeesLede": "Karyawan siap pakai, tersusun per departemen. Masing-masing berjalan secara lokal dengan memori permanen dan mulai bekerja begitu Anda merekrutnya.",
+		"employeesLede": "Karyawan siap pakai, tersusun per departemen. Masing-masing punya memori permanen dan mulai bekerja begitu Anda merekrutnya.",
 		"toolsHeadline": "Alat",
 		"toolsLede": "Sambungkan perangkat lunak yang sudah Anda pakai — tersusun menurut fungsinya.",
 		"searchAllPlaceholder": "Cari karyawan, alat, koleksi…",
@@ -2519,7 +2519,7 @@
 		"business": "Bisnis",
 		"businessDesc": "Atur dan otomatiskan pekerjaan Anda.",
 		"welcomeTitle": "Selamat bergabung.",
-		"welcomeBody": "Saya tinggal di komputer Anda dan membantu Anda mengatur serta mengotomatiskan {noun}. Izinkan saya memberi tur singkat agar Anda tahu letak semuanya.",
+		"welcomeBody": "Saya di sini untuk membantu Anda mengatur serta mengotomatiskan {noun}. Izinkan saya memberi tur singkat agar Anda tahu letak semuanya.",
 		"nounPersonal": "kehidupan Anda",
 		"nounBusiness": "bisnis Anda",
 		"skipTour": "Lewati tur",
@@ -2573,7 +2573,16 @@
 		"paymentAtCheckout": "Metode pembayaran akan diminta saat checkout",
 		"processingPaymentEllipsis": "Memproses pembayaran…",
 		"mayTakeMoment": "Ini mungkin butuh beberapa saat",
-		"skipSetup": "Lewati penyiapan"
+		"skipSetup": "Lewati penyiapan",
+		"hireName": "Rekrut {name}",
+		"hired": "Direkrut",
+		"hiringName": "Merekrut {name}…",
+		"hiredTitle": "{name} sudah direkrut",
+		"hiredReady": "{name} siap bekerja.",
+		"gettingReady": "Menyiapkan {name}…",
+		"skillsAndTools": "Keahlian dan alat",
+		"hireFailedTitle": "Perekrutan tidak dapat diselesaikan",
+		"hireFailed": "{name} tidak berhasil direkrut. Coba lagi."
 	},
 	"activity": {
 		"pageTitle": "Aktivitas - Nebo",
@@ -2818,7 +2827,7 @@
 	},
 	"christen": {
 		"title": "Beri nama karyawan pertama Anda",
-		"lede": "Setiap perekrutan dimulai dari sebuah nama. Yang satu ini berjalan di mesin Anda, mengingat semua yang Anda ajarkan, dan bekerja untuk Anda seorang.",
+		"lede": "Setiap perekrutan dimulai dari sebuah nama. Yang satu ini mengingat semua yang Anda ajarkan dan bekerja untuk Anda seorang.",
 		"placeholder": "mis. Jarvis, Piper, Ada…",
 		"create": "Rekrut dia",
 		"creating": "Membuat {name}…",

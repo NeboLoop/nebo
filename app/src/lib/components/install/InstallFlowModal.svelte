@@ -154,6 +154,11 @@
         : codeType.charAt(0).toUpperCase() + codeType.slice(1)
       : $t('marketplace.kind.agent'),
   );
+  // Hiring an employee (an agent artifact) speaks in hire words, never install
+  // words: a marketplace product open is always an employee, and a pasted code
+  // is one when its type is agent. Skills, plugins and the rest keep "install".
+  const hiring = $derived(mode === 'product' || (mode === 'code' && codeType === 'agent'));
+  const employeeName = $derived(artifactName || agentName || typeLabel);
   const installedCount = $derived(deps.filter((d) => d.status === 'installed').length);
   const failedCount = $derived(deps.filter((d) => d.status === 'failed').length);
   const settledCount = $derived(installedCount + failedCount);
@@ -168,9 +173,13 @@
 
   const title = $derived(
     phase === 'done'
-      ? configuring ? $t('common.saved') : $t('installFlow.installedTitle', { values: { name: artifactName || typeLabel } })
+      ? configuring
+        ? $t('common.saved')
+        : hiring
+          ? $t('installFlow.hiredTitle', { values: { name: employeeName } })
+          : $t('installFlow.installedTitle', { values: { name: artifactName || typeLabel } })
       : phase === 'error'
-        ? $t('installFlow.installFailed')
+        ? hiring ? $t('installFlow.hireFailedTitle') : $t('installFlow.installFailed')
         : phase === 'confirm'
           ? $t('installFlow.confirmPurchase')
           : phase === 'processing'
@@ -179,7 +188,11 @@
               ? configuring ? $t('installFlow.configureTitle', { values: { name: agentName || '' } }) : $t('installFlow.setupTitle', { values: { name: artifactName || agentName || '' } })
               : phase === 'schedule'
                 ? $t('installFlow.scheduleTitle')
-                : $t('installFlow.installingTitle', { values: { type: typeLabel } }),
+                : hiring
+                  ? artifactName || agentName
+                    ? $t('installFlow.hireName', { values: { name: artifactName || agentName } })
+                    : $t('newEmployee.title')
+                  : $t('installFlow.installingTitle', { values: { type: typeLabel } }),
   );
 
   const intervalOptions = $derived([
@@ -329,7 +342,7 @@
       if (mode === 'configure') {
         agentId = existingAgentId;
       } else {
-        statusMessage = $t('marketplace.detail.installing');
+        statusMessage = $t('installFlow.hiringName', { values: { name: employeeName } });
         phase = 'installing';
         if (dependencies) seedDepRows(dependencies);
         const res = await installStoreProduct(appId);
@@ -773,11 +786,13 @@
   }
 
   // ── Misc UI ─────────────────────────────────────────────────────────────────
+  /** A dep's display name. With none declared, a human title from the last path
+   *  segment (@neboai/skills/client-finder → Client Finder), never the package ref. */
   function depLabel(dep: DepItem): string {
     if (dep.name) return dep.name;
-    const ref = dep.reference;
-    if (ref.startsWith('@') && ref.includes('/')) return ref.split('/').pop() || ref;
-    return ref;
+    return (dep.reference.split('/').pop() || dep.reference)
+      .replace(/[_-]+/g, ' ')
+      .replace(/\b\w/g, (c) => c.toUpperCase());
   }
   async function copyCode(reference: string) {
     try {
@@ -920,13 +935,13 @@
             {#if cascadePending}
               <span class="loading loading-spinner loading-lg text-primary"></span>
               <p class="text-sm font-medium">
-                {$t('installFlow.installingDependencies')} <span class="font-mono text-base-content/50">{settledCount}/{progressTotal}</span>
+                {hiring ? $t('installFlow.gettingReady', { values: { name: employeeName } }) : $t('installFlow.installingDependencies')} <span class="font-mono text-base-content/50">{settledCount}/{progressTotal}</span>
               </p>
             {:else}
               <div class="w-12 h-12 rounded-full bg-success/15 flex items-center justify-center">
                 <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="text-success"><polyline points="20 6 9 17 4 12"/></svg>
               </div>
-              <p class="text-sm font-medium">{configuring ? $t('installFlow.savedExclaim') : $t('installFlow.installedExclaim', { values: { name: artifactName || typeLabel } })}</p>
+              <p class="text-sm font-medium">{configuring ? $t('installFlow.savedExclaim') : hiring ? $t('installFlow.hiredReady', { values: { name: employeeName } }) : $t('installFlow.installedExclaim', { values: { name: artifactName || typeLabel } })}</p>
               {#if needsSetupFlag && agentId}
                 <button type="button" class="btn btn-xs btn-outline" onclick={() => { const id = agentId; close(); goto(`/${id}/settings/configure`); }}>
                   {$t('installFlow.finishSetupInSettings')}
@@ -941,7 +956,7 @@
               <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-error"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
             </div>
             <div class="text-center">
-              <p class="text-sm font-medium">{$t('installFlow.failedToInstall')}</p>
+              <p class="text-sm font-medium">{hiring ? $t('installFlow.hireFailed', { values: { name: employeeName } }) : $t('installFlow.failedToInstall')}</p>
               <p class="text-xs text-error/80 mt-2 max-w-[280px]">{errorMessage}</p>
             </div>
           </div>
@@ -994,7 +1009,7 @@
         {#if deps.length > 0}
           <div class="border-t border-base-content/10 pt-4 mt-5">
             <p class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-3">
-              {$t('installFlow.dependencies')} ({installedCount}/{progressTotal})
+              {hiring ? $t('installFlow.skillsAndTools') : $t('installFlow.dependencies')} ({installedCount}/{progressTotal})
               {#if failedCount > 0}<span class="text-error/70 normal-case font-medium"> · {$t('agentActivity.failedCount', { values: { count: failedCount } })}</span>{/if}
             </p>
             <ul class="flex flex-col gap-2">
@@ -1015,7 +1030,7 @@
                   {/if}
                   <div class="flex-1 min-w-0">
                     <div class="truncate font-medium {dep.status === 'failed' ? 'text-error/90' : ''}">{label}</div>
-                    {#if dep.reference !== label}
+                    {#if !hiring && dep.reference !== label}
                       <button type="button" class="font-mono text-base-content/40 hover:text-base-content/70 cursor-pointer bg-transparent border-none p-0" title={$t('installFlow.copyInstallCode')} onclick={() => copyCode(dep.reference)}>
                         {copiedRef === dep.reference ? $t('installFlow.copied') : dep.reference}
                       </button>
@@ -1024,7 +1039,7 @@
                   {#if auth && aState === 'connected'}
                     <span class="text-xs text-success shrink-0">{$t('common.connected')}</span>
                   {:else}
-                    <span class="text-xs text-base-content/40 shrink-0">{dep.type}</span>
+                    <span class="text-xs text-base-content/40 shrink-0">{KIND_KEYS[dep.type] ? $t(KIND_KEYS[dep.type]) : dep.type}</span>
                   {/if}
                   {#if dep.status === 'failed'}
                     <button type="button" class="btn btn-xs btn-primary shrink-0" onclick={() => retryDep(dep)} title={dep.error}>{$t('common.install')}</button>
