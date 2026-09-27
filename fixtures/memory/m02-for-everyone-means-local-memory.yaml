@@ -39,11 +39,12 @@ prompt_assertions:
       result_contains: Saved to local memory
   recovery:
   - id: other-employee-finds-it
-    text: The second employee's recall returns HARBOR-{{tag}}
+    text: The second employee's reply (turn two) gives HARBOR-{{tag}}, from its own recall or the memory
+      the turn recalled for it. Where the row is stored is proved by suites/memory-proof.yaml
     severity: critical
     check:
-      tool: recall
-      result_contains: HARBOR-{{tag}}
+      turn: 2
+      reply_matches: HARBOR-{{tag}}
   - id: not-called-global
     text: 'The reply never calls it global memory: the owner did not say global'
     severity: important
@@ -51,4 +52,4 @@ prompt_assertions:
       reply_not_matches: (?i)global memory
 ideal_behavior:
   tool_calls: 2
-  narrative: 'remember(scope: "local"); then, as the other employee, recall and answer HARBOR-{{tag}}.'
+  narrative: 'remember(scope: "local"); then the other employee answers HARBOR-{{tag}}, from recall or from the memory the turn recalled.'

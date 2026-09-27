@@ -40,11 +40,12 @@ prompt_assertions:
       result_contains: Saved to
   recovery:
   - id: new-chat-recalls-it
-    text: In the new chat, recall returns MAPLE-{{tag}}
+    text: The new chat's reply (turn two) gives MAPLE-{{tag}}, from recall or the memory the turn recalled.
+      Where the row is stored is proved by suites/memory-proof.yaml
     severity: critical
     check:
-      tool: recall
-      result_contains: MAPLE-{{tag}}
+      turn: 2
+      reply_matches: MAPLE-{{tag}}
   - id: not-sealed
     text: The save is never refused or sealed to the conversation
     severity: critical
@@ -55,4 +56,4 @@ prompt_assertions:
       - disabled
 ideal_behavior:
   tool_calls: 2
-  narrative: remember in chat one; recall in chat two returns the order.
+  narrative: remember in chat one; chat two answers with the order, from recall or the memory the turn recalled.

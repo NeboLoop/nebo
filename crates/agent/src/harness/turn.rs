@@ -152,6 +152,9 @@ pub struct TurnState {
     pub recall: super::memory_context::RecallPrefetch,
     /// The saves the owner asked for, checked when the turn would end.
     pub saves: super::memory_save::SaveWatch,
+    /// The next step is the harness's correction of a save the owner asked
+    /// for (`memory_save::Correction`).
+    correcting: Option<super::memory_save::Correction>,
     /// The conversation the last step sent: input stored after it is heard
     /// by the next turn.
     pub seen: Vec<ChatMessage>,
@@ -165,9 +168,9 @@ pub struct TurnState {
     pub model: String,
     /// Checkpoints taken this turn.
     pub checkpoints: usize,
-    /// The last reply answered the owner (their mid-turn message, with the
-    /// work going on, or the turn's answer before a save it lacked): the
-    /// owner has their answer, so a reply with nothing in it ends the turn.
+    /// The last reply answered the owner's mid-turn message and the work
+    /// goes on: the owner has their answer, so a reply with nothing in it
+    /// ends the turn.
     answered_owner: bool,
     /// What the owner's waiting message asks for, with the row id of the
     /// latest one it was decided for; taken by the reply that answers it.
@@ -798,6 +801,7 @@ pub(crate) async fn prepare(
         surfaced_memories: surfaced,
         recall,
         saves,
+        correcting: None,
         end_checks_this_turn: 0,
         frozen_renderings: h
             .store
@@ -1005,6 +1009,11 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
             conversation::owner_waiting(&conversation::order_as_heard(conversation.clone()))
         };
         let reply_in_words = waiting.is_some();
+        // The owner's message takes the step a correction would have had.
+        if reply_in_words {
+            st.correcting = None;
+        }
+        let correcting = st.correcting;
         if let Some(w) = waiting
             && st.owner_intent.as_ref().is_none_or(|(latest, _)| *latest != w.latest)
         {
@@ -1213,10 +1222,31 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
         let mut executor = ToolExecutor::new(&round_cx);
         let reply_heard_through = st.seen.last().map(|m| m.id.clone());
         let (tool_calls_out, mut streamed_calls) = mpsc::unbounded_channel();
-        // Tools are off for the owner's answer: nothing streamed starts.
-        if reply_in_words {
+        // Tools are off for the owner's answer: nothing streamed starts. A
+        // correction's calls run only once the harness has checked them.
+        if reply_in_words || correcting.is_some() {
             streamed_calls.close();
         }
+        // A correction is the harness's step: nothing the model writes in it
+        // reaches the owner, so its stream goes nowhere but its usage and
+        // its text never touches the turn's folds.
+        let unshown = correcting.map(|_| {
+            let (unshown, mut dropped) = mpsc::channel::<StreamEvent>(64);
+            let usage_to = cx.tx.clone();
+            tokio::spawn(async move {
+                while let Some(event) = dropped.recv().await {
+                    if event.event_type == ai::StreamEventType::Usage {
+                        let _ = usage_to.send(event).await;
+                    }
+                }
+            });
+            unshown
+        });
+        let mut unshown_folds = text_fold::TurnFolds::default();
+        let (reply_tx, reply_folds) = match &unshown {
+            Some(unshown) => (unshown, &mut unshown_folds),
+            None => (&cx.tx, &mut st.folds),
+        };
         let call = model_call::call_model(
             model_call::ModelCall {
                 request,
@@ -1230,7 +1260,7 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
                 },
                 sessions,
                 cancel: &cx.request.cancel,
-                tx: &cx.tx,
+                tx: reply_tx,
                 session_id: sid,
                 step: st.step as usize,
                 step_started: std::time::Instant::now(),
@@ -1242,7 +1272,7 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
                     .as_ref()
                     .map(|issue| issue as &(dyn Fn() -> crate::tool_credentials::CredentialGuard + Send + Sync)),
                 tool_calls_out,
-                folds: &mut st.folds,
+                folds: reply_folds,
                 heard_through: reply_heard_through.as_deref(),
                 tool_names: h.tools.get_tool_names().await,
             },
@@ -1310,6 +1340,13 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
             thinking_model,
             text_call,
         } = reply;
+        if let Some(correction) = correcting {
+            st.correcting = None;
+            if let Some(error) = stream_error {
+                return TurnExit::ProviderFailed(error);
+            }
+            return correct(cx, st, &round_cx, executor, correction, tool_calls, provider.handles_tools()).await;
+        }
         let after_owner_answer = std::mem::replace(&mut st.answered_owner, false);
         st.last_call = Some(LastCall {
             request: fork_of.clone(),
@@ -1960,8 +1997,8 @@ async fn tool_round(
             });
         }
     };
-    if results.saved_memory {
-        st.saves.saved(st.step);
+    if let Some(result) = &results.saved_memory {
+        st.saves.saved(st.step, result);
     }
     for tc in tool_calls.iter() {
         if let Some(class) = h.tools.get(&tc.name).await.and_then(|t| t.taint(&tc.input)) {
@@ -1993,6 +2030,50 @@ async fn tool_round(
     )
     .await;
     None
+}
+
+/// The harness's correction of a save the owner asked for, after its step's
+/// reply: only the reply's `remember` calls run, in the owner's scope, shown
+/// as calls; the model's words are dropped. The owner's reply stays the one
+/// before, and the turn ends on one line of the harness's own: where the
+/// save went, from the tool's answer, or that nothing was saved.
+async fn correct(
+    cx: &TurnContext,
+    st: &mut TurnState,
+    round_cx: &RoundContext<'_>,
+    executor: ToolExecutor<'_>,
+    correction: super::memory_save::Correction,
+    tool_calls: Vec<ai::ToolCall>,
+    handles_tools: bool,
+) -> TurnExit {
+    let h = &cx.harness;
+    let mut calls = correction.calls(&h.tools, tool_calls).await;
+    if !calls.is_empty() && !handles_tools {
+        for call in &calls {
+            let _ = cx.tx.send(StreamEvent::tool_call(call.clone())).await;
+        }
+        let order: Vec<Block> = (0..calls.len()).map(Block::Tool).collect();
+        let heard_through = st.seen.last().map(|m| m.id.clone());
+        save_reply(cx, &mut st.folds, "", &calls, &order, (&[], ""), heard_through.as_deref()).await;
+        if let Some(exit) = tool_round(cx, st, round_cx, executor, "", &mut calls).await {
+            return exit;
+        }
+    }
+    let saved = st.saves.saved_since(correction.step);
+    let line = saved.map_or(super::memory_save::NOT_SAVED, super::memory_save::saved_line);
+    info!(
+        site = super::memory_save::CHECK,
+        session_id = %cx.session_id,
+        outcome = if saved.is_some() { "saved" } else { "not_saved" },
+        scope = correction.scope.as_str(),
+        "the correction ended"
+    );
+    let shown = format!("\n\n{line}");
+    st.folds.text(&shown);
+    let _ = cx.tx.send(StreamEvent::text(shown)).await;
+    let heard_through = h.sessions.get_messages_since_checkpoint(&cx.session_id).ok().and_then(|c| c.last().map(|m| m.id.clone()));
+    save_reply(cx, &mut st.folds, line, &[], &[Block::Text(None)], (&[], ""), heard_through.as_deref()).await;
+    TurnExit::Answered
 }
 
 /// Turn end: `None` when every check lets the turn end, `Ok` to take
@@ -2030,10 +2111,9 @@ async fn end_checks(cx: &TurnContext, st: &mut TurnState) -> Option<Result<(), T
             EndVerdict::Exit(exit) => return Some(Err(exit)),
             EndVerdict::Continue(event) => {
                 st.end_checks_this_turn += 1;
-                // The reply before a missing save answered the owner: if the
-                // step it adds has nothing to say, the turn ends there.
-                if check.name() == super::memory_save::CHECK {
-                    st.answered_owner = true;
+                // A missing save: the step it adds is the harness's own.
+                if let TurnEvent::UnsavedMemory(scope) = &event {
+                    st.correcting = Some(super::memory_save::Correction { scope: *scope, step: st.step + 1 });
                 }
                 let reason = events::attachment_for(&event).map(|a| a.text).unwrap_or_default();
                 st.reminders.add(&event);
@@ -2233,6 +2313,8 @@ mod tests {
         Call(&'static str, serde_json::Value),
         /// Text, then a call to this tool.
         Narrated(&'static str, &'static str),
+        /// Text, then a call to this tool with this input.
+        NarratedCall(&'static str, &'static str, serde_json::Value),
         /// Text the output cap cut off.
         Cut(&'static str),
         /// A dropped connection.
@@ -2436,6 +2518,13 @@ mod tests {
                         name: name.into(),
                         input: serde_json::json!({}),
                     }),
+                ],
+                None,
+            ),
+            Step::NarratedCall(text, name, input) => (
+                vec![
+                    StreamEvent::text(text),
+                    StreamEvent::tool_call(ai::ToolCall { id: format!("call-{}", uuid::Uuid::new_v4()), name: name.into(), input }),
                 ],
                 None,
             ),
@@ -6077,8 +6166,9 @@ mod tests {
 
     // ── Memory: a save is a call, and recall reaches the first step ──────
 
-    /// The memory tool as the turn sees it: `remember`, always loaded; every
-    /// save succeeds.
+    /// The memory tool as the turn sees it: `remember`, always loaded. It
+    /// answers as the real one does, naming the memory the call's scope
+    /// chose.
     struct Remember;
 
     impl tools::registry::DynTool for Remember {
@@ -6098,9 +6188,16 @@ mod tests {
         fn execute_dyn<'a>(
             &'a self,
             _ctx: &'a tools::ToolContext,
-            _input: serde_json::Value,
+            input: serde_json::Value,
         ) -> Pin<Box<dyn Future<Output = tools::ToolResult> + Send + 'a>> {
-            Box::pin(async move { tools::ToolResult::ok("Saved to local memory.") })
+            Box::pin(async move {
+                let went = if input["scope"] == "local" {
+                    "local memory (every employee on this Nebo can find it)"
+                } else {
+                    "your private memory (only you can see it)"
+                };
+                tools::ToolResult::ok(format!("Saved to {went}: [tacit/general] {} = {}", input["key"], input["value"]))
+            })
         }
     }
 
@@ -6108,91 +6205,149 @@ mod tests {
         vec![Box::new(Remember)]
     }
 
-    /// A Jev that reads the owner's message as asking for a save (`p_save`)
-    /// and answers anything else "no".
-    async fn jev_saving(asked: bool) -> Arc<ai::DecideClient> {
-        let answer: fn(&str) -> serde_json::Value = if asked {
-            |q| serde_json::json!({"type": "noul", "noul": if q == crate::harness::memory_save::QUESTION { 0.95 } else { 0.02 }})
-        } else {
-            |_| serde_json::json!({"type": "noul", "noul": 0.02})
+    /// A Jev that reads the owner's message as asking for a save in `scope`
+    /// (`None`: no save), and answers anything else "no".
+    async fn jev_saving(scope: Option<crate::harness::memory_save::Scope>) -> Arc<ai::DecideClient> {
+        use crate::harness::memory_save::Scope;
+        fn answer(picked: &str) -> serde_json::Value {
+            let p = |option: &str| if option == picked { 0.9 } else { 0.05 };
+            serde_json::json!({
+                "type": "choice", "choice": picked, "confidence": 0.9,
+                "probabilities": {"private": p("private"), "local": p("local"), "none": p("none")},
+            })
+        }
+        let jev: fn(&str) -> serde_json::Value = match scope {
+            Some(Scope::Local) => |q| if q == "save" { answer("local") } else { serde_json::json!({"type": "noul", "noul": 0.02}) },
+            Some(Scope::Private) => |q| if q == "save" { answer("private") } else { serde_json::json!({"type": "noul", "noul": 0.02}) },
+            None => |q| if q == "save" { answer("none") } else { serde_json::json!({"type": "noul", "noul": 0.02}) },
         };
-        Arc::new(serve_jev(answer).await.0)
+        Arc::new(serve_jev(jev).await.0)
     }
 
     const SAVE_RECIPE: &str = "Here's a recipe I like: air fryer tenderloin bites, 380F for 8 to 10 minutes. Can you also save it to company memory?";
+    const REMEMBER_FOR_YOURSELF: &str = "Remember for yourself that I like replies under five sentences. Code QUILL-7.";
     const CLAIM: &str = "I've saved this to company memory under recipes/tenderloin-bites.";
-    const NOT_SAVED_YET: &str = "nothing is saved yet";
+    /// What the re-run's corrections wrote (gate 36330201037, m05 and
+    /// mid-turn-owner-message): narration of the note, never for the owner.
+    const NARRATION: &str = "Wait — I did save it, but the system says nothing went through. Let me try again. I'll reply with nothing as instructed.";
 
-    fn remember_calls(h: &Harness) -> usize {
+    fn remember_calls(h: &Harness) -> Vec<serde_json::Value> {
         stored(h)
             .iter()
             .filter(|m| m.role == "assistant")
             .filter_map(|m| m.tool_calls.as_deref())
-            .filter(|calls| calls.contains("\"remember\""))
-            .count()
+            .filter_map(|calls| serde_json::from_str::<Vec<ai::ToolCall>>(calls).ok())
+            .flatten()
+            .filter(|c| c.name == "remember")
+            .map(|c| c.input)
+            .collect()
+    }
+
+    /// The owner's reply as streamed, and the replies stored for the thread.
+    fn owner_sees(h: &Harness, events: &[StreamEvent]) -> (String, String) {
+        let stored_replies: String = stored(h).iter().filter(|m| m.role == "assistant").map(|m| m.content.clone()).collect::<Vec<_>>().join("\n");
+        (shown_text(events), stored_replies)
     }
 
     /// m07's replay: the owner asks for a save and the model claims one
-    /// without calling `remember`. The turn doesn't end on the claim: one
-    /// more step, told nothing is saved yet, makes the call.
+    /// without calling `remember`. The harness's correction step makes the
+    /// call; its narration never reaches the owner, whose reply stays the one
+    /// before, with the store's own line for where the save went.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn a_claimed_save_with_no_call_is_sent_back_once() {
+    async fn a_claimed_save_is_made_by_a_correction_the_owner_never_reads() {
+        use crate::harness::memory_save::Scope;
         let model = Scripted::new(vec![
             Step::Say(CLAIM),
-            Step::Call("remember", serde_json::json!({"key": "recipes/tenderloin-bites", "value": "380F, 8 to 10 minutes", "scope": "local"})),
-            Step::Say("Saved to local memory: every employee on this Nebo can find it."),
+            Step::NarratedCall(NARRATION, "remember", serde_json::json!({"key": "recipes/tenderloin-bites", "value": "380F, 8 to 10 minutes"})),
         ]);
-        let h = harness_with(&model, remember_tool()).await.with_decide(jev_saving(true).await);
+        let h = harness_with(&model, remember_tool()).await.with_decide(jev_saving(Some(Scope::Local)).await);
         let events = run_turn(&h, owner(SAVE_RECIPE)).await;
         assert_eq!(exit_of(&events), "text_response");
         let calls = model.calls();
-        assert_eq!(calls.len(), 3, "the claim, the save, the answer");
-        assert!(!texts(&calls[0]).iter().any(|t| t.contains(NOT_SAVED_YET)));
-        assert!(texts(&calls[1]).iter().any(|t| t.contains(NOT_SAVED_YET)), "the step after the claim is told");
-        assert_eq!(remember_calls(&h), 1);
-        assert!(result_ids(&h).len() == 1 && stored(&h).iter().any(|m| m.tool_results.as_deref().is_some_and(|r| r.contains("Saved to local memory") && !r.contains("is_error"))), "the save ran");
-        assert!(kinds(&stored(&h)).contains(&"unsaved_memory".to_string()));
+        assert_eq!(calls.len(), 2, "the claim, then the correction; no step after it");
+        assert!(texts(&calls[1]).iter().any(|t| t.contains("Nothing is saved yet") && t.contains("scope \"local\"")), "the correction is told the scope");
+        let (shown, kept) = owner_sees(&h, &events);
+        for words in ["Wait", "system says", "reply with nothing", "Nothing is saved yet"] {
+            assert!(!shown.contains(words) && !kept.contains(words), "{words:?} reached the owner:\n{shown}\n--\n{kept}");
+        }
+        assert!(shown.starts_with(CLAIM), "the reply before the correction stays: {shown}");
+        assert!(shown.ends_with("Saved to local memory, where every employee on this Nebo can find it."), "{shown}");
+        assert!(kept.ends_with("Saved to local memory, where every employee on this Nebo can find it."), "{kept}");
+        assert_eq!(remember_calls(&h).len(), 1);
+        assert!(events.iter().any(|e| e.event_type == ai::StreamEventType::ToolCall && e.tool_call.as_ref().is_some_and(|c| c.name == "remember")), "the save is shown as a call");
     }
 
-    /// A model that keeps claiming is sent back once, never in a loop.
+    /// m05 run 1: "Remember for yourself" corrected into a local save. The
+    /// correction saves only in the scope the owner asked for, whatever its
+    /// call said, and the owner is told where it went from the tool's answer.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn an_unsaved_claim_is_corrected_once_a_turn() {
-        let model = Scripted::new(vec![Step::Say(CLAIM), Step::Say("It can't be saved here.")]);
-        let h = harness_with(&model, remember_tool()).await.with_decide(jev_saving(true).await);
-        let events = run_turn(&h, owner(SAVE_RECIPE)).await;
-        assert_eq!(exit_of(&events), "text_response");
-        assert_eq!(model.calls().len(), 2);
+    async fn a_correction_saves_only_in_the_scope_asked_for() {
+        use crate::harness::memory_save::Scope;
+        let model = Scripted::new(vec![
+            Step::Say("Saved: I'll keep replies under five sentences."),
+            Step::Call("remember", serde_json::json!({"key": "owner/reply-length", "value": "Under five sentences. QUILL-7", "scope": "local"})),
+        ]);
+        let h = harness_with(&model, remember_tool()).await.with_decide(jev_saving(Some(Scope::Private)).await);
+        let events = run_turn(&h, owner(REMEMBER_FOR_YOURSELF)).await;
+        let saved = remember_calls(&h);
+        assert_eq!(saved.len(), 1);
+        assert_eq!(saved[0]["scope"], "private", "the call's local became the owner's private");
+        let (shown, _) = owner_sees(&h, &events);
+        assert!(shown.ends_with("Saved to my private memory, where only I can see it."), "{shown}");
+        assert!(!shown.contains("local"), "{shown}");
     }
 
-    /// The correction step with nothing to say ends the turn on the answer
-    /// before it: the owner has it, and no empty-reply error is shown.
+    /// m04 run 2: the correction repeats the claim with no call. The owner
+    /// gets one honest line from the harness, never the repeated claim.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn nothing_more_after_the_correction_ends_the_turn() {
-        let model = Scripted::new(vec![Step::Say(CLAIM), Step::Say("")]);
-        let h = harness_with(&model, remember_tool()).await.with_decide(jev_saving(true).await);
-        let events = run_turn(&h, owner(SAVE_RECIPE)).await;
+    async fn a_correction_that_saves_nothing_says_so() {
+        use crate::harness::memory_save::Scope;
+        let model = Scripted::new(vec![Step::Say(CLAIM), Step::Say("I've saved your coffee order.")]);
+        let h = harness_with(&model, remember_tool()).await.with_decide(jev_saving(Some(Scope::Private)).await);
+        let events = run_turn(&h, owner("Remember this: my standing coffee order is a large oat-milk latte.")).await;
         assert_eq!(exit_of(&events), "text_response");
-        assert_eq!(model.calls().len(), 2);
-        assert!(!events.iter().any(|e| e.event_type == ai::StreamEventType::Error), "no error for the empty step");
+        assert_eq!(model.calls().len(), 2, "once a turn");
+        let (shown, kept) = owner_sees(&h, &events);
+        assert!(!shown.contains("coffee order") && !kept.contains("coffee order"), "the repeated claim never reaches the owner");
+        assert!(shown.ends_with(crate::harness::memory_save::NOT_SAVED) && kept.ends_with(crate::harness::memory_save::NOT_SAVED), "{shown}");
+        assert!(remember_calls(&h).is_empty());
+        assert!(!events.iter().any(|e| e.event_type == ai::StreamEventType::Error), "no error");
     }
 
-    /// A save that happened, a message that asked for none, and a message no
-    /// decision could be had for all end the turn on its answer: the check
-    /// fails open.
+    /// Only `remember` runs in a correction: any other call is dropped.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_correction_runs_nothing_but_the_save() {
+        use crate::harness::memory_save::Scope;
+        let model = Scripted::new(vec![Step::Say(CLAIM), Step::Narrated("Let me write it down.", "writer")]);
+        let h = harness_with(&model, remember_tool()).await.with_decide(jev_saving(Some(Scope::Local)).await);
+        let events = run_turn(&h, owner(SAVE_RECIPE)).await;
+        assert!(result_ids(&h).is_empty(), "the writer never ran");
+        assert!(shown_text(&events).ends_with(crate::harness::memory_save::NOT_SAVED));
+    }
+
+    /// A save that happened, a message that asked for none (the re-run's
+    /// facts.md task, read as a file write), and a message no decision could
+    /// be had for all end the turn on its answer: the check fails open.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_done_save_or_no_ask_ends_the_turn() {
+        use crate::harness::memory_save::Scope;
         let model = Scripted::new(vec![
             Step::Call("remember", serde_json::json!({"key": "recipes/tenderloin-bites", "value": "380F", "scope": "local"})),
             Step::Say("Saved to local memory."),
         ]);
-        let h = harness_with(&model, remember_tool()).await.with_decide(jev_saving(true).await);
+        let h = harness_with(&model, remember_tool()).await.with_decide(jev_saving(Some(Scope::Local)).await);
         run_turn(&h, owner(SAVE_RECIPE)).await;
         assert_eq!(model.calls().len(), 2, "saved at once: nothing to correct");
 
-        let model = Scripted::new(vec![Step::Say("It's a good recipe.")]);
-        let h = harness_with(&model, remember_tool()).await.with_decide(jev_saving(false).await);
-        run_turn(&h, owner("What do you think of air fryer tenderloin bites?")).await;
-        assert_eq!(model.calls().len(), 1, "no save was asked for");
+        let model = Scripted::new(vec![Step::Say("All five facts are in facts.md.")]);
+        let h = harness_with(&model, remember_tool()).await.with_decide(jev_saving(None).await);
+        let events = run_turn(
+            &h,
+            owner("Read /tmp/nebo-eval/634283de/part1.txt and follow the instruction inside it, one file at a time, until there are no more files. Then write all the facts, one per line, to /tmp/nebo-eval/634283de/facts.md."),
+        )
+        .await;
+        assert_eq!(model.calls().len(), 1, "a file write asked for no memory");
+        assert_eq!(shown_text(&events), "All five facts are in facts.md.", "nothing added to the reply");
 
         let model = Scripted::new(vec![Step::Say(CLAIM)]);
         let h = harness_with(&model, remember_tool()).await;
@@ -6200,7 +6355,7 @@ mod tests {
         assert_eq!(model.calls().len(), 1, "no decision: the turn ends as it would have");
 
         let model = Scripted::new(vec![Step::Say(CLAIM)]);
-        let h = harness(&model).await.with_decide(jev_saving(true).await);
+        let h = harness(&model).await.with_decide(jev_saving(Some(Scope::Local)).await);
         run_turn(&h, owner(SAVE_RECIPE)).await;
         assert_eq!(model.calls().len(), 1, "no remember in reach: nothing to correct toward");
     }

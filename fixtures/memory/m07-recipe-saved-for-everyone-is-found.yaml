@@ -47,11 +47,12 @@ prompt_assertions:
       result_contains: Saved to local memory
   recovery:
   - id: other-employee-finds-it
-    text: The second employee's recall returns the recipe (380F)
+    text: The second employee's reply (turn two) gives the recipe (380F), from its own recall or the memory
+      the turn recalled for it. Where the row is stored is proved by suites/memory-proof.yaml
     severity: critical
     check:
-      tool: recall
-      result_contains: '380'
+      turn: 2
+      reply_matches: '380'
   - id: answers-with-the-recipe
     text: 'The second employee''s reply (turn two) gives the recipe it recalled: 380F and 8 to 10 minutes,
       without saving a copy of its own'
@@ -70,5 +71,5 @@ prompt_assertions:
       max_tool_calls: 5
 ideal_behavior:
   tool_calls: 2
-  narrative: 'remember(scope: "local") → "Saved to local memory." Then the other employee: recall(query:
-    "chicken tenderloin bites") → the recipe.'
+  narrative: 'remember(scope: "local") → "Saved to local memory." Then the other employee answers with the recipe, from recall(query:
+    "chicken tenderloin bites") or from the memory the turn recalled.'

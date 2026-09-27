@@ -213,9 +213,9 @@ pub(crate) struct RoundResults {
     /// Short snapshots of the calls and results for the tool-summary label.
     pub summary_tool_calls: Vec<ai::ToolCall>,
     pub summary_tool_results: Vec<ToolResult>,
-    /// A `remember` call in the round succeeded: a save the owner asked for
-    /// is done (`memory_save`).
-    pub saved_memory: bool,
+    /// A `remember` call in the round succeeded, with the tool's answer (the
+    /// last one's): a save the owner asked for is done (`memory_save`).
+    pub saved_memory: Option<String>,
 }
 
 /// Run the model's tool calls: the exit primitive, then every call through
@@ -411,7 +411,7 @@ pub(crate) async fn run_tool_round(
     // Lightweight snapshots for the background tool summary generator.
     let mut summary_tool_calls: Vec<ai::ToolCall> = Vec::new();
     let mut summary_tool_results: Vec<ToolResult> = Vec::new();
-    let mut saved_memory = false;
+    let mut saved_memory = None;
     for (idx, entry) in results.into_iter().enumerate() {
         let Some((tc, result)) = entry else { continue };
         let target = targets[idx].as_ref();
@@ -457,7 +457,7 @@ pub(crate) async fn run_tool_round(
             crate::review_fork::note_voluntary_save(session_id);
         }
         if !result.is_error && target.is_some_and(|t| t.key == "remember") {
-            saved_memory = true;
+            saved_memory = Some(result.content.clone());
         }
 
         let row = ToolResultRow {
