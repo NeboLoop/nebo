@@ -283,6 +283,7 @@ async fn web_off_shell_reaches_no_network() {
         let r = registry.execute(&ctx, "run_command", fetch.clone()).await;
         assert!(!r.content.contains("Example Domain"), "{who} reached the page: {}", r.content);
         assert!(r.content.contains("web access is off"), "{who} was not told why: {}", r.content);
+        assert!(r.content.contains("No other tool, helper or coworker gets around it"), "{who}: another route stays open: {}", r.content);
     }
     assert_eq!(hits.load(Ordering::SeqCst), 0, "a web-off run reached the server");
 

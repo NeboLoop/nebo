@@ -220,6 +220,8 @@ pub enum Transition {
     OverflowCleared,
     OverflowCheckpointed,
     TransientRetry { attempt: u8 },
+    /// The last reply wrote a tool call out as text instead of making it.
+    TextCall { attempt: u8 },
     EndCheckContinue { check: &'static str, reason: String },
 }
 
@@ -1242,6 +1244,7 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
                 tool_calls_out,
                 folds: &mut st.folds,
                 heard_through: reply_heard_through.as_deref(),
+                tool_names: h.tools.get_tool_names().await,
             },
             &mut st.call,
             &mut st.usage,
@@ -1305,6 +1308,7 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
             provider,
             thinking,
             thinking_model,
+            text_call,
         } = reply;
         let after_owner_answer = std::mem::replace(&mut st.answered_owner, false);
         st.last_call = Some(LastCall {
@@ -1322,6 +1326,14 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
             // provider sent anyway is neither run nor stored.
             tool_calls.clear();
             block_order.retain(|b| !matches!(b, Block::Tool(_)));
+        }
+        // A call the reply wrote out as text was cut there and never ran:
+        // the next step is told so, and makes it as a call.
+        let text_call = text_call.filter(|_| tool_calls.is_empty());
+        match &text_call {
+            Some(tool) => st.reminders.add(&TurnEvent::TextCall(tool.clone())),
+            None if !tool_calls.is_empty() => st.call.text_call_retries = 0,
+            None => {}
         }
         let heard_through = st.seen.last().map(|m| m.id.as_str());
         save_reply(cx, &mut st.folds, &text, &tool_calls, &block_order, (&thinking, &thinking_model), heard_through).await;
@@ -1378,6 +1390,13 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
             st.answered_owner = true;
             st.reminders.add(&TurnEvent::MidTurnAnswered(intent));
             st.transition = Transition::MidTurnAnswered;
+            continue;
+        }
+        // The reply wrote its call out as text: the work it was reaching
+        // for isn't done, so the turn goes on and the next step makes the
+        // call.
+        if text_call.is_some() && model_call::retry_text_call(&mut st.call, st.step as usize, sid) {
+            st.transition = Transition::TextCall { attempt: st.call.text_call_retries as u8 };
             continue;
         }
         // The provider said tools were called and none arrived: the
@@ -4063,6 +4082,98 @@ mod tests {
             );
             assert_eq!(run.reads, 2, "{jev:?}: no read on the forged go-ahead");
         }
+    }
+
+    /// The tools-off answer step of `mid-turn-owner-message` run 2
+    /// (2026-09-27 release-fix proof, gate 36310269938), as the model wrote
+    /// it: the answer, then a call written out as text.
+    const TEXT_CALL_TRACE: &str = "12 times 12 is 144.\n\nNow, continuing with the task: I've read part1.txt and part2.txt. \
+        Let me proceed to part3.txt.\n\n12 \u{d7} 12 = 144.\n\nContinuing with the file chain: I've read part1.txt \
+        (\"Fact one: the office opens at eight.\") and part2.txt (\"Fact two: parking is behind the building.\"). \
+        Now reading part3.txt.\n\nI'll read part3.txt now.\n\n<function_name>read_file</function_name>\n\
+        <parameter_path>/tmp/nebo-eval/634283de/part3.txt</parameter";
+
+    fn shown_text(events: &[StreamEvent]) -> String {
+        events.iter().filter(|e| e.event_type == ai::StreamEventType::Text).map(|e| e.text.as_str()).collect()
+    }
+
+    fn told_of_text_call(req: &ChatRequest, tool: &str) -> bool {
+        texts(req).iter().any(|t| t.contains(&format!("wrote a call to {tool} out as text")))
+    }
+
+    /// Makes the call once it is told its call written as text didn't run.
+    fn calls_read_file_when_told(req: &ChatRequest) -> Step {
+        if told_of_text_call(req, "read_file") { Step::Call("read_file", serde_json::json!({})) } else { Step::Say("Done.") }
+    }
+
+    /// A call the model writes out as text, in the pieces a stream splits
+    /// it into, never reaches the owner or the stored reply, and never runs
+    /// as text; the next step is told it didn't run and makes it as a call.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_call_written_as_text_is_cut_and_then_made_as_a_call() {
+        let model = Scripted::new(vec![
+            Step::Text(TEXT_CALL_TRACE.to_string(), None),
+            Step::Reacting(calls_read_file_when_told),
+            Step::Say("Part three says the alarm code changes monthly."),
+        ]);
+        let h = harness_with(&model, vec![Box::new(Echo { name: "read_file", deferred: false, read_only: true })]).await;
+        let events = run_turn(&h, owner("Read the parts in order, and what's 12 times 12?")).await;
+        let shown = shown_text(&events);
+        assert!(shown.contains("12 times 12 is 144.") && shown.contains("I'll read part3.txt now."), "the answer is shown: {shown}");
+        for leak in ["<function_name>", "read_file</function_name>", "<parameter_path>", "part3.txt</parameter"] {
+            assert!(!shown.contains(leak), "shown to the owner: {leak:?}\n{shown}");
+        }
+        let rows = stored(&h);
+        assert!(replies(&rows).iter().all(|r| !r.contains("<function_name>")), "stored: {:?}", replies(&rows));
+        let calls = model.calls();
+        assert_eq!(calls.len(), 3, "the turn goes on for the call, then answers");
+        assert!(told_of_text_call(&calls[1], "read_file"), "the next step is told the call didn't run");
+        assert!(calls[1].messages.iter().all(|m| !m.content.contains("<function_name>")), "nor read back as its own words");
+        let result = calls[2].messages.last().unwrap().tool_results.as_ref().unwrap().to_string();
+        assert!(result.contains("read_file ran"), "the call ran as a call: {result}");
+        assert_eq!(exit_of(&events), "text_response");
+    }
+
+    /// Answers the owner's aside with tools off, then writes a read out as
+    /// text, as the proof run's model did.
+    fn writes_a_read_out_while_answering(req: &ChatRequest) -> Step {
+        if req.tool_choice == ai::ToolChoice::None {
+            return Step::Text(
+                "12 times 12 is 144.\n\nI'll read the next part now.\n\n<function_name>read</function_name>\n\
+                 <parameter_path>/tmp/nebo-eval/part2.txt</parameter"
+                    .to_string(),
+                None,
+            );
+        }
+        answers_and_reads_on(req)
+    }
+
+    /// The same on the tools-off answer step: the owner reads the answer
+    /// alone, and the work carries on with real calls.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_call_written_as_text_while_answering_the_owner_never_reaches_him() {
+        let run = interrupted(At::DuringCall, |_| Act::Message(TWELVE), writes_a_read_out_while_answering, Some("aside")).await;
+        let shown = shown_text(&run.events);
+        assert!(shown.contains("12 times 12 is 144.") && shown.contains("I'll read the next part now."), "{shown}");
+        assert!(!shown.contains("<function_name>") && !shown.contains("<parameter_path>"), "shown to the owner: {shown}");
+        assert!(replies(&run.rows).iter().all(|r| !r.contains("<function_name>")), "{:?}", replies(&run.rows));
+        let answered = run.calls.iter().position(|c| c.tool_choice == ai::ToolChoice::None).expect("the answer step");
+        assert!(told_of_text_call(&run.calls[answered + 1], "read"), "the step after the answer is told the read didn't run");
+        assert_eq!(run.reads, 3, "and the work carries on with real reads");
+    }
+
+    /// A model that only ever writes its call as text is asked for the call
+    /// a bounded number of times; then the turn ends on what it said.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_model_that_keeps_writing_calls_as_text_is_not_asked_forever() {
+        let slip = || Step::Text("Checking now.\n<function_name>echo</function_name>\n<parameter_q>x</parameter".to_string(), None);
+        let model = Scripted::new(vec![slip(), slip(), slip()]);
+        let h = harness(&model).await;
+        let events = run_turn(&h, owner("Check it.")).await;
+        assert_eq!(model.calls().len(), 3, "two more steps for the call, then the turn ends");
+        assert_eq!(exit_of(&events), "text_response");
+        let shown = shown_text(&events);
+        assert!(shown.contains("Checking now.") && !shown.contains("<function_name>"), "{shown}");
     }
 
     /// `find_tools` loads a deferred tool: its schema joins the request from

@@ -45,6 +45,9 @@ const DEFAULT_MAX_OUTPUT_TOKENS: i32 = 16_384;
 const ESCALATED_MAX_OUTPUT_TOKENS: i32 = 65_536;
 /// Empty replies retried before the turn gives up with "(empty)".
 pub(crate) const MAX_EMPTY_CONTENT_RETRIES: usize = 3;
+/// Replies in a row that write a call out as text before the turn stops
+/// asking for the call and ends on what the reply said.
+const MAX_TEXT_CALL_RETRIES: usize = 2;
 
 /// What the owner reads when the model he picked refuses the request outright.
 /// The raw upstream text ("Parameter 'temperature'=0.699… is not supported for
@@ -154,6 +157,9 @@ pub struct CallState {
     /// trusted — ending the turn silently strands the user mid-task.
     pub lost_toolcall_retries: usize,
     pub empty_content_retries: usize,
+    /// Replies in a row, since the last real call, that wrote a call out as
+    /// text instead of making it.
+    pub text_call_retries: usize,
     /// Janus provider metadata for tool stickiness — echoed back in subsequent requests
     pub sticky_metadata: Option<HashMap<String, String>>,
 }
@@ -204,6 +210,10 @@ pub(crate) struct ModelCall<'a> {
     /// a stop cuts short, as on every reply (`conversation::HEARD_THROUGH`):
     /// a message that landed during the call reads after it, unanswered.
     pub heard_through: Option<&'a str>,
+    /// Every tool the run knows by name, declared or not yet loaded: a call
+    /// to one written out as text is cut from the reply
+    /// (`reminders::NoteFence`).
+    pub tool_names: Vec<String>,
 }
 
 /// One content block of a reply, in stream order.
@@ -259,6 +269,9 @@ pub(crate) struct ModelReply {
     /// ("provider/model").
     pub thinking: Vec<ai::ThinkingBlock>,
     pub thinking_model: String,
+    /// The tool the reply wrote a call to out as text, where the reply was
+    /// cut (`reminders::NoteFence`): that call never ran.
+    pub text_call: Option<String>,
 }
 
 /// Make one call, streaming its events on `call.tx`. `state` takes the
@@ -284,6 +297,7 @@ pub(crate) async fn call_model(call: ModelCall<'_>, st: &mut CallState, state: &
         tool_calls_out,
         folds,
         heard_through,
+        tool_names,
     } = call;
 
     // Acquire LLM permit before provider call (blocks if at capacity)
@@ -485,8 +499,9 @@ pub(crate) async fn call_model(call: ModelCall<'_>, st: &mut CallState, state: &
     let mut thinking: Vec<ai::ThinkingBlock> = Vec::new();
     // CLI providers run multi-turn tool loops — save each turn incrementally.
     let cli_incremental = provider.handles_tools();
-    // The reply never carries a note in Nebo's own format past this point.
-    let mut notes = super::reminders::NoteFence::default();
+    // The reply never carries a note in Nebo's own format, or a call
+    // written out as text, past this point.
+    let mut notes = super::reminders::NoteFence::new(tool_names.clone());
 
     loop {
         let mut event = tokio::select! {
@@ -571,7 +586,7 @@ pub(crate) async fn call_model(call: ModelCall<'_>, st: &mut CallState, state: &
                     assistant_content.clear();
                     tool_calls.clear();
                     block_order.clear();
-                    notes = super::reminders::NoteFence::default();
+                    notes = super::reminders::NoteFence::new(tool_names.clone());
                 }
                 event.text = notes.push(&event.text);
                 if !event.text.is_empty() {
@@ -760,9 +775,17 @@ pub(crate) async fn call_model(call: ModelCall<'_>, st: &mut CallState, state: &
     if !held.is_empty() {
         show_text(StreamEvent::text(held), &mut assistant_content, folds, &mut block_order, tx).await;
     }
-    if notes.cut() {
-        warn!(session_id, iteration, "the reply opened a note in Nebo's own format: it ends there, unshown and unstored");
-    }
+    let text_call = match notes.cut() {
+        Some(super::reminders::Cut::Note) => {
+            warn!(session_id, iteration, "the reply opened a note in Nebo's own format: it ends there, unshown and unstored");
+            None
+        }
+        Some(super::reminders::Cut::Call(tool)) => {
+            warn!(session_id, iteration, tool = %tool, "the reply wrote a tool call out as text: it ends there, unshown and unstored, and the call did not run");
+            Some(tool.clone())
+        }
+        None => None,
+    };
 
     // Drop LLM permit now that stream is complete
     drop(llm_permit);
@@ -912,6 +935,7 @@ pub(crate) async fn call_model(call: ModelCall<'_>, st: &mut CallState, state: &
         provider,
         thinking,
         thinking_model,
+        text_call,
     })
 }
 
@@ -1024,6 +1048,18 @@ pub(crate) fn retry_empty_reply(st: &mut CallState, iteration: usize, session_id
             retry = st.empty_content_retries,
             "empty response — retrying"
         );
+        return true;
+    }
+    false
+}
+
+/// A reply that wrote a call out as text: true while the turn goes on for
+/// the call (the next step is told it didn't run), false once
+/// `MAX_TEXT_CALL_RETRIES` replies in a row have done it.
+pub(crate) fn retry_text_call(st: &mut CallState, iteration: usize, session_id: &str) -> bool {
+    if st.text_call_retries < MAX_TEXT_CALL_RETRIES {
+        st.text_call_retries += 1;
+        warn!(iteration, session_id, retry = st.text_call_retries, "the reply wrote a call out as text; the turn goes on for the call");
         return true;
     }
     false

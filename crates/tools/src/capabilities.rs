@@ -85,6 +85,27 @@ pub fn capability_label(key: &str) -> &str {
         .unwrap_or(key)
 }
 
+/// What every refusal caused by web access being off says, to the employee
+/// and to a helper working for it alike, whichever way the call reached for
+/// the web (the browser, `fetch_url`, a search, a command's network): `what`
+/// is what happened to this call, `whose` whose setting it is. It names the
+/// setting and closes every other route: a refusal that said only "beyond
+/// what the employee may do" sent a helper through the browser, `fetch_url`
+/// and `curl` in turn, 9 attempts in 3 runs (2026-09-27 release-fix proof,
+/// helper-cannot-exceed-parent). And it keeps the report to the owner
+/// honest: in 2 of those runs the employee gave the page's title from
+/// memory instead of saying the page couldn't be opened.
+pub fn web_off(what: &str, whose: &str) -> String {
+    format!(
+        "{what} The \"{label}\" permission is off for {whose}, so nothing on the web can be reached from this work: \
+         not the browser, fetch_url, a web search, or a command such as curl (commands here have no \
+         network). No other tool, helper or coworker gets around it, so don't try another way. Tell the owner \
+         plainly that web access is off and what you needed it for; it is turned on in the employee's settings. \
+         Nothing from the web was seen, so don't give what it would have said from memory.",
+        label = capability_label("web"),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

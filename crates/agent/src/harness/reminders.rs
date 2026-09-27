@@ -47,59 +47,205 @@ pub fn wrap(text: &str) -> String {
 /// text inside it comes from Nebo, not from the owner.
 const NOTE_OPEN: &str = "<system-reminder>";
 
+/// How models write a tool call out as text instead of making it: what
+/// comes before the tool's name, and the character that ends the name. A
+/// space stands for any run of whitespace, or none. 2026-09-27 release-fix
+/// proof (`mid-turn-owner-message`, run 2): on the tools-off answer step
+/// the model wrote `<function_name>read_file</function_name>` and a path
+/// into the owner's reply.
+const TEXT_CALLS: &[(&str, char)] = &[
+    ("<function_name>", '<'),
+    ("<function=", '>'),
+    ("<invoke name=\"", '"'),
+    ("<tool_call> {\"name\" : \"", '"'),
+    ("<tool_call> <function=", '>'),
+    ("<function_calls> <invoke name=\"", '"'),
+];
+
+/// Where a reply left its own voice, and so ends ([`NoteFence`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Cut {
+    /// It opened a note in Nebo's own format.
+    Note,
+    /// It wrote a call to this tool out as text.
+    Call(String),
+}
+
 /// A reply as the owner reads it and the conversation stores it: never a
-/// note in Nebo's own format. A reply that starts writing one has left its
-/// own voice: it is echoing a note it was sent, or writing the next input
-/// itself, and what follows in that reply answers input nobody sent. So the
-/// reply ends where the note opens, and nothing from there on is shown,
-/// stored, or read back by a later step as if Nebo or the owner had said
-/// it. 2026-09-27 release proof: in `mid-turn-owner-message` the model
-/// printed the owner's mid-turn frame into the reply, and in
-/// `correction-message-while-working` it wrote itself a reminder-shaped
-/// "Continue with the work as before", then read it back at the next step
-/// and read on.
+/// note in Nebo's own format, and never a tool call written out as text.
 ///
-/// Text that could be the start of the note's opening is held until the
-/// next piece of the reply tells ([`NoteFence::push`]), and handed out when
-/// the reply's text ends without it ([`NoteFence::finish`]).
+/// A reply that starts writing a note has left its own voice: it is
+/// echoing a note it was sent, or writing the next input itself, and what
+/// follows in that reply answers input nobody sent. 2026-09-27 release
+/// proof: in `mid-turn-owner-message` the model printed the owner's
+/// mid-turn frame into the reply, and in `correction-message-while-working`
+/// it wrote itself a reminder-shaped "Continue with the work as before",
+/// then read it back at the next step and read on.
+///
+/// A reply that writes a call out as text believes it made the call: what
+/// follows waits on, or makes up, a result that never comes. Only the
+/// provider's own call runs a tool: text is never turned into a call here,
+/// because text can quote a page or a file, and on a step whose tools are
+/// off it would run a call the turn ruled out. A provider whose model
+/// calls tools in text by design parses its own format and sends real calls
+/// (`LocalProvider::extract_tool_calls`). So the reply ends where the call
+/// opens, and the turn tells the next step it didn't run (`TextCall`).
+///
+/// Either way nothing from there on is shown, stored, or read back by a
+/// later step as if Nebo or the owner had said it. A call is only text that
+/// opens a line, outside a code block, in one of the forms in [`TEXT_CALLS`],
+/// naming one of the run's tools: angle brackets in anything else,
+/// code the owner asked about included, are shown as written.
+///
+/// Text that could still become a note's opening or a call is held until
+/// the next piece of the reply tells ([`NoteFence::push`]), and handed out
+/// when the reply's text ends without it ([`NoteFence::finish`]).
 #[derive(Debug, Default)]
 pub struct NoteFence {
     held: String,
-    closed: bool,
+    cut: Option<Cut>,
+    /// The run's tools, declared or not yet loaded: what a call written as
+    /// text would name.
+    tools: Vec<String>,
+    /// The line handed out so far, and whether a code block is open.
+    line: String,
+    in_code: bool,
+}
+
+/// What text that opens a line is, as far as it goes.
+enum Opening {
+    Call(String),
+    Maybe,
+    No,
 }
 
 impl NoteFence {
+    /// A fence for a run that knows these tools.
+    pub fn new(tools: impl IntoIterator<Item = String>) -> Self {
+        Self { tools: tools.into_iter().collect(), ..Self::default() }
+    }
+
     /// The part of the reply so far that can be shown now, given its next
     /// piece.
     pub fn push(&mut self, piece: &str) -> String {
-        if self.closed {
+        if self.cut.is_some() {
             return String::new();
         }
         self.held.push_str(piece);
-        if let Some(at) = self.held.find(NOTE_OPEN) {
-            self.closed = true;
-            self.held.truncate(at);
-            return std::mem::take(&mut self.held);
-        }
-        // The longest tail that could still become the opening stays held.
-        // NOTE_OPEN is ASCII, so the cut is on a char boundary.
-        let keep = (1..NOTE_OPEN.len()).rev().find(|&n| self.held.ends_with(&NOTE_OPEN[..n])).unwrap_or(0);
-        let rest = self.held.split_off(self.held.len() - keep);
-        std::mem::replace(&mut self.held, rest)
+        self.advance(false)
     }
 
-    /// The reply's text ended: what was held never became a note.
+    /// The reply's text ended (or a call ended the text before it): what
+    /// was held never became a note or a call.
     pub fn finish(&mut self) -> String {
-        std::mem::take(&mut self.held)
+        let shown = self.advance(true);
+        self.line.clear();
+        shown
     }
 
-    /// Whether the reply opened a note and was cut there.
-    pub fn cut(&self) -> bool {
-        self.closed
+    /// Where the reply was cut, if it was.
+    pub fn cut(&self) -> Option<&Cut> {
+        self.cut.as_ref()
+    }
+
+    /// Hand out what is decided. `last`: nothing more follows this text.
+    fn advance(&mut self, last: bool) -> String {
+        if self.cut.is_some() {
+            self.held.clear();
+            return String::new();
+        }
+        let note_at = self.held.find(NOTE_OPEN);
+        // The longest tail that could still become a note's opening waits.
+        // NOTE_OPEN is ASCII, so the cut is on a char boundary.
+        let limit = match note_at {
+            Some(at) => at,
+            None if last => self.held.len(),
+            None => {
+                let keep = (1..NOTE_OPEN.len()).rev().find(|&n| self.held.ends_with(&NOTE_OPEN[..n])).unwrap_or(0);
+                self.held.len() - keep
+            }
+        };
+        let mut at = 0;
+        let mut call = None;
+        while at < limit {
+            let Some(c) = self.held[at..].chars().next() else { break };
+            if !self.in_code && !c.is_whitespace() && self.line.trim().is_empty() {
+                match self.opening(&self.held[at..], last) {
+                    Opening::Call(name) => {
+                        call = Some(name);
+                        break;
+                    }
+                    Opening::Maybe => break,
+                    Opening::No => {}
+                }
+            }
+            if c == '\n' {
+                if self.line.trim_start().starts_with("```") {
+                    self.in_code = !self.in_code;
+                }
+                self.line.clear();
+            } else {
+                self.line.push(c);
+            }
+            at += c.len_utf8();
+        }
+        let reached_note = call.is_none() && note_at.is_some_and(|n| at >= n);
+        let rest = self.held.split_off(at);
+        let shown = std::mem::replace(&mut self.held, rest);
+        if let Some(name) = call {
+            self.cut = Some(Cut::Call(name));
+            self.held.clear();
+        } else if reached_note {
+            self.cut = Some(Cut::Note);
+            self.held.clear();
+        }
+        shown
+    }
+
+    /// Whether `text`, opening a line, is a call to one of the run's tools
+    /// written out as text.
+    fn opening(&self, text: &str, last: bool) -> Opening {
+        if self.tools.is_empty() {
+            return Opening::No;
+        }
+        let mut maybe = false;
+        for (form, ends) in TEXT_CALLS {
+            match self.form(text, form, *ends) {
+                Opening::Call(name) => return Opening::Call(name),
+                Opening::Maybe => maybe = true,
+                Opening::No => {}
+            }
+        }
+        if maybe && !last { Opening::Maybe } else { Opening::No }
+    }
+
+    fn form(&self, text: &str, form: &str, ends: char) -> Opening {
+        let mut rest = text;
+        for want in form.chars() {
+            if want == ' ' {
+                rest = rest.trim_start();
+            }
+            if rest.is_empty() {
+                return Opening::Maybe;
+            }
+            if want != ' ' {
+                match rest.strip_prefix(want) {
+                    Some(after) => rest = after,
+                    None => return Opening::No,
+                }
+            }
+        }
+        let len = rest.find(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))).unwrap_or(rest.len());
+        let name = &rest[..len];
+        match rest[len..].chars().next() {
+            None if self.tools.iter().any(|t| t.starts_with(name)) => Opening::Maybe,
+            Some(c) if c == ends && self.tools.iter().any(|t| t == name) => Opening::Call(name.to_string()),
+            _ => Opening::No,
+        }
     }
 }
 
-/// A whole reply, fenced ([`NoteFence`]).
+/// A whole reply, fenced for notes ([`NoteFence`]).
 pub fn fence_notes(text: &str) -> String {
     let mut fence = NoteFence::default();
     let mut shown = fence.push(text);
@@ -476,11 +622,99 @@ mod tests {
 
     /// A reply piece by piece, the way a stream hands it over.
     fn streamed(reply: &str, piece: usize) -> String {
-        let mut fence = NoteFence::default();
+        streamed_through(&mut NoteFence::default(), reply, piece)
+    }
+
+    fn streamed_through(fence: &mut NoteFence, reply: &str, piece: usize) -> String {
         let chars: Vec<char> = reply.chars().collect();
         let mut shown: String = chars.chunks(piece).map(|c| fence.push(&c.iter().collect::<String>())).collect();
         shown.push_str(&fence.finish());
         shown
+    }
+
+    /// A step's fence: the tools a proof-run turn declares.
+    fn step_fence() -> NoteFence {
+        NoteFence::new(["read_file", "write_file", "run_command", "delegate"].map(String::from))
+    }
+
+    /// The tools-off answer step of `mid-turn-owner-message` run 2
+    /// (2026-09-27 release-fix proof, gate 36310269938), as the model wrote
+    /// it: the answer, then a call written out as text.
+    const TEXT_CALL_TRACE: &str = "12 times 12 is 144.\n\nNow, continuing with the task: I've read part1.txt and part2.txt. \
+        Let me proceed to part3.txt.\n\n12 \u{d7} 12 = 144.\n\nContinuing with the file chain: I've read part1.txt \
+        (\"Fact one: the office opens at eight.\") and part2.txt (\"Fact two: parking is behind the building.\"). \
+        Now reading part3.txt.\n\nI'll read part3.txt now.\n\n<function_name>read_file</function_name>\n\
+        <parameter_path>/tmp/nebo-eval/634283de/part3.txt</parameter";
+
+    #[test]
+    fn a_reply_ends_where_it_writes_a_call_out_as_text() {
+        let answer = TEXT_CALL_TRACE.split("<function_name>").next().unwrap();
+        assert!(answer.ends_with("I'll read part3.txt now.\n\n"));
+        for piece in [1, 2, 3, 4, 7, 13, 16, 1000] {
+            let mut fence = step_fence();
+            assert_eq!(streamed_through(&mut fence, TEXT_CALL_TRACE, piece), answer, "pieces of {piece}");
+            assert_eq!(fence.cut(), Some(&Cut::Call("read_file".into())), "pieces of {piece}");
+            assert_eq!(fence.push(" more"), "", "nothing after the cut is shown");
+        }
+        // The other ways models write a call as text, indented or not.
+        for call in [
+            "<function=read_file>\n<parameter=path>\n/tmp/a.txt\n</parameter>\n</function>",
+            "<tool_call>\n{\"name\": \"read_file\", \"arguments\": {\"path\": \"/tmp/a.txt\"}}\n</tool_call>",
+            "<tool_call>{\"name\":\"read_file\"}</tool_call>",
+            "<tool_call>\n<function=read_file>\n<parameter=path>/tmp/a.txt</parameter>\n</function>\n</tool_call>",
+            "<invoke name=\"read_file\">\n<parameter name=\"path\">/tmp/a.txt</parameter>\n</invoke>",
+            "<function_calls>\n<invoke name=\"read_file\">\n</invoke>\n</function_calls>",
+            "   <function_name>read_file</function_name>",
+        ] {
+            for piece in [1, 3, 1000] {
+                let mut fence = step_fence();
+                let reply = format!("Reading it now.\n{call}\nThe file says hello.");
+                let before = &reply[..reply.find('<').unwrap()];
+                assert_eq!(streamed_through(&mut fence, &reply, piece), before, "{call:?} in pieces of {piece}");
+                assert_eq!(fence.cut(), Some(&Cut::Call("read_file".into())), "{call:?}");
+            }
+        }
+        // A call first in the reply leaves nothing to show.
+        let mut fence = step_fence();
+        assert_eq!(streamed_through(&mut fence, "<function_name>delegate</function_name>", 2), "");
+        assert_eq!(fence.cut(), Some(&Cut::Call("delegate".into())));
+    }
+
+    /// Angle brackets in anything but a call to one of the step's tools,
+    /// opening a line outside a code block, are the reply's own words: code
+    /// the owner asked about, markup, a tool name inside a sentence.
+    #[test]
+    fn text_that_only_looks_like_a_call_is_shown_whole() {
+        for reply in [
+            "The template marks its entry point with <function_name>main</function_name>, as you guessed.",
+            "<function_name>main</function_name> is where it starts: main is not one of my tools.",
+            "Here is the format you asked about:\n```xml\n<function=read_file>\n<parameter=path>a.txt</parameter>\n</function>\n```\nThat is the whole of it.",
+            "Wrap it as `<tool_call>{\"name\": \"read_file\"}</tool_call>` in your prompt.",
+            "a < b, and b > c\n<b>bold</b>\n<function_namesake>\n<invoke>",
+            "<function=read_filex> is a different name.",
+            "<tool_call> is a tag some models use.",
+            "It ends mid-way: <function_name>read_fi",
+            "Ends on an opening line:\n<function_name>read_fi",
+        ] {
+            for piece in [1, 2, 5, 100] {
+                let mut fence = step_fence();
+                assert_eq!(streamed_through(&mut fence, reply, piece), reply, "{reply:?} in pieces of {piece}");
+                assert_eq!(fence.cut(), None, "{reply:?}");
+            }
+        }
+        // With no tools declared (a whole stored reply), only notes are cut.
+        assert_eq!(streamed(TEXT_CALL_TRACE, 3), TEXT_CALL_TRACE);
+        // A possible call is held until it tells, then handed out whole.
+        let mut fence = step_fence();
+        assert_eq!(fence.push("Look:\n<function_na"), "Look:\n");
+        assert_eq!(fence.push("mesake> is not a tag"), "<function_namesake> is not a tag");
+        // After a real call ends the text before it, the text after it
+        // opens a line again.
+        let mut fence = step_fence();
+        assert_eq!(fence.push("Reading it."), "Reading it.");
+        assert_eq!(fence.finish(), "");
+        assert_eq!(fence.push("<function_name>read_file</function_name>"), "");
+        assert_eq!(fence.cut(), Some(&Cut::Call("read_file".into())));
     }
 
     #[test]
@@ -506,6 +740,6 @@ mod tests {
         let mut fence = NoteFence::default();
         assert_eq!(fence.push("see <sys"), "see ", "a possible opening is held");
         assert_eq!(fence.push("tem> here"), "<system> here", "and handed out once it is not one");
-        assert!(!fence.cut());
+        assert!(fence.cut().is_none());
     }
 }

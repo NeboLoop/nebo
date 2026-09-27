@@ -322,6 +322,11 @@ fn beyond(ceiling: &Grant, cx: &CheckCx<'_>, t: &Target) -> Option<String> {
     }
     let rs = RuleSet::of(ceiling);
     match rs.decide(t) {
+        // Web access off says so, and that no route gets around it: a helper
+        // told only "beyond what" tried every other way to the page.
+        Some((rule, Effect::Deny)) if turns_off_web(rule) => {
+            return Some(tools::capabilities::web_off("This didn't run.", name));
+        }
         Some((_, Effect::Deny)) => return refusal(),
         _ if ceiling.mode == Mode::Plan && !plan::allows(t) => return refusal(),
         _ if ceiling.mode != Mode::FullAccess && !rs.in_job(t, cx.input) => return refusal(),
@@ -378,8 +383,16 @@ fn offline(cx: &CheckCx<'_>) -> bool {
         || cx.grant.ceiling.as_ref().is_some_and(|c| beyond(c.grant(), cx, &web).is_some())
 }
 
+/// Whether `rule` is the owner's Web Access switch turned off.
+fn turns_off_web(rule: &types::permissions::Rule) -> bool {
+    matches!(&rule.key, types::permissions::RuleKey::Capability(c) if c == "web")
+}
+
 /// The plain-words refusal for a deny rule.
 fn refusal(t: &Target, rule: &types::permissions::Rule) -> String {
+    if turns_off_web(rule) {
+        return tools::capabilities::web_off("This didn't run.", "this employee");
+    }
     let what = match &rule.key {
         types::permissions::RuleKey::Capability(c) => {
             format!("The \"{}\" permission is off for this employee", tools::capabilities::capability_label(c))
