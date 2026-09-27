@@ -150,10 +150,6 @@ pub struct Nebo {
     _tmp: tempfile::TempDir,
 }
 
-fn free_port() -> u16 {
-    std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
-}
-
 /// The directories a Nebo expects under its home. The server creates most of
 /// them itself; these exist before boot so a scenario can put packages,
 /// plugins and packs in place first.
@@ -190,9 +186,11 @@ impl Nebo {
         // Made before the server boots, which reads the same one.
         let key = config::ensure_install_key().expect("install key");
 
-        let port = free_port();
+        // Port 0: the server takes whichever port the system assigns and
+        // holds it from its first line, so no other test's listener can
+        // land on it; the port is read back from its state below.
         let mut cfg = config::Config::default();
-        cfg.port = port;
+        cfg.port = 0;
         cfg.host = "127.0.0.1".to_string();
         cfg.database.sqlite_path = home.join("data").join("nebo.db").to_string_lossy().to_string();
         cfg.auth.access_secret = uuid::Uuid::new_v4().to_string();
@@ -224,8 +222,16 @@ impl Nebo {
             .default_headers(auth)
             .build()
             .expect("client");
-        let health = format!("http://127.0.0.1:{port}/health");
         let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
+        let state = loop {
+            assert!(tokio::time::Instant::now() < deadline, "the server did not come up in 90s");
+            if let Some(state) = BOOTED.lock().unwrap_or_else(|e| e.into_inner()).clone() {
+                break state;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        };
+        let port = state.config.port;
+        let health = format!("http://127.0.0.1:{port}/health");
         loop {
             assert!(tokio::time::Instant::now() < deadline, "the server did not come up in 90s");
             match client.get(&health).send().await {
@@ -233,11 +239,6 @@ impl Nebo {
                 _ => tokio::time::sleep(Duration::from_millis(100)).await,
             }
         }
-        let state = BOOTED
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone()
-            .expect("run() recorded its state");
         Nebo { home, port, client, state, _tmp: tmp }
     }
 

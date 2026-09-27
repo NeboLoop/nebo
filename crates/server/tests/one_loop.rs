@@ -111,7 +111,7 @@ async fn a_chat_message_runs_a_turn_through_the_one_loop() {
         .await;
     assert!(created.status().is_success(), "{}", created.status());
 
-    let (mut ws, _) = connect_async(format!("ws://127.0.0.1:{}/ws", server.port)).await.expect("ws");
+    let (mut ws, _) = connect_async(server.ws_url()).await.expect("ws");
     let msg = json!({"type": "chat", "data": {"session_id": KEY, "prompt": OWNER}});
     ws.send(Message::Text(msg.to_string().into())).await.unwrap();
 

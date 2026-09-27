@@ -434,7 +434,13 @@ fn eval_scenarios() -> Vec<Scenario> {
 #[ignore] // Only run manually: cargo test -p nebo-server --test prompt_eval -- --ignored --nocapture
 async fn eval_prompt_via_janus() {
     let base_url = std::env::var("EVAL_NEBO_URL").unwrap_or_else(|_| "localhost:27895".to_string());
-    let ws_url = format!("ws://{}/ws", base_url);
+    // The owner's own client: it proves itself with this computer's install
+    // key, carried as the address's first segment.
+    let Some(key) = config::read_install_key() else {
+        eprintln!("No install key (start Nebo once, or set NEBO_MCP_API_KEY). Skipping eval.");
+        return;
+    };
+    let ws_url = format!("ws://{}/k/{}/ws", base_url, key);
     let section_filter = std::env::var("EVAL_SECTION").ok();
 
     // Quick connectivity check
@@ -442,8 +448,8 @@ async fn eval_prompt_via_janus() {
         Ok(_) => {}
         Err(e) => {
             eprintln!(
-                "Cannot connect to Nebo at {}. Is `make dev` running?\nError: {}",
-                ws_url, e
+                "Cannot connect to Nebo at ws://{}/ws. Is `make dev` running?\nError: {}",
+                base_url, e
             );
             eprintln!("Skipping eval.");
             return;

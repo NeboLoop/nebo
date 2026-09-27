@@ -814,13 +814,19 @@ async fn handle_comm_install_event(
     }
 }
 
-pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
-    let port = cfg.port;
+pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
     let host = cfg.host.clone();
+    // The port is taken first and held until the server serves on it, so
+    // nothing else can take it while Nebo starts. Port 0 takes whichever
+    // port the system assigns, and everything below uses that one.
+    let std_listener =
+        TcpListener::bind(format!("{host}:{}", cfg.port)).map_err(|_| NeboError::PortInUse(cfg.port))?;
+    cfg.port = std_listener
+        .local_addr()
+        .map_err(|e| NeboError::Server(format!("failed to bind: {e}")))?
+        .port();
+    let port = cfg.port;
     let bind_addr = format!("{host}:{port}");
-
-    // Check port availability
-    TcpListener::bind(&bind_addr).map_err(|_| NeboError::PortInUse(port))?;
 
     if !quiet {
         println!("Starting server on http://localhost:{port}");
@@ -3087,8 +3093,9 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         }
     }
 
-    let listener = tokio::net::TcpListener::bind(&bind_addr)
-        .await
+    let listener = std_listener
+        .set_nonblocking(true)
+        .and_then(|()| tokio::net::TcpListener::from_std(std_listener))
         .map_err(|e| NeboError::Server(format!("failed to bind: {e}")))?;
     // The local API: no command an employee runs connects to it.
     if let Ok(addr) = listener.local_addr() {
