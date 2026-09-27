@@ -959,3 +959,21 @@ pub struct LinkedAgent {
     pub name: String,
     pub description: String,
 }
+
+/// A coding agent a linked bot can add a new one of (Claude Code, Codex).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct LinkedRuntime {
+    /// `claude-code`, `codex`, `gemini`, `opencode`.
+    pub id: String,
+    pub name: String,
+}
+
+/// A linked bot's roster on its chat contract: who can be hired, and what it
+/// can add.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct LinkedRoster {
+    pub agents: Vec<LinkedAgent>,
+    pub runtimes: Vec<LinkedRuntime>,
+}

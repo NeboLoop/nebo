@@ -96,7 +96,7 @@
 
   type AgentInfo = { id: string; name: string; color: string; initial: string; role: string; status: string; isApp?: boolean };
 
-  let { messages = [], agentName = 'Agent', agentId = '', threadId = '', sessionId = '', headerTitle = '', headerRight = '', placeholder = '', emptyIcon = '', emptyTitle = '', emptyDesc = '', allAgents = [], onteachsent, activityStatus = '', helpers = [], tokenUsage = null, goal = null, quotaWarning = '', chatError = '', recapText = '', onsend, onstop, onedit, onredo, onasksubmit, onrestoreversion, ondismisswarning, ondismisserror, onloadmore, isLoading = false, isLoadingMore = false, historyLoading = false, hasMore = false, allowAttachments = true, flowsPane, onopenruns, onsettings, isolated = false, isApp = false, onopenapp, onback, askQueueLength = 0, composerPrefill = '', onprefilled }: {
+  let { messages = [], agentName = 'Agent', agentId = '', threadId = '', sessionId = '', headerTitle = '', headerRight = '', placeholder = '', emptyIcon = '', emptyTitle = '', emptyDesc = '', allAgents = [], onteachsent, activityStatus = '', helpers = [], tokenUsage = null, goal = null, quotaWarning = '', chatError = '', recapText = '', onsend, onstop, onedit, onredo, onasksubmit, onrestoreversion, ondismisswarning, ondismisserror, onloadmore, isLoading = false, isLoadingMore = false, historyLoading = false, hasMore = false, allowAttachments = true, flowsPane, onopenruns, onsettings, isolated = false, folder = '', isApp = false, onopenapp, onback, askQueueLength = 0, composerPrefill = '', onprefilled }: {
     messages?: Message[];
     /** Employee-scoped views for the work pane. Omitted on chats with no
      *  employee behind them (channel setup help, the embed), and the matching
@@ -107,6 +107,8 @@
     onsettings?: () => void;
     /** memory.context_isolated — this employee's conversations are sealed. */
     isolated?: boolean;
+    /** The folder a linked coding employee's conversation works in. */
+    folder?: string;
     /** This employee is an app: badge the header and offer Open App. */
     isApp?: boolean;
     onopenapp?: () => void;
@@ -1255,6 +1257,9 @@
         {/if}
         {#if headerTitle && headerTitle !== agentName}
           <span class="text-sm text-base-content/70 truncate">{headerTitle}</span>
+        {/if}
+        {#if folder}
+          <span class="text-xs text-base-content/50 truncate" title={folder}>{$t('chat.worksIn', { values: { folder } })}</span>
         {/if}
       </span>
       <div class="ml-auto max-lg:hidden flex items-center gap-0.5 shrink-0">

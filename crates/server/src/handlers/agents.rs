@@ -1588,7 +1588,7 @@ pub async fn delete_agent(
         && let Some(model) = state.store.get_entity_config("agent", &id).ok().flatten().and_then(|c| c.model_preference)
         && let Some((bot, agent)) = ai::LinkedProvider::target(&model)
         && local.bot_id().as_deref() == Some(bot)
-        && let Err(e) = local.remove(agent)
+        && let Err(e) = local.remove(agent).await
     {
         warn!(agent = %id, error = %e, "the employee's coding agent was not removed");
     }
@@ -1934,9 +1934,10 @@ fn linked_target(
 /// its name is locked, and its brain is `linked/<bot>/<agent>` on the
 /// employee's model preference. Soul and rules stay the runtime's.
 ///
-/// `bot_id` is this bot's own for a coding agent on this computer:
-/// `agent_id` is then which agent (`claude-code`, `codex`, ...), and Nebo
-/// hosts a new one of it in its own folder, the employee's brain naming it.
+/// `agent_id` `new:<runtime>` (a "New Claude Code" row) is a new coding
+/// agent of that runtime: the computer starts one in a folder of its own,
+/// then it is hired. `bot_id` is this bot's own for this computer, where
+/// Nebo hosts it; any other bot's link adds it.
 async fn create_linked_agent(
     state: AppState,
     bot_id: &str,
@@ -1944,14 +1945,15 @@ async fn create_linked_agent(
     mode: Option<types::permissions::Mode>,
 ) -> HandlerResult<serde_json::Value> {
     if let Some(local) = state.local_host.clone().filter(|l| l.bot_id().as_deref() == Some(bot_id)) {
+        let runtime = agent_id.strip_prefix(NEW).unwrap_or(agent_id);
         let hosted = local
-            .hire(agent_id)
+            .hire(runtime)
             .await
             .map_err(|e| to_error_response(types::NeboError::Validation(e)))?;
         let description = format!("Works in {}", hosted.acp.workdir.display());
         let hired = hire_linked(&state, bot_id, &hosted.id, &hosted.label, &description, mode).await;
         if hired.is_err()
-            && let Err(e) = local.remove(&hosted.id)
+            && let Err(e) = local.remove(&hosted.id).await
         {
             warn!(agent = %hosted.id, error = %e, "hire: the agent hosted for a failed hire was not removed");
         }
@@ -1971,20 +1973,68 @@ async fn create_linked_agent(
                 "That bot is not a linked bot of yours with chat.".into(),
             ))
         })?;
-    let roster = api.linked_bot_agents(bot_id).await.map_err(|e| {
+    if let Some(runtime) = agent_id.strip_prefix(NEW) {
+        let added = api.add_linked_agent(bot_id, runtime).await.map_err(|e| {
+            info!(bot_id, runtime, error = %e, "hire: the linked bot did not add the agent");
+            to_error_response(types::NeboError::Validation(refusal(&e, &bot.name)))
+        })?;
+        let hired = hire_linked(&state, bot_id, &added.id, &added.name, &added.description, mode).await;
+        if hired.is_err()
+            && let Err(e) = api.remove_linked_agent(bot_id, &added.id).await
+        {
+            warn!(bot_id, agent = %added.id, error = %e, "hire: the agent added for a failed hire was not removed");
+        }
+        return hired;
+    }
+    let roster = api.linked_bot_roster(bot_id).await.map_err(|e| {
         info!(bot_id, error = %e, "hire: the linked bot's roster did not answer");
         to_error_response(types::NeboError::Internal(format!(
             "Could not connect to {}. Try again.",
             bot.name
         )))
     })?;
-    let linked = roster.iter().find(|a| a.id == agent_id).ok_or_else(|| {
+    let linked = roster.agents.iter().find(|a| a.id == agent_id).ok_or_else(|| {
         to_error_response(types::NeboError::Validation(format!(
             "No agent {agent_id} on {}.",
             bot.name
         )))
     })?;
     hire_linked(&state, bot_id, agent_id, &linked.name, &linked.description, mode).await
+}
+
+/// What a "New <runtime>" row's agent id starts with: `new:claude-code`.
+/// Never an agent's own id (those are lowercase letters, digits and
+/// hyphens).
+const NEW: &str = "new:";
+
+/// A linked bot's refusal in the owner's words: the link's own sentence
+/// ("Codex isn't installed on this computer."), else that it can't be
+/// reached.
+fn refusal(e: &comm::CommError, bot: &str) -> String {
+    match e {
+        comm::CommError::Http { status, body } if *status < 500 => serde_json::from_str::<serde_json::Value>(body)
+            .ok()
+            .and_then(|b| b["error"].as_str().map(str::to_owned))
+            .unwrap_or_else(|| format!("Could not connect to {bot}. Try again.")),
+        _ => format!("Could not connect to {bot}. Try again."),
+    }
+}
+
+/// A computer's "New <runtime>" rows: one per coding agent it can start a
+/// new one of, `computer` naming it for the owner ("Mac.lan", "this
+/// computer").
+fn new_rows(runtimes: &[comm::api_types::LinkedRuntime], computer: &str) -> Vec<serde_json::Value> {
+    runtimes
+        .iter()
+        .map(|r| {
+            serde_json::json!({
+                "id": format!("{NEW}{}", r.id),
+                "name": format!("New {}", r.name),
+                "description": format!("Starts a new {} on {computer}", r.name),
+                "runtime": r.id,
+            })
+        })
+        .collect()
 }
 
 /// The linked employee's row, locked name, brain and permission mode, and
@@ -2060,14 +2110,14 @@ pub async fn list_linked_agents(State(state): State<AppState>) -> HandlerResult<
         .map_err(|e| to_error_response(types::NeboError::Internal(e.to_string())))?;
     let self_id = config::read_bot_id().unwrap_or_default();
     for bot in bots.iter().filter(|b| hire_source(b, &self_id)) {
-        let agents = match api.linked_bot_agents(&bot.id).await {
-            Ok(agents) => agents,
+        let roster = match api.linked_bot_roster(&bot.id).await {
+            Ok(roster) => roster,
             Err(e) => {
                 info!(bot_id = %bot.id, error = %e, "linked bot's roster did not answer");
-                Vec::new()
+                comm::api_types::LinkedRoster::default()
             }
         };
-        sources.extend(source_entry(bot, agents));
+        sources.extend(source_entry(bot, roster));
     }
     Ok(Json(serde_json::json!({ "bots": sources })))
 }
@@ -2084,12 +2134,20 @@ fn hire_source(bot: &comm::api_types::ManagedBot, self_id: &str) -> bool {
         && bot.id != self_id
 }
 
-/// One hire source as the modal lists it; a bot with no agents to offer
-/// (its roster did not answer, or it has none) is not listed.
+/// One hire source as the modal lists it: its agents, then a "New
+/// <runtime>" row for each coding agent it can start a new one of. A bot
+/// with nothing to offer (its roster did not answer, or it has none) is not
+/// listed.
 fn source_entry(
     bot: &comm::api_types::ManagedBot,
-    agents: Vec<comm::api_types::LinkedAgent>,
+    roster: comm::api_types::LinkedRoster,
 ) -> Option<serde_json::Value> {
+    let mut agents: Vec<serde_json::Value> = roster
+        .agents
+        .into_iter()
+        .map(|a| serde_json::to_value(a).expect("a linked agent serializes"))
+        .collect();
+    agents.extend(new_rows(&roster.runtimes, &bot.name));
     (!agents.is_empty()).then(|| {
         serde_json::json!({
             "id": bot.id,
@@ -2102,22 +2160,19 @@ fn source_entry(
     })
 }
 
-/// This computer as a hire source: the coding agents installed here that
-/// Nebo can host, each hired into a folder of its own. Not listed without a
-/// bot to host them as, or while nebo-link hosts this computer's agents
-/// (its bot is listed with the others then).
+/// This computer as a hire source: a "New <runtime>" row for each coding
+/// agent installed here that Nebo can host, each hired into a folder of its
+/// own. Not listed without a bot to host them as, or while nebo-link hosts
+/// this computer's agents (its bot is listed with the others then).
 fn local_source(state: &AppState) -> Option<serde_json::Value> {
     let local = state.local_host.as_ref()?;
     let bot_id = local.bot_id()?;
-    let agents: Vec<comm::api_types::LinkedAgent> = local
+    let runtimes: Vec<comm::api_types::LinkedRuntime> = local
         .hireable()
         .into_iter()
-        .map(|h| comm::api_types::LinkedAgent {
-            id: h.key.to_owned(),
-            name: h.name.to_owned(),
-            description: "Works in its own folder in ~/NeboAI".to_owned(),
-        })
+        .map(|a| comm::api_types::LinkedRuntime { id: a.id, name: a.name })
         .collect();
+    let agents = new_rows(&runtimes, "this computer");
     (!agents.is_empty()).then(|| {
         serde_json::json!({
             "id": bot_id,
@@ -4381,6 +4436,8 @@ pub async fn list_agent_chats(
                 "id": chat.id,
                 "name": chat.title,
                 "title": chat.title,
+                // A linked coding employee's conversation: where it works.
+                "folder": chat.linked_folder,
                 "preview": preview,
                 "restarted": status.restarted,
                 "updatedAt": updated_at_relative,
@@ -5788,7 +5845,7 @@ mod frontmatter_save_tests {
 
 #[cfg(test)]
 mod linked_hire_tests {
-    use super::{Here, hire_source, linked_offline, linked_persona_edit, linked_rename, linked_target, source_entry};
+    use super::{Here, NEW, hire_source, linked_offline, linked_persona_edit, linked_rename, linked_target, refusal, source_entry};
 
     fn agent_row(kind: Option<&str>, soul: Option<&str>) -> db::models::Agent {
         db::models::Agent {
@@ -5931,12 +5988,54 @@ mod linked_hire_tests {
             description: String::new(),
         };
         let bot = managed("hm", "hermes", true, false);
-        assert!(source_entry(&bot, Vec::new()).is_none());
-        let entry = source_entry(&bot, vec![agent]).unwrap();
+        assert!(source_entry(&bot, Default::default()).is_none());
+        let roster = comm::api_types::LinkedRoster { agents: vec![agent], runtimes: Vec::new() };
+        let entry = source_entry(&bot, roster).unwrap();
         assert_eq!(entry["runtime"], "hermes");
         assert_eq!(entry["online"], false);
         assert_eq!(entry["local"], false);
         assert_eq!(entry["agents"][0]["name"], "Hermes");
+    }
+
+    /// A computer that can start new coding agents offers a "New <runtime>"
+    /// row for each, after its agents, in the shape the phone's hire sheet
+    /// already reads (id, name, description), hired with the same linked body.
+    #[test]
+    fn a_computer_offers_new_coding_agents() {
+        let mut bot = managed("mac", "claude-code", true, false);
+        bot.name = "Mac.lan".into();
+        let roster = comm::api_types::LinkedRoster {
+            agents: vec![comm::api_types::LinkedAgent {
+                id: "assistant".into(),
+                name: "Claude Code".into(),
+                description: "Works in /Users/me/NeboAI/claude-code".into(),
+            }],
+            runtimes: vec![
+                comm::api_types::LinkedRuntime { id: "claude-code".into(), name: "Claude Code".into() },
+                comm::api_types::LinkedRuntime { id: "codex".into(), name: "Codex".into() },
+            ],
+        };
+        let entry = source_entry(&bot, roster).unwrap();
+        assert_eq!(entry["agents"][0]["id"], "assistant");
+        assert_eq!(
+            entry["agents"][1],
+            serde_json::json!({ "id": "new:claude-code", "name": "New Claude Code", "description": "Starts a new Claude Code on Mac.lan", "runtime": "claude-code" })
+        );
+        assert_eq!(entry["agents"][2]["name"], "New Codex");
+        // Nothing but new ones is still somewhere to hire from.
+        let only_new = comm::api_types::LinkedRoster {
+            agents: Vec::new(),
+            runtimes: vec![comm::api_types::LinkedRuntime { id: "codex".into(), name: "Codex".into() }],
+        };
+        assert_eq!(source_entry(&bot, only_new).unwrap()["agents"][0]["id"], "new:codex");
+        // The hire body's agent id passes as it is.
+        let (_, agent, _) = linked_target(&serde_json::json!({ "botId": "mac", "agentId": "new:codex" })).unwrap();
+        assert_eq!(agent.strip_prefix(NEW), Some("codex"));
+        // A link's own sentence reaches the owner; anything else is plain.
+        let refused = comm::CommError::Http { status: 400, body: r#"{"error":"Codex isn't installed on this computer."}"#.into() };
+        assert_eq!(refusal(&refused, "Mac.lan"), "Codex isn't installed on this computer.");
+        let down = comm::CommError::Http { status: 502, body: "bad gateway".into() };
+        assert_eq!(refusal(&down, "Mac.lan"), "Could not connect to Mac.lan. Try again.");
     }
 
     /// A linked employee's name is its linked agent's: a rename is refused,

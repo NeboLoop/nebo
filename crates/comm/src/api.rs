@@ -1302,23 +1302,48 @@ impl NeboAIApi {
         Ok(resp.bots)
     }
 
-    /// The agents a linked bot serves on its chat contract —
-    /// GET /t/{botId}/api/v1/agents through the hub's tunnel, which admits
-    /// this bot's token for a bot of the same owner.
-    pub async fn linked_bot_agents(&self, bot_id: &str) -> Result<Vec<LinkedAgent>, CommError> {
+    /// A linked bot's roster on its chat contract (`GET
+    /// /t/{botId}/api/v1/agents`, through the hub's tunnel, which admits
+    /// this bot's token for a bot of the same owner): its agents, and the
+    /// coding agents it can add (`runtimes`, empty from a link that adds
+    /// none).
+    pub async fn linked_bot_roster(&self, bot_id: &str) -> Result<LinkedRoster, CommError> {
+        self.do_json(
+            reqwest::Method::GET,
+            &format!("/t/{bot_id}/api/v1/agents"),
+            None::<&()>,
+        )
+        .await
+    }
+
+    /// Adds a new coding agent of `runtime` to a linked bot, in a folder of
+    /// its own (`POST /t/{botId}/api/v1/runtimes/{runtime}/agents`).
+    pub async fn add_linked_agent(&self, bot_id: &str, runtime: &str) -> Result<LinkedAgent, CommError> {
         #[derive(serde::Deserialize)]
         struct Response {
-            #[serde(default)]
-            agents: Vec<LinkedAgent>,
+            agent: LinkedAgent,
         }
         let resp: Response = self
             .do_json(
-                reqwest::Method::GET,
-                &format!("/t/{bot_id}/api/v1/agents"),
+                reqwest::Method::POST,
+                &format!("/t/{bot_id}/api/v1/runtimes/{runtime}/agents"),
                 None::<&()>,
             )
             .await?;
-        Ok(resp.agents)
+        Ok(resp.agent)
+    }
+
+    /// Stops a linked bot hosting one of its agents; its folder stays
+    /// (`DELETE /t/{botId}/api/v1/agents/{agentId}`).
+    pub async fn remove_linked_agent(&self, bot_id: &str, agent_id: &str) -> Result<(), CommError> {
+        let _: serde_json::Value = self
+            .do_json(
+                reqwest::Method::DELETE,
+                &format!("/t/{bot_id}/api/v1/agents/{agent_id}"),
+                None::<&()>,
+            )
+            .await?;
+        Ok(())
     }
 
     /// The connected account's own profile (id/email/displayName) —

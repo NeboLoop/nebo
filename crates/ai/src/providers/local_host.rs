@@ -17,8 +17,11 @@
 //! nothing, and this computer's agents are hired from the daemon's bot like
 //! any other computer's.
 //!
-//! Every agent works in its own folder, `~/NeboAI/<agent id>`. Nebo's
-//! record, under `<data dir>/link/`:
+//! Every agent works in its own folder, `~/NeboAI/<agent id>`, and a
+//! conversation moves to another when the owner asks. Hiring and firing go
+//! through link-core's host (`Host::add_agent`, `Host::remove_agent`), the
+//! same for every host; what Nebo keeps of them is this record, under
+//! `<data dir>/link/`:
 //!
 //! ```text
 //! agents.json                 every hosted agent: its id, name, which agent
@@ -33,14 +36,14 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
-use link_core::acp::{Acp, AcpLink, Client, Settings};
+use link_core::acp::{Acp, Client, Settings};
 use link_core::host::Host;
+use link_core::keep::{Add, Addable, CodingAgent, Installable, Keeper, Kept};
 use link_core::roster::{Member, Roster};
 use nebo_runtimes::acp::Agent as AcpAgent;
-use nebo_runtimes::{Environment, Runtime, RuntimeCommand};
 use oal_host::{OalHost, Runtime as OalRuntime};
 use oal_secure::KeyStore;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use tracing::{info, warn};
 
 /// Who drives the agents, as ACP's `initialize` introduces Nebo.
@@ -49,30 +52,12 @@ const CLIENT: Client = Client {
     version: env!("CARGO_PKG_VERSION"),
 };
 
-/// One coding agent Nebo hosts.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct LocalAgent {
-    /// Its id, fixed when it is hired: its employee names it.
-    pub id: String,
-    /// Its name: "Claude Code", "Claude Code 2".
-    pub label: String,
-    pub agent: AcpAgent,
-    /// How it starts, and the folder it works in.
-    pub acp: AcpLink,
-}
+/// One coding agent Nebo hosts, as `agents.json` records it.
+pub type LocalAgent = CodingAgent;
 
 /// This Nebo's bot id, read per call (a bot gets one when it is first
 /// linked to NeboAI). `None` = none yet, so nothing is hosted as it.
 pub type BotIdSource = Arc<dyn Fn() -> Option<String> + Send + Sync>;
-
-/// A coding agent installed on this computer that Nebo can host.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Hireable {
-    /// `claude-code`, `codex`, `gemini`, `opencode`.
-    pub key: &'static str,
-    pub name: &'static str,
-}
 
 /// This computer's host.
 pub struct LocalHost {
@@ -80,8 +65,6 @@ pub struct LocalHost {
     bot_id: BotIdSource,
     /// `<data dir>/link`.
     dir: PathBuf,
-    /// The OS user's home, where `~/NeboAI` is.
-    home: PathBuf,
     /// Where this OS user's nebo-link daemon would keep its state.
     daemon_home: Option<PathBuf>,
     host: Arc<Host>,
@@ -89,9 +72,101 @@ pub struct LocalHost {
     keys: KeyStore,
     /// The host over Open Agent Link, made once there is a bot to host as.
     oal: OnceLock<Arc<OalHost>>,
-    agents: Arc<Mutex<Vec<LocalAgent>>>,
-    /// One hire at a time, so two never take the same id or folder.
-    hiring: tokio::sync::Mutex<()>,
+    record: Arc<Record>,
+}
+
+/// Nebo's record of the agents it hosts (`agents.json`): the host's keeper.
+struct Record {
+    /// `<data dir>/link`.
+    dir: PathBuf,
+    /// Where this OS user's nebo-link daemon would keep its state.
+    daemon_home: Option<PathBuf>,
+    agents: Mutex<Vec<LocalAgent>>,
+    /// Agents Nebo was told how to start, besides those installed here.
+    told: Mutex<Vec<Installable>>,
+}
+
+impl Record {
+    fn agents(&self) -> Vec<LocalAgent> {
+        self.agents.lock().expect("local agents").clone()
+    }
+
+    /// The nebo-link bot hosting this computer's agents, when one is linked.
+    fn daemon(&self) -> Option<String> {
+        self.daemon_home.as_deref().and_then(link_core::machine::linked_daemon)
+    }
+
+    /// Records `agents`, and says where nebo-link looks
+    /// ([`link_core::machine::record_app_host`]) whether Nebo hosts this
+    /// computer's agents: nebo-link then refuses to link or pair while it
+    /// does, so one program hosts them.
+    fn save(&self, agents: Vec<LocalAgent>) -> Result<(), String> {
+        write_private(&self.dir.join("agents.json"), &agents)
+            .map_err(|e| format!("Could not save this computer's agents: {e}"))?;
+        self.record_hosting(&agents);
+        *self.agents.lock().expect("local agents") = agents;
+        Ok(())
+    }
+
+    fn record_hosting(&self, agents: &[LocalAgent]) {
+        let Some(home) = self.daemon_home.as_deref() else {
+            return;
+        };
+        let hosted: Vec<String> = match self.daemon() {
+            Some(_) => Vec::new(),
+            None => agents.iter().map(|a| a.label.clone()).collect(),
+        };
+        if let Err(e) = link_core::machine::record_app_host(home, "Nebo", &hosted) {
+            warn!(error = %e, "linked: could not record that Nebo hosts this computer's agents");
+        }
+    }
+}
+
+impl Keeper for Record {
+    fn client(&self) -> Client {
+        CLIENT
+    }
+
+    /// The coding agents installed here, and any Nebo was told how to
+    /// start; none while a nebo-link daemon is this computer's host.
+    fn addable(&self) -> Vec<Installable> {
+        if self.daemon().is_some() {
+            return Vec::new();
+        }
+        let told = self.told.lock().expect("told").clone();
+        let mut all = link_core::keep::installed();
+        all.retain(|a| !told.iter().any(|t| t.id == a.id));
+        all.extend(told);
+        all
+    }
+
+    fn agents(&self) -> Vec<Kept> {
+        Record::agents(self)
+            .into_iter()
+            .map(|a| Kept {
+                runtime: a.agent.key().to_owned(),
+                folder: Some(a.acp.workdir.clone()),
+                id: a.id,
+                label: a.label,
+            })
+            .collect()
+    }
+
+    fn keep(&self, agent: &LocalAgent) -> Result<Member, String> {
+        let mut agents = Record::agents(self);
+        agents.push(agent.clone());
+        self.save(agents)?;
+        info!(agent = %agent.id, folder = %agent.acp.workdir.display(), "linked: hosting a coding agent on this computer");
+        Ok(member(&self.dir, agent))
+    }
+
+    fn forget(&self, id: &str) -> Result<(), String> {
+        let mut agents = Record::agents(self);
+        agents.retain(|a| a.id != id);
+        self.save(agents)?;
+        info!(agent = id, "linked: no longer hosting a coding agent on this computer");
+        Ok(())
+    }
 }
 
 impl LocalHost {
@@ -112,35 +187,24 @@ impl LocalHost {
             .unwrap_or_default();
         let members = agents.iter().map(|a| member(&dir, a)).collect();
         let host = Host::new(Arc::new(Roster::new(members)));
-        let local = Arc::new(Self {
+        let record = Arc::new(Record {
+            dir: dir.clone(),
+            daemon_home: daemon_home.clone(),
+            agents: Mutex::new(agents.clone()),
+            told: Mutex::new(Vec::new()),
+        });
+        record.record_hosting(&agents);
+        host.set_home(home.clone());
+        host.set_keeper(record.clone());
+        Ok(Arc::new(Self {
             bot_id,
             dir,
-            home,
             daemon_home,
             host,
             keys,
             oal: OnceLock::new(),
-            agents: Arc::new(Mutex::new(agents.clone())),
-            hiring: tokio::sync::Mutex::new(()),
-        });
-        local.record_hosting(&agents);
-        Ok(local)
-    }
-
-    /// Says, where nebo-link looks ([`link_core::machine::record_app_host`]),
-    /// whether Nebo hosts this computer's agents: nebo-link then refuses to
-    /// link or pair while it does, so one program hosts them.
-    fn record_hosting(&self, agents: &[LocalAgent]) {
-        let Some(home) = self.daemon_home.as_deref() else {
-            return;
-        };
-        let hosted: Vec<String> = match self.hosted_by_daemon() {
-            Some(_) => Vec::new(),
-            None => agents.iter().map(|a| a.label.clone()).collect(),
-        };
-        if let Err(e) = link_core::machine::record_app_host(home, "Nebo", &hosted) {
-            warn!(error = %e, "linked: could not record that Nebo hosts this computer's agents");
-        }
+            record,
+        }))
     }
 
     /// This computer's bot id: the bot a local employee's brain names.
@@ -172,7 +236,7 @@ impl LocalHost {
             return Some(oal.clone());
         }
         let bot_id = self.bot_id()?;
-        let agents = self.agents.clone();
+        let record = self.record.clone();
         let config = oal_host::Config {
             host_id: bot_id,
             host_name: "This computer".to_owned(),
@@ -180,15 +244,15 @@ impl LocalHost {
             keys: self.keys.clone(),
             seen_file: self.dir.join("oal-seen.json"),
             runtimes: Arc::new(move || {
-                let mut all: Vec<OalRuntime> = agents
-                    .lock()
-                    .expect("local agents")
+                let mut all: Vec<OalRuntime> = record
+                    .agents()
                     .iter()
                     .map(|a| OalRuntime {
                         id: a.agent.key().to_owned(),
                         name: a.agent.name().to_owned(),
                         kind: "acp".to_owned(),
                         version: None,
+                        addable: false,
                     })
                     .collect();
                 all.sort_by(|a, b| a.id.cmp(&b.id));
@@ -206,133 +270,54 @@ impl LocalHost {
 
     /// Every agent Nebo hosts.
     pub fn agents(&self) -> Vec<LocalAgent> {
-        self.agents.lock().expect("local agents").clone()
+        self.record.agents()
     }
 
     /// The coding agents installed on this computer that Nebo can host;
     /// none while a nebo-link daemon is the host.
-    pub fn hireable(&self) -> Vec<Hireable> {
-        if self.hosted_by_daemon().is_some() {
-            return Vec::new();
-        }
-        let installed: Vec<AcpAgent> = nebo_runtimes::detect(&Environment::current())
-            .iter()
-            .filter_map(|install| install.runtime.acp())
-            .collect();
-        AcpAgent::KNOWN
-            .into_iter()
-            .filter(|agent| installed.contains(agent))
-            .map(|agent| Hireable {
-                key: agent.key(),
-                name: agent.name(),
-            })
-            .collect()
+    pub fn hireable(&self) -> Vec<Addable> {
+        self.host.addable()
     }
 
     /// Hosts one more of the coding agent `key` (`claude-code`, `codex`,
     /// ...), in a folder of its own, once it has started and answered in ACP.
     pub async fn hire(&self, key: &str) -> Result<LocalAgent, String> {
-        let agent = AcpAgent::KNOWN
-            .into_iter()
-            .find(|a| a.key() == key)
-            .ok_or_else(|| format!("Nebo can't host {key} on this computer."))?;
-        let install = nebo_runtimes::detect(&Environment::current())
-            .into_iter()
-            .find(|install| install.runtime == Runtime::Acp(agent))
-            .ok_or_else(|| format!("{} isn't installed on this computer.", agent.name()))?;
-        self.host(agent, install.restart).await
-    }
-
-    /// Hosts the ACP agent that `command` starts, after starting it once in
-    /// its new folder to prove it runs.
-    pub(crate) async fn host(
-        &self,
-        agent: AcpAgent,
-        command: RuntimeCommand,
-    ) -> Result<LocalAgent, String> {
         if let Some(daemon) = self.hosted_by_daemon() {
+            let name = AcpAgent::KNOWN.into_iter().find(|a| a.key() == key).map(|a| a.name()).unwrap_or(key);
             return Err(format!(
-                "nebo-link hosts this computer's agents as {daemon}. Hire {} from {daemon}, or unlink it with `nebo-link unlink`.",
-                agent.name()
+                "nebo-link hosts this computer's agents as {daemon}. Hire {name} from {daemon}, or unlink it with `nebo-link unlink`."
             ));
         }
-        let _one = self.hiring.lock().await;
-        let (label, id) = {
-            let agents = self.agents.lock().expect("local agents");
-            let same = agents.iter().filter(|a| a.agent == agent).count();
-            let label = match same {
-                0 => agent.name().to_owned(),
-                n => format!("{} {}", agent.name(), n + 1),
-            };
-            let taken: Vec<&str> = std::iter::once(link_core::PRIMARY)
-                .chain(agents.iter().map(|a| a.id.as_str()))
-                .collect();
-            let id = link_core::roster::new_id(&label, &taken);
-            (label, id)
-        };
-        let workdir = self.home.join("NeboAI").join(&id);
-        std::fs::create_dir_all(&workdir)
-            .map_err(|e| format!("Could not make the folder {}: {e}", workdir.display()))?;
-        let workdir = workdir.canonicalize().unwrap_or(workdir);
-        let title = link_core::acp::probe(agent.name(), &command, &workdir, CLIENT).await?;
-        let hosted = LocalAgent {
-            label: match (agent, title) {
-                (AcpAgent::Other, Some(title)) => title,
-                _ => label,
-            },
-            id,
-            agent,
-            acp: AcpLink {
-                program: command.program,
-                args: command.args,
-                env: command.env,
-                workdir,
-            },
-        };
-        let mut agents = self.agents();
-        agents.push(hosted.clone());
-        self.save(agents)?;
-        info!(agent = %hosted.id, folder = %hosted.acp.workdir.display(), "linked: hosting a coding agent on this computer");
-        Ok(hosted)
+        let added = self
+            .host
+            .add_agent(Add { runtime: key.to_owned(), ..Add::default() })
+            .await
+            .map_err(|e| e.message)?;
+        self.agents()
+            .into_iter()
+            .find(|a| a.id == added.id)
+            .ok_or_else(|| format!("{} was hosted but not recorded.", added.label))
+    }
+
+    /// Hosts the ACP agent `agent` as `command` starts it, the way
+    /// [`LocalHost::hire`] hosts one installed here: for the tests, whose
+    /// agents are scripted.
+    #[cfg(test)]
+    pub(crate) async fn host(&self, agent: AcpAgent, command: nebo_runtimes::RuntimeCommand) -> Result<LocalAgent, String> {
+        {
+            let mut told = self.record.told.lock().expect("told");
+            told.retain(|t| t.id != agent.key());
+            told.push(Installable { id: agent.key().to_owned(), name: agent.name().to_owned(), agent, command });
+        }
+        self.hire(agent.key()).await
     }
 
     /// Stops hosting the agent `id`: its process ends. Its folder stays.
-    pub fn remove(&self, id: &str) -> Result<(), String> {
-        let mut agents = self.agents();
-        let before = agents.len();
-        agents.retain(|a| a.id != id);
-        if agents.len() == before {
+    pub async fn remove(&self, id: &str) -> Result<(), String> {
+        if !self.agents().iter().any(|a| a.id == id) {
             return Ok(());
         }
-        self.save(agents)?;
-        info!(
-            agent = id,
-            "linked: no longer hosting a coding agent on this computer"
-        );
-        Ok(())
-    }
-
-    /// Records `agents` and hosts exactly them: one that stays keeps its
-    /// running process and sessions.
-    fn save(&self, agents: Vec<LocalAgent>) -> Result<(), String> {
-        write_private(&self.dir.join("agents.json"), &agents)
-            .map_err(|e| format!("Could not save this computer's agents: {e}"))?;
-        let host = &self.host;
-        let current = host.roster().members();
-        let members = agents
-            .iter()
-            .map(|a| {
-                current
-                    .iter()
-                    .find(|m| m.id == a.id)
-                    .cloned()
-                    .unwrap_or_else(|| member(&self.dir, a))
-            })
-            .collect();
-        host.set_members(members);
-        self.record_hosting(&agents);
-        *self.agents.lock().expect("local agents") = agents;
-        Ok(())
+        self.host.remove_agent(id).await.map(|_| ()).map_err(|e| e.message)
     }
 }
 

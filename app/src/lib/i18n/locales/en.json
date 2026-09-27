@@ -250,6 +250,7 @@
 		"offline": "Offline"
 	},
 	"chat": {
+		"worksIn": "Works in {folder}",
 		"compactBoundary": "Earlier conversation summarized",
 		"goalLine": "Goal: {condition} ({turns} turns)",
 		"goalLastCheck": "last check: {reason}",

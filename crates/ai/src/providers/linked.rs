@@ -323,6 +323,11 @@ impl Driver<'_> {
                 if unrecorded {
                     self.record()?;
                 }
+                // Where it works now: its agent's folder, or where the owner
+                // asked it to move.
+                if let Some(folder) = opened["_meta"][link_core::host::META_CWD].as_str().or(self.folder.as_deref()) {
+                    self.record_folder(folder);
+                }
                 opened
             }
             None => {
@@ -336,6 +341,9 @@ impl Driver<'_> {
                     .ok_or_else(|| "The linked bot created a chat without an id.".to_owned())?
                     .to_owned();
                 self.record()?;
+                if let Some(folder) = self.folder.clone() {
+                    self.record_folder(&folder);
+                }
                 info!(bot_id = %self.bot_id, agent = %self.agent, chat_id = %self.req.chat_id, session = %self.session, "linked: session created");
                 created
             }
@@ -379,6 +387,14 @@ impl Driver<'_> {
             .store
             .set_chat_linked_session(&self.req.chat_id, &self.agent_id, &self.session)
             .map_err(|e| format!("Could not record the linked chat: {e}"))
+    }
+
+    /// Records the folder the conversation works in on the chat row, which
+    /// the app shows ("Works in ~/workspaces/foo").
+    fn record_folder(&self, folder: &str) {
+        if let Err(e) = self.provider.store.set_chat_linked_folder(&self.req.chat_id, folder) {
+            warn!(chat_id = %self.req.chat_id, error = %e, "linked: the conversation's folder was not recorded");
+        }
     }
 
     /// The employee's permission mode rides with the turn: an agent with
@@ -515,6 +531,14 @@ impl Driver<'_> {
 
     /// One of this turn's updates, as stream events.
     async fn update(&mut self, update: &Value) {
+        // The conversation moved to another folder at the owner's request:
+        // the host says where ("Now working in …" arrives as its text).
+        if update["sessionUpdate"] == "session_info_update"
+            && let Some(folder) = update["_meta"][link_core::host::META_CWD].as_str()
+        {
+            info!(chat_id = %self.req.chat_id, folder, "linked: the conversation moved to another folder");
+            self.record_folder(folder);
+        }
         let Some((_, parsed)) = protocol::update(&json!({ "sessionId": self.session, "update": update })) else {
             return;
         };
@@ -871,6 +895,9 @@ mod tests {
     /// - `turn`: thinks, says, runs `ls`, says, and ends with its usage.
     /// - `ask`: asks in its own words whether to run `rm -rf build`.
     /// - `hang`: says it is working until it is cancelled.
+    /// - `folders`: takes the host's HTTP MCP server; `where` says the folder
+    ///   its session works in (and the handoff its prompt started with),
+    ///   `work in <folder>` calls the host's `move_to_folder`.
     #[test]
     fn fake_acp_agent() {
         use std::io::{BufRead, Write};
@@ -895,6 +922,8 @@ mod tests {
         // so every frame is a line of its own.
         send(Value::Null);
         let mut prompt_id = Value::Null;
+        // Each session's folder and the host's MCP server it was given.
+        let mut sessions: HashMap<String, (String, String)> = HashMap::new();
         for line in std::io::stdin().lock().lines() {
             let Ok(message) = serde_json::from_str::<Value>(&line.unwrap()) else {
                 continue;
@@ -904,9 +933,64 @@ mod tests {
             match message["method"].as_str() {
                 Some("initialize") => reply(json!({
                     "protocolVersion": 1,
-                    "agentCapabilities": { "loadSession": false },
+                    "agentCapabilities": match script.as_str() {
+                        "folders" => json!({ "loadSession": false, "mcpCapabilities": { "http": true } }),
+                        _ => json!({ "loadSession": false }),
+                    },
                     "agentInfo": { "name": "fake-acp" },
                 })),
+                Some("session/new") if script == "folders" => {
+                    note(json!({ "new": message["params"]["cwd"] }));
+                    let session = format!("s-{}", sessions.len() + 1);
+                    let url = message["params"]["mcpServers"]
+                        .as_array()
+                        .and_then(|servers| servers.iter().find(|s| s["type"] == "http" && s["name"] == "host"))
+                        .and_then(|s| s["url"].as_str())
+                        .unwrap_or("")
+                        .to_owned();
+                    let cwd = message["params"]["cwd"].as_str().unwrap_or("").to_owned();
+                    sessions.insert(session.clone(), (cwd, url));
+                    reply(json!({ "sessionId": session }));
+                }
+                Some("session/prompt") if script == "folders" => {
+                    note(json!({ "prompt": message["params"]["prompt"] }));
+                    let session = message["params"]["sessionId"].as_str().unwrap_or("").to_owned();
+                    let texts: Vec<String> = message["params"]["prompt"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|b| b["text"].as_str().map(str::to_owned))
+                        .collect();
+                    let text = texts.last().cloned().unwrap_or_default();
+                    let (cwd, url) = sessions.get(&session).cloned().unwrap_or_default();
+                    let say_in = |text: &str| {
+                        emit(&json!({ "jsonrpc": "2.0", "method": "session/update", "params": { "sessionId": session,
+                            "update": { "sessionUpdate": "agent_message_chunk", "content": { "type": "text", "text": text } } } }))
+                    };
+                    if let Some(folder) = text.strip_prefix("work in ") {
+                        emit(&json!({ "jsonrpc": "2.0", "method": "session/update", "params": { "sessionId": session,
+                            "update": { "sessionUpdate": "tool_call", "toolCallId": "call_move", "title": "move_to_folder", "kind": "other", "status": "in_progress" } } }));
+                        // The host answers the tool after it started the
+                        // new session here: the call runs beside this loop.
+                        let (folder, id) = (folder.to_owned(), id.clone());
+                        std::thread::spawn(move || {
+                            let (status, said) = match call_move(&url, &folder, &format!("Was working in {cwd}.")) {
+                                Ok(_) => ("completed", "Moved.".to_owned()),
+                                Err(why) => ("failed", format!("Couldn't move: {why}")),
+                            };
+                            let update = |update: Value| emit(&json!({ "jsonrpc": "2.0", "method": "session/update", "params": { "sessionId": session, "update": update } }));
+                            update(json!({ "sessionUpdate": "tool_call_update", "toolCallId": "call_move", "status": status }));
+                            update(json!({ "sessionUpdate": "agent_message_chunk", "content": { "type": "text", "text": said } }));
+                            emit(&json!({ "jsonrpc": "2.0", "id": id, "result": { "stopReason": "end_turn" } }));
+                        });
+                    } else {
+                        say_in(&format!("Working in {cwd}."));
+                        if texts.len() > 1 {
+                            say_in(&format!(" Handoff: {}", texts[0]));
+                        }
+                        reply(json!({ "stopReason": "end_turn" }));
+                    }
+                }
                 Some("session/new") => {
                     note(json!({ "new": message["params"]["cwd"] }));
                     let mut modes = vec![
@@ -984,6 +1068,40 @@ mod tests {
                 }
                 _ => {}
             }
+        }
+    }
+
+    /// One frame on the fake agent's stdout, from any of its threads.
+    fn emit(frame: &Value) {
+        use std::io::Write;
+        let mut out = std::io::stdout().lock();
+        writeln!(out, "{frame}").unwrap();
+        out.flush().unwrap();
+    }
+
+    /// The host's `move_to_folder`, called as an MCP client does over
+    /// Streamable HTTP: the tool's text, or its error.
+    fn call_move(url: &str, folder: &str, handoff: &str) -> Result<String, String> {
+        use std::io::{Read, Write};
+        let rest = url.strip_prefix("http://").ok_or("the host gave no tools")?;
+        let (authority, path) = rest.split_once('/').ok_or("no path")?;
+        let body = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": { "name": "move_to_folder", "arguments": { "path": folder, "handoff": handoff } } })
+        .to_string();
+        let mut stream = std::net::TcpStream::connect(authority).map_err(|e| e.to_string())?;
+        write!(
+            stream,
+            "POST /{path} HTTP/1.1\r\nHost: {authority}\r\nContent-Type: application/json\r\nAccept: application/json, text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
+        .map_err(|e| e.to_string())?;
+        let mut response = String::new();
+        stream.read_to_string(&mut response).map_err(|e| e.to_string())?;
+        let answer: Value = serde_json::from_str(response.split_once("\r\n\r\n").ok_or("no answer")?.1.trim()).map_err(|e| e.to_string())?;
+        let text = answer["result"]["content"][0]["text"].as_str().unwrap_or("").to_owned();
+        match answer["result"]["isError"].as_bool() {
+            Some(false) => Ok(text),
+            _ => Err(text),
         }
     }
 
@@ -1557,12 +1675,57 @@ mod tests {
         assert_eq!(store.get_chat("chat-1").unwrap().unwrap().linked_agent_id.as_deref(), Some("claude-code"));
 
         // Fired: the agent is no longer hosted, and its folder stays.
-        local.remove(&hosted.id).unwrap();
+        local.remove(&hosted.id).await.unwrap();
         assert_eq!(local.agents().iter().map(|a| a.id.as_str()).collect::<Vec<_>>(), ["claude-code-2"]);
         assert_eq!(link_core::machine::hosting_app(&daemon_home).unwrap().agents, ["Claude Code 2"]);
         assert!(folder.is_dir());
         let reopened = local_host(root.path());
         assert_eq!(reopened.agents(), local.agents(), "the record survives a restart");
+    }
+
+    /// Everything the agent said in one turn.
+    async fn said(p: &LinkedProvider, prompt: &str, model: &str) -> (String, Vec<StreamEvent>) {
+        let events = collect(p.stream(&request(prompt, "chat-1", model)).await.unwrap()).await;
+        let text = events.iter().filter(|e| e.event_type == StreamEventType::Text).map(|e| e.text.as_str()).collect();
+        (text, events)
+    }
+
+    /// A "New Claude Code" hired on this computer starts in a folder of its
+    /// own; told "work in <folder>", it moves there through the host's
+    /// tool, the chat records the folder, and the next message runs there.
+    #[tokio::test]
+    async fn a_new_coding_agent_moves_to_the_folder_the_owner_names() {
+        let root = tempfile::tempdir().unwrap();
+        let local = local_host(root.path());
+        let told_path = root.path().join("told.jsonl");
+        let hosted = local.host(nebo_runtimes::acp::Agent::ClaudeCode, fake_acp(&told_path, "folders")).await.unwrap();
+        let folder = root.path().join("home").join("NeboAI").join("claude-code").canonicalize().unwrap();
+        assert_eq!(hosted.acp.workdir, folder, "a folder of its own, asked of nobody");
+        let (store, _) = store_in(root.path());
+        let relay = Relay::Hub { api_url: "http://127.0.0.1:9".into(), token: Arc::new(|| None) };
+        let p = LinkedProvider::new(relay, store.clone(), Some(local.clone()), "Nebo on test");
+        let model = format!("{SELF}/{}", hosted.id);
+
+        let (text, _) = said(&p, "where", &model).await;
+        assert_eq!(text, format!("Working in {}.", folder.display()));
+        let chat = store.get_chat("chat-1").unwrap().unwrap();
+        assert_eq!(chat.linked_folder.as_deref(), folder.to_str(), "the chat says where it works");
+        let session = chat.linked_chat_id.clone().unwrap();
+
+        let proj = root.path().join("home").join("proj");
+        std::fs::create_dir_all(&proj).unwrap();
+        let proj = proj.canonicalize().unwrap();
+        let (text, events) = said(&p, &format!("work in {}", proj.display()), &model).await;
+        assert!(text.contains("Now working in ~/proj."), "{text}");
+        assert!(text.ends_with("Moved."), "{text}");
+        assert!(events.iter().any(|e| e.tool_call.as_ref().is_some_and(|c| c.name == "move_to_folder")));
+        let chat = store.get_chat("chat-1").unwrap().unwrap();
+        assert_eq!(chat.linked_folder.as_deref(), proj.to_str(), "the chat records the move");
+        assert_eq!(chat.linked_chat_id.as_deref(), Some(session.as_str()), "the same conversation");
+
+        let (text, _) = said(&p, "where", &model).await;
+        assert!(text.starts_with(&format!("Working in {}.", proj.display())), "the next message runs there: {text}");
+        assert!(text.contains(&format!("Was working in {}.", folder.display())), "starting with the handoff: {text}");
     }
 
     /// One host per computer per OS user: while a nebo-link daemon is linked

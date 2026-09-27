@@ -2613,6 +2613,8 @@ export interface LinkedAgentEntry {
 	id: string
 	name: string
 	description: string
+	/** A "New <runtime>" row (`id` `new:<runtime>`): the coding agent it starts. */
+	runtime?: string
 }
 
 export interface LinkedBotEntry {

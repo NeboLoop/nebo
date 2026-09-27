@@ -46,7 +46,7 @@
     { id: 'full_access', label: 'permissions.modeFullAccess', desc: 'newEmployee.linkedModeFullAccessDesc' }
   ];
   let linkedMode = $state<LinkedMode>('automatic');
-  const anyCoding = $derived(linkedBots.some((b) => CODING.has(b.runtime)));
+  const anyCoding = $derived(linkedBots.some((b) => CODING.has(b.runtime) || b.agents.some((a) => CODING.has(a.runtime ?? ''))));
 
   // The drafted job: its plain-words items and the draft Create grants.
   let draftId = $state<string | null>(null);
@@ -123,13 +123,15 @@
     }
   }
 
-  async function hireLinked(bot: LinkedBotEntry, agentId: string) {
+  // A "New <runtime>" row names the coding agent it starts; any other row
+  // runs what its bot runs.
+  async function hireLinked(bot: LinkedBotEntry, agentId: string, runtime: string) {
     if (busy) return;
     busy = true;
     errorMsg = '';
     try {
       const resp = await createAgent({
-        linked: { botId: bot.id, agentId, ...(CODING.has(bot.runtime) ? { permissionMode: linkedMode } : {}) }
+        linked: { botId: bot.id, agentId, ...(CODING.has(runtime) ? { permissionMode: linkedMode } : {}) }
       });
       oncreated(resp.agent.id, resp.agent.name, resp.threadId);
     } catch (e: unknown) {
@@ -262,7 +264,7 @@
                     type="button"
                     class="btn btn-ghost btn-sm rounded-field w-full h-auto min-h-0 py-2 flex-col items-start gap-0.5 font-normal text-left"
                     disabled={busy}
-                    onclick={() => hireLinked(bot, agent.id)}
+                    onclick={() => hireLinked(bot, agent.id, agent.runtime ?? bot.runtime)}
                   >
                     <span class="font-medium whitespace-normal break-words">{agent.name}</span>
                     {#if agent.description}

@@ -2,7 +2,7 @@
   import { launchApp } from '$lib/apps/launcher';
   import FlowsPane from '$lib/components/flows/FlowsPane.svelte';
   import { goto } from '$lib/nav';
-  import { getContext, onMount, onDestroy } from 'svelte';
+  import { getContext, onMount, onDestroy, untrack } from 'svelte';
   import { t } from 'svelte-i18n';
   import { page } from '$app/stores';
   import { replaceState } from '$app/navigation';
@@ -16,6 +16,7 @@
   import { getWebSocketClient } from '$lib/websocket/client';
   import type { Agent, ChatMessage as ApiChatMessage } from '$lib/api/neboComponents';
   import { uploadFiles } from '$lib/api/upload';
+  import { getChat } from '$lib/api/nebo';
 
   const PENDING_SEND_PREFIX = 'nebo:pending-send:';
   const PENDING_ERROR_PREFIX = 'nebo:pending-error:';
@@ -38,6 +39,19 @@
   const chat = createChatController({
     agentId: initialAgentId,
     sessionKey: threadKey(initialAgentId, initialThreadId),
+  });
+
+  // The folder a linked coding employee's conversation works in: read when
+  // the thread opens and whenever a turn ends, since the owner can ask the
+  // employee to move to another folder in the conversation.
+  let chatFolder = $state('');
+  async function loadFolder(id: string) {
+    const row = await (getChat(id) as Promise<{ folder?: string | null }>).catch(() => null);
+    if (id === threadId) chatFolder = row?.folder ?? '';
+  }
+  $effect(() => {
+    const id = threadId;
+    if (id && !chat.isLoading) untrack(() => loadFolder(id));
   });
 
   /** The transcript, through the controller's ONE loader; resolves true when
@@ -261,6 +275,7 @@
   onback={ctx.openList}
   onsettings={ctx.openSettings}
   isolated={ctx.agent?.isolated ?? false}
+  folder={chatFolder}
   isApp={ctx.agent?.isApp ?? false}
   onopenapp={() => launchApp(ctx.agentId, ctx.agent?.name ?? 'App')}
 
