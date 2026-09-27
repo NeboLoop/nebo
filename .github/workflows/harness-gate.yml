@@ -303,7 +303,7 @@ jobs:
           CHROMIUM_REVISION: "1243"
         run: |
           dir="${{ runner.tool_cache }}/chromium/$CHROMIUM_REVISION"
-          if [ ! -x "$dir/chrome-linux-arm64/chrome" ]; then
+          if [ ! -x "$dir/chrome-linux/chrome" ]; then
             tmp="$(mktemp -d)"
             curl -sSfL -o "$tmp/chromium.zip" "https://cdn.playwright.dev/builds/chromium/$CHROMIUM_REVISION/chromium-linux-arm64.zip"
             unzip -q "$tmp/chromium.zip" -d "$tmp/unpacked"
@@ -312,7 +312,7 @@ jobs:
             mv "$tmp/unpacked" "$dir"
             rm -rf "$tmp"
           fi
-          ln -sfn "$dir/chrome-linux-arm64/chrome" "$GATE_JOB/bin/chromium"
+          ln -sfn "$dir/chrome-linux/chrome" "$GATE_JOB/bin/chromium"
           "$GATE_JOB/bin/chromium" --version
 
       # A fresh NEBO_HOME, the arm's CI bot, Janus confirmed as the provider:
