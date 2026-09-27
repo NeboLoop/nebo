@@ -117,7 +117,7 @@ impl PermissionGate for Check {
         match decision {
             Decision::Allow { why } => {
                 spend(&cx, t);
-                GateVerdict::Run { why, offline: offline(&cx, t) }
+                GateVerdict::Run { why, reach: reach(&cx, t) }
             }
             Decision::Deny { reason, .. } => GateVerdict::Refuse(ToolResult::error(reason)),
             Decision::Ask { case } => {
@@ -333,15 +333,37 @@ fn beyond(ceiling: &Grant, cx: &CheckCx<'_>, t: &Target) -> Option<String> {
     }
 }
 
-/// Whether the command a call starts must run with no network: a shell
-/// call in a run whose web access is refused, by a deny rule of its own or
-/// by the grant it can only narrow (a helper's employee). The web tools are
-/// refused there by the same rules; the shell is not the way around them
-/// (2026-09-26: a helper refused `fetch_url` ran `curl` and got the page).
-pub fn offline(cx: &CheckCx<'_>, t: &Target) -> bool {
+/// What the command a call starts may reach: the one place it is decided.
+///
+/// - Offline: a shell call in a run whose web access is refused, by a deny
+///   rule of its own or by the grant it can only narrow (a helper's
+///   employee). The web tools are refused there by the same rules; the
+///   shell is not the way around them (2026-09-26: a helper refused
+///   `fetch_url` ran `curl` and got the page).
+/// - Unconfined: the employee holds Full access, which runs anything on
+///   this computer without asking, so the operating system closes nothing
+///   for its commands (a program that starts a sandbox of its own, Chrome
+///   or `swift build`, can't start one inside Nebo's). The owner's own
+///   limits still hold: web access off keeps the command offline, the
+///   command's text is still checked, and Nebo's own settings stay out of
+///   its environment.
+pub fn reach(cx: &CheckCx<'_>, t: &Target) -> tools::confine::Reach {
     if t.key != "run_command" {
-        return false;
+        return tools::confine::Reach::default();
     }
+    tools::confine::Reach { offline: offline(cx), unconfined: full_access(cx.grant) }
+}
+
+/// Whether `grant` holds Full access, and so does every grant it can only
+/// narrow: a helper of a Full access employee runs as its parent does; a
+/// helper, or an employee made by an employee, never gets more than the
+/// grant above it.
+fn full_access(grant: &Grant) -> bool {
+    grant.mode == Mode::FullAccess && grant.ceiling.as_ref().is_none_or(|c| full_access(c.grant()))
+}
+
+/// Whether the run's web access is refused (`reach`).
+fn offline(cx: &CheckCx<'_>) -> bool {
     let web = Target {
         tool: String::new(),
         key: String::new(),

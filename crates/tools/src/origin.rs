@@ -274,10 +274,11 @@ pub struct ToolContext {
     /// command prints, so its result is its output as written with its exit
     /// status (the shell's `raw` mode). Never set from tool input.
     pub stdin: Option<Vec<u8>>,
-    /// Set by the permission check for one call (`GateVerdict::Run`): the
-    /// run's web access is off, so the command this call starts may not
-    /// reach the network either (`confine`). Never set by a door.
-    pub offline: bool,
+    /// Set by the permission check for one call (`GateVerdict::Run`): what
+    /// the command this call starts may reach (`confine::Reach`: offline
+    /// when the run's web access is off, unconfined for Full access). Never
+    /// set by a door.
+    pub reach: crate::confine::Reach,
     /// Default working directory for shell commands and relative file paths
     /// (a worktree or scratch copy for isolated sub-agents). None = the
     /// process cwd, exactly as before.
@@ -394,13 +395,15 @@ pub fn workflow_session_key(agent_id: &str, run_id: &str) -> String {
 }
 
 impl ToolContext {
-    /// This context for one call the permission check let run, offline when
-    /// the check said so (`GateVerdict::Run`).
-    pub fn confined(&self, offline: bool) -> std::borrow::Cow<'_, ToolContext> {
-        if offline && !self.offline {
-            std::borrow::Cow::Owned(ToolContext { offline: true, ..self.clone() })
-        } else {
+    /// This context for one call the permission check let run, reaching
+    /// what the check said (`GateVerdict::Run`). A context already offline
+    /// stays offline.
+    pub fn confined(&self, reach: crate::confine::Reach) -> std::borrow::Cow<'_, ToolContext> {
+        let reach = crate::confine::Reach { offline: reach.offline || self.reach.offline, ..reach };
+        if reach == self.reach {
             std::borrow::Cow::Borrowed(self)
+        } else {
+            std::borrow::Cow::Owned(ToolContext { reach, ..self.clone() })
         }
     }
 

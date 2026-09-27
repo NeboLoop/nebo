@@ -25,6 +25,13 @@
 //! proxy. An employee's shell does the owner's work with the owner's tools,
 //! so it keeps everything but what this module takes away.
 //!
+//! What a command may reach is the permission check's to decide, once per
+//! call ([`Reach`], `GateVerdict::Run`). An employee with Full access runs
+//! its commands without any of this, as the owner chose: a program that
+//! starts a sandbox of its own (Chrome, `swift build`, a Homebrew build)
+//! works there. Its web access, when the owner turned it off, still holds:
+//! its commands run offline, and nothing else is closed.
+//!
 //! Where neither is available (Windows, a Linux without user namespaces), a
 //! run that must be offline can't run commands at all: `prefix` says so and
 //! the shell refuses. Nebo's own files then rest on the safeguard's check of
@@ -43,12 +50,28 @@ use std::sync::OnceLock;
 
 use crate::nebo_files::NeboFiles;
 
+/// What the command a call starts may reach, as the permission check
+/// decided it for that call (`GateVerdict::Run`, then `ToolContext::reach`).
+/// The default is every employee's: Nebo's own files and ports closed by
+/// the operating system, the network open.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Reach {
+    /// The run's web access is off: the command may not reach the network.
+    pub offline: bool,
+    /// The employee holds Full access, and so does every grant it runs
+    /// under: the operating system closes nothing for the command but the
+    /// network when `offline`. The command's text is still checked
+    /// (`safeguard`), and Nebo's own settings stay out of its environment.
+    pub unconfined: bool,
+}
+
 /// The confinement one command runs under.
 pub struct Confinement<'a> {
     /// The command may not reach the network: the run's web access is off.
     pub offline: bool,
     /// Nebo's own files, closed to the command. `None`: Nebo's folder can't
-    /// be found, so there is nothing to fence.
+    /// be found, so there is nothing to fence, or the employee has Full
+    /// access (`Reach::unconfined`).
     pub fence: Option<&'a NeboFiles>,
     /// Ports the command may not connect to, on any address: Nebo's own.
     /// On Linux the spawn carries it (`spawn_with`), not the prefix.

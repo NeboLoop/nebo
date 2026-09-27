@@ -116,7 +116,7 @@ impl RunToolScope<'_> {
             untrusted_input,
             judgement: None,
             // The permission check sets it per call (`GateVerdict::Run`).
-            offline: false,
+            reach: Default::default(),
             // A turn's asks park: the owner answers the card.
             cannot_wait: false,
             stdin: None,

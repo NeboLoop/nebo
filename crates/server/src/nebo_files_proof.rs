@@ -452,3 +452,127 @@ async fn a_workflow_command_step_meets_its_employee_limits() {
     assert!(refused.why.contains("cannot_wait"), "{}", refused.why);
     assert_eq!(refused.door, "workflow");
 }
+
+/// `full-access-runs-unconfined`: the operating system's confinement of an
+/// employee's commands (Nebo's own files and ports closed) broke programs
+/// that start a sandbox of their own: Chrome without `--no-sandbox`,
+/// `swift build`, Homebrew builds from source. The owner's call: an
+/// employee with Full access runs its commands without it, and every other
+/// employee keeps it. The same command, from a Full access employee and an
+/// Automatic one: it reads a log of Nebo's through a path its text doesn't
+/// name (what only the confinement stops), and on macOS starts a sandbox of
+/// its own. The Full access employee's does both; the Automatic one's does
+/// neither. What still holds for Full access: the command's text is checked,
+/// Nebo's own settings stay out of its environment, and web access off
+/// keeps its commands off the network. A helper runs as its parent does and
+/// never gets more.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_full_access_employee_runs_unconfined() {
+    use std::sync::atomic::Ordering;
+    use types::permissions::{Ceiling, Door, Mode};
+    let nebo = session().await;
+    let home = nebo.home.clone();
+    let id = &uuid::Uuid::new_v4().simple().to_string()[..8];
+    let (builder, clerk, researcher) = (format!("builder-{id}"), format!("clerk-{id}"), format!("researcher-{id}"));
+    for agent in [&builder, &clerk, &researcher] {
+        own_rule(&nebo, agent, RuleKey::Capability("shell".into()), Effect::Allow);
+        own_rule(&nebo, agent, RuleKey::Capability("web".into()), Effect::Allow);
+    }
+    let store = nebo.store();
+    store.set_permission_mode(&Scope::Employee(builder.clone()), Mode::FullAccess).unwrap();
+    store.set_permission_mode(&Scope::Employee(clerk.clone()), Mode::Automatic).unwrap();
+    // The researcher has Full access and its web access turned off.
+    store.set_permission_mode(&Scope::Employee(researcher.clone()), Mode::FullAccess).unwrap();
+    own_rule(&nebo, &researcher, RuleKey::Capability("web".into()), Effect::Deny);
+
+    std::fs::create_dir_all(home.join("files")).unwrap();
+    std::fs::create_dir_all(home.join("logs")).unwrap();
+    std::fs::write(home.join("logs/full-access-proof.log"), "FULL-ACCESS-canary").unwrap();
+    let files = home.join("files").to_string_lossy().into_owned();
+    let run = |command: String| json!({ "command": command, "description": "Build the project" });
+    // Reaches a closed path by a spelling the command's text check can't
+    // follow: only the operating system's confinement stops it.
+    let read_log = run(format!("cd '{files}' && cat ../logs/full-access-proof.log"));
+    let reads = |r: &tools::ToolResult| r.content.contains("FULL-ACCESS-canary");
+    // A program that starts a sandbox of its own, as Chrome and `swift
+    // build` do. macOS allows none inside another.
+    let nested = run("/usr/bin/sandbox-exec -p '(version 1)(allow default)' /usr/bin/true && echo NESTED-OK".into());
+    let nests = |r: &tools::ToolResult| r.content.contains("NESTED-OK");
+    let helper = |parent: &str, mode: Mode, n: u8| {
+        let mut ctx = Nebo::ctx(parent, Origin::User);
+        let parent_grant = agent::resolve_grant(store, parent, None);
+        let mut grant = parent_grant.clone();
+        grant.mode = mode;
+        grant.ceiling = Some(Ceiling::Parent { grant: Box::new(parent_grant) });
+        ctx.session_key = format!("subagent:agent:{parent}:main:sa-{n}");
+        ctx.door = Door::Helper;
+        ctx.grant = Some(std::sync::Arc::new(grant));
+        ctx
+    };
+
+    // Full access: unconfined, and so is its helper.
+    for (who, ctx) in [
+        ("the Full access employee", Nebo::ctx(&builder, Origin::User)),
+        ("its helper", helper(&builder, Mode::FullAccess, 1)),
+    ] {
+        let r = nebo.tool(&ctx, "run_command", read_log.clone()).await;
+        assert!(!r.is_error && reads(&r), "{who}'s command ran confined: {}", r.content);
+        if cfg!(target_os = "macos") && tools::confine::available() {
+            let r = nebo.tool(&ctx, "run_command", nested.clone()).await;
+            assert!(nests(&r), "{who}'s command could not start a sandbox of its own: {}", r.content);
+        }
+    }
+
+    // Everyone else: confined. The Automatic employee, a helper that asks
+    // for Full access under it, and a Full access employee's helper that
+    // runs Automatic.
+    if tools::confine::available() {
+        for (who, ctx) in [
+            ("the Automatic employee", Nebo::ctx(&clerk, Origin::User)),
+            ("a Full access helper under the Automatic employee", helper(&clerk, Mode::FullAccess, 2)),
+            ("an Automatic helper under the Full access employee", helper(&builder, Mode::Automatic, 3)),
+        ] {
+            let r = nebo.tool(&ctx, "run_command", read_log.clone()).await;
+            assert!(!reads(&r), "{who}'s command read Nebo's own files: {}", r.content);
+            if cfg!(target_os = "macos") {
+                let r = nebo.tool(&ctx, "run_command", nested.clone()).await;
+                assert!(!nests(&r), "{who}'s command ran unconfined: {}", r.content);
+            }
+        }
+    } else {
+        eprintln!("no confinement on this computer: every employee's commands run unconfined");
+    }
+
+    // What Full access doesn't lift: the command's text is checked, and
+    // Nebo's own settings are not in its environment.
+    let full = Nebo::ctx(&builder, Origin::User);
+    let r = nebo.tool(&full, "run_command", run(format!("cat '{}'", home.join("logs/full-access-proof.log").display()))).await;
+    assert!(r.is_error && r.content.contains("Nebo's own files") && !reads(&r), "{}", r.content);
+    let r = nebo.tool(&full, "run_command", run("env".into())).await;
+    let own: Vec<&str> = r.content.lines().filter(|l| l.starts_with("NEBO_") || l.starts_with("NEBOAI_")).collect();
+    assert!(!r.is_error && own.is_empty(), "Nebo's own settings in a Full access command's environment: {own:?}");
+
+    // Web access off with Full access: the owner's web setting holds. The
+    // command runs offline and nothing else is closed; on a computer that
+    // can't keep a command offline, it doesn't run.
+    let (port, hits) = page_server();
+    let fetch = run(format!("curl -s -m 5 http://127.0.0.1:{port}/"));
+    for (who, ctx) in [
+        ("the web-off Full access employee", Nebo::ctx(&researcher, Origin::User)),
+        ("its helper", helper(&researcher, Mode::FullAccess, 4)),
+    ] {
+        let r = nebo.tool(&ctx, "run_command", fetch.clone()).await;
+        assert!(!r.content.contains("Example Domain"), "{who} reached the page: {}", r.content);
+        assert!(r.content.contains("web access is off"), "{who} was not told why: {}", r.content);
+        let r = nebo.tool(&ctx, "run_command", read_log.clone()).await;
+        if tools::confine::available() {
+            assert!(reads(&r), "{who}'s offline command was confined beyond the network: {}", r.content);
+        } else {
+            assert!(r.is_error && r.content.contains("web access is off"), "{}", r.content);
+        }
+    }
+    assert_eq!(hits.load(Ordering::SeqCst), 0, "a web-off Full access command reached the server");
+    let r = nebo.tool(&full, "run_command", fetch).await;
+    assert!(r.content.contains("Example Domain"), "the command itself works: {}", r.content);
+    assert_eq!(hits.load(Ordering::SeqCst), 1);
+}

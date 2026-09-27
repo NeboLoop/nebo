@@ -956,11 +956,11 @@ impl Registry {
             input: &input,
             target: target_of(tool.as_ref(), &input),
         };
-        let offline = match self.gate.check(ctx, &call).await {
-            GateVerdict::Run { offline, .. } => offline,
+        let reach = match self.gate.check(ctx, &call).await {
+            GateVerdict::Run { reach, .. } => reach,
             GateVerdict::Refuse(result) | GateVerdict::Parked(result) => return result,
         };
-        let confined = ctx.confined(offline);
+        let confined = ctx.confined(reach);
         let ctx: &ToolContext = &confined;
 
         // Lease gate: while this bot's lease is not held (a cloud bot
