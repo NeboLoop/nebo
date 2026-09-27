@@ -47,6 +47,6 @@
 			{/if}
 			<InstallCode code={item.code} inline />
 		</div>
-		<PricePill price={item.price} installed={item.installed} />
+		<PricePill price={item.price} installed={item.installed} hire={item.type === 'agent'} />
 	</div>
 </a>

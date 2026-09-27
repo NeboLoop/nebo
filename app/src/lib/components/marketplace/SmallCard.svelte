@@ -12,5 +12,5 @@
 >
 	<ArtifactIcon emoji={item.iconEmoji} bg={item.iconBg} size="lg" />
 	<p class="text-sm font-semibold text-center truncate w-full">{item.name}</p>
-	<PricePill price={item.price} installed={item.installed} />
+	<PricePill price={item.price} installed={item.installed} hire={item.type === 'agent'} />
 </a>

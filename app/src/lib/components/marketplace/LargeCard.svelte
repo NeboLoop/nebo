@@ -90,7 +90,7 @@
 						<span class="loading loading-spinner loading-xs"></span>
 					</span>
 				{:else}
-					<PricePill price={item.price} installed={item.installed} />
+					<PricePill price={item.price} installed={item.installed} hire={item.type === 'agent'} />
 				{/if}
 			</button>
 		</div>

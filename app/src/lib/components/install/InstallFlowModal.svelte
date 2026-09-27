@@ -902,7 +902,7 @@
             </button>
             {#if configuring && onUninstall}
               <button type="button" class="btn btn-ghost btn-sm text-error/80 hover:text-error" onclick={onUninstall}>
-                {$t('installFlow.uninstallName', { values: { name: agentName } })}
+                {$t('installFlow.removeName', { values: { name: agentName } })}
               </button>
             {/if}
           </div>

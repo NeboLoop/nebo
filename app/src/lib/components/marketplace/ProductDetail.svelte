@@ -396,13 +396,13 @@
 								<div class="flex gap-2">
 									<button type="button" onclick={() => (confirmUninstall = false)} class="btn btn-ghost btn-sm rounded-lg flex-1">{$t('common.cancel')}</button>
 									<button type="button" onclick={uninstallProduct} disabled={uninstalling} class="btn btn-error btn-sm rounded-lg flex-1 disabled:opacity-50">
-										{uninstalling ? $t('marketplace.detail.removing') : $t('common.uninstall')}
+										{uninstalling ? $t('marketplace.detail.removing') : artifactType === 'agent' ? $t('common.remove') : $t('common.uninstall')}
 									</button>
 								</div>
 							</div>
 						{:else}
 							<button type="button" onclick={() => (confirmUninstall = true)} class="btn btn-ghost rounded-xl h-11 text-error/80 hover:text-error">
-								{$t('common.uninstall')}
+								{artifactType === 'agent' ? $t('common.remove') : $t('common.uninstall')}
 							</button>
 						{/if}
 					{:else}
