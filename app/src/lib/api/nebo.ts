@@ -1322,6 +1322,13 @@ export function neboAIBillingSubscription() {
 }
 
 /**
+ * @description "Nebo a i get bot"
+ */
+export function neboAIGetBot() {
+	return webapi.get<components.BotNameResponse>(`/api/v1/neboai/bot`)
+}
+
+/**
  * @description "Nebo a i connect handler"
  */
 export function neboAIConnectHandler(req: Record<string, unknown> = {}) {
@@ -1331,8 +1338,8 @@ export function neboAIConnectHandler(req: Record<string, unknown> = {}) {
 /**
  * @description "Nebo a i bot email"
  */
-export function neboAIBotEmail() {
-	return webapi.get<components.BotEmailResponse>(`/api/v1/neboai/email`)
+export function neboAIBotEmail(agentId: string) {
+	return webapi.get<components.BotEmailResponse>(`/api/v1/neboai/email`, { agentId })
 }
 
 /**

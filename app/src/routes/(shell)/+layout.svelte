@@ -393,6 +393,7 @@
           // reporting tree from these, so there is no second fetch for shape.
           department: a.department ?? '',
           reportsTo: a.reportsTo ?? '',
+          installedAt: a.installedAt ?? undefined,
         }));
         agentStatuses = Object.fromEntries(allAgents.map(a => [a.id, a.status]));
       }
@@ -1186,6 +1187,7 @@
     agentStatus,
     refreshRuns,
     refreshThreads,
+    refreshAgent: () => loadAgentData(agentId),
   });
 </script>
 
@@ -1211,7 +1213,7 @@
         <button class="flex items-center gap-2.5 w-full px-3 py-1.5 text-sm text-left cursor-pointer bg-transparent border-none hover:bg-base-200 transition-colors" onclick={() => ctxAction('toggle-status')}>
           {#if ctxSt === 'paused'}
             <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" class="text-success"><polygon points="6,4 20,12 6,20"/></svg>
-            {$t('agent.activate')}
+            {$t('agent.resume')}
           {:else}
             <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" class="text-base-content/50"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>
             {$t('sidebar.pause')}
@@ -1230,13 +1232,13 @@
     </button>
     <button class="flex items-center gap-2.5 w-full px-3 py-1.5 text-sm text-left cursor-pointer bg-transparent border-none hover:bg-base-200 transition-colors" onclick={() => ctxAction('settings')}>
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-base-content/50"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-      {$t('nav.settings')}
+      {$t('nav.employeeSettings')}
     </button>
     <div class="h-px bg-base-300 my-1"></div>
     {#if ctxAgent}
       {#if ctxMenu.agentId === 'assistant'}
-        <!-- The primary is the front desk on the switchboard; it cannot be deleted. -->
-        <p class="px-3 py-2 text-xs text-base-content/60 leading-snug">{$t('agent.frontDeskUndeletable')}</p>
+        <!-- The primary is the owner's personal assistant; it cannot be deleted. -->
+        <p class="px-3 py-2 text-xs text-base-content/60 leading-snug">{$t('agent.primaryUndeletable')}</p>
       {:else}
         <button class="flex items-center gap-2.5 w-full px-3 py-1.5 text-sm text-left cursor-pointer bg-transparent border-none hover:bg-error/10 text-error transition-colors" onclick={() => ctxAction('delete')}>
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
@@ -1621,7 +1623,7 @@
             <button
               class="shrink-0 p-1.5 rounded-field bg-transparent border-none cursor-pointer text-base-content/50 hover:text-base-content hover:bg-base-100 transition-colors"
               onclick={(e) => { e.stopPropagation(); goto(`/${a.id}/settings/general`); }}
-              title={$t('nav.settings')}
+              title={$t('nav.employeeSettings')}
             >
               <SettingsIcon class="w-4 h-4" />
             </button>
@@ -1774,6 +1776,8 @@
   open={settingsSection !== null}
   section={settingsSection ?? 'general'}
   agentName={agent?.name ?? ''}
+  agentRole={agent?.role ?? ''}
+  isPrimary={agent?.id === 'assistant'}
   readOnly={agent ? !agent.editable : false}
   avatarInitial={agent ? initialsOf(agent.name) : ''}
   avatarClass={agentColor?.solidClass ?? ''}

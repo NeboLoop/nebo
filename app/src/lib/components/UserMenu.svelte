@@ -30,7 +30,7 @@
   });
 
   const menuItems = [
-    { href: '/settings/profile', label: 'nav.settings', icon: '⚙' },
+    { href: '/settings/account', label: 'nav.botSettings', icon: '🏢' },
     { href: '/settings/account', label: 'settings.navItems.account', icon: '👤' },
     { href: '/settings/billing', label: 'settings.navItems.billing', icon: '💳' },
     null,

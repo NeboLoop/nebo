@@ -18,6 +18,8 @@
   interface Props {
     open: boolean;
     title: string;
+    /** A short second line under the title (a role, a context). Shown only when set. */
+    subtitle?: string;
     onclose: () => void;
     /** Employee identity chip before the title — same avatar/color as the roster row. */
     avatarInitial?: string;
@@ -29,7 +31,7 @@
     children: Snippet;
   }
 
-  let { open, title, onclose, avatarInitial = '', avatarClass = '', narrow = false, actions, children }: Props = $props();
+  let { open, title, subtitle = '', onclose, avatarInitial = '', avatarClass = '', narrow = false, actions, children }: Props = $props();
 
   function onkeydown(e: KeyboardEvent) {
     // defaultPrevented = a stacked shelf already consumed this Escape —
@@ -106,8 +108,15 @@
         {#if avatarInitial}
           <span class="w-7 h-7 rounded-lg flex items-center justify-center text-[10px] font-semibold tracking-wide shrink-0 {avatarClass}">{avatarInitial}</span>
         {/if}
-        <span class="text-sm font-semibold">{title}</span>
-        <div class="flex-1"></div>
+        {#if subtitle}
+          <div class="min-w-0 flex-1 flex flex-col leading-tight">
+            <span class="text-sm font-semibold truncate">{title}</span>
+            <span class="text-xs text-base-content/60 truncate">{subtitle}</span>
+          </div>
+        {:else}
+          <span class="text-sm font-semibold">{title}</span>
+          <div class="flex-1"></div>
+        {/if}
         {#if actions}{@render actions()}{/if}
         <button
           type="button"

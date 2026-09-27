@@ -3,6 +3,9 @@
   import { onMount, onDestroy } from 'svelte';
   import { t } from 'svelte-i18n';
   import { neboAIOauthStart, neboAIOauthStatus } from '$lib/api/index';
+  import { get } from 'svelte/store';
+  import Building2 from 'lucide-svelte/icons/building-2';
+  import { botName, botRenameUrl, loadBotName, openBotRename, offerMatchingRename } from '$lib/stores/botName';
 
   let user = $state({ name: '', email: '', displayName: '' });
   let connected = $state(true);
@@ -24,6 +27,48 @@
 
   // The bot's own hosted email address, when its NeboAI account gives it one.
   let botEmail = $state('');
+
+  // The bot's name (Bot settings → Name). It is the owner's: the owner
+  // renames it on the NeboAI web app with their own session, and the web and
+  // the phone show the same name. The bot and its primary employee start with
+  // the same name; right after the bot is renamed, offer to rename the
+  // primary too — never silently.
+  let nameLoaded = $state(false);
+  let primaryName = '';
+  let primaryOffer = $state<string | null>(null);
+  let primaryBusy = $state(false);
+  let primaryError = $state('');
+  let primaryRenamedTo = $state('');
+
+  // Back from the web app: read the name again, and if the bot was renamed
+  // while it matched the primary, offer the primary the same name.
+  async function refreshBotName() {
+    if (!nameLoaded) return;
+    const before = get(botName);
+    await loadBotName(true);
+    const after = get(botName);
+    if (offerMatchingRename(before, primaryName, after)) {
+      primaryRenamedTo = '';
+      primaryOffer = after;
+    }
+  }
+
+  async function renamePrimary() {
+    if (!primaryOffer || primaryBusy) return;
+    primaryBusy = true;
+    primaryError = '';
+    try {
+      const api = await import('$lib/api/nebo');
+      await api.updateAgent('assistant', { name: primaryOffer });
+      primaryName = primaryOffer;
+      primaryRenamedTo = primaryOffer;
+      primaryOffer = null;
+    } catch (e) {
+      primaryError = e instanceof Error ? e.message : $t('agentSettings.saveFailed');
+    } finally {
+      primaryBusy = false;
+    }
+  }
 
   onDestroy(() => {
     if (oauthPollInterval) clearInterval(oauthPollInterval);
@@ -54,9 +99,17 @@
 
     try {
       const api = await import('$lib/api/nebo');
-      const email = await api.neboAIBotEmail();
+      const email = await api.neboAIBotEmail('');
       if (email?.address) botEmail = email.address;
     } catch { /* no hosted address — the row stays hidden */ }
+
+    await loadBotName();
+    nameLoaded = true;
+    try {
+      const api = await import('$lib/api/nebo');
+      const primary = await api.getAgent('assistant');
+      primaryName = (primary as { agent?: { name?: string } })?.agent?.name ?? '';
+    } catch { /* no primary row: nothing to offer */ }
   });
 
   async function reconnect() {
@@ -127,6 +180,8 @@
   }
 </script>
 
+<svelte:window onfocus={refreshBotName} />
+
 <SettingsHeader title={$t('settingsAccount.neboaiAccount')} description={$t('settingsAccount.pageDescription')} />
 
 <!-- Connection status + inline connect/disconnect action -->
@@ -162,6 +217,32 @@
 
 <div class="mb-8">
   <a href="/settings/usage" class="text-sm font-medium text-primary hover:underline">{$t('settingsAccount.viewUsageArrow')}</a>
+</div>
+
+<!-- The bot's name -->
+<div class="mb-8">
+  <h3 class="text-base font-semibold mb-1 flex items-center gap-2"><Building2 class="w-4 h-4 text-base-content/70" aria-hidden="true" />{$t('settingsAccount.botName')}</h3>
+  <p class="text-xs text-base-content/70 mb-2.5">{$t('settingsAccount.botNameDesc')}</p>
+  {#if nameLoaded && !connected}
+    <div class="text-sm text-base-content/60">{$t('settingsAccount.botNameNotConnected')}</div>
+  {:else}
+    <div class="flex items-center gap-3 p-3 rounded-lg border border-base-content/10 bg-base-200/50">
+      <span class="flex-1 min-w-0 text-sm font-medium truncate">{$botName || '…'}</span>
+      {#if $botRenameUrl}
+        <button class="btn btn-sm btn-outline shrink-0" onclick={() => openBotRename($botRenameUrl)}>{$t('settingsAccount.renameBot')}</button>
+      {/if}
+    </div>
+    {#if primaryOffer}
+      <div class="flex flex-wrap items-center gap-2 rounded-lg border border-base-300 bg-base-200/40 px-3 py-2.5 mt-3">
+        <span class="flex-1 min-w-0 text-sm">{$t('settingsAccount.alsoRenamePrimary', { values: { name: primaryOffer } })}</span>
+        <button type="button" class="btn btn-sm btn-primary" onclick={renamePrimary} disabled={primaryBusy}>{$t('settingsAccount.renamePrimary')}</button>
+        <button type="button" class="btn btn-sm btn-ghost" onclick={() => (primaryOffer = null)} disabled={primaryBusy}>{$t('settingsAccount.keepPrimaryName', { values: { name: primaryName } })}</button>
+        {#if primaryError}<div class="w-full text-xs text-error">{primaryError}</div>{/if}
+      </div>
+    {:else if primaryRenamedTo}
+      <div class="text-xs text-success mt-2">{$t('settingsAccount.primaryRenamed', { values: { name: primaryRenamedTo } })}</div>
+    {/if}
+  {/if}
 </div>
 
 <!-- Bot Identity (immutable) -->

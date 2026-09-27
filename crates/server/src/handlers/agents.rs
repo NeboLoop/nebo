@@ -1197,18 +1197,29 @@ pub async fn update_agent(
         }
     });
 
-    // Update agent_md frontmatter if name/description changed via body (not via agentMd)
+    // The employee's skills: `skills` in the body replaces the list (the
+    // Skills section's Remove), otherwise the AGENT.md's stand.
+    let skills: Vec<String> = match body.get("skills").and_then(|v| v.as_array()) {
+        Some(list) => list
+            .iter()
+            .filter_map(|s| s.as_str())
+            .map(str::to_string)
+            .collect(),
+        None => fm.skills.clone(),
+    };
+
+    // Update agent_md frontmatter if name/description/skills changed via body (not via agentMd)
     let final_agent_md = if body.get("agentMd").is_none()
-        && (name != fm.name.as_str() || description != fm.description.as_str())
+        && (name != fm.name.as_str() || description != fm.description.as_str() || skills != fm.skills)
     {
         // Rebuild agent_md with updated name/description in frontmatter
         let mut new_md = String::from("---\n");
         new_md.push_str(&format!("name: \"{}\"\n", name));
         new_md.push_str(&format!("description: \"{}\"\n", description));
         // Re-serialize other frontmatter fields
-        if !fm.skills.is_empty() {
+        if !skills.is_empty() {
             new_md.push_str(&format!("skills:\n"));
-            for s in &fm.skills {
+            for s in &skills {
                 new_md.push_str(&format!("  - \"{}\"\n", s));
             }
         }
@@ -1272,7 +1283,7 @@ pub async fn update_agent(
     let mut frontmatter_json = saved_frontmatter(
         &existing_fm,
         workflows,
-        serde_json::json!(fm.skills),
+        serde_json::json!(skills),
         fm.pricing
             .as_ref()
             .map(|p| serde_json::json!({ "model": p.model, "cost": p.cost })),

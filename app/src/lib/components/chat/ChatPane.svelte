@@ -1278,7 +1278,7 @@
           {@render headerIcon(creationsOpen && paneView === 'work', $t('chat.work'), () => togglePane('work'), workIcon)}
         {/if}
         {#if onsettings}
-          {@render headerIcon(false, $t('settings.title'), onsettings, settingsIcon)}
+          {@render headerIcon(false, $t('nav.employeeSettings'), onsettings, settingsIcon)}
         {/if}
         {#if isApp && onopenapp}
           <button
@@ -1319,7 +1319,7 @@
               <li><button onclick={() => { (document.activeElement as HTMLElement)?.blur(); togglePane('work'); }}>{@render workIcon()}{$t('chat.work')}</button></li>
             {/if}
             {#if onsettings}
-              <li><button onclick={() => { (document.activeElement as HTMLElement)?.blur(); onsettings?.(); }}>{@render settingsIcon()}{$t('settings.title')}</button></li>
+              <li><button onclick={() => { (document.activeElement as HTMLElement)?.blur(); onsettings?.(); }}>{@render settingsIcon()}{$t('nav.employeeSettings')}</button></li>
             {/if}
           </ul>
         </div>
