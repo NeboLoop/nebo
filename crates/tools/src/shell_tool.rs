@@ -95,7 +95,7 @@ impl ShellTool {
         }
 
         match si.resource.as_str() {
-            "bash" if ctx.offline => {
+            "bash" if ctx.reach.offline => {
                 let mut result = self.handle_bash(&si, ctx).await;
                 result.content.push_str(OFFLINE_NOTE);
                 result
@@ -437,8 +437,9 @@ impl ShellTool {
     }
 
     /// The one command every run_command call runs: the shell with the
-    /// command, confined (`confine`: Nebo's own files and ports closed, no
-    /// network for a run whose web access is off), its folder, and the
+    /// command, confined as the permission check decided (`confine`: Nebo's
+    /// own files and ports closed, but not for Full access; no network for a
+    /// run whose web access is off), its folder, and the
     /// environment (sanitized, Nebo's own settings left out, git's prompts
     /// off, installed plugins on the PATH, and plugin auth for a workflow's
     /// command step alone). With it, the ports its spawn must close
@@ -448,10 +449,14 @@ impl ShellTool {
         let default_cwd = ctx.cwd.as_deref();
         // Every command is fenced, a workflow's command step included: it
         // runs the installed plugins, so their programs and data are open to
-        // it (`NeboFiles::of`), and nothing else of Nebo's is.
-        let fence = crate::nebo_files::NeboFiles::of(ctx);
-        let closed_ports = types::own_ports::list();
-        let prefix = crate::confine::Confinement { offline: ctx.offline, fence: fence.as_ref(), closed_ports: &closed_ports }
+        // it (`NeboFiles::of`), and nothing else of Nebo's is. The command of
+        // an employee with Full access is not (`confine::Reach::unconfined`).
+        let (fence, closed_ports) = if ctx.reach.unconfined {
+            (None, Vec::new())
+        } else {
+            (crate::nebo_files::NeboFiles::of(ctx), types::own_ports::list())
+        };
+        let prefix = crate::confine::Confinement { offline: ctx.reach.offline, fence: fence.as_ref(), closed_ports: &closed_ports }
             .prefix()
             .map_err(|_| ToolResult::error(OFFLINE_UNAVAILABLE))?;
         let (shell, shell_args) = process::shell_command();

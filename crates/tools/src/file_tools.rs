@@ -81,8 +81,8 @@ impl Machine {
                 input: &call_input,
                 target: crate::registry::target_of(&run_command, &call_input),
             };
-            let offline = match gate.check(ctx, &call).await {
-                GateVerdict::Run { offline, .. } => offline,
+            let reach = match gate.check(ctx, &call).await {
+                GateVerdict::Run { reach, .. } => reach,
                 GateVerdict::Refuse(out) | GateVerdict::Parked(out) => {
                     let note = crate::plan::first_line(&out.content, Self::PLAN_NOTE_CHARS);
                     results.push(crate::plan::StepResult { n: step.n, ok: false, exit: None, note });
@@ -94,7 +94,7 @@ impl Machine {
             let out = self
                 .shell
                 .execute(
-                    &ctx.confined(offline),
+                    &ctx.confined(reach),
                     json!({
                         "action": "exec", "command": step.verify,
                         "cwd": dir, "timeout": Self::PLAN_VERIFY_TIMEOUT_SECS, "raw": true
@@ -1249,7 +1249,7 @@ mod tests {
                 if command.starts_with("touch") {
                     return GateVerdict::Refuse(ToolResult::error("'run_command' is turned off for `touch`."));
                 }
-                GateVerdict::Run { why: types::permissions::Why::BasicWork, offline: false }
+                GateVerdict::Run { why: types::permissions::Why::BasicWork, reach: Default::default() }
             }
         }
         let dir = tempfile::tempdir().unwrap();

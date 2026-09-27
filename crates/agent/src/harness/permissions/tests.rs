@@ -510,6 +510,65 @@ async fn helper_cannot_exceed_parent() {
     assert!(matches!(d, Decision::Deny { why: Why::Ceiling, .. }), "{d:?}");
 }
 
+/// What an employee's command may reach is decided once, by the check:
+/// Full access runs unconfined, and only when every grant above it is Full
+/// access too (a helper, or an employee an employee made, never gets more);
+/// web access off keeps the command offline whatever the mode.
+#[test]
+fn only_full_access_all_the_way_up_runs_unconfined() {
+    use tools::confine::Reach;
+    let (_d, store) = store();
+    // Every job has the shell and the web; the owner turned web off for the researcher.
+    put(&store, rule(Scope::Company, cap("shell"), None, Effect::Allow));
+    put(&store, rule(Scope::Company, cap("web"), None, Effect::Allow));
+    put(&store, rule(Scope::Employee("researcher".into()), cap("web"), None, Effect::Deny));
+    for (agent, mode) in [("builder", Mode::FullAccess), ("clerk", Mode::Automatic), ("researcher", Mode::FullAccess)] {
+        store.set_permission_mode(&Scope::Employee(agent.into()), mode).unwrap();
+    }
+    let command = Target {
+        tool: "run_command".into(),
+        key: "run_command".into(),
+        operation: None,
+        capability: Some("shell".into()),
+        field: None,
+        subject: None,
+        read_only: false,
+        effects: types::permissions::CallEffects::unknown(),
+    };
+    let reach_of = |grant: Grant, t: &Target| {
+        let c = ToolContext { grant: Some(Arc::new(grant.clone())), ..Default::default() };
+        reach(&CheckCx { ctx: &c, input: &json!({}), grant: &grant, store: &store }, t)
+    };
+    let under = |parent: &Grant, mode: Mode, ceiling: fn(Box<Grant>) -> Ceiling| {
+        let mut g = parent.clone();
+        g.mode = mode;
+        g.ceiling = Some(ceiling(Box::new(parent.clone())));
+        g
+    };
+    let parent = |g: Box<Grant>| Ceiling::Parent { grant: g };
+    let creator = |g: Box<Grant>| Ceiling::Creator { creator_id: "creator".into(), grant: g };
+    let (builder, clerk, researcher) =
+        (resolve_grant(&store, "builder", None), resolve_grant(&store, "clerk", None), resolve_grant(&store, "researcher", None));
+    let unconfined = Reach { offline: false, unconfined: true };
+    let confined = Reach::default();
+    for (who, grant, want) in [
+        ("a Full access employee", builder.clone(), unconfined),
+        ("an Automatic employee", clerk.clone(), confined),
+        ("the Full access employee's helper", under(&builder, Mode::FullAccess, parent), unconfined),
+        ("a Full access helper's own helper", under(&under(&builder, Mode::FullAccess, parent), Mode::FullAccess, parent), unconfined),
+        ("a helper of it that runs Automatic", under(&builder, Mode::Automatic, parent), confined),
+        ("a Full access helper under an Automatic employee", under(&clerk, Mode::FullAccess, parent), confined),
+        ("a Full access employee made by an Automatic one", under(&clerk, Mode::FullAccess, creator), confined),
+        ("a Full access employee with web off", researcher.clone(), Reach { offline: true, unconfined: true }),
+        ("its helper", under(&researcher, Mode::FullAccess, parent), Reach { offline: true, unconfined: true }),
+    ] {
+        assert_eq!(reach_of(grant, &command), want, "{who}");
+    }
+    // Only a command is confined at all.
+    let file = Target { tool: "write_file".into(), key: "write_file".into(), capability: Some("file".into()), ..command };
+    assert_eq!(reach_of(builder, &file), Reach::default());
+}
+
 #[test]
 fn employee_cannot_widen_rules() {
     let (_d, store) = store();

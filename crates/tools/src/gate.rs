@@ -24,10 +24,11 @@ impl ResolvedCall<'_> {
 /// What the gate decided for one call.
 #[derive(Debug, Clone)]
 pub enum GateVerdict {
-    /// Run it; why is recorded. `offline`: the run's web access is off, so
-    /// the command it starts may not reach the network either; the caller
-    /// runs it with `ToolContext::offline` set (`ToolContext::confined`).
-    Run { why: types::permissions::Why, offline: bool },
+    /// Run it; why is recorded. `reach`: what the command it starts may
+    /// reach (no network when the run's web access is off; nothing closed
+    /// by the operating system for Full access); the caller runs it with
+    /// `ToolContext::reach` set (`ToolContext::confined`).
+    Run { why: types::permissions::Why, reach: crate::confine::Reach },
     /// Don't run it; the result tells the model why in plain words.
     Refuse(ToolResult),
     /// Don't run it now: it waits for the owner. The result says so.
@@ -51,7 +52,7 @@ pub(crate) fn test_gate() -> std::sync::Arc<dyn PermissionGate> {
     #[async_trait::async_trait]
     impl PermissionGate for RunEverything {
         async fn check(&self, _ctx: &ToolContext, _call: &ResolvedCall<'_>) -> GateVerdict {
-            GateVerdict::Run { why: types::permissions::Why::BasicWork, offline: false }
+            GateVerdict::Run { why: types::permissions::Why::BasicWork, reach: Default::default() }
         }
     }
     std::sync::Arc::new(RunEverything)
