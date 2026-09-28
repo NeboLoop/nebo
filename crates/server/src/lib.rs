@@ -3101,6 +3101,7 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
     let shutdown_store = state.store.clone();
     let shutdown_lifecycles = state.app_lifecycles.clone();
     let shutdown_state = state.clone();
+    let shutdown_local_host = state.local_host.clone();
 
     if !quiet {
         info!("Server ready at http://localhost:{port}");
@@ -3166,7 +3167,13 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
                 }
                 lifecycles.clear();
             }
-            info!("app sidecars stopped, closing the browser and the desktop...");
+            info!("app sidecars stopped, stopping the coding agents Nebo hosts...");
+            // A turn another device started gets a moment to finish; then
+            // every agent Nebo hosts stops, its sessions kept for next time.
+            if let Some(local_host) = &shutdown_local_host {
+                local_host.shutdown(std::time::Duration::from_secs(10)).await;
+            }
+            info!("coding agents stopped, closing the browser and the desktop...");
             // Asked to exit, not killed: the browser releases its profile
             // whole, so nothing still writes into the data directory.
             shutdown_browser.shutdown().await;

@@ -15,7 +15,8 @@
 //! One host per computer per OS user ([`link_core::machine`]): while a
 //! nebo-link daemon is linked for this user, it is the host, Nebo hosts
 //! nothing, and this computer's agents are hired from the daemon's bot like
-//! any other computer's.
+//! any other computer's, over the same session, which Nebo opens on this
+//! computer with no relay between ([`LocalHost::direct`]).
 //!
 //! Every agent works in its own folder, `~/NeboAI/<agent id>`, and a
 //! conversation moves to another when the owner asks. Hiring and firing go
@@ -31,6 +32,8 @@
 //! logs/<id>.log               each agent's own output
 //! oal/                        Nebo's key and every pairing (a KeyStore)
 //! oal-seen.json               when each device was last seen
+//! oal-lan.json                each linked bot's LAN direct certificate,
+//!                             as it named it on an earlier connection
 //! ```
 
 use std::path::{Path, PathBuf};
@@ -70,6 +73,8 @@ pub struct LocalHost {
     host: Arc<Host>,
     /// Nebo's key and pairings.
     keys: KeyStore,
+    /// The ways to a linked bot's host with nothing between.
+    direct: super::oal::Direct,
     /// The host over Open Agent Link, made once there is a bot to host as.
     oal: OnceLock<Arc<OalHost>>,
     record: Arc<Record>,
@@ -196,12 +201,14 @@ impl LocalHost {
         record.record_hosting(&agents);
         host.set_home(home.clone());
         host.set_keeper(record.clone());
+        let direct = super::oal::Direct::new(daemon_home.clone(), dir.join("oal-lan.json"));
         Ok(Arc::new(Self {
             bot_id,
             dir,
             daemon_home,
             host,
             keys,
+            direct,
             oal: OnceLock::new(),
             record,
         }))
@@ -223,6 +230,12 @@ impl LocalHost {
     /// Nebo's key and every pairing: the one key store.
     pub fn keys(&self) -> &KeyStore {
         &self.keys
+    }
+
+    /// The ways to a linked bot's host with nothing between: this OS user's
+    /// nebo-link daemon on this computer, then the LAN.
+    pub fn direct(&self) -> &super::oal::Direct {
+        &self.direct
     }
 
     /// The Open Agent Link host the hosted agents are reached through, in
@@ -313,6 +326,13 @@ impl LocalHost {
         self.hire(agent.key()).await
     }
 
+    /// Stops every agent Nebo hosts as Nebo shuts down: a turn still running
+    /// gets up to `grace` to finish, then each agent's processes stop, its
+    /// sessions kept for the next start. Nothing they started outlives Nebo.
+    pub async fn shutdown(&self, grace: std::time::Duration) {
+        self.host.shutdown(grace).await;
+    }
+
     /// Stops hosting the agent `id`: its process ends. Its folder stays.
     pub async fn remove(&self, id: &str) -> Result<(), String> {
         if !self.agents().iter().any(|a| a.id == id) {
@@ -333,6 +353,7 @@ fn member(dir: &Path, agent: &LocalAgent) -> Member {
         log: dir.join("logs").join(format!("{}.log", agent.id)),
         chats_file: dir.join("agents").join(&agent.id).join("acp-chats.json"),
         client: CLIENT,
+        idle: link_core::acp::IDLE_WINDOW,
     });
     Member {
         id: agent.id.clone(),
