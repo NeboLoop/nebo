@@ -7,8 +7,10 @@ description: |
   conversation scope (`<owner>:agent:<id>:matter:<A>`), B's in B's, nothing in the employee's
   private memory. B never reaches A's facts, and A never B's: not by recall (words, key, listing),
   not in any request the model is sent (the prompt, the relevant-memories recall), not by
-  search_history, not through a helper B starts. A fact the owner saved to local memory is found in
-  both. The save names its scope: "Saved to this conversation's confidential memory".
+  search_history, not through a helper B starts. The employee's own `scope: "local"` on a fact the
+  owner never asked to share stays in B's conversation (the v0.16.0 proof's m08 leak). A fact the
+  owner saved to local memory is found in both. The save names its scope: "Saved to this
+  conversation's confidential memory".
 target_component: memory
 proof: staffed_proof::memory::a_confidential_employees_conversations_never_see_each_other
 conversation: []

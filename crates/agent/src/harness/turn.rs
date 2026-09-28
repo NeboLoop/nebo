@@ -1964,11 +1964,22 @@ async fn tool_round(
     cx: &TurnContext,
     st: &mut TurnState,
     round_cx: &RoundContext<'_>,
-    executor: ToolExecutor<'_>,
+    mut executor: ToolExecutor<'_>,
     text: &str,
     tool_calls: &mut [ai::ToolCall],
 ) -> Option<TurnExit> {
     let h = &cx.harness;
+    // A memory write that names local memory: whether the owner asked to
+    // share is what takes it there from a Confidential conversation. Asked
+    // only then, so no other round waits on the decision.
+    for call in tool_calls.iter() {
+        if call.input["scope"] == "local"
+            && h.tools.target(&call.name, &call.input).await.is_some_and(|t| matches!(t.key.as_str(), "remember" | "forget"))
+        {
+            executor.owner_shares(st.saves.shares().await);
+            break;
+        }
+    }
     let carry = &mut st.round;
     let outcome = tool_round::run_tool_round(
         round_cx,
@@ -6323,6 +6334,60 @@ mod tests {
         let events = run_turn(&h, owner(SAVE_RECIPE)).await;
         assert!(result_ids(&h).is_empty(), "the writer never ran");
         assert!(shown_text(&events).ends_with(crate::harness::memory_save::NOT_SAVED));
+    }
+
+    /// `remember` as the turn hands it over, noting whether each call came
+    /// with the owner's ask to share (`ToolContext::owner_shares`).
+    struct SharesSeen(Arc<Mutex<Vec<bool>>>);
+
+    impl tools::registry::DynTool for SharesSeen {
+        fn name(&self) -> &str {
+            "remember"
+        }
+        fn description(&self) -> String {
+            "Saves a fact".into()
+        }
+        fn schema(&self) -> serde_json::Value {
+            serde_json::json!({
+                "type": "object",
+                "properties": {"key": {"type": "string"}, "value": {"type": "string"}, "scope": {"type": "string"}},
+                "required": ["key", "value"]
+            })
+        }
+        fn execute_dyn<'a>(
+            &'a self,
+            ctx: &'a tools::ToolContext,
+            _input: serde_json::Value,
+        ) -> Pin<Box<dyn Future<Output = tools::ToolResult> + Send + 'a>> {
+            Box::pin(async move {
+                self.0.lock().unwrap().push(ctx.owner_shares);
+                tools::ToolResult::ok("Saved to memory: [tacit/general] office/friday-close = 4pm")
+            })
+        }
+    }
+
+    /// m08 and m09: a save naming local memory reaches the tool with the
+    /// owner's ask to share (the turn's save decision) and nothing else —
+    /// what a Confidential conversation's save needs to leave it
+    /// (`memory_tools::Memory::write_scope`). "Save it for everyone" is yes;
+    /// "remember this" (the employee's own memory), no ask and no decision
+    /// are no, whatever scope the model chose.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_local_save_carries_whether_the_owner_asked_to_share() {
+        use crate::harness::memory_save::Scope;
+        for (decided, shares) in [(Some(Some(Scope::Local)), true), (Some(Some(Scope::Private)), false), (Some(None), false), (None, false)] {
+            let seen = Arc::new(Mutex::new(Vec::new()));
+            let model = Scripted::new(vec![
+                Step::Call("remember", serde_json::json!({"key": "office/friday-close", "value": "The office closes at 4pm on Fridays.", "scope": "local"})),
+                Step::Say("Saved."),
+            ]);
+            let mut h = harness_with(&model, vec![Box::new(SharesSeen(seen.clone()))]).await;
+            if let Some(scope) = decided {
+                h = h.with_decide(jev_saving(scope).await);
+            }
+            run_turn(&h, owner("The office closes at 4pm on Fridays.")).await;
+            assert_eq!(*seen.lock().unwrap(), vec![shares], "decision {decided:?}");
+        }
     }
 
     /// A save that happened, a message that asked for none (the re-run's

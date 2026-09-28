@@ -16,7 +16,8 @@
 //!   employee's private memory.
 //! - CONFIDENTIAL (`<owner>:agent:<id>:matter:<ctx>`) — any conversation of a
 //!   Confidential employee, the owner's own included. It reads only itself
-//!   and local memory.
+//!   and local memory, and writes local memory only when the owner's own
+//!   words ask for something to be kept for everyone.
 
 use std::sync::Arc;
 
@@ -47,6 +48,12 @@ const LIST_PREFIX: &str = "tacit/";
 const SEALED_SEGMENT: &str = ":ctx:";
 /// The segment a Confidential conversation hangs off the private scope by.
 const CONFIDENTIAL_SEGMENT: &str = ":matter:";
+
+/// What a Confidential conversation's `scope: "local"` write is told when it
+/// was made in the conversation because the owner did not ask to share.
+const KEPT_CONFIDENTIAL: &str = "Local memory was not touched: this employee keeps every conversation \
+     confidential, and local memory changes only when the owner asks for something to be kept for \
+     everyone. This conversation's confidential memory was used instead.";
 
 /// A scope bound to one conversation, read back from its `user_id`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -236,9 +243,23 @@ impl Memory {
     /// read by every employee on this Nebo, so only the owner's own message
     /// puts something there — an unattended run, a caller or a coworker
     /// cannot publish to everyone.
-    fn write_scope<'c>(input: &Value, ctx: &'c ToolContext) -> Result<&'c str, ToolResult> {
+    ///
+    /// A Confidential conversation is sealed: the call's `scope: "local"`
+    /// alone never takes a fact out of it. Only the owner's own words asking
+    /// for it to be kept for everyone do (`ToolContext::owner_shares`, the
+    /// turn's save decision); otherwise the call writes this conversation's
+    /// confidential memory, and the second value is the words that say so.
+    fn write_scope<'c>(
+        input: &Value,
+        ctx: &'c ToolContext,
+    ) -> Result<(&'c str, Option<&'static str>), ToolResult> {
         if input["scope"].as_str() != Some("local") {
-            return Ok(&ctx.user_id);
+            return Ok((&ctx.user_id, None));
+        }
+        if MemoryScopeKind::of(&ctx.user_id) == MemoryScopeKind::Confidential
+            && !(ctx.owner_request && ctx.owner_shares)
+        {
+            return Ok((&ctx.user_id, Some(KEPT_CONFIDENTIAL)));
         }
         if !ctx.owner_request {
             return Err(ToolResult::error(
@@ -247,7 +268,7 @@ impl Memory {
                  Save it with scope \"private\", or tell the owner what you would add.",
             ));
         }
-        Ok(local_memory_scope(&ctx.user_id))
+        Ok((local_memory_scope(&ctx.user_id), None))
     }
 
     /// Recall-for-audience (trust-boundaries design 2026-08-22): replying to
@@ -286,8 +307,8 @@ impl Memory {
             ));
         }
 
-        let scope = match Self::write_scope(input, ctx) {
-            Ok(scope) => scope,
+        let (scope, kept_here) = match Self::write_scope(input, ctx) {
+            Ok(written) => written,
             Err(refused) => return refused,
         };
         let key = input["key"].as_str().unwrap_or("");
@@ -405,19 +426,20 @@ impl Memory {
         if let Some(ref embedder) = self.embedder {
             embedder.embed(namespace, key, scope);
         }
-        match keychain_kind {
-            Some(kind) => ToolResult::ok(format!(
+        let saved = match keychain_kind {
+            Some(kind) => format!(
                 "Saved a pointer for {key} in [{namespace}] of {}; the value was credential-shaped \
                  ({kind}), and the secret itself is in the OS keychain (service \
                  {MEMORY_KEYCHAIN_SERVICE}, account {}/{key}). Tell the owner where it lives.",
                 MemoryScopeKind::of(scope).saved_to(),
                 scope
-            )),
-            None => ToolResult::ok(format!(
+            ),
+            None => format!(
                 "Saved to {}: [{namespace}] {key} = {stored_value}",
                 MemoryScopeKind::of(scope).saved_to()
-            )),
-        }
+            ),
+        };
+        ToolResult::ok(with_why(saved, kept_here))
     }
 
     /// A query that is a stored key returns that fact; any other query
@@ -604,8 +626,8 @@ impl Memory {
         if let Some(refused) = Self::writes_refused(ctx) {
             return refused;
         }
-        let scope = match Self::write_scope(input, ctx) {
-            Ok(scope) => scope,
+        let (scope, kept_here) = match Self::write_scope(input, ctx) {
+            Ok(written) => written,
             Err(refused) => return refused,
         };
         let key = input["key"].as_str().unwrap_or("");
@@ -618,15 +640,28 @@ impl Memory {
             .store
             .delete_memory_by_key_and_user(namespace, key, scope)
         {
-            Ok(n) if n > 0 => ToolResult::ok(format!(
-                "Forgot {n} entries for key '{key}' in {namespace} of {place}."
+            Ok(n) if n > 0 => ToolResult::ok(with_why(
+                format!("Forgot {n} entries for key '{key}' in {namespace} of {place}."),
+                kept_here,
             )),
-            Ok(_) => ToolResult::ok(format!(
-                "Nothing forgotten: no memory with key '{key}' in {namespace} of {place}. recall \
-                 with the key shows the namespace and the memory it is in."
+            Ok(_) => ToolResult::ok(with_why(
+                format!(
+                    "Nothing forgotten: no memory with key '{key}' in {namespace} of {place}. \
+                     recall with the key shows the namespace and the memory it is in."
+                ),
+                kept_here,
             )),
             Err(e) => ToolResult::error(format!("Failed to forget: {e}")),
         }
+    }
+}
+
+/// A write's answer, with the reason on its own line when the write stayed
+/// somewhere other than the memory the call named.
+fn with_why(said: String, why: Option<&str>) -> String {
+    match why {
+        Some(why) => format!("{said}\n{why}"),
+        None => said,
     }
 }
 
@@ -1373,6 +1408,7 @@ mod tests {
         let conv = |c: &str| ToolContext {
             user_id: conversation_scope_id("o:agent:law", c, true),
             owner_request: true,
+            owner_shares: true,
             ..Default::default()
         };
         let (a, b) = (conv("client-a"), conv("client-b"));
@@ -1403,5 +1439,105 @@ mod tests {
         assert!(hours.content.contains("four on Fridays") && hours.content.contains("(local memory)"), "{}", hours.content);
         let own = rig.recall.execute_dyn(&a, json!({"query": "Harlow settlement"})).await;
         assert!(own.content.contains("ALDER-1") && own.content.contains("confidential memory"), "{}", own.content);
+    }
+
+    /// The v0.16.0 proof's leak (m08, 2 of 3 runs): a Confidential
+    /// employee's own `scope: "local"` in the owner's conversation, with no
+    /// ask from the owner to share, put a client's deposition date in local
+    /// memory for every employee. The call's scope alone never takes a fact
+    /// out of the conversation: it lands in this conversation's confidential
+    /// memory, the answer says so and never says local memory got it, and no
+    /// other conversation or employee finds it. A forget stays here too.
+    #[tokio::test]
+    async fn a_confidential_local_write_the_owner_did_not_ask_to_share_stays_in_the_conversation() {
+        let rig = Rig::new(false);
+        let pryce = ToolContext {
+            user_id: conversation_scope_id("o:agent:law", "client-b", true),
+            owner_request: true,
+            owner_shares: false,
+            ..Default::default()
+        };
+        let saved = rig
+            .remember
+            .execute_dyn(&pryce, json!({"key": "cases/pryce/deposition", "value": "The Pryce deposition is on the 14th, BIRCH-1.", "layer": "project", "scope": "local"}))
+            .await;
+        assert!(!saved.is_error, "{}", saved.content);
+        assert!(saved.content.starts_with("Saved to this conversation's confidential memory"), "{}", saved.content);
+        assert!(!saved.content.contains("Saved to local memory"), "{}", saved.content);
+        assert!(saved.content.contains("Local memory was not touched"), "the answer says why: {}", saved.content);
+        let conversation = "o:agent:law:matter:client-b";
+        assert!(rig.store.get_memory_by_key_and_user("project", "cases/pryce/deposition", conversation).unwrap().is_some());
+        assert!(rig.store.get_memory_by_key_and_user("project", "cases/pryce/deposition", "o").unwrap().is_none(), "nothing in local memory");
+
+        for reader in [ctx_for(&conversation_scope_id("o:agent:law", "client-a", true)), employee("o", "clerk", true)] {
+            for input in [json!({"query": "Pryce deposition"}), json!({"query": "cases/pryce/deposition"}), json!({"namespace": "project"})] {
+                let seen = rig.recall.execute_dyn(&reader, input.clone()).await;
+                assert!(!seen.content.contains("BIRCH-1"), "{} {input}: {}", reader.user_id, seen.content);
+            }
+        }
+
+        rig.store.upsert_memory("tacit/general", "office/hours", "The office closes at four.", None, None, "o").unwrap();
+        let forgot = rig.forget.execute_dyn(&pryce, json!({"key": "office/hours", "scope": "local"})).await;
+        assert!(forgot.content.starts_with("Nothing forgotten") && forgot.content.contains("confidential memory"), "{}", forgot.content);
+        assert!(rig.store.get_memory_by_key_and_user("tacit/general", "office/hours", "o").unwrap().is_some(), "the local fact is untouched");
+    }
+
+    /// m09: when the owner's own words ask for a fact to be kept for
+    /// everyone, a Confidential conversation's save goes to local memory,
+    /// and every other conversation of the employee and every other employee
+    /// finds it. The owner's ask is needed on the owner's own turn: a share
+    /// on a turn the owner did not start is kept in the conversation.
+    #[tokio::test]
+    async fn a_confidential_save_the_owner_asked_to_share_goes_to_local_memory() {
+        let rig = Rig::new(false);
+        let asked = ToolContext {
+            user_id: conversation_scope_id("o:agent:law", "front-desk", true),
+            owner_request: true,
+            owner_shares: true,
+            ..Default::default()
+        };
+        let saved = rig
+            .remember
+            .execute_dyn(&asked, json!({"key": "office/friday-close", "value": "The office closes at 4pm on Fridays, CEDAR-1.", "scope": "local"}))
+            .await;
+        assert!(saved.content.starts_with("Saved to local memory"), "{}", saved.content);
+        assert!(!saved.content.contains("not touched"), "{}", saved.content);
+        assert!(rig.store.get_memory_by_key_and_user("tacit/general", "office/friday-close", "o").unwrap().is_some());
+        for reader in [ctx_for(&conversation_scope_id("o:agent:law", "client-a", true)), employee("o", "clerk", false)] {
+            let found = rig.recall.execute_dyn(&reader, json!({"query": "Fridays"})).await;
+            assert!(found.content.contains("CEDAR-1") && found.content.contains("(local memory)"), "{}: {}", reader.user_id, found.content);
+        }
+
+        let not_the_owners_turn = ToolContext { owner_request: false, ..asked.clone() };
+        let kept = rig
+            .remember
+            .execute_dyn(&not_the_owners_turn, json!({"key": "office/parking", "value": "Visitors park in bay 3, CEDAR-2.", "scope": "local"}))
+            .await;
+        assert!(kept.content.starts_with("Saved to this conversation's confidential memory"), "{}", kept.content);
+        assert!(rig.store.get_memory_by_key_and_user("tacit/general", "office/parking", "o").unwrap().is_none());
+    }
+
+    /// Separate conversations: a conversation with someone other than the
+    /// owner is sealed, and the owner never speaks in it, so its
+    /// `scope: "local"` is refused and nothing is written; the owner's own
+    /// conversations share the employee's private memory, and local memory
+    /// changes there at the owner's request as for any employee.
+    #[tokio::test]
+    async fn a_sealed_conversation_never_writes_local_memory() {
+        let rig = Rig::new(false);
+        let caller = ToolContext { user_id: conversation_scope_id("o:agent:desk", "caller-1", false), ..Default::default() };
+        let refused = rig
+            .remember
+            .execute_dyn(&caller, json!({"key": "team/vendor", "value": "The vendor list moved to the shared drive.", "scope": "local"}))
+            .await;
+        assert!(refused.is_error && refused.content.starts_with("Not saved to local memory"), "{}", refused.content);
+        assert_eq!(rig.store.count_memories().unwrap(), 0);
+
+        let owner = employee("o", "desk", true);
+        let saved = rig
+            .remember
+            .execute_dyn(&owner, json!({"key": "team/vendor", "value": "The vendor list moved to the shared drive.", "scope": "local"}))
+            .await;
+        assert!(saved.content.starts_with("Saved to local memory"), "{}", saved.content);
     }
 }
