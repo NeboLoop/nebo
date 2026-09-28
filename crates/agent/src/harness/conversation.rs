@@ -219,13 +219,6 @@ pub(crate) fn mid_turn_message_landed(fresh: &[ChatMessage], seen: &[ChatMessage
         .any(|m| m.role == "user" && arrived_mid_turn(m).is_some())
 }
 
-/// True while the owner's latest mid-turn message has no reply in words
-/// after it, in `messages` as heard (`order_as_heard`): the step built from
-/// them is that reply, with tools off.
-pub(crate) fn unanswered_mid_turn_message(messages: &[ChatMessage]) -> bool {
-    owner_waiting(messages).is_some()
-}
-
 /// The owner's messages typed into the running work that no reply in words
 /// answers yet, as the step that answers them reads them.
 #[derive(Debug, Clone, PartialEq, Eq)]

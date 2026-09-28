@@ -482,9 +482,10 @@ fn queue_input(h: &Harness, session_id: &str, req: &TurnRequest) {
 
 /// The admitted turn's task: prepare, drive, finish; then, while input
 /// arrived after the last step, the next turn on the same slot. A turn the
-/// owner stopped runs nothing more on it: its stream has ended. The owner's
-/// message it never answered gets a turn of its own from the app
-/// (`Outlets::answer_thread`), once the slot is free.
+/// owner stopped runs nothing more on it, on anything: its stream has ended,
+/// and nothing — not even a message of his own the stopped turn never
+/// answered — starts another one for him. Stop means stop; a message he
+/// sends after it starts its own turn the normal way, once the slot is free.
 async fn run(
     h: Harness,
     req: TurnRequest,
@@ -493,7 +494,6 @@ async fn run(
     guard: TurnGuard,
     tx: mpsc::Sender<StreamEvent>,
 ) {
-    let session_key = req.session_key.clone();
     let mut req = Some(req);
     let mut taint = BTreeSet::new();
     let mut exit = TurnExit::Answered;
@@ -521,29 +521,12 @@ async fn run(
         }
     }
     // The slot is closing, so no row is written into this turn from here:
-    // what the owner typed and no answer followed is all in the thread now.
-    let owner_waits = exit == TurnExit::Cancelled && owner_waits_for_answer(&h, &session_id);
+    // what the owner typed and no answer followed is all in the thread now,
+    // unanswered — a stop never starts a turn of its own to answer it.
     let _ = tx
         .send(StreamEvent::done_with_reason(exit.label()).with_provenance(taint.into_iter().collect()))
         .await;
     drop(guard);
-    if owner_waits {
-        match h.answer_thread() {
-            Some(answer) => {
-                info!(session_id, "the stopped turn left the owner's message unanswered: its own turn answers it");
-                answer(&session_key);
-            }
-            None => warn!(session_id, "the owner's message is unanswered and nothing is bound to start a turn for it"),
-        }
-    }
-}
-
-/// Whether the owner's latest mid-turn message has no reply in words after
-/// it, as the thread reads.
-fn owner_waits_for_answer(h: &Harness, session_id: &str) -> bool {
-    h.sessions
-        .get_messages_since_checkpoint(session_id)
-        .is_ok_and(|rows| conversation::unanswered_mid_turn_message(&conversation::order_as_heard(rows)))
 }
 
 /// The owner ended the work (the stop button, or a message of his that
@@ -4004,14 +3987,6 @@ mod tests {
         }
     }
 
-    /// The turn the app runs when the harness asks it to answer the thread:
-    /// no input of its own, the owner's message is already there.
-    async fn answer_the_thread(h: &Harness) -> Vec<StreamEvent> {
-        let mut follow = owner("");
-        follow.input = TurnInput::None;
-        run_turn(h, follow).await
-    }
-
     /// Outlets that record each session the harness asks a turn for.
     fn asking_outlets(goal_observer: Option<Arc<Watch>>) -> (crate::harness::Outlets, mpsc::UnboundedReceiver<String>) {
         let (asked_tx, asked) = mpsc::unbounded_channel::<String>();
@@ -4026,12 +4001,15 @@ mod tests {
     }
 
     /// The owner types while the employee works, then presses stop before
-    /// any step hears the message. The stop ends the work; the message then
-    /// starts the next turn, which answers it in words first. Nothing the
-    /// owner typed goes unanswered. A stop with nothing unanswered asks for
-    /// no turn: stop means stop.
+    /// any step hears the message. The stop ends the work, and nothing
+    /// starts a turn to answer the message it never heard: stop means stop,
+    /// whether or not it leaves something unanswered (live incident: a
+    /// linked bot's daemon restart replayed the owner's pre-stop "Looks like
+    /// you got stuck" ahead of the message he actually sent next). He
+    /// answers it himself, the normal way, by sending it again or something
+    /// new; that next message starts its own turn once the slot is free.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn a_message_the_stopped_turn_never_heard_starts_the_next_turn() {
+    async fn a_stop_never_auto_answers_a_message_it_never_heard() {
         for at in [At::DuringCall, At::WhileStreaming, At::DuringTools] {
             let (outlets, mut asked) = asking_outlets(None);
             let run = interrupted_with(
@@ -4045,17 +4023,8 @@ mod tests {
             assert_eq!(exit_of(&run.events), "cancelled", "{at:?}: the stop ends the work");
             let carries = |c: &ChatRequest| texts(c).iter().any(|t| t.contains(STOP_READING));
             assert!(!run.calls.iter().any(carries), "{at:?}: the stopped turn never heard it");
-            let key = tokio::time::timeout(std::time::Duration::from_secs(2), asked.recv()).await.ok().flatten();
-            assert_eq!(key.as_deref(), Some(KEY), "{at:?}: the app is asked for a turn that answers it");
-
-            let events = answer_the_thread(&run.h).await;
-            assert_eq!(exit_of(&events), "text_response", "{at:?}");
-            let calls = run.model.calls();
-            let first = &calls[run.calls.len()];
-            assert!(carries(first), "{at:?}: the next turn hears the message");
-            assert_eq!(first.tool_choice, ai::ToolChoice::None, "{at:?}: and answers it in words first");
-            let reply = stored(&run.h).into_iter().rev().find(|m| m.role == "assistant").expect("a reply");
-            assert!(reply.content.starts_with("Stopping as asked"), "{at:?}: {}", reply.content);
+            let key = tokio::time::timeout(std::time::Duration::from_millis(300), asked.recv()).await.ok().flatten();
+            assert_eq!(key, None, "{at:?}: nothing auto-answers a message the stop never heard");
         }
 
         let (outlets, mut asked) = asking_outlets(None);

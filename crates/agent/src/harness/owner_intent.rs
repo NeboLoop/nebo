@@ -247,8 +247,7 @@ pub const NOTE_FIELD: &str = "intent";
 
 /// The intent already decided for the owner's message `latest` (its row id):
 /// the one its note stored, when a note was written after it. A turn taken
-/// again, or the turn that answers a message a stopped turn never answered,
-/// reads it instead of deciding twice.
+/// again reads it instead of deciding twice.
 pub fn recorded(messages: &[ChatMessage], latest: &str) -> Option<OwnerIntent> {
     let at = messages.iter().position(|m| m.id == latest)?;
     messages[at + 1..]
