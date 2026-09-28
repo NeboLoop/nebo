@@ -5,7 +5,7 @@
 //!
 //! | Old shape | Becomes |
 //! |---|---|
-//! | Capability toggles (company `user_profiles.tool_permissions`, employee `entity_config.permissions`) | allow / deny rules on the capability (the job); a company "off" that some employee turned on becomes a deny for each employee that didn't, since a company deny now binds every employee |
+//! | Capability toggles (company `user_profiles.tool_permissions`, employee `entity_config.permissions`) | an "on" is an allow on the capability (the job); an "off" asked the owner and Full Access ran it, so a company "off" writes no rule (the mode decides) and an employee's own "off" is an ask, or nothing under Full Access |
 //! | Screen and browser grants (`entity_config.resource_grants`) | deny rules on the screen and browser keys |
 //! | Path fence (`entity_config.allowed_paths`) | folder rules |
 //! | Saved "always allow" commands (`user_profiles.approved_commands`) | allow rules on `run_command` with a command prefix |
@@ -52,12 +52,19 @@ const SCREEN_KEYS: &[&str] = &[
     "shortcut*",
 ];
 
-/// Convert the old settings once. Returns `None` when it already ran.
+/// Convert the old settings once, then take back the switches an earlier
+/// build of the conversion wrote as refusals ([`repair_switches`]).
+/// Returns `None` when the conversion already ran.
 pub fn migrate_legacy(store: &db::Store) -> Result<Option<MigrationReport>, types::NeboError> {
-    if store.upgrade_conversion_done(MIGRATION)? {
-        return Ok(None);
-    }
+    let report = if store.upgrade_conversion_done(MIGRATION)? { None } else { Some(convert(store)?) };
+    repair_switches(store)?;
+    Ok(report)
+}
+
+fn convert(store: &db::Store) -> Result<MigrationReport, types::NeboError> {
     let mut w = Writes { store, report: MigrationReport::default() };
+    // Full Access ran every call whatever its capability switch said.
+    let full_access = store.get_settings()?.is_some_and(|s| s.full_access == 1);
 
     // Company capability toggles and saved commands.
     let profile = store.get_user_profile()?;
@@ -77,26 +84,20 @@ pub fn migrate_legacy(store: &db::Store) -> Result<Option<MigrationReport>, type
                 .unwrap_or_default()
         })
         .collect();
-    // A capability no toggle names was on: the old gate only refused an
-    // explicit `false`. A company "off" was a default an employee could
-    // turn back on; a company deny now binds every employee, so where one
-    // did, the "off" stays with each employee that didn't, and the company
-    // leaves it out of the job (asked, not refused, for anyone new).
-    let company_cap = |w: &mut Writes<'_>, cap: &str, on: bool| {
-        let turned_on: Vec<bool> = employee_toggles.iter().map(|t| t.get(cap) == Some(&true)).collect();
-        if on || !turned_on.contains(&true) {
-            w.rule(Scope::Company, RuleKey::Capability(cap.into()), None, if on { Effect::Allow } else { Effect::Deny }, None, "user_profiles.tool_permissions");
-            return;
-        }
-        for (ec, _) in configs.iter().zip(&turned_on).filter(|(_, on)| !**on) {
-            w.rule(Scope::Employee(ec.entity_id.clone()), RuleKey::Capability(cap.into()), None, Effect::Deny, None, "user_profiles.tool_permissions");
-        }
-    };
+    // A capability no toggle names was on: the old gate only acted on an
+    // explicit `false`. An "off" was never a refusal: the old gate asked
+    // the owner for the call when he was there, and Full Access ran it
+    // without asking. So an "on" is the job (an allow) and an "off" writes
+    // nothing: the capability stays out of the job and the mode decides —
+    // Automatic and Ask ask, Full Access runs, as the switch did.
+    let company_on = |cap: &str| company_toggles.get(cap).copied().unwrap_or(true);
     for cap in tools::capabilities::CAPABILITIES.iter().map(|c| c.key).filter(|k| *k != "chat") {
-        company_cap(&mut w, cap, company_toggles.get(cap).copied().unwrap_or(true));
+        if company_on(cap) {
+            w.rule(Scope::Company, RuleKey::Capability(cap.into()), None, Effect::Allow, None, "user_profiles.tool_permissions");
+        }
     }
-    for (cap, on) in company_toggles.iter().filter(|(k, _)| is_extra_capability(k)) {
-        company_cap(&mut w, cap, *on);
+    for (cap, _) in company_toggles.iter().filter(|(k, on)| is_extra_capability(k) && **on) {
+        w.rule(Scope::Company, RuleKey::Capability(cap.clone()), None, Effect::Allow, None, "user_profiles.tool_permissions");
     }
     let commands: Vec<String> = profile
         .as_ref()
@@ -115,7 +116,6 @@ pub fn migrate_legacy(store: &db::Store) -> Result<Option<MigrationReport>, type
     }
 
     // Full Access is the company's mode; every other install runs Automatic.
-    let full_access = store.get_settings()?.is_some_and(|s| s.full_access == 1);
     let mode = if full_access { Mode::FullAccess } else { Mode::Automatic };
     store.set_permission_mode(&Scope::Company, mode)?;
     w.report.company_mode = Some(mode.as_str().to_string());
@@ -143,7 +143,14 @@ pub fn migrate_legacy(store: &db::Store) -> Result<Option<MigrationReport>, type
             if cap == "chat" {
                 continue;
             }
-            w.rule(scope.clone(), RuleKey::Capability(cap.clone()), None, if *on { Effect::Allow } else { Effect::Deny }, None, "entity_config.permissions");
+            // An employee's own "off" asked the owner for it; under Full
+            // Access it changed nothing, so nothing is written.
+            let effect = match (*on, full_access) {
+                (true, _) => Effect::Allow,
+                (false, false) => Effect::Ask,
+                (false, true) => continue,
+            };
+            w.rule(scope.clone(), RuleKey::Capability(cap.clone()), None, effect, None, "entity_config.permissions");
         }
         let grants: HashMap<String, String> = ec
             .resource_grants
@@ -165,15 +172,7 @@ pub fn migrate_legacy(store: &db::Store) -> Result<Option<MigrationReport>, type
             .unwrap_or_default();
         if !folders.is_empty() {
             // The fence restricted file work; it never granted it. Where
-            // File was off the employee keeps it off, above its folders.
-            let file_on = employee_toggles
-                .get("file")
-                .or_else(|| company_toggles.get("file"))
-                .copied()
-                .unwrap_or(true);
-            if !file_on {
-                w.rule(scope.clone(), RuleKey::Capability("file".into()), None, Effect::Deny, None, "entity_config.allowed_paths");
-            }
+            // File was off, the File switch above decides it, as it did.
             for folder in folders {
                 w.rule(
                     scope.clone(),
@@ -249,7 +248,52 @@ pub fn migrate_legacy(store: &db::Store) -> Result<Option<MigrationReport>, type
     let report = w.report;
     store.record_upgrade_conversion(MIGRATION, &serde_json::to_string(&report).unwrap_or_default())?;
     tracing::info!(rules = report.rules, mode = ?report.company_mode, unreadable = report.unreadable.len(), "permissions: old settings converted to rules");
-    Ok(Some(report))
+    Ok(report)
+}
+
+/// The name the switch repair is recorded under.
+pub const SWITCHES_REPAIR: &str = "legacy_switches_v2";
+
+/// Where an earlier build of the conversion wrote an old capability
+/// switch's "off" as a refusal.
+const SWITCH_SOURCES: &[&str] = &["user_profiles.tool_permissions", "entity_config.permissions", "entity_config.allowed_paths"];
+
+/// Take back the refusals an earlier build of the conversion wrote for the
+/// old capability switches, once. That build wrote every "off" as a deny,
+/// and a deny binds in every mode: an employee in Full Access was refused
+/// shell by a switch the owner had never set on the Permissions page, a
+/// second permission path beside the one model. Each such deny becomes
+/// what the switch meant (see [`convert`]): an employee's own "off" asks,
+/// outside Full Access; every other one is removed, so the mode decides.
+/// A rule the owner wrote since is his, and stands.
+pub fn repair_switches(store: &db::Store) -> Result<usize, types::NeboError> {
+    if store.upgrade_conversion_done(SWITCHES_REPAIR)? {
+        return Ok(0);
+    }
+    let full_access = store.permission_mode(&Scope::Company)? == Some(Mode::FullAccess);
+    let mut repaired = 0;
+    for rule in store.all_permission_rules()? {
+        let from_switch = matches!(&rule.source, RuleSource::Migrated { from } if SWITCH_SOURCES.contains(&from.as_str()));
+        if !from_switch || rule.effect != Effect::Deny || rule.field.is_some() || !matches!(rule.key, RuleKey::Capability(_)) {
+            continue;
+        }
+        let own_off = matches!(&rule.source, RuleSource::Migrated { from } if from == "entity_config.permissions")
+            && matches!(rule.scope, Scope::Employee(_));
+        let result = if own_off && !full_access {
+            store.write_permission_rule(&Rule { effect: Effect::Ask, ..rule.clone() }, &Writer::Migration).map(|_| ())
+        } else {
+            store.remove_permission_rule(&rule.id, &Writer::Migration)
+        };
+        match result {
+            Ok(()) => repaired += 1,
+            Err(e) => tracing::warn!(rule = %rule.id, error = %e, "permissions: a switch's refusal was not taken back"),
+        }
+    }
+    store.record_upgrade_conversion(SWITCHES_REPAIR, &serde_json::json!({ "repaired": repaired }).to_string())?;
+    if repaired > 0 {
+        tracing::info!(repaired, "permissions: old capability switches no longer refuse; the mode decides");
+    }
+    Ok(repaired)
 }
 
 /// A toggle key that is not one of the listed capabilities (an older

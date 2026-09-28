@@ -388,7 +388,9 @@ fn turns_off_web(rule: &types::permissions::Rule) -> bool {
     matches!(&rule.key, types::permissions::RuleKey::Capability(c) if c == "web")
 }
 
-/// The plain-words refusal for a deny rule.
+/// The plain-words refusal for a deny rule: what is off, and the way to
+/// have it back when the owner wants that (`request_permission`, which
+/// asks him on his card), never a workaround.
 fn refusal(t: &Target, rule: &types::permissions::Rule) -> String {
     if turns_off_web(rule) {
         return tools::capabilities::web_off("This didn't run.", "this employee");
@@ -399,9 +401,19 @@ fn refusal(t: &Target, rule: &types::permissions::Rule) -> String {
         }
         _ => format!("'{}' is turned off for this employee", t.key),
     };
+    if rule.locked {
+        return format!(
+            "{what}, so this didn't run. A law or a package fixed it, so it can't be turned back on from here. \
+             Tell the user in plain words what you needed it for. Do not try other tools or workarounds to get around it."
+        );
+    }
     format!(
-        "{what}, so this didn't run. Tell the user in plain words what you needed it for, then stop. \
-         Do not try other tools or workarounds to get around it."
+        "{what}, so this didn't run. Tell the user in plain words what you needed it for and offer to ask \
+         for it. If they want you to have it, call {tool}(permission: \"{key}\"): that puts the question on \
+         their card, and it turns back on when they approve it there. Do not try other tools or workarounds \
+         to get around it.",
+        tool = tools::permission_request_tool::RequestPermissionTool::NAME,
+        key = rule.key.value(),
     )
 }
 
