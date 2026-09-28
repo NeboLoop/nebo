@@ -15,7 +15,11 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
+use base64::Engine;
 use chromiumoxide::cdp::browser_protocol::browser::CloseParams;
+use chromiumoxide::cdp::browser_protocol::page::CaptureScreenshotFormat;
+use chromiumoxide::cdp::js_protocol::runtime::EvaluateParams;
+use chromiumoxide::page::ScreenshotParams;
 use chromiumoxide::{Browser, Page};
 use futures::StreamExt;
 use rand::Rng;
@@ -36,6 +40,13 @@ const NEW_PAGE_TIMEOUT: Duration = Duration::from_secs(30);
 const CLOSE_TIMEOUT: Duration = Duration::from_secs(10);
 const NAV_TIMEOUT: Duration = Duration::from_secs(45);
 const EVAL_TIMEOUT: Duration = Duration::from_secs(20);
+/// The page side of reads and ref actions: the extension's tree format and
+/// ref resolution (see the file's header).
+const PAGE_TREE_JS: &str = include_str!("page_tree.js");
+/// What a read returns at most, as the extension's `read_page` default.
+const READ_MAX_CHARS: u64 = 50_000;
+/// The longest `wait`, as the extension's.
+const MAX_WAIT: Duration = Duration::from_secs(30);
 
 /// How to launch the bundled Obscura browser (resolved once, used on lazy init).
 #[derive(Clone)]
@@ -335,7 +346,8 @@ impl CdpBridge {
         Ok(page)
     }
 
-    /// Execute a browser tool over CDP. Phase-1 surface: `navigate` + `read_page`.
+    /// Execute a browser tool over CDP, with the extension's tool names,
+    /// arguments and result shapes.
     pub async fn execute(
         &self,
         tool: &str,
@@ -364,27 +376,84 @@ impl CdpBridge {
             }
             "read_page" => {
                 let page = self.page_for(session_id).await?;
-                // Visible text — enough for reading search results and article content. The
-                // interactive accessibility/ref surface (click/fill targets) is Phase 2.
-                let eval = match tokio::time::timeout(
+                let filter = args.get("filter").and_then(|v| v.as_str());
+                let depth = args.get("depth").and_then(|v| v.as_u64());
+                let max_chars = args.get("maxChars").and_then(|v| v.as_u64()).unwrap_or(READ_MAX_CHARS);
+                let ref_id = args.get("refId").and_then(|v| v.as_str()).map(normalize_ref);
+                let tree = self
+                    .page_call(
+                        &page,
+                        &format!(
+                            "window.__neboGenerateAccessibilityTree({}, {}, {max_chars}, {})",
+                            json!(filter),
+                            json!(depth),
+                            json!(ref_id)
+                        ),
+                    )
+                    .await?;
+                if let Some(e) = tree.get("error").and_then(|v| v.as_str()) {
+                    return Err(BrowserError::Other(e.to_string()));
+                }
+                Ok(tree)
+            }
+            "find" => {
+                let query = args
+                    .get("query")
+                    .and_then(|v| v.as_str())
+                    .filter(|q| !q.is_empty())
+                    .ok_or_else(|| BrowserError::Other("query parameter is required".into()))?;
+                let page = self.page_for(session_id).await?;
+                let tree = self
+                    .page_call(&page, "window.__neboGenerateAccessibilityTree('all')")
+                    .await?;
+                let content = tree.get("pageContent").and_then(|v| v.as_str()).unwrap_or("");
+                Ok(json!({ "text": find_in_tree(content, query) }))
+            }
+            "wait" => {
+                let seconds = args
+                    .get("duration")
+                    .and_then(|v| v.as_f64())
+                    .or_else(|| args.get("ms").and_then(|v| v.as_f64()).map(|ms| ms / 1000.0))
+                    .unwrap_or(0.0);
+                if seconds <= 0.0 {
+                    return Err(BrowserError::Other(
+                        "Duration parameter is required and must be positive".into(),
+                    ));
+                }
+                if seconds > MAX_WAIT.as_secs_f64() {
+                    return Err(BrowserError::Other(format!(
+                        "Duration cannot exceed {} seconds",
+                        MAX_WAIT.as_secs()
+                    )));
+                }
+                tokio::time::sleep(Duration::from_secs_f64(seconds)).await;
+                let plural = if seconds == 1.0 { "" } else { "s" };
+                Ok(json!({ "text": format!("Waited for {seconds} second{plural}") }))
+            }
+            "screenshot" => {
+                let page = self.page_for(session_id).await?;
+                let shot = tokio::time::timeout(
                     EVAL_TIMEOUT,
-                    page.evaluate(
-                        "document.body && document.body.innerText ? document.body.innerText \
-                         : (document.documentElement ? document.documentElement.innerText : '')",
+                    page.screenshot(
+                        ScreenshotParams::builder()
+                            .format(CaptureScreenshotFormat::Jpeg)
+                            .quality(75)
+                            .build(),
                     ),
                 )
                 .await
-                {
-                    Ok(Ok(e)) => e,
-                    Ok(Err(e)) => return Err(BrowserError::Other(format!("cdp read_page: {e}"))),
-                    Err(_) => {
-                        return Err(BrowserError::Timeout("cdp read_page timed out".into()));
-                    }
-                };
-                let text: String = eval
-                    .into_value()
-                    .map_err(|e| BrowserError::Other(format!("cdp read_page decode: {e}")))?;
-                Ok(json!({ "pageContent": text }))
+                .map_err(|_| BrowserError::Timeout("cdp screenshot timed out".into()))?
+                .map_err(|e| BrowserError::Other(format!("cdp screenshot: {e}")))?;
+                let viewport = self
+                    .page_call(&page, "[window.innerWidth, window.innerHeight]")
+                    .await?;
+                Ok(json!({
+                    "data": base64::engine::general_purpose::STANDARD.encode(shot),
+                    "format": "jpeg",
+                    "encoding": "base64",
+                    "width": viewport.get(0),
+                    "height": viewport.get(1),
+                }))
             }
             "evaluate" => {
                 let expression = args
@@ -411,8 +480,8 @@ impl CdpBridge {
                 Ok(json!({ "text": text }))
             }
             // Humanized input — exact parity with the extension (curved mouse path,
-            // human click hold, typing cadence). Targets an element by CSS `selector`
-            // or explicit `coordinate`.
+            // human click hold, typing cadence). Targets an element by its `ref`
+            // from a read, a CSS `selector`, or an explicit `coordinate`.
             "click" => {
                 let page = self.page_for(session_id).await?;
                 let (x, y) = self.resolve_point(&page, args).await?;
@@ -426,15 +495,28 @@ impl CdpBridge {
                 // focus to form fields (a headless quirk). The human mouse motion
                 // above is what bot-detection observes; this focus() just guarantees
                 // a following `type` lands in the field the agent clicked.
-                if let Some(sel) = args.get("selector").and_then(|v| v.as_str()) {
+                let target = if let Some(r) = args.get("ref").and_then(|v| v.as_str()) {
+                    Some(format!(
+                        "((window.__neboElementMap || {{}})[{}] || {{ deref: () => null }}).deref()",
+                        json!(normalize_ref(r))
+                    ))
+                } else {
+                    args.get("selector").and_then(|v| v.as_str()).map(|sel| {
+                        format!("document.querySelector({})", json!(sel))
+                    })
+                };
+                if let Some(target) = target {
                     let expr = format!(
-                        "(() => {{ const el = document.querySelector({sel}); \
-                         if (el && typeof el.focus === 'function') el.focus(); }})()",
-                        sel = serde_json::to_string(sel).unwrap_or_else(|_| "''".into()),
+                        "(() => {{ const el = {target}; \
+                         if (el && typeof el.focus === 'function') el.focus(); }})()"
                     );
                     let _ = page.evaluate(expr).await;
                 }
-                Ok(json!({ "text": format!("Clicked at ({:.0}, {:.0})", x, y) }))
+                self.settle(&page).await;
+                Ok(json!({ "text": match args.get("ref").and_then(|v| v.as_str()) {
+                    Some(r) => format!("Clicked on element {r}"),
+                    None => format!("Clicked at ({:.0}, {:.0})", x, y),
+                } }))
             }
             "type" => {
                 let text = args
@@ -443,6 +525,7 @@ impl CdpBridge {
                     .ok_or_else(|| BrowserError::Other("type requires 'text'".into()))?;
                 let page = self.page_for(session_id).await?;
                 human_input::human_type(&page, text).await?;
+                self.settle(&page).await;
                 Ok(json!({ "text": format!("Typed {} chars", text.chars().count()) }))
             }
             "press" => {
@@ -452,6 +535,7 @@ impl CdpBridge {
                     .ok_or_else(|| BrowserError::Other("press requires 'key'".into()))?;
                 let page = self.page_for(session_id).await?;
                 human_input::press_key(&page, key).await?;
+                self.settle(&page).await;
                 Ok(json!({ "text": format!("Pressed {key}") }))
             }
             other => Err(BrowserError::Other(format!(
@@ -460,14 +544,58 @@ impl CdpBridge {
         }
     }
 
-    /// Resolve a click target to viewport CSS-pixel coordinates: explicit
-    /// `coordinate: [x, y]`, or a CSS `selector` whose center is found via JS
-    /// (scrolled into view first). Errors if neither resolves.
+    /// Evaluate `call` in the page after [`PAGE_TREE_JS`] (idempotent), awaiting
+    /// a promise, and return its value.
+    async fn page_call(&self, page: &Page, call: &str) -> Result<Value, BrowserError> {
+        let params = EvaluateParams::builder()
+            .expression(format!("({PAGE_TREE_JS}, {call})"))
+            .await_promise(true)
+            .return_by_value(true)
+            .build()
+            .map_err(|e| BrowserError::Other(format!("cdp page script: {e}")))?;
+        let eval = tokio::time::timeout(EVAL_TIMEOUT, page.evaluate(params))
+            .await
+            .map_err(|_| BrowserError::Timeout("cdp page script timed out".into()))?
+            .map_err(|e| BrowserError::Other(format!("cdp page script: {e}")))?;
+        Ok(eval.value().cloned().unwrap_or(Value::Null))
+    }
+
+    /// Let what an input action changed land before the page is read: the
+    /// DOM quiet for 300 ms, at most 2 s, as the extension waits. A page that
+    /// navigated away mid-wait has nothing left to wait for.
+    async fn settle(&self, page: &Page) {
+        let _ = self.page_call(page, "window.__neboDomStable(300, 2000)").await;
+    }
+
+    /// The viewport point a `ref` from a read names, scrolled into view. A
+    /// ref the page no longer holds is looked up again after a fresh read,
+    /// as the extension does.
+    async fn resolve_ref(&self, page: &Page, r: &str) -> Result<(f64, f64), BrowserError> {
+        let r = normalize_ref(r);
+        let call = format!("window.__neboResolveRef({})", json!(r));
+        let mut point = self.page_call(page, &call).await?;
+        if point.is_null() {
+            self.page_call(page, "window.__neboGenerateAccessibilityTree('all', 15)").await?;
+            point = self.page_call(page, &call).await?;
+        }
+        serde_json::from_value::<(f64, f64)>(point).map_err(|_| {
+            BrowserError::Other(format!(
+                "No element found with reference: \"{r}\". The element may have been removed from the page. Use read_page to get fresh references."
+            ))
+        })
+    }
+
+    /// Resolve a click target to viewport CSS-pixel coordinates: a `ref` from
+    /// a read, explicit `coordinate: [x, y]`, or a CSS `selector` whose center
+    /// is found via JS (scrolled into view first). Errors if none resolves.
     async fn resolve_point(
         &self,
         page: &Page,
         args: &Value,
     ) -> Result<(f64, f64), BrowserError> {
+        if let Some(r) = args.get("ref").and_then(|v| v.as_str()) {
+            return self.resolve_ref(page, r).await;
+        }
         if let Some(arr) = args.get("coordinate").and_then(|v| v.as_array()) {
             if let (Some(x), Some(y)) = (
                 arr.first().and_then(|v| v.as_f64()),
@@ -479,7 +607,7 @@ impl CdpBridge {
         let selector = args
             .get("selector")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| BrowserError::Other("click requires 'selector' or 'coordinate'".into()))?;
+            .ok_or_else(|| BrowserError::Other("click requires 'ref', 'selector' or 'coordinate'".into()))?;
         let expr = format!(
             "(() => {{ const el = document.querySelector({sel}); if (!el) return null; \
              el.scrollIntoView({{block:'center', inline:'center'}}); \
@@ -514,6 +642,35 @@ impl CdpBridge {
             }
         }
     }
+}
+
+/// A ref as the page map keys it: `ref_N` (a bare `N` is accepted, as the
+/// extension accepts it).
+fn normalize_ref(r: &str) -> String {
+    if r.starts_with("ref_") { r.to_string() } else { format!("ref_{r}") }
+}
+
+/// The extension's `find`: the tree lines that carry a ref and contain the
+/// query (case-insensitive), at most 20.
+fn find_in_tree(tree: &str, query: &str) -> String {
+    let q = query.to_lowercase();
+    let matches: Vec<&str> = tree
+        .lines()
+        .filter(|l| l.contains("[ref_") && l.to_lowercase().contains(&q))
+        .map(str::trim)
+        .take(20)
+        .collect();
+    if matches.is_empty() {
+        return format!(
+            "No elements found matching \"{query}\". Try a different search term or use read_page to see all elements on the page."
+        );
+    }
+    format!(
+        "Found {} element{} matching \"{query}\":\n\n{}",
+        matches.len(),
+        if matches.len() == 1 { "" } else { "s" },
+        matches.join("\n")
+    )
 }
 
 /// Pick a free, **random high** loopback TCP port. The random high range + a bind-test means the
@@ -805,6 +962,103 @@ mod tests {
         assert!(reaped, "idle reaper never closed the browser");
         assert!(std::fs::symlink_metadata(&lock).is_err(), "the idle reaper left the profile locked");
         let _ = std::fs::remove_dir_all(&profile);
+    }
+
+    fn chromium_bridge(profile: &str) -> Option<CdpBridge> {
+        let binary = crate::chrome::find_chrome()?;
+        let dir = std::env::temp_dir().join(format!("nebo-cdp-{profile}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        Some(CdpBridge::new(ObscuraConfig {
+            binary,
+            storage_dir: Some(dir),
+            stealth: false,
+            log_path: None,
+            chromium: true,
+        }))
+    }
+
+    /// The built-in browser speaks the extension's contract (v0.16.0 proof,
+    /// web-browser-interaction: 15–17 calls because its snapshot had no refs
+    /// and find, wait and screenshot were "not supported yet"). A read lists
+    /// the page's controls with refs, a click by ref presses the control, a
+    /// wait waits, the page is read after, find returns ref lines, and a
+    /// screenshot is an image.
+    #[tokio::test]
+    #[ignore = "requires a Chromium or Chrome; run with --ignored"]
+    async fn a_ref_from_a_read_clicks_and_the_page_reads_after() {
+        let Some(bridge) = chromium_bridge("refs") else {
+            eprintln!("no Chromium found — skipping");
+            return;
+        };
+        let sid = "refs";
+        let html = "data:text/html,<body><h1>Demo</h1><div id='out'></div>\
+                    <button onclick=\"setTimeout(()=>{document.getElementById('out').innerHTML='<h4>Loaded text</h4>'},800)\">Start</button>\
+                    <input placeholder='Your name'></body>";
+        bridge.execute("navigate", &json!({ "url": html }), sid).await.expect("navigate");
+
+        let snap = bridge.execute("read_page", &json!({ "filter": "interactive" }), sid).await.expect("read_page");
+        let tree = snap["pageContent"].as_str().unwrap_or_default().to_string();
+        let start = tree
+            .lines()
+            .find(|l| l.contains("button \"Start\""))
+            .and_then(|l| l.split('[').nth(1)?.split(']').next())
+            .unwrap_or_else(|| panic!("no Start button with a ref: {tree}"))
+            .to_string();
+        assert!(tree.contains("textbox \"Your name\" [ref_"), "{tree}");
+
+        let found = bridge.execute("find", &json!({ "query": "start" }), sid).await.expect("find");
+        assert!(found["text"].as_str().unwrap_or_default().contains(&format!("[{start}]")), "{found}");
+
+        let clicked = bridge.execute("click", &json!({ "ref": start }), sid).await.expect("click by ref");
+        assert_eq!(clicked["text"], json!(format!("Clicked on element {start}")));
+        let waited = bridge.execute("wait", &json!({ "ms": 1500 }), sid).await.expect("wait");
+        assert_eq!(waited["text"], json!("Waited for 1.5 seconds"));
+        let after = bridge.execute("read_page", &json!({}), sid).await.expect("read after");
+        assert!(after["pageContent"].as_str().unwrap_or_default().contains("heading \"Loaded text\""), "{after}");
+        // The same element keeps its ref across reads.
+        assert!(after["pageContent"].as_str().unwrap_or_default().contains(&format!("button \"Start\" [{start}]")), "{after}");
+
+        let shot = bridge.execute("screenshot", &json!({}), sid).await.expect("screenshot");
+        assert_eq!(shot["format"], json!("jpeg"));
+        assert!(shot["data"].as_str().is_some_and(|d| d.len() > 100), "screenshot has no image data");
+        bridge.shutdown().await;
+    }
+}
+
+#[cfg(test)]
+mod contract_tests {
+    use super::*;
+
+    fn bridge() -> CdpBridge {
+        CdpBridge::new(ObscuraConfig {
+            binary: PathBuf::from("/nonexistent/browser"),
+            storage_dir: None,
+            stealth: false,
+            log_path: None,
+            chromium: true,
+        })
+    }
+
+    #[test]
+    fn find_returns_the_ref_lines_that_match() {
+        let tree = "heading \"Demo\" [ref_1]\n  button \"Start\" [ref_2]\n  option \"Start later\"\nlink \"Docs\" [ref_3]";
+        assert_eq!(find_in_tree(tree, "START"), "Found 1 element matching \"START\":\n\nbutton \"Start\" [ref_2]");
+        assert!(find_in_tree(tree, "checkout").starts_with("No elements found matching \"checkout\"."));
+    }
+
+    #[test]
+    fn a_bare_ref_number_is_a_ref() {
+        assert_eq!(normalize_ref("7"), "ref_7");
+        assert_eq!(normalize_ref("ref_7"), "ref_7");
+    }
+
+    /// A wait needs no page, and has the extension's bounds.
+    #[tokio::test]
+    async fn wait_waits_within_the_extensions_bounds() {
+        let b = bridge();
+        assert_eq!(b.execute("wait", &json!({ "ms": 10 }), "s").await.unwrap()["text"], json!("Waited for 0.01 seconds"));
+        assert!(b.execute("wait", &json!({}), "s").await.is_err());
+        assert!(b.execute("wait", &json!({ "ms": 31_000 }), "s").await.is_err());
     }
 
 }

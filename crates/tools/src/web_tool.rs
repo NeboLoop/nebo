@@ -857,32 +857,20 @@ impl WebCore {
             }
         }
 
-        // HUMAN-FLOW SEARCH first (extension tier): land on the homepage, click the
-        // search box, type the query with human cadence, press Enter. Navigating
-        // straight to a results URL with query params is the classic automation
-        // signature — it's how our IP got bot-flagged. Real users never construct
-        // `?q=` URLs by hand.
-        if executor.extension_connected() {
-            if let Some(result) = self
-                .search_via_browser_human(&executor, query, session_id)
-                .await
-            {
-                return result;
-            }
-            tracing::warn!("human search flow failed — falling back to results-URL navigation");
-        } else if executor.cdp_available() {
-            // Obscura (headless, no real Chrome session) is the path most likely to
-            // get bot-flagged — it MUST browse like a human too. Same homepage →
-            // human click → human type → Enter flow, via the CDP tier's humanized
-            // input (curved mouse, click hold, typing cadence). NEVER a ?q= URL.
-            if let Some(result) = self
-                .search_via_cdp_human(&executor, query, session_id)
-                .await
-            {
-                return result;
-            }
-            tracing::warn!("cdp human search flow failed — falling back to results-URL navigation");
+        // HUMAN-FLOW SEARCH first, on whichever browser serves the call: land on
+        // the homepage, click the search box, type the query with human
+        // cadence, press Enter. Navigating straight to a results URL with query
+        // params is the classic automation signature — it's how our IP got
+        // bot-flagged. Real users never construct `?q=` URLs by hand. The
+        // built-in browser (headless, no real Chrome session) is the path most
+        // likely to get flagged, and it speaks the extension's refs too.
+        if let Some(result) = self
+            .search_via_browser_human(&executor, query, session_id)
+            .await
+        {
+            return result;
         }
+        tracing::warn!("human search flow failed — falling back to results-URL navigation");
 
         // Fallback: navigate to the Brave results URL directly. NOT DuckDuckGo:
         // html.duckduckgo.com serves its bot-block "anomaly" page even to a real
@@ -924,8 +912,8 @@ impl WebCore {
         ToolResult::error("browser search yielded no parseable results")
     }
 
-    /// Human-flow Brave search via the extension: homepage → click the search box →
-    /// type the query (the extension adds human mouse paths + typing cadence) →
+    /// Human-flow Brave search: homepage → click the search box → type the
+    /// query (both browsers add human mouse paths + typing cadence) →
     /// Enter → read results. Returns None when any step can't complete (layout
     /// change, box not found, transport failure) — the caller then falls back to
     /// plain results-URL navigation.
@@ -989,54 +977,7 @@ impl WebCore {
             .await
             .ok()?;
         let links = extract_search_links(&evaluate_result_text(&v), "search.brave.com");
-        (links.len() >= 2).then(|| format_search_results(query, &links, "extension-human"))
-    }
-
-    /// Human-flow Brave search via the built-in Obscura browser (CDP tier). Same
-    /// shape as the extension flow, but the headless tier has no element-ref
-    /// surface, so the search box is located by CSS selector — the CDP tier's
-    /// humanized `click` resolves it to a center coordinate and moves there along a
-    /// curved path. Returns None on any miss so the caller falls back to URL nav.
-    async fn search_via_cdp_human(
-        &self,
-        executor: &browser::ActionExecutor,
-        query: &str,
-        session_id: &str,
-    ) -> Option<ToolResult> {
-        executor
-            .execute(
-                "navigate",
-                &serde_json::json!({ "url": "https://search.brave.com/" }),
-                Some(session_id),
-            )
-            .await
-            .ok()?;
-        // Brave's homepage search input — first match of these selectors.
-        let click = serde_json::json!({
-            "selector": "#searchbox, input[name=\"q\"], textarea[name=\"q\"], input[type=\"search\"]"
-        });
-        executor.execute("click", &click, Some(session_id)).await.ok()?;
-        executor
-            .execute("type", &serde_json::json!({ "text": query }), Some(session_id))
-            .await
-            .ok()?;
-        executor
-            .execute("press", &serde_json::json!({ "key": "Enter" }), Some(session_id))
-            .await
-            .ok()?;
-
-        // Let the results page load (Enter submits + navigates), then read it.
-        tokio::time::sleep(std::time::Duration::from_millis(2500)).await;
-        let v = executor
-            .execute(
-                "evaluate",
-                &serde_json::json!({"expression": "document.documentElement.outerHTML"}),
-                Some(session_id),
-            )
-            .await
-            .ok()?;
-        let links = extract_search_links(&evaluate_result_text(&v), "search.brave.com");
-        (links.len() >= 2).then(|| format_search_results(query, &links, "cdp-human"))
+        (links.len() >= 2).then(|| format_search_results(query, &links, "browser-human"))
     }
 
     /// Dispatch to the correct BYOK search API provider.
@@ -1960,13 +1901,14 @@ impl Kind {
     fn description(self) -> String {
         match self {
             Kind::SearchWeb => "Searches the web and returns results with titles, links and snippets.\n\
-                - Use it for anything current or outside what you know: news, prices, versions, people's roles.\n\
-                - Pass several distinct short queries at once (up to 8); they run together. A few keywords each, no chains of site: filters.\n\
+                - Use it first for anything current or outside what you know: news, prices, versions, people's roles.\n\
+                - Pass several distinct short queries at once (up to 8): a few keywords each, no chains of site: filters.\n\
                 - Snippets are short: read a promising result with fetch_url.\n\
                 - Cite the pages you used, with their links, in your answer."
                 .to_string(),
             Kind::FetchUrl => "Fetches a URL and returns its content as text.\n\
-                - A web page comes back as its readable text, not markup; JSON and other text formats come back as they are.\n\
+                - For a URL the owner gave or a search returned. To look something up, search_web first, not a URL you guess.\n\
+                - A web page comes back as readable text; JSON and other text come back as they are.\n\
                 - Read-only (GET). To send data or headers, use http_request.\n\
                 - A page that needs JavaScript or a sign-in comes back empty or partial: open it with browser_open.\n\
                 - A large non-HTML response comes back in windows; pass the `offset` its note gives to read the next one."
@@ -2059,7 +2001,7 @@ impl Kind {
                 "type": "object",
                 "properties": {
                     "url": url,
-                    "offset": {"type": "integer", "minimum": 0, "description": "For a large non-HTML response: the byte offset to read from, as the previous window's note gives it."}
+                    "offset": {"type": "integer", "minimum": 0, "description": "The byte offset the previous window's note gives."}
                 },
                 "required": ["url"]
             }),
@@ -3127,7 +3069,7 @@ fn format_search_results(query: &str, results: &[SearchResult], tier: &str) -> T
 fn search_source_label(tier: &str) -> String {
     match tier {
         "janus" => "the platform search API".to_string(),
-        "browser-nav" | "extension-human" | "cdp-human" => "the browser".to_string(),
+        "browser-nav" | "browser-human" => "the browser".to_string(),
         "brave-scrape" => "the direct Brave scrape".to_string(),
         "ddg-scrape" => "the direct DuckDuckGo scrape".to_string(),
         t if t.starts_with("search-") => {
@@ -3863,7 +3805,7 @@ mod wording_tests {
     fn search_source_labels_are_plain() {
         assert_eq!(search_source_label("janus"), "the platform search API");
         assert_eq!(search_source_label("search-brave"), "your search API key (brave)");
-        assert_eq!(search_source_label("cdp-human"), "the browser");
+        assert_eq!(search_source_label("browser-human"), "the browser");
     }
 }
 
