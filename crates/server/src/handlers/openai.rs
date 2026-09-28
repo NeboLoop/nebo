@@ -384,6 +384,7 @@ async fn start_employee_run(
             audience: None,
             cwd: None,
             model_override: None,
+            client_id: None,
         },
     )
     .await?;

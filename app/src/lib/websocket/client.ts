@@ -8,6 +8,7 @@ import { storage } from '$lib/storage';
 
 import { logger } from '$lib/monitoring/logger';
 import { sendClientEvent } from '$lib/api/gocliRequest';
+import { clientId } from './origin';
 
 const log = logger.child({ component: 'WebSocket' });
 
@@ -135,10 +136,12 @@ class WebSocketClient {
 
 				// Send auth token if available, otherwise just connect.
 				// Server allows unauthenticated local connections (all HTTP API routes are public).
+				// Either way the page names itself, so work it starts over this
+				// socket opens its surfaces here and nowhere else (./origin.ts).
 				const authToken = this.authToken || storage.get('nebo_token');
 				const msg = authToken
-					? { type: 'auth', data: { token: authToken }, timestamp: new Date().toISOString() }
-					: { type: 'connect', timestamp: new Date().toISOString() };
+					? { type: 'auth', data: { token: authToken, client_id: clientId }, timestamp: new Date().toISOString() }
+					: { type: 'connect', data: { client_id: clientId }, timestamp: new Date().toISOString() };
 				const payload = JSON.stringify(msg);
 				log.info('WS sending handshake (' + msg.type + '): ' + payload.substring(0, 120));
 				try {

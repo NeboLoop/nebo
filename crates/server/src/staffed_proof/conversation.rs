@@ -349,6 +349,7 @@ impl<'a> Rig<'a> {
             audience: None,
             cwd: None,
             model_override: None,
+            client_id: None,
         };
         crate::chat_dispatch::run_chat(&self.nebo.state, config).await;
     }
@@ -1457,6 +1458,7 @@ async fn a_woken_turn_keeps_the_seat_of_the_conversation_it_continues() {
         audience: None,
         cwd: None,
         model_override: None,
+        client_id: None,
     };
     crate::chat_dispatch::run_chat(&nebo.state, config).await;
     rig.until(20, "the channel's first turn ends", || {

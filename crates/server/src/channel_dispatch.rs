@@ -130,6 +130,7 @@ impl agent::ChannelDispatcher for ChannelDispatchImpl {
                 audience: None,
                 cwd: None,
                 model_override: None,
+                client_id: None,
             };
             let channel = channel_kind.as_str();
 

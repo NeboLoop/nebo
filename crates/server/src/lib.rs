@@ -796,11 +796,13 @@ async fn handle_comm_install_event(
                 .ok_or_else(|| format!("artifact {} has no install code", event.tool_id))?;
             let (code_type, validated) =
                 codes::detect_code(code).ok_or_else(|| format!("invalid install code: {code}"))?;
+            // A hire on the owner's account (the phone, the website): no
+            // client on this server asked, so none opens an install surface.
             codes::handle_code(
                 state,
                 code_type,
                 validated,
-                &format!("install-event-{}", event.tool_id),
+                &handlers::ws::EventOrigin::unclaimed(format!("install-event-{}", event.tool_id)),
             )
             .await;
             Ok(())
@@ -3854,8 +3856,7 @@ async fn try_handle_comm_control(
             "deny"
         };
         state.pending_comm_approvals.lock().await.remove(session_key);
-        if let Some(tx) = state.approval_channels.lock().await.remove(&request_id) {
-            let _ = tx.send(decision.to_string());
+        if crate::chat_dispatch::answer_approval(state, &request_id, decision).await {
             tracing::info!(
                 session = %session_key,
                 decision,
@@ -4350,6 +4351,7 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
             audience: None,
             cwd: None,
             model_override: None,
+            client_id: None,
         };
 
         chat_dispatch::run_chat(&state, config).await;
@@ -4533,6 +4535,7 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
             audience: None,
             cwd: None,
             model_override: None,
+            client_id: None,
         };
 
         chat_dispatch::run_chat(&state, config).await;
@@ -4815,6 +4818,7 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
                 audience: None,
                 cwd: None,
                 model_override: None,
+                client_id: None,
             };
 
             chat_dispatch::run_chat(&state, config).await;
@@ -4927,6 +4931,7 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
             audience: None,
             cwd: None,
             model_override: None,
+            client_id: None,
         };
 
         chat_dispatch::run_chat(&state, config).await;
@@ -5730,6 +5735,7 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
                 audience: None,
                 cwd: None,
                 model_override: None,
+                client_id: None,
             };
 
             chat_dispatch::run_chat(&state, config).await;

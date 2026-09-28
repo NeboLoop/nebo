@@ -350,6 +350,7 @@ pub(crate) async fn run_in_thread(
         audience: Some(sender_ref.to_string()),
         cwd: None,
         model_override: None,
+        client_id: None,
     };
 
     let rx = run_chat_events(state, config)
@@ -465,14 +466,15 @@ pub(crate) struct OwnerForward<'a> {
 
 impl OwnerForward<'_> {
     pub(crate) fn forward_approval(&self, tc: &ai::ToolCall) {
+        // No client started a coworker's run: the card opens wherever the
+        // owner is.
         self.state.hub.broadcast(
             "approval_request",
-            serde_json::json!({
-                "session_id": self.session_key,
+            crate::handlers::ws::EventOrigin::unclaimed(self.session_key).stamp(serde_json::json!({
                 "request_id": tc.id,
                 "tool": tc.name,
                 "input": tc.input,
-            }),
+            })),
         );
         self.notify_owner(
             &format!("coworker-approval:{}", tc.id),

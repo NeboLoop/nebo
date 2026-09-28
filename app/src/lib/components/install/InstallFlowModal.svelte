@@ -4,7 +4,9 @@
   Replaces the old CodeInstallModal (paste-a-code) and AgentSetupModal (marketplace
   wizard). Three launch modes converge on one phase machine:
 
-    • code      — WS-driven: opens on a pasted install code (nebo:code_processing).
+    • code      — WS-driven: opens on an install code this client submitted (its
+                  code_processing / code_result; another client's never open it,
+                  see $lib/websocket/origin).
     • product   — API-driven: caller sets appId + show; we call installStoreProduct.
     • configure — edit an already-installed agent (existingAgentId); no install.
 
@@ -41,6 +43,7 @@
   import AgentInputForm from '$lib/components/agent/AgentInputForm.svelte';
   import { installFlow } from '$lib/stores/installFlow';
   import { getWebSocketClient } from '$lib/websocket/client';
+  import { opensHere, type EventOrigin } from '$lib/websocket/origin';
 
   type Phase =
     | 'installing'
@@ -73,8 +76,8 @@
 
   // ── Single global instance: no props ────────────────────────────────────────
   // Product/configure opens arrive through the installFlow store; code-paste
-  // installs arrive through window `nebo:code_*` events. Either way this one
-  // mounted modal owns its own visibility, so two modals can never stack.
+  // installs arrive through this client's own `code_*` WS events. Either way this
+  // one mounted modal owns its own visibility, so two modals can never stack.
   let show = $state(false);
   let mode = $state<Mode>('code');
   let appId = $state('');
@@ -95,7 +98,6 @@
   let artifactType = $state('');
   let statusMessage = $state('');
   let errorMessage = $state('');
-  let interactive = $state(true);
 
   // The installed agent we configure + activate. Set from code_result (code),
   // installStoreProduct (product), or existingAgentId (configure).
@@ -257,7 +259,6 @@
     artifactType = '';
     statusMessage = '';
     errorMessage = '';
-    interactive = true;
     agentId = '';
     deps = [];
     depTotal = 0;
@@ -290,10 +291,6 @@
     installFlow.close();
   }
 
-  function autoCloseIfRemote(delay = 1500) {
-    if (!interactive) setTimeout(close, delay);
-  }
-
   // ── Launch ──────────────────────────────────────────────────────────────
   // Every open arrives via the installFlow store. Code-paste opens optimistically
   // (mode 'code') and then the backend's code_*/dep_* WS events drive progress;
@@ -310,7 +307,6 @@
         code: f.code,
         code_type: f.codeType,
         status_message: f.statusMessage,
-        interactive: f.interactive,
       });
       return;
     }
@@ -325,7 +321,6 @@
     oncomplete = f.oncomplete;
     onUninstall = f.onUninstall;
     launched = true;
-    interactive = true;
     codeType = 'agent';
     show = true;
     void startCallerDriven();
@@ -457,13 +452,9 @@
     statusMessage = configuring ? $t('common.saved') : $t('installFlow.installedStatus', { values: { name: artifactName || typeLabel } });
     phase = 'done';
     // Surface any plugins still needing auth on the review screen. (Also refreshed
-    // on dep_cascade_complete; this covers agents with no cascade.)
+    // on dep_cascade_complete; this covers agents with no cascade.) The owner
+    // dismisses it with the footer's Done.
     void refreshAuthNeeded();
-    if (interactive) {
-      // Wait for the user to dismiss (footer Done button).
-    } else {
-      autoCloseIfRemote();
-    }
   }
 
   /** Skip the remaining setup: activate now with defaults; flag the rest for later. */
@@ -552,20 +543,14 @@
   }
 
   // ── Code-mode flow ──────────────────────────────────────────────────────────
-  // Shared by the optimistic store open (installFlow.openCode) and the backend's
-  // `code_processing` WS frame — both converge here so there's one open path.
-  function openCodeFlow(data: {
-    code?: string;
-    code_type?: string;
-    status_message?: string;
-    interactive?: boolean;
-  }) {
+  // Shared by the optimistic store open (installFlow.openCode) and this client's
+  // own `code_processing` WS frame — both converge here so there's one open path.
+  function openCodeFlow(data: { code?: string; code_type?: string; status_message?: string }) {
     if (mode !== 'code') return;
     reset();
     code = data?.code || '';
     codeType = data?.code_type || '';
     statusMessage = data?.status_message || $t('installFlow.processing');
-    interactive = data?.interactive !== false;
     show = true;
 
     if (installTimeout) clearTimeout(installTimeout);
@@ -575,17 +560,22 @@
       if (phase === 'installing') {
         statusMessage = $t('installFlow.installedFinalizing', { values: { type: typeLabel } });
         phase = 'done';
-        autoCloseIfRemote(2000);
       }
     }, 10_000);
   }
 
+  // An install another client started (the phone, a second window) or that no
+  // client started (a hire on the owner's account, an employee's own call) is
+  // theirs: it never opens here, and its result never lands in this modal.
   function handleCodeProcessing(e: Event) {
-    openCodeFlow((e as CustomEvent).detail);
+    const data = (e as CustomEvent).detail as EventOrigin & { code?: string; code_type?: string; status_message?: string };
+    if (!opensHere(data, 'nowhere')) return;
+    openCodeFlow(data);
   }
 
   async function handleCodeResult(e: Event) {
     if (mode !== 'code') return;
+    if (!opensHere((e as CustomEvent).detail as EventOrigin, 'nowhere')) return;
     if (installTimeout) {
       clearTimeout(installTimeout);
       installTimeout = null;
@@ -620,7 +610,6 @@
     } else {
       statusMessage = message || $t('installFlow.installedStatus', { values: { name: artifactName || typeLabel } });
       phase = 'done';
-      autoCloseIfRemote();
     }
   }
 
@@ -1064,7 +1053,7 @@
         <div class="shrink-0 flex justify-end px-5 py-3 border-t border-base-content/10">
           <button type="button" class="btn btn-sm btn-ghost" onclick={close}>{$t('common.close')}</button>
         </div>
-      {:else if phase === 'done' && interactive}
+      {:else if phase === 'done'}
         <div class="shrink-0 flex justify-end px-5 py-3 border-t border-base-content/10">
           <button type="button" class="btn btn-sm btn-primary" disabled={cascadePending} onclick={() => { const id = agentId; close(); oncomplete?.(id || undefined); }}>{$t('common.done')}</button>
         </div>

@@ -86,6 +86,21 @@ pub(crate) async fn answer_ask(state: &AppState, request_id: &str, value: String
     tx.send(value).is_ok()
 }
 
+/// The ONE way an approval card is answered, whichever surface the answer
+/// came from (the app's approval modal, a loop reply): the gated call's
+/// oneshot receives the decision ("once", "always" or "deny") and every
+/// client still showing the card closes it (`approval_resolved`). Returns
+/// false when nothing was waiting on that request id.
+pub(crate) async fn answer_approval(state: &AppState, request_id: &str, decision: &str) -> bool {
+    state.pending_tool_approvals.lock().await.remove(request_id);
+    let tx = state.approval_channels.lock().await.remove(request_id);
+    state.hub.broadcast(
+        "approval_resolved",
+        serde_json::json!({ "request_id": request_id, "decision": decision }),
+    );
+    tx.is_some_and(|tx| tx.send(decision.to_string()).is_ok())
+}
+
 /// A plugin landed on this Nebo, by whatever door: every question parked on
 /// an install card for it is answered "installed", exactly as the card's own
 /// button would have. Live (2026-09-22): the owner pasted the card's code in
@@ -271,6 +286,11 @@ pub struct ChatConfig {
     /// Explicit model for this run (the harness's `--model`); wins over the
     /// entity's model preference. None = the selector's choice.
     pub model_override: Option<String>,
+    /// The client that sent the owner's message (`EventOrigin::client_id`):
+    /// an approval the run asks for opens on that client. None when no
+    /// client started the run (a schedule, a channel, a coworker), and its
+    /// approvals open wherever the owner is.
+    pub client_id: Option<String>,
 }
 
 /// The model one conversation runs at, if its owner picked one from the
@@ -538,6 +558,10 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
     let ask_channels = state.ask_channels.clone();
     let run_registry = state.run_registry.clone();
     let approvals_agent_id = config.agent_id.clone();
+    let approvals_origin = crate::handlers::ws::EventOrigin {
+        client_id: config.client_id.clone(),
+        session_id: config.session_key.clone(),
+    };
     // The loop plugin serves loop conversations only: a reply routed to
     // another channel (email) never reaches it, not even as a typing signal.
     let comm_manager = if config.comm_reply.as_ref().is_some_and(|c| c.provider == "neboai") {
@@ -1105,14 +1129,13 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                 );
                                 hub.broadcast(
                                     "approval_request",
-                                    serde_json::json!({
-                                        "session_id": sid,
+                                    approvals_origin.stamp(serde_json::json!({
                                         "request_id": tc.id,
                                         "tool": tc.name,
                                         "input": tc.input,
                                         // Present when several gated calls share this card.
                                         "batch": event.widgets.as_ref().and_then(|w| w.get("batch").cloned()),
-                                    }),
+                                    })),
                                 );
                                 // Relay the approval into the loop conversation
                                 // (personal contexts only) — otherwise the run
@@ -1770,6 +1793,7 @@ pub async fn compact(state: &AppState, session_key: &str, agent_id: &str, instru
         audience: None,
         cwd: None,
         model_override: None,
+        client_id: None,
     };
     let (_, run_handle) = register_run(state, &config).await;
     let mut req = turn_request(state, &config, &run_handle);

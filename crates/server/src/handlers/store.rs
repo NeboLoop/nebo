@@ -367,6 +367,7 @@ pub async fn submit_store_product_feedback(
 pub async fn install_store_product(
     State(state): State<AppState>,
     Path(id): Path<String>,
+    headers: axum::http::HeaderMap,
 ) -> HandlerResult<serde_json::Value> {
     let api = build_api_client(&state).map_err(to_error_response)?;
 
@@ -390,11 +391,12 @@ pub async fn install_store_product(
         to_error_response(NeboError::Internal(format!("invalid code format: {code}")))
     })?;
 
-    // Use a synthetic session ID for the install
-    let session_id = format!("store-install-{}", id);
+    // Use a synthetic session ID for the install, asked by the client that
+    // tapped Hire: its install surface is that client's alone.
+    let origin = crate::handlers::ws::EventOrigin::of_request(&headers, format!("store-install-{}", id));
     // The owner's Hire tap is the consent to the line it showed: the code
     // door hires it as the owner's act.
-    crate::codes::handle_code(&state, code_type, validated_code, &session_id).await;
+    crate::codes::handle_code(&state, code_type, validated_code, &origin).await;
 
     // The marketplace product id equals the installed artifact/agent id, so the
     // frontend can address the agent directly instead of matching by name.

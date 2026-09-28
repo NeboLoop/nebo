@@ -30,6 +30,7 @@ use tokio::io::AsyncReadExt;
 use tokio::sync::oneshot;
 use tracing::{info, warn};
 
+use super::ws::EventOrigin;
 use super::{HandlerResult, to_error_response};
 use crate::state::AppState;
 use types::NeboError;
@@ -297,7 +298,7 @@ async fn start_login(
     profile: Option<LoginProfile>,
 ) -> Result<AuthLoginResponse, NeboError> {
     if !crate::middleware::came_through_tunnel(headers) {
-        let link = SignInLink::Broadcast(state.hub.clone());
+        let link = SignInLink::Broadcast(state.hub.clone(), EventOrigin::of_request(headers, String::new()));
         spawn_plugin_login(state, slug, login_command, binary_path, label, profile, link);
         return Ok(AuthLoginResponse { started: true, auth_url: None });
     }
@@ -485,8 +486,9 @@ fn plugin_profile_dir(agent_id: &str, slug: &str, account_label: &str) -> std::p
 
 /// Where a login's sign-in link goes — see [`start_login`].
 enum SignInLink {
-    /// The desktop app opens it from a `plugin_auth_url` broadcast.
-    Broadcast(std::sync::Arc<super::ws::ClientHub>),
+    /// The desktop app opens it from a `plugin_auth_url` broadcast: the
+    /// client that asked, and no other.
+    Broadcast(std::sync::Arc<super::ws::ClientHub>, EventOrigin),
     /// The caller opens it on its own device: the link goes back in the
     /// response. Taken once; the login's two output streams share it.
     Reply(Mutex<Option<oneshot::Sender<String>>>),
@@ -1723,14 +1725,14 @@ pub async fn plugin_proxy(
 /// caller waiting on its login response.
 fn open_auth_url(slug: &str, url: &str, link: &SignInLink) {
     match link {
-        SignInLink::Broadcast(hub) => {
-            info!(plugin = %slug, url = %url, "broadcasting plugin OAuth URL to frontend");
+        SignInLink::Broadcast(hub, origin) => {
+            info!(plugin = %slug, url = %url, client = ?origin.client_id, "broadcasting plugin OAuth URL to frontend");
             hub.broadcast(
                 "plugin_auth_url",
-                serde_json::json!({
+                origin.stamp(serde_json::json!({
                     "plugin": slug,
                     "url": url,
-                }),
+                })),
             );
         }
         SignInLink::Reply(reply) => {
@@ -2267,10 +2269,15 @@ mod tests {
             "a remote login must not open the link on the bot's machine"
         );
 
-        open_auth_url("xero", url, &SignInLink::Broadcast(hub.clone()));
+        let mut asked = axum::http::HeaderMap::new();
+        asked.insert(EventOrigin::CLIENT_HEADER, "desktop-page".parse().unwrap());
+        open_auth_url("xero", url, &SignInLink::Broadcast(hub.clone(), EventOrigin::of_request(&asked, String::new())));
         let opened = desktop.try_recv().expect("the desktop opens its own logins");
         assert_eq!(opened.event_type, "plugin_auth_url");
         assert_eq!(opened.payload["url"], url);
+        // Only the page that asked opens it: a second window, or the phone's
+        // web app on the same bot, reads a login that isn't theirs.
+        assert_eq!(opened.payload["client_id"], "desktop-page");
     }
 
     /// What the remote caller reads: `authUrl` to open; `started` alone when

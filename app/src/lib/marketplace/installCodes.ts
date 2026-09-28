@@ -59,8 +59,6 @@ export function dispatchInstallStart(text: string): boolean {
     code: match.code,
     codeType: match.codeType,
     statusMessage: STATUS_BY_TYPE[match.codeType] || 'Processing...',
-    // User-initiated from the desktop UI — the modal stays open until dismissed.
-    interactive: true,
   });
   return true;
 }

@@ -48,6 +48,60 @@ impl ClientHub {
     }
 }
 
+/// The client and conversation that started a piece of work.
+///
+/// Every event is broadcast to every connected client, but an interactive
+/// surface (an install's progress and setup, a sign-in window, an approval)
+/// belongs to the client that started the work: the owner hired from his
+/// phone and came back to a desktop full of half-finished install dialogs
+/// (2026-09-27). Events about such work carry `client_id` and `session_id`
+/// (see [`EventOrigin::stamp`]), and a client opens the surface only for its
+/// own (`app/src/lib/websocket/origin.ts`, the one place that decides).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct EventOrigin {
+    /// The client that asked: the page's `X-Nebo-Client` header on a
+    /// request, or the `client_id` its socket sent when it connected. None
+    /// when no client on this server asked (a hire on the owner's account,
+    /// a channel, an employee's own call).
+    pub client_id: Option<String>,
+    /// The conversation it was asked in, when there is one.
+    pub session_id: String,
+}
+
+impl EventOrigin {
+    /// The request header a page names itself with.
+    pub const CLIENT_HEADER: &'static str = "x-nebo-client";
+
+    /// The origin of a request: the client its header names, asking in
+    /// `session_id`.
+    pub fn of_request(headers: &axum::http::HeaderMap, session_id: impl Into<String>) -> Self {
+        Self {
+            client_id: headers
+                .get(Self::CLIENT_HEADER)
+                .and_then(|v| v.to_str().ok())
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+                .map(str::to_string),
+            session_id: session_id.into(),
+        }
+    }
+
+    /// Work no client on this server asked for, in `session_id`.
+    pub fn unclaimed(session_id: impl Into<String>) -> Self {
+        Self { client_id: None, session_id: session_id.into() }
+    }
+
+    /// `payload` with this origin on it: `client_id` (null when unclaimed)
+    /// and `session_id`.
+    pub fn stamp(&self, mut payload: serde_json::Value) -> serde_json::Value {
+        if let Some(map) = payload.as_object_mut() {
+            map.insert("client_id".to_string(), serde_json::json!(self.client_id));
+            map.insert("session_id".to_string(), serde_json::json!(self.session_id));
+        }
+        payload
+    }
+}
+
 /// True when a WS handshake may reach a localhost-trust endpoint: either no
 /// Origin header (native clients — the Tauri shell, agents, relays), or an
 /// Origin whose host is loopback/Tauri (our own SPA, dev server, app iframes).
@@ -301,6 +355,7 @@ async fn handle_app_ws_message(state: &AppState, agent_id: &str, text: &str) {
                     audience: None,
                     cwd: None,
                     model_override: None,
+                    client_id: None,
                 };
 
                 run_chat(&state_clone, config).await;
@@ -337,6 +392,10 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState, ua: String) {
     let mut lagged: u64 = 0;
     let mut hub_rx = state.hub.subscribe();
     let seen_ids: Arc<tokio::sync::Mutex<HashSet<String>>> = Default::default();
+    // Who this socket is (see `EventOrigin`): the page names itself in its
+    // handshake; a client that doesn't (the phone app) is this socket alone,
+    // so work it starts is never mistaken for another client's.
+    let mut client_id = format!("socket-{}", uuid::Uuid::new_v4());
 
     // Spawn periodic cleanup of stale runs in the global registry (10 min expiry).
     let cleanup_registry = state.run_registry.clone();
@@ -468,7 +527,7 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState, ua: String) {
                                             seen.clear();
                                         }
                                     }
-                                    dispatch_chat(&state, &parsed).await;
+                                    dispatch_chat(&state, &parsed, &client_id).await;
                                 }
                                 "cancel" => {
                                     let (outcome, session_id) =
@@ -559,6 +618,13 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState, ua: String) {
                                 }
                                 "auth" | "connect" => {
                                     info!("ws received '{}' message, sending auth_ok", msg_type);
+                                    if let Some(named) = parsed["data"]["client_id"]
+                                        .as_str()
+                                        .map(str::trim)
+                                        .filter(|v| !v.is_empty())
+                                    {
+                                        client_id = named.to_string();
+                                    }
                                     let auth_ok = serde_json::json!({"type": "auth_ok"});
                                     match socket
                                         .send(Message::Text(serde_json::to_string(&auth_ok).unwrap().into()))
@@ -681,11 +747,7 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState, ua: String) {
                                     } else {
                                         "once"
                                     };
-                                    state.pending_tool_approvals.lock().await.remove(&request_id);
-                                    let mut channels = state.approval_channels.lock().await;
-                                    if let Some(tx) = channels.remove(&request_id) {
-                                        let _ = tx.send(decision.to_string());
-                                    }
+                                    crate::chat_dispatch::answer_approval(&state, &request_id, decision).await;
                                 }
                                 "presence" => {
                                     let status = parsed["data"]["status"]
@@ -846,6 +908,7 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState, ua: String) {
                                             audience: None,
                                             cwd: None,
                                             model_override: None,
+                                            client_id: None,
                                         };
 
                                         run_chat(&state_clone, config).await;
@@ -1287,6 +1350,9 @@ struct ChatPayload {
     /// App-provided context (the chat embed's `setContext`), shown to the
     /// model beside the prompt.
     app_context: Option<String>,
+    /// The client whose socket sent it (`EventOrigin::client_id`); never
+    /// read from the message itself. None for a platform-written prompt.
+    client_id: Option<String>,
 }
 
 impl ChatPayload {
@@ -1316,6 +1382,7 @@ impl ChatPayload {
                 .get("attachments")
                 .and_then(|v| serde_json::from_value(v.clone()).ok())
                 .unwrap_or_default(),
+            client_id: None,
         }
     }
 }
@@ -1328,8 +1395,10 @@ impl ChatPayload {
 /// cloud bot's report run was killed twice by mobile disconnects. Runs finish
 /// server-side and persist; explicit cancellation goes through the RunRegistry
 /// (the "cancel" WS message), never through connection lifetime.
-async fn dispatch_chat(state: &AppState, msg: &serde_json::Value) {
-    dispatch_payload(state, ChatPayload::parse(&msg["data"]), false).await;
+async fn dispatch_chat(state: &AppState, msg: &serde_json::Value, client_id: &str) {
+    let mut payload = ChatPayload::parse(&msg["data"]);
+    payload.client_id = Some(client_id.to_string());
+    dispatch_payload(state, payload, false).await;
 }
 
 /// Run a platform-written prompt the owner never sees (a goal's kickoff) on
@@ -1358,6 +1427,7 @@ async fn dispatch_payload(state: &AppState, payload: ChatPayload, hidden: bool) 
         cwd,
         model_override,
         app_context,
+        client_id,
     } = payload;
 
     info!(
@@ -1379,7 +1449,8 @@ async fn dispatch_payload(state: &AppState, payload: ChatPayload, hidden: bool) 
 
     // Intercept marketplace codes before they reach the agent
     if let Some((code_type, code)) = crate::codes::detect_code(&prompt) {
-        crate::codes::handle_code(state, code_type, code, &session_id).await;
+        let origin = EventOrigin { client_id: client_id.clone(), session_id: session_id.clone() };
+        crate::codes::handle_code(state, code_type, code, &origin).await;
         return;
     }
 
@@ -1672,6 +1743,7 @@ async fn dispatch_payload(state: &AppState, payload: ChatPayload, hidden: bool) 
             audience: None,
             cwd: (!cwd.is_empty()).then(|| std::path::PathBuf::from(cwd)),
             model_override: (!model_override.is_empty()).then_some(model_override),
+            client_id: client_id.clone(),
         };
         run_chat(state, config).await;
     } else {
@@ -1692,6 +1764,7 @@ async fn dispatch_payload(state: &AppState, payload: ChatPayload, hidden: bool) 
                     &channel,
                     &agent_id,
                     origin_matter.as_deref(),
+                    client_id.clone(),
                 )
                 .await;
             }
@@ -1720,6 +1793,7 @@ async fn fork_mention_chat(
     channel: &str,
     origin_agent_id: &str,
     origin_matter: Option<&str>,
+    client_id: Option<String>,
 ) {
     use crate::chat_dispatch::{ChatConfig, run_chat};
 
@@ -1773,6 +1847,7 @@ async fn fork_mention_chat(
         audience: None,
         cwd: None,
         model_override: None,
+        client_id,
     };
 
     run_chat(state, chat_config).await;
@@ -2078,6 +2153,37 @@ async fn handle_extension_ws(socket: WebSocket, bridge: Arc<browser::ExtensionBr
     }
 
     bridge.disconnect(conn_id).await;
+}
+
+#[cfg(test)]
+mod event_origin_tests {
+    use super::EventOrigin;
+    use axum::http::HeaderMap;
+
+    /// A page names itself on a request; the event about the work it asked
+    /// for carries that name and the conversation, whatever else it says.
+    #[test]
+    fn a_request_names_its_client_on_the_event() {
+        let mut headers = HeaderMap::new();
+        headers.insert(EventOrigin::CLIENT_HEADER, " desktop-page ".parse().unwrap());
+        let origin = EventOrigin::of_request(&headers, "store-install-a1");
+        assert_eq!(origin.client_id.as_deref(), Some("desktop-page"));
+        let payload = origin.stamp(serde_json::json!({ "code": "PLUG-AAAA-0001" }));
+        assert_eq!(payload["client_id"], "desktop-page");
+        assert_eq!(payload["session_id"], "store-install-a1");
+        assert_eq!(payload["code"], "PLUG-AAAA-0001");
+    }
+
+    /// No header (the phone app, a script): no client asked, and the event
+    /// says so rather than leaving the field out.
+    #[test]
+    fn a_request_without_a_name_is_unclaimed() {
+        let mut headers = HeaderMap::new();
+        headers.insert(EventOrigin::CLIENT_HEADER, "".parse().unwrap());
+        assert_eq!(EventOrigin::of_request(&headers, "s"), EventOrigin::unclaimed("s"));
+        let payload = EventOrigin::of_request(&HeaderMap::new(), "s").stamp(serde_json::json!({}));
+        assert!(payload.get("client_id").is_some_and(|v| v.is_null()));
+    }
 }
 
 #[cfg(test)]

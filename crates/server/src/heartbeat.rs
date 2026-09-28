@@ -167,6 +167,7 @@ pub(crate) async fn fire(state: &AppState, entity_type: &str, entity_id: &str) -
         audience: None,
         cwd: None,
         model_override: None,
+        client_id: None,
     };
 
     run_chat(state, config).await;

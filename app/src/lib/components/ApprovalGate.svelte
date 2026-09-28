@@ -7,6 +7,11 @@
   `approval_response`. Mounted once in the root layout so it works regardless of
   which view is open. FIFO queue — one modal at a time.
 
+  Whose card it is: a run the owner started from another client (the phone, a
+  second window) asks there, never here; a run no client started (a schedule, a
+  coworker) asks wherever the owner is ($lib/websocket/origin). The first answer
+  anywhere closes the card everywhere (`approval_resolved`).
+
   Rendering rule: the modal must read like a sentence to a non-technical owner.
   Gated operations carry a model-written `display` headline (real names, real
   amounts); the fact rows below it are computed deterministically from the actual
@@ -19,6 +24,7 @@
   import ApprovalModal from '$lib/components/ApprovalModal.svelte';
   import { onWsEvent } from '$lib/websocket/subscribe';
   import { getWebSocketClient } from '$lib/websocket/client';
+  import { opensHere } from '$lib/websocket/origin';
   import * as api from '$lib/api/nebo';
 
   interface DetailRow {
@@ -136,15 +142,20 @@
     };
   }
 
+  /** Requests already answered somewhere, so a late card never opens. */
+  const resolved = new Set<string>();
+
   onWsEvent<{
     request_id?: string;
     agentName?: string;
     session_id?: string;
+    client_id?: string | null;
     tool?: string;
     input?: Record<string, unknown>;
     batch?: { id: string; tool: string; input?: Record<string, unknown> }[] | null;
   }>('approval_request', async (d) => {
     if (!d?.request_id) return;
+    if (!opensHere(d, 'everywhere')) return;
     // Several gated calls in one step: one card listing each action, one decision.
     const described =
       d.batch && d.batch.length > 1
@@ -162,7 +173,15 @@
       d.agentName ??
       (await resolveAgentName(d.session_id)) ??
       $t('components.approvalGate.yourAgent');
+    if (resolved.has(d.request_id)) return; // answered elsewhere while the name resolved
     queue = [...queue, { requestId: d.request_id, agent, ...described }];
+  });
+
+  // Answered anywhere (here, another client, a loop reply): the card closes.
+  onWsEvent<{ request_id?: string }>('approval_resolved', (d) => {
+    if (!d?.request_id) return;
+    resolved.add(d.request_id);
+    queue = queue.filter((a) => a.requestId !== d.request_id);
   });
 
   function respond(approved: boolean, always: boolean) {
