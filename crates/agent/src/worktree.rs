@@ -463,7 +463,7 @@ pub async fn remove(wt: &Worktree) -> Result<(), String> {
 }
 
 /// Sweep copies a crashed parent left behind under `<data_dir>/worktrees`.
-/// Fail-closed like the reference: a worktree with uncommitted changes or
+/// Fail-closed: a worktree with uncommitted changes or
 /// commits not on any remote is kept; a scratch copy is always kept (there is
 /// no snapshot to compare against once the parent is gone) unless it is
 /// empty. Only `nebo/sa-*` branches are ever deleted. Returns what was removed.

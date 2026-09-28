@@ -948,7 +948,7 @@
     }
   });
 
-  // Follow ("sticky") is an INTENT bit, per the reference ScrollBox model:
+  // Follow ("sticky") is an INTENT bit:
   // set by send / the scroll button / arriving at the bottom, cleared ONLY by
   // explicit user input (wheel up, touch drag) — NEVER inferred from scroll
   // events. Scroll events can come from our own programmatic pins arriving a

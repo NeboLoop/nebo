@@ -6,8 +6,8 @@
 //! so a formatter's or test runner's verdict reaches the model through the
 //! same seam a plugin hook would.
 //!
-//! Exit-code contract. The first two rows are the reference's, kept because
-//! agents that have read its docs assume them. The rest used to be "logged for
+//! Exit-code contract. The first two rows are the common hook convention,
+//! kept because agents already assume them. The rest used to be "logged for
 //! the owner; the model sees nothing", which made the natural `exit 1` on a
 //! failing check the one outcome nobody acted on (live 2026-09-03: a test
 //! runner failed on every edit and the model reported done):
@@ -29,7 +29,7 @@
 //!   - name: cargo-test
 //!     tool: [write_file, edit_file]   # optional filters; omitted = any
 //!     command: cargo test -p web 2>&1 | tail -n 20
-//!     timeout_secs: 600   # default 600; the reference's tool-hook default
+//!     timeout_secs: 600   # default 600: room for a build or a test run
 //! pre_tool:
 //!   - name: no-force-push
 //!     tool: run_command

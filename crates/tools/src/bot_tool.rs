@@ -66,8 +66,8 @@ pub struct StructuredTask {
     /// siblings keyed `subagent:{parent}:sa-{id}` share the parent's visited-page cache.
     pub tab_key: String,
     /// Optional cap on free-phase tool-use turns. `None` → the agent default. Used to
-    /// hold a sub-agent to a single tool call (e.g. the reference deep-research search
-    /// agent does ONE WebSearch per angle, not an open-ended browse loop).
+    /// hold a sub-agent to a single tool call (e.g. a deep-research search helper
+    /// does ONE web search per angle, not an open-ended browse loop).
     pub max_tool_turns: Option<u32>,
 }
 

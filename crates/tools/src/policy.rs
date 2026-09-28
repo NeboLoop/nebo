@@ -350,11 +350,11 @@ pub fn is_destructive_git(cmd: &str) -> bool {
 }
 
 /// Files a shell command writes outside the supervised edit path: `sed -i`
-/// targets, `tee` targets, and `>`/`>>` redirections. The reference applies
-/// `sed -i` in-process so what the user previews is what gets written; ours
-/// refuses `sed -i` (the edit action exists for that) and, for the rest,
-/// refreshes the read ledger so the agent's own shell write is not later
-/// reported to it as someone else's change.
+/// targets, `tee` targets, and `>`/`>>` redirections. `sed -i` is refused
+/// (the edit action exists for that, and what the owner previews there is
+/// what gets written); for the rest, this refreshes the read ledger so the
+/// agent's own shell write is not later reported to it as someone else's
+/// change.
 pub fn shell_write_targets(cmd: &str) -> Vec<String> {
     let mut out = Vec::new();
     let flat = cmd.replace('\n', " ");

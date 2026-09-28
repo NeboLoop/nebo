@@ -105,7 +105,7 @@ pub struct ToolPreExecutePayload {
     pub tool_name: String,
     pub input: serde_json::Value,
     pub session_id: String,
-    /// The reference's hook contract fields; serde defaults keep older
+    /// The hook contract's call and folder fields; serde defaults keep older
     /// plugin callers unchanged.
     #[serde(default)]
     pub tool_use_id: String,
