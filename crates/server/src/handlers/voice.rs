@@ -556,12 +556,12 @@ fn resolve_call_tree(state: &AppState, agent_id: &str, line: &str) -> Option<Cal
 /// answers, the caller's provenance, and the exact tool surface their
 /// delegated runs may use. `None` = the owner's own voice session.
 #[derive(Clone)]
-struct CallerContext {
-    agent_id: String,
-    caller_id: String,
-    business: String,
-    line: String,
-    allowlist: std::collections::HashSet<String>,
+pub(crate) struct CallerContext {
+    pub(crate) agent_id: String,
+    pub(crate) caller_id: String,
+    pub(crate) business: String,
+    pub(crate) line: String,
+    pub(crate) allowlist: std::collections::HashSet<String>,
 }
 
 /// Execute a delegated voice task as a turn and collect the final text. This
@@ -572,10 +572,17 @@ struct CallerContext {
 /// through the one permission check, an explicit tool allowlist, and a
 /// provenance reminder
 /// marking the task as untrusted third-party speech.
-async fn run_delegated_task(
+///
+/// `None` is the owner's own call: the run is his request, the way a message
+/// he typed in his own chat is (`TurnInput::Spoken`), and `said` — what he
+/// said since the call's last reply, from the call's transcript — is what
+/// its owner-intent decisions read. A caller's words are never his: their
+/// run is a platform prompt, and `said` is not used.
+pub(crate) async fn run_delegated_task(
     state: &AppState,
     session_key: &str,
     task: &str,
+    said: &str,
     caller: Option<&CallerContext>,
 ) -> String {
     let owner_agent = types::keyparser::extract_agent_id(session_key);
@@ -628,7 +635,10 @@ async fn run_delegated_task(
         // The task is the voice model's restatement of what was said; the
         // spoken words are already the thread's user row. The model reads
         // the task, the owner never sees it twice.
-        input: agent::harness::TurnInput::Platform { text: task.to_string() },
+        input: match caller {
+            None => agent::harness::TurnInput::Spoken { task: task.to_string(), said: said.to_string() },
+            Some(_) => agent::harness::TurnInput::Platform { text: task.to_string() },
+        },
         seat: agent::harness::SeatRequest {
             agent_id: agent_id.clone(),
             user_id: String::new(),
@@ -986,12 +996,22 @@ fn voice_cancel_line(cancelled: bool, before: Option<&agent::harness::session_ga
 /// transcript lands after the reply starts). That speech, and any delegation
 /// it makes, belongs to the utterance's turn, so it is held apart until the
 /// user row is written: rows land in utterance order, not arrival order.
+///
+/// It is also the call's one record of the owner's own words: what he said
+/// since the last reply (`said`, what a delegated run's owner-intent
+/// decision reads instead of the voice model's restatement) and when he
+/// last spoke (`spoke_at`, a spoken answer to an ask counts only after it).
 #[derive(Default)]
 struct TurnLedger {
     /// An utterance is in progress: started, its end not seen yet.
     open: bool,
     /// Cumulative transcript of the utterance in progress.
     user: String,
+    /// The finished utterances since the model's last reply, in order: what
+    /// the user said that the next reply answers.
+    said: String,
+    /// When the user last spoke (unix seconds).
+    spoke_at: i64,
     /// The model's reply to the utterance in progress started before the
     /// utterance ended.
     answering: bool,
@@ -1018,12 +1038,14 @@ impl TurnLedger {
     /// The user started speaking.
     fn utterance_started(&mut self) {
         self.open = true;
+        self.spoke_at = chrono::Utc::now().timestamp();
     }
 
     /// The utterance's words so far (cumulative: replaces).
     fn words(&mut self, text: &str) {
         self.open = true;
         self.user = text.to_string();
+        self.spoke_at = chrono::Utc::now().timestamp();
     }
 
     /// The model started a reply. Before the utterance in progress has
@@ -1062,14 +1084,25 @@ impl TurnLedger {
         let early = std::mem::take(&mut self.early);
         self.open = false;
         self.answering = false;
+        self.spoke_at = chrono::Utc::now().timestamp();
         if self.user.trim().is_empty() {
             // No words: whatever answered it continues the current turn.
             join_transcript(&mut self.turn.text, &early.text);
             self.turn.delegated |= early.delegated;
             return Vec::new();
         }
+        // The model replied since the user's last words: these start what
+        // the next reply answers.
+        if self.turn.delegated || !self.turn.text.trim().is_empty() {
+            self.said.clear();
+        }
+        let words = std::mem::take(&mut self.user).trim().to_string();
+        if !self.said.is_empty() {
+            self.said.push('\n');
+        }
+        self.said.push_str(&words);
         let mut rows = self.close_assistant();
-        rows.push(Row::User(std::mem::take(&mut self.user).trim().to_string()));
+        rows.push(Row::User(words));
         self.turn = early;
         rows
     }
@@ -2069,7 +2102,9 @@ async fn handle_conversation_session(
 
     // Runs one tool call off the select loop; its output comes back through
     // `tool_done_tx`.
-    let spawn_tool = |call_id: String, name: String, arguments: String| {
+    // `said` is what the owner said since the call's last reply
+    // (`TurnLedger::said`), read when the call starts.
+    let spawn_tool = |call_id: String, name: String, arguments: String, said: String| {
         let state = state.clone();
         let ctx = ctx.clone();
         let done = tool_done_tx.clone();
@@ -2119,7 +2154,7 @@ async fn handle_conversation_session(
                     {
                         warn!(error = %e, "voice: could not open the lead's team seat");
                     }
-                    run_delegated_task(&state, &ctx.session_key, task, caller.as_ref()).await
+                    run_delegated_task(&state, &ctx.session_key, task, &said, caller.as_ref()).await
                 };
                 // On the owner's own call, what the run left waiting on his
                 // OK, with the id his spoken answer goes to.
@@ -2143,9 +2178,6 @@ async fn handle_conversation_session(
     // yet. They start when it is (TranscriptionEnd), so the spoken request
     // lands before the run's rows.
     let mut held_runs: Vec<(String, String, String)> = Vec::new();
-    // When the owner last spoke (unix seconds): a spoken answer to an ask
-    // counts only if he spoke after it was raised.
-    let mut owner_spoke_at: i64 = 0;
 
     loop {
         tokio::select! {
@@ -2159,13 +2191,11 @@ async fn handle_conversation_session(
                     ConversationEvent::SessionInitialized =>
                         Some(serde_json::json!({"type": "session_initialized"})),
                     ConversationEvent::TranscriptionStart => {
-                        owner_spoke_at = chrono::Utc::now().timestamp();
                         ledger.utterance_started();
                         Some(serde_json::json!({"type": "transcription_start"}))
                     }
                     // Cumulative transcript — the client replaces, never appends.
                     ConversationEvent::TranscriptionText(text) => {
-                        owner_spoke_at = chrono::Utc::now().timestamp();
                         ledger.words(&text);
                         Some(serde_json::json!({"type": "transcription_text", "text": text}))
                     }
@@ -2173,11 +2203,10 @@ async fn handle_conversation_session(
                     // finished transcript): its user row, then the runs that
                     // waited for it.
                     ConversationEvent::TranscriptionEnd => {
-                        owner_spoke_at = chrono::Utc::now().timestamp();
                         let rows = ledger.user_final();
                         sink.write(&state, &mut socket, rows).await;
                         for (call_id, name, arguments) in held_runs.drain(..) {
-                            spawn_tool(call_id, name, arguments);
+                            spawn_tool(call_id, name, arguments, ledger.said.clone());
                         }
                         Some(serde_json::json!({"type": "transcription_end"}))
                     }
@@ -2268,7 +2297,7 @@ async fn handle_conversation_session(
                                 &state.permission_asks,
                                 &ctx.session_key,
                                 &decode_tool_arguments(&arguments),
-                                owner_spoke_at,
+                                ledger.spoke_at,
                             );
                             info!(session_key = %ctx.session_key, outcome = %line, "voice answer to an ask");
                             if tool_done_tx
@@ -2346,7 +2375,7 @@ async fn handle_conversation_session(
                         if name == "nebo" && ledger.call(team.is_none()) {
                             held_runs.push((call_id, name, arguments));
                         } else {
-                            spawn_tool(call_id, name, arguments);
+                            spawn_tool(call_id, name, arguments, ledger.said.clone());
                         }
                         None
                     }
@@ -2438,7 +2467,7 @@ async fn handle_conversation_session(
     sink.write(&state, &mut socket, rows).await;
     // A run the owner asked for still runs when the call ends first.
     for (call_id, name, arguments) in held_runs.drain(..) {
-        spawn_tool(call_id, name, arguments);
+        spawn_tool(call_id, name, arguments, ledger.said.clone());
     }
     if let Some(cid) = chat_id.as_deref() {
         // A short call can end before any assistant row was written: last
@@ -2577,6 +2606,50 @@ mod voice_prompt_tests {
         l.speech("Here they are.");
         assert!(!l.call(true));
         assert!(l.flush().is_empty());
+    }
+
+    /// What the owner said since the last reply is his own words, from the
+    /// transcript (what a delegated run's save decision reads, never the
+    /// voice model's task): utterances with no reply between them are read
+    /// together, and a reply, spoken or delegated, starts it again. When he
+    /// last spoke moves with every utterance.
+    #[test]
+    fn ledger_keeps_what_the_owner_said_since_the_last_reply() {
+        let mut l = TurnLedger::default();
+        assert_eq!((l.said.as_str(), l.spoke_at), ("", 0));
+        l.utterance_started();
+        assert!(l.spoke_at > 0, "starting to speak is speaking");
+        l.words("what's on my calendar");
+        l.user_final();
+        assert_eq!(l.said, "what's on my calendar");
+        l.reply_started();
+        l.speech("You have nothing today.");
+        // A reply came: his next words start what he said.
+        l.utterance_started();
+        l.words("save my home address");
+        l.user_final();
+        assert_eq!(l.said, "save my home address");
+        // No reply between two utterances: both are what he said.
+        l.utterance_started();
+        l.words("for everyone");
+        l.user_final();
+        assert_eq!(l.said, "save my home address\nfor everyone");
+        // The model delegates, answering before his words end: those words
+        // are still what that run answers.
+        l.utterance_started();
+        l.words("the one on Juniper Lane");
+        assert!(l.call(true), "the run waits for the user row");
+        l.user_final();
+        assert_eq!(l.said, "save my home address\nfor everyone\nthe one on Juniper Lane");
+        // After a delegated reply, his next words start it again.
+        l.utterance_started();
+        l.words("thanks");
+        l.user_final();
+        assert_eq!(l.said, "thanks");
+        // An utterance with no words changes nothing he said.
+        l.utterance_started();
+        l.user_final();
+        assert_eq!(l.said, "thanks");
     }
 
     /// The order xAI can send: the reply starts, and even delegates, before

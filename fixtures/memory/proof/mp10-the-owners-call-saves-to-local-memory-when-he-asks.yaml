@@ -1,0 +1,13 @@
+id: mp10-the-owners-call-saves-to-local-memory-when-he-asks
+name: "MP10 — The owner's call saves to local memory when he asks"
+description: |
+  Live 2026-09-28: on a voice call with his assistant (Separate conversations) the owner asked
+  twice to save his home address for everyone. Every save was refused as not his request, because
+  the call's task reached the run as a platform prompt; the assistant saved it privately and told
+  him Nebo blocks shared memory. A task from the owner's own call is his request, like a message
+  he typed: the save lands in local memory, nothing in the private memory. A phone caller's task
+  on the same line is refused, never told to save it elsewhere, and writes nothing. A Confidential
+  employee's own `scope: "local"` on his call stays in its conversation.
+target_component: memory
+proof: staffed_proof::memory::the_owners_call_saves_to_local_memory_when_he_asks
+conversation: []

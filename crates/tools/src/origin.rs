@@ -251,11 +251,11 @@ pub struct ToolContext {
     /// heartbeat, coworker, voice, MCP, the local API). Recorded with every
     /// decision.
     pub door: types::permissions::Door,
-    /// The owner's own message, in the owner's own chat, started this turn:
-    /// the call serves his request, so his words are his consent to
-    /// replacing what he asked to have changed. Set only by the turn
-    /// (`owner_speaks`); every other run, helper, coworker, channel,
-    /// visitor, caller and unattended door leaves it false.
+    /// The owner's own message, in the owner's own chat, or his own call
+    /// started this turn: the call serves his request, so his words are his
+    /// consent to replacing what he asked to have changed. Set only by the
+    /// turn (`owner_speaks`); every other run, helper, coworker, channel,
+    /// visitor, phone caller and unattended door leaves it false.
     pub owner_request: bool,
     /// The owner's own words this turn asked for what is remembered to be
     /// kept for everyone on this Nebo (the turn's save decision). A

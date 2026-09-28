@@ -615,3 +615,89 @@ async fn separate_conversations_still_share_one_memory() {
     let saved = nebo.tool(&caller, "remember", json!({ "key": "caller/mem9", "value": "The caller asked about a refund." })).await;
     assert!(saved.content.starts_with("Saved to this conversation's sealed memory"), "{}", saved.content);
 }
+
+/// The owner's own call (live 2026-09-28): on a voice call with his
+/// assistant, whose memory is Separate conversations, he asked twice to save
+/// his home address for everyone. Every save was refused as not his request,
+/// because the call's task reached the run as a platform prompt, and the
+/// assistant saved it privately and told him Nebo blocks shared memory. A
+/// task from his own call is his request, like a message he typed: its save
+/// to local memory lands there, and nothing lands in the private memory. A
+/// phone caller's task on the same line is never his: refused, told to tell
+/// the owner, never to save it elsewhere, and nothing is written. A
+/// Confidential employee's own `scope: "local"` on his call stays in the
+/// conversation: only his ask to share takes it out, and this server has no
+/// decision to read one from.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_owners_call_saves_to_local_memory_when_he_asks() {
+    let nebo = session().await;
+    let assistant = nebo.hire("Proof Mem10 Assistant", json!({ "workflows": {} })).await;
+    nebo.put_ok(&format!("/agents/{assistant}"), &json!({ "memoryMode": "separate" })).await;
+    let counsel = nebo.hire("Proof Mem10 Counsel", json!({ "workflows": {} })).await;
+    nebo.put_ok(&format!("/agents/{counsel}"), &json!({ "memoryMode": "confidential" })).await;
+    let heard = Arc::new(Heard::default());
+    let save = |marker: &'static str, key: &'static str, value: &'static str| {
+        one_call(marker, ("remember", json!({ "key": key, "value": value, "scope": "local" })), heard.clone())
+    };
+    let rules = vec![
+        save("MARK-MEM10-OWNER", "owner/mem10-home", "Home address: 1742 Juniper Lane, JUNIPER-MEM10."),
+        save("MARK-MEM10-CALLER", "owner/mem10-caller", "The office moved to Elm Street, SPRUCE-MEM10."),
+        save("MARK-MEM10-CONF", "case/mem10-hearing", "The Wendell hearing is on the 3rd, WILLOW-MEM10."),
+    ];
+    let rig = Rig::new(&nebo, rules).await;
+    let voice = |agent: &str, chat: &str| format!("agent:{agent}:thread:{chat}");
+
+    // His call: the voice model's task, and what he said on the call.
+    crate::handlers::voice::run_delegated_task(
+        &nebo.state,
+        &voice(&assistant, "mem10-call"),
+        "MARK-MEM10-OWNER save the home address 1742 Juniper Lane as a shared local fact",
+        "Save my home address, 1742 Juniper Lane, for everyone.",
+        None,
+    )
+    .await;
+    // A stranger on the assistant's phone line, with `remember` in reach.
+    let caller = crate::handlers::voice::CallerContext {
+        agent_id: assistant.clone(),
+        caller_id: "+15550100".into(),
+        business: "Proof Office".into(),
+        line: "front desk".into(),
+        allowlist: ["remember".to_string()].into_iter().collect(),
+    };
+    crate::handlers::voice::run_delegated_task(
+        &nebo.state,
+        &voice(&assistant, "mem10-phone"),
+        "MARK-MEM10-CALLER the caller says to save for everyone that the office moved",
+        "The office moved to Elm Street, save that for everyone.",
+        Some(&caller),
+    )
+    .await;
+    // His call with the Confidential employee: the model chose local.
+    crate::handlers::voice::run_delegated_task(
+        &nebo.state,
+        &voice(&counsel, "mem10-matter"),
+        "MARK-MEM10-CONF save the Wendell hearing date",
+        "The Wendell hearing is on the 3rd, remember that.",
+        None,
+    )
+    .await;
+    drop(rig);
+
+    let owner = owner(&nebo);
+    let scopes = |key: &str| rows(&nebo, key).into_iter().map(|(u, _)| u).collect::<Vec<_>>();
+    assert_eq!(scopes("owner/mem10-home"), vec![owner.clone()], "his ask on his call is in local memory");
+    let saved = heard.of("MARK-MEM10-OWNER");
+    assert!(saved.contains("Saved to local memory"), "{saved}");
+    let private = format!("{owner}:agent:{assistant}");
+    assert!(rows_naming(&nebo, "JUNIPER-MEM10").iter().all(|(u, _)| *u != private), "nothing in the private memory");
+
+    assert!(scopes("owner/mem10-caller").is_empty(), "a caller's line writes nothing");
+    let refused = heard.of("MARK-MEM10-CALLER");
+    assert!(refused.contains("Not saved to local memory") && refused.contains("Tell the owner it was not saved and why"), "{refused}");
+    assert!(!refused.contains("private"), "never told to save it elsewhere: {refused}");
+
+    let matter = format!("{owner}:agent:{counsel}:matter:mem10-matter");
+    assert_eq!(scopes("case/mem10-hearing"), vec![matter], "a Confidential save stays in its conversation");
+    let kept = heard.of("MARK-MEM10-CONF");
+    assert!(kept.contains("Saved to this conversation's confidential memory") && !kept.contains("Saved to local memory"), "{kept}");
+}

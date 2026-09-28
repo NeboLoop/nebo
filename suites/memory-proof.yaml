@@ -19,3 +19,4 @@ fixtures:
   - ../fixtures/memory/proof/mp07-a-recipe-saved-for-everyone-is-found-by-another-employee.yaml
   - ../fixtures/memory/proof/mp08-a-confidential-employees-conversations-never-see-each-other.yaml
   - ../fixtures/memory/proof/mp09-separate-conversations-still-share-one-memory.yaml
+  - ../fixtures/memory/proof/mp10-the-owners-call-saves-to-local-memory-when-he-asks.yaml

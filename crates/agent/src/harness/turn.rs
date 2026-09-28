@@ -373,13 +373,14 @@ fn given_text(request: &ai::ChatRequest) -> Arc<str> {
     given.into()
 }
 
-/// Whether the owner wrote this turn's input in their own chat: an owner
-/// chat turn from the owner's app, not a chat channel (Slack, Discord, a
-/// loop), a coworker, a visitor or a caller. Only such input is stored as
-/// the owner's word (a consent reads nothing else).
+/// Whether the owner asked for this turn himself: his message in his own
+/// chat, or a task from his own call (`TurnInput::Spoken`); not a chat
+/// channel (Slack, Discord, a loop), a coworker, a visitor or a phone
+/// caller. Only a typed message is stored as the owner's word (a consent
+/// reads nothing else); a spoken one is already the thread's row.
 fn owner_speaks(req: &TurnRequest) -> bool {
     matches!(req.mode, TurnMode::Chat)
-        && matches!(req.input, TurnInput::Owner { .. })
+        && matches!(req.input, TurnInput::Owner { .. } | TurnInput::Spoken { .. })
         && req.seat.origin == tools::Origin::User
         && req.seat.audience.is_none()
 }
@@ -439,7 +440,7 @@ fn queue_input(h: &Harness, session_id: &str, req: &TurnRequest) {
                 )
                 .map(|_| ())
         }
-        TurnInput::Platform { text } => h
+        TurnInput::Platform { text } | TurnInput::Spoken { task: text, .. } => h
             .sessions
             .append_message(session_id, "user", text, None, None, Some(r#"{"isMeta":true,"hiddenPrompt":true}"#))
             .map(|_| ()),
@@ -791,7 +792,9 @@ pub(crate) async fn prepare(
     surfaced.extend(memory.identity_ids.iter().copied());
     // Whether the owner's words ask for a save, and whether they give a
     // command to run, is decided in one call while the steps run: each
-    // question when the owner speaks and its tool is the employee's.
+    // question when the owner speaks and its tool is the employee's. His
+    // words are his typed message, or what he said on his call, never the
+    // voice model's restatement of it.
     let can_save = !employee.linked
         && !seat.memory.writes_disabled
         && grant.mode != Mode::Plan
@@ -799,7 +802,7 @@ pub(crate) async fn prepare(
         && req.seat.tool_allowlist.as_ref().is_none_or(|allowed| allowed.contains("remember"))
         && h.tools.get("remember").await.is_some();
     let owner_words = match &req.input {
-        TurnInput::Owner { text, .. } => Some(text.as_str()),
+        TurnInput::Owner { text, .. } | TurnInput::Spoken { said: text, .. } => Some(text.as_str()),
         _ => None,
     };
     let can_run = !employee.linked
@@ -921,7 +924,7 @@ async fn store_input(h: &Harness, session_id: &str, req: &TurnRequest) -> Result
     let (text, images, attachments, hidden, coworker): (&str, &[ai::ImageContent], &[comm::wire::Attachment], bool, Option<&str>) =
         match &req.input {
             TurnInput::Owner { text, images, attachments } => (text, images, attachments, false, None),
-            TurnInput::Platform { text } => (text, &[], &[], true, None),
+            TurnInput::Platform { text } | TurnInput::Spoken { task: text, .. } => (text, &[], &[], true, None),
             TurnInput::Coworker { from, text } => (text, &[], &[], false, Some(from.as_str())),
             TurnInput::Notification(c) => {
                 return h
@@ -6750,9 +6753,10 @@ mod tests {
         assert!(shown_text(&events).ends_with(crate::harness::memory_save::NOT_SAVED));
     }
 
-    /// `remember` as the turn hands it over, noting whether each call came
-    /// with the owner's ask to share (`ToolContext::owner_shares`).
-    struct SharesSeen(Arc<Mutex<Vec<bool>>>);
+    /// `remember` as the turn hands it over, noting whether each call served
+    /// the owner's own request and came with his ask to share
+    /// (`ToolContext::owner_request`, `ToolContext::owner_shares`).
+    struct SharesSeen(Arc<Mutex<Vec<(bool, bool)>>>);
 
     impl tools::registry::DynTool for SharesSeen {
         fn name(&self) -> &str {
@@ -6774,7 +6778,7 @@ mod tests {
             _input: serde_json::Value,
         ) -> Pin<Box<dyn Future<Output = tools::ToolResult> + Send + 'a>> {
             Box::pin(async move {
-                self.0.lock().unwrap().push(ctx.owner_shares);
+                self.0.lock().unwrap().push((ctx.owner_request, ctx.owner_shares));
                 tools::ToolResult::ok("Saved to memory: [tacit/general] office/friday-close = 4pm")
             })
         }
@@ -6800,7 +6804,55 @@ mod tests {
                 h = h.with_decide(jev_saving(scope).await);
             }
             run_turn(&h, owner("The office closes at 4pm on Fridays.")).await;
-            assert_eq!(*seen.lock().unwrap(), vec![shares], "decision {decided:?}");
+            assert_eq!(*seen.lock().unwrap(), vec![(true, shares)], "decision {decided:?}");
+        }
+    }
+
+    /// A task from the owner's own call is his request, the way a message he
+    /// typed is (live 2026-09-28: each save to local memory he asked for on
+    /// a call was refused as not his). The save decision reads what he said
+    /// on the call, never the voice model's restatement, so his ask to share
+    /// is his words. The same task on a phone caller's line is never the
+    /// owner's: no request, no decision.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_task_from_the_owners_call_is_his_request() {
+        const SAID: &str = "Save my home address, 1742 Juniper Lane, for everyone.";
+        const TASK: &str = "save the home address 1742 Juniper Lane as a shared local fact";
+        for origin in [tools::Origin::User, tools::Origin::Caller] {
+            let seen = Arc::new(Mutex::new(Vec::new()));
+            let model = Scripted::new(vec![
+                Step::Call("remember", serde_json::json!({"key": "owner/home-address", "value": "1742 Juniper Lane", "scope": "local"})),
+                Step::Say("Saved."),
+            ]);
+            let (jev, read) = serve_jev(|q| {
+                if q == "save" {
+                    serde_json::json!({"type": "choice", "choice": "local", "confidence": 0.9, "probabilities": {"private": 0.05, "local": 0.9, "none": 0.05}})
+                } else {
+                    serde_json::json!({"type": "noul", "noul": 0.02})
+                }
+            })
+            .await;
+            let h = harness_with(&model, vec![Box::new(SharesSeen(seen.clone()))]).await.with_decide(Arc::new(jev));
+            let mut req = owner("");
+            req.input = TurnInput::Spoken { task: TASK.into(), said: SAID.into() };
+            req.seat.origin = origin;
+            req.seat.door = types::permissions::Door::Voice;
+            run_turn(&h, req).await;
+            let read: Vec<String> = read.lock().unwrap().iter().map(|s| s["state"]["message"].as_str().unwrap_or_default().to_string()).collect();
+            if origin == tools::Origin::User {
+                assert_eq!(*seen.lock().unwrap(), vec![(true, true)], "his request, and his ask to share");
+                assert_eq!(read, vec![SAID.to_string()], "the decision read his words, not the task");
+            } else {
+                // The caller's seat may stop the call before it runs; any call
+                // that does run serves no owner request.
+                let seen = seen.lock().unwrap().clone();
+                assert!(seen.iter().all(|&(request, shares)| !request && !shares), "a caller's line is never the owner's request: {seen:?}");
+                assert!(read.is_empty(), "no decision on a caller's words: {read:?}");
+            }
+            let rows = stored(&h);
+            let task_row = rows.iter().find(|m| m.content == TASK).expect("the task is the run's input");
+            assert!(task_row.metadata.as_deref().is_some_and(|m| m.contains("hiddenPrompt")), "stored hidden: {:?}", task_row.metadata);
+            assert!(!rows.iter().any(|m| m.content == SAID), "his words are the call's row, never written twice");
         }
     }
 

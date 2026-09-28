@@ -240,9 +240,12 @@ impl Memory {
 
     /// The scope a `remember`/`forget` call writes: the run's own scope, or
     /// local memory when the call names `scope: "local"`. Local memory is
-    /// read by every employee on this Nebo, so only the owner's own message
-    /// puts something there — an unattended run, a caller or a coworker
-    /// cannot publish to everyone.
+    /// read by every employee on this Nebo, so only the owner's own request
+    /// (his message in his own chat, or his own call) puts something there —
+    /// an unattended run, a caller or a coworker cannot publish to everyone.
+    /// The refusal says to tell the owner, never to save it elsewhere: told
+    /// to save it privately, the owner's assistant did so on his call and
+    /// told him Nebo blocks shared memory (live 2026-09-28).
     ///
     /// A Confidential conversation is sealed: the call's `scope: "local"`
     /// alone never takes a fact out of it. Only the owner's own words asking
@@ -264,8 +267,10 @@ impl Memory {
         if !ctx.owner_request {
             return Err(ToolResult::error(
                 "Not saved to local memory: local memory is shared by every employee on this \
-                 Nebo, so it only changes when the owner asks for it in their own conversation. \
-                 Save it with scope \"private\", or tell the owner what you would add.",
+                 Nebo, so only the owner's own request (their message in their own \
+                 conversation, or their own call) changes it, and this run was not started by \
+                 one. Nothing was saved. Tell the owner it was not saved and why; don't save it \
+                 anywhere else in its place.",
             ));
         }
         Ok((local_memory_scope(&ctx.user_id), None))
@@ -1329,6 +1334,11 @@ mod tests {
             .execute_dyn(&unattended, json!({"key": "team/standup", "value": "The team standup moved to Thursdays at nine.", "scope": "local"}))
             .await;
         assert!(refused.is_error && refused.content.starts_with("Not saved to local memory"), "{}", refused.content);
+        // Told to tell the owner, never to save it somewhere else in its place
+        // (live 2026-09-28: told to save it privately, it did, and told the
+        // owner Nebo blocks shared memory).
+        assert!(refused.content.contains("Tell the owner it was not saved and why"), "{}", refused.content);
+        assert!(!refused.content.contains("private"), "{}", refused.content);
         assert_eq!(rig.store.count_memories().unwrap(), 0);
 
         rig.store.upsert_memory("tacit/general", "team/standup", "Thursdays", None, None, "o").unwrap();
