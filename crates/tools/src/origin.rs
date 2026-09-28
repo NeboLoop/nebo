@@ -254,8 +254,10 @@ pub struct ToolContext {
     /// The owner's own message, in the owner's own chat, or his own call
     /// started this turn: the call serves his request, so his words are his
     /// consent to replacing what he asked to have changed. Set only by the
-    /// turn (`owner_speaks`); every other run, helper, coworker, channel,
-    /// visitor, phone caller and unattended door leaves it false.
+    /// turn (`owner_asks`): his own message, his own call, or a teammate
+    /// passing on his team post (the coworker rail's `Authority`); every
+    /// other run, helper, colleague's request, channel, visitor, phone caller
+    /// and unattended door leaves it false.
     pub owner_request: bool,
     /// The owner's own words this turn asked for what is remembered to be
     /// kept for everyone on this Nebo (the turn's save decision). A

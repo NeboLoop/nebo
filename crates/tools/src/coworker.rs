@@ -50,6 +50,13 @@ pub struct CoworkerMessage {
     /// Which of a linked employee's conversations the message goes into.
     /// `None`: the sender's own thread with it, as it stands.
     pub conversation: Option<Conversation>,
+    /// The sender's turn when it is the owner's own request
+    /// (`ToolContext::owner_request`): its run id, copied by the tool from
+    /// the engine. The rail passes that one request on with the message
+    /// (`server::coworker::seat_authority`); `None` for every other turn —
+    /// one a notification woke, a schedule, a helper, a colleague's request —
+    /// whatever its words say.
+    pub owners_turn: Option<String>,
 }
 
 /// A linked employee's conversation a message goes into (see
@@ -84,6 +91,44 @@ pub struct TeamDelivery {
     /// The session that posted, when one did: the member's reply comes back
     /// to it as a notification as well as into the team.
     pub reply_to: Option<String>,
+    /// Whose request the post is, decided by the team rail
+    /// (`server::team::post`).
+    pub authority: Authority,
+}
+
+/// Whose request a message between employees carries. Never chosen by a
+/// tool or by anything a model writes: the owner's own post comes through
+/// the owner's door (`TeamPost::by_owner`), and the rail derives the rest
+/// from what the engine knows of the sender (`server::coworker::seat_authority`)
+/// — a seat working on one of the owner's requests, or a turn the owner's
+/// own message started, passes that one request on; any other sender asks
+/// for itself.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Authority {
+    /// A colleague's own request: the target answers it with its own grant,
+    /// under the coworker limits (a request it can only answer with a reply).
+    #[default]
+    Coworker,
+    /// The owner's own words: the team post he typed (`request`, its row in
+    /// the team thread). The target runs as on his direct message.
+    Owner { request: String },
+    /// A colleague's words passing on the owner's request `request`: his team
+    /// post's row, or the run of his own turn that sent it (the owner asked
+    /// his employee, in his own chat or on his call, to have a colleague do
+    /// it). The target serves that same request, as on his direct message;
+    /// the words stay the colleague's.
+    OwnersRequest { request: String },
+}
+
+impl Authority {
+    /// The owner's request this serves; `None` for a colleague's own.
+    pub fn owners_request(&self) -> Option<&str> {
+        match self {
+            Authority::Coworker => None,
+            Authority::Owner { request } | Authority::OwnersRequest { request } => Some(request),
+        }
+    }
 }
 
 /// Delivery acknowledgment — a message is never silently dropped: either this
@@ -108,6 +153,14 @@ pub struct TeamPost {
     pub team_id: String,
     /// Posting agent id (empty = the owner).
     pub from_agent_id: String,
+    /// The owner typed this post in the app: it is his own request, and the
+    /// members it asks act on it with his authority. Set only by the
+    /// owner's door (`POST /teams/{id}/messages`); every post a tool or the
+    /// rail makes leaves it false.
+    pub by_owner: bool,
+    /// The posting turn when it is the owner's own request, as on
+    /// `CoworkerMessage::owners_turn`.
+    pub owners_turn: Option<String>,
     pub text: String,
     /// Uploaded files riding the post (the app's composer). The post core
     /// saves them locally and notes the paths in the text, the same way a
@@ -208,6 +261,14 @@ pub async fn deliver(
         handoff_depth: ctx.handoff_depth,
         provenance: ctx.run_taint.clone(),
         team: None,
+        owners_turn: owners_turn(ctx),
     })
     .await
+}
+
+/// The sending turn's run id when the owner's own request started it
+/// (`ToolContext::owner_request`, engine-set): what a message or a post
+/// carries as `owners_turn`. The ONE place a tool reads it.
+pub fn owners_turn(ctx: &crate::origin::ToolContext) -> Option<String> {
+    ctx.run_id.clone().filter(|_| ctx.owner_request)
 }

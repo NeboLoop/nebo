@@ -56,6 +56,12 @@ pub(crate) struct CoworkerRoute {
     pub sender_depth: u8,
     /// Set for a team member's thread: the reply is posted into the team.
     pub team: Option<TeamLeg>,
+    /// Whose request the thread's work serves (`coworker::seat_authority`):
+    /// its turns, the message's and every one a notification wakes, run with
+    /// that authority, and what the seat sends on passes it on. A route
+    /// stored before there was one reads as a colleague's request.
+    #[serde(default)]
+    pub authority: tools::coworker::Authority,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -204,6 +210,7 @@ mod tests {
                 team_id: "t1".into(),
                 team_name: "Floor".into(),
             }),
+            authority: tools::coworker::Authority::OwnersRequest { request: "p1".into() },
         });
         let channel = ReplyRoute::Channel {
             channel_ctx: tools::ChannelContext { kind: "slack".into(), channel_id: "C1".into(), thread_ts: Some("1.2".into()) },
@@ -222,5 +229,17 @@ mod tests {
         };
         let back: WakeSeat = serde_json::from_str(&serde_json::to_string(&seat).unwrap()).unwrap();
         assert_eq!(back, seat);
+    }
+
+    /// A coworker route stored before routes carried whose request they
+    /// serve reads as a colleague's: nothing stored earlier gains the
+    /// owner's authority.
+    #[test]
+    fn an_older_route_reads_as_a_colleagues_request() {
+        let stored = r#"{"kind":"coworker","to_agent_id":"bk","to_name":"Bookkeeper","from_agent_id":"","from_name":"Owner","reply_to":null,"mirror_key":null,"sender_depth":0,"team":{"team_id":"t1","team_name":"Floor"}}"#;
+        let ReplyRoute::Coworker(route) = serde_json::from_str::<ReplyRoute>(stored).unwrap() else {
+            panic!("a coworker route");
+        };
+        assert_eq!(route.authority, tools::coworker::Authority::Coworker);
     }
 }

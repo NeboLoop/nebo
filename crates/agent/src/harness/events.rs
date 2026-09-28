@@ -769,9 +769,13 @@ const SKILL_WORDS: ListingWords = ListingWords {
     removed: "These skills are no longer available:",
 };
 
+/// The employee listing is every employee on this Nebo, never a team's
+/// roster (that is the team listing's): worded "on the team", an employee
+/// turned off here read, in a team thread, as one removed from that team
+/// (live 2026-09-28).
 const AGENT_WORDS: ListingWords = ListingWords {
-    available: "Other employees on this team. Work that is one of theirs goes to them with send_message; a helper is for work you would do yourself:",
-    removed: "These employees are no longer on the team:",
+    available: "Other employees on this Nebo. Work that is one of theirs goes to them with send_message; a helper is for work you would do yourself:",
+    removed: "These employees are no longer active on this Nebo:",
 };
 
 const TEAM_WORDS: ListingWords = ListingWords {

@@ -1935,3 +1935,437 @@ async fn mail_to_an_employees_tag_reaches_that_employee() {
     assert_eq!(rig.company.calls_naming("MARK-TAG-AUTO"), 0, "an auto-reply is never answered");
     assert!(mail.outbox.replies_to(&auto_record.id).is_empty());
 }
+
+/// The script for employee `seat` asked with `mark`: in one step it runs a
+/// command, writes `file` and saves `key` to local memory — the owner's live
+/// ask of his team lead (2026-09-28) — then says `done`.
+fn does_the_work(seat: &str, mark: &'static str, file: PathBuf, key: &'static str, done: &'static str) -> Rule {
+    let identity = format!("You are {seat}.");
+    Box::new(move |t| {
+        if !t.opener().contains(mark) || !t.says(&identity) {
+            return None;
+        }
+        if t.answered(done) {
+            return Some(Step::say("noted"));
+        }
+        if t.has_tool_results() {
+            return Some(Step::say(done));
+        }
+        Some(Step::call(vec![
+            ("run_command", json!({ "command": format!("echo {done}-RAN"), "description": "Say it ran" })),
+            ("write_file", json!({ "path": file.to_string_lossy(), "content": format!("{done}\n") })),
+            ("remember", json!({ "key": key, "value": format!("{done} is shared."), "scope": "local" })),
+        ]))
+    })
+}
+
+/// Every tool result in session `key`, as stored, one after another.
+fn tool_results(rig: &Rig<'_>, key: &str) -> String {
+    rig.thread(key).into_iter().filter_map(|m| m.tool_results).collect::<Vec<_>>().join("\n")
+}
+
+/// Owner report 2026-09-28 ("Doesn't work in team mode and it should"): the
+/// post the owner types in a team thread is his request, and the member it
+/// asks acts on it with exactly the authority of his direct message: its
+/// own mode, the rules, local memory. On Full Access the lead runs a
+/// command, writes a file and saves to local memory. The same asks in a
+/// colleague's message to the same lead are a colleague's: each is refused
+/// in the coworker's words, and nothing is written or saved.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_owners_team_post_carries_his_authority_and_a_coworkers_message_does_not() {
+    let nebo = session().await;
+    let lead = nebo.hire("Proof OA Lead", json!({ "workflows": {} })).await;
+    let member = nebo.hire("Proof OA Member", json!({ "workflows": {} })).await;
+    let buyer = nebo.hire("Proof OA Buyer", json!({ "workflows": {} })).await;
+    nebo.store()
+        .set_permission_mode(&types::permissions::Scope::Employee(lead.clone()), types::permissions::Mode::FullAccess)
+        .unwrap();
+    const TEAM: &str = "proof-team-oa";
+    nebo.store()
+        .create_team(TEAM, "Proof OA Team", "ship the page", &[db::TeamMember::local(&lead), db::TeamMember::local(&member)], &lead, None)
+        .unwrap();
+    let out = tempfile::tempdir().unwrap();
+    let owners_file = out.path().join("owners.md");
+    let coworkers_file = out.path().join("coworkers.md");
+    let rig = Rig::new(
+        &nebo,
+        vec![
+            does_the_work("Proof OA Lead", "MARK-OAO", owners_file.clone(), "proof/oa-owner", "OAO-DONE"),
+            does_the_work("Proof OA Lead", "MARK-OAC", coworkers_file.clone(), "proof/oa-coworker", "OAC-DONE"),
+        ],
+    )
+    .await;
+
+    nebo.post_ok(&format!("/teams/{TEAM}/messages"), &json!({ "text": "MARK-OAO put the page on the desktop" })).await;
+    let seat = format!("agent:{lead}:coworker:team:{TEAM}");
+    rig.until(30, "the lead works on the owner's post", || {
+        rig.thread(&seat).iter().any(|m| m.role == "assistant" && m.content.contains("OAO-DONE"))
+    })
+    .await;
+    let done = tool_results(&rig, &seat);
+    assert!(!done.contains("not permitted"), "the owner's request is not a coworker's: {done}");
+    assert!(done.contains("OAO-DONE-RAN"), "the command ran: {done}");
+    assert!(done.contains("Saved to local memory"), "local memory took the owner's request: {done}");
+    assert_eq!(std::fs::read_to_string(&owners_file).unwrap_or_default(), "OAO-DONE\n", "the file is written");
+
+    let from = format!("agent:{buyer}:web");
+    rig.open_session(&from);
+    let ctx = tools::ToolContext::new(Origin::User).with_session(from.clone(), "s1");
+    let sent = nebo
+        .tool(&ctx, "send_message", json!({ "to": "Proof OA Lead", "message": "MARK-OAC put the page on the desktop" }))
+        .await;
+    assert!(!sent.is_error, "{}", sent.content);
+    let thread = format!("agent:{lead}:coworker:{buyer}");
+    rig.until(30, "the lead answers the colleague", || {
+        rig.thread(&thread).iter().any(|m| m.role == "assistant" && m.content.contains("OAC-DONE"))
+    })
+    .await;
+    let refused = tool_results(&rig, &thread);
+    assert_eq!(
+        refused.matches("a coworker asked for this").count(),
+        2,
+        "the command and the file are refused as a colleague's request: {refused}"
+    );
+    assert!(refused.contains("Not saved to local memory"), "local memory refuses a colleague: {refused}");
+    assert!(!coworkers_file.exists(), "nothing is written for a colleague");
+}
+
+/// The owner's authority on his team post is his direct message's, never
+/// more: a rule that turns a tool off for the employee still refuses it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_deny_rule_still_wins_on_the_owners_team_post() {
+    let nebo = session().await;
+    let lead = nebo.hire("Proof ODY Lead", json!({ "workflows": {} })).await;
+    let member = nebo.hire("Proof ODY Member", json!({ "workflows": {} })).await;
+    let employee = types::permissions::Scope::Employee(lead.clone());
+    nebo.store().set_permission_mode(&employee, types::permissions::Mode::FullAccess).unwrap();
+    nebo.store()
+        .write_permission_rule(
+            &types::permissions::Rule {
+                id: uuid::Uuid::new_v4().to_string(),
+                scope: employee,
+                key: types::permissions::RuleKey::Tool("run_command".into()),
+                field: None,
+                effect: types::permissions::Effect::Deny,
+                money: None,
+                source: types::permissions::RuleSource::Owner,
+                locked: false,
+                created_at: 0,
+            },
+            &types::permissions::Writer::Owner,
+        )
+        .unwrap();
+    const TEAM: &str = "proof-team-ody";
+    nebo.store()
+        .create_team(TEAM, "Proof ODY Team", "ship the page", &[db::TeamMember::local(&lead), db::TeamMember::local(&member)], &lead, None)
+        .unwrap();
+    let rig = Rig::new(
+        &nebo,
+        vec![Box::new(|t| {
+            if !t.opener().contains("MARK-ODY") || !t.says("You are Proof ODY Lead.") {
+                return None;
+            }
+            if t.has_tool_results() || t.answered("ODY-DONE") {
+                return Some(Step::say("ODY-DONE"));
+            }
+            Some(Step::call(vec![("run_command", json!({ "command": "echo ODY-RAN", "description": "Say it ran" }))]))
+        })],
+    )
+    .await;
+    nebo.post_ok(&format!("/teams/{TEAM}/messages"), &json!({ "text": "MARK-ODY run the build" })).await;
+    let seat = format!("agent:{lead}:coworker:team:{TEAM}");
+    rig.until(30, "the lead works on the owner's post", || {
+        rig.thread(&seat).iter().any(|m| m.role == "assistant" && m.content.contains("ODY-DONE"))
+    })
+    .await;
+    let results = tool_results(&rig, &seat);
+    assert!(results.contains("'run_command' is turned off for this employee"), "the deny rule refuses it: {results}");
+    assert!(!results.contains("ODY-RAN"), "nothing ran: {results}");
+    assert!(!results.contains("a coworker asked"), "refused by the rule, not as a colleague's request: {results}");
+}
+
+/// The lead passes a step of the owner's team request on to a teammate
+/// (live: Top Coder asking Claude Code to write the file for the owner, with
+/// send_message). The teammate's turn serves that same request, with the
+/// owner's authority: its command runs, its file is written, local memory
+/// takes it. The same lead passing on a colleague's request is passing on a
+/// colleague's: the teammate it asks is refused.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_lead_passes_the_owners_request_on_with_his_authority_and_a_colleagues_without() {
+    let nebo = session().await;
+    let lead = nebo.hire("Proof RLY Lead", json!({ "workflows": {} })).await;
+    let coder = nebo.hire("Proof RLY Coder", json!({ "workflows": {} })).await;
+    let second = nebo.hire("Proof RLY Second", json!({ "workflows": {} })).await;
+    let buyer = nebo.hire("Proof RLY Buyer", json!({ "workflows": {} })).await;
+    for seat in [&coder, &second] {
+        nebo.store()
+            .set_permission_mode(&types::permissions::Scope::Employee(seat.to_string()), types::permissions::Mode::FullAccess)
+            .unwrap();
+    }
+    const TEAM: &str = "proof-team-rly";
+    nebo.store()
+        .create_team(
+            TEAM,
+            "Proof RLY Team",
+            "ship the page",
+            &[db::TeamMember::local(&lead), db::TeamMember::local(&coder), db::TeamMember::local(&second)],
+            &lead,
+            None,
+        )
+        .unwrap();
+    let out = tempfile::tempdir().unwrap();
+    let owners_file = out.path().join("owners.md");
+    let colleagues_file = out.path().join("colleagues.md");
+    // The lead hands the work on with send_message, once per request.
+    let hands_on = |mark: &'static str, to: &'static str, ask: &'static str, asked: &'static str| -> Rule {
+        Box::new(move |t| {
+            if !t.opener().contains(mark) || !t.says("You are Proof RLY Lead.") {
+                return None;
+            }
+            if t.answered(asked) {
+                return Some(Step::say("noted"));
+            }
+            if t.has_tool_results() {
+                return Some(Step::say(asked));
+            }
+            Some(Step::call(vec![("send_message", json!({ "to": to, "message": ask }))]))
+        })
+    };
+    let rig = Rig::new(
+        &nebo,
+        vec![
+            does_the_work("Proof RLY Coder", "MARK-RLYGO", owners_file.clone(), "proof/rly-owner", "RLYGO-DONE"),
+            does_the_work("Proof RLY Second", "MARK-RLCGO", colleagues_file.clone(), "proof/rly-colleague", "RLCGO-DONE"),
+            hands_on("MARK-RLYO", "Proof RLY Coder", "MARK-RLYGO write the page file and run the build for the owner", "RLYO-ASKED"),
+            hands_on("MARK-RLCO", "Proof RLY Second", "MARK-RLCGO write the page file and run the build", "RLCO-ASKED"),
+        ],
+    )
+    .await;
+
+    nebo.post_ok(&format!("/teams/{TEAM}/messages"), &json!({ "text": "MARK-RLYO have the coder put the page on the desktop" })).await;
+    let coder_thread = format!("agent:{coder}:coworker:{lead}");
+    rig.until(30, "the coder works on the step the lead passed on", || {
+        rig.thread(&coder_thread).iter().any(|m| m.role == "assistant" && m.content.contains("RLYGO-DONE"))
+    })
+    .await;
+    let done = tool_results(&rig, &coder_thread);
+    assert!(!done.contains("not permitted"), "the owner's request, passed on, is still his: {done}");
+    assert!(done.contains("RLYGO-DONE-RAN"), "the command ran: {done}");
+    assert!(done.contains("Saved to local memory"), "local memory took the owner's request: {done}");
+    assert_eq!(std::fs::read_to_string(&owners_file).unwrap_or_default(), "RLYGO-DONE\n", "the file is written");
+
+    // A colleague asks the lead directly; the lead hands the step on.
+    let from = format!("agent:{buyer}:web");
+    rig.open_session(&from);
+    let ctx = tools::ToolContext::new(Origin::User).with_session(from.clone(), "s1");
+    let sent = nebo
+        .tool(&ctx, "send_message", json!({ "to": "Proof RLY Lead", "message": "MARK-RLCO have someone put the page on the desktop" }))
+        .await;
+    assert!(!sent.is_error, "{}", sent.content);
+    let second_thread = format!("agent:{second}:coworker:{lead}");
+    rig.until(30, "the second member works on the colleague's step", || {
+        rig.thread(&second_thread).iter().any(|m| m.role == "assistant" && m.content.contains("RLCGO-DONE"))
+    })
+    .await;
+    let refused = tool_results(&rig, &second_thread);
+    assert_eq!(refused.matches("a coworker asked for this").count(), 2, "a colleague's request stays a colleague's: {refused}");
+    assert!(refused.contains("Not saved to local memory"), "{refused}");
+    assert!(!colleagues_file.exists(), "nothing is written for a colleague");
+}
+
+/// The owner asks the employee he talks to, in his own chat, to have a
+/// colleague do the work (#473 made the primary employee the company's point
+/// person), and it relays with send_message. The colleague's turn serves that
+/// one request of the owner's: its command runs, its file is written, local
+/// memory takes it. A message the same employee sends later on its own — in
+/// a turn a notification woke, which the owner did not start — is its own
+/// request: the colleague it asks is refused.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_primary_employee_passes_the_owners_request_on_and_its_own_initiative_stays_its_own() {
+    let nebo = session().await;
+    let coder = nebo.hire("Proof AR Coder", json!({ "workflows": {} })).await;
+    let second = nebo.hire("Proof AR Second", json!({ "workflows": {} })).await;
+    for seat in [&coder, &second] {
+        nebo.store()
+            .set_permission_mode(&types::permissions::Scope::Employee(seat.to_string()), types::permissions::Mode::FullAccess)
+            .unwrap();
+    }
+    let out = tempfile::tempdir().unwrap();
+    let owners_file = out.path().join("owners.md");
+    let its_own_file = out.path().join("its-own.md");
+    let rig = Rig::new(
+        &nebo,
+        vec![
+            does_the_work("Proof AR Coder", "MARK-ARGO", owners_file.clone(), "proof/ar-owner", "ARGO-DONE"),
+            does_the_work("Proof AR Second", "MARK-ARSELF", its_own_file.clone(), "proof/ar-own", "ARSELF-DONE"),
+            Box::new(|t| {
+                if !t.opener().contains("OWNER-AR") {
+                    return None;
+                }
+                if t.answered("AR-SELF-ASKED") {
+                    return Some(Step::say("noted"));
+                }
+                if t.answered("AR-ASKED") {
+                    if t.has_tool_results() {
+                        return Some(Step::say("AR-SELF-ASKED"));
+                    }
+                    if t.new_text().contains("ARSELF-TRIGGER") {
+                        return Some(Step::call(vec![(
+                            "send_message",
+                            json!({ "to": "Proof AR Second", "message": "MARK-ARSELF write the page file and run the build" }),
+                        )]));
+                    }
+                    return Some(Step::say("noted"));
+                }
+                if t.has_tool_results() {
+                    return Some(Step::say("AR-ASKED"));
+                }
+                Some(Step::call(vec![(
+                    "send_message",
+                    json!({ "to": "Proof AR Coder", "message": "MARK-ARGO write the page file and run the build for the owner" }),
+                )]))
+            }),
+        ],
+    )
+    .await;
+
+    const OWNER_CHAT: &str = "agent:assistant:web-ar";
+    rig.owner_writes(OWNER_CHAT, "assistant", None, "OWNER-AR have the coder put the page on the desktop").await;
+    let coder_thread = format!("agent:{coder}:coworker:assistant");
+    rig.until(30, "the coder works on the owner's request, passed on", || {
+        rig.thread(&coder_thread).iter().any(|m| m.role == "assistant" && m.content.contains("ARGO-DONE"))
+    })
+    .await;
+    let done = tool_results(&rig, &coder_thread);
+    assert!(!done.contains("not permitted"), "the owner's request, passed on, is still his: {done}");
+    assert!(done.contains("ARGO-DONE-RAN"), "the command ran: {done}");
+    assert!(done.contains("Saved to local memory"), "local memory took the owner's request: {done}");
+    assert_eq!(std::fs::read_to_string(&owners_file).unwrap_or_default(), "ARGO-DONE\n", "the file is written");
+
+    // The coder's answer comes back and the owner's turn is over. Something
+    // else wakes the employee; what it sends now is its own request.
+    rig.until(30, "the owner's chat hears the coder and settles", || {
+        let rows = rig.thread(OWNER_CHAT);
+        rows.iter().any(|m| m.role == "user" && m.content.contains("ARGO-DONE"))
+            && rows.last().is_some_and(|m| m.role == "assistant")
+            && !nebo.state.harness.is_session_busy(OWNER_CHAT)
+    })
+    .await;
+    crate::wake::enqueue(&nebo.state, OWNER_CHAT, "coworker_reply", "ARSELF-TRIGGER the supplier sent a new price list", &[], 0);
+    let second_thread = format!("agent:{second}:coworker:assistant");
+    rig.until(30, "the second colleague answers the employee's own request", || {
+        rig.thread(&second_thread).iter().any(|m| m.role == "assistant" && m.content.contains("ARSELF-DONE"))
+    })
+    .await;
+    let refused = tool_results(&rig, &second_thread);
+    assert_eq!(refused.matches("a coworker asked for this").count(), 2, "its own request stays a colleague's: {refused}");
+    assert!(refused.contains("Not saved to local memory"), "{refused}");
+    assert!(!its_own_file.exists(), "nothing is written for the employee's own request");
+}
+
+/// A linked teammate's runtime, recording every request it is sent whole
+/// (system prompt and messages), so a scenario reads what its turn was told.
+struct RecordingRuntime {
+    seen: std::sync::Mutex<Vec<String>>,
+}
+
+#[async_trait::async_trait]
+impl ai::Provider for RecordingRuntime {
+    fn id(&self) -> &str {
+        ai::providers::linked::ID
+    }
+    fn handles_tools(&self) -> bool {
+        true
+    }
+    fn retryable(&self) -> bool {
+        false
+    }
+    async fn stream(&self, req: &ai::ChatRequest) -> Result<ai::EventReceiver, ai::ProviderError> {
+        let mut told = req.system.clone();
+        for m in &req.messages {
+            told.push('\n');
+            told.push_str(&m.content);
+        }
+        self.seen.lock().unwrap().push(told);
+        let (tx, rx) = tokio::sync::mpsc::channel(4);
+        tokio::spawn(async move {
+            let _ = tx.send(ai::StreamEvent::text("LRL-HERMES-RESULT: the page file is on the desktop.")).await;
+            let _ = tx.send(ai::StreamEvent::done()).await;
+        });
+        Ok(rx)
+    }
+}
+
+/// The lead hands a step of the owner's team post to a linked teammate by
+/// name in its reply (the team's own way to hand work on). The linked
+/// teammate's turn serves the owner's request: Nebo runs it on the owner's
+/// own surface with no colleague's audience, its thread serves the owner's
+/// post (so whatever it passes on is his request too), and the lead's words
+/// stay the lead's. Its runtime answers into the team.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_lead_passes_the_owners_request_to_a_linked_teammate_with_his_authority() {
+    let nebo = session().await;
+    let lead = nebo.hire("Proof LRL Lead", json!({ "workflows": {} })).await;
+    let hermes = "proof-lrl-hermes-linked";
+    nebo.store()
+        .create_agent(hermes, Some("linked"), "Proof LRL Hermes", "", "---\nname: Proof LRL Hermes\n---\n", "{}", None, None)
+        .unwrap();
+    nebo.store()
+        .upsert_entity_config("agent", hermes, &json!({ "modelPreference": ai::LinkedProvider::model_id("proof-bot", "hermes-lrl") }))
+        .unwrap();
+    const TEAM: &str = "proof-team-lrl";
+    nebo.store()
+        .create_team(TEAM, "Proof LRL Team", "ship the page", &[db::TeamMember::local(&lead), db::TeamMember::local(hermes)], &lead, None)
+        .unwrap();
+    let rig = Rig::new(
+        &nebo,
+        vec![Box::new(|t| {
+            if !t.opener().contains("MARK-LRL") || !t.says("You are Proof LRL Lead.") {
+                return None;
+            }
+            if t.answered("MARK-LRLGO") {
+                return Some(Step::say("noted"));
+            }
+            Some(Step::say("@Proof LRL Hermes MARK-LRLGO write the page file to the desktop for the owner"))
+        })],
+    )
+    .await;
+    let runtime = Arc::new(RecordingRuntime { seen: Default::default() });
+    nebo.state
+        .harness
+        .reload_providers(vec![Arc::new(Model(rig.company.clone())), runtime.clone() as Arc<dyn ai::Provider>])
+        .await;
+
+    nebo.post_ok(&format!("/teams/{TEAM}/messages"), &json!({ "text": "MARK-LRL have Hermes put the page on the desktop" })).await;
+    rig.until(30, "the linked teammate answers into the team", || {
+        team_rows(&nebo, TEAM).iter().any(|(from, text)| from == "Proof LRL Hermes" && text.contains("LRL-HERMES-RESULT"))
+    })
+    .await;
+    let told = runtime.seen.lock().unwrap().join("\n---\n");
+    assert!(told.contains("MARK-LRLGO"), "the step reached the runtime: {told}");
+
+    // The turn ran as the owner's request: on his own surface, with no
+    // colleague's audience, through the lead's door; and its thread serves
+    // the owner's post, so what it passes on is his request too.
+    let owners_post = nebo
+        .store()
+        .list_team_messages(TEAM, 100)
+        .unwrap()
+        .into_iter()
+        .find(|m| m.from_agent_id.is_empty() && m.content.contains("MARK-LRL have Hermes"))
+        .expect("the owner's post")
+        .id;
+    let seat = format!("agent:{hermes}:coworker:team:{TEAM}");
+    let ran_as = crate::reply_route::seat_of(&nebo.state, &seat).expect("the turn's seat is recorded");
+    assert_eq!(ran_as.origin, Origin::User, "the owner's request runs on his own surface");
+    assert_eq!(ran_as.audience, None, "memory answers the owner, not a colleague");
+    assert_eq!(ran_as.door, types::permissions::Door::Coworker { from: lead.clone() }, "it came through the lead");
+    let Some(crate::reply_route::ReplyRoute::Coworker(route)) = crate::reply_route::of(&nebo.state, &seat) else {
+        panic!("the teammate's thread keeps its route");
+    };
+    assert_eq!(route.authority, tools::coworker::Authority::OwnersRequest { request: owners_post });
+    let asked = rig.thread(&seat).into_iter().find(|m| m.role == "user" && m.content.contains("MARK-LRLGO")).expect("stored");
+    let meta: Value = serde_json::from_str(asked.metadata.as_deref().unwrap_or("{}")).unwrap();
+    assert_eq!(meta["coworker"], "Proof LRL Lead", "the lead's words stay the lead's: {meta}");
+    assert!(meta.get(db::OWNER_MARK).is_none(), "never stored as the owner's word: {meta}");
+}

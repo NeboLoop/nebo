@@ -229,6 +229,9 @@ pub async fn send_team_message(
             attachments: body.attachments,
             team_id: team.id,
             from_agent_id: String::new(),
+            // The owner typed it: his own request.
+            by_owner: true,
+            owners_turn: None,
             text: text.to_string(),
             mention,
             handoff_depth: 0,

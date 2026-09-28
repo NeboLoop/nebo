@@ -27,7 +27,7 @@
 use std::future::Future;
 use std::pin::Pin;
 
-use tools::coworker::{CoworkerMessage, TeamDelivery, TeamPost, TeamPostReceipt};
+use tools::coworker::{Authority, CoworkerMessage, TeamDelivery, TeamPost, TeamPostReceipt};
 
 use crate::state::AppState;
 
@@ -181,6 +181,20 @@ pub(crate) fn post(
         // delays the members; best effort either way).
         mirror_to_hub(&state, &team, &text, &sender_name, &post, &remote_asks).await;
 
+        // Whose request the post is: the owner's own when he typed it; one
+        // of his passed on when the member posting (its reply, or a post
+        // through the tool) is working on his post; its own otherwise.
+        let authority = if post.by_owner {
+            Authority::Owner { request: message.id.clone() }
+        } else {
+            crate::coworker::seat_authority(
+                &state,
+                post.reply_to.as_deref().unwrap_or_default(),
+                &post.from_agent_id,
+                post.owners_turn.as_deref(),
+            )
+        };
+
         let mut asked: Vec<String> = Vec::new();
         for m in &remote_asks {
             let name = if m.name.is_empty() { m.agent_id.clone() } else { m.name.clone() };
@@ -214,8 +228,11 @@ pub(crate) fn post(
                     team_id: team.id.clone(),
                     post_id: message.id.clone(),
                     reply_to: post.reply_to.clone(),
+                    authority: authority.clone(),
                 }),
                 conversation: None,
+                // The delivery carries the post's authority, decided above.
+                owners_turn: None,
             };
             match crate::coworker::send_coworker_message(state.clone(), msg).await {
                 Ok(_) => asked.push(member_name.clone()),

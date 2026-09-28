@@ -300,6 +300,8 @@ impl Teams {
             attachments: vec![],
             team_id: t.id.clone(),
             from_agent_id: Self::caller_agent_id(store, ctx),
+            by_owner: false,
+            owners_turn: crate::coworker::owners_turn(ctx),
             text: text.to_string(),
             mention: asked,
             handoff_depth: ctx.handoff_depth,
