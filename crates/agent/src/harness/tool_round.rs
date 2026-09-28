@@ -64,6 +64,8 @@ pub(crate) struct RunToolScope<'a> {
     pub declared_tools: &'a Arc<HashSet<String>>,
     /// The employee's own tools the run's tool scope leaves out.
     pub withheld_tools: &'a Arc<HashSet<String>>,
+    /// What this step's model was given (`ToolContext::given_text`).
+    pub given_text: &'a Arc<str>,
 }
 
 impl RunToolScope<'_> {
@@ -98,6 +100,7 @@ impl RunToolScope<'_> {
             tool_denial_hint,
             declared_tools,
             withheld_tools,
+            given_text,
         } = *self;
         let resolved_key = sessions
             .resolve_session_key(session_id)
@@ -163,6 +166,7 @@ impl RunToolScope<'_> {
                 .unwrap_or_default(),
             declared_tools: Some(declared_tools.clone()),
             withheld_tools: (!withheld_tools.is_empty()).then(|| withheld_tools.clone()),
+            given_text: Some(given_text.clone()),
             tool_call_id: String::new(),
         }
     }

@@ -2044,7 +2044,7 @@ impl Kind {
                 "type": "object",
                 "properties": {
                     "action": {"type": "string", "enum": ACT_ACTIONS},
-                    "ref": {"type": "string", "description": "The element's ref from browser_read or browser_find."},
+                    "ref": {"type": "string", "description": "The element's ref from browser_read or browser_find, such as ref_4."},
                     "coordinate": {"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2, "description": "[x, y] in the page's viewport, instead of a ref. For drag, where to drop."},
                     "text": {"type": "string", "description": "For type: the text."},
                     "key": {"type": "string", "description": "For press: a key or chord, e.g. Enter, Escape, cmd+a."},
@@ -2207,6 +2207,9 @@ impl Kind {
             Kind::BrowserAct => {
                 let action = str_field(input, "action").unwrap_or_default();
                 let has = |k: &str| input.get(k).is_some_and(|v| !v.is_null());
+                if let Some(r) = str_field(input, "ref") {
+                    ref_shape(r)?;
+                }
                 let missing = match action {
                     "click" | "hover" if !has("ref") && !has("coordinate") => Some("`ref` or `coordinate`"),
                     "type" if !has("text") => Some("`text`"),
@@ -2495,6 +2498,9 @@ impl DynTool for WebTool {
                 executor.send_command("show_indicators", Some(session_id)).await;
             }
 
+            if let Some(refusal) = unnamed_site(self.kind, ctx, &input) {
+                return ToolResult::error(refusal);
+            }
             match self.kind {
                 Kind::SearchWeb => self.core.handle_search(&input, session_id, &group_key).await,
                 Kind::FetchUrl => self.core.handle_http(reqwest::Method::GET, &input).await,
@@ -2645,6 +2651,59 @@ fn build_extension_args(action: &str, input: &serde_json::Value) -> serde_json::
     serde_json::Value::Object(args)
 }
 
+
+/// The refusal for a page no one pointed at, or `None` when fetch_url or
+/// browser_open may open it. A site is pointed at when a word of its host
+/// (a label of three letters or more, but not `www` or the top-level
+/// domain) appears in what the model was given (`ToolContext::given_text`):
+/// the owner named it ("Check Google Flights" → google.com), or a tool
+/// returned its address. A site the model knows only from its own memory is
+/// found with search_web first.
+fn unnamed_site(kind: Kind, ctx: &ToolContext, input: &serde_json::Value) -> Option<String> {
+    let verb = match kind {
+        Kind::FetchUrl => "fetched",
+        Kind::BrowserOpen | Kind::BrowserNewTab => "opened",
+        _ => return None,
+    };
+    let given = ctx.given_text.as_deref()?;
+    let url = url::Url::parse(str_field(input, "url")?).ok()?;
+    let host = url.host_str()?.to_lowercase();
+    let labels: Vec<&str> = host.split('.').collect();
+    let named = labels[..labels.len().saturating_sub(1)]
+        .iter()
+        .filter(|l| l.len() >= 3 && **l != "www")
+        .any(|l| names_word(given, l));
+    (!named).then(|| {
+        format!(
+            "Not {verb}: no one pointed at {host}. The owner didn't name it and no tool returned it. \
+             Find the page with search_web and open one it returns, or ask the owner for the address."
+        )
+    })
+}
+
+/// A ref is the id a read puts in brackets (`ref_4`, or just `4`). Live
+/// (36371319880): a run passed the element's words as its ref twelve times;
+/// each click came back "No element found" with advice to read again, and
+/// the reads showed the same refs it wasn't using.
+fn ref_shape(r: &str) -> Result<(), String> {
+    let digits = r.strip_prefix("ref_").unwrap_or(r);
+    if !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit()) {
+        return Ok(());
+    }
+    Err(format!(
+        "`ref` is the id in brackets from a read, not the element's words: for `link \"Sign in\" [ref_4]` \
+         it is ref_4. Got \"{r}\"."
+    ))
+}
+
+/// `word` appears in `text` on its own, not inside a longer word.
+fn names_word(text: &str, word: &str) -> bool {
+    text.match_indices(word).any(|(i, _)| {
+        let before = text[..i].chars().next_back();
+        let after = text[i + word.len()..].chars().next();
+        !before.is_some_and(char::is_alphanumeric) && !after.is_some_and(char::is_alphanumeric)
+    })
+}
 
 /// Truncate a snapshot at a line boundary, appending an omission note.
 /// Used by auto-snapshot after navigate to keep output compact.
@@ -3799,6 +3858,36 @@ mod wording_tests {
         assert!(e.starts_with("Cannot fetch http://127.0.0.1:8080/x:"), "{e}");
         assert!(!e.contains("SSRF"));
         assert!(!e.contains("27895"), "the model is never pointed at Nebo's own API: {e}");
+    }
+
+    /// v0.16.0 proof (36371319880 run 3, and 2 earlier sweeps): "What's the
+    /// weather in Austin, TX right now?" went straight to a weather
+    /// service's address no one had named. A site is opened only when the
+    /// owner named it or a tool returned it.
+    #[test]
+    fn a_site_no_one_pointed_at_is_not_opened() {
+        let ctx = |given: &str| ToolContext { given_text: Some(given.to_lowercase().into()), ..Default::default() };
+        let url = |u: &str| serde_json::json!({ "url": u });
+        let asked = ctx("What's the weather in Austin, TX right now?");
+        let refused = unnamed_site(Kind::FetchUrl, &asked, &url("https://wttr.in/Austin,TX")).expect("refused");
+        assert!(refused.starts_with("Not fetched: no one pointed at wttr.in."), "{refused}");
+        assert!(unnamed_site(Kind::BrowserOpen, &asked, &url("https://www.accuweather.com/x")).is_some(), "a longer word is not the name");
+        // Named by the owner, or returned by a tool.
+        assert!(unnamed_site(Kind::BrowserOpen, &ctx("Check Google Flights"), &url("https://www.google.com/travel/flights")).is_none());
+        assert!(unnamed_site(Kind::FetchUrl, &ctx("read https://httpbin.org/json"), &url("https://httpbin.org/json")).is_none());
+        assert!(unnamed_site(Kind::FetchUrl, &ctx("[{\"content\":\"https://www.wunderground.com/weather/us/tx/austin\"}]"), &url("https://www.wunderground.com/weather/us/tx/austin")).is_none());
+        // Only the reading tools, and only in a model's step.
+        assert!(unnamed_site(Kind::HttpRequest, &asked, &url("https://wttr.in/")).is_none());
+        assert!(unnamed_site(Kind::FetchUrl, &ToolContext::default(), &url("https://wttr.in/")).is_none());
+    }
+
+    #[test]
+    fn a_ref_is_the_id_in_brackets() {
+        assert!(ref_shape("ref_12").is_ok() && ref_shape("12").is_ok());
+        let e = ref_shape("button \"Start\"").unwrap_err();
+        assert!(e.starts_with("`ref` is the id in brackets from a read"), "{e}");
+        assert!(Kind::BrowserAct.validate(&serde_json::json!({"action": "click", "ref": "the Start button"})).is_err());
+        assert!(Kind::BrowserAct.validate(&serde_json::json!({"action": "click", "ref": "ref_1"})).is_ok());
     }
 
     #[test]
