@@ -95,6 +95,9 @@
   // Name, voice and color are stored on this machine and never re-read, so
   // they are the owner's to change on every employee.
   const managed = $derived(!agent?.editable);
+  // A linked employee works in another app on the computer it is linked
+  // from: its persona is read there, but its name is the owner's here.
+  const linked = $derived(agent?.kind === 'linked');
 
   // A packaged employee is deleted only after the owner types its name: the
   // action uninstalls the package and erases its history, and the name is
@@ -274,6 +277,7 @@
       loadedIdentityFor = agentId;
       editName = agent.name;
       savedName = agent.name;
+      nameRequired = false;
       botRenameOffer = null;
       editRole = agent.role;
       jobCheckedRole = agent.role;
@@ -297,6 +301,22 @@
   function debounceIdentitySave() {
     if (identitySaveTimer) clearTimeout(identitySaveTimer);
     identitySaveTimer = setTimeout(() => saveIdentity(), 800);
+  }
+
+  // Clearing the name to retype it saves nothing while it is empty. Left
+  // empty, the last saved name comes back with a quiet hint: an employee
+  // always has a name.
+  let nameRequired = $state(false);
+
+  function nameTyped() {
+    if (editName.trim()) nameRequired = false;
+    debounceIdentitySave();
+  }
+
+  function nameLeft() {
+    if (editName.trim()) return;
+    editName = savedName;
+    nameRequired = true;
   }
 
   function selectColor(color: string) {
@@ -382,11 +402,12 @@
   }
 
   async function saveIdentity() {
-    if (!agentId) return;
+    const name = editName.trim();
+    if (!agentId || !name) return;
     try {
       const api = await import('$lib/api/nebo');
       await api.updateAgent(agentId, {
-        name: editName,
+        name,
         description: editRole,
         color: editColor,
         voice: editVoice,
@@ -400,7 +421,7 @@
       setTimeout(() => identitySaved = false, 2000);
       void checkJobEdit();
       const before = savedName;
-      savedName = editName;
+      savedName = name;
       void offerBotRename(before);
     } catch (e) {
       // A refused reporting line names the loop it would have closed, and a
@@ -1361,7 +1382,9 @@
       {#if identityError}
         <div class="rounded-lg border border-error/40 bg-error/10 px-3.5 py-2.5 text-xs text-error">{identityError}</div>
       {/if}
-      {#if managed}
+      {#if linked}
+        <div class="rounded-lg border border-base-300 bg-base-200/50 px-3.5 py-2.5 text-xs text-base-content/70">{$t('agentSettings.identityLinkedNote')}</div>
+      {:else if managed}
         <div class="rounded-lg border border-base-300 bg-base-200/50 px-3.5 py-2.5 text-xs text-base-content/70 flex items-start gap-3">
           <span class="flex-1">{$t('agentSettings.identityManagedNote')}</span>
           <button class="btn btn-xs btn-outline shrink-0" onclick={openDuplicate}>{$t('agentSettings.duplicateAgent')}</button>
@@ -1369,7 +1392,10 @@
       {/if}
       <label class="block">
         <span class="block text-xs font-semibold uppercase tracking-wider mb-1.5">{$t('agentSettings.agentName')}</span>
-        <input type="text" bind:value={editName} oninput={debounceIdentitySave} class="w-full py-[7px] px-2.5 rounded-md border border-base-300 text-sm bg-base-100 outline-none font-body disabled:opacity-60 disabled:cursor-not-allowed" />
+        <input type="text" bind:value={editName} oninput={nameTyped} onblur={nameLeft} class="w-full py-[7px] px-2.5 rounded-md border border-base-300 text-sm bg-base-100 outline-none font-body disabled:opacity-60 disabled:cursor-not-allowed" />
+        {#if nameRequired}
+          <span class="block text-xs text-base-content/60 mt-1">{$t('agentSettings.nameRequired')}</span>
+        {/if}
       </label>
       {#if botRenameOffer}
         <div class="flex flex-wrap items-center gap-2 rounded-lg border border-base-300 bg-base-200/40 px-3 py-2.5">

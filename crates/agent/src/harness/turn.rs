@@ -2991,6 +2991,23 @@ mod tests {
         assert!(events.iter().any(|e| e.text == "Hey, Hermes here."));
     }
 
+    /// The owner renamed Hermes: the turn still goes to the same linked
+    /// agent. The link reaches it, never the name.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_renamed_linked_employee_is_still_answered_by_its_linked_bot() {
+        let bot = Arc::new(LinkedBot::default());
+        let h = hired_linked(vec![bot.clone() as Arc<dyn ai::Provider>]);
+        let hired = h.store().get_agent(HERMES).unwrap().unwrap();
+        h.store()
+            .update_agent(HERMES, "Scout", "", &hired.agent_md, &hired.frontmatter, None, None, None, None, None, None, None, None, None, None)
+            .expect("rename");
+        let events = run_turn(&h, to_hermes("yo")).await;
+        let calls = bot.calls.lock().unwrap().clone();
+        assert_eq!(calls.len(), 1, "{events:?}");
+        assert_eq!(calls[0].model, "a736730b-86e3-4a70-9a44-5e51724acf6e/hermes");
+        assert!(events.iter().any(|e| e.text == "Hey, Hermes here."));
+    }
+
     /// A linked runtime's question reaches the run's events as an ask, the
     /// card every surface (the phone included) shows and answers; the turn
     /// carries the run's ask door to the provider.

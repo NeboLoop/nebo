@@ -1998,6 +1998,8 @@
 		"configManagedPrefix": "Konfiguracja tego pracownika jest zarządzana przez jego",
 		"configManagedSuffix": "i nie można jej edytować bezpośrednio. Zduplikuj go, aby utworzyć edytowalną kopię.",
 		"identityManagedNote": "Ten pracownik pochodzi z pakietu. Imię, głos i kolor należą do Ciebie, możesz je zmieniać i zmiany zostaną. Rola jest zapisana w pliku AGENT.md pakietu i wraca do pierwotnej przy ponownym uruchomieniu Nebo — zduplikuj pracownika, aby stał się w pełni Twój.",
+		"identityLinkedNote": "Ten pracownik działa w innej aplikacji. Imię, głos i kolor możesz zmienić tutaj; rola i persona zostają w tamtej aplikacji.",
+		"nameRequired": "Nazwa jest wymagana.",
 		"packageManagedNote": "To pochodzi z pakietu, z którego zainstalowano tego pracownika, więc nie da się tego tutaj edytować. Zduplikuj pracownika, aby dostać kopię, którą możesz przepisać.",
 		"fromPackage": "z pakietu",
 		"model": "Model",

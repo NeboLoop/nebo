@@ -1998,6 +1998,8 @@
 		"configManagedPrefix": "该员工的配置由其",
 		"configManagedSuffix": "管理，无法直接编辑。复制它以创建可编辑的副本。",
 		"identityManagedNote": "这名员工来自一个套装。名字、声音和颜色由你更改，并会保持不变。角色写在套装的 AGENT.md 里，Nebo 重启时会恢复原样 — 复制这名员工，才能完全变成你自己的。",
+		"identityLinkedNote": "这位员工在另一个应用中工作。名字、声音和颜色可以在这里修改；角色和人设保留在那个应用里。",
+		"nameRequired": "名字不能为空。",
 		"packageManagedNote": "这来自安装这名员工时所用的套装，因此无法在这里编辑。复制这名员工，就能得到一份可以改写的副本。",
 		"fromPackage": "来自套装",
 		"model": "模型",

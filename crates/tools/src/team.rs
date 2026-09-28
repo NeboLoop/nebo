@@ -456,6 +456,36 @@ mod tests {
         assert_eq!(team.name, "Sales");
     }
 
+    /// The owner renames a linked employee after it joined a team: it stays
+    /// on the team under its new name, and delegation reaches it by that
+    /// name, its handle or its id. Its link is untouched: the brain still
+    /// names the same linked agent.
+    #[tokio::test]
+    async fn a_renamed_linked_employee_stays_on_its_team_and_is_reached() {
+        let s = store();
+        s.create_agent("chief", None, "Chief of Staff", "", "---\nname: Chief of Staff\n---\n", "{}", None, None).unwrap();
+        let hired = s.create_agent("emp-linked", Some("linked"), "main", "", "---\nname: main\n---\n", "{}", None, None).unwrap();
+        let brain = ai::LinkedProvider::model_id("bot-1", "main");
+        s.upsert_entity_config("agent", &hired.id, &serde_json::json!({ "modelPreference": brain })).unwrap();
+        let team = create(None, &s, "Research", "", &[TeamMember::local(&hired.id)], "chief", &SAVED).await.unwrap();
+
+        s.update_agent(
+            &hired.id, "Scout", &hired.description, &hired.agent_md, &hired.frontmatter,
+            None, None, None, None, None, None, None, None, None, None,
+        )
+        .unwrap();
+
+        let team = s.get_team(&team.id).unwrap().unwrap();
+        assert_eq!(members_of(&team), vec!["chief", "emp-linked"]);
+        assert!(member_roster(&s, &team).contains(&("emp-linked".to_string(), "Scout".to_string())));
+        for label in ["Scout", "@scout", "emp-linked"] {
+            assert_eq!(resolve_agent(&s, label).map(|a| a.id), Some("emp-linked".to_string()), "{label}");
+        }
+        assert!(resolve_agent(&s, "main").is_none(), "the old name is nobody's now");
+        let config = s.get_entity_config("agent", "emp-linked").unwrap().unwrap();
+        assert_eq!(config.model_preference.as_deref(), Some(brain.as_str()));
+    }
+
     /// The two policies: no solo teams, no repeated names.
     #[tokio::test]
     async fn create_refuses_solo_and_repeated_names() {

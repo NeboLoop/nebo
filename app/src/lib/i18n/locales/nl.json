@@ -1998,6 +1998,8 @@
 		"configManagedPrefix": "De configuratie van deze medewerker wordt beheerd door zijn",
 		"configManagedSuffix": "en kan niet direct worden bewerkt. Dupliceer hem om een bewerkbare kopie te maken.",
 		"identityManagedNote": "Deze medewerker komt uit een pakket. Naam, stem en kleur mag je veranderen en die blijven zo. De rol staat in de AGENT.md van het pakket en wordt teruggezet als Nebo opnieuw start — dupliceer de medewerker om die helemaal van jou te maken.",
+		"identityLinkedNote": "Deze medewerker werkt in een andere app. Naam, stem en kleur kun je hier wijzigen; rol en persona blijven in die app.",
+		"nameRequired": "Een naam is verplicht.",
 		"packageManagedNote": "Dit komt uit het pakket waaruit deze medewerker is geïnstalleerd en kan hier niet worden bewerkt. Dupliceer de medewerker voor een kopie die je wel kunt herschrijven.",
 		"fromPackage": "uit het pakket",
 		"model": "Model",

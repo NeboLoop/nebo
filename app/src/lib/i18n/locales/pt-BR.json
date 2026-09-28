@@ -1998,6 +1998,8 @@
 		"configManagedPrefix": "A configuração deste funcionário é gerenciada por seu",
 		"configManagedSuffix": "e não pode ser editada diretamente. Duplique-o para criar uma cópia editável.",
 		"identityManagedNote": "Este funcionário vem de um pacote. O nome, a voz e a cor são seus: as suas alterações ficam. O cargo está escrito no AGENT.md do pacote e volta ao original quando o Nebo reinicia — duplique o funcionário para ele ser inteiramente seu.",
+		"identityLinkedNote": "Este funcionário trabalha em outro app. Nome, voz e cor você muda aqui; a função e a persona ficam nesse app.",
+		"nameRequired": "O nome é obrigatório.",
 		"packageManagedNote": "Isto vem do pacote de onde o funcionário foi instalado, então não dá para mudar aqui. Duplique o funcionário para ter uma cópia que você pode reescrever.",
 		"fromPackage": "do pacote",
 		"model": "Modelo",

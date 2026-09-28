@@ -1180,19 +1180,20 @@ pub async fn update_agent(
     let agent_md = body["agentMd"].as_str().unwrap_or(&existing.agent_md);
     let (fm, _body) = parse_agent_md(agent_md).map_err(to_error_response)?;
 
-    // Body fields take priority over frontmatter (allows renaming without editing AGENT.md)
-    let name = body["name"].as_str().unwrap_or_else(|| {
+    // Body fields take priority over frontmatter (allows renaming without editing AGENT.md).
+    // Every employee's name is the owner's to change, a linked one's included:
+    // its link (bot and agent id) is what reaches it, never its name.
+    let name = body["name"].as_str().map(str::trim).unwrap_or_else(|| {
         if fm.name.is_empty() {
             &existing.name
         } else {
             &fm.name
         }
     });
-    if linked_rename(&existing, name) {
-        return Err(to_error_response(types::NeboError::Validation(format!(
-            "{}'s name is set on the linked bot.",
-            existing.name
-        ))));
+    if body.get("name").is_some() && name.is_empty() {
+        return Err(to_error_response(types::NeboError::Validation(
+            "A name is required.".into(),
+        )));
     }
     let description = body["description"].as_str().unwrap_or_else(|| {
         if fm.description.is_empty() {
@@ -1959,9 +1960,10 @@ fn linked_target(
 }
 
 /// Hire an agent of a linked bot as an employee of this bot: the row is
-/// `kind = "linked"`, its name and description are the contract roster's,
-/// its name is locked, and its brain is `linked/<bot>/<agent>` on the
-/// employee's model preference. Soul and rules stay the runtime's.
+/// `kind = "linked"`, its name and description start as the contract
+/// roster's, and its brain is `linked/<bot>/<agent>` on the employee's model
+/// preference. The name is then the owner's to change, like any employee's:
+/// the brain is what reaches the agent. Soul and rules stay the runtime's.
 ///
 /// `agent_id` `new:<runtime>` (a "New Claude Code" row) is a new coding
 /// agent of that runtime: the computer starts one in a folder of its own,
@@ -2066,7 +2068,7 @@ fn new_rows(runtimes: &[comm::api_types::LinkedRuntime], computer: &str) -> Vec<
         .collect()
 }
 
-/// The linked employee's row, locked name, brain and permission mode, and
+/// The linked employee's row, brain and permission mode, and
 /// its activation: every linked hire, from any computer, ends here.
 async fn hire_linked(
     state: &AppState,
@@ -2076,6 +2078,14 @@ async fn hire_linked(
     description: &str,
     mode: Option<types::permissions::Mode>,
 ) -> HandlerResult<serde_json::Value> {
+    let brain = ai::LinkedProvider::model_id(bot_id, agent_id);
+    let rows = state.store.list_agents(1000, 0).map_err(to_error_response)?;
+    if let Some(hired) = hired_as(&rows, &linked_employees(state, &rows), &brain) {
+        return Err(to_error_response(types::NeboError::Validation(format!(
+            "That agent is already hired, as {}.",
+            hired.name
+        ))));
+    }
     let id = uuid::Uuid::new_v4().to_string();
     let name = name.trim();
     let name = if name.is_empty() { agent_id } else { name };
@@ -2096,13 +2106,12 @@ async fn hire_linked(
             None,
         )
         .map_err(to_error_response)?;
-    state.store.lock_agent_name(&id).map_err(to_error_response)?;
     state
         .store
         .upsert_entity_config(
             "agent",
             &id,
-            &serde_json::json!({ "modelPreference": ai::LinkedProvider::model_id(bot_id, agent_id) }),
+            &serde_json::json!({ "modelPreference": brain }),
         )
         .map_err(to_error_response)?;
     if let Some(mode) = mode {
@@ -2115,8 +2124,8 @@ async fn hire_linked(
 
     activate_hire(state, &agent).await;
 
-    // No introduction ceremony: the name is the linked agent's, not one the
-    // owner gave, and the runtime owns what it says first.
+    // No introduction ceremony: the name is the linked agent's until the
+    // owner changes it, and the runtime owns what it says first.
     Ok(Json(serde_json::json!({
         "agent": { "id": id, "name": agent.name },
         "activated": true,
@@ -2270,10 +2279,16 @@ fn linked_employees(state: &AppState, rows: &[db::models::Agent]) -> Vec<(String
         .collect()
 }
 
-/// A write that would rename a linked employee (by `name` or through the
-/// AGENT.md frontmatter): the name is the linked agent's, locked at hire.
-fn linked_rename(existing: &db::models::Agent, name: &str) -> bool {
-    existing.kind.as_deref() == Some("linked") && name != existing.name
+/// The employee already running as the linked agent `brain` names, if one
+/// is hired. A linked agent is known by its link, never by its name: the
+/// owner may have renamed the employee since it was hired.
+fn hired_as<'a>(
+    rows: &'a [db::models::Agent],
+    linked: &[(String, String)],
+    brain: &str,
+) -> Option<&'a db::models::Agent> {
+    let (id, _) = linked.iter().find(|(_, model)| model == brain)?;
+    rows.iter().find(|r| &r.id == id)
 }
 
 /// A write that would change a linked employee's soul or rules: those are
@@ -5877,7 +5892,7 @@ mod frontmatter_save_tests {
 
 #[cfg(test)]
 mod linked_hire_tests {
-    use super::{Here, NEW, hire_source, linked_offline, linked_persona_edit, linked_rename, linked_target, refusal, source_entry};
+    use super::{Here, NEW, hire_source, hired_as, linked_offline, linked_persona_edit, linked_target, refusal, source_entry};
 
     fn agent_row(kind: Option<&str>, soul: Option<&str>) -> db::models::Agent {
         db::models::Agent {
@@ -6070,15 +6085,21 @@ mod linked_hire_tests {
         assert_eq!(refusal(&down, "Mac.lan"), "Could not connect to Mac.lan. Try again.");
     }
 
-    /// A linked employee's name is its linked agent's: a rename is refused,
-    /// the same name passes, and other employees rename freely.
+    /// A linked agent already hired is found by its link, whatever the owner
+    /// has renamed the employee since: a second hire of it is refused, and
+    /// another agent on the same bot is not mistaken for it.
     #[test]
-    fn a_linked_employee_keeps_its_name() {
-        let linked = agent_row(Some("linked"), None);
-        assert!(linked_rename(&linked, "Renamed"));
-        assert!(!linked_rename(&linked, "Danny"));
-        let plain = agent_row(None, None);
-        assert!(!linked_rename(&plain, "Renamed"));
+    fn a_renamed_linked_employee_is_still_the_one_hired() {
+        let mut renamed = agent_row(Some("linked"), None);
+        renamed.name = "Scout".into();
+        let mut plain = agent_row(None, None);
+        plain.id = "emp-2".into();
+        let rows = vec![plain, renamed];
+        let brain = ai::LinkedProvider::model_id("bot-1", "main");
+        let linked = vec![("emp-1".to_string(), brain.clone())];
+        assert_eq!(hired_as(&rows, &linked, &brain).map(|a| a.name.as_str()), Some("Scout"));
+        let other = ai::LinkedProvider::model_id("bot-1", "research");
+        assert!(hired_as(&rows, &linked, &other).is_none());
     }
 
     /// Soul and rules belong to the runtime: a change is refused on a linked
