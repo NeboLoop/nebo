@@ -1,0 +1,15 @@
+id: a-tools-own-setting-outranks-its-default
+name: "A tool's own setting outranks its server's default"
+description: |
+  Owner ruling 2026-09-28: the Permissions page is one three-way switch
+  (Allow, Ask, Off) everywhere. A connected server's default covers every
+  tool without a setting of its own, and a tool's own switch overrides it
+  whichever way it points, the way the MCP screen's per-tool control
+  always read. The permission check has to agree with the page: within one
+  scope the most specific rule (the tool's own, then its server's default,
+  then its capability) decides. A company Off still binds every employee.
+  Purely rule precedence with no model involved, so it is a deterministic
+  proof rather than a conversation.
+target_component: permissions
+proof: harness::permissions::proof::a_tools_own_setting_outranks_its_default
+conversation: []

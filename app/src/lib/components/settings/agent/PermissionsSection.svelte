@@ -3,9 +3,13 @@
   employee → Permissions). With no agentId it is the company defaults page,
   with the same controls (Settings → Permissions).
 
-  Every line is a sentence the server renders; the page never shows a rule.
-  Changes save as they are made: a mode, an item removed, a capability or a
-  folder added, a money amount typed (debounced).
+  Every choice is the same three-way switch — Allow, Ask, Off — on each
+  capability, each connected service's default and its actions or tools,
+  and each specific setting. A switch with no setting of the page's own
+  shows its default's or the company's value, dimmed. The server builds the
+  page (sentences, groups, current and inherited values); the page never
+  shows a rule. Changes save as they are made: a mode, a switch, a folder
+  added or removed, a money amount typed (debounced).
 -->
 <script lang="ts">
   import { untrack } from 'svelte';
@@ -13,11 +17,14 @@
   import Check from 'lucide-svelte/icons/check';
   import X from 'lucide-svelte/icons/x';
   import Lock from 'lucide-svelte/icons/lock';
+  import Hand from 'lucide-svelte/icons/hand';
+  import Ban from 'lucide-svelte/icons/ban';
   import FolderPlus from 'lucide-svelte/icons/folder-plus';
   import AlertTriangle from 'lucide-svelte/icons/alert-triangle';
   import * as api from '$lib/api/nebo';
-  import type { PermissionItem, PermissionsPage, MoneyAmounts } from '$lib/api/nebo';
+  import type { PermissionItem, PermissionSwitch, PermissionsPage, MoneyAmounts } from '$lib/api/nebo';
   import Spinner from '$lib/components/ui/Spinner.svelte';
+  import { switchStates, switchChange, inheritedNote, type SwitchChange, type SwitchValue } from '$lib/utils/permissionSwitch';
 
   let { agentId, name = '' }: { agentId?: string; name?: string } = $props();
 
@@ -30,7 +37,6 @@
   let saved = $state(false);
   let savedTimer: ReturnType<typeof setTimeout> | null = null;
   let confirmFullAccess = $state(false);
-  let addChoice = $state('');
 
   /** Money amounts as typed, in dollars, keyed by item id. */
   let moneyInputs = $state<Record<string, { perAction: string; perDay: string; perDayCount: string }>>({});
@@ -42,6 +48,13 @@
     { id: 'plan', label: 'permissions.modePlan', desc: 'permissions.modePlanDesc' },
     { id: 'full_access', label: 'permissions.modeFullAccess', desc: 'permissions.modeFullAccessDesc' }
   ];
+
+  /** Each switch state's icon and lit colour. */
+  const stateLook: Record<SwitchValue, { icon: typeof Check; lit: string }> = {
+    allow: { icon: Check, lit: 'btn-active text-success' },
+    ask: { icon: Hand, lit: 'btn-active text-warning' },
+    deny: { icon: Ban, lit: 'btn-active text-error' }
+  };
 
   function modeLabel(m: string): string {
     return $t(modes.find((x) => x.id === m)?.label ?? 'permissions.modeAutomatic');
@@ -112,6 +125,10 @@
     void change({ mode: 'full_access' });
   }
 
+  function setSwitch(sw: PermissionSwitch, value: SwitchChange | null) {
+    if (value) void change({ set: { id: sw.id, value } });
+  }
+
   async function removeItem(item: PermissionItem) {
     error = '';
     try {
@@ -122,12 +139,6 @@
     } catch (e) {
       error = e instanceof Error && e.message ? e.message : $t('permissions.saveError');
     }
-  }
-
-  function addCapability() {
-    const id = addChoice;
-    addChoice = '';
-    if (id) void change({ addCapability: id });
   }
 
   async function addFolder() {
@@ -162,6 +173,38 @@
   const isEmployee = $derived(!!agentId);
 </script>
 
+{#snippet toggle(sw: PermissionSwitch)}
+  <div class="join shrink-0 {sw.inherited ? 'opacity-70' : ''}" role="group" aria-label={sw.sentence}>
+    {#each switchStates as s (s.value)}
+      {@const look = stateLook[s.value]}
+      <button
+        type="button"
+        class="btn btn-xs join-item {sw.value === s.value ? look.lit : 'btn-ghost text-base-content/50'}"
+        title={$t(s.long)}
+        aria-label={$t(s.long)}
+        aria-pressed={sw.value === s.value}
+        disabled={sw.locked}
+        onclick={() => setSwitch(sw, switchChange(sw, s.value))}
+      >
+        <look.icon class="w-3 h-3" />
+        <span class="hidden sm:inline">{$t(s.label)}</span>
+      </button>
+    {/each}
+  </div>
+{/snippet}
+
+{#snippet switchRow(sw: PermissionSwitch, title = '')}
+  {@const note = inheritedNote(sw)}
+  <li class="flex items-center gap-3 py-2 flex-wrap">
+    <span class="flex-1 min-w-0 text-sm">
+      {#if sw.locked}<Lock class="w-3.5 h-3.5 inline mr-1 align-[-2px] text-base-content/50" />{/if}
+      {title || sw.sentence}
+      {#if note}<span class="text-xs text-base-content/50 ml-1.5">{$t(note)}</span>{/if}
+    </span>
+    {@render toggle(sw)}
+  </li>
+{/snippet}
+
 {#snippet itemRow(item: PermissionItem, locked = false)}
   <li class="flex items-start gap-3 py-2.5">
     {#if locked}<Lock class="w-3.5 h-3.5 mt-0.5 shrink-0 text-base-content/50" />{/if}
@@ -183,22 +226,6 @@
       </button>
     {/if}
   </li>
-{/snippet}
-
-{#snippet group(title: string, hint: string, items: PermissionItem[], empty: string, locked = false)}
-  <section class="mb-7">
-    <h3 class="text-sm font-semibold">{title}</h3>
-    {#if hint}<p class="text-xs text-base-content/70 mt-0.5">{hint}</p>{/if}
-    {#if items.length === 0}
-      <p class="text-xs text-base-content/60 mt-2">{empty}</p>
-    {:else}
-      <ul class="divide-y divide-base-content/10 mt-1">
-        {#each items as item (item.id)}
-          {@render itemRow(item, locked)}
-        {/each}
-      </ul>
-    {/if}
-  </section>
 {/snippet}
 
 <div class="flex items-center justify-end h-5 mb-1">
@@ -243,28 +270,40 @@
     </div>
   </section>
 
-  <!-- What the job includes -->
+  <!-- What employees can do -->
   <section class="mb-7">
-    <h3 class="text-sm font-semibold">{$t('permissions.jobTitle')}</h3>
-    <p class="text-xs text-base-content/70 mt-0.5">{$t('permissions.jobHint')}</p>
-    {#if page.job.length === 0}
-      <p class="text-xs text-base-content/60 mt-2">{$t('permissions.jobEmpty')}</p>
-    {:else}
-      <ul class="divide-y divide-base-content/10 mt-1">
-        {#each page.job as item (item.id)}
-          {@render itemRow(item)}
-        {/each}
-      </ul>
-    {/if}
-    {#if page.canAdd.length > 0}
-      <select class="select select-sm select-bordered mt-2 w-full max-w-sm" bind:value={addChoice} onchange={addCapability} aria-label={$t('permissions.addToJob')}>
-        <option value="" disabled selected>{$t('permissions.addToJob')}</option>
-        {#each page.canAdd as option (option.id)}
-          <option value={option.id}>{option.sentence}</option>
-        {/each}
-      </select>
-    {/if}
+    <h3 class="text-sm font-semibold">{isEmployee ? $t('permissions.canDoTitleEmployee', { values: { name } }) : $t('permissions.canDoTitle')}</h3>
+    <p class="text-xs text-base-content/70 mt-0.5">{$t('permissions.canDoHint')}</p>
+    <ul class="divide-y divide-base-content/10 mt-1">
+      {#each page.capabilities as sw (sw.id)}
+        {@render switchRow(sw)}
+      {/each}
+    </ul>
   </section>
+
+  <!-- Connected services: plugins and MCP servers -->
+  {#if page.groups.length > 0}
+    <section class="mb-7">
+      <h3 class="text-sm font-semibold">{$t('permissions.servicesTitle')}</h3>
+      <p class="text-xs text-base-content/70 mt-0.5">{$t('permissions.servicesHint')}</p>
+      <div class="flex flex-col gap-3 mt-2">
+        {#each page.groups as g (g.id)}
+          <div class="rounded-lg border border-base-300">
+            <div class="px-3.5 pt-2.5">
+              <div class="text-sm font-medium">{g.title}</div>
+              {#if g.subtitle}<div class="text-xs text-base-content/70">{g.subtitle}</div>{/if}
+            </div>
+            <ul class="divide-y divide-base-content/10 px-3.5">
+              {@render switchRow(g.default, $t('permissions.groupDefault'))}
+              {#each g.rows as sw (sw.id)}
+                {@render switchRow(sw)}
+              {/each}
+            </ul>
+          </div>
+        {/each}
+      </div>
+    </section>
+  {/if}
 
   <!-- Money limits -->
   <section class="mb-7">
@@ -327,15 +366,42 @@
     </button>
   </section>
 
-  {@render group($t('permissions.alwaysTitle'), $t('permissions.alwaysHint'), page.alwaysAllowed, $t('permissions.alwaysEmpty'))}
-  {#if page.asksFirst.length > 0}
-    {@render group($t('permissions.asksTitle'), $t('permissions.asksHint'), page.asksFirst, '')}
+  <!-- Specific actions -->
+  {#if page.specific.length > 0}
+    <section class="mb-7">
+      <h3 class="text-sm font-semibold">{$t('permissions.specificTitle')}</h3>
+      <p class="text-xs text-base-content/70 mt-0.5">{$t('permissions.specificHint')}</p>
+      <ul class="divide-y divide-base-content/10 mt-1">
+        {#each page.specific as sw (sw.id)}
+          {@render switchRow(sw)}
+        {/each}
+      </ul>
+    </section>
   {/if}
-  {#if page.never.length > 0}
-    {@render group($t('permissions.neverTitle'), $t('permissions.neverHint'), page.never, '')}
+
+  <!-- Safety rules -->
+  {#if page.alwaysAsks.length > 0}
+    <section class="mb-7">
+      <h3 class="text-sm font-semibold">{$t('permissions.alwaysAsksTitle')}</h3>
+      <p class="text-xs text-base-content/70 mt-0.5">{$t('permissions.alwaysAsksHint')}</p>
+      <ul class="divide-y divide-base-content/10 mt-1">
+        {#each page.alwaysAsks as item (item.id)}
+          {@render itemRow(item, true)}
+        {/each}
+      </ul>
+    </section>
   {/if}
+
   {#if page.fixed.length > 0}
-    {@render group($t('permissions.fixedTitle'), $t('permissions.fixedHint'), page.fixed, '', true)}
+    <section class="mb-7">
+      <h3 class="text-sm font-semibold">{$t('permissions.fixedTitle')}</h3>
+      <p class="text-xs text-base-content/70 mt-0.5">{$t('permissions.fixedHint')}</p>
+      <ul class="divide-y divide-base-content/10 mt-1">
+        {#each page.fixed as item (item.id)}
+          {@render itemRow(item, true)}
+        {/each}
+      </ul>
+    </section>
   {/if}
 
   <a class="link link-hover text-xs text-base-content/70" href={agentId ? `/activity?agent=${encodeURIComponent(agentId)}` : '/activity'}>

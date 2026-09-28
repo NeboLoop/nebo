@@ -1105,20 +1105,6 @@ export function testIntegration(id: string, req: Record<string, unknown> = {}) {
 }
 
 /**
- * @description "Get tool permissions"
- */
-export function getToolPermissions(id: string) {
-	return webapi.get<unknown>(`/api/v1/integrations/${id}/tool-permissions`)
-}
-
-/**
- * @description "Update tool permissions"
- */
-export function updateToolPermissions(id: string, req: Record<string, unknown> = {}) {
-	return webapi.put<unknown>(`/api/v1/integrations/${id}/tool-permissions`, req)
-}
-
-/**
  * @description "List layers"
  */
 export function listLayers() {

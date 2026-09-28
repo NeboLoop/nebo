@@ -983,6 +983,14 @@ export interface PermissionAsksResponse {
 	asks: PermissionAskCard[]
 }
 
+export interface PermissionGroup {
+	id: string
+	title: string
+	subtitle: string
+	default: PermissionSwitch
+	rows: PermissionSwitch[]
+}
+
 export interface PermissionItem {
 	id: string
 	sentence: string
@@ -991,17 +999,26 @@ export interface PermissionItem {
 	money?: MoneyAmounts
 }
 
+export interface PermissionSwitch {
+	id: string
+	sentence: string
+	value: string
+	inherited: boolean
+	inheritsFrom?: string
+	canInherit: boolean
+	locked: boolean
+}
+
 export interface PermissionsPage {
 	mode: string
 	modeFromCompany: boolean
 	companyMode: string
-	job: PermissionItem[]
-	canAdd: PermissionItem[]
+	capabilities: PermissionSwitch[]
+	groups: PermissionGroup[]
+	specific: PermissionSwitch[]
 	money: PermissionItem[]
 	folders: PermissionItem[]
-	alwaysAllowed: PermissionItem[]
-	asksFirst: PermissionItem[]
-	never: PermissionItem[]
+	alwaysAsks: PermissionItem[]
 	fixed: PermissionItem[]
 }
 
