@@ -53,7 +53,8 @@ async fn run_and_answer(server: &TestServer, agent_id: &str, target: &std::path:
     assert_eq!(std::fs::read_to_string(target).unwrap(), "approved", "the parked call ran once, as approved");
 }
 
-/// U2: a gated workflow step, answered from the web Inbox and from the hub.
+/// U2: a gated workflow step, answered from the web Inbox, from the hub, and
+/// from a button on the phone's notification.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_parked_workflow_step_resumes_when_answered_from_the_web_inbox_or_the_hub() {
     let out = tempfile::tempdir().unwrap();
@@ -105,6 +106,8 @@ async fn a_parked_workflow_step_resumes_when_answered_from_the_web_inbox_or_the_
     run_and_answer(&server, &agent_id, &target, "inbox").await;
     std::fs::remove_file(&target).unwrap();
     run_and_answer(&server, &agent_id, &target, "mobile").await;
+    std::fs::remove_file(&target).unwrap();
+    run_and_answer(&server, &agent_id, &target, "notification").await;
 }
 
 /// U3: an employee's scheduled job runs as the employee.

@@ -131,7 +131,7 @@ pub async fn get_permission_ask(
 pub struct AnswerAskBody {
     /// allow_always | this_once | no
     pub answer: String,
-    /// chat | inbox | mobile
+    /// chat | inbox | mobile | notification
     pub via: String,
 }
 
@@ -148,7 +148,7 @@ pub async fn answer_permission_ask(
     // never from a client claiming one.
     let via = AnsweredVia::parse(&body.via)
         .filter(|v| *v != AnsweredVia::Voice)
-        .ok_or_else(|| invalid("via must be chat, inbox or mobile"))?;
+        .ok_or_else(|| invalid("via must be chat, inbox, mobile or notification"))?;
     match state.permission_asks.answer(&id, answer, via) {
         Ok(ask) => Ok(Json(card(&state, &ask))),
         Err(AskError::Settled(ask)) => Ok(Json(card(&state, &ask))),
