@@ -1324,12 +1324,15 @@ fn interpret_exit_code(command: &str, exit_code: i32, output: &str, nothing_sear
                 // the user grep was not installed.
                 Some(match missing_command_name(output) {
                     Some(name) => format!(
-                        "The command '{}' is not available on this system. Tell the user it isn't \
-                         installed — do not search the disk for it, substitute another command, or \
-                         install it without asking.",
-                        name
+                        "The command '{name}' is not installed on this system. {} Don't search the disk \
+                         for it or substitute another command.",
+                        crate::errors::install_guidance()
                     ),
-                    None => "A command in this pipeline is not installed (the shell's message above names it). Tell the user; do not substitute another command.".to_string(),
+                    None => format!(
+                        "A command in this pipeline is not installed (the shell's message above names it). {} \
+                         Don't substitute another command.",
+                        crate::errors::install_guidance()
+                    ),
                 })
             } else if lo.contains("no such file")
                 || lo.contains("unable to open")
@@ -1559,8 +1562,42 @@ mod tests {
             .execute(&ctx(), json!({"action": "exec", "command": "frobnicate_zz --version | head -1"}))
             .await;
         assert!(res.is_error, "{}", res.content);
-        assert!(res.content.contains("'frobnicate_zz' is not available"), "{}", res.content);
-        assert!(res.content.contains("do not search the disk"), "{}", res.content);
+        assert!(res.content.contains("'frobnicate_zz' is not installed"), "{}", res.content);
+        assert!(res.content.contains("Don't search the disk"), "{}", res.content);
+    }
+
+    // Owner, 2026-09-28: installing never asks ("We must be able to actually
+    // install things so we can code"). A missing program's hint says to
+    // install it with this platform's installers and carry on; it never says
+    // to ask first, and sudo stays refused.
+    #[tokio::test]
+    async fn a_missing_program_is_installed_and_the_work_carries_on() {
+        let t = tool();
+        let res = t.execute(&ctx(), json!({"action": "exec", "command": "frobnicate_zz --version"})).await;
+        assert!(res.is_error, "{}", res.content);
+        let hint = crate::errors::install_guidance();
+        assert!(res.content.contains(&format!("'frobnicate_zz' is not installed on this system. {hint}")), "{}", res.content);
+        let piped = t.execute(&ctx(), json!({"action": "exec", "command": "frobnicate_zz | head -1"})).await;
+        assert!(piped.content.contains(hint), "{}", piped.content);
+        let not_started = crate::errors::command_not_found("frobnicate_zz");
+        assert!(not_started.contains(hint), "{not_started}");
+        for text in [res.content.as_str(), piped.content.as_str(), not_started.as_str()] {
+            let lower = text.to_lowercase();
+            for ask in ["without asking", "ask the owner first", "ask the user first", "ask before"] {
+                assert!(!lower.contains(ask), "{ask:?} in: {text}");
+            }
+        }
+        assert!(hint.starts_with("Install it and carry on"), "{hint}");
+        assert!(hint.contains("then run the command again"), "{hint}");
+        assert!(hint.contains("cargo install") && hint.contains("go install"), "{hint}");
+        #[cfg(target_os = "macos")]
+        assert!(hint.contains("brew install") && hint.contains("Never sudo"), "{hint}");
+        #[cfg(target_os = "linux")]
+        assert!(hint.contains("pipx install") && hint.contains("apt and dnf need root"), "{hint}");
+        #[cfg(target_os = "windows")]
+        assert!(hint.contains("winget install --scope user") && hint.contains("scoop install"), "{hint}");
+        let sudo = t.execute(&ctx(), json!({"action": "exec", "command": "sudo apt-get install -y frobnicate"})).await;
+        assert!(sudo.is_error, "sudo is still refused: {}", sudo.content);
     }
 
     #[tokio::test]

@@ -600,20 +600,16 @@ impl DynTool for ExecuteTool {
                     script = script_path,
                     "cloud sandbox not yet available"
                 );
-                return ToolResult::error(
-                    "No local runtime for this script and cloud execution is not available. Ask the owner to install the runtime (Python or Node.js) on this machine.",
-                );
+                return ToolResult::error(format!(
+                    "No local runtime for this script and cloud execution is not available: it needs {language}. {}",
+                    crate::errors::install_guidance()
+                ));
             }
 
             // 6. Neither available — show both options
             ToolResult::error(format!(
-                "No {} runtime found on this machine and cloud execution is not available. Ask the owner to install {}:\n{}",
-                language,
-                language,
-                match language {
-                    "python" => "  https://python.org/downloads/",
-                    _ => "  https://nodejs.org/",
-                }
+                "No {language} runtime found on this machine and cloud execution is not available. {}",
+                crate::errors::install_guidance()
             ))
         })
     }

@@ -2,8 +2,10 @@ id: run-command-fails
 name: "Run command — command failure recovery"
 description: |
   The user asks to run a command that will fail (nonexistent binary).
-  The model should report the error clearly — NOT retry the same command,
-  NOT try to install the missing tool without asking.
+  The model should report the error clearly — NOT retry the same command
+  blindly. Installing a missing tool needs no ask (owner, 2026-09-28), and
+  no package provides this one, so any install attempt fails and the model
+  says the command was not found.
 # The first error is the test itself: the fixture makes it happen.
 induced_errors: 1
 target_component: run_command
@@ -28,10 +30,10 @@ prompt_assertions:
       check: { first_call: true, tool: run_command, arg: command, contains: "nebo-nonexistent-tool" }
   recovery:
     - id: no-retry
-      text: "Model does not retry the same command after 'command not found'"
+      text: "Model does not run the same command again after 'command not found' unless an install between the two succeeded"
       severity: critical
-    - id: no-install-attempt
-      text: "Model does not try to install the missing tool without asking"
+    - id: install-or-report
+      text: "Any install attempt uses a package manager without sudo, and when no package provides the tool the model says so instead of trying further"
       severity: important
     - id: clear-error-report
       text: "Model tells the user the command was not found"
