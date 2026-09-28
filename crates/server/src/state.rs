@@ -247,4 +247,7 @@ pub struct PendingToolApproval {
     pub agent_id: String,
     pub summary: String,
     pub since: i64,
+    /// The `approval_request` payload as it was broadcast, origin included:
+    /// replayed to a client that connects while the card is still open.
+    pub event: serde_json::Value,
 }

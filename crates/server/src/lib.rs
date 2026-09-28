@@ -2636,7 +2636,7 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
                 if !deps.is_empty() {
                     let mut visited = std::collections::HashSet::new();
                     // The boot-time reconcile: no one's act is behind it.
-                    crate::deps::resolve_cascade(&cascade_state, deps, &mut visited, tools::InstalledBy::Other).await;
+                    crate::deps::resolve_cascade(&cascade_state, deps, &mut visited, tools::InstalledBy::Other, &handlers::ws::EventOrigin::default()).await;
                 }
             }
         });
@@ -3355,6 +3355,7 @@ async fn handle_agent_fs_events(
                                             deps,
                                             &mut visited,
                                             tools::InstalledBy::Other,
+                                            &handlers::ws::EventOrigin::default(),
                                         )
                                         .await;
                                     }

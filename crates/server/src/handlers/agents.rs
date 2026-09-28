@@ -670,6 +670,7 @@ fn spawn_agent_intro(state: &AppState, agent_id: &str, name: &str, brand_new: bo
 
 pub async fn create_agent(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     Json(body): Json<serde_json::Value>,
 ) -> HandlerResult<serde_json::Value> {
     // Blank agent: create a minimal agent and auto-activate it. The sidebar's
@@ -844,8 +845,10 @@ pub async fn create_agent(
 
     let cascade = if !deps.is_empty() {
         let mut visited = std::collections::HashSet::new();
+        // The page that created it renders the cascade's progress.
+        let origin = super::ws::EventOrigin::of_request(&headers, String::new());
         Some(
-            crate::deps::resolve_cascade(&state, deps, &mut visited, tools::InstalledBy::Owner)
+            crate::deps::resolve_cascade(&state, deps, &mut visited, tools::InstalledBy::Owner, &origin)
                 .await,
         )
     } else {

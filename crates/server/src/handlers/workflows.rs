@@ -38,6 +38,7 @@ pub async fn list_workflows(
 /// POST /workflows
 pub async fn create_workflow(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     Json(body): Json<serde_json::Value>,
 ) -> HandlerResult<serde_json::Value> {
     let name = body["name"]
@@ -86,8 +87,10 @@ pub async fn create_workflow(
     let deps = crate::deps::extract_workflow_deps(&_def);
     let cascade = if !deps.is_empty() {
         let mut visited = std::collections::HashSet::new();
+        // The page that created it renders the cascade's progress.
+        let origin = super::ws::EventOrigin::of_request(&headers, String::new());
         Some(
-            crate::deps::resolve_cascade(&state, deps, &mut visited, tools::InstalledBy::Owner)
+            crate::deps::resolve_cascade(&state, deps, &mut visited, tools::InstalledBy::Owner, &origin)
                 .await,
         )
     } else {

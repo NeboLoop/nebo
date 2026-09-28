@@ -48,6 +48,18 @@ impl ClientHub {
     }
 }
 
+/// The `approval_request` frames for every approval card still open, as
+/// they were broadcast (origin included), for a client that just connected.
+pub(crate) async fn pending_approval_frames(state: &AppState) -> Vec<serde_json::Value> {
+    state
+        .pending_tool_approvals
+        .lock()
+        .await
+        .values()
+        .map(|a| serde_json::json!({ "type": "approval_request", "data": a.event }))
+        .collect()
+}
+
 /// The client and conversation that started a piece of work.
 ///
 /// Every event is broadcast to every connected client, but an interactive
@@ -453,6 +465,18 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState, ua: String) {
             "type": "ask_request",
             "data": ask.event_payload(&session_key),
         });
+        if socket
+            .send(Message::Text(serde_json::to_string(&msg).unwrap_or_default().into()))
+            .await
+            .is_err()
+        {
+            return;
+        }
+    }
+    // The same for approval cards still open: a phone that was in the
+    // background when its run asked (its socket was down) shows the card
+    // when it comes back, instead of a goal waiting unseen.
+    for msg in pending_approval_frames(&state).await {
         if socket
             .send(Message::Text(serde_json::to_string(&msg).unwrap_or_default().into()))
             .await
