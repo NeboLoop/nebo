@@ -51,12 +51,10 @@ impl ClientHub {
 /// The `approval_request` frames for every approval card still open, as
 /// they were broadcast (origin included), for a client that just connected.
 pub(crate) async fn pending_approval_frames(state: &AppState) -> Vec<serde_json::Value> {
-    state
-        .pending_tool_approvals
-        .lock()
+    crate::chat_dispatch::open_approval_cards(&state.approval_channels)
         .await
-        .values()
-        .map(|a| serde_json::json!({ "type": "approval_request", "data": a.event }))
+        .into_iter()
+        .map(|(_, card)| serde_json::json!({ "type": "approval_request", "data": card.event }))
         .collect()
 }
 

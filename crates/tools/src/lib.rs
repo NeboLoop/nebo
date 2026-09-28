@@ -178,7 +178,8 @@ pub use orchestrator::{
     FollowUp, OrchestratorHandle, SpawnRequest, SpawnResult, SubAgentOrchestrator, new_handle,
 };
 pub use origin::{
-    ApprovalChannels, AskChannels, ChannelContext, ExecutionMode, Origin, ToolContext, Waiting,
+    ApprovalCard, ApprovalChannels, AskChannels, ChannelContext, ExecutionMode, Origin, PendingApproval,
+    ToolContext, Waiting,
     workflow_session_key,
 };
 pub use os_tool::OsTool;

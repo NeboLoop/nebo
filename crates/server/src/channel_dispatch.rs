@@ -288,7 +288,7 @@ pub(crate) async fn collect_channel_reply(
                     // Local owner has a real approval surface: forward and let
                     // the run park on its oneshot until they answer.
                     if let Some(ref tc) = event.tool_call {
-                        fw.forward_approval(tc);
+                        fw.forward_approval(tc).await;
                     }
                     continue;
                 }

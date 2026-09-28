@@ -465,17 +465,27 @@ pub(crate) struct OwnerForward<'a> {
 }
 
 impl OwnerForward<'_> {
-    pub(crate) fn forward_approval(&self, tc: &ai::ToolCall) {
+    pub(crate) async fn forward_approval(&self, tc: &ai::ToolCall) {
         // No client started a coworker's run: the card opens wherever the
-        // owner is.
-        self.state.hub.broadcast(
-            "approval_request",
-            crate::handlers::ws::EventOrigin::unclaimed(self.session_key).stamp(serde_json::json!({
-                "request_id": tc.id,
-                "tool": tc.name,
-                "input": tc.input,
-            })),
-        );
+        // owner is, and stays open for whoever connects until it is decided.
+        let request = crate::handlers::ws::EventOrigin::unclaimed(self.session_key).stamp(serde_json::json!({
+            "request_id": tc.id,
+            "tool": tc.name,
+            "input": tc.input,
+        }));
+        crate::chat_dispatch::record_approval_card(
+            &self.state.approval_channels,
+            &tc.id,
+            tools::ApprovalCard {
+                event: request.clone(),
+                session_key: self.session_key.to_string(),
+                agent_id: self.agent_id.to_string(),
+                summary: format!("{} wants to run `{}`", self.agent_name, tc.name),
+                since: chrono::Utc::now().timestamp(),
+            },
+        )
+        .await;
+        self.state.hub.broadcast("approval_request", request);
         self.notify_owner(
             &format!("coworker-approval:{}", tc.id),
             "approval",

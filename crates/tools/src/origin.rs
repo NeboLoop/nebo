@@ -120,14 +120,53 @@ pub type AskChannels = std::sync::Arc<
 >;
 
 /// Shared tool-approval channels map (keyed by tool_call_id). The runner inserts
-/// a oneshot sender and emits a `StreamEvent::approval_request`; the WS handler
+/// a [`PendingApproval`] and emits a `StreamEvent::approval_request`; the WS handler
 /// resolves it from the user's ApprovalModal choice. The value is the decision:
 /// `"once"`, `"always"`, or `"deny"` (mirrors the `AskChannels` string idiom and
 /// carries the modal's "Approve Always" flag). This is the ONE tool-approval
 /// pathway (PERMISSIONS_SME §11) — do not add a parallel one.
-pub type ApprovalChannels = std::sync::Arc<
-    tokio::sync::Mutex<std::collections::HashMap<String, tokio::sync::oneshot::Sender<String>>>,
->;
+///
+/// It is also the ONE record of which approval cards are open: the card an
+/// entry holds is what the dashboard lists and what a client that connects
+/// later is shown, for exactly as long as the answer can still be given. A
+/// turn's end does not close a card whose waiter outlives it (a suggested
+/// goal); only a decision, or its waiter going away, does.
+pub type ApprovalChannels =
+    std::sync::Arc<tokio::sync::Mutex<std::collections::HashMap<String, PendingApproval>>>;
+
+/// One approval waiting on the owner: where the decision goes, and the card
+/// the owner was shown for it.
+pub struct PendingApproval {
+    /// The decision: `"once"`, `"always"` or `"deny"`.
+    pub answer: tokio::sync::oneshot::Sender<String>,
+    /// The card as announced (the `approval_request` payload, origin
+    /// included), with the conversation and employee it belongs to and a
+    /// one-line summary. None until the card is announced.
+    pub card: Option<ApprovalCard>,
+}
+
+/// The announced side of a [`PendingApproval`].
+#[derive(Clone, Debug)]
+pub struct ApprovalCard {
+    pub event: serde_json::Value,
+    pub session_key: String,
+    pub agent_id: String,
+    pub summary: String,
+    /// Unix seconds.
+    pub since: i64,
+}
+
+impl PendingApproval {
+    /// A card not yet announced, answered through `answer`.
+    pub fn new(answer: tokio::sync::oneshot::Sender<String>) -> Self {
+        Self { answer, card: None }
+    }
+
+    /// Still answerable: whoever waits on the decision has not gone away.
+    pub fn is_open(&self) -> bool {
+        !self.answer.is_closed()
+    }
+}
 
 /// Sentinel value the frontend sends as the `ask_response` when the user dismisses
 /// (Skip / Esc) an ask widget instead of answering. The ask tool interprets it as

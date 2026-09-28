@@ -783,7 +783,10 @@ impl Suggestions {
             input: serde_json::json!({ "condition": condition }),
         };
         let (answer_tx, answer_rx) = tokio::sync::oneshot::channel();
-        cx.approvals.lock().await.insert(card.id.clone(), answer_tx);
+        cx.approvals
+            .lock()
+            .await
+            .insert(card.id.clone(), tools::PendingApproval::new(answer_tx));
         let _ = cx.events.send(StreamEvent::approval_request(card)).await;
 
         let waiting = self.waiting.clone();
@@ -1484,7 +1487,7 @@ mod tests {
                 .await
                 .remove(call_id)
                 .expect("a card waits");
-            tx.send(decision.to_string()).unwrap();
+            tx.answer.send(decision.to_string()).unwrap();
             self.settle().await;
         }
 

@@ -365,8 +365,8 @@ async fn handle_chat_send(state: &AppState, input: &serde_json::Value) -> (Strin
                 // Auto-approve all tool calls from MCP (once — don't persist a grant)
                 if let Some(ref tc) = event.tool_call {
                     let mut channels = state.approval_channels.lock().await;
-                    if let Some(tx) = channels.remove(&tc.id) {
-                        let _ = tx.send("once".to_string());
+                    if let Some(pending) = channels.remove(&tc.id) {
+                        let _ = pending.answer.send("once".to_string());
                     }
                 }
             }

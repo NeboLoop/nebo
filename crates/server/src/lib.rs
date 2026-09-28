@@ -2269,7 +2269,6 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
         ask_channels: ask_channels.clone(),
         pending_comm_asks: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
         pending_comm_approvals: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
-        pending_tool_approvals: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
         channel_agent_triggers: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
         update_pending: Arc::new(tokio::sync::Mutex::new(None)),
         hooks,
