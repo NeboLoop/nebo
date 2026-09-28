@@ -2673,10 +2673,13 @@ fn unnamed_site(kind: Kind, ctx: &ToolContext, input: &serde_json::Value) -> Opt
         .iter()
         .filter(|l| l.len() >= 3 && **l != "www")
         .any(|l| names_word(given, l));
+    // The refusal never names the site: a tool result is what the model
+    // was given, so a named site would pass on the retry (36375670407 run
+    // 1: refused, then fetched the same site one call later).
     (!named).then(|| {
         format!(
-            "Not {verb}: no one pointed at {host}. The owner didn't name it and no tool returned it. \
-             Find the page with search_web and open one it returns, or ask the owner for the address."
+            "Not {verb}: no one pointed at that site. The owner didn't name it and no tool returned its \
+             address. Find the page with search_web and open one it returns, or ask the owner for the address."
         )
     })
 }
@@ -3870,7 +3873,11 @@ mod wording_tests {
         let url = |u: &str| serde_json::json!({ "url": u });
         let asked = ctx("What's the weather in Austin, TX right now?");
         let refused = unnamed_site(Kind::FetchUrl, &asked, &url("https://wttr.in/Austin,TX")).expect("refused");
-        assert!(refused.starts_with("Not fetched: no one pointed at wttr.in."), "{refused}");
+        assert!(refused.starts_with("Not fetched: no one pointed at that site."), "{refused}");
+        // The refusal is a tool result the model is then given: it names no
+        // site, so the retry is refused too.
+        let after = ctx(&format!("What's the weather in Austin, TX right now?\n{refused}"));
+        assert!(unnamed_site(Kind::FetchUrl, &after, &url("https://wttr.in/Austin,TX?format=j1")).is_some());
         assert!(unnamed_site(Kind::BrowserOpen, &asked, &url("https://www.accuweather.com/x")).is_some(), "a longer word is not the name");
         // Named by the owner, or returned by a tool.
         assert!(unnamed_site(Kind::BrowserOpen, &ctx("Check Google Flights"), &url("https://www.google.com/travel/flights")).is_none());
