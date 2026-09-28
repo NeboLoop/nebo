@@ -2885,6 +2885,8 @@
 		"thisComputer": "This computer",
 		"offline": "Offline",
 		"linkedFailed": "Couldn't hire from {bot}. Try again.",
+		"onYourTeam": "On your team",
+		"linkedEmpty": "Nothing to hire on {computer} yet. Add an app with nebo-link add.",
 		"linkedModeTitle": "What coding agents may do without asking",
 		"linkedModeAutomaticDesc": "Edits files in its folder on its own. Asks before anything else.",
 		"linkedModeAskDesc": "Asks you before it changes anything.",

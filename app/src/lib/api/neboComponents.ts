@@ -1915,7 +1915,7 @@ export interface ListIntegrationsResponse {
 }
 
 export interface ListLinkedAgentsResponse {
-	bots: LinkedBotEntry[]
+	computers: LinkedComputerEntry[]
 }
 
 export interface ListMemoriesResponse {
@@ -2646,21 +2646,27 @@ export interface ImportOutcome {
 }
 
 export interface LinkedAgentEntry {
+	/** The agent's id, or `new:<runtime>` for a coding employee to start. */
 	id: string
 	name: string
+	/** "Hermes on Mac.lan"; "Works in a new folder on Mac.lan". */
 	description: string
-	/** A "New <runtime>" row (`id` `new:<runtime>`): the coding agent it starts. */
-	runtime?: string
+	/** The runtime it runs: "hermes", "codex". */
+	runtime: string
+	/** The bot a hire of it goes to (`linked.botId`). */
+	botId: string
+	/** Already on the team: shown, not hired again. */
+	hired: boolean
 }
 
-export interface LinkedBotEntry {
+export interface LinkedComputerEntry {
+	/** `computer:<hostname>`: a key, never a bot. */
 	id: string
+	/** "Mac.lan"; "This computer" for the computer this bot runs on. */
 	name: string
-	/** What runs the bot: "openclaw", "hermes". */
-	runtime: string
 	online: boolean
-	/** This computer: coding agents Nebo hosts itself, each hired into a folder of its own. */
 	local: boolean
+	/** What is installed on it, one entry per app, in the order shown. */
 	agents: LinkedAgentEntry[]
 }
 
