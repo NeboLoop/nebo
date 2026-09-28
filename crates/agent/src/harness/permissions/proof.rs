@@ -204,6 +204,68 @@ async fn company_deny_beats_employee_allow() {
     assert!(matches!(decide(&CheckCx { ctx: &ctx, input: &input, grant: &grant, store: &store }, &t), Decision::Deny { .. }));
 }
 
+/// `a-tools-own-setting-outranks-its-default`: on the Permissions page a
+/// connected server's default covers its tools, and a tool's own switch
+/// overrides it whichever way it points. The permission check agrees: a
+/// tool set to Allow runs under a server set to Ask or Off, a tool set to
+/// Off is refused under a server set to Allow, and an employee's own Allow
+/// still doesn't undo a company Off.
+#[tokio::test]
+async fn a_tools_own_setting_outranks_its_default() {
+    let (_d, store) = store();
+    let owner = types::permissions::Writer::Owner;
+    let put = |scope: Scope, key: &str, effect: Effect| {
+        let rule = types::permissions::Rule {
+            id: uuid::Uuid::new_v4().to_string(),
+            scope,
+            key: RuleKey::Tool(key.into()),
+            field: None,
+            effect,
+            money: None,
+            source: RuleSource::Owner,
+            locked: false,
+            created_at: 0,
+        };
+        store.write_permission_rule(&rule, &owner).unwrap();
+    };
+    let call = |agent: &str, tool: &str| {
+        let grant = resolve_grant(&store, agent, None);
+        let ctx = ToolContext {
+            origin: Origin::User,
+            session_key: format!("agent:{agent}:web"),
+            grant: Some(Arc::new(grant.clone())),
+            ..Default::default()
+        };
+        let t = Target {
+            tool: tool.into(),
+            key: tool.into(),
+            operation: None,
+            capability: None,
+            field: None,
+            subject: None,
+            read_only: false,
+            effects: CallEffects::unknown(),
+        };
+        let input = serde_json::json!({});
+        decide(&CheckCx { ctx: &ctx, input: &input, grant: &grant, store: &store }, &t)
+    };
+    let (lookup, purge) = ("mcp__crm__lookup", "mcp__crm__purge");
+
+    put(Scope::Company, "mcp__crm__*", Effect::Ask);
+    assert!(matches!(call("dev", lookup), Decision::Ask { .. }), "the server's default asks");
+    put(Scope::Company, lookup, Effect::Allow);
+    assert!(matches!(call("dev", lookup), Decision::Allow { .. }), "the tool's own Allow runs it");
+    assert!(matches!(call("dev", purge), Decision::Ask { .. }), "the others keep the default");
+    put(Scope::Company, "mcp__crm__*", Effect::Deny);
+    assert!(matches!(call("dev", lookup), Decision::Allow { .. }), "its own Allow outranks a server Off");
+    assert!(matches!(call("dev", purge), Decision::Deny { .. }));
+    put(Scope::Company, "mcp__crm__*", Effect::Allow);
+    put(Scope::Company, purge, Effect::Deny);
+    assert!(matches!(call("dev", purge), Decision::Deny { .. }), "its own Off outranks a server Allow");
+    put(Scope::Employee("dev".into()), purge, Effect::Allow);
+    assert!(matches!(call("dev", purge), Decision::Deny { .. }), "an employee's Allow doesn't undo a company Off");
+}
+
 /// A server on this computer that answers every request with a page titled
 /// "Example Domain", and counts the connections it took.
 fn page_server() -> (u16, Arc<std::sync::atomic::AtomicUsize>) {

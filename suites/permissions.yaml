@@ -31,6 +31,8 @@ fixtures:
   - ../fixtures/permissions/job-edit-surfaces-only-new-needs.yaml
   # Precedence: a deny from any scope wins (rule sources merge, deny first)
   - ../fixtures/permissions/company-deny-beats-employee-allow.yaml
+  # The page's switch: a tool's own setting outranks its server's default
+  - ../fixtures/permissions/a-tools-own-setting-outranks-its-default.yaml
   # Limits: helpers, employee-made employees, coworkers (§4.6; #246)
   - ../fixtures/turn/helper-cannot-exceed-parent.yaml
   - ../fixtures/permissions/employee-made-employee-capped-one-card.yaml
