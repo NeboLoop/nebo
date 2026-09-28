@@ -1419,25 +1419,43 @@ pub const TEMPORARY_WORK_ENDED: &str = "temporary_work.ended";
 // ── pre-flight: a binding's declared needs, before anything else ─────────
 
 /// Fire-time pre-flight (`crate::preflight`) for a workflow binding's fire:
-/// true runs it. A fire of no binding declares nothing and runs. Checked on
-/// every fire, before triage, at no token cost. The owner hears a missing
-/// need once (`crate::workflow_manager::tell_owner_need`).
+/// true runs it ([`preflight_fire`], handed the installed plugins).
 fn preflight_admits(state: &AppState, run: &EngineRun) -> bool {
-    let Some((agent_id, binding)) = crate::preflight::fire_binding(&state.store, run) else {
+    let installed = agent::agent_worker::installed_interfaces(&state.plugin_store);
+    preflight_fire(&state.store, &state.hub, &state.config.neboai.api_url, &installed, run, now())
+}
+
+/// Pre-flight for one fire: true runs it. A fire of no binding declares
+/// nothing and runs. Checked on every fire, before triage, at no token
+/// cost. The employee's needs the owner was told of are checked first, so a
+/// met one is resolved (`crate::workflow_manager::settle_owner_needs`); the
+/// owner hears a missing need once (`crate::workflow_manager::tell_owner_need`).
+/// `installed` as [`crate::preflight::unmet_need`] takes it.
+pub(crate) fn preflight_fire(
+    store: &Store,
+    hub: &crate::handlers::ws::ClientHub,
+    api_url: &str,
+    installed: &[(String, Vec<String>)],
+    run: &EngineRun,
+    t: i64,
+) -> bool {
+    let Some((agent_id, binding)) = crate::preflight::fire_binding(store, run) else {
         return true;
     };
-    let unmet = crate::preflight::unmet_need_now(&state.store, &state.plugin_store, &agent_id, &binding);
-    let announce = |need: &str| {
+    crate::workflow_manager::settle_owner_needs(store, api_url, installed, &agent_id);
+    let unmet = crate::preflight::unmet_need_now(store, installed, &agent_id, &binding);
+    let announce = |need: &types::OwnerNeed| {
         crate::workflow_manager::tell_owner_need(
-            &state.store,
-            &state.hub,
-            &state.config.neboai.api_url,
+            store,
+            hub,
+            api_url,
+            installed,
             &agent_id,
             &binding,
-            crate::preflight::Need::Recorded(need),
+            crate::preflight::Need::Known(need),
         );
     };
-    crate::preflight::admit(&state.store, run, &agent_id, &binding, unmet, now(), &announce)
+    crate::preflight::admit(store, run, &agent_id, &binding, unmet, t, &announce)
 }
 
 // ── heartbeat triage: one decision before a timer fire runs ──────────────
@@ -1483,6 +1501,7 @@ async fn triage_admits(state: &AppState, run: &EngineRun) -> bool {
             &state.store,
             &state.hub,
             &state.config.neboai.api_url,
+            &agent::agent_worker::installed_interfaces(&state.plugin_store),
             &run.agent_id,
             duty,
             crate::preflight::Need::Judged(held),

@@ -35,41 +35,63 @@ pub(crate) fn required_plugin(store: &Store, reference: &str) -> String {
     tools::plugin_tools::plugin_slug_of(store, reference).unwrap_or_else(|| reference.trim().to_string())
 }
 
-/// What the binding declares it needs that is not present now, as its
-/// record should say it, or None when every need is present. `installed` is
-/// every installed plugin with the interfaces it binds
-/// ([`agent::agent_worker::installed_interfaces`]); `enabled` the installed
-/// plugins that are not switched off.
+/// What a binding declares it needs that is not present now: the need as
+/// the owner supplies it, and its record's words (`needs a telephony
+/// plugin`, `needs the ledgerly plugin turned on`).
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Unmet {
+    pub need: types::OwnerNeed,
+    pub reason: String,
+}
+
+/// What the binding declares it needs that is not present now, or None when
+/// every need is present. `installed` is every installed plugin with the
+/// interfaces it binds ([`agent::agent_worker::installed_interfaces`]);
+/// `enabled` the installed plugins that are not switched off
+/// ([`enabled_plugins`]).
 pub(crate) fn unmet_need(
     store: &Store,
     config: &napp::agent::AgentConfig,
     binding: &napp::agent::WorkflowBinding,
     installed: &[(String, Vec<String>)],
     enabled: &[String],
-) -> Option<String> {
+) -> Option<Unmet> {
     if let napp::agent::AgentTrigger::Watch { plugin, .. } = &binding.trigger {
         let is_slug = installed.iter().any(|(slug, _)| slug == plugin) || plugin.contains('.');
         if !is_slug
             && agent::agent_worker::resolve_capability_plugin(plugin, installed, &[]).is_none()
         {
-            return Some(agent::agent_worker::capability_degraded_reason(
-                plugin, installed,
-            ));
+            return Some(Unmet {
+                need: types::OwnerNeed::Capability { capability: plugin.clone() },
+                reason: agent::agent_worker::capability_degraded_reason(plugin, installed),
+            });
         }
     }
     for reference in &config.requires.plugins {
         let name = required_plugin(store, reference);
-        if !installed.iter().any(|(slug, _)| *slug == name) {
-            return Some(match crate::codes::detect_code(&name) {
+        let reason = if !installed.iter().any(|(slug, _)| *slug == name) {
+            match crate::codes::detect_code(&name) {
                 Some(_) => format!("needs the plugin from code {name}"),
                 None => format!("needs the {name} plugin"),
-            });
-        }
-        if !enabled.iter().any(|slug| *slug == name) {
-            return Some(format!("needs the {name} plugin turned on"));
-        }
+            }
+        } else if !enabled.iter().any(|slug| *slug == name) {
+            format!("needs the {name} plugin turned on")
+        } else {
+            continue;
+        };
+        return Some(Unmet { need: types::OwnerNeed::Plugin { plugin: name }, reason });
     }
     None
+}
+
+/// The installed plugins that are not switched off.
+pub(crate) fn enabled_plugins(store: &Store, installed: &[(String, Vec<String>)]) -> Vec<String> {
+    installed
+        .iter()
+        .map(|(slug, _)| slug)
+        .filter(|slug| !matches!(store.get_plugin_by_slug(slug), Ok(Some(row)) if row.is_enabled == 0))
+        .cloned()
+        .collect()
 }
 
 /// The employee and binding a queued fire runs: a binding heartbeat
@@ -99,27 +121,19 @@ pub(crate) fn fire_binding(store: &Store, run: &EngineRun) -> Option<(String, St
 }
 
 /// The unmet need of one binding right now, read from its employee's
-/// definition and the installed plugins. An employee or binding that cannot
-/// be read declares nothing here.
+/// definition and the installed plugins (`installed`, as [`unmet_need`]
+/// takes them). An employee or binding that cannot be read declares nothing
+/// here.
 pub(crate) fn unmet_need_now(
     store: &Store,
-    plugin_store: &napp::plugin::PluginStore,
+    installed: &[(String, Vec<String>)],
     agent_id: &str,
     binding_name: &str,
-) -> Option<String> {
+) -> Option<Unmet> {
     let agent = store.get_agent(agent_id).ok().flatten()?;
     let config = napp::agent::parse_agent_config(&agent.frontmatter).ok()?;
     let binding = config.workflows.get(binding_name)?;
-    let installed = agent::agent_worker::installed_interfaces(plugin_store);
-    let enabled: Vec<String> = installed
-        .iter()
-        .map(|(slug, _)| slug)
-        .filter(
-            |slug| !matches!(store.get_plugin_by_slug(slug), Ok(Some(row)) if row.is_enabled == 0),
-        )
-        .cloned()
-        .collect();
-    unmet_need(store, &config, binding, &installed, &enabled)
+    unmet_need(store, &config, binding, installed, &enabled_plugins(store, installed))
 }
 
 /// Act on one fire's pre-flight. `unmet` None: the fire runs, and a need
@@ -129,16 +143,15 @@ pub(crate) fn unmet_need_now(
 /// over it) and does not run. The binding is never retired here. True runs.
 ///
 /// `announce` is handed the need of every held fire; the owner hears it
-/// once ([`db::Store::tell_binding_need`]), and clearing the record here
-/// forgets it, so a need that returns is told again.
+/// once ([`crate::workflow_manager::tell_owner_need`]).
 pub(crate) fn admit(
     store: &Store,
     run: &EngineRun,
     agent_id: &str,
     binding_name: &str,
-    unmet: Option<String>,
+    unmet: Option<Unmet>,
     t: i64,
-    announce: &dyn Fn(&str),
+    announce: &dyn Fn(&types::OwnerNeed),
 ) -> bool {
     let recorded = store
         .agent_workflow_degraded_reason(agent_id, binding_name)
@@ -146,7 +159,7 @@ pub(crate) fn admit(
         .flatten()
         .unwrap_or_default();
     let key = format!("{agent_id}:{binding_name}");
-    let Some(missing) = unmet else {
+    let Some(Unmet { need, reason: missing }) = unmet else {
         if !recorded.is_empty() {
             info!(site = "preflight", binding = %key, was = %recorded, "binding's needs are present; running");
             let _ = store.set_agent_workflow_degraded_reason(agent_id, binding_name, "");
@@ -161,7 +174,7 @@ pub(crate) fn admit(
             warn!(site = "preflight", binding = %key, error = %e, "could not record the missing need");
         }
     }
-    announce(&missing);
+    announce(&need);
     if let Err(e) = store
         .engine_set_run_result_tag(&run.id, "skipped")
         .and_then(|_| store.engine_set_run_state(&run.id, "done", t, None))
@@ -174,7 +187,7 @@ pub(crate) fn admit(
 
 // ── Telling the owner ────────────────────────────────────────────────────
 
-/// One Inbox item telling the owner an employee cannot do a duty until
+/// One Inbox item telling the owner an employee cannot do its duties until
 /// something only the owner supplies is in place, and the one place to
 /// supply it. Nothing is installed or connected for them: a connection can
 /// provision something (a phone line, a paid account), so the owner decides.
@@ -186,23 +199,33 @@ pub(crate) struct NeedNotice {
     pub link: String,
 }
 
-/// A duty's name in plain words: `front-desk-report` → `front desk report`.
-fn duty_words(binding_name: &str) -> String {
-    binding_name.replace(['-', '_'], " ")
+/// The duties held on one need in plain words: `front-desk-report` →
+/// `"front desk report"`; two or more joined with commas and "and".
+fn duty_words(duties: &[String]) -> String {
+    let quoted: Vec<String> = duties.iter().map(|d| format!("\"{}\"", d.replace(['-', '_'], " "))).collect();
+    match quoted.split_last() {
+        None => String::new(),
+        Some((last, [])) => last.clone(),
+        Some((last, rest)) => format!("{} and {last}", rest.join(", ")),
+    }
 }
 
-/// The notice for a need a binding's record names (`needs a telephony
-/// plugin`, `needs the ledgerly plugin turned on`), from pre-flight or a
-/// watch trigger's start. Each is met in Plugins, where a plugin is added
-/// from the marketplace or turned on.
-pub(crate) fn plugin_need_notice(employee: &str, binding_name: &str, need: &str) -> NeedNotice {
+/// "The duty goes ahead on its own after that", for one duty or several.
+fn goes_ahead(duties: &[String]) -> &'static str {
+    if duties.len() > 1 { "The duties go ahead on their own after that." } else { "The duty goes ahead on its own after that." }
+}
+
+/// The notice for a plugin to add or turn on (`needs a telephony plugin`,
+/// `needs the ledgerly plugin turned on`). Each is met in Plugins, where a
+/// plugin is added from the marketplace or turned on.
+fn plugin_need_notice(id: &str, employee: &str, duties: &[String], need: &str) -> NeedNotice {
     NeedNotice {
-        id: format!("need:{}", uuid::Uuid::new_v4()),
+        id: id.to_string(),
         title: format!("{employee} {need}"),
         body: format!(
-            "{employee} is holding \"{duty}\" until then. Add the plugin or turn it on in Plugins. \
-             The duty goes ahead on its own after that.",
-            duty = duty_words(binding_name)
+            "{employee} is holding {duties} until then. Add the plugin or turn it on in Plugins. {after}",
+            duties = duty_words(duties),
+            after = goes_ahead(duties)
         ),
         link: tools::owner_notify::link::plugins(),
     }
@@ -210,15 +233,16 @@ pub(crate) fn plugin_need_notice(employee: &str, binding_name: &str, need: &str)
 
 /// The notice for a missing account on an installed plugin: open that
 /// employee's accounts at that plugin. `plugin` is (slug, name).
-pub(crate) fn account_need_notice(employee: &str, agent_id: &str, binding_name: &str, plugin: (&str, &str)) -> NeedNotice {
+fn account_need_notice(id: &str, employee: &str, agent_id: &str, duties: &[String], plugin: (&str, &str)) -> NeedNotice {
     let (slug, name) = plugin;
     NeedNotice {
-        id: format!("need:{}", uuid::Uuid::new_v4()),
+        id: id.to_string(),
         title: format!("{employee} needs {name} connected"),
         body: format!(
-            "{employee} can't do \"{duty}\" until a {name} account is connected for it. \
-             Connect one in {employee}'s accounts. The duty goes ahead on its own after that.",
-            duty = duty_words(binding_name)
+            "{employee} can't do {duties} until a {name} account is connected for it. \
+             Connect one in {employee}'s accounts. {after}",
+            duties = duty_words(duties),
+            after = goes_ahead(duties)
         ),
         link: tools::owner_notify::link::accounts(agent_id, Some(slug)),
     }
@@ -227,45 +251,185 @@ pub(crate) fn account_need_notice(employee: &str, agent_id: &str, binding_name: 
 /// The notice when a run's own words say the duty cannot be done until
 /// something is connected, and what is not known. `clause` is the one short
 /// piece of the run's words the owner is shown, quoted.
-pub(crate) fn something_needed_notice(employee: &str, agent_id: &str, binding_name: &str, clause: &str) -> NeedNotice {
-    let duty = duty_words(binding_name);
+fn something_needed_notice(id: &str, employee: &str, agent_id: &str, duties: &[String], clause: &str) -> NeedNotice {
     let said = if clause.is_empty() { String::new() } else { format!(" Its last run said: \"{clause}\"") };
     NeedNotice {
-        id: format!("need:{}", uuid::Uuid::new_v4()),
+        id: id.to_string(),
         title: format!("{employee} needs something connected"),
         body: format!(
-            "{employee} can't do \"{duty}\" until something is added or connected.{said} \
-             Check {employee}'s accounts and Plugins. The duty goes ahead on its own after that."
+            "{employee} can't do {duties} until something is added or connected.{said} \
+             Check {employee}'s accounts and Plugins. {after}",
+            duties = duty_words(duties),
+            after = goes_ahead(duties)
         ),
         link: tools::owner_notify::link::accounts(agent_id, None),
     }
 }
 
+/// The notice telling the owner `employee` holds `duties` on `need` (None:
+/// a need nobody could name, with the run's own `clause`), under item `id`.
+pub(crate) fn need_notice(
+    store: &Store,
+    id: &str,
+    employee: &str,
+    agent_id: &str,
+    duties: &[String],
+    need: Option<&types::OwnerNeed>,
+    clause: &str,
+) -> NeedNotice {
+    use types::OwnerNeed;
+    match need {
+        Some(OwnerNeed::Capability { capability }) => {
+            plugin_need_notice(id, employee, duties, &format!("needs a {capability} plugin"))
+        }
+        Some(OwnerNeed::Plugin { plugin }) => {
+            let need = match store.get_plugin_by_slug(plugin) {
+                Ok(Some(row)) if row.is_enabled == 0 => format!("needs the {plugin} plugin turned on"),
+                _ if crate::codes::detect_code(plugin).is_some() => format!("needs the plugin from code {plugin}"),
+                _ => format!("needs the {plugin} plugin"),
+            };
+            plugin_need_notice(id, employee, duties, &need)
+        }
+        Some(OwnerNeed::Account { plugin }) => {
+            // An installed plugin's name as the owner sees it.
+            let name = store
+                .get_plugin_by_slug(plugin)
+                .ok()
+                .flatten()
+                .and_then(|p| [p.display_name, p.name].into_iter().find(|n| !n.trim().is_empty()))
+                .unwrap_or_else(|| plugin.clone());
+            account_need_notice(id, employee, agent_id, duties, (plugin, &name))
+        }
+        None => something_needed_notice(id, employee, agent_id, duties, clause),
+    }
+}
+
 /// What a binding's duty stands on, from whichever source knows it.
 pub(crate) enum Need<'a> {
-    /// The reason the binding's record names (pre-flight, a watch trigger's
-    /// start): `needs a telephony plugin`.
-    Recorded(&'a str),
-    /// What the tool that blocked a run named, as data.
+    /// What the code that met the wall named, as data: pre-flight, a watch
+    /// trigger's start, or the tool that blocked a run.
     Known(&'a types::OwnerNeed),
     /// What heartbeat triage read the last outcome as standing on.
     Judged(&'a agent::heartbeat_triage::HeldNeed),
 }
 
-impl Need<'_> {
-    /// The key "the owner was told this" is kept under.
-    pub(crate) fn key(&self) -> String {
-        use agent::heartbeat_triage::Declared;
-        match self {
-            Need::Recorded(text) => text.to_string(),
-            Need::Known(need) => need.key(),
-            Need::Judged(held) => match &held.which {
-                Some(Declared::Capability(c)) => format!("judged:capability:{c}"),
-                Some(Declared::Plugin(p)) => format!("judged:plugin:{p}"),
-                None => "judged:something".to_string(),
-            },
+/// The key of a need nobody could name.
+pub(crate) const SOMETHING: &str = "something";
+
+/// What an employee has now that its needs are read against: every
+/// installed plugin with the interfaces it binds
+/// ([`agent::agent_worker::installed_interfaces`]), those switched on, and
+/// the plugins it has an account on.
+pub(crate) struct Holdings<'a> {
+    installed: &'a [(String, Vec<String>)],
+    enabled: Vec<String>,
+    accounts: Vec<String>,
+}
+
+impl<'a> Holdings<'a> {
+    pub(crate) fn of(store: &Store, installed: &'a [(String, Vec<String>)], agent_id: &str) -> Self {
+        let accounts = store
+            .list_all_plugin_account_profiles_for_agent(agent_id)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|p| p.plugin_slug)
+            .collect();
+        Holdings { installed, enabled: enabled_plugins(store, installed), accounts }
+    }
+
+    /// What is switched on and connected: `plugin:<slug>`, `account:<slug>`.
+    pub(crate) fn basis(&self) -> Vec<String> {
+        let mut basis: Vec<String> = self
+            .enabled
+            .iter()
+            .map(|s| format!("plugin:{s}"))
+            .chain(self.accounts.iter().map(|s| format!("account:{s}")))
+            .collect();
+        basis.sort();
+        basis.dedup();
+        basis
+    }
+
+    /// A capability as the need it is here: an installed plugin that binds
+    /// it (the one a watch trigger would run on,
+    /// [`agent::agent_worker::resolve_capability_plugin`]) is the need, as
+    /// an account on it or, switched off, the plugin; none binds it, and a
+    /// plugin that provides it is.
+    fn capability(&self, capability: &str) -> types::OwnerNeed {
+        let capability = capability.trim().to_lowercase();
+        match agent::agent_worker::resolve_capability_plugin(&capability, self.installed, &self.accounts) {
+            None => types::OwnerNeed::Capability { capability },
+            Some(slug) => self.plugin(slug),
         }
     }
+
+    /// An installed plugin as the need it is: switched on, an account on
+    /// it; otherwise the plugin itself.
+    fn plugin(&self, slug: String) -> types::OwnerNeed {
+        if self.enabled.contains(&slug) {
+            types::OwnerNeed::Account { plugin: slug }
+        } else {
+            types::OwnerNeed::Plugin { plugin: slug }
+        }
+    }
+}
+
+/// A plugin reference as the need names it: the installed plugin's slug
+/// ([`required_plugin`]), a plain name lowercased, an install code as is.
+fn plugin_name(store: &Store, reference: &str) -> String {
+    let name = required_plugin(store, reference);
+    if crate::codes::detect_code(&name).is_some() { name } else { name.to_lowercase() }
+}
+
+/// The ONE need every source's need reduces to, so the same missing thing
+/// has the same key whoever noticed it ([`types::OwnerNeed::key`], or
+/// [`SOMETHING`] for None): casing does not matter, a plugin is named by its
+/// slug, and a capability an installed plugin binds is that plugin. None: a
+/// need triage could not name.
+pub(crate) fn settle(store: &Store, holdings: &Holdings<'_>, need: &Need<'_>) -> Option<types::OwnerNeed> {
+    use agent::heartbeat_triage::Declared;
+    use types::OwnerNeed;
+    match need {
+        Need::Known(OwnerNeed::Capability { capability }) => Some(holdings.capability(capability)),
+        Need::Known(OwnerNeed::Plugin { plugin }) => Some(OwnerNeed::Plugin { plugin: plugin_name(store, plugin) }),
+        Need::Known(OwnerNeed::Account { plugin }) => Some(OwnerNeed::Account { plugin: plugin_name(store, plugin) }),
+        Need::Judged(held) => match &held.which {
+            Some(Declared::Capability(c)) => Some(holdings.capability(c)),
+            Some(Declared::Plugin(p)) => {
+                let slug = plugin_name(store, p);
+                Some(match holdings.installed.iter().any(|(s, _)| *s == slug) {
+                    true => holdings.plugin(slug),
+                    false => OwnerNeed::Plugin { plugin: slug },
+                })
+            }
+            None => None,
+        },
+    }
+}
+
+/// Whether a need the owner was told of (`need`, None for [`SOMETHING`]),
+/// told when `told_basis` was what the employee had, is met now: its check
+/// passes (a plugin binds the capability; the plugin is installed and on;
+/// the account is connected; nobody can check a need nobody named), and
+/// something was switched on or connected since. A run that ends, however
+/// it ends, meets nothing; a judgment the checks already pass waits for a
+/// change the owner made.
+pub(crate) fn need_met(
+    store: &Store,
+    holdings: &Holdings<'_>,
+    need: Option<&types::OwnerNeed>,
+    told_basis: &[String],
+) -> bool {
+    use types::OwnerNeed;
+    let passes = match need {
+        Some(OwnerNeed::Capability { capability }) => {
+            agent::agent_worker::resolve_capability_plugin(capability, holdings.installed, &[]).is_some()
+        }
+        Some(OwnerNeed::Plugin { plugin }) => holdings.enabled.contains(&required_plugin(store, plugin)),
+        Some(OwnerNeed::Account { plugin }) => holdings.accounts.contains(plugin),
+        None => true,
+    };
+    passes && holdings.basis().iter().any(|b| !told_basis.contains(b))
 }
 
 /// The owner need a binding's run ended blocked on, as the refusing tool
@@ -306,8 +470,11 @@ mod tests {
         let b = &c.workflows["answer"];
         let none = [plugin("sheets", &["spreadsheet"])];
         assert_eq!(
-            unmet_need(&s, &c, b, &none, &["sheets".into()]).as_deref(),
-            Some("needs a telephony plugin")
+            unmet_need(&s, &c, b, &none, &["sheets".into()]),
+            Some(Unmet {
+                need: types::OwnerNeed::Capability { capability: "telephony".into() },
+                reason: "needs a telephony plugin".into()
+            })
         );
         let one = [
             plugin("sheets", &["spreadsheet"]),
@@ -329,13 +496,19 @@ mod tests {
         let c = config(&REQUIRING.replace(r#","PLUG-PJ3Z-ECFV""#, ""));
         let b = &c.workflows["sweep"];
         assert_eq!(
-            unmet_need(&s, &c, b, &[], &[]).as_deref(),
-            Some("needs the ledgerly plugin")
+            unmet_need(&s, &c, b, &[], &[]),
+            Some(Unmet {
+                need: types::OwnerNeed::Plugin { plugin: "ledgerly".into() },
+                reason: "needs the ledgerly plugin".into()
+            })
         );
         let installed = [plugin("ledgerly", &[])];
         assert_eq!(
-            unmet_need(&s, &c, b, &installed, &[]).as_deref(),
-            Some("needs the ledgerly plugin turned on")
+            unmet_need(&s, &c, b, &installed, &[]),
+            Some(Unmet {
+                need: types::OwnerNeed::Plugin { plugin: "ledgerly".into() },
+                reason: "needs the ledgerly plugin turned on".into()
+            })
         );
         assert_eq!(unmet_need(&s, &c, b, &installed, &["ledgerly".into()]), None);
     }
@@ -350,7 +523,7 @@ mod tests {
         let b = &c.workflows["sweep"];
         let ledgerly = plugin("ledgerly", &[]);
         assert_eq!(
-            unmet_need(&s, &c, b, &[ledgerly.clone()], &["ledgerly".into()]).as_deref(),
+            unmet_need(&s, &c, b, &[ledgerly.clone()], &["ledgerly".into()]).map(|u| u.reason).as_deref(),
             Some("needs the plugin from code PLUG-PJ3Z-ECFV")
         );
         s.upsert_installed_plugin("coded-books", "Coded Books", "1.0.0", "", "", "", "")
@@ -358,7 +531,7 @@ mod tests {
         s.set_plugin_install_code("coded-books", "PLUG-PJ3Z-ECFV").unwrap();
         let both = [ledgerly, plugin("coded-books", &[])];
         assert_eq!(
-            unmet_need(&s, &c, b, &both, &["ledgerly".into()]).as_deref(),
+            unmet_need(&s, &c, b, &both, &["ledgerly".into()]).map(|u| u.reason).as_deref(),
             Some("needs the coded-books plugin turned on")
         );
         assert_eq!(
@@ -381,6 +554,61 @@ mod tests {
             r#"{"workflows":{"sweep":{"trigger":{"type":"schedule","cron":"0 0 9 * * *"}}}}"#,
         );
         assert_eq!(unmet_need(&s, &bare, &bare.workflows["sweep"], &[], &[]), None);
+    }
+
+    fn ledgerly_missing() -> Unmet {
+        Unmet { need: types::OwnerNeed::Plugin { plugin: "ledgerly".into() }, reason: "needs the ledgerly plugin".into() }
+    }
+
+    /// Every source's name for one missing thing reduces to one key: the
+    /// casing a model or a manifest used does not matter, a plugin named by
+    /// its install code is the plugin that code installed, and a capability
+    /// an installed plugin binds is that plugin's need.
+    #[test]
+    fn every_spelling_of_one_need_is_one_key() {
+        use agent::heartbeat_triage::{Declared, HeldNeed};
+        use types::OwnerNeed;
+        let s = store();
+        s.create_agent("emp", None, "E", "", "", "{}", None, None).unwrap();
+        let key = |installed: &[(String, Vec<String>)], need: Need<'_>| {
+            settle(&s, &Holdings::of(&s, installed, "emp"), &need).map(|n| n.key()).unwrap_or_else(|| SOMETHING.into())
+        };
+        let judged = |which: Declared| HeldNeed { which: Some(which), clause: String::new() };
+
+        // No plugin binds telephony: pre-flight, a watch start and triage,
+        // however spelled, all name the capability.
+        let none: Vec<(String, Vec<String>)> = vec![plugin("sheets", &["spreadsheet"])];
+        let recorded = OwnerNeed::Capability { capability: "telephony".into() };
+        assert_eq!(key(&none, Need::Known(&recorded)), "capability:telephony");
+        assert_eq!(key(&none, Need::Judged(&judged(Declared::Capability("Telephony".into())))), "capability:telephony");
+        assert_eq!(key(&none, Need::Judged(&judged(Declared::Capability(" TELEPHONY ".into())))), "capability:telephony");
+
+        // A plugin that binds it is installed and on: the capability, the
+        // plugin by any casing, and the refusing tool's account need are one.
+        s.upsert_installed_plugin("voiceline", "VoiceLine", "1.0.0", "", "", "", "").unwrap();
+        let one = vec![plugin("sheets", &["spreadsheet"]), plugin("voiceline", &["telephony"])];
+        let account = OwnerNeed::Account { plugin: "voiceline".into() };
+        assert_eq!(key(&one, Need::Known(&account)), "account:voiceline");
+        assert_eq!(key(&one, Need::Known(&OwnerNeed::Account { plugin: "VoiceLine".into() })), "account:voiceline");
+        assert_eq!(key(&one, Need::Judged(&judged(Declared::Capability("telephony".into())))), "account:voiceline");
+        assert_eq!(key(&one, Need::Judged(&judged(Declared::Plugin("VoiceLine".into())))), "account:voiceline");
+
+        // Switched off, it is the plugin to turn on, from either spelling.
+        s.set_plugin_enabled("voiceline", false).unwrap();
+        assert_eq!(key(&one, Need::Judged(&judged(Declared::Capability("telephony".into())))), "plugin:voiceline");
+        assert_eq!(key(&one, Need::Known(&OwnerNeed::Plugin { plugin: "Voiceline".into() })), "plugin:voiceline");
+
+        // A plugin named by its install code is the plugin it installed.
+        s.set_plugin_install_code("voiceline", "PLUG-PJ3Z-ECFV").unwrap();
+        assert_eq!(key(&one, Need::Known(&OwnerNeed::Plugin { plugin: "PLUG-PJ3Z-ECFV".into() })), "plugin:voiceline");
+        // A code nothing here was installed from keeps its spelling.
+        assert_eq!(key(&one, Need::Known(&OwnerNeed::Plugin { plugin: "PLUG-AAAA-BBBB".into() })), "plugin:PLUG-AAAA-BBBB");
+
+        // Nobody could name it.
+        assert_eq!(key(&one, Need::Judged(&HeldNeed { which: None, clause: "x".into() })), SOMETHING);
+        // The key reads back as the need it names.
+        assert_eq!(OwnerNeed::from_key("account:voiceline"), Some(account));
+        assert_eq!(OwnerNeed::from_key(SOMETHING), None);
     }
 
     fn store() -> Store {
@@ -434,7 +662,7 @@ mod tests {
             &first,
             "emp",
             "sweep",
-            Some("needs the ledgerly plugin".into()),
+            Some(ledgerly_missing()),
             100,
             &|_| {}
         ));
@@ -461,7 +689,7 @@ mod tests {
             &second,
             "emp",
             "sweep",
-            Some("needs the ledgerly plugin".into()),
+            Some(ledgerly_missing()),
             200,
             &|_| {}
         ));

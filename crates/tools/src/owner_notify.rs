@@ -102,6 +102,47 @@ pub fn emit(
     }
 }
 
+/// Restate an item the owner was already given, in place, when what it says
+/// has changed (another duty held on the same need, the newest words of the
+/// same proposal): the row keeps when it was made and whether it was read,
+/// and the live Inbox takes the new words under the same id, quietly. False
+/// when there is no such item (the owner dismissed it): it is never brought
+/// back. A caller that mirrors the item restates its hub copy
+/// ([`OwnerNotification::hub_item`]) only on true; the hub takes the same id
+/// as an update, so nothing is pushed to a phone or emailed again.
+pub fn restate(
+    store: &db::Store,
+    broadcast: Option<&dyn Fn(&str, serde_json::Value)>,
+    n: &OwnerNotification,
+) -> bool {
+    let link = n.link();
+    match store.restate_notification(n.id, n.title, n.body, Some(&link)) {
+        Ok(true) => {}
+        Ok(false) => return false,
+        Err(e) => {
+            tracing::warn!(id = %n.id, error = %e, "owner notification not restated");
+            return false;
+        }
+    }
+    let user_id = store.ensure_local_user_id().unwrap_or_default();
+    if let (Some(broadcast), Ok(Some(row))) = (broadcast, store.get_notification(n.id, &user_id)) {
+        broadcast(
+            "notification_created",
+            json!({
+                "id": n.id,
+                "type": n.kind,
+                "title": n.title,
+                "body": n.body,
+                "actionUrl": link,
+                "agentId": n.agent_id,
+                "readAt": row.read_at,
+                "createdAt": row.created_at,
+            }),
+        );
+    }
+    true
+}
+
 /// Where an owner item opens: its Inbox row's `action_url`, and the `link`
 /// of the same item mirrored to the owner's hub Inbox and pushed to his
 /// phone ([`OwnerNotification::hub_item`]). A path in the app's own route
@@ -250,6 +291,38 @@ mod tests {
             assert_eq!(seen.lock().unwrap().last().unwrap()["actionUrl"], *want, "{}: the live banner", n.id);
             assert_eq!(n.hub_item(serde_json::json!({}))["link"], *want, "{}: the hub copy", n.id);
         }
+    }
+
+    /// An item told again with new words is restated in place, quietly: the
+    /// row keeps whether it was read and when it was made, the live Inbox
+    /// takes the words under the same id and never as a banner. An item the
+    /// owner dismissed is not brought back.
+    #[test]
+    fn a_restated_item_changes_its_words_in_place_and_a_dismissed_one_stays_gone() {
+        let (_dir, store) = store();
+        let seen = std::sync::Mutex::new(Vec::new());
+        let broadcast = |ev: &str, payload: serde_json::Value| seen.lock().unwrap().push((ev.to_string(), payload));
+        let first = OwnerNotification { id: "need:1", kind: "warning", title: "Ava needs a telephony plugin", body: Some("one duty"), action_url: Some("/settings/plugins"), agent_id: Some("ava"), loud: true };
+        emit(&store, Some(&broadcast), &first);
+        let user = store.ensure_local_user_id().unwrap();
+        store.mark_notification_read("need:1", &user).unwrap();
+        let made = row(&store, "need:1");
+
+        let again = OwnerNotification { body: Some("two duties"), ..first };
+        assert!(restate(&store, Some(&broadcast), &again));
+        let now = row(&store, "need:1");
+        assert_eq!(now.body.as_deref(), Some("two duties"));
+        assert_eq!((now.read_at, now.created_at), (made.read_at, made.created_at), "read stays read; made stays when it was made");
+        let (ev, payload) = seen.lock().unwrap().last().unwrap().clone();
+        assert_eq!(ev, "notification_created", "a restatement is never a banner");
+        assert_eq!((payload["id"].as_str(), payload["body"].as_str()), (Some("need:1"), Some("two duties")));
+        assert_eq!(store.list_user_notifications(&user, 50, 0).unwrap().len(), 1, "still one item");
+
+        store.delete_notification("need:1", &user).unwrap();
+        let heard = seen.lock().unwrap().len();
+        assert!(!restate(&store, Some(&broadcast), &again), "dismissed: not restated");
+        assert!(store.list_user_notifications(&user, 50, 0).unwrap().is_empty(), "and not brought back");
+        assert_eq!(seen.lock().unwrap().len(), heard, "nothing is broadcast for it");
     }
 
     /// The hub copy is the item itself plus only what the hub alone

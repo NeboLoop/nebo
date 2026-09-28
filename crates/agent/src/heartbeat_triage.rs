@@ -247,7 +247,7 @@ pub struct Binding {
     pub cadence: Option<Duration>,
     pub flags: Flags,
     /// The workflow binding this fire runs, when it is one. Only a binding
-    /// can be held on a missing need (the owner is told once per binding).
+    /// can be held on a missing need (the owner is told once per need).
     pub duty: Option<String>,
     /// What the employee declares it may need: its `requires.interfaces`,
     /// its `requires.plugins`, and the binding's watch plugin. The options

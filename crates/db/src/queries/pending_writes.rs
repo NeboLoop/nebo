@@ -116,6 +116,47 @@ impl Store {
         Ok(count > 0)
     }
 
+    /// An employee's proposals of one kind and action still waiting on the
+    /// owner, newest first.
+    pub fn open_pending_writes(&self, agent_id: &str, kind: &str, action: &str) -> Result<Vec<PendingWrite>, NeboError> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT * FROM pending_writes
+                 WHERE agent_id = ?1 AND kind = ?2 AND action = ?3 AND status = 'pending'
+                 ORDER BY created_at DESC",
+            )
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        let rows = stmt
+            .query_map(params![agent_id, kind, action], row_to_pending_write)
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| NeboError::Database(e.to_string()))
+    }
+
+    /// Replace what an open proposal would write with the employee's newer
+    /// proposal of the same thing, and date it now. False when the row was
+    /// decided meanwhile (nothing is changed then).
+    pub fn restage_pending_write(
+        &self,
+        id: &str,
+        target: &str,
+        content: Option<&str>,
+        gist: &str,
+        target_hash: &str,
+        prior_content: Option<&str>,
+    ) -> Result<bool, NeboError> {
+        let conn = self.conn()?;
+        let n = conn
+            .execute(
+                "UPDATE pending_writes
+                 SET target = ?2, content = ?3, gist = ?4, target_hash = ?5, prior_content = ?6, created_at = unixepoch()
+                 WHERE id = ?1 AND status = 'pending'",
+                params![id, target, content, gist, target_hash, prior_content],
+            )
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(n > 0)
+    }
+
     pub fn get_pending_write(&self, id: &str) -> Result<Option<PendingWrite>, NeboError> {
         let conn = self.conn()?;
         match conn.query_row(
