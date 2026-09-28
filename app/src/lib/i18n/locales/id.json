@@ -811,7 +811,12 @@
 		"alsoRenamePrimary": "Ubah juga nama asisten pribadi Anda menjadi “{name}”?",
 		"renamePrimary": "Ubah nama asisten pribadi Anda",
 		"keepPrimaryName": "Tetap “{name}”",
-		"primaryRenamed": "Nama asisten pribadi Anda sekarang {name}."
+		"primaryRenamed": "Nama asisten pribadi Anda sekarang {name}.",
+		"botLocation": "Lokasi",
+		"botLocationDesc": "Tempat kantor bot ini berada. Karyawan Anda menggunakannya untuk memberi tahu seberapa jauh Anda dari kantor.",
+		"botLocationPlaceholder": "Alamat jalan, kota",
+		"botLocationPending": "Ponsel Anda akan menempatkan alamat ini di peta saat Nebo dibuka di sana berikutnya.",
+		"botLocationSaveFailed": "Tidak dapat menyimpan lokasi. Coba lagi."
 	},
 	"settingsAbout": {
 		"title": "Tentang",

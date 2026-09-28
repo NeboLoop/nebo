@@ -811,7 +811,12 @@
 		"alsoRenamePrimary": "개인 비서 이름도 “{name}”(으)로 바꿀까요?",
 		"renamePrimary": "개인 비서 이름 바꾸기",
 		"keepPrimaryName": "“{name}” 유지",
-		"primaryRenamed": "개인 비서 이름이 {name}(으)로 바뀌었습니다."
+		"primaryRenamed": "개인 비서 이름이 {name}(으)로 바뀌었습니다.",
+		"botLocation": "위치",
+		"botLocationDesc": "이 봇의 사무실 위치입니다. 직원들이 이를 사용해 사무실까지 얼마나 떨어져 있는지 알려 드립니다.",
+		"botLocationPlaceholder": "도로명 주소, 도시",
+		"botLocationPending": "다음에 휴대폰에서 Nebo를 열면 이 주소가 지도에 표시됩니다.",
+		"botLocationSaveFailed": "위치를 저장할 수 없습니다. 다시 시도하세요."
 	},
 	"settingsAbout": {
 		"title": "정보",

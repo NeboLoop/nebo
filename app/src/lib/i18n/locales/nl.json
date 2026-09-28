@@ -811,7 +811,12 @@
 		"alsoRenamePrimary": "Ook je persoonlijk assistent hernoemen naar “{name}”?",
 		"renamePrimary": "Je persoonlijk assistent hernoemen",
 		"keepPrimaryName": "“{name}” behouden",
-		"primaryRenamed": "Je persoonlijk assistent heet nu {name}."
+		"primaryRenamed": "Je persoonlijk assistent heet nu {name}.",
+		"botLocation": "Locatie",
+		"botLocationDesc": "Waar het kantoor van deze bot is. Je medewerkers gebruiken dit om je te vertellen hoe ver je van kantoor bent.",
+		"botLocationPlaceholder": "Straat en huisnummer, plaats",
+		"botLocationPending": "Je telefoon zet dit adres op de kaart zodra Nebo daar de volgende keer opent.",
+		"botLocationSaveFailed": "De locatie kon niet worden opgeslagen. Probeer het opnieuw."
 	},
 	"settingsAbout": {
 		"title": "Over",

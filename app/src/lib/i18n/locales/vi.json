@@ -811,7 +811,12 @@
 		"alsoRenamePrimary": "Cũng đổi tên trợ lý cá nhân của bạn thành “{name}”?",
 		"renamePrimary": "Đổi tên trợ lý cá nhân của bạn",
 		"keepPrimaryName": "Giữ “{name}”",
-		"primaryRenamed": "Trợ lý cá nhân của bạn giờ có tên là {name}."
+		"primaryRenamed": "Trợ lý cá nhân của bạn giờ có tên là {name}.",
+		"botLocation": "Vị trí",
+		"botLocationDesc": "Nơi đặt văn phòng của bot này. Nhân viên của bạn dùng nó để cho bạn biết bạn cách văn phòng bao xa.",
+		"botLocationPlaceholder": "Địa chỉ, thành phố",
+		"botLocationPending": "Điện thoại của bạn sẽ đặt địa chỉ này lên bản đồ vào lần tới Nebo được mở trên đó.",
+		"botLocationSaveFailed": "Không thể lưu vị trí. Hãy thử lại."
 	},
 	"settingsAbout": {
 		"title": "Giới thiệu",

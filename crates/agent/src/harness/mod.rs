@@ -187,8 +187,9 @@ impl Harness {
     }
 
     /// Where a session runs, as it is told: the environment's fields after
-    /// the date, the employee's email address among them. The ONE builder
-    /// for a text turn's `environment` row and a voice call's instructions.
+    /// the date, the employee's email address and the bot's Location among
+    /// them. The ONE builder for a text turn's `environment` row and a voice
+    /// call's instructions.
     pub fn environment_fields(
         &self,
         agent_id: &str,
@@ -197,29 +198,42 @@ impl Harness {
         watching: prompt::sections::Watching,
     ) -> Vec<(String, String)> {
         let email = prompt::inputs::email_address(&self.store, agent_id);
-        prompt::sections::environment_fields(cwd, channel, watching, email.as_deref())
+        let location = prompt::inputs::office_location(&self.store);
+        prompt::sections::environment_fields(cwd, channel, watching, email.as_deref(), location.as_deref())
     }
 
     /// The owner's phone position `agent_id` may be told now: only while the
     /// owner shares it with that employee, and never into a run a stranger
     /// or another program started. Read afresh at every step of a text turn
-    /// and at the start of a call.
+    /// and at the start of a call. When the bot's Location has coordinates,
+    /// each reading carries the owner's distance from the office, in the
+    /// unit the owner's language setting reads: it is told and withdrawn
+    /// with the reading, never on its own.
     pub fn shared_phone_position(
         &self,
         agent_id: &str,
         origin: tools::Origin,
     ) -> Option<crate::phone_location::SharedPosition> {
-        origin
-            .is_trusted()
-            .then(|| self.phone_locations.reading_for(agent_id, chrono::Utc::now().timestamp()))
-            .flatten()
+        if !origin.is_trusted() {
+            return None;
+        }
+        let office = self.store.bot_location().ok().flatten().and_then(|l| l.coordinates()).map(|(latitude, longitude)| {
+            let language = self.store.get_user_preferences().ok().flatten().map(|p| p.language).unwrap_or_default();
+            crate::phone_location::Office {
+                latitude,
+                longitude,
+                unit: crate::phone_location::DistanceUnit::for_language(&language),
+            }
+        });
+        self.phone_locations.reading_for(agent_id, chrono::Utc::now().timestamp(), office)
     }
 
     /// What a voice call is told about where it runs, from the same sources
     /// a text turn's rows are: the environment (the owner's date and
-    /// timezone, the fields, the email address among them), the owner's
-    /// time, and the phone position when it is shared with this employee
-    /// and the call is the owner's.
+    /// timezone, the fields, the email address and the bot's Location among
+    /// them), the owner's time, and the phone position with the owner's
+    /// distance from the office when it is shared with this employee and the
+    /// call is the owner's.
     pub fn call_facts(&self, agent_id: &str, origin: tools::Origin) -> String {
         let timezone = self
             .store

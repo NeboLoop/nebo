@@ -811,7 +811,12 @@
 		"alsoRenamePrimary": "Byta namn på din personliga assistent till ”{name}” också?",
 		"renamePrimary": "Byt namn på din personliga assistent",
 		"keepPrimaryName": "Behåll ”{name}”",
-		"primaryRenamed": "Din personliga assistent heter nu {name}."
+		"primaryRenamed": "Din personliga assistent heter nu {name}.",
+		"botLocation": "Plats",
+		"botLocationDesc": "Var den här botens kontor ligger. Dina anställda använder den för att berätta hur långt du är från kontoret.",
+		"botLocationPlaceholder": "Gatuadress, ort",
+		"botLocationPending": "Din telefon placerar adressen på kartan nästa gång Nebo öppnas där.",
+		"botLocationSaveFailed": "Det gick inte att spara platsen. Försök igen."
 	},
 	"settingsAbout": {
 		"title": "Om",

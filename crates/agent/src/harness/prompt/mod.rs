@@ -260,7 +260,7 @@ mod tests {
     /// refused whatever the mode.
     #[test]
     fn the_environment_says_admin_rights_are_none() {
-        let fields = sections::environment_fields(None, "web", sections::Watching::Live, None);
+        let fields = sections::environment_fields(None, "web", sections::Watching::Live, None, None);
         assert!(fields.iter().any(|(k, v)| k == "Admin rights" && v == sections::ADMIN_RIGHTS), "{fields:?}");
         assert!(sections::ADMIN_RIGHTS.contains("sudo and su are always refused"));
         let ctx = tools::ToolContext::new(tools::Origin::User);

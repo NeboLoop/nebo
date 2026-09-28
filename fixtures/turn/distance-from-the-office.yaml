@@ -1,0 +1,47 @@
+id: distance-from-the-office
+name: "How far the owner is from the office is answered from the session's facts"
+description: |
+  The bot has a Location (Bot settings → Location: the office, with its
+  coordinates) and the owner's phone shares its position with the primary
+  employee. Nebo tells the employee both, and the straight-line distance
+  between them, which Nebo computes (haversine) so the model never does the
+  arithmetic: "The owner is about 38.6 miles from the office (straight
+  line)." Asked "How far am I from the office?", the reply states that
+  distance with no tool call. Setup sets the office in Salt Lake City and a
+  phone reading in Provo, 38.6 miles away; teardown puts back the Location
+  the bot had before and withdraws the phone's sharing. The revision is the clock, so a rerun inside
+  a reading's ten-minute life is never taken as an older update. The
+  deterministic half (the facts, the distance only while both exist and
+  sharing is on, the withdrawal, the voice instructions) is the harness unit
+  tests beside `Harness::shared_phone_position`.
+target_component: prompt
+setup:
+  - "mkdir -p {{scratch}} && curl -s ${NEBO_TEST_SERVER:-localhost:27895}/api/v1/agent/location > {{scratch}}/office.json"
+  - "curl -s -X PUT ${NEBO_TEST_SERVER:-localhost:27895}/api/v1/agent/location -H 'Content-Type: application/json' -d '{\"label\":\"50 W Broadway, Salt Lake City, UT\",\"latitude\":40.7625,\"longitude\":-111.8937}' > /dev/null"
+  - "curl -s -X PUT ${NEBO_TEST_SERVER:-localhost:27895}/api/v1/phone/location -H 'Content-Type: application/json' -d \"{\\\"accountId\\\":\\\"fixture-{{tag}}\\\",\\\"deviceId\\\":\\\"phone-{{tag}}\\\",\\\"revision\\\":$(date +%s),\\\"agentIds\\\":[\\\"assistant\\\"],\\\"latitude\\\":40.2338,\\\"longitude\\\":-111.6585,\\\"accuracyMetres\\\":10,\\\"takenAt\\\":$(date +%s)}\" > /dev/null"
+teardown:
+  - "curl -s -X PUT ${NEBO_TEST_SERVER:-localhost:27895}/api/v1/phone/location -H 'Content-Type: application/json' -d \"{\\\"accountId\\\":\\\"fixture-{{tag}}\\\",\\\"deviceId\\\":\\\"phone-{{tag}}\\\",\\\"revision\\\":$(( $(date +%s) + 1 )),\\\"agentIds\\\":[]}\" > /dev/null"
+  - "python3 -c \"import json,urllib.request as u; prior=json.load(open('{{scratch}}/office.json')).get('location') or {'label': ''}; u.urlopen(u.Request('http://${NEBO_TEST_SERVER:-localhost:27895}/api/v1/agent/location', data=json.dumps(prior).encode(), headers={'Content-Type': 'application/json'}, method='PUT'))\""
+  - "rm -rf {{scratch}}"
+
+conversation:
+  - role: user
+    content: "How far am I from the office?"
+
+prompt_assertions:
+  first_call:
+    - id: states-the-distance
+      text: "The reply states the distance Nebo computed, about 38.6 miles (38 to 39 miles), as a straight-line distance"
+      severity: critical
+      check: { reply_matches: "(?i)\\b3[89](\\.\\d+)?\\s*(miles|mi)\\b" }
+    - id: no-invented-route
+      text: "The reply does not present a driving time, route or arrival estimate as known"
+      severity: important
+  cost:
+    - id: no-tools
+      text: "Answered from the session's facts, with no tool call"
+      severity: important
+      check: { max_tool_calls: 0 }
+
+ideal_behavior:
+  tool_calls: 0

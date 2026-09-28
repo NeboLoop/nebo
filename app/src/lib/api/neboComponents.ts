@@ -294,6 +294,16 @@ export interface BotEmailResponse {
 	sentToday: number
 }
 
+export interface BotLocation {
+	label: string
+	latitude?: number
+	longitude?: number
+}
+
+export interface BotLocationResponse {
+	location?: BotLocation
+}
+
 export interface BotNameResponse {
 	name: string
 	renameUrl: string

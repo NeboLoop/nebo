@@ -811,7 +811,12 @@
 		"alsoRenamePrimary": "也将你的私人助理重命名为「{name}」吗？",
 		"renamePrimary": "重命名你的私人助理",
 		"keepPrimaryName": "保留「{name}」",
-		"primaryRenamed": "你的私人助理现在叫 {name}。"
+		"primaryRenamed": "你的私人助理现在叫 {name}。",
+		"botLocation": "位置",
+		"botLocationDesc": "此机器人的办公室所在地。你的员工会用它告诉你离办公室有多远。",
+		"botLocationPlaceholder": "街道地址，城市",
+		"botLocationPending": "下次在手机上打开 Nebo 时，手机会在地图上定位此地址。",
+		"botLocationSaveFailed": "无法保存位置，请重试。"
 	},
 	"settingsAbout": {
 		"title": "关于",

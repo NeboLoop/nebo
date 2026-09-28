@@ -811,7 +811,12 @@
 		"alsoRenamePrimary": "個人秘書の名前も「{name}」に変更しますか？",
 		"renamePrimary": "個人秘書の名前を変更",
 		"keepPrimaryName": "「{name}」のままにする",
-		"primaryRenamed": "個人秘書の名前が{name}になりました。"
+		"primaryRenamed": "個人秘書の名前が{name}になりました。",
+		"botLocation": "所在地",
+		"botLocationDesc": "このボットのオフィスの場所です。従業員はこれを使って、オフィスまでの距離をお伝えします。",
+		"botLocationPlaceholder": "住所、市区町村",
+		"botLocationPending": "次にスマートフォンで Nebo を開いたときに、この住所が地図上に配置されます。",
+		"botLocationSaveFailed": "所在地を保存できませんでした。もう一度お試しください。"
 	},
 	"settingsAbout": {
 		"title": "このアプリについて",

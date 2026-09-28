@@ -811,7 +811,12 @@
 		"alsoRenamePrimary": "Mudar também o nome do seu assistente pessoal para “{name}”?",
 		"renamePrimary": "Mudar o nome do seu assistente pessoal",
 		"keepPrimaryName": "Manter “{name}”",
-		"primaryRenamed": "O seu assistente pessoal chama-se agora {name}."
+		"primaryRenamed": "O seu assistente pessoal chama-se agora {name}.",
+		"botLocation": "Localização",
+		"botLocationDesc": "Onde fica o escritório deste bot. Os seus funcionários usam-na para lhe dizer a que distância está do escritório.",
+		"botLocationPlaceholder": "Morada, cidade",
+		"botLocationPending": "O seu telemóvel coloca esta morada no mapa da próxima vez que o Nebo for aberto nele.",
+		"botLocationSaveFailed": "Não foi possível guardar a localização. Tente novamente."
 	},
 	"settingsAbout": {
 		"title": "Sobre",

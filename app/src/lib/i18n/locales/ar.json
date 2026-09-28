@@ -811,7 +811,12 @@
 		"alsoRenamePrimary": "هل تريد أيضًا إعادة تسمية مساعدك الشخصي إلى «{name}»؟",
 		"renamePrimary": "إعادة تسمية مساعدك الشخصي",
 		"keepPrimaryName": "الإبقاء على «{name}»",
-		"primaryRenamed": "أصبح اسم مساعدك الشخصي الآن {name}."
+		"primaryRenamed": "أصبح اسم مساعدك الشخصي الآن {name}.",
+		"botLocation": "الموقع",
+		"botLocationDesc": "مكان مكتب هذا البوت. يستخدمه موظفوك ليخبروك بمدى بُعدك عن المكتب.",
+		"botLocationPlaceholder": "عنوان الشارع، المدينة",
+		"botLocationPending": "سيضع هاتفك هذا العنوان على الخريطة في المرة القادمة التي يُفتح فيها Nebo عليه.",
+		"botLocationSaveFailed": "تعذّر حفظ الموقع. حاول مرة أخرى."
 	},
 	"settingsAbout": {
 		"title": "حول",

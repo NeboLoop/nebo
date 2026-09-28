@@ -650,7 +650,8 @@ pub fn session_fact_events(now: &SessionFacts, history: &[ChatMessage]) -> Vec<T
 /// being shared with the employee: sharing was turned off, or the phone
 /// stopped reporting.
 const PHONE_LOCATION_WITHDRAWN: &str = "The owner's phone location is not shared with you now: sharing was turned off \
-or the phone stopped reporting. Earlier readings in this conversation are withdrawn; don't use or repeat them.";
+or the phone stopped reporting. Earlier readings in this conversation, and the owner's distance from the office worked \
+out from them, are withdrawn; don't use or repeat them.";
 
 /// The phone-position row this step needs: a reading the conversation has
 /// not heard, a withdrawal when what it heard is no longer shared, or none.
