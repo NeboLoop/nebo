@@ -8,8 +8,10 @@
 //! Whether the owner's message asks for something to be kept is one typed
 //! decision (Jev through Janus, [`ai::DecideClient`]), made once per message:
 //!
-//! - the message that starts the turn: decided from Prepare, while the steps
-//!   run, and read when the turn would end, so it costs the turn no wait;
+//! - the message that starts the turn: decided in the turn's one opening
+//!   call (`opening`), with any other question about that message, from
+//!   Prepare while the steps run, and read when it is needed, so it costs
+//!   the turn no wait;
 //! - a message typed into the running work: asked in the same call that
 //!   decides its intent (`owner_intent::decide`), never a second call.
 //!
@@ -63,12 +65,9 @@
 //! `shadow` decides and logs `would_correct` without ever correcting; unset
 //! (or anything else) is on.
 
-use std::collections::BTreeMap;
-use std::sync::Arc;
 use std::time::Duration;
 
-use ai::{DecideClient, Decision, Question};
-use tokio::task::JoinHandle;
+use ai::{Decision, Question};
 use tracing::{info, warn};
 
 use super::events::TurnEvent;
@@ -88,9 +87,6 @@ pub const DECIDE_TIMEOUT: Duration = Duration::from_secs(3);
 /// The end check's name, and the key the question is asked under.
 pub const CHECK: &str = "unsaved_memory";
 pub const QUESTION: &str = "save";
-
-/// The most of the owner's words the decision reads.
-const WORDS_CAP: usize = 2_000;
 
 /// The memory a save goes to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -198,32 +194,10 @@ pub fn undecided(agent_id: &str, reason: &str) -> SaveAsk {
     SaveAsk::Undecided
 }
 
-/// Decide whether the message that starts the turn asks for a save: one
-/// call, one question. Anything but an answer is [`SaveAsk::Undecided`].
-pub async fn decide(client: Option<&DecideClient>, message: &str, agent_id: &str, timeout: Duration) -> SaveAsk {
-    let Some(client) = client else {
-        return undecided(agent_id, "no_client");
-    };
-    let state = serde_json::json!({ "message": ai::decide::clip(message.trim(), WORDS_CAP) });
-    let questions = BTreeMap::from([(QUESTION, question())]);
-    let trace = ai::RequestTrace { agent_id: agent_id.to_string(), ..ai::RequestTrace::new("save_ask") };
-    match tokio::time::timeout(timeout, client.decide(&trace, &state, &questions)).await {
-        Ok(Ok(decision)) => read(&decision, agent_id),
-        Ok(Err(e)) => {
-            warn!(site = "save_ask", error = %e, "the decision failed");
-            undecided(agent_id, "error")
-        }
-        Err(_) => undecided(agent_id, "timeout"),
-    }
-}
-
 /// What the turn knows about the saves the owner asked for.
 pub struct SaveWatch {
     mode: Mode,
     agent_id: String,
-    /// The decision on the message that starts the turn, running since
-    /// Prepare; read once, when the turn would first end.
-    opening: Option<JoinHandle<SaveAsk>>,
     /// The step the latest asking message was heard at, and the memory it
     /// asked for: a save must have succeeded at that step or after.
     asked_at: Option<(u32, Scope)>,
@@ -237,26 +211,23 @@ pub struct SaveWatch {
 impl SaveWatch {
     /// A turn nothing is checked on.
     pub fn off() -> SaveWatch {
-        SaveWatch { mode: Mode::Off, agent_id: String::new(), opening: None, asked_at: None, saved_at: None, spent: true }
+        SaveWatch { mode: Mode::Off, agent_id: String::new(), asked_at: None, saved_at: None, spent: true }
     }
 
     /// Start watching a turn. `applies` is whether the owner speaks in it
-    /// and the employee can save (`remember` in reach, memory writes on);
-    /// `message` is the owner's words that start it, if any.
-    pub fn start(client: Option<Arc<DecideClient>>, message: Option<&str>, applies: bool, agent_id: &str) -> SaveWatch {
+    /// and the employee can save (`remember` in reach, memory writes on).
+    /// The opening message's decision comes from the turn's opening call
+    /// ([`Self::opened`]).
+    pub fn start(applies: bool, agent_id: &str) -> SaveWatch {
         let mode = mode();
         if !applies || mode == Mode::Off {
             return SaveWatch::off();
         }
-        let opening = message.map(str::trim).filter(|m| !m.is_empty()).map(|message| {
-            let message = message.to_string();
-            let agent = agent_id.to_string();
-            tokio::spawn(async move { decide(client.as_deref(), &message, &agent, DECIDE_TIMEOUT).await })
-        });
-        SaveWatch { mode, agent_id: agent_id.to_string(), opening, asked_at: None, saved_at: None, spent: false }
+        SaveWatch { mode, agent_id: agent_id.to_string(), asked_at: None, saved_at: None, spent: false }
     }
 
-    /// Whether a message typed into the work is asked about too.
+    /// Whether the opening message, and a message typed into the work, are
+    /// asked about.
     pub fn applies(&self) -> bool {
         self.mode != Mode::Off
     }
@@ -279,11 +250,9 @@ impl SaveWatch {
         self.saved_at.as_ref().filter(|(at, _)| *at >= step).map(|(_, result)| result.as_str())
     }
 
-    /// Read the opening message's decision, once it is in.
-    async fn settle(&mut self) {
-        if let Some(opening) = self.opening.take()
-            && let Ok(SaveAsk::Asked(scope)) = opening.await
-        {
+    /// The opening message's decision came in.
+    pub fn opened(&mut self, ask: SaveAsk) {
+        if let (true, SaveAsk::Asked(scope)) = (self.applies(), ask) {
             // The turn's first step heard it; a later ask keeps its own step.
             self.asked_at.get_or_insert((1, scope));
         }
@@ -293,33 +262,22 @@ impl SaveWatch {
     /// lets a Confidential conversation's save reach every employee
     /// (`ToolContext::owner_shares`). No decision, or an ask for the
     /// employee's own memory, is no.
-    pub async fn shares(&mut self) -> bool {
-        self.settle().await;
+    pub fn shares(&self) -> bool {
         matches!(self.asked_at, Some((_, Scope::Local)))
     }
 
     /// The turn would end: the check to run, when the owner asked for a save
     /// that no `remember` call answers yet. Once per turn.
-    pub async fn due(&mut self) -> Option<SaveCheck> {
+    pub fn due(&mut self) -> Option<SaveCheck> {
         if self.spent {
             return None;
         }
-        self.settle().await;
         let (asked_at, scope) = self.asked_at?;
         if self.saved_since(asked_at).is_some() {
             return None;
         }
         self.spent = true;
         Some(SaveCheck { shadow: self.mode == Mode::Shadow, agent_id: self.agent_id.clone(), scope })
-    }
-}
-
-impl Drop for SaveWatch {
-    /// A turn that ends before its decision came back stops it.
-    fn drop(&mut self) {
-        if let Some(opening) = self.opening.take() {
-            opening.abort();
-        }
     }
 }
 
@@ -475,40 +433,29 @@ mod tests {
     /// no, and a later ask for the employee's own memory takes it back.
     #[tokio::test]
     async fn sharing_is_the_latest_ask_for_local_memory() {
-        assert!(watch(Some(LOCAL)).shares().await);
-        assert!(!watch(Some(PRIVATE)).shares().await);
-        assert!(!watch(Some(SaveAsk::NotAsked)).shares().await);
-        assert!(!watch(Some(SaveAsk::Undecided)).shares().await);
-        assert!(!SaveWatch::off().shares().await);
+        assert!(watch(Some(LOCAL)).shares());
+        assert!(!watch(Some(PRIVATE)).shares());
+        assert!(!watch(Some(SaveAsk::NotAsked)).shares());
+        assert!(!watch(Some(SaveAsk::Undecided)).shares());
+        assert!(!SaveWatch::off().shares());
 
         let mut w = watch(Some(SaveAsk::NotAsked));
         w.heard(3, LOCAL);
-        assert!(w.shares().await, "a message typed into the work asked");
+        assert!(w.shares(), "a message typed into the work asked");
         w.heard(5, PRIVATE);
-        assert!(!w.shares().await, "and a later one kept it to the employee");
+        assert!(!w.shares(), "and a later one kept it to the employee");
 
         let mut w = watch(Some(LOCAL));
-        assert!(w.shares().await);
-        assert_eq!(w.due().await.map(|c| c.scope), Some(Scope::Local), "the end check still reads the same ask");
-    }
-
-    #[tokio::test]
-    async fn no_decision_is_undecided() {
-        let t = Duration::from_millis(50);
-        assert_eq!(decide(None, "save this recipe", "a", t).await, SaveAsk::Undecided);
-        let dead = DecideClient::new("http://127.0.0.1:9", || Some(ai::Bearer { token: "t".into(), bot_id: None }));
-        assert_eq!(decide(Some(&dead), "save this recipe", "a", t).await, SaveAsk::Undecided, "an unreachable Jev");
+        assert!(w.shares());
+        assert_eq!(w.due().map(|c| c.scope), Some(Scope::Local), "the end check still reads the same ask");
     }
 
     fn watch(opening: Option<SaveAsk>) -> SaveWatch {
-        SaveWatch {
-            mode: Mode::On,
-            agent_id: "a".into(),
-            opening: opening.map(|ask| tokio::spawn(async move { ask })),
-            asked_at: None,
-            saved_at: None,
-            spent: false,
+        let mut w = SaveWatch { mode: Mode::On, agent_id: "a".into(), asked_at: None, saved_at: None, spent: false };
+        if let Some(ask) = opening {
+            w.opened(ask);
         }
+        w
     }
 
     const LOCAL: SaveAsk = SaveAsk::Asked(Scope::Local);
@@ -517,18 +464,18 @@ mod tests {
     /// Fails open: an undecided or not-asking message is never corrected.
     #[tokio::test]
     async fn only_an_asked_save_with_none_done_is_checked() {
-        assert!(watch(Some(SaveAsk::Undecided)).due().await.is_none(), "undecided counts as not asking");
-        assert!(watch(Some(SaveAsk::NotAsked)).due().await.is_none());
-        assert!(watch(None).due().await.is_none());
+        assert!(watch(Some(SaveAsk::Undecided)).due().is_none(), "undecided counts as not asking");
+        assert!(watch(Some(SaveAsk::NotAsked)).due().is_none());
+        assert!(watch(None).due().is_none());
 
         let mut w = watch(Some(LOCAL));
         w.saved(2, "Saved to local memory (every employee on this Nebo can find it): [project] k = v");
-        assert!(w.due().await.is_none(), "a save that succeeded answers the ask");
+        assert!(w.due().is_none(), "a save that succeeded answers the ask");
 
         let mut w = watch(Some(PRIVATE));
-        let check = w.due().await.expect("asked and nothing saved");
+        let check = w.due().expect("asked and nothing saved");
         assert_eq!(check.scope, Scope::Private, "the correction carries the scope asked for");
-        assert!(w.due().await.is_none(), "one correction a turn");
+        assert!(w.due().is_none(), "one correction a turn");
     }
 
     /// A message typed into the work asks from its own step, in its own
@@ -538,16 +485,16 @@ mod tests {
         let mut w = watch(Some(SaveAsk::NotAsked));
         w.saved(2, "Saved to local memory");
         w.heard(4, LOCAL);
-        assert_eq!(w.due().await.map(|c| c.scope), Some(Scope::Local));
+        assert_eq!(w.due().map(|c| c.scope), Some(Scope::Local));
 
         let mut w = watch(Some(PRIVATE));
         w.heard(4, LOCAL);
         w.saved(5, "Saved to local memory");
-        assert!(w.due().await.is_none());
+        assert!(w.due().is_none());
 
         let mut w = watch(None);
         w.heard(4, SaveAsk::Undecided);
-        assert!(w.due().await.is_none(), "fails open");
+        assert!(w.due().is_none(), "fails open");
     }
 
     #[tokio::test]

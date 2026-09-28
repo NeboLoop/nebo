@@ -109,6 +109,9 @@ pub enum TurnEvent {
     /// The owner asked for something to be saved, in this memory, and no
     /// `remember` call has succeeded since (`memory_save`).
     UnsavedMemory(super::memory_save::Scope),
+    /// The owner gave a command to run and no run_command call was made this
+    /// turn (`owner_command`).
+    UnrunCommand,
     /// The `steering.generate` app hook's text.
     AppHook {
         label: String,
@@ -216,6 +219,7 @@ pub const NAMES: &[&str] = &[
     "workflow_contract",
     "answer_shape",
     "unsaved_memory",
+    "unrun_command",
     "app_hook",
     "restored_file",
     "invoked_skills",
@@ -451,6 +455,12 @@ pub fn attachment_for(e: &TurnEvent) -> Option<Attachment> {
                  reaches the owner, and only the remember call counts.",
                 scope.as_str()
             ),
+        ),
+        TurnEvent::UnrunCommand => (
+            "unrun_command",
+            "The owner gave you a command to run, and none has run in this turn: what it prints is known only by \
+             running it. Run it now with run_command, exactly as they gave it, then report what it returned."
+                .to_string(),
         ),
         TurnEvent::AppHook { text, .. } => ("app_hook", non_empty(text)?),
         TurnEvent::RestoredFile { path, content } => (
@@ -1114,6 +1124,7 @@ mod tests {
             TurnEvent::WorkflowContract("call publish once".into()),
             TurnEvent::AnswerShape("no JSON object".into()),
             TurnEvent::UnsavedMemory(crate::harness::memory_save::Scope::Private),
+            TurnEvent::UnrunCommand,
             TurnEvent::AppHook {
                 label: "app".into(),
                 text: "the invoice is due".into(),
