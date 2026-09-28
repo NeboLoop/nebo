@@ -49,6 +49,12 @@ impl Subcommand {
         Subcommand { assigns: false, words: vec![None], writes: false }
     }
 
+    /// The command's words, the program first: quoting removed,
+    /// redirections left out, and `None` for one only known when it runs.
+    pub fn words(&self) -> &[Option<String>] {
+        &self.words
+    }
+
     /// Whether every word of the command is known before it runs.
     pub fn readable(&self) -> bool {
         self.words.iter().all(Option::is_some)

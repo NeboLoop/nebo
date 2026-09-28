@@ -264,12 +264,17 @@ fn shell() -> String {
 /// drives then, and says plainly what the missing desktop does NOT take away:
 /// on 2026-09-26 the old line ("the os tool has no … reminders here, never
 /// call them") read as "this bot can't set reminders", and runs asked to be
-/// reminded in three hours answered that no reminder tool existed.
+/// reminded in three hours answered that no reminder tool existed. The
+/// owner's own computer is named as not this one: in the 2026-09-27 proofs
+/// of `file-discovery-spiral`, runs asked for "a screenshot from my
+/// Desktop" knew this server had none and searched `/home` and `/` for one
+/// anyway (4–6 commands).
 pub const SERVER_DESKTOP: &str = "none: this Nebo runs on a server in the cloud, with no screen and none of a \
 computer's own apps (Mail, Contacts, Calendar, Reminders, Shortcuts, speech). Files, commands, the web, schedules \
 (a reminder for the owner is one) and connected services all work normally. The os tool is offered only while a \
 desktop session is up, and then drives just that session's windows, input, clipboard, capture, ui, menu, dialog and \
-space.";
+space. The owner's own computer is not this server: what is on its Desktop, in its Downloads or its photos reaches you \
+only when they send it, so say that rather than searching this server for it.";
 
 /// What a command may never do, told before the first one runs: the
 /// safeguard refuses sudo and su in every mode (a hard limit,
