@@ -212,10 +212,25 @@ impl ShellTool {
             ));
         }
 
+        // A cloud bot's package installer, as a command of its own, is the
+        // one command that runs through sudo (`system_packages`): it runs
+        // outside the confinement (whose no-new-privileges would stop sudo),
+        // and what it installs is recorded to be put back after a restart.
+        let install = crate::system_packages::allowed(&input.command);
+        if install.is_some() && ctx.reach.offline {
+            return ToolResult::error(
+                "The package installer downloads from the Debian mirrors, and this run's web access is off, \
+                 so it can't run here.",
+            );
+        }
+
         // Privilege escalation is never a legitimate automation step: Nebo runs
         // unattended, so sudo either hangs on a password prompt or silently
         // escalates. Refuse before anything executes (covers background too).
-        if crate::policy::is_privilege_escalation(&input.command) {
+        if install.is_none() && crate::policy::is_privilege_escalation(&input.command) {
+            if crate::cloud_bot() {
+                return ToolResult::error(crate::system_packages::CLOUD_SUDO_REFUSAL);
+            }
             return ToolResult::error(
                 "Privilege escalation (sudo/doas/su) is not available — Nebo runs \
                  unattended and cannot enter passwords or hold admin rights. Do not \
@@ -254,7 +269,7 @@ impl ShellTool {
             );
         }
 
-        let (cmd, closed_ports) = match self.command(input, ctx) {
+        let (cmd, closed_ports) = match self.command(input, ctx, install.is_some()) {
             Ok(launch) => launch,
             Err(refusal) => return refusal,
         };
@@ -263,7 +278,7 @@ impl ShellTool {
             description: input.description.clone(),
         });
         if input.background {
-            return self.execute_background(cmd, &closed_ports, input, caller).await;
+            return self.execute_background(cmd, &closed_ports, input, caller, install).await;
         }
 
         let timeout_secs = if input.timeout > 0 {
@@ -276,6 +291,7 @@ impl ShellTool {
             Ok(s) => s,
             Err(e) => return spawn_failure(&input.command, &e),
         };
+        let started = record_install(started, install);
         // Until the command ends or moves to the background, its call owns
         // it: a cancelled turn drops this and takes the whole group with it.
         let mut owned = KillOnDrop(Some(started.session.pid));
@@ -443,15 +459,17 @@ impl ShellTool {
     /// environment (sanitized, Nebo's own settings left out, git's prompts
     /// off, installed plugins on the PATH, and plugin auth for a workflow's
     /// command step alone). With it, the ports its spawn must close
-    /// (`confine::spawn_with`).
-    fn command(&self, input: &ShellInput, ctx: &ToolContext) -> Result<(tokio::process::Command, Vec<u16>), ToolResult> {
+    /// (`confine::spawn_with`). A cloud bot's package installer
+    /// (`installer`) runs unconfined: the confinement's no-new-privileges
+    /// would stop its sudo, and its grammar names nothing but packages.
+    fn command(&self, input: &ShellInput, ctx: &ToolContext, installer: bool) -> Result<(tokio::process::Command, Vec<u16>), ToolResult> {
         let trusted_plugin_env = ctx.trusted_plugin_env;
         let default_cwd = ctx.cwd.as_deref();
         // Every command is fenced, a workflow's command step included: it
         // runs the installed plugins, so their programs and data are open to
         // it (`NeboFiles::of`), and nothing else of Nebo's is. The command of
         // an employee with Full access is not (`confine::Reach::unconfined`).
-        let (fence, closed_ports) = if ctx.reach.unconfined {
+        let (fence, closed_ports) = if ctx.reach.unconfined || installer {
             (None, Vec::new())
         } else {
             (crate::nebo_files::NeboFiles::of(ctx), types::own_ports::list())
@@ -524,16 +542,20 @@ impl ShellTool {
         closed_ports: &[u16],
         input: &ShellInput,
         caller: Option<process::Caller>,
+        install: Option<Vec<String>>,
     ) -> ToolResult {
         let told = if caller.is_some() { " You'll be notified when it ends." } else { "" };
         match self.registry.spawn(cmd, &input.command, process::Spawn::Background(caller), input.pty, closed_ports).await {
-            Ok(started) => ToolResult::ok(format!(
-                "Background session started: **{}** (PID {})\n\nCommand: `{}`\n\n{}{told}\n",
-                started.session.id,
-                started.session.pid,
-                input.command,
-                session_next_steps(&started.session.id, input.pty)
-            )),
+            Ok(started) => {
+                let started = record_install(started, install);
+                ToolResult::ok(format!(
+                    "Background session started: **{}** (PID {})\n\nCommand: `{}`\n\n{}{told}\n",
+                    started.session.id,
+                    started.session.pid,
+                    input.command,
+                    session_next_steps(&started.session.id, input.pty)
+                ))
+            }
             Err(e) => ToolResult::error(format!("Failed to start background process: {}", e)),
         }
     }
@@ -926,6 +948,27 @@ impl Drop for KillOnDrop {
             process::kill_group(pid);
         }
     }
+}
+
+/// A cloud bot's install (`packages`, from `system_packages::allowed`) is
+/// recorded once the command succeeds, however the call ends: in the
+/// foreground, moved to the background past its timeout, or started there.
+/// The exit status reaches the caller after the record is written.
+fn record_install(started: process::Started, packages: Option<Vec<String>>) -> process::Started {
+    let Some(packages) = packages.filter(|p| !p.is_empty()) else {
+        return started;
+    };
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let exited = started.exited;
+    tokio::spawn(async move {
+        if let Ok(status) = exited.await {
+            if status.is_some_and(|s| s.success()) {
+                crate::system_packages::record(&packages);
+            }
+            let _ = tx.send(status);
+        }
+    });
+    process::Started { session: started.session, exited: rx }
 }
 
 /// The `payload` kind of a raw command's result: `exit_code` (null when a

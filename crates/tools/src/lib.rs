@@ -98,6 +98,7 @@ pub mod spotlight_tool;
 pub mod vm_tool;
 pub mod walk_bounds;
 pub mod web_tool;
+pub mod system_packages;
 pub mod task_tools;
 pub mod team;
 pub mod team_tool;
@@ -116,12 +117,20 @@ pub mod workflows;
 /// nor `WAYLAND_DISPLAY` is headless by definition (a Linux desktop always has
 /// one). macOS/Windows are always treated as desktops.
 pub fn server_mode() -> bool {
-    if std::env::var_os("NEBO_SERVER_MODE").is_some() {
+    if cloud_bot() {
         return true;
     }
     cfg!(target_os = "linux")
         && std::env::var_os("DISPLAY").is_none()
         && std::env::var_os("WAYLAND_DISPLAY").is_none()
+}
+
+/// True when this Nebo is a cloud bot: the server image, which sets
+/// `NEBO_SERVER_MODE` (a headless Linux box of the owner's own is a server,
+/// never a cloud bot). A cloud bot is its own VM holding one customer's
+/// data; its package installer runs as root (`system_packages`).
+pub fn cloud_bot() -> bool {
+    std::env::var_os("NEBO_SERVER_MODE").is_some()
 }
 
 /// The tool that drives this computer's desktop, apps and settings

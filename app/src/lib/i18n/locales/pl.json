@@ -1491,7 +1491,11 @@
 		"operational": "Sprawna",
 		"down": "Niedostępna",
 		"degraded": "Ograniczona",
-		"system": "System"
+		"system": "System",
+		"systemPackages": "Pakiety systemowe",
+		"systemPackagesNone": "Brak zainstalowanych",
+		"systemPackagesInstalling": "Instalowanie…",
+		"systemPackagesFailed": "Nie udało się zainstalować: {names}"
 	},
 	"settingsUsage": {
 		"title": "Użycie",

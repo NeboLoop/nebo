@@ -1491,7 +1491,11 @@
 		"operational": "Operationeel",
 		"down": "Offline",
 		"degraded": "Verstoord",
-		"system": "Systeem"
+		"system": "Systeem",
+		"systemPackages": "Systeempakketten",
+		"systemPackagesNone": "Geen geïnstalleerd",
+		"systemPackagesInstalling": "Bezig met installeren…",
+		"systemPackagesFailed": "Kon niet installeren: {names}"
 	},
 	"settingsUsage": {
 		"title": "Gebruik",

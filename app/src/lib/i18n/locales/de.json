@@ -1491,7 +1491,11 @@
 		"operational": "Betriebsbereit",
 		"down": "Ausgefallen",
 		"degraded": "Beeinträchtigt",
-		"system": "System"
+		"system": "System",
+		"systemPackages": "Systempakete",
+		"systemPackagesNone": "Keine installiert",
+		"systemPackagesInstalling": "Wird installiert…",
+		"systemPackagesFailed": "Konnte nicht installiert werden: {names}"
 	},
 	"settingsUsage": {
 		"title": "Nutzung",

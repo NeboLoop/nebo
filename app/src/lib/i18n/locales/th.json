@@ -1491,7 +1491,11 @@
 		"operational": "ทำงานปกติ",
 		"down": "ล่ม",
 		"degraded": "ประสิทธิภาพลดลง",
-		"system": "ระบบ"
+		"system": "ระบบ",
+		"systemPackages": "แพ็กเกจระบบ",
+		"systemPackagesNone": "ยังไม่มีการติดตั้ง",
+		"systemPackagesInstalling": "กำลังติดตั้ง…",
+		"systemPackagesFailed": "ติดตั้งไม่ได้: {names}"
 	},
 	"settingsUsage": {
 		"title": "การใช้งาน",

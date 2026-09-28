@@ -1491,7 +1491,11 @@
 		"operational": "Beroperasi",
 		"down": "Terhenti",
 		"degraded": "Merosot",
-		"system": "Sistem"
+		"system": "Sistem",
+		"systemPackages": "Pakej sistem",
+		"systemPackagesNone": "Tiada yang dipasang",
+		"systemPackagesInstalling": "Memasang…",
+		"systemPackagesFailed": "Tidak dapat dipasang: {names}"
 	},
 	"settingsUsage": {
 		"title": "Penggunaan",

@@ -1491,7 +1491,11 @@
 		"operational": "সচল",
 		"down": "বন্ধ",
 		"degraded": "অবনত",
-		"system": "সিস্টেম"
+		"system": "সিস্টেম",
+		"systemPackages": "সিস্টেম প্যাকেজ",
+		"systemPackagesNone": "কিছু ইনস্টল করা নেই",
+		"systemPackagesInstalling": "ইনস্টল হচ্ছে…",
+		"systemPackagesFailed": "ইনস্টল করা যায়নি: {names}"
 	},
 	"settingsUsage": {
 		"title": "ব্যবহার",

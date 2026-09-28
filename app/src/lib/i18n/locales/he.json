@@ -1491,7 +1491,11 @@
 		"operational": "תקין",
 		"down": "מושבת",
 		"degraded": "פגוע",
-		"system": "מערכת"
+		"system": "מערכת",
+		"systemPackages": "חבילות מערכת",
+		"systemPackagesNone": "לא הותקן דבר",
+		"systemPackagesInstalling": "מתקין…",
+		"systemPackagesFailed": "לא ניתן היה להתקין: {names}"
 	},
 	"settingsUsage": {
 		"title": "שימוש",

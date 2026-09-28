@@ -1491,7 +1491,11 @@
 		"operational": "Beroperasi",
 		"down": "Mati",
 		"degraded": "Terdegradasi",
-		"system": "Sistem"
+		"system": "Sistem",
+		"systemPackages": "Paket sistem",
+		"systemPackagesNone": "Belum ada yang terpasang",
+		"systemPackagesInstalling": "Memasang…",
+		"systemPackagesFailed": "Tidak dapat dipasang: {names}"
 	},
 	"settingsUsage": {
 		"title": "Penggunaan",

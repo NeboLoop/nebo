@@ -1491,7 +1491,11 @@
 		"operational": "يعمل",
 		"down": "متوقف",
 		"degraded": "متدهور",
-		"system": "النظام"
+		"system": "النظام",
+		"systemPackages": "حزم النظام",
+		"systemPackagesNone": "لم يُثبَّت شيء",
+		"systemPackagesInstalling": "جارٍ التثبيت…",
+		"systemPackagesFailed": "تعذّر التثبيت: {names}"
 	},
 	"settingsUsage": {
 		"title": "الاستخدام",

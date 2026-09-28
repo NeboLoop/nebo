@@ -1491,7 +1491,11 @@
 		"operational": "Operativo",
 		"down": "Caído",
 		"degraded": "Degradado",
-		"system": "Sistema"
+		"system": "Sistema",
+		"systemPackages": "Paquetes del sistema",
+		"systemPackagesNone": "Ninguno instalado",
+		"systemPackagesInstalling": "Instalando…",
+		"systemPackagesFailed": "No se pudo instalar: {names}"
 	},
 	"settingsUsage": {
 		"title": "Uso",

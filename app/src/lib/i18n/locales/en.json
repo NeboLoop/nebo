@@ -1500,7 +1500,11 @@
 		"operational": "Operational",
 		"down": "Down",
 		"degraded": "Degraded",
-		"system": "System"
+		"system": "System",
+		"systemPackages": "System packages",
+		"systemPackagesNone": "None installed",
+		"systemPackagesInstalling": "Installing…",
+		"systemPackagesFailed": "Couldn't install: {names}"
 	},
 	"settingsUsage": {
 		"title": "Usage",

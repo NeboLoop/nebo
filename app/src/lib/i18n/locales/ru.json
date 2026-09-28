@@ -1491,7 +1491,11 @@
 		"operational": "Работает",
 		"down": "Не работает",
 		"degraded": "Деградация",
-		"system": "Система"
+		"system": "Система",
+		"systemPackages": "Системные пакеты",
+		"systemPackagesNone": "Ничего не установлено",
+		"systemPackagesInstalling": "Установка…",
+		"systemPackagesFailed": "Не удалось установить: {names}"
 	},
 	"settingsUsage": {
 		"title": "Использование",

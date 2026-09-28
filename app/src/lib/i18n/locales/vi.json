@@ -1491,7 +1491,11 @@
 		"operational": "Hoạt động bình thường",
 		"down": "Ngừng hoạt động",
 		"degraded": "Suy giảm",
-		"system": "Hệ thống"
+		"system": "Hệ thống",
+		"systemPackages": "Gói hệ thống",
+		"systemPackagesNone": "Chưa cài đặt gói nào",
+		"systemPackagesInstalling": "Đang cài đặt…",
+		"systemPackagesFailed": "Không thể cài đặt: {names}"
 	},
 	"settingsUsage": {
 		"title": "Sử dụng",
