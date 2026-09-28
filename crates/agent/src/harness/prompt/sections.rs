@@ -216,6 +216,8 @@ pub enum Watching {
     Live,
     /// No one is watching; the final message is what gets read.
     Unattended,
+    /// A live voice call: each word is heard as it is said.
+    Call,
 }
 
 impl From<tools::ExecutionMode> for Watching {
@@ -280,11 +282,13 @@ owner's to make. Tell them what to run instead of trying another way.";
 
 /// The environment's fields after the date, in the order they are told:
 /// the platform, the shell, admin rights, the desktop a server bot lacks, the working
-/// folder when there is one, the channel and who is watching.
-pub fn environment_fields(cwd: Option<&str>, channel: &str, watching: Watching) -> Vec<(String, String)> {
+/// folder when there is one, the channel, who is watching, and the
+/// employee's email address when the bot has one (`inputs::email_address`).
+pub fn environment_fields(cwd: Option<&str>, channel: &str, watching: Watching, email: Option<&str>) -> Vec<(String, String)> {
     let watching = match watching {
         Watching::Live => "the owner sees your messages as you write them",
         Watching::Unattended => "no one is watching this run; your final message is what gets read",
+        Watching::Call => "this is a live call: every word you say is heard as you say it",
     };
     let mut fields = vec![
         ("Platform".to_string(), platform()),
@@ -299,6 +303,9 @@ pub fn environment_fields(cwd: Option<&str>, channel: &str, watching: Watching) 
     }
     fields.push(("Channel".to_string(), channel.to_string()));
     fields.push(("Watching".to_string(), watching.to_string()));
+    if let Some(email) = email {
+        fields.push(("Email".to_string(), email.to_string()));
+    }
     fields
 }
 

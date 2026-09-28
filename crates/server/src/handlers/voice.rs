@@ -1514,6 +1514,13 @@ async fn handle_conversation_ws(mut socket: WebSocket, state: AppState, mut q: C
              the Nebo desktop app.",
         );
     }
+    // Where the call runs, from the builder a text turn's rows come from:
+    // the date and time, the environment with the employee's email address,
+    // and the owner's phone position — only on the owner's own call, never
+    // on a phone line a stranger is on.
+    let origin = if telephony { tools::Origin::Caller } else { tools::Origin::User };
+    instructions.push_str("\n\n---\n\n");
+    instructions.push_str(&state.harness.call_facts(q.agent_id.as_deref().unwrap_or_default(), origin));
     // A phone call is its own conversation — replaying desktop chat history
     // into it would have the employee greet a stranger mid-thread.
     if let Some(t) = team.as_ref() {

@@ -745,7 +745,7 @@ pub(crate) async fn prepare(
         model: turn_model.clone(),
         permission_mode: permission_mode_name(grant.mode).to_string(),
     };
-    let environment = sections::environment_fields(req.seat.cwd.as_deref(), &channel, seat.execution_mode.into());
+    let environment = h.environment_fields(&req.seat.agent_id, req.seat.cwd.as_deref(), &channel, seat.execution_mode.into());
     let channel_plugin = h.tools.get(&format!("{}{channel}", tools::plugin_tools::PLUGIN_PREFIX)).await.is_some();
     let files_dir = config::data_dir()
         .map(|d| d.join("files").to_string_lossy().into_owned())
@@ -1597,13 +1597,7 @@ async fn step_events(
     // this employee is told when it is new, and turning sharing off is told
     // at the next step. Never shared into a turn a stranger or another
     // program started.
-    let shared = cx
-        .request
-        .seat
-        .origin
-        .is_trusted()
-        .then(|| h.phone_locations.reading_for(&cx.request.seat.agent_id, chrono::Utc::now().timestamp()))
-        .flatten();
+    let shared = h.shared_phone_position(&cx.request.seat.agent_id, cx.request.seat.origin);
     if let Some(event) = events::phone_location_event(shared, conversation) {
         st.reminders.add(&event);
     }
@@ -4823,6 +4817,115 @@ mod tests {
         assert_eq!(told(&calls[2], withdrawn), 1, "a later turn is told once, not again");
         assert_eq!(told(&calls[2], "40.500000"), 0, "and hears no reading");
         assert_eq!(told(&calls[3], "40.500000, -111.891000"), 1, "shared again: the new reading");
+    }
+
+    const BOT_ADDRESS: &str = "nanna-7kq@nebo.bot";
+
+    /// The NeboAI account with the bot's hosted address kept on it, as the
+    /// server keeps it when it connects, and the primary employee's row.
+    fn with_bot_address(h: &Harness) {
+        h.store
+            .create_auth_profile("neboai-1", "NeboAI", "neboai", "tok", None, None, 0, 1, Some("token"), Some("{}"))
+            .unwrap();
+        auth::set_neboai_bot_address(&h.store, Some(BOT_ADDRESS));
+        h.store.create_agent(tools::team_tool::PRIMARY_AGENT_ID, None, "Nanna", "", "", "", None, None).unwrap();
+    }
+
+    /// The primary employee knows the bot's own address: it is in the
+    /// environment its turn is told, not asked of the hub. (Live
+    /// 2026-09-27: asked by voice for its email address, the primary said
+    /// it had none.)
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_primary_is_told_the_bots_email_address() {
+        let model = Scripted::new(vec![Step::Say("It's nanna-7kq@nebo.bot.")]);
+        let h = harness(&model).await;
+        with_bot_address(&h);
+        run_turn(&h, owner("What's your email address?")).await;
+        let env = latest_row(&h, "environment").expect("the environment is told");
+        assert!(
+            env.contains("- Email: nanna-7kq@nebo.bot (this bot's own address; mail to it comes to you)"),
+            "{env}"
+        );
+        assert!(texts(&model.calls()[0]).iter().any(|t| t.contains(&env)), "and the model reads it");
+    }
+
+    /// Any other employee is told its own `+tag` address, with the bot's
+    /// address and who that reaches as context: the tag the mail intake
+    /// routes by.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_employee_is_told_its_tagged_email_address() {
+        let model = Scripted::new(vec![Step::Say("Front desk here.")]);
+        let h = harness(&model).await;
+        with_bot_address(&h);
+        h.store.create_agent("ops", None, "Front Desk", "", "", "", None, None).unwrap();
+        let mut req = owner("What's your email address?");
+        req.seat.agent_id = "ops".into();
+        run_turn(&h, req).await;
+        let env = latest_row(&h, "environment").expect("the environment is told");
+        assert!(
+            env.contains("- Email: nanna-7kq+front-desk@nebo.bot (yours; the bot's address nanna-7kq@nebo.bot reaches Nanna)"),
+            "{env}"
+        );
+    }
+
+    /// A Nebo not connected to NeboAI has no hosted address: its turns say
+    /// nothing about email, and no address is made up.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn no_hosted_address_no_email_line() {
+        let model = Scripted::new(vec![Step::Say("Hello.")]);
+        let h = harness(&model).await;
+        run_turn(&h, owner("What's your email address?")).await;
+        let env = latest_row(&h, "environment").expect("the environment is told");
+        assert!(!env.contains("Email") && !env.contains("@"), "{env}");
+        assert!(!h.call_facts("", tools::Origin::User).contains("Email"), "nor on a call");
+    }
+
+    /// A voice call is told where it runs from the same builder as a text
+    /// turn: the date and time, the environment with the employee's email
+    /// address, and the owner's phone position only while it is shared
+    /// with that employee and only on the owner's own call.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_call_is_told_the_same_environment_email_and_shared_position() {
+        let model = Scripted::new(Vec::new());
+        let h = harness(&model).await;
+        with_bot_address(&h);
+        let now = chrono::Utc::now().timestamp();
+        let reading = |revision: i64, agent_ids: Vec<String>| crate::phone_location::PhoneReading {
+            account_id: "owner".into(),
+            device_id: "phone".into(),
+            revision,
+            agent_ids,
+            latitude: Some(40.7608),
+            longitude: Some(-111.891),
+            accuracy_metres: Some(12.0),
+            taken_at: Some(now),
+        };
+        let position = "40.760800, -111.891000";
+
+        let facts = h.call_facts(tools::team_tool::PRIMARY_AGENT_ID, tools::Origin::User);
+        assert!(facts.contains("# Environment\n- Date: "), "{facts}");
+        assert!(facts.contains("\nIt is "), "the owner's time: {facts}");
+        assert!(facts.contains("- Channel: voice"), "{facts}");
+        assert!(facts.contains("- Email: nanna-7kq@nebo.bot (this bot's own address"), "{facts}");
+        assert!(!facts.contains(position), "not shared: no position");
+
+        h.phone_locations().update(reading(1, vec!["assistant".into()]), now).unwrap();
+        let facts = h.call_facts(tools::team_tool::PRIMARY_AGENT_ID, tools::Origin::User);
+        assert!(facts.contains(position), "shared with this employee: {facts}");
+        assert!(
+            !h.call_facts(tools::team_tool::PRIMARY_AGENT_ID, tools::Origin::Caller).contains(position),
+            "never on a stranger's phone call"
+        );
+        h.store.create_agent("ops", None, "Front Desk", "", "", "", None, None).unwrap();
+        let ops = h.call_facts("ops", tools::Origin::User);
+        assert!(ops.contains("- Email: nanna-7kq+front-desk@nebo.bot"), "{ops}");
+        assert!(!ops.contains(position), "shared with another employee only");
+
+        h.phone_locations().update(reading(2, Vec::new()), now).unwrap();
+        assert!(
+            !h.call_facts(tools::team_tool::PRIMARY_AGENT_ID, tools::Origin::User).contains(position),
+            "withdrawn: no position"
+        );
     }
 
     /// An explore helper declares the same tools as every run, the helper

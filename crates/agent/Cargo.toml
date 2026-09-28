@@ -8,6 +8,7 @@ license.workspace = true
 tls = { workspace = true }
 types = { workspace = true }
 ai = { workspace = true }
+auth = { workspace = true }
 comm = { workspace = true }
 db = { workspace = true }
 tools = { workspace = true }

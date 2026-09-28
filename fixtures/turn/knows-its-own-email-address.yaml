@@ -1,0 +1,39 @@
+id: knows-its-own-email-address
+name: "The employee knows its own email address"
+description: |
+  From a real voice conversation (2026-09-27): the owner asked the primary
+  employee "Hey what's your email address?" and it answered that it had no
+  personal email address and could only be reached in the app. Every bot
+  connected to NeboAI has an address at nebo.bot, and the mail intake
+  delivers mail sent to it. The address is in the environment the turn is
+  told (the `Email` field), so the answer needs no tool and no guess.
+  Needs a Nebo connected to NeboAI (the gate's bot is): a Nebo without a
+  hosted address has no email line, and this fixture does not apply to it.
+target_component: prompt
+
+conversation:
+  - role: user
+    content: "Hey what's your email address?"
+
+prompt_assertions:
+  first_call:
+    - id: gives-the-address
+      text: "The reply gives the bot's own address at nebo.bot"
+      severity: critical
+      check: { reply_matches: "(?i)[a-z0-9-]+@nebo\\.bot" }
+    - id: never-denies-having-one
+      text: "The reply never says the employee has no email address or can only be reached in the app"
+      severity: critical
+      check: { reply_not_matches: "(?i)(don['’]?t|do not)\\s+have\\s+(a|an|my own)?\\s*(personal\\s+)?e-?mail|no\\s+(personal\\s+)?e-?mail\\s+address" }
+  cost:
+    - id: no-lookup
+      text: "The address is answered from what the turn was told: no tool call"
+      severity: important
+      check: { max_tool_calls: 0 }
+
+ideal_behavior:
+  tool_calls: 0
+  total_tokens: 1500
+  narrative: |
+    "It's <short id>@nebo.bot." One line, the address the environment
+    names, nothing invented.

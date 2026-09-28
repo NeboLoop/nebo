@@ -75,6 +75,20 @@ pub fn secondary_agent_slug(slug: &str) -> Option<&str> {
     Some(&rest[idx + 1..])
 }
 
+/// The longest employee tag the hub routes by (neboloop `botmail.maxTagLen`):
+/// a longer tag is dropped there and the mail goes to the primary employee.
+const MAX_EMAIL_TAG_LEN: usize = 27;
+
+/// The address that reaches one employee: the bot's hosted address with the
+/// `+tag` the mail intake routes by (the [`slugify`]d name). `None` when the
+/// bot has no address or the hub would drop the tag (empty or too long), so
+/// no one is ever told an address that doesn't reach them.
+pub fn employee_email_address(bot_address: &str, employee_name: &str) -> Option<String> {
+    let (local, domain) = bot_address.split_once('@')?;
+    let tag = slugify(employee_name);
+    (!local.is_empty() && !domain.is_empty() && !tag.is_empty() && tag.len() <= MAX_EMAIL_TAG_LEN)
+        .then(|| format!("{local}+{tag}@{domain}"))
+}
 
 // ---------------------------------------------------------------------------
 // Mention-token grammar — the ONE parser for `<@id>` chips.
@@ -149,6 +163,23 @@ pub fn strip_mention_tokens(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The tag is the one mail intake routes by; no address, no tag, and a
+    /// tag the hub would drop, no address.
+    #[test]
+    fn an_employee_is_reached_at_the_bots_address_plus_its_tag() {
+        assert_eq!(
+            employee_email_address("nanna-7kq@nebo.bot", "Front Office Lead").as_deref(),
+            Some("nanna-7kq+front-office-lead@nebo.bot")
+        );
+        assert_eq!(employee_email_address("", "Nanna"), None);
+        assert_eq!(employee_email_address("nanna-7kq@nebo.bot", "  "), None);
+        assert_eq!(
+            employee_email_address("nanna-7kq@nebo.bot", "Senior Transaction Coordinator Two"),
+            None,
+            "a 34-character tag is dropped by the hub, so it reaches no one by that tag"
+        );
+    }
 
     #[test]
     fn secondary_handle_is_bot_scoped() {

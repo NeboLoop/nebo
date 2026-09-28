@@ -186,6 +186,59 @@ impl Harness {
         &self.phone_locations
     }
 
+    /// Where a session runs, as it is told: the environment's fields after
+    /// the date, the employee's email address among them. The ONE builder
+    /// for a text turn's `environment` row and a voice call's instructions.
+    pub fn environment_fields(
+        &self,
+        agent_id: &str,
+        cwd: Option<&str>,
+        channel: &str,
+        watching: prompt::sections::Watching,
+    ) -> Vec<(String, String)> {
+        let email = prompt::inputs::email_address(&self.store, agent_id);
+        prompt::sections::environment_fields(cwd, channel, watching, email.as_deref())
+    }
+
+    /// The owner's phone position `agent_id` may be told now: only while the
+    /// owner shares it with that employee, and never into a run a stranger
+    /// or another program started. Read afresh at every step of a text turn
+    /// and at the start of a call.
+    pub fn shared_phone_position(
+        &self,
+        agent_id: &str,
+        origin: tools::Origin,
+    ) -> Option<crate::phone_location::SharedPosition> {
+        origin
+            .is_trusted()
+            .then(|| self.phone_locations.reading_for(agent_id, chrono::Utc::now().timestamp()))
+            .flatten()
+    }
+
+    /// What a voice call is told about where it runs, from the same sources
+    /// a text turn's rows are: the environment (the owner's date and
+    /// timezone, the fields, the email address among them), the owner's
+    /// time, and the phone position when it is shared with this employee
+    /// and the call is the owner's.
+    pub fn call_facts(&self, agent_id: &str, origin: tools::Origin) -> String {
+        let timezone = self
+            .store
+            .get_user_profile()
+            .ok()
+            .flatten()
+            .and_then(|u| u.timezone)
+            .filter(|tz| !tz.is_empty());
+        let fields = self.environment_fields(agent_id, None, "voice", prompt::sections::Watching::Call);
+        let mut out = vec![
+            events::environment_text(prompt::sections::owner_today(timezone.as_deref()), timezone.as_deref(), &fields),
+            prompt::sections::owner_now(timezone.as_deref()),
+        ];
+        if let Some(position) = self.shared_phone_position(agent_id, origin) {
+            out.push(position.text);
+        }
+        out.join("\n\n")
+    }
+
     pub fn store(&self) -> &Arc<db::Store> {
         &self.store
     }

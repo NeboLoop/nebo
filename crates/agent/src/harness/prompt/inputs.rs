@@ -1,7 +1,7 @@
 //! What the turn's identity and session-context rows are built from,
 //! resolved from the employee and the workspace once per turn: the AGENT.md
-//! body, the employee's own setup, the plugins and tools its job uses and
-//! the workspace notes.
+//! body, the employee's own setup, the plugins and tools its job uses, the
+//! workspace notes and the employee's email address.
 
 use tracing::{debug, warn};
 
@@ -129,6 +129,26 @@ pub async fn job_tools(
         lines.join("\n"),
         tools::find_tools::FIND_TOOLS
     )
+}
+
+/// The environment's `Email` field for `agent_id`: the bot's hosted address
+/// for the primary employee; for any other employee its own `+tag` address
+/// and the bot's address as context (who mail to it reaches). `None` when
+/// the bot has no hosted address (not connected to NeboAI): then nothing is
+/// said about email, and no address is ever made up. Read from the account
+/// info the server keeps (`auth::neboai_bot_address`), never from the hub.
+pub fn email_address(store: &db::Store, agent_id: &str) -> Option<String> {
+    let bot = auth::neboai_bot_address(store)?;
+    let primary = tools::team_tool::PRIMARY_AGENT_ID;
+    if agent_id.is_empty() || agent_id == primary {
+        return Some(format!("{bot} (this bot's own address; mail to it comes to you)"));
+    }
+    let name_of = |id: &str| store.get_agent(id).ok().flatten().map(|a| a.name.trim().to_string()).filter(|n| !n.is_empty());
+    let reaches = name_of(primary).unwrap_or_else(|| "the primary employee".to_string());
+    Some(match name_of(agent_id).and_then(|name| comm::handle::employee_email_address(&bot, &name)) {
+        Some(own) => format!("{own} (yours; the bot's address {bot} reaches {reaches})"),
+        None => format!("none of your own; the bot's address {bot} reaches {reaches}"),
+    })
 }
 
 /// The employee's own setup as it knows itself from its first step: its

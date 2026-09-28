@@ -548,7 +548,7 @@ pub async fn bot_email(
         .then(|| state.store.get_agent(&q.agent_id).ok().flatten())
         .flatten();
     let employee_address = employee
-        .and_then(|a| employee_address(&info.address, &a.name))
+        .and_then(|a| comm::handle::employee_email_address(&info.address, &a.name))
         .unwrap_or_default();
     Ok(Json(BotEmailResponse {
         address: info.address,
@@ -557,31 +557,6 @@ pub async fn bot_email(
         daily_limit: info.daily_limit,
         sent_today: info.sent_today,
     }))
-}
-
-/// The address that reaches one employee: the bot's address with the tag
-/// mail intake routes by (`comm::handle::slugify` of the name).
-fn employee_address(bot_address: &str, employee_name: &str) -> Option<String> {
-    let (local, domain) = bot_address.split_once('@')?;
-    let tag = comm::handle::slugify(employee_name);
-    (!local.is_empty() && !domain.is_empty() && !tag.is_empty())
-        .then(|| format!("{local}+{tag}@{domain}"))
-}
-
-#[cfg(test)]
-mod employee_address_tests {
-    use super::employee_address;
-
-    /// The tag is the one mail intake routes by; no address, no tag.
-    #[test]
-    fn an_employee_is_reached_at_the_bots_address_plus_its_tag() {
-        assert_eq!(
-            employee_address("nanna-7kq@nebo.bot", "Front Office Lead").as_deref(),
-            Some("nanna-7kq+front-office-lead@nebo.bot")
-        );
-        assert_eq!(employee_address("", "Nanna"), None);
-        assert_eq!(employee_address("nanna-7kq@nebo.bot", "  "), None);
-    }
 }
 
 // --- Janus AI usage ---

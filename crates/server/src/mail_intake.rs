@@ -716,7 +716,9 @@ impl comm::ChannelProvider for EmailChannel {
 
 /// Ask the hub for the bot's own address and put its sender in place as a
 /// provider of `mail_message_send` — or take it away when there is none
-/// (no pairing, or a hub without the address service).
+/// (no pairing, or a hub without the address service). The address is kept
+/// with the NeboAI account info, where every turn and call reads it
+/// (`auth::neboai_bot_address`) without asking the hub.
 pub(crate) async fn refresh_bot_address(state: &AppState) {
     let address = match crate::codes::build_api_client(state) {
         Ok(api) => match api.bot_email().await {
@@ -730,6 +732,7 @@ pub(crate) async fn refresh_bot_address(state: &AppState) {
         },
         Err(_) => None,
     };
+    auth::set_neboai_bot_address(&state.store, address.as_deref());
     let provider = address.map(|a| {
         Arc::new(tools::bot_mail::BotMailProvider::new(state.store.clone(), state.config.neboai.api_url.clone(), a))
             as Arc<dyn tools::operation_tools::OperationProvider>

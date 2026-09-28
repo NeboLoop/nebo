@@ -5750,6 +5750,7 @@ dependencies = [
  "hex",
  "libc",
  "nebo-ai",
+ "nebo-auth",
  "nebo-comm",
  "nebo-config",
  "nebo-db",
