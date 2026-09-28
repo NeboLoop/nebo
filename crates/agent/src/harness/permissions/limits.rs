@@ -122,6 +122,8 @@ const OUTSIDE_KEYS: &[&str] = &[
     "get_profile",
     "update_profile",
     "open_billing",
+    // Asking the owner to give an employee more room.
+    "request_permission",
     "consult_advisors",
     "list_advisors",
     "list_runs",

@@ -1557,6 +1557,78 @@ mod tests {
         assert!(r.store.permission_rules("scribe").unwrap().iter().all(|x| x.scope != Scope::Employee("scribe".into())));
     }
 
+    /// A "never" rule refuses shell in Full Access, and the refusal offers
+    /// the way back instead of "stop": the owner says yes, the employee
+    /// calls request_permission, which is the Widens ask on the owner's one
+    /// card; his answer (here, out loud) lifts the rule, and shell runs. A
+    /// No, or a rule a law fixed, leaves it off.
+    #[tokio::test]
+    async fn a_refused_permission_comes_back_on_the_owners_card() {
+        use types::permissions::{Effect, Rule, RuleKey, RuleSource, Scope, Writer};
+        let r = rig().await;
+        let shell_ran = Arc::new(AtomicUsize::new(0));
+        r.reg.register(Box::new(Probe { name: "run_command", capability: Some("shell"), ran: shell_ran.clone() })).await;
+        r.reg.register(Box::new(tools::permission_request_tool::RequestPermissionTool::new(r.store.clone()))).await;
+        r.store.set_permission_mode(&Scope::Company, Mode::FullAccess).unwrap();
+        let deny = |cap: &str, locked: bool| Rule {
+            id: uuid::Uuid::new_v4().to_string(),
+            scope: Scope::Company,
+            key: RuleKey::Capability(cap.into()),
+            field: None,
+            effect: Effect::Deny,
+            money: None,
+            source: if locked { RuleSource::Law { pack: "company".into() } } else { RuleSource::Owner },
+            locked,
+            created_at: 0,
+        };
+        r.store.write_permission_rule(&deny("shell", false), &Writer::Owner).unwrap();
+        let seat_in = |key: &str| {
+            let mut c = ctx(key, Door::Chat);
+            c.grant = Some(Arc::new(crate::harness::permissions::resolve_grant(&r.store, "emp", None)));
+            c
+        };
+        let seat = || seat_in(KEY);
+
+        let refused = r.reg.execute(&seat(), "run_command", json!({ "command": "shopify version" })).await;
+        assert!(refused.is_error && refused.parked_ask.is_none(), "{}", refused.content);
+        assert!(refused.content.contains("request_permission(permission: \"shell\")"), "{}", refused.content);
+        assert!(!refused.content.contains("then stop"), "{}", refused.content);
+        assert_eq!(shell_ran.load(Ordering::SeqCst), 0);
+
+        // Called without the owner's card, it only asks.
+        let request = json!({ "permission": "shell" });
+        let parked = r.reg.execute(&seat(), "request_permission", request.clone()).await;
+        let id = parked.parked_ask.clone().expect("the owner's card");
+        let ask = r.asks.get(&id).unwrap().unwrap();
+        assert_eq!(ask.case, AskCase::Widens);
+        assert!(!ask.allow_always_offered(&r.store), "answered each time");
+        assert!(ask.sentence.contains("Shell Commands"), "{}", ask.sentence);
+
+        // A No leaves it off.
+        r.answer(&id, Answer::No, AnsweredVia::Chat).await.unwrap();
+        assert!(r.reg.execute(&seat(), "run_command", json!({ "command": "ls" })).await.is_error);
+
+        // Later, in another conversation, a yes out loud: the rule is
+        // lifted and shell runs.
+        let again = r.reg.execute(&seat_in("agent:emp:web"), "request_permission", request).await;
+        let id = again.parked_ask.clone().expect("asked again");
+        r.answer(&id, Answer::ThisOnce, AnsweredVia::Voice).await.unwrap();
+        assert!(
+            r.store.all_permission_rules().unwrap().iter().all(|x| !(x.key == RuleKey::Capability("shell".into()) && x.effect == Effect::Deny)),
+            "the never is gone"
+        );
+        assert!(r.store.permission_rules_in(&Scope::Employee("emp".into())).unwrap().iter().any(|x| x.key == RuleKey::Capability("shell".into()) && x.effect == Effect::Allow));
+        let ran = r.reg.execute(&seat(), "run_command", json!({ "command": "shopify version" })).await;
+        assert!(!ran.is_error, "{}", ran.content);
+        assert_eq!(shell_ran.load(Ordering::SeqCst), 1);
+
+        // A law's never is not lifted by a card.
+        r.store.write_permission_rule(&deny("media", true), &Writer::Package { package: "company".into() }).unwrap();
+        let fixed = r.reg.execute(&seat(), "request_permission", json!({ "permission": "media" })).await;
+        r.answer(fixed.parked_ask.as_deref().expect("asked"), Answer::ThisOnce, AnsweredVia::Mobile).await.unwrap();
+        assert!(r.store.all_permission_rules().unwrap().iter().any(|x| x.key == RuleKey::Capability("media".into()) && x.effect == Effect::Deny));
+    }
+
     /// Giving an employee more room is answered each time: no "Allow
     /// always", and an answer the card didn't offer counts as "This once".
     #[tokio::test]

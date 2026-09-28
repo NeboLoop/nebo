@@ -218,6 +218,22 @@ impl Store {
         Ok(rules)
     }
 
+    /// Every rule, at every scope.
+    pub fn all_permission_rules(&self) -> Result<Vec<Rule>, NeboError> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(&format!("SELECT {RULE_COLUMNS} FROM permission_rules ORDER BY created_at, id"))
+            .map_err(db_err)?;
+        let rows = stmt.query_map([], row_to_rule).map_err(db_err)?;
+        let mut rules = Vec::new();
+        for r in rows {
+            if let Some(rule) = r.map_err(db_err)? {
+                rules.push(rule);
+            }
+        }
+        Ok(rules)
+    }
+
     pub fn get_permission_rule(&self, id: &str) -> Result<Option<Rule>, NeboError> {
         let conn = self.conn()?;
         conn.query_row(

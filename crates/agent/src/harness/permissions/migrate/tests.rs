@@ -63,20 +63,25 @@ fn toggles_become_capability_rules() {
     employee(&conn, "other", "permissions", r#"{"web": false}"#);
     migrate_legacy(&store).unwrap().expect("ran");
     let cap = |c: &str| RuleKey::Capability(c.into());
-    // Off company-wide and nobody turned it back on: a company deny.
-    assert_eq!(effect_of(&store, Scope::Company, cap("media"), None), Some(Effect::Deny));
-    // Off company-wide but one employee turned it on: a company deny would
-    // bind that employee too, so the "off" stays with each employee that
-    // didn't turn it on.
+    // An "off" was never a refusal (the old gate asked, Full Access ran
+    // it): no rule, the capability stays out of the job, and the mode
+    // decides.
+    assert_eq!(effect_of(&store, Scope::Company, cap("media"), None), None);
     assert_eq!(effect_of(&store, Scope::Company, cap("shell"), None), None);
-    assert_eq!(effect_of(&store, Scope::Employee("other".into()), cap("shell"), None), Some(Effect::Deny));
+    assert_eq!(effect_of(&store, Scope::Employee("other".into()), cap("shell"), None), None);
     assert_eq!(effect_of(&store, Scope::Company, cap("web"), None), Some(Effect::Allow));
     // A capability the toggles never named was on.
     assert_eq!(effect_of(&store, Scope::Company, cap("file"), None), Some(Effect::Allow));
     assert_eq!(effect_of(&store, Scope::Company, cap("chat"), None), None, "chat is no tool capability");
     let emp = Scope::Employee("emp".into());
     assert_eq!(effect_of(&store, emp.clone(), cap("shell"), None), Some(Effect::Allow));
-    assert_eq!(effect_of(&store, emp, cap("desktop"), None), Some(Effect::Deny));
+    // An employee's own "off" asked for that employee.
+    assert_eq!(effect_of(&store, emp, cap("desktop"), None), Some(Effect::Ask));
+    assert_eq!(effect_of(&store, Scope::Employee("other".into()), cap("web"), None), Some(Effect::Ask));
+    assert!(
+        store.all_permission_rules().unwrap().iter().all(|r| r.effect != Effect::Deny),
+        "no switch became a refusal"
+    );
     // It runs once.
     assert!(migrate_legacy(&store).unwrap().is_none());
 }
@@ -127,8 +132,10 @@ fn fence_becomes_folder_rules() {
         .collect();
     folders.sort();
     assert_eq!(folders, vec![std::path::PathBuf::from("/work/a"), "/work/b".into()]);
-    // The fence never granted file work: with File off it stays off above the folders.
-    assert_eq!(effect_of(&store, emp, RuleKey::Capability("file".into()), None), Some(Effect::Deny));
+    // The fence never granted file work: with File off, the switch decides
+    // it as it did (asked), and no refusal sits above the folders.
+    assert_eq!(effect_of(&store, emp, RuleKey::Capability("file".into()), None), None);
+    assert_eq!(effect_of(&store, Scope::Company, RuleKey::Capability("file".into()), None), None);
 }
 
 #[test]
@@ -277,12 +284,11 @@ fn migrated_decisions_equal_todays() {
     use tools::Origin::{Comm, User, Workflow};
     // (seat, origin, call, what the old gates did unattended or in chat)
     let table: &[(&str, tools::Origin, Target, &str)] = &[
-        // Shell off company-wide: refused (unattended, the old registry
-        // block) for every employee that left it off; the employee who has
-        // it on runs it. A company deny would bind that employee too, so
-        // the company leaves shell out of the job: the main seat, which has
-        // no employee rules, is asked instead of refused.
-        ("ap", Workflow, target("run_command", Some("shell"), None), "refuse"),
+        // Shell off company-wide: the old gate asked the owner for it, so
+        // shell is out of the job and asked for every employee that left it
+        // off; the employee who has it on runs it.
+        ("ap", Workflow, target("run_command", Some("shell"), None), "ask"),
+        ("ap", User, target("run_command", Some("shell"), None), "ask"),
         ("dev", Workflow, target("run_command", Some("shell"), None), "run"),
         ("", Workflow, target("run_command", Some("shell"), None), "ask"),
         // Web on: runs.
@@ -336,7 +342,8 @@ fn bound_interfaces_become_the_job() {
         "only the catalog's terms are capabilities"
     );
     assert_eq!(effect_of(&store, Scope::Employee("other".into()), ledger.clone(), None), None);
-    assert_eq!(effect_of(&store, Scope::Employee("off".into()), ledger, None), Some(Effect::Deny));
+    // The employee's own "off" asked for it, and still does.
+    assert_eq!(effect_of(&store, Scope::Employee("off".into()), ledger, None), Some(Effect::Ask));
 
     let t = Target {
         tool: "ledger_invoice_update".into(),
@@ -357,7 +364,116 @@ fn bound_interfaces_become_the_job() {
     };
     assert!(matches!(decide_for("clerk"), Decision::Allow { .. }), "{:?}", decide_for("clerk"));
     assert!(matches!(decide_for("other"), Decision::Ask { .. }), "{:?}", decide_for("other"));
-    assert!(matches!(decide_for("off"), Decision::Deny { .. }), "{:?}", decide_for("off"));
+    assert!(matches!(decide_for("off"), Decision::Ask { .. }), "{:?}", decide_for("off"));
+}
+
+/// The owner's Full Access runs shell whatever an old switch said: the
+/// switch is written as no rule at all, so the one model — the mode —
+/// decides.
+#[test]
+fn full_access_runs_what_an_old_switch_had_off() {
+    let (_d, store, conn) = legacy();
+    profile(&store, &conn, r#"{"shell": false, "desktop": false}"#, "[]");
+    employee(&conn, "ops", "permissions", r#"{"shell": false}"#);
+    conn.execute("INSERT OR IGNORE INTO settings (id) VALUES (1)", []).unwrap();
+    conn.execute("UPDATE settings SET full_access = 1 WHERE id = 1", []).unwrap();
+    migrate_legacy(&store).unwrap().expect("ran");
+    assert!(store.all_permission_rules().unwrap().iter().all(|r| r.key != RuleKey::Capability("shell".into())));
+    assert!(matches!(shell_decision(&store, "ops"), Decision::Allow { .. }), "{:?}", shell_decision(&store, "ops"));
+}
+
+/// An install an earlier build converted holds the old switches as
+/// refusals ("The \"Shell Commands\" permission is off for this employee"
+/// in Full Access). The repair takes them back once; a refusal the owner
+/// wrote himself stands.
+#[test]
+fn repair_takes_back_the_switch_refusals() {
+    let (_d, store, _conn) = legacy();
+    // The install converted with the earlier build.
+    store.record_upgrade_conversion(MIGRATION, "{}").unwrap();
+    store.set_permission_mode(&Scope::Company, Mode::FullAccess).unwrap();
+    let rule = |scope: Scope, cap: &str, effect: Effect, source: RuleSource| types::permissions::Rule {
+        id: uuid::Uuid::new_v4().to_string(),
+        scope,
+        key: RuleKey::Capability(cap.into()),
+        field: None,
+        effect,
+        money: None,
+        source,
+        locked: false,
+        created_at: 0,
+    };
+    let migrated = |from: &str| RuleSource::Migrated { from: from.into() };
+    let put = |r: types::permissions::Rule, by: types::permissions::Writer| store.write_permission_rule(&r, &by).unwrap();
+    use types::permissions::Writer;
+    // What the earlier conversion wrote from the owner's switches.
+    put(rule(Scope::Company, "shell", Effect::Deny, migrated("user_profiles.tool_permissions")), Writer::Migration);
+    put(rule(Scope::Company, "file", Effect::Allow, migrated("user_profiles.tool_permissions")), Writer::Migration);
+    put(rule(Scope::Employee("ops".into()), "media", Effect::Deny, migrated("entity_config.permissions")), Writer::Migration);
+    // An owner's own refusal, and a law's.
+    put(rule(Scope::Employee("ops".into()), "contacts", Effect::Deny, RuleSource::Owner), Writer::Owner);
+    put(rule(Scope::Employee("ops".into()), "desktop", Effect::Deny, migrated("entity_config.operation_policy")), Writer::Migration);
+    // The refusal the owner saw: shell, in Full Access.
+    assert!(matches!(shell_decision(&store, "ops"), Decision::Deny { .. }));
+
+    migrate_legacy(&store).unwrap();
+    assert!(matches!(shell_decision(&store, "ops"), Decision::Allow { .. }), "{:?}", shell_decision(&store, "ops"));
+    let cap = |c: &str| RuleKey::Capability(c.into());
+    assert_eq!(effect_of(&store, Scope::Company, cap("shell"), None), None);
+    assert_eq!(effect_of(&store, Scope::Company, cap("file"), None), Some(Effect::Allow), "an allow stays");
+    assert_eq!(effect_of(&store, Scope::Employee("ops".into()), cap("media"), None), None);
+    assert_eq!(effect_of(&store, Scope::Employee("ops".into()), cap("contacts"), None), Some(Effect::Deny), "the owner's own stands");
+    assert_eq!(effect_of(&store, Scope::Employee("ops".into()), cap("desktop"), None), Some(Effect::Deny), "not a switch");
+
+    // Once: a refusal written after the repair is not touched.
+    put(rule(Scope::Company, "shell", Effect::Deny, migrated("user_profiles.tool_permissions")), Writer::Migration);
+    migrate_legacy(&store).unwrap();
+    assert_eq!(effect_of(&store, Scope::Company, cap("shell"), None), Some(Effect::Deny));
+}
+
+/// Outside Full Access, an employee's own "off" is repaired to what it
+/// meant for that employee: ask.
+#[test]
+fn repair_keeps_an_employees_own_off_as_an_ask() {
+    let (_d, store, _conn) = legacy();
+    store.record_upgrade_conversion(MIGRATION, "{}").unwrap();
+    store.set_permission_mode(&Scope::Company, Mode::Automatic).unwrap();
+    use types::permissions::Writer;
+    let rule = |scope: Scope, effect: Effect, from: &str| types::permissions::Rule {
+        id: uuid::Uuid::new_v4().to_string(),
+        scope,
+        key: RuleKey::Capability("shell".into()),
+        field: None,
+        effect,
+        money: None,
+        source: RuleSource::Migrated { from: from.into() },
+        locked: false,
+        created_at: 0,
+    };
+    store.write_permission_rule(&rule(Scope::Company, Effect::Allow, "user_profiles.tool_permissions"), &Writer::Migration).unwrap();
+    store.write_permission_rule(&rule(Scope::Employee("ops".into()), Effect::Deny, "entity_config.permissions"), &Writer::Migration).unwrap();
+    migrate_legacy(&store).unwrap();
+    assert_eq!(effect_of(&store, Scope::Employee("ops".into()), RuleKey::Capability("shell".into()), None), Some(Effect::Ask));
+    assert!(matches!(shell_decision(&store, "ops"), Decision::Ask { .. }));
+}
+
+/// A workflow's shell call for `agent`, decided by the one check.
+fn shell_decision(store: &Arc<db::Store>, agent: &str) -> Decision {
+    let t = Target {
+        tool: "system".into(),
+        key: "run_command".into(),
+        operation: None,
+        capability: Some("shell".into()),
+        field: None,
+        subject: None,
+        read_only: false,
+        effects: types::permissions::CallEffects::unknown(),
+    };
+    let grant = crate::harness::permissions::resolve_grant(store, agent, None);
+    let ctx = tools::ToolContext { origin: tools::Origin::Workflow, ..Default::default() };
+    let input = json!({ "command": "shopify version" });
+    let cx = crate::harness::permissions::CheckCx { ctx: &ctx, input: &input, grant: &grant, store };
+    crate::harness::permissions::decide(&cx, &t)
 }
 
 /// Nothing outside the conversion reads the old permission shapes: the
