@@ -284,8 +284,44 @@ space.";
 pub const ADMIN_RIGHTS: &str = "none: sudo and su are always refused, so a change that needs admin rights is the \
 owner's to make. Tell them what to run instead of trying another way.";
 
+/// A cloud bot's admin rights: its package installer, as a command of its
+/// own, and nothing else (`tools::system_packages`, the image's sudoers).
+pub const CLOUD_ADMIN_RIGHTS: &str = "the package installer only: install a system package with `sudo apt-get update \
+&& sudo apt-get install -y <package>`, as a command of its own. Every other use of sudo, and su, is refused.";
+
+/// Where software comes from on this computer, told beside the admin
+/// rights. A cloud bot installs system packages itself and keeps them
+/// (`tools::system_packages`: `installed` so far, and where putting them
+/// back after a restart stands); the owner's own computer uses the
+/// installers that need no admin rights.
+pub fn installing_software(cloud: bool, os: &str, installed: &[String], restore: &tools::system_packages::Restore) -> String {
+    if !cloud {
+        return match os {
+            "macos" => "Homebrew (brew install) or a user-level installer (pip install --user, npm install -g).",
+            "windows" => "winget or a user-level installer (pip install --user, npm install -g).",
+            _ => "a user-level installer (pip install --user, npm install -g, cargo install).",
+        }
+        .to_string();
+    }
+    let mut text = "system packages with the installer above, and they are put back after every restart. User-level \
+installs (npm install -g, pip install --user, cargo install, go install) are kept too."
+        .to_string();
+    if !installed.is_empty() {
+        text.push_str(&format!(" Installed so far: {}.", installed.join(", ")));
+    }
+    if restore.running {
+        text.push_str(" They are being put back after a restart now, so one may be missing for a minute.");
+    } else if !restore.failed.is_empty() {
+        text.push_str(&format!(
+            " These could not be put back after the last restart: {}. Install them again if the work needs them.",
+            restore.failed.join(", ")
+        ));
+    }
+    text
+}
+
 /// The environment's fields after the date, in the order they are told:
-/// the platform, the shell, admin rights, the desktop a server bot lacks, the working
+/// the platform, the shell, admin rights, where software comes from, the desktop a server bot lacks, the working
 /// folder when there is one, the channel, who is watching, the employee's
 /// email address when the bot has one (`inputs::email_address`), and the
 /// bot's Location when the owner set one (`inputs::office_location`).
@@ -301,10 +337,20 @@ pub fn environment_fields(
         Watching::Unattended => "no one is watching this run; your final message is what gets read",
         Watching::Call => "this is a live call: every word you say is heard as you say it",
     };
+    let cloud = tools::cloud_bot();
+    let (installed, restore) = if cloud {
+        (tools::system_packages::installed(), tools::system_packages::restore())
+    } else {
+        (Vec::new(), Default::default())
+    };
     let mut fields = vec![
         ("Platform".to_string(), platform()),
         ("Shell".to_string(), shell()),
-        ("Admin rights".to_string(), ADMIN_RIGHTS.to_string()),
+        ("Admin rights".to_string(), if cloud { CLOUD_ADMIN_RIGHTS } else { ADMIN_RIGHTS }.to_string()),
+        (
+            "Installing software".to_string(),
+            installing_software(cloud, std::env::consts::OS, &installed, &restore),
+        ),
     ];
     if tools::server_mode() {
         fields.push(("Desktop".to_string(), SERVER_DESKTOP.to_string()));

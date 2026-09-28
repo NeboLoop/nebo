@@ -1491,7 +1491,11 @@
 		"operational": "정상",
 		"down": "중단",
 		"degraded": "저하",
-		"system": "시스템"
+		"system": "시스템",
+		"systemPackages": "시스템 패키지",
+		"systemPackagesNone": "설치된 항목 없음",
+		"systemPackagesInstalling": "설치 중…",
+		"systemPackagesFailed": "설치할 수 없음: {names}"
 	},
 	"settingsUsage": {
 		"title": "사용량",

@@ -1491,7 +1491,11 @@
 		"operational": "Operacional",
 		"down": "Indisponível",
 		"degraded": "Degradado",
-		"system": "Sistema"
+		"system": "Sistema",
+		"systemPackages": "Pacotes do sistema",
+		"systemPackagesNone": "Nenhum instalado",
+		"systemPackagesInstalling": "A instalar…",
+		"systemPackagesFailed": "Não foi possível instalar: {names}"
 	},
 	"settingsUsage": {
 		"title": "Utilização",

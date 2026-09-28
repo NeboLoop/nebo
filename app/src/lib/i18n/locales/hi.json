@@ -1491,7 +1491,11 @@
 		"operational": "चालू",
 		"down": "बंद",
 		"degraded": "प्रभावित",
-		"system": "सिस्टम"
+		"system": "सिस्टम",
+		"systemPackages": "सिस्टम पैकेज",
+		"systemPackagesNone": "कोई इंस्टॉल नहीं",
+		"systemPackagesInstalling": "इंस्टॉल हो रहा है…",
+		"systemPackagesFailed": "इंस्टॉल नहीं हो सका: {names}"
 	},
 	"settingsUsage": {
 		"title": "उपयोग",

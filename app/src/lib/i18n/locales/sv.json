@@ -1491,7 +1491,11 @@
 		"operational": "Fungerar",
 		"down": "Nere",
 		"degraded": "Nedsatt",
-		"system": "System"
+		"system": "System",
+		"systemPackages": "Systempaket",
+		"systemPackagesNone": "Inga installerade",
+		"systemPackagesInstalling": "Installerar…",
+		"systemPackagesFailed": "Kunde inte installera: {names}"
 	},
 	"settingsUsage": {
 		"title": "Användning",

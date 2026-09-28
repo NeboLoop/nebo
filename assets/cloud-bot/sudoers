@@ -1,0 +1,15 @@
+# The cloud bot's one admin right: the package installer, and nothing else.
+# Installed as /etc/sudoers.d/nebo-packages by the Dockerfile. Nebo reads the
+# same two rules (tools::system_packages), so the command it lets through is
+# exactly the command sudo runs.
+#
+# - `apt-get update`, with no arguments at all.
+# - `apt-get install` of package names from the image's configured Debian
+#   repositories, with -y, --yes, -q or --no-install-recommends. No -o/-c
+#   (an APT option or config file runs any program as root), no path (a
+#   local .deb carries scripts of its own), no trailing `-` (that removes a
+#   package). A package's own maintainer scripts run as they would anywhere.
+#
+# sudo resets the environment (env_reset is Debian's default), so APT_CONFIG
+# and friends never reach apt-get.
+nebo ALL=(root) NOPASSWD: /usr/bin/apt-get ^update$, /usr/bin/apt-get ^install( (-y|--yes|-q|--no-install-recommends|[a-z0-9][a-z0-9+.-]*[a-z0-9+]))+$

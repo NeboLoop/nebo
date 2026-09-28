@@ -1788,6 +1788,7 @@ export interface GetSystemInfoResponse {
 	os: unknown
 	arch: unknown
 	version: string
+	systemPackages: unknown
 }
 
 export interface GetTeamMessagesResponse {

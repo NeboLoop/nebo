@@ -30,7 +30,7 @@ const READ_KEYS: &[&str] = &["read_file", "share_file", "list_checkpoints", "che
 /// This check is unconditional — cannot be bypassed by any setting.
 pub fn check_safeguard(rule_key: &str, input: &serde_json::Value, ctx: &crate::origin::ToolContext) -> Option<String> {
     let fence = NeboFiles::of(ctx);
-    let run = Run { fence: fence.as_ref(), cwd: ctx.cwd.as_deref().map(Path::new) };
+    let run = Run { fence: fence.as_ref(), cwd: ctx.cwd.as_deref().map(Path::new), cloud: crate::cloud_bot() };
     match rule_key {
         "run_command" => check_shell_safeguard(input, &run),
         // Text typed into a running command may be typed into a shell (a
@@ -50,6 +50,9 @@ struct Run<'a> {
     fence: Option<&'a NeboFiles>,
     /// The folder the run's relative paths are taken from.
     cwd: Option<&'a Path>,
+    /// This is a cloud bot (`crate::cloud_bot`): its package installer
+    /// runs as root (`system_packages`).
+    cloud: bool,
 }
 
 impl Run<'_> {
@@ -307,6 +310,13 @@ fn check_shell_safeguard(input: &serde_json::Value, run: &Run<'_>) -> Option<Str
 
     let cmd = command.trim();
 
+    // A cloud bot's package installer, as a command of its own, is the one
+    // command that runs through sudo (`system_packages`). Its grammar
+    // leaves nothing else in the command to check.
+    if run.cloud && crate::system_packages::installer(cmd).is_some() {
+        return None;
+    }
+
     // Scan the command string itself.
     if let Some(reason) = scan_command_text(cmd, run) {
         return Some(reason);
@@ -340,6 +350,9 @@ fn scan_command_text(text: &str, run: &Run<'_>) -> Option<String> {
         return Some(nebo_file_refusal(&path, fence));
     }
     let lower = text.to_lowercase();
+    if has_sudo(&lower) && run.cloud {
+        return Some(crate::system_packages::CLOUD_SUDO_REFUSAL.to_string());
+    }
     if has_sudo(&lower) {
         return Some(
             "BLOCKED: sudo is not permitted. \
@@ -703,6 +716,34 @@ mod tests {
         assert!(!has_sudo("sudoku"));
     }
 
+    /// On a cloud bot the package installer, alone, runs through sudo;
+    /// every other sudo is refused with the one wording that names it.
+    /// Off a cloud bot every sudo is refused, the installer included.
+    #[test]
+    fn sudo_is_the_installer_alone_on_a_cloud_bot() {
+        let cloud = Run { fence: None, cwd: None, cloud: true };
+        let check = |command: &str, run: &Run<'_>| check_shell_safeguard(&serde_json::json!({ "command": command }), run);
+        for allowed in ["sudo apt-get install -y jq", "sudo apt-get update && sudo apt-get install -y imagemagick"] {
+            assert_eq!(check(allowed, &cloud), None, "{allowed}");
+            let off = check(allowed, &bare()).expect("refused off a cloud bot");
+            assert!(off.starts_with("BLOCKED: sudo is not permitted"), "{off}");
+        }
+        for refused in [
+            "sudo rm -rf /tmp/x",
+            "sudo bash",
+            "sudo apt-get -o APT::Update::Pre-Invoke::=/bin/sh update",
+            "sudo apt-get install -o APT::Update::Pre-Invoke::=/bin/sh jq",
+            "sudo apt-get install -y jq && sudo rm -rf /etc",
+            "ls && sudo tee /etc/hosts",
+        ] {
+            assert_eq!(check(refused, &cloud).as_deref(), Some(crate::system_packages::CLOUD_SUDO_REFUSAL), "{refused}");
+            assert!(check(refused, &bare()).is_some(), "{refused}");
+        }
+        // Typed into a running shell, sudo stays refused: the installer
+        // runs as a command of its own.
+        assert!(scan_command_text("sudo apt-get install -y jq", &cloud).is_some());
+    }
+
     #[test]
     fn test_root_wipe_detection() {
         assert!(is_root_wipe("rm -rf /"));
@@ -712,7 +753,7 @@ mod tests {
 
     /// A run with no fence: the limits that hold whatever the folder.
     fn bare() -> Run<'static> {
-        Run { fence: None, cwd: None }
+        Run { fence: None, cwd: None, cloud: false }
     }
 
     /// Nebo's own files are closed to every file action and every command
@@ -723,7 +764,7 @@ mod tests {
         let root = dir.path().join("nebo-home");
         std::fs::create_dir_all(root.join("files")).unwrap();
         let fence = NeboFiles::at(&root, &[], &root.join("sessions/s1"), false);
-        let run = Run { fence: Some(&fence), cwd: None };
+        let run = Run { fence: Some(&fence), cwd: None, cloud: false };
         let at = |rel: &str| root.join(rel).to_string_lossy().into_owned();
 
         for key in ["read_file", "write_file", "edit_file", "share_file", "convert_file"] {
@@ -764,7 +805,7 @@ mod tests {
         std::fs::write(skill.join("SKILL.md"), "---\nname: ledger-bills\n---\n").unwrap();
         let other = dir.path().join("platform-nebo");
         let fence = NeboFiles::at(&root, &[other.clone()], &root.join("sessions/s1"), false);
-        let run = Run { fence: Some(&fence), cwd: None };
+        let run = Run { fence: Some(&fence), cwd: None, cloud: false };
         let guide = skill.join("SKILL.md").to_string_lossy().into_owned();
 
         for key in ["read_file", "share_file"] {

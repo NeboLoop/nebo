@@ -1491,7 +1491,11 @@
 		"operational": "正常運作",
 		"down": "停止服務",
 		"degraded": "降級",
-		"system": "系統"
+		"system": "系統",
+		"systemPackages": "系統套件",
+		"systemPackagesNone": "尚未安裝",
+		"systemPackagesInstalling": "正在安裝…",
+		"systemPackagesFailed": "無法安裝：{names}"
 	},
 	"settingsUsage": {
 		"title": "用量",

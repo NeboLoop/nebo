@@ -1491,7 +1491,11 @@
 		"operational": "正常稼働",
 		"down": "停止",
 		"degraded": "機能低下",
-		"system": "システム"
+		"system": "システム",
+		"systemPackages": "システムパッケージ",
+		"systemPackagesNone": "インストールなし",
+		"systemPackagesInstalling": "インストール中…",
+		"systemPackagesFailed": "インストールできませんでした: {names}"
 	},
 	"settingsUsage": {
 		"title": "使用量",

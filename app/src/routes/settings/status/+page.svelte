@@ -7,14 +7,18 @@
   import AlertTriangle from 'lucide-svelte/icons/alert-triangle';
 
   let services = $state<{ name: string; status: 'operational' | 'degraded' | 'down'; latency: string; reason?: string }[]>([]);
+  // A cloud bot's: the system packages its employees installed.
+  let systemPackages = $state<{ installed: string[]; restoring: boolean; failed: string[] } | null>(null);
 
   onMount(async () => {
     try {
       const api = await import('$lib/api/nebo');
-      const [statusResp, lanesResp] = await Promise.all([
+      const [statusResp, lanesResp, systemResp] = await Promise.all([
         api.getStatus().catch(() => null),
         api.getLanes().catch(() => null),
+        api.getSystemInfo().catch(() => null),
       ]);
+      systemPackages = (systemResp?.systemPackages ?? null) as typeof systemPackages;
 
       const svcList: typeof services = [];
 
@@ -110,4 +114,17 @@
     <span class="font-semibold">{$t('settingsStatus.system')}</span>
   </div>
   <p class="text-xs text-base-content/50">{$t('settingsStatus.servicesMonitored', { values: { count: services.length } })}</p>
+  {#if systemPackages}
+    <div class="mt-3">
+      <div class="text-xs font-semibold">{$t('settingsStatus.systemPackages')}</div>
+      <p class="text-xs text-base-content/50 font-mono">
+        {systemPackages.installed.length ? systemPackages.installed.join(', ') : $t('settingsStatus.systemPackagesNone')}
+      </p>
+      {#if systemPackages.restoring}
+        <p class="text-xs text-base-content/50">{$t('settingsStatus.systemPackagesInstalling')}</p>
+      {:else if systemPackages.failed.length}
+        <p class="text-xs text-warning">{$t('settingsStatus.systemPackagesFailed', { values: { names: systemPackages.failed.join(', ') } })}</p>
+      {/if}
+    </div>
+  {/if}
 </div>

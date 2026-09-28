@@ -1491,7 +1491,11 @@
 		"operational": "Çalışıyor",
 		"down": "Çalışmıyor",
 		"degraded": "Sorunlu",
-		"system": "Sistem"
+		"system": "Sistem",
+		"systemPackages": "Sistem paketleri",
+		"systemPackagesNone": "Yüklü paket yok",
+		"systemPackagesInstalling": "Yükleniyor…",
+		"systemPackagesFailed": "Yüklenemedi: {names}"
 	},
 	"settingsUsage": {
 		"title": "Kullanım",

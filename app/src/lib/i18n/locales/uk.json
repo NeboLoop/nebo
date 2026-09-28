@@ -1491,7 +1491,11 @@
 		"operational": "Працює",
 		"down": "Не працює",
 		"degraded": "Деградовано",
-		"system": "Система"
+		"system": "Система",
+		"systemPackages": "Системні пакети",
+		"systemPackagesNone": "Нічого не встановлено",
+		"systemPackagesInstalling": "Встановлення…",
+		"systemPackagesFailed": "Не вдалося встановити: {names}"
 	},
 	"settingsUsage": {
 		"title": "Використання",

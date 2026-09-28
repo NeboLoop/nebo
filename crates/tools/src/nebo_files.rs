@@ -49,6 +49,10 @@ const OPEN: &[&str] = &[
     "nebo/agents",
     "user/agents",
     "appdata/agents",
+    // A cloud bot's user-level installs (`npm install -g`, `pip install
+    // --user`, `cargo install`, `go install`): the image points them here
+    // so they persist with the bot's state.
+    "toolchains",
 ];
 
 /// Where the installed plugins' packages live, relative to Nebo's folder.

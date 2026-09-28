@@ -270,6 +270,31 @@ mod tests {
         }
     }
 
+    /// Where software comes from: the owner's computer names the installers
+    /// that need no admin rights; a cloud bot names its package installer
+    /// in the form the safeguard lets through, what it installed, and a
+    /// reinstall that is running or failed.
+    #[test]
+    fn the_environment_says_where_software_comes_from() {
+        use tools::system_packages::Restore;
+        let none = Restore::default();
+        assert!(sections::installing_software(false, "macos", &[], &none).starts_with("Homebrew"));
+        assert!(sections::installing_software(false, "windows", &[], &none).starts_with("winget"));
+        assert!(sections::installing_software(false, "linux", &[], &none).starts_with("a user-level installer"));
+
+        let command = "sudo apt-get update && sudo apt-get install -y imagemagick";
+        assert!(sections::CLOUD_ADMIN_RIGHTS.contains("`sudo apt-get update && sudo apt-get install -y <package>`"));
+        assert_eq!(tools::system_packages::installer(command), Some(vec!["imagemagick".to_string()]));
+
+        let jq = vec!["jq".to_string(), "imagemagick".to_string()];
+        let told = sections::installing_software(true, "linux", &jq, &none);
+        assert!(told.contains("put back after every restart") && told.contains("Installed so far: jq, imagemagick."), "{told}");
+        let running = Restore { running: true, failed: vec![] };
+        assert!(sections::installing_software(true, "linux", &jq, &running).contains("being put back"));
+        let failed = Restore { running: false, failed: vec!["jq".to_string()] };
+        assert!(sections::installing_software(true, "linux", &jq, &failed).contains("could not be put back after the last restart: jq."));
+    }
+
     /// Nebo's own machinery is not the work, and signing in is the owner's.
     #[test]
     fn nebo_itself_is_not_the_work() {

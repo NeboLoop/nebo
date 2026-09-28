@@ -1491,7 +1491,11 @@
 		"operational": "正常",
 		"down": "宕机",
 		"degraded": "降级",
-		"system": "系统"
+		"system": "系统",
+		"systemPackages": "系统软件包",
+		"systemPackagesNone": "尚未安装",
+		"systemPackagesInstalling": "正在安装…",
+		"systemPackagesFailed": "无法安装：{names}"
 	},
 	"settingsUsage": {
 		"title": "用量",

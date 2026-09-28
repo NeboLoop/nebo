@@ -2828,6 +2828,11 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
         });
     }
 
+    // A cloud bot's system folders are rebuilt on every restart: put back
+    // the packages its employees installed, in the background, so the boot
+    // never waits on the package mirrors (`tools::system_packages`).
+    tokio::spawn(tools::system_packages::reinstall());
+
     // Spawn background update checker (skip in debug/dev builds)
     if cfg!(debug_assertions) {
         tracing::debug!("skipping background update checker in dev build");

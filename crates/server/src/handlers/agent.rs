@@ -320,11 +320,24 @@ pub async fn get_status(State(state): State<AppState>) -> HandlerResult<serde_js
 }
 
 /// GET /api/v1/agent/system-info
+///
+/// `systemPackages` is a cloud bot's: the packages its employees installed
+/// and where putting them back after the last restart stands
+/// (`tools::system_packages`). Null elsewhere.
 pub async fn get_system_info() -> HandlerResult<serde_json::Value> {
+    let system_packages = tools::cloud_bot().then(|| {
+        let restore = tools::system_packages::restore();
+        serde_json::json!({
+            "installed": tools::system_packages::installed(),
+            "restoring": restore.running,
+            "failed": restore.failed,
+        })
+    });
     Ok(Json(serde_json::json!({
         "os": std::env::consts::OS,
         "arch": std::env::consts::ARCH,
         "version": env!("CARGO_PKG_VERSION"),
+        "systemPackages": system_packages,
     })))
 }
 

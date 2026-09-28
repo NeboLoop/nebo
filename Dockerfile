@@ -50,9 +50,13 @@ FROM debian:bookworm-slim
 # Runtime .so set matches ldd of the binary — nothing speculative.
 #
 # Below the .so line: the agent's toolbox. A cloud pod is the employee's
-# computer, and sudo is (correctly) hard-blocked — so anything the agent
-# should be able to use must ship in the image. Standard dev/scripting
-# tools + media processing (ffmpeg pairs with audio/video attachments).
+# computer: the standard dev/scripting tools ship here (git, curl, Python 3
+# with pip and venv, build-essential, jq, unzip, …) + media processing
+# (ffmpeg pairs with audio/video attachments). Node is the current LTS from
+# the official image (below), not Debian's 18. Anything else the employee
+# installs itself: `sudo apt-get install` is the one command sudo runs
+# (assets/cloud-bot/sudoers), and Nebo puts those packages back after every
+# restart (crates/tools/src/system_packages.rs).
 #
 # The desktop rows (xvfb…fonts) are the bot's on-demand computer: a curated
 # xfce subset (NOT the xfce4 metapackage — no screensaver/power-manager),
@@ -68,8 +72,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       libwayland-client0 libxkbcommon0 \
       git openssh-client curl wget \
       python3 python3-pip python3-venv python3-dev \
-      nodejs npm \
       build-essential pkg-config \
+      sudo \
       jq unzip zip ripgrep less procps sqlite3 \
       ffmpeg \
       xvfb x11vnc xdotool wmctrl scrot xclip x11-utils x11-xserver-utils xinput dbus-x11 at-spi2-core \
@@ -79,8 +83,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       fonts-dejavu fonts-liberation fonts-noto-color-emoji \
       zsh \
     && rm -rf /var/lib/apt/lists/* \
+    && echo 'debconf debconf/frontend select Noninteractive' | debconf-set-selections \
     && git clone --depth=1 https://github.com/ohmyzsh/ohmyzsh.git /usr/share/oh-my-zsh \
     && useradd -u 1000 -m -s /usr/bin/zsh nebo
+# Node LTS with npm, from the official image of the same Debian release.
+COPY --from=node:24-bookworm-slim /usr/local/bin/node /usr/local/bin/node
+COPY --from=node:24-bookworm-slim /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/npm
+RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
+    && ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
+# The installer, and nothing else, through sudo. visudo refuses a file sudo
+# would reject, so a broken rule fails the build, not the bot.
+COPY assets/cloud-bot/sudoers /etc/sudoers.d/nebo-packages
+RUN chmod 0440 /etc/sudoers.d/nebo-packages && visudo -cf /etc/sudoers.d/nebo-packages
 COPY --from=build /src/target/server/nebo-cli /usr/local/bin/nebo-cli
 # The computer's face: a 3-launcher dock (Chromium / Terminal / Files) instead
 # of xfce's placeholder gears, and the default ~/.zshrc oh-my-zsh seed. The
@@ -89,16 +103,24 @@ COPY --from=build /src/target/server/nebo-cli /usr/local/bin/nebo-cli
 COPY assets/cloud-desktop/xfce4-panel.xml /etc/xdg/xfce4/xfconf/xfce-perchannel-xml/xfce4-panel.xml
 COPY assets/cloud-desktop/xfce4-panel.xml /etc/nebo/desktop-skel/xfce4-panel.xml
 COPY assets/cloud-desktop/zshrc /etc/nebo/zshrc
-# $HOME lives on the persistent /data volume so toolchains the agent installs
-# (rustup, Go, nvm, pip --user) survive restarts and consent-update rolls —
-# an ephemeral homedir silently eats them, which reads as "my tools vanished".
-RUN printf '#!/bin/sh\nmkdir -p "$HOME"\n[ -f "$HOME/.zshrc" ] || cp /etc/nebo/zshrc "$HOME/.zshrc" 2>/dev/null || true\nexec nebo-cli serve "$@"\n' \
-      > /usr/local/bin/nebo-entry && chmod +x /usr/local/bin/nebo-entry
+# $HOME lives under /data. What the employee installs for itself lands in
+# /data/toolchains (the ENV below points npm -g, pip --user, cargo, rustup
+# and go there), which is part of the bot's state whether /data is its own
+# volume or scratch restored from the state commit: an ephemeral install
+# reads as "my tools vanished". nebo-entry moves toolchains an older image
+# left in $HOME into place, once (a bot on its own volume kept them there).
+COPY assets/cloud-bot/nebo-entry /usr/local/bin/nebo-entry
 USER 1000
-# pip installs land in ~/.local (PEP 668 would otherwise refuse outside a venv
-# — a disposable per-tenant container is exactly the case where that's noise).
+# pip installs land in the user base (PEP 668 would otherwise refuse outside a
+# venv — a disposable per-tenant container is exactly the case where that's
+# noise). The Go module cache is re-downloadable, so it stays scratch.
 ENV NEBO_HOST=0.0.0.0 NEBO_DATA_DIR=/data NEBO_SERVER_MODE=1 \
     HOME=/data/home/nebo \
-    PIP_BREAK_SYSTEM_PACKAGES=1 PATH="/data/home/nebo/.local/bin:${PATH}"
+    NPM_CONFIG_PREFIX=/data/toolchains/npm \
+    PYTHONUSERBASE=/data/toolchains/python \
+    CARGO_HOME=/data/toolchains/cargo RUSTUP_HOME=/data/toolchains/rustup \
+    GOPATH=/data/toolchains/go GOMODCACHE=/data/cache/go-mod \
+    PIP_BREAK_SYSTEM_PACKAGES=1 \
+    PATH="/data/toolchains/npm/bin:/data/toolchains/python/bin:/data/toolchains/cargo/bin:/data/toolchains/go/bin:/data/home/nebo/.local/bin:${PATH}"
 EXPOSE 27895
 ENTRYPOINT ["nebo-entry"]
