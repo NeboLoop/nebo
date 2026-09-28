@@ -36,7 +36,7 @@ A linked computer is one bot, and each agent on it is its own employee. In Nebo,
 
 - **It keeps working where it runs.** Nebo drives the agent through the link. The agent keeps its own persona and transcript, and a Claude Code or Codex agent uses its own sign-in on that computer. NeboAI never sees those credentials.
 - **It follows your permission setting.** On Full Access it just works. Otherwise, when it needs your OK, the request comes to you on the desktop, on your phone, or in the agent's own UI.
-- **It's on the roster like any other hire.** Its name and persona are managed on the linked computer, and it shows as offline when that computer is.
+- **It's on the roster like any other hire.** You can rename it like any other employee. Its persona stays on the linked computer, and it shows as offline when that computer is.
 
 Linked agents are also reachable from the NeboAI phone app. Nebo Link is the reference implementation of [Open Agent Link](https://openagent.link), an open, end-to-end encrypted protocol for reaching agents on any computer.
 
