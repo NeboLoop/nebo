@@ -80,12 +80,16 @@ impl Owner {
         let agent_id =
             Some(types::keyparser::extract_agent_id(&ctx.session_key)).filter(|s| !s.is_empty());
         let id = uuid::Uuid::new_v4().to_string();
+        // It opens the conversation it was sent from.
+        let link = agent_id
+            .as_deref()
+            .map(|a| crate::owner_notify::link::session_chat(&self.store, a, &ctx.session_key));
         let n = crate::owner_notify::OwnerNotification {
             id: &id,
             kind: if urgent { "warning" } else { "info" },
             title,
             body: Some(text),
-            action_url: None,
+            action_url: link.as_deref(),
             agent_id: agent_id.as_deref(),
             loud: urgent,
         };

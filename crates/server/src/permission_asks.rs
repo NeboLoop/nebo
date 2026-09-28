@@ -122,12 +122,8 @@ pub(crate) fn push_to_inbox(state: &AppState, c: &PermissionAskCard) {
         })
         .collect();
     // The conversation that asked: an answer by email (the hub mails the
-    // owner every new item) comes back into it.
-    let sessions = state.harness.sessions();
-    let chat_id = sessions
-        .resolve_session_id_by_key(&c.session_key)
-        .map(|sid| sessions.active_chat_id(&sid))
-        .unwrap_or_default();
+    // owner every new item) comes back into it, and a tap opens it.
+    let chat_id = chat_of(state, c);
     crate::codes::push_inbox(
         state,
         serde_json::json!({
@@ -135,12 +131,21 @@ pub(crate) fn push_to_inbox(state: &AppState, c: &PermissionAskCard) {
             "type": "permission_ask",
             "title": title(c),
             "body": body(c),
-            "link": format!("/{}", c.agent_id),
+            "link": tools::owner_notify::link::chat(&c.agent_id, &chat_id),
             "agentId": c.agent_id,
             "chatId": chat_id,
             "actions": { "buttons": buttons, "status": { "method": "GET", "path": path } },
         }),
     );
+}
+
+/// The conversation whose work waits on the ask: where its card sits.
+fn chat_of(state: &AppState, c: &PermissionAskCard) -> String {
+    let sessions = state.harness.sessions();
+    sessions
+        .resolve_session_id_by_key(&c.session_key)
+        .map(|sid| sessions.active_chat_id(&sid))
+        .unwrap_or_default()
 }
 
 /// The server's surfaces for asks. Holds the app state: the hub, the
@@ -155,6 +160,7 @@ impl AskSurfaces for OwnerSurfaces {
         let c = card(state, ask);
         let (title, body) = (title(&c), body(&c));
         let id = inbox_id(&c.id);
+        let link = tools::owner_notify::link::chat(&c.agent_id, &chat_of(state, &c));
         tools::owner_notify::emit(
             &state.store,
             Some(&|ev, payload| state.hub.broadcast(ev, payload)),
@@ -163,7 +169,7 @@ impl AskSurfaces for OwnerSurfaces {
                 kind: "permission_ask",
                 title: &title,
                 body: Some(&body),
-                action_url: None,
+                action_url: Some(&link),
                 agent_id: (!c.agent_id.is_empty()).then_some(c.agent_id.as_str()),
                 loud: true,
             },
@@ -181,6 +187,7 @@ impl AskSurfaces for OwnerSurfaces {
         if let Err(e) = state.store.resurface_notification(&id, &user_id) {
             warn!(ask = %c.id, error = %e, "ask's Inbox row not brought back");
         }
+        let link = tools::owner_notify::link::chat(&c.agent_id, &chat_of(state, &c));
         tools::owner_notify::emit(
             &state.store,
             Some(&|ev, payload| state.hub.broadcast(ev, payload)),
@@ -189,7 +196,7 @@ impl AskSurfaces for OwnerSurfaces {
                 kind: "permission_ask",
                 title: &title,
                 body: Some(&body),
-                action_url: None,
+                action_url: Some(&link),
                 agent_id: (!c.agent_id.is_empty()).then_some(c.agent_id.as_str()),
                 loud: true,
             },

@@ -77,6 +77,10 @@ impl SkillCore {
     /// Stage a learned-skill write for owner approval: pending_writes row +
     /// Inbox notification (`learn:<id>`) + live broadcast. The ONE staging
     /// pathway for every learned write when learning_mode = "staged".
+    ///
+    /// A proposal the employee already has open for the same skill
+    /// ([`same_proposal`]) is updated in place, not filed again: the owner
+    /// gets one item, carrying the newest text, back at the top of his Inbox.
     #[allow(clippy::too_many_arguments)]
     fn stage_learned_write(
         &self,
@@ -91,13 +95,36 @@ impl SkillCore {
         let Some(store) = self.store.as_ref() else {
             return ToolResult::error("Staging unavailable: the database is not initialized. Tell the user to restart Nebo.");
         };
-        let pending_id = uuid::Uuid::new_v4().to_string();
-        if let Err(e) = store.create_pending_write(
-            &pending_id, agent_id, "skill", action, target, content, gist, target_hash,
-            prior_content,
-        ) {
-            return ToolResult::error(format!("Failed to stage write: {}. Do not retry — this is a database error.", e));
-        }
+        let open = store
+            .open_pending_writes(agent_id, "skill", action)
+            .unwrap_or_default()
+            .into_iter()
+            .find(|p| same_proposal(action, &p.target, target));
+        let restaged = open.as_ref().is_some_and(|p| {
+            store
+                .restage_pending_write(&p.id, target, content, gist, target_hash, prior_content)
+                .unwrap_or(false)
+        });
+        let pending_id = match open.filter(|_| restaged) {
+            Some(p) => {
+                // The one item comes back with the newest words.
+                let user_id = store.ensure_local_user_id().unwrap_or_default();
+                if let Err(e) = store.delete_notification(&format!("learn:{}", p.id), &user_id) {
+                    tracing::warn!(error = %e, "learned write: the open proposal's Inbox row was not replaced");
+                }
+                p.id
+            }
+            None => {
+                let id = uuid::Uuid::new_v4().to_string();
+                if let Err(e) = store.create_pending_write(
+                    &id, agent_id, "skill", action, target, content, gist, target_hash,
+                    prior_content,
+                ) {
+                    return ToolResult::error(format!("Failed to stage write: {}. Do not retry — this is a database error.", e));
+                }
+                id
+            }
+        };
         let agent_name = store
             .get_agent(agent_id)
             .ok()
@@ -106,13 +133,14 @@ impl SkillCore {
             .unwrap_or_else(|| "An employee".to_string());
         let notif_id = format!("learn:{}", pending_id);
         let title = format!("{} wants to learn something new", agent_name);
+        let link = crate::owner_notify::link::inbox_item(&notif_id);
         let notify = self.notify_fn.read().ok().and_then(|g| g.clone());
         let n = crate::owner_notify::OwnerNotification {
             id: &notif_id,
             kind: "approval",
             title: &title,
             body: Some(gist),
-            action_url: Some("/inbox"),
+            action_url: Some(&link),
             agent_id: Some(agent_id),
             loud: false,
         };
@@ -120,8 +148,9 @@ impl SkillCore {
             Some(f) => crate::owner_notify::emit(store, Some(&|ev, payload| f(ev, payload)), &n),
             None => crate::owner_notify::emit(store, None, &n),
         }
+        let staged = if restaged { "The proposal already waiting on the owner now reads" } else { "Staged for the owner's approval" };
         ToolResult::ok(format!(
-            "Staged for the owner's approval: {}. NOTHING has been saved yet — the owner reviews this from their Inbox. Report it as 'staged for approval', never as 'saved'.",
+            "{staged}: {}. NOTHING has been saved yet — the owner reviews this from their Inbox. Report it as 'staged for approval', never as 'saved'.",
             gist
         ))
     }
@@ -163,13 +192,14 @@ impl SkillCore {
             .unwrap_or_else(|| "An employee".to_string());
         let notif_id = format!("learn:{}", pending_id);
         let title = format!("{} refined a skill", agent_name);
+        let link = crate::owner_notify::link::inbox_item(&notif_id);
         if let Err(e) = store.create_notification_if_not_exists(
             &notif_id,
             &user_id,
             "info",
             &title,
             Some(gist),
-            Some("/inbox"),
+            Some(&link),
             None,
             Some(agent_id),
         ) {
@@ -184,7 +214,7 @@ impl SkillCore {
                     "type": "info",
                     "title": title,
                     "body": gist,
-                    "actionUrl": "/inbox",
+                    "actionUrl": link,
                     "agentId": agent_id,
                     "readAt": null,
                 }),
@@ -860,6 +890,28 @@ struct Scope<'a> {
     learned_owner: Option<&'a str>,
 }
 
+/// Whether a learned write the employee proposes is one it already has
+/// open (`open` is that proposal's skill name). An update or a delete is
+/// the same proposal only on the same skill. A new skill is the same one
+/// under the same name, or a name that runs on from it: one name's words
+/// are the other's first words, three or more of them
+/// (`verify-shell-permissions-before-command` and
+/// `verify-shell-permissions-before-command-execution`).
+fn same_proposal(action: &str, open: &str, proposed: &str) -> bool {
+    if open == proposed {
+        return true;
+    }
+    if action != "create" {
+        return false;
+    }
+    let words = |name: &str| -> Vec<String> {
+        name.split(['-', '_', ' ']).filter(|w| !w.is_empty()).map(str::to_lowercase).collect()
+    };
+    let (a, b) = (words(open), words(proposed));
+    let (short, long) = if a.len() <= b.len() { (a, b) } else { (b, a) };
+    short.len() >= 3 && long.starts_with(&short)
+}
+
 /// `content` as a whole SKILL.md: bare instructions get the skill's existing
 /// name and description as frontmatter.
 fn with_frontmatter(skill: &crate::skills::Skill, content: &str) -> String {
@@ -1235,6 +1287,63 @@ mod tests {
 
     fn tool<'a>(family: &'a [SkillTool], name: &str) -> &'a SkillTool {
         family.iter().find(|t| t.name() == name).unwrap()
+    }
+
+    /// An employee that proposes a skill it already has open gets the open
+    /// proposal updated, not a second one filed: the owner saw two nearly
+    /// identical "Create learned skill 'verify-shell-permissions-…'" items.
+    #[test]
+    fn a_proposal_that_matches_an_open_one_updates_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(db::Store::new(&dir.path().join("t.db").to_string_lossy()).unwrap());
+        let loader = Arc::new(Loader::new(dir.path().join("installed"), dir.path().join("user")));
+        let core = SkillCore::new(loader).with_store(store.clone());
+        let stage = |name: &str, body: &str| {
+            let gist = format!("Create learned skill '{name}'");
+            let r = core.stage_learned_write("mom", "create", name, Some(body), &gist, "", None);
+            assert!(!r.is_error, "{}", r.content);
+        };
+        stage("verify-shell-permissions-before-command-execution", "v1");
+        stage("verify-shell-permissions-before-command", "v2");
+        stage("verify-shell-permissions-before-command-execution", "v3");
+        let open = store.open_pending_writes("mom", "skill", "create").unwrap();
+        assert_eq!(open.len(), 1, "one proposal, not three: {open:?}");
+        assert_eq!(open[0].content.as_deref(), Some("v3"), "it carries the newest text");
+        let user = store.ensure_local_user_id().unwrap();
+        let rows: Vec<_> = store
+            .list_user_notifications(&user, 50, 0)
+            .unwrap()
+            .into_iter()
+            .filter(|n| n.id.starts_with("learn:"))
+            .collect();
+        assert_eq!(rows.len(), 1, "one Inbox item");
+        assert_eq!(rows[0].id, format!("learn:{}", open[0].id));
+        assert_eq!(rows[0].action_url.as_deref(), Some(format!("/inbox?m=learn%3A{}", open[0].id).as_str()));
+
+        // A different skill, and another employee's same skill, are their own.
+        stage("handle-empty-model-responses", "x");
+        let r = core.stage_learned_write("other", "create", "verify-shell-permissions-before-command", Some("y"), "g", "", None);
+        assert!(!r.is_error);
+        assert_eq!(store.open_pending_writes("mom", "skill", "create").unwrap().len(), 2);
+        assert_eq!(store.open_pending_writes("other", "skill", "create").unwrap().len(), 1);
+
+        // A decided proposal is not reopened: the next one is new.
+        store.resolve_pending_write(&open[0].id, "rejected").unwrap();
+        stage("verify-shell-permissions-before-command-execution", "v4");
+        let now_open = store.open_pending_writes("mom", "skill", "create").unwrap();
+        assert!(now_open.iter().all(|p| p.id != open[0].id));
+        assert_eq!(now_open.len(), 2);
+    }
+
+    #[test]
+    fn the_same_proposal_is_the_same_skill() {
+        assert!(same_proposal("create", "a-b-c", "a-b-c"));
+        assert!(same_proposal("create", "verify-shell-permissions-before-command", "verify-shell-permissions-before-command-execution"));
+        assert!(same_proposal("create", "verify-shell-permissions-before-command-execution", "verify-shell-permissions-before-command"));
+        assert!(!same_proposal("create", "handle-queue", "handle-queue-pause"), "two shared words are not enough");
+        assert!(!same_proposal("create", "token-budget-realism", "token-budget-overestimation"));
+        assert!(!same_proposal("update", "a-b-c", "a-b-c-d"), "an update is on one skill");
+        assert!(same_proposal("update", "a-b-c", "a-b-c"));
     }
 
     #[test]

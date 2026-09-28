@@ -393,7 +393,8 @@ fn notify_updates_available(state: &AppState) {
             "{} {} → {} is available. Review it in Settings → Updates.",
             display, a.local_version, a.remote_version
         );
-        let action_url = "/settings/updates".to_string();
+        // Settings → Updates, at this package, with its Update button.
+        let action_url = tools::owner_notify::link::update(&a.artifact_id);
         tools::owner_notify::emit(
             &state.store,
             Some(&|ev, payload| state.hub.broadcast(ev, payload)),

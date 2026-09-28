@@ -68,3 +68,83 @@ pub fn emit(
         );
     }
 }
+
+/// Where an owner item opens: its Inbox row's `action_url`, and the `link`
+/// of the item mirrored to the owner's hub Inbox and pushed to his phone.
+/// A path in the app's own route space, so every surface reads the same
+/// address: the desktop navigates to it, the web Inbox opens it through the
+/// tunnel, and the phone maps it to its screen. Every item that is about a
+/// place names that place here, never somewhere generic.
+pub mod link {
+    /// A conversation: `/{agent}/threads/{chat}` — where a card the owner
+    /// answers sits. The employee's page when the chat is not known.
+    pub fn chat(agent_id: &str, chat_id: &str) -> String {
+        if chat_id.is_empty() {
+            return format!("/{agent_id}");
+        }
+        format!("/{agent_id}/threads/{}", urlencoding::encode(chat_id))
+    }
+
+    /// The conversation a session is holding now (the session key is its
+    /// name; see `db::Store::resolve_session_chat_id`).
+    pub fn session_chat(store: &db::Store, agent_id: &str, session_key: &str) -> String {
+        let chat_id = store
+            .get_session_by_name(session_key)
+            .ok()
+            .flatten()
+            .map(|s| store.resolve_session_chat_id(&s.id))
+            .unwrap_or_default();
+        chat(agent_id, &chat_id)
+    }
+
+    /// One run of an employee's work.
+    pub fn run(agent_id: &str, run_id: &str) -> String {
+        format!("/{agent_id}/runs/{}", urlencoding::encode(run_id))
+    }
+
+    /// An Inbox item opened in the Inbox's reader: a proposal the owner
+    /// reads in full before he decides (`learn:<id>`).
+    pub fn inbox_item(item_id: &str) -> String {
+        format!("/inbox?m={}", urlencoding::encode(item_id))
+    }
+
+    /// An employee's connections, with `plugin` first when one is named:
+    /// where "X needs Y connected" is fixed.
+    pub fn accounts(agent_id: &str, plugin: Option<&str>) -> String {
+        match plugin.filter(|p| !p.is_empty()) {
+            Some(p) => format!("/{agent_id}/settings/accounts?plugin={}", urlencoding::encode(p)),
+            None => format!("/{agent_id}/settings/accounts"),
+        }
+    }
+
+    /// Settings → Updates, at one package.
+    pub fn update(artifact_id: &str) -> String {
+        format!("/settings/updates?artifact={}", urlencoding::encode(artifact_id))
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn every_place_has_one_address() {
+            assert_eq!(chat("emp", "c-1"), "/emp/threads/c-1");
+            assert_eq!(chat("emp", ""), "/emp");
+            assert_eq!(run("emp", "r 1"), "/emp/runs/r%201");
+            assert_eq!(inbox_item("learn:abc"), "/inbox?m=learn%3Aabc");
+            assert_eq!(accounts("emp", Some("gmail")), "/emp/settings/accounts?plugin=gmail");
+            assert_eq!(accounts("emp", None), "/emp/settings/accounts");
+            assert_eq!(update("google-sheets"), "/settings/updates?artifact=google-sheets");
+        }
+
+        #[test]
+        fn a_session_opens_its_conversation() {
+            let dir = tempfile::tempdir().unwrap();
+            let store = db::Store::new(&dir.path().join("t.db").to_string_lossy()).unwrap();
+            assert_eq!(session_chat(&store, "emp", "agent:emp:web"), "/emp", "no session: the employee");
+            let s = store.create_session("s1", Some("agent:emp:web"), Some("agent"), Some("emp"), None).unwrap();
+            let expected = format!("/emp/threads/{}", store.resolve_session_chat_id(&s.id));
+            assert_eq!(session_chat(&store, "emp", "agent:emp:web"), expected);
+        }
+    }
+}

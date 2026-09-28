@@ -1930,7 +1930,7 @@ pub fn notify_plugin_needs_reauth(
         "{}'s connection to {} expired. Reconnect it in the agent's Settings, Plugins.",
         p.account_label, p.plugin_slug
     );
-    let action_url = format!("/{}/settings/accounts", p.agent_id);
+    let action_url = crate::owner_notify::link::accounts(&p.agent_id, Some(&p.plugin_slug));
     crate::owner_notify::emit(
         store,
         Some(&|ev, payload| broadcast(ev, payload)),

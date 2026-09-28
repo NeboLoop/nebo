@@ -1482,12 +1482,13 @@ async fn watch_loop(
                     "Connect your {} account to enable automated workflows. Go to Settings → Plugins.",
                     cfg.plugin
                 );
+                let link = tools::owner_notify::link::accounts(&agent_id, Some(&cfg.plugin));
                 let n = tools::owner_notify::OwnerNotification {
                     id: &notif_id,
                     kind: "warning",
                     title: &title,
                     body: Some(&body),
-                    action_url: Some("/settings/plugins"),
+                    action_url: Some(&link),
                     agent_id: Some(agent_id.as_ref()),
                     loud: true,
                 };
@@ -2622,12 +2623,13 @@ async fn channel_loop(
                     "Connect your {} account to enable the {} channel. Go to Settings → Plugins.",
                     plugin_slug, channel_name
                 );
+                let link = tools::owner_notify::link::accounts(&agent_id, Some(&plugin_slug));
                 let n = tools::owner_notify::OwnerNotification {
                     id: &notif_id,
                     kind: "warning",
                     title: &title,
                     body: Some(&body),
-                    action_url: Some("/settings/plugins"),
+                    action_url: Some(&link),
                     agent_id: Some(agent_id.as_ref()),
                     loud: true,
                 };

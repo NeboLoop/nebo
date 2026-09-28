@@ -2038,6 +2038,7 @@ pub(crate) fn notify_binding_need(
             "title": notice.title,
             "body": notice.body,
             "link": notice.link,
+            "agentId": agent_id,
         }),
     );
 }
@@ -2136,7 +2137,7 @@ fn notify_workflow_failure(
     } else {
         error
     };
-    let action_url = format!("/{}/runs/{}", agent_id, run_id);
+    let action_url = tools::owner_notify::link::run(agent_id, run_id);
 
     tools::owner_notify::emit(
         store,
@@ -3145,7 +3146,7 @@ async fn workflow_tuning_sweep(
                             kind: "info",
                             title: &format!("{} tuned its own workflow", agent.name),
                             body: Some(&gist),
-                            action_url: None,
+                            action_url: Some(&tools::owner_notify::link::inbox_item(&format!("learn:{}", pending_id))),
                             agent_id: Some(&agent.id),
                             loud: false,
                         },
@@ -3158,6 +3159,9 @@ async fn workflow_tuning_sweep(
                 }
             }
         } else {
+            // The proposal opens in full, with the change it would make and
+            // its Approve and Reject, wherever the owner taps it.
+            let link = tools::owner_notify::link::inbox_item(&format!("learn:{}", pending_id));
             tools::owner_notify::emit(
                 store,
                 Some(&|ev, payload| hub.broadcast(ev, payload)),
@@ -3166,7 +3170,7 @@ async fn workflow_tuning_sweep(
                     kind: "approval",
                     title: &format!("{} proposes a workflow change", agent.name),
                     body: Some(&gist),
-                    action_url: None,
+                    action_url: Some(&link),
                     agent_id: Some(&agent.id),
                     loud: false,
                 },
@@ -3182,6 +3186,8 @@ async fn workflow_tuning_sweep(
                     "type": "approval",
                     "title": format!("{} proposes a workflow change", agent.name),
                     "body": gist,
+                    "link": link,
+                    "agentId": agent.id,
                     "actions": {
                         "buttons": [
                             {"label": "Approve", "style": "primary", "method": "POST",
