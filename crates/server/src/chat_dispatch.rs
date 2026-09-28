@@ -580,6 +580,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
     let approval_channels = state.approval_channels.clone();
     let ask_channels = state.ask_channels.clone();
     let run_registry = state.run_registry.clone();
+    let live_calls = state.live_calls.clone();
     let approvals_agent_id = config.agent_id.clone();
     let approvals_origin = crate::handlers::ws::EventOrigin {
         client_id: config.client_id.clone(),
@@ -1684,6 +1685,8 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                     },
                 )
                 .await;
+                // The owner on a call in this conversation hears it too.
+                crate::handlers::voice::say_on_call(&live_calls, &sid, &full_response);
 
                 // Persist the artifacts onto the turn's final assistant message so
                 // Work items + their version chain survive history reload (the live

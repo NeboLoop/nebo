@@ -8,6 +8,7 @@ mod artifact_updates;
 mod channel_dispatch;
 pub mod chat_dispatch;
 pub mod codes;
+pub mod company;
 pub mod coworker;
 pub mod team;
 pub mod deps;
@@ -2298,6 +2299,7 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
         store_cache: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         codes_in_flight: Arc::new(codes::InFlightCodes::default()),
         local_host,
+        live_calls: Default::default(),
     };
 
     // An ask's card and its answers reach the owner through the hub, the

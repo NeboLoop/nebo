@@ -49,6 +49,13 @@ impl CoworkerRail for CoworkerRailImpl {
     ) -> Pin<Box<dyn Future<Output = Result<tools::coworker::TeamPostReceipt, String>> + Send + '_>> {
         crate::team::post(self.state.clone(), post)
     }
+
+    fn company_now(
+        &self,
+        query: tools::company::CompanyQuery,
+    ) -> Pin<Box<dyn Future<Output = Vec<tools::company::EmployeeNow>> + Send + '_>> {
+        Box::pin(crate::company::now(self.state.clone(), query))
+    }
 }
 
 pub(crate) async fn send_coworker_message(
@@ -127,7 +134,18 @@ pub(crate) async fn send_coworker_message(
 
     // Target-side thread gets a readable title before the run creates it with
     // the legacy key-named chat shape.
-    ensure_conversation_thread(&state, &thread_key, &thread_title)?;
+    let thread_session = ensure_conversation_thread(&state, &thread_key, &thread_title)?;
+    // A linked employee's conversation the sender named: the thread speaks
+    // into it from this message on. While the thread's own turn runs, that
+    // turn has its conversation already, so nothing is switched under it.
+    if let Some(conversation) = msg.conversation.as_ref() {
+        if state.harness.is_session_busy(&thread_key) {
+            return Err(format!(
+                "{to_name} is still answering your last message. Nothing was sent: send this when its reply comes."
+            ));
+        }
+        crate::company::open_conversation(&state, &to_id, &to_name, &thread_session, conversation).await?;
+    }
 
     // What the member reads: the post with every mention written out as
     // "@Name" (the team record keeps the tokens; a member reads names).

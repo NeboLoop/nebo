@@ -20,6 +20,7 @@ pub mod channel_bridge;
 pub mod code_tool;
 pub mod command_tools;
 pub mod confine;
+pub mod company;
 pub mod coworker;
 
 /// A subprocess result (shell exec, plugin exec) longer than this, in

@@ -144,9 +144,17 @@ impl Helpers {
     async fn send_message(&self, input: &Value, ctx: &ToolContext) -> ToolResult {
         let to = input["to"].as_str().unwrap_or("").trim();
         let message = input["message"].as_str().unwrap_or("").trim();
-        match self.recipient(to) {
+        let conversation = input["conversation"].as_str().and_then(crate::coworker::Conversation::parse);
+        let recipient = self.recipient(to);
+        if conversation.is_some() && !matches!(recipient, Recipient::Coworker(_)) {
+            return ToolResult::error(
+                "`conversation` picks one of a linked employee's conversations; a team or a helper has one \
+                 conversation with you. Nothing was sent. Send it again without `conversation`.",
+            );
+        }
+        match recipient {
             Recipient::Team(team) => return self.teams.post(ctx, &team, message, &input["mention"]).await,
-            Recipient::Coworker(name) => return self.to_coworker(ctx, &name, message).await,
+            Recipient::Coworker(name) => return self.to_coworker(ctx, &name, message, conversation).await,
             Recipient::Helper => {}
         }
         let orch = match self.orchestrator() {
@@ -181,8 +189,15 @@ impl Helpers {
     /// A message into a coworker's own session — their persona, memory,
     /// connected accounts and permissions — through the coworker rail. It
     /// never waits: the message is queued, the call returns, and the reply
-    /// comes back later as a notification.
-    async fn to_coworker(&self, ctx: &ToolContext, to: &str, text: &str) -> ToolResult {
+    /// comes back later as a notification. `conversation` picks which of a
+    /// linked employee's conversations it goes into.
+    async fn to_coworker(
+        &self,
+        ctx: &ToolContext,
+        to: &str,
+        text: &str,
+        conversation: Option<crate::coworker::Conversation>,
+    ) -> ToolResult {
         let rail = self.rail.read().unwrap().clone();
         let Some(rail) = rail else {
             return ToolResult::error(
@@ -190,7 +205,7 @@ impl Helpers {
                  use send_loop_message for bots on the NeboAI hub).",
             );
         };
-        match crate::coworker::deliver(&rail, ctx, to, text).await {
+        match crate::coworker::deliver(&rail, ctx, to, text, conversation).await {
             Ok(delivery) => {
                 // Structured payload → the chat renders a first-class
                 // "Messaged {name}" event (clickable through to the coworker
@@ -319,7 +334,8 @@ impl DynTool for HelperTool {
                 "properties": {
                     "to": { "type": "string", "description": "A helper's id (from delegate), a coworker's name, or a team's name." },
                     "message": { "type": "string", "description": "What to tell them." },
-                    "mention": { "type": "array", "items": { "type": "string" }, "description": "To a team: the members asked to act, by name." }
+                    "mention": { "type": "array", "items": { "type": "string" }, "description": "To a team: the members asked to act, by name." },
+                    "conversation": { "type": "string", "description": "A linked employee's conversation id (as list_employees shows it) or \"new\"; leave out to continue your thread with it." }
                 },
                 "required": ["to", "message"]
             }),
@@ -507,12 +523,14 @@ mod tests {
     #[derive(Default)]
     struct Rail {
         sent: Mutex<Vec<(String, String)>>,
+        conversations: Mutex<Vec<Option<crate::coworker::Conversation>>>,
         posts: Mutex<Vec<(String, String, Vec<String>)>>,
     }
 
     impl crate::coworker::CoworkerRail for Rail {
         fn send(&self, msg: crate::coworker::CoworkerMessage) -> Fut<'_, Result<crate::coworker::CoworkerDelivery, String>> {
             self.sent.lock().unwrap().push((msg.to.clone(), msg.text.clone()));
+            self.conversations.lock().unwrap().push(msg.conversation.clone());
             Box::pin(async move {
                 Ok(crate::coworker::CoworkerDelivery {
                     to_agent_id: "bk".into(),
@@ -531,6 +549,9 @@ mod tests {
                     asked: vec!["Bookkeeper".into()],
                 })
             })
+        }
+        fn company_now(&self, _query: crate::company::CompanyQuery) -> Fut<'_, Vec<crate::company::EmployeeNow>> {
+            Box::pin(async { Vec::new() })
         }
     }
 
@@ -769,6 +790,33 @@ mod tests {
         assert_eq!(send.rule_field(&json!({"to": "Bookkeeper"})), Some(types::permissions::RuleField::Recipient("Bookkeeper".into())));
         assert_eq!(send.rule_field(&json!({"to": "h1"})), None);
         assert_eq!(send.activity(&json!({"to": "Back Office"})), "messaging the Back Office team");
+    }
+
+    /// `conversation` reaches the rail as which of a linked employee's
+    /// conversations the message goes into: one by id, or a new one; left
+    /// out, the sender's own thread. A team or a helper has one
+    /// conversation, so naming one there sends nothing.
+    #[tokio::test]
+    async fn a_message_names_which_of_its_conversations_it_goes_into() {
+        use crate::coworker::Conversation;
+        let rig = Rig::new();
+        rig.store.create_agent("cx", Some("linked"), "Coder", "d", "# agent", "", None, None).unwrap();
+        rig.store.create_team("t-1", "Back Office", "Books", &[db::TeamMember::local("cx")], "cx", None).unwrap();
+        for (conversation, want) in [
+            (json!("s-1"), Some(Conversation::Existing("s-1".into()))),
+            (json!("NEW"), Some(Conversation::New)),
+            (json!(""), None),
+            (Value::Null, None),
+        ] {
+            let r = rig.call("send_message", json!({"to": "Coder", "message": "how far along?", "conversation": conversation})).await;
+            assert!(!r.is_error, "{}", r.content);
+            assert_eq!(rig.rail.conversations.lock().unwrap().pop().unwrap(), want);
+        }
+        for to in ["Back Office", "h1"] {
+            let r = rig.call("send_message", json!({"to": to, "message": "x", "conversation": "s-1"})).await;
+            assert!(r.is_error && r.content.contains("Nothing was sent"), "{to}: {}", r.content);
+        }
+        assert!(rig.rail.posts.lock().unwrap().is_empty() && rig.rec.sent.lock().unwrap().is_empty());
     }
 
     /// A send to a coworker never waits: there

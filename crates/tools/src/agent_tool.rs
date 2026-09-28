@@ -151,6 +151,9 @@ pub struct PersonaTool {
     /// Shared cell holding the permission system's side of making and
     /// changing jobs (filled late by the server, like `code_installer`).
     job_consent: crate::needs::JobConsentCell,
+    /// The coworker rail (filled late by the server): what every employee
+    /// is doing right now, which the roster reports.
+    rail: crate::coworker::CoworkerRailCell,
 }
 
 /// A listing NeboAI published: its qualified name lives under the @neboai
@@ -180,6 +183,28 @@ impl PersonaTool {
             agent_loader,
             code_installer: Arc::new(std::sync::RwLock::new(None)),
             job_consent: Arc::new(std::sync::RwLock::new(None)),
+            rail: crate::coworker::new_rail_cell(),
+        }
+    }
+
+    /// Inject the shared coworker-rail cell (from the `Registry`): the
+    /// roster reports what each employee is doing through it.
+    pub fn with_coworker_rail(mut self, rail: crate::coworker::CoworkerRailCell) -> Self {
+        self.rail = rail;
+        self
+    }
+
+    /// What the company is doing right now, asked from `ctx`'s session,
+    /// with `detail_for`'s work read in detail. Empty until the server has
+    /// bound the rail.
+    async fn company_now(&self, ctx: &ToolContext, detail_for: Option<String>) -> Vec<crate::company::EmployeeNow> {
+        let rail = self.rail.read().ok().and_then(|r| r.clone());
+        match rail {
+            Some(rail) => {
+                rail.company_now(crate::company::CompanyQuery { caller_session: ctx.session_key.clone(), detail_for })
+                    .await
+            }
+            None => Vec::new(),
         }
     }
 
@@ -205,7 +230,7 @@ impl PersonaTool {
         self
     }
 
-    pub(crate) async fn handle_list(&self) -> ToolResult {
+    pub(crate) async fn handle_list(&self, ctx: &ToolContext) -> ToolResult {
         // Get agents from loader cache
         let fs_agents = self.agent_loader.list().await;
         let installed: Vec<_> = fs_agents
@@ -307,13 +332,19 @@ impl PersonaTool {
         } else {
             format!("{} marketplace, {} user-created", installed.len(), user.len())
         };
-        ToolResult::ok(format!(
+        let mut out = format!(
             "{} employee(s)/app(s) ({}){}:\n{}",
             lines.len(),
             breakdown,
             status,
             lines.join("\n")
-        ))
+        );
+        let now = crate::company::render_all(&self.company_now(ctx, None).await);
+        if !now.is_empty() {
+            out.push_str("\n\n");
+            out.push_str(&now);
+        }
+        ToolResult::ok(out)
     }
 
     pub(crate) async fn handle_activate(&self, input: &serde_json::Value) -> ToolResult {
@@ -457,7 +488,7 @@ impl PersonaTool {
         }
     }
 
-    pub(crate) async fn handle_info(&self, input: &serde_json::Value) -> ToolResult {
+    pub(crate) async fn handle_info(&self, input: &serde_json::Value, ctx: &ToolContext) -> ToolResult {
         let name = input["name"].as_str().unwrap_or("");
         if name.is_empty() {
             // Show all active agents
@@ -487,11 +518,18 @@ impl PersonaTool {
         }
 
         match self.find_agent(name).await {
-            Some(loaded) => ToolResult::ok(Self::info_text(
-                &loaded,
-                self.agent_loader.user_dir(),
-                self.agent_loader.installed_dir(),
-            )),
+            Some(loaded) => {
+                let mut info = Self::info_text(&loaded, self.agent_loader.user_dir(), self.agent_loader.installed_dir());
+                // What it is doing right now, read in detail.
+                if let Some(id) = self.find_agent_row(name).map(|r| r.id) {
+                    let now = self.company_now(ctx, Some(id.clone())).await;
+                    if let Some(employee) = now.iter().find(|e| e.agent_id == id) {
+                        info.push_str("\n\n");
+                        info.push_str(&crate::company::render_one(employee));
+                    }
+                }
+                ToolResult::ok(info)
+            }
             None => ToolResult::error(format!("No employee named '{}'.", name)),
         }
     }

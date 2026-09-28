@@ -167,8 +167,8 @@ impl Kind {
 
     fn search_hint(self) -> &'static str {
         match self {
-            Kind::ListEmployees => "list the employees and apps here",
-            Kind::GetEmployee => "show an employee's instructions and workflows",
+            Kind::ListEmployees => "list employees and what each is doing",
+            Kind::GetEmployee => "show an employee's instructions, workflows and current work",
             Kind::FindEmployees => "search the marketplace for employees to hire",
             Kind::HireEmployee => "install an employee by marketplace code",
             Kind::CreateEmployee => "make a new employee with duties",
@@ -184,9 +184,9 @@ impl Kind {
 
     fn description(self) -> String {
         match self {
-            Kind::ListEmployees => "Lists the employees on this computer — hired from the marketplace, made here, and apps — each with its description."
+            Kind::ListEmployees => "Lists every employee with its description and what it is doing now: working (where, on what, how long), waiting on the owner, idle or not running. Linked employees are read from their own computers."
                 .to_string(),
-            Kind::GetEmployee => "Shows one employee: its description, instructions, workflows and what starts them, skills, and where its files are."
+            Kind::GetEmployee => "Shows one employee: description, instructions, workflows and their triggers, skills, files, and its current work (the request, recent calls, latest words)."
                 .to_string(),
             Kind::FindEmployees => format!(
                 "Searches the marketplace for employees to hire, and the tools they use.\n\
@@ -505,8 +505,8 @@ impl DynTool for EmployeeTool {
         Box::pin(async move {
             let p = &self.persona;
             match self.kind {
-                Kind::ListEmployees => p.handle_list().await,
-                Kind::GetEmployee => p.handle_info(&input).await,
+                Kind::ListEmployees => p.handle_list(ctx).await,
+                Kind::GetEmployee => p.handle_info(&input, ctx).await,
                 Kind::FindEmployees => p.handle_discover(&input, ctx).await,
                 Kind::HireEmployee => p.handle_install(ctx, &input).await,
                 Kind::CreateEmployee => p.create_with_consent(&input, ctx).await,
