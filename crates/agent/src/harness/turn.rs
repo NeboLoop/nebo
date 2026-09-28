@@ -385,6 +385,22 @@ fn owner_speaks(req: &TurnRequest) -> bool {
         && req.seat.audience.is_none()
 }
 
+/// Whether the turn serves the owner's own request: his own words
+/// (`owner_speaks`), or a colleague's words passing a request of his on.
+/// The coworker rail runs the second on the owner's own surface
+/// (`Origin::User`, no colleague's audience) only when a teammate hands on a
+/// step of the owner's team post (`server::coworker::seat_authority`); a
+/// colleague's own request runs as `Origin::Comm` and is never his. The
+/// colleague's words are never stored or read as the owner's: only
+/// `owner_speaks` marks a row his.
+fn owner_asks(req: &TurnRequest) -> bool {
+    owner_speaks(req)
+        || (matches!(req.mode, TurnMode::Chat)
+            && matches!(req.input, TurnInput::Coworker { .. })
+            && req.seat.origin == tools::Origin::User
+            && req.seat.audience.is_none())
+}
+
 /// Whether the owner is in this turn's conversation: an owner chat turn in
 /// the owner's own chat (the app, the phone, the owner's loop), started by
 /// the owner's message, a message queued behind it, or a result the owner's
@@ -1193,7 +1209,7 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
             handoff_depth: cx.request.seat.handoff_depth,
             grant: &cx.grant,
             door: &cx.request.seat.door,
-            owner_request: owner_speaks(&cx.request),
+            owner_request: owner_asks(&cx.request),
             untrusted_input: cx.workflow().is_some_and(|m| m.tainted),
             run_cwd: cx.request.seat.cwd.as_deref(),
             channel_ctx: cx.request.delivery.channel_ctx.as_ref(),
@@ -6839,6 +6855,36 @@ mod tests {
             let task_row = rows.iter().find(|m| m.content == TASK).expect("the task is the run's input");
             assert!(task_row.metadata.as_deref().is_some_and(|m| m.contains("hiddenPrompt")), "stored hidden: {:?}", task_row.metadata);
             assert!(!rows.iter().any(|m| m.content == SAID), "his words are the call's row, never written twice");
+        }
+    }
+
+    /// A teammate passing on a step of the owner's team post serves his
+    /// request: the coworker rail runs it on his own surface with no
+    /// colleague's audience (`server::coworker::seat_authority`), and every
+    /// call carries it (live 2026-09-28: the lead's relay to Claude Code was
+    /// refused as a colleague's). The teammate's words are still never
+    /// stored as the owner's. A colleague's own request carries none.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_colleague_passing_on_the_owners_request_serves_it() {
+        const ASK: &str = "Save the page file's path for everyone, for the owner.";
+        for (origin, audience, serves) in [(tools::Origin::User, None, true), (tools::Origin::Comm, Some("lead"), false)] {
+            let seen = Arc::new(Mutex::new(Vec::new()));
+            let model = Scripted::new(vec![
+                Step::Call("remember", serde_json::json!({"key": "site/page", "value": "~/Desktop/page.md", "scope": "local"})),
+                Step::Say("Saved."),
+            ]);
+            let h = harness_with(&model, vec![Box::new(SharesSeen(seen.clone()))]).await;
+            let mut req = owner("");
+            req.input = TurnInput::Coworker { from: "Proof Lead".into(), text: ASK.into() };
+            req.seat.origin = origin;
+            req.seat.audience = audience.map(str::to_string);
+            run_turn(&h, req).await;
+            assert_eq!(*seen.lock().unwrap(), vec![(serves, false)], "{origin:?}: whose request the call serves");
+            let rows = stored(&h);
+            let row = rows.iter().find(|m| m.content == ASK).expect("the teammate's words are the run's input");
+            let meta: serde_json::Value = serde_json::from_str(row.metadata.as_deref().unwrap_or("{}")).unwrap();
+            assert_eq!(meta["from"], "coworker", "{origin:?}: stored as the teammate's: {meta}");
+            assert!(meta.get(db::OWNER_MARK).is_none(), "{origin:?}: never the owner's word: {meta}");
         }
     }
 

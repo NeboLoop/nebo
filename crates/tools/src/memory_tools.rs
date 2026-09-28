@@ -241,8 +241,9 @@ impl Memory {
     /// The scope a `remember`/`forget` call writes: the run's own scope, or
     /// local memory when the call names `scope: "local"`. Local memory is
     /// read by every employee on this Nebo, so only the owner's own request
-    /// (his message in his own chat, or his own call) puts something there —
-    /// an unattended run, a caller or a coworker cannot publish to everyone.
+    /// (his message in his own chat or his team thread, or his own call)
+    /// puts something there — an unattended run, a caller or a coworker
+    /// cannot publish to everyone.
     /// The refusal says to tell the owner, never to save it elsewhere: told
     /// to save it privately, the owner's assistant did so on his call and
     /// told him Nebo blocks shared memory (live 2026-09-28).
@@ -268,8 +269,8 @@ impl Memory {
             return Err(ToolResult::error(
                 "Not saved to local memory: local memory is shared by every employee on this \
                  Nebo, so only the owner's own request (their message in their own \
-                 conversation, or their own call) changes it, and this run was not started by \
-                 one. Nothing was saved. Tell the owner it was not saved and why; don't save it \
+                 conversation or their team thread, or their own call) changes it, and this run \
+                 was not started by one. Nothing was saved. Tell the owner it was not saved and why; don't save it \
                  anywhere else in its place.",
             ));
         }

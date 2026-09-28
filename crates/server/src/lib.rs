@@ -1925,6 +1925,9 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
         let fs_agents = agent_loader.list().await;
         let mut synced = 0usize;
         let mut created = 0usize;
+        // The rows the folders on disk are: matched by manifest id or by
+        // name, or created here. What the orphan sweep below keeps.
+        let mut on_disk: std::collections::HashSet<String> = std::collections::HashSet::new();
         for loaded in &fs_agents {
             // Match by manifest ID first (marketplace agents), then by name
             let db_agent = loaded
@@ -2002,6 +2005,8 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
                 }
             }
 
+            on_disk.insert(agent_id_for_bindings.clone());
+
             // Sync app fields (ui path, binary path, window config) to DB
             if loaded.is_app {
                 let _ = store.set_agent_app_fields(
@@ -2022,55 +2027,37 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
                 sync_agent_workflows(&store, &agent_id_for_bindings, config);
             }
         }
-        // Filesystem is the source of truth for which agents are active.
-        // Soft-deactivate any DB agent not on the filesystem — same policy as
-        // the fs-watcher's Removed branch. Do NOT delete: the user may re-add
-        // the directory; chats/sessions/memories must survive.
-        //
-        // Circuit breaker first: the scan swallows IO errors, so a boot that
-        // races a slow volume mount produces a PARTIAL listing that looks
-        // like mass deletion. One such boot deactivated a whole roster of
-        // employees. A real user removes agents one at a time — losing more
-        // than a third of the enabled roster in a single sweep means the
-        // scan is lying, not the user.
-        let fs_ids: std::collections::HashSet<String> = fs_agents
-            .iter()
-            .map(|a| a.id.clone().unwrap_or_else(|| a.agent_def.name.clone()))
-            .collect();
+        // Filesystem is the source of truth for which agents are active:
+        // soft-deactivate every DB agent no folder is (`orphan_sweep`) — same
+        // policy as the fs-watcher's Removed branch. Do NOT delete: the user
+        // may re-add the directory; chats/sessions/memories must survive.
         if let Ok(db_agents) = store.list_agents(1000, 0) {
-            let enabled: Vec<_> = db_agents
-                .iter()
-                .filter(|a| a.is_enabled != 0 && a.id != "assistant")
-                .collect();
-            let orphans: Vec<_> = enabled
-                .iter()
-                .filter(|a| !fs_ids.contains(&a.id))
-                .collect();
-            if !orphans.is_empty() && orphans.len() * 3 > enabled.len() {
-                warn!(
-                    orphans = orphans.len(),
-                    enabled = enabled.len(),
-                    scanned = fs_ids.len(),
+            match orphan_sweep(&db_agents, &on_disk) {
+                Err((orphans, enabled)) => warn!(
+                    orphans,
+                    enabled,
+                    scanned = on_disk.len(),
                     "agent scan would deactivate an implausible share of the roster — treating the scan as incomplete, deactivating nothing"
-                );
-            } else {
-                let mut deactivated = 0usize;
-                for db_agent in orphans {
-                    match store.set_agent_enabled(&db_agent.id, false) {
-                        Ok(()) => {
-                            deactivated += 1;
-                            info!(id = %db_agent.id, name = %db_agent.name, "deactivated orphan agent missing from filesystem (data preserved)");
-                        }
-                        Err(e) => {
-                            warn!(id = %db_agent.id, error = %e, "failed to deactivate orphan agent");
+                ),
+                Ok(orphans) => {
+                    let mut deactivated = 0usize;
+                    for db_agent in orphans {
+                        match store.set_agent_enabled(&db_agent.id, false) {
+                            Ok(()) => {
+                                deactivated += 1;
+                                info!(id = %db_agent.id, name = %db_agent.name, "deactivated orphan agent missing from filesystem (data preserved)");
+                            }
+                            Err(e) => {
+                                warn!(id = %db_agent.id, error = %e, "failed to deactivate orphan agent");
+                            }
                         }
                     }
-                }
-                if deactivated > 0 {
-                    info!(
-                        deactivated,
-                        "deactivated orphan agents missing from filesystem"
-                    );
+                    if deactivated > 0 {
+                        info!(
+                            deactivated,
+                            "deactivated orphan agents missing from filesystem"
+                        );
+                    }
                 }
             }
         }
@@ -3609,6 +3596,66 @@ fn heal_agent_install_debris(nebo_dir: &std::path::Path) {
             Ok(()) => warn!(dir = %staging.display(), "removed leftover install staging directory (install was interrupted mid-flight)"),
             Err(e) => warn!(dir = %staging.display(), error = %e, "failed to remove leftover install staging directory"),
         }
+    }
+}
+
+/// The enabled employees the start-up sweep turns off: those no folder on
+/// disk is (`on_disk`: the rows the folders matched, by manifest id or by
+/// name, or created). Never the primary employee, and never a linked one: its
+/// hire is the row and its runtime lives on another computer, so it never had
+/// a folder. Sweeping by the id a folder names for itself, and sweeping
+/// linked employees, turned both off at every start, and the employees
+/// beside them were told they had left (live 2026-09-28: "Claude Code and
+/// Codex have been removed from the team").
+///
+/// Circuit breaker: the scan swallows IO errors, so a boot that races a slow
+/// volume mount produces a PARTIAL listing that looks like mass deletion. One
+/// such boot deactivated a whole roster of employees. A real user removes
+/// agents one at a time — losing more than a third of the enabled roster in a
+/// single sweep means the scan is lying, not the user: `Err((orphans,
+/// enabled))`, and nothing is turned off.
+fn orphan_sweep<'a>(
+    rows: &'a [db::models::Agent],
+    on_disk: &std::collections::HashSet<String>,
+) -> Result<Vec<&'a db::models::Agent>, (usize, usize)> {
+    let enabled: Vec<&db::models::Agent> = rows
+        .iter()
+        .filter(|a| a.is_enabled != 0 && a.id != "assistant" && a.kind.as_deref() != Some(ai::providers::linked::ID))
+        .collect();
+    let orphans: Vec<&db::models::Agent> = enabled.iter().copied().filter(|a| !on_disk.contains(&a.id)).collect();
+    if !orphans.is_empty() && orphans.len() * 3 > enabled.len() {
+        return Err((orphans.len(), enabled.len()));
+    }
+    Ok(orphans)
+}
+
+#[cfg(test)]
+mod orphan_sweep_tests {
+    use super::orphan_sweep;
+
+    fn row(id: &str, kind: Option<&str>) -> db::models::Agent {
+        db::models::Agent { id: id.into(), kind: kind.map(str::to_string), name: id.into(), is_enabled: 1, ..Default::default() }
+    }
+
+    /// A linked employee has no folder and is never swept; an employee whose
+    /// folder was matched by name is on disk under the row's own id; the one
+    /// row no folder is gets turned off.
+    #[test]
+    fn only_a_row_no_folder_is_gets_turned_off() {
+        let rows: Vec<db::models::Agent> = (0..6)
+            .map(|i| row(&format!("native-{i}"), Some("user")))
+            .chain([row("claude-code", Some("linked")), row("codex", Some("linked")), row("assistant", None)])
+            .collect();
+        let on_disk: std::collections::HashSet<String> = (0..5).map(|i| format!("native-{i}")).collect();
+        let swept: Vec<&str> = orphan_sweep(&rows, &on_disk).expect("a plausible sweep").iter().map(|a| a.id.as_str()).collect();
+        assert_eq!(swept, vec!["native-5"]);
+    }
+
+    /// A partial scan (most rows missing) turns nothing off.
+    #[test]
+    fn an_implausible_sweep_turns_nothing_off() {
+        let rows: Vec<db::models::Agent> = (0..3).map(|i| row(&format!("native-{i}"), Some("user"))).collect();
+        assert_eq!(orphan_sweep(&rows, &Default::default()).map(|v| v.len()), Err((3, 3)));
     }
 }
 

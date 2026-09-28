@@ -1,0 +1,11 @@
+id: sc58-the-owners-team-post-carries-his-authority
+name: "SC58 — The owner's team post carries his authority; a coworker's message does not"
+description: |
+  Owner report 2026-09-28 ("Doesn't work in team mode and it should"): the post the owner types
+  in a team thread is his request. The lead it asks, on Full Access, runs a command, writes a
+  file and saves to local memory, exactly as on his direct message. The same asks in a
+  colleague's message to the same lead are refused in the coworker's words, and nothing is
+  written or saved.
+target_component: staffed-company
+proof: staffed_proof::conversation::the_owners_team_post_carries_his_authority_and_a_coworkers_message_does_not
+conversation: []

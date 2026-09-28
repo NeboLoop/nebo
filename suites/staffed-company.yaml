@@ -60,3 +60,8 @@ fixtures:
   - ../fixtures/staffed-company/company/sc55-the-point-person-sees-what-everyone-is-doing.yaml
   - ../fixtures/staffed-company/company/sc56-the-point-person-relays-into-a-linked-employees-conversation.yaml
   - ../fixtures/staffed-company/company/sc57-a-busy-linked-conversation-is-never-sent-a-second-prompt.yaml
+  - ../fixtures/staffed-company/conversation/sc58-the-owners-team-post-carries-his-authority.yaml
+  - ../fixtures/staffed-company/conversation/sc59-a-deny-rule-still-wins-on-the-owners-team-post.yaml
+  - ../fixtures/staffed-company/conversation/sc60-the-lead-passes-the-owners-request-on-with-his-authority.yaml
+  - ../fixtures/staffed-company/conversation/sc61-the-lead-passes-the-owners-request-to-a-linked-teammate.yaml
+  - ../fixtures/staffed-company/conversation/sc62-the-primary-employee-passes-the-owners-request-on.yaml

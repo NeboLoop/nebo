@@ -1,0 +1,10 @@
+id: sc60-the-lead-passes-the-owners-request-on-with-his-authority
+name: "SC60 — The lead passes the owner's request on with his authority, a colleague's without"
+description: |
+  The lead hands a step of the owner's team post to a teammate with send_message (live: Top
+  Coder asking Claude Code to write the file for the owner). The teammate's turn serves that
+  same request: its command runs, its file is written, local memory takes it. The same lead
+  handing on a colleague's request passes on a colleague's: the teammate it asks is refused.
+target_component: staffed-company
+proof: staffed_proof::conversation::the_lead_passes_the_owners_request_on_with_his_authority_and_a_colleagues_without
+conversation: []

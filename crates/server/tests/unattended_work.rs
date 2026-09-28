@@ -165,10 +165,13 @@ async fn a_scheduled_job_runs_as_its_employee_with_its_rules_and_instructions() 
 }
 
 /// U4: a coworker runs under its own permissions, never the asker's. The
-/// asker works in Full Access. Asked to write a file, the coworker's call is
-/// decided as the coworker, through the coworker door, under the limits a
-/// request from another employee carries (it can reply, not change things,
-/// as on main): the asker's access is never lent to it.
+/// asker works in Full Access; the coworker in Ask. Asked to write a file,
+/// the coworker's call is decided as the coworker, through the coworker
+/// door, in its own mode: it asks the owner, and the asker's access is never
+/// lent to it. (The owner asked for it in his own chat, so the coworker
+/// serves his request rather than only answering a colleague's; a
+/// colleague's own request is refused outright, proven in
+/// `staffed_proof::conversation`.)
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_coworker_acts_under_its_own_permissions_not_the_askers() {
     let out = tempfile::tempdir().unwrap();
@@ -199,6 +202,7 @@ async fn a_coworker_acts_under_its_own_permissions_not_the_askers() {
     let supervisor = hire_blank(&server, "Supervisor").await;
     let researcher = hire_blank(&server, "Field Researcher").await;
     set_mode(&server, &supervisor, "full_access").await;
+    set_mode(&server, &researcher, "ask").await;
 
     let said = server
         .post_json(&format!("/agents/{supervisor}/chat"), &json!({"prompt": "Ask Field Researcher to note the VAT rate."}))

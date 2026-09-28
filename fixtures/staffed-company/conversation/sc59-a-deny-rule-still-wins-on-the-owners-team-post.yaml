@@ -1,0 +1,8 @@
+id: sc59-a-deny-rule-still-wins-on-the-owners-team-post
+name: "SC59 — A deny rule still wins on the owner's team post"
+description: |
+  The owner's team post carries the authority of his direct message and never more: a rule
+  that turns a tool off for the lead still refuses it, in the rule's words, on Full Access.
+target_component: staffed-company
+proof: staffed_proof::conversation::a_deny_rule_still_wins_on_the_owners_team_post
+conversation: []

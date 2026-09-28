@@ -529,6 +529,11 @@ fn remember_input(state: &AppState, config: &ChatConfig) {
             let route = crate::reply_route::ReplyRoute::comm(cr);
             crate::reply_route::set(state, &config.session_key, &config.user_id, Some(&route));
         }
+        // The coworker rail records its thread's route itself
+        // (`coworker::send_coworker_message`): the reply goes back to the
+        // sender or into the team, whether the turn serves a colleague's
+        // request or the owner's.
+        (None, _) if config.channel == crate::coworker::COWORKER_CHANNEL => {}
         (None, Origin::User) => crate::reply_route::set(state, &config.session_key, &config.user_id, None),
         (None, _) => {
             if let Some(ctx) = &config.channel_ctx {
