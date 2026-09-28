@@ -76,6 +76,11 @@ pub struct TurnMetrics {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TracedToolCall {
     pub sequence: usize,
+    /// The 1-based turn ([`TurnMetrics::turn`]) the call started in, so a
+    /// reader can tell which of the owner's messages it answered. 0 in
+    /// traces from before it was recorded.
+    #[serde(default)]
+    pub turn: usize,
     pub tool: String,
     pub arguments: serde_json::Value,
     pub response: TracedToolResponse,

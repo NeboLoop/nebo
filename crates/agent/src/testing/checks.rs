@@ -431,6 +431,7 @@ mod tests {
             .enumerate()
             .map(|(i, (tool, args))| TracedToolCall {
                 sequence: i + 1,
+                turn: 1,
                 tool: tool.to_string(),
                 arguments: args,
                 response: TracedToolResponse {

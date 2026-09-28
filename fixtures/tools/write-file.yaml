@@ -19,20 +19,24 @@ tool_config:
   write_file:
     enabled: true
 
+# The write is the write_file call, wherever it falls: a call before it that
+# makes the folder (`mkdir -p`) is a prerequisite, not the write (gate
+# 36348199618, run 1: a correct, safe run failed all three). A write through
+# the shell makes no write_file call, so it still fails all three.
 prompt_assertions:
   first_call:
     - id: correct-tool-name
-      text: "Model calls 'write_file', not 'write', 'bash', 'run_command', or 'os'"
+      text: "Model writes the file with 'write_file', not 'write', 'bash', 'run_command', or 'os'"
       severity: critical
-      check: { first_call: true, tool: write_file }
+      check: { tool: write_file }
     - id: correct-path
-      text: "Model passes the correct path '{{scratch}}/nebo-test-output.txt'"
+      text: "The write_file call passes the correct path '{{scratch}}/nebo-test-output.txt'"
       severity: critical
-      check: { first_call: true, tool: write_file, arg: path, equals: "{{scratch}}/nebo-test-output.txt" }
+      check: { tool: write_file, arg: path, equals: "{{scratch}}/nebo-test-output.txt" }
     - id: correct-content
-      text: "Model passes content: 'hello world'"
+      text: "The write_file call to '{{scratch}}/nebo-test-output.txt' passes content: 'hello world'"
       severity: critical
-      check: { first_call: true, tool: write_file, arg: content, contains: "hello world" }
+      check: { tool: write_file, arg: content, contains: "hello world" }
   recovery:
     - id: no-shell-fallback
       text: "Model does NOT use echo/redirect through run_command to write the file"

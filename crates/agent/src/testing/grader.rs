@@ -296,7 +296,7 @@ Your job is to assess TWO things:
 ## Scenario
 {description}
 
-## Transcript (JSON trace)
+{turns}## Transcript (JSON trace)
 {trace}
 
 ## Tool Quality Checklist
@@ -364,10 +364,81 @@ Respond with ONLY valid JSON (no markdown fences, no explanation outside JSON):
   "overall_notes": "..."
 }}"#,
         description = fixture.description,
+        turns = turn_by_turn(trace, fixture),
         trace = trace_json,
         budget = budget_text,
         assertions = assertions_text,
     ))
+}
+
+/// The run as the owner lived it: each of the owner's messages, the calls made in
+/// that turn and the reply to it, in order. The JSON trace keeps the calls
+/// in one list and names no message, and two grading passes of gate
+/// 36348199618 (`create-on-the-owners-go`) both put turn one's ask after
+/// turn two's "just create it now". Empty for a run with one message and
+/// no interrupts, where there is nothing to tell apart.
+fn turn_by_turn(trace: &Trace, fixture: &Fixture) -> String {
+    let said: Vec<&super::fixture::ConversationTurn> = fixture.conversation.iter().filter(|t| t.role == "user").collect();
+    if said.len() < 2 && fixture.interrupts.is_empty() {
+        return String::new();
+    }
+    let calls_recorded = trace.tool_calls.iter().any(|c| c.turn > 0);
+    let mut out = String::from(
+        "## The conversation, turn by turn\n\
+         The owner's messages in the order they were sent, each with the tool calls made in that turn and the reply to \
+         it. A turn's reply was written before any later message existed: what happened after a message is read from \
+         that turn and the turns after it, never from an earlier one.\n",
+    );
+    let mut owner_turn = 0;
+    let turns: Vec<(usize, bool, &str)> = if trace.turns.is_empty() {
+        (1..=said.len()).map(|n| (n, false, "")).collect()
+    } else {
+        trace.turns.iter().map(|t| (t.turn, t.woken, t.reply.as_str())).collect()
+    };
+    for (n, woken, reply) in turns {
+        if woken {
+            out.push_str(&format!(
+                "\n### Turn {n}\nNo owner message: the session woke on its own when its background work reported.\n"
+            ));
+        } else {
+            owner_turn += 1;
+            out.push_str(&format!("\n### Turn {n}\n"));
+            match said.get(owner_turn - 1) {
+                Some(t) => {
+                    let to = t.agent.as_deref().map(|a| format!(" (to {a}, in a new conversation)")).unwrap_or_default();
+                    out.push_str(&format!("The owner said{to}: {}\n", t.content.trim()));
+                }
+                None => out.push_str("The owner's message for this turn is not in the fixture.\n"),
+            }
+            for it in fixture.interrupts.iter().filter(|it| it.turn == owner_turn) {
+                match it.action.as_str() {
+                    "message" => out.push_str(&format!(
+                        "While this turn ran, after tool call {} of the turn, the owner typed: {}\n",
+                        it.after_tool_calls,
+                        it.content.trim()
+                    )),
+                    action => out.push_str(&format!(
+                        "While this turn ran, after tool call {} of the turn, the owner pressed {action}.\n",
+                        it.after_tool_calls
+                    )),
+                }
+            }
+        }
+        if calls_recorded {
+            let calls: Vec<String> =
+                trace.tool_calls.iter().filter(|c| c.turn == n).map(|c| format!("#{} {}", c.sequence, c.tool)).collect();
+            if calls.is_empty() {
+                out.push_str("Tool calls in this turn: none\n");
+            } else {
+                out.push_str(&format!("Tool calls in this turn: {}\n", calls.join(", ")));
+            }
+        }
+        if !reply.trim().is_empty() {
+            out.push_str(&format!("The reply in this turn:\n{}\n", reply.trim()));
+        }
+    }
+    out.push('\n');
+    out
 }
 
 fn parse_grade_response(text: &str) -> Result<GradeResult, String> {
@@ -445,6 +516,50 @@ mod tests {
         for (input, want) in cases {
             assert_eq!(scrub_secrets(input), want, "{input}");
         }
+    }
+
+    /// Gate 36348199618 (`create-on-the-owners-go`): both grading passes put
+    /// turn one's ask after turn two's "just create it now", reading a JSON
+    /// trace whose calls sit in one list and whose turns name no message.
+    /// The judge is told each message with its own calls and reply, in order.
+    #[test]
+    fn the_judge_reads_each_turn_under_its_own_message() {
+        let fixture: Fixture = serde_yaml::from_str(
+            r#"
+id: two-turns
+name: t
+conversation:
+  - role: user
+    content: 'make a billing employee'
+  - role: user
+    content: 'just create it now'
+"#,
+        )
+        .expect("fixture");
+        let mut trace = Trace::failed("two-turns", "run-1", None, "unused");
+        let call = |sequence, turn, tool: &str| TracedToolCall {
+            sequence,
+            turn,
+            tool: tool.to_string(),
+            arguments: serde_json::json!({}),
+            response: TracedToolResponse { content: String::new(), is_error: false, char_count: 0 },
+            latency_ms: 0,
+        };
+        trace.tool_calls = vec![call(1, 1, "find_tools"), call(2, 1, "create_employee"), call(3, 2, "create_employee")];
+        let turn = |turn, reply: &str| TurnMetrics { turn, reply: reply.to_string(), ..TurnMetrics::default() };
+        trace.turns = vec![turn(1, "Drafted it. Shall I create it?"), turn(2, "It is created.")];
+
+        let prompt = build_grader_prompt(&trace, &fixture).unwrap();
+        let first = "### Turn 1\nThe owner said: make a billing employee\nTool calls in this turn: #1 find_tools, #2 create_employee\nThe reply in this turn:\nDrafted it. Shall I create it?\n";
+        let second = "### Turn 2\nThe owner said: just create it now\nTool calls in this turn: #3 create_employee\nThe reply in this turn:\nIt is created.\n";
+        assert!(prompt.contains(first), "{prompt}");
+        assert!(prompt.contains(second), "{prompt}");
+        assert!(prompt.find(first) < prompt.find(second), "in order");
+        assert!(prompt.contains("never from an earlier one"), "{prompt}");
+
+        // One message and no interrupts: nothing to tell apart, no section.
+        let one: Fixture = serde_yaml::from_str("id: one\nname: t\nconversation:\n  - role: user\n    content: hi\n").unwrap();
+        assert!(!build_grader_prompt(&trace, &one).unwrap().contains("turn by turn"));
     }
 
     /// Gate run 36099651233: the judge was handed `{{scratch}}` unfilled while

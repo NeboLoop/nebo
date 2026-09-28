@@ -237,6 +237,17 @@ mod tests {
         }
     }
 
+    /// A command the owner gives is run as given, before anything else, and
+    /// never answered with what it would do (2026-09-27 proof:
+    /// `run-command-fails` run 3, `run-command-retry-spiral` run 1).
+    #[test]
+    fn the_owners_command_is_run_as_given() {
+        let text = system_prompt();
+        let line = "- When the owner gives you a command to run, run it with run_command as given before anything else, \
+                    then report what it returned: what a command does is known only from running it.\n";
+        assert!(text.contains(line), "{line:?} missing from:\n{text}");
+    }
+
     /// Nebo's own machinery is not the work, and signing in is the owner's.
     #[test]
     fn nebo_itself_is_not_the_work() {
@@ -271,5 +282,5 @@ mod tests {
         assert!(chars < 8_000);
     }
 
-    const SYSTEM_PROMPT_CHARS: usize = 7_107;
+    const SYSTEM_PROMPT_CHARS: usize = 7_288;
 }
