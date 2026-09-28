@@ -5151,7 +5151,7 @@ checksum = "2e126dda6f34391ab7b444f9922055facc83c07a910da3eb16f1e4d9c45dc777"
 [[package]]
 name = "link-core"
 version = "0.1.0"
-source = "git+https://github.com/NeboLoop/nebo-link?rev=aaf2d0ffcdae2c232fabee861ad3bb8e72e1a26d#aaf2d0ffcdae2c232fabee861ad3bb8e72e1a26d"
+source = "git+https://github.com/NeboLoop/nebo-link?rev=d8e66db1ad6afbe8b8c5add06005d92ca721ce5e#d8e66db1ad6afbe8b8c5add06005d92ca721ce5e"
 dependencies = [
  "bytes",
  "dirs",
@@ -6041,7 +6041,7 @@ dependencies = [
 [[package]]
 name = "nebo-runtimes"
 version = "0.1.0"
-source = "git+https://github.com/NeboLoop/nebo-link?rev=aaf2d0ffcdae2c232fabee861ad3bb8e72e1a26d#aaf2d0ffcdae2c232fabee861ad3bb8e72e1a26d"
+source = "git+https://github.com/NeboLoop/nebo-link?rev=d8e66db1ad6afbe8b8c5add06005d92ca721ce5e#d8e66db1ad6afbe8b8c5add06005d92ca721ce5e"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -6602,7 +6602,7 @@ dependencies = [
 [[package]]
 name = "oal-host"
 version = "0.1.0"
-source = "git+https://github.com/NeboLoop/nebo-link?rev=aaf2d0ffcdae2c232fabee861ad3bb8e72e1a26d#aaf2d0ffcdae2c232fabee861ad3bb8e72e1a26d"
+source = "git+https://github.com/NeboLoop/nebo-link?rev=d8e66db1ad6afbe8b8c5add06005d92ca721ce5e#d8e66db1ad6afbe8b8c5add06005d92ca721ce5e"
 dependencies = [
  "base64 0.22.1",
  "futures",
@@ -6626,7 +6626,7 @@ dependencies = [
 [[package]]
 name = "oal-relay"
 version = "0.1.0"
-source = "git+https://github.com/NeboLoop/nebo-link?rev=aaf2d0ffcdae2c232fabee861ad3bb8e72e1a26d#aaf2d0ffcdae2c232fabee861ad3bb8e72e1a26d"
+source = "git+https://github.com/NeboLoop/nebo-link?rev=d8e66db1ad6afbe8b8c5add06005d92ca721ce5e#d8e66db1ad6afbe8b8c5add06005d92ca721ce5e"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -6649,7 +6649,7 @@ dependencies = [
 [[package]]
 name = "oal-secure"
 version = "0.1.0"
-source = "git+https://github.com/NeboLoop/nebo-link?rev=aaf2d0ffcdae2c232fabee861ad3bb8e72e1a26d#aaf2d0ffcdae2c232fabee861ad3bb8e72e1a26d"
+source = "git+https://github.com/NeboLoop/nebo-link?rev=d8e66db1ad6afbe8b8c5add06005d92ca721ce5e#d8e66db1ad6afbe8b8c5add06005d92ca721ce5e"
 dependencies = [
  "base64 0.22.1",
  "bytes",

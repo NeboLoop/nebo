@@ -55,13 +55,12 @@ pub const PROTOCOL: &str = "0.1";
 /// How long a relay and a host may take to open a connection.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
 /// How long a host reached directly (on this computer or the LAN) may take
-/// to open a connection before Nebo goes the next way.
+/// to open a connection, dial and handshake together, before Nebo goes the
+/// next way.
 const DIRECT_TIMEOUT: Duration = Duration::from_secs(5);
 /// How long Nebo listens on the LAN, once, before a host not heard is taken
 /// to be elsewhere.
 const LAN_WAIT: Duration = Duration::from_millis(1500);
-/// How long `host/info` may take on a new connection through the relay.
-const INFO_TIMEOUT: Duration = Duration::from_secs(5);
 /// How long a request on a connection may take to be answered (a first
 /// `initialize` starts the agent's process).
 const CALL_TIMEOUT: Duration = Duration::from_secs(60);
@@ -206,13 +205,24 @@ impl Direct {
 
     /// Learns, on a connection through the relay, whether the bot serves LAN
     /// direct and with which certificate (`host/info`, spec 4.5), for the
-    /// next connection to try the LAN first.
-    async fn learn(&self, bot: &str, conn: &mut Conn) {
-        let asked = tokio::time::timeout(INFO_TIMEOUT, conn.call(None, "host/info", json!({}))).await;
-        let Ok(Some((Ok(info), _))) = asked else {
-            return;
-        };
-        let fingerprint = info["host"]["tlsFingerprint"].as_str();
+    /// next connection to try the LAN first. Asked on the connection and
+    /// taken in as its answer is read: the connection is the caller's at
+    /// once, and nothing else it carries is lost.
+    fn learn(&self, bot: &str, conn: &mut Conn) {
+        let (direct, bot) = (self.clone(), bot.to_owned());
+        conn.ask(
+            "host/info",
+            json!({}),
+            Box::new(move |answer| {
+                if let Some(info) = answer.get("result") {
+                    direct.remember(&bot, info["host"]["tlsFingerprint"].as_str());
+                }
+            }),
+        );
+    }
+
+    /// Keeps whether the bot serves LAN direct, and with which certificate.
+    fn remember(&self, bot: &str, fingerprint: Option<&str>) {
         let _held = LAN_FILE.lock().expect("lan file");
         let mut known: BTreeMap<String, String> = std::fs::read_to_string(&self.lan_file)
             .ok()
@@ -267,12 +277,29 @@ impl Ways<'_> {
 impl Way {
     /// A WebSocket to the host this way, its certificate pinned.
     async fn dial(&self, bot: &str) -> Option<(Binary, Closed)> {
-        match tokio::time::timeout(DIRECT_TIMEOUT, oal_host::lan::dial(self.addr, &self.fingerprint)).await {
-            Ok(Ok(ws)) => Some(Binary::new(ws)),
-            Ok(Err(e)) => {
+        match oal_host::lan::dial(self.addr, &self.fingerprint).await {
+            Ok(ws) => Some(Binary::new(ws)),
+            Err(e) => {
                 info!(bot, via = %self.via, addr = %self.addr, error = %e, "linked: the linked bot did not answer this way");
                 None
             }
+        }
+    }
+
+    /// `open` on a WebSocket to the host this way, dial and all within
+    /// [`DIRECT_TIMEOUT`]; `None` when it didn't answer, or not in time.
+    async fn attempt<T, F, Fut>(&self, bot: &str, open: F) -> Option<T>
+    where
+        F: FnOnce(Binary, Closed) -> Fut,
+        Fut: std::future::Future<Output = Option<T>>,
+    {
+        let attempt = tokio::time::timeout(DIRECT_TIMEOUT, async {
+            let (transport, closed) = self.dial(bot).await?;
+            open(transport, closed).await
+        })
+        .await;
+        match attempt {
+            Ok(opened) => opened,
             Err(_) => {
                 info!(bot, via = %self.via, addr = %self.addr, "linked: the linked bot did not answer this way in time");
                 None
@@ -313,7 +340,13 @@ pub struct Conn {
     pub device: String,
     /// How it reached the bot.
     pub via: Via,
+    /// A request of Nebo's own on the host channel ([`Conn::ask`]): its id,
+    /// and what takes its answer.
+    asked: Option<(u64, Answered)>,
 }
+
+/// What takes the answer to a request of Nebo's own.
+type Answered = Box<dyn FnOnce(&Value) + Send>;
 
 impl Conn {
     /// A connection to this computer's own host, in this process.
@@ -326,6 +359,7 @@ impl Conn {
             next_id: 0,
             device: id,
             via: Via::Local,
+            asked: None,
         }
     }
 
@@ -370,6 +404,7 @@ impl Conn {
             next_id: 0,
             device,
             via,
+            asked: None,
         }
     }
 
@@ -397,13 +432,30 @@ impl Conn {
     }
 
     /// The next frame; `None` once the connection is gone. Anything not JSON
-    /// is dropped (spec 4.2).
+    /// is dropped (spec 4.2); the answer to a request of Nebo's own
+    /// ([`Conn::ask`]) goes where it was asked for.
     pub async fn next(&mut self) -> Option<Value> {
         loop {
             let bytes = self.rx.recv().await?;
-            if let Ok(frame) = serde_json::from_slice(&bytes) {
-                return Some(frame);
+            let Ok(frame) = serde_json::from_slice::<Value>(&bytes) else {
+                continue;
+            };
+            let own = self.asked.as_ref().is_some_and(|(id, _)| {
+                frame.get("agent").is_none() && frame.get("method").is_none() && frame["id"] == json!(id)
+            });
+            if own && let Some((_, then)) = self.asked.take() {
+                then(&frame);
+                continue;
             }
+            return Some(frame);
+        }
+    }
+
+    /// Sends a request of Nebo's own on the host channel, whose answer goes
+    /// to `then` whenever it is read, never to the caller.
+    fn ask(&mut self, method: &str, params: Value, then: Answered) {
+        if let Some(id) = self.request(None, method, params) {
+            self.asked = Some((id, then));
         }
     }
 
@@ -484,29 +536,35 @@ static PAIRING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// Pairs Nebo with the linked bot `bot` using `code` (spec 6, 17.5): CPace
 /// and Noise with the code, `host/pair` inside, both static keys checked
-/// against the handshake's, on the first way to the bot that answers (the
+/// against the handshake's, on the first way to the bot it succeeds on (the
 /// relay last). The pairing connection stays open as Nebo's first
 /// connection to the bot.
 pub async fn pair(relay: &Relay, direct: &Direct, keys: &KeyStore, bot: &str, code: &PairingCode, device_name: &str) -> Result<Conn, Unreached> {
     let mut ways = direct.ways(bot);
-    let mut opened = None;
     while let Some(way) = ways.next().await {
-        if let Some((transport, _)) = way.dial(bot).await {
-            opened = Some((transport, way.via));
-            break;
+        let paired = way
+            .attempt(bot, |transport, _| async move { pair_on(transport, way.via, keys, bot, code, device_name).await.ok() })
+            .await;
+        if let Some(conn) = paired {
+            return Ok(conn);
         }
     }
-    let (transport, via) = match opened {
-        Some(opened) => opened,
-        None => (relay.socket(keys, bot, Some(code.nameplate())).await?.0, Via::Relay),
-    };
-    let mut pairing = match tokio::time::timeout(CONNECT_TIMEOUT, oal_secure::pair(transport, code, keys, Side::Client)).await {
-        Ok(Ok(pairing)) => pairing,
-        Ok(Err(e)) => {
-            info!(bot, error = %e, "linked: pairing with the linked bot failed");
+    let (transport, _) = relay.socket(keys, bot, Some(code.nameplate())).await?;
+    let mut conn = tokio::time::timeout(CONNECT_TIMEOUT, pair_on(transport, Via::Relay, keys, bot, code, device_name))
+        .await
+        .map_err(|_| Unreached::Offline)??;
+    direct.learn(bot, &mut conn);
+    Ok(conn)
+}
+
+/// The pairing itself, on a socket that reached the bot `via`.
+async fn pair_on(transport: Binary, via: Via, keys: &KeyStore, bot: &str, code: &PairingCode, device_name: &str) -> Result<Conn, Unreached> {
+    let mut pairing = match oal_secure::pair(transport, code, keys, Side::Client).await {
+        Ok(pairing) => pairing,
+        Err(e) => {
+            info!(bot, %via, error = %e, "linked: pairing with the linked bot failed");
             return Err(Unreached::Offline);
         }
-        Err(_) => return Err(Unreached::Offline),
     };
     let request = json!({ "jsonrpc": "2.0", "id": 1, "method": "host/pair", "params": {
         "protocol": protocol(),
@@ -517,8 +575,8 @@ pub async fn pair(relay: &Relay, direct: &Direct, keys: &KeyStore, bot: &str, co
     if pairing.send(request.to_string().as_bytes()).await.is_err() {
         return Err(Unreached::Offline);
     }
-    let answered: Value = match tokio::time::timeout(CONNECT_TIMEOUT, pairing.recv()).await {
-        Ok(Ok(Some(bytes))) => serde_json::from_slice(&bytes).unwrap_or_default(),
+    let answered: Value = match pairing.recv().await {
+        Ok(Some(bytes)) => serde_json::from_slice(&bytes).unwrap_or_default(),
         _ => return Err(Unreached::Offline),
     };
     let result = match answer(&answered) {
@@ -544,11 +602,7 @@ pub async fn pair(relay: &Relay, direct: &Direct, keys: &KeyStore, bot: &str, co
     })?;
     info!(bot, device, %via, "linked: Nebo paired with the linked bot");
     info!(bot, %via, "linked: connected {via}");
-    let mut conn = Conn::session(session, device.to_owned(), via);
-    if via == Via::Relay {
-        direct.learn(bot, &mut conn).await;
-    }
-    Ok(conn)
+    Ok(Conn::session(session, device.to_owned(), via))
 }
 
 /// Why a session didn't open.
@@ -565,29 +619,34 @@ enum Opened {
 async fn session(relay: &Relay, direct: &Direct, keys: &KeyStore, peer: &Peer) -> Result<Conn, Opened> {
     let mut ways = direct.ways(&peer.id);
     while let Some(way) = ways.next().await {
-        let Some((transport, closed)) = way.dial(&peer.id).await else {
-            continue;
-        };
-        match handshake(transport, closed, keys, peer, way.via, DIRECT_TIMEOUT).await {
-            Err(Opened::Failed(_)) => continue,
-            opened => return opened,
+        let opened = way
+            .attempt(&peer.id, |transport, closed| async move { Some(handshake(transport, closed, keys, peer, way.via).await) })
+            .await;
+        match opened {
+            None | Some(Err(Opened::Failed(_))) => continue,
+            Some(opened) => return opened,
         }
     }
     let (transport, closed) = relay.socket(keys, &peer.id, None).await.map_err(Opened::Failed)?;
-    let mut conn = handshake(transport, closed, keys, peer, Via::Relay, CONNECT_TIMEOUT).await?;
-    direct.learn(&peer.id, &mut conn).await;
+    let mut conn = match tokio::time::timeout(CONNECT_TIMEOUT, handshake(transport, closed, keys, peer, Via::Relay)).await {
+        Ok(opened) => opened?,
+        Err(_) => {
+            info!(bot = %peer.id, "linked: the session did not open in time");
+            return Err(Opened::Failed(Unreached::Offline));
+        }
+    };
+    direct.learn(&peer.id, &mut conn);
     Ok(conn)
 }
 
 /// The session's handshake (spec 17.2) on a socket that reached the host
 /// `via`: Noise IK with the pinned keys, the hello's version checked in the
 /// answer.
-async fn handshake(transport: Binary, closed: Closed, keys: &KeyStore, peer: &Peer, via: Via, timeout: Duration) -> Result<Conn, Opened> {
+async fn handshake(transport: Binary, closed: Closed, keys: &KeyStore, peer: &Peer, via: Via) -> Result<Conn, Opened> {
     let hello = json!({ "protocol": protocol(), "client": client() });
-    let opened = tokio::time::timeout(timeout, oal_secure::connect(transport, keys, peer, hello.to_string().as_bytes())).await;
-    let (session, reply) = match opened {
-        Ok(Ok(opened)) => opened,
-        Ok(Err(e)) => {
+    let (session, reply) = match oal_secure::connect(transport, keys, peer, hello.to_string().as_bytes()).await {
+        Ok(opened) => opened,
+        Err(e) => {
             let code = *closed.lock().expect("close code");
             info!(bot = %peer.id, %via, error = %e, ?code, "linked: the session did not open");
             return Err(match (&e, code) {
@@ -595,10 +654,6 @@ async fn handshake(transport: Binary, closed: Closed, keys: &KeyStore, peer: &Pe
                 (_, Some(4001 | 4003)) => Opened::Forgotten,
                 _ => Opened::Failed(Unreached::Offline),
             });
-        }
-        Err(_) => {
-            info!(bot = %peer.id, %via, "linked: the session did not open in time");
-            return Err(Opened::Failed(Unreached::Offline));
         }
     };
     let reply: Value = serde_json::from_slice(&reply).unwrap_or_default();
@@ -931,6 +986,43 @@ mod tests {
         }
     }
 
+    /// The answer to a request of Nebo's own goes where it was asked for,
+    /// whenever it is read; every other frame, before it or after, still
+    /// reaches the caller.
+    #[tokio::test]
+    async fn an_answer_nebo_asked_for_itself_never_takes_another_frame() {
+        let (tx, _sent) = mpsc::unbounded_channel();
+        let (host, rx) = mpsc::unbounded_channel();
+        let mut conn = Conn { tx, rx, next_id: 0, device: "d".into(), via: Via::Relay, asked: None };
+        let (got, answered) = std::sync::mpsc::channel();
+        conn.ask("host/info", json!({}), Box::new(move |answer| got.send(answer.clone()).unwrap()));
+        let before = json!({ "jsonrpc": "2.0", "method": "host/agent_update", "params": {} });
+        let own = json!({ "jsonrpc": "2.0", "id": 1, "result": { "host": {} } });
+        let after = json!({ "agent": "a", "acp": { "jsonrpc": "2.0", "id": 1, "result": {} } });
+        for frame in [&before, &own, &after] {
+            host.send(frame.to_string().into_bytes()).unwrap();
+        }
+        assert_eq!(conn.next().await, Some(before));
+        assert_eq!(conn.next().await, Some(after), "an agent channel's id 1 is not Nebo's own");
+        assert_eq!(answered.try_recv().unwrap(), own);
+    }
+
+    /// A direct way that answers but can't pair (another host has the
+    /// address now) gives way to the relay.
+    #[tokio::test]
+    async fn a_pairing_that_fails_directly_goes_through_the_relay() {
+        let root = tempfile::tempdir().unwrap();
+        let oal = bot_host(&root.path().join("bot"));
+        let hub = Hub::start(oal.clone()).await;
+        let nebo = nebo(&root.path().join("nebo"), Vec::new());
+        let decoy = root.path().join("decoy");
+        nebo.daemon_serves(&bot_host(&decoy), &decoy).await;
+
+        let conn = nebo.connect(&hub).await.unwrap();
+        assert_eq!(conn.via, Via::Relay);
+        assert_eq!(oal.devices().len(), 1, "paired with the bot, through the relay");
+    }
+
     /// The connection answers: the host's agents, asked on it.
     async fn answers(conn: &mut Conn) {
         let (answer, _) = conn.call(None, "host/agents", json!({})).await.expect("an answer");
@@ -1008,8 +1100,12 @@ mod tests {
         let hub = Hub::start(oal.clone()).await;
         let gone = TcpListener::bind("127.0.0.1:0").await.unwrap().local_addr().unwrap();
         let nebo = nebo(&root.path().join("nebo"), vec![gone]);
-        // Paired, and the LAN certificate learned, through the relay.
-        assert_eq!(nebo.connect(&hub).await.unwrap().via, Via::Relay);
+        // Paired, and the LAN certificate learned (as the connection is
+        // read), through the relay.
+        let mut first = nebo.connect(&hub).await.unwrap();
+        assert_eq!(first.via, Via::Relay);
+        answers(&mut first).await;
+        assert_eq!(nebo.direct.certificates().get(BOT), Some(&on_lan.fingerprint));
         let stale = link_core::machine::Direct { addr: gone, fingerprint: on_lan.fingerprint.clone() };
         link_core::machine::record_direct(&nebo.daemon_home.join(BOT), &stale, true).unwrap();
 
