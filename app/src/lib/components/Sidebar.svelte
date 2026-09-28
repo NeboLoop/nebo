@@ -1,6 +1,7 @@
 <script lang="ts">
   import { openWebBilling } from '$lib/billing';
   import { t } from 'svelte-i18n';
+  import BrandMark from '$lib/components/BrandMark.svelte';
   import { onMount } from 'svelte';
   import { onWsEvent } from '$lib/websocket/subscribe';
   import { AGENT_COLORS, AGENT_COLORS_MAP } from '$lib/tokens.js';
@@ -105,7 +106,7 @@
 <aside class="flex flex-col border-r border-base-content/10 bg-base-100 shrink-0 overflow-hidden {collapsed ? 'w-14' : 'w-[260px]'}">
   <!-- Top: brand + collapse toggle -->
   <div class="h-12 px-3.5 border-b border-base-content/10 flex items-center gap-2.5">
-    <a href="/" class="w-[22px] h-[22px] rounded-md bg-base-content text-base-100 flex items-center justify-center font-mono text-sm font-semibold shrink-0">N</a>
+    <a href="/" class="shrink-0"><BrandMark class="w-[22px] h-[22px]" /></a>
     {#if !collapsed}
       <a href="/" class="font-semibold text-sm tracking-tight flex-1">Nebo</a>
     {/if}

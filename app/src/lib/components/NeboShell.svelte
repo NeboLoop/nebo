@@ -1,5 +1,6 @@
 <script lang="ts">
   import { t } from 'svelte-i18n';
+  import BrandMark from '$lib/components/BrandMark.svelte';
   import { N } from '$lib/tokens.js';
   let { tab = 'Orchestrate', children } = $props();
 
@@ -15,7 +16,7 @@
 <div class="flex flex-col h-screen">
   <header class="h-14 border-b border-base-300 bg-base-100 flex items-center px-4 shrink-0">
     <div class="flex items-center gap-1.5 font-semibold text-sm tracking-tight mr-4">
-      <div class="w-5 h-5 rounded bg-primary text-primary-content flex items-center justify-center font-mono text-sm font-bold">N</div>
+      <BrandMark class="w-5 h-5" />
       Nebo
     </div>
     <nav class="flex items-center h-full gap-1">
