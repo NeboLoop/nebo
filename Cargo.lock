@@ -5851,6 +5851,7 @@ dependencies = [
  "base64 0.22.1",
  "chromiumoxide",
  "futures",
+ "libc",
  "nebo-tls",
  "nebo-types",
  "rand 0.8.5",

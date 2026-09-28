@@ -3,7 +3,7 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use tokio::process::Command;
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::BrowserError;
 
@@ -195,17 +195,77 @@ impl RunningChrome {
             .ok_or_else(|| BrowserError::CdpConnection("no webSocketDebuggerUrl".into()))
     }
 
-    /// Kill the Chrome process.
-    pub async fn kill(&mut self) {
-        let _ = self.child.kill().await;
-        info!(pid = self.pid, "killed Chrome");
+    /// Quit Chrome as a user quitting it would, and wait for it (see
+    /// [`quit`]).
+    pub async fn quit(&mut self) {
+        if quit(&mut self.child, QUIT_GRACE).await {
+            info!(pid = self.pid, "Chrome quit");
+        } else {
+            warn!(pid = self.pid, "Chrome did not quit when asked — killed it");
+        }
     }
 }
 
 impl Drop for RunningChrome {
     fn drop(&mut self) {
-        // Best-effort kill on drop
-        let _ = self.child.start_kill();
+        // Asked, not killed: Chrome finishes quitting on its own.
+        ask_to_quit(&mut self.child);
         types::own_ports::close(self.cdp_port);
+    }
+}
+
+/// How long Chrome gets to quit before it is killed.
+const QUIT_GRACE: Duration = Duration::from_secs(5);
+
+/// Asks `child` to quit, waits up to `grace`, then kills it. True when it
+/// quit on its own. A clean quit removes what Chrome made for the run —
+/// among them the copy of itself macOS Chrome keeps in the temp folder
+/// while it runs, which a kill leaves behind for good.
+async fn quit(child: &mut tokio::process::Child, grace: Duration) -> bool {
+    ask_to_quit(child);
+    if tokio::time::timeout(grace, child.wait()).await.is_ok() {
+        return true;
+    }
+    let _ = child.kill().await;
+    false
+}
+
+/// SIGTERM on Unix, Chrome's own clean shutdown. Windows has no such
+/// signal for a windowless child, so there it is ended outright.
+fn ask_to_quit(child: &mut tokio::process::Child) {
+    #[cfg(unix)]
+    if let Some(pid) = child.id() {
+        // SAFETY: a signal to our own child, not yet reaped (`id` is Some).
+        unsafe { libc::kill(pid as i32, libc::SIGTERM) };
+        return;
+    }
+    let _ = child.start_kill();
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    /// A child running `script`, given a moment to get there (a trap set
+    /// before the ask arrives).
+    async fn spawn(script: &str) -> tokio::process::Child {
+        let child = Command::new("sh").args(["-c", script]).spawn().expect("sh");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        child
+    }
+
+    #[tokio::test]
+    async fn a_child_that_quits_when_asked_is_never_killed() {
+        let mut child = spawn("exec sleep 30").await;
+        assert!(quit(&mut child, Duration::from_secs(5)).await);
+    }
+
+    #[tokio::test]
+    async fn a_child_that_ignores_the_ask_is_killed_after_the_grace() {
+        let mut child = spawn("trap '' TERM; sleep 30 & wait").await;
+        let started = std::time::Instant::now();
+        assert!(!quit(&mut child, Duration::from_millis(300)).await);
+        assert!(started.elapsed() < Duration::from_secs(5));
+        assert!(child.try_wait().expect("status").is_some(), "it is gone");
     }
 }
