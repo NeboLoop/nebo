@@ -2650,16 +2650,20 @@ export interface LinkedAgentEntry {
 	description: string
 	/** A "New <runtime>" row (`id` `new:<runtime>`): the coding agent it starts. */
 	runtime?: string
+	/** The bot a hire of this row goes to (`linked.botId`). */
+	botId: string
 }
 
 export interface LinkedBotEntry {
 	id: string
 	name: string
-	/** What runs the bot: "openclaw", "hermes". */
+	/** What runs the bot: "openclaw", "hermes"; empty for a computer. */
 	runtime: string
 	online: boolean
 	/** This computer: coding agents Nebo hosts itself, each hired into a folder of its own. */
 	local: boolean
+	/** A computer, not an app: its "New <runtime>" rows, once however many of its apps are linked. */
+	computer: boolean
 	agents: LinkedAgentEntry[]
 }
 

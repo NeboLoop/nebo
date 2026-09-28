@@ -38,7 +38,7 @@ var typeOverrides = map[string]string{
 	"list_agents.primaryChristened": "boolean",
 	// Linked bots (OpenClaw, Hermes) with chat, and the agents each serves:
 	// what "Hire from <linked bot>" offers.
-	"list_linked_agents.bots": "LinkedBotEntry[]",
+	"list_linked_agents.computers": "LinkedComputerEntry[]",
 	// Blank-create (the Hire flow) returns the introduction thread so the
 	// UI can land the owner where the new employee is speaking.
 	"create_agent.threadId": "string | null",
@@ -147,23 +147,31 @@ export interface RunDisplay {
 	offline?: boolean
 }`,
 
-	"LinkedBotEntry": `export interface LinkedBotEntry {
+	"LinkedComputerEntry": `export interface LinkedComputerEntry {
+	/** ` + "`computer:<hostname>`" + `: a key, never a bot. */
 	id: string
+	/** "Mac.lan"; "This computer" while Nebo hosts its coding agents itself. */
 	name: string
-	/** What runs the bot: "openclaw", "hermes". */
-	runtime: string
 	online: boolean
-	/** This computer: coding agents Nebo hosts itself, each hired into a folder of its own. */
 	local: boolean
+	/** The agents of the apps linked on it. */
 	agents: LinkedAgentEntry[]
+	/** The coding employees it can start, each in a new folder. */
+	new: LinkedAgentEntry[]
 }`,
 
 	"LinkedAgentEntry": `export interface LinkedAgentEntry {
+	/** The agent's id, or ` + "`new:<runtime>`" + ` for a coding employee to start. */
 	id: string
 	name: string
+	/** "Hermes on Mac.lan"; "Works in a new folder on Mac.lan". */
 	description: string
-	/** A "New <runtime>" row (` + "`id`" + ` ` + "`new:<runtime>`" + `): the coding agent it starts. */
-	runtime?: string
+	/** The runtime it runs: "hermes", "codex". */
+	runtime: string
+	/** The bot a hire of it goes to (` + "`linked.botId`" + `). */
+	botId: string
+	/** Already on the team: shown, not hired again. */
+	hired?: boolean
 }`,
 
 	"AppWindowConfig": `export interface AppWindowConfig {

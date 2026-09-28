@@ -2028,6 +2028,12 @@ async fn create_linked_agent(
             bot.name
         )))
     })?;
+    if hired_linked(&state).contains(&(bot_id.to_owned(), agent_id.to_owned())) {
+        return Err(to_error_response(types::NeboError::Validation(format!(
+            "{} is already on your team.",
+            linked.name
+        ))));
+    }
     hire_linked(&state, bot_id, agent_id, &linked.name, &linked.description, mode).await
 }
 
@@ -2049,21 +2055,17 @@ fn refusal(e: &comm::CommError, bot: &str) -> String {
     }
 }
 
-/// A computer's "New <runtime>" rows: one per coding agent it can start a
-/// new one of, `computer` naming it for the owner ("Mac.lan", "this
-/// computer").
-fn new_rows(runtimes: &[comm::api_types::LinkedRuntime], computer: &str) -> Vec<serde_json::Value> {
-    runtimes
-        .iter()
-        .map(|r| {
-            serde_json::json!({
-                "id": format!("{NEW}{}", r.id),
-                "name": format!("New {}", r.name),
-                "description": format!("Starts a new {} on {computer}", r.name),
-                "runtime": r.id,
-            })
-        })
-        .collect()
+/// A computer's "New <runtime>" row: a new coding employee of `runtime` in
+/// a folder of its own, `computer` naming the computer for the owner
+/// ("Mac.lan", "this computer"), started by the bot `bot_id`.
+fn new_row(runtime: &comm::api_types::LinkedRuntime, computer: &str, bot_id: &str) -> serde_json::Value {
+    serde_json::json!({
+        "id": format!("{NEW}{}", runtime.id),
+        "name": runtime.name,
+        "description": format!("Works in a new folder on {computer}"),
+        "runtime": runtime.id,
+        "botId": bot_id,
+    })
 }
 
 /// The linked employee's row, locked name, brain and permission mode, and
@@ -2124,21 +2126,23 @@ async fn hire_linked(
     })))
 }
 
-/// GET /agents/linked — what "Hire from another app" offers: the coding
-/// agents Nebo can host on this computer, and every linked bot of the
-/// owner's that has agents to hire, with those agents. Not signed in to
-/// NeboAI = nothing to hire from another computer.
+/// GET /agents/linked — what "Hire from another app" offers, by computer:
+/// the agents of the apps linked on each (the ones already hired marked
+/// `hired`), and the coding employees it can start (`new`). Every row
+/// carries the bot its hire goes to (`botId`). Not signed in to NeboAI =
+/// only this computer's coding employees.
 pub async fn list_linked_agents(State(state): State<AppState>) -> HandlerResult<serde_json::Value> {
-    let mut sources: Vec<serde_json::Value> = local_source(&state).into_iter().collect();
+    let here = this_computer(&state);
     let Ok(api) = crate::codes::build_api_client(&state) else {
-        return Ok(Json(serde_json::json!({ "bots": sources })));
+        return Ok(Json(serde_json::json!({ "computers": linked_computers(&[], here, &std::collections::HashSet::new()) })));
     };
     let bots = api
         .list_managed_bots()
         .await
         .map_err(|e| to_error_response(types::NeboError::Internal(e.to_string())))?;
     let self_id = config::read_bot_id().unwrap_or_default();
-    for bot in bots.iter().filter(|b| hire_source(b, &self_id)) {
+    let mut links = Vec::new();
+    for bot in bots.into_iter().filter(|b| hire_source(b, &self_id)) {
         let roster = match api.linked_bot_roster(&bot.id).await {
             Ok(roster) => roster,
             Err(e) => {
@@ -2146,9 +2150,20 @@ pub async fn list_linked_agents(State(state): State<AppState>) -> HandlerResult<
                 comm::api_types::LinkedRoster::default()
             }
         };
-        sources.extend(source_entry(bot, roster));
+        links.push((bot, roster));
     }
-    Ok(Json(serde_json::json!({ "bots": sources })))
+    let hired = hired_linked(&state);
+    Ok(Json(serde_json::json!({ "computers": linked_computers(&links, here, &hired) })))
+}
+
+/// The linked agents already hired here, as (bot, agent).
+fn hired_linked(state: &AppState) -> std::collections::HashSet<(String, String)> {
+    let rows = state.store.list_agents(1000, 0).unwrap_or_default();
+    linked_employees(state, &rows)
+        .iter()
+        .filter_map(|(_, model)| ai::LinkedProvider::target(model))
+        .map(|(bot, agent)| (bot.to_owned(), agent.to_owned()))
+        .collect()
 }
 
 /// Whether a bot of the owner's is a place to hire from: another app's
@@ -2163,55 +2178,146 @@ fn hire_source(bot: &comm::api_types::ManagedBot, self_id: &str) -> bool {
         && bot.id != self_id
 }
 
-/// One hire source as the modal lists it: its agents, then a "New
-/// <runtime>" row for each coding agent it can start a new one of. A bot
-/// with nothing to offer (its roster did not answer, or it has none) is not
-/// listed.
-fn source_entry(
-    bot: &comm::api_types::ManagedBot,
-    roster: comm::api_types::LinkedRoster,
-) -> Option<serde_json::Value> {
-    let mut agents: Vec<serde_json::Value> = roster
-        .agents
-        .into_iter()
-        .map(|a| serde_json::to_value(a).expect("a linked agent serializes"))
-        .collect();
-    agents.extend(new_rows(&roster.runtimes, &bot.name));
-    (!agents.is_empty()).then(|| {
-        serde_json::json!({
-            "id": bot.id,
-            "name": bot.name,
-            "runtime": bot.runtime,
-            "online": bot.online,
-            "local": false,
-            "agents": agents,
-        })
-    })
+/// This computer while Nebo hosts its coding agents itself: its hostname,
+/// and the coding employees Nebo can start here.
+struct ThisComputer {
+    hostname: String,
+    new: Vec<serde_json::Value>,
 }
 
-/// This computer as a hire source: a "New <runtime>" row for each coding
-/// agent installed here that Nebo can host, each hired into a folder of its
-/// own. Not listed without a bot to host them as, or while nebo-link hosts
-/// this computer's agents (its bot is listed with the others then).
-fn local_source(state: &AppState) -> Option<serde_json::Value> {
+/// This computer as a hire source: the coding agents installed here that
+/// Nebo can host, each a new employee in a folder of its own. None without
+/// a bot to host them as, or while nebo-link hosts this computer's agents
+/// (it is one of the owner's computers then, like any other).
+fn this_computer(state: &AppState) -> Option<ThisComputer> {
     let local = state.local_host.as_ref()?;
     let bot_id = local.bot_id()?;
-    let runtimes: Vec<comm::api_types::LinkedRuntime> = local
+    let new: Vec<serde_json::Value> = local
         .hireable()
         .into_iter()
-        .map(|a| comm::api_types::LinkedRuntime { id: a.id, name: a.name })
+        .map(|a| new_row(&comm::api_types::LinkedRuntime { id: a.id, name: a.name }, "this computer", &bot_id))
         .collect();
-    let agents = new_rows(&runtimes, "this computer");
-    (!agents.is_empty()).then(|| {
-        serde_json::json!({
-            "id": bot_id,
-            "name": "This computer",
-            "runtime": "acp",
-            "online": true,
-            "local": true,
+    (!new.is_empty()).then(|| ThisComputer { hostname: crate::codes::host_label(), new })
+}
+
+/// The owner's computers as the hire list shows them: this one first while
+/// Nebo hosts its coding agents ("This computer"), then each computer the
+/// owner's linked apps run on, once however many of its apps are linked. A
+/// computer is its hostname; a bot that never reported one is a computer of
+/// its own, under its name. Each lists its apps' agents, "Hermes" with "Hermes
+/// on Mac.lan" under it (`hired` for one already on the team), and the coding
+/// employees it can start (`new`), one per coding agent any of its links
+/// can add.
+fn linked_computers(
+    links: &[(comm::api_types::ManagedBot, comm::api_types::LinkedRoster)],
+    here: Option<ThisComputer>,
+    hired: &std::collections::HashSet<(String, String)>,
+) -> Vec<serde_json::Value> {
+    let here_key = here.as_ref().map(|h| h.hostname.as_str());
+    let mut keys: Vec<&str> = here_key.into_iter().collect();
+    for (bot, _) in links {
+        if !keys.contains(&computer(bot)) {
+            keys.push(computer(bot));
+        }
+    }
+    let mut computers = Vec::new();
+    for key in keys {
+        let on: Vec<_> = links.iter().filter(|(bot, _)| computer(bot) == key).collect();
+        let local = here_key == Some(key);
+        let (name, place) = match on.first().map(|(bot, _)| bot) {
+            _ if local => ("This computer", "this computer"),
+            Some(bot) if bot.hostname.is_empty() => (bot.name.as_str(), bot.name.as_str()),
+            _ => (key, key),
+        };
+        let agents: Vec<serde_json::Value> = on
+            .iter()
+            .flat_map(|(bot, roster)| roster.agents.iter().map(move |a| (bot, a)))
+            .map(|(bot, a)| {
+                let runtime = if a.runtime.is_empty() { &bot.runtime } else { &a.runtime };
+                serde_json::json!({
+                    "id": a.id,
+                    "name": a.name,
+                    "description": format!("{} on {place}", app_name(runtime)),
+                    "runtime": runtime,
+                    "botId": bot.id,
+                    "hired": hired.contains(&(bot.id.clone(), a.id.clone())),
+                })
+            })
+            .collect();
+        let new = match &here {
+            Some(here) if local => here.new.clone(),
+            _ => new_rows(&on, place),
+        };
+        computers.push(serde_json::json!({
+            "id": format!("computer:{key}"),
+            "name": name,
+            "online": local || on.iter().any(|(bot, _)| bot.online),
+            "local": local,
             "agents": agents,
+            "new": new,
+        }));
+    }
+    computers
+}
+
+/// Which computer a linked bot runs on: its hostname, else the bot itself.
+fn computer(bot: &comm::api_types::ManagedBot) -> &str {
+    if bot.hostname.is_empty() { &bot.id } else { &bot.hostname }
+}
+
+/// An app as the owner knows it, by its runtime (`openclaw`, `codex`).
+fn app_name(runtime: &str) -> &str {
+    match runtime {
+        "openclaw" => "OpenClaw",
+        "hermes" => "Hermes",
+        key => nebo_runtimes::acp::Agent::KNOWN
+            .into_iter()
+            .find(|a| a.key() == key)
+            .map_or(key, |a| a.name()),
+    }
+}
+
+/// A computer's coding employees to start, one per coding agent any of its
+/// links (`on`) can add, each started by [`starter`].
+fn new_rows(
+    on: &[&(comm::api_types::ManagedBot, comm::api_types::LinkedRoster)],
+    place: &str,
+) -> Vec<serde_json::Value> {
+    let mut offered: Vec<&comm::api_types::LinkedRuntime> = Vec::new();
+    for r in on.iter().flat_map(|(_, roster)| &roster.runtimes) {
+        if !offered.iter().any(|o| o.id == r.id) {
+            offered.push(r);
+        }
+    }
+    offered
+        .iter()
+        .filter_map(|r| starter(on, &r.id, &offered).map(|bot| new_row(r, place, &bot.id)))
+        .collect()
+}
+
+/// The bot on one computer that starts a new coding agent of `runtime`, of
+/// those whose link offers it: one running that runtime itself, else one
+/// running another coding agent the computer offers (the computer's coding
+/// agent host), else any (an OpenClaw or Hermes link); online before
+/// offline, then by id, so it is the same bot every time.
+fn starter<'a>(
+    on: &[&'a (comm::api_types::ManagedBot, comm::api_types::LinkedRoster)],
+    runtime: &str,
+    offered: &[&comm::api_types::LinkedRuntime],
+) -> Option<&'a comm::api_types::ManagedBot> {
+    on.iter()
+        .filter(|link| link.1.runtimes.iter().any(|r| r.id == runtime))
+        .map(|link| &link.0)
+        .min_by_key(|bot| {
+            let kind = if bot.runtime == runtime {
+                0
+            } else if offered.iter().any(|r| r.id == bot.runtime) {
+                1
+            } else {
+                2
+            };
+            (kind, !bot.online, bot.id.as_str())
         })
-    })
 }
 
 /// This computer's hosted agents as the roster reads them: the bot they are
@@ -5877,7 +5983,7 @@ mod frontmatter_save_tests {
 
 #[cfg(test)]
 mod linked_hire_tests {
-    use super::{Here, NEW, hire_source, linked_offline, linked_persona_edit, linked_rename, linked_target, refusal, source_entry};
+    use super::{Here, NEW, ThisComputer, hire_source, linked_computers, linked_offline, linked_persona_edit, linked_rename, linked_target, new_row, refusal};
 
     fn agent_row(kind: Option<&str>, soul: Option<&str>) -> db::models::Agent {
         db::models::Agent {
@@ -6010,59 +6116,143 @@ mod linked_hire_tests {
         assert!(!hire_source(&managed("old", "", true, false), me));
     }
 
-    /// A bot whose roster came back empty (offline, or nothing to offer) is
-    /// not listed; one with agents is, offline or not.
-    #[test]
-    fn a_hire_source_is_listed_only_with_agents() {
-        let agent = comm::api_types::LinkedAgent {
-            id: "assistant".into(),
-            name: "Hermes".into(),
-            description: String::new(),
+    fn link(id: &str, runtime: &str, hostname: &str, agents: &[(&str, &str)], runtimes: &[&str]) -> (comm::api_types::ManagedBot, comm::api_types::LinkedRoster) {
+        let name = |id: &str| match id {
+            "claude-code" => "Claude Code",
+            "codex" => "Codex",
+            "gemini" => "Gemini CLI",
+            other => other,
+        }
+        .to_owned();
+        let mut bot = managed(id, runtime, true, false);
+        bot.hostname = hostname.into();
+        bot.online = true;
+        let roster = comm::api_types::LinkedRoster {
+            agents: agents
+                .iter()
+                .map(|(id, runtime)| comm::api_types::LinkedAgent {
+                    id: (*id).into(),
+                    name: name(id),
+                    description: String::new(),
+                    runtime: (*runtime).into(),
+                })
+                .collect(),
+            runtimes: runtimes
+                .iter()
+                .map(|r| comm::api_types::LinkedRuntime { id: (*r).into(), name: name(r) })
+                .collect(),
         };
-        let bot = managed("hm", "hermes", true, false);
-        assert!(source_entry(&bot, Default::default()).is_none());
-        let roster = comm::api_types::LinkedRoster { agents: vec![agent], runtimes: Vec::new() };
-        let entry = source_entry(&bot, roster).unwrap();
-        assert_eq!(entry["runtime"], "hermes");
-        assert_eq!(entry["online"], false);
-        assert_eq!(entry["local"], false);
-        assert_eq!(entry["agents"][0]["name"], "Hermes");
+        (bot, roster)
     }
 
-    /// A computer that can start new coding agents offers a "New <runtime>"
-    /// row for each, after its agents, in the shape the phone's hire sheet
-    /// already reads (id, name, description), hired with the same linked body.
+    const ALL: &[&str] = &["claude-code", "codex", "gemini"];
+
+    fn rows<'a>(computer: &'a serde_json::Value, key: &str) -> Vec<(&'a str, &'a str)> {
+        computer[key]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| (r["id"].as_str().unwrap(), r["botId"].as_str().unwrap()))
+            .collect()
+    }
+
+    /// The owner's Mac with three apps linked (its coding agent host,
+    /// Hermes, OpenClaw), each link offering the same coding agents: the Mac
+    /// is listed once, under its name, with every app's agents named for the
+    /// app they run in, and each coding employee to start once, started by
+    /// its coding agent host, never by Hermes or OpenClaw.
     #[test]
-    fn a_computer_offers_new_coding_agents() {
-        let mut bot = managed("mac", "claude-code", true, false);
-        bot.name = "Mac.lan".into();
-        let roster = comm::api_types::LinkedRoster {
-            agents: vec![comm::api_types::LinkedAgent {
-                id: "assistant".into(),
-                name: "Claude Code".into(),
-                description: "Works in /Users/me/NeboAI/claude-code".into(),
-            }],
-            runtimes: vec![
-                comm::api_types::LinkedRuntime { id: "claude-code".into(), name: "Claude Code".into() },
-                comm::api_types::LinkedRuntime { id: "codex".into(), name: "Codex".into() },
-            ],
-        };
-        let entry = source_entry(&bot, roster).unwrap();
-        assert_eq!(entry["agents"][0]["id"], "assistant");
+    fn a_computer_is_listed_once_across_its_links() {
+        let links = [
+            link("cc", "claude-code", "Mac.lan", &[("claude-code", ""), ("codex", "codex")], ALL),
+            link("hm", "hermes", "Mac.lan", &[("hermes", "")], ALL),
+            link("oc", "openclaw", "Mac.lan", &[("OpenClaw", "openclaw")], ALL),
+        ];
+        let hired = std::collections::HashSet::from([("hm".to_owned(), "hermes".to_owned())]);
+        let computers = linked_computers(&links, None, &hired);
+        assert_eq!(computers.len(), 1);
+        let mac = &computers[0];
+        assert_eq!((mac["id"].as_str(), mac["name"].as_str(), mac["local"].as_bool()), (Some("computer:Mac.lan"), Some("Mac.lan"), Some(false)));
+        assert_eq!(rows(mac, "agents"), [("claude-code", "cc"), ("codex", "cc"), ("hermes", "hm"), ("OpenClaw", "oc")]);
+        let said: Vec<(&str, &str, bool)> = mac["agents"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| (a["description"].as_str().unwrap(), a["runtime"].as_str().unwrap(), a["hired"].as_bool().unwrap()))
+            .collect();
         assert_eq!(
-            entry["agents"][1],
-            serde_json::json!({ "id": "new:claude-code", "name": "New Claude Code", "description": "Starts a new Claude Code on Mac.lan", "runtime": "claude-code" })
+            said,
+            [
+                ("Claude Code on Mac.lan", "claude-code", false),
+                ("Codex on Mac.lan", "codex", false),
+                ("Hermes on Mac.lan", "hermes", true),
+                ("OpenClaw on Mac.lan", "openclaw", false),
+            ]
         );
-        assert_eq!(entry["agents"][2]["name"], "New Codex");
-        // Nothing but new ones is still somewhere to hire from.
-        let only_new = comm::api_types::LinkedRoster {
-            agents: Vec::new(),
-            runtimes: vec![comm::api_types::LinkedRuntime { id: "codex".into(), name: "Codex".into() }],
-        };
-        assert_eq!(source_entry(&bot, only_new).unwrap()["agents"][0]["id"], "new:codex");
-        // The hire body's agent id passes as it is.
-        let (_, agent, _) = linked_target(&serde_json::json!({ "botId": "mac", "agentId": "new:codex" })).unwrap();
-        assert_eq!(agent.strip_prefix(NEW), Some("codex"));
+        assert_eq!(rows(mac, "new"), [("new:claude-code", "cc"), ("new:codex", "cc"), ("new:gemini", "cc")]);
+        assert_eq!(
+            mac["new"][0],
+            serde_json::json!({ "id": "new:claude-code", "name": "Claude Code", "description": "Works in a new folder on Mac.lan", "runtime": "claude-code", "botId": "cc" })
+        );
+    }
+
+    /// Two computers are two groups, each coding employee started on its own
+    /// computer: by a link running that runtime, then the computer's coding
+    /// agent host, and only with neither an OpenClaw or Hermes link (online
+    /// first, then by id). A computer that offers nothing is still listed.
+    #[test]
+    fn each_computer_starts_its_own_coding_employees() {
+        let mut down = link("oc-a", "openclaw", "Linux-box", &[], ALL);
+        down.0.online = false;
+        let links = [
+            link("cc", "claude-code", "Mac.lan", &[], ALL),
+            link("cx", "codex", "Mac.lan", &[], &["codex"]),
+            down,
+            link("oc-b", "openclaw", "Linux-box", &[], &["codex"]),
+            link("hm", "hermes", "Linux-box", &[], &["codex"]),
+            link("pi", "hermes", "pi", &[], &[]),
+        ];
+        let computers = linked_computers(&links, None, &Default::default());
+        let names: Vec<&str> = computers.iter().map(|c| c["name"].as_str().unwrap()).collect();
+        assert_eq!(names, ["Mac.lan", "Linux-box", "pi"]);
+        assert_eq!(rows(&computers[0], "new"), [("new:claude-code", "cc"), ("new:codex", "cx"), ("new:gemini", "cc")]);
+        assert_eq!(rows(&computers[1], "new"), [("new:claude-code", "oc-a"), ("new:codex", "hm"), ("new:gemini", "oc-a")]);
+        assert_eq!(computers[1]["new"][1]["description"], "Works in a new folder on Linux-box");
+        assert!(computers[2]["agents"].as_array().unwrap().is_empty() && computers[2]["new"].as_array().unwrap().is_empty());
+        // The hire body's bot and agent id pass as they are.
+        let (bot, agent, _) = linked_target(&serde_json::json!({ "botId": "cx", "agentId": "new:codex" })).unwrap();
+        assert_eq!((bot.as_str(), agent.strip_prefix(NEW)), ("cx", Some("codex")));
+    }
+
+    /// While Nebo hosts this computer's coding agents itself, it comes first
+    /// as "This computer", with its own coding employees and the agents of
+    /// apps linked on it; a bot that never reported a hostname is a computer
+    /// of its own, under its name.
+    #[test]
+    fn this_computer_comes_first_and_unknown_computers_stand_alone() {
+        let links = [
+            link("old", "openclaw", "", &[("OpenClaw", "")], &["codex"]),
+            link("hm", "hermes", "Mac.lan", &[("hermes", "")], ALL),
+        ];
+        let codex = comm::api_types::LinkedRuntime { id: "codex".into(), name: "Codex".into() };
+        let here = ThisComputer { hostname: "Mac.lan".into(), new: vec![new_row(&codex, "this computer", "self-bot")] };
+        let computers = linked_computers(&links, Some(here), &Default::default());
+        let names: Vec<&str> = computers.iter().map(|c| c["name"].as_str().unwrap()).collect();
+        assert_eq!(names, ["This computer", "old"]);
+        assert_eq!(computers[0]["local"], true);
+        assert_eq!(rows(&computers[0], "new"), [("new:codex", "self-bot")]);
+        assert_eq!(computers[0]["agents"][0]["description"], "Hermes on this computer");
+        assert_eq!(computers[1]["agents"][0]["description"], "OpenClaw on old");
+        assert_eq!(rows(&computers[1], "new"), [("new:codex", "old")]);
+        // Nothing linked: this computer alone.
+        let codex = comm::api_types::LinkedRuntime { id: "codex".into(), name: "Codex".into() };
+        let alone = ThisComputer { hostname: "Mac.lan".into(), new: vec![new_row(&codex, "this computer", "self-bot")] };
+        assert_eq!(linked_computers(&[], Some(alone), &Default::default()).len(), 1);
+    }
+
+    /// A link's refusal reaches the owner in its own words.
+    #[test]
+    fn a_new_coding_agent_refusal_is_the_links_own() {
         // A link's own sentence reaches the owner; anything else is plain.
         let refused = comm::CommError::Http { status: 400, body: r#"{"error":"Codex isn't installed on this computer."}"#.into() };
         assert_eq!(refusal(&refused, "Mac.lan"), "Codex isn't installed on this computer.");

@@ -12,6 +12,7 @@ db = { workspace = true }
 auth = { workspace = true }
 ai = { workspace = true }
 link-core = { workspace = true }
+nebo-runtimes = { workspace = true }
 async-trait = "0.1"
 agent = { workspace = true }
 tools = { workspace = true }
