@@ -1,5 +1,6 @@
 import { backendBase } from './base';
 import { storage } from '$lib/storage';
+import { CLIENT_HEADER, clientId } from '$lib/websocket/origin';
 export type Method =
 	| 'get'
 	| 'GET'
@@ -169,9 +170,11 @@ export async function request({
 	// Get API base URL from browser origin
 	const apiUrl = `${getBaseUrl()}${url}`;
 
-	// Build headers with auth token if available
+	// Build headers with auth token if available. The page names itself on
+	// every request, so what it starts opens its surfaces here and nowhere else.
 	const headers: Record<string, string> = {
-		'Content-Type': 'application/json'
+		'Content-Type': 'application/json',
+		[CLIENT_HEADER]: clientId
 	};
 
 	const token = getAuthToken();

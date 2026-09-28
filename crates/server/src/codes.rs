@@ -11,6 +11,7 @@ use comm::api::NeboAIApi;
 use tools::InstalledBy;
 use types::NeboError;
 
+use crate::handlers::ws::EventOrigin;
 use crate::state::AppState;
 
 // ── Code Detection ──────────────────────────────────────────────────
@@ -249,8 +250,10 @@ async fn install(
 
 /// Install a code the owner entered in their own app (pasted in chat, a
 /// store tap) or hired on their account (the hub's install event), and
-/// report it to the app.
-pub async fn handle_code(state: &AppState, code_type: CodeType, code: &str, session_id: &str) {
+/// report it to the app. `origin` is who asked: its install surface opens
+/// on that client only, and every other client just sees the result.
+pub async fn handle_code(state: &AppState, code_type: CodeType, code: &str, origin: &EventOrigin) {
+    let session_id = origin.session_id.as_str();
     let Some(claim) = state.codes_in_flight.begin(code) else {
         info!(code, session_id, "code is already being handled; the first run reports the result");
         return;
@@ -270,38 +273,29 @@ pub async fn handle_code(state: &AppState, code_type: CodeType, code: &str, sess
 
     state.hub.broadcast(
         "code_processing",
-        serde_json::json!({
-            "session_id": session_id,
+        origin.stamp(serde_json::json!({
             "code": code,
             "code_type": code_type_str,
             "status_message": status_message,
-            // User-initiated from the desktop UI: the modal stays open for the
-            // user to read until they dismiss it.
-            "interactive": true,
-        }),
+        })),
     );
 
     let result = install(state, code_type, &claim, InstalledBy::Owner).await;
 
     match result {
         Ok(r) => {
-            let mut result = install_result(code, code_type_str, &r);
-            result["session_id"] = serde_json::json!(session_id);
-            result["interactive"] = serde_json::json!(true);
-            state.hub.broadcast("code_result", result);
+            state.hub.broadcast("code_result", origin.stamp(install_result(code, code_type_str, &r)));
         }
         Err(e) => {
             warn!(code = code, error = %e, "code handling failed");
             state.hub.broadcast(
                 "code_result",
-                serde_json::json!({
-                    "session_id": session_id,
+                origin.stamp(serde_json::json!({
                     "code": code,
                     "code_type": code_type_str,
                     "success": false,
                     "error": e.to_string(),
-                    "interactive": true,
-                }),
+                })),
             );
         }
     }
@@ -341,17 +335,17 @@ pub async fn handle_code_text(
         CodeType::Connection => "connection",
     };
 
-    // Also broadcast for the frontend UI. Triggered remotely via a channel
-    // (loop, Slack, etc.) — no human is waiting on the desktop modal, so it
-    // auto-dismisses rather than blocking until manually closed.
+    // Also broadcast for the frontend UI. No client on this server asked
+    // (a channel, an employee's own call): every client sees the result, and
+    // none opens an install surface for it.
+    let origin = EventOrigin::default();
     state.hub.broadcast(
         "code_processing",
-        serde_json::json!({
+        origin.stamp(serde_json::json!({
             "code": code,
             "code_type": code_type_str,
             "status_message": format!("Installing {code_type_str}..."),
-            "interactive": false,
-        }),
+        })),
     );
 
     let result = install(state, code_type, &claim, by).await;
@@ -361,15 +355,14 @@ pub async fn handle_code_text(
             // Broadcast for frontend
             state.hub.broadcast(
                 "code_result",
-                serde_json::json!({
+                origin.stamp(serde_json::json!({
                     "code": code,
                     "code_type": code_type_str,
                     "success": true,
                     "message": r.message,
                     "artifact_name": r.artifact_name,
                     "artifact_id": r.artifact_id,
-                    "interactive": false,
-                }),
+                })),
             );
 
             if let Some(url) = r.checkout_url {
@@ -380,6 +373,17 @@ pub async fn handle_code_text(
         }
         Err(e) => {
             warn!(code = code, error = %e, "code handling failed (channel)");
+            // The processing event above is answered either way: a failure
+            // is the install's final state too, never a spinner left open.
+            state.hub.broadcast(
+                "code_result",
+                origin.stamp(serde_json::json!({
+                    "code": code,
+                    "code_type": code_type_str,
+                    "success": false,
+                    "error": e.to_string(),
+                })),
+            );
             format!("Failed to install {code_type_str}: {e}")
         }
     }

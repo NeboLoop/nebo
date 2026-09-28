@@ -54,3 +54,4 @@ fixtures:
   - ../fixtures/staffed-company/conversation/sc49-a-team-conversation-stays-in-the-team-thread.yaml
   - ../fixtures/staffed-company/conversation/sc50-only-the-owners-proven-email-answers-for-the-owner.yaml
   - ../fixtures/staffed-company/conversation/sc51-mail-to-an-employees-tag-reaches-that-employee.yaml
+  - ../fixtures/staffed-company/connections/sc52-an-install-carries-the-client-that-asked.yaml

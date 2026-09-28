@@ -226,7 +226,7 @@ async fn an_install_by_another_door_answers_the_install_card() {
     assert!(nebo.state.run_registry.pending_ask_for_session("agent:card-seat:main").await.is_some());
 
     // The owner pastes the code into another chat.
-    crate::codes::handle_code(&nebo.state, crate::codes::CodeType::Plugin, CODE, "agent:card-seat:elsewhere").await;
+    crate::codes::handle_code(&nebo.state, crate::codes::CodeType::Plugin, CODE, &crate::handlers::ws::EventOrigin::unclaimed("agent:card-seat:elsewhere")).await;
     assert!(nebo.state.plugin_store.resolve(SLUG, "*").is_some(), "the code installed the plugin");
 
     let answer = tokio::time::timeout(Duration::from_secs(10), card)
@@ -241,6 +241,70 @@ async fn an_install_by_another_door_answers_the_install_card() {
 
     // Leave the shared server as it was found.
     other_card.abort();
+    let _ = nebo.state.plugin_store.remove(SLUG);
+    let _ = nebo.store().delete_installed_plugin(SLUG);
+    nebo.store().delete_auth_profile(&profile).unwrap();
+}
+
+/// An install's events carry who asked: the client that pasted the code
+/// (its socket's `client_id`) and the conversation it pasted it in, so only
+/// that client opens the install surface. The owner hired from his phone and
+/// came back to a desktop full of install dialogs (2026-09-27). The same
+/// install arriving as a hire on the owner's account names no client, and
+/// no client opens anything for it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_install_carries_the_client_that_asked() {
+    use crate::handlers::ws::EventOrigin;
+    const CODE: &str = "PLUG-0R1G-0001";
+    const SLUG: &str = "origin-ledger";
+    let nebo = session().await;
+    hub_offers_plugin(CODE, SLUG, "Origin Ledger");
+    let profile = uuid::Uuid::new_v4().to_string();
+    nebo.store()
+        .create_auth_profile(&profile, "NeboAI", "neboai", "proof-token", None, None, 0, 1, Some("token"), None)
+        .unwrap();
+
+    // Every event about this code, as a desktop's socket hears it.
+    let heard = |rx: &mut tokio::sync::broadcast::Receiver<crate::handlers::ws::HubEvent>| {
+        let mut out = Vec::new();
+        while let Ok(e) = rx.try_recv() {
+            if e.payload["code"] == CODE {
+                out.push((e.event_type, e.payload));
+            }
+        }
+        out
+    };
+
+    let mut desktop = nebo.state.hub.subscribe();
+    let phone = EventOrigin { client_id: Some("phone-page".to_string()), session_id: "agent:main:web".to_string() };
+    crate::codes::handle_code(&nebo.state, crate::codes::CodeType::Plugin, CODE, &phone).await;
+    let events = heard(&mut desktop);
+    let kinds: Vec<&str> = events.iter().map(|(k, _)| k.as_str()).collect();
+    assert_eq!(kinds, ["code_processing", "code_result"], "the install was announced and finished");
+    for (kind, payload) in &events {
+        assert_eq!(payload["client_id"], "phone-page", "{kind} names the client that asked");
+        assert_eq!(payload["session_id"], "agent:main:web", "{kind} names the conversation");
+    }
+    assert_eq!(events[1].1["success"], true);
+
+    // Again, as a hire on the owner's account: nobody here asked.
+    let _ = nebo.state.plugin_store.remove(SLUG);
+    let _ = nebo.store().delete_installed_plugin(SLUG);
+    crate::codes::handle_code(
+        &nebo.state,
+        crate::codes::CodeType::Plugin,
+        CODE,
+        &EventOrigin::unclaimed("install-event-origin-ledger"),
+    )
+    .await;
+    let events = heard(&mut desktop);
+    assert_eq!(events.len(), 2);
+    for (kind, payload) in &events {
+        assert!(payload["client_id"].is_null(), "{kind} names no client");
+        assert_eq!(payload["session_id"], "install-event-origin-ledger");
+    }
+
+    // Leave the shared server as it was found.
     let _ = nebo.state.plugin_store.remove(SLUG);
     let _ = nebo.store().delete_installed_plugin(SLUG);
     nebo.store().delete_auth_profile(&profile).unwrap();
@@ -277,7 +341,7 @@ async fn a_plugin_required_by_its_code_is_its_own_tool() {
         &nebo.state,
         crate::codes::CodeType::Plugin,
         CODE,
-        "agent:main:web",
+        &crate::handlers::ws::EventOrigin::unclaimed("agent:main:web"),
     )
     .await;
     assert!(

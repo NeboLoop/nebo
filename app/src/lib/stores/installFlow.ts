@@ -9,7 +9,8 @@ import { writable } from 'svelte/store';
  * (`openCode`) — instead of mounting its own copy (which used to stack/duplicate
  * modals) or firing a `window` CustomEvent (a dead second pathway). Once open,
  * progress is driven by the backend's `code_*` / `dep_*` WS events, which the
- * modal subscribes to directly via the WS emitter.
+ * modal subscribes to directly via the WS emitter — only this client's own
+ * (`$lib/websocket/origin`): an install started on the phone never opens here.
  */
 
 export type InstallMode = 'code' | 'product' | 'configure';
@@ -20,8 +21,6 @@ export interface CodeOpenOptions {
 	code: string;
 	codeType: string;
 	statusMessage: string;
-	/** Desktop-initiated paste: the modal stays open until the user dismisses it. */
-	interactive: boolean;
 }
 
 export interface InstallFlowOptions {

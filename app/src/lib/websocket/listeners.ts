@@ -14,6 +14,7 @@
 import { get } from 'svelte/store';
 import { t } from 'svelte-i18n';
 import { getWebSocketClient } from './client';
+import { opensHere } from './origin';
 import { notifications, pushNotification, loadNotifications, settleUpdateNotices } from '$lib/stores/notifications';
 import { askRaised, askSettled, loadOpenAsks } from '$lib/stores/permissionAsks';
 import { addToast, removeToast } from '$lib/stores/toast';
@@ -131,24 +132,15 @@ export function attachWebSocketListeners(): void {
   );
 
   // --- Plugin OAuth: open the auth URL once, app-wide (the single owner). ---
-  // Always open — auth can be triggered by agent startup/watchers when no
-  // page-level UI is mounted. Components only track connect *state* via ws.on.
+  // Components only track connect *state* via ws.on. The server broadcasts to
+  // every connected client, but only the client that started the sign-in opens
+  // it: a second Nebo window (an old one left open after a restart) opened the
+  // same sign-in twice on 2026-09-06, and the phone's web app would open the
+  // desktop's (./origin.ts).
   unsubs.push(
     ws.on('plugin_auth_url', (data: any) => {
       if (typeof window === 'undefined' || !data?.url) return;
-      // The server broadcasts to every connected window; a second Nebo
-      // window (an old one left open after a restart) opened the same
-      // sign-in twice on 2026-09-06. Windows share this origin's storage,
-      // so the first one to claim the URL opens it and the others skip.
-      const key = 'nb:plugin-auth-opened';
-      try {
-        const seen = JSON.parse(localStorage.getItem(key) || '{}');
-        const now = Date.now();
-        if (seen.url === data.url && now - (seen.at || 0) < 20000) return;
-        localStorage.setItem(key, JSON.stringify({ url: data.url, at: now }));
-      } catch {
-        // storage unavailable: open anyway
-      }
+      if (!opensHere(data, 'nowhere')) return;
       // A blocked popup returns null. Silence here read as "Connect does
       // nothing" — say so instead.
       if (!window.open(data.url, '_blank')) {

@@ -326,7 +326,7 @@ async fn every_hiring_door_grants_the_declared_job() {
         &nebo.state,
         crate::codes::CodeType::Agent,
         &code,
-        "agent:main:web",
+        &crate::handlers::ws::EventOrigin::unclaimed("agent:main:web"),
     )
     .await;
     assert_eq!(granted(&pasted), the_job, "pasted code");
@@ -441,7 +441,7 @@ async fn every_hiring_door_grants_the_declared_job() {
         &nebo.state,
         crate::codes::CodeType::Agent,
         &code,
-        "agent:main:web",
+        &crate::handlers::ws::EventOrigin::unclaimed("agent:main:web"),
     )
     .await;
     nebo.put_ok(
@@ -453,7 +453,7 @@ async fn every_hiring_door_grants_the_declared_job() {
         &nebo.state,
         crate::codes::CodeType::Agent,
         &code,
-        "agent:main:web",
+        &crate::handlers::ws::EventOrigin::unclaimed("agent:main:web"),
     )
     .await;
     let mail = nebo

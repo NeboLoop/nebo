@@ -244,6 +244,7 @@ pub(crate) async fn answer_thread(
         audience: seat.audience,
         cwd: None,
         model_override: None,
+        client_id: None,
     };
     // A chat channel's conversation hears the reply where it was asked.
     if let Some(ReplyRoute::Channel { channel_ctx }) = route {
