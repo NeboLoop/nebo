@@ -811,7 +811,12 @@
 		"alsoRenamePrimary": "Kişisel asistanınızın adı da “{name}” olarak değiştirilsin mi?",
 		"renamePrimary": "Kişisel asistanı yeniden adlandır",
 		"keepPrimaryName": "“{name}” kalsın",
-		"primaryRenamed": "Kişisel asistanınızın adı artık {name}."
+		"primaryRenamed": "Kişisel asistanınızın adı artık {name}.",
+		"botLocation": "Konum",
+		"botLocationDesc": "Bu botun ofisinin bulunduğu yer. Çalışanlarınız, ofise ne kadar uzakta olduğunuzu söylemek için bunu kullanır.",
+		"botLocationPlaceholder": "Sokak adresi, şehir",
+		"botLocationPending": "Telefonunuz, Nebo orada bir sonraki açılışında bu adresi haritaya yerleştirir.",
+		"botLocationSaveFailed": "Konum kaydedilemedi. Tekrar deneyin."
 	},
 	"settingsAbout": {
 		"title": "Hakkında",

@@ -1,7 +1,7 @@
-use rusqlite::params;
+use rusqlite::{OptionalExtension, params};
 
 use crate::Store;
-use crate::models::Setting;
+use crate::models::{BotLocation, Setting};
 use types::NeboError;
 
 impl Store {
@@ -139,6 +139,46 @@ impl Store {
 
         stmt.raw_execute()
             .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    /// The bot's Location, or `None` when the owner has not set one.
+    pub fn bot_location(&self) -> Result<Option<BotLocation>, NeboError> {
+        let conn = self.conn()?;
+        let row: Option<BotLocation> = conn
+            .query_row(
+                "SELECT location_label, location_latitude, location_longitude FROM settings WHERE id = 1",
+                [],
+                |row| {
+                    Ok(BotLocation {
+                        label: row.get(0)?,
+                        latitude: row.get(1)?,
+                        longitude: row.get(2)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(row.filter(|l| !l.label.is_empty()))
+    }
+
+    /// Set the bot's Location whole, or clear it with `None`. The caller
+    /// has checked it (a label, and both coordinates or neither).
+    pub fn set_bot_location(&self, location: Option<&BotLocation>) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        conn.execute("INSERT OR IGNORE INTO settings (id) VALUES (1)", [])
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        conn.execute(
+            "UPDATE settings SET location_label = ?1, location_latitude = ?2, location_longitude = ?3,
+                    updated_at = unixepoch()
+             WHERE id = 1",
+            params![
+                location.map_or("", |l| l.label.as_str()),
+                location.and_then(|l| l.latitude),
+                location.and_then(|l| l.longitude),
+            ],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))?;
         Ok(())
     }
 

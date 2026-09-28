@@ -1,6 +1,8 @@
 //! Calls the phone app makes to its bot, answered as the phone sends them:
-//! the location heartbeat (`lib/api/phone_location.dart`) and the borrow
-//! picker's other computers (`BotApi.otherComputers`).
+//! the location heartbeat (`lib/api/phone_location.dart`), the borrow
+//! picker's other computers (`BotApi.otherComputers`), and the bot's
+//! Location in Bot settings (`BotApi.location` / `BotApi.setLocation`, the
+//! same calls the web app's generated `getLocation` / `updateLocation` make).
 //!
 //! Run:
 //!   cargo test -p nebo-server --test phone_contract
@@ -63,4 +65,43 @@ async fn the_phones_calls_are_answered() {
         others.json::<Value>().await.unwrap(),
         json!({ "computers": [] })
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_bots_location_round_trips() {
+    let server = TestServer::boot().await;
+
+    let unset = server.get("/agent/location").await;
+    assert_eq!(unset.status(), 200);
+    assert_eq!(unset.json::<Value>().await.unwrap(), json!({}), "no Location until one is set");
+
+    // The phone: an address and the coordinates its geocoder found.
+    let set = server
+        .put_json(
+            "/agent/location",
+            &json!({ "label": "  50 W Broadway, Salt Lake City  ", "latitude": 40.7625, "longitude": -111.8937 }),
+        )
+        .await;
+    assert_eq!(set.status(), 200);
+    let office = json!({ "location": { "label": "50 W Broadway, Salt Lake City", "latitude": 40.7625, "longitude": -111.8937 } });
+    assert_eq!(set.json::<Value>().await.unwrap(), office);
+    assert_eq!(server.get("/agent/location").await.json::<Value>().await.unwrap(), office, "it is kept");
+
+    // Half a coordinate pair, or one off the globe, is refused and changes nothing.
+    for bad in [
+        json!({ "label": "Somewhere", "latitude": 40.0 }),
+        json!({ "label": "Somewhere", "latitude": 91.0, "longitude": 0.0 }),
+    ] {
+        assert_eq!(server.put_json("/agent/location", &bad).await.status(), 400, "{bad}");
+    }
+    assert_eq!(server.get("/agent/location").await.json::<Value>().await.unwrap(), office);
+
+    // The web: a typed address with no geocoder drops the old coordinates.
+    let typed = server.put_json("/agent/location", &json!({ "label": "1 Main St, Provo" })).await;
+    assert_eq!(typed.json::<Value>().await.unwrap(), json!({ "location": { "label": "1 Main St, Provo" } }));
+
+    // An empty label clears it.
+    let cleared = server.put_json("/agent/location", &json!({ "label": "" })).await;
+    assert_eq!(cleared.status(), 200);
+    assert_eq!(server.get("/agent/location").await.json::<Value>().await.unwrap(), json!({}));
 }

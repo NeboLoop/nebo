@@ -173,6 +173,67 @@ pub async fn update_settings(
     Ok(Json(serde_json::json!({"settings": settings, "permissionJudgement": judgement.as_str()})))
 }
 
+/// The longest Location label taken: an address, not a document.
+const MAX_LOCATION_LABEL_CHARS: usize = 300;
+
+/// The bot's Location, or none when the owner has not set one.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BotLocationResponse {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub location: Option<db::models::BotLocation>,
+}
+
+/// PUT /api/v1/agent/location's body: the whole Location. An empty label
+/// clears it; coordinates come both or neither (a label typed where there
+/// is no geocoder has none, and the phone fills them in).
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BotLocationRequest {
+    #[serde(default)]
+    pub label: String,
+    pub latitude: Option<f64>,
+    pub longitude: Option<f64>,
+}
+
+/// GET /api/v1/agent/location
+pub async fn get_location(State(state): State<AppState>) -> HandlerResult<BotLocationResponse> {
+    let location = state.store.bot_location().map_err(to_error_response)?;
+    Ok(Json(BotLocationResponse { location }))
+}
+
+/// PUT /api/v1/agent/location — replaces the bot's Location whole.
+pub async fn update_location(
+    State(state): State<AppState>,
+    Json(body): Json<BotLocationRequest>,
+) -> HandlerResult<BotLocationResponse> {
+    let invalid = |msg: &str| to_error_response(types::NeboError::Validation(msg.to_string()));
+    let label = body.label.trim();
+    let location = if label.is_empty() {
+        None
+    } else {
+        if label.chars().count() > MAX_LOCATION_LABEL_CHARS {
+            return Err(invalid("The location is too long."));
+        }
+        let (latitude, longitude) = match (body.latitude, body.longitude) {
+            (Some(lat), Some(lon))
+                if lat.is_finite() && lon.is_finite() && (-90.0..=90.0).contains(&lat) && (-180.0..=180.0).contains(&lon) =>
+            {
+                (Some(lat), Some(lon))
+            }
+            (None, None) => (None, None),
+            _ => return Err(invalid("The location's coordinates are not valid.")),
+        };
+        Some(db::models::BotLocation {
+            label: label.to_string(),
+            latitude,
+            longitude,
+        })
+    };
+    state.store.set_bot_location(location.as_ref()).map_err(to_error_response)?;
+    Ok(Json(BotLocationResponse { location }))
+}
+
 /// GET /api/v1/agent/profile
 pub async fn get_profile(State(state): State<AppState>) -> HandlerResult<serde_json::Value> {
     // Best-effort: ensure default profile row exists before reading

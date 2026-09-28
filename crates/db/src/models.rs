@@ -547,6 +547,27 @@ pub struct Setting {
     pub updated_at: i64,
 }
 
+/// The bot's Location (Bot settings → Location): the office, as the owner
+/// names it, and its coordinates once a geocoder has found them. A label
+/// typed where there is no geocoder (the web and desktop app) has none until
+/// the phone fills them in.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BotLocation {
+    pub label: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latitude: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub longitude: Option<f64>,
+}
+
+impl BotLocation {
+    /// The coordinates, when both are known.
+    pub fn coordinates(&self) -> Option<(f64, f64)> {
+        Some((self.latitude?, self.longitude?))
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PluginRegistry {

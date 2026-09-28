@@ -811,7 +811,12 @@
 		"alsoRenamePrimary": "לשנות גם את שם העוזר האישי שלך ל-\"{name}\"?",
 		"renamePrimary": "שנה את שם העוזר האישי שלך",
 		"keepPrimaryName": "השאר \"{name}\"",
-		"primaryRenamed": "העוזר האישי שלך נקרא עכשיו {name}."
+		"primaryRenamed": "העוזר האישי שלך נקרא עכשיו {name}.",
+		"botLocation": "מיקום",
+		"botLocationDesc": "איפה נמצא המשרד של הבוט הזה. העובדים שלך משתמשים בזה כדי לומר לך כמה רחוק אתה מהמשרד.",
+		"botLocationPlaceholder": "כתובת רחוב, עיר",
+		"botLocationPending": "הטלפון שלך יציב את הכתובת הזו על המפה בפעם הבאה ש־Nebo ייפתח בו.",
+		"botLocationSaveFailed": "לא ניתן היה לשמור את המיקום. נסה שוב."
 	},
 	"settingsAbout": {
 		"title": "אודות",

@@ -811,7 +811,12 @@
 		"alsoRenamePrimary": "Auch deine persönliche Assistenz in „{name}“ umbenennen?",
 		"renamePrimary": "Persönliche Assistenz umbenennen",
 		"keepPrimaryName": "„{name}“ behalten",
-		"primaryRenamed": "Deine persönliche Assistenz heißt jetzt {name}."
+		"primaryRenamed": "Deine persönliche Assistenz heißt jetzt {name}.",
+		"botLocation": "Standort",
+		"botLocationDesc": "Wo sich das Büro dieses Bots befindet. Deine Mitarbeiter nutzen ihn, um dir zu sagen, wie weit du vom Büro entfernt bist.",
+		"botLocationPlaceholder": "Straße und Hausnummer, Ort",
+		"botLocationPending": "Dein Handy setzt diese Adresse auf die Karte, sobald Nebo dort das nächste Mal geöffnet wird.",
+		"botLocationSaveFailed": "Der Standort konnte nicht gespeichert werden. Versuche es erneut."
 	},
 	"settingsAbout": {
 		"title": "Über",

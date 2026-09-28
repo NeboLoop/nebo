@@ -1,7 +1,7 @@
 //! What the turn's identity and session-context rows are built from,
 //! resolved from the employee and the workspace once per turn: the AGENT.md
 //! body, the employee's own setup, the plugins and tools its job uses, the
-//! workspace notes and the employee's email address.
+//! workspace notes, the employee's email address and the bot's Location.
 
 use tracing::{debug, warn};
 
@@ -148,6 +148,20 @@ pub fn email_address(store: &db::Store, agent_id: &str) -> Option<String> {
     Some(match name_of(agent_id).and_then(|name| comm::handle::employee_email_address(&bot, &name)) {
         Some(own) => format!("{own} (yours; the bot's address {bot} reaches {reaches})"),
         None => format!("none of your own; the bot's address {bot} reaches {reaches}"),
+    })
+}
+
+/// The environment's `Location` field: the bot's office as the owner set it
+/// in Bot settings → Location, with its coordinates once a geocoder placed
+/// it. `None` when no Location is set: then nothing is said about an office.
+pub fn office_location(store: &db::Store) -> Option<String> {
+    let location = store.bot_location().ok().flatten()?;
+    Some(match location.coordinates() {
+        Some((lat, lon)) => format!("the office (this bot's Location) is at {}, {lat:.6}, {lon:.6}", location.label),
+        None => format!(
+            "the office (this bot's Location) is at {}; it is not placed on a map yet, so no distance to it is known",
+            location.label
+        ),
     })
 }
 

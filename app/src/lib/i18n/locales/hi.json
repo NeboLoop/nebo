@@ -811,7 +811,12 @@
 		"alsoRenamePrimary": "क्या अपने निजी सहायक का नाम भी बदलकर “{name}” करें?",
 		"renamePrimary": "अपने निजी सहायक का नाम बदलें",
 		"keepPrimaryName": "“{name}” रखें",
-		"primaryRenamed": "आपके निजी सहायक का नाम अब {name} है।"
+		"primaryRenamed": "आपके निजी सहायक का नाम अब {name} है।",
+		"botLocation": "स्थान",
+		"botLocationDesc": "इस बॉट का ऑफ़िस कहाँ है। आपके कर्मचारी इसका उपयोग यह बताने के लिए करते हैं कि आप ऑफ़िस से कितनी दूर हैं।",
+		"botLocationPlaceholder": "सड़क का पता, शहर",
+		"botLocationPending": "अगली बार जब आप अपने फ़ोन पर Nebo खोलेंगे, तो वह इस पते को मानचित्र पर रख देगा।",
+		"botLocationSaveFailed": "स्थान सहेजा नहीं जा सका। फिर से कोशिश करें।"
 	},
 	"settingsAbout": {
 		"title": "जानकारी",

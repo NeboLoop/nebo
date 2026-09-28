@@ -34,3 +34,4 @@ fixtures:
   - ../fixtures/turn/deferred-tool-loaded-and-used.yaml
   # What the employee is told about itself
   - ../fixtures/turn/knows-its-own-email-address.yaml
+  - ../fixtures/turn/distance-from-the-office.yaml

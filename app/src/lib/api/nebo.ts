@@ -83,6 +83,20 @@ export function getLanes() {
 }
 
 /**
+ * @description "Get location"
+ */
+export function getLocation() {
+	return webapi.get<components.BotLocationResponse>(`/api/v1/agent/location`)
+}
+
+/**
+ * @description "Update location"
+ */
+export function updateLocation(req: Record<string, unknown> = {}) {
+	return webapi.put<components.BotLocationResponse>(`/api/v1/agent/location`, req)
+}
+
+/**
  * @description "List personality presets"
  */
 export function listPersonalityPresets() {

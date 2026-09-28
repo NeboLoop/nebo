@@ -37,6 +37,14 @@ pub fn routes() -> Router<AppState> {
             axum::routing::put(handlers::agent::update_settings),
         )
         .route(
+            "/agent/location",
+            axum::routing::get(handlers::agent::get_location),
+        )
+        .route(
+            "/agent/location",
+            axum::routing::put(handlers::agent::update_location),
+        )
+        .route(
             "/agent/profile",
             axum::routing::get(handlers::agent::get_profile),
         )

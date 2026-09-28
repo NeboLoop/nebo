@@ -6,6 +6,8 @@
   import { get } from 'svelte/store';
   import Building2 from 'lucide-svelte/icons/building-2';
   import { botName, botRenameUrl, loadBotName, openBotRename, offerMatchingRename } from '$lib/stores/botName';
+  import MapPin from 'lucide-svelte/icons/map-pin';
+  import type { BotLocation } from '$lib/api/neboComponents';
 
   let user = $state({ name: '', email: '', displayName: '' });
   let connected = $state(true);
@@ -70,6 +72,36 @@
     }
   }
 
+  // The bot's Location (Bot settings → Location): the office. Stored in
+  // Nebo itself, so it needs no NeboAI account. This app has no geocoder, so
+  // an address typed here is saved without coordinates, and the phone fills
+  // them in the next time Nebo opens there.
+  let location = $state<BotLocation | null>(null);
+  let locationDraft = $state('');
+  let locationBusy = $state(false);
+  let locationError = $state('');
+  let locationSaved = $state(false);
+
+  async function saveLocation(label: string) {
+    if (locationBusy) return;
+    // The same address again keeps the coordinates it already has.
+    if (label.trim() === (location?.label ?? '')) return;
+    locationBusy = true;
+    locationError = '';
+    try {
+      const api = await import('$lib/api/nebo');
+      const resp = await api.updateLocation({ label: label.trim() });
+      location = resp.location ?? null;
+      locationDraft = location?.label ?? '';
+      locationSaved = true;
+      setTimeout(() => (locationSaved = false), 2000);
+    } catch {
+      locationError = $t('settingsAccount.botLocationSaveFailed');
+    } finally {
+      locationBusy = false;
+    }
+  }
+
   onDestroy(() => {
     if (oauthPollInterval) clearInterval(oauthPollInterval);
     if (oauthTimeout) clearTimeout(oauthTimeout);
@@ -102,6 +134,12 @@
       const email = await api.neboAIBotEmail('');
       if (email?.address) botEmail = email.address;
     } catch { /* no hosted address — the row stays hidden */ }
+
+    try {
+      const api = await import('$lib/api/nebo');
+      location = (await api.getLocation()).location ?? null;
+      locationDraft = location?.label ?? '';
+    } catch { /* the row shows empty; saving says so if the bot can't be reached */ }
 
     await loadBotName();
     nameLoaded = true;
@@ -242,6 +280,33 @@
     {:else if primaryRenamedTo}
       <div class="text-xs text-success mt-2">{$t('settingsAccount.primaryRenamed', { values: { name: primaryRenamedTo } })}</div>
     {/if}
+  {/if}
+</div>
+
+<!-- The bot's Location -->
+<div class="mb-8">
+  <h3 class="text-base font-semibold mb-1 flex items-center gap-2"><MapPin class="w-4 h-4 text-base-content/70" aria-hidden="true" />{$t('settingsAccount.botLocation')}</h3>
+  <p class="text-xs text-base-content/70 mb-2.5">{$t('settingsAccount.botLocationDesc')}</p>
+  <form class="flex items-center gap-2" onsubmit={(e) => { e.preventDefault(); saveLocation(locationDraft); }}>
+    <input
+      type="text"
+      bind:value={locationDraft}
+      placeholder={$t('settingsAccount.botLocationPlaceholder')}
+      aria-label={$t('settingsAccount.botLocation')}
+      maxlength="300"
+      class="flex-1 min-w-0 py-2 px-3 rounded-lg border border-base-content/25 bg-base-200/40 text-sm outline-none focus:border-base-content/50"
+    />
+    <button type="submit" class="btn btn-sm btn-outline shrink-0" disabled={locationBusy || !locationDraft.trim() || locationDraft.trim() === (location?.label ?? '')}>{locationBusy ? $t('common.saving') : $t('common.save')}</button>
+    {#if location}
+      <button type="button" class="btn btn-sm btn-ghost shrink-0" disabled={locationBusy} onclick={() => saveLocation('')}>{$t('common.remove')}</button>
+    {/if}
+  </form>
+  {#if locationError}
+    <div class="text-xs text-error mt-2">{locationError}</div>
+  {:else if locationSaved}
+    <div class="text-xs text-success mt-2">{$t('common.saved')}</div>
+  {:else if location && location.latitude === undefined}
+    <div class="text-xs text-base-content/70 mt-2">{$t('settingsAccount.botLocationPending')}</div>
   {/if}
 </div>
 

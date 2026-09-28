@@ -4928,6 +4928,116 @@ mod tests {
         );
     }
 
+    /// The office in Salt Lake City, and a phone reading in Provo 38.6
+    /// miles away (straight line).
+    const OFFICE: (f64, f64) = (40.7625, -111.8937);
+    const PROVO: (f64, f64) = (40.2338, -111.6585);
+    const DISTANCE: &str = "The owner is about 38.6 miles from the office (straight line).";
+
+    fn set_office(h: &Harness, placed: bool) {
+        let location = db::models::BotLocation {
+            label: "50 W Broadway, Salt Lake City".into(),
+            latitude: placed.then_some(OFFICE.0),
+            longitude: placed.then_some(OFFICE.1),
+        };
+        h.store.set_bot_location(Some(&location)).unwrap();
+    }
+
+    fn phone_in_provo(revision: i64, agent_ids: Vec<String>) -> crate::phone_location::PhoneReading {
+        crate::phone_location::PhoneReading {
+            account_id: "owner".into(),
+            device_id: "phone".into(),
+            revision,
+            agent_ids,
+            latitude: Some(PROVO.0),
+            longitude: Some(PROVO.1),
+            accuracy_metres: Some(10.0),
+            taken_at: Some(chrono::Utc::now().timestamp()),
+        }
+    }
+
+    /// The bot's Location (Bot settings → Location) is one of the session's
+    /// facts: in the environment a text turn is told and in a voice call's
+    /// instructions, from the one builder. No Location, no line.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_bots_location_is_in_the_environment_in_text_and_voice() {
+        let model = Scripted::new(vec![Step::Say("It's on Broadway.")]);
+        let h = harness(&model).await;
+        let primary = tools::team_tool::PRIMARY_AGENT_ID;
+        assert!(!h.call_facts(primary, tools::Origin::User).contains("- Location:"), "none set: no line");
+
+        set_office(&h, true);
+        let line = "- Location: the office (this bot's Location) is at 50 W Broadway, Salt Lake City, 40.762500, -111.893700";
+        run_turn(&h, owner("Where is the office?")).await;
+        let env = latest_row(&h, "environment").expect("the environment is told");
+        assert!(env.contains(line), "{env}");
+        assert!(texts(&model.calls()[0]).iter().any(|t| t.contains(line)), "and the model reads it");
+        assert!(h.call_facts(primary, tools::Origin::User).contains(line), "a call is told the same");
+        assert!(h.call_facts(primary, tools::Origin::Caller).contains(line), "the office is no secret on any call");
+
+        set_office(&h, false);
+        let facts = h.call_facts(primary, tools::Origin::User);
+        assert!(
+            facts.contains("- Location: the office (this bot's Location) is at 50 W Broadway, Salt Lake City; it is not placed on a map yet"),
+            "{facts}"
+        );
+    }
+
+    /// The owner's distance from the office is told only when the office
+    /// has coordinates and the owner's phone position is shared with this
+    /// employee on the owner's own run, in text and in voice alike.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_distance_needs_both_locations_and_sharing() {
+        let model = Scripted::new(vec![Step::Say("About 38.6 miles.")]);
+        let h = harness(&model).await;
+        let primary = tools::team_tool::PRIMARY_AGENT_ID;
+        let now = chrono::Utc::now().timestamp();
+        let told = |agent: &str, origin| h.call_facts(agent, origin).contains(DISTANCE);
+
+        h.phone_locations().update(phone_in_provo(1, vec!["assistant".into()]), now).unwrap();
+        assert!(!told(primary, tools::Origin::User), "no Location: no distance");
+        set_office(&h, false);
+        assert!(!told(primary, tools::Origin::User), "a Location with no coordinates: no distance");
+        assert!(h.call_facts(primary, tools::Origin::User).contains("40.233800, -111.658500"), "the position is still told");
+
+        set_office(&h, true);
+        assert!(told(primary, tools::Origin::User), "both, and shared: {}", h.call_facts(primary, tools::Origin::User));
+        assert!(!told(primary, tools::Origin::Caller), "never on a stranger's phone call");
+        h.store.create_agent("ops", None, "Front Desk", "", "", "", None, None).unwrap();
+        assert!(!told("ops", tools::Origin::User), "not shared with this employee");
+
+        run_turn(&h, owner("How far am I from the office?")).await;
+        assert!(texts(&model.calls()[0]).iter().any(|t| t.contains(DISTANCE)), "a text turn is told it too");
+    }
+
+    /// Turning sharing off withdraws the distance with the reading: the next
+    /// turn is told both are withdrawn and hears no distance, and a call
+    /// started after it is told none.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn turning_sharing_off_withdraws_the_distance() {
+        let model = Scripted::new(vec![Step::Say("About 38.6 miles."), Step::Say("I can't tell now.")]);
+        let h = harness(&model).await;
+        let now = chrono::Utc::now().timestamp();
+        set_office(&h, true);
+        h.phone_locations().update(phone_in_provo(1, vec!["assistant".into()]), now).unwrap();
+        run_turn(&h, owner("How far am I from the office?")).await;
+        h.phone_locations().update(phone_in_provo(2, Vec::new()), now).unwrap();
+        run_turn(&h, owner("And now?")).await;
+
+        let calls = model.calls();
+        let told = |c: &ChatRequest, what: &str| texts(c).iter().filter(|t| t.contains(what)).count();
+        assert_eq!(told(&calls[0], DISTANCE), 1, "shared: the distance is told");
+        let last = calls.last().expect("the second turn's call");
+        assert_eq!(told(last, "the owner's distance from the office worked out from them, are withdrawn"), 1, "withdrawn");
+        let rows = texts(last);
+        let withdrawal = rows.iter().rposition(|t| t.contains("are withdrawn")).expect("the withdrawal");
+        assert!(
+            rows[withdrawal..].iter().all(|t| !t.contains(DISTANCE)),
+            "no distance is told after the withdrawal"
+        );
+        assert!(!h.call_facts(tools::team_tool::PRIMARY_AGENT_ID, tools::Origin::User).contains(DISTANCE), "nor to a call");
+    }
+
     /// An explore helper declares the same tools as every run, the helper
     /// tool included, and the one check refuses what it may not do: a call
     /// that changes something, or starting a helper.

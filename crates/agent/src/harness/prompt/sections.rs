@@ -290,9 +290,16 @@ owner's to make. Tell them what to run instead of trying another way.";
 
 /// The environment's fields after the date, in the order they are told:
 /// the platform, the shell, admin rights, the desktop a server bot lacks, the working
-/// folder when there is one, the channel, who is watching, and the
-/// employee's email address when the bot has one (`inputs::email_address`).
-pub fn environment_fields(cwd: Option<&str>, channel: &str, watching: Watching, email: Option<&str>) -> Vec<(String, String)> {
+/// folder when there is one, the channel, who is watching, the employee's
+/// email address when the bot has one (`inputs::email_address`), and the
+/// bot's Location when the owner set one (`inputs::office_location`).
+pub fn environment_fields(
+    cwd: Option<&str>,
+    channel: &str,
+    watching: Watching,
+    email: Option<&str>,
+    location: Option<&str>,
+) -> Vec<(String, String)> {
     let watching = match watching {
         Watching::Live => "the owner sees your messages as you write them",
         Watching::Unattended => "no one is watching this run; your final message is what gets read",
@@ -313,6 +320,9 @@ pub fn environment_fields(cwd: Option<&str>, channel: &str, watching: Watching, 
     fields.push(("Watching".to_string(), watching.to_string()));
     if let Some(email) = email {
         fields.push(("Email".to_string(), email.to_string()));
+    }
+    if let Some(location) = location {
+        fields.push(("Location".to_string(), location.to_string()));
     }
     fields
 }

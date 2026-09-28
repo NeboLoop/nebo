@@ -811,7 +811,12 @@
 		"alsoRenamePrimary": "Namakan semula pembantu peribadi anda kepada “{name}” juga?",
 		"renamePrimary": "Namakan semula pembantu peribadi anda",
 		"keepPrimaryName": "Kekalkan “{name}”",
-		"primaryRenamed": "Pembantu peribadi anda kini bernama {name}."
+		"primaryRenamed": "Pembantu peribadi anda kini bernama {name}.",
+		"botLocation": "Lokasi",
+		"botLocationDesc": "Tempat pejabat bot ini terletak. Pekerja anda menggunakannya untuk memberitahu sejauh mana anda dari pejabat.",
+		"botLocationPlaceholder": "Alamat jalan, bandar",
+		"botLocationPending": "Telefon anda akan meletakkan alamat ini pada peta apabila Nebo dibuka di sana seterusnya.",
+		"botLocationSaveFailed": "Tidak dapat menyimpan lokasi. Cuba lagi."
 	},
 	"settingsAbout": {
 		"title": "Perihal",
