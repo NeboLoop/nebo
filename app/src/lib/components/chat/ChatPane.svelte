@@ -35,7 +35,7 @@
   import PermissionAskCard from '$lib/components/PermissionAskCard.svelte';
   import type { HelperLine } from '$lib/chat/helpers';
   import { stepMeta } from '$lib/chat/stepMeta';
-  import { turnBlocks, turnProse, noteLabel, LIVE_PREVIEW_ROWS, type Fold, type TurnBlock, type TurnStep } from '$lib/chat/turnBlocks';
+  import { turnBlocks, turnProse, noteLabel, type Fold, type TurnBlock, type TurnStep } from '$lib/chat/turnBlocks';
 
   interface Artifact {
     /** Stable container id — same across every version of this document. */
@@ -1028,9 +1028,8 @@
   type AssistantMsg = Extract<Message, { type: 'assistant' }>;
   type ActivityStep = TurnStep<ToolMsg>;
 
-  /** Open state per group; unset means folded. While the turn is live its
-   *  last group shows its latest rows under the shimmering summary line, so
-   *  a paragraph that folds is seen moving into the work. */
+  /** Open state per group; unset means folded — live or not. A long turn is
+   *  one shimmering summary line, not a card of every call it made. */
   let activityOpen = $state<Record<string, boolean>>({});
 
   function turnSegments(idx: number): AssistantMsg[] {
@@ -1368,11 +1367,11 @@
     {/if}
 
     <!-- One activity group: notes and tool calls in order, folded under a
-         summary line; while live, its latest rows show under it. Rows open
-         on click; a page's address is a link. -->
+         summary line until it is clicked, live or not. Rows open on click;
+         a page's address is a link. -->
     {#snippet activityPanel(steps: ActivityStep[], tools: ToolMsg[], keyId: string, live: boolean)}
       {@const open = activityOpen[keyId] ?? false}
-      {@const rows = open ? steps : live ? steps.slice(-LIVE_PREVIEW_ROWS) : []}
+      {@const rows = open ? steps : []}
       <div class="max-w-[640px] my-1.5">
         <button
           type="button"

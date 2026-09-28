@@ -23,9 +23,6 @@ export type TurnBlock<T> =
   | { kind: 'prose'; key: string; text: string }
   | { kind: 'group'; key: string; steps: TurnStep<T>[]; tools: T[] };
 
-/** How many of a live group's latest rows show under its summary line. */
-export const LIVE_PREVIEW_ROWS = 3;
-
 /**
  * The turn's blocks in order. `shown` picks the calls a reader sees (failed
  * retries leave out); `work` says whether a segment ran calls that belong in
