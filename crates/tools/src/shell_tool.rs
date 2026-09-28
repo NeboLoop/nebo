@@ -1097,16 +1097,19 @@ const EMPTY_FOLDER_SCAN: usize = 2_000;
 /// When `command` runs a search that searched nothing, the note that says
 /// so: over folders that hold no files at all (the search programs'
 /// arguments that name existing directories, relative ones against `cwd`),
-/// or from a `find` starting point that does not exist.
+/// or from a path that does not exist: a `find` starting point or an `ls`
+/// operand.
 ///
 /// Gate 2026-09-27 (`file-discovery-spiral`, 0/3): `find ~/Desktop … 2>/dev/null
 /// | head` on a computer with no Desktop folder came back "(exit 0, no
 /// output)", the same words as a search that found nothing, and every run
 /// spent 3–5 more commands finding out the folder wasn't there, widening to
-/// `/home` and then to `/`. A missing starting point is read only from
-/// `find`, whose starting points are the words before its expression; the
-/// other programs take a pattern first, and which word is a path is theirs
-/// to know.
+/// `/home` and then to `/`. A missing path is read only where every such
+/// word is a path: `find`'s starting points (the words before its
+/// expression) and `ls`'s operands. The re-run after that fix
+/// (36371219698) still had `ls -la ~/Desktop/ 2>/dev/null` answer a bare
+/// "Command exited with code 2". The search programs take a pattern first,
+/// and which of their words is a path is theirs to know.
 fn nothing_searched_note(command: &str, cwd: &std::path::Path) -> Option<String> {
     let tokens = shlex::split(command).unwrap_or_else(|| command.split_whitespace().map(str::to_string).collect());
     let mut searching = false;
@@ -1116,6 +1119,8 @@ fn nothing_searched_note(command: &str, cwd: &std::path::Path) -> Option<String>
     // -H/-L/-P/-D/-O options may still come.
     let mut find_roots = false;
     let mut find_options = false;
+    // Reading an `ls`'s operands.
+    let mut listing = false;
     let mut skip_next = false;
     // A `cd` earlier in the command moves where relative paths point.
     let mut command_start = true;
@@ -1124,13 +1129,19 @@ fn nothing_searched_note(command: &str, cwd: &std::path::Path) -> Option<String>
         if matches!(token.as_str(), "|" | "||" | "&&" | ";" | "&") {
             searching = false;
             find_roots = false;
+            listing = false;
             command_start = true;
             continue;
         }
-        if std::mem::take(&mut command_start) && token == "cd" {
+        let at_start = std::mem::take(&mut command_start);
+        if at_start && token == "cd" {
             moved = true;
         }
         let program = std::path::Path::new(token).file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if at_start && program == "ls" {
+            listing = true;
+            continue;
+        }
         if !searching && SEARCH_PROGRAMS.contains(&program) {
             searching = true;
             find_roots = program == "find";
@@ -1138,6 +1149,14 @@ fn nothing_searched_note(command: &str, cwd: &std::path::Path) -> Option<String>
             continue;
         }
         if std::mem::take(&mut skip_next) {
+            continue;
+        }
+        if listing {
+            if LS_VALUE_OPTIONS.contains(&token.as_str()) {
+                skip_next = true;
+            } else if !token.starts_with('-') && !token.contains('>') {
+                note_missing(token, cwd, moved, &mut missing);
+            }
             continue;
         }
         if find_roots {
@@ -1151,14 +1170,7 @@ fn nothing_searched_note(command: &str, cwd: &std::path::Path) -> Option<String>
             find_options = false;
             if token.starts_with('-') || matches!(token.as_str(), "(" | ")" | "!" | ",") {
                 find_roots = false;
-            } else if let Some(path) = missing_path(token, cwd, moved) {
-                let shown = match path.to_string_lossy() {
-                    p if p == token.as_str() => token.clone(),
-                    p => format!("{token} ({p})"),
-                };
-                if !missing.contains(&shown) {
-                    missing.push(shown);
-                }
+            } else if note_missing(token, cwd, moved, &mut missing) {
                 continue;
             }
         }
@@ -1173,8 +1185,8 @@ fn nothing_searched_note(command: &str, cwd: &std::path::Path) -> Option<String>
     let mut notes: Vec<String> = Vec::new();
     if !missing.is_empty() {
         notes.push(format!(
-            "{} does not exist, so nothing was searched there. If the owner named that folder, tell them it isn't \
-             there and ask where the files are, rather than searching other folders for it.",
+            "{} does not exist, so nothing was searched or listed there. If the owner named that folder, tell them \
+             it isn't there and ask where the files are, rather than searching other folders for it.",
             missing.join(" and ")
         ));
     }
@@ -1186,6 +1198,26 @@ fn nothing_searched_note(command: &str, cwd: &std::path::Path) -> Option<String>
         ));
     }
     (!notes.is_empty()).then(|| notes.join(" "))
+}
+
+/// `ls` options whose value is the next word, not an operand.
+const LS_VALUE_OPTIONS: &[&str] = &[
+    "-I", "-w", "-T", "--ignore", "--hide", "--width", "--tabsize", "--block-size", "--format", "--sort",
+    "--time-style", "--quoting-style", "--indicator-style",
+];
+
+/// Add `token` to `missing` when it names a path that isn't there, shown
+/// with the path it resolves to. Whether it did.
+fn note_missing(token: &str, cwd: &std::path::Path, moved: bool, missing: &mut Vec<String>) -> bool {
+    let Some(path) = missing_path(token, cwd, moved) else { return false };
+    let shown = match path.to_string_lossy() {
+        p if p == token => token.to_string(),
+        p => format!("{token} ({p})"),
+    };
+    if !missing.contains(&shown) {
+        missing.push(shown);
+    }
+    true
 }
 
 /// The path a search starting point names when nothing is there, read as
@@ -1316,7 +1348,9 @@ fn interpret_exit_code(command: &str, exit_code: i32, output: &str, nothing_sear
             } else {
                 None
             };
-            (true, hint)
+            // A failure with its error discarded (`2>/dev/null`) that
+            // listed a path that isn't there says so.
+            (true, hint.or_else(|| nothing_searched.map(str::to_string)))
         }
     }
 }
@@ -1606,7 +1640,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("notes.txt"), "x").unwrap();
         let missing = dir.path().join("Desktop").to_string_lossy().into_owned();
-        let said = format!("{missing} does not exist, so nothing was searched there");
+        let said = format!("{missing} does not exist, so nothing was searched or listed there");
 
         let piped = format!("find {missing} -type f \\( -iname '*screenshot*' -o -iname '*.png' \\) 2>/dev/null | head -30");
         let r = t.execute(&ctx(), json!({"action": "exec", "command": piped})).await;
@@ -1637,9 +1671,24 @@ mod tests {
         let r = t.execute(&ctx(), json!({"action": "exec", "command": format!("find {here} -name Desktop")})).await;
         assert_eq!(r.content, "(exit 0, no output)", "{}", r.content);
 
+        // An `ls` of a folder that isn't there, its error discarded, fails
+        // saying so instead of a bare exit code (36371219698: `ls -la
+        // ~/Desktop/ 2>/dev/null` answered "Command exited with code 2").
+        let r = t.execute(&ctx(), json!({"action": "exec", "command": format!("ls -la {missing}/ 2>/dev/null")})).await;
+        assert!(r.is_error, "{}", r.content);
+        assert!(r.content.contains(&format!("{missing}/ does not exist, so nothing was searched or listed there")), "{}", r.content);
+        // An option's value is not an operand.
+        let note = nothing_searched_note(&format!("ls -la -I Desktop --hide Pictures {here}"), dir.path());
+        assert_eq!(note, None, "{note:?}");
+
         // Words the shell still rewrites, and relative paths after a `cd`,
-        // aren't read.
-        for command in ["find $HOME/nebo-no-such-folder-5c1e -name x 2>/dev/null", "cd / && find Desktop -name x 2>/dev/null"] {
+        // aren't read; `ls` is read only where it is the command.
+        for command in [
+            "find $HOME/nebo-no-such-folder-5c1e -name x 2>/dev/null",
+            "cd / && find Desktop -name x 2>/dev/null",
+            "ls /home/*/nebo-no-such-folder-5c1e 2>/dev/null",
+            "echo ls nebo-no-such-folder-5c1e >/dev/null",
+        ] {
             let r = t.execute(&ctx(), json!({"action": "exec", "command": command, "cwd": dir.path()})).await;
             assert!(!r.content.contains("does not exist"), "{command}: {}", r.content);
         }
