@@ -308,7 +308,7 @@ async fn an_enrolled_global_store_carries_a_save_to_a_second_bot() {
     assert!(!saved.is_error, "{}", saved.content);
 
     // A second bot: its own client of the same store.
-    let second = reqwest::Client::new();
+    let second = tls::http_client().build().expect("client");
     let read: Value = second
         .post(&store_url)
         .json(&json!({ "jsonrpc": "2.0", "id": 9, "method": "tools/call", "params": { "name": "memory_recall", "arguments": { "src_id": 1 } } }))

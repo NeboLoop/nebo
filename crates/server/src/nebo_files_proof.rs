@@ -221,15 +221,19 @@ async fn an_employee_reads_what_use_skill_hands_it() {
     let guide = std::path::PathBuf::from(&folder).join("SKILL.md");
     let r = nebo.tool(&ctx, "write_file", json!({ "path": guide.to_string_lossy(), "content": "rewritten" })).await;
     assert!(r.is_error && r.content.contains("never changes it"), "write_file: {}", r.content);
+    assert_eq!(std::fs::read_to_string(&guide).unwrap(), skill_md, "write_file changed the skill");
+    // A command's text may name a plugin's skill (it is read and run from
+    // there), so only the operating system keeps a command from changing
+    // it (`nebo_files::named_in`, `confine`).
     let r = nebo
         .tool(&ctx, "run_command", json!({ "command": format!("echo rewritten >> '{}'", guide.display()), "description": "Edit the skill" }))
         .await;
     if tools::confine::available() {
         assert!(r.is_error, "the command changed a plugin's skill: {}", r.content);
+        assert_eq!(std::fs::read_to_string(&guide).unwrap(), skill_md, "the command changed the skill");
     } else {
         eprintln!("no confinement on this computer: a command's writes to a plugin's skill rest on nothing");
     }
-    assert_eq!(std::fs::read_to_string(&guide).unwrap(), skill_md, "the skill was changed");
 
     // The rest of the plugin, and Nebo's own files, stay closed.
     let leaked = |t: &str| ["PROGRAM-canary", "ACCOUNT-canary", "DATA-canary"].iter().any(|c| t.contains(c));
