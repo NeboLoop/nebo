@@ -142,7 +142,7 @@ impl Manager {
     pub async fn stop(&self, profile_name: &str) -> Result<(), BrowserError> {
         let mut browsers = self.browsers.write().await;
         if let Some(mut chrome) = browsers.remove(profile_name) {
-            chrome.kill().await;
+            chrome.quit().await;
         }
 
         let mut sessions = self.sessions.write().await;
@@ -221,7 +221,7 @@ impl Manager {
     pub async fn shutdown(&self) {
         let mut browsers = self.browsers.write().await;
         for (name, mut chrome) in browsers.drain() {
-            chrome.kill().await;
+            chrome.quit().await;
             info!(profile = name.as_str(), "browser shutdown");
         }
         let mut sessions = self.sessions.write().await;
