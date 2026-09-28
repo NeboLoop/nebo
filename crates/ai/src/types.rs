@@ -734,6 +734,14 @@ pub trait Provider: Send + Sync {
         false
     }
 
+    /// The linked provider itself: what reaches a linked bot outside a turn
+    /// (what its agents are doing now, a session's current work) goes the
+    /// way its turns go, over the same relay, keys and host. `None` for
+    /// every other provider.
+    fn linked(&self) -> Option<&crate::providers::linked::LinkedProvider> {
+        None
+    }
+
     /// Send a request and return a channel of streaming events.
     async fn stream(&self, req: &ChatRequest) -> Result<EventReceiver, ProviderError>;
 }

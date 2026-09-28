@@ -1,0 +1,11 @@
+id: sc55-the-point-person-sees-what-everyone-is-doing
+name: "SC55 — The point person sees what everyone is doing"
+description: |
+  "What is everyone doing?" has one answer for the whole company. list_employees says who is
+  working (where, on what, for how long), who waits on the owner and for what, who is idle, and a
+  linked employee's work read from the computer it runs on, with the conversation's id. The
+  asking turn is not reported as work. get_employee reads the linked employee's current work (its
+  request, its calls, its latest words) and sends it nothing.
+target_component: staffed-company
+proof: staffed_proof::company::the_point_person_sees_what_everyone_is_doing
+conversation: []

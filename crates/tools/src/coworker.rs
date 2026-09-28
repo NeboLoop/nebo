@@ -47,6 +47,31 @@ pub struct CoworkerMessage {
     /// instead of returned to the sender. A member not asked to act is sent
     /// nothing: the team thread is the one record of the conversation.
     pub team: Option<TeamDelivery>,
+    /// Which of a linked employee's conversations the message goes into.
+    /// `None`: the sender's own thread with it, as it stands.
+    pub conversation: Option<Conversation>,
+}
+
+/// A linked employee's conversation a message goes into (see
+/// `CoworkerMessage::conversation`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Conversation {
+    /// One it already has, by id (as `list_employees` and `get_employee`
+    /// show it): the one it is working in, say.
+    Existing(String),
+    /// A new one.
+    New,
+}
+
+impl Conversation {
+    /// `send_message`'s `conversation`: an id, or "new".
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim() {
+            "" => None,
+            v if v.eq_ignore_ascii_case("new") => Some(Conversation::New),
+            v => Some(Conversation::Existing(v.to_string())),
+        }
+    }
 }
 
 /// The team leg of a coworker message (see `CoworkerMessage::team`).
@@ -134,6 +159,14 @@ pub trait CoworkerRail: Send + Sync {
         &self,
         post: TeamPost,
     ) -> Pin<Box<dyn Future<Output = Result<TeamPostReceipt, String>> + Send + '_>>;
+
+    /// What every employee is doing right now, native and linked, read
+    /// where each one's work runs (see [`crate::company`]). The rail that
+    /// reaches every coworker is the one that can see them all.
+    fn company_now(
+        &self,
+        query: crate::company::CompanyQuery,
+    ) -> Pin<Box<dyn Future<Output = Vec<crate::company::EmployeeNow>> + Send + '_>>;
 }
 
 /// Late-bound cell: tool registration runs before `AppState` exists, so the
@@ -160,8 +193,10 @@ pub async fn deliver(
     ctx: &crate::origin::ToolContext,
     to: &str,
     text: &str,
+    conversation: Option<Conversation>,
 ) -> Result<CoworkerDelivery, String> {
     rail.send(CoworkerMessage {
+        conversation,
         from_agent_id: types::keyparser::extract_agent_id(&ctx.session_key),
         sender_session_key: ctx.session_key.clone(),
         to: to.to_string(),

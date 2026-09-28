@@ -32,6 +32,8 @@ use serde_json::{json, Value};
 
 use crate::state::AppState;
 
+mod company;
+mod company_agent;
 mod connections;
 mod conversation;
 mod layers;
@@ -99,6 +101,7 @@ fn every_proof_is_a_fixture_in_the_staffed_company_suite_and_every_fixture_prove
     suite_and_proofs_are_one_set(
         "suites/staffed-company.yaml",
         &[
+            ("company", include_str!("company.rs")),
             ("connections", include_str!("connections.rs")),
             ("conversation", include_str!("conversation.rs")),
             ("layers", include_str!("layers.rs")),

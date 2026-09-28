@@ -215,6 +215,7 @@ pub(crate) fn post(
                     post_id: message.id.clone(),
                     reply_to: post.reply_to.clone(),
                 }),
+                conversation: None,
             };
             match crate::coworker::send_coworker_message(state.clone(), msg).await {
                 Ok(_) => asked.push(member_name.clone()),

@@ -1320,7 +1320,8 @@ impl Registry {
             let persona =
                 crate::agent_tool::PersonaTool::new(store.clone(), agent_reg, agent_loader)
                     .with_code_installer(self.code_installer.clone())
-                    .with_job_consent(self.job_consent.clone());
+                    .with_job_consent(self.job_consent.clone())
+                    .with_coworker_rail(self.coworker_rail.clone());
             for tool in crate::employee_tools::tools(persona) {
                 self.register(Box::new(tool)).await;
             }
@@ -2564,8 +2565,13 @@ pub(crate) mod tests {
     /// Each package that lands lowers the numbers; they never rise without
     /// an owner decision. 2026-09-27: run_command's `pty` line (#374) had
     /// raised it +90; run_command's own wording was trimmed instead and the
-    /// 90 given back: 16,120.
-    const CORE_DEFINITION_CHARS_BUDGET: usize = 16_120;
+    /// 90 given back: 16,120. The owner, 2026-09-28: the primary employee is
+    /// the point person for the whole company, native and linked, and "I
+    /// can only see this conversation" is no answer. list_employees says
+    /// what everyone is doing now, get_employee reads one employee's current
+    /// work, and send_message takes a linked employee's `conversation`
+    /// (list_employees 231, get_employee 303, send_message 1,371): 16,402.
+    const CORE_DEFINITION_CHARS_BUDGET: usize = 16_402;
 
     #[tokio::test]
     async fn the_always_loaded_set_stays_within_its_budget() {

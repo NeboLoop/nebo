@@ -53,7 +53,7 @@ impl AskOwnerTool {
             "[{my_name} cannot finish this without a decision, and there is nobody at the \
              keyboard. You are the employee they answer to.]\n\n{text}"
         );
-        match crate::coworker::deliver(&rail, ctx, &manager_id, &asked).await {
+        match crate::coworker::deliver(&rail, ctx, &manager_id, &asked, None).await {
             Ok(delivery) => Some(ToolResult::ok(format!(
                 "Nobody is at the keyboard, so this went to {name}, who you answer to. They decide \
                  in their own session, and their answer comes to you as a notification. Until \

@@ -125,6 +125,21 @@ impl Store {
         .map_err(|e| NeboError::Database(e.to_string()))
     }
 
+    /// The conversation a linked agent's session `session_id` is recorded
+    /// on (see `Chat::linked_chat_id`): the most recently active one when
+    /// more than one speaks into it (the owner's own thread with the
+    /// employee, and a coworker's thread sent into it).
+    pub fn chat_for_linked_session(&self, agent_id: &str, session_id: &str) -> Result<Option<Chat>, NeboError> {
+        let conn = self.conn()?;
+        conn.query_row(
+            "SELECT * FROM chats WHERE linked_agent_id = ?1 AND linked_chat_id = ?2 ORDER BY updated_at DESC, rowid DESC LIMIT 1",
+            params![agent_id, session_id],
+            |row| row_to_chat(row),
+        )
+        .optional()
+        .map_err(|e| NeboError::Database(e.to_string()))
+    }
+
     pub fn list_chats(&self, limit: i64, offset: i64) -> Result<Vec<Chat>, NeboError> {
         let conn = self.conn()?;
         let mut stmt = conn
@@ -1423,6 +1438,11 @@ mod tests {
 
         store.create_chat("c2", "Second").unwrap();
         assert!(store.get_chat("c2").unwrap().unwrap().linked_chat_id.is_none());
+
+        // Found by the session it records, for that agent only.
+        assert_eq!(store.chat_for_linked_session("coder", "api_7").unwrap().map(|c| c.id).as_deref(), Some("c1"));
+        assert!(store.chat_for_linked_session("other", "api_7").unwrap().is_none());
+        assert!(store.chat_for_linked_session("coder", "api_8").unwrap().is_none());
 
         // Cleared: forgotten, so the next turn opens a new session.
         store.set_chat_linked_session("c1", "", "").unwrap();

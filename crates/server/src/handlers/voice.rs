@@ -264,8 +264,9 @@ fn voice_tools(transfer: bool, telephony: bool, intents: &[String]) -> Vec<serde
         "name": "nebo",
         "description": "Do a task the user asked you to do: anything that needs real data or \
                         action (files, printers, email, calendar, web, apps, documents, system \
-                        info). Only for a request addressed to you. Never for the user thinking \
-                        aloud, describing what they see, asking how it is going (use `status`), \
+                        info, what any employee is doing, a message to one). Only for a request \
+                        addressed to you. Never for the user thinking \
+                        aloud, describing what they see, asking how your own task is going (use `status`), \
                         asking to stop work (use `cancel`), or your own words read back to you. \
                         Pass the request restated with the \
                         spoken context needed to complete it. It runs the full toolchain and \
@@ -279,9 +280,10 @@ fn voice_tools(transfer: bool, telephony: bool, intents: &[String]) -> Vec<serde
         tools.push(serde_json::json!({
             "type": "function",
             "name": "status",
-            "description": "How the current work is going: time elapsed, tool calls, what is \
-                            running now. Use for 'how is it going', 'are you done', 'what are \
-                            you doing'. Never starts work.",
+            "description": "How your own task in this conversation is going: time elapsed, \
+                            tool calls, what is running now. Use for 'how is it going', 'are you \
+                            done', 'what are you doing'. Never starts work. What other employees \
+                            are doing is the nebo tool's to answer.",
             "parameters": {"type": "object", "properties": {}}
         }));
         // "Stop" is a control, not a job: through `nebo` it would queue
@@ -1070,11 +1072,89 @@ pub(crate) fn pick_voice_chat(
     (now - last <= VOICE_RESUME_WINDOW.as_secs() as i64).then(|| c.id.clone())
 }
 
-/// What the `status` voice tool answers, from the live counters.
+/// The owner's live calls, by the conversation (session key) each is on. A
+/// turn that runs in that conversation outside the call (a woken turn that
+/// hears a coworker's reply, a helper's result) is said aloud on it
+/// ([`say_on_call`]): what reaches his conversation reaches his ear.
+pub type LiveCalls = std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, mpsc::Sender<String>>>>;
+
+/// Hand `reply`, what a turn in conversation `session_key` said, to the
+/// owner's call there, if one is live. The chat pipeline calls it as each
+/// turn ends; the call's own delegated runs never come through here.
+pub(crate) fn say_on_call(calls: &LiveCalls, session_key: &str, reply: &str) {
+    if reply.trim().is_empty() {
+        return;
+    }
+    let call = calls.lock().unwrap_or_else(|e| e.into_inner()).get(session_key).cloned();
+    if let Some(call) = call
+        && let Err(e) = call.try_send(reply.to_string())
+    {
+        // The reply is in the conversation either way; only the call misses it.
+        warn!(session_key, error = %e, "voice: a reply for the call could not be handed to it");
+    }
+}
+
+/// A call's place in [`LiveCalls`], given up when the call ends, however it
+/// ends. A second call on the same conversation takes the place; the first
+/// one's ending leaves it alone.
+struct OnCall {
+    calls: LiveCalls,
+    key: String,
+    heard: mpsc::Sender<String>,
+}
+
+impl OnCall {
+    fn join(calls: &LiveCalls, key: &str, heard: mpsc::Sender<String>) -> Self {
+        calls.lock().unwrap_or_else(|e| e.into_inner()).insert(key.to_string(), heard.clone());
+        OnCall { calls: calls.clone(), key: key.to_string(), heard }
+    }
+}
+
+impl Drop for OnCall {
+    fn drop(&mut self) {
+        let mut calls = self.calls.lock().unwrap_or_else(|e| e.into_inner());
+        if calls.get(&self.key).is_some_and(|c| c.same_channel(&self.heard)) {
+            calls.remove(&self.key);
+        }
+    }
+}
+
+/// The most of one reply the call is handed to say.
+const HEARD_CHARS: usize = 1500;
+
+/// What the voice model is told when replies came into the conversation
+/// outside the call: they are the conversation's own words, to be retold,
+/// never a request from the owner.
+fn heard_on_call(replies: &[String]) -> String {
+    let said: Vec<String> = replies
+        .iter()
+        .map(|r| {
+            let r = r.trim();
+            match r.char_indices().nth(HEARD_CHARS) {
+                Some((cut, _)) => format!("{} …", &r[..cut]),
+                None => r.to_string(),
+            }
+        })
+        .collect();
+    format!(
+        "(This just came into our conversation from work you started; it is already in the thread. \
+         It is not something the owner said. Tell the owner, in a sentence or two, in your own words:)\n\n{}",
+        said.join("\n\n")
+    )
+}
+
+/// What the `status` voice tool answers, from the live counters of this
+/// conversation's own turn. It says so: live 2026-09-28, the owner asked on
+/// his call whether a linked employee was working, and the voice model
+/// answered from this line that it could only see its own conversation. What
+/// anyone else is doing is the `nebo` tool's to answer (list_employees).
 fn voice_status_line(st: Option<&agent::harness::session_gate::ActiveTurnStatus>) -> String {
     match st {
-        Some(st) => format!("Still working: {}.", agent::harness::session_gate::progress_phrase(st)),
-        None => "Nothing is running right now.".to_string(),
+        Some(st) => format!(
+            "Still working in this conversation: {}.",
+            agent::harness::session_gate::progress_phrase(st)
+        ),
+        None => "Nothing is running in this conversation. For what other employees are doing, use nebo.".to_string(),
     }
 }
 
@@ -1207,6 +1287,15 @@ impl TurnLedger {
         let mut rows = self.close_assistant();
         rows.push(Row::User(words));
         self.turn = early;
+        rows
+    }
+
+    /// A reply that came into the conversation outside the call is about
+    /// to be said: the model's speech so far closes its own row, and what it
+    /// says next retells a row the thread already has, so it writes none.
+    fn relayed(&mut self) -> Vec<Row> {
+        let rows = self.close_assistant();
+        self.turn = TurnSpeech { text: String::new(), delegated: true };
         rows
     }
 
@@ -1734,7 +1823,9 @@ async fn handle_conversation_ws(mut socket: WebSocket, state: AppState, mut q: C
              `nebo` tool with the task and relay its result aloud; never guess and never \
              claim you can't act. Only a request addressed to you is a task: the user \
              thinking aloud, describing what they see, or asking how it is going is not. \
-             For progress questions call `status` and read it back. When the user asks \
+             For how your own task here is going, call `status` and read it back. For \
+             what anyone else is doing (another employee, the whole company), or to pass \
+             a message to one, use `nebo`: you can see and reach every employee. When the user asks \
              you to stop or cancel the work, call `cancel` and read back what it says; if \
              it is not clear they mean the running work, ask in one short sentence first. \
              While a task runs, \
@@ -2281,6 +2372,15 @@ async fn handle_conversation_session(
     // yet. They start when it is (TranscriptionEnd), so the spoken request
     // lands before the run's rows.
     let mut held_runs: Vec<(String, String, String)> = Vec::new();
+    // The call hears what its conversation hears: a turn that ran there
+    // outside the call (a coworker's reply coming back, a helper's result)
+    // is said aloud once the call is free to speak. The owner's own calls
+    // only; a phone caller's call is its own conversation.
+    let (heard_tx, mut heard_rx) = mpsc::channel::<String>(8);
+    let _on_call = caller_ctx.is_none().then(|| OnCall::join(&state.live_calls, &ctx.session_key, heard_tx));
+    let mut to_say: Vec<String> = Vec::new();
+    // A model response is owed or playing: nothing new is said over it.
+    let mut responding = false;
 
     loop {
         tokio::select! {
@@ -2314,13 +2414,17 @@ async fn handle_conversation_session(
                         Some(serde_json::json!({"type": "transcription_end"}))
                     }
                     ConversationEvent::PlaybackStart => {
+                        responding = true;
                         ledger.reply_started();
                         Some(serde_json::json!({"type": "playback_start"}))
                     }
                     // The model's speech stays open until the turn closes (next
                     // utterance or session end): only then is it known whether
                     // a delegated run answered, which makes it noise.
-                    ConversationEvent::PlaybackEnd => Some(serde_json::json!({"type": "playback_end"})),
+                    ConversationEvent::PlaybackEnd => {
+                        responding = false;
+                        Some(serde_json::json!({"type": "playback_end"}))
+                    }
                     ConversationEvent::ResponseText(text) => {
                         ledger.speech(&text);
                         Some(serde_json::json!({"type": "response_text", "text": text}))
@@ -2336,6 +2440,9 @@ async fn handle_conversation_session(
                         None
                     }
                     ConversationEvent::ToolCall { call_id, name, arguments } => {
+                        // The response became a tool call: its continuation
+                        // is owed when the outputs are in.
+                        responding = false;
                         info!(
                             tool = %name,
                             call_id = %call_id,
@@ -2498,12 +2605,16 @@ async fn handle_conversation_session(
                     break;
                 }
                 pending_tools = pending_tools.saturating_sub(1);
-                if pending_tools == 0
-                    && rt_tx.send(RealtimeCommand::ToolOutputsDone).await.is_err()
-                {
-                    break;
+                if pending_tools == 0 {
+                    if rt_tx.send(RealtimeCommand::ToolOutputsDone).await.is_err() {
+                        break;
+                    }
+                    responding = true;
                 }
             }
+
+            // A turn ran in this conversation outside the call.
+            Some(reply) = heard_rx.recv() => to_say.push(reply),
 
             // Messages from the WebSocket client -> upstream
             ws_msg = socket.recv() => {
@@ -2562,6 +2673,19 @@ async fn handle_conversation_session(
                     }
                 }
             }
+        }
+
+        // What came into the conversation is said when the call is free:
+        // the owner is not speaking, no reply is owed or playing, and no
+        // tool is out. The thread already has it as a row; the model's
+        // retelling writes none.
+        if !to_say.is_empty() && !responding && pending_tools == 0 && held_runs.is_empty() && !ledger.open {
+            let rows = ledger.relayed();
+            sink.write(&state, &mut socket, rows).await;
+            if rt_tx.send(RealtimeCommand::Text(heard_on_call(&std::mem::take(&mut to_say)))).await.is_err() {
+                break;
+            }
+            responding = true;
         }
     }
 
@@ -2712,6 +2836,50 @@ mod voice_prompt_tests {
         assert!(l.flush().is_empty());
     }
 
+    /// A reply that came into the conversation outside the call is said
+    /// aloud: the model's own speech before it keeps its row, and its
+    /// retelling writes none (the thread already has the reply).
+    #[test]
+    fn ledger_writes_no_row_for_a_retold_reply() {
+        let mut l = TurnLedger::default();
+        l.utterance_started();
+        l.words("ask the coder how far it is");
+        assert_eq!(shape(&l.user_final()), ["user:ask the coder how far it is"]);
+        l.reply_started();
+        l.speech("I asked it.");
+        assert_eq!(shape(&l.relayed()), ["assistant:I asked it."]);
+        l.reply_started();
+        l.speech("The coder says three files are left.");
+        assert!(l.flush().is_empty(), "the retelling is not a row");
+    }
+
+    /// A call's place is its conversation's while it lasts: a turn there
+    /// outside the call is handed to it, told as the conversation's words and
+    /// never the owner's, and a second call on the same conversation keeps
+    /// the place when the first one ends.
+    #[tokio::test]
+    async fn a_reply_in_the_conversation_reaches_the_call_on_it() {
+        let calls: LiveCalls = Default::default();
+        let (first_tx, mut first) = mpsc::channel(4);
+        let on_first = OnCall::join(&calls, "agent:a:thread:c1", first_tx);
+        say_on_call(&calls, "agent:a:thread:c1", "The coder says three files are left.");
+        say_on_call(&calls, "agent:a:thread:other", "not this call's");
+        say_on_call(&calls, "agent:a:thread:c1", "  ");
+        assert_eq!(first.recv().await.as_deref(), Some("The coder says three files are left."));
+        assert!(first.try_recv().is_err(), "only its own conversation, and only words");
+
+        let (second_tx, mut second) = mpsc::channel(4);
+        let _on_second = OnCall::join(&calls, "agent:a:thread:c1", second_tx);
+        drop(on_first);
+        say_on_call(&calls, "agent:a:thread:c1", "later");
+        assert_eq!(second.recv().await.as_deref(), Some("later"), "the call still on it keeps the place");
+
+        let told = heard_on_call(&["The coder says three files are left.".to_string(), "x".repeat(HEARD_CHARS + 5)]);
+        assert!(told.contains("It is not something the owner said."), "{told}");
+        assert!(told.contains("The coder says three files are left."), "{told}");
+        assert!(told.ends_with(" …"), "a long reply is cut where it says: {told}");
+    }
+
     /// What the owner said since the last reply is his own words, from the
     /// transcript (what a delegated run's save decision reads, never the
     /// voice model's task): utterances with no reply between them are read
@@ -2847,9 +3015,12 @@ mod voice_prompt_tests {
         let st = agent::harness::session_gate::ActiveTurnStatus { elapsed_secs: 200, tool_calls: 2, current_tool: "os: exec".into() };
         assert_eq!(
             voice_status_line(Some(&st)),
-            "Still working: 3 minutes in, 2 tool calls so far, currently running os: exec."
+            "Still working in this conversation: 3 minutes in, 2 tool calls so far, currently running os: exec."
         );
-        assert_eq!(voice_status_line(None), "Nothing is running right now.");
+        assert_eq!(
+            voice_status_line(None),
+            "Nothing is running in this conversation. For what other employees are doing, use nebo."
+        );
     }
 
     #[test]

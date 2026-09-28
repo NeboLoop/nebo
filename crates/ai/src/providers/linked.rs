@@ -45,6 +45,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
+pub use link_core::model::{AgentStatus, Life, SessionStatus, Working};
 use link_core::model::{DeviceRef, PermissionOption, StopReason, TurnState, TurnUpdate, code};
 use link_core::turn::{self, Permission, ToolEvent, Tools, mode_for};
 use nebo_runtimes::acp::protocol::{self, ToolCall as AcpToolCall};
@@ -223,6 +224,63 @@ impl LinkedProvider {
         driver.run().await
     }
 
+    /// Whether `bot_id` is this computer's own, hosted by Nebo itself.
+    pub fn hosted_here(&self, bot_id: &str) -> bool {
+        self.local.as_ref().is_some_and(|l| l.bot_id().as_deref() == Some(bot_id))
+    }
+
+    /// What the linked bot `bot_id`'s agents are doing now, as its host
+    /// says (`host/status`): for each of `agents` (as the employees' brains
+    /// name them), in order, its status, or `None` when the host does not
+    /// list it. `Err` is why the host could not be asked, in plain words.
+    pub async fn status(&self, bot_id: &str, agents: &[String]) -> Result<Vec<Option<AgentStatus>>, String> {
+        let route = self.route(bot_id, COMPUTER)?;
+        let mut conn = self.open(&route, bot_id).await.map_err(|e| unreached(e, COMPUTER))?;
+        let (answer, _) = conn.call(None, "host/status", json!({})).await.ok_or_else(no_answer)?;
+        let answer = answer.map_err(|e| e.message)?;
+        let listed: Vec<AgentStatus> =
+            serde_json::from_value(answer["agents"].clone()).map_err(|e| format!("its computer's status could not be read: {e}"))?;
+        Ok(agents
+            .iter()
+            .map(|agent| {
+                let canonical = link_core::roster::agent_id(agent);
+                listed.iter().find(|s| s.agent == *agent || s.agent == canonical).cloned()
+            })
+            .collect())
+    }
+
+    /// What the agent `agent_id` of `bot_id` is doing in its session
+    /// `session_id`, read from the session's record on its host
+    /// (`session/load`, which reads and changes nothing): see
+    /// [`SessionWork`]. Only for a session its host holds open: loading a
+    /// paused one would start the agent again.
+    pub async fn session_work(&self, bot_id: &str, agent_id: &str, session_id: &str) -> Result<SessionWork, String> {
+        let route = self.route(bot_id, COMPUTER)?;
+        let mut conn = self.open(&route, bot_id).await.map_err(|e| unreached(e, COMPUTER))?;
+        let (answer, _) = conn.call(None, "host/agents", json!({})).await.ok_or_else(no_answer)?;
+        let agents = answer.map_err(|e| e.message)?;
+        let listed = agents["agents"].as_array().cloned().unwrap_or_default();
+        let found = listed_agent(&listed, agent_id).ok_or_else(|| format!("No agent {agent_id} on its computer."))?;
+        let agent = found["id"].as_str().unwrap_or_default().to_owned();
+        let cwd = found["folder"].as_str().unwrap_or("/").to_owned();
+        let params = json!({ "protocolVersion": 1, "clientCapabilities": {} });
+        let (answer, _) = conn.call(Some(&agent), "initialize", params).await.ok_or_else(no_answer)?;
+        answer.map_err(|e| e.message)?;
+        let params = json!({ "sessionId": session_id, "cwd": cwd, "mcpServers": [] });
+        let (answer, replay) = conn.call(Some(&agent), "session/load", params).await.ok_or_else(no_answer)?;
+        answer.map_err(|e| e.message)?;
+        let mut record = Vec::new();
+        let mut turn = None;
+        for frame in &replay {
+            match replayed(frame, &agent, session_id) {
+                Replayed::Turn(update) => turn = Some(update),
+                Replayed::Update(update) => record.push(update),
+                Replayed::Other => {}
+            }
+        }
+        Ok(summarise(&record, turn.filter(|t| t.state == TurnState::Running).as_ref()))
+    }
+
     /// The employee's name, for the copy the owner reads.
     fn employee_name(&self, req: &ChatRequest, agent_id: &str) -> String {
         self.store
@@ -256,6 +314,10 @@ impl Provider for LinkedProvider {
     /// call as over, and free to send another, before that round trip ends.
     fn cancel_is_async(&self) -> bool {
         true
+    }
+
+    fn linked(&self) -> Option<&LinkedProvider> {
+        Some(self)
     }
 
     async fn stream(&self, req: &ChatRequest) -> Result<EventReceiver, ProviderError> {
@@ -407,12 +469,7 @@ impl Driver<'_> {
         let (answer, _) = self.conn.call(None, "host/agents", json!({})).await.ok_or_else(|| self.offline())?;
         let agents = answer.map_err(|e| turn::plain(&self.name, &e))?;
         let listed = agents["agents"].as_array().cloned().unwrap_or_default();
-        let canonical = link_core::roster::agent_id(&self.agent_id);
-        let found = listed
-            .iter()
-            .find(|a| a["id"] == self.agent_id.as_str())
-            .or_else(|| listed.iter().find(|a| a["id"] == canonical.as_str()))
-            .ok_or_else(|| format!("No agent {} on this bot.", self.agent_id))?;
+        let found = listed_agent(&listed, &self.agent_id).ok_or_else(|| format!("No agent {} on this bot.", self.agent_id))?;
         self.agent = found["id"].as_str().unwrap_or_default().to_owned();
         self.folder = found["folder"].as_str().map(str::to_owned);
         Ok(())
@@ -542,6 +599,14 @@ impl Driver<'_> {
         loop {
             tokio::select! {
                 _ = cancel.cancelled(), if cancel_deadline.is_none() => {
+                    // A message still waiting behind another turn in the
+                    // session (its prompt refused as turn_in_progress) was
+                    // never taken: stopping it withdraws it. The running
+                    // turn is not this one's to cancel.
+                    if self.waiting {
+                        info!(session = %self.session, "linked: a waiting message was withdrawn; the running turn goes on");
+                        return Err("Cancelled".to_owned());
+                    }
                     let cancel = json!({ "agent": self.agent, "acp": { "jsonrpc": "2.0", "method": "session/cancel", "params": { "sessionId": self.session } } });
                     if !self.conn.send(&cancel) {
                         return Err("Cancelled".to_owned());
@@ -942,21 +1007,12 @@ impl Driver<'_> {
         let mut record: Vec<Value> = Vec::new();
         let mut latest: Option<TurnUpdate> = None;
         for frame in replay {
-            let host_turn = frame.get("agent").is_none() && frame["method"] == "host/turn";
-            let recorded = frame["agent"] == agent.as_str()
-                && frame["acp"]["method"] == "session/update"
-                && frame["acp"]["params"]["sessionId"] == self.session.as_str();
-            if host_turn {
-                if let Ok(update) = serde_json::from_value::<TurnUpdate>(frame["params"].clone())
-                    && update.agent == self.agent
-                    && update.session_id == self.session
-                {
-                    latest = Some(update);
+            match replayed(&frame, &agent, &self.session) {
+                Replayed::Turn(update) => latest = Some(update),
+                Replayed::Update(update) => record.push(update),
+                Replayed::Other => {
+                    self.frame(frame, answers).await.map_err(Some)?;
                 }
-            } else if recorded {
-                record.push(frame["acp"]["params"]["update"].clone());
-            } else {
-                self.frame(frame, answers).await.map_err(Some)?;
             }
         }
         if self.turn.is_none() {
@@ -1035,6 +1091,163 @@ fn this_turns(record: &[Value], latest: bool) -> &[Value] {
         (true, []) => record,
         _ => &[],
     }
+}
+
+/// What a linked agent's host is called in a status read: the employee
+/// reading about it knows which computer that is.
+const COMPUTER: &str = "its computer";
+
+fn no_answer() -> String {
+    "its computer did not answer".to_owned()
+}
+
+/// The agent `agent_id` names in a host's `host/agents` listing: by its
+/// id, or by the one form every agent id now takes.
+fn listed_agent<'a>(listed: &'a [Value], agent_id: &str) -> Option<&'a Value> {
+    let canonical = link_core::roster::agent_id(agent_id);
+    listed
+        .iter()
+        .find(|a| a["id"] == agent_id)
+        .or_else(|| listed.iter().find(|a| a["id"] == canonical.as_str()))
+}
+
+/// One frame a `session/load` replayed, for the session `session` of
+/// `agent`: its turn notice, one of its recorded updates, or anything else.
+enum Replayed {
+    Turn(TurnUpdate),
+    Update(Value),
+    Other,
+}
+
+fn replayed(frame: &Value, agent: &str, session: &str) -> Replayed {
+    if frame.get("agent").is_none() && frame["method"] == "host/turn" {
+        return match serde_json::from_value::<TurnUpdate>(frame["params"].clone()) {
+            Ok(update) if update.agent == agent && update.session_id == session => Replayed::Turn(update),
+            _ => Replayed::Other,
+        };
+    }
+    if frame["agent"] == agent && frame["acp"]["method"] == "session/update" && frame["acp"]["params"]["sessionId"] == session {
+        return Replayed::Update(frame["acp"]["params"]["update"].clone());
+    }
+    Replayed::Other
+}
+
+/// What a linked agent is doing in one session, as its record says: the
+/// conversation's title, the owner's request its latest turn works on, that
+/// turn's tool calls and its latest words. Bounded: the newest
+/// [`WORK_CALLS`] calls, and the last [`WORK_CHARS`] characters of the
+/// request and of the words, each cut named where it is cut.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SessionWork {
+    pub title: Option<String>,
+    /// The request the latest turn works on.
+    pub prompt: Option<String>,
+    /// The latest turn's tool calls, oldest first: what the agent shows for
+    /// each, and where it is ("running", "done", "failed", "about to run").
+    pub calls: Vec<(String, String)>,
+    /// How many earlier calls of the turn are not in `calls`.
+    pub earlier_calls: usize,
+    /// What the agent said last in that turn.
+    pub said: Option<String>,
+    /// When the running turn started (RFC 3339); `None` when no turn runs.
+    pub running_since: Option<String>,
+}
+
+/// The newest calls a [`SessionWork`] carries.
+pub const WORK_CALLS: usize = 5;
+/// The most of a request or of the latest words a [`SessionWork`] carries.
+pub const WORK_CHARS: usize = 400;
+
+/// A session's work from its record (the `session/update`s a load
+/// replays, oldest first) and its running turn, if one runs.
+fn summarise(record: &[Value], running: Option<&TurnUpdate>) -> SessionWork {
+    let parsed: Vec<protocol::Update> = record
+        .iter()
+        .filter_map(|u| protocol::update(&json!({ "sessionId": "", "update": u })).map(|(_, p)| p))
+        .collect();
+    let mut work = SessionWork {
+        running_since: running.map(|t| t.started_at.clone()).filter(|s| !s.is_empty()),
+        ..SessionWork::default()
+    };
+    work.title = parsed.iter().rev().find_map(|u| match u {
+        protocol::Update::Title(t) if !t.trim().is_empty() => Some(t.trim().to_owned()),
+        _ => None,
+    });
+    // The latest request: the last run of the owner's message chunks.
+    let last_user = parsed.iter().rposition(|u| matches!(u, protocol::Update::UserText { .. }));
+    let after = match last_user {
+        Some(end) => {
+            let start = parsed[..=end]
+                .iter()
+                .rposition(|u| !matches!(u, protocol::Update::UserText { .. }))
+                .map_or(0, |i| i + 1);
+            let text: String = parsed[start..=end]
+                .iter()
+                .filter_map(|u| match u {
+                    protocol::Update::UserText { text, .. } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect();
+            work.prompt = bounded(text.trim(), false);
+            &parsed[end + 1..]
+        }
+        None => &parsed[..],
+    };
+    let mut calls: Vec<(String, String, String)> = Vec::new();
+    let mut said = String::new();
+    for u in after {
+        match u {
+            protocol::Update::ToolCall(call) | protocol::Update::ToolCallUpdate(call) => {
+                let label = call.title.clone().or_else(|| call.name.clone()).or_else(|| call.kind.clone()).filter(|l| !l.trim().is_empty());
+                let status = call.status.map(|s| match s {
+                    protocol::ToolStatus::Pending => "about to run",
+                    protocol::ToolStatus::InProgress => "running",
+                    protocol::ToolStatus::Completed => "done",
+                    protocol::ToolStatus::Failed => "failed",
+                });
+                match calls.iter_mut().find(|(id, _, _)| *id == call.id) {
+                    Some((_, l, s)) => {
+                        if let Some(label) = label {
+                            *l = label;
+                        }
+                        if let Some(status) = status {
+                            *s = status.to_owned();
+                        }
+                    }
+                    None => calls.push((
+                        call.id.clone(),
+                        label.unwrap_or_else(|| "a tool".to_owned()),
+                        status.unwrap_or("running").to_owned(),
+                    )),
+                }
+            }
+            protocol::Update::AgentText { text, .. } => said.push_str(text),
+            _ => {}
+        }
+    }
+    work.earlier_calls = calls.len().saturating_sub(WORK_CALLS);
+    work.calls = calls.into_iter().skip(work.earlier_calls).map(|(_, l, s)| (l, s)).collect();
+    work.said = bounded(said.trim(), true);
+    work
+}
+
+/// `text` bounded to [`WORK_CHARS`]: its end when `keep_end` (the latest
+/// words), else its start; the cut is said where it is.
+fn bounded(text: &str, keep_end: bool) -> Option<String> {
+    if text.is_empty() {
+        return None;
+    }
+    let count = text.chars().count();
+    if count <= WORK_CHARS {
+        return Some(text.to_owned());
+    }
+    Some(if keep_end {
+        let tail: String = text.chars().skip(count - WORK_CHARS).collect();
+        format!("… {tail}")
+    } else {
+        let head: String = text.chars().take(WORK_CHARS).collect();
+        format!("{head} …")
+    })
 }
 
 /// Why the linked bot could not be reached, as the owner reads it.
@@ -1853,6 +2066,135 @@ mod tests {
         token.cancel();
         let rest = collect(rx).await;
         assert_eq!(kinds(&rest), vec![StreamEventType::Error, StreamEventType::Done]);
+        assert_eq!(rest[0].error.as_deref(), Some("Cancelled"));
+        assert_eq!(told(&r.told).iter().filter(|t| t.get("cancel").is_some()).count(), 1);
+    }
+
+    /// What a session's record says it is doing: the title, the request
+    /// its latest turn works on (never an earlier one's), that turn's calls
+    /// where each is now, and its latest words, bounded.
+    #[test]
+    fn a_sessions_work_is_read_from_its_record() {
+        let user = |t: &str| json!({ "sessionUpdate": "user_message_chunk", "content": { "type": "text", "text": t } });
+        let agent = |t: &str| json!({ "sessionUpdate": "agent_message_chunk", "content": { "type": "text", "text": t } });
+        let call = |id: &str, title: &str, status: &str| json!({ "sessionUpdate": "tool_call", "toolCallId": id, "title": title, "kind": "execute", "status": status });
+        let done = |id: &str| json!({ "sessionUpdate": "tool_call_update", "toolCallId": id, "status": "completed" });
+        let mut record = vec![
+            json!({ "sessionUpdate": "session_info_update", "title": "Fix the login bug" }),
+            user("earlier ask"),
+            agent("earlier answer"),
+            call("old", "old call", "in_progress"),
+            user("find why sign-in "),
+            user("fails"),
+            agent("Looking."),
+            call("c1", "grep auth", "in_progress"),
+            done("c1"),
+        ];
+        for i in 2..=7 {
+            record.push(call(&format!("c{i}"), &format!("step {i}"), "completed"));
+        }
+        record.push(call("c8", "cargo test", "in_progress"));
+        record.push(agent(" Running the tests now."));
+        let running = TurnUpdate {
+            agent: "claude-code".into(),
+            session_id: "s-1".into(),
+            turn_id: "t-2".into(),
+            state: TurnState::Running,
+            started_at: "2026-09-28T16:00:00Z".into(),
+            by: None,
+            stop_reason: None,
+            error: None,
+            usage: None,
+        };
+        let work = summarise(&record, Some(&running));
+        assert_eq!(work.title.as_deref(), Some("Fix the login bug"));
+        assert_eq!(work.prompt.as_deref(), Some("find why sign-in fails"), "the latest request, whole, never an earlier one");
+        assert_eq!(work.earlier_calls, 3, "eight calls this turn, the newest five carried");
+        assert_eq!(work.calls.len(), WORK_CALLS);
+        assert_eq!(work.calls.last().unwrap(), &("cargo test".to_owned(), "running".to_owned()));
+        assert!(!work.calls.iter().any(|(l, _)| l == "old call"), "an earlier turn's call is not this one's: {:?}", work.calls);
+        assert_eq!(work.said.as_deref(), Some("Looking. Running the tests now."));
+        assert_eq!(work.running_since.as_deref(), Some("2026-09-28T16:00:00Z"));
+
+        let long = "x".repeat(WORK_CHARS + 50);
+        let work = summarise(&[user(&long), agent(&long)], None);
+        assert!(work.prompt.as_deref().unwrap().ends_with(" …"), "a long request says where it is cut");
+        assert!(work.said.as_deref().unwrap().starts_with("… "), "the latest words keep their end");
+        assert_eq!(work.running_since, None, "no turn runs");
+        assert_eq!(summarise(&[], None), SessionWork::default());
+    }
+
+    /// A linked agent mid-prompt, asked from outside its turn: its host says
+    /// it is working on a prompt in that session, an agent it does not list
+    /// is `None`, and the session's record gives the request it works on and
+    /// what it said, while the turn goes on untouched.
+    #[tokio::test]
+    async fn the_host_says_what_its_agent_is_doing_and_its_session_is_read() {
+        let r = remote("hang").await;
+        let token = CancellationToken::new();
+        let mut req = request("refactor the billing module", "chat-1", &remote_model());
+        req.cancel_token = Some(token.clone());
+        let mut rx = r.provider.stream(&req).await.unwrap();
+        let first = tokio::time::timeout(Duration::from_secs(60), rx.recv()).await.unwrap().unwrap();
+        assert_eq!(first.text, "Working");
+
+        assert!(!r.provider.hosted_here(BOT), "another computer's bot");
+        let status = r.provider.status(BOT, &["claude-code".to_owned(), "nobody".to_owned()]).await.unwrap();
+        let codex = status[0].as_ref().expect("the host lists its agent");
+        assert!(codex.busy && codex.why.contains(&Working::Prompt), "{codex:?}");
+        let session = codex.sessions.iter().find(|s| s.session_id == "s-1").expect("the session it works in");
+        assert!(session.busy && session.why.contains(&Working::Prompt), "{session:?}");
+        assert!(status[1].is_none(), "an agent the host does not list");
+
+        let work = r.provider.session_work(BOT, "claude-code", "s-1").await.unwrap();
+        assert_eq!(work.prompt.as_deref(), Some("refactor the billing module"));
+        assert_eq!(work.said.as_deref(), Some("Working"));
+        assert!(work.running_since.is_some(), "{work:?}");
+
+        let told = told(&r.told);
+        assert_eq!(told.iter().filter(|t| t.get("prompt").is_some()).count(), 1, "reading sent nothing: {told:?}");
+        assert!(told.iter().all(|t| t.get("cancel").is_none()), "reading cancelled nothing: {told:?}");
+        token.cancel();
+        let rest = collect(rx).await;
+        assert_eq!(rest[0].error.as_deref(), Some("Cancelled"));
+    }
+
+    /// Never two prompts in flight on one session: a message for a session
+    /// whose turn runs waits, the agent is told nothing of it, and stopping
+    /// it withdraws it without cancelling the turn it waited behind.
+    #[tokio::test]
+    async fn a_waiting_message_never_cancels_the_turn_it_waits_behind() {
+        let r = remote("hang").await;
+        let first = CancellationToken::new();
+        let mut req = request("do something long", "chat-1", &remote_model());
+        req.cancel_token = Some(first.clone());
+        let mut running = r.provider.stream(&req).await.unwrap();
+        let said = tokio::time::timeout(Duration::from_secs(60), running.recv()).await.unwrap().unwrap();
+        assert_eq!(said.text, "Working");
+
+        // A second Nebo conversation bound to the same session.
+        r.store.create_chat("chat-2", "Second").unwrap();
+        r.store.set_chat_linked_session("chat-2", "claude-code", "s-1").unwrap();
+        let second = CancellationToken::new();
+        let mut req = request("and also this", "chat-2", &remote_model());
+        req.cancel_token = Some(second.clone());
+        let waiting = r.provider.stream(&req).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let prompts = |told: &[Value]| told.iter().filter(|t| t.get("prompt").is_some()).count();
+        assert_eq!(prompts(&told(&r.told)), 1, "the second message waits: {:?}", told(&r.told));
+
+        second.cancel();
+        let withdrawn = collect(waiting).await;
+        assert_eq!(withdrawn[0].error.as_deref(), Some("Cancelled"));
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let told_now = told(&r.told);
+        assert!(told_now.iter().all(|t| t.get("cancel").is_none()), "the running turn was not cancelled: {told_now:?}");
+        assert_eq!(prompts(&told_now), 1, "the withdrawn message never reached the agent");
+        let status = r.provider.status(BOT, &["claude-code".to_owned()]).await.unwrap();
+        assert!(status[0].as_ref().unwrap().busy, "the first turn goes on");
+
+        first.cancel();
+        let rest = collect(running).await;
         assert_eq!(rest[0].error.as_deref(), Some("Cancelled"));
         assert_eq!(told(&r.told).iter().filter(|t| t.get("cancel").is_some()).count(), 1);
     }
