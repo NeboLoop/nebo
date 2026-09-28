@@ -448,7 +448,10 @@ Address the coworker whose role owns this step — write their mention token wit
 in your reply — instead of doing the step yourself.";
 
 /// The turn a chat asks for: the one mapping both run entrypoints use.
-fn turn_request(state: &AppState, config: &ChatConfig, run: &RunHandle) -> agent::TurnRequest {
+/// `attachments`: the caller places the run's files on its reply
+/// (`place_run_files`) — `run_chat` does; `run_chat_events` hands the raw
+/// stream to a door that relays only text.
+fn turn_request(state: &AppState, config: &ChatConfig, run: &RunHandle, attachments: bool) -> agent::TurnRequest {
     use agent::harness::{Delivery, SeatRequest, TurnInput, TurnMode};
 
     let (model_preference, personality_snippet) = entity_run_params(config.entity_config.as_ref());
@@ -502,6 +505,7 @@ fn turn_request(state: &AppState, config: &ChatConfig, run: &RunHandle) -> agent
             channel: config.channel.clone(),
             channel_ctx: config.channel_ctx.clone(),
             mention_briefing: config.mention_context.clone(),
+            attachments,
         },
         cancel: config.cancel_token.clone(),
         progress: Some(agent::RunProgress {
@@ -616,7 +620,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
     let lane = config.lane.clone();
     // Resolve display name + register the run (shared with run_chat_events).
     let (agent_display_name, run_handle) = register_run(state, &config).await;
-    let req = turn_request(state, &config, &run_handle);
+    let req = turn_request(state, &config, &run_handle, true);
 
     let channel = config.channel;
     let origin = config.origin;
@@ -1070,36 +1074,16 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                 )
                                 .await;
                             }
-                            // Collect run-produced media: persist to <data_dir>/files and
-                            // reference by /api/v1/files/<name> — for the LOCAL app (always,
-                            // rendered inline) and comm replies (when replying to a channel;
-                            // resolve_comm_attachments maps the same /api/v1/files prefix).
-                            // Only media the owner asked for attaches: a capture the
-                            // model took, or a document a call produced. A file read
-                            // returns an EXISTING image for the model, and the browser
-                            // and the desktop return the page or window after every act
-                            // — the tool's eyes (34 frame reads once hung 34 tiles on one
-                            // message; a Simulator session hung three frames on each
-                            // reply, 2026-09-22). The tool's spec says which it is.
-                            let owner_media = match event.tool_call.as_ref() {
-                                Some(tc) => match spec_tools.get(&tc.name).await {
-                                    Some(tool) => tool.emits_image(&tc.input),
-                                    None => true,
-                                },
-                                None => true,
-                            };
-                            if event.error.is_none() && owner_media {
-                                if let Some(url) = &event.image_url {
-                                    if let Some(app_url) = to_app_artifact_url(url) {
-                                        if !app_file_artifacts.contains(&app_url) {
-                                            app_file_artifacts.push(app_url.clone());
-                                        }
-                                        if comm_reply.is_some()
-                                            && !comm_file_artifacts.contains(&app_url)
-                                        {
-                                            comm_file_artifacts.push(app_url);
-                                        }
-                                    }
+                            // The file this call hands the owner: for the LOCAL app
+                            // (always, on the reply) and comm replies (when replying to
+                            // a channel; resolve_comm_attachments maps the same
+                            // /api/v1/files prefix).
+                            if let Some(app_url) = owner_file(&spec_tools, &event).await {
+                                if !app_file_artifacts.contains(&app_url) {
+                                    app_file_artifacts.push(app_url.clone());
+                                }
+                                if comm_reply.is_some() && !comm_file_artifacts.contains(&app_url) {
+                                    comm_file_artifacts.push(app_url);
                                 }
                             }
                             needs_separator = true;
@@ -1630,37 +1614,11 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                     }
                 }
 
-                // Resolve the active chat so run-produced documents can be
-                // versioned + persisted under a stable container.
-                let chat_id_for_artifacts = harness
-                    .sessions()
-                    .resolve_session_id_by_key(&sid)
-                    .ok()
-                    .map(|session_id| harness.sessions().active_chat_id(&session_id));
-
-                // Version each run-produced DOCUMENT (non-media) into its
-                // append-only chain and emit structured artifact objects; media
-                // stays a plain URL string (rendered inline). Mixed array — the
-                // frontend splits by type. Falls back to the bare URL on any error.
-                let chat_artifacts: Vec<serde_json::Value> = match &chat_id_for_artifacts {
-                    Some(chat_id) if !app_file_artifacts.is_empty() => {
-                        let message_id = harness
-                            .store()
-                            .latest_assistant_message_id(chat_id)
-                            .ok()
-                            .flatten();
-                        version_app_artifacts(
-                            harness.store(),
-                            chat_id,
-                            message_id.as_deref(),
-                            &app_file_artifacts,
-                        )
-                    }
-                    _ => app_file_artifacts
-                        .iter()
-                        .map(|u| serde_json::Value::String(u.clone()))
-                        .collect(),
-                };
+                // The run's files go on its reply before the app hears the turn
+                // is over, so a page that reloads the thread on completion reads
+                // them.
+                let chat_artifacts =
+                    place_run_files(&harness, &neboai_api_url, &sid, &app_file_artifacts);
 
                 // Kept before chat_complete, so a page that reloads the thread
                 // on completion reads it.
@@ -1684,43 +1642,6 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                     },
                 )
                 .await;
-
-                // Persist the artifacts onto the turn's final assistant message so
-                // Work items + their version chain survive history reload (the live
-                // event above is the only other carrier).
-                if !chat_artifacts.is_empty() {
-                    if let Some(chat_id) = &chat_id_for_artifacts {
-                        if let Err(e) = harness
-                            .store()
-                            .attach_artifacts_to_latest_assistant_message(chat_id, &chat_artifacts)
-                        {
-                            warn!(error = %e, chat_id = %chat_id, "failed to persist artifacts on message");
-                        }
-                    }
-                    // Register each versioned document in the owner's web
-                    // library (best-effort push; the hub row is a pointer —
-                    // content stays here and is opened through the tunnel).
-                    for a in &chat_artifacts {
-                        if let Some(doc_id) = a.get("documentId").and_then(|v| v.as_str()) {
-                            // openPath is the standalone viewer route (full
-                            // renderer matrix + source/download), not the raw
-                            // blob — a phone opening /t/<bot>/work/<id> gets a
-                            // rendered document, not text/markdown bytes. The
-                            // blob stays reachable via the viewer's Download.
-                            crate::codes::push_artifact_via(
-                                harness.store(),
-                                &neboai_api_url,
-                                serde_json::json!({
-                                    "id": doc_id,
-                                    "kind": a.get("kind").and_then(|v| v.as_str()).unwrap_or("document"),
-                                    "title": a.get("filename").and_then(|v| v.as_str()).unwrap_or("document"),
-                                    "openPath": format!("/work/{}", doc_id),
-                                    "version": a.get("version").and_then(|v| v.as_i64()).unwrap_or(1),
-                                }),
-                            );
-                        }
-                    }
-                }
 
                 // The chat title is generated after the turn by the harness; the
                 // ChatTitleSink bound at startup broadcasts it and pushes it to
@@ -1817,7 +1738,7 @@ pub async fn compact(state: &AppState, session_key: &str, agent_id: &str, instru
         client_id: None,
     };
     let (_, run_handle) = register_run(state, &config).await;
-    let mut req = turn_request(state, &config, &run_handle);
+    let mut req = turn_request(state, &config, &run_handle, false);
     req.input = agent::harness::TurnInput::Compact { instructions: instructions.to_string() };
     let mut events = state.harness.start_turn(req).await.map_err(|e| e.to_string())?.events;
     let mut outcome = Err("the compact ended without a checkpoint".to_string());
@@ -1846,7 +1767,7 @@ pub async fn run_chat_events(
     // Resolve display name + register the run (shared with run_chat).
     let (_agent_display_name, run_handle) = register_run(state, &config).await;
 
-    let req = turn_request(state, &config, &run_handle);
+    let req = turn_request(state, &config, &run_handle, false);
 
     let (tx, rx) = mpsc::channel(64);
     let lane_task = make_task(&lane, format!("chat:{}", sid), async move {
@@ -2030,6 +1951,11 @@ fn mime_from_extension(path: &std::path::Path) -> String {
         "webp" => "image/webp",
         "svg" => "image/svg+xml",
         "pdf" => "application/pdf",
+        "wav" => "audio/wav",
+        "mp3" => "audio/mpeg",
+        "m4a" => "audio/mp4",
+        "aac" => "audio/aac",
+        "ogg" | "opus" => "audio/ogg",
         "txt" | "log" => "text/plain",
         "md" => "text/markdown",
         "csv" => "text/csv",
@@ -2042,6 +1968,88 @@ fn mime_from_extension(path: &std::path::Path) -> String {
         _ => "application/octet-stream",
     }
     .to_string()
+}
+
+/// The file a finished tool call hands the owner, as the app URL his clients
+/// render; None for a failed call or one with no file. Only media the owner
+/// asked for counts: a capture the model took, a document a call produced, a
+/// file `share_file` attached. A file read returns an EXISTING image for the
+/// model, and the browser and the desktop return the page or window after
+/// every act — the tool's eyes (34 frame reads once hung 34 tiles on one
+/// message; a Simulator session hung three frames on each reply,
+/// 2026-09-22). The tool's spec says which it is. Every door that places a
+/// run's files on its reply (`Delivery::attachments`) reads its tool results
+/// through here.
+pub(crate) async fn owner_file(tools: &tools::Registry, event: &ai::StreamEvent) -> Option<String> {
+    if event.event_type != StreamEventType::ToolResult || event.error.is_some() {
+        return None;
+    }
+    let url = event.image_url.as_deref()?;
+    if let Some(tc) = event.tool_call.as_ref()
+        && let Some(tool) = tools.get(&tc.name).await
+        && !tool.emits_image(&tc.input)
+    {
+        return None;
+    }
+    to_app_artifact_url(url)
+}
+
+/// Put a run's files on its reply: each document is versioned into the
+/// chat's Work (its append-only chain, so the chat's Documents list and the
+/// owner's web library hold it), and the whole set is written onto the
+/// turn's final assistant message, where the app and the phone render the
+/// cards on reload. Returns what `chat_complete` carries: a mixed array of
+/// structured document objects and plain media URLs (the clients split by
+/// type). The ONE placement every door with `Delivery::attachments` ends
+/// through.
+pub(crate) fn place_run_files(
+    harness: &agent::Harness,
+    neboai_api_url: &str,
+    session_key: &str,
+    files: &[String],
+) -> Vec<serde_json::Value> {
+    if files.is_empty() {
+        return Vec::new();
+    }
+    let chat_id = harness
+        .sessions()
+        .resolve_session_id_by_key(session_key)
+        .ok()
+        .map(|session_id| harness.sessions().active_chat_id(&session_id));
+    let Some(chat_id) = chat_id else {
+        return files.iter().map(|u| serde_json::Value::String(u.clone())).collect();
+    };
+    let message_id = harness.store().latest_assistant_message_id(&chat_id).ok().flatten();
+    let artifacts = version_app_artifacts(harness.store(), &chat_id, message_id.as_deref(), files);
+    if let Err(e) = harness
+        .store()
+        .attach_artifacts_to_latest_assistant_message(&chat_id, &artifacts)
+    {
+        warn!(error = %e, chat_id = %chat_id, "failed to persist artifacts on message");
+    }
+    // Register each versioned document in the owner's web library
+    // (best-effort push; the hub row is a pointer — content stays here and
+    // is opened through the tunnel).
+    for a in &artifacts {
+        if let Some(doc_id) = a.get("documentId").and_then(|v| v.as_str()) {
+            // openPath is the standalone viewer route (full renderer matrix +
+            // source/download), not the raw blob — a phone opening
+            // /t/<bot>/work/<id> gets a rendered document, not text/markdown
+            // bytes. The blob stays reachable via the viewer's Download.
+            crate::codes::push_artifact_via(
+                harness.store(),
+                neboai_api_url,
+                serde_json::json!({
+                    "id": doc_id,
+                    "kind": a.get("kind").and_then(|v| v.as_str()).unwrap_or("document"),
+                    "title": a.get("filename").and_then(|v| v.as_str()).unwrap_or("document"),
+                    "openPath": format!("/work/{}", doc_id),
+                    "version": a.get("version").and_then(|v| v.as_i64()).unwrap_or(1),
+                }),
+            );
+        }
+    }
+    artifacts
 }
 
 /// Map a run-produced `image_url` to a URL the LOCAL app can render and comm replies
@@ -2131,6 +2139,7 @@ fn artifact_kind(ext: &str) -> &'static str {
     match ext {
         "csv" | "xlsx" | "xls" => "table",
         "pptx" | "ppt" => "slides",
+        "wav" | "mp3" | "m4a" | "aac" | "ogg" | "opus" => "audio",
         "js" | "ts" | "jsx" | "tsx" | "py" | "rs" | "go" | "json" | "sh" | "css" => "code",
         _ => "document",
     }

@@ -318,7 +318,7 @@ async fn handle_chat_send(state: &AppState, input: &serde_json::Value) -> (Strin
             tool_scope: None,
         },
         mode: agent::harness::TurnMode::Chat,
-        delivery: agent::harness::Delivery { channel: "mcp".into(), channel_ctx: None, mention_briefing: None },
+        delivery: agent::harness::Delivery { channel: "mcp".into(), channel_ctx: None, mention_briefing: None, attachments: false },
         cancel: cancel_token.clone(),
         progress: None,
     };

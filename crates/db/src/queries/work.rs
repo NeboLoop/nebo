@@ -223,12 +223,13 @@ impl Store {
         Ok(version)
     }
 
-    /// The account-wide document index, newest first: every work document with
-    /// its latest version's URL and the owning chat's title/session. This is
-    /// the read side the Library pulls through the tunnel — the Work panel is
-    /// a per-thread view; this is the only cross-chat list.
+    /// The document index, newest first: every work document with its latest
+    /// version's URL and the owning chat's title/session. `chat_id` narrows it
+    /// to one conversation, which is what a chat's Work panel opens with; no
+    /// `chat_id` is the account-wide list the Library pulls through the tunnel.
     pub fn list_work_documents(
         &self,
+        chat_id: Option<&str>,
         limit: i64,
         offset: i64,
     ) -> Result<Vec<WorkDocumentListing>, NeboError> {
@@ -243,12 +244,13 @@ impl Store {
                  JOIN work_document_versions v
                    ON v.document_id = d.id AND v.version_number = d.latest_version
                  LEFT JOIN chats c ON c.id = d.chat_id
-                 ORDER BY d.updated_at DESC
+                 WHERE ?3 IS NULL OR d.chat_id = ?3
+                 ORDER BY d.updated_at DESC, d.rowid DESC
                  LIMIT ?1 OFFSET ?2",
             )
             .map_err(|e| NeboError::Database(e.to_string()))?;
         let rows = stmt
-            .query_map(params![limit, offset], |row| {
+            .query_map(params![limit, offset, chat_id], |row| {
                 Ok(WorkDocumentListing {
                     id: row.get("id")?,
                     chat_id: row.get("chat_id")?,
@@ -436,7 +438,7 @@ mod tests {
             .add_work_version(&d2.id, None, "/api/v1/files/work/blobs/c.csv", Some("hC"), Some("text/csv"), None)
             .unwrap();
 
-        let all = store.list_work_documents(50, 0).unwrap();
+        let all = store.list_work_documents(None, 50, 0).unwrap();
         assert_eq!(all.len(), 2);
         // Each row carries the LATEST version's url + the chat title.
         let row2 = all.iter().find(|r| r.id == d2.id).unwrap();
@@ -447,11 +449,15 @@ mod tests {
         assert_eq!(row1.url, "/api/v1/files/work/blobs/a.md");
 
         // Pagination applies.
-        assert_eq!(store.list_work_documents(1, 0).unwrap().len(), 1);
-        assert_eq!(store.list_work_documents(50, 2).unwrap().len(), 0);
+        assert_eq!(store.list_work_documents(None, 1, 0).unwrap().len(), 1);
+        assert_eq!(store.list_work_documents(None, 50, 2).unwrap().len(), 0);
 
         // A container with no versions yet never appears (JOIN, not LEFT).
         store.upsert_work_document("c1", "empty.md", "document").unwrap();
-        assert_eq!(store.list_work_documents(50, 0).unwrap().len(), 2);
+        assert_eq!(store.list_work_documents(None, 50, 0).unwrap().len(), 2);
+        // One chat's documents: what its Work panel opens with.
+        let c1: Vec<String> = store.list_work_documents(Some("c1"), 50, 0).unwrap().into_iter().map(|r| r.id).collect();
+        assert_eq!(c1, vec![d1.id.clone()]);
+        assert!(store.list_work_documents(Some("nope"), 50, 0).unwrap().is_empty());
     }
 }

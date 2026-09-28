@@ -7,7 +7,8 @@ use tracing::{error, info, warn};
 
 use super::to_error_response;
 use crate::chat_dispatch::{
-    TurnEnd, announce_ask, control_stop_of, entity_run_params, finish_turn,
+    TurnEnd, announce_ask, control_stop_of, entity_run_params, finish_turn, owner_file,
+    place_run_files,
 };
 use crate::codes::build_api_client;
 use crate::run_registry::{RegisterParams, RunHandle, RunRegistry};
@@ -658,7 +659,14 @@ pub(crate) async fn run_delegated_task(
             tool_scope: None,
         },
         mode: agent::harness::TurnMode::Chat,
-        delivery: agent::harness::Delivery { channel: "voice".into(), channel_ctx: None, mention_briefing: briefing },
+        delivery: agent::harness::Delivery {
+            channel: "voice".into(),
+            channel_ctx: None,
+            mention_briefing: briefing,
+            // The drain puts the run's files on its reply in the thread
+            // (`drain_voice_run`).
+            attachments: true,
+        },
         cancel: cancel_token.clone(),
         progress: Some(agent::RunProgress {
             run_id: run_handle.run_id.clone(),
@@ -677,6 +685,11 @@ pub(crate) async fn run_delegated_task(
                 hub: state.hub.clone(),
                 registry: state.run_registry.clone(),
                 ask_channels: state.ask_channels.clone(),
+                files: RunFileSink {
+                    harness: state.harness.clone(),
+                    tools: state.tools.clone(),
+                    neboai_api_url: state.config.neboai.api_url.clone(),
+                },
             };
             tokio::spawn(drain_voice_run(
                 sinks,
@@ -704,6 +717,16 @@ struct VoiceRunSinks {
     hub: std::sync::Arc<super::ws::ClientHub>,
     registry: RunRegistry,
     ask_channels: tools::AskChannels,
+    files: RunFileSink,
+}
+
+/// Where the run's files go: onto its reply in the thread, through the same
+/// placement a chat run ends with (`chat_dispatch::place_run_files`). The
+/// run's tools were told the reply carries them (`Delivery::attachments`).
+struct RunFileSink {
+    harness: agent::Harness,
+    tools: std::sync::Arc<tools::Registry>,
+    neboai_api_url: String,
 }
 
 /// Drain a delegated voice run to its end. The spoken reply is sent ONCE
@@ -730,6 +753,8 @@ async fn drain_voice_run(
     // notices are superseded by the text that follows.
     let mut last_notice = String::new();
     let mut control_stop: Option<(String, String)> = None;
+    // The files the run's tools handed the owner (a share, a document made).
+    let mut files: Vec<String> = Vec::new();
     let mut last_event = tokio::time::Instant::now();
     loop {
         let event = match agent::guardrails::next_event(&mut rx, last_event, &run_handle.waiting).await {
@@ -750,6 +775,11 @@ async fn drain_voice_run(
         };
         last_event = tokio::time::Instant::now();
         run_handle.touch();
+        if let Some(file) = owner_file(&sinks.files.tools, &event).await
+            && !files.contains(&file)
+        {
+            files.push(file);
+        }
         match event.event_type {
             ai::StreamEventType::Text => out.push_str(&event.text),
             ai::StreamEventType::ControlNotice => {
@@ -768,13 +798,21 @@ async fn drain_voice_run(
     if let Some(tx) = spoken.take() {
         let _ = tx.send(voice_reply(&out, &last_notice));
     }
+    // The run's reply is the thread's row for this turn (`TurnLedger`): its
+    // files go on it before the app hears the turn is over.
+    let artifacts = place_run_files(
+        &sinks.files.harness,
+        &sinks.files.neboai_api_url,
+        &session_key,
+        &files,
+    );
     finish_turn(
         &sinks.hub,
         &run_handle,
         &sinks.ask_channels,
         TurnEnd {
             payload: serde_json::json!({ "session_id": session_key, "agentId": agent_id }),
-            artifacts: &[],
+            artifacts: &artifacts,
             control_stop: control_stop.as_ref(),
         },
     )
@@ -2828,6 +2866,126 @@ mod voice_prompt_tests {
         assert_eq!(super::spoken_ask(&e), "I need you to sign in to Gmail from the app before I can continue.");
     }
 
+    /// Where a drained run's files go: a scratch store and Nebo root, never the
+    /// owner's.
+    fn file_sink() -> super::RunFileSink {
+        scratch_home();
+        let path = std::env::temp_dir().join(format!("nebo-voice-files-{}.db", uuid::Uuid::new_v4()));
+        let store = std::sync::Arc::new(db::Store::new(&path.to_string_lossy()).expect("store"));
+        let tools = std::sync::Arc::new(tools::Registry::new(std::sync::Arc::new(agent::Check::new(store.clone()))));
+        let harness = agent::Harness::new(
+            store,
+            tools.clone(),
+            Vec::new(),
+            agent::selector::ModelSelector::new(Default::default()),
+            std::sync::Arc::new(agent::ConcurrencyController::new(Some(2))),
+            std::sync::Arc::new(napp::HookDispatcher::new()),
+            None,
+            Default::default(),
+            None,
+        );
+        super::RunFileSink { harness, tools, neboai_api_url: String::new() }
+    }
+
+    /// Files land under `config::data_dir()`; point it at a scratch directory
+    /// once per process, and never over a root another test already set.
+    fn scratch_home() {
+        static HOME: std::sync::OnceLock<Option<tempfile::TempDir>> = std::sync::OnceLock::new();
+        HOME.get_or_init(|| {
+            if std::env::var_os("NEBO_HOME").is_some() {
+                return None;
+            }
+            let dir = tempfile::tempdir().unwrap();
+            // SAFETY: one-time initialization, and only when no root is set.
+            unsafe { std::env::set_var("NEBO_HOME", dir.path()) };
+            Some(dir)
+        });
+    }
+
+    /// Live 2026-09-28: the owner asked on a call for two chimes; the
+    /// delegated run shared both ("Attached … as a download card on this
+    /// reply") and the phone showed no card, because the voice drain dropped
+    /// the run's files. A file the run shares is on the reply the owner sees:
+    /// on the thread's row for the turn, on `chat_complete`, and in the
+    /// chat's Work.
+    #[tokio::test]
+    async fn drain_voice_run_puts_a_shared_file_on_the_reply() {
+        let files = file_sink();
+        let harness = files.harness.clone();
+        let key = format!("agent:assistant:thread:{}", uuid::Uuid::new_v4());
+        let session = harness.sessions().get_or_create(&key, "").expect("session");
+        let chat_id = harness.sessions().active_chat_id(&session.id);
+        harness.sessions().append_message(&session.id, "user", "Send me the chimes", None, None, None).unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let wav = dir.path().join(format!("chime-{}.wav", uuid::Uuid::new_v4()));
+        std::fs::write(&wav, b"RIFF\x24\0\0\0WAVEfmt ").unwrap();
+        let filename = wav.file_name().unwrap().to_string_lossy().into_owned();
+
+        let hub = std::sync::Arc::new(crate::handlers::ws::ClientHub::new());
+        let mut events = hub.subscribe();
+        let registry = crate::run_registry::RunRegistry::new();
+        let run_handle = registry
+            .register(crate::run_registry::RegisterParams {
+                session_key: key.clone(),
+                entity_id: "assistant".into(),
+                entity_name: "Assistant".into(),
+                origin: "user".into(),
+                channel: "voice".into(),
+                cancel_token: tokio_util::sync::CancellationToken::new(),
+                parent_run_id: None,
+            })
+            .await;
+        let (tx, rx) = tokio::sync::mpsc::channel(8);
+        let (spoken_tx, spoken_rx) = tokio::sync::oneshot::channel();
+        let sinks = super::VoiceRunSinks {
+            hub: hub.clone(),
+            registry,
+            ask_channels: Default::default(),
+            files,
+        };
+        let drain = tokio::spawn(super::drain_voice_run(
+            sinks,
+            key.clone(),
+            "assistant".into(),
+            rx,
+            run_handle,
+            tokio_util::sync::CancellationToken::new(),
+            spoken_tx,
+        ));
+
+        let mut shared = ai::StreamEvent::text(&format!("Attached {filename} (0KB) as a download card on this reply."));
+        shared.event_type = ai::StreamEventType::ToolResult;
+        shared.tool_call = Some(ai::ToolCall {
+            id: "call-1".into(),
+            name: "share_file".into(),
+            input: serde_json::json!({ "path": wav.to_string_lossy() }),
+        });
+        shared.image_url = Some(wav.to_string_lossy().into_owned());
+        tx.send(shared).await.unwrap();
+        // The run's reply: the thread's row for this turn.
+        harness.sessions().append_message(&session.id, "assistant", "Here it is.", None, None, None).unwrap();
+        tx.send(ai::StreamEvent::text("Here it is.")).await.unwrap();
+        drop(tx);
+        drain.await.unwrap();
+        assert_eq!(spoken_rx.await.unwrap(), "Here it is.");
+
+        let done = events.recv().await.unwrap();
+        assert_eq!(done.event_type, "chat_complete");
+        let live = done.payload["artifacts"].as_array().expect("artifacts on chat_complete").clone();
+        assert_eq!(live.len(), 1, "{live:?}");
+        assert_eq!(live[0]["filename"], filename.as_str());
+        assert_eq!(live[0]["kind"], "audio");
+
+        let thread = harness.sessions().get_messages(&session.id).unwrap();
+        let reply = thread.iter().rev().find(|m| m.role == "assistant").expect("reply row");
+        let meta: serde_json::Value = serde_json::from_str(reply.metadata.as_deref().expect("metadata")).unwrap();
+        assert_eq!(meta["artifacts"], serde_json::Value::Array(live.clone()), "the reply row carries the card");
+
+        let work = harness.store().list_work_documents(Some(&chat_id), 50, 0).unwrap();
+        assert_eq!(work.iter().map(|d| d.filename.as_str()).collect::<Vec<_>>(), vec![filename.as_str()], "the chat's Work lists it");
+    }
+
     /// A run that parks on a question answers the phone at once with the
     /// spoken question, records the card on the run, and when the run later
     /// ends releases the card and emits chat_complete for the session.
@@ -2860,6 +3018,7 @@ mod voice_prompt_tests {
             hub: hub.clone(),
             registry: registry.clone(),
             ask_channels: ask_channels.clone(),
+            files: file_sink(),
         };
         let drain = tokio::spawn(super::drain_voice_run(
             sinks,
@@ -2923,6 +3082,7 @@ mod voice_prompt_tests {
             hub: hub.clone(),
             registry,
             ask_channels: Default::default(),
+            files: file_sink(),
         };
         let drain = tokio::spawn(super::drain_voice_run(
             sinks,

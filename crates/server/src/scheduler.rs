@@ -194,6 +194,7 @@ fn scheduled_turn(
             channel: channel.to_string(),
             channel_ctx,
             mention_briefing: None,
+            attachments: false,
         },
         cancel,
         progress: None,

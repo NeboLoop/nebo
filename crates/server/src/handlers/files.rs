@@ -314,16 +314,29 @@ pub async fn serve_comm_file(
         .unwrap_or_default())
 }
 
-/// GET /api/v1/work/documents — the account-wide document index (container +
-/// latest version + owning chat), newest first. The Work panel stays a
-/// per-thread view; this is the cross-chat list the web Library pulls through
-/// the tunnel. `?limit=&offset=` paginate (default 100).
+/// Query for `GET /api/v1/work/documents`.
+#[derive(Debug, Default, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkDocumentsQuery {
+    /// One document by id — the standalone /work/<id> viewer's lookup.
+    pub id: Option<String>,
+    /// One conversation's documents — what its Work panel opens with.
+    pub chat_id: Option<String>,
+    pub limit: Option<i64>,
+    pub offset: Option<i64>,
+}
+
+/// GET /api/v1/work/documents — the document index (container + latest
+/// version + owning chat), newest first. `?chatId=` is one conversation's
+/// Work (the panel loads it when the chat opens, so what was made or shared
+/// there survives leaving and coming back); without it, the account-wide
+/// list the web Library pulls through the tunnel. `?limit=&offset=` paginate
+/// (default 100).
 pub async fn list_work_documents(
     State(state): State<AppState>,
-    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+    axum::extract::Query(params): axum::extract::Query<WorkDocumentsQuery>,
 ) -> HandlerResult<serde_json::Value> {
-    // ?id= — the standalone /work/<id> viewer's single-document lookup.
-    if let Some(id) = params.get("id") {
+    if let Some(id) = params.id.as_deref() {
         let doc = state
             .store
             .get_work_document_listing(id)
@@ -331,19 +344,11 @@ pub async fn list_work_documents(
         let documents: Vec<db::WorkDocumentListing> = doc.into_iter().collect();
         return Ok(Json(serde_json::json!({ "documents": documents })));
     }
-    let limit = params
-        .get("limit")
-        .and_then(|v| v.parse::<i64>().ok())
-        .filter(|v| *v > 0 && *v <= 500)
-        .unwrap_or(100);
-    let offset = params
-        .get("offset")
-        .and_then(|v| v.parse::<i64>().ok())
-        .filter(|v| *v >= 0)
-        .unwrap_or(0);
+    let limit = params.limit.filter(|v| *v > 0 && *v <= 500).unwrap_or(100);
+    let offset = params.offset.filter(|v| *v >= 0).unwrap_or(0);
     let documents = state
         .store
-        .list_work_documents(limit, offset)
+        .list_work_documents(params.chat_id.as_deref(), limit, offset)
         .map_err(to_error_response)?;
     Ok(Json(serde_json::json!({ "documents": documents })))
 }
@@ -406,6 +411,11 @@ pub async fn serve_file(
         Some("mp4") => "video/mp4",
         Some("webm") => "video/webm",
         Some("mov") => "video/quicktime",
+        Some("wav") => "audio/wav",
+        Some("mp3") => "audio/mpeg",
+        Some("m4a") => "audio/mp4",
+        Some("aac") => "audio/aac",
+        Some("ogg") | Some("opus") => "audio/ogg",
         Some("pdf") => "application/pdf",
         Some("json") => "application/json; charset=utf-8",
         Some("txt") | Some("log") | Some("md") | Some("markdown") | Some("csv") | Some("typ") => {

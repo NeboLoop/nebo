@@ -440,6 +440,12 @@ pub struct Delivery {
     pub channel_ctx: Option<tools::ChannelContext>,
     /// Team roster, @mention and room briefing; rides as a `RunBriefing` fact.
     pub mention_briefing: Option<String>,
+    /// The door places the run's files on its reply
+    /// (`chat_dispatch::place_run_files`): a file a tool hands the owner
+    /// lands on a message his clients render. False for a door that only
+    /// relays the run's text (a channel, a coworker, MCP, a helper), where
+    /// `share_file` says it cannot attach (`ToolContext::attachments`).
+    pub attachments: bool,
 }
 
 /// The seat a turn asks for; `seat::resolve_seat` turns it into a `Seat`.

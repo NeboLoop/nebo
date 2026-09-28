@@ -1506,7 +1506,7 @@ mod tests {
                 input: TurnInput::None,
                 seat: child::tests::parent_seat(),
                 mode: TurnMode::Chat,
-                delivery: super::super::Delivery { channel: "web".into(), channel_ctx: None, mention_briefing: None },
+                delivery: super::super::Delivery { channel: "web".into(), channel_ctx: None, mention_briefing: None, attachments: false },
                 cancel: self.helpers.session_token(key).child_token(),
                 progress: None,
             }

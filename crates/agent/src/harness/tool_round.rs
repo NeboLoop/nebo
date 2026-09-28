@@ -40,6 +40,8 @@ pub(crate) struct RunToolScope<'a> {
     pub grant: &'a Arc<types::permissions::Grant>,
     /// The entry the run came through.
     pub door: &'a types::permissions::Door,
+    /// The door places the run's files on its reply (`Delivery::attachments`).
+    pub attachments: bool,
     /// The owner's own chat message or call started the turn (`ToolContext::owner_request`).
     pub owner_request: bool,
     /// The run's input arrived from outside (a workflow started by an
@@ -79,6 +81,7 @@ impl RunToolScope<'_> {
             handoff_depth,
             grant,
             door,
+            attachments,
             owner_request,
             untrusted_input,
             run_cwd,
@@ -117,6 +120,7 @@ impl RunToolScope<'_> {
             owner_request,
             // The round sets it once the reply is in (`ToolExecutor::owner_shares`).
             owner_shares: false,
+            attachments,
             answered_ask: None,
             untrusted_input,
             judgement: None,

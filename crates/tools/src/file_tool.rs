@@ -189,7 +189,7 @@ impl FileTool {
             "grep" => self.handle_grep(&fi),
             // Hand an EXISTING file to the user as a download card. Synonyms the
             // model reaches for map to the one implementation.
-            "share" | "present" | "send" => self.handle_share(&fi),
+            "share" | "present" | "send" => self.handle_share(ctx, &fi),
             // Prior-redirect ("ls ~/Desktop"): a directory listing IS glob with
             // its defaulted "*" pattern — route to the one implementation. Not
             // advertised in the schema; glob stays the single documented way.
@@ -896,7 +896,13 @@ impl FileTool {
     /// Any file type is allowed: the provider layer sniffs magic bytes and omits
     /// non-image bytes from the model payload (see `ai::image_source_to_base64`),
     /// so a `.pptx`/`.zip` path is carried as an attachment, never a bogus image.
-    fn handle_share(&self, input: &FileInput) -> ToolResult {
+    ///
+    /// "Attached" is said only where it is true: the run's door places its
+    /// files on the reply the owner sees (`ToolContext::attachments`). Anywhere
+    /// else the call fails and says where the file is, so the model reports
+    /// that instead of a card nobody will see (live 2026-09-28: a voice run
+    /// said "Attached" six times and the phone showed nothing).
+    fn handle_share(&self, ctx: &ToolContext, input: &FileInput) -> ToolResult {
         if input.path.is_empty() {
             return ToolResult::error(errors::missing_param(
                 "share",
@@ -934,6 +940,13 @@ impl FileTool {
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| path.clone());
+        if !ctx.attachments {
+            return ToolResult::error(format!(
+                "Not attached: this run's reply doesn't reach the owner's chat, so no file card \
+                 can be shown from here. {name} is at {path}; say where it is instead of saying \
+                 it is attached."
+            ));
+        }
         let size = meta.len();
         let size_str = if size >= 1024 {
             format!("{}KB", size / 1024)
@@ -2017,6 +2030,11 @@ mod tests {
         ToolContext::new(Origin::User)
     }
 
+    /// A run whose door places its files on the owner's reply.
+    fn attaching() -> ToolContext {
+        ToolContext { attachments: true, ..ctx() }
+    }
+
     /// A restore rewrites files the agent itself asked to put back; the read
     /// ledger must follow, or the very next edit is refused over its own change.
     #[test]
@@ -2606,7 +2624,7 @@ mod tests {
         let tool = FileTool::new();
         // No prior read required — share hands over a file that already exists.
         let r = tool.execute(
-            &ctx(),
+            &attaching(),
             json!({"action":"share","path": path.to_str().unwrap()}),
         );
         assert!(!r.is_error, "{}", r.content);
@@ -2615,6 +2633,25 @@ mod tests {
             "share must emit the file on the image_url artifact channel, got {:?}",
             r.image_url
         );
+    }
+
+    /// Where the run's reply never reaches the owner's chat, share says so and
+    /// names the file's place; it never claims a card and never emits one.
+    #[test]
+    fn share_without_an_owner_reply_is_an_honest_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("chime.wav");
+        fs::write(&path, b"RIFF\0\0\0\0WAVEfmt ").unwrap();
+        let tool = FileTool::new();
+        let r = tool.execute(&ctx(), json!({"action":"share","path": path.to_str().unwrap()}));
+        assert!(r.is_error, "{}", r.content);
+        assert!(r.image_url.is_none(), "no card rides a reply nobody sees");
+        assert!(!r.content.starts_with("Attached"), "{}", r.content);
+        assert!(r.content.contains(path.to_str().unwrap()), "names where the file is: {}", r.content);
+
+        let r = tool.execute(&attaching(), json!({"action":"share","path": path.to_str().unwrap()}));
+        assert!(!r.is_error, "{}", r.content);
+        assert!(r.content.starts_with("Attached chime.wav"), "{}", r.content);
     }
 
     #[test]

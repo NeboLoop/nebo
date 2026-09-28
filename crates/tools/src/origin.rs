@@ -263,6 +263,12 @@ pub struct ToolContext {
     /// only with it. Set only by the turn, once the reply is in; false
     /// everywhere else.
     pub owner_shares: bool,
+    /// The door that started this run places the files its tools hand the
+    /// owner on the reply he sees (`Delivery::attachments`). A tool that
+    /// would attach a file (`share_file`) refuses when it is false, so it
+    /// never says a card is on a reply that has none. False for every run
+    /// whose door only relays its text.
+    pub attachments: bool,
     /// Engine-set only: the owner already answered the ask this exact call
     /// parked on (a workflow resuming the approved call). The check still
     /// applies the hard limits, the ceiling and deny rules.

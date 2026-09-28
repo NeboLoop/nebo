@@ -118,8 +118,9 @@ impl LoopCore {
     /// `image_url`. The chat dispatcher collects every non-`data:` `image_url`
     /// produced during a run and staples it onto the loop reply as an uploaded
     /// attachment (see resolve_comm_attachments) — so sharing a file is just a
-    /// matter of nominating its absolute path here.
-    fn share_file(&self, path: &str) -> ToolResult {
+    /// matter of nominating its absolute path here. Said only where the run's
+    /// door places its files on the reply (`ToolContext::attachments`).
+    fn share_file(&self, ctx: &ToolContext, path: &str) -> ToolResult {
         let p = std::path::Path::new(path);
         if !p.is_absolute() {
             return ToolResult::error(format!(
@@ -148,6 +149,13 @@ impl LoopCore {
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| path.to_string());
+
+        if !ctx.attachments {
+            return ToolResult::error(format!(
+                "Not attached: this run's reply doesn't carry files, so {filename} can't go with it. \
+                 To send it now, use send_loop_message with `path` ({path})."
+            ));
+        }
 
         // Truthful: nothing is uploaded here. `image_url` is collected by the chat
         // dispatcher and stapled onto the reply this run sends. To post a file
@@ -813,7 +821,7 @@ impl DynTool for LoopTool {
                 Kind::Subscribe => core.subscribe(str_field(&input, "topic"), true).await,
                 Kind::Unsubscribe => core.subscribe(str_field(&input, "topic"), false).await,
                 Kind::TopicStatus => core.status(),
-                Kind::Share => core.share_file(str_field(&input, "path")),
+                Kind::Share => core.share_file(ctx, str_field(&input, "path")),
             }
         })
     }

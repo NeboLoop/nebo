@@ -386,6 +386,7 @@ impl ActivityLoop for WorkflowTurns {
                 channel: "workflow".into(),
                 channel_ctx: None,
                 mention_briefing: None,
+                attachments: false,
             },
             cancel: cancel.clone(),
             progress: None,
