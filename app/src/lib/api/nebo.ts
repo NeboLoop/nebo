@@ -2290,8 +2290,8 @@ export function userUpdateProfile(req: Record<string, unknown> = {}) {
 /**
  * @description "List work documents"
  */
-export function listWorkDocuments() {
-	return webapi.get<components.ListWorkDocumentsResponse>(`/api/v1/work/documents`)
+export function listWorkDocuments(id?: string, chatId?: string, limit?: number, offset?: number) {
+	return webapi.get<components.ListWorkDocumentsResponse>(`/api/v1/work/documents`, { id, chatId, limit, offset })
 }
 
 /**

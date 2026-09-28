@@ -45,6 +45,7 @@
 
   const IMAGE_EXTS = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg'];
   const VIDEO_EXTS = ['mp4', 'webm', 'mov'];
+  const AUDIO_EXTS = ['wav', 'mp3', 'm4a', 'aac', 'ogg', 'opus'];
   const CODE_LANGS: Record<string, string> = {
     js: 'javascript', mjs: 'javascript', cjs: 'javascript', ts: 'typescript',
     py: 'python', rs: 'rust', go: 'go', json: 'json', sh: 'bash', bash: 'bash',
@@ -55,7 +56,7 @@
 
   type Mode =
     | 'markdown' | 'html' | 'pdf' | 'sheet' | 'csv' | 'docx' | 'code'
-    | 'pptx' | 'image' | 'video' | 'download';
+    | 'pptx' | 'image' | 'video' | 'audio' | 'download';
 
   const mode: Mode = $derived.by(() => {
     if (ext === 'md' || ext === 'txt') return 'markdown';
@@ -67,6 +68,7 @@
     if (ext === 'docx') return 'docx';
     if (IMAGE_EXTS.includes(ext)) return 'image';
     if (VIDEO_EXTS.includes(ext)) return 'video';
+    if (AUDIO_EXTS.includes(ext)) return 'audio';
     if (CODE_LANGS[ext]) return 'code';
     // ppt/pptx/doc and anything else: no faithful in-app preview — offer the file.
     return 'download';
@@ -249,6 +251,7 @@
         }
         case 'image':
         case 'video':
+        case 'audio':
         case 'download':
           break;
       }
@@ -388,6 +391,12 @@
   {:else if mode === 'video'}
     <!-- svelte-ignore a11y_media_has_caption -->
     <video src={src} controls class="max-w-full rounded-lg border border-base-300"></video>
+  {:else if mode === 'audio'}
+    <div class="flex flex-col items-center gap-3 py-10">
+      <div class="text-sm font-medium">{title}</div>
+      <audio src={src} controls preload="metadata" class="w-full max-w-md"></audio>
+      <a href={src} download={title} onclick={(e) => downloadArtifact(e, src, title)} class="btn btn-sm btn-outline">{$t('common.download')}</a>
+    </div>
   {:else}
     <div class="flex flex-col items-center gap-3 py-10">
       <div class="text-sm font-medium">{title}</div>

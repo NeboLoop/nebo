@@ -16,7 +16,7 @@ import { untrack } from 'svelte';
 import { getWebSocketClient } from '$lib/websocket/client';
 import type { AskWidgetDef } from '$lib/components/chat/AskWidget.svelte';
 import type { UploadedAttachment } from '$lib/types/attachment';
-import type { ChatMessagesResponse, SessionGoalStatus } from '$lib/api/neboComponents';
+import type { ChatMessagesResponse, SessionGoalStatus, WorkDocumentListing } from '$lib/api/neboComponents';
 import { sendClientEvent } from '$lib/api/gocliRequest';
 import { sendInstallCode } from '$lib/marketplace/installCodes';
 import { parseMessages, lastRunError } from '$lib/chat/history';
@@ -52,7 +52,7 @@ export interface WorkItem {
   /** Same as id; the document container this version belongs to. */
   documentId: string;
   title: string;
-  kind: 'document' | 'code' | 'table' | 'slides';
+  kind: 'document' | 'code' | 'table' | 'slides' | 'audio';
   /** 1-based version number of this write (legacy artifacts are version 1). */
   version: number;
   url: string;
@@ -159,12 +159,24 @@ export function artifactsToAttachments(artifacts: unknown): UploadedAttachment[]
     });
 }
 
+const AUDIO_EXTS = ['wav', 'mp3', 'm4a', 'aac', 'ogg', 'opus'];
+
 /** Kind by extension. Mirrors the backend's artifact_kind(). */
-function kindForExt(ext: string): WorkItem['kind'] {
+export function kindForExt(ext: string): WorkItem['kind'] {
   if (ext === 'csv' || ext === 'xlsx' || ext === 'xls') return 'table';
   if (ext === 'pptx' || ext === 'ppt') return 'slides';
+  if (AUDIO_EXTS.includes(ext)) return 'audio';
   if (['js', 'ts', 'jsx', 'tsx', 'py', 'rs', 'go', 'json', 'sh', 'css'].includes(ext)) return 'code';
   return 'document';
+}
+
+/** A Work item's kind: the server's word for it, except audio, which the
+ *  extension decides — rows written before the `audio` kind existed call a
+ *  .wav a document. */
+function workKind(kind: unknown, filename: string): WorkItem['kind'] {
+  const ext = urlExt(filename);
+  if (AUDIO_EXTS.includes(ext)) return 'audio';
+  return (kind as WorkItem['kind']) ?? kindForExt(ext);
 }
 
 /** Map run-produced DOCUMENT artifacts to "Work" items (reports/sheets/code → clickable
@@ -185,7 +197,7 @@ export function artifactsToWorkItems(artifacts: unknown): WorkItem[] {
           id: String(o.documentId),
           documentId: String(o.documentId),
           title: filename,
-          kind: (o.kind as WorkItem['kind']) ?? kindForExt(urlExt(url)),
+          kind: workKind(o.kind, filename),
           version: Number(o.version ?? 1),
           url,
         };
@@ -210,6 +222,38 @@ export function artifactsToWorkItems(artifacts: unknown): WorkItem[] {
   return docs
     .filter((d) => !pairedUrls.has(d.url))
     .map((d) => ({ ...d, codeUrl: fileExt(d.title) === 'html' ? sourceFor(d)?.url : undefined }));
+}
+
+/** A chat's documents as the server lists them (`GET /work/documents?chatId=`),
+ *  one per document at its latest version, as Work items. Rows of another chat
+ *  are dropped: an older server ignores `chatId` and lists every chat's. */
+export function workDocumentsToItems(docs: WorkDocumentListing[] | undefined, chatId: string): WorkItem[] {
+  return artifactsToWorkItems(
+    (docs ?? [])
+      .filter((d) => d.chatId === chatId)
+      .map((d) => ({ documentId: d.id, filename: d.filename, kind: d.kind, version: d.latestVersion, url: d.url }))
+  );
+}
+
+/** Every version of each document a chat knows, oldest → newest, keyed by
+ *  document id: the versions the loaded messages carry plus the server's
+ *  latest of each (history is paged, so a document from before the loaded
+ *  page is known only to the server). A version both know keeps the message's
+ *  copy — it carries the turn it came from. Documents run in the server's
+ *  order (it lists newest first, so reversed), then those only messages know. */
+export function mergeDocumentVersions<T extends { documentId: string; version: number }>(
+  fromMessages: T[],
+  fromServer: T[]
+): Map<string, T[]> {
+  const map = new Map<string, T[]>();
+  for (const a of [...fromServer].reverse().concat(fromMessages)) {
+    const list = map.get(a.documentId) ?? [];
+    const existing = list.findIndex((v) => v.version === a.version);
+    if (existing >= 0) list[existing] = a; else list.push(a);
+    map.set(a.documentId, list);
+  }
+  for (const list of map.values()) list.sort((x, y) => x.version - y.version);
+  return map;
 }
 
 export function createChatController(config: ChatControllerConfig) {

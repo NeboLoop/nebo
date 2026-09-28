@@ -6,7 +6,8 @@
   import AgentAvatar from '$lib/components/AgentAvatar.svelte';
   import WorkViewer from './WorkViewer.svelte';
   import DesktopView from './DesktopView.svelte';
-  import { teachStart, teachStop, getToolOutput } from '$lib/api/nebo';
+  import { teachStart, teachStop, getToolOutput, listWorkDocuments } from '$lib/api/nebo';
+  import { mergeDocumentVersions, workDocumentsToItems, type WorkItem } from '$lib/chat/controller.svelte';
   import ShareArtifactModal from './ShareArtifactModal.svelte';
   import AskWidget from './AskWidget.svelte';
   import ConsentChip from './ConsentChip.svelte';
@@ -23,10 +24,11 @@
   import Code from 'lucide-svelte/icons/code';
   import Table from 'lucide-svelte/icons/table';
   import Presentation from 'lucide-svelte/icons/presentation';
+  import AudioLines from 'lucide-svelte/icons/audio-lines';
   import type { UploadedAttachment } from '$lib/types/attachment';
   import type { SessionGoalStatus } from '$lib/api/neboComponents';
   import { attSrc, stripAttachmentNotes } from '$lib/types/attachment';
-  import { flushSync } from 'svelte';
+  import { flushSync, untrack } from 'svelte';
   import type { Snippet } from 'svelte';
   import { getAttachmentType, formatFileSize, attachmentMediaUrl } from '$lib/types/attachment';
   import { NEAR_BOTTOM_PX, distanceFromBottom } from '$lib/chat/scroll';
@@ -47,7 +49,7 @@
     /** Timestamp of the turn that produced this version (provenance). */
     time?: string;
     title: string;
-    kind: 'document' | 'code' | 'table' | 'slides';
+    kind: 'document' | 'code' | 'table' | 'slides' | 'audio';
     url?: string;
     /** Source behind a compiled artifact (.jsx behind .html) — enables the Preview/Code toggle. */
     codeUrl?: string;
@@ -265,18 +267,32 @@
     )
   );
 
-  // Group versions per document container (oldest → newest), deduped by version.
-  const documentVersions = $derived.by(() => {
-    const map = new Map<string, Artifact[]>();
-    for (const a of artifacts) {
-      const list = map.get(a.documentId) ?? [];
-      const existing = list.findIndex((v) => v.version === a.version);
-      if (existing >= 0) list[existing] = a; else list.push(a);
-      map.set(a.documentId, list);
+  // The chat's documents from the server, loaded when the chat opens: history
+  // is paged, so a file made or shared before the loaded page (or in a turn
+  // that never streamed here) would otherwise vanish from Work after leaving
+  // and coming back. Live turns add theirs through `messages`. Only a thread
+  // knows its chat id; a session-keyed surface keeps what its messages carry.
+  let serverDocuments = $state<WorkItem[]>([]);
+
+  async function loadWorkDocuments(chatId: string) {
+    try {
+      const resp = await listWorkDocuments(undefined, chatId);
+      if (chatId === threadId) serverDocuments = workDocumentsToItems(resp.documents, chatId);
+    } catch (e) {
+      console.warn('[chat] Failed to load work documents for', chatId, e);
     }
-    for (const list of map.values()) list.sort((x, y) => x.version - y.version);
-    return map;
+  }
+
+  $effect(() => {
+    const chatId = threadId;
+    untrack(() => {
+      serverDocuments = [];
+      if (chatId) void loadWorkDocuments(chatId);
+    });
   });
+
+  // Group versions per document container (oldest → newest), deduped by version.
+  const documentVersions = $derived(mergeDocumentVersions<Artifact>(artifacts, serverDocuments));
   // Distinct documents, represented by their latest version.
   const documents = $derived<Artifact[]>(
     [...documentVersions.values()].map((vs) => vs[vs.length - 1])
@@ -286,7 +302,7 @@
     documentVersions.get(activeArtifactId ?? '') ?? []
   );
 
-  const artifactIcons = { document: FileText, code: Code, table: Table, slides: Presentation };
+  const artifactIcons = { document: FileText, code: Code, table: Table, slides: Presentation, audio: AudioLines };
   // The shown artifact = the pinned version (activeVersion) or, by default, the
   // latest — so a new version produced by the AI refreshes the open viewer in place.
   const activeArtifact = $derived.by(() => {
@@ -390,8 +406,8 @@
     activeArtifactId = id;
     activeVersion = null; // follow latest; the version dropdown pins an older one
     viewSource = false;
-    const a = artifacts.find(x => x.documentId === id);
-    if (a) creationsTitle = a.title;
+    const vs = documentVersions.get(id);
+    if (vs?.length) creationsTitle = vs[vs.length - 1].title;
     // WorkViewer owns fetching + rendering (text/binary/media per format).
     // Opening the panel narrows the chat column and reflows the transcript —
     // re-pin to the bottom so the message you clicked from stays in view.
@@ -1812,16 +1828,33 @@
           <!-- Inline artifact cards for this message (populated by agent tool results) -->
           {#each artifacts.filter(a => segs.some((sg) => sg.id === a.messageId)) as artifact}
             {@const ArtIcon = artifactIcons[artifact.kind]}
-            <button
-              class="flex items-center gap-3 mt-3 w-full max-w-xs p-3 rounded-xl border cursor-pointer transition-colors text-left {activeArtifactId === artifact.id && creationsOpen ? 'border-primary/40 bg-primary/5' : 'border-base-content/10 bg-base-200/30 hover:border-base-content/20 hover:bg-base-200/50'}"
-              onclick={() => openArtifact(artifact.id)}
-            >
+            {@const cardTone = activeArtifactId === artifact.id && creationsOpen ? 'border-primary/40 bg-primary/5' : 'border-base-content/10 bg-base-200/30 hover:border-base-content/20 hover:bg-base-200/50'}
+            {#snippet cardHead()}
               {#if ArtIcon}<ArtIcon class="w-4 h-4 text-base-content/50 shrink-0" />{/if}
               <div class="flex-1 min-w-0">
                 <div class="text-xs font-medium truncate">{artifact.title}</div>
-                <div class="text-xs text-base-content/50">{artifact.kind === 'code' ? $t('chat.artifactCode') : artifact.kind === 'table' ? $t('chat.artifactSpreadsheet') : artifact.kind === 'slides' ? $t('chat.artifactPresentation') : $t('chat.artifactDocument')}</div>
+                <div class="text-xs text-base-content/50">{artifact.kind === 'code' ? $t('chat.artifactCode') : artifact.kind === 'table' ? $t('chat.artifactSpreadsheet') : artifact.kind === 'slides' ? $t('chat.artifactPresentation') : artifact.kind === 'audio' ? $t('chat.artifactAudio') : $t('chat.artifactDocument')}</div>
               </div>
-            </button>
+            {/snippet}
+            {#if artifact.kind === 'audio' && artifact.url}
+              <!-- Audio plays right in the card; its name opens it in Work. -->
+              <div class="mt-3 w-full max-w-xs p-3 rounded-xl border transition-colors {cardTone}">
+                <button
+                  class="flex items-center gap-3 w-full p-0 cursor-pointer text-left bg-transparent border-none"
+                  onclick={() => openArtifact(artifact.id)}
+                >
+                  {@render cardHead()}
+                </button>
+                <audio src={backendUrl(artifact.url)} controls preload="metadata" class="w-full h-8 mt-2"></audio>
+              </div>
+            {:else}
+              <button
+                class="flex items-center gap-3 mt-3 w-full max-w-xs p-3 rounded-xl border cursor-pointer transition-colors text-left {cardTone}"
+                onclick={() => openArtifact(artifact.id)}
+              >
+                {@render cardHead()}
+              </button>
+            {/if}
           {/each}
 
           {#if isTurnEnd}
@@ -2179,7 +2212,7 @@
               {#if ListIcon}<ListIcon class="w-4 h-4 text-base-content/50 shrink-0" />{/if}
               <div class="flex-1 min-w-0">
                 <div class="text-sm font-medium truncate">{a.title}</div>
-                <div class="text-xs text-base-content/50">{a.kind === 'code' ? $t('chat.artifactCode') : a.kind === 'table' ? $t('chat.artifactSpreadsheet') : a.kind === 'slides' ? $t('chat.artifactPresentation') : $t('chat.artifactDocument')}</div>
+                <div class="text-xs text-base-content/50">{a.kind === 'code' ? $t('chat.artifactCode') : a.kind === 'table' ? $t('chat.artifactSpreadsheet') : a.kind === 'slides' ? $t('chat.artifactPresentation') : a.kind === 'audio' ? $t('chat.artifactAudio') : $t('chat.artifactDocument')}</div>
               </div>
             </button>
           {/each}
