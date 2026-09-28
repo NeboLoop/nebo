@@ -62,24 +62,33 @@ pub(crate) async fn stop_session(
 
 /// The ONE way a parked question is answered, whichever surface the answer
 /// came from (the app's ask card, a loop or channel reply, the MCP
-/// auto-answer): the tool's oneshot receives the value and the run's card is
-/// cleared. Returns false when nothing was waiting on that request id.
-pub(crate) async fn answer_ask(state: &AppState, request_id: &str, value: String) -> bool {
-    let tx = state.ask_channels.lock().await.remove(request_id);
-    let session_key = state.run_registry.resolve_ask(request_id).await;
+/// auto-answer, or the work behind the card settling it: `AskSettled`): the
+/// tool's oneshot receives the value and the run's card is cleared. What
+/// every client is told the card says is the answer, except that a sign-in
+/// card never shows the owner's code (`sign_in::answer_as_shown`). Returns
+/// false when nothing was waiting on that request id.
+pub(crate) async fn answer_ask(
+    hub: &ClientHub,
+    registry: &RunRegistry,
+    ask_channels: &tools::AskChannels,
+    request_id: &str,
+    value: String,
+) -> bool {
+    let tx = ask_channels.lock().await.remove(request_id);
+    let asked = registry.resolve_ask(request_id).await;
     let Some(tx) = tx else {
         return false;
     };
     // Every surface still showing the card closes it with the answer, whoever
     // gave it: the phone, a loop reply, or an install that landed by another
     // door.
-    if let Some(session_key) = session_key {
-        state.hub.broadcast(
+    if let Some((session_key, ask)) = asked {
+        hub.broadcast(
             "ask_answered",
             serde_json::json!({
                 "session_id": session_key,
                 "request_id": request_id,
-                "value": value,
+                "value": tools::sign_in::answer_as_shown(ask.widgets.as_ref(), value.clone()),
             }),
         );
     }
@@ -135,7 +144,9 @@ pub(crate) async fn release_install_cards(state: &AppState, slug: &str) {
         let offers = ask.widgets.as_ref().and_then(tools::plugin_tool::install_card_plugin);
         if offers == Some(slug)
             && answer_ask(
-                state,
+                &state.hub,
+                &state.run_registry,
+                &state.ask_channels,
                 &ask.request_id,
                 tools::plugin_tool::INSTALL_CARD_INSTALLED.to_string(),
             )
@@ -557,7 +568,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
         && !config.prompt.trim().is_empty();
     if owner_writes
         && let Some(ask) = state.run_registry.pending_ask_for_session(&config.session_key).await
-        && answer_ask(state, &ask.request_id, config.prompt.clone()).await
+        && answer_ask(&state.hub, &state.run_registry, &state.ask_channels, &ask.request_id, config.prompt.clone()).await
     {
         info!(session = %config.session_key, "the owner's message answered the open question");
         return;
@@ -1254,6 +1265,16 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                     let _ = cm.send_typing(&cfg.conversation_id, false, None).await;
                                 }
                             }
+                        }
+                        StreamEventType::AskSettled => {
+                            answer_ask(
+                                &ask_state.hub,
+                                &ask_state.run_registry,
+                                &ask_state.ask_channels,
+                                event.error.as_deref().unwrap_or_default(),
+                                event.text.clone(),
+                            )
+                            .await;
                         }
                         StreamEventType::RateLimit => {
                             if let Some(ref rl) = event.rate_limit {

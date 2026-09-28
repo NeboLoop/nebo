@@ -1,0 +1,16 @@
+id: sc55-an-employee-signs-the-owner-in-to-a-command-line-tool-and-never-sees-the-code
+name: "SC55 — An employee signs the owner in to a command-line tool and never sees the code"
+description: |
+  A real turn with a scripted model runs a stand-in login in a terminal
+  (run_command, pty and background) and hands its sign-in over with
+  send_input's sign_in. The card reaches the conversation the request came
+  from with the link and a field for the code. The owner's code, sent the
+  way the app sends it (ask_response through the one answer path), goes into
+  the terminal and the tool takes it. Every client closes the card as "code
+  entered"; the socket frame is logged without the code; the conversation's
+  stored rows (the login's exit notification included) and every request the
+  model was sent carry none of it. The employee is told the code was entered
+  and reads the tool's own answer, the echo masked.
+target_component: staffed-company
+proof: staffed_proof::connections::an_employee_signs_the_owner_in_to_a_command_line_tool_and_never_sees_the_code
+conversation: []

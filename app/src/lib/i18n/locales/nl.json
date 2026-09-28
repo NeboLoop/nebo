@@ -405,7 +405,14 @@
 		"researchVerified": "{n} beweringen gecontroleerd aan bronnen",
 		"historyLoadFailed": "Dit gesprek kon niet worden geladen. Controleer je verbinding en probeer het opnieuw.",
 		"consentCreates": "Zeg ja en de medewerker wordt aangemaakt met precies deze taak.",
-		"consentAdds": "Zeg ja en dit komt bij de taak."
+		"consentAdds": "Zeg ja en dit komt bij de taak.",
+		"signInOpen": "Open de aanmeldpagina",
+		"signInTypeCode": "Typ daar deze code:",
+		"signInPasteCode": "Plak de code die je krijgt",
+		"signInEnterCode": "Code invoeren",
+		"signInWaiting": "Ik ga verder zodra je bent aangemeld.",
+		"signInCodeEntered": "Code ingevoerd",
+		"signedIn": "Aangemeld"
 	},
 	"chatInput": {
 		"placeholder": "Antwoord...",

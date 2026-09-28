@@ -674,3 +674,216 @@ async fn two_taps_on_one_install_card_start_one_install() {
     nebo.state.tools.refresh_plugin_tools().await;
     nebo.store().delete_auth_profile(&profile).unwrap();
 }
+
+/// A stand-in command-line tool on the bot's computer, in `dir`: a shell
+/// script printing what the real tool prints.
+#[cfg(unix)]
+fn stand_in_cli(dir: &Path, name: &str, body: &str) -> String {
+    use std::os::unix::fs::PermissionsExt;
+    let path = dir.join(name);
+    std::fs::write(&path, format!("#!/bin/sh\n{body}")).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    path.to_string_lossy().into_owned()
+}
+
+/// The scripted employee signing the owner in: it runs the login in a
+/// terminal, hands the sign-in over with `send_input`'s `sign_in`, and says
+/// `DONE-<marker>` once it hears back (and again for the login's exit
+/// notification). Every request it is sent is kept in `shown`: what the
+/// model read.
+#[cfg(unix)]
+fn signs_the_owner_in(
+    marker: &'static str,
+    command: String,
+    what: &'static str,
+    shown: Arc<std::sync::Mutex<Vec<String>>>,
+) -> super::conversation::Rule {
+    use super::conversation::Step;
+    Box::new(move |t| {
+        if !t.opener().contains(marker) {
+            return None;
+        }
+        shown.lock().unwrap().push(format!("{:?}", t.req));
+        let new: String = t
+            .since_last_answer()
+            .iter()
+            .map(|m| format!("{}\n{}\n", m.content, m.tool_results.as_ref().map(|r| r.to_string()).unwrap_or_default()))
+            .collect();
+        if new.contains("Background command bg-") {
+            return Some(Step::say(format!("DONE-{marker}")));
+        }
+        if !t.has_tool_results() {
+            let login = json!({ "command": command, "description": "Sign in", "pty": true, "background": true });
+            return Some(Step::call(vec![("run_command", login)]));
+        }
+        if let Some(id) = new.split("**").nth(1).filter(|id| id.starts_with("bg-")) {
+            return Some(Step::call(vec![("send_input", json!({ "task_id": id, "sign_in": what }))]));
+        }
+        Some(Step::say(format!("DONE-{marker}")))
+    })
+}
+
+/// The next event of `kind` every client hears that `want` accepts.
+async fn heard_by_clients(
+    rx: &mut tokio::sync::broadcast::Receiver<crate::handlers::ws::HubEvent>,
+    kind: &str,
+    want: impl Fn(&Value) -> bool,
+) -> Value {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        match tokio::time::timeout_at(deadline, rx.recv()).await {
+            Ok(Ok(e)) if e.event_type == kind && want(&e.payload) => return e.payload,
+            Ok(Ok(_)) | Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => {}
+            Ok(Err(e)) => panic!("the hub closed: {e}"),
+            Err(_) => panic!("no client heard {kind}"),
+        }
+    }
+}
+
+/// An employee signs the owner in to a command-line tool on the bot's
+/// computer, and never sees the code. A real turn (scripted model) runs the
+/// login in a terminal and hands it over; the card reaches the conversation
+/// the request came from with the link and a field; the owner's code, sent
+/// the way the app sends it, goes into the terminal, and the tool takes it.
+/// The code is in none of: what every client heard, the logged socket
+/// frame, the conversation's stored rows (the login's exit notification
+/// included), or any request the model was sent.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_employee_signs_the_owner_in_to_a_command_line_tool_and_never_sees_the_code() {
+    const CODE: &str = "4/0AfakeOwnerCode-XYZ_12345";
+    const MARK: &str = "MARK-SIGNIN-PASTE";
+    let nebo = session().await;
+    let seat = nebo.hire("Proof SignIn Admin", json!({ "workflows": {} })).await;
+    // A login is ordinary command work under the employee's mode: in Full
+    // Access nothing asks.
+    nebo.put_ok(&format!("/agents/{seat}/permissions"), &json!({ "mode": "full_access" })).await;
+    let dir = tempfile::tempdir().unwrap();
+    let result = dir.path().join("result");
+    let cli = stand_in_cli(
+        dir.path(),
+        "fakecloud",
+        &format!(
+            "printf 'Go to the following link in your browser, and complete the sign-in prompts:\\n\\n    \
+             https://accounts.example.com/o/oauth2/auth?client_id=fake&state=s1\\n\\n\
+             Once finished, enter the verification code provided in your browser: '\n\
+             IFS= read -r code\n\
+             echo \"Received $code\"\n\
+             if [ \"$code\" = '{CODE}' ]; then echo match > '{r}'; echo 'You are now logged in as owner@example.com.'; \
+             else echo mismatch > '{r}'; exit 1; fi\n",
+            r = result.display()
+        ),
+    );
+    let shown = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let rules = vec![signs_the_owner_in(MARK, format!("{cli} auth login --no-launch-browser"), "Fakecloud", shown.clone())];
+    let rig = super::conversation::Rig::new(&nebo, rules).await;
+    let key = format!("agent:{seat}:thread:sign-in-paste");
+    let mut clients = nebo.state.hub.subscribe();
+
+    let owner = async {
+        let card = heard_by_clients(&mut clients, "ask_request", |p| p["widgets"][0]["type"] == "sign_in").await;
+        assert_eq!(card["session_id"], key.as_str(), "the card is in the conversation the request came from");
+        assert_eq!(card["prompt"], "Sign in to Fakecloud");
+        let widget = &card["widgets"][0];
+        assert_eq!(widget["url"], "https://accounts.example.com/o/oauth2/auth?client_id=fake&state=s1");
+        assert_eq!((widget["input"].as_bool(), widget["code"].is_null()), (Some(true), true));
+        let request = card["request_id"].as_str().unwrap().to_string();
+
+        // The frame the app sends, and a chat message in this conversation
+        // (which would answer the card), are logged without the code.
+        let frame = json!({ "type": "ask_response", "data": { "request_id": request, "value": CODE } });
+        let chat = json!({ "type": "chat", "data": { "session_id": key, "prompt": CODE } });
+        let elsewhere = json!({ "type": "chat", "data": { "session_id": "agent:other:thread:x", "prompt": "hello" } });
+        let registry = &nebo.state.run_registry;
+        assert!(crate::handlers::ws::answers_a_sign_in(registry, &frame).await);
+        assert!(crate::handlers::ws::answers_a_sign_in(registry, &chat).await);
+        assert!(!crate::handlers::ws::answers_a_sign_in(registry, &elsewhere).await, "another conversation's message is logged as ever");
+        for logged in [crate::redact::without_sign_in_answer(frame), crate::redact::without_sign_in_answer(chat)] {
+            assert!(!logged.to_string().contains(CODE), "{logged}");
+        }
+
+        // The owner pastes the code: the ask's one answer path.
+        let s = &nebo.state;
+        assert!(crate::chat_dispatch::answer_ask(&s.hub, &s.run_registry, &s.ask_channels, &request, format!(" {CODE}\n")).await);
+        let answered = heard_by_clients(&mut clients, "ask_answered", |p| p["request_id"] == request.as_str()).await;
+        assert_eq!(answered["value"], tools::sign_in::CODE_ENTERED, "every client closes the card as code entered: {answered}");
+    };
+    tokio::join!(rig.owner_writes(&key, &seat, None, &format!("{MARK} sign me in to Fakecloud")), owner);
+
+    let done = format!("DONE-{MARK}");
+    rig.until(60, "the employee hears the sign-in went through", || {
+        rig.thread(&key).iter().any(|m| m.role == "assistant" && m.content.contains(&done))
+    })
+    .await;
+    assert_eq!(std::fs::read_to_string(&result).unwrap().trim(), "match", "the tool took the owner's code");
+    rig.until(30, "the login's exit notification lands", || {
+        rig.thread(&key).iter().any(|m| m.content.contains("Background command bg-"))
+    })
+    .await;
+
+    let rows = rig.thread(&key);
+    let told = rows
+        .iter()
+        .filter_map(|m| m.tool_results.as_deref())
+        .find(|r| r.contains("was entered into"))
+        .expect("the employee was told the code went in")
+        .to_string();
+    assert!(told.contains("You are now logged in") && told.contains("Received [code entered]"), "{told}");
+    for row in &rows {
+        assert!(!format!("{row:?}").contains("fakeOwnerCode"), "a stored row carries the code: {row:?}");
+    }
+    let shown = shown.lock().unwrap();
+    assert!(shown.len() >= 3, "the login, the hand-over and the result each reached the model");
+    assert!(shown.iter().all(|r| !r.contains("fakeOwnerCode")), "the model was sent the code");
+}
+
+/// A device-code sign-in: the card shows the code to type on the page and
+/// asks for nothing back; when the owner has signed in there the login
+/// finishes, the card closes everywhere as signed in, and the employee is
+/// told.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_device_code_sign_in_closes_its_card_when_the_login_finishes() {
+    const MARK: &str = "MARK-SIGNIN-DEVICE";
+    let nebo = session().await;
+    let seat = nebo.hire("Proof SignIn Developer", json!({ "workflows": {} })).await;
+    nebo.put_ok(&format!("/agents/{seat}/permissions"), &json!({ "mode": "full_access" })).await;
+    let dir = tempfile::tempdir().unwrap();
+    let approved = dir.path().join("approved");
+    let cli = stand_in_cli(
+        dir.path(),
+        "fakehub",
+        &format!(
+            "echo '! First copy your one-time code: WXYZ-1234'\n\
+             echo 'Open this URL to continue in your web browser: https://auth.example.com/login/device'\n\
+             while [ ! -f '{a}' ]; do sleep 0.1; done\n\
+             echo 'Authentication complete. Logged in as owner.'\n",
+            a = approved.display()
+        ),
+    );
+    let shown = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let rules = vec![signs_the_owner_in(MARK, format!("{cli} auth login --web"), "Fakehub", shown)];
+    let rig = super::conversation::Rig::new(&nebo, rules).await;
+    let key = format!("agent:{seat}:thread:sign-in-device");
+    let mut clients = nebo.state.hub.subscribe();
+
+    let owner = async {
+        let card = heard_by_clients(&mut clients, "ask_request", |p| p["widgets"][0]["type"] == "sign_in").await;
+        let widget = &card["widgets"][0];
+        assert_eq!(widget["url"], "https://auth.example.com/login/device");
+        assert_eq!((widget["code"].as_str(), widget["input"].as_bool()), (Some("WXYZ-1234"), Some(false)));
+        // The owner types the code on the page; the tool finishes.
+        std::fs::write(&approved, "").unwrap();
+        let answered = heard_by_clients(&mut clients, "ask_answered", |p| p["request_id"] == card["request_id"]).await;
+        assert_eq!(answered["value"], tools::sign_in::SIGNED_IN);
+    };
+    tokio::join!(rig.owner_writes(&key, &seat, None, &format!("{MARK} log me in to Fakehub")), owner);
+
+    let done = format!("DONE-{MARK}");
+    rig.until(60, "the employee hears the sign-in finished", || {
+        rig.thread(&key).iter().any(|m| m.role == "assistant" && m.content.contains(&done))
+    })
+    .await;
+    let told = rig.thread(&key).into_iter().filter_map(|m| m.tool_results).find(|r| r.contains("The owner signed in"));
+    assert!(told.is_some_and(|r| r.contains("Authentication complete")), "the employee is told it finished");
+}

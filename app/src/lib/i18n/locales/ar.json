@@ -405,7 +405,14 @@
 		"researchVerified": "{n} ادعاء تم التحقق منه مقابل المصادر",
 		"historyLoadFailed": "تعذّر تحميل هذه المحادثة. تحقق من اتصالك وحاول مرة أخرى.",
 		"consentCreates": "قل نعم وسيُنشأ بهذا العمل تمامًا.",
-		"consentAdds": "قل نعم وستُضاف هذه إلى عمله."
+		"consentAdds": "قل نعم وستُضاف هذه إلى عمله.",
+		"signInOpen": "افتح صفحة تسجيل الدخول",
+		"signInTypeCode": "اكتب هذا الرمز هناك:",
+		"signInPasteCode": "الصق الرمز الذي تحصل عليه",
+		"signInEnterCode": "أدخل الرمز",
+		"signInWaiting": "سأتابع بمجرد تسجيل دخولك.",
+		"signInCodeEntered": "تم إدخال الرمز",
+		"signedIn": "تم تسجيل الدخول"
 	},
 	"chatInput": {
 		"placeholder": "اكتب ردك...",

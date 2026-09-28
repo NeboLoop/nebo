@@ -405,7 +405,14 @@
 		"researchVerified": "{n}টি দাবি সূত্রের সঙ্গে মিলিয়ে যাচাই হয়েছে",
 		"historyLoadFailed": "এই চ্যাটটি লোড করা যায়নি। আপনার সংযোগ দেখে আবার চেষ্টা করুন।",
 		"consentCreates": "হ্যাঁ বলুন, ঠিক এই কাজ নিয়েই তৈরি হবে।",
-		"consentAdds": "হ্যাঁ বলুন, এটি তাদের কাজে যোগ হবে।"
+		"consentAdds": "হ্যাঁ বলুন, এটি তাদের কাজে যোগ হবে।",
+		"signInOpen": "সাইন-ইন পেজ খুলুন",
+		"signInTypeCode": "সেখানে এই কোডটি লিখুন:",
+		"signInPasteCode": "যে কোডটি পাবেন তা পেস্ট করুন",
+		"signInEnterCode": "কোড দিন",
+		"signInWaiting": "আপনি সাইন ইন করলেই আমি আবার শুরু করব।",
+		"signInCodeEntered": "কোড দেওয়া হয়েছে",
+		"signedIn": "সাইন ইন হয়েছে"
 	},
 	"chatInput": {
 		"placeholder": "উত্তর দিন...",

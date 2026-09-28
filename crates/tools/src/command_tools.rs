@@ -471,7 +471,8 @@ impl DynTool for SendInputTool {
     fn description(&self) -> String {
         "Types into a background command: text, then named keys.\n\
          - End the text with a newline to submit a line.\n\
-         - A command started with pty: true also takes keys (Enter, Tab, Up, Ctrl-C, …) and a new size."
+         - A command started with pty: true also takes keys (Enter, Tab, Up, Ctrl-C, …) and a new size.\n\
+         - A login showing a sign-in link: `sign_in` hands it to the owner on a card and types their code in; you never see the code."
             .to_string()
     }
 
@@ -487,14 +488,26 @@ impl DynTool for SendInputTool {
                     "description": "Keys pressed after the text, in order: Enter, Tab, Shift-Tab, Escape, Backspace, Space, Up, Down, Left, Right, Home, End, PageUp, PageDown, Insert, Delete, F1–F12, Ctrl-<key>, Alt-<key>. Terminal commands only."
                 },
                 "cols": { "type": "integer", "description": "Resize the terminal to this many columns. Terminal commands only." },
-                "rows": { "type": "integer", "description": "Resize the terminal to this many rows. Terminal commands only." }
+                "rows": { "type": "integer", "description": "Resize the terminal to this many rows. Terminal commands only." },
+                "sign_in": { "type": "string", "description": "What the owner signs in to, as they'd say it (\"GitHub CLI\"). Hands the terminal's sign-in link to them on a card; alone in its call." }
             },
             "required": ["task_id"]
         })
     }
 
     fn search_hint(&self) -> &str {
-        "type input into background command"
+        "type input into background command sign in login"
+    }
+
+    fn validate_input(&self, input: &Value) -> Result<(), String> {
+        let keys = input.get("keys").is_some_and(|k| {
+            k.as_array().is_some_and(|a| !a.is_empty()) || k.as_str().is_some_and(|s| !s.is_empty())
+        });
+        let typed = str_arg(input, "text").is_some() || keys;
+        if str_arg(input, "sign_in").is_some() && typed {
+            return Err("sign_in hands the session to the owner; send text or keys in a call of their own.".to_string());
+        }
+        Ok(())
     }
 
     fn capability(&self, _input: &Value) -> Option<&'static str> {
@@ -502,15 +515,24 @@ impl DynTool for SendInputTool {
     }
 
     fn activity(&self, input: &Value) -> String {
-        format!("sending input to {}", task_id(input))
+        match str_arg(input, "sign_in") {
+            Some(what) => format!("waiting for you to sign in to {what}"),
+            None => format!("sending input to {}", task_id(input)),
+        }
     }
 
     fn outcome(&self, input: &Value) -> String {
-        format!("Sent input to {}", task_id(input))
+        match str_arg(input, "sign_in") {
+            Some(what) => format!("Sign-in to {what}"),
+            None => format!("Sent input to {}", task_id(input)),
+        }
     }
 
     fn execute_dyn<'a>(&'a self, ctx: &'a ToolContext, input: Value) -> Fut<'a> {
         Box::pin(async move {
+            if let Some(what) = str_arg(&input, "sign_in") {
+                return self.0.shell.execute(ctx, json!({"action": "sign_in", "session_id": task_id(&input), "sign_in": what})).await;
+            }
             let mut call = json!({
                 "action": "write",
                 "session_id": task_id(&input),

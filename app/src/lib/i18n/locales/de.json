@@ -405,7 +405,14 @@
 		"researchVerified": "{n} Aussagen anhand von Quellen geprüft",
 		"historyLoadFailed": "Dieses Gespräch konnte nicht geladen werden. Prüf deine Verbindung und versuch es nochmal.",
 		"consentCreates": "Sagen Sie Ja, und sie wird mit genau dieser Aufgabe angelegt.",
-		"consentAdds": "Sagen Sie Ja, und das kommt zu ihrer Aufgabe hinzu."
+		"consentAdds": "Sagen Sie Ja, und das kommt zu ihrer Aufgabe hinzu.",
+		"signInOpen": "Anmeldeseite öffnen",
+		"signInTypeCode": "Gib dort diesen Code ein:",
+		"signInPasteCode": "Füge den Code ein, den du dort erhältst",
+		"signInEnterCode": "Code eingeben",
+		"signInWaiting": "Ich mache weiter, sobald du angemeldet bist.",
+		"signInCodeEntered": "Code eingegeben",
+		"signedIn": "Angemeldet"
 	},
 	"chatInput": {
 		"placeholder": "Antworten...",

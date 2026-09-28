@@ -15,6 +15,7 @@
 import { untrack } from 'svelte';
 import { getWebSocketClient } from '$lib/websocket/client';
 import type { AskWidgetDef } from '$lib/components/chat/AskWidget.svelte';
+import { answerKept } from '$lib/chat/signIn';
 import type { UploadedAttachment } from '$lib/types/attachment';
 import type { ChatMessagesResponse, SessionGoalStatus } from '$lib/api/neboComponents';
 import { sendClientEvent } from '$lib/api/gocliRequest';
@@ -1080,7 +1081,10 @@ export function createChatController(config: ChatControllerConfig) {
 
   function submitAsk(requestId: string, value: string) {
     ws.send('ask_response', { request_id: requestId, value });
-    markAnswered(requestId, value);
+    // A sign-in card's code goes to the bot only; the thread keeps that it
+    // was entered.
+    const card = messages.find((m) => m.type === 'ask' && m.requestId === requestId);
+    markAnswered(requestId, answerKept(card?.type === 'ask' ? card.widgets : undefined, value));
   }
 
   /** A question was answered — here, on another surface, or by the server

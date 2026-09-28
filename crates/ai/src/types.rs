@@ -69,6 +69,12 @@ pub enum StreamEventType {
     RateLimit,
     ApprovalRequest,
     AskRequest,
+    /// A card whose question ended without the owner's answer, because the
+    /// work behind it finished or gave up (a sign-in that completed in the
+    /// terminal, or timed out): `error` is the request id, `text` what the
+    /// card shows ([`StreamEvent::ask_settled`]). Settled through the ask's
+    /// one answer path, so every client closes it the same way.
+    AskSettled,
     SubagentStart,
     SubagentProgress,
     SubagentComplete,
@@ -424,6 +430,15 @@ impl StreamEvent {
             provider_metadata: None,
             stop_reason: None,
             image_url: None,
+        }
+    }
+
+    /// The card `question_id` is settled without an answer: `shown` is what
+    /// it says (see [`StreamEventType::AskSettled`]).
+    pub fn ask_settled(question_id: impl Into<String>, shown: impl Into<String>) -> Self {
+        Self {
+            event_type: StreamEventType::AskSettled,
+            ..Self::ask_request(question_id, shown, None)
         }
     }
 

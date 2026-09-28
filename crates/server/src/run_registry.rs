@@ -317,14 +317,14 @@ impl RunRegistry {
     }
 
     /// The question `request_id` was answered (or dropped): clear it from
-    /// whichever run held it. Returns that run's session key.
-    pub async fn resolve_ask(&self, request_id: &str) -> Option<String> {
+    /// whichever run held it. Returns that run's session key and the
+    /// question.
+    pub async fn resolve_ask(&self, request_id: &str) -> Option<(String, PendingAsk)> {
         let runs = self.inner.runs.read().await;
         for entry in runs.values() {
             let mut slot = entry.pending_ask.lock().unwrap_or_else(|e| e.into_inner());
             if slot.as_ref().is_some_and(|a| a.request_id == request_id) {
-                *slot = None;
-                return Some(entry.session_key.clone());
+                return slot.take().map(|ask| (entry.session_key.clone(), ask));
             }
         }
         None
@@ -656,9 +656,10 @@ mod tests {
         let _h2 = register(&registry, "s2").await;
         registry.park_ask("s1", ask("r1")).await;
         registry.park_ask("s2", ask("r2")).await;
-        assert_eq!(registry.resolve_ask("nope").await, None);
+        assert!(registry.resolve_ask("nope").await.is_none());
         assert_eq!(registry.pending_asks().await.len(), 2);
-        assert_eq!(registry.resolve_ask("r2").await.as_deref(), Some("s2"));
+        let (session, ask) = registry.resolve_ask("r2").await.expect("r2 was parked");
+        assert_eq!((session.as_str(), ask.request_id.as_str()), ("s2", "r2"));
         assert!(registry.pending_ask_for_session("s2").await.is_none());
         assert_eq!(registry.pending_ask_for_session("s1").await.unwrap().request_id, "r1");
     }

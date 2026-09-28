@@ -405,7 +405,14 @@
 		"researchVerified": "{n} iddia kaynaklarla doğrulandı",
 		"historyLoadFailed": "Bu sohbet yüklenemedi. Bağlantınızı kontrol edip tekrar deneyin.",
 		"consentCreates": "Evet deyin, tam olarak bu görevle oluşturulsun.",
-		"consentAdds": "Evet deyin, bu görevine eklensin."
+		"consentAdds": "Evet deyin, bu görevine eklensin.",
+		"signInOpen": "Oturum açma sayfasını aç",
+		"signInTypeCode": "Bu kodu oraya yazın:",
+		"signInPasteCode": "Size verilen kodu yapıştırın",
+		"signInEnterCode": "Kodu gir",
+		"signInWaiting": "Oturum açtığınızda devam edeceğim.",
+		"signInCodeEntered": "Kod girildi",
+		"signedIn": "Oturum açıldı"
 	},
 	"chatInput": {
 		"placeholder": "Yanıtla...",

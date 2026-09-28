@@ -533,7 +533,12 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState, ua: String) {
             Some(msg) = socket.recv() => {
                 match msg {
                     Ok(Message::Text(text)) => {
-                        info!("ws client message: {}", text);
+                        match serde_json::from_str::<serde_json::Value>(&text) {
+                            Ok(frame) if answers_a_sign_in(&state.run_registry, &frame).await => {
+                                info!("ws client message: {}", crate::redact::without_sign_in_answer(frame));
+                            }
+                            _ => info!("ws client message: {}", text),
+                        }
                         if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&text) {
                             let msg_type = parsed["type"].as_str().unwrap_or("");
                             match msg_type {
@@ -803,7 +808,7 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState, ua: String) {
                                         .as_str()
                                         .unwrap_or("")
                                         .to_string();
-                                    if !crate::chat_dispatch::answer_ask(&state, &request_id, value).await {
+                                    if !crate::chat_dispatch::answer_ask(&state.hub, &state.run_registry, &state.ask_channels, &request_id, value).await {
                                         debug!(request_id, "ask_response for a question nobody is waiting on");
                                     }
                                 }
@@ -820,7 +825,7 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState, ua: String) {
                                     } else {
                                         "rejected".to_string()
                                     };
-                                    if !crate::chat_dispatch::answer_ask(&state, &request_id, value).await {
+                                    if !crate::chat_dispatch::answer_ask(&state.hub, &state.run_registry, &state.ask_channels, &request_id, value).await {
                                         debug!(request_id, "plan_response for a plan nobody is waiting on");
                                     }
                                 }
@@ -1417,6 +1422,21 @@ impl ChatPayload {
 /// cloud bot's report run was killed twice by mobile disconnects. Runs finish
 /// server-side and persist; explicit cancellation goes through the RunRegistry
 /// (the "cancel" WS message), never through connection lifetime.
+/// Whether a client's frame answers an open sign-in card: an `ask_response`
+/// to one, or a chat message in a conversation with one open (the message
+/// answers it). Such a frame is logged without its answer.
+pub(crate) async fn answers_a_sign_in(registry: &crate::run_registry::RunRegistry, frame: &serde_json::Value) -> bool {
+    let data = &frame["data"];
+    let card = match (frame["type"].as_str(), data["request_id"].as_str(), data["session_id"].as_str()) {
+        (Some("ask_response"), Some(id), _) => {
+            registry.pending_asks().await.into_iter().map(|(_, ask)| ask).find(|ask| ask.request_id == id)
+        }
+        (Some("chat"), _, Some(session)) => registry.pending_ask_for_session(session).await,
+        _ => None,
+    };
+    card.is_some_and(|ask| tools::sign_in::is_card(ask.widgets.as_ref()))
+}
+
 async fn dispatch_chat(state: &AppState, msg: &serde_json::Value, client_id: &str) {
     let mut payload = ChatPayload::parse(&msg["data"]);
     payload.client_id = Some(client_id.to_string());

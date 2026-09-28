@@ -57,3 +57,5 @@ fixtures:
   - ../fixtures/staffed-company/connections/sc52-an-install-carries-the-client-that-asked.yaml
   - ../fixtures/staffed-company/connections/sc53-a-cascade-carries-the-client-that-asked.yaml
   - ../fixtures/staffed-company/connections/sc54-an-open-approval-outlives-its-turn-and-reaches-a-client-that-connects-later.yaml
+  - ../fixtures/staffed-company/connections/sc55-an-employee-signs-the-owner-in-to-a-command-line-tool-and-never-sees-the-code.yaml
+  - ../fixtures/staffed-company/connections/sc56-a-device-code-sign-in-closes-its-card-when-the-login-finishes.yaml

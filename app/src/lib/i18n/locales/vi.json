@@ -405,7 +405,14 @@
 		"researchVerified": "{n} luận điểm đã đối chiếu với nguồn",
 		"historyLoadFailed": "Không tải được cuộc trò chuyện này. Hãy kiểm tra kết nối và thử lại.",
 		"consentCreates": "Nói đồng ý và nhân viên sẽ được tạo với đúng công việc này.",
-		"consentAdds": "Nói đồng ý và điều này được thêm vào công việc."
+		"consentAdds": "Nói đồng ý và điều này được thêm vào công việc.",
+		"signInOpen": "Mở trang đăng nhập",
+		"signInTypeCode": "Nhập mã này ở đó:",
+		"signInPasteCode": "Dán mã bạn nhận được",
+		"signInEnterCode": "Nhập mã",
+		"signInWaiting": "Tôi sẽ tiếp tục khi bạn đã đăng nhập.",
+		"signInCodeEntered": "Đã nhập mã",
+		"signedIn": "Đã đăng nhập"
 	},
 	"chatInput": {
 		"placeholder": "Trả lời...",

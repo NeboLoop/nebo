@@ -405,7 +405,14 @@
 		"researchVerified": "{n} affermazioni verificate sulle fonti",
 		"historyLoadFailed": "Non è stato possibile caricare questa conversazione. Controlla la connessione e riprova.",
 		"consentCreates": "Di' di sì e verrà creato con esattamente questo lavoro.",
-		"consentAdds": "Di' di sì e questo si aggiunge al suo lavoro."
+		"consentAdds": "Di' di sì e questo si aggiunge al suo lavoro.",
+		"signInOpen": "Apri la pagina di accesso",
+		"signInTypeCode": "Digita lì questo codice:",
+		"signInPasteCode": "Incolla il codice che ricevi",
+		"signInEnterCode": "Inserisci codice",
+		"signInWaiting": "Continuo appena hai effettuato l'accesso.",
+		"signInCodeEntered": "Codice inserito",
+		"signedIn": "Accesso effettuato"
 	},
 	"chatInput": {
 		"placeholder": "Rispondi...",

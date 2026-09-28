@@ -405,7 +405,14 @@
 		"researchVerified": "{n} affirmations vérifiées face aux sources",
 		"historyLoadFailed": "Impossible de charger cette conversation. Vérifiez votre connexion et réessayez.",
 		"consentCreates": "Dites oui et il sera créé avec exactement ce travail.",
-		"consentAdds": "Dites oui et ceci s'ajoute à son travail."
+		"consentAdds": "Dites oui et ceci s'ajoute à son travail.",
+		"signInOpen": "Ouvrir la page de connexion",
+		"signInTypeCode": "Saisissez ce code là-bas :",
+		"signInPasteCode": "Collez le code qui vous est donné",
+		"signInEnterCode": "Saisir le code",
+		"signInWaiting": "Je continue dès que vous êtes connecté.",
+		"signInCodeEntered": "Code saisi",
+		"signedIn": "Connecté"
 	},
 	"chatInput": {
 		"placeholder": "Répondre...",

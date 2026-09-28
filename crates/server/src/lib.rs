@@ -3802,7 +3802,7 @@ async fn try_handle_comm_control(
         asks.get_mut(session_key).and_then(|q| q.pop_front())
     };
     if let Some(request_id) = pending {
-        if chat_dispatch::answer_ask(state, &request_id, answer.to_string()).await {
+        if chat_dispatch::answer_ask(&state.hub, &state.run_registry, &state.ask_channels, &request_id, answer.to_string()).await {
             tracing::info!(session = %session_key, "inbound comm message resolved pending ask");
             return true;
         }

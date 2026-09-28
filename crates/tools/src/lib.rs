@@ -91,6 +91,7 @@ pub mod safeguard;
 pub mod sandbox_policy;
 pub mod settings_tool;
 pub mod shell_tool;
+pub mod sign_in;
 pub mod sidecar_tool;
 pub mod skill_tool;
 pub mod skills;

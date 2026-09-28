@@ -24,6 +24,22 @@ const SENSITIVE_COMMANDS: &[&str] = &[
     "/signin",
 ];
 
+/// A client's socket frame that answers a sign-in card (an `ask_response`
+/// to one, or a chat message sent while its conversation has one open,
+/// which answers it), as the log shows it: the answer (`data.value`,
+/// `data.prompt`) left out. The owner's code for a sign-in never reaches a
+/// log.
+pub fn without_sign_in_answer(mut frame: serde_json::Value) -> serde_json::Value {
+    if let Some(data) = frame.get_mut("data").and_then(serde_json::Value::as_object_mut) {
+        for key in ["value", "prompt"] {
+            if let Some(answer) = data.get_mut(key) {
+                *answer = serde_json::json!("[sign-in answer]");
+            }
+        }
+    }
+    frame
+}
+
 /// If `prompt` is a sensitive slash command, return a copy with arguments
 /// replaced by `[redacted]`. Otherwise return `None` (caller should use
 /// the original prompt unchanged).
@@ -59,6 +75,18 @@ pub fn redact_sensitive_args(prompt: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The answer to a sign-in card is left out of the logged frame, and
+    /// nothing else is.
+    #[test]
+    fn a_sign_in_answer_is_left_out_of_the_logged_frame() {
+        let answer = serde_json::json!({ "type": "ask_response", "data": { "request_id": "r1", "value": "4/0Secret" } });
+        let logged = without_sign_in_answer(answer).to_string();
+        assert!(!logged.contains("4/0Secret") && logged.contains("r1"), "{logged}");
+        let chat = serde_json::json!({ "type": "chat", "data": { "session_id": "s1", "prompt": "4/0Secret" } });
+        let logged = without_sign_in_answer(chat).to_string();
+        assert!(!logged.contains("4/0Secret") && logged.contains("s1"), "{logged}");
+    }
 
     #[test]
     fn redacts_auth_command() {

@@ -527,6 +527,23 @@ impl ToolContext {
     /// [{"type": "checkbox", "label": "Pick calendars", "options": ["Work", "Personal"]}]
     /// ```
     pub async fn ask_user(&self, prompt: &str, widgets: serde_json::Value) -> Option<String> {
+        let Asked::Answer(answer) = self.ask_user_until(prompt, widgets, std::future::pending()).await? else {
+            return None;
+        };
+        Some(answer)
+    }
+
+    /// [`Self::ask_user`] for a question that can also end without the
+    /// owner: when `ends` resolves first (the work behind the card finished
+    /// or gave up), the card is settled with what it resolved to, through
+    /// the ask's one answer path (an `AskSettled` event the server answers
+    /// the card with), and every client closes it showing that.
+    pub async fn ask_user_until(
+        &self,
+        prompt: &str,
+        widgets: serde_json::Value,
+        ends: impl std::future::Future<Output = String>,
+    ) -> Option<Asked> {
         let tx = self.stream_tx.as_ref()?;
         let channels = self.ask_channels.as_ref()?;
 
@@ -548,7 +565,13 @@ impl ToolContext {
 
         self.parked.store(true, std::sync::atomic::Ordering::SeqCst);
         let answer = tokio::select! {
-            answer = resp_rx => answer.ok(),
+            answer = resp_rx => answer.ok().map(Asked::Answer),
+            shown = ends => {
+                // The answer channel stays for the server's answer path,
+                // which takes it when it closes the card.
+                let _ = tx.send(ai::StreamEvent::ask_settled(&request_id, shown.clone())).await;
+                Some(Asked::Ended(shown))
+            }
             _ = self.cancel_token.cancelled() => {
                 // The run is being cancelled: unpark now, so the runner can end
                 // the turn instead of waiting on an answer nobody will give.
@@ -560,6 +583,16 @@ impl ToolContext {
         self.parked.store(false, std::sync::atomic::Ordering::SeqCst);
         answer
     }
+}
+
+/// How a question with an end of its own settled
+/// ([`ToolContext::ask_user_until`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Asked {
+    /// The owner answered, or dismissed it ([`SKIP_SENTINEL`]).
+    Answer(String),
+    /// The work behind it ended first; the card now shows this.
+    Ended(String),
 }
 
 #[cfg(test)]

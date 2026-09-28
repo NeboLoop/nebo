@@ -405,7 +405,14 @@
 		"researchVerified": "{n} klaim diverifikasi terhadap sumber",
 		"historyLoadFailed": "Tidak bisa memuat percakapan ini. Periksa koneksi Anda dan coba lagi.",
 		"consentCreates": "Katakan ya dan karyawan ini dibuat dengan pekerjaan persis ini.",
-		"consentAdds": "Katakan ya dan ini ditambahkan ke pekerjaannya."
+		"consentAdds": "Katakan ya dan ini ditambahkan ke pekerjaannya.",
+		"signInOpen": "Buka halaman masuk",
+		"signInTypeCode": "Ketik kode ini di sana:",
+		"signInPasteCode": "Tempel kode yang Anda dapatkan",
+		"signInEnterCode": "Masukkan kode",
+		"signInWaiting": "Saya lanjutkan setelah Anda masuk.",
+		"signInCodeEntered": "Kode dimasukkan",
+		"signedIn": "Sudah masuk"
 	},
 	"chatInput": {
 		"placeholder": "Balas...",

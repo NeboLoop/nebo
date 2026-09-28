@@ -405,7 +405,14 @@
 		"researchVerified": "已對照來源查證 {n} 項論點",
 		"historyLoadFailed": "無法載入這段對話。請檢查網路連線後再試一次。",
 		"consentCreates": "回答「是」，就會按這份工作內容建立。",
-		"consentAdds": "回答「是」，就會把這項加入工作內容。"
+		"consentAdds": "回答「是」，就會把這項加入工作內容。",
+		"signInOpen": "開啟登入頁面",
+		"signInTypeCode": "在那裡輸入此代碼：",
+		"signInPasteCode": "貼上頁面給你的代碼",
+		"signInEnterCode": "輸入代碼",
+		"signInWaiting": "你登入後我會繼續。",
+		"signInCodeEntered": "代碼已輸入",
+		"signedIn": "已登入"
 	},
 	"chatInput": {
 		"placeholder": "回覆...",

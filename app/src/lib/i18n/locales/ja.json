@@ -405,7 +405,14 @@
 		"researchVerified": "{n}件の主張を情報源と照合済み",
 		"historyLoadFailed": "この会話を読み込めませんでした。接続を確認してもう一度お試しください。",
 		"consentCreates": "「はい」と答えると、この仕事内容のまま作成されます。",
-		"consentAdds": "「はい」と答えると、これが仕事内容に加わります。"
+		"consentAdds": "「はい」と答えると、これが仕事内容に加わります。",
+		"signInOpen": "サインインページを開く",
+		"signInTypeCode": "そこでこのコードを入力してください：",
+		"signInPasteCode": "表示されたコードを貼り付けてください",
+		"signInEnterCode": "コードを入力",
+		"signInWaiting": "サインインが済んだら続けます。",
+		"signInCodeEntered": "コードを入力済み",
+		"signedIn": "サインイン済み"
 	},
 	"chatInput": {
 		"placeholder": "返信...",

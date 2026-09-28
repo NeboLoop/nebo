@@ -1,0 +1,12 @@
+id: sc56-a-device-code-sign-in-closes-its-card-when-the-login-finishes
+name: "SC56 — A device-code sign-in closes its card when the login finishes"
+description: |
+  A stand-in device-code login (the GitHub CLI's shape: a code to type on
+  the page, nothing pasted back) is handed over in a real turn. The card
+  shows the link and the code and has no field. When the owner has signed in
+  on the page the tool finishes, the card is settled through the ask's one
+  answer path (AskSettled) and every client closes it as signed in, and the
+  employee is told the sign-in finished with the tool's own words.
+target_component: staffed-company
+proof: staffed_proof::connections::a_device_code_sign_in_closes_its_card_when_the_login_finishes
+conversation: []

@@ -49,6 +49,9 @@ struct ShellInput {
     /// `exec`: run the command in a terminal of its own.
     #[serde(default)]
     pty: bool,
+    /// `sign_in`: what the owner signs in to, as they'd name it.
+    #[serde(default)]
+    sign_in: String,
     /// Machine-consumer mode: on success return stdout ONLY (no STDERR
     /// section, no "(no output)" placeholder, no truncation footer); on a
     /// non-zero exit return an error carrying stderr. Used by deterministic
@@ -102,17 +105,17 @@ impl ShellTool {
             }
             "bash" => self.handle_bash(&si, ctx).await,
             "process" => self.handle_process(&si).await,
-            "session" => self.handle_session(&si).await,
+            "session" => self.handle_session(&si, ctx).await,
             other => ToolResult::error(format!(
-                "Unknown shell action '{}'{}. Valid: exec, list, poll, log, write, kill, info",
+                "Unknown shell action '{}'{}. Valid: exec, list, poll, log, write, sign_in, kill, info",
                 si.action,
                 if other.is_empty() { String::new() } else { format!(" (resource '{other}')") }
             )),
         }
     }
 
-    /// The handler an action belongs to. `exec` runs a command; `poll`, `log`
-    /// and `write` manage a background session; `kill`, `info` and `list`
+    /// The handler an action belongs to. `exec` runs a command; `poll`, `log`,
+    /// `write` and `sign_in` manage a background session; `kill`, `info` and `list`
     /// take a `pid` (system process) or a `session_id` (background session),
     /// and a bare `list` is the session list (`filter` asks for processes).
     /// Anything else routes by the parameter that is present, so an unknown
@@ -120,7 +123,7 @@ impl ShellTool {
     fn route_for(si: &ShellInput) -> &'static str {
         match si.action.as_str() {
             "exec" => "bash",
-            "poll" | "log" | "write" => "session",
+            "poll" | "log" | "write" | "sign_in" => "session",
             "kill" | "info" if si.pid > 0 => "process",
             "kill" | "info" => "session",
             "list" if si.pid > 0 || !si.filter.is_empty() => "process",
@@ -280,7 +283,27 @@ impl ShellTool {
         // it: a cancelled turn drops this and takes the whole group with it.
         let mut owned = KillOnDrop(Some(started.session.pid));
         let mut exited = started.exited;
-        let status = match tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), &mut exited).await {
+        // A terminal command that shows a sign-in waits on the owner, not on
+        // its timeout: it moves to the background at once, to be handed over.
+        let hands_over = input.pty && !input.raw && caller.is_some();
+        let session = started.session.clone();
+        let sign_in_shown = async {
+            if !hands_over {
+                return std::future::pending::<()>().await;
+            }
+            loop {
+                tokio::time::sleep(SIGN_IN_LOOK).await;
+                if crate::sign_in::hint(&input.command, &session.output_tail(SIGN_IN_TAIL).await, Some(&session.id)).is_some() {
+                    return;
+                }
+            }
+        };
+        // Err(true): a sign-in waits; Err(false): the timeout passed.
+        let waited = tokio::select! {
+            waited = tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), &mut exited) => waited.map_err(|_| false),
+            () = sign_in_shown => Err(true),
+        };
+        let status = match waited {
             Ok(status) => status,
             // A workflow's command step is parsed by the next step, and a
             // run nobody started has nobody to tell: their timeout is the
@@ -295,21 +318,31 @@ impl ShellTool {
                 }
                 return stopped;
             }
-            Err(_) => {
+            Err(signing_in) => {
                 if self.registry.move_to_background(&started.session, caller) {
                     owned.0 = None;
-                    return ToolResult::ok(format!(
-                        "Command exceeded its timeout ({timeout_secs}s) and was moved to the background \
-                         with ID: {id}. It is still running; you'll be notified when it completes. Read \
-                         what it has printed so far with read_output(task_id: \"{id}\"); stop it with \
-                         stop_task(task_id: \"{id}\").{typed}",
-                        id = started.session.id,
+                    let id = started.session.id.as_str();
+                    let why = if signing_in {
+                        "Command is waiting on a sign-in".to_string()
+                    } else {
+                        format!("Command exceeded its timeout ({timeout_secs}s)")
+                    };
+                    let mut moved = format!(
+                        "{why} and was moved to the background with ID: {id}. It is still running; you'll \
+                         be notified when it completes. Read what it has printed so far with \
+                         read_output(task_id: \"{id}\"); stop it with stop_task(task_id: \"{id}\").{typed}",
                         typed = if input.pty {
                             " If it is waiting for input, type into it with send_input."
                         } else {
                             ""
                         }
-                    ));
+                    );
+                    let screen = started.session.get_output().await;
+                    if let Some(hint) = crate::sign_in::hint(&input.command, &screen, input.pty.then_some(id)) {
+                        moved.push_str("\n\n");
+                        moved.push_str(&hint);
+                    }
+                    return ToolResult::ok(moved);
                 }
                 // It ended in the same instant: its status is on the way.
                 exited.await
@@ -389,6 +422,11 @@ impl ShellTool {
                 result.push_str(&msg);
             }
             if is_error {
+                // A login that failed without a terminal: sign-ins run in one.
+                if let Some(hint) = crate::sign_in::hint(&input.command, &result, None) {
+                    result.push_str("\n\n");
+                    result.push_str(&hint);
+                }
                 return ToolResult { payload: None, need: None, parked_ask: None, taint: Vec::new(), loads: Vec::new(),
                     content: format!("{}\n{}", exit_header(&output.status), result),
                     is_error: true,
@@ -526,13 +564,16 @@ impl ShellTool {
         caller: Option<process::Caller>,
     ) -> ToolResult {
         let told = if caller.is_some() { " You'll be notified when it ends." } else { "" };
+        // A login started without a terminal: sign-ins run in one.
+        let sign_in = if input.pty { None } else { crate::sign_in::hint(&input.command, "", None) };
         match self.registry.spawn(cmd, &input.command, process::Spawn::Background(caller), input.pty, closed_ports).await {
             Ok(started) => ToolResult::ok(format!(
-                "Background session started: **{}** (PID {})\n\nCommand: `{}`\n\n{}{told}\n",
+                "Background session started: **{}** (PID {})\n\nCommand: `{}`\n\n{}{told}\n{}",
                 started.session.id,
                 started.session.pid,
                 input.command,
-                session_next_steps(&started.session.id, input.pty)
+                session_next_steps(&started.session.id, input.pty),
+                sign_in.map(|h| format!("\n{h}\n")).unwrap_or_default()
             )),
             Err(e) => ToolResult::error(format!("Failed to start background process: {}", e)),
         }
@@ -727,9 +768,9 @@ impl ShellTool {
         }
     }
 
-    async fn handle_session(&self, input: &ShellInput) -> ToolResult {
+    async fn handle_session(&self, input: &ShellInput, ctx: &ToolContext) -> ToolResult {
         let action = input.action.as_str();
-        if matches!(action, "poll" | "log" | "write" | "kill" | "info") && input.session_id.is_empty() {
+        if matches!(action, "poll" | "log" | "write" | "sign_in" | "kill" | "info") && input.session_id.is_empty() {
             return ToolResult::error(format!(
                 "task_id is required: the id run_command gave the background command (bg-…){}",
                 match action {
@@ -743,10 +784,14 @@ impl ShellTool {
             "poll" => self.poll_session(&input.session_id, input.raw).await,
             "log" => self.get_session_log(&input.session_id).await,
             "write" => self.write_to_session(input).await,
+            "sign_in" if input.sign_in.trim().is_empty() => ToolResult::error(
+                "sign_in names what the owner signs in to, as they'd say it (\"GitHub CLI\", \"Google Cloud\").",
+            ),
+            "sign_in" => crate::sign_in::hand_over(&self.registry, ctx, &input.session_id, &input.sign_in, crate::sign_in::Waits::default()).await,
             "kill" => self.kill_session(&input.session_id).await,
             "info" => self.session_info(&input.session_id).await,
             other => ToolResult::error(format!(
-                "Unknown shell action '{}' for a session_id-based call. Valid: list, poll, log, write, kill, info",
+                "Unknown shell action '{}' for a session_id-based call. Valid: list, poll, log, write, sign_in, kill, info",
                 other
             )),
         }
@@ -828,6 +873,13 @@ impl ShellTool {
         );
 
         let (stdout, stderr) = sess.drain_pending(raw).await;
+        // A sign-in on what it printed: handed over while its terminal runs;
+        // a command without one is told sign-ins run in one.
+        let sign_in = match (sess.terminal, sess.exited) {
+            (true, true) => None,
+            _ if stdout.is_empty() => None,
+            (terminal, _) => crate::sign_in::hint(&sess.command, &String::from_utf8_lossy(&stdout), terminal.then_some(sess.id.as_str())),
+        };
         if !stdout.is_empty() || !stderr.is_empty() {
             result.push_str("\nNew output:\n");
             if !stdout.is_empty() {
@@ -841,6 +893,10 @@ impl ShellTool {
             }
         } else {
             result.push_str("\n(no new output)");
+        }
+        if let Some(hint) = sign_in {
+            result.push_str("\n\n");
+            result.push_str(&hint);
         }
 
         ToolResult::ok(result)
@@ -902,7 +958,7 @@ impl ShellTool {
         if bytes.is_empty() {
             return ToolResult::ok(format!("Resized session {session_id}{resized}"));
         }
-        match self.registry.write_stdin(session_id, &bytes).await {
+        match self.registry.write_stdin(session_id, &bytes, false).await {
             Ok(()) => ToolResult::ok(format!("Wrote {} bytes to session {session_id}{resized}", bytes.len())),
             Err(e) => ToolResult::error(format!("Error writing to session: {}", e)),
         }
@@ -927,6 +983,13 @@ impl Drop for KillOnDrop {
         }
     }
 }
+
+/// How often a foreground terminal command's screen is looked at for a
+/// sign-in waiting on the owner.
+const SIGN_IN_LOOK: std::time::Duration = std::time::Duration::from_millis(250);
+/// How much of its screen's end is read for one: a sign-in is the last
+/// thing a login prints.
+const SIGN_IN_TAIL: usize = 4096;
 
 /// The `payload` kind of a raw command's result: `exit_code` (null when a
 /// signal ended it), `stdout` and `stderr`, or `timed_out`.

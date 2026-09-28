@@ -405,7 +405,14 @@
 		"researchVerified": "출처와 대조해 확인한 주장 {n}건",
 		"historyLoadFailed": "이 대화를 불러오지 못했습니다. 연결을 확인하고 다시 시도하세요.",
 		"consentCreates": "예라고 답하면 정확히 이 업무로 만들어집니다.",
-		"consentAdds": "예라고 답하면 이 업무가 추가됩니다."
+		"consentAdds": "예라고 답하면 이 업무가 추가됩니다.",
+		"signInOpen": "로그인 페이지 열기",
+		"signInTypeCode": "그곳에 이 코드를 입력하세요:",
+		"signInPasteCode": "받은 코드를 붙여 넣으세요",
+		"signInEnterCode": "코드 입력",
+		"signInWaiting": "로그인하시면 이어서 진행할게요.",
+		"signInCodeEntered": "코드 입력됨",
+		"signedIn": "로그인됨"
 	},
 	"chatInput": {
 		"placeholder": "답장...",

@@ -762,6 +762,16 @@ async fn drain_voice_run(
                     let _ = tx.send(spoken_ask(&event));
                 }
             }
+            ai::StreamEventType::AskSettled => {
+                crate::chat_dispatch::answer_ask(
+                    &sinks.hub,
+                    &sinks.registry,
+                    &sinks.ask_channels,
+                    event.error.as_deref().unwrap_or_default(),
+                    event.text,
+                )
+                .await;
+            }
             _ => {}
         }
     }
@@ -808,6 +818,18 @@ fn spoken_ask(event: &ai::StreamEvent) -> String {
     match kind {
         "install_plugin" => format!("I need you to install {name} from the app before I can continue."),
         "connect_account" => format!("I need you to sign in to {name} from the app before I can continue."),
+        // The steps, read out; the code the tool asks back for is pasted into
+        // the card, never said aloud.
+        tools::sign_in::CARD => {
+            let what = field("tool").unwrap_or("that tool");
+            let typed = field("code").map(|c| format!(", type the code {c} there")).unwrap_or_default();
+            let back = if widget.and_then(|w| w.get("input")).and_then(|v| v.as_bool()) == Some(true) {
+                ", then paste the code it gives you into the card"
+            } else {
+                ", and I'll carry on when it's done"
+            };
+            format!("I've put a card to sign in to {what} in our chat. Open its link{typed}{back}.")
+        }
         _ => {
             let options: Vec<&str> = widget
                 .and_then(|w| w.get("options"))
@@ -2826,6 +2848,29 @@ mod voice_prompt_tests {
             serde_json::json!([{ "type": "connect_account", "plugin": "gmail", "label": "Gmail" }]),
         );
         assert_eq!(super::spoken_ask(&e), "I need you to sign in to Gmail from the app before I can continue.");
+    }
+
+    /// A command-line sign-in on a call: the steps are read out, the code to
+    /// type on the page included; the code the tool asks back for comes from
+    /// the card, so it is never asked for aloud.
+    #[test]
+    fn spoken_ask_reads_a_sign_in_card_step_by_step() {
+        let e = ask_event(
+            "Sign in to GitHub CLI",
+            serde_json::json!([{ "type": "sign_in", "tool": "GitHub CLI", "url": "https://github.com/login/device", "code": "1A2B-3C4D", "input": false }]),
+        );
+        assert_eq!(
+            super::spoken_ask(&e),
+            "I've put a card to sign in to GitHub CLI in our chat. Open its link, type the code 1A2B-3C4D there, and I'll carry on when it's done."
+        );
+        let e = ask_event(
+            "Sign in to Google Cloud",
+            serde_json::json!([{ "type": "sign_in", "tool": "Google Cloud", "url": "https://accounts.google.com/o/oauth2/auth", "code": null, "input": true }]),
+        );
+        assert_eq!(
+            super::spoken_ask(&e),
+            "I've put a card to sign in to Google Cloud in our chat. Open its link, then paste the code it gives you into the card."
+        );
     }
 
     /// A run that parks on a question answers the phone at once with the

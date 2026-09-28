@@ -304,6 +304,9 @@ pub struct BackgroundSession {
     pending_stdout: Arc<Mutex<Vec<u8>>>,
     pending_stderr: Arc<Mutex<Vec<u8>>>,
     pending_raw: Arc<Mutex<Vec<u8>>>,
+    /// The owner's codes typed into its terminal (`write_stdin` with
+    /// `secret`), masked in everything read from it after.
+    masks: Arc<std::sync::Mutex<crate::sign_in::Masks>>,
     lifecycle: Arc<std::sync::Mutex<Lifecycle>>,
     stdin_tx: Option<tokio::sync::mpsc::Sender<Vec<u8>>>,
     /// The terminal while the command runs.
@@ -315,14 +318,28 @@ impl BackgroundSession {
         self.output.lock().await.clone()
     }
 
+    /// The end of what it printed: at most `max` bytes, cut where a
+    /// character starts.
+    pub async fn output_tail(&self, max: usize) -> String {
+        let output = self.output.lock().await;
+        let mut from = output.len().saturating_sub(max);
+        while !output.is_char_boundary(from) {
+            from += 1;
+        }
+        output[from..].to_string()
+    }
+
     /// What it printed since the last read: (stdout, stderr). A terminal's
     /// output is all stdout, as plain text, or with `raw` as the program
-    /// wrote it, escape codes and all.
+    /// wrote it, escape codes and all. Once an owner's code was typed into
+    /// it, only the plain text is given, with the code masked: the escape
+    /// codes can carry it in pieces no mask would see.
     pub async fn drain_pending(&self, raw: bool) -> (Vec<u8>, Vec<u8>) {
         let stdout = std::mem::take(&mut *self.pending_stdout.lock().await);
         let stderr = std::mem::take(&mut *self.pending_stderr.lock().await);
         let terminal = std::mem::take(&mut *self.pending_raw.lock().await);
-        if raw && self.terminal { (terminal, stderr) } else { (stdout, stderr) }
+        let masked = !self.masks.lock().unwrap_or_else(|e| e.into_inner()).is_empty();
+        if raw && self.terminal && !masked { (terminal, stderr) } else { (stdout, stderr) }
     }
 
     fn lifecycle(&self) -> std::sync::MutexGuard<'_, Lifecycle> {
@@ -425,6 +442,7 @@ impl ProcessRegistry {
             pending_stdout: Arc::default(),
             pending_stderr: Arc::default(),
             pending_raw: Arc::default(),
+            masks: Arc::default(),
             lifecycle: Arc::new(std::sync::Mutex::new(Lifecycle { foreground, notify, stopped: false, ended: false })),
             stdin_tx,
             pty: None,
@@ -466,6 +484,7 @@ impl ProcessRegistry {
             pending_stdout: Arc::default(),
             pending_stderr: Arc::default(),
             pending_raw: Arc::default(),
+            masks: Arc::default(),
             lifecycle: Arc::new(std::sync::Mutex::new(Lifecycle { foreground, notify, stopped: false, ended: false })),
             stdin_tx: Some(stdin_tx),
             pty: Some(opened.control.clone()),
@@ -491,24 +510,37 @@ impl ProcessRegistry {
         // `terminal::Plain`); the answers go in as typed input does.
         let replies = session.stdin_tx.clone();
         let (output, pending, pending_raw) = (session.output.clone(), session.pending_stdout.clone(), session.pending_raw.clone());
+        let masks = session.masks.clone();
         let mut plain = crate::terminal::Plain::new(&control);
         // Terminal reads block: they get a thread of their own.
         let reader_handle = tokio::task::spawn_blocking(move || {
+            let keep = |text: &str| {
+                output.blocking_lock().push_str(text);
+                pending.blocking_lock().extend_from_slice(text.as_bytes());
+            };
             let mut buf = [0u8; 4096];
             loop {
                 match std::io::Read::read(&mut reader, &mut buf) {
                     Ok(0) | Err(_) => break,
                     Ok(n) => {
                         let (text, answer) = plain.feed(&buf[..n]);
-                        output.blocking_lock().push_str(&text);
-                        pending.blocking_lock().extend_from_slice(text.as_bytes());
-                        pending_raw.blocking_lock().extend_from_slice(&buf[..n]);
+                        let (text, masked) = {
+                            let mut masks = masks.lock().unwrap_or_else(|e| e.into_inner());
+                            (masks.mask(&text), !masks.is_empty())
+                        };
+                        keep(&text);
+                        if !masked {
+                            pending_raw.blocking_lock().extend_from_slice(&buf[..n]);
+                        }
                         if let (false, Some(tx)) = (answer.is_empty(), replies.as_ref()) {
                             let _ = tx.try_send(answer);
                         }
                     }
                 }
             }
+            // What the mask held back to see how it went on: nothing more
+            // is coming.
+            keep(&masks.lock().unwrap_or_else(|e| e.into_inner()).flush());
         });
         let writer = Arc::new(std::sync::Mutex::new(writer));
         let stdin_handle = tokio::spawn(async move {
@@ -647,6 +679,7 @@ impl ProcessRegistry {
                 pending_stdout: sess.pending_stdout.clone(),
                 pending_stderr: sess.pending_stderr.clone(),
                 pending_raw: sess.pending_raw.clone(),
+                masks: sess.masks.clone(),
                 lifecycle: sess.lifecycle.clone(),
                 stdin_tx: None,
                 pty: None,
@@ -722,14 +755,24 @@ impl ProcessRegistry {
         }
     }
 
-    /// Write data to a session's stdin.
-    pub async fn write_stdin(&self, id: &str, data: &[u8]) -> Result<(), String> {
+    /// Write data to a session's stdin. `secret`: it is the owner's code
+    /// (`sign_in::hand_over`), typed into a terminal and masked in everything
+    /// read from the session from now on.
+    pub async fn write_stdin(&self, id: &str, data: &[u8], secret: bool) -> Result<(), String> {
         let running = self.running.lock().await;
         let Some(sess) = running.get(id) else {
             drop(running);
             return Err(self.not_running(id).await);
         };
         let tx = sess.stdin_tx.as_ref().ok_or("session stdin closed")?;
+        if secret {
+            if !sess.terminal {
+                return Err(format!("session {id} has no terminal to type a code into"));
+            }
+            // Masked before it is typed, so its echo is too.
+            let code = String::from_utf8_lossy(data);
+            sess.masks.lock().unwrap_or_else(|e| e.into_inner()).add(code.trim_end_matches(['\r', '\n']));
+        }
         tx.send(data.to_vec())
             .await
             .map_err(|e| format!("write error: {}", e))

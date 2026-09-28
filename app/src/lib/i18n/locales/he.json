@@ -405,7 +405,14 @@
 		"researchVerified": "{n} טענות אומתו מול המקורות",
 		"historyLoadFailed": "לא ניתן לטעון את השיחה הזו. בדוק את החיבור ונסה שוב.",
 		"consentCreates": "אמרו כן והוא ייווצר בדיוק עם התפקיד הזה.",
-		"consentAdds": "אמרו כן וזה יתווסף לתפקיד שלו."
+		"consentAdds": "אמרו כן וזה יתווסף לתפקיד שלו.",
+		"signInOpen": "פתח את דף הכניסה",
+		"signInTypeCode": "הקלד שם את הקוד הזה:",
+		"signInPasteCode": "הדבק את הקוד שתקבל",
+		"signInEnterCode": "הזן קוד",
+		"signInWaiting": "אמשיך ברגע שתתחבר.",
+		"signInCodeEntered": "הקוד הוזן",
+		"signedIn": "מחובר"
 	},
 	"chatInput": {
 		"placeholder": "השב...",

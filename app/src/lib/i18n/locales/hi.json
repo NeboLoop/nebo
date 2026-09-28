@@ -405,7 +405,14 @@
 		"researchVerified": "{n} दावे स्रोतों से सत्यापित हुए",
 		"historyLoadFailed": "यह चैट लोड नहीं हो सकी। अपना कनेक्शन जाँचें और फिर से कोशिश करें।",
 		"consentCreates": "हाँ कहें और यह ठीक इसी काम के साथ बनाया जाएगा।",
-		"consentAdds": "हाँ कहें और यह उनके काम में जुड़ जाएगा।"
+		"consentAdds": "हाँ कहें और यह उनके काम में जुड़ जाएगा।",
+		"signInOpen": "साइन-इन पेज खोलें",
+		"signInTypeCode": "वहाँ यह कोड लिखें:",
+		"signInPasteCode": "वहाँ मिला कोड यहाँ चिपकाएँ",
+		"signInEnterCode": "कोड डालें",
+		"signInWaiting": "आपके साइन इन करते ही मैं आगे बढ़ूँगा।",
+		"signInCodeEntered": "कोड डाला गया",
+		"signedIn": "साइन इन हो गया"
 	},
 	"chatInput": {
 		"placeholder": "जवाब दें...",

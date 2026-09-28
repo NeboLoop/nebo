@@ -11,7 +11,7 @@
 
 	export interface AskWidgetDef {
 		/** 'options' is canonical; legacy single-choice shapes still render. */
-		type: 'options' | 'buttons' | 'confirm' | 'select' | 'radio' | 'checkbox' | 'connect_account' | 'install_plugin' | 'hire_employee';
+		type: 'options' | 'buttons' | 'confirm' | 'select' | 'radio' | 'checkbox' | 'connect_account' | 'install_plugin' | 'hire_employee' | 'sign_in';
 		label?: string;
 		options?: AskOption[];
 		multiSelect?: boolean;
@@ -21,8 +21,14 @@
 		plugin?: string;
 		agentId?: string;
 		/** install_plugin / hire_employee: the marketplace code (PLUG-… or AGNT-…) redeemed via
-		 *  the canonical POST /codes path — the same button, the same resume, a different verb. */
-		code?: string;
+		 *  the canonical POST /codes path — the same button, the same resume, a different verb.
+		 *  sign_in: the code the owner types on the sign-in page, when the tool shows one. */
+		code?: string | null;
+		/** sign_in: what the owner signs in to, the page that signs them in, and whether
+		 *  the tool asks for a code pasted back (see $lib/chat/signIn). */
+		tool?: string;
+		url?: string;
+		input?: boolean;
 		name?: string;
 		description?: string;
 		/** hire_employee: several listings behind one confirm — the owner asked for a
@@ -65,6 +71,9 @@
 	import Check from 'lucide-svelte/icons/check';
 	import UserPlus from 'lucide-svelte/icons/user-plus';
 	import Download from 'lucide-svelte/icons/download';
+	import ExternalLink from 'lucide-svelte/icons/external-link';
+	import Copy from 'lucide-svelte/icons/copy';
+	import { cleanCode, signInStatus } from '$lib/chat/signIn';
 	import { getWebSocketClient } from '$lib/websocket/client';
 	import { authLoginAccount, submitCode } from '$lib/api/nebo';
 
@@ -83,6 +92,27 @@
 	let installDone = $state(false);
 	// The listings on the card (one, or the team) and how many have landed.
 	const hireList = $derived((widgets?.[0]?.hires?.length ? widgets[0].hires : widgets?.[0]?.code ? [widgets[0]] : []) as { code?: string; name?: string; description?: string }[]);
+
+	// sign_in: the code the owner pastes goes straight back to the waiting
+	// terminal; the card keeps only that it was entered.
+	let signInCode = $state('');
+	let codeCopied = $state(false);
+
+	function submitSignInCode() {
+		const code = cleanCode(signInCode);
+		if (!code) return;
+		signInCode = '';
+		submit(code);
+	}
+
+	async function copyDeviceCode(code: string) {
+		try {
+			await navigator.clipboard.writeText(code);
+			codeCopied = true;
+		} catch {
+			codeCopied = false;
+		}
+	}
 	let hiredCodes = $state<Set<string>>(new Set());
 
 	async function startInstall(w: AskWidgetDef) {
@@ -193,7 +223,8 @@
 	}
 
 	function onKeydown(e: KeyboardEvent) {
-		if (e.key === 'Escape' && !answered && !disabled && !cancelled) {
+		// A sign-in is cancelled by its own button only: Escape would stop the login.
+		if (e.key === 'Escape' && widget?.type !== 'sign_in' && !answered && !disabled && !cancelled) {
 			submit(SKIP_VALUE);
 		}
 	}
@@ -205,7 +236,16 @@
 	<div class="text-sm font-medium mb-2 prose prose-sm max-w-none [&_p]:my-1 [&>:first-child]:mt-0 [&>:last-child]:mb-0">{@html promptHtml}</div>
 
 	{#if answered}
-		{#if wasSkipped}
+		{#if widget?.type === 'sign_in'}
+			{@const status = signInStatus(response ?? '')}
+			{#if status.state === 'failed'}
+				<div class="text-xs text-error">{status.reason}</div>
+			{:else if status.state === 'cancelled'}
+				<div class="badge badge-ghost badge-sm">{$t('common.cancelled')}</div>
+			{:else}
+				<div class="badge badge-primary badge-sm">{status.state === 'signedIn' ? $t('chat.signedIn') : $t('chat.signInCodeEntered')}</div>
+			{/if}
+		{:else if wasSkipped}
 			<div class="badge badge-ghost badge-sm">{$t('common.skipped')}</div>
 		{:else if failedReason != null}
 			<div class="text-xs text-error">{failedReason}</div>
@@ -259,6 +299,43 @@
 		</div>
 		<div class="mt-2 flex">
 			<button type="button" class="text-xs text-base-content/40 hover:text-base-content/70 cursor-pointer bg-transparent border-none px-0 ml-auto" onclick={() => submit(SKIP_VALUE)}>{$t('common.skip')}</button>
+		</div>
+	{:else if widget?.type === 'sign_in'}
+		<div class="flex flex-col gap-2 rounded-lg border border-base-300 bg-base-100 px-3 py-2.5">
+			<a class="btn btn-sm btn-primary self-start" href={widget.url} target="_blank" rel="noopener noreferrer">
+				<ExternalLink class="w-4 h-4" />
+				{$t('chat.signInOpen')}
+			</a>
+			{#if widget.code}
+				{@const deviceCode = widget.code}
+				<div class="flex items-center gap-2 text-sm">
+					<span class="text-base-content/70">{$t('chat.signInTypeCode')}</span>
+					<code class="font-mono font-semibold tracking-wider">{deviceCode}</code>
+					<button type="button" class="btn btn-ghost btn-xs" aria-label={$t('common.copy')} onclick={() => copyDeviceCode(deviceCode)}>
+						{#if codeCopied}<Check class="w-3.5 h-3.5 text-success" />{:else}<Copy class="w-3.5 h-3.5" />{/if}
+					</button>
+				</div>
+			{/if}
+			{#if widget.input}
+				<div class="flex gap-2 items-center">
+					<input
+						type="text"
+						class="input input-bordered input-sm flex-1 font-mono"
+						placeholder={$t('chat.signInPasteCode')}
+						autocomplete="off"
+						autocapitalize="off"
+						spellcheck="false"
+						bind:value={signInCode}
+						onkeydown={(e) => e.key === 'Enter' && submitSignInCode()}
+					/>
+					<button type="button" class="btn btn-sm btn-primary" disabled={!cleanCode(signInCode)} onclick={submitSignInCode}>{$t('chat.signInEnterCode')}</button>
+				</div>
+			{:else}
+				<div class="text-xs text-base-content/60">{$t('chat.signInWaiting')}</div>
+			{/if}
+		</div>
+		<div class="mt-2 flex">
+			<button type="button" class="text-xs text-base-content/40 hover:text-base-content/70 cursor-pointer bg-transparent border-none px-0 ml-auto" onclick={() => submit(SKIP_VALUE)}>{$t('common.cancel')}</button>
 		</div>
 	{:else if widget?.type === 'connect_account'}
 		<div class="flex items-center gap-3 rounded-lg border border-base-300 bg-base-100 px-3 py-2.5">

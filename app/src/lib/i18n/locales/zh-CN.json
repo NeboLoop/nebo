@@ -405,7 +405,14 @@
 		"researchVerified": "已对照来源核实 {n} 条论点",
 		"historyLoadFailed": "无法加载这段对话。请检查网络连接后重试。",
 		"consentCreates": "回答“是”，就会按这份工作内容创建。",
-		"consentAdds": "回答“是”，就会把这项加入工作内容。"
+		"consentAdds": "回答“是”，就会把这项加入工作内容。",
+		"signInOpen": "打开登录页面",
+		"signInTypeCode": "在那里输入此代码：",
+		"signInPasteCode": "粘贴页面给你的代码",
+		"signInEnterCode": "输入代码",
+		"signInWaiting": "你登录后我会继续。",
+		"signInCodeEntered": "代码已输入",
+		"signedIn": "已登录"
 	},
 	"chatInput": {
 		"placeholder": "回复...",

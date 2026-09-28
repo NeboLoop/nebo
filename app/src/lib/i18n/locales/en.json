@@ -414,7 +414,14 @@
 		"researchVerified": "{n} claims verified against sources",
 		"historyLoadFailed": "Couldn't load this conversation. Check your connection and try again.",
 		"consentCreates": "Say yes and they're created with exactly this job.",
-		"consentAdds": "Say yes and this is added to their job."
+		"consentAdds": "Say yes and this is added to their job.",
+		"signInOpen": "Open the sign-in page",
+		"signInTypeCode": "Type this code there:",
+		"signInPasteCode": "Paste the code it gives you",
+		"signInEnterCode": "Enter code",
+		"signInWaiting": "I'll carry on once you've signed in.",
+		"signInCodeEntered": "Code entered",
+		"signedIn": "Signed in"
 	},
 	"chatInput": {
 		"placeholder": "Reply...",
