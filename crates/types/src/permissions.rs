@@ -569,8 +569,8 @@ impl Grant {
 pub enum Writer {
     /// The owner: the Permissions page, an ask answer, consent.
     Owner,
-    /// Nebo's one-time conversion of the old settings, and the safe
-    /// defaults Nebo writes itself (a newly connected server's tools ask).
+    /// Nebo's one-time conversion of the old settings, and the tidying Nebo
+    /// does itself (a tool its server stopped offering loses its setting).
     Migration,
     /// A package or pack: its laws and its must-ask operations, locked.
     Package { package: String },

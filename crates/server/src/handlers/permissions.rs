@@ -725,8 +725,11 @@ fn page(
     };
 
     // What applies with no setting at all: Full Access runs it without
-    // asking; any other mode asks for work outside the job.
+    // asking; any other mode asks for work outside the job. A connected
+    // server's tool is no capability, so outside Ask and Plan mode it runs
+    // as everyday work (the surfaced cases still ask).
     let standing = if mode == Mode::FullAccess { Effect::Allow } else { Effect::Ask };
+    let tool_standing = if matches!(mode, Mode::Ask | Mode::Plan) { Effect::Ask } else { Effect::Allow };
 
     // What employees can do: the built-in capabilities.
     for cap in builtin_capabilities() {
@@ -808,7 +811,7 @@ fn page(
             .iter()
             .map(|key| {
                 let tool = key.strip_prefix(&family).unwrap_or(key);
-                scopes.switch(sentence_case(&words(tool)), &[RuleKey::Tool(key.clone()), default_key.clone()], Effect::Allow)
+                scopes.switch(sentence_case(&words(tool)), &[RuleKey::Tool(key.clone()), default_key.clone()], tool_standing)
             })
             .collect();
         rows.sort_by(|a, b| a.sentence.cmp(&b.sentence));
@@ -816,7 +819,7 @@ fn page(
             id: format!("group:mcp:{slug}"),
             title: name.clone(),
             subtitle: String::new(),
-            default: scopes.switch(key_phrase(&format!("{family}*")), &[default_key], Effect::Allow),
+            default: scopes.switch(key_phrase(&format!("{family}*")), &[default_key], tool_standing),
             rows,
         });
     }
@@ -1627,9 +1630,17 @@ mod tests {
     #[test]
     fn a_switch_with_no_setting_shows_the_mode_and_off_wins() {
         let (_d, store) = store();
+        // A newly connected server has no setting: its tools follow the mode.
+        mcp_server(&store, "Acme CRM", &["lookup"]);
+        let lookup = "tool:mcp__acme_crm__lookup";
+        assert_eq!(shows(&page(&store, None, &none()).unwrap(), lookup), ("allow", Some("default")));
+        store.set_permission_mode(&Scope::Company, Mode::Ask).unwrap();
+        assert_eq!(shows(&page(&store, None, &none()).unwrap(), lookup), ("ask", Some("default")), "Ask mode asks");
+        store.set_permission_mode(&Scope::Company, Mode::Automatic).unwrap();
         assert_eq!(shows(&page(&store, None, &none()).unwrap(), "capability:web"), ("ask", Some("default")));
         store.set_permission_mode(&Scope::Company, Mode::FullAccess).unwrap();
         assert_eq!(shows(&page(&store, None, &none()).unwrap(), "capability:web"), ("allow", Some("default")), "Full Access never asks");
+        assert_eq!(shows(&page(&store, None, &none()).unwrap(), lookup), ("allow", Some("default")));
         assert_eq!(shows(&page(&store, Some("a"), &none()).unwrap(), "capability:web"), ("allow", Some("company")));
         store.set_permission_mode(&emp(), Mode::Ask).unwrap();
         assert_eq!(shows(&page(&store, Some("a"), &none()).unwrap(), "capability:web"), ("ask", Some("company")), "its own mode asks");
@@ -1652,7 +1663,7 @@ mod tests {
     fn an_mcp_servers_tools_follow_its_default_until_set() {
         let (_d, store) = store();
         mcp_server(&store, "Acme CRM", &["lookup", "delete_all"]);
-        // What the server's first connect writes: its tools ask first.
+        // The owner set the server to ask first.
         let all = put(&store, Scope::Company, RuleKey::Tool("mcp__acme_crm__*".into()), None, Effect::Ask, RuleSource::Owner);
         let p = page(&store, None, &none()).unwrap();
         let g = p.groups.iter().find(|g| g.id == "group:mcp:acme_crm").unwrap();
