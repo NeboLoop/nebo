@@ -32,3 +32,5 @@ fixtures:
   - ../fixtures/turn/no-steering-in-stored-thread.yaml
   # Tool surface
   - ../fixtures/turn/deferred-tool-loaded-and-used.yaml
+  # What the employee is told about itself
+  - ../fixtures/turn/knows-its-own-email-address.yaml

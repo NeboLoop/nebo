@@ -488,16 +488,27 @@ fn fields_json(fields: &[(String, String)]) -> serde_json::Value {
 
 /// The whole environment: the date, then each field.
 fn environment_row(f: &SessionFacts) -> Option<Attachment> {
-    let date = f.date.format("%A, %B %-d, %Y");
-    let date = match &f.timezone {
+    let mut data = serde_json::Map::from_iter([("fields".to_string(), fields_json(&f.environment))]);
+    data.insert("date".into(), serde_json::json!(f.date.to_string()));
+    Some(Attachment {
+        kind: "environment",
+        text: environment_text(f.date, f.timezone.as_deref(), &f.environment),
+        data,
+    })
+}
+
+/// The environment's words: the date in the owner's timezone, then each
+/// field. A text turn's `environment` row and a voice call's instructions
+/// (`Harness::call_facts`) both say it this way.
+pub fn environment_text(date: chrono::NaiveDate, timezone: Option<&str>, fields: &[(String, String)]) -> String {
+    let date = date.format("%A, %B %-d, %Y");
+    let date = match timezone {
         Some(tz) => format!("{date} ({tz})"),
         None => date.to_string(),
     };
     let mut lines = vec!["# Environment".to_string(), format!("- Date: {date}")];
-    lines.extend(f.environment.iter().map(|(k, v)| format!("- {k}: {v}")));
-    let mut data = serde_json::Map::from_iter([("fields".to_string(), fields_json(&f.environment))]);
-    data.insert("date".into(), serde_json::json!(f.date.to_string()));
-    Some(Attachment { kind: "environment", text: lines.join("\n"), data })
+    lines.extend(fields.iter().map(|(k, v)| format!("- {k}: {v}")));
+    lines.join("\n")
 }
 
 fn mode_row(m: &ModeFacts) -> Option<Attachment> {

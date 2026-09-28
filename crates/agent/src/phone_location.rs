@@ -102,12 +102,8 @@ impl PhoneLocations {
         if !valid {
             return Err("Invalid or expired location reading");
         }
-        // The phone names the primary employee by its role; its runs carry
-        // no employee id.
         for id in &mut reading.agent_ids {
-            if id == "assistant" || id == "main" {
-                id.clear();
-            }
+            *id = recipient(id).to_string();
         }
         entries.insert(key, (reading, taken_at + READING_LIFETIME_SECS));
         Ok(())
@@ -116,6 +112,7 @@ impl PhoneLocations {
     /// What `agent_id`'s turn is told at `now`: each good reading shared
     /// with it, or `None` when nothing is.
     pub fn reading_for(&self, agent_id: &str, now: i64) -> Option<SharedPosition> {
+        let agent_id = recipient(agent_id);
         let mut entries = self.entries.lock().unwrap_or_else(|p| p.into_inner());
         entries.retain(|_, (_, expires)| *expires > now);
         let mut shared: Vec<(&(String, String), &PhoneReading)> = entries
@@ -144,6 +141,14 @@ impl PhoneLocations {
             taken: taken.join(","),
         })
     }
+}
+
+/// The employee a reading is shared with, as a turn names it. The phone
+/// names the primary employee by its role and a voice call by its row id
+/// (`assistant`); a text run of the primary carries no employee id. All
+/// three are the one employee.
+fn recipient(agent_id: &str) -> &str {
+    if agent_id == "assistant" || agent_id == "main" { "" } else { agent_id }
 }
 
 /// The readings a turn may be told, and which readings they are.
