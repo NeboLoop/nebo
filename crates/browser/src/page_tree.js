@@ -5,7 +5,12 @@
 // `depth`, `maxChars` and `refId`, refs that stay stable across reads, and
 // the same ref resolution (live element first, then role + name + href +
 // type). The model reads one format and clicks one kind of ref whichever
-// browser serves it. Defining is idempotent: a page keeps its map across
+// browser serves it. One difference, and the extension should take it too:
+// what the page does not render (display: none, visibility: hidden) is left
+// out of every read. The extension keeps it in an unfiltered read, so a
+// hidden result reads as if the page showed it (v0.16.0 proof: the text a
+// click reveals was in the tree before the click, next to a spent
+// "Loading..."). Defining is idempotent: a page keeps its map across
 // reads, and a navigation starts a fresh one. The file is ONE expression,
 // evaluated as `(<this file>, <call>)`: Obscura returns the value of a single
 // expression only, never a script's completion value.
@@ -118,6 +123,13 @@
     return '';
   }
 
+  // The computed style says what the page renders; Obscura computes only
+  // part of it, so the element's own inline style (how scripts show and
+  // hide things) is read too.
+  function unrendered(el, prop, value) {
+    return window.getComputedStyle(el)[prop] === value || el.style[prop] === value;
+  }
+
   function isVisible(el) {
     if (!(el instanceof HTMLElement)) return true;
     const style = window.getComputedStyle(el);
@@ -147,6 +159,7 @@
   function shouldInclude(el, opts) {
     const tag = el.tagName.toLowerCase();
     if (SKIP_TAGS.includes(tag)) return false;
+    if (el instanceof HTMLElement && unrendered(el, 'visibility', 'hidden')) return false;
     if (opts.filter !== 'all' && el.getAttribute('aria-hidden') === 'true') return false;
     if (opts.filter !== 'all' && !isVisible(el)) return false;
     if (opts.filter !== 'all' && !opts.refId) {
@@ -167,6 +180,8 @@
     if (!el || !el.tagName) return;
     const tag = el.tagName.toLowerCase();
     if (SKIP_TAGS.includes(tag)) return;
+    // Nothing under display: none is on the page.
+    if (el instanceof HTMLElement && unrendered(el, 'display', 'none')) return;
     const included = shouldInclude(el, opts) || (opts.refId !== null && depth === 0);
     if (included) {
       const role = getRole(el);

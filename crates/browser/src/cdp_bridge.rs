@@ -991,8 +991,12 @@ mod tests {
             return;
         };
         let sid = "refs";
-        let html = "data:text/html,<body><h1>Demo</h1><div id='out'></div>\
-                    <button onclick=\"setTimeout(()=>{document.getElementById('out').innerHTML='<h4>Loaded text</h4>'},800)\">Start</button>\
+        let html = "data:text/html,<body><h1>Demo</h1>\
+                    <div id='out' style='display:none'><h4>Loaded text</h4></div>\
+                    <div id='wait' style='visibility:hidden'><h4>Loading now</h4></div>\
+                    <button onclick=\"document.getElementById('wait').style.visibility='visible';\
+                    setTimeout(()=>{document.getElementById('wait').style.visibility='hidden';\
+                    document.getElementById('out').style.display='block'},800)\">Start</button>\
                     <input placeholder='Your name'></body>";
         bridge.execute("navigate", &json!({ "url": html }), sid).await.expect("navigate");
 
@@ -1005,6 +1009,10 @@ mod tests {
             .unwrap_or_else(|| panic!("no Start button with a ref: {tree}"))
             .to_string();
         assert!(tree.contains("textbox \"Your name\" [ref_"), "{tree}");
+        // What the page does not show is not read, before the click or after.
+        let before = bridge.execute("read_page", &json!({}), sid).await.expect("read before");
+        let before = before["pageContent"].as_str().unwrap_or_default().to_string();
+        assert!(before.contains("heading \"Demo\"") && !before.contains("Loaded text") && !before.contains("Loading now"), "{before}");
 
         let found = bridge.execute("find", &json!({ "query": "start" }), sid).await.expect("find");
         assert!(found["text"].as_str().unwrap_or_default().contains(&format!("[{start}]")), "{found}");
@@ -1015,6 +1023,7 @@ mod tests {
         assert_eq!(waited["text"], json!("Waited for 1.5 seconds"));
         let after = bridge.execute("read_page", &json!({}), sid).await.expect("read after");
         assert!(after["pageContent"].as_str().unwrap_or_default().contains("heading \"Loaded text\""), "{after}");
+        assert!(!after["pageContent"].as_str().unwrap_or_default().contains("Loading now"), "{after}");
         // The same element keeps its ref across reads.
         assert!(after["pageContent"].as_str().unwrap_or_default().contains(&format!("button \"Start\" [{start}]")), "{after}");
 
