@@ -100,11 +100,27 @@ impl BotMailProvider {
             return SendOutcome::PreSendFailure("This Nebo is no longer paired; the hosted address cannot send.".into());
         };
         let api = comm::api::NeboAIApi::new(self.api_url.clone(), bot_id, token);
+        let result = api.send_bot_email(&req).await;
+        self.outcome(&req, result)
+    }
+
+    /// The address a request goes out from: an employee's own `+tag` form
+    /// of the bot's address, or the bot's address for the primary.
+    fn from_address(&self, req: &comm::api_types::BotEmailSend) -> String {
+        comm::handle::employee_email_address(&self.address, &req.employee_name).unwrap_or_else(|| self.address.clone())
+    }
+
+    /// What the employee is told about a send. The From it names is the one
+    /// the hub reports it sent from (an employee's `+tag` address, not the
+    /// bot's), so the employee never tells anyone a wrong address to answer.
+    fn outcome(&self, req: &comm::api_types::BotEmailSend, result: Result<Value, comm::CommError>) -> SendOutcome {
+        let from = self.from_address(req);
         let to = if req.to_owner { "the owner".to_string() } else { req.to.clone() };
-        match api.send_bot_email(&req).await {
+        match result {
             Ok(v) => {
                 let reference = v["messageId"].as_str().map(str::to_string);
-                SendOutcome::Sent(format!("Sent from {} to {to}.", self.address), reference)
+                let sent_from = v["sentFrom"].as_str().filter(|s| !s.is_empty()).unwrap_or(&from);
+                SendOutcome::Sent(format!("Sent from {sent_from} to {to}."), reference)
             }
             Err(e @ comm::CommError::Paused) => SendOutcome::PreSendFailure(e.to_string()),
             Err(comm::CommError::Http { status, body }) if (400..500).contains(&status) => {
@@ -112,10 +128,10 @@ impl BotMailProvider {
                     .ok()
                     .and_then(|v| v["error"].as_str().map(str::to_string))
                     .unwrap_or(body);
-                SendOutcome::ConfirmedFailure(format!("Not sent from {}: {why}", self.address))
+                SendOutcome::ConfirmedFailure(format!("Not sent from {from}: {why}"))
             }
             // A server error or no answer: the mail may already be on its way.
-            Err(e) => SendOutcome::Unknown(format!("sending from {}: {e}", self.address)),
+            Err(e) => SendOutcome::Unknown(format!("sending from {from}: {e}")),
         }
     }
 }
@@ -126,7 +142,7 @@ impl OperationProvider for BotMailProvider {
     }
 
     fn service(&self) -> String {
-        format!("your own address {}", self.address)
+        format!("this bot's own address {}", self.address)
     }
 
     fn operations(&self) -> Vec<ProvidedOperation> {
@@ -144,8 +160,9 @@ impl OperationProvider for BotMailProvider {
             properties,
             required: vec!["subject".into(), "text".into()],
             note: format!(
-                "{PROVIDER} sends from {}, signed by you; replies come back to you. Mail to the owner is never limited; \
-                 mail to anyone else counts against the bot's daily limit.",
+                "{PROVIDER} sends from your own address, the Email your environment names ({} for the primary \
+                 employee, its +tag form for any other), signed by you; replies come back to you. Mail to the owner \
+                 is never limited; mail to anyone else counts against the bot's daily limit.",
                 self.address
             ),
             ..Default::default()
@@ -218,6 +235,40 @@ mod tests {
         assert_eq!(req.employee_name, "Front Desk");
         assert_eq!(req.agent_id, "recep-1");
         assert_eq!(req.to, "pat@example.com");
+    }
+
+    /// The employee is told the address its mail really went out from: its
+    /// own `+tag` address, as the hub reports it, never the bot's. (Live
+    /// 2026-09-28: Front Desk's mail left from `…+front-desk@nebo.bot` and it
+    /// was told "Sent from …@nebo.bot", the address that reaches the primary.)
+    #[test]
+    fn a_send_names_the_address_it_really_went_from() {
+        let p = provider();
+        p.store
+            .create_agent("recep-1", None, "Front Desk", "", "", "---\nname: Front Desk\n---\n", None, None)
+            .unwrap();
+        let ctx = ToolContext::new(crate::Origin::User).with_session("agent:recep-1:web", "");
+        let req = p.request(&ctx, &json!({"to": "pat@example.com", "subject": "Hi", "text": "Hello"})).unwrap();
+        let said = |o: SendOutcome| match o {
+            SendOutcome::Sent(m, _) | SendOutcome::ConfirmedFailure(m) | SendOutcome::PreSendFailure(m) | SendOutcome::Unknown(m) => m,
+        };
+
+        let hub = json!({"ok": true, "messageId": "m-1@nebo.bot", "sentFrom": "nanna-7kq+front-desk@nebo.bot"});
+        assert_eq!(said(p.outcome(&req, Ok(hub))), "Sent from nanna-7kq+front-desk@nebo.bot to pat@example.com.");
+        assert_eq!(
+            said(p.outcome(&req, Ok(json!({"ok": true})))),
+            "Sent from nanna-7kq+front-desk@nebo.bot to pat@example.com.",
+            "a hub that names no sender: the employee's own address"
+        );
+        let off = comm::CommError::Http { status: 403, body: r#"{"error":"email sending is turned off for this bot"}"#.into() };
+        assert_eq!(
+            said(p.outcome(&req, Err(off))),
+            "Not sent from nanna-7kq+front-desk@nebo.bot: email sending is turned off for this bot"
+        );
+
+        let primary = ToolContext::new(crate::Origin::User).with_session("agent:assistant:web", "");
+        let req = p.request(&primary, &json!({"toOwner": true, "subject": "Done", "text": "Ready."})).unwrap();
+        assert_eq!(said(p.outcome(&req, Ok(json!({"ok": true})))), "Sent from nanna-7kq@nebo.bot to the owner.");
     }
 
     /// A send with nobody to send to, or nothing to say, is refused before
