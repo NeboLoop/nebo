@@ -6,7 +6,10 @@
 //! memories it finds. There is no pre-gate. It is skipped when the employee already saved memory itself
 //! during those messages. One pass runs per session at a time; a turn that
 //! ends meanwhile becomes the trailing pass, which starts where the running
-//! one stopped.
+//! one stopped. A pass covers its own turn and never a message after it: a
+//! pass that starts late, while the owner's next message is already being
+//! answered, would otherwise cover half of the next turn and leave its
+//! other half to a pass with too little to read.
 
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
@@ -197,6 +200,9 @@ pub(crate) struct MemoryExtraction<'a> {
 struct ExtractionJob {
     sessions: SessionManager,
     session_id: String,
+    /// The last message of the turn this pass is for, as the turn ended:
+    /// where the pass stops. `None` when the conversation held nothing.
+    through: Option<String>,
     providers: Arc<RwLock<Vec<Arc<dyn Provider>>>>,
     store: Arc<Store>,
     concurrency: Arc<ConcurrencyController>,
@@ -248,9 +254,11 @@ impl MemoryExtraction<'_> {
         if self.skip_memory || self.providers.read().await.is_empty() {
             return;
         }
+        let through = self.sessions.get_messages(session_id).ok().and_then(|all| all.last().map(|m| m.id.clone()));
         let job = ExtractionJob {
             sessions: self.sessions.clone(),
             session_id: session_id.to_string(),
+            through,
             providers: self.providers.clone(),
             store: self.store.clone(),
             concurrency: self.concurrency.clone(),
@@ -298,11 +306,16 @@ async fn run_extractions(mut job: ExtractionJob) {
     }
 }
 
-/// One pass over the messages after `cursor`. Returns the new cursor: the
-/// last message the pass covered, or None when the pass failed and those
-/// messages wait for the next one.
+/// One pass over the messages after `cursor`, through the end of the
+/// job's turn. Returns the new cursor: the last message the pass covered,
+/// or None when the pass failed and those messages wait for the next one.
 async fn extract_once(job: &ExtractionJob, cursor: Option<&str>) -> Option<String> {
-    let all = job.sessions.get_messages(&job.session_id).unwrap_or_default();
+    let mut all = job.sessions.get_messages(&job.session_id).unwrap_or_default();
+    // A conversation that no longer holds the turn's end (a checkpoint, a
+    // new chat) is read whole.
+    if let Some(end) = job.through.as_deref().and_then(|t| all.iter().position(|m| m.id == t)) {
+        all.truncate(end + 1);
+    }
     let last = all.last()?.id.clone();
     let messages = messages_since(&all, cursor);
     if messages.len() < 2 {
@@ -592,6 +605,13 @@ mod tests {
 
         /// End a turn: hand it to the service and wait for its passes.
         async fn end_turn(&self, goal: Option<&str>) {
+            self.hand_off(goal).await;
+            self.passes_done().await;
+        }
+
+        /// Hand the ended turn to the service. On the test's one thread its
+        /// pass starts only once the test waits.
+        async fn hand_off(&self, goal: Option<&str>) {
             let taint = std::sync::Mutex::new(BTreeSet::new());
             MemoryExtraction {
                 sessions: &self.sessions,
@@ -612,6 +632,9 @@ mod tests {
             }
             .schedule()
             .await;
+        }
+
+        async fn passes_done(&self) {
             for _ in 0..400 {
                 if !extractions().get(&self.session_id).is_some_and(|s| s.running) {
                     return;
@@ -676,6 +699,37 @@ mod tests {
         assert_eq!(prompts.len(), 1);
         assert!(prompts[0].contains("email reminders"));
         assert!(!prompts[0].contains("Remember that invoices"), "the written range is behind the cursor");
+    }
+
+    /// A pass that starts after the owner's next message landed covers its
+    /// own turn only: the next turn, half-written when that pass read the
+    /// conversation, is left whole to its own pass. Before, the late pass
+    /// covered the next owner message alone and its pass got only the
+    /// reply: the facts in it were never extracted (the confidential memory
+    /// proof lost "the Harlow mediation" this way in about half its runs).
+    #[tokio::test]
+    async fn a_late_pass_leaves_the_next_turn_to_its_own_pass() {
+        let f = Fixture::new().await;
+        f.say("user", "Remember that invoices go out on the 1st.", None);
+        let store_call = serde_json::json!([{
+            "id": "call-1",
+            "name": "remember",
+            "input": {"key": "invoice/day", "value": "Invoices go out on the 1st"}
+        }]);
+        f.say("assistant", "", Some(store_call));
+        f.say("assistant", "Saved.", None);
+        f.hand_off(None).await;
+        // The owner's next message lands before that pass reads anything.
+        f.say("user", "Also, the mediation is set for the 9th.", None);
+        f.passes_done().await;
+        assert!(f.prompts().is_empty(), "the first turn wrote memory itself");
+
+        f.say("assistant", "Noted.", None);
+        f.end_turn(None).await;
+        let prompts = f.prompts();
+        assert_eq!(prompts.len(), 1, "the second turn gets its own extraction");
+        assert!(prompts[0].contains("mediation is set for the 9th") && prompts[0].contains("Noted."), "{}", prompts[0]);
+        assert!(!prompts[0].contains("invoices go out"), "the first turn is behind the cursor");
     }
 
     /// Extraction reads the messages and the agreed goal; attachment rows

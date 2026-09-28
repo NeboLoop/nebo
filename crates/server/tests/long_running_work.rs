@@ -46,6 +46,22 @@ async fn say(server: &TestServer, agent_id: &str, prompt: &str) {
     ws.send(Message::Text(msg.to_string().into())).await.unwrap();
 }
 
+/// Wait until no turn runs in the employee's app conversation: the owner
+/// speaks again after the reply. A message typed into a running turn is
+/// answered in that turn with its tools off when no decision on it can be
+/// had, as on this server (`owner_intent`: it fails toward stopping), so it
+/// would never start the work it asks for. On a slow computer the previous
+/// turn, or the turn that tells the conversation a workflow's outcome, is
+/// still running when the next line is said.
+async fn replied(server: &TestServer, agent_id: &str) {
+    let key = format!("agent:{agent_id}:web");
+    eventually(60, "the turn to end", async || {
+        let active: Value = server.get("/runs/active").await.json().await.ok()?;
+        (!active["runs"].as_array()?.iter().any(|r| r["sessionKey"] == key.as_str())).then_some(())
+    })
+    .await;
+}
+
 /// The employee's workflows, as the app lists them.
 async fn workflows(server: &TestServer, agent_id: &str) -> Value {
     server.get(&format!("/agents/{agent_id}/workflows")).await.json::<Value>().await.unwrap()["workflows"].clone()
@@ -126,6 +142,7 @@ async fn a_temporary_workflow_reports_disappears_and_is_saved_to_run_every_monda
 
     // "Give me a report each week on Monday at 8:00 am": the same work,
     // saved and scheduled through the one create path.
+    replied(&server, &planner).await;
     say(&server, &planner, "MARK-WEEKLY give me a report each week on monday at 8:00 am").await;
     let weekly = eventually(60, "the weekly workflow", async || workflows(&server, &planner).await.get("weekly-budget").cloned()).await;
     assert_eq!(weekly["temporary"], false, "saved, not temporary: {weekly}");
@@ -181,6 +198,7 @@ async fn a_one_time_watch_fires_once_reports_and_disappears() {
     assert!(store.list_workflow_runs(&format!("agent:{planner}"), 10, 0).unwrap().is_empty(), "nothing runs until the event");
 
     // The order ships: the watch fires once, reports, and is gone.
+    replied(&server, &planner).await;
     say(&server, &planner, "MARK-SHIP the order went out").await;
     eventually(90, "the watch to report and leave the list", async || {
         workflows(&server, &planner).await.get("rivera-shipped").is_none().then_some(())
@@ -193,6 +211,8 @@ async fn a_one_time_watch_fires_once_reports_and_disappears() {
     assert!(inbox.body.unwrap_or_default().contains("SHIP-RESULT"));
 
     // Another shipment: the watch is gone, nothing fires.
+    eventually(60, "the conversation to hear the outcome", async || heard(&calls, "Temporary work you started has ended").then_some(())).await;
+    replied(&server, &planner).await;
     say(&server, &planner, "MARK-SHIP another order went out").await;
     eventually(30, "the second event to be emitted", async || {
         (calls.lock().unwrap().iter().filter(|(p, b)| main_call(p) && b.to_string().contains("Event emitted")).count() >= 2).then_some(())

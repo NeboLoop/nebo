@@ -3,6 +3,7 @@
   import { storage } from '$lib/storage';
   import { onMount } from 'svelte';
   import { t } from 'svelte-i18n';
+  import BrandMark from '$lib/components/BrandMark.svelte';
   import { completeOnboarding } from '$lib/stores/onboarding';
   import { logger } from '$lib/monitoring';
   import * as api from '$lib/api/nebo';
@@ -352,7 +353,7 @@
 {#if step === 0}
   <!-- Welcome + T&C -->
   <div class="text-center">
-    <div class="w-14 h-14 rounded-2xl bg-primary text-primary-content flex items-center justify-center font-mono text-xl font-bold mx-auto mb-5">N</div>
+    <BrandMark class="w-14 h-14 mx-auto mb-5" />
     <h2 class="text-2xl font-bold mb-2">{$t('onboarding.welcome.title')}</h2>
     <p class="text-xs text-base-content/50 mb-6 max-w-sm mx-auto">{$t('onboardingPage.welcomeDescription')}</p>
 
