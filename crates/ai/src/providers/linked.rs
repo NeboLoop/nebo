@@ -11,13 +11,14 @@
 //!
 //! The target rides in the model id, `linked/<linkedBotId>/<agentId>`, on the
 //! employee's `model_preference`; one provider serves every linked employee.
-//! Another computer's linked bot is reached through a relay ([`Relay`]):
-//! NeboAI, at `{NEBOAI_API_URL}/t/{linkedBotId}/oal` with the Nebo bot's own
-//! token, end-to-end encrypted with the keys Nebo paired with the bot
-//! ([`super::oal`]; the first time, Nebo pairs by itself). An agent on this
-//! computer is hosted by Nebo itself ([`super::local_host::LocalHost`]),
-//! under this bot's own id, and reached the same way in memory, with no hub
-//! between: one client for both.
+//! A linked bot is reached directly when it can be (this OS user's
+//! nebo-link daemon on this computer, or a host on the LAN), else through a
+//! relay ([`Relay`]): NeboAI, at `{NEBOAI_API_URL}/t/{linkedBotId}/oal` with
+//! the Nebo bot's own token; every way end-to-end encrypted with the keys
+//! Nebo paired with the bot ([`super::oal`]; the first time, Nebo pairs by
+//! itself). An agent on this computer that Nebo hosts itself
+//! ([`super::local_host::LocalHost`]), under this bot's own id, is reached
+//! the same way in memory, with no hub between: one client for both.
 //!
 //! The agent keeps the transcript. One Nebo chat is one agent session: the
 //! first turn on a thread creates the session and records its id and agent
@@ -48,7 +49,6 @@ use link_core::model::{DeviceRef, PermissionOption, StopReason, TurnState, TurnU
 use link_core::turn::{self, Permission, ToolEvent, Tools, mode_for};
 use nebo_runtimes::acp::protocol::{self, ToolCall as AcpToolCall};
 use oal_host::OalHost;
-use oal_secure::KeyStore;
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -149,16 +149,12 @@ impl LinkedProvider {
     /// pairs by itself; through a self-hosted relay it needs this once.
     pub async fn pair(&self, bot_id: &str, code: &str) -> Result<(), String> {
         let refused = || "That code didn't work. Get a new one on the computer.".to_owned();
-        let keys = self.keys().ok_or_else(refused)?;
+        let local = self.local.as_ref().ok_or_else(refused)?;
         let code = oal_secure::PairingCode::parse(code).map_err(|_| refused())?;
-        oal::pair(&self.relay, &keys, bot_id, &code, &self.device_name)
+        oal::pair(&self.relay, local.direct(), local.keys(), bot_id, &code, &self.device_name)
             .await
             .map(drop)
             .map_err(|_| refused())
-    }
-
-    fn keys(&self) -> Option<KeyStore> {
-        self.local.as_ref().map(|l| l.keys().clone())
     }
 
     /// Where `bot_id` is reached: this computer's own host when it is this
@@ -173,8 +169,8 @@ impl LinkedProvider {
                 }
             };
         }
-        match self.keys() {
-            Some(keys) => Ok(Route::Remote(keys)),
+        match &self.local {
+            Some(local) => Ok(Route::Remote(local.clone())),
             None => {
                 warn!(bot_id, "linked: Nebo has no key store, so it can't reach another computer");
                 Err(format!("Could not connect to {name}. Try again."))
@@ -186,7 +182,7 @@ impl LinkedProvider {
     async fn open(&self, route: &Route, bot_id: &str) -> Result<Conn, Unreached> {
         match route {
             Route::Local(oal) => Ok(Conn::local(oal, this_device())),
-            Route::Remote(keys) => oal::connect(&self.relay, keys, bot_id, &self.device_name).await,
+            Route::Remote(local) => oal::connect(&self.relay, local.direct(), local.keys(), bot_id, &self.device_name).await,
         }
     }
 
@@ -286,8 +282,10 @@ impl Provider for LinkedProvider {
 enum Route {
     /// This computer's own host, in this process.
     Local(Arc<OalHost>),
-    /// Another computer's linked bot, through the relay, with Nebo's keys.
-    Remote(KeyStore),
+    /// A linked bot's host (another computer's, or this OS user's nebo-link
+    /// daemon's), directly when it can be, else through the relay, with
+    /// Nebo's keys.
+    Remote(Arc<LocalHost>),
 }
 
 /// [`Driver::liveness`]'s answer.
@@ -1371,6 +1369,8 @@ mod tests {
         /// The listener's accept loop, to take the whole hub down (a bot
         /// truly unreachable, not just this one connection).
         accept_loop: Option<tokio::task::AbortHandle>,
+        /// Answers every socket 502, as NeboAI did when its relay blipped.
+        failing: bool,
     }
 
     impl Hub {
@@ -1415,6 +1415,12 @@ mod tests {
         let n = stream.peek(&mut head).await.unwrap();
         let head = String::from_utf8_lossy(&head[..n]).into_owned();
         let target = head.split_whitespace().nth(1).unwrap_or("").to_owned();
+        if target == format!("/t/{BOT}/oal") && hub.lock().unwrap().failing {
+            hub.lock().unwrap().bearers.push("refused".to_owned());
+            let _ = stream.read(&mut [0u8; 2048]).await;
+            let _ = stream.write_all(b"HTTP/1.1 502 Bad Gateway\r\ncontent-length: 0\r\nconnection: close\r\n\r\n").await;
+            return;
+        }
         if target == format!("/t/{BOT}/oal") {
             let seen = hub.clone();
             let ws = tokio_tungstenite::accept_hdr_async(
@@ -2040,6 +2046,60 @@ mod tests {
         let answers: Vec<Value> = told(&r.told).into_iter().filter_map(|t| t.get("answer").cloned()).collect();
         assert_eq!(answers, vec![json!({ "outcome": "selected", "optionId": "allow" })], "answered once");
         assert_eq!(r.hub.lock().unwrap().bearers.len(), 3, "the pairing, then one reconnect");
+    }
+
+    /// The bot's nebo-link daemon runs on this computer, and NeboAI's relay
+    /// fails (502) the whole time: the turn opens on this computer, its
+    /// connection drops while the agent waits on the owner, Nebo reaches the
+    /// bot again on this computer at once, and the turn ends as it would have.
+    /// The relay is asked for nothing but the pairing code.
+    #[tokio::test]
+    async fn a_turn_with_a_bot_on_this_computer_never_waits_on_a_failing_relay() {
+        let r = remote("git").await;
+        let bot = r.bot.oal().unwrap();
+        let serving = oal_host::lan::serve(bot, "127.0.0.1:0".parse().unwrap(), &r._root.path().join("bot-tls"), oal_host::lan::Reach::Machine)
+            .await
+            .unwrap();
+        // The daemon's listener, behind a pipe the test can cut.
+        let pipe = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let direct = link_core::machine::Direct { addr: pipe.local_addr().unwrap(), fingerprint: serving.fingerprint };
+        link_core::machine::record_direct(&r._root.path().join("nebo").join("nebo-link").join(BOT), &direct, true).unwrap();
+        let piped: Arc<Mutex<Vec<tokio::task::AbortHandle>>> = Arc::default();
+        let pipes = piped.clone();
+        tokio::spawn(async move {
+            loop {
+                let (mut client, _) = pipe.accept().await.unwrap();
+                let task = tokio::spawn(async move {
+                    let mut host = TcpStream::connect(serving.addr).await.unwrap();
+                    let _ = tokio::io::copy_bidirectional(&mut client, &mut host).await;
+                });
+                pipes.lock().unwrap().push(task.abort_handle());
+            }
+        });
+        r.hub.lock().unwrap().failing = true;
+
+        let channels: AskChannels = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+        let mut req = request("check the repo", "chat-1", &remote_model());
+        req.ask_channels = Some(channels.clone());
+        let mut rx = r.provider.stream(&req).await.unwrap();
+        let (before, ask) = until_ask(&mut rx).await;
+        assert_eq!(kinds(&before), vec![StreamEventType::Text, StreamEventType::ToolCall]);
+        assert_eq!(ask.error.as_deref(), Some("call_1"));
+
+        for pipe in piped.lock().unwrap().drain(..) {
+            pipe.abort();
+        }
+        channels.lock().await.remove("call_1").expect("registered on the run").send("Allow once".to_owned()).unwrap();
+
+        let rest = tokio::time::timeout(Duration::from_secs(10), collect(rx)).await.expect("the turn never waited on the relay");
+        assert_eq!(
+            kinds(&rest),
+            vec![StreamEventType::ToolResult, StreamEventType::Text, StreamEventType::Usage, StreamEventType::Done],
+            "{:?}",
+            rest.iter().map(|e| (&e.text, &e.error)).collect::<Vec<_>>()
+        );
+        assert_eq!(rest[1].text, "Ran it.");
+        assert_eq!(r.hub.lock().unwrap().bearers, vec!["bearer bot-jwt"], "the pairing code, and no socket");
     }
 
     /// The first answer wins: answered on the phone (another client of the
