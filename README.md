@@ -2,11 +2,11 @@
 
 **Nebo is the operating system for AI employees — open source, Apache 2.0 licensed.**
 
-Hire pre-built employees from the marketplace — bookkeeper, researcher, scheduler — one click each. They show up already knowing the job: workflows, tools, and skills wired together, no setup.
+Hire pre-built employees from the marketplace — bookkeeper, researcher, scheduler — one click each. They show up already knowing the job: workflows, tools, and skills wired together, no setup. Already running OpenClaw, Hermes, Claude Code, or Codex? Connect them with Nebo Link and hire them onto the same team.
 
 They coordinate as a team, with real handoffs. They work in repeatable, auditable workflows — the thousandth run as dependable as the first. And they operate inside guardrails written into the code, not the prompt, so you can trust them with real access to your systems.
 
-Start on your own machine — your data never leaves your walls. Move to a server when the team needs to grow and never clock out.
+Run it on your own computer, on your own server, or in Nebo Cloud. Your employees, their memory, and your files live where the bot runs, and you can move the team as it grows.
 
 ```bash
 brew install --cask neboloop/tap/nebo
@@ -14,19 +14,41 @@ brew install --cask neboloop/tap/nebo
 
 Windows and Linux installers in the [latest release](https://github.com/NeboLoop/nebo/releases/latest) — full instructions [below](#install).
 
-**What is Nebo?** Nebo runs a team of AI employees on hardware you control. Each employee is a pre-built role hired from the marketplace in one click. You own the machine, the data, and the workforce.
+**What is Nebo?** Nebo runs a team of AI employees on your computer, your server, or in Nebo Cloud. Each employee is a pre-built role hired from the marketplace in one click, or an agent you already run, connected with Nebo Link. You own the data and the workforce.
 
 ## Hire, don't build
 
-You've been building agents one at a time. Nebo lets you hire them. Pick a role — bookkeeper, researcher, scheduler — and click once. A pre-built employee arrives with its workflows, tools, and skills already wired together. The shelf is stocked: 110 ready-to-hire roles in the [marketplace](https://neboai.com) today, built from 280 plugins and skills. No configuration, no prompt engineering, no assembly.
+You've been building agents one at a time. Nebo lets you hire them. Pick a role — bookkeeper, researcher, scheduler — and click once. A pre-built employee arrives with its workflows, tools, and skills already wired together. The [marketplace](https://neboai.com) is stocked with ready-to-hire roles, built from plugins and skills. No configuration, no prompt engineering, no assembly.
 
 <!-- screenshot: marketplace roles page → one-click hire → employee active in the roster. Caption: "Hired in one click. Working in the next." -->
+
+## Hire the agents you already run
+
+Your OpenClaw, Hermes, and coding agents (Claude Code, Codex, Gemini CLI, OpenCode, or any agent that speaks the [Agent Client Protocol](https://agentclientprotocol.com)) can join your Nebo workforce without moving. [Nebo Link](https://github.com/NeboLoop/nebo-link) connects the computer they run on to your NeboAI account. It uses outbound connections only, so you don't open ports or set up a VPN.
+
+```bash
+nebo-link ABCD-1234                          # pair this computer with the code from the NeboAI app
+nebo-link add claude-code --dir ~/code/site  # add a coding agent, working in that folder
+nebo-link add codex --dir ~/code/api
+```
+
+A linked computer is one bot, and each agent on it is its own employee. In Nebo, open **Hire an employee → Hire from another app** and pick one:
+
+- **It keeps working where it runs.** Nebo drives the agent through the link. The agent keeps its own persona and transcript, and a Claude Code or Codex agent uses its own sign-in on that computer. NeboAI never sees those credentials.
+- **It follows your permission setting.** On Full Access it just works. Otherwise, when it needs your OK, the request comes to you on the desktop, on your phone, or in the agent's own UI.
+- **It's on the roster like any other hire.** Its name and persona are managed on the linked computer, and it shows as offline when that computer is.
+
+Linked agents are also reachable from the NeboAI phone app. Nebo Link is the reference implementation of [Open Agent Link](https://openagent.link), an open, end-to-end encrypted protocol for reaching agents on any computer.
+
+### Or bring your setup over
+
+To move a Hermes or OpenClaw install into Nebo instead of linking it, Nebo detects it during onboarding or in **Settings → Import**. It shows you everything it found before changing anything. It then imports your employees, skills, MCP servers, memory, conversation history, and provider keys, and it never writes to the original install. Re-running an import won't duplicate anything.
 
 ## The work moves between them
 
 A workforce isn't a pile of chatbots. Hand the researcher a job and it delegates — passes its findings to the writer, gets the draft back, sends it on to the scheduler — every handoff landing in the thread where you can read it. Chain workflows so one employee's finished job kicks off the next one's. You manage the team; they manage the work.
 
-<!-- screenshot (LOAD-BEARING): a delegation in the chat thread — researcher's message, then the writer's response with its agent badge. This is shootable today. Caption: "A real handoff, not a metaphor." -->
+<!-- screenshot (LOAD-BEARING): a delegation in the chat thread — researcher's message, then the writer's response with its employee badge. This is shootable today. Caption: "A real handoff, not a metaphor." -->
 
 ## The thousandth run is as good as the first
 
@@ -137,9 +159,9 @@ rebuilding the setup you already got working.
 
 ### Or skip the install
 
-Launch a cloud Nebo from the browser at [neboai.com/cloud](https://neboai.com/cloud):
-same employees, same roster, always on, nothing to host. Start on your machine and
-move to the cloud later, or run both. Your data stays yours either way.
+Launch a Nebo in Nebo Cloud from [neboai.com/cloud](https://neboai.com/cloud): same
+employees, same roster, always on, nothing to host. Free for 7 days, no card. Start on
+your computer and move to the cloud later, or run both. Your data stays yours either way.
 
 ## Multi-Provider
 
@@ -151,6 +173,7 @@ Nebo works with the model you prefer:
 - **Ollama** — local models, no API key needed
 - **DeepSeek** — streaming, tool calls via OpenAI-compatible API
 - **CLI wrappers** — `claude`, `gemini`, `codex` commands
+- **Linked agents** — an employee hired through Nebo Link runs on its own agent (OpenClaw, Hermes, Claude Code, Codex, and more)
 
 Configure providers via the Web UI or `models.yaml` in your data directory.
 
@@ -162,8 +185,8 @@ Configure providers via the Web UI or `models.yaml` in your data directory.
 | **Shell** | Execute commands, manage processes, background tasks |
 | **Web** | Fetch pages, search the web, full browser automation |
 | **Memory** | Store and recall facts, preferences, project context |
-| **Tasks** | Spawn parallel sub-agents, schedule recurring jobs |
-| **Communication** | Inter-agent messaging via NeboAI |
+| **Tasks** | Hand work to parallel helpers, schedule recurring jobs |
+| **Communication** | Email, texts, and messages between your bots via NeboAI |
 
 Platform-specific capabilities (macOS: accessibility, calendar, contacts; Windows/Linux: desktop automation) are auto-detected.
 
@@ -179,7 +202,7 @@ Nebo is a Rust workspace — one binary, no runtime dependencies beyond SQLite.
 | `config` | Config structs, YAML loading, CLI detection |
 | `db` | SQLite store, migrations, connection pool (r2d2) |
 | `auth` | JWT auth, keyring integration, credential encryption |
-| `ai` | Provider trait + implementations (Anthropic, OpenAI, Gemini, Ollama, CLI) |
+| `ai` | Provider trait + implementations (Anthropic, OpenAI, Gemini, Ollama, CLI, linked) |
 | `tools` | Tool registry, policy, domain tools (STRAP pattern), skills loader |
 | `agent` | Runner, session, memory, compaction, advisors, search, steering |
 | `server` | Axum HTTP server, handlers, WebSocket, middleware |
@@ -205,10 +228,6 @@ Nebo is a Rust workspace — one binary, no runtime dependencies beyond SQLite.
 - **reqwest** — HTTP client with SSE streaming
 - **rust-embed** — SPA static assets embedded in binary
 
-## Local Inference
-
-Run entirely offline with local models: install [Ollama](https://ollama.com), configure it as a provider in Settings, and go. No API key, no cloud, no build-time dependencies.
-
 ## App Platform
 
 Nebo has a sandboxed app platform. Developers build `.napp` packages that extend Nebo with new tools, channels, and integrations.
@@ -217,7 +236,7 @@ Nebo has a sandboxed app platform. Developers build `.napp` packages that extend
 - **Deny-by-default permissions** — apps only access what their manifest declares
 - **Signed** — ED25519 signature verification for every app binary and manifest
 - **Compiled-only** — only native binaries accepted (Go, Rust, C, Zig). No interpreted languages.
-- **Distributed via NeboAI** — install apps from the marketplace or deploy privately to your loop
+- **Distributed via NeboAI** — install apps from the marketplace or publish them privately to your account
 
 See the [Publisher's Guide](docs/publishers-guide/apps.md) for the developer guide.
 
@@ -233,7 +252,7 @@ Reach your Nebo from anywhere:
 | **Discord** | Install the Discord channel app from the marketplace |
 | **Slack** | Install the Slack channel app from the marketplace |
 
-Channel apps are distributed through NeboAI. All channels route to the same agent with the same memory and context.
+Channel apps are distributed through NeboAI. Every channel reaches the same employee, with the same memory and context.
 
 ## NeboAI
 
@@ -241,16 +260,16 @@ Channel apps are distributed through NeboAI. All channels route to the same agen
 
 - **Hiring** — ready-to-work roles, and the skills, tools, workflows, and apps they're built from — created by the community
 - **Cloud integrations** — pre-built connectors like My Cloud (unified Google Workspace access: Gmail, Drive, Sheets, Docs, Contacts)
-- **Inter-agent communication** — your Nebo can collaborate with other Nebos in your loop
+- **Bots that work together** — your bots can hand work to each other across your account
 - **Secure transport** — WebSocket-based binary protocol with JWT authentication
 
-Nebo works fully offline without NeboAI if you have a local LLM (e.g., Ollama). The marketplace is opt-in.
+Nebo is open source and works without NeboAI: bring your own provider key, or run a local model with [Ollama](https://ollama.com) fully offline. NeboAI is opt-in.
 
 ## Security
 
 Eight layers of defense, each enforced in code — not by prompts. See [SECURITY.md](SECURITY.md) for the full architecture and audit trail.
 
-- Hard safeguards block destructive operations unconditionally (sudo, disk formatting, system paths)
+- Hard safeguards block destructive operations unconditionally (admin rights on your computer, disk formatting, system paths)
 - Origin tagging tracks every request source (user, comm, app, skill, system)
 - Configurable tool policies with allowlists and approval flows
 - Capability permissions gate what each employee is allowed to do
@@ -265,7 +284,7 @@ Eight layers of defense, each enforced in code — not by prompts. See [SECURITY
 |----------|-------------|
 | **macOS** | macOS 11+ (Apple Silicon or Intel) |
 | **Windows** | Windows 10+ (64-bit) |
-| **Linux** | Ubuntu 22.04+ or equivalent (amd64/arm64) |
+| **Linux** | Ubuntu 24.04+, Debian 13+, or any distro with glibc 2.39+ (amd64/arm64) |
 
 ## Development
 
@@ -275,7 +294,7 @@ make build                           # Release CLI binary
 make build-desktop                   # Tauri desktop app (builds frontend first)
 
 # Test
-cargo test                           # All workspace tests (900+)
+cargo test                           # All workspace tests
 
 # Run
 make dev                             # Desktop dev mode with hot reload
