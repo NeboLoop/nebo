@@ -1998,6 +1998,8 @@
 		"configManagedPrefix": "Konfigurasi karyawan ini dikelola oleh",
 		"configManagedSuffix": "dan tidak dapat diedit langsung. Duplikasi untuk membuat salinan yang dapat diedit.",
 		"identityManagedNote": "Karyawan ini berasal dari sebuah paket. Nama, suara, dan warna boleh Anda ubah dan akan tetap berubah. Perannya tertulis di AGENT.md milik paket dan disetel ulang saat Nebo dijalankan ulang — gandakan karyawannya agar sepenuhnya menjadi milik Anda.",
+		"identityLinkedNote": "Karyawan ini bekerja di aplikasi lain. Nama, suara, dan warnanya bisa Anda ubah di sini; peran dan personanya tetap di aplikasi itu.",
+		"nameRequired": "Nama wajib diisi.",
 		"packageManagedNote": "Ini berasal dari paket tempat karyawan ini dipasang, jadi tidak bisa diubah di sini. Gandakan karyawannya untuk mendapat salinan yang bisa Anda tulis ulang.",
 		"fromPackage": "dari paket",
 		"model": "Model",

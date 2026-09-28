@@ -1998,6 +1998,8 @@
 		"configManagedPrefix": "Die Konfiguration dieses Mitarbeiters wird verwaltet durch",
 		"configManagedSuffix": "und kann nicht direkt bearbeitet werden. Dupliziere ihn, um eine bearbeitbare Kopie zu erstellen.",
 		"identityManagedNote": "Dieser Mitarbeiter kam aus einem Paket. Name, Stimme und Farbe kannst du ändern, und sie bleiben geändert. Die Rolle steht in der AGENT.md des Pakets und wird beim Neustart von Nebo zurückgesetzt — dupliziere den Mitarbeiter, damit er ganz dir gehört.",
+		"identityLinkedNote": "Dieser Mitarbeiter arbeitet in einer anderen App. Name, Stimme und Farbe kannst du hier ändern; Rolle und Persona bleiben in dieser App.",
+		"nameRequired": "Ein Name ist erforderlich.",
 		"packageManagedNote": "Das kommt aus dem Paket, aus dem dieser Mitarbeiter installiert wurde, und lässt sich hier nicht bearbeiten. Dupliziere den Mitarbeiter, um eine Kopie zu bekommen, die du umschreiben kannst.",
 		"fromPackage": "aus dem Paket",
 		"model": "Modell",

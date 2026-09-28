@@ -2007,6 +2007,8 @@
 		"configManagedPrefix": "This employee's configuration is managed by its",
 		"configManagedSuffix": "and cannot be edited directly. Duplicate it to create an editable copy.",
 		"identityManagedNote": "This employee came from a package. Name, voice and color are yours to change and stay changed. The role is written in the package's AGENT.md and the package restores it each time Nebo starts — duplicate the employee to make it fully yours.",
+		"identityLinkedNote": "This employee works in another app. Its name, voice and color are yours to change here; its role and persona stay in that app.",
+		"nameRequired": "A name is required.",
 		"packageManagedNote": "This comes from the package this employee was installed from, so it can't be edited here. Duplicate the employee to get a copy you can rewrite.",
 		"fromPackage": "from the package",
 		"model": "Model",

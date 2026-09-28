@@ -872,6 +872,31 @@ mod tests {
         );
     }
 
+    /// The owner renames an imported employee: the name sticks through a
+    /// re-import, which finds the employee by its folder and id, and through
+    /// a restart's manifest sync, which still reads the imported name.
+    #[test]
+    fn an_imported_employee_can_be_renamed() {
+        let f = setup();
+        let out = apply_hermes(&targets(&f), &f.root).unwrap();
+        let id = out.agent_id.clone().unwrap();
+        let imported = f.store.get_agent(&id).unwrap().unwrap();
+        f.store
+            .update_agent(
+                &id, "Atlas", &imported.description, &imported.agent_md, &imported.frontmatter,
+                None, None, None, None, None, None, None, None, None, None,
+            )
+            .unwrap();
+
+        let again = apply_hermes(&targets(&f), &f.root).unwrap();
+        assert_eq!(again.agents, 0, "a renamed employee is not imported twice");
+        assert_eq!(f.store.count_agents().unwrap(), 1);
+
+        let restarted = db::Store::new(f._nebo.path().join("nebo.db").to_str().unwrap()).unwrap();
+        restarted.sync_agent_identity(&id, "Hermes", &imported.description).unwrap();
+        assert_eq!(restarted.get_agent(&id).unwrap().unwrap().name, "Atlas");
+    }
+
     #[test]
     fn rejects_non_hermes_directory() {
         let f = setup();

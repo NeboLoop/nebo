@@ -1998,6 +1998,8 @@
 		"configManagedPrefix": "Bu çalışanın yapılandırması",
 		"configManagedSuffix": "tarafından yönetilir ve doğrudan düzenlenemez. Düzenlenebilir bir kopya oluşturmak için çoğaltın.",
 		"identityManagedNote": "Bu çalışan bir paketten geldi. Ad, ses ve renk sizin değiştirebileceğiniz şeylerdir ve değişmiş olarak kalır. Rol, paketin AGENT.md dosyasında yazılıdır ve Nebo yeniden başladığında sıfırlanır — tamamen sizin olması için çalışanı çoğaltın.",
+		"identityLinkedNote": "Bu çalışan başka bir uygulamada çalışır. Adını, sesini ve rengini burada değiştirebilirsin; rolü ve personası o uygulamada kalır.",
+		"nameRequired": "Ad gerekli.",
 		"packageManagedNote": "Bu, çalışanın kurulduğu paketten gelir, bu yüzden burada düzenlenemez. Yeniden yazabileceğiniz bir kopya için çalışanı çoğaltın.",
 		"fromPackage": "paketten",
 		"model": "Model",

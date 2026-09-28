@@ -1998,6 +1998,8 @@
 		"configManagedPrefix": "Cấu hình của nhân viên này được quản lý bởi",
 		"configManagedSuffix": "và không thể chỉnh sửa trực tiếp. Nhân bản để tạo một bản sao có thể chỉnh sửa.",
 		"identityManagedNote": "Nhân viên này đến từ một gói. Tên, giọng nói và màu sắc là của bạn để sửa và sẽ giữ nguyên như bạn sửa. Vai trò của họ nằm trong AGENT.md của gói và được đặt lại mỗi khi Nebo chạy lại — hãy nhân bản nhân viên để họ hoàn toàn thuộc về bạn.",
+		"identityLinkedNote": "Nhân viên này làm việc trong một ứng dụng khác. Tên, giọng nói và màu sắc bạn đổi được tại đây; vai trò và persona vẫn ở ứng dụng đó.",
+		"nameRequired": "Cần có tên.",
 		"packageManagedNote": "Phần này đến từ gói đã cài nhân viên, nên không sửa được ở đây. Hãy nhân bản nhân viên để có một bản sao bạn tự viết lại được.",
 		"fromPackage": "từ gói",
 		"model": "Mô hình",

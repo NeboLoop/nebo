@@ -1998,6 +1998,8 @@
 		"configManagedPrefix": "La configuration de cet employé est gérée par son",
 		"configManagedSuffix": "et ne peut pas être modifiée directement. Dupliquez-le pour créer une copie modifiable.",
 		"identityManagedNote": "Cet employé vient d'un paquet. Le nom, la voix et la couleur sont à vous : vos changements restent. Le rôle est écrit dans l'AGENT.md du paquet et se réinitialise au redémarrage de Nebo — dupliquez l'employé pour qu'il soit entièrement le vôtre.",
+		"identityLinkedNote": "Cet employé travaille dans une autre app. Son nom, sa voix et sa couleur se changent ici ; son rôle et sa persona restent dans cette app.",
+		"nameRequired": "Un nom est requis.",
 		"packageManagedNote": "Ceci vient du paquet depuis lequel cet employé a été installé, et ne peut donc pas être modifié ici. Dupliquez l'employé pour obtenir une copie que vous pourrez réécrire.",
 		"fromPackage": "du paquet",
 		"model": "Modèle",
