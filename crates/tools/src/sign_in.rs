@@ -553,7 +553,7 @@ mod tests {
         let az = read(AZURE).unwrap();
         assert_eq!((az.url.as_str(), az.code.as_deref(), az.asks_for_code), ("https://microsoft.com/devicelogin", Some("F7GHXQ2LN"), false));
         let vercel = read(VERCEL).unwrap();
-        assert_eq!((vercel.code, vercel.asks_for_code), (None, false), "the code is in the link");
+        assert_eq!((vercel.code.as_deref(), vercel.asks_for_code), (None, false), "the code is in the link");
         assert!(looks_like_sign_in(VERCEL, &vercel));
     }
 
@@ -610,14 +610,14 @@ mod tests {
         // Split across two reads: the first read's end is held, not shown.
         let a = m.mask(&format!("got {}", &code[..4]));
         let b = m.mask(&format!("{} ok", &code[4..]));
-        assert_eq!(a + &b, "got [code entered] ok");
+        assert_eq!(a + b.as_str(), "got [code entered] ok");
         // A read that ends in what could start the code is shown once the
         // session has nothing more to say.
         let short = m.mask("path 4/");
-        assert_eq!(short + &m.flush(), "path 4/");
+        assert_eq!(short + m.flush().as_str(), "path 4/");
         // A long piece still held when the session ends is masked, not shown.
         let cut = m.mask(&format!("got {}", &code[..10]));
-        assert_eq!(cut + &m.flush(), "got [code entered]");
+        assert_eq!(cut + m.flush().as_str(), "got [code entered]");
     }
 
     #[test]
@@ -625,7 +625,7 @@ mod tests {
         let mut m = Masks::default();
         m.add("ABCD12");
         let shown: String = "Code: ABCD12\n".chars().map(|c| m.mask(&c.to_string())).collect();
-        assert_eq!(shown + &m.flush(), "Code: [code entered]\n");
+        assert_eq!(shown + m.flush().as_str(), "Code: [code entered]\n");
     }
 }
 
