@@ -566,6 +566,7 @@ impl AgentWorker {
                     let ps = plugin_store.clone();
                     let dispatch = dispatcher.clone();
                     let ch_notify = notify_fn.clone();
+                    let ch_store = store.clone();
                     let ch_sem = watch_semaphore.clone();
                     let slug = binding.plugin_slug.clone();
                     let agent = agent_id.clone();
@@ -591,7 +592,7 @@ impl AgentWorker {
                             );
                             shared_channel_loop(
                                 bp, slug, cd, ps, sb,
-                                dispatch, token, ch_notify, ch_sem,
+                                dispatch, token, ch_store, ch_notify, ch_sem,
                             ).await;
                         }
                     });
@@ -1482,12 +1483,13 @@ async fn watch_loop(
                     "Connect your {} account to enable automated workflows. Go to Settings → Plugins.",
                     cfg.plugin
                 );
+                let link = tools::owner_notify::link::accounts(&agent_id, Some(&cfg.plugin));
                 let n = tools::owner_notify::OwnerNotification {
                     id: &notif_id,
                     kind: "warning",
                     title: &title,
                     body: Some(&body),
-                    action_url: Some("/settings/plugins"),
+                    action_url: Some(&link),
                     agent_id: Some(agent_id.as_ref()),
                     loud: true,
                 };
@@ -2622,12 +2624,13 @@ async fn channel_loop(
                     "Connect your {} account to enable the {} channel. Go to Settings → Plugins.",
                     plugin_slug, channel_name
                 );
+                let link = tools::owner_notify::link::accounts(&agent_id, Some(&plugin_slug));
                 let n = tools::owner_notify::OwnerNotification {
                     id: &notif_id,
                     kind: "warning",
                     title: &title,
                     body: Some(&body),
-                    action_url: Some("/settings/plugins"),
+                    action_url: Some(&link),
                     agent_id: Some(agent_id.as_ref()),
                     loud: true,
                 };
@@ -2680,6 +2683,7 @@ async fn shared_channel_loop(
     shared_bridges: Arc<SharedBridgeRegistry>,
     dispatcher: Arc<dyn ChannelDispatcher>,
     cancel: CancellationToken,
+    store: Arc<Store>,
     notify_fn: Option<NotifyFn>,
     spawn_semaphore: Arc<tokio::sync::Semaphore>,
 ) {
@@ -3073,16 +3077,24 @@ async fn shared_channel_loop(
                     "shared channel failed: plugin auth failing persistently, slowing to probe cadence until auth recovers"
                 );
 
-                if let Some(ref notify) = notify_fn {
-                    notify(
-                        "notification",
-                        serde_json::json!({
-                            "type": "warning",
-                            "title": format!("{} needs authentication", plugin_slug),
-                            "body": format!("Connect your {} account to enable channels.", plugin_slug),
-                            "link": "/settings/plugins",
-                        }),
-                    );
+                // One bridge serves every employee on it, so its account is
+                // the plugin's own: connected again in Plugins.
+                let notif_id = format!("auth-required:{}", plugin_slug);
+                let title = format!("{} needs authentication", plugin_slug);
+                let body = format!("Connect your {} account to enable channels.", plugin_slug);
+                let link = tools::owner_notify::link::plugins();
+                let n = tools::owner_notify::OwnerNotification {
+                    id: &notif_id,
+                    kind: "warning",
+                    title: &title,
+                    body: Some(&body),
+                    action_url: Some(&link),
+                    agent_id: None,
+                    loud: true,
+                };
+                match &notify_fn {
+                    Some(f) => tools::owner_notify::emit(&store, Some(&|ev, payload| f(ev, payload)), &n),
+                    None => tools::owner_notify::emit(&store, None, &n),
                 }
                 // Self-heal: keep probing on the slow cadence instead of
                 // parking; reconnecting still resumes via plugin_auth_complete.

@@ -556,7 +556,8 @@ impl OwnerForward<'_> {
     /// isn't looking at the target agent's thread — same Inbox pathway as
     /// workflow approval notifications.
     fn notify_owner(&self, id: &str, kind: &str, title: &str, body: &str) {
-        let action_url = format!("/{}", self.agent_id);
+        // The conversation the parked work is in, where its card waits.
+        let action_url = tools::owner_notify::link::session_chat(&self.state.store, self.agent_id, self.session_key);
         tools::owner_notify::emit(
             &self.state.store,
             Some(&|ev, payload| self.state.hub.broadcast(ev, payload)),

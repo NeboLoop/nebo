@@ -1930,7 +1930,7 @@ pub fn notify_plugin_needs_reauth(
         "{}'s connection to {} expired. Reconnect it in the agent's Settings, Plugins.",
         p.account_label, p.plugin_slug
     );
-    let action_url = format!("/{}/settings/accounts", p.agent_id);
+    let action_url = crate::owner_notify::link::accounts(&p.agent_id, Some(&p.plugin_slug));
     crate::owner_notify::emit(
         store,
         Some(&|ev, payload| broadcast(ev, payload)),
@@ -2239,6 +2239,29 @@ mod tests {
         assert_eq!(best_match(&items, "office manager")["slug"], "front-desk", "no match falls back to the top result");
     }
     use super::*;
+
+    /// An expired sign-in opens that employee's accounts at that plugin,
+    /// where it is connected again.
+    #[test]
+    fn an_expired_sign_in_opens_the_employees_accounts_at_the_plugin() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = db::Store::new(&dir.path().join("t.db").to_string_lossy()).unwrap();
+        let p = db::PluginAccountProfile {
+            id: "p1".into(),
+            agent_id: "emp".into(),
+            plugin_slug: "quickbooks".into(),
+            account_label: "Books".into(),
+            config_dir: String::new(),
+            is_primary: true,
+            needs_reauth: true,
+            reauth_notified: false,
+        };
+        notify_plugin_needs_reauth(&store, |_, _| {}, &p);
+        let user = store.ensure_local_user_id().unwrap();
+        let rows = store.list_user_notifications(&user, 10, 0).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].action_url.as_deref(), Some("/emp/settings/accounts?plugin=quickbooks"));
+    }
 
     #[test]
     fn exec_binding_match_requires_word_boundary() {

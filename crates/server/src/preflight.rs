@@ -204,7 +204,7 @@ pub(crate) fn plugin_need_notice(employee: &str, binding_name: &str, need: &str)
              The duty goes ahead on its own after that.",
             duty = duty_words(binding_name)
         ),
-        link: crate::handlers::plugins::PLUGINS_SETTINGS_PATH.to_string(),
+        link: tools::owner_notify::link::plugins(),
     }
 }
 
@@ -220,7 +220,7 @@ pub(crate) fn account_need_notice(employee: &str, agent_id: &str, binding_name: 
              Connect one in {employee}'s accounts. The duty goes ahead on its own after that.",
             duty = duty_words(binding_name)
         ),
-        link: format!("/{agent_id}/settings/accounts?plugin={}", urlencoding::encode(slug)),
+        link: tools::owner_notify::link::accounts(agent_id, Some(slug)),
     }
 }
 
@@ -237,7 +237,7 @@ pub(crate) fn something_needed_notice(employee: &str, agent_id: &str, binding_na
             "{employee} can't do \"{duty}\" until something is added or connected.{said} \
              Check {employee}'s accounts and Plugins. The duty goes ahead on its own after that."
         ),
-        link: format!("/{agent_id}/settings/accounts"),
+        link: tools::owner_notify::link::accounts(agent_id, None),
     }
 }
 

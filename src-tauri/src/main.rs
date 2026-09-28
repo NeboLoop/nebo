@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use tauri::{
-    LogicalPosition, Manager, WebviewUrl, WebviewWindowBuilder,
+    Emitter, LogicalPosition, Manager, WebviewUrl, WebviewWindowBuilder,
     menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     webview::NewWindowResponse,
@@ -192,6 +192,72 @@ fn save_artifact(rel_path: String, save_name: String) -> Result<String, String> 
     std::fs::copy(&src, &dest).map_err(|e| e.to_string())?;
     reveal_in_file_manager(&dest);
     Ok(dest.to_string_lossy().into_owned())
+}
+
+/// The event the main window opens an owner item's place on
+/// (`app/src/lib/websocket/listeners.ts`).
+const OWNER_ITEM_OPEN: &str = "owner-item-open";
+
+/// Tauri command: an owner item's native banner. A click on it brings Nebo
+/// forward and opens the item's place: `link`, the same address its Inbox
+/// row opens and its phone push opens. The wait for the click is the
+/// platform's own (NSUserNotificationCenter, the toast's activation, the
+/// desktop bus's default action), on a thread of its own so nothing here
+/// waits on the owner.
+#[tauri::command]
+fn show_owner_notification(app: tauri::AppHandle, title: String, body: String, link: String) {
+    let spawned = std::thread::Builder::new().name("owner-banner".into()).spawn(move || {
+        let mut banner = notify_rust::Notification::new();
+        banner.summary(&title).body(&body).auto_icon();
+        // A click on the body is the desktop bus's "default" action.
+        #[cfg(all(unix, not(target_os = "macos")))]
+        banner.action("default", "Open");
+        // The toast is Nebo's once installed; a build run from its target
+        // directory has no registered app id to show it under.
+        #[cfg(windows)]
+        if let Ok(exe) = tauri::utils::platform::current_exe() {
+            let dir = exe.parent().map(|d| d.display().to_string()).unwrap_or_default();
+            let sep = std::path::MAIN_SEPARATOR;
+            if !(dir.ends_with(&format!("{sep}target{sep}debug")) || dir.ends_with(&format!("{sep}target{sep}release"))) {
+                banner.app_id(&app.config().identifier);
+            }
+        }
+        #[cfg(target_os = "macos")]
+        let _ = notify_rust::set_application(if tauri::is_dev() {
+            "com.apple.Terminal"
+        } else {
+            &app.config().identifier
+        });
+        let handle = match banner.show() {
+            Ok(h) => h,
+            Err(e) => {
+                tracing::warn!(error = %e, "owner banner not shown");
+                return;
+            }
+        };
+        let opened = |response: &notify_rust::NotificationResponse| {
+            if !matches!(
+                response,
+                notify_rust::NotificationResponse::Default | notify_rust::NotificationResponse::Action(_)
+            ) {
+                return;
+            }
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.unminimize();
+                let _ = w.show();
+                let _ = w.set_focus();
+            }
+            if let Err(e) = app.emit_to("main", OWNER_ITEM_OPEN, &link) {
+                tracing::warn!(error = %e, "owner banner: the item's place was not opened");
+            }
+        };
+        if let Err(e) = handle.wait_for_response(opened) {
+            tracing::warn!(error = %e, "owner banner: no answer from the platform");
+        }
+    });
+    if let Err(e) = spawned {
+        tracing::warn!(error = %e, "owner banner not shown");
+    }
 }
 
 /// Select the file in the platform file manager (Finder/Explorer); on Linux,
@@ -429,7 +495,7 @@ fn main() {
     let saved = load_state("main");
 
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![get_window_state, save_artifact])
+        .invoke_handler(tauri::generate_handler![get_window_state, save_artifact, show_owner_notification])
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())

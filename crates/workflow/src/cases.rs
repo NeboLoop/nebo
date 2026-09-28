@@ -52,13 +52,19 @@ pub fn needs_attention(store: &Store, agent_id: &str, run_id: &str, subject: &st
         Some(_) => "A case needs your attention",
         None => "A run needs your attention",
     };
+    // A case opens on the employee's cases; anything else on this item in
+    // the Inbox's reader, which holds the whole reason.
+    let link = match case {
+        Some(_) if !agent_id.is_empty() => tools::owner_notify::link::cases(agent_id),
+        _ => tools::owner_notify::link::inbox_item(&idem),
+    };
     store.create_notification_if_not_exists(
         &idem,
         &user_id,
         "needs_attention",
         title,
         Some(reason),
-        Some("/dashboard?inbox=1"),
+        Some(&link),
         None,
         (!agent_id.is_empty()).then_some(agent_id),
     )

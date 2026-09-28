@@ -131,7 +131,7 @@ async fn deliver_to_session(state: &AppState, session_key: &str) {
                 body: Some(&format!(
                     "{poisoned} pending update(s) for this employee failed delivery repeatedly and were dropped."
                 )),
-                action_url: Some(&format!("/{}", agent_id)),
+                action_url: Some(&tools::owner_notify::link::employee(&agent_id)),
                 agent_id: (!agent_id.is_empty()).then_some(agent_id.as_str()),
                 loud: false,
             },

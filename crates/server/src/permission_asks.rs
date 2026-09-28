@@ -99,10 +99,17 @@ pub(crate) fn reply_answer(c: &PermissionAskCard, reply: &str) -> Answer {
         .unwrap_or(Answer::No)
 }
 
-/// Push the card to the owner's hub Inbox, which reaches the phone. The
-/// item carries its own answer calls; the hub relays them through the
-/// tunnel. Idempotent on the item id.
-pub(crate) fn push_to_inbox(state: &AppState, c: &PermissionAskCard) {
+/// The card as the owner's item, the ONE place its Inbox row and its hub
+/// copy (which the phone is pushed) are built: `f` gets the item — the same
+/// id, words and link on every surface — and what only the hub copy
+/// carries: the card's own answer calls, which the hub relays through the
+/// tunnel, and the conversation that asked, so an answer by email (the hub
+/// mails the owner every new item) comes back into it.
+fn with_item<R>(
+    store: &db::Store,
+    c: &PermissionAskCard,
+    f: impl FnOnce(&tools::owner_notify::OwnerNotification, serde_json::Value) -> R,
+) -> R {
     let path = format!("/api/v1/permissions/asks/{}", c.id);
     let answer_path = format!("{path}/answer");
     let button = |label: &str, style: &str, answer: &str| {
@@ -121,26 +128,39 @@ pub(crate) fn push_to_inbox(state: &AppState, c: &PermissionAskCard) {
             button(label, style, answer.as_str())
         })
         .collect();
-    // The conversation that asked: an answer by email (the hub mails the
-    // owner every new item) comes back into it.
-    let sessions = state.harness.sessions();
-    let chat_id = sessions
-        .resolve_session_id_by_key(&c.session_key)
-        .map(|sid| sessions.active_chat_id(&sid))
-        .unwrap_or_default();
-    crate::codes::push_inbox(
-        state,
+    // The conversation whose work waits on the ask: where its card sits,
+    // and where a tap on the item opens.
+    let chat_id = tools::owner_notify::link::conversation(store, &c.session_key);
+    let link = tools::owner_notify::link::chat(&c.agent_id, &chat_id);
+    let (id, title, body) = (inbox_id(&c.id), title(c), body(c));
+    let n = tools::owner_notify::OwnerNotification {
+        id: &id,
+        kind: "permission_ask",
+        title: &title,
+        body: Some(&body),
+        action_url: Some(&link),
+        agent_id: (!c.agent_id.is_empty()).then_some(c.agent_id.as_str()),
+        loud: true,
+    };
+    f(
+        &n,
         serde_json::json!({
-            "id": inbox_id(&c.id),
-            "type": "permission_ask",
-            "title": title(c),
-            "body": body(c),
-            "link": format!("/{}", c.agent_id),
-            "agentId": c.agent_id,
             "chatId": chat_id,
             "actions": { "buttons": buttons, "status": { "method": "GET", "path": path } },
         }),
-    );
+    )
+}
+
+/// Put the card before the owner: `here` files its Inbox row in this
+/// Inbox too (with its live banner); a re-push to the hub alone
+/// ([`reconcile_inbox`]) leaves the row be. Idempotent on the item id.
+fn surface(state: &AppState, c: &PermissionAskCard, here: bool) {
+    with_item(&state.store, c, |n, hub_only| {
+        if here {
+            tools::owner_notify::emit(&state.store, Some(&|ev, payload| state.hub.broadcast(ev, payload)), n);
+        }
+        crate::codes::push_inbox(state, n.hub_item(hub_only));
+    });
 }
 
 /// The server's surfaces for asks. Holds the app state: the hub, the
@@ -153,48 +173,19 @@ impl AskSurfaces for OwnerSurfaces {
     fn card(&self, ask: &Ask) {
         let state = &self.state;
         let c = card(state, ask);
-        let (title, body) = (title(&c), body(&c));
-        let id = inbox_id(&c.id);
-        tools::owner_notify::emit(
-            &state.store,
-            Some(&|ev, payload| state.hub.broadcast(ev, payload)),
-            &tools::owner_notify::OwnerNotification {
-                id: &id,
-                kind: "permission_ask",
-                title: &title,
-                body: Some(&body),
-                action_url: None,
-                agent_id: (!c.agent_id.is_empty()).then_some(c.agent_id.as_str()),
-                loud: true,
-            },
-        );
-        push_to_inbox(state, &c);
+        surface(state, &c, true);
         state.hub.broadcast("permission_ask", serde_json::to_value(&c).unwrap_or_default());
     }
 
     fn remind(&self, ask: &Ask) {
         let state = &self.state;
         let c = card(state, ask);
-        let (title, body) = (title(&c), body(&c));
         let id = inbox_id(&c.id);
         let user_id = state.store.ensure_local_user_id().unwrap_or_default();
         if let Err(e) = state.store.resurface_notification(&id, &user_id) {
             warn!(ask = %c.id, error = %e, "ask's Inbox row not brought back");
         }
-        tools::owner_notify::emit(
-            &state.store,
-            Some(&|ev, payload| state.hub.broadcast(ev, payload)),
-            &tools::owner_notify::OwnerNotification {
-                id: &id,
-                kind: "permission_ask",
-                title: &title,
-                body: Some(&body),
-                action_url: None,
-                agent_id: (!c.agent_id.is_empty()).then_some(c.agent_id.as_str()),
-                loud: true,
-            },
-        );
-        push_to_inbox(state, &c);
+        surface(state, &c, true);
         state.hub.broadcast("permission_ask", serde_json::to_value(&c).unwrap_or_default());
         info!(ask = %c.id, "ask still open; the owner was reminded");
     }
@@ -236,7 +227,7 @@ pub(crate) fn reconcile_inbox(state: &AppState) {
     match state.permission_asks.open(None) {
         Ok(asks) => {
             for ask in &asks {
-                push_to_inbox(state, &card(state, ask));
+                surface(state, &card(state, ask), false);
             }
         }
         Err(e) => warn!(error = %e, "owner inbox reconcile: asks unreadable"),
@@ -262,6 +253,31 @@ mod tests {
             answer: None,
             created_at: 0,
         }
+    }
+
+    /// A tap on an ask, anywhere — the Inbox row here, the hub row, the
+    /// phone's push — opens the conversation that asked, where its card
+    /// waits: one link, carried by the row and the hub copy alike.
+    #[test]
+    fn an_ask_opens_the_conversation_that_asked() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = db::Store::new(&dir.path().join("t.db").to_string_lossy()).unwrap();
+        let c = card(true, true);
+        // No session behind it any more: the employee.
+        let (link, item) = with_item(&store, &c, |n, extra| (n.link(), n.hub_item(extra)));
+        assert_eq!(link, "/ava");
+        assert_eq!(item["link"], "/ava");
+
+        let s = store.create_session("s1", Some(&c.session_key), Some("agent"), Some("ava"), None).unwrap();
+        let chat = store.resolve_session_chat_id(&s.id);
+        let (link, item) = with_item(&store, &c, |n, extra| (n.link(), n.hub_item(extra)));
+        assert_eq!(link, format!("/ava/threads/{}", urlencoding::encode(&chat)));
+        assert_eq!(item["link"], link, "the hub copy opens where the row opens");
+        assert_eq!(item["id"], "permission-ask:a1");
+        assert_eq!(item["type"], "permission_ask");
+        assert_eq!(item["agentId"], "ava");
+        assert_eq!(item["chatId"], chat.as_str());
+        assert_eq!(item["actions"]["buttons"].as_array().map(Vec::len), Some(3));
     }
 
     #[test]

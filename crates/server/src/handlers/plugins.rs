@@ -19,10 +19,6 @@ const SETUP_COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_sec
 /// disconnect must still finish when the plugin or network is broken.
 const ACCOUNT_LOGOUT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
-/// Frontend route of the Plugins settings page (the reconnect destination in
-/// owner-facing notices).
-pub(crate) const PLUGINS_SETTINGS_PATH: &str = "/settings/plugins";
-
 use axum::extract::{Path, Query, State};
 use axum::http::HeaderMap;
 use axum::response::Json;
@@ -2167,6 +2163,12 @@ pub(crate) async fn revoke_plugin_auth(state: &AppState, revoked: &PluginAuthRev
     // being folded into an already-read row (same rule as the reauth notice).
     let notif_id = uuid::Uuid::new_v4().to_string();
     let agent_id = holders.first().map(|p| p.agent_id.as_str());
+    // Where it is connected again: the employee's accounts at this plugin,
+    // or Plugins for a plugin with one account of its own.
+    let link = match agent_id {
+        Some(a) => tools::owner_notify::link::accounts(a, Some(slug)),
+        None => tools::owner_notify::link::plugins(),
+    };
     tools::owner_notify::emit(
         &state.store,
         Some(&|ev, payload| state.hub.broadcast(ev, payload)),
@@ -2175,7 +2177,7 @@ pub(crate) async fn revoke_plugin_auth(state: &AppState, revoked: &PluginAuthRev
             kind: "warning",
             title: &title,
             body: Some(&body),
-            action_url: Some(PLUGINS_SETTINGS_PATH),
+            action_url: Some(&link),
             agent_id,
             loud: true,
         },

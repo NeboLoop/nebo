@@ -1379,21 +1379,19 @@ pub fn report_temporary_outcome(
     let user_id = store.ensure_local_user_id()?;
     let id = format!("temporary:{}", run.id);
     let agent = (!work.agent_id.is_empty()).then_some(work.agent_id.as_str());
+    // The run is deleted below, so the item is its own place.
+    let n = tools::owner_notify::OwnerNotification {
+        id: &id,
+        kind: "info",
+        title: &title,
+        body: Some(&outcome),
+        action_url: None,
+        agent_id: agent,
+        loud: true,
+    };
     // Written before anything is deleted: the outcome must reach the owner.
-    store.create_notification_if_not_exists(&id, &user_id, "info", &title, Some(&outcome), None, None, agent)?;
-    tools::owner_notify::emit(
-        store,
-        broadcast,
-        &tools::owner_notify::OwnerNotification {
-            id: &id,
-            kind: "info",
-            title: &title,
-            body: Some(&outcome),
-            action_url: None,
-            agent_id: agent,
-            loud: true,
-        },
-    );
+    store.create_notification_if_not_exists(&id, &user_id, n.kind, n.title, n.body, Some(&n.link()), None, agent)?;
+    tools::owner_notify::emit(store, broadcast, &n);
     if !work.report_to.is_empty() {
         let saved_again = match work.kind {
             db::TemporaryKind::Workflow => format!(

@@ -112,7 +112,9 @@ impl SkillCore {
             kind: "approval",
             title: &title,
             body: Some(gist),
-            action_url: Some("/inbox"),
+            // The proposal is its own place: read in full, and decided, in
+            // the Inbox.
+            action_url: None,
             agent_id: Some(agent_id),
             loud: false,
         };
@@ -154,7 +156,6 @@ impl SkillCore {
             tracing::warn!(error = %e, "auto learned write: could not record audit row");
             return;
         }
-        let user_id = store.ensure_local_user_id().unwrap_or_default();
         let agent_name = store
             .get_agent(agent_id)
             .ok()
@@ -163,32 +164,20 @@ impl SkillCore {
             .unwrap_or_else(|| "An employee".to_string());
         let notif_id = format!("learn:{}", pending_id);
         let title = format!("{} refined a skill", agent_name);
-        if let Err(e) = store.create_notification_if_not_exists(
-            &notif_id,
-            &user_id,
-            "info",
-            &title,
-            Some(gist),
-            Some("/inbox"),
-            None,
-            Some(agent_id),
-        ) {
-            tracing::warn!(error = %e, "auto learned write: could not persist notification");
-        }
         let notify = self.notify_fn.read().ok().and_then(|g| g.clone());
-        if let Some(notify) = notify {
-            notify(
-                "notification_created",
-                serde_json::json!({
-                    "id": notif_id,
-                    "type": "info",
-                    "title": title,
-                    "body": gist,
-                    "actionUrl": "/inbox",
-                    "agentId": agent_id,
-                    "readAt": null,
-                }),
-            );
+        let n = crate::owner_notify::OwnerNotification {
+            id: &notif_id,
+            kind: "info",
+            title: &title,
+            body: Some(gist),
+            // Read, and undone if need be, in the Inbox.
+            action_url: None,
+            agent_id: Some(agent_id),
+            loud: false,
+        };
+        match &notify {
+            Some(f) => crate::owner_notify::emit(store, Some(&|ev, payload| f(ev, payload)), &n),
+            None => crate::owner_notify::emit(store, None, &n),
         }
     }
 
@@ -1235,6 +1224,31 @@ mod tests {
 
     fn tool<'a>(family: &'a [SkillTool], name: &str) -> &'a SkillTool {
         family.iter().find(|t| t.name() == name).unwrap()
+    }
+
+    /// A learned-skill proposal, and a learning already applied, open as
+    /// themselves: read in full (and decided or undone) in the Inbox.
+    #[test]
+    fn a_learning_opens_as_itself() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(db::Store::new(&dir.path().join("t.db").to_string_lossy()).unwrap());
+        let loader = Arc::new(Loader::new(dir.path().join("installed"), dir.path().join("user")));
+        let core = SkillCore::new(loader).with_store(store.clone());
+        let r = core.stage_learned_write("mom", "create", "verify-invoices", Some("body"), "Create learned skill 'verify-invoices'", "", None);
+        assert!(!r.is_error, "{}", r.content);
+        core.record_applied_learning("mom", "update", "verify-invoices", Some("body 2"), "Refine 'verify-invoices'", "", None);
+        let user = store.ensure_local_user_id().unwrap();
+        let rows: Vec<_> = store
+            .list_user_notifications(&user, 10, 0)
+            .unwrap()
+            .into_iter()
+            .filter(|n| n.id.starts_with("learn:"))
+            .collect();
+        assert_eq!(rows.len(), 2);
+        for n in &rows {
+            let want = format!("/inbox?m={}", urlencoding::encode(&n.id));
+            assert_eq!(n.action_url.as_deref(), Some(want.as_str()), "{}", n.title);
+        }
     }
 
     #[test]
