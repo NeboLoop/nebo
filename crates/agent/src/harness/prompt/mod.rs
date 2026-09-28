@@ -237,15 +237,37 @@ mod tests {
         }
     }
 
-    /// A command the owner gives is run as given, before anything else, and
-    /// never answered with what it would do (2026-09-27 proof:
-    /// `run-command-fails` run 3, `run-command-retry-spiral` run 1).
+    /// A command the owner gives is the first call, as given, and never
+    /// answered with what it would do; a search starts where the owner
+    /// pointed (2026-09-27 proofs: `run-command-fails`,
+    /// `run-command-retry-spiral`, `file-discovery-spiral`).
     #[test]
     fn the_owners_command_is_run_as_given() {
         let text = system_prompt();
-        let line = "- When the owner gives you a command to run, run it with run_command as given before anything else, \
-                    then report what it returned: what a command does is known only from running it.\n";
-        assert!(text.contains(line), "{line:?} missing from:\n{text}");
+        for line in [
+            "- When the owner gives you a command to run, your first call is that command, with run_command, exactly as \
+             given. Don't check its inputs or look for them first: its own output says what is missing. Then report \
+             what it returned.\n",
+            "- Search where the owner pointed first. If that place isn't there, tell them and ask where to look; don't \
+             search the rest of the computer for it.\n",
+        ] {
+            assert!(text.contains(line), "{line:?} missing from:\n{text}");
+        }
+    }
+
+    /// Every environment says admin rights are none before the first
+    /// command, and that is the safeguard's own limit: sudo and su are
+    /// refused whatever the mode.
+    #[test]
+    fn the_environment_says_admin_rights_are_none() {
+        let fields = sections::environment_fields(None, "web", sections::Watching::Live);
+        assert!(fields.iter().any(|(k, v)| k == "Admin rights" && v == sections::ADMIN_RIGHTS), "{fields:?}");
+        assert!(sections::ADMIN_RIGHTS.contains("sudo and su are always refused"));
+        let ctx = tools::ToolContext::new(tools::Origin::User);
+        for command in ["sudo apt-get install -y imagemagick", "su -c 'touch /etc/x'"] {
+            let refused = tools::safeguard::check_safeguard("run_command", &serde_json::json!({ "command": command }), &ctx);
+            assert!(refused.is_some(), "{command} must be refused, as the environment says");
+        }
     }
 
     /// Nebo's own machinery is not the work, and signing in is the owner's.
@@ -282,5 +304,5 @@ mod tests {
         assert!(chars < 8_000);
     }
 
-    const SYSTEM_PROMPT_CHARS: usize = 7_288;
+    const SYSTEM_PROMPT_CHARS: usize = 7_481;
 }

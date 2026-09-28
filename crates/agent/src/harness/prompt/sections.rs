@@ -125,11 +125,16 @@ tool returned.";
 /// is run as given, first: in the 2026-09-27 proof one run answered "running
 /// it would result in command not found" without running it, and one loaded
 /// convert_file for "Run `convert image.png image.jpg`" and then went
-/// looking for converters and installing one instead.
+/// looking for converters and installing one instead. In its re-run
+/// (36368802608) one run still looked for image.png first and widened the
+/// search to `/`, and one asked for "a screenshot from my Desktop" searched
+/// `/home` first: a command's first call is the command, and a search
+/// starts where the owner pointed and stops when that place isn't there.
 pub const USING_TOOLS: &str = "# Using your tools
 - Use read_file, edit_file and write_file for files, and run_command for shell work.
-- When the owner gives you a command to run, run it with run_command as given before anything else, then report what it returned: what a command does is known only from running it.
+- When the owner gives you a command to run, your first call is that command, with run_command, exactly as given. Don't check its inputs or look for them first: its own output says what is missing. Then report what it returned.
 - Search yourself with find or grep when the target is known: a file, a name or a value, or a search that takes one or two tries. A wide search, across the project or likely to take more than three searches, goes to an explore helper with delegate.
+- Search where the owner pointed first. If that place isn't there, tell them and ask where to look; don't search the rest of the computer for it.
 - More tools are available than are loaded. They're listed by name in reminders; load one with find_tools before calling it.
 - Skills are packaged instructions for a kind of work; load the ones the task needs with use_skill before starting.
 - You can call several tools in one response. When calls don't depend on each other, make them all at once: they run at the same time. When one needs another's result, call them in order.
@@ -264,15 +269,28 @@ computer's own apps (Mail, Contacts, Calendar, Reminders, Shortcuts, speech). Fi
 desktop session is up, and then drives just that session's windows, input, clipboard, capture, ui, menu, dialog and \
 space.";
 
+/// What a command may never do, told before the first one runs: the
+/// safeguard refuses sudo and su in every mode (a hard limit,
+/// `tools::safeguard`), and a run that learned it only from the refusal
+/// spent a call on it. 2026-09-27 proofs: `run-command-retry-spiral` retried
+/// a failed `apt-get install` with sudo, and `run-command-permission-denied`
+/// retried a refused write with `sudo sh -c`.
+pub const ADMIN_RIGHTS: &str = "none: sudo and su are always refused, so a change that needs admin rights is the \
+owner's to make. Tell them what to run instead of trying another way.";
+
 /// The environment's fields after the date, in the order they are told:
-/// the platform, the shell, the desktop a server bot lacks, the working
+/// the platform, the shell, admin rights, the desktop a server bot lacks, the working
 /// folder when there is one, the channel and who is watching.
 pub fn environment_fields(cwd: Option<&str>, channel: &str, watching: Watching) -> Vec<(String, String)> {
     let watching = match watching {
         Watching::Live => "the owner sees your messages as you write them",
         Watching::Unattended => "no one is watching this run; your final message is what gets read",
     };
-    let mut fields = vec![("Platform".to_string(), platform()), ("Shell".to_string(), shell())];
+    let mut fields = vec![
+        ("Platform".to_string(), platform()),
+        ("Shell".to_string(), shell()),
+        ("Admin rights".to_string(), ADMIN_RIGHTS.to_string()),
+    ];
     if tools::server_mode() {
         fields.push(("Desktop".to_string(), SERVER_DESKTOP.to_string()));
     }
