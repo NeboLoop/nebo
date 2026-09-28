@@ -3691,7 +3691,7 @@ fn notify_skipped_workflows(
              definition or recreate it with create_workflow.",
             error
         );
-        let action_url = format!("/{}/settings/workflows", agent_id);
+        let action_url = tools::owner_notify::link::employee_settings(agent_id, "workflows");
         tools::owner_notify::emit(
             store,
             Some(&|ev, payload| hub.broadcast(ev, payload)),

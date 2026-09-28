@@ -393,33 +393,22 @@ fn notify_updates_available(state: &AppState) {
             "{} {} → {} is available. Review it in Settings → Updates.",
             display, a.local_version, a.remote_version
         );
-        let action_url = "/settings/updates".to_string();
-        tools::owner_notify::emit(
-            &state.store,
-            Some(&|ev, payload| state.hub.broadcast(ev, payload)),
-            &tools::owner_notify::OwnerNotification {
-                id: &notif_id,
-                kind: "info",
-                title: &title,
-                body: Some(&body),
-                action_url: Some(&action_url),
-                agent_id: None,
-                loud: false,
-            },
-        );
+        // Settings → Updates, at this package, with its Update button.
+        let action_url = tools::owner_notify::link::update(&a.artifact_id);
+        let n = tools::owner_notify::OwnerNotification {
+            id: &notif_id,
+            kind: "info",
+            title: &title,
+            body: Some(&body),
+            action_url: Some(&action_url),
+            agent_id: None,
+            loud: false,
+        };
+        tools::owner_notify::emit(&state.store, Some(&|ev, payload| state.hub.broadcast(ev, payload)), &n);
         // Mirror to the owner's web inbox (informational — no action
         // buttons; applying an update stays a bot-UI decision). The hub
         // upsert on the id keeps the every-check re-push idempotent.
-        crate::codes::push_inbox(
-            state,
-            serde_json::json!({
-                "id": notif_id,
-                "type": "info",
-                "title": title,
-                "body": body,
-                "link": action_url,
-            }),
-        );
+        crate::codes::push_inbox(state, n.hub_item(serde_json::json!({})));
     }
 }
 

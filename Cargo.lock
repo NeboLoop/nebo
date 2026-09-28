@@ -5721,6 +5721,7 @@ dependencies = [
  "nebo-browser",
  "nebo-config",
  "nebo-server",
+ "notify-rust",
  "open",
  "serde",
  "serde_json",

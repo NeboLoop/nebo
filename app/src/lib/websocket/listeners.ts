@@ -20,6 +20,7 @@ import { askRaised, askSettled, loadOpenAsks } from '$lib/stores/permissionAsks'
 import { addToast, removeToast } from '$lib/stores/toast';
 import { onUpdateAvailable, onUpdateProgress, onUpdateReady, onUpdateError } from '$lib/stores/update';
 import { logger } from '$lib/monitoring';
+import { goto } from '$lib/nav';
 
 const log = logger.child({ component: 'WSListeners' });
 
@@ -68,25 +69,44 @@ export function attachWebSocketListeners(): void {
       pushNotification(n);
       addToast(n.title || n.body, n.type === 'error' ? 'error' : 'info');
 
-      // Desktop: a NATIVE macOS notification — system-wide (shows over any app),
+      // Desktop: a NATIVE notification — system-wide (shows over any app),
       // auto-dismisses, and carries Nebo's icon. No webview window, so it cannot hang
-      // the app (an always-on-top transparent window did). No-ops on the web build.
+      // the app (an always-on-top transparent window did). A click on it opens the
+      // item's place, the same one its Inbox row and its phone push open (the
+      // `owner-item-open` listener below). No-ops on the web build.
       void (async () => {
         if (shownNotifIds.has(n.id)) return; // dedupe repeated broadcasts of the same id
         shownNotifIds.add(n.id);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        if (!(window as any).__TAURI_INTERNALS__) return;
         try {
           const notif = await import('@tauri-apps/plugin-notification');
           let granted = await notif.isPermissionGranted();
           if (!granted) granted = (await notif.requestPermission()) === 'granted';
           if (granted) {
-            notif.sendNotification({ title: n.title || 'Nebo', body: n.body || '' });
+            const { invoke } = await import('@tauri-apps/api/core');
+            await invoke('show_owner_notification', {
+              title: n.title || 'Nebo',
+              body: n.body || '',
+              // Every owner item names where it opens (the server's one link builder).
+              link: n.actionUrl ?? '',
+            });
           }
-        } catch {
-          /* web build — no Tauri runtime */
+        } catch (e) {
+          log.debug(`native notification not shown: ${String(e)}`);
         }
       })();
     })
   );
+
+  // A click on a native notification opens the item's place in the main window.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  if (typeof window !== 'undefined' && (window as any).__TAURI_INTERNALS__) {
+    void import('@tauri-apps/api/event')
+      .then(({ listen }) => listen<string>('owner-item-open', (e) => { if (e.payload) void goto(e.payload); }))
+      .then((stop) => unsubs.push(stop))
+      .catch(() => log.debug('owner-item-open listener not attached'));
+  }
 
   unsubs.push(
     ws.on('notification_created', (data: any) => {

@@ -15,6 +15,8 @@ tauri-plugin-shell = "2"
 tauri-plugin-single-instance = "2"
 tauri-plugin-global-shortcut = "2"
 tauri-plugin-notification = "2"
+# An owner item's banner, whose click opens the item's place
+notify-rust = "4"
 
 # Internal crates
 server = { workspace = true }

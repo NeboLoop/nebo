@@ -252,8 +252,20 @@
     return { meta, body: text.slice(m[0].length) };
   }
 
+  /** Whether a link names a place other than the Inbox itself (an item about
+   *  no other place links to itself here, `/inbox?m=<id>`; rows filed before
+   *  that say `/dashboard?inbox=1`). */
+  const elsewhere = (link?: string): link is string =>
+    !!link && !link.startsWith('/inbox') && !link.startsWith('/dashboard?inbox');
+
+  /** A row opens the place it is about — where its native banner and its
+   *  phone push open; an item about no other place opens here, in the reader. */
   function open(n: Notification) {
     markAsRead(n.id);
+    if (elsewhere(n.link)) {
+      onnavigate(n.link);
+      return;
+    }
     copied = false;
     onselect(n.id);
   }
@@ -450,7 +462,7 @@
         <div class="ml-auto flex items-center gap-1 shrink-0">
           <!-- Open goes somewhere else — a run, a thread. A link back to the
                inbox itself is not a destination, so it gets no button. -->
-          {#if selected.link && !selected.link.startsWith('/inbox')}
+          {#if elsewhere(selected.link)}
             <button class="btn btn-ghost btn-xs gap-1.5" onclick={() => selected?.link && onnavigate(selected.link)}>
               <ExternalLink class="w-3.5 h-3.5" />
               {$t('common.open')}
