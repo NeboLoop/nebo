@@ -4,7 +4,8 @@ description: |
   Confidential seals each conversation, but knowledge the owner deliberately saves to local memory is
   for everyone. In one conversation with a Confidential employee the owner asks for a fact to be
   saved to local memory; the save must say "Saved to local memory". In a NEW conversation with the
-  same employee the owner asks for it, and recall returns it.
+  same employee the owner asks for it, and the reply gives it, from recall or the memory the turn
+  recalled. Where the row is stored is proved without a model by suites/memory-proof.yaml.
 target_component: memory
 agent: counsel-{{tag}}
 setup:
@@ -43,11 +44,13 @@ prompt_assertions:
       result_contains: Saved to local memory
   recovery:
   - id: new-conversation-finds-it
-    text: In the new conversation, recall returns CEDAR-{{tag}}
+    text: The new conversation's reply (turn two) gives the Friday closing time with CEDAR-{{tag}}, from
+      its own recall or the memory the turn recalled for it
     severity: critical
     check:
-      tool: recall
-      result_contains: CEDAR-{{tag}}
+      turn: 2
+      reply_matches: CEDAR-{{tag}}
 ideal_behavior:
   tool_calls: 2
-  narrative: 'remember(scope: "local"); in the new conversation recall returns the closing time and code.'
+  narrative: 'remember(scope: "local"); the new conversation answers with the closing time and code, from
+    recall or the memory the turn recalled.'

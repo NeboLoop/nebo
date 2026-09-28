@@ -42,6 +42,15 @@
 //! (`owner_intent` fails toward stopping), staying quiet never does work the
 //! owner forbade.
 //!
+//! The same decision is the one sign that the owner asked to share: a
+//! Confidential conversation's `remember` reaches local memory only when the
+//! owner's latest ask this turn is for local memory ([`SaveWatch::shares`],
+//! handed to the tool as `ToolContext::owner_shares`). The model choosing
+//! `scope: "local"` on its own never takes a fact out of the conversation:
+//! in the v0.16.0 proof (m08) it put one client's deposition date in local
+//! memory in 2 of 3 runs. Undecided is no here too, so without a decision a
+//! Confidential save stays in its conversation.
+//!
 //! No phrase lists: whether a message asks for a save is the decision's,
 //! never a keyword match.
 //!
@@ -49,7 +58,8 @@
 //! probability that made it; an undecided one at warn with the reason. Every
 //! correction is logged at info with `site="unsaved_memory"`.
 //!
-//! Switch: `NEBO_DECIDE_SAVE` — `0` turns it off (no decision is asked),
+//! Switch: `NEBO_DECIDE_SAVE` — `0` turns it off (no decision is asked, so
+//! a Confidential employee's saves all stay in their conversations),
 //! `shadow` decides and logs `would_correct` without ever correcting; unset
 //! (or anything else) is on.
 
@@ -123,7 +133,9 @@ pub fn question() -> Question {
     Question::choice(
         "Whether `message` asks the employee to keep something in its memory, and for whom. Memory is what \
          the employee remembers from one conversation to the next. Writing, saving or exporting a file or a \
-         document is work on that file, not memory.",
+         document is work on that file, not memory, and changing an employee's instructions or settings is \
+         work on that employee: words the owner wants written into a file, a document, a message or an \
+         employee's instructions are that writing, even when they mention memory.",
         &[
             (
                 "private",
@@ -137,8 +149,9 @@ pub fn question() -> Question {
             ),
             (
                 "none",
-                "Nothing to keep in memory: a question, a task, or writing, saving or exporting a file or a \
-                 document (a .md or .txt file, a spreadsheet, a PDF, a note in an app).",
+                "Nothing to keep in memory: a question, a task, writing, saving or exporting a file or a \
+                 document (a .md or .txt file, a spreadsheet, a PDF, a note in an app), or changing an \
+                 employee's instructions or settings.",
             ),
         ],
     )
@@ -266,18 +279,32 @@ impl SaveWatch {
         self.saved_at.as_ref().filter(|(at, _)| *at >= step).map(|(_, result)| result.as_str())
     }
 
-    /// The turn would end: the check to run, when the owner asked for a save
-    /// that no `remember` call answers yet. Once per turn.
-    pub async fn due(&mut self) -> Option<SaveCheck> {
-        if self.spent {
-            return None;
-        }
+    /// Read the opening message's decision, once it is in.
+    async fn settle(&mut self) {
         if let Some(opening) = self.opening.take()
             && let Ok(SaveAsk::Asked(scope)) = opening.await
         {
             // The turn's first step heard it; a later ask keeps its own step.
             self.asked_at.get_or_insert((1, scope));
         }
+    }
+
+    /// Whether the owner's latest ask this turn is for local memory: what
+    /// lets a Confidential conversation's save reach every employee
+    /// (`ToolContext::owner_shares`). No decision, or an ask for the
+    /// employee's own memory, is no.
+    pub async fn shares(&mut self) -> bool {
+        self.settle().await;
+        matches!(self.asked_at, Some((_, Scope::Local)))
+    }
+
+    /// The turn would end: the check to run, when the owner asked for a save
+    /// that no `remember` call answers yet. Once per turn.
+    pub async fn due(&mut self) -> Option<SaveCheck> {
+        if self.spent {
+            return None;
+        }
+        self.settle().await;
         let (asked_at, scope) = self.asked_at?;
         if self.saved_since(asked_at).is_some() {
             return None;
@@ -422,6 +449,47 @@ mod tests {
         assert!(!asked.contains("facts.md") && !asked.contains(TRACE), "the owner's words are state");
         // Jev reading the trace as no memory: nothing is asked, nothing corrected.
         assert_eq!(read(&said(&[("private", 0.06), ("local", 0.04), ("none", 0.9)]), "a"), SaveAsk::NotAsked);
+    }
+
+    /// The v0.16.0 proof's misfire (correction-agent-update-instructions, 3
+    /// of 3 runs, p_private 0.42–0.52): new instructions for an employee
+    /// that mention local memory were read as a save, and the correction's
+    /// "That wasn't saved to memory." ended a reply that never spoke of
+    /// memory. The question Jev reads says changing an employee's
+    /// instructions is not memory, even when they mention it; the message is
+    /// state.
+    #[test]
+    fn an_instruction_edit_is_not_memory_in_the_question() {
+        const TRACE: &str = "Update the front-desk-c3ebffbf employee's instructions to exactly this: You answer inbound \
+                             calls for NeboAI. Use only what is in local memory; never search the web.";
+        let Question::Choice { instructions, criteria } = question() else { panic!("a choice") };
+        assert!(instructions.contains("changing an employee's instructions or settings is work on that employee"), "{instructions}");
+        assert!(instructions.contains("even when they mention memory"), "{instructions}");
+        assert!(criteria["none"].contains("changing an employee's instructions or settings"), "{:?}", criteria["none"]);
+        let asked = serde_json::to_string(&(instructions, criteria)).unwrap();
+        assert!(!asked.contains("front-desk") && !asked.contains(TRACE), "the owner's words are state");
+    }
+
+    /// The owner's ask to share is the latest ask's scope, once the opening
+    /// decision is in: local is yes, the employee's own memory or no ask is
+    /// no, and a later ask for the employee's own memory takes it back.
+    #[tokio::test]
+    async fn sharing_is_the_latest_ask_for_local_memory() {
+        assert!(watch(Some(LOCAL)).shares().await);
+        assert!(!watch(Some(PRIVATE)).shares().await);
+        assert!(!watch(Some(SaveAsk::NotAsked)).shares().await);
+        assert!(!watch(Some(SaveAsk::Undecided)).shares().await);
+        assert!(!SaveWatch::off().shares().await);
+
+        let mut w = watch(Some(SaveAsk::NotAsked));
+        w.heard(3, LOCAL);
+        assert!(w.shares().await, "a message typed into the work asked");
+        w.heard(5, PRIVATE);
+        assert!(!w.shares().await, "and a later one kept it to the employee");
+
+        let mut w = watch(Some(LOCAL));
+        assert!(w.shares().await);
+        assert_eq!(w.due().await.map(|c| c.scope), Some(Scope::Local), "the end check still reads the same ask");
     }
 
     #[tokio::test]

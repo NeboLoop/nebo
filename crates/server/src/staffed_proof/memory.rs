@@ -456,14 +456,19 @@ fn rows_naming(nebo: &Nebo, needle: &str) -> Vec<(String, String)> {
 /// by recall (words, key, listing), not in what the model is sent (the
 /// prompt, the relevant-memories recall), not by searching past
 /// conversations, not through a helper B starts. The owner's own
-/// conversations are sealed too: both are the owner's. A fact the owner
-/// saved to local memory is visible in both. Every row sits where the words
-/// say: A's in A's scope, B's in B's, the local fact in local memory, and
-/// nothing in the employee's private memory.
+/// conversations are sealed too: both are the owner's. The employee's own
+/// `scope: "local"` on a save the owner never asked to share stays in its
+/// conversation (the v0.16.0 proof's m08 leak): only the owner's ask to
+/// share takes a Confidential fact to local memory, and this server has no
+/// decision to read one from. A fact the owner saved to local memory is
+/// visible in both. Every row sits where the words say: A's in A's scope,
+/// B's in B's, the local fact in local memory, and nothing in the
+/// employee's private memory.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_confidential_employees_conversations_never_see_each_other() {
     let nebo = session().await;
     let counsel = nebo.hire("Proof Mem8 Counsel", json!({ "workflows": {} })).await;
+    let office = nebo.hire("Proof Mem8 Office", json!({ "workflows": {} })).await;
     // The owner picks Confidential in the employee's settings.
     nebo.put_ok(&format!("/agents/{counsel}"), &json!({ "memoryMode": "confidential" })).await;
     assert_eq!(crate::workflow_manager::agent_memory_mode(nebo.store(), &counsel), napp::agent::MemoryMode::Confidential);
@@ -497,6 +502,7 @@ async fn a_confidential_employees_conversations_never_see_each_other() {
         turn("MARK-MEM8-A-TALK", vec![], heard.clone()),
         turn("MARK-MEM8-LOCAL", vec![("remember", json!({ "key": "office/friday-close", "value": "The office closes at four on Fridays, CEDAR-MEM8.", "scope": "local" }))], heard.clone()),
         turn("MARK-MEM8-B-SAVE", vec![("remember", json!({ "key": "case/pryce-deposition", "value": "The Pryce deposition is on the 14th, BIRCH-MEM8.", "layer": "project" }))], heard.clone()),
+        turn("MARK-MEM8-B-FILE", vec![("remember", json!({ "key": "case/pryce-file-code", "value": "The Pryce file code is BIRCH-FILE-MEM8.", "layer": "project", "scope": "local" }))], heard.clone()),
         turn("MARK-MEM8-B-ASK", asks("Harlow settlement", "case/harlow-settlement"), heard.clone()),
         turn("MARK-MEM8-A-ASK", asks("Pryce deposition", "case/pryce-deposition"), heard.clone()),
         turn("MARK-MEM8-B-HELP", vec![("delegate", json!({ "description": "check the file", "prompt": "MARK-MEM8-HELPER check the file for the Harlow settlement" }))], heard.clone()),
@@ -517,8 +523,9 @@ async fn a_confidential_employees_conversations_never_see_each_other() {
     owner_turn(&rig, &counsel, "mem8-a", "MARK-MEM8-A-SAVE", "MARK-MEM8-A-SAVE client A: remember the Harlow settlement offer is 410,000").await;
     owner_turn(&rig, &counsel, "mem8-a", "MARK-MEM8-A-TALK", "MARK-MEM8-A-TALK also, the Harlow mediation is set for the 9th").await;
     rig.until(30, "extraction files A's mediation fact", || !rows_naming(&nebo, "DOGWOOD-MEM8").is_empty()).await;
-    owner_turn(&rig, &counsel, "mem8-local", "MARK-MEM8-LOCAL", "MARK-MEM8-LOCAL save to local memory for everyone: the office closes at four on Fridays").await;
+    owner_turn(&rig, &office, "mem8-local", "MARK-MEM8-LOCAL", "MARK-MEM8-LOCAL save to local memory for everyone: the office closes at four on Fridays").await;
     owner_turn(&rig, &counsel, "mem8-b", "MARK-MEM8-B-SAVE", "MARK-MEM8-B-SAVE client B: remember the Pryce deposition is on the 14th").await;
+    owner_turn(&rig, &counsel, "mem8-b", "MARK-MEM8-B-FILE", "MARK-MEM8-B-FILE client B: remember the Pryce file code").await;
     owner_turn(&rig, &counsel, "mem8-b", "MARK-MEM8-B-ASK", "MARK-MEM8-B-ASK what do we know about the Harlow settlement and the mediation? when does the office close?").await;
     owner_turn(&rig, &counsel, "mem8-a", "MARK-MEM8-A-ASK", "MARK-MEM8-A-ASK what do we know about the Pryce deposition? when does the office close?").await;
     owner_turn(&rig, &counsel, "mem8-b", "MARK-MEM8-B-HELP", "MARK-MEM8-B-HELP have a helper check the file").await;
@@ -532,6 +539,7 @@ async fn a_confidential_employees_conversations_never_see_each_other() {
     assert_eq!(scopes("ALDER-MEM8"), vec![a.clone()], "A's save is in A's conversation");
     assert_eq!(scopes("DOGWOOD-MEM8"), vec![a.clone()], "the fact extracted after A's turn is in A's conversation too");
     assert_eq!(scopes("BIRCH-MEM8"), vec![b.clone()], "B's save is in B's conversation");
+    assert_eq!(scopes("BIRCH-FILE-MEM8"), vec![b.clone()], "the employee's own local save stays in B's conversation");
     assert_eq!(scopes("CEDAR-MEM8"), vec![owner.clone()], "the local fact is in local memory");
     let private = format!("{owner}:agent:{counsel}");
     let conn = rusqlite::Connection::open(nebo.home.join("data").join("nebo.db")).expect("db");
@@ -542,6 +550,8 @@ async fn a_confidential_employees_conversations_never_see_each_other() {
     let saved = heard.of("MARK-MEM8-A-SAVE");
     assert!(saved.contains("Saved to this conversation's confidential memory"), "the save names its scope: {saved}");
     assert!(heard.of("MARK-MEM8-LOCAL").contains("Saved to local memory"), "{}", heard.of("MARK-MEM8-LOCAL"));
+    let kept = heard.of("MARK-MEM8-B-FILE");
+    assert!(kept.contains("Saved to this conversation's confidential memory") && !kept.contains("Saved to local memory"), "{kept}");
     for (marker, other) in [("MARK-MEM8-B-ASK", ["ALDER-MEM8", "DOGWOOD-MEM8"]), ("MARK-MEM8-A-ASK", ["BIRCH-MEM8", "Pryce deposition is on"]), ("MARK-MEM8-HELPER", ["ALDER-MEM8", "DOGWOOD-MEM8"])] {
         let got = heard.of(marker);
         for word in other {
@@ -549,6 +559,7 @@ async fn a_confidential_employees_conversations_never_see_each_other() {
         }
         assert!(got.contains("CEDAR-MEM8"), "{marker} reads local memory: {got}");
     }
+    assert!(!heard.of("MARK-MEM8-A-ASK").contains("BIRCH-FILE-MEM8"), "A's listing never shows B's file code: {}", heard.of("MARK-MEM8-A-ASK"));
     // The other conversation's own words are not found by searching history
     // either (the searched conversation's own words are).
     assert!(!heard.of("MARK-MEM8-B-ASK").contains("410,000"), "{}", heard.of("MARK-MEM8-B-ASK"));
@@ -564,7 +575,7 @@ async fn a_confidential_employees_conversations_never_see_each_other() {
             }
         }
         if in_a && !in_b {
-            for word in ["BIRCH-MEM8", "Pryce deposition is on"] {
+            for word in ["BIRCH-MEM8", "BIRCH-FILE-MEM8", "Pryce deposition is on"] {
                 assert!(!text.contains(word), "a request in A carried B's {word}: {words}");
             }
         }

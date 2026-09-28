@@ -218,6 +218,12 @@ pub struct ToolContext {
     /// (`owner_speaks`); every other run, helper, coworker, channel,
     /// visitor, caller and unattended door leaves it false.
     pub owner_request: bool,
+    /// The owner's own words this turn asked for what is remembered to be
+    /// kept for everyone on this Nebo (the turn's save decision). A
+    /// Confidential conversation's `remember`/`forget` reaches local memory
+    /// only with it. Set only by the turn, once the reply is in; false
+    /// everywhere else.
+    pub owner_shares: bool,
     /// Engine-set only: the owner already answered the ask this exact call
     /// parked on (a workflow resuming the approved call). The check still
     /// applies the hard limits, the ceiling and deny rules.

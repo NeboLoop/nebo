@@ -112,6 +112,8 @@ impl RunToolScope<'_> {
             grant: Some(grant.clone()),
             door: door.clone(),
             owner_request,
+            // The round sets it once the reply is in (`ToolExecutor::owner_shares`).
+            owner_shares: false,
             answered_ask: None,
             untrusted_input,
             judgement: None,
@@ -725,6 +727,14 @@ impl<'a> ToolExecutor<'a> {
             streaming: true,
             halted: false,
         }
+    }
+
+    /// Whether the owner's words this turn asked for what is remembered to
+    /// be kept for everyone (`ToolContext::owner_shares`), known once the
+    /// reply is in. Every call that writes memory runs after it: none is
+    /// safe to start while the reply streams.
+    pub(crate) fn owner_shares(&mut self, shares: bool) {
+        self.ctx.owner_shares = shares;
     }
 
     /// A workflow activity that can park runs its calls one at a time, so a
