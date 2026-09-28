@@ -230,7 +230,8 @@ async fn an_unanswered_ask_never_expires_and_is_reminded() {
 /// answer (live 2026-09-28: told nothing about where to answer, the employee
 /// sent the owner, on his phone, to "the desktop app", then to support).
 /// The parked step tells the model to ask him now; the voice model hears
-/// the ask's id beside the run's reply. His answer counts only after he
+/// the ask's id beside the run's reply. An id the voice model made up
+/// answers nothing and names the real one. His answer counts only after he
 /// spoke and only in the call's own conversation; then it goes through the
 /// ask's one answer path (answered via voice), the server's engine resumes
 /// the parked call once, and the employee hears it ran. A client can't
@@ -257,6 +258,13 @@ async fn owners_call_ask_is_asked_aloud_and_answered_by_voice() {
     let created = asks.get(&ask_id).unwrap().unwrap().created_at;
     let yes = json!({ "ask_id": ask_id, "answer": "this_once" });
 
+    // An id the voice model made up (live 2026-09-28: "0") answers nothing,
+    // and the voice model hears the real one.
+    let invented = json!({ "ask_id": "0", "answer": "this_once" });
+    let refused = crate::handlers::voice::answer_by_voice(asks, &key, &invented, created + 5);
+    assert!(refused.starts_with("No ask 0 is waiting in this conversation"), "{refused}");
+    assert!(refused.contains(&format!("ask_id \"{ask_id}\"")), "the real id is named: {refused}");
+    assert_eq!(asks.get(&ask_id).unwrap().unwrap().status, agent::harness::permissions::AskStatus::Open);
     // Not yet: the owner hasn't spoken since it was asked.
     let early = crate::handlers::voice::answer_by_voice(asks, &key, &yes, created);
     assert!(early.contains("hasn't answered since this was asked"), "{early}");

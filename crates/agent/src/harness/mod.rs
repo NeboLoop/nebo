@@ -380,8 +380,16 @@ pub enum TurnInput {
         attachments: Vec<comm::wire::Attachment>,
     },
     /// A prompt the platform writes and the owner never sees (christening,
-    /// a voice task).
+    /// a phone caller's task).
     Platform { text: String },
+    /// A task from the owner's own call: the voice model's restatement of
+    /// what he asked, which the run works from, and what he said since the
+    /// call's last reply (`said`, from the call's transcript). The run is
+    /// his request, like a message he typed in his own chat; a decision on
+    /// what he asked for (a save to local memory) reads `said`, never the
+    /// restatement. The task is stored hidden: his words are already the
+    /// thread's row. A phone caller's task is never this: it is `Platform`.
+    Spoken { task: String, said: String },
     /// A coworker's message (a team post included): a colleague's
     /// information, never the owner's word, stored and queued as theirs.
     /// `from` is the sender's name.

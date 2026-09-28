@@ -40,7 +40,7 @@ pub(crate) struct RunToolScope<'a> {
     pub grant: &'a Arc<types::permissions::Grant>,
     /// The entry the run came through.
     pub door: &'a types::permissions::Door,
-    /// The owner's own chat message started the turn (`ToolContext::owner_request`).
+    /// The owner's own chat message or call started the turn (`ToolContext::owner_request`).
     pub owner_request: bool,
     /// The run's input arrived from outside (a workflow started by an
     /// inbound payload).
