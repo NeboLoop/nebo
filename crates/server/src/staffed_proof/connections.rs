@@ -310,6 +310,111 @@ async fn an_install_carries_the_client_that_asked() {
     nebo.store().delete_auth_profile(&profile).unwrap();
 }
 
+/// A dependency cascade's progress carries the install it belongs to: a
+/// collection the desktop's page redeems through `POST /codes` (its
+/// `X-Nebo-Client` header) reports every `dep_*` step with that client, and
+/// the same kind of install with no client behind it reports none. Only the
+/// page that asked renders the rows; another client's cascade running at the
+/// same moment never lands in its install modal. The cascade says it is
+/// complete once, at its end: each level of the recursion used to say so,
+/// and a hired employee's empty dependency list read as the whole cascade
+/// being done.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_cascade_carries_the_client_that_asked() {
+    let nebo = session().await;
+    let profile = uuid::Uuid::new_v4().to_string();
+    nebo.store()
+        .create_auth_profile(&profile, "NeboAI", "neboai", "proof-token", None, None, 0, 1, Some("token"), None)
+        .unwrap();
+    let job = json!({ "workflows": {} });
+    hub_offers_agent("AGNT-CASC-0001", "cascade-desk", "Cascade Desk", job.clone());
+    hub_offers_agent("AGNT-CASC-0002", "cascade-phone", "Cascade Phone", job);
+    hub_offers_collection("COLL-CASC-0001", "cascade-desk-pack", "Desk Pack", &["AGNT-CASC-0001"]);
+    hub_offers_collection("COLL-CASC-0002", "cascade-phone-pack", "Phone Pack", &["AGNT-CASC-0002"]);
+
+    // The cascade's events as a desktop's socket hears them: kind and client.
+    let cascade = |rx: &mut tokio::sync::broadcast::Receiver<crate::handlers::ws::HubEvent>| {
+        let mut out = Vec::new();
+        while let Ok(e) = rx.try_recv() {
+            if e.event_type.starts_with("dep_") {
+                out.push((e.event_type, e.payload["client_id"].clone()));
+            }
+        }
+        out
+    };
+    let mut desktop = nebo.state.hub.subscribe();
+
+    let sent = nebo
+        .client
+        .post(nebo.url("/codes"))
+        .header(crate::handlers::ws::EventOrigin::CLIENT_HEADER, "desktop-page")
+        .json(&json!({ "code": "COLL-CASC-0001" }))
+        .send()
+        .await
+        .expect("POST /codes");
+    assert_eq!(sent.status(), 200);
+    let events = cascade(&mut desktop);
+    let kinds: Vec<&str> = events.iter().map(|(k, _)| k.as_str()).collect();
+    assert_eq!(kinds, ["dep_cascade_start", "dep_started", "dep_installed", "dep_cascade_complete"]);
+    for (kind, client) in &events {
+        assert_eq!(client, "desktop-page", "{kind} names the page that asked");
+    }
+
+    // The same install with no client behind it (the phone app sends no name).
+    nebo.post_ok("/codes", &json!({ "code": "COLL-CASC-0002" })).await;
+    let events = cascade(&mut desktop);
+    assert_eq!(events.len(), 4, "{events:?}");
+    for (kind, client) in &events {
+        assert!(client.is_null(), "{kind} names no client");
+    }
+
+    // Leave the shared server as it was found.
+    for id in ["cascade-desk", "cascade-phone"] {
+        let _ = nebo.delete(&format!("/agents/{id}")).await;
+    }
+    nebo.store().delete_auth_profile(&profile).unwrap();
+}
+
+/// An approval card still open is shown to a client that connects later,
+/// with the origin it was asked under: the phone that was in the background
+/// when its run suggested a goal shows the card when it comes back. The
+/// first answer anywhere closes it everywhere (`approval_resolved`) and it is
+/// replayed no more.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_open_approval_reaches_a_client_that_connects_later() {
+    let nebo = session().await;
+    const REQUEST: &str = "toolu_replay_goal";
+    let asked = crate::handlers::ws::EventOrigin {
+        client_id: Some("socket-phone".to_string()),
+        session_id: "agent:main:web".to_string(),
+    }
+    .stamp(json!({ "request_id": REQUEST, "tool": "suggest_goal", "input": { "condition": "done" }, "batch": null }));
+    nebo.state.pending_tool_approvals.lock().await.insert(
+        REQUEST.to_string(),
+        crate::state::PendingToolApproval {
+            session_key: "agent:main:web".to_string(),
+            agent_id: "main".to_string(),
+            summary: "Agree on a goal".to_string(),
+            since: 0,
+            event: asked.clone(),
+        },
+    );
+    let replayed = crate::handlers::ws::pending_approval_frames(&nebo.state).await;
+    let frame = replayed.iter().find(|f| f["data"]["request_id"] == REQUEST).expect("the open card is replayed");
+    assert_eq!(frame["type"], "approval_request");
+    assert_eq!(frame["data"], asked, "replayed as it was asked, origin included");
+
+    let mut desktop = nebo.state.hub.subscribe();
+    crate::chat_dispatch::answer_approval(&nebo.state, REQUEST, "deny").await;
+    let resolved = std::iter::from_fn(|| desktop.try_recv().ok())
+        .find(|e| e.event_type == "approval_resolved")
+        .expect("every client hears the decision");
+    assert_eq!(resolved.payload["request_id"], REQUEST);
+    assert_eq!(resolved.payload["decision"], "deny");
+    let replayed = crate::handlers::ws::pending_approval_frames(&nebo.state).await;
+    assert!(replayed.iter().all(|f| f["data"]["request_id"] != REQUEST), "a decided card is not replayed");
+}
+
 /// An employee that names a plugin by its install code
 /// (`requires.plugins: ["PLUG-…"]`, as marketplace packages do) reaches the
 /// plugin's own `plugin__<slug>` tool: the install records the code it came
@@ -425,7 +530,7 @@ async fn the_hubs_echo_of_a_card_install_installs_nothing_twice() {
     let tap = {
         let state = nebo.state.clone();
         tokio::spawn(async move {
-            crate::codes::submit_code(axum::extract::State(state), axum::response::Json(json!({ "code": CODE })))
+            crate::codes::submit_code(axum::extract::State(state), axum::http::HeaderMap::new(), axum::response::Json(json!({ "code": CODE })))
                 .await
                 .map(|body| body.0)
                 .map_err(|(status, body)| format!("{status}: {}", body.error))
@@ -491,7 +596,7 @@ async fn two_taps_on_one_install_card_start_one_install() {
     let first = {
         let state = nebo.state.clone();
         tokio::spawn(async move {
-            crate::codes::submit_code(axum::extract::State(state), axum::response::Json(json!({ "code": CODE })))
+            crate::codes::submit_code(axum::extract::State(state), axum::http::HeaderMap::new(), axum::response::Json(json!({ "code": CODE })))
                 .await
         })
     };
@@ -500,7 +605,7 @@ async fn two_taps_on_one_install_card_start_one_install() {
     assert!(!first.is_finished(), "the first tap ended before its install was seen in flight");
 
     let second =
-        crate::codes::submit_code(axum::extract::State(nebo.state.clone()), axum::response::Json(json!({ "code": CODE })))
+        crate::codes::submit_code(axum::extract::State(nebo.state.clone()), axum::http::HeaderMap::new(), axum::response::Json(json!({ "code": CODE })))
             .await;
     let (status, body) = second.err().expect("the second tap is refused");
     assert_eq!(status, axum::http::StatusCode::CONFLICT);

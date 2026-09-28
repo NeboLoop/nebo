@@ -1118,6 +1118,13 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                         StreamEventType::ApprovalRequest => {
                             if let Some(ref tc) = event.tool_call {
                                 let summary = spec_tools.labels(&tc.name, &tc.input).await.0;
+                                let request = approvals_origin.stamp(serde_json::json!({
+                                    "request_id": tc.id,
+                                    "tool": tc.name,
+                                    "input": tc.input,
+                                    // Present when several gated calls share this card.
+                                    "batch": event.widgets.as_ref().and_then(|w| w.get("batch").cloned()),
+                                }));
                                 pending_tool_approvals.lock().await.insert(
                                     tc.id.clone(),
                                     crate::state::PendingToolApproval {
@@ -1125,18 +1132,10 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                         agent_id: approvals_agent_id.clone(),
                                         summary,
                                         since: chrono::Utc::now().timestamp(),
+                                        event: request.clone(),
                                     },
                                 );
-                                hub.broadcast(
-                                    "approval_request",
-                                    approvals_origin.stamp(serde_json::json!({
-                                        "request_id": tc.id,
-                                        "tool": tc.name,
-                                        "input": tc.input,
-                                        // Present when several gated calls share this card.
-                                        "batch": event.widgets.as_ref().and_then(|w| w.get("batch").cloned()),
-                                    })),
-                                );
+                                hub.broadcast("approval_request", request);
                                 // Relay the approval into the loop conversation
                                 // (personal contexts only) — otherwise the run
                                 // parks on a prompt the remote owner never sees.

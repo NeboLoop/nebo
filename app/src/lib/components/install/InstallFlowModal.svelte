@@ -676,60 +676,67 @@
     return deps.length - 1;
   }
 
+  /** Progress for the install this modal is showing: open, and started by this
+   *  client. Another client's install (the phone's, a second window's) cascades
+   *  at the same time and its rows never land here ($lib/websocket/origin). */
+  function ours(e: Event): boolean {
+    return show && opensHere((e as CustomEvent).detail as EventOrigin, 'nowhere');
+  }
+
   function handleDepCascadeStart(e: Event) {
-    if (!show) return;
+    if (!ours(e)) return;
     cascadeStarted = true;
     const total = Number((e as CustomEvent).detail?.total ?? 0);
     if (total > 0) depTotal = total;
   }
-  function handleDepCascadeComplete() {
-    if (!show) return;
+  function handleDepCascadeComplete(e: Event) {
+    if (!ours(e)) return;
     cascadeComplete = true;
     // Plugins are installed now — surface any that still need auth on the review row.
     void refreshAuthNeeded();
   }
   function handleDepStarted(e: Event) {
-    if (!show) return;
+    if (!ours(e)) return;
     const d = (e as CustomEvent).detail;
     if (!d?.reference) return;
     const idx = findOrAddDep(d.reference, (d.depType || 'skill').toLowerCase(), d.name, d.slug);
     if (deps[idx].status === 'pending') deps[idx] = { ...deps[idx], status: 'installing' };
   }
   function handleDepPending(e: Event) {
-    if (!show) return;
+    if (!ours(e)) return;
     const d = (e as CustomEvent).detail;
     if (d?.reference) findOrAddDep(d.reference, (d.depType || 'skill').toLowerCase(), d.name, d.slug);
   }
   function handleDepInstalled(e: Event) {
-    if (!show) return;
+    if (!ours(e)) return;
     const d = (e as CustomEvent).detail;
     if (!d?.reference) return;
     const idx = findOrAddDep(d.reference, (d.depType || 'skill').toLowerCase(), d.name, d.slug);
     deps[idx] = { ...deps[idx], status: 'installed', error: undefined };
   }
   function handleDepFailed(e: Event) {
-    if (!show) return;
+    if (!ours(e)) return;
     const d = (e as CustomEvent).detail;
     if (!d?.reference) return;
     const idx = findOrAddDep(d.reference, (d.depType || 'skill').toLowerCase(), d.name, d.slug);
     deps[idx] = { ...deps[idx], status: 'failed', error: (d.error as string) || $t('installFlow.unknownError') };
   }
   function handlePluginInstalling(e: Event) {
-    if (!show) return;
+    if (!ours(e)) return;
     const plugin = (e as CustomEvent).detail?.plugin as string;
     if (!plugin) return;
     const idx = findOrAddDep(plugin, 'plugin');
     deps[idx] = { ...deps[idx], status: 'installing' };
   }
   function handlePluginInstalled(e: Event) {
-    if (!show) return;
+    if (!ours(e)) return;
     const plugin = (e as CustomEvent).detail?.plugin as string;
     if (!plugin) return;
     const idx = findOrAddDep(plugin, 'plugin');
     deps[idx] = { ...deps[idx], status: 'installed' };
   }
   function handleDepNeedsSetup(e: Event) {
-    if (!show) return;
+    if (!ours(e)) return;
     // Collections surface plugins-needing-auth via this event (no single agent to
     // getAgent). Merge into the same per-row auth model so there's ONE auth surface.
     const items = ((e as CustomEvent).detail?.items as AuthEntry[]) || [];

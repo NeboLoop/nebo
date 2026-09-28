@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize};
 use comm::api::NeboAIApi;
 
 use crate::handlers::HandlerResult;
+use crate::handlers::ws::EventOrigin;
 use crate::state::AppState;
 
 // ── Types ───────────────────────────────────────────────────────────
@@ -97,25 +98,43 @@ pub struct CascadeResult {
 /// branch any more. Explicit installs (codes, marketplace, collections) all
 /// flow through here; the boot-time reconcile in `lib.rs` gates the CALL on
 /// `auto_install_deps_enabled`, not the behavior inside.
+///
+/// `origin` is who asked for the install the cascade belongs to: every
+/// `dep_*` event carries it, so only that client's install modal renders the
+/// progress (another client's cascade never lands in it).
 pub async fn resolve_cascade(
     state: &AppState,
     deps: Vec<DepRef>,
     visited: &mut HashSet<String>,
     by: tools::InstalledBy,
+    origin: &EventOrigin,
 ) -> CascadeResult {
     // Counted as local install work so the hub's `tool_installed` echo of a
     // dep we redeem here waits for it (codes::InFlightCodes::settle).
     let _cascade = state.codes_in_flight.cascade_begin();
-    announce_cascade_start(state, &deps);
-    resolve_cascade_inner(state, deps, visited, by).await
+    announce_cascade_start(state, &deps, origin);
+    let result = resolve_cascade_inner(state, deps, visited, by, origin).await;
+    // Once, when the whole cascade is done: each level of the recursion used
+    // to announce its own end, so the install modal read a child agent's
+    // finished (empty) dependency list as the cascade being complete while
+    // its siblings were still installing.
+    state.hub.broadcast(
+        "dep_cascade_complete",
+        origin.stamp(serde_json::json!({
+            "installed": result.installed_count,
+            "pending": result.pending_count,
+            "failed": result.failed_count,
+        })),
+    );
+    result
 }
 
 /// Tell the UI how many top-level dependencies are about to be processed, so the
 /// install modal can render a determinate progress bar instead of a spinner.
-fn announce_cascade_start(state: &AppState, deps: &[DepRef]) {
+fn announce_cascade_start(state: &AppState, deps: &[DepRef], origin: &EventOrigin) {
     state.hub.broadcast(
         "dep_cascade_start",
-        serde_json::json!({ "total": deps.len() }),
+        origin.stamp(serde_json::json!({ "total": deps.len() })),
     );
 }
 
@@ -124,6 +143,7 @@ fn resolve_cascade_inner<'a>(
     deps: Vec<DepRef>,
     visited: &'a mut HashSet<String>,
     by: tools::InstalledBy,
+    origin: &'a EventOrigin,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = CascadeResult> + Send + 'a>> {
     Box::pin(async move {
         let mut results = Vec::new();
@@ -146,12 +166,12 @@ fn resolve_cascade_inner<'a>(
                 // user retries a previously-failed item that's actually installed).
                 state.hub.broadcast(
                     "dep_installed",
-                    serde_json::json!({
+                    origin.stamp(serde_json::json!({
                         "depType": format!("{:?}", dep.dep_type),
                         "reference": dep.reference,
                         "name": dep.name,
                         "slug": dep.slug,
-                    }),
+                    })),
                 );
                 installed_count += 1;
                 results.push(DepResult {
@@ -184,28 +204,28 @@ fn resolve_cascade_inner<'a>(
             // render a live per-dependency progress indicator.
             state.hub.broadcast(
                 "dep_started",
-                serde_json::json!({
+                origin.stamp(serde_json::json!({
                     "depType": format!("{:?}", dep.dep_type),
                     "reference": dep.reference,
                     "name": dep.name,
                     "slug": dep.slug,
-                }),
+                })),
             );
             match install_dep(state, &dep, by).await {
                 Ok(child_deps) => {
                     state.hub.broadcast(
                         "dep_installed",
-                        serde_json::json!({
+                        origin.stamp(serde_json::json!({
                             "depType": format!("{:?}", dep.dep_type),
                             "reference": dep.reference,
                             "name": dep.name,
                             "slug": dep.slug,
-                        }),
+                        })),
                     );
                     installed_count += 1;
 
                     // Recurse into child deps
-                    let child_result = resolve_cascade_inner(state, child_deps, visited, by).await;
+                    let child_result = resolve_cascade_inner(state, child_deps, visited, by, origin).await;
                     installed_count += child_result.installed_count;
                     failed_count += child_result.failed_count;
 
@@ -218,13 +238,13 @@ fn resolve_cascade_inner<'a>(
                 Err(e) => {
                     state.hub.broadcast(
                         "dep_failed",
-                        serde_json::json!({
+                        origin.stamp(serde_json::json!({
                             "depType": format!("{:?}", dep.dep_type),
                             "reference": dep.reference,
                             "name": dep.name,
                             "slug": dep.slug,
                             "error": e,
-                        }),
+                        })),
                     );
                     failed_count += 1;
                     results.push(DepResult {
@@ -235,15 +255,6 @@ fn resolve_cascade_inner<'a>(
                 }
             }
         }
-
-        state.hub.broadcast(
-            "dep_cascade_complete",
-            serde_json::json!({
-                "installed": installed_count,
-                "pending": pending_count,
-                "failed": failed_count,
-            }),
-        );
 
         CascadeResult {
             results,
@@ -889,11 +900,13 @@ pub struct ApproveRequest {
 /// path: the install modal calls this to retry a single dep row that failed.
 pub async fn approve_deps(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     Json(body): Json<ApproveRequest>,
 ) -> HandlerResult<serde_json::Value> {
     let mut visited = HashSet::new();
-    // The owner's retry in the install modal.
-    let result = resolve_cascade(&state, body.deps, &mut visited, tools::InstalledBy::Owner).await;
+    // The owner's retry in the install modal: its rows update there alone.
+    let origin = EventOrigin::of_request(&headers, String::new());
+    let result = resolve_cascade(&state, body.deps, &mut visited, tools::InstalledBy::Owner, &origin).await;
     Ok(Json(serde_json::json!(result)))
 }
 

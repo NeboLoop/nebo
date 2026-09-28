@@ -227,23 +227,26 @@ impl Drop for CascadeGuard<'_> {
 /// whose act it is, which decides whether a hired employee gets its job.
 /// `claim` is the door's hold on the code in [`InFlightCodes`]: while it
 /// lives, a second door for the same code is refused and the hub's echo of
-/// this install waits (`settle`) instead of installing again.
+/// this install waits (`settle`) instead of installing again. `origin` is
+/// who asked: the install's progress events (its dependency cascade too)
+/// carry it, so only that client renders them.
 async fn install(
     state: &AppState,
     code_type: CodeType,
     claim: &InFlightGuard<'_>,
     by: InstalledBy,
+    origin: &EventOrigin,
 ) -> Result<CodeHandlerResult, NeboError> {
     let code = claim.code();
     match code_type {
         CodeType::Nebo => handle_nebo_code(state, code).await,
-        CodeType::Skill => handle_skill_code(state, code, by).await,
-        CodeType::Work => handle_work_code(state, code, by).await,
-        CodeType::Agent => handle_agent_code(state, code, by).await,
+        CodeType::Skill => handle_skill_code(state, code, by, origin).await,
+        CodeType::Work => handle_work_code(state, code, by, origin).await,
+        CodeType::Agent => handle_agent_code(state, code, by, origin).await,
         CodeType::Loop => handle_loop_code(state, code).await,
-        CodeType::Plugin => handle_plugin_code(state, code).await,
-        CodeType::App => handle_app_code(state, code, by).await,
-        CodeType::Collection => handle_collection_code(state, code, by).await,
+        CodeType::Plugin => handle_plugin_code(state, code, origin).await,
+        CodeType::App => handle_app_code(state, code, by, origin).await,
+        CodeType::Collection => handle_collection_code(state, code, by, origin).await,
         CodeType::Connection => handle_connection_code(state, code).await,
     }
 }
@@ -280,7 +283,7 @@ pub async fn handle_code(state: &AppState, code_type: CodeType, code: &str, orig
         })),
     );
 
-    let result = install(state, code_type, &claim, InstalledBy::Owner).await;
+    let result = install(state, code_type, &claim, InstalledBy::Owner, origin).await;
 
     match result {
         Ok(r) => {
@@ -348,7 +351,7 @@ pub async fn handle_code_text(
         })),
     );
 
-    let result = install(state, code_type, &claim, by).await;
+    let result = install(state, code_type, &claim, by, &origin).await;
 
     match result {
         Ok(r) => {
@@ -403,6 +406,7 @@ async fn handle_skill_code(
     state: &AppState,
     code: &str,
     by: InstalledBy,
+    origin: &EventOrigin,
 ) -> Result<CodeHandlerResult, NeboError> {
     let api = build_api_client(state)?;
 
@@ -483,6 +487,7 @@ async fn handle_skill_code(
     // Cascade: resolve skill deps (tools[], dependencies[])
     if let Some(skill_dir) = skill_dir {
         let state_clone = state.clone();
+        let origin = origin.clone();
         tokio::spawn(async move {
             let skill_path = skill_dir.join("SKILL.md");
             if let Ok(data) = std::fs::read(&skill_path) {
@@ -490,7 +495,7 @@ async fn handle_skill_code(
                     let deps = crate::deps::extract_skill_deps(&skill);
                     if !deps.is_empty() {
                         let mut visited = std::collections::HashSet::new();
-                        crate::deps::resolve_cascade(&state_clone, deps, &mut visited, by).await;
+                        crate::deps::resolve_cascade(&state_clone, deps, &mut visited, by, &origin).await;
                     }
                 }
             }
@@ -508,6 +513,7 @@ async fn handle_work_code(
     state: &AppState,
     code: &str,
     by: InstalledBy,
+    origin: &EventOrigin,
 ) -> Result<CodeHandlerResult, NeboError> {
     let api = build_api_client(state)?;
 
@@ -573,13 +579,14 @@ async fn handle_work_code(
     // Cascade: resolve workflow deps (skills, tools, sub-workflows)
     let state_clone = state.clone();
     let artifact_id_clone = artifact_id.clone();
+    let origin = origin.clone();
     tokio::spawn(async move {
         if let Ok(Some(wf)) = state_clone.store.get_workflow(&artifact_id_clone) {
             if let Ok(def) = workflow::parser::parse_workflow(&wf.definition) {
                 let deps = crate::deps::extract_workflow_deps(&def);
                 if !deps.is_empty() {
                     let mut visited = std::collections::HashSet::new();
-                    crate::deps::resolve_cascade(&state_clone, deps, &mut visited, by).await;
+                    crate::deps::resolve_cascade(&state_clone, deps, &mut visited, by, &origin).await;
                 }
             }
         }
@@ -602,6 +609,7 @@ async fn handle_collection_code(
     state: &AppState,
     code: &str,
     by: InstalledBy,
+    origin: &EventOrigin,
 ) -> Result<CodeHandlerResult, NeboError> {
     let api = build_api_client(state)?;
 
@@ -687,7 +695,7 @@ async fn handle_collection_code(
 
     // Install every item via the canonical installer.
     let mut visited = std::collections::HashSet::new();
-    let result = crate::deps::resolve_cascade(state, deps, &mut visited, by).await;
+    let result = crate::deps::resolve_cascade(state, deps, &mut visited, by, origin).await;
 
     // Apps install through the agent path; detect & persist their app-specific
     // paths so they show up and launch as apps (the cascade only does the agent part).
@@ -709,7 +717,7 @@ async fn handle_collection_code(
     if !needs_setup.is_empty() {
         state.hub.broadcast(
             "dep_needs_setup",
-            serde_json::json!({ "items": needs_setup }),
+            origin.stamp(serde_json::json!({ "items": needs_setup })),
         );
     }
 
@@ -1105,6 +1113,7 @@ async fn handle_agent_code(
     state: &AppState,
     code: &str,
     by: InstalledBy,
+    origin: &EventOrigin,
 ) -> Result<CodeHandlerResult, NeboError> {
     let api = build_api_client(state)?;
 
@@ -1246,9 +1255,10 @@ async fn handle_agent_code(
             if !deps.is_empty() {
                 let bg_state = state.clone();
                 let bg_name = artifact_name.clone();
+                let origin = origin.clone();
                 tokio::spawn(async move {
                     let mut visited = std::collections::HashSet::new();
-                    crate::deps::resolve_cascade(&bg_state, deps, &mut visited, by).await;
+                    crate::deps::resolve_cascade(&bg_state, deps, &mut visited, by, &origin).await;
                     info!(agent = %bg_name, "cascade: background dep resolution complete");
                 });
             }
@@ -1369,7 +1379,11 @@ async fn handle_loop_code(state: &AppState, code: &str) -> Result<CodeHandlerRes
     })
 }
 
-async fn handle_plugin_code(state: &AppState, code: &str) -> Result<CodeHandlerResult, NeboError> {
+async fn handle_plugin_code(
+    state: &AppState,
+    code: &str,
+    origin: &EventOrigin,
+) -> Result<CodeHandlerResult, NeboError> {
     let api = build_api_client(state)?;
 
     // Try to redeem code — may fail if already redeemed (re-install)
@@ -1432,10 +1446,10 @@ async fn handle_plugin_code(state: &AppState, code: &str) -> Result<CodeHandlerR
     // Broadcast installing event
     state.hub.broadcast(
         "plugin_installing",
-        serde_json::json!({
+        origin.stamp(serde_json::json!({
             "plugin": name,
             "platform": platform,
-        }),
+        })),
     );
 
     // Resolve by the canonical marketplace slug — NEVER derive it from the display
@@ -1453,13 +1467,13 @@ async fn handle_plugin_code(state: &AppState, code: &str) -> Result<CodeHandlerR
     if let Err(e) = fetch_and_install_plugin(state, &api, &slug, &name, Some(code)).await {
         state.hub.broadcast(
             "plugin_error",
-            serde_json::json!({ "plugin": name, "error": e.to_string() }),
+            origin.stamp(serde_json::json!({ "plugin": name, "error": e.to_string() })),
         );
         return Err(e);
     }
     state
         .hub
-        .broadcast("plugin_installed", serde_json::json!({ "plugin": name }));
+        .broadcast("plugin_installed", origin.stamp(serde_json::json!({ "plugin": name })));
     info!(code, plugin = %name, artifact_id = %artifact_id, "installed plugin");
 
     // Cascade plugin-to-plugin dependencies (e.g., digest → ffmpeg).
@@ -1514,11 +1528,11 @@ async fn handle_plugin_code(state: &AppState, code: &str) -> Result<CodeHandlerR
     if let Some(auth) = state.plugin_store.get_manifest(&slug).and_then(|m| m.auth) {
         state.hub.broadcast(
             "plugin_auth_required",
-            serde_json::json!({
+            origin.stamp(serde_json::json!({
                 "plugin": name,
                 "label": auth.label,
                 "description": auth.description,
-            }),
+            })),
         );
     }
 
@@ -1738,9 +1752,10 @@ async fn handle_app_code(
     state: &AppState,
     code: &str,
     by: InstalledBy,
+    origin: &EventOrigin,
 ) -> Result<CodeHandlerResult, NeboError> {
     // Apps use the same install flow as agents — they ARE agents with artifact_type="app"
-    let result = handle_agent_code(state, code, by).await?;
+    let result = handle_agent_code(state, code, by, origin).await?;
 
     // Detect & persist app-specific paths (ui/, bin/) so it's recognised as an app.
     reconcile_app_fields(state).await;
@@ -1764,6 +1779,7 @@ async fn handle_app_code(
 /// Returns: `{ "success": true, "message": "Installed skill: ..." }`
 pub async fn submit_code(
     axum::extract::State(state): axum::extract::State<AppState>,
+    headers: axum::http::HeaderMap,
     axum::response::Json(body): axum::response::Json<serde_json::Value>,
 ) -> Result<
     axum::response::Json<serde_json::Value>,
@@ -1800,7 +1816,9 @@ pub async fn submit_code(
             }),
         ));
     };
-    let result = install(&state, code_type, &claim, InstalledBy::Owner).await;
+    // The card that asked renders the install's progress; no other client does.
+    let origin = EventOrigin::of_request(&headers, String::new());
+    let result = install(&state, code_type, &claim, InstalledBy::Owner, &origin).await;
 
     match result {
         Ok(r) => {
