@@ -55,6 +55,12 @@ pub fn auto_correct_resource(
     resource_names: &[&str],
 ) -> String {
     if !domain_input.resource.is_empty() {
+        // `"\"memory\""`: a resource name sent with its quotes still names it.
+        let bare = domain_input.resource.trim().trim_matches(|c| c == '"' || c == '\'' || c == '`').trim();
+        if bare != domain_input.resource && resource_names.contains(&bare) {
+            input["resource"] = serde_json::Value::String(bare.to_string());
+            return bare.to_string();
+        }
         return domain_input.resource.clone();
     }
 
@@ -235,4 +241,18 @@ pub fn build_domain_description(cfg: &DomainSchemaConfig) -> String {
 /// Check if an action requires user approval based on a list of dangerous actions.
 pub fn action_requires_approval(action: &str, dangerous_actions: &[&str]) -> bool {
     dangerous_actions.contains(&action)
+}
+
+#[cfg(test)]
+mod quoted_resource_tests {
+    #[test]
+    fn a_quoted_resource_name_still_names_the_resource() {
+        let mut input = serde_json::json!({"resource": "\"memory\"", "action": "search"});
+        let d: super::DomainInput = serde_json::from_value(input.clone()).unwrap();
+        assert_eq!(super::auto_correct_resource(&d, &mut input, &["memory", "task"]), "memory");
+        assert_eq!(input["resource"], "memory");
+        let mut other = serde_json::json!({"resource": "\"nope\"", "action": "search"});
+        let d: super::DomainInput = serde_json::from_value(other.clone()).unwrap();
+        assert_eq!(super::auto_correct_resource(&d, &mut other, &["memory"]), "\"nope\"");
+    }
 }
