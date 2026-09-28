@@ -367,6 +367,13 @@ pub struct ToolContext {
     /// to a deferred tool outside it that fails validation is told to load
     /// the tool first. `None` for callers that are not a model's step.
     pub declared_tools: Option<std::sync::Arc<std::collections::HashSet<String>>>,
+    /// What this step's model was given, lowercased: the system prompt, every
+    /// message that is not its own, and every tool result. The prompt's rule
+    /// is "never make up a web address; use what the owner gave you or what
+    /// a tool returned", and the web tools keep it: a site is opened only
+    /// when it is named here (`web_tool::unnamed_site`). `None` for callers
+    /// that are not a model's step.
+    pub given_text: Option<std::sync::Arc<str>>,
     /// The id of the call this context runs, so a long call's progress
     /// events name the call they belong to. Empty outside a model's step.
     pub tool_call_id: String,

@@ -347,6 +347,26 @@ pub(crate) async fn start(h: Harness, mut req: TurnRequest) -> Result<TurnHandle
     Ok(TurnHandle { events: rx, turn_id })
 }
 
+/// What a step's model was given, lowercased: the system prompt, every
+/// message that is not the model's own, and every tool result the request
+/// carries (`ToolContext::given_text`). The model's own words and calls are
+/// left out: an address it wrote itself was given by no one. In the v0.16.0
+/// proof, "What's the weather in Austin, TX right now?" was answered from a
+/// weather service's address no one had named, in 3 runs across 3 sweeps,
+/// though the prompt already says never to make one up.
+fn given_text(request: &ai::ChatRequest) -> Arc<str> {
+    let mut given = request.system.to_lowercase();
+    for m in request.messages.iter().filter(|m| m.role != "assistant") {
+        given.push('\n');
+        given.push_str(&m.content.to_lowercase());
+        if let Some(results) = &m.tool_results {
+            given.push('\n');
+            given.push_str(&results.to_string().to_lowercase());
+        }
+    }
+    given.into()
+}
+
 /// Whether the owner wrote this turn's input in their own chat: an owner
 /// chat turn from the owner's app, not a chat channel (Slack, Discord, a
 /// loop), a coworker, a visitor or a caller. Only such input is stored as
@@ -1147,6 +1167,7 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
         }
 
         let declared_names: Arc<HashSet<String>> = Arc::new(request.tools.iter().map(|t| t.name.clone()).collect());
+        let given_text = given_text(&request);
         let memory_user_id = cx.seat.memory.user_id.clone();
         let tool_scope = RunToolScope {
             sessions,
@@ -1177,6 +1198,7 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
             tool_denial_hint: &cx.request.seat.tool_denial_hint,
             declared_tools: &declared_names,
             withheld_tools: &cx.withheld_tools,
+            given_text: &given_text,
         };
         let issue_credential = h.tool_credentials.as_ref().map(|credentials| {
             let tool_scope = &tool_scope;
@@ -2315,6 +2337,30 @@ mod tests {
     use std::pin::Pin;
 
     use super::*;
+
+    /// A step's given text holds the prompt, the owner's words and the tool
+    /// results, never the model's own words or calls.
+    #[test]
+    fn given_text_leaves_out_the_models_own_words() {
+        let msg = |role: &str, content: &str, results: Option<serde_json::Value>| ai::Message {
+            role: role.into(),
+            content: content.into(),
+            tool_results: results,
+            ..Default::default()
+        };
+        let request = ai::ChatRequest {
+            system: "Company site: Example.org".into(),
+            messages: vec![
+                msg("user", "Look up the weather", None),
+                msg("assistant", "I'll fetch https://wttr.in", None),
+                msg("user", "", Some(serde_json::json!([{"content": "https://Forecast.example.net/today"}]))),
+            ],
+            ..ai::ChatRequest::new(ai::RequestTrace::new("given"))
+        };
+        let given = given_text(&request);
+        assert!(given.contains("example.org") && given.contains("look up the weather") && given.contains("forecast.example.net"), "{given}");
+        assert!(!given.contains("wttr"), "{given}");
+    }
     use crate::harness::{Delivery, SeatRequest};
 
     type Hook = Pin<Box<dyn Future<Output = ()> + Send>>;
