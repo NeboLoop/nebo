@@ -1094,23 +1094,73 @@ const SEARCH_PROGRAMS: &[&str] = &["grep", "egrep", "fgrep", "rg", "ag", "ack", 
 /// folder is taken to have some.
 const EMPTY_FOLDER_SCAN: usize = 2_000;
 
-/// When `command` runs a search over folders that hold no files at all,
-/// the note that says nothing was searched. Folders are the search
-/// programs' arguments that name existing directories (relative ones
-/// against `cwd`).
+/// When `command` runs a search that searched nothing, the note that says
+/// so: over folders that hold no files at all (the search programs'
+/// arguments that name existing directories, relative ones against `cwd`),
+/// or from a `find` starting point that does not exist.
+///
+/// Gate 2026-09-27 (`file-discovery-spiral`, 0/3): `find ~/Desktop … 2>/dev/null
+/// | head` on a computer with no Desktop folder came back "(exit 0, no
+/// output)", the same words as a search that found nothing, and every run
+/// spent 3–5 more commands finding out the folder wasn't there, widening to
+/// `/home` and then to `/`. A missing starting point is read only from
+/// `find`, whose starting points are the words before its expression; the
+/// other programs take a pattern first, and which word is a path is theirs
+/// to know.
 fn nothing_searched_note(command: &str, cwd: &std::path::Path) -> Option<String> {
     let tokens = shlex::split(command).unwrap_or_else(|| command.split_whitespace().map(str::to_string).collect());
     let mut searching = false;
     let mut empty: Vec<String> = Vec::new();
+    let mut missing: Vec<String> = Vec::new();
+    // Reading a `find`'s starting points; `find_options` while its leading
+    // -H/-L/-P/-D/-O options may still come.
+    let mut find_roots = false;
+    let mut find_options = false;
+    let mut skip_next = false;
+    // A `cd` earlier in the command moves where relative paths point.
+    let mut command_start = true;
+    let mut moved = false;
     for token in &tokens {
         if matches!(token.as_str(), "|" | "||" | "&&" | ";" | "&") {
             searching = false;
+            find_roots = false;
+            command_start = true;
             continue;
+        }
+        if std::mem::take(&mut command_start) && token == "cd" {
+            moved = true;
         }
         let program = std::path::Path::new(token).file_name().and_then(|n| n.to_str()).unwrap_or("");
         if !searching && SEARCH_PROGRAMS.contains(&program) {
             searching = true;
+            find_roots = program == "find";
+            find_options = find_roots;
             continue;
+        }
+        if std::mem::take(&mut skip_next) {
+            continue;
+        }
+        if find_roots {
+            if find_options && (matches!(token.as_str(), "-H" | "-L" | "-P") || token.starts_with("-O")) {
+                continue;
+            }
+            if find_options && token == "-D" {
+                skip_next = true;
+                continue;
+            }
+            find_options = false;
+            if token.starts_with('-') || matches!(token.as_str(), "(" | ")" | "!" | ",") {
+                find_roots = false;
+            } else if let Some(path) = missing_path(token, cwd, moved) {
+                let shown = match path.to_string_lossy() {
+                    p if p == token.as_str() => token.clone(),
+                    p => format!("{token} ({p})"),
+                };
+                if !missing.contains(&shown) {
+                    missing.push(shown);
+                }
+                continue;
+            }
         }
         if !searching || token.starts_with('-') || token.contains('>') {
             continue;
@@ -1120,14 +1170,41 @@ fn nothing_searched_note(command: &str, cwd: &std::path::Path) -> Option<String>
             empty.push(token.clone());
         }
     }
-    if empty.is_empty() {
+    let mut notes: Vec<String> = Vec::new();
+    if !missing.is_empty() {
+        notes.push(format!(
+            "{} does not exist, so nothing was searched there. If the owner named that folder, tell them it isn't \
+             there and ask where the files are, rather than searching other folders for it.",
+            missing.join(" and ")
+        ));
+    }
+    if !empty.is_empty() {
+        notes.push(format!(
+            "{} holds no files, so this searched nothing: the empty result says nothing about whether what you \
+             looked for exists. Tell the owner the folder is empty and ask where the files are.",
+            empty.join(" and ")
+        ));
+    }
+    (!notes.is_empty()).then(|| notes.join(" "))
+}
+
+/// The path a search starting point names when nothing is there, read as
+/// the shell would pass it: `~` expanded, relative to `cwd` unless a `cd`
+/// came before it (`moved`). A word the shell would still rewrite (a
+/// variable, a glob, a substitution) is not read.
+fn missing_path(token: &str, cwd: &std::path::Path, moved: bool) -> Option<std::path::PathBuf> {
+    if token.contains(['$', '`', '*', '?', '[', '{']) || (token.starts_with('~') && token != "~" && !token.starts_with("~/")) {
         return None;
     }
-    Some(format!(
-        "{} holds no files, so this searched nothing: the empty result says nothing about whether what you \
-         looked for exists. Tell the owner the folder is empty and ask where the files are.",
-        empty.join(" and ")
-    ))
+    let expanded = std::path::PathBuf::from(crate::file_tool::expand_path(token));
+    if moved && expanded.is_relative() {
+        return None;
+    }
+    let path = cwd.join(expanded);
+    match std::fs::symlink_metadata(&path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(path),
+        _ => None,
+    }
 }
 
 /// Whether `dir` holds at least one file anywhere below it (a folder too
@@ -1151,8 +1228,10 @@ fn holds_a_file(dir: &std::path::Path) -> bool {
     false
 }
 
-/// `nothing_searched`: the note for a search over folders with no files,
-/// which replaces grep's "no matches" (there was nothing to match against).
+/// `nothing_searched`: the note for a search that searched nothing (folders
+/// with no files, or a `find` starting point that isn't there), which
+/// replaces grep's "no matches" and find's "inaccessible" (there was nothing
+/// to match against).
 fn interpret_exit_code(command: &str, exit_code: i32, output: &str, nothing_searched: Option<&str>) -> (bool, Option<String>) {
     let base = extract_base_command(command);
     match base.as_str() {
@@ -1175,8 +1254,11 @@ fn interpret_exit_code(command: &str, exit_code: i32, output: &str, nothing_sear
             }
         }
         // find: 0=success, 1=some dirs inaccessible (partial), 2+=error
+        // A starting point that isn't there also exits 1: the note says so.
         "find" | "fd" => {
-            if exit_code == 1 {
+            if let (1, Some(note)) = (exit_code, nothing_searched) {
+                (false, Some(note.to_string()))
+            } else if exit_code == 1 {
                 (false, Some("Some directories were inaccessible.".to_string()))
             } else {
                 (true, None)
@@ -1511,6 +1593,56 @@ mod tests {
         let r = t.execute(&ctx(), json!({"action": "exec", "command": format!("grep -rn handle_login {empty}")})).await;
         assert!(r.content.contains("No matches found"), "{}", r.content);
         assert!(!r.content.contains("holds no files"), "{}", r.content);
+    }
+
+    // Gate 2026-09-27 (file-discovery-spiral, 0/3): `find ~/Desktop … 2>/dev/null
+    // | head` on a computer with no Desktop came back "(exit 0, no output)",
+    // the words of a search that found nothing, and every run spent 3–5 more
+    // commands finding out the folder wasn't there. A `find` from a starting
+    // point that doesn't exist says so, on either exit code.
+    #[tokio::test]
+    async fn a_find_from_a_folder_that_isnt_there_says_nothing_was_searched() {
+        let t = tool();
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("notes.txt"), "x").unwrap();
+        let missing = dir.path().join("Desktop").to_string_lossy().into_owned();
+        let said = format!("{missing} does not exist, so nothing was searched there");
+
+        let piped = format!("find {missing} -type f \\( -iname '*screenshot*' -o -iname '*.png' \\) 2>/dev/null | head -30");
+        let r = t.execute(&ctx(), json!({"action": "exec", "command": piped})).await;
+        assert!(!r.is_error, "{}", r.content);
+        assert!(r.content.starts_with("(exit 0, no output)\n"), "{}", r.content);
+        assert!(r.content.contains(&said), "{}", r.content);
+        assert!(r.content.contains("If the owner named that folder, tell them it isn't there"), "{}", r.content);
+
+        // find's own exit 1 is the missing folder, not "inaccessible" ones.
+        let r = t.execute(&ctx(), json!({"action": "exec", "command": format!("find -L {missing} -name '*.png'")})).await;
+        assert!(!r.is_error, "{}", r.content);
+        assert!(r.content.contains(&said), "{}", r.content);
+        assert!(!r.content.contains("Some directories were inaccessible"), "{}", r.content);
+
+        // Relative to the call's folder, and `~` as the shell expands it,
+        // each shown with the path it names.
+        let r = t
+            .execute(&ctx(), json!({"action": "exec", "command": "find Desktop -name '*.png'", "cwd": dir.path()}))
+            .await;
+        assert!(r.content.contains(&format!("Desktop ({missing}) does not exist")), "{}", r.content);
+        let home = dirs::home_dir().unwrap().join("nebo-no-such-folder-5c1e");
+        let r = t.execute(&ctx(), json!({"action": "exec", "command": "find ~/nebo-no-such-folder-5c1e -name x 2>/dev/null"})).await;
+        assert!(r.content.contains(&format!("~/nebo-no-such-folder-5c1e ({}) does not exist", home.display())), "{}", r.content);
+
+        // A folder that is there and holds files: a real "nothing matched".
+        // A pattern after the expression begins is never a starting point.
+        let here = dir.path().to_string_lossy().into_owned();
+        let r = t.execute(&ctx(), json!({"action": "exec", "command": format!("find {here} -name Desktop")})).await;
+        assert_eq!(r.content, "(exit 0, no output)", "{}", r.content);
+
+        // Words the shell still rewrites, and relative paths after a `cd`,
+        // aren't read.
+        for command in ["find $HOME/nebo-no-such-folder-5c1e -name x 2>/dev/null", "cd / && find Desktop -name x 2>/dev/null"] {
+            let r = t.execute(&ctx(), json!({"action": "exec", "command": command, "cwd": dir.path()})).await;
+            assert!(!r.content.contains("does not exist"), "{command}: {}", r.content);
+        }
     }
 
     // The background start names the poll call; an empty session log says

@@ -121,9 +121,14 @@ tool returned.";
 /// of this conversation. The parallel-calls line carries a worked example
 /// because the rule alone wasn't followed: on 2026-09-26 an employee loaded
 /// 28 skills one step at a time, ~3 s a step, though the tool round runs
-/// independent calls of one response together.
+/// independent calls of one response together. A command the owner gives
+/// is run as given, first: in the 2026-09-27 proof one run answered "running
+/// it would result in command not found" without running it, and one loaded
+/// convert_file for "Run `convert image.png image.jpg`" and then went
+/// looking for converters and installing one instead.
 pub const USING_TOOLS: &str = "# Using your tools
 - Use read_file, edit_file and write_file for files, and run_command for shell work.
+- When the owner gives you a command to run, run it with run_command as given before anything else, then report what it returned: what a command does is known only from running it.
 - Search yourself with find or grep when the target is known: a file, a name or a value, or a search that takes one or two tries. A wide search, across the project or likely to take more than three searches, goes to an explore helper with delegate.
 - More tools are available than are loaded. They're listed by name in reminders; load one with find_tools before calling it.
 - Skills are packaged instructions for a kind of work; load the ones the task needs with use_skill before starting.

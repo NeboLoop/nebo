@@ -317,6 +317,8 @@ enum Step {
 struct OpenCall {
     tool_id: String,
     slot: usize,
+    /// The turn it started in.
+    turn: usize,
     tool: String,
     arguments: Value,
     started: Instant,
@@ -422,11 +424,12 @@ impl Recorder {
                 Step::Continue
             }
             Some("tool_start") => {
-                self.active_turn();
+                let turn = self.active_turn().metrics.turn;
                 let tool = data["tool"].as_str().or_else(|| data["name"].as_str()).unwrap_or("unknown").to_string();
                 self.open_calls.push(OpenCall {
                     tool_id: data["tool_id"].as_str().unwrap_or("").to_string(),
                     slot: self.calls.len(),
+                    turn,
                     tool,
                     arguments: data["input"].clone(),
                     started: Instant::now(),
@@ -457,6 +460,7 @@ impl Recorder {
                 turn.metrics.tool_errors += usize::from(is_error);
                 self.calls[call.slot] = Some(TracedToolCall {
                     sequence: 0,
+                    turn: call.turn,
                     tool: call.tool,
                     arguments: call.arguments,
                     response: TracedToolResponse { char_count: content.len(), content, is_error },
@@ -1219,6 +1223,7 @@ mod recording_tests {
         assert!(trace.final_response.content.contains("the access code is 4417"), "{}", trace.final_response.content);
         assert!(trace.final_response.content.contains("[a later turn: the session woke on its own"), "{}", trace.final_response.content);
         assert_eq!(trace.tool_calls.iter().map(|c| c.tool.as_str()).collect::<Vec<_>>(), ["delegate", "read_file"]);
+        assert_eq!(trace.tool_calls.iter().map(|c| c.turn).collect::<Vec<_>>(), [1, 2], "each call names the turn it started in");
         assert_eq!(trace.turns.len(), 2, "{:?}", trace.turns);
         assert!(!trace.turns[0].woken && trace.turns[1].woken, "{:?}", trace.turns);
         assert_eq!(trace.turns[1].tool_calls, 1);
