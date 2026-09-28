@@ -11,7 +11,7 @@ use crate::chat_dispatch::{
 };
 use crate::codes::build_api_client;
 use crate::run_registry::{RegisterParams, RunHandle, RunRegistry};
-use crate::state::{AppState, PendingToolApproval};
+use crate::state::AppState;
 
 /// Voice conversation — speech-to-speech via the xAI Grok realtime API
 /// (Janus metered relay or BYOK direct). Dictation was removed: the OS does
@@ -667,7 +667,6 @@ async fn run_delegated_task(
                 hub: state.hub.clone(),
                 registry: state.run_registry.clone(),
                 ask_channels: state.ask_channels.clone(),
-                pending_tool_approvals: state.pending_tool_approvals.clone(),
             };
             tokio::spawn(drain_voice_run(
                 sinks,
@@ -695,7 +694,6 @@ struct VoiceRunSinks {
     hub: std::sync::Arc<super::ws::ClientHub>,
     registry: RunRegistry,
     ask_channels: tools::AskChannels,
-    pending_tool_approvals: std::sync::Arc<tokio::sync::Mutex<std::collections::HashMap<String, PendingToolApproval>>>,
 }
 
 /// Drain a delegated voice run to its end. The spoken reply is sent ONCE
@@ -764,9 +762,7 @@ async fn drain_voice_run(
         &sinks.hub,
         &run_handle,
         &sinks.ask_channels,
-        &sinks.pending_tool_approvals,
         TurnEnd {
-            session_key: &session_key,
             payload: serde_json::json!({ "session_id": session_key, "agentId": agent_id }),
             artifacts: &[],
             control_stop: control_stop.as_ref(),
@@ -2768,7 +2764,6 @@ mod voice_prompt_tests {
         let mut events = hub.subscribe();
         let registry = crate::run_registry::RunRegistry::new();
         let ask_channels: tools::AskChannels = Default::default();
-        let approvals = std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()));
         let cancel = tokio_util::sync::CancellationToken::new();
         let run_handle = registry
             .register(crate::run_registry::RegisterParams {
@@ -2792,7 +2787,6 @@ mod voice_prompt_tests {
             hub: hub.clone(),
             registry: registry.clone(),
             ask_channels: ask_channels.clone(),
-            pending_tool_approvals: approvals,
         };
         let drain = tokio::spawn(super::drain_voice_run(
             sinks,
@@ -2856,7 +2850,6 @@ mod voice_prompt_tests {
             hub: hub.clone(),
             registry,
             ask_channels: Default::default(),
-            pending_tool_approvals: std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
         };
         let drain = tokio::spawn(super::drain_voice_run(
             sinks,

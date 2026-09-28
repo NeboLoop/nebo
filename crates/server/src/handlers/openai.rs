@@ -313,7 +313,7 @@ async fn park_for_owner(state: &AppState, run: &EmployeeRun, key_label: &str, ev
     match ev.event_type {
         ai::StreamEventType::ApprovalRequest => {
             if let Some(tc) = &ev.tool_call {
-                fwd.forward_approval(tc);
+                fwd.forward_approval(tc).await;
             }
         }
         _ => fwd.forward_ask(ev).await,

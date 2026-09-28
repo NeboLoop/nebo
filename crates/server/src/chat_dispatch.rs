@@ -21,7 +21,7 @@ use tools::Origin;
 use crate::handlers::chat::PendingAsk;
 use crate::handlers::ws::ClientHub;
 use crate::run_registry::{RegisterParams, RunHandle, RunRegistry};
-use crate::state::{AppState, PendingToolApproval};
+use crate::state::AppState;
 
 /// A run parked on a question. The ONE pathway for every consumer that sees
 /// an `AskRequest` on a run's stream (the chat pipeline, coworker forwarding,
@@ -92,13 +92,37 @@ pub(crate) async fn answer_ask(state: &AppState, request_id: &str, value: String
 /// client still showing the card closes it (`approval_resolved`). Returns
 /// false when nothing was waiting on that request id.
 pub(crate) async fn answer_approval(state: &AppState, request_id: &str, decision: &str) -> bool {
-    state.pending_tool_approvals.lock().await.remove(request_id);
-    let tx = state.approval_channels.lock().await.remove(request_id);
+    let pending = state.approval_channels.lock().await.remove(request_id);
     state.hub.broadcast(
         "approval_resolved",
         serde_json::json!({ "request_id": request_id, "decision": decision }),
     );
-    tx.is_some_and(|tx| tx.send(decision.to_string()).is_ok())
+    pending.is_some_and(|p| p.answer.send(decision.to_string()).is_ok())
+}
+
+/// Record the card an approval was announced with on its open entry in
+/// `approval_channels`, the one record of open approvals: the dashboard
+/// lists it and a client that connects later is shown it, for as long as
+/// the answer can still be given. An approval nothing waits on is not
+/// recorded (there is no entry to hold it).
+pub(crate) async fn record_approval_card(
+    approvals: &tools::ApprovalChannels,
+    request_id: &str,
+    card: tools::ApprovalCard,
+) {
+    if let Some(pending) = approvals.lock().await.get_mut(request_id) {
+        pending.card = Some(card);
+    }
+}
+
+/// The approval cards still open, for a client that just connected and the
+/// dashboard: announced, and still answerable. Entries whose waiter went
+/// away are dropped here, the only other way a card closes besides a
+/// decision.
+pub(crate) async fn open_approval_cards(approvals: &tools::ApprovalChannels) -> Vec<(String, tools::ApprovalCard)> {
+    let mut open = approvals.lock().await;
+    open.retain(|_, p| p.is_open());
+    open.iter().filter_map(|(id, p)| p.card.clone().map(|c| (id.clone(), c))).collect()
 }
 
 /// A plugin landed on this Nebo, by whatever door: every question parked on
@@ -134,7 +158,6 @@ pub(crate) fn control_stop_of(event: &ai::StreamEvent) -> (String, String) {
 
 /// How a drained run ended, for [`finish_turn`].
 pub(crate) struct TurnEnd<'a> {
-    pub session_key: &'a str,
     /// The identity the consumer owns: session_id, agentId, and for chat
     /// runs turn_id / originAgentId.
     pub payload: serde_json::Value,
@@ -147,15 +170,14 @@ pub(crate) struct TurnEnd<'a> {
 /// The ONE way a drained run tells the app its turn is over. Every consumer
 /// that drains a run's stream to its end (the chat pipeline here, the voice
 /// bridge in `handlers::voice`) ends through here: the question the run was
-/// parked on is released together with its unanswered oneshot, the run's
-/// gated tool approvals are dropped, and `chat_complete` is broadcast on the
+/// parked on is released together with its unanswered oneshot, and
+/// `chat_complete` is broadcast on the
 /// identity payload plus the run's artifacts and typed stop reason. Carries
 /// NO message content: streamed blocks finalize in place on the frontend.
 pub(crate) async fn finish_turn(
     hub: &ClientHub,
     run: &RunHandle,
     ask_channels: &tools::AskChannels,
-    pending_tool_approvals: &tokio::sync::Mutex<HashMap<String, PendingToolApproval>>,
     end: TurnEnd<'_>,
 ) {
     if let Some(ask) = run.take_pending_ask() {
@@ -164,8 +186,9 @@ pub(crate) async fn finish_turn(
         // question the run can no longer act on.
         ask_channels.lock().await.remove(&ask.request_id);
     }
-    // The run is over: nothing it asked can still be answered.
-    pending_tool_approvals.lock().await.retain(|_, a| a.session_key != end.session_key);
+    // An approval the run asked for stays open past the turn when something
+    // still waits on it (a suggested goal is decided whenever the owner gets
+    // to it): `approval_channels` closes it on the decision, not here.
     let mut payload = end.payload;
     payload["artifacts"] = serde_json::json!(end.artifacts);
     if let Some((reason, notice)) = end.control_stop {
@@ -554,7 +577,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
     let pending_comm_asks = state.pending_comm_asks.clone();
     let pending_comm_approvals = state.pending_comm_approvals.clone();
     let ask_state = state.clone();
-    let pending_tool_approvals = state.pending_tool_approvals.clone();
+    let approval_channels = state.approval_channels.clone();
     let ask_channels = state.ask_channels.clone();
     let run_registry = state.run_registry.clone();
     let approvals_agent_id = config.agent_id.clone();
@@ -1125,16 +1148,18 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                     // Present when several gated calls share this card.
                                     "batch": event.widgets.as_ref().and_then(|w| w.get("batch").cloned()),
                                 }));
-                                pending_tool_approvals.lock().await.insert(
-                                    tc.id.clone(),
-                                    crate::state::PendingToolApproval {
+                                record_approval_card(
+                                    &approval_channels,
+                                    &tc.id,
+                                    tools::ApprovalCard {
+                                        event: request.clone(),
                                         session_key: sid.to_string(),
                                         agent_id: approvals_agent_id.clone(),
                                         summary,
                                         since: chrono::Utc::now().timestamp(),
-                                        event: request.clone(),
                                     },
-                                );
+                                )
+                                .await;
                                 hub.broadcast("approval_request", request);
                                 // Relay the approval into the loop conversation
                                 // (personal contexts only) — otherwise the run
@@ -1652,9 +1677,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                     &hub,
                     &_run_handle,
                     &ask_channels,
-                    &pending_tool_approvals,
                     TurnEnd {
-                        session_key: &sid,
                         payload: ws_payload!(),
                         artifacts: &chat_artifacts,
                         control_stop: control_stop.as_ref(),
@@ -1717,8 +1740,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                     &hub,
                     &_run_handle,
                     &ask_channels,
-                    &pending_tool_approvals,
-                    TurnEnd { session_key: &sid, payload: ws_payload!(), artifacts: &[], control_stop: None },
+                    TurnEnd { payload: ws_payload!(), artifacts: &[], control_stop: None },
                 )
                 .await;
             }

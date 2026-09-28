@@ -31,13 +31,7 @@ pub async fn dashboard(State(state): State<AppState>) -> HandlerResult<Dashboard
     let agents = state.store.list_agents(1000, 0).map_err(to_error_response)?;
     let active_ids: HashSet<String> = state.agent_registry.read().await.keys().cloned().collect();
     let running = state.run_registry.list_all().await;
-    let tool_approvals: Vec<(String, crate::state::PendingToolApproval)> = state
-        .pending_tool_approvals
-        .lock()
-        .await
-        .iter()
-        .map(|(k, v)| (k.clone(), v.clone()))
-        .collect();
+    let tool_approvals = crate::chat_dispatch::open_approval_cards(&state.approval_channels).await;
     let asks = state.permission_asks.open(None).unwrap_or_default();
     let runs = state
         .store

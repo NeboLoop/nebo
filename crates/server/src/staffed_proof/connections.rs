@@ -375,44 +375,96 @@ async fn a_cascade_carries_the_client_that_asked() {
     nebo.store().delete_auth_profile(&profile).unwrap();
 }
 
-/// An approval card still open is shown to a client that connects later,
-/// with the origin it was asked under: the phone that was in the background
-/// when its run suggested a goal shows the card when it comes back. The
-/// first answer anywhere closes it everywhere (`approval_resolved`) and it is
-/// replayed no more.
+/// An approval stays open past the turn that asked for it, for as long as
+/// it can still be answered, and a client that connects later is shown it.
+/// The employee suggests a goal through the real `suggest_goal` tool (its
+/// answer waits on the owner however long that takes); the card is recorded
+/// the way the chat pipeline records it; the turn ends through the real
+/// `finish_turn`. The phone that was in the background all along connects
+/// and gets the card, with the origin it was asked under. The owner's
+/// decision closes it everywhere (`approval_resolved`, the goal is set) and
+/// it is shown no more. A card nothing waits on any more (its waiter went
+/// away) is not shown either: it has truly expired.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn an_open_approval_reaches_a_client_that_connects_later() {
+async fn an_open_approval_outlives_its_turn_and_reaches_a_client_that_connects_later() {
+    use crate::handlers::ws::{EventOrigin, pending_approval_frames};
     let nebo = session().await;
-    const REQUEST: &str = "toolu_replay_goal";
-    let asked = crate::handlers::ws::EventOrigin {
-        client_id: Some("socket-phone".to_string()),
-        session_id: "agent:main:web".to_string(),
-    }
-    .stamp(json!({ "request_id": REQUEST, "tool": "suggest_goal", "input": { "condition": "done" }, "batch": null }));
-    nebo.state.pending_tool_approvals.lock().await.insert(
-        REQUEST.to_string(),
-        crate::state::PendingToolApproval {
-            session_key: "agent:main:web".to_string(),
-            agent_id: "main".to_string(),
+    const REQUEST: &str = "toolu_goal_after_turn";
+    const SESSION: &str = "agent:goal-seat:main";
+    let shown = |frames: &[Value], id: &str| frames.iter().find(|f| f["data"]["request_id"] == id).cloned();
+
+    // The employee suggests a goal in a turn the phone started.
+    let (stream_tx, mut stream_rx) = tokio::sync::mpsc::channel(8);
+    let mut ctx = Nebo::ctx("goal-seat", Origin::User);
+    ctx.tool_call_id = REQUEST.to_string();
+    ctx.stream_tx = Some(stream_tx);
+    let r = nebo
+        .tool(&ctx, "suggest_goal", json!({ "condition": "Every unpaid invoice has a reminder scheduled", "ask_owner": true }))
+        .await;
+    assert!(!r.is_error, "{}", r.content);
+    let event = stream_rx.recv().await.expect("the card was asked");
+    let tc = event.tool_call.expect("the card's call");
+    let asked = EventOrigin { client_id: Some("socket-phone".to_string()), session_id: SESSION.to_string() }
+        .stamp(json!({ "request_id": tc.id, "tool": tc.name, "input": tc.input, "batch": null }));
+    crate::chat_dispatch::record_approval_card(
+        &nebo.state.approval_channels,
+        &tc.id,
+        tools::ApprovalCard {
+            event: asked.clone(),
+            session_key: SESSION.to_string(),
+            agent_id: "goal-seat".to_string(),
             summary: "Agree on a goal".to_string(),
             since: 0,
-            event: asked.clone(),
         },
-    );
-    let replayed = crate::handlers::ws::pending_approval_frames(&nebo.state).await;
-    let frame = replayed.iter().find(|f| f["data"]["request_id"] == REQUEST).expect("the open card is replayed");
-    assert_eq!(frame["type"], "approval_request");
-    assert_eq!(frame["data"], asked, "replayed as it was asked, origin included");
+    )
+    .await;
 
+    // The turn ends.
+    let run = nebo
+        .state
+        .run_registry
+        .register(crate::run_registry::RegisterParams {
+            session_key: SESSION.to_string(),
+            entity_id: "goal-seat".to_string(),
+            entity_name: "Goal Seat".to_string(),
+            origin: "user".to_string(),
+            channel: "web".to_string(),
+            cancel_token: tokio_util::sync::CancellationToken::new(),
+            parent_run_id: None,
+        })
+        .await;
+    crate::chat_dispatch::finish_turn(
+        &nebo.state.hub,
+        &run,
+        &nebo.state.ask_channels,
+        crate::chat_dispatch::TurnEnd { payload: json!({ "session_id": SESSION }), artifacts: &[], control_stop: None },
+    )
+    .await;
+    drop(run);
+
+    // The phone connects later: it is shown the card, as it was asked.
+    let frame = shown(&pending_approval_frames(&nebo.state).await, REQUEST).expect("the open card outlives its turn");
+    assert_eq!(frame["type"], "approval_request");
+    assert_eq!(frame["data"], asked, "shown as it was asked, origin included");
+
+    // The owner approves it; every client hears so, and it is shown no more.
     let mut desktop = nebo.state.hub.subscribe();
-    crate::chat_dispatch::answer_approval(&nebo.state, REQUEST, "deny").await;
+    assert!(crate::chat_dispatch::answer_approval(&nebo.state, REQUEST, "once").await, "the answer reached the waiting suggestion");
     let resolved = std::iter::from_fn(|| desktop.try_recv().ok())
         .find(|e| e.event_type == "approval_resolved")
         .expect("every client hears the decision");
     assert_eq!(resolved.payload["request_id"], REQUEST);
-    assert_eq!(resolved.payload["decision"], "deny");
-    let replayed = crate::handlers::ws::pending_approval_frames(&nebo.state).await;
-    assert!(replayed.iter().all(|f| f["data"]["request_id"] != REQUEST), "a decided card is not replayed");
+    assert_eq!(resolved.payload["decision"], "once");
+    assert!(shown(&pending_approval_frames(&nebo.state).await, REQUEST).is_none(), "a decided card is shown no more");
+
+    // A card whose waiter went away has expired: not shown, and gone.
+    let (answer, waiter) = tokio::sync::oneshot::channel();
+    let mut expired = tools::PendingApproval::new(answer);
+    expired.card = Some(tools::ApprovalCard { event: json!({ "request_id": "toolu_expired" }), session_key: SESSION.to_string(), agent_id: "goal-seat".to_string(), summary: String::new(), since: 0 });
+    nebo.state.approval_channels.lock().await.insert("toolu_expired".to_string(), expired);
+    drop(waiter);
+    assert!(shown(&pending_approval_frames(&nebo.state).await, "toolu_expired").is_none(), "an expired card is not shown");
+    assert!(!nebo.state.approval_channels.lock().await.contains_key("toolu_expired"));
 }
 
 /// An employee that names a plugin by its install code
