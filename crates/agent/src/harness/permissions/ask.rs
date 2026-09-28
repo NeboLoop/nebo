@@ -76,6 +76,8 @@ pub enum AnsweredVia {
     Chat,
     Inbox,
     Mobile,
+    /// Out loud, on the owner's own call.
+    Voice,
 }
 
 impl AnsweredVia {
@@ -84,6 +86,7 @@ impl AnsweredVia {
             AnsweredVia::Chat => "chat",
             AnsweredVia::Inbox => "inbox",
             AnsweredVia::Mobile => "mobile",
+            AnsweredVia::Voice => "voice",
         }
     }
 
@@ -92,6 +95,7 @@ impl AnsweredVia {
             "chat" => Some(AnsweredVia::Chat),
             "inbox" => Some(AnsweredVia::Inbox),
             "mobile" => Some(AnsweredVia::Mobile),
+            "voice" => Some(AnsweredVia::Voice),
             _ => None,
         }
     }
@@ -754,8 +758,11 @@ fn money_cover(store: &db::Store, ask: &Ask, cents: i64) -> (RuleKey, Option<Rul
     (rule.key.clone(), rule.field.clone(), Some(limit))
 }
 
-/// What the model hears for a parked call.
-pub fn parked_text(sentence: &str, case: &AskCase) -> String {
+/// What the model hears for a parked call: what waits, why, and where the
+/// owner answers it, so the model never has to guess (live 2026-09-28: told
+/// nothing, it sent the owner on his phone to "the desktop app", then to
+/// support).
+pub fn parked_text(sentence: &str, case: &AskCase, door: &Door, origin: tools::Origin) -> String {
     let why = match case {
         AskCase::Money { .. } => " It is over this employee's money limit.",
         AskCase::CompanyMoney { .. } => " It is over what the company may spend unattended today.",
@@ -763,10 +770,37 @@ pub fn parked_text(sentence: &str, case: &AskCase) -> String {
         AskCase::UntrustedInput { .. } => " It acts on words that came from outside.",
         _ => "",
     };
-    format!(
-        "Waiting for the owner to allow: {sentence}.{why} Carry on with anything else; the answer \
-         arrives as a notification. Don't retry this action."
-    )
+    format!("Waiting for the owner to allow: {sentence}.{why} {}", where_to_answer(door, origin))
+}
+
+/// Where the owner answers an ask raised through `door` by a run of
+/// `origin`. Every ask's card is in the owner's Inbox, in the Nebo app on
+/// each of his devices; the conversation that asked shows it too, and on
+/// his own call his spoken answer is the answer. Someone else's words (a
+/// phone caller, a stranger's message) never answer one.
+fn where_to_answer(door: &Door, origin: tools::Origin) -> &'static str {
+    if !origin.is_trusted() {
+        return "Only the owner can allow it, in their Nebo app; the person you are talking with can't, so \
+                don't ask them to. Carry on with anything else; the answer arrives as a notification. Don't \
+                retry this action.";
+    }
+    match door {
+        Door::Voice => {
+            "You are on a call with the owner: ask them now, in one short spoken question (for example \
+             \"Want me to send it?\"). Their spoken yes or no on this call is the answer; they can also tap \
+             the card in this conversation or in their Inbox, in the Nebo app on any of their devices. \
+             Don't retry this action."
+        }
+        Door::Chat => {
+            "The owner answers on the card in this conversation or in their Inbox, in the Nebo app on any of \
+             their devices, phone or computer. Carry on with anything else; the answer arrives as a \
+             notification. Don't retry this action."
+        }
+        _ => {
+            "The owner answers in their Inbox, in the Nebo app on any of their devices, phone or computer. \
+             Carry on with anything else; the answer arrives as a notification. Don't retry this action."
+        }
+    }
 }
 
 /// Why a call that needed the owner's OK didn't run in a run nothing can
@@ -1435,6 +1469,41 @@ mod tests {
         assert_eq!(r.store.engine_get_run(&id).unwrap().unwrap().state, "done");
         assert!(matches!(r.asks.answer(&id, Answer::ThisOnce, AnsweredVia::Inbox), Err(AskError::Settled(_))));
         assert_eq!(r.ran(1), 0);
+    }
+
+    /// The model always hears where the owner answers, by door: on his own
+    /// call he is asked aloud and his spoken answer is the answer; in a chat
+    /// the card is in the conversation; otherwise his Inbox. A stranger (a
+    /// phone caller, an outside message) is never asked to approve. No text
+    /// names a desktop app or support (live 2026-09-28, both invented).
+    #[test]
+    fn the_parked_text_says_where_the_owner_answers() {
+        let case = AskCase::NewCounterparty { who: "pat@example.com".into() };
+        let text = |door: Door, origin: Origin| parked_text("sending an email to pat@example.com", &case, &door, origin);
+        let call = text(Door::Voice, Origin::User);
+        assert!(call.starts_with("Waiting for the owner to allow: sending an email to pat@example.com. "), "{call}");
+        assert!(call.contains("ask them now, in one short spoken question"), "{call}");
+        assert!(call.contains("Their spoken yes or no on this call is the answer"), "{call}");
+        let stranger = text(Door::Voice, Origin::Caller);
+        assert!(stranger.contains("the person you are talking with can't"), "{stranger}");
+        assert!(!stranger.contains("spoken"), "a caller is never asked: {stranger}");
+        assert!(text(Door::Chat, Origin::Comm).contains("the person you are talking with can't"));
+        let chat = text(Door::Chat, Origin::User);
+        assert!(chat.contains("on the card in this conversation or in their Inbox"), "{chat}");
+        let unattended = text(Door::Heartbeat, Origin::System);
+        assert!(unattended.contains("in their Inbox, in the Nebo app on any of their devices"), "{unattended}");
+        for door in [Door::Voice, Door::Chat, Door::Heartbeat, Door::Workflow, Door::Helper] {
+            for origin in [Origin::User, Origin::System, Origin::Caller] {
+                let t = text(door.clone(), origin).to_lowercase();
+                assert!(!t.contains("desktop") && !t.contains("support"), "{t}");
+                assert!(t.contains("don't retry this action"), "{t}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_spoken_answer_is_recorded_as_voice() {
+        assert_eq!(AnsweredVia::parse(AnsweredVia::Voice.as_str()), Some(AnsweredVia::Voice));
     }
 
     /// Answered while a reminder was going out: the answer's signal found no

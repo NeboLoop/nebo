@@ -122,7 +122,7 @@ impl PermissionGate for Check {
             Decision::Deny { reason, .. } => GateVerdict::Refuse(ToolResult::error(reason)),
             Decision::Ask { case } => {
                 let sentence = call.tool.activity(call.input);
-                let mut parked = ToolResult::error(ask::parked_text(&sentence, &case));
+                let mut parked = ToolResult::error(ask::parked_text(&sentence, &case, &ctx.door, ctx.origin));
                 parked.parked_ask = ask_id;
                 GateVerdict::Parked(parked)
             }

@@ -1,0 +1,22 @@
+id: owners-call-ask-answered-by-voice
+name: "On the owner's call the employee asks aloud, and his spoken yes answers the ask"
+description: |
+  Live 2026-09-28: on a voice call from his phone the owner asked his
+  assistant to send a test email. The send parked on his OK, the model was
+  told only "waiting for the owner", and it sent him to "the Nebo desktop
+  app", then to support. He never saw an approval.
+  PRD-Permissions §4.5: one card, everywhere, answered anywhere. On the
+  owner's own call "anywhere" includes the call itself: the parked step tells
+  the model to ask him now in one short spoken question, the voice model
+  hears the ask's id, and his spoken yes or no is the answer, through the
+  ask's one answer path (answered via voice). It counts only after he spoke
+  and only in the call's own conversation; a client can't claim a spoken
+  answer, and a phone caller's line has no way to answer at all.
+  This proof parks a step through the real server on the owner's voice door,
+  asserts what the model is told, refuses an answer before he spoke and one
+  from another conversation, then answers yes by voice and asserts the
+  server's engine resumes the parked call once and the employee is told.
+  Clock- and engine-driven, no model: a deterministic proof.
+target_component: permissions
+proof: harness::permissions::proof::owners_call_ask_is_asked_aloud_and_answered_by_voice
+conversation: []

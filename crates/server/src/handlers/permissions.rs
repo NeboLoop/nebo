@@ -144,7 +144,11 @@ pub async fn answer_permission_ask(
 ) -> HandlerResult<PermissionAskCard> {
     let invalid = |msg: &str| to_error_response(NeboError::Validation(msg.to_string()));
     let answer = Answer::parse(&body.answer).ok_or_else(|| invalid("answer must be allow_always, this_once or no"))?;
-    let via = AnsweredVia::parse(&body.via).ok_or_else(|| invalid("via must be chat, inbox or mobile"))?;
+    // A spoken answer comes only from the owner's own call (`voice.rs`),
+    // never from a client claiming one.
+    let via = AnsweredVia::parse(&body.via)
+        .filter(|v| *v != AnsweredVia::Voice)
+        .ok_or_else(|| invalid("via must be chat, inbox or mobile"))?;
     match state.permission_asks.answer(&id, answer, via) {
         Ok(ask) => Ok(Json(card(&state, &ask))),
         Err(AskError::Settled(ask)) => Ok(Json(card(&state, &ask))),
