@@ -111,6 +111,9 @@ pub enum AnsweredVia {
     Chat,
     Inbox,
     Mobile,
+    /// A button on the phone's notification: the lock screen, or the Watch
+    /// it mirrors to.
+    Notification,
     /// Out loud, on the owner's own call.
     Voice,
 }
@@ -121,6 +124,7 @@ impl AnsweredVia {
             AnsweredVia::Chat => "chat",
             AnsweredVia::Inbox => "inbox",
             AnsweredVia::Mobile => "mobile",
+            AnsweredVia::Notification => "notification",
             AnsweredVia::Voice => "voice",
         }
     }
@@ -130,6 +134,7 @@ impl AnsweredVia {
             "chat" => Some(AnsweredVia::Chat),
             "inbox" => Some(AnsweredVia::Inbox),
             "mobile" => Some(AnsweredVia::Mobile),
+            "notification" => Some(AnsweredVia::Notification),
             "voice" => Some(AnsweredVia::Voice),
             _ => None,
         }
@@ -1656,6 +1661,23 @@ mod tests {
     #[test]
     fn a_spoken_answer_is_recorded_as_voice() {
         assert_eq!(AnsweredVia::parse(AnsweredVia::Voice.as_str()), Some(AnsweredVia::Voice));
+    }
+
+    /// A button on the phone's notification (the lock screen, or the Watch
+    /// it mirrors to) is a door of its own: the answer is taken, runs the
+    /// step, and is kept as answered from the notification.
+    #[tokio::test]
+    async fn an_answer_from_the_notification_is_kept_as_one() {
+        let r = rig().await;
+        let id = r.park(KEY, Door::Chat, "+15550142").await;
+        let via = AnsweredVia::parse("notification").expect("notification is a door");
+        r.answer(&id, Answer::ThisOnce, via).await.unwrap();
+        assert_eq!(r.ran(1), 1, "the step ran once");
+        let kept = r.asks.get(&id).unwrap().expect("the ask");
+        assert_eq!(
+            kept.status,
+            AskStatus::Answered { answer: Answer::ThisOnce, via: Some(AnsweredVia::Notification) }
+        );
     }
 
     /// Answered while a reminder was going out: the answer's signal found no
