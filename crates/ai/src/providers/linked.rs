@@ -65,11 +65,36 @@ pub const ID: &str = "linked";
 /// How long a cancel waits for the turn's end.
 const CANCEL_TIMEOUT: Duration = Duration::from_secs(10);
 /// How often a connection pings the host, so a turn that waits on the owner
-/// keeps it (spec §11: every 20 s of quiet).
+/// keeps it (spec §11: every 20 s of quiet), and checks with `host/agents`
+/// that the agent's own process is still there. A linked run can
+/// legitimately go silent for a long time — a build, a test suite, a slow
+/// tool — with no session/update at all, so liveness is judged by whether
+/// the host still reports the process running, never by how long it has
+/// been quiet.
+#[cfg(not(test))]
 const HEARTBEAT: Duration = Duration::from_secs(20);
+/// Short in tests, so the liveness check and the "a long silence alone
+/// never ends a healthy turn" test both run in real time (this module's
+/// tests run a real subprocess over a real socket, which a mocked clock
+/// races unpredictably against).
+#[cfg(test)]
+const HEARTBEAT: Duration = Duration::from_millis(80);
 /// Waits between tries to reach the linked bot again after a connection
 /// drops mid-turn (spec §11: from 1 s, capped at 30 s).
 const RECONNECT: [u64; 7] = [1, 2, 4, 8, 16, 30, 30];
+
+/// A [`RECONNECT`] entry's wait: its seconds in production, the same
+/// numbers as milliseconds in tests — the same backoff shape, real time
+/// either way, just short enough that exhausting every attempt fits in a
+/// test.
+#[cfg(not(test))]
+fn reconnect_wait(secs: u64) -> Duration {
+    Duration::from_secs(secs)
+}
+#[cfg(test)]
+fn reconnect_wait(secs: u64) -> Duration {
+    Duration::from_millis(secs)
+}
 
 /// Nebo as a client of the host on its own computer.
 fn this_device() -> DeviceRef {
@@ -224,6 +249,13 @@ impl Provider for LinkedProvider {
         false
     }
 
+    /// A stop here is an ACP `session/cancel` to the linked agent, waited on
+    /// ([`Driver::run`]'s own cancel branch): the runner must not treat this
+    /// call as over, and free to send another, before that round trip ends.
+    fn cancel_is_async(&self) -> bool {
+        true
+    }
+
     async fn stream(&self, req: &ChatRequest) -> Result<EventReceiver, ProviderError> {
         // The runner hands the provider its model without the `linked/`
         // prefix, as it does every provider.
@@ -250,6 +282,16 @@ enum Route {
     Local(Arc<OalHost>),
     /// Another computer's linked bot, through the relay, with Nebo's keys.
     Remote(KeyStore),
+}
+
+/// [`Driver::liveness`]'s answer.
+enum Liveness {
+    /// The host says the agent's own process is no longer running.
+    Gone,
+    /// No definite answer — a blip, or nothing worth acting on.
+    Unknown,
+    /// A frame read while checking turned out to be this turn's own end.
+    Ended(TurnUpdate),
 }
 
 /// A permission request Nebo raised a card for.
@@ -437,6 +479,54 @@ impl Driver<'_> {
         Ok(())
     }
 
+    /// What the owner reads when Nebo gives up on the agent's own process,
+    /// found gone on the host (`host/agents`' `online`): plain, no
+    /// wake/sleep/restart words, just what to do.
+    fn stalled_notice(&self) -> String {
+        format!("{} didn't answer. Try again.", self.name)
+    }
+
+    /// This session may be wedged, not merely idle: a cancel — the owner's
+    /// stop, or Nebo's own once the host says the process is gone — is no
+    /// guarantee the agent's own query actually stopped (an adapter can
+    /// force a `cancelled` answer on its own floor without the SDK
+    /// underneath yielding). Forgetting the session here means the next
+    /// message on this chat opens a fresh one instead of resuming one that
+    /// might never answer again.
+    fn forget_session(&self) {
+        if let Err(e) = self.provider.store.set_chat_linked_session(&self.req.chat_id, &self.agent_id, "") {
+            warn!(chat_id = %self.req.chat_id, error = %e, "linked: could not forget the session after a cancel");
+        }
+    }
+
+    /// Whether the host still lists this turn's agent as running its
+    /// process (`host/agents`' `online`), without losing anything else the
+    /// connection delivers while waiting for that answer (`conn.call`'s
+    /// `others`, read verbatim through [`Driver::frame`] the way the main
+    /// loop reads every frame — this call runs mid-turn, not before the
+    /// prompt like `locate`'s, so something real can arrive alongside it).
+    /// A blip — no answer, no listing, no `online` field — proves nothing
+    /// either way: liveness still rests on the connection and the reconnect
+    /// window then, never on one missed status call.
+    async fn liveness(&mut self, answers: &mpsc::Sender<(String, String)>) -> Result<Liveness, String> {
+        let Some((answer, others)) = self.conn.call(None, "host/agents", json!({})).await else {
+            return Ok(Liveness::Unknown);
+        };
+        for other in others {
+            if let Some(ended) = self.frame(other, answers).await? {
+                return Ok(Liveness::Ended(ended));
+            }
+        }
+        let Ok(agents) = answer else {
+            return Ok(Liveness::Unknown);
+        };
+        let listed = agents["agents"].as_array().cloned().unwrap_or_default();
+        match listed.iter().find(|a| a["id"] == self.agent.as_str()).and_then(|a| a["online"].as_bool()) {
+            Some(false) => Ok(Liveness::Gone),
+            _ => Ok(Liveness::Unknown),
+        }
+    }
+
     /// The turn, from the prompt to its end.
     async fn run(&mut self) -> Result<(), String> {
         let (answers_tx, mut answers_rx) = mpsc::channel::<(String, String)>(8);
@@ -453,16 +543,40 @@ impl Driver<'_> {
                     cancel_deadline = Some(tokio::time::Instant::now() + CANCEL_TIMEOUT);
                 }
                 _ = tokio::time::sleep_until(cancel_deadline.unwrap_or_else(tokio::time::Instant::now)), if cancel_deadline.is_some() => {
+                    self.forget_session();
                     return Err("Cancelled".to_owned());
                 }
                 Some((id, value)) = answers_rx.recv() => self.answer(&id, &value),
+                // A run can legitimately go silent for a long time — a
+                // build, a test suite, a slow tool — with no session/update
+                // at all, so this never judges liveness by quiet alone.
+                // Every heartbeat it also asks the host whether the
+                // agent's own process is still there
+                // (`host/agents`'s `online`): a connection can stay open to
+                // a host whose agent process already died.
                 _ = heartbeat.tick() => {
                     let _ = self.conn.request(None, "host/ping", json!({}));
+                    if cancel_deadline.is_none() {
+                        match self.liveness(&answers_tx).await? {
+                            Liveness::Ended(ended) => return self.ended(ended).await,
+                            Liveness::Gone => {
+                                warn!(bot_id = %self.bot_id, agent = %self.agent, session = %self.session, "linked: the host says the agent's process is gone; ending the turn");
+                                let cancel = json!({ "agent": self.agent, "acp": { "jsonrpc": "2.0", "method": "session/cancel", "params": { "sessionId": self.session } } });
+                                let _ = self.conn.send(&cancel);
+                                self.forget_session();
+                                return Err(self.stalled_notice());
+                            }
+                            Liveness::Unknown => {}
+                        }
+                    }
                 }
                 frame = self.conn.next() => {
                     let ended = match frame {
                         Some(frame) => self.frame(frame, &answers_tx).await?,
-                        None if cancel_deadline.is_some() => return Err("Cancelled".to_owned()),
+                        None if cancel_deadline.is_some() => {
+                            self.forget_session();
+                            return Err("Cancelled".to_owned());
+                        }
                         None => self.reconnect(&answers_tx, &cancel).await?,
                     };
                     if let Some(ended) = ended {
@@ -757,7 +871,15 @@ impl Driver<'_> {
             return Err(turn::plain(&self.name, error));
         }
         match ended.stop_reason {
-            Some(StopReason::Cancelled) => Err("Cancelled".to_owned()),
+            Some(StopReason::Cancelled) => {
+                // A "cancelled" answer is no proof the agent's own query
+                // really stopped: an adapter can force one on its own floor
+                // without the SDK underneath yielding. Forgetting the
+                // session means the next message opens a fresh one instead
+                // of resuming one that might be wedged.
+                self.forget_session();
+                Err("Cancelled".to_owned())
+            }
             Some(StopReason::Refusal) => Err(format!("{} declined to do that.", self.name)),
             _ => {
                 if let Some(usage) = &ended.usage {
@@ -784,7 +906,7 @@ impl Driver<'_> {
         info!(bot_id = %self.bot_id, session = %self.session, "linked: the connection dropped mid-turn; reconnecting");
         for wait in RECONNECT {
             tokio::select! {
-                _ = tokio::time::sleep(Duration::from_secs(wait)) => {}
+                _ = tokio::time::sleep(reconnect_wait(wait)) => {}
                 _ = cancel.cancelled() => return Err("Cancelled".to_owned()),
             }
             self.conn = match self.provider.open(&self.route, &self.bot_id).await {
@@ -961,6 +1083,7 @@ mod tests {
     /// - `turn`: thinks, says, runs `ls`, says, and ends with its usage.
     /// - `ask`: asks in its own words whether to run `rm -rf build`.
     /// - `hang`: says it is working until it is cancelled.
+    /// - `dies`: says it is working, then the process itself exits.
     /// - `coder`: offers a bypass mode; in it, runs `git status` without
     ///   asking, else asks first as `git` does.
     /// - `folders`: takes the host's HTTP MCP server; `where` says the folder
@@ -1107,6 +1230,13 @@ mod tests {
                                 "labels": ["Allow once", "Always allow", "Deny"] } },
                         } })),
                         "hang" => say("Working"),
+                        // The Mac-mini incident: the process itself dies
+                        // mid-turn, not just the connection — a crash, not a
+                        // network blip.
+                        "dies" => {
+                            say("Working");
+                            std::process::exit(1);
+                        }
                         "coder" if mode == "bypassPermissions" => {
                             update(json!({ "sessionUpdate": "tool_call", "toolCallId": "call_1", "title": "git status", "kind": "execute",
                                 "status": "in_progress", "rawInput": { "command": "git status" } }));
@@ -1224,12 +1354,24 @@ mod tests {
         bearers: Vec<String>,
         /// The sockets it relays, to drop them.
         sockets: Vec<tokio::task::AbortHandle>,
+        /// The listener's accept loop, to take the whole hub down (a bot
+        /// truly unreachable, not just this one connection).
+        accept_loop: Option<tokio::task::AbortHandle>,
     }
 
     impl Hub {
         fn drop_sockets(&mut self) {
             for socket in self.sockets.drain(..) {
                 socket.abort();
+            }
+        }
+
+        /// The bot is gone, not just this connection: no new connection to
+        /// it succeeds either, so a reconnect can never recover.
+        fn shut_down(&mut self) {
+            self.drop_sockets();
+            if let Some(accept_loop) = self.accept_loop.take() {
+                accept_loop.abort();
             }
         }
     }
@@ -1243,13 +1385,14 @@ mod tests {
         let url = format!("http://{}", listener.local_addr().unwrap());
         let hub = Arc::new(Mutex::new(Hub::default()));
         let seen = hub.clone();
-        tokio::spawn(async move {
+        let accept_loop = tokio::spawn(async move {
             loop {
                 let (stream, _) = listener.accept().await.unwrap();
                 let (oal, hub) = (oal.clone(), seen.clone());
                 tokio::spawn(async move { serve_hub(stream, oal, hub).await });
             }
         });
+        hub.lock().unwrap().accept_loop = Some(accept_loop.abort_handle());
         (url, hub)
     }
 
@@ -1692,6 +1835,119 @@ mod tests {
         assert_eq!(kinds(&rest), vec![StreamEventType::Error, StreamEventType::Done]);
         assert_eq!(rest[0].error.as_deref(), Some("Cancelled"));
         assert_eq!(told(&r.told).iter().filter(|t| t.get("cancel").is_some()).count(), 1);
+    }
+
+    /// A cancel — even one the agent answers politely — is never trusted to
+    /// have really freed the session (nebo-link's own adapter can force a
+    /// `cancelled` answer on its own floor without the underlying SDK truly
+    /// yielding, leaving the session wedged): it is forgotten, so the next
+    /// message on the same chat opens a fresh one (`session/new` again)
+    /// instead of resuming the one that might never answer again.
+    #[tokio::test]
+    async fn a_cancel_forgets_the_session_so_the_next_message_starts_fresh() {
+        let r = remote("hang").await;
+        let token = CancellationToken::new();
+        let mut req = request("do something long", "chat-1", &remote_model());
+        req.cancel_token = Some(token.clone());
+
+        let mut rx = r.provider.stream(&req).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(60), rx.recv()).await.unwrap().unwrap();
+        token.cancel();
+        collect(rx).await;
+
+        let chat = r.store.get_chat("chat-1").unwrap().unwrap();
+        assert!(chat.linked_chat_id.is_none_or(|s| s.is_empty()), "the session is forgotten after a cancel");
+
+        let mut again = r.provider.stream(&request("and again", "chat-1", &remote_model())).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(60), again.recv()).await.unwrap().unwrap();
+        let news = told(&r.told).iter().filter(|t| t.get("new").is_some()).count();
+        assert_eq!(news, 2, "session/new again, not a resume of the forgotten one");
+    }
+
+    /// Generous enough for several [`HEARTBEAT`]s (test-shrunk) to pass in
+    /// real time.
+    async fn collect_patiently(mut rx: EventReceiver) -> Vec<StreamEvent> {
+        let cap = HEARTBEAT * 20 + Duration::from_secs(5);
+        let mut events = Vec::new();
+        while let Some(e) = tokio::time::timeout(cap, rx.recv()).await.expect("the turn went on") {
+            events.push(e);
+        }
+        events
+    }
+
+    /// A run can legitimately go silent for a long time — a build, a test
+    /// suite, a slow tool — with no session/update at all, and the
+    /// connection stays perfectly healthy throughout. Several heartbeats of
+    /// that silence (well past where a silence-timeout design would have
+    /// given up) must never end the turn on their own: only the owner's own
+    /// stop does, once he asks for it.
+    #[tokio::test]
+    async fn a_healthy_silent_turn_is_never_cancelled_on_its_own() {
+        let r = remote("hang").await;
+        let token = CancellationToken::new();
+        let mut req = request("do something long", "chat-1", &remote_model());
+        req.cancel_token = Some(token.clone());
+
+        let mut rx = r.provider.stream(&req).await.unwrap();
+        let first = tokio::time::timeout(Duration::from_secs(60), rx.recv()).await.unwrap().unwrap();
+        assert_eq!(first.text, "Working");
+
+        // Many heartbeats' worth of silence, agent still reported running:
+        // nothing arrives — not an error, not "done" — because nothing
+        // judges this turn stuck.
+        let quiet = tokio::time::timeout(HEARTBEAT * 10, rx.recv()).await;
+        assert!(quiet.is_err(), "a healthy, silent turn was ended on its own");
+
+        token.cancel();
+        let rest = collect(rx).await;
+        assert_eq!(kinds(&rest), vec![StreamEventType::Error, StreamEventType::Done]);
+        assert_eq!(rest[0].error.as_deref(), Some("Cancelled"), "only the owner's stop ends it");
+    }
+
+    /// The Mac-mini incident, precisely: the agent's own process dies
+    /// mid-turn — not a network blip, the process itself is gone. In this
+    /// host, that takes the connection down with it (nothing left for it to
+    /// relay), so this exercises the same reconnect-exhaustion path as
+    /// [`a_connection_that_never_comes_back_ends_the_turn_cleanly`]: no
+    /// process to reconnect to, the window runs out, and the turn ends
+    /// cleanly instead of sitting on "Thinking…" forever. A host that keeps
+    /// a connection open past one of several agents dying is exactly what
+    /// [`Driver::liveness`]'s own `host/agents` check is for — not
+    /// reachable through this single-agent test fixture, but reached the
+    /// same way once the connection itself does drop.
+    #[tokio::test]
+    async fn an_agent_whose_process_died_ends_the_turn_cleanly() {
+        let r = remote("dies").await;
+        let req = request("do something long", "chat-1", &remote_model());
+
+        let mut rx = r.provider.stream(&req).await.unwrap();
+        let first = tokio::time::timeout(Duration::from_secs(60), rx.recv()).await.unwrap().unwrap();
+        assert_eq!(first.text, "Working");
+
+        let rest = collect_patiently(rx).await;
+        assert_eq!(kinds(&rest), vec![StreamEventType::Error, StreamEventType::Done]);
+        assert_eq!(rest[0].error.as_deref(), Some("Could not connect to Danny. Try again."));
+    }
+
+    /// The connection itself is gone and no reconnect attempt ever
+    /// succeeds (the bot unreachable, not just one socket): the turn ends
+    /// cleanly once the reconnect window is exhausted, the same plain
+    /// "could not connect" copy as never having reached it at all — never a
+    /// hang.
+    #[tokio::test]
+    async fn a_connection_that_never_comes_back_ends_the_turn_cleanly() {
+        let r = remote("hang").await;
+        let req = request("do something long", "chat-1", &remote_model());
+
+        let mut rx = r.provider.stream(&req).await.unwrap();
+        let first = tokio::time::timeout(Duration::from_secs(60), rx.recv()).await.unwrap().unwrap();
+        assert_eq!(first.text, "Working");
+
+        r.hub.lock().unwrap().shut_down();
+
+        let rest = collect_patiently(rx).await;
+        assert_eq!(kinds(&rest), vec![StreamEventType::Error, StreamEventType::Done]);
+        assert_eq!(rest[0].error.as_deref(), Some("Could not connect to Danny. Try again."));
     }
 
     /// Nothing answers at the linked bot: the plain copy, no retry.
