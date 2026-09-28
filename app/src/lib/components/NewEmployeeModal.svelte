@@ -7,12 +7,12 @@
   able to do (the one needs step, `POST /agents/needs`), shown above Create
   in plain words. Each item is removable; Create grants what is left.
 
-  Below the name, "Hire from another app" lists every computer of the
-  owner's joined through Nebo Link, each with the agents it hosts (OpenClaw
-  and Hermes agents, Claude Code, Codex, Gemini CLI, OpenCode in their own
-  folders): picking one makes it an employee here, with its own name and
-  brain. This computer comes first: the coding agents installed here, which
-  Nebo hosts itself, each hired into a folder of its own.
+  Below the name, "Hire from another app" lists the owner's computers
+  (GET /agents/linked), this one first, each with what is installed on it,
+  one entry per app, named for what it is: Claude Code, Codex, Gemini CLI,
+  OpenClaw, Hermes. Picking one makes it an employee here, started as
+  itself on its own computer. The list is looked for again while it is
+  open, so an app installed meanwhile shows up.
   A coding agent (Claude Code, Codex, ...) is hired with the permission mode
   the owner picks here, which it runs in on its computer: the company's
   unless he picks another. Settings changes it later.
@@ -22,7 +22,8 @@
   import { t } from 'svelte-i18n';
   import { X } from 'lucide-svelte';
   import { createAgent, getCompanyPermissions, listLinkedAgents, workOutAgentNeeds } from '$lib/api/nebo';
-  import type { LinkedBotEntry } from '$lib/api/neboComponents';
+  import type { LinkedAgentEntry, LinkedComputerEntry } from '$lib/api/neboComponents';
+  import { RELIST_MS, anyCoding as codingOnList, linkedHire, type LinkedMode } from '$lib/utils/linkedHire';
 
   let { onclose, oncreated }: {
     onclose: () => void;
@@ -33,14 +34,8 @@
   let job = $state('');
   let busy = $state(false);
   let errorMsg = $state('');
-  let linkedBots = $state<LinkedBotEntry[]>([]);
+  let computers = $state<LinkedComputerEntry[]>([]);
 
-  // The runtimes that are coding agents: they run their own tools on their
-  // computer, under the permission mode the employee is hired with.
-  const CODING = new Set(['claude-code', 'codex', 'gemini', 'opencode', 'acp']);
-  // `company`: the employee follows the company's mode, now and when it
-  // changes; any other is its own.
-  type LinkedMode = 'company' | 'automatic' | 'ask' | 'plan' | 'full_access';
   const linkedModes: { id: LinkedMode; label: string; desc: string }[] = [
     { id: 'company', label: 'permissions.modeCompany', desc: 'permissions.modeCompanyDesc' },
     { id: 'automatic', label: 'permissions.modeAutomatic', desc: 'newEmployee.linkedModeAutomaticDesc' },
@@ -52,7 +47,7 @@
   // The company's mode, named on the first choice.
   let companyMode = $state('');
   const companyModeLabel = $derived(linkedModes.find((m) => m.id !== 'company' && m.id === companyMode)?.label);
-  const anyCoding = $derived(linkedBots.some((b) => CODING.has(b.runtime) || b.agents.some((a) => CODING.has(a.runtime ?? ''))));
+  const anyCoding = $derived(codingOnList(computers));
 
   // The drafted job: its plain-words items and the draft Create grants.
   let draftId = $state<string | null>(null);
@@ -101,20 +96,27 @@
     removed = [...removed, item];
   }
 
-  onMount(async () => {
+  // What is installed on each computer, looked for again while the list is
+  // open. A listing that fails keeps what is shown.
+  async function relist() {
+    try {
+      const resp = await listLinkedAgents();
+      computers = resp.computers ?? [];
+    } catch {
+      // Nothing listed yet is the same as no computers: the section stays
+      // hidden.
+    }
+  }
+
+  onMount(() => {
     getCompanyPermissions()
       .then((page) => (companyMode = page.companyMode))
       .catch(() => {
         // The first choice reads "Same as company defaults" alone.
       });
-    try {
-      const resp = await listLinkedAgents();
-      linkedBots = resp.bots ?? [];
-    } catch {
-      // Nothing to hire from is the same as no linked bots: the section
-      // stays hidden.
-      linkedBots = [];
-    }
+    relist();
+    const every = setInterval(relist, RELIST_MS);
+    return () => clearInterval(every);
   });
 
   async function create() {
@@ -134,45 +136,18 @@
     }
   }
 
-  // A "New <runtime>" row names the coding agent it starts; any other row
-  // runs what its bot runs.
-  async function hireLinked(bot: LinkedBotEntry, agentId: string, runtime: string) {
-    if (busy) return;
+  async function hireLinked(computer: LinkedComputerEntry, agent: LinkedAgentEntry) {
+    if (busy || agent.hired) return;
     busy = true;
     errorMsg = '';
     try {
-      const resp = await createAgent({
-        linked: { botId: bot.id, agentId, ...(CODING.has(runtime) && linkedMode !== 'company' ? { permissionMode: linkedMode } : {}) }
-      });
+      const resp = await createAgent({ linked: linkedHire(agent, linkedMode) });
       oncreated(resp.agent.id, resp.agent.name, resp.threadId);
     } catch (e: unknown) {
       errorMsg =
-        e instanceof Error ? e.message : $t('newEmployee.linkedFailed', { values: { bot: bot.name } });
+        e instanceof Error ? e.message : $t('newEmployee.linkedFailed', { values: { bot: computer.name } });
       busy = false;
     }
-  }
-
-  // The app a linked bot runs, as the owner knows it.
-  const APP_NAMES: Record<string, string> = {
-    openclaw: 'OpenClaw',
-    hermes: 'Hermes',
-    'claude-code': 'Claude Code',
-    codex: 'Codex',
-    gemini: 'Gemini CLI',
-    opencode: 'OpenCode',
-    acp: 'ACP agent'
-  };
-  function appName(runtime: string): string {
-    return APP_NAMES[runtime] ?? runtime.charAt(0).toUpperCase() + runtime.slice(1);
-  }
-
-  // A computer's bot hosting several agents (Claude Code and Codex in their
-  // own folders, an OpenClaw install) is headed by its name alone: each
-  // agent's row names what it is. One agent: the bot and the app it runs.
-  // This computer is headed as that.
-  function botHeading(bot: LinkedBotEntry): string {
-    if (bot.local) return $t('newEmployee.thisComputer');
-    return bot.agents.length === 1 ? `${bot.name} · ${appName(bot.runtime)}` : bot.name;
   }
 
   function onkeydown(e: KeyboardEvent) {
@@ -245,7 +220,7 @@
       </button>
     </div>
 
-    {#if linkedBots.length > 0}
+    {#if computers.length > 0}
       <div class="w-full mt-5 pt-4 border-t border-base-300 text-left">
         <h2 class="text-sm font-semibold">{$t('newEmployee.hireFromApps')}</h2>
         <p class="text-xs text-base-content/60 mt-1 leading-relaxed">{$t('newEmployee.linkedLede')}</p>
@@ -269,26 +244,31 @@
             </div>
           </fieldset>
         {/if}
-        {#each linkedBots as bot (bot.id)}
+        {#each computers as computer (computer.id)}
+          {@const name = computer.local ? $t('newEmployee.thisComputer') : computer.name}
           <div class="mt-3">
-            <h3 class="text-xs font-medium text-base-content/70">{botHeading(bot)}{bot.online ? '' : ` · ${$t('newEmployee.offline')}`}</h3>
-            <ul class="mt-1 flex flex-col gap-1">
-              {#each bot.agents as agent (agent.id)}
-                <li>
-                  <button
-                    type="button"
-                    class="btn btn-ghost btn-sm rounded-field w-full h-auto min-h-0 py-2 flex-col items-start gap-0.5 font-normal text-left"
-                    disabled={busy}
-                    onclick={() => hireLinked(bot, agent.id, agent.runtime ?? bot.runtime)}
-                  >
-                    <span class="font-medium whitespace-normal break-words">{agent.name}</span>
-                    {#if agent.description}
-                      <span class="text-xs text-base-content/60 truncate w-full">{agent.description}</span>
-                    {/if}
-                  </button>
-                </li>
-              {/each}
-            </ul>
+            <h3 class="text-xs font-medium text-base-content/70">{name}{computer.online ? '' : ` · ${$t('newEmployee.offline')}`}</h3>
+            {#if computer.agents.length === 0}
+              {#if computer.online}
+                <p class="text-xs text-base-content/60 mt-1">{$t('newEmployee.linkedEmpty', { values: { computer: name } })}</p>
+              {/if}
+            {:else}
+              <ul class="mt-1 flex flex-col gap-1">
+                {#each computer.agents as agent (`${agent.botId}/${agent.id}`)}
+                  <li>
+                    <button
+                      type="button"
+                      class="btn btn-ghost btn-sm rounded-field w-full h-auto min-h-0 py-2 flex-col items-start gap-0.5 font-normal text-left"
+                      disabled={busy || agent.hired}
+                      onclick={() => hireLinked(computer, agent)}
+                    >
+                      <span class="font-medium whitespace-normal break-words">{agent.name}</span>
+                      <span class="text-xs text-base-content/60 truncate w-full">{agent.hired ? $t('newEmployee.onYourTeam') : agent.description}</span>
+                    </button>
+                  </li>
+                {/each}
+              </ul>
+            {/if}
           </div>
         {/each}
       </div>

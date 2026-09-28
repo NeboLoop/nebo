@@ -946,6 +946,9 @@ pub struct ManagedBot {
     /// Shared with this account by another owner (never a hire source: a
     /// bot token reaches a linked bot only for a bot of the same owner).
     pub shared: bool,
+    /// The computer the bot runs on, as it reports itself at connect
+    /// ("Mac.lan"); empty when it never said.
+    pub hostname: String,
 }
 
 /// One agent a linked bot serves on its chat contract
@@ -956,6 +959,9 @@ pub struct LinkedAgent {
     pub id: String,
     pub name: String,
     pub description: String,
+    /// The runtime it runs (`hermes`, `codex`); empty from a link that
+    /// does not say, where it is the bot's.
+    pub runtime: String,
 }
 
 /// A coding agent a linked bot can add a new one of (Claude Code, Codex).
