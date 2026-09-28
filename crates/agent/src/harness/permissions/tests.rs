@@ -667,99 +667,59 @@ async fn activity_names_the_rule() {
     assert_eq!(serde_json::from_str::<Why>(&basic.why).unwrap(), Why::BasicWork);
 }
 
-/// A tool an MCP server adds after the owner set it to "Always allow"
-/// asks first, as on main: the sync that finds it pins an ask on it, the
-/// tools the owner already saw run under the server's default, and a tool
-/// the server stops offering is new again when it returns.
+/// A newly connected server's tools get no setting from Nebo: they follow
+/// the employee's mode like every unset switch, running without asking in
+/// Full Access and asking in Ask mode, until the owner sets the server's
+/// default or a tool's own switch. A tool added later follows the server's
+/// default; a tool the server stops offering loses its setting.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_new_tool_on_an_always_allowed_server_asks_first() {
+async fn a_newly_connected_servers_tools_follow_the_mode() {
     use mcp::bridge::ProxyToolRegistry;
     let (_d, store) = store();
     store
-        .create_mcp_integration(
-            "crm-1",
-            "CRM",
-            "crm",
-            Some("https://mcp.example.com"),
-            "none",
-            None,
-            None,
-        )
+        .create_mcp_integration("crm-1", "CRM", "crm", Some("https://mcp.example.com"), "none", None, None)
         .unwrap();
-    let (old, old_ran) = Probe::new("mcp__crm__lookup", "mcp__crm__lookup", None);
-    let (new, new_ran) = Probe::new("mcp__crm__delete_all", "mcp__crm__delete_all", None);
-    let reg = registry(&store, vec![old, new]).await;
+    let (lookup, lookup_ran) = Probe::new("mcp__crm__lookup", "mcp__crm__lookup", None);
+    let (purge, purge_ran) = Probe::new("mcp__crm__purge", "mcp__crm__purge", None);
+    let reg = registry(&store, vec![lookup, purge]).await;
     reg.set_store(store.clone());
     let synced = |names: &[&str]| -> Vec<(String, String)> {
-        names
-            .iter()
-            .map(|n| (n.to_string(), format!("mcp__crm__{n}")))
-            .collect()
+        names.iter().map(|n| (n.to_string(), format!("mcp__crm__{n}"))).collect()
     };
-    // First connect: the server's default asks; the owner sees `lookup`
-    // and sets the server to Always allow.
-    reg.tools_synced("crm-1", "crm", &synced(&["lookup"]));
-    let default = store
-        .permission_rules_in(&Scope::Company)
-        .unwrap()
-        .into_iter()
-        .find(|r| r.key == RuleKey::Tool("mcp__crm__*".into()))
-        .expect("the server's default");
-    assert_eq!(default.effect, Effect::Ask);
-    put(
-        &store,
-        Rule {
-            effect: Effect::Allow,
-            ..default
-        },
-    );
-    // A reconnect finds a tool the owner never saw.
-    reg.tools_synced("crm-1", "crm", &synced(&["lookup", "delete_all"]));
-    let c = ctx(&store, "", Origin::User);
-    assert_eq!(
-        reg.execute(&c, "mcp__crm__lookup", json!({})).await.content,
-        "RAN",
-        "a tool the owner saw"
-    );
-    let r = reg.execute(&c, "mcp__crm__delete_all", json!({})).await;
-    assert!(
-        r.parked_ask.is_some(),
-        "a new tool asks first: {}",
-        r.content
-    );
-    assert_eq!(
-        (
-            old_ran.load(Ordering::SeqCst),
-            new_ran.load(Ordering::SeqCst)
-        ),
-        (1, 0)
-    );
-    // Syncing again changes nothing: the ask stays the owner's to change.
-    reg.tools_synced("crm-1", "crm", &synced(&["lookup", "delete_all"]));
-    assert!(
-        reg.execute(&c, "mcp__crm__delete_all", json!({}))
-            .await
-            .parked_ask
-            .is_some()
-    );
-    // Gone, then back: new again.
-    reg.tools_synced("crm-1", "crm", &synced(&["lookup"]));
-    assert!(
-        !store
+    let crm_rules = || -> Vec<Rule> {
+        store
             .permission_rules_in(&Scope::Company)
             .unwrap()
-            .iter()
-            .any(|r| r.key == RuleKey::Tool("mcp__crm__delete_all".into())),
-        "a gone tool's rule goes with it"
-    );
-    reg.tools_synced("crm-1", "crm", &synced(&["lookup", "delete_all"]));
-    assert!(
-        reg.execute(&c, "mcp__crm__delete_all", json!({}))
-            .await
-            .parked_ask
-            .is_some(),
-        "back is new"
-    );
+            .into_iter()
+            .filter(|r| r.key.value().starts_with("mcp__crm__"))
+            .collect()
+    };
+
+    // First connect: nothing is written for the server or its tools.
+    reg.tools_synced("crm-1", "crm", &synced(&["lookup"]));
+    assert!(crm_rules().is_empty(), "no setting the owner didn't make: {:?}", crm_rules());
+    let full = with_mode(ctx(&store, "", Origin::User), Mode::FullAccess);
+    assert_eq!(reg.execute(&full, "mcp__crm__lookup", json!({})).await.content, "RAN", "Full Access never asks");
+    let ask = with_mode(ctx(&store, "", Origin::User), Mode::Ask);
+    assert!(reg.execute(&ask, "mcp__crm__lookup", json!({})).await.parked_ask.is_some(), "Ask mode asks");
+    assert_eq!(lookup_ran.load(Ordering::SeqCst), 1);
+
+    // The owner sets the server to Always allow; a tool it adds later
+    // follows that default, with nothing written for it.
+    put(&store, rule(Scope::Company, RuleKey::Tool("mcp__crm__*".into()), None, Effect::Allow));
+    reg.tools_synced("crm-1", "crm", &synced(&["lookup", "purge"]));
+    assert_eq!(crm_rules().len(), 1);
+    let auto = ctx(&store, "", Origin::User);
+    assert_eq!(reg.execute(&auto, "mcp__crm__purge", json!({})).await.content, "RAN");
+
+    // A tool's own setting, then the server stops offering it: the setting
+    // goes, so a return starts unset.
+    put(&store, rule(Scope::Company, RuleKey::Tool("mcp__crm__purge".into()), None, Effect::Deny));
+    let full = with_mode(ctx(&store, "", Origin::User), Mode::FullAccess);
+    assert!(reg.execute(&full, "mcp__crm__purge", json!({})).await.is_error, "Off refuses in Full Access");
+    reg.tools_synced("crm-1", "crm", &synced(&["lookup"]));
+    assert!(!crm_rules().iter().any(|r| r.key == RuleKey::Tool("mcp__crm__purge".into())), "a gone tool's setting goes");
+    assert_eq!(purge_ran.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]

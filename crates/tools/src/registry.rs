@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
 use ai::ToolDefinition;
 
@@ -798,12 +798,6 @@ impl Registry {
             .collect()
     }
 
-    /// Get the full description of a specific tool (used for steering injection on first use).
-    pub async fn get_tool_description(&self, name: &str) -> Option<String> {
-        let cache = self.def_cache.read().await;
-        cache.get(name).map(|def| def.description.clone())
-    }
-
     /// The `(integration_id, original tool name)` behind a registered MCP proxy
     /// tool (`mcp__<server>__<tool>`), or `None` for any other tool. The runner's
     /// approval gate uses this to resolve the server's tri-state tool permissions.
@@ -1473,8 +1467,14 @@ impl mcp::bridge::ProxyToolRegistry for Registry {
         }
     }
 
+    /// A server's tools are recorded as it offers them. Nothing is decided
+    /// for them here: a tool with no setting of its own or its server's
+    /// follows the employee's mode, as every unset switch does (Full Access
+    /// runs it, Ask mode asks), until the owner sets one on the
+    /// Permissions page. A tool the server stopped offering loses its
+    /// setting, so if it returns it is unset again.
     fn tools_synced(&self, integration_id: &str, server_slug: &str, tools: &[(String, String)]) {
-        use types::permissions::{Effect, Rule, RuleKey, RuleSource, Scope, Writer};
+        use types::permissions::{RuleKey, Scope, Writer};
         let store = match self.store.read().unwrap().as_ref() {
             Some(s) => s.clone(),
             None => {
@@ -1492,17 +1492,6 @@ impl mcp::bridge::ProxyToolRegistry for Registry {
         if platform {
             return;
         }
-        let rule = |key: RuleKey, effect: Effect| Rule {
-            id: uuid::Uuid::new_v4().to_string(),
-            scope: Scope::Company,
-            key,
-            field: None,
-            effect,
-            money: None,
-            source: RuleSource::Owner,
-            locked: false,
-            created_at: chrono::Utc::now().timestamp(),
-        };
         let company = match store.permission_rules_in(&Scope::Company) {
             Ok(rules) => rules,
             Err(e) => {
@@ -1510,42 +1499,6 @@ impl mcp::bridge::ProxyToolRegistry for Registry {
                 return;
             }
         };
-        let own = |key: &RuleKey| company.iter().find(|r| &r.key == key && r.field.is_none());
-        // A server's tools ask until the owner says otherwise: the server's
-        // default rule is written once, at its first connect.
-        let default_key = RuleKey::Tool(format!("mcp__{server_slug}__*"));
-        let default = match own(&default_key) {
-            Some(r) => r.effect,
-            None => {
-                if let Err(e) =
-                    store.write_permission_rule(&rule(default_key, Effect::Ask), &Writer::Migration)
-                {
-                    warn!(integration = %integration_id, error = %e, "failed to write the MCP server's default rule");
-                }
-                Effect::Ask
-            }
-        };
-        // A tool the owner has never seen doesn't ride an "Always allow"
-        // default: while the default allows, each tool the server didn't
-        // offer at its last sync gets its own ask, which the owner can
-        // change. A tool the server stopped offering loses its rule, so if
-        // it returns it is new again.
-        let known = store
-            .get_mcp_known_tools(integration_id)
-            .unwrap_or_default();
-        for (original, proxy) in tools {
-            let key = RuleKey::Tool(proxy.clone());
-            if default == Effect::Allow && !known.contains(original) && own(&key).is_none() {
-                match store.write_permission_rule(&rule(key, Effect::Ask), &Writer::Migration) {
-                    Ok(_) => {
-                        info!(integration = %integration_id, tool = %proxy, "a new tool on an always-allowed server asks first")
-                    }
-                    Err(e) => {
-                        warn!(integration = %integration_id, tool = %proxy, error = %e, "the new tool's ask did not land")
-                    }
-                }
-            }
-        }
         let family = format!("mcp__{server_slug}__");
         for r in company.iter().filter(|r| r.field.is_none() && !r.locked) {
             let RuleKey::Tool(key) = &r.key else { continue };

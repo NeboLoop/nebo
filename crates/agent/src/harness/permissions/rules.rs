@@ -8,6 +8,13 @@
 //! scope decides; else the company's does. Within the deciding scope ask
 //! beats allow; a more specific field never outranks a broader deny.
 //!
+//! Within one scope a rule on the call's own tool or operation is its own
+//! setting, and a rule on its family (`mcp__crm__*`) or its capability is
+//! the default for everything without one: the most specific key that has
+//! a rule decides, whatever the broader ones say. A rule with a field
+//! (a command, folder, site or recipient) is never set aside this way, and
+//! neither is a locked one.
+//!
 //! A shell command is judged by every command it runs (`ls && rm x` is `ls`
 //! and `rm x`): denied when any is denied, asked when any asks, allowed only
 //! when every one is allowed. A command that can't be read before it runs
@@ -74,22 +81,25 @@ impl RuleSet {
     /// be read and that a deny rule of either scope could name; else the
     /// deciding scope's strongest rule.
     pub fn decide_piece(&self, t: &Target, piece: Option<&Subcommand>) -> Option<(&Rule, Effect)> {
-        if let Some(deny) = self.all().find(|r| effect_on(r, t, piece) == Some(Effect::Deny)) {
-            return Some((deny, Effect::Deny));
+        let employee = applying(&self.employee, t, piece);
+        let company = applying(&self.company, t, piece);
+        if let Some(deny) = employee.iter().chain(&company).find(|(_, e)| *e == Effect::Deny) {
+            return Some(*deny);
         }
-        if let Some(unread) = self.all().find(|r| r.effect == Effect::Deny && effect_on(r, t, piece).is_some()) {
+        // A deny that may name a command it can't read asks.
+        if let Some(unread) = self.all().find(|r| r.effect == Effect::Deny && effect_on(r, t, piece) == Some(Effect::Ask)) {
             return Some((unread, Effect::Ask));
         }
-        self.deciding(t, piece)
-            .iter()
-            .filter_map(|r| effect_on(r, t, piece).map(|e| (r, e)))
-            .max_by_key(|(_, e)| *e)
+        let deciding = if employee.is_empty() { company } else { employee };
+        deciding.into_iter().max_by_key(|(_, e)| *e)
     }
 
-    /// The scope that decides one piece of `t`: the employee's when any of
-    /// its rules matches, else the company's.
-    fn deciding(&self, t: &Target, piece: Option<&Subcommand>) -> &[Rule] {
-        if self.employee.iter().any(|r| effect_on(r, t, piece).is_some()) { &self.employee } else { &self.company }
+    /// The rules of the scope that decides one piece of `t`, with what each
+    /// does to it: the employee's when any of its rules applies, else the
+    /// company's.
+    fn deciding(&self, t: &Target, piece: Option<&Subcommand>) -> Vec<(&Rule, Effect)> {
+        let employee = applying(&self.employee, t, piece);
+        if employee.is_empty() { applying(&self.company, t, piece) } else { employee }
     }
 
     /// Whether one piece of `t` is allowed by an allow `pick` accepts among
@@ -99,7 +109,7 @@ impl RuleSet {
             && self
                 .deciding(t, piece)
                 .iter()
-                .any(|r| r.effect == Effect::Allow && pick(r) && effect_on(r, t, piece).is_some())
+                .any(|(r, _)| r.effect == Effect::Allow && pick(r))
     }
 
     /// Whether `t` is allowed and, for every piece of it, an allow `pick`
@@ -181,6 +191,30 @@ pub fn pieces(t: &Target) -> Vec<Option<Subcommand>> {
 /// shell call, any one of the commands it runs.
 pub fn matches(rule: &Rule, t: &Target) -> bool {
     pieces(t).iter().any(|piece| effect_on(rule, t, piece.as_ref()).is_some())
+}
+
+/// How narrowly a rule's key names a call: its own tool or operation, its
+/// family of tools (`mcp__crm__*`), or its capability.
+pub fn key_rank(key: &RuleKey) -> u8 {
+    match key {
+        RuleKey::Capability(_) => 0,
+        RuleKey::Tool(k) if k.ends_with('*') => 1,
+        RuleKey::Tool(_) | RuleKey::Operation(_) => 2,
+    }
+}
+
+/// The rules of one scope that apply to one piece of `t`, with what each
+/// does to it. A rule without a field is set aside when a rule of the same
+/// scope with a narrower key (and no field) also applies: the call's own
+/// setting outranks its family's and its capability's. Locked rules and
+/// rules with a field always apply.
+fn applying<'a>(rules: &'a [Rule], t: &Target, piece: Option<&Subcommand>) -> Vec<(&'a Rule, Effect)> {
+    let matched: Vec<(&Rule, Effect)> = rules.iter().filter_map(|r| effect_on(r, t, piece).map(|e| (r, e))).collect();
+    let narrowest = matched.iter().filter(|(r, _)| r.field.is_none()).map(|(r, _)| key_rank(&r.key)).max();
+    matched
+        .into_iter()
+        .filter(|(r, _)| r.field.is_some() || r.locked || Some(key_rank(&r.key)) == narrowest)
+        .collect()
 }
 
 /// What `rule` does to one piece of `t` (see [`pieces`]): its effect when it
@@ -476,6 +510,48 @@ mod tests {
         let read_input = serde_json::json!({"path": dir.path().join("outside.txt").to_string_lossy()});
         let read = target("read_file", Some("file"), Some(RuleField::Folder(dir.path().join("outside.txt"))));
         assert!(rules.in_job(&read, &read_input));
+    }
+
+    /// A tool's or an operation's own rule outranks its family's and its
+    /// capability's in the same scope, whichever is stricter; a company deny
+    /// still binds an employee, and a locked rule or one with a field is
+    /// never set aside.
+    #[test]
+    fn a_calls_own_rule_outranks_its_default() {
+        let co = || Scope::Company;
+        let emp = || Scope::Employee("a".into());
+        let tool = |s: Scope, k: &str, e: Effect| rule(s, RuleKey::Tool(k.into()), None, e);
+        let effect = |rules: Vec<Rule>, t: &Target| set(rules).decide(t).map(|d| d.1);
+        let mut lookup = target("mcp__crm__lookup", None, None);
+        lookup.tool = "mcp__crm__lookup".into();
+
+        // The server's default decides a tool without its own rule.
+        assert_eq!(effect(vec![tool(co(), "mcp__crm__*", Effect::Ask)], &lookup), Some(Effect::Ask));
+        // The tool's own rule decides it, looser or stricter.
+        for (default, own) in [(Effect::Ask, Effect::Allow), (Effect::Deny, Effect::Allow), (Effect::Allow, Effect::Deny)] {
+            let rules = vec![tool(co(), "mcp__crm__*", default), tool(co(), "mcp__crm__lookup", own)];
+            assert_eq!(effect(rules, &lookup), Some(own), "{default:?} default, {own:?} own");
+        }
+        // An operation's own rule outranks its capability's.
+        let mut pay = target("ledger.billpayment.create", Some("ledger"), None);
+        pay.operation = Some("accounting.ap.ledger.billpayment.create".into());
+        let cap = |s: Scope, e: Effect| rule(s, RuleKey::Capability("ledger".into()), None, e);
+        let op = |s: Scope, e: Effect| rule(s, RuleKey::Operation("ledger.billpayment.create".into()), None, e);
+        assert_eq!(effect(vec![cap(emp(), Effect::Deny), op(emp(), Effect::Allow)], &pay), Some(Effect::Allow));
+        assert_eq!(effect(vec![cap(emp(), Effect::Allow), op(emp(), Effect::Ask)], &pay), Some(Effect::Ask));
+        // Across scopes a deny still binds: the company's default, set aside
+        // only by the company's own tool rule.
+        let company_off = tool(co(), "mcp__crm__*", Effect::Deny);
+        assert_eq!(effect(vec![company_off.clone(), tool(emp(), "mcp__crm__lookup", Effect::Allow)], &lookup), Some(Effect::Deny));
+        assert_eq!(effect(vec![company_off, tool(co(), "mcp__crm__lookup", Effect::Allow)], &lookup), Some(Effect::Allow));
+        // A locked rule is never set aside.
+        let law = Rule { locked: true, ..cap(emp(), Effect::Ask) };
+        assert_eq!(effect(vec![law, op(emp(), Effect::Allow)], &pay), Some(Effect::Ask));
+        // A rule with a field never outranks a broader deny.
+        let shell = target("run_command", Some("shell"), Some(RuleField::CommandPrefix("git status".into())));
+        let prefix = rule(emp(), RuleKey::Tool("run_command".into()), Some(RuleField::CommandPrefix("git".into())), Effect::Allow);
+        let off = rule(emp(), RuleKey::Capability("shell".into()), None, Effect::Deny);
+        assert_eq!(effect(vec![off, prefix], &shell), Some(Effect::Deny));
     }
 
     #[test]

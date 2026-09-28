@@ -204,6 +204,168 @@ async fn company_deny_beats_employee_allow() {
     assert!(matches!(decide(&CheckCx { ctx: &ctx, input: &input, grant: &grant, store: &store }, &t), Decision::Deny { .. }));
 }
 
+/// `a-tools-own-setting-outranks-its-default`: on the Permissions page a
+/// connected server's default covers its tools, and a tool's own switch
+/// overrides it whichever way it points. The permission check agrees: a
+/// tool set to Allow runs under a server set to Ask or Off, a tool set to
+/// Off is refused under a server set to Allow, and an employee's own Allow
+/// still doesn't undo a company Off.
+#[tokio::test]
+async fn a_tools_own_setting_outranks_its_default() {
+    let (_d, store) = store();
+    let owner = types::permissions::Writer::Owner;
+    let put = |scope: Scope, key: &str, effect: Effect| {
+        let rule = types::permissions::Rule {
+            id: uuid::Uuid::new_v4().to_string(),
+            scope,
+            key: RuleKey::Tool(key.into()),
+            field: None,
+            effect,
+            money: None,
+            source: RuleSource::Owner,
+            locked: false,
+            created_at: 0,
+        };
+        store.write_permission_rule(&rule, &owner).unwrap();
+    };
+    let call = |agent: &str, tool: &str| {
+        let grant = resolve_grant(&store, agent, None);
+        let ctx = ToolContext {
+            origin: Origin::User,
+            session_key: format!("agent:{agent}:web"),
+            grant: Some(Arc::new(grant.clone())),
+            ..Default::default()
+        };
+        let t = Target {
+            tool: tool.into(),
+            key: tool.into(),
+            operation: None,
+            capability: None,
+            field: None,
+            subject: None,
+            read_only: false,
+            effects: CallEffects::unknown(),
+        };
+        let input = serde_json::json!({});
+        decide(&CheckCx { ctx: &ctx, input: &input, grant: &grant, store: &store }, &t)
+    };
+    let (lookup, purge) = ("mcp__crm__lookup", "mcp__crm__purge");
+
+    put(Scope::Company, "mcp__crm__*", Effect::Ask);
+    assert!(matches!(call("dev", lookup), Decision::Ask { .. }), "the server's default asks");
+    put(Scope::Company, lookup, Effect::Allow);
+    assert!(matches!(call("dev", lookup), Decision::Allow { .. }), "the tool's own Allow runs it");
+    assert!(matches!(call("dev", purge), Decision::Ask { .. }), "the others keep the default");
+    put(Scope::Company, "mcp__crm__*", Effect::Deny);
+    assert!(matches!(call("dev", lookup), Decision::Allow { .. }), "its own Allow outranks a server Off");
+    assert!(matches!(call("dev", purge), Decision::Deny { .. }));
+    put(Scope::Company, "mcp__crm__*", Effect::Allow);
+    put(Scope::Company, purge, Effect::Deny);
+    assert!(matches!(call("dev", purge), Decision::Deny { .. }), "its own Off outranks a server Allow");
+    put(Scope::Employee("dev".into()), purge, Effect::Allow);
+    assert!(matches!(call("dev", purge), Decision::Deny { .. }), "an employee's Allow doesn't undo a company Off");
+}
+
+/// `an-off-switch-wins-in-every-mode`: a switch set to Off on the
+/// Permissions page (a deny on the capability, the connected tool or the
+/// employee's own page) refuses the call whatever the mode, Full Access
+/// included, and an employee's own Allow never turns a company Off back on.
+#[tokio::test]
+async fn an_off_switch_wins_in_every_mode() {
+    use types::permissions::Mode;
+    let (_d, store) = store();
+    let owner = types::permissions::Writer::Owner;
+    let put = |scope: Scope, key: RuleKey, effect: Effect| {
+        let rule = types::permissions::Rule {
+            id: uuid::Uuid::new_v4().to_string(),
+            scope,
+            key,
+            field: None,
+            effect,
+            money: None,
+            source: RuleSource::Owner,
+            locked: false,
+            created_at: 0,
+        };
+        store.write_permission_rule(&rule, &owner).unwrap();
+    };
+    put(Scope::Company, RuleKey::Capability("web".into()), Effect::Deny);
+    put(Scope::Employee("dev".into()), RuleKey::Capability("web".into()), Effect::Allow);
+    put(Scope::Employee("dev".into()), RuleKey::Capability("desktop".into()), Effect::Deny);
+    for mode in [Mode::Automatic, Mode::Ask, Mode::Plan, Mode::FullAccess] {
+        store.set_permission_mode(&Scope::Employee("dev".into()), mode).unwrap();
+        assert!(matches!(decision(&store, "dev", "web"), Decision::Deny { .. }), "company Off in {mode:?}");
+        assert!(matches!(decision(&store, "dev", "desktop"), Decision::Deny { .. }), "its own Off in {mode:?}");
+    }
+}
+
+/// `full-access-never-asks`: in Full Access nothing asks on its own: work
+/// outside the job, a capability with no setting, and installing software
+/// (`npm install -g`, `brew install`) all run. Installing is never an ask
+/// case in Automatic either, once the shell is part of the job. Only a
+/// switch the owner set to Ask asks; Off still refuses.
+#[tokio::test]
+async fn full_access_never_asks() {
+    use types::permissions::Mode;
+    let (_d, store) = store();
+    let owner = types::permissions::Writer::Owner;
+    let shell = |agent: &str, command: &str| {
+        let grant = resolve_grant(&store, agent, None);
+        let ctx = ToolContext {
+            origin: Origin::User,
+            session_key: format!("agent:{agent}:web"),
+            grant: Some(Arc::new(grant.clone())),
+            ..Default::default()
+        };
+        let t = Target {
+            tool: "run_command".into(),
+            key: "run_command".into(),
+            operation: None,
+            capability: Some("shell".into()),
+            field: Some(types::permissions::RuleField::CommandPrefix(command.into())),
+            subject: None,
+            read_only: false,
+            effects: CallEffects::unknown(),
+        };
+        let input = serde_json::json!({ "command": command });
+        decide(&CheckCx { ctx: &ctx, input: &input, grant: &grant, store: &store }, &t)
+    };
+    let installs = ["npm install -g typescript", "brew install jq", "pip install --user requests"];
+
+    store.set_permission_mode(&Scope::Employee("dev".into()), Mode::FullAccess).unwrap();
+    for cap in ["web", "file", "shell", "desktop", "contacts"] {
+        assert!(matches!(decision(&store, "dev", cap), Decision::Allow { .. }), "{cap} runs in Full Access");
+    }
+    for command in installs {
+        assert!(matches!(shell("dev", command), Decision::Allow { .. }), "{command} runs in Full Access");
+    }
+
+    // Automatic, with the shell in the job: an install runs too.
+    let allow_shell = types::permissions::Rule {
+        id: uuid::Uuid::new_v4().to_string(),
+        scope: Scope::Employee("ops".into()),
+        key: RuleKey::Capability("shell".into()),
+        field: None,
+        effect: Effect::Allow,
+        money: None,
+        source: RuleSource::Owner,
+        locked: false,
+        created_at: 0,
+    };
+    store.write_permission_rule(&allow_shell, &owner).unwrap();
+    for command in installs {
+        assert!(matches!(shell("ops", command), Decision::Allow { .. }), "{command} runs in Automatic");
+    }
+
+    // A switch the owner set to Ask still asks, and Off still refuses.
+    for (effect, cap) in [(Effect::Ask, "web"), (Effect::Deny, "desktop")] {
+        let rule = types::permissions::Rule { id: uuid::Uuid::new_v4().to_string(), scope: Scope::Employee("dev".into()), key: RuleKey::Capability(cap.into()), effect, ..allow_shell.clone() };
+        store.write_permission_rule(&rule, &owner).unwrap();
+    }
+    assert!(matches!(decision(&store, "dev", "web"), Decision::Ask { .. }));
+    assert!(matches!(decision(&store, "dev", "desktop"), Decision::Deny { .. }));
+}
+
 /// A server on this computer that answers every request with a page titled
 /// "Example Domain", and counts the connections it took.
 fn page_server() -> (u16, Arc<std::sync::atomic::AtomicUsize>) {

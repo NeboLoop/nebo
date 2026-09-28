@@ -9,7 +9,7 @@
 //! (`permission_rules`, `permission_modes`) through the store's writers, as
 //! the owner.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path as FsPath;
 
 use axum::extract::{Path, Query, State};
@@ -235,6 +235,8 @@ pub async fn answer_workflow_run_approval(
 // ── The Permissions pages ───────────────────────────────────────────────
 
 /// One employee's permissions, or the company defaults, in plain words.
+/// Every choice on it is the same three-way switch: always allow, ask
+/// first, or off.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PermissionsPage {
@@ -244,25 +246,63 @@ pub struct PermissionsPage {
     pub mode_from_company: bool,
     /// The company default mode.
     pub company_mode: String,
-    /// What the job includes: the capabilities it may use.
-    pub job: Vec<PermissionItem>,
-    /// Capabilities the owner can add to the job.
-    pub can_add: Vec<PermissionItem>,
+    /// What employees can do: one switch per built-in capability.
+    pub capabilities: Vec<PermissionSwitch>,
+    /// Each connected service (what a plugin lets employees do, or an MCP
+    /// server): its default, and one switch per action or tool.
+    pub groups: Vec<PermissionGroup>,
+    /// Settings on one command, site, recipient or tool, from the owner's
+    /// answers and settings.
+    pub specific: Vec<PermissionSwitch>,
     /// Money it may spend without asking.
     pub money: Vec<PermissionItem>,
     /// Folders it may change files in.
     pub folders: Vec<PermissionItem>,
-    /// Actions allowed from past answers and the owner's own settings.
-    pub always_allowed: Vec<PermissionItem>,
-    /// Actions that ask the owner first.
-    pub asks_first: Vec<PermissionItem>,
-    /// Actions that never run.
-    pub never: Vec<PermissionItem>,
+    /// Safety rules: these always ask the owner and have no switch.
+    pub always_asks: Vec<PermissionItem>,
     /// Rules a company law or the employee's package sets; they can't change here.
     pub fixed: Vec<PermissionItem>,
 }
 
-/// One line on a Permissions page.
+/// One three-way choice on a Permissions page.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PermissionSwitch {
+    /// What `set` names.
+    pub id: String,
+    pub sentence: String,
+    /// allow | ask | deny: what applies now.
+    pub value: String,
+    /// No setting of this page's own: `value` is the default's or the
+    /// company's.
+    pub inherited: bool,
+    /// Where an inherited value comes from: `default` (its group's default,
+    /// or the standing default) or `company`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub inherits_from: Option<String>,
+    /// Whether its own setting can be cleared, back to the default or the
+    /// company's (`set` with `inherit`).
+    pub can_inherit: bool,
+    /// A company "off" binds it: it changes on the company page only.
+    pub locked: bool,
+}
+
+/// A connected service's switches.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PermissionGroup {
+    pub id: String,
+    /// The MCP server's name, or what the plugin lets employees do.
+    pub title: String,
+    /// The plugins that provide it; empty for an MCP server.
+    pub subtitle: String,
+    /// What everything in it does without a setting of its own.
+    pub default: PermissionSwitch,
+    /// One switch per action or tool.
+    pub rows: Vec<PermissionSwitch>,
+}
+
+/// One line on a Permissions page without a switch.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PermissionItem {
@@ -319,12 +359,21 @@ pub struct PermissionsUpdate {
     /// `automatic`, `ask`, `plan` or `full_access`; on an employee's page,
     /// `company` follows the company default.
     pub mode: Option<String>,
-    /// The id of a `canAdd` item.
-    pub add_capability: Option<String>,
     /// A folder the job may change files in.
     pub add_folder: Option<String>,
     /// New amounts for a money item.
     pub money: Option<MoneyEdit>,
+    /// One switch moved.
+    pub set: Option<SwitchEdit>,
+}
+
+/// A switch moved: its `id` and `allow`, `ask`, `deny`, or `inherit` (clear
+/// this page's own setting, back to the default or the company's).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SwitchEdit {
+    pub id: String,
+    pub value: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -446,8 +495,26 @@ pub async fn list_permission_activity(
     activity(&state.store, &q).map(Json).map_err(to_error_response)
 }
 
-fn connected(state: &AppState) -> BTreeSet<String> {
-    super::agents::connected_capabilities(state).into_keys().collect()
+/// The capabilities the company's active plugins provide, each with the
+/// names of the plugins that provide it.
+fn connected(state: &AppState) -> BTreeMap<String, Vec<String>> {
+    super::agents::connected_capabilities(state)
+        .into_iter()
+        .map(|(capability, slugs)| {
+            let names = slugs
+                .iter()
+                .map(|slug| {
+                    state
+                        .plugin_store
+                        .get_manifest(slug)
+                        .map(|m| m.name)
+                        .filter(|n| !n.trim().is_empty())
+                        .unwrap_or_else(|| tools::humanize::service_name(slug))
+                })
+                .collect();
+            (capability, names)
+        })
+        .collect()
 }
 
 // ── The page ────────────────────────────────────────────────────────────
@@ -521,8 +588,112 @@ fn shown_rules(store: &db::Store, agent_id: Option<&str>) -> Result<Vec<(Rule, b
     Ok(shown)
 }
 
+/// Whether two rule keys name the same thing (an operation by its port
+/// suffix, as the rules engine matches it).
+fn same_key(a: &RuleKey, b: &RuleKey) -> bool {
+    match (a, b) {
+        (RuleKey::Operation(x), RuleKey::Operation(y)) => {
+            tools::plugin_tool::port_suffix(x) == tools::plugin_tool::port_suffix(y)
+        }
+        _ => a == b,
+    }
+}
+
+/// An operation as the catalog names it (`accounting.ap.ledger.bill.create`
+/// → `ledger.bill.create`), or its port suffix when the catalog has none.
+fn catalog_operation(op: &str) -> String {
+    let suffix = tools::plugin_tool::port_suffix(op);
+    tools::interface_catalog::gated_operations()
+        .iter()
+        .find(|c| **c == op || tools::plugin_tool::port_suffix(c) == suffix)
+        .map(|c| c.to_string())
+        .unwrap_or(suffix)
+}
+
+/// The capability an operation belongs to: its first word.
+fn capability_of(op: &str) -> &str {
+    op.split('.').next().unwrap_or("")
+}
+
+/// A safety rule's operation: giving an employee more access, or changing
+/// the company's own file. It always asks the owner and has no switch.
+fn is_safety(op: &str) -> bool {
+    matches!(capability_of(op), "authority" | "layers") && tools::interface_catalog::is_critical(op)
+}
+
+/// The MCP server a tool key belongs to (`mcp__crm__lookup` → `crm`).
+fn mcp_server(key: &str) -> Option<&str> {
+    key.strip_prefix("mcp__").map(|rest| rest.split_once("__").map_or(rest, |(slug, _)| slug))
+}
+
+/// The id a switch is set by.
+fn switch_id(key: &RuleKey) -> String {
+    match key {
+        RuleKey::Capability(c) => format!("capability:{c}"),
+        RuleKey::Tool(t) => format!("tool:{t}"),
+        RuleKey::Operation(o) => format!("operation:{o}"),
+    }
+}
+
+/// What one scope's rules set for a switch whose keys are `covers`, its
+/// own first and then its defaults: the effect, and whether a rule on its
+/// own key sets it, and whether a locked rule on its own key fixes it. As
+/// in the rules engine, the narrowest key with a rule decides and a locked
+/// rule always counts.
+fn scope_setting(rules: &[&Rule], covers: &[RuleKey]) -> Option<(Effect, bool, bool)> {
+    let matched: Vec<(&Rule, usize)> = rules
+        .iter()
+        .filter(|r| r.field.is_none())
+        .filter_map(|r| covers.iter().position(|k| same_key(k, &r.key)).map(|i| (*r, i)))
+        .collect();
+    let narrowest = matched.iter().map(|(_, i)| *i).min()?;
+    let effect = matched.iter().filter(|(r, i)| *i == narrowest || r.locked).map(|(r, _)| r.effect).max()?;
+    let own = |locked: bool| matched.iter().any(|(r, i)| *i == 0 && r.locked == locked);
+    Some((effect, own(false), own(true)))
+}
+
+/// The rules a page's switches read: its own scope's, and on an employee's
+/// page the company's.
+struct Scopes<'a> {
+    own: Vec<&'a Rule>,
+    company: Option<Vec<&'a Rule>>,
+}
+
+impl Scopes<'_> {
+    /// One switch. `standing` is what applies with no rule at all.
+    fn switch(&self, sentence: String, covers: &[RuleKey], standing: Effect) -> PermissionSwitch {
+        let mine = scope_setting(&self.own, covers);
+        let theirs = self.company.as_ref().and_then(|c| scope_setting(c, covers));
+        let own_setting = mine.is_some_and(|(_, own, _)| own);
+        // A law or a package's rule on it fixes it for both pages.
+        let fixed = [mine, theirs].iter().flatten().any(|(_, _, fixed)| *fixed);
+        let (value, from, locked) = match (mine, theirs) {
+            // No rule of the employee's undoes a company "off".
+            (_, Some((Effect::Deny, _, _))) => (Effect::Deny, Some("company"), true),
+            (Some((e, true, _)), _) => (e, None, fixed),
+            (Some((e, false, _)), _) => (e, Some("default"), fixed),
+            (None, Some((e, _, _))) => (e, Some("company"), fixed),
+            (None, None) => (standing, Some(if self.company.is_some() { "company" } else { "default" }), false),
+        };
+        PermissionSwitch {
+            id: switch_id(&covers[0]),
+            sentence,
+            value: value.as_str().to_string(),
+            inherited: from.is_some(),
+            inherits_from: from.map(str::to_string),
+            can_inherit: own_setting && !locked,
+            locked,
+        }
+    }
+}
+
 /// Build one page: an employee's (`Some`) or the company defaults (`None`).
-fn page(store: &db::Store, agent_id: Option<&str>, connected: &BTreeSet<String>) -> Result<PermissionsPage, NeboError> {
+/// `connected` is what the company's plugins provide, with their names.
+fn page(
+    store: &db::Store,
+    agent_id: Option<&str>,
+    connected: &BTreeMap<String, Vec<String>>,
+) -> Result<PermissionsPage, NeboError> {
     let company_mode = store.permission_mode(&Scope::Company)?.unwrap_or_default();
     let (mode, mode_from_company) = match agent_id {
         Some(id) => match store.permission_mode(&Scope::Employee(id.to_string()))? {
@@ -531,71 +702,186 @@ fn page(store: &db::Store, agent_id: Option<&str>, connected: &BTreeSet<String>)
         },
         None => (company_mode, false),
     };
+    let shown = shown_rules(store, agent_id)?;
+    let company_rules = match agent_id {
+        Some(_) => store.permission_rules_in(&Scope::Company)?,
+        None => Vec::new(),
+    };
+    let scopes = Scopes {
+        own: shown.iter().filter(|(_, from_company)| !from_company).map(|(r, _)| r).collect(),
+        company: agent_id.map(|_| company_rules.iter().collect()),
+    };
     let mut p = PermissionsPage {
         mode: mode.as_str().to_string(),
         mode_from_company,
         company_mode: company_mode.as_str().to_string(),
-        job: Vec::new(),
-        can_add: Vec::new(),
+        capabilities: Vec::new(),
+        groups: Vec::new(),
+        specific: Vec::new(),
         money: Vec::new(),
         folders: Vec::new(),
-        always_allowed: Vec::new(),
-        asks_first: Vec::new(),
-        never: Vec::new(),
+        always_asks: Vec::new(),
         fixed: Vec::new(),
     };
-    let shown = shown_rules(store, agent_id)?;
-    let mut in_job: BTreeSet<String> = BTreeSet::new();
-    for (rule, from_company) in &shown {
-        let section = section_of(rule);
-        if section == Section::Job {
-            in_job.insert(rule.key.value().to_string());
+
+    // What applies with no setting at all: Full Access runs it without
+    // asking; any other mode asks for work outside the job. A connected
+    // server's tool is no capability, so outside Ask and Plan mode it runs
+    // as everyday work (the surfaced cases still ask).
+    let standing = if mode == Mode::FullAccess { Effect::Allow } else { Effect::Ask };
+    let tool_standing = if matches!(mode, Mode::Ask | Mode::Plan) { Effect::Ask } else { Effect::Allow };
+
+    // What employees can do: the built-in capabilities.
+    for cap in builtin_capabilities() {
+        p.capabilities.push(scopes.switch(capability_phrase(cap), &[RuleKey::Capability(cap.into())], standing));
+    }
+
+    // What the plugins provide: the connected capabilities, and any other a
+    // rule names, each with its actions.
+    let mut services: BTreeMap<String, Vec<String>> =
+        connected.iter().filter(|(c, _)| !builtin_capabilities().any(|b| b == c.as_str())).map(|(c, n)| (c.clone(), n.clone())).collect();
+    let mut actions: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for (rule, _) in &shown {
+        match (&rule.key, &rule.field) {
+            (RuleKey::Operation(op), None) if !rule.locked => {
+                let op = catalog_operation(op);
+                if !is_safety(&op) {
+                    services.entry(capability_of(&op).to_string()).or_default();
+                    actions.entry(capability_of(&op).to_string()).or_default().insert(op);
+                }
+            }
+            (RuleKey::Capability(c), None)
+                if !rule.locked && c != "chat" && !builtin_capabilities().any(|b| b == c.as_str()) =>
+            {
+                services.entry(c.clone()).or_default();
+            }
+            _ => {}
         }
-        // A company job item leaves one employee's job from its page; every
-        // other company default changes on the company page.
-        let removable = !rule.locked && (!from_company || section == Section::Job);
-        let item = PermissionItem {
+    }
+    for (cap, providers) in &services {
+        let mut ops = actions.remove(cap).unwrap_or_default();
+        if connected.contains_key(cap) {
+            ops.extend(
+                tools::interface_catalog::gated_operations()
+                    .iter()
+                    .filter(|op| capability_of(op) == cap && !is_safety(op))
+                    .map(|op| op.to_string()),
+            );
+        }
+        let default_key = RuleKey::Capability(cap.clone());
+        let mut rows: Vec<PermissionSwitch> = ops
+            .iter()
+            .map(|op| {
+                scopes.switch(operation_phrase(op), &[RuleKey::Operation(op.clone()), default_key.clone()], standing)
+            })
+            .collect();
+        rows.sort_by(|a, b| a.sentence.cmp(&b.sentence));
+        p.groups.push(PermissionGroup {
+            id: format!("group:{cap}"),
+            title: capability_phrase(cap),
+            subtitle: providers.join(", "),
+            default: scopes.switch(capability_phrase(cap), &[default_key], standing),
+            rows,
+        });
+    }
+
+    // The MCP servers, and any other a rule names, each with its tools.
+    let mut servers: BTreeMap<String, (String, BTreeSet<String>)> = BTreeMap::new();
+    for integration in store.list_mcp_integrations()? {
+        let prefix = mcp::bridge::tool_name_prefix(&integration.name);
+        let tools = store.get_mcp_known_tools(&integration.id)?;
+        let entry = servers.entry(mcp::bridge::server_slug(&prefix)).or_insert_with(|| (integration.name.clone(), BTreeSet::new()));
+        entry.1.extend(tools.iter().map(|t| mcp::bridge::make_tool_name(&prefix, t)));
+    }
+    for (rule, _) in &shown {
+        if let (RuleKey::Tool(key), None, false) = (&rule.key, &rule.field, rule.locked)
+            && let Some(slug) = mcp_server(key)
+        {
+            let entry = servers.entry(slug.to_string()).or_insert_with(|| (tools::humanize::service_name(slug), BTreeSet::new()));
+            if !key.ends_with('*') {
+                entry.1.insert(key.clone());
+            }
+        }
+    }
+    let mut mcp_groups = Vec::new();
+    for (slug, (name, tool_keys)) in &servers {
+        let default_key = RuleKey::Tool(format!("mcp__{slug}__*"));
+        let family = format!("mcp__{slug}__");
+        let mut rows: Vec<PermissionSwitch> = tool_keys
+            .iter()
+            .map(|key| {
+                let tool = key.strip_prefix(&family).unwrap_or(key);
+                scopes.switch(sentence_case(&words(tool)), &[RuleKey::Tool(key.clone()), default_key.clone()], tool_standing)
+            })
+            .collect();
+        rows.sort_by(|a, b| a.sentence.cmp(&b.sentence));
+        mcp_groups.push(PermissionGroup {
+            id: format!("group:mcp:{slug}"),
+            title: name.clone(),
+            subtitle: String::new(),
+            default: scopes.switch(key_phrase(&format!("{family}*")), &[default_key], tool_standing),
+            rows,
+        });
+    }
+    p.groups.sort_by(|a, b| a.title.cmp(&b.title));
+    mcp_groups.sort_by(|a, b| a.title.cmp(&b.title));
+    p.groups.extend(mcp_groups);
+
+    // Every other rule: money, folders, safety, fixed, or a specific setting.
+    let switched: Vec<&str> = p
+        .capabilities
+        .iter()
+        .chain(p.groups.iter().flat_map(|g| std::iter::once(&g.default).chain(&g.rows)))
+        .map(|s| s.id.as_str())
+        .collect();
+    for (rule, from_company) in &shown {
+        let item = |sentence: String, removable: bool| PermissionItem {
             id: rule.id.clone(),
-            sentence: item_sentence(rule, section),
+            sentence,
             removable,
             from_company: *from_company,
             money: rule.money.as_ref().map(MoneyAmounts::from),
         };
-        match section {
-            Section::Job => p.job.push(item),
-            Section::Money => p.money.push(item),
-            Section::Folders => p.folders.push(item),
-            Section::AlwaysAllowed => p.always_allowed.push(item),
-            Section::AsksFirst => p.asks_first.push(item),
-            Section::Never => p.never.push(item),
-            Section::Fixed => p.fixed.push(item),
+        let own_switch = rule.field.is_none() && switched.contains(&switch_id(&normalized(&rule.key)).as_str());
+        match section_of(rule) {
+            Section::Fixed if rule.effect == Effect::Ask => p.always_asks.push(item(rule_phrase(rule), false)),
+            Section::Fixed => p.fixed.push(item(item_sentence(rule, Section::Fixed), false)),
+            Section::Folders => p.folders.push(item(item_sentence(rule, Section::Folders), !from_company)),
+            Section::Money => p.money.push(item(item_sentence(rule, Section::Money), !from_company)),
+            _ if rule.effect == Effect::Ask
+                && rule.field.is_none()
+                && matches!(&rule.key, RuleKey::Operation(op) if is_safety(&catalog_operation(op))) =>
+            {
+                p.always_asks.push(item(rule_phrase(rule), false))
+            }
+            _ if own_switch => {}
+            _ => {
+                let locked = *from_company && rule.effect == Effect::Deny;
+                p.specific.push(PermissionSwitch {
+                    id: format!("rule:{}", rule.id),
+                    sentence: rule_phrase(rule),
+                    value: rule.effect.as_str().to_string(),
+                    inherited: *from_company,
+                    inherits_from: from_company.then(|| "company".to_string()),
+                    can_inherit: !from_company,
+                    locked,
+                })
+            }
         }
     }
-    for list in [&mut p.job, &mut p.money, &mut p.folders, &mut p.always_allowed, &mut p.asks_first, &mut p.never, &mut p.fixed] {
+    for list in [&mut p.money, &mut p.folders, &mut p.always_asks, &mut p.fixed] {
         list.sort_by(|a, b| a.sentence.cmp(&b.sentence));
     }
-    // A capability the company defaults turn off can't join one employee's
-    // job: no rule of the employee's undoes a company deny.
-    let company_off: BTreeSet<String> = shown
-        .iter()
-        .filter(|(r, from_company)| *from_company && r.effect == Effect::Deny && r.field.is_none())
-        .filter_map(|(r, _)| match &r.key {
-            RuleKey::Capability(c) => Some(c.clone()),
-            _ => None,
-        })
-        .collect();
-    for cap in builtin_capabilities().map(str::to_string).chain(connected.iter().cloned()) {
-        if !in_job.contains(&cap) && !company_off.contains(&cap) && !p.can_add.iter().any(|i| i.id == cap) {
-            p.can_add.push(PermissionItem {
-                sentence: capability_phrase(&cap),
-                id: cap,
-                removable: false,
-                from_company: false,
-                money: None,
-            });
-        }
-    }
+    p.specific.sort_by(|a, b| a.sentence.cmp(&b.sentence));
     Ok(p)
+}
+
+/// A rule's key as its switch names it (an operation as the catalog does).
+fn normalized(key: &RuleKey) -> RuleKey {
+    match key {
+        RuleKey::Operation(op) => RuleKey::Operation(catalog_operation(op)),
+        other => other.clone(),
+    }
 }
 
 fn owner_rule(scope: Scope, key: RuleKey, field: Option<RuleField>, effect: Effect, source: RuleSource) -> Rule {
@@ -617,7 +903,7 @@ fn update(
     store: &db::Store,
     agent_id: Option<&str>,
     body: &PermissionsUpdate,
-    connected: &BTreeSet<String>,
+    connected: &BTreeMap<String, Vec<String>>,
 ) -> Result<(), NeboError> {
     let scope = scope_of(agent_id);
     if let Some(mode) = body.mode.as_deref() {
@@ -628,16 +914,6 @@ fn update(
                 store.set_permission_mode(&scope, mode)?;
             }
         }
-    }
-    if let Some(cap) = body.add_capability.as_deref() {
-        if !builtin_capabilities().any(|c| c == cap) && !connected.contains(cap) {
-            return Err(NeboError::Validation("that can't be added to the job".into()));
-        }
-        if agent_id.is_some() && company_denies(store, cap)? {
-            return Err(NeboError::Validation("the company defaults turn this off; change it in the company defaults".into()));
-        }
-        let rule = owner_rule(scope.clone(), RuleKey::Capability(cap.to_string()), None, Effect::Allow, RuleSource::JobEdit);
-        store.write_permission_rule(&rule, &Writer::Owner).map_err(rule_error)?;
     }
     if let Some(folder) = body.add_folder.as_deref() {
         let folder = folder.trim();
@@ -663,43 +939,70 @@ fn update(
             .write_permission_rule(&Rule { money: Some(money), ..rule }, &Writer::Owner)
             .map_err(rule_error)?;
     }
+    if let Some(edit) = &body.set {
+        set_switch(store, agent_id, edit, connected)?;
+    }
     Ok(())
 }
 
-/// Whether the company defaults turn capability `cap` off.
-fn company_denies(store: &db::Store, cap: &str) -> Result<bool, NeboError> {
-    Ok(store.permission_rules_in(&Scope::Company)?.iter().any(|r| {
-        r.effect == Effect::Deny && r.field.is_none() && r.key == RuleKey::Capability(cap.to_string())
-    }))
+/// Move one switch: write this page's own rule on its key, or clear it.
+fn set_switch(
+    store: &db::Store,
+    agent_id: Option<&str>,
+    edit: &SwitchEdit,
+    connected: &BTreeMap<String, Vec<String>>,
+) -> Result<(), NeboError> {
+    let p = page(store, agent_id, connected)?;
+    let switch = p
+        .capabilities
+        .iter()
+        .chain(p.groups.iter().flat_map(|g| std::iter::once(&g.default).chain(&g.rows)))
+        .chain(&p.specific)
+        .find(|s| s.id == edit.id)
+        .ok_or_else(|| NeboError::Validation("that can't be set here".into()))?;
+    if switch.locked {
+        return Err(NeboError::Validation("the company defaults turn this off; change it in the company defaults".into()));
+    }
+    let (key, field) = match edit.id.split_once(':') {
+        Some(("capability", c)) => (RuleKey::Capability(c.into()), None),
+        Some(("tool", t)) => (RuleKey::Tool(t.into()), None),
+        Some(("operation", o)) => (RuleKey::Operation(o.into()), None),
+        Some(("rule", id)) => {
+            let rule = store.get_permission_rule(id)?.ok_or(NeboError::NotFound)?;
+            (rule.key, rule.field)
+        }
+        _ => return Err(NeboError::NotFound),
+    };
+    let scope = scope_of(agent_id);
+    let own = store.permission_rules_in(&scope)?.into_iter().find(|r| same_key(&r.key, &key) && r.field == field);
+    if edit.value == "inherit" {
+        if !switch.can_inherit {
+            return Err(NeboError::Validation("this has no setting of its own to clear".into()));
+        }
+        return match own {
+            Some(rule) => store.remove_permission_rule(&rule.id, &Writer::Owner).map_err(rule_error),
+            None => Ok(()),
+        };
+    }
+    let effect = Effect::parse(&edit.value)
+        .ok_or_else(|| NeboError::Validation("value must be allow, ask, deny or inherit".into()))?;
+    let source = if matches!(key, RuleKey::Capability(_)) { RuleSource::JobEdit } else { RuleSource::Owner };
+    let rule = match own {
+        Some(rule) => Rule { effect, source, ..rule },
+        None => owner_rule(scope, key, field, effect, source),
+    };
+    store.write_permission_rule(&rule, &Writer::Owner).map_err(rule_error)?;
+    Ok(())
 }
 
-/// Remove one item, as the owner. On an employee's page a job item leaves
-/// that employee's job: its own rule is deleted, and when the company
-/// default still includes the capability the employee is set to ask first
-/// for it, the way a capability outside its job asks.
+/// Remove one item (a folder or a money limit), as the owner. A company
+/// default changes on the company page.
 fn remove(store: &db::Store, agent_id: Option<&str>, rule_id: &str) -> Result<(), NeboError> {
     let rule = store.get_permission_rule(rule_id)?.ok_or(NeboError::NotFound)?;
-    let scope = scope_of(agent_id);
-    if rule.scope == scope {
-        let company_includes = agent_id.is_some()
-            && section_of(&rule) == Section::Job
-            && store
-                .permission_rules_in(&Scope::Company)?
-                .iter()
-                .any(|c| c.key == rule.key && c.field.is_none() && section_of(c) == Section::Job);
-        if company_includes {
-            let ask = owner_rule(scope, rule.key.clone(), None, Effect::Ask, RuleSource::JobEdit);
-            store.write_permission_rule(&ask, &Writer::Owner).map_err(rule_error)?;
-            return Ok(());
-        }
+    if rule.scope == scope_of(agent_id) {
         return store.remove_permission_rule(rule_id, &Writer::Owner).map_err(rule_error);
     }
     match (&rule.scope, agent_id) {
-        (Scope::Company, Some(_)) if section_of(&rule) == Section::Job => {
-            let ask = owner_rule(scope, rule.key.clone(), None, Effect::Ask, RuleSource::JobEdit);
-            store.write_permission_rule(&ask, &Writer::Owner).map_err(rule_error)?;
-            Ok(())
-        }
         (Scope::Company, Some(_)) => Err(NeboError::Validation("change this in the company defaults".into())),
         _ => Err(NeboError::NotFound),
     }
@@ -1003,6 +1306,12 @@ fn operation_phrase(op: &str) -> String {
         [verb, rest] => (*rest, *verb),
         [.., resource, action] => (*resource, *action),
     };
+    match (resource, action) {
+        ("grant", "grant") => return "Give itself or another employee more access".to_string(),
+        ("grant", "widen") => return "Widen the access it or another employee has".to_string(),
+        ("company", "write") => return "Change the company file".to_string(),
+        _ => {}
+    }
     let verb = match action {
         "create" => "Create".to_string(),
         "send" => "Send".to_string(),
@@ -1130,15 +1439,66 @@ mod tests {
         }
     }
 
+    fn none() -> BTreeMap<String, Vec<String>> {
+        BTreeMap::new()
+    }
+
+    fn set(store: &db::Store, agent: Option<&str>, id: &str, value: &str) -> Result<(), NeboError> {
+        let body = PermissionsUpdate { set: Some(SwitchEdit { id: id.into(), value: value.into() }), ..Default::default() };
+        update(store, agent, &body, &none())
+    }
+
+    fn all_switches(p: &PermissionsPage) -> Vec<&PermissionSwitch> {
+        p.capabilities
+            .iter()
+            .chain(p.groups.iter().flat_map(|g| std::iter::once(&g.default).chain(&g.rows)))
+            .chain(&p.specific)
+            .collect()
+    }
+
+    fn switch<'a>(p: &'a PermissionsPage, id: &str) -> &'a PermissionSwitch {
+        all_switches(p).into_iter().find(|s| s.id == id).unwrap_or_else(|| panic!("no switch {id}"))
+    }
+
+    /// (value, inherits from) — `None` when the page's own rule sets it.
+    fn shows<'a>(p: &'a PermissionsPage, id: &str) -> (&'a str, Option<&'a str>) {
+        let s = switch(p, id);
+        (s.value.as_str(), s.inherits_from.as_deref())
+    }
+
+    /// A connected MCP server with the tools it offered at its last sync.
+    fn mcp_server(store: &db::Store, name: &str, tools: &[&str]) {
+        let id = format!("{name}-1");
+        store.create_mcp_integration(&id, name, "http", Some("https://mcp.example.com"), "none", None, None).unwrap();
+        store.set_mcp_known_tools(&id, &tools.iter().map(|t| t.to_string()).collect::<Vec<_>>()).unwrap();
+    }
+
+    /// What the rules engine decides for an employee's call to `key`.
+    fn engine(store: &db::Store, agent: &str, key: &str, capability: Option<&str>, operation: Option<&str>) -> Option<Effect> {
+        let t = types::permissions::Target {
+            tool: key.into(),
+            key: key.into(),
+            operation: operation.map(str::to_string),
+            capability: capability.map(str::to_string),
+            field: None,
+            subject: None,
+            read_only: false,
+            effects: types::permissions::CallEffects::unknown(),
+        };
+        agent::harness::permissions::RuleSet::load(store, agent).unwrap().decide(&t).map(|d| d.1)
+    }
+
     #[test]
     fn no_rule_string_reaches_the_client() {
         let (_d, store) = store();
+        mcp_server(&store, "Acme CRM", &["search_contacts"]);
         put(&store, Scope::Company, cap("shell"), None, Effect::Allow, RuleSource::Migrated { from: "x".into() });
         put(&store, emp(), RuleKey::Tool("run_command".into()), Some(RuleField::CommandPrefix("git status".into())), Effect::Allow, RuleSource::AllowAlways { ask_id: "k".into() });
         put(&store, emp(), RuleKey::Operation("mail.message.send".into()), Some(RuleField::Recipient("pat@example.com".into())), Effect::Allow, RuleSource::Owner);
         put(&store, emp(), RuleKey::Tool("mcp__acme_crm__search_contacts".into()), None, Effect::Ask, RuleSource::Owner);
         put(&store, emp(), RuleKey::Tool("desktop_*".into()), None, Effect::Deny, RuleSource::Owner);
         put(&store, emp(), cap("file"), Some(RuleField::Folder("/srv/work".into())), Effect::Allow, RuleSource::Owner);
+        put(&store, Scope::Company, RuleKey::Operation("authority.grant.grant".into()), None, Effect::Ask, RuleSource::Migrated { from: "x".into() });
         let money = Rule {
             money: Some(MoneyLimit { per_day_cents: Some(5000), ..Default::default() }),
             ..owner_rule(emp(), RuleKey::Operation("ledger.billpayment.create".into()), None, Effect::Allow, RuleSource::Owner)
@@ -1150,97 +1510,307 @@ mod tests {
         };
         store.write_permission_rule(&law, &Writer::Package { package: "p".into() }).unwrap();
 
-        let page = serde_json::to_value(page(&store, Some("a"), &BTreeSet::from(["mail".to_string()])).unwrap()).unwrap();
+        let connected = BTreeMap::from([("ledger".to_string(), vec!["Books".to_string()])]);
+        let page = serde_json::to_value(page(&store, Some("a"), &connected).unwrap()).unwrap();
         let mut out = Vec::new();
         strings(&page, &mut out);
         assert!(out.len() >= 9, "{page}");
         let forbidden = [
             "run_command", "mail.message.send", "mcp__", "desktop_", "command_prefix", "capability",
-            "ledger.", "billpayment", "_", "{", "\"kind\"",
+            "ledger.", "billpayment", "authority", "_", "{", "\"kind\"",
         ];
         for s in &out {
             for f in forbidden {
                 assert!(!s.contains(f), "{s:?} carries {f:?}");
             }
         }
-        assert!(out.contains(&"Run commands that start with \u{201c}git status\u{201d}".to_string()), "{out:?}");
-        assert!(out.contains(&"Send message to pat@example.com".to_string()), "{out:?}");
-        assert!(out.contains(&"Create bill payments, up to $50 a day".to_string()), "{out:?}");
-        assert!(out.contains(&"Never: void invoice".to_string()), "{out:?}");
+        for sentence in [
+            "Run commands that start with \u{201c}git status\u{201d}",
+            "Send message to pat@example.com",
+            "Create bill payments, up to $50 a day",
+            "Never: void invoice",
+            "Give itself or another employee more access",
+            "Search contacts",
+            "Acme CRM",
+            "Books",
+        ] {
+            assert!(out.contains(&sentence.to_string()), "{sentence:?} in {out:?}");
+        }
+    }
+
+    /// A capability's switch writes the page's own rule on it and clears it
+    /// again; an employee's page shows the company's value until it has its
+    /// own, and a company "off" binds it.
+    #[test]
+    fn capability_switches_set_and_inherit() {
+        let (_d, store) = store();
+        let p = page(&store, None, &none()).unwrap();
+        let caps: Vec<&str> = p.capabilities.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(caps.len(), builtin_capabilities().count());
+        assert_eq!(shows(&p, "capability:web"), ("ask", Some("default")), "outside the job, it asks");
+        assert!(!switch(&p, "capability:web").can_inherit);
+
+        set(&store, None, "capability:web", "allow").unwrap();
+        let rule = store.permission_rules_in(&Scope::Company).unwrap().pop().unwrap();
+        assert_eq!((&rule.key, rule.effect, &rule.source), (&cap("web"), Effect::Allow, &RuleSource::JobEdit));
+        let p = page(&store, None, &none()).unwrap();
+        assert_eq!(shows(&p, "capability:web"), ("allow", None));
+        assert!(switch(&p, "capability:web").can_inherit);
+
+        // An employee follows the company until it has its own setting.
+        let e = page(&store, Some("a"), &none()).unwrap();
+        assert_eq!(shows(&e, "capability:web"), ("allow", Some("company")));
+        assert!(!switch(&e, "capability:web").can_inherit);
+        set(&store, Some("a"), "capability:web", "ask").unwrap();
+        assert_eq!(shows(&page(&store, Some("a"), &none()).unwrap(), "capability:web"), ("ask", None));
+        assert_eq!(shows(&page(&store, None, &none()).unwrap(), "capability:web"), ("allow", None), "the company's stays");
+        assert_eq!(engine(&store, "a", "web_fetch", Some("web"), None), Some(Effect::Ask));
+        set(&store, Some("a"), "capability:web", "inherit").unwrap();
+        assert!(store.permission_rules_in(&emp()).unwrap().is_empty());
+        assert_eq!(shows(&page(&store, Some("a"), &none()).unwrap(), "capability:web"), ("allow", Some("company")));
+
+        // A company "off" binds every employee: locked on the employee's page.
+        set(&store, None, "capability:shell", "deny").unwrap();
+        let e = page(&store, Some("a"), &none()).unwrap();
+        let shell = switch(&e, "capability:shell");
+        assert_eq!((shell.value.as_str(), shell.locked, shell.can_inherit), ("deny", true, false));
+        assert!(matches!(set(&store, Some("a"), "capability:shell", "allow"), Err(NeboError::Validation(_))));
+        // Clearing the company's own setting returns it to the default.
+        set(&store, None, "capability:web", "inherit").unwrap();
+        assert_eq!(shows(&page(&store, None, &none()).unwrap(), "capability:web"), ("ask", Some("default")));
+        assert!(matches!(set(&store, None, "capability:web", "inherit"), Err(NeboError::Validation(_))));
+        assert!(matches!(set(&store, None, "capability:web", "sometimes"), Err(NeboError::Validation(_))));
+        assert!(matches!(set(&store, None, "capability:ledger", "allow"), Err(NeboError::Validation(_))), "not on the page");
+    }
+
+    /// Every switch round-trips each of its three states, as the page's JSON
+    /// carries it and as the rules engine then decides, and `inherit` puts
+    /// it back where it came from, on the company page and an employee's.
+    #[test]
+    fn every_switch_round_trips_allow_ask_and_off() {
+        let (_d, store) = store();
+        mcp_server(&store, "Acme CRM", &["lookup"]);
+        let connected = BTreeMap::from([("ledger".to_string(), vec!["Books".to_string()])]);
+        let switches = [
+            ("capability:web", ("web_fetch", Some("web"), None)),
+            ("tool:mcp__acme_crm__*", ("mcp__acme_crm__lookup", None, None)),
+            ("tool:mcp__acme_crm__lookup", ("mcp__acme_crm__lookup", None, None)),
+            ("capability:ledger", ("ledger.bill.create", Some("ledger"), Some("accounting.ap.ledger.bill.create"))),
+            ("operation:ledger.bill.create", ("ledger.bill.create", Some("ledger"), Some("accounting.ap.ledger.bill.create"))),
+        ];
+        for agent in [None, Some("a")] {
+            for (id, (key, capability, operation)) in switches {
+                let before = page(&store, agent, &connected).unwrap();
+                let was = shows(&before, id);
+                for value in ["allow", "ask", "deny"] {
+                    let body = PermissionsUpdate { set: Some(SwitchEdit { id: id.into(), value: value.into() }), ..Default::default() };
+                    update(&store, agent, &body, &connected).unwrap();
+                    let json = serde_json::to_value(page(&store, agent, &connected).unwrap()).unwrap();
+                    let sw = json["capabilities"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .chain(json["groups"].as_array().unwrap().iter().flat_map(|g| std::iter::once(&g["default"]).chain(g["rows"].as_array().unwrap())))
+                        .find(|s| s["id"] == id)
+                        .unwrap_or_else(|| panic!("no {id}"));
+                    assert_eq!((sw["value"].as_str(), sw["inherited"].as_bool(), sw["canInherit"].as_bool()), (Some(value), Some(false), Some(true)), "{agent:?} {id} {value}");
+                    assert_eq!(engine(&store, "a", key, capability, operation).map(|e| e.as_str()), Some(value), "{agent:?} {id} {value}");
+                }
+                let body = PermissionsUpdate { set: Some(SwitchEdit { id: id.into(), value: "inherit".into() }), ..Default::default() };
+                update(&store, agent, &body, &connected).unwrap();
+                assert_eq!(shows(&page(&store, agent, &connected).unwrap(), id), was, "{agent:?} {id} back where it was");
+            }
+        }
+    }
+
+    /// A switch with no setting shows what the mode does: Full Access runs
+    /// it without asking, any other mode asks for work outside the job. An
+    /// Off set anywhere stays Off in every mode, and locks the employee's
+    /// switch when the company set it.
+    #[test]
+    fn a_switch_with_no_setting_shows_the_mode_and_off_wins() {
+        let (_d, store) = store();
+        // A newly connected server has no setting: its tools follow the mode.
+        mcp_server(&store, "Acme CRM", &["lookup"]);
+        let lookup = "tool:mcp__acme_crm__lookup";
+        assert_eq!(shows(&page(&store, None, &none()).unwrap(), lookup), ("allow", Some("default")));
+        store.set_permission_mode(&Scope::Company, Mode::Ask).unwrap();
+        assert_eq!(shows(&page(&store, None, &none()).unwrap(), lookup), ("ask", Some("default")), "Ask mode asks");
+        store.set_permission_mode(&Scope::Company, Mode::Automatic).unwrap();
+        assert_eq!(shows(&page(&store, None, &none()).unwrap(), "capability:web"), ("ask", Some("default")));
+        store.set_permission_mode(&Scope::Company, Mode::FullAccess).unwrap();
+        assert_eq!(shows(&page(&store, None, &none()).unwrap(), "capability:web"), ("allow", Some("default")), "Full Access never asks");
+        assert_eq!(shows(&page(&store, None, &none()).unwrap(), lookup), ("allow", Some("default")));
+        assert_eq!(shows(&page(&store, Some("a"), &none()).unwrap(), "capability:web"), ("allow", Some("company")));
+        store.set_permission_mode(&emp(), Mode::Ask).unwrap();
+        assert_eq!(shows(&page(&store, Some("a"), &none()).unwrap(), "capability:web"), ("ask", Some("company")), "its own mode asks");
+
+        set(&store, None, "capability:web", "deny").unwrap();
+        for mode in [Mode::Automatic, Mode::Ask, Mode::Plan, Mode::FullAccess] {
+            store.set_permission_mode(&emp(), mode).unwrap();
+            let web = page(&store, Some("a"), &none()).unwrap();
+            let web = switch(&web, "capability:web");
+            assert_eq!((web.value.as_str(), web.locked), ("deny", true), "{mode:?}");
+            assert_eq!(engine(&store, "a", "web_fetch", Some("web"), None), Some(Effect::Deny), "{mode:?}");
+        }
+        assert!(matches!(set(&store, Some("a"), "capability:web", "allow"), Err(NeboError::Validation(_))));
+    }
+
+    /// An MCP server is a group: its default, and one switch per tool that
+    /// follows the default until it has its own setting. What the page shows
+    /// is what the rules engine decides.
+    #[test]
+    fn an_mcp_servers_tools_follow_its_default_until_set() {
+        let (_d, store) = store();
+        mcp_server(&store, "Acme CRM", &["lookup", "delete_all"]);
+        // The owner set the server to ask first.
+        let all = put(&store, Scope::Company, RuleKey::Tool("mcp__acme_crm__*".into()), None, Effect::Ask, RuleSource::Owner);
+        let p = page(&store, None, &none()).unwrap();
+        let g = p.groups.iter().find(|g| g.id == "group:mcp:acme_crm").unwrap();
+        assert_eq!((g.title.as_str(), g.default.id.as_str(), g.default.value.as_str()), ("Acme CRM", "tool:mcp__acme_crm__*", "ask"));
+        let rows: Vec<(&str, &str, Option<&str>)> =
+            g.rows.iter().map(|s| (s.sentence.as_str(), s.value.as_str(), s.inherits_from.as_deref())).collect();
+        assert_eq!(rows, [("Delete all", "ask", Some("default")), ("Lookup", "ask", Some("default"))]);
+
+        // A tool's own setting outranks the default, looser or stricter.
+        set(&store, None, "tool:mcp__acme_crm__lookup", "allow").unwrap();
+        set(&store, None, "tool:mcp__acme_crm__*", "deny").unwrap();
+        let p = page(&store, None, &none()).unwrap();
+        assert_eq!(shows(&p, "tool:mcp__acme_crm__lookup"), ("allow", None));
+        assert_eq!(shows(&p, "tool:mcp__acme_crm__delete_all"), ("deny", Some("default")));
+        assert_eq!(store.get_permission_rule(&all.id).unwrap().unwrap().effect, Effect::Deny, "one rule per key");
+        assert_eq!(engine(&store, "a", "mcp__acme_crm__lookup", None, None), Some(Effect::Allow));
+        assert_eq!(engine(&store, "a", "mcp__acme_crm__delete_all", None, None), Some(Effect::Deny));
+        set(&store, None, "tool:mcp__acme_crm__lookup", "inherit").unwrap();
+        assert_eq!(shows(&page(&store, None, &none()).unwrap(), "tool:mcp__acme_crm__lookup"), ("deny", Some("default")));
+
+        // On an employee's page a company "off" binds; the company's other
+        // settings can be changed for that employee alone.
+        set(&store, None, "tool:mcp__acme_crm__*", "ask").unwrap();
+        set(&store, None, "tool:mcp__acme_crm__delete_all", "deny").unwrap();
+        let e = page(&store, Some("a"), &none()).unwrap();
+        assert_eq!(shows(&e, "tool:mcp__acme_crm__lookup"), ("ask", Some("company")));
+        assert!(switch(&e, "tool:mcp__acme_crm__delete_all").locked);
+        set(&store, Some("a"), "tool:mcp__acme_crm__lookup", "allow").unwrap();
+        let e = page(&store, Some("a"), &none()).unwrap();
+        assert_eq!(shows(&e, "tool:mcp__acme_crm__lookup"), ("allow", None));
+        assert_eq!(engine(&store, "a", "mcp__acme_crm__lookup", None, None), Some(Effect::Allow));
+        assert_eq!(engine(&store, "b", "mcp__acme_crm__lookup", None, None), Some(Effect::Ask));
+        assert!(matches!(set(&store, Some("a"), "tool:mcp__acme_crm__delete_all", "allow"), Err(NeboError::Validation(_))));
+
+        // A setting for a tool the server no longer offers still shows.
+        put(&store, Scope::Company, RuleKey::Tool("mcp__acme_crm__export".into()), None, Effect::Allow, RuleSource::Owner);
+        assert_eq!(shows(&page(&store, None, &none()).unwrap(), "tool:mcp__acme_crm__export"), ("allow", None));
+        assert!(matches!(set(&store, None, "tool:mcp__other__x", "allow"), Err(NeboError::Validation(_))));
+    }
+
+    /// A plugin's capability is a group: its default is the capability, its
+    /// rows the actions, each following the default until it has its own.
+    #[test]
+    fn a_plugins_actions_follow_its_default_until_set() {
+        let (_d, store) = store();
+        let connected = BTreeMap::from([("ledger".to_string(), vec!["Books".to_string()])]);
+        // The upgrade's critical asks are the actions' own settings.
+        put(&store, Scope::Company, RuleKey::Operation("ledger.billpayment.create".into()), None, Effect::Ask, RuleSource::Migrated { from: "x".into() });
+        let p = page(&store, None, &connected).unwrap();
+        let g = p.groups.iter().find(|g| g.id == "group:ledger").unwrap();
+        assert_eq!((g.title.as_str(), g.subtitle.as_str(), g.default.id.as_str()), ("Work in your accounting", "Books", "capability:ledger"));
+        assert!(g.rows.len() > 1 && g.rows.iter().all(|r| r.id.starts_with("operation:ledger.")));
+        assert!(!p.capabilities.iter().any(|s| s.id == "capability:ledger"), "a plugin's capability is its group");
+
+        let update = |agent: Option<&str>, id: &str, value: &str| {
+            let body = PermissionsUpdate { set: Some(SwitchEdit { id: id.into(), value: value.into() }), ..Default::default() };
+            update(&store, agent, &body, &connected)
+        };
+        update(None, "capability:ledger", "allow").unwrap();
+        let p = page(&store, None, &connected).unwrap();
+        assert_eq!(shows(&p, "operation:ledger.bill.create"), ("allow", Some("default")));
+        assert_eq!(shows(&p, "operation:ledger.billpayment.create"), ("ask", None));
+        let pay = Some("ledger.billpayment.create");
+        assert_eq!(engine(&store, "a", "ledger.billpayment.create", Some("ledger"), pay), Some(Effect::Ask));
+        update(None, "operation:ledger.billpayment.create", "allow").unwrap();
+        assert_eq!(engine(&store, "a", "ledger.billpayment.create", Some("ledger"), pay), Some(Effect::Allow));
+        update(Some("a"), "operation:ledger.billpayment.create", "deny").unwrap();
+        assert_eq!(engine(&store, "a", "ledger.billpayment.create", Some("ledger"), pay), Some(Effect::Deny));
+        assert_eq!(shows(&page(&store, Some("a"), &connected).unwrap(), "operation:ledger.billpayment.create"), ("deny", None));
+    }
+
+    /// Giving an employee more access and changing the company's own file
+    /// always ask: plain words, no switch. A locked rule is fixed.
+    #[test]
+    fn safety_rules_always_ask_and_never_switch() {
+        let (_d, store) = store();
+        for op in ["authority.grant.grant", "authority.grant.widen", "layers.company.write", "layers.company.remove"] {
+            put(&store, Scope::Company, RuleKey::Operation(op.into()), None, Effect::Ask, RuleSource::Migrated { from: "x".into() });
+        }
+        let law = Rule {
+            locked: true,
+            ..owner_rule(emp(), RuleKey::Operation("ledger.invoice.void".into()), None, Effect::Deny, RuleSource::Law { pack: "p".into() })
+        };
+        store.write_permission_rule(&law, &Writer::Package { package: "p".into() }).unwrap();
+        for agent in [None, Some("a")] {
+            let p = page(&store, agent, &none()).unwrap();
+            let asks: Vec<&str> = p.always_asks.iter().map(|i| i.sentence.as_str()).collect();
+            assert_eq!(
+                asks,
+                [
+                    "Change the company file",
+                    "Delete the company file",
+                    "Give itself or another employee more access",
+                    "Widen the access it or another employee has",
+                ]
+            );
+            assert!(p.always_asks.iter().all(|i| !i.removable));
+            assert!(p.groups.is_empty() && p.specific.is_empty(), "{:?} {:?}", p.groups, p.specific);
+            assert!(matches!(set(&store, agent, "operation:authority.grant.grant", "allow"), Err(NeboError::Validation(_))));
+        }
+        let p = page(&store, Some("a"), &none()).unwrap();
+        assert_eq!(p.fixed.iter().map(|i| (i.sentence.as_str(), i.removable)).collect::<Vec<_>>(), [("Never: void invoice", false)]);
+        assert!(remove(&store, Some("a"), &law.id).is_err());
+    }
+
+    /// A setting on one command, site or recipient is its own switch: moved,
+    /// cleared, or on an employee's page set for that employee alone.
+    #[test]
+    fn specific_settings_switch_and_clear() {
+        let (_d, store) = store();
+        let git = put(&store, Scope::Company, RuleKey::Tool("run_command".into()), Some(RuleField::CommandPrefix("git status".into())), Effect::Allow, RuleSource::AllowAlways { ask_id: "k".into() });
+        let id = format!("rule:{}", git.id);
+        let p = page(&store, None, &none()).unwrap();
+        assert_eq!(p.specific.len(), 1);
+        assert_eq!((p.specific[0].sentence.as_str(), shows(&p, &id)), ("Run commands that start with \u{201c}git status\u{201d}", ("allow", None)));
+
+        // For one employee: its own rule on the same command.
+        let e = page(&store, Some("a"), &none()).unwrap();
+        assert_eq!(shows(&e, &id), ("allow", Some("company")));
+        set(&store, Some("a"), &id, "ask").unwrap();
+        let own = store.permission_rules_in(&emp()).unwrap();
+        assert_eq!((own.len(), own[0].effect, &own[0].field), (1, Effect::Ask, &git.field));
+        assert_eq!(store.get_permission_rule(&git.id).unwrap().unwrap().effect, Effect::Allow);
+
+        set(&store, None, &id, "deny").unwrap();
+        assert_eq!(store.get_permission_rule(&git.id).unwrap().unwrap().effect, Effect::Deny, "the same rule, moved");
+        set(&store, None, &id, "inherit").unwrap();
+        assert!(store.get_permission_rule(&git.id).unwrap().is_none());
+        assert!(page(&store, None, &none()).unwrap().specific.is_empty());
     }
 
     #[test]
-    fn removing_a_job_item_deletes_its_rule() {
+    fn folders_are_added_and_removed_on_their_own_page() {
         let (_d, store) = store();
-        let own = put(&store, emp(), cap("web"), None, Effect::Allow, RuleSource::Owner);
-        remove(&store, Some("a"), &own.id).unwrap();
-        assert!(store.get_permission_rule(&own.id).unwrap().is_none());
-        let p = page(&store, Some("a"), &BTreeSet::new()).unwrap();
-        assert!(p.job.is_empty());
-        assert!(p.can_add.iter().any(|i| i.id == "web"), "it can be added back");
-
-        // A job item from the company defaults leaves this employee's job
-        // only: it asks first, the company default stays.
-        let company = put(&store, Scope::Company, cap("shell"), None, Effect::Allow, RuleSource::Owner);
-        let p = page(&store, Some("a"), &BTreeSet::new()).unwrap();
-        let item = p.job.iter().find(|i| i.id == company.id).unwrap();
-        assert!(item.removable && item.from_company);
-        remove(&store, Some("a"), &company.id).unwrap();
-        assert!(store.get_permission_rule(&company.id).unwrap().is_some());
-        let p = page(&store, Some("a"), &BTreeSet::new()).unwrap();
-        assert!(p.job.is_empty());
-        assert_eq!(p.asks_first.len(), 1);
-        assert!(page(&store, Some("b"), &BTreeSet::new()).unwrap().job.iter().any(|i| i.id == company.id));
-
-        // Other company defaults change on the company page only; locked
-        // rules never.
-        let default = put(&store, Scope::Company, RuleKey::Tool("run_command".into()), None, Effect::Ask, RuleSource::Owner);
-        assert!(matches!(remove(&store, Some("a"), &default.id), Err(NeboError::Validation(_))));
-        remove(&store, None, &default.id).unwrap();
-        let law = Rule { locked: true, ..owner_rule(emp(), cap("desktop"), None, Effect::Deny, RuleSource::Law { pack: "p".into() }) };
-        let law = store.write_permission_rule(&law, &Writer::Package { package: "p".into() }).unwrap();
-        assert!(!page(&store, Some("a"), &BTreeSet::new()).unwrap().fixed[0].removable);
-        assert!(remove(&store, Some("a"), &law.id).is_err());
-        // Another employee's rule is not this page's.
+        let folder = PermissionsUpdate { add_folder: Some("/srv/work".into()), ..Default::default() };
+        update(&store, None, &folder, &none()).unwrap();
+        assert!(update(&store, None, &PermissionsUpdate { add_folder: Some("relative".into()), ..Default::default() }, &none()).is_err());
+        let company = page(&store, None, &none()).unwrap().folders.pop().unwrap();
+        assert_eq!((company.sentence.as_str(), company.removable), ("Change files in /srv/work", true));
+        let e = page(&store, Some("a"), &none()).unwrap();
+        assert!(e.folders.iter().any(|i| i.id == company.id && i.from_company && !i.removable));
+        assert!(e.capabilities.iter().all(|s| s.id != "capability:file" || s.inherited), "a folder is not the file switch");
+        assert!(matches!(remove(&store, Some("a"), &company.id), Err(NeboError::Validation(_))));
+        remove(&store, None, &company.id).unwrap();
+        assert!(page(&store, None, &none()).unwrap().folders.is_empty());
         let other = put(&store, Scope::Employee("b".into()), cap("web"), None, Effect::Allow, RuleSource::Owner);
         assert!(matches!(remove(&store, Some("a"), &other.id), Err(NeboError::NotFound)));
-    }
-
-    #[test]
-    fn adding_to_the_job_and_folders_writes_the_owners_rules() {
-        let (_d, store) = store();
-        let connected = BTreeSet::from(["mail".to_string()]);
-        let add = |cap: &str| PermissionsUpdate { add_capability: Some(cap.into()), ..Default::default() };
-        update(&store, Some("a"), &add("mail"), &connected).unwrap();
-        update(&store, Some("a"), &add("shell"), &connected).unwrap();
-        assert!(update(&store, Some("a"), &add("ledger"), &connected).is_err(), "nothing connected provides it");
-        let folder = PermissionsUpdate { add_folder: Some("/srv/work".into()), ..Default::default() };
-        update(&store, Some("a"), &folder, &connected).unwrap();
-        assert!(update(&store, Some("a"), &PermissionsUpdate { add_folder: Some("relative".into()), ..Default::default() }, &connected).is_err());
-        let p = page(&store, Some("a"), &connected).unwrap();
-        let job: Vec<&str> = p.job.iter().map(|i| i.sentence.as_str()).collect();
-        assert_eq!(job, ["Read and send email", "Run commands on this computer"]);
-        assert_eq!(p.folders[0].sentence, "Change files in /srv/work");
-        assert!(!p.can_add.iter().any(|i| i.id == "mail" || i.id == "shell"), "what the job holds is not offered again");
-    }
-
-    /// No rule of the employee's undoes a company deny: the employee's page
-    /// keeps showing it, doesn't offer the capability, and refuses to add it.
-    #[test]
-    fn a_company_deny_stays_on_the_employees_page() {
-        let (_d, store) = store();
-        let deny = put(&store, Scope::Company, cap("shell"), None, Effect::Deny, RuleSource::Owner);
-        let p = page(&store, Some("a"), &BTreeSet::new()).unwrap();
-        assert!(!p.can_add.iter().any(|i| i.id == "shell"));
-        let add = PermissionsUpdate { add_capability: Some("shell".into()), ..Default::default() };
-        assert!(matches!(update(&store, Some("a"), &add, &BTreeSet::new()), Err(NeboError::Validation(_))));
-        // An allow of the employee's own (written before the deny) never
-        // hides it.
-        put(&store, emp(), cap("shell"), None, Effect::Allow, RuleSource::Owner);
-        let p = page(&store, Some("a"), &BTreeSet::new()).unwrap();
-        assert!(p.never.iter().any(|i| i.id == deny.id && i.from_company), "{:?}", p.never);
-        // The company page itself can still turn it back on.
-        update(&store, None, &add, &BTreeSet::new()).unwrap();
     }
 
     #[test]
@@ -1258,50 +1828,34 @@ mod tests {
             }),
             ..Default::default()
         };
-        update(&store, Some("a"), &edit, &BTreeSet::new()).unwrap();
-        let p = page(&store, Some("a"), &BTreeSet::new()).unwrap();
+        update(&store, Some("a"), &edit, &none()).unwrap();
+        let p = page(&store, Some("a"), &none()).unwrap();
         assert_eq!(p.money[0].sentence, "Send payment, up to $25 each time, up to $100 a day");
         assert_eq!(p.money[0].money.as_ref().unwrap().per_day_cents, Some(10000));
+        // Its action's switch keeps the amounts when it moves.
+        set(&store, Some("a"), "operation:payments.payment.send", "ask").unwrap();
+        let moved = store.get_permission_rule(&rule.id).unwrap().unwrap();
+        assert_eq!((moved.effect, moved.money.and_then(|m| m.per_day_cents)), (Effect::Ask, Some(10000)));
     }
 
     #[test]
     fn mode_picker_writes_the_mode() {
         let (_d, store) = store();
         let set = |agent: Option<&str>, m: &str| {
-            update(&store, agent, &PermissionsUpdate { mode: Some(m.into()), ..Default::default() }, &BTreeSet::new())
+            update(&store, agent, &PermissionsUpdate { mode: Some(m.into()), ..Default::default() }, &none())
         };
-        let p = page(&store, Some("a"), &BTreeSet::new()).unwrap();
+        let p = page(&store, Some("a"), &none()).unwrap();
         assert_eq!((p.mode.as_str(), p.mode_from_company), ("automatic", true));
         set(Some("a"), "plan").unwrap();
         assert_eq!(store.permission_mode(&emp()).unwrap(), Some(Mode::Plan));
-        let p = page(&store, Some("a"), &BTreeSet::new()).unwrap();
+        let p = page(&store, Some("a"), &none()).unwrap();
         assert_eq!((p.mode.as_str(), p.mode_from_company, p.company_mode.as_str()), ("plan", false, "automatic"));
         set(Some("a"), "company").unwrap();
         assert_eq!(store.permission_mode(&emp()).unwrap(), None);
         set(None, "full_access").unwrap();
-        assert_eq!(page(&store, Some("a"), &BTreeSet::new()).unwrap().mode, "full_access");
+        assert_eq!(page(&store, Some("a"), &none()).unwrap().mode, "full_access");
         assert!(set(None, "company").is_err(), "the company has no default above it");
         assert!(set(Some("a"), "everything").is_err());
-    }
-
-    #[test]
-    fn company_default_applies_until_overridden() {
-        let (_d, store) = store();
-        let company = put(&store, Scope::Company, cap("web"), None, Effect::Allow, RuleSource::Owner);
-        let folder = put(&store, Scope::Company, cap("file"), Some(RuleField::Folder("/srv/shared".into())), Effect::Allow, RuleSource::Owner);
-        let p = page(&store, Some("a"), &BTreeSet::new()).unwrap();
-        assert!(p.job.iter().any(|i| i.id == company.id && i.from_company));
-        assert!(p.folders.iter().any(|i| i.id == folder.id && i.from_company && !i.removable));
-        put(&store, emp(), cap("web"), None, Effect::Deny, RuleSource::Owner);
-        put(&store, emp(), cap("file"), Some(RuleField::Folder("/srv/own".into())), Effect::Allow, RuleSource::Owner);
-        let p = page(&store, Some("a"), &BTreeSet::new()).unwrap();
-        assert!(p.job.is_empty(), "the employee's own rule decides");
-        assert_eq!(p.never.len(), 1);
-        assert_eq!(p.folders.iter().map(|i| i.sentence.as_str()).collect::<Vec<_>>(), ["Change files in /srv/own"]);
-        // The company page shows only the company's own.
-        let c = page(&store, None, &BTreeSet::new()).unwrap();
-        assert_eq!((c.job.len(), c.folders.len(), c.never.len()), (1, 1, 0));
-        assert!(c.job.iter().all(|i| !i.from_company && i.removable));
     }
 
     #[test]

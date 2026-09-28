@@ -1,0 +1,13 @@
+id: full-access-never-asks
+name: "Full Access never asks on its own; installing never asks"
+description: |
+  Owner rulings 2026-09-28: Full Access never asks, and installing
+  software is never an ask case. In Full Access work outside the job, a
+  capability with no setting and an install (npm, brew, pip) all run. In
+  Automatic, with the shell in the job, an install runs too. Only a
+  switch the owner set to Ask asks, and Off still refuses.
+  Purely rule and mode precedence with no model involved, so it is a
+  deterministic proof rather than a conversation.
+target_component: permissions
+proof: harness::permissions::proof::full_access_never_asks
+conversation: []
