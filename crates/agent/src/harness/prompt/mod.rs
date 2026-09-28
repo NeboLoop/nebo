@@ -270,6 +270,16 @@ mod tests {
         }
     }
 
+    /// A server bot says the owner's own computer is not this one, so a
+    /// file on the owner's Desktop is asked for, not searched for here.
+    #[test]
+    fn a_server_bot_is_not_the_owners_computer() {
+        assert!(sections::SERVER_DESKTOP.contains(
+            "The owner's own computer is not this server: what is on its Desktop, in its Downloads or its photos \
+             reaches you only when they send it, so say that rather than searching this server for it."
+        ));
+    }
+
     /// Nebo's own machinery is not the work, and signing in is the owner's.
     #[test]
     fn nebo_itself_is_not_the_work() {

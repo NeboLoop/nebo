@@ -1109,77 +1109,55 @@ const EMPTY_FOLDER_SCAN: usize = 2_000;
 /// expression) and `ls`'s operands. The re-run after that fix
 /// (36371219698) still had `ls -la ~/Desktop/ 2>/dev/null` answer a bare
 /// "Command exited with code 2". The search programs take a pattern first,
-/// and which of their words is a path is theirs to know.
+/// and which of their words is a path is theirs to know. The commands are
+/// read by `policy::subcommands`, the one shell reader: in 36374049578 a
+/// split on spaces kept `2>/dev/null;` as one word, read the next command's
+/// words as `ls` operands, and told the model "ls and 3 and d … does not
+/// exist".
 fn nothing_searched_note(command: &str, cwd: &std::path::Path) -> Option<String> {
-    let tokens = shlex::split(command).unwrap_or_else(|| command.split_whitespace().map(str::to_string).collect());
-    let mut searching = false;
     let mut empty: Vec<String> = Vec::new();
     let mut missing: Vec<String> = Vec::new();
-    // Reading a `find`'s starting points; `find_options` while its leading
-    // -H/-L/-P/-D/-O options may still come.
-    let mut find_roots = false;
-    let mut find_options = false;
-    // Reading an `ls`'s operands.
-    let mut listing = false;
-    let mut skip_next = false;
     // A `cd` earlier in the command moves where relative paths point.
-    let mut command_start = true;
     let mut moved = false;
-    for token in &tokens {
-        if matches!(token.as_str(), "|" | "||" | "&&" | ";" | "&") {
-            searching = false;
-            find_roots = false;
-            listing = false;
-            command_start = true;
-            continue;
-        }
-        let at_start = std::mem::take(&mut command_start);
-        if at_start && token == "cd" {
-            moved = true;
-        }
-        let program = std::path::Path::new(token).file_name().and_then(|n| n.to_str()).unwrap_or("");
-        if at_start && program == "ls" {
-            listing = true;
-            continue;
-        }
-        if !searching && SEARCH_PROGRAMS.contains(&program) {
-            searching = true;
-            find_roots = program == "find";
-            find_options = find_roots;
-            continue;
-        }
-        if std::mem::take(&mut skip_next) {
-            continue;
-        }
-        if listing {
-            if LS_VALUE_OPTIONS.contains(&token.as_str()) {
-                skip_next = true;
-            } else if !token.starts_with('-') && !token.contains('>') {
-                note_missing(token, cwd, moved, &mut missing);
+    // Each command as the shell runs it (`policy::subcommands`): its words
+    // with quoting removed, redirections left out, and a word the shell
+    // still rewrites (a variable, a glob) unknown.
+    for sub in crate::policy::subcommands(command) {
+        let words = sub.words();
+        let Some(Some(first)) = words.first() else { continue };
+        let program = std::path::Path::new(first).file_name().and_then(|n| n.to_str()).unwrap_or("");
+        let args = &words[1..];
+        match program {
+            "cd" => moved = true,
+            "ls" => {
+                let mut value_next = false;
+                for word in args {
+                    if std::mem::take(&mut value_next) {
+                        continue;
+                    }
+                    match word.as_deref() {
+                        Some(w) if LS_VALUE_OPTIONS.contains(&w) => value_next = true,
+                        Some(w) if !w.starts_with('-') => {
+                            note_missing(w, cwd, moved, &mut missing);
+                        }
+                        _ => {}
+                    }
+                }
             }
-            continue;
-        }
-        if find_roots {
-            if find_options && (matches!(token.as_str(), "-H" | "-L" | "-P") || token.starts_with("-O")) {
-                continue;
+            p if SEARCH_PROGRAMS.contains(&p) => {
+                if p == "find" {
+                    for root in find_roots(args) {
+                        note_missing(root, cwd, moved, &mut missing);
+                    }
+                }
+                for word in args.iter().flatten().filter(|w| !w.starts_with('-')) {
+                    let path = cwd.join(crate::file_tool::expand_path(word));
+                    if path.is_dir() && !holds_a_file(&path) && !empty.contains(word) {
+                        empty.push(word.clone());
+                    }
+                }
             }
-            if find_options && token == "-D" {
-                skip_next = true;
-                continue;
-            }
-            find_options = false;
-            if token.starts_with('-') || matches!(token.as_str(), "(" | ")" | "!" | ",") {
-                find_roots = false;
-            } else if note_missing(token, cwd, moved, &mut missing) {
-                continue;
-            }
-        }
-        if !searching || token.starts_with('-') || token.contains('>') {
-            continue;
-        }
-        let path = cwd.join(crate::file_tool::expand_path(token));
-        if path.is_dir() && !holds_a_file(&path) && !empty.contains(token) {
-            empty.push(token.clone());
+            _ => {}
         }
     }
     let mut notes: Vec<String> = Vec::new();
@@ -1198,6 +1176,32 @@ fn nothing_searched_note(command: &str, cwd: &std::path::Path) -> Option<String>
         ));
     }
     (!notes.is_empty()).then(|| notes.join(" "))
+}
+
+/// A `find`'s starting points: the known words before its expression,
+/// past its leading -H/-L/-P/-D/-O options.
+fn find_roots(args: &[Option<String>]) -> Vec<&str> {
+    let mut roots = Vec::new();
+    let mut words = args.iter().peekable();
+    while let Some(word) = words.peek() {
+        match word.as_deref() {
+            Some("-H" | "-L" | "-P") => {}
+            Some("-D") => {
+                words.next();
+            }
+            Some(w) if w.starts_with("-O") => {}
+            _ => break,
+        }
+        words.next();
+    }
+    for word in words {
+        match word.as_deref() {
+            Some(w) if w.starts_with('-') || matches!(w, "(" | ")" | "!" | ",") => break,
+            Some(w) => roots.push(w),
+            None => {}
+        }
+    }
+    roots
 }
 
 /// `ls` options whose value is the next word, not an operand.
@@ -1222,10 +1226,9 @@ fn note_missing(token: &str, cwd: &std::path::Path, moved: bool, missing: &mut V
 
 /// The path a search starting point names when nothing is there, read as
 /// the shell would pass it: `~` expanded, relative to `cwd` unless a `cd`
-/// came before it (`moved`). A word the shell would still rewrite (a
-/// variable, a glob, a substitution) is not read.
+/// came before it (`moved`). `~user` is not read.
 fn missing_path(token: &str, cwd: &std::path::Path, moved: bool) -> Option<std::path::PathBuf> {
-    if token.contains(['$', '`', '*', '?', '[', '{']) || (token.starts_with('~') && token != "~" && !token.starts_with("~/")) {
+    if token.starts_with('~') && token != "~" && !token.starts_with("~/") {
         return None;
     }
     let expanded = std::path::PathBuf::from(crate::file_tool::expand_path(token));
@@ -1680,6 +1683,17 @@ mod tests {
         // An option's value is not an operand.
         let note = nothing_searched_note(&format!("ls -la -I Desktop --hide Pictures {here}"), dir.path());
         assert_eq!(note, None, "{note:?}");
+
+        // Each command of a compound is read on its own (36374049578: `;`
+        // joined to a redirect ran the next command's words into `ls`).
+        let compound = format!(
+            "ls -la {missing}/ 2>/dev/null; ls -la {here}/ >/dev/null; find {here} -maxdepth 3 -type d -iname \"desktop\" 2>/dev/null"
+        );
+        let r = t.execute(&ctx(), json!({"action": "exec", "command": compound})).await;
+        assert!(r.content.contains(&format!("\n{missing}/ does not exist, so nothing was searched or listed there")), "{}", r.content);
+        for word in [" and ls", " and 3", " and d ", "desktop does not exist"] {
+            assert!(!r.content.contains(word), "{word:?}: {}", r.content);
+        }
 
         // Words the shell still rewrites, and relative paths after a `cd`,
         // aren't read; `ls` is read only where it is the command.
