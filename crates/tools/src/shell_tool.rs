@@ -1163,9 +1163,10 @@ fn nothing_searched_note(command: &str, cwd: &std::path::Path) -> Option<String>
     let mut notes: Vec<String> = Vec::new();
     if !missing.is_empty() {
         notes.push(format!(
-            "{} does not exist, so nothing was searched or listed there. If the owner named that folder, tell them \
+            "{} {}, so nothing was searched or listed there. If the owner named that folder, tell them \
              it isn't there and ask where the files are, rather than searching other folders for it.",
-            missing.join(" and ")
+            missing.join(" and "),
+            if missing.len() == 1 { "does not exist" } else { "do not exist" }
         ));
     }
     if !empty.is_empty() {
@@ -1680,6 +1681,10 @@ mod tests {
         let r = t.execute(&ctx(), json!({"action": "exec", "command": format!("ls -la {missing}/ 2>/dev/null")})).await;
         assert!(r.is_error, "{}", r.content);
         assert!(r.content.contains(&format!("{missing}/ does not exist, so nothing was searched or listed there")), "{}", r.content);
+        // Several at once are named together.
+        let two = format!("find {missing} {missing}-2 -name x 2>/dev/null");
+        let r = t.execute(&ctx(), json!({"action": "exec", "command": two})).await;
+        assert!(r.content.contains(&format!("{missing} and {missing}-2 do not exist, so nothing")), "{}", r.content);
         // An option's value is not an operand.
         let note = nothing_searched_note(&format!("ls -la -I Desktop --hide Pictures {here}"), dir.path());
         assert_eq!(note, None, "{note:?}");
