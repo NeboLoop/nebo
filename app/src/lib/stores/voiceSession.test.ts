@@ -76,7 +76,13 @@ const released = vi.fn();
 
 /** The playback AudioContext's clock (seconds) and every source it played. */
 let audioClock = 0;
-let sources: Array<{ onended: (() => void) | null; stopped: boolean }> = [];
+let sources: Array<{
+	onended: (() => void) | null;
+	stopped: boolean;
+	buffer: { data?: Float32Array; sound?: string } | null;
+}> = [];
+/** Every playback AudioContext the store made, and whether it was closed. */
+let contexts: Array<{ closed: boolean }> = [];
 
 async function startCall(chatId?: string) {
 	const { voiceSession } = await import('./voiceSession');
@@ -109,17 +115,26 @@ beforeEach(() => {
 	vi.stubGlobal('WebSocket', FakeSocket);
 	audioClock = 0;
 	sources = [];
+	contexts = [];
 	vi.stubGlobal('AudioContext', class {
 		destination = {};
+		closed = false;
+		constructor() {
+			contexts.push(this);
+		}
 		get currentTime() {
 			return audioClock;
 		}
 		createBuffer() {
 			return { copyToChannel: () => {} };
 		}
+		/** A bundled sound, named after its file. */
+		async decodeAudioData(data: { url: string }) {
+			return { sound: data.url.includes('disconnect') ? 'disconnect' : 'connect' };
+		}
 		createBufferSource() {
 			const source = {
-				buffer: null,
+				buffer: null as { data?: Float32Array; sound?: string } | null,
 				connect: () => {},
 				start: () => {},
 				stopped: false,
@@ -131,8 +146,11 @@ beforeEach(() => {
 			sources.push(source);
 			return source;
 		}
-		close() {}
+		close() {
+			this.closed = true;
+		}
 	});
+	vi.stubGlobal('fetch', async (url: string) => ({ arrayBuffer: async () => ({ url }) }));
 	vi.stubGlobal('navigator', {
 		wakeLock: { request: async () => ({ release: async () => released() }) }
 	});
@@ -374,5 +392,104 @@ describe('voiceSession barge-in', () => {
 		first.emit({ type: 'transcription_start' });
 
 		expect(first.frames()).toHaveLength(sent);
+	});
+});
+
+/**
+ * The call opens and closes with a sound the owner can hear: one when it goes
+ * live, a different one when it ends. The closing sound is never cut off by
+ * the call's own cleanup.
+ */
+describe('voiceSession chimes', () => {
+	/** The call's sounds played so far, in order, once the decoding has landed. */
+	async function chimes() {
+		await vi.advanceTimersByTimeAsync(0);
+		return sources.map((s) => s.buffer?.sound).filter((n) => n !== undefined);
+	}
+
+	it('sounds once when the call goes live, and not again for the replies', async () => {
+		const { first } = await liveCall();
+		first.emit({ type: 'playback_start' });
+		first.audio(500);
+		expect(await chimes()).toEqual(['connect']);
+	});
+
+	it('plays the closing sound when the owner ends the call, and lets the audio go only after it', async () => {
+		const { voiceSession } = await liveCall();
+		await chimes();
+		voiceSession.stop();
+
+		expect(await chimes()).toEqual(['connect', 'disconnect']);
+		expect(get(voiceSession).status).toBe('idle');
+		// The microphone and the socket went at once; the speaker waits for
+		// the goodbye to finish.
+		expect(contexts[0].closed).toBe(false);
+		await vi.advanceTimersByTimeAsync(500);
+		expect(contexts[0].closed).toBe(false);
+		sources.at(-1)?.onended?.();
+		expect(contexts[0].closed).toBe(true);
+	});
+
+	it('never keeps the audio more than a second for the closing sound', async () => {
+		const { voiceSession } = await liveCall();
+		await chimes();
+		voiceSession.stop();
+		await vi.advanceTimersByTimeAsync(999);
+		expect(contexts[0].closed).toBe(false);
+		await vi.advanceTimersByTimeAsync(1);
+		expect(contexts[0].closed).toBe(true);
+	});
+
+	it('lets the audio go at once when the sounds could not be loaded', async () => {
+		vi.stubGlobal('fetch', async () => {
+			throw new Error('offline');
+		});
+		const { voiceSession } = await liveCall();
+		voiceSession.stop();
+		expect(await chimes()).toEqual([]);
+		expect(contexts[0].closed).toBe(true);
+	});
+
+	it('plays the closing sound when the call fails', async () => {
+		const { first } = await liveCall();
+		await chimes();
+		first.emit({ type: 'Error', message: 'The employee could not answer.' });
+		expect(await chimes()).toEqual(['connect', 'disconnect']);
+	});
+
+	it('keeps a redial inside the quiet window silent', async () => {
+		const { voiceSession } = await liveCall();
+		FakeSocket.instances[0].drop(1006);
+		await vi.advanceTimersByTimeAsync(500);
+		const second = FakeSocket.instances[1];
+		second.open();
+		second.emit({ type: 'session_initialized' });
+		await vi.advanceTimersByTimeAsync(10_000);
+		expect(get(voiceSession).status).toBe('listening');
+		expect(await chimes()).toEqual(['connect']);
+	});
+
+	it('sounds once when a lost line is announced, and once more when it is back', async () => {
+		const { voiceSession } = await liveCall();
+		FakeSocket.instances[0].drop(1006);
+		// Every redial times out until the quiet window has passed.
+		await vi.advanceTimersByTimeAsync(4_000);
+		expect(get(voiceSession).status).toBe('reconnecting');
+		expect(await chimes()).toEqual(['connect', 'disconnect']);
+
+		const next = FakeSocket.instances.at(-1)!;
+		next.open();
+		next.emit({ type: 'session_initialized' });
+		expect(get(voiceSession).status).toBe('listening');
+		expect(await chimes()).toEqual(['connect', 'disconnect', 'connect']);
+	});
+
+	it('does not say goodbye twice for a line already announced as lost', async () => {
+		const { voiceSession } = await liveCall();
+		FakeSocket.instances[0].drop(1006);
+		await vi.advanceTimersByTimeAsync(4_000);
+		expect(get(voiceSession).status).toBe('reconnecting');
+		voiceSession.stop();
+		expect(await chimes()).toEqual(['connect', 'disconnect']);
 	});
 });

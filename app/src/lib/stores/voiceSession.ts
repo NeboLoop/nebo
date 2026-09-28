@@ -20,6 +20,7 @@
 
 import { writable, derived } from 'svelte/store';
 import { finishUserTranscript } from './voiceTranscript';
+import { loadVoiceChimes, type VoiceChimes } from './voiceChimes';
 import { backendWsBase } from '$lib/api/base';
 import { startPcmCapture, type AudioCaptureHandle } from '$lib/stores/audio';
 import { deviceManager } from '$lib/stores/devices';
@@ -131,6 +132,12 @@ const CALL_LOST_MESSAGE = 'The call dropped and could not be rejoined. Start it 
 /** A failure that arrived with nothing to say: the one thing still true. */
 const CALL_ENDED_MESSAGE = 'The call ended. Start it again.';
 
+/**
+ * The longest a call's audio is kept open, once the call is over, for its
+ * closing sound to finish.
+ */
+const GOODBYE_WAIT_MS = 1_000;
+
 // --- Store ---
 
 function createVoiceSessionStore() {
@@ -162,6 +169,9 @@ function createVoiceSessionStore() {
 	// TTS playback resources
 	let playbackCtx: AudioContext | null = null;
 	let pendingAudioChunks: Float32Array[] = [];
+	// The call's connect and disconnect sounds, decoded for the playback
+	// context when the call starts; null if they could not be.
+	let chimes: Promise<VoiceChimes | null> = Promise.resolve(null);
 	let currentSource: AudioBufferSourceNode | null = null;
 	let isPlayingAudio = false;
 	// Where playback is along the call's stream of reply audio, in ms, so a
@@ -302,6 +312,28 @@ function createVoiceSessionStore() {
 		source.start();
 	}
 
+	/**
+	 * One of the call's two sounds, on its own source straight to the speaker:
+	 * never part of the reply's stream, so a barge-in never cuts it and it
+	 * never counts as reply audio heard.
+	 */
+	function playChime(ctx: AudioContext, sound: AudioBuffer): AudioBufferSourceNode {
+		const source = ctx.createBufferSource();
+		source.buffer = sound;
+		source.connect(ctx.destination);
+		source.start();
+		return source;
+	}
+
+	/** Play [which] on the call's context, once the sounds are decoded. */
+	function chime(which: keyof VoiceChimes) {
+		const ctx = playbackCtx;
+		if (!ctx) return;
+		void chimes.then((c) => {
+			if (c && playbackCtx === ctx) playChime(ctx, c[which]);
+		});
+	}
+
 	/** Stream position of playback: finished buffers plus the one playing. */
 	function playedPositionMs(): number {
 		if (!currentSource || !playbackCtx) return streamPlayedMs;
@@ -338,8 +370,13 @@ function createVoiceSessionStore() {
 		isPlayingAudio = false;
 	}
 
-	/** Full cleanup of all resources. */
-	function cleanup() {
+	/**
+	 * Full cleanup of all resources. The microphone and the socket go at once.
+	 * With [goodbye] (the owner ended the call, or it failed) the closing sound
+	 * plays on the way out, and the playback context is let go only once it
+	 * has finished — at most GOODBYE_WAIT_MS.
+	 */
+	function cleanup(goodbye = false) {
 		clearTimers();
 		stopPlayback();
 		releaseWakeLock();
@@ -362,9 +399,30 @@ function createVoiceSessionStore() {
 		redialing = false;
 
 		if (playbackCtx) {
-			playbackCtx.close();
+			const ctx = playbackCtx;
 			playbackCtx = null;
+			if (goodbye) {
+				let closed = false;
+				const close = () => {
+					if (closed) return;
+					closed = true;
+					clearTimeout(cap);
+					ctx.close();
+				};
+				const cap = setTimeout(close, GOODBYE_WAIT_MS);
+				void chimes.then((c) => {
+					if (closed || !c) return close();
+					playChime(ctx, c.disconnect).onended = close;
+				});
+			} else {
+				ctx.close();
+			}
 		}
+	}
+
+	/** A call that was already announced as lost has had its closing sound. */
+	function saysGoodbye(): boolean {
+		return readState().status !== 'reconnecting';
 	}
 
 	/**
@@ -464,7 +522,10 @@ function createVoiceSessionStore() {
 			// lasts longer than the quiet window is worth a word.
 			quietTimer = setTimeout(() => {
 				quietTimer = null;
-				if (redialing) update((s) => ({ ...s, status: 'reconnecting' }));
+				if (!redialing) return;
+				update((s) => ({ ...s, status: 'reconnecting' }));
+				// The one sound that says the line went.
+				chime('disconnect');
 			}, RECONNECT_QUIET_MS);
 		}
 		// The half-heard sentence goes either way: it belongs to a dead socket.
@@ -505,7 +566,7 @@ function createVoiceSessionStore() {
 	}
 
 	function transitionToError(message: string) {
-		cleanup();
+		cleanup(saysGoodbye());
 		update((s) => ({
 			...s,
 			status: 'error',
@@ -544,6 +605,10 @@ function createVoiceSessionStore() {
 					} else {
 						log.info('Voice session initialized');
 					}
+					// Live — and after a first dial or a redial that was
+					// announced, the one sound that says so. A silent redial
+					// stays silent.
+					const announce = ['connecting', 'reconnecting'].includes(readState().status);
 					redialing = false;
 					if (quietTimer) {
 						clearTimeout(quietTimer);
@@ -555,6 +620,7 @@ function createVoiceSessionStore() {
 						status: 'listening',
 						conversationId: msg.conversationId ?? s.conversationId
 					}));
+					if (announce) chime('connect');
 					break;
 
 				case 'transcription_start': {
@@ -734,6 +800,10 @@ function createVoiceSessionStore() {
 			try {
 				// Playback AudioContext (24kHz — matches the realtime output rate)
 				playbackCtx = new AudioContext({ sampleRate: 24000 });
+				chimes = loadVoiceChimes(playbackCtx).catch((err) => {
+					log.warn('Voice call sounds could not be loaded: ' + String(err));
+					return null;
+				});
 
 				// PARALLEL INIT: open the WebSocket and acquire the mic at the same
 				// time (serializing them wastes the slower of the two); mic chunks
@@ -794,7 +864,7 @@ function createVoiceSessionStore() {
 			if (current.status === 'idle') return;
 
 			log.info('Voice session stopped');
-			cleanup();
+			cleanup(saysGoodbye());
 			// boundChatId records what the call produced, so it has to outlive the
 			// call — the closer reads it to land in the thread voice just created.
 			// `start()` clears it for the next session.
