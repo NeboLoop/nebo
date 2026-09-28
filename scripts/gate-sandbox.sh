@@ -48,6 +48,15 @@ for d in home tmp work; do
 done
 
 args=(--dev-bind / / --bind "$GATE_JOB/home" "$HOME" --bind "$GATE_JOB/tmp" /tmp)
+# Nothing of the machine the VM runs on: a folder the VM host shares in
+# (Lima's default template mounts the Mac's home) is covered in both views.
+# A gate run's `find /` once listed the owner's Mail under /Users/stadium
+# (2026-09-28); the VM mounts nothing now (harden-stadium-ci.sh --host), and
+# this keeps a rebuilt VM from bringing it back into view. Rosetta's mount is
+# Lima's x86 translator, not a host folder.
+while read -r shared; do
+  if [ -n "$shared" ] && [ "$shared" != /mnt/lima-rosetta ]; then args+=(--tmpfs "$shared"); fi
+done < <(findmnt -rn -t virtiofs,9p -o TARGET 2>/dev/null || true)
 # What the job runs from, bound back at the same paths. Sources resolve in the
 # real filesystem, so these are reachable even though they live under $HOME.
 if [ -n "$server" ]; then
