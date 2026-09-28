@@ -1128,9 +1128,15 @@ async fn handle_builtin_slash(
             // existed for threads ("Failed to clear: not found"), and
             // rotation wouldn't stick anyway — get_or_create pins a thread
             // session back to its URL-bound chat. Clear means clear: wipe
-            // this thread's messages in place.
+            // this thread's messages in place. A linked employee's session
+            // on its runtime is forgotten with them, so the agent starts
+            // fresh too instead of carrying on with everything before.
             if let Some(chat_id) = types::keyparser::chat_id_from_thread_key(session_id) {
-                return Some(match state.store.delete_chat_messages_by_chat_id(chat_id) {
+                let cleared = state
+                    .store
+                    .delete_chat_messages_by_chat_id(chat_id)
+                    .and_then(|()| state.store.set_chat_linked_session(chat_id, "", ""));
+                return Some(match cleared {
                     Ok(()) => {
                         if let Ok(sid) = state
                             .harness

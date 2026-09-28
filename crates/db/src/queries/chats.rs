@@ -95,11 +95,12 @@ impl Store {
 
     /// Record the linked agent's session behind this chat and the agent it
     /// belongs to (see `Chat::linked_chat_id`). Written on the thread's
-    /// first turn.
+    /// first turn. Empty ids forget it (a cleared conversation): the next
+    /// turn opens a new session on the agent's side too.
     pub fn set_chat_linked_session(&self, id: &str, agent_id: &str, session_id: &str) -> Result<(), NeboError> {
         let conn = self.conn()?;
         conn.execute(
-            "UPDATE chats SET linked_chat_id = ?1, linked_agent_id = ?2 WHERE id = ?3",
+            "UPDATE chats SET linked_chat_id = NULLIF(?1, ''), linked_agent_id = NULLIF(?2, '') WHERE id = ?3",
             params![session_id, agent_id, id],
         )
         .map_err(|e| NeboError::Database(e.to_string()))?;
@@ -1422,6 +1423,12 @@ mod tests {
 
         store.create_chat("c2", "Second").unwrap();
         assert!(store.get_chat("c2").unwrap().unwrap().linked_chat_id.is_none());
+
+        // Cleared: forgotten, so the next turn opens a new session.
+        store.set_chat_linked_session("c1", "", "").unwrap();
+        let chat = store.get_chat("c1").unwrap().unwrap();
+        assert!(chat.linked_chat_id.is_none());
+        assert!(chat.linked_agent_id.is_none());
     }
 
     /// A new conversation starts clean: rotating never inherits the last
