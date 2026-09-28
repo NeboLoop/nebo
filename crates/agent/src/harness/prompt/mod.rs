@@ -270,13 +270,14 @@ mod tests {
         }
     }
 
-    /// A server bot says the owner's own computer is not this one, so a
-    /// file on the owner's Desktop is asked for, not searched for here.
+    /// A server bot says the owner's own computer is not this one: a folder
+    /// of theirs is looked for here once, then asked for, never hunted.
     #[test]
     fn a_server_bot_is_not_the_owners_computer() {
         assert!(sections::SERVER_DESKTOP.contains(
-            "The owner's own computer is not this server: what is on its Desktop, in its Downloads or its photos \
-             reaches you only when they send it, so say that rather than searching this server for it."
+            "The owner's own computer is not this server. When they name a folder of theirs, such as their Desktop, \
+             look once for that folder here (~/Desktop); if it isn't there, tell them and ask them to send the file, \
+             rather than searching the rest of this server for it."
         ));
     }
 

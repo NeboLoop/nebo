@@ -265,16 +265,19 @@ fn shell() -> String {
 /// on 2026-09-26 the old line ("the os tool has no … reminders here, never
 /// call them") read as "this bot can't set reminders", and runs asked to be
 /// reminded in three hours answered that no reminder tool existed. The
-/// owner's own computer is named as not this one: in the 2026-09-27 proofs
-/// of `file-discovery-spiral`, runs asked for "a screenshot from my
-/// Desktop" knew this server had none and searched `/home` and `/` for one
-/// anyway (4–6 commands).
+/// owner's own computer is named as not this one, and a folder of theirs is
+/// looked for here once: in the 2026-09-27 proofs of
+/// `file-discovery-spiral`, runs asked for "a screenshot from my Desktop"
+/// knew this server had none and searched `/home` and `/` anyway (4–6
+/// commands), and when this line said only "not this server" (36378229215)
+/// every run answered without looking at all.
 pub const SERVER_DESKTOP: &str = "none: this Nebo runs on a server in the cloud, with no screen and none of a \
 computer's own apps (Mail, Contacts, Calendar, Reminders, Shortcuts, speech). Files, commands, the web, schedules \
 (a reminder for the owner is one) and connected services all work normally. The os tool is offered only while a \
 desktop session is up, and then drives just that session's windows, input, clipboard, capture, ui, menu, dialog and \
-space. The owner's own computer is not this server: what is on its Desktop, in its Downloads or its photos reaches you \
-only when they send it, so say that rather than searching this server for it.";
+space. The owner's own computer is not this server. When they name a folder of theirs, such as their Desktop, look \
+once for that folder here (~/Desktop); if it isn't there, tell them and ask them to send the file, rather than \
+searching the rest of this server for it.";
 
 /// What a command may never do, told before the first one runs: the
 /// safeguard refuses sudo and su in every mode (a hard limit,
