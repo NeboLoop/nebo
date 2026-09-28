@@ -2745,15 +2745,7 @@
 		"copyUrl": "Salin URL pelayan",
 		"urlCopied": "Disalin",
 		"moreActions": "Tindakan lain",
-		"refreshTools": "Muat semula senarai alat",
-		"toolPermissions": "Kebenaran alat",
-		"toolPermissionsDesc": "Pilih bagaimana setiap alat daripada pelayan ini boleh berjalan. Alat baharu secara lalai Perlu kelulusan.",
-		"serverDefault": "Lalai untuk semua alat",
-		"alwaysAllow": "Sentiasa benarkan",
-		"needsApproval": "Perlu kelulusan",
-		"blocked": "Disekat",
-		"noToolsSynced": "Belum ada alat diselaraskan — sambungkan pelayan atau muat semula senarai alat.",
-		"viaDefault": "lalai"
+		"refreshTools": "Muat semula senarai alat"
 	},
 	"settingsUpdates": {
 		"updateFailedDetail": "Kemas kini gagal: {error}",
@@ -3024,6 +3016,10 @@
 		"asksHint": "Perkara ini sentiasa menunggu jawapan anda.",
 		"neverTitle": "Tidak sekali-kali buat",
 		"neverHint": "Perkara ini tidak sekali-kali berjalan.",
+		"toolsTitle": "Alat yang disambungkan",
+		"toolsHint": "Tetapkan apa yang boleh dilakukan oleh alat pelayan yang disambungkan. Baris pelayan itu sendiri meliputi semua alatnya.",
+		"toolsPick": "Pilih alat…",
+		"toolsEffect": "Apa yang boleh dilakukannya",
 		"fixedTitle": "Tetap",
 		"fixedHint": "Ditetapkan oleh peraturan syarikat. Ini tidak boleh diubah di sini.",
 		"activityLink": "Lihat apa yang pekerja buat, dan sebabnya",

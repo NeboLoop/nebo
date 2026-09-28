@@ -2745,15 +2745,7 @@
 		"copyUrl": "Salin URL server",
 		"urlCopied": "Tersalin",
 		"moreActions": "Tindakan lainnya",
-		"refreshTools": "Muat ulang daftar alat",
-		"toolPermissions": "Izin alat",
-		"toolPermissionsDesc": "Pilih bagaimana tiap alat dari server ini boleh berjalan. Alat baru secara bawaan Perlu persetujuan.",
-		"serverDefault": "Bawaan untuk semua alat",
-		"alwaysAllow": "Selalu izinkan",
-		"needsApproval": "Perlu persetujuan",
-		"blocked": "Diblokir",
-		"noToolsSynced": "Belum ada alat yang tersinkron — sambungkan server atau muat ulang daftar alat.",
-		"viaDefault": "bawaan"
+		"refreshTools": "Muat ulang daftar alat"
 	},
 	"settingsUpdates": {
 		"updateFailedDetail": "Pembaruan gagal: {error}",
@@ -3024,6 +3016,10 @@
 		"asksHint": "Ini selalu menunggu jawaban Anda.",
 		"neverTitle": "Tidak pernah dilakukan",
 		"neverHint": "Ini tidak pernah berjalan.",
+		"toolsTitle": "Alat yang terhubung",
+		"toolsHint": "Atur apa yang boleh dilakukan alat dari server yang terhubung. Baris milik server berlaku untuk semua alatnya.",
+		"toolsPick": "Pilih alat…",
+		"toolsEffect": "Yang boleh dilakukannya",
 		"fixedTitle": "Tetap",
 		"fixedHint": "Ditetapkan oleh aturan perusahaan. Ini tidak bisa diubah di sini.",
 		"activityLink": "Lihat apa yang dilakukan karyawan, dan alasannya",

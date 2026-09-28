@@ -2745,15 +2745,7 @@
 		"copyUrl": "Server-URL kopieren",
 		"urlCopied": "Kopiert",
 		"moreActions": "Weitere Aktionen",
-		"refreshTools": "Werkzeugliste aktualisieren",
-		"toolPermissions": "Werkzeugrechte",
-		"toolPermissionsDesc": "Leg fest, wie jedes Werkzeug dieses Servers laufen darf. Neue Werkzeuge stehen standardmäßig auf „Braucht Freigabe“.",
-		"serverDefault": "Standard für alle Werkzeuge",
-		"alwaysAllow": "Immer erlauben",
-		"needsApproval": "Braucht Freigabe",
-		"blocked": "Gesperrt",
-		"noToolsSynced": "Noch keine Werkzeuge abgeglichen — verbinde den Server oder aktualisiere die Werkzeugliste.",
-		"viaDefault": "Standard"
+		"refreshTools": "Werkzeugliste aktualisieren"
 	},
 	"settingsUpdates": {
 		"updateFailedDetail": "Update fehlgeschlagen: {error}",
@@ -3024,6 +3016,10 @@
 		"asksHint": "Diese warten immer auf deine Antwort.",
 		"neverTitle": "Macht er nie",
 		"neverHint": "Diese laufen nie.",
+		"toolsTitle": "Verbundene Tools",
+		"toolsHint": "Lege fest, was die Tools eines verbundenen Servers tun dürfen. Die eigene Zeile eines Servers gilt für alle seine Tools.",
+		"toolsPick": "Tool auswählen…",
+		"toolsEffect": "Was es tun darf",
 		"fixedTitle": "Festgelegt",
 		"fixedHint": "Durch eine Firmenregel festgelegt. Das lässt sich hier nicht ändern.",
 		"activityLink": "Sehen, was Mitarbeiter getan haben, und warum",

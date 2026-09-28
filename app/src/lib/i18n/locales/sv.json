@@ -2745,15 +2745,7 @@
 		"copyUrl": "Kopiera serverns URL",
 		"urlCopied": "Kopierad",
 		"moreActions": "Fler åtgärder",
-		"refreshTools": "Uppdatera verktygslistan",
-		"toolPermissions": "Verktygsbehörigheter",
-		"toolPermissionsDesc": "Välj hur varje verktyg från den här servern får köras. Nya verktyg får Kräver godkännande som standard.",
-		"serverDefault": "Standard för alla verktyg",
-		"alwaysAllow": "Tillåt alltid",
-		"needsApproval": "Kräver godkännande",
-		"blocked": "Blockerad",
-		"noToolsSynced": "Inga verktyg har synkats än — anslut servern eller uppdatera verktygslistan.",
-		"viaDefault": "standard"
+		"refreshTools": "Uppdatera verktygslistan"
 	},
 	"settingsUpdates": {
 		"updateFailedDetail": "Uppdateringen misslyckades: {error}",
@@ -3024,6 +3016,10 @@
 		"asksHint": "Dessa väntar alltid på ditt svar.",
 		"neverTitle": "Gör aldrig",
 		"neverHint": "Dessa körs aldrig.",
+		"toolsTitle": "Anslutna verktyg",
+		"toolsHint": "Välj vad en ansluten servers verktyg får göra. Serverns egen rad gäller alla dess verktyg.",
+		"toolsPick": "Välj ett verktyg…",
+		"toolsEffect": "Vad det får göra",
 		"fixedTitle": "Fast",
 		"fixedHint": "Bestämt av en företagsregel. Det går inte att ändra här.",
 		"activityLink": "Se vad medarbetare gjorde, och varför",

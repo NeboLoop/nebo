@@ -2745,15 +2745,7 @@
 		"copyUrl": "Sunucu URL'sini kopyala",
 		"urlCopied": "Kopyalandı",
 		"moreActions": "Diğer işlemler",
-		"refreshTools": "Araç listesini yenile",
-		"toolPermissions": "Araç izinleri",
-		"toolPermissionsDesc": "Bu sunucudaki her aracın nasıl çalışabileceğini seçin. Yeni araçlar varsayılan olarak Onay gerekir durumundadır.",
-		"serverDefault": "Tüm araçlar için varsayılan",
-		"alwaysAllow": "Her zaman izin ver",
-		"needsApproval": "Onay gerekir",
-		"blocked": "Engellendi",
-		"noToolsSynced": "Henüz araç eşitlenmedi — sunucuya bağlanın ya da araç listesini yenileyin.",
-		"viaDefault": "varsayılan"
+		"refreshTools": "Araç listesini yenile"
 	},
 	"settingsUpdates": {
 		"updateFailedDetail": "Güncelleme başarısız: {error}",
@@ -3024,6 +3016,10 @@
 		"asksHint": "Bunlar her zaman cevabınızı bekler.",
 		"neverTitle": "Asla yapmaz",
 		"neverHint": "Bunlar asla çalışmaz.",
+		"toolsTitle": "Bağlı araçlar",
+		"toolsHint": "Bağlı bir sunucunun araçlarının ne yapabileceğini belirleyin. Sunucunun kendi satırı tüm araçlarını kapsar.",
+		"toolsPick": "Bir araç seçin…",
+		"toolsEffect": "Ne yapabileceği",
 		"fixedTitle": "Sabit",
 		"fixedHint": "Bir şirket kuralıyla belirlenmiştir. Burada değiştirilemez.",
 		"activityLink": "Çalışanların ne yaptığını ve nedenini görün",

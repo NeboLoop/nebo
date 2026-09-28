@@ -2745,15 +2745,7 @@
 		"copyUrl": "Copiar o URL do servidor",
 		"urlCopied": "Copiado",
 		"moreActions": "Mais ações",
-		"refreshTools": "Atualizar a lista de ferramentas",
-		"toolPermissions": "Permissões das ferramentas",
-		"toolPermissionsDesc": "Escolha como cada ferramenta deste servidor pode rodar. As ferramentas novas começam em Precisa de aprovação.",
-		"serverDefault": "Padrão para todas as ferramentas",
-		"alwaysAllow": "Sempre permitir",
-		"needsApproval": "Precisa de aprovação",
-		"blocked": "Bloqueado",
-		"noToolsSynced": "Ainda sem ferramentas sincronizadas — conecte o servidor ou atualize a lista de ferramentas.",
-		"viaDefault": "padrão"
+		"refreshTools": "Atualizar a lista de ferramentas"
 	},
 	"settingsUpdates": {
 		"updateFailedDetail": "Falha na atualização: {error}",
@@ -3024,6 +3016,10 @@
 		"asksHint": "Isso sempre espera sua resposta.",
 		"neverTitle": "Nunca faz",
 		"neverHint": "Isso nunca roda.",
+		"toolsTitle": "Ferramentas conectadas",
+		"toolsHint": "Defina o que as ferramentas de um servidor conectado podem fazer. A linha do próprio servidor vale para todas as ferramentas dele.",
+		"toolsPick": "Escolha uma ferramenta…",
+		"toolsEffect": "O que ela pode fazer",
 		"fixedTitle": "Fixo",
 		"fixedHint": "Definido por uma regra da empresa. Isso não pode ser mudado aqui.",
 		"activityLink": "Ver o que os funcionários fizeram, e por quê",

@@ -2745,15 +2745,7 @@
 		"copyUrl": "Sao chép URL máy chủ",
 		"urlCopied": "Đã sao chép",
 		"moreActions": "Thao tác khác",
-		"refreshTools": "Tải lại danh sách công cụ",
-		"toolPermissions": "Quyền công cụ",
-		"toolPermissionsDesc": "Chọn cách từng công cụ của máy chủ này được phép chạy. Công cụ mới mặc định là Cần phê duyệt.",
-		"serverDefault": "Mặc định cho mọi công cụ",
-		"alwaysAllow": "Luôn cho phép",
-		"needsApproval": "Cần phê duyệt",
-		"blocked": "Chặn",
-		"noToolsSynced": "Chưa đồng bộ công cụ nào — hãy kết nối máy chủ hoặc tải lại danh sách công cụ.",
-		"viaDefault": "mặc định"
+		"refreshTools": "Tải lại danh sách công cụ"
 	},
 	"settingsUpdates": {
 		"updateFailedDetail": "Cập nhật thất bại: {error}",
@@ -3024,6 +3016,10 @@
 		"asksHint": "Những việc này luôn chờ câu trả lời của bạn.",
 		"neverTitle": "Không bao giờ làm",
 		"neverHint": "Những việc này không bao giờ chạy.",
+		"toolsTitle": "Công cụ đã kết nối",
+		"toolsHint": "Chọn những gì công cụ của máy chủ đã kết nối được làm. Dòng riêng của máy chủ áp dụng cho mọi công cụ của nó.",
+		"toolsPick": "Chọn một công cụ…",
+		"toolsEffect": "Được làm gì",
 		"fixedTitle": "Cố định",
 		"fixedHint": "Do quy tắc công ty đặt ra. Không thể thay đổi ở đây.",
 		"activityLink": "Xem nhân viên đã làm gì, và vì sao",

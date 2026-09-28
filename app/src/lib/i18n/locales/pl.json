@@ -2745,15 +2745,7 @@
 		"copyUrl": "Kopiuj adres serwera",
 		"urlCopied": "Skopiowano",
 		"moreActions": "Więcej działań",
-		"refreshTools": "Odśwież listę narzędzi",
-		"toolPermissions": "Uprawnienia narzędzi",
-		"toolPermissionsDesc": "Wybierz, jak może działać każde narzędzie z tego serwera. Nowe narzędzia domyślnie wymagają zatwierdzenia.",
-		"serverDefault": "Domyślnie dla wszystkich narzędzi",
-		"alwaysAllow": "Zawsze pozwalaj",
-		"needsApproval": "Wymaga zatwierdzenia",
-		"blocked": "Zablokowane",
-		"noToolsSynced": "Nie zsynchronizowano jeszcze narzędzi — podłącz serwer albo odśwież listę narzędzi.",
-		"viaDefault": "domyślnie"
+		"refreshTools": "Odśwież listę narzędzi"
 	},
 	"settingsUpdates": {
 		"updateFailedDetail": "Aktualizacja nie powiodła się: {error}",
@@ -3024,6 +3016,10 @@
 		"asksHint": "Te zawsze czekają na twoją odpowiedź.",
 		"neverTitle": "Nigdy nie robi",
 		"neverHint": "Te nigdy nie działają.",
+		"toolsTitle": "Połączone narzędzia",
+		"toolsHint": "Ustal, co mogą robić narzędzia połączonego serwera. Własny wiersz serwera obejmuje wszystkie jego narzędzia.",
+		"toolsPick": "Wybierz narzędzie…",
+		"toolsEffect": "Co może robić",
 		"fixedTitle": "Ustalone",
 		"fixedHint": "Ustawione przez regułę firmy. Nie można tego zmienić tutaj.",
 		"activityLink": "Zobacz, co zrobili pracownicy i dlaczego",

@@ -2762,15 +2762,7 @@
 		"copyUrl": "Copy server URL",
 		"urlCopied": "Copied",
 		"moreActions": "More actions",
-		"refreshTools": "Refresh tools list",
-		"toolPermissions": "Tool permissions",
-		"toolPermissionsDesc": "Choose how each tool from this server can run. New tools default to Needs approval.",
-		"serverDefault": "Default for all tools",
-		"alwaysAllow": "Always allow",
-		"needsApproval": "Needs approval",
-		"blocked": "Blocked",
-		"noToolsSynced": "No tools synced yet — connect the server or refresh the tools list.",
-		"viaDefault": "default"
+		"refreshTools": "Refresh tools list"
 	},
 	"settingsUpdates": {
 		"updateFailedDetail": "Update failed: {error}",
@@ -3054,6 +3046,10 @@
 		"asksHint": "These always wait for your answer.",
 		"neverTitle": "Never does",
 		"neverHint": "These never run.",
+		"toolsTitle": "Connected tools",
+		"toolsHint": "Set what a connected server's tools may do. A server's own line covers all its tools.",
+		"toolsPick": "Choose a tool…",
+		"toolsEffect": "What it may do",
 		"fixedTitle": "Fixed",
 		"fixedHint": "Set by a company rule. These can't change here.",
 		"activityLink": "See what employees did, and why",

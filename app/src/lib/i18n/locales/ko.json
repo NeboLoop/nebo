@@ -2745,15 +2745,7 @@
 		"copyUrl": "서버 URL 복사",
 		"urlCopied": "복사했습니다",
 		"moreActions": "다른 작업",
-		"refreshTools": "도구 목록 새로고침",
-		"toolPermissions": "도구 권한",
-		"toolPermissionsDesc": "이 서버의 각 도구를 어떻게 실행할지 고르세요. 새 도구는 기본이 승인 필요입니다.",
-		"serverDefault": "모든 도구의 기본값",
-		"alwaysAllow": "항상 허용",
-		"needsApproval": "승인 필요",
-		"blocked": "차단",
-		"noToolsSynced": "아직 동기화된 도구가 없습니다 — 서버를 연결하거나 도구 목록을 새로고침하세요.",
-		"viaDefault": "기본값"
+		"refreshTools": "도구 목록 새로고침"
 	},
 	"settingsUpdates": {
 		"updateFailedDetail": "업데이트 실패: {error}",
@@ -3024,6 +3016,10 @@
 		"asksHint": "이 항목들은 항상 당신의 답변을 기다립니다.",
 		"neverTitle": "절대 하지 않는 것",
 		"neverHint": "이 항목들은 절대 실행되지 않습니다.",
+		"toolsTitle": "연결된 도구",
+		"toolsHint": "연결된 서버의 도구가 할 수 있는 일을 정하세요. 서버 자체 항목은 해당 서버의 모든 도구에 적용됩니다.",
+		"toolsPick": "도구 선택…",
+		"toolsEffect": "허용할 일",
 		"fixedTitle": "고정됨",
 		"fixedHint": "회사 규칙으로 설정되었습니다. 여기서는 바꿀 수 없습니다.",
 		"activityLink": "직원들이 한 일과 이유 보기",

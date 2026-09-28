@@ -248,6 +248,9 @@ pub struct PermissionsPage {
     pub job: Vec<PermissionItem>,
     /// Capabilities the owner can add to the job.
     pub can_add: Vec<PermissionItem>,
+    /// Tools of the connected MCP servers, and each server's line for all
+    /// its tools, that no line on this page covers yet; `mcpTool` sets one.
+    pub mcp_can_add: Vec<PermissionItem>,
     /// Money it may spend without asking.
     pub money: Vec<PermissionItem>,
     /// Folders it may change files in.
@@ -273,6 +276,10 @@ pub struct PermissionItem {
     pub from_company: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub money: Option<MoneyAmounts>,
+    /// An MCP tool, or a server's line for all its tools, that `mcpTool`
+    /// can set to always allowed, asks first or never on this page.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_id: Option<String>,
 }
 
 /// A money limit's amounts, for editing.
@@ -325,6 +332,17 @@ pub struct PermissionsUpdate {
     pub add_folder: Option<String>,
     /// New amounts for a money item.
     pub money: Option<MoneyEdit>,
+    /// What an MCP tool (or a server's line for all its tools) does: an
+    /// item's `toolId`, from a line or from `mcpCanAdd`.
+    pub mcp_tool: Option<McpToolEdit>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpToolEdit {
+    pub tool_id: String,
+    /// allow | ask | deny
+    pub effect: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -537,6 +555,7 @@ fn page(store: &db::Store, agent_id: Option<&str>, connected: &BTreeSet<String>)
         company_mode: company_mode.as_str().to_string(),
         job: Vec::new(),
         can_add: Vec::new(),
+        mcp_can_add: Vec::new(),
         money: Vec::new(),
         folders: Vec::new(),
         always_allowed: Vec::new(),
@@ -545,6 +564,10 @@ fn page(store: &db::Store, agent_id: Option<&str>, connected: &BTreeSet<String>)
         fixed: Vec::new(),
     };
     let shown = shown_rules(store, agent_id)?;
+    // On an employee's page an MCP tool a company deny covers can't be set:
+    // no rule of the employee's undoes a company deny.
+    let company_blocks =
+        |key: &str| agent_id.is_some() && shown.iter().any(|(r, from_company)| *from_company && denies_tool(r, key));
     let mut in_job: BTreeSet<String> = BTreeSet::new();
     for (rule, from_company) in &shown {
         let section = section_of(rule);
@@ -560,6 +583,7 @@ fn page(store: &db::Store, agent_id: Option<&str>, connected: &BTreeSet<String>)
             removable,
             from_company: *from_company,
             money: rule.money.as_ref().map(MoneyAmounts::from),
+            tool_id: mcp_tool_key(rule).filter(|k| !rule.locked && !company_blocks(k)).map(str::to_string),
         };
         match section {
             Section::Job => p.job.push(item),
@@ -592,10 +616,49 @@ fn page(store: &db::Store, agent_id: Option<&str>, connected: &BTreeSet<String>)
                 removable: false,
                 from_company: false,
                 money: None,
+                tool_id: None,
             });
         }
     }
+    let lined: BTreeSet<&str> = shown.iter().filter_map(|(r, _)| mcp_tool_key(r)).collect();
+    for integration in store.list_mcp_integrations()? {
+        let prefix = mcp::bridge::tool_name_prefix(&integration.name);
+        let all = format!("mcp__{}__*", mcp::bridge::server_slug(&prefix));
+        let tools = store.get_mcp_known_tools(&integration.id)?;
+        for key in std::iter::once(all).chain(tools.iter().map(|t| mcp::bridge::make_tool_name(&prefix, t))) {
+            if !lined.contains(key.as_str()) && !company_blocks(&key) && !p.mcp_can_add.iter().any(|i| i.id == key) {
+                p.mcp_can_add.push(PermissionItem {
+                    sentence: key_phrase(&key),
+                    tool_id: Some(key.clone()),
+                    id: key,
+                    removable: false,
+                    from_company: false,
+                    money: None,
+                });
+            }
+        }
+    }
+    p.mcp_can_add.sort_by(|a, b| a.sentence.cmp(&b.sentence));
     Ok(p)
+}
+
+/// The key of an MCP tool's rule, or of a server's rule for all its tools
+/// (`mcp__<server>__*`): the rules `mcpTool` sets.
+fn mcp_tool_key(rule: &Rule) -> Option<&str> {
+    match (&rule.key, &rule.field) {
+        (RuleKey::Tool(k), None) if k.starts_with("mcp__") => Some(k),
+        _ => None,
+    }
+}
+
+/// Whether `rule` is a deny that covers MCP tool key `key`: the key itself
+/// or its server's rule for all its tools.
+fn denies_tool(rule: &Rule, key: &str) -> bool {
+    rule.effect == Effect::Deny
+        && match mcp_tool_key(rule) {
+            Some(k) => k == key || k.strip_suffix('*').is_some_and(|family| key.starts_with(family)),
+            None => false,
+        }
 }
 
 fn owner_rule(scope: Scope, key: RuleKey, field: Option<RuleField>, effect: Effect, source: RuleSource) -> Rule {
@@ -662,6 +725,20 @@ fn update(
         store
             .write_permission_rule(&Rule { money: Some(money), ..rule }, &Writer::Owner)
             .map_err(rule_error)?;
+    }
+    if let Some(edit) = &body.mcp_tool {
+        let effect = Effect::parse(&edit.effect)
+            .ok_or_else(|| NeboError::Validation("effect must be allow, ask or deny".into()))?;
+        let p = page(store, agent_id, connected)?;
+        let offered = [&p.job, &p.money, &p.folders, &p.always_allowed, &p.asks_first, &p.never, &p.fixed, &p.mcp_can_add]
+            .into_iter()
+            .flatten()
+            .any(|i| i.tool_id.as_deref() == Some(edit.tool_id.as_str()));
+        if !offered {
+            return Err(NeboError::Validation("that can't be set here".into()));
+        }
+        let rule = owner_rule(scope, RuleKey::Tool(edit.tool_id.clone()), None, effect, RuleSource::Owner);
+        store.write_permission_rule(&rule, &Writer::Owner).map_err(rule_error)?;
     }
     Ok(())
 }
@@ -1302,6 +1379,122 @@ mod tests {
         let c = page(&store, None, &BTreeSet::new()).unwrap();
         assert_eq!((c.job.len(), c.folders.len(), c.never.len()), (1, 1, 0));
         assert!(c.job.iter().all(|i| !i.from_company && i.removable));
+    }
+
+    /// A connected MCP server with the tools it offered at its last sync.
+    fn mcp_server(store: &db::Store, name: &str, tools: &[&str]) {
+        let id = format!("{name}-1");
+        store.create_mcp_integration(&id, name, "http", Some("https://mcp.example.com"), "none", None, None).unwrap();
+        store.set_mcp_known_tools(&id, &tools.iter().map(|t| t.to_string()).collect::<Vec<_>>()).unwrap();
+    }
+
+    fn set_tool(store: &db::Store, agent: Option<&str>, tool_id: &str, effect: &str) -> Result<(), NeboError> {
+        let body = PermissionsUpdate {
+            mcp_tool: Some(McpToolEdit { tool_id: tool_id.into(), effect: effect.into() }),
+            ..Default::default()
+        };
+        update(store, agent, &body, &BTreeSet::new())
+    }
+
+    fn line<'a>(items: &'a [PermissionItem], sentence: &str) -> Option<&'a PermissionItem> {
+        items.iter().find(|i| i.sentence == sentence)
+    }
+
+    /// The company page is where an MCP server's tools are set: the server's
+    /// line for all its tools and each tool it offers, in plain words, to
+    /// always allowed, asks first or never, on the one rule each key has.
+    #[test]
+    fn mcp_tools_are_set_on_the_company_page() {
+        let (_d, store) = store();
+        mcp_server(&store, "Acme CRM", &["lookup", "delete_all"]);
+        // What the server's first connect writes: its tools ask first.
+        let all = put(&store, Scope::Company, RuleKey::Tool("mcp__acme_crm__*".into()), None, Effect::Ask, RuleSource::Owner);
+        let p = page(&store, None, &BTreeSet::new()).unwrap();
+        let every = line(&p.asks_first, "Use Acme Crm").expect("the server's line");
+        assert_eq!(every.tool_id.as_deref(), Some("mcp__acme_crm__*"));
+        let offered: Vec<(&str, Option<&str>)> =
+            p.mcp_can_add.iter().map(|i| (i.sentence.as_str(), i.tool_id.as_deref())).collect();
+        assert_eq!(
+            offered,
+            [
+                ("Use Acme Crm to delete all", Some("mcp__acme_crm__delete_all")),
+                ("Use Acme Crm to lookup", Some("mcp__acme_crm__lookup")),
+            ]
+        );
+
+        set_tool(&store, None, "mcp__acme_crm__delete_all", "deny").unwrap();
+        set_tool(&store, None, "mcp__acme_crm__*", "allow").unwrap();
+        let p = page(&store, None, &BTreeSet::new()).unwrap();
+        let never = line(&p.never, "Use Acme Crm to delete all").expect("set to never");
+        assert!(never.removable && never.tool_id.is_some());
+        let every = line(&p.always_allowed, "Use Acme Crm").expect("the server's line moved");
+        assert_eq!(every.id, all.id, "one rule per key: the same rule, changed");
+        assert!(p.asks_first.is_empty());
+        assert_eq!(p.mcp_can_add.iter().map(|i| i.sentence.as_str()).collect::<Vec<_>>(), ["Use Acme Crm to lookup"]);
+        let rules = store.permission_rules_in(&Scope::Company).unwrap();
+        let written = rules.iter().find(|r| r.key == RuleKey::Tool("mcp__acme_crm__delete_all".into())).unwrap();
+        assert_eq!((written.effect, &written.source, written.field.is_none()), (Effect::Deny, &RuleSource::Owner, true));
+        assert_eq!(rules.len(), 2);
+
+        // A rule for a tool the server no longer offers still shows and can
+        // be changed.
+        put(&store, Scope::Company, RuleKey::Tool("mcp__acme_crm__export".into()), None, Effect::Ask, RuleSource::Owner);
+        set_tool(&store, None, "mcp__acme_crm__export", "allow").unwrap();
+        let p = page(&store, None, &BTreeSet::new()).unwrap();
+        assert!(line(&p.always_allowed, "Use Acme Crm to export").is_some_and(|i| i.tool_id.is_some()));
+
+        // Only what the page offers, with a known effect.
+        assert!(matches!(set_tool(&store, None, "mcp__acme_crm__lookup", "sometimes"), Err(NeboError::Validation(_))));
+        for key in ["mcp__other__search", "run_command", "desktop_*"] {
+            assert!(matches!(set_tool(&store, None, key, "allow"), Err(NeboError::Validation(_))), "{key}");
+        }
+        // Lines that aren't an MCP tool's carry no toolId.
+        put(&store, Scope::Company, RuleKey::Tool("run_command".into()), None, Effect::Ask, RuleSource::Owner);
+        let p = page(&store, None, &BTreeSet::new()).unwrap();
+        assert!(line(&p.asks_first, "Run commands").is_some_and(|i| i.tool_id.is_none()));
+        let json = serde_json::to_value(&p).unwrap();
+        let mut out = Vec::new();
+        strings(&json, &mut out);
+        assert!(out.iter().all(|s| !s.contains("mcp__") && !s.contains('_')), "{out:?}");
+    }
+
+    /// On an employee's page an MCP tool is set for that employee alone: its
+    /// own rule on the same key decides over the company default, and a
+    /// company deny can't be undone there.
+    #[test]
+    fn an_employees_page_sets_mcp_tools_for_that_employee() {
+        let (_d, store) = store();
+        mcp_server(&store, "Acme CRM", &["lookup", "delete_all"]);
+        put(&store, Scope::Company, RuleKey::Tool("mcp__acme_crm__*".into()), None, Effect::Allow, RuleSource::Owner);
+        let deny = put(&store, Scope::Company, RuleKey::Tool("mcp__acme_crm__delete_all".into()), None, Effect::Deny, RuleSource::Owner);
+        let p = page(&store, Some("a"), &BTreeSet::new()).unwrap();
+        let every = line(&p.always_allowed, "Use Acme Crm").unwrap();
+        assert!(every.from_company && every.tool_id.is_some());
+        let never = p.never.iter().find(|i| i.id == deny.id).unwrap();
+        assert!(never.from_company && never.tool_id.is_none(), "a company deny can't change here");
+        assert_eq!(p.mcp_can_add.iter().map(|i| i.sentence.as_str()).collect::<Vec<_>>(), ["Use Acme Crm to lookup"]);
+        assert!(matches!(set_tool(&store, Some("a"), "mcp__acme_crm__delete_all", "allow"), Err(NeboError::Validation(_))));
+
+        set_tool(&store, Some("a"), "mcp__acme_crm__lookup", "ask").unwrap();
+        set_tool(&store, Some("a"), "mcp__acme_crm__*", "ask").unwrap();
+        let own = store.permission_rules_in(&emp()).unwrap();
+        assert_eq!(own.len(), 2);
+        assert!(own.iter().all(|r| r.effect == Effect::Ask && matches!(&r.key, RuleKey::Tool(k) if k.starts_with("mcp__acme_crm__"))));
+        let p = page(&store, Some("a"), &BTreeSet::new()).unwrap();
+        let asks: Vec<(&str, bool)> = p.asks_first.iter().map(|i| (i.sentence.as_str(), i.from_company)).collect();
+        assert_eq!(asks, [("Use Acme Crm", false), ("Use Acme Crm to lookup", false)], "its own rules replace the company line");
+        assert!(p.mcp_can_add.is_empty());
+        // The company page and another employee are unchanged.
+        assert!(line(&page(&store, None, &BTreeSet::new()).unwrap().always_allowed, "Use Acme Crm").is_some());
+        assert!(line(&page(&store, Some("b"), &BTreeSet::new()).unwrap().always_allowed, "Use Acme Crm").is_some());
+
+        // A company deny on the whole server: nothing of it is offered or
+        // settable on an employee's page.
+        set_tool(&store, None, "mcp__acme_crm__*", "deny").unwrap();
+        let p = page(&store, Some("b"), &BTreeSet::new()).unwrap();
+        assert!(p.mcp_can_add.is_empty());
+        assert!(p.never.iter().all(|i| i.tool_id.is_none()));
+        assert!(matches!(set_tool(&store, Some("b"), "mcp__acme_crm__lookup", "allow"), Err(NeboError::Validation(_))));
     }
 
     #[test]

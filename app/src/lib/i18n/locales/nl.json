@@ -2745,15 +2745,7 @@
 		"copyUrl": "Server-URL kopiëren",
 		"urlCopied": "Gekopieerd",
 		"moreActions": "Meer acties",
-		"refreshTools": "Toollijst vernieuwen",
-		"toolPermissions": "Toolrechten",
-		"toolPermissionsDesc": "Kies hoe elke tool van deze server mag draaien. Nieuwe tools staan standaard op Vraagt goedkeuring.",
-		"serverDefault": "Standaard voor alle tools",
-		"alwaysAllow": "Altijd toestaan",
-		"needsApproval": "Vraagt goedkeuring",
-		"blocked": "Geblokkeerd",
-		"noToolsSynced": "Nog geen tools gesynchroniseerd — verbind de server of vernieuw de toollijst.",
-		"viaDefault": "standaard"
+		"refreshTools": "Toollijst vernieuwen"
 	},
 	"settingsUpdates": {
 		"updateFailedDetail": "Update mislukt: {error}",
@@ -3024,6 +3016,10 @@
 		"asksHint": "Deze wachten altijd op jouw antwoord.",
 		"neverTitle": "Doet hij nooit",
 		"neverHint": "Deze draaien nooit.",
+		"toolsTitle": "Verbonden tools",
+		"toolsHint": "Bepaal wat de tools van een verbonden server mogen doen. De eigen regel van een server geldt voor al zijn tools.",
+		"toolsPick": "Kies een tool…",
+		"toolsEffect": "Wat het mag doen",
 		"fixedTitle": "Vast",
 		"fixedHint": "Ingesteld door een bedrijfsregel. Dit kan hier niet worden gewijzigd.",
 		"activityLink": "Bekijk wat medewerkers deden, en waarom",

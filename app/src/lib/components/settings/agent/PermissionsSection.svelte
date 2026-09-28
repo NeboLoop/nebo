@@ -5,7 +5,8 @@
 
   Every line is a sentence the server renders; the page never shows a rule.
   Changes save as they are made: a mode, an item removed, a capability or a
-  folder added, a money amount typed (debounced).
+  folder added, a money amount typed (debounced), what a connected tool may
+  do (a line with a toolId, or one picked from mcpCanAdd).
 -->
 <script lang="ts">
   import { untrack } from 'svelte';
@@ -23,6 +24,8 @@
 
   /** The server's mode ids. */
   type Mode = 'automatic' | 'ask' | 'plan' | 'full_access';
+  /** What a connected tool may do, in the server's words. */
+  type Effect = 'allow' | 'ask' | 'deny';
 
   let page = $state<PermissionsPage | null>(null);
   let loading = $state(true);
@@ -31,10 +34,18 @@
   let savedTimer: ReturnType<typeof setTimeout> | null = null;
   let confirmFullAccess = $state(false);
   let addChoice = $state('');
+  let toolChoice = $state('');
 
   /** Money amounts as typed, in dollars, keyed by item id. */
   let moneyInputs = $state<Record<string, { perAction: string; perDay: string; perDayCount: string }>>({});
   const moneyTimers: Record<string, ReturnType<typeof setTimeout>> = {};
+
+  /** The same words as the sections a line moves between. */
+  const effects: { id: Effect; label: string }[] = [
+    { id: 'allow', label: 'permissions.alwaysTitle' },
+    { id: 'ask', label: 'permissions.asksTitle' },
+    { id: 'deny', label: 'permissions.neverTitle' }
+  ];
 
   const modes: { id: Mode; label: string; desc: string }[] = [
     { id: 'automatic', label: 'permissions.modeAutomatic', desc: 'permissions.modeAutomaticDesc' },
@@ -130,6 +141,11 @@
     if (id) void change({ addCapability: id });
   }
 
+  function setTool(toolId: string | undefined, effect: string) {
+    toolChoice = '';
+    if (toolId && effect) void change({ mcpTool: { toolId, effect } });
+  }
+
   async function addFolder() {
     try {
       const picked = await api.pickFolder();
@@ -162,7 +178,7 @@
   const isEmployee = $derived(!!agentId);
 </script>
 
-{#snippet itemRow(item: PermissionItem, locked = false)}
+{#snippet itemRow(item: PermissionItem, locked = false, effect: Effect | '' = '')}
   <li class="flex items-start gap-3 py-2.5">
     {#if locked}<Lock class="w-3.5 h-3.5 mt-0.5 shrink-0 text-base-content/50" />{/if}
     <span class="flex-1 min-w-0 text-sm">
@@ -171,6 +187,18 @@
         <span class="badge badge-ghost badge-xs ml-1.5 align-middle">{$t('permissions.fromCompany')}</span>
       {/if}
     </span>
+    {#if item.toolId && effect}
+      <select
+        class="select select-xs select-bordered shrink-0"
+        value={effect}
+        aria-label={$t('permissions.toolsEffect')}
+        onchange={(e) => setTool(item.toolId, e.currentTarget.value)}
+      >
+        {#each effects as option (option.id)}
+          <option value={option.id}>{$t(option.label)}</option>
+        {/each}
+      </select>
+    {/if}
     {#if item.removable}
       <button
         type="button"
@@ -185,7 +213,7 @@
   </li>
 {/snippet}
 
-{#snippet group(title: string, hint: string, items: PermissionItem[], empty: string, locked = false)}
+{#snippet group(title: string, hint: string, items: PermissionItem[], empty: string, locked = false, effect: Effect | '' = '')}
   <section class="mb-7">
     <h3 class="text-sm font-semibold">{title}</h3>
     {#if hint}<p class="text-xs text-base-content/70 mt-0.5">{hint}</p>{/if}
@@ -194,7 +222,7 @@
     {:else}
       <ul class="divide-y divide-base-content/10 mt-1">
         {#each items as item (item.id)}
-          {@render itemRow(item, locked)}
+          {@render itemRow(item, locked, effect)}
         {/each}
       </ul>
     {/if}
@@ -327,12 +355,40 @@
     </button>
   </section>
 
-  {@render group($t('permissions.alwaysTitle'), $t('permissions.alwaysHint'), page.alwaysAllowed, $t('permissions.alwaysEmpty'))}
+  {@render group($t('permissions.alwaysTitle'), $t('permissions.alwaysHint'), page.alwaysAllowed, $t('permissions.alwaysEmpty'), false, 'allow')}
   {#if page.asksFirst.length > 0}
-    {@render group($t('permissions.asksTitle'), $t('permissions.asksHint'), page.asksFirst, '')}
+    {@render group($t('permissions.asksTitle'), $t('permissions.asksHint'), page.asksFirst, '', false, 'ask')}
   {/if}
   {#if page.never.length > 0}
-    {@render group($t('permissions.neverTitle'), $t('permissions.neverHint'), page.never, '')}
+    {@render group($t('permissions.neverTitle'), $t('permissions.neverHint'), page.never, '', false, 'deny')}
+  {/if}
+  {#if page.mcpCanAdd.length > 0}
+    {@const picked = page.mcpCanAdd.find((i) => i.toolId === toolChoice)}
+    <section class="mb-7">
+      <h3 class="text-sm font-semibold">{$t('permissions.toolsTitle')}</h3>
+      <p class="text-xs text-base-content/70 mt-0.5">{$t('permissions.toolsHint')}</p>
+      <div class="flex flex-wrap gap-2 mt-2">
+        <select class="select select-sm select-bordered w-full max-w-sm" bind:value={toolChoice} aria-label={$t('permissions.toolsPick')}>
+          <option value="" disabled selected>{$t('permissions.toolsPick')}</option>
+          {#each page.mcpCanAdd as option (option.id)}
+            <option value={option.toolId}>{option.sentence}</option>
+          {/each}
+        </select>
+        {#key toolChoice}
+          <select
+            class="select select-sm select-bordered"
+            disabled={!picked}
+            aria-label={$t('permissions.toolsEffect')}
+            onchange={(e) => setTool(picked?.toolId, e.currentTarget.value)}
+          >
+            <option value="" disabled selected>{$t('permissions.toolsEffect')}</option>
+            {#each effects as option (option.id)}
+              <option value={option.id}>{$t(option.label)}</option>
+            {/each}
+          </select>
+        {/key}
+      </div>
+    </section>
   {/if}
   {#if page.fixed.length > 0}
     {@render group($t('permissions.fixedTitle'), $t('permissions.fixedHint'), page.fixed, '', true)}

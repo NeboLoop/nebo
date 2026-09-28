@@ -989,6 +989,7 @@ export interface PermissionItem {
 	removable: boolean
 	fromCompany: boolean
 	money?: MoneyAmounts
+	toolId?: string
 }
 
 export interface PermissionsPage {
@@ -997,6 +998,7 @@ export interface PermissionsPage {
 	companyMode: string
 	job: PermissionItem[]
 	canAdd: PermissionItem[]
+	mcpCanAdd: PermissionItem[]
 	money: PermissionItem[]
 	folders: PermissionItem[]
 	alwaysAllowed: PermissionItem[]

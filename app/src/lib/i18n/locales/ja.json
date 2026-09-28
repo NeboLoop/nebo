@@ -2745,15 +2745,7 @@
 		"copyUrl": "サーバーURLをコピー",
 		"urlCopied": "コピーしました",
 		"moreActions": "その他の操作",
-		"refreshTools": "ツール一覧を更新",
-		"toolPermissions": "ツールの権限",
-		"toolPermissionsDesc": "このサーバーの各ツールをどう実行するか選びます。新しいツールは既定で「承認が必要」になります。",
-		"serverDefault": "すべてのツールの既定",
-		"alwaysAllow": "常に許可",
-		"needsApproval": "承認が必要",
-		"blocked": "ブロック",
-		"noToolsSynced": "まだツールが同期されていません — サーバーを接続するか、ツール一覧を更新してください。",
-		"viaDefault": "既定"
+		"refreshTools": "ツール一覧を更新"
 	},
 	"settingsUpdates": {
 		"updateFailedDetail": "アップデートに失敗しました: {error}",
@@ -3024,6 +3016,10 @@
 		"asksHint": "これらは必ずあなたの回答を待ちます。",
 		"neverTitle": "絶対に行わないこと",
 		"neverHint": "これらは絶対に実行されません。",
+		"toolsTitle": "接続済みのツール",
+		"toolsHint": "接続したサーバーのツールに何を許可するかを設定します。サーバー自体の行は、そのすべてのツールに適用されます。",
+		"toolsPick": "ツールを選択…",
+		"toolsEffect": "許可する内容",
 		"fixedTitle": "固定",
 		"fixedHint": "会社のルールで設定されています。ここでは変更できません。",
 		"activityLink": "社員が何を行い、なぜそうしたかを見る",

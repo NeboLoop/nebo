@@ -798,12 +798,6 @@ impl Registry {
             .collect()
     }
 
-    /// Get the full description of a specific tool (used for steering injection on first use).
-    pub async fn get_tool_description(&self, name: &str) -> Option<String> {
-        let cache = self.def_cache.read().await;
-        cache.get(name).map(|def| def.description.clone())
-    }
-
     /// The `(integration_id, original tool name)` behind a registered MCP proxy
     /// tool (`mcp__<server>__<tool>`), or `None` for any other tool. The runner's
     /// approval gate uses this to resolve the server's tri-state tool permissions.

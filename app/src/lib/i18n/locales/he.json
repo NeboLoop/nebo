@@ -2745,15 +2745,7 @@
 		"copyUrl": "העתק את כתובת השרת",
 		"urlCopied": "הועתק",
 		"moreActions": "עוד פעולות",
-		"refreshTools": "רענן את רשימת הכלים",
-		"toolPermissions": "הרשאות כלים",
-		"toolPermissionsDesc": "בחר כיצד כל כלי מהשרת הזה רשאי לפעול. ברירת המחדל לכלים חדשים היא דורש אישור.",
-		"serverDefault": "ברירת מחדל לכל הכלים",
-		"alwaysAllow": "תמיד לאפשר",
-		"needsApproval": "דורש אישור",
-		"blocked": "חסום",
-		"noToolsSynced": "עדיין לא סונכרנו כלים — חבר את השרת או רענן את רשימת הכלים.",
-		"viaDefault": "ברירת מחדל"
+		"refreshTools": "רענן את רשימת הכלים"
 	},
 	"settingsUpdates": {
 		"updateFailedDetail": "העדכון נכשל: {error}",
@@ -3024,6 +3016,10 @@
 		"asksHint": "אלה תמיד מחכים לתשובה שלך.",
 		"neverTitle": "לעולם לא עושה",
 		"neverHint": "אלה לעולם לא פועלים.",
+		"toolsTitle": "כלים מחוברים",
+		"toolsHint": "קבעו מה הכלים של שרת מחובר רשאים לעשות. השורה של השרת עצמו חלה על כל הכלים שלו.",
+		"toolsPick": "בחרו כלי…",
+		"toolsEffect": "מה מותר לו לעשות",
 		"fixedTitle": "קבוע",
 		"fixedHint": "נקבע על ידי כלל של החברה. אי אפשר לשנות זאת כאן.",
 		"activityLink": "ראה מה העובדים עשו, ולמה",

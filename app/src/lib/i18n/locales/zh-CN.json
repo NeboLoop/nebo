@@ -2745,15 +2745,7 @@
 		"copyUrl": "复制服务器 URL",
 		"urlCopied": "已复制",
 		"moreActions": "更多操作",
-		"refreshTools": "刷新工具列表",
-		"toolPermissions": "工具权限",
-		"toolPermissionsDesc": "选择这个服务器的每个工具如何运行。新工具默认为需要审批。",
-		"serverDefault": "所有工具的默认设置",
-		"alwaysAllow": "始终允许",
-		"needsApproval": "需要审批",
-		"blocked": "已阻止",
-		"noToolsSynced": "还没有同步到任何工具 — 请连接服务器或刷新工具列表。",
-		"viaDefault": "默认"
+		"refreshTools": "刷新工具列表"
 	},
 	"settingsUpdates": {
 		"updateFailedDetail": "更新失败：{error}",
@@ -3024,6 +3016,10 @@
 		"asksHint": "这些操作总会等待你的回答。",
 		"neverTitle": "绝不会做",
 		"neverHint": "这些操作永远不会执行。",
+		"toolsTitle": "已连接的工具",
+		"toolsHint": "设置已连接服务器的工具可以做什么。服务器自身的那一行适用于它的所有工具。",
+		"toolsPick": "选择一个工具…",
+		"toolsEffect": "允许做什么",
 		"fixedTitle": "固定",
 		"fixedHint": "由公司规则设定，此处无法更改。",
 		"activityLink": "查看员工做过什么，以及原因",

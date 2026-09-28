@@ -2745,15 +2745,7 @@
 		"copyUrl": "複製伺服器網址",
 		"urlCopied": "已複製",
 		"moreActions": "更多操作",
-		"refreshTools": "重新整理工具清單",
-		"toolPermissions": "工具權限",
-		"toolPermissionsDesc": "選擇這個伺服器的每個工具如何執行。新工具預設為需要核准。",
-		"serverDefault": "所有工具的預設值",
-		"alwaysAllow": "一律允許",
-		"needsApproval": "需要核准",
-		"blocked": "已封鎖",
-		"noToolsSynced": "還沒有同步到任何工具 — 請連接伺服器或重新整理工具清單。",
-		"viaDefault": "預設"
+		"refreshTools": "重新整理工具清單"
 	},
 	"settingsUpdates": {
 		"updateFailedDetail": "更新失敗：{error}",
@@ -3024,6 +3016,10 @@
 		"asksHint": "這些動作一律會等待你的回答。",
 		"neverTitle": "絕不會做",
 		"neverHint": "這些動作永遠不會執行。",
+		"toolsTitle": "已連線的工具",
+		"toolsHint": "設定已連線伺服器的工具可以做什麼。伺服器本身的那一行適用於它的所有工具。",
+		"toolsPick": "選擇一個工具…",
+		"toolsEffect": "允許做什麼",
 		"fixedTitle": "固定",
 		"fixedHint": "由公司規則設定，此處無法變更。",
 		"activityLink": "查看員工做過什麼，以及原因",

@@ -9,12 +9,9 @@
   import ExternalLink from 'lucide-svelte/icons/external-link';
   import X from 'lucide-svelte/icons/x';
   import ChevronLeft from 'lucide-svelte/icons/chevron-left';
-  import ChevronDown from 'lucide-svelte/icons/chevron-down';
   import KeyRound from 'lucide-svelte/icons/key-round';
   import Copy from 'lucide-svelte/icons/copy';
   import Check from 'lucide-svelte/icons/check';
-  import Hand from 'lucide-svelte/icons/hand';
-  import Ban from 'lucide-svelte/icons/ban';
   import EllipsisVertical from 'lucide-svelte/icons/ellipsis-vertical';
   import type { McpIntegration } from '$lib/api/nebo';
 
@@ -302,74 +299,14 @@
   async function removeIntegration(id: string) {
     (document.activeElement as HTMLElement | null)?.blur();
     integrations = integrations.filter(i => i.id !== id);
-    if (expandedId === id) expandedId = null;
     try {
       const api = await import('$lib/api/nebo');
       await api.deleteIntegration(id);
     } catch { /* local state already updated */ }
   }
 
-  // ── Per-tool permissions (server default + tri-state per tool) ──
-  type ToolAccess = 'allow' | 'ask' | 'deny';
-  interface ToolPermRow { name: string; description: string | null; override: ToolAccess | null; effective: ToolAccess }
-  interface ToolPerms { default: ToolAccess; tools: ToolPermRow[] }
-
-  let expandedId = $state<string | null>(null);
-  let toolPerms = $state<Record<string, ToolPerms>>({});
-  let permsLoading = $state<string | null>(null);
   let copiedId = $state<string | null>(null);
   let refreshingId = $state<string | null>(null);
-
-  const accessStates = $derived([
-    { value: 'allow' as const, label: $t('settingsMcp.alwaysAllow'), icon: Check, activeClass: 'btn-active text-success' },
-    { value: 'ask' as const, label: $t('settingsMcp.needsApproval'), icon: Hand, activeClass: 'btn-active text-warning' },
-    { value: 'deny' as const, label: $t('settingsMcp.blocked'), icon: Ban, activeClass: 'btn-active text-error' },
-  ]);
-
-  async function toggleExpand(id: string) {
-    expandedId = expandedId === id ? null : id;
-    if (expandedId) await loadToolPerms(id);
-  }
-
-  async function loadToolPerms(id: string) {
-    permsLoading = id;
-    try {
-      const api = await import('$lib/api/nebo');
-      toolPerms[id] = (await api.getToolPermissions(id)) as ToolPerms;
-    } catch { /* keep whatever we had */ } finally {
-      if (permsLoading === id) permsLoading = null;
-    }
-  }
-
-  /** PUT the full permission state (default + explicit overrides); state refreshes from the response. */
-  async function saveToolPerms(id: string, def: ToolAccess, overrides: Record<string, ToolAccess>) {
-    try {
-      const api = await import('$lib/api/nebo');
-      toolPerms[id] = (await api.updateToolPermissions(id, { default: def, tools: overrides })) as ToolPerms;
-    } catch { await loadToolPerms(id); }
-  }
-
-  function overridesOf(p: ToolPerms): Record<string, ToolAccess> {
-    const map: Record<string, ToolAccess> = {};
-    for (const row of p.tools) if (row.override) map[row.name] = row.override;
-    return map;
-  }
-
-  async function setServerDefault(id: string, value: ToolAccess) {
-    const p = toolPerms[id];
-    if (!p) return;
-    await saveToolPerms(id, value, overridesOf(p));
-  }
-
-  async function setToolState(id: string, tool: string, value: ToolAccess) {
-    const p = toolPerms[id];
-    if (!p) return;
-    const overrides = overridesOf(p);
-    // Clicking the already-explicit state clears the override (back to the server default).
-    if (overrides[tool] === value) delete overrides[tool];
-    else overrides[tool] = value;
-    await saveToolPerms(id, p.default, overrides);
-  }
 
   async function copyUrl(integration: MCPIntegration) {
     try {
@@ -391,7 +328,6 @@
       } else {
         updateIntegrationById(id, { lastError: resp?.message || $t('settingsMcp.connectionFailed') });
       }
-      if (expandedId === id) await loadToolPerms(id);
     } catch {
       updateIntegrationById(id, { lastError: $t('settingsMcp.connectionFailed') });
     } finally {
@@ -519,13 +455,6 @@
             >
               <RefreshCw class="w-4 h-4 text-base-content/50" />
             </button>
-            <button
-              onclick={() => toggleExpand(integration.id)}
-              class="p-1.5 rounded-md hover:bg-base-200 transition-colors cursor-pointer bg-transparent border-none"
-              title={$t('settingsMcp.toolPermissions')}
-            >
-              <ChevronDown class="w-4 h-4 text-base-content/50 transition-transform {expandedId === integration.id ? 'rotate-180' : ''}" />
-            </button>
             <div class="dropdown dropdown-end">
               <button
                 tabindex="0"
@@ -552,66 +481,6 @@
           </div>
         </div>
 
-        {#if expandedId === integration.id}
-          {@const perms = toolPerms[integration.id]}
-          <div class="border-t border-base-content/10 px-3.5 py-3">
-            <div class="flex items-start justify-between gap-3 flex-wrap mb-2">
-              <div class="min-w-0">
-                <div class="text-sm font-medium">{$t('settingsMcp.toolPermissions')}</div>
-                <div class="text-xs text-base-content/70">{$t('settingsMcp.toolPermissionsDesc')}</div>
-              </div>
-              {#if perms}
-                <label class="flex items-center gap-2 shrink-0">
-                  <span class="text-xs text-base-content/50">{$t('settingsMcp.serverDefault')}</span>
-                  <select
-                    class="select select-sm text-xs"
-                    value={perms.default}
-                    onchange={(e) => setServerDefault(integration.id, (e.currentTarget as HTMLSelectElement).value as ToolAccess)}
-                  >
-                    <option value="allow">{$t('settingsMcp.alwaysAllow')}</option>
-                    <option value="ask">{$t('settingsMcp.needsApproval')}</option>
-                    <option value="deny">{$t('settingsMcp.blocked')}</option>
-                  </select>
-                </label>
-              {/if}
-            </div>
-            {#if permsLoading === integration.id && !perms}
-              <div class="flex justify-center py-4"><span class="loading loading-spinner loading-sm"></span></div>
-            {:else if !perms || perms.tools.length === 0}
-              <div class="text-xs text-base-content/50 py-2">{$t('settingsMcp.noToolsSynced')}</div>
-            {:else}
-              <div class="divide-y divide-base-content/10">
-                {#each perms.tools as row (row.name)}
-                  <div class="flex items-center gap-3 py-2 flex-wrap">
-                    <div class="flex-1 min-w-0">
-                      <div class="flex items-center gap-1.5">
-                        <span class="text-xs font-mono truncate">{row.name}</span>
-                        {#if !row.override}
-                          <span class="text-xs text-base-content/50 shrink-0">{$t('settingsMcp.viaDefault')}</span>
-                        {/if}
-                      </div>
-                      {#if row.description}
-                        <div class="text-xs text-base-content/50 truncate">{row.description}</div>
-                      {/if}
-                    </div>
-                    <div class="join shrink-0">
-                      {#each accessStates as s (s.value)}
-                        <button
-                          class="btn btn-xs join-item {row.effective === s.value ? s.activeClass : 'btn-ghost text-base-content/50'} {row.effective === s.value && !row.override ? 'opacity-70' : ''}"
-                          title={s.label}
-                          onclick={() => setToolState(integration.id, row.name, s.value)}
-                        >
-                          <s.icon class="w-3 h-3" />
-                          <span class="hidden sm:inline">{s.label}</span>
-                        </button>
-                      {/each}
-                    </div>
-                  </div>
-                {/each}
-              </div>
-            {/if}
-          </div>
-        {/if}
       </div>
     {/each}
   </div>
