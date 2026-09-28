@@ -3005,7 +3005,10 @@
 		"allowedOnce": "Allowed this once",
 		"declined": "Declined",
 		"withdrawn": "Withdrawn: the work it was for has ended",
-		"failed": "Could not send your answer. Try again."
+		"failed": "Could not send your answer. Try again.",
+		"sendCheckTitle": "Did {name}'s message go out?",
+		"sent": "It went out",
+		"notSent": "It didn't go out"
 	},
 	"permissions": {
 		"title": "Permissions",

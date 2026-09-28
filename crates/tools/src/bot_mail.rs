@@ -166,7 +166,7 @@ impl OperationProvider for BotMailProvider {
                 Ok(r) => r,
                 Err(why) => return ToolResult::error(why),
             };
-            crate::effects::guarded_send(&self.store, ctx, "messaging", PROVIDER, OPERATION, &input, || self.send(req)).await
+            crate::effects::guarded_send(&self.store, ctx, "messaging", PROVIDER, OPERATION, &input, None, || self.send(req)).await
         })
     }
 }

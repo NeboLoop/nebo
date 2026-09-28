@@ -1,0 +1,21 @@
+id: held-send-settled-by-the-owner
+name: "A send whose outcome never came back is settled by the owner's answer"
+description: |
+  Live 2026-09-28: three sends sat "pending reconciliation" for a day. Nothing
+  could close a held send, and the engine logged each one every five seconds.
+  A send whose outcome is truly unknown may already have gone out, so it is
+  never retried; only the owner can say. The engine raises one card per held
+  ledger row: "Did {employee}'s message go out? It went out · It didn't go
+  out". It appears in the conversation that sent the message, and in the
+  Inbox when that conversation is not a chat. It goes through the ask's one
+  pathway: it waits, it comes back as a reminder, and the first answer
+  anywhere wins. "It went out" completes the row. "It didn't go out" fails
+  it, so the message may be sent again. A permission answer doesn't fit the
+  question.
+  This proof holds two sends through the real server, runs the engine's
+  pass twice and checks one card per row. It answers one each way and checks
+  that the server's engine settles both rows, once.
+  Engine-driven, no model: a deterministic proof.
+target_component: permissions
+proof: harness::permissions::proof::a_held_send_is_settled_by_the_owners_answer
+conversation: []

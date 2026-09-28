@@ -41,13 +41,44 @@ pub fn reminder_after(reminded: usize) -> i64 {
 /// ([`db::ask_wait_key`]).
 pub const ANSWER_SIGNAL: &str = "answer";
 
-/// The owner's answer.
+/// The owner's answer. A permission ask takes Allow always, This once or
+/// No; a held send's ask ([`AskKind::SendCheck`]) takes whether it went out.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Answer {
     AllowAlways,
     ThisOnce,
     No,
+    /// The held send went out.
+    Sent,
+    /// The held send did not go out.
+    NotSent,
+}
+
+/// What an ask asks: the owner's OK for a call, or whether a send whose
+/// outcome never came back went out. The card shows each with its own
+/// question and answers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AskKind {
+    Permission,
+    SendCheck,
+}
+
+impl AskKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AskKind::Permission => "permission",
+            AskKind::SendCheck => "send_check",
+        }
+    }
+
+    /// Whether `answer` is one this kind of ask takes.
+    pub fn takes(self, answer: Answer) -> bool {
+        match self {
+            AskKind::Permission => matches!(answer, Answer::AllowAlways | Answer::ThisOnce | Answer::No),
+            AskKind::SendCheck => matches!(answer, Answer::Sent | Answer::NotSent),
+        }
+    }
 }
 
 impl Answer {
@@ -56,6 +87,8 @@ impl Answer {
             Answer::AllowAlways => "allow_always",
             Answer::ThisOnce => "this_once",
             Answer::No => "no",
+            Answer::Sent => "sent",
+            Answer::NotSent => "not_sent",
         }
     }
 
@@ -64,6 +97,8 @@ impl Answer {
             "allow_always" => Some(Answer::AllowAlways),
             "this_once" => Some(Answer::ThisOnce),
             "no" => Some(Answer::No),
+            "sent" => Some(Answer::Sent),
+            "not_sent" => Some(Answer::NotSent),
             _ => None,
         }
     }
@@ -195,7 +230,7 @@ impl Ask {
                 .ok()
                 .flatten()
                 .is_some_and(|r| !r.locked && r.effect == Effect::Ask),
-            AskCase::Widens | AskCase::CompanyMoney { .. } => false,
+            AskCase::Widens | AskCase::CompanyMoney { .. } | AskCase::UnconfirmedSend { .. } => false,
             _ => true,
         };
         loosenable && allow_always_rules(store, self).is_some()
@@ -204,7 +239,15 @@ impl Ask {
     /// Whether "This once" can be offered: an employee's extra needs are
     /// part of its job, so they are granted for good or not at all.
     pub fn this_once_offered(&self) -> bool {
-        !matches!(self.case, AskCase::CreatedExtras { .. })
+        !matches!(self.case, AskCase::CreatedExtras { .. } | AskCase::UnconfirmedSend { .. })
+    }
+
+    /// What this ask asks.
+    pub fn kind(&self) -> AskKind {
+        match self.case {
+            AskCase::UnconfirmedSend { .. } => AskKind::SendCheck,
+            _ => AskKind::Permission,
+        }
     }
 
     /// Why it asked, in plain words for the card.
@@ -228,6 +271,9 @@ pub fn reason_of(case: &AskCase) -> &'static str {
         AskCase::AskMode => "This employee asks before it changes anything.",
         AskCase::Widens => "Only you can give an employee more room.",
         AskCase::CreatedExtras { .. } => "It was made by another employee and needs more than that employee has.",
+        AskCase::UnconfirmedSend { .. } => {
+            "Nebo couldn't confirm it went out. Check the sent items, then say whether it did."
+        }
     }
 }
 
@@ -257,6 +303,10 @@ pub enum AskError {
     /// Someone already answered it, somewhere else, or it was withdrawn.
     #[error("this was already answered")]
     Settled(Box<Ask>),
+    /// The answer is not one this ask takes (a permission answer to a held
+    /// send's question, or the other way round).
+    #[error("that answer doesn't fit this question")]
+    NotOffered,
     #[error("{0}")]
     Store(String),
 }
@@ -427,6 +477,9 @@ impl Asks {
     /// wakes the run and [`Asks::resume`] applies it.
     pub fn answer(&self, id: &str, answer: Answer, via: AnsweredVia) -> Result<Ask, AskError> {
         let mut ask = self.get(id)?.ok_or(AskError::NotFound)?;
+        if !ask.kind().takes(answer) {
+            return Err(AskError::NotOffered);
+        }
         let now = chrono::Utc::now().timestamp();
         let won = self
             .store
@@ -513,6 +566,10 @@ impl Asks {
         let AskStatus::Answered { answer, .. } = ask.status else {
             return Ok(None);
         };
+        if let AskCase::UnconfirmedSend { effect_id } = ask.case {
+            self.settle_send(&ask, effect_id, answer == Answer::Sent, now);
+            return Ok(None);
+        }
         // An answer the card didn't offer counts as the one it did.
         let answer = match answer {
             Answer::AllowAlways if !ask.allow_always_offered(&self.store) => Answer::ThisOnce,
@@ -549,7 +606,95 @@ impl Asks {
                 None
             }
             Answer::AllowAlways | Answer::ThisOnce => self.run(registry, ask, always),
+            // Not a permission's answer: `answer` refused it.
+            Answer::Sent | Answer::NotSent => None,
         })
+    }
+
+    /// The owner's question for a send that was attempted and whose outcome
+    /// never came back (the ledger row `effect` is held): did it go out?
+    /// One card per row, in the conversation that sent it (the Inbox when
+    /// that is no chat); it waits and comes back as a reminder like any ask,
+    /// until he answers. Returns the ask's id when this call raised it,
+    /// `None` when the row already has one.
+    pub fn raise_send_check(
+        &self,
+        effect: &db::EngineEffect,
+        agent_id: &str,
+        session_key: &str,
+        sentence: String,
+    ) -> Result<Option<String>, types::NeboError> {
+        let id = send_check_id(effect.id);
+        if self.store.get_permission_ask(&id)?.is_some() {
+            return Ok(None);
+        }
+        let door = match tools::origin::workflow_run_id(session_key) {
+            Some(_) => Door::Workflow,
+            None => Door::Chat,
+        };
+        let ask = Ask {
+            id: id.clone(),
+            agent_id: agent_id.to_string(),
+            session_key: session_key.to_string(),
+            door,
+            case: AskCase::UnconfirmedSend { effect_id: effect.id },
+            sentence,
+            target: Target {
+                tool: String::new(),
+                key: String::new(),
+                operation: None,
+                capability: None,
+                field: None,
+                subject: None,
+                read_only: false,
+                effects: types::permissions::CallEffects::default(),
+            },
+            call: StoredCall { name: String::new(), input: serde_json::Value::Null },
+            seat: SeatSnapshot {
+                grant: Grant::new(agent_id, types::permissions::Mode::default()),
+                origin: tools::Origin::System,
+                user_id: String::new(),
+                session_id: String::new(),
+                untrusted_input: false,
+                cwd: None,
+                handoff_depth: 0,
+            },
+            status: AskStatus::Open,
+            run_id: None,
+            created_at: chrono::Utc::now().timestamp(),
+        };
+        self.raise(&ask)?;
+        Ok(Some(id))
+    }
+
+    /// The owner said whether a held send went out: its ledger row takes
+    /// that as its outcome, once. It went: completed, and the people it
+    /// went to are people the employee works with. It didn't: failed, so it
+    /// may be sent again.
+    fn settle_send(&self, ask: &Ask, effect_id: i64, sent: bool, now: i64) {
+        let effect = match self.store.engine_get_effect(effect_id) {
+            Ok(Some(e)) if e.state == "pending" => e,
+            Ok(_) => return,
+            Err(e) => {
+                tracing::warn!(ask = %ask.id, effect = effect_id, error = %e, "held send not settled: its row is unreadable");
+                return;
+            }
+        };
+        let written = if sent {
+            self.store.engine_effect_completed(effect_id, None, Some("The owner confirmed it went out."), now).map(|_| {
+                for who in effect.counterparty.as_deref().unwrap_or("").split(',').filter(|w| !w.is_empty()) {
+                    if let Err(e) = self.store.add_employee_counterparty(&ask.agent_id, who, "sent") {
+                        tracing::warn!(error = %e, "counterparty not recorded");
+                    }
+                }
+            })
+        } else {
+            self.store.engine_effect_failed(effect_id, "The owner confirmed it did not go out.", now).map(|_| ())
+        };
+        match written {
+            Ok(()) => tracing::info!(effect = effect_id, ask = %ask.id, sent, "held send settled by the owner"),
+            Err(e) => tracing::warn!(effect = effect_id, ask = %ask.id, error = %e, "held send's answer not written"),
+        }
     }
 
     /// Whether the workflow run parked on an ask has ended, so nothing
@@ -624,6 +769,11 @@ impl Asks {
     }
 }
 
+/// The id of the one ask a held send's ledger row gets.
+pub fn send_check_id(effect_id: i64) -> String {
+    format!("send-check-{effect_id}")
+}
+
 /// Most rules one "Allow always" on a compound command saves, so one answer
 /// can't quietly open a long list of commands.
 const MAX_COMMAND_RULES: usize = 5;
@@ -643,6 +793,7 @@ pub fn allow_always_rules(store: &db::Store, ask: &Ask) -> Option<Vec<Rule>> {
             | AskCase::NewCounterparty { .. }
             | AskCase::Widens
             | AskCase::CreatedExtras { .. }
+            | AskCase::UnconfirmedSend { .. }
     );
     if per_command && matches!(t.field, Some(RuleField::CommandPrefix(_))) {
         return command_rules(ask);
@@ -726,6 +877,7 @@ fn allow_always_rule(store: &db::Store, ask: &Ask) -> Rule {
         | AskCase::AskMode
         | AskCase::Widens
         | AskCase::CreatedExtras { .. }
+        | AskCase::UnconfirmedSend { .. }
         | AskCase::CompanyMoney { .. } => (call_key(), t.field.clone(), None),
     };
     standing_allow(ask, key, field, money)

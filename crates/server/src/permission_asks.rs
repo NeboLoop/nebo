@@ -6,7 +6,7 @@ use std::collections::HashMap;
 
 use tracing::{info, warn};
 
-use agent::harness::permissions::{Answer, Ask, AskSurfaces};
+use agent::harness::permissions::{Answer, Ask, AskKind, AskSurfaces};
 
 use crate::handlers::permissions::{PermissionAskCard, card};
 use crate::state::AppState;
@@ -16,8 +16,12 @@ pub(crate) fn inbox_id(ask_id: &str) -> String {
     format!("permission-ask:{ask_id}")
 }
 
-/// The card's headline: "{Employee} wants your OK".
+/// The card's headline: "{Employee} wants your OK", or for a held send
+/// "Did {Employee}'s message go out?".
 fn title(c: &PermissionAskCard) -> String {
+    if c.kind == AskKind::SendCheck.as_str() {
+        return format!("Did {}'s message go out?", c.employee);
+    }
     format!("{} wants your OK", c.employee)
 }
 
@@ -32,6 +36,9 @@ fn body(c: &PermissionAskCard) -> String {
 
 /// The answers a card offers, in order, with their labels.
 fn offered(c: &PermissionAskCard) -> Vec<(&'static str, Answer)> {
+    if c.kind == AskKind::SendCheck.as_str() {
+        return vec![("It went out", Answer::Sent), ("It didn't go out", Answer::NotSent)];
+    }
     let mut answers = Vec::with_capacity(3);
     if c.allow_always {
         answers.push(("Allow always", Answer::AllowAlways));
@@ -102,14 +109,18 @@ pub(crate) fn push_to_inbox(state: &AppState, c: &PermissionAskCard) {
         serde_json::json!({ "label": label, "style": style, "method": "POST",
             "path": answer_path, "body": { "answer": answer, "via": "mobile" } })
     };
-    let mut buttons = Vec::with_capacity(3);
-    if c.allow_always {
-        buttons.push(button("Allow always", "primary", "allow_always"));
-    }
-    if c.this_once {
-        buttons.push(button("This once", "default", "this_once"));
-    }
-    buttons.push(button("No", "danger", "no"));
+    // The card's own answers: the same list the conversation card offers.
+    let buttons: Vec<serde_json::Value> = offered(c)
+        .into_iter()
+        .map(|(label, answer)| {
+            let style = match answer {
+                Answer::AllowAlways | Answer::Sent => "primary",
+                Answer::No | Answer::NotSent => "danger",
+                Answer::ThisOnce => "default",
+            };
+            button(label, style, answer.as_str())
+        })
+        .collect();
     // The conversation that asked: an answer by email (the hub mails the
     // owner every new item) comes back into it.
     let sessions = state.harness.sessions();
@@ -239,6 +250,7 @@ mod tests {
     fn card(allow_always: bool, this_once: bool) -> PermissionAskCard {
         PermissionAskCard {
             id: "a1".into(),
+            kind: "permission".into(),
             agent_id: "ava".into(),
             employee: "Ava".into(),
             session_key: "agent:ava:neboai".into(),

@@ -7,7 +7,8 @@ import { writable } from 'svelte/store';
 import type { PermissionAskCard } from '$lib/api/neboComponents';
 import { askBandStatus, askNotificationId, setApprovalStatus } from './notifications';
 
-export type AskAnswer = 'allow_always' | 'this_once' | 'no';
+/** A permission card's answers, or a held send's (did it go out?). */
+export type AskAnswer = 'allow_always' | 'this_once' | 'no' | 'sent' | 'not_sent';
 
 /** Open asks, oldest first. The chat shows its own session's. */
 export const openAsks = writable<PermissionAskCard[]>([]);

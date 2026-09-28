@@ -2975,7 +2975,10 @@
 		"allowedOnce": "이번에 허용됨",
 		"declined": "거절됨",
 		"withdrawn": "철회됨: 해당 작업이 끝났습니다",
-		"failed": "답변을 보내지 못했습니다. 다시 시도하세요."
+		"failed": "답변을 보내지 못했습니다. 다시 시도하세요.",
+		"sendCheckTitle": "{name}의 메시지가 전송되었나요?",
+		"sent": "전송됨",
+		"notSent": "전송되지 않음"
 	},
 	"permissions": {
 		"title": "권한",

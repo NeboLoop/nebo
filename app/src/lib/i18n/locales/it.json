@@ -2975,7 +2975,10 @@
 		"allowedOnce": "Consentito questa volta",
 		"declined": "Rifiutato",
 		"withdrawn": "Ritirata: il lavoro per cui era è terminato",
-		"failed": "Impossibile inviare la risposta. Riprova."
+		"failed": "Impossibile inviare la risposta. Riprova.",
+		"sendCheckTitle": "Il messaggio di {name} è partito?",
+		"sent": "È partito",
+		"notSent": "Non è partito"
 	},
 	"permissions": {
 		"title": "Autorizzazioni",

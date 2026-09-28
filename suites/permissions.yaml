@@ -58,3 +58,5 @@ fixtures:
   - ../fixtures/permissions/ask-never-expires.yaml
   # Where the owner answers: on his own call, out loud (§4.5)
   - ../fixtures/permissions/owners-call-ask-answered-by-voice.yaml
+  # A held send reaches a final state: the owner says whether it went out
+  - ../fixtures/permissions/held-send-settled-by-the-owner.yaml

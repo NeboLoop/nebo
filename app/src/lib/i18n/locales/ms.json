@@ -2975,7 +2975,10 @@
 		"allowedOnce": "Dibenarkan kali ini",
 		"declined": "Ditolak",
 		"withdrawn": "Ditarik balik: kerja yang berkaitan telah tamat",
-		"failed": "Jawapan anda tidak dapat dihantar. Cuba lagi."
+		"failed": "Jawapan anda tidak dapat dihantar. Cuba lagi.",
+		"sendCheckTitle": "Adakah mesej {name} telah dihantar?",
+		"sent": "Telah dihantar",
+		"notSent": "Tidak dihantar"
 	},
 	"permissions": {
 		"title": "Kebenaran",

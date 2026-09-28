@@ -991,6 +991,7 @@ impl DynTool for OsTool {
                                 "mail-app",
                                 "mail.message.send",
                                 &exact,
+                                None,
                                 || organizer::mail_send(&parsed),
                             )
                             .await

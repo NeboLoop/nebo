@@ -966,6 +966,7 @@ export interface PendingWrite {
 
 export interface PermissionAskCard {
 	id: string
+	kind: string
 	agentId: string
 	employee: string
 	sessionKey: string

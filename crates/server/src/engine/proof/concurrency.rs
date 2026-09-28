@@ -201,7 +201,7 @@ async fn the_store_and_the_ledger_hold_under_contention() {
                 // Every thread tries to message the same person four times in
                 // four wordings; the ledger lets one through per run.
                 let input = json!({"to": "same@person.com", "text": format!("wording {k}")});
-                let r = guarded_send(&s, &ctx, "messaging", "mail-app", "mail.message.send", &input, || async { SendOutcome::Sent("ok".into(), None) }).await;
+                let r = guarded_send(&s, &ctx, "messaging", "mail-app", "mail.message.send", &input, None, || async { SendOutcome::Sent("ok".into(), None) }).await;
                 if !r.is_error {
                     sent += 1;
                 }

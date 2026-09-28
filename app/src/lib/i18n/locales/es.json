@@ -2975,7 +2975,10 @@
 		"allowedOnce": "Permitido esta vez",
 		"declined": "Rechazado",
 		"withdrawn": "Retirada: el trabajo para el que era terminó",
-		"failed": "No se pudo enviar tu respuesta. Inténtalo de nuevo."
+		"failed": "No se pudo enviar tu respuesta. Inténtalo de nuevo.",
+		"sendCheckTitle": "¿Se envió el mensaje de {name}?",
+		"sent": "Se envió",
+		"notSent": "No se envió"
 	},
 	"permissions": {
 		"title": "Permisos",

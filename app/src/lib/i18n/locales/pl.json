@@ -2975,7 +2975,10 @@
 		"allowedOnce": "Dozwolone tym razem",
 		"declined": "Odrzucono",
 		"withdrawn": "Wycofane: praca, której dotyczyło, się zakończyła",
-		"failed": "Nie udało się wysłać odpowiedzi. Spróbuj ponownie."
+		"failed": "Nie udało się wysłać odpowiedzi. Spróbuj ponownie.",
+		"sendCheckTitle": "Czy wiadomość od {name} została wysłana?",
+		"sent": "Została wysłana",
+		"notSent": "Nie została wysłana"
 	},
 	"permissions": {
 		"title": "Uprawnienia",

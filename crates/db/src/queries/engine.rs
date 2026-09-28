@@ -1601,7 +1601,8 @@ impl Store {
             "INSERT INTO engine_effects (run_id, class, idem_key, provider, provider_key, counterparty)
              VALUES (?1, ?2, ?3, ?4, ?5, NULLIF(?6, ''))
              ON CONFLICT(idem_key) DO UPDATE
-                 SET state = 'pending', attempts = 0, result = NULL, completed_at = NULL
+                 SET state = 'pending', attempts = 0, result = NULL, completed_at = NULL,
+                     class = excluded.class, counterparty = excluded.counterparty
                  WHERE engine_effects.state = 'failed'",
             params![run_id, class, idem_key, provider, provider_key, counterparty],
         )
@@ -1656,6 +1657,15 @@ impl Store {
             params![id, result, now],
         )
         .db_err("engine_effect_failed")?;
+        Ok(())
+    }
+
+    /// An attempted effect whose outcome is unknown is held: it stays
+    /// pending, with why on the row.
+    pub fn engine_effect_held(&self, id: i64, why: &str) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        conn.execute("UPDATE engine_effects SET result = ?2 WHERE id = ?1 AND state = 'pending'", params![id, why])
+            .db_err("engine_effect_held")?;
         Ok(())
     }
 

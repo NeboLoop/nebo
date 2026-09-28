@@ -1,6 +1,8 @@
 <!--
   PermissionAskCard — the ONE ask card. A single step of an employee's work
   waits on the owner: who wants to do what, why it asked, and three answers.
+  A `send_check` card asks instead whether a send whose outcome never came
+  back went out: It went out · It didn't go out.
   The same card sits in the open chat, the Inbox and the dashboard; the first
   answer anywhere wins and `permission_ask_resolved` clears it everywhere.
 -->
@@ -16,6 +18,7 @@
   let settled = $state<PermissionAskCard | null>(null);
   const shown = $derived(settled ?? ask);
   const sentence = $derived(shown.sentence.charAt(0).toUpperCase() + shown.sentence.slice(1));
+  const sendCheck = $derived(shown.kind === 'send_check');
 
   async function answer(a: AskAnswer) {
     if (busy) return;
@@ -32,9 +35,16 @@
 </script>
 
 <div class="permission-ask-card">
-  <p class="permission-ask-title">{$t('permissionAsk.title', { values: { name: shown.employee } })}</p>
+  <p class="permission-ask-title">{$t(sendCheck ? 'permissionAsk.sendCheckTitle' : 'permissionAsk.title', { values: { name: shown.employee } })}</p>
   <p class="permission-ask-sentence">{sentence}. <span class="permission-ask-reason">{shown.reason}</span></p>
-  {#if shown.status === 'open'}
+  {#if shown.status === 'open' && sendCheck}
+    <div class="permission-ask-actions">
+      <button type="button" class="btn btn-primary btn-sm rounded-full" disabled={busy} onclick={() => answer('sent')}>{$t('permissionAsk.sent')}</button>
+      <button type="button" class="btn btn-ghost btn-sm rounded-full" disabled={busy} onclick={() => answer('not_sent')}>{$t('permissionAsk.notSent')}</button>
+    </div>
+  {:else if shown.status === 'answered'}
+    <p class="permission-ask-settled">{$t(shown.answer === 'sent' ? 'permissionAsk.sent' : 'permissionAsk.notSent')}</p>
+  {:else if shown.status === 'open'}
     <div class="permission-ask-actions">
       {#if shown.allowAlways}
         <button type="button" class="btn btn-primary btn-sm rounded-full" disabled={busy} onclick={() => answer('allow_always')}>{$t('permissionAsk.allowAlways')}</button>

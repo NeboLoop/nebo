@@ -502,6 +502,10 @@ pub enum AskCase {
     /// An employee made by an employee needs more than its creator holds:
     /// the one card at creation, listing the extras.
     CreatedExtras { capabilities: Vec<String> },
+    /// A send was attempted and its outcome never came back (the ledger
+    /// row `effect_id` is held): only the owner can say whether it went
+    /// out. Not a permission; nothing runs on the answer.
+    UnconfirmedSend { effect_id: i64 },
 }
 
 /// What the check decided for one call.

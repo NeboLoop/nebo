@@ -2975,7 +2975,10 @@
 		"allowedOnce": "本次已允許",
 		"declined": "已拒絕",
 		"withdrawn": "已撤回：相關工作已結束",
-		"failed": "無法送出你的回答。請再試一次。"
+		"failed": "無法送出你的回答。請再試一次。",
+		"sendCheckTitle": "{name} 的訊息送出了嗎？",
+		"sent": "已送出",
+		"notSent": "沒有送出"
 	},
 	"permissions": {
 		"title": "權限",
