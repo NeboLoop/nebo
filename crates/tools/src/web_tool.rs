@@ -3067,7 +3067,7 @@ fn cached_search_result(cached: &VisitedPage) -> ToolResult {
 }
 
 /// Format search results into a ToolResult (the payload the model sees).
-/// Contract (mirrors the reference implementation): numbered `title / url / snippet`
+/// Contract: numbered `title / url / snippet`
 /// with title ≤200 chars and snippet ≤600, an untrusted-content guard in the header,
 /// an explicit empty state, and an explicit note when no preview text could be
 /// produced — a silently blank snippet is indistinguishable from "no description
@@ -3075,7 +3075,7 @@ fn cached_search_result(cached: &VisitedPage) -> ToolResult {
 fn format_search_results(query: &str, results: &[SearchResult], tier: &str) -> ToolResult {
     let with_snippets = results.iter().filter(|r| !r.snippet.trim().is_empty()).count();
     // Tier + snippet coverage make silent degradation visible in the logs
-    // (query length, not query text — mirrors the reference's telemetry).
+    // (query length, not query text).
     tracing::info!(
         tier,
         query_len = query.len(),
@@ -3260,8 +3260,7 @@ fn parse_serpapi_results(body: &serde_json::Value) -> Vec<SearchResult> {
 /// result links + their anchor text — there are NO per-engine class selectors to rot when a site
 /// changes its markup (every organic result is fundamentally `<a href="external">title</a>`).
 /// Decodes DuckDuckGo's `uddg=` redirect wrapper, drops the engine's own + social/nav links, and
-/// dedups by normalized URL. This mirrors the reference harness's "generic extraction, no
-/// hardcoded selectors" approach (its WebFetch returns clean text the same way).
+/// dedups by normalized URL.
 fn extract_search_links(html: &str, engine_host: &str) -> Vec<SearchResult> {
     const JUNK_HOSTS: &[&str] = &[
         "duckduckgo.com",
@@ -3390,7 +3389,7 @@ fn extract_search_links(html: &str, engine_host: &str) -> Vec<SearchResult> {
     results
 }
 
-/// Collapse whitespace and cap snippet text at 600 chars (the reference contract).
+/// Collapse whitespace and cap snippet text at 600 chars (the search-result contract).
 fn clamp_snippet(text: &str) -> String {
     clamp_text(&text.split_whitespace().collect::<Vec<_>>().join(" "), 600)
 }
