@@ -25,6 +25,7 @@ mod license_keys;
 mod mcp_integrations;
 mod memories;
 mod notifications;
+mod owner_needs;
 pub mod pending_writes;
 mod pending_tasks;
 mod permissions;
@@ -57,6 +58,7 @@ pub use permissions::{PermissionActivityFilter, PermissionActivityRow, Permissio
 pub use run_usage::cost_microcents;
 pub use license_keys::LicenseKeyRow;
 pub use session_goals::SessionGoal;
+pub use owner_needs::{OwnerNeedRow, ToldNeed};
 pub use plugin_account_profiles::PluginAccountProfile;
 pub use upgrade::{ToolNamingCell, tool_naming_places};
 pub use work::WorkDocumentListing;

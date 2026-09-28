@@ -1,0 +1,17 @@
+id: server-one-missing-need-is-one-notice-whoever-sees-it-and-however-often
+name: "One missing need is one notice, whoever sees it and however often"
+description: |
+  The Receptionist's live loop (2026-09-27/28): one missing phone line, noticed
+  by pre-flight, a watch trigger's start and heartbeat triage on three duties,
+  each under its own key, was told again every ninety minutes for two days, to
+  the Inbox, the phone and email. The same missing telephony capability, from
+  three sources on three duties and spelled two ways, is one item listing the
+  three duties. Twelve hours of fires, restarts, judgments and completed runs
+  while it stands add nothing. Dismissed, nothing brings it back while it
+  stands. A plugin that provides telephony meets it; the account on that plugin
+  is then the need, and the refusing tool, triage naming the capability and
+  triage naming the plugin in another casing all tell the one account item.
+  Connecting the account resolves it; losing it tells it once more.
+target_component: engine
+proof: engine::proof::server::one_missing_need_is_one_notice_whoever_sees_it_and_however_often
+conversation: []

@@ -1881,6 +1881,7 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
         harness.providers(),
         Some(decide_client.clone()),
         tool_registry.clone(),
+        plugin_store.clone(),
         hub.clone(),
         cfg.clone(),
         Some(event_bus.clone()),
