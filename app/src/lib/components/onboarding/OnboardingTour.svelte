@@ -1,5 +1,6 @@
 <script lang="ts">
   import { t } from 'svelte-i18n';
+  import BrandMark from '$lib/components/BrandMark.svelte';
   import { onMount, onDestroy } from 'svelte';
   import { dispatchInstallStart } from '$lib/marketplace/installCodes';
   import { storage } from '$lib/storage';
@@ -171,7 +172,7 @@
 {#if phase === 'account'}
   <div class="fixed inset-0 z-[90] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
     <div class="w-full max-w-md rounded-2xl bg-base-100 border border-base-300 shadow-2xl p-7 text-center">
-      <div class="w-12 h-12 rounded-xl bg-primary text-primary-content flex items-center justify-center font-mono text-xl font-bold mx-auto mb-4">N</div>
+      <BrandMark class="w-12 h-12 mx-auto mb-4" />
       <h2 class="text-xl font-bold mb-1">{$t('onboardingTour.hiTitle')}</h2>
       <p class="text-sm text-base-content/70 mb-6">{$t('onboardingTour.accountQuestion')}</p>
       <div class="grid grid-cols-2 gap-3">
@@ -189,7 +190,7 @@
 {:else if phase === 'welcome'}
   <div class="fixed inset-0 z-[90] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
     <div class="w-full max-w-md rounded-2xl bg-base-100 border border-base-300 shadow-2xl p-7 text-center">
-      <div class="w-12 h-12 rounded-xl bg-primary text-primary-content flex items-center justify-center font-mono text-xl font-bold mx-auto mb-4">N</div>
+      <BrandMark class="w-12 h-12 mx-auto mb-4" />
       <h2 class="text-xl font-bold mb-2">{$t('onboardingTour.welcomeTitle')}</h2>
       <p class="text-sm text-base-content/80 mb-6 leading-relaxed">
         {$t('onboardingTour.welcomeBody', { values: { noun: welcomeNoun } })}
