@@ -2975,7 +2975,10 @@
 		"allowedOnce": "今回は許可",
 		"declined": "拒否しました",
 		"withdrawn": "取り下げ済み（対象の作業が終了）",
-		"failed": "回答を送信できませんでした。もう一度お試しください。"
+		"failed": "回答を送信できませんでした。もう一度お試しください。",
+		"sendCheckTitle": "{name}のメッセージは送信されましたか？",
+		"sent": "送信された",
+		"notSent": "送信されていない"
 	},
 	"permissions": {
 		"title": "権限",

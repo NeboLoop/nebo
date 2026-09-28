@@ -317,7 +317,7 @@ async fn known_counterparty_does_not_ask() {
     // A confirmed send through the one send path records who it went to.
     let c = ctx(&store, "care");
     let input = json!({ "to": "pat@example.com", "text": "hello" });
-    let sent = tools::effects::guarded_send(&store, &c, "messaging", "test", "mail.message.send", &input, || async {
+    let sent = tools::effects::guarded_send(&store, &c, "messaging", "test", "mail.message.send", &input, None, || async {
         tools::effects::SendOutcome::Sent("Sent.".into(), None)
     })
     .await;

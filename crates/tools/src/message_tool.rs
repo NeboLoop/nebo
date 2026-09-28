@@ -180,7 +180,7 @@ async fn handle_sms(store: &Store, ctx: &ToolContext, agent_id: Option<&str>, ac
             if phone.is_empty() {
                 return ToolResult::error(errors::missing_param("send", "phone", "message(resource: \"sms\", action: \"send\", phone: \"+15551234567\", text: \"Hello!\")"));
             }
-            crate::effects::guarded_send(store, ctx, "messaging", "sms", "sms.message.send", input, || async {
+            crate::effects::guarded_send(store, ctx, "messaging", "sms", "sms.message.send", input, None, || async {
                 match send_from_phone_line(store, agent_id, input).await {
                     Some(outcome) => outcome,
                     // No texting line: the owner's Messages.app. AppleScript

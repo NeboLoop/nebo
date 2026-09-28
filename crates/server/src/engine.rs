@@ -68,7 +68,7 @@ fn now() -> i64 {
 }
 
 /// What one tick did — returned so tests and logs can say it in numbers.
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct TickReport {
     pub claimed: usize,
     pub poisoned: usize,
@@ -163,8 +163,10 @@ pub fn tick(store: &Store, t: i64, live: &dyn Fn(&str) -> Option<String>, steer:
     match store.engine_pending_effects() {
         Ok(pending) => {
             report.pending_effects = pending.len();
+            // A held send is the owner's question (`settle_held_sends`); a
+            // pending row is logged when its state changes, never per tick
+            // (live 2026-09-28: three held rows, 16,647 lines in a day).
             for e in &pending {
-                info!(effect = e.id, run = %e.run_id, class = %e.class, attempts = e.attempts, "engine: effect pending reconciliation");
                 // Money that was attempted and never confirmed is never
                 // retried by the engine: whoever owns the run is told, once,
                 // and reconciles by the provider's key.
@@ -173,8 +175,13 @@ pub fn tick(store: &Store, t: i64, live: &dyn Fn(&str) -> Option<String>, steer:
                     let agent_id = run.as_ref().map(|r| r.agent_id.clone()).unwrap_or_default();
                     let case = run.as_ref().and_then(|r| r.parent_run_id.as_deref()).and_then(|p| store.engine_get_run(p).ok().flatten());
                     let reason = format!("a {} charge could not be confirmed after {} attempt(s); it was not retried — confirm it with the provider under key {}", e.provider, e.attempts, e.idem_key);
-                    if let Err(err) = needs_attention(store, &agent_id, &e.run_id, &format!("effect:{}", e.id), case.as_ref(), &reason, t) {
-                        warn!(effect = e.id, error = %err, "engine: could not route the unconfirmed effect for attention");
+                    let subject = format!("effect:{}", e.id);
+                    let user = store.ensure_local_user_id().unwrap_or_default();
+                    let first = matches!(store.get_notification(&format!("attention:{subject}"), &user), Ok(None));
+                    match needs_attention(store, &agent_id, &e.run_id, &subject, case.as_ref(), &reason, t) {
+                        Ok(()) if first => info!(effect = e.id, run = %e.run_id, "engine: unconfirmed charge sent to the owner"),
+                        Ok(()) => {}
+                        Err(err) => warn!(effect = e.id, error = %err, "engine: could not route the unconfirmed effect for attention"),
                     }
                 }
             }
@@ -1221,6 +1228,7 @@ async fn drive(state: &AppState) {
         }
     }
 
+    settle_held_sends(store, &state.permission_asks);
     resume_asks(store, &state.permission_asks, &state.tools, t);
     finish_temporary_work(state).await;
 
@@ -1235,6 +1243,53 @@ async fn drive(state: &AppState) {
             warn!(run = %turn.id, error = %e, "engine: settle failed");
         }
     }
+}
+
+/// Sends that were attempted and whose outcome never came back: each held
+/// ledger row gets one card asking the owner whether it went out, in the
+/// conversation that sent it (the Inbox when that is no chat). His answer
+/// settles the row (`Asks::settle_send`); until then the card waits and comes
+/// back as a reminder, like any ask. Logged once, when the card is raised.
+pub fn settle_held_sends(store: &Store, asks: &agent::harness::permissions::Asks) {
+    let pending = match store.engine_pending_effects() {
+        Ok(p) => p,
+        Err(e) => {
+            warn!(error = %e, "engine: held sends unreadable");
+            return;
+        }
+    };
+    for e in pending.iter().filter(|e| e.class == "messaging" && e.attempts > 0) {
+        // The run it was sent from: a workflow run's own record, else the
+        // session the send ran in.
+        let (agent_id, session_key) = match store.engine_get_run(&e.run_id).ok().flatten() {
+            Some(run) => (run.agent_id, run.session_key),
+            None => (types::keyparser::extract_agent_id(&e.run_id), e.run_id.clone()),
+        };
+        match asks.raise_send_check(e, &agent_id, &session_key, held_send_sentence(e)) {
+            Ok(Some(ask)) => info!(effect = e.id, run = %e.run_id, ask, "engine: held send; the owner is asked whether it went out"),
+            Ok(None) => {}
+            Err(err) => warn!(effect = e.id, error = %err, "engine: the owner could not be asked about a held send"),
+        }
+    }
+}
+
+/// The card's line for a held send: what it was and who it was to.
+fn held_send_sentence(e: &db::EngineEffect) -> String {
+    // The ledger key names the operation (`send_key`, `write_key`).
+    let what = if e.idem_key.contains(":mail.message.send:") {
+        "an email"
+    } else if e.idem_key.contains(":sms.message.send:") {
+        "a text"
+    } else {
+        "a message"
+    };
+    let to = match e.counterparty.as_deref().filter(|c| !c.is_empty()) {
+        Some("owner") => " to you".to_string(),
+        Some(who) => format!(" to {who}"),
+        None => String::new(),
+    };
+    let via = if e.provider.is_empty() { String::new() } else { format!(" through {}", e.provider) };
+    format!("{what}{to}{via}, sent {}", chrono::DateTime::from_timestamp(e.created_at, 0).map(|d| d.format("%Y-%m-%d %H:%M UTC").to_string()).unwrap_or_default())
 }
 
 /// Asks whose wait woke — the owner's answer arrived, or a reminder came
@@ -1835,7 +1890,9 @@ pub fn spawn(state: AppState) {
             })
             .await
             .unwrap_or_default();
-            if report != TickReport::default() {
+            // Rows that stay pending while the owner decides are counted,
+            // not news: a tick is logged when it did something.
+            if (TickReport { pending_effects: 0, ..report.clone() }) != TickReport::default() {
                 info!(?report, "engine: tick");
             }
             drive(&state).await;

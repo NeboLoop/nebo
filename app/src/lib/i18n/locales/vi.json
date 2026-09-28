@@ -2975,7 +2975,10 @@
 		"allowedOnce": "Được phép lần này",
 		"declined": "Đã từ chối",
 		"withdrawn": "Đã rút lại: công việc liên quan đã kết thúc",
-		"failed": "Không gửi được câu trả lời. Hãy thử lại."
+		"failed": "Không gửi được câu trả lời. Hãy thử lại.",
+		"sendCheckTitle": "Tin nhắn của {name} đã được gửi chưa?",
+		"sent": "Đã gửi",
+		"notSent": "Chưa gửi"
 	},
 	"permissions": {
 		"title": "Quyền",

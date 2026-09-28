@@ -2975,7 +2975,10 @@
 		"allowedOnce": "Diizinkan kali ini",
 		"declined": "Ditolak",
 		"withdrawn": "Ditarik: pekerjaan yang terkait sudah berakhir",
-		"failed": "Jawabanmu tidak terkirim. Coba lagi."
+		"failed": "Jawabanmu tidak terkirim. Coba lagi.",
+		"sendCheckTitle": "Apakah pesan {name} terkirim?",
+		"sent": "Sudah terkirim",
+		"notSent": "Tidak terkirim"
 	},
 	"permissions": {
 		"title": "Izin",

@@ -32,6 +32,9 @@ use crate::state::AppState;
 #[serde(rename_all = "camelCase")]
 pub struct PermissionAskCard {
     pub id: String,
+    /// permission (Allow always · This once · No) | send_check (a send whose
+    /// outcome never came back: It went out · It didn't go out).
+    pub kind: String,
     pub agent_id: String,
     /// The employee's name.
     pub employee: String,
@@ -46,9 +49,10 @@ pub struct PermissionAskCard {
     /// for good or not at all).
     pub this_once: bool,
     /// open | allowed | declined | withdrawn (the work that waited on it
-    /// ended without it). An open ask stays open until it is answered.
+    /// ended without it) | answered (a send_check card: `answer` says
+    /// whether it went out). An open ask stays open until it is answered.
     pub status: String,
-    /// allow_always | this_once | no, once answered.
+    /// allow_always | this_once | no | sent | not_sent, once answered.
     pub answer: Option<String>,
     pub created_at: i64,
 }
@@ -58,11 +62,13 @@ pub(crate) fn card(state: &AppState, ask: &Ask) -> PermissionAskCard {
     let (status, answer) = match ask.status {
         AskStatus::Open => ("open", None),
         AskStatus::Answered { answer: Answer::No, .. } => ("declined", Some(Answer::No)),
+        AskStatus::Answered { answer: answer @ (Answer::Sent | Answer::NotSent), .. } => ("answered", Some(answer)),
         AskStatus::Answered { answer, .. } => ("allowed", Some(answer)),
         AskStatus::Withdrawn => ("withdrawn", None),
     };
     PermissionAskCard {
         id: ask.id.clone(),
+        kind: ask.kind().as_str().to_string(),
         agent_id: ask.agent_id.clone(),
         employee: employee_name(state, &ask.agent_id),
         session_key: ask.session_key.clone(),
@@ -92,6 +98,7 @@ fn ask_error(e: AskError) -> (axum::http::StatusCode, Json<types::api::ErrorResp
     to_error_response(match e {
         AskError::NotFound => NeboError::NotFound,
         AskError::Settled(_) => NeboError::Validation("this was already answered".into()),
+        AskError::NotOffered => NeboError::Validation("that answer doesn't fit this question".into()),
         AskError::Store(msg) => NeboError::Database(msg),
     })
 }
@@ -129,7 +136,7 @@ pub async fn get_permission_ask(
 
 #[derive(Debug, Deserialize)]
 pub struct AnswerAskBody {
-    /// allow_always | this_once | no
+    /// allow_always | this_once | no; sent | not_sent for a send_check card
     pub answer: String,
     /// chat | inbox | mobile
     pub via: String,
@@ -143,7 +150,8 @@ pub async fn answer_permission_ask(
     Json(body): Json<AnswerAskBody>,
 ) -> HandlerResult<PermissionAskCard> {
     let invalid = |msg: &str| to_error_response(NeboError::Validation(msg.to_string()));
-    let answer = Answer::parse(&body.answer).ok_or_else(|| invalid("answer must be allow_always, this_once or no"))?;
+    let answer = Answer::parse(&body.answer)
+        .ok_or_else(|| invalid("answer must be allow_always, this_once, no, sent or not_sent"))?;
     // A spoken answer comes only from the owner's own call (`voice.rs`),
     // never from a client claiming one.
     let via = AnsweredVia::parse(&body.via)
@@ -844,6 +852,7 @@ fn ask_sentence(store: &db::Store, case: &AskCase) -> String {
             let needs: Vec<String> = capabilities.iter().map(|c| lower_first(&capability_phrase(c))).collect();
             format!("An employee it made needs more than it holds: {}", needs.join(", "))
         }
+        AskCase::UnconfirmedSend { .. } => "A send whose outcome never came back: did it go out?".into(),
     }
 }
 

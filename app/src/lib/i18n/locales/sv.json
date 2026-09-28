@@ -2975,7 +2975,10 @@
 		"allowedOnce": "Tillåtet den här gången",
 		"declined": "Nekat",
 		"withdrawn": "Återkallad: arbetet den gällde har avslutats",
-		"failed": "Ditt svar kunde inte skickas. Försök igen."
+		"failed": "Ditt svar kunde inte skickas. Försök igen.",
+		"sendCheckTitle": "Gick meddelandet från {name} iväg?",
+		"sent": "Det gick iväg",
+		"notSent": "Det gick inte iväg"
 	},
 	"permissions": {
 		"title": "Behörigheter",

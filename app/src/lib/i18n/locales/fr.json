@@ -2975,7 +2975,10 @@
 		"allowedOnce": "Autorisé cette fois",
 		"declined": "Refusé",
 		"withdrawn": "Retirée : le travail concerné est terminé",
-		"failed": "Impossible d'envoyer ta réponse. Réessaie."
+		"failed": "Impossible d'envoyer ta réponse. Réessaie.",
+		"sendCheckTitle": "Le message de {name} est-il parti ?",
+		"sent": "Il est parti",
+		"notSent": "Il n'est pas parti"
 	},
 	"permissions": {
 		"title": "Autorisations",

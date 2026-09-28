@@ -290,3 +290,68 @@ async fn owners_call_ask_is_asked_aloud_and_answered_by_voice() {
     assert!(again.contains("already answered"), "{again}");
     assert_eq!(count(&ran)[1], 1);
 }
+
+/// A send that was attempted and whose outcome never came back (a held
+/// ledger row) reaches a final state: the engine raises one card asking the
+/// owner whether it went out, in the conversation that sent it; it takes
+/// only "it went out" or "it didn't go out", and his answer settles the row
+/// once. Live 2026-09-28: three held rows sat pending for a day with no way
+/// to close them, logged every five seconds.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_held_send_is_settled_by_the_owners_answer() {
+    let nebo = session().await;
+    let agent = format!("hs-{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
+    let key = format!("agent:{agent}:thread:{}", uuid::Uuid::new_v4());
+    let store = nebo.store();
+    let asks = &nebo.state.permission_asks;
+    let held = |to: &str| {
+        let id = store
+            .engine_effect_pending(&key, "messaging", &format!("send:{key}:mail.message.send:{to}"), "gmail", "", to)
+            .unwrap();
+        store.engine_effect_attempted(id).unwrap();
+        store.engine_effect_held(id, "the plugin timed out").unwrap();
+        id
+    };
+    let (went, didnt) = (held("pat@example.com"), held("sam@example.com"));
+
+    // One card per held row, however often the engine looks.
+    crate::engine::settle_held_sends(store, asks);
+    crate::engine::settle_held_sends(store, asks);
+    let open = nebo.get_ok(&format!("/permissions/asks?session={key}")).await;
+    let cards = open["asks"].as_array().expect("asks").clone();
+    assert_eq!(cards.len(), 2, "{open}");
+    let card_for = |effect: i64| {
+        let id = agent::harness::permissions::send_check_id(effect);
+        cards.iter().find(|c| c["id"] == id.as_str()).cloned().unwrap_or_else(|| panic!("no card for {effect}: {open}"))
+    };
+    let card = card_for(went);
+    assert_eq!(card["kind"], "send_check");
+    assert_eq!(card["sessionKey"], key.as_str(), "in the conversation that sent it");
+    assert!(card["sentence"].as_str().unwrap().starts_with("an email to pat@example.com through gmail"), "{card}");
+    assert_eq!((card["allowAlways"].as_bool(), card["thisOnce"].as_bool()), (Some(false), Some(false)));
+
+    // A permission's answer doesn't fit the question.
+    let (status, _) = nebo
+        .post(&format!("/permissions/asks/{}/answer", card["id"].as_str().unwrap()), &json!({ "answer": "this_once", "via": "chat" }))
+        .await;
+    assert!(status >= 400, "{status}");
+
+    // It went out: completed, and the person is one the employee works with.
+    // It didn't: failed, so it may be sent again.
+    for (effect, answer) in [(went, "sent"), (didnt, "not_sent")] {
+        let answered = nebo
+            .post_ok(&format!("/permissions/asks/{}/answer", card_for(effect)["id"].as_str().unwrap()), &json!({ "answer": answer, "via": "chat" }))
+            .await;
+        assert_eq!((answered["status"].as_str(), answered["answer"].as_str()), (Some("answered"), Some(answer)), "{answered}");
+    }
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    let state = |id: i64| store.engine_get_effect(id).unwrap().unwrap().state;
+    while state(went) == "pending" || state(didnt) == "pending" {
+        assert!(tokio::time::Instant::now() < deadline, "the answers never settled the rows");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!((state(went).as_str(), state(didnt).as_str()), ("completed", "failed"));
+    assert!(store.known_counterparties(&agent, &["pat@example.com".to_string()]).unwrap().contains("pat@example.com"));
+    crate::engine::settle_held_sends(store, asks);
+    assert!(nebo.get_ok(&format!("/permissions/asks?session={key}")).await["asks"].as_array().unwrap().is_empty(), "settled rows get no new card");
+}

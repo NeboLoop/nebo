@@ -2975,7 +2975,10 @@
 		"allowedOnce": "本次已允许",
 		"declined": "已拒绝",
 		"withdrawn": "已撤回：相关工作已结束",
-		"failed": "无法发送你的回答。请重试。"
+		"failed": "无法发送你的回答。请重试。",
+		"sendCheckTitle": "{name} 的消息发出去了吗？",
+		"sent": "已发出",
+		"notSent": "没有发出"
 	},
 	"permissions": {
 		"title": "权限",

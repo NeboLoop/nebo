@@ -2975,7 +2975,10 @@
 		"allowedOnce": "Deze keer toegestaan",
 		"declined": "Geweigerd",
 		"withdrawn": "Ingetrokken: het werk waarvoor het was is afgelopen",
-		"failed": "Je antwoord kon niet worden verzonden. Probeer het opnieuw."
+		"failed": "Je antwoord kon niet worden verzonden. Probeer het opnieuw.",
+		"sendCheckTitle": "Is het bericht van {name} verstuurd?",
+		"sent": "Het is verstuurd",
+		"notSent": "Het is niet verstuurd"
 	},
 	"permissions": {
 		"title": "Machtigingen",

@@ -767,6 +767,68 @@ Date
         assert_eq!(linked("none"), (None, None));
     }
 
+    /// Sends Nebo refused before the plugin ran, held as "outcome unknown"
+    /// before the send path failed them itself (live 2026-09-26), are
+    /// failed on their recorded refusal and their false notices go. A row
+    /// whose plugin ran — untyped output, a failure after launch — is not
+    /// guessed at, and neither is a row already settled or a charge.
+    #[test]
+    fn sends_refused_before_the_plugin_ran_are_failed_and_nothing_else_is() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let conn = Connection::open(dir.path().join("presend.db")).unwrap();
+        run_migrations_to(&conn, 191).unwrap();
+        conn.execute("INSERT INTO users (id, email, password_hash) VALUES ('u1', 'o@example.com', 'x')", []).unwrap();
+        let notice = |why: &str| {
+            format!(
+                "A mail.message.send through gmail was attempted and the plugin reported no typed outcome: {why}. \
+                 It was not retried, because it may already have been delivered. Check the provider's sent items; ledger entry #1."
+            )
+        };
+        let refused = "No gmail account is connected for this agent. Connect one in this agent's Settings, Plugins before using gmail. Connected for this employee: shopify. Do the work with what is connected; if it cannot b";
+        for (id, class, state, why) in [
+            (5, "messaging", "pending", refused.to_string()),
+            (6, "messaging", "pending", "Plugin 'gmail' not found. Available: shopify".to_string()),
+            (7, "messaging", "pending", "Error: connection refused".to_string()),
+            (8, "messaging", "pending", "Plugin 'gmail' command failed: broken pipe".to_string()),
+            (9, "messaging", "completed", refused.to_string()),
+            (10, "financial", "pending", refused.to_string()),
+        ] {
+            conn.execute(
+                "INSERT INTO engine_effects (id, run_id, class, idem_key, provider, state, attempts) VALUES (?1, 'run-1', ?2, ?3, 'gmail', ?4, 1)",
+                rusqlite::params![id, class, format!("send:run-1:mail.message.send:{id}"), state],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO notifications (id, user_id, type, title, body) VALUES (?1, 'u1', 'needs_attention', 'A send could not be confirmed', ?2)",
+                rusqlite::params![format!("attention:effect:{id}"), notice(&why)],
+            )
+            .unwrap();
+        }
+
+        run_migrations(&conn).unwrap();
+        run_migrations(&conn).unwrap();
+
+        let row = |id: i64| -> (String, Option<String>) {
+            conn.query_row("SELECT state, result FROM engine_effects WHERE id = ?1", [id], |r| Ok((r.get(0)?, r.get(1)?))).unwrap()
+        };
+        let notice_kept = |id: i64| -> bool {
+            conn.query_row("SELECT COUNT(*) FROM notifications WHERE id = ?1", [format!("attention:effect:{id}")], |r| r.get::<_, i64>(0)).unwrap() == 1
+        };
+        for id in [5, 6] {
+            let (state, result) = row(id);
+            assert_eq!(state, "failed", "row {id}");
+            let result = result.unwrap_or_default();
+            assert!(result.starts_with("Not sent: Nebo refused it before the plugin ran. "), "{result}");
+            assert!(!result.contains("It was not retried"), "the refusal alone: {result}");
+            assert!(!notice_kept(id), "the false notice for {id} goes");
+        }
+        assert!(row(5).1.unwrap().contains("No gmail account is connected"));
+        for (id, state) in [(7, "pending"), (8, "pending"), (9, "completed"), (10, "pending")] {
+            assert_eq!(row(id).0, state, "row {id} is not guessed at");
+            assert!(notice_kept(id), "row {id}'s notice stays");
+        }
+    }
+
     /// The team-post copies stored in members' threads leave them (the
     /// owner's case, 2026-09-26: Neighbor Mail's chat held the owner's post
     /// to Marketing & Growth and the Social Media Manager's answer). A copy

@@ -13,8 +13,9 @@
 //!   turn killed mid-send was relaunched and composed a fresh first contact
 //!   — a different text, a different key, a second message;
 //! - a send whose outcome is unknown (the provider was reached, no answer
-//!   came back) stays pending, is never retried by anyone, and the owner is
-//!   told with the ledger entry to check;
+//!   came back) stays pending and is never retried by anyone; the engine
+//!   asks the owner whether it went out, on a card in the conversation that
+//!   sent it (the Inbox when that is no chat), and his answer settles it;
 //! - a send the provider refused, or that failed before anything left the
 //!   machine, is failed and may be tried again.
 //!
@@ -204,7 +205,27 @@ fn held_by_someone_else(store: &Store, ctx: &ToolContext, counterparty: &str) ->
     None
 }
 
-/// Perform one customer-facing send through the ledger.
+/// The seat a call runs as: the employee its session belongs to, else the
+/// session itself.
+fn seat_of(ctx: &ToolContext) -> String {
+    match types::keyparser::extract_agent_id(&ctx.session_key) {
+        id if id.is_empty() => ctx.session_key.clone(),
+        id => id,
+    }
+}
+
+/// Whether ledger row `e` of run `run` is a send of `operation`: keyed by
+/// its input (`send_key`), or by the seat's `clientKey` (`write_key`).
+fn is_send_of(e: &db::EngineEffect, run: &str, seat: &str, operation: &str) -> bool {
+    e.idem_key.starts_with(&format!("send:{run}:{operation}:"))
+        || (e.class == "messaging" && e.idem_key.starts_with(&write_key(seat, operation, "")))
+}
+
+/// Perform one customer-facing send through the ledger: its one row. A send
+/// made under the seat's `clientKey` (a port call's ledger contract) is
+/// keyed by it, so the same call under the same key is answered from the
+/// row, in this run or a later one; any other send is keyed by its run and
+/// exact input.
 pub async fn guarded_send<F, Fut>(
     store: &Store,
     ctx: &ToolContext,
@@ -212,6 +233,7 @@ pub async fn guarded_send<F, Fut>(
     provider: &str,
     operation: &str,
     input: &serde_json::Value,
+    client_key: Option<&str>,
     send: F,
 ) -> ToolResult
 where
@@ -224,7 +246,11 @@ where
         return ToolResult::error(format!("{operation}: {}", comm::lease::PAUSED));
     }
     let run = run_ref(ctx);
-    let key = send_key(&run, operation, input);
+    let seat = seat_of(ctx);
+    let key = match client_key {
+        Some(k) => write_key(&seat, operation, k),
+        None => send_key(&run, operation, input),
+    };
     let counterparty = counterparty_of(input);
     // A person in an open case is written to by an employee holding one of
     // their cases, nobody else. Seen live: a case turn asked a coworker to
@@ -236,11 +262,10 @@ where
     }
     // One run, one message to a person — the person, not the wording.
     if !counterparty.is_empty() {
-        let prefix = format!("send:{run}:{operation}:");
         let prior = store.engine_effects_for_run(&run).unwrap_or_default();
         let same_person = prior.iter().find(|e| {
             e.idem_key != key
-                && e.idem_key.starts_with(&prefix)
+                && is_send_of(e, &run, &seat, operation)
                 && e.counterparty.as_deref() == Some(counterparty.as_str())
                 && (e.state == "completed" || (e.state == "pending" && e.attempts > 0))
         });
@@ -251,7 +276,6 @@ where
                     e.id
                 ));
             }
-            tell_owner(store, ctx, e.id, provider, operation, "its outcome is still unknown");
             return ToolResult::error(format!(
                 "A {operation} to {counterparty} was already attempted in this run and its outcome is unknown (ledger #{}), so this one was NOT sent — it may already have been delivered. The owner has been asked to confirm it. Do not retry.",
                 e.id
@@ -275,7 +299,6 @@ where
         }
         "pending" if effect.attempts > 0 => {
             // Attempted before, outcome unknown: it may already have gone out.
-            tell_owner(store, ctx, id, provider, operation, "its outcome is still unknown");
             return ToolResult::error(format!(
                 "This exact send ({operation}) was attempted before and its outcome is unknown, so it was NOT sent again. The owner has been asked to confirm it with the provider. Do not retry it."
             ));
@@ -305,7 +328,10 @@ where
         }
         SendOutcome::Unknown(why) => match on_unknown(provider) {
             OnUnknown::Hold => {
-                tell_owner(store, ctx, id, provider, operation, &why);
+                // Why it is held stays on the row; the owner's card says it.
+                if let Err(e) = store.engine_effect_held(id, &why) {
+                    tracing::warn!(effect = id, error = %e, "why the send is held was not recorded");
+                }
                 ToolResult::error(format!(
                     "The send ({operation}) was attempted but the outcome is unknown: {why}. It was NOT retried, because it may already have been delivered. The owner has been asked to confirm it. Do not retry it."
                 ))
@@ -352,11 +378,7 @@ where
     if comm::lease::process().frozen() {
         return ToolResult::error(format!("{operation}: {}", comm::lease::PAUSED));
     }
-    let seat = match types::keyparser::extract_agent_id(&ctx.session_key) {
-        id if id.is_empty() => ctx.session_key.clone(),
-        id => id,
-    };
-    let key = write_key(&seat, operation, client_key);
+    let key = write_key(&seat_of(ctx), operation, client_key);
     let id = match store.engine_effect_pending(&run_ref(ctx), "financial", &key, provider, "", "") {
         Ok(id) => id,
         Err(e) => return ToolResult::error(format!("could not record the write before performing it; not performed: {e}")),
@@ -392,24 +414,6 @@ where
     r
 }
 
-fn tell_owner(store: &Store, ctx: &ToolContext, effect_id: i64, provider: &str, operation: &str, why: &str) {
-    let user = store.ensure_local_user_id().unwrap_or_default();
-    let body = format!(
-        "A {operation} through {provider} was attempted and {why}. It was not retried, because it may already have been delivered. Check the provider's sent items; ledger entry #{effect_id}."
-    );
-    let agent = agent_of(ctx);
-    let _ = store.create_notification_if_not_exists(
-        &format!("attention:effect:{effect_id}"),
-        &user,
-        "needs_attention",
-        "A send could not be confirmed",
-        Some(&body),
-        Some("/dashboard?inbox=1"),
-        None,
-        agent.as_deref(),
-    );
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -425,7 +429,8 @@ mod tests {
 
     /// The whole contract: written before the attempt; the same send
     /// again is answered from the ledger; a refusal may be retried; an
-    /// unknown outcome is held and the owner told, once.
+    /// unknown outcome is held with why on the row (the engine asks the
+    /// owner whether it went out; no separate notice).
     #[tokio::test]
     async fn a_send_is_recorded_before_it_goes_and_never_goes_twice() {
         let s = store();
@@ -433,9 +438,9 @@ mod tests {
         let input = serde_json::json!({"to": "+15551234567", "text": "hello"});
         let user = s.ensure_local_user_id().unwrap();
 
-        let r = guarded_send(&s, &c, "messaging", "hub-sms", "sms.message.send", &input, || async { SendOutcome::Sent("Sent.".into(), Some("SM123".into())) }).await;
+        let r = guarded_send(&s, &c, "messaging", "hub-sms", "sms.message.send", &input, None, || async { SendOutcome::Sent("Sent.".into(), Some("SM123".into())) }).await;
         assert!(!r.is_error, "{}", r.content);
-        let again = guarded_send(&s, &c, "messaging", "hub-sms", "sms.message.send", &input, || async { panic!("must not send twice") }).await;
+        let again = guarded_send(&s, &c, "messaging", "hub-sms", "sms.message.send", &input, None, || async { panic!("must not send twice") }).await;
         assert!(!again.is_error);
         assert!(again.content.contains("Already sent") && again.content.contains("SM123"));
         assert_eq!(run_ref(&c), "run-9");
@@ -443,22 +448,23 @@ mod tests {
         // A refusal may be retried (to someone else: one run sends one
         // message to a person, whatever the wording).
         let other = serde_json::json!({"to": "+15550000002", "text": "hello"});
-        let r = guarded_send(&s, &c, "messaging", "hub-sms", "sms.message.send", &other, || async { SendOutcome::ConfirmedFailure("bad number".into()) }).await;
+        let r = guarded_send(&s, &c, "messaging", "hub-sms", "sms.message.send", &other, None, || async { SendOutcome::ConfirmedFailure("bad number".into()) }).await;
         assert!(r.is_error);
-        let r = guarded_send(&s, &c, "messaging", "hub-sms", "sms.message.send", &other, || async { SendOutcome::Sent("Sent.".into(), None) }).await;
+        let r = guarded_send(&s, &c, "messaging", "hub-sms", "sms.message.send", &other, None, || async { SendOutcome::Sent("Sent.".into(), None) }).await;
         assert!(!r.is_error, "a refusal may be retried");
 
         // Unknown: held, owner told, never retried.
         let third = serde_json::json!({"to": "+15550000003", "text": "third"});
-        let r = guarded_send(&s, &c, "messaging", "hub-sms", "sms.message.send", &third, || async { SendOutcome::Unknown("no answer".into()) }).await;
+        let r = guarded_send(&s, &c, "messaging", "hub-sms", "sms.message.send", &third, None, || async { SendOutcome::Unknown("no answer".into()) }).await;
         assert!(r.is_error && r.content.contains("NOT retried"));
-        let r = guarded_send(&s, &c, "messaging", "hub-sms", "sms.message.send", &third, || async { panic!("held sends are never retried") }).await;
+        let r = guarded_send(&s, &c, "messaging", "hub-sms", "sms.message.send", &third, None, || async { panic!("held sends are never retried") }).await;
         assert!(r.is_error && r.content.contains("outcome is unknown"));
         let key = send_key("run-9", "sms.message.send", &third);
         let id = s.engine_effect_pending("run-9", "messaging", &key, "hub-sms", "", "").unwrap();
         let e = s.engine_get_effect(id).unwrap().unwrap();
         assert_eq!((e.state.as_str(), e.attempts), ("pending", 1));
-        assert!(s.get_notification(&format!("attention:effect:{id}"), &user).unwrap().is_some());
+        assert_eq!(e.result.as_deref(), Some("no answer"), "why it is held is on the row");
+        assert!(s.get_notification(&format!("attention:effect:{id}"), &user).unwrap().is_none(), "the owner's card is the ask, not a notice");
     }
 
     /// Seen live: a turn killed mid-send was relaunched and composed a new
@@ -471,19 +477,19 @@ mod tests {
         let s = store();
         let c = ctx();
         let first = serde_json::json!({"to": ["Alma@x.com"], "subject": "Hi", "text": "one"});
-        let r = guarded_send(&s, &c, "messaging", "mail-app", "mail.message.send", &first, || async { SendOutcome::Sent("Handed to Mail".into(), None) }).await;
+        let r = guarded_send(&s, &c, "messaging", "mail-app", "mail.message.send", &first, None, || async { SendOutcome::Sent("Handed to Mail".into(), None) }).await;
         assert!(!r.is_error, "{}", r.content);
         let reworded = serde_json::json!({"to": "alma@x.com", "subject": "Hello again", "text": "two"});
-        let r = guarded_send(&s, &c, "messaging", "mail-app", "mail.message.send", &reworded, || async { panic!("a second message to the same person in one run must not go") }).await;
+        let r = guarded_send(&s, &c, "messaging", "mail-app", "mail.message.send", &reworded, None, || async { panic!("a second message to the same person in one run must not go") }).await;
         assert!(r.is_error && r.content.contains("already sent") && r.content.contains("alma@x.com"), "{}", r.content);
         let other = serde_json::json!({"to": "bob@x.com", "subject": "Hi", "text": "one"});
-        let r = guarded_send(&s, &c, "messaging", "mail-app", "mail.message.send", &other, || async { SendOutcome::Sent("ok".into(), None) }).await;
+        let r = guarded_send(&s, &c, "messaging", "mail-app", "mail.message.send", &other, None, || async { SendOutcome::Sent("ok".into(), None) }).await;
         assert!(!r.is_error, "someone else is a different send");
 
         let c2 = ToolContext { session_key: "agent:a1:workflow:run-10".into(), ..Default::default() };
-        let r = guarded_send(&s, &c2, "messaging", "mail-app", "mail.message.send", &first, || async { SendOutcome::Unknown("killed mid-send".into()) }).await;
+        let r = guarded_send(&s, &c2, "messaging", "mail-app", "mail.message.send", &first, None, || async { SendOutcome::Unknown("killed mid-send".into()) }).await;
         assert!(r.is_error);
-        let r = guarded_send(&s, &c2, "messaging", "mail-app", "mail.message.send", &reworded, || async { panic!("held: outcome unknown") }).await;
+        let r = guarded_send(&s, &c2, "messaging", "mail-app", "mail.message.send", &reworded, None, || async { panic!("held: outcome unknown") }).await;
         assert!(r.is_error && r.content.contains("outcome is unknown"), "{}", r.content);
         assert_eq!(counterparty_of(&serde_json::json!({"to": [" B@x.com", "a@x.com", "b@x.com"]})), "a@x.com,b@x.com");
         assert_eq!(counterparty_of(&serde_json::json!({"text": "hi"})), "");
@@ -504,17 +510,17 @@ mod tests {
 
         let receptionist = ToolContext { session_key: "agent:receptionist:coworker:ic".into(), ..Default::default() };
         let input = serde_json::json!({"to": "Pat@x.com", "text": "your gate code is noted"});
-        let r = guarded_send(&s, &receptionist, "messaging", "mail-app", "mail.message.send", &input, || async { panic!("a coworker must not write to another employee's person") }).await;
+        let r = guarded_send(&s, &receptionist, "messaging", "mail-app", "mail.message.send", &input, None, || async { panic!("a coworker must not write to another employee's person") }).await;
         assert!(r.is_error && r.content.contains("ic's open lead case") && r.content.contains("Hand the message to ic"), "{}", r.content);
         assert!(s.engine_effects_for_run("agent:receptionist:coworker:ic").unwrap().is_empty(), "nothing recorded");
         let by_phone = serde_json::json!({"to": "(555) 123-4567", "text": "hi"});
-        assert!(guarded_send(&s, &receptionist, "messaging", "hub-sms", "sms.message.send", &by_phone, || async { panic!("phones too") }).await.is_error);
+        assert!(guarded_send(&s, &receptionist, "messaging", "hub-sms", "sms.message.send", &by_phone, None, || async { panic!("phones too") }).await.is_error);
 
         let ic = ToolContext { session_key: "agent:ic:workflow:turn-1:run::0".into(), ..Default::default() };
-        let r = guarded_send(&s, &ic, "messaging", "mail-app", "mail.message.send", &input, || async { SendOutcome::Sent("Handed to Mail".into(), None) }).await;
+        let r = guarded_send(&s, &ic, "messaging", "mail-app", "mail.message.send", &input, None, || async { SendOutcome::Sent("Handed to Mail".into(), None) }).await;
         assert!(!r.is_error, "the holder writes: {}", r.content);
         let stranger = serde_json::json!({"to": "nobody@x.com", "text": "hi"});
-        let r = guarded_send(&s, &receptionist, "messaging", "mail-app", "mail.message.send", &stranger, || async { SendOutcome::Sent("ok".into(), None) }).await;
+        let r = guarded_send(&s, &receptionist, "messaging", "mail-app", "mail.message.send", &stranger, None, || async { SendOutcome::Sent("ok".into(), None) }).await;
         assert!(!r.is_error, "a person in nobody's case may be written to by anyone");
     }
 

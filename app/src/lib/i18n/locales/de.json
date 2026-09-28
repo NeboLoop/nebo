@@ -2975,7 +2975,10 @@
 		"allowedOnce": "Dieses Mal erlaubt",
 		"declined": "Abgelehnt",
 		"withdrawn": "Zurückgezogen: Die Arbeit, für die es war, ist beendet",
-		"failed": "Deine Antwort konnte nicht gesendet werden. Versuch es erneut."
+		"failed": "Deine Antwort konnte nicht gesendet werden. Versuch es erneut.",
+		"sendCheckTitle": "Ist die Nachricht von {name} rausgegangen?",
+		"sent": "Sie ist rausgegangen",
+		"notSent": "Sie ist nicht rausgegangen"
 	},
 	"permissions": {
 		"title": "Berechtigungen",

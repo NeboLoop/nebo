@@ -2975,7 +2975,10 @@
 		"allowedOnce": "Bu kez izin verildi",
 		"declined": "Reddedildi",
 		"withdrawn": "Geri çekildi: ait olduğu iş sona erdi",
-		"failed": "Yanıtın gönderilemedi. Tekrar dene."
+		"failed": "Yanıtın gönderilemedi. Tekrar dene.",
+		"sendCheckTitle": "{name} adlı çalışanın mesajı gitti mi?",
+		"sent": "Gitti",
+		"notSent": "Gitmedi"
 	},
 	"permissions": {
 		"title": "İzinler",

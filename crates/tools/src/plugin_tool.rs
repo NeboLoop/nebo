@@ -857,40 +857,52 @@ impl PluginRunner {
             }
         }
         let call = PluginCall { slug: slug.to_string(), command, args, timeout: 0 };
-        match client_key {
-            Some(key) => {
-                crate::effects::guarded_write(&self.db_store, ctx, slug, operation, &key, || {
-                    self.run_bound(ctx, &call, operation, &input)
-                })
-                .await
-            }
-            None => self.run_bound(ctx, &call, operation, &input).await,
-        }
+        self.run_bound(ctx, &call, operation, &input, client_key.as_deref()).await
     }
 
-    /// Run a bound operation's command.
+    /// Run a bound operation's command, through its one ledger row.
     ///
-    /// A customer-facing send goes through the effect ledger: recorded
-    /// before it goes, never sent twice for the same input in one run, held
-    /// when the outcome is unknown. The plugin vouches for the outcome with
-    /// a typed report on stdout (see `SendOutcome::from_plugin_output`); a
-    /// plugin that reports nothing typed leaves the send unknown, which
-    /// holds it — the words in an error are never the verdict. A send Nebo
-    /// refused before the call reached the plugin is failed (`Exec`).
+    /// A customer-facing send goes through the send ledger: recorded before
+    /// it goes, never sent twice for the same input in one run (or under the
+    /// same `clientKey` at all), held when the outcome is unknown. The
+    /// plugin vouches for the outcome with a typed report on stdout (see
+    /// `SendOutcome::from_plugin_output`); a plugin that reports nothing
+    /// typed leaves the send unknown, which holds it — the words in an error
+    /// are never the verdict. A send Nebo refused before the call reached
+    /// the plugin is failed (`Exec`). Any other write under a `clientKey`
+    /// goes through the write ledger. A send is never in both: one send with
+    /// two rows recorded two outcomes (live 2026-09-26: one failed, one held
+    /// pending forever).
     async fn run_bound(
         &self,
         ctx: &ToolContext,
         call: &PluginCall,
         operation: &str,
         input: &serde_json::Value,
+        client_key: Option<&str>,
     ) -> ToolResult {
         if crate::effects::is_customer_send(operation) {
-            return crate::effects::guarded_send(&self.db_store, ctx, "messaging", &call.slug, operation, input, || async {
-                self.handle_exec(call, ctx).await.send_outcome()
-            })
+            return crate::effects::guarded_send(
+                &self.db_store,
+                ctx,
+                "messaging",
+                &call.slug,
+                operation,
+                input,
+                client_key,
+                || async { self.handle_exec(call, ctx).await.send_outcome() },
+            )
             .await;
         }
-        self.handle_exec(call, ctx).await.into_result()
+        match client_key {
+            Some(key) => {
+                crate::effects::guarded_write(&self.db_store, ctx, &call.slug, operation, key, || async {
+                    self.handle_exec(call, ctx).await.into_result()
+                })
+                .await
+            }
+            None => self.handle_exec(call, ctx).await.into_result(),
+        }
     }
 
     /// Run a command on an installed plugin (the `plugin__<slug>` tool). A
@@ -2764,6 +2776,36 @@ mod budget_and_install_tests {
         assert!(rows.iter().all(|e| e.state == "failed"), "{rows:?}");
         assert!(rows.iter().all(|e| held(e.id).is_none()), "{rows:?}");
         assert!(db_store.engine_pending_effects().unwrap().is_empty(), "nothing is left for reconciliation");
+    }
+
+    /// A send under a `clientKey` is one ledger row (live 2026-09-26: the
+    /// write ledger and the send ledger each wrote one for the same email,
+    /// and they recorded different outcomes). The same call under the same
+    /// key, in this run or a later one, is answered from that row.
+    #[tokio::test]
+    async fn a_send_under_a_client_key_is_one_ledger_row() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (plugin_store, db_store) = stores(tmp.path());
+        install_account_plugin(tmp.path(), "gmail", serde_json::json!({"mail.message.send": "send"}));
+        let tool = operation_tool(plugin_store, db_store.clone(), "gmail", "mail_message_send");
+        let ctx = ToolContext { session_key: "agent:ic:workflow:run-1".into(), ..Default::default() };
+        let input = serde_json::json!({"clientKey": "alert-1", "to": "lead@example.com", "subject": "Hi", "text": "hello"});
+        let r = tool.execute_dyn(&ctx, input.clone()).await;
+        assert!(r.is_error, "{}", r.content);
+        let rows = db_store.engine_effects_for_run("run-1").unwrap();
+        assert_eq!(rows.len(), 1, "one send, one row: {rows:?}");
+        assert_eq!((rows[0].class.as_str(), rows[0].state.as_str()), ("messaging", "failed"), "{rows:?}");
+        assert_eq!(rows[0].idem_key, crate::effects::write_key("ic", "mail.message.send", "alert-1"));
+        assert_eq!(rows[0].counterparty.as_deref(), Some("lead@example.com"));
+
+        // Sent under the key: a later run's same call is not sent again.
+        db_store.engine_effect_pending("run-1", "messaging", &rows[0].idem_key, "gmail", "", "lead@example.com").unwrap();
+        db_store.engine_effect_attempted(rows[0].id).unwrap();
+        db_store.engine_effect_completed(rows[0].id, Some("msg-1"), Some("Email sent"), 1).unwrap();
+        let later = ToolContext { session_key: "agent:ic:workflow:run-2".into(), ..Default::default() };
+        let again = tool.execute_dyn(&later, input).await;
+        assert!(!again.is_error && again.content.contains("Already sent"), "{}", again.content);
+        assert!(db_store.engine_effects_for_run("run-2").unwrap().is_empty(), "no second row");
     }
 
     /// Gate 2026-09-26 (correction-quickbooks-payment-dry-run): with nothing
