@@ -14,14 +14,14 @@
   brain. This computer comes first: the coding agents installed here, which
   Nebo hosts itself, each hired into a folder of its own.
   A coding agent (Claude Code, Codex, ...) is hired with the permission mode
-  the owner picks here, which it runs in on its computer; Settings changes
-  it later.
+  the owner picks here, which it runs in on its computer: the company's
+  unless he picks another. Settings changes it later.
 -->
 <script lang="ts">
   import { onMount } from 'svelte';
   import { t } from 'svelte-i18n';
   import { X } from 'lucide-svelte';
-  import { createAgent, listLinkedAgents, workOutAgentNeeds } from '$lib/api/nebo';
+  import { createAgent, getCompanyPermissions, listLinkedAgents, workOutAgentNeeds } from '$lib/api/nebo';
   import type { LinkedBotEntry } from '$lib/api/neboComponents';
 
   let { onclose, oncreated }: {
@@ -38,14 +38,20 @@
   // The runtimes that are coding agents: they run their own tools on their
   // computer, under the permission mode the employee is hired with.
   const CODING = new Set(['claude-code', 'codex', 'gemini', 'opencode', 'acp']);
-  type LinkedMode = 'automatic' | 'ask' | 'plan' | 'full_access';
+  // `company`: the employee follows the company's mode, now and when it
+  // changes; any other is its own.
+  type LinkedMode = 'company' | 'automatic' | 'ask' | 'plan' | 'full_access';
   const linkedModes: { id: LinkedMode; label: string; desc: string }[] = [
+    { id: 'company', label: 'permissions.modeCompany', desc: 'permissions.modeCompanyDesc' },
     { id: 'automatic', label: 'permissions.modeAutomatic', desc: 'newEmployee.linkedModeAutomaticDesc' },
     { id: 'ask', label: 'permissions.modeAsk', desc: 'newEmployee.linkedModeAskDesc' },
     { id: 'plan', label: 'permissions.modePlan', desc: 'newEmployee.linkedModePlanDesc' },
     { id: 'full_access', label: 'permissions.modeFullAccess', desc: 'newEmployee.linkedModeFullAccessDesc' }
   ];
-  let linkedMode = $state<LinkedMode>('automatic');
+  let linkedMode = $state<LinkedMode>('company');
+  // The company's mode, named on the first choice.
+  let companyMode = $state('');
+  const companyModeLabel = $derived(linkedModes.find((m) => m.id !== 'company' && m.id === companyMode)?.label);
   const anyCoding = $derived(linkedBots.some((b) => CODING.has(b.runtime) || b.agents.some((a) => CODING.has(a.runtime ?? ''))));
 
   // The drafted job: its plain-words items and the draft Create grants.
@@ -96,6 +102,11 @@
   }
 
   onMount(async () => {
+    getCompanyPermissions()
+      .then((page) => (companyMode = page.companyMode))
+      .catch(() => {
+        // The first choice reads "Same as company defaults" alone.
+      });
     try {
       const resp = await listLinkedAgents();
       linkedBots = resp.bots ?? [];
@@ -131,7 +142,7 @@
     errorMsg = '';
     try {
       const resp = await createAgent({
-        linked: { botId: bot.id, agentId, ...(CODING.has(runtime) ? { permissionMode: linkedMode } : {}) }
+        linked: { botId: bot.id, agentId, ...(CODING.has(runtime) && linkedMode !== 'company' ? { permissionMode: linkedMode } : {}) }
       });
       oncreated(resp.agent.id, resp.agent.name, resp.threadId);
     } catch (e: unknown) {
@@ -247,7 +258,11 @@
                   <input type="radio" class="radio radio-xs radio-primary mt-0.5" name="linked-mode" value={m.id} bind:group={linkedMode} disabled={busy} />
                   <span class="min-w-0">
                     <span class="block text-sm">{$t(m.label)}</span>
-                    <span class="block text-xs text-base-content/60">{$t(m.desc)}</span>
+                    {#if m.id !== 'company'}
+                      <span class="block text-xs text-base-content/60">{$t(m.desc)}</span>
+                    {:else if companyModeLabel}
+                      <span class="block text-xs text-base-content/60">{$t(m.desc, { values: { mode: $t(companyModeLabel) } })}</span>
+                    {/if}
                   </span>
                 </label>
               {/each}

@@ -301,9 +301,10 @@ impl LocalHost {
 
     /// Hosts the ACP agent `agent` as `command` starts it, the way
     /// [`LocalHost::hire`] hosts one installed here: for the tests, whose
-    /// agents are scripted.
-    #[cfg(test)]
-    pub(crate) async fn host(&self, agent: AcpAgent, command: nebo_runtimes::RuntimeCommand) -> Result<LocalAgent, String> {
+    /// agents are scripted (this crate's, and the server's proofs through
+    /// the `test-agents` feature).
+    #[cfg(any(test, feature = "test-agents"))]
+    pub async fn host(&self, agent: AcpAgent, command: nebo_runtimes::RuntimeCommand) -> Result<LocalAgent, String> {
         {
             let mut told = self.record.told.lock().expect("told");
             told.retain(|t| t.id != agent.key());
