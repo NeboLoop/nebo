@@ -2047,8 +2047,15 @@ mod tests {
         let rest = collect(rx).await;
         assert_eq!(rest.last().unwrap().event_type, StreamEventType::Done);
         assert!(channels.lock().await.is_empty(), "the card left the run");
-        let answers: Vec<Value> = told(&r.told).into_iter().filter_map(|t| t.get("answer").cloned()).collect();
-        assert_eq!(answers, vec![json!({ "outcome": "cancelled" })], "answered once, as cancelled");
+        // The host answers the question as it passes the cancel on, each on
+        // its own way to the agent's process: the agent may end its turn,
+        // and the stream end, before it has read the answer.
+        let answered = || -> Vec<Value> { told(&r.told).into_iter().filter_map(|t| t.get("answer").cloned()).collect() };
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        while answered().is_empty() && tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(answered(), vec![json!({ "outcome": "cancelled" })], "answered once, as cancelled");
     }
 
     /// A stop cancels the agent's turn, waits for its end, and ends the
