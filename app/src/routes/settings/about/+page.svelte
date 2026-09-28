@@ -1,5 +1,6 @@
 <script lang="ts">
   import SettingsHeader from '$lib/components/settings/SettingsHeader.svelte';
+  import BrandMark from '$lib/components/BrandMark.svelte';
   import { onMount } from 'svelte';
   import { t } from 'svelte-i18n';
   import ExternalLink from 'lucide-svelte/icons/external-link';
@@ -55,7 +56,7 @@
   }
 
   const resources = $derived([
-    { label: $t('settingsAbout.docs'), url: 'https://docs.neboai.com' },
+    { label: $t('settingsAbout.docs'), url: 'https://neboai.com/docs' },
     { label: $t('settingsAbout.reportIssue'), url: 'https://github.com/NeboLoop/nebo/issues' },
     { label: $t('settingsApps.privacyPolicy'), url: 'https://neboai.com/privacy' },
     { label: $t('settingsAbout.termsOfService'), url: 'https://neboai.com/terms' },
@@ -66,7 +67,7 @@
 
 <div class="p-4 rounded-xl border border-base-content/5 bg-base-100 mb-6">
   <div class="flex items-center gap-3 mb-4">
-    <div class="w-12 h-12 rounded-xl bg-base-content text-base-100 grid place-items-center font-mono text-lg font-semibold">N</div>
+    <BrandMark class="w-12 h-12 shrink-0" />
     <div>
       <div class="text-sm font-bold">Nebo</div>
       <div class="text-xs text-base-content/70">{$t('settingsAbout.tagline')}</div>

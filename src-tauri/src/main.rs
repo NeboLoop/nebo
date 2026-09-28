@@ -682,8 +682,16 @@ fn main() {
                 .items(&[&show, &hide, &sep1, &check_update, &help, &feedback, &sep2, &quit])
                 .build()?;
 
+            // macOS re-tints a black template icon to suit the menu bar.
+            // Windows and Linux draw the icon as-is on a taskbar or panel that
+            // is dark by default, where the black mark disappears, so they get
+            // the full-colour app tile.
+            #[cfg(target_os = "macos")]
             let tray_icon =
                 tauri::image::Image::from_bytes(include_bytes!("../icons/tray-icon.png"))?;
+            #[cfg(not(target_os = "macos"))]
+            let tray_icon =
+                tauri::image::Image::from_bytes(include_bytes!("../icons/32x32.png"))?;
 
             let _tray = TrayIconBuilder::new()
                 .icon(tray_icon)
