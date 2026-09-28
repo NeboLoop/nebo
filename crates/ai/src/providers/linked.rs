@@ -63,7 +63,13 @@ use crate::types::*;
 pub const ID: &str = "linked";
 
 /// How long a cancel waits for the turn's end.
+#[cfg(not(test))]
 const CANCEL_TIMEOUT: Duration = Duration::from_secs(10);
+/// Short in tests, so a peer that never acknowledges a cancel is exercised
+/// in real time (see [`HEARTBEAT`]'s test value for why real time, not a
+/// mocked clock).
+#[cfg(test)]
+const CANCEL_TIMEOUT: Duration = Duration::from_millis(300);
 /// How often a connection pings the host, so a turn that waits on the owner
 /// keeps it (spec §11: every 20 s of quiet), and checks with `host/agents`
 /// that the agent's own process is still there. A linked run can
@@ -486,16 +492,18 @@ impl Driver<'_> {
         format!("{} didn't answer. Try again.", self.name)
     }
 
-    /// This session may be wedged, not merely idle: a cancel — the owner's
-    /// stop, or Nebo's own once the host says the process is gone — is no
-    /// guarantee the agent's own query actually stopped (an adapter can
-    /// force a `cancelled` answer on its own floor without the SDK
-    /// underneath yielding). Forgetting the session here means the next
+    /// A cancel that never got an answer — Nebo's own [`CANCEL_TIMEOUT`]
+    /// ran out, or the connection closed while one was pending — is the one
+    /// case nothing tells Nebo the agent's own side is sane: the session
+    /// may be wedged, not merely idle. Forgetting it here means the next
     /// message on this chat opens a fresh one instead of resuming one that
-    /// might never answer again.
+    /// might never answer again. An *acknowledged* cancel (the agent said
+    /// "cancelled", or the host says the process died but its own record of
+    /// the session survives it) keeps the session — the owner's "Stop… now
+    /// do X" still has its context.
     fn forget_session(&self) {
         if let Err(e) = self.provider.store.set_chat_linked_session(&self.req.chat_id, &self.agent_id, "") {
-            warn!(chat_id = %self.req.chat_id, error = %e, "linked: could not forget the session after a cancel");
+            warn!(chat_id = %self.req.chat_id, error = %e, "linked: could not forget the session after an unacknowledged cancel");
         }
     }
 
@@ -542,6 +550,8 @@ impl Driver<'_> {
                     }
                     cancel_deadline = Some(tokio::time::Instant::now() + CANCEL_TIMEOUT);
                 }
+                // The cancel never got an answer: forget the session, the
+                // one case nothing vouches for its state.
                 _ = tokio::time::sleep_until(cancel_deadline.unwrap_or_else(tokio::time::Instant::now)), if cancel_deadline.is_some() => {
                     self.forget_session();
                     return Err("Cancelled".to_owned());
@@ -560,10 +570,13 @@ impl Driver<'_> {
                         match self.liveness(&answers_tx).await? {
                             Liveness::Ended(ended) => return self.ended(ended).await,
                             Liveness::Gone => {
+                                // The process died, but the session itself
+                                // (the agent's own transcript) is not lost:
+                                // a fresh adapter resumes it via
+                                // session/load, so the session is kept.
                                 warn!(bot_id = %self.bot_id, agent = %self.agent, session = %self.session, "linked: the host says the agent's process is gone; ending the turn");
                                 let cancel = json!({ "agent": self.agent, "acp": { "jsonrpc": "2.0", "method": "session/cancel", "params": { "sessionId": self.session } } });
                                 let _ = self.conn.send(&cancel);
-                                self.forget_session();
                                 return Err(self.stalled_notice());
                             }
                             Liveness::Unknown => {}
@@ -871,15 +884,10 @@ impl Driver<'_> {
             return Err(turn::plain(&self.name, error));
         }
         match ended.stop_reason {
-            Some(StopReason::Cancelled) => {
-                // A "cancelled" answer is no proof the agent's own query
-                // really stopped: an adapter can force one on its own floor
-                // without the SDK underneath yielding. Forgetting the
-                // session means the next message opens a fresh one instead
-                // of resuming one that might be wedged.
-                self.forget_session();
-                Err("Cancelled".to_owned())
-            }
+            // The agent acknowledged the cancel: its own record of the
+            // session is intact, so the session is kept — a "Stop… now do
+            // X" resumes with its context, not a fresh session.
+            Some(StopReason::Cancelled) => Err("Cancelled".to_owned()),
             Some(StopReason::Refusal) => Err(format!("{} declined to do that.", self.name)),
             _ => {
                 if let Some(usage) = &ended.usage {
@@ -1083,6 +1091,7 @@ mod tests {
     /// - `turn`: thinks, says, runs `ls`, says, and ends with its usage.
     /// - `ask`: asks in its own words whether to run `rm -rf build`.
     /// - `hang`: says it is working until it is cancelled.
+    /// - `deaf`: says it is working, then never acknowledges a cancel.
     /// - `dies`: says it is working, then the process itself exits.
     /// - `coder`: offers a bypass mode; in it, runs `git status` without
     ///   asking, else asks first as `git` does.
@@ -1200,9 +1209,14 @@ mod tests {
                     mode = message["params"]["modeId"].as_str().unwrap_or_default().to_owned();
                     reply(json!({}));
                 }
-                Some("session/cancel") => {
+                // "deaf": never acknowledges a cancel — the wedge case
+                // Nebo's own CANCEL_TIMEOUT has to give up on.
+                Some("session/cancel") if script != "deaf" => {
                     note(json!({ "cancel": true }));
                     send(json!({ "jsonrpc": "2.0", "id": prompt_id, "result": { "stopReason": "cancelled" } }));
+                }
+                Some("session/cancel") => {
+                    note(json!({ "cancel": true }));
                 }
                 Some("session/prompt") => {
                     note(json!({ "prompt": message["params"]["prompt"] }));
@@ -1229,7 +1243,7 @@ mod tests {
                             "_meta": { "nebo/words": { "question": "Run `rm -rf build`?", "summary": "run `rm -rf build`",
                                 "labels": ["Allow once", "Always allow", "Deny"] } },
                         } })),
-                        "hang" => say("Working"),
+                        "hang" | "deaf" => say("Working"),
                         // The Mac-mini incident: the process itself dies
                         // mid-turn, not just the connection — a crash, not a
                         // network blip.
@@ -1837,14 +1851,12 @@ mod tests {
         assert_eq!(told(&r.told).iter().filter(|t| t.get("cancel").is_some()).count(), 1);
     }
 
-    /// A cancel — even one the agent answers politely — is never trusted to
-    /// have really freed the session (nebo-link's own adapter can force a
-    /// `cancelled` answer on its own floor without the underlying SDK truly
-    /// yielding, leaving the session wedged): it is forgotten, so the next
-    /// message on the same chat opens a fresh one (`session/new` again)
-    /// instead of resuming the one that might never answer again.
+    /// The owner's "Stop… now do X" still has Claude's context: the agent
+    /// acknowledged the cancel (its own record of the session is intact),
+    /// so the session is kept, and the next message resumes it
+    /// (`session/load`) instead of starting over (`session/new`).
     #[tokio::test]
-    async fn a_cancel_forgets_the_session_so_the_next_message_starts_fresh() {
+    async fn an_acknowledged_cancel_keeps_the_session() {
         let r = remote("hang").await;
         let token = CancellationToken::new();
         let mut req = request("do something long", "chat-1", &remote_model());
@@ -1853,10 +1865,38 @@ mod tests {
         let mut rx = r.provider.stream(&req).await.unwrap();
         tokio::time::timeout(Duration::from_secs(60), rx.recv()).await.unwrap().unwrap();
         token.cancel();
-        collect(rx).await;
+        let rest = collect(rx).await;
+        assert_eq!(rest[0].error.as_deref(), Some("Cancelled"));
 
         let chat = r.store.get_chat("chat-1").unwrap().unwrap();
-        assert!(chat.linked_chat_id.is_none_or(|s| s.is_empty()), "the session is forgotten after a cancel");
+        assert!(chat.linked_chat_id.is_some_and(|s| !s.is_empty()), "the session is kept after an acknowledged cancel");
+
+        let mut again = r.provider.stream(&request("now do X", "chat-1", &remote_model())).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(60), again.recv()).await.unwrap().unwrap();
+        let news = told(&r.told).iter().filter(|t| t.get("new").is_some()).count();
+        assert_eq!(news, 1, "resumed the same session, never session/new again");
+    }
+
+    /// A cancel that never gets an answer — the agent deaf to it, Nebo's own
+    /// [`CANCEL_TIMEOUT`] running out — is the wedge case: nothing vouches
+    /// for the session's state, so it is forgotten and the next message
+    /// opens a fresh one instead of resuming one that might never answer
+    /// again.
+    #[tokio::test]
+    async fn an_unacknowledged_cancel_forgets_the_session() {
+        let r = remote("deaf").await;
+        let token = CancellationToken::new();
+        let mut req = request("do something long", "chat-1", &remote_model());
+        req.cancel_token = Some(token.clone());
+
+        let mut rx = r.provider.stream(&req).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(60), rx.recv()).await.unwrap().unwrap();
+        token.cancel();
+        let rest = collect(rx).await;
+        assert_eq!(rest[0].error.as_deref(), Some("Cancelled"));
+
+        let chat = r.store.get_chat("chat-1").unwrap().unwrap();
+        assert!(chat.linked_chat_id.is_none_or(|s| s.is_empty()), "the session is forgotten after an unacknowledged cancel");
 
         let mut again = r.provider.stream(&request("and again", "chat-1", &remote_model())).await.unwrap();
         tokio::time::timeout(Duration::from_secs(60), again.recv()).await.unwrap().unwrap();
