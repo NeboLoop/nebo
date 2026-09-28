@@ -141,38 +141,60 @@ pub fn permission_denied(path: &str, operation: &str) -> String {
     msg
 }
 
-/// How an employee installs a missing program here, and when it tells the
-/// owner instead: the one text every "not installed" result carries.
+/// The installers that work on this computer: the one wording the
+/// environment tells (`Installing software`) and every "not installed"
+/// result carries (`install_guidance`).
 ///
 /// Installing needs no ask (owner, 2026-09-28: "We must be able to actually
 /// install things so we can code and do other high-value things"; the
-/// permission check never surfaces an install). What can't run is admin
-/// rights: sudo and su are hard limits (`safeguard`), so each platform names
-/// the installers that work without them.
+/// permission check never surfaces an install).
+/// - A cloud bot (`crate::cloud_bot`): its package installer runs as root,
+///   as a command of its own (`system_packages`), and what it installs is put
+///   back after a restart; the language installers write to the durable
+///   toolchains folder the image points them at.
 /// - macOS: Homebrew installs as the user, and the language installers do.
-/// - Linux (a desktop or a cloud bot, never root): apt and dnf need root;
-///   user-level installers write to the home folder (on a cloud bot, the one
-///   folder that survives a restart). `pip install --user` is refused by
+/// - Linux (the owner's own, never root): apt and dnf need root; user-level
+///   installers write to the home folder. `pip install --user` is refused by
 ///   current Debian and Ubuntu (PEP 668), so a Python tool goes through pipx
 ///   or a venv.
 /// - Windows: winget's user scope and scoop need no administrator;
 ///   Chocolatey does, by default.
-pub fn install_guidance() -> &'static str {
-    if cfg!(target_os = "macos") {
-        "Install it and carry on: Homebrew (brew install <package>), or a language's own installer (npm install -g, \
-         pipx install or a venv for a Python tool, cargo install, go install), then run the command again. Never \
-         sudo; if an install needs admin rights or no package provides it, tell the owner."
-    } else if cfg!(target_os = "windows") {
-        "Install it and carry on: winget install --scope user <id>, scoop install <package>, or a language's own \
-         installer (npm install -g, pip install --user, cargo install, go install), then run the command again. An \
-         installer that needs administrator rights can't run here; then, or when no package provides it, tell the \
-         owner."
-    } else {
-        "Install it and carry on, at user level: pipx install or a venv (python3 -m venv) for a Python tool, npm \
-         install -g --prefix ~/.local, cargo install, go install, brew install where Homebrew is set up, or a \
-         release binary in ~/.local/bin; then run the command again. apt and dnf need root, which Nebo never has: \
-         when only a system package provides it, or none does, tell the owner the package and the command to run."
+pub fn installers(cloud: bool, os: &str) -> &'static str {
+    if cloud {
+        return "a system package with `sudo apt-get update && sudo apt-get install -y <package>`, as a command of its \
+                own, or a language's own installer (npm install -g, pip install --user, cargo install, go install); \
+                both are kept after a restart";
     }
+    match os {
+        "macos" => "Homebrew (brew install <package>), or a language's own installer (npm install -g, pipx install or \
+                    a venv for a Python tool, cargo install, go install)",
+        "windows" => "winget install --scope user <id>, scoop install <package>, or a language's own installer (npm \
+                      install -g, pip install --user, cargo install, go install)",
+        _ => "user-level installers: pipx install or a venv (python3 -m venv) for a Python tool, npm install -g \
+              --prefix ~/.local, cargo install, go install, brew install where Homebrew is set up, or a release binary \
+              in ~/.local/bin",
+    }
+}
+
+/// How an employee installs a missing program here, and when it tells the
+/// owner instead: the one text every "not installed" result carries.
+pub fn install_guidance() -> String {
+    guidance(crate::cloud_bot(), std::env::consts::OS)
+}
+
+fn guidance(cloud: bool, os: &str) -> String {
+    let otherwise = if cloud {
+        "If no package provides it, tell the owner."
+    } else {
+        match os {
+            "macos" => "Never sudo; if an install needs admin rights or no package provides it, tell the owner.",
+            "windows" => "An installer that needs administrator rights can't run here; then, or when no package \
+                          provides it, tell the owner.",
+            _ => "apt and dnf need root, which Nebo never has: when only a system package provides it, or none does, \
+                  tell the owner the package and the command to run.",
+        }
+    };
+    format!("Install it and carry on with {}; then run the command again. {otherwise}", installers(cloud, os))
 }
 
 /// Build a "command not found" error with similar command suggestions.
@@ -186,7 +208,7 @@ pub fn command_not_found(cmd: &str) -> String {
         ));
     }
     msg.push_str(". ");
-    msg.push_str(install_guidance());
+    msg.push_str(&install_guidance());
     msg
 }
 
@@ -283,4 +305,27 @@ fn levenshtein(a: &str, b: &str) -> usize {
         std::mem::swap(&mut prev, &mut curr);
     }
     prev[b_len]
+}
+
+#[cfg(test)]
+mod install_tests {
+    use super::*;
+
+    /// A cloud bot's missing program is installed with its package installer
+    /// and kept; the owner's computer never hears of sudo as an option.
+    #[test]
+    fn the_hint_names_the_installers_that_work_here() {
+        let cloud = guidance(true, "linux");
+        assert!(cloud.starts_with("Install it and carry on"), "{cloud}");
+        assert!(cloud.contains("`sudo apt-get update && sudo apt-get install -y <package>`, as a command of its own"), "{cloud}");
+        assert!(cloud.contains("kept after a restart") && !cloud.contains("need root"), "{cloud}");
+        assert_eq!(
+            crate::system_packages::installer("sudo apt-get update && sudo apt-get install -y imagemagick"),
+            Some(vec!["imagemagick".to_string()]),
+            "the form the hint names is the form the installer lets through"
+        );
+        let linux = guidance(false, "linux");
+        assert!(linux.contains("apt and dnf need root") && !linux.contains("sudo apt-get"), "{linux}");
+        assert!(guidance(false, "macos").contains("Never sudo"));
+    }
 }

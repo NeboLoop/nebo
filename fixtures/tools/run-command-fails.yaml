@@ -33,7 +33,7 @@ prompt_assertions:
       text: "Model does not run the same command again after 'command not found' unless an install between the two succeeded"
       severity: critical
     - id: install-or-report
-      text: "Any install attempt uses a package manager without sudo, and when no package provides the tool the model says so instead of trying further"
+      text: "Any install attempt uses an installer the environment names (without sudo on the owner's computer; on a cloud bot, sudo apt-get install -y <package> as a command of its own), and when no package provides the tool the model says so instead of trying further"
       severity: important
     - id: clear-error-report
       text: "Model tells the user the command was not found"

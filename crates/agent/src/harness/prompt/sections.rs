@@ -290,22 +290,15 @@ pub const CLOUD_ADMIN_RIGHTS: &str = "the package installer only: install a syst
 && sudo apt-get install -y <package>`, as a command of its own. Every other use of sudo, and su, is refused.";
 
 /// Where software comes from on this computer, told beside the admin
-/// rights. A cloud bot installs system packages itself and keeps them
-/// (`tools::system_packages`: `installed` so far, and where putting them
-/// back after a restart stands); the owner's own computer uses the
-/// installers that need no admin rights.
+/// rights, in the words every "not installed" result uses
+/// (`tools::errors::installers`). A cloud bot's also names what it
+/// installed so far and where putting it back after a restart stands
+/// (`tools::system_packages`).
 pub fn installing_software(cloud: bool, os: &str, installed: &[String], restore: &tools::system_packages::Restore) -> String {
+    let mut text = format!("{}.", tools::errors::installers(cloud, os));
     if !cloud {
-        return match os {
-            "macos" => "Homebrew (brew install) or a user-level installer (pip install --user, npm install -g).",
-            "windows" => "winget or a user-level installer (pip install --user, npm install -g).",
-            _ => "a user-level installer (pip install --user, npm install -g, cargo install).",
-        }
-        .to_string();
+        return text;
     }
-    let mut text = "system packages with the installer above, and they are put back after every restart. User-level \
-installs (npm install -g, pip install --user, cargo install, go install) are kept too."
-        .to_string();
     if !installed.is_empty() {
         text.push_str(&format!(" Installed so far: {}.", installed.join(", ")));
     }

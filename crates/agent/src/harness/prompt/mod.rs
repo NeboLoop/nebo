@@ -280,7 +280,11 @@ mod tests {
         let none = Restore::default();
         assert!(sections::installing_software(false, "macos", &[], &none).starts_with("Homebrew"));
         assert!(sections::installing_software(false, "windows", &[], &none).starts_with("winget"));
-        assert!(sections::installing_software(false, "linux", &[], &none).starts_with("a user-level installer"));
+        assert!(sections::installing_software(false, "linux", &[], &none).starts_with("user-level installers"));
+        for (cloud, os) in [(false, "macos"), (false, "windows"), (false, "linux"), (true, "linux")] {
+            let told = sections::installing_software(cloud, os, &[], &none);
+            assert!(told.contains(tools::errors::installers(cloud, os)), "one wording with the not-installed hint: {told}");
+        }
 
         let command = "sudo apt-get update && sudo apt-get install -y imagemagick";
         assert!(sections::CLOUD_ADMIN_RIGHTS.contains("`sudo apt-get update && sudo apt-get install -y <package>`"));
@@ -288,7 +292,7 @@ mod tests {
 
         let jq = vec!["jq".to_string(), "imagemagick".to_string()];
         let told = sections::installing_software(true, "linux", &jq, &none);
-        assert!(told.contains("put back after every restart") && told.contains("Installed so far: jq, imagemagick."), "{told}");
+        assert!(told.contains("kept after a restart") && told.contains("Installed so far: jq, imagemagick."), "{told}");
         let running = Restore { running: true, failed: vec![] };
         assert!(sections::installing_software(true, "linux", &jq, &running).contains("being put back"));
         let failed = Restore { running: false, failed: vec!["jq".to_string()] };

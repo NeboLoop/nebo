@@ -1621,9 +1621,9 @@ mod tests {
         let hint = crate::errors::install_guidance();
         assert!(res.content.contains(&format!("'frobnicate_zz' is not installed on this system. {hint}")), "{}", res.content);
         let piped = t.execute(&ctx(), json!({"action": "exec", "command": "frobnicate_zz | head -1"})).await;
-        assert!(piped.content.contains(hint), "{}", piped.content);
+        assert!(piped.content.contains(&hint), "{}", piped.content);
         let not_started = crate::errors::command_not_found("frobnicate_zz");
-        assert!(not_started.contains(hint), "{not_started}");
+        assert!(not_started.contains(&hint), "{not_started}");
         for text in [res.content.as_str(), piped.content.as_str(), not_started.as_str()] {
             let lower = text.to_lowercase();
             for ask in ["without asking", "ask the owner first", "ask the user first", "ask before"] {
