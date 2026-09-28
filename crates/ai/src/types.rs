@@ -706,6 +706,19 @@ pub trait Provider: Send + Sync {
         true
     }
 
+    /// Whether cancelling this provider's stream is a round trip to a
+    /// runtime it does not control in-process (the linked provider's ACP
+    /// `session/cancel`, sent to a remote or local agent and waited on),
+    /// rather than something the runner can end on the spot (a CLI
+    /// provider's child process, a native stream it just stops reading).
+    /// True here means the runner keeps waiting for this call's stream to
+    /// actually end — the provider's own cancel handshake, bounded — before
+    /// it treats the call as over and free to send this session a second
+    /// prompt: never two prompts in flight on one linked session.
+    fn cancel_is_async(&self) -> bool {
+        false
+    }
+
     /// Whether this provider supports images in tool result content blocks.
     /// When true, the runner will pass screenshot images directly to the model
     /// instead of converting them to text via the sidecar vision model.

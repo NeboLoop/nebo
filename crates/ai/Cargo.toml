@@ -60,3 +60,4 @@ rcgen = "0.13"
 tokio-rustls = "0.26"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 tempfile = "3"
+tokio = { workspace = true, features = ["test-util"] }

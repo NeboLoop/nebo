@@ -48,6 +48,12 @@ pub(crate) const MAX_EMPTY_CONTENT_RETRIES: usize = 3;
 /// Replies in a row that write a call out as text before the turn stops
 /// asking for the call and ends on what the reply said.
 const MAX_TEXT_CALL_RETRIES: usize = 2;
+/// How long a cancel waits for a `cancel_is_async` provider's stream to
+/// actually end (its own cancel handshake, e.g. the linked provider's ACP
+/// `session/cancel` round trip) before giving up on it and freeing the slot
+/// anyway. Longer than that provider's own cancel timeout, so its stream
+/// ends on its own terms first.
+const CANCEL_ACK_GRACE: Duration = Duration::from_secs(15);
 
 /// What the owner reads when the model he picked refuses the request outright.
 /// The raw upstream text ("Parameter 'temperature'=0.699… is not supported for
@@ -272,6 +278,23 @@ pub(crate) struct ModelReply {
     /// The tool the reply wrote a call to out as text, where the reply was
     /// cut (`reminders::NoteFence`): that call never ran.
     pub text_call: Option<String>,
+}
+
+/// After a cancel, waits (bounded by [`CANCEL_ACK_GRACE`]) for a
+/// `cancel_is_async` provider's stream to end on its own — its cancel
+/// handshake with the runtime it does not control — before the caller frees
+/// the slot. The events themselves are not needed here: they were already
+/// read up to the point the cancel fired, and nothing after it reaches the
+/// owner. Returns once the stream ends (a `Done` event or the channel
+/// closes) or the grace period runs out, whichever comes first.
+async fn drain_after_cancel(rx: &mut mpsc::Receiver<StreamEvent>) {
+    let deadline = tokio::time::Instant::now() + CANCEL_ACK_GRACE;
+    loop {
+        match tokio::time::timeout_at(deadline, rx.recv()).await {
+            Ok(Some(event)) if event.event_type != StreamEventType::Done => continue,
+            _ => return,
+        }
+    }
 }
 
 /// Make one call, streaming its events on `call.tx`. `state` takes the
@@ -508,6 +531,16 @@ pub(crate) async fn call_model(call: ModelCall<'_>, st: &mut CallState, state: &
             biased;
             _ = cancel_token.cancelled() => {
                 info!(session_id, "run cancelled during LLM stream");
+                // A provider whose stop is a round trip to a runtime it does
+                // not control (the linked provider's ACP `session/cancel`)
+                // is not done just because this token fired: waiting here
+                // for its stream to actually end is what keeps the next
+                // turn from sending a second prompt while the first is
+                // still being told to stop (never two prompts in flight to
+                // one linked session).
+                if provider.cancel_is_async() {
+                    drain_after_cancel(&mut rx).await;
+                }
                 // Best-effort: save whatever content we accumulated before cancellation
                 if !assistant_content.is_empty() || !tool_calls.is_empty() {
                     let tc_json = if !tool_calls.is_empty() {
@@ -1276,5 +1309,136 @@ mod tests {
         let (provider, model) = resolve_aux(&cfg, &providers).expect("aux route should resolve");
         assert_eq!(provider.id(), "openai");
         assert_eq!(model, "gpt-4o-mini");
+    }
+
+    /// A provider whose cancel is a round trip to a runtime it does not
+    /// control (`cancel_is_async`): it keeps streaming until it has heard
+    /// the cancel token, then only ends its stream after `ack_lag` — the
+    /// stand-in for an ACP `session/cancel` round trip.
+    struct SlowToAck {
+        ack_lag: Duration,
+        cancel_is_async: bool,
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for SlowToAck {
+        fn id(&self) -> &str {
+            "slow-to-ack"
+        }
+        fn cancel_is_async(&self) -> bool {
+            self.cancel_is_async
+        }
+        async fn stream(&self, req: &ChatRequest) -> Result<ai::EventReceiver, ProviderError> {
+            let (tx, rx) = mpsc::channel(4);
+            let cancel = req.cancel_token.clone().unwrap_or_default();
+            let ack_lag = self.ack_lag;
+            tokio::spawn(async move {
+                let _ = tx.send(StreamEvent::text("Working")).await;
+                cancel.cancelled().await;
+                tokio::time::sleep(ack_lag).await;
+                let _ = tx.send(StreamEvent::error("Cancelled".to_owned())).await;
+                let _ = tx.send(StreamEvent::done()).await;
+            });
+            Ok(rx)
+        }
+    }
+
+    /// Everything `call_model` needs besides the provider, built fresh so
+    /// each test owns its store file.
+    struct Rig {
+        _dir: tempfile::TempDir,
+        store: Arc<db::Store>,
+        selector: ModelSelector,
+        concurrency: ConcurrencyController,
+    }
+
+    impl Rig {
+        fn new() -> Self {
+            let dir = tempfile::tempdir().unwrap();
+            let store = Arc::new(db::Store::new(dir.path().join("t.db").to_str().unwrap()).expect("store"));
+            Self {
+                _dir: dir,
+                store,
+                selector: ModelSelector::new(Default::default()),
+                concurrency: ConcurrencyController::new(Some(4)),
+            }
+        }
+    }
+
+    /// A stop on a provider that needs an ack round trip to actually end
+    /// (the linked provider's stand-in here) must not let `call_model`
+    /// declare the slot free before that round trip lands: the bug this
+    /// closes let the runner start a second prompt on the still-live ACP
+    /// session the moment the local cancel token fired, before the agent
+    /// had even been told to stop.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cancel_waits_for_a_cancel_is_async_provider_to_actually_end() {
+        for (cancel_is_async, min_elapsed) in [(true, Duration::from_millis(150)), (false, Duration::ZERO)] {
+            let rig = Rig::new();
+            let sessions = SessionManager::new(rig.store.clone());
+            let providers: RwLock<Vec<Arc<dyn Provider>>> = RwLock::new(vec![Arc::new(SlowToAck {
+                ack_lag: Duration::from_millis(200),
+                cancel_is_async,
+            })]);
+            let token = CancellationToken::new();
+            let request = ChatRequest {
+                model: "slow-to-ack".to_string(),
+                cancel_token: Some(token.clone()),
+                ..ChatRequest::new(ai::RequestTrace::new("agent_turn"))
+            };
+            let (tx, _rx_out) = mpsc::channel(16);
+            let (tool_calls_out, _tc_rx) = mpsc::unbounded_channel();
+            let mut folds = crate::harness::text_fold::TurnFolds::default();
+            let mut st = CallState::default();
+            let mut state = RunState::default();
+
+            let cancel_after = token.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                cancel_after.cancel();
+            });
+
+            let started = std::time::Instant::now();
+            let outcome = call_model(
+                ModelCall {
+                    request,
+                    providers: &providers,
+                    selector: &rig.selector,
+                    concurrency: &rig.concurrency,
+                    priority: crate::concurrency::Priority::Owner,
+                    sessions: &sessions,
+                    cancel: &token,
+                    tx: &tx,
+                    session_id: "s1",
+                    step: 0,
+                    step_started: std::time::Instant::now(),
+                    selected_provider_id: "slow-to-ack",
+                    selected_model: "slow-to-ack",
+                    model_override: "slow-to-ack",
+                    context_limit: 100_000,
+                    tool_credential: None,
+                    tool_calls_out,
+                    folds: &mut folds,
+                    heard_through: None,
+                    tool_names: vec![],
+                },
+                &mut st,
+                &mut state,
+            )
+            .await;
+            let elapsed = started.elapsed();
+
+            assert!(matches!(outcome, CallOutcome::Cancelled), "cancel_is_async={cancel_is_async}");
+            assert!(
+                elapsed >= min_elapsed,
+                "cancel_is_async={cancel_is_async}: returned after {elapsed:?}, wanted at least {min_elapsed:?}"
+            );
+            if cancel_is_async {
+                assert!(
+                    elapsed < CANCEL_ACK_GRACE,
+                    "the provider's own ack ended the stream well inside the grace period: {elapsed:?}"
+                );
+            }
+        }
     }
 }
