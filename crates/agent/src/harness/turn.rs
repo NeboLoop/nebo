@@ -150,8 +150,14 @@ pub struct TurnState {
     pub frozen_renderings: compact::trim::Frozen,
     /// The relevant-memories search started at Prepare.
     pub recall: super::memory_context::RecallPrefetch,
+    /// The one decision about the owner's opening message, running since
+    /// Prepare (`opening`); read into `saves` and `commands`.
+    pub opening: super::opening::Opening,
     /// The saves the owner asked for, checked when the turn would end.
     pub saves: super::memory_save::SaveWatch,
+    /// A command the owner gave: the first step's tool choice, and checked
+    /// when the turn would end.
+    pub commands: super::owner_command::CommandWatch,
     /// The next step is the harness's correction of a save the owner asked
     /// for (`memory_save::Correction`).
     correcting: Option<super::memory_save::Correction>,
@@ -783,8 +789,9 @@ pub(crate) async fn prepare(
         },
     );
     surfaced.extend(memory.identity_ids.iter().copied());
-    // Whether the owner's words ask for a save is decided while the steps
-    // run, when the owner speaks and the employee can save.
+    // Whether the owner's words ask for a save, and whether they give a
+    // command to run, is decided in one call while the steps run: each
+    // question when the owner speaks and its tool is the employee's.
     let can_save = !employee.linked
         && !seat.memory.writes_disabled
         && grant.mode != Mode::Plan
@@ -795,10 +802,17 @@ pub(crate) async fn prepare(
         TurnInput::Owner { text, .. } => Some(text.as_str()),
         _ => None,
     };
-    let saves = super::memory_save::SaveWatch::start(
+    let can_run = !employee.linked
+        && grant.mode != Mode::Plan
+        && !withheld_tools.contains(super::owner_command::RUN_COMMAND)
+        && req.seat.tool_allowlist.as_ref().is_none_or(|allowed| allowed.contains(super::owner_command::RUN_COMMAND))
+        && h.tools.get(super::owner_command::RUN_COMMAND).await.is_some();
+    let saves = super::memory_save::SaveWatch::start(can_save && owner_speaks(&req), &req.seat.agent_id);
+    let commands = super::owner_command::CommandWatch::start(can_run && owner_speaks(&req), &req.seat.agent_id);
+    let opening = super::opening::Opening::start(
         h.decide.clone(),
         owner_words,
-        can_save && owner_speaks(&req),
+        super::opening::Asks { save: saves.applies(), command: commands.applies() },
         &req.seat.agent_id,
     );
 
@@ -820,7 +834,9 @@ pub(crate) async fn prepare(
         usage: RunState::default(),
         surfaced_memories: surfaced,
         recall,
+        opening,
         saves,
+        commands,
         correcting: None,
         end_checks_this_turn: 0,
         frozen_renderings: h
@@ -1124,6 +1140,17 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
         let mut request = build_request(cx, st, &window, surface.declared, &model_name);
         if reply_in_words {
             request.tool_choice = ai::ToolChoice::None;
+        } else if st.step == 1 && correcting.is_none() && st.commands.applies() {
+            // A command the owner gave is the first step's call: its tool
+            // choice waits (briefly) on the opening decision.
+            tokio::select! {
+                biased;
+                _ = cx.request.cancel.cancelled() => return TurnExit::Cancelled,
+                _ = settle_opening(st, super::owner_command::FIRST_STEP_WAIT) => {}
+            }
+            if let Some(choice) = st.commands.first_step_choice(&request.tools) {
+                request.tool_choice = choice;
+            }
         }
         let request_tokens =
             st.usage.last_request_estimate + st.usage.system_overhead_tokens + st.usage.estimate_correction;
@@ -1992,7 +2019,8 @@ async fn tool_round(
         if call.input["scope"] == "local"
             && h.tools.target(&call.name, &call.input).await.is_some_and(|t| matches!(t.key.as_str(), "remember" | "forget"))
         {
-            executor.owner_shares(st.saves.shares().await);
+            settle_opening(st, super::memory_save::DECIDE_TIMEOUT).await;
+            executor.owner_shares(st.saves.shares());
             break;
         }
     }
@@ -2026,6 +2054,12 @@ async fn tool_round(
     };
     if let Some(result) = &results.saved_memory {
         st.saves.saved(st.step, result);
+    }
+    for tc in tool_calls.iter() {
+        if h.tools.target(&tc.name, &tc.input).await.is_some_and(|t| t.key == super::owner_command::RUN_COMMAND) {
+            st.commands.ran();
+            break;
+        }
     }
     for tc in tool_calls.iter() {
         if let Some(class) = h.tools.get(&tc.name).await.and_then(|t| t.taint(&tc.input)) {
@@ -2119,8 +2153,13 @@ async fn end_checks(cx: &TurnContext, st: &mut TurnState) -> Option<Result<(), T
         _ => None,
     };
     let workflow_contract = cx.workflow().map(|m| m.contract.clone());
-    let unsaved_memory = st.saves.due().await;
-    let checks = turn_end::registry(&cx.request.mode, turn_end::EndChecks { goal, workflow_contract, unsaved_memory });
+    settle_opening(st, super::memory_save::DECIDE_TIMEOUT).await;
+    let unsaved_memory = st.saves.due();
+    let unrun_command = st.commands.due();
+    let checks = turn_end::registry(
+        &cx.request.mode,
+        turn_end::EndChecks { goal, workflow_contract, unsaved_memory, unrun_command },
+    );
     if checks.is_empty() {
         return None;
     }
@@ -2142,6 +2181,9 @@ async fn end_checks(cx: &TurnContext, st: &mut TurnState) -> Option<Result<(), T
                 if let TurnEvent::UnsavedMemory(scope) = &event {
                     st.correcting = Some(super::memory_save::Correction { scope: *scope, step: st.step + 1 });
                 }
+                if matches!(event, TurnEvent::UnrunCommand) {
+                    st.commands.spend();
+                }
                 let reason = events::attachment_for(&event).map(|a| a.text).unwrap_or_default();
                 st.reminders.add(&event);
                 st.transition = Transition::EndCheckContinue {
@@ -2153,6 +2195,15 @@ async fn end_checks(cx: &TurnContext, st: &mut TurnState) -> Option<Result<(), T
         }
     }
     None
+}
+
+/// Read the opening decision into the watches that use it, waiting at most
+/// `wait` for it. Once it is read, later calls return at once.
+async fn settle_opening(st: &mut TurnState, wait: std::time::Duration) {
+    if let Some(heard) = st.opening.heard(wait).await {
+        st.saves.opened(heard.save);
+        st.commands.opened(heard.command);
+    }
 }
 
 // ── Finish ───────────────────────────────────────────────────────────────
@@ -3165,7 +3216,8 @@ mod tests {
                         }
                     };
                     let req: serde_json::Value = serde_json::from_slice(&buf[start..]).unwrap_or_default();
-                    kept.lock().unwrap().push(req["state"].clone());
+                    let asked: Vec<String> = req["questions"].as_object().map(|q| q.keys().cloned().collect()).unwrap_or_default();
+                    kept.lock().unwrap().push(serde_json::json!({"state": req["state"], "questions": asked}));
                     let answers: serde_json::Map<String, serde_json::Value> = req["questions"]
                         .as_object()
                         .map(|q| q.keys().map(|k| (k.clone(), answer(k))).collect())
@@ -3202,9 +3254,9 @@ mod tests {
         assert_eq!(exit_of(&events), "text_response");
         let seen = seen.lock().unwrap().clone();
         assert_eq!(seen.len(), 1, "Jev was asked once, about the writer call: {seen:?}");
-        assert_eq!(seen[0]["last_user_message"], "OWNER-D12 update the Rivera listing");
-        assert_eq!(seen[0]["objective"], "the Rivera listing is updated");
-        assert_eq!(seen[0]["calls"][0]["tool"], "writer");
+        assert_eq!(seen[0]["state"]["last_user_message"], "OWNER-D12 update the Rivera listing");
+        assert_eq!(seen[0]["state"]["objective"], "the Rivera listing is updated");
+        assert_eq!(seen[0]["state"]["calls"][0]["tool"], "writer");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -6492,6 +6544,109 @@ mod tests {
             None => |q| if q == "save" { answer("none") } else { serde_json::json!({"type": "noul", "noul": 0.02}) },
         };
         Arc::new(serve_jev(jev).await.0)
+    }
+
+    /// The run_command tool, as the harness sees it: it runs and says so.
+    fn run_command_tool() -> Vec<Box<dyn tools::registry::DynTool>> {
+        vec![Box::new(Echo { name: "run_command", deferred: false, read_only: false })]
+    }
+
+    /// A Jev that reads the owner's opening message as giving a command
+    /// (`named`) or not, never as a save, and answers anything else "no".
+    async fn jev_commanding(named: bool) -> (Arc<ai::DecideClient>, Arc<Mutex<Vec<serde_json::Value>>>) {
+        fn choice(picked: &str, options: &[&str]) -> serde_json::Value {
+            let probabilities: serde_json::Map<String, serde_json::Value> =
+                options.iter().map(|o| (o.to_string(), serde_json::json!(if *o == picked { 0.9 } else { 0.1 / 2.0 }))).collect();
+            serde_json::json!({"type": "choice", "choice": picked, "confidence": 0.9, "probabilities": probabilities})
+        }
+        let jev: fn(&str) -> serde_json::Value = if named {
+            |q| match q {
+                "command" => choice("named", &["named", "none"]),
+                "save" => choice("none", &["private", "local", "none"]),
+                _ => serde_json::json!({"type": "noul", "noul": 0.02}),
+            }
+        } else {
+            |q| match q {
+                "command" => choice("none", &["named", "none"]),
+                "save" => choice("none", &["private", "local", "none"]),
+                _ => serde_json::json!({"type": "noul", "noul": 0.02}),
+            }
+        };
+        let (client, seen) = serve_jev(jev).await;
+        (Arc::new(client), seen)
+    }
+
+    const RUN_IT: &str = "Run 'nebo-nonexistent-tool --version' and tell me what version it is.";
+
+    /// `run-command-retry-spiral` run 1 (2026-09-27) opened with loading
+    /// convert_file for "Run `convert image.png image.jpg`". When the
+    /// opening decision says the owner gave a command, the first step's
+    /// tool choice is run_command; the steps after it choose freely. The
+    /// save and command questions go in ONE call about the opening message.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_command_the_owner_gives_is_the_first_call() {
+        let model = Scripted::new(vec![
+            Step::Call("run_command", serde_json::json!({"command": "nebo-nonexistent-tool --version"})),
+            Step::Say("nebo-nonexistent-tool isn't installed here."),
+        ]);
+        let mut extra = run_command_tool();
+        extra.extend(remember_tool());
+        let (jev, seen) = jev_commanding(true).await;
+        let h = harness_with(&model, extra).await.with_decide(jev);
+        let events = run_turn(&h, owner(RUN_IT)).await;
+        assert_eq!(exit_of(&events), "text_response");
+        let calls = model.calls();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].tool_choice, ai::ToolChoice::Tool("run_command".into()), "the first step calls run_command");
+        assert_eq!(calls[1].tool_choice, ai::ToolChoice::Auto, "the next step chooses freely");
+        let seen = seen.lock().unwrap().clone();
+        assert_eq!(seen.len(), 1, "one call about the opening message: {seen:?}");
+        assert_eq!(seen[0]["questions"], serde_json::json!(["command", "save"]), "both questions in it");
+        assert_eq!(seen[0]["state"]["message"], RUN_IT);
+    }
+
+    /// `run-command-fails` run 3 (2026-09-27) answered "running it would
+    /// result in command not found" with no call. A reply with no
+    /// run_command after the owner gave a command gets ONE more step, told
+    /// so; once the command has run, the turn ends on its answer.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_answer_without_running_the_command_takes_one_more_step() {
+        let model = Scripted::new(vec![
+            Step::Say("There is no such tool; running it would result in command not found."),
+            Step::Call("run_command", serde_json::json!({"command": "nebo-nonexistent-tool --version"})),
+            Step::Say("It isn't installed: the shell says command not found."),
+        ]);
+        let (jev, _) = jev_commanding(true).await;
+        let h = harness_with(&model, run_command_tool()).await.with_decide(jev);
+        let events = run_turn(&h, owner(RUN_IT)).await;
+        assert_eq!(exit_of(&events), "text_response");
+        let calls = model.calls();
+        assert_eq!(calls.len(), 3, "the answer, the step the check added, the reply after the call");
+        assert!(
+            texts(&calls[1]).iter().any(|t| t.contains("none has run in this turn") && t.contains("Run it now with run_command")),
+            "the added step is told why"
+        );
+        assert!(texts(&calls[0]).iter().all(|t| !t.contains("none has run in this turn")));
+    }
+
+    /// No command given, or no decision: nothing is forced or added.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn no_command_given_changes_nothing() {
+        let model = Scripted::new(vec![Step::Say("Here's what I found.")]);
+        let (jev, _) = jev_commanding(false).await;
+        let h = harness_with(&model, run_command_tool()).await.with_decide(jev);
+        let events = run_turn(&h, owner("Find all .json files in the current directory.")).await;
+        assert_eq!(exit_of(&events), "text_response");
+        let calls = model.calls();
+        assert_eq!(calls.len(), 1, "no step added");
+        assert_eq!(calls[0].tool_choice, ai::ToolChoice::Auto);
+
+        let model = Scripted::new(vec![Step::Say("Running it would print its version.")]);
+        let h = harness_with(&model, run_command_tool()).await;
+        let events = run_turn(&h, owner(RUN_IT)).await;
+        assert_eq!(exit_of(&events), "text_response");
+        assert_eq!(model.calls().len(), 1, "no decision fails open");
+        assert_eq!(model.calls()[0].tool_choice, ai::ToolChoice::Auto);
     }
 
     const SAVE_RECIPE: &str = "Here's a recipe I like: air fryer tenderloin bites, 380F for 8 to 10 minutes. Can you also save it to company memory?";
