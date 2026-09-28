@@ -2116,7 +2116,9 @@ pub(crate) fn push_inbox_via(store: &db::Store, api_url: &str, item: serde_json:
     };
     tokio::spawn(async move {
         if let Err(e) = api.push_inbox_item(&item).await {
-            debug!(error = %e, "owner inbox push failed (best-effort)");
+            // Best-effort, but never silent: a missed push is a card the
+            // owner's phone never showed.
+            warn!(item = %item["id"], error = %e, "owner inbox push failed");
         }
     });
 }

@@ -295,6 +295,34 @@ fn voice_tools(transfer: bool, telephony: bool, intents: &[String]) -> Vec<serde
                             Never starts work.",
             "parameters": {"type": "object", "properties": {}}
         }));
+        // The owner's spoken yes or no to something waiting on his OK: the
+        // answer, through the ask's one answer path. Owner sessions only —
+        // a phone caller never answers the owner's asks.
+        tools.push(serde_json::json!({
+            "type": "function",
+            "name": "answer_ask",
+            "description": "Give the user's spoken answer to something waiting on their OK: a nebo \
+                            result that says it is waiting on their OK and names an ask id. Call \
+                            it only after they have answered out loud: yes or go ahead is \
+                            this_once; yes, always, or don't ask again is allow_always; no is \
+                            no. If what they said isn't clearly yes or no, ask again instead. \
+                            Never starts work.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "ask_id": {
+                        "type": "string",
+                        "description": "The ask id the nebo result named."
+                    },
+                    "answer": {
+                        "type": "string",
+                        "enum": ["this_once", "allow_always", "no"],
+                        "description": "What the user said."
+                    }
+                },
+                "required": ["ask_id", "answer"]
+            }
+        }));
     }
     if telephony {
         // A phone employee must be able to put the receiver down — without
@@ -800,6 +828,76 @@ fn join_options(options: &[&str]) -> String {
         [one] => (*one).to_string(),
         [first, second] => format!("{first} or {second}"),
         [head @ .., last] => format!("{}, or {last}", head.join(", ")),
+    }
+}
+
+/// The asks a delegated run on the owner's call left waiting on his OK
+/// (raised at or after `since`, still open), each with the id his spoken
+/// answer goes to. Empty when nothing waits.
+pub(crate) fn waiting_on_owner(asks: &agent::harness::permissions::Asks, session_key: &str, since: i64) -> String {
+    let open = match asks.open(Some(session_key)) {
+        Ok(open) => open,
+        Err(e) => {
+            warn!(session_key, error = %e, "voice: the asks waiting on the owner could not be read");
+            return String::new();
+        }
+    };
+    open.iter()
+        .filter(|a| a.created_at >= since)
+        .map(|a| {
+            format!(
+                "\n\n(Waiting on the user's OK, ask {id}: {sentence}. Ask them; when they answer, call \
+                 answer_ask with ask_id \"{id}\" and their answer.)",
+                id = a.id,
+                sentence = a.sentence
+            )
+        })
+        .collect()
+}
+
+/// The owner's spoken answer to an ask, from the voice model's
+/// `answer_ask` call, through the ask's one answer path (answered via
+/// voice). Only an open ask of this call's own conversation, and only when
+/// the owner spoke after it was raised (`owner_spoke_at`, unix seconds): the
+/// voice model can't answer on words a tool result put in front of it.
+/// Returns what the voice model hears.
+pub(crate) fn answer_by_voice(
+    asks: &agent::harness::permissions::Asks,
+    session_key: &str,
+    input: &serde_json::Value,
+    owner_spoke_at: i64,
+) -> String {
+    use agent::harness::permissions::{Answer, AnsweredVia, AskError, AskStatus};
+    let Some(answer) = input["answer"].as_str().and_then(Answer::parse) else {
+        return "answer_ask needs `answer`: this_once, allow_always or no.".to_string();
+    };
+    let id = input["ask_id"].as_str().unwrap_or_default();
+    let ask = match asks.get(id) {
+        Ok(Some(ask)) if ask.session_key == session_key => ask,
+        Ok(_) => {
+            let waiting = waiting_on_owner(asks, session_key, 0);
+            return if waiting.is_empty() {
+                format!("Nothing is waiting on the user's OK in this conversation (no ask {id}).")
+            } else {
+                format!("No ask {id} is waiting in this conversation. These are:{waiting}")
+            };
+        }
+        Err(e) => return format!("The answer could not be recorded ({e}). Ask them to tap the card in this conversation."),
+    };
+    if ask.status != AskStatus::Open {
+        return "That was already answered; nothing more to do.".to_string();
+    }
+    if owner_spoke_at <= ask.created_at {
+        return "The user hasn't answered since this was asked. Ask them, then call answer_ask with what they say."
+            .to_string();
+    }
+    match asks.answer(&ask.id, answer, AnsweredVia::Voice) {
+        Ok(_) if answer == Answer::No => "Answered no: it won't run. Tell them so.".to_string(),
+        Ok(_) => "Answered yes: it runs now, and its result comes back in this conversation. Tell them you're on \
+                  it; if they ask whether it went through, check with nebo."
+            .to_string(),
+        Err(AskError::Settled(_)) => "That was already answered; nothing more to do.".to_string(),
+        Err(e) => format!("The answer could not be recorded ({e}). Ask them to tap the card in this conversation."),
     }
 }
 
@@ -1509,9 +1607,11 @@ async fn handle_conversation_ws(mut socket: WebSocket, state: AppState, mut q: C
              it is not clear they mean the running work, ask in one short sentence first. \
              While a task runs, \
              say you are on it once. If a result says the last task is still running and \
-             the message is waiting, say that instead of on it. If the result says \
-             something needs approval or a permission, say so plainly and point them to \
-             the Nebo desktop app.",
+             the message is waiting, say that instead of on it. If a result says it is \
+             waiting on the user's OK, ask them that in one short question; when they \
+             answer yes or no, call `answer_ask` with the ask id and their answer. They \
+             can also tap the card in this conversation or in their Inbox, in the Nebo \
+             app on any of their devices.",
         );
     }
     // Where the call runs, from the builder a text turn's rows come from:
@@ -2009,7 +2109,8 @@ async fn handle_conversation_session(
                     .get("task")
                     .and_then(|v| v.as_str())
                     .unwrap_or_default();
-                let content = if task.is_empty() {
+                let started = chrono::Utc::now().timestamp();
+                let mut content = if task.is_empty() {
                     "The nebo tool needs a `task` string describing what to do.".to_string()
                 } else {
                     // A delegated run appends to the thread —
@@ -2024,6 +2125,11 @@ async fn handle_conversation_session(
                     }
                     run_delegated_task(&state, &ctx.session_key, task, caller.as_ref()).await
                 };
+                // On the owner's own call, what the run left waiting on his
+                // OK, with the id his spoken answer goes to.
+                if caller.is_none() {
+                    content.push_str(&waiting_on_owner(&state.permission_asks, &ctx.session_key, started));
+                }
                 serde_json::json!({ "ok": true, "content": content })
             } else {
                 let result = state.tools.execute(&ctx, &name, input).await;
@@ -2041,6 +2147,9 @@ async fn handle_conversation_session(
     // yet. They start when it is (TranscriptionEnd), so the spoken request
     // lands before the run's rows.
     let mut held_runs: Vec<(String, String, String)> = Vec::new();
+    // When the owner last spoke (unix seconds): a spoken answer to an ask
+    // counts only if he spoke after it was raised.
+    let mut owner_spoke_at: i64 = 0;
 
     loop {
         tokio::select! {
@@ -2054,11 +2163,13 @@ async fn handle_conversation_session(
                     ConversationEvent::SessionInitialized =>
                         Some(serde_json::json!({"type": "session_initialized"})),
                     ConversationEvent::TranscriptionStart => {
+                        owner_spoke_at = chrono::Utc::now().timestamp();
                         ledger.utterance_started();
                         Some(serde_json::json!({"type": "transcription_start"}))
                     }
                     // Cumulative transcript — the client replaces, never appends.
                     ConversationEvent::TranscriptionText(text) => {
+                        owner_spoke_at = chrono::Utc::now().timestamp();
                         ledger.words(&text);
                         Some(serde_json::json!({"type": "transcription_text", "text": text}))
                     }
@@ -2066,6 +2177,7 @@ async fn handle_conversation_session(
                     // finished transcript): its user row, then the runs that
                     // waited for it.
                     ConversationEvent::TranscriptionEnd => {
+                        owner_spoke_at = chrono::Utc::now().timestamp();
                         let rows = ledger.user_final();
                         sink.write(&state, &mut socket, rows).await;
                         for (call_id, name, arguments) in held_runs.drain(..) {
@@ -2142,6 +2254,27 @@ async fn handle_conversation_session(
                             let line = voice_status_line(
                                 state.harness.active_turn_status(&ctx.session_key).as_ref(),
                             );
+                            if tool_done_tx
+                                .send((
+                                    call_id,
+                                    serde_json::json!({"ok": true, "content": line}).to_string(),
+                                ))
+                                .await
+                                .is_err()
+                            {
+                                break;
+                            }
+                            continue;
+                        }
+                        if name == "answer_ask" && caller_ctx.is_none() {
+                            pending_tools += 1;
+                            let line = answer_by_voice(
+                                &state.permission_asks,
+                                &ctx.session_key,
+                                &decode_tool_arguments(&arguments),
+                                owner_spoke_at,
+                            );
+                            info!(session_key = %ctx.session_key, outcome = %line, "voice answer to an ask");
                             if tool_done_tx
                                 .send((
                                     call_id,
@@ -2566,6 +2699,17 @@ mod voice_prompt_tests {
         };
         assert!(names(voice_tools(false, false, &[])).contains(&"cancel".to_string()));
         assert!(!names(voice_tools(false, true, &[])).contains(&"cancel".to_string()));
+    }
+
+    /// `answer_ask` is the owner's spoken answer: declared on his own call,
+    /// never on a phone line, where a stranger must not answer his asks.
+    #[test]
+    fn answer_ask_is_declared_for_owner_sessions_only() {
+        let names = |tools: Vec<serde_json::Value>| -> Vec<String> {
+            tools.iter().map(|t| t["name"].as_str().unwrap_or_default().to_string()).collect()
+        };
+        assert!(names(voice_tools(false, false, &[])).contains(&"answer_ask".to_string()));
+        assert!(!names(voice_tools(true, true, &["book".into()])).contains(&"answer_ask".to_string()));
     }
 
     #[test]

@@ -225,3 +225,68 @@ async fn an_unanswered_ask_never_expires_and_is_reminded() {
     assert_eq!(count(&ran)[1], 1);
     assert_eq!(nebo.store().engine_get_run(&ask_id).unwrap().unwrap().state, "done");
 }
+
+/// On the owner's own call the employee asks aloud and his spoken yes is the
+/// answer (live 2026-09-28: told nothing about where to answer, the employee
+/// sent the owner, on his phone, to "the desktop app", then to support).
+/// The parked step tells the model to ask him now; the voice model hears
+/// the ask's id beside the run's reply. His answer counts only after he
+/// spoke and only in the call's own conversation; then it goes through the
+/// ask's one answer path (answered via voice), the server's engine resumes
+/// the parked call once, and the employee hears it ran. A client can't
+/// claim a spoken answer.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn owners_call_ask_is_asked_aloud_and_answered_by_voice() {
+    let nebo = session().await;
+    let agent = format!("vc-{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
+    let key = format!("agent:{agent}:thread:{}", uuid::Uuid::new_v4());
+    let (names, ran) = heartbeat_steps(&nebo, &agent.replace('-', "_")).await;
+    let mut ctx = ToolContext::new(Origin::User).with_session(&key, "voice");
+    ctx.door = Door::Voice;
+    let asks = &nebo.state.permission_asks;
+
+    // The step parks, and the model is told to ask the owner now, by voice.
+    let since = chrono::Utc::now().timestamp();
+    let parked = nebo.tool(&ctx, &names[1], json!({ "to": "+15550142" })).await;
+    let ask_id = parked.parked_ask.clone().expect("the step parks on the owner");
+    assert!(parked.content.contains("ask them now, in one short spoken question"), "{}", parked.content);
+    assert!(parked.content.contains("Their spoken yes or no on this call is the answer"), "{}", parked.content);
+    assert!(!parked.content.to_lowercase().contains("desktop"), "{}", parked.content);
+    let waiting = crate::handlers::voice::waiting_on_owner(asks, &key, since);
+    assert!(waiting.contains(&format!("ask_id \"{ask_id}\"")), "the voice model hears the id: {waiting}");
+    let created = asks.get(&ask_id).unwrap().unwrap().created_at;
+    let yes = json!({ "ask_id": ask_id, "answer": "this_once" });
+
+    // Not yet: the owner hasn't spoken since it was asked.
+    let early = crate::handlers::voice::answer_by_voice(asks, &key, &yes, created);
+    assert!(early.contains("hasn't answered since this was asked"), "{early}");
+    // Not from another conversation.
+    let elsewhere = format!("agent:{agent}:thread:other");
+    let other = crate::handlers::voice::answer_by_voice(asks, &elsewhere, &yes, created + 5);
+    assert!(other.contains("Nothing is waiting"), "{other}");
+    // Not from a client claiming a spoken answer.
+    let (status, _) = nebo
+        .post(&format!("/permissions/asks/{ask_id}/answer"), &json!({ "answer": "this_once", "via": "voice" }))
+        .await;
+    assert!(status >= 400, "a client can't claim a spoken answer: {status}");
+    assert_eq!(asks.get(&ask_id).unwrap().unwrap().status, agent::harness::permissions::AskStatus::Open);
+    assert_eq!(count(&ran)[1], 0);
+
+    // He says yes: answered via voice, and the parked call runs once.
+    let heard = crate::handlers::voice::answer_by_voice(asks, &key, &yes, created + 2);
+    assert!(heard.starts_with("Answered yes"), "{heard}");
+    let row = nebo.store().get_permission_ask(&ask_id).unwrap().unwrap();
+    assert_eq!((row.answer.as_deref(), row.answered_via.as_deref()), (Some("this_once"), Some("voice")));
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        if told(&nebo, &key).iter().any(|t| t.contains(&ask_id) && t.contains("allowed, this once\nIt ran:\nDONE")) {
+            break;
+        }
+        assert!(tokio::time::Instant::now() < deadline, "the answer never resumed the ask: {:?}", told(&nebo, &key));
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(count(&ran)[1], 1, "the parked call ran once");
+    let again = crate::handlers::voice::answer_by_voice(asks, &key, &yes, created + 9);
+    assert!(again.contains("already answered"), "{again}");
+    assert_eq!(count(&ran)[1], 1);
+}

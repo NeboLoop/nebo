@@ -232,6 +232,60 @@ pub(crate) struct PluginCall {
     pub(crate) timeout: i64,
 }
 
+/// A plugin call's result, and whether the call reached the plugin. A send
+/// the call carried takes its outcome from this, never from the words in
+/// the result: one that never reached the plugin cannot have gone out.
+enum Exec {
+    /// Nebo refused or failed before the call reached the plugin: no
+    /// plugin process started, or its bridge never took the op.
+    NotReached(ToolResult),
+    /// The call reached the plugin — its process was started, or its
+    /// bridge took the op — and this is what came back.
+    Reached(ToolResult),
+}
+
+impl Exec {
+    fn result(&self) -> &ToolResult {
+        match self {
+            Exec::NotReached(r) | Exec::Reached(r) => r,
+        }
+    }
+
+    fn into_result(self) -> ToolResult {
+        match self {
+            Exec::NotReached(r) | Exec::Reached(r) => r,
+        }
+    }
+
+    /// The same call, answered with `result`: a step after the call (the
+    /// auth self-heal) rewords the answer; it does not change whether the
+    /// plugin was reached.
+    fn answer(&self, result: ToolResult) -> Exec {
+        match self {
+            Exec::NotReached(_) => Exec::NotReached(result),
+            Exec::Reached(_) => Exec::Reached(result),
+        }
+    }
+
+    /// The call run again after this attempt: the plugin was reached if
+    /// either attempt reached it.
+    fn retried(&self, retry: Exec) -> Exec {
+        match retry {
+            Exec::NotReached(r) => self.answer(r),
+            reached => reached,
+        }
+    }
+
+    /// The outcome of a send the call carried. Only a plugin that was
+    /// reached vouches for it, in its own typed report.
+    fn send_outcome(self) -> crate::effects::SendOutcome {
+        match self {
+            Exec::NotReached(r) => crate::effects::SendOutcome::PreSendFailure(r.content),
+            Exec::Reached(r) => crate::effects::SendOutcome::from_plugin_output(&r.content),
+        }
+    }
+}
+
 /// The id a typed operation's input or result names a record by.
 pub fn record_id(v: &serde_json::Value) -> Option<String> {
     match v.get("id")? {
@@ -821,7 +875,8 @@ impl PluginRunner {
     /// when the outcome is unknown. The plugin vouches for the outcome with
     /// a typed report on stdout (see `SendOutcome::from_plugin_output`); a
     /// plugin that reports nothing typed leaves the send unknown, which
-    /// holds it — the words in an error are never the verdict.
+    /// holds it — the words in an error are never the verdict. A send Nebo
+    /// refused before the call reached the plugin is failed (`Exec`).
     async fn run_bound(
         &self,
         ctx: &ToolContext,
@@ -831,12 +886,11 @@ impl PluginRunner {
     ) -> ToolResult {
         if crate::effects::is_customer_send(operation) {
             return crate::effects::guarded_send(&self.db_store, ctx, "messaging", &call.slug, operation, input, || async {
-                let r = self.handle_exec(call, ctx).await;
-                crate::effects::SendOutcome::from_plugin_output(&r.content)
+                self.handle_exec(call, ctx).await.send_outcome()
             })
             .await;
         }
-        self.handle_exec(call, ctx).await
+        self.handle_exec(call, ctx).await.into_result()
     }
 
     /// Run a command on an installed plugin (the `plugin__<slug>` tool). A
@@ -858,7 +912,7 @@ impl PluginRunner {
                 crate::operation_tools::operation_tool_name(&op)
             ));
         }
-        self.handle_exec(call, ctx).await
+        self.handle_exec(call, ctx).await.into_result()
     }
 
     pub(crate) fn handle_events(&self, slug: &str) -> ToolResult {
@@ -895,7 +949,7 @@ impl PluginRunner {
         }
     }
 
-    async fn handle_exec(&self, pi: &PluginCall, ctx: &ToolContext) -> ToolResult {
+    async fn handle_exec(&self, pi: &PluginCall, ctx: &ToolContext) -> Exec {
         // Channel-plugin messaging ops route through the running bridge sidecar's
         // stdin — never through a fresh CLI invocation. Two processes hitting the
         // same upstream socket race each other (we observed this with orphan
@@ -913,7 +967,8 @@ impl PluginRunner {
 
         let budget = ExecBudget::start(Self::exec_timeout(pi));
         let command_label = Self::command_label(pi);
-        let result = self.run_plugin_command(pi, ctx, budget.remaining()).await;
+        let first = self.run_plugin_command(pi, ctx, budget.remaining()).await;
+        let result = first.result();
 
         // On error, check if it's an auth failure and attempt self-heal:
         // silent refresh first (manifest `auth.commands.refresh`), interactive
@@ -963,9 +1018,9 @@ impl PluginRunner {
                     if auth.commands.status.is_some() {
                         match bounded(&budget, &command_label, "the auth status check", self.probe_auth(&pi.slug, probe_dir)).await {
                             // Status says authenticated — false positive, return original error
-                            Ok(Some(true)) => return result,
+                            Ok(Some(true)) => return first,
                             Ok(_) => {}
-                            Err(text) => return out_of_time(text, &result),
+                            Err(text) => return first.answer(out_of_time(text, result)),
                         }
                     }
 
@@ -977,18 +1032,18 @@ impl PluginRunner {
                     // no browser — renew, re-probe, retry.
                     if auth.commands.refresh.is_some() {
                         if let Err(text) = bounded(&budget, &command_label, "the silent token refresh", self.plugin_store.run_auth_refresh(&pi.slug, probe_dir)).await {
-                            return out_of_time(text, &result);
+                            return first.answer(out_of_time(text, result));
                         }
                         match bounded(&budget, &command_label, "the auth status check after the refresh", self.probe_auth(&pi.slug, probe_dir)).await {
                             Ok(Some(true)) => {
                                 info!(plugin = %pi.slug, "silent token refresh healed auth, retrying command");
                                 return match budget.step(&command_label, "the retry after the refresh") {
-                                    Ok(given) => self.run_plugin_command(pi, ctx, given).await,
-                                    Err(text) => out_of_time(text, &result),
+                                    Ok(given) => first.retried(self.run_plugin_command(pi, ctx, given).await),
+                                    Err(text) => first.answer(out_of_time(text, result)),
                                 };
                             }
                             Ok(_) => {}
-                            Err(text) => return out_of_time(text, &result),
+                            Err(text) => return first.answer(out_of_time(text, result)),
                         }
                     }
 
@@ -1058,7 +1113,7 @@ impl PluginRunner {
                                  it in Settings, Plugins, then ask me again."
                             ),
                         });
-                        return ToolResult { need, ..refused };
+                        return first.answer(ToolResult { need, ..refused });
                     }
 
                     // Interactive chat: the ONE connect card — the widget the
@@ -1081,11 +1136,11 @@ impl PluginRunner {
                         } else {
                             "have not been entered for this employee"
                         };
-                        return ToolResult::error(format!(
+                        return first.answer(ToolResult::error(format!(
                             "{display_name} cannot be used: the {display_label} details {state}. \
                              The owner enters them in {display_name}'s plugin settings. Tell the \
                              owner that in plain words and stop; do not suggest commands."
-                        ));
+                        )));
                     }
 
                     // Values the login itself needs (an OAuth app's client id
@@ -1103,23 +1158,23 @@ impl PluginRunner {
                         .collect();
                     unset.sort_unstable();
                     if !unset.is_empty() {
-                        return ToolResult::error(format!(
+                        return first.answer(ToolResult::error(format!(
                             "{display_name} is not set up yet: {} {} no value, and no {display_label} can \
                              be connected until the owner enters {} in {display_name}'s plugin settings. \
                              Tell the owner that in plain words and stop; do not suggest commands.",
                             unset.join(" and "),
                             if unset.len() == 1 { "has" } else { "have" },
                             if unset.len() == 1 { "it" } else { "them" },
-                        ));
+                        )));
                     }
 
                     let agent_id = types::keyparser::extract_agent_id(&ctx.session_key);
                     if agent_id.is_empty() {
-                        return ToolResult::error(format!(
+                        return first.answer(ToolResult::error(format!(
                             "{display_name} has no working sign-in, and this session belongs to no \
                              employee a {display_label} could be connected for. Tell the owner in plain \
                              words and stop."
-                        ));
+                        )));
                     }
                     let answer = ctx
                         .ask_user(
@@ -1136,28 +1191,28 @@ impl PluginRunner {
                             // The owner's time on the card is not the command's:
                             // the retry gets the full exec budget, as a launch
                             // after the first-use card does.
-                            self.run_plugin_command(pi, ctx, Self::exec_timeout(pi)).await
+                            first.retried(self.run_plugin_command(pi, ctx, Self::exec_timeout(pi)).await)
                         }
-                        CardAnswer::Failed(reason) => ToolResult::error(format!(
+                        CardAnswer::Failed(reason) => first.answer(ToolResult::error(format!(
                             "Connecting the {display_label} failed: {reason}. Tell the owner that \
                              error in plain words and stop. Do not offer the card again and do not \
                              suggest commands."
-                        )),
-                        CardAnswer::Skipped => ToolResult::error(format!(
+                        ))),
+                        CardAnswer::Skipped => first.answer(ToolResult::error(format!(
                             "The owner skipped connecting the {display_label}, so {display_name} \
                              cannot be used yet. Say so in plain words, do what can be done without \
                              it, and do not offer the card again unless they ask."
-                        )),
-                        CardAnswer::NoAnswer => ToolResult::error(format!(
+                        ))),
+                        CardAnswer::NoAnswer => first.answer(ToolResult::error(format!(
                             "The {display_label} was not connected: no answer (the owner stopped \
                              the run). Do not offer the card again."
-                        )),
+                        ))),
                     };
                 }
             }
         }
 
-        result
+        first
     }
 
     /// The exec budget a call asked for, or the default.
@@ -1180,11 +1235,11 @@ impl PluginRunner {
 
     /// Execute a plugin command and return the result. Shared by initial call
     /// and retry; `timeout` is what is left of the exec budget.
-    async fn run_plugin_command(&self, pi: &PluginCall, ctx: &ToolContext, timeout: Duration) -> ToolResult {
+    async fn run_plugin_command(&self, pi: &PluginCall, ctx: &ToolContext, timeout: Duration) -> Exec {
         if pi.command.is_empty() && pi.args.is_empty() {
-            return ToolResult::error(
+            return Exec::NotReached(ToolResult::error(
                 "command is required: the subcommand and flags, as the plugin's skills document them (read one with use_skill).",
-            );
+            ));
         }
 
         // Resolve binary path
@@ -1215,10 +1270,10 @@ impl PluginRunner {
                 } else {
                     format!(" (disabled: {})", disabled.join(", "))
                 };
-                return ToolResult::error(format!(
+                return Exec::NotReached(ToolResult::error(format!(
                     "Plugin '{}' not found. Available: {}{}",
                     pi.slug, available, disabled_desc
-                ));
+                )));
             }
         };
 
@@ -1235,10 +1290,10 @@ impl PluginRunner {
             match shlex::split(&pi.command) {
                 Some(a) => a,
                 None => {
-                    return ToolResult::error(format!(
+                    return Exec::NotReached(ToolResult::error(format!(
                         "Could not parse command '{}' (unbalanced quotes). Put values with quotes/special characters in args: {{\"key\": \"value\"}} instead.",
                         pi.command
-                    ));
+                    )));
                 }
             }
         } else {
@@ -1251,13 +1306,13 @@ impl PluginRunner {
         // 2026-09-16). The model reads that as a bad query and starts guessing
         // at the command instead of dropping the pipe. Say what happened.
         if let Some(op) = shell_operator(&args) {
-            return ToolResult::error(format!(
+            return Exec::NotReached(ToolResult::error(format!(
                 "`{op}` is a shell operator and `{}` runs directly, with no shell — so `{op}` \
                  was handed to it as an argument and it refused. Run the command without it: the \
                  whole output comes back here for you to read. To get less back, narrow the \
                  command itself (a filter, a smaller query); there is no pipe to filter through.",
                 pi.slug
-            ));
+            )));
         }
 
         // Forgive a leading plugin-name token. Models often prefix the plugin
@@ -1278,11 +1333,11 @@ impl PluginRunner {
             if let Some(sub) = args.get(1).map(|s| s.to_ascii_lowercase()) {
                 if sub == "login" || sub == "logout" || sub == "setup" {
                     let (display_name, _) = self.display_names(&pi.slug);
-                    return ToolResult::terminal(format!(
+                    return Exec::NotReached(ToolResult::terminal(format!(
                         "I can't sign in to or re-authenticate {display_name} on my own — that's \
                          handled for you. If this account needs reconnecting, you can do it \
                          in this agent's Settings, Plugins."
-                    ));
+                    )));
                 }
             }
         }
@@ -1348,13 +1403,13 @@ impl PluginRunner {
                         if let (Some(label), false) = (selected_account.as_deref(), connected.is_empty()) {
                             // Wrong label with accounts present: the model can
                             // fix this itself, so it stays a plain error.
-                            return ToolResult::error(format!(
+                            return Exec::NotReached(ToolResult::error(format!(
                                 "No {res} account named \"{label}\" for this agent. Connected \
                                  {res} accounts: {labels}. Retry with one of those exact labels \
                                  (or omit --account to use the primary).",
                                 res = pi.slug,
                                 labels = connected.join(", ")
-                            ));
+                            )));
                         }
                         let none_msg = format!(
                             "No {res} account is connected for this agent. Connect one in \
@@ -1365,11 +1420,11 @@ impl PluginRunner {
                         // state is the answer, not an error to recover from.
                         let first = pi.command.split_whitespace().next().unwrap_or("");
                         if first == "doctor" || first == "help" || pi.command.contains("--help") {
-                            return ToolResult::ok(format!(
+                            return Exec::NotReached(ToolResult::ok(format!(
                                 "{res} {first}: not connected. {none_msg} Nothing else to \
                                  diagnose until then.",
                                 res = pi.slug
-                            ));
+                            )));
                         }
                         // Nothing connected. Interactive chat renders an inline
                         // connect card via ask_user, which parks THIS tool call
@@ -1391,7 +1446,7 @@ impl PluginRunner {
                             res = pi.slug
                         );
                         let Some(agent_id) = agent_id.as_deref() else {
-                            return ToolResult::error(blocked);
+                            return Exec::NotReached(ToolResult::error(blocked));
                         };
                         if !interactive {
                             // Unattended: the error steers to what IS connected
@@ -1421,8 +1476,8 @@ impl PluginRunner {
                                 })
                                 .collect();
                             if connected.is_empty() {
-                                return ToolResult::terminal(none_msg)
-                                    .with_need(types::OwnerNeed::Account { plugin: pi.slug.clone() });
+                                return Exec::NotReached(ToolResult::terminal(none_msg)
+                                    .with_need(types::OwnerNeed::Account { plugin: pi.slug.clone() }));
                             }
                             let mut msg = format!(
                                 "{none_msg} Connected for this employee: {}.",
@@ -1438,7 +1493,7 @@ impl PluginRunner {
                                 " Do the work with what is connected; if it cannot be done without \
                                  this account, exit the turn saying so instead of retrying it.",
                             );
-                            return ToolResult::error(msg);
+                            return Exec::NotReached(ToolResult::error(msg));
                         }
                         let (_, display_label) = self.display_names(&pi.slug);
                         let answer = ctx
@@ -1456,7 +1511,7 @@ impl PluginRunner {
                             )
                             .await;
                         if answer.as_deref() != Some("connected") {
-                            return ToolResult::error(blocked);
+                            return Exec::NotReached(ToolResult::error(blocked));
                         }
                         match self
                             .db_store
@@ -1470,10 +1525,10 @@ impl PluginRunner {
                         {
                             Some(p) => Some((env_name, p.config_dir)),
                             None => {
-                                return ToolResult::error(format!(
+                                return Exec::NotReached(ToolResult::error(format!(
                                     "The {res} account didn't finish connecting. {none_msg}",
                                     res = pi.slug
-                                ));
+                                )));
                             }
                         }
                     }
@@ -1531,12 +1586,16 @@ impl PluginRunner {
             .await;
 
         match result {
-            Err(napp::plugin_runtime::LaunchError::TimedOut { .. }) => ToolResult::error(format!(
+            // The process never started: the call did not reach the plugin.
+            Err(e @ napp::plugin_runtime::LaunchError::Spawn(_)) => {
+                Exec::NotReached(ToolResult::error(format!("Plugin '{}' command failed: {}", pi.slug, e)))
+            }
+            Err(napp::plugin_runtime::LaunchError::TimedOut { .. }) => Exec::Reached(ToolResult::error(format!(
                 "Plugin '{}' command timed out after {}s",
                 pi.slug,
                 timeout.as_secs()
-            )),
-            Err(e) => ToolResult::error(format!("Plugin '{}' command failed: {}", pi.slug, e)),
+            ))),
+            Err(e) => Exec::Reached(ToolResult::error(format!("Plugin '{}' command failed: {}", pi.slug, e))),
             Ok(output) => {
                 let mut text = String::new();
 
@@ -1560,10 +1619,10 @@ impl PluginRunner {
                         Some(code) => format!("exited with code {}", code),
                         None => "was terminated by a signal".to_string(),
                     };
-                    return ToolResult::error(format!(
+                    return Exec::Reached(ToolResult::error(format!(
                         "Plugin '{}' {}\n{}",
                         pi.slug, how, text
-                    ));
+                    )));
                 }
 
                 if text.is_empty() {
@@ -1594,10 +1653,10 @@ impl PluginRunner {
                 // panel / chat cards. Same is_work_document gate; the mtime check
                 // keeps inputs the plugin only read (a spec, a template) out.
                 let result = ToolResult::ok(text);
-                match produced_work_document(&args, None, started) {
+                Exec::Reached(match produced_work_document(&args, None, started) {
                     Some(path) => result.with_image_url(path),
                     None => result,
-                }
+                })
             }
         }
     }
@@ -1615,7 +1674,7 @@ impl PluginRunner {
         op: &str,
         pi: &PluginCall,
         ctx: &ToolContext,
-    ) -> ToolResult {
+    ) -> Exec {
         // Caller agent_id is encoded in session_key as "agent:<id>:..." for
         // channel and chat runs. For non-agent runs (cron without channel
         // context, system tasks) there's no agent to look up a bridge for.
@@ -1630,20 +1689,20 @@ impl PluginRunner {
         };
 
         if agent_id.is_empty() {
-            return ToolResult::error(format!(
+            return Exec::NotReached(ToolResult::error(format!(
                 "Cannot route `{op}` to channel plugin `{}` — this run has no agent context. \
                  Channel ops only work inside agent-bound conversations or scheduled tasks \
                  that preserve their originating channel.",
                 pi.slug
-            ));
+            )));
         }
 
         let registry = match channel_bridge::channel_bridges() {
             Some(r) => r,
             None => {
-                return ToolResult::error(
+                return Exec::NotReached(ToolResult::error(
                     "Channel bridge registry not initialized — Nebo is still starting up.".to_string(),
-                );
+                ));
             }
         };
 
@@ -1653,13 +1712,13 @@ impl PluginRunner {
             guard.get(&key).cloned()
         };
         let Some(handle) = handle else {
-            return ToolResult::error(format!(
+            return Exec::NotReached(ToolResult::error(format!(
                 "Channel plugin `{}` is not running for agent `{}`. \
                  Enable it for this agent in Settings → Channels. \
                  (Real-time messaging ops {{reply, post, upload, dm}} only work \
                  when the bridge sidecar is live — there is no fallback CLI path.)",
                 pi.slug, agent_id
-            ));
+            )));
         };
 
         // Build the op JSON. Args come from pi.args (named flags) plus any
@@ -1685,10 +1744,10 @@ impl PluginRunner {
         let mut op_json = match build_op_json(op, &args) {
             Ok(v) => v,
             Err(e) => {
-                return ToolResult::error(format!(
+                return Exec::NotReached(ToolResult::error(format!(
                     "Channel op `{op}` for plugin `{}`: {e}",
                     pi.slug
-                ));
+                )));
             }
         };
 
@@ -1714,11 +1773,11 @@ impl PluginRunner {
 
         if let Err(e) = handle.stdin_tx.send(op_json).await {
             handle.pending_ops.lock().await.remove(&req_id);
-            return ToolResult::error(format!(
+            return Exec::NotReached(ToolResult::error(format!(
                 "Bridge for plugin `{}` (agent `{}`) has closed its stdin ({e}). \
                  Restart the channel in Settings > Channels.",
                 pi.slug, agent_id
-            ));
+            )));
         }
 
         info!(
@@ -1733,7 +1792,8 @@ impl PluginRunner {
         // case (large file uploads through `files.uploadV2`). Past that
         // it's almost certainly a stuck bridge — drop the pending entry
         // and surface a real timeout error instead of waiting forever.
-        match tokio::time::timeout(Duration::from_secs(30), result_rx).await {
+        // The bridge took the op: from here the call has reached the plugin.
+        Exec::Reached(match tokio::time::timeout(Duration::from_secs(30), result_rx).await {
             Ok(Ok(res)) if res.ok => ToolResult::ok(format!(
                 "Op `{op}` completed on plugin `{}` (agent `{}`, req_id {}).",
                 pi.slug, agent_id, req_id
@@ -1758,7 +1818,7 @@ impl PluginRunner {
                     pi.slug
                 ))
             }
-        }
+        })
     }
 
 
@@ -2654,17 +2714,56 @@ mod budget_and_install_tests {
         let ctx = ToolContext { session_key: "agent:ic:workflow:run-1".into(), ..Default::default() };
         let pi = PluginCall { slug: "gws".into(), command: "calendar events list".into(), ..Default::default() };
 
-        let r = tool.run_plugin_command(&pi, &ctx, Duration::from_secs(5)).await;
+        let r = tool.run_plugin_command(&pi, &ctx, Duration::from_secs(5)).await.into_result();
         assert!(r.is_error && r.terminal, "nothing connected at all: {}", r.content);
 
         db_store
             .upsert_plugin_account_profile("p1", "ic", "gmail", "sales@example.com", tmp.path().join("gmail-acct").to_str().unwrap())
             .unwrap();
-        let r = tool.run_plugin_command(&pi, &ctx, Duration::from_secs(5)).await;
+        let r = tool.run_plugin_command(&pi, &ctx, Duration::from_secs(5)).await.into_result();
         assert!(r.is_error && !r.terminal, "{}", r.content);
         assert!(r.content.contains("No gws account is connected"), "{}", r.content);
         assert!(r.content.contains("Connected for this employee: gmail"), "{}", r.content);
         assert!(r.content.contains("Operation tools those serve: mail_message_send (via gmail)"), "{}", r.content);
+    }
+
+    /// Live: three workflow sends from an employee with no gmail connected
+    /// sat pending for a day, each with a "check the provider's sent items"
+    /// notice. Nebo refused them before the plugin ran, so nothing could
+    /// have gone out: a send refused before the call reaches the plugin, or
+    /// whose process never started, is failed — not held as unknown.
+    #[tokio::test]
+    async fn a_send_refused_before_the_plugin_ran_is_failed_not_held() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (plugin_store, db_store) = stores(tmp.path());
+        install_account_plugin(tmp.path(), "gmail", serde_json::json!({"mail.message.send": "send"}));
+        let tool = operation_tool(plugin_store, db_store.clone(), "gmail", "mail_message_send");
+        let ctx = ToolContext { session_key: "agent:ic:workflow:run-1".into(), ..Default::default() };
+        let user = db_store.ensure_local_user_id().unwrap();
+        let held = |id: i64| db_store.get_notification(&format!("attention:effect:{id}"), &user).unwrap();
+
+        // No gmail account: refused before anything launches.
+        let input = serde_json::json!({"to": "lead@example.com", "subject": "Hi", "text": "hello"});
+        let r = tool.execute_dyn(&ctx, input).await;
+        assert!(r.is_error, "{}", r.content);
+        assert!(r.content.starts_with("No gmail account is connected for this agent."), "the refusal reaches the model as it was: {}", r.content);
+        let rows = db_store.engine_effects_for_run("run-1").unwrap();
+        assert_eq!(rows.len(), 1, "the send was recorded before it was attempted");
+        assert_eq!(rows[0].state, "failed", "{:?}", rows[0]);
+        assert!(held(rows[0].id).is_none(), "the owner is not asked to check a send that never left");
+
+        // Connected, but the plugin's binary cannot start: nothing launched.
+        db_store
+            .upsert_plugin_account_profile("p1", "ic", "gmail", "sales@example.com", tmp.path().join("gmail-acct").to_str().unwrap())
+            .unwrap();
+        let input = serde_json::json!({"to": "other@example.com", "subject": "Hi", "text": "hello"});
+        let r = tool.execute_dyn(&ctx, input).await;
+        assert!(r.is_error && r.content.contains("failed to start"), "{}", r.content);
+        let rows = db_store.engine_effects_for_run("run-1").unwrap();
+        assert_eq!(rows.len(), 2, "{rows:?}");
+        assert!(rows.iter().all(|e| e.state == "failed"), "{rows:?}");
+        assert!(rows.iter().all(|e| held(e.id).is_none()), "{rows:?}");
+        assert!(db_store.engine_pending_effects().unwrap().is_empty(), "nothing is left for reconciliation");
     }
 
     /// Gate 2026-09-26 (correction-quickbooks-payment-dry-run): with nothing
@@ -2681,7 +2780,7 @@ mod budget_and_install_tests {
         let ctx = ToolContext { session_key: "eval:no-employee:run-1".into(), ..Default::default() };
         let pi = PluginCall { slug: "gws".into(), command: "calendar events list --dry-run".into(), ..Default::default() };
 
-        let r = tool.run_plugin_command(&pi, &ctx, Duration::from_secs(5)).await;
+        let r = tool.run_plugin_command(&pi, &ctx, Duration::from_secs(5)).await.into_result();
         assert!(r.is_error && !r.terminal, "{}", r.content);
         assert!(r.content.starts_with("No gws account is connected for this agent."), "{}", r.content);
         assert!(
@@ -2935,7 +3034,7 @@ mod budget_and_install_tests {
         ctx.ask_channels = Some(channels.clone());
         let cancel = ctx.cancel_token.clone();
         let pi = PluginCall { slug: "books".into(), command: "organisation get".into(), ..Default::default() };
-        let running = tokio::spawn(async move { tool.handle_exec(&pi, &ctx).await });
+        let running = tokio::spawn(async move { tool.handle_exec(&pi, &ctx).await.into_result() });
         let card = tokio::select! {
             shown = stream_rx.recv() => shown,
             _ = tokio::time::sleep(Duration::from_secs(5)) => None,
@@ -3041,7 +3140,7 @@ mod budget_and_install_tests {
         let tool = PluginRunner::new(plugin_store, db_store);
         let ctx = ToolContext { session_key: "agent:ic:workflow:run-1".into(), ..Default::default() };
         let pi = PluginCall { slug: "books".into(), command: "organisation get".into(), ..Default::default() };
-        let r = tool.handle_exec(&pi, &ctx).await;
+        let r = tool.handle_exec(&pi, &ctx).await.into_result();
         assert!(r.is_error && r.terminal, "{}", r.content);
         assert!(r.content.starts_with("I couldn't reach Example Books — it has no working sign-in"), "{}", r.content);
         assert!(!r.content.contains("**"), "{}", r.content);
