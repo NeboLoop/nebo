@@ -796,8 +796,19 @@ fn voice_reply(out: &str, last_notice: &str) -> String {
 /// What the phone hears when the delegated run parks on a question. Choices
 /// are read out so the caller knows what the employee is waiting on; an
 /// install or sign-in card can only be acted on in the app, so that one
-/// sentence says exactly that and the card waits there.
+/// sentence says exactly that and the card waits there. A permission
+/// question (its card names the owner's answer each option is: a linked
+/// agent's ask) also carries its id, for the owner's spoken answer.
 fn spoken_ask(event: &ai::StreamEvent) -> String {
+    let question = spoken_question(event);
+    let id = event.error.as_deref().unwrap_or_default();
+    if id.is_empty() || owners_answers(event.widgets.as_ref()).is_none() {
+        return question;
+    }
+    format!("{question}{}", waiting_line(id, &event.text))
+}
+
+fn spoken_question(event: &ai::StreamEvent) -> String {
     let widget = event.widgets.as_ref().and_then(|w| w.get(0));
     let field = |key: &str| widget.and_then(|w| w.get(key)).and_then(|v| v.as_str());
     let kind = field("type").unwrap_or("");
@@ -850,15 +861,107 @@ pub(crate) fn waiting_on_owner(asks: &agent::harness::permissions::Asks, session
     };
     open.iter()
         .filter(|a| a.created_at >= since)
-        .map(|a| {
-            format!(
-                "\n\n(Waiting on the user's OK, ask {id}: {sentence}. Ask them; when they answer, call \
-                 answer_ask with ask_id \"{id}\" and their answer.)",
-                id = a.id,
-                sentence = a.sentence
-            )
-        })
+        .map(|a| waiting_line(&a.id, &a.sentence))
         .collect()
+}
+
+/// One thing waiting on the owner's OK, as the voice model hears it: what
+/// waits, and the id his spoken answer goes to.
+fn waiting_line(id: &str, sentence: &str) -> String {
+    format!(
+        "\n\n(Waiting on the user's OK, ask {id}: {sentence}. Ask them; when they answer, call \
+         answer_ask with ask_id \"{id}\" and their answer.)",
+        sentence = sentence.trim().trim_end_matches('.')
+    )
+}
+
+/// The owner's answer each option of a question's card is (`this_once`,
+/// `allow_always`, `no`, or none), when the card says: a permission
+/// question on the run's ask channel (a linked agent's ask).
+fn owners_answers(widgets: Option<&serde_json::Value>) -> Option<Vec<Option<String>>> {
+    let answers = widgets?.get(0)?.get("answers")?.as_array()?;
+    Some(answers.iter().map(|a| a.as_str().map(str::to_owned)).collect())
+}
+
+/// The owner's spoken answer to `ask_id`, from the voice model's
+/// `answer_ask` call, on his own call. A permission question the run is
+/// parked on (a linked agent's ask) is answered through the one answer path
+/// of a parked question, [`crate::chat_dispatch::answer_ask`], with the
+/// owner's answer, which its asker maps to the option of that kind; any
+/// other ask through [`answer_by_voice`]. The same rules hold for both:
+/// only this call's own conversation, only after the owner spoke. Returns
+/// what the voice model hears.
+pub(crate) async fn answer_ask_by_voice(
+    state: &AppState,
+    session_key: &str,
+    input: &serde_json::Value,
+    owner_spoke_at: i64,
+) -> String {
+    let id = input["ask_id"].as_str().unwrap_or_default();
+    let parked = state
+        .run_registry
+        .pending_ask_for_session(session_key)
+        .await
+        .filter(|a| owners_answers(a.widgets.as_ref()).is_some());
+    let Some(parked) = parked else {
+        return answer_by_voice(&state.permission_asks, session_key, input, owner_spoke_at);
+    };
+    if parked.request_id != id {
+        let durable = matches!(state.permission_asks.get(id), Ok(Some(a)) if a.session_key == session_key);
+        if durable {
+            return answer_by_voice(&state.permission_asks, session_key, input, owner_spoke_at);
+        }
+        return format!(
+            "No ask {id} is waiting in this conversation. This is:{}",
+            waiting_line(&parked.request_id, &parked.prompt)
+        );
+    }
+    let answer = match parked_answer(&parked, input, owner_spoke_at) {
+        Ok(answer) => answer,
+        Err(heard) => return heard,
+    };
+    if !crate::chat_dispatch::answer_ask(state, id, answer.to_string()).await {
+        return "That was already answered; nothing more to do.".to_string();
+    }
+    if answer == "no" {
+        "Answered no: it won't run. Tell them so.".to_string()
+    } else {
+        "Answered yes: it carries on now, and its result comes back in this conversation. Tell them you're on \
+         it; if they ask how it's going, check with status."
+            .to_string()
+    }
+}
+
+/// The owner's answer to a permission question the run is parked on, as
+/// its card offers it: `this_once`, `allow_always` or `no`, only after he
+/// spoke. An answer the card doesn't offer counts as the nearest one it
+/// does, as on every permission card (always → once, once → always). `Err`
+/// is what the voice model hears instead.
+pub(crate) fn parked_answer(
+    ask: &crate::handlers::chat::PendingAsk,
+    input: &serde_json::Value,
+    owner_spoke_at: i64,
+) -> Result<&'static str, String> {
+    let Some(answer) = input["answer"].as_str().and_then(|a| ["this_once", "allow_always", "no"].into_iter().find(|o| *o == a))
+    else {
+        return Err("answer_ask needs `answer`: this_once, allow_always or no.".to_string());
+    };
+    if owner_spoke_at <= ask.created_at {
+        return Err(
+            "The user hasn't answered since this was asked. Ask them, then call answer_ask with what they say."
+                .to_string(),
+        );
+    }
+    let offered = owners_answers(ask.widgets.as_ref()).unwrap_or_default();
+    let nearest = match answer {
+        "allow_always" => "this_once",
+        "this_once" => "allow_always",
+        _ => "no",
+    };
+    [answer, nearest]
+        .into_iter()
+        .find(|a| offered.iter().any(|o| o.as_deref() == Some(*a)))
+        .ok_or_else(|| "That isn't one of its answers. Ask them to tap the card in this conversation.".to_string())
 }
 
 /// The owner's spoken answer to an ask, from the voice model's
@@ -2293,12 +2396,13 @@ async fn handle_conversation_session(
                         }
                         if name == "answer_ask" && caller_ctx.is_none() {
                             pending_tools += 1;
-                            let line = answer_by_voice(
-                                &state.permission_asks,
+                            let line = answer_ask_by_voice(
+                                &state,
                                 &ctx.session_key,
                                 &decode_tool_arguments(&arguments),
                                 ledger.spoke_at,
-                            );
+                            )
+                            .await;
                             info!(session_key = %ctx.session_key, outcome = %line, "voice answer to an ask");
                             if tool_done_tx
                                 .send((
@@ -2810,6 +2914,52 @@ mod voice_prompt_tests {
         assert_eq!(super::spoken_ask(&e), "Send it? Your options are: Yes or No.");
         let e = ask_event("Go on?", serde_json::json!([]));
         assert_eq!(super::spoken_ask(&e), "Go on?");
+    }
+
+    /// A permission question on the run (a linked agent's ask: its card
+    /// names the owner's answer each option is) reads its options and gives
+    /// the voice model its id, never its sentence, for the spoken answer.
+    #[test]
+    fn spoken_ask_gives_a_permission_question_its_id() {
+        let e = ai::StreamEvent::ask_request(
+            "toolu_016",
+            "Check whether README changed",
+            Some(serde_json::json!([{ "type": "options", "options": ["Allow once", "Always allow", "Deny"],
+                "answers": ["this_once", "allow_always", "no"] }])),
+        );
+        let spoken = super::spoken_ask(&e);
+        assert!(
+            spoken.starts_with("Check whether README changed Your options are: Allow once, Always allow, or Deny."),
+            "{spoken}"
+        );
+        assert!(spoken.contains("call answer_ask with ask_id \"toolu_016\""), "{spoken}");
+    }
+
+    fn parked(answers: serde_json::Value, created_at: i64) -> crate::handlers::chat::PendingAsk {
+        crate::handlers::chat::PendingAsk {
+            request_id: "toolu_016".into(),
+            prompt: "git status".into(),
+            widgets: Some(serde_json::json!([{ "type": "options", "options": ["Allow once", "Always allow", "Deny"], "answers": answers }])),
+            created_at,
+        }
+    }
+
+    /// A spoken answer to a parked permission question counts only after
+    /// the owner spoke, and only as one of the card's answers: the nearest
+    /// one it offers when it doesn't offer his.
+    #[test]
+    fn a_spoken_answer_is_one_the_parked_card_offers() {
+        let all = parked(serde_json::json!(["this_once", "allow_always", "no"]), 100);
+        let say = |answer: &str| serde_json::json!({ "ask_id": "toolu_016", "answer": answer });
+        assert!(super::parked_answer(&all, &say("allow_always"), 100).unwrap_err().contains("hasn't answered"));
+        assert_eq!(super::parked_answer(&all, &say("allow_always"), 101), Ok("allow_always"));
+        assert_eq!(super::parked_answer(&all, &say("no"), 101), Ok("no"));
+        assert!(super::parked_answer(&all, &say("maybe"), 101).is_err());
+        let once_or_no = parked(serde_json::json!(["this_once", "no"]), 100);
+        assert_eq!(super::parked_answer(&once_or_no, &say("allow_always"), 101), Ok("this_once"));
+        let always_only = parked(serde_json::json!(["allow_always", null]), 100);
+        assert_eq!(super::parked_answer(&always_only, &say("this_once"), 101), Ok("allow_always"));
+        assert!(super::parked_answer(&always_only, &say("no"), 101).is_err(), "no is never invented");
     }
 
     /// Install and sign-in cards become one sentence naming the app: the

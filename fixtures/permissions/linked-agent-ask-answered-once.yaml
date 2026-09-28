@@ -1,0 +1,25 @@
+id: linked-agent-ask-answered-once
+name: "A linked coding agent's ask is one card, answered once anywhere, and its turn goes on"
+description: |
+  Live 2026-09-28: on a voice call from his phone the owner asked his linked
+  Claude Code employee to summarise a README. The agent asked its own
+  permission to run a command; the voice model was handed the ask's
+  sentence as its id, its answer found nothing, it sent the task again, the
+  agent redid the work and asked again: a loop.
+  A linked agent's permission request is one card with every option it
+  offered, answered once by the owner anywhere: out loud on his own call by
+  the ask's id (only after he spoke, only in that conversation), or on the
+  card from another device. The option of the answer's kind goes back to the
+  agent and the same turn goes on; a second answer changes nothing. The
+  employee's mode is set as the agent's own before every message, whatever
+  mode the session last said it was in; in Full Access the agent runs in its
+  no-prompt mode and nothing reaches the owner.
+  This proof runs the real server, the real linked provider and host, and a
+  coding agent process: it asserts what the voice model hears, refuses an
+  answer before he spoke, one by the sentence and one from another
+  conversation, answers "always" by voice and "no" on the card, and asserts
+  the agent received exactly those options, each task once, and the Full
+  Access mode before the last one. Deterministic, no model.
+target_component: permissions
+proof: harness::permissions::proof::a_linked_agents_ask_is_answered_once_in_its_own_turn
+conversation: []

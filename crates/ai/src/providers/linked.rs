@@ -28,13 +28,16 @@
 //! drops mid-turn is opened again and the session loaded: the turn goes on
 //! from where Nebo left it (spec §12).
 //!
-//! A permission request the agent stops for becomes a
+//! A permission request the agent stops for is answered under the
+//! employee's permission mode: in Full Access nothing asks, so Nebo answers
+//! it with the agent's allow option itself (a runtime with no no-prompt mode
+//! of its own still asks). In every other mode it becomes a
 //! [`StreamEvent::ask_request`] registered on the run's ask channels, the ONE
 //! way a parked question is answered: the app's ask card, the phone (live
-//! and on reload), and a loop reply all show it with the agent's own
-//! options, and the option chosen goes back as the request's answer. The
-//! first answer wins: one given elsewhere (the phone) takes Nebo's card
-//! back.
+//! and on reload), a loop reply, and the owner's spoken answer on his call
+//! all show or answer it with the agent's own options, and the option chosen
+//! goes back as the request's answer, by the option's kind. The first answer
+//! wins: one given elsewhere (the phone) takes Nebo's card back.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -398,7 +401,11 @@ impl Driver<'_> {
     }
 
     /// The employee's permission mode rides with the turn: an agent with
-    /// modes runs it in its own matching one.
+    /// modes runs it in its own matching one, set before every message.
+    /// The mode the session says it is in is not trusted to skip it: a
+    /// host answers from its own record of the session, and an agent
+    /// process started again comes back in whatever mode its own settings
+    /// start it in.
     async fn mode(&mut self, opened: &Value) -> Result<(), String> {
         let Some(permission) = self.req.permission_mode.and_then(|m| Permission::parse(m.as_str())) else {
             return Ok(());
@@ -406,7 +413,7 @@ impl Driver<'_> {
         let Some(modes) = protocol::modes(opened) else {
             return Ok(());
         };
-        let Some(wanted) = mode_for(permission, &modes.available).filter(|id| *id != modes.current) else {
+        let Some(wanted) = mode_for(permission, &modes.available) else {
             return Ok(());
         };
         let wanted = wanted.to_owned();
@@ -414,7 +421,7 @@ impl Driver<'_> {
         let agent = self.agent.clone();
         let (answer, _) = self.conn.call(Some(&agent), "session/set_mode", params).await.ok_or_else(|| self.offline())?;
         answer.map_err(|e| format!("{} could not switch to its {wanted} mode: {}", self.name, e.message))?;
-        info!(session = %self.session, mode = %wanted, ?permission, "linked: session mode set");
+        info!(session = %self.session, mode = %wanted, was = %modes.current, ?permission, "linked: session mode set");
         Ok(())
     }
 
@@ -590,10 +597,11 @@ impl Driver<'_> {
         }
     }
 
-    /// The agent stopped to ask the owner: the question registered on the
-    /// run's ask channels and raised as `ask_request` with the agent's own
-    /// options; the option chosen comes back through `answers`. A request
-    /// sent again after a reconnect is the same question.
+    /// The agent stopped to ask the owner. In Full Access it is allowed
+    /// here; otherwise the question is registered on the run's ask channels
+    /// and raised as `ask_request` with the agent's own options, and the
+    /// option chosen comes back through `answers`. A request sent again
+    /// after a reconnect is the same question.
     async fn asked(&mut self, rpc: Value, params: &Value, answers: &mpsc::Sender<(String, String)>) {
         let call = AcpToolCall::parse(&params["toolCall"]).unwrap_or_default();
         let id = match call.id.as_str() {
@@ -614,6 +622,13 @@ impl Driver<'_> {
                 words
             }
         };
+        let owners_answers: Vec<Option<&str>> = options.iter().map(|o| answer_of(&o.kind)).collect();
+        // What Full Access answers with: the agent's allow, once if it
+        // offers that.
+        let allow = ["allow_once", "allow_always"]
+            .iter()
+            .find_map(|kind| options.iter().find(|o| o.kind == *kind))
+            .map(|o| o.option_id.clone());
         self.asks.insert(
             id.clone(),
             Asked {
@@ -623,16 +638,38 @@ impl Driver<'_> {
                 chosen: None,
             },
         );
+        // Full Access: nothing asks. The agent runs in its own no-prompt
+        // mode when it has one; one that still asks is answered here.
+        if self.req.permission_mode == Some(types::permissions::Mode::FullAccess)
+            && let Some(allow) = allow
+        {
+            info!(request_id = %id, "linked: full access, so Nebo allows the agent's ask itself");
+            self.answer(&id, &allow);
+            return;
+        }
+        // A question nobody here can answer is never left waiting: the call
+        // is refused, as Nebo refuses its own calls when nothing can wait
+        // for the owner.
+        if owners_answers.iter().all(Option::is_none) {
+            warn!(request_id = %id, "linked: the agent asked with no option the owner can pick; it is cancelled");
+            self.cancel_ask(&id);
+            return;
+        }
         let Some(channels) = self.req.ask_channels.as_ref() else {
-            // No ask door on this run (nothing could answer): the question
-            // stays open for the linked bot's other clients and the phone.
-            warn!(request_id = %id, "linked: an ask with no ask door on the run");
+            warn!(request_id = %id, "linked: the agent asked on a run nothing can answer; it is declined");
+            self.answer(&id, "no");
+            if self.asks.get(&id).is_some_and(|a| a.chosen.is_none()) {
+                self.cancel_ask(&id);
+            }
             return;
         };
         info!(request_id = %id, "linked: the agent asks the owner");
         let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
         channels.lock().await.insert(id.clone(), resp_tx);
-        let widgets = json!([{ "type": "options", "multiSelect": false, "options": words.labels }]);
+        // Every option the agent offered, and the owner's answer each one
+        // is (`answers`, by the option's kind): what a spoken answer on his
+        // call is matched to.
+        let widgets = json!([{ "type": "options", "multiSelect": false, "options": words.labels, "answers": owners_answers }]);
         let _ = self.tx.send(StreamEvent::ask_request(id.clone(), words.question, Some(widgets))).await;
         let answers = answers.clone();
         tokio::spawn(async move {
@@ -644,25 +681,43 @@ impl Driver<'_> {
         });
     }
 
-    /// The owner's answer to the question `id`: the label shown (or the
-    /// option's id), sent as the option it names.
+    /// The owner's answer to the question `id`, sent as the option it
+    /// names: the owner's answer (`this_once`, `allow_always`, `no`) as the
+    /// option of its kind, or the card's label for an option, or the
+    /// option's id. The first answer is the answer; another is ignored.
     fn answer(&mut self, id: &str, value: &str) {
         let Some(asked) = self.asks.get_mut(id) else {
             info!(request_id = id, "linked: an answer for a question nobody is waiting on");
             return;
         };
-        let chosen = asked
-            .options
-            .iter()
-            .zip(asked.labels.iter().map(Some).chain(std::iter::repeat(None)))
-            .find(|(o, label)| label.is_some_and(|l| l == value) || o.option_id == value)
-            .map(|(o, _)| o.option_id.clone());
-        let Some(option_id) = chosen else {
+        if asked.chosen.is_some() {
+            info!(request_id = id, value, "linked: the question was already answered");
+            return;
+        }
+        let by_kind = asked.options.iter().find(|o| answer_of(&o.kind) == Some(value));
+        let by_label = || {
+            asked
+                .options
+                .iter()
+                .zip(asked.labels.iter().map(Some).chain(std::iter::repeat(None)))
+                .find(|(o, label)| label.is_some_and(|l| l == value) || o.option_id == value)
+                .map(|(o, _)| o)
+        };
+        let Some(option) = by_kind.or_else(by_label) else {
             info!(request_id = id, value, "linked: an answer that is none of the question's options");
             return;
         };
-        asked.chosen = Some(option_id);
+        info!(request_id = id, option = %option.option_id, kind = %option.kind, "linked: the answer goes to the agent");
+        asked.chosen = Some(option.option_id.clone());
         self.send_answer(id);
+    }
+
+    /// Answers the question `id` as cancelled (ACP's `cancelled` outcome):
+    /// nothing will answer it, so the agent is not left waiting.
+    fn cancel_ask(&mut self, id: &str) {
+        if let Some(Asked { rpc: Some(rpc), .. }) = self.asks.remove(id) {
+            self.conn.respond(&self.agent, &rpc, json!({ "outcome": { "outcome": "cancelled" } }));
+        }
     }
 
     /// Sends the chosen option to this connection's copy of the question, if
@@ -820,6 +875,17 @@ impl Driver<'_> {
     }
 }
 
+/// The owner's answer an option of `kind` is: the three answers of every
+/// permission card, the ones his spoken answer on a call takes.
+fn answer_of(kind: &str) -> Option<&'static str> {
+    match kind {
+        "allow_once" => Some("this_once"),
+        "allow_always" => Some("allow_always"),
+        "reject_once" | "reject_always" => Some("no"),
+        _ => None,
+    }
+}
+
 /// The updates of a turn in a session's record: those after the prompt that
 /// began it, the newest prompt when it is the `latest` turn, else the one
 /// before the newest.
@@ -895,6 +961,8 @@ mod tests {
     /// - `turn`: thinks, says, runs `ls`, says, and ends with its usage.
     /// - `ask`: asks in its own words whether to run `rm -rf build`.
     /// - `hang`: says it is working until it is cancelled.
+    /// - `coder`: offers a bypass mode; in it, runs `git status` without
+    ///   asking, else asks first as `git` does.
     /// - `folders`: takes the host's HTTP MCP server; `where` says the folder
     ///   its session works in (and the handoff its prompt started with),
     ///   `work in <folder>` calls the host's `move_to_folder`.
@@ -922,6 +990,8 @@ mod tests {
         // so every frame is a line of its own.
         send(Value::Null);
         let mut prompt_id = Value::Null;
+        // The session's mode, as `session/set_mode` last set it.
+        let mut mode = "default".to_owned();
         // Each session's folder and the host's MCP server it was given.
         let mut sessions: HashMap<String, (String, String)> = HashMap::new();
         for line in std::io::stdin().lock().lines() {
@@ -997,13 +1067,14 @@ mod tests {
                         json!({ "id": "default", "name": "Default", "_meta": { "kind": "standard" } }),
                         json!({ "id": "acceptEdits", "name": "Accept edits", "_meta": { "kind": "standard" } }),
                     ];
-                    if script == "turn" {
+                    if script == "turn" || script == "coder" {
                         modes.push(json!({ "id": "bypassPermissions", "name": "Bypass", "_meta": { "kind": "full_access" } }));
                     }
                     reply(json!({ "sessionId": "s-1", "modes": { "currentModeId": "default", "availableModes": modes } }));
                 }
                 Some("session/set_mode") => {
                     note(json!({ "mode": message["params"]["modeId"] }));
+                    mode = message["params"]["modeId"].as_str().unwrap_or_default().to_owned();
                     reply(json!({}));
                 }
                 Some("session/cancel") => {
@@ -1036,6 +1107,14 @@ mod tests {
                                 "labels": ["Allow once", "Always allow", "Deny"] } },
                         } })),
                         "hang" => say("Working"),
+                        "coder" if mode == "bypassPermissions" => {
+                            update(json!({ "sessionUpdate": "tool_call", "toolCallId": "call_1", "title": "git status", "kind": "execute",
+                                "status": "in_progress", "rawInput": { "command": "git status" } }));
+                            update(json!({ "sessionUpdate": "tool_call_update", "toolCallId": "call_1", "status": "completed",
+                                "content": [{ "type": "content", "content": { "type": "text", "text": "nothing to commit" } }] }));
+                            say("Ran it.");
+                            reply(json!({ "stopReason": "end_turn" }));
+                        }
                         _ => {
                             say("Checking.");
                             send(json!({ "jsonrpc": "2.0", "id": 900, "method": "session/request_permission", "params": {
@@ -1464,6 +1543,136 @@ mod tests {
         assert_eq!(rest[0].text, "answered: Always allow");
         let answers: Vec<Value> = told(&r.told).into_iter().filter_map(|t| t.get("answer").cloned()).collect();
         assert_eq!(answers, vec![json!({ "outcome": "selected", "optionId": "always" })]);
+    }
+
+    /// Every option the agent offered is on the card, each with the owner's
+    /// answer it is; an answer given as the owner's word (a spoken "no" on
+    /// his call) goes back as the option of that kind, in the same turn.
+    #[tokio::test]
+    async fn the_owners_answer_goes_back_as_the_option_of_its_kind() {
+        let r = remote("ask").await;
+        let channels: AskChannels = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+        let mut req = request("clean the build", "chat-1", &remote_model());
+        req.ask_channels = Some(channels.clone());
+
+        let mut rx = r.provider.stream(&req).await.unwrap();
+        let (_, ask) = until_ask(&mut rx).await;
+        let widget = &ask.widgets.as_ref().unwrap()[0];
+        assert_eq!(widget["options"], json!(["Allow once", "Always allow", "Deny"]), "every option the agent offered");
+        assert_eq!(widget["answers"], json!(["this_once", "allow_always", "no"]), "the owner's answer each one is");
+
+        channels.lock().await.remove("req-9").expect("registered on the run").send("no".to_owned()).unwrap();
+        let rest = collect(rx).await;
+        assert_eq!(kinds(&rest), vec![StreamEventType::Text, StreamEventType::Done], "the same turn goes on");
+        assert_eq!(rest[0].text, "answered: Deny");
+        let told = told(&r.told);
+        let answers: Vec<Value> = told.iter().filter_map(|t| t.get("answer").cloned()).collect();
+        assert_eq!(answers, vec![json!({ "outcome": "selected", "optionId": "deny" })]);
+        assert_eq!(told.iter().filter(|t| t.get("prompt").is_some()).count(), 1, "the turn was not sent again");
+    }
+
+    /// Full Access with an agent that has no no-prompt mode of its own: its
+    /// ask never reaches the owner. Nebo allows it, once, and the turn goes
+    /// on.
+    #[tokio::test]
+    async fn full_access_allows_an_agents_ask_itself() {
+        let r = remote("ask").await;
+        let channels: AskChannels = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+        let mut req = request("clean the build", "chat-1", &remote_model());
+        req.permission_mode = Some(types::permissions::Mode::FullAccess);
+        req.ask_channels = Some(channels.clone());
+
+        let events = collect(r.provider.stream(&req).await.unwrap()).await;
+        assert_eq!(kinds(&events), vec![StreamEventType::Text, StreamEventType::Done], "no card");
+        assert_eq!(events[0].text, "answered: Allow once");
+        assert!(channels.lock().await.is_empty(), "nothing waited on the owner");
+        let told = told(&r.told);
+        assert!(!told.iter().any(|t| t.get("mode").is_some()), "it has no full-access mode to switch to");
+        let answers: Vec<Value> = told.iter().filter_map(|t| t.get("answer").cloned()).collect();
+        assert_eq!(answers, vec![json!({ "outcome": "selected", "optionId": "once" })]);
+    }
+
+    /// The employee's mode is the agent's own from the next message. In Full
+    /// Access the agent runs in its no-prompt mode and an ordinary call asks
+    /// nobody; switched to Ask (no hire again), the next message runs in the
+    /// agent's asking mode and its ask reaches the owner.
+    #[tokio::test]
+    async fn the_employees_mode_is_the_agents_own_from_the_next_message() {
+        let r = remote("coder").await;
+        let channels: AskChannels = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+        let mut full = request("check the repo", "chat-1", &remote_model());
+        full.permission_mode = Some(types::permissions::Mode::FullAccess);
+        full.ask_channels = Some(channels.clone());
+
+        let events = collect(r.provider.stream(&full).await.unwrap()).await;
+        assert_eq!(
+            kinds(&events),
+            vec![StreamEventType::ToolCall, StreamEventType::ToolResult, StreamEventType::Text, StreamEventType::Done],
+            "the call ran and nothing asked"
+        );
+        assert!(channels.lock().await.is_empty(), "no permission request reached the owner");
+
+        let mut ask = request("and again", "chat-1", &remote_model());
+        ask.permission_mode = Some(types::permissions::Mode::Ask);
+        ask.ask_channels = Some(channels.clone());
+        let mut rx = r.provider.stream(&ask).await.unwrap();
+        let (_, card) = until_ask(&mut rx).await;
+        assert_eq!(card.widgets.as_ref().unwrap()[0]["options"], json!(["Allow once", "Deny"]));
+        channels.lock().await.remove("call_1").expect("registered on the run").send("this_once".to_owned()).unwrap();
+        let rest = collect(rx).await;
+        assert_eq!(rest.last().unwrap().event_type, StreamEventType::Done);
+
+        let folder = r.bot.agents()[0].acp.workdir.to_string_lossy().into_owned();
+        assert_eq!(
+            told(&r.told),
+            vec![
+                json!({ "new": folder }),
+                json!({ "mode": "bypassPermissions" }),
+                json!({ "prompt": [{ "type": "text", "text": "check the repo" }] }),
+                json!({ "mode": "default" }),
+                json!({ "prompt": [{ "type": "text", "text": "and again" }] }),
+                json!({ "answer": { "outcome": "selected", "optionId": "allow" } }),
+            ],
+            "Full Access, then Ask, each the agent's own mode before its message"
+        );
+    }
+
+    /// A question nothing on the run can answer is never left waiting: it
+    /// is declined, and the turn goes on to its end.
+    #[tokio::test]
+    async fn an_ask_nothing_can_answer_is_declined() {
+        let r = remote("ask").await;
+        let mut req = request("clean the build", "chat-1", &remote_model());
+        req.permission_mode = Some(types::permissions::Mode::Ask);
+        let events = collect(r.provider.stream(&req).await.unwrap()).await;
+        assert_eq!(kinds(&events), vec![StreamEventType::Text, StreamEventType::Done], "no card nobody could answer");
+        assert_eq!(events[0].text, "answered: Deny");
+        let answers: Vec<Value> = told(&r.told).into_iter().filter_map(|t| t.get("answer").cloned()).collect();
+        assert_eq!(answers, vec![json!({ "outcome": "selected", "optionId": "deny" })]);
+    }
+
+    /// Stopped while the agent waits on the owner: the host answers its
+    /// question as cancelled (ACP's `session/cancel`), once, and the card
+    /// leaves the run, so the agent's turn ends and the next message is not
+    /// stuck behind it.
+    #[tokio::test]
+    async fn a_stop_cancels_the_question_the_agent_waits_on() {
+        let r = remote("ask").await;
+        let channels: AskChannels = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+        let token = CancellationToken::new();
+        let mut req = request("clean the build", "chat-1", &remote_model());
+        req.ask_channels = Some(channels.clone());
+        req.cancel_token = Some(token.clone());
+
+        let mut rx = r.provider.stream(&req).await.unwrap();
+        let (_, ask) = until_ask(&mut rx).await;
+        assert_eq!(ask.error.as_deref(), Some("req-9"));
+        token.cancel();
+        let rest = collect(rx).await;
+        assert_eq!(rest.last().unwrap().event_type, StreamEventType::Done);
+        assert!(channels.lock().await.is_empty(), "the card left the run");
+        let answers: Vec<Value> = told(&r.told).into_iter().filter_map(|t| t.get("answer").cloned()).collect();
+        assert_eq!(answers, vec![json!({ "outcome": "cancelled" })], "answered once, as cancelled");
     }
 
     /// A stop cancels the agent's turn, waits for its end, and ends the

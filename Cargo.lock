@@ -5151,7 +5151,7 @@ checksum = "2e126dda6f34391ab7b444f9922055facc83c07a910da3eb16f1e4d9c45dc777"
 [[package]]
 name = "link-core"
 version = "0.1.0"
-source = "git+https://github.com/NeboLoop/nebo-link?rev=4e05336eaf92c65e8d639de2001aab8622b3b069#4e05336eaf92c65e8d639de2001aab8622b3b069"
+source = "git+https://github.com/NeboLoop/nebo-link?rev=5a1d341eccf765f3d11684ed41ad8f26d172c3e8#5a1d341eccf765f3d11684ed41ad8f26d172c3e8"
 dependencies = [
  "bytes",
  "dirs",
@@ -6040,7 +6040,7 @@ dependencies = [
 [[package]]
 name = "nebo-runtimes"
 version = "0.1.0"
-source = "git+https://github.com/NeboLoop/nebo-link?rev=4e05336eaf92c65e8d639de2001aab8622b3b069#4e05336eaf92c65e8d639de2001aab8622b3b069"
+source = "git+https://github.com/NeboLoop/nebo-link?rev=5a1d341eccf765f3d11684ed41ad8f26d172c3e8#5a1d341eccf765f3d11684ed41ad8f26d172c3e8"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -6092,6 +6092,7 @@ dependencies = [
  "nebo-napp",
  "nebo-notify",
  "nebo-proto",
+ "nebo-runtimes",
  "nebo-tls",
  "nebo-tools",
  "nebo-types",
@@ -6600,7 +6601,7 @@ dependencies = [
 [[package]]
 name = "oal-host"
 version = "0.1.0"
-source = "git+https://github.com/NeboLoop/nebo-link?rev=4e05336eaf92c65e8d639de2001aab8622b3b069#4e05336eaf92c65e8d639de2001aab8622b3b069"
+source = "git+https://github.com/NeboLoop/nebo-link?rev=5a1d341eccf765f3d11684ed41ad8f26d172c3e8#5a1d341eccf765f3d11684ed41ad8f26d172c3e8"
 dependencies = [
  "base64 0.22.1",
  "futures",
@@ -6624,7 +6625,7 @@ dependencies = [
 [[package]]
 name = "oal-relay"
 version = "0.1.0"
-source = "git+https://github.com/NeboLoop/nebo-link?rev=4e05336eaf92c65e8d639de2001aab8622b3b069#4e05336eaf92c65e8d639de2001aab8622b3b069"
+source = "git+https://github.com/NeboLoop/nebo-link?rev=5a1d341eccf765f3d11684ed41ad8f26d172c3e8#5a1d341eccf765f3d11684ed41ad8f26d172c3e8"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -6647,7 +6648,7 @@ dependencies = [
 [[package]]
 name = "oal-secure"
 version = "0.1.0"
-source = "git+https://github.com/NeboLoop/nebo-link?rev=4e05336eaf92c65e8d639de2001aab8622b3b069#4e05336eaf92c65e8d639de2001aab8622b3b069"
+source = "git+https://github.com/NeboLoop/nebo-link?rev=5a1d341eccf765f3d11684ed41ad8f26d172c3e8#5a1d341eccf765f3d11684ed41ad8f26d172c3e8"
 dependencies = [
  "base64 0.22.1",
  "bytes",

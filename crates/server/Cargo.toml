@@ -92,6 +92,9 @@ cron = { workspace = true }
 uuid = { workspace = true }
 tokio-tungstenite = { workspace = true }
 futures-util = "0.3"
+# A coding agent a proof hires through the real linked provider and host.
+nebo-runtimes = { workspace = true }
+ai = { workspace = true, features = ["test-agents"] }
 
 [target.'cfg(not(target_os = "android"))'.dependencies]
 rfd = { workspace = true }

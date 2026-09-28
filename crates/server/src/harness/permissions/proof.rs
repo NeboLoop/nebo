@@ -363,3 +363,267 @@ async fn a_held_send_is_settled_by_the_owners_answer() {
     crate::engine::settle_held_sends(store, asks);
     assert!(nebo.get_ok(&format!("/permissions/asks?session={key}")).await["asks"].as_array().unwrap().is_empty(), "settled rows get no new card");
 }
+
+/// Not a proof when the harness runs it: the coding agent
+/// [`a_linked_agents_ask_is_answered_once_in_its_own_turn`] hires (this test
+/// binary again, with `NEBO_PROOF_CODER` naming the file it writes what it
+/// was told to). Every message, it runs `git status`: in its bypass mode
+/// without asking, in any other after asking its own permission.
+#[test]
+fn fake_coding_agent() {
+    use std::io::{BufRead, Write};
+    let Ok(told) = std::env::var("NEBO_PROOF_CODER") else {
+        return;
+    };
+    let note = |line: Value| {
+        let mut file = std::fs::OpenOptions::new().create(true).append(true).open(&told).unwrap();
+        writeln!(file, "{line}").unwrap();
+    };
+    let send = |frame: Value| {
+        let mut out = std::io::stdout().lock();
+        writeln!(out, "{frame}").unwrap();
+        out.flush().unwrap();
+    };
+    let update = |update: Value| {
+        send(json!({ "jsonrpc": "2.0", "method": "session/update", "params": { "sessionId": "s-1", "update": update } }));
+    };
+    // What the call and the turn did once it may run (or may not).
+    let finish = |call: &str, prompt: &Value, ran: bool| {
+        let (status, text, said) = if ran {
+            ("completed", "nothing to commit", "Ran it.")
+        } else {
+            ("failed", "not allowed", "Declined.")
+        };
+        update(json!({ "sessionUpdate": "tool_call_update", "toolCallId": call, "status": status,
+            "content": [{ "type": "content", "content": { "type": "text", "text": text } }] }));
+        update(json!({ "sessionUpdate": "agent_message_chunk", "content": { "type": "text", "text": said } }));
+        send(json!({ "jsonrpc": "2.0", "id": prompt, "result": { "stopReason": "end_turn" } }));
+    };
+    // The harness printed "test ... " without a newline: end that line.
+    send(Value::Null);
+    let (mut prompt_id, mut mode, mut prompts) = (Value::Null, "default".to_owned(), 0);
+    for line in std::io::stdin().lock().lines() {
+        let Ok(message) = serde_json::from_str::<Value>(&line.unwrap()) else {
+            continue;
+        };
+        let id = message["id"].clone();
+        let reply = |result: Value| send(json!({ "jsonrpc": "2.0", "id": id, "result": result }));
+        let call = format!("call_{prompts}");
+        match message["method"].as_str() {
+            Some("initialize") => reply(json!({ "protocolVersion": 1, "agentCapabilities": { "loadSession": false },
+                "agentInfo": { "name": "proof-coder" } })),
+            Some("session/new") => reply(json!({ "sessionId": "s-1", "modes": { "currentModeId": "default", "availableModes": [
+                { "id": "default", "name": "Default", "_meta": { "kind": "standard" } },
+                { "id": "acceptEdits", "name": "Accept edits", "_meta": { "kind": "standard" } },
+                { "id": "bypassPermissions", "name": "Bypass permissions", "_meta": { "kind": "full_access" } },
+            ] } })),
+            Some("session/set_mode") => {
+                mode = message["params"]["modeId"].as_str().unwrap_or_default().to_owned();
+                note(json!({ "mode": mode }));
+                reply(json!({}));
+            }
+            Some("session/prompt") => {
+                note(json!({ "prompt": message["params"]["prompt"][0]["text"] }));
+                prompts += 1;
+                prompt_id = id.clone();
+                let call = format!("call_{prompts}");
+                update(json!({ "sessionUpdate": "tool_call", "toolCallId": call, "title": "git status", "kind": "execute",
+                    "status": "pending", "rawInput": { "command": "git status" } }));
+                if mode == "bypassPermissions" {
+                    finish(&call, &prompt_id, true);
+                } else {
+                    send(json!({ "jsonrpc": "2.0", "id": 900 + prompts, "method": "session/request_permission", "params": {
+                        "sessionId": "s-1",
+                        "toolCall": { "toolCallId": call, "title": "git status", "kind": "execute", "status": "pending",
+                            "rawInput": { "command": "git status" } },
+                        "options": [
+                            { "optionId": "once", "name": "Allow", "kind": "allow_once" },
+                            { "optionId": "always", "name": "Always", "kind": "allow_always" },
+                            { "optionId": "deny", "name": "Reject", "kind": "reject_once" },
+                        ],
+                    } }));
+                }
+            }
+            None if id == json!(900 + prompts) => {
+                let chosen = message["result"]["outcome"]["optionId"].as_str().unwrap_or_default().to_owned();
+                note(json!({ "answer": chosen }));
+                finish(&call, &prompt_id, chosen != "deny");
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Titles, recaps and memory: answered, and never by the linked agent.
+struct Quiet;
+
+#[async_trait::async_trait]
+impl ai::Provider for Quiet {
+    fn id(&self) -> &str {
+        "proof-quiet"
+    }
+
+    async fn stream(&self, _req: &ai::ChatRequest) -> Result<ai::EventReceiver, ai::ProviderError> {
+        let (tx, rx) = tokio::sync::mpsc::channel(4);
+        tokio::spawn(async move {
+            let _ = tx.send(ai::StreamEvent::text("ok")).await;
+            let _ = tx.send(ai::StreamEvent::done()).await;
+        });
+        Ok(rx)
+    }
+}
+
+/// What the fake coding agent was told, in order.
+fn coder_told(path: &std::path::Path) -> Vec<Value> {
+    std::fs::read_to_string(path)
+        .unwrap_or_default()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect()
+}
+
+/// The assistant rows of a conversation.
+fn replies(nebo: &Nebo, chat: &str) -> Vec<String> {
+    nebo.store()
+        .get_chat_messages(chat)
+        .unwrap()
+        .into_iter()
+        .filter(|m| m.role == "assistant")
+        .map(|m| m.content)
+        .collect()
+}
+
+async fn until(what: &str, mut cond: impl FnMut() -> bool) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    while !cond() {
+        assert!(tokio::time::Instant::now() < deadline, "{what}");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+/// Live 2026-09-28: on his call the owner's linked Claude Code asked to run
+/// a command; the voice model was handed the ask's sentence, not its id, its
+/// answer went nowhere, it sent the task again, and the agent asked again.
+/// A linked coding agent's own permission request is one card with every
+/// option it offered, answered once by the owner anywhere: out loud on his
+/// call (by the ask's id, after he spoke, in that conversation only) or on
+/// the card from another device. The option of the answer's kind goes back
+/// to the agent and the same turn goes on; a second answer changes nothing.
+/// In Full Access the agent runs in its own no-prompt mode and nothing asks.
+/// Through the real server, the real linked provider and host, and a coding
+/// agent process; no model.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_linked_agents_ask_is_answered_once_in_its_own_turn() {
+    const BOT: &str = "5e1f0000-0000-4000-8000-0000000c0de5";
+    let nebo = session().await;
+    let root = tempfile::tempdir().unwrap();
+    let told_path = root.path().join("told.jsonl");
+    let local = ai::LocalHost::open(
+        Arc::new(|| Some(BOT.to_owned())),
+        root.path().join("link"),
+        root.path().join("home"),
+        Some(root.path().join("nebo-link")),
+    )
+    .unwrap();
+    let coder = nebo_runtimes::RuntimeCommand {
+        program: std::env::current_exe().unwrap().to_string_lossy().into_owned(),
+        args: ["harness::permissions::proof::fake_coding_agent", "--exact", "--nocapture", "--test-threads=1"]
+            .map(String::from)
+            .to_vec(),
+        env: vec![("NEBO_PROOF_CODER".into(), told_path.to_string_lossy().into_owned())],
+    };
+    let hosted = local.host(nebo_runtimes::acp::Agent::ClaudeCode, coder).await.unwrap();
+    let relay = ai::Relay::Hub { api_url: "http://127.0.0.1:9".into(), token: Arc::new(|| None) };
+    let linked = ai::LinkedProvider::new(relay, nebo.store().clone(), Some(local.clone()), "Nebo proof");
+    nebo.state
+        .harness
+        .reload_providers(vec![Arc::new(Quiet) as Arc<dyn ai::Provider>, Arc::new(linked)])
+        .await;
+
+    let agent = format!("lc-{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
+    nebo.store()
+        .create_agent(&agent, Some("linked"), "Proof Coder", "", "---\nname: Proof Coder\n---\n", "{}", None, None)
+        .unwrap();
+    nebo.store()
+        .upsert_entity_config("agent", &agent, &json!({ "modelPreference": ai::LinkedProvider::model_id(BOT, &hosted.id) }))
+        .unwrap();
+    let employee = types::permissions::Scope::Employee(agent.clone());
+    nebo.store().set_permission_mode(&employee, types::permissions::Mode::Ask).unwrap();
+    let chat = uuid::Uuid::new_v4().to_string();
+    nebo.store().create_chat(&chat, "Proof").unwrap();
+    let key = format!("agent:{agent}:thread:{chat}");
+    let state = &nebo.state;
+    let idle = || !state.harness.is_session_busy(&key);
+
+    // On his call: the run parks on the agent's ask and the voice model
+    // hears it with its id and every option.
+    let spoken = crate::handlers::voice::run_delegated_task(state, &key, "check the repo", "Check the repo.", None).await;
+    assert!(spoken.contains("Your options are: Allow once, Always allow, or Deny."), "{spoken}");
+    assert!(spoken.contains("ask_id \"call_1\""), "the voice model hears the ask's id: {spoken}");
+    let card = state.run_registry.pending_ask_for_session(&key).await.expect("the card is on the run");
+    let widget = &card.widgets.as_ref().unwrap()[0];
+    assert_eq!(widget["options"], json!(["Allow once", "Always allow", "Deny"]), "every option the agent offered");
+
+    // Not before he spoke, not by its sentence, not from another conversation.
+    let say = |id: &str, answer: &str| json!({ "ask_id": id, "answer": answer });
+    let voice = |key: String, input: Value, at: i64| async move {
+        crate::handlers::voice::answer_ask_by_voice(state, &key, &input, at).await
+    };
+    let early = voice(key.clone(), say("call_1", "allow_always"), card.created_at).await;
+    assert!(early.contains("hasn't answered since this was asked"), "{early}");
+    let by_sentence = voice(key.clone(), say("git status Your options are: Allow once", "allow_always"), card.created_at + 2).await;
+    assert!(by_sentence.contains("ask_id \"call_1\""), "it is told the id to use: {by_sentence}");
+    let elsewhere = voice(format!("agent:{agent}:thread:other"), say("call_1", "allow_always"), card.created_at + 2).await;
+    assert!(elsewhere.contains("Nothing is waiting"), "{elsewhere}");
+    assert!(coder_told(&told_path).iter().all(|t| t.get("answer").is_none()), "nothing answered the agent yet");
+
+    // He says "always": the agent gets its always option and the same turn
+    // goes on to its end.
+    let mut hub = state.hub.subscribe();
+    let heard = voice(key.clone(), say("call_1", "allow_always"), card.created_at + 2).await;
+    assert!(heard.starts_with("Answered yes"), "{heard}");
+    until("the turn goes on to its end", || replies(&nebo, &chat).iter().any(|r| r.contains("Ran it."))).await;
+    let settled = loop {
+        let e = hub.recv().await.unwrap();
+        if e.event_type == "ask_answered" {
+            break e;
+        }
+    };
+    assert_eq!((settled.payload["request_id"].as_str(), settled.payload["value"].as_str()), (Some("call_1"), Some("allow_always")));
+    assert!(!crate::chat_dispatch::answer_ask(state, "call_1", "Deny".into()).await, "a second answer changes nothing");
+    let again = voice(key.clone(), say("call_1", "no"), card.created_at + 9).await;
+    assert!(again.contains("Nothing is waiting"), "{again}");
+
+    until("the turn is over", idle).await;
+
+    // Asked again next message, the card is answered from another device
+    // (the phone's tap is its label): the agent gets that option, once.
+    let spoken = crate::handlers::voice::run_delegated_task(state, &key, "and the other repo", "And the other repo.", None).await;
+    assert!(spoken.contains("ask_id \"call_2\""), "{spoken}");
+    assert!(crate::chat_dispatch::answer_ask(state, "call_2", "Deny".into()).await);
+    assert!(!crate::chat_dispatch::answer_ask(state, "call_2", "Allow once".into()).await, "the first answer wins");
+    until("the declined turn ends", || replies(&nebo, &chat).iter().any(|r| r.contains("Declined."))).await;
+
+    until("the turn is over", idle).await;
+
+    // Full Access: the agent's own no-prompt mode, and no ask reaches him.
+    nebo.store().set_permission_mode(&employee, types::permissions::Mode::FullAccess).unwrap();
+    let spoken = crate::handlers::voice::run_delegated_task(state, &key, "once more", "Once more.", None).await;
+    assert!(spoken.contains("Ran it."), "{spoken}");
+    assert!(state.run_registry.pending_ask_for_session(&key).await.is_none());
+
+    assert_eq!(
+        coder_told(&told_path),
+        vec![
+            json!({ "mode": "default" }),
+            json!({ "prompt": "check the repo" }),
+            json!({ "answer": "always" }),
+            json!({ "mode": "default" }),
+            json!({ "prompt": "and the other repo" }),
+            json!({ "answer": "deny" }),
+            json!({ "mode": "bypassPermissions" }),
+            json!({ "prompt": "once more" }),
+        ],
+        "each task sent once after the employee's mode, each ask answered once by its kind"
+    );
+}
