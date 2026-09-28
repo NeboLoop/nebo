@@ -1469,14 +1469,14 @@ pub async fn set_plugin_config(
         .map(|c| &c.config_schema[..])
         .unwrap_or(&[]);
 
-    // Validate required fields
-    for field in schema {
-        if field.required && !body.contains_key(&field.key) {
-            return Err(to_error_response(NeboError::Validation(format!(
-                "missing required config field: {}",
-                field.key
-            ))));
-        }
+    let stored = state
+        .store
+        .list_plugin_settings_by_slug(&slug)
+        .unwrap_or_default();
+    if let Some(key) = missing_required_field(schema, &body, &stored) {
+        return Err(to_error_response(NeboError::Validation(format!(
+            "missing required config field: {key}"
+        ))));
     }
 
     // Collect allowed env var keys from auth.env (any auth type)
@@ -1523,6 +1523,21 @@ pub async fn set_plugin_config(
 
     info!(plugin = %slug, keys = body.len(), "updated plugin config");
     Ok(Json(serde_json::json!({ "success": true })))
+}
+
+/// The first required field a save would leave without a value, if any. A
+/// field already stored needs no resending: a secret comes back from GET as a
+/// mask, so a form leaves it blank to keep it, and that is not a missing field.
+fn missing_required_field<'a>(
+    schema: &'a [napp::plugin::PluginConfigField],
+    body: &HashMap<String, String>,
+    stored: &[db::models::PluginSetting],
+) -> Option<&'a str> {
+    schema
+        .iter()
+        .filter(|f| f.required && !body.contains_key(&f.key))
+        .find(|f| !stored.iter().any(|s| s.setting_key == f.key && !s.setting_value.is_empty()))
+        .map(|f| f.key.as_str())
 }
 
 /// GET /plugins/{slug}/diagnostics
@@ -2185,6 +2200,40 @@ mod tests {
         assert_eq!(extract_url(plain, false).as_deref(), Some("https://example.com/device"));
         // Streaming: a URL still being written is not taken yet.
         assert_eq!(extract_url("visit https://appcenter.intuit.com/connect?client_id=", false), None);
+    }
+
+    #[test]
+    fn a_stored_required_field_need_not_be_resent() {
+        let field = |key: &str, required: bool| napp::plugin::PluginConfigField {
+            key: key.into(),
+            label: key.into(),
+            description: String::new(),
+            field_type: "string".into(),
+            default: None,
+            required,
+            secret: required,
+            options: None,
+        };
+        let schema = [field("API_TOKEN", true), field("REGION", false)];
+        let setting = |key: &str, value: &str| db::models::PluginSetting {
+            id: "s".into(),
+            plugin_id: "p".into(),
+            setting_key: key.into(),
+            setting_value: value.into(),
+            is_secret: 1,
+            created_at: 0,
+            updated_at: 0,
+        };
+        let body: HashMap<String, String> = [("REGION".to_string(), "eu".to_string())].into();
+        // Never set: the save names what it lacks.
+        assert_eq!(missing_required_field(&schema, &body, &[]), Some("API_TOKEN"));
+        // Set before and left blank on the form (it comes back masked): kept.
+        assert_eq!(missing_required_field(&schema, &body, &[setting("API_TOKEN", "enc:abc")]), None);
+        // A stored empty value is no value.
+        assert_eq!(missing_required_field(&schema, &body, &[setting("API_TOKEN", "")]), Some("API_TOKEN"));
+        // Sent in the body: satisfied whatever is stored.
+        let sent: HashMap<String, String> = [("API_TOKEN".to_string(), "t".to_string())].into();
+        assert_eq!(missing_required_field(&schema, &sent, &[]), None);
     }
 
     fn req() -> AccountLoginRequest {

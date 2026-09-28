@@ -99,6 +99,43 @@ struct CodeHandlerResult {
     tier: Option<serde_json::Value>,
 }
 
+/// The wire name of a code's type (`"agent"`, `"plugin"`, …).
+fn code_type_name(code_type: CodeType) -> &'static str {
+    match code_type {
+        CodeType::Nebo => "nebo",
+        CodeType::Skill => "skill",
+        CodeType::Work => "workflow",
+        CodeType::Agent => "agent",
+        CodeType::Loop => "loop",
+        CodeType::Plugin => "plugin",
+        CodeType::App => "app",
+        CodeType::Collection => "collection",
+        CodeType::Connection => "connection",
+    }
+}
+
+/// What a finished install tells whoever is waiting on it: the one shape of
+/// the `code_result` broadcast and of the `POST /codes` reply, so the app
+/// that asked (the desktop's modal, the phone's card) reads the same keys
+/// either way and can go straight to configuring what was installed
+/// (`artifact_id` is an employee's own id; `needsAuth` says a plugin it
+/// needs is not connected yet, so it waits to start until it is).
+fn install_result(code: &str, code_type: &str, r: &CodeHandlerResult) -> serde_json::Value {
+    serde_json::json!({
+        "code": code,
+        "code_type": code_type,
+        "success": true,
+        "message": r.message,
+        "artifact_name": r.artifact_name,
+        "artifact_id": r.artifact_id,
+        "artifact_type": r.artifact_type.as_deref().unwrap_or(code_type),
+        "payment_required": r.checkout_url.is_some(),
+        "checkout_url": r.checkout_url,
+        "needsAuth": r.needs_auth,
+        "tier": r.tier,
+    })
+}
+
 /// Handle a detected code: broadcast processing event, dispatch to handler, broadcast result.
 /// The install work in flight right now: the codes being handled, so a code
 /// arriving twice (a second click) never starts a second install of the same
@@ -218,16 +255,17 @@ pub async fn handle_code(state: &AppState, code_type: CodeType, code: &str, sess
         info!(code, session_id, "code is already being handled; the first run reports the result");
         return;
     };
-    let (code_type_str, status_message) = match code_type {
-        CodeType::Nebo => ("nebo", "Connecting to NeboAI..."),
-        CodeType::Skill => ("skill", "Installing skill..."),
-        CodeType::Work => ("workflow", "Installing workflow..."),
-        CodeType::Agent => ("agent", "Installing agent..."),
-        CodeType::Loop => ("loop", "Joining loop..."),
-        CodeType::Plugin => ("plugin", "Installing plugin..."),
-        CodeType::App => ("app", "Installing app..."),
-        CodeType::Collection => ("collection", "Installing collection..."),
-        CodeType::Connection => ("connection", "Adding MCP connection..."),
+    let code_type_str = code_type_name(code_type);
+    let status_message = match code_type {
+        CodeType::Nebo => "Connecting to NeboAI...",
+        CodeType::Skill => "Installing skill...",
+        CodeType::Work => "Installing workflow...",
+        CodeType::Agent => "Installing agent...",
+        CodeType::Loop => "Joining loop...",
+        CodeType::Plugin => "Installing plugin...",
+        CodeType::App => "Installing app...",
+        CodeType::Collection => "Installing collection...",
+        CodeType::Connection => "Adding MCP connection...",
     };
 
     state.hub.broadcast(
@@ -247,25 +285,10 @@ pub async fn handle_code(state: &AppState, code_type: CodeType, code: &str, sess
 
     match result {
         Ok(r) => {
-            let payment_required = r.checkout_url.is_some();
-            state.hub.broadcast(
-                "code_result",
-                serde_json::json!({
-                    "session_id": session_id,
-                    "code": code,
-                    "code_type": code_type_str,
-                    "success": true,
-                    "message": r.message,
-                    "artifact_name": r.artifact_name,
-                    "artifact_id": r.artifact_id,
-                    "artifact_type": r.artifact_type.as_deref().unwrap_or(code_type_str),
-                    "payment_required": payment_required,
-                    "checkout_url": r.checkout_url,
-                    "needsAuth": r.needs_auth,
-                    "tier": r.tier,
-                    "interactive": true,
-                }),
-            );
+            let mut result = install_result(code, code_type_str, &r);
+            result["session_id"] = serde_json::json!(session_id);
+            result["interactive"] = serde_json::json!(true);
+            state.hub.broadcast("code_result", result);
         }
         Err(e) => {
             warn!(code = code, error = %e, "code handling failed");
@@ -1776,15 +1799,11 @@ pub async fn submit_code(
     let result = install(&state, code_type, &claim, InstalledBy::Owner).await;
 
     match result {
-        Ok(r) => Ok(axum::response::Json(serde_json::json!({
-            "success": true,
-            "code": validated_code,
-            "codeType": format!("{:?}", code_type),
-            "message": r.message,
-            "artifact_name": r.artifact_name,
-            "payment_required": r.checkout_url.is_some(),
-            "checkout_url": r.checkout_url,
-        }))),
+        Ok(r) => {
+            let mut result = install_result(validated_code, code_type_name(code_type), &r);
+            result["codeType"] = serde_json::json!(format!("{:?}", code_type));
+            Ok(axum::response::Json(result))
+        }
         Err(e) => Err((
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
             axum::response::Json(types::api::ErrorResponse {
@@ -2888,6 +2907,29 @@ pub(crate) async fn refresh_license_keys(state: &AppState) -> Result<(), NeboErr
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The phone's card reads the `POST /codes` reply to configure what it
+    /// just hired, so the reply names the employee and whether a plugin it
+    /// needs still waits to be connected, in the keys `code_result` uses.
+    #[test]
+    fn an_install_result_names_what_to_configure() {
+        let hired = CodeHandlerResult {
+            message: "Installed agent: Receptionist".into(),
+            artifact_name: Some("Receptionist".into()),
+            artifact_id: Some("agent-123".into()),
+            needs_auth: true,
+            ..Default::default()
+        };
+        let r = install_result("AGNT-AAAA-BBBB", code_type_name(CodeType::Agent), &hired);
+        assert_eq!(r["success"], true);
+        assert_eq!(r["artifact_id"], "agent-123");
+        assert_eq!(r["artifact_type"], "agent");
+        assert_eq!(r["needsAuth"], true);
+        assert_eq!(r["payment_required"], false);
+        // A handler that names its own type keeps it.
+        let plugin = CodeHandlerResult { artifact_type: Some("plugin".into()), ..Default::default() };
+        assert_eq!(install_result("PLUG-AAAA-BBBB", "plugin", &plugin)["artifact_type"], "plugin");
+    }
 
     /// A code in hand or a cascade in progress both count as "installing";
     /// `settle` returns at once when neither is. Mutation check: drop the
