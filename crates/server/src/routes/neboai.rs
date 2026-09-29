@@ -108,12 +108,10 @@ pub fn routes() -> Router<AppState> {
             axum::routing::post(handlers::neboai::force_reconnect),
         )
         .route(
-            "/neboai/share/targets",
-            axum::routing::get(handlers::neboai::share_targets),
-        )
-        .route(
             "/neboai/share",
-            axum::routing::post(handlers::neboai::share_artifact),
+            axum::routing::get(handlers::neboai::share_link)
+                .put(handlers::neboai::set_share_link)
+                .delete(handlers::neboai::turn_off_share_link),
         )
         // Phone binding, called by the phonecall plugin's auth login/logout
         // over the local API ("a number is a connected account").

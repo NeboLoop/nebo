@@ -1434,17 +1434,24 @@ export function neboAIReferralCode() {
 }
 
 /**
- * @description "Nebo a i share artifact"
+ * @description "Nebo a i share link"
  */
-export function neboAIShareArtifact(req: Record<string, unknown> = {}) {
-	return webapi.post<components.NeboAIShareArtifactResponse>(`/api/v1/neboai/share`, req)
+export function neboAIShareLink(artifact: string) {
+	return webapi.get<components.ShareLinkResponse>(`/api/v1/neboai/share`, { artifact })
 }
 
 /**
- * @description "Nebo a i share targets"
+ * @description "Nebo a i set share link"
  */
-export function neboAIShareTargets() {
-	return webapi.get<components.ShareTargetsResponse>(`/api/v1/neboai/share/targets`)
+export function neboAISetShareLink(req: Record<string, unknown> = {}) {
+	return webapi.put<components.ShareLinkResponse>(`/api/v1/neboai/share`, req)
+}
+
+/**
+ * @description "Nebo a i turn off share link"
+ */
+export function neboAITurnOffShareLink(artifact: string) {
+	return webapi.delete<components.ShareLinkResponse>(`/api/v1/neboai/share`, { artifact })
 }
 
 /**

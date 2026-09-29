@@ -1323,178 +1323,139 @@ pub async fn connect_handler(
     })))
 }
 
-// ── Artifact sharing (Work panel → loop channels / members) ───────────
+// ── Sharing a Work-panel file by link ─────────────────────────────────
+//
+// One way to share: a link at neboai.com/s/<token>. The file goes up through
+// the one upload path (POST /api/v1/files/upload), then the hub keeps the
+// link (/api/v1/shares): who can open it, until when, and turning it off.
+// The desktop's share dialog and the phone's share screen both call these.
 
-#[derive(serde::Serialize)]
+#[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ShareChannel {
-    pub channel_id: String,
-    pub channel_name: String,
-    pub loop_id: String,
-    pub loop_name: String,
+pub struct ShareLinkQuery {
+    /// The Work-panel file: its `/api/v1/files/...` reference.
+    pub artifact: String,
 }
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ShareMember {
-    pub bot_id: String,
-    pub bot_name: String,
-    pub loop_id: String,
-    pub loop_name: String,
-    pub is_online: bool,
-}
-
-#[derive(serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ShareTargetsResponse {
-    pub connected: bool,
-    pub channels: Vec<ShareChannel>,
-    pub members: Vec<ShareMember>,
-}
-
-/// GET /api/v1/neboai/share/targets — where an artifact can be shared:
-/// loop channels this bot belongs to, and loop members (bots/agents) it can DM.
-pub async fn share_targets(State(state): State<AppState>) -> HandlerResult<ShareTargetsResponse> {
-    if !state.comm_manager.is_connected().await {
-        return Ok(Json(ShareTargetsResponse {
-            connected: false,
-            channels: Vec::new(),
-            members: Vec::new(),
-        }));
-    }
-
-    let channels: Vec<ShareChannel> = state
-        .comm_manager
-        .list_channels()
-        .await
-        .unwrap_or_default()
-        .into_iter()
-        .map(|c| ShareChannel {
-            channel_id: c.channel_id,
-            channel_name: c.channel_name,
-            loop_id: c.loop_id,
-            loop_name: c.loop_name,
-        })
-        .collect();
-
-    // Members come per loop; exclude this bot itself (sharing to yourself is
-    // what Download is for).
-    let self_bot_id = config::read_bot_id().unwrap_or_default();
-    let mut members = Vec::new();
-    for lp in state.comm_manager.list_loops().await.unwrap_or_default() {
-        for m in state
-            .comm_manager
-            .list_channel_members(&lp.id)
-            .await
-            .unwrap_or_default()
-        {
-            if m.bot_id == self_bot_id {
-                continue;
-            }
-            members.push(ShareMember {
-                bot_id: m.bot_id,
-                bot_name: m.bot_name,
-                loop_id: lp.id.clone(),
-                loop_name: lp.name.clone(),
-                is_online: m.is_online,
-            });
-        }
-    }
-
-    Ok(Json(ShareTargetsResponse {
-        connected: true,
-        channels,
-        members,
-    }))
+pub struct ShareLinkResponse {
+    /// The file's live link; none when it has no link (or it was turned off).
+    pub share: Option<comm::api_types::FileShare>,
 }
 
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ShareArtifactRequest {
-    /// Artifact reference — a `/api/v1/files/...` URL or absolute local path.
+pub struct SetShareLinkRequest {
+    /// The Work-panel file: its `/api/v1/files/...` reference.
     pub artifact: String,
-    /// Optional message to accompany the file.
+    /// `link` (anyone with the link), `password`, or `private` (only you).
+    pub access: String,
+    /// A new password; empty keeps the link's current one.
     #[serde(default)]
-    pub text: String,
-    /// Post into this loop channel…
+    pub password: String,
+    /// RFC 3339; empty = never.
     #[serde(default)]
-    pub channel_id: String,
-    /// …or DM this loop member (exactly one of the two).
-    #[serde(default)]
-    pub to_bot_id: String,
+    pub expires_at: String,
 }
 
-/// POST /api/v1/neboai/share — upload a Work-panel artifact to the loop and
-/// send it to a channel or member. Same upload pathway as run-artifact
-/// attachments (resolve_comm_attachments), same addressing as the loop tool.
-pub async fn share_artifact(
-    State(state): State<AppState>,
-    Json(body): Json<ShareArtifactRequest>,
-) -> HandlerResult<serde_json::Value> {
-    if body.channel_id.is_empty() == body.to_bot_id.is_empty() {
+/// Only files in this bot's Work panel can be shared: a link makes a file
+/// readable by others, so nothing outside `<data_dir>/files/` is offered.
+fn shareable_artifact(artifact: &str) -> Result<&str, (axum::http::StatusCode, Json<ErrorResponse>)> {
+    let artifact = artifact.trim();
+    let rel = artifact.strip_prefix("/api/v1/files/").unwrap_or("");
+    if rel.is_empty() || rel.split('/').any(|seg| seg == ".." || seg.is_empty()) {
         return Err(to_error_response(NeboError::Validation(
-            "provide exactly one of channelId or toBotId".into(),
+            "Only files in the Work panel can be shared.".into(),
         )));
     }
-    if !state.comm_manager.is_connected().await {
-        return Err(to_error_response(NeboError::Internal(
-            "not connected to NeboAI".into(),
-        )));
-    }
+    Ok(artifact)
+}
 
-    let comm = Some(state.comm_manager.clone());
-    let attachments = crate::chat_dispatch::resolve_comm_attachments(
-        &comm,
-        &state.plugin_store,
-        std::slice::from_ref(&body.artifact),
-    )
-    .await;
-    if attachments.is_empty() {
-        return Err(to_error_response(NeboError::Internal(format!(
-            "failed to upload artifact {}",
-            body.artifact
-        ))));
-    }
-
-    // Relay markers: this is the OWNER sharing, not the agent speaking —
-    // same canonical shape as the ws prompt mirror (handlers/ws.rs).
-    let mut meta = HashMap::new();
-    meta.insert("relay".to_string(), "true".to_string());
-    meta.insert("role".to_string(), "user".to_string());
-    meta.insert("senderName".to_string(), "You".to_string());
-
-    let to_channel = !body.channel_id.is_empty();
-    let msg = comm::CommMessage {
-        id: Uuid::new_v4().to_string(),
-        from: String::new(),
-        to: body.to_bot_id.clone(),
-        topic: body.channel_id.clone(),
-        conversation_id: body.channel_id.clone(),
-        msg_type: if to_channel {
-            comm::CommMessageType::LoopChannel
-        } else {
-            comm::CommMessageType::Message
-        },
-        content: body.text.clone(),
-        metadata: meta,
-        timestamp: 0,
-        human_injected: true,
-        human_id: None,
-        task_id: None,
-        correlation_id: None,
-        task_status: None,
-        artifacts: Vec::new(),
-        error: None,
-        attachments,
+/// A hub refusal in the owner's words (its own sentence for a 4xx), else a
+/// plain failure.
+fn share_error(e: comm::CommError) -> (axum::http::StatusCode, Json<ErrorResponse>) {
+    let refused = match &e {
+        comm::CommError::Http { status, body } if (400..500).contains(status) => {
+            serde_json::from_str::<serde_json::Value>(body)
+                .ok()
+                .and_then(|b| b["error"].as_str().map(str::to_owned))
+        }
+        _ => None,
     };
+    match refused {
+        Some(msg) => to_error_response(NeboError::Validation(msg)),
+        None => {
+            warn!(error = %e, "share link: hub request failed");
+            to_error_response(NeboError::Internal("Could not share this file. Try again.".into()))
+        }
+    }
+}
 
-    state
-        .comm_manager
-        .send(msg)
+/// GET /api/v1/neboai/share?artifact= — the file's live link, if it has one.
+pub async fn share_link(
+    State(state): State<AppState>,
+    Query(q): Query<ShareLinkQuery>,
+) -> HandlerResult<ShareLinkResponse> {
+    let artifact = shareable_artifact(&q.artifact)?;
+    let api = build_api_client(&state).map_err(to_error_response)?;
+    let share = api.file_shares(artifact).await.map_err(share_error)?.into_iter().next();
+    Ok(Json(ShareLinkResponse { share }))
+}
+
+/// PUT /api/v1/neboai/share — give the file a link with these settings: the
+/// link it has is changed; a file with none is uploaded and gets one.
+pub async fn set_share_link(
+    State(state): State<AppState>,
+    Json(body): Json<SetShareLinkRequest>,
+) -> HandlerResult<ShareLinkResponse> {
+    let artifact = shareable_artifact(&body.artifact)?;
+    let api = build_api_client(&state).map_err(to_error_response)?;
+    let settings = comm::api_types::FileShareSettings {
+        access: body.access.clone(),
+        password: body.password.clone(),
+        expires_at: body.expires_at.clone(),
+    };
+    if let Some(existing) = api.file_shares(artifact).await.map_err(share_error)?.into_iter().next() {
+        let share = api.update_file_share(&existing.id, &settings).await.map_err(share_error)?;
+        return Ok(Json(ShareLinkResponse { share: Some(share) }));
+    }
+
+    if !state.comm_manager.is_connected().await {
+        return Err(to_error_response(NeboError::Validation(
+            "Connect to NeboAI to share.".into(),
+        )));
+    }
+    let files_dir = config::data_dir()
+        .map_err(|e| to_error_response(NeboError::Internal(e.to_string())))?
+        .join("files");
+    let path = crate::chat_dispatch::artifact_local_path(&files_dir, artifact)
+        .ok_or_else(|| to_error_response(NeboError::NotFound))?;
+    let uploaded = crate::chat_dispatch::upload_local_file(&state.comm_manager, &path)
         .await
-        .map_err(|e| to_error_response(NeboError::Internal(format!("share send: {e}"))))?;
+        .map_err(|e| {
+            warn!(error = %e, "share link: upload failed");
+            to_error_response(NeboError::Internal("Could not upload this file. Try again.".into()))
+        })?;
+    let share = api
+        .create_file_share(&uploaded.file_id, artifact, &settings)
+        .await
+        .map_err(share_error)?;
+    Ok(Json(ShareLinkResponse { share: Some(share) }))
+}
 
-    Ok(Json(serde_json::json!({ "shared": true })))
+/// DELETE /api/v1/neboai/share?artifact= — turn the file's link off. The
+/// link stops opening anything, for good.
+pub async fn turn_off_share_link(
+    State(state): State<AppState>,
+    Query(q): Query<ShareLinkQuery>,
+) -> HandlerResult<ShareLinkResponse> {
+    let artifact = shareable_artifact(&q.artifact)?;
+    let api = build_api_client(&state).map_err(to_error_response)?;
+    for share in api.file_shares(artifact).await.map_err(share_error)? {
+        api.revoke_file_share(&share.id).await.map_err(share_error)?;
+    }
+    Ok(Json(ShareLinkResponse { share: None }))
 }
 
 fn callback_html(_email: &str, err_msg: &str) -> Html<String> {
@@ -1751,4 +1712,33 @@ pub async fn phone_unbind(
         .map_err(|e| to_error_response(NeboError::Internal(format!("phone unbind: {e}"))))?;
     info!(number = %req.number, "phone number released via NeboAI");
     Ok(Json(resp))
+}
+
+#[cfg(test)]
+mod share_link_tests {
+    use super::*;
+
+    /// A link makes a file readable by others: only Work-panel files under
+    /// `/api/v1/files/` can get one, never a path that climbs out of it.
+    #[test]
+    fn only_work_panel_files_can_be_shared() {
+        assert_eq!(shareable_artifact(" /api/v1/files/Go-Live-Checklist.md ").unwrap(), "/api/v1/files/Go-Live-Checklist.md");
+        assert!(shareable_artifact("/api/v1/files/reports/q3.pdf").is_ok());
+        for bad in ["", "/api/v1/files/", "/etc/passwd", "/api/v1/files/../settings.json", "/api/v1/files/a//b", "https://example.com/x.md"] {
+            assert!(shareable_artifact(bad).is_err(), "{bad} was shareable");
+        }
+    }
+
+    /// The hub's own sentence reaches the owner for what it refused; anything
+    /// else is a plain failure, never a raw status.
+    #[test]
+    fn hub_refusals_speak_plainly() {
+        let refused = comm::CommError::Http { status: 400, body: r#"{"error":"Use at least 6 characters for the password."}"#.into() };
+        let (status, Json(body)) = share_error(refused);
+        assert_eq!(status, axum::http::StatusCode::BAD_REQUEST);
+        assert_eq!(body.error, "Use at least 6 characters for the password.");
+        let (status, Json(body)) = share_error(comm::CommError::Http { status: 502, body: "bad gateway".into() });
+        assert_eq!(status, axum::http::StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(body.error, "Could not share this file. Try again.");
+    }
 }
