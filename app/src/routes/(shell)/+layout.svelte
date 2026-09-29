@@ -353,7 +353,7 @@
   // The employee's threads with colleagues and teams, apart from the
   // owner's conversations above: the collapsed "With teammates" section.
   let apiTeammateThreads = $state<Record<string, EnrichedChat[]>>({});
-  let teammatesOpen = $state(false);
+  let teammatesOpen = $state(true);
   let apiRuns = $state<Record<string, AgentRun[]>>({});
   let apiRunsTotal = $state<Record<string, number>>({});
   let apiRunsLoading = $state<Record<string, boolean>>({});
@@ -1708,7 +1708,7 @@
           {#if (apiTeammateThreads[drilledAgent.id] ?? []).length > 0}
             <!-- The employee's threads with colleagues and teams: work the
                  owner can read, kept apart from his own conversations and
-                 collapsed at the bottom. A row opens the view-only transcript. -->
+                 listed below them, open until he folds them. A row opens the transcript. -->
             <button
               class="w-full flex items-center gap-2 mt-3 mb-1 px-4 bg-transparent border-none cursor-pointer text-left"
               onclick={() => (teammatesOpen = !teammatesOpen)}
