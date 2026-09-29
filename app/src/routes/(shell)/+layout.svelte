@@ -1806,7 +1806,12 @@
 
 {#if newEmployeeOpen}
   <NewEmployeeModal
+    names={allAgents.map((a) => a.name)}
     onclose={() => (newEmployeeOpen = false)}
+    onopen={(id) => {
+      newEmployeeOpen = false;
+      goto(`/${id}/threads`);
+    }}
     oncreated={(id, _name, threadId) => {
       newEmployeeOpen = false;
       loadAgentRoster();

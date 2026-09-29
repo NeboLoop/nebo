@@ -2336,6 +2336,9 @@ pub async fn activate_neboai(state: &AppState) -> Result<(), NeboError> {
             // outside the install-code path (hand-dropped dirs, restored
             // volumes) — boot's field sync runs pre-AppState and can't push.
             reconcile_app_fields(&st).await;
+            // The owner's linked computers are reachable again: what is
+            // on them is looked at now, not at the next round.
+            st.linked_apps.look(&st).await;
         });
     }
 

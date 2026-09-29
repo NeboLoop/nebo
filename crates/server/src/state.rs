@@ -215,6 +215,8 @@ pub struct AppState {
     /// This computer's host: the coding agents the owner hires here run in
     /// Nebo itself. `None` where this user has no home or data folder.
     pub local_host: Option<Arc<ai::LocalHost>>,
+    /// What "Hire from another app" offers, known before it is asked.
+    pub linked_apps: Arc<crate::linked_apps::LinkedApps>,
     /// The owner's live calls, by the conversation each is on: what a turn
     /// says there outside the call is said aloud on it.
     pub live_calls: crate::handlers::voice::LiveCalls,

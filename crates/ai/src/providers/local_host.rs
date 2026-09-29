@@ -294,7 +294,9 @@ impl LocalHost {
 
     /// Hosts one more of the coding agent `key` (`claude-code`, `codex`,
     /// ...), in a folder of its own, once it has started and answered in ACP.
-    pub async fn hire(&self, key: &str) -> Result<LocalAgent, String> {
+    /// `label` is the name the owner gave it, which its id and folder are
+    /// made from; `None` is the agent's own ("Claude Code", "Claude Code 2").
+    pub async fn hire(&self, key: &str, label: Option<&str>) -> Result<LocalAgent, String> {
         if let Some(daemon) = self.hosted_by_daemon() {
             let name = AcpAgent::KNOWN.into_iter().find(|a| a.key() == key).map(|a| a.name()).unwrap_or(key);
             return Err(format!(
@@ -303,7 +305,7 @@ impl LocalHost {
         }
         let added = self
             .host
-            .add_agent(Add { runtime: key.to_owned(), ..Add::default() })
+            .add_agent(Add { runtime: key.to_owned(), label: label.map(str::to_owned), ..Add::default() })
             .await
             .map_err(|e| e.message)?;
         self.agents()
@@ -318,12 +320,18 @@ impl LocalHost {
     /// the `test-agents` feature).
     #[cfg(any(test, feature = "test-agents"))]
     pub async fn host(&self, agent: AcpAgent, command: nebo_runtimes::RuntimeCommand) -> Result<LocalAgent, String> {
-        {
-            let mut told = self.record.told.lock().expect("told");
-            told.retain(|t| t.id != agent.key());
-            told.push(Installable { id: agent.key().to_owned(), name: agent.name().to_owned(), agent, command });
-        }
-        self.hire(agent.key()).await
+        self.tell(agent, command);
+        self.hire(agent.key(), None).await
+    }
+
+    /// Makes the ACP agent `agent`, as `command` starts it, one this host
+    /// can hire, as if it were installed here, hiring none yet: for the
+    /// tests, whose agents are scripted.
+    #[cfg(any(test, feature = "test-agents"))]
+    pub fn tell(&self, agent: AcpAgent, command: nebo_runtimes::RuntimeCommand) {
+        let mut told = self.record.told.lock().expect("told");
+        told.retain(|t| t.id != agent.key());
+        told.push(Installable { id: agent.key().to_owned(), name: agent.name().to_owned(), agent, command });
     }
 
     /// Stops every agent Nebo hosts as Nebo shuts down: a turn still running

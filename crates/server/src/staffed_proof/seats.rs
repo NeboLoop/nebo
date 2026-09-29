@@ -472,3 +472,197 @@ async fn every_hiring_door_grants_the_declared_job() {
     }
     nebo.store().delete_auth_profile(&profile).unwrap();
 }
+
+/// This computer's host for a scenario, under its own folders, able to hire
+/// Claude Code as the fake coding agent (`company_agent::fake_company_agent`,
+/// writing what it is told to `told`), hiring none yet: what "Hire from
+/// another app" reaches on this computer.
+fn claude_code_here(bot: &'static str, root: &Path, told: &Path) -> Arc<ai::LocalHost> {
+    let host = ai::LocalHost::open(
+        Arc::new(move || Some(bot.to_owned())),
+        root.join("link"),
+        root.join("home"),
+        Some(root.join("nebo-link")),
+    )
+    .unwrap();
+    host.tell(
+        nebo_runtimes::acp::Agent::ClaudeCode,
+        nebo_runtimes::RuntimeCommand {
+            program: std::env::current_exe().unwrap().to_string_lossy().into_owned(),
+            args: ["staffed_proof::company_agent::fake_company_agent", "--exact", "--nocapture", "--test-threads=1"]
+                .map(String::from)
+                .to_vec(),
+            env: vec![("NEBO_PROOF_COMPANY".into(), told.to_string_lossy().into_owned())],
+        },
+    );
+    host
+}
+
+/// The hire list's entries of `runtime` on one computer as (id, name,
+/// hired). Only the runtime asked about: what else this machine has
+/// installed is listed too.
+fn hire_entries(listing: &Value, computer: &str, runtime: &str) -> Vec<(String, String, bool)> {
+    listing["computers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["name"] == computer)
+        .unwrap_or_else(|| panic!("{computer} is not listed: {listing}"))["agents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|a| a["runtime"] == runtime)
+        .map(|a| (a["id"].as_str().unwrap().to_owned(), a["name"].as_str().unwrap().to_owned(), a["hired"] == true))
+        .collect()
+}
+
+/// The owner taps Claude Code twice in "Hire from another app" and names
+/// each: two employees, each its own Claude Code in a folder of its own,
+/// and each conversation a session of its own agent in its own folder. A
+/// third named like one of them is refused in the owner's words before
+/// anything is started. The hire list still offers Claude Code once, to
+/// start new, with both on the team by the names he gave them. Through the
+/// create-agent handler, this computer's real host and a coding agent
+/// process; no network.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn every_claude_code_hire_is_an_employee_of_its_own() {
+    const BOT: &str = "5e1f0000-0000-4000-8000-00000000c0d2";
+    let nebo = session().await;
+    let root = tempfile::tempdir().unwrap();
+    let told = root.path().join("told.jsonl");
+    let host = claude_code_here(BOT, root.path(), &told);
+    let mut state = nebo.state.clone();
+    state.local_host = Some(host.clone());
+    state.linked_apps = Arc::new(Default::default());
+    let hire = |name: &str| {
+        let state = state.clone();
+        let body = json!({ "linked": { "botId": BOT, "agentId": "new:claude-code" }, "name": name });
+        async move {
+            crate::handlers::agents::create_agent(axum::extract::State(state), axum::http::HeaderMap::new(), axum::Json(body)).await
+        }
+    };
+
+    let front = hire("Proof Frontend").await.expect("the first is hired").0;
+    let back = hire("Proof Backend").await.expect("the second is hired").0;
+    let (front, back) = (front["agent"]["id"].as_str().unwrap().to_owned(), back["agent"]["id"].as_str().unwrap().to_owned());
+    assert_ne!(front, back);
+    assert_eq!((nebo.agent(&front).name, nebo.agent(&back).name), ("Proof Frontend".to_owned(), "Proof Backend".to_owned()));
+
+    // Two coding agents on this computer, each in a folder of its own, each
+    // the brain of one employee.
+    let hosted = host.agents();
+    assert_eq!(hosted.len(), 2, "one agent per hire");
+    assert_ne!(hosted[0].id, hosted[1].id);
+    assert_ne!(hosted[0].acp.workdir, hosted[1].acp.workdir);
+    let own = root.path().join("home").join("NeboAI").canonicalize().unwrap();
+    assert!(hosted.iter().all(|a| a.acp.workdir.is_dir() && a.acp.workdir.starts_with(&own)), "{hosted:?}");
+    let brain = |id: &str| nebo.store().get_entity_config("agent", id).unwrap().and_then(|c| c.model_preference).unwrap();
+    let agent_of = |id: &str| brain(id).rsplit('/').next().unwrap().to_owned();
+    let (front_agent, back_agent) = (agent_of(&front), agent_of(&back));
+    assert_ne!(front_agent, back_agent);
+    let folder = |agent: &str| hosted.iter().find(|a| a.id == agent).unwrap().acp.workdir.clone();
+
+    // A name already on the team is refused, whatever its case, and nothing
+    // was started for it.
+    let (status, refused) = hire("proof frontend").await.expect_err("a taken name");
+    assert_eq!(status.as_u16(), 400);
+    assert_eq!(refused.0.error, "You already have an employee named \"Proof Frontend\". Pick another name.");
+    assert_eq!(host.agents().len(), 2, "nothing started for a refused name");
+    assert_eq!(std::fs::read_dir(&own).unwrap().count(), 2, "no folder made for a refused name");
+
+    // Each employee's conversation is a session of its own agent, opened in
+    // its own folder.
+    let provider = ai::LinkedProvider::new(
+        ai::Relay::Hub { api_url: "http://127.0.0.1:9".into(), token: Arc::new(|| None) },
+        nebo.store().clone(),
+        Some(host.clone()),
+        "Nebo proof",
+    );
+    for (employee, agent) in [(&front, &front_agent), (&back, &back_agent)] {
+        let chat = uuid::Uuid::new_v4().to_string();
+        nebo.store()
+            .create_chat_for_session(&chat, &format!("agent:{employee}:thread:{chat}"), "Proof", None)
+            .unwrap();
+        let req = ai::ChatRequest {
+            messages: vec![ai::Message { role: "user".into(), content: "How many files are left?".into(), ..Default::default() }],
+            model: format!("{BOT}/{agent}"),
+            chat_id: chat,
+            ..ai::ChatRequest::new(ai::RequestTrace { agent_id: employee.clone(), ..ai::RequestTrace::new("agent_turn") })
+        };
+        let mut rx = ai::Provider::stream(&provider, &req).await.unwrap();
+        let mut said = String::new();
+        while let Some(e) = tokio::time::timeout(Duration::from_secs(60), rx.recv()).await.expect("the turn ended") {
+            said.push_str(&e.text);
+        }
+        assert!(said.contains("ANSWER: 3 files left."), "{said}");
+    }
+    let opened: Vec<PathBuf> = std::fs::read_to_string(&told)
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str::<Value>(l).unwrap())
+        .filter(|t| t.get("new").is_some())
+        .map(|t| PathBuf::from(t["cwd"].as_str().unwrap()))
+        .collect();
+    assert_eq!(opened, [folder(&front_agent), folder(&back_agent)], "one session per employee, each in its own folder");
+
+    // The hire list: Claude Code once, to start new; both on the team.
+    let listing = crate::handlers::agents::list_linked_agents(axum::extract::State(state.clone())).await.unwrap().0;
+    assert_eq!(
+        hire_entries(&listing, "This computer", "claude-code"),
+        [
+            (front_agent.clone(), "Proof Frontend".to_owned(), true),
+            (back_agent.clone(), "Proof Backend".to_owned(), true),
+            ("new:claude-code".to_owned(), "Claude Code".to_owned(), false),
+        ]
+    );
+
+    host.shutdown(Duration::from_secs(5)).await;
+    for id in [&front, &back] {
+        let _ = nebo.delete(&format!("/agents/{id}")).await;
+    }
+}
+
+/// The hire list is known before it is asked: a listing answers at once
+/// with what was last found on the owner's computers and looks again behind
+/// it; an app found meanwhile reaches every open list in ONE
+/// `linked_apps_changed` event, and the next listing has it. Only the very
+/// first listing, before anything was found, waits for the look.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_hire_list_answers_from_what_is_known_and_an_app_found_later_is_sent() {
+    const BOT: &str = "5e1f0000-0000-4000-8000-00000000c0d3";
+    let nebo = session().await;
+    let root = tempfile::tempdir().unwrap();
+    let host = claude_code_here(BOT, root.path(), &root.path().join("told.jsonl"));
+    let mut state = nebo.state.clone();
+    state.local_host = Some(host.clone());
+    state.linked_apps = Arc::new(Default::default());
+    let list = || crate::handlers::agents::list_linked_agents(axum::extract::State(state.clone()));
+    // Any other coding agent that speaks ACP: never one this machine has
+    // installed itself, so it is there only once it is told.
+    let other = |listing: &Value| !hire_entries(listing, "This computer", "acp").is_empty();
+    let mut events = nebo.state.hub.subscribe();
+
+    // The first listing waits for the first look.
+    let first = list().await.unwrap().0;
+    assert!(first["checkedAt"].as_i64().is_some_and(|t| t > 0), "{first}");
+    assert_eq!(hire_entries(&first, "This computer", "claude-code"), [("new:claude-code".to_owned(), "Claude Code".to_owned(), false)]);
+    assert!(!other(&first), "{first}");
+
+    // Another coding agent is installed meanwhile: the next listing answers
+    // with what was known, and the look behind it sends the list with it.
+    host.tell(
+        nebo_runtimes::acp::Agent::Other,
+        nebo_runtimes::RuntimeCommand { program: "proof-acp".into(), args: Vec::new(), env: Vec::new() },
+    );
+    let known = list().await.unwrap().0;
+    assert_eq!(known["computers"], first["computers"], "answered from what was known, not after a look");
+    let sent = loop {
+        let e = tokio::time::timeout(Duration::from_secs(30), events.recv()).await.expect("the change is sent").unwrap();
+        if e.event_type == "linked_apps_changed" {
+            break e.payload;
+        }
+    };
+    assert_eq!(hire_entries(&sent, "This computer", "acp"), [("new:acp".to_owned(), "ACP agent".to_owned(), false)], "{sent}");
+    let next = list().await.unwrap().0;
+    assert_eq!(next["computers"], sent["computers"]);
+}

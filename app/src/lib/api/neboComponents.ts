@@ -1917,6 +1917,7 @@ export interface ListIntegrationsResponse {
 
 export interface ListLinkedAgentsResponse {
 	computers: LinkedComputerEntry[]
+	checkedAt: number
 }
 
 export interface ListMemoriesResponse {
@@ -2663,7 +2664,10 @@ export interface ImportOutcome {
 export interface LinkedAgentEntry {
 	/** The agent's id, or `new:<runtime>` for a coding employee to start. */
 	id: string
+	/** The agent's name; the employee's, once it is on the team. */
 	name: string
+	/** The app it is: "Claude Code", "Hermes". */
+	app: string
 	/** "Hermes on Mac.lan"; "Works in a new folder on Mac.lan". */
 	description: string
 	/** The runtime it runs: "hermes", "codex". */
@@ -2672,6 +2676,8 @@ export interface LinkedAgentEntry {
 	botId: string
 	/** Already on the team: shown, not hired again. */
 	hired: boolean
+	/** The employee it is, once it is on the team. */
+	employeeId: string | null
 }
 
 export interface LinkedComputerEntry {
