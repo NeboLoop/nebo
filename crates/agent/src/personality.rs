@@ -121,6 +121,7 @@ pub async fn synthesize_directive(
         chat_id: String::new(),
         ask_channels: None,
         permission_mode: None,
+        linked_context: None,
         tool_choice: Default::default(),
         messages: vec![ai::Message {
             role: "user".to_string(),

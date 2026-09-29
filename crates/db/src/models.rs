@@ -197,6 +197,16 @@ pub struct Chat {
     /// ("Works in ~/workspaces/foo").
     #[serde(default, rename = "folder", skip_serializing_if = "Option::is_none")]
     pub linked_folder: Option<String>,
+    /// How much of its context window the linked session in
+    /// `linked_chat_id` has used, and the window's size, as its agent last
+    /// reported (ACP's `usage_update`). Internal.
+    #[serde(default, skip_serializing)]
+    pub linked_used_tokens: Option<i64>,
+    #[serde(default, skip_serializing)]
+    pub linked_window_tokens: Option<i64>,
+    /// When that session last had a turn (unix seconds). Internal.
+    #[serde(default, skip_serializing)]
+    pub linked_turn_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

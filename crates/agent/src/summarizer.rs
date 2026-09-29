@@ -80,6 +80,7 @@ pub async fn summarize_tool_batch(
         chat_id: String::new(),
         ask_channels: None,
         permission_mode: None,
+        linked_context: None,
         tool_choice: Default::default(),
         messages: vec![Message {
             role: "user".to_string(),
@@ -173,6 +174,7 @@ pub async fn one_line(
         chat_id: String::new(),
         ask_channels: None,
         permission_mode: None,
+        linked_context: None,
         tool_choice: Default::default(),
         model,
         system: instruction.to_string(),

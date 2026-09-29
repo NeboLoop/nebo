@@ -1630,30 +1630,11 @@ async fn step_events(
     if let Some(event) = events::phone_location_event(shared, conversation) {
         st.reminders.add(&event);
     }
-    let team: events::Listing = h
-        .store
-        .list_agents(100, 0)
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|a| a.is_enabled == 1 && a.name != cx.name)
-        .map(|a| (a.name, a.description))
-        .collect();
+    let team = events::employees_listing(&h.store, &cx.name);
     if let Some(delta) = events::LinedDelta::between(&events::announced("agents_listing", conversation), &team) {
         st.reminders.add(&TurnEvent::AgentsListing(delta));
     }
-    let teams: events::Listing = h
-        .store
-        .list_teams()
-        .unwrap_or_default()
-        .into_iter()
-        .map(|t| {
-            let roster = tools::team::member_roster(&h.store, &t);
-            let lead = tools::team::lead_of(&t).and_then(|id| roster.iter().find(|(m, _)| *m == id).map(|(_, name)| name.as_str()));
-            let members: Vec<String> = roster.iter().map(|(_, name)| name.clone()).collect();
-            let line = events::team_line(&t.mission, lead, &members);
-            (t.name, line)
-        })
-        .collect();
+    let teams: events::Listing = h.store.list_teams().unwrap_or_default().iter().map(|t| events::team_entry(&h.store, t)).collect();
     if let Some(delta) = events::LinedDelta::between(&events::announced("teams_listing", conversation), &teams) {
         st.reminders.add(&TurnEvent::TeamsListing(delta));
     }
@@ -1809,6 +1790,12 @@ fn build_request(
         // How much the employee may do without asking, for a runtime that
         // runs its own tools under modes of its own (the linked provider).
         permission_mode: Some(cx.grant.mode),
+        // What a fresh session of a linked employee's agent is told (the
+        // linked provider).
+        linked_context: cx.linked.then(|| {
+            let handoff = super::linked_handoff::Handoff::new(cx.harness.clone(), &cx.session_id, cx.agent_id(), &cx.name, &cx.progress.run_id);
+            ai::LinkedContextRef(Arc::new(handoff))
+        }),
         tool_choice: Default::default(),
         messages: conversation::convert_messages(window, &st.model),
         tools: declared,

@@ -96,12 +96,38 @@ impl Store {
     /// Record the linked agent's session behind this chat and the agent it
     /// belongs to (see `Chat::linked_chat_id`). Written on the thread's
     /// first turn. Empty ids forget it (a cleared conversation): the next
-    /// turn opens a new session on the agent's side too.
+    /// turn opens a new session on the agent's side too. Another session
+    /// than the one recorded starts with no activity of its own
+    /// (`set_chat_linked_activity`).
     pub fn set_chat_linked_session(&self, id: &str, agent_id: &str, session_id: &str) -> Result<(), NeboError> {
         let conn = self.conn()?;
         conn.execute(
-            "UPDATE chats SET linked_chat_id = NULLIF(?1, ''), linked_agent_id = NULLIF(?2, '') WHERE id = ?3",
+            "UPDATE chats SET
+                 linked_used_tokens = CASE WHEN linked_chat_id IS NULLIF(?1, '') THEN linked_used_tokens END,
+                 linked_window_tokens = CASE WHEN linked_chat_id IS NULLIF(?1, '') THEN linked_window_tokens END,
+                 linked_turn_at = CASE WHEN linked_chat_id IS NULLIF(?1, '') THEN linked_turn_at END,
+                 linked_chat_id = NULLIF(?1, ''),
+                 linked_agent_id = NULLIF(?2, '')
+             WHERE id = ?3",
             params![session_id, agent_id, id],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Record a turn of the linked session behind this chat: when it was
+    /// (unix seconds), and how much of its context window the session has
+    /// used, when its agent reported it (`used`, `window`). A report kept
+    /// from before stays when this turn brought none.
+    pub fn set_chat_linked_activity(&self, id: &str, at: i64, context: Option<(i64, i64)>) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        let (used, window) = context.unzip();
+        conn.execute(
+            "UPDATE chats SET linked_turn_at = ?1,
+                 linked_used_tokens = COALESCE(?2, linked_used_tokens),
+                 linked_window_tokens = COALESCE(?3, linked_window_tokens)
+             WHERE id = ?4",
+            params![at, used, window, id],
         )
         .map_err(|e| NeboError::Database(e.to_string()))?;
         Ok(())
@@ -1192,6 +1218,9 @@ fn row_to_chat(row: &rusqlite::Row) -> rusqlite::Result<Chat> {
         linked_chat_id: row.get("linked_chat_id")?,
         linked_agent_id: row.get("linked_agent_id")?,
         linked_folder: row.get("linked_folder")?,
+        linked_used_tokens: row.get("linked_used_tokens")?,
+        linked_window_tokens: row.get("linked_window_tokens")?,
+        linked_turn_at: row.get("linked_turn_at")?,
     })
 }
 
@@ -1420,6 +1449,34 @@ mod tests {
         let chat = store.get_chat("c1").unwrap().unwrap();
         assert_eq!(chat.linked_folder.as_deref(), Some("/Users/me/workspaces/foo"));
         assert_eq!(serde_json::to_value(chat).unwrap()["folder"], "/Users/me/workspaces/foo");
+    }
+
+    /// A linked session's activity (when it last had a turn, how much of
+    /// its context window it has used) is kept for that session only: a
+    /// turn with no report keeps the last one, and another session, or a
+    /// forgotten one, starts with none.
+    #[test]
+    fn a_linked_sessions_activity_belongs_to_that_session() {
+        let (_dir, store) = store();
+        store.create_chat("c1", "First").unwrap();
+        store.set_chat_linked_session("c1", "coder", "s-1").unwrap();
+        store.set_chat_linked_activity("c1", 100, Some((1_000, 200_000))).unwrap();
+        store.set_chat_linked_activity("c1", 200, None).unwrap();
+        let chat = store.get_chat("c1").unwrap().unwrap();
+        assert_eq!((chat.linked_turn_at, chat.linked_used_tokens, chat.linked_window_tokens), (Some(200), Some(1_000), Some(200_000)));
+
+        // The same session recorded again (its agent filled in) keeps it.
+        store.set_chat_linked_session("c1", "coder", "s-1").unwrap();
+        assert_eq!(store.get_chat("c1").unwrap().unwrap().linked_used_tokens, Some(1_000));
+
+        store.set_chat_linked_session("c1", "coder", "s-2").unwrap();
+        let chat = store.get_chat("c1").unwrap().unwrap();
+        assert_eq!((chat.linked_turn_at, chat.linked_used_tokens, chat.linked_window_tokens), (None, None, None));
+
+        store.set_chat_linked_activity("c1", 300, Some((5, 10))).unwrap();
+        store.set_chat_linked_session("c1", "", "").unwrap();
+        let chat = store.get_chat("c1").unwrap().unwrap();
+        assert_eq!((chat.linked_chat_id, chat.linked_turn_at, chat.linked_used_tokens), (None, None, None));
     }
 
     /// A linked employee's chat remembers the runtime's session once the

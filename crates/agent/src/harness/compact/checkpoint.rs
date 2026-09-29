@@ -302,7 +302,7 @@ pub async fn checkpoint(cx: &CheckpointContext<'_>, why: CheckpointReason) -> Re
         .get_chat_messages_since_checkpoint(&cx.sessions.active_chat_id(cx.session_id))
         .map_err(|e| format!("could not load the conversation: {e}"))?;
 
-    let (reply, head_cut) = summarize(cx).await?;
+    let (reply, head_cut) = summarize(cx.provider, cx.fork_of, cx.conversation, cx.instructions, cx.session_id).await?;
     let summary = extract_checkpoint(&reply)?;
 
     // The deferred tools loaded so far carry over on the boundary.
@@ -383,18 +383,40 @@ pub async fn checkpoint(cx: &CheckpointContext<'_>, why: CheckpointReason) -> Re
     })
 }
 
-/// The summary call, forked from the step's request. Returns the reply and
-/// whether the oldest part had to be dropped to fit.
-async fn summarize(cx: &CheckpointContext<'_>) -> Result<(String, bool), String> {
-    let rounds = round_starts(cx.conversation);
+/// The conversation summarized as a checkpoint writes it, on `provider`,
+/// with `base` as the request (its model; the conversation and the
+/// instruction replace its messages): what a linked employee's fresh agent
+/// session is told of the conversation so far (`linked_handoff`), written by
+/// the same call as every checkpoint.
+pub async fn summary_of(
+    provider: &dyn ai::Provider,
+    base: &ChatRequest,
+    conversation: &[ChatMessage],
+    session_id: &str,
+) -> Result<String, String> {
+    let (reply, _) = summarize(provider, base, conversation, None, session_id).await?;
+    extract_checkpoint(&reply)
+}
+
+/// The summary call over `conversation`, forked from `fork_of` (the step's
+/// request). Returns the reply and whether the oldest part had to be
+/// dropped to fit.
+async fn summarize(
+    provider: &dyn ai::Provider,
+    fork_of: &ChatRequest,
+    conversation: &[ChatMessage],
+    instructions: Option<&str>,
+    session_id: &str,
+) -> Result<(String, bool), String> {
+    let rounds = round_starts(conversation);
     let (mut dropped, mut cuts) = (0, 0);
     loop {
-        let start = rounds.get(dropped).copied().unwrap_or(cx.conversation.len());
-        let model = format!("{}/{}", cx.provider.id(), cx.fork_of.model);
-        let mut messages = crate::harness::conversation::convert_messages(&cx.conversation[start..], &model);
+        let start = rounds.get(dropped).copied().unwrap_or(conversation.len());
+        let model = format!("{}/{}", provider.id(), fork_of.model);
+        let mut messages = crate::harness::conversation::convert_messages(&conversation[start..], &model);
         messages.push(Message {
             role: "user".into(),
-            content: instruction(cx.instructions),
+            content: instruction(instructions),
             ..Default::default()
         });
         // Everything but the messages is the step's request as it was sent:
@@ -408,11 +430,11 @@ async fn summarize(cx: &CheckpointContext<'_>) -> Result<(String, bool), String>
             messages,
             trace: ai::RequestTrace {
                 purpose: "checkpoint",
-                ..cx.fork_of.trace.clone()
+                ..fork_of.trace.clone()
             },
-            ..cx.fork_of.clone()
+            ..fork_of.clone()
         };
-        match call(cx.provider, &req).await {
+        match call(provider, &req).await {
             Ok(reply) => return Ok((reply, dropped > 0)),
             Err(CallError::TooLong) => {
                 let left = rounds.len() - dropped;
@@ -421,7 +443,7 @@ async fn summarize(cx: &CheckpointContext<'_>) -> Result<(String, bool), String>
                 }
                 cuts += 1;
                 dropped += (left / 5).max(1);
-                warn!(session_id = cx.session_id, dropped, "checkpoint call too long; dropping the oldest part");
+                warn!(session_id, dropped, "checkpoint call too long; dropping the oldest part");
             }
             Err(CallError::Failed(e)) => return Err(e),
         }

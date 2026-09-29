@@ -29,6 +29,18 @@
 //! drops mid-turn is opened again and the session loaded: the turn goes on
 //! from where Nebo left it (spec §12).
 //!
+//! Nebo keeps the conversation; the agent keeps one working stretch of it.
+//! A fresh session's first prompt starts with a briefing of who the employee
+//! is here ([`ai::LinkedContext`], built by the harness). A healthy session
+//! carries on from message to message; the conversation continues in a fresh
+//! one, whose first prompt also carries the conversation so far (Nebo's
+//! checkpoint summary) and the latest exchanges word for word, when the
+//! session stops answering mid-turn ([`Stall`]: its host says the prompt is
+//! open and nothing works, held for [`STALL_WINDOW`], never silence alone),
+//! when it has used most of its context window as its agent reports, or
+//! when it sat idle for [`IDLE_ROTATION`]. The owner reads one plain line
+//! when that happens. A cleared conversation starts fresh with no handoff.
+//!
 //! A permission request the agent stops for is answered under the
 //! employee's permission mode: in Full Access nothing asks, so Nebo answers
 //! it with the agent's allow option itself (a runtime with no no-prompt mode
@@ -86,6 +98,31 @@ const HEARTBEAT: Duration = Duration::from_secs(20);
 /// races unpredictably against).
 #[cfg(test)]
 const HEARTBEAT: Duration = Duration::from_millis(80);
+/// How long a turn may sit stalled before its conversation continues in a
+/// fresh session ([`Stall`]): its host says the prompt is open and nothing
+/// works in it (no call running, no question waiting, none of the agent's
+/// processes working) and nothing new has come from the agent. Long enough
+/// for a model thinking in silence; a build, a test run or a running call is
+/// work the host sees, so it never counts.
+#[cfg(not(test))]
+const STALL_WINDOW: Duration = Duration::from_secs(10 * 60);
+/// Short in tests, in real time (see [`HEARTBEAT`]'s), and longer than any
+/// test's own quiet turn.
+#[cfg(test)]
+const STALL_WINDOW: Duration = Duration::from_secs(3);
+/// A session with no turn for this long continues fresh at the next message.
+const IDLE_ROTATION: Duration = Duration::from_secs(8 * 3600);
+/// The share of its context window (percent), as its agent reports it, a
+/// session may use before the conversation continues in a fresh one: ahead
+/// of the agent's own compaction, while it still works well.
+const LONG_PERCENT: i64 = 60;
+/// The most of Nebo's summary a handoff carries.
+const SUMMARY_CHARS: usize = 6_000;
+/// The latest exchanges a handoff carries word for word, and the most of
+/// each message.
+const TAIL_MESSAGES: usize = 6;
+const TAIL_CHARS: usize = 600;
+
 /// Waits between tries to reach the linked bot again after a connection
 /// drops mid-turn (spec §11: from 1 s, capped at 30 s).
 const RECONNECT: [u64; 7] = [1, 2, 4, 8, 16, 30, 30];
@@ -209,6 +246,7 @@ impl LinkedProvider {
             agent_id: agent_id.to_owned(),
             agent: String::new(),
             folder: None,
+            runtime: name.clone(),
             name,
             session: String::new(),
             conn,
@@ -219,9 +257,15 @@ impl LinkedProvider {
             seen: 0,
             tools: Tools::default(),
             asks: HashMap::new(),
+            lead: None,
+            stall: Stall::default(),
+            rotated: false,
+            context: None,
         };
         driver.begin(chat).await?;
-        driver.run().await
+        let ended = driver.run().await;
+        driver.record_activity();
+        ended
     }
 
     /// Whether `bot_id` is this computer's own, hosted by Nebo itself.
@@ -354,6 +398,8 @@ enum Route {
 enum Liveness {
     /// The host says the agent's own process is no longer running.
     Gone,
+    /// The turn stopped answering ([`Stall`]).
+    Stalled,
     /// No definite answer — a blip, or nothing worth acting on.
     Unknown,
     /// A frame read while checking turned out to be this turn's own end.
@@ -387,6 +433,8 @@ struct Driver<'a> {
     folder: Option<String>,
     /// The employee's name, for the copy the owner reads.
     name: String,
+    /// What the agent calls itself on its host ("Claude Code").
+    runtime: String,
     session: String,
     conn: Conn,
     prompt: String,
@@ -403,6 +451,16 @@ struct Driver<'a> {
     /// The permission requests asked, by their id on the run's ask channels
     /// (the tool call's id).
     asks: HashMap<String, Asked>,
+    /// The first block of a fresh session's first prompt: its briefing and,
+    /// when it carries the conversation on, the handoff.
+    lead: Option<String>,
+    /// Whether this turn is stalled, one heartbeat at a time.
+    stall: Stall,
+    /// The conversation already continued in a fresh session this turn.
+    rotated: bool,
+    /// How much of its context window the session has used, and the
+    /// window, as the agent last reported this turn (`usage_update`).
+    context: Option<(i64, i64)>,
 }
 
 impl Driver<'_> {
@@ -415,6 +473,7 @@ impl Driver<'_> {
     async fn begin(&mut self, chat: Option<db::models::Chat>) -> Result<(), String> {
         self.locate().await?;
         let capabilities = self.initialize().await?;
+        let due = chat.as_ref().and_then(|c| rotation_due(c, now_secs()));
         let recorded = chat.and_then(|c| {
             let session = c.linked_chat_id.filter(|id| !id.is_empty())?;
             // A session recorded before its agent was is the employee's.
@@ -422,8 +481,11 @@ impl Driver<'_> {
             let agent = c.linked_agent_id.unwrap_or_else(|| self.agent_id.clone());
             (agent == self.agent_id).then_some((session, unrecorded))
         });
-        let opened = match recorded {
-            Some((session, unrecorded)) => {
+        let opened = match (recorded, due) {
+            // A session that got long or sat idle: the conversation continues
+            // in a fresh one, with the handoff.
+            (Some(_), Some(why)) => return self.rotate(why).await,
+            (Some((session, unrecorded)), None) => {
                 let resume = capabilities["sessionCapabilities"]["resume"].is_object();
                 let method = if resume { "session/resume" } else { "session/load" };
                 let params = json!({ "sessionId": session, "cwd": self.cwd(), "mcpServers": [] });
@@ -441,26 +503,96 @@ impl Driver<'_> {
                 }
                 opened
             }
-            None => {
-                let params = json!({ "cwd": self.cwd(), "mcpServers": [] });
-                let agent = self.agent.clone();
-                let (answer, _) = self.conn.call(Some(&agent), "session/new", params).await.ok_or_else(|| self.offline())?;
-                let created = answer.map_err(|e| turn::plain(&self.name, &e))?;
-                self.session = created["sessionId"]
-                    .as_str()
-                    .filter(|s| !s.is_empty())
-                    .ok_or_else(|| "The linked bot created a chat without an id.".to_owned())?
-                    .to_owned();
-                self.record()?;
-                if let Some(folder) = self.folder.clone() {
-                    self.record_folder(&folder);
-                }
-                info!(bot_id = %self.bot_id, agent = %self.agent, chat_id = %self.req.chat_id, session = %self.session, "linked: session created");
-                created
+            // The chat's first turn, or a cleared conversation: a fresh
+            // session with its briefing and no handoff.
+            (None, _) => {
+                let lead = self.lead(false).await;
+                self.new_session(lead).await?
             }
         };
         self.mode(&opened).await?;
         self.send_prompt()
+    }
+
+    /// A fresh session of the agent for this conversation, recorded on the
+    /// chat, its first prompt to start with `lead`.
+    async fn new_session(&mut self, lead: Option<String>) -> Result<Value, String> {
+        let params = json!({ "cwd": self.cwd(), "mcpServers": [] });
+        let agent = self.agent.clone();
+        let (answer, _) = self.conn.call(Some(&agent), "session/new", params).await.ok_or_else(|| self.offline())?;
+        let created = answer.map_err(|e| turn::plain(&self.name, &e))?;
+        self.session = created["sessionId"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| "The linked bot created a chat without an id.".to_owned())?
+            .to_owned();
+        self.record()?;
+        if let Some(folder) = self.folder.clone() {
+            self.record_folder(&folder);
+        }
+        self.lead = lead;
+        info!(bot_id = %self.bot_id, agent = %self.agent, chat_id = %self.req.chat_id, session = %self.session, "linked: session created");
+        Ok(created)
+    }
+
+    /// The conversation continues in a fresh session of the agent (`why`):
+    /// the old one is forgotten, the owner reads one plain line, and the
+    /// fresh session's first prompt carries the handoff and the owner's
+    /// message. Once a turn.
+    async fn rotate(&mut self, why: Rotation) -> Result<(), String> {
+        info!(chat_id = %self.req.chat_id, session = %self.session, ?why, "linked: the conversation continues in a fresh session");
+        self.forget_session();
+        self.rotated = true;
+        let lead = self.lead(true).await;
+        let notice = format!("Continuing in a fresh {} session with a summary of this conversation.\n\n", self.runtime);
+        let _ = self.tx.send(StreamEvent::text(notice)).await;
+        self.turn = None;
+        self.seen = 0;
+        self.tools = Tools::default();
+        self.asks.clear();
+        self.prompted = false;
+        self.waiting = false;
+        self.stall = Stall::default();
+        self.context = None;
+        let opened = self.new_session(lead).await?;
+        self.mode(&opened).await?;
+        self.send_prompt()
+    }
+
+    /// The first block of a fresh session's first prompt: the briefing and,
+    /// when it carries the conversation on, the conversation so far and the
+    /// latest exchanges word for word. `None` with nothing to say.
+    async fn lead(&mut self, carrying_on: bool) -> Option<String> {
+        let context = self.req.linked_context.as_ref().map(|c| c.0.clone());
+        let mut parts: Vec<String> = Vec::new();
+        if let Some(briefing) = context.as_ref().map(|c| c.briefing()).filter(|b| !b.trim().is_empty()) {
+            parts.push(briefing);
+        }
+        if carrying_on {
+            parts.push("This conversation carries on from an earlier session. Pick up from where it stands; don't ask the owner to repeat anything.".to_owned());
+            let summary = match &context {
+                Some(context) => context.summary().await,
+                None => None,
+            };
+            if let Some(summary) = summary.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+                parts.push(format!("## The conversation so far\n\n{}", clip(summary, SUMMARY_CHARS, false)));
+            }
+            if let Some(tail) = latest_exchanges(&self.req.messages) {
+                parts.push(format!("## The latest exchanges, word for word\n\n{tail}"));
+            }
+        }
+        (!parts.is_empty()).then(|| parts.join("\n\n"))
+    }
+
+    /// Records this turn on the chat: when it was, and how much of its
+    /// context window the session has used, as the agent reported.
+    fn record_activity(&self) {
+        if self.session.is_empty() {
+            return;
+        }
+        if let Err(e) = self.provider.store.set_chat_linked_activity(&self.req.chat_id, now_secs(), self.context) {
+            warn!(chat_id = %self.req.chat_id, error = %e, "linked: the session's activity was not recorded");
+        }
     }
 
     /// The agent on the host (`host/agents`): by the id the brain names, or
@@ -472,6 +604,11 @@ impl Driver<'_> {
         let found = listed_agent(&listed, &self.agent_id).ok_or_else(|| format!("No agent {} on this bot.", self.agent_id))?;
         self.agent = found["id"].as_str().unwrap_or_default().to_owned();
         self.folder = found["folder"].as_str().map(str::to_owned);
+        let runtime = found["runtime"].as_str().unwrap_or_default();
+        let known = nebo_runtimes::acp::Agent::KNOWN.iter().find(|a| a.key() == runtime).map(|a| a.name().to_owned());
+        if let Some(runtime) = known.or_else(|| found["label"].as_str().filter(|l| !l.trim().is_empty()).map(str::to_owned)) {
+            self.runtime = runtime;
+        }
         Ok(())
     }
 
@@ -529,7 +666,12 @@ impl Driver<'_> {
     }
 
     fn send_prompt(&mut self) -> Result<(), String> {
-        let params = json!({ "sessionId": self.session, "prompt": [{ "type": "text", "text": self.prompt }] });
+        let mut prompt: Vec<Value> = Vec::new();
+        if let Some(lead) = &self.lead {
+            prompt.push(json!({ "type": "text", "text": lead }));
+        }
+        prompt.push(json!({ "type": "text", "text": self.prompt }));
+        let params = json!({ "sessionId": self.session, "prompt": prompt });
         let agent = self.agent.clone();
         if self.conn.request(Some(&agent), "session/prompt", params).is_none() {
             return Err(self.offline());
@@ -555,10 +697,11 @@ impl Driver<'_> {
     /// might never answer again. An *acknowledged* cancel (the agent said
     /// "cancelled", or the host says the process died but its own record of
     /// the session survives it) keeps the session — the owner's "Stop… now
-    /// do X" still has its context.
+    /// do X" still has its context. A session the conversation leaves for a
+    /// fresh one ([`Driver::rotate`]) is forgotten too.
     fn forget_session(&self) {
         if let Err(e) = self.provider.store.set_chat_linked_session(&self.req.chat_id, &self.agent_id, "") {
-            warn!(chat_id = %self.req.chat_id, error = %e, "linked: could not forget the session after an unacknowledged cancel");
+            warn!(chat_id = %self.req.chat_id, error = %e, "linked: could not forget the session");
         }
     }
 
@@ -571,6 +714,11 @@ impl Driver<'_> {
     /// A blip — no answer, no listing, no `online` field — proves nothing
     /// either way: liveness still rests on the connection and the reconnect
     /// window then, never on one missed status call.
+    ///
+    /// Then what the host says the agent is doing (`host/status`), taken in
+    /// by [`Stall`]: the turn is stalled once its prompt has been open with
+    /// nothing working and nothing new for [`STALL_WINDOW`]. A host that
+    /// doesn't say, or a turn not yet started, is never judged.
     async fn liveness(&mut self, answers: &mpsc::Sender<(String, String)>) -> Result<Liveness, String> {
         let Some((answer, others)) = self.conn.call(None, "host/agents", json!({})).await else {
             return Ok(Liveness::Unknown);
@@ -584,9 +732,26 @@ impl Driver<'_> {
             return Ok(Liveness::Unknown);
         };
         let listed = agents["agents"].as_array().cloned().unwrap_or_default();
-        match listed.iter().find(|a| a["id"] == self.agent.as_str()).and_then(|a| a["online"].as_bool()) {
-            Some(false) => Ok(Liveness::Gone),
-            _ => Ok(Liveness::Unknown),
+        if listed.iter().find(|a| a["id"] == self.agent.as_str()).and_then(|a| a["online"].as_bool()) == Some(false) {
+            return Ok(Liveness::Gone);
+        }
+        let Some((answer, others)) = self.conn.call(None, "host/status", json!({})).await else {
+            self.stall.look(None, &self.session, std::time::Instant::now(), STALL_WINDOW);
+            return Ok(Liveness::Unknown);
+        };
+        for other in others {
+            if let Some(ended) = self.frame(other, answers).await? {
+                return Ok(Liveness::Ended(ended));
+            }
+        }
+        let status = answer
+            .ok()
+            .and_then(|a| serde_json::from_value::<Vec<AgentStatus>>(a["agents"].clone()).ok())
+            .and_then(|listed| listed.into_iter().find(|s| s.agent == self.agent));
+        let status = status.filter(|_| self.turn.is_some());
+        match self.stall.look(status.as_ref(), &self.session, std::time::Instant::now(), STALL_WINDOW) {
+            true => Ok(Liveness::Stalled),
+            false => Ok(Liveness::Unknown),
         }
     }
 
@@ -642,6 +807,16 @@ impl Driver<'_> {
                                 let _ = self.conn.send(&cancel);
                                 return Err(self.stalled_notice());
                             }
+                            Liveness::Stalled => {
+                                warn!(bot_id = %self.bot_id, agent = %self.agent, session = %self.session, "linked: the turn stopped answering: its prompt is open and nothing works in it");
+                                let cancel = json!({ "agent": self.agent, "acp": { "jsonrpc": "2.0", "method": "session/cancel", "params": { "sessionId": self.session } } });
+                                let _ = self.conn.send(&cancel);
+                                if self.rotated {
+                                    self.forget_session();
+                                    return Err(self.stalled_notice());
+                                }
+                                self.rotate(Rotation::Stalled).await?;
+                            }
                             Liveness::Unknown => {}
                         }
                     }
@@ -678,12 +853,14 @@ impl Driver<'_> {
         let ours = msg["params"]["sessionId"] == self.session.as_str();
         match (msg["method"].as_str(), msg.get("id")) {
             (Some("session/update"), None) if ours => {
+                self.stall.heard();
                 if self.turn.is_some() {
                     self.seen += 1;
                     self.update(&msg["params"]["update"]).await;
                 }
             }
             (Some("session/request_permission"), Some(id)) if ours => {
+                self.stall.heard();
                 self.asked(id.clone(), &msg["params"], answers).await;
             }
             (Some("$/cancel_request"), None) => self.withdrawn(&msg["params"]["requestId"]).await,
@@ -728,6 +905,13 @@ impl Driver<'_> {
 
     /// One of this turn's updates, as stream events.
     async fn update(&mut self, update: &Value) {
+        // How much of its context window the session has used, as the agent
+        // reports it: what says the conversation should continue fresh.
+        if update["sessionUpdate"] == "usage_update"
+            && let (Some(used), Some(size)) = (update["used"].as_i64(), update["size"].as_i64())
+        {
+            self.context = Some((used, size));
+        }
         // The conversation moved to another folder at the owner's request:
         // the host says where ("Now working in …" arrives as its text).
         if update["sessionUpdate"] == "session_info_update"
@@ -1093,6 +1277,104 @@ fn this_turns(record: &[Value], latest: bool) -> &[Value] {
     }
 }
 
+/// Why a conversation continues in a fresh session of its agent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Rotation {
+    /// Its turn stopped answering ([`Stall`]).
+    Stalled,
+    /// It has used most of its context window ([`LONG_PERCENT`]).
+    Long,
+    /// It had no turn for [`IDLE_ROTATION`].
+    Idle,
+}
+
+/// Whether the session recorded on `chat` should continue fresh at this
+/// message (`now`, unix seconds): it sat idle, or it got long.
+fn rotation_due(chat: &db::models::Chat, now: i64) -> Option<Rotation> {
+    let idle = IDLE_ROTATION.as_secs() as i64;
+    if chat.linked_turn_at.is_some_and(|at| now.saturating_sub(at) >= idle) {
+        return Some(Rotation::Idle);
+    }
+    match (chat.linked_used_tokens, chat.linked_window_tokens) {
+        (Some(used), Some(window)) if window > 0 && used.saturating_mul(100) >= window.saturating_mul(LONG_PERCENT) => Some(Rotation::Long),
+        _ => None,
+    }
+}
+
+/// Watches one turn for a stall, a heartbeat at a time: its agent's host
+/// says the prompt is open and nothing else works in it (no call running,
+/// no permission request waiting, none of the agent's processes working)
+/// and nothing new has come from the agent in the session, held for the
+/// window. Silence alone never counts: a build, a test run or a running call
+/// is work the host sees, and anything the agent sends starts it over. No
+/// word from the host is no evidence either way.
+#[derive(Debug, Default)]
+struct Stall {
+    since: Option<std::time::Instant>,
+    last_update: Option<String>,
+}
+
+impl Stall {
+    /// Takes in one look at the agent's `host/status` entry (`status`) for
+    /// `session`; true once the turn has been stalled for `window`.
+    fn look(&mut self, status: Option<&AgentStatus>, session: &str, now: std::time::Instant, window: Duration) -> bool {
+        let seen = status.and_then(|agent| {
+            let s = agent.sessions.iter().find(|s| s.session_id == session)?;
+            let quiet = agent.state == Life::Running
+                && !agent.why.contains(&Working::Processes)
+                && s.why.contains(&Working::Prompt)
+                && !s.why.iter().any(|w| matches!(w, Working::Tool | Working::Permission));
+            Some((quiet, s.last_update.clone()))
+        });
+        match seen {
+            Some((true, last_update)) => {
+                if last_update != self.last_update {
+                    self.last_update = last_update;
+                    self.since = Some(now);
+                }
+                let since = *self.since.get_or_insert(now);
+                now.saturating_duration_since(since) >= window
+            }
+            Some((false, last_update)) => {
+                self.last_update = last_update;
+                self.since = None;
+                false
+            }
+            None => {
+                self.since = None;
+                false
+            }
+        }
+    }
+
+    /// Something came from the agent in the session: it is not stalled.
+    fn heard(&mut self) {
+        self.since = None;
+    }
+}
+
+/// The latest exchanges before the owner's newest message, word for word
+/// (each message bounded): what a fresh session reads besides the summary.
+fn latest_exchanges(messages: &[Message]) -> Option<String> {
+    let owners = |m: &Message| m.role == "user" && !m.content.trim().starts_with("<system-reminder>");
+    let newest = messages.iter().rposition(owners)?;
+    let lines: Vec<String> = messages[..newest]
+        .iter()
+        .filter(|m| (owners(m) || m.role == "assistant") && !m.content.trim().is_empty())
+        .map(|m| match m.role.as_str() {
+            "user" => format!("Owner: {}", clip(m.content.trim(), TAIL_CHARS, false)),
+            _ => format!("You: {}", clip(m.content.trim(), TAIL_CHARS, true)),
+        })
+        .collect();
+    let tail = &lines[lines.len().saturating_sub(TAIL_MESSAGES)..];
+    (!tail.is_empty()).then(|| tail.join("\n\n"))
+}
+
+/// Now, in unix seconds.
+fn now_secs() -> i64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or_default()
+}
+
 /// What a linked agent's host is called in a status read: the employee
 /// reading about it knows which computer that is.
 const COMPUTER: &str = "its computer";
@@ -1231,23 +1513,25 @@ fn summarise(record: &[Value], running: Option<&TurnUpdate>) -> SessionWork {
     work
 }
 
-/// `text` bounded to [`WORK_CHARS`]: its end when `keep_end` (the latest
-/// words), else its start; the cut is said where it is.
+/// `text` bounded to [`WORK_CHARS`] ([`clip`]); `None` when empty.
 fn bounded(text: &str, keep_end: bool) -> Option<String> {
-    if text.is_empty() {
-        return None;
-    }
+    (!text.is_empty()).then(|| clip(text, WORK_CHARS, keep_end))
+}
+
+/// `text` bounded to `max` characters: its end when `keep_end` (the latest
+/// words), else its start; the cut is said where it is.
+fn clip(text: &str, max: usize, keep_end: bool) -> String {
     let count = text.chars().count();
-    if count <= WORK_CHARS {
-        return Some(text.to_owned());
+    if count <= max {
+        return text.to_owned();
     }
-    Some(if keep_end {
-        let tail: String = text.chars().skip(count - WORK_CHARS).collect();
+    if keep_end {
+        let tail: String = text.chars().skip(count - max).collect();
         format!("… {tail}")
     } else {
-        let head: String = text.chars().take(WORK_CHARS).collect();
+        let head: String = text.chars().take(max).collect();
         format!("{head} …")
-    })
+    }
 }
 
 /// Why the linked bot could not be reached, as the owner reads it.
@@ -1309,6 +1593,16 @@ mod tests {
     /// - `folders`: takes the host's HTTP MCP server; `where` says the folder
     ///   its session works in (and the handoff its prompt started with),
     ///   `work in <folder>` calls the host's `move_to_folder`.
+    /// - `stall`: its first session is wedged: every prompt there opens a
+    ///   call that stays pending (a model's stream stopped mid-call), then
+    ///   nothing; a cancel is acknowledged, and the session stays wedged,
+    ///   in this process or the next (it loads sessions). Every other
+    ///   session answers `Fresh here.`
+    /// - `busy`: a call running (`in_progress`), then nothing until
+    ///   cancelled: quiet, but working.
+    /// - `rotate`: each new session its own (`s-1`, `s-2`, …); a prompt is
+    ///   answered `In <session>.` with the context it used: most of it for
+    ///   `a long one`, little otherwise.
     #[test]
     fn fake_acp_agent() {
         use std::io::{BufRead, Write};
@@ -1348,10 +1642,40 @@ mod tests {
                     "protocolVersion": 1,
                     "agentCapabilities": match script.as_str() {
                         "folders" => json!({ "loadSession": false, "mcpCapabilities": { "http": true } }),
+                        "stall" => json!({ "loadSession": true }),
                         _ => json!({ "loadSession": false }),
                     },
                     "agentInfo": { "name": "fake-acp" },
                 })),
+                // Its sessions are numbered by every one it made, in any of
+                // its processes (`told` outlives them).
+                Some("session/new") if script == "stall" || script == "rotate" => {
+                    let made = self::told(std::path::Path::new(&told)).iter().filter(|t| t.get("new").is_some()).count();
+                    note(json!({ "new": message["params"]["cwd"] }));
+                    reply(json!({ "sessionId": format!("s-{}", made + 1) }));
+                }
+                Some("session/load") if script == "stall" => {
+                    note(json!({ "load": message["params"]["sessionId"] }));
+                    reply(json!({}));
+                }
+                Some("session/prompt") if script == "stall" || script == "rotate" => {
+                    note(json!({ "prompt": message["params"]["prompt"] }));
+                    let session = message["params"]["sessionId"].as_str().unwrap_or("").to_owned();
+                    let update_in = |update: Value| emit(&json!({ "jsonrpc": "2.0", "method": "session/update", "params": { "sessionId": session, "update": update } }));
+                    let text = message["params"]["prompt"].as_array().and_then(|p| p.last()).and_then(|b| b["text"].as_str()).unwrap_or("").to_owned();
+                    if script == "stall" && session == "s-1" {
+                        prompt_id = id.clone();
+                        update_in(json!({ "sessionUpdate": "tool_call", "toolCallId": "call_1", "title": "Read", "kind": "read", "status": "pending" }));
+                    } else if script == "stall" {
+                        update_in(json!({ "sessionUpdate": "agent_message_chunk", "content": { "type": "text", "text": "Fresh here." } }));
+                        reply(json!({ "stopReason": "end_turn" }));
+                    } else {
+                        let used = if text == "a long one" { 150_000 } else { 1_000 };
+                        update_in(json!({ "sessionUpdate": "agent_message_chunk", "content": { "type": "text", "text": format!("In {session}.") } }));
+                        update_in(json!({ "sessionUpdate": "usage_update", "used": used, "size": 200_000 }));
+                        reply(json!({ "stopReason": "end_turn" }));
+                    }
+                }
                 Some("session/new") if script == "folders" => {
                     note(json!({ "new": message["params"]["cwd"] }));
                     let session = format!("s-{}", sessions.len() + 1);
@@ -1455,6 +1779,8 @@ mod tests {
                                 "labels": ["Allow once", "Always allow", "Deny"] } },
                         } })),
                         "hang" | "deaf" => say("Working"),
+                        "busy" => update(json!({ "sessionUpdate": "tool_call", "toolCallId": "call_1", "title": "cargo build", "kind": "execute",
+                            "status": "in_progress", "rawInput": { "command": "cargo build" } })),
                         // The Mac-mini incident: the process itself dies
                         // mid-turn, not just the connection — a crash, not a
                         // network blip.
@@ -1780,6 +2106,56 @@ mod tests {
             assert_ne!(event.event_type, StreamEventType::Error, "{:?}", event.error);
             before.push(event);
         }
+    }
+
+    /// What the harness would tell a fresh session, as a test fixes it.
+    struct Context;
+
+    #[async_trait]
+    impl LinkedContext for Context {
+        fn briefing(&self) -> String {
+            "BRIEFING".to_owned()
+        }
+
+        async fn summary(&self) -> Option<String> {
+            Some("SUMMARY".to_owned())
+        }
+    }
+
+    /// `req` with the harness's context for a fresh session.
+    fn briefed(mut req: ChatRequest) -> ChatRequest {
+        req.linked_context = Some(LinkedContextRef(Arc::new(Context)));
+        req
+    }
+
+    /// The line the owner reads when the conversation continues fresh.
+    const NOTICE: &str = "Continuing in a fresh Claude Code session with a summary of this conversation.";
+
+    /// The handoff a fresh session that carries the conversation on starts
+    /// with: the briefing, Nebo's summary, the latest exchanges word for
+    /// word (the request's `earlier` and `ok`).
+    fn assert_handoff(lead: &str) {
+        assert!(lead.starts_with("BRIEFING\n\nThis conversation carries on from an earlier session."), "{lead}");
+        assert!(lead.contains("## The conversation so far\n\nSUMMARY"), "{lead}");
+        assert!(lead.ends_with("## The latest exchanges, word for word\n\nOwner: earlier\n\nYou: ok"), "{lead}");
+    }
+
+    /// The text the owner read.
+    fn texts(events: &[StreamEvent]) -> String {
+        events.iter().filter(|e| e.event_type == StreamEventType::Text).map(|e| e.text.as_str()).collect()
+    }
+
+    /// Each prompt the agent was sent, as its text blocks.
+    fn prompt_texts(told: &[Value]) -> Vec<Vec<String>> {
+        told.iter()
+            .filter_map(|t| t.get("prompt").and_then(Value::as_array))
+            .map(|blocks| blocks.iter().filter_map(|b| b["text"].as_str().map(str::to_owned)).collect())
+            .collect()
+    }
+
+    /// How many sessions the agent made.
+    fn news(told: &[Value]) -> usize {
+        told.iter().filter(|t| t.get("new").is_some()).count()
     }
 
     fn kinds(events: &[StreamEvent]) -> Vec<StreamEventType> {
@@ -2263,33 +2639,230 @@ mod tests {
         events
     }
 
-    /// A run can legitimately go silent for a long time — a build, a test
-    /// suite, a slow tool — with no session/update at all, and the
-    /// connection stays perfectly healthy throughout. Several heartbeats of
-    /// that silence (well past where a silence-timeout design would have
-    /// given up) must never end the turn on their own: only the owner's own
-    /// stop does, once he asks for it.
+    /// A turn that works in silence — a build, a test run, a long call — is
+    /// never cut: the host says a call runs, so however long it is quiet,
+    /// nothing ends it but the owner's own stop, and the session is kept.
     #[tokio::test]
-    async fn a_healthy_silent_turn_is_never_cancelled_on_its_own() {
-        let r = remote("hang").await;
+    async fn a_quiet_turn_that_works_is_never_cut() {
+        let r = remote("busy").await;
         let token = CancellationToken::new();
-        let mut req = request("do something long", "chat-1", &remote_model());
+        let mut req = briefed(request("build it", "chat-1", &remote_model()));
         req.cancel_token = Some(token.clone());
 
         let mut rx = r.provider.stream(&req).await.unwrap();
         let first = tokio::time::timeout(Duration::from_secs(60), rx.recv()).await.unwrap().unwrap();
-        assert_eq!(first.text, "Working");
+        assert_eq!(first.event_type, StreamEventType::ToolCall, "the running call is shown");
 
-        // Many heartbeats' worth of silence, agent still reported running:
-        // nothing arrives — not an error, not "done" — because nothing
-        // judges this turn stuck.
-        let quiet = tokio::time::timeout(HEARTBEAT * 10, rx.recv()).await;
-        assert!(quiet.is_err(), "a healthy, silent turn was ended on its own");
+        let quiet = tokio::time::timeout(STALL_WINDOW * 2, rx.recv()).await;
+        assert!(quiet.is_err(), "a quiet turn that works was ended on its own");
+        let told_now = told(&r.told);
+        assert_eq!(news(&told_now), 1, "never a fresh session: {told_now:?}");
+        assert!(told_now.iter().all(|t| t.get("cancel").is_none()), "never cancelled: {told_now:?}");
 
         token.cancel();
         let rest = collect(rx).await;
-        assert_eq!(kinds(&rest), vec![StreamEventType::Error, StreamEventType::Done]);
         assert_eq!(rest[0].error.as_deref(), Some("Cancelled"), "only the owner's stop ends it");
+    }
+
+    /// The live incident: the agent's stream stopped mid-call (the call still
+    /// pending, then nothing) and its process sat idle. Its host says the
+    /// prompt is open and nothing works; held for the stall window, the turn
+    /// is not left hanging: the stuck session is cancelled and forgotten,
+    /// the owner reads one plain line, and the conversation continues in a
+    /// fresh session whose first prompt carries the handoff (the briefing,
+    /// Nebo's summary, the latest exchanges word for word) and the owner's
+    /// message, which it answers.
+    #[tokio::test]
+    async fn a_stalled_turn_continues_in_a_fresh_session_with_a_handoff() {
+        let r = remote("stall").await;
+        let events = collect(r.provider.stream(&briefed(request("do it", "chat-1", &remote_model()))).await.unwrap()).await;
+        assert_eq!(events.last().unwrap().event_type, StreamEventType::Done, "{:?}", events.iter().map(|e| (&e.text, &e.error)).collect::<Vec<_>>());
+        assert_eq!(texts(&events), format!("{}\n\nFresh here.", NOTICE));
+
+        let told_now = told(&r.told);
+        assert_eq!(news(&told_now), 2, "{told_now:?}");
+        assert!(told_now.iter().any(|t| t.get("cancel").is_some()), "the stuck turn was cancelled: {told_now:?}");
+        let prompts = prompt_texts(&told_now);
+        assert_eq!(prompts[0], ["BRIEFING", "do it"]);
+        let fresh = prompts.last().unwrap();
+        assert_eq!(fresh[1], "do it", "the owner's message, not retyped");
+        assert_handoff(&fresh[0]);
+        let chat = r.store.get_chat("chat-1").unwrap().unwrap();
+        assert_eq!(chat.linked_chat_id.as_deref(), Some("s-2"), "the fresh session is the conversation's now");
+    }
+
+    /// The agent acknowledges a cancel (its adapter forces it) while its
+    /// session stays wedged: the session is kept, as for any acknowledged
+    /// cancel, and the next message, resumed there and stalled again, still
+    /// continues in a fresh session and is answered.
+    #[tokio::test]
+    async fn an_acknowledged_cancel_on_a_wedged_session_still_gets_a_fresh_one() {
+        let r = remote("stall").await;
+        let token = CancellationToken::new();
+        let mut req = briefed(request("do it", "chat-1", &remote_model()));
+        req.cancel_token = Some(token.clone());
+        let rx = r.provider.stream(&req).await.unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        while !told(&r.told).iter().any(|t| t.get("prompt").is_some()) {
+            assert!(std::time::Instant::now() < deadline, "the prompt never arrived");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        tokio::time::sleep(HEARTBEAT * 2).await;
+        token.cancel();
+        let rest = collect(rx).await;
+        let error = rest.iter().find(|e| e.event_type == StreamEventType::Error).and_then(|e| e.error.as_deref());
+        assert_eq!(error, Some("Cancelled"));
+        assert_eq!(r.store.get_chat("chat-1").unwrap().unwrap().linked_chat_id.as_deref(), Some("s-1"), "an acknowledged cancel keeps the session");
+
+        let next = collect(r.provider.stream(&briefed(request("now do X", "chat-1", &remote_model()))).await.unwrap()).await;
+        assert_eq!(texts(&next), format!("{}\n\nFresh here.", NOTICE), "{:?}", next.iter().map(|e| (&e.text, &e.error)).collect::<Vec<_>>());
+        let prompts = prompt_texts(&told(&r.told));
+        assert_eq!(prompts.last().unwrap()[1], "now do X");
+        assert_eq!(r.store.get_chat("chat-1").unwrap().unwrap().linked_chat_id.as_deref(), Some("s-2"));
+    }
+
+    /// A fresh session's first prompt starts with the briefing. A healthy,
+    /// short session then carries on from message to message: resumed, it is
+    /// sent only the owner's message, never briefed again, and nothing
+    /// rotates it. Its activity is kept on the chat.
+    #[tokio::test]
+    async fn a_fresh_session_is_briefed_once_and_a_healthy_one_carries_on() {
+        let r = remote("rotate").await;
+        let first = collect(r.provider.stream(&briefed(request("hi", "chat-1", &remote_model()))).await.unwrap()).await;
+        assert_eq!(texts(&first), "In s-1.");
+        let second = collect(r.provider.stream(&briefed(request("and again", "chat-1", &remote_model()))).await.unwrap()).await;
+        assert_eq!(texts(&second), "In s-1.", "the same session, and no notice");
+        let told_now = told(&r.told);
+        assert_eq!(prompt_texts(&told_now), vec![vec!["BRIEFING", "hi"], vec!["and again"]]);
+        assert_eq!(news(&told_now), 1);
+        let chat = r.store.get_chat("chat-1").unwrap().unwrap();
+        assert_eq!((chat.linked_used_tokens, chat.linked_window_tokens), (Some(1_000), Some(200_000)));
+        assert!(chat.linked_turn_at.is_some());
+    }
+
+    /// A session that has used most of its context window, as its agent
+    /// reported, continues fresh at the next message, with the handoff.
+    #[tokio::test]
+    async fn a_session_that_got_long_continues_fresh_with_a_handoff() {
+        let r = remote("rotate").await;
+        collect(r.provider.stream(&briefed(request("a long one", "chat-1", &remote_model()))).await.unwrap()).await;
+        let next = collect(r.provider.stream(&briefed(request("next", "chat-1", &remote_model()))).await.unwrap()).await;
+        assert_eq!(texts(&next), format!("{}\n\nIn s-2.", NOTICE));
+        let prompts = prompt_texts(&told(&r.told));
+        assert_eq!(prompts.len(), 2);
+        assert_eq!(prompts[1][1], "next");
+        assert_handoff(&prompts[1][0]);
+        let chat = r.store.get_chat("chat-1").unwrap().unwrap();
+        assert_eq!((chat.linked_chat_id.as_deref(), chat.linked_used_tokens), (Some("s-2"), Some(1_000)), "the fresh session's own activity");
+    }
+
+    /// A session with no turn for a long time continues fresh at the next
+    /// message, with the handoff.
+    #[tokio::test]
+    async fn a_session_idle_for_hours_continues_fresh_with_a_handoff() {
+        let r = remote("rotate").await;
+        collect(r.provider.stream(&briefed(request("hi", "chat-1", &remote_model()))).await.unwrap()).await;
+        r.store.set_chat_linked_activity("chat-1", now_secs() - 9 * 3600, None).unwrap();
+        let next = collect(r.provider.stream(&briefed(request("morning", "chat-1", &remote_model()))).await.unwrap()).await;
+        assert_eq!(texts(&next), format!("{}\n\nIn s-2.", NOTICE));
+        let prompts = prompt_texts(&told(&r.told));
+        assert_handoff(&prompts[1][0]);
+        assert_eq!(prompts[1][1], "morning");
+    }
+
+    /// `/clear` is a true reset: the conversation's messages and its session
+    /// are gone, and the next message starts a fresh session with its
+    /// briefing and no handoff, and no notice.
+    #[tokio::test]
+    async fn a_cleared_conversation_starts_fresh_with_no_handoff() {
+        let r = remote("rotate").await;
+        collect(r.provider.stream(&briefed(request("hi", "chat-1", &remote_model()))).await.unwrap()).await;
+        // What `/clear` does to a thread.
+        r.store.delete_chat_messages_by_chat_id("chat-1").unwrap();
+        r.store.set_chat_linked_session("chat-1", "", "").unwrap();
+        let mut req = briefed(request("start over", "chat-1", &remote_model()));
+        req.messages.drain(..2);
+        let next = collect(r.provider.stream(&req).await.unwrap()).await;
+        assert_eq!(texts(&next), "In s-2.");
+        assert_eq!(prompt_texts(&told(&r.told))[1], ["BRIEFING", "start over"]);
+    }
+
+    /// A turn is stalled only when its host says the prompt is open and
+    /// nothing works in it, with nothing new from the agent, for the whole
+    /// window: a running call, a question waiting or the agent's processes
+    /// working never count, something new starts the window over, and no
+    /// word from the host is no evidence.
+    #[test]
+    fn a_turn_is_stalled_only_when_nothing_works_and_nothing_new_comes_for_the_window() {
+        use std::time::Instant;
+        let status = |why: Vec<Working>, agent: Vec<Working>, last: &str| AgentStatus {
+            agent: "claude-code".into(),
+            state: Life::Running,
+            busy: true,
+            why: agent,
+            idle_since: None,
+            sessions: vec![SessionStatus { session_id: "s".into(), state: Life::Running, busy: true, why, last_update: Some(last.into()) }],
+        };
+        let (w, t0, minute) = (Duration::from_secs(600), Instant::now(), Duration::from_secs(60));
+        let quiet = status(vec![Working::Prompt], vec![Working::Prompt], "10:00");
+
+        let mut stall = Stall::default();
+        assert!(!stall.look(Some(&quiet), "s", t0, w));
+        assert!(!stall.look(Some(&quiet), "s", t0 + w - Duration::from_secs(1), w));
+        assert!(stall.look(Some(&quiet), "s", t0 + w, w));
+
+        for (why, agent) in [
+            (vec![Working::Prompt, Working::Tool], vec![Working::Prompt, Working::Tool]),
+            (vec![Working::Prompt, Working::Permission], vec![Working::Prompt, Working::Permission]),
+            (vec![Working::Prompt], vec![Working::Prompt, Working::Processes]),
+        ] {
+            let mut stall = Stall::default();
+            for m in 0..=120 {
+                assert!(!stall.look(Some(&status(why.clone(), agent.clone(), "10:00")), "s", t0 + minute * m, w), "{why:?} {agent:?}");
+            }
+        }
+
+        // Something new from the agent starts the window over.
+        let mut stall = Stall::default();
+        assert!(!stall.look(Some(&quiet), "s", t0, w));
+        let newer = status(vec![Working::Prompt], vec![Working::Prompt], "10:05");
+        assert!(!stall.look(Some(&newer), "s", t0 + w, w));
+        assert!(stall.look(Some(&newer), "s", t0 + w * 2, w));
+
+        // So does a frame Nebo read; and a host that says nothing, a paused
+        // agent or another session is no evidence.
+        let mut stall = Stall::default();
+        stall.look(Some(&quiet), "s", t0, w);
+        stall.heard();
+        assert!(!stall.look(Some(&quiet), "s", t0 + w, w));
+        assert!(!stall.look(None, "s", t0 + w * 2, w));
+        let paused = AgentStatus { state: Life::Paused, ..quiet.clone() };
+        assert!(!stall.look(Some(&paused), "s", t0 + w * 3, w));
+        assert!(!stall.look(Some(&quiet), "other", t0 + w * 4, w));
+        assert!(!stall.look(Some(&quiet), "s", t0 + w * 5 - Duration::from_secs(1), w));
+    }
+
+    /// When a recorded session continues fresh at the next message: idle for
+    /// hours, or most of its context window used; never otherwise.
+    #[test]
+    fn a_session_continues_fresh_when_it_sat_idle_or_got_long() {
+        let dir = tempfile::tempdir().unwrap();
+        let (store, _) = store_in(dir.path());
+        store.set_chat_linked_session("chat-1", "claude-code", "s-1").unwrap();
+        let now = 1_000_000;
+        let due = |at: i64, context: Option<(i64, i64)>| {
+            store.set_chat_linked_session("chat-1", "claude-code", "").unwrap();
+            store.set_chat_linked_session("chat-1", "claude-code", "s-1").unwrap();
+            store.set_chat_linked_activity("chat-1", at, context).unwrap();
+            rotation_due(&store.get_chat("chat-1").unwrap().unwrap(), now)
+        };
+        assert_eq!(due(now - 60, Some((10_000, 200_000))), None);
+        assert_eq!(due(now - 60, None), None, "a session whose agent reports no usage");
+        assert_eq!(due(now - 60, Some((119_999, 200_000))), None);
+        assert_eq!(due(now - 60, Some((120_000, 200_000))), Some(Rotation::Long));
+        assert_eq!(due(now - 8 * 3600 + 1, Some((1, 200_000))), None);
+        assert_eq!(due(now - 8 * 3600, Some((1, 200_000))), Some(Rotation::Idle));
+        assert_eq!(rotation_due(&store.get_chat("chat-1").unwrap().unwrap(), now - 8 * 3600), None);
     }
 
     /// The Mac-mini incident, precisely: the agent's own process dies
