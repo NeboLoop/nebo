@@ -117,6 +117,14 @@ impl DynTool for RunCommandTool {
         Some("shell")
     }
 
+    /// What the command removes, rewrites and creates (`policy::shell_effects`).
+    fn effects(&self, input: &Value) -> types::permissions::CallEffects {
+        match str_arg(input, "command") {
+            Some(c) if !crate::policy::is_read_only(c) => crate::policy::shell_effects(c, str_arg(input, "cwd")),
+            _ => types::permissions::CallEffects::none(),
+        }
+    }
+
     fn max_result_chars(&self, _input: &Value) -> Option<usize> {
         Some(crate::MAX_SUBPROCESS_OUTPUT)
     }
