@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 /// to). A prompt that says HOLD starts a long refactor: a tool call running
 /// and words said, until it is cancelled. Any other prompt is answered at
 /// once with "ANSWER: 3 files left." Each `session/new` is a session of its
-/// own, `s-1`, `s-2`, ...
+/// own, `s-1`, `s-2`, ..., noted with the folder it was opened in.
 #[test]
 fn fake_company_agent() {
     use std::io::{BufRead, Write};
@@ -62,7 +62,7 @@ fn fake_company_agent() {
             Some("session/new") => {
                 sessions += 1;
                 let session = format!("s-{sessions}");
-                note(json!({ "new": session }));
+                note(json!({ "new": session, "cwd": message["params"]["cwd"] }));
                 reply(json!({ "sessionId": session }));
             }
             Some("session/prompt") => {

@@ -40,6 +40,8 @@ var typeOverrides = map[string]string{
 	// Linked bots (OpenClaw, Hermes) with chat, and the agents each serves:
 	// what "Hire from <linked bot>" offers.
 	"list_linked_agents.computers": "LinkedComputerEntry[]",
+	// When the owner's computers were last looked at (unix seconds).
+	"list_linked_agents.checkedAt": "number",
 	// Blank-create (the Hire flow) returns the introduction thread so the
 	// UI can land the owner where the new employee is speaking.
 	"create_agent.threadId": "string | null",
@@ -177,7 +179,10 @@ export interface RunDisplay {
 	"LinkedAgentEntry": `export interface LinkedAgentEntry {
 	/** The agent's id, or ` + "`new:<runtime>`" + ` for a coding employee to start. */
 	id: string
+	/** The agent's name; the employee's, once it is on the team. */
 	name: string
+	/** The app it is: "Claude Code", "Hermes". */
+	app: string
 	/** "Hermes on Mac.lan"; "Works in a new folder on Mac.lan". */
 	description: string
 	/** The runtime it runs: "hermes", "codex". */
@@ -186,6 +191,8 @@ export interface RunDisplay {
 	botId: string
 	/** Already on the team: shown, not hired again. */
 	hired: boolean
+	/** The employee it is, once it is on the team. */
+	employeeId: string | null
 }`,
 
 	"AppWindowConfig": `export interface AppWindowConfig {

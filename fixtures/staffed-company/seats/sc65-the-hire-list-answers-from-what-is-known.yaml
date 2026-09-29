@@ -1,0 +1,10 @@
+id: sc65-the-hire-list-answers-from-what-is-known
+name: "SC65 — The hire list answers from what is known; an app found later is sent"
+description: |
+  "Hire from another app" is known before it is opened: a listing answers at once with what was
+  last found on the owner's computers and looks again behind it. An app installed meanwhile
+  reaches every open list in one linked_apps_changed event, and the next listing has it. Only the
+  very first listing, before anything was found, waits for the look.
+target_component: staffed-company
+proof: staffed_proof::seats::the_hire_list_answers_from_what_is_known_and_an_app_found_later_is_sent
+conversation: []

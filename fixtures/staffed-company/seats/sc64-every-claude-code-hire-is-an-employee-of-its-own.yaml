@@ -1,0 +1,12 @@
+id: sc64-every-claude-code-hire-is-an-employee-of-its-own
+name: "SC64 — Every Claude Code hire is an employee of its own"
+description: |
+  The owner hires Claude Code twice from "Hire from another app", naming each. Each hire is its
+  own employee: its own coding agent on this computer, in a folder of its own, and its
+  conversations sessions of that agent opened in that folder. A third named like one of them is
+  refused in the owner's words ("You already have an employee named ...") before anything is
+  started. The hire list still offers Claude Code once, to start new, with both on the team by
+  the names he gave them.
+target_component: staffed-company
+proof: staffed_proof::seats::every_claude_code_hire_is_an_employee_of_its_own
+conversation: []

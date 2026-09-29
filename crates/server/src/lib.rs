@@ -18,6 +18,7 @@ mod engine;
 mod heartbeat;
 mod workforce_reporter;
 pub mod import;
+pub(crate) mod linked_apps;
 pub mod local_access;
 pub mod middleware;
 mod mail_intake;
@@ -2286,6 +2287,7 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
         store_cache: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         codes_in_flight: Arc::new(codes::InFlightCodes::default()),
         local_host,
+        linked_apps: Default::default(),
         live_calls: Default::default(),
     };
 
@@ -2671,6 +2673,10 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
             }
         });
     }
+
+    // What "Hire from another app" offers, looked for now and every few
+    // minutes, so the list answers at once when it is opened.
+    linked_apps::spawn(state.clone());
 
     // Employee roster reconcile worker: connect and every employee change
     // request a pass; this is the one place a pass runs (debounced, coalesced).

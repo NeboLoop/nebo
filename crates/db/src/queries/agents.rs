@@ -98,6 +98,17 @@ impl Store {
         Ok(None)
     }
 
+    /// Refuses `name` when another employee has it, matched as
+    /// [`Store::agent_name_taken`] matches. `except_id` is the row being renamed.
+    pub fn agent_name_free(&self, name: &str, except_id: Option<&str>) -> Result<(), NeboError> {
+        match self.agent_name_taken(name, except_id)? {
+            Some(other) => Err(NeboError::Validation(format!(
+                "You already have an employee named \"{other}\". Pick another name."
+            ))),
+            None => Ok(()),
+        }
+    }
+
     /// The employee whose name slugs to `slug` — how the public API names one.
     pub fn get_agent_by_slug(&self, slug: &str) -> Result<Option<Agent>, NeboError> {
         let conn = self.conn()?;
@@ -160,9 +171,7 @@ impl Store {
         pricing_model: Option<&str>,
         pricing_cost: Option<f64>,
     ) -> Result<Agent, NeboError> {
-        if let Some(other) = self.agent_name_taken(name, None)? {
-            return Err(NeboError::Validation(format!("An employee named \"{other}\" already exists. Pick a different name.")));
-        }
+        self.agent_name_free(name, None)?;
         let conn = self.conn()?;
         conn.query_row(
             "INSERT INTO agents (id, kind, name, description, agent_md, frontmatter,
@@ -201,9 +210,7 @@ impl Store {
         reports_to: Option<&str>,
     ) -> Result<(), NeboError> {
         if !name.trim().is_empty() {
-            if let Some(other) = self.agent_name_taken(name, Some(id))? {
-                return Err(NeboError::Validation(format!("An employee named \"{other}\" already exists. Pick a different name.")));
-            }
+            self.agent_name_free(name, Some(id))?;
         }
         // The reporting line is refused HERE, not in a client: every door that
         // writes an employee's fields comes through this one call.
