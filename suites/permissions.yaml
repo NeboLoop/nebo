@@ -36,6 +36,8 @@ fixtures:
   - ../fixtures/permissions/an-off-switch-wins-in-every-mode.yaml
   # Full Access never asks on its own; installing software never asks
   - ../fixtures/permissions/full-access-never-asks.yaml
+  # ...but a run the owner didn't start never removes what it didn't make
+  - ../fixtures/permissions/full-access-unattended-never-removes-others-work.yaml
   # Limits: helpers, employee-made employees, coworkers (§4.6; #246)
   - ../fixtures/turn/helper-cannot-exceed-parent.yaml
   - ../fixtures/permissions/employee-made-employee-capped-one-card.yaml

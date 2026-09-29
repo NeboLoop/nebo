@@ -278,7 +278,39 @@ fn decide_rules(cx: &CheckCx<'_>, t: &Target) -> Result<Decision, Automatic> {
         None => Why::BasicWork,
     };
     match cx.grant.mode {
-        Mode::FullAccess => return Ok(Decision::Allow { why: Why::Mode { mode: Mode::FullAccess } }),
+        // Full Access never asks. A run the owner didn't start himself (a
+        // schedule, a workflow, a helper, a coworker's request) still may
+        // not remove what the employee didn't make outside the job's
+        // folders, or replace a whole folder of it (case 3): with no one to
+        // ask, it is refused.
+        Mode::FullAccess => {
+            if !cx.ctx.owner_request {
+                let folders = rules.folders();
+                let outside_job = |named: &String| {
+                    named.strip_prefix("file:").is_none_or(|p| !folders.iter().any(|f| std::path::Path::new(p).starts_with(f)))
+                };
+                let mut guarded = t.clone();
+                guarded.effects.deletes.retain(outside_job);
+                guarded.effects.overwrites.retain(|o| {
+                    outside_job(o) && o.strip_prefix("file:").is_some_and(|p| std::path::Path::new(p).is_dir())
+                });
+                if !guarded.effects.deletes.is_empty() || !guarded.effects.overwrites.is_empty() {
+                    let gathered = cases::Gathered::load(cx, &rules, &guarded);
+                    let facts = gathered.facts(&cx.ctx.run_taint, cx.input);
+                    if let Some(AskCase::Irreversible { what }) = cases::irreversible(&guarded, &rules, &facts) {
+                        return Ok(Decision::Deny {
+                            reason: format!(
+                                "Removing or replacing {what} isn't allowed here: this employee didn't make it, and \
+                                 the owner didn't ask for it in this run. Do not retry another way. Tell the owner \
+                                 what you wanted to change and why; they can do it, or ask you to in a chat."
+                            ),
+                            why: Why::HardLimit { limit: "not_its_own".into() },
+                        });
+                    }
+                }
+            }
+            return Ok(Decision::Allow { why: Why::Mode { mode: Mode::FullAccess } });
+        }
         Mode::Plan if !plan::allows(t) => {
             return Ok(Decision::Deny { reason: plan::REFUSAL.to_string(), why: Why::Mode { mode: Mode::Plan } });
         }

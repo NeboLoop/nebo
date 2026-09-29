@@ -988,7 +988,16 @@ impl Registry {
         let call = ResolvedCall {
             tool: tool.as_ref(),
             input: &input,
-            target: target_of(tool.as_ref(), &input),
+            target: {
+                // A path the call names relative to where it runs is named
+                // from the run's folder, the way the created ledger keeps it.
+                let mut target = target_of(tool.as_ref(), &input);
+                let folder = ctx.cwd.as_ref().map(std::path::PathBuf::from).or_else(|| std::env::current_dir().ok());
+                if let Some(folder) = folder {
+                    target.effects = target.effects.anchored(&folder);
+                }
+                target
+            },
         };
         let reach = match self.gate.check(ctx, &call).await {
             GateVerdict::Run { reach, .. } => reach,

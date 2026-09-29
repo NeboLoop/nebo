@@ -1092,6 +1092,7 @@ fn why_sentence(store: &db::Store, decision: &str, why: &str, door: &str) -> (St
             "origin" => "Someone outside your company started this, so it can only reply".into(),
             "coworker" => "Another employee asked for this, and a coworker's request can only reply".into(),
             "credentials" => "It would have shared a password or key".into(),
+            "not_its_own" => "It would have removed or replaced something it didn't make, and you didn't ask for it".into(),
             _ => "A safety limit".into(),
         },
         Why::Ceiling => "It can't do more than the employee or run it works for".into(),
