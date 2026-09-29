@@ -236,7 +236,6 @@ pub async fn send_team_message(
             mention,
             handoff_depth: 0,
             provenance: Vec::new(),
-            is_reply: false,
             // The owner reads the team thread.
             reply_to: None,
         },

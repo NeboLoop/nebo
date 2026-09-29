@@ -88,8 +88,8 @@ pub struct TeamDelivery {
     /// The post's row in the team thread (`db::TeamMessage::id`): the
     /// team's conversation the member is briefed with is what came before it.
     pub post_id: String,
-    /// The session that posted, when one did: the member's reply comes back
-    /// to it as a notification as well as into the team.
+    /// The session that posted, when one did: it hears the member's answer
+    /// (with every other answer it waits for) as well as the team thread.
     pub reply_to: Option<String>,
     /// Whose request the post is, decided by the team rail
     /// (`server::team::post`).
@@ -175,14 +175,11 @@ pub struct TeamPost {
     pub handoff_depth: u8,
     /// Engine-stamped provenance of the posting run.
     pub provenance: Vec<types::provenance::ProvenanceClass>,
-    /// True when this post is a member's reply to a delivery (set by the
-    /// rail's collector), false for a deliberate post (tool or app). A reply
-    /// asks nobody on its own — even the lead's; its mentions still ask, and
-    /// the lead's @everyone still summons the team.
-    pub is_reply: bool,
     /// The session that posted (`None` for the owner in the app, who reads
-    /// the team thread): every reply the post causes comes back to it as a
-    /// notification. A reply carries its post's.
+    /// the team thread). Whether the post is said deliberately or in the
+    /// course of answering what addressed its author is read from it
+    /// (`server::addressing::said_in`), and it hears the answers the post's
+    /// asks bring back.
     pub reply_to: Option<String>,
 }
 

@@ -89,6 +89,11 @@ pub struct TeamMessage {
     /// Uploaded files on the post (upload metadata, camelCase), if any.
     pub attachments: Vec<serde_json::Value>,
     pub created_at: i64,
+    /// The untrusted content the post's words hold (its run's provenance):
+    /// for the model and the gates that read the post, never for a person,
+    /// so it stays off the wire.
+    #[serde(skip)]
+    pub provenance: Vec<types::provenance::ProvenanceClass>,
 }
 
 fn row_to_team(row: &rusqlite::Row) -> rusqlite::Result<Team> {
@@ -113,14 +118,26 @@ fn message_from_row(m: ChatMessage) -> TeamMessage {
         .as_deref()
         .and_then(|s| serde_json::from_str(s).ok())
         .unwrap_or(serde_json::Value::Null);
+    // A post's provenance is metadata; a row written before it was still
+    // begins with the label it carried then, which comes off here, so every
+    // reader — a person's view, a member's briefing — gets the words alone.
+    let split = types::labels::split(&m.content);
+    let mut provenance: Vec<types::provenance::ProvenanceClass> =
+        serde_json::from_value(meta["provenance"].clone()).unwrap_or_default();
+    for class in split.provenance {
+        if !provenance.contains(&class) {
+            provenance.push(class);
+        }
+    }
     TeamMessage {
-        id: m.id,
+        id: m.id.clone(),
         from: meta["senderName"].as_str().unwrap_or("").to_string(),
         from_agent_id: meta["fromAgentId"].as_str().unwrap_or("").to_string(),
-        role: m.role,
-        content: m.content,
+        role: m.role.clone(),
+        content: split.text.to_string(),
         attachments: meta["attachments"].as_array().cloned().unwrap_or_default(),
         created_at: m.created_at,
+        provenance,
     }
 }
 
@@ -266,8 +283,9 @@ impl Store {
     }
 
     /// Append one post to the team's local thread. `from_agent_id` is empty
-    /// for the owner. The sender rides message metadata so the transcript
-    /// labels every row correctly after a reload.
+    /// for the owner. The sender and the post's provenance ride message
+    /// metadata, so the transcript labels every row correctly after a reload
+    /// and the words stay the words.
     pub fn append_team_message(
         &self,
         team: &Team,
@@ -276,6 +294,7 @@ impl Store {
         sender_name: &str,
         from_agent_id: &str,
         attachments: &serde_json::Value,
+        provenance: &[types::provenance::ProvenanceClass],
     ) -> Result<TeamMessage, NeboError> {
         let chat_id = self.ensure_team_thread(&team.id, &team.name)?;
         let meta = serde_json::json!({
@@ -283,6 +302,7 @@ impl Store {
             "fromAgentId": from_agent_id,
             "teamId": team.id,
             "attachments": attachments,
+            "provenance": provenance,
         })
         .to_string();
         let msg = self.create_chat_message_for_runner(
@@ -388,12 +408,12 @@ mod tests {
         let team = s.create_team("t-1", "Ops", "m", &members(), "chief", None).unwrap();
         assert!(s.list_team_messages("t-1", 50).unwrap().is_empty());
 
-        let first = s.append_team_message(&team, "user", "hello team", "Owner", "", &serde_json::Value::Array(vec![])).unwrap();
+        let first = s.append_team_message(&team, "user", "hello team", "Owner", "", &serde_json::Value::Array(vec![]), &[]).unwrap();
         assert_eq!(first.from, "Owner");
         assert_eq!(first.role, "user");
         assert_eq!(first.from_agent_id, "");
-        s.append_team_message(&team, "assistant", "on it", "Chief of Staff", "chief", &serde_json::Value::Array(vec![])).unwrap();
-        s.append_team_message(&team, "assistant", "booked", "Executive Assistant", "ea", &serde_json::Value::Array(vec![])).unwrap();
+        s.append_team_message(&team, "assistant", "on it", "Chief of Staff", "chief", &serde_json::Value::Array(vec![]), &[]).unwrap();
+        s.append_team_message(&team, "assistant", "booked", "Executive Assistant", "ea", &serde_json::Value::Array(vec![]), &[]).unwrap();
 
         let all = s.list_team_messages("t-1", 0).unwrap();
         assert_eq!(all.len(), 3);

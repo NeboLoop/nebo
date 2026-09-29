@@ -423,7 +423,8 @@
 		"researchVerified": "{n} טענות אומתו מול המקורות",
 		"historyLoadFailed": "לא ניתן לטעון את השיחה הזו. בדוק את החיבור ונסה שוב.",
 		"consentCreates": "אמרו כן והוא ייווצר בדיוק עם התפקיד הזה.",
-		"consentAdds": "אמרו כן וזה יתווסף לתפקיד שלו."
+		"consentAdds": "אמרו כן וזה יתווסף לתפקיד שלו.",
+		"fromColleague": "מאת {name}"
 	},
 	"chatInput": {
 		"placeholder": "השב...",

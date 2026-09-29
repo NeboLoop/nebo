@@ -1,4 +1,5 @@
 pub mod a2ui;
+mod addressing;
 pub mod attachments;
 pub mod a2ui_actions;
 pub mod agents_export;
@@ -5090,6 +5091,7 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
                 team::TeamSender::Hub { agent_id: &from_agent_id, name: &sender_name, is_agent },
                 &text,
                 &serde_json::to_value(&msg.attachments).unwrap_or_default(),
+                &[],
             ) {
                 tracing::warn!(error = %e, team = %room.id, "failed to record mirrored hub message in the team thread");
             }

@@ -306,22 +306,25 @@ impl Teams {
             mention: asked,
             handoff_depth: ctx.handoff_depth,
             provenance: ctx.run_taint.clone(),
-            is_reply: false,
             reply_to: Some(ctx.session_key.clone()),
         };
         match rail.post_team(post).await {
             Ok(receipt) => {
-                let asked = if receipt.asked.is_empty() {
-                    "Nobody was asked to act. The post is in the team thread, and a member reads it there when it is next asked (mention members to ask them now).".to_string()
+                // Exactly who received it: a post that addressed no one
+                // reached no one, whatever its words say.
+                let sent = if receipt.asked.is_empty() {
+                    "Sent to no one: it addressed no teammate, and teammates only receive posts addressed to them \
+                     (`mention`, @Name, or @everyone). It is in the team thread."
+                        .to_string()
                 } else {
                     format!(
-                        "Asked to act: {}. They answer in the team, and each reply comes to you as a notification.",
+                        "Sent to {}. Each answers once, in the team; their answers come to you together when the last one is in.",
                         receipt.asked.join(", ")
                     )
                 };
                 ToolResult::ok(format!(
                     "Posted to team \"{}\". {}",
-                    receipt.team_name, asked
+                    receipt.team_name, sent
                 ))
                 .with_payload(serde_json::json!({
                     "kind": "team_post",
@@ -357,7 +360,12 @@ impl Teams {
                     .iter()
                     .map(|m| {
                         let who = if m.from.is_empty() { m.role.as_str() } else { m.from.as_str() };
-                        format!("[{}] {}: {}", m.created_at, who, m.content)
+                        // What untrusted content a post holds is its
+                        // metadata; the model reading the thread sees it.
+                        match types::labels::provenance_mark(&m.provenance) {
+                            Some(mark) => format!("[{}] {}: {mark} {}", m.created_at, who, m.content),
+                            None => format!("[{}] {}: {}", m.created_at, who, m.content),
+                        }
                     })
                     .collect();
                 ToolResult::ok(format!(

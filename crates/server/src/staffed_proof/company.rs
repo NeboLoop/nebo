@@ -37,7 +37,7 @@ impl ai::Provider for Relay {
         // The reply as the notification carries it, without the reminder's
         // wrapping.
         let heard = req.messages.iter().rev().find_map(|m| {
-            let from = m.content.find("[Reply from")?;
+            let from = m.content.find("An answer to what you asked:")?;
             let reply = &m.content[from..];
             Some(
                 reply
@@ -256,7 +256,11 @@ fn thread(nebo: &Nebo, agent: &str, title: &str) -> String {
 /// turn of its runs tools with.
 fn assistant_thread(nebo: &Nebo, title: &str) -> (String, tools::ToolContext) {
     let key = thread(nebo, tools::team_tool::PRIMARY_AGENT_ID, title);
-    let ctx = tools::ToolContext::new(Origin::User).with_session(key.clone(), "s1");
+    let mut ctx = tools::ToolContext::new(Origin::User).with_session(key.clone(), "s1");
+    // The owner's own turn with his point person: what it sends carries his
+    // request (the engine sets this on a turn his own message started).
+    ctx.run_id = Some(format!("run-{}", uuid::Uuid::new_v4()));
+    ctx.owner_request = true;
     (key, ctx)
 }
 
@@ -489,7 +493,7 @@ async fn the_point_person_relays_into_a_linked_employees_conversation_and_hears_
     let rows = replied(&nebo);
     assert!(
         rows.iter()
-            .any(|m| m.content.contains("[Reply from Proof Point Relay]")
+            .any(|m| m.content.contains("An answer to what you asked:\nProof Point Relay:\n")
                 && m.content.contains("ANSWER: 3 files left.")),
         "the reply came back to the point person: {rows:?}"
     );
@@ -621,6 +625,20 @@ async fn a_busy_linked_conversation_is_never_sent_a_second_prompt() {
         unknown.is_error && unknown.content.contains("has no conversation s-404"),
         "{}",
         unknown.content
+    );
+    // A colleague's own ask — a turn the owner did not start — never goes
+    // into one of its existing conversations; a new one is offered.
+    let mut colleague = ctx.clone();
+    colleague.owner_request = false;
+    let refused = nebo
+        .tool(&colleague, "send_message", json!({ "to": "Proof Point Busy", "message": "x", "conversation": "s-1" }))
+        .await;
+    assert!(
+        refused.is_error
+            && refused.content.contains("only the owner's own request goes into one of Proof Point Busy's existing conversations")
+            && refused.content.contains("conversation: \"new\""),
+        "{}",
+        refused.content
     );
     let native_one = nebo
         .tool(

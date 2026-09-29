@@ -1,0 +1,9 @@
+id: sc66-the-owners-everyone-reaches-every-member-once
+name: "SC66 — The owner's @everyone reaches every member once"
+description: |
+  The owner's own @everyone asks every member, the lead included; each answers once. An
+  acknowledgement before the work adds a row and wakes no one, answers that name teammates
+  ask no one, and the thread goes quiet.
+target_component: staffed-company
+proof: staffed_proof::conversation::the_owners_everyone_reaches_every_member_once
+conversation: []

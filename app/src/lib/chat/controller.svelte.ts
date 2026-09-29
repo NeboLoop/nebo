@@ -103,7 +103,7 @@ export interface TeamPost {
 }
 
 export type ChatMessage =
-  | { type: 'user'; content: string; time?: string; id?: string; attachments?: UploadedAttachment[]; pending?: boolean; teamPost?: TeamPost }
+  | { type: 'user'; content: string; time?: string; id?: string; attachments?: UploadedAttachment[]; pending?: boolean; teamPost?: TeamPost; fromColleague?: string }
   | { type: 'thinking'; content: string; duration: string }
   | { type: 'ask'; requestId: string; prompt: string; widgets: AskWidgetDef[]; response?: string; cancelled?: boolean }
   /** `fold`: the server's verdict on this segment's text (`text_verdict`) —

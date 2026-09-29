@@ -423,7 +423,8 @@
 		"researchVerified": "출처와 대조해 확인한 주장 {n}건",
 		"historyLoadFailed": "이 대화를 불러오지 못했습니다. 연결을 확인하고 다시 시도하세요.",
 		"consentCreates": "예라고 답하면 정확히 이 업무로 만들어집니다.",
-		"consentAdds": "예라고 답하면 이 업무가 추가됩니다."
+		"consentAdds": "예라고 답하면 이 업무가 추가됩니다.",
+		"fromColleague": "{name} 님이 보냄"
 	},
 	"chatInput": {
 		"placeholder": "답장...",

@@ -1,0 +1,11 @@
+id: sc64-a-leads-everyone-is-answered-once-and-the-lead-answers-once
+name: "SC64 — A lead's @everyone is answered once, and the lead answers the owner once"
+description: |
+  The live loop of 2026-09-29: the owner tells the team to stop everybody, the lead posts
+  @everyone, and every member answers naming the lead and @everyone. Each member is asked
+  once and answers once, asking no one; the lead hears the three answers together and
+  answers the owner once (its @everyone asks no one); then the thread is quiet. Before the
+  addressing model each answer woke the lead and each of its posts woke the members.
+target_component: staffed-company
+proof: staffed_proof::conversation::a_leads_everyone_is_answered_once_and_the_lead_answers_once
+conversation: []

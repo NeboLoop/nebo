@@ -423,7 +423,8 @@
 		"researchVerified": "已對照來源查證 {n} 項論點",
 		"historyLoadFailed": "無法載入這段對話。請檢查網路連線後再試一次。",
 		"consentCreates": "回答「是」，就會按這份工作內容建立。",
-		"consentAdds": "回答「是」，就會把這項加入工作內容。"
+		"consentAdds": "回答「是」，就會把這項加入工作內容。",
+		"fromColleague": "來自 {name}"
 	},
 	"chatInput": {
 		"placeholder": "回覆...",

@@ -249,7 +249,7 @@ fn agent_dir_name(name: &str) -> String {
 /// A message as a one-line preview: plain text, cut at `PREVIEW_CHARS`.
 const PREVIEW_CHARS: usize = 120;
 fn chat_preview(last_content: &str) -> String {
-    let clean = strip_to_plain(last_content);
+    let clean = strip_to_plain(types::labels::split(last_content).text);
     if clean.chars().count() > PREVIEW_CHARS {
         format!("{}...", clean.chars().take(PREVIEW_CHARS).collect::<String>())
     } else {
@@ -269,13 +269,16 @@ pub(crate) struct ThreadPreview {
 const PREVIEW_LOOKBACK: i64 = 6;
 
 /// A row the owner sees in the thread. Mirrors `last_visible_message_sql`
-/// in crates/db/src/queries/chats.rs (not a tool row, non-empty, not
-/// `"hidden":true`, not `"runError":true`); `sql_visibility_rule_matches_thread_preview` fails if
-/// that SQL changes without this predicate following.
+/// in crates/db/src/queries/chats.rs (not a tool or system row, non-empty,
+/// not `"hidden":true`, not `"isMeta":true`, not `"runError":true`);
+/// `sql_visibility_rule_matches_thread_preview` fails if that SQL changes
+/// without this predicate following.
 fn is_visible(m: &db::models::ChatMessage) -> bool {
     m.role != "tool"
+        && m.role != "system"
         && !m.content.is_empty()
         && !m.metadata.as_deref().is_some_and(|raw| raw.contains("\"hidden\":true"))
+        && !m.metadata.as_deref().is_some_and(|raw| raw.contains("\"isMeta\":true"))
         && !m.metadata.as_deref().is_some_and(|raw| raw.contains("\"runError\":true"))
 }
 
@@ -5842,6 +5845,19 @@ mod thread_preview_tests {
         assert!(thread_preview(&[]).preview.is_none());
     }
 
+    /// A notification or a system row is never the line (they are the
+    /// house's, not anyone's words), and a line an older row wrote with a
+    /// label in its words reads without it.
+    #[test]
+    fn a_notification_or_a_label_is_never_the_line() {
+        let rows = vec![
+            msg("user", "[Coworker message from Top Coder]\n\n[Contains content from: web]\nThe draft is ready.", None),
+            msg("user", "<system-reminder>\n[Notification: not a message from the owner]\nAn answer to what you asked:\nClerk:\nFiled.\n</system-reminder>", Some(r#"{"notification":true,"isMeta":true,"provenance":[]}"#)),
+            msg("system", "[Reply from Top Coder]\nFiled.", None),
+        ];
+        assert_eq!(thread_preview(&rows).preview.as_deref(), Some("The draft is ready."));
+    }
+
     /// A restart note on top makes the thread "restarted" and the line is
     /// the last real status before it, never the apology sentence.
     #[test]
@@ -5881,6 +5897,8 @@ mod thread_preview_tests {
         assert!(rule.contains("m2.content != ''"), "empty rows are hidden: {rule}");
         assert!(rule.contains(r#"NOT LIKE '%\"hidden\":true%'"#), "hidden rows are hidden: {rule}");
         assert!(rule.contains(r#"NOT LIKE '%\"runError\":true%'"#), "run errors are not a line: {rule}");
+        assert!(rule.contains("m2.role != 'system'"), "system rows are not a line: {rule}");
+        assert!(rule.contains(r#"NOT LIKE '%\"isMeta\":true%'"#), "the house's own rows are not a line: {rule}");
     }
 }
 

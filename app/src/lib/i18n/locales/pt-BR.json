@@ -423,7 +423,8 @@
 		"researchVerified": "{n} afirmações conferidas com as fontes",
 		"historyLoadFailed": "Não foi possível carregar esta conversa. Verifique a conexão e tente de novo.",
 		"consentCreates": "Diga sim e ele é criado com exatamente este trabalho.",
-		"consentAdds": "Diga sim e isto é adicionado ao trabalho dele."
+		"consentAdds": "Diga sim e isto é adicionado ao trabalho dele.",
+		"fromColleague": "De {name}"
 	},
 	"chatInput": {
 		"placeholder": "Responder...",

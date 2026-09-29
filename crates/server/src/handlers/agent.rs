@@ -83,6 +83,9 @@ pub async fn get_session_messages(
         .get_chat_messages(chat_id)
         .map_err(to_error_response)?;
     all_messages.retain(super::chat::is_owner_visible);
+    for m in all_messages.iter_mut() {
+        super::chat::for_owner(m);
+    }
 
     if let Some(ref before_id) = q.before {
         // Find cursor position and return messages before it

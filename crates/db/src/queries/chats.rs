@@ -61,17 +61,21 @@ impl Conversations {
 }
 
 /// A chat's preview line is its last VISIBLE message: not a tool result,
-/// not empty, not a hidden system-injected message (reminders carry
-/// metadata {"hidden":true}), not the error a failed run left (metadata
-/// {"runError":true}, shown on the thread's error banner, never as a line).
-/// `chat_id` is the SQL expression to match on.
+/// not empty, not a system row, not a hidden system-injected message
+/// (reminders carry metadata {"hidden":true}), not the house talking to
+/// itself (notifications and hidden prompts carry {"isMeta":true}), not the
+/// error a failed run left (metadata {"runError":true}, shown on the
+/// thread's error banner, never as a line). `chat_id` is the SQL expression
+/// to match on.
 fn last_visible_message_sql(chat_id: &str) -> String {
     format!(
         "(SELECT m2.content FROM chat_messages m2
           WHERE m2.chat_id = {chat_id}
             AND m2.role != 'tool'
+            AND m2.role != 'system'
             AND m2.content != ''
             AND (m2.metadata IS NULL OR m2.metadata NOT LIKE '%\"hidden\":true%')
+            AND (m2.metadata IS NULL OR m2.metadata NOT LIKE '%\"isMeta\":true%')
             AND (m2.metadata IS NULL OR m2.metadata NOT LIKE '%\"runError\":true%')
           ORDER BY m2.created_at DESC, m2.id DESC LIMIT 1)"
     )

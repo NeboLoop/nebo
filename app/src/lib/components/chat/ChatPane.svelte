@@ -88,7 +88,7 @@
 
   type TeamPost = { teamId: string; teamName: string; from: string; fromOwner?: boolean; text: string };
   type Message =
-    | { type: 'user'; content: string; time?: string; attachments?: UploadedAttachment[]; pending?: boolean; teamPost?: TeamPost }
+    | { type: 'user'; content: string; time?: string; attachments?: UploadedAttachment[]; pending?: boolean; teamPost?: TeamPost; fromColleague?: string }
     | { type: 'thinking'; content: string; duration: string }
     | { type: 'ask'; requestId: string; prompt: string; widgets: AskWidgetDef[]; response?: string; cancelled?: boolean }
     | { type: 'assistant'; content: string; time?: string; delegateAgentId?: string; delegateAgentName?: string; id?: string; attachments?: UploadedAttachment[]; tools?: ToolMsg[]; streaming?: boolean; fold?: Fold }
@@ -1613,10 +1613,13 @@
                teammate's post sits on the left like a reply; the owner's on
                the right like their other messages. -->
           {@const tp = msg.teamPost}
-          {@const fromOwner = !tp || (tp.fromOwner ?? tp.from === 'Owner')}
+          {@const colleague = tp ? undefined : msg.fromColleague}
+          {@const fromOwner = !colleague && (!tp || (tp.fromOwner ?? tp.from === 'Owner'))}
           <div class="max-w-[640px] mt-3 {fromOwner ? 'self-end' : ''}" data-user-msg>
             {#if tp}
               <div class="text-xs font-medium text-base-content/60 mb-1 {fromOwner ? 'text-right' : ''}">{fromOwner ? $t('common.you') : tp.from} · {tp.teamName}</div>
+            {:else if colleague}
+              <div class="text-xs font-medium text-base-content/60 mb-1">{$t('chat.fromColleague', { values: { name: colleague } })}</div>
             {/if}
             <div class="py-2.5 px-3.5 rounded-xl text-sm leading-relaxed bg-base-200 {fromOwner ? 'rounded-br-sm' : 'rounded-bl-sm'} prose prose-sm max-w-none {msg.pending ? 'italic text-base-content/60' : ''} [&_p]:my-0 [&_ul]:my-1 [&_ol]:my-1 [&>:first-child]:mt-0 [&>:last-child]:mb-0">
               {#if tp}

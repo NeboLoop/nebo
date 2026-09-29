@@ -1346,6 +1346,7 @@ impl TurnSink {
                     crate::team::TeamSender::Local(from),
                     text,
                     &serde_json::json!([]),
+                    &[],
                 ) {
                     error!(error = %e, team = %team.id, "failed to post voice turn to the team");
                 }

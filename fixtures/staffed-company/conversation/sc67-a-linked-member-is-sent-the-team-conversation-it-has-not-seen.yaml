@@ -1,0 +1,10 @@
+id: sc67-a-linked-member-is-sent-the-team-conversation-it-has-not-seen
+name: "SC67 — A linked member is sent the team conversation it has not seen"
+description: |
+  The owner asks the lead to bring a linked member up to speed; the lead addresses it by
+  name. The linked runtime is sent the team's conversation it had not seen, with the team
+  and its rule that teammates only receive posts addressed to them, before the post — the
+  briefing a native member reads as a reminder, which a linked runtime is never sent.
+target_component: staffed-company
+proof: staffed_proof::conversation::a_linked_member_is_sent_the_team_conversation_it_has_not_seen
+conversation: []

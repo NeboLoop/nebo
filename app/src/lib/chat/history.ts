@@ -37,6 +37,9 @@ interface MessageMeta {
    * to the envelope the model read; the list derives {teamId, teamName, from,
    * text} at read time. Only the derived object is carried onto the bubble. */
   teamPost?: boolean | TeamPost;
+  /** A colleague's message (another employee's words): the server names
+   * the colleague, and the words are theirs alone. */
+  fromColleague?: string;
   /** The owner-visible marker left where earlier conversation was summarized
    * (role "system"). Every other system row stays hidden. */
   compactBoundary?: boolean;
@@ -130,6 +133,7 @@ export function parseMessages(rawMessages: ApiChatMessage[]): ChatMessage[] {
         time: formatTime(m.createdAt),
         ...(meta?.attachments?.length ? { attachments: meta.attachments } : {}),
         ...(teamPost ? { teamPost } : {}),
+        ...(meta?.fromColleague ? { fromColleague: meta.fromColleague } : {}),
       });
       continue;
     }

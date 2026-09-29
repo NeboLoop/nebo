@@ -423,7 +423,8 @@
 		"researchVerified": "{n} iddia kaynaklarla doğrulandı",
 		"historyLoadFailed": "Bu sohbet yüklenemedi. Bağlantınızı kontrol edip tekrar deneyin.",
 		"consentCreates": "Evet deyin, tam olarak bu görevle oluşturulsun.",
-		"consentAdds": "Evet deyin, bu görevine eklensin."
+		"consentAdds": "Evet deyin, bu görevine eklensin.",
+		"fromColleague": "{name} gönderdi"
 	},
 	"chatInput": {
 		"placeholder": "Yanıtla...",

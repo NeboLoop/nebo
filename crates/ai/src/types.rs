@@ -659,6 +659,13 @@ pub trait LinkedContext: Send + Sync {
     /// the files and values involved, the decisions, what is open). `None`
     /// when nothing came before it, or the summary could not be written.
     async fn summary(&self) -> Option<String>;
+    /// What this turn was asked with beside the words, for every turn, fresh
+    /// session or not: the team a post came from, who wrote it, the
+    /// teammates, and the team's conversation the employee has not seen.
+    /// Nebo's own model reads it as a reminder, which a linked agent is
+    /// never sent, so it rides the prompt instead. `None` when the turn has
+    /// none.
+    fn run_briefing(&self) -> Option<String>;
 }
 
 /// A [`LinkedContext`] riding on a request.

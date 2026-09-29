@@ -86,9 +86,9 @@ impl Helpers {
         )
     }
 
-    /// A helper has no name: a call that names an employee is work for a
-    /// coworker, and an anonymous helper would impersonate them (smoke,
-    /// 2026-09-05: "Chief of Staff" got a blank helper).
+    /// A helper has no name: a call that hands its work to an employee is
+    /// work for a coworker, and an anonymous helper would impersonate them
+    /// (smoke, 2026-09-05: "Chief of Staff" got a blank helper).
     fn names_an_employee(&self, input: &Value) -> Option<String> {
         let names: Vec<String> = self
             .store
@@ -97,7 +97,11 @@ impl Helpers {
             .into_iter()
             .map(|a| a.name)
             .collect();
-        let who = employee_named_in_prompt(input["prompt"].as_str().unwrap_or(""), &names)?;
+        let who = employee_addressed(
+            input["prompt"].as_str().unwrap_or(""),
+            input["helper_type"].as_str().unwrap_or(""),
+            &names,
+        )?;
         Some(format!(
             "A helper is an anonymous extra pair of hands; \"{who}\" is an employee. Work for an \
              employee is a message: send_message(to: \"{who}\", message: \"<what you need>\"). \
@@ -218,9 +222,10 @@ impl Helpers {
                     "text": text,
                 });
                 ToolResult::ok(format!(
-                    "Message sent to {name}. They work on it in their own session, and their reply \
-                     comes to you as a notification. Until then you know nothing about their answer: \
-                     don't report, guess or redo it. If the owner asks, say {name} is working on it.",
+                    "Message sent to {name}. They work on it in their own session and answer once; their answer \
+                     comes to you as a notification, with any other answers you are waiting for, when the last \
+                     one is in. Until then you know nothing about their answer: don't report, guess or redo it. \
+                     If the owner asks, say {name} is working on it.",
                     name = delivery.to_name
                 ))
                 .with_payload(payload)
@@ -230,31 +235,63 @@ impl Helpers {
     }
 }
 
-/// The one employee a prompt names, if exactly one. Whole words only, and
-/// never inside a path: a prompt that points at
+/// The one employee a helper call hands its work TO, if exactly one: the
+/// helper type is an employee's name, or the prompt addresses one — it opens
+/// with the name, casts the helper as it ("you are …", "act as …"), or asks
+/// for it to do the work ("ask …", "tell …", "have …"). A name the task only
+/// mentions — a product to research, a colleague's past work — hands
+/// nothing off (live 2026-09-28: "Search Hacker News for discussions about
+/// … Claude Code …" was refused because a linked employee has that name).
+/// Whole words only, and never inside a path: a prompt that points at
 /// "/Library/Application Support/Nebo/sessions/..." is not asking for the
 /// employee called Nebo (live Auto-Categorizer thread, 2026-09-06).
-fn employee_named_in_prompt(prompt: &str, names: &[String]) -> Option<String> {
+fn employee_addressed(prompt: &str, helper_type: &str, names: &[String]) -> Option<String> {
+    let names: Vec<&String> = names.iter().filter(|n| n.trim().len() >= 3).collect();
+    if let Some(n) = names.iter().find(|n| n.trim().eq_ignore_ascii_case(helper_type.trim())) {
+        return Some((*n).clone());
+    }
     let cleaned: String = prompt
         .split_whitespace()
         .filter(|w| !w.contains('/'))
         .collect::<Vec<_>>()
         .join(" ")
         .to_ascii_lowercase();
-    let as_word = |n: &str| -> bool {
+    let addressed = |n: &str| -> bool {
         let n = n.to_ascii_lowercase();
         cleaned.match_indices(&n).any(|(i, _)| {
             let before = cleaned[..i].chars().next_back();
             let after = cleaned[i + n.len()..].chars().next();
             // "nebo-cli" and "nebo_home" are compounds, not the name.
             let joins = |c: char| c.is_alphanumeric() || c == '-' || c == '_';
-            !before.is_some_and(joins) && !after.is_some_and(joins)
+            if before.is_some_and(joins) || after.is_some_and(joins) {
+                return false;
+            }
+            addresses(&cleaned[..i])
         })
     };
-    let mut hits = names.iter().filter(|n| n.trim().len() >= 3 && as_word(n));
+    let mut hits = names.iter().filter(|n| addressed(n));
     match (hits.next(), hits.next()) {
-        (Some(n), None) => Some(n.clone()),
+        (Some(n), None) => Some((*n).clone()),
         _ => None,
+    }
+}
+
+/// Whether the words before a name make the name the one the work is
+/// handed to: nothing before it (or a greeting), a verb that asks someone
+/// to act, or a phrase that casts the helper as them.
+fn addresses(before: &str) -> bool {
+    let mut words: Vec<&str> = before
+        .split(|c: char| c.is_whitespace() || c == '@' || c == ',')
+        .filter(|w| !w.is_empty())
+        .collect();
+    if matches!(words.last(), Some(&("the" | "our"))) {
+        words.pop();
+    }
+    match words.as_slice() {
+        [] | ["hey" | "hi" | "dear"] => true,
+        [.., "ask" | "tell" | "have" | "get" | "message" | "ping" | "email" | "contact" | "let"] => true,
+        [.., "you", "are"] | [.., "act" | "acting", "as"] | [.., "to", "be"] | [.., "role", "of"] => true,
+        _ => false,
     }
 }
 
@@ -307,8 +344,8 @@ impl DynTool for HelperTool {
                 .to_string(),
             HelperOp::SendMessage => "Sends a message to a helper you started (by its id), a coworker (another employee on this Nebo, by name) or a team (by name).\n\
                  - A running helper sees it at its next step; a finished one continues with it, keeping its context.\n\
-                 - A coworker gets it in their own session and answers with their own tools and permissions; their reply comes to you as a notification. Several messages in one response go out together.\n\
-                 - A team's lead answers and hands steps to teammates; `mention` asks named members to act, and @everyone in the message asks the whole team.\n\
+                 - A coworker gets it in their own session and answers with their own tools and permissions; their answer comes to you as a notification. Several messages in one response go out together.\n\
+                 - To a team: only teammates it addresses receive it (`mention`, @Name, @everyone); naming nobody sends it to the lead.\n\
                  - Work for a named employee is a message to them, never a helper. Bots on the NeboAI hub are send_loop_message.\n\
                  - For a quick question to a coworker or two. A direction that spans employees, teams or days and must be carried to one outcome is a temporary workflow: create_workflow(lifetime: \"temporary\")."
                 .to_string(),
@@ -334,7 +371,7 @@ impl DynTool for HelperTool {
                 "properties": {
                     "to": { "type": "string", "description": "A helper's id (from delegate), a coworker's name, or a team's name." },
                     "message": { "type": "string", "description": "What to tell them." },
-                    "mention": { "type": "array", "items": { "type": "string" }, "description": "To a team: the members asked to act, by name." },
+                    "mention": { "type": "array", "items": { "type": "string" }, "description": "To a team: who receives it, by name." },
                     "conversation": { "type": "string", "description": "A linked employee's conversation id (as list_employees shows it) or \"new\"; leave out to continue your thread with it." }
                 },
                 "required": ["to", "message"]
@@ -707,6 +744,22 @@ mod tests {
         assert!(rig.rec.spawned.lock().unwrap().is_empty());
     }
 
+    /// The live refusal (2026-09-28): a research helper whose task mentions
+    /// a product that shares a linked employee's name runs.
+    #[tokio::test]
+    async fn a_prompt_that_only_mentions_an_employee_runs() {
+        let rig = Rig::new();
+        rig.store.create_agent("cc", None, "Claude Code", "", "", "", None, None).unwrap();
+        let r = rig
+            .call(
+                "delegate",
+                json!({"description": "HN research", "prompt": "Search Hacker News for discussions about AI coding agents — Cursor, Claude Code, Codex — and summarize the themes."}),
+            )
+            .await;
+        assert!(!r.is_error, "{}", r.content);
+        assert_eq!(rig.rec.spawned.lock().unwrap().len(), 1);
+    }
+
     #[tokio::test]
     async fn send_reaches_the_helper() {
         let rig = Rig::new();
@@ -750,15 +803,36 @@ mod tests {
     fn employees_are_named_as_words_not_paths() {
         let names = vec!["Nebo".to_string(), "Chief of Staff".to_string()];
         let path_prompt = "Parse the file at /Users/a/Library/Application Support/Nebo/sessions/x/y.txt and summarize it.";
-        assert_eq!(employee_named_in_prompt(path_prompt, &names), None);
+        assert_eq!(employee_addressed(path_prompt, "", &names), None);
         assert_eq!(
-            employee_named_in_prompt("Ask the Chief of Staff to draft the memo", &names).as_deref(),
+            employee_addressed("Ask the Chief of Staff to draft the memo", "", &names).as_deref(),
             Some("Chief of Staff")
         );
-        assert_eq!(
-            employee_named_in_prompt("Compare nebo-cli flags", &names),
-            None
-        );
+        assert_eq!(employee_addressed("Compare nebo-cli flags", "", &names), None);
+    }
+
+    /// Only work handed TO an employee is refused: the helper type is its
+    /// name, the prompt opens with it, casts the helper as it, or asks it to
+    /// act. A name the task only mentions runs as a helper — the live prompt
+    /// that researched a product sharing a linked employee's name.
+    #[test]
+    fn only_work_handed_to_an_employee_is_refused() {
+        let names = vec!["Claude Code".to_string(), "Chief of Staff".to_string()];
+        let live = "Search Hacker News for discussions about AI coding agents from the last month — \
+                    what people say about Cursor, Claude Code and Codex — and summarize the themes.";
+        assert_eq!(employee_addressed(live, "general", &names), None);
+        assert_eq!(employee_addressed("Summarize what Chief of Staff wrote last week", "", &names), None);
+        for handed in [
+            "Chief of Staff, draft the board memo",
+            "@Chief of Staff draft the board memo",
+            "You are the Chief of Staff. Draft the board memo.",
+            "Act as Chief of Staff and draft the memo",
+            "Have Claude Code fix the failing test",
+            "Tell the Chief of Staff the memo is due",
+        ] {
+            assert!(employee_addressed(handed, "", &names).is_some(), "{handed}");
+        }
+        assert_eq!(employee_addressed("draft the memo", "chief of staff", &names).as_deref(), Some("Chief of Staff"));
     }
 
     /// One send tool, three kinds of `to`: a team's name posts into the
@@ -776,6 +850,7 @@ mod tests {
 
         let team = rig.call("send_message", json!({"to": "Back Office", "message": "close the month", "mention": ["Bookkeeper"]})).await;
         assert!(!team.is_error && team.content.contains("Posted to team \"Back Office\""), "{}", team.content);
+        assert!(team.content.contains("Sent to Bookkeeper."), "the receipt names exactly who received it: {}", team.content);
         assert_eq!(rig.rail.posts.lock().unwrap()[0], ("t-1".to_string(), "close the month".to_string(), vec!["bk".to_string()]));
 
         let coworker = rig.call("send_message", json!({"to": "Bookkeeper", "message": "send the invoice"})).await;
@@ -830,7 +905,7 @@ mod tests {
         assert!(send.schema()["properties"].get("wait").is_none(), "one way: a send never waits");
         assert!(send.concurrency_safe(&json!({"to": "Bookkeeper", "message": "x"})));
         let r = rig.call("send_message", json!({"to": "Bookkeeper", "message": "the invoice"})).await;
-        assert!(r.content.contains("their reply comes to you as a notification"), "{}", r.content);
+        assert!(r.content.contains("answer once; their answer comes to you as a notification"), "{}", r.content);
         assert!(r.payload.as_ref().is_some_and(|p| p.get("reply").is_none()), "{:?}", r.payload);
     }
 
