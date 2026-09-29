@@ -149,11 +149,14 @@ impl Store {
         .db_err("create_team")
     }
 
+    /// Every team, A to Z by name: the one order every client shows, so the
+    /// desktop and the phone never disagree and a list never reorders under
+    /// the owner's finger.
     pub fn list_teams(&self) -> Result<Vec<Team>, NeboError> {
         let conn = self.conn()?;
         let mut stmt = conn
             .prepare(&format!(
-                "SELECT {TEAM_COLUMNS} FROM teams ORDER BY created_at DESC, id"
+                "SELECT {TEAM_COLUMNS} FROM teams ORDER BY name COLLATE NOCASE, id"
             ))
             .db_err("list_teams prepare")?;
         let rows = stmt.query_map([], row_to_team).db_err("list_teams query")?;
@@ -324,6 +327,18 @@ mod tests {
 
     fn members() -> Vec<TeamMember> {
         vec![TeamMember::local("chief"), TeamMember::local("ea")]
+    }
+
+    /// Teams list A to Z, case-insensitively, whatever order they were made
+    /// in: the one order the desktop and the phone both show.
+    #[test]
+    fn teams_list_a_to_z() {
+        let s = store();
+        for (id, name) in [("t-1", "operations"), ("t-2", "Customer Support"), ("t-3", "Market Research")] {
+            s.create_team(id, name, "", &members(), "chief", None).unwrap();
+        }
+        let names: Vec<String> = s.list_teams().unwrap().into_iter().map(|t| t.name).collect();
+        assert_eq!(names, ["Customer Support", "Market Research", "operations"]);
     }
 
     /// A team is a local row: created with no hub channel, listed, fetched by

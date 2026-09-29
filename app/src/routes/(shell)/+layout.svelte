@@ -200,13 +200,8 @@
     }
   }
   const teamParam = $derived(appPath($page.url.pathname).match(/^\/teams\/([^/]+)/)?.[1] ?? null);
-  const sortedTeams = $derived(
-    [...teams].sort(
-      (a, b) =>
-        (teamActivity[b.id] ?? b.createdAt * 1000) -
-        (teamActivity[a.id] ?? a.createdAt * 1000)
-    )
-  );
+  // The server's order (A to Z), the same one the phone shows.
+  const sortedTeams = $derived(teams);
   const openTeam = (id: string) => goto(`/teams/${id}`);
   const closeTeam = () => goto('/dashboard');
   let newTeamOpen = $state(false);
