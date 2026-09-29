@@ -1,0 +1,9 @@
+id: sc72-the-lead-stops-the-team-on-the-owners-request-only
+name: "SC72 — The lead stops the team on the owner's request, never on its own"
+description: |
+  When the owner asks the lead to stop everyone, his post carries his authority and the lead's
+  stop_team stops every other member's work in the team. A lead's stop that serves no request of
+  the owner's is refused, and so is a member's.
+target_component: staffed-company
+proof: staffed_proof::conversation::the_lead_stops_the_team_on_the_owners_request_and_never_on_its_own
+conversation: []

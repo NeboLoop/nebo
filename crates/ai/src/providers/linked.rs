@@ -2909,18 +2909,23 @@ mod tests {
         assert_eq!(prompts[1][1], "morning");
     }
 
-    /// `/clear` is a true reset: the conversation's messages and its session
-    /// are gone, and the next message starts a fresh session with its
-    /// briefing and no handoff, and no notice.
+    /// `/clear` resets the agent's context: the conversation's session is
+    /// forgotten, and the next message starts a fresh session with its
+    /// briefing and no handoff, and no notice. Nothing from before the
+    /// clear is sent, though Nebo keeps every message.
     #[tokio::test]
     async fn a_cleared_conversation_starts_fresh_with_no_handoff() {
         let r = remote("rotate").await;
         collect(r.provider.stream(&briefed(request("hi", "chat-1", &remote_model()))).await.unwrap()).await;
-        // What `/clear` does to a thread.
-        r.store.delete_chat_messages_by_chat_id("chat-1").unwrap();
+        // What `/clear` does to a thread (`checkpoint::clear`): the session
+        // is forgotten, and the conversation the harness sends opens on the
+        // clear's boundary.
         r.store.set_chat_linked_session("chat-1", "", "").unwrap();
         let mut req = briefed(request("start over", "chat-1", &remote_model()));
-        req.messages.drain(..2);
+        req.messages.splice(
+            ..2,
+            [Message { role: "user".into(), content: "The owner cleared the conversation here.".into(), ..Default::default() }],
+        );
         let next = collect(r.provider.stream(&req).await.unwrap()).await;
         assert_eq!(texts(&next), "In s-2.");
         assert_eq!(prompt_texts(&told(&r.told))[1], ["BRIEFING", "start over"]);

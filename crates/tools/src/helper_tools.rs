@@ -587,6 +587,9 @@ mod tests {
                 })
             })
         }
+        fn stop_team(&self, _stop: crate::coworker::TeamStop) -> Fut<'_, Result<String, String>> {
+            Box::pin(async { Err("no team here".into()) })
+        }
         fn company_now(&self, _query: crate::company::CompanyQuery) -> Fut<'_, Vec<crate::company::EmployeeNow>> {
             Box::pin(async { Vec::new() })
         }

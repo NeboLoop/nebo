@@ -1,0 +1,10 @@
+id: sc75-the-teams-working-list-and-a-rows-stop
+name: "SC75 — The team's working list names members and helpers, and a row's Stop stops only that one"
+description: |
+  The team thread's "who's working" strip reads what runs in the team's conversation: each member
+  at work in its seat and each helper a member started there, with what it is doing now and the
+  chat that holds its steps. A row's Stop stops only that helper or that member; with nothing
+  running the list is empty and the strip hides.
+target_component: staffed-company
+proof: staffed_proof::conversation::the_teams_working_list_names_members_and_helpers_and_a_rows_stop_stops_only_that_one
+conversation: []

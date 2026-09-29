@@ -50,6 +50,26 @@ impl CoworkerRail for CoworkerRailImpl {
         crate::team::post(self.state.clone(), post)
     }
 
+    fn stop_team(
+        &self,
+        stop: tools::coworker::TeamStop,
+    ) -> Pin<Box<dyn Future<Output = Result<String, String>> + Send + '_>> {
+        Box::pin(async move {
+            let team = self
+                .state
+                .store
+                .get_team(&stop.team_id)
+                .map_err(|e| format!("load team: {e}"))?
+                .ok_or_else(|| format!("No team with id {}", stop.team_id))?;
+            let by = crate::handlers::teams::StopBy::Employee {
+                agent_id: &stop.from_agent_id,
+                session_key: &stop.session_key,
+                owners_turn: stop.owners_turn.as_deref(),
+            };
+            crate::handlers::teams::stop(&self.state, &team, by, crate::handlers::teams::Target::Everyone).await.map(|stopped| crate::handlers::teams::stopped_line(&stopped))
+        })
+    }
+
     fn company_now(
         &self,
         query: tools::company::CompanyQuery,
@@ -797,16 +817,21 @@ pub(crate) fn team_context(
         Some(at) => &rows[..at],
         None => rows,
     };
-    let since = before
+    // The owner's `/clear` starts the team's conversation over: nothing
+    // before its divider is briefed again.
+    let cleared = before.iter().rposition(|m| m.cleared).map_or(0, |at| at + 1);
+    let last_post = before
         .iter()
         .rposition(|m| m.from_agent_id == member_id)
-        .map_or(0, |at| at + 1);
+        .map(|at| at + 1)
+        .filter(|&after| after > cleared);
+    let since = last_post.unwrap_or(cleared);
     let unseen = &before[since..];
     if unseen.is_empty() {
         return None;
     }
     let shown = &unseen[unseen.len().saturating_sub(TEAM_CONTEXT_POSTS)..];
-    let mut out = if since == 0 {
+    let mut out = if last_post.is_none() {
         "The team's conversation before this post, oldest first:".to_string()
     } else {
         "The team's conversation since your last post in it, oldest first:".to_string()
@@ -1079,6 +1104,7 @@ mod tests {
             attachments: Vec::new(),
             created_at: 0,
             provenance: Vec::new(),
+            cleared: false,
         }
     }
 
@@ -1106,6 +1132,30 @@ mod tests {
         assert!(!got.contains("mail the new flyer"), "the post itself is not in its briefing: {got}");
         // Nothing unseen: no briefing section at all.
         assert_eq!(team_context(&rows[..3], "m", "3", &roster), None);
+    }
+
+    /// The owner's `/clear` in the team starts its conversation over: a
+    /// member is briefed only with what was said after the divider, though
+    /// every post before it stays in the thread.
+    #[test]
+    fn a_member_is_never_briefed_with_what_came_before_a_clear() {
+        let roster = vec![("lead".to_string(), "Pam".to_string()), ("m".to_string(), "Neighbor Mail".to_string())];
+        let divider = db::TeamMessage { cleared: true, role: "system".into(), ..post("2", "", "", "Cleared here. Earlier messages are kept but not used.") };
+        let rows = vec![
+            post("1", OWNER, "", "the old launch plan"),
+            divider,
+            post("3", OWNER, "", "new project: the spring catalogue"),
+            post("4", "Pam", "lead", "<@m> draft the catalogue mail"),
+        ];
+        let got = team_context(&rows, "m", "4", &roster).expect("the post after the clear").0;
+        assert_eq!(got, "The team's conversation before this post, oldest first:\nOwner: new project: the spring catalogue");
+        // A member whose last post was before the clear reads from the clear.
+        let mut with_old_post = rows.clone();
+        with_old_post.insert(1, post("1b", "Neighbor Mail", "m", "sent the launch mail"));
+        let got = team_context(&with_old_post, "m", "4", &roster).expect("the post after the clear").0;
+        assert!(!got.contains("launch"), "{got}");
+        // Right after the clear there is nothing to brief.
+        assert_eq!(team_context(&rows[..2], "m", "", &roster), None);
     }
 
     /// The briefing is bounded, and says what it left out instead of

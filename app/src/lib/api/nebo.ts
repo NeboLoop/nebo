@@ -2176,6 +2176,20 @@ export function sendTeamMessage(teamId: string, req: Record<string, unknown> = {
 }
 
 /**
+ * @description "Stop team work"
+ */
+export function stopTeamWork(teamId: string, req: Record<string, unknown> = {}) {
+	return webapi.post<components.StopTeamWorkResponse>(`/api/v1/teams/${teamId}/stop`, req)
+}
+
+/**
+ * @description "Team working"
+ */
+export function teamWorking(teamId: string) {
+	return webapi.get<components.TeamWorkingResponse>(`/api/v1/teams/${teamId}/working`)
+}
+
+/**
  * @description "Update apply"
  */
 export function updateApply(req: Record<string, unknown> = {}) {

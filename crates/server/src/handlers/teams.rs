@@ -93,6 +93,9 @@ fn resolve_members(
 /// PUT /teams/{teamId} — rename, re-mission, or change members (`edit_team`: the
 /// commander graph already owns the `update_team` name). The rules
 /// (two-member floor, organizer stays) live in `tools::team::update`.
+/// `changed` is false when the team already was what the request asks for
+/// (every member named already on it, the same lead): nothing was written
+/// and nothing is announced.
 pub async fn edit_team(
     State(state): State<AppState>,
     Path(team_id): Path<String>,
@@ -107,7 +110,7 @@ pub async fn edit_team(
         Some("") => Some(String::new()),
         Some(label) => Some(resolve_label(&state, label)?),
     };
-    let team = tools::team::update(
+    let updated = tools::team::update(
         &state.store,
         &team_id,
         body.name.as_deref(),
@@ -117,11 +120,13 @@ pub async fn edit_team(
     )
     .map_err(|e| to_error_response(types::NeboError::Validation(e)))?;
 
-    state.hub.broadcast(
-        tools::team::TEAM_UPDATED_EVENT,
-        serde_json::json!({ "team": team }),
-    );
-    Ok(Json(serde_json::json!({ "team": team })))
+    if updated.changed {
+        state.hub.broadcast(
+            tools::team::TEAM_UPDATED_EVENT,
+            serde_json::json!({ "team": updated.team }),
+        );
+    }
+    Ok(Json(serde_json::json!({ "team": updated.team, "changed": updated.changed })))
 }
 
 /// An employee label (local id or exact name) → local id, or the 400 that names it.
@@ -204,7 +209,10 @@ pub struct SendTeamMessageRequest {
 }
 
 /// POST /teams/{teamId}/messages — the owner posts into the team. The
-/// owner's post always reaches everyone and re-opens the floor.
+/// owner's post always reaches everyone and re-opens the floor. A command
+/// he types here (`/clear`, `/stop`, …) is run at this door and never
+/// posted: `command` names it, `message` is its answer, and `messageId` is
+/// the row it left in the thread, if any (the divider a clear leaves).
 pub async fn send_team_message(
     State(state): State<AppState>,
     Path(team_id): Path<String>,
@@ -221,6 +229,15 @@ pub async fn send_team_message(
         .get_team(&team_id)
         .map_err(to_error_response)?
         .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
+    if let Some(command) = command(&state, &team, text).await {
+        let command = command.map_err(|e| to_error_response(types::NeboError::Internal(e)))?;
+        return Ok(Json(serde_json::json!({
+            "message": command.reply,
+            "messageId": command.message_id,
+            "asked": Vec::<String>::new(),
+            "command": command.name,
+        })));
+    }
     let mention = mention_ids(&state.store, &team, &body.mention);
 
     let receipt = crate::team::post(
@@ -247,7 +264,262 @@ pub async fn send_team_message(
         "message": "Sent",
         "messageId": receipt.message_id,
         "asked": receipt.asked,
+        "command": "",
     })))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StopTeamWorkRequest {
+    /// One member's work only (a local agent id). Absent: every member's.
+    #[serde(default)]
+    pub agent_id: String,
+    /// One helper that member started only.
+    #[serde(default)]
+    pub task_id: String,
+}
+
+/// POST /teams/{teamId}/stop — the team's Stop: every member's work in the
+/// team's conversation, one member's (`agentId`), or one helper a member
+/// started there (`agentId` + `taskId`). Never anything outside the team.
+pub async fn stop_team_work(
+    State(state): State<AppState>,
+    Path(team_id): Path<String>,
+    Json(body): Json<StopTeamWorkRequest>,
+) -> HandlerResult<serde_json::Value> {
+    let team = state
+        .store
+        .get_team(&team_id)
+        .map_err(to_error_response)?
+        .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
+    let target = match (body.agent_id.as_str(), body.task_id.as_str()) {
+        ("", _) => Target::Everyone,
+        (member, "") => Target::Member(member),
+        (member, task_id) => Target::Helper { member, task_id },
+    };
+    let stopped = stop(&state, &team, StopBy::Owner, target)
+        .await
+        .map_err(|e| to_error_response(types::NeboError::Internal(e)))?;
+    Ok(Json(serde_json::json!({
+        "message": stopped_line(&stopped),
+        "stopped": stopped,
+    })))
+}
+
+/// GET /teams/{teamId}/working — what runs in the team's conversation now:
+/// each member working in its seat for the team, and each helper a member
+/// started there, with what it is doing and the chat that holds its steps.
+/// Read once when the team opens; every change after arrives as the events
+/// the work already sends (`tool_start`, `chat_complete`, `subagent_*`,
+/// `team_activity`), never by polling.
+pub async fn team_working(
+    State(state): State<AppState>,
+    Path(team_id): Path<String>,
+) -> HandlerResult<serde_json::Value> {
+    let team = state
+        .store
+        .get_team(&team_id)
+        .map_err(to_error_response)?
+        .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
+    let sessions = state.harness.sessions();
+    let chat_of = |key: &str| sessions.resolve_session_id_by_key(key).map(|sid| sessions.active_chat_id(&sid)).unwrap_or_default();
+    let mut working: Vec<serde_json::Value> = Vec::new();
+    for (member_id, name) in tools::team::member_roster(&state.store, &team) {
+        if !team.members.iter().any(|m| m.agent_id == member_id && m.is_local()) {
+            continue;
+        }
+        let (seat, _) = crate::coworker::team_seat(&member_id, &team);
+        if let Some(run) = state.run_registry.find_by_session(&seat).await {
+            working.push(serde_json::json!({
+                "kind": "member",
+                "agentId": member_id,
+                "member": name,
+                "title": name,
+                "taskId": "",
+                "activity": run.activity,
+                "sessionKey": seat,
+                "chatId": chat_of(&seat),
+            }));
+        }
+        for helper in state.helpers.list(&seat).into_iter().filter(|h| h.running) {
+            working.push(serde_json::json!({
+                "kind": "helper",
+                "agentId": member_id,
+                "member": name,
+                "title": helper.description,
+                "taskId": helper.task_id,
+                "activity": helper.activity,
+                "sessionKey": helper.session_key,
+                "chatId": chat_of(&helper.session_key),
+            }));
+        }
+    }
+    Ok(Json(serde_json::json!({ "working": working })))
+}
+
+/// A command the owner typed in a team's composer, run at the door.
+pub(crate) struct Command {
+    /// The command, without its slash.
+    pub name: &'static str,
+    /// What the owner reads.
+    pub reply: String,
+    /// The row it left in the team thread; empty when it left none.
+    pub message_id: String,
+}
+
+/// What `/help` says in a team, and what a chat-only command is answered
+/// with there.
+const TEAM_COMMANDS: &str = "In a team, /clear starts the conversation fresh (every message is kept), and /stop stops the team's work.";
+
+/// The owner's commands in a team thread. `None`: the text is not one of
+/// them, and is posted. A command is never posted to the team, so no member
+/// reads it as a message: the chat's commands that have no meaning for a
+/// team are answered with the ones that do.
+pub(crate) async fn command(state: &AppState, team: &db::Team, text: &str) -> Option<Result<Command, String>> {
+    let word = text.split_whitespace().next().unwrap_or_default().to_lowercase();
+    let reply = |name: &'static str, reply: String| Some(Ok(Command { name, reply, message_id: String::new() }));
+    match word.as_str() {
+        "/clear" => Some(clear_team(state, team).await.map(|message_id| Command {
+            name: "clear",
+            reply: "Context cleared — fresh start.".to_string(),
+            message_id,
+        })),
+        "/stop" | "/cancel" | "/halt" => match stop(state, team, StopBy::Owner, Target::Everyone).await {
+            Ok(stopped) => reply("stop", stopped_line(&stopped)),
+            Err(e) => Some(Err(e)),
+        },
+        "/new" => reply("new", "A team keeps one conversation. /clear starts it fresh; every message is kept.".to_string()),
+        "/help" => reply("help", TEAM_COMMANDS.to_string()),
+        "/compact" | "/model" | "/status" | "/goal" => {
+            reply("other", format!("{word} works in an employee's own chat. {TEAM_COMMANDS}"))
+        }
+        _ => None,
+    }
+}
+
+/// Who asks to stop a team's work.
+pub(crate) enum StopBy<'a> {
+    /// The owner: the team thread's Stop, or `/stop` there.
+    Owner,
+    /// An employee through `stop_team`: only the team's lead, and only while
+    /// it serves the owner's own request (`coworker::seat_authority`).
+    Employee { agent_id: &'a str, session_key: &'a str, owners_turn: Option<&'a str> },
+}
+
+/// What a stop stops in a team.
+pub(crate) enum Target<'a> {
+    /// Every member's work there.
+    Everyone,
+    /// One member's work there (a local agent id).
+    Member(&'a str),
+    /// One helper a member started there.
+    Helper { member: &'a str, task_id: &'a str },
+}
+
+/// Stop the team's work: each local member's running turn in its seat for
+/// the team, and the helpers that turn started, through the ONE stop path
+/// (`chat_dispatch::stop_session`; a linked member's turn cancels its
+/// agent's prompt with it). The members' other conversations are left
+/// alone, and so is the lead that asked. The owner may stop one member's
+/// work there, or one helper a member started there; an employee stops the
+/// team as a whole or not at all. Returns who (or what) was stopped.
+pub(crate) async fn stop(state: &AppState, team: &db::Team, by: StopBy<'_>, target: Target<'_>) -> Result<Vec<String>, String> {
+    let asker = match by {
+        StopBy::Owner => "",
+        StopBy::Employee { agent_id, session_key, owners_turn } => {
+            if tools::team::lead_of(team) != Some(agent_id) {
+                return Err(format!(
+                    "Only the {} team's lead can stop its work, when the owner asks. Nothing was stopped.",
+                    team.name
+                ));
+            }
+            let authority = crate::coworker::seat_authority(state, session_key, agent_id, owners_turn);
+            if authority.owners_request().is_none() {
+                return Err(format!(
+                    "Stopping the {} team's work takes the owner's own request. Nothing was stopped; ask the owner.",
+                    team.name
+                ));
+            }
+            agent_id
+        }
+    };
+    let roster = tools::team::member_roster(&state.store, team);
+    if let Target::Helper { member, task_id } = target {
+        let (seat, _) = crate::coworker::team_seat(member, team);
+        let Some(helper) = state.helpers.list(&seat).into_iter().find(|h| h.task_id == task_id && h.running) else {
+            return Ok(Vec::new());
+        };
+        state.helpers.stop(&seat, task_id)?;
+        let name = roster.iter().find(|(id, _)| id == member).map(|(_, n)| n.as_str()).unwrap_or(member);
+        return Ok(vec![format!("{name}'s helper ({})", helper.description)]);
+    }
+    let mut stopped: Vec<String> = Vec::new();
+    for (member_id, name) in roster {
+        let local = team.members.iter().any(|m| m.agent_id == member_id && m.is_local());
+        let wanted = match target {
+            Target::Member(id) => member_id == id,
+            _ => true,
+        };
+        if !local || !wanted || member_id == asker {
+            continue;
+        }
+        let (seat, _) = crate::coworker::team_seat(&member_id, team);
+        if crate::chat_dispatch::stop_session(&state.helpers, &state.run_registry, &seat).await {
+            state.hub.broadcast(
+                tools::team::TEAM_ACTIVITY_EVENT,
+                serde_json::json!({ "teamId": team.id, "agentId": member_id, "agentName": name, "state": "stopped" }),
+            );
+            stopped.push(name);
+        }
+    }
+    Ok(stopped)
+}
+
+/// What a stop says: who was stopped, in plain words.
+pub(crate) fn stopped_line(stopped: &[String]) -> String {
+    match stopped.split_last() {
+        None => "Nothing was running in the team.".to_string(),
+        Some((only, [])) => format!("Stopped the team's work: {only}."),
+        Some((last, rest)) => format!("Stopped the team's work: {} and {last}.", rest.join(", ")),
+    }
+}
+
+/// The owner's `/clear` in a team: the team's project starts over. The
+/// team's work stops first; then the team thread keeps every post and shows
+/// the divider where it was cleared, and each local member's seat for the
+/// team is cleared the way a chat is (`checkpoint::clear`: its model starts
+/// after the divider, a linked member's session is forgotten). No member is
+/// briefed with a post from before it again (`coworker::team_context`).
+/// Returns the divider's row id.
+async fn clear_team(state: &AppState, team: &db::Team) -> Result<String, String> {
+    stop(state, team, StopBy::Owner, Target::Everyone).await?;
+    let chat = state.store.ensure_team_thread(&team.id, &team.name).map_err(|e| format!("open team thread: {e}"))?;
+    let divider = agent::harness::compact::checkpoint::clear(&state.store, &chat).map_err(|e| format!("clear team thread: {e}"))?;
+    let sessions = state.harness.sessions();
+    for member in team.members.iter().filter(|m| m.is_local()) {
+        let (seat, _) = crate::coworker::team_seat(&member.agent_id, team);
+        let Ok(sid) = sessions.resolve_session_id_by_key(&seat) else {
+            continue;
+        };
+        agent::harness::compact::checkpoint::clear(&state.store, &sessions.active_chat_id(&sid))
+            .map_err(|e| format!("clear a member's seat: {e}"))?;
+        let _ = state.store.reset_session_counters(&sid);
+    }
+    state.hub.broadcast(
+        tools::team::TEAM_MESSAGE_EVENT,
+        serde_json::json!({
+            "teamId": team.id,
+            "messageId": divider.id,
+            "from": "",
+            "fromAgentId": "",
+            "senderName": "",
+            "role": "system",
+            "text": divider.content,
+            "attachments": [],
+            "cleared": true,
+        }),
+    );
+    Ok(divider.id)
 }
 
 /// GET /teams/other-computers — the employees a team can borrow from the

@@ -109,8 +109,9 @@ export type ChatMessage =
   /** `fold`: the server's verdict on this segment's text (`text_verdict`) —
    *  prose or a note in the turn's work; `segment`: its index in the turn. */
   | { type: 'assistant'; content: string; time?: string; delegateAgentId?: string; delegateAgentName?: string; id?: string; attachments?: UploadedAttachment[]; workItems?: WorkItem[]; tools?: ToolUse[]; streaming?: boolean; fold?: Fold; segment?: number }
-  /** The boundary the backend leaves where earlier conversation was summarized. */
-  | { type: 'compactBoundary'; id?: string; time?: string };
+  /** The boundary the backend leaves where earlier conversation was
+   *  summarized, or (`cleared`) where the owner cleared it. */
+  | { type: 'compactBoundary'; id?: string; time?: string; cleared?: boolean };
 
 export interface ChatControllerConfig {
   agentId: string;
@@ -728,11 +729,16 @@ export function createChatController(config: ChatControllerConfig) {
 
   function handleSessionReset(data: any) {
     if (!isMyEvent(data)) return;
-    if (data.success) {
-      messages = [];
-      askQueue = [];
-      resetStreaming();
+    if (!data.success) return;
+    // A thread cleared in place (`/clear`): every message stays, and the
+    // marker the server wrote shows where the employee starts again.
+    if (data.newChatId && data.newChatId === historyTarget) {
+      messages = [...messages, { type: 'compactBoundary' as const, cleared: true, time: formatTime(Date.now()) }];
+      return;
     }
+    messages = [];
+    askQueue = [];
+    resetStreaming();
   }
 
   function handleChatCancelled(data: any) {

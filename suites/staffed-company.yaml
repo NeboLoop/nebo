@@ -72,3 +72,9 @@ fixtures:
   - ../fixtures/staffed-company/conversation/sc69-a-question-back-to-the-lead-is-the-members-answer.yaml
   - ../fixtures/staffed-company/conversation/sc66-the-owners-everyone-reaches-every-member-once.yaml
   - ../fixtures/staffed-company/conversation/sc67-a-linked-member-is-sent-the-team-conversation-it-has-not-seen.yaml
+  - ../fixtures/staffed-company/conversation/sc70-the-owners-clear-in-a-team-keeps-every-post.yaml
+  - ../fixtures/staffed-company/conversation/sc71-the-owners-stop-in-a-team-stops-its-members-work.yaml
+  - ../fixtures/staffed-company/conversation/sc72-the-lead-stops-the-team-on-the-owners-request-only.yaml
+  - ../fixtures/staffed-company/conversation/sc73-a-team-member-reads-who-is-on-the-team-now.yaml
+  - ../fixtures/staffed-company/conversation/sc74-editing-a-team-to-what-it-already-is-changes-nothing.yaml
+  - ../fixtures/staffed-company/conversation/sc75-the-teams-working-list-and-a-rows-stop.yaml

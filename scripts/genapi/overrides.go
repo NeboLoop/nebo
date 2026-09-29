@@ -58,6 +58,9 @@ var typeOverrides = map[string]string{
 	"open_team.team":              "Team",
 	"get_team_messages.messages":  "TeamMessage[]",
 	"send_team_message.asked":     "string[]",
+	"edit_team.changed":           "boolean",
+	"stop_team_work.stopped":      "string[]",
+	"team_working.working":        "TeamWorkEntry[]",
 
 	// ── User profile ──
 	"userGetProfile.profile": "UserProfileFull",
@@ -97,6 +100,17 @@ var typeOverrides = map[string]string{
 // extraInterfaces defines TypeScript interfaces that don't exist as Rust structs
 // but are needed by the type overrides above.
 var extraInterfaces = map[string]string{
+	// One row of a team's "who's working" strip (GET /teams/{id}/working).
+	"TeamWorkEntry": `export interface TeamWorkEntry {
+	kind: 'member' | 'helper'
+	agentId: string
+	member: string
+	title: string
+	taskId: string
+	activity: string
+	sessionKey: string
+	chatId: string
+}`,
 	"RunDisplay": `export interface RunDisplayFact {
 	key: string
 	value: string

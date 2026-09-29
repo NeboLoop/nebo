@@ -6,7 +6,13 @@
 
   Data: initial load from GET /teams/{id}/messages, then `team_message`
   WS events (never polling). A post with no mention lets every member
-  answer once; a mentioned member is asked to act.
+  answer once; a mentioned member is asked to act. A command the owner
+  types (/clear, /stop) is run by the server and never posted; its answer
+  shows above the composer, and a clear leaves its divider in the thread.
+
+  The working strip above the composer: who is working in this team's
+  conversation now (GET /teams/{id}/working, then the work's own events),
+  folded to "N working"; a row opens what that one is doing in a sheet.
 -->
 <script lang="ts">
   import { t } from 'svelte-i18n';
@@ -16,7 +22,7 @@
   import ChevronDown from 'lucide-svelte/icons/chevron-down';
   import Pencil from 'lucide-svelte/icons/pencil';
   import NewTeamModal from '$lib/components/teams/NewTeamModal.svelte';
-  import { getTeamMessages, sendTeamMessage } from '$lib/api/nebo';
+  import { getTeamMessages, sendTeamMessage, stopTeamWork, teamWorking } from '$lib/api/nebo';
   import { uploadFiles } from '$lib/api/upload';
   import { stripAttachmentNotes, type UploadedAttachment } from '$lib/types/attachment';
   import type { Team, TeamMessage } from '$lib/api/neboComponents';
@@ -25,6 +31,8 @@
   import { EVERYONE, renderMentionChips } from '$lib/mentions';
   import TranscriptMessage from '$lib/components/chat/TranscriptMessage.svelte';
   import ChatComposer from '$lib/components/chat/ChatComposer.svelte';
+  import TeamWorkSheet from '$lib/components/teams/TeamWorkSheet.svelte';
+  import { applyWorkEvent, stopBody, workKey, WORK_EVENTS, type WorkEntry } from '$lib/teams/teamWork';
   import { AGENT_COLORS_MAP } from '$lib/tokens.js';
 
   let {
@@ -46,6 +54,8 @@
     content: string;
     mine: boolean;
     attachments: UploadedAttachment[];
+    /** The divider where the owner cleared the team's conversation. */
+    cleared?: boolean;
   };
   const asAttachments = (v: unknown): UploadedAttachment[] =>
     Array.isArray(v) ? (v as UploadedAttachment[]) : [];
@@ -60,9 +70,16 @@
     roster.find((a) => a.id === label || a.name === label);
 
   let messages: TeamMsg[] = $state([]);
-  // Members currently running because of a post — the owner's proof a post
-  // was picked up. Set by team_activity, cleared by the reply.
-  let working: { id: string; name: string }[] = $state([]);
+  // Who is working in the team's conversation now: members and the helpers
+  // they started there (`teamWork`). Folded to one line until opened.
+  let work: WorkEntry[] = $state([]);
+  let workOpen = $state(false);
+  let sheetEntry: WorkEntry | null = $state(null);
+  // The answer to a command or a stop, shown above the composer until the
+  // next send.
+  let notice = $state('');
+  // Redirect: the composer opens with the member named.
+  let prefill = $state('');
   let loading = $state(true);
   let sending = $state(false);
   let scroller = $state<HTMLDivElement | null>(null);
@@ -125,10 +142,22 @@
     content: m.content,
     mine: m.role === 'user',
     attachments: asAttachments(m.attachments),
+    ...(m.cleared ? { cleared: true } : {}),
   });
 
-  function clearWorking(senderName: string, fromAgentId?: string) {
-    working = working.filter((w) => w.name !== senderName && w.id !== (fromAgentId || ''));
+  async function stopWork(entry?: WorkEntry) {
+    sheetEntry = null;
+    try {
+      const resp = await stopTeamWork(team.id, entry ? stopBody(entry) : {});
+      notice = resp?.message ?? '';
+    } catch {
+      notice = '';
+    }
+  }
+
+  function redirect(entry: WorkEntry) {
+    sheetEntry = null;
+    prefill = `@${entry.member} `;
   }
 
   async function scrollToEnd() {
@@ -149,15 +178,30 @@
       }
     })();
 
-    const off = getWebSocketClient().on('team_message', (data: any) => {
+    (async () => {
+      const resp = await teamWorking(team.id).catch(() => null);
+      if (resp?.working) work = resp.working;
+    })();
+    const ws = getWebSocketClient();
+    const offWork = WORK_EVENTS.map((type) =>
+      ws.on(type, (data: any) => {
+        work = applyWorkEvent(work, type, data ?? {}, team.id, nameFor);
+      })
+    );
+
+    const off = ws.on('team_message', (data: any) => {
       if (data?.teamId !== team.id) return;
       const text = data.text ?? '';
       if (!text) return;
       // Already here: the same row can arrive twice (the owner's own echo
       // after its optimistic render, a reconnect replay).
       if (data.messageId && messages.some((m) => m.id === data.messageId)) return;
+      if (data.cleared) {
+        messages = [...messages, { id: data.messageId || crypto.randomUUID(), from: '', content: text, mine: false, attachments: [], cleared: true }];
+        scrollToEnd();
+        return;
+      }
       const senderName = data.senderName || nameFor(data.fromAgentId || data.from || '');
-      clearWorking(senderName, data.fromAgentId);
       // The owner's own post echoes back as role "user" — it is MINE, and
       // it already rendered optimistically. Drop the duplicate; keep it (as
       // a mine bubble) only if another device sent it.
@@ -177,23 +221,9 @@
       scrollToEnd();
     });
 
-    // "Somebody picked your post up": the server broadcasts when a member's
-    // run starts; the reply's team_message clears it.
-    const offActivity = getWebSocketClient().on('team_activity', (data: any) => {
-      if (data?.teamId !== team.id || data?.state !== 'started') return;
-      const id = data.agentId || data.agentName;
-      if (!id || working.some((w) => w.id === id)) return;
-      working = [...working, { id, name: data.agentName || nameFor(id) }];
-      scrollToEnd();
-      // Failsafe: a run that dies without posting must not spin forever.
-      setTimeout(() => {
-        working = working.filter((w) => w.id !== id);
-      }, 300_000);
-    });
-
     return () => {
       off();
-      offActivity();
+      offWork.forEach((fn) => fn());
     };
   });
 
@@ -201,6 +231,7 @@
     const text = raw.trim();
     if ((!text && files.length === 0) || sending) return;
     sending = true;
+    notice = '';
     // Render first, then send: the server echoes the post over the socket
     // BEFORE the request returns, so the row must already exist for the echo
     // to dedupe against. The temp id is swapped for the server's on return.
@@ -214,7 +245,12 @@
         messages = messages.map((m) => (m.id === tempId ? { ...m, attachments } : m));
       }
       const resp = await sendTeamMessage(team.id, { text, attachments });
-      if (resp?.messageId) {
+      if (resp?.command) {
+        // A command, run by the server and never posted: its answer shows
+        // above the composer; a clear's divider arrives as its own row.
+        messages = messages.filter((m) => m.id !== tempId);
+        notice = resp.message;
+      } else if (resp?.messageId) {
         // The echo may have landed as its own row while this request was in
         // flight: keep one row under the server's id, never two.
         messages = messages.some((m) => m.id === resp.messageId)
@@ -301,6 +337,9 @@
       <div class="max-w-2xl mx-auto flex flex-col gap-4" data-selectable>
         {#each messages as m (m.id)}
           {@const sender = m.mine ? undefined : rosterFor(m.from)}
+          {#if m.cleared}
+            <div class="divider my-2 text-xs text-base-content/50">{$t('chat.clearedBoundary')}</div>
+          {:else}
           <TranscriptMessage
             name={m.mine ? $t('teams.you') : m.from}
             mine={m.mine}
@@ -309,15 +348,7 @@
             html={renderMentionChips(parseMarkdown(stripAttachmentNotes(m.content)), roster)}
             attachments={m.attachments}
           />
-        {/each}
-        <!-- Who is on it right now — the owner's proof a post was picked up. -->
-        {#each working as w (w.id)}
-          {@const wa = rosterFor(w.id) ?? rosterFor(w.name)}
-          <div class="flex items-center gap-2.5">
-            <span class="w-6 h-6 rounded-full flex items-center justify-center font-mono text-[10px] font-semibold shrink-0 {colorClass(wa?.color)}">{wa?.initial ?? (w.name[0] ?? '?').toUpperCase()}</span>
-            <span class="text-xs text-base-content/60">{$t('teams.working', { values: { name: w.name } })}</span>
-            <span class="loading loading-dots loading-xs text-base-content/50"></span>
-          </div>
+          {/if}
         {/each}
       </div>
     {/if}
@@ -328,14 +359,51 @@
        and the team feels like every other conversation in the app. -->
   <div class="shrink-0 px-4 pb-3 pt-1">
     <div class="max-w-2xl mx-auto">
+      {#if work.length > 0}
+        <!-- Who is working in this conversation: one quiet line, opened to
+             one line per member or helper; a line opens its sheet. -->
+        <div class="mb-1.5">
+          <button
+            type="button"
+            class="w-full flex items-center gap-2 px-1 py-1 bg-transparent border-none cursor-pointer text-left text-xs text-base-content/60 hover:text-base-content"
+            aria-expanded={workOpen}
+            onclick={() => (workOpen = !workOpen)}
+          >
+            <span class="w-2 h-2 rounded-full bg-success agent-working-dot shrink-0"></span>
+            <span>{$t('teams.workingCount', { values: { count: work.length } })}</span>
+            <ChevronDown class="w-3 h-3 shrink-0 transition-transform {workOpen ? 'rotate-180' : ''}" />
+          </button>
+          {#if workOpen}
+            <div transition:slide={{ duration: 140 }} class="flex flex-col">
+              {#each work as w (workKey(w))}
+                <button
+                  type="button"
+                  class="w-full flex items-center gap-2 px-1 py-1 rounded-md bg-transparent border-none cursor-pointer text-left min-w-0 hover:bg-base-200"
+                  onclick={() => (sheetEntry = w)}
+                >
+                  <span class="w-1.5 h-1.5 rounded-full bg-success agent-working-dot shrink-0"></span>
+                  <span class="text-xs font-medium shrink-0 max-w-[40%] truncate">{w.title}</span>
+                  <span class="text-xs text-base-content/55 truncate min-w-0">{w.activity || $t('sidebar.working')}</span>
+                </button>
+              {/each}
+            </div>
+          {/if}
+        </div>
+      {/if}
+      {#if notice}
+        <p class="px-1 pb-1.5 text-xs text-base-content/60">{notice}</p>
+      {/if}
       <ChatComposer
         agentId="team"
         threadId={team.id}
         teamId={team.id}
         placeholder={$t('teams.composerPlaceholder')}
         allAgents={composerAgents}
-        isLoading={sending}
+        isLoading={sending || work.length > 0}
         onsend={(text, files) => send(text, files)}
+        onstop={() => stopWork()}
+        {prefill}
+        onprefilled={() => (prefill = '')}
       />
     </div>
   </div>
@@ -357,4 +425,19 @@
 
 {#if editOpen}
   <NewTeamModal {roster} {team} onclose={() => (editOpen = false)} oncreated={() => (editOpen = false)} />
+{/if}
+
+{#if sheetEntry}
+  <!-- The row as it is now: its activity line keeps moving under the sheet. -->
+  {@const current = work.find((w) => sheetEntry && workKey(w) === workKey(sheetEntry))}
+  {#key workKey(sheetEntry)}
+    <TeamWorkSheet
+      teamId={team.id}
+      entry={current ?? sheetEntry}
+      live={!!current}
+      onclose={() => (sheetEntry = null)}
+      onstop={(entry) => stopWork(entry)}
+      onredirect={redirect}
+    />
+  {/key}
 {/if}

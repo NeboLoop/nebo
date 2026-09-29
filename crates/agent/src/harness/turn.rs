@@ -4674,6 +4674,30 @@ mod tests {
         assert!(model.side_call("owner_recap").await.is_some(), "the owner's turn is recapped");
     }
 
+    /// The owner's `/clear` keeps every message, and the next turn's model
+    /// reads nothing said before it: its conversation opens on the clear.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_cleared_conversation_is_kept_and_never_read_again() {
+        let model = Scripted::new(vec![Step::Say("Noted."), Step::Say("I don't have it.")]);
+        let h = harness(&model).await;
+        run_turn(&h, owner("My locker code is 4417.")).await;
+        let kept = stored(&h);
+        let chat = h.sessions.active_chat_id(&h.sessions.resolve_session_id_by_key(KEY).unwrap());
+        compact::checkpoint::clear(&h.store, &chat).unwrap();
+        run_turn(&h, owner("What is my locker code?")).await;
+
+        let calls = model.calls();
+        let first = texts(&calls[0]);
+        assert!(first.iter().any(|t| t.contains("4417")), "before the clear the model reads it: {first:?}");
+        let after = texts(calls.last().unwrap());
+        assert_eq!(after.first().map(String::as_str), Some(compact::checkpoint::CLEARED_BOUNDARY), "{after:?}");
+        assert!(!after.iter().any(|t| t.contains("4417") || t == "Noted."), "nothing before the clear: {after:?}");
+        let rows = stored(&h);
+        for m in &kept {
+            assert!(rows.iter().any(|r| r.id == m.id), "every row before the clear stays: {}", m.content);
+        }
+    }
+
     /// A tool that replaces the owner's price list, which the employee
     /// didn't make, and counts the calls that ran.
     struct Replace(Arc<std::sync::atomic::AtomicUsize>);

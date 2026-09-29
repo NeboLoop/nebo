@@ -1,0 +1,10 @@
+id: sc73-a-team-member-reads-who-is-on-the-team-now
+name: "SC73 — A team member reads who is on the team now, whatever its thread said"
+description: |
+  A conversation kept saying a teammate "was removed" after the roster said otherwise
+  (2026-09-28). Every team post a member is asked on carries the team as it is now, read from
+  Nebo, after anything its thread said before: the Nebo-run lead reads it as the turn's briefing,
+  and a linked member's runtime is sent it with the prompt. Names only, never ids.
+target_component: staffed-company
+proof: staffed_proof::conversation::a_team_member_reads_who_is_on_the_team_now_whatever_its_thread_said
+conversation: []

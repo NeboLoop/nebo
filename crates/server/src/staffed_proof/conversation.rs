@@ -999,6 +999,8 @@ struct LinkedRuntime {
     offline: std::sync::atomic::AtomicBool,
     hold: Arc<tokio::sync::Semaphore>,
     prompts: std::sync::Mutex<Vec<String>>,
+    /// The run briefing each request carried for the runtime.
+    briefings: std::sync::Mutex<Vec<String>>,
 }
 
 #[async_trait::async_trait]
@@ -1016,6 +1018,9 @@ impl ai::Provider for LinkedRuntime {
         let (tx, rx) = tokio::sync::mpsc::channel(16);
         let last = req.messages.iter().rev().find(|m| m.role == "user").map(|m| m.content.clone()).unwrap_or_default();
         self.prompts.lock().unwrap().push(last);
+        if let Some(briefing) = req.linked_context.as_ref().and_then(|c| c.0.run_briefing()) {
+            self.briefings.lock().unwrap().push(briefing);
+        }
         if self.offline.load(std::sync::atomic::Ordering::SeqCst) {
             tokio::spawn(async move {
                 let _ = tx.send(ai::StreamEvent::error("Could not connect to Proof Hermes. Try again.")).await;
@@ -1070,6 +1075,7 @@ async fn a_linked_member_acknowledges_in_the_thread_and_an_unreachable_one_says_
         offline: Default::default(),
         hold: Arc::new(tokio::sync::Semaphore::new(0)),
         prompts: Default::default(),
+        briefings: Default::default(),
     });
     nebo.state
         .harness
@@ -2779,4 +2785,387 @@ async fn a_linked_member_is_sent_the_team_conversation_it_has_not_seen() {
     assert!(briefing.contains("CODEX-HISTORY: the ICP is two-agent brokerages."), "the unseen posts reach the runtime: {briefing}");
     assert!(briefing.contains("bring Codex up to speed"), "{briefing}");
     assert!(briefing.contains("Teammates only receive posts addressed to them"), "{briefing}");
+}
+
+/// The team thread as the app loads it (GET /teams/{id}/messages).
+async fn team_page(nebo: &Nebo, team_id: &str) -> Vec<Value> {
+    nebo.get_ok(&format!("/teams/{team_id}/messages")).await["messages"].as_array().cloned().unwrap_or_default()
+}
+
+/// The chat behind session `key`.
+fn seat_chat(nebo: &Nebo, key: &str) -> String {
+    let sessions = nebo.state.harness.sessions();
+    let sid = sessions.get_or_create(key, "").expect("session").id;
+    sessions.active_chat_id(&sid)
+}
+
+/// Owner report 2026-09-28: "/clear" typed in a team thread was posted to
+/// the team, and the lead answered it. A command is run at the team's door
+/// and never posted: no member reads it, the thread keeps every post and
+/// shows the divider where it was cleared, and each member starts after it
+/// (its seat is cleared as a chat is; a linked member's session is
+/// forgotten). The next post reaches the lead with nothing from before.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_owners_clear_in_a_team_keeps_every_post_and_its_members_start_after_it() {
+    let nebo = session().await;
+    let lead = nebo.hire("Proof TC Lead", json!({ "workflows": {} })).await;
+    let member = nebo.hire("Proof TC Writer", json!({ "workflows": {} })).await;
+    const TEAM: &str = "proof-team-tclear";
+    nebo.store()
+        .create_team(TEAM, "Proof TC Team", "run the shop", &[db::TeamMember::local(&lead), db::TeamMember::local(&member)], &lead, None)
+        .unwrap();
+    let after_clear: Arc<std::sync::Mutex<Vec<String>>> = Default::default();
+    let seen = after_clear.clone();
+    let rig = Rig::new(
+        &nebo,
+        vec![
+            Box::new(move |t| {
+                if !(t.opener().contains("MARK-TC2") && t.says("You are Proof TC Lead.")) {
+                    return None;
+                }
+                *seen.lock().unwrap() = t.req.messages.iter().map(|m| m.content.clone()).collect();
+                Some(Step::say("TC2-DONE: the spring sale plan is next."))
+            }),
+            Box::new(|t| {
+                (t.opener().contains("MARK-TC1") && t.says("You are Proof TC Lead."))
+                    .then(|| Step::say("TC1-DONE: the launch plan is ready."))
+            }),
+        ],
+    )
+    .await;
+    nebo.post_ok(&format!("/teams/{TEAM}/messages"), &json!({ "text": "MARK-TC1 plan the launch" })).await;
+    rig.until(30, "the lead answers the first post", || {
+        team_rows(&nebo, TEAM).iter().any(|(_, text)| text.contains("TC1-DONE"))
+    })
+    .await;
+    let lead_seat = format!("agent:{lead}:coworker:team:{TEAM}");
+    rig.until(30, "the lead's turn ends", || !rig.busy(&lead_seat)).await;
+    let lead_chat = seat_chat(&nebo, &lead_seat);
+    nebo.store().set_chat_linked_session(&lead_chat, "proof-runtime", "s-1").unwrap();
+
+    let cleared = nebo.post_ok(&format!("/teams/{TEAM}/messages"), &json!({ "text": "/clear" })).await;
+    assert_eq!(cleared["command"], "clear", "{cleared}");
+    assert_eq!(cleared["message"], "Context cleared — fresh start.", "{cleared}");
+    assert_eq!(cleared["asked"], json!([]), "nobody is asked: {cleared}");
+
+    let page = team_page(&nebo, TEAM).await;
+    assert!(!page.iter().any(|m| m["content"] == "/clear"), "the command is never posted: {page:?}");
+    let divider: Vec<&Value> = page.iter().filter(|m| m["cleared"] == true).collect();
+    assert_eq!(divider.len(), 1, "one divider: {page:?}");
+    assert_eq!(divider[0]["id"], cleared["messageId"]);
+    assert_eq!(divider[0]["content"], agent::harness::compact::checkpoint::CLEARED_MARKER);
+    for kept in ["MARK-TC1 plan the launch", "TC1-DONE"] {
+        assert!(page.iter().any(|m| m["content"].as_str().is_some_and(|c| c.contains(kept))), "kept: {kept}");
+    }
+    assert!(!rig.thread(&lead_seat).iter().any(|m| m.content.contains("/clear")), "no member reads the command");
+    assert!(nebo.store().get_chat(&lead_chat).unwrap().unwrap().linked_chat_id.is_none(), "a linked session is forgotten");
+
+    nebo.post_ok(&format!("/teams/{TEAM}/messages"), &json!({ "text": "MARK-TC2 plan the spring sale" })).await;
+    rig.until(30, "the lead answers the post after the clear", || !after_clear.lock().unwrap().is_empty()).await;
+    let read = after_clear.lock().unwrap().clone();
+    assert!(!read.iter().any(|c| c.contains("TC1") || c.contains("launch")), "nothing from before the clear: {read:?}");
+    assert!(rig.thread(&lead_seat).iter().any(|m| m.content.contains("TC1-DONE")), "the seat keeps its rows");
+}
+
+/// Owner report 2026-09-28 ("Stop everybody from what they're doing"): the
+/// lead's "@everyone stop" was only a message, and nothing stopped. The
+/// team's Stop (it sends /stop at the team's door) cancels every member's
+/// running work in the team's conversation, at once, and says who; the same
+/// members' other conversations keep running.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_owners_stop_in_a_team_stops_its_members_work_and_nothing_else() {
+    let nebo = session().await;
+    let lead = nebo.hire("Proof TS Lead", json!({ "workflows": {} })).await;
+    let ann = nebo.hire("Proof TS Ann", json!({ "workflows": {} })).await;
+    let bo = nebo.hire("Proof TS Bo", json!({ "workflows": {} })).await;
+    const TEAM: &str = "proof-team-tstop";
+    nebo.store()
+        .create_team(
+            TEAM,
+            "Proof TS Team",
+            "ship the campaign",
+            &[db::TeamMember::local(&lead), db::TeamMember::local(&ann), db::TeamMember::local(&bo)],
+            &lead,
+            None,
+        )
+        .unwrap();
+    let rig = Rig::new(&nebo, vec![worker("MARK-TSW", "tsw", "TSW-RESULT"), worker("MARK-TSO", "tso", "TSO-RESULT")]).await;
+    nebo.post_ok(&format!("/teams/{TEAM}/messages"), &json!({ "text": "MARK-TSW @Proof TS Ann @Proof TS Bo draft the ads" })).await;
+    let own = format!("agent:{ann}:web");
+    rig.owner_writes(&own, &ann, None, "MARK-TSO sort my inbox").await;
+    let (ann_seat, bo_seat) = (format!("agent:{ann}:coworker:team:{TEAM}"), format!("agent:{bo}:coworker:team:{TEAM}"));
+    rig.until(30, "both members work on the team's ask, and Ann on her own chat", || {
+        rig.company.calls_naming("MARK-TSW") == 2 && rig.company.calls_naming("MARK-TSO") == 1
+    })
+    .await;
+
+    let stopped = nebo.post_ok(&format!("/teams/{TEAM}/messages"), &json!({ "text": "/stop" })).await;
+    assert_eq!(stopped["command"], "stop", "{stopped}");
+    assert_eq!(stopped["message"], "Stopped the team's work: Proof TS Ann and Proof TS Bo.", "{stopped}");
+    rig.until(30, "the team's work stops", || !rig.busy(&ann_seat) && !rig.busy(&bo_seat)).await;
+    assert!(rig.busy(&own), "Ann's own conversation keeps running");
+    assert!(!team_rows(&nebo, TEAM).iter().any(|(_, text)| text == "/stop"), "the command is never posted");
+    assert!(!team_rows(&nebo, TEAM).iter().any(|(_, text)| text.contains("TSW-RESULT")));
+    rig.company.open("tso");
+    rig.until(30, "Ann's own conversation finishes", || !rig.busy(&own)).await;
+    assert!(rig.thread(&own).iter().any(|m| m.role == "assistant" && m.content.contains("TSO-RESULT")));
+}
+
+/// The owner asks the lead to stop everyone: his post carries his authority,
+/// so the lead's stop_team stops the team's work (every member but the
+/// lead). An employee's own initiative can't: a lead's stop that serves no
+/// request of the owner's is refused, and so is a member's.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_lead_stops_the_team_on_the_owners_request_and_never_on_its_own() {
+    let nebo = session().await;
+    let lead = nebo.hire("Proof LS Lead", json!({ "workflows": {} })).await;
+    let ann = nebo.hire("Proof LS Ann", json!({ "workflows": {} })).await;
+    const TEAM: &str = "proof-team-lstop";
+    nebo.store()
+        .create_team(TEAM, "Proof LS Team", "ship the page", &[db::TeamMember::local(&lead), db::TeamMember::local(&ann)], &lead, None)
+        .unwrap();
+    let rig = Rig::new(
+        &nebo,
+        vec![
+            worker("MARK-LSW", "lsw", "LSW-RESULT"),
+            Box::new(|t| {
+                if !(t.opener().contains("MARK-LSH") && t.says("You are Proof LS Lead.")) {
+                    return None;
+                }
+                Some(if t.has_tool_results() {
+                    Step::say("LSH-DONE")
+                } else {
+                    Step::call(vec![("stop_team", json!({ "team": "Proof LS Team" }))])
+                })
+            }),
+        ],
+    )
+    .await;
+    let ann_seat = format!("agent:{ann}:coworker:team:{TEAM}");
+    let lead_seat = format!("agent:{lead}:coworker:team:{TEAM}");
+
+    // On its own initiative: refused, and nothing stops.
+    nebo.post_ok(&format!("/teams/{TEAM}/messages"), &json!({ "text": "MARK-LSW @Proof LS Ann write the page" })).await;
+    rig.until(30, "Ann works on the page", || rig.company.calls_naming("MARK-LSW") == 1).await;
+    let own = tools::ToolContext::new(Origin::User).with_session(format!("agent:{lead}:main"), "s1");
+    rig.open_session(&format!("agent:{lead}:main"));
+    let refused = nebo.tool(&own, "stop_team", json!({ "team": "Proof LS Team" })).await;
+    assert!(refused.is_error && refused.content.contains("takes the owner's own request"), "{}", refused.content);
+    let by_member = tools::ToolContext::new(Origin::User).with_session(format!("agent:{ann}:main"), "s1");
+    let refused = nebo.tool(&by_member, "stop_team", json!({ "team": "Proof LS Team" })).await;
+    assert!(refused.is_error && refused.content.contains("Only the Proof LS Team team's lead"), "{}", refused.content);
+    assert!(rig.busy(&ann_seat), "nothing was stopped");
+
+    // On the owner's request, posted to the team: the lead stops the team.
+    nebo.post_ok(&format!("/teams/{TEAM}/messages"), &json!({ "text": "MARK-LSH stop everyone" })).await;
+    rig.until(30, "the lead's stop lands", || tool_results(&rig, &lead_seat).contains("Stopped the team's work")).await;
+    assert!(tool_results(&rig, &lead_seat).contains("Stopped the team's work: Proof LS Ann."), "{}", tool_results(&rig, &lead_seat));
+    rig.until(30, "Ann's work stops", || !rig.busy(&ann_seat)).await;
+}
+
+/// Owner report 2026-09-28: a conversation still said a teammate "was
+/// removed" after the roster said otherwise. Each team post a member is
+/// asked on carries the team as it is now, read from Nebo, after anything
+/// the member's thread said before: the Nebo-run lead reads it as the turn's
+/// briefing, and a linked member's runtime is sent it with the prompt.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_team_member_reads_who_is_on_the_team_now_whatever_its_thread_said() {
+    let nebo = session().await;
+    let lead = nebo.hire("Proof RS Lead", json!({ "workflows": {} })).await;
+    let bo = nebo.hire("Proof RS Bo", json!({ "workflows": {} })).await;
+    let hermes = "proof-rs-hermes-linked";
+    nebo.store()
+        .create_agent(hermes, Some("linked"), "Proof RS Hermes", "", "---\nname: Proof RS Hermes\n---\n", "{}", None, None)
+        .unwrap();
+    nebo.store()
+        .upsert_entity_config("agent", hermes, &json!({ "modelPreference": ai::LinkedProvider::model_id("proof-bot", "hermes-rs") }))
+        .unwrap();
+    const TEAM: &str = "proof-team-roster";
+    nebo.store()
+        .create_team(
+            TEAM,
+            "Proof RS Team",
+            "run the shop",
+            &[db::TeamMember::local(&lead), db::TeamMember::local(&bo), db::TeamMember::local(hermes)],
+            &lead,
+            None,
+        )
+        .unwrap();
+    const STALE: &str = "Proof RS Bo was removed from the team.";
+    let lead_seat = format!("agent:{lead}:coworker:team:{TEAM}");
+    let hermes_seat = format!("agent:{hermes}:coworker:team:{TEAM}");
+    let lead_read: Arc<std::sync::Mutex<Vec<String>>> = Default::default();
+    let seen = lead_read.clone();
+    let rig = Rig::new(
+        &nebo,
+        vec![Box::new(move |t| {
+            if !(t.opener().contains("MARK-RS") && t.says("You are Proof RS Lead.")) {
+                return None;
+            }
+            *seen.lock().unwrap() = t.req.messages.iter().map(|m| m.content.clone()).collect();
+            Some(Step::say("RS-DONE"))
+        })],
+    )
+    .await;
+    let runtime = Arc::new(LinkedRuntime {
+        offline: Default::default(),
+        hold: Arc::new(tokio::sync::Semaphore::new(10_000)),
+        prompts: Default::default(),
+        briefings: Default::default(),
+    });
+    nebo.state
+        .harness
+        .reload_providers(vec![Arc::new(Model(rig.company.clone())), runtime.clone() as Arc<dyn ai::Provider>])
+        .await;
+    // What each seat's thread said before: a stale claim.
+    for seat in [&lead_seat, &hermes_seat] {
+        let sessions = nebo.state.harness.sessions();
+        let sid = sessions.get_or_create(seat, "").expect("session").id;
+        sessions.append_message(&sid, "assistant", STALE, None, None, None).unwrap();
+    }
+
+    nebo.post_ok(&format!("/teams/{TEAM}/messages"), &json!({ "text": "MARK-RS @Proof RS Lead @Proof RS Hermes who is doing the window display?" })).await;
+    rig.until(30, "the lead and the linked member are both asked", || {
+        !lead_read.lock().unwrap().is_empty() && !runtime.briefings.lock().unwrap().is_empty()
+    })
+    .await;
+    let read = lead_read.lock().unwrap().clone();
+    let claim = read.iter().position(|c| c == STALE).expect("the lead's thread holds the claim");
+    let roster = read.iter().rposition(|c| c.contains("Teammates:") && c.contains("@Proof RS Bo")).expect("the current roster");
+    assert!(claim < roster, "the roster comes after the claim: {read:?}");
+    let briefing = runtime.briefings.lock().unwrap()[0].clone();
+    assert!(briefing.contains("Teammates:") && briefing.contains("@Proof RS Bo") && briefing.contains("@Proof RS Lead"), "{briefing}");
+    assert!(!briefing.contains(hermes), "no ids: {briefing}");
+}
+
+/// Editing a team to what it already is (every member named already on it,
+/// the same lead) writes nothing and says so: `changed` is false. Adding
+/// someone new changes it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn editing_a_team_to_what_it_already_is_changes_nothing() {
+    let nebo = session().await;
+    let lead = nebo.hire("Proof ED Lead", json!({ "workflows": {} })).await;
+    let ann = nebo.hire("Proof ED Ann", json!({ "workflows": {} })).await;
+    let bo = nebo.hire("Proof ED Bo", json!({ "workflows": {} })).await;
+    const TEAM: &str = "proof-team-edit";
+    nebo.store()
+        .create_team(TEAM, "Proof ED Team", "", &[db::TeamMember::local(&lead), db::TeamMember::local(&ann)], &lead, None)
+        .unwrap();
+    let same = nebo
+        .put_ok(&format!("/teams/{TEAM}"), &json!({ "members": [{ "agentId": ann }, { "agentId": lead }], "organizerAgentId": lead }))
+        .await;
+    assert_eq!(same["changed"], false, "{same}");
+    let grown = nebo
+        .put_ok(&format!("/teams/{TEAM}"), &json!({ "members": [{ "agentId": lead }, { "agentId": ann }, { "agentId": bo }] }))
+        .await;
+    assert_eq!(grown["changed"], true, "{grown}");
+    assert_eq!(grown["team"]["members"].as_array().map(Vec::len), Some(3));
+}
+
+/// What the team's working list reads: GET /teams/{id}/working, as the app
+/// loads it.
+async fn team_working(nebo: &Nebo, team_id: &str) -> Vec<Value> {
+    nebo.get_ok(&format!("/teams/{team_id}/working")).await["working"].as_array().cloned().unwrap_or_default()
+}
+
+/// Poll the working list until `cond` holds (the scenario's clock, not the
+/// app's: the app hears the same changes as events).
+async fn until_working(nebo: &Nebo, team_id: &str, what: &str, cond: impl Fn(&[Value]) -> bool) -> Vec<Value> {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        let now = team_working(nebo, team_id).await;
+        if cond(&now) {
+            return now;
+        }
+        assert!(tokio::time::Instant::now() < deadline, "gave up waiting for: {what}; working: {now:?}");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// The team's "who's working" strip reads what runs in the team's
+/// conversation: each member at work in its seat, and each helper a member
+/// started there, with what it is doing now and the chat that holds its
+/// steps. A row's Stop stops only that one (a helper, or a member), and with
+/// nothing running the list is empty, so the strip hides.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_teams_working_list_names_members_and_helpers_and_a_rows_stop_stops_only_that_one() {
+    let nebo = session().await;
+    let lead = nebo.hire("Proof WK Lead", json!({ "workflows": {} })).await;
+    let ann = nebo.hire("Proof WK Ann", json!({ "workflows": {} })).await;
+    let bo = nebo.hire("Proof WK Bo", json!({ "workflows": {} })).await;
+    const TEAM: &str = "proof-team-working";
+    nebo.store()
+        .create_team(
+            TEAM,
+            "Proof WK Team",
+            "price the plans",
+            &[db::TeamMember::local(&lead), db::TeamMember::local(&ann), db::TeamMember::local(&bo)],
+            &lead,
+            None,
+        )
+        .unwrap();
+    let rig = Rig::new(
+        &nebo,
+        vec![
+            Box::new(|t| {
+                if !(t.opener().contains("MARK-WKA") && t.says("You are Proof WK Ann.")) {
+                    return None;
+                }
+                Some(if t.has_tool_results() {
+                    Step::say("Started the research.")
+                } else {
+                    Step::call(vec![(
+                        "delegate",
+                        json!({ "description": "research rival pricing", "prompt": "MARK-WKH research rival pricing", "background": true }),
+                    )])
+                })
+            }),
+            Box::new(|t| {
+                if !t.opener().contains("MARK-WKH") {
+                    return None;
+                }
+                Some(if t.has_tool_results() {
+                    Step::held("wkh", "WKH-RESULT: rivals sell three tiers.")
+                } else {
+                    Step::call(vec![("recall", json!({ "query": "rival pricing" }))])
+                })
+            }),
+            worker("MARK-WKB", "wkb", "WKB-RESULT"),
+        ],
+    )
+    .await;
+    assert!(team_working(&nebo, TEAM).await.is_empty(), "nothing runs yet");
+    nebo.post_ok(&format!("/teams/{TEAM}/messages"), &json!({ "text": "MARK-WKA @Proof WK Ann research what rivals charge" })).await;
+    nebo.post_ok(&format!("/teams/{TEAM}/messages"), &json!({ "text": "MARK-WKB @Proof WK Bo draft the pricing page" })).await;
+    let ann_seat = format!("agent:{ann}:coworker:team:{TEAM}");
+    let bo_seat = format!("agent:{bo}:coworker:team:{TEAM}");
+    let working = until_working(&nebo, TEAM, "Bo at work, and Ann's helper on its tool step", |w| {
+        let bo_working = w.iter().any(|e| e["kind"] == "member" && e["agentId"] == bo.as_str());
+        let helper = w.iter().any(|e| e["kind"] == "helper" && e["activity"].as_str().is_some_and(|a| !a.is_empty()));
+        let ann_done = !w.iter().any(|e| e["kind"] == "member" && e["agentId"] == ann.as_str());
+        bo_working && helper && ann_done
+    })
+    .await;
+    assert_eq!(working.len(), 2, "{working:?}");
+    let member = working.iter().find(|e| e["kind"] == "member").unwrap();
+    assert_eq!((member["title"].as_str(), member["sessionKey"].as_str()), (Some("Proof WK Bo"), Some(bo_seat.as_str())));
+    assert!(member["chatId"].as_str().is_some_and(|c| !c.is_empty()), "{member}");
+    let helper = working.iter().find(|e| e["kind"] == "helper").unwrap();
+    assert_eq!((helper["title"].as_str(), helper["member"].as_str()), (Some("research rival pricing"), Some("Proof WK Ann")));
+    assert!(helper["sessionKey"].as_str().is_some_and(|k| k.starts_with(&format!("subagent:{ann_seat}:"))), "{helper}");
+    assert!(helper["chatId"].as_str().is_some_and(|c| !c.is_empty()), "{helper}");
+
+    // The helper's row: only the helper stops.
+    let task_id = helper["taskId"].as_str().unwrap().to_string();
+    let stopped = nebo.post_ok(&format!("/teams/{TEAM}/stop"), &json!({ "agentId": ann, "taskId": task_id })).await;
+    assert_eq!(stopped["message"], "Stopped the team's work: Proof WK Ann's helper (research rival pricing).", "{stopped}");
+    until_working(&nebo, TEAM, "the helper leaves the list", |w| !w.iter().any(|e| e["kind"] == "helper")).await;
+    assert!(rig.busy(&bo_seat), "Bo keeps working");
+
+    // Bo's row: only Bo stops, and then nothing runs.
+    let stopped = nebo.post_ok(&format!("/teams/{TEAM}/stop"), &json!({ "agentId": bo })).await;
+    assert_eq!(stopped["message"], "Stopped the team's work: Proof WK Bo.", "{stopped}");
+    until_working(&nebo, TEAM, "the list empties, so the strip hides", |w| w.is_empty()).await;
+    let again = nebo.post_ok(&format!("/teams/{TEAM}/stop"), &json!({})).await;
+    assert_eq!(again["message"], "Nothing was running in the team.", "{again}");
 }

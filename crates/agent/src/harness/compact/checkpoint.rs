@@ -286,6 +286,42 @@ pub fn boundary_text(summary: &str, head_cut: bool, why: CheckpointReason) -> St
     text
 }
 
+/// The owner-visible marker `/clear` leaves in the thread.
+pub const CLEARED_MARKER: &str = "Cleared here. Earlier messages are kept but not used.";
+/// The boundary row `/clear` writes: the model's conversation starts here.
+pub const CLEARED_BOUNDARY: &str = "The owner cleared the conversation here. What was said before this point \
+is not part of this conversation: start fresh from the owner's next message.";
+/// The `reason` a clear's marker and boundary carry.
+pub const CLEARED: &str = "cleared";
+
+/// The owner's `/clear` of the chat `chat_id`: a checkpoint with no
+/// summary. Every row stays stored and in the owner's thread; the owner sees
+/// one marker where he cleared, and the model's conversation loads from the
+/// hidden boundary written after it
+/// (`Store::get_chat_messages_since_checkpoint`), so the next turn starts
+/// from there. A linked employee's session on its runtime is forgotten, so
+/// its next turn opens a fresh one, told nothing from before. Records are
+/// never deleted: clear clears context. Returns the marker row.
+pub fn clear(store: &db::Store, chat_id: &str) -> Result<ChatMessage, types::NeboError> {
+    let row = |role: &str, text: &str, metadata: serde_json::Value| {
+        store.create_chat_message_for_runner(
+            &uuid::Uuid::new_v4().to_string(),
+            chat_id,
+            role,
+            text,
+            None,
+            None,
+            None,
+            Some(&metadata.to_string()),
+            None,
+        )
+    };
+    let marker = row("system", CLEARED_MARKER, serde_json::json!({ MARKER_KEY: true, "reason": CLEARED }))?;
+    row("user", CLEARED_BOUNDARY, serde_json::json!({ "checkpoint": true, "isMeta": true, "reason": CLEARED }))?;
+    store.set_chat_linked_session(chat_id, "", "")?;
+    Ok(marker)
+}
+
 /// Checkpoint the conversation: hooks, summary, boundary row, restore rows.
 pub async fn checkpoint(cx: &CheckpointContext<'_>, why: CheckpointReason) -> Result<Checkpoint, String> {
     if cx.conversation.is_empty() {
@@ -1108,6 +1144,51 @@ mod tests {
         let loaded = s.conversation();
         assert!(is_boundary(&loaded[0]), "the model's conversation opens on the boundary");
         assert!(loaded.iter().all(|m| m.role != "system"), "the model never reads a marker");
+    }
+
+    /// `/clear` deletes nothing. The owner's thread keeps every message and
+    /// shows one marker where he cleared, worded for a clear; the model's
+    /// conversation opens on the hidden boundary after it and holds nothing
+    /// from before; a linked employee's runtime session is forgotten.
+    #[test]
+    fn clear_keeps_every_message_and_the_model_starts_after_it() {
+        let s = Setup::new();
+        s.say("user", "Draft the letter to the landlord.");
+        s.say("assistant", "Drafted.");
+        let before = s.store.get_chat_messages(&s.chat).unwrap();
+
+        s.store.set_chat_linked_session(&s.chat, "coder", "s-1").unwrap();
+        clear(&s.store, &s.chat).unwrap();
+        let chat = s.store.get_chat(&s.chat).unwrap().unwrap();
+        assert_eq!((chat.linked_chat_id, chat.linked_agent_id), (None, None), "a linked employee's session is forgotten");
+        s.say("user", "Start on the lease.");
+
+        let all = s.store.get_chat_messages(&s.chat).unwrap();
+        assert_eq!(all.len(), before.len() + 3, "the marker, the boundary and the new message; nothing removed");
+        for m in &before {
+            assert!(all.iter().any(|r| r.id == m.id && r.content == m.content), "kept: {}", m.content);
+        }
+
+        // The page the apps load (rows written in one second come back in
+        // any order, so this compares the set).
+        let owner_sees = s.store.get_chat_messages_budgeted(&s.chat, 1_000_000, None).unwrap();
+        let mut shown: Vec<(&str, &str)> = owner_sees.iter().map(|m| (m.role.as_str(), m.content.as_str())).collect();
+        shown.sort();
+        let mut want = vec![
+            ("user", "Draft the letter to the landlord."),
+            ("assistant", "Drafted."),
+            ("system", CLEARED_MARKER),
+            ("user", "Start on the lease."),
+        ];
+        want.sort();
+        assert_eq!(shown, want, "the owner reads everything and the marker, never the boundary");
+        let marker = owner_sees.iter().find(|m| m.role == "system").and_then(metadata).unwrap();
+        assert_eq!((marker[MARKER_KEY].as_bool(), marker["reason"].as_str()), (Some(true), Some(CLEARED)));
+
+        let loaded = s.conversation();
+        let read: Vec<&str> = loaded.iter().map(|m| m.content.as_str()).collect();
+        assert_eq!(read, vec![CLEARED_BOUNDARY, "Start on the lease."], "the model starts after the clear");
+        assert!(is_boundary(&loaded[0]));
     }
 
     /// The owner's `/compact` runs it on a spawned task.

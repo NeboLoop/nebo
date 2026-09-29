@@ -129,6 +129,24 @@ describe('parseMessages compact boundary', () => {
     const shape = msgs.map((m) => m.type === 'assistant' ? `${m.id}:${m.tools?.length ?? 0}` : m.type);
     expect(shape).toEqual(['user', 'a1-0:1', 'compactBoundary', 'a2-0:1']);
     expect(msgs[2]).toMatchObject({ type: 'compactBoundary', id: 's1' });
+    expect(msgs[2]).not.toHaveProperty('cleared');
+  });
+
+  // The owner's /clear keeps every message and leaves the same marker with
+  // reason "cleared": the thread shows everything, with the divider worded
+  // for a clear where it happened.
+  it('keeps the messages around a clear and marks the divider as cleared', () => {
+    const cleared = {
+      id: 's3', role: 'system', content: 'Cleared here. Earlier messages are kept but not used.', createdAt: 0,
+      metadata: JSON.stringify({ compactBoundary: true, reason: 'cleared' }),
+    };
+    const msgs = parseMessages([
+      { id: 'u1', role: 'user', content: 'before', createdAt: 0 },
+      cleared,
+      { id: 'u2', role: 'user', content: 'after', createdAt: 0 },
+    ] as never);
+    expect(msgs.map((m) => m.type)).toEqual(['user', 'compactBoundary', 'user']);
+    expect(msgs[1]).toMatchObject({ type: 'compactBoundary', id: 's3', cleared: true });
   });
 });
 

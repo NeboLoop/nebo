@@ -171,7 +171,7 @@ pub async fn install_org(
                     Some(&member_list),
                     Some(&organizer_id),
                 )
-                .map(|t| t.id),
+                .map(|u| u.team.id),
                 None => tools::team::create(
                     None,
                     &state.store,

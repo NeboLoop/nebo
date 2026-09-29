@@ -120,11 +120,21 @@ pub async fn create(
     Ok(team)
 }
 
+/// A team after [`update`], and whether the call changed it. Asking for the
+/// team as it already is (adding an employee already on it, the same lead)
+/// changes nothing and says so: it is never reported as an update.
+#[derive(Debug, Clone)]
+pub struct Updated {
+    pub team: Team,
+    pub changed: bool,
+}
+
 /// Change a team's name, mission, members, or lead — the ONE rule set both
 /// doors (the app's edit picker, the tool) go through. `None` keeps a field.
 /// Rules: a team never drops below two employees; the lead (organizer) must
 /// be a member or empty (= the owner leads); remove the lead without naming
-/// a new one and the team becomes owner-led.
+/// a new one and the team becomes owner-led. Members are a set: the same
+/// people in another order is no change.
 pub fn update(
     store: &Store,
     team_id: &str,
@@ -132,7 +142,7 @@ pub fn update(
     mission: Option<&str>,
     member_list: Option<&[TeamMember]>,
     organizer_agent_id: Option<&str>,
-) -> Result<Team, String> {
+) -> Result<Updated, String> {
     let current = store
         .get_team(team_id)
         .map_err(|e| format!("load team: {e}"))?
@@ -184,9 +194,14 @@ pub fn update(
         None => String::new(),
     };
 
+    let same_members = members.len() == current.members.len() && members.iter().all(|m| current.members.contains(m));
+    if name == current.name && mission == current.mission && same_members && organizer == current.organizer_agent_id {
+        return Ok(Updated { team: current, changed: false });
+    }
     store
         .update_team(&current.id, name, mission, &members, &organizer)
         .map_err(|e| format!("update team: {e}"))?
+        .map(|team| Updated { team, changed: true })
         .ok_or_else(|| "team vanished during update".to_string())
 }
 
@@ -557,7 +572,7 @@ mod tests {
 
         // The local member is still a fine lead.
         let ok = update(&s, "t-1", None, None, None, Some("chief")).unwrap();
-        assert_eq!(ok.organizer_agent_id, "chief");
+        assert_eq!(ok.team.organizer_agent_id, "chief");
     }
 
     /// A member on another computer survives an edit that does not mention
@@ -584,11 +599,31 @@ mod tests {
         assert_eq!(member_ids(&team), vec!["chief", "hub-agent-1"]);
 
         let renamed = update(&s, "t-1", Some("Finance & Books"), None, None, None).unwrap();
-        assert_eq!(renamed.members, vec![TeamMember::local("chief"), remote]);
+        assert!(renamed.changed);
+        assert_eq!(renamed.team.members, vec![TeamMember::local("chief"), remote]);
 
         // The roster shows the stored name, because nothing here can look it up.
-        let roster = member_roster(&s, &renamed);
+        let roster = member_roster(&s, &renamed.team);
         assert_eq!(roster[1], ("hub-agent-1".to_string(), "Bookkeeper".to_string()));
+    }
+
+    /// Asking for the team as it already is changes nothing and says so:
+    /// the same members in another order, the same lead, the same name. A
+    /// real change is written and says it changed.
+    #[test]
+    fn an_update_that_asks_for_the_team_as_it_is_changes_nothing() {
+        let s = store();
+        s.create_team("t-1", "Ops", "run the office", &[TeamMember::local("a"), TeamMember::local("b")], "a", None)
+            .unwrap();
+        let same = update(&s, "t-1", Some("Ops"), None, Some(&[TeamMember::local("b"), TeamMember::local("a")]), Some("a"))
+            .unwrap();
+        assert!(!same.changed, "the same people, lead and name");
+        assert_eq!(member_ids(&same.team), vec!["a", "b"], "the order stays as it was");
+
+        let grown = update(&s, "t-1", None, None, Some(&[TeamMember::local("a"), TeamMember::local("b"), TeamMember::local("c")]), None)
+            .unwrap();
+        assert!(grown.changed);
+        assert_eq!(member_ids(&s.get_team("t-1").unwrap().unwrap()), vec!["a", "b", "c"]);
     }
 
     #[test]
