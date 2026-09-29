@@ -28,9 +28,27 @@ pub type SpendToday = db::PermissionSpend;
 #[derive(Debug, Clone, Default)]
 pub struct Counterparties(pub HashSet<String>);
 
-/// What, among a call's deletes and overwrites, the employee created.
+/// What, among a call's deletes and overwrites and the folders they sit
+/// in, the employee created.
 #[derive(Debug, Clone, Default)]
 pub struct CreatedLedger(pub HashSet<String>);
+
+impl CreatedLedger {
+    /// The employee made `what`, or the folder it is in: a clone it made is
+    /// its own, every file in it too.
+    pub fn covers(&self, what: &str) -> bool {
+        with_folders(what).any(|w| self.0.contains(&w))
+    }
+}
+
+/// `what`, and for a file each folder it sits in (`file:/a/b` → `file:/a`).
+pub fn with_folders(what: &str) -> impl Iterator<Item = String> + '_ {
+    let folders = what
+        .strip_prefix("file:")
+        .map(|p| Path::new(p).ancestors().skip(1).map(|a| format!("file:{}", a.display())).collect::<Vec<_>>())
+        .unwrap_or_default();
+    std::iter::once(what.to_string()).chain(folders)
+}
 
 /// The people the conversation the run serves is with: a reply to them is
 /// a reply in the thread.
@@ -201,7 +219,7 @@ pub fn irreversible(t: &Target, rules: &RuleSet, f: &Facts<'_>) -> Option<AskCas
     if rules.answered_always(t) {
         return None;
     }
-    if let Some(what) = t.effects.deletes.iter().find(|d| !f.created.0.contains(*d)) {
+    if let Some(what) = t.effects.deletes.iter().find(|d| !f.created.covers(d)) {
         return Some(AskCase::Irreversible { what: plain(what) });
     }
     let folders = rules.folders();
@@ -217,7 +235,7 @@ pub fn irreversible(t: &Target, rules: &RuleSet, f: &Facts<'_>) -> Option<AskCas
     t.effects
         .overwrites
         .iter()
-        .find(|o| !f.created.0.contains(*o) && !in_job_folders(o))
+        .find(|o| !f.created.covers(o) && !in_job_folders(o))
         .map(|what| AskCase::Irreversible { what: plain(what) })
 }
 
@@ -302,7 +320,8 @@ impl Gathered {
         let counterparties = Counterparties(
             cx.store.known_counterparties(agent, &t.effects.recipients).unwrap_or_default(),
         );
-        let mine: Vec<String> = t.effects.deletes.iter().chain(&t.effects.overwrites).cloned().collect();
+        let mine: Vec<String> =
+            t.effects.deletes.iter().chain(&t.effects.overwrites).flat_map(|w| with_folders(w)).collect();
         let created = CreatedLedger(cx.store.created_by(agent, &mine).unwrap_or_default());
         let thread = thread_of(cx.store, &cx.ctx.session_key);
         let outside_source = if cx.ctx.untrusted_input {

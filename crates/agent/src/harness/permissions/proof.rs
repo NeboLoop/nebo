@@ -366,6 +366,94 @@ async fn full_access_never_asks() {
     assert!(matches!(decision(&store, "dev", "desktop"), Decision::Deny { .. }));
 }
 
+/// `full-access-unattended-never-removes-others-work` (the 2026-09-29
+/// incident): in Full Access, a scheduled run of a coding employee removed
+/// the owner's folder of repos with `rm -rf` and re-cloned into it. Full
+/// Access still never asks, but a run the owner didn't start never removes
+/// or replaces a folder the employee didn't make; the owner's own chat
+/// request still does, and the employee's own clone and the temp folder
+/// stay its to clean.
+#[tokio::test]
+async fn full_access_unattended_never_removes_others_work() {
+    use types::permissions::{Door, Mode, Why};
+    let (_d, store) = store();
+    store.set_permission_mode(&Scope::Employee("dev".into()), Mode::FullAccess).unwrap();
+    // The owner's folders, outside the temp folder (removing scratch there
+    // is nobody's work). A delete is judged by name; a working tree rewritten
+    // must be a folder, so the git case runs in this crate's own.
+    let home = std::path::Path::new("/Users/owner");
+    let workspaces = home.join("workspaces");
+    let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let run = |command: &str, origin: Origin, door: Door, owner_request: bool| -> Decision {
+        let grant = resolve_grant(&store, "dev", None);
+        let ctx = ToolContext {
+            origin,
+            door,
+            owner_request,
+            session_key: "agent:dev:workflow:r1".into(),
+            grant: Some(Arc::new(grant.clone())),
+            ..Default::default()
+        };
+        let input = serde_json::json!({ "command": command });
+        let t = Target {
+            tool: "run_command".into(),
+            key: "run_command".into(),
+            operation: None,
+            capability: Some("shell".into()),
+            field: Some(types::permissions::RuleField::CommandPrefix(command.into())),
+            subject: None,
+            read_only: false,
+            effects: tools::policy::shell_effects(command, None).anchored(home),
+        };
+        decide(&CheckCx { ctx: &ctx, input: &input, grant: &grant, store: &store }, &t)
+    };
+    let refused = |d: &Decision| matches!(d, Decision::Deny { why: Why::HardLimit { limit }, .. } if limit == "not_its_own");
+
+    let wiped = format!("cd {} && rm -rf nebo && git clone git@github.com:acme/nebo.git", workspaces.display());
+    let checkout = format!("cd {} && git checkout fix/x && git rebase origin/main", repo.display());
+    let unattended = [
+        (Origin::Workflow, Door::Workflow),
+        (Origin::System, Door::Schedule),
+        (Origin::System, Door::Heartbeat),
+        (Origin::User, Door::Helper),
+        (Origin::User, Door::Coworker { from: "lead".into() }),
+    ];
+    for (origin, door) in unattended {
+        for command in [&wiped, &checkout] {
+            let d = run(command, origin, door.clone(), false);
+            assert!(refused(&d), "{door:?}: {command}: {d:?}");
+        }
+    }
+    // The owner asked for it in his own chat: Full Access runs it.
+    assert!(matches!(run(&wiped, Origin::User, Door::Chat, true), Decision::Allow { .. }));
+
+    // Its own clone, anything in it, and the temp folder stay its own work.
+    let clone = format!("cd {} && git clone https://github.com/acme/tool.git", workspaces.display());
+    let created = tools::policy::shell_effects(&clone, None).anchored(home).creates;
+    assert_eq!(created, vec![format!("file:{}", workspaces.join("tool").display())]);
+    store.add_employee_created("dev", &created[0]).unwrap();
+    let own = format!("rm -rf {} && rm -rf /tmp/dev-build", workspaces.join("tool/target").display());
+    assert!(matches!(run(&own, Origin::Workflow, Door::Workflow, false), Decision::Allow { .. }));
+    // The folder the owner gave the job is its own to clean too.
+    let job = types::permissions::Rule {
+        id: uuid::Uuid::new_v4().to_string(),
+        scope: Scope::Employee("dev".into()),
+        key: RuleKey::Capability("file".into()),
+        field: Some(types::permissions::RuleField::Folder(workspaces.join("site"))),
+        effect: Effect::Allow,
+        money: None,
+        source: RuleSource::Owner,
+        locked: false,
+        created_at: 0,
+    };
+    store.write_permission_rule(&job, &types::permissions::Writer::Owner).unwrap();
+    let in_job = format!("rm -rf {}", workspaces.join("site/old-build").display());
+    assert!(matches!(run(&in_job, Origin::System, Door::Schedule, false), Decision::Allow { .. }));
+    assert!(refused(&run(&wiped, Origin::System, Door::Schedule, false)), "outside the job's folder it still may not");
+    // Work that removes nothing is untouched by the limit.
+    assert!(matches!(run("cargo build --release", Origin::Workflow, Door::Workflow, false), Decision::Allow { .. }));
+}
+
 /// A server on this computer that answers every request with a page titled
 /// "Example Domain", and counts the connections it took.
 fn page_server() -> (u16, Arc<std::sync::atomic::AtomicUsize>) {

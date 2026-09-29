@@ -64,6 +64,43 @@ impl CallEffects {
     pub fn unknown() -> Self {
         Self::default()
     }
+
+    /// Every `file:` path named from `folder` when relative, and spelled
+    /// without `.` or `..`, so one file has one name in the created ledger.
+    /// A create of what already exists brings nothing into being: it is
+    /// left out, or a `mkdir -p` of the owner's folder would make it the
+    /// employee's own.
+    pub fn anchored(mut self, folder: &std::path::Path) -> Self {
+        let anchor = |named: String| match named.strip_prefix("file:") {
+            Some(p) => format!("file:{}", lexical(&folder.join(p)).display()),
+            None => named,
+        };
+        self.deletes = self.deletes.into_iter().map(anchor).collect();
+        self.overwrites = self.overwrites.into_iter().map(anchor).collect();
+        self.creates = self
+            .creates
+            .into_iter()
+            .map(anchor)
+            .filter(|named| named.strip_prefix("file:").is_none_or(|p| !std::path::Path::new(p).exists()))
+            .collect();
+        self
+    }
+}
+
+/// `path` without `.` and `..`, read as written (no links followed).
+fn lexical(path: &std::path::Path) -> PathBuf {
+    use std::path::Component;
+    let mut out = PathBuf::new();
+    for c in path.components() {
+        match c {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other),
+        }
+    }
+    out
 }
 
 /// One call, resolved for the permission check from the tool's spec.
@@ -609,5 +646,25 @@ impl MoneyLimit {
             && no_looser(self.per_day_cents, outer.per_day_cents)
             && no_looser(self.per_day_count, outer.per_day_count)
             && no_looser(self.per_counterparty_day_cents, outer.per_counterparty_day_cents)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn anchored_names_each_file_once_and_never_claims_what_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let fx = CallEffects {
+            deletes: vec!["file:nebo".into(), "file:/a/b/../c/.".into(), "command:rm …".into()],
+            overwrites: vec!["file:./r/.".into()],
+            creates: vec!["file:new".into(), format!("file:{}", dir.path().display())],
+            ..CallEffects::unknown()
+        }
+        .anchored(std::path::Path::new("/w"));
+        assert_eq!(fx.deletes, vec!["file:/w/nebo", "file:/a/c", "command:rm …"]);
+        assert_eq!(fx.overwrites, vec!["file:/w/r"]);
+        assert_eq!(fx.creates, vec!["file:/w/new"], "an existing folder is not the employee's to claim");
     }
 }
