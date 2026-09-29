@@ -507,9 +507,9 @@ impl PluginRunner {
             return ToolResult::ok(format!(
                 "{slug} v{version} was already installed; nothing to discover or install. \
                  Its tool is {tool}: its description names the skills that document its \
-                 commands (read one with use_skill). If a result says no account is \
-                 connected, the owner connects one in Settings, Plugins; there is no \
-                 command for that.",
+                 commands (read one with use_skill). When the owner wants its account \
+                 connected, or a result says none is, run its `auth login`: that shows the \
+                 owner the connect card, where they sign in.",
                 tool = crate::plugin_tools::plugin_tool_name(&slug)
             ));
         }
@@ -1138,34 +1138,22 @@ impl PluginRunner {
                     // (its client id was never set), and the terminal result
                     // ended the turn as a red bar showing raw markdown.
 
-                    // Sign-in details typed into Nebo's own dialog (auth type
-                    // env): the card collects no values, so there is nothing
-                    // to raise. Say what is missing as data; the model answers
-                    // the owner in prose and the turn ends normally.
-                    if auth.auth_type == "env" {
-                        let state = if had_account == Some(true) {
-                            "entered for this employee stopped working"
-                        } else {
-                            "have not been entered for this employee"
-                        };
-                        return first.answer(ToolResult::error(format!(
-                            "{display_name} cannot be used: the {display_label} details {state}. \
-                             The owner enters them in {display_name}'s plugin settings. Tell the \
-                             owner that in plain words and stop; do not suggest commands."
-                        )));
-                    }
+                    // Sign-in details typed in (auth type env: a store domain
+                    // and a token) are what the card itself asks for, so the
+                    // card is raised for them too.
 
-                    // Values the login itself needs (an OAuth app's client id
-                    // and secret, declared under `auth.env`) that nothing has
-                    // set: the login exits at once with "... is not set", on
-                    // the card too, so the card is not offered. Read from the
-                    // ONE env computation the login runs with.
+                    // Values a browser login itself needs (an OAuth app's
+                    // client id and secret, declared under `auth.env`) that
+                    // nothing has set: the login exits at once with "... is
+                    // not set", on the card too, so the card is not offered.
+                    // Read from the ONE env computation the login runs with.
                     let login_env = napp::PluginRuntime::new(&pi.slug, binary.clone(), self.plugin_store.clone())
                         .build_env();
                     let mut unset: Vec<&str> = auth
                         .env
                         .keys()
                         .map(String::as_str)
+                        .filter(|_| auth.auth_type != "env")
                         .filter(|key| !login_env.iter().any(|(name, value)| name == key && !value.is_empty()))
                         .collect();
                     unset.sort_unstable();
@@ -1225,6 +1213,45 @@ impl PluginRunner {
         }
 
         first
+    }
+
+    /// The owner asked for this plugin's account to be connected: the ONE
+    /// connect card, where the owner signs in (a browser sign-in, or the
+    /// values a plugin takes typed in). With nobody here to see a card (an
+    /// unattended run), it says who connects it and when.
+    async fn connect_on_request(&self, slug: &str, ctx: &ToolContext) -> ToolResult {
+        let (display_name, display_label) = self.display_names(slug);
+        let agent_id = types::keyparser::extract_agent_id(&ctx.session_key);
+        let interactive = crate::origin::ExecutionMode::from(ctx.origin) == crate::origin::ExecutionMode::Interactive
+            && ctx.ask_channels.is_some();
+        if agent_id.is_empty() || !interactive {
+            return ToolResult::terminal(format!(
+                "I can't sign in to {display_name} on my own, and nobody is here to connect it now. The \
+                 owner connects the {display_label} on the card when they ask for it in a chat with me."
+            ));
+        }
+        let answer = ctx
+            .ask_user(
+                &format!("Connect your {display_label} on the card and I'll carry on from there."),
+                Self::connect_account_widget(slug, &agent_id, &display_label),
+            )
+            .await;
+        match CardAnswer::read(answer.as_deref(), "connected") {
+            CardAnswer::Done => ToolResult::ok(format!(
+                "The {display_label} is connected. Carry on with what the owner asked."
+            )),
+            CardAnswer::Failed(reason) => ToolResult::error(format!(
+                "Connecting the {display_label} failed: {reason}. Tell the owner that error in plain \
+                 words and stop."
+            )),
+            CardAnswer::Skipped => ToolResult::error(format!(
+                "The owner skipped connecting the {display_label}. Say so in plain words; show the card \
+                 again only when they ask."
+            )),
+            CardAnswer::NoAnswer => ToolResult::error(format!(
+                "The {display_label} was not connected: no answer (the owner stopped the run)."
+            )),
+        }
     }
 
     /// The exec budget a call asked for, or the default.
@@ -1341,14 +1368,19 @@ impl PluginRunner {
         // into endless browser/curl/re-auth attempts (see FRAMES.md). Refuse, and
         // make it terminal so the turn ends instead of the agent improvising. Read-only
         // `auth status`/`export` stay allowed (the host uses them to verify auth).
+        // `auth login` / `setup` is how an employee asked to connect the
+        // account ("set up QuickBooks") puts the ONE connect card in front of
+        // the owner, who signs in on it; the employee never signs in itself.
         if args.first().map(|a| a.eq_ignore_ascii_case("auth")) == Some(true) {
             if let Some(sub) = args.get(1).map(|s| s.to_ascii_lowercase()) {
-                if sub == "login" || sub == "logout" || sub == "setup" {
+                if sub == "login" || sub == "setup" {
+                    return Exec::NotReached(self.connect_on_request(&pi.slug, ctx).await);
+                }
+                if sub == "logout" {
                     let (display_name, _) = self.display_names(&pi.slug);
                     return Exec::NotReached(ToolResult::terminal(format!(
-                        "I can't sign in to or re-authenticate {display_name} on my own — that's \
-                         handled for you. If this account needs reconnecting, you can do it \
-                         in this agent's Settings, Plugins."
+                        "I can't sign out of {display_name} on my own. The owner disconnects an \
+                         account in this employee's Settings, Plugins."
                     )));
                 }
             }
@@ -1424,8 +1456,9 @@ impl PluginRunner {
                             )));
                         }
                         let none_msg = format!(
-                            "No {res} account is connected for this agent. Connect one in \
-                             this agent's Settings, Plugins before using {res}.",
+                            "No {res} account is connected for this agent. The owner connects \
+                             one on the connect card (run `auth login` when they ask) or in this \
+                             agent's Settings, Plugins.",
                             res = pi.slug
                         );
                         // doctor and help are how a model checks the state; the
@@ -3182,17 +3215,57 @@ mod budget_and_install_tests {
         );
     }
 
-    /// Sign-in details typed into Nebo's own dialog (auth type env): the card
-    /// collects no values, so the error says what is missing and stays
-    /// non-terminal.
+    /// Sign-in details typed in (auth type env: a store domain and a token)
+    /// are what the card asks for, so an env plugin gets the card too, and
+    /// its unset values never hold the card back (2026-09-29: the store
+    /// manager could only send the owner to Settings).
     #[tokio::test]
-    async fn an_env_plugin_gets_a_plain_error_not_a_card() {
+    async fn an_env_plugin_gets_the_connect_card() {
         let auth = serde_json::json!({"type": "env", "label": "Example login", "env": {"BOOKS_API_KEY": ""}});
         let (r, card, login_ran) = auth_failure_ending(auth, Some("connected")).await;
-        assert!(card.is_none());
+        let card = card.expect("the connect card is shown");
+        assert_eq!(card.widgets.unwrap()[0]["type"], "connect_account");
         assert!(!login_ran);
-        assert!(r.is_error && !r.terminal, "{}", r.content);
-        assert!(r.content.starts_with("Example Books cannot be used: the Example login details have not been entered for this employee."), "{}", r.content);
+        assert!(!r.is_error, "{}", r.content);
+        assert_eq!(r.content.trim(), "ok", "connected retries the command");
+    }
+
+    /// Asked to set an account up, the employee runs `auth login`: the owner
+    /// gets the connect card and no login runs on this machine. With nobody
+    /// to see a card, it says who connects it. `logout` is never the
+    /// employee's.
+    #[tokio::test]
+    async fn auth_login_shows_the_owner_the_connect_card() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (plugin_store, db_store) = stores(tmp.path());
+        install_auth_plugin(tmp.path(), "books", oauth_auth());
+        let tool = std::sync::Arc::new(PluginRunner::new(plugin_store, db_store));
+        let (stream_tx, mut stream_rx) = tokio::sync::mpsc::channel(4);
+        let channels: crate::origin::AskChannels = Default::default();
+        let mut ctx = ToolContext::new(crate::origin::Origin::User);
+        ctx.session_key = "agent:ic:main".into();
+        ctx.stream_tx = Some(stream_tx);
+        ctx.ask_channels = Some(channels.clone());
+        let pi = PluginCall { slug: "books".into(), command: "auth login".into(), ..Default::default() };
+        let t = tool.clone();
+        let running = tokio::spawn(async move { t.handle_exec(&pi, &ctx).await.into_result() });
+        let card = tokio::time::timeout(Duration::from_secs(5), stream_rx.recv()).await.unwrap().expect("a card");
+        let widget = &card.widgets.clone().unwrap()[0];
+        assert_eq!((widget["type"].as_str(), widget["plugin"].as_str(), widget["agentId"].as_str()), (Some("connect_account"), Some("books"), Some("ic")));
+        channels.lock().await.remove(&card.error.clone().unwrap()).unwrap().send("connected".into()).unwrap();
+        let r = running.await.unwrap();
+        assert!(!r.is_error && r.content.contains("is connected"), "{}", r.content);
+        assert!(!tmp.path().join("login-ran").exists(), "no login runs on the bot's machine");
+
+        let unattended = ToolContext { session_key: "agent:ic:workflow:run-1".into(), ..Default::default() };
+        let pi = PluginCall { slug: "books".into(), command: "auth login".into(), ..Default::default() };
+        let r = tool.handle_exec(&pi, &unattended).await.into_result();
+        assert!(r.terminal && r.content.contains("nobody is here to connect it now"), "{}", r.content);
+
+        let pi = PluginCall { slug: "books".into(), command: "auth logout".into(), ..Default::default() };
+        let r = tool.handle_exec(&pi, &unattended).await.into_result();
+        assert!(r.terminal && r.content.starts_with("I can't sign out of Example Books"), "{}", r.content);
+        assert!(!tmp.path().join("login-ran").exists());
     }
 
     /// Unattended (nobody to ask): the result stays terminal, no login runs,

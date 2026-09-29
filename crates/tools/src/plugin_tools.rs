@@ -151,11 +151,11 @@ impl PluginCliTool {
             };
             if auth.profile_dir_env.is_some() {
                 out.push_str(&format!(
-                    "- Each employee uses its own {label} account; with none connected, a connect card appears on first use.\n"
+                    "- Each employee uses its own {label} account. With none connected, a connect card appears on first use; when the owner asks to connect one, run `auth login` to show it.\n"
                 ));
             } else if !runner.plugin_store().is_ready(slug) {
                 out.push_str(&format!(
-                    "- Not connected yet: the owner connects {label} in Settings, Plugins. You can't sign in for them.\n"
+                    "- Not connected yet. When the owner asks to connect {label}, run `auth login`: it shows them the connect card. You never sign in for them.\n"
                 ));
             }
         }
