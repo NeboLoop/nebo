@@ -423,7 +423,10 @@ fn fake_coding_agent() {
                 reply(json!({}));
             }
             Some("session/prompt") => {
-                note(json!({ "prompt": message["params"]["prompt"][0]["text"] }));
+                // The owner's message: the prompt's last block (a fresh
+                // session's first prompt starts with its briefing).
+                let owners = message["params"]["prompt"].as_array().and_then(|p| p.last()).map_or(Value::Null, |b| b["text"].clone());
+                note(json!({ "prompt": owners }));
                 prompts += 1;
                 prompt_id = id.clone();
                 let call = format!("call_{prompts}");
