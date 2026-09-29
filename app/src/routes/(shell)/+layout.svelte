@@ -262,6 +262,17 @@
     if (Object.keys(rest).length === 0) delete working[id];
     else working[id] = rest;
   }
+  /** A thread with a teammate the owner must be able to reach even with the
+   *  section folded: the employee is working in it, it waits on his answer,
+   *  or it is the one open. */
+  function teammateLive(agentId: string, c: EnrichedChat): boolean {
+    return (
+      c.sessionName in (working[agentId] ?? {}) ||
+      $waitingAsks.some((a) => a.sessionKey === c.sessionName) ||
+      cwKey === c.sessionName ||
+      $page.params.threadId === c.id
+    );
+  }
   /** The newest live verb for an employee, capitalized, or '' when idle. */
   function workingLabel(id: string): string {
     const labels = Object.values(working[id] ?? {});
@@ -326,6 +337,7 @@
     return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
   }
   import { devMode } from '$lib/stores/devmode.js';
+  import { waitingAsks } from '$lib/stores/waitingAsks';
   import type { AgentDisplay, EnrichedChat, AgentRun, WorkflowStatsLocal, WorkflowConfig } from '$lib/types/agentPage';
   import { mapWorkflows, saveWorkflows } from '$lib/utils/workflowApi';
   import type { Agent, AgentRunEntry, ActiveAgent, WorkflowRun } from '$lib/api/neboComponents';
@@ -1707,22 +1719,20 @@
               <span class="flex-1"></span>
               <svg class="w-3.5 h-3.5 text-base-content/45 transition-transform {teammatesOpen ? '' : '-rotate-90'}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
             </button>
-            {#if teammatesOpen}
-              {#each apiTeammateThreads[drilledAgent.id] ?? [] as c (c.id)}
-                <a
-                  href={teammateHref(c)}
-                  class="block py-2 px-2.5 mx-1.5 rounded-box {cwKey === c.sessionName
-                    ? 'bg-primary/10 border border-primary/30 shadow-sm'
-                    : 'border border-transparent hover:bg-base-100/70'}"
-                >
-                  <div class="flex items-baseline gap-2">
-                    <span class="text-sm truncate flex-1 min-w-0">{teammateLabel(c, $t)}</span>
-                    <span class="text-xs text-base-content/45 shrink-0">{dayLabel(c.updatedAtEpoch)}</span>
-                  </div>
-                  <div class="text-xs text-base-content/55 truncate">{c.preview}</div>
-                </a>
-              {/each}
-            {/if}
+            {#each (apiTeammateThreads[drilledAgent.id] ?? []).filter((c) => teammatesOpen || teammateLive(drilledAgent.id, c)) as c (c.id)}
+              <a
+                href={teammateHref(c)}
+                class="block py-2 px-2.5 mx-1.5 rounded-box {cwKey === c.sessionName
+                  ? 'bg-primary/10 border border-primary/30 shadow-sm'
+                  : 'border border-transparent hover:bg-base-100/70'}"
+              >
+                <div class="flex items-baseline gap-2">
+                  <span class="text-sm truncate flex-1 min-w-0">{teammateLabel(c, $t)}</span>
+                  <span class="text-xs text-base-content/45 shrink-0">{dayLabel(c.updatedAtEpoch)}</span>
+                </div>
+                <div class="text-xs text-base-content/55 truncate">{c.preview}</div>
+              </a>
+            {/each}
           {/if}
         </div>
       {/if}
