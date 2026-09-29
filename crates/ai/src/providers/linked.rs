@@ -41,6 +41,10 @@
 //! when it sat idle for [`IDLE_ROTATION`]. The owner reads one plain line
 //! when that happens. A cleared conversation starts fresh with no handoff.
 //!
+//! The owner's `/compact` compacts the agent's own session: it is sent as
+//! his message where the agent offers the command (its
+//! `available_commands_update`), and refused plainly where it doesn't.
+//!
 //! A permission request the agent stops for is answered under the
 //! employee's permission mode: in Full Access nothing asks, so Nebo answers
 //! it with the agent's allow option itself (a runtime with no no-prompt mode
@@ -122,6 +126,16 @@ const SUMMARY_CHARS: usize = 6_000;
 /// each message.
 const TAIL_MESSAGES: usize = 6;
 const TAIL_CHARS: usize = 600;
+
+/// The agent's own command that compacts its session: what the owner's
+/// `/compact` runs in a linked employee's conversation.
+const COMPACT: &str = "compact";
+/// How long Nebo waits, after opening a session, for the commands it
+/// offers: an agent says so just after it opens one.
+#[cfg(not(test))]
+const COMMANDS_WAIT: Duration = Duration::from_secs(5);
+#[cfg(test)]
+const COMMANDS_WAIT: Duration = Duration::from_millis(300);
 
 /// Waits between tries to reach the linked bot again after a connection
 /// drops mid-turn (spec §11: from 1 s, capped at 30 s).
@@ -473,7 +487,10 @@ impl Driver<'_> {
     async fn begin(&mut self, chat: Option<db::models::Chat>) -> Result<(), String> {
         self.locate().await?;
         let capabilities = self.initialize().await?;
-        let due = chat.as_ref().and_then(|c| rotation_due(c, now_secs()));
+        // The owner's `/compact` works on the session as it is: it never
+        // rotates it.
+        let compact = is_command(&self.prompt, COMPACT);
+        let due = chat.as_ref().filter(|_| !compact).and_then(|c| rotation_due(c, now_secs()));
         let recorded = chat.and_then(|c| {
             let session = c.linked_chat_id.filter(|id| !id.is_empty())?;
             // A session recorded before its agent was is the employee's.
@@ -486,13 +503,19 @@ impl Driver<'_> {
             // in a fresh one, with the handoff.
             (Some(_), Some(why)) => return self.rotate(why).await,
             (Some((session, unrecorded)), None) => {
-                let resume = capabilities["sessionCapabilities"]["resume"].is_object();
+                // `/compact` loads the session: its record says what
+                // commands it offers.
+                let resume = capabilities["sessionCapabilities"]["resume"].is_object() && !compact;
                 let method = if resume { "session/resume" } else { "session/load" };
                 let params = json!({ "sessionId": session, "cwd": self.cwd(), "mcpServers": [] });
                 let agent = self.agent.clone();
-                let (answer, _) = self.conn.call(Some(&agent), method, params).await.ok_or_else(|| self.offline())?;
+                let (answer, replay) = self.conn.call(Some(&agent), method, params).await.ok_or_else(|| self.offline())?;
                 let opened = answer.map_err(|e| turn::plain(&self.name, &e))?;
                 self.session = session;
+                if compact && !self.offers(COMPACT, &replay).await {
+                    info!(session = %self.session, "linked: the agent offers no compact command");
+                    return Err(format!("{} can't compact its conversation from here.", self.runtime));
+                }
                 if unrecorded {
                     self.record()?;
                 }
@@ -503,6 +526,7 @@ impl Driver<'_> {
                 }
                 opened
             }
+            (None, _) if compact => return Err(format!("{} has nothing to compact yet.", self.runtime)),
             // The chat's first turn, or a cleared conversation: a fresh
             // session with its briefing and no handoff.
             (None, _) => {
@@ -582,6 +606,39 @@ impl Driver<'_> {
             }
         }
         (!parts.is_empty()).then(|| parts.join("\n\n"))
+    }
+
+    /// Whether the session offers the agent's own command `name`, as its
+    /// `available_commands_update` says: read from what opening it replayed,
+    /// or waited for ([`COMMANDS_WAIT`]), since an agent says it just after
+    /// it opens a session.
+    async fn offers(&mut self, name: &str, replay: &[Value]) -> bool {
+        let mut offered = replay.iter().filter_map(|frame| self.commands_in(frame)).last();
+        let deadline = tokio::time::Instant::now() + COMMANDS_WAIT;
+        while offered.is_none() {
+            match tokio::time::timeout_at(deadline, self.conn.next()).await {
+                Ok(Some(frame)) => offered = self.commands_in(&frame),
+                _ => break,
+            }
+        }
+        offered.is_some_and(|names| names.iter().any(|n| n.eq_ignore_ascii_case(name)))
+    }
+
+    /// The commands a frame says this session offers, when it says so.
+    fn commands_in(&self, frame: &Value) -> Option<Vec<String>> {
+        let params = &frame["acp"]["params"];
+        let said = frame["agent"] == self.agent.as_str()
+            && frame["acp"]["method"] == "session/update"
+            && params["sessionId"] == self.session.as_str()
+            && params["update"]["sessionUpdate"] == "available_commands_update";
+        said.then(|| {
+            params["update"]["availableCommands"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|c| c["name"].as_str().map(|n| n.trim_start_matches('/').to_owned()))
+                .collect()
+        })
     }
 
     /// Records this turn on the chat: when it was, and how much of its
@@ -1370,6 +1427,16 @@ fn latest_exchanges(messages: &[Message]) -> Option<String> {
     (!tail.is_empty()).then(|| tail.join("\n\n"))
 }
 
+/// Whether the owner's message is the command `name` (`/name`, then any
+/// words for it).
+fn is_command(message: &str, name: &str) -> bool {
+    message
+        .trim()
+        .strip_prefix('/')
+        .and_then(|rest| rest.split_whitespace().next())
+        .is_some_and(|command| command.eq_ignore_ascii_case(name))
+}
+
 /// Now, in unix seconds.
 fn now_secs() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or_default()
@@ -1600,9 +1667,10 @@ mod tests {
     ///   session answers `Fresh here.`
     /// - `busy`: a call running (`in_progress`), then nothing until
     ///   cancelled: quiet, but working.
-    /// - `rotate`: each new session its own (`s-1`, `s-2`, …); a prompt is
-    ///   answered `In <session>.` with the context it used: most of it for
-    ///   `a long one`, little otherwise.
+    /// - `rotate`: each new session its own (`s-1`, `s-2`, …), offering the
+    ///   commands `compact` and `review`; a prompt is answered `In
+    ///   <session>.` with the context it used: most of it for `a long one`,
+    ///   little otherwise; `/compact` is answered `Compacted.`
     #[test]
     fn fake_acp_agent() {
         use std::io::{BufRead, Write};
@@ -1652,7 +1720,16 @@ mod tests {
                 Some("session/new") if script == "stall" || script == "rotate" => {
                     let made = self::told(std::path::Path::new(&told)).iter().filter(|t| t.get("new").is_some()).count();
                     note(json!({ "new": message["params"]["cwd"] }));
-                    reply(json!({ "sessionId": format!("s-{}", made + 1) }));
+                    let session = format!("s-{}", made + 1);
+                    reply(json!({ "sessionId": session }));
+                    // Just after it opens a session, it says what commands
+                    // the session offers.
+                    if script == "rotate" {
+                        emit(&json!({ "jsonrpc": "2.0", "method": "session/update", "params": { "sessionId": session, "update": {
+                            "sessionUpdate": "available_commands_update",
+                            "availableCommands": [{ "name": "compact", "description": "Compact the conversation" }, { "name": "review", "description": "Review" }],
+                        } } }));
+                    }
                 }
                 Some("session/load") if script == "stall" => {
                     note(json!({ "load": message["params"]["sessionId"] }));
@@ -1668,6 +1745,9 @@ mod tests {
                         update_in(json!({ "sessionUpdate": "tool_call", "toolCallId": "call_1", "title": "Read", "kind": "read", "status": "pending" }));
                     } else if script == "stall" {
                         update_in(json!({ "sessionUpdate": "agent_message_chunk", "content": { "type": "text", "text": "Fresh here." } }));
+                        reply(json!({ "stopReason": "end_turn" }));
+                    } else if text.starts_with("/compact") {
+                        update_in(json!({ "sessionUpdate": "agent_message_chunk", "content": { "type": "text", "text": "Compacted." } }));
                         reply(json!({ "stopReason": "end_turn" }));
                     } else {
                         let used = if text == "a long one" { 150_000 } else { 1_000 };
@@ -2785,6 +2865,34 @@ mod tests {
         let next = collect(r.provider.stream(&req).await.unwrap()).await;
         assert_eq!(texts(&next), "In s-2.");
         assert_eq!(prompt_texts(&told(&r.told))[1], ["BRIEFING", "start over"]);
+    }
+
+    /// The owner's `/compact` compacts the agent's own session where the
+    /// agent offers the command: sent to it as his message, in the same
+    /// session, and its answer streams back.
+    #[tokio::test]
+    async fn compact_runs_in_the_agents_own_session_where_it_offers_it() {
+        let r = remote("rotate").await;
+        collect(r.provider.stream(&briefed(request("hi", "chat-1", &remote_model()))).await.unwrap()).await;
+        let compacted = collect(r.provider.stream(&briefed(request("/compact keep the numbers", "chat-1", &remote_model()))).await.unwrap()).await;
+        assert_eq!(texts(&compacted), "Compacted.");
+        assert_eq!(compacted.last().unwrap().event_type, StreamEventType::Done);
+        let told_now = told(&r.told);
+        assert_eq!(prompt_texts(&told_now).last().unwrap(), &["/compact keep the numbers"]);
+        assert_eq!(news(&told_now), 1, "the same session");
+    }
+
+    /// An agent that offers no compact command: the owner reads plainly that
+    /// it can't, and the agent is sent nothing.
+    #[tokio::test]
+    async fn compact_is_refused_plainly_where_the_agent_offers_none() {
+        let r = remote("turn").await;
+        collect(r.provider.stream(&request("hi", "chat-1", &remote_model())).await.unwrap()).await;
+        let refused = collect(r.provider.stream(&request("/compact", "chat-1", &remote_model())).await.unwrap()).await;
+        assert_eq!(kinds(&refused), vec![StreamEventType::Error, StreamEventType::Done]);
+        assert_eq!(refused[0].error.as_deref(), Some("Claude Code can't compact its conversation from here."));
+        assert!(prompt_texts(&told(&r.told)).iter().all(|p| p.last().map(String::as_str) != Some("/compact")));
+        assert!(is_command("/Compact now", COMPACT) && !is_command("/compaction", COMPACT) && !is_command("compact it", COMPACT));
     }
 
     /// A turn is stalled only when its host says the prompt is open and

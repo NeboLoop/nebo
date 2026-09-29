@@ -317,7 +317,7 @@ async fn linked_provider(state: &AppState) -> Option<LinkedProvider> {
 }
 
 /// A linked employee's brain: its linked bot and agent.
-fn linked_target(state: &AppState, agent_id: &str) -> Option<(String, String)> {
+pub(crate) fn linked_target(state: &AppState, agent_id: &str) -> Option<(String, String)> {
     let model = state
         .store
         .get_entity_config("agent", agent_id)
