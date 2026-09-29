@@ -1175,25 +1175,8 @@ export interface Setting {
 	fullAccess: boolean
 }
 
-export interface ShareChannel {
-	channelId: string
-	channelName: string
-	loopId: string
-	loopName: string
-}
-
-export interface ShareMember {
-	botId: string
-	botName: string
-	loopId: string
-	loopName: string
-	isOnline: boolean
-}
-
-export interface ShareTargetsResponse {
-	connected: boolean
-	channels: ShareChannel[]
-	members: ShareMember[]
+export interface ShareLinkResponse {
+	share?: FileShare
 }
 
 export interface SkillSecretInfo {
@@ -2101,10 +2084,6 @@ export interface NeboAIPhoneAnswerResponse {
 	ok: boolean
 }
 
-export interface NeboAIShareArtifactResponse {
-	shared: boolean
-}
-
 export interface OauthRelayResponse {
 	status: string
 	message: string
@@ -2631,6 +2610,20 @@ export interface EventSourceOption {
 	agentName: string
 	bindingName: string
 	description?: string
+}
+
+export interface FileShare {
+	/** Only for changing or turning the link off; never shown. */
+	id: string
+	/** https://neboai.com/s/<token> */
+	url: string
+	filename: string
+	/** link (anyone with the link), password, or private (only you). */
+	access: 'link' | 'password' | 'private'
+	hasPassword: boolean
+	/** RFC 3339; empty = never. */
+	expiresAt: string
+	createdAt: string
 }
 
 export interface ImportItem {

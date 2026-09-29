@@ -928,6 +928,37 @@ pub struct BotStateCommitResponse {
     pub expires_at: Option<String>,
 }
 
+// ── File share links ─────────────────────────────────────────────────
+
+/// A link that opens one stored file (`/api/v1/shares`). `url` is the link;
+/// `id` is only for changing or turning it off, never shown.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct FileShare {
+    pub id: String,
+    pub url: String,
+    pub filename: String,
+    /// `link` (anyone with the link), `password`, or `private` (only the
+    /// owner and his organization, signed in).
+    pub access: String,
+    pub has_password: bool,
+    /// RFC 3339; empty = never.
+    pub expires_at: String,
+    pub created_at: String,
+}
+
+/// Who can open a link and until when. An empty `password` on a password
+/// link keeps the one it has; an empty `expires_at` means never.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct FileShareSettings {
+    pub access: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub password: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub expires_at: String,
+}
+
 // ── Managed bots (the owner's account) ───────────────────────────────
 
 /// One bot on the owner's account, as `GET /api/v1/manage/bots` lists it.

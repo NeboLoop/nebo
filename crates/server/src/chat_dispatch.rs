@@ -1957,32 +1957,17 @@ pub(crate) async fn resolve_comm_attachments(
     };
 
     for artifact in artifacts {
-        // Map the artifact reference to a local path under <data_dir>/files/.
-        let path = if let Some(rel) = artifact.strip_prefix("/api/v1/files/") {
-            files_dir.join(rel)
-        } else if artifact.starts_with("http://") || artifact.starts_with("https://") {
+        let Some(path) = artifact_local_path(&files_dir, artifact) else {
             // Remote URL we didn't produce locally — skip (can't read bytes).
             warn!(url = %artifact, "skipping remote artifact for comm attachment");
             continue;
-        } else {
-            std::path::PathBuf::from(artifact)
         };
-
-        let data = match tokio::fs::read(&path).await {
-            Ok(b) => b,
-            Err(e) => {
-                warn!(path = %path.display(), error = %e, "failed to read run artifact for attachment");
-                continue;
-            }
-        };
-
         let filename = path
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| "file".to_string());
-        let mime = mime_from_extension(&path);
 
-        match mgr.upload_file(&filename, &mime, data, &[]).await {
+        match upload_local_file(mgr, &path).await {
             Ok(att) => out.push(att),
             Err(e) => {
                 warn!(filename = %filename, error = %e, "failed to upload run artifact attachment");
@@ -2022,6 +2007,37 @@ pub(crate) async fn resolve_comm_attachments(
         }
     }
     out
+}
+
+/// Map a Work-panel artifact reference — a local `/api/v1/files/<name>` URL
+/// or a path — to its file under `files_dir`. A remote URL has no local file.
+pub(crate) fn artifact_local_path(files_dir: &std::path::Path, artifact: &str) -> Option<std::path::PathBuf> {
+    if let Some(rel) = artifact.strip_prefix("/api/v1/files/") {
+        Some(files_dir.join(rel))
+    } else if artifact.starts_with("http://") || artifact.starts_with("https://") {
+        None
+    } else {
+        Some(std::path::PathBuf::from(artifact))
+    }
+}
+
+/// Read one local file and store it through the one upload path
+/// (`POST /api/v1/files/upload`, via the active comm plugin).
+pub(crate) async fn upload_local_file(
+    mgr: &comm::PluginManager,
+    path: &std::path::Path,
+) -> Result<comm::wire::Attachment, String> {
+    let data = tokio::fs::read(path)
+        .await
+        .map_err(|e| format!("read {}: {e}", path.display()))?;
+    let filename = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "file".to_string());
+    let mime = mime_from_extension(path);
+    mgr.upload_file(&filename, &mime, data, &[])
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// Infer a MIME type from a file extension for outbound comm attachments.

@@ -147,6 +147,21 @@ export interface RunDisplay {
 	offline?: boolean
 }`,
 
+	// comm::api_types::FileShare — the hub's link for a shared file.
+	"FileShare": `export interface FileShare {
+	/** Only for changing or turning the link off; never shown. */
+	id: string
+	/** https://neboai.com/s/<token> */
+	url: string
+	filename: string
+	/** link (anyone with the link), password, or private (only you). */
+	access: 'link' | 'password' | 'private'
+	hasPassword: boolean
+	/** RFC 3339; empty = never. */
+	expiresAt: string
+	createdAt: string
+}`,
+
 	"LinkedComputerEntry": `export interface LinkedComputerEntry {
 	/** ` + "`computer:<hostname>`" + `: a key, never a bot. */
 	id: string

@@ -1806,6 +1806,50 @@ impl NeboAIApi {
         self.fetch_raw(&url, FILE_TRANSFER_TIMEOUT).await
     }
 
+    // ── File share links ──────────────────────────────────────────────
+
+    /// The live link for a file this bot shared before, found by what the
+    /// bot calls the file (its Work-panel reference). Zero or one.
+    pub async fn file_shares(&self, source: &str) -> Result<Vec<crate::api_types::FileShare>, CommError> {
+        #[derive(serde::Deserialize)]
+        struct List {
+            #[serde(default)]
+            shares: Vec<crate::api_types::FileShare>,
+        }
+        let path = format!("/api/v1/shares?source={}", urlencoding::encode(source));
+        let list: List = self.do_json(reqwest::Method::GET, &path, None::<&()>).await?;
+        Ok(list.shares)
+    }
+
+    /// Share a file already stored through [`Self::upload_file`] by link.
+    pub async fn create_file_share(
+        &self,
+        file_id: &str,
+        source: &str,
+        settings: &crate::api_types::FileShareSettings,
+    ) -> Result<crate::api_types::FileShare, CommError> {
+        let mut body = serde_json::to_value(settings).map_err(|e| CommError::Other(e.to_string()))?;
+        body["fileId"] = serde_json::Value::String(file_id.to_string());
+        body["source"] = serde_json::Value::String(source.to_string());
+        self.do_json(reqwest::Method::POST, "/api/v1/shares", Some(&body)).await
+    }
+
+    /// Change who can open a link and until when.
+    pub async fn update_file_share(
+        &self,
+        id: &str,
+        settings: &crate::api_types::FileShareSettings,
+    ) -> Result<crate::api_types::FileShare, CommError> {
+        let path = format!("/api/v1/shares/{}", urlencoding::encode(id));
+        self.do_json(reqwest::Method::PUT, &path, Some(settings)).await
+    }
+
+    /// Turn a link off for good.
+    pub async fn revoke_file_share(&self, id: &str) -> Result<(), CommError> {
+        let path = format!("/api/v1/shares/{}", urlencoding::encode(id));
+        self.do_void(reqwest::Method::DELETE, &path, None::<&()>).await
+    }
+
     // ── BotState ────────────────────────────────────────────────────
 
     /// This bot's committed state: the head generation a next commit must
@@ -2093,5 +2137,91 @@ mod tests {
         let desktop = rebuilt_api(url, None);
         let read = desktop.bot_update_status().await;
         assert!(matches!(read, Err(CommError::Http { status: 401, .. })), "{read:?}");
+    }
+
+    /// A hub keeping one file's link: it records each request (method, path,
+    /// body) and answers the way /api/v1/shares does.
+    async fn shares_hub() -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = seen.clone();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut sock, _)) = listener.accept().await else { return };
+                // Read the head, then as much body as it declares.
+                let mut raw_bytes = Vec::new();
+                let mut buf = vec![0u8; 16384];
+                loop {
+                    let n = sock.read(&mut buf).await.unwrap_or(0);
+                    raw_bytes.extend_from_slice(&buf[..n]);
+                    let text = String::from_utf8_lossy(&raw_bytes).to_string();
+                    let Some((head, body)) = text.split_once("\r\n\r\n") else {
+                        if n == 0 { break } else { continue }
+                    };
+                    let want = head
+                        .lines()
+                        .find_map(|l| l.to_ascii_lowercase().strip_prefix("content-length:").map(|v| v.trim().parse::<usize>().unwrap_or(0)))
+                        .unwrap_or(0);
+                    if body.len() >= want || n == 0 {
+                        break;
+                    }
+                }
+                let raw = String::from_utf8_lossy(&raw_bytes).to_string();
+                let line = raw.lines().next().unwrap_or("").to_string();
+                let body = raw.split("\r\n\r\n").nth(1).unwrap_or("").to_string();
+                log.lock().unwrap().push(format!("{line} {body}").trim().to_string());
+                let share = r#"{"id":"s1","url":"https://neboai.com/s/tok","filename":"Go-Live-Checklist.md","access":"password","hasPassword":true,"expiresAt":"","createdAt":"2026-09-28T00:00:00Z"}"#;
+                let (status, out) = if line.starts_with("GET /api/v1/shares?") {
+                    ("200 OK", format!(r#"{{"shares":[{share}]}}"#))
+                } else if line.starts_with("DELETE") {
+                    ("200 OK", r#"{"status":"revoked"}"#.to_string())
+                } else {
+                    ("200 OK", share.to_string())
+                };
+                let resp = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{out}",
+                    out.len()
+                );
+                let _ = sock.write_all(resp.as_bytes()).await;
+            }
+        });
+        (format!("http://{addr}"), seen)
+    }
+
+    /// Finding, creating, changing and turning off a link are one request
+    /// each to /api/v1/shares, with the file's reference as its source.
+    #[tokio::test]
+    async fn file_share_links_speak_the_hub_shares_api() {
+        let (url, seen) = shares_hub().await;
+        let api = NeboAIApi::new(url, "bot".into(), "token".into());
+        let found = api.file_shares("/api/v1/files/Go-Live Checklist.md").await.unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].url, "https://neboai.com/s/tok");
+        assert!(found[0].has_password);
+
+        let settings = crate::api_types::FileShareSettings {
+            access: "password".into(),
+            password: "hunter22".into(),
+            expires_at: String::new(),
+        };
+        let made = api.create_file_share("f1", "/api/v1/files/Go-Live Checklist.md", &settings).await.unwrap();
+        assert_eq!(made.id, "s1");
+        let keep = crate::api_types::FileShareSettings { access: "password".into(), ..Default::default() };
+        api.update_file_share("s1", &keep).await.unwrap();
+        api.revoke_file_share("s1").await.unwrap();
+
+        let seen = seen.lock().unwrap().clone();
+        assert_eq!(seen.len(), 4, "{seen:#?}");
+        assert!(seen[0].starts_with("GET /api/v1/shares?source=%2Fapi%2Fv1%2Ffiles%2FGo-Live%20Checklist.md "), "{}", seen[0]);
+        assert!(seen[1].starts_with("POST /api/v1/shares "), "{}", seen[1]);
+        let created: serde_json::Value = serde_json::from_str(seen[1].split_once("HTTP/1.1 ").unwrap().1).unwrap();
+        assert_eq!(created, serde_json::json!({"access": "password", "password": "hunter22", "fileId": "f1", "source": "/api/v1/files/Go-Live Checklist.md"}));
+        // Saving without a new password sends none, so the hub keeps it.
+        assert!(seen[2].starts_with("PUT /api/v1/shares/s1 "), "{}", seen[2]);
+        let updated: serde_json::Value = serde_json::from_str(seen[2].split_once("HTTP/1.1 ").unwrap().1).unwrap();
+        assert_eq!(updated, serde_json::json!({"access": "password"}));
+        assert!(seen[3].starts_with("DELETE /api/v1/shares/s1 "), "{}", seen[3]);
     }
 }
