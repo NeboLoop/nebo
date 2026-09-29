@@ -12,6 +12,7 @@ pub use backup::Backup;
 pub use pool::create_pool;
 pub use queries::{Addressing, AddressingState};
 pub use queries::agent_slug;
+pub use queries::{AUTOMATION_KEY, is_automation_notice};
 pub use queries::InboundMailRow;
 pub use queries::{Assignment, NewAssignment};
 pub use queries::cron_ref;

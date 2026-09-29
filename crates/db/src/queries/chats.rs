@@ -60,6 +60,20 @@ impl Conversations {
     }
 }
 
+/// The metadata key of an automation's notice in an employee's conversation
+/// ("Automation started", "completed", …): status for the owner, which the
+/// model's view (`get_chat_messages_since_checkpoint`) and memory
+/// extraction leave out.
+pub const AUTOMATION_KEY: &str = "automation";
+
+/// Whether `m` is an automation's notice (`AUTOMATION_KEY`).
+pub fn is_automation_notice(m: &ChatMessage) -> bool {
+    m.metadata
+        .as_deref()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+        .is_some_and(|v| v[AUTOMATION_KEY] == true)
+}
+
 /// A chat's preview line is its last VISIBLE message: not a tool result,
 /// not empty, not a system row, not a hidden system-injected message
 /// (reminders carry metadata {"hidden":true}), not the house talking to
@@ -345,8 +359,9 @@ impl Store {
     /// but before the boundary itself arrived while the summary was written:
     /// the summary never read it, so it loads too, after the boundary. The
     /// owner's marker (`compactBoundary`) never does, and neither does the
-    /// error a failed run left for the owner (`runError`). Rows before the
-    /// boundary stay on disk and in the owner's thread.
+    /// error a failed run left for the owner (`runError`) or an automation's
+    /// notice (`automation`). Rows before the boundary stay on disk and in
+    /// the owner's thread.
     pub fn get_chat_messages_since_checkpoint(&self, chat_id: &str) -> Result<Vec<ChatMessage>, NeboError> {
         let conn = self.conn()?;
         let mut stmt = conn
@@ -355,6 +370,7 @@ impl Store {
                      SELECT rowid AS r, * FROM chat_messages
                      WHERE chat_id = ?1 AND rowid > COALESCE((SELECT compacted_below_rowid FROM chats WHERE id = ?1), 0)
                        AND COALESCE(CASE WHEN json_valid(metadata) THEN json_extract(metadata, '$.runError') END, 0) != 1
+                       AND COALESCE(CASE WHEN json_valid(metadata) THEN json_extract(metadata, '$.automation') END, 0) != 1
                  ),
                  boundary AS (
                      SELECT b.created_at, b.r,
@@ -1640,6 +1656,30 @@ mod tests {
 
         assert_eq!(ids(store.get_chat_messages_since_checkpoint("c1").unwrap()), vec!["m1", "m2"]);
         assert_eq!(ids(store.get_chat_messages("c1").unwrap()), vec!["m1", "e1", "m2"], "the thread keeps it");
+    }
+
+    /// An automation's notice is in the owner's thread, never in the model's
+    /// conversation: a five-minute workflow once left 36,980 of them as
+    /// context (2026-09-29).
+    #[test]
+    fn the_model_never_reads_an_automation_notice() {
+        let (_dir, store) = store();
+        store.create_chat("c1", "Chat").unwrap();
+        let ids = |rows: Vec<crate::models::ChatMessage>| rows.into_iter().map(|m| m.id).collect::<Vec<_>>();
+        store.create_chat_message("m1", "c1", "user", "How did the intake go?", None).unwrap();
+        set_created_at(&store, "m1", 100);
+        let notice = serde_json::json!({ super::AUTOMATION_KEY: true }).to_string();
+        store
+            .create_chat_message("a1", "c1", "assistant", "**Automation failed** — intake-from-email (schedule): no balance", Some(&notice))
+            .unwrap();
+        set_created_at(&store, "a1", 101);
+        store.create_chat_message("m2", "c1", "user", "And now?", None).unwrap();
+        set_created_at(&store, "m2", 102);
+
+        assert_eq!(ids(store.get_chat_messages_since_checkpoint("c1").unwrap()), vec!["m1", "m2"]);
+        let thread = store.get_chat_messages("c1").unwrap();
+        assert_eq!(ids(thread.clone()), vec!["m1", "a1", "m2"], "the thread keeps it");
+        assert!(super::is_automation_notice(&thread[1]) && !super::is_automation_notice(&thread[0]));
     }
 
     /// Rows stored while a checkpoint's summary was written sit before its

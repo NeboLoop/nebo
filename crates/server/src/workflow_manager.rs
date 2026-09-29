@@ -3235,8 +3235,13 @@ async fn workflow_tuning_sweep(
     }
 }
 
+/// An automation's notice in the employee's main conversation: status for
+/// the owner, never the employee's own words. It carries the automation
+/// marker, which the model's view and memory extraction leave out (a
+/// five-minute workflow once left 36,980 of them as context).
 fn post_automation_message(store: &db::Store, hub: &ClientHub, session_key: &str, content: &str) {
     let msg_id = uuid::Uuid::new_v4().to_string();
+    let metadata = serde_json::json!({ db::AUTOMATION_KEY: true }).to_string();
     match store.create_chat_message_for_runner(
         &msg_id,
         session_key,
@@ -3245,7 +3250,7 @@ fn post_automation_message(store: &db::Store, hub: &ClientHub, session_key: &str
         None,
         None,
         None,
-        None,
+        Some(&metadata),
         None,
     ) {
         Ok(_msg) => {
