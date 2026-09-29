@@ -554,22 +554,14 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState, ua: String) {
                                     dispatch_chat(&state, &parsed, &client_id).await;
                                 }
                                 "cancel" => {
-                                    let (outcome, session_id) =
-                                        apply_cancel(&parsed["data"], &state.run_registry).await;
-                                    // Stop means stop: the helpers the session
-                                    // started stop with it, whichever turn
-                                    // started them.
-                                    state.helpers.stop_session(match outcome {
-                                        CancelOutcome::AllFallback { .. } => None,
-                                        _ => Some(session_id.as_str()),
-                                    });
+                                    let (_, session_id) =
+                                        apply_cancel(&parsed["data"], &state.helpers, &state.run_registry).await;
                                     state.hub.broadcast("chat_cancelled", serde_json::json!({
                                         "session_id": session_id,
                                     }));
                                 }
                                 "cancel_all" => {
-                                    state.helpers.stop_session(None);
-                                    let count = state.run_registry.cancel_all().await;
+                                    let count = apply_cancel_all(&state.helpers, &state.run_registry).await;
                                     info!(count, "emergency cancel_all");
                                     state.hub.broadcast("chat_cancelled", serde_json::json!({
                                         "session_id": "all",
@@ -1308,61 +1300,85 @@ async fn handle_builtin_slash(
 enum CancelOutcome {
     /// run_id was present and matched a live run.
     RunId,
-    /// run_id was present but unknown — the chain STOPS here (no fallback):
-    /// naming a specific run and missing it must not kill unrelated runs.
+    /// run_id was present but unknown — the chain STOPS here: naming a
+    /// specific run and missing it stops nothing.
     RunIdMiss,
     /// entity_id was present; `count` runs of that entity were cancelled.
     Entity { count: usize },
-    /// session_id matched a live run.
+    /// The conversation the frame named had a live run, and it stopped.
     Session,
-    /// Nothing matched but runs were active — stop means stop: all cancelled.
-    AllFallback { count: usize },
-    /// Nothing matched and nothing was running.
-    NoActiveRuns,
+    /// The conversation the frame named has nothing running (its turn
+    /// already ended): nothing stops. Stopping everything is the explicit
+    /// `cancel_all` message, never a miss.
+    NothingLive,
 }
 
-/// The cancel precedence chain: run_id > entity_id > session_id > cancel-ALL
-/// fallback. Returns the outcome and the session_id to echo in the
-/// `chat_cancelled` broadcast (missing session_id defaults to "default").
+/// The cancel precedence chain: run_id > entity_id > the conversation the
+/// frame names. The conversation is resolved exactly as a "chat" frame's
+/// turn is (`turn_session_key`), so a Stop naming the same employee,
+/// session and channel as its send reaches the key that turn is registered
+/// under. Whatever stops, the helpers of that one session stop with it.
+/// Returns the outcome and the session key to echo in the `chat_cancelled`
+/// broadcast.
 async fn apply_cancel(
     data: &serde_json::Value,
+    helpers: &agent::harness::delegation::Helpers,
     registry: &crate::run_registry::RunRegistry,
 ) -> (CancelOutcome, String) {
-    let session_id = data["session_id"].as_str().unwrap_or("default").to_string();
+    let frame = ChatPayload::parse(data);
+    let session_key = turn_session_key(&frame.session_id, &frame.agent_id, &frame.channel);
 
-    // Support cancel by run_id, entity_id, or session_id
-    let outcome = if let Some(run_id) = data["run_id"].as_str() {
-        if registry.cancel(run_id).await {
-            info!(run_id, "cancelled run by run_id");
-            CancelOutcome::RunId
-        } else {
-            debug!(run_id, "cancel: run_id not found");
-            CancelOutcome::RunIdMiss
-        }
-    } else if let Some(entity_id) = data["entity_id"].as_str() {
+    if let Some(run_id) = data["run_id"].as_str() {
+        let Some(run) = registry.get(run_id).await else {
+            info!(run_id, "cancel: that run is not running; nothing stopped");
+            return (CancelOutcome::RunIdMiss, session_key);
+        };
+        helpers.stop_session(Some(&run.session_key));
+        registry.cancel(run_id).await;
+        info!(run_id, session = %run.session_key, "cancelled run by run_id");
+        return (CancelOutcome::RunId, run.session_key);
+    }
+    if let Some(entity_id) = data["entity_id"].as_str() {
+        helpers.stop_session(Some(&session_key));
         let count = registry.cancel_by_entity(entity_id).await;
         info!(entity_id, count, "cancelled runs by entity_id");
-        CancelOutcome::Entity { count }
-    } else if registry.cancel_by_session(&session_id).await {
-        info!(session_id = %session_id, "cancelled run by session_id");
+        return (CancelOutcome::Entity { count }, session_key);
+    }
+    let outcome = if crate::chat_dispatch::stop_session(helpers, registry, &session_key).await {
+        info!(session = %session_key, "cancelled the conversation's run");
         CancelOutcome::Session
     } else {
-        // Stop means stop: cancel ALL active runs.
-        let count = registry.cancel_all().await;
-        if count > 0 {
-            warn!(
-                requested = %session_id,
-                "cancel key mismatch — cancelled all {} active runs",
-                count
-            );
-            CancelOutcome::AllFallback { count }
-        } else {
-            debug!(session_id = %session_id, "cancel: no active runs");
-            CancelOutcome::NoActiveRuns
-        }
+        info!(session = %session_key, "cancel: nothing running in that conversation; nothing else stopped");
+        CancelOutcome::NothingLive
     };
+    (outcome, session_key)
+}
 
-    (outcome, session_id)
+/// The owner's emergency stop — the `cancel_all` message, the ONE way to
+/// stop everything: every helper of every session, then every run on the
+/// bot. Returns how many runs were cancelled.
+async fn apply_cancel_all(
+    helpers: &agent::harness::delegation::Helpers,
+    registry: &crate::run_registry::RunRegistry,
+) -> usize {
+    helpers.stop_session(None);
+    registry.cancel_all().await
+}
+
+/// The session a chat frame's turn runs under: the client's session key
+/// when it belongs to the frame's employee (`agent:<id>:…`, e.g. a thread
+/// `agent:<id>:thread:<chat>`), else the employee's conversation on the
+/// frame's channel (`agent:<id>:<channel>`), else the session key as sent.
+/// It is the key the run registry registers the turn under, and the "chat"
+/// and "cancel" frames both resolve through it.
+fn turn_session_key(session_id: &str, agent_id: &str, channel: &str) -> String {
+    if agent_id.is_empty() {
+        return session_id.to_string();
+    }
+    if session_id.starts_with(&types::keyparser::agent_session_prefix(agent_id)) {
+        return session_id.to_string();
+    }
+    types::keyparser::build_agent_session_key(agent_id, channel)
 }
 
 /// The defaulted fields of a "chat" WS payload's `data` object — the pure
@@ -1591,18 +1607,7 @@ async fn dispatch_payload(state: &AppState, payload: ChatPayload, hidden: bool) 
     // Use the client-provided session_id if it already has the correct agent prefix
     // (e.g. "agent:brief:app:doc123" for document-scoped sessions).
     // Otherwise, build one from agent_id + channel.
-    let expected_prefix = if !agent_id.is_empty() {
-        types::keyparser::agent_session_prefix(&agent_id)
-    } else {
-        String::new()
-    };
-    let session_key = if !expected_prefix.is_empty() && session_id.starts_with(&expected_prefix) {
-        session_id
-    } else if !agent_id.is_empty() {
-        types::keyparser::build_agent_session_key(&agent_id, &channel)
-    } else {
-        session_id
-    };
+    let session_key = turn_session_key(&session_id, &agent_id, &channel);
 
     info!(session_key = %session_key, agent_id = %agent_id, channel = %channel, "[THREAD-DEBUG] dispatch_chat final session_key");
 
@@ -2492,10 +2497,15 @@ mod chat_payload_tests {
 #[cfg(test)]
 mod cancel_precedence_tests {
     //! Locks the ws "cancel" precedence chain itself (run_id > entity_id >
-    //! session_id > cancel-ALL fallback). The registry building blocks the
-    //! chain calls are pinned in run_registry's cancel_semantics_tests.
-    use super::{CancelOutcome, apply_cancel};
+    //! the conversation the frame names). A cancel that names nothing live
+    //! stops nothing; stopping everything is the `cancel_all` message alone.
+    //! The registry building blocks the chain calls are pinned in
+    //! run_registry's cancel_semantics_tests.
+    use std::sync::Arc;
+
+    use super::{CancelOutcome, ChatPayload, apply_cancel, apply_cancel_all, turn_session_key};
     use crate::run_registry::{RegisterParams, RunHandle, RunRegistry};
+    use agent::harness::delegation::Helpers;
     use tokio_util::sync::CancellationToken;
 
     async fn reg(
@@ -2517,8 +2527,36 @@ mod cancel_precedence_tests {
             .await
     }
 
+    fn helpers() -> Arc<Helpers> {
+        let path = std::env::temp_dir().join(format!("nebo-cancel-{}.db", uuid::Uuid::new_v4()));
+        let store = Arc::new(db::Store::new(&path.to_string_lossy()).expect("store"));
+        let tools = Arc::new(tools::Registry::new(Arc::new(agent::Check::new(
+            store.clone(),
+        ))));
+        let harness = agent::Harness::new(
+            store.clone(),
+            tools.clone(),
+            Vec::new(),
+            agent::selector::ModelSelector::new(Default::default()),
+            Arc::new(agent::ConcurrencyController::new(Some(2))),
+            Arc::new(napp::HookDispatcher::new()),
+            None,
+            Default::default(),
+            None,
+        );
+        Helpers::new(
+            store,
+            Arc::new(harness.sessions().clone()),
+            tools,
+            Arc::new(harness.clone()),
+            None,
+            None,
+        )
+    }
+
     /// A run_id in the payload wins over entity_id AND session_id — only the
-    /// named run is cancelled even when the other keys would also match.
+    /// named run is cancelled even when the other keys would also match, and
+    /// the broadcast names the session that run belonged to.
     #[tokio::test]
     async fn run_id_tier_wins_over_entity_and_session() {
         let registry = RunRegistry::new();
@@ -2531,16 +2569,15 @@ mod cancel_precedence_tests {
             "entity_id": "a",
             "session_id": "agent:a:thread:c1",
         });
-        let (outcome, session_id) = apply_cancel(&data, &registry).await;
+        let (outcome, session_id) = apply_cancel(&data, &helpers(), &registry).await;
         assert_eq!(outcome, CancelOutcome::RunId);
-        assert_eq!(session_id, "agent:a:thread:c1");
+        assert_eq!(session_id, "agent:a:main");
         assert!(ta.is_cancelled());
         assert!(!tb.is_cancelled());
     }
 
     /// An UNKNOWN run_id stops the chain — it does NOT fall through to
-    /// entity/session/all: naming a specific run and missing it must never
-    /// kill unrelated runs.
+    /// entity/session: naming a specific run and missing it stops nothing.
     #[tokio::test]
     async fn unknown_run_id_stops_the_chain() {
         let registry = RunRegistry::new();
@@ -2552,7 +2589,7 @@ mod cancel_precedence_tests {
             "entity_id": "a",
             "session_id": "agent:a:main",
         });
-        let (outcome, _) = apply_cancel(&data, &registry).await;
+        let (outcome, _) = apply_cancel(&data, &helpers(), &registry).await;
         assert_eq!(outcome, CancelOutcome::RunIdMiss);
         assert!(!token.is_cancelled());
     }
@@ -2575,64 +2612,170 @@ mod cancel_precedence_tests {
             "entity_id": "x",
             "session_id": "agent:y:main",
         });
-        let (outcome, _) = apply_cancel(&data, &registry).await;
+        let (outcome, _) = apply_cancel(&data, &helpers(), &registry).await;
         assert_eq!(outcome, CancelOutcome::Entity { count: 2 });
         assert!(ta.is_cancelled());
         assert!(tb.is_cancelled());
         assert!(!tc.is_cancelled());
     }
 
-    /// With no run_id/entity_id, an exactly-matching session_id cancels that
-    /// session's run and leaves the rest alive.
+    /// A Stop naming a thread by its exact key stops that thread's run and
+    /// nothing else — not the same employee's other conversation, not
+    /// another employee's.
     #[tokio::test]
-    async fn session_tier_fires_when_no_run_or_entity_key() {
+    async fn the_exact_thread_key_stops_that_run_only() {
         let registry = RunRegistry::new();
-        let (ta, tb) = (CancellationToken::new(), CancellationToken::new());
-        let _h1 = reg(&registry, "agent:a:main", "a", &ta).await;
-        let _h2 = reg(&registry, "agent:b:main", "b", &tb).await;
+        let (thread, web, other) = (
+            CancellationToken::new(),
+            CancellationToken::new(),
+            CancellationToken::new(),
+        );
+        let _h1 = reg(&registry, "agent:a:thread:c1", "a", &thread).await;
+        let _h2 = reg(&registry, "agent:a:web", "a", &web).await;
+        let _h3 = reg(&registry, "agent:b:thread:c2", "b", &other).await;
 
-        let data = serde_json::json!({ "session_id": "agent:a:main" });
-        let (outcome, session_id) = apply_cancel(&data, &registry).await;
+        let data = serde_json::json!({ "session_id": "agent:a:thread:c1", "agent_id": "a" });
+        let (outcome, session_id) = apply_cancel(&data, &helpers(), &registry).await;
         assert_eq!(outcome, CancelOutcome::Session);
-        assert_eq!(session_id, "agent:a:main");
-        assert!(ta.is_cancelled());
-        assert!(!tb.is_cancelled());
+        assert_eq!(session_id, "agent:a:thread:c1");
+        assert!(thread.is_cancelled());
+        assert!(!web.is_cancelled());
+        assert!(!other.is_cancelled());
     }
 
-    /// The cancel-ALL fallback ("stop means stop") fires ONLY when no key
-    /// matched anything AND runs are active — every live run is cancelled.
+    /// A Stop sent before the phone knows its conversation's name carries
+    /// the employee and channel its send carried: it resolves to the key
+    /// that send's turn runs under (`agent:<id>:web`), and stops that turn.
     #[tokio::test]
-    async fn fallback_cancels_all_only_when_nothing_matched() {
+    async fn the_employee_and_channel_name_the_conversation_its_send_started() {
         let registry = RunRegistry::new();
+        let (mine, help, other) = (
+            CancellationToken::new(),
+            CancellationToken::new(),
+            CancellationToken::new(),
+        );
+        let _h1 = reg(&registry, "agent:a:web", "a", &mine).await;
+        let _h2 = reg(&registry, "agent:a:help:mail", "a", &help).await;
+        let _h3 = reg(&registry, "agent:b:web", "b", &other).await;
+
+        let data = serde_json::json!({ "agent_id": "a" });
+        let (outcome, session_id) = apply_cancel(&data, &helpers(), &registry).await;
+        assert_eq!(outcome, CancelOutcome::Session);
+        assert_eq!(session_id, "agent:a:web");
+        assert!(mine.is_cancelled());
+        assert!(!help.is_cancelled());
+        assert!(!other.is_cancelled());
+
+        let data = serde_json::json!({ "agent_id": "a", "channel": "help:mail" });
+        let (outcome, _) = apply_cancel(&data, &helpers(), &registry).await;
+        assert_eq!(outcome, CancelOutcome::Session);
+        assert!(help.is_cancelled());
+        assert!(!other.is_cancelled());
+    }
+
+    /// A Stop whose conversation has nothing running (its turn already
+    /// ended, or the key names no live run) stops nothing: another
+    /// employee's work on the bot keeps running.
+    #[tokio::test]
+    async fn a_cancel_naming_nothing_live_stops_nothing() {
+        let registry = RunRegistry::new();
+        let other = CancellationToken::new();
+        let _duty = reg(&registry, "agent:b:thread:c2", "b", &other).await;
+
+        let data = serde_json::json!({ "session_id": "agent:a:thread:ended", "agent_id": "a" });
+        let (outcome, session_id) = apply_cancel(&data, &helpers(), &registry).await;
+        assert!(
+            !other.is_cancelled(),
+            "another employee's run keeps running"
+        );
+        assert_eq!(outcome, CancelOutcome::NothingLive);
+        assert_eq!(
+            session_id, "agent:a:thread:ended",
+            "the broadcast settles the conversation that asked"
+        );
+
+        let (outcome, _) = apply_cancel(
+            &serde_json::json!({ "session_id": "stale-key" }),
+            &helpers(),
+            &registry,
+        )
+        .await;
+        assert_eq!(outcome, CancelOutcome::NothingLive);
+        assert!(!other.is_cancelled(), "a stale key stops nothing either");
+    }
+
+    /// The helpers stop with their session: a Stop stops the helpers its
+    /// conversation started (even when its turn already ended), and another
+    /// conversation's helpers keep running.
+    #[tokio::test]
+    async fn the_helpers_of_another_session_keep_running() {
+        let registry = RunRegistry::new();
+        let helpers = helpers();
+        let mine = helpers.session_token("agent:a:thread:c1").child_token();
+        let theirs = helpers.session_token("agent:b:thread:c2").child_token();
+
+        let data = serde_json::json!({ "session_id": "agent:a:thread:c1", "agent_id": "a" });
+        let (outcome, _) = apply_cancel(&data, &helpers, &registry).await;
+        assert_eq!(outcome, CancelOutcome::NothingLive);
+        assert!(
+            mine.is_cancelled(),
+            "the conversation's helper stops with it"
+        );
+        assert!(
+            !theirs.is_cancelled(),
+            "another conversation's helper runs on"
+        );
+    }
+
+    /// `cancel_all` still stops everything: every run on the bot and every
+    /// session's helpers.
+    #[tokio::test]
+    async fn cancel_all_still_stops_everything() {
+        let registry = RunRegistry::new();
+        let helpers = helpers();
         let (ta, tb) = (CancellationToken::new(), CancellationToken::new());
-        let _h1 = reg(&registry, "agent:a:main", "a", &ta).await;
-        let _h2 = reg(&registry, "agent:b:main", "b", &tb).await;
+        let _h1 = reg(&registry, "agent:a:thread:c1", "a", &ta).await;
+        let _h2 = reg(&registry, "agent:b:web", "b", &tb).await;
+        let (ha, hb) = (
+            helpers.session_token("agent:a:thread:c1").child_token(),
+            helpers.session_token("agent:c:web").child_token(),
+        );
 
-        let data = serde_json::json!({ "session_id": "stale-key" });
-        let (outcome, _) = apply_cancel(&data, &registry).await;
-        assert_eq!(outcome, CancelOutcome::AllFallback { count: 2 });
-        assert!(ta.is_cancelled());
-        assert!(tb.is_cancelled());
+        assert_eq!(apply_cancel_all(&helpers, &registry).await, 2);
+        assert!(ta.is_cancelled() && tb.is_cancelled(), "every run stops");
+        assert!(
+            ha.is_cancelled() && hb.is_cancelled(),
+            "every session's helpers stop"
+        );
     }
 
-    /// With nothing running, a mismatched cancel is a quiet no-op — no
-    /// fallback warn, count zero.
-    #[tokio::test]
-    async fn no_active_runs_is_a_quiet_noop() {
-        let registry = RunRegistry::new();
-        let data = serde_json::json!({ "session_id": "anything" });
-        let (outcome, _) = apply_cancel(&data, &registry).await;
-        assert_eq!(outcome, CancelOutcome::NoActiveRuns);
-    }
-
-    /// A payload with no session_id echoes "default" in the broadcast
-    /// session_id — the wire default the frontend keys on.
-    #[tokio::test]
-    async fn missing_session_id_defaults_for_the_broadcast() {
-        let registry = RunRegistry::new();
-        let (outcome, session_id) = apply_cancel(&serde_json::Value::Null, &registry).await;
-        assert_eq!(outcome, CancelOutcome::NoActiveRuns);
-        assert_eq!(session_id, "default");
+    /// The "cancel" frame resolves its conversation through the same
+    /// function, with the same wire defaults, as the "chat" frame whose turn
+    /// it stops.
+    #[test]
+    fn cancel_resolves_the_key_a_chat_frame_runs_under() {
+        for data in [
+            serde_json::json!({ "agent_id": "a", "session_id": "agent:a:thread:c1" }),
+            serde_json::json!({ "agent_id": "a" }),
+            serde_json::json!({ "agent_id": "a", "channel": "app", "session_id": "agent:a:app:doc1" }),
+            serde_json::json!({ "agent_id": "a", "session_id": "agent:b:thread:c9" }),
+            serde_json::json!({ "session_id": "neboai:dm:conv-1" }),
+            serde_json::Value::Null,
+        ] {
+            let p = ChatPayload::parse(&data);
+            let key = turn_session_key(&p.session_id, &p.agent_id, &p.channel);
+            assert!(!key.is_empty(), "{data}");
+        }
+        assert_eq!(
+            turn_session_key("agent:a:thread:c1", "a", "web"),
+            "agent:a:thread:c1"
+        );
+        assert_eq!(turn_session_key("default", "a", "web"), "agent:a:web");
+        assert_eq!(
+            turn_session_key("agent:b:thread:c9", "a", "web"),
+            "agent:a:web"
+        );
+        assert_eq!(turn_session_key("default", "", "web"), "default");
     }
 }
 
