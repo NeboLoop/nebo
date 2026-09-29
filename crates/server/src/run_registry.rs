@@ -942,9 +942,9 @@ mod tests {
 #[cfg(test)]
 mod cancel_semantics_tests {
     //! Locks the registry semantics the ws.rs "cancel" handler's precedence
-    //! chain (run_id > entity_id > session_id > cancel-ALL fallback) is built
-    //! on. The chain itself is inline in handle_client_ws; these pin the
-    //! building blocks it calls.
+    //! chain (run_id > entity_id > the named conversation) and the
+    //! `cancel_all` message are built on. The chain itself is `apply_cancel`
+    //! in ws.rs; these pin the building blocks it calls.
     use super::*;
 
     async fn reg(
@@ -967,8 +967,7 @@ mod cancel_semantics_tests {
     }
 
     /// cancel(run_id) on an unknown id returns false and cancels nothing —
-    /// the ws handler relies on this to fall through to the next precedence
-    /// tier instead of silently "succeeding".
+    /// a Stop naming a run that already ended stops nothing else.
     #[tokio::test]
     async fn cancel_unknown_run_id_is_a_miss() {
         let registry = RunRegistry::new();
@@ -999,8 +998,8 @@ mod cancel_semantics_tests {
         assert_eq!(registry.cancel_by_entity("nobody").await, 0);
     }
 
-    /// cancel_all (the ws fallback when no key matches — "stop means stop")
-    /// cancels every active run and reports how many.
+    /// cancel_all (the owner's explicit `cancel_all` message, never implied
+    /// by a cancel that misses) cancels every active run and reports how many.
     #[tokio::test]
     async fn cancel_all_stops_everything_and_counts() {
         let registry = RunRegistry::new();

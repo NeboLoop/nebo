@@ -876,11 +876,9 @@ export function createChatController(config: ChatControllerConfig) {
 
     const payload: Record<string, unknown> = {
       prompt: text,
-      agent_id: agentId,
       ...(config.extraPayload?.() || {}),
+      ...turnTarget(),
     };
-    if (activeSessionKey) payload.session_id = activeSessionKey;
-    if (config.channel) payload.channel = config.channel;
     if (options?.attachments?.length) payload.attachments = options.attachments;
     ws.send('chat', payload);
 
@@ -908,11 +906,21 @@ export function createChatController(config: ChatControllerConfig) {
     }, DELIVERY_TIMEOUT_MS);
   }
 
+  /** The conversation this controller's turns run in, named the same way
+   *  on the frame that starts a turn and the frame that stops it: the
+   *  employee, the session key when known, the channel when set. The server
+   *  resolves the run registry's key from exactly these, so a Stop reaches
+   *  the turn its send started and nothing else. */
+  function turnTarget(): Record<string, unknown> {
+    return {
+      agent_id: agentId,
+      ...(activeSessionKey ? { session_id: activeSessionKey } : {}),
+      ...(config.channel ? { channel: config.channel } : {}),
+    };
+  }
+
   function stop() {
-    const payload: Record<string, unknown> = {};
-    if (activeSessionKey) payload.session_id = activeSessionKey;
-    else payload.agent_id = agentId;
-    ws.send('cancel', payload);
+    ws.send('cancel', turnTarget());
     clearDeliveryTimer();
     isLoading = false;
     resetStreaming();
