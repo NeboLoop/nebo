@@ -370,7 +370,9 @@ async fn extract_once(job: &ExtractionJob, cursor: Option<&str>) -> Option<Strin
 /// longer holds (a checkpoint, a new chat, a restart) falls back to the
 /// last exchange: the last owner message and everything after it.
 fn messages_since(all: &[ChatMessage], cursor: Option<&str>) -> Vec<ChatMessage> {
-    let visible = |m: &&ChatMessage| crate::harness::reminders::attachment_kind(m).is_none();
+    // Reminders and an automation's notices are not the conversation.
+    let visible =
+        |m: &&ChatMessage| crate::harness::reminders::attachment_kind(m).is_none() && !db::is_automation_notice(m);
     let start = match cursor.and_then(|c| all.iter().position(|m| m.id == c)) {
         Some(i) => i + 1,
         None => match all.iter().rposition(|m| m.role == "user" && visible(&m)) {

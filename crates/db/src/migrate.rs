@@ -983,6 +983,41 @@ Date
         assert_eq!(before.0, 2, "only the conversations with someone else stay sealed");
     }
 
+    /// The automation notices stored before 0196 carry the automation marker,
+    /// and nothing else does: the employee's own words that merely mention
+    /// an automation, and a row with metadata of its own, keep theirs.
+    #[test]
+    fn stored_automation_notices_are_marked() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let conn = Connection::open(dir.path().join("automation.db")).unwrap();
+        run_migrations_to(&conn, 195).unwrap();
+        conn.execute_batch(
+            r#"INSERT INTO chats (id, title, created_at, updated_at) VALUES ('c', 'c', 0, 0);
+               INSERT INTO chat_messages (id, chat_id, role, content, metadata, created_at) VALUES
+                ('s', 'c', 'assistant', '**Automation started** — intake (schedule)', NULL, 1),
+                ('f', 'c', 'assistant', '**Automation failed** — intake (schedule): no balance', '{"x":1}', 2),
+                ('d', 'c', 'assistant', '**Automation completed** — intake (schedule)
+
+Two leads.', NULL, 3),
+                ('p', 'c', 'assistant', '**Automation paused for your approval** — send (manual): email', NULL, 4),
+                ('w', 'c', 'assistant', 'The **Automation started** line is the schedule firing.', NULL, 5),
+                ('u', 'c', 'user', '**Automation started** — intake (schedule)', NULL, 6);"#,
+        )
+        .unwrap();
+        conn.execute_batch(&extract_goose_up(include_str!("../migrations/0196_automation_notices_not_context.sql"))).unwrap();
+        let marked = |id: &str| -> bool {
+            conn.query_row("SELECT COALESCE(json_extract(metadata, '$.automation'), 0) FROM chat_messages WHERE id = ?1", [id], |r| r.get::<_, i64>(0)).unwrap() == 1
+        };
+        for id in ["s", "f", "d", "p"] {
+            assert!(marked(id), "{id} is a notice");
+        }
+        for id in ["w", "u"] {
+            assert!(!marked(id), "{id} is not");
+        }
+        let kept: i64 = conn.query_row("SELECT json_extract(metadata, '$.x') FROM chat_messages WHERE id = 'f'", [], |r| r.get(0)).unwrap();
+        assert_eq!(kept, 1, "a row's own metadata stays");
+    }
+
     /// The isolation flag becomes the memory mode it behaved as: off is one
     /// conversation, on is separate conversations (so the primary employee,
     /// sealed today, stays exactly as it is). A mode already named is kept,
