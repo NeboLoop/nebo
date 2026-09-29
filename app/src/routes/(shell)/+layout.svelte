@@ -25,6 +25,7 @@
   import AgentSettingsModal from '$lib/components/settings/agent/AgentSettingsModal.svelte';
   import ConfirmModal from '$lib/components/settings/ConfirmModal.svelte';
   import { menuAnchor, deleteChatRow } from '$lib/chat/chatMenu';
+  import { conversationLists, teammateLabel, teammateName } from '$lib/chat/teammates';
   import NewEmployeeModal from '$lib/components/NewEmployeeModal.svelte';
   import { unreadCount } from '$lib/stores/notifications';
   import { slide } from 'svelte/transition';
@@ -91,6 +92,14 @@
   // agent:{target}:coworker:{sender}[:{matter}].
   const cwKey = $derived($page.url.searchParams.get('cw'));
   const closeCoworkerThread = () => setParams((p) => { p.delete('cw'); p.delete('cwf'); });
+  // An employee's thread with a teammate opens in the same view-only
+  // transcript, named by who it is with.
+  function teammateHref(c: EnrichedChat): string {
+    const url = new URL($page.url);
+    url.searchParams.set('cw', c.sessionName);
+    url.searchParams.set('cwf', teammateName(c, $t));
+    return url.pathname + url.search;
+  }
   const cwNames = $derived.by(() => {
     if (!cwKey) return null;
     const parts = cwKey.split(':');
@@ -329,6 +338,10 @@
 
   let allAgents = $state<AgentDisplay[]>([]);
   let apiThreads = $state<Record<string, EnrichedChat[]>>({});
+  // The employee's threads with colleagues and teams, apart from the
+  // owner's conversations above: the collapsed "With teammates" section.
+  let apiTeammateThreads = $state<Record<string, EnrichedChat[]>>({});
+  let teammatesOpen = $state(false);
   let apiRuns = $state<Record<string, AgentRun[]>>({});
   let apiRunsTotal = $state<Record<string, number>>({});
   let apiRunsLoading = $state<Record<string, boolean>>({});
@@ -399,6 +412,12 @@
     }
   }
 
+  function setConversations(id: string, resp: { chats?: EnrichedChat[]; teammates?: EnrichedChat[] }) {
+    const { own, teammates } = conversationLists(resp);
+    apiThreads[id] = own;
+    apiTeammateThreads[id] = teammates;
+  }
+
   // Refresh threads for the currently viewed agent
   async function refreshThreads() {
     const id = $page.params.agentId;
@@ -406,7 +425,7 @@
     try {
       const api = await import('$lib/api/nebo');
       const chatsResp = await api.listAgentChats(id).catch(() => null);
-      if (chatsResp?.chats) apiThreads[id] = chatsResp.chats as EnrichedChat[];
+      if (chatsResp) setConversations(id, chatsResp);
     } catch { /* silent */ }
   }
 
@@ -679,7 +698,7 @@
 
       // Unblock thread list as soon as chats arrive
       const chatsResp = await chatsPromise;
-      if (chatsResp?.chats) apiThreads[id] = chatsResp.chats as EnrichedChat[];
+      if (chatsResp) setConversations(id, chatsResp);
       threadsLoading[id] = false;
 
       // Unblock runs list as soon as runs + stats arrive (don't wait for agent/workflows)
@@ -1674,6 +1693,37 @@
               </a>
             {/if}
           {/each}
+          {#if (apiTeammateThreads[drilledAgent.id] ?? []).length > 0}
+            <!-- The employee's threads with colleagues and teams: work the
+                 owner can read, kept apart from his own conversations and
+                 collapsed at the bottom. A row opens the view-only transcript. -->
+            <button
+              class="w-full flex items-center gap-2 mt-3 mb-1 px-4 bg-transparent border-none cursor-pointer text-left"
+              onclick={() => (teammatesOpen = !teammatesOpen)}
+              aria-expanded={teammatesOpen}
+            >
+              <span class="text-[10px] font-semibold uppercase tracking-wider text-base-content/45">{$t('sidebar.withTeammates')}</span>
+              <span class="text-[10px] font-mono text-base-content/40">{(apiTeammateThreads[drilledAgent.id] ?? []).length}</span>
+              <span class="flex-1"></span>
+              <svg class="w-3.5 h-3.5 text-base-content/45 transition-transform {teammatesOpen ? '' : '-rotate-90'}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
+            </button>
+            {#if teammatesOpen}
+              {#each apiTeammateThreads[drilledAgent.id] ?? [] as c (c.id)}
+                <a
+                  href={teammateHref(c)}
+                  class="block py-2 px-2.5 mx-1.5 rounded-box {cwKey === c.sessionName
+                    ? 'bg-primary/10 border border-primary/30 shadow-sm'
+                    : 'border border-transparent hover:bg-base-100/70'}"
+                >
+                  <div class="flex items-baseline gap-2">
+                    <span class="text-sm truncate flex-1 min-w-0">{teammateLabel(c, $t)}</span>
+                    <span class="text-xs text-base-content/45 shrink-0">{dayLabel(c.updatedAtEpoch)}</span>
+                  </div>
+                  <div class="text-xs text-base-content/55 truncate">{c.preview}</div>
+                </a>
+              {/each}
+            {/if}
+          {/if}
         </div>
       {/if}
       {#if !drilledAgent && sortedTeams.length === 0}

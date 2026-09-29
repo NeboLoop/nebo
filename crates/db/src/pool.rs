@@ -61,8 +61,26 @@ impl r2d2::CustomizeConnection<rusqlite::Connection, rusqlite::Error> for Sqlite
              PRAGMA temp_store = MEMORY;",
             journal_mode()
         ))?;
-        Ok(())
+        register_conversation_kind(conn)
     }
+}
+
+/// `conversation_kind(session_name)`: whose conversation a chat is —
+/// `'owner'`, `'colleague'`, `'team'`, or NULL when it is not a conversation
+/// — so the queries over an employee's chats ask the key classifier
+/// (`types::keyparser::conversation_of`) rather than keep their own copy of
+/// its rules.
+fn register_conversation_kind(conn: &rusqlite::Connection) -> Result<(), rusqlite::Error> {
+    use rusqlite::functions::FunctionFlags;
+    conn.create_scalar_function(
+        "conversation_kind",
+        1,
+        FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
+        |ctx| {
+            let key: Option<String> = ctx.get(0)?;
+            Ok(key.as_deref().and_then(types::keyparser::conversation_of).map(|c| c.kind()))
+        },
+    )
 }
 
 #[cfg(test)]

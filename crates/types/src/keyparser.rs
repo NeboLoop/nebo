@@ -210,6 +210,62 @@ pub fn agent_session_prefix(agent_id: &str) -> String {
     format!("agent:{}:", agent_id)
 }
 
+/// Channel segment of an employee's threads with its colleagues:
+/// `agent:<id>:coworker:<ctx>`. `<ctx>` is the other employee's id (`main`
+/// for the primary one), optionally followed by a matter, or a matter alone
+/// when an isolated colleague asked; `team:<team>` is the employee's seat in
+/// a team.
+pub const COWORKER_CHANNEL: &str = "coworker";
+
+/// Whose conversation one of an employee's sessions is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Conversation {
+    /// The owner's own: `agent:<id>:web`, `agent:<id>:thread:<chat>`, a
+    /// phone, loop or channel conversation.
+    Owner,
+    /// A thread with a colleague (`agent:<id>:coworker:<ctx>`). `with` is the
+    /// first segment of `<ctx>`: the colleague's id, `main`, or the matter an
+    /// isolated colleague asked about.
+    Colleague { with: String },
+    /// The employee's seat in a team (`agent:<id>:coworker:team:<team>`).
+    Team { team_id: String },
+}
+
+impl Conversation {
+    /// The wire name: `owner`, `colleague` or `team`.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Conversation::Owner => "owner",
+            Conversation::Colleague { .. } => "colleague",
+            Conversation::Team { .. } => "team",
+        }
+    }
+}
+
+/// Classify an employee's session key: the ONE decision of which of its
+/// chats are the owner's conversations, which are its threads with
+/// colleagues or teams, and which are not conversations at all (`None`):
+/// internal help surfaces (`agent:<id>:help:…`), a workflow run's activity
+/// sessions (`agent:<id>:workflow:…`), and keys that are not an employee's.
+/// The conversation list, the latest conversation and the count all read it.
+pub fn conversation_of(key: &str) -> Option<Conversation> {
+    let info = parse_session_key(key);
+    if info.agent_id.is_empty() {
+        return None;
+    }
+    match info.channel.as_str() {
+        "help" | "workflow" => None,
+        COWORKER_CHANNEL => {
+            let ctx = info.rest.split_once(':').map(|(_, ctx)| ctx).unwrap_or("");
+            Some(match ctx.split_once(':') {
+                Some(("team", team_id)) => Conversation::Team { team_id: team_id.to_string() },
+                _ => Conversation::Colleague { with: ctx.split(':').next().unwrap_or("").to_string() },
+            })
+        }
+        _ => Some(Conversation::Owner),
+    }
+}
+
 /// The workflow-id namespace for an agent's inline workflow bindings.
 /// DELIBERATELY a separate helper even though the literal shape (`agent:<id>`)
 /// collides with a channel-less agent session key: a workflow id is NOT a
@@ -290,6 +346,30 @@ mod tests {
         assert_eq!(extract_agent_id("agent:cos-uuid:workflow:run-42"), "cos-uuid");
         assert_eq!(extract_agent_id("main"), "");
         assert_eq!(extract_agent_id("acp:xyz"), "");
+    }
+
+    /// The owner's conversations, an employee's threads with colleagues and
+    /// teams, and sessions that are not conversations, told apart by key.
+    #[test]
+    fn conversation_of_tells_the_owners_from_colleagues_and_teams() {
+        for owner in ["agent:cc:web", "agent:cc:thread:9f1c", "agent:cc:phone", "agent:cc:workflow-review"] {
+            assert_eq!(conversation_of(owner), Some(Conversation::Owner), "{owner}");
+        }
+        let colleague = |with: &str| Some(Conversation::Colleague { with: with.to_string() });
+        assert_eq!(conversation_of("agent:cc:coworker:top-coder"), colleague("top-coder"));
+        assert_eq!(conversation_of("agent:cc:coworker:main"), colleague("main"));
+        assert_eq!(conversation_of("agent:top-coder:coworker:cc:case-42"), colleague("cc"));
+        assert_eq!(conversation_of("agent:cc:coworker:case-42"), colleague("case-42"));
+        assert_eq!(
+            conversation_of("agent:cc:coworker:team:dev-1"),
+            Some(Conversation::Team { team_id: "dev-1".to_string() })
+        );
+        for none in ["agent:cc:help:workflow", "agent:cc:workflow:run-1:step::0", "team:dev-1", "proof:dm:x", ""] {
+            assert_eq!(conversation_of(none), None, "{none}");
+        }
+        assert_eq!(conversation_of("agent:cc:coworker:team:dev-1").map(|c| c.kind()), Some("team"));
+        assert_eq!(conversation_of("agent:cc:coworker:x").map(|c| c.kind()), Some("colleague"));
+        assert_eq!(conversation_of("agent:cc:web").map(|c| c.kind()), Some("owner"));
     }
 
     #[test]

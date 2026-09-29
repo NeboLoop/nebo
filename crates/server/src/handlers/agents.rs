@@ -4549,7 +4549,13 @@ async fn get_cached_plugins_auth_status(state: &AppState) -> Vec<serde_json::Val
 
 // ── Agent Multi-Chat ─────────────────────────────────────────────────────────
 
-/// GET /api/v1/agents/{id}/chats — list all chats for an agent.
+/// GET /api/v1/agents/{id}/chats — an employee's conversations. `chats` is
+/// the owner's own, newest first: the list the app shows, and the one it
+/// opens the latest of. `teammates` is the employee's threads with its
+/// colleagues and its teams — work the owner can read but did not have —
+/// each naming who is on the other side (`with`). Every row says which it is
+/// (`kind`: `owner`, `colleague` or `team`), from the ONE key classifier
+/// (`types::keyparser::conversation_of`).
 pub async fn list_agent_chats(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -4573,8 +4579,13 @@ pub async fn list_agent_chats(
         .unwrap_or_default();
 
     // Backfill: legacy agent chats store messages under the session key as chat_id
-    // but have no `chats` row. If we found no chats but messages exist, create the row.
-    if enriched_chats.is_empty() {
+    // but have no `chats` row. If the owner has no conversation listed but
+    // messages exist, create the row.
+    let owners = |chat: &db::models::Chat| {
+        chat.session_name.as_deref().and_then(types::keyparser::conversation_of)
+            == Some(types::keyparser::Conversation::Owner)
+    };
+    if !enriched_chats.iter().any(|(chat, _, _)| owners(chat)) {
         let legacy_chat_id = if active_chat_id.is_empty() {
             &legacy_session_key
         } else {
@@ -4595,37 +4606,79 @@ pub async fn list_agent_chats(
 
     // Format response
     let now = chrono::Utc::now().timestamp();
-    let enriched: Vec<serde_json::Value> = enriched_chats
-        .iter()
-        .map(|(chat, msg_count, last_content)| {
-            // The enriched row's last content is the fallback for a thread
-            // whose newest rows could not be read.
-            let status = thread_status(&state.store, &chat.id);
-            let preview = status.preview.unwrap_or_else(|| chat_preview(last_content));
-            let updated_at_relative = format_relative_time(chat.updated_at, now);
-            serde_json::json!({
-                "id": chat.id,
-                "name": chat.title,
-                "title": chat.title,
-                // A linked coding employee's conversation: where it works.
-                "folder": chat.linked_folder,
-                "preview": preview,
-                "restarted": status.restarted,
-                "updatedAt": updated_at_relative,
-                "messages": msg_count,
-                "createdAt": chat.created_at,
-                "updatedAtEpoch": chat.updated_at,
-                "sessionName": chat.session_name,
-            })
-        })
-        .collect();
+    let mut chats = Vec::new();
+    let mut teammates = Vec::new();
+    for (chat, msg_count, last_content) in &enriched_chats {
+        let Some(conversation) =
+            chat.session_name.as_deref().and_then(types::keyparser::conversation_of)
+        else {
+            continue;
+        };
+        // The enriched row's last content is the fallback for a thread
+        // whose newest rows could not be read.
+        let status = thread_status(&state.store, &chat.id);
+        let preview = status.preview.unwrap_or_else(|| chat_preview(last_content));
+        let updated_at_relative = format_relative_time(chat.updated_at, now);
+        let with = match conversation {
+            types::keyparser::Conversation::Owner => None,
+            _ => Some(teammate_name(&state, &conversation, chat)),
+        };
+        let row = serde_json::json!({
+            "id": chat.id,
+            "name": chat.title,
+            "title": chat.title,
+            "kind": conversation.kind(),
+            "with": with,
+            // A linked coding employee's conversation: where it works.
+            "folder": chat.linked_folder,
+            "preview": preview,
+            "restarted": status.restarted,
+            "updatedAt": updated_at_relative,
+            "messages": msg_count,
+            "createdAt": chat.created_at,
+            "updatedAtEpoch": chat.updated_at,
+            "sessionName": chat.session_name,
+        });
+        match conversation {
+            types::keyparser::Conversation::Owner => chats.push(row),
+            _ => teammates.push(row),
+        }
+    }
 
-    let total = enriched.len();
+    let total = chats.len();
     Ok(Json(serde_json::json!({
-        "chats": enriched,
+        "chats": chats,
+        "teammates": teammates,
         "activeChatId": active_chat_id,
         "total": total,
     })))
+}
+
+/// Who is on the other side of an employee's thread with a colleague or a
+/// team, by name: the team's, or the colleague's (`main` is the primary
+/// employee). A thread an isolated colleague keyed by its matter names no
+/// one in its key, and its route recorded who asked. The chat's own title
+/// when neither is on record.
+fn teammate_name(
+    state: &AppState,
+    conversation: &types::keyparser::Conversation,
+    chat: &db::models::Chat,
+) -> String {
+    use types::keyparser::Conversation;
+    let named = match conversation {
+        Conversation::Owner => None,
+        Conversation::Team { team_id } => state.store.get_team(team_id).ok().flatten().map(|t| t.name),
+        Conversation::Colleague { with } => {
+            let id = if with == "main" { tools::team_tool::PRIMARY_AGENT_ID } else { with.as_str() };
+            state.store.get_agent(id).ok().flatten().map(|a| a.name).or_else(|| {
+                match crate::reply_route::of(state, chat.session_name.as_deref().unwrap_or_default()) {
+                    Some(crate::reply_route::ReplyRoute::Coworker(route)) => Some(route.from_name),
+                    _ => None,
+                }
+            })
+        }
+    };
+    named.filter(|n| !n.is_empty()).unwrap_or_else(|| chat.title.clone())
 }
 
 /// Strip HTML tags and markdown markers to a plain-text thread-list preview snippet.

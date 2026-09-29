@@ -22,15 +22,22 @@
     targetName,
   }: { threadKey: string; senderName: string; targetName: string } = $props();
 
+  const REPLY_FROM = '[Reply from ';
   let messages: ChatMessage[] = $state([]);
   let loading = $state(true);
 
   onMount(async () => {
     try {
       const resp = await getSessionMessages(encodeURIComponent(threadKey), 200);
-      messages = (resp?.messages ?? []).filter(
-        (m) => m.role === 'user' || m.role === 'assistant'
-      );
+      // The sender's own record of an exchange stores the colleague's reply
+      // as a "[Reply from <name>]" system row: it is the other side's words.
+      messages = (resp?.messages ?? []).flatMap((m) => {
+        if (m.role === 'user' || m.role === 'assistant') return [m];
+        if (m.role === 'system' && m.content.startsWith(REPLY_FROM)) {
+          return [{ ...m, content: m.content.slice(m.content.indexOf('\n') + 1) }];
+        }
+        return [];
+      });
     } catch {
       messages = [];
     } finally {
