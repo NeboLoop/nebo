@@ -937,6 +937,14 @@ async fn a_team_conversation_stays_in_the_team_thread() {
         !listed(&lead_chats).iter().any(|s| s.contains(":coworker:team:")),
         "the lead's own chats are its conversations with the owner, not the team's: {lead_chats}"
     );
+    let lead_seat = lead_chats["teammates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["sessionName"] == seat(&lead).as_str())
+        .unwrap_or_else(|| panic!("the lead's seat is listed apart, as the team's: {lead_chats}"));
+    assert_eq!(lead_seat["kind"], "team", "{lead_seat}");
+    assert_eq!(lead_seat["with"], "Proof Marketing & Growth", "{lead_seat}");
 
     // The owner asks one member by name: it answers in the team, briefed with
     // the conversation so far from the team thread.
@@ -1402,6 +1410,88 @@ async fn a_coworkers_message_is_read_as_a_coworkers() {
         assert_eq!(meta["coworker"], "Proof 54 Buyer", "{text}: {meta}");
         assert!(meta.get(db::OWNER_MARK).is_none(), "{text}: never the owner's word");
     }
+}
+
+/// A colleague's message is the colleague's thread, never the owner's chat
+/// (2026-09-28: the owner opened his coding employee and landed in "Are you
+/// still there", another employee's message to it). The exchange is stored
+/// only in the two employees' threads with each other. The employee's list
+/// keeps the owner's conversations apart from them. The employee opens on
+/// the owner's conversation, and a loop DM continues it, even when the
+/// colleague's thread is newer. The reply comes back to the conversation
+/// the sender asked from.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_colleagues_thread_is_never_the_employees_own_chat() {
+    let nebo = session().await;
+    let sender = nebo.hire("Proof Peer Sender", json!({ "workflows": {} })).await;
+    let coder = nebo.hire("Proof Peer Coder", json!({ "workflows": {} })).await;
+    let rules: Vec<Rule> = vec![
+        Box::new(|t| t.opener().contains("OWNER-PEER-HELLO").then(|| Step::say("PEER-OWNER-ANSWER: on it."))),
+        Box::new(|t| t.opener().contains("MARK-PEER").then(|| Step::say("PEER-REPLY: yes, still here."))),
+    ];
+    let rig = Rig::new(&nebo, rules).await;
+    let own = format!("agent:{coder}:web");
+    let colleague = format!("agent:{coder}:coworker:{sender}");
+    let mirror = format!("agent:{sender}:coworker:{coder}");
+    let asked_from = format!("agent:{sender}:web");
+
+    // The owner talks to the coder in its own chat first.
+    rig.owner_writes(&own, &coder, None, "OWNER-PEER-HELLO fix the login bug").await;
+    rig.until(30, "the coder answers the owner", || {
+        rig.thread(&own).iter().any(|m| m.role == "assistant" && m.content.contains("PEER-OWNER-ANSWER"))
+    })
+    .await;
+
+    // Later, a colleague messages the coder from its own chat. Rows are
+    // stamped in whole seconds: wait one out, so the colleague's thread is
+    // strictly the newer one.
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    rig.open_session(&asked_from);
+    let ctx = tools::ToolContext::new(Origin::User).with_session(asked_from.clone(), "s1");
+    let sent = nebo
+        .tool(&ctx, "send_message", json!({"to": "Proof Peer Coder", "message": "MARK-PEER Are you still there?"}))
+        .await;
+    assert!(!sent.is_error, "{}", sent.content);
+    rig.until(30, "the reply comes back to the conversation the sender asked from", || {
+        rig.notifications(&asked_from).iter().any(|n| n.contains("PEER-REPLY"))
+    })
+    .await;
+
+    // The exchange is in the colleague thread, and only there.
+    let exchange = rig.thread(&colleague);
+    assert!(exchange.iter().any(|m| m.role == "user" && m.content.contains("MARK-PEER")), "the message is in the colleague thread");
+    assert!(exchange.iter().any(|m| m.role == "assistant" && m.content.contains("PEER-REPLY")), "and the reply");
+    assert!(
+        !rig.thread(&own).iter().any(|m| m.content.contains("MARK-PEER") || m.content.contains("PEER-REPLY")),
+        "nothing of the exchange is in the owner's chat: {:?}",
+        rig.thread(&own).iter().map(|m| m.content.clone()).collect::<Vec<_>>()
+    );
+    assert!(rig.thread(&mirror).iter().any(|m| m.content.contains("MARK-PEER")), "the sender keeps its record");
+
+    // The coder's list: the owner's conversation, and apart from it the
+    // colleague's thread, naming who it is with. Newest is the colleague's,
+    // and the owner's is still the one the coder opens on.
+    let session_names = |rows: &Value| -> Vec<String> {
+        rows.as_array().unwrap().iter().map(|c| c["sessionName"].as_str().unwrap_or("").to_string()).collect()
+    };
+    let listed = nebo.get_ok(&format!("/agents/{coder}/chats")).await;
+    assert_eq!(session_names(&listed["chats"]), vec![own.clone()], "{listed}");
+    assert_eq!(listed["chats"][0]["kind"], "owner", "{listed}");
+    assert_eq!(session_names(&listed["teammates"]), vec![colleague.clone()], "{listed}");
+    assert_eq!(listed["teammates"][0]["kind"], "colleague", "{listed}");
+    assert_eq!(listed["teammates"][0]["with"], "Proof Peer Sender", "{listed}");
+    assert_eq!(
+        nebo.state.store.get_latest_agent_chat(&coder).unwrap().and_then(|c| c.session_name).as_deref(),
+        Some(own.as_str()),
+        "the coder opens on the owner's conversation"
+    );
+    assert_eq!(crate::resolve_agent_session_key(&nebo.state, &coder), own, "a loop DM continues the owner's conversation");
+
+    // The sender's list: its own chat, and its record of the exchange apart.
+    let listed = nebo.get_ok(&format!("/agents/{sender}/chats")).await;
+    assert!(!session_names(&listed["chats"]).contains(&mirror), "{listed}");
+    assert_eq!(session_names(&listed["teammates"]), vec![mirror.clone()], "{listed}");
+    assert_eq!(listed["teammates"][0]["with"], "Proof Peer Coder", "{listed}");
 }
 
 /// Review 5.2: a turn woken by a notification continues the conversation

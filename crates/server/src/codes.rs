@@ -2587,11 +2587,17 @@ async fn reconcile_agents(state: &AppState) -> Result<(), NeboError> {
     // Per-chat agent spaces: publish each agent's desktop chat list so every
     // chat gets its own loop conversation (the remote emulates the local
     // Threads tab). Additive server-side — loop-created chats are untouched.
+    // Only the owner's own conversations: an employee's thread with a
+    // colleague or a team is not one the owner talks in.
     for (local_id, loop_agent_id) in &chat_sync_targets {
         let prefix = types::keyparser::agent_session_prefix(local_id);
         let chats = match state.store.list_chats_by_session_enriched(&prefix) {
             Ok(rows) => rows
                 .into_iter()
+                .filter(|(chat, _, _)| {
+                    chat.session_name.as_deref().and_then(types::keyparser::conversation_of)
+                        == Some(types::keyparser::Conversation::Owner)
+                })
                 .map(|(chat, _, _)| comm::api::AgentChatSync {
                     chat_id: chat.id,
                     title: chat.title,

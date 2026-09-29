@@ -1857,6 +1857,7 @@ export interface ListAgentChannelsResponse {
 
 export interface ListAgentChatsResponse {
 	chats: EnrichedChat[]
+	teammates: EnrichedChat[]
 	activeChatId: string
 	total: number
 }
@@ -2595,6 +2596,10 @@ export interface EnrichedChat {
 	id: string
 	name: string
 	title: string
+	/** Whose conversation it is: the owner's, or the employee's thread with a colleague or a team. */
+	kind: 'owner' | 'colleague' | 'team'
+	/** Who is on the other side of a colleague or team thread; null for the owner's. */
+	with: string | null
 	preview: string
 	updatedAt: string
 	messages: number

@@ -65,3 +65,4 @@ fixtures:
   - ../fixtures/staffed-company/conversation/sc60-the-lead-passes-the-owners-request-on-with-his-authority.yaml
   - ../fixtures/staffed-company/conversation/sc61-the-lead-passes-the-owners-request-to-a-linked-teammate.yaml
   - ../fixtures/staffed-company/conversation/sc62-the-primary-employee-passes-the-owners-request-on.yaml
+  - ../fixtures/staffed-company/conversation/sc63-a-colleagues-thread-is-never-the-employees-own-chat.yaml

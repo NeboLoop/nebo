@@ -18,6 +18,11 @@ export interface EnrichedChat {
 	id: string
 	name: string
 	title: string
+	/** Whose conversation it is: the owner's, or the employee's thread with a
+	 *  colleague or a team. */
+	kind: 'owner' | 'colleague' | 'team'
+	/** Who is on the other side of a colleague or team thread; null for the owner's. */
+	with: string | null
 	preview: string
 	/** The thread's newest visible message is the restart note: `preview` is the
 	 *  last real status before it. */
@@ -150,6 +155,7 @@ export interface AgentPageContext {
 	readonly runsAgentId: string
 	readonly agent: AgentDisplay | undefined
 	readonly agentColor: Record<string, string> | null
+	/** The owner's conversations with this employee. */
 	readonly threads: EnrichedChat[]
 	readonly isThreadsLoading: boolean
 	readonly agentsLoading: boolean

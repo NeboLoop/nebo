@@ -21,7 +21,7 @@ use tools::coworker::{Authority, CoworkerDelivery, CoworkerMessage, CoworkerRail
 /// Channel segment for coworker threads: `agent:{id}:coworker:{ctx}`. The 4th
 /// segment is the deliberate isolation context the runner's canonical
 /// `session_key_context` picks up.
-pub(crate) const COWORKER_CHANNEL: &str = "coworker";
+pub(crate) const COWORKER_CHANNEL: &str = types::keyparser::COWORKER_CHANNEL;
 
 /// Server-side implementation of [`tools::coworker::CoworkerRail`] — dispatches
 /// through the ONE chat pipeline (`run_chat_events`) on the comm lane.

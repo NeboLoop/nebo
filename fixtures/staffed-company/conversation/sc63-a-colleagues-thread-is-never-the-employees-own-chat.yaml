@@ -1,0 +1,13 @@
+id: sc63-a-colleagues-thread-is-never-the-employees-own-chat
+name: "SC63 — A colleague's thread is never the employee's own chat"
+description: |
+  The owner talks to an employee in its own chat, then a colleague messages that employee. The
+  exchange is stored only in the two employees' threads with each other, never in the owner's
+  chat. The employee's conversation list keeps the owner's conversations apart from its threads
+  with teammates, and names who each is with. The employee still opens on the owner's
+  conversation, and a loop DM still continues it, although the colleague's thread is newer. The
+  reply comes back to the conversation the sender asked from (2026-09-28: the owner opened his
+  coding employee and landed in "Are you still there", another employee's message to it).
+target_component: staffed-company
+proof: staffed_proof::conversation::a_colleagues_thread_is_never_the_employees_own_chat
+conversation: []

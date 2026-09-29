@@ -11,7 +11,8 @@ package main
 //  4. If the type isn't in neboComponents.ts, add it to extraInterfaces below.
 var typeOverrides = map[string]string{
 	// ── Agent chats (enriched with preview, message count, relative time) ──
-	"list_agent_chats.chats": "EnrichedChat[]",
+	"list_agent_chats.chats":     "EnrichedChat[]",
+	"list_agent_chats.teammates": "EnrichedChat[]",
 	"edit_team.team":        "Team",
 
 	// ── Active agents ──
@@ -198,6 +199,10 @@ export interface RunDisplay {
 	id: string
 	name: string
 	title: string
+	/** Whose conversation it is: the owner's, or the employee's thread with a colleague or a team. */
+	kind: 'owner' | 'colleague' | 'team'
+	/** Who is on the other side of a colleague or team thread; null for the owner's. */
+	with: string | null
 	preview: string
 	updatedAt: string
 	messages: number
