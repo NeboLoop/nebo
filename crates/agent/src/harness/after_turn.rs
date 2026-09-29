@@ -6,10 +6,11 @@
 //! memories it finds. There is no pre-gate. It is skipped when the employee already saved memory itself
 //! during those messages. One pass runs per session at a time; a turn that
 //! ends meanwhile becomes the trailing pass, which starts where the running
-//! one stopped. A pass covers its own turn and never a message after it: a
-//! pass that starts late, while the owner's next message is already being
-//! answered, would otherwise cover half of the next turn and leave its
-//! other half to a pass with too little to read.
+//! one stopped. A pass covers its own turn, through the turn's last reply,
+//! and never a message after it: the owner's next message can land while
+//! the turn's tail still runs or before its pass starts, and a pass that
+//! took it would cover half of the next turn and leave the other half to a
+//! pass with too little to read.
 
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
@@ -200,8 +201,8 @@ pub(crate) struct MemoryExtraction<'a> {
 struct ExtractionJob {
     sessions: SessionManager,
     session_id: String,
-    /// The last message of the turn this pass is for, as the turn ended:
-    /// where the pass stops. `None` when the conversation held nothing.
+    /// The last reply of the turn this pass is for, as the turn ended:
+    /// where the pass stops. `None` when the conversation held no reply.
     through: Option<String>,
     providers: Arc<RwLock<Vec<Arc<dyn Provider>>>>,
     store: Arc<Store>,
@@ -254,7 +255,11 @@ impl MemoryExtraction<'_> {
         if self.skip_memory || self.providers.read().await.is_empty() {
             return;
         }
-        let through = self.sessions.get_messages(session_id).ok().and_then(|all| all.last().map(|m| m.id.clone()));
+        let through = self
+            .sessions
+            .get_messages(session_id)
+            .ok()
+            .and_then(|all| all.iter().rev().find(|m| m.role == "assistant").map(|m| m.id.clone()));
         let job = ExtractionJob {
             sessions: self.sessions.clone(),
             session_id: session_id.to_string(),
@@ -730,6 +735,32 @@ mod tests {
         assert_eq!(prompts.len(), 1, "the second turn gets its own extraction");
         assert!(prompts[0].contains("mediation is set for the 9th") && prompts[0].contains("Noted."), "{}", prompts[0]);
         assert!(!prompts[0].contains("invoices go out"), "the first turn is behind the cursor");
+    }
+
+    /// The owner's next message can land while the turn's tail still runs,
+    /// before its pass is even scheduled: the pass stops at the turn's last
+    /// reply, so that message is left to the turn that answers it.
+    #[tokio::test]
+    async fn a_message_during_the_turns_tail_is_the_next_turns() {
+        let f = Fixture::new().await;
+        f.say("user", "Remember that invoices go out on the 1st.", None);
+        let store_call = serde_json::json!([{
+            "id": "call-1",
+            "name": "remember",
+            "input": {"key": "invoice/day", "value": "Invoices go out on the 1st"}
+        }]);
+        f.say("assistant", "", Some(store_call));
+        f.say("assistant", "Saved.", None);
+        // The owner's next message lands before the turn hands off its pass.
+        f.say("user", "Also, the mediation is set for the 9th.", None);
+        f.end_turn(None).await;
+        assert!(f.prompts().is_empty(), "the first turn wrote memory itself");
+
+        f.say("assistant", "Noted.", None);
+        f.end_turn(None).await;
+        let prompts = f.prompts();
+        assert_eq!(prompts.len(), 1, "the second turn gets its own extraction");
+        assert!(prompts[0].contains("mediation is set for the 9th") && prompts[0].contains("Noted."), "{}", prompts[0]);
     }
 
     /// Extraction reads the messages and the agreed goal; attachment rows

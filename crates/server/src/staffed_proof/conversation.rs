@@ -373,6 +373,12 @@ impl<'a> Rig<'a> {
         }
     }
 
+    /// Whether a turn is running on session `key`: its loop, or the tail
+    /// after its last reply.
+    pub(super) fn busy(&self, key: &str) -> bool {
+        self.nebo.state.harness.is_session_busy(key)
+    }
+
     /// The notification rows of session `key`.
     fn notifications(&self, key: &str) -> Vec<String> {
         self.thread(key)
