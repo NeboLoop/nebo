@@ -1250,6 +1250,13 @@ async fn handle_builtin_slash(
         }
 
         "/compact" => {
+            // A linked employee's agent keeps its own conversation: the owner
+            // compacts that, so `/compact` goes to it as his message, and the
+            // linked provider runs it where the agent offers it or says
+            // plainly that it can't.
+            if !agent_id.is_empty() && crate::company::linked_target(state, agent_id).is_some() {
+                return None;
+            }
             let session_key = if !agent_id.is_empty() {
                 types::keyparser::build_agent_session_key(agent_id, channel)
             } else {

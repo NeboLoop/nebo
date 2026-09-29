@@ -9,6 +9,7 @@ pub mod conversation;
 pub mod delegation;
 pub mod events;
 pub mod goal;
+pub mod linked_handoff;
 pub mod memory_context;
 pub mod memory_save;
 pub mod model_call;

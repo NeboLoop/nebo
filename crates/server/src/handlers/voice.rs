@@ -2739,6 +2739,9 @@ mod voice_prompt_tests {
             linked_chat_id: None,
             linked_agent_id: None,
             linked_folder: None,
+            linked_used_tokens: None,
+            linked_window_tokens: None,
+            linked_turn_at: None,
         }
     }
 

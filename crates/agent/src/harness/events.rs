@@ -783,6 +783,27 @@ const TEAM_WORDS: ListingWords = ListingWords {
     removed: "These teams no longer exist:",
 };
 
+/// The employees listing: every enabled employee but the one named
+/// `except`, with what it does.
+pub fn employees_listing(store: &db::Store, except: &str) -> Listing {
+    store
+        .list_agents(100, 0)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|a| a.is_enabled == 1 && a.name != except)
+        .map(|a| (a.name, a.description))
+        .collect()
+}
+
+/// One team's entry in the teams listing: its name, and what it owns, its
+/// lead and its members (`team_line`).
+pub fn team_entry(store: &db::Store, team: &db::Team) -> (String, String) {
+    let roster = tools::team::member_roster(store, team);
+    let lead = tools::team::lead_of(team).and_then(|id| roster.iter().find(|(m, _)| *m == id).map(|(_, name)| name.as_str()));
+    let members: Vec<String> = roster.iter().map(|(_, name)| name.clone()).collect();
+    (team.name.clone(), team_line(&team.mission, lead, &members))
+}
+
 /// One team's roster line: what it owns, its lead and its members, by name.
 pub fn team_line(mission: &str, lead: Option<&str>, members: &[String]) -> String {
     let owns = match mission.trim() {

@@ -636,6 +636,39 @@ pub struct ChatRequest {
     /// without asking). `None` for calls outside a run. Never serialized.
     #[serde(skip)]
     pub permission_mode: Option<types::permissions::Mode>,
+    /// What Nebo tells a fresh session of a linked employee's agent, for the
+    /// linked provider (built by the harness, which holds Nebo's copy of the
+    /// conversation and the company around the employee). `None` for every
+    /// other call. Never serialized.
+    #[serde(skip)]
+    pub linked_context: Option<LinkedContextRef>,
+}
+
+/// What Nebo tells a fresh session of a linked employee's agent: Nebo keeps
+/// the conversation, and the agent keeps one working stretch of it in its
+/// session. Built by the harness; runtime-neutral text, so the same words
+/// could start any agent on the conversation.
+#[async_trait]
+pub trait LinkedContext: Send + Sync {
+    /// The briefing a fresh session starts with: the company, the
+    /// employee's name and job here, its teams, the teammates it can reach
+    /// and how, and the owner.
+    fn briefing(&self) -> String;
+    /// The conversation so far, before the owner's newest message, as
+    /// Nebo's checkpoint summary writes it (the owner's asks, what was done,
+    /// the files and values involved, the decisions, what is open). `None`
+    /// when nothing came before it, or the summary could not be written.
+    async fn summary(&self) -> Option<String>;
+}
+
+/// A [`LinkedContext`] riding on a request.
+#[derive(Clone)]
+pub struct LinkedContextRef(pub Arc<dyn LinkedContext>);
+
+impl std::fmt::Debug for LinkedContextRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("LinkedContext")
+    }
 }
 
 /// The run's ask channels, keyed by request id; the value is the answer (one
@@ -666,6 +699,7 @@ impl ChatRequest {
             chat_id: String::new(),
             ask_channels: None,
             permission_mode: None,
+            linked_context: None,
         }
     }
 }

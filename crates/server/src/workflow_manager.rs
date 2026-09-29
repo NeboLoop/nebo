@@ -2387,6 +2387,7 @@ async fn review_failed_workflow_run(
         chat_id: String::new(),
         ask_channels: None,
         permission_mode: None,
+        linked_context: None,
         tool_choice: Default::default(),
         messages: vec![ai::Message {
             role: "user".into(),
@@ -3087,6 +3088,7 @@ async fn workflow_tuning_sweep(
             chat_id: String::new(),
             ask_channels: None,
             permission_mode: None,
+            linked_context: None,
             tool_choice: Default::default(),
             messages: vec![ai::Message {
                 role: "user".into(),
