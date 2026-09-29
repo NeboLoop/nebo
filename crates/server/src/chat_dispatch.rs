@@ -19,7 +19,6 @@ use tokio::sync::mpsc;
 use tools::Origin;
 
 use crate::handlers::chat::PendingAsk;
-use crate::handlers::ws::ClientHub;
 use crate::run_registry::{RegisterParams, RunHandle, RunRegistry};
 use crate::state::AppState;
 
@@ -28,22 +27,20 @@ use crate::state::AppState;
 /// the voice bridge): the question is recorded on the run so a late reader
 /// (thread open, socket reconnect) finds it, then the same `ask_request` the
 /// app renders live is broadcast. Returns the recorded question.
-pub(crate) async fn announce_ask(
-    hub: &ClientHub,
-    registry: &RunRegistry,
-    session_key: &str,
-    event: &ai::StreamEvent,
-) -> PendingAsk {
+/// It is then surfaced wherever the owner is (`handlers::asks`): his live
+/// call is told, his phone is pushed a link to it, every pinned bar shows it.
+pub(crate) async fn announce_ask(state: &AppState, session_key: &str, event: &ai::StreamEvent) -> PendingAsk {
     let ask = PendingAsk {
         request_id: event.error.clone().unwrap_or_default(),
         prompt: event.text.clone(),
         widgets: event.widgets.clone(),
         created_at: chrono::Utc::now().timestamp(),
     };
-    if !registry.park_ask(session_key, ask.clone()).await {
+    if !state.run_registry.park_ask(session_key, ask.clone()).await {
         warn!(session_key, "ask request on a session with no registered run: the card will not survive a reload");
     }
-    hub.broadcast("ask_request", ask.event_payload(session_key));
+    state.hub.broadcast("ask_request", ask.event_payload(session_key));
+    crate::handlers::asks::question_raised(state, session_key, &ask).await;
     ask
 }
 
@@ -83,7 +80,9 @@ pub(crate) async fn answer_ask(state: &AppState, request_id: &str, value: String
             }),
         );
     }
-    tx.send(value).is_ok()
+    let delivered = tx.send(value).is_ok();
+    crate::handlers::asks::question_settled(state, request_id).await;
+    delivered
 }
 
 /// The ONE way an approval card is answered, whichever surface the answer
@@ -174,17 +173,14 @@ pub(crate) struct TurnEnd<'a> {
 /// `chat_complete` is broadcast on the
 /// identity payload plus the run's artifacts and typed stop reason. Carries
 /// NO message content: streamed blocks finalize in place on the frontend.
-pub(crate) async fn finish_turn(
-    hub: &ClientHub,
-    run: &RunHandle,
-    ask_channels: &tools::AskChannels,
-    end: TurnEnd<'_>,
-) {
+pub(crate) async fn finish_turn(state: &AppState, run: &RunHandle, end: TurnEnd<'_>) {
     if let Some(ask) = run.take_pending_ask() {
         // Dropping the sender wakes a tool still parked on it (`ask_user`
         // reads the closed channel as "no answer"): nothing hangs on a
-        // question the run can no longer act on.
-        ask_channels.lock().await.remove(&ask.request_id);
+        // question the run can no longer act on, and nothing shows it as
+        // waiting any more.
+        state.ask_channels.lock().await.remove(&ask.request_id);
+        crate::handlers::asks::question_settled(state, &ask.request_id).await;
     }
     // An approval the run asked for stays open past the turn when something
     // still waits on it (a suggested goal is decided whenever the owner gets
@@ -195,7 +191,7 @@ pub(crate) async fn finish_turn(
         payload["stop_reason"] = serde_json::json!(reason);
         payload["stop_notice"] = serde_json::json!(notice);
     }
-    hub.broadcast("chat_complete", payload);
+    state.hub.broadcast("chat_complete", payload);
 }
 
 /// The metadata key on the row a failed run leaves in its conversation.
@@ -553,16 +549,25 @@ fn remember_input(state: &AppState, config: &ChatConfig) {
 }
 
 pub async fn run_chat(state: &AppState, config: ChatConfig) {
-    // The owner's message answers the question open in this conversation,
-    // since typing a reply is the natural way to answer: the parked call
-    // gets it as the answer and the turn goes on. It starts no turn of its own.
+    // The owner's message may answer the question waiting in this
+    // conversation, since typing a reply is the natural way to answer: when
+    // the one decision reads it as the answer, the parked call gets it and
+    // the turn goes on, and it starts no turn of its own. Anything else is a
+    // new message (live 2026-09-29: "Which conversation is the AI" was taken
+    // as the answer to a yes-or-no question); the question stays open and
+    // pinned.
     let owner_writes = config.origin == Origin::User
         && config.audience.is_none()
         && !config.hidden_prompt
         && !config.prompt.trim().is_empty();
     if owner_writes
-        && let Some(ask) = state.run_registry.pending_ask_for_session(&config.session_key).await
-        && answer_ask(state, &ask.request_id, config.prompt.clone()).await
+        && crate::handlers::asks::answered_by_message(
+            state,
+            &config.session_key,
+            &config.prompt,
+            agent::harness::permissions::AnsweredVia::Chat,
+        )
+        .await
     {
         info!(session = %config.session_key, "the owner's message answered the open question");
         return;
@@ -583,8 +588,6 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
     let pending_comm_approvals = state.pending_comm_approvals.clone();
     let ask_state = state.clone();
     let approval_channels = state.approval_channels.clone();
-    let ask_channels = state.ask_channels.clone();
-    let run_registry = state.run_registry.clone();
     let live_calls = state.live_calls.clone();
     let approvals_agent_id = config.agent_id.clone();
     let approvals_origin = crate::handlers::ws::EventOrigin {
@@ -1216,7 +1219,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                             }
                         }
                         StreamEventType::AskRequest => {
-                            let ask = announce_ask(&hub, &run_registry, &sid, &event).await;
+                            let ask = announce_ask(&ask_state, &sid, &event).await;
                             let request_id = ask.request_id.as_str();
                             // Forward the question to the loop/channel
                             // conversation — without this the run blocks on a
@@ -1680,9 +1683,8 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                 // + status line so the UI can render e.g. "stopped: repeated
                 // tool calls" as status, never prose.
                 finish_turn(
-                    &hub,
+                    &ask_state,
                     &_run_handle,
-                    &ask_channels,
                     TurnEnd {
                         payload: ws_payload!(),
                         artifacts: &chat_artifacts,
@@ -1745,9 +1747,8 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                 );
                 record_run_error(&harness, &sid, &error);
                 finish_turn(
-                    &hub,
+                    &ask_state,
                     &_run_handle,
-                    &ask_channels,
                     TurnEnd { payload: ws_payload!(), artifacts: &[], control_stop: None },
                 )
                 .await;

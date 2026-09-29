@@ -3866,50 +3866,44 @@ async fn try_handle_comm_control(
         tracing::info!(session = %session_key, cancelled, "inbound comm stop command");
         return true;
     }
+    // A question the run is parked on, or a permission ask, waiting in this
+    // conversation: the reply is read by the one decision
+    // (`handlers::asks`). An answer answers it through the ask's one answer
+    // path; anything else is an ordinary message and the question stays
+    // open, never a guessed answer (live 2026-09-29: a new question was
+    // taken as an answer).
     let pending = {
-        let mut asks = state.pending_comm_asks.lock().await;
-        asks.get_mut(session_key).and_then(|q| q.pop_front())
+        let asks = state.pending_comm_asks.lock().await;
+        asks.get(session_key).and_then(|q| q.front().cloned())
     };
     if let Some(request_id) = pending {
-        if chat_dispatch::answer_ask(state, &request_id, answer.to_string()).await {
-            tracing::info!(session = %session_key, "inbound comm message resolved pending ask");
-            return true;
+        match answer_waiting(state, session_key, &request_id, answer).await {
+            Some(true) => {
+                pop_comm_ask(state, session_key, &request_id).await;
+                tracing::info!(session = %session_key, "inbound comm message resolved pending ask");
+                return true;
+            }
+            // Answered elsewhere first, or its run is gone: the message is an ordinary one.
+            None => pop_comm_ask(state, session_key, &request_id).await,
+            Some(false) => return false,
         }
-        // Asker already gone (timeout/cancel) — treat as a normal message.
     }
-    // A pending relayed APPROVAL for this session: the message is the decision.
     let pending_approval = {
         let approvals = state.pending_comm_approvals.lock().await;
         approvals.get(session_key).cloned()
     };
-    // A permission ask: the reply is the owner's answer, through the ask's
-    // one answer path. An ask settled elsewhere first leaves this message an
-    // ordinary one.
     if let Some(crate::state::CommApproval::Ask(ask_id)) = &pending_approval {
-        state.pending_comm_approvals.lock().await.remove(session_key);
-        let ask = match state.permission_asks.get(ask_id) {
-            Ok(Some(ask)) if ask.status == agent::harness::permissions::AskStatus::Open => ask,
-            _ => return false,
-        };
-        let card = crate::handlers::permissions::card(state, &ask);
-        let answer = crate::permission_asks::reply_answer(&card, answer);
-        return match state.permission_asks.answer(
-            ask_id,
-            answer,
-            agent::harness::permissions::AnsweredVia::Chat,
-        ) {
-            Ok(_) => {
-                tracing::info!(
-                    session = %session_key,
-                    answer = answer.as_str(),
-                    "inbound comm message answered the ask"
-                );
+        return match answer_waiting(state, session_key, ask_id, answer).await {
+            Some(true) => {
+                state.pending_comm_approvals.lock().await.remove(session_key);
+                tracing::info!(session = %session_key, "inbound comm message answered the ask");
                 true
             }
-            Err(e) => {
-                tracing::info!(session = %session_key, error = ?e, "the relayed ask was not answered by this message");
+            None => {
+                state.pending_comm_approvals.lock().await.remove(session_key);
                 false
             }
+            Some(false) => false,
         };
     }
     // A card the run waits on: the same decision strings the desktop
@@ -3935,6 +3929,40 @@ async fn try_handle_comm_control(
         }
     }
     false
+}
+
+/// The owner's reply `words` in conversation `session_key`, read against the
+/// ask `id` waiting there. `Some(true)` answered it; `Some(false)` is not an
+/// answer, and it stays open; `None` when it no longer waits (answered
+/// elsewhere, or its run ended).
+async fn answer_waiting(state: &AppState, session_key: &str, id: &str, words: &str) -> Option<bool> {
+    use crate::handlers::asks::NotAnswered;
+    let waiting = crate::handlers::asks::waiting(state, Some(session_key)).await;
+    let w = waiting.iter().find(|w| w.card.id == id)?;
+    match crate::handlers::asks::answer_in_words(
+        state,
+        state.decide.as_deref(),
+        w,
+        words,
+        words,
+        agent::harness::permissions::AnsweredVia::Chat,
+    )
+    .await
+    {
+        Ok(_) => Some(true),
+        Err(NotAnswered::Settled) => None,
+        Err(why) => {
+            tracing::info!(session = %session_key, ask = %id, ?why, "the reply is an ordinary message; the ask stays open");
+            Some(false)
+        }
+    }
+}
+
+/// Take a relayed question off the conversation's queue.
+async fn pop_comm_ask(state: &AppState, session_key: &str, request_id: &str) {
+    if let Some(q) = state.pending_comm_asks.lock().await.get_mut(session_key) {
+        q.retain(|id| id != request_id);
+    }
 }
 
 /// Channel variant of the control check: channel session keys are per-agent

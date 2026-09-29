@@ -2533,7 +2533,11 @@ pub(crate) mod tests {
     /// what everyone is doing now, get_employee reads one employee's current
     /// work, and send_message takes a linked employee's `conversation`
     /// (list_employees 231, get_employee 303, send_message 1,371): 16,402.
-    const CORE_DEFINITION_CHARS_BUDGET: usize = 16_402;
+    /// The owner, 2026-09-29, after an employee on Full Access asked him to
+    /// confirm a plan it chose for his clear instruction and the question
+    /// froze his voice call: ask_owner says it is for real ambiguity only
+    /// and never asks a clear instruction back (ask_owner 759, +111): 16,513.
+    const CORE_DEFINITION_CHARS_BUDGET: usize = 16_513;
 
     #[tokio::test]
     async fn the_always_loaded_set_stays_within_its_budget() {

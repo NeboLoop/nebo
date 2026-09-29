@@ -501,6 +501,9 @@ async fn the_point_person_relays_into_a_linked_employees_conversation_and_hears_
         .await
         .expect("the call heard it")
         .unwrap();
+    let crate::handlers::voice::CallNews::Reply(on_call) = on_call else {
+        panic!("the call was told {on_call:?}, not the reply");
+    };
     assert!(on_call.contains("ANSWER: 3 files left."), "{on_call}");
 
     // Into the conversation it already had: one session, both prompts in it.

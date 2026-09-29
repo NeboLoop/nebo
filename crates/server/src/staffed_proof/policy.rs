@@ -534,8 +534,8 @@ async fn the_phones_default_is_the_employees_mode() {
 /// from the owner's loop or phone conversation carries the ask's card into
 /// that conversation too, as main relayed its approvals, and the owner's
 /// next message there answers it through the ask's one answer path. A reply
-/// that isn't an answer is a No; an ask answered elsewhere first leaves the
-/// reply an ordinary message.
+/// that isn't an answer is an ordinary message and the ask stays open; an
+/// ask answered elsewhere first leaves the reply an ordinary message.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_ask_reaches_the_owners_conversation_and_their_reply_answers_it() {
     use types::permissions::{Rule, RuleKey, Scope, Writer};
@@ -620,11 +620,14 @@ async fn an_ask_reaches_the_owners_conversation_and_their_reply_answers_it() {
         ("allowed", Some("this_once"))
     );
 
-    // A reply that isn't an answer is a No.
+    // A reply that isn't an answer answers nothing: it is an ordinary
+    // message, and the ask stays open.
     let (session_key, ask, _) = park("unclear").await;
     assert!(
-        crate::try_handle_comm_control(&nebo.state, &session_key, "what is this for?", &none).await
+        !crate::try_handle_comm_control(&nebo.state, &session_key, "what is this for?", &none).await
     );
+    assert_eq!(card(&ask).status, "open");
+    assert!(crate::try_handle_comm_control(&nebo.state, &session_key, "No", &none).await, "its answer still answers it");
     assert_eq!(card(&ask).answer.as_deref(), Some("no"));
 
     // Answered in the Inbox first: the reply is an ordinary message.

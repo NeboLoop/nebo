@@ -229,13 +229,13 @@ async fn an_unanswered_ask_never_expires_and_is_reminded() {
 /// On the owner's own call the employee asks aloud and his spoken yes is the
 /// answer (live 2026-09-28: told nothing about where to answer, the employee
 /// sent the owner, on his phone, to "the desktop app", then to support).
-/// The parked step tells the model to ask him now; the voice model hears
-/// the ask's id beside the run's reply. An id the voice model made up
-/// answers nothing and names the real one. His answer counts only after he
-/// spoke and only in the call's own conversation; then it goes through the
-/// ask's one answer path (answered via voice), the server's engine resumes
-/// the parked call once, and the employee hears it ran. A client can't
-/// claim a spoken answer.
+/// The parked step tells the model to ask him now; the call is told the
+/// ask with its real id. An id the voice model made up answers nothing and
+/// names the real one (live 2026-09-29: "0", four times). His answer counts
+/// only after he spoke; his words ("yes") are read as one of the card's
+/// answers by the one decision, then go through the ask's one answer path
+/// (answered via voice), the server's engine resumes the parked call once,
+/// and the employee hears it ran. A client can't claim a spoken answer.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn owners_call_ask_is_asked_aloud_and_answered_by_voice() {
     let nebo = session().await;
@@ -245,34 +245,36 @@ async fn owners_call_ask_is_asked_aloud_and_answered_by_voice() {
     let mut ctx = ToolContext::new(Origin::User).with_session(&key, "voice");
     ctx.door = Door::Voice;
     let asks = &nebo.state.permission_asks;
+    let state = &nebo.state;
+    let (jev, _) = crate::handlers::asks::tests::table_jev(&[("yes", "option_2")]).await;
 
     // The step parks, and the model is told to ask the owner now, by voice.
-    let since = chrono::Utc::now().timestamp();
     let parked = nebo.tool(&ctx, &names[1], json!({ "to": "+15550142" })).await;
     let ask_id = parked.parked_ask.clone().expect("the step parks on the owner");
     assert!(parked.content.contains("ask them now, in one short spoken question"), "{}", parked.content);
     assert!(parked.content.contains("Their spoken yes or no on this call is the answer"), "{}", parked.content);
     assert!(!parked.content.to_lowercase().contains("desktop"), "{}", parked.content);
-    let waiting = crate::handlers::voice::waiting_on_owner(asks, &key, since);
-    assert!(waiting.contains(&format!("ask_id \"{ask_id}\"")), "the voice model hears the id: {waiting}");
-    let created = asks.get(&ask_id).unwrap().unwrap().created_at;
-    let yes = json!({ "ask_id": ask_id, "answer": "this_once" });
+    let waiting = crate::handlers::asks::waiting(state, Some(&key)).await;
+    let w = waiting.iter().find(|w| w.card.id == ask_id).expect("the ask waits on the owner");
+    assert_eq!(w.card.kind, "permission");
+    assert_eq!(w.card.options, ["Allow always", "This once", "No"]);
+    assert_eq!(w.card.values, ["allow_always", "this_once", "no"], "what a tap on each sends");
+    let on_call = crate::handlers::asks::on_call(&w.card);
+    assert!(on_call.contains(&format!("ask_id \"{ask_id}\"")), "the call hears the id: {on_call}");
+    let created = w.card.created_at;
+    let yes = json!({ "ask_id": ask_id, "answer": "yes" });
 
-    // An id the voice model made up (live 2026-09-28: "0") answers nothing,
-    // and the voice model hears the real one.
-    let invented = json!({ "ask_id": "0", "answer": "this_once" });
-    let refused = crate::handlers::voice::answer_by_voice(asks, &key, &invented, created + 5);
-    assert!(refused.starts_with("No ask 0 is waiting in this conversation"), "{refused}");
-    assert!(refused.contains(&format!("ask_id \"{ask_id}\"")), "the real id is named: {refused}");
+    // An id the voice model made up answers nothing, and the voice model
+    // hears the real one.
+    let invented = json!({ "ask_id": "0", "answer": "yes" });
+    let (ok, refused) = crate::handlers::voice::answer_ask_on_call(state, Some(&jev), &invented, "yes", created + 5).await;
+    assert!(!ok && refused.starts_with("No ask 0 is waiting"), "{refused}");
+    assert!(refused.contains(&format!("ask {ask_id}:")), "the real id is named: {refused}");
     assert_eq!(asks.get(&ask_id).unwrap().unwrap().status, agent::harness::permissions::AskStatus::Open);
     // Not yet: the owner hasn't spoken since it was asked.
-    let early = crate::handlers::voice::answer_by_voice(asks, &key, &yes, created);
-    assert!(early.contains("hasn't answered since this was asked"), "{early}");
-    // Not from another conversation.
-    let elsewhere = format!("agent:{agent}:thread:other");
-    let other = crate::handlers::voice::answer_by_voice(asks, &elsewhere, &yes, created + 5);
-    assert!(other.contains("Nothing is waiting"), "{other}");
-    // Not from a client claiming a spoken answer.
+    let (ok, early) = crate::handlers::voice::answer_ask_on_call(state, Some(&jev), &yes, "yes", created).await;
+    assert!(!ok && early.contains("hasn't answered since this was asked"), "{early}");
+    // Not a client claiming a spoken answer.
     let (status, _) = nebo
         .post(&format!("/permissions/asks/{ask_id}/answer"), &json!({ "answer": "this_once", "via": "voice" }))
         .await;
@@ -280,9 +282,10 @@ async fn owners_call_ask_is_asked_aloud_and_answered_by_voice() {
     assert_eq!(asks.get(&ask_id).unwrap().unwrap().status, agent::harness::permissions::AskStatus::Open);
     assert_eq!(count(&ran)[1], 0);
 
-    // He says yes: answered via voice, and the parked call runs once.
-    let heard = crate::handlers::voice::answer_by_voice(asks, &key, &yes, created + 2);
-    assert!(heard.starts_with("Answered yes"), "{heard}");
+    // He says yes: read as "This once", answered via voice, and the parked
+    // call runs once.
+    let (ok, heard) = crate::handlers::voice::answer_ask_on_call(state, Some(&jev), &yes, "yes", created + 2).await;
+    assert!(ok && heard.starts_with("Answered \"This once\""), "{heard}");
     let row = nebo.store().get_permission_ask(&ask_id).unwrap().unwrap();
     assert_eq!((row.answer.as_deref(), row.answered_via.as_deref()), (Some("this_once"), Some("voice")));
     let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
@@ -294,8 +297,8 @@ async fn owners_call_ask_is_asked_aloud_and_answered_by_voice() {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     assert_eq!(count(&ran)[1], 1, "the parked call ran once");
-    let again = crate::handlers::voice::answer_by_voice(asks, &key, &yes, created + 9);
-    assert!(again.contains("already answered"), "{again}");
+    let (ok, again) = crate::handlers::voice::answer_ask_on_call(state, Some(&jev), &yes, "yes", created + 9).await;
+    assert!(!ok && again.contains(&format!("No ask {ask_id} is waiting")), "{again}");
     assert_eq!(count(&ran)[1], 1);
 }
 
@@ -561,30 +564,34 @@ async fn a_linked_agents_ask_is_answered_once_in_its_own_turn() {
     // On his call: the run parks on the agent's ask and the voice model
     // hears it with its id and every option.
     let spoken = crate::handlers::voice::run_delegated_task(state, &key, "check the repo", "Check the repo.", None).await;
-    assert!(spoken.contains("Your options are: Allow once, Always allow, or Deny."), "{spoken}");
+    assert_eq!(spoken.told, ["call_1"], "the call is told it, once");
+    let spoken = spoken.text;
+    assert!(spoken.contains("The answers it takes: Allow once, Always allow, or Deny."), "{spoken}");
     assert!(spoken.contains("ask_id \"call_1\""), "the voice model hears the ask's id: {spoken}");
     let card = state.run_registry.pending_ask_for_session(&key).await.expect("the card is on the run");
     let widget = &card.widgets.as_ref().unwrap()[0];
     assert_eq!(widget["options"], json!(["Allow once", "Always allow", "Deny"]), "every option the agent offered");
 
-    // Not before he spoke, not by its sentence, not from another conversation.
+    // Not before he spoke, not by its sentence, not words that are no answer.
+    let (jev, _) = crate::handlers::asks::tests::table_jev(&[("always, don't ask me again", "option_2")]).await;
     let say = |id: &str, answer: &str| json!({ "ask_id": id, "answer": answer });
-    let voice = |key: String, input: Value, at: i64| async move {
-        crate::handlers::voice::answer_ask_by_voice(state, &key, &input, at).await
+    let voice = |input: Value, heard: &'static str, at: i64| {
+        let jev = &jev;
+        async move { crate::handlers::voice::answer_ask_on_call(state, Some(jev), &input, heard, at).await }
     };
-    let early = voice(key.clone(), say("call_1", "allow_always"), card.created_at).await;
+    let (_, early) = voice(say("call_1", "always"), "always, don't ask me again", card.created_at).await;
     assert!(early.contains("hasn't answered since this was asked"), "{early}");
-    let by_sentence = voice(key.clone(), say("git status Your options are: Allow once", "allow_always"), card.created_at + 2).await;
-    assert!(by_sentence.contains("ask_id \"call_1\""), "it is told the id to use: {by_sentence}");
-    let elsewhere = voice(format!("agent:{agent}:thread:other"), say("call_1", "allow_always"), card.created_at + 2).await;
-    assert!(elsewhere.contains("Nothing is waiting"), "{elsewhere}");
+    let (_, by_sentence) = voice(say("git status The answers it takes: Allow once", "always"), "always", card.created_at + 2).await;
+    assert!(by_sentence.contains("ask call_1:"), "it is told the id to use: {by_sentence}");
+    let (ok, new_task) = voice(say("call_1", "what's the weather"), "what's the weather", card.created_at + 2).await;
+    assert!(!ok && new_task.contains("isn't an answer"), "{new_task}");
     assert!(coder_told(&told_path).iter().all(|t| t.get("answer").is_none()), "nothing answered the agent yet");
 
     // He says "always": the agent gets its always option and the same turn
     // goes on to its end.
     let mut hub = state.hub.subscribe();
-    let heard = voice(key.clone(), say("call_1", "allow_always"), card.created_at + 2).await;
-    assert!(heard.starts_with("Answered yes"), "{heard}");
+    let (ok, heard) = voice(say("call_1", "always"), "always, don't ask me again", card.created_at + 2).await;
+    assert!(ok && heard.starts_with("Answered \"Always allow\""), "{heard}");
     until("the turn goes on to its end", || replies(&nebo, &chat).iter().any(|r| r.contains("Ran it."))).await;
     let settled = loop {
         let e = hub.recv().await.unwrap();
@@ -594,14 +601,14 @@ async fn a_linked_agents_ask_is_answered_once_in_its_own_turn() {
     };
     assert_eq!((settled.payload["request_id"].as_str(), settled.payload["value"].as_str()), (Some("call_1"), Some("allow_always")));
     assert!(!crate::chat_dispatch::answer_ask(state, "call_1", "Deny".into()).await, "a second answer changes nothing");
-    let again = voice(key.clone(), say("call_1", "no"), card.created_at + 9).await;
-    assert!(again.contains("Nothing is waiting"), "{again}");
+    let (ok, again) = voice(say("call_1", "no"), "no", card.created_at + 9).await;
+    assert!(!ok && again.contains("No ask call_1 is waiting"), "{again}");
 
     until("the turn is over", idle).await;
 
     // Asked again next message, the card is answered from another device
     // (the phone's tap is its label): the agent gets that option, once.
-    let spoken = crate::handlers::voice::run_delegated_task(state, &key, "and the other repo", "And the other repo.", None).await;
+    let spoken = crate::handlers::voice::run_delegated_task(state, &key, "and the other repo", "And the other repo.", None).await.text;
     assert!(spoken.contains("ask_id \"call_2\""), "{spoken}");
     assert!(crate::chat_dispatch::answer_ask(state, "call_2", "Deny".into()).await);
     assert!(!crate::chat_dispatch::answer_ask(state, "call_2", "Allow once".into()).await, "the first answer wins");
@@ -611,7 +618,7 @@ async fn a_linked_agents_ask_is_answered_once_in_its_own_turn() {
 
     // Full Access: the agent's own no-prompt mode, and no ask reaches him.
     nebo.store().set_permission_mode(&employee, types::permissions::Mode::FullAccess).unwrap();
-    let spoken = crate::handlers::voice::run_delegated_task(state, &key, "once more", "Once more.", None).await;
+    let spoken = crate::handlers::voice::run_delegated_task(state, &key, "once more", "Once more.", None).await.text;
     assert!(spoken.contains("Ran it."), "{spoken}");
     assert!(state.run_registry.pending_ask_for_session(&key).await.is_none());
 

@@ -1310,11 +1310,14 @@ async fn an_employees_team_post_goes_to_the_lead_and_a_leaderless_team_refuses_i
     );
 }
 
-/// Review 1.9: the owner's next message answers the question card that is
-/// open in the conversation. The parked call gets the message as its answer and the
-/// turn goes on; it is never queued behind a card nobody will click.
+/// Review 1.9, live 2026-09-29: the owner's reply to the question open in
+/// the conversation answers it and the turn goes on, never queued behind a
+/// card nobody clicks. A message that is not an answer (live: "Which
+/// conversation is the AI", typed while a yes-or-no question waited, was
+/// taken as its answer) is a new message: it answers nothing, the question
+/// stays open, and the employee hears the message as the owner's.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn the_owners_next_message_answers_the_open_question() {
+async fn the_owners_answer_answers_the_open_question_and_a_new_message_is_new() {
     let nebo = session().await;
     const OWNER: &str = "agent:proof-q:web";
     let rules: Vec<Rule> = vec![Box::new(|t| {
@@ -1322,12 +1325,15 @@ async fn the_owners_next_message_answers_the_open_question() {
             return None;
         }
         if t.has_tool_results() {
-            let answered = t
+            let answer = t
                 .since_last_answer()
                 .iter()
                 .filter_map(|m| m.tool_results.as_ref())
-                .any(|r| r.to_string().contains("teal, please"));
-            return Some(Step::say(if answered { "ANSWER-Q teal it is." } else { "ANSWER-Q no answer." }));
+                .map(|r| r.to_string())
+                .collect::<String>();
+            let color = if answer.contains("green") { "green" } else { "no answer" };
+            let heard = if t.says("Which conversation is this in?") { "; also heard the new question" } else { "" };
+            return Some(Step::say(format!("ANSWER-Q {color}{heard}.")));
         }
         t.new_text().contains("OWNER-Q").then(|| {
             Step::call(vec![(
@@ -1342,18 +1348,122 @@ async fn the_owners_next_message_answers_the_open_question() {
         futures::executor::block_on(nebo.state.run_registry.pending_ask_for_session(OWNER)).is_some()
     })
     .await;
+    let asked = nebo.state.run_registry.pending_ask_for_session(OWNER).await.unwrap().request_id;
+    let listed = nebo.get_ok("/asks").await;
+    assert!(
+        listed["asks"].as_array().unwrap().iter().any(|a| a["id"] == asked.as_str() && a["kind"] == "question"),
+        "the pinned bar's list has it: {listed}"
+    );
 
-    rig.owner_writes(OWNER, "", None, "teal, please").await;
-    rig.until(20, "the turn goes on with the owner's message as the answer", || {
+    // A new question is not the answer: nothing is consumed.
+    rig.owner_writes(OWNER, "", None, "Which conversation is this in?").await;
+    assert_eq!(
+        nebo.state.run_registry.pending_ask_for_session(OWNER).await.map(|a| a.request_id),
+        Some(asked.clone()),
+        "the question stays open"
+    );
+    assert!(!rig.thread(OWNER).iter().any(|m| m.content.contains("ANSWER-Q")), "the parked call got no answer");
+
+    // His answer, one of the card's options, answers it.
+    rig.owner_writes(OWNER, "", None, "green").await;
+    rig.until(20, "the turn goes on with the owner's answer", || {
         rig.thread(OWNER).iter().any(|m| m.role == "assistant" && m.content.contains("ANSWER-Q"))
     })
     .await;
     let said: Vec<String> = rig.thread(OWNER).into_iter().filter(|m| m.role == "assistant").map(|m| m.content).collect();
-    assert!(said.iter().any(|c| c.contains("ANSWER-Q teal it is.")), "{said:?}");
-    assert!(
-        futures::executor::block_on(nebo.state.run_registry.pending_ask_for_session(OWNER)).is_none(),
-        "the card is closed"
-    );
+    assert!(said.iter().any(|c| c.contains("ANSWER-Q green; also heard the new question.")), "{said:?}");
+    assert!(nebo.state.run_registry.pending_ask_for_session(OWNER).await.is_none(), "the card is closed");
+}
+
+/// Live 2026-09-29, on the owner's call while he drove: the employee asked
+/// a question the call never put to him, the voice model answered an
+/// invented ask id, and six restated "yes" tasks queued behind the frozen
+/// turn. Now the question comes back to the call with its real id and is
+/// put to every call he is on; words that are no answer start nothing and
+/// the call is told who waits on what; his spoken yes — in English,
+/// Japanese or Mandarin — answers it and the turn goes on. His words come
+/// from the call's transcript and are read by the one decision (a stand-in
+/// for Jev here).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_question_is_put_to_the_owners_call_and_his_spoken_yes_answers_it_in_any_language() {
+    const QUESTION: &str = "Rather than creating dozens of sub-agents, I'll set up one daily schedule at 7 AM. Want me to do that?";
+    const YES: &str = "Yes, set up the daily schedule as described";
+    const NO: &str = "No, let me explain differently";
+    let nebo = session().await;
+    let state = &nebo.state;
+    let key = format!("agent:proof-v:thread:{}", uuid::Uuid::new_v4());
+    let rules: Vec<Rule> = vec![Box::new(|t| {
+        if !t.opener().contains("OWNER-V") {
+            return None;
+        }
+        if t.has_tool_results() {
+            let answer = t
+                .since_last_answer()
+                .iter()
+                .filter_map(|m| m.tool_results.as_ref())
+                .map(|r| r.to_string())
+                .collect::<String>();
+            let picked = if answer.contains(YES) { "YES" } else { "OTHER" };
+            return Some(Step::say(format!("ANSWER-V {picked}")));
+        }
+        t.new_text().contains("OWNER-V").then(|| {
+            Step::call(vec![("ask_owner", json!({"question": QUESTION, "options": [YES, NO]}))])
+        })
+    })];
+    let rig = Rig::new(&nebo, rules).await;
+    let (jev, seen) = crate::handlers::asks::tests::table_jev(&[("yes", "option_1"), ("はい", "option_1"), ("好的", "option_1")]).await;
+    // Another call of his, on another conversation.
+    let (call_tx, mut call) = tokio::sync::mpsc::channel(8);
+    state.live_calls.lock().unwrap().insert(format!("agent:proof-v:thread:{}", uuid::Uuid::new_v4()), call_tx);
+
+    for (round, (words, heard_in)) in [
+        ("yes", "Set up a daily stand-up across all employees."),
+        ("はい", "全員で毎日のスタンドアップを設定して。"),
+        ("好的", "为所有员工设置每日站会。"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        // The task parks on the question: it comes back to the call with
+        // its real id, and every other call he is on is told it.
+        let reply = crate::handlers::voice::run_delegated_task(state, &key, &format!("OWNER-V round {round}: {heard_in}"), heard_in, None).await;
+        let ask = state.run_registry.pending_ask_for_session(&key).await.expect("the run is parked on the question");
+        assert_eq!(reply.told, [ask.request_id.clone()], "{}", reply.text);
+        assert!(reply.text.contains(&format!("ask_id \"{}\"", ask.request_id)), "{}", reply.text);
+        assert!(reply.text.contains(QUESTION) && reply.text.contains(&format!("{YES} or {NO}")), "{}", reply.text);
+        let told = tokio::time::timeout(Duration::from_secs(10), call.recv()).await.expect("the other call is told").unwrap();
+        let crate::handlers::voice::CallNews::Ask(told) = told else { panic!("told {told:?}") };
+        assert_eq!(told.id, ask.request_id);
+
+        // Words that are no answer start nothing: no task queues behind the
+        // question, and the call is told who waits on what.
+        let spoke = ask.created_at + 1;
+        let blocked = crate::handlers::voice::before_task(state, Some(&jev), &key, "Which conversation is the AI", spoke)
+            .await
+            .expect("a parked question comes first");
+        assert!(blocked.text.starts_with("Not started:") && blocked.text.contains("is waiting on your answer"), "{}", blocked.text);
+        assert_eq!(state.run_registry.pending_ask_for_session(&key).await.map(|a| a.request_id), Some(ask.request_id.clone()));
+
+        // His spoken yes answers it, and the turn goes on.
+        let (ok, said) = crate::handlers::voice::answer_ask_on_call(
+            state,
+            Some(&jev),
+            &json!({ "ask_id": ask.request_id, "answer": "yes" }),
+            words,
+            spoke,
+        )
+        .await;
+        assert!(ok && said.starts_with(&format!("Answered \"{YES}\"")), "{words}: {said}");
+        rig.until(20, "the turn goes on with his answer", || {
+            rig.thread(&key).iter().filter(|m| m.role == "assistant" && m.content == "ANSWER-V YES").count() == round + 1
+        })
+        .await;
+        rig.until(20, "the turn is over", || !rig.busy(&key)).await;
+    }
+    let seen = seen.lock().unwrap().clone();
+    let mandarin = seen.iter().find(|r| r["state"]["reply"] == "好的").expect("the decision read it");
+    assert_eq!(mandarin["state"]["question"], QUESTION);
+    state.live_calls.lock().unwrap().clear();
 }
 
 /// Review 5.4: a coworker's message is a coworker's. The employee reads it
@@ -1915,8 +2025,8 @@ async fn only_the_owners_proven_email_answers_for_the_owner() {
                     .since_last_answer()
                     .iter()
                     .filter_map(|m| m.tool_results.as_ref())
-                    .any(|r| r.to_string().contains("teal, please"));
-                return Some(Step::say(if answered { "ANSWER-MAIL teal it is." } else { "ANSWER-MAIL no answer." }));
+                    .any(|r| r.to_string().contains("green"));
+                return Some(Step::say(if answered { "ANSWER-MAIL green it is." } else { "ANSWER-MAIL no answer." }));
             }
             t.new_text().contains("OWNER-MAIL").then(|| {
                 Step::call(vec![("ask_owner", json!({"question": "Which color for the banner?", "options": ["blue", "green"]}))])
@@ -1975,14 +2085,19 @@ async fn only_the_owners_proven_email_answers_for_the_owner() {
     assert_eq!(mail.outbox.replies_to(&record.id).len(), 1, "one email per turn");
 
     // The owner's proven reply to the same conversation.
-    let proven = mail.arrives(OWNER_EMAIL, "pass", "", "teal, please", thread).await;
+    // His reply is one of the card's options, word for word (a reply with a
+    // subject line, or in words of his own, is the one decision's to read;
+    // this server has none).
+    let mut reply = thread;
+    reply["subject"] = json!("");
+    let proven = mail.arrives(OWNER_EMAIL, "pass", "", "green", reply).await;
     assert_eq!(mail.record(&proven).expect("recorded").standing, "owner");
     rig.until(20, "the turn goes on with the owner's email as the answer", || {
         rig.thread(OWNER).iter().any(|m| m.role == "assistant" && m.content.contains("ANSWER-MAIL"))
     })
     .await;
     let said: Vec<String> = rig.thread(OWNER).into_iter().filter(|m| m.role == "assistant").map(|m| m.content).collect();
-    assert!(said.iter().any(|c| c.contains("ANSWER-MAIL teal it is.")), "{said:?}");
+    assert!(said.iter().any(|c| c.contains("ANSWER-MAIL green it is.")), "{said:?}");
     assert!(futures::executor::block_on(nebo.state.run_registry.pending_ask_for_session(OWNER)).is_none(), "the card is closed");
 }
 

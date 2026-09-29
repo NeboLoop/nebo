@@ -35,7 +35,7 @@ fn body(c: &PermissionAskCard) -> String {
 }
 
 /// The answers a card offers, in order, with their labels.
-fn offered(c: &PermissionAskCard) -> Vec<(&'static str, Answer)> {
+pub(crate) fn offered(c: &PermissionAskCard) -> Vec<(&'static str, Answer)> {
     if c.kind == AskKind::SendCheck.as_str() {
         return vec![("It went out", Answer::Sent), ("It didn't go out", Answer::NotSent)];
     }
@@ -48,6 +48,17 @@ fn offered(c: &PermissionAskCard) -> Vec<(&'static str, Answer)> {
     }
     answers.push(("No", Answer::No));
     answers
+}
+
+/// The card as a question the owner answers in words, on his call or in
+/// a pinned bar: "OK to go ahead with sending an email to …? It's the first
+/// time it would contact them." — or, for a held send, "Did … go out?".
+pub(crate) fn question(c: &PermissionAskCard) -> String {
+    let sentence = c.sentence.trim().trim_end_matches('.');
+    if c.kind == AskKind::SendCheck.as_str() {
+        return format!("Did {sentence} go out?");
+    }
+    format!("OK to go ahead with {sentence}? {}", c.reason.trim())
 }
 
 /// The card as a message in the owner's loop or phone conversation, which
@@ -72,31 +83,6 @@ pub(crate) fn conversation_card(c: &PermissionAskCard) -> (String, HashMap<Strin
             .to_string(),
     );
     (text, meta)
-}
-
-/// The owner's reply in that conversation, read as one of the card's
-/// answers: "Allow always" (or "always"), "This once" (or "allow", "approve",
-/// "yes"), else No — an ask fails closed. An answer the card doesn't offer
-/// becomes the nearest one it does: always → once, once → always (a card
-/// for an employee's extra needs offers no "This once").
-pub(crate) fn reply_answer(c: &PermissionAskCard, reply: &str) -> Answer {
-    let words = reply.trim().trim_end_matches(['.', '!']).to_lowercase();
-    let wanted = match words.as_str() {
-        "allow always" | "approve always" | "always" => Answer::AllowAlways,
-        "this once" | "once" | "allow once" | "approve once" | "allow" | "approve" | "yes" => {
-            Answer::ThisOnce
-        }
-        _ => return Answer::No,
-    };
-    let answers: Vec<Answer> = offered(c).into_iter().map(|(_, a)| a).collect();
-    let fallback = match wanted {
-        Answer::AllowAlways => Answer::ThisOnce,
-        _ => Answer::AllowAlways,
-    };
-    [wanted, fallback]
-        .into_iter()
-        .find(|a| answers.contains(a))
-        .unwrap_or(Answer::No)
 }
 
 /// The card as the owner's item, the ONE place its Inbox row and its hub
@@ -175,6 +161,7 @@ impl AskSurfaces for OwnerSurfaces {
         let c = card(state, ask);
         surface(state, &c, true);
         state.hub.broadcast("permission_ask", serde_json::to_value(&c).unwrap_or_default());
+        crate::handlers::asks::permission_raised(state, &c);
     }
 
     fn remind(&self, ask: &Ask) {
@@ -187,6 +174,7 @@ impl AskSurfaces for OwnerSurfaces {
         }
         surface(state, &c, true);
         state.hub.broadcast("permission_ask", serde_json::to_value(&c).unwrap_or_default());
+        crate::handlers::asks::permission_raised(state, &c);
         info!(ask = %c.id, "ask still open; the owner was reminded");
     }
 
@@ -200,6 +188,7 @@ impl AskSurfaces for OwnerSurfaces {
         }
         crate::codes::push_inbox(state, serde_json::json!({ "id": id, "resolved": true }));
         state.hub.broadcast("permission_ask_resolved", serde_json::to_value(&c).unwrap_or_default());
+        crate::handlers::asks::spawn_changed(state);
     }
 
     fn notify(&self, session_key: &str, text: &str) {
@@ -278,25 +267,6 @@ mod tests {
         assert_eq!(item["agentId"], "ava");
         assert_eq!(item["chatId"], chat.as_str());
         assert_eq!(item["actions"]["buttons"].as_array().map(Vec::len), Some(3));
-    }
-
-    #[test]
-    fn a_reply_in_the_conversation_is_one_of_the_cards_answers() {
-        let full = card(true, true);
-        assert_eq!(reply_answer(&full, "Allow always"), Answer::AllowAlways);
-        assert_eq!(reply_answer(&full, "approve always."), Answer::AllowAlways);
-        assert_eq!(reply_answer(&full, "This once"), Answer::ThisOnce);
-        assert_eq!(reply_answer(&full, "yes"), Answer::ThisOnce);
-        assert_eq!(reply_answer(&full, "No"), Answer::No);
-        assert_eq!(
-            reply_answer(&full, "hmm, what is it for?"),
-            Answer::No,
-            "anything else fails closed"
-        );
-        // A widening card offers no Allow always; an employee's extra needs
-        // offer no This once.
-        assert_eq!(reply_answer(&card(false, true), "always"), Answer::ThisOnce);
-        assert_eq!(reply_answer(&card(true, false), "yes"), Answer::AllowAlways);
     }
 
     #[test]

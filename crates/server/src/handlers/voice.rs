@@ -10,7 +10,7 @@ use crate::chat_dispatch::{
     TurnEnd, announce_ask, control_stop_of, entity_run_params, finish_turn,
 };
 use crate::codes::build_api_client;
-use crate::run_registry::{RegisterParams, RunHandle, RunRegistry};
+use crate::run_registry::{RegisterParams, RunHandle};
 use crate::state::AppState;
 
 /// Voice conversation — speech-to-speech via the xAI Grok realtime API
@@ -297,29 +297,27 @@ fn voice_tools(transfer: bool, telephony: bool, intents: &[String]) -> Vec<serde
                             Never starts work.",
             "parameters": {"type": "object", "properties": {}}
         }));
-        // The owner's spoken yes or no to something waiting on his OK: the
-        // answer, through the ask's one answer path. Owner sessions only —
-        // a phone caller never answers the owner's asks.
+        // The owner's spoken answer to anything waiting on him — a question
+        // an employee asked, or a permission — by the id the call was told.
+        // Owner sessions only: a phone caller never answers the owner's asks.
         tools.push(serde_json::json!({
             "type": "function",
             "name": "answer_ask",
-            "description": "Give the user's spoken answer to something waiting on their OK: a nebo \
-                            result that says it is waiting on their OK and names an ask id. Call \
-                            it only after they have answered out loud: yes or go ahead is \
-                            this_once; yes, always, or don't ask again is allow_always; no is \
-                            no. If what they said isn't clearly yes or no, ask again instead. \
-                            Never starts work.",
+            "description": "Give the owner's spoken answer to something waiting on their answer: an \
+                            employee's question or a permission. Use the ask id you were told with \
+                            it, never one you made up. Call it only after they answered out loud, \
+                            with their words exactly as they said them, in their language. If the \
+                            result says it isn't an answer, ask them again. Never starts work.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "ask_id": {
                         "type": "string",
-                        "description": "The ask id the nebo result named."
+                        "description": "The ask id you were told with the question."
                     },
                     "answer": {
                         "type": "string",
-                        "enum": ["this_once", "allow_always", "no"],
-                        "description": "What the user said."
+                        "description": "What the owner said, word for word."
                     }
                 },
                 "required": ["ask_id", "answer"]
@@ -566,8 +564,12 @@ pub(crate) struct CallerContext {
     pub(crate) allowlist: std::collections::HashSet<String>,
 }
 
-/// Execute a delegated voice task as a turn and collect the final text. This
-/// is the SAME loop text chat runs, so voice inherits its reliability.
+/// Execute a delegated voice task as a turn and collect what the call says
+/// back. This is the SAME loop text chat runs, so voice inherits its
+/// reliability. On the owner's own call, what the run left waiting on his
+/// answer (a question it parked on, a permission it needs) comes back with
+/// it, each with the id his answer goes to, and is named in `told` so the
+/// call doesn't tell him twice.
 ///
 /// `caller` is Some for telephony: the run carries `Origin::Caller` (never
 /// interactive — no ask tool, no approval modals), the employee's own grant
@@ -586,7 +588,7 @@ pub(crate) async fn run_delegated_task(
     task: &str,
     said: &str,
     caller: Option<&CallerContext>,
-) -> String {
+) -> DelegatedReply {
     let owner_agent = types::keyparser::extract_agent_id(session_key);
     // Memory is scoped by the seat's agent — the session key alone
     // does not set it. Owner voice sessions target an employee via
@@ -671,17 +673,13 @@ pub(crate) async fn run_delegated_task(
             stalled: run_handle.stalled.clone(),
         }),
     };
-    match state.harness.start_turn(req).await {
+    let started = chrono::Utc::now().timestamp();
+    let text = match state.harness.start_turn(req).await {
         Ok(handle) => {
             let rx = handle.events;
             let (spoken_tx, spoken_rx) = tokio::sync::oneshot::channel();
-            let sinks = VoiceRunSinks {
-                hub: state.hub.clone(),
-                registry: state.run_registry.clone(),
-                ask_channels: state.ask_channels.clone(),
-            };
             tokio::spawn(drain_voice_run(
-                sinks,
+                state.clone(),
                 session_key.to_string(),
                 agent_id,
                 rx,
@@ -692,32 +690,46 @@ pub(crate) async fn run_delegated_task(
             spoken_rx.await.unwrap_or_else(|_| VOICE_RUN_VANISHED.to_string())
         }
         Err(e) => format!("The task failed: {e}"),
+    };
+    let mut reply = DelegatedReply { text, told: Vec::new() };
+    if caller.is_none() {
+        for w in super::asks::waiting(state, Some(session_key)).await {
+            if w.card.created_at >= started {
+                reply.text.push_str("\n\n");
+                reply.text.push_str(&super::asks::on_call(&w.card));
+                reply.told.push(w.card.id);
+            }
+        }
     }
+    if reply.text.trim().is_empty() {
+        reply.text = VOICE_RUN_SILENT.to_string();
+    }
+    reply
+}
+
+/// What a delegated run hands back to the call: what to say, and the ids of
+/// the waiting asks it says, which the call has then been told.
+pub(crate) struct DelegatedReply {
+    pub text: String,
+    pub told: Vec<String>,
 }
 
 /// Spoken when the drain task ended without ever producing a reply (it
 /// panicked): the phone must hear something, and it must be true.
 const VOICE_RUN_VANISHED: &str = "The task ended before it could answer.";
-
-/// Where a delegated voice run reports: the same hub, registry and answer
-/// channels the chat pipeline uses, so its parked questions and its end look
-/// identical to a chat run's from every client.
-struct VoiceRunSinks {
-    hub: std::sync::Arc<super::ws::ClientHub>,
-    registry: RunRegistry,
-    ask_channels: tools::AskChannels,
-}
+/// Spoken when a run ended having said nothing and asked nothing.
+const VOICE_RUN_SILENT: &str = "The task completed but produced no text summary.";
 
 /// Drain a delegated voice run to its end. The spoken reply is sent ONCE
 /// through `spoken`: the run's text when it finishes, or, if the run parks
-/// on a question first, the spoken form of that question, so the phone's
-/// tool call returns while the run waits for the answer (the card is on the
-/// web, recorded on the run like any chat ask). Live 2026-09-05: the run sat
-/// on an install card and the phone reported "plugin failed 300s". The run
-/// then ends through the same `finish_turn` the chat pipeline uses, so the
-/// phone learns the turn is over from `chat_complete` like every client.
+/// on a question first, what it said before it (the question itself comes
+/// back from the waiting asks, with its id), so the call's tool call returns
+/// while the run waits for the answer. Live 2026-09-05: the run sat on an
+/// install card and the phone reported "plugin failed 300s". The run then
+/// ends through the same `finish_turn` the chat pipeline uses, so the phone
+/// learns the turn is over from `chat_complete` like every client.
 async fn drain_voice_run(
-    sinks: VoiceRunSinks,
+    state: AppState,
     session_key: String,
     agent_id: String,
     mut rx: mpsc::Receiver<ai::StreamEvent>,
@@ -759,9 +771,9 @@ async fn drain_voice_run(
                 last_notice = event.text;
             }
             ai::StreamEventType::AskRequest => {
-                announce_ask(&sinks.hub, &sinks.registry, &session_key, &event).await;
+                announce_ask(&state, &session_key, &event).await;
                 if let Some(tx) = spoken.take() {
-                    let _ = tx.send(spoken_ask(&event));
+                    let _ = tx.send(out.clone());
                 }
             }
             _ => {}
@@ -771,9 +783,8 @@ async fn drain_voice_run(
         let _ = tx.send(voice_reply(&out, &last_notice));
     }
     finish_turn(
-        &sinks.hub,
+        &state,
         &run_handle,
-        &sinks.ask_channels,
         TurnEnd {
             payload: serde_json::json!({ "session_id": session_key, "agentId": agent_id }),
             artifacts: &[],
@@ -783,233 +794,131 @@ async fn drain_voice_run(
     .await;
 }
 
-/// The spoken reply when a run ends: its text, else its typed status line,
-/// else an honest "nothing to say".
+/// The spoken reply when a run ends: its text, else its typed status line
+/// (empty when it has none: the caller says so plainly).
 fn voice_reply(out: &str, last_notice: &str) -> String {
-    if !out.trim().is_empty() {
-        out.to_string()
-    } else if !last_notice.is_empty() {
-        last_notice.to_string()
-    } else {
-        "The task completed but produced no text summary.".into()
-    }
+    if !out.trim().is_empty() { out.to_string() } else { last_notice.to_string() }
 }
 
-/// What the phone hears when the delegated run parks on a question. Choices
-/// are read out so the caller knows what the employee is waiting on; an
-/// install or sign-in card can only be acted on in the app, so that one
-/// sentence says exactly that and the card waits there. A permission
-/// question (its card names the owner's answer each option is: a linked
-/// agent's ask) also carries its id, for the owner's spoken answer.
-fn spoken_ask(event: &ai::StreamEvent) -> String {
-    let question = spoken_question(event);
-    let id = event.error.as_deref().unwrap_or_default();
-    if id.is_empty() || owners_answers(event.widgets.as_ref()).is_none() {
-        return question;
-    }
-    format!("{question}{}", waiting_line(id, &event.text))
-}
-
-fn spoken_question(event: &ai::StreamEvent) -> String {
-    let widget = event.widgets.as_ref().and_then(|w| w.get(0));
-    let field = |key: &str| widget.and_then(|w| w.get(key)).and_then(|v| v.as_str());
-    let kind = field("type").unwrap_or("");
-    let name = field("name")
-        .or_else(|| field("label"))
-        .or_else(|| field("plugin"))
-        .unwrap_or("that app");
-    match kind {
-        "install_plugin" => format!("I need you to install {name} from the app before I can continue."),
-        "connect_account" => format!("I need you to sign in to {name} from the app before I can continue."),
-        _ => {
-            let options: Vec<&str> = widget
-                .and_then(|w| w.get("options"))
-                .and_then(|o| o.as_array())
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|o| o.as_str().or_else(|| o.get("label").and_then(|l| l.as_str())))
-                        .collect()
-                })
-                .unwrap_or_default();
-            if options.is_empty() {
-                event.text.clone()
-            } else {
-                format!("{} Your options are: {}.", event.text.trim_end(), join_options(&options))
-            }
-        }
-    }
-}
-
-/// "A", "A or B", "A, B, or C".
-fn join_options(options: &[&str]) -> String {
-    match options {
-        [] => String::new(),
-        [one] => (*one).to_string(),
-        [first, second] => format!("{first} or {second}"),
-        [head @ .., last] => format!("{}, or {last}", head.join(", ")),
-    }
-}
-
-/// The asks a delegated run on the owner's call left waiting on his OK
-/// (raised at or after `since`, still open), each with the id his spoken
-/// answer goes to. Empty when nothing waits.
-pub(crate) fn waiting_on_owner(asks: &agent::harness::permissions::Asks, session_key: &str, since: i64) -> String {
-    let open = match asks.open(Some(session_key)) {
-        Ok(open) => open,
-        Err(e) => {
-            warn!(session_key, error = %e, "voice: the asks waiting on the owner could not be read");
-            return String::new();
-        }
-    };
-    open.iter()
-        .filter(|a| a.created_at >= since)
-        .map(|a| waiting_line(&a.id, &a.sentence))
-        .collect()
-}
-
-/// One thing waiting on the owner's OK, as the voice model hears it: what
-/// waits, and the id his spoken answer goes to.
-fn waiting_line(id: &str, sentence: &str) -> String {
-    format!(
-        "\n\n(Waiting on the user's OK, ask {id}: {sentence}. Ask them; when they answer, call \
-         answer_ask with ask_id \"{id}\" and their answer.)",
-        sentence = sentence.trim().trim_end_matches('.')
-    )
-}
-
-/// The owner's answer each option of a question's card is (`this_once`,
-/// `allow_always`, `no`, or none), when the card says: a permission
-/// question on the run's ask channel (a linked agent's ask).
-fn owners_answers(widgets: Option<&serde_json::Value>) -> Option<Vec<Option<String>>> {
-    let answers = widgets?.get(0)?.get("answers")?.as_array()?;
-    Some(answers.iter().map(|a| a.as_str().map(str::to_owned)).collect())
-}
-
-/// The owner's spoken answer to `ask_id`, from the voice model's
-/// `answer_ask` call, on his own call. A permission question the run is
-/// parked on (a linked agent's ask) is answered through the one answer path
-/// of a parked question, [`crate::chat_dispatch::answer_ask`], with the
-/// owner's answer, which its asker maps to the option of that kind; any
-/// other ask through [`answer_by_voice`]. The same rules hold for both:
-/// only this call's own conversation, only after the owner spoke. Returns
-/// what the voice model hears.
-pub(crate) async fn answer_ask_by_voice(
+/// The owner's spoken answer to ask `ask_id`, from the voice model's
+/// `answer_ask` call on his own call, through the ask's one answer path
+/// (`handlers::asks`). `heard` is what he said since the call's last reply,
+/// from the call's own transcript: his words, in his language, are what the
+/// decision reads, never the voice model's retelling (its `answer` stands in
+/// only when the transcript has nothing). It counts only after he spoke
+/// (`spoke_at`, unix seconds, after the ask was raised). Returns whether it
+/// answered, and what the voice model hears; an id that names nothing
+/// waiting is an error that lists what does.
+pub(crate) async fn answer_ask_on_call(
     state: &AppState,
-    session_key: &str,
+    decide: Option<&ai::DecideClient>,
     input: &serde_json::Value,
-    owner_spoke_at: i64,
-) -> String {
-    let id = input["ask_id"].as_str().unwrap_or_default();
-    let parked = state
-        .run_registry
-        .pending_ask_for_session(session_key)
-        .await
-        .filter(|a| owners_answers(a.widgets.as_ref()).is_some());
-    let Some(parked) = parked else {
-        return answer_by_voice(&state.permission_asks, session_key, input, owner_spoke_at);
+    heard: &str,
+    spoke_at: i64,
+) -> (bool, String) {
+    let id = input["ask_id"].as_str().unwrap_or_default().trim();
+    let waiting = super::asks::waiting(state, None).await;
+    let Some(w) = waiting.iter().find(|w| w.card.id == id) else {
+        return (false, unknown_ask(id, &waiting));
     };
-    if parked.request_id != id {
-        let durable = matches!(state.permission_asks.get(id), Ok(Some(a)) if a.session_key == session_key);
-        if durable {
-            return answer_by_voice(&state.permission_asks, session_key, input, owner_spoke_at);
-        }
-        return format!(
-            "No ask {id} is waiting in this conversation. This is:{}",
-            waiting_line(&parked.request_id, &parked.prompt)
-        );
-    }
-    let answer = match parked_answer(&parked, input, owner_spoke_at) {
-        Ok(answer) => answer,
-        Err(heard) => return heard,
-    };
-    if !crate::chat_dispatch::answer_ask(state, id, answer.to_string()).await {
-        return "That was already answered; nothing more to do.".to_string();
-    }
-    if answer == "no" {
-        "Answered no: it won't run. Tell them so.".to_string()
-    } else {
-        "Answered yes: it carries on now, and its result comes back in this conversation. Tell them you're on \
-         it; if they ask how it's going, check with status."
-            .to_string()
-    }
-}
-
-/// The owner's answer to a permission question the run is parked on, as
-/// its card offers it: `this_once`, `allow_always` or `no`, only after he
-/// spoke. An answer the card doesn't offer counts as the nearest one it
-/// does, as on every permission card (always → once, once → always). `Err`
-/// is what the voice model hears instead.
-pub(crate) fn parked_answer(
-    ask: &crate::handlers::chat::PendingAsk,
-    input: &serde_json::Value,
-    owner_spoke_at: i64,
-) -> Result<&'static str, String> {
-    let Some(answer) = input["answer"].as_str().and_then(|a| ["this_once", "allow_always", "no"].into_iter().find(|o| *o == a))
-    else {
-        return Err("answer_ask needs `answer`: this_once, allow_always or no.".to_string());
-    };
-    if owner_spoke_at <= ask.created_at {
-        return Err(
-            "The user hasn't answered since this was asked. Ask them, then call answer_ask with what they say."
+    if spoke_at <= w.card.created_at {
+        return (
+            false,
+            "The owner hasn't answered since this was asked. Ask them, then call answer_ask with what they say."
                 .to_string(),
         );
     }
-    let offered = owners_answers(ask.widgets.as_ref()).unwrap_or_default();
-    let nearest = match answer {
-        "allow_always" => "this_once",
-        "this_once" => "allow_always",
-        _ => "no",
-    };
-    [answer, nearest]
-        .into_iter()
-        .find(|a| offered.iter().any(|o| o.as_deref() == Some(*a)))
-        .ok_or_else(|| "That isn't one of its answers. Ask them to tap the card in this conversation.".to_string())
+    let words = if heard.trim().is_empty() { input["answer"].as_str().unwrap_or_default() } else { heard };
+    use super::asks::NotAnswered;
+    match super::asks::answer_in_words(
+        state,
+        decide,
+        w,
+        words,
+        heard,
+        agent::harness::permissions::AnsweredVia::Voice,
+    )
+    .await
+    {
+        Ok(given) => (
+            true,
+            format!(
+                "Answered \"{given}\" for {}. Tell the owner in a few words; what comes of it comes back in its \
+                 conversation.",
+                w.card.employee
+            ),
+        ),
+        Err(NotAnswered::NotAnAnswer) => (
+            false,
+            format!(
+                "What the owner said isn't an answer to {}'s question. If they asked for something new, say {} is \
+                 still waiting on their answer first; then ask the question again.",
+                w.card.employee, w.card.employee
+            ),
+        ),
+        Err(NotAnswered::InApp) => (false, format!("That one is done in the app, not on the call: {}", w.card.question)),
+        Err(NotAnswered::Settled) => (true, "That was already answered; nothing more to do.".to_string()),
+        Err(NotAnswered::Failed(e)) => (
+            false,
+            format!("The answer could not be recorded ({e}). Ask the owner to answer it in the app."),
+        ),
+    }
 }
 
-/// The owner's spoken answer to an ask, from the voice model's
-/// `answer_ask` call, through the ask's one answer path (answered via
-/// voice). Only an open ask of this call's own conversation, and only when
-/// the owner spoke after it was raised (`owner_spoke_at`, unix seconds): the
-/// voice model can't answer on words a tool result put in front of it.
-/// Returns what the voice model hears.
-pub(crate) fn answer_by_voice(
-    asks: &agent::harness::permissions::Asks,
+/// What the voice model hears for an ask id that names nothing waiting: the
+/// real ones, with their ids.
+fn unknown_ask(id: &str, waiting: &[super::asks::Waiting]) -> String {
+    if waiting.is_empty() {
+        return format!("No ask {id} is waiting, and nothing is waiting on the owner's answer.");
+    }
+    let lines: Vec<String> = waiting.iter().map(|w| format!("- ask {}: {}", w.card.id, super::asks::waiting_line(&w.card))).collect();
+    format!("No ask {id} is waiting. These are:\n{}", lines.join("\n"))
+}
+
+/// Before the call hands a task to its conversation: what waits on the
+/// owner there comes first. The owner's words since the last reply are read
+/// against the newest ask words can answer — his answer answers it, the
+/// same decision a typed message gets. Otherwise, while a run there is
+/// parked on a question, the task is not queued behind it (live
+/// 2026-09-29: six restated "yes" tasks queued behind one frozen turn); the
+/// call is told who is waiting on what. `None` lets the task run.
+pub(crate) async fn before_task(
+    state: &AppState,
+    decide: Option<&ai::DecideClient>,
     session_key: &str,
-    input: &serde_json::Value,
-    owner_spoke_at: i64,
-) -> String {
-    use agent::harness::permissions::{Answer, AnsweredVia, AskError, AskStatus};
-    let Some(answer) = input["answer"].as_str().and_then(Answer::parse) else {
-        return "answer_ask needs `answer`: this_once, allow_always or no.".to_string();
-    };
-    let id = input["ask_id"].as_str().unwrap_or_default();
-    let ask = match asks.get(id) {
-        Ok(Some(ask)) if ask.session_key == session_key => ask,
-        Ok(_) => {
-            let waiting = waiting_on_owner(asks, session_key, 0);
-            return if waiting.is_empty() {
-                format!("Nothing is waiting on the user's OK in this conversation (no ask {id}).")
-            } else {
-                format!("No ask {id} is waiting in this conversation. These are:{waiting}")
-            };
-        }
-        Err(e) => return format!("The answer could not be recorded ({e}). Ask them to tap the card in this conversation."),
-    };
-    if ask.status != AskStatus::Open {
-        return "That was already answered; nothing more to do.".to_string();
+    said: &str,
+    spoke_at: i64,
+) -> Option<DelegatedReply> {
+    let here = super::asks::waiting(state, Some(session_key)).await;
+    if let Some(w) = here.iter().rev().find(|w| w.card.answerable && spoke_at > w.card.created_at)
+        && let Ok(given) = super::asks::answer_in_words(
+            state,
+            decide,
+            w,
+            said,
+            said,
+            agent::harness::permissions::AnsweredVia::Voice,
+        )
+        .await
+    {
+        return Some(DelegatedReply {
+            text: format!(
+                "That was the owner's answer to {}'s question: answered \"{given}\". The work goes on; its result \
+                 comes back in this conversation. Tell them in a few words.",
+                w.card.employee
+            ),
+            told: vec![w.card.id.clone()],
+        });
     }
-    if owner_spoke_at <= ask.created_at {
-        return "The user hasn't answered since this was asked. Ask them, then call answer_ask with what they say."
-            .to_string();
-    }
-    match asks.answer(&ask.id, answer, AnsweredVia::Voice) {
-        Ok(_) if answer == Answer::No => "Answered no: it won't run. Tell them so.".to_string(),
-        Ok(_) => "Answered yes: it runs now, and its result comes back in this conversation. Tell them you're on \
-                  it; if they ask whether it went through, check with nebo."
-            .to_string(),
-        Err(AskError::Settled(_)) => "That was already answered; nothing more to do.".to_string(),
-        Err(e) => format!("The answer could not be recorded ({e}). Ask them to tap the card in this conversation."),
-    }
+    let parked = here.iter().find(|w| w.card.kind == "question")?;
+    Some(DelegatedReply {
+        text: format!(
+            "Not started: {}. Nothing new runs in this conversation until it is answered.\n\n{}",
+            super::asks::waiting_line(&parked.card),
+            super::asks::on_call(&parked.card)
+        ),
+        told: vec![parked.card.id.clone()],
+    })
 }
 
 /// How long after its last activity a thread still counts as the one the
@@ -1075,8 +984,19 @@ pub(crate) fn pick_voice_chat(
 /// The owner's live calls, by the conversation (session key) each is on. A
 /// turn that runs in that conversation outside the call (a woken turn that
 /// hears a coworker's reply, a helper's result) is said aloud on it
-/// ([`say_on_call`]): what reaches his conversation reaches his ear.
-pub type LiveCalls = std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, mpsc::Sender<String>>>>;
+/// ([`say_on_call`]): what reaches his conversation reaches his ear. What
+/// waits on his answer, from any employee in any conversation, is put to
+/// every one of them ([`tell_calls`]).
+pub type LiveCalls = std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, mpsc::Sender<CallNews>>>>;
+
+/// What reaches a live call from outside it.
+#[derive(Debug, Clone)]
+pub enum CallNews {
+    /// A turn in the call's conversation said this.
+    Reply(String),
+    /// This waits on the owner's answer.
+    Ask(super::asks::WaitingAsk),
+}
 
 /// Hand `reply`, what a turn in conversation `session_key` said, to the
 /// owner's call there, if one is live. The chat pipeline calls it as each
@@ -1087,10 +1007,29 @@ pub(crate) fn say_on_call(calls: &LiveCalls, session_key: &str, reply: &str) {
     }
     let call = calls.lock().unwrap_or_else(|e| e.into_inner()).get(session_key).cloned();
     if let Some(call) = call
-        && let Err(e) = call.try_send(reply.to_string())
+        && let Err(e) = call.try_send(CallNews::Reply(reply.to_string()))
     {
         // The reply is in the conversation either way; only the call misses it.
         warn!(session_key, error = %e, "voice: a reply for the call could not be handed to it");
+    }
+}
+
+/// Put `ask`, something now waiting on the owner's answer, to every call he
+/// is on, whichever conversation it waits in: the call speaks it, naming who
+/// asks, and his spoken answer goes to its id (live 2026-09-29: an
+/// employee's question sat unseen for ten minutes while he was on a call).
+pub(crate) fn tell_calls(calls: &LiveCalls, ask: &super::asks::WaitingAsk) {
+    let live: Vec<(String, mpsc::Sender<CallNews>)> = calls
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .map(|(k, c)| (k.clone(), c.clone()))
+        .collect();
+    for (key, call) in live {
+        if let Err(e) = call.try_send(CallNews::Ask(ask.clone())) {
+            // The ask is on every other surface either way.
+            warn!(session_key = %key, ask = %ask.id, error = %e, "voice: a waiting ask could not be handed to the call");
+        }
     }
 }
 
@@ -1100,11 +1039,11 @@ pub(crate) fn say_on_call(calls: &LiveCalls, session_key: &str, reply: &str) {
 struct OnCall {
     calls: LiveCalls,
     key: String,
-    heard: mpsc::Sender<String>,
+    heard: mpsc::Sender<CallNews>,
 }
 
 impl OnCall {
-    fn join(calls: &LiveCalls, key: &str, heard: mpsc::Sender<String>) -> Self {
+    fn join(calls: &LiveCalls, key: &str, heard: mpsc::Sender<CallNews>) -> Self {
         calls.lock().unwrap_or_else(|e| e.into_inner()).insert(key.to_string(), heard.clone());
         OnCall { calls: calls.clone(), key: key.to_string(), heard }
     }
@@ -1143,19 +1082,54 @@ fn heard_on_call(replies: &[String]) -> String {
     )
 }
 
+/// What the call says next from the news held for it: the replies to retell,
+/// then each ask still waiting that it hasn't been told of. `waiting` is the
+/// ids waiting on the owner now; `told` the ids the call already heard, and
+/// gains the ones said here. Empty when there is nothing to say.
+fn news_to_say(news: Vec<CallNews>, waiting: &std::collections::HashSet<String>, told: &mut std::collections::HashSet<String>) -> String {
+    let mut replies = Vec::new();
+    let mut asks = Vec::new();
+    for n in news {
+        match n {
+            CallNews::Reply(r) => replies.push(r),
+            CallNews::Ask(a) => {
+                if waiting.contains(&a.id) && told.insert(a.id.clone()) {
+                    asks.push(super::asks::on_call(&a));
+                }
+            }
+        }
+    }
+    let mut parts = Vec::new();
+    if !replies.is_empty() {
+        parts.push(heard_on_call(&replies));
+    }
+    parts.extend(asks);
+    parts.join("\n\n")
+}
+
 /// What the `status` voice tool answers, from the live counters of this
 /// conversation's own turn. It says so: live 2026-09-28, the owner asked on
 /// his call whether a linked employee was working, and the voice model
 /// answered from this line that it could only see its own conversation. What
 /// anyone else is doing is the `nebo` tool's to answer (list_employees).
-fn voice_status_line(st: Option<&agent::harness::session_gate::ActiveTurnStatus>) -> String {
-    match st {
+///
+/// What waits on the owner's answer, from anyone, is said with it, each with
+/// its id: a waiting question is never silent.
+fn voice_status_line(
+    st: Option<&agent::harness::session_gate::ActiveTurnStatus>,
+    waiting: &[super::asks::WaitingAsk],
+) -> String {
+    let mut line = match st {
         Some(st) => format!(
             "Still working in this conversation: {}.",
             agent::harness::session_gate::progress_phrase(st)
         ),
         None => "Nothing is running in this conversation. For what other employees are doing, use nebo.".to_string(),
+    };
+    for w in waiting {
+        line.push_str(&format!("\n- ask {}: {}", w.id, super::asks::waiting_line(w)));
     }
+    line
 }
 
 /// What the owner hears after `cancel`: what was stopped, from the counters
@@ -1259,6 +1233,22 @@ impl TurnLedger {
         let turn = if self.answering { &mut self.early } else { &mut self.turn };
         turn.delegated |= delegating;
         self.answering
+    }
+
+    /// What the owner has said since the model last replied, from the call's
+    /// own transcript: the finished utterances, and the one still in
+    /// progress. What a spoken answer to a waiting ask is read from, in the
+    /// owner's own words and language.
+    fn since_reply(&self) -> String {
+        let replied = self.turn.delegated || !self.turn.text.trim().is_empty();
+        let mut words = if replied { String::new() } else { self.said.clone() };
+        if self.open && !self.user.trim().is_empty() {
+            if !words.is_empty() {
+                words.push('\n');
+            }
+            words.push_str(self.user.trim());
+        }
+        words.trim().to_string()
     }
 
     /// The utterance ended: its user row, after the previous turn's model
@@ -1831,11 +1821,12 @@ async fn handle_conversation_ws(mut socket: WebSocket, state: AppState, mut q: C
              it is not clear they mean the running work, ask in one short sentence first. \
              While a task runs, \
              say you are on it once. If a result says the last task is still running and \
-             the message is waiting, say that instead of on it. If a result says it is \
-             waiting on the user's OK, ask them that in one short question; when they \
-             answer yes or no, call `answer_ask` with the ask id and their answer. They \
-             can also tap the card in this conversation or in their Inbox, in the Nebo \
-             app on any of their devices.",
+             the message is waiting, say that instead of on it. When you are told an employee \
+             is waiting on the user's answer, put the question to them right away in one \
+             short question, in the language they are speaking, saying who asks. When they \
+             answer, call `answer_ask` with the ask id you were told and their words exactly \
+             as they said them; never make up an id. They can also answer it in the Nebo app \
+             on any of their devices, where it is pinned at the top of the chat.",
         );
     }
     // Where the call runs, from the builder a text turn's rows come from:
@@ -2292,14 +2283,16 @@ async fn handle_conversation_session(
 
     // Completed tool executions flow back through this channel so the select
     // loop below owns all rt_tx sends (all outputs before one continuation).
-    let (tool_done_tx, mut tool_done_rx) = mpsc::channel::<(String, String)>(8);
+    // Each carries the ids of the waiting asks its output told the call of.
+    let (tool_done_tx, mut tool_done_rx) = mpsc::channel::<(String, String, Vec<String>)>(8);
     let mut pending_tools: usize = 0;
 
     // Runs one tool call off the select loop; its output comes back through
     // `tool_done_tx`.
     // `said` is what the owner said since the call's last reply
-    // (`TurnLedger::said`), read when the call starts.
-    let spawn_tool = |call_id: String, name: String, arguments: String, said: String| {
+    // (`TurnLedger::said`), read when the call starts, and `spoke_at` when
+    // he last spoke.
+    let spawn_tool = |call_id: String, name: String, arguments: String, said: String, spoke_at: i64| {
         let state = state.clone();
         let ctx = ctx.clone();
         let done = tool_done_tx.clone();
@@ -2330,13 +2323,23 @@ async fn handle_conversation_session(
             // `nebo` delegates to a harness turn (the ONE
             // tool brain); anything else the model improvises
             // still runs through the policy-gated registry.
+            let mut told = Vec::new();
             let output = if name == "nebo" {
                 let task = input
                     .get("task")
                     .and_then(|v| v.as_str())
                     .unwrap_or_default();
-                let started = chrono::Utc::now().timestamp();
-                let mut content = if task.is_empty() {
+                // On the owner's own call, what waits on his answer in this
+                // conversation comes first: his answer answers it, and a
+                // new task never queues behind a question.
+                let first = match caller.as_ref() {
+                    None => before_task(&state, state.decide.as_deref(), &ctx.session_key, &said, spoke_at).await,
+                    Some(_) => None,
+                };
+                let content = if let Some(first) = first {
+                    told = first.told;
+                    first.text
+                } else if task.is_empty() {
                     "The nebo tool needs a `task` string describing what to do.".to_string()
                 } else {
                     // A delegated run appends to the thread —
@@ -2349,13 +2352,10 @@ async fn handle_conversation_session(
                     {
                         warn!(error = %e, "voice: could not open the lead's team seat");
                     }
-                    run_delegated_task(&state, &ctx.session_key, task, &said, caller.as_ref()).await
+                    let reply = run_delegated_task(&state, &ctx.session_key, task, &said, caller.as_ref()).await;
+                    told = reply.told;
+                    reply.text
                 };
-                // On the owner's own call, what the run left waiting on his
-                // OK, with the id his spoken answer goes to.
-                if caller.is_none() {
-                    content.push_str(&waiting_on_owner(&state.permission_asks, &ctx.session_key, started));
-                }
                 serde_json::json!({ "ok": true, "content": content })
             } else {
                 let result = state.tools.execute(&ctx, &name, input).await;
@@ -2366,7 +2366,7 @@ async fn handle_conversation_session(
                     "content": result.content,
                 })
             };
-            let _ = done.send((call_id, output.to_string())).await;
+            let _ = done.send((call_id, output.to_string(), told)).await;
         });
     };
     // `nebo` calls that answer an utterance whose user row is not written
@@ -2377,9 +2377,17 @@ async fn handle_conversation_session(
     // outside the call (a coworker's reply coming back, a helper's result)
     // is said aloud once the call is free to speak. The owner's own calls
     // only; a phone caller's call is its own conversation.
-    let (heard_tx, mut heard_rx) = mpsc::channel::<String>(8);
+    let (heard_tx, mut heard_rx) = mpsc::channel::<CallNews>(32);
     let _on_call = caller_ctx.is_none().then(|| OnCall::join(&state.live_calls, &ctx.session_key, heard_tx));
-    let mut to_say: Vec<String> = Vec::new();
+    let mut to_say: Vec<CallNews> = Vec::new();
+    // The waiting asks this call has told the owner of, by id: each is put
+    // to him once, however it reached the call.
+    let mut told: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // What already waits on the owner's answer when he calls is the first
+    // thing the call says: a waiting question is never silent.
+    if caller_ctx.is_none() {
+        to_say.extend(super::asks::waiting(&state, None).await.into_iter().map(|w| CallNews::Ask(w.card)));
+    }
     // A model response is owed or playing: nothing new is said over it.
     let mut responding = false;
 
@@ -2410,7 +2418,7 @@ async fn handle_conversation_session(
                         let rows = ledger.user_final();
                         sink.write(&state, &mut socket, rows).await;
                         for (call_id, name, arguments) in held_runs.drain(..) {
-                            spawn_tool(call_id, name, arguments, ledger.said.clone());
+                            spawn_tool(call_id, name, arguments, ledger.said.clone(), ledger.spoke_at);
                         }
                         Some(serde_json::json!({"type": "transcription_end"}))
                     }
@@ -2474,6 +2482,7 @@ async fn handle_conversation_session(
                                         "content": "Call ended."
                                     })
                                     .to_string(),
+                                    Vec::new(),
                                 ))
                                 .await;
                             let _ = socket
@@ -2487,13 +2496,18 @@ async fn handle_conversation_session(
                         }
                         if name == "status" && caller_ctx.is_none() {
                             pending_tools += 1;
+                            let waiting: Vec<super::asks::WaitingAsk> =
+                                super::asks::waiting(&state, None).await.into_iter().map(|w| w.card).collect();
+                            told.extend(waiting.iter().map(|w| w.id.clone()));
                             let line = voice_status_line(
                                 state.harness.active_turn_status(&ctx.session_key).as_ref(),
+                                &waiting,
                             );
                             if tool_done_tx
                                 .send((
                                     call_id,
                                     serde_json::json!({"ok": true, "content": line}).to_string(),
+                                    Vec::new(),
                                 ))
                                 .await
                                 .is_err()
@@ -2504,18 +2518,20 @@ async fn handle_conversation_session(
                         }
                         if name == "answer_ask" && caller_ctx.is_none() {
                             pending_tools += 1;
-                            let line = answer_ask_by_voice(
+                            let (ok, line) = answer_ask_on_call(
                                 &state,
-                                &ctx.session_key,
+                                state.decide.as_deref(),
                                 &decode_tool_arguments(&arguments),
+                                &ledger.since_reply(),
                                 ledger.spoke_at,
                             )
                             .await;
-                            info!(session_key = %ctx.session_key, outcome = %line, "voice answer to an ask");
+                            info!(session_key = %ctx.session_key, ok, outcome = %line, "voice answer to an ask");
                             if tool_done_tx
                                 .send((
                                     call_id,
-                                    serde_json::json!({"ok": true, "content": line}).to_string(),
+                                    serde_json::json!({"ok": ok, "content": line}).to_string(),
+                                    Vec::new(),
                                 ))
                                 .await
                                 .is_err()
@@ -2541,6 +2557,7 @@ async fn handle_conversation_session(
                                 .send((
                                     call_id,
                                     serde_json::json!({"ok": true, "content": line}).to_string(),
+                                    Vec::new(),
                                 ))
                                 .await
                                 .is_err()
@@ -2565,6 +2582,7 @@ async fn handle_conversation_session(
                                         "content": "Transferring now — the caller is being connected."
                                     })
                                     .to_string(),
+                                    Vec::new(),
                                 ))
                                 .await;
                             if socket
@@ -2587,7 +2605,7 @@ async fn handle_conversation_session(
                         if name == "nebo" && ledger.call(team.is_none()) {
                             held_runs.push((call_id, name, arguments));
                         } else {
-                            spawn_tool(call_id, name, arguments, ledger.said.clone());
+                            spawn_tool(call_id, name, arguments, ledger.said.clone(), ledger.spoke_at);
                         }
                         None
                     }
@@ -2601,7 +2619,8 @@ async fn handle_conversation_session(
 
             // Finished tool executions -> upstream. ALL outputs first, then
             // exactly one continuation once nothing is outstanding.
-            Some((call_id, output)) = tool_done_rx.recv() => {
+            Some((call_id, output, told_by_it)) = tool_done_rx.recv() => {
+                told.extend(told_by_it);
                 if rt_tx.send(RealtimeCommand::ToolOutput { call_id, output }).await.is_err() {
                     break;
                 }
@@ -2681,12 +2700,18 @@ async fn handle_conversation_session(
         // tool is out. The thread already has it as a row; the model's
         // retelling writes none.
         if !to_say.is_empty() && !responding && pending_tools == 0 && held_runs.is_empty() && !ledger.open {
-            let rows = ledger.relayed();
-            sink.write(&state, &mut socket, rows).await;
-            if rt_tx.send(RealtimeCommand::Text(heard_on_call(&std::mem::take(&mut to_say)))).await.is_err() {
-                break;
+            // An ask answered or dropped while it waited here is not said.
+            let waiting: std::collections::HashSet<String> =
+                super::asks::waiting(&state, None).await.into_iter().map(|w| w.card.id).collect();
+            let say = news_to_say(std::mem::take(&mut to_say), &waiting, &mut told);
+            if !say.is_empty() {
+                let rows = ledger.relayed();
+                sink.write(&state, &mut socket, rows).await;
+                if rt_tx.send(RealtimeCommand::Text(say)).await.is_err() {
+                    break;
+                }
+                responding = true;
             }
-            responding = true;
         }
     }
 
@@ -2696,7 +2721,7 @@ async fn handle_conversation_session(
     sink.write(&state, &mut socket, rows).await;
     // A run the owner asked for still runs when the call ends first.
     for (call_id, name, arguments) in held_runs.drain(..) {
-        spawn_tool(call_id, name, arguments, ledger.said.clone());
+        spawn_tool(call_id, name, arguments, ledger.said.clone(), ledger.spoke_at);
     }
     if let Some(cid) = chat_id.as_deref() {
         // A short call can end before any assistant row was written: last
@@ -2869,14 +2894,14 @@ mod voice_prompt_tests {
         say_on_call(&calls, "agent:a:thread:c1", "The coder says three files are left.");
         say_on_call(&calls, "agent:a:thread:other", "not this call's");
         say_on_call(&calls, "agent:a:thread:c1", "  ");
-        assert_eq!(first.recv().await.as_deref(), Some("The coder says three files are left."));
+        assert!(matches!(first.recv().await, Some(CallNews::Reply(r)) if r == "The coder says three files are left."));
         assert!(first.try_recv().is_err(), "only its own conversation, and only words");
 
         let (second_tx, mut second) = mpsc::channel(4);
         let _on_second = OnCall::join(&calls, "agent:a:thread:c1", second_tx);
         drop(on_first);
         say_on_call(&calls, "agent:a:thread:c1", "later");
-        assert_eq!(second.recv().await.as_deref(), Some("later"), "the call still on it keeps the place");
+        assert!(matches!(second.recv().await, Some(CallNews::Reply(r)) if r == "later"), "the call still on it keeps the place");
 
         let told = heard_on_call(&["The coder says three files are left.".to_string(), "x".repeat(HEARD_CHARS + 5)]);
         assert!(told.contains("It is not something the owner said."), "{told}");
@@ -3018,11 +3043,11 @@ mod voice_prompt_tests {
     fn status_line_reads_the_counters_or_says_idle() {
         let st = agent::harness::session_gate::ActiveTurnStatus { elapsed_secs: 200, tool_calls: 2, current_tool: "os: exec".into() };
         assert_eq!(
-            voice_status_line(Some(&st)),
+            voice_status_line(Some(&st), &[]),
             "Still working in this conversation: 3 minutes in, 2 tool calls so far, currently running os: exec."
         );
         assert_eq!(
-            voice_status_line(None),
+            voice_status_line(None, &[]),
             "Nothing is running in this conversation. For what other employees are doing, use nebo."
         );
     }
@@ -3074,184 +3099,110 @@ mod voice_prompt_tests {
         ai::StreamEvent::ask_request("req-1", prompt, Some(widgets))
     }
 
-    /// Option widgets are read out; a lone option or a pair reads naturally.
-    #[test]
-    fn spoken_ask_reads_the_options() {
-        let e = ask_event(
-            "Which calendar should I use?",
-            serde_json::json!([{ "type": "options", "options": ["Work", { "label": "Personal" }, "Both"] }]),
-        );
-        assert_eq!(
-            super::spoken_ask(&e),
-            "Which calendar should I use? Your options are: Work, Personal, or Both."
-        );
-        let e = ask_event("Send it?", serde_json::json!([{ "type": "options", "options": ["Yes", "No"] }]));
-        assert_eq!(super::spoken_ask(&e), "Send it? Your options are: Yes or No.");
-        let e = ask_event("Go on?", serde_json::json!([]));
-        assert_eq!(super::spoken_ask(&e), "Go on?");
-    }
-
-    /// A permission question on the run (a linked agent's ask: its card
-    /// names the owner's answer each option is) reads its options and gives
-    /// the voice model its id, never its sentence, for the spoken answer.
-    #[test]
-    fn spoken_ask_gives_a_permission_question_its_id() {
-        let e = ai::StreamEvent::ask_request(
-            "toolu_016",
-            "Check whether README changed",
-            Some(serde_json::json!([{ "type": "options", "options": ["Allow once", "Always allow", "Deny"],
-                "answers": ["this_once", "allow_always", "no"] }])),
-        );
-        let spoken = super::spoken_ask(&e);
-        assert!(
-            spoken.starts_with("Check whether README changed Your options are: Allow once, Always allow, or Deny."),
-            "{spoken}"
-        );
-        assert!(spoken.contains("call answer_ask with ask_id \"toolu_016\""), "{spoken}");
-    }
-
-    fn parked(answers: serde_json::Value, created_at: i64) -> crate::handlers::chat::PendingAsk {
-        crate::handlers::chat::PendingAsk {
-            request_id: "toolu_016".into(),
-            prompt: "git status".into(),
-            widgets: Some(serde_json::json!([{ "type": "options", "options": ["Allow once", "Always allow", "Deny"], "answers": answers }])),
-            created_at,
+    fn register<'a>(state: &'a AppState, key: &str) -> impl std::future::Future<Output = RunHandle> + 'a {
+        let key = key.to_string();
+        async move {
+            state
+                .run_registry
+                .register(crate::run_registry::RegisterParams {
+                    session_key: key,
+                    entity_id: "a".into(),
+                    entity_name: "A".into(),
+                    origin: "user".into(),
+                    channel: "voice".into(),
+                    cancel_token: tokio_util::sync::CancellationToken::new(),
+                    parent_run_id: None,
+                })
+                .await
         }
     }
 
-    /// A spoken answer to a parked permission question counts only after
-    /// the owner spoke, and only as one of the card's answers: the nearest
-    /// one it offers when it doesn't offer his.
-    #[test]
-    fn a_spoken_answer_is_one_the_parked_card_offers() {
-        let all = parked(serde_json::json!(["this_once", "allow_always", "no"]), 100);
-        let say = |answer: &str| serde_json::json!({ "ask_id": "toolu_016", "answer": answer });
-        assert!(super::parked_answer(&all, &say("allow_always"), 100).unwrap_err().contains("hasn't answered"));
-        assert_eq!(super::parked_answer(&all, &say("allow_always"), 101), Ok("allow_always"));
-        assert_eq!(super::parked_answer(&all, &say("no"), 101), Ok("no"));
-        assert!(super::parked_answer(&all, &say("maybe"), 101).is_err());
-        let once_or_no = parked(serde_json::json!(["this_once", "no"]), 100);
-        assert_eq!(super::parked_answer(&once_or_no, &say("allow_always"), 101), Ok("this_once"));
-        let always_only = parked(serde_json::json!(["allow_always", null]), 100);
-        assert_eq!(super::parked_answer(&always_only, &say("this_once"), 101), Ok("allow_always"));
-        assert!(super::parked_answer(&always_only, &say("no"), 101).is_err(), "no is never invented");
-    }
-
-    /// Install and sign-in cards become one sentence naming the app: the
-    /// action happens in the app, the phone only needs to know to go there.
-    #[test]
-    fn spoken_ask_names_the_app_for_cards() {
-        let e = ask_event(
-            "Install QuickBooks to continue.",
-            serde_json::json!([{ "type": "install_plugin", "name": "QuickBooks", "code": "PLUG-1" }]),
-        );
-        assert_eq!(super::spoken_ask(&e), "I need you to install QuickBooks from the app before I can continue.");
-        let e = ask_event(
-            "Connect your Gmail on the card.",
-            serde_json::json!([{ "type": "connect_account", "plugin": "gmail", "label": "Gmail" }]),
-        );
-        assert_eq!(super::spoken_ask(&e), "I need you to sign in to Gmail from the app before I can continue.");
-    }
-
-    /// A run that parks on a question answers the phone at once with the
-    /// spoken question, records the card on the run, and when the run later
-    /// ends releases the card and emits chat_complete for the session.
-    #[tokio::test]
-    async fn drain_voice_run_speaks_the_ask_then_finishes_the_turn() {
-        let hub = std::sync::Arc::new(crate::handlers::ws::ClientHub::new());
-        let mut events = hub.subscribe();
-        let registry = crate::run_registry::RunRegistry::new();
-        let ask_channels: tools::AskChannels = Default::default();
-        let cancel = tokio_util::sync::CancellationToken::new();
-        let run_handle = registry
-            .register(crate::run_registry::RegisterParams {
-                session_key: "agent:a:thread:t".into(),
-                entity_id: "a".into(),
-                entity_name: "A".into(),
-                origin: "user".into(),
-                channel: "voice".into(),
-                cancel_token: cancel.clone(),
-                parent_run_id: None,
-            })
-            .await;
+    /// A run that parks on a question answers the call at once with what it
+    /// said before it (the question itself comes back from the waiting asks,
+    /// with its id), records the card on the run, tells the owner's live
+    /// calls, and when the run later ends releases the card and emits
+    /// chat_complete for the session.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn drain_voice_run_parks_the_ask_then_finishes_the_turn() {
+        let nebo = crate::staffed_proof::session().await;
+        let state = nebo.state.clone();
+        let key = format!("agent:a:thread:{}", uuid::Uuid::new_v4());
+        let mut events = state.hub.subscribe();
+        let run_handle = register(&state, &key).await;
+        // A call the owner is on elsewhere hears the question.
+        let (call_tx, mut call) = mpsc::channel(8);
+        let _on_call = OnCall::join(&state.live_calls, "agent:b:thread:elsewhere", call_tx);
         // The tool side of the ask: a oneshot the drain must leave alone
         // while parked and release when the run ends.
         let (ask_tx, ask_rx) = tokio::sync::oneshot::channel::<String>();
-        ask_channels.lock().await.insert("req-1".into(), ask_tx);
+        state.ask_channels.lock().await.insert("req-1".into(), ask_tx);
 
         let (tx, rx) = tokio::sync::mpsc::channel(8);
         let (spoken_tx, spoken_rx) = tokio::sync::oneshot::channel();
-        let sinks = super::VoiceRunSinks {
-            hub: hub.clone(),
-            registry: registry.clone(),
-            ask_channels: ask_channels.clone(),
-        };
         let drain = tokio::spawn(super::drain_voice_run(
-            sinks,
-            "agent:a:thread:t".into(),
+            state.clone(),
+            key.clone(),
             "a".into(),
             rx,
             run_handle,
-            cancel,
+            tokio_util::sync::CancellationToken::new(),
             spoken_tx,
         ));
 
+        tx.send(ai::StreamEvent::text("Checking. ")).await.unwrap();
         tx.send(ask_event("Send it?", serde_json::json!([{ "type": "options", "options": ["Yes", "No"] }])))
             .await
             .unwrap();
-        let spoken = tokio::time::timeout(std::time::Duration::from_secs(2), spoken_rx)
+        let spoken = tokio::time::timeout(std::time::Duration::from_secs(5), spoken_rx)
             .await
-            .expect("phone hears the question before the run ends")
+            .expect("the call hears back before the run ends")
             .unwrap();
-        assert_eq!(spoken, "Send it? Your options are: Yes or No.");
-        let parked = registry.pending_ask_for_session("agent:a:thread:t").await.expect("card recorded on the run");
+        assert_eq!(spoken, "Checking. ", "what it said before the question");
+        let parked = state.run_registry.pending_ask_for_session(&key).await.expect("card recorded on the run");
         assert_eq!(parked.request_id, "req-1");
-        assert!(ask_channels.lock().await.contains_key("req-1"), "the answer channel waits while parked");
-        let live = events.recv().await.unwrap();
-        assert_eq!(live.event_type, "ask_request");
-        assert_eq!(live.payload["request_id"], "req-1");
+        assert!(state.ask_channels.lock().await.contains_key("req-1"), "the answer channel waits while parked");
+        let told = tokio::time::timeout(std::time::Duration::from_secs(5), call.recv()).await.unwrap().unwrap();
+        match told {
+            CallNews::Ask(w) => assert_eq!((w.id.as_str(), w.question.as_str(), w.kind.as_str()), ("req-1", "Send it?", "question")),
+            other => panic!("the call was told {other:?}"),
+        }
+        loop {
+            let e = events.recv().await.unwrap();
+            if e.event_type == "asks_waiting" {
+                assert!(e.payload["asks"].as_array().unwrap().iter().any(|a| a["id"] == "req-1"), "{}", e.payload);
+                break;
+            }
+        }
 
         // The run ends (answered elsewhere, or not): the turn finishes.
-        tx.send(ai::StreamEvent::text("Done.")).await.unwrap();
         drop(tx);
         drain.await.unwrap();
-        let done = events.recv().await.unwrap();
-        assert_eq!(done.event_type, "chat_complete");
-        assert_eq!(done.payload["session_id"], "agent:a:thread:t");
+        let done = loop {
+            let e = events.recv().await.unwrap();
+            if e.event_type == "chat_complete" && e.payload["session_id"] == key.as_str() {
+                break e;
+            }
+        };
         assert_eq!(done.payload["agentId"], "a");
-        assert!(ask_channels.lock().await.is_empty(), "the unanswered channel is released with the run");
+        assert!(!state.ask_channels.lock().await.contains_key("req-1"), "the unanswered channel is released with the run");
         assert!(ask_rx.await.is_err(), "the parked tool is woken");
-        assert!(registry.pending_asks().await.is_empty());
+        assert!(state.run_registry.pending_ask_for_session(&key).await.is_none());
     }
 
-    /// Without a question the phone hears the run's text at the end, and
+    /// Without a question the call hears the run's text at the end, and
     /// chat_complete still follows.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn drain_voice_run_speaks_the_reply_when_nothing_parks() {
-        let hub = std::sync::Arc::new(crate::handlers::ws::ClientHub::new());
-        let mut events = hub.subscribe();
-        let registry = crate::run_registry::RunRegistry::new();
-        let run_handle = registry
-            .register(crate::run_registry::RegisterParams {
-                session_key: "s".into(),
-                entity_id: "a".into(),
-                entity_name: "A".into(),
-                origin: "user".into(),
-                channel: "voice".into(),
-                cancel_token: tokio_util::sync::CancellationToken::new(),
-                parent_run_id: None,
-            })
-            .await;
+        let nebo = crate::staffed_proof::session().await;
+        let state = nebo.state.clone();
+        let key = format!("agent:a:thread:{}", uuid::Uuid::new_v4());
+        let mut events = state.hub.subscribe();
+        let run_handle = register(&state, &key).await;
         let (tx, rx) = tokio::sync::mpsc::channel(8);
         let (spoken_tx, spoken_rx) = tokio::sync::oneshot::channel();
-        let sinks = super::VoiceRunSinks {
-            hub: hub.clone(),
-            registry,
-            ask_channels: Default::default(),
-        };
         let drain = tokio::spawn(super::drain_voice_run(
-            sinks,
-            "s".into(),
+            state.clone(),
+            key.clone(),
             "a".into(),
             rx,
             run_handle,
@@ -3263,6 +3214,68 @@ mod voice_prompt_tests {
         drop(tx);
         drain.await.unwrap();
         assert_eq!(spoken_rx.await.unwrap(), "Booked both.");
-        assert_eq!(events.recv().await.unwrap().event_type, "chat_complete");
+        loop {
+            let e = events.recv().await.unwrap();
+            if e.event_type == "chat_complete" && e.payload["session_id"] == key.as_str() {
+                break;
+            }
+        }
+    }
+
+    /// Every live call hears what waits on the owner, from any conversation;
+    /// what the call says names who asks and the real id, once, and never an
+    /// ask that was answered while it waited.
+    #[tokio::test]
+    async fn a_waiting_ask_is_put_to_every_call_once() {
+        let calls: LiveCalls = Default::default();
+        let (a_tx, mut a) = mpsc::channel(4);
+        let (b_tx, mut b) = mpsc::channel(4);
+        let _a = OnCall::join(&calls, "agent:nanna:thread:t1", a_tx);
+        let _b = OnCall::join(&calls, "agent:ava:thread:t9", b_tx);
+        let w = crate::handlers::asks::tests::question("bf8e2c67", "Set up the stand-up?", &["Yes", "No"]).card;
+        tell_calls(&calls, &w);
+        let (Some(CallNews::Ask(on_a)), Some(CallNews::Ask(on_b))) = (a.recv().await, b.recv().await) else {
+            panic!("both calls are told");
+        };
+        assert_eq!((on_a.id.as_str(), on_b.id.as_str()), ("bf8e2c67", "bf8e2c67"));
+
+        let waiting: std::collections::HashSet<String> = ["bf8e2c67".to_string()].into();
+        let mut told = std::collections::HashSet::new();
+        let said = news_to_say(vec![CallNews::Reply("Three files left.".into()), CallNews::Ask(on_a.clone())], &waiting, &mut told);
+        assert!(said.contains("Three files left.") && said.contains("It is not something the owner said."), "{said}");
+        assert!(said.contains("Nanna is waiting on the owner's answer, ask bf8e2c67"), "{said}");
+        assert!(said.contains("call answer_ask with ask_id \"bf8e2c67\""), "{said}");
+        assert_eq!(news_to_say(vec![CallNews::Ask(on_a.clone())], &waiting, &mut told), "", "told once");
+        let mut fresh = std::collections::HashSet::new();
+        assert_eq!(news_to_say(vec![CallNews::Ask(on_b)], &Default::default(), &mut fresh), "", "answered meanwhile");
+    }
+
+    /// `status` says who waits on what, with each id: a waiting question is
+    /// never silent.
+    #[test]
+    fn status_names_what_waits_on_the_owner() {
+        let w = crate::handlers::asks::tests::question("bf8e2c67", "Set up the stand-up?", &["Yes", "No"]).card;
+        let line = voice_status_line(None, &[w]);
+        assert!(
+            line.ends_with("\n- ask bf8e2c67: Nanna is waiting on your answer: Set up the stand-up?"),
+            "{line}"
+        );
+    }
+
+    /// The owner's words since the model's last reply, from the transcript:
+    /// the utterance in progress counts, words from before the reply don't.
+    #[test]
+    fn since_reply_is_the_owners_words_after_the_question() {
+        let mut l = TurnLedger::default();
+        l.words("set up a daily stand-up");
+        l.user_final();
+        l.reply_started();
+        l.speech("Nanna asks: one schedule instead of sub-agents? Yes or no?");
+        assert_eq!(l.since_reply(), "", "the question was the last thing said");
+        l.utterance_started();
+        l.words("はい");
+        assert_eq!(l.since_reply(), "はい", "before its transcript is final");
+        l.user_final();
+        assert_eq!(l.since_reply(), "はい");
     }
 }

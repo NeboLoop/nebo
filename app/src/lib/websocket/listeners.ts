@@ -17,6 +17,7 @@ import { getWebSocketClient } from './client';
 import { opensHere } from './origin';
 import { notifications, pushNotification, loadNotifications, settleUpdateNotices } from '$lib/stores/notifications';
 import { askRaised, askSettled, loadOpenAsks } from '$lib/stores/permissionAsks';
+import { loadWaitingAsks, setWaitingAsks } from '$lib/stores/waitingAsks';
 import { addToast, removeToast } from '$lib/stores/toast';
 import { onUpdateAvailable, onUpdateProgress, onUpdateReady, onUpdateError } from '$lib/stores/update';
 import { logger } from '$lib/monitoring';
@@ -50,6 +51,11 @@ export function attachWebSocketListeners(): void {
   // clears it everywhere. ---
   unsubs.push(ws.on('permission_ask', (data: any) => askRaised(data)));
   unsubs.push(ws.on('permission_ask_resolved', (data: any) => askSettled(data)));
+
+  // --- Everything waiting on the owner's answer, from every employee: the
+  // pinned bar's list, loaded once and replaced whole on every change. ---
+  void loadWaitingAsks().catch(() => log.debug('Waiting asks API unavailable'));
+  unsubs.push(ws.on('asks_waiting', (data: any) => setWaitingAsks(data)));
 
   // --- Notifications: store + toast ---
   unsubs.push(

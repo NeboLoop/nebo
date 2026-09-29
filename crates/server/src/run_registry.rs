@@ -288,9 +288,19 @@ impl RunRegistry {
 
     /// Record the question the session's run is now parked on. Returns false
     /// when no run is registered under that session (nothing to park on).
+    ///
+    /// A message sent while the turn runs registers a run of its own under
+    /// the same session for as long as it takes to queue into the turn; the
+    /// question belongs to the run that has been going longest, the one
+    /// whose turn asked it, never to that short-lived one (whose end would
+    /// drop the question with it).
     pub async fn park_ask(&self, session_key: &str, ask: PendingAsk) -> bool {
         let runs = self.inner.runs.read().await;
-        match runs.values().find(|e| e.session_key == session_key) {
+        match runs
+            .values()
+            .filter(|e| e.session_key == session_key)
+            .min_by_key(|e| e.started_at)
+        {
             Some(entry) => {
                 *entry.pending_ask.lock().unwrap_or_else(|e| e.into_inner()) = Some(ask);
                 true
@@ -299,12 +309,13 @@ impl RunRegistry {
         }
     }
 
-    /// The question the session's run is parked on, if any.
+    /// The question the session's run is parked on, if any, whichever of the
+    /// session's runs holds it.
     pub async fn pending_ask_for_session(&self, session_key: &str) -> Option<PendingAsk> {
         let runs = self.inner.runs.read().await;
         runs.values()
-            .find(|e| e.session_key == session_key)
-            .and_then(RunEntry::pending_ask)
+            .filter(|e| e.session_key == session_key)
+            .find_map(RunEntry::pending_ask)
     }
 
     /// Every parked question, with the session it belongs to (a client that
@@ -645,6 +656,27 @@ mod tests {
         let all = registry.pending_asks().await;
         assert_eq!(all.len(), 1);
         assert_eq!(all[0].0, "agent:a:thread:1");
+    }
+
+    /// A message queued into a parked turn registers a second, short-lived
+    /// run under the same session: the question stays on the turn's own run
+    /// and is found whichever run is listed first, and the queued run's end
+    /// takes nothing with it.
+    #[tokio::test]
+    async fn a_queued_message_never_takes_the_question() {
+        let registry = RunRegistry::new();
+        let turn = register(&registry, "s1").await;
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+        let queued = register(&registry, "s1").await;
+        assert!(registry.park_ask("s1", ask("r1")).await);
+        for _ in 0..8 {
+            assert_eq!(registry.pending_ask_for_session("s1").await.unwrap().request_id, "r1");
+        }
+        assert!(queued.take_pending_ask().is_none(), "the queued run holds no question");
+        drop(queued);
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        assert_eq!(registry.pending_ask_for_session("s1").await.unwrap().request_id, "r1");
+        assert_eq!(turn.take_pending_ask().unwrap().request_id, "r1");
     }
 
     /// Answering clears the question by request id and names the session it
