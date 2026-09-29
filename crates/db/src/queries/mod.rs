@@ -1,4 +1,5 @@
 mod a2ui_surfaces;
+mod addressings;
 mod assignments;
 mod advisors;
 mod agent_profile;
@@ -45,6 +46,7 @@ mod teams;
 mod temporary_work;
 mod upgrade;
 
+pub use addressings::{Addressing, AddressingState};
 pub use agents::agent_slug;
 pub use inbound_mail::InboundMailRow;
 pub use assignments::{Assignment, NewAssignment};

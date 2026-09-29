@@ -12,83 +12,21 @@
 //! 3. forwards it to the team's hub channel when the team is mirrored —
 //!    best effort, never on the critical path.
 //!
-//! Turn-taking (the chatter-storm guard) is `act_targets`: the team lead
-//! manages the room (owner rule, 2026-09-15). A post carrying mentions asks
-//! only the mentioned members to act; a post directed at the team from
-//! outside it — the owner's, or another employee's such as the one the owner
-//! talks to — that names nobody goes to the lead alone, who answers and
-//! hands steps to teammates by mention; only an explicit @everyone asks the
-//! whole team; a reply asks nobody unless it mentions someone. A team with no
-//! lead takes an unaddressed post only from the owner, and then asks
-//! everyone once; an employee's is refused, with the reason.
-//! Every delivery carries the depth of the post that caused it, and the
-//! rail's existing depth limit refuses past it.
+//! Who a post asks to act is `addressing::who_is_addressed` — the ONE
+//! routing model for team posts and messages between employees: the
+//! owner's plain post goes to the lead, @Name to that member, @everyone to
+//! every member, and the lead, answering, hands steps off by name. Nothing
+//! else asks anyone: a member's reply is its answer, and it goes to whoever
+//! asked (and into the thread), never back as a new question. Each member
+//! answers each post once (`addressing::turn_ended`).
 
 use std::future::Future;
 use std::pin::Pin;
 
 use tools::coworker::{Authority, CoworkerMessage, TeamDelivery, TeamPost, TeamPostReceipt};
 
+use crate::addressing::{self, NoLead, Room, Said};
 use crate::state::AppState;
-
-/// An employee's post that names nobody, to a team with no lead: nobody
-/// would take it.
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) struct NoLead;
-
-/// Which members a post asks to act. Pure — the whole turn-taking policy.
-/// `lead` is the team's lead (`tools::team::lead_of`).
-///
-/// - `everyone` (an explicit @everyone) from outside the team (the owner,
-///   `from_agent_id` empty, or another employee) or from the lead: every
-///   other member, once — even in a reply, since the lead runs the room;
-/// - mentions present: the mentioned members (that are in the team), never
-///   the poster itself;
-/// - a reply: nobody;
-/// - a deliberate post from outside the team that names nobody: the lead
-///   alone. With no lead, the owner's post asks every member once; an
-///   employee's is `NoLead`;
-/// - a member's own unaddressed post, the lead's included: nobody. The lead
-///   delegates by mention, not by posting.
-pub(crate) fn act_targets(
-    from_agent_id: &str,
-    lead: Option<&str>,
-    members: &[String],
-    mentioned: &[String],
-    is_reply: bool,
-    everyone: bool,
-) -> Result<Vec<String>, NoLead> {
-    let others = || -> Vec<String> {
-        members
-            .iter()
-            .filter(|m| m.as_str() != from_agent_id)
-            .cloned()
-            .collect()
-    };
-    let from_owner = from_agent_id.is_empty();
-    let from_outside = from_owner || !members.iter().any(|m| m == from_agent_id);
-    let from_lead = lead == Some(from_agent_id);
-    if everyone && (from_outside || from_lead) {
-        return Ok(others());
-    }
-    if !mentioned.is_empty() {
-        let mut out: Vec<String> = Vec::new();
-        for m in mentioned {
-            if members.contains(m) && m != from_agent_id && !out.contains(m) {
-                out.push(m.clone());
-            }
-        }
-        return Ok(out);
-    }
-    if is_reply || !from_outside {
-        return Ok(Vec::new());
-    }
-    match lead {
-        Some(lead) => Ok(vec![lead.to_string()]),
-        None if from_owner => Ok(others()),
-        None => Err(NoLead),
-    }
-}
 
 /// Who wrote a team row, for `record`. Everything that happens on this Nebo
 /// is `Local`: the owner (empty id) or one of this Nebo's employees, whose
@@ -130,22 +68,28 @@ pub(crate) fn post(
 
         // Who acts is decided once, before anything is recorded or sent: a
         // post nobody would take is refused whole, and the hub mirror has to
-        // carry the asks for members on other machines.
+        // carry the asks for members on other machines. How the post is said
+        // — deliberately, or in the course of answering what addressed its
+        // author — is read from the conversation it was posted from.
         let member_ids = tools::team::member_ids(&team);
-        let mut mentioned = post.mention.clone();
+        let mut named = post.mention.clone();
         for id in tools::team::mentioned_members(&text, &member_ids) {
-            if !mentioned.contains(&id) {
-                mentioned.push(id);
+            if !named.contains(&id) {
+                named.push(id);
             }
         }
-        let act = act_targets(
-            &post.from_agent_id,
-            tools::team::lead_of(&team),
-            &member_ids,
-            &mentioned,
-            post.is_reply,
-            tools::team::mentions_everyone(&text),
-        )
+        let said = if post.from_agent_id.is_empty() {
+            Said::Deliberate
+        } else {
+            addressing::said_in(&state, post.reply_to.as_deref().unwrap_or_default(), &team.id)
+        };
+        let act = addressing::who_is_addressed(&addressing::Post {
+            author: &post.from_agent_id,
+            said: &said,
+            room: Some(Room { lead: tools::team::lead_of(&team), members: &member_ids }),
+            named: &named,
+            everyone: tools::team::mentions_everyone(&text),
+        })
         .map_err(|NoLead| {
             let names: Vec<String> = roster.iter().map(|(_, name)| format!("@{name}")).collect();
             format!(
@@ -164,6 +108,7 @@ pub(crate) fn post(
             TeamSender::Local(&post.from_agent_id),
             &text,
             &attachments_json,
+            &post.provenance,
         )?;
 
         // A member on another computer is reached the only way it can be:
@@ -264,12 +209,15 @@ pub(crate) fn post(
 /// takes a post it was asked to act on acknowledges through it
 /// (`coworker::OwnerForward::acknowledge`). Returns the
 /// row and the sender's display name ("Owner" for the owner of this Nebo).
+/// `provenance` is the posting run's: it rides the row as metadata, for the
+/// members briefed with the post and the gates, never in the words.
 pub(crate) fn record(
     state: &AppState,
     team: &db::Team,
     sender: TeamSender<'_>,
     text: &str,
     attachments: &serde_json::Value,
+    provenance: &[types::provenance::ProvenanceClass],
 ) -> Result<(db::TeamMessage, String), String> {
     let (from_agent_id, sender_name, role) = match sender {
         TeamSender::Local("") => ("", "Owner".to_string(), "user"),
@@ -290,7 +238,7 @@ pub(crate) fn record(
     };
     let message = state
         .store
-        .append_team_message(team, role, text, &sender_name, from_agent_id, attachments)
+        .append_team_message(team, role, text, &sender_name, from_agent_id, attachments, provenance)
         .map_err(|e| format!("record team post: {e}"))?;
     state.hub.broadcast(
         tools::team::TEAM_MESSAGE_EVENT,
@@ -392,109 +340,6 @@ async fn mirror_to_hub(
 
 #[cfg(test)]
 mod tests {
-    use super::{NoLead, act_targets};
-
-    fn members(n: usize) -> Vec<String> {
-        (1..=n).map(|i| format!("m{i}")).collect()
-    }
-
-    fn asked(from: &str, lead: Option<&str>, members: &[String], mentioned: &[String], is_reply: bool, everyone: bool) -> Vec<String> {
-        act_targets(from, lead, members, mentioned, is_reply, everyone).expect("someone decides")
-    }
-
-    /// Simulate the fan-out policy end to end: one post, then every member
-    /// asked to act replies (with no mentions), each reply itself a post
-    /// flagged as a reply. Returns the number of runs until nobody is asked.
-    fn simulate(first_from: &str, lead: Option<&str>, members: &[String], mentioned: &[String], everyone: bool) -> usize {
-        let mut runs = 0usize;
-        let mut queue: Vec<(String, Vec<String>, bool, bool)> =
-            vec![(first_from.to_string(), mentioned.to_vec(), false, everyone)];
-        let mut guard = 0usize;
-        while let Some((from, mentions, is_reply, all)) = queue.pop() {
-            guard += 1;
-            assert!(guard < 1_000, "fan-out did not converge");
-            for target in asked(&from, lead, members, &mentions, is_reply, all) {
-                runs += 1;
-                queue.push((target, Vec::new(), true, false));
-            }
-        }
-        runs
-    }
-
-    /// The owner's unaddressed post reaches the lead alone; the lead's reply
-    /// asks nobody; a five-member team runs exactly once.
-    #[test]
-    fn owner_post_goes_to_the_lead_alone() {
-        let team = members(5);
-        assert_eq!(asked("", Some("m1"), &team, &[], false, false), vec!["m1".to_string()]);
-        assert_eq!(simulate("", Some("m1"), &team, &[], false), 1);
-        // The lead posting without addressing anyone asks nobody: it
-        // delegates by mention, not by posting.
-        assert!(asked("m1", Some("m1"), &team, &[], false, false).is_empty());
-        // A non-lead member's unaddressed post asks nobody either.
-        assert!(asked("m3", Some("m1"), &team, &[], false, false).is_empty());
-    }
-
-    /// E15: the employee the owner talks to directs a team without naming
-    /// anyone: the lead answers, alone, once. Before, an employee's post
-    /// asked nobody at all.
-    #[test]
-    fn an_employees_post_from_outside_the_team_goes_to_the_lead() {
-        let team = members(4);
-        assert_eq!(asked("assistant", Some("m2"), &team, &[], false, false), vec!["m2".to_string()]);
-        assert_eq!(simulate("assistant", Some("m2"), &team, &[], false), 1);
-        // A member of the team is inside the room: its post names who acts.
-        assert!(asked("m3", Some("m2"), &team, &[], false, false).is_empty());
-    }
-
-    /// A team with no lead refuses an employee's unaddressed post: nobody
-    /// would take it. Named asks and @everyone still go through.
-    #[test]
-    fn a_team_with_no_lead_refuses_an_employees_unaddressed_post() {
-        let team = members(3);
-        assert_eq!(act_targets("assistant", None, &team, &[], false, false), Err(NoLead));
-        assert_eq!(asked("assistant", None, &team, &["m2".into()], false, false), vec!["m2".to_string()]);
-        assert_eq!(asked("assistant", None, &team, &[], false, true), team);
-    }
-
-    /// @everyone from the owner, from outside, or from the lead asks the
-    /// whole team once — and still does not loop, because replies never
-    /// re-open the floor.
-    #[test]
-    fn everyone_asks_the_whole_team_once() {
-        let team = members(5);
-        assert_eq!(asked("", Some("m1"), &team, &[], false, true), team);
-        assert_eq!(simulate("", Some("m1"), &team, &[], true), 5);
-        assert_eq!(asked("m1", Some("m1"), &team, &[], true, true).len(), 4);
-        // A member who is not the lead cannot summon everyone.
-        assert!(asked("m3", Some("m1"), &team, &[], false, true).is_empty());
-    }
-
-    /// Mentions narrow the ask to the mentioned members only, whoever posts;
-    /// a member never asks itself; strangers are ignored.
-    #[test]
-    fn mentions_ask_only_the_mentioned() {
-        let team = members(5);
-        assert_eq!(
-            asked("", Some("m1"), &team, &["m2".into(), "m4".into()], false, false),
-            vec!["m2".to_string(), "m4".to_string()]
-        );
-        assert_eq!(
-            asked("m3", Some("m1"), &team, &["m3".into(), "m5".into(), "zed".into()], true, false),
-            vec!["m5".to_string()]
-        );
-        assert_eq!(simulate("m3", Some("m1"), &team, &["m5".into()], false), 1);
-    }
-
-    /// With no lead on record the owner still reaches everyone once (the
-    /// owner's own rule, 2026-09-15), so the owner is never left unanswered.
-    #[test]
-    fn owner_reaches_everyone_without_a_lead() {
-        let team = members(3);
-        assert_eq!(asked("", None, &team, &[], false, false), team);
-        assert!(asked("m2", None, &team, &[], false, false).is_empty());
-    }
-
     /// The lead is ONE rule for text, voice and the roster: the member on
     /// record, if it is on the team; nobody when there is no lead or the
     /// lead left the team.

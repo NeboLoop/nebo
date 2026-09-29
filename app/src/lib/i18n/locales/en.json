@@ -432,7 +432,8 @@
 		"researchVerified": "{n} claims verified against sources",
 		"historyLoadFailed": "Couldn't load this conversation. Check your connection and try again.",
 		"consentCreates": "Say yes and they're created with exactly this job.",
-		"consentAdds": "Say yes and this is added to their job."
+		"consentAdds": "Say yes and this is added to their job.",
+		"fromColleague": "From {name}"
 	},
 	"chatInput": {
 		"placeholder": "Reply...",

@@ -1,0 +1,9 @@
+id: sc69-a-question-back-to-the-lead-is-the-members-answer
+name: "SC65 — A question back to the lead is the member's answer"
+description: |
+  A member the lead asks may ask the lead one question back: that is its answer. The lead
+  hears it as an answer, never as a new ask, answers the owner once, and the member is not
+  asked again.
+target_component: staffed-company
+proof: staffed_proof::conversation::a_question_back_to_the_lead_is_the_members_answer
+conversation: []

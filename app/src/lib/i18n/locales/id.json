@@ -423,7 +423,8 @@
 		"researchVerified": "{n} klaim diverifikasi terhadap sumber",
 		"historyLoadFailed": "Tidak bisa memuat percakapan ini. Periksa koneksi Anda dan coba lagi.",
 		"consentCreates": "Katakan ya dan karyawan ini dibuat dengan pekerjaan persis ini.",
-		"consentAdds": "Katakan ya dan ini ditambahkan ke pekerjaannya."
+		"consentAdds": "Katakan ya dan ini ditambahkan ke pekerjaannya.",
+		"fromColleague": "Dari {name}"
 	},
 	"chatInput": {
 		"placeholder": "Balas...",

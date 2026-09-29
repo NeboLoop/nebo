@@ -423,7 +423,8 @@
 		"researchVerified": "{n}件の主張を情報源と照合済み",
 		"historyLoadFailed": "この会話を読み込めませんでした。接続を確認してもう一度お試しください。",
 		"consentCreates": "「はい」と答えると、この仕事内容のまま作成されます。",
-		"consentAdds": "「はい」と答えると、これが仕事内容に加わります。"
+		"consentAdds": "「はい」と答えると、これが仕事内容に加わります。",
+		"fromColleague": "{name} から"
 	},
 	"chatInput": {
 		"placeholder": "返信...",

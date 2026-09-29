@@ -727,6 +727,13 @@ impl Driver<'_> {
         if let Some(lead) = &self.lead {
             prompt.push(json!({ "type": "text", "text": lead }));
         }
+        // What the turn was asked with beside the words (a team post's
+        // team, teammates and the conversation it has not seen): Nebo's model
+        // reads it as a reminder, which is never sent here.
+        let briefing = self.req.linked_context.as_ref().and_then(|c| c.0.run_briefing()).filter(|b| !b.trim().is_empty());
+        if let Some(briefing) = briefing {
+            prompt.push(json!({ "type": "text", "text": briefing }));
+        }
         prompt.push(json!({ "type": "text", "text": self.prompt }));
         let params = json!({ "sessionId": self.session, "prompt": prompt });
         let agent = self.agent.clone();
@@ -2200,6 +2207,29 @@ mod tests {
         async fn summary(&self) -> Option<String> {
             Some("SUMMARY".to_owned())
         }
+
+        fn run_briefing(&self) -> Option<String> {
+            None
+        }
+    }
+
+    /// A turn asked in a team, as the harness fixes it: its briefing carries
+    /// the team's conversation the member has not seen.
+    struct TeamTurn;
+
+    #[async_trait]
+    impl LinkedContext for TeamTurn {
+        fn briefing(&self) -> String {
+            "BRIEFING".to_owned()
+        }
+
+        async fn summary(&self) -> Option<String> {
+            None
+        }
+
+        fn run_briefing(&self) -> Option<String> {
+            Some("TEAM: The team's conversation before this post, oldest first:\nOwner: bring Codex up to speed".to_owned())
+        }
     }
 
     /// `req` with the harness's context for a fresh session.
@@ -2825,6 +2855,28 @@ mod tests {
         let chat = r.store.get_chat("chat-1").unwrap().unwrap();
         assert_eq!((chat.linked_used_tokens, chat.linked_window_tokens), (Some(1_000), Some(200_000)));
         assert!(chat.linked_turn_at.is_some());
+    }
+
+    /// A linked member asked in a team is sent what the post was asked
+    /// with — the team's conversation it has not seen — before the post, on
+    /// every turn, fresh session or not.
+    #[tokio::test]
+    async fn a_team_turn_is_sent_its_briefing_before_the_post() {
+        let r = remote("rotate").await;
+        let asked = |text: &str| {
+            let mut req = request(text, "chat-1", &remote_model());
+            req.linked_context = Some(LinkedContextRef(Arc::new(TeamTurn)));
+            req
+        };
+        collect(r.provider.stream(&asked("@Codex here is where we are")).await.unwrap()).await;
+        collect(r.provider.stream(&asked("@Codex one more thing")).await.unwrap()).await;
+        let prompts = prompt_texts(&told(&r.told));
+        assert_eq!(prompts[0].len(), 3, "{prompts:?}");
+        assert_eq!(prompts[0][0], "BRIEFING");
+        assert!(prompts[0][1].contains("Owner: bring Codex up to speed"), "{prompts:?}");
+        assert_eq!(prompts[0][2], "@Codex here is where we are");
+        assert!(prompts[1][0].contains("Owner: bring Codex up to speed"), "a resumed session still hears it: {prompts:?}");
+        assert_eq!(prompts[1][1], "@Codex one more thing");
     }
 
     /// A session that has used most of its context window, as its agent

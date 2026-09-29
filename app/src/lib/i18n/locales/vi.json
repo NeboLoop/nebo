@@ -423,7 +423,8 @@
 		"researchVerified": "{n} luận điểm đã đối chiếu với nguồn",
 		"historyLoadFailed": "Không tải được cuộc trò chuyện này. Hãy kiểm tra kết nối và thử lại.",
 		"consentCreates": "Nói đồng ý và nhân viên sẽ được tạo với đúng công việc này.",
-		"consentAdds": "Nói đồng ý và điều này được thêm vào công việc."
+		"consentAdds": "Nói đồng ý và điều này được thêm vào công việc.",
+		"fromColleague": "Từ {name}"
 	},
 	"chatInput": {
 		"placeholder": "Trả lời...",

@@ -29,18 +29,21 @@ pub struct Handoff {
     session_id: String,
     agent_id: String,
     name: String,
+    /// The turn's own briefing (`TurnDelivery::mention_briefing`).
+    run_briefing: Option<String>,
     trace: RequestTrace,
 }
 
 impl Handoff {
     /// For the turn of the employee `agent_id` (named `name`) on the
-    /// session `session_id`, in the run `run_id`.
-    pub fn new(harness: Harness, session_id: &str, agent_id: &str, name: &str, run_id: &str) -> Self {
+    /// session `session_id`, in the run `run_id`, asked with `run_briefing`.
+    pub fn new(harness: Harness, session_id: &str, agent_id: &str, name: &str, run_id: &str, run_briefing: Option<String>) -> Self {
         Self {
             harness,
             session_id: session_id.to_string(),
             agent_id: agent_id.to_string(),
             name: name.to_string(),
+            run_briefing,
             trace: RequestTrace {
                 agent_id: agent_id.to_string(),
                 run_id: run_id.to_string(),
@@ -55,6 +58,10 @@ impl ai::LinkedContext for Handoff {
     fn briefing(&self) -> String {
         let packs = config::packs_dir().map(|dir| napp::scan_packs(&dir)).unwrap_or_default();
         briefing(&self.harness.store, &packs, &self.agent_id, &self.name)
+    }
+
+    fn run_briefing(&self) -> Option<String> {
+        self.run_briefing.clone()
     }
 
     async fn summary(&self) -> Option<String> {

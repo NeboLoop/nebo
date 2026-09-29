@@ -360,7 +360,9 @@ async fn handle_app_ws_message(state: &AppState, agent_id: &str, text: &str) {
                     handoff_depth: 0,
                     seed_taint: vec![],
                     tool_allowlist: None,
-                    hidden_prompt: false,
+                    // The house describing a click: the model reads it, the owner sees
+                    // only the reply (a hidden prompt, `isMeta`).
+                    hidden_prompt: true,
                     coworker: None,
                     audience: None,
                     cwd: None,
@@ -925,7 +927,9 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState, ua: String) {
                                             handoff_depth: 0,
                                             seed_taint: vec![],
                                             tool_allowlist: None,
-                                            hidden_prompt: false,
+                                            // The house describing a click: the model reads it, the owner sees
+                                            // only the reply (a hidden prompt, `isMeta`).
+                                            hidden_prompt: true,
                                             coworker: None,
                                             audience: None,
                                             cwd: None,
@@ -1849,15 +1853,10 @@ async fn fork_mention_chat(
     };
     let entity_config = crate::entity_config::resolve_for_chat(&state.store, "agent", mentioned_id);
 
-    let contextualized = format!(
-        "[You were @mentioned in a conversation. Respond helpfully.]\n\n{}",
-        prompt,
-    );
-
     let delegate_session_key = session_key.clone();
     let chat_config = ChatConfig {
         session_key,
-        prompt: contextualized,
+        prompt: prompt.to_string(),
         user_id: user_id.to_string(),
         channel: channel.to_string(),
         origin: Origin::User,
@@ -1871,7 +1870,8 @@ async fn fork_mention_chat(
         attachments: vec![],
         entity_name: String::new(),
         origin_agent_id: Some(origin_agent_id.to_string()),
-        mention_context: None,
+        // Why the turn runs: briefing beside the words, never in them.
+        mention_context: Some("You were @mentioned in a conversation. Respond helpfully.".to_string()),
         tool_scope: None,
         channel_ctx: None,
         handoff_depth: 0,

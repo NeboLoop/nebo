@@ -410,6 +410,12 @@ pub(crate) fn coworker_mark(metadata: &mut serde_json::Value, from: &str) {
     metadata["coworker"] = serde_json::json!(from);
 }
 
+/// The colleague a row's [`coworker_mark`] names.
+fn colleague_of(meta: Option<&serde_json::Value>) -> Option<&str> {
+    let meta = meta?;
+    (meta.get("from")?.as_str()? == "coworker").then(|| meta.get("coworker")?.as_str()).flatten()
+}
+
 /// Mark a user row's metadata as the owner's own words ([`db::OWNER_MARK`]).
 pub(crate) fn mark_owner(metadata: &mut serde_json::Value) {
     metadata[db::OWNER_MARK] = serde_json::json!(true);
@@ -563,10 +569,15 @@ pub(crate) fn convert_messages(messages: &[ChatMessage], model: &str) -> Vec<Mes
                 Some(from_attachments)
             };
             // A message that arrived while the turn was running is stored as
-            // sent; the model reads it framed with who sent it.
+            // sent; the model reads it framed with who sent it. A colleague's
+            // message is stored as their words, marked as theirs in its
+            // metadata; the model reads the mark (`types::labels`).
             let content = match arrived_mid_turn(msg) {
                 Some(from) => frame_mid_turn_message(&msg.content, &from),
-                None => msg.content.clone(),
+                None => match colleague_of(meta.as_ref()) {
+                    Some(name) if msg.role == "user" => types::labels::from_colleague(name, &msg.content),
+                    _ => msg.content.clone(),
+                },
             };
 
             let thinking = thinking_for(meta.as_ref(), model);

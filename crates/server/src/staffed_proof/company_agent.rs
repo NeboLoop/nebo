@@ -66,10 +66,12 @@ fn fake_company_agent() {
                 reply(json!({ "sessionId": session }));
             }
             Some("session/prompt") => {
-                let text = message["params"]["prompt"][0]["text"]
-                    .as_str()
-                    .unwrap_or("")
-                    .to_owned();
+                // The whole prompt, every block (a turn's briefing rides
+                // before the words it was asked).
+                let text = message["params"]["prompt"]
+                    .as_array()
+                    .map(|blocks| blocks.iter().filter_map(|b| b["text"].as_str()).collect::<Vec<_>>().join("\n\n"))
+                    .unwrap_or_default();
                 note(json!({ "prompt": text, "session": session }));
                 if text.contains("HOLD") {
                     update(

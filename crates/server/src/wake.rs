@@ -18,8 +18,8 @@ use crate::state::AppState;
 use agent::harness::delegation::notify;
 use types::provenance::ProvenanceClass;
 
-/// A single update is clipped to this many chars in its row — the full text
-/// stays in the queue row / source thread.
+/// A status update is clipped to this many chars in its row — the full text
+/// stays in the queue row / source thread. An answer is never clipped.
 const PAYLOAD_CLIP: usize = 2000;
 
 /// Producer entry: persist the wake, then deliver it. Never blocks the
@@ -32,13 +32,33 @@ pub fn enqueue(
     provenance: &[ProvenanceClass],
     handoff_depth: u8,
 ) {
-    let prov = serde_json::to_string(provenance).unwrap_or_else(|_| "[]".to_string());
-    if let Err(e) =
-        state
-            .store
-            .engine_enqueue_wake(session_key, kind, payload, &prov, handoff_depth)
-    {
-        warn!(error = %e, session = %session_key, "wake: failed to persist — payload lost");
+    enqueue_all(
+        state,
+        session_key,
+        &[Update { kind: kind.to_string(), payload: payload.to_string(), provenance: provenance.to_vec(), handoff_depth }],
+    );
+}
+
+/// One update for a session.
+pub struct Update {
+    pub kind: String,
+    pub payload: String,
+    pub provenance: Vec<ProvenanceClass>,
+    pub handoff_depth: u8,
+}
+
+/// Persist every update, then deliver once: updates that belong together
+/// (the answers a session waited for) are heard together, by one turn.
+pub fn enqueue_all(state: &AppState, session_key: &str, updates: &[Update]) {
+    let mut persisted = false;
+    for u in updates {
+        let prov = serde_json::to_string(&u.provenance).unwrap_or_else(|_| "[]".to_string());
+        match state.store.engine_enqueue_wake(session_key, &u.kind, &u.payload, &prov, u.handoff_depth) {
+            Ok(_) => persisted = true,
+            Err(e) => warn!(error = %e, session = %session_key, "wake: failed to persist — payload lost"),
+        }
+    }
+    if !persisted {
         return;
     }
     let state = state.clone();
@@ -299,19 +319,19 @@ fn now() -> i64 {
 }
 
 /// The row an update becomes. A helper's notification is already in the one
-/// format and is never clipped (a helper's result is capped where it is
-/// collected); any other update is labeled and clipped.
+/// format, and an answer is labeled whole: both were capped where they were
+/// collected (the one spill path). A status update is labeled and clipped.
 fn row_text(kind: &str, payload: &str) -> String {
-    if kind == notify::WAKE_KIND {
-        return payload.to_string();
+    match kind {
+        notify::WAKE_KIND => payload.to_string(),
+        crate::addressing::ANSWER => notify::render_update(label(kind), payload),
+        _ => notify::render_update(label(kind), &clip(payload)),
     }
-    notify::render_update(label(kind), &clip(payload))
 }
 
 fn label(kind: &str) -> &str {
     match kind {
-        "coworker_reply" => "A coworker replied to your message",
-        "team_reply" => "A teammate replied to your team post",
+        crate::addressing::ANSWER => "An answer to what you asked",
         "task_done" => "A background task you started finished",
         crate::engine::TEMPORARY_WORK_ENDED => "Temporary work you started has ended",
         other => other,
@@ -353,10 +373,10 @@ mod tests {
 
     #[test]
     fn an_update_is_a_labeled_notification() {
-        let w = wake("coworker_reply", "[Reply from Billy]\nDone.");
+        let w = wake(crate::addressing::ANSWER, "Billy:\nDone.");
         let row = row_text(&w.kind, &w.payload);
         assert!(row.starts_with("<system-reminder>\n[Notification: not a message from the owner]"), "{row}");
-        assert!(row.contains("A coworker replied to your message:\n[Reply from Billy]\nDone."));
+        assert!(row.contains("An answer to what you asked:\nBilly:\nDone."));
     }
 
     /// A helper's notification is written in its one format, unclipped, with
@@ -370,10 +390,22 @@ mod tests {
         assert_eq!(row_text(notify::WAKE_KIND, &n), n);
     }
 
+    /// An answer reaches whoever asked whole: a 5,000-character report is
+    /// not clipped (it was capped where it was collected).
+    #[test]
+    fn an_answer_arrives_whole() {
+        let report = format!("Business Brainstormer:\n{}", "ICP draft line.\n".repeat(320));
+        assert!(report.chars().count() > 5000);
+        let row = row_text(crate::addressing::ANSWER, &report);
+        assert!(row.contains(&report), "the whole answer is in the row");
+        assert!(!row.contains("[clipped"), "{}", &row[row.len() - 200..]);
+    }
+
+    /// A status update is still clipped.
     #[test]
     fn oversized_payload_clips_with_pointer() {
         let big = "x".repeat(5000);
-        let row = row_text("coworker_reply", &big);
+        let row = row_text("task_done", &big);
         assert!(row.contains("[clipped — read the source thread for the full text]"));
         assert!(row.len() < 3000);
     }

@@ -158,3 +158,18 @@ describe('run error rows', () => {
     expect(lastRunError([] as never)).toBeNull();
   });
 });
+
+// A colleague's message is its words, and the bubble knows whose they are
+// (the server names the colleague; no label ever rides the words).
+describe('a colleague message', () => {
+  it('carries the colleague onto the bubble and the words alone', () => {
+    const msgs = parseMessages([
+      { id: 'u1', role: 'user', content: 'The invoice is sent.', createdAt: 0, metadata: JSON.stringify({ from: 'coworker', coworker: 'Top Coder', fromColleague: 'Top Coder' }) },
+      { id: 'u2', role: 'user', content: 'thanks', createdAt: 0 },
+    ] as never);
+    const [colleague, owner] = msgs as { type: string; content: string; fromColleague?: string }[];
+    expect(colleague.fromColleague).toBe('Top Coder');
+    expect(colleague.content).toBe('The invoice is sent.');
+    expect(owner.fromColleague).toBeUndefined();
+  });
+});

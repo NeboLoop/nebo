@@ -1793,7 +1793,14 @@ fn build_request(
         // What a fresh session of a linked employee's agent is told (the
         // linked provider).
         linked_context: cx.linked.then(|| {
-            let handoff = super::linked_handoff::Handoff::new(cx.harness.clone(), &cx.session_id, cx.agent_id(), &cx.name, &cx.progress.run_id);
+            let handoff = super::linked_handoff::Handoff::new(
+                cx.harness.clone(),
+                &cx.session_id,
+                cx.agent_id(),
+                &cx.name,
+                &cx.progress.run_id,
+                cx.request.delivery.mention_briefing.clone(),
+            );
             ai::LinkedContextRef(Arc::new(handoff))
         }),
         tool_choice: Default::default(),

@@ -682,10 +682,8 @@ async fn a_team_reply_reaches_the_poster() {
     )
     .await;
     let notes = rig.notifications(POSTER).join("\n");
-    assert!(
-        notes.contains("[Reply from Proof Team Lead in team \"Proof Floor\"]"),
-        "{notes}"
-    );
+    assert!(notes.contains("Proof Team Lead, in team \"Proof Floor\":\nLEAD-RESULT"), "{notes}");
+    assert_eq!(notes.matches("LEAD-RESULT").count(), 1, "each answer is heard once: {notes}");
 }
 
 /// What a member says before it starts, then the call that starts its work.
@@ -1700,7 +1698,7 @@ async fn an_update_for_a_finished_helper_tells_its_parent() {
     rig.open_session(PARENT);
     rig.open_session(&helper);
     nebo.store()
-        .engine_enqueue_wake(&helper, "coworker_reply", "[Reply from Proof Clerk]\nCW55-RESULT: filed.", "[\"coworker\"]", 1)
+        .engine_enqueue_wake(&helper, crate::addressing::ANSWER, "Proof Clerk:\nCW55-RESULT: filed.", "[\"coworker\"]", 1)
         .unwrap();
     crate::wake::recover_pending_wakes(&nebo.state).await;
     rig.until(20, "the parent is told", || {
@@ -2347,7 +2345,7 @@ async fn the_primary_employee_passes_the_owners_request_on_and_its_own_initiativ
             && !nebo.state.harness.is_session_busy(OWNER_CHAT)
     })
     .await;
-    crate::wake::enqueue(&nebo.state, OWNER_CHAT, "coworker_reply", "ARSELF-TRIGGER the supplier sent a new price list", &[], 0);
+    crate::wake::enqueue(&nebo.state, OWNER_CHAT, crate::addressing::ANSWER, "ARSELF-TRIGGER the supplier sent a new price list", &[], 0);
     let second_thread = format!("agent:{second}:coworker:assistant");
     rig.until(30, "the second colleague answers the employee's own request", || {
         rig.thread(&second_thread).iter().any(|m| m.role == "assistant" && m.content.contains("ARSELF-DONE"))
@@ -2464,4 +2462,321 @@ async fn the_lead_passes_the_owners_request_to_a_linked_teammate_with_his_author
     let meta: Value = serde_json::from_str(asked.metadata.as_deref().unwrap_or("{}")).unwrap();
     assert_eq!(meta["coworker"], "Proof LRL Lead", "the lead's words stay the lead's: {meta}");
     assert!(meta.get(db::OWNER_MARK).is_none(), "never stored as the owner's word: {meta}");
+}
+
+
+/// The rows each sender wrote in a team thread.
+fn rows_by(nebo: &Nebo, team_id: &str, sender: &str) -> Vec<String> {
+    team_rows(nebo, team_id).into_iter().filter(|(from, _)| from == sender).map(|(_, text)| text).collect()
+}
+
+/// The asks that reached `agent_id`'s seat for `team_id`: the user rows the
+/// team wrote there (an answer it heard is a notification, not an ask).
+fn asks_in_seat(rig: &Rig<'_>, agent_id: &str, team_id: &str, marker: &str) -> usize {
+    rig.thread(&format!("agent:{agent_id}:coworker:team:{team_id}"))
+        .into_iter()
+        .filter(|m| m.role == "user" && m.content.contains(marker))
+        .filter(|m| !agent::harness::delegation::notify::is_notification_row(m))
+        .count()
+}
+
+/// Nothing runs on any of `seats` and the team thread holds `rows` rows,
+/// and a while later it still does: the thread has gone quiet.
+async fn goes_quiet(rig: &Rig<'_>, nebo: &Nebo, team_id: &str, seats: &[String], rows: usize) {
+    rig.until(30, "the team settles", || {
+        team_rows(nebo, team_id).len() >= rows && seats.iter().all(|s| !rig.busy(s))
+    })
+    .await;
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    let after = team_rows(nebo, team_id);
+    assert_eq!(after.len(), rows, "the thread went quiet: {after:?}");
+    assert!(seats.iter().all(|s| !rig.busy(s)), "nothing is still running");
+}
+
+/// The live loop (2026-09-29, "Marketing & Growth"): the owner told the
+/// team to stop everybody; the lead posted @everyone; every member answered
+/// naming the lead; each answer woke the lead, who posted again; ten
+/// deliveries in four minutes. Now the lead's @everyone asks each member
+/// once; every member answers once — naming the lead and @everyone, as they
+/// did live — and asks no one; the lead hears the three answers together,
+/// once, and answers the owner once (its answer names @everyone again and
+/// asks no one); then the thread is quiet.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_leads_everyone_is_answered_once_and_the_lead_answers_once() {
+    let nebo = session().await;
+    let lead = nebo.hire("Proof Stop Lead", json!({ "workflows": {} })).await;
+    let names = ["Proof Stop Mailer", "Proof Stop Neighbor", "Proof Stop Linked"];
+    let mut members = vec![db::TeamMember::local(&lead)];
+    let mut ids = Vec::new();
+    for name in names {
+        let id = nebo.hire(name, json!({ "workflows": {} })).await;
+        members.push(db::TeamMember::local(&id));
+        ids.push(id);
+    }
+    const TEAM: &str = "proof-team-stop";
+    nebo.store().create_team(TEAM, "Proof Growth Team", "grow the pipeline", &members, &lead, None).unwrap();
+    let lead_turns = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let rules: Vec<Rule> = vec![
+        Box::new({
+            let lead_turns = lead_turns.clone();
+            move |t| {
+                if !(t.opener().contains("MARK-STOP") && t.says("You are Proof Stop Lead.")) {
+                    return None;
+                }
+                lead_turns.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Some(if t.new_text().contains("STOP-ANSWER") {
+                    Step::say("@everyone LEAD-SUMMARY: everyone has stopped and is standing by for the brief.")
+                } else {
+                    Step::say("@everyone MARK-STOP Stop what you're doing and stand by for the new project.")
+                })
+            }
+        }),
+        Box::new(|t| {
+            if !t.opener().contains("MARK-STOP") {
+                return None;
+            }
+            let me = ["Proof Stop Mailer", "Proof Stop Neighbor", "Proof Stop Linked"]
+                .into_iter()
+                .find(|n| t.says(&format!("You are {n}.")))?;
+            Some(Step::say(format!(
+                "@Proof Stop Lead STOP-ANSWER from {me}: understood, standing by. @everyone"
+            )))
+        }),
+    ];
+    let rig = Rig::new(&nebo, rules).await;
+    nebo.post_ok(
+        &format!("/teams/{TEAM}/messages"),
+        &json!({"text": "MARK-STOP Stop everybody from what they're doing and let's get ready for this new project"}),
+    )
+    .await;
+
+    rig.until(60, "the lead answers the owner after hearing everyone", || {
+        team_rows(&nebo, TEAM).iter().any(|(_, text)| text.contains("LEAD-SUMMARY"))
+    })
+    .await;
+    let mut seats: Vec<String> = ids.iter().map(|id| format!("agent:{id}:coworker:team:{TEAM}")).collect();
+    seats.push(format!("agent:{lead}:coworker:team:{TEAM}"));
+    // The owner's post, the lead's hand-off, three answers, the lead's answer.
+    goes_quiet(&rig, &nebo, TEAM, &seats, 6).await;
+
+    for (id, name) in ids.iter().zip(names) {
+        assert_eq!(asks_in_seat(&rig, id, TEAM, "Stop what you're doing"), 1, "{name} was asked once");
+        let said = rows_by(&nebo, TEAM, name);
+        assert_eq!(said.len(), 1, "{name} answered once: {said:?}");
+        assert!(said[0].contains("STOP-ANSWER"), "{said:?}");
+    }
+    let lead_said = rows_by(&nebo, TEAM, "Proof Stop Lead");
+    assert_eq!(lead_said.len(), 2, "the hand-off and one answer: {lead_said:?}");
+    assert!(lead_said[1].contains("LEAD-SUMMARY"), "{lead_said:?}");
+    assert_eq!(lead_turns.load(std::sync::atomic::Ordering::SeqCst), 2, "the lead ran twice: once asked, once to answer");
+    let rows = team_rows(&nebo, TEAM);
+    let summary = rows.iter().position(|(_, t)| t.contains("LEAD-SUMMARY")).unwrap();
+    assert_eq!(
+        rows[..summary].iter().filter(|(_, t)| t.contains("STOP-ANSWER")).count(),
+        3,
+        "the lead answered after every member: {rows:?}"
+    );
+    // The lead heard the three answers in one notification turn.
+    let lead_seat = format!("agent:{lead}:coworker:team:{TEAM}");
+    let heard = rig.notifications(&lead_seat).join("\n");
+    assert_eq!(heard.matches("STOP-ANSWER").count(), 3, "{heard}");
+}
+
+/// A member asked by the lead may ask the lead one question back: that is
+/// its answer. The lead hears it with the others, once, and answers the
+/// owner once; the member is not asked again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_question_back_to_the_lead_is_the_members_answer() {
+    let nebo = session().await;
+    let lead = nebo.hire("Proof Ask Lead", json!({ "workflows": {} })).await;
+    let member = nebo.hire("Proof Ask Writer", json!({ "workflows": {} })).await;
+    const TEAM: &str = "proof-team-clarify";
+    nebo.store()
+        .create_team(TEAM, "Proof Copy Team", "write the mailers", &[db::TeamMember::local(&lead), db::TeamMember::local(&member)], &lead, None)
+        .unwrap();
+    let rules: Vec<Rule> = vec![
+        Box::new(|t| {
+            if !(t.opener().contains("MARK-ASK") && t.says("You are Proof Ask Lead.")) {
+                return None;
+            }
+            Some(if t.new_text().contains("CLARIFY-Q") {
+                Step::say("ASK-LEAD-ANSWER: the writer needs the brief before starting; send it when you can.")
+            } else {
+                Step::say("@Proof Ask Writer MARK-ASK draft the spring mailer.")
+            })
+        }),
+        Box::new(|t| {
+            (t.opener().contains("MARK-ASK") && t.says("You are Proof Ask Writer."))
+                .then(|| Step::say("@Proof Ask Lead CLARIFY-Q: what is the brief for the spring mailer?"))
+        }),
+    ];
+    let rig = Rig::new(&nebo, rules).await;
+    nebo.post_ok(&format!("/teams/{TEAM}/messages"), &json!({"text": "MARK-ASK get the spring mailer going"})).await;
+    rig.until(60, "the lead answers the owner", || {
+        team_rows(&nebo, TEAM).iter().any(|(_, text)| text.contains("ASK-LEAD-ANSWER"))
+    })
+    .await;
+    let seats = vec![format!("agent:{lead}:coworker:team:{TEAM}"), format!("agent:{member}:coworker:team:{TEAM}")];
+    // The owner's post, the hand-off, the question back, the lead's answer.
+    goes_quiet(&rig, &nebo, TEAM, &seats, 4).await;
+    assert_eq!(asks_in_seat(&rig, &member, TEAM, "draft the spring mailer"), 1, "the writer was asked once");
+    assert_eq!(rows_by(&nebo, TEAM, "Proof Ask Writer").len(), 1);
+    assert_eq!(rows_by(&nebo, TEAM, "Proof Ask Lead").len(), 2);
+    assert_eq!(
+        asks_in_seat(&rig, &lead, TEAM, "CLARIFY-Q"),
+        0,
+        "the question back reached the lead as an answer, never as a new ask"
+    );
+    let heard = rig.notifications(&seats[0]).join("\n");
+    assert_eq!(heard.matches("CLARIFY-Q").count(), 1, "the lead heard it once, as an answer: {heard}");
+}
+
+/// The owner's own @everyone reaches every member, the lead included, and
+/// each answers once. A member that acknowledges before it works adds its
+/// acknowledgement to the thread and wakes no one; nobody collects (the
+/// owner reads the thread), and then the thread is quiet.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_owners_everyone_reaches_every_member_once() {
+    let nebo = session().await;
+    let lead = nebo.hire("Proof All Lead", json!({ "workflows": {} })).await;
+    let clerk = nebo.hire("Proof All Clerk", json!({ "workflows": {} })).await;
+    let buyer = nebo.hire("Proof All Buyer", json!({ "workflows": {} })).await;
+    const TEAM: &str = "proof-team-all";
+    nebo.store()
+        .create_team(
+            TEAM,
+            "Proof Ops Team",
+            "run the shop",
+            &[db::TeamMember::local(&lead), db::TeamMember::local(&clerk), db::TeamMember::local(&buyer)],
+            &lead,
+            None,
+        )
+        .unwrap();
+    let rules: Vec<Rule> = vec![
+        Box::new(|t| {
+            (t.opener().contains("MARK-ALL") && t.says("You are Proof All Lead."))
+                .then(|| Step::say("ALL-LEAD: the week is planned. Standing by."))
+        }),
+        Box::new(|t| {
+            if !(t.opener().contains("MARK-ALL") && t.says("You are Proof All Clerk.")) {
+                return None;
+            }
+            Some(if t.has_tool_results() {
+                Step::say("ALL-CLERK: the ledger balances. @Proof All Lead")
+            } else {
+                takes_it("Standing by — checking the ledger first.", "recall", json!({"query": "ledger"}))
+            })
+        }),
+        Box::new(|t| {
+            (t.opener().contains("MARK-ALL") && t.says("You are Proof All Buyer."))
+                .then(|| Step::say("ALL-BUYER: stock is fine. Thanks @everyone"))
+        }),
+    ];
+    let rig = Rig::new(&nebo, rules).await;
+    nebo.post_ok(&format!("/teams/{TEAM}/messages"), &json!({"text": "@everyone MARK-ALL where do we stand?"})).await;
+    let seats: Vec<String> = [&lead, &clerk, &buyer].iter().map(|id| format!("agent:{id}:coworker:team:{TEAM}")).collect();
+    // The owner's post, three answers and the clerk's acknowledgement.
+    goes_quiet(&rig, &nebo, TEAM, &seats, 5).await;
+    for (id, name, words) in [(&lead, "Proof All Lead", "ALL-LEAD"), (&clerk, "Proof All Clerk", "ALL-CLERK"), (&buyer, "Proof All Buyer", "ALL-BUYER")] {
+        assert_eq!(asks_in_seat(&rig, id, TEAM, "where do we stand"), 1, "{name} was asked once");
+        assert_eq!(rows_by(&nebo, TEAM, name).iter().filter(|r| r.contains(words)).count(), 1, "{name} answered once");
+    }
+    assert!(rows_by(&nebo, TEAM, "Proof All Clerk").iter().any(|r| r.contains("checking the ledger first")));
+    assert!(rig.notifications(&seats[0]).is_empty(), "the lead was not woken by anyone's answer");
+}
+
+
+/// A linked member as its runtime sees each turn: the post it was sent and
+/// what the turn was asked with beside it (its run briefing).
+struct LinkedCodex {
+    seen: std::sync::Mutex<Vec<(String, Option<String>)>>,
+}
+
+#[async_trait::async_trait]
+impl ai::Provider for LinkedCodex {
+    fn id(&self) -> &str {
+        ai::providers::linked::ID
+    }
+    fn handles_tools(&self) -> bool {
+        true
+    }
+    fn retryable(&self) -> bool {
+        false
+    }
+    async fn stream(&self, req: &ai::ChatRequest) -> Result<ai::EventReceiver, ai::ProviderError> {
+        let (tx, rx) = tokio::sync::mpsc::channel(16);
+        let post = req.messages.iter().rev().find(|m| m.role == "user" && !m.content.starts_with("<system-reminder>")).map(|m| m.content.clone()).unwrap_or_default();
+        let briefing = req.linked_context.as_ref().and_then(|c| c.0.run_briefing());
+        self.seen.lock().unwrap().push((post, briefing));
+        tokio::spawn(async move {
+            let _ = tx.send(ai::StreamEvent::text("CODEX-GOT-IT: I have the brief.")).await;
+            let _ = tx.send(ai::StreamEvent::done()).await;
+        });
+        Ok(rx)
+    }
+}
+
+/// The live case (Market Research Team, 2026-09-29): the owner asked the
+/// lead to bring Codex, a linked member, up to speed. The lead addresses
+/// Codex; Codex's runtime is sent the team's conversation it had not seen
+/// (the same briefing a native member reads as a reminder) before the post.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_linked_member_is_sent_the_team_conversation_it_has_not_seen() {
+    let nebo = session().await;
+    let lead = nebo.hire("Proof Researcher", json!({ "workflows": {} })).await;
+    let brain = nebo.hire("Proof Brainstormer", json!({ "workflows": {} })).await;
+    let codex = "proof-codex-linked";
+    nebo.store()
+        .create_agent(codex, Some("linked"), "Proof Codex", "", "---\nname: Proof Codex\n---\n", "{}", None, None)
+        .unwrap();
+    nebo.store()
+        .upsert_entity_config("agent", codex, &json!({ "modelPreference": ai::LinkedProvider::model_id("proof-bot", "codex") }))
+        .unwrap();
+    const TEAM: &str = "proof-team-codex";
+    let team = nebo
+        .store()
+        .create_team(
+            TEAM,
+            "Proof Market Research",
+            "find the customer",
+            &[db::TeamMember::local(&lead), db::TeamMember::local(&brain), db::TeamMember::local(codex)],
+            &lead,
+            None,
+        )
+        .unwrap();
+    nebo.store()
+        .append_team_message(&team, "assistant", "CODEX-HISTORY: the ICP is two-agent brokerages.", "Proof Brainstormer", &brain, &json!([]), &[])
+        .unwrap();
+    let rig = Rig::new(
+        &nebo,
+        vec![Box::new(|t| {
+            if !(t.opener().contains("MARK-CODEX") && t.says("You are Proof Researcher.")) {
+                return None;
+            }
+            Some(if t.new_text().contains("CODEX-GOT-IT") {
+                Step::say("CODEX-LEAD-DONE: Codex has the brief.")
+            } else {
+                Step::say("@Proof Codex MARK-CODEX welcome — here is where we are.")
+            })
+        })],
+    )
+    .await;
+    let runtime = Arc::new(LinkedCodex { seen: Default::default() });
+    nebo.state
+        .harness
+        .reload_providers(vec![Arc::new(Model(rig.company.clone())), runtime.clone() as Arc<dyn ai::Provider>])
+        .await;
+    nebo.post_ok(&format!("/teams/{TEAM}/messages"), &json!({"text": "MARK-CODEX @Proof Researcher bring Codex up to speed"})).await;
+    rig.until(60, "the lead answers once Codex has answered", || {
+        team_rows(&nebo, TEAM).iter().any(|(_, text)| text.contains("CODEX-LEAD-DONE"))
+    })
+    .await;
+    let seen = runtime.seen.lock().unwrap();
+    assert_eq!(seen.len(), 1, "Codex was addressed once, by the lead: {seen:?}");
+    let (post, briefing) = &seen[0];
+    assert!(post.contains("welcome — here is where we are"), "{post}");
+    let briefing = briefing.as_deref().unwrap_or_default();
+    assert!(briefing.contains("CODEX-HISTORY: the ICP is two-agent brokerages."), "the unseen posts reach the runtime: {briefing}");
+    assert!(briefing.contains("bring Codex up to speed"), "{briefing}");
+    assert!(briefing.contains("Teammates only receive posts addressed to them"), "{briefing}");
 }

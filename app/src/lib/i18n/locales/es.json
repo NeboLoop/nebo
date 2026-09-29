@@ -423,7 +423,8 @@
 		"researchVerified": "{n} afirmaciones verificadas con las fuentes",
 		"historyLoadFailed": "No se pudo cargar esta conversación. Revisa tu conexión e inténtalo de nuevo.",
 		"consentCreates": "Di que sí y se creará con exactamente este trabajo.",
-		"consentAdds": "Di que sí y esto se añade a su trabajo."
+		"consentAdds": "Di que sí y esto se añade a su trabajo.",
+		"fromColleague": "De {name}"
 	},
 	"chatInput": {
 		"placeholder": "Responder...",

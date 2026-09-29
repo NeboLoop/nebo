@@ -423,7 +423,8 @@
 		"researchVerified": "已对照来源核实 {n} 条论点",
 		"historyLoadFailed": "无法加载这段对话。请检查网络连接后重试。",
 		"consentCreates": "回答“是”，就会按这份工作内容创建。",
-		"consentAdds": "回答“是”，就会把这项加入工作内容。"
+		"consentAdds": "回答“是”，就会把这项加入工作内容。",
+		"fromColleague": "来自 {name}"
 	},
 	"chatInput": {
 		"placeholder": "回复...",

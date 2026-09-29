@@ -29,8 +29,9 @@ pub(crate) enum ReplyRoute {
         approval_relay: bool,
         from_agent_id: String,
     },
-    /// A coworker's thread: the reply goes back to whoever messaged it, or
-    /// into the team it was asked in.
+    /// A coworker's thread: its words are recorded in the sender's thread or
+    /// the team it was asked in; who hears its answer is the addressing's
+    /// (`addressing`).
     Coworker(CoworkerRoute),
     /// A chat-channel conversation (Slack, Discord, Teams): the reply is
     /// posted into it, in the thread it came from.
@@ -46,9 +47,6 @@ pub(crate) struct CoworkerRoute {
     /// The sending employee ("" = the main one, or the owner in a team).
     pub from_agent_id: String,
     pub from_name: String,
-    /// The session that hears the reply as a notification. `None` for a team
-    /// post from the owner's app: the team thread is where they read it.
-    pub reply_to: Option<String>,
     /// The sender's own record of the exchange (`None` for the main
     /// employee, whose conversation already shows it).
     pub mirror_key: Option<String>,
@@ -203,7 +201,6 @@ mod tests {
             to_name: "Bookkeeper".into(),
             from_agent_id: String::new(),
             from_name: "Nebo".into(),
-            reply_to: Some("neboai:dm:c1".into()),
             mirror_key: None,
             sender_depth: 0,
             team: Some(TeamLeg {

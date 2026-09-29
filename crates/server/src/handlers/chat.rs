@@ -228,6 +228,65 @@ pub fn is_owner_visible(m: &db::models::ChatMessage) -> bool {
         != Some(true)
 }
 
+/// A stored row as a person reads it: the words alone, with who sent them
+/// as metadata. What the model reads beside the words — the envelope of a
+/// team post a member was asked to act on, a colleague's mark, what
+/// untrusted content the words hold — never reaches a person. It is derived
+/// here, at read time, in the one place both clients read (the chat pages
+/// and a session's messages), so rows stored while those labels were still
+/// written into the words read clean too, and nothing is re-stored.
+///
+/// - A team post: `metadata.teamPost` {teamId, teamName, from, fromOwner,
+///   text} and the words. The row's CONTENT decides, not a flag: the runner
+///   writes the asked member's row with no flag at all (`teamPost: true` was
+///   only set by the retired context-only relay; a copy whose team has no
+///   thread left keeps it as the carrier of `teamId`).
+/// - A colleague's message: `metadata.fromColleague` (their name) and the
+///   words, whether the colleague was named by the row's mark or by a label
+///   an older row carries. The sender's own record used to keep a
+///   colleague's reply as a "[Reply from <name>]" system row: it reads as
+///   the colleague's message it is.
+pub(crate) fn for_owner(msg: &mut ChatMessage) {
+    if msg.role == "system" && types::labels::split(&msg.content).colleague.is_some() {
+        msg.role = "user".to_string();
+    }
+    if msg.role != "user" {
+        return;
+    }
+    let mut meta = msg
+        .metadata
+        .as_deref()
+        .and_then(|m| serde_json::from_str::<serde_json::Value>(m).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+    if let Some(env) = crate::coworker::parse_team_envelope(&msg.content) {
+        let team_id = meta.get("teamId").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let text = types::labels::split(env.text).text.to_string();
+        meta["teamPost"] = serde_json::json!({
+            "teamId": team_id,
+            "teamName": env.team_name,
+            "from": env.from,
+            // Said once, on the server: the clients showed the owner's own
+            // post as a teammate's whenever they spelled the name differently.
+            "fromOwner": env.from == crate::coworker::OWNER,
+            "text": text,
+        });
+        msg.content = text;
+        msg.metadata = Some(meta.to_string());
+        return;
+    }
+    let split = types::labels::split(&msg.content);
+    let marked = (meta.get("from").and_then(|v| v.as_str()) == Some("coworker"))
+        .then(|| meta.get("coworker").and_then(|v| v.as_str()).map(str::to_string))
+        .flatten();
+    let colleague = marked.or_else(|| split.colleague.map(str::to_string));
+    let text = split.text.to_string();
+    if let Some(name) = colleague {
+        meta["fromColleague"] = serde_json::json!(name);
+        msg.metadata = Some(meta.to_string());
+    }
+    msg.content = text;
+}
+
 /// Prepare stored messages for a human transcript.
 ///
 /// Internal turns are dropped: a message carrying `isMeta` was written by the
@@ -298,45 +357,9 @@ pub fn build_message_metadata(messages: &mut Vec<db::models::ChatMessage>) {
         }
     }
 
-    // Phase 1b: a team post a member was asked to act on is stored in its
-    // seat for the team as the prompt the model read — "[Team \"Customer
-    // Support\" — mission]\n[Post from Owner]\n\n<text>". The model needs
-    // that envelope; a person does not, and every client was printing it raw.
-    // Derive the display fields here, at read time, in the one place both
-    // clients read, so old rows get them too and nothing has to be re-stored.
-    //
-    // The row's CONTENT decides — not a flag. `teamPost: true` was only ever
-    // set by the retired context-only relay (migration 0187 took those copies
-    // out of members' threads; a copy whose team has no thread left keeps
-    // the flag as the carrier of `teamId`, which the text does not hold). The
-    // runner writes the asked member's row with no flag at all.
+    // Phase 1b: every row as a person reads it (`for_owner`).
     for msg in messages.iter_mut() {
-        if msg.role != "user" {
-            continue;
-        }
-        let Some(env) = crate::coworker::parse_team_envelope(&msg.content) else {
-            continue;
-        };
-        let mut meta = msg
-            .metadata
-            .as_deref()
-            .and_then(|m| serde_json::from_str::<serde_json::Value>(m).ok())
-            .unwrap_or_else(|| serde_json::json!({}));
-        let team_id = meta
-            .get("teamId")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-        meta["teamPost"] = serde_json::json!({
-            "teamId": team_id,
-            "teamName": env.team_name,
-            "from": env.from,
-            // Said once, on the server: the clients showed the owner's own
-            // post as a teammate's whenever they spelled the name differently.
-            "fromOwner": env.from == crate::coworker::OWNER,
-            "text": env.text,
-        });
-        msg.metadata = Some(meta.to_string());
+        for_owner(msg);
     }
 
     // Phase 2: For each assistant message, build/augment metadata
@@ -957,6 +980,38 @@ mod transcript_metadata_tests {
         assert_eq!(post["teamPost"]["from"], "Pam");
         assert_eq!(post["teamPost"]["fromOwner"], false);
         assert!(messages[1].metadata.is_none());
+    }
+
+    /// No row a person reads begins with a label the model reads: a
+    /// colleague's message is its words with `fromColleague` naming them,
+    /// whether the colleague is named by the row's mark or by the label an
+    /// older row carries in its words; an older teammate post's provenance
+    /// label comes off its text; the owner's own words are untouched.
+    #[test]
+    fn no_owner_visible_row_begins_with_a_label() {
+        let mut marked = msg("user", "The invoice is sent.");
+        marked.metadata = Some(serde_json::json!({ "from": "coworker", "coworker": "Top Coder" }).to_string());
+        let old = msg("user", "[Coworker message from Top Coder]\n\n[Contains content from: web]\nThe invoice is sent.");
+        let old_post = msg(
+            "user",
+            &crate::coworker::team_envelope("Growth", "grow", "Neighbor Mail", "[Contains content from: web]\nStanding by."),
+        );
+        let old_reply = msg("system", "[Reply from Top Coder]\nFiled.");
+        let mut messages = vec![marked, old, old_post, old_reply, msg("user", "[1] my own list")];
+        build_message_metadata(&mut messages);
+        for m in &messages[..2] {
+            assert_eq!(m.content, "The invoice is sent.");
+            let meta: serde_json::Value = serde_json::from_str(m.metadata.as_deref().unwrap()).unwrap();
+            assert_eq!(meta["fromColleague"], "Top Coder");
+        }
+        let post: serde_json::Value = serde_json::from_str(messages[2].metadata.as_deref().unwrap()).unwrap();
+        assert_eq!(post["teamPost"]["text"], "Standing by.");
+        assert_eq!(messages[2].content, "Standing by.");
+        assert_eq!((messages[3].role.as_str(), messages[3].content.as_str()), ("user", "Filed."), "an old reply row reads as the colleague's message");
+        assert_eq!(messages[4].content, "[1] my own list", "the owner's own words stay");
+        for m in &messages[..4] {
+            assert!(!m.content.starts_with('['), "{}", m.content);
+        }
     }
 
     /// Messages stamped `isMeta` (system steering, auto-continue nudges) are

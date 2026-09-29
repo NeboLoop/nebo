@@ -423,7 +423,8 @@
 		"researchVerified": "{n} affirmations vérifiées face aux sources",
 		"historyLoadFailed": "Impossible de charger cette conversation. Vérifiez votre connexion et réessayez.",
 		"consentCreates": "Dites oui et il sera créé avec exactement ce travail.",
-		"consentAdds": "Dites oui et ceci s'ajoute à son travail."
+		"consentAdds": "Dites oui et ceci s'ajoute à son travail.",
+		"fromColleague": "De {name}"
 	},
 	"chatInput": {
 		"placeholder": "Répondre...",

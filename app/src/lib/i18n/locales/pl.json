@@ -423,7 +423,8 @@
 		"researchVerified": "twierdzeń potwierdzonych w źródłach: {n}",
 		"historyLoadFailed": "Nie udało się wczytać tej rozmowy. Sprawdź połączenie i spróbuj ponownie.",
 		"consentCreates": "Powiedz tak, a zostanie utworzony dokładnie z tym zakresem pracy.",
-		"consentAdds": "Powiedz tak, a to zostanie dodane do zakresu pracy."
+		"consentAdds": "Powiedz tak, a to zostanie dodane do zakresu pracy.",
+		"fromColleague": "Od: {name}"
 	},
 	"chatInput": {
 		"placeholder": "Odpowiedz...",
