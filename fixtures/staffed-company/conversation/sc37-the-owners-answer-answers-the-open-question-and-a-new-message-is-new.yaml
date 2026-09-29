@@ -1,0 +1,12 @@
+id: sc37-the-owners-answer-answers-the-open-question-and-a-new-message-is-new
+name: "SC37 — The owner's answer answers the open question; a new message is new"
+description: |
+  An ask_owner card is open when the owner writes in the conversation. His answer — one of its
+  options, or words the one decision reads as an answer — is the answer: the turn goes on with it
+  and nothing is queued behind a card nobody clicks (review 1.9). A message that is not an answer
+  is a new message (live 2026-09-29: "Which conversation is the AI", typed while a yes-or-no
+  question waited, was taken as its answer): it answers nothing, the question stays open and
+  listed for the pinned bar, and the employee hears the message as the owner's.
+target_component: staffed-company
+proof: staffed_proof::conversation::the_owners_answer_answers_the_open_question_and_a_new_message_is_new
+conversation: []

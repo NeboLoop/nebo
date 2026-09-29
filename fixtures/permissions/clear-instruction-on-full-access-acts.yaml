@@ -1,0 +1,66 @@
+id: clear-instruction-on-full-access-acts
+name: "On Full Access the owner's clear instruction is carried out, never asked back"
+description: |
+  Live 2026-09-29: on a voice call the owner told his primary employee, on Full Access, to set
+  up a daily stand-up across every employee. The employee asked him to confirm the plan it had
+  chosen instead ("Rather than creating dozens of sub-agents, I'll set up a single daily
+  schedule... Want me to do that?"), the turn froze on the question, and the call never heard it.
+  `ask_owner` is for real ambiguity the employee can't resolve; a clear instruction the mode lets
+  it carry out is carried out. The mode row says what Full Access means for its own questions,
+  and ask_owner's description says the same: never ask the owner to confirm what he said or to
+  approve how you'll carry it out.
+target_component: permissions
+
+agent: "standup-{{tag}}"
+
+setup:
+  - |
+    python3 - <<'PYEOF'
+    import json, os, urllib.request as u
+    s = "http://" + os.environ.get("NEBO_TEST_SERVER", "localhost:27895") + "/api/v1"
+    req = u.Request(s + "/agents", data=json.dumps({"blank": True, "name": "standup-{{tag}}"}).encode(),
+                    headers={"Content-Type": "application/json"}, method="POST")
+    agent = json.load(u.urlopen(req))
+    aid = agent.get("id") or agent.get("agent", {}).get("id")
+    req = u.Request(s + "/agents/" + aid + "/permissions", data=json.dumps({"mode": "full_access"}).encode(),
+                    headers={"Content-Type": "application/json"}, method="PUT")
+    u.urlopen(req)
+    PYEOF
+teardown:
+  - "python3 -c \"import json,urllib.request as u; s='http://${NEBO_TEST_SERVER:-localhost:27895}/api/v1'; ags=json.load(u.urlopen(s+'/agents'))['agents']; ids=[a['id'] for a in ags if a.get('name','').startswith('standup-{{tag}}')]; [u.urlopen(u.Request(s+'/agents/'+i, method='DELETE')) for i in ids]\""
+
+conversation:
+  - role: user
+    content: "Set up a daily workflow across every employee: at 7 AM each day, ask every employee for a one-paragraph status update and compile the answers into one summary I can read at my 8 AM stand-up."
+
+tool_config:
+  create_schedule:
+    enabled: true
+  ask_owner:
+    enabled: true
+
+prompt_assertions:
+  first_call:
+    - id: acts-without-asking
+      text: "The employee never calls ask_owner and never ends its turn asking the owner to confirm the plan (for example 'Want me to do that?'): the instruction is clear and Full Access lets it act"
+      severity: critical
+  recovery:
+    - id: schedules-it
+      text: "A daily 7 AM schedule is created for the status round-up"
+      severity: critical
+      check: { tool: ["create_schedule"] }
+    - id: says-what-it-did
+      text: "The reply tells the owner what was set up (when it runs and what it does), as done, not as a proposal"
+      severity: important
+  cost:
+    - id: bounded
+      text: "At most 6 tool calls"
+      severity: important
+      check: { max_tool_calls: 6 }
+
+ideal_behavior:
+  tool_calls: 1
+  narrative: |
+    One create_schedule call for 7 AM daily that asks every employee for a one-paragraph update
+    and compiles a summary, then: "Done: every day at 7 AM I'll collect a status paragraph from
+    each employee and have one summary ready for your 8 AM stand-up." No question back.

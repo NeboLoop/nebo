@@ -5,7 +5,8 @@ description: |
   from the owner's own loop or phone conversation, carries the ask's card
   into that conversation (as main relayed its approvals), offering exactly
   the card's answers. The owner's next message there answers it through
-  the ask's one answer path; a reply that isn't an answer is a No; an ask
+  the ask's one answer path; a reply that isn't an answer is an ordinary
+  message and the ask stays open (read by the one decision, never guessed); an ask
   answered elsewhere first leaves the reply an ordinary message.
 target_component: staffed-company
 proof: staffed_proof::policy::an_ask_reaches_the_owners_conversation_and_their_reply_answers_it

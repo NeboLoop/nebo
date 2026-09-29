@@ -83,7 +83,7 @@ pub(crate) fn card(state: &AppState, ask: &Ask) -> PermissionAskCard {
 }
 
 /// The employee's name; the main assistant goes by the bot's own name.
-fn employee_name(state: &AppState, agent_id: &str) -> String {
+pub(crate) fn employee_name(state: &AppState, agent_id: &str) -> String {
     let named = |n: String| (!n.trim().is_empty()).then_some(n);
     let agent = (!agent_id.is_empty())
         .then(|| state.store.get_agent(agent_id).ok().flatten())

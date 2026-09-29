@@ -164,6 +164,8 @@ pub struct ModeFacts {
     pub model: String,
     /// By the name the owner sees.
     pub permission_mode: String,
+    /// What the mode means for the employee's own questions to the owner.
+    pub meaning: String,
 }
 
 /// One work task as the task reminder lists it.
@@ -525,9 +527,11 @@ fn mode_row(m: &ModeFacts) -> Option<Attachment> {
     Some(Attachment {
         kind: "mode",
         text: format!(
-            "Model: {}. Permission mode: {}.",
-            m.model, m.permission_mode
-        ),
+            "Model: {}. Permission mode: {}. {}",
+            m.model, m.permission_mode, m.meaning
+        )
+        .trim_end()
+        .to_string(),
         data: serde_json::Map::from_iter([
             ("model".to_string(), serde_json::json!(m.model)),
             ("mode".to_string(), serde_json::json!(m.permission_mode)),
@@ -959,7 +963,11 @@ mod tests {
             date: chrono::NaiveDate::from_ymd_opt(2026, 9, 24).unwrap(),
             timezone: Some("America/Denver".into()),
             environment: vec![("Platform".into(), "macOS (aarch64)".into()), ("Channel".into(), "web".into())],
-            mode: ModeFacts { model: "janus/nebo-1".into(), permission_mode: "Automatic".into() },
+            mode: ModeFacts {
+                model: "janus/nebo-1".into(),
+                permission_mode: "Automatic".into(),
+                meaning: "Calls inside your job run without asking.".into(),
+            },
             employee_memory: "# User Information\nName: Sam".into(),
             session_context: "# Workspace notes\n\nFiles live in ~/Clients.".into(),
             channel_rules: crate::harness::prompt::sections::channel_rules("web", false, "/data/files"),

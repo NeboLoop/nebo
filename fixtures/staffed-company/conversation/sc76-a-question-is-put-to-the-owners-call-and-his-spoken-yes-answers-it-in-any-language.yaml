@@ -1,0 +1,12 @@
+id: sc76-a-question-is-put-to-the-owners-call-and-his-spoken-yes-answers-it-in-any-language
+name: "SC76 — A question is put to the owner's call, and his spoken yes answers it in any language"
+description: |
+  Live 2026-09-29, on the owner's call while he drove: the employee asked a question the call never
+  put to him, the voice model answered an invented ask id four times, and six restated "yes" tasks
+  queued behind the frozen turn. Now the question comes back to the call with its real id and is
+  put to every call he is on; words that are no answer start nothing and the call is told who waits
+  on what; his spoken yes — in English, Japanese and Mandarin conversations — answers it through
+  the one answer path, read from his own words by the one decision, and the turn goes on.
+target_component: staffed-company
+proof: staffed_proof::conversation::a_question_is_put_to_the_owners_call_and_his_spoken_yes_answers_it_in_any_language
+conversation: []

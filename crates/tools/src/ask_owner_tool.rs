@@ -114,9 +114,10 @@ impl DynTool for AskOwnerTool {
     }
 
     fn description(&self) -> String {
-        "Asks the owner one question and waits for the answer.\n\
-         - Give `options` for a choice (two options like Yes/No for a confirmation); leave them out for a free answer.\n\
-         - Ask only when the next step truly needs their decision."
+        "Asks the owner one question; the work waits for the answer.\n\
+         - Only for real ambiguity you can't resolve: readings that lead to different work, or a choice only the owner can make.\n\
+         - A clear instruction your permission mode allows is carried out, never asked back to confirm it or how you'll do it.\n\
+         - Give `options` for a choice; leave them out for a free answer."
             .to_string()
     }
 

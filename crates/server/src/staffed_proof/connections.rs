@@ -217,7 +217,7 @@ async fn an_install_by_another_door_answers_the_install_card() {
                 ctx.ask_user("Install it on the card.", install_card_widget("PLUG-ANY", slug, slug, "")).await
             });
             let event = stream_rx.recv().await.expect("the card was asked");
-            crate::chat_dispatch::announce_ask(&state.hub, &state.run_registry, session_key, &event).await;
+            crate::chat_dispatch::announce_ask(&state, session_key, &event).await;
             (run, asking)
         }
     };
@@ -434,9 +434,8 @@ async fn an_open_approval_outlives_its_turn_and_reaches_a_client_that_connects_l
         })
         .await;
     crate::chat_dispatch::finish_turn(
-        &nebo.state.hub,
+        &nebo.state,
         &run,
-        &nebo.state.ask_channels,
         crate::chat_dispatch::TurnEnd { payload: json!({ "session_id": SESSION }), artifacts: &[], control_stop: None },
     )
     .await;

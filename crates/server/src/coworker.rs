@@ -680,13 +680,7 @@ impl OwnerForward<'_> {
     }
 
     pub(crate) async fn forward_ask(&self, event: &ai::StreamEvent) {
-        let ask = crate::chat_dispatch::announce_ask(
-            &self.state.hub,
-            &self.state.run_registry,
-            self.session_key,
-            event,
-        )
-        .await;
+        let ask = crate::chat_dispatch::announce_ask(self.state, self.session_key, event).await;
         self.notify_owner(
             &format!("coworker-ask:{}", ask.request_id),
             "info",

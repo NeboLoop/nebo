@@ -41,7 +41,7 @@ fixtures:
   - ../fixtures/staffed-company/conversation/sc34-a-question-up-the-line-never-waits.yaml
   - ../fixtures/staffed-company/conversation/sc35-a-woken-turn-replies-where-the-work-came-from.yaml
   - ../fixtures/staffed-company/conversation/sc36-an-employees-team-post-goes-to-the-lead.yaml
-  - ../fixtures/staffed-company/conversation/sc37-the-owners-next-message-answers-the-open-question.yaml
+  - ../fixtures/staffed-company/conversation/sc37-the-owners-answer-answers-the-open-question-and-a-new-message-is-new.yaml
   - ../fixtures/staffed-company/conversation/sc38-a-coworkers-message-is-read-as-a-coworkers.yaml
   - ../fixtures/staffed-company/conversation/sc39-a-woken-turn-keeps-the-seat-of-the-conversation-it-continues.yaml
   - ../fixtures/staffed-company/conversation/sc40-an-update-for-a-finished-helper-tells-its-parent.yaml
@@ -78,3 +78,4 @@ fixtures:
   - ../fixtures/staffed-company/conversation/sc73-a-team-member-reads-who-is-on-the-team-now.yaml
   - ../fixtures/staffed-company/conversation/sc74-editing-a-team-to-what-it-already-is-changes-nothing.yaml
   - ../fixtures/staffed-company/conversation/sc75-the-teams-working-list-and-a-rows-stop.yaml
+  - ../fixtures/staffed-company/conversation/sc76-a-question-is-put-to-the-owners-call-and-his-spoken-yes-answers-it-in-any-language.yaml

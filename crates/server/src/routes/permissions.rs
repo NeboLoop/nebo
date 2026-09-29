@@ -8,6 +8,9 @@ use crate::state::AppState;
 /// activity with why each action was allowed.
 pub fn routes() -> Router<AppState> {
     Router::new()
+        // Everything waiting on the owner's answer, both kinds: the pinned
+        // bar's list (`asks_waiting` keeps it current).
+        .route("/asks", axum::routing::get(handlers::asks::list_waiting_asks))
         .route("/permissions/asks", axum::routing::get(handlers::permissions::list_permission_asks))
         .route("/permissions/asks/{id}", axum::routing::get(handlers::permissions::get_permission_ask))
         .route(

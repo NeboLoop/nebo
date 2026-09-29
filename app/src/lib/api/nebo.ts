@@ -650,6 +650,13 @@ export function setArtifactAutoUpdate(id: string, req: Record<string, unknown> =
 }
 
 /**
+ * @description "List waiting asks"
+ */
+export function listWaitingAsks() {
+	return webapi.get<components.WaitingAsksResponse>(`/api/v1/asks`)
+}
+
+/**
  * @description "Config"
  */
 export function config() {

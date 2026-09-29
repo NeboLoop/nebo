@@ -750,6 +750,7 @@ pub(crate) async fn prepare(
     let mode_facts = events::ModeFacts {
         model: turn_model.clone(),
         permission_mode: permission_mode_name(grant.mode).to_string(),
+        meaning: permission_mode_meaning(grant.mode).to_string(),
     };
     let environment = h.environment_fields(&req.seat.agent_id, req.seat.cwd.as_deref(), &channel, seat.execution_mode.into());
     let channel_plugin = h.tools.get(&format!("{}{channel}", tools::plugin_tools::PLUGIN_PREFIX)).await.is_some();
@@ -976,6 +977,26 @@ fn permission_mode_name(mode: Mode) -> &'static str {
         Mode::Ask => "Ask",
         Mode::Plan => "Plan",
         Mode::FullAccess => "Full Access",
+    }
+}
+
+/// What the permission mode means for the employee's own questions to the
+/// owner, said with the mode. Live 2026-09-29: on Full Access, told to set
+/// up a daily stand-up, an employee asked the owner to confirm the plan it
+/// chose, and the question froze his voice call for ten minutes. Approval
+/// is Nebo's to ask for; the employee acts on a clear instruction.
+fn permission_mode_meaning(mode: Mode) -> &'static str {
+    match mode {
+        Mode::Automatic => {
+            "Calls inside your job run without asking, and Nebo asks the owner itself for anything outside it. When \
+             the owner's instruction is clear, act on it: don't ask them to confirm it."
+        }
+        Mode::Ask => "Nebo asks the owner itself before each call that changes something: don't ask them to confirm it as well.",
+        Mode::Plan => "Read and plan only: a call that changes something doesn't run.",
+        Mode::FullAccess => {
+            "Nothing you do asks the owner. When their instruction is clear, act on it: don't ask them to confirm it \
+             or to approve how you'll carry it out."
+        }
     }
 }
 

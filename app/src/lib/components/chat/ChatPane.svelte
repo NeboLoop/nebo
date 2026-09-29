@@ -33,6 +33,7 @@
   import { threadKey } from '$lib/chat/sessionKey';
   import { openAsks } from '$lib/stores/permissionAsks';
   import PermissionAskCard from '$lib/components/PermissionAskCard.svelte';
+  import WaitingAsksBar from '$lib/components/chat/WaitingAsksBar.svelte';
   import type { HelperLine } from '$lib/chat/helpers';
   import { stepMeta } from '$lib/chat/stepMeta';
   import { turnBlocks, turnProse, noteLabel, type Fold, type TurnBlock, type TurnStep } from '$lib/chat/turnBlocks';
@@ -1329,6 +1330,9 @@
       </div>
     </div>
   {/if}
+
+  <!-- What waits on the owner's answer, from any employee, pinned here. -->
+  <WaitingAsksBar sessionKey={chatSessionKey} />
 
   <!-- Messages / Empty state -->
   {#if !hasMessages && historyLoading}

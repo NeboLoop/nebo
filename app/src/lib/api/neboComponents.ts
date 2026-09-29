@@ -1263,6 +1263,26 @@ export interface UserProfile {
 	approvedCommands?: string
 }
 
+export interface WaitingAsk {
+	id: string
+	kind: string
+	agentId: string
+	employee: string
+	sessionKey: string
+	chatId: string
+	question: string
+	options: string[]
+	values: string[]
+	freeText: boolean
+	answerable: boolean
+	createdAt: number
+}
+
+export interface WaitingAsksResponse {
+	asks: WaitingAsk[]
+	total: number
+}
+
 export interface WorkDocument {
 	id: string
 	chatId: string
