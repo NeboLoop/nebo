@@ -156,8 +156,8 @@ pub(crate) fn announce(
 mod tests {
     use super::*;
 
-    /// The desktop's stripper, verbatim — app/src/lib/types/attachment.ts:49
-    /// (`ATTACHMENT_NOTE_RE`); mobile mirrors it in `chat_parse.dart`. If this
+    /// The desktop's stripper, verbatim — `ATTACHMENT_NOTE_RE` in
+    /// app/src/lib/types/attachment.ts; mobile mirrors it in `chat_parse.dart`. If this
     /// constant and that regex ever disagree, a note shows up raw in a bubble.
     /// The third alternative matches notes stored before this module existed.
     const NOTE_RE: &str = r"\n?\[(?:Attached|Audio): [^\]]*\]|\n?\[The audio file is saved at [^\]]*\]";

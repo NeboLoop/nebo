@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use tokio::sync::Mutex;
 
-use agent::{LaneManager, Runner};
+use agent::{Harness, LaneManager};
 use auth::AuthService;
 use config::Config;
 use db::Store;
@@ -63,6 +63,18 @@ pub struct JanusUsage {
 }
 
 /// Shared application state passed to all handlers via Axum extractors.
+/// What a card relayed into the owner's loop or phone conversation waits
+/// on: the owner's next message there is its answer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CommApproval {
+    /// A card the run itself waits on (a goal suggestion): the reply goes to
+    /// its oneshot in `approval_channels`, as the desktop's modal answers.
+    Waiting(String),
+    /// A permission ask the run parked a call on (its id): the reply is the
+    /// owner's answer to the ask, through its one answer path.
+    Ask(String),
+}
+
 #[derive(Clone)]
 pub struct AppState {
     pub config: Config,
@@ -73,8 +85,18 @@ pub struct AppState {
     pub embedding_provider: Option<Arc<dyn ai::EmbeddingProvider>>,
     pub auth: Arc<AuthService>,
     pub hub: Arc<ClientHub>,
-    pub runner: Arc<Runner>,
+    /// The one loop: every turn starts here.
+    pub harness: Harness,
+    /// The helper registry: every helper a turn starts, its notifications and
+    /// the owner's Stop.
+    pub helpers: Arc<agent::harness::delegation::Helpers>,
+    /// The typed-decision door (Jev through Janus), when the Janus provider is
+    /// present. Outside the turn: memory consolidation, the workflow engine,
+    /// heartbeat triage.
+    pub decide: Option<Arc<ai::DecideClient>>,
     pub tools: Arc<Registry>,
+    /// Asks parked on the owner: the one card, its answers and reminders.
+    pub permission_asks: Arc<agent::harness::permissions::Asks>,
     pub bridge: Arc<mcp::Bridge>,
     /// Tool package registry for managing installable tools (.napp packages)
     pub napp_registry: Arc<napp::Registry>,
@@ -96,11 +118,6 @@ pub struct AppState {
     /// string ("once" | "always" | "deny") carries the ApprovalModal's choice
     /// including the "Approve Always" flag. See `tools::ApprovalChannels`.
     pub approval_channels: tools::ApprovalChannels,
-    /// What each pending tool approval is about, keyed by request id, so the
-    /// dashboard can show "Support Agent wants to send mail" without asking
-    /// the runner. Written where the request is announced, removed where it
-    /// is answered or when the run ends.
-    pub pending_tool_approvals: Arc<Mutex<HashMap<String, PendingToolApproval>>>,
     /// Pending ask requests: question_id -> sender
     pub ask_channels: tools::AskChannels,
     /// Asks forwarded to a loop/channel conversation, keyed by session key →
@@ -109,12 +126,11 @@ pub struct AppState {
     /// — without this, an agent question over comm blocks forever. A queue
     /// (not a single id) keeps stacked asks from overwriting each other.
     pub pending_comm_asks: Arc<Mutex<HashMap<String, VecDeque<String>>>>,
-    /// Approvals relayed to a loop conversation, keyed by session key →
-    /// request_id (tool_call id). The owner's NEXT inbound message in that
-    /// conversation resolves the pending approval ("approve"/"approve always"/
-    /// "deny") into `approval_channels` — the same oneshot the desktop
-    /// ApprovalModal uses. Without this a gated tool parks the run invisibly.
-    pub pending_comm_approvals: Arc<Mutex<HashMap<String, String>>>,
+    /// Approvals relayed to the owner's loop or phone conversation, keyed by
+    /// session key. The owner's NEXT inbound message in that conversation
+    /// answers it. Without this a run parks on a card the remote owner never
+    /// sees.
+    pub pending_comm_approvals: Arc<Mutex<HashMap<String, CommApproval>>>,
     /// Agent-triggered dispatch timestamps per loop channel (conversation_id →
     /// recent instants). Backstop rate limit so agent→agent mention chains
     /// can't melt a channel even if depth metadata is stripped.
@@ -157,10 +173,6 @@ pub struct AppState {
     /// True while the management tunnel to the hub is up — the switchboard
     /// can reach this Nebo. Set by the tunnel itself, nothing else.
     pub tunnel_online: Arc<std::sync::atomic::AtomicBool>,
-    /// Proactive inbox — in-memory queue for background task results
-    pub proactive_inbox: Arc<agent::ProactiveInbox>,
-    /// Auto-continuation budget/state tracker for judge-gated persistent goals
-    pub goal_tracker: Arc<agent::goals::GoalTracker>,
     /// Global registry of all active agent runs — single source of truth
     pub run_registry: RunRegistry,
     /// Owner's personal loop ID — used to unify agent sessions across local + NeboAI
@@ -175,7 +187,7 @@ pub struct AppState {
     /// A2UI surface manager — surface lifecycle, broadcasting, persistence
     pub a2ui: Arc<A2UIManager>,
     /// Running app sidecars keyed by agent ID.
-    pub app_lifecycles: Arc<tokio::sync::RwLock<HashMap<String, AppLifecycle>>>,
+    pub app_lifecycles: Arc<tokio::sync::RwLock<HashMap<String, Arc<AppLifecycle>>>>,
     /// Rolling un-answered context buffer per loop channel, keyed by conversation_id.
     /// Every channel message is ingested here (mentioned or not); the buffer is
     /// drained when the bot replies, so it only ever holds messages since the
@@ -200,6 +212,12 @@ pub struct AppState {
     /// file or directory"); and an agent install re-ran itself plus every dep,
     /// flashing the install modal once per echo (2026-09-17).
     pub codes_in_flight: Arc<crate::codes::InFlightCodes>,
+    /// This computer's host: the coding agents the owner hires here run in
+    /// Nebo itself. `None` where this user has no home or data folder.
+    pub local_host: Option<Arc<ai::LocalHost>>,
+    /// The owner's live calls, by the conversation each is on: what a turn
+    /// says there outside the call is said aloud on it.
+    pub live_calls: crate::handlers::voice::LiveCalls,
 }
 
 impl AppState {
@@ -220,11 +238,3 @@ impl AppState {
     }
 }
 
-/// A gated tool call waiting on the owner (see `AppState::pending_tool_approvals`).
-#[derive(Debug, Clone)]
-pub struct PendingToolApproval {
-    pub session_key: String,
-    pub agent_id: String,
-    pub summary: String,
-    pub since: i64,
-}

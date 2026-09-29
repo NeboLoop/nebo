@@ -45,6 +45,7 @@ pub fn fixture_from_run(
         .map(|m| ConversationTurn {
             role: "user".to_string(),
             content: m.content.clone(),
+            agent: None,
         })
         .collect();
     let first_prompt = conversation
@@ -148,13 +149,10 @@ pub fn render_yaml(export: &ReplayExport) -> Result<String, String> {
     Ok(out)
 }
 
-/// A user row the owner actually typed: not a synthetic continuation and not
-/// an isMeta (platform-authored) prompt.
+/// A user row the owner actually typed: not an isMeta (platform-authored)
+/// prompt.
 fn is_real_user_turn(m: &ChatMessage) -> bool {
     if m.role != "user" || m.content.trim().is_empty() {
-        return false;
-    }
-    if crate::goals::is_continuation_prompt(&m.content) {
         return false;
     }
     let is_meta = m
@@ -286,14 +284,13 @@ mod tests {
 
     const SESSION: &str = "agent:emp1:web";
 
-    /// Only the owner's own turns replay: assistant rows, the synthetic
-    /// continuation prompt, and isMeta prompts are all left out.
+    /// Only the owner's own turns replay: assistant rows and isMeta prompts
+    /// are left out.
     #[test]
     fn conversation_is_the_real_user_turns_only() {
         let messages = vec![
             msg("user", "Fix the failing test", None, None),
             msg("assistant", "Looking.", None, None),
-            msg("user", &crate::goals::continuation_prompt("unfinished"), None, None),
             msg("user", "platform intro", None, Some(r#"{"isMeta":true}"#)),
             msg("user", "Also update the docs", None, Some(r#"{"isMeta":false}"#)),
         ];
@@ -321,15 +318,15 @@ mod tests {
                 "",
                 calls(
                     r#"[
-                      {"id":"1","name":"os","input":{"resource":"file","action":"read","path":"/proj/src/a.rs"}},
-                      {"id":"2","name":"os","input":{"resource":"shell","action":"run","command":"cat /proj/README.md; ls '/proj/src'"}},
-                      {"id":"3","name":"os","input":{"resource":"file","action":"checkpoint","paths":["/proj/src/b.rs","/proj/src/a.rs"]}}
+                      {"id":"1","name":"read_file","input":{"path":"/proj/src/a.rs"}},
+                      {"id":"2","name":"run_command","input":{"command":"cat /proj/README.md; ls '/proj/src'"}},
+                      {"id":"3","name":"checkpoint_files","input":{"paths":["/proj/src/b.rs","/proj/src/a.rs"]}}
                     ]"#,
                 ),
                 None,
             ),
         ];
-        let export = fixture_from_run(SESSION, "same_error_loop", &messages).unwrap();
+        let export = fixture_from_run(SESSION, "max_steps", &messages).unwrap();
         assert_eq!(export.fixture.cwd.as_deref(), Some("/proj"));
         assert_eq!(
             export.touched,
@@ -345,7 +342,7 @@ mod tests {
             msg(
                 "assistant",
                 "",
-                calls(r#"[{"id":"1","name":"os","input":{"resource":"shell","action":"run","command":"make","cwd":"/work/app"}}]"#),
+                calls(r#"[{"id":"1","name":"run_command","input":{"command":"make","cwd":"/work/app"}}]"#),
                 None,
             ),
         ];
@@ -362,7 +359,7 @@ mod tests {
             msg(
                 "assistant",
                 "",
-                calls(r#"[{"id":"1","name":"os","input":{"path":"/a/x.rs"}},{"id":"2","name":"os","input":{"path":"/b/y.rs"}}]"#),
+                calls(r#"[{"id":"1","name":"read_file","input":{"path":"/a/x.rs"}},{"id":"2","name":"read_file","input":{"path":"/b/y.rs"}}]"#),
                 None,
             ),
         ];
@@ -370,7 +367,7 @@ mod tests {
 
         let relative = vec![
             msg("user", "go", None, None),
-            msg("assistant", "", calls(r#"[{"id":"1","name":"os","input":{"path":"src/x.rs"}}]"#), None),
+            msg("assistant", "", calls(r#"[{"id":"1","name":"read_file","input":{"path":"src/x.rs"}}]"#), None),
         ];
         let export = fixture_from_run(SESSION, "r", &relative).unwrap();
         assert_eq!(export.fixture.cwd, None);
@@ -389,7 +386,7 @@ mod tests {
             msg(
                 "assistant",
                 "",
-                calls(r#"[{"id":"1","name":"os","input":{"resource":"file","action":"read","path":"/p/f"}},{"id":"2","name":"web","input":{"action":"search"}}]"#),
+                calls(r#"[{"id":"1","name":"web","input":{"action":"search","query":"q"}},{"id":"2","name":"read_file","input":{"path":"/p/f"}}]"#),
                 None,
             ),
         ];
@@ -398,18 +395,18 @@ mod tests {
         assert_eq!(first.len(), 1);
         let check = first[0].check.as_ref().expect("program check");
         assert!(check.first_call);
-        assert_eq!(check.tool, vec!["os".to_string()]);
+        assert_eq!(check.tool, vec!["web".to_string()]);
         assert_eq!(check.arg.as_deref(), Some("action"));
-        assert_eq!(check.equals, Some(serde_yaml::Value::String("read".into())));
-        assert_eq!(first[0].text, "First tool call is os read");
+        assert_eq!(check.equals, Some(serde_yaml::Value::String("search".into())));
+        assert_eq!(first[0].text, "First tool call is web search");
 
         let no_action = vec![
             msg("user", "go", None, None),
-            msg("assistant", "", calls(r#"[{"id":"1","name":"agent","input":{"resource":"memory"}}]"#), None),
+            msg("assistant", "", calls(r#"[{"id":"1","name":"read_file","input":{"path":"/p/f"}}]"#), None),
         ];
         let export = fixture_from_run(SESSION, "r", &no_action).unwrap();
         let check = export.fixture.prompt_assertions.first_call[0].check.as_ref().unwrap();
-        assert_eq!(check.tool, vec!["agent".to_string()]);
+        assert_eq!(check.tool, vec!["read_file".to_string()]);
         assert_eq!(check.arg, None);
         assert_eq!(check.equals, None);
 
@@ -425,7 +422,7 @@ mod tests {
     fn identity_and_recovery_name_the_run_and_its_exit() {
         let long_prompt = "word ".repeat(40);
         let messages = vec![msg("user", &long_prompt, None, None)];
-        let export = fixture_from_run(SESSION, "repeated_tool_calls", &messages).unwrap();
+        let export = fixture_from_run(SESSION, "max_steps", &messages).unwrap();
         let f = &export.fixture;
         assert_eq!(f.id.len(), "replay-".len() + REPLAY_ID_HASH_CHARS);
         assert!(f.id.starts_with("replay-"));
@@ -438,12 +435,12 @@ mod tests {
         assert!(f.name.ends_with("..."));
         assert!(f.name.chars().count() <= REPLAY_NAME_MAX_CHARS + "...".len());
         assert_eq!(f.agent.as_deref(), Some("emp1"));
-        assert!(f.description.contains("repeated_tool_calls"));
+        assert!(f.description.contains("max_steps"));
 
         let recovery = &f.prompt_assertions.recovery;
         assert_eq!(recovery.len(), 1);
         assert_eq!(recovery[0].severity, Severity::Critical);
-        assert!(recovery[0].text.contains("must not end in repeated_tool_calls again"));
+        assert!(recovery[0].text.contains("must not end in max_steps again"));
         assert!(recovery[0].text.contains("blocked"));
 
         let plain = fixture_from_run("eval:x:run-1:1", "r", &messages).unwrap();
@@ -459,7 +456,7 @@ mod tests {
             msg(
                 "assistant",
                 "",
-                calls(r#"[{"id":"1","name":"os","input":{"resource":"file","action":"read","path":"/proj/a.txt"}}]"#),
+                calls(r#"[{"id":"1","name":"read_file","input":{"path":"/proj/a.txt"}}]"#),
                 None,
             ),
         ];
@@ -475,7 +472,7 @@ mod tests {
         assert_eq!(loaded.conversation.len(), 1);
         let check = loaded.prompt_assertions.first_call[0].check.as_ref().unwrap();
         assert!(check.first_call);
-        assert_eq!(check.tool, vec!["os".to_string()]);
+        assert_eq!(check.tool, vec!["read_file".to_string()]);
         assert_eq!(loaded.prompt_assertions.recovery[0].severity, Severity::Critical);
         // Empty sections are not written (the header comment mentions
         // `setup:` in prose; the key itself would start a line).

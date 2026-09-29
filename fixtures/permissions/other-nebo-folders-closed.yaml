@@ -1,0 +1,20 @@
+id: other-nebo-folders-closed
+name: "Every other Nebo folder on the computer stays closed"
+description: |
+  v0.16.0 release proof: the fence covered NEBO_HOME only. In
+  goal-persistence-across-segue run 1 (calls #14-15) the employee found and
+  read /home/<runner>/.local/share/nebo/settings.json, a second Nebo folder
+  at the platform default, while the run's NEBO_HOME pointed elsewhere.
+  Every folder a Nebo on this computer may keep its settings in is now
+  closed to employees, whole: this Nebo's own (NEBO_HOME), the
+  platform-native one, the platform config folder of the pre-v5 layout,
+  and ~/.nebo, the root before 0.10.4 (config::nebo_roots). This proof
+  runs, through the real server, a read_file in each other folder and a
+  command naming each one's settings.json by its full path, through $HOME
+  and through ~, and asserts each is refused as one of Nebo's own files.
+  It asks only for an absent file and a size, so a broken fence reads
+  nothing of a real install.
+  Mechanical, no model: a deterministic proof through the real server.
+target_component: permissions
+proof: nebo_files_proof::another_nebo_on_this_computer_stays_closed
+conversation: []

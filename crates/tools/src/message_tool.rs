@@ -6,166 +6,22 @@ use crate::origin::ToolContext;
 use crate::registry::{DynTool, ToolResult};
 use db::Store;
 
-/// Broadcast callback injected by the server (wired to ClientHub). Lets the
-/// message tool surface owner notifications to the frontend (bell + desktop HUD)
-/// without crates/tools depending on the server's hub — the same boundary-clean
+/// Broadcast callback injected by the server (wired to ClientHub). Lets tools
+/// surface owner notifications to the frontend (bell + desktop HUD) without
+/// crates/tools depending on the server's hub — the same boundary-clean
 /// pattern the agent worker uses (`agent::agent_worker::NotifyFn`).
 pub type NotifyFn = Arc<dyn Fn(&str, serde_json::Value) + Send + Sync>;
 
-/// MessageTool handles outbound delivery to the owner (notifications, companion chat, SMS, TTS)
-/// and to coworkers (named AI employees on this bot).
+/// MessageTool sends and reads SMS. Coworkers and teams are `send_message`;
+/// reaching the owner is `message_owner`, `push_notification` and
+/// `check_dnd` (`owner_tools`).
 pub struct MessageTool {
     store: Arc<Store>,
-    /// Shared cell (NOT a snapshot): the server late-wires the broadcaster after the
-    /// hub exists, so we read it at execution time — same pattern as `code_installer`.
-    notify_fn: Arc<std::sync::RwLock<Option<NotifyFn>>>,
-    /// Coworker message rail (server-implemented). Late-wired like `notify_fn`.
-    coworker_rail: crate::coworker::CoworkerRailCell,
 }
 
 impl MessageTool {
-    pub fn new(
-        store: Arc<Store>,
-        notify_fn: Arc<std::sync::RwLock<Option<NotifyFn>>>,
-        coworker_rail: crate::coworker::CoworkerRailCell,
-    ) -> Self {
-        Self {
-            store,
-            notify_fn,
-            coworker_rail,
-        }
-    }
-
-    fn infer_resource(&self, action: &str, input: &serde_json::Value) -> &str {
-        let to = input["to"].as_str().unwrap_or("").trim();
-        let phone_like = !to.is_empty()
-            && to.chars().all(|c| c.is_ascii_digit() || matches!(c, '+' | ' ' | '-' | '(' | ')'));
-        match action {
-            "notify" => "owner",
-            "alert" | "dnd_status" => "notify",
-            "conversations" | "read" | "search" => "sms",
-            // send to a phone number is sms; send to anyone else is a
-            // coworker (smoke 2026-09-06: to + text with no resource).
-            "send" if phone_like => "sms",
-            "send" if !to.is_empty() || input.get("text").is_some() => "coworker",
-            _ => "",
-        }
-    }
-
-    async fn handle_coworker(&self, ctx: &ToolContext, input: &serde_json::Value) -> ToolResult {
-        let text = input["text"].as_str().unwrap_or("");
-        // A send with no `to` that names exactly one installed employee in its
-        // text is addressed to them (smoke, 2026-09-05: "Chief of Staff" was in
-        // the text and the call died on the missing field).
-        let names: Vec<String> = self
-            .store
-            .list_agents(500, 0)
-            .unwrap_or_default()
-            .into_iter()
-            .map(|a| a.name)
-            .filter(|n| !n.trim().is_empty())
-            .collect();
-        // Names are matched with hyphens and underscores as spaces, so the
-        // user's "chief-of-staff" is the employee "Chief of Staff".
-        let norm = |t: &str| t.to_ascii_lowercase().replace(['-', '_'], " ");
-        let unique_name_in = |haystack: &str| -> Option<String> {
-            let hay = norm(haystack);
-            let mut hits = names.iter().filter(|n| hay.contains(&norm(n)));
-            match (hits.next(), hits.next()) {
-                (Some(n), None) => Some(n.clone()),
-                _ => None,
-            }
-        };
-        let inferred: Option<String> = if input["to"].as_str().unwrap_or("").is_empty() {
-            // The text first; then the user's own request in this chat, which
-            // is where the model read the name (smoke 2026-09-06: "Ask the
-            // chief-of-staff agent ..." became text: "Draft my weekly report.").
-            unique_name_in(text).or_else(|| {
-                // The session's current chat, by the ONE derivation the store
-                // owns. `chat_id_from_thread_key` only understands `:thread:`
-                // keys, so on every ordinary `agent:<id>:<channel>` key (and
-                // the harness's `eval:` keys) this fallback silently never ran
-                // — smoke 2026-09-15: "Ask the chief-of-staff agent…" died on
-                // "Missing required parameter 'to'".
-                let session = self.store.get_session_by_name(&ctx.session_key).ok().flatten()?;
-                let chat_id = self.store.session_chat_id(&session.id)?;
-                let last_user = self
-                    .store
-                    .get_recent_chat_messages(&chat_id, 8)
-                    .ok()?
-                    .into_iter()
-                    .rev()
-                    .find(|m| m.role == "user")?;
-                unique_name_in(&last_user.content)
-            })
-        } else {
-            None
-        };
-        let to = input["to"].as_str().filter(|t| !t.is_empty()).map(String::from).or(inferred);
-        let Some(to) = to else {
-            let roster = if names.is_empty() {
-                String::new()
-            } else {
-                format!(" Installed employees: {}.", names.join(", "))
-            };
-            return ToolResult::error(format!(
-                "{}{roster}",
-                errors::missing_param(
-                    "send",
-                    "to",
-                    "message(resource: \"coworker\", action: \"send\", to: \"receptionist\", text: \"...\")",
-                )
-            ));
-        };
-        let to = to.as_str();
-        if text.is_empty() {
-            return ToolResult::error(errors::missing_param(
-                "send",
-                "text",
-                "message(resource: \"coworker\", action: \"send\", to: \"receptionist\", text: \"...\")",
-            ));
-        }
-
-        let rail = self.coworker_rail.read().unwrap().clone();
-        let Some(rail) = rail else {
-            return ToolResult::error(
-                "Coworker messaging is not available in this environment (no coworker rail wired; use loop(resource: \"dm\") for hub bots).",
-            );
-        };
-
-        let wait = input["wait"].as_bool().unwrap_or(true);
-        match crate::coworker::deliver(&rail, ctx, to, text, wait).await {
-            Ok(delivery) => {
-                // Structured payload → the chat renders a first-class
-                // "Messaged {name}" event (clickable through to the coworker
-                // thread) instead of a bare tool chip. threadKey identifies
-                // the delivered-into thread for the view-only transcript.
-                let payload = serde_json::json!({
-                    "kind": "coworker_message",
-                    "to": delivery.to_name,
-                    "toAgentId": delivery.to_agent_id,
-                    "threadKey": delivery.thread_key,
-                    "text": text,
-                    "reply": delivery.reply.clone(),
-                });
-                match delivery.reply {
-                    Some(ref reply) => ToolResult::ok(format!(
-                        "Message delivered to {}. Their reply:\n\n{}",
-                        delivery.to_name, reply
-                    ))
-                    .with_payload(payload),
-                    None => ToolResult::ok(format!(
-                        "Message delivered to {} — they are handling it in their own session; \
-                         when their reply arrives you will be woken automatically to act on it \
-                         and report. Until then, report this as \"asked {} — waiting\", never as \
-                         done.",
-                        delivery.to_name, delivery.to_name
-                    ))
-                    .with_payload(payload),
-                }
-            }
-            Err(e) => ToolResult::error(e),
-        }
+    pub fn new(store: Arc<Store>) -> Self {
+        Self { store }
     }
 }
 
@@ -175,22 +31,12 @@ impl DynTool for MessageTool {
     }
 
     fn description(&self) -> String {
-        "Outbound delivery — message coworkers (named AI employees), and send notifications, alerts, and SMS to the owner.\n\
-         USE THIS when: handing work to a named coworker, or when the user wants to send a text, notification, or alert to someone outside NeboAI.\n\n\
-         Coworkers (named employees on this bot):\n\
-         - message(resource: \"coworker\", action: \"send\", to: \"receptionist\", text: \"Can you confirm tomorrow's 2pm?\") — Message a coworker and wait for their reply\n\
-         - message(resource: \"coworker\", action: \"send\", to: \"receptionist\", text: \"FYI: the Smith file moved.\", wait: false) — Fire-and-forget (delivery is acknowledged; their reply wakes you automatically to act on it)\n\
-         The message is delivered into the coworker's own session — their persona, their memory, their connected accounts, their receipt — and the conversation is visible to the owner on both sides. \
-         Work for a coworker? Message them by name. Extra hands for your own work? Spawn a task: agent(resource: \"task\", action: \"spawn\", ...).\n\
-         Never claim a coworker's work is done — report \"asked X — waiting\" or relay their actual reply.\n\n\
-         - message(resource: \"owner\", action: \"notify\", text: \"Task complete!\") — Notify the owner via companion chat\n\
+        "SMS — send, list, read and search text messages with people outside NeboAI.\n\
+         To message a coworker (another employee on this Nebo) or a team, use send_message.\n\n\
          - message(resource: \"sms\", action: \"send\", phone: \"+15551234567\", text: \"Hello!\") — Send SMS (macOS)\n\
          - message(resource: \"sms\", action: \"conversations\") — List SMS conversations\n\
          - message(resource: \"sms\", action: \"read\", phone: \"+15551234567\") — Read SMS messages\n\
-         - message(resource: \"sms\", action: \"search\", query: \"meeting\") — Search SMS messages\n\
-         - message(resource: \"notify\", action: \"send\", title: \"Alert\", text: \"Something happened\") — System notification\n\
-         - message(resource: \"notify\", action: \"alert\", title: \"Warning\", text: \"...\") — Show alert dialog\n\
-         - message(resource: \"notify\", action: \"dnd_status\") — Check Do Not Disturb status\n\n\
+         - message(resource: \"sms\", action: \"search\", query: \"meeting\") — Search SMS messages\n\n\
          For text-to-speech: use os(resource: \"tts\", action: \"speak\", text: \"Hello\")\n\
          Use message for outbound delivery to humans outside NeboAI."
             .to_string()
@@ -203,17 +49,14 @@ impl DynTool for MessageTool {
                 "resource": {
                     "type": "string",
                     "description": "REQUIRED. The messaging resource category — determines which actions are available.",
-                    "enum": ["coworker", "owner", "notify", "sms"]
+                    "enum": ["sms"]
                 },
                 "action": {
                     "type": "string",
                     "description": "The operation to perform on the selected resource. Never put a resource name here.",
-                    "enum": ["notify", "send", "alert", "dnd_status", "conversations", "read", "search"]
+                    "enum": ["send", "conversations", "read", "search"]
                 },
                 "text": { "type": "string", "description": "Message text" },
-                "to": { "type": "string", "description": "REQUIRED for a coworker send: the employee to message, by installed name (e.g. \"receptionist\") or id. Never leave it out and name them in the text instead." },
-                "wait": { "type": "boolean", "description": "Coworker send: wait for their reply (default true). false = fire-and-forget; their reply wakes you automatically.", "default": true },
-                "title": { "type": "string", "description": "Notification or alert title" },
                 "phone": { "type": "string", "description": "Phone number or contact for SMS" },
                 "from": { "type": "string", "description": "SMS send: which of your phone lines to text from (E.164). Omit to use your first texting line." },
                 "query": { "type": "string", "description": "Search query for SMS search" },
@@ -223,7 +66,51 @@ impl DynTool for MessageTool {
         })
     }
 
-    fn requires_approval(&self) -> bool {
+
+    fn search_hint(&self) -> &str {
+        "send read search sms text messages"
+    }
+
+    fn should_defer(&self) -> bool {
+        false
+    }
+
+    fn rule_key(&self, input: &serde_json::Value) -> String {
+        let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
+        let resource = input
+            .get("resource")
+            .and_then(|v| v.as_str())
+            .filter(|r| !r.is_empty())
+            .unwrap_or_else(|| infer_resource(action));
+        match (resource, action) {
+            ("sms", "send") => "sms_message_send",
+            ("sms", "conversations") => "sms_conversations",
+            ("sms", "search") => "sms_search",
+            ("sms", _) => "sms_read",
+            _ => "message",
+        }
+        .to_string()
+    }
+
+    /// Who a text goes to: the phone number a recipient rule matches.
+    fn rule_field(&self, input: &serde_json::Value) -> Option<types::permissions::RuleField> {
+        let to = input.get("phone").and_then(|v| v.as_str()).filter(|t| !t.trim().is_empty())?;
+        Some(types::permissions::RuleField::Recipient(to.trim().to_string()))
+    }
+
+    fn read_only(&self, input: &serde_json::Value) -> bool {
+        matches!(self.rule_key(input).as_str(), "sms_conversations" | "sms_search" | "sms_read")
+    }
+
+    /// SMS reads bring outside people's words into the run.
+    fn taint(&self, input: &serde_json::Value) -> Option<types::provenance::ProvenanceClass> {
+        matches!(self.rule_key(input).as_str(), "sms_conversations" | "sms_search" | "sms_read")
+            .then_some(types::provenance::ProvenanceClass::Channel)
+    }
+
+    /// Pre-interface: it settles its own call shapes (see
+    /// `DynTool::validates_input`).
+    fn validates_input(&self) -> bool {
         false
     }
 
@@ -233,12 +120,12 @@ impl DynTool for MessageTool {
         input: serde_json::Value,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolResult> + Send + 'a>> {
         Box::pin(async move {
-            // Attribute persisted notifications to the calling AI employee.
+            // Attribute sends to the calling AI employee.
             let agent_id =
                 Some(types::keyparser::extract_agent_id(&ctx.session_key)).filter(|s| !s.is_empty());
             let domain_input: DomainInput = match serde_json::from_value(input.clone()) {
                 Ok(v) => v,
-                Err(e) => return ToolResult::error(format!("Input did not match the schema: {}. Every call needs resource (coworker, owner, notify or sms) and action; fix the call and send it again.", e)),
+                Err(e) => return ToolResult::error(format!("Input did not match the schema: {}. Every call needs resource (sms) and action; fix the call and send it again.", e)),
             };
 
             let mut input = input;
@@ -246,62 +133,19 @@ impl DynTool for MessageTool {
                 let corrected = crate::domain::auto_correct_resource(
                     &domain_input,
                     &mut input,
-                    &["coworker", "owner", "sms", "notify"],
+                    &["sms"],
                 );
                 if corrected.is_empty() {
-                    self.infer_resource(&domain_input.action, &input).to_string()
+                    infer_resource(&domain_input.action).to_string()
                 } else {
                     corrected
                 }
             };
 
             match resource.as_str() {
-                "coworker" => match domain_input.action.as_str() {
-                    "send" => self.handle_coworker(ctx, &input).await,
-                    other => ToolResult::error(format!(
-                        "Unknown action '{}' for coworker resource. Available: send",
-                        other
-                    )),
-                },
-                "owner" => {
-                    let text = input["text"].as_str().unwrap_or("");
-                    if text.is_empty() {
-                        return ToolResult::error(errors::missing_param("notify", "text", "message(resource: \"owner\", action: \"notify\", text: \"Task complete!\")"));
-                    }
-
-                    // Get existing companion chat or create one
-                    let msg_id = uuid::Uuid::new_v4().to_string();
-                    let companion = match self.store.get_companion_chat_by_user("") {
-                        Ok(Some(chat)) => Ok(chat),
-                        _ => {
-                            let chat_id = uuid::Uuid::new_v4().to_string();
-                            self.store.create_companion_chat(&chat_id, "")
-                        }
-                    };
-
-                    match companion {
-                        Ok(chat) => {
-                            let _ = self.store.create_chat_message(
-                                &msg_id,
-                                &chat.id,
-                                "assistant",
-                                text,
-                                None,
-                            );
-                            // Fire OS notification
-                            notify_crate::send("Nebo", text);
-                            ToolResult::ok(format!("Owner notified ({} chars)", text.chars().count()))
-                        }
-                        Err(e) => ToolResult::error(format!("Failed to notify: {}. Do not retry — this is a database error.", e)),
-                    }
-                }
-                "notify" => {
-                    let nf = self.notify_fn.read().unwrap().clone();
-                    handle_notify(&self.store, nf.as_ref(), &domain_input.action, &input, agent_id.as_deref()).await
-                }
                 "sms" => handle_sms(&self.store, ctx, agent_id.as_deref(), &domain_input.action, &input).await,
                 other => ToolResult::error(format!(
-                    "Resource {:?} not available. Available: coworker, owner, notify, sms",
+                    "Resource {:?} not available. Available: sms. To message a coworker or a team, use send_message.",
                     other
                 )),
             }
@@ -309,231 +153,12 @@ impl DynTool for MessageTool {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Notify resource handlers
-// ---------------------------------------------------------------------------
-
-async fn handle_notify(store: &Store, notify_fn: Option<&NotifyFn>, action: &str, input: &serde_json::Value, agent_id: Option<&str>) -> ToolResult {
+/// Every action of this tool is an SMS action.
+fn infer_resource(action: &str) -> &'static str {
     match action {
-        "send" => {
-            let text = input["text"].as_str().unwrap_or("");
-            let title = input["title"].as_str().unwrap_or("Nebo");
-
-            if text.is_empty() {
-                return ToolResult::error(errors::missing_param("send", "text", "message(resource: \"notify\", action: \"send\", title: \"Alert\", text: \"Something happened\")"));
-            }
-
-            let id = uuid::Uuid::new_v4().to_string();
-            crate::owner_notify::emit(
-                store,
-                None,
-                &crate::owner_notify::OwnerNotification {
-                    id: &id,
-                    kind: "info",
-                    title,
-                    body: Some(text),
-                    action_url: None,
-                    agent_id,
-                    loud: false,
-                },
-            );
-            notify_crate::send(title, text);
-            ToolResult::ok(format!(
-                "Notification sent ({} chars, title '{}')",
-                text.chars().count(),
-                title
-            ))
-        }
-        "alert" => {
-            let text = input["text"].as_str().unwrap_or("");
-            let title = input["title"].as_str().unwrap_or("Nebo");
-
-            if text.is_empty() {
-                return ToolResult::error(errors::missing_param("alert", "text", "message(resource: \"notify\", action: \"alert\", title: \"Warning\", text: \"Something happened\")"));
-            }
-
-            handle_alert(store, notify_fn, title, text, agent_id).await
-        }
-        "speak" => ToolResult::error(
-            "speak has moved to the os tool: os(resource: \"tts\", action: \"speak\", text: \"...\")",
-        ),
-        "dnd_status" => handle_dnd_status().await,
-        other => ToolResult::error(format!(
-            "Unknown action '{}' for notify resource. Available: send, alert, dnd_status",
-            other
-        )),
+        "send" | "conversations" | "read" | "search" => "sms",
+        _ => "",
     }
-}
-
-// ---------------------------------------------------------------------------
-// Alert (urgent owner notification → bell + desktop HUD)
-// ---------------------------------------------------------------------------
-
-/// Surface an urgent alert to the owner via the canonical notification pathway:
-/// a persisted row (the bell) plus a `notification` broadcast that the desktop
-/// frontend turns into the branded auto-dismissing HUD. Replaces the old
-/// osascript `display alert` modal (blocking, generic icon, never auto-dismisses).
-/// Falls back to a persisted-only notification when no broadcaster is wired
-/// (headless / no frontend) — never a modal.
-async fn handle_alert(store: &Store, notify_fn: Option<&NotifyFn>, title: &str, text: &str, agent_id: Option<&str>) -> ToolResult {
-    let id = uuid::Uuid::new_v4().to_string();
-    let n = crate::owner_notify::OwnerNotification {
-        id: &id,
-        kind: "warning",
-        title,
-        body: Some(text),
-        action_url: None,
-        agent_id,
-        loud: true,
-    };
-    match notify_fn {
-        Some(f) => crate::owner_notify::emit(store, Some(&|ev, payload| f(ev, payload)), &n),
-        None => crate::owner_notify::emit(store, None, &n),
-    }
-
-    ToolResult::ok(format!("Alerted the owner: {}", title))
-}
-
-// ---------------------------------------------------------------------------
-// DND status
-// ---------------------------------------------------------------------------
-
-async fn handle_dnd_status() -> ToolResult {
-    #[cfg(target_os = "macos")]
-    {
-        // Focus (macOS 12+) records every active mode as an assertion in
-        // ~/Library/DoNotDisturb/DB/Assertions.json; an empty record list
-        // means no Focus is on. That is the state itself, not a menu-bar
-        // preference.
-        let assertions = dirs::home_dir().map(|h| h.join("Library/DoNotDisturb/DB/Assertions.json"));
-        let read = match assertions {
-            Some(ref p) => tokio::fs::read_to_string(p).await.map_err(|e| e.to_string()),
-            None => Err("home directory unknown".to_string()),
-        };
-        match read.map(|s| focus_assertions(&s)) {
-            Ok(Some(modes)) => ToolResult::ok(
-                serde_json::json!({
-                    "dnd_enabled": !modes.is_empty(),
-                    "active_focus_modes": modes,
-                    "source": "~/Library/DoNotDisturb/DB/Assertions.json",
-                })
-                .to_string(),
-            ),
-            Ok(None) => ToolResult::ok(
-                serde_json::json!({
-                    "dnd_enabled": null,
-                    "note": "DND state unknown: ~/Library/DoNotDisturb/DB/Assertions.json was read but is not in the expected shape",
-                })
-                .to_string(),
-            ),
-            Err(e) => {
-                // Legacy (pre-Focus) preference, still a real DND flag on
-                // old systems; on new ones the key is absent.
-                let legacy = tokio::process::Command::new("defaults")
-                    .args(["read", "com.apple.ncprefs", "dnd_prefs"])
-                    .output()
-                    .await;
-                if let Ok(o) = legacy
-                    && o.status.success()
-                {
-                    let stdout = String::from_utf8_lossy(&o.stdout);
-                    let enabled = stdout.contains("dndDisplayLock = 1") || stdout.contains("dndMirrored = 1");
-                    return ToolResult::ok(
-                        serde_json::json!({
-                            "dnd_enabled": enabled,
-                            "source": "defaults read com.apple.ncprefs dnd_prefs (legacy)",
-                        })
-                        .to_string(),
-                    );
-                }
-                ToolResult::ok(
-                    serde_json::json!({
-                        "dnd_enabled": null,
-                        "note": format!("DND state unknown: could not read ~/Library/DoNotDisturb/DB/Assertions.json ({}); ask the owner to grant Nebo Full Disk Access if this persists", e),
-                    })
-                    .to_string(),
-                )
-            }
-        }
-    }
-
-    #[cfg(target_os = "linux")]
-    {
-        // Try D-Bus to check GNOME DND
-        let output = tokio::process::Command::new("dbus-send")
-            .args([
-                "--session",
-                "--print-reply",
-                "--dest=org.freedesktop.Notifications",
-                "/org/freedesktop/Notifications",
-                "org.freedesktop.DBus.Properties.Get",
-                "string:org.freedesktop.Notifications",
-                "string:DoNotDisturb",
-            ])
-            .output()
-            .await;
-
-        match output {
-            Ok(o) if o.status.success() => {
-                let stdout = String::from_utf8_lossy(&o.stdout).trim().to_string();
-                let enabled = stdout.contains("true");
-                return ToolResult::ok(
-                    serde_json::json!({
-                        "dnd_enabled": enabled,
-                        "source": "org.freedesktop.Notifications DoNotDisturb property via dbus-send",
-                    })
-                    .to_string(),
-                );
-            }
-            Ok(o) => {
-                let stderr = String::from_utf8_lossy(&o.stderr).trim().to_string();
-                return ToolResult::ok(
-                    serde_json::json!({
-                        "dnd_enabled": null,
-                        "note": format!("DND state unknown: D-Bus query failed (dbus-send exited {}: {})", o.status.code().unwrap_or(-1), stderr),
-                    })
-                    .to_string(),
-                );
-            }
-            Err(e) => {
-                return ToolResult::ok(
-                    serde_json::json!({
-                        "dnd_enabled": null,
-                        "note": format!("DND state unknown: D-Bus query failed (dbus-send could not run: {})", e),
-                    })
-                    .to_string(),
-                );
-            }
-        }
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        // Focus Assist keeps its state in an undocumented binary blob; the
-        // only honest reading is whether the key exists and how big it is.
-        let script = r#"try { $val = Get-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\CloudStore\Store\DefaultAccount\Current\default$windows.data.notifications.quiethourssettings\windows.data.notifications.quiethourssettings' -ErrorAction Stop; Write-Output ("" + $val.Data.Length) } catch { Write-Output 'unavailable' }"#;
-        let r = run_powershell(script).await;
-        if r.is_error {
-            return r;
-        }
-        let note = match r.content.trim().parse::<usize>() {
-            Ok(n) => format!(
-                "DND state unknown: Focus Assist stores its state as an undocumented {} byte binary blob under HKCU ...quiethourssettings, which Nebo does not decode",
-                n
-            ),
-            Err(_) => "DND state unknown: the Focus Assist registry key (HKCU ...quiethourssettings) is not present".to_string(),
-        };
-        return ToolResult::ok(
-            serde_json::json!({
-                "dnd_enabled": null,
-                "note": note,
-            })
-            .to_string(),
-        );
-    }
-
-    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-    ToolResult::error("Do Not Disturb status is not available on this platform. Do not retry.")
 }
 
 // ---------------------------------------------------------------------------
@@ -555,7 +180,7 @@ async fn handle_sms(store: &Store, ctx: &ToolContext, agent_id: Option<&str>, ac
             if phone.is_empty() {
                 return ToolResult::error(errors::missing_param("send", "phone", "message(resource: \"sms\", action: \"send\", phone: \"+15551234567\", text: \"Hello!\")"));
             }
-            crate::effects::guarded_send(store, ctx, "messaging", "sms", "sms.message.send", input, || async {
+            crate::effects::guarded_send(store, ctx, "messaging", "sms", "sms.message.send", input, None, || async {
                 match send_from_phone_line(store, agent_id, input).await {
                     Some(outcome) => outcome,
                     // No texting line: the owner's Messages.app. AppleScript
@@ -785,59 +410,6 @@ async fn handle_sms_search(input: &serde_json::Value) -> ToolResult {
 // Helper: macOS Focus assertions
 // ---------------------------------------------------------------------------
 
-/// Active Focus mode identifiers from the contents of
-/// `~/Library/DoNotDisturb/DB/Assertions.json`: every `storeAssertionRecords`
-/// entry under `data` is one active mode. `None` when the document is not in
-/// that shape (so the caller reports "unknown", never a guessed boolean).
-#[cfg(target_os = "macos")]
-fn focus_assertions(json: &str) -> Option<Vec<String>> {
-    let v: serde_json::Value = serde_json::from_str(json).ok()?;
-    let data = v.get("data")?.as_array()?;
-    let mut modes = Vec::new();
-    for entry in data {
-        let records = entry
-            .get("storeAssertionRecords")
-            .and_then(|r| r.as_array())
-            .map(|r| r.as_slice())
-            .unwrap_or(&[]);
-        for record in records {
-            let mode = record
-                .get("assertionDetails")
-                .and_then(|d| d.get("assertionDetailsModeIdentifier"))
-                .and_then(|m| m.as_str())
-                .unwrap_or("unknown");
-            modes.push(mode.to_string());
-        }
-    }
-    Some(modes)
-}
-
-#[cfg(all(test, target_os = "macos"))]
-mod focus_tests {
-    use super::focus_assertions;
-
-    #[test]
-    fn active_focus_lists_mode_identifiers() {
-        let json = r#"{"data":[{"storeAssertionRecords":[{"assertionDetails":{"assertionDetailsModeIdentifier":"com.apple.donotdisturb.mode.default"}}]}]}"#;
-        assert_eq!(
-            focus_assertions(json),
-            Some(vec!["com.apple.donotdisturb.mode.default".to_string()])
-        );
-    }
-
-    #[test]
-    fn no_focus_is_empty_not_unknown() {
-        let json = r#"{"data":[{"storeAssertionRecords":[]}]}"#;
-        assert_eq!(focus_assertions(json), Some(vec![]));
-    }
-
-    #[test]
-    fn unexpected_shape_is_unknown() {
-        assert_eq!(focus_assertions("not json"), None);
-        assert_eq!(focus_assertions(r#"{"other":1}"#), None);
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Helper: macOS chat.db path
 // ---------------------------------------------------------------------------
@@ -930,32 +502,3 @@ async fn run_osascript_stdin(script: &str, ok_text: &str) -> ToolResult {
         Err(e) => ToolResult::error(format!("Failed to run osascript: {}. Do not retry — this is a system error.", e)),
     }
 }
-
-// ---------------------------------------------------------------------------
-// Helper: run PowerShell (Windows)
-// ---------------------------------------------------------------------------
-
-#[cfg(target_os = "windows")]
-async fn run_powershell(script: &str) -> ToolResult {
-    let output = tokio::process::Command::new("powershell")
-        .args(["-NoProfile", "-Command", script])
-        .output()
-        .await;
-
-    match output {
-        Ok(o) if o.status.success() => {
-            let stdout = String::from_utf8_lossy(&o.stdout).trim().to_string();
-            if stdout.is_empty() {
-                ToolResult::ok("OK")
-            } else {
-                ToolResult::ok(stdout)
-            }
-        }
-        Ok(o) => {
-            let stderr = String::from_utf8_lossy(&o.stderr).trim().to_string();
-            ToolResult::error(format!("PowerShell error: {}. Do not retry — this is a system error.", stderr))
-        }
-        Err(e) => ToolResult::error(format!("Failed to run PowerShell: {}. Do not retry — this is a system error.", e)),
-    }
-}
-

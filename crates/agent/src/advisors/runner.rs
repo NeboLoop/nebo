@@ -134,7 +134,9 @@ async fn run_single_advisor(
     let req = ChatRequest {
         tool_credential: None,
         chat_id: String::new(),
-        approval_channels: None,
+        ask_channels: None,
+        permission_mode: None,
+        linked_context: None,
         tool_choice: Default::default(),
         messages: vec![Message {
             role: "user".to_string(),
@@ -148,7 +150,6 @@ async fn run_single_advisor(
         max_tokens: 1024,
         temperature: 0.7,
         system: system_prompt,
-        static_system: String::new(),
         model: String::new(),
         enable_thinking: false,
         metadata: None,
@@ -203,7 +204,7 @@ async fn run_single_advisor(
 }
 
 /// Implement the AdvisorDeliberator trait from tools crate
-/// so that AgentTool can call deliberate without circular dependencies.
+/// so that the advisor tools can call deliberate without circular dependencies.
 impl tools::bot_tool::AdvisorDeliberator for Runner {
     fn deliberate<'a>(
         &'a self,

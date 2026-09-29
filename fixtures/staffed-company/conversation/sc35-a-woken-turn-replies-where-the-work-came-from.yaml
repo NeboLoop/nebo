@@ -1,0 +1,8 @@
+id: sc35-a-woken-turn-replies-where-the-work-came-from
+name: "SC35 — A woken turn replies where the work came from"
+description: |
+  A helper started from the owner's loop conversation finishes; the turn its notification
+  wakes sends its reply to that loop conversation (B13; hub check O3).
+target_component: staffed-company
+proof: staffed_proof::conversation::a_woken_turn_replies_where_the_work_came_from
+conversation: []

@@ -3,9 +3,8 @@ name: "Correction — a read over the 100 KB budget is an error, and the model p
 description: |
   A blind read of a 300 KB file exceeds the read budget. The tool answers
   with an ERROR that names the file's line count and points at offset/limit
-  and grep — never a clipped payload (Claude Code's Read makes the same
-  choice: the error costs ~100 bytes, a truncated result costs the whole
-  budget). The model must take the hint: one targeted grep or ranged read,
+  and grep — never a clipped payload (the error costs ~100 bytes, a
+  truncated result costs the whole budget). The model must take the hint: one targeted grep or ranged read,
   then the answer. Not a loop of blind re-reads. On the rewrite the read is
   read_file (offset/limit) and the grep is run_command grep or rg.
   v2 (new harness): checks written for the rewrite's tools; see fixtures/v2/MAPPING.md.

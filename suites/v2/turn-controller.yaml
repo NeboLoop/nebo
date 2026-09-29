@@ -35,3 +35,5 @@ fixtures:
   - ../../fixtures/v2/turn/no-steering-in-stored-thread.yaml
   # Tool surface
   - ../../fixtures/v2/turn/deferred-tool-loaded-and-used.yaml
+  # The owner's go is the go
+  - ../../fixtures/v2/turn/create-on-the-owners-go.yaml

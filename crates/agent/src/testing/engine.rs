@@ -1,100 +1,56 @@
-use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use futures::{SinkExt, StreamExt};
 use serde_json::{Value, json};
 use tokio::time::timeout;
-use tokio_tungstenite::{connect_async, tungstenite::Message};
+use tokio_tungstenite::tungstenite::Message;
 use tracing::{info, warn};
 
 use super::fixture::{Fixture, Interrupt};
 use super::trace::*;
 
-/// Inspect the assembled prompt with optional overrides. Prints to stdout.
-pub fn inspect_prompt(
-    fixture: Option<&Fixture>,
-    overrides: &HashMap<String, String>,
-) {
-    use crate::prompt;
+/// Print what a turn opens with: the system prompt every turn sends, then
+/// the identity row the fixture's employee is told, each with its size.
+pub fn inspect_prompt(fixture: Option<&Fixture>) {
+    use crate::harness::prompt::{Identity, Role, system_prompt};
 
-    let mut pctx = prompt::PromptContext::default();
-    if let Some(f) = fixture {
-        pctx.agent_name = f.target_component.clone();
-    }
-
-    let static_system = prompt::build_static(&pctx);
-
-    // Apply overrides to STRAP sections
-    let final_prompt = if overrides.is_empty() {
-        static_system.clone()
-    } else {
-        apply_overrides(&static_system, overrides)
-    };
-
-    // Print with section markers and sizes
-    print_annotated_prompt(&final_prompt, overrides);
-
-    let dctx = prompt::DynamicContext::default();
-    let dynamic = prompt::build_dynamic_suffix(&dctx);
-
-    if !dynamic.trim().is_empty() {
-        println!("\n=== DYNAMIC SUFFIX (chars: {}) ===", dynamic.len());
-        println!("{}", dynamic);
-    }
-
-    let total = final_prompt.len() + dynamic.len();
-    // ~4 chars per token is a rough estimate
-    println!("\n--- Total: {} chars (~{} tokens) ---", total, total / 4);
+    let name = fixture.map(|f| f.target_component.clone()).filter(|n| !n.is_empty()).unwrap_or_else(|| "Nebo".to_string());
+    let identity = Identity { name, role: Role::Employee, personality_snippet: None, soul: None, rules: None, persona: None }.text();
+    let system = system_prompt();
+    println!("=== SYSTEM PROMPT (chars: {}) ===", system.chars().count());
+    println!("{system}");
+    println!("\n=== IDENTITY ROW (chars: {}) ===", identity.chars().count());
+    println!("{identity}");
+    let total = system.chars().count() + identity.chars().count();
+    println!("\n--- Total: {} chars (~{} tokens) ---", total, total / crate::CHARS_PER_TOKEN);
 }
 
-/// Run a fixture live against a running Nebo server.
+/// Run a fixture live against a running Nebo server. The harness is the
+/// owner's own client: it proves itself to the local API with the server's
+/// install key `key`, carried as the first segment of the address it hands
+/// everything (the chat socket, the employee lookup, the setup commands'
+/// NEBO_TEST_SERVER), so a fixture's `curl` needs no change.
 pub async fn run_live(
     fixture: &Fixture,
     server: &str,
+    key: &str,
     model: Option<&str>,
-    overrides: &HashMap<String, String>,
     runs: usize,
 ) -> Result<Vec<Trace>, String> {
+    let shown = server;
+    let server = &format!("{server}/k/{key}");
     let ws_url = format!("ws://{}/ws", server);
 
     // Quick connectivity check
-    match connect_async(&ws_url).await {
+    match tls::connect_ws(&ws_url).await {
         Ok(_) => {}
         Err(e) => {
             return Err(format!(
-                "Cannot connect to Nebo at {}. Is `make dev` running?\nError: {}",
-                ws_url, e
+                "Cannot connect to Nebo at ws://{}/ws. Is `make dev` running?\nError: {}",
+                shown, e
             ));
         }
     }
-
-    // Build system override if overrides were provided.
-    // STRAP docs are NOT in build_static() — they're built separately by
-    // build_strap_section() and appended by the runner. To override a STRAP doc,
-    // we must build the full prompt (static + strap), apply replacements, then send
-    // it as a complete system prompt.
-    let system_override = if overrides.is_empty() {
-        None
-    } else if let Some(full_system) = overrides.get("system") {
-        // Full system prompt replacement — used for naming convention A/B tests
-        Some(full_system.clone())
-    } else {
-        let pctx = crate::prompt::PromptContext::default();
-        let static_system = crate::prompt::build_static(&pctx);
-        let all_tool_names: Vec<String> = vec![
-            "os".into(),
-            "agent".into(),
-            "web".into(),
-            "event".into(),
-            "loop".into(),
-            "message".into(),
-            "skill".into(),
-        ];
-        let strap_section =
-            crate::prompt::build_strap_section(&all_tool_names, &[], &all_tool_names);
-        let full = format!("{}\n\n{}", static_system, strap_section);
-        Some(apply_overrides(&full, overrides))
-    };
 
     let mut traces = Vec::new();
     for run_idx in 0..runs {
@@ -121,7 +77,7 @@ pub async fn run_live(
         info!(fixture = %fixture.id, run = %run_id, "starting live test run");
 
         let result = match with_agent_id(fixture, server).await {
-            Ok(bound) => run_single(&ws_url, &bound, &run_id, model, system_override.as_deref()).await,
+            Ok(bound) => run_single(&ws_url, &bound, &run_id, model).await,
             Err(e) => Err(e),
         };
 
@@ -157,12 +113,11 @@ async fn run_single(
     fixture: &Fixture,
     run_id: &str,
     model: Option<&str>,
-    system_override: Option<&str>,
 ) -> Result<Trace, String> {
     let start = Instant::now();
 
     // Connect
-    let (mut ws, _) = connect_async(ws_url)
+    let (mut ws, _) = tls::connect_ws(ws_url)
         .await
         .map_err(|e| format!("WS connect: {}", e))?;
 
@@ -190,16 +145,10 @@ async fn run_single(
     // With an agent, the id carries the agent prefix: the server keeps a
     // client session id only when it already does, and replaces anything
     // else with the agent's main session, whose events would never be ours.
-    let session_id = match fixture.agent.as_deref() {
-        Some(agent) => format!(
-            "{}eval:{}:{}:{}",
-            types::keyparser::agent_session_prefix(agent),
-            fixture.id,
-            run_id,
-            ts
-        ),
-        None => format!("eval:{}:{}:{}", fixture.id, run_id, ts),
-    };
+    // A turn that names its own employee starts a new conversation with it
+    // (`conversation_session`), and the turns after it continue there.
+    let mut agent = fixture.agent.clone();
+    let mut session_id = conversation_session(agent.as_deref(), &fixture.id, run_id, ts, None);
 
     let mut rec = Recorder::default();
 
@@ -211,6 +160,10 @@ async fn run_single(
         .collect();
 
     for (turn_idx, turn) in user_turns.iter().enumerate() {
+        if let Some(to) = turn.agent.as_deref() {
+            agent = Some(to.to_string());
+            session_id = conversation_session(Some(to), &fixture.id, run_id, ts, Some(turn_idx + 1));
+        }
         let mut msg_data = json!({
             "session_id": session_id,
             "prompt": turn.content,
@@ -221,13 +174,10 @@ async fn run_single(
         if let Some(model) = model {
             msg_data["model_override"] = json!(model);
         }
-        if let Some(sys) = system_override {
-            msg_data["system"] = json!(sys);
-        }
         if let Some(cwd) = fixture.cwd.as_deref() {
             msg_data["cwd"] = json!(cwd);
         }
-        if let Some(agent) = fixture.agent.as_deref() {
+        if let Some(agent) = agent.as_deref() {
             msg_data["agent_id"] = json!(agent);
         }
 
@@ -282,12 +232,11 @@ async fn run_single(
                         }
                         Step::Reply(replies) => send_replies(&mut ws, replies, &fixture.id, run_id).await,
                         Step::TurnEnded => break,
-                        // A run the server stopped (a spiral guard, a
-                        // provider error) still has a story: the recorder
-                        // keeps the calls made so far and the reason, so the
-                        // stop can be read and turned into a fixture. Two
-                        // SWE-bench runs on 2026-09-06 ended in the
-                        // identical-call stop with nothing on disk.
+                        // A run the server stopped (a step or spending
+                        // limit, a provider error) still has a story: the
+                        // recorder keeps the calls made so far and the
+                        // reason, so the stop can be read and turned into a
+                        // fixture.
                         Step::Stopped(err) => {
                             warn!(fixture = %fixture.id, run = %run_id, error = %err, "run stopped by the server; keeping the partial trace");
                             cancel_run(&mut ws, &session_id).await;
@@ -368,6 +317,8 @@ enum Step {
 struct OpenCall {
     tool_id: String,
     slot: usize,
+    /// The turn it started in.
+    turn: usize,
     tool: String,
     arguments: Value,
     started: Instant,
@@ -404,6 +355,9 @@ struct Recorder {
     /// Calls that started work which reports later: a background helper or
     /// command, in either arm's vocabulary.
     background_launches: usize,
+    /// Background commands the model itself stopped: their end is heard in
+    /// the turn that stopped them, so no turn wakes for them.
+    commands_stopped: usize,
     woken_turns: usize,
     /// A helper finished and no turn of the session has ended since, so its
     /// report is not heard yet.
@@ -464,16 +418,18 @@ impl Recorder {
                     if turn.metrics.first_reply_ms.is_none() && !t.trim().is_empty() {
                         turn.metrics.first_reply_ms = Some(turn.started.elapsed().as_millis() as u64);
                     }
+                    turn.metrics.reply.push_str(t);
                     self.text.push(t.to_string());
                 }
                 Step::Continue
             }
             Some("tool_start") => {
-                self.active_turn();
+                let turn = self.active_turn().metrics.turn;
                 let tool = data["tool"].as_str().or_else(|| data["name"].as_str()).unwrap_or("unknown").to_string();
                 self.open_calls.push(OpenCall {
                     tool_id: data["tool_id"].as_str().unwrap_or("").to_string(),
                     slot: self.calls.len(),
+                    turn,
                     tool,
                     arguments: data["input"].clone(),
                     started: Instant::now(),
@@ -496,11 +452,15 @@ impl Recorder {
                 if !is_error && launches_background_work(&call.tool, &call.arguments) {
                     self.background_launches += 1;
                 }
+                if !is_error && stops_background_command(&call.tool, &call.arguments) {
+                    self.commands_stopped += 1;
+                }
                 let turn = self.active_turn();
                 turn.metrics.tool_calls += 1;
                 turn.metrics.tool_errors += usize::from(is_error);
                 self.calls[call.slot] = Some(TracedToolCall {
                     sequence: 0,
+                    turn: call.turn,
                     tool: call.tool,
                     arguments: call.arguments,
                     response: TracedToolResponse { char_count: content.len(), content, is_error },
@@ -609,8 +569,14 @@ impl Recorder {
     fn settled(&self) -> bool {
         self.turn.is_none()
             && self.helpers_running.is_empty()
-            && self.background_launches <= self.helpers_finished.max(self.woken_turns)
+            && self.background_launches <= self.heard()
             && !self.unheard
+    }
+
+    /// Background launches accounted for: by a finished helper or a turn the
+    /// session woke for, plus the commands the model stopped.
+    fn heard(&self) -> usize {
+        self.helpers_finished.max(self.woken_turns) + self.commands_stopped
     }
 
     /// What is still out, for the transcript note when the wait runs out.
@@ -622,7 +588,7 @@ impl Recorder {
         if !self.helpers_running.is_empty() {
             parts.push(format!("{} helper(s) still running", self.helpers_running.len()));
         }
-        let heard = self.helpers_finished.max(self.woken_turns);
+        let heard = self.heard();
         if self.background_launches > heard {
             parts.push(format!("{} background launch(es) not reported back", self.background_launches - heard));
         }
@@ -682,6 +648,17 @@ fn launches_background_work(tool: &str, args: &Value) -> bool {
         "agent" => action == Some("spawn") && flag("wait") == Some(false),
         "run_command" => flag("background") == Some(true),
         "os" => action == Some("exec") && flag("background") == Some(true),
+        _ => false,
+    }
+}
+
+/// Whether a call stops a background command, in either arm's vocabulary: a
+/// stopped helper reports its own end (`subagent_complete`).
+fn stops_background_command(tool: &str, args: &Value) -> bool {
+    let is_command = |k: &str| args.get(k).and_then(Value::as_str).is_some_and(|id| id.starts_with("bg-"));
+    match tool {
+        "stop_task" => is_command("task_id"),
+        "os" => args.get("action").and_then(Value::as_str) == Some("kill"),
         _ => false,
     }
 }
@@ -758,24 +735,54 @@ async fn send_replies(ws: &mut Ws, replies: Vec<Value>, fixture_id: &str, run_id
     }
 }
 
-/// The fixture with its employee named by id. A fixture that hires its own
+/// The session id of one conversation of the run: the fixture's own, or
+/// (`turn` given) the new conversation a turn naming its employee starts.
+fn conversation_session(agent: Option<&str>, fixture_id: &str, run_id: &str, ts: u128, turn: Option<usize>) -> String {
+    let suffix = turn.map(|t| format!(":t{t}")).unwrap_or_default();
+    match agent {
+        Some(agent) => format!(
+            "{}eval:{}:{}:{}{}",
+            types::keyparser::agent_session_prefix(agent),
+            fixture_id,
+            run_id,
+            ts,
+            suffix
+        ),
+        None => format!("eval:{}:{}:{}{}", fixture_id, run_id, ts, suffix),
+    }
+}
+
+/// The fixture with every employee it names — its own `agent` and each
+/// turn's — bound to that employee's id. A fixture that hires its own
 /// employee in setup knows only the name it gave (`records-clerk-{{tag}}`),
 /// and the chat payload takes an id, so the name is looked up once setup has
 /// run. An id is kept as it is.
 async fn with_agent_id(fixture: &Fixture, server: &str) -> Result<Fixture, String> {
     let mut bound = fixture.clone();
-    let Some(agent) = fixture.agent.as_deref() else {
+    let named = fixture.agent.is_some() || fixture.conversation.iter().any(|t| t.agent.is_some());
+    if !named {
         return Ok(bound);
-    };
+    }
     let url = format!("http://{server}/api/v1/agents");
-    let list: Value = reqwest::get(&url)
+    let list: Value = tls::http_client()
+        .build()
+        .map_err(|e| format!("list employees: {e}"))?
+        .get(&url)
+        .send()
         .await
         .map_err(|e| format!("list employees: {e}"))?
         .json()
         .await
         .map_err(|e| format!("list employees: {e}"))?;
-    let id = agent_id_in(&list, agent).ok_or_else(|| format!("no employee with the id or name `{agent}`"))?;
-    bound.agent = Some(id);
+    let resolve = |agent: &str| agent_id_in(&list, agent).ok_or_else(|| format!("no employee with the id or name `{agent}`"));
+    if let Some(agent) = fixture.agent.as_deref() {
+        bound.agent = Some(resolve(agent)?);
+    }
+    for turn in &mut bound.conversation {
+        if let Some(agent) = turn.agent.as_deref() {
+            turn.agent = Some(resolve(agent)?);
+        }
+    }
     Ok(bound)
 }
 
@@ -791,39 +798,8 @@ fn agent_id_in(list: &Value, agent: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-/// Apply prompt overrides by replacing STRAP tool doc sections.
-fn apply_overrides(prompt: &str, overrides: &HashMap<String, String>) -> String {
-    let mut result = prompt.to_string();
-    for (component, replacement) in overrides {
-        if let Some(tool_name) = component.strip_prefix("tool.") {
-            if let Some(original_doc) = crate::prompt::strap_tool_doc(tool_name) {
-                result = result.replace(original_doc, replacement);
-            }
-        }
-    }
-    result
-}
-
-/// Parse override args like "tool.shell:./overrides/shell-v2.md" into a map.
-pub fn parse_overrides(args: &[String]) -> Result<HashMap<String, String>, String> {
-    let mut map = HashMap::new();
-    for arg in args {
-        let (component, path) = arg
-            .split_once(':')
-            .ok_or_else(|| format!("invalid override format '{}', expected 'component:path'", arg))?;
-        let content = std::fs::read_to_string(path)
-            .map_err(|e| format!("read override {}: {}", path, e))?;
-        map.insert(component.to_string(), content);
-    }
-    Ok(map)
-}
-
-/// Build experiment metadata from current git state and overrides.
-pub fn build_experiment_metadata(
-    name: &str,
-    overrides: &HashMap<String, String>,
-    runs: usize,
-) -> ExperimentMetadata {
+/// Build experiment metadata from current git state.
+pub fn build_experiment_metadata(name: &str, runs: usize) -> ExperimentMetadata {
     let git_commit = std::process::Command::new("git")
         .args(["rev-parse", "HEAD"])
         .output()
@@ -846,7 +822,6 @@ pub fn build_experiment_metadata(
         git_commit,
         git_branch,
         strap_doc_hashes: compute_strap_hashes(),
-        overrides: overrides.keys().cloned().collect(),
         runs_per_fixture: runs,
     }
 }
@@ -877,35 +852,6 @@ pub fn save_experiment(
         .map_err(|e| format!("write {}: {}", result_path.display(), e))?;
 
     Ok(())
-}
-
-fn print_annotated_prompt(prompt: &str, overrides: &HashMap<String, String>) {
-    // Split by known section markers and annotate
-    let sections = vec![
-        ("STRAP", "## Tool Guide"),
-        ("IDENTITY", "You are"),
-        ("BEHAVIOR", "## Behavior"),
-        ("MEMORY", "## Memory"),
-        ("ETIQUETTE", "## Etiquette"),
-    ];
-
-    let mut printed_header = false;
-    for line in prompt.lines() {
-        // Check if this line starts a known section
-        for (label, marker) in &sections {
-            if line.contains(marker) && !printed_header {
-                let overridden = overrides.keys().any(|k| {
-                    k.starts_with(&format!("tool.")) && line.contains("Tool Guide")
-                        || k == &label.to_lowercase()
-                });
-                let suffix = if overridden { " [OVERRIDDEN]" } else { "" };
-                println!("\n=== {} (starts here){} ===", label, suffix);
-                printed_header = true;
-            }
-        }
-        println!("{}", line);
-        printed_header = false;
-    }
 }
 
 /// Does this event move the run on? Reply text or tool activity — the two
@@ -1112,6 +1058,18 @@ mod agent_lookup_tests {
         assert_eq!(agent_id_in(&list, "odd").as_deref(), Some("records-clerk-1f2e"));
         assert_eq!(agent_id_in(&list, "nobody"), None);
     }
+
+    /// A turn that names its employee is a new conversation with it: its own
+    /// session id under that employee's prefix, distinct from the fixture's.
+    #[test]
+    fn a_turn_naming_an_employee_starts_its_own_conversation() {
+        let first = conversation_session(Some("a1"), "fx", "run-1", 7, None);
+        let second = conversation_session(Some("b2"), "fx", "run-1", 7, Some(2));
+        let again = conversation_session(Some("a1"), "fx", "run-1", 7, Some(3));
+        assert!(first.starts_with("agent:a1:") && second.starts_with("agent:b2:"), "{first} {second}");
+        assert_ne!(first, again, "the same employee in a new chat is a new session");
+        assert_eq!(conversation_session(None, "fx", "run-1", 7, None), "eval:fx:run-1:7");
+    }
 }
 
 /// The runner end to end against a scripted server: the real socket loop,
@@ -1193,7 +1151,7 @@ mod recording_tests {
 
     async fn record(turns: &[&str], batches: Vec<Batch>) -> Trace {
         let server = scripted_server(batches).await;
-        let mut traces = run_live(&fixture(turns), &server, None, &HashMap::new(), 1).await.expect("run");
+        let mut traces = run_live(&fixture(turns), &server, "test-key", None, 1).await.expect("run");
         traces.pop().expect("one trace")
     }
 
@@ -1265,6 +1223,7 @@ mod recording_tests {
         assert!(trace.final_response.content.contains("the access code is 4417"), "{}", trace.final_response.content);
         assert!(trace.final_response.content.contains("[a later turn: the session woke on its own"), "{}", trace.final_response.content);
         assert_eq!(trace.tool_calls.iter().map(|c| c.tool.as_str()).collect::<Vec<_>>(), ["delegate", "read_file"]);
+        assert_eq!(trace.tool_calls.iter().map(|c| c.turn).collect::<Vec<_>>(), [1, 2], "each call names the turn it started in");
         assert_eq!(trace.turns.len(), 2, "{:?}", trace.turns);
         assert!(!trace.turns[0].woken && trace.turns[1].woken, "{:?}", trace.turns);
         assert_eq!(trace.turns[1].tool_calls, 1);
@@ -1306,6 +1265,33 @@ mod recording_tests {
         let trace = record(&["kick it off"], vec![turn]).await;
         assert!(trace.final_response.content.contains("rates fell"), "{}", trace.final_response.content);
         assert_eq!(trace.turns.len(), 2);
+    }
+
+    /// A background command the model stopped is over: the run ends at the
+    /// owner's last turn instead of waiting out the settle cap for a report
+    /// the stop already gave.
+    #[tokio::test]
+    async fn a_background_command_the_model_stopped_is_not_waited_for() {
+        let turn = vec![
+            start("c1", "run_command", json!({"command": "sleep 120", "background": true})),
+            result("c1", "run_command", "Started in the background as bg-1a2b3c4d."),
+            start("s1", "stop_task", json!({"task_id": "bg-1a2b3c4d"})),
+            result("s1", "stop_task", "Stopped bg-1a2b3c4d"),
+            text(0, "Stopped it."),
+            complete(0),
+        ];
+        let begun = Instant::now();
+        let trace = record(&["start it, then stop it"], vec![turn]).await;
+        assert!(begun.elapsed() < Duration::from_secs(2), "{:?}", begun.elapsed());
+        assert!(!trace.final_response.content.contains("stopped waiting"), "{}", trace.final_response.content);
+    }
+
+    #[test]
+    fn stops_of_background_commands_in_either_vocabulary() {
+        assert!(stops_background_command("stop_task", &json!({"task_id": "bg-1a2b3c4d"})));
+        assert!(!stops_background_command("stop_task", &json!({"task_id": "h-7"})), "a helper reports its own end");
+        assert!(stops_background_command("os", &json!({"resource": "shell", "action": "kill", "session_id": "bg-1"})));
+        assert!(!stops_background_command("read_output", &json!({"task_id": "bg-1a2b3c4d"})));
     }
 
     /// With nothing started in the background the run ends at the owner's

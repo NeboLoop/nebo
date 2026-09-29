@@ -74,6 +74,9 @@
   let draftN = $state(4);
   let draftHour = $state(9); // 0-23
   let draftMinute = $state(0);
+  // What a fire does while the last run is still going (the schedule's
+  // overlap policy): skip it, run it once when the last ends, or run anyway.
+  let draftOverlap = $state('skip');
 
   const DOW_LABELS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
@@ -107,6 +110,7 @@
     draftText = r.instructions || r.message || r.command || '';
     scheduleEditable = !!parseSimple(r.schedule);
     if (scheduleEditable) startEditSchedule(r);
+    draftOverlap = r.overlapPolicy;
   }
 
   // ONE save: text back into the field it came from, plus the schedule when
@@ -121,6 +125,7 @@
       body[field] = draftText;
     }
     if (scheduleEditable) body.schedule = buildSimple(draftToSimple());
+    if (draftOverlap !== t.overlapPolicy) body.overlapPolicy = draftOverlap;
     try {
       if (Object.keys(body).length) await api.updateTask(t.name, body);
       await loadReminders();
@@ -368,6 +373,14 @@
           <!-- More specific than the simple shapes can hold — display, never rewrite. -->
           <div class="text-sm text-base-content/70 font-mono">{describeSchedule(editorReminder.schedule).text}</div>
         {/if}
+      </div>
+      <div>
+        <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1.5">{$t('flows.editorOverlap')}</div>
+        <select class="select select-sm bg-base-100 border-base-300" bind:value={draftOverlap}>
+          <option value="skip">{$t('flows.overlapSkip')}</option>
+          <option value="buffer_one">{$t('flows.overlapBufferOne')}</option>
+          <option value="allow_all">{$t('flows.overlapAllowAll')}</option>
+        </select>
       </div>
       <div class="flex items-center gap-2 mt-1">
         <button class="btn btn-primary btn-sm" disabled={reminderBusy === editorReminder.name} onclick={saveReminder}>{$t('common.save')}</button>

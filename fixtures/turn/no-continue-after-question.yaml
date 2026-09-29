@@ -23,7 +23,9 @@ conversation:
     content: "I need a short note to each of the three vendors in {{scratch}}/vendors.txt about our price change, saved as one file per vendor in {{scratch}}/notes. I haven't decided yet whether the change is 5% or 8% — ask me which before you write anything."
 
 tool_config:
-  os:
+  read_file:
+    enabled: true
+  write_file:
     enabled: true
 
 prompt_assertions:

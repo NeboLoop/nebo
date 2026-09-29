@@ -7,6 +7,11 @@
   `approval_response`. Mounted once in the root layout so it works regardless of
   which view is open. FIFO queue — one modal at a time.
 
+  Whose card it is: a run the owner started from another client (the phone, a
+  second window) asks there, never here; a run no client started (a schedule, a
+  coworker) asks wherever the owner is ($lib/websocket/origin). The first answer
+  anywhere closes the card everywhere (`approval_resolved`).
+
   Rendering rule: the modal must read like a sentence to a non-technical owner.
   Gated operations carry a model-written `display` headline (real names, real
   amounts); the fact rows below it are computed deterministically from the actual
@@ -19,6 +24,7 @@
   import ApprovalModal from '$lib/components/ApprovalModal.svelte';
   import { onWsEvent } from '$lib/websocket/subscribe';
   import { getWebSocketClient } from '$lib/websocket/client';
+  import { opensHere } from '$lib/websocket/origin';
   import * as api from '$lib/api/nebo';
 
   interface DetailRow {
@@ -97,27 +103,36 @@
     tool: string,
     input: Record<string, unknown> | undefined
   ): Omit<PendingApproval, 'requestId' | 'agent'> {
-    const action = String(input?.action ?? '');
-    const resource = String(input?.resource ?? '');
-    const operation = String(input?.operation ?? '');
     const str = (v: unknown) => (typeof v === 'string' ? v : undefined);
 
-    // Typed gated operation — headline from `display`, facts from the args.
-    if (tool === 'plugin' && operation) {
+    // A call that carries its own sentence for the owner (an operation, a
+    // plugin command): that sentence is the headline, its other fields the
+    // facts.
+    const display = str(input?.display);
+    if (display) {
+      const fields = Object.fromEntries(Object.entries(input ?? {}).filter(([k]) => k !== 'display'));
       return {
-        actionType: operationLabel(operation),
-        actionDetail: JSON.stringify({ operation, input: input?.input ?? {} }),
-        headline: str(input?.display),
-        detailRows: factRows(input?.input as Record<string, unknown> | undefined),
+        actionType: operationLabel(tool.replace(/_/g, '.')),
+        actionDetail: JSON.stringify(fields),
+        headline: display,
+        detailRows: factRows(fields),
       };
     }
-    if (resource === 'shell' || action === 'exec') {
+    // A suggested agreed goal: the owner approves the end state itself.
+    if (tool === 'suggest_goal') {
+      return {
+        actionType: 'goal',
+        actionDetail: str(input?.condition) ?? '',
+        headline: $t('components.approvalGate.goalHeadline'),
+      };
+    }
+    if (tool === 'run_command') {
       return { actionType: 'shell_command', actionDetail: str(input?.command) ?? '' };
     }
-    if (resource === 'file' && (action === 'write' || action === 'edit')) {
+    if (tool === 'write_file' || tool === 'edit_file') {
       return { actionType: 'file_write', actionDetail: str(input?.path) ?? '' };
     }
-    if (tool === 'web') {
+    if (tool === 'http_request' || tool === 'fetch_url') {
       return { actionType: 'http_request', actionDetail: str(input?.url) ?? JSON.stringify(input ?? {}) };
     }
     return {
@@ -127,15 +142,20 @@
     };
   }
 
+  /** Requests already answered somewhere, so a late card never opens. */
+  const resolved = new Set<string>();
+
   onWsEvent<{
     request_id?: string;
     agentName?: string;
     session_id?: string;
+    client_id?: string | null;
     tool?: string;
     input?: Record<string, unknown>;
     batch?: { id: string; tool: string; input?: Record<string, unknown> }[] | null;
   }>('approval_request', async (d) => {
     if (!d?.request_id) return;
+    if (!opensHere(d, 'everywhere')) return;
     // Several gated calls in one step: one card listing each action, one decision.
     const described =
       d.batch && d.batch.length > 1
@@ -153,7 +173,15 @@
       d.agentName ??
       (await resolveAgentName(d.session_id)) ??
       $t('components.approvalGate.yourAgent');
+    if (resolved.has(d.request_id)) return; // answered elsewhere while the name resolved
     queue = [...queue, { requestId: d.request_id, agent, ...described }];
+  });
+
+  // Answered anywhere (here, another client, a loop reply): the card closes.
+  onWsEvent<{ request_id?: string }>('approval_resolved', (d) => {
+    if (!d?.request_id) return;
+    resolved.add(d.request_id);
+    queue = queue.filter((a) => a.requestId !== d.request_id);
   });
 
   function respond(approved: boolean, always: boolean) {

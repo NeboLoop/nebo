@@ -1,42 +1,60 @@
 id: web-browser-interaction
 name: "Web — browser for interactive pages"
 description: |
-  The user wants to interact with a webpage (click, fill, read dynamic content).
-  The model must use browser actions (navigate, read_page, click) — NOT fetch,
-  which won't execute JavaScript or render the page.
-target_component: web
+  The user wants what a page shows after a click. The page renders its
+  result with JavaScript only once its Start button is pressed, so reading
+  it as text (fetch_url) cannot answer: the model must use the browser —
+  open the page, click Start, and read what appears (browser_open,
+  browser_act, browser_read). The browser tools are deferred: loading them
+  with find_tools first is the expected path.
+target_component: browser_open
 
 conversation:
   - role: user
-    content: "Go to example.com and tell me what the main heading says."
+    content: "Open https://the-internet.herokuapp.com/dynamic_loading/2, press the Start button, and tell me the text that shows up once it finishes loading."
 
 tool_config:
-  web:
+  browser_open:
+    enabled: true
+  browser_read:
+    enabled: true
+  browser_act:
     enabled: true
 
 prompt_assertions:
   first_call:
-    - id: uses-navigate
-      text: "Model uses web(action: 'navigate') to open the page"
+    - id: uses-browser-open
+      text: "Model uses browser_open to open the page"
+      check: { tool: browser_open, arg: url, contains: "dynamic_loading/2" }
       severity: critical
-    - id: reads-page
-      text: "Model calls web(action: 'read_page') after navigating"
+    - id: clicks-start
+      text: "Model clicks the Start button with browser_act"
+      check: { tool: browser_act, arg: action, equals: "click" }
+      severity: critical
+    - id: reports-loaded-text
+      text: "Model reports the text that appeared after loading"
+      check: { reply_matches: "(?i)hello world" }
+      severity: critical
+    - id: reads-after-click
+      text: "Model reads the text from the page after the click (browser_read, or what browser_act returned), not from the page's script source"
       severity: critical
     - id: no-fetch
-      text: "Model does NOT use web(action: 'fetch') when the task requires seeing the rendered page"
+      text: "Model does NOT use fetch_url when the task needs a click on the rendered page"
       severity: important
   recovery:
-    - id: scrolls-if-needed
-      text: "If the heading isn't visible, model scrolls down before giving up"
+    - id: waits-if-loading
+      text: "If the page still shows 'Loading...', model waits (browser_act wait) and reads again before giving up"
       severity: important
   cost:
-    - id: max-three-calls
-      text: "Task completes in 2-3 tool calls (navigate + read_page, maybe scroll)"
+    - id: max-six-calls
+      text: "Task completes in 3-6 tool calls (find_tools, browser_open, browser_act click, maybe a wait, browser_read)"
       severity: important
 
 ideal_behavior:
-  tool_calls: 2
-  total_tokens: 3000
+  tool_calls: 4
+  total_tokens: 4000
   narrative: |
-    web(action: "navigate", url: "https://example.com") → web(action: "read_page")
-    → report the heading.
+    find_tools(query: "select:browser_open,browser_act,browser_read")
+    → browser_open(url: "https://the-internet.herokuapp.com/dynamic_loading/2")
+    → browser_act(action: "click", ref: <Start button>) → browser_read
+    → report "Hello World!".

@@ -1,7 +1,7 @@
 //! Isolation for mutating fan-out (coding harness P5.3).
 //!
 //! When a parallel batch is spawned with `isolate: "worktree"`, each child
-//! gets its own copy of the project, fenced by `allowed_paths` and `cwd`, and
+//! gets its own copy of the project, fenced by its grant's `fence` and `cwd`, and
 //! the parent merges the copies back when the batch is done. Read-only
 //! fan-out never comes here: it shares the tree.
 //!
@@ -463,7 +463,7 @@ pub async fn remove(wt: &Worktree) -> Result<(), String> {
 }
 
 /// Sweep copies a crashed parent left behind under `<data_dir>/worktrees`.
-/// Fail-closed like the reference: a worktree with uncommitted changes or
+/// Fail-closed: a worktree with uncommitted changes or
 /// commits not on any remote is kept; a scratch copy is always kept (there is
 /// no snapshot to compare against once the parent is gone) unless it is
 /// empty. Only `nebo/sa-*` branches are ever deleted. Returns what was removed.

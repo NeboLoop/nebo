@@ -1,7 +1,7 @@
-use rusqlite::params;
+use rusqlite::{OptionalExtension, params};
 
 use crate::Store;
-use crate::models::Setting;
+use crate::models::{BotLocation, Setting};
 use types::NeboError;
 
 impl Store {
@@ -10,12 +10,10 @@ impl Store {
         match conn.query_row(
             "SELECT id, auto_install_deps, auto_approve_read, auto_approve_write,
                     auto_approve_bash, heartbeat_interval_minutes, comm_enabled,
-                    comm_plugin, developer_mode, auto_update, full_access, guardrails,
-                    updated_at
+                    comm_plugin, developer_mode, auto_update, full_access, updated_at
              FROM settings WHERE id = 1",
             [],
             |row| {
-                let guardrails_raw: String = row.get(11)?;
                 Ok(Setting {
                     id: row.get(0)?,
                     auto_install_deps: row.get(1)?,
@@ -28,9 +26,7 @@ impl Store {
                     developer_mode: row.get(8)?,
                     auto_update: row.get(9)?,
                     full_access: row.get(10)?,
-                    guardrails: serde_json::from_str(&guardrails_raw)
-                        .unwrap_or_else(|_| serde_json::json!({})),
-                    updated_at: row.get(12)?,
+                    updated_at: row.get(11)?,
                 })
             },
         ) {
@@ -38,32 +34,6 @@ impl Store {
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
             Err(e) => Err(NeboError::Database(e.to_string())),
         }
-    }
-
-    /// Raw guardrails JSON blob ('{}' when unset). Read on the hot path by the
-    /// chat runner at run start, so it stays a single-column fetch.
-    pub fn get_guardrails(&self) -> Result<String, NeboError> {
-        let conn = self.conn()?;
-        match conn.query_row("SELECT guardrails FROM settings WHERE id = 1", [], |row| {
-            row.get::<_, String>(0)
-        }) {
-            Ok(s) => Ok(s),
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok("{}".to_string()),
-            Err(e) => Err(NeboError::Database(e.to_string())),
-        }
-    }
-
-    /// Replace the guardrails JSON blob (caller validates it is a JSON object).
-    pub fn set_guardrails(&self, json: &str) -> Result<(), NeboError> {
-        let conn = self.conn()?;
-        conn.execute("INSERT OR IGNORE INTO settings (id) VALUES (1)", [])
-            .map_err(|e| NeboError::Database(e.to_string()))?;
-        conn.execute(
-            "UPDATE settings SET guardrails = ?1, updated_at = unixepoch() WHERE id = 1",
-            params![json],
-        )
-        .map_err(|e| NeboError::Database(e.to_string()))?;
-        Ok(())
     }
 
     pub fn update_settings(
@@ -77,7 +47,6 @@ impl Store {
         comm_plugin: Option<&str>,
         developer_mode: Option<bool>,
         auto_update: Option<bool>,
-        full_access: Option<bool>,
     ) -> Result<(), NeboError> {
         let conn = self.conn()?;
         // Ensure settings row exists
@@ -108,7 +77,6 @@ impl Store {
         maybe_set!(comm_plugin, "comm_plugin");
         maybe_set!(developer_mode, "developer_mode");
         maybe_set!(auto_update, "auto_update");
-        maybe_set!(full_access, "full_access");
 
         if updates.is_empty() {
             return Ok(());
@@ -166,16 +134,51 @@ impl Store {
         if let Some(v) = auto_update {
             stmt.raw_bind_parameter(idx, v as i64)
                 .map_err(|e| NeboError::Database(e.to_string()))?;
-            idx += 1;
-        }
-        if let Some(v) = full_access {
-            stmt.raw_bind_parameter(idx, v as i64)
-                .map_err(|e| NeboError::Database(e.to_string()))?;
             let _ = idx + 1;
         }
 
         stmt.raw_execute()
             .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    /// The bot's Location, or `None` when the owner has not set one.
+    pub fn bot_location(&self) -> Result<Option<BotLocation>, NeboError> {
+        let conn = self.conn()?;
+        let row: Option<BotLocation> = conn
+            .query_row(
+                "SELECT location_label, location_latitude, location_longitude FROM settings WHERE id = 1",
+                [],
+                |row| {
+                    Ok(BotLocation {
+                        label: row.get(0)?,
+                        latitude: row.get(1)?,
+                        longitude: row.get(2)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(row.filter(|l| !l.label.is_empty()))
+    }
+
+    /// Set the bot's Location whole, or clear it with `None`. The caller
+    /// has checked it (a label, and both coordinates or neither).
+    pub fn set_bot_location(&self, location: Option<&BotLocation>) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        conn.execute("INSERT OR IGNORE INTO settings (id) VALUES (1)", [])
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        conn.execute(
+            "UPDATE settings SET location_label = ?1, location_latitude = ?2, location_longitude = ?3,
+                    updated_at = unixepoch()
+             WHERE id = 1",
+            params![
+                location.map_or("", |l| l.label.as_str()),
+                location.and_then(|l| l.latitude),
+                location.and_then(|l| l.longitude),
+            ],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))?;
         Ok(())
     }
 
@@ -387,7 +390,7 @@ mod tests {
         store
             .update_settings(
                 Some(true),
-                None, None, None, None, None, None, None, None, None,
+                None, None, None, None, None, None, None, None,
             )
             .unwrap();
         let s = store.get_settings().unwrap().unwrap();

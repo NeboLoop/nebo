@@ -85,7 +85,7 @@ struct FileInput {
 ///
 /// The old sentence always offered the parent of the folder just searched,
 /// and the model took the offer every time: in the gate's
-/// `os-file-discovery-spiral` two hints in a row walked `/home/<bot>/` up to
+/// `file-discovery-spiral` two hints in a row walked `/home/<bot>/` up to
 /// `/home` and then to `/`, and the root walk ran until the harness cancelled
 /// the run. The widening offered here never leaves the bot's own area
 /// (`walk_bounds::widen_within_own_area`), so `path: "/"` is not a sentence
@@ -93,11 +93,9 @@ struct FileInput {
 /// different tool, not a wider walk: look the name up in the index, grep the
 /// contents, or ask the owner where the file lives.
 fn nothing_matched(pattern: &str, base_path: &str, cwd: Option<&str>) -> String {
-    let recursive = if pattern.starts_with("**/") {
-        pattern.to_string()
-    } else {
-        format!("**/{pattern}")
-    };
+    // `find` matches a name with -name and a path with -path.
+    let name = pattern.trim_start_matches("**/");
+    let by_name = if name.contains('/') { format!("-path '*/{name}'") } else { format!("-name '{name}'") };
     let head = format!(
         "No files found matching \"{pattern}\" in {base_path}. This is not an error; nothing here matches."
     );
@@ -105,8 +103,8 @@ fn nothing_matched(pattern: &str, base_path: &str, cwd: Option<&str>) -> String 
 
     match walk_bounds::widen_within_own_area(Path::new(base_path), cwd) {
         Some(wider) => format!(
-            "{head} Next: widen the search one folder with os(resource: \"file\", action: \"glob\", \
-             pattern: \"{recursive}\", path: \"{}\"), or search file contents with action: \"grep\". {tail}",
+            "{head} Next: widen the search one folder with run_command(command: \"find {} {by_name}\"), \
+             or search file contents with run_command(command: \"grep -rn '<text>' {0}\"). {tail}",
             wider.display()
         ),
         None => format!(
@@ -114,7 +112,7 @@ fn nothing_matched(pattern: &str, base_path: &str, cwd: Option<&str>) -> String 
              glob: a walk above it covers the whole machine and is stopped before it finds anything. \
              Next: look the file up by name with os(resource: \"search\", action: \"search\", \
              query: \"<name>\", dir: \"{base_path}\"), or search file contents with \
-             os(resource: \"file\", action: \"grep\", pattern: \"<text>\", path: \"{base_path}\"). \
+             run_command(command: \"grep -rn '<text>' {base_path}\"). \
              If the file is not under this bot's area, ask the owner where it lives. {tail}"
         ),
     }
@@ -197,9 +195,8 @@ impl FileTool {
             // advertised in the schema; glob stays the single documented way.
             "list" | "ls" => self.handle_glob(ctx, &fi),
             "screenshot" | "capture" => ToolResult::error(format!(
-                "screenshot is not a file action. To take one: os(resource: \"desktop\", action: \"screenshot\"). \
-                 To find existing screenshots: os(resource: \"file\", action: \"glob\", \
-                 pattern: \"*.png\", path: \"{}\").",
+                "screenshot is not a file action. To take one: os(resource: \"capture\", action: \"screenshot\"). \
+                 To find existing screenshots: run_command(command: \"find {} -name '*.png'\").",
                 if fi.path.is_empty() { "~/Desktop" } else { fi.path.as_str() }
             )),
             other => ToolResult::error(format!(
@@ -214,7 +211,7 @@ impl FileTool {
         if paths.is_empty() && !fi.path.is_empty() {
             paths.push(fi.path.clone());
         }
-        if let Some(blocked) = crate::safeguard::outside_allowed("checkpoint", &paths, &ctx.allowed_paths) {
+        if let Some(blocked) = ctx.outside_folders("checkpoint", &paths) {
             return ToolResult::error(blocked);
         }
         match crate::checkpoint::create(&ctx.session_id, &fi.label, &paths) {
@@ -232,7 +229,7 @@ impl FileTool {
             Err(e) => return ToolResult::error(e),
         };
         let targets = if fi.paths.is_empty() { crate::checkpoint::paths(&cp) } else { fi.paths.clone() };
-        if let Some(blocked) = crate::safeguard::outside_allowed("restore", &targets, &ctx.allowed_paths) {
+        if let Some(blocked) = ctx.outside_folders("restore", &targets) {
             return ToolResult::error(blocked);
         }
         match crate::checkpoint::restore(&ctx.session_id, &fi.checkpoint, &fi.paths) {
@@ -256,10 +253,17 @@ impl FileTool {
         crate::diagnostics_feed::clear_delivered(path);
     }
 
-    /// Write a document through the ONE write pathway (Work panel, versions,
-    /// overwrite advisory). Used by `plan_check` on OsTool, which rewrites the
-    /// plan it just verified.
-    pub fn write_document(&self, session: &str, path: &str, content: &str) -> ToolResult {
+    /// Rewrite a document the caller read as `read` through the ONE write
+    /// pathway (Work panel, versions). Used by `check_plan`, which rewrites
+    /// the plan it just verified: the rewrite stands on that read, so it is
+    /// refused when the file changed since.
+    pub fn write_document(&self, session: &str, path: &str, read: &str, content: &str) -> ToolResult {
+        if std::fs::read_to_string(path).ok().as_deref() != Some(read) {
+            return ToolResult::error(format!(
+                "Error: {path} changed on disk while its steps were checked. Read it again, then check it."
+            ));
+        }
+        self.record_read(session, path);
         let write = FileInput {
             action: "write".into(),
             path: path.to_string(),
@@ -301,7 +305,7 @@ impl FileTool {
         let mut result = self.handle_write(session, &write);
         if !result.is_error {
             result.content = format!(
-                "plan written to {} ({} step{}). Verify with os(resource: \"file\", action: \"plan_check\", path: \"{}\") — only a passing verify command ticks a step.\n{}",
+                "plan written to {} ({} step{}). Verify with check_plan(path: \"{}\") — only a passing verify command ticks a step.\n{}",
                 fi.path,
                 steps.len(),
                 if steps.len() == 1 { "" } else { "s" },
@@ -332,68 +336,34 @@ impl FileTool {
         }
     }
 
-    /// Overwrite advisory: a warning to attach to the result when the target
-    /// exists and was not read this session, or changed on disk since that read.
+    /// Why an edit or a whole-file write of an existing file is refused: this
+    /// session has not read it, or it changed on disk since that read in a way
+    /// the session has not been shown. A change whose bytes match the read
+    /// (a touch) is not a change. `None` lets the call through.
     ///
-    /// A WARNING, never a block. This used to hard-error, and a blocked model
-    /// does not give up on the write — it wants the file to exist, so it routes
-    /// around the guard through the shell heredoc, where it gets no staleness
-    /// protection at all. The block converted a supervised write into an
-    /// unsupervised one. A warning rides on the write the model was going to
-    /// make anyway, and names what it may have just clobbered so it can go look.
-    fn overwrite_warning(&self, session: &str, path: &str, verb: &str) -> Option<String> {
-        let guard = self.read_state.lock().ok()?; // poisoned lock: no advisory
-        match guard.get(&Self::read_state_key(session, path)) {
-            None => {
-                // Captured before the write lands: the size and mtime of what is
-                // about to be replaced are the only evidence of it.
-                let meta = std::fs::metadata(path).ok();
-                let old_size = meta
-                    .as_ref()
-                    .map(|m| format!("{} bytes", m.len()))
-                    .unwrap_or_else(|| "size unknown".to_string());
-                let old_mtime = current_mtime_ms(path)
-                    .map(fmt_ms_rfc3339)
-                    .unwrap_or_else(|| "mtime unknown".to_string());
-                let effect = if verb == "edit" {
-                    "Only the matched text was replaced; re-read to see the rest of the file."
-                } else {
-                    "Its previous content is gone; re-read if it mattered."
-                };
-                Some(format!(
-                    "Warning: {path} already existed ({old_size}, modified {old_mtime}) and this \
-                     tool has no record of reading it this session (shell reads are not \
-                     recorded). {effect}"
-                ))
-            }
-            Some(entry) => {
-                // Warn only when the file is demonstrably newer than the recorded
-                // read. If we can't stat it, stay quiet — don't alarm on our own
-                // bookkeeping.
-                if let Some(cur) = current_mtime_ms(path).filter(|cur| *cur > entry.mtime_ms) {
-                    // An edit replaces one string; the outside change is still on
-                    // disk. Only a write replaced the whole file. Saying "overwrote"
-                    // for an edit sent models re-applying changes that were there.
-                    let effect = if verb == "edit" {
-                        "Your edit replaced only the matched text; the other change is still there"
-                    } else {
-                        "Your write replaced the whole file, including that change"
-                    };
-                    Some(format!(
-                        "Warning: {path} changed on disk (modified {} ms after your read). {effect}. Re-read before editing further.",
-                        cur - entry.mtime_ms
-                    ))
-                } else {
-                    None
-                }
-            }
+    /// Both are refused ("File has not been read yet…", "File has been
+    /// modified since read…"): an edit made blind, or over someone else's
+    /// newer change, would lose work.
+    fn unread_or_stale(&self, session: &str, path: &str, verb: &str) -> Option<String> {
+        let read = self.read_state.lock().ok()?.get(&Self::read_state_key(session, path)).cloned();
+        let Some(read) = read else {
+            return Some(format!(
+                "Error: {path} has not been read in this conversation. Read it with read_file first, then {verb} it."
+            ));
+        };
+        let now = snapshot(path)?;
+        if now.mtime_ms > read.mtime_ms && (read.content.is_none() || now.content != read.content) {
+            return Some(format!(
+                "Error: {path} changed on disk since you read it (the owner, a formatter or another program changed it). Read it again, then {verb} it."
+            ));
         }
+        None
     }
 
     fn handle_read(&self, ctx: &ToolContext, input: &FileInput) -> ToolResult {
         let session = ctx.session_key.as_str();
         if input.path.is_empty() {
-            return ToolResult::error(errors::missing_param("read", "path", "os(resource: \"file\", action: \"read\", path: \"/tmp/file.txt\")"));
+            return ToolResult::error(errors::missing_param("read", "path", "read_file(path: \"/tmp/file.txt\")"));
         }
 
         // Resolve the user-supplied path through the canonical resolver:
@@ -518,7 +488,7 @@ impl FileTool {
                         format!("size unknown (metadata reports 0 bytes; {} bytes were read)", n)
                     };
                     return ToolResult::ok(format!(
-                        "[Binary file detected: content not shown. {}; {}. To inspect the raw bytes: os(resource: \"shell\", action: \"exec\", command: \"hexdump -C '{}' | head\")]",
+                        "[Binary file detected: content not shown. {}; {}. To inspect the raw bytes: run_command(command: \"hexdump -C '{}' | head\", description: \"Show the file's first bytes\")]",
                         size,
                         reason,
                         path
@@ -532,22 +502,20 @@ impl FileTool {
         }
 
         // UTF-16 files read from the decoded text; everything else streams from disk.
-        let is_utf16 = utf16_text.is_some();
         let reader: Box<dyn BufRead> = match utf16_text {
             Some(text) => Box::new(std::io::Cursor::new(text)),
             None => Box::new(BufReader::with_capacity(1024 * 1024, file)),
         };
-        // Read budget for the whole rendered result: ~25,000 tokens, the same
-        // shape as Claude Code's Read. A read that overruns it is an ERROR
+        // Read budget for the whole rendered result: ~25,000 tokens. A read
+        // that overruns it is an ERROR
         // naming offset/limit, never a clipped result: the error costs ~100
         // bytes, a clipped result costs the whole budget and still leaves the
-        // model without the part it wanted (Claude Code measured exactly this
-        // and reverted truncation, Mar 2026).
+        // model without the part it wanted (truncating was measured to be
+        // worse than the error).
         const FILE_READ_MAX_BYTES: usize = 100_000;
         let mut result = String::new();
         let mut line_num = 0usize;
         let mut lines_read = 0usize;
-        let mut limit_truncated = false;
         let mut over_budget = false;
         // Spill artifacts (large tool results persisted under <session>/tool-results/)
         // already CONTAIN the line numbers from the read that produced them —
@@ -578,7 +546,6 @@ impl FileTool {
             }
 
             if lines_read >= limit {
-                limit_truncated = true;
                 // Count the rest so the note states the real total, not a floor.
                 let total = line_num + (&mut lines_iter).count();
                 total_lines = Some(total);
@@ -632,8 +599,8 @@ impl FileTool {
                 // read and is returned as one.
                 return ToolResult::error(format!(
                     "(no content returned — this file is {} bytes on disk, so it is NOT empty. \
-                     This is a read failure, not the file's contents. Try os(resource: \"file\", \
-                     action: \"grep\", path: \"{}\", pattern: \".\") instead of repeating this read.)",
+                     This is a read failure, not the file's contents. Search it with run_command \
+                     (grep -n . '{}' | head) instead of repeating this read.)",
                     size, path
                 ));
             } else {
@@ -645,43 +612,16 @@ impl FileTool {
             result.push_str(&note);
         }
 
-        // Outline-first reads (PRD P4.1): a BLIND read (no offset/limit given)
-        // that does not cover the whole file gets the file's tree-sitter
-        // outline prepended, so the next read can target a symbol's line range
-        // instead of paging forward blindly. Decoration of the ONE read
-        // pathway — never a second one. Ranged reads and files with no
-        // compiled-in grammar are untouched (absence, not noise).
-        let outline = if (limit_truncated || over_budget)
-            && input.offset <= 0
-            && input.limit <= 0
-            && !is_utf16
-            && let Some(lang) = syntax::Lang::from_path(Path::new(&path))
-            && let Ok(full) = std::fs::read_to_string(&path)
-            && let Ok(symbols) = syntax::outline(&full, lang)
-            && !symbols.is_empty()
-        {
-            format!(
-                "[Outline ({}, {} lines total) — this read does not cover the whole file; request specific sections with offset/limit using these [start-end] line ranges.]\n{}\n\n",
-                lang.name(),
-                full.lines().count(),
-                crate::code_tool::render_outline(&symbols, 200),
-            )
-        } else {
-            String::new()
-        };
-
         if over_budget {
             return ToolResult::error(format!(
-                "{}File content ({} bytes rendered from line {}; the file has {} lines) exceeds the read budget of {} bytes (about 25,000 tokens). Use offset and limit to read a portion of the file, or grep for the content you need instead of reading the whole file.",
-                outline,
+                "Too much to read at once: {} bytes from line {}, and the file has {} lines. The read budget is {} bytes (about 25,000 tokens). Read one part with offset and limit, or search it with run_command(command: \"grep -n '<text>' {}\"), rather than the whole file.",
                 result.len(),
                 offset,
                 total_lines.unwrap_or(line_num),
-                FILE_READ_MAX_BYTES
+                FILE_READ_MAX_BYTES,
+                path
             ));
         }
-        result = format!("{}{}", outline, result);
-
         if let Some(ref callback) = self.on_file_read {
             callback(&path);
         }
@@ -695,13 +635,13 @@ impl FileTool {
 
     fn handle_write(&self, session: &str, input: &FileInput) -> ToolResult {
         if input.path.is_empty() {
-            return ToolResult::error(errors::missing_param("write", "path", "os(resource: \"file\", action: \"write\", path: \"/tmp/file.txt\", content: \"hello\")"));
+            return ToolResult::error(errors::missing_param("write", "path", "write_file(path: \"/tmp/file.txt\", content: \"hello\")"));
         }
         // Reject empty content (catches wrong field name like 'text' instead of 'content').
         // Append to existing file with empty content is allowed (no-op but not an error).
         if input.content.is_empty() && !input.append {
             return ToolResult::error(
-                "Error: content is required for write. Use the 'content' field (not 'text' or 'data'). Example: os(resource: \"file\", action: \"write\", path: \"/tmp/f.txt\", content: \"hello\")",
+                "Error: content is required for write. Use the 'content' field (not 'text' or 'data'). Example: write_file(path: \"/tmp/f.txt\", content: \"hello\")",
             );
         }
 
@@ -718,9 +658,9 @@ impl FileTool {
             .map(|e| e.to_ascii_lowercase())
             .unwrap_or_default();
         let redirect = match ext_lower.as_str() {
-            "docx" | "doc" => Some("write the content as Markdown (.md), then os(resource: \"file\", action: \"convert\", path: ..., to: \"docx\")"),
-            "xlsx" | "xls" => Some("write the data as CSV (.csv), then os(resource: \"file\", action: \"convert\", path: ..., to: \"xlsx\")"),
-            "pdf" => Some("write the content as Markdown (.md), then os(resource: \"file\", action: \"convert\", path: ..., to: \"pdf\")"),
+            "docx" | "doc" => Some("write the content as Markdown (.md), then convert_file(path: ..., to: \"docx\")"),
+            "xlsx" | "xls" => Some("write the data as CSV (.csv), then convert_file(path: ..., to: \"xlsx\")"),
+            "pdf" => Some("write the content as Markdown (.md), then convert_file(path: ..., to: \"pdf\")"),
             "pptx" | "ppt" => Some("use the pptx skill: write a JSON spec, then run the nebo-office binary (`nebo-office pptx create spec.json -o out.pptx`)"),
             _ => None,
         };
@@ -732,18 +672,18 @@ impl FileTool {
 
         let path = expand_path(&input.path);
 
-        // Overwrite advisory, captured BEFORE the write clobbers the evidence.
-        // Creating a new file, or appending, needs no advisory.
+        // Replacing an existing file needs a current read of it. Creating a
+        // new file, or appending, does not.
         let prior_len = if !input.append {
             std::fs::metadata(&path).ok().map(|m| m.len())
         } else {
             None
         };
-        let overwrite_note = if !input.append && prior_len.is_some() {
-            self.overwrite_warning(session, &path, "write")
-        } else {
-            None
-        };
+        if prior_len.is_some()
+            && let Some(refusal) = self.unread_or_stale(session, &path, "write")
+        {
+            return ToolResult::error(refusal);
+        }
 
         // Create parent directories
         if let Some(parent) = Path::new(&path).parent() {
@@ -818,10 +758,6 @@ impl FileTool {
                     msg.push('\n');
                     msg.push_str(&note);
                 }
-                if let Some(note) = overwrite_note {
-                    msg.push_str("\n\n");
-                    msg.push_str(&note);
-                }
                 // Raw JSX in a .html with no transpiler renders blank in every browser.
                 // Redirect to the canonical pathway: write a .jsx, then convert to html
                 // (Nebo's SWC engine produces a self-contained, renderable page).
@@ -830,7 +766,7 @@ impl FileTool {
                         "\n\nWARNING: this .html contains raw JSX (e.g. className=, <Component/>) \
                          with no transpiler, so it renders BLANK in a browser. To build an \
                          interactive React artifact, write the component as a .jsx file, then \
-                         os(resource: \"file\", action: \"convert\", path: \"<file>.jsx\", to: \"html\"). \
+                         convert_file(path: \"<file>.jsx\", to: \"html\"). \
                          Never put JSX or CDN-loaded React directly in a .html.",
                     );
                 }
@@ -850,10 +786,10 @@ impl FileTool {
 
     fn handle_edit(&self, session: &str, input: &FileInput) -> ToolResult {
         if input.path.is_empty() {
-            return ToolResult::error(errors::missing_param("edit", "path", "os(resource: \"file\", action: \"edit\", path: \"/tmp/file.txt\", old_string: \"old\", new_string: \"new\")"));
+            return ToolResult::error(errors::missing_param("edit", "path", "edit_file(path: \"/tmp/file.txt\", old_string: \"old\", new_string: \"new\")"));
         }
         if input.old_string.is_empty() {
-            return ToolResult::error(errors::missing_param("edit", "old_string", "os(resource: \"file\", action: \"edit\", path: \"/tmp/file.txt\", old_string: \"text to find\", new_string: \"replacement\")"));
+            return ToolResult::error(errors::missing_param("edit", "old_string", "edit_file(path: \"/tmp/file.txt\", old_string: \"text to find\", new_string: \"replacement\")"));
         }
         if input.old_string == input.new_string {
             return ToolResult::error("Error: old_string and new_string are identical. The edit would produce no change.");
@@ -869,12 +805,6 @@ impl FileTool {
             return ToolResult::error(format!("Error: {}", e));
         }
 
-        // Overwrite advisory (warn, never block — see overwrite_warning). Edit is
-        // additionally self-guarding: old_string must match the CURRENT on-disk
-        // content read below, so a surgical edit cannot land on text the model
-        // has never seen the way a whole-file write can.
-        let overwrite_note = self.overwrite_warning(session, &path, "edit");
-
         let content = match std::fs::read_to_string(&path) {
             Ok(c) => c,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -885,6 +815,9 @@ impl FileTool {
             }
             Err(e) => return ToolResult::error(format!("Error reading file: {}", e)),
         };
+        if let Some(refusal) = self.unread_or_stale(session, &path, "edit") {
+            return ToolResult::error(refusal);
+        }
 
         // Exact match first; otherwise curly quotes read as straight ones (the
         // model types ' and " where the document has ’ and “), and the file's
@@ -937,10 +870,6 @@ impl FileTool {
             msg.push('\n');
             msg.push_str(&note);
         }
-        if let Some(note) = overwrite_note {
-            msg.push_str("\n\n");
-            msg.push_str(&note);
-        }
         let result = ToolResult::ok(msg);
         // An edited work document must re-emit its artifact exactly like a write,
         // or the Work panel keeps rendering the pre-edit version — observed live:
@@ -972,7 +901,7 @@ impl FileTool {
             return ToolResult::error(errors::missing_param(
                 "share",
                 "path",
-                "os(resource: \"file\", action: \"share\", path: \"/data/files/deck.pptx\")",
+                "share_file(path: \"/data/files/deck.pptx\")",
             ));
         }
 
@@ -1061,7 +990,7 @@ impl FileTool {
                 // the caller needs: the same call succeeds on a directory.
                 let what = if Path::new(&expanded).is_file() { "a file, not a directory" } else { "not a path that exists" };
                 return ToolResult::error(format!(
-                    "glob on {} did nothing: it is {}. A path alone lists a directory; to search by name give pattern (os(resource: \"file\", action: \"glob\", pattern: \"*.json\", path: \"<dir>\")); to read a file use action: \"read\".",
+                    "glob on {} did nothing: it is {}. A path alone lists a directory; to search by name use run_command(command: \"find <dir> -name '*.json'\"); to read a file use read_file.",
                     expanded, what
                 ));
             }
@@ -1140,9 +1069,9 @@ impl FileTool {
         result.push_str(&paths.join("\n"));
 
         if pattern_was_defaulted {
-            result.push_str(
-                "\n\nTo filter by type, add pattern: os(action: \"glob\", pattern: \"*.json\", path: \".\")"
-            );
+            result.push_str(&format!(
+                "\n\nTo filter by type: run_command(command: \"find '{base_path}' -maxdepth 1 -name '*.json'\")"
+            ));
         }
 
         ToolResult::ok(result)
@@ -1151,7 +1080,7 @@ impl FileTool {
     fn handle_grep(&self, input: &FileInput) -> ToolResult {
         let pattern = &input.pattern;
         if pattern.is_empty() {
-            return ToolResult::error(errors::missing_param("grep", "pattern", "os(resource: \"file\", action: \"grep\", pattern: \"TODO\", path: \".\")"));
+            return ToolResult::error(errors::missing_param("grep", "pattern", "run_command(command: \"grep -rn 'TODO' .\")"));
         }
 
         let path = if input.path.is_empty() {
@@ -1683,6 +1612,13 @@ fn preserve_quote_style(old_string: &str, actual_old: &str, new_string: &str) ->
 /// Expand `~` to the user's home directory. Tilde-only (no fuzzy
 /// fallback) — call `types::pathres::resolve` directly when the file
 /// must exist. Kept as a thin wrapper for legacy call sites.
+/// True when the path lies under the attachment/ingestion root
+/// (`<data_dir>/files/`) — files the agent pulled in, not files the owner
+/// placed.
+pub(crate) fn is_ingested_file(path: &str) -> bool {
+    std::path::Path::new(path).starts_with(crate::checkpoint::data_dir().join("files"))
+}
+
 pub fn expand_path(path: &str) -> String {
     types::pathres::expand(path).to_string_lossy().into_owned()
 }
@@ -1736,18 +1672,6 @@ fn fmt_ms_rfc3339(ms: i64) -> String {
         Some(dt) => dt.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         None => format!("{} ms since epoch", ms),
     }
-}
-
-/// Current on-disk modification time of `path` in milliseconds since the epoch, or
-/// `None` if it can't be determined. Used by the read-before-edit staleness guard.
-fn current_mtime_ms(path: &str) -> Option<i64> {
-    std::fs::metadata(path)
-        .ok()?
-        .modified()
-        .ok()?
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()
-        .map(|d| d.as_millis() as i64)
 }
 
 
@@ -1864,14 +1788,13 @@ mod tests {
 
     /// The path a hint offers to glob next, if it offers one at all.
     fn widening_offered(hint: &str) -> Option<String> {
-        let rest = &hint[hint.find("action: \"glob\"")?..];
-        let start = rest.find("path: \"")? + "path: \"".len();
-        let end = rest[start..].find('"')?;
-        Some(rest[start..start + end].to_string())
+        let start = hint.find("command: \"find ")? + "command: \"find ".len();
+        let end = hint[start..].find(" -")?;
+        Some(hint[start..start + end].to_string())
     }
 
     /// The widening an empty glob offers must never leave the bot's own area.
-    /// The defect (gate fixture `os-file-discovery-spiral`): the hint always
+    /// The defect (gate fixture `file-discovery-spiral`): the hint always
     /// named the parent of the folder just searched, the model took the offer
     /// every time, and two hints in a row walked `/home/<bot>/` up to `/home`
     /// and then to `/`, where the walk ran until the harness cancelled the
@@ -1915,7 +1838,7 @@ mod tests {
 
         for hint in &hints {
             assert!(
-                !hint.contains("path: \"/\""),
+                !hint.contains("find / "),
                 "a hint offered the whole machine: {hint}"
             );
         }
@@ -1942,7 +1865,7 @@ mod tests {
             "the last hint must say why it stops: {edge}"
         );
         assert!(
-            edge.contains("action: \"search\"") && edge.contains("action: \"grep\""),
+            edge.contains("action: \"search\"") && edge.contains("grep -rn"),
             "the edge must offer a lookup by name and a content search: {edge}"
         );
         assert!(
@@ -2095,9 +2018,9 @@ mod tests {
     }
 
     /// A restore rewrites files the agent itself asked to put back; the read
-    /// ledger must follow, or the very next edit is warned about its own change.
+    /// ledger must follow, or the very next edit is refused over its own change.
     #[test]
-    fn restore_refreshes_read_state_so_the_next_edit_has_no_overwrite_warning() {
+    fn restore_refreshes_read_state_so_the_next_edit_is_not_refused() {
         let _g = crate::TEST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let home = tempfile::tempdir().unwrap();
         // SAFETY: serialized by the crate-wide lock; checkpoints go under NEBO_HOME.
@@ -2120,8 +2043,7 @@ mod tests {
         assert!(!r.is_error, "{}", r.content);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "one\n");
         let e = t.execute(&c, serde_json::json!({"action": "edit", "path": p, "old_string": "one", "new_string": "three"}));
-        assert!(!e.is_error, "{}", e.content);
-        assert!(!e.content.contains("Warning"), "no overwrite warning after a restore:\n{}", e.content);
+        assert!(!e.is_error, "no refusal after a restore: {}", e.content);
         unsafe { std::env::remove_var("NEBO_HOME") };
     }
 
@@ -2504,12 +2426,9 @@ mod tests {
         );
     }
 
-    // ── Overwrite advisory: warn, never block ───────────────────────
-    // A hard block here taught the model to route the write through a shell
-    // heredoc, where it got no staleness protection at all. The write goes
-    // through; the warning rides on the result.
+    // ── Read before edit: an unread or stale file is refused ─────────
     #[test]
-    fn edit_without_prior_read_succeeds_with_warning() {
+    fn edit_without_prior_read_is_refused() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("e.txt");
         fs::write(&path, "alpha\n").unwrap();
@@ -2518,13 +2437,9 @@ mod tests {
             &ctx(),
             json!({"action":"edit","path": path.to_str().unwrap(),"old_string":"alpha","new_string":"beta"}),
         );
-        assert!(!r.is_error, "{}", r.content);
-        assert_eq!(fs::read_to_string(&path).unwrap(), "beta\n");
-        assert!(
-            r.content.contains("Warning") && r.content.contains("no record of reading it"),
-            "the edit lands, the advisory rides along: {}",
-            r.content
-        );
+        assert!(r.is_error, "an unread edit is refused: {}", r.content);
+        assert!(r.content.contains("has not been read"), "{}", r.content);
+        assert_eq!(fs::read_to_string(&path).unwrap(), "alpha\n", "the file is untouched");
     }
 
     #[test]
@@ -2544,7 +2459,7 @@ mod tests {
     }
 
     #[test]
-    fn stale_edit_succeeds_with_warning() {
+    fn stale_edit_is_refused() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("e.txt");
         fs::write(&path, "alpha\n").unwrap();
@@ -2558,9 +2473,35 @@ mod tests {
             &ctx(),
             json!({"action":"edit","path": p,"old_string":"alpha","new_string":"beta"}),
         );
+        assert!(r.is_error, "a stale edit is refused: {}", r.content);
+        assert!(r.content.contains("changed on disk since you read it"), "{}", r.content);
+        assert_eq!(fs::read_to_string(&path).unwrap(), "alpha changed\n", "the outside change stands");
+        // Read again and the edit goes through.
+        assert!(!tool.execute(&ctx(), json!({"action":"read","path": p})).is_error);
+        let r = tool.execute(
+            &ctx(),
+            json!({"action":"edit","path": p,"old_string":"alpha","new_string":"beta"}),
+        );
         assert!(!r.is_error, "{}", r.content);
         assert_eq!(fs::read_to_string(&path).unwrap(), "beta changed\n");
-        assert!(r.content.contains("changed on disk"), "{}", r.content);
+    }
+
+    /// A touch that left the bytes alone is not a change.
+    #[test]
+    fn a_touch_since_the_read_is_not_stale() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("e.txt");
+        fs::write(&path, "alpha\n").unwrap();
+        let tool = FileTool::new();
+        let p = path.to_str().unwrap();
+        assert!(!tool.execute(&ctx(), json!({"action":"read","path": p})).is_error);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        fs::write(&path, "alpha\n").unwrap();
+        let r = tool.execute(
+            &ctx(),
+            json!({"action":"edit","path": p,"old_string":"alpha","new_string":"beta"}),
+        );
+        assert!(!r.is_error, "{}", r.content);
     }
 
     #[test]
@@ -2596,7 +2537,7 @@ mod tests {
     }
 
     #[test]
-    fn overwrite_existing_without_read_succeeds_with_warning() {
+    fn overwrite_existing_without_read_is_refused() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("exists.txt");
         fs::write(&path, "old\n").unwrap();
@@ -2605,13 +2546,42 @@ mod tests {
             &ctx(),
             json!({"action":"write","path": path.to_str().unwrap(),"content":"new\n"}),
         );
+        assert!(r.is_error, "an unread overwrite is refused: {}", r.content);
+        assert!(r.content.contains("has not been read"), "{}", r.content);
+        assert_eq!(fs::read_to_string(&path).unwrap(), "old\n", "the file is untouched");
+    }
+
+    #[test]
+    fn stale_overwrite_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("exists.txt");
+        fs::write(&path, "old\n").unwrap();
+        let tool = FileTool::new();
+        let p = path.to_str().unwrap();
+        assert!(!tool.execute(&ctx(), json!({"action":"read","path": p})).is_error);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        fs::write(&path, "theirs\n").unwrap();
+        let r = tool.execute(&ctx(), json!({"action":"write","path": p,"content":"new\n"}));
+        assert!(r.is_error, "a stale overwrite is refused: {}", r.content);
+        assert!(r.content.contains("changed on disk since you read it"), "{}", r.content);
+        assert_eq!(fs::read_to_string(&path).unwrap(), "theirs\n");
+    }
+
+    /// A rewrite of a document stands on the caller's read of it: it lands
+    /// when the file is as read, and is refused when it changed since.
+    #[test]
+    fn a_document_rewrite_stands_on_its_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("PLAN.md");
+        fs::write(&path, "v1\n").unwrap();
+        let p = path.to_str().unwrap();
+        let tool = FileTool::new();
+        let r = tool.write_document("s", p, "v1\n", "v2\n");
         assert!(!r.is_error, "{}", r.content);
-        assert_eq!(fs::read_to_string(&path).unwrap(), "new\n");
-        assert!(
-            r.content.contains("Warning") && r.content.contains("no record of reading it"),
-            "{}",
-            r.content
-        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), "v2\n");
+        let r = tool.write_document("s", p, "v1\n", "v3\n");
+        assert!(r.is_error, "the file is no longer as read: {}", r.content);
+        assert_eq!(fs::read_to_string(&path).unwrap(), "v2\n");
     }
 
     #[test]
@@ -2869,7 +2839,7 @@ mod tests {
         );
     }
 
-    // ── Outline-first reads (PRD P4.1) ──────────────────────────────
+    // ── Cut-off reads ───────────────────────────────────────────────
 
     /// Write a source file long enough to trip the default 2000-line read
     /// truncation.
@@ -2883,60 +2853,18 @@ mod tests {
         path
     }
 
-    /// A blind read that comes back truncated prepends the tree-sitter
-    /// outline with ranged-read instructions — and the outline's own cap is
-    /// stated, never silent.
+    /// A blind read that comes back cut off is the read and its range note,
+    /// nothing added: an outline would only spend the budget again.
     #[test]
-    fn truncated_read_of_source_file_prepends_outline() {
+    fn a_cut_off_read_is_the_read_alone() {
         let dir = tempfile::tempdir().unwrap();
         let path = big_rust_file(dir.path());
         let tool = FileTool::new();
         let r = tool.execute(&ctx(), json!({"action":"read","path": path.to_str().unwrap()}));
         assert!(!r.is_error, "{}", r.content);
-        assert!(r.content.starts_with("[Outline (rust, 2100 lines total)"), "{}", crate::truncate_str(&r.content, 200));
-        assert!(r.content.contains("fn f0  [1-1]"), "{}", crate::truncate_str(&r.content, 400));
-        assert!(
-            r.content.contains("… 1900 more omitted"),
-            "outline cap must be stated: {}",
-            crate::truncate_str(&r.content, 400)
-        );
-        assert!(r.content.contains("offset/limit"), "must tell the model how to read ranges");
-        // The truncated content still follows — the outline decorates the ONE
-        // read pathway, it does not replace the read.
+        assert!(r.content.starts_with("     1\tfn f0() {}"), "{}", crate::truncate_str(&r.content, 200));
+        assert!(!r.content.contains("[Outline"), "{}", crate::truncate_str(&r.content, 200));
         assert!(r.content.contains("showing lines 1-2000"), "{}", crate::truncate_str(&r.content, 200));
-    }
-
-    /// A read that is NOT truncated carries no outline preamble.
-    #[test]
-    fn untruncated_read_has_no_outline_preamble() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("small.rs");
-        fs::write(&path, "fn a() {}\nfn b() {}\n").unwrap();
-        let tool = FileTool::new();
-        let r = tool.execute(&ctx(), json!({"action":"read","path": path.to_str().unwrap()}));
-        assert!(!r.is_error);
-        assert!(!r.content.contains("[Outline"), "{}", r.content);
-    }
-
-    /// An explicitly RANGED read never gets the outline — the model is
-    /// already reading by range, so the preamble would be repeated noise.
-    #[test]
-    fn ranged_read_has_no_outline_preamble() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = big_rust_file(dir.path());
-        let tool = FileTool::new();
-        let r = tool.execute(
-            &ctx(),
-            json!({"action":"read","path": path.to_str().unwrap(), "offset": 5}),
-        );
-        assert!(!r.is_error);
-        assert!(!r.content.contains("[Outline"), "{}", crate::truncate_str(&r.content, 200));
-        let r = tool.execute(
-            &ctx(),
-            json!({"action":"read","path": path.to_str().unwrap(), "limit": 10}),
-        );
-        assert!(!r.is_error);
-        assert!(!r.content.contains("[Outline"), "{}", crate::truncate_str(&r.content, 200));
     }
 
     /// A limit-truncated read states the real total and the offset to continue
@@ -2989,7 +2917,11 @@ mod tests {
         let r = tool.execute(&ctx(), json!({"action":"read","path": path.to_str().unwrap()}));
         assert!(r.is_error, "{}", crate::truncate_str(&r.content, 200));
         assert!(r.content.contains("the file has 1200 lines"), "{}", r.content);
-        assert!(r.content.contains("Use offset and limit"), "{}", r.content);
+        assert!(r.content.contains("Read one part with offset and limit"), "{}", r.content);
+        // The search it points at is a real tool (proof run 2026-09-26: "or
+        // grep for what you need" sent a run to a grep tool that doesn't exist).
+        assert!(r.content.contains("run_command(command: \"grep -n '<text>' "), "{}", r.content);
+        assert!(!r.content.contains("grep for"), "{}", r.content);
         assert!(r.content.len() < 600, "an error, not a clipped payload: {} bytes", r.content.len());
         // A ranged read that fits is served whole.
         let r = tool.execute(&ctx(), json!({"action":"read","path": path.to_str().unwrap(), "offset": 600, "limit": 300}));
@@ -3068,20 +3000,6 @@ mod tests {
         );
         assert!(!r.is_error, "{}", r.content);
         assert!(r.content.starts_with(&format!("Edited {}: replaced 1 occurrence at line 3", p)), "{}", r.content);
-    }
-
-    /// Overwriting a file this session never read names what was replaced.
-    #[test]
-    fn unread_overwrite_warning_states_size_and_mtime() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("u.txt");
-        fs::write(&path, "previous\n").unwrap();
-        let p = path.to_str().unwrap();
-        let tool = FileTool::new();
-        let r = tool.execute(&ctx(), json!({"action":"write","path": p,"content":"new\n"}));
-        assert!(!r.is_error, "{}", r.content);
-        assert!(r.content.contains("already existed (9 bytes, modified 20"), "{}", r.content);
-        assert!(r.content.contains("shell reads are not recorded"), "{}", r.content);
     }
 }
 

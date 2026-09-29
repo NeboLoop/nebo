@@ -1,0 +1,59 @@
+id: memory-primary-facts-outlive-the-chat
+name: 'Memory: what the owner''s primary employee learns in one chat is there in the next'
+description: |
+  The bug of 2026-09-27: the owner's primary employee had memory isolation switched on (the same
+  switch splits its conversations into separate threads), and every durable fact it learned in
+  the owner's chat was filed under that one chat, so a new chat never saw it. An owner chat is not
+  a matter. The employee here is set to Separate conversations, the mode the primary's isolation
+  maps to; the owner tells it a fact in one chat, then asks in a NEW chat with the same employee.
+target_component: memory
+agent: assistant-{{tag}}
+setup:
+- 'curl -sf -X POST ${NEBO_TEST_SERVER:-localhost:27895}/api/v1/agents -H ''Content-Type: application/json''
+  -d ''{"blank":true,"name":"assistant-{{tag}}"}'' > /dev/null'
+- 'python3 -c "import json,urllib.request as u; s=''http://${NEBO_TEST_SERVER:-localhost:27895}/api/v1'';
+  ags=json.load(u.urlopen(s+''/agents''))[''agents'']; i=[a[''id''] for a in ags if a.get(''name'')==''assistant-{{tag}}''][0];
+  u.urlopen(u.Request(s+''/agents/''+i, data=json.dumps({''memoryMode'': ''separate''}).encode(), headers={''Content-Type'':
+  ''application/json''}, method=''PUT''))"'
+teardown:
+- python3 -c "import json,urllib.request as u; s='http://${NEBO_TEST_SERVER:-localhost:27895}/api/v1';
+  ags=json.load(u.urlopen(s+'/agents'))['agents']; ids=[a['id'] for a in ags if a.get('name','')=='assistant-{{tag}}'];
+  [u.urlopen(u.Request(s+'/agents/'+i, method='DELETE')) for i in ids]"
+conversation:
+- role: user
+  content: 'Remember this: my standing coffee order is a large oat-milk latte, order code MAPLE-{{tag}}.'
+- role: user
+  agent: assistant-{{tag}}
+  content: What's my standing coffee order? Use your memory.
+tool_config:
+  remember:
+    enabled: true
+  recall:
+    enabled: true
+prompt_assertions:
+  first_call:
+  - id: saves-it
+    text: The fact is saved with remember
+    severity: critical
+    check:
+      tool: remember
+      result_contains: Saved to
+  recovery:
+  - id: new-chat-recalls-it
+    text: The new chat's reply (turn two) gives MAPLE-{{tag}}, from recall or the memory the turn recalled.
+      Where the row is stored is proved by suites/memory-proof.yaml
+    severity: critical
+    check:
+      turn: 2
+      reply_matches: MAPLE-{{tag}}
+  - id: not-sealed
+    text: The save is never refused or sealed to the conversation
+    severity: critical
+    check:
+      tool: remember
+      result_not_contains:
+      - sealed
+      - disabled
+ideal_behavior:
+  tool_calls: 2
+  narrative: remember in chat one; chat two answers with the order, from recall or the memory the turn recalled.

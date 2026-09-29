@@ -259,11 +259,17 @@ impl Store {
             ],
         )
         .map_err(|e| NeboError::Database(e.to_string()))?;
+        drop(conn);
+        // Exposure on the loop is an outside door: the employee is multi-chat.
+        if loop_exposed == Some(true) {
+            self.mark_multi_chat(id)?;
+        }
         Ok(())
     }
 
     /// Set an agent's "Expose to Loop" flag. Used to seed the primary agent's
     /// default (ON) at row creation; the toggle save path uses `update_agent`.
+    /// Exposure is an outside door, so the employee becomes multi-chat.
     pub fn set_loop_exposed(&self, id: &str, exposed: bool) -> Result<(), NeboError> {
         let conn = self.conn()?;
         conn.execute(
@@ -271,6 +277,10 @@ impl Store {
             params![id, exposed as i32],
         )
         .map_err(|e| NeboError::Database(e.to_string()))?;
+        drop(conn);
+        if exposed {
+            self.mark_multi_chat(id)?;
+        }
         Ok(())
     }
 
@@ -280,9 +290,9 @@ impl Store {
     ///
     /// Owner-set runtime state rides IN the DB frontmatter and the filesystem
     /// knows nothing about it, so a content refresh must carry it forward:
-    /// `memory.context_isolated` (the isolation toggle) previously vanished on
-    /// every server restart, silently un-isolating employees. The owner's DB
-    /// value always wins over the publisher's shipped default.
+    /// `memory.mode` (and the isolation toggle before it) previously vanished
+    /// on every server restart, silently un-isolating employees. The owner's
+    /// DB value always wins over the publisher's shipped default.
     ///
     /// A sync that changes nothing writes nothing. Boot runs it for every
     /// employee, and `updated_at` is the employee's last real change: heartbeat
@@ -305,7 +315,7 @@ impl Store {
             .db_err("sync_agent_content read")?;
         // ONE merge for both package-delivery paths (this sync and the
         // marketplace install/update in `persist_agent_from_api`): the owner's
-        // own declaration entries and the isolation toggle are held, everything
+        // own declaration entries and the memory mode are held, everything
         // else is the package's to change. See `crate::declaration`.
         let merged = match existing {
             Some(ours) => crate::declaration::merge_package_declaration(&ours, frontmatter),
@@ -320,10 +330,6 @@ impl Store {
         Ok(())
     }
 
-    /// Flip `memory.context_isolated` in the DB frontmatter and return the
-    /// merged frontmatter so the caller can mirror it to agent.json. Used
-    /// when a phone line is attached: a receptionist's callers must never
-    /// share memory, so the line forces isolation on.
     /// The owner's per-run spending limit for this employee, in cents
     /// (`budget.run_spend_cap_cents` in the frontmatter); 0 = no limit. A
     /// package's `token_budget` figures are the author's cost estimate and
@@ -339,7 +345,12 @@ impl Store {
             .max(0)
     }
 
-    pub fn set_agent_context_isolated(&self, id: &str, isolated: bool) -> Result<serde_json::Value, NeboError> {
+    /// Set `memory.mode` in the DB frontmatter and return the merged
+    /// frontmatter so the caller can mirror it to agent.json. The flag it
+    /// replaced (`memory.context_isolated`) goes with the write. Used when a
+    /// phone line is attached: a receptionist's callers must never share
+    /// memory, so the line keeps the employee's conversations separate.
+    pub fn set_agent_memory_mode(&self, id: &str, mode: &str) -> Result<serde_json::Value, NeboError> {
         let conn = self.conn()?;
         let current: String = conn
             .query_row("SELECT frontmatter FROM agents WHERE id = ?1", params![id], |r| r.get(0))
@@ -356,7 +367,9 @@ impl Store {
         if !mem.is_object() {
             *mem = serde_json::json!({});
         }
-        mem.as_object_mut().unwrap().insert("context_isolated".into(), serde_json::json!(isolated));
+        let mem = mem.as_object_mut().unwrap();
+        mem.remove("context_isolated");
+        mem.insert("mode".into(), serde_json::json!(mode));
         conn.execute(
             "UPDATE agents SET frontmatter = ?2, updated_at = unixepoch() WHERE id = ?1",
             params![id, fm.to_string()],
@@ -371,19 +384,6 @@ impl Store {
     /// runs on every restart and used to revert christened names to the
     /// bundled manifest's default. Like [`Self::sync_agent_content`], a sync
     /// that changes nothing writes nothing (`updated_at` stays put).
-    /// Lock the employee's name against manifest syncs (`name_locked`, the
-    /// same contract an owner's rename sets): a linked employee's name is
-    /// the linked agent's, never a package's.
-    pub fn lock_agent_name(&self, id: &str) -> Result<(), NeboError> {
-        let conn = self.conn()?;
-        conn.execute(
-            "UPDATE agents SET name_locked = 1, updated_at = unixepoch() WHERE id = ?1",
-            params![id],
-        )
-        .map_err(|e| NeboError::Database(e.to_string()))?;
-        Ok(())
-    }
-
     pub fn sync_agent_identity(
         &self,
         id: &str,
@@ -800,6 +800,23 @@ impl Store {
             params![agent_id, binding_name],
         )
         .map_err(|e| NeboError::Database(e.to_string()))?;
+        // A deleted workflow is no longer temporary work either.
+        conn.execute(
+            "DELETE FROM temporary_work WHERE kind = 'workflow' AND agent_id = ?1 AND name = ?2",
+            params![agent_id, binding_name],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Turn a binding on or off.
+    pub fn set_agent_workflow_active(&self, agent_id: &str, binding_name: &str, active: bool) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE agent_workflows SET is_active = ?3 WHERE agent_id = ?1 AND binding_name = ?2",
+            params![agent_id, binding_name, active as i64],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))?;
         Ok(())
     }
 
@@ -829,6 +846,11 @@ impl Store {
         let conn = self.conn()?;
         conn.execute(
             "DELETE FROM agent_workflows WHERE agent_id = ?1",
+            params![agent_id],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))?;
+        conn.execute(
+            "DELETE FROM temporary_work WHERE kind = 'workflow' AND agent_id = ?1",
             params![agent_id],
         )
         .map_err(|e| NeboError::Database(e.to_string()))?;
@@ -928,8 +950,17 @@ impl Store {
                 })
             })
             .map_err(|e| NeboError::Database(e.to_string()))?;
-        rows.collect::<Result<Vec<_>, _>>()
-            .map_err(|e| NeboError::Database(e.to_string()))
+        let rows = rows.collect::<Result<Vec<_>, _>>().map_err(|e| NeboError::Database(e.to_string()))?;
+        // A workflow may announce several events (stored comma-separated):
+        // one source per event.
+        Ok(rows
+            .into_iter()
+            .flat_map(|row| {
+                types::strutil::name_list(&row.emit)
+                    .into_iter()
+                    .map(move |emit| EmitSource { emit, ..row.clone() })
+            })
+            .collect())
     }
 
     pub fn delete_cron_jobs_by_prefix(&self, prefix: &str) -> Result<i64, NeboError> {
@@ -975,7 +1006,9 @@ impl Store {
         // base-only pattern left every sealed matter's memories alive after
         // the employee was deleted. Chunks/embeddings cascade via FK.
         let base = format!("%:agent:{}", agent_id);
-        let ctx = format!("%:agent:{}:ctx:%", agent_id);
+        // Every conversation scope under the private one (`:ctx:` and
+        // `:matter:`); agent ids hold no colon.
+        let ctx = format!("%:agent:{}:%", agent_id);
         let n = conn
             .execute(
                 "DELETE FROM memories WHERE user_id LIKE ?1 OR user_id LIKE ?2",
@@ -1145,6 +1178,17 @@ mod owner_modified_tests {
         assert_eq!(rows[0].trigger_config, "0 0 9 * * * *");
         assert!(activities(&s).contains("pkg2"));
     }
+
+    /// A32: a workflow announcing several events offers each one as a
+    /// source other workflows can listen to.
+    #[test]
+    fn every_announced_event_is_a_source() {
+        let s = store();
+        s.upsert_agent_workflow("a1", "funnel-scan", "schedule", "0 8 * * 1-5", None, None,
+            Some("conversion.dropoff.detected,report.ready"), None, None, false).unwrap();
+        let emits: Vec<String> = s.list_emit_sources().unwrap().into_iter().map(|e| e.emit).collect();
+        assert_eq!(emits, ["conversion.dropoff.detected", "report.ready"]);
+    }
 }
 
 /// Structure on an employee: the department the owner claims from the package,
@@ -1299,7 +1343,7 @@ mod structure_tests {
         seat(&s, "a", "Social");
         seat(&s, "ab", "Other");
         let job = |name: &str, task_type: &str, agent: Option<&str>| {
-            s.create_cron_job(name, "0 0 9 * * * *", "", task_type, Some("x"), None, None, true, agent, None)
+            s.create_cron_job(name, "0 0 9 * * * *", "", task_type, Some("x"), None, None, true, agent, None, None)
                 .unwrap();
         };
         job("agent-a-plan-week", "agent_workflow", Some("a"));
@@ -1464,7 +1508,7 @@ mod boot_sync_tests {
         // the app fields are recorded.
         s.sync_agent_content("emp", "# Clerk", shipped).unwrap();
         s.sync_agent_identity("emp", "Clerk", "Keeps the books").unwrap();
-        s.set_agent_context_isolated("emp", true).unwrap();
+        s.set_agent_memory_mode("emp", "separate").unwrap();
         s.set_agent_app_fields("emp", true, Some("ui"), None, Some("{}")).unwrap();
         s.conn_exec_for_test("UPDATE agents SET updated_at = 10 WHERE id = 'emp'");
         let settings_changed = || s.engine_agent_changes_since("emp", 100, "hb:emp:x", Some("x")).unwrap().settings_changed;
@@ -1475,7 +1519,8 @@ mod boot_sync_tests {
         s.set_agent_app_fields("emp", true, Some("ui"), None, Some("{}")).unwrap();
         let a = s.get_agent("emp").unwrap().unwrap();
         assert_eq!(a.updated_at, 10, "a no-op boot sync leaves updated_at alone");
-        assert!(a.frontmatter.contains(r#""context_isolated":true"#), "the owner's toggle is kept");
+        assert!(a.frontmatter.contains(r#""mode":"separate""#), "the owner's mode is kept: {}", a.frontmatter);
+        assert!(!a.frontmatter.contains("context_isolated"), "the package's old flag never comes back: {}", a.frontmatter);
         assert!(!settings_changed());
 
         // A real change does move it: the owner's edit, a new package on disk.

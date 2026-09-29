@@ -62,11 +62,13 @@ pub enum StreamEventType {
     Error,
     Done,
     Thinking,
+    /// One whole thinking block, as the provider must get it back with the
+    /// assistant turn it belongs to ([`StreamEvent::thinking_block`]).
+    ThinkingBlock,
     Usage,
     RateLimit,
     ApprovalRequest,
     AskRequest,
-    PlanApproval,
     SubagentStart,
     SubagentProgress,
     SubagentComplete,
@@ -74,12 +76,13 @@ pub enum StreamEventType {
     /// Run-control status from the runner (spiral backstop, circuit breaker,
     /// terminal tool error). Rendered as a status/notice in the UI — NEVER
     /// accumulated into reply text (`text` is the human-readable status line;
-    /// `stop_reason` is the typed machine reason, e.g. "repeated_tool_calls").
+    /// `stop_reason` is the typed machine reason, e.g. "max_steps").
     ControlNotice,
-    /// End-of-turn context accounting (files re-read, compaction passes,
-    /// spilled results) so the owner can see where a session's tokens went.
-    /// Carried in `widgets`; never reply text.
-    ContextStats,
+    /// Whether the text segment the next tool call closed stays in the reply
+    /// or folds into the turn's work (`text`: "shown" | "folded"; `payload`:
+    /// `{"segment": n}`, the segment's index in the turn). Sent by the
+    /// harness, never by a provider ([`StreamEvent::text_verdict`]).
+    TextVerdict,
 }
 
 /// Token usage statistics from a streaming response.
@@ -157,6 +160,30 @@ impl StreamEvent {
         self.payload.clone().and_then(|p| serde_json::from_value(p).ok())
     }
 
+    /// A whole thinking block (ThinkingBlock events), carried in `payload`.
+    pub fn thinking_block(block: ThinkingBlock) -> Self {
+        let mut event = Self::thinking("");
+        event.event_type = StreamEventType::ThinkingBlock;
+        event.payload = serde_json::to_value(block).ok();
+        event
+    }
+
+    /// The verdict on the turn's text segment `segment` ("shown" | "folded").
+    pub fn text_verdict(segment: usize, fold: &str) -> Self {
+        let mut event = Self::text(fold);
+        event.event_type = StreamEventType::TextVerdict;
+        event.payload = Some(serde_json::json!({ "segment": segment }));
+        event
+    }
+
+    /// The block a ThinkingBlock event carries.
+    pub fn block(&self) -> Option<ThinkingBlock> {
+        if self.event_type != StreamEventType::ThinkingBlock {
+            return None;
+        }
+        self.payload.clone().and_then(|p| serde_json::from_value(p).ok())
+    }
+
     /// Attach the run's final provenance classes (Done events).
     pub fn with_provenance(mut self, classes: Vec<types::provenance::ProvenanceClass>) -> Self {
         self.provenance = Some(classes);
@@ -196,7 +223,7 @@ impl StreamEvent {
     }
 
     /// Run-control status: `text` is the user-facing status line, `stop_reason`
-    /// the typed reason ("repeated_tool_calls", "user_requested_stop",
+    /// the typed reason ("max_steps", "user_requested_stop",
     /// "terminal_tool_error"). Consumers surface it as status — reply
     /// accumulators must ignore it by type.
     pub fn control_notice(text: impl Into<String>, stop_reason: impl Into<String>) -> Self {
@@ -368,22 +395,6 @@ impl StreamEvent {
         ev
     }
 
-    pub fn context_stats(stats: serde_json::Value) -> Self {
-        Self { payload: None,
-            provenance: None,
-            event_type: StreamEventType::ContextStats,
-            text: String::new(),
-            tool_call: None,
-            error: None,
-            usage: None,
-            rate_limit: None,
-            widgets: Some(stats),
-            provider_metadata: None,
-            stop_reason: None,
-            image_url: None,
-        }
-    }
-
     pub fn approval_request(tc: ToolCall) -> Self {
         Self { payload: None,
             provenance: None,
@@ -436,27 +447,6 @@ impl StreamEvent {
         }
     }
 
-    /// Plan approval request: sends plan text and proposed tool names to the frontend.
-    pub fn plan_approval_request(
-        request_id: impl Into<String>,
-        plan: impl Into<String>,
-        tools: Vec<String>,
-    ) -> Self {
-        Self { payload: None,
-            provenance: None,
-            event_type: StreamEventType::PlanApproval,
-            text: plan.into(),
-            tool_call: None,
-            error: Some(request_id.into()),
-            usage: None,
-            rate_limit: None,
-            widgets: Some(serde_json::json!(tools)),
-            provider_metadata: None,
-            stop_reason: None,
-            image_url: None,
-        }
-    }
-
 }
 
 /// Describes a tool available to the AI.
@@ -497,6 +487,18 @@ pub struct ImageContent {
     pub data: String,
 }
 
+/// A block of the model's thinking in an assistant turn. A provider that
+/// signs its thinking (Anthropic) refuses a tool loop with thinking on unless
+/// each block comes back unchanged with the turn it belongs to, and a
+/// signature is bound to the model that wrote it, so the blocks stay in the
+/// assistant message and are stripped when the model changes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ThinkingBlock {
+    Thinking { thinking: String, signature: String },
+    RedactedThinking { data: String },
+}
+
 /// A message in a conversation.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Message {
@@ -509,6 +511,10 @@ pub struct Message {
     pub tool_results: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub images: Option<Vec<ImageContent>>,
+    /// An assistant turn's thinking blocks, in the order they came, when the
+    /// request goes to the model that wrote them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub thinking: Vec<ThinkingBlock>,
 }
 
 /// What an LLM request is for and which Nebo run produced it. Every
@@ -584,8 +590,6 @@ pub struct ChatRequest {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub system: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub static_system: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub model: String,
     #[serde(default)]
     pub enable_thinking: bool,
@@ -618,21 +622,59 @@ pub struct ChatRequest {
     /// serialized.
     #[serde(skip)]
     pub chat_id: String,
-    /// The run's tool-approval channels — `tools::ApprovalChannels`, the ONE
-    /// tool-approval pathway — for a `handles_tools` provider whose runtime
-    /// stops for the owner's decision (the linked provider): it registers the
-    /// runtime's request under the same map the runner's own gate uses, so
-    /// the ApprovalGate, the phone and the comm relay all answer it. Never
-    /// serialized.
+    /// The run's ask channels — `tools::AskChannels`, the ONE way a parked
+    /// question is answered — for a `handles_tools` provider whose runtime
+    /// stops to ask the owner (the linked provider): it registers the
+    /// runtime's question under the same map the `ask` tool uses and raises
+    /// [`StreamEvent::ask_request`], so the app's ask card, the phone, a loop
+    /// reply and a reload all show and answer it. Never serialized.
     #[serde(skip)]
-    pub approval_channels: Option<ApprovalChannels>,
+    pub ask_channels: Option<AskChannels>,
+    /// The run's permission mode (the employee's, or this run's override),
+    /// for a `handles_tools` provider whose runtime has modes of its own
+    /// (the linked provider tells a linked coding agent how much it may do
+    /// without asking). `None` for calls outside a run. Never serialized.
+    #[serde(skip)]
+    pub permission_mode: Option<types::permissions::Mode>,
+    /// What Nebo tells a fresh session of a linked employee's agent, for the
+    /// linked provider (built by the harness, which holds Nebo's copy of the
+    /// conversation and the company around the employee). `None` for every
+    /// other call. Never serialized.
+    #[serde(skip)]
+    pub linked_context: Option<LinkedContextRef>,
 }
 
-/// The run's tool-approval channels, keyed by request id; the value is the
-/// decision (`"once"`, `"always"`, `"deny"`). The same type as
-/// `tools::ApprovalChannels`, spelled here because `tools` depends on this
-/// crate.
-pub type ApprovalChannels = Arc<
+/// What Nebo tells a fresh session of a linked employee's agent: Nebo keeps
+/// the conversation, and the agent keeps one working stretch of it in its
+/// session. Built by the harness; runtime-neutral text, so the same words
+/// could start any agent on the conversation.
+#[async_trait]
+pub trait LinkedContext: Send + Sync {
+    /// The briefing a fresh session starts with: the company, the
+    /// employee's name and job here, its teams, the teammates it can reach
+    /// and how, and the owner.
+    fn briefing(&self) -> String;
+    /// The conversation so far, before the owner's newest message, as
+    /// Nebo's checkpoint summary writes it (the owner's asks, what was done,
+    /// the files and values involved, the decisions, what is open). `None`
+    /// when nothing came before it, or the summary could not be written.
+    async fn summary(&self) -> Option<String>;
+}
+
+/// A [`LinkedContext`] riding on a request.
+#[derive(Clone)]
+pub struct LinkedContextRef(pub Arc<dyn LinkedContext>);
+
+impl std::fmt::Debug for LinkedContextRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("LinkedContext")
+    }
+}
+
+/// The run's ask channels, keyed by request id; the value is the answer (one
+/// of the question's options). The same type as `tools::AskChannels`,
+/// spelled here because `tools` depends on this crate.
+pub type AskChannels = Arc<
     tokio::sync::Mutex<std::collections::HashMap<String, tokio::sync::oneshot::Sender<String>>>,
 >;
 
@@ -647,7 +689,6 @@ impl ChatRequest {
             max_tokens: 0,
             temperature: 0.0,
             system: String::new(),
-            static_system: String::new(),
             model: String::new(),
             enable_thinking: false,
             metadata: None,
@@ -656,7 +697,9 @@ impl ChatRequest {
             trace,
             tool_credential: None,
             chat_id: String::new(),
-            approval_channels: None,
+            ask_channels: None,
+            permission_mode: None,
+            linked_context: None,
         }
     }
 }
@@ -697,6 +740,19 @@ pub trait Provider: Send + Sync {
         true
     }
 
+    /// Whether cancelling this provider's stream is a round trip to a
+    /// runtime it does not control in-process (the linked provider's ACP
+    /// `session/cancel`, sent to a remote or local agent and waited on),
+    /// rather than something the runner can end on the spot (a CLI
+    /// provider's child process, a native stream it just stops reading).
+    /// True here means the runner keeps waiting for this call's stream to
+    /// actually end — the provider's own cancel handshake, bounded — before
+    /// it treats the call as over and free to send this session a second
+    /// prompt: never two prompts in flight on one linked session.
+    fn cancel_is_async(&self) -> bool {
+        false
+    }
+
     /// Whether this provider supports images in tool result content blocks.
     /// When true, the runner will pass screenshot images directly to the model
     /// instead of converting them to text via the sidecar vision model.
@@ -710,6 +766,14 @@ pub trait Provider: Send + Sync {
     /// and answer as if nothing had been attached.
     fn supports_vision(&self) -> bool {
         false
+    }
+
+    /// The linked provider itself: what reaches a linked bot outside a turn
+    /// (what its agents are doing now, a session's current work) goes the
+    /// way its turns go, over the same relay, keys and host. `None` for
+    /// every other provider.
+    fn linked(&self) -> Option<&crate::providers::linked::LinkedProvider> {
+        None
     }
 
     /// Send a request and return a channel of streaming events.

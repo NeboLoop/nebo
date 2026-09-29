@@ -78,10 +78,11 @@ pub async fn get_session_messages(
         .unwrap_or(&id);
 
     let limit = q.limit.unwrap_or(50).min(200) as usize;
-    let all_messages = state
+    let mut all_messages = state
         .store
         .get_chat_messages(chat_id)
         .map_err(to_error_response)?;
+    all_messages.retain(super::chat::is_owner_visible);
 
     if let Some(ref before_id) = q.before {
         // Find cursor position and return messages before it
@@ -117,8 +118,14 @@ pub struct SessionMessagesQuery {
 
 /// GET /api/v1/agent/settings
 pub async fn get_settings(State(state): State<AppState>) -> HandlerResult<serde_json::Value> {
-    let settings = state.store.get_settings().map_err(to_error_response)?;
-    Ok(Json(serde_json::json!({"settings": settings})))
+    let mut settings = state.store.get_settings().map_err(to_error_response)?;
+    // Full Access is the company's permission mode.
+    if let Some(s) = settings.as_mut() {
+        let mode = state.store.permission_mode(&types::permissions::Scope::Company).map_err(to_error_response)?;
+        s.full_access = (mode == Some(types::permissions::Mode::FullAccess)) as i64;
+    }
+    let judgement = state.store.permission_judgement_mode().map_err(to_error_response)?;
+    Ok(Json(serde_json::json!({"settings": settings, "permissionJudgement": judgement.as_str()})))
 }
 
 /// PUT /api/v1/agent/settings
@@ -138,29 +145,93 @@ pub async fn update_settings(
             body["commPlugin"].as_str(),
             body["developerMode"].as_bool(),
             body["autoUpdate"].as_bool(),
-            body["fullAccess"].as_bool(),
         )
         .map_err(to_error_response)?;
+    // Full Access is the company's permission mode; every other employee
+    // without its own mode runs Automatic.
+    if let Some(full) = body["fullAccess"].as_bool() {
+        let mode = if full { types::permissions::Mode::FullAccess } else { types::permissions::Mode::Automatic };
+        state
+            .store
+            .set_permission_mode(&types::permissions::Scope::Company, mode)
+            .map_err(to_error_response)?;
+    }
 
-    // Loop-guardrail thresholds (Settings → Developer). Round-trip through the
-    // typed config so junk fields are dropped and floors are enforced before
-    // anything is persisted — the runner must never load a blob that blocks
-    // every call.
-    if body["guardrails"].is_object() {
-        let cfg = agent::guardrails::GuardrailConfig::from_json(
-            &body["guardrails"].to_string(),
-        )
-        .sanitized();
-        let json = serde_json::to_string(&cfg).map_err(|e| {
+    // Automatic mode's judgement: "shadow" records its verdicts, "enforce"
+    // lets an ask verdict ask.
+    if let Some(raw) = body["permissionJudgement"].as_str() {
+        let mode = types::permissions::JudgementMode::parse(raw).ok_or_else(|| {
             to_error_response(types::NeboError::Validation(format!(
-                "invalid guardrails: {e}"
+                "permissionJudgement must be \"shadow\" or \"enforce\", not {raw:?}"
             )))
         })?;
-        state.store.set_guardrails(&json).map_err(to_error_response)?;
+        state.store.set_permission_judgement_mode(mode).map_err(to_error_response)?;
     }
 
     let settings = state.store.get_settings().map_err(to_error_response)?;
-    Ok(Json(serde_json::json!({"settings": settings})))
+    let judgement = state.store.permission_judgement_mode().map_err(to_error_response)?;
+    Ok(Json(serde_json::json!({"settings": settings, "permissionJudgement": judgement.as_str()})))
+}
+
+/// The longest Location label taken: an address, not a document.
+const MAX_LOCATION_LABEL_CHARS: usize = 300;
+
+/// The bot's Location, or none when the owner has not set one.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BotLocationResponse {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub location: Option<db::models::BotLocation>,
+}
+
+/// PUT /api/v1/agent/location's body: the whole Location. An empty label
+/// clears it; coordinates come both or neither (a label typed where there
+/// is no geocoder has none, and the phone fills them in).
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BotLocationRequest {
+    #[serde(default)]
+    pub label: String,
+    pub latitude: Option<f64>,
+    pub longitude: Option<f64>,
+}
+
+/// GET /api/v1/agent/location
+pub async fn get_location(State(state): State<AppState>) -> HandlerResult<BotLocationResponse> {
+    let location = state.store.bot_location().map_err(to_error_response)?;
+    Ok(Json(BotLocationResponse { location }))
+}
+
+/// PUT /api/v1/agent/location — replaces the bot's Location whole.
+pub async fn update_location(
+    State(state): State<AppState>,
+    Json(body): Json<BotLocationRequest>,
+) -> HandlerResult<BotLocationResponse> {
+    let invalid = |msg: &str| to_error_response(types::NeboError::Validation(msg.to_string()));
+    let label = body.label.trim();
+    let location = if label.is_empty() {
+        None
+    } else {
+        if label.chars().count() > MAX_LOCATION_LABEL_CHARS {
+            return Err(invalid("The location is too long."));
+        }
+        let (latitude, longitude) = match (body.latitude, body.longitude) {
+            (Some(lat), Some(lon))
+                if lat.is_finite() && lon.is_finite() && (-90.0..=90.0).contains(&lat) && (-180.0..=180.0).contains(&lon) =>
+            {
+                (Some(lat), Some(lon))
+            }
+            (None, None) => (None, None),
+            _ => return Err(invalid("The location's coordinates are not valid.")),
+        };
+        Some(db::models::BotLocation {
+            label: label.to_string(),
+            latitude,
+            longitude,
+        })
+    };
+    state.store.set_bot_location(location.as_ref()).map_err(to_error_response)?;
+    Ok(Json(BotLocationResponse { location }))
 }
 
 /// GET /api/v1/agent/profile
@@ -202,21 +273,12 @@ pub async fn update_profile(
         .map_err(to_error_response)?;
 
     let profile = state.store.get_agent_profile().map_err(to_error_response)?;
-
-    // Sync name to NeboAI in background (non-blocking)
-    if body["name"].as_str().is_some() {
-        let st = state.clone();
-        tokio::spawn(async move {
-            crate::codes::sync_bot_identity(&st).await;
-        });
-    }
-
     Ok(Json(serde_json::json!(profile)))
 }
 
 /// GET /api/v1/agent/status
 pub async fn get_status(State(state): State<AppState>) -> HandlerResult<serde_json::Value> {
-    let provider_count = state.runner.provider_count();
+    let provider_count = state.harness.provider_count();
     let tool_names = state.tools.get_tool_names().await;
 
     // Get real task counts from the DB
@@ -258,11 +320,24 @@ pub async fn get_status(State(state): State<AppState>) -> HandlerResult<serde_js
 }
 
 /// GET /api/v1/agent/system-info
+///
+/// `systemPackages` is a cloud bot's: the packages its employees installed
+/// and where putting them back after the last restart stands
+/// (`tools::system_packages`). Null elsewhere.
 pub async fn get_system_info() -> HandlerResult<serde_json::Value> {
+    let system_packages = tools::cloud_bot().then(|| {
+        let restore = tools::system_packages::restore();
+        serde_json::json!({
+            "installed": tools::system_packages::installed(),
+            "restoring": restore.running,
+            "failed": restore.failed,
+        })
+    });
     Ok(Json(serde_json::json!({
         "os": std::env::consts::OS,
         "arch": std::env::consts::ARCH,
         "version": env!("CARGO_PKG_VERSION"),
+        "systemPackages": system_packages,
     })))
 }
 

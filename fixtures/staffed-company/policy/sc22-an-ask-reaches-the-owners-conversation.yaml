@@ -1,0 +1,12 @@
+id: sc22-an-ask-reaches-the-owners-conversation
+name: "SC22 — An ask reaches the owner's loop or phone conversation, and their reply answers it"
+description: |
+  One ask, every surface. A call parked on the owner, in a run that came
+  from the owner's own loop or phone conversation, carries the ask's card
+  into that conversation (as main relayed its approvals), offering exactly
+  the card's answers. The owner's next message there answers it through
+  the ask's one answer path; a reply that isn't an answer is a No; an ask
+  answered elsewhere first leaves the reply an ordinary message.
+target_component: staffed-company
+proof: staffed_proof::policy::an_ask_reaches_the_owners_conversation_and_their_reply_answers_it
+conversation: []

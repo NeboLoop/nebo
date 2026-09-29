@@ -8,14 +8,20 @@ description: |
 
   This tests both auth detection and graceful degradation: the model
   should still try to answer the question using other public sources.
-target_component: web
+target_component: browser_open
 
 conversation:
   - role: user
     content: "Look up NeboLoop on LinkedIn and tell me how many employees they have, their industry, and recent posts"
 
 tool_config:
-  web:
+  search_web:
+    enabled: true
+  browser_open:
+    enabled: true
+  browser_read:
+    enabled: true
+  browser_act:
     enabled: true
 
 prompt_assertions:
@@ -51,7 +57,7 @@ ideal_behavior:
   tool_calls: 8
   total_tokens: 12000
   narrative: |
-    1. search "NeboLoop LinkedIn" or navigate to linkedin.com/company/neboloop
+    1. search_web "NeboLoop LinkedIn" or browser_open linkedin.com/company/neboloop
     2. Hit auth wall → detect_auth_page fires → model sees warning
     3. Fall back: search "NeboLoop company employees industry" on Google
     4. Navigate to company website or Crunchbase for public info

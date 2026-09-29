@@ -1,12 +1,7 @@
 //! The harness: the one loop every turn runs through — owner chat, helpers,
 //! coworker runs, scheduled runs, voice and MCP runs, workflow activities.
-//!
-//! This tree replaces `Runner` (`runner.rs`), `steering.rs`, `turn_decide.rs`
-//! and `goals.rs` at cutover; until then nothing on main calls it. The work
-//! packages of the harness build plan fill it: Phase 1 moves code here from
-//! `runner.rs` without changing behaviour, Phase 2 builds the new turn on
-//! the moved parts. A function whose body is `unimplemented!("WPx.y")` is
-//! filled by that package and has no caller before it.
+//! Every caller starts a turn with [`Harness::start_turn`]; `turn::drive_turn`
+//! is the loop.
 
 pub mod after_turn;
 pub mod compact;
@@ -14,14 +9,21 @@ pub mod conversation;
 pub mod delegation;
 pub mod events;
 pub mod goal;
+pub mod linked_handoff;
 pub mod memory_context;
+pub mod memory_save;
 pub mod model_call;
+pub mod opening;
+pub mod owner_command;
+pub mod owner_intent;
+pub mod permissions;
 pub mod prompt;
 pub mod recap;
 pub mod reminders;
 pub mod seat;
 pub mod session_gate;
 pub mod telemetry;
+pub mod text_fold;
 pub mod tool_round;
 pub mod tool_surface;
 pub mod turn;
@@ -29,36 +31,321 @@ pub mod turn_end;
 pub mod usage;
 pub mod workflow_turn;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
+use std::sync::{Arc, OnceLock};
 
-use tokio::sync::mpsc;
+use tokio::sync::{RwLock, mpsc};
 use tokio_util::sync::CancellationToken;
+use tracing::info;
 
-use crate::runner::{ActiveTurns, RunProgress, WorkflowMode};
+use crate::concurrency::ConcurrencyController;
+use crate::selector::ModelSelector;
+use crate::session::SessionManager;
+use session_gate::{ActiveTurns, RunProgress};
+pub use workflow_turn::{WorkflowMode, WorkflowPark};
 
-/// The facade every caller starts a turn through. WP2.9 gives it the rest of
-/// what `Runner` holds (sessions, tools, store, providers, concurrency,
-/// selector, hooks, agent registry, ask/approval channels, embedding,
-/// hybrid searcher, skill loader, title sink) when it points the callers here.
+/// Where the harness tells the app what happens outside a turn's stream.
+/// The server binds them once its state exists ([`Harness::bind`]); every
+/// clone of the harness sees them.
+#[derive(Default)]
+pub struct Outlets {
+    /// Chat titles, broadcast and pushed to the loop.
+    pub title_sink: Option<Arc<dyn after_turn::ChatTitleSink>>,
+    /// Owner-facing events outside a turn's stream (`turn_recap`).
+    pub broadcast: Option<crate::agent_worker::NotifyFn>,
+    /// Where the agreed goal's status, kickoffs and running work are told;
+    /// without it no goal is checked.
+    pub goal_observer: Option<Arc<dyn goal::GoalObserver>>,
+    /// Starts a turn on a session (its key) for input already in its thread,
+    /// replying where its conversation came from: the owner's message a
+    /// stopped turn never answered. A stopped turn's stream has ended, so
+    /// its answer needs a turn of its own the app runs.
+    pub answer_thread: Option<Arc<dyn Fn(&str) + Send + Sync>>,
+}
+
+/// The facade every caller starts a turn through: the services a turn runs
+/// against. Cheap to clone; a running turn owns a clone.
+#[derive(Clone)]
 pub struct Harness {
-    active_turns: ActiveTurns,
+    pub(crate) sessions: SessionManager,
+    pub(crate) store: Arc<db::Store>,
+    pub(crate) tools: Arc<tools::Registry>,
+    pub(crate) providers: Arc<RwLock<Vec<Arc<dyn ai::Provider>>>>,
+    pub(crate) selector: Arc<ModelSelector>,
+    pub(crate) concurrency: Arc<ConcurrencyController>,
+    pub(crate) hooks: Arc<napp::HookDispatcher>,
+    /// Issues the credential a CLI provider's tool calls carry back over
+    /// /agent/mcp.
+    pub(crate) tool_credentials: Option<crate::tool_credentials::ToolCredentials>,
+    pub(crate) agent_registry: tools::AgentRegistry,
+    pub(crate) skill_loader: Option<Arc<tools::skills::Loader>>,
+    pub(crate) ask_channels: Option<tools::AskChannels>,
+    pub(crate) embedding_provider: Option<Arc<dyn ai::EmbeddingProvider>>,
+    /// The hybrid search the memory tool uses: the turn's recall runs on it.
+    pub(crate) hybrid_searcher: Option<Arc<dyn tools::HybridSearcher>>,
+    pub(crate) outlets: Arc<OnceLock<Outlets>>,
+    /// The goal check-ins waiting on background work, one per session.
+    pub(crate) goal_check_ins: goal::CheckIns,
+    pub(crate) active_turns: ActiveTurns,
+    /// The owner's phone position, for the employees it is shared with.
+    pub(crate) phone_locations: Arc<crate::phone_location::PhoneLocations>,
+    /// Jev, the permission judge asked first about a call the code can't
+    /// decide (PRD-Permissions §4.7); `None` goes straight to the aux
+    /// classifier.
+    pub(crate) decide: Option<Arc<ai::DecideClient>>,
 }
 
 impl Harness {
-    /// Admit, prepare and drive one turn; its events stream on the handle.
-    pub async fn start_turn(&self, _req: TurnRequest) -> Result<TurnHandle, HarnessError> {
-        unimplemented!("WP2.9")
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        store: Arc<db::Store>,
+        tools: Arc<tools::Registry>,
+        providers: Vec<Arc<dyn ai::Provider>>,
+        selector: ModelSelector,
+        concurrency: Arc<ConcurrencyController>,
+        hooks: Arc<napp::HookDispatcher>,
+        tool_credentials: Option<crate::tool_credentials::ToolCredentials>,
+        agent_registry: tools::AgentRegistry,
+        skill_loader: Option<Arc<tools::skills::Loader>>,
+    ) -> Self {
+        // The selector resolves a turn's model against what is loaded.
+        selector.set_loaded_providers(providers.iter().map(|p| p.id().to_string()).collect());
+        Self {
+            sessions: SessionManager::new(store.clone()),
+            store,
+            tools,
+            providers: Arc::new(RwLock::new(providers)),
+            selector: Arc::new(selector),
+            concurrency,
+            hooks,
+            tool_credentials,
+            agent_registry,
+            skill_loader,
+            ask_channels: None,
+            embedding_provider: None,
+            hybrid_searcher: None,
+            outlets: Default::default(),
+            goal_check_ins: Default::default(),
+            active_turns: Default::default(),
+            phone_locations: Default::default(),
+            decide: None,
+        }
+    }
+
+    /// The owner's answers to a question (a tool's, or a linked runtime's
+    /// relayed by its provider) reach it here.
+    pub fn with_ask_channels(mut self, channels: tools::AskChannels) -> Self {
+        self.ask_channels = Some(channels);
+        self
+    }
+
+    /// Jev: the permission judge's first reader.
+    pub fn with_decide(mut self, decide: Arc<ai::DecideClient>) -> Self {
+        self.decide = Some(decide);
+        self
+    }
+
+    /// Embeds memories written after a turn and at a checkpoint.
+    pub fn with_embedding_provider(mut self, provider: Arc<dyn ai::EmbeddingProvider>) -> Self {
+        self.embedding_provider = Some(provider);
+        self
+    }
+
+    /// The memory tool's own search: the turn's recall shares its index.
+    pub fn with_hybrid_searcher(mut self, searcher: Arc<dyn tools::HybridSearcher>) -> Self {
+        self.hybrid_searcher = Some(searcher);
+        self
+    }
+
+    /// Bind the app's outlets. Once: a second bind is ignored.
+    pub fn bind(&self, outlets: Outlets) {
+        if self.outlets.set(outlets).is_err() {
+            tracing::warn!("harness outlets bound twice; the first binding stays");
+        }
+    }
+
+    pub(crate) fn title_sink(&self) -> Option<Arc<dyn after_turn::ChatTitleSink>> {
+        self.outlets.get().and_then(|o| o.title_sink.clone())
+    }
+
+    pub(crate) fn broadcast(&self) -> Option<crate::agent_worker::NotifyFn> {
+        self.outlets.get().and_then(|o| o.broadcast.clone())
+    }
+
+    pub(crate) fn goal_observer(&self) -> Option<Arc<dyn goal::GoalObserver>> {
+        self.outlets.get().and_then(|o| o.goal_observer.clone())
+    }
+
+    pub(crate) fn answer_thread(&self) -> Option<Arc<dyn Fn(&str) + Send + Sync>> {
+        self.outlets.get().and_then(|o| o.answer_thread.clone())
+    }
+
+    pub fn sessions(&self) -> &SessionManager {
+        &self.sessions
+    }
+
+    /// Where the owner's phone reports its position (`PUT /phone/location`).
+    pub fn phone_locations(&self) -> &crate::phone_location::PhoneLocations {
+        &self.phone_locations
+    }
+
+    /// Where a session runs, as it is told: the environment's fields after
+    /// the date, the employee's email address and the bot's Location among
+    /// them. The ONE builder for a text turn's `environment` row and a voice
+    /// call's instructions.
+    pub fn environment_fields(
+        &self,
+        agent_id: &str,
+        cwd: Option<&str>,
+        channel: &str,
+        watching: prompt::sections::Watching,
+    ) -> Vec<(String, String)> {
+        let email = prompt::inputs::email_address(&self.store, agent_id);
+        let location = prompt::inputs::office_location(&self.store);
+        prompt::sections::environment_fields(cwd, channel, watching, email.as_deref(), location.as_deref())
+    }
+
+    /// The owner's phone position `agent_id` may be told now: only while the
+    /// owner shares it with that employee, and never into a run a stranger
+    /// or another program started. Read afresh at every step of a text turn
+    /// and at the start of a call. When the bot's Location has coordinates,
+    /// each reading carries the owner's distance from the office, in the
+    /// unit the owner's language setting reads: it is told and withdrawn
+    /// with the reading, never on its own.
+    pub fn shared_phone_position(
+        &self,
+        agent_id: &str,
+        origin: tools::Origin,
+    ) -> Option<crate::phone_location::SharedPosition> {
+        if !origin.is_trusted() {
+            return None;
+        }
+        let office = self.store.bot_location().ok().flatten().and_then(|l| l.coordinates()).map(|(latitude, longitude)| {
+            let language = self.store.get_user_preferences().ok().flatten().map(|p| p.language).unwrap_or_default();
+            crate::phone_location::Office {
+                latitude,
+                longitude,
+                unit: crate::phone_location::DistanceUnit::for_language(&language),
+            }
+        });
+        self.phone_locations.reading_for(agent_id, chrono::Utc::now().timestamp(), office)
+    }
+
+    /// What a voice call is told about where it runs, from the same sources
+    /// a text turn's rows are: the environment (the owner's date and
+    /// timezone, the fields, the email address and the bot's Location among
+    /// them), the owner's time, and the phone position with the owner's
+    /// distance from the office when it is shared with this employee and the
+    /// call is the owner's.
+    pub fn call_facts(&self, agent_id: &str, origin: tools::Origin) -> String {
+        let timezone = self
+            .store
+            .get_user_profile()
+            .ok()
+            .flatten()
+            .and_then(|u| u.timezone)
+            .filter(|tz| !tz.is_empty());
+        let fields = self.environment_fields(agent_id, None, "voice", prompt::sections::Watching::Call);
+        let mut out = vec![
+            events::environment_text(prompt::sections::owner_today(timezone.as_deref()), timezone.as_deref(), &fields),
+            prompt::sections::owner_now(timezone.as_deref()),
+        ];
+        if let Some(position) = self.shared_phone_position(agent_id, origin) {
+            out.push(position.text);
+        }
+        out.join("\n\n")
+    }
+
+    pub fn store(&self) -> &Arc<db::Store> {
+        &self.store
+    }
+
+    pub fn tools(&self) -> &Arc<tools::Registry> {
+        &self.tools
+    }
+
+    pub fn selector(&self) -> &ModelSelector {
+        &self.selector
+    }
+
+    pub fn concurrency(&self) -> &Arc<ConcurrencyController> {
+        &self.concurrency
+    }
+
+    /// The providers every turn and side call shares.
+    pub fn providers(&self) -> Arc<RwLock<Vec<Arc<dyn ai::Provider>>>> {
+        self.providers.clone()
+    }
+
+    /// How many providers are loaded; 0 while they are being replaced.
+    pub fn provider_count(&self) -> usize {
+        self.providers.try_read().map(|p| p.len()).unwrap_or(0)
+    }
+
+    /// Replace the providers (the owner changed their keys or plan).
+    pub async fn reload_providers(&self, providers: Vec<Arc<dyn ai::Provider>>) {
+        let loaded: Vec<String> = providers.iter().map(|p| p.id().to_string()).collect();
+        let count = providers.len();
+        *self.providers.write().await = providers;
+        self.selector.set_loaded_providers(loaded);
+        self.selector.rebuild_fuzzy(&std::collections::HashMap::new());
+        info!(count, "reloaded AI providers");
+    }
+
+    /// Title a chat whose turns were stored outside a turn (the voice loop
+    /// writes its own rows): the same generator and sink a turn uses.
+    pub fn spawn_title_generation(&self, session_id: &str, chat_id: &str) {
+        after_turn::spawn_chat_title_generation(
+            self.providers.clone(),
+            self.store.clone(),
+            chat_id.to_string(),
+            session_id.to_string(),
+            self.selector.background_model(),
+            self.title_sink(),
+        );
+    }
+
+    /// Admit the turn and drive it on its own task; its events stream on the
+    /// handle. On a busy session the input is queued into the running turn
+    /// and the handle carries the busy line.
+    pub async fn start_turn(&self, req: TurnRequest) -> Result<TurnHandle, HarnessError> {
+        turn::start(self.clone(), req).await
     }
 
     /// Whether a turn is running on `key`.
     pub fn is_session_busy(&self, key: &str) -> bool {
-        crate::runner::session_is_busy(&self.active_turns, key)
+        session_gate::session_is_busy(&self.active_turns, key)
+    }
+
+    /// A turn running on `key` will still hear a row written now: it is
+    /// running and its loop has not ended. A closing turn has made its last
+    /// check for input, so a row written now needs a turn of its own.
+    pub fn hears_new_rows(&self, key: &str) -> bool {
+        session_gate::live_session_under(&self.active_turns, key)
+            .is_some_and(|live| !session_gate::turn_is_closing(&self.active_turns, &live))
     }
 
     /// The running turn's live counters on `key`, if one is running.
     pub fn active_turn_status(&self, key: &str) -> Option<types::api::ActiveTurnStatus> {
-        crate::runner::active_turn_status(&self.active_turns, key)
+        session_gate::active_turn_status(&self.active_turns, key)
     }
+
+    /// The session a turn is live on under `key` (a workflow turn runs in an
+    /// activity session under its run's key), if any.
+    pub fn live_session_under(&self, key: &str) -> Option<String> {
+        session_gate::live_session_under(&self.active_turns, key)
+    }
+}
+
+/// FNV-1a over `data`: a cheap fingerprint for spotting a repeated result or
+/// text. Not cryptographic.
+pub(crate) fn simple_hash(data: &[u8]) -> u64 {
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for &byte in data {
+        hash ^= byte as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
 }
 
 /// Why a turn could not start.
@@ -94,12 +381,30 @@ pub enum TurnInput {
         attachments: Vec<comm::wire::Attachment>,
     },
     /// A prompt the platform writes and the owner never sees (christening,
-    /// a voice task).
+    /// a phone caller's task).
     Platform { text: String },
+    /// A task from the owner's own call: the voice model's restatement of
+    /// what he asked, which the run works from, and what he said since the
+    /// call's last reply (`said`, from the call's transcript). The run is
+    /// his request, like a message he typed in his own chat; a decision on
+    /// what he asked for (a save to local memory) reads `said`, never the
+    /// restatement. The task is stored hidden: his words are already the
+    /// thread's row. A phone caller's task is never this: it is `Platform`.
+    Spoken { task: String, said: String },
+    /// A coworker's message (a team post included): a colleague's
+    /// information, never the owner's word, stored and queued as theirs.
+    /// `from` is the sender's name.
+    Coworker { from: String, text: String },
     /// A helper, coworker or workflow result woke an idle session.
     Notification(delegation::Completion),
     /// A workflow seed or a resume: the conversation already holds the input.
     None,
+    /// The owner's `/compact`: the turn checkpoints its first step the way
+    /// the turn's own checkpoint does (same request, hooks and restore),
+    /// with the owner's instructions for the summary, and ends. It waits for
+    /// a running turn to finish instead of joining it, so the summary never
+    /// cuts a turn in half.
+    Compact { instructions: String },
 }
 
 /// Which kind of turn this is.
@@ -110,6 +415,11 @@ pub enum TurnMode {
         parent_session_key: String,
         kind: delegation::HelperKind,
         depth: u8,
+        /// The JSON schema the helper's final answer must match, when its
+        /// caller reads the answer as data (a research pipeline's
+        /// sub-agent): the turn can't end on an answer that doesn't
+        /// (`turn_end::AnswerShapeCheck`).
+        answer: Option<Arc<serde_json::Value>>,
     },
     /// A workflow activity. Boxed: the config is far larger than the other
     /// modes.
@@ -120,12 +430,12 @@ pub enum TurnMode {
 /// A forked turn over a finished conversation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ForkKind {
-    /// The self-improvement review.
-    Review,
+    /// The self-improvement review. `staged`: learned skills wait in the
+    /// Inbox for the owner instead of landing at once.
+    Review { staged: bool },
 }
 
-/// Where the turn's words go. WP2.9 adds the comm reply facts when it moves
-/// the callers onto `start_turn`.
+/// Where the turn's words go.
 pub struct Delivery {
     pub channel: String,
     pub channel_ctx: Option<tools::ChannelContext>,
@@ -134,20 +444,23 @@ pub struct Delivery {
 }
 
 /// The seat a turn asks for; `seat::resolve_seat` turns it into a `Seat`.
+#[derive(Clone)]
 pub struct SeatRequest {
     pub agent_id: String,
     pub user_id: String,
     pub origin: tools::Origin,
-    pub permissions: Option<HashMap<String, bool>>,
-    pub operation_policy: Option<tools::policy::OperationPolicy>,
-    pub resource_grants: Option<HashMap<String, String>>,
-    pub allowed_paths: Vec<String>,
+    /// Which entry started this run.
+    pub door: types::permissions::Door,
+    /// A run override of the employee's mode (e.g. Plan); `None` = its own.
+    pub mode: Option<types::permissions::Mode>,
+    /// The parent's grant (a helper) or the creator's (a created employee):
+    /// the run can only narrow it.
+    pub ceiling: Option<types::permissions::Ceiling>,
     pub cwd: Option<String>,
     pub seed_taint: Vec<types::provenance::ProvenanceClass>,
     pub audience: Option<String>,
     pub tool_allowlist: Option<HashSet<String>>,
     pub tool_denial_hint: Option<String>,
-    pub approval_mode: seat::ApprovalMode,
     pub handoff_depth: u8,
     pub model_override: String,
     pub model_preference: Option<String>,

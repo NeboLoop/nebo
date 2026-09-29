@@ -119,7 +119,9 @@ pub async fn synthesize_directive(
     let req = ai::ChatRequest {
         tool_credential: None,
         chat_id: String::new(),
-        approval_channels: None,
+        ask_channels: None,
+        permission_mode: None,
+        linked_context: None,
         tool_choice: Default::default(),
         messages: vec![ai::Message {
             role: "user".to_string(),
@@ -131,7 +133,6 @@ pub async fn synthesize_directive(
         temperature: 0.3,
         system: "You are a personality synthesis engine. Produce concise, actionable directives."
             .to_string(),
-        static_system: String::new(),
         model: String::new(),
         enable_thinking: false,
         metadata: None,

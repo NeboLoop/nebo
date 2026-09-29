@@ -372,8 +372,35 @@ impl DynTool for VmTool {
         })
     }
 
-    fn requires_approval(&self) -> bool {
-        true
+
+    fn search_hint(&self) -> &str {
+        "isolated linux vm builds toolchains"
+    }
+
+    fn read_only(&self, input: &serde_json::Value) -> bool {
+        matches!(
+            input.get("action").and_then(|v| v.as_str()),
+            Some("read_file" | "list" | "status")
+        )
+    }
+
+    fn rule_key(&self, input: &serde_json::Value) -> String {
+        match input.get("action").and_then(|v| v.as_str()).unwrap_or("") {
+            "write_file" => "vm_write_file",
+            "read_file" => "vm_read_file",
+            "copy_out" => "vm_copy_out",
+            "list" => "vm_list",
+            "status" => "vm_status",
+            "stop" => "vm_stop",
+            _ => "vm_run",
+        }
+        .to_string()
+    }
+
+    /// Pre-interface: it settles its own call shapes (see
+    /// `DynTool::validates_input`).
+    fn validates_input(&self) -> bool {
+        false
     }
 
     fn execute_dyn<'a>(

@@ -14,6 +14,43 @@ pub struct WorkflowInfo {
     pub is_enabled: bool,
     pub trigger_count: usize,
     pub activity_count: usize,
+    /// Made for one piece of work: it runs once and is deleted after its
+    /// outcome reaches the owner.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub temporary: bool,
+    /// The run a save started (a temporary workflow run by hand starts as
+    /// it is made).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
+    /// The employee the workflow belongs to, by name. None for a
+    /// standalone marketplace workflow, which belongs to no one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub employee: Option<String>,
+}
+
+/// How long a workflow lives (owner, 09-25). One create path, with this as
+/// its option.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Lifetime {
+    /// Kept until it is deleted.
+    Saved,
+    /// Made for one piece of work: it runs once, and when that run has
+    /// ended and its outcome has reached the owner it is deleted. Its run
+    /// history, receipts and cost stay. `report_to` is the session woken
+    /// with the outcome.
+    Temporary { report_to: String },
+}
+
+/// What a create or an update carries besides the definition.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SaveOptions {
+    /// `None` keeps an existing workflow's lifetime; a new one is saved.
+    pub lifetime: Option<Lifetime>,
+    /// Start from the definition a past run ran with: the same piece of
+    /// work, kept (a temporary workflow that already finished, saved to run
+    /// again). The definition given with it adds to or replaces its fields
+    /// (a schedule trigger, say).
+    pub from_run: Option<String>,
 }
 
 /// Info about a workflow run.
@@ -36,7 +73,9 @@ pub struct WorkflowRunInfo {
 pub trait WorkflowManager: Send + Sync {
     /// List workflows visible to an agent: its own `agent_workflows` bindings
     /// (what the Settings → Workflows panel shows) plus any standalone
-    /// marketplace-installed workflows.
+    /// marketplace-installed workflows. An empty `agent_id` (a conversation
+    /// no employee owns, which can own no workflow) lists every employee's
+    /// bindings, each naming its employee.
     fn list<'a>(
         &'a self,
         agent_id: &'a str,
@@ -65,7 +104,7 @@ pub trait WorkflowManager: Send + Sync {
     ) -> Pin<Box<dyn Future<Output = Result<WorkflowInfo, String>> + Send + 'a>>;
 
     /// Resolve an agent reference (id, exact name, or slug) to the agent's id.
-    /// Backs the work tool's `agent` input: the session key only identifies the
+    /// Backs the workflow tools' `employee` input: the session key only identifies the
     /// CALLER, so without this an assistant asked to change another employee's
     /// duties could only self-scope — which is how weekend workflows silently
     /// landed on the assistant instead of the Content Creator (2026-08-01).
@@ -126,6 +165,7 @@ pub trait WorkflowManager: Send + Sync {
         agent_id: &'a str,
         name: &'a str,
         definition: &'a str,
+        options: SaveOptions,
     ) -> Pin<Box<dyn Future<Output = Result<WorkflowInfo, String>> + Send + 'a>>;
 
     /// Full-replacement edit of an existing binding the calling agent owns.
@@ -137,6 +177,7 @@ pub trait WorkflowManager: Send + Sync {
         agent_id: &'a str,
         name: &'a str,
         definition: &'a str,
+        options: SaveOptions,
     ) -> Pin<Box<dyn Future<Output = Result<WorkflowInfo, String>> + Send + 'a>>;
 
     /// Periodic workflow tuning sweep (self-optimization). Default no-op so
@@ -157,7 +198,7 @@ pub trait WorkflowManager: Send + Sync {
 
     /// Run an inline workflow from a JSON definition (no DB/filesystem lookup).
     /// Used by agent workers for inline workflow bindings defined in agent.json.
-    /// `emit_source` — if set, the last activity will be instructed to emit its output.
+    /// `emit_sources` — the events the last activity is instructed to announce its output as.
     fn run_inline<'a>(
         &'a self,
         definition_json: String,
@@ -165,7 +206,7 @@ pub trait WorkflowManager: Send + Sync {
         trigger_type: &'a str,
         trigger_detail: Option<String>,
         agent_id: &'a str,
-        emit_source: Option<String>,
+        emit_sources: Vec<String>,
     ) -> Pin<Box<dyn Future<Output = Result<String, String>> + Send + 'a>>;
 
     /// Cancel a running workflow by run_id.
@@ -175,10 +216,10 @@ pub trait WorkflowManager: Send + Sync {
     ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>>;
 
     /// A binding cannot run until the owner supplies what `need` names (a
-    /// plugin its watch trigger needs; its record already says so). The
+    /// capability its watch trigger needs; its record already says so). The
     /// server's manager tells the owner once per need. Default no-op so test
     /// doubles don't have to care.
-    fn announce_binding_need(&self, _agent_id: &str, _binding_name: &str, _need: &str) {}
+    fn announce_binding_need(&self, _agent_id: &str, _binding_name: &str, _need: &types::OwnerNeed) {}
 
     /// Cancel all running workflows for a given agent. Default no-op.
     fn cancel_runs_for_agent<'a>(

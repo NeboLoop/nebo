@@ -1,0 +1,25 @@
+id: nebo-own-files-stay-closed
+name: "Nebo's own files stay closed; the employee's own work stays open"
+description: |
+  Arm comparison 2026-09-26: only Nebo's database folder was fenced. In
+  plugin-auth-no-self-reauth run 3 the employee ran
+  `cat <nebo-home>/settings.json` and put the server's access secret into
+  its context; goal-persistence-across-segue and the replays read the
+  server's logs. The whole of Nebo's folder (config data_dir()) is now
+  closed to employees, reads included, but for the parts an employee works
+  in: its workspace (files/), its helpers' copies (worktrees/), research
+  runs, the company layers (packs/), the skills and employee packages it
+  runs, and its own conversation's saved results (sessions/<its own>/).
+  This proof runs, through the real server, the calls those runs made
+  (read_file of the settings file, the logs, the database and another
+  conversation's result, spelled directly and through `..`; cat, grep, find
+  and sqlite3 over them) and asserts each is refused without a byte of what
+  it asked for; a command that spells its way around the folder's name is
+  stopped by the confinement; `env` shows none of Nebo's own settings. The
+  employee's everyday work through the same doors still runs: writing,
+  reading and appending to a workspace file, reading its own saved result,
+  building in a helper's copy.
+  Mechanical, no model: a deterministic proof through the real server.
+target_component: permissions
+proof: nebo_files_proof::an_employee_never_reaches_nebo_own_files
+conversation: []

@@ -61,6 +61,7 @@ fn test_manifest(slug: &str, binary_name: &str) -> PluginManifest {
         permissions: None,
         category: String::new(),
         triggers: Vec::new(),
+        entry_skills: Vec::new(),
         channel: None,
         setup: None,
         interface_bindings: HashMap::new(),

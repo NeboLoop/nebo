@@ -122,7 +122,7 @@ impl ExecuteTool {
             return Err(format!(
                 "Skill '{}' requires configuration before use.\n\n\
                  Missing secrets:\n{}\n\n\
-                 Configure with: skill(action: \"configure\", name: \"{}\", key: \"SECRET_NAME\", value: \"your-key\")\n\
+                 Configure with: configure_skill(name: \"{}\", key: \"SECRET_NAME\", value: \"your-key\")\n\
                  Or set them in Settings → Skills → {}",
                 skill.name,
                 details.join("\n"),
@@ -322,6 +322,10 @@ impl ExecuteTool {
             cmd.arg(arg);
         }
         cmd.arg(&final_cmd);
+        // Nebo's own settings never reach a script, as they never reach a
+        // command (`process::command_env`); what it is given is added below.
+        cmd.env_clear();
+        cmd.envs(crate::process::command_env());
 
         // Pass args as environment variable
         if !args.is_null() {
@@ -454,8 +458,19 @@ impl DynTool for ExecuteTool {
         })
     }
 
-    fn requires_approval(&self) -> bool {
-        true
+
+    fn search_hint(&self) -> &str {
+        "run a skill script python node"
+    }
+
+    fn rule_key(&self, _input: &serde_json::Value) -> String {
+        "run_skill_script".to_string()
+    }
+
+    /// Pre-interface: it settles its own call shapes (see
+    /// `DynTool::validates_input`).
+    fn validates_input(&self) -> bool {
+        false
     }
 
     fn execute_dyn<'a>(
@@ -495,7 +510,7 @@ impl DynTool for ExecuteTool {
                 Some(s) => s,
                 None => {
                     return ToolResult::error(format!(
-                        "No installed skill named '{}'. List them with skill(action: \"list\").",
+                        "No installed skill named '{}'. Installed skills are in the skill listing; find_skills searches them.",
                         skill_name
                     ));
                 }
@@ -585,20 +600,16 @@ impl DynTool for ExecuteTool {
                     script = script_path,
                     "cloud sandbox not yet available"
                 );
-                return ToolResult::error(
-                    "No local runtime for this script and cloud execution is not available. Ask the owner to install the runtime (Python or Node.js) on this machine.",
-                );
+                return ToolResult::error(format!(
+                    "No local runtime for this script and cloud execution is not available: it needs {language}. {}",
+                    crate::errors::install_guidance()
+                ));
             }
 
             // 6. Neither available — show both options
             ToolResult::error(format!(
-                "No {} runtime found on this machine and cloud execution is not available. Ask the owner to install {}:\n{}",
-                language,
-                language,
-                match language {
-                    "python" => "  https://python.org/downloads/",
-                    _ => "  https://nodejs.org/",
-                }
+                "No {language} runtime found on this machine and cloud execution is not available. {}",
+                crate::errors::install_guidance()
             ))
         })
     }

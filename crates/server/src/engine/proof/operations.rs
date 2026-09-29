@@ -2,6 +2,7 @@
 
 use super::*;
 use chrono::{Local, TimeZone};
+use db::models::OverlapPolicy;
 use serde_json::json;
 
 pub(super) fn local(y: i32, mo: u32, d: u32, h: u32, mi: u32) -> i64 {
@@ -11,7 +12,7 @@ pub(super) fn local(y: i32, mo: u32, d: u32, h: u32, mi: u32) -> i64 {
 /// A scheduled job whose floor is `floor`: one consumed timer at that
 /// moment, the way a job that has fired before carries its floor.
 pub(super) fn job(s: &Store, name: &str, schedule: &str, floor: i64) -> db::models::CronJob {
-    let j = s.create_cron_job(name, schedule, "echo hi", "shell", None, None, None, true, None, None).unwrap();
+    let j = s.create_cron_job(name, schedule, "echo hi", "shell", None, None, None, true, None, None, None).unwrap();
     let target = cron_target(&j);
     let Enqueued::Inserted(id) = s
         .engine_enqueue_event(&NewEvent { kind: "timer", target_type: "binding", target_id: &target, idem_key: &format!("{target}:floor"), due_at: Some(floor), ..Default::default() })
@@ -21,6 +22,133 @@ pub(super) fn job(s: &Store, name: &str, schedule: &str, floor: i64) -> db::mode
     };
     s.engine_complete_event(id, floor).unwrap();
     j
+}
+
+/// A schedule of each kind whose overlap matters, with its policy (`None`
+/// = the default): a workflow binding's inbox sweep, whose fire ends as
+/// soon as the workflow it started is under way, and a prompt job, whose
+/// fire is the turn itself.
+fn sweep_and_report(s: &Store, overlap: Option<OverlapPolicy>, floor: i64) -> (db::models::CronJob, db::models::CronJob) {
+    s.create_agent("ops", None, "Operations", "", "", "{}", None, None).unwrap();
+    s.upsert_agent_workflow("ops", "sweep", "schedule", "0 0 * * * *", None, None, None, Some(r#"[{"id":"a","intent":"Sweep the inbox"}]"#), None, false).unwrap();
+    let make = |name: &str, task_type: &str, command: &str, message: Option<&str>| {
+        let j = s
+            .create_cron_job(name, "0 0 * * * *", command, task_type, message, None, None, true, Some("ops"), None, overlap)
+            .unwrap();
+        let target = cron_target(&j);
+        let Enqueued::Inserted(id) = s
+            .engine_enqueue_event(&NewEvent { kind: "timer", target_type: "binding", target_id: &target, idem_key: &format!("{target}:floor"), due_at: Some(floor), ..Default::default() })
+            .unwrap()
+        else {
+            panic!("floor timer")
+        };
+        s.engine_complete_event(id, floor).unwrap();
+        j
+    };
+    (
+        make("inbox-sweep", "agent_workflow", "agent:ops:sweep", None),
+        make("status-report", "agent", "", Some("Report the day's orders.")),
+    )
+}
+
+/// What `drive` leaves once both 09:00 fires have started: the sweep's fire
+/// is done and the workflow run it started is still going; the report's
+/// fire is its running turn. Returns the report's fire.
+fn both_under_way(s: &Store, sweep: &db::models::CronJob, t: i64) -> String {
+    let queued = s.engine_queued_runs_of_kind("task", 10).unwrap();
+    assert_eq!(queued.len(), 2, "both fired");
+    let mut report_fire = String::new();
+    for run in queued {
+        if run.external_ref.as_deref() == Some(cron_target(sweep).as_str()) {
+            s.engine_set_run_state(&run.id, "running", t, None).unwrap();
+            s.create_workflow_run("sweep-0900", "agent:ops", "schedule", Some("sweep"), None, None, Some("{}")).unwrap();
+            s.engine_set_run_state(&run.id, "done", t + 1, None).unwrap();
+        } else {
+            s.engine_set_run_state(&run.id, "running", t, None).unwrap();
+            report_fire = run.id;
+        }
+    }
+    report_fire
+}
+
+/// A31 — An inbox sweep that overlaps itself is skipped. By default a
+/// schedule that comes due while its last fire is still going skips the
+/// occurrence: for a prompt job while its turn runs, and for a workflow
+/// job while the workflow its fire started runs — the fire itself ended
+/// when the workflow began, and the sweep must not process the inbox twice.
+#[test]
+fn a31_a_schedule_skips_while_its_last_run_goes() {
+    let s = World::new().s;
+    let (sweep, report) = sweep_and_report(&s, None, local(2026, 9, 1, 8, 0));
+    assert_eq!((sweep.overlap(), report.overlap()), (OverlapPolicy::Skip, OverlapPolicy::Skip), "skip is the default");
+    assert_eq!(tick(&s, local(2026, 9, 1, 8, 1), &idle, &no_steer).armed, 2);
+    assert_eq!(tick(&s, local(2026, 9, 1, 9, 0) + 5, &idle, &no_steer).fired, 2);
+    let report_fire = both_under_way(&s, &sweep, local(2026, 9, 1, 9, 0) + 6);
+    tick(&s, local(2026, 9, 1, 9, 0) + 10, &idle, &no_steer);
+
+    let r = tick(&s, local(2026, 9, 1, 10, 0) + 5, &idle, &no_steer);
+    assert_eq!((r.fired, r.skipped), (0, 2), "both still going: both 10:00 occurrences skipped");
+    assert!(s.engine_queued_runs_of_kind("task", 10).unwrap().is_empty());
+
+    s.complete_workflow_run("sweep-0900", "completed", 0, None, None, None).unwrap();
+    s.engine_set_run_state(&report_fire, "done", local(2026, 9, 1, 10, 30), None).unwrap();
+    tick(&s, local(2026, 9, 1, 10, 0) + 10, &idle, &no_steer);
+    let r = tick(&s, local(2026, 9, 1, 11, 0) + 5, &idle, &no_steer);
+    assert_eq!((r.fired, r.skipped), (2, 0), "ended: the next occurrences fire");
+}
+
+/// A31 — Buffer one: an occurrence that comes due while the last run goes
+/// waits and starts when it ends; while one waits, further occurrences are
+/// skipped. Each schedule's buffered fire is released by its own run's end.
+#[test]
+fn a31_a_buffered_schedule_starts_once_the_last_run_ends() {
+    let s = World::new().s;
+    let (sweep, report) = sweep_and_report(&s, Some(OverlapPolicy::BufferOne), local(2026, 9, 1, 8, 0));
+    assert_eq!(sweep.overlap(), OverlapPolicy::BufferOne);
+    tick(&s, local(2026, 9, 1, 8, 1), &idle, &no_steer);
+    assert_eq!(tick(&s, local(2026, 9, 1, 9, 0) + 5, &idle, &no_steer).fired, 2);
+    let report_fire = both_under_way(&s, &sweep, local(2026, 9, 1, 9, 0) + 6);
+    tick(&s, local(2026, 9, 1, 9, 0) + 10, &idle, &no_steer);
+
+    let r = tick(&s, local(2026, 9, 1, 10, 0) + 5, &idle, &no_steer);
+    assert_eq!((r.fired, r.buffered, r.skipped), (0, 2, 0), "both wait behind the runs still going");
+    assert!(s.engine_queued_runs_of_kind("task", 10).unwrap().is_empty(), "nothing starts yet");
+    assert_eq!(s.engine_buffered_fires().unwrap().len(), 2);
+
+    tick(&s, local(2026, 9, 1, 10, 0) + 10, &idle, &no_steer);
+    let r = tick(&s, local(2026, 9, 1, 11, 0) + 5, &idle, &no_steer);
+    assert_eq!((r.buffered, r.skipped), (0, 2), "one already waits: the 11:00 occurrences are skipped");
+
+    s.complete_workflow_run("sweep-0900", "completed", 0, None, None, None).unwrap();
+    let r = tick(&s, local(2026, 9, 1, 11, 20), &idle, &no_steer);
+    assert_eq!(r.released, 1, "the sweep's run ended: its buffered fire starts");
+    let queued = s.engine_queued_runs_of_kind("task", 10).unwrap();
+    assert_eq!(queued.len(), 1);
+    assert_eq!(queued[0].external_ref.as_deref(), Some(cron_target(&sweep).as_str()));
+    assert_eq!(s.engine_buffered_fires().unwrap().len(), 1, "the report's still waits for its turn");
+
+    s.engine_set_run_state(&report_fire, "done", local(2026, 9, 1, 11, 30), None).unwrap();
+    let r = tick(&s, local(2026, 9, 1, 11, 30) + 5, &idle, &no_steer);
+    assert_eq!(r.released, 1);
+    assert!(s.engine_buffered_fires().unwrap().is_empty());
+    let report_ref = cron_target(&report);
+    assert!(s.engine_queued_runs_of_kind("task", 10).unwrap().iter().any(|q| q.external_ref.as_deref() == Some(report_ref.as_str())));
+}
+
+/// A31 — Allow all: every occurrence starts, whatever is still running.
+#[test]
+fn a31_an_allow_all_schedule_starts_every_fire() {
+    let s = World::new().s;
+    let (sweep, _report) = sweep_and_report(&s, Some(OverlapPolicy::AllowAll), local(2026, 9, 1, 8, 0));
+    assert_eq!(sweep.overlap(), OverlapPolicy::AllowAll);
+    tick(&s, local(2026, 9, 1, 8, 1), &idle, &no_steer);
+    assert_eq!(tick(&s, local(2026, 9, 1, 9, 0) + 5, &idle, &no_steer).fired, 2);
+    both_under_way(&s, &sweep, local(2026, 9, 1, 9, 0) + 6);
+    tick(&s, local(2026, 9, 1, 9, 0) + 10, &idle, &no_steer);
+
+    let r = tick(&s, local(2026, 9, 1, 10, 0) + 5, &idle, &no_steer);
+    assert_eq!((r.fired, r.buffered, r.skipped), (2, 0, 0), "both start beside the runs still going");
+    assert_eq!(s.engine_queued_runs_of_kind("task", 10).unwrap().len(), 2);
 }
 
 fn ops(case_type: &str) -> CaseBinding<'static> {

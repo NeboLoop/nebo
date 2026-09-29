@@ -535,16 +535,14 @@ pub struct RedeemCodeResponse {
     pub owner_display_name: String,
 }
 
-// ── Bot Identity ─────────────────────────────────────────────────────
+// ── Bot Name ─────────────────────────────────────────────────────────
 
-/// Sent to PUT /api/v1/bots/{id}.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct UpdateBotIdentityRequest {
-    #[serde(default, skip_serializing_if = "String::is_empty")]
+/// GET /api/v1/bots/{id}: the part of the hub's bot record Nebo reads.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct BotRecord {
+    pub id: String,
     pub name: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub role: String,
 }
 
 // ── Loop Types ───────────────────────────────────────────────────────
@@ -930,6 +928,37 @@ pub struct BotStateCommitResponse {
     pub expires_at: Option<String>,
 }
 
+// ── File share links ─────────────────────────────────────────────────
+
+/// A link that opens one stored file (`/api/v1/shares`). `url` is the link;
+/// `id` is only for changing or turning it off, never shown.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct FileShare {
+    pub id: String,
+    pub url: String,
+    pub filename: String,
+    /// `link` (anyone with the link), `password`, or `private` (only the
+    /// owner and his organization, signed in).
+    pub access: String,
+    pub has_password: bool,
+    /// RFC 3339; empty = never.
+    pub expires_at: String,
+    pub created_at: String,
+}
+
+/// Who can open a link and until when. An empty `password` on a password
+/// link keeps the one it has; an empty `expires_at` means never.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct FileShareSettings {
+    pub access: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub password: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub expires_at: String,
+}
+
 // ── Managed bots (the owner's account) ───────────────────────────────
 
 /// One bot on the owner's account, as `GET /api/v1/manage/bots` lists it.
@@ -948,6 +977,9 @@ pub struct ManagedBot {
     /// Shared with this account by another owner (never a hire source: a
     /// bot token reaches a linked bot only for a bot of the same owner).
     pub shared: bool,
+    /// The computer the bot runs on, as it reports itself at connect
+    /// ("Mac.lan"); empty when it never said.
+    pub hostname: String,
 }
 
 /// One agent a linked bot serves on its chat contract
@@ -958,4 +990,67 @@ pub struct LinkedAgent {
     pub id: String,
     pub name: String,
     pub description: String,
+    /// The runtime it runs (`hermes`, `codex`); empty from a link that
+    /// does not say, where it is the bot's.
+    pub runtime: String,
+}
+
+/// A coding agent a linked bot can add a new one of (Claude Code, Codex).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct LinkedRuntime {
+    /// `claude-code`, `codex`, `gemini`, `opencode`.
+    pub id: String,
+    pub name: String,
+}
+
+/// A linked bot's roster on its chat contract: who can be hired, and what it
+/// can add.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct LinkedRoster {
+    pub agents: Vec<LinkedAgent>,
+    pub runtimes: Vec<LinkedRuntime>,
+}
+
+/// `GET /api/v1/bots/self/email`: the bot's own hosted address
+/// (`nanna-7kq@nebo.bot`) and whether it may send.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct BotEmailInfo {
+    pub address: String,
+    pub handle: String,
+    pub domain: String,
+    pub sending_enabled: bool,
+    pub daily_limit: i64,
+    pub sent_today: i64,
+}
+
+/// `POST /api/v1/bots/self/email`: one message from the bot's own address.
+/// `to_owner` sends to the owner's account email (then `to` is ignored);
+/// `inbound_email_id` answers mail the bot received. `employee` is the
+/// `+tag` that brings replies back to that employee; `agent_id`/`chat_id`
+/// name the conversation a reply continues.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct BotEmailSend {
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub to: String,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub to_owner: bool,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub subject: String,
+    pub body_text: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub body_html: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub employee: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub employee_name: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub inbound_email_id: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub agent_id: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub chat_id: String,
 }

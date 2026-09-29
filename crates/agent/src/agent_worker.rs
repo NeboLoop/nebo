@@ -37,6 +37,9 @@ pub type NotifyFn = Arc<dyn Fn(&str, serde_json::Value) + Send + Sync>;
 /// `ToolContext.channel`, which the plugin tool turns into env vars.
 pub trait ChannelDispatcher: Send + Sync {
     /// Send a message to an agent and return the complete response text.
+    /// `None` when the message went into the turn already running in that
+    /// conversation: that turn hears it and its reply answers it, so
+    /// nothing is posted for it (and it is not sent again).
     ///
     /// - `agent_id`: target agent
     /// - `session_key`: conversation session (e.g., "agent:brief:slack:C123")
@@ -49,7 +52,7 @@ pub trait ChannelDispatcher: Send + Sync {
         session_key: &'a str,
         channel_ctx: tools::ChannelContext,
         prompt: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<String, String>> + Send + 'a>>;
+    ) -> Pin<Box<dyn Future<Output = Result<Option<String>, String>> + Send + 'a>>;
 }
 
 /// A single autonomous agent worker. Owns all trigger tasks for one agent.
@@ -179,9 +182,9 @@ impl AgentWorker {
                         .unwrap_or_else(|| serde_json::json!({}));
 
                     // The event's address, built by the ONE addressing function.
-                    let event_emit_source = wf_binding
-                        .and_then(|wb| wb.emit.as_ref())
-                        .map(|emit_name| workflow::events::emit_source_for(&name, emit_name));
+                    let event_emit_sources: Vec<String> = wf_binding
+                        .map(|wb| wb.emit.iter().map(|emit_name| workflow::events::emit_source_for(&name, emit_name)).collect())
+                        .unwrap_or_default();
 
                     for source in binding.trigger_config.split(',') {
                         let pattern = source.trim().to_string();
@@ -194,7 +197,7 @@ impl AgentWorker {
                             agent_source: agent_id.clone(),
                             binding_name: binding.binding_name.clone(),
                             definition_json: def_json.clone(),
-                            emit_source: event_emit_source.clone(),
+                            emit_sources: event_emit_sources.clone(),
                             case: wf_binding.and_then(|wb| workflow::events::CaseRoute::from_binding(&binding.binding_name, wb)),
                         };
                         // Inline (not spawned): subscriptions must be in place
@@ -246,7 +249,11 @@ impl AgentWorker {
                                 let reason = capability_degraded_reason(&watch_cfg.plugin, &installed);
                                 warn!(agent = %agent_id, binding = %binding.binding_name, %reason, "capability trigger has no connection; binding kept, marked degraded");
                                 let _ = store.set_agent_workflow_degraded_reason(&agent_id, &binding.binding_name, &reason);
-                                workflow_manager.announce_binding_need(&agent_id, &binding.binding_name, &reason);
+                                workflow_manager.announce_binding_need(
+                                    &agent_id,
+                                    &binding.binding_name,
+                                    &types::OwnerNeed::Capability { capability: watch_cfg.plugin.clone() },
+                                );
                                 continue;
                             }
                         }
@@ -338,9 +345,9 @@ impl AgentWorker {
                         continue;
                     }
 
-                    let emit_source = wf_binding
-                        .and_then(|wb| wb.emit.as_ref())
-                        .map(|emit_name| workflow::events::emit_source_for(&name, emit_name));
+                    let emit_sources: Vec<String> = wf_binding
+                        .map(|wb| wb.emit.iter().map(|emit_name| workflow::events::emit_source_for(&name, emit_name)).collect())
+                        .unwrap_or_default();
 
                     // Per-account isolation: a plugin that declares a
                     // profile_dir_env (the "resource" credential model, e.g. gws)
@@ -397,7 +404,7 @@ impl AgentWorker {
                         inputs,
                         agent,
                         bname,
-                        emit_source,
+                        emit_sources,
                         mgr,
                         token,
                         auto_emit,
@@ -468,9 +475,9 @@ impl AgentWorker {
                         continue;
                     }
 
-                    let emit_source = wf_binding
-                        .and_then(|wb| wb.emit.as_ref())
-                        .map(|emit_name| workflow::events::emit_source_for(&name, emit_name));
+                    let emit_sources: Vec<String> = wf_binding
+                        .map(|wb| wb.emit.iter().map(|emit_name| workflow::events::emit_source_for(&name, emit_name)).collect())
+                        .unwrap_or_default();
 
                     let token = cancel.clone();
                     let mgr = workflow_manager.clone();
@@ -486,7 +493,7 @@ impl AgentWorker {
                         inputs,
                         agent,
                         bname,
-                        emit_source,
+                        emit_sources,
                         mgr,
                         token,
                         bus,
@@ -563,6 +570,7 @@ impl AgentWorker {
                     let ps = plugin_store.clone();
                     let dispatch = dispatcher.clone();
                     let ch_notify = notify_fn.clone();
+                    let ch_store = store.clone();
                     let ch_sem = watch_semaphore.clone();
                     let slug = binding.plugin_slug.clone();
                     let agent = agent_id.clone();
@@ -588,7 +596,7 @@ impl AgentWorker {
                             );
                             shared_channel_loop(
                                 bp, slug, cd, ps, sb,
-                                dispatch, token, ch_notify, ch_sem,
+                                dispatch, token, ch_store, ch_notify, ch_sem,
                             ).await;
                         }
                     });
@@ -1108,7 +1116,7 @@ async fn watch_loop(
     base_inputs: serde_json::Value,
     agent_id: String,
     binding_name: String,
-    emit_source: Option<String>,
+    emit_sources: Vec<String>,
     workflow_manager: Arc<dyn WorkflowManager>,
     cancel: CancellationToken,
     auto_emit: Option<(String, bool)>,
@@ -1397,7 +1405,7 @@ async fn watch_loop(
                                     "watch",
                                     watch_detail,
                                     &agent_id,
-                                    emit_source.clone(),
+                                    emit_sources.clone(),
                                 ).await {
                                     Ok(run_id) => {
                                         info!(
@@ -1479,12 +1487,13 @@ async fn watch_loop(
                     "Connect your {} account to enable automated workflows. Go to Settings → Plugins.",
                     cfg.plugin
                 );
+                let link = tools::owner_notify::link::accounts(&agent_id, Some(&cfg.plugin));
                 let n = tools::owner_notify::OwnerNotification {
                     id: &notif_id,
                     kind: "warning",
                     title: &title,
                     body: Some(&body),
-                    action_url: Some("/settings/plugins"),
+                    action_url: Some(&link),
                     agent_id: Some(agent_id.as_ref()),
                     loud: true,
                 };
@@ -1569,7 +1578,7 @@ async fn folder_watch_loop(
     base_inputs: serde_json::Value,
     agent_id: String,
     binding_name: String,
-    emit_source: Option<String>,
+    emit_sources: Vec<String>,
     workflow_manager: Arc<dyn WorkflowManager>,
     cancel: CancellationToken,
     event_bus: EventBus,
@@ -1744,7 +1753,7 @@ async fn folder_watch_loop(
                 });
 
                 // Emit event if configured
-                if let Some(ref source) = emit_source {
+                for source in &emit_sources {
                     let timestamp = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
                         .unwrap_or_default()
@@ -1778,7 +1787,7 @@ async fn folder_watch_loop(
                         "folder",
                         detail,
                         &agent_id,
-                        emit_source.clone(),
+                        emit_sources.clone(),
                     )
                     .await
                 {
@@ -1885,12 +1894,10 @@ async fn channel_loop(
         // reach the local voice session, so the employee's real persona and
         // tools answer the call. Bridges that don't declare it get nothing.
         if channel_def.needs_local_api {
-            let port = std::env::var("NEBO_PORT")
-                .ok()
-                .and_then(|v| v.parse::<u16>().ok())
-                .unwrap_or(types::constants::DEFAULT_PORT);
+            for (key, value) in napp::plugin::plugin_base_env() {
+                runtime = runtime.with_env(key, value);
+            }
             runtime = runtime
-                .with_env("NEBO_LOCAL_URL", format!("http://127.0.0.1:{port}"))
                 .with_env("NEBO_AGENT_ID", agent_id.clone())
                 // And which bot this Nebo is, so the bridge can say so when
                 // it registers — the gateway logs a mismatch, and an empty
@@ -2386,7 +2393,16 @@ async fn channel_loop(
                                     let result = dispatch.dispatch(&agent, &session_key, channel_ctx.clone(), &text).await;
                                     let elapsed_ms = started.elapsed().as_millis();
                                     match result {
-                                        Ok(r) if !r.is_empty() => {
+                                        Ok(None) => {
+                                            info!(
+                                                agent = %agent,
+                                                channel = %ch,
+                                                session = %session_key,
+                                                "channel dispatch: joined the running turn; its reply answers"
+                                            );
+                                            return;
+                                        }
+                                        Ok(Some(r)) if !r.is_empty() => {
                                             info!(
                                                 agent = %agent,
                                                 channel = %ch,
@@ -2406,7 +2422,7 @@ async fn channel_loop(
                                             response = Some(r);
                                             break;
                                         }
-                                        Ok(_) => {
+                                        Ok(Some(_)) => {
                                             warn!(
                                                 agent = %agent,
                                                 channel = %ch,
@@ -2612,12 +2628,13 @@ async fn channel_loop(
                     "Connect your {} account to enable the {} channel. Go to Settings → Plugins.",
                     plugin_slug, channel_name
                 );
+                let link = tools::owner_notify::link::accounts(&agent_id, Some(&plugin_slug));
                 let n = tools::owner_notify::OwnerNotification {
                     id: &notif_id,
                     kind: "warning",
                     title: &title,
                     body: Some(&body),
-                    action_url: Some("/settings/plugins"),
+                    action_url: Some(&link),
                     agent_id: Some(agent_id.as_ref()),
                     loud: true,
                 };
@@ -2670,6 +2687,7 @@ async fn shared_channel_loop(
     shared_bridges: Arc<SharedBridgeRegistry>,
     dispatcher: Arc<dyn ChannelDispatcher>,
     cancel: CancellationToken,
+    store: Arc<Store>,
     notify_fn: Option<NotifyFn>,
     spawn_semaphore: Arc<tokio::sync::Semaphore>,
 ) {
@@ -2945,9 +2963,9 @@ async fn shared_channel_loop(
                             tokio::spawn(async move {
                                 match dispatch.dispatch(&target_id, &session_key, channel_ctx, &text).await {
                                     Ok(response) => {
-                                        if response.is_empty() {
+                                        let Some(response) = response.filter(|r| !r.is_empty()) else {
                                             return;
-                                        }
+                                        };
                                         let mut reply = serde_json::Map::new();
                                         reply.insert(
                                             "op".into(),
@@ -3063,16 +3081,24 @@ async fn shared_channel_loop(
                     "shared channel failed: plugin auth failing persistently, slowing to probe cadence until auth recovers"
                 );
 
-                if let Some(ref notify) = notify_fn {
-                    notify(
-                        "notification",
-                        serde_json::json!({
-                            "type": "warning",
-                            "title": format!("{} needs authentication", plugin_slug),
-                            "body": format!("Connect your {} account to enable channels.", plugin_slug),
-                            "link": "/settings/plugins",
-                        }),
-                    );
+                // One bridge serves every employee on it, so its account is
+                // the plugin's own: connected again in Plugins.
+                let notif_id = format!("auth-required:{}", plugin_slug);
+                let title = format!("{} needs authentication", plugin_slug);
+                let body = format!("Connect your {} account to enable channels.", plugin_slug);
+                let link = tools::owner_notify::link::plugins();
+                let n = tools::owner_notify::OwnerNotification {
+                    id: &notif_id,
+                    kind: "warning",
+                    title: &title,
+                    body: Some(&body),
+                    action_url: Some(&link),
+                    agent_id: None,
+                    loud: true,
+                };
+                match &notify_fn {
+                    Some(f) => tools::owner_notify::emit(&store, Some(&|ev, payload| f(ev, payload)), &n),
+                    None => tools::owner_notify::emit(&store, None, &n),
                 }
                 // Self-heal: keep probing on the slow cadence instead of
                 // parking; reconnecting still resumes via plugin_auth_complete.

@@ -2,7 +2,7 @@ id: naming-grep-file
 name: "Naming test — search file contents"
 description: |
   Baseline task: search for a pattern in files. Measures first-call tool naming accuracy.
-target_component: os
+target_component: run_command
 
 setup:
   - "mkdir -p /tmp/nebo-project && printf '// TODO fix this\n' > /tmp/nebo-project/x.txt"
@@ -16,15 +16,15 @@ conversation:
 prompt_assertions:
   first_call:
     - id: calls-any-grep
-      text: "Model's first call searches file contents — either os(resource: 'file', action: 'grep') or grep(regex: '...') depending on convention"
-      check: { first_call: true, tool: [os, grep] }
+      text: "Model's first call searches file contents — run_command with a grep or rg command"
+      check: { first_call: true, tool: run_command, arg: command, matches: "\\b(grep|rg)\\b" }
       severity: critical
     - id: correct-pattern
-      text: "Model passes regex/pattern containing 'TODO'"
-      check: { first_call: true, arg: pattern, contains: "TODO" }
+      text: "The command searches for 'TODO'"
+      check: { first_call: true, tool: run_command, arg: command, contains: "TODO" }
       severity: critical
     - id: not-glob
-      text: "Model does NOT use glob/find (which matches filenames, not contents)"
+      text: "Model does NOT use find alone (which matches filenames, not contents)"
       severity: important
   cost:
     - id: single-call

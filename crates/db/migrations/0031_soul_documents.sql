@@ -1,7 +1,7 @@
 -- +goose Up
 
 -- Rewrite personality presets as proper soul documents
--- Inspired by Claude's soul document structure: identity, values, helpfulness, honesty, boundaries, relationship
+-- Sections: identity, values, helpfulness, honesty, boundaries, relationship
 
 UPDATE personality_presets SET system_prompt =
 '# Soul

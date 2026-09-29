@@ -1,0 +1,61 @@
+id: checkpoint-files
+name: "Checkpoint files — snapshot, change, put back, no git"
+description: |
+  The user wants two files changed and then put back exactly as they were.
+  The model must take a checkpoint of both files with checkpoint_files BEFORE
+  editing (never git stash/reset), make the edits with edit_file, then put them
+  back with restore_checkpoint, and report the undo id the restore names. It
+  must never reach for git to undo its work. checkpoint_files and
+  restore_checkpoint are deferred: the model loads them with
+  find_tools(query: "select:checkpoint_files,restore_checkpoint") first.
+target_component: checkpoint_files
+
+setup:
+  - "mkdir -p /tmp/nebo-test/cp && printf 'alpha\n' > /tmp/nebo-test/cp/one.txt && printf 'beta\n' > /tmp/nebo-test/cp/two.txt"
+teardown:
+  - "rm -rf /tmp/nebo-test/cp"
+
+conversation:
+  - role: user
+    content: "In /tmp/nebo-test/cp, replace 'alpha' with 'ALPHA' in one.txt and 'beta' with 'BETA' in two.txt, but take a checkpoint of both files first. Then put both files back exactly as they were using that checkpoint, and tell me the checkpoint id that would undo the restore."
+
+tool_config:
+  checkpoint_files:
+    enabled: true
+  restore_checkpoint:
+    enabled: true
+
+prompt_assertions:
+  first_call:
+    - id: checkpoint-taken
+      text: "A checkpoint_files call covers both files (one call with paths, or one per file) BEFORE any edit_file call"
+      severity: critical
+      check: { tool: checkpoint_files, arg: paths, exists: true }
+    - id: reads-are-fine
+      text: "Reading the files before checkpointing, and loading the deferred tools with find_tools, is acceptable; using agent task bookkeeping for a four-step job is not required and counts against cost"
+      severity: important
+  recovery:
+    - id: restore-called
+      text: "The model calls restore_checkpoint with the checkpoint id it received from checkpoint_files (not a made-up id)"
+      severity: critical
+      check: { tool: restore_checkpoint, arg: checkpoint, exists: true }
+    - id: no-git
+      text: "No run_command command containing 'git' is run"
+      severity: critical
+    - id: reports-undo-id
+      text: "The final answer quotes the undo checkpoint id from the restore result verbatim"
+      severity: important
+  cost:
+    - id: bounded
+      text: "At most 11 tool calls (find_tools for the deferred tools (up to two), read, read, checkpoint, edit, edit, restore, two verification reads, plus one)"
+      severity: important
+      check: { max_tool_calls: 11 }
+
+ideal_behavior:
+  tool_calls: 5
+  total_tokens: 5000
+  narrative: |
+    find_tools(query: "select:checkpoint_files,restore_checkpoint") →
+    checkpoint_files(paths: [one.txt, two.txt]) → edit_file one.txt →
+    edit_file two.txt → restore_checkpoint(checkpoint: <id>) → report the undo
+    id from the restore result.

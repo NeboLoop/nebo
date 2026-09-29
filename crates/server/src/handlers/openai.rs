@@ -124,7 +124,7 @@ pub async fn api_key_auth(State(state): State<AppState>, mut request: Request, n
 /// a client knows whether `user` names a conversation or is ignored.
 pub async fn openai_list_models(State(state): State<AppState>, axum::Extension(key): axum::Extension<db::models::ApiKey>) -> Response {
     let agent = state.store.get_agent(&key.agent_id).ok().flatten();
-    let isolated = crate::workflow_manager::agent_context_isolated(&state.store, &key.agent_id);
+    let isolated = crate::workflow_manager::agent_memory_mode(&state.store, &key.agent_id).separates_conversations();
     let name = agent.as_ref().map(|a| a.name.clone()).unwrap_or_default();
     let data: Vec<serde_json::Value> = key
         .models
@@ -232,7 +232,7 @@ fn conversation_ctx(user: Option<&str>) -> String {
 /// The thread this call runs in, per the employee's memory mode. Returns the
 /// session key and the chat id (created if new).
 async fn resolve_thread(state: &AppState, agent_id: &str, agent_name: &str, user: Option<&str>) -> (String, String) {
-    let isolated = crate::workflow_manager::agent_context_isolated(&state.store, agent_id);
+    let isolated = crate::workflow_manager::agent_memory_mode(&state.store, agent_id).separates_conversations();
     if isolated {
         let ctx = conversation_ctx(user);
         let chat_id = format!("api-{}-{}", &agent_id[..agent_id.len().min(8)], ctx);
@@ -245,7 +245,7 @@ async fn resolve_thread(state: &AppState, agent_id: &str, agent_name: &str, user
         // its first turn (Deal Desk, 2026-09-10: five keys, ten rows). Bind
         // the session to this row; a session that already holds its
         // conversation elsewhere keeps it, history and summary intact.
-        let sessions = state.runner.sessions();
+        let sessions = state.harness.sessions();
         let bound = match sessions.get_or_create(&session_key, "") {
             Ok(session) => {
                 let existing = session
@@ -280,7 +280,7 @@ async fn resolve_thread(state: &AppState, agent_id: &str, agent_name: &str, user
         (session_key, chat_id)
     } else {
         // One conversation: join the working thread, as a voice call does.
-        let chat_id = super::voice::resolve_voice_chat(state, agent_id).await;
+        let chat_id = super::voice::resolve_voice_chat(state, agent_id, false).await;
         let session_key = format!("agent:{agent_id}:thread:{chat_id}");
         super::voice::ensure_chat_row(state, &chat_id, &session_key, Some(&format!("API · {agent_name}")));
         (session_key, chat_id)
@@ -308,11 +308,12 @@ async fn park_for_owner(state: &AppState, run: &EmployeeRun, key_label: &str, ev
         agent_name: &run.agent_name,
         from_name: &from,
         session_key: &run.session_key,
+        team_id: None,
     };
     match ev.event_type {
         ai::StreamEventType::ApprovalRequest => {
             if let Some(tc) = &ev.tool_call {
-                fwd.forward_approval(tc);
+                fwd.forward_approval(tc).await;
             }
         }
         _ => fwd.forward_ask(ev).await,
@@ -359,10 +360,10 @@ async fn start_employee_run(
         crate::chat_dispatch::ChatConfig {
             session_key,
             prompt,
-            system: String::new(),
             user_id: String::new(),
             channel: CHANNEL.to_string(),
             origin: tools::Origin::Visitor,
+            door: types::permissions::Door::LocalApi,
             agent_id: agent_id.to_string(),
             cancel_token: tokio_util::sync::CancellationToken::new(),
             lane: types::constants::lanes::COMM.to_string(),
@@ -374,15 +375,16 @@ async fn start_employee_run(
             origin_agent_id: None,
             mention_context: Some(mention),
             tool_scope: None,
-            plan_mode: false,
             channel_ctx: None,
             handoff_depth: 0,
             seed_taint: vec![types::provenance::ProvenanceClass::Channel],
             tool_allowlist: Some(allowlist_for(key)),
             hidden_prompt: false,
+            coworker: None,
             audience: None,
             cwd: None,
             model_override: None,
+            client_id: None,
         },
     )
     .await?;
@@ -408,10 +410,11 @@ async fn run_workflow_model(state: &AppState, agent_id: &str, name: &str, req: &
     if let Some(obj) = inputs.as_object_mut() {
         obj.insert("text".into(), serde_json::Value::String(prompt));
     }
-    let emit_source = binding
+    let emit_sources: Vec<String> = binding
         .emit
-        .as_ref()
-        .map(|emit_name| workflow::events::emit_source_for(&agent.name, emit_name));
+        .iter()
+        .map(|emit_name| workflow::events::emit_source_for(&agent.name, emit_name))
+        .collect();
     // Listen before starting so a finish can't slip between the two; the
     // workflow manager announces every terminal state on the local event
     // bus. The final read of the row is the answer either way — the event
@@ -419,7 +422,7 @@ async fn run_workflow_model(state: &AppState, agent_id: &str, name: &str, req: &
     let mut events = state.hub.subscribe();
     let run_id = state
         .workflow_manager
-        .run_inline(def_json, inputs, "api", Some(name.to_string()), agent_id, emit_source)
+        .run_inline(def_json, inputs, "api", Some(name.to_string()), agent_id, emit_sources)
         .await
         .map_err(types::NeboError::Internal)?;
     let deadline = tokio::time::Instant::now() + WORKFLOW_WAIT;
@@ -636,7 +639,7 @@ pub async fn openai_chat_completions(
                         ai::StreamEventType::Done => {
                             text = seg.done();
                         }
-                        ai::StreamEventType::ApprovalRequest | ai::StreamEventType::AskRequest | ai::StreamEventType::PlanApproval => {
+                        ai::StreamEventType::ApprovalRequest | ai::StreamEventType::AskRequest => {
                             park_for_owner(&state, &run, &key_label, &ev).await;
                             text = seg.done();
                             text.push_str(PARKED);
@@ -681,7 +684,7 @@ pub async fn openai_chat_completions(
                             }
                             serde_json::json!({ "reasoning_content": interim })
                         }
-                        ai::StreamEventType::ApprovalRequest | ai::StreamEventType::AskRequest | ai::StreamEventType::PlanApproval => {
+                        ai::StreamEventType::ApprovalRequest | ai::StreamEventType::AskRequest => {
                             park_for_owner(&state, &run, &key_label, &ev).await;
                             let mut text = seg.done();
                             text.push_str(PARKED);
@@ -754,7 +757,7 @@ pub async fn list_agent_api_keys(State(state): State<AppState>, Path(id): Path<S
         .map_err(to_error_response)?
         .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
     let keys = state.store.list_api_keys_for_agent(&id).map_err(to_error_response)?;
-    let isolated = crate::workflow_manager::agent_context_isolated(&state.store, &id);
+    let isolated = crate::workflow_manager::agent_memory_mode(&state.store, &id).separates_conversations();
     let memory = if isolated { "isolated" } else { "shared" };
     let mut models = vec![serde_json::json!({
         "id": employee_model(&agent),

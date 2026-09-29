@@ -1,0 +1,26 @@
+id: workflow-command-step-meets-employee-limits
+name: "A workflow's command step meets its employee's permissions and Nebo's fences"
+description: |
+  A workflow's command step ran through run_command but with no fence and
+  no closed ports: it could read Nebo's settings file, reach Nebo's own
+  local API, and a step that needed the owner's OK parked a card nobody
+  waited on. It now runs as the employee that owns the workflow, through
+  the one door every command goes through: the permission check under that
+  employee's grant, Nebo's own files and ports closed, Nebo's own settings
+  out of its environment, no network when web access is off. The installed
+  plugins it runs (their programs and data) stay open to it, as their auth
+  env does; their accounts stay closed.
+  Nothing waits on a command step, so one that needs the owner's OK is
+  refused instead of parked, the decision is recorded with why
+  (cannot_wait) under the workflow door, and the run fails with the
+  reason, which is the owner's notice.
+  This proof runs one-step workflows through the real engine and registry:
+  a web-off employee's curl to a page on this computer (no connection), a
+  read of settings.json (refused, no secret), a curl to Nebo's own /health
+  (not reached, where commands are confined), an installed plugin that
+  reads its own data (runs), and a command an ask rule covers (refused, its
+  marker never written, no card parked, recorded under the workflow door).
+  Mechanical, no model: a deterministic proof through the real server.
+target_component: permissions
+proof: nebo_files_proof::a_workflow_command_step_meets_its_employee_limits
+conversation: []

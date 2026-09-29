@@ -240,6 +240,9 @@ impl Store {
         let conn = self.conn()?;
         conn.execute("DELETE FROM teams WHERE id = ?1", params![id])
             .db_err("delete_team")?;
+        // A removed team is no longer temporary work either.
+        conn.execute("DELETE FROM temporary_work WHERE kind = 'team' AND name = ?1", params![id])
+            .db_err("delete_team temporary")?;
         Ok(())
     }
 

@@ -1,0 +1,8 @@
+id: sc34-a-question-up-the-line-never-waits
+name: "SC34 — A question up the reporting line never waits"
+description: |
+  ask_owner in an unattended run goes up the reporting line and returns at once; the
+  manager's answer arrives as a notification in the asking run's session (B7).
+target_component: staffed-company
+proof: staffed_proof::conversation::a_question_up_the_line_returns_at_once_and_the_answer_wakes_the_run
+conversation: []

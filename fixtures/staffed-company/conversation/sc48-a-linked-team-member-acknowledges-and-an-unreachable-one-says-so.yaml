@@ -1,0 +1,10 @@
+id: sc48-a-linked-team-member-acknowledges-and-an-unreachable-one-says-so
+name: "SC48 — A linked team member acknowledges; an unreachable one says so"
+description: |
+  A linked employee (its turns stream from another runtime) asked in a team: its first streamed
+  words are the acknowledgement in the thread, before its runtime's first tool call, and its
+  answer comes back to the thread. With the runtime unreachable, the thread shows
+  "Could not connect to <name>. Try again." and no acknowledgement.
+target_component: staffed-company
+proof: staffed_proof::conversation::a_linked_member_acknowledges_in_the_thread_and_an_unreachable_one_says_so
+conversation: []

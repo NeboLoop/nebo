@@ -48,7 +48,9 @@ conversation:
     content: "Now save those fourteen BATCH-IDs to a file, one per line, with a file write."
 
 tool_config:
-  os:
+  read_file:
+    enabled: true
+  write_file:
     enabled: true
 
 prompt_assertions:
@@ -56,12 +58,12 @@ prompt_assertions:
     - id: reads-happened
       text: "All fourteen files were read (the trace has a read of part14.txt)"
       severity: critical
-      check: { tool: os, arg: path, contains: "part14.txt" }
+      check: { tool: read_file, arg: path, contains: "part14.txt" }
   recovery:
     - id: rule-honoured-after-checkpoint
       text: "The file is written under out/ with a name starting fz-, although the rule was given only in the first message"
       severity: critical
-      check: { tool: os, arg: path, matches: "/out/fz-[^/]+$" }
+      check: { tool: write_file, arg: path, matches: "/out/fz-[^/]+$" }
     - id: no-asking-where
       text: "The model does not ask where to save the file or what to call it, and does not say it no longer knows the rule"
       severity: critical

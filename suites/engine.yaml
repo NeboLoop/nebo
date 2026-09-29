@@ -48,6 +48,9 @@ fixtures:
   - ../fixtures/engine/operations/uc33-a-renewal-wakes-on-the-day-and-not-before.yaml
   - ../fixtures/engine/operations/uc34-milestones-wake-a-case-months-later-across-a-restart.yaml
   - ../fixtures/engine/operations/uc35-interval-checks-catch-up-once-never-storm.yaml
+  - ../fixtures/engine/operations/a31-a-schedule-skips-while-its-last-run-goes.yaml
+  - ../fixtures/engine/operations/a31-a-buffered-schedule-starts-once-the-last-run-ends.yaml
+  - ../fixtures/engine/operations/a31-an-allow-all-schedule-starts-every-fire.yaml
   # Marketing
   - ../fixtures/engine/marketing/uc36-a-drip-pauses-on-reply-and-resumes-on-silence.yaml
   - ../fixtures/engine/marketing/uc37-each-piece-is-one-case-from-brief-to-publish.yaml
@@ -74,6 +77,11 @@ fixtures:
   - ../fixtures/engine/platform/uc55-one-audit-history-per-case.yaml
   - ../fixtures/engine/platform/platform-a-persons-case-holder-is-the-only-one-who-writes-to-them.yaml
   - ../fixtures/engine/platform/uc56-a-case-moves-between-employees-with-its-history.yaml
+  # Long-running work (Batch E)
+  - ../fixtures/engine/longrun/e4-an-ask-waits-four-days-across-a-restart-and-the-answer-resumes-it.yaml
+  - ../fixtures/engine/longrun/e13-a-temporary-workflows-outcome-reaches-the-owner-once-before-it-goes.yaml
+  - ../fixtures/engine/longrun/e16-a-temporary-team-is-due-to-disband-when-its-lead-closes-its-work.yaml
+  - ../fixtures/engine/longrun/e18-a-temporary-workflow-waits-days-for-the-customers-reply-as-a-signal.yaml
   # Parity with the seven replaced mechanisms
   - ../fixtures/engine/parity/parity-parity-scheduled-jobs.yaml
   - ../fixtures/engine/parity/parity-parity-heartbeats.yaml
@@ -99,3 +107,4 @@ fixtures:
   - ../fixtures/engine/server/server-the-owners-answer-is-one-event-per-wait.yaml
   - ../fixtures/engine/server/server-the-webhook-door-routes-people-to-their-case-and-the-rest-to-a-plain-run.yaml
   - ../fixtures/engine/server/server-a-missing-need-reaches-the-owner-once.yaml
+  - ../fixtures/engine/server/server-one-missing-need-is-one-notice-whoever-sees-it-and-however-often.yaml

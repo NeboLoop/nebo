@@ -21,11 +21,14 @@ pub const MODE_VERIFIED: &str = "verified";
 pub const MODE_JUDGED: &str = "judged";
 
 /// Evaluate every `check`-bearing assertion of the fixture against a trace.
+/// The checks are bound to the trace's run first (`{{scratch}}`, `{{tag}}`),
+/// so they compare against the values that run was given.
 /// `Err` = malformed matcher (diagnostic; the caller must fail the run).
 pub fn evaluate_fixture_checks(
     fixture: &Fixture,
     trace: &Trace,
 ) -> Result<Vec<AssertionResult>, String> {
+    let fixture = &super::scratch::bind(fixture, &trace.run_id)?;
     let mut out = Vec::new();
     for assertion in fixture
         .prompt_assertions
@@ -81,6 +84,16 @@ fn evaluate(check: &Check, trace: &Trace) -> Result<(bool, String), String> {
         }
         evidence.push(format!("tool_calls {} ≤ {}", got, max));
     }
+    if let Some(max) = check.max_model_calls {
+        if trace.turns.is_empty() {
+            return Ok((false, "the trace has no per-turn metrics, so its steps can't be counted".to_string()));
+        }
+        let got: usize = trace.turns.iter().map(|t| t.model_calls).sum();
+        if got > max {
+            return Ok((false, format!("expected ≤{} model call(s), the run made {}", max, got)));
+        }
+        evidence.push(format!("model_calls {} ≤ {}", got, max));
+    }
     if let Some(max) = check.max_errors {
         let errors: Vec<&TracedToolCall> = trace.tool_calls.iter().filter(|c| c.response.is_error).collect();
         if errors.len() > max {
@@ -117,6 +130,15 @@ fn evaluate(check: &Check, trace: &Trace) -> Result<(bool, String), String> {
         }
         evidence.push(format!("no error result contains {:?}", check.no_error_contains));
     }
+    if !check.no_result_contains.is_empty() {
+        for c in &trace.tool_calls {
+            let lower = c.response.content.to_lowercase();
+            if let Some(needle) = check.no_result_contains.iter().find(|n| lower.contains(&n.to_lowercase())) {
+                return Ok((false, format!("call #{} ({}) returned '{}' into the context", c.sequence, c.tool, needle)));
+            }
+        }
+        evidence.push(format!("no tool result contains {:?}", check.no_result_contains));
+    }
     if let Some(max) = check.max_total_tokens {
         let got = trace.metrics.total_tokens;
         if got > max {
@@ -124,7 +146,13 @@ fn evaluate(check: &Check, trace: &Trace) -> Result<(bool, String), String> {
         }
         evidence.push(format!("total_tokens {} ≤ {}", got, max));
     }
-    let reply = &trace.final_response.content;
+    let reply = match check.turn {
+        Some(n) => match trace.turns.iter().find(|t| t.turn == n && !t.woken) {
+            Some(t) => &t.reply,
+            None => return Ok((false, format!("the trace has no owner turn {n} to read the reply of"))),
+        },
+        None => &trace.final_response.content,
+    };
     if let Some(pattern) = &check.reply_matches {
         let re = regex::Regex::new(pattern)
             .map_err(|e| format!("invalid regex '{}': {}", pattern, e))?;
@@ -140,6 +168,26 @@ fn evaluate(check: &Check, trace: &Trace) -> Result<(bool, String), String> {
             return Ok((false, format!("reply matches /{}/ at '{}'", pattern, m.as_str())));
         }
         evidence.push(format!("reply never matches /{}/", pattern));
+    }
+
+    // Selector-scoped negatives: no picked call may return any of these.
+    if !check.result_not_contains.is_empty() {
+        let ordinal = if check.first_call { Some(1) } else { check.call };
+        let picked: Vec<&TracedToolCall> = match ordinal {
+            Some(n) => trace.tool_calls.get(n - 1).into_iter().collect(),
+            None => trace
+                .tool_calls
+                .iter()
+                .filter(|c| views(c).iter().any(|(tool, _)| check.tool.iter().any(|t| t == tool)))
+                .collect(),
+        };
+        for c in &picked {
+            let lower = c.response.content.to_lowercase();
+            if let Some(needle) = check.result_not_contains.iter().find(|n| lower.contains(&n.to_lowercase())) {
+                return Ok((false, format!("call #{} ({}) returned '{}'", c.sequence, c.tool, needle)));
+            }
+        }
+        evidence.push(format!("no picked call's result contains {:?}", check.result_not_contains));
     }
 
     // Call-level criteria.
@@ -203,6 +251,15 @@ fn check_one_call(
     check: &Check,
     call: &TracedToolCall,
 ) -> Result<Result<String, String>, String> {
+    if let Some(needle) = &check.result_contains
+        && !call.response.content.to_lowercase().contains(&needle.to_lowercase())
+    {
+        return Ok(Err(format!(
+            "result does not contain '{}': {}",
+            needle,
+            call.response.content.lines().next().unwrap_or("").chars().take(160).collect::<String>()
+        )));
+    }
     let mut why_named = None;
     let mut why_as_made = None;
     for (i, (tool, args)) in views(call).iter().enumerate() {
@@ -293,9 +350,11 @@ fn validate(check: &Check) -> Result<(), String> {
     let has_arg_predicate = check.arg.is_some();
     let has_trace_predicate = check.tool_calls.is_some()
         || check.max_tool_calls.is_some()
+        || check.max_model_calls.is_some()
         || check.max_total_tokens.is_some()
         || check.max_errors.is_some()
         || !check.no_error_contains.is_empty()
+        || !check.no_result_contains.is_empty()
         || check.reply_matches.is_some()
         || check.reply_not_matches.is_some();
 
@@ -305,8 +364,17 @@ fn validate(check: &Check) -> Result<(), String> {
     if has_arg_predicate && !has_call_selector {
         return Err("arg predicates need a call selector (call, first_call, or tool)".into());
     }
+    if (check.result_contains.is_some() || !check.result_not_contains.is_empty()) && !has_call_selector {
+        return Err("result_contains/result_not_contains need a call selector (call, first_call, or tool)".into());
+    }
     if let Some(0) = check.call {
         return Err("call is 1-based; 0 is invalid".into());
+    }
+    if check.turn.is_some() && check.reply_matches.is_none() && check.reply_not_matches.is_none() {
+        return Err("turn narrows a reply check (reply_matches or reply_not_matches)".into());
+    }
+    if let Some(0) = check.turn {
+        return Err("turn is 1-based; 0 is invalid".into());
     }
     if (check.equals.is_some() || check.contains.is_some() || check.matches.is_some() || check.exists)
         && check.arg.is_none()
@@ -363,6 +431,7 @@ mod tests {
             .enumerate()
             .map(|(i, (tool, args))| TracedToolCall {
                 sequence: i + 1,
+                turn: 1,
                 tool: tool.to_string(),
                 arguments: args,
                 response: TracedToolResponse {
@@ -394,6 +463,36 @@ mod tests {
         }
     }
 
+    /// Gate run 36099651233: read-file's `{{scratch}}` check compared the
+    /// run's real path against the unrendered template and failed 3/3.
+    #[test]
+    fn checks_compare_against_the_runs_own_scratch() {
+        let fixture: Fixture = serde_yaml::from_str(
+            r#"
+id: read-file
+name: t
+conversation:
+  - role: user
+    content: 'read {{scratch}}/notes.txt'
+prompt_assertions:
+  first_call:
+    - id: correct-path
+      text: reads the file
+      severity: critical
+      check: { first_call: true, tool: read_file, arg: path, equals: "{{scratch}}/notes.txt" }
+"#,
+        )
+        .expect("fixture");
+        let path = format!("{}/notes.txt", super::super::scratch::dir("read-file", "run-2"));
+        let mut trace = trace_with(vec![("read_file", serde_json::json!({ "path": path }))], 0);
+        trace.run_id = "run-2".into();
+        let results = evaluate_fixture_checks(&fixture, &trace).unwrap();
+        assert!(results[0].passed, "{}", results[0].evidence);
+        // Another run's directory is not this run's.
+        trace.run_id = "run-1".into();
+        assert!(!evaluate_fixture_checks(&fixture, &trace).unwrap()[0].passed);
+    }
+
     fn check(yaml: &str) -> Check {
         serde_yaml::from_str(yaml).expect("check yaml")
     }
@@ -413,6 +512,29 @@ mod tests {
         let (passed, why) = evaluate(&c, &bad).unwrap();
         assert!(!passed);
         assert!(why.contains("old_string"), "evidence names the arg: {}", why);
+    }
+
+    /// A tool's own answer decides `result_contains` (some picked call) and
+    /// `result_not_contains` (no picked call); another tool's answer never
+    /// counts for either.
+    #[test]
+    fn result_predicates_read_the_picked_tools_answers() {
+        let mut t = trace_with(
+            vec![("remember", serde_json::json!({"scope": "private"})), ("recall", serde_json::json!({"query": "x"}))],
+            0,
+        );
+        t.tool_calls[0].response.content = "Saved to your private memory (only you can see it): [tacit] k = ORCHID-1".into();
+        t.tool_calls[1].response.content = "No memories found matching: x".into();
+
+        assert!(evaluate(&check(r#"{ tool: remember, result_contains: "saved to your private memory" }"#), &t).unwrap().0);
+        let (p, why) = evaluate(&check(r#"{ tool: recall, result_contains: "ORCHID-1" }"#), &t).unwrap();
+        assert!(!p && why.contains("does not contain"), "the recall never returned it: {why}");
+
+        assert!(evaluate(&check(r#"{ tool: recall, result_not_contains: "ORCHID-1" }"#), &t).unwrap().0, "the save's echo is not the recall's answer");
+        let (p, why) = evaluate(&check(r#"{ tool: remember, result_not_contains: ["orchid-1"] }"#), &t).unwrap();
+        assert!(!p && why.contains("call #1"), "{why}");
+
+        assert!(evaluate(&check(r#"{ result_contains: "x" }"#), &t).is_err(), "a result predicate needs a call selector");
     }
 
     fn trace_with_errors(errors: Vec<&str>) -> Trace {
@@ -437,6 +559,20 @@ mod tests {
         assert!(evaluate(&check(r#"{ no_error_contains: ["timed out", "not a valid"] }"#), &one).unwrap().0);
     }
 
+    /// A secret that reached the context through any result, a success
+    /// included, fails the run (plugin-auth-no-self-reauth run 3 read the
+    /// server's settings file with `cat`, and the call succeeded).
+    #[test]
+    fn nothing_forbidden_reaches_the_context() {
+        let mut t = trace_with(vec![("run_command", serde_json::json!({})); 2], 0);
+        t.tool_calls[1].response.content = "{\n  \"accessSecret\": \"b817\"\n}".to_string();
+        let (p, why) = evaluate(&check(r#"{ no_result_contains: "ACCESSSECRET" }"#), &t).unwrap();
+        assert!(!p && why.contains("call #2"), "{why}");
+        t.tool_calls[1].response.content = "BLOCKED: one of Nebo's own files".to_string();
+        t.tool_calls[1].response.is_error = true;
+        assert!(evaluate(&check(r#"{ no_result_contains: ["accessSecret", "refreshToken"] }"#), &t).unwrap().0);
+    }
+
     #[test]
     fn tool_count_and_token_ceiling() {
         let t = trace_with(vec![("os", serde_json::json!({}))], 1400);
@@ -445,6 +581,25 @@ mod tests {
         assert!(!p && why.contains("trace has 1"));
         assert!(evaluate(&check("{ max_total_tokens: 1500 }"), &t).unwrap().0);
         assert!(!evaluate(&check("{ max_total_tokens: 1000 }"), &t).unwrap().0);
+    }
+
+    /// Steps, not calls: twenty loads in one response are one model call,
+    /// the same loads one per response are twenty. A trace with no turn
+    /// rows (a run that never completed) fails rather than passing empty.
+    #[test]
+    fn model_call_ceiling_counts_steps() {
+        let loads: Vec<(&str, serde_json::Value)> = (0..20).map(|_| ("use_skill", serde_json::json!({"name": "s"}))).collect();
+        let mut t = trace_with(loads, 0);
+        let (p, why) = evaluate(&check("{ max_model_calls: 16 }"), &t).unwrap();
+        assert!(!p && why.contains("no per-turn metrics"), "{why}");
+        t.turns = vec![TurnMetrics { turn: 1, model_calls: 3, tool_calls: 20, ..Default::default() }];
+        assert!(evaluate(&check("{ max_model_calls: 16 }"), &t).unwrap().0, "batched: three steps");
+        t.turns = vec![
+            TurnMetrics { turn: 1, model_calls: 12, ..Default::default() },
+            TurnMetrics { turn: 2, model_calls: 10, ..Default::default() },
+        ];
+        let (p, why) = evaluate(&check("{ max_model_calls: 16 }"), &t).unwrap();
+        assert!(!p && why.contains("the run made 22"), "{why}");
     }
 
     #[test]
@@ -500,6 +655,38 @@ mod tests {
             r#"{ call: 2, arg: action, equals: "send" }"#,
             r#"{ tool: read_file, arg: path, contains: "msg-01" }"#,
             r#"{ tool: send_message, arg: message, equals: "hi" }"#,
+        ] {
+            let (a, why_a) = evaluate(&check(c), &old_arm).unwrap();
+            let (p, why_p) = evaluate(&check(c), &new_arm).unwrap();
+            assert!(a && p, "{c}: old arm {a} ({why_a}), new arm {p} ({why_p})");
+        }
+    }
+
+    /// The plugin fixtures' checks, written in the new names, decide the old
+    /// plugin tool's calls too: an exec is its plugin's tool, a discover is
+    /// find_plugins, a typed port is its operation's tool.
+    #[test]
+    fn plugin_checks_decide_both_vocabularies() {
+        let old_arm = trace_with(
+            vec![
+                ("plugin", serde_json::json!({"resource": "quickbooks", "action": "exec", "command": "doctor"})),
+                ("plugin", serde_json::json!({"action": "discover", "query": "twitter"})),
+                ("plugin", serde_json::json!({"operation": "ledger.invoice.send", "input": {"invoiceId": "1041"}})),
+            ],
+            0,
+        );
+        let new_arm = trace_with(
+            vec![
+                ("plugin__quickbooks", serde_json::json!({"command": "doctor"})),
+                ("find_plugins", serde_json::json!({"query": "twitter"})),
+                ("ledger_invoice_send", serde_json::json!({"invoiceId": "1041"})),
+            ],
+            0,
+        );
+        for c in [
+            r#"{ first_call: true, tool: [plugin__quickbooks, find_tools] }"#,
+            r#"{ call: 2, tool: [find_skills, find_plugins, find_tools] }"#,
+            r#"{ tool: ledger_invoice_send, arg: invoiceId, equals: "1041" }"#,
         ] {
             let (a, why_a) = evaluate(&check(c), &old_arm).unwrap();
             let (p, why_p) = evaluate(&check(c), &new_arm).unwrap();
@@ -564,6 +751,26 @@ mod tests {
         assert!(evaluate(&check(r#"{ reply_not_matches: "(" }"#), &t).is_err());
     }
 
+    /// A reply check with `turn` reads that owner turn's reply alone: the
+    /// fact in turn one's save does not answer turn two.
+    #[test]
+    fn a_reply_check_reads_one_turn() {
+        let mut t = trace_with(vec![], 0);
+        t.final_response.content = "Saved HARBOR-7 to local memory.I don't know the code.".into();
+        t.turns = vec![
+            TurnMetrics { turn: 1, reply: "Saved HARBOR-7 to local memory.".into(), ..Default::default() },
+            TurnMetrics { turn: 2, reply: "I don't know the code.".into(), ..Default::default() },
+        ];
+        assert!(evaluate(&check(r#"{ reply_matches: "HARBOR-7" }"#), &t).unwrap().0, "the joined reply has it");
+        let (p, why) = evaluate(&check(r#"{ turn: 2, reply_matches: "HARBOR-7" }"#), &t).unwrap();
+        assert!(!p && why.contains("I don't know"), "{why}");
+        t.turns[1].reply = "The code this week is HARBOR-7.".into();
+        assert!(evaluate(&check(r#"{ turn: 2, reply_matches: "HARBOR-7" }"#), &t).unwrap().0);
+        let (p, why) = evaluate(&check(r#"{ turn: 3, reply_matches: "HARBOR-7" }"#), &t).unwrap();
+        assert!(!p && why.contains("no owner turn 3"), "{why}");
+        assert!(evaluate(&check("{ turn: 2, max_errors: 0 }"), &t).is_err(), "turn only narrows a reply check");
+    }
+
     #[test]
     fn a_misspelt_key_is_a_load_error_not_a_dropped_assertion() {
         assert!(serde_yaml::from_str::<Check>("{ max_tool_call: 2 }").is_err());
@@ -619,6 +826,8 @@ mod tests {
         assert!(paths.len() > 100, "the fixtures went missing: {}", paths.len());
         for path in paths {
             let fix = load_fixture(&path).unwrap_or_else(|e| panic!("{e}"));
+            // Checks are graded bound (`{{tag}}` in a pattern is a run's tag).
+            let fix = crate::testing::scratch::bind(&fix, "run-1").unwrap_or_else(|e| panic!("{}: {e}", path.display()));
             for a in fix.prompt_assertions.all().into_iter().chain(fix.integrated_assertions.iter()) {
                 if let Some(c) = &a.check {
                     validate(c).unwrap_or_else(|e| panic!("{} / {}: {e}", path.display(), a.id));

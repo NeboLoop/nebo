@@ -21,12 +21,8 @@ export async function load({ params }) {
 	if (detail?.agent?.isApp) {
 		target = `/${id}/overview`;
 	} else {
-		let isolated = false;
-		try {
-			isolated = JSON.parse(detail?.agent?.frontmatter || '{}')?.memory?.context_isolated === true;
-		} catch {
-			/* unreadable frontmatter reads as not isolated, the same as the roster */
-		}
+		const mode = detail?.memoryMode;
+		const isolated = mode === 'separate' || mode === 'confidential';
 		const latest = chats?.chats?.[0]?.id;
 		if (isolated) target = `/${id}/threads?list=${encodeURIComponent(id)}`;
 		else if (latest) target = `/${id}/threads/${latest}`;

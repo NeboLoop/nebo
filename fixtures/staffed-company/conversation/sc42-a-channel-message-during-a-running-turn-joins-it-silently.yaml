@@ -1,0 +1,8 @@
+id: sc42-a-channel-message-during-a-running-turn-joins-it-silently
+name: "SC42 — A channel message during a running turn joins it silently"
+description: |
+  A Slack message arrives while that conversation's turn is running. It goes into the running
+  turn and nothing is posted for it (no busy line); the running turn's reply answers it (A34).
+target_component: staffed-company
+proof: staffed_proof::conversation::a_channel_message_during_a_running_turn_joins_it_silently
+conversation: []

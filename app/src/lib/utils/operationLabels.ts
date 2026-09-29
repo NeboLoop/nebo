@@ -1,5 +1,5 @@
-// Human labels for typed interface operations — the ONE source used by both the
-// approval modal (ApprovalGate) and the per-employee Approvals settings page.
+// Human labels for typed interface operations, for the approval modal
+// (ApprovalGate). The Permissions pages get their sentences from the server.
 // Non-technical rule: an owner should never have to read "ledger.billpayment.create".
 
 const OP_VERBS: Record<string, string> = {
@@ -68,28 +68,4 @@ export function operationLabel(operation: string): string {
 	const verb = OP_VERBS[action] ?? humanize(action);
 	const noun = RESOURCE_LABELS[resource] ?? words(resource);
 	return `${verb} ${noun}`.trim();
-}
-
-/** Capability group → owner-readable heading. */
-export const CAPABILITY_LABELS: Record<string, string> = {
-	ledger: 'Accounting & money',
-	mail: 'Email',
-	sms: 'Text messages',
-	esign: 'Contracts & signing',
-	crm: 'Sales CRM',
-	ats: 'Recruiting',
-	store: 'Store & orders',
-	social: 'Social media',
-	cms: 'Website content',
-	'email-marketing': 'Email campaigns',
-	helpdesk: 'Support tickets',
-	kb: 'Knowledge base',
-	reviews: 'Reviews',
-	ads: 'Advertising',
-	tickets: 'Project issues',
-	layers: "The company's own files",
-};
-
-export function capabilityLabel(capability: string): string {
-	return CAPABILITY_LABELS[capability] ?? humanize(capability);
 }

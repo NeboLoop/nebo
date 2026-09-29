@@ -27,10 +27,11 @@ members = [
     "crates/render",
     "crates/vm-daemon",
     "crates/syntax",
+    "crates/tls",
 ]
 
 [workspace.package]
-version = "0.15.0"
+version = "0.16.0"
 edition = "2024"
 license = "Apache-2.0"
 repository = "https://github.com/NeboLoop/nebo"
@@ -53,7 +54,9 @@ tower-http = { version = "0.6", features = ["cors", "compression-gzip", "fs", "s
 # securityd, and when securityd wedged on a customer box the OS returned an EMPTY
 # trust store — every certificate rejected, no error, two-day outage.
 # `native-roots` keeps today's trust behaviour (system store, so enterprise CAs
-# still work) while dropping the C dependency entirely.
+# still work) while dropping the C dependency entirely. The roots themselves come
+# from crates/tls: every client starts from `tls::http_client()`, never from
+# reqwest's own per-client read of the OS store.
 reqwest = { version = "0.12", default-features = false, features = [
     "json", "stream", "multipart",
     "charset", "http2", "macos-system-configuration",
@@ -105,7 +108,8 @@ async-openai = { version = "0.33", features = ["chat-completion"] }
 tokio-util = "0.7"
 # MUST match reqwest's TLS backend. Leaving websockets on native-tls would pull
 # openssl-sys back into the build — the binary would compile and the platform
-# goal would silently be lost.
+# goal would silently be lost. Every WebSocket opens through `tls::connect_ws()`,
+# which hands tungstenite the shared roots.
 tokio-tungstenite = { version = "0.26", default-features = false, features = [
     "connect", "handshake", "rustls-tls-native-roots",
 ] }
@@ -153,6 +157,19 @@ updater = { path = "crates/updater", package = "nebo-updater" }
 sandbox-runtime = { git = "https://github.com/NeboLoop/sandbox-runtime.git", branch = "master" }
 vm = { path = "crates/vm", package = "nebo-vm" }
 syntax = { path = "crates/syntax", package = "nebo-syntax" }
+tls = { path = "crates/tls", package = "nebo-tls", version = "0.1" }
+# Hosting coding agents on this computer (Nebo is the host where it runs).
+# Pinned to a nebo-link commit, as nebo-link pins nebo-comm to a nebo one.
+link-core = { git = "https://github.com/NeboLoop/nebo-link", rev = "419e5705a861685c06ed290379a56823c3abe797" }
+# Without `preserve-order`: Nebo never rewrites a runtime's config, and the
+# feature would turn every serde_json map in Nebo from sorted to insertion order.
+nebo-runtimes = { git = "https://github.com/NeboLoop/nebo-link", rev = "419e5705a861685c06ed290379a56823c3abe797", default-features = false }
+# Nebo is an Open Agent Link client of every linked bot, and the host of its
+# own computer's agents in process: the host, the end-to-end encryption, and
+# the relay client (a self-hosted relay; NeboAI's is reached by its tunnel).
+oal-host = { git = "https://github.com/NeboLoop/nebo-link", rev = "419e5705a861685c06ed290379a56823c3abe797" }
+oal-secure = { git = "https://github.com/NeboLoop/nebo-link", rev = "419e5705a861685c06ed290379a56823c3abe797" }
+oal-relay = { git = "https://github.com/NeboLoop/nebo-link", rev = "419e5705a861685c06ed290379a56823c3abe797", default-features = false }
 
 # A2UI protocol
 a2ui-types = { path = "crates/a2ui/a2ui-types" }
@@ -178,6 +195,52 @@ opt-level = 3
 [profile.dev.package.fdeflate]
 opt-level = 3
 [profile.dev.package.miniz_oxide]
+opt-level = 3
+
+# Every TurboVec index load builds a 1536x1536 rotation matrix by QR
+# decomposition (faer + gemm on every core through rayon). Optimized that is
+# 0.6 s; unoptimized it took 20-77 s on a loaded desktop and stalled the whole
+# process — the hub's 3 s tunnel probe failed and the phone showed the bot
+# offline (2026-09-26). Only the linear-algebra stack, like the codecs above.
+[profile.dev.package.turbovec]
+opt-level = 3
+[profile.dev.package.faer]
+opt-level = 3
+[profile.dev.package.faer-entity]
+opt-level = 3
+[profile.dev.package.gemm]
+opt-level = 3
+[profile.dev.package.gemm-common]
+opt-level = 3
+[profile.dev.package.gemm-f32]
+opt-level = 3
+[profile.dev.package.gemm-f64]
+opt-level = 3
+[profile.dev.package.gemm-f16]
+opt-level = 3
+[profile.dev.package.gemm-c32]
+opt-level = 3
+[profile.dev.package.gemm-c64]
+opt-level = 3
+[profile.dev.package.nano-gemm]
+opt-level = 3
+[profile.dev.package.nano-gemm-core]
+opt-level = 3
+[profile.dev.package.nano-gemm-f32]
+opt-level = 3
+[profile.dev.package.nano-gemm-f64]
+opt-level = 3
+[profile.dev.package.nano-gemm-c32]
+opt-level = 3
+[profile.dev.package.nano-gemm-c64]
+opt-level = 3
+[profile.dev.package.pulp]
+opt-level = 3
+[profile.dev.package.dyn-stack]
+opt-level = 3
+[profile.dev.package.matrixmultiply]
+opt-level = 3
+[profile.dev.package.ndarray]
 opt-level = 3
 
 [profile.release]

@@ -141,6 +141,40 @@ pub fn permission_denied(path: &str, operation: &str) -> String {
     msg
 }
 
+/// How an employee installs a missing program here, and when it tells the
+/// owner instead: the one text every "not installed" result carries.
+///
+/// Installing needs no ask (owner, 2026-09-28: "We must be able to actually
+/// install things so we can code and do other high-value things"; the
+/// permission check never surfaces an install). What can't run is admin
+/// rights: sudo and su are hard limits (`safeguard`), so each platform names
+/// the installers that work without them.
+/// - macOS: Homebrew installs as the user, and the language installers do.
+/// - Linux (a desktop or a cloud bot, never root): apt and dnf need root;
+///   user-level installers write to the home folder (on a cloud bot, the one
+///   folder that survives a restart). `pip install --user` is refused by
+///   current Debian and Ubuntu (PEP 668), so a Python tool goes through pipx
+///   or a venv.
+/// - Windows: winget's user scope and scoop need no administrator;
+///   Chocolatey does, by default.
+pub fn install_guidance() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "Install it and carry on: Homebrew (brew install <package>), or a language's own installer (npm install -g, \
+         pipx install or a venv for a Python tool, cargo install, go install), then run the command again. Never \
+         sudo; if an install needs admin rights or no package provides it, tell the owner."
+    } else if cfg!(target_os = "windows") {
+        "Install it and carry on: winget install --scope user <id>, scoop install <package>, or a language's own \
+         installer (npm install -g, pip install --user, cargo install, go install), then run the command again. An \
+         installer that needs administrator rights can't run here; then, or when no package provides it, tell the \
+         owner."
+    } else {
+        "Install it and carry on, at user level: pipx install or a venv (python3 -m venv) for a Python tool, npm \
+         install -g --prefix ~/.local, cargo install, go install, brew install where Homebrew is set up, or a \
+         release binary in ~/.local/bin; then run the command again. apt and dnf need root, which Nebo never has: \
+         when only a system package provides it, or none does, tell the owner the package and the command to run."
+    }
+}
+
 /// Build a "command not found" error with similar command suggestions.
 pub fn command_not_found(cmd: &str) -> String {
     let similar = find_similar_commands(cmd);
@@ -151,7 +185,8 @@ pub fn command_not_found(cmd: &str) -> String {
             similar.join(", ")
         ));
     }
-    msg.push_str(". Do NOT attempt to install software without asking the user first.");
+    msg.push_str(". ");
+    msg.push_str(install_guidance());
     msg
 }
 

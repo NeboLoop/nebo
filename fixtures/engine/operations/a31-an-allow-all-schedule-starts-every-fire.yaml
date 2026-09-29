@@ -1,0 +1,8 @@
+id: a31-an-allow-all-schedule-starts-every-fire
+name: "A31 — An allow-all schedule starts every fire"
+description: |
+  A31 — Overlap policy allow all: every occurrence starts, whatever is still
+  running.
+target_component: engine
+proof: engine::proof::operations::a31_an_allow_all_schedule_starts_every_fire
+conversation: []

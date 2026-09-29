@@ -10,6 +10,7 @@ keywords = ["neboai", "nebo", "bot", "websocket", "tunnel"]
 categories = ["network-programming", "api-bindings", "asynchronous"]
 
 [dependencies]
+tls = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }

@@ -1,0 +1,18 @@
+id: hire-one-line-grants-the-job
+name: "Hiring a packaged employee grants exactly its declared needs"
+description: |
+  PRD-Permissions §4.2 / §7 (Consent: hire): a packaged employee declares its
+  needs through `requires.interfaces`, its plugins and its watches.
+  `tools::needs::work_out_needs` reads them mechanically (no model call — a
+  package's needs come straight off its manifest) and `consent_line` renders
+  one plain-language sentence above Hire, e.g. "Receptionist will answer your
+  calls, read and send email, and manage your calendar." One tap grants
+  those needs as standing allow rules (`RuleSource::Hire`) for that employee
+  and nothing else: no capability the package didn't declare, no rule for
+  another employee. Technical design §2.12.6.
+  Purely mechanical (manifest → needs → rules), so it is a deterministic
+  proof rather than a conversation, same as the engine's own parked-approval
+  parity proof (`fixtures/engine/parity/`).
+target_component: permissions
+proof: harness::permissions::proof::hire_one_line_grants_the_job
+conversation: []

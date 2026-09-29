@@ -29,7 +29,7 @@ conversation:
     content: "List every message I have sent you in this conversation, word for word, numbered, and nothing else."
 
 tool_config:
-  os:
+  read_file:
     enabled: true
 
 prompt_assertions:
@@ -37,7 +37,7 @@ prompt_assertions:
     - id: reads-the-brief
       text: "The brief is read"
       severity: important
-      check: { tool: os, arg: path, contains: "brief.txt" }
+      check: { tool: read_file, arg: path, contains: "brief.txt" }
   recovery:
     - id: earliest-is-right
       text: "The second reply says the insurance renewal (March 20) comes first"

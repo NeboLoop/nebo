@@ -3,7 +3,7 @@
 //! The code-intelligence spine (PRD_CODING_HARNESS Pillar 2): zero external
 //! processes, works on every customer machine, offline. Consumed by the `code`
 //! STRAP tool (outline/symbols/parse_check/query/context) and by the os file
-//! tool's edit-verification chain and outline-first reads.
+//! tool's edit-verification chain.
 //!
 //! Tier-1 grammars only: rust, typescript(+tsx), javascript, python, go,
 //! json, yaml, toml, bash, html, css, markdown.
@@ -499,6 +499,140 @@ pub fn query(source: &str, lang: Lang, ts_query: &str) -> Result<Vec<QueryHit>, 
         }
     }
     Ok(hits)
+}
+
+/// One simple command in a shell script: the command name and its arguments
+/// with quoting removed, whether variable assignments prefix it
+/// (`FOO=1 cmd`), and whether an output redirect on it, or on a statement
+/// around it, sends to a file (anything but a file descriptor or
+/// `/dev/null`). Redirections are not words. A word whose value is only
+/// known when the script runs (`$X`, `$(…)`, a glob, `{a,b}`) is `None`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShellCommand {
+    pub assigns: bool,
+    pub words: Vec<Option<String>>,
+    pub writes: bool,
+}
+
+/// Every simple command in a bash script, the nested ones included (command
+/// and process substitutions, backticks, subshells, redirect targets,
+/// function bodies), in source order. `None` when the grammar rejects any of
+/// it.
+pub fn shell_commands(script: &str) -> Option<Vec<ShellCommand>> {
+    let tree = parse(script, Lang::Bash).ok()?;
+    if tree.root_node().has_error() {
+        return None;
+    }
+    let mut commands = Vec::new();
+    let mut cursor = tree.walk();
+    'walk: loop {
+        let node = cursor.node();
+        if node.kind() == "command" {
+            commands.push(shell_command(node, script));
+        }
+        if cursor.goto_first_child() {
+            continue;
+        }
+        loop {
+            if cursor.goto_next_sibling() {
+                continue 'walk;
+            }
+            if !cursor.goto_parent() {
+                break 'walk;
+            }
+        }
+    }
+    Some(commands)
+}
+
+fn shell_command(node: Node, script: &str) -> ShellCommand {
+    let mut writes = false;
+    let mut around = Some(node);
+    while let Some(n) = around {
+        writes |= redirects_to_a_file(n, script);
+        around = n.parent();
+    }
+    let mut command = ShellCommand { assigns: false, words: Vec::new(), writes };
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        match child.kind() {
+            "variable_assignment" => command.assigns = true,
+            "command_name" => command.words.push(child.named_child(0).and_then(|w| shell_word(w, script))),
+            kind if kind.ends_with("redirect") => {}
+            _ => command.words.push(shell_word(child, script)),
+        }
+    }
+    command
+}
+
+/// Whether one of `node`'s own redirects writes a file: `>`, `>>`, `>|`,
+/// `&>`, `&>>`, `<>`, or `>&` to anything but a descriptor, unless the
+/// target is `/dev/null`. A target only known when the script runs counts.
+fn redirects_to_a_file(node: Node, script: &str) -> bool {
+    let mut cursor = node.walk();
+    let redirects: Vec<Node> = node.named_children(&mut cursor).filter(|c| c.kind() == "file_redirect").collect();
+    redirects.into_iter().any(|redirect| {
+        let mut cursor = redirect.walk();
+        let op = redirect
+            .children(&mut cursor)
+            .find(|c| !c.is_named())
+            .map(|c| node_text(c, script))
+            .unwrap_or_default();
+        let target = redirect.child_by_field_name("destination").and_then(|d| shell_word(d, script));
+        let to_null = target.as_deref() == Some("/dev/null");
+        match op {
+            ">" | ">>" | ">|" | "&>" | "&>>" | "<>" => !to_null,
+            ">&" => !to_null && !target.is_some_and(|t| t == "-" || t.chars().all(|c| c.is_ascii_digit())),
+            _ => false,
+        }
+    })
+}
+
+/// The value of one word, or `None` when only running the script knows it.
+fn shell_word(node: Node, script: &str) -> Option<String> {
+    let text = node_text(node, script);
+    match node.kind() {
+        "word" | "number" => {
+            let mut out = String::new();
+            let mut chars = text.chars();
+            while let Some(c) = chars.next() {
+                match c {
+                    '\\' => out.extend(chars.next().filter(|&n| n != '\n')),
+                    '*' | '?' | '[' | '{' => return None,
+                    c => out.push(c),
+                }
+            }
+            Some(out)
+        }
+        "raw_string" => text.strip_prefix('\'')?.strip_suffix('\'').map(str::to_string),
+        "string" => {
+            let mut cursor = node.walk();
+            if node.named_children(&mut cursor).any(|c| c.kind() != "string_content") {
+                return None;
+            }
+            let inner = text.strip_prefix('"')?.strip_suffix('"')?;
+            let mut out = String::new();
+            let mut chars = inner.chars().peekable();
+            while let Some(c) = chars.next() {
+                match (c, chars.peek()) {
+                    ('\\', Some('\n')) => {
+                        chars.next();
+                    }
+                    ('\\', Some(&n @ ('$' | '`' | '"' | '\\'))) => {
+                        chars.next();
+                        out.push(n);
+                    }
+                    (c, _) => out.push(c),
+                }
+            }
+            Some(out)
+        }
+        "concatenation" => {
+            let mut cursor = node.walk();
+            node.named_children(&mut cursor).map(|c| shell_word(c, script)).collect()
+        }
+        _ => None,
+    }
 }
 
 #[cfg(test)]

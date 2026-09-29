@@ -102,7 +102,6 @@ pub struct Session {
     pub name: Option<String>,
     pub scope: Option<String>,
     pub scope_id: Option<String>,
-    pub summary: Option<String>,
     pub token_count: Option<i64>,
     pub message_count: Option<i64>,
     pub last_compacted_at: Option<i64>,
@@ -120,9 +119,6 @@ pub struct Session {
     pub verbose_level: Option<String>,
     pub custom_label: Option<String>,
     pub last_embedded_message_id: Option<i64>,
-    pub active_task: Option<String>,
-    pub last_summarized_count: Option<i64>,
-    pub work_tasks: Option<String>,
     pub active_chat_id: Option<String>,
 }
 
@@ -184,12 +180,33 @@ pub struct Chat {
     /// the employee's `model_preference`, then the selector's choice.
     #[serde(default)]
     pub model: Option<String>,
-    /// The linked runtime's session behind this chat, for an employee hired
-    /// from a linked bot: set by the linked provider on the thread's first
-    /// turn and reused after. Internal — the runtime's id means nothing to
-    /// the app (skip_serializing keeps the response shape unchanged).
+    /// The linked agent's session behind this chat, for an employee hired
+    /// from a linked bot: the agent's own session id (Open Agent Link's
+    /// `sessionId`), set by the linked provider on the thread's first turn
+    /// and reused after. Internal — the runtime's id means nothing to the
+    /// app (skip_serializing keeps the response shape unchanged).
     #[serde(default, skip_serializing)]
     pub linked_chat_id: Option<String>,
+    /// The linked agent that session belongs to (`linked/<bot>/<agent>`'s
+    /// agent). None on a chat whose session was recorded before the agent
+    /// was: the employee's own agent, recorded on its next turn.
+    #[serde(default, skip_serializing)]
+    pub linked_agent_id: Option<String>,
+    /// The folder a linked coding employee's conversation works in: its
+    /// agent's own, or where the owner asked it to move. Shown in the app
+    /// ("Works in ~/workspaces/foo").
+    #[serde(default, rename = "folder", skip_serializing_if = "Option::is_none")]
+    pub linked_folder: Option<String>,
+    /// How much of its context window the linked session in
+    /// `linked_chat_id` has used, and the window's size, as its agent last
+    /// reported (ACP's `usage_update`). Internal.
+    #[serde(default, skip_serializing)]
+    pub linked_used_tokens: Option<i64>,
+    #[serde(default, skip_serializing)]
+    pub linked_window_tokens: Option<i64>,
+    /// When that session last had a turn (unix seconds). Internal.
+    #[serde(default, skip_serializing)]
+    pub linked_turn_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -280,6 +297,52 @@ pub struct CronJob {
     /// routes back through the same channel bridge. NULL for jobs created
     /// outside a channel.
     pub channel_ctx_json: Option<String>,
+    /// What a fire does while the last one is still going: `skip`,
+    /// `buffer_one` or `allow_all` ([`OverlapPolicy`]).
+    pub overlap_policy: String,
+}
+
+impl CronJob {
+    /// The job's overlap policy. The column's CHECK holds it to the three
+    /// values, so a row always reads as one of them.
+    pub fn overlap(&self) -> OverlapPolicy {
+        OverlapPolicy::parse(&self.overlap_policy).unwrap_or(OverlapPolicy::Skip)
+    }
+}
+
+/// What a schedule does when it comes due while its last fire — and the
+/// workflow that fire started — is still going. Temporal's schedule
+/// overlap policy, the three values an owner has a use for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OverlapPolicy {
+    /// This occurrence is skipped and noted. The default.
+    Skip,
+    /// One occurrence waits and starts when the last fire ends; any more
+    /// while it waits are skipped.
+    BufferOne,
+    /// Every occurrence starts, whatever is still running.
+    AllowAll,
+}
+
+impl OverlapPolicy {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            OverlapPolicy::Skip => "skip",
+            OverlapPolicy::BufferOne => "buffer_one",
+            OverlapPolicy::AllowAll => "allow_all",
+        }
+    }
+
+    pub fn parse(s: &str) -> Result<Self, types::NeboError> {
+        match s {
+            "skip" => Ok(OverlapPolicy::Skip),
+            "buffer_one" => Ok(OverlapPolicy::BufferOne),
+            "allow_all" => Ok(OverlapPolicy::AllowAll),
+            other => Err(types::NeboError::Validation(format!(
+                "overlap policy must be skip, buffer_one or allow_all, not {other:?}"
+            ))),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -490,11 +553,29 @@ pub struct Setting {
     /// When ON, the runner's per-tool approval gate is bypassed.
     #[serde(serialize_with = "i64_as_bool")]
     pub full_access: i64,
-    /// Loop-guardrail thresholds as a JSON object (see agent::guardrails).
-    /// '{}' means built-in defaults.
-    pub guardrails: serde_json::Value,
     #[serde(skip_serializing)]
     pub updated_at: i64,
+}
+
+/// The bot's Location (Bot settings → Location): the office, as the owner
+/// names it, and its coordinates once a geocoder has found them. A label
+/// typed where there is no geocoder (the web and desktop app) has none until
+/// the phone fills them in.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BotLocation {
+    pub label: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latitude: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub longitude: Option<f64>,
+}
+
+impl BotLocation {
+    /// The coordinates, when both are known.
+    pub fn coordinates(&self) -> Option<(f64, f64)> {
+        Some((self.latitude?, self.longitude?))
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -738,7 +819,7 @@ pub struct Agent {
     #[serde(default)]
     pub voice: String,
     /// 1 once the owner has renamed this agent; manifest syncs never overwrite
-    /// a locked name (owner wins, same contract as memory.context_isolated).
+    /// a locked name (owner wins, same contract as memory.mode).
     #[serde(default)]
     pub name_locked: i64,
     /// JSON: what the package part of `rules` was written against and
@@ -1061,4 +1142,17 @@ pub struct OutcomeCount {
     pub outcome: String,
     pub count: i64,
     pub cost_microcents: i64,
+}
+
+/// The owner recap written after a chat turn (Turn-Controller Technical
+/// Design SS2.7 / WP2.5): one or two plain sentences for the owner coming
+/// back to the thread. Stored and emitted over WS as `turn_recap`; never
+/// read back into a model request.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatRecap {
+    pub chat_id: String,
+    pub turn_id: String,
+    pub text: String,
+    pub created_at: i64,
 }

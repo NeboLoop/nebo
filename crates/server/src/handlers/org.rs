@@ -179,6 +179,7 @@ pub async fn install_org(
                     &mission,
                     &member_list,
                     &organizer_id,
+                    &tools::Lifetime::Saved,
                 )
                 .await
                 .map(|t| t.id),

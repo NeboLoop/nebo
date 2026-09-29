@@ -42,7 +42,9 @@ async fn describe(
     let req = ChatRequest {
         tool_credential: None,
         chat_id: String::new(),
-        approval_channels: None,
+        ask_channels: None,
+        permission_mode: None,
+        linked_context: None,
         tool_choice: Default::default(),
         messages: vec![Message {
             role: "user".to_string(),
@@ -54,7 +56,6 @@ async fn describe(
         max_tokens,
         temperature: 0.0,
         system: system.to_string(),
-        static_system: String::new(),
         model: sidecar_model(provider.id()),
         enable_thinking: false,
         metadata: None,

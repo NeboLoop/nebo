@@ -1,47 +1,50 @@
 id: agent-spawn-explore
-name: "Sub-agent spawn — explore specialist for a search task"
+name: "Helper delegate — explore helper for a search task"
 description: |
   The user asks a codebase-wide search question where the answer location is
-  unknown. The model should delegate to a READ-ONLY explore sub-agent
-  (resource: "task", action: "spawn", agent_type: "explore") instead of
-  grepping through its own context, and must pass the tools the sub-agent
-  needs (born-blind rule).
-target_component: agent
+  unknown. The model should delegate to a READ-ONLY explore helper
+  (delegate with helper_type: "explore") instead of grepping through its own
+  context. Helpers get the full tool surface, so no tools are passed.
+target_component: delegate
 
 conversation:
   - role: user
     content: "Somewhere in this project the retry backoff is configured — find every place that sets or overrides it. The project is large, search broadly."
 
 tool_config:
-  agent:
+  delegate:
     enabled: true
-  os:
+  run_command:
+    enabled: true
+  read_file:
     enabled: true
 
 prompt_assertions:
   first_call:
     - id: uses-spawn
-      text: "Model calls agent with resource: 'task', action: 'spawn' (or spawn_parallel)"
+      text: "Model starts a helper with delegate (one call, or several delegate calls in one response)"
       severity: critical
+      check: { first_call: true, tool: delegate }
     - id: explore-type
-      text: "Model passes agent_type: 'explore' for the search"
+      text: "Model passes helper_type: 'explore' for the search"
       severity: important
+      check: { first_call: true, tool: delegate, arg: helper_type, equals: explore }
     - id: born-blind
-      text: "Model passes the tools the sub-agent needs (e.g. tools including 'os' or 'system')"
+      text: "The delegate call carries a short description and a prompt that states the whole job: find every place the retry backoff is set or overridden, and report the locations"
       severity: critical
   recovery:
     - id: uses-result
-      text: "Final answer reports what the sub-agent found rather than claiming the model searched itself without any search happening"
+      text: "Final answer reports what the helper found rather than claiming the model searched itself without any search happening"
       severity: critical
     - id: no-self-grep-flood
-      text: "Model does not run more than 3 direct os grep/read calls itself before or instead of delegating"
+      text: "Model does not run more than 3 direct run_command grep/find or read_file calls itself before or instead of delegating"
       severity: important
 
 ideal_behavior:
   tool_calls: 2
   total_tokens: 6000
   narrative: |
-    One agent(resource: "task", action: "spawn", agent_type: "explore",
-    tools: ["os"], prompt: "find retry backoff configuration...") call
-    (wait defaults to true), then a final answer built from the sub-agent's
-    report.
+    One delegate(description: "find retry backoff config", helper_type: "explore",
+    prompt: "find retry backoff configuration...") call — in the background by
+    default, or background: false since the answer is the helper's report —
+    then a final answer built from the helper's report.

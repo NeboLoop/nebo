@@ -27,9 +27,36 @@ fn message_created_at(conn: &rusqlite::Connection, id: &str) -> Result<i64, Nebo
     .map_err(|e| NeboError::Database(e.to_string()))
 }
 
+/// Whether a chat under an employee's session prefix is one of the
+/// employee's own conversations — the ONE predicate every "this employee's
+/// threads" query uses (its list, its latest thread, its count), so the
+/// thread the app opens, the one a loop DM continues and the one the roster
+/// previews are always chosen from the same set. `session_name` is the SQL
+/// expression to match on. Not a conversation:
+/// - internal tooling surfaces (Architect/help sessions), which bled raw
+///   session keys into the Chats tab;
+/// - a workflow run's activity sessions
+///   (`agent:<id>:workflow:<run>:<activity>::<n>`), the run's plumbing — the
+///   employee's own list showed every one as a chat titled with its raw key
+///   (2026-09-09);
+/// - a member's seat for a team (`agent:<id>:coworker:team:<team>`), where it
+///   works when the team asks it to act. That is the team's conversation,
+///   which lives in the team thread; counted here it was the employee's
+///   newest thread, so its own chat opened onto a team exchange it never took
+///   part in (2026-09-26).
+fn own_conversation_sql(session_name: &str) -> String {
+    format!(
+        "{session_name} NOT LIKE '%:help:%'
+         AND {session_name} NOT LIKE '%:workflow:%'
+         AND {session_name} NOT LIKE 'agent:%:coworker:team:%'"
+    )
+}
+
 /// A chat's preview line is its last VISIBLE message: not a tool result,
 /// not empty, not a hidden system-injected message (reminders carry
-/// metadata {"hidden":true}). `chat_id` is the SQL expression to match on.
+/// metadata {"hidden":true}), not the error a failed run left (metadata
+/// {"runError":true}, shown on the thread's error banner, never as a line).
+/// `chat_id` is the SQL expression to match on.
 fn last_visible_message_sql(chat_id: &str) -> String {
     format!(
         "(SELECT m2.content FROM chat_messages m2
@@ -37,6 +64,7 @@ fn last_visible_message_sql(chat_id: &str) -> String {
             AND m2.role != 'tool'
             AND m2.content != ''
             AND (m2.metadata IS NULL OR m2.metadata NOT LIKE '%\"hidden\":true%')
+            AND (m2.metadata IS NULL OR m2.metadata NOT LIKE '%\"runError\":true%')
           ORDER BY m2.created_at DESC, m2.id DESC LIMIT 1)"
     )
 }
@@ -65,15 +93,52 @@ impl Store {
         Ok(())
     }
 
-    /// Record the linked runtime's session behind this chat (see
-    /// `Chat::linked_chat_id`). Written once, on the thread's first turn.
-    pub fn set_chat_linked_chat_id(&self, id: &str, linked_chat_id: &str) -> Result<(), NeboError> {
+    /// Record the linked agent's session behind this chat and the agent it
+    /// belongs to (see `Chat::linked_chat_id`). Written on the thread's
+    /// first turn. Empty ids forget it (a cleared conversation): the next
+    /// turn opens a new session on the agent's side too. Another session
+    /// than the one recorded starts with no activity of its own
+    /// (`set_chat_linked_activity`).
+    pub fn set_chat_linked_session(&self, id: &str, agent_id: &str, session_id: &str) -> Result<(), NeboError> {
         let conn = self.conn()?;
         conn.execute(
-            "UPDATE chats SET linked_chat_id = ?1 WHERE id = ?2",
-            params![linked_chat_id, id],
+            "UPDATE chats SET
+                 linked_used_tokens = CASE WHEN linked_chat_id IS NULLIF(?1, '') THEN linked_used_tokens END,
+                 linked_window_tokens = CASE WHEN linked_chat_id IS NULLIF(?1, '') THEN linked_window_tokens END,
+                 linked_turn_at = CASE WHEN linked_chat_id IS NULLIF(?1, '') THEN linked_turn_at END,
+                 linked_chat_id = NULLIF(?1, ''),
+                 linked_agent_id = NULLIF(?2, '')
+             WHERE id = ?3",
+            params![session_id, agent_id, id],
         )
         .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Record a turn of the linked session behind this chat: when it was
+    /// (unix seconds), and how much of its context window the session has
+    /// used, when its agent reported it (`used`, `window`). A report kept
+    /// from before stays when this turn brought none.
+    pub fn set_chat_linked_activity(&self, id: &str, at: i64, context: Option<(i64, i64)>) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        let (used, window) = context.unzip();
+        conn.execute(
+            "UPDATE chats SET linked_turn_at = ?1,
+                 linked_used_tokens = COALESCE(?2, linked_used_tokens),
+                 linked_window_tokens = COALESCE(?3, linked_window_tokens)
+             WHERE id = ?4",
+            params![at, used, window, id],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Record the folder a linked coding employee's conversation works in
+    /// (see `Chat::linked_folder`).
+    pub fn set_chat_linked_folder(&self, id: &str, folder: &str) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        conn.execute("UPDATE chats SET linked_folder = ?1 WHERE id = ?2", params![folder, id])
+            .map_err(|e| NeboError::Database(e.to_string()))?;
         Ok(())
     }
 
@@ -86,6 +151,21 @@ impl Store {
         .map_err(|e| NeboError::Database(e.to_string()))
     }
 
+    /// The conversation a linked agent's session `session_id` is recorded
+    /// on (see `Chat::linked_chat_id`): the most recently active one when
+    /// more than one speaks into it (the owner's own thread with the
+    /// employee, and a coworker's thread sent into it).
+    pub fn chat_for_linked_session(&self, agent_id: &str, session_id: &str) -> Result<Option<Chat>, NeboError> {
+        let conn = self.conn()?;
+        conn.query_row(
+            "SELECT * FROM chats WHERE linked_agent_id = ?1 AND linked_chat_id = ?2 ORDER BY updated_at DESC, rowid DESC LIMIT 1",
+            params![agent_id, session_id],
+            |row| row_to_chat(row),
+        )
+        .optional()
+        .map_err(|e| NeboError::Database(e.to_string()))
+    }
+
     pub fn list_chats(&self, limit: i64, offset: i64) -> Result<Vec<Chat>, NeboError> {
         let conn = self.conn()?;
         let mut stmt = conn
@@ -93,8 +173,11 @@ impl Store {
                  WHERE session_name IS NULL
                     OR (session_name NOT LIKE 'agent:%:workflow:%'
                         AND session_name NOT LIKE 'workflow:%'
-                        -- A team's thread is the team's surface, not a chat.
-                        AND session_name NOT LIKE 'team:%')
+                        -- A team's thread is the team's surface, not a chat,
+                        -- and so is a member's seat for the team: the work
+                        -- it does when the team asks it to act.
+                        AND session_name NOT LIKE 'team:%'
+                        AND session_name NOT LIKE 'agent:%:coworker:team:%')
                  ORDER BY updated_at DESC LIMIT ?1 OFFSET ?2")
             .map_err(|e| NeboError::Database(e.to_string()))?;
         let rows = stmt
@@ -225,6 +308,66 @@ impl Store {
             .map_err(|e| NeboError::Database(e.to_string()))
     }
 
+    /// The chat's rows stored after the row whose rowid is `after_rowid`,
+    /// each with its rowid, in the order they were written.
+    pub fn get_chat_messages_after_rowid(
+        &self,
+        chat_id: &str,
+        after_rowid: i64,
+    ) -> Result<Vec<(i64, ChatMessage)>, NeboError> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare("SELECT rowid AS r, * FROM chat_messages WHERE chat_id = ?1 AND rowid > ?2 ORDER BY rowid ASC")
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        let rows = stmt
+            .query_map(params![chat_id, after_rowid], |row| Ok((row.get("r")?, row_to_chat_message(row)?)))
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| NeboError::Database(e.to_string()))
+    }
+
+    /// The conversation the model sees: the chat's rows from its latest
+    /// checkpoint boundary (a row whose metadata carries `"checkpoint": true`)
+    /// on, the boundary first; every row when there is none. A row stored
+    /// after the last row the boundary's summary read (its `heardThrough`)
+    /// but before the boundary itself arrived while the summary was written:
+    /// the summary never read it, so it loads too, after the boundary. The
+    /// owner's marker (`compactBoundary`) never does, and neither does the
+    /// error a failed run left for the owner (`runError`). Rows before the
+    /// boundary stay on disk and in the owner's thread.
+    pub fn get_chat_messages_since_checkpoint(&self, chat_id: &str) -> Result<Vec<ChatMessage>, NeboError> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(
+                "WITH visible AS (
+                     SELECT rowid AS r, * FROM chat_messages
+                     WHERE chat_id = ?1 AND rowid > COALESCE((SELECT compacted_below_rowid FROM chats WHERE id = ?1), 0)
+                       AND COALESCE(CASE WHEN json_valid(metadata) THEN json_extract(metadata, '$.runError') END, 0) != 1
+                 ),
+                 boundary AS (
+                     SELECT b.created_at, b.r,
+                            (SELECT h.r FROM visible h
+                             WHERE h.id = CASE WHEN json_valid(b.metadata) THEN json_extract(b.metadata, '$.heardThrough') END) AS heard
+                     FROM visible b
+                     WHERE CASE WHEN json_valid(b.metadata) THEN json_extract(b.metadata, '$.checkpoint') END = 1
+                     ORDER BY b.created_at DESC, b.r DESC LIMIT 1
+                 )
+                 SELECT v.* FROM visible v
+                 WHERE NOT EXISTS (SELECT 1 FROM boundary)
+                    OR v.created_at > (SELECT created_at FROM boundary)
+                    OR (v.created_at = (SELECT created_at FROM boundary) AND v.r >= (SELECT r FROM boundary))
+                    OR (v.r > (SELECT heard FROM boundary) AND v.r < (SELECT r FROM boundary)
+                        AND COALESCE(CASE WHEN json_valid(v.metadata) THEN json_extract(v.metadata, '$.compactBoundary') END, 0) != 1)
+                 ORDER BY CASE WHEN v.r = (SELECT r FROM boundary) THEN 0 ELSE 1 END, v.created_at ASC, v.r ASC",
+            )
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        let rows = stmt
+            .query_map(params![chat_id], row_to_chat_message)
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| NeboError::Database(e.to_string()))
+    }
+
     /// Get the most recent N messages for a chat. If `before` is provided, fetch messages older
     /// than that message ID (for "load more" pagination). Returns messages in ascending order.
     pub fn get_chat_messages_paginated(
@@ -302,6 +445,7 @@ impl Store {
                     "SELECT * FROM chat_messages WHERE chat_id = ?1
                      AND (created_at < ?2 OR (created_at = ?2 AND id < ?3))
                      AND rowid > COALESCE((SELECT compacted_below_rowid FROM chats WHERE id = ?1), 0)
+                     AND COALESCE(json_extract(metadata, '$.isMeta'), 0) NOT IN (1, 'true')
                  ORDER BY created_at DESC, id DESC LIMIT ?4",
                 )
                 .map_err(|e| NeboError::Database(e.to_string()))?;
@@ -317,6 +461,7 @@ impl Store {
             let mut stmt = conn
                 .prepare(
                     "SELECT * FROM chat_messages WHERE chat_id = ?1 AND rowid > COALESCE((SELECT compacted_below_rowid FROM chats WHERE id = ?1), 0)
+                     AND COALESCE(json_extract(metadata, '$.isMeta'), 0) NOT IN (1, 'true')
                  ORDER BY created_at DESC, id DESC LIMIT ?2",
                 )
                 .map_err(|e| NeboError::Database(e.to_string()))?;
@@ -326,6 +471,10 @@ impl Store {
             rows.collect::<Result<Vec<_>, _>>()
                 .map_err(|e| NeboError::Database(e.to_string()))?
         };
+        // Nebo's own rows (`isMeta`: session facts, listings, hidden prompts)
+        // are never shown, so they are left out here rather than dropped after
+        // paging: counted against the budget, a turn's attachment rows filled
+        // the page and the owner saw only its last few messages.
         // msgs is newest-first — accumulate budget and truncate.
         // The budget is measured in CONVERSATIONAL TEXT (message content) only.
         // Tool calls/results are collapsed in the UI ("Used N tools") and do NOT
@@ -382,6 +531,9 @@ impl Store {
         .map_err(|e| NeboError::Database(e.to_string()))
     }
 
+    /// The chat's latest `limit` turns as the owner reads them: user and
+    /// assistant rows, without Nebo's own (`isMeta`: session facts, the
+    /// interrupt line, hidden prompts).
     pub fn get_recent_chat_messages(
         &self,
         chat_id: &str,
@@ -392,6 +544,7 @@ impl Store {
             .prepare(
                 "SELECT * FROM (
                     SELECT *, rowid AS _rn FROM chat_messages WHERE chat_id = ?1 AND role IN ('user', 'assistant')
+                      AND COALESCE(json_extract(metadata, '$.isMeta'), 0) NOT IN (1, 'true')
                     ORDER BY created_at DESC, _rn DESC LIMIT ?2
                  ) sub ORDER BY created_at ASC, _rn ASC",
             )
@@ -521,6 +674,7 @@ impl Store {
         chat_id: &str,
         message_id: &str,
         summary: &str,
+        metadata: Option<&str>,
     ) -> Result<(), NeboError> {
         let mut conn = self.conn()?;
         let tx = conn
@@ -534,9 +688,9 @@ impl Store {
         )
         .map_err(|e| NeboError::Database(e.to_string()))?;
         tx.execute(
-            "INSERT INTO chat_messages (id, chat_id, role, content, created_at)
-             VALUES (?1, ?2, 'assistant', ?3, unixepoch())",
-            params![message_id, chat_id, summary],
+            "INSERT INTO chat_messages (id, chat_id, role, content, metadata, created_at)
+             VALUES (?1, ?2, 'assistant', ?3, ?4, unixepoch())",
+            params![message_id, chat_id, summary, metadata],
         )
         .map_err(|e| NeboError::Database(e.to_string()))?;
         tx.commit()
@@ -611,10 +765,13 @@ impl Store {
     /// Counting within a recent-messages window instead made long chats
     /// re-title forever: the sliding window kept containing exactly 1 or 3
     /// user messages, so the title chased whatever was said most recently.
+    /// The user rows the owner reads in the chat: Nebo's own (`isMeta`)
+    /// are not turns.
     pub fn count_chat_user_messages(&self, chat_id: &str) -> Result<i64, NeboError> {
         let conn = self.conn()?;
         conn.query_row(
-            "SELECT COUNT(*) FROM chat_messages WHERE chat_id = ?1 AND role = 'user'",
+            "SELECT COUNT(*) FROM chat_messages WHERE chat_id = ?1 AND role = 'user'
+               AND COALESCE(json_extract(metadata, '$.isMeta'), 0) NOT IN (1, 'true')",
             params![chat_id],
             |row| row.get(0),
         )
@@ -749,18 +906,10 @@ impl Store {
                      GROUP BY m.chat_id
                  ) s ON s.chat_id = c.id
                  WHERE c.session_name LIKE ?1
-                   -- Internal tooling surfaces (Architect/help sessions) are
-                   -- not conversations; they bled raw session keys into the
-                   -- Chats tab.
-                   AND c.session_name NOT LIKE '%:help:%'
-                   -- A workflow run's activity sessions
-                   -- (agent:<id>:workflow:<run>:<activity>::<n>) are the
-                   -- run's plumbing, hidden from the global list since day
-                   -- one; the employee's own list showed every one of them
-                   -- as a chat titled with its raw key (2026-09-09).
-                   AND c.session_name NOT LIKE '%:workflow:%'
+                   AND {own}
                  ORDER BY c.updated_at DESC",
-                last_visible = last_visible_message_sql("m.chat_id")
+                last_visible = last_visible_message_sql("m.chat_id"),
+                own = own_conversation_sql("c.session_name"),
             ))
             .map_err(|e| NeboError::Database(e.to_string()))?;
         let rows = stmt
@@ -864,6 +1013,25 @@ impl Store {
         .map_err(|e| NeboError::Database(e.to_string()))
     }
 
+    /// Set one value inside a stored message's metadata, at a JSON path
+    /// (`$.contentBlocks[2].fold`), leaving the rest of it as it is.
+    pub fn set_chat_message_metadata(
+        &self,
+        id: &str,
+        path: &str,
+        value: &serde_json::Value,
+    ) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE chat_messages
+             SET metadata = json_set(COALESCE(NULLIF(metadata, ''), '{}'), ?2, json(?3))
+             WHERE id = ?1",
+            params![id, path, value.to_string()],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(())
+    }
+
     pub fn attach_artifacts_to_latest_assistant_message(
         &self,
         chat_id: &str,
@@ -907,8 +1075,11 @@ impl Store {
     pub fn count_agent_chats(&self, agent_id: &str) -> Result<i64, NeboError> {
         let conn = self.conn()?;
         conn.query_row(
-            "SELECT COUNT(*) FROM chats WHERE session_name LIKE 'agent:' || ?1 || ':%'
-               AND session_name NOT LIKE '%:workflow:%'",
+            &format!(
+                "SELECT COUNT(*) FROM chats WHERE session_name LIKE 'agent:' || ?1 || ':%'
+                   AND {}",
+                own_conversation_sql("session_name")
+            ),
             params![agent_id],
             |row| row.get(0),
         )
@@ -950,17 +1121,18 @@ impl Store {
     ) -> Result<Vec<(Chat, i64)>, NeboError> {
         let conn = self.conn()?;
         let mut stmt = conn
-            .prepare(
+            .prepare(&format!(
                 "SELECT chats.*, COALESCE(
                      (SELECT MAX(m.created_at) FROM chat_messages m WHERE m.chat_id = chats.id),
                      updated_at
                  ) AS last_activity
                  FROM chats
                  WHERE session_name LIKE 'agent:' || ?1 || ':%'
-                   AND session_name NOT LIKE '%:workflow:%'
+                   AND {}
                  ORDER BY last_activity DESC
                  LIMIT ?2",
-            )
+                own_conversation_sql("session_name")
+            ))
             .map_err(|e| NeboError::Database(e.to_string()))?;
         let rows = stmt
             .query_map(params![agent_id, limit as i64], |row| {
@@ -1044,6 +1216,11 @@ fn row_to_chat(row: &rusqlite::Row) -> rusqlite::Result<Chat> {
         title_custom: row.get("title_custom")?,
         model: row.get("model")?,
         linked_chat_id: row.get("linked_chat_id")?,
+        linked_agent_id: row.get("linked_agent_id")?,
+        linked_folder: row.get("linked_folder")?,
+        linked_used_tokens: row.get("linked_used_tokens")?,
+        linked_window_tokens: row.get("linked_window_tokens")?,
+        linked_turn_at: row.get("linked_turn_at")?,
     })
 }
 
@@ -1078,12 +1255,12 @@ impl<T> OptionalExt<T> for rusqlite::Result<T> {
 }
 
 impl Store {
-    /// Full-text search across every chat's messages (FTS5, ranked). Distinct
-    /// from search_chat_messages, which is the in-chat find (one chat, LIKE,
-    /// full rows). Tool/system rows are excluded — this searches the
-    /// conversation, not tool output. Terms are quoted so user text can't
-    /// break FTS syntax.
-    pub fn search_chats(&self, query: &str, limit: i64) -> Result<Vec<ChatSearchHit>, NeboError> {
+    /// Full-text search across every chat's messages (FTS5, ranked), or only
+    /// `chat_id`'s when given. Distinct from search_chat_messages, which is
+    /// the in-chat find (one chat, LIKE, full rows). Tool/system rows are
+    /// excluded — this searches the conversation, not tool output. Terms are
+    /// quoted so user text can't break FTS syntax.
+    pub fn search_chats(&self, query: &str, limit: i64, chat_id: Option<&str>) -> Result<Vec<ChatSearchHit>, NeboError> {
         let fts_query = query
             .split_whitespace()
             .map(|t| format!("\"{}\"", t.replace('"', "")))
@@ -1102,12 +1279,13 @@ impl Store {
                  LEFT JOIN chats c ON c.id = m.chat_id
                  WHERE chat_messages_fts MATCH ?1
                    AND m.role IN ('user', 'assistant')
+                   AND (?3 IS NULL OR m.chat_id = ?3)
                  ORDER BY rank
                  LIMIT ?2",
             )
             .map_err(|e| NeboError::Database(e.to_string()))?;
         let rows = stmt
-            .query_map(params![fts_query, limit], |row| {
+            .query_map(params![fts_query, limit, chat_id], |row| {
                 Ok(ChatSearchHit {
                     message_id: row.get(0)?,
                     chat_id: row.get(1)?,
@@ -1197,6 +1375,34 @@ impl Store {
 mod tests {
     use crate::Store;
 
+    /// An employee's threads are its own conversations: its seat for a team,
+    /// a workflow run's plumbing and a help surface are never listed, counted
+    /// or chosen as its latest thread — even when the seat is the newest.
+    #[test]
+    fn a_team_seat_is_never_one_of_the_employees_threads() {
+        let (_dir, store) = store();
+        store.create_chat_for_session("direct", "agent:nm:web", "Rates", None).unwrap();
+        store.create_chat_message("d1", "direct", "user", "what are the USPS rates?", None).unwrap();
+        store.create_chat_for_session("seat", "agent:nm:coworker:team:t1", "Team: Marketing", None).unwrap();
+        store.create_chat_message("s1", "seat", "user", "add Hermes to this team", None).unwrap();
+        store.create_chat_for_session("wf", "agent:nm:workflow:r1:a1::1", "agent:nm:workflow:r1:a1::1", None).unwrap();
+        store.create_chat_for_session("help", "agent:nm:help:architect", "help", None).unwrap();
+        set_created_at(&store, "d1", 1_000);
+        set_created_at(&store, "s1", 2_000);
+
+        let listed: Vec<String> = store
+            .list_chats_by_session_enriched("agent:nm:")
+            .unwrap()
+            .into_iter()
+            .map(|(c, _, _)| c.id)
+            .collect();
+        assert_eq!(listed, vec!["direct".to_string()]);
+        assert_eq!(store.get_latest_agent_chat("nm").unwrap().map(|c| c.id).as_deref(), Some("direct"));
+        assert_eq!(store.latest_agent_chat_preview("nm").unwrap().as_deref(), Some("what are the USPS rates?"));
+        assert_eq!(store.count_agent_chats("nm").unwrap(), 1);
+        assert!(!store.list_chats(50, 0).unwrap().iter().any(|c| c.id == "seat"), "not in the global list either");
+    }
+
     /// The sweep removes only empty `api-` rows; a conversation with a
     /// message keeps its row whatever its id.
     #[test]
@@ -1231,6 +1437,48 @@ mod tests {
         assert!(store.get_chat("c1").unwrap().unwrap().model.is_none(), "clearing returns to the default");
     }
 
+    /// A linked coding employee's conversation says the folder it works in,
+    /// as `folder` in the chat the app reads; any other chat says none.
+    #[test]
+    fn a_linked_chat_says_the_folder_it_works_in() {
+        let (_dir, store) = store();
+        store.create_chat("c1", "First").unwrap();
+        let json = serde_json::to_value(store.get_chat("c1").unwrap().unwrap()).unwrap();
+        assert!(json.get("folder").is_none(), "{json}");
+        store.set_chat_linked_folder("c1", "/Users/me/workspaces/foo").unwrap();
+        let chat = store.get_chat("c1").unwrap().unwrap();
+        assert_eq!(chat.linked_folder.as_deref(), Some("/Users/me/workspaces/foo"));
+        assert_eq!(serde_json::to_value(chat).unwrap()["folder"], "/Users/me/workspaces/foo");
+    }
+
+    /// A linked session's activity (when it last had a turn, how much of
+    /// its context window it has used) is kept for that session only: a
+    /// turn with no report keeps the last one, and another session, or a
+    /// forgotten one, starts with none.
+    #[test]
+    fn a_linked_sessions_activity_belongs_to_that_session() {
+        let (_dir, store) = store();
+        store.create_chat("c1", "First").unwrap();
+        store.set_chat_linked_session("c1", "coder", "s-1").unwrap();
+        store.set_chat_linked_activity("c1", 100, Some((1_000, 200_000))).unwrap();
+        store.set_chat_linked_activity("c1", 200, None).unwrap();
+        let chat = store.get_chat("c1").unwrap().unwrap();
+        assert_eq!((chat.linked_turn_at, chat.linked_used_tokens, chat.linked_window_tokens), (Some(200), Some(1_000), Some(200_000)));
+
+        // The same session recorded again (its agent filled in) keeps it.
+        store.set_chat_linked_session("c1", "coder", "s-1").unwrap();
+        assert_eq!(store.get_chat("c1").unwrap().unwrap().linked_used_tokens, Some(1_000));
+
+        store.set_chat_linked_session("c1", "coder", "s-2").unwrap();
+        let chat = store.get_chat("c1").unwrap().unwrap();
+        assert_eq!((chat.linked_turn_at, chat.linked_used_tokens, chat.linked_window_tokens), (None, None, None));
+
+        store.set_chat_linked_activity("c1", 300, Some((5, 10))).unwrap();
+        store.set_chat_linked_session("c1", "", "").unwrap();
+        let chat = store.get_chat("c1").unwrap().unwrap();
+        assert_eq!((chat.linked_chat_id, chat.linked_turn_at, chat.linked_used_tokens), (None, None, None));
+    }
+
     /// A linked employee's chat remembers the runtime's session once the
     /// first turn created it; a new conversation starts without one, so a
     /// rotated thread gets its own runtime session.
@@ -1240,14 +1488,24 @@ mod tests {
         store.create_chat("c1", "First").unwrap();
         assert!(store.get_chat("c1").unwrap().unwrap().linked_chat_id.is_none());
 
-        store.set_chat_linked_chat_id("c1", "api_7").unwrap();
-        assert_eq!(
-            store.get_chat("c1").unwrap().unwrap().linked_chat_id.as_deref(),
-            Some("api_7")
-        );
+        store.set_chat_linked_session("c1", "coder", "api_7").unwrap();
+        let chat = store.get_chat("c1").unwrap().unwrap();
+        assert_eq!(chat.linked_chat_id.as_deref(), Some("api_7"));
+        assert_eq!(chat.linked_agent_id.as_deref(), Some("coder"));
 
         store.create_chat("c2", "Second").unwrap();
         assert!(store.get_chat("c2").unwrap().unwrap().linked_chat_id.is_none());
+
+        // Found by the session it records, for that agent only.
+        assert_eq!(store.chat_for_linked_session("coder", "api_7").unwrap().map(|c| c.id).as_deref(), Some("c1"));
+        assert!(store.chat_for_linked_session("other", "api_7").unwrap().is_none());
+        assert!(store.chat_for_linked_session("coder", "api_8").unwrap().is_none());
+
+        // Cleared: forgotten, so the next turn opens a new session.
+        store.set_chat_linked_session("c1", "", "").unwrap();
+        let chat = store.get_chat("c1").unwrap().unwrap();
+        assert!(chat.linked_chat_id.is_none());
+        assert!(chat.linked_agent_id.is_none());
     }
 
     /// A new conversation starts clean: rotating never inherits the last
@@ -1290,7 +1548,7 @@ mod tests {
         for id in ["m1", "m2", "m3"] {
             store.create_chat_message(id, "c1", "user", id, None).unwrap();
         }
-        store.compact_chat_history("c1", "s1", "**Conversation Summary**\nfirst").unwrap();
+        store.compact_chat_history("c1", "s1", "**Conversation Summary**\nfirst", None).unwrap();
         let visible = store.get_chat_messages("c1").unwrap();
         assert_eq!(visible.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), vec!["s1"]);
         let on_disk: i64 = store
@@ -1304,9 +1562,84 @@ mod tests {
         assert_eq!(store.get_chat_messages_paginated("c1", 10, None).unwrap().len(), 2);
         assert_eq!(store.get_chat_messages_budgeted("c1", 100_000, None).unwrap().len(), 2);
         // Compact again: one visible summary, floor moved.
-        store.compact_chat_history("c1", "s2", "**Conversation Summary**\nsecond").unwrap();
+        store.compact_chat_history("c1", "s2", "**Conversation Summary**\nsecond", None).unwrap();
         let visible = store.get_chat_messages("c1").unwrap();
         assert_eq!(visible.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), vec!["s2"]);
+    }
+
+    /// The model's conversation starts at the latest checkpoint boundary,
+    /// the boundary included; with none it is every row. The owner's thread
+    /// still reads every row.
+    #[test]
+    fn boundary_load_starts_at_latest_checkpoint() {
+        let (_dir, store) = store();
+        store.create_chat("c1", "Chat").unwrap();
+        let ids = |rows: Vec<crate::models::ChatMessage>| rows.into_iter().map(|m| m.id).collect::<Vec<_>>();
+        for (i, id) in ["m1", "m2"].iter().enumerate() {
+            store.create_chat_message(id, "c1", "user", id, None).unwrap();
+            set_created_at(&store, id, 100 + i as i64);
+        }
+        assert_eq!(ids(store.get_chat_messages_since_checkpoint("c1").unwrap()), vec!["m1", "m2"]);
+
+        let boundary = Some(r#"{"checkpoint":true}"#);
+        store.create_chat_message("b1", "c1", "user", "first summary", boundary).unwrap();
+        set_created_at(&store, "b1", 102);
+        store.create_chat_message("m3", "c1", "assistant", "m3", Some("not json")).unwrap();
+        set_created_at(&store, "m3", 103);
+        store.create_chat_message("b2", "c1", "user", "second summary", boundary).unwrap();
+        set_created_at(&store, "b2", 104);
+        // Same second as the boundary, written after it: loads.
+        store.create_chat_message("m4", "c1", "user", "m4", None).unwrap();
+        set_created_at(&store, "m4", 104);
+        store.create_chat_message("m5", "c1", "assistant", "m5", Some(r#"{"checkpoint":false}"#)).unwrap();
+        set_created_at(&store, "m5", 105);
+
+        assert_eq!(ids(store.get_chat_messages_since_checkpoint("c1").unwrap()), vec!["b2", "m4", "m5"]);
+        assert_eq!(store.get_chat_messages("c1").unwrap().len(), 7, "the thread keeps every row");
+    }
+
+    /// The error a failed run left for the owner is in the thread, never in
+    /// the model's conversation.
+    #[test]
+    fn the_model_never_reads_a_run_error() {
+        let (_dir, store) = store();
+        store.create_chat("c1", "Chat").unwrap();
+        let ids = |rows: Vec<crate::models::ChatMessage>| rows.into_iter().map(|m| m.id).collect::<Vec<_>>();
+        store.create_chat_message("m1", "c1", "user", "Draft the letter.", None).unwrap();
+        set_created_at(&store, "m1", 100);
+        store
+            .create_chat_message("e1", "c1", "system", "USAGE_LIMIT_EXCEEDED: no balance", Some(r#"{"runError":true}"#))
+            .unwrap();
+        set_created_at(&store, "e1", 101);
+        store.create_chat_message("m2", "c1", "user", "Try again.", None).unwrap();
+        set_created_at(&store, "m2", 102);
+
+        assert_eq!(ids(store.get_chat_messages_since_checkpoint("c1").unwrap()), vec!["m1", "m2"]);
+        assert_eq!(ids(store.get_chat_messages("c1").unwrap()), vec!["m1", "e1", "m2"], "the thread keeps it");
+    }
+
+    /// Rows stored while a checkpoint's summary was written sit before its
+    /// boundary, yet the summary never read them: the load keeps every row
+    /// after the one the boundary heard through, read after the boundary,
+    /// and never the owner's marker.
+    #[test]
+    fn boundary_load_keeps_rows_its_summary_never_read() {
+        let (_dir, store) = store();
+        store.create_chat("c1", "Chat").unwrap();
+        let ids = |rows: Vec<crate::models::ChatMessage>| rows.into_iter().map(|m| m.id).collect::<Vec<_>>();
+        let rows = [
+            ("m1", "user", None),
+            ("m2", "assistant", None),
+            ("late", "user", None),
+            ("marker", "system", Some(r#"{"compactBoundary":true}"#)),
+            ("b1", "user", Some(r#"{"checkpoint":true,"heardThrough":"m2"}"#)),
+            ("m3", "user", None),
+        ];
+        for (i, (id, role, meta)) in rows.iter().enumerate() {
+            store.create_chat_message(id, "c1", role, id, *meta).unwrap();
+            set_created_at(&store, id, 100 + i as i64);
+        }
+        assert_eq!(ids(store.get_chat_messages_since_checkpoint("c1").unwrap()), vec!["b1", "late", "m3"]);
     }
 
     /// Frozen renderings round-trip and never overwrite.
@@ -1463,6 +1796,34 @@ mod tests {
             .map(|m| m.id)
             .collect();
         assert_eq!(older, vec!["m1", "m2"], "before-cursor page, ascending");
+    }
+
+    /// A turn's attachment rows (`isMeta`) never cost the page its budget:
+    /// with nine large hidden rows after the conversation, the first page
+    /// still carries the owner's messages before them.
+    #[test]
+    fn hidden_rows_do_not_fill_the_page() {
+        let (_dir, store) = store();
+        store.create_chat("c1", "Chat").unwrap();
+        for (id, ts) in [("m1", 100), ("m2", 200), ("m3", 300)] {
+            store.create_chat_message(id, "c1", "user", id, None).unwrap();
+            set_created_at(&store, id, ts);
+        }
+        let listing = "x".repeat(5_000);
+        for i in 0..9 {
+            let id = format!("meta{i}");
+            store
+                .create_chat_message(&id, "c1", "user", &listing, Some(r#"{"isMeta":true}"#))
+                .unwrap();
+            set_created_at(&store, &id, 400 + i);
+        }
+        let page: Vec<String> = store
+            .get_chat_messages_budgeted("c1", 12_000, None)
+            .unwrap()
+            .into_iter()
+            .map(|m| m.id)
+            .collect();
+        assert_eq!(page, vec!["m1", "m2", "m3"]);
     }
 
     /// `has_chat_messages_before` answers what a page can still load: rows

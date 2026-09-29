@@ -4,21 +4,22 @@ description: |
   A command that succeeds and prints nothing. The result says "(exit 0, no
   output)". The model must report exactly that, not retry, not call the tool
   broken, not invent output.
-target_component: os
+target_component: run_command
 
 conversation:
   - role: user
     content: "Run the command `true` and tell me exactly what it printed."
 
 tool_config:
-  os:
+  run_command:
     enabled: true
 
 prompt_assertions:
   first_call:
     - id: runs-it
-      text: "Model runs `true` with os(resource: 'shell', action: 'exec')"
+      text: "Model runs `true` with run_command"
       severity: critical
+      check: { first_call: true, tool: run_command, arg: command, matches: "\\btrue\\b" }
   recovery:
     - id: honest-empty
       text: "Model tells the user the command succeeded (exit 0) and printed nothing"

@@ -217,6 +217,17 @@ fn default_content_blocks(content: &str, call_count: usize) -> Vec<serde_json::V
     blocks
 }
 
+/// Whether the owner's thread shows a stored message: every row but the
+/// ones stamped `isMeta` (the house talking to itself: preloads, hidden
+/// prompts, the harness's attachment rows).
+pub fn is_owner_visible(m: &db::models::ChatMessage) -> bool {
+    m.metadata
+        .as_deref()
+        .and_then(|meta| serde_json::from_str::<serde_json::Value>(meta).ok())
+        .and_then(|v| v.get("isMeta").and_then(|f| f.as_bool()))
+        != Some(true)
+}
+
 /// Prepare stored messages for a human transcript.
 ///
 /// Internal turns are dropped: a message carrying `isMeta` was written by the
@@ -229,13 +240,7 @@ fn default_content_blocks(content: &str, call_count: usize) -> Vec<serde_json::V
 /// 2. New metadata with only contentBlocks (persisted block order) — build toolCalls, use persisted order
 /// 3. No metadata — build everything, fall back to text→tools order
 pub fn build_message_metadata(messages: &mut Vec<db::models::ChatMessage>) {
-    messages.retain(|m| {
-        m.metadata
-            .as_deref()
-            .and_then(|meta| serde_json::from_str::<serde_json::Value>(meta).ok())
-            .and_then(|v| v.get("isMeta").and_then(|f| f.as_bool()))
-            != Some(true)
-    });
+    messages.retain(is_owner_visible);
     // Phase 1: Collect tool result statuses from role="tool" messages — and
     // bound what a listed result carries (see RESULT_PREVIEW_CHARS).
     let mut tool_statuses: HashMap<String, bool> = HashMap::new();
@@ -293,19 +298,18 @@ pub fn build_message_metadata(messages: &mut Vec<db::models::ChatMessage>) {
         }
     }
 
-    // Phase 1b: a team post relayed into a member's own thread is stored as
-    // the prompt the model read — "[Team \"Customer Support\" — mission]\n
-    // [Post from Owner]\n\n<text>". The model needs that envelope; a person
-    // does not, and every client was printing it raw. Derive the display
-    // fields here, at read time, in the one place both clients read, so old
-    // rows get them too and nothing has to be re-stored.
+    // Phase 1b: a team post a member was asked to act on is stored in its
+    // seat for the team as the prompt the model read — "[Team \"Customer
+    // Support\" — mission]\n[Post from Owner]\n\n<text>". The model needs
+    // that envelope; a person does not, and every client was printing it raw.
+    // Derive the display fields here, at read time, in the one place both
+    // clients read, so old rows get them too and nothing has to be re-stored.
     //
-    // The row's CONTENT decides — not a flag. Only one of the two writers ever
-    // set `teamPost: true` (the context-only relay); the lead's row and every
-    // addressed member's row are written by the runner from the same envelope
-    // with no flag at all, and those threads rendered the envelope raw
-    // (2026-09-19). The flag survives as the carrier of `teamId`, which the
-    // text does not hold.
+    // The row's CONTENT decides — not a flag. `teamPost: true` was only ever
+    // set by the retired context-only relay (migration 0187 took those copies
+    // out of members' threads; a copy whose team has no thread left keeps
+    // the flag as the carrier of `teamId`, which the text does not hold). The
+    // runner writes the asked member's row with no flag at all.
     for msg in messages.iter_mut() {
         if msg.role != "user" {
             continue;
@@ -381,7 +385,13 @@ pub fn build_message_metadata(messages: &mut Vec<db::models::ChatMessage>) {
                     .iter()
                     .map(|b| {
                         if b.get("type").and_then(|v| v.as_str()) == Some("text") {
-                            serde_json::json!({"type": "text", "text": msg.content})
+                            // The verdict the stream gave the segment
+                            // (`text_fold`) replays with it.
+                            let mut text = serde_json::json!({"type": "text", "text": msg.content});
+                            if let Some(fold) = b.get("fold") {
+                                text["fold"] = fold.clone();
+                            }
+                            text
                         } else {
                             b.clone()
                         }
@@ -525,11 +535,11 @@ pub async fn get_companion_chat(
     // session_reset), the session's active_chat_id may point to a different chat than
     // what get_companion_chat_by_user() returns. Always load messages from the active chat.
     let active_chat_id = state
-        .runner
+        .harness
         .sessions()
         .resolve_session_id_by_key(session_key)
         .ok()
-        .map(|sid| state.runner.sessions().active_chat_id(&sid))
+        .map(|sid| state.harness.sessions().active_chat_id(&sid))
         .unwrap_or_else(|| chat.id.clone());
 
     let mut messages = state
@@ -564,7 +574,7 @@ pub async fn create_companion_chat(
             .unwrap_or(&existing_chat.id);
         if let Ok(Some(session)) = state.store.get_session_by_name(session_key) {
             let new_chat_id = state
-                .runner
+                .harness
                 .sessions()
                 .rotate_chat(&session.id, Some(COMPANION_USER_ID))
                 .map_err(to_error_response)?;
@@ -665,11 +675,11 @@ pub async fn list_chat_days(
     // Resolve active chat_id from session (same pattern as get_companion_chat)
     let session_key = chat.session_name.as_deref().unwrap_or(&chat.id);
     let active_chat_id = state
-        .runner
+        .harness
         .sessions()
         .resolve_session_id_by_key(session_key)
         .ok()
-        .map(|sid| state.runner.sessions().active_chat_id(&sid))
+        .map(|sid| state.harness.sessions().active_chat_id(&sid))
         .unwrap_or_else(|| chat.id.clone());
 
     let days = state
@@ -707,11 +717,11 @@ pub async fn get_chat_history_by_day(
     // Resolve active chat_id from session (same pattern as get_companion_chat)
     let session_key = chat.session_name.as_deref().unwrap_or(&chat.id);
     let active_chat_id = state
-        .runner
+        .harness
         .sessions()
         .resolve_session_id_by_key(session_key)
         .ok()
-        .map(|sid| state.runner.sessions().active_chat_id(&sid))
+        .map(|sid| state.harness.sessions().active_chat_id(&sid))
         .unwrap_or_else(|| chat.id.clone());
 
     let mut messages = state
@@ -768,11 +778,11 @@ pub async fn get_chat_messages(
     // chat_id.  Resolve via the session's active_chat_id when possible so we
     // always load from the correct (possibly rotated) conversation.
     let resolved_id = state
-        .runner
+        .harness
         .sessions()
         .resolve_session_id_by_key(&id)
         .ok()
-        .map(|sid| state.runner.sessions().active_chat_id(&sid))
+        .map(|sid| state.harness.sessions().active_chat_id(&sid))
         .unwrap_or_else(|| id.clone());
 
     tracing::info!(
@@ -807,7 +817,7 @@ pub async fn get_chat_messages(
         .and_then(|c| c.session_name);
     let active_run = session_key
         .as_deref()
-        .and_then(|key| state.runner.active_turn_status(key));
+        .and_then(|key| state.harness.active_turn_status(key));
     let pending_ask = match session_key.as_deref() {
         Some(key) => state.run_registry.pending_ask_for_session(key).await,
         None => None,
@@ -898,10 +908,10 @@ mod transcript_metadata_tests {
     }
 
     /// A team post is unpacked for the clients whether or not the row carries
-    /// the `teamPost` flag. The flag is only ever set on the context-only
-    /// relay; the lead's row and an addressed member's row are written by the
-    /// runner from the same envelope with no metadata at all, and those
-    /// threads used to print "[Team \"…\" — …]" at the reader.
+    /// the `teamPost` flag. The flag was only ever set by the retired
+    /// context-only relay; the lead's row and an addressed member's row are
+    /// written by the runner from the same envelope with no metadata at all,
+    /// and those threads used to print "[Team \"…\" — …]" at the reader.
     #[test]
     fn a_team_post_is_unpacked_with_or_without_the_flag() {
         let envelope =
@@ -960,6 +970,33 @@ mod transcript_metadata_tests {
         build_message_metadata(&mut messages);
         assert_eq!(messages.len(), 2);
         assert!(messages.iter().all(|m| m.content != "system nudge"));
+    }
+
+    /// The harness's attachment rows are model history, never the owner's
+    /// thread: written by the one reminder path, dropped by the transcript.
+    #[test]
+    fn owner_thread_hides_attachment_rows() {
+        use agent::harness::events::{Threshold, TurnEvent};
+        let path = std::env::temp_dir().join(format!("nebo-owner-thread-{}.db", uuid::Uuid::new_v4()));
+        let store = std::sync::Arc::new(db::Store::new(path.to_str().unwrap()).unwrap());
+        let sessions = agent::SessionManager::new(store.clone());
+        let session_id = sessions.get_or_create("agent:a1:web", "").unwrap().id;
+        sessions.append_message(&session_id, "user", "Draft the plan", None, None, None).unwrap();
+        let mut reminders = agent::harness::reminders::Reminders::default();
+        reminders.add(&TurnEvent::Usage(Threshold::Context { percent_full: 82 }));
+        reminders.add(&TurnEvent::GoalSet("all tests pass".into()));
+        reminders.write(&sessions, &session_id).unwrap();
+        sessions.append_message(&session_id, "assistant", "On it.", None, None, None).unwrap();
+
+        let mut messages = store.get_chat_messages(&sessions.active_chat_id(&session_id)).unwrap();
+        assert_eq!(
+            messages.iter().filter(|m| agent::harness::reminders::attachment_kind(m).is_some()).count(),
+            2,
+            "the model's history carries both rows"
+        );
+        build_message_metadata(&mut messages);
+        let contents: Vec<&str> = messages.iter().map(|m| m.content.as_str()).collect();
+        assert_eq!(contents, ["Draft the plan", "On it."]);
     }
 
     /// An assistant message with a tool_calls column gets UI metadata built:
@@ -1033,6 +1070,24 @@ mod transcript_metadata_tests {
         assert_eq!(blocks[0]["type"], "tool"); // tool FIRST, as streamed
         assert_eq!(blocks[1]["type"], "text");
         assert_eq!(blocks[1]["text"], "Here's the file.");
+    }
+
+    /// A text block's stored verdict (`text_fold`) replays with its text, so
+    /// a reloaded thread folds the same paragraphs the live one did.
+    #[test]
+    fn a_stored_verdict_replays_on_its_text_block() {
+        let mut assistant = msg("assistant", "Let me check the workflows.");
+        assistant.tool_calls = Some(r#"[{"id":"t1","name":"os","input":{}}]"#.to_string());
+        assistant.metadata = Some(
+            r#"{"contentBlocks":[{"type":"text","fold":"folded"},{"type":"tool","toolCallIndex":0}]}"#.to_string(),
+        );
+        let mut messages = vec![assistant];
+        build_message_metadata(&mut messages);
+        let meta: serde_json::Value = serde_json::from_str(messages[0].metadata.as_deref().unwrap()).unwrap();
+        let blocks = meta["contentBlocks"].as_array().unwrap();
+        assert_eq!(blocks[0]["fold"], "folded");
+        assert_eq!(blocks[0]["text"], "Let me check the workflows.");
+        assert!(blocks[1].get("fold").is_none());
     }
 
     /// build_ui_tool_calls: string inputs pass through raw, object inputs are

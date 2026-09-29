@@ -122,7 +122,7 @@ mod bundled_skill_tests {
         assert!(content.contains("NeboAppSDK.nebo.identity.get()"), "the skill shows the real global");
         assert!(content.contains("/sdk/nebo.global.js"), "the skill loads the served bundle");
         assert!(
-            content.contains("resource: \"registry\", action: \"delete\""),
+            content.contains("delete_employee(name:"),
             "the skill sends deletion through the registry door, not the folder"
         );
     }
@@ -142,8 +142,8 @@ mod bundled_skill_tests {
             .nth(1)
             .expect("the skill has an Iterate section");
         assert!(
-            iterate.contains("action: \"update\""),
-            "Iterate must send the change through the registry door: {iterate}"
+            iterate.contains("update_employee("),
+            "Iterate must send the change through update_employee: {iterate}"
         );
         assert!(
             !iterate.contains("file tool"),

@@ -47,19 +47,19 @@ conversation:
     content: "Follow-up on the first file only: what exactly was the BATCH-ID line in part01.txt? Reply with the exact id. If you genuinely no longer have it in context, re-read that one file rather than guessing."
 
 tool_config:
-  os:
+  read_file:
     enabled: true
 
 prompt_assertions:
   first_call:
     - id: first-large-read-happened
-      text: "The trace contains an os file read of part01.txt (the compaction pressure is meaningless if the reads never happened)"
+      text: "The trace contains a read_file of part01.txt (the compaction pressure is meaningless if the reads never happened)"
       severity: critical
-      check: { tool: [os, system], arg: path, contains: "part01.txt" }
+      check: { tool: read_file, arg: path, contains: "part01.txt" }
     - id: last-large-read-happened
-      text: "The trace also contains an os file read of part14.txt — the sweep actually reached the volume that crosses the compaction threshold"
+      text: "The trace also contains a read_file of part14.txt — the sweep actually reached the volume that crosses the compaction threshold"
       severity: important
-      check: { tool: [os, system], arg: path, contains: "part14.txt" }
+      check: { tool: read_file, arg: path, contains: "part14.txt" }
     - id: batch-ids-reported
       text: "After the sweep the model reports the batch ids, including QK-01-CINNABAR for part01 and QK-14-SCHIST for part14 (real content, not invented ids)"
       severity: critical
@@ -80,7 +80,7 @@ ideal_behavior:
   tool_calls: 14
   total_tokens: 250000
   narrative: |
-    Fourteen sequential os file reads, one per part file, then a list of the
+    Fourteen sequential read_file calls, one per part file, then a list of the
     fourteen BATCH-IDs. Turn 2 answers QK-01-CINNABAR — directly if the first
     read survived compaction in usable form, or after one honest re-read of
     part01.txt if it did not. Total 14-15 tool calls.

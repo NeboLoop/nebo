@@ -174,7 +174,7 @@ vm-rootfs:
 	docker export rootfs-tmp > vm/build/rootfs.tar
 	docker rm rootfs-tmp
 	@echo "Converting to raw disk image..."
-	@# Create a raw ext4 image from the tarball (same format as Claude's rootfs.img)
+	@# Create a raw ext4 image from the tarball (the VM's rootfs.img format)
 	dd if=/dev/zero of=vm/build/rootfs.img bs=1M count=512
 	mkfs.ext4 -F vm/build/rootfs.img
 	mkdir -p /tmp/nebo-rootfs-mnt
@@ -540,10 +540,10 @@ stage-ripgrep:
 #
 #   make test-live                        # smoke suite, LLM-judged
 #   make test-live SUITE=error-handling   # any suite in suites/
-#   make test-live FIXTURE=fixtures/tools/os-file-read.yaml
+#   make test-live FIXTURE=fixtures/tools/read-file.yaml
 #   make test-live-fast                   # program checks only, no claude CLI
 #
-# Prose assertions are graded by Claude Code (`claude -p`), so the CLI must be
+# Prose assertions are graded by the `claude` CLI (`claude -p`), so it must be
 # installed for `test-live`. `test-live-fast` skips the judge and decides from
 # structured `check:` blocks alone — deterministic and free, but silent on any
 # fixture that has no `check:`.
@@ -556,7 +556,7 @@ test-live: $(NEBO_CLI)
 	@curl -sf -m 3 http://$(TEST_SERVER)/health >/dev/null \
 		|| { echo "No Nebo on $(TEST_SERVER) — start one with 'make dev' first."; exit 1; }
 	@command -v claude >/dev/null \
-		|| { echo "Claude Code CLI not found — it grades the prose assertions. Use 'make test-live-fast' to skip the judge."; exit 1; }
+		|| { echo "claude CLI not found — it grades the prose assertions. Use 'make test-live-fast' to skip the judge."; exit 1; }
 ifdef FIXTURE
 	$(NEBO_CLI) test run --fixture $(FIXTURE) --server $(TEST_SERVER)
 else
@@ -608,6 +608,20 @@ test-engine-proof: $(NEBO_CLI)
 .PHONY: test-staffed-proof
 test-staffed-proof: $(NEBO_CLI)
 	$(NEBO_CLI) test run --suite suites/staffed-company.yaml --no-judge
+# The app-sidecar proof (suites/app-sidecars.yaml, fixtures/app-sidecars/):
+# a real sidecar killed, crashed, starved and removed, and the app serving
+# again or saying exactly why not. nebo-server lib tests, like the above.
+# The memory proof (suites/memory-proof.yaml, fixtures/memory/proof/): local
+# memory shared across employees, private memory kept, nothing filed under
+# one conversation, the global store only through its own door, each as a
+# real turn on the in-process server with a scripted model. nebo-server lib
+# tests, like the above. The model-driven half is suites/memory.yaml (gate).
+.PHONY: test-memory-proof
+test-memory-proof: $(NEBO_CLI)
+	$(NEBO_CLI) test run --suite suites/memory-proof.yaml --no-judge
+.PHONY: test-sidecar-proof
+test-sidecar-proof: $(NEBO_CLI)
+	$(NEBO_CLI) test run --suite suites/app-sidecars.yaml --no-judge
 # The real-model half (suites/engine-live.yaml): a running Nebo and an
 # address you own.
 test-engine-live:
@@ -616,7 +630,7 @@ test-engine-live:
 # Deterministic tool cases over /agent/mcp — no model, seconds, free. The
 # fastest loop for any tool-shaped change (checkpoint/plan/git refusals).
 #   make test-tools                 # all
-#   make test-tools CASE=os-plan    # id prefix
+#   make test-tools CASE=plan       # id prefix
 .PHONY: test-tools
 test-tools:
 	@TEST_SERVER=$(TEST_SERVER) CASE=$(CASE) bash scripts/test-tools.sh
@@ -649,7 +663,7 @@ $(NEBO_CLI):
 	@echo "Building the test CLI (make build)..." && $(MAKE) build
 
 # The gate CI runs on every PR (.github/workflows/harness-gate.yml), locally:
-# smoke + error-correction with program checks only, against the dev server.
+# smoke, error-correction and memory with program checks only, against the dev server.
 # A failed critical check exits non-zero. Pass MODEL to pin the model the way
 # CI does (CI uses anthropic/claude-haiku-4-5-20251001).
 test-gate: $(NEBO_CLI)
@@ -657,6 +671,7 @@ test-gate: $(NEBO_CLI)
 		|| { echo "No Nebo on $(TEST_SERVER) — start one with 'make dev' first."; exit 1; }
 	$(NEBO_CLI) test run --suite suites/smoke.yaml --no-judge --runs 3 --server $(TEST_SERVER) $(if $(MODEL),--model $(MODEL),)
 	$(NEBO_CLI) test run --suite suites/error-correction.yaml --no-judge --server $(TEST_SERVER) $(if $(MODEL),--model $(MODEL),)
+	$(NEBO_CLI) test run --suite suites/memory.yaml --no-judge --server $(TEST_SERVER) $(if $(MODEL),--model $(MODEL),)
 
 # What the nightly lane runs: judged, three runs, and the correction rate must
 # clear the same floor CI uses. Billed grader calls; takes most of an hour.

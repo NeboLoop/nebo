@@ -1,0 +1,24 @@
+id: use-skill-files-readable
+name: "The folder use_skill hands an employee is readable, and never changed"
+description: |
+  v0.16.0 release proof: `use_skill` told the model "This skill's files
+  are in: <nebo-home>/nebo/plugins/quickbooks/0.1.10/skills/…", and the
+  fence on Nebo's own files refused that very folder
+  (correction-plugin-discover-installed run 1, calls #15-16;
+  plugin-many-skills-fan-out run 2, calls #8-9). The model then built a
+  workflow nobody asked for. The folder of every skill an installed plugin
+  ships (the first folder holding a SKILL.md below the plugin's own, as
+  the skill loader finds it) is now read by every run and changed by none.
+  This proof installs a plugin as the marketplace lays it out, loads its
+  skill with use_skill through the real server, and follows the skill's
+  own instructions: read_file of the folder use_skill names and of the
+  file the skill points to, the script it says to run, `ls` and `cat` of
+  the folder. A write_file into the skill and a command appending to it
+  are refused and the file is unchanged. The plugin's program, its
+  manifest, its account, its data and Nebo's settings stay closed to the
+  file tools, a command that names them, and one that walks to them with
+  `..` from the skill's folder.
+  Mechanical, no model: a deterministic proof through the real server.
+target_component: permissions
+proof: nebo_files_proof::an_employee_reads_what_use_skill_hands_it
+conversation: []

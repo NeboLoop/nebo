@@ -1,7 +1,7 @@
 ### code — Code Intelligence (read-only)
 USE THIS when: working in source code — before reading a large file blind, to find a symbol by name, to check a file's syntax, or to search code structurally.
 
-Read-only tree-sitter parsing compiled into Nebo (rust, typescript, tsx, javascript, python, go, json, yaml, toml, bash, html, css, markdown). outline/symbols/parse_check/query/context need no external processes and work offline. diagnostics/definition/references/hover additionally use a language server ALREADY INSTALLED on this machine (rust-analyzer, typescript-language-server, pyright, gopls, clangd) — Nebo never installs one; without it those actions return the factual line "(no language server for <lang> detected — outline/parse_check/query still available)". Edits stay on os(resource: "file", action: "edit") — its result already appends the same syntax check for these languages, plus language-server diagnostics when a server is available.
+Read-only tree-sitter parsing compiled into Nebo (rust, typescript, tsx, javascript, python, go, json, yaml, toml, bash, html, css, markdown). outline/symbols/parse_check/query/context need no external processes and work offline. diagnostics/definition/references/hover additionally use a language server ALREADY INSTALLED on this machine (rust-analyzer, typescript-language-server, pyright, gopls, clangd) — Nebo never installs one; without it those actions return the factual line "(no language server for <lang> detected — outline/parse_check/query still available)". Edits stay on edit_file — its result already appends the same syntax check for these languages, plus language-server diagnostics when a server is available.
 
 | action | what it returns | required params | optional |
 |--------|-----------------|-----------------|----------|
@@ -17,8 +17,8 @@ Read-only tree-sitter parsing compiled into Nebo (rust, typescript, tsx, javascr
 
 Workflow for a large unfamiliar file:
 1. code(action: "outline", path: "/src/runner.rs") — see the structure first
-2. os(resource: "file", action: "read", path: ..., offset: <start>, limit: <lines>) — read only the symbol you need
-3. os(resource: "file", action: "edit", ...) — the edit result appends "syntax OK (rust)" or the parse errors
+2. read_file(path: ..., offset: <start>, limit: <lines>) — read only the symbol you need
+3. edit_file(path: ..., old_string: ..., new_string: ...) — the edit result appends "syntax OK (rust)" or the parse errors
 4. If the edit result reports syntax errors, fix them before moving on — the errors name the line.
 5. An edit result may end with a `[hook ...]` note from the project's own checks (a hooks file, or the inferred `cargo check` / `go vet` / `tsc` / `ruff`). A failing check is the next thing to fix, before any further edits or reporting done.
 

@@ -17,6 +17,8 @@
 set -u
 
 TEST_SERVER="${TEST_SERVER:-127.0.0.1:27895}"
+. "$(dirname "$0")/install-key.sh"
+TEST_SERVER="$(with_install_key "$TEST_SERVER")"
 REPLAY_RUNS="${REPLAY_RUNS:-1}"
 DEADLINE_SECS=240
 FAIL_TOOL_CALLS=20

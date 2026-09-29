@@ -1,13 +1,12 @@
 //! Passive cross-file diagnostics: what a language server published for
 //! files the employee did NOT just touch (an edit in `a.rs` that breaks
-//! `b.rs`), delivered once, with the reference's caps, at the top of the
-//! next iteration. The touched file's own diagnostics ride on its write
+//! `b.rs`), delivered once, within fixed caps, at the top of the next
+//! iteration. The touched file's own diagnostics ride on its write
 //! result (`file_tool::syntax_note`); this feed is everything else.
 //!
-//! Caps and the dedup rule are copied from the reference so an agent that
-//! has learned its rhythm sees the same one here: 10 per file, 30 in total,
-//! a 500-file LRU of what was already delivered, errors first, a 4000-char
-//! summary. Editing a file forgets what was delivered for it, so an error
+//! The caps and the dedup rule keep the feed short and steady: 10 per
+//! file, 30 in total, a 500-file LRU of what was already delivered, errors
+//! first, a 4000-char summary. Editing a file forgets what was delivered for it, so an error
 //! the employee reintroduces is shown again.
 use std::collections::{HashSet, VecDeque};
 use std::sync::Mutex;
@@ -107,7 +106,7 @@ fn render(files: &[(String, String, Vec<Diag>)]) -> String {
         out = format!("{head}…[summary truncated at {MAX_SUMMARY_CHARS} chars; {omitted_lines} lines not shown]");
     }
     format!(
-        "<new-diagnostics>The following new diagnostic issues were detected:\n\n{}</new-diagnostics>",
+        "<diagnostics>New problems found in other files:\n\n{}</diagnostics>",
         out.trim_end()
     )
 }
@@ -150,9 +149,9 @@ mod tests {
         let mut l = DeliveredLedger::default();
         let err = || d(7, Severity::Error, "mismatched types");
         let first = l.take_new(vec![file("/p/b.rs", vec![err()])]).expect("first delivery");
-        assert!(first.starts_with("<new-diagnostics>The following new diagnostic issues were detected:"), "{first}");
+        assert!(first.starts_with("<diagnostics>New problems found in other files:"), "{first}");
         assert!(first.contains("/p/b.rs (rust-analyzer):\n  line 7:1 [error] mismatched types"), "{first}");
-        assert!(first.ends_with("</new-diagnostics>"), "{first}");
+        assert!(first.ends_with("</diagnostics>"), "{first}");
         assert!(l.take_new(vec![file("/p/b.rs", vec![err()])]).is_none(), "same diagnostic is not re-billed");
         l.clear("/p/c.rs");
         assert!(l.take_new(vec![file("/p/b.rs", vec![err()])]).is_none(), "clearing another file changes nothing");
@@ -190,7 +189,7 @@ mod tests {
         let s = l.take_new(reports).unwrap();
         assert!(s.contains("…[summary truncated at 4000 chars; "), "{s}");
         assert!(s.contains(" lines not shown]"), "{s}");
-        // the cap is on the summary; the <new-diagnostics> wrapper sits outside it
+        // the cap is on the summary; the <diagnostics> wrapper sits outside it
         assert!(s.chars().count() < MAX_SUMMARY_CHARS + 200, "{}", s.len());
         // LRU: after 500 more files, the first ones are forgotten and deliver again.
         for i in 0..MAX_DELIVERED_FILES {

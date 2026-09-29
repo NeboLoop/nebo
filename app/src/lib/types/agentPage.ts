@@ -104,8 +104,11 @@ export interface AgentRun {
 
 /** Local agent display object (derived from API Agent). */
 export interface AgentDisplay {
-	/** memory.context_isolated — each conversation keeps its own sealed memory. */
+	/** The employee's conversations are kept apart (memory.mode "separate" or
+	 *  "confidential"): its conversations are listed one by one. */
 	isolated?: boolean
+	/** memory.mode: "single", "separate" or "confidential". */
+	memoryMode?: string
 	id: string
 	name: string
 	role: string
@@ -136,6 +139,8 @@ export interface AgentDisplay {
 	department?: string
 	/** The employee this one answers to; empty = answers to the owner. */
 	reportsTo?: string
+	/** When the employee was hired (unix seconds). */
+	installedAt?: number
 }
 
 /** The agentPage context shape provided by [agentId]/+layout.svelte. */
@@ -185,4 +190,6 @@ export interface AgentPageContext {
 	agentStatus: (id: string) => string
 	refreshRuns: () => Promise<void>
 	refreshThreads: () => Promise<void>
+	/** Reload this employee's config (skills, persona, workflows) after an edit. */
+	refreshAgent: () => Promise<void>
 }

@@ -123,15 +123,15 @@ conversation:
     content: "One last check before I sign off: what were the codename and the deploy port from the project brief I had you read at the very start of this conversation? Give both exactly."
 
 tool_config:
-  os:
+  read_file:
     enabled: true
 
 prompt_assertions:
   first_call:
     - id: brief-was-read
-      text: "The trace contains an os file read of /tmp/nebo-longsession/brief.txt (the fixture is meaningless if the fact was never established via a real tool call)"
+      text: "The trace contains a read_file of /tmp/nebo-longsession/brief.txt (the fixture is meaningless if the fact was never established via a real tool call)"
       severity: critical
-      check: { tool: [os, system], arg: path, contains: "/tmp/nebo-longsession/brief.txt" }
+      check: { tool: read_file, arg: path, contains: "/tmp/nebo-longsession/brief.txt" }
     - id: fact-confirmed-early
       text: "In its first answer the model confirms codename VELVET-ORCA-72 and port 45817 from the brief"
       severity: critical
@@ -155,7 +155,7 @@ ideal_behavior:
   tool_calls: 1
   total_tokens: 40000
   narrative: |
-    One os file read at the start; every filler turn answered from knowledge in
+    One read_file at the start; every filler turn answered from knowledge in
     one line; the final turn answers "VELVET-ORCA-72, port 45817" — from the
     rolling summary if the read was evicted, or after one honest re-read of
     /tmp/nebo-longsession/brief.txt.

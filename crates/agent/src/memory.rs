@@ -85,10 +85,6 @@ const MIN_CONFIDENCE_THRESHOLD: f64 = 0.65;
 const NEW_MEMORY_ACCESS_PRIOR: f64 = 3.0;
 const NEW_MEMORY_GRACE_DAYS: f64 = 14.0;
 
-/// Max characters per message when building extraction prompt.
-const MAX_CONTENT_PER_MESSAGE: usize = 500;
-/// Max total characters for extraction prompt.
-const MAX_CONVERSATION_CHARS: usize = 15000;
 
 /// Resolve confidence from raw value and explicit flag.
 /// Explicit facts get 0.9, inferred facts get 0.6, raw value used as fallback.
@@ -149,31 +145,95 @@ fn extract_confidence_from_metadata(mem: &Memory) -> Option<f64> {
 }
 
 /// Extract facts from conversation messages.
-/// When `store` and `user_id` are provided, existing memory keys are loaded
+/// When `existing` (the store and the scope's user id) is provided, existing memory keys are loaded
 /// and included in the prompt so the LLM avoids extracting duplicates.
 /// `topics` are the scope's declared memory topics (agent.json `memory.topics`);
 /// when non-empty they replace the generic `project` category in the prompt.
 /// `model` overrides the provider's default model (empty = provider default).
+/// `goal` is the session's agreed goal, when it has one: what the ongoing
+/// work is for. `window_tokens` is the extraction model's window: the
+/// conversation fills up to half of it.
 pub async fn extract_facts(
     trace: ai::RequestTrace,
     provider: &dyn Provider,
     messages: &[ChatMessage],
-    store: Option<&Store>,
-    user_id: Option<&str>,
+    existing: Option<(&Store, &str)>,
     topics: &[MemoryTopic],
     model: &str,
+    goal: Option<&str>,
+    window_tokens: usize,
 ) -> Option<ExtractedFacts> {
-    let conversation = build_conversation_text(messages);
+    let conversation = build_conversation_text(messages, window_tokens);
     if conversation.is_empty() {
         return None;
     }
 
     // Pattern 9: load existing memory keys to prevent duplicate extraction
-    let existing_memories_section = match (store, user_id) {
-        (Some(s), Some(uid)) => build_existing_memories_section(s, uid),
-        _ => String::new(),
+    let existing_memories_section = match existing {
+        Some((s, uid)) => build_existing_memories_section(s, uid),
+        None => String::new(),
+    };
+    let prompt = extraction_prompt(&conversation, &existing_memories_section, topics, goal);
+
+    let req = ai::ChatRequest {
+        tool_credential: None,
+        chat_id: String::new(),
+        ask_channels: None,
+        permission_mode: None,
+        linked_context: None,
+        tool_choice: Default::default(),
+        messages: vec![ai::Message {
+            role: "user".to_string(),
+            content: prompt,
+            ..Default::default()
+        }],
+        tools: vec![],
+        max_tokens: 4096,
+        temperature: 0.0,
+        system: "You are a precise fact extractor. Return only valid JSON.".to_string(),
+        model: model.to_string(),
+        enable_thinking: false,
+        metadata: None,
+        cache_breakpoints: vec![],
+        cancel_token: None,
+        trace,
     };
 
+    let mut rx = match provider.stream(&req).await {
+        Ok(rx) => rx,
+        Err(e) => {
+            warn!("memory extraction provider error: {}", e);
+            return None;
+        }
+    };
+
+    let mut response = String::new();
+    while let Some(event) = rx.recv().await {
+        if event.event_type == ai::StreamEventType::Text {
+            response.push_str(&event.text);
+        }
+    }
+
+    // Parse JSON response
+    let json_str = extract_json_object(&response)?;
+    match serde_json::from_str::<ExtractedFacts>(&json_str) {
+        Ok(facts) => Some(facts),
+        Err(e) => {
+            warn!("failed to parse extracted facts: {}", e);
+            None
+        }
+    }
+}
+
+/// The extraction prompt over `conversation`: the bar, the categories (the
+/// scope's topics replace the generic `project`), the memories already
+/// stored and, when the session has one, its agreed goal.
+fn extraction_prompt(
+    conversation: &str,
+    existing_memories_section: &str,
+    topics: &[MemoryTopic],
+    goal: Option<&str>,
+) -> String {
     // Extraction prompt v2 — docs/design/MEMORY_QUALITY.md. Agent-declared
     // topics replace the generic `project` definition; the description is the
     // category instruction verbatim.
@@ -188,7 +248,11 @@ pub async fn extract_facts(
             .join("\n            ")
     };
 
-    let prompt = format!(
+    let goal_section = match goal.map(str::trim).filter(|g| !g.is_empty()) {
+        Some(goal) => format!("The agreed goal of this work: {goal}\n\n"),
+        None => String::new(),
+    };
+    format!(
         "Analyze the conversation and extract durable facts worth remembering in FUTURE conversations.\n\n\
          THE BAR — every fact must pass all three:\n\
          1. Will this still matter in a month?\n\
@@ -229,57 +293,10 @@ pub async fn extract_facts(
          - \"tags\": searchable tags\n\
          - \"explicit\": true if the user directly stated it, false if inferred\n\n\
          {existing_memories_section}\
+         {goal_section}\
          Conversation:\n{conversation}\n\n\
          Return ONLY valid JSON, no markdown fences."
-    );
-
-    let req = ai::ChatRequest {
-        tool_credential: None,
-        chat_id: String::new(),
-        approval_channels: None,
-        tool_choice: Default::default(),
-        messages: vec![ai::Message {
-            role: "user".to_string(),
-            content: prompt,
-            ..Default::default()
-        }],
-        tools: vec![],
-        max_tokens: 4096,
-        temperature: 0.0,
-        system: "You are a precise fact extractor. Return only valid JSON.".to_string(),
-        static_system: String::new(),
-        model: model.to_string(),
-        enable_thinking: false,
-        metadata: None,
-        cache_breakpoints: vec![],
-        cancel_token: None,
-        trace,
-    };
-
-    let mut rx = match provider.stream(&req).await {
-        Ok(rx) => rx,
-        Err(e) => {
-            warn!("memory extraction provider error: {}", e);
-            return None;
-        }
-    };
-
-    let mut response = String::new();
-    while let Some(event) = rx.recv().await {
-        if event.event_type == ai::StreamEventType::Text {
-            response.push_str(&event.text);
-        }
-    }
-
-    // Parse JSON response
-    let json_str = extract_json_object(&response)?;
-    match serde_json::from_str::<ExtractedFacts>(&json_str) {
-        Ok(facts) => Some(facts),
-        Err(e) => {
-            warn!("failed to parse extracted facts: {}", e);
-            None
-        }
-    }
+    )
 }
 
 /// Store extracted facts in the database.
@@ -561,43 +578,58 @@ fn build_existing_memories_section(store: &Store, user_id: &str) -> String {
     section
 }
 
-/// Build conversation text for extraction, truncating per message and total.
-fn build_conversation_text(messages: &[ChatMessage]) -> String {
+/// Share of the extraction model's window the conversation may fill.
+const WINDOW_SHARE: f64 = 0.5;
+
+/// The conversation the extraction reads: every message whole, the tool
+/// calls and their results with them (the messages since the cursor, as
+/// they are, since a summary drops the facts), newest first until half the
+/// extraction model's window is used, then put back in order. Rows the
+/// platform wrote for the model (`isMeta` reminders) are not the
+/// conversation. The newest message always goes in, cut to fit when alone
+/// it is too long.
+fn build_conversation_text(messages: &[ChatMessage], window_tokens: usize) -> String {
+    let budget = ((window_tokens as f64 * WINDOW_SHARE) as usize).saturating_mul(crate::CHARS_PER_TOKEN);
     let mut parts = Vec::new();
-    let mut total_chars = 0usize;
-
+    let mut total = 0usize;
     for msg in messages.iter().rev() {
-        // Skip tool results
-        if msg.role == "tool" {
-            continue;
-        }
-        if msg.content.is_empty() {
-            continue;
-        }
-
-        let content = if msg.content.len() > MAX_CONTENT_PER_MESSAGE {
-            let mut end = MAX_CONTENT_PER_MESSAGE;
-            while !msg.content.is_char_boundary(end) {
-                end -= 1;
+        let Some(line) = message_line(msg) else { continue };
+        if total + line.len() > budget {
+            if parts.is_empty() {
+                let cut = types::strutil::floor_char_boundary(&line, budget);
+                parts.push(format!("{}…", &line[..cut]));
             }
-            format!("{}...", &msg.content[..end])
-        } else {
-            msg.content.clone()
-        };
-
-        let line = format!("{}: {}", msg.role, content);
-        total_chars += line.len();
-
-        if total_chars > MAX_CONVERSATION_CHARS {
             break;
         }
-
+        total += line.len() + 1;
         parts.push(line);
     }
-
-    // Reverse to get chronological order (we built from the end)
     parts.reverse();
     parts.join("\n")
+}
+
+/// One stored message as the extraction reads it; `None` for a platform row
+/// or an empty one.
+fn message_line(msg: &ChatMessage) -> Option<String> {
+    let meta = msg.metadata.as_deref().and_then(|m| serde_json::from_str::<serde_json::Value>(m).ok());
+    if meta.as_ref().and_then(|m| m.get("isMeta")).and_then(|v| v.as_bool()) == Some(true) {
+        return None;
+    }
+    let rows = |json: Option<&str>| -> Vec<serde_json::Value> {
+        json.and_then(|j| serde_json::from_str::<Vec<serde_json::Value>>(j).ok()).unwrap_or_default()
+    };
+    let mut lines = Vec::new();
+    if !msg.content.trim().is_empty() {
+        lines.push(format!("{}: {}", msg.role, msg.content));
+    }
+    for call in rows(msg.tool_calls.as_deref()) {
+        let name = call["name"].as_str().unwrap_or("");
+        lines.push(format!("{} called {name}({})", msg.role, call["input"]));
+    }
+    for result in rows(msg.tool_results.as_deref()) {
+        lines.push(format!("tool result: {}", result["content"].as_str().unwrap_or("")));
+    }
+    (!lines.is_empty()).then(|| lines.join("\n"))
 }
 
 /// Find the first balanced JSON object in a response string (public for reuse).
@@ -694,27 +726,17 @@ pub fn agent_memory_scope(owner_user_id: &str, agent_id: &str) -> String {
     }
 }
 
-/// The READ scope chain for a memory user_id — the ONE place ancestor scopes
-/// are derived. An agent (and a context-isolated layer under it) also reads
-/// the scopes above it: `owner:agent:X:ctx:Y` → itself, `owner:agent:X`,
-/// `owner`; the bare owner reads only itself. Writes always use the exact
-/// scope, so what each agent learns stays its own.
-pub fn memory_scope_chain(user_id: &str) -> Vec<String> {
-    let mut chain = vec![user_id.to_string()];
-    if let Some((agent_scope, _ctx)) = user_id.split_once(":ctx:") {
-        chain.push(agent_scope.to_string());
-    }
-    if let Some((owner, _rest)) = user_id.split_once(":agent:") {
-        chain.push(owner.to_string());
-    }
-    chain.dedup();
-    chain
-}
+/// The READ scope chain for a memory user_id (the run's own scope, then
+/// private memory, then local memory). Defined once, beside the memory tools
+/// that also read it.
+pub use tools::memory_tools::memory_scope_chain;
 
 /// Explicit isolation context carried in a session key, if any.
 /// Channel sessions set a deliberate 4th segment: `agent:{id}:{channel}:{ctx}`
 /// (the ctx segment may itself contain colons — everything after the third
-/// colon is the context). Desktop chat-thread sessions carry no segment.
+/// colon is the context). Desktop threads (`agent:{id}:thread:{chat}`) and
+/// workflow activities carry one too; it only scopes memory for an outside
+/// party (see [`resolve_memory_scope`]).
 pub fn session_key_context(session_key: &str) -> Option<String> {
     let parts: Vec<&str> = session_key.splitn(4, ':').collect();
     if parts.len() == 4 && parts[0] == "agent" {
@@ -724,13 +746,15 @@ pub fn session_key_context(session_key: &str) -> Option<String> {
     }
 }
 
-/// The matter (isolation context) portion of a RESOLVED memory scope, if any —
-/// the read-side counterpart of the `:ctx:` suffix [`resolve_memory_scope`]
-/// appends. Used to carry a requester's matter on a coworker envelope
-/// (`ToolContext.user_id` → envelope → target session key) without any caller
-/// re-deriving scopes.
+/// The matter (the conversation a scope is bound to) of a RESOLVED memory
+/// scope, if any — the read-side counterpart of the conversation segment
+/// [`resolve_memory_scope`] appends. Used to carry a requester's matter on a
+/// coworker envelope (`ToolContext.user_id` → envelope → target session key)
+/// and to scope company Memory, without any caller re-deriving scopes.
 pub fn scope_matter(user_id: &str) -> Option<&str> {
-    user_id.split_once(":ctx:").map(|(_, ctx)| ctx)
+    tools::memory_tools::conversation_scope(user_id)
+        .map(|c| c.conversation)
+        .filter(|c| !c.is_empty())
 }
 
 /// The memory scoping decision for one run — produced by
@@ -741,78 +765,109 @@ pub fn scope_matter(user_id: &str) -> Option<&str> {
 pub struct MemoryScope {
     /// The exact scope every memory WRITE uses, and the base scope for reads.
     pub user_id: String,
-    /// Fail-closed marker: `context_isolated` is set but no context could be
-    /// derived (no explicit key segment, no session row / active chat). All
-    /// memory writes for the run must be refused — never silently written to
-    /// the shared agent scope, where they would be readable from every
-    /// isolation context. Reads still serve `user_id` (the base agent scope)
-    /// plus the owner identity chain.
+    /// Fail-closed marker: the run's memory must be bound to a conversation
+    /// but none could be derived (no explicit key segment, no session row /
+    /// active chat). All memory writes for the run must be refused — never
+    /// silently written to a scope every conversation reads. Reads still
+    /// serve `user_id` and its chain.
     pub writes_disabled: bool,
 }
 
-/// Derive the memory scope for a run. Context precedence (highest first):
+/// Derive the memory scope for a run from the employee's memory mode — the
+/// ONE decision of where a run's memory lives. An employee's durable memory
+/// is its PRIVATE memory (`owner:agent:X`); the main bot (empty `agent_id`)
+/// uses the raw owner scope, which is LOCAL memory.
 ///
-/// 1. An EXPLICIT `:ctx:` segment in the session key
-///    (`agent:{id}:{channel}:{ctx}`) — channel sessions set it deliberately.
-/// 2. With `context_isolated` only: the session's ACTIVE CHAT id
-///    (thread = matter), resolved by the caller via the canonical
-///    `Store::session_chat_id`.
-/// 3. Neither derivable under `context_isolated` → FAIL CLOSED: the base
-///    agent scope is kept for reads, `writes_disabled` is set.
+/// - `Single` and `Separate`, the owner's own runs (trusted origins — their
+///   chats, schedules and workflows): the private memory. One owner is one
+///   person; splitting what they said by thread only loses it.
+/// - `Separate`, a run with someone OTHER than the owner (a caller, a
+///   visitor, another bot, a coworker on a client matter): bound to that
+///   conversation (`owner:agent:X:ctx:<ctx>`), which also reads the private
+///   memory. A `Single` employee's outside runs keep the private memory, as
+///   they always have.
+/// - `Confidential`, every run, the owner's included: bound to that
+///   conversation (`owner:agent:X:matter:<ctx>`), which reads only itself
+///   and local memory. Nothing learned in one conversation reaches another.
 ///
-/// Without `context_isolated`, contexts are ignored and the agent's base
-/// scope applies; the main bot (empty `agent_id`) always uses the raw owner.
+/// The conversation, highest first:
+/// 1. An EXPLICIT segment in the session key (`agent:{id}:{channel}:{ctx}`)
+///    — channel sessions and desktop threads set it deliberately.
+/// 2. The session's ACTIVE CHAT id, resolved by the caller via the
+///    canonical `Store::session_chat_id`.
+/// 3. Neither → FAIL CLOSED: `writes_disabled` is set, and reads keep what
+///    that mode may read with no conversation (a Separate run the private
+///    memory; a Confidential run local memory only).
 pub fn resolve_memory_scope(
     owner: &str,
     agent_id: &str,
-    context_isolated: bool,
+    mode: napp::agent::MemoryMode,
+    origin: tools::Origin,
     explicit_ctx: Option<&str>,
     chat_ctx: Option<&str>,
 ) -> MemoryScope {
+    use napp::agent::MemoryMode;
     if agent_id.is_empty() {
         return MemoryScope {
             user_id: owner.to_string(),
             writes_disabled: false,
         };
     }
-    let agent_scope = agent_memory_scope(owner, agent_id);
-    if !context_isolated {
+    let private = agent_memory_scope(owner, agent_id);
+    // (bound to its conversation, confidential)
+    let (bound, confidential) = match mode {
+        MemoryMode::Single => (false, false),
+        MemoryMode::Separate => (!origin.is_trusted(), false),
+        MemoryMode::Confidential => (true, true),
+    };
+    if !bound {
         return MemoryScope {
-            user_id: agent_scope,
+            user_id: private,
             writes_disabled: false,
         };
     }
-    match explicit_ctx.or(chat_ctx) {
+    let conversation = explicit_ctx
+        .filter(|c| !c.is_empty())
+        .or(chat_ctx.filter(|c| !c.is_empty()));
+    match conversation {
         Some(ctx) => MemoryScope {
-            user_id: format!("{}:ctx:{}", agent_scope, ctx),
+            user_id: tools::memory_tools::conversation_scope_id(&private, ctx, confidential),
             writes_disabled: false,
         },
+        None if confidential => MemoryScope {
+            user_id: tools::memory_tools::conversation_scope_id(&private, "", true),
+            writes_disabled: true,
+        },
         None => MemoryScope {
-            user_id: agent_scope,
+            user_id: private,
             writes_disabled: true,
         },
     }
 }
 
 /// The inherited READ scopes for a run — the ONE place this construction
-/// lives (the runner calls it once per run). A context-isolated run inherits
-/// the agent-wide `tacit/` prefix ONLY (working style crosses contexts, case
-/// facts do not — and sibling ctx scopes appear nowhere); every agent
-/// additionally reads the owner's identity prefixes. The main bot inherits
-/// nothing (it IS the owner scope).
+/// lives (the runner calls it once per run), read off the run's resolved
+/// scope (`scope`, from [`resolve_memory_scope`]). A sealed conversation of a
+/// Separate employee inherits the agent-wide `tacit/` prefix ONLY (working
+/// style crosses contexts, case facts do not — and sibling ctx scopes appear
+/// nowhere); a Confidential conversation inherits nothing of the private
+/// memory. Every agent additionally reads the owner's identity prefixes
+/// (local memory). The main bot inherits nothing (it IS the owner scope).
 pub fn build_inherit_scopes(
     owner: &str,
     agent_id: &str,
-    context_isolated: bool,
-    has_context: bool,
+    scope: &str,
 ) -> Vec<crate::db_context::InheritScope> {
     let mut inherit_scopes: Vec<crate::db_context::InheritScope> = Vec::new();
 
     if !agent_id.is_empty() {
-        // If context-isolated, inherit agent-wide memories (all tacit/)
-        if context_isolated && has_context {
+        // A Separate employee's sealed conversation reads its private
+        // memory's tacit/ (the chain says which scopes are above it).
+        if let Some(c) = tools::memory_tools::conversation_scope(scope)
+            && !c.confidential
+        {
             inherit_scopes.push(crate::db_context::InheritScope {
-                user_id: agent_memory_scope(owner, agent_id),
+                user_id: c.private.to_string(),
                 namespace_prefix: "tacit/".to_string(),
             });
         }
@@ -863,7 +918,7 @@ pub fn load_scored_memories(
         }
     }
 
-    // Inherited scopes (user preferences, agent-wide for context-isolated)
+    // Inherited scopes (user preferences, agent-wide for a sealed conversation)
     for scope in inherit_scopes {
         if let Ok(memories) = store.get_tacit_memories_with_min_confidence(
             &scope.user_id,
@@ -1071,6 +1126,48 @@ pub async fn backfill_missing_embeddings(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use napp::agent::MemoryMode::{Confidential, Separate, Single};
+    use tools::Origin;
+
+    fn row(role: &str, content: &str, calls: Option<&str>, results: Option<&str>, meta: Option<&str>) -> ChatMessage {
+        ChatMessage {
+            id: uuid::Uuid::new_v4().to_string(),
+            chat_id: "c".into(),
+            role: role.into(),
+            content: content.into(),
+            metadata: meta.map(str::to_string),
+            created_at: 0,
+            day_marker: None,
+            tool_calls: calls.map(str::to_string),
+            tool_results: results.map(str::to_string),
+            token_estimate: None,
+            html: None,
+        }
+    }
+
+    /// B15: extraction reads the messages as they are: a long message whole,
+    /// the tool calls and their results, and
+    /// more than the newest 15k characters when the window allows; the
+    /// platform's own rows are not the conversation.
+    #[test]
+    fn extraction_reads_whole_messages_and_tool_results_to_half_the_window() {
+        let early = format!("The owner's accountant is Dana Ruiz. {}", "Background detail. ".repeat(1_000));
+        let late = format!("Ship it Friday. {}", "Later detail. ".repeat(1_200));
+        let rows = vec![
+            row("user", &early, None, None, None),
+            row("assistant", "", Some(r#"[{"id":"c1","name":"read_file","input":{"path":"/tmp/lease.txt"}}]"#), None, None),
+            row("tool", "", None, Some(r#"[{"tool_call_id":"c1","content":"Lease ends 2027-03-31.","is_error":false}]"#), None),
+            row("user", "<system-reminder>skills</system-reminder>", None, None, Some(r#"{"isMeta":true}"#)),
+            row("user", &late, None, None, None),
+        ];
+        let text = build_conversation_text(&rows, 200_000);
+        assert!(text.contains(&early), "the early message whole, past the newest 15k characters");
+        assert!(text.contains(&late));
+        assert!(text.contains("read_file") && text.contains("Lease ends 2027-03-31."), "tool calls and results");
+        assert!(!text.contains("<system-reminder>"), "the platform's rows are not the conversation");
+        let small = build_conversation_text(&rows, 5_000);
+        assert!(small.contains("Ship it Friday.") && !small.contains("Dana Ruiz"), "the newest first, to half the window");
+    }
 
     #[test]
     fn test_normalize_key() {
@@ -1346,7 +1443,7 @@ mod tests {
             session_key_context("agent:a1:loop:dm:123").as_deref(),
             Some("dm:123")
         );
-        // Desktop chat-thread keys carry no segment.
+        // A channel-less agent key carries no segment.
         assert_eq!(session_key_context("agent:a1:web"), None);
         // Non-agent key shapes never yield a context.
         assert_eq!(session_key_context("main"), None);
@@ -1359,10 +1456,10 @@ mod tests {
     fn test_scope_matter_round_trip() {
         // The matter extracted from a resolved scope is exactly what
         // resolve_memory_scope appended — envelope stamping must round-trip.
-        let s = resolve_memory_scope("local", "a1", true, Some("caseA"), None);
+        let s = resolve_memory_scope("local", "a1", Separate, Origin::Caller, Some("caseA"), None);
         assert_eq!(scope_matter(&s.user_id), Some("caseA"));
         // Matters may carry colons (channel-style ctx segments) — stay whole.
-        let s = resolve_memory_scope("local", "a1", true, Some("dm:123"), None);
+        let s = resolve_memory_scope("local", "a1", Separate, Origin::Caller, Some("dm:123"), None);
         assert_eq!(scope_matter(&s.user_id), Some("dm:123"));
         // Un-isolated scopes carry no matter.
         assert_eq!(scope_matter("local:agent:a1"), None);
@@ -1372,12 +1469,12 @@ mod tests {
     #[test]
     fn test_resolve_memory_scope_main_bot_and_plain_agent() {
         // Main bot: raw owner, contexts irrelevant.
-        let s = resolve_memory_scope("local", "", true, Some("caseA"), None);
+        let s = resolve_memory_scope("local", "", Separate, Origin::Caller, Some("caseA"), None);
         assert_eq!(s.user_id, "local");
         assert!(!s.writes_disabled);
 
         // Non-isolated agent: base scope, contexts ignored.
-        let s = resolve_memory_scope("local", "a1", false, Some("caseA"), Some("chat-1"));
+        let s = resolve_memory_scope("local", "a1", Single, Origin::Caller, Some("caseA"), Some("chat-1"));
         assert_eq!(s.user_id, "local:agent:a1");
         assert!(!s.writes_disabled);
     }
@@ -1385,14 +1482,88 @@ mod tests {
     #[test]
     fn test_resolve_memory_scope_isolated_context_precedence() {
         // Explicit channel segment wins over the chat derivation.
-        let s = resolve_memory_scope("local", "a1", true, Some("caseA"), Some("chat-1"));
+        let s = resolve_memory_scope("local", "a1", Separate, Origin::Caller, Some("caseA"), Some("chat-1"));
         assert_eq!(s.user_id, "local:agent:a1:ctx:caseA");
         assert!(!s.writes_disabled);
 
         // No explicit segment → active chat id (thread = matter).
-        let s = resolve_memory_scope("local", "a1", true, None, Some("chat-1"));
+        let s = resolve_memory_scope("local", "a1", Separate, Origin::Caller, None, Some("chat-1"));
         assert_eq!(s.user_id, "local:agent:a1:ctx:chat-1");
         assert!(!s.writes_disabled);
+    }
+
+    /// The owner's own runs never bind memory to a conversation, even on a
+    /// sealed employee: the primary employee with isolation on, in a desktop
+    /// thread whose key carries the chat id, files durable facts under its
+    /// private memory (the 2026-09-27 regression: every one of the primary
+    /// employee's threads had become its own memory).
+    #[test]
+    fn test_owner_runs_never_bind_memory_to_a_conversation() {
+        let key = "agent:assistant:thread:chat-1";
+        for origin in [Origin::User, Origin::System, Origin::Workflow] {
+            let s = resolve_memory_scope(
+                "owner",
+                "assistant",
+                Separate,
+                origin,
+                session_key_context(key).as_deref(),
+                Some("chat-1"),
+            );
+            assert_eq!(s.user_id, "owner:agent:assistant", "{origin:?}");
+            assert!(!s.writes_disabled, "{origin:?}");
+            assert_eq!(scope_matter(&s.user_id), None);
+        }
+        // A caller in the same shape of thread stays sealed.
+        let s = resolve_memory_scope(
+            "owner",
+            "assistant",
+            Separate,
+            Origin::Caller,
+            session_key_context(key).as_deref(),
+            None,
+        );
+        assert_eq!(s.user_id, "owner:agent:assistant:ctx:chat-1");
+    }
+
+    /// Confidential: every run is bound to its conversation, the owner's own
+    /// included, under a scope that never reads the private memory. Each
+    /// conversation is its own scope; a run with no conversation writes
+    /// nothing and reads local memory only.
+    #[test]
+    fn test_confidential_binds_every_run_to_its_conversation() {
+        let key = "agent:counsel:thread:chat-A";
+        for origin in [Origin::User, Origin::System, Origin::Workflow, Origin::Caller, Origin::Comm] {
+            let s = resolve_memory_scope("owner", "counsel", Confidential, origin, session_key_context(key).as_deref(), None);
+            assert_eq!(s.user_id, "owner:agent:counsel:matter:chat-A", "{origin:?}");
+            assert!(!s.writes_disabled, "{origin:?}");
+            assert_eq!(scope_matter(&s.user_id), Some("chat-A"));
+            assert_eq!(memory_scope_chain(&s.user_id), vec![s.user_id.clone(), "owner".to_string()], "{origin:?}: never the private memory");
+        }
+        let b = resolve_memory_scope("owner", "counsel", Confidential, Origin::User, None, Some("chat-B"));
+        assert_eq!(b.user_id, "owner:agent:counsel:matter:chat-B");
+        assert!(!memory_scope_chain(&b.user_id).iter().any(|s| s.contains("chat-A")));
+
+        // No conversation derivable (a schedule, a workflow): fail closed.
+        for origin in [Origin::User, Origin::Workflow] {
+            let s = resolve_memory_scope("owner", "counsel", Confidential, origin, None, None);
+            assert!(s.writes_disabled, "{origin:?}");
+            assert_eq!(scope_matter(&s.user_id), None);
+            assert_eq!(memory_scope_chain(&s.user_id), vec![s.user_id.clone(), "owner".to_string()]);
+            let empty = resolve_memory_scope("owner", "counsel", Confidential, origin, Some(""), Some(""));
+            assert_eq!(empty, s, "an empty segment is no conversation");
+        }
+    }
+
+    /// The mode the old flag maps to behaves as the flag did: `Separate` is
+    /// what `context_isolated: true` was, `Single` what false was.
+    #[test]
+    fn test_separate_and_single_keep_the_flags_behavior() {
+        for (mode, outside) in [(Single, "owner:agent:a1"), (Separate, "owner:agent:a1:ctx:chat-1")] {
+            let own = resolve_memory_scope("owner", "a1", mode, Origin::User, Some("chat-1"), Some("chat-1"));
+            assert_eq!(own.user_id, "owner:agent:a1", "{mode:?}: the owner's runs share the private memory");
+            let caller = resolve_memory_scope("owner", "a1", mode, Origin::Caller, Some("chat-1"), None);
+            assert_eq!(caller.user_id, outside, "{mode:?}");
+        }
     }
 
     #[test]
@@ -1400,26 +1571,9 @@ mod tests {
         // Isolated with NO derivable context: reads keep the base agent
         // scope, writes are refused — never a silent write to the shared
         // agent scope.
-        let s = resolve_memory_scope("local", "a1", true, None, None);
+        let s = resolve_memory_scope("local", "a1", Separate, Origin::Caller, None, None);
         assert_eq!(s.user_id, "local:agent:a1");
         assert!(s.writes_disabled);
-    }
-
-    #[test]
-    fn test_memory_scope_chain_ctx_excludes_siblings() {
-        let chain = memory_scope_chain("local:agent:a1:ctx:chat-A");
-        assert_eq!(
-            chain,
-            vec![
-                "local:agent:a1:ctx:chat-A".to_string(),
-                "local:agent:a1".to_string(),
-                "local".to_string(),
-            ]
-        );
-        // Sibling contexts and sibling agents are never in the chain —
-        // cross-case recall is structurally impossible.
-        assert!(!chain.iter().any(|s| s.contains(":ctx:chat-B")));
-        assert!(!chain.iter().any(|s| s.contains(":agent:a2")));
     }
 
     #[test]
@@ -1427,7 +1581,7 @@ mod tests {
         // Isolated run with a context: agent-wide tacit/ ONLY + owner
         // identity prefixes — never the agent's non-tacit namespaces, never
         // a sibling ctx scope.
-        let scopes = build_inherit_scopes("local", "a1", true, true);
+        let scopes = build_inherit_scopes("local", "a1", "local:agent:a1:ctx:caseA");
         assert_eq!(scopes.len(), 3);
         assert_eq!(scopes[0].user_id, "local:agent:a1");
         assert_eq!(scopes[0].namespace_prefix, "tacit/");
@@ -1447,27 +1601,60 @@ mod tests {
 
         // Fail-closed run (no context): no agent tacit/ inherit (the base
         // agent scope IS the read scope), identity prefixes remain.
-        let scopes = build_inherit_scopes("local", "a1", true, false);
+        let scopes = build_inherit_scopes("local", "a1", "local:agent:a1");
         assert_eq!(scopes.len(), 2);
         assert!(scopes.iter().all(|s| s.user_id == "local"));
 
         // Main bot inherits nothing.
-        assert!(build_inherit_scopes("local", "", false, false).is_empty());
+        assert!(build_inherit_scopes("local", "", "local").is_empty());
+
+        // A Confidential conversation inherits nothing of the private
+        // memory: the owner's identity prefixes (local memory) only.
+        let scopes = build_inherit_scopes("local", "a1", "local:agent:a1:matter:caseA");
+        assert_eq!(scopes.len(), 2);
+        assert!(scopes.iter().all(|s| s.user_id == "local"), "{scopes:?}");
+    }
+
+    /// Automatic extraction in a Confidential conversation lands in that
+    /// conversation's scope only: never the private memory, never local
+    /// memory, never a sibling conversation.
+    #[test]
+    fn test_confidential_extraction_lands_in_its_conversation_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::new(&dir.path().join("conf-extract.db").to_string_lossy()).unwrap());
+        let scope = resolve_memory_scope("local", "a1", Confidential, Origin::User, Some("client-A"), None);
+        let facts = ExtractedFacts {
+            topics: vec![Fact {
+                key: "harlow-settlement".to_string(),
+                value: "The Harlow settlement offer is 410,000 dollars.".to_string(),
+                category: "topic".to_string(),
+                tags: vec![],
+                confidence: 0.9,
+                explicit: Some(true),
+                topic: None,
+            }],
+            ..Default::default()
+        };
+        store_facts(&store, &facts, &scope.user_id, None, &[], &[]);
+        let rows: Vec<String> = store
+            .search_memories("Harlow", 10, 0)
+            .unwrap()
+            .into_iter()
+            .map(|m| m.user_id)
+            .collect();
+        assert_eq!(rows, vec!["local:agent:a1:matter:client-A".to_string()]);
     }
 
     #[test]
     fn test_store_facts_extraction_lands_at_exact_ctx_scope() {
-        // Extraction parity: with context_isolated + a chat-derived ctx, the
+        // Extraction parity: a sealed run with a chat-derived ctx — the
         // debounced-extraction/flush write path (store_facts) lands facts
         // under the exact ctx scope — invisible to sibling contexts.
-        let path = std::env::temp_dir().join(format!(
-            "nebo-ctx-extract-test-{}.db",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_file(&path);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ctx-extract-test.db");
         let store = Arc::new(Store::new(&path.to_string_lossy()).unwrap());
 
-        let scope = resolve_memory_scope("local", "a1", true, None, Some("chat-A"));
+        let scope = resolve_memory_scope("local", "a1", Separate, Origin::Caller, None, Some("chat-A"));
         assert!(!scope.writes_disabled);
 
         let facts = ExtractedFacts {
@@ -1507,7 +1694,5 @@ mod tests {
                 "fact leaked to scope {other}"
             );
         }
-
-        let _ = std::fs::remove_file(&path);
     }
 }

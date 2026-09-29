@@ -1,0 +1,41 @@
+{
+  "requires": {
+    "tools": ["web", "plugin", "work", "read_file"],
+    "plugins": ["stannp"]
+  },
+  "scopes": {
+    "outreach": { "tools": ["loop", "team"] }
+  },
+  "app": { "permissions": ["network:*", "tool:emit"] },
+  "workflows": {
+    "mail-blast": {
+      "trigger": { "type": "schedule", "cron": "0 9 * * *" },
+      "activities": [
+        {
+          "id": "send",
+          "intent": "Mail the postcards",
+          "steps": [
+            "Run plugin(resource: \"stannp\", action: \"exec\", command: \"letters send --campaign spring\")",
+            "Close it with agent(resource: \"task\", action: \"update\", task_id: \"t1\", status: \"completed\")"
+          ],
+          "tools": ["plugin", "loop"],
+          "requires_tools": ["plugin"]
+        },
+        {
+          "id": "research",
+          "intent": "Look up the market",
+          "steps": ["web(resource: \"search\", action: \"search\", query: \"home prices\")"],
+          "requiresTools": ["web", "message"]
+        }
+      ]
+    },
+    "front-desk": {
+      "trigger": { "type": "event", "event": "voice.call" },
+      "activities": [
+        { "id": "greet", "type": "greeting", "params": { "text": "Hello" } },
+        { "id": "billing", "type": "intent", "params": { "name": "billing", "tools": "agent:memory, web:search, os:calendar", "workflows": "weekly-report" } },
+        { "id": "booking", "type": "intent", "params": { "name": "booking", "tools": ["work:weekly-report", "plugin:calendly"] } }
+      ]
+    }
+  }
+}

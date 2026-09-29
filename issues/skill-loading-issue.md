@@ -5,7 +5,7 @@ Skills can be created successfully but fail to load. The skill file is written t
 
 ## Reproduction Steps
 1. Create skill with `skill(action: "create", name: "lvt-sdr", content: "...")`
-2. Skill reports success: `Created skill 'lvt-sdr' at /Users/almatuck/Library/Application Support/Nebo/skills/lvt-sdr/SKILL.md`
+2. Skill reports success: `Created skill 'lvt-sdr' at /Users/example/Library/Application Support/Nebo/skills/lvt-sdr/SKILL.md`
 3. Attempt to load with `skill(action: "load", name: "lvt-sdr")`
 4. System responds: `Skill 'lvt-sdr' not found. Use skill(action: "catalog") to list available skills.`
 5. `skill(action: "catalog")` shows: `No skills installed. Create one with skill(action: "create", name: "my-skill", content: "...")`
@@ -15,7 +15,7 @@ Skills can be created successfully but fail to load. The skill file is written t
 
 ### File exists on disk
 ```
-/Users/almatuck/Library/Application Support/Nebo/skills/lvt-sdr/SKILL.md
+/Users/example/Library/Application Support/Nebo/skills/lvt-sdr/SKILL.md
 ```
 
 ### File content is valid YAML
@@ -55,8 +55,8 @@ Users cannot use custom skills. All skill creation is effectively broken. This b
 
 ## Environment
 - OS: macOS (aarch64)
-- Skill directory: `/Users/almatuck/Library/Application Support/Nebo/skills/`
-- Skill file written: `/Users/almatuck/Library/Application Support/Nebo/skills/lvt-sdr/SKILL.md`
+- Skill directory: `/Users/example/Library/Application Support/Nebo/skills/`
+- Skill file written: `/Users/example/Library/Application Support/Nebo/skills/lvt-sdr/SKILL.md`
 
 ## Suggested Debug Steps
 1. Check if skill index file exists and is being updated

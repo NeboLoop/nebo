@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use tauri::{
-    LogicalPosition, Manager, WebviewUrl, WebviewWindowBuilder,
+    Emitter, LogicalPosition, Manager, WebviewUrl, WebviewWindowBuilder,
     menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     webview::NewWindowResponse,
@@ -192,6 +192,72 @@ fn save_artifact(rel_path: String, save_name: String) -> Result<String, String> 
     std::fs::copy(&src, &dest).map_err(|e| e.to_string())?;
     reveal_in_file_manager(&dest);
     Ok(dest.to_string_lossy().into_owned())
+}
+
+/// The event the main window opens an owner item's place on
+/// (`app/src/lib/websocket/listeners.ts`).
+const OWNER_ITEM_OPEN: &str = "owner-item-open";
+
+/// Tauri command: an owner item's native banner. A click on it brings Nebo
+/// forward and opens the item's place: `link`, the same address its Inbox
+/// row opens and its phone push opens. The wait for the click is the
+/// platform's own (NSUserNotificationCenter, the toast's activation, the
+/// desktop bus's default action), on a thread of its own so nothing here
+/// waits on the owner.
+#[tauri::command]
+fn show_owner_notification(app: tauri::AppHandle, title: String, body: String, link: String) {
+    let spawned = std::thread::Builder::new().name("owner-banner".into()).spawn(move || {
+        let mut banner = notify_rust::Notification::new();
+        banner.summary(&title).body(&body).auto_icon();
+        // A click on the body is the desktop bus's "default" action.
+        #[cfg(all(unix, not(target_os = "macos")))]
+        banner.action("default", "Open");
+        // The toast is Nebo's once installed; a build run from its target
+        // directory has no registered app id to show it under.
+        #[cfg(windows)]
+        if let Ok(exe) = tauri::utils::platform::current_exe() {
+            let dir = exe.parent().map(|d| d.display().to_string()).unwrap_or_default();
+            let sep = std::path::MAIN_SEPARATOR;
+            if !(dir.ends_with(&format!("{sep}target{sep}debug")) || dir.ends_with(&format!("{sep}target{sep}release"))) {
+                banner.app_id(&app.config().identifier);
+            }
+        }
+        #[cfg(target_os = "macos")]
+        let _ = notify_rust::set_application(if tauri::is_dev() {
+            "com.apple.Terminal"
+        } else {
+            &app.config().identifier
+        });
+        let handle = match banner.show() {
+            Ok(h) => h,
+            Err(e) => {
+                tracing::warn!(error = %e, "owner banner not shown");
+                return;
+            }
+        };
+        let opened = |response: &notify_rust::NotificationResponse| {
+            if !matches!(
+                response,
+                notify_rust::NotificationResponse::Default | notify_rust::NotificationResponse::Action(_)
+            ) {
+                return;
+            }
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.unminimize();
+                let _ = w.show();
+                let _ = w.set_focus();
+            }
+            if let Err(e) = app.emit_to("main", OWNER_ITEM_OPEN, &link) {
+                tracing::warn!(error = %e, "owner banner: the item's place was not opened");
+            }
+        };
+        if let Err(e) = handle.wait_for_response(opened) {
+            tracing::warn!(error = %e, "owner banner: no answer from the platform");
+        }
+    });
+    if let Err(e) = spawned {
+        tracing::warn!(error = %e, "owner banner not shown");
+    }
 }
 
 /// Select the file in the platform file manager (Finder/Explorer); on Linux,
@@ -429,7 +495,7 @@ fn main() {
     let saved = load_state("main");
 
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![get_window_state, save_artifact])
+        .invoke_handler(tauri::generate_handler![get_window_state, save_artifact, show_owner_notification])
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
@@ -550,6 +616,12 @@ fn main() {
                 let req = if let Some(connection) = request.headers().get("x-nebo-connection-id").and_then(|v| v.to_str().ok()) {
                     req.set("X-Nebo-Connection-Id", connection)
                 } else { req };
+                // The desktop shell is the owner's own client: its proxy
+                // proves itself to the local API with the install key.
+                let req = match config::read_install_key() {
+                    Some(key) => req.set("Authorization", &format!("Bearer {key}")),
+                    None => req,
+                };
                 let result = if matches!(method, "POST" | "PUT" | "PATCH") && !req_body.is_empty() {
                     req.set("Content-Type", &content_type_in)
                         .send_bytes(&req_body)
@@ -626,10 +698,14 @@ fn main() {
                 .map(|s| (s.width, s.height))
                 .unwrap_or((1280.0, 860.0));
 
+            // The window opens through a one-use sign-in ticket minted in
+            // this process (the server runs here too): the local API answers
+            // only a browser holding the session it gives (`local_access`).
+            let signed_in = format!("{}{}", frontend_url(), server::local_access::sign_in_path());
             let window = WebviewWindowBuilder::new(
                 app,
                 "main",
-                WebviewUrl::External(frontend_url().parse().unwrap()),
+                WebviewUrl::External(signed_in.parse().unwrap()),
             )
             .title("Nebo")
             .inner_size(w, h)
@@ -845,10 +921,14 @@ fn main() {
                     // Fire-and-forget POST to the local backend — raw TCP to avoid extra deps.
                     std::thread::spawn(|| {
                         use std::io::Write;
+                        let Some(key) = config::read_install_key() else { return };
                         if let Ok(mut stream) = std::net::TcpStream::connect("127.0.0.1:27895") {
                             let _ = stream.set_write_timeout(Some(std::time::Duration::from_secs(5)));
                             let _ = stream.write_all(
-                                b"POST /api/v1/neboai/reconnect HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n"
+                                format!(
+                                    "POST /api/v1/neboai/reconnect HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {key}\r\nContent-Length: 0\r\n\r\n"
+                                )
+                                .as_bytes(),
                             );
                         }
                     });

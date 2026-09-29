@@ -15,10 +15,9 @@ use ai::{ChatRequest, Provider, ProviderError, StreamEvent, StreamEventType};
 
 use crate::concurrency::ConcurrencyController;
 use crate::dedupe::{self, DedupeCache};
-use crate::runner::RunState;
+use super::usage::RunState;
 use crate::selector::ModelSelector;
 use crate::session::SessionManager;
-use crate::steering;
 
 /// Max transient error retries before giving up.
 const MAX_TRANSIENT_RETRIES: usize = 10;
@@ -28,9 +27,9 @@ const MAX_RETRYABLE_RETRIES: usize = 5;
 /// overflow despite the local estimate saying we fit (single-shot reactive
 /// compact + give-up, a guard against an auto-compaction death-spiral).
 const MAX_OVERFLOW_RETRIES: usize = 2;
-/// Consecutive overloaded (529) errors before falling back to a cheaper model.
-#[allow(dead_code)] // reserved for overload fallback logic
-const MAX_OVERLOADS_BEFORE_FALLBACK: usize = 3;
+/// Tokens added to the local estimate when the provider refuses a request
+/// as over the window.
+const OVERFLOW_ESTIMATE_BUMP: usize = 20_000;
 /// Max gap between stream events before the stream is declared wedged
 /// (connection open, no tokens). A 90s idle watchdog, classified transient so
 /// the normal retry/failover path re-issues the request.
@@ -38,10 +37,6 @@ const MAX_OVERLOADS_BEFORE_FALLBACK: usize = 3;
 // tool-call arguments make healthy streams go silent for minutes. TCP
 // keepalive surfaces dead sockets as read errors long before this fires.
 const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
-/// A first token this long in coming gets a status line, repeated at the
-/// same interval until it arrives, so a slow model is never minutes of
-/// silence (live 2026-09-03: 294 s with nothing shown).
-const SLOW_FIRST_TOKEN: Duration = Duration::from_secs(30);
 /// Max recovery attempts when output is truncated by token limit.
 const MAX_OUTPUT_RECOVERY_ATTEMPTS: usize = 3;
 /// Default output token cap for LLM requests.
@@ -50,16 +45,15 @@ const DEFAULT_MAX_OUTPUT_TOKENS: i32 = 16_384;
 const ESCALATED_MAX_OUTPUT_TOKENS: i32 = 65_536;
 /// Empty replies retried before the turn gives up with "(empty)".
 pub(crate) const MAX_EMPTY_CONTENT_RETRIES: usize = 3;
-
-/// Status for a retry the owner would otherwise never see. With partial
-/// text on screen the retry resumes it; before any text it is a fresh try.
-pub fn retry_notice(had_partial: bool, retry: usize) -> String {
-    if had_partial {
-        "Connection dropped mid-response, reconnecting to resume where it left off.".to_string()
-    } else {
-        format!("The model connection dropped before it replied; retry {retry} starting.")
-    }
-}
+/// Replies in a row that write a call out as text before the turn stops
+/// asking for the call and ends on what the reply said.
+const MAX_TEXT_CALL_RETRIES: usize = 2;
+/// How long a cancel waits for a `cancel_is_async` provider's stream to
+/// actually end (its own cancel handshake, e.g. the linked provider's ACP
+/// `session/cancel` round trip) before giving up on it and freeing the slot
+/// anyway. Longer than that provider's own cancel timeout, so its stream
+/// ends on its own terms first.
+const CANCEL_ACK_GRACE: Duration = Duration::from_secs(15);
 
 /// What the owner reads when the model he picked refuses the request outright.
 /// The raw upstream text ("Parameter 'temperature'=0.699… is not supported for
@@ -80,10 +74,6 @@ pub fn model_refusal_notice(model: &str, detail: &str) -> String {
     )
 }
 
-pub fn slow_first_token_notice(waited_secs: u64) -> String {
-    format!("Still waiting on the model, {waited_secs} seconds with no reply yet.")
-}
-
 /// Retry backoff: exponential 500ms × 2^(n−1) capped at 32s, plus 0–25% jitter.
 /// An explicit provider Retry-After wins outright.
 fn retry_backoff(attempt: usize, retry_after_secs: Option<u64>) -> Duration {
@@ -100,6 +90,20 @@ fn retry_backoff(attempt: usize, retry_after_secs: Option<u64>) -> Duration {
             .unwrap_or(0))
         / 1000;
     Duration::from_millis(base_ms + jitter_ms)
+}
+
+/// What the owner reads when the connection to the model kept failing.
+fn could_not_connect(selector: &ModelSelector, model: &str) -> String {
+    let name = selector
+        .get_model_info(model)
+        .map(|m| m.display_name)
+        .filter(|n| !n.is_empty())
+        .unwrap_or_else(|| model.rsplit('/').next().unwrap_or(model).to_string());
+    if name.is_empty() {
+        "Could not connect. Try again.".to_string()
+    } else {
+        format!("Could not connect to {name}. Try again.")
+    }
 }
 
 /// Pick a non-gateway provider when available.  Falls back to the default
@@ -130,6 +134,17 @@ pub(crate) fn resolve_aux(
         return None;
     }
     let (provider_id, model) = spec.split_once('/')?;
+    // Background work runs on a chat model only: an embedding or audio
+    // model named as the aux route is passed over.
+    let (capabilities, kind) = cfg
+        .providers
+        .get(provider_id)
+        .and_then(|models| models.iter().find(|m| m.id == model))
+        .map(|m| (m.capabilities.clone(), m.kind.clone()))
+        .unwrap_or_default();
+    if !crate::selector::is_chat_model(model, &capabilities, &kind) {
+        return None;
+    }
     let provider = providers.iter().find(|p| p.id() == provider_id)?.clone();
     Some((provider, model.to_string()))
 }
@@ -138,8 +153,6 @@ pub(crate) fn resolve_aux(
 /// failover position, the retry counters and the output-cap escalation.
 #[derive(Debug, Default)]
 pub struct CallState {
-    /// Round-robin offset into the providers once a call has failed over.
-    pub provider_idx: usize,
     pub transient_retries: usize,
     pub retryable_retries: usize,
     pub overflow_retries: usize,
@@ -150,6 +163,9 @@ pub struct CallState {
     /// trusted — ending the turn silently strands the user mid-task.
     pub lost_toolcall_retries: usize,
     pub empty_content_retries: usize,
+    /// Replies in a row, since the last real call, that wrote a call out as
+    /// text instead of making it.
+    pub text_call_retries: usize,
     /// Janus provider metadata for tool stickiness — echoed back in subsequent requests
     pub sticky_metadata: Option<HashMap<String, String>>,
 }
@@ -171,6 +187,8 @@ pub(crate) struct ModelCall<'a> {
     pub providers: &'a RwLock<Vec<Arc<dyn Provider>>>,
     pub selector: &'a ModelSelector,
     pub concurrency: &'a ConcurrencyController,
+    /// Whose call this is: the owner's turn is served before queued work.
+    pub priority: crate::concurrency::Priority,
     pub sessions: &'a SessionManager,
     pub cancel: &'a CancellationToken,
     pub tx: &'a mpsc::Sender<StreamEvent>,
@@ -188,6 +206,30 @@ pub(crate) struct ModelCall<'a> {
     /// itself over /agent/mcp (the CLI providers). Revoked when the call ends.
     pub tool_credential:
         Option<&'a (dyn Fn() -> crate::tool_credentials::CredentialGuard + Send + Sync)>,
+    /// Each tool call as its input completes in the stream, for the tool
+    /// executor to start while the reply streams. Dropped when the call
+    /// returns, which tells the executor the stream is over.
+    pub tool_calls_out: mpsc::UnboundedSender<ai::ToolCall>,
+    /// The turn's text segments: a tool call closing one sends its verdict.
+    pub folds: &'a mut super::text_fold::TurnFolds,
+    /// The last row the request was built from, stamped on a partial reply
+    /// a stop cuts short, as on every reply (`conversation::HEARD_THROUGH`):
+    /// a message that landed during the call reads after it, unanswered.
+    pub heard_through: Option<&'a str>,
+    /// Every tool the run knows by name, declared or not yet loaded: a call
+    /// to one written out as text is cut from the reply
+    /// (`reminders::NoteFence`).
+    pub tool_names: Vec<String>,
+}
+
+/// One content block of a reply, in stream order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Block {
+    /// Coalesced text, with its verdict once a tool call in this reply
+    /// closed it.
+    Text(Option<super::text_fold::Fold>),
+    /// The tool call at this index.
+    Tool(usize),
 }
 
 /// What a call came back with.
@@ -195,8 +237,8 @@ pub(crate) enum CallOutcome {
     /// The model's reply. A stream error the retries could not clear has
     /// already been shown to the owner and rides in `stream_error`.
     Reply(ModelReply),
-    /// Take the step again: reactive compaction, failover or a reconnect.
-    Retry,
+    /// Take the step again.
+    Retry(RetryWhy),
     /// Cancelled waiting for the permit or during the stream.
     Cancelled,
     /// Cancelled while backing off before a retry.
@@ -207,32 +249,63 @@ pub(crate) enum CallOutcome {
     Failed(String),
 }
 
+/// Why a call is taken again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RetryWhy {
+    /// The provider said the request is over the window: compact first.
+    Overflow,
+    /// A failover, a backoff or a reconnect: the same request again.
+    Transient,
+    /// The connection dropped mid-reply; the partial reply is stored and the
+    /// next call resumes it.
+    StreamCut,
+}
+
 /// The model's reply.
 pub(crate) struct ModelReply {
     pub text: String,
     pub tool_calls: Vec<ai::ToolCall>,
     pub stop: Option<String>,
     pub stream_error: Option<String>,
-    /// The order of content blocks: "text" (coalesced) or a tool index.
-    pub block_order: Vec<(&'static str, Option<usize>)>,
+    /// The order of content blocks.
+    pub block_order: Vec<Block>,
     /// The provider that answered.
     pub provider: Arc<dyn Provider>,
+    /// The reply's thinking blocks, in order, and the model that wrote them
+    /// ("provider/model").
+    pub thinking: Vec<ai::ThinkingBlock>,
+    pub thinking_model: String,
+    /// The tool the reply wrote a call to out as text, where the reply was
+    /// cut (`reminders::NoteFence`): that call never ran.
+    pub text_call: Option<String>,
+}
+
+/// After a cancel, waits (bounded by [`CANCEL_ACK_GRACE`]) for a
+/// `cancel_is_async` provider's stream to end on its own — its cancel
+/// handshake with the runtime it does not control — before the caller frees
+/// the slot. The events themselves are not needed here: they were already
+/// read up to the point the cancel fired, and nothing after it reaches the
+/// owner. Returns once the stream ends (a `Done` event or the channel
+/// closes) or the grace period runs out, whichever comes first.
+async fn drain_after_cancel(rx: &mut mpsc::Receiver<StreamEvent>) {
+    let deadline = tokio::time::Instant::now() + CANCEL_ACK_GRACE;
+    loop {
+        match tokio::time::timeout_at(deadline, rx.recv()).await {
+            Ok(Some(event)) if event.event_type != StreamEventType::Done => continue,
+            _ => return,
+        }
+    }
 }
 
 /// Make one call, streaming its events on `call.tx`. `state` takes the
-/// usage, the overflow correction and the quota warning; `pending_stream_reminders`
-/// takes a cutoff continuation and is emptied once the call lands.
-pub(crate) async fn call_model(
-    call: ModelCall<'_>,
-    st: &mut CallState,
-    state: &mut RunState,
-    pending_stream_reminders: &mut Vec<String>,
-) -> CallOutcome {
+/// usage, the overflow correction and the quota warning.
+pub(crate) async fn call_model(call: ModelCall<'_>, st: &mut CallState, state: &mut RunState) -> CallOutcome {
     let ModelCall {
         request: chat_req,
         providers,
         selector,
         concurrency,
+        priority,
         sessions,
         cancel: cancel_token,
         tx,
@@ -244,16 +317,24 @@ pub(crate) async fn call_model(
         model_override,
         context_limit,
         tool_credential,
+        tool_calls_out,
+        folds,
+        heard_through,
+        tool_names,
     } = call;
 
     // Acquire LLM permit before provider call (blocks if at capacity)
     let t_permit_start = std::time::Instant::now();
+    // `biased`: a stop that already happened wins over a free permit, a
+    // stream that opened and an event already buffered, so a stopped turn
+    // never sends another request or runs what it streamed.
     let llm_permit = tokio::select! {
+        biased;
         _ = cancel_token.cancelled() => {
             info!(session_id, "run cancelled waiting for LLM permit");
             return CallOutcome::Cancelled;
         }
-        permit = concurrency.acquire_llm_permit() => permit,
+        permit = concurrency.acquire_llm_permit(priority) => permit,
     };
     // A 429 on this call reports the round its permit was granted in, so
     // one wave of rejections halves the pool once.
@@ -273,7 +354,9 @@ pub(crate) async fn call_model(
             return CallOutcome::Failed("No AI providers available".to_string());
         }
 
-        let Some(idx) = pick_provider(&prov_lock, st.provider_idx, selected_provider_id) else {
+        // The chosen model's provider, every attempt: a failed call is
+        // retried on the same model, never handed to another provider.
+        let Some(idx) = pick_provider(&prov_lock, selected_provider_id) else {
             return CallOutcome::Failed(no_provider(selected_provider_id));
         };
 
@@ -293,8 +376,8 @@ pub(crate) async fn call_model(
         prov_lock[idx].clone()
     };
 
-    // If we fell through to a different provider (e.g. CLI after Janus rate limit),
-    // clear the model so the fallback provider uses its own default.
+    // The chosen model's provider isn't loaded (a bot without the gateway):
+    // the first provider serves with its own default model.
     let mut chat_req = chat_req;
     if provider.id() != selected_provider_id {
         chat_req.model = String::new();
@@ -320,6 +403,7 @@ pub(crate) async fn call_model(
 
     let t_stream_start = std::time::Instant::now();
     let stream_result = tokio::select! {
+        biased;
         _ = cancel_token.cancelled() => {
             info!(session_id, "run cancelled during provider.stream() call");
             return CallOutcome::Cancelled;
@@ -368,65 +452,33 @@ pub(crate) async fn call_model(
                     ));
                 }
                 // The provider disagreed with our local estimate. Make the
-                // retry state-changing: tighten thresholds by 20% of the
-                // compaction budget so next iteration's stages actually
-                // evict, instead of re-sending the identical request.
-                let bump = state
-                    .thresholds
-                    .as_ref()
-                    .map(|t| t.auto_compact / 5)
-                    .unwrap_or(20_000);
-                state.estimate_correction += bump;
+                // retry state-changing: raise the estimate so the next step's
+                // checkpoint trigger fires instead of re-sending the
+                // identical request.
+                state.estimate_correction += OVERFLOW_ESTIMATE_BUMP;
                 warn!(
                     overflow_retries = st.overflow_retries,
                     correction = state.estimate_correction,
                     "context overflow: forcing reactive compaction"
                 );
-                return CallOutcome::Retry;
+                return CallOutcome::Retry(RetryWhy::Overflow);
             }
 
             if ai::is_transient_error(&e) {
                 st.transient_retries += 1;
-                selector.mark_failed(selected_model);
                 if st.transient_retries > MAX_TRANSIENT_RETRIES {
-                    return CallOutcome::Failed(format!("Too many transient errors: {}", e));
+                    warn!(session_id, error = %e, "the connection kept failing; ending the turn");
+                    return CallOutcome::Failed(could_not_connect(selector, selected_model));
                 }
-                // The owner sees the retry, not a silent gap (voice said
-                // "on it" and went quiet for five minutes, 2026-09-03).
-                if tx
-                    .send(StreamEvent::control_notice(
-                        retry_notice(false, st.transient_retries),
-                        "stream_reconnecting",
-                    ))
-                    .await
-                    .is_err()
-                {
-                    debug!(session_id, "retry notice: receiver gone");
-                }
-                // Try next provider on transient error — but never
-                // silently fall from CLI to Janus (burns Nebo credits).
-                let prov_lock = providers.read().await;
-                let rotation = rotation(&prov_lock);
-                let prov_count = rotation.len();
-                if prov_count > 1 {
-                    let next_idx = rotation[(st.provider_idx + 1) % prov_count];
-                    if prov_lock[next_idx].id() == "janus" {
-                        drop(prov_lock);
-                        return CallOutcome::Failed(format!(
-                            "Provider error (no fallback to Janus): {}",
-                            e
-                        ));
-                    }
-                    drop(prov_lock);
-                    st.provider_idx += 1;
-                } else {
-                    drop(prov_lock);
-                }
+                // A dropped connection is nobody's model failing: the same
+                // model is asked again after a backoff, never a different
+                // model. A reconnect is
+                // silent: the owner's screen still shows the turn working.
                 tokio::select! {
                     _ = cancel_token.cancelled() => return CallOutcome::CancelledInBackoff,
                     _ = tokio::time::sleep(retry_backoff(st.transient_retries, None)) => {}
                 }
-                return CallOutcome::Retry;
+                return CallOutcome::Retry(RetryWhy::Transient);
             }
 
             // A 429 slows the whole bot, not just this call: the pool
@@ -439,35 +491,19 @@ pub(crate) async fn call_model(
 
             if e.is_retryable() {
                 st.retryable_retries += 1;
-                selector.mark_failed(selected_model);
                 if st.retryable_retries > MAX_RETRYABLE_RETRIES {
                     return CallOutcome::Failed(format!(
                         "Service temporarily unavailable after {} retries: {}",
                         MAX_RETRYABLE_RETRIES, e
                     ));
                 }
-                let prov_lock = providers.read().await;
-                let rotation = rotation(&prov_lock);
-                let prov_count = rotation.len();
-                if prov_count > 1 {
-                    let next_idx = rotation[(st.provider_idx + 1) % prov_count];
-                    if prov_lock[next_idx].id() == "janus" {
-                        drop(prov_lock);
-                        return CallOutcome::Failed(format!(
-                            "Provider error (no fallback to Janus): {}",
-                            e
-                        ));
-                    }
-                    drop(prov_lock);
-                    st.provider_idx += 1;
-                } else {
-                    drop(prov_lock);
-                }
+                // Busy or rate-limited: the same model again after the
+                // wait the provider asked for.
                 tokio::select! {
                     _ = cancel_token.cancelled() => return CallOutcome::CancelledInBackoff,
                     _ = tokio::time::sleep(retry_backoff(st.retryable_retries, retry_after)) => {}
                 }
-                return CallOutcome::Retry;
+                return CallOutcome::Retry(RetryWhy::Transient);
             }
 
             return CallOutcome::Failed(format!("Provider error: {}", e));
@@ -481,17 +517,30 @@ pub(crate) async fn call_model(
     let mut last_retry_after: Option<u64> = None;
     let mut stop_reason: Option<String> = None;
     let mut t_first_token: Option<std::time::Instant> = None;
-    let mut slow_notice_at = tokio::time::Instant::now() + SLOW_FIRST_TOKEN;
     // Track the order of content blocks (text vs tool) for correct rehydration.
-    // Each entry is either "text" (coalesced) or a tool index.
-    let mut block_order: Vec<(&'static str, Option<usize>)> = Vec::new();
+    let mut block_order: Vec<Block> = Vec::new();
+    let mut thinking: Vec<ai::ThinkingBlock> = Vec::new();
     // CLI providers run multi-turn tool loops — save each turn incrementally.
     let cli_incremental = provider.handles_tools();
+    // The reply never carries a note in Nebo's own format, or a call
+    // written out as text, past this point.
+    let mut notes = super::reminders::NoteFence::new(tool_names.clone());
 
     loop {
         let mut event = tokio::select! {
+            biased;
             _ = cancel_token.cancelled() => {
                 info!(session_id, "run cancelled during LLM stream");
+                // A provider whose stop is a round trip to a runtime it does
+                // not control (the linked provider's ACP `session/cancel`)
+                // is not done just because this token fired: waiting here
+                // for its stream to actually end is what keeps the next
+                // turn from sending a second prompt while the first is
+                // still being told to stop (never two prompts in flight to
+                // one linked session).
+                if provider.cancel_is_async() {
+                    drain_after_cancel(&mut rx).await;
+                }
                 // Best-effort: save whatever content we accumulated before cancellation
                 if !assistant_content.is_empty() || !tool_calls.is_empty() {
                     let tc_json = if !tool_calls.is_empty() {
@@ -499,9 +548,11 @@ pub(crate) async fn call_model(
                     } else {
                         None
                     };
+                    let heard = heard_through
+                        .map(|id| serde_json::json!({ super::conversation::HEARD_THROUGH: id }).to_string());
                     if let Err(e) = sessions.append_message(
                         session_id, "assistant", &assistant_content,
-                        tc_json.as_deref(), None, None,
+                        tc_json.as_deref(), None, heard.as_deref(),
                     ) {
                         warn!(session_id = %session_id, error = %e, "failed to save partial assistant message on cancel");
                     } else {
@@ -509,21 +560,6 @@ pub(crate) async fn call_model(
                     }
                 }
                 return CallOutcome::Cancelled;
-            }
-            _ = tokio::time::sleep_until(slow_notice_at), if t_first_token.is_none() => {
-                let waited = t_stream_start.elapsed().as_secs();
-                if tx
-                    .send(StreamEvent::control_notice(
-                        slow_first_token_notice(waited),
-                        "slow_first_token",
-                    ))
-                    .await
-                    .is_err()
-                {
-                    debug!(session_id, "slow first token notice: receiver gone");
-                }
-                slow_notice_at += SLOW_FIRST_TOKEN;
-                continue;
             }
             ev = tokio::time::timeout(STREAM_IDLE_TIMEOUT, rx.recv()) => match ev {
                 Ok(Some(e)) => e,
@@ -583,23 +619,43 @@ pub(crate) async fn call_model(
                     assistant_content.clear();
                     tool_calls.clear();
                     block_order.clear();
+                    notes = super::reminders::NoteFence::new(tool_names.clone());
                 }
-                assistant_content.push_str(&event.text);
-                // Coalesce consecutive text events into one block
-                if block_order.last().is_none_or(|b| b.0 != "text") {
-                    block_order.push(("text", None));
+                event.text = notes.push(&event.text);
+                if !event.text.is_empty() {
+                    show_text(event, &mut assistant_content, folds, &mut block_order, tx).await;
                 }
-                let _ = tx.send(event).await;
             }
             StreamEventType::Thinking => {
-                info!(session_id, "received thinking block");
                 let _ = tx.send(event).await;
             }
+            StreamEventType::ThinkingBlock => {
+                info!(session_id, "received thinking block");
+                thinking.extend(event.block());
+            }
             StreamEventType::ToolCall => {
+                // The call ends the text before it: what the fence held
+                // there never became a note.
+                let held = notes.finish();
+                if !held.is_empty() {
+                    show_text(StreamEvent::text(held), &mut assistant_content, folds, &mut block_order, tx).await;
+                }
                 if let Some(ref tc) = event.tool_call {
                     info!(session_id, tool = %tc.name, tool_id = %tc.id, "tool call received");
                     tool_calls.push(tc.clone());
-                    block_order.push(("tool", Some(tool_calls.len() - 1)));
+                    // The call closes the text before it: its verdict goes
+                    // out first, so the clients fold it before the call row.
+                    if let Some((segment, fold)) = folds.tool_call() {
+                        if let Some(Block::Text(verdict)) = block_order.last_mut() {
+                            *verdict = Some(fold);
+                        }
+                        let _ = tx.send(StreamEvent::text_verdict(segment, fold.as_str())).await;
+                    }
+                    block_order.push(Block::Tool(tool_calls.len() - 1));
+                    // A CLI provider runs its own tools over /agent/mcp.
+                    if !cli_incremental {
+                        let _ = tool_calls_out.send(tc.clone());
+                    }
                 }
                 let _ = tx.send(event).await;
             }
@@ -610,7 +666,6 @@ pub(crate) async fn call_model(
             }
             StreamEventType::Usage => {
                 if let Some(ref mut usage) = event.usage {
-                    state.last_input_tokens = usage.input_tokens as usize;
                     state.total_input_tokens += usage.input_tokens;
                     state.total_output_tokens += usage.output_tokens;
                     state.total_cache_read_tokens += usage.cache_read_input_tokens;
@@ -722,20 +777,19 @@ pub(crate) async fn call_model(
                 // the runner synthesizes it after executing tools itself.
                 let _ = tx.send(event).await;
             }
-            StreamEventType::ApprovalRequest => {
+            StreamEventType::AskRequest => {
                 // A provider that runs tools itself relays its runtime's own
-                // approval prompt (the linked provider), registered on the
-                // run's approval channels like the runner's own gate; relay
-                // so chat_dispatch broadcasts approval_request. API
-                // providers never emit this event.
+                // question (the linked provider), registered on the run's ask
+                // channels like the `ask` tool's; relay so chat_dispatch
+                // parks and broadcasts ask_request. API providers never emit
+                // this event.
                 let _ = tx.send(event).await;
             }
-            StreamEventType::AskRequest
-            | StreamEventType::PlanApproval
+            StreamEventType::ApprovalRequest
             | StreamEventType::ControlNotice
-            | StreamEventType::ContextStats => {
-                // Ask/Plan/ControlNotice: only sent by runner, not received
-                // from provider.
+            | StreamEventType::TextVerdict => {
+                // Approval/ControlNotice: only sent by the runner, not
+                // received from a provider.
             }
             StreamEventType::ToolSummary => {
                 // Tool execution summary — relay to parent for display.
@@ -749,6 +803,22 @@ pub(crate) async fn call_model(
             }
         }
     }
+
+    let held = notes.finish();
+    if !held.is_empty() {
+        show_text(StreamEvent::text(held), &mut assistant_content, folds, &mut block_order, tx).await;
+    }
+    let text_call = match notes.cut() {
+        Some(super::reminders::Cut::Note) => {
+            warn!(session_id, iteration, "the reply opened a note in Nebo's own format: it ends there, unshown and unstored");
+            None
+        }
+        Some(super::reminders::Cut::Call(tool)) => {
+            warn!(session_id, iteration, tool = %tool, "the reply wrote a tool call out as text: it ends there, unshown and unstored, and the call did not run");
+            Some(tool.clone())
+        }
+        None => None,
+    };
 
     // Drop LLM permit now that stream is complete
     drop(llm_permit);
@@ -786,20 +856,13 @@ pub(crate) async fn call_model(
         // tool calls are NOT saved — an assistant tool_use with no tool
         // result is an invalid sequence for every provider.
         // Called only on the branches that actually retry; the
-        // non-retryable fall-through persists via the normal save.
-        // The user watched this text stream and then freeze mid-sentence.
-        // Without a status line the dead bubble reads as the model giving
-        // up; with one, the retry reads as what it is — a reconnect.
-        let had_partial = !assistant_content.is_empty();
-        let reconnect_notice = |retry: usize| {
-            tx.send(StreamEvent::control_notice(
-                retry_notice(had_partial, retry),
-                "stream_reconnecting",
-            ))
-        };
-        let mut queue_cutoff_continuation = || {
+        // non-retryable fall-through persists via the normal save. The
+        // retry itself is silent: the turn goes on and resumes in place.
+        // Returns whether the stream was cut mid-reply: the retry is then a
+        // resume, and the caller says so on the next call.
+        let save_partial = || {
             if assistant_content.is_empty() && tool_calls.is_empty() {
-                return;
+                return RetryWhy::Transient;
             }
             if !assistant_content.is_empty()
                 && let Err(e) = sessions.append_message(
@@ -813,49 +876,19 @@ pub(crate) async fn call_model(
             {
                 warn!(session_id = %session_id, error = %e, "failed to save partial assistant message before stream retry");
             }
-            // A stream that dies while a tool call is in flight is almost
-            // always killed by the call itself — one enormous streamed
-            // argument (a whole document inline). A generic "continue"
-            // makes the model re-emit the same giant call and die the same
-            // way; name the cause and steer it to chunk the work instead.
-            let reminder = if tool_calls.is_empty() {
-                "Your previous response was cut off mid-stream by a \
-                 connection error. Continue EXACTLY where you left off — \
-                 do not repeat or restart."
-                    .to_string()
-            } else {
-                let names: Vec<&str> = tool_calls.iter().map(|tc| tc.name.as_str()).collect();
-                format!(
-                    "Your previous response was cut off mid-stream while \
-                     emitting a tool call ({}) — the call was NOT delivered. \
-                     Oversized tool arguments are the usual cause. Do NOT \
-                     retry one giant call: break the work into several \
-                     smaller tool calls (write large files in pieces, edit \
-                     one section at a time), then continue from where you \
-                     stopped.",
-                    names.join(", ")
-                )
-            };
-            pending_stream_reminders.push(steering::wrap_system_reminder(&reminder));
+            RetryWhy::StreamCut
         };
 
         // Layer 1: Transient errors (connection reset, timeout, EOF)
         if provider.retryable() && !deterministic && ai::is_transient_error(&err) {
             st.transient_retries += 1;
             if st.transient_retries <= MAX_TRANSIENT_RETRIES {
-                queue_cutoff_continuation();
-                if reconnect_notice(st.transient_retries).await.is_err() {
-                    debug!(session_id, "retry notice: receiver gone");
-                }
-                let prov_count = rotation(&providers.read().await).len();
-                if prov_count > 1 {
-                    st.provider_idx += 1;
-                }
+                let why = save_partial();
                 tokio::select! {
                     _ = cancel_token.cancelled() => return CallOutcome::CancelledInBackoff,
                     _ = tokio::time::sleep(retry_backoff(st.transient_retries, None)) => {}
                 }
-                return CallOutcome::Retry;
+                return CallOutcome::Retry(why);
             }
         }
 
@@ -886,21 +919,14 @@ pub(crate) async fn call_model(
             warn!(
                 reason,
                 retryable_retries = st.retryable_retries,
-                "retryable stream error, trying next provider"
+                "retryable stream error, retrying the same model"
             );
-            queue_cutoff_continuation();
-            if reconnect_notice(st.retryable_retries).await.is_err() {
-                debug!(session_id, "retry notice: receiver gone");
-            }
-            let prov_count = rotation(&providers.read().await).len();
-            if prov_count > 1 {
-                st.provider_idx += 1;
-            }
+            let why = save_partial();
             tokio::select! {
                 _ = cancel_token.cancelled() => return CallOutcome::CancelledInBackoff,
                 _ = tokio::time::sleep(retry_backoff(st.retryable_retries, last_retry_after)) => {}
             }
-            return CallOutcome::Retry;
+            return CallOutcome::Retry(why);
         }
 
         // Layer 3: Non-retryable — send error to user
@@ -918,8 +944,6 @@ pub(crate) async fn call_model(
             }))
             .await;
     }
-    // The call landed: its stream reminders are spent.
-    pending_stream_reminders.clear();
 
     let stream_total_ms = t_stream_start.elapsed().as_millis() as u64;
     let iter_total_ms = t_iter_start.elapsed().as_millis() as u64;
@@ -934,6 +958,7 @@ pub(crate) async fn call_model(
         "[telemetry] stream complete"
     );
 
+    let thinking_model = format!("{}/{}", provider.id(), chat_req.model);
     CallOutcome::Reply(ModelReply {
         text: assistant_content,
         tool_calls,
@@ -941,31 +966,27 @@ pub(crate) async fn call_model(
         stream_error,
         block_order,
         provider,
+        thinking,
+        thinking_model,
+        text_call,
     })
 }
 
-/// The provider a call goes to, by index. The first attempt goes to the
-/// provider the model names; after a failure (`provider_idx` > 0) the call
-/// rotates so it actually falls through to the next provider (e.g. a CLI
-/// agent). A named provider that is not registered falls back to the first
-/// one that takes calls it did not build. A provider that answers only for
-/// the agent it is addressed to (the linked one) is never that fallback,
-/// never rotated onto, and never stood in for: a call named for it that it
-/// cannot take, or a call with nowhere to go, is `None`.
-fn pick_provider(providers: &[Arc<dyn Provider>], provider_idx: usize, selected: &str) -> Option<usize> {
-    let rotation = rotation(providers);
-    if provider_idx > 0 && !rotation.is_empty() {
-        return Some(rotation[provider_idx % rotation.len()]);
+/// The provider a call goes to, by index: the provider the model names.
+/// A named provider that is not registered, or no name (a CLI bot's empty
+/// model), falls back to the first one that takes calls it did not build
+/// (`ai::default_provider`). A provider that answers only for the agent it
+/// is addressed to (the linked one) is never that fallback and never stood
+/// in for: a call named for it that it cannot take, or a call with nowhere
+/// to go, is `None`.
+fn pick_provider(providers: &[Arc<dyn Provider>], selected: &str) -> Option<usize> {
+    if let Some(idx) = providers.iter().position(|p| p.id() == selected) {
+        return Some(idx);
     }
-    if !selected.is_empty() {
-        if let Some(idx) = providers.iter().position(|p| p.id() == selected) {
-            return Some(idx);
-        }
-        if selected == ai::providers::linked::ID {
-            return None;
-        }
+    if selected == ai::providers::linked::ID {
+        return None;
     }
-    rotation.first().copied()
+    providers.iter().position(|p| p.retryable())
 }
 
 /// What the owner reads when no provider can take the call.
@@ -977,23 +998,31 @@ fn no_provider(selected: &str) -> String {
     }
 }
 
-/// The providers a call may be rotated onto after a failure, by index: every
-/// one that takes a call it did not build (see `Provider::retryable`).
-fn rotation(providers: &[Arc<dyn Provider>]) -> Vec<usize> {
-    providers
-        .iter()
-        .enumerate()
-        .filter(|(_, p)| p.retryable())
-        .map(|(i, _)| i)
-        .collect()
-}
-
 /// What a reply without tool calls asks of the next step.
 pub(crate) enum StepRetry {
     /// Take the step again as it is.
     Same,
-    /// Take the step again with this reminder on the call.
-    WithReminder(String),
+    /// Continue in place: the reply stands and the next call resumes it
+    /// (`TurnEvent::CutoffResume`).
+    Resume,
+}
+
+/// Hand a piece of the reply's text the note fence let through to the
+/// owner's stream, the reply being built and the turn's fold tracker.
+async fn show_text(
+    event: StreamEvent,
+    assistant_content: &mut String,
+    folds: &mut super::text_fold::TurnFolds,
+    block_order: &mut Vec<Block>,
+    tx: &mpsc::Sender<StreamEvent>,
+) {
+    assistant_content.push_str(&event.text);
+    folds.text(&event.text);
+    // Coalesce consecutive text events into one block
+    if !matches!(block_order.last(), Some(Block::Text(_))) {
+        block_order.push(Block::Text(None));
+    }
+    let _ = tx.send(event).await;
 }
 
 /// The output-cap ladder for a reply the output cap cut off: first a retry
@@ -1031,13 +1060,7 @@ pub(crate) fn output_cutoff(
             attempt = st.output_recovery_attempts,
             "max output tokens recovery"
         );
-        // Continuation rides the next call as an ephemeral reminder
-        // after the (already persisted) truncated turn.
-        return Some(StepRetry::WithReminder(steering::wrap_system_reminder(
-            "Your previous response was cut off by the output token limit. \
-             Resume directly from where you stopped — no recap, no apology. \
-             If you had pending tool calls, make them now.",
-        )));
+        return Some(StepRetry::Resume);
     }
     // Reset recovery counter and escalation flag on successful non-truncated completion
     if stop_reason != Some("length") && stop_reason != Some("max_tokens") {
@@ -1063,18 +1086,30 @@ pub(crate) fn retry_empty_reply(st: &mut CallState, iteration: usize, session_id
     false
 }
 
+/// A reply that wrote a call out as text: true while the turn goes on for
+/// the call (the next step is told it didn't run), false once
+/// `MAX_TEXT_CALL_RETRIES` replies in a row have done it.
+pub(crate) fn retry_text_call(st: &mut CallState, iteration: usize, session_id: &str) -> bool {
+    if st.text_call_retries < MAX_TEXT_CALL_RETRIES {
+        st.text_call_retries += 1;
+        warn!(iteration, session_id, retry = st.text_call_retries, "the reply wrote a call out as text; the turn goes on for the call");
+        return true;
+    }
+    false
+}
+
 /// Contradictory stop: the provider says the model stopped TO CALL TOOLS,
 /// but no tool calls were parsed from the stream — the payload was lost
 /// in transit (observed live with Janus: stop_reason="tool_calls",
 /// tool_call_count=0). Ending the turn there strands the user with only
-/// the preamble text; the step is retried with this reminder instead.
+/// the preamble text; the step is taken again instead.
 pub(crate) fn lost_tool_calls(
     st: &mut CallState,
     stop_reason: Option<&str>,
     tool_calls: &[ai::ToolCall],
     iteration: usize,
     session_id: &str,
-) -> Option<String> {
+) -> bool {
     let stop_says_tools = matches!(stop_reason, Some("tool_calls" | "tool_use"));
     if stop_says_tools && tool_calls.is_empty() && st.lost_toolcall_retries < 2 {
         st.lost_toolcall_retries += 1;
@@ -1084,26 +1119,14 @@ pub(crate) fn lost_tool_calls(
             attempt = st.lost_toolcall_retries,
             "stop_reason says tool_calls but none were parsed — retrying iteration"
         );
-        return Some(steering::wrap_system_reminder(
-            "Your previous response ended as if calling tools, but no tool \
-             calls arrived. Make the tool calls now — do not re-introduce \
-             the task.",
-        ));
+        return true;
     }
-    None
+    false
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn retry_notice_says_which_kind_of_retry() {
-        assert!(retry_notice(true, 1).contains("resume"));
-        let fresh = retry_notice(false, 3);
-        assert!(fresh.contains("retry 3") && !fresh.contains("resume"));
-        assert!(slow_first_token_notice(60).contains("60 seconds"));
-    }
 
     /// The live failure: "Nebo 1 Pro" resolved to a model that rejects the
     /// temperature every Nebo chat turn sends, so the owner's employee died
@@ -1187,21 +1210,6 @@ mod tests {
         }
     }
 
-    /// Another employee's failed call rotates over the addressed provider,
-    /// and it is never the default when no provider is named.
-    #[test]
-    fn rotation_skips_a_provider_that_takes_no_call_it_did_not_build() {
-        let providers: Vec<Arc<dyn Provider>> = vec![
-            Arc::new(Addressed),
-            Arc::new(StubProvider("anthropic")),
-            Arc::new(Addressed),
-            Arc::new(StubProvider("janus")),
-        ];
-        assert_eq!(rotation(&providers), vec![1, 3]);
-        let none: Vec<Arc<dyn Provider>> = vec![Arc::new(Addressed)];
-        assert!(rotation(&none).is_empty());
-    }
-
     /// A call goes to the provider its model names. When that provider is
     /// not registered it goes to the first one that takes any call, never to
     /// the linked provider; with nowhere else to go it goes nowhere, and a
@@ -1209,18 +1217,17 @@ mod tests {
     #[test]
     fn a_missing_provider_never_lands_on_the_linked_one() {
         let only_linked: Vec<Arc<dyn Provider>> = vec![Arc::new(Addressed)];
-        assert_eq!(pick_provider(&only_linked, 0, "janus"), None);
-        assert_eq!(pick_provider(&only_linked, 0, ""), None);
-        assert_eq!(pick_provider(&only_linked, 1, "janus"), None);
-        assert_eq!(pick_provider(&only_linked, 0, "linked"), Some(0));
+        assert_eq!(pick_provider(&only_linked, "janus"), None);
+        assert_eq!(pick_provider(&only_linked, ""), None);
+        assert_eq!(pick_provider(&only_linked, "linked"), Some(0));
 
         let both: Vec<Arc<dyn Provider>> = vec![Arc::new(Addressed), Arc::new(StubProvider("anthropic"))];
-        assert_eq!(pick_provider(&both, 0, "janus"), Some(1));
-        assert_eq!(pick_provider(&both, 0, ""), Some(1));
-        assert_eq!(pick_provider(&both, 0, "linked"), Some(0));
+        assert_eq!(pick_provider(&both, "janus"), Some(1));
+        assert_eq!(pick_provider(&both, ""), Some(1));
+        assert_eq!(pick_provider(&both, "linked"), Some(0));
 
         let no_linked: Vec<Arc<dyn Provider>> = vec![Arc::new(StubProvider("anthropic"))];
-        assert_eq!(pick_provider(&no_linked, 0, "linked"), None);
+        assert_eq!(pick_provider(&no_linked, "linked"), None);
         assert_eq!(no_provider("janus"), "No AI provider is connected for janus.");
     }
 
@@ -1285,6 +1292,13 @@ mod tests {
         assert!(resolve_aux(&aux_config("gpt-4o-mini"), &providers).is_none());
     }
 
+    /// An embedding model named as the aux route is never used.
+    #[test]
+    fn test_resolve_aux_never_an_embedding_model() {
+        let providers: Vec<Arc<dyn Provider>> = vec![Arc::new(StubProvider("janus"))];
+        assert!(resolve_aux(&aux_config("janus/nebo-embed-small"), &providers).is_none());
+    }
+
     #[test]
     fn test_resolve_aux_set_and_available_routes() {
         let providers: Vec<Arc<dyn Provider>> = vec![
@@ -1295,5 +1309,136 @@ mod tests {
         let (provider, model) = resolve_aux(&cfg, &providers).expect("aux route should resolve");
         assert_eq!(provider.id(), "openai");
         assert_eq!(model, "gpt-4o-mini");
+    }
+
+    /// A provider whose cancel is a round trip to a runtime it does not
+    /// control (`cancel_is_async`): it keeps streaming until it has heard
+    /// the cancel token, then only ends its stream after `ack_lag` — the
+    /// stand-in for an ACP `session/cancel` round trip.
+    struct SlowToAck {
+        ack_lag: Duration,
+        cancel_is_async: bool,
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for SlowToAck {
+        fn id(&self) -> &str {
+            "slow-to-ack"
+        }
+        fn cancel_is_async(&self) -> bool {
+            self.cancel_is_async
+        }
+        async fn stream(&self, req: &ChatRequest) -> Result<ai::EventReceiver, ProviderError> {
+            let (tx, rx) = mpsc::channel(4);
+            let cancel = req.cancel_token.clone().unwrap_or_default();
+            let ack_lag = self.ack_lag;
+            tokio::spawn(async move {
+                let _ = tx.send(StreamEvent::text("Working")).await;
+                cancel.cancelled().await;
+                tokio::time::sleep(ack_lag).await;
+                let _ = tx.send(StreamEvent::error("Cancelled".to_owned())).await;
+                let _ = tx.send(StreamEvent::done()).await;
+            });
+            Ok(rx)
+        }
+    }
+
+    /// Everything `call_model` needs besides the provider, built fresh so
+    /// each test owns its store file.
+    struct Rig {
+        _dir: tempfile::TempDir,
+        store: Arc<db::Store>,
+        selector: ModelSelector,
+        concurrency: ConcurrencyController,
+    }
+
+    impl Rig {
+        fn new() -> Self {
+            let dir = tempfile::tempdir().unwrap();
+            let store = Arc::new(db::Store::new(dir.path().join("t.db").to_str().unwrap()).expect("store"));
+            Self {
+                _dir: dir,
+                store,
+                selector: ModelSelector::new(Default::default()),
+                concurrency: ConcurrencyController::new(Some(4)),
+            }
+        }
+    }
+
+    /// A stop on a provider that needs an ack round trip to actually end
+    /// (the linked provider's stand-in here) must not let `call_model`
+    /// declare the slot free before that round trip lands: the bug this
+    /// closes let the runner start a second prompt on the still-live ACP
+    /// session the moment the local cancel token fired, before the agent
+    /// had even been told to stop.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cancel_waits_for_a_cancel_is_async_provider_to_actually_end() {
+        for (cancel_is_async, min_elapsed) in [(true, Duration::from_millis(150)), (false, Duration::ZERO)] {
+            let rig = Rig::new();
+            let sessions = SessionManager::new(rig.store.clone());
+            let providers: RwLock<Vec<Arc<dyn Provider>>> = RwLock::new(vec![Arc::new(SlowToAck {
+                ack_lag: Duration::from_millis(200),
+                cancel_is_async,
+            })]);
+            let token = CancellationToken::new();
+            let request = ChatRequest {
+                model: "slow-to-ack".to_string(),
+                cancel_token: Some(token.clone()),
+                ..ChatRequest::new(ai::RequestTrace::new("agent_turn"))
+            };
+            let (tx, _rx_out) = mpsc::channel(16);
+            let (tool_calls_out, _tc_rx) = mpsc::unbounded_channel();
+            let mut folds = crate::harness::text_fold::TurnFolds::default();
+            let mut st = CallState::default();
+            let mut state = RunState::default();
+
+            let cancel_after = token.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                cancel_after.cancel();
+            });
+
+            let started = std::time::Instant::now();
+            let outcome = call_model(
+                ModelCall {
+                    request,
+                    providers: &providers,
+                    selector: &rig.selector,
+                    concurrency: &rig.concurrency,
+                    priority: crate::concurrency::Priority::Owner,
+                    sessions: &sessions,
+                    cancel: &token,
+                    tx: &tx,
+                    session_id: "s1",
+                    step: 0,
+                    step_started: std::time::Instant::now(),
+                    selected_provider_id: "slow-to-ack",
+                    selected_model: "slow-to-ack",
+                    model_override: "slow-to-ack",
+                    context_limit: 100_000,
+                    tool_credential: None,
+                    tool_calls_out,
+                    folds: &mut folds,
+                    heard_through: None,
+                    tool_names: vec![],
+                },
+                &mut st,
+                &mut state,
+            )
+            .await;
+            let elapsed = started.elapsed();
+
+            assert!(matches!(outcome, CallOutcome::Cancelled), "cancel_is_async={cancel_is_async}");
+            assert!(
+                elapsed >= min_elapsed,
+                "cancel_is_async={cancel_is_async}: returned after {elapsed:?}, wanted at least {min_elapsed:?}"
+            );
+            if cancel_is_async {
+                assert!(
+                    elapsed < CANCEL_ACK_GRACE,
+                    "the provider's own ack ended the stream well inside the grace period: {elapsed:?}"
+                );
+            }
+        }
     }
 }

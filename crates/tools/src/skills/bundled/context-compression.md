@@ -103,13 +103,13 @@ Sometimes the best move is a new conversation. Start fresh when:
 Before starting a new conversation, save anything important to memory. This way you don't lose the work — you just lose the noise.
 
 ```
-agent(resource: "memory", action: "store", key: "project/[name]/decisions", value: "Key decisions made", layer: "tacit")
-agent(resource: "memory", action: "store", key: "project/[name]/status", value: "Current status and next steps", layer: "tacit")
+remember(key: "project/[name]/decisions", value: "Key decisions made", layer: "tacit")
+remember(key: "project/[name]/status", value: "Current status and next steps", layer: "tacit")
 ```
 
 Then in the new conversation, you can pull it back:
 ```
-agent(resource: "memory", action: "search", query: "project [name] decisions")
+recall(query: "project [name] decisions")
 ```
 
 ### Step 6: Use Focused Sessions

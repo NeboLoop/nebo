@@ -1,0 +1,9 @@
+id: sc57-a-busy-linked-conversation-is-never-sent-a-second-prompt
+name: "SC57 — A busy linked conversation is never sent a second prompt"
+description: |
+  While a linked employee's turn runs in a conversation, a message into it is not sent and the
+  sender is told so plainly, with what to do instead. A conversation it does not have, or one
+  named for an employee with no conversations of its own, sends nothing either.
+target_component: staffed-company
+proof: staffed_proof::company::a_busy_linked_conversation_is_never_sent_a_second_prompt
+conversation: []

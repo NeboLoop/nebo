@@ -1,0 +1,10 @@
+id: sc50-only-the-owners-proven-email-answers-for-the-owner
+name: "SC50 — Only the owner's proven email answers for the owner"
+description: |
+  Mail from the owner's address that fails DKIM/DMARC is a stranger's: it runs in a thread of its
+  own, read as external, never in the owner's conversation; its "approve" answers no open question
+  and its request to change permissions is refused. The owner's proven reply to the same
+  conversation answers the open question and the turn goes on.
+target_component: staffed-company
+proof: staffed_proof::conversation::only_the_owners_proven_email_answers_for_the_owner
+conversation: []

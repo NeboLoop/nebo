@@ -15,7 +15,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-/// Desktop automation — windows, input, clipboard, notifications, screen capture,
+/// Desktop automation — windows, input, clipboard, screen capture,
 /// UI accessibility, menus, dialogs, virtual desktops, shortcuts, TTS, and dock.
 /// Cross-platform: macOS (AppleScript/native), Linux (xdotool/wmctrl/AT-SPI), Windows (PowerShell).
 /// Persistent PowerShell daemon — shared across all desktop tool invocations (Windows only).
@@ -59,13 +59,12 @@ impl DynTool for DesktopTool {
     }
 
     fn description(&self) -> String {
-        "Desktop automation — windows, input, clipboard, notifications, screen capture, \
+        "Desktop automation — windows, input, clipboard, screen capture, \
          UI accessibility, menus, dialogs, virtual desktops, shortcuts, TTS, and dock.\n\n\
          Resources:\n\
          - window: list, focus, minimize, maximize, resize, close, move\n\
          - input: click (click_count/button), type, press, move, scroll (direction/amount), drag, paste\n\
          - clipboard: read, write, clear\n\
-         - notification: send, alert\n\
          - capture: screenshot, see\n\
          - ui: tree, find, click, get_value, set_value, list_apps\n\
          - menu: list, menus, click, status, click_status\n\
@@ -74,13 +73,13 @@ impl DynTool for DesktopTool {
          - shortcut: list, run\n\
          - tts: speak\n\
          - dock: badges, recent, is_running (macOS only)\n\n\
-         Workflow: capture(action: see, app) returns the window as an image plus the elements it found, \
+         Workflow: os(resource: \"capture\", action: \"see\", app) returns the window as an image plus the elements it found, \
          with refs and positions in that image's pixels. Every input action on that app then returns the \
          window as it looks AFTER the action (image + what changed) — read it before the next step. \
          Act by ref when the element is listed, by image pixel (coordinate: [x, y]) when it is not; a pixel \
          click on an app you have not captured is refused, capture first. Text the accessibility tree does not \
          expose is read from the image and listed as OCRText elements, clickable by ref. \
-         scroll(until: \"text\") pages until that text is on screen; drag(ref, to_ref | coordinate) reports where \
+         An input scroll with until: \"text\" pages until that text is on screen; an input drag (ref, to_ref | coordinate) reports where \
          the dragged element ended up.\n\n\
          Examples:\n  \
          os(resource: \"capture\", action: \"see\", app: \"Safari\") — snapshot + element IDs\n  \
@@ -89,7 +88,6 @@ impl DynTool for DesktopTool {
          os(resource: \"clipboard\", action: \"read\")\n  \
          os(resource: \"window\", action: \"list\")\n  \
          os(resource: \"capture\", action: \"screenshot\", app: \"Safari\")\n  \
-         os(resource: \"notification\", action: \"send\", title: \"Done\", message: \"Task complete\")\n  \
          os(resource: \"tts\", action: \"speak\", text: \"Hello world\")"
             .to_string()
     }
@@ -101,7 +99,7 @@ impl DynTool for DesktopTool {
                 "resource": {
                     "type": "string",
                     "description": "Desktop resource",
-                    "enum": ["window", "input", "clipboard", "notification", "capture",
+                    "enum": ["window", "input", "clipboard", "capture",
                              "ui", "menu", "dialog", "space", "shortcut", "tts", "dock"]
                 },
                 "action": {
@@ -109,8 +107,7 @@ impl DynTool for DesktopTool {
                     "description": "Action to perform on the resource"
                 },
                 "app": { "type": "string", "description": "Application name (for window/capture/ui)" },
-                "title": { "type": "string", "description": "Window or notification title" },
-                "message": { "type": "string", "description": "Notification message" },
+                "title": { "type": "string", "description": "Window title" },
                 "text": { "type": "string", "description": "Text to type, write to clipboard, or speak" },
                 "key": { "type": "string", "description": "Key or combo to press (e.g. 'return', 'tab', 'cmd+shift+s')" },
                 "x": { "type": "integer", "description": "X coordinate (window move; or an input target, same meaning as coordinate[0])" },
@@ -133,7 +130,7 @@ impl DynTool for DesktopTool {
                 "index": { "type": "integer", "description": "Index for space/menu item" },
                 "voice": { "type": "string", "description": "TTS voice name" },
                 "rate": { "type": "integer", "description": "TTS speaking rate (words per minute)" },
-                "ref": { "type": "string", "description": "Element ref from capture(action: see) (e.g. B1, T2)" },
+                "ref": { "type": "string", "description": "Element ref from a capture see (e.g. B1, T2)" },
                 "snapshot_id": { "type": "string", "description": "Snapshot ID from a previous see action" },
                 "max_elements": { "type": "integer", "description": "Max elements returned by see (default: 60)" },
                 "until": { "type": "string", "description": "For input scroll: keep scrolling a page at a time until an element whose label contains this text is on screen (case-insensitive), up to max_pages" },
@@ -145,9 +142,6 @@ impl DynTool for DesktopTool {
         })
     }
 
-    fn requires_approval(&self) -> bool {
-        true
-    }
 
     fn execute_dyn<'a>(
         &'a self,
@@ -171,7 +165,6 @@ impl DynTool for DesktopTool {
                     let _guard = self.clipboard_lock.lock().await;
                     handle_clipboard(action, &input).await
                 }
-                "notification" => handle_notification(action, &input).await,
                 "capture" => {
                     handle_capture(action, &input, &self.snapshot_store, &self.ax_cache).await
                 }
@@ -192,7 +185,7 @@ impl DynTool for DesktopTool {
                 "tts" => handle_tts(action, &input).await,
                 "dock" => handle_dock(action, &input).await,
                 _ => ToolResult::error(format!(
-                    "Unknown resource '{}'. Use: window, input, clipboard, notification, capture, \
+                    "Unknown resource '{}'. Use: window, input, clipboard, capture, \
                      ui, menu, dialog, space, shortcut, tts, dock",
                     resource
                 )),
@@ -2209,119 +2202,6 @@ async fn clipboard_clear() -> ToolResult {
     ToolResult::error("Clipboard is not supported on this platform")
 }
 
-// --- Notifications ---
-
-async fn handle_notification(action: &str, input: &serde_json::Value) -> ToolResult {
-    match action {
-        "send" => {
-            let title = input["title"].as_str().unwrap_or("Nebo");
-            let message = input["message"].as_str().unwrap_or("");
-            if message.is_empty() {
-                return ToolResult::error(errors::missing_param("send", "message", "os(resource: \"notification\", action: \"send\", title: \"Done\", message: \"Task complete\")"));
-            }
-            notification_send(title, message).await
-        }
-        "alert" => {
-            let title = input["title"].as_str().unwrap_or("Nebo");
-            let message = input["message"].as_str().unwrap_or("");
-            if message.is_empty() {
-                return ToolResult::error(errors::missing_param("alert", "message", "os(resource: \"notification\", action: \"alert\", title: \"Warning\", message: \"Something happened\")"));
-            }
-            notification_alert(title, message).await
-        }
-        _ => ToolResult::error(format!(
-            "Unknown notification action '{}'. Use: send, alert",
-            action
-        )),
-    }
-}
-
-async fn notification_send(title: &str, message: &str) -> ToolResult {
-    #[cfg(target_os = "macos")]
-    {
-        let script = format!(
-            "display notification \"{}\" with title \"{}\"",
-            escape_applescript(message),
-            escape_applescript(title)
-        );
-        return run_osascript(&script).await;
-    }
-    #[cfg(target_os = "linux")]
-    {
-        if which("notify-send") {
-            return run_command("notify-send", &[title, message]).await;
-        }
-        return ToolResult::error("Notifications require notify-send (install libnotify)");
-    }
-    #[cfg(target_os = "windows")]
-    {
-        // Try BurntToast module, fallback to .NET
-        let script = format!(
-            r#"if (Get-Module -ListAvailable -Name BurntToast) {{
-    New-BurntToastNotification -Text '{}', '{}'
-}} else {{
-    Add-Type -AssemblyName System.Windows.Forms
-    $n = New-Object System.Windows.Forms.NotifyIcon
-    $n.Icon = [System.Drawing.SystemIcons]::Information
-    $n.BalloonTipTitle = '{}'
-    $n.BalloonTipText = '{}'
-    $n.Visible = $true
-    $n.ShowBalloonTip(5000)
-}}"#,
-            escape_powershell(title),
-            escape_powershell(message),
-            escape_powershell(title),
-            escape_powershell(message)
-        );
-        return run_powershell(&script).await;
-    }
-    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-    {
-        let _ = (title, message);
-        ToolResult::error("Notifications are not supported on this platform")
-    }
-}
-
-async fn notification_alert(title: &str, message: &str) -> ToolResult {
-    #[cfg(target_os = "macos")]
-    {
-        let script = format!(
-            "display alert \"{}\" message \"{}\"",
-            escape_applescript(title),
-            escape_applescript(message)
-        );
-        return run_osascript(&script).await;
-    }
-    #[cfg(target_os = "linux")]
-    {
-        if which("zenity") {
-            return run_command("zenity", &["--info", "--title", title, "--text", message]).await;
-        }
-        if which("kdialog") {
-            return run_command("kdialog", &["--msgbox", message, "--title", title]).await;
-        }
-        if which("notify-send") {
-            return run_command("notify-send", &["-u", "critical", title, message]).await;
-        }
-        return ToolResult::error("Alert requires zenity, kdialog, or notify-send");
-    }
-    #[cfg(target_os = "windows")]
-    {
-        let script = format!(
-            r#"Add-Type -AssemblyName PresentationFramework
-[System.Windows.MessageBox]::Show('{}', '{}')"#,
-            escape_powershell(message),
-            escape_powershell(title)
-        );
-        return run_powershell(&script).await;
-    }
-    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-    {
-        let _ = (title, message);
-        ToolResult::error("Alert is not supported on this platform")
-    }
-}
-
 // --- Screen capture ---
 
 /// The capture action a call means: the desktop straps say `capture` for a
@@ -2775,7 +2655,7 @@ async fn observe(
     ));
 
     Ok(Observed {
-        result: ToolResult { payload: None, need: None, content: text, is_error: false, image_url: shot.image_url, http_status: None, terminal: false },
+        result: ToolResult { payload: None, need: None, parked_ask: None, taint: Vec::new(), loads: Vec::new(), content: text, is_error: false, image_url: shot.image_url, http_status: None, terminal: false },
         snapshot,
     })
 }
@@ -3227,7 +3107,7 @@ fn finalize_capture(bytes: &[u8], mime: &str, dims: Option<(u32, u32)>, summary:
         image_url: Some(data_uri),
         http_status: None,
         terminal: false,
-        need: None,
+        need: None, parked_ask: None, taint: Vec::new(), loads: Vec::new(),
     }
 }
 
@@ -3476,7 +3356,7 @@ end tell"#,
     }
     #[cfg(target_os = "linux")]
     {
-        return ToolResult::error("UI click is not available on Linux. Use capture(action: see) for a screenshot and input(action: click, coordinate: [x,y]) instead.");
+        return ToolResult::error("UI click is not available on Linux. Use os(resource: \"capture\", action: \"see\") for a screenshot and os(resource: \"input\", action: \"click\", coordinate: [x,y]) instead.");
     }
     #[cfg(target_os = "windows")]
     {
@@ -3524,7 +3404,7 @@ end tell"#,
     #[cfg(target_os = "linux")]
     {
         return ToolResult::error(
-            "UI get_value is not available on Linux. Use capture(action: see) for a screenshot and read the value from it.",
+            "UI get_value is not available on Linux. Use os(resource: \"capture\", action: \"see\") for a screenshot and read the value from it.",
         );
     }
     #[cfg(target_os = "windows")]
@@ -3572,7 +3452,7 @@ end tell"#,
     #[cfg(target_os = "linux")]
     {
         return ToolResult::error(
-            "UI set_value is not available on Linux. Use input(action: click, coordinate: [x,y]) then input(action: type, text: ...) instead.",
+            "UI set_value is not available on Linux. Use os(resource: \"input\", action: \"click\", coordinate: [x,y]) then os(resource: \"input\", action: \"type\", text: ...) instead.",
         );
     }
     #[cfg(target_os = "windows")]
@@ -3764,7 +3644,7 @@ end tell"#,
         // The old PowerShell script only proved the process existed and then
         // answered "Menu bar found" with no menus in it.
         return ToolResult::error(
-            "Menu enumeration is not implemented on Windows; use ui(action: tree) to read the window's controls.",
+            "Menu enumeration is not implemented on Windows; use os(resource: \"ui\", action: \"tree\") to read the window's controls.",
         );
     }
     #[cfg(target_os = "linux")]
@@ -4221,7 +4101,7 @@ async fn space_list() -> ToolResult {
         // old `defaults read` script printed two unrelated integers that read
         // as space numbers.
         ToolResult::error(
-            "Listing Mission Control spaces is not available on macOS. Switch by number with space(action: \"switch\", index: N), 1 to 9.",
+            "Listing Mission Control spaces is not available on macOS. Switch by number with os(resource: \"space\", action: \"switch\", index: N), 1 to 9.",
         )
     }
     #[cfg(target_os = "linux")]
@@ -4235,7 +4115,7 @@ async fn space_list() -> ToolResult {
     {
         // PowerShell has no supported API for enumerating virtual desktops.
         return ToolResult::error(
-            "Virtual desktop enumeration is not available on Windows; space(action: switch, index: N) moves N desktops to the right.",
+            "Virtual desktop enumeration is not available on Windows; os(resource: \"space\", action: \"switch\", index: N) moves N desktops to the right.",
         );
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
@@ -4981,7 +4861,6 @@ mod tests {
         assert!(tool.description().contains("menu"));
         assert!(tool.description().contains("tts"));
         assert!(tool.description().contains("dock"));
-        assert!(tool.requires_approval());
         let schema = tool.schema();
         assert!(schema["properties"]["resource"].is_object());
         assert!(schema["properties"]["action"].is_object());
@@ -4991,7 +4870,7 @@ mod tests {
         assert!(resource_names.contains(&"window"));
         assert!(resource_names.contains(&"input"));
         assert!(resource_names.contains(&"clipboard"));
-        assert!(resource_names.contains(&"notification"));
+        assert!(!resource_names.contains(&"notification"), "notifications are push_notification");
         assert!(resource_names.contains(&"capture"));
         assert!(resource_names.contains(&"ui"));
         assert!(resource_names.contains(&"menu"));
@@ -5450,12 +5329,5 @@ mod tests {
         let result = handle_clipboard("invalid", &serde_json::json!({})).await;
         assert!(result.is_error);
         assert!(result.content.contains("clear"));
-    }
-
-    #[tokio::test]
-    async fn test_notification_alert_missing_message() {
-        let result = handle_notification("alert", &serde_json::json!({})).await;
-        assert!(result.is_error);
-        assert!(result.content.contains("message"));
     }
 }

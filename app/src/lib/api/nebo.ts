@@ -83,6 +83,20 @@ export function getLanes() {
 }
 
 /**
+ * @description "Get location"
+ */
+export function getLocation() {
+	return webapi.get<components.BotLocationResponse>(`/api/v1/agent/location`)
+}
+
+/**
+ * @description "Update location"
+ */
+export function updateLocation(req: Record<string, unknown> = {}) {
+	return webapi.put<components.BotLocationResponse>(`/api/v1/agent/location`, req)
+}
+
+/**
  * @description "List personality presets"
  */
 export function listPersonalityPresets() {
@@ -115,6 +129,27 @@ export function listSessions(limit?: number, offset?: number) {
  */
 export function deleteSession(id: string) {
 	return webapi.delete<components.DeleteSessionResponse>(`/api/v1/agent/sessions/${id}`)
+}
+
+/**
+ * @description "Get session goal"
+ */
+export function getSessionGoal(id: string) {
+	return webapi.get<components.SessionGoalResponse>(`/api/v1/agent/sessions/${id}/goal`)
+}
+
+/**
+ * @description "Set session goal"
+ */
+export function setSessionGoal(id: string, req: Record<string, unknown> = {}) {
+	return webapi.put<components.SessionGoalResponse>(`/api/v1/agent/sessions/${id}/goal`, req)
+}
+
+/**
+ * @description "Clear session goal"
+ */
+export function clearSessionGoal(id: string) {
+	return webapi.delete<components.SessionGoalResponse>(`/api/v1/agent/sessions/${id}/goal`)
 }
 
 /**
@@ -230,17 +265,24 @@ export function listLinkedAgents() {
 }
 
 /**
- * @description "Get workflow approval status"
+ * @description "Work out agent needs"
  */
-export function getWorkflowApprovalStatus(runId: string) {
-	return webapi.get<components.GetWorkflowApprovalStatusResponse>(`/api/v1/agents/workflow-runs/${runId}/approval`)
+export function workOutAgentNeeds(req: Record<string, unknown> = {}) {
+	return webapi.post<components.WorkOutAgentNeedsResponse>(`/api/v1/agents/needs`, req)
 }
 
 /**
- * @description "Resolve workflow approval"
+ * @description "Get workflow run approval"
  */
-export function resolveWorkflowApproval(runId: string, req: Record<string, unknown> = {}) {
-	return webapi.post<components.ResolveWorkflowApprovalResponse>(`/api/v1/agents/workflow-runs/${runId}/approval`, req)
+export function getWorkflowRunApproval(runId: string) {
+	return webapi.get<components.GetWorkflowRunApprovalResponse>(`/api/v1/agents/workflow-runs/${runId}/approval`)
+}
+
+/**
+ * @description "Answer workflow run approval"
+ */
+export function answerWorkflowRunApproval(runId: string, req: Record<string, unknown> = {}) {
+	return webapi.post<components.AnswerWorkflowRunApprovalResponse>(`/api/v1/agents/workflow-runs/${runId}/approval`, req)
 }
 
 /**
@@ -395,6 +437,27 @@ export function updateAgentInputs(id: string, req: Record<string, unknown> = {})
  */
 export function getAgentOperations(id: string) {
 	return webapi.get<components.GetAgentOperationsResponse>(`/api/v1/agents/${id}/operations`)
+}
+
+/**
+ * @description "Get agent permissions"
+ */
+export function getAgentPermissions(id: string) {
+	return webapi.get<components.PermissionsPage>(`/api/v1/agents/${id}/permissions`)
+}
+
+/**
+ * @description "Update agent permissions"
+ */
+export function updateAgentPermissions(id: string, req: Record<string, unknown> = {}) {
+	return webapi.put<components.PermissionsPage>(`/api/v1/agents/${id}/permissions`, req)
+}
+
+/**
+ * @description "Remove agent permission"
+ */
+export function removeAgentPermission(id: string, ruleId: string) {
+	return webapi.delete<components.RemoveAgentPermissionResponse>(`/api/v1/agents/${id}/permissions/items/${ruleId}`)
 }
 
 /**
@@ -1042,20 +1105,6 @@ export function testIntegration(id: string, req: Record<string, unknown> = {}) {
 }
 
 /**
- * @description "Get tool permissions"
- */
-export function getToolPermissions(id: string) {
-	return webapi.get<unknown>(`/api/v1/integrations/${id}/tool-permissions`)
-}
-
-/**
- * @description "Update tool permissions"
- */
-export function updateToolPermissions(id: string, req: Record<string, unknown> = {}) {
-	return webapi.put<unknown>(`/api/v1/integrations/${id}/tool-permissions`, req)
-}
-
-/**
  * @description "List layers"
  */
 export function listLayers() {
@@ -1116,6 +1165,20 @@ export function listLayerFiles(slug: string) {
  */
 export function localModelsStatus() {
 	return webapi.get<components.LocalModelsStatusResponse>(`/api/v1/local-models/status`)
+}
+
+/**
+ * @description "Sign in"
+ */
+export function signIn() {
+	return webapi.get<unknown>(`/api/v1/local-session`)
+}
+
+/**
+ * @description "New ticket"
+ */
+export function newTicket(req: Record<string, unknown> = {}) {
+	return webapi.post<unknown>(`/api/v1/local-session/ticket`, req)
 }
 
 /**
@@ -1273,10 +1336,24 @@ export function neboAIBillingSubscription() {
 }
 
 /**
+ * @description "Nebo a i get bot"
+ */
+export function neboAIGetBot() {
+	return webapi.get<components.BotNameResponse>(`/api/v1/neboai/bot`)
+}
+
+/**
  * @description "Nebo a i connect handler"
  */
 export function neboAIConnectHandler(req: Record<string, unknown> = {}) {
 	return webapi.post<components.NeboAIConnectHandlerResponse>(`/api/v1/neboai/connect`, req)
+}
+
+/**
+ * @description "Nebo a i bot email"
+ */
+export function neboAIBotEmail(agentId: string) {
+	return webapi.get<components.BotEmailResponse>(`/api/v1/neboai/email`, { agentId })
 }
 
 /**
@@ -1357,17 +1434,24 @@ export function neboAIReferralCode() {
 }
 
 /**
- * @description "Nebo a i share artifact"
+ * @description "Nebo a i share link"
  */
-export function neboAIShareArtifact(req: Record<string, unknown> = {}) {
-	return webapi.post<components.NeboAIShareArtifactResponse>(`/api/v1/neboai/share`, req)
+export function neboAIShareLink(artifact: string) {
+	return webapi.get<components.ShareLinkResponse>(`/api/v1/neboai/share`, { artifact })
 }
 
 /**
- * @description "Nebo a i share targets"
+ * @description "Nebo a i set share link"
  */
-export function neboAIShareTargets() {
-	return webapi.get<components.ShareTargetsResponse>(`/api/v1/neboai/share/targets`)
+export function neboAISetShareLink(req: Record<string, unknown> = {}) {
+	return webapi.put<components.ShareLinkResponse>(`/api/v1/neboai/share`, req)
+}
+
+/**
+ * @description "Nebo a i turn off share link"
+ */
+export function neboAITurnOffShareLink(artifact: string) {
+	return webapi.delete<components.ShareLinkResponse>(`/api/v1/neboai/share`, { artifact })
 }
 
 /**
@@ -1420,6 +1504,55 @@ export function installOrg(req: Record<string, unknown> = {}) {
 }
 
 /**
+ * @description "List permission activity"
+ */
+export function listPermissionActivity(agentId?: string, door?: string, decision?: string, limit?: number, offset?: number) {
+	return webapi.get<components.ActivityPage>(`/api/v1/permissions/activity`, { agentId, door, decision, limit, offset })
+}
+
+/**
+ * @description "List permission asks"
+ */
+export function listPermissionAsks(session?: string) {
+	return webapi.get<components.PermissionAsksResponse>(`/api/v1/permissions/asks`, { session })
+}
+
+/**
+ * @description "Get permission ask"
+ */
+export function getPermissionAsk(id: string) {
+	return webapi.get<components.PermissionAskCard>(`/api/v1/permissions/asks/${id}`)
+}
+
+/**
+ * @description "Answer permission ask"
+ */
+export function answerPermissionAsk(id: string, req: Record<string, unknown> = {}) {
+	return webapi.post<components.PermissionAskCard>(`/api/v1/permissions/asks/${id}/answer`, req)
+}
+
+/**
+ * @description "Get company permissions"
+ */
+export function getCompanyPermissions() {
+	return webapi.get<components.PermissionsPage>(`/api/v1/permissions/company`)
+}
+
+/**
+ * @description "Update company permissions"
+ */
+export function updateCompanyPermissions(req: Record<string, unknown> = {}) {
+	return webapi.put<components.PermissionsPage>(`/api/v1/permissions/company`, req)
+}
+
+/**
+ * @description "Remove company permission"
+ */
+export function removeCompanyPermission(ruleId: string) {
+	return webapi.delete<components.RemoveCompanyPermissionResponse>(`/api/v1/permissions/company/items/${ruleId}`)
+}
+
+/**
  * @description "Nebo a i phone answer"
  */
 export function neboAIPhoneAnswer(req: Record<string, unknown> = {}) {
@@ -1452,6 +1585,13 @@ export function neboAIPhoneClaimable() {
  */
 export function neboAIPhoneLines() {
 	return webapi.get<unknown>(`/api/v1/phone/lines`)
+}
+
+/**
+ * @description "Update"
+ */
+export function update(req: Record<string, unknown> = {}) {
+	return webapi.put<components.UpdateResponse>(`/api/v1/phone/location`, req)
 }
 
 /**

@@ -1,0 +1,8 @@
+id: mp02-a-private-fact-stays-with-its-employee
+name: "MP02 — A private fact stays with its employee"
+description: |
+  A fact an employee keeps for itself is stored in its private scope: another employee's recall
+  never returns it, and the employee itself finds it again in a new conversation.
+target_component: memory
+proof: staffed_proof::memory::a_private_fact_stays_with_its_employee
+conversation: []

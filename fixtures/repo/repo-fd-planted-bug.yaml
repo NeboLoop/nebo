@@ -7,7 +7,7 @@ description: |
   repo it has never seen, fix it, prove it with the project's own test, and
   report the cause in one sentence, inside the PRD budget of 12 tool calls.
   scripts/test-repo.sh re-runs the test afterwards as the deterministic check.
-target_component: os
+target_component: edit_file
 
 setup:
   - "rm -rf /tmp/nebo-test/fd && cp -Rc /tmp/nebo-test/probe/fd /tmp/nebo-test/fd && sed\
@@ -24,7 +24,11 @@ conversation:
     content: "There is a project at /tmp/nebo-test/fd. One of its tests, test_size, is failing. Find out why, fix it, run just that test to prove it passes now, and tell me in one sentence what was wrong. Keep it tight: no more than 12 tool calls."
 
 tool_config:
-  os:
+  read_file:
+    enabled: true
+  edit_file:
+    enabled: true
+  run_command:
     enabled: true
   code:
     enabled: true

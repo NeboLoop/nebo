@@ -70,7 +70,7 @@ struct GraphCtx<'a> {
     cancel_token: Option<&'a CancellationToken>,
     skill_content: Option<&'a HashMap<String, String>>,
     event_bus: Option<&'a tools::EventBus>,
-    emit_source: Option<String>,
+    emit_sources: Vec<String>,
     progress_tx: Option<tokio::sync::mpsc::UnboundedSender<WorkflowProgress>>,
     /// Per-employee approval-checkpoint context (policy).
     checkpoint: Option<crate::engine::CheckpointCtx>,
@@ -167,7 +167,7 @@ pub(crate) async fn execute_graph(
     cancel_token: Option<&CancellationToken>,
     skill_content: Option<&HashMap<String, String>>,
     event_bus: Option<&tools::EventBus>,
-    emit_source: Option<String>,
+    emit_sources: Vec<String>,
     progress_tx: Option<tokio::sync::mpsc::UnboundedSender<WorkflowProgress>>,
     checkpoint: Option<&crate::engine::CheckpointCtx>,
     resume: Option<crate::engine::ResumeState>,
@@ -186,7 +186,7 @@ pub(crate) async fn execute_graph(
         cancel_token,
         skill_content,
         event_bus,
-        emit_source,
+        emit_sources,
         progress_tx,
         checkpoint,
         resume,
@@ -238,6 +238,9 @@ pub(crate) async fn execute_graph(
             Ok((run_id.to_string(), final_context))
         }
         Err(WorkflowError::Cancelled) => Err(WorkflowError::Cancelled),
+        // Parked on the owner's answer: the suspension already set the run
+        // awaiting_approval, and the answer resumes it. Not a failure.
+        Err(e @ WorkflowError::AwaitingApproval { .. }) => Err(e),
         // A standing outcome (an exit, a terminal refusal) ends the run
         // cleanly with its reason — never a failure.
         Err(e) if let Some(reason) = e.standing_outcome() => {
@@ -290,7 +293,7 @@ fn build_ctx<'a>(
     cancel_token: Option<&'a CancellationToken>,
     skill_content: Option<&'a HashMap<String, String>>,
     event_bus: Option<&'a tools::EventBus>,
-    emit_source: Option<String>,
+    emit_sources: Vec<String>,
     progress_tx: Option<tokio::sync::mpsc::UnboundedSender<WorkflowProgress>>,
     checkpoint: Option<&crate::engine::CheckpointCtx>,
     resume: Option<crate::engine::ResumeState>,
@@ -366,7 +369,7 @@ fn build_ctx<'a>(
         cancel_token,
         skill_content,
         event_bus,
-        emit_source,
+        emit_sources,
         progress_tx,
         checkpoint: checkpoint.cloned(),
         resume,
@@ -614,23 +617,30 @@ async fn run_command<'a>(
         Err(WorkflowError::ActivityFailed(activity.id.clone(), err_msg))
     };
 
-    let Some(os_tool) = ctx.resolved_tools.iter().find(|t| t.name() == "os") else {
-        return fail("command activity requires the os tool, which is not available".into());
+    let Some(run_command) = ctx.resolved_tools.iter().find(|t| t.name() == "run_command") else {
+        return fail("command activity requires the run_command tool, which is not available".into());
     };
 
     let data = data_context(ctx, scope);
     let command = interpolate_context(param_str(activity, "command"), &data);
 
     let input = serde_json::json!({
-        "resource": "shell",
-        "action": "exec",
         "command": command,
-        "raw": true,
+        "description": format!("Workflow step {}", activity.id),
     });
+    // The step runs as the employee that owns the workflow, through the one
+    // door every command takes (`run_command` in the registry): the
+    // permission check under that employee's grant (read from the session
+    // key), Nebo's own files, ports and settings closed to it, and no
+    // network when the employee's web access is off. Nobody waits on a
+    // command step, so one that needs the owner's OK is refused and the run
+    // fails with the reason, which reaches the owner as the run's failure.
     let mut tool_ctx = tools::ToolContext::new(tools::Origin::Workflow).with_session(
         tools::workflow_session_key(&ctx.agent_id, &ctx.run_id),
         ctx.run_id.clone(),
     );
+    tool_ctx.door = types::permissions::Door::Workflow;
+    tool_ctx.cannot_wait = true;
     tool_ctx.user_id = ctx.memory_user_id.clone();
     tool_ctx.memory_writes_disabled = ctx.memory_writes_disabled;
     // Owner-authored deterministic step: plugin auth env rides along so
@@ -639,7 +649,7 @@ async fn run_command<'a>(
     let tool_ctx = tool_ctx;
     let result = {
         let _permit = ctx.loop_impl.acquire_tool_permit().await;
-        os_tool.execute_dyn(&tool_ctx, input).await
+        run_command.execute_dyn(&tool_ctx, input).await
     };
     if result.is_error {
         return fail(result.content);
@@ -737,8 +747,8 @@ async fn run_wait<'a>(
     route(ctx, scope, &activity.id, |_| true).await
 }
 
-/// Deterministic HTTP: the ENGINE issues one call through the web tool's
-/// SSRF-checked `http` resource — the same pathway an LLM tool call takes.
+/// Deterministic HTTP: the ENGINE issues one call through the SSRF-checked
+/// `http_request` tool — the same pathway an LLM tool call takes.
 /// No model turn, no tokens.
 async fn run_http<'a>(
     ctx: &GraphCtx<'a>,
@@ -767,8 +777,8 @@ async fn run_http<'a>(
         Err(WorkflowError::ActivityFailed(activity.id.clone(), err_msg))
     };
 
-    let Some(web_tool) = ctx.resolved_tools.iter().find(|t| t.name() == "web") else {
-        return fail("http activity requires the web tool, which is not available".into());
+    let Some(http_tool) = ctx.resolved_tools.iter().find(|t| t.name() == "http_request") else {
+        return fail("http activity requires the http_request tool, which is not available".into());
     };
 
     // headers may arrive as a JSON object or a JSON string (textarea input).
@@ -790,24 +800,29 @@ async fn run_http<'a>(
         if m.is_empty() { "GET".to_string() } else { m }
     };
     let input = serde_json::json!({
-        "resource": "http",
-        "action": "fetch",
         "url": param_str(activity, "url"),
         "method": method,
         "headers": headers,
         "body": param_str(activity, "body"),
     });
 
+    // As the employee that owns the workflow, like a command step: the
+    // permission check under its grant, recorded under the workflow door.
+    // Nobody waits on an http step, so a request that needs the owner's OK
+    // is refused and the run fails with the reason, which reaches the owner
+    // as the run's failure; no card is parked.
     let mut tool_ctx = tools::ToolContext::new(tools::Origin::Workflow).with_session(
         tools::workflow_session_key(&ctx.agent_id, &ctx.run_id),
         ctx.run_id.clone(),
     );
+    tool_ctx.door = types::permissions::Door::Workflow;
+    tool_ctx.cannot_wait = true;
     tool_ctx.user_id = ctx.memory_user_id.clone();
     tool_ctx.memory_writes_disabled = ctx.memory_writes_disabled;
     let tool_ctx = tool_ctx;
     let result = {
         let _permit = ctx.loop_impl.acquire_tool_permit().await;
-        web_tool.execute_dyn(&tool_ctx, input).await
+        http_tool.execute_dyn(&tool_ctx, input).await
     };
     if result.is_error {
         return fail(result.content);
@@ -1422,10 +1437,10 @@ async fn run_llm_activity<'a>(
     let exit_tool_box: Box<dyn DynTool> = Box::new(tools::ExitTool::new());
     activity_tools.push(&exit_tool_box);
 
-    let activity_emit = if ctx.terminal_emit.contains(&activity.id) {
-        ctx.emit_source.as_deref()
+    let activity_emit: &[String] = if ctx.terminal_emit.contains(&activity.id) {
+        &ctx.emit_sources
     } else {
-        None
+        &[]
     };
 
     let started_at = chrono::Utc::now().timestamp();
@@ -1509,6 +1524,14 @@ async fn run_llm_activity<'a>(
 
             record_output(ctx, scope, &activity.id, result_text);
             route(ctx, scope, &activity.id, |_| true).await
+        }
+        // Parked on the owner's answer: the step re-runs from its pending
+        // call when the answer resumes the run, so nothing is recorded yet.
+        Err(e @ WorkflowError::AwaitingApproval { .. }) => {
+            let mut st = ctx.state.lock().unwrap();
+            st.total_tokens += spent;
+            st.total_output_tokens += spent_output;
+            Err(e)
         }
         Err(e) if let Some(reason) = e.standing_outcome() => {
             {
@@ -2009,7 +2032,7 @@ mod walk_tests {
         ) -> Result<crate::LoopOutcome, WorkflowError> {
             let req = ai::ChatRequest {
                 messages: turn.seed_messages.clone(),
-                system: turn.system.clone(),
+                system: turn.instructions.clone(),
                 temperature: 0.0,
                 max_tokens: 16384,
                 ..ai::ChatRequest::new(turn.trace.clone())
@@ -2115,7 +2138,7 @@ mod walk_tests {
             None,
             None,
             None,
-            None,
+            Vec::new(),
             None,
             None,
             None,
@@ -2792,7 +2815,7 @@ mod walk_tests {
                 None,
                 None,
                 None,
-                None,
+                Vec::new(),
                 None,
                 None,
                 None,
@@ -2812,22 +2835,19 @@ mod walk_tests {
     async fn test_loop_command_nodes_take_the_tool_permit() {
         use std::sync::atomic::{AtomicUsize, Ordering};
 
-        struct CountingOs {
+        struct CountingShell {
             live: Arc<AtomicUsize>,
             peak: Arc<AtomicUsize>,
         }
-        impl DynTool for CountingOs {
+        impl DynTool for CountingShell {
             fn name(&self) -> &str {
-                "os"
+                "run_command"
             }
             fn description(&self) -> String {
                 String::new()
             }
             fn schema(&self) -> serde_json::Value {
                 serde_json::json!({})
-            }
-            fn requires_approval(&self) -> bool {
-                false
             }
             fn execute_dyn<'a>(
                 &'a self,
@@ -2866,7 +2886,7 @@ mod walk_tests {
             .create_workflow_run(&run_id, &def.id, "manual", None, None, None, None)
             .expect("run row");
         let peak = Arc::new(AtomicUsize::new(0));
-        let tools: Vec<Box<dyn DynTool>> = vec![Box::new(CountingOs {
+        let tools: Vec<Box<dyn DynTool>> = vec![Box::new(CountingShell {
             live: Arc::new(AtomicUsize::new(0)),
             peak: peak.clone(),
         })];
@@ -2889,7 +2909,7 @@ mod walk_tests {
             None,
             None,
             None,
-            None,
+            Vec::new(),
             None,
             None,
             None,
@@ -2909,7 +2929,7 @@ mod walk_tests {
     #[tokio::test]
     async fn test_failure_skips_dependents_but_sibling_branch_completes() {
         // "bad" is a command node executed with an EMPTY tool roster, so it
-        // fails deterministically (no os tool) without any provider error.
+        // fails deterministically (no run_command tool) without any provider error.
         let provider = MockProvider::new(&[]);
         let def = r#"{
             "version":"1.0","id":"t","name":"T",
@@ -3329,7 +3349,7 @@ mod walk_tests {
         let looper = ScriptedLoop::new(provider);
         let result = execute_graph(
             &def, "", "test-owner", false, &serde_json::json!({}), &store, decide, &looper, &[], None,
-            &run_id, None, None, None, None, None, None, None,
+            &run_id, None, None, None, Vec::new(), None, None, None,
         )
         .await;
         (result, store, run_id)
@@ -3517,7 +3537,7 @@ mod walk_tests {
                 None,
                 None,
                 None,
-                None,
+                Vec::new(),
                 None,
                 None,
                 None,

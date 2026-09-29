@@ -1,0 +1,17 @@
+id: e16-a-temporary-team-is-due-to-disband-when-its-lead-closes-its-work
+name: "E16 — A temporary team disbands after its lead closes its one piece of work"
+description: |
+  E16 — A temporary team (owner, 09-25: "a temporary team makes sense too")
+  is assembled with a lead for one piece of work: the assignment its lead
+  takes. While the lead works it the team stands. When the lead closes it,
+  the team is due to disband, and its outcome, the lead's summary, reaches
+  the owner's Inbox and the session that assembled the team, once. A
+  persistent team is never listed to disband. The end-to-end half (the
+  employee assembles the team, hands it the work, a second piece of work is
+  refused, the team disbands, a persistent team stays) is
+  crates/server/tests/long_running_work.rs.
+  Must never: a temporary team disbanded while its work is open, or a
+  persistent team disbanded at all.
+target_component: engine
+proof: engine::proof::longrun::e16_a_temporary_team_is_due_to_disband_when_its_lead_closes_its_work
+conversation: []

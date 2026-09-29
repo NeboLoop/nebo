@@ -1,0 +1,21 @@
+id: nebo-own-server-closed
+name: "An employee's commands never reach Nebo's own server"
+description: |
+  Nebo's local API trusts a caller on this computer: nearly every route
+  (chats, memory, employees, permissions, plugins, backups) answers a
+  loopback request with no key. An employee's `curl http://127.0.0.1:27895/…`
+  could therefore do what the owner's app does, its own permissions
+  included, whatever its permissions say.
+  Every port Nebo listens on (its server, its browser's debugging port, a
+  plugin sign-in's callback) is registered as its own
+  (types::own_ports), and an employee's command can't connect to one on any
+  address: macOS denies it in the command's Seatbelt profile, Linux starts
+  the command from a thread Landlock keeps from connecting (Linux 6.7+).
+  This proof, through the real server, runs curl against the server's own
+  /health by 127.0.0.1 and by localhost and asserts neither answers, then
+  has the employee start its own dev server in the background and asserts
+  its curl to that one works.
+  Mechanical, no model: a deterministic proof through the real server.
+target_component: permissions
+proof: nebo_files_proof::an_employee_command_never_reaches_nebo_own_server
+conversation: []

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { t } from 'svelte-i18n';
+  import { page } from '$app/stores';
   import { onWsEvent } from '$lib/websocket/subscribe';
   import { addToast } from '$lib/stores/toast';
   import RefreshCw from 'lucide-svelte/icons/refresh-cw';
@@ -37,6 +38,11 @@
   let updatingAll = $state(false);
   // artifactIds currently mid-apply (button → spinner)
   let applying = $state<Record<string, boolean>>({});
+  // The package an "Update available" item opened: first, and marked.
+  const focused = $derived($page.url.searchParams.get('artifact') ?? '');
+  const shown = $derived(
+    focused ? [...pending].sort((a, b) => Number(b.artifactId === focused) - Number(a.artifactId === focused)) : pending
+  );
 
   async function loadAll() {
     try {
@@ -127,7 +133,7 @@
 </script>
 
 <div class="flex items-center justify-between mb-1">
-  <h2 class="text-lg font-semibold">{$t('settingsStatus.updates')}</h2>
+  <h2 class="text-lg font-semibold">{$t('settingsUpdates.title')}</h2>
   <button class="btn btn-sm btn-outline gap-2" onclick={checkNow} disabled={checking}>
     <RefreshCw class="w-4 h-4 {checking ? 'animate-spin' : ''}" />
     {checking ? $t('agentSettings.checking') : $t('settingsUpdates.checkNow')}
@@ -150,8 +156,8 @@
   </div>
 {:else}
   <div class="divide-y divide-base-content/10 border border-base-300 rounded-xl mb-8">
-    {#each pending as p (p.artifactType + ':' + p.artifactId)}
-      <div class="flex items-center gap-3 px-4 py-3">
+    {#each shown as p (p.artifactType + ':' + p.artifactId)}
+      <div class="flex items-center gap-3 px-4 py-3 {p.artifactId === focused ? 'bg-primary/5' : ''}">
         <div class="flex-1 min-w-0">
           <div class="text-sm font-medium truncate">{p.name || p.artifactId}</div>
           <div class="text-xs text-base-content/60 flex items-center gap-1.5">

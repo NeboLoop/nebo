@@ -16,23 +16,24 @@ conversation:
     content: "In {{scratch}} there are two .png screenshots and a Screenshots folder. Move both .png files into the Screenshots folder."
 
 tool_config:
-  os:
+  run_command:
     enabled: true
 
 prompt_assertions:
   first_call:
     - id: acts-not-announces
-      text: "Model CALLS the os tool to move/manage the files — it does NOT just reply 'On it' with zero tool calls"
+      text: "Model CALLS run_command (mv) to move the files — it does NOT just reply 'On it' with zero tool calls"
       severity: critical
-      check: { tool: os }
+      check: { tool: run_command }
   cost:
     - id: completes
-      text: "The .png files are actually moved (at least one os tool call is made)"
+      text: "The .png files are actually moved (at least one run_command call is made)"
       severity: critical
 
 ideal_behavior:
   tool_calls: 1
   total_tokens: 2000
   narrative: |
-    The agent calls os(resource: "file", action: "move"/"exec") to move the two
-    PNGs into Screenshots. It does the work rather than announcing intent and stopping.
+    The agent calls run_command(command: "mv {{scratch}}/*.png {{scratch}}/Screenshots/",
+    description: "Move the screenshots into the folder") to move the two PNGs
+    into Screenshots. It does the work rather than announcing intent and stopping.

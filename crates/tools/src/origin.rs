@@ -1,6 +1,7 @@
 /// Origin identifies the source of a request flowing through the agent.
 /// Used by Policy to enforce per-origin tool restrictions.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Origin {
     /// Direct user interaction (web UI, CLI).
     User,
@@ -119,14 +120,53 @@ pub type AskChannels = std::sync::Arc<
 >;
 
 /// Shared tool-approval channels map (keyed by tool_call_id). The runner inserts
-/// a oneshot sender and emits a `StreamEvent::approval_request`; the WS handler
+/// a [`PendingApproval`] and emits a `StreamEvent::approval_request`; the WS handler
 /// resolves it from the user's ApprovalModal choice. The value is the decision:
 /// `"once"`, `"always"`, or `"deny"` (mirrors the `AskChannels` string idiom and
 /// carries the modal's "Approve Always" flag). This is the ONE tool-approval
 /// pathway (PERMISSIONS_SME §11) — do not add a parallel one.
-pub type ApprovalChannels = std::sync::Arc<
-    tokio::sync::Mutex<std::collections::HashMap<String, tokio::sync::oneshot::Sender<String>>>,
->;
+///
+/// It is also the ONE record of which approval cards are open: the card an
+/// entry holds is what the dashboard lists and what a client that connects
+/// later is shown, for exactly as long as the answer can still be given. A
+/// turn's end does not close a card whose waiter outlives it (a suggested
+/// goal); only a decision, or its waiter going away, does.
+pub type ApprovalChannels =
+    std::sync::Arc<tokio::sync::Mutex<std::collections::HashMap<String, PendingApproval>>>;
+
+/// One approval waiting on the owner: where the decision goes, and the card
+/// the owner was shown for it.
+pub struct PendingApproval {
+    /// The decision: `"once"`, `"always"` or `"deny"`.
+    pub answer: tokio::sync::oneshot::Sender<String>,
+    /// The card as announced (the `approval_request` payload, origin
+    /// included), with the conversation and employee it belongs to and a
+    /// one-line summary. None until the card is announced.
+    pub card: Option<ApprovalCard>,
+}
+
+/// The announced side of a [`PendingApproval`].
+#[derive(Clone, Debug)]
+pub struct ApprovalCard {
+    pub event: serde_json::Value,
+    pub session_key: String,
+    pub agent_id: String,
+    pub summary: String,
+    /// Unix seconds.
+    pub since: i64,
+}
+
+impl PendingApproval {
+    /// A card not yet announced, answered through `answer`.
+    pub fn new(answer: tokio::sync::oneshot::Sender<String>) -> Self {
+        Self { answer, card: None }
+    }
+
+    /// Still answerable: whoever waits on the decision has not gone away.
+    pub fn is_open(&self) -> bool {
+        !self.answer.is_closed()
+    }
+}
 
 /// Sentinel value the frontend sends as the `ask_response` when the user dismisses
 /// (Skip / Esc) an ask widget instead of answering. The ask tool interprets it as
@@ -141,7 +181,7 @@ pub const SKIP_SENTINEL: &str = "__skip__";
 /// Propagated as env vars `NEBO_CHANNEL_KIND`, `NEBO_CHANNEL_ID`,
 /// `NEBO_THREAD_TS` when the plugin tool invokes a plugin binary.
 /// See `docs/publishers-guide/channel-plugins.md`.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ChannelContext {
     /// Plugin slug / channel kind — "slack", "discord", "teams", etc.
     pub kind: String,
@@ -149,6 +189,46 @@ pub struct ChannelContext {
     pub channel_id: String,
     /// Thread ID for threading replies. Slack: `thread_ts`. Discord: parent message ID.
     pub thread_ts: Option<String>,
+}
+
+/// How many of a run's calls are waiting on someone other than the run
+/// itself: the owner answering a question. A run that is waiting is not
+/// stalled, however long the answer takes; the dispatcher's idle bound
+/// counts only time when nothing is waited on (`agent::guardrails`).
+#[derive(Debug, Default)]
+pub struct Waiting {
+    count: std::sync::atomic::AtomicUsize,
+    changed: tokio::sync::Notify,
+}
+
+impl Waiting {
+    /// A call starts waiting; it stops when the guard drops.
+    pub fn enter(self: &std::sync::Arc<Self>) -> WaitGuard {
+        self.count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.changed.notify_waiters();
+        WaitGuard(self.clone())
+    }
+
+    /// Nothing is waited on.
+    pub fn is_idle(&self) -> bool {
+        self.count.load(std::sync::atomic::Ordering::SeqCst) == 0
+    }
+
+    /// Resolves at the next start or end of a wait. Enable it before
+    /// reading [`Self::is_idle`] so a change in between is not missed.
+    pub fn changed(&self) -> tokio::sync::futures::Notified<'_> {
+        self.changed.notified()
+    }
+}
+
+/// One call's wait; see [`Waiting::enter`].
+pub struct WaitGuard(std::sync::Arc<Waiting>);
+
+impl Drop for WaitGuard {
+    fn drop(&mut self) {
+        self.0.count.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+        self.0.changed.notify_waiters();
+    }
 }
 
 /// Context carried through tool execution for origin tracking and session info.
@@ -159,18 +239,44 @@ pub struct ToolContext {
     pub session_id: String,
     pub user_id: String,
     /// Agent-to-agent handoff depth of the run this tool executes in (0 = not
-    /// a handoff). The loop tool stamps it on outbound sends so receiving bots
+    /// a handoff). send_loop_message stamps it on outbound sends so receiving bots
     /// enforce the depth cap on tool-authored messages too.
     pub handoff_depth: u8,
-    /// Per-entity permission overrides (tool category → allowed).
-    pub entity_permissions: Option<std::collections::HashMap<String, bool>>,
-    /// Per-employee three-state approval policy over gated interface operations
-    /// (Always / Approval / Blocked). `None` = no per-employee overrides; the
-    /// gate falls back to the seat's declared defaults. The single decision
-    /// function both the chat gate and the workflow checkpoint consult.
-    pub operation_policy: Option<crate::policy::OperationPolicy>,
-    /// Per-entity resource grant overrides (resource → "allow"|"deny"|"inherit").
-    pub resource_grants: Option<std::collections::HashMap<String, String>>,
+    /// The seat's permissions for this run: its mode, the company's and the
+    /// employee's rules, and the ceiling it runs under. The registry's
+    /// permission check decides every call against it. `None`: the check
+    /// loads the grant of the employee the session belongs to.
+    pub grant: Option<std::sync::Arc<types::permissions::Grant>>,
+    /// The entry this run came through (chat, helper, workflow, schedule,
+    /// heartbeat, coworker, voice, MCP, the local API). Recorded with every
+    /// decision.
+    pub door: types::permissions::Door,
+    /// The owner's own message, in the owner's own chat, or his own call
+    /// started this turn: the call serves his request, so his words are his
+    /// consent to replacing what he asked to have changed. Set only by the
+    /// turn (`owner_asks`): his own message, his own call, or a teammate
+    /// passing on his team post (the coworker rail's `Authority`); every
+    /// other run, helper, colleague's request, channel, visitor, phone caller
+    /// and unattended door leaves it false.
+    pub owner_request: bool,
+    /// The owner's own words this turn asked for what is remembered to be
+    /// kept for everyone on this Nebo (the turn's save decision). A
+    /// Confidential conversation's `remember`/`forget` reaches local memory
+    /// only with it. Set only by the turn, once the reply is in; false
+    /// everywhere else.
+    pub owner_shares: bool,
+    /// Engine-set only: the owner already answered the ask this exact call
+    /// parked on (a workflow resuming the approved call). The check still
+    /// applies the hard limits, the ceiling and deny rules.
+    pub answered_ask: Option<String>,
+    /// Engine-set: the run's input arrived from outside (a workflow run
+    /// started by an inbound payload). A catalog-gated operation asks, the
+    /// same as for an untrusted origin.
+    pub untrusted_input: bool,
+    /// The judgement's verdict for this call, when the tool round asked the
+    /// judges about it (a call whose outward effects the code could not
+    /// decide). `None`: no judge was asked; the code's answer stands.
+    pub judgement: Option<types::permissions::Verdict>,
     /// Dispatch-time tool whitelist for restricted internal runs (the
     /// self-improvement review fork). `Some` = only these tool names may
     /// execute; everything else is denied with a corrective error at the ONE
@@ -178,14 +284,19 @@ pub struct ToolContext {
     /// still DECLARED to the model (prompt-cache byte parity) — restriction
     /// happens here, never by narrowing the registry.
     pub tool_whitelist: Option<std::collections::HashSet<String>>,
+    /// The tools this run may not use: the employee's own tools its tool
+    /// scope leaves out (`scopes.<name>.tools`), and company Memory for an
+    /// isolated employee with no matter. Never listed, never loaded, never
+    /// run. `None` when nothing is withheld.
+    pub withheld_tools: Option<std::sync::Arc<std::collections::HashSet<String>>>,
     /// When a whitelist denial fires, this text IS the error (the denial must
     /// teach the recovery for the run's actual situation — a room organizer is
     /// told to delegate, a phone run is told to take a message).
     pub whitelist_denial_hint: Option<String>,
     /// Set when this run is the self-improvement review fork (or curator):
-    /// the skill tool's writes target the LEARNED tree of this agent instead
-    /// of user/skills/, and update/delete require the skill to have been
-    /// loaded this run (read-before-write, see `skills_read`).
+    /// save_skill and delete_skill target the LEARNED tree of this agent
+    /// instead of user/skills/, and replacing or deleting a skill requires it
+    /// to have been loaded this run (read-before-write, see `skills_read`).
     pub learned_write_agent: Option<String>,
     /// With `learned_write_agent`: stage writes to pending_writes for Inbox
     /// approval instead of committing (employee's learning_mode = "staged").
@@ -195,14 +306,26 @@ pub struct ToolContext {
     /// Suppresses the auto-mode audit row so approve/revert don't mint a
     /// duplicate `learn:` record for a write a pending_writes row already covers.
     pub learned_write_reapply: bool,
-    /// Read marks for the review fork: learned-skill names loaded via the
-    /// skill tool THIS run. update/delete on a learned skill is refused
+    /// Read marks for the review fork: learned-skill names loaded via
+    /// use_skill THIS run. A save or delete of a learned skill is refused
     /// unless its name is here — the fork must write against actual on-disk
     /// content, never a recollection inferred from the transcript.
     pub skills_read: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
-    /// Allowed filesystem paths — if set, file writes and shell commands are restricted
-    /// to these directories and their children. Empty = unrestricted.
-    pub allowed_paths: Vec<String>,
+    /// Engine-set: nothing in this run can wait for the owner's answer (a
+    /// scheduled command, a workflow's command step, a hook around a call).
+    /// A call that would ask is refused instead, and the refusal says why;
+    /// it is never parked and never runs unchecked.
+    pub cannot_wait: bool,
+    /// Engine-set only (a hook around a call, `shell_hooks`): what the
+    /// command reads on its standard input. A program reads what such a
+    /// command prints, so its result is its output as written with its exit
+    /// status (the shell's `raw` mode). Never set from tool input.
+    pub stdin: Option<Vec<u8>>,
+    /// Set by the permission check for one call (`GateVerdict::Run`): what
+    /// the command this call starts may reach (`confine::Reach`: offline
+    /// when the run's web access is off, unconfined for Full access). Never
+    /// set by a door.
+    pub reach: crate::confine::Reach,
     /// Default working directory for shell commands and relative file paths
     /// (a worktree or scratch copy for isolated sub-agents). None = the
     /// process cwd, exactly as before.
@@ -210,8 +333,8 @@ pub struct ToolContext {
     /// Cancellation token from the parent run — propagated to sub-agents so that
     /// cancelling the parent also cancels any spawned children.
     pub cancel_token: tokio_util::sync::CancellationToken,
-    /// Stream sender from the parent run — used by spawn_parallel to forward
-    /// sub-agent progress events to the caller's event stream.
+    /// Stream sender from the parent run — forwards a tool's progress events
+    /// to the caller's event stream.
     pub stream_tx: Option<tokio::sync::mpsc::Sender<ai::StreamEvent>>,
     /// Run ID from the global RunRegistry — used by sub-agent spawning to link
     /// child runs to their parent via parent_run_id.
@@ -225,6 +348,9 @@ pub struct ToolContext {
     /// reporting it as "timed out after 300s" sent a live run off to blame
     /// the marketplace (2026-09-05).
     pub parked: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// The run's count of calls waiting on the owner, shared by every call
+    /// of the run and read by its dispatcher.
+    pub waiting: std::sync::Arc<Waiting>,
     /// Channel context (Slack/Discord/etc.) when this run was triggered by an
     /// inbound channel message. `None` for web UI, scheduled, or system runs.
     pub channel: Option<ChannelContext>,
@@ -238,39 +364,26 @@ pub struct ToolContext {
     /// addition to the built-in layers. Empty for the main bot.
     pub memory_topics: Vec<String>,
     /// Fail-closed memory isolation (set by the runner's ONE scope
-    /// derivation): the active agent has `memory.context_isolated` but no
-    /// isolation context could be derived for this run, so memory MUTATIONS
-    /// (store/delete/clear) must be refused rather than land in the shared
-    /// agent scope. Reads still serve the inherited chain. `false` for every
+    /// derivation): the active agent's memory mode binds this run to a
+    /// conversation but none could be derived, so memory MUTATIONS
+    /// (store/delete/clear) must be refused rather than land in a scope every
+    /// conversation reads. Reads still serve the inherited chain. `false` for every
     /// normal run.
     pub memory_writes_disabled: bool,
-    /// Confidentiality scope for this run: the client matter an isolated
-    /// employee is sealed to (`memory.context_isolated` + the derived
-    /// context). Forwarded to platform Memory as a header so the shard can
+    /// Confidentiality scope for this run: the client matter a sealed run is
+    /// bound to (the employee's `memory.mode` + the derived conversation). Forwarded to platform Memory as a header so the shard can
     /// enforce the wall server-side. `None` for a normal employee.
     pub memory_matter: Option<String>,
     /// Engine-set ONLY (workflow command nodes — owner-authored deterministic
     /// steps): shell exec additionally injects each installed plugin's
-    /// resolved auth env, so `${plugin.X_BIN}` invocations of env-auth
-    /// plugins (e.g. odoo) work in command nodes. NEVER set for model-driven
-    /// shell — that would hand every plugin credential to the model. Not
-    /// forgeable from tool input: it lives on the context, not the payload.
+    /// resolved auth env, and the installed plugins' programs and data are
+    /// open to the command (`NeboFiles::of`), so `${plugin.X_BIN}`
+    /// invocations of env-auth plugins (e.g. odoo) work in command nodes.
+    /// The rest of Nebo's folder and its ports stay closed, as for every
+    /// command. NEVER set for model-driven shell — that would hand every
+    /// plugin credential to the model. Not forgeable from tool input: it
+    /// lives on the context, not the payload.
     pub trusted_plugin_env: bool,
-    /// Capability categories the runner has cleared for execution this turn —
-    /// pre-granted (capability ON), covered by Full Access, matched by the
-    /// per-command allowlist, or user-approved via the ApprovalModal. In
-    /// UNATTENDED runs an OFF capability is never inserted here — there is no
-    /// autonomy bypass; the category stays ungranted and Phase 1b/1c
-    /// hard-blocks (OFF means OFF when nobody can answer a prompt). The gate
-    /// treats an OFF capability as allowed only when its category is present,
-    /// so interactively "off" means ASK rather than a hard error. Empty for
-    /// callers that don't run the approval gate (their OFF capabilities still
-    /// hard-block, preserving enforcement).
-    pub approved_categories: std::collections::HashSet<String>,
-    /// The owner's Full Access switch as this run has it (after the outside
-    /// fence). Engine-set; a sub-agent inherits it with the rest of the
-    /// parent's limits, and it never overrides a per-employee operation gate.
-    pub full_access: bool,
     /// Engine-stamped provenance snapshot of the run at this iteration — the
     /// classes of untrusted content the run has touched so far (accumulated by
     /// the runner from the static tool→class table). Read-only for tools; the
@@ -287,6 +400,24 @@ pub struct ToolContext {
     /// (working style) only — non-tacit reads are refused with an
     /// "isn't shared with their role" correction. `false` for owner runs.
     pub audience_restricted: bool,
+    /// The coworker this run replies to, if any (the seat's audience). A
+    /// helper this run starts replies through it, so it keeps the audience
+    /// and the recall restriction it implies.
+    pub audience: Option<String>,
+    /// The tools whose definitions the model was sent on this step. A call
+    /// to a deferred tool outside it that fails validation is told to load
+    /// the tool first. `None` for callers that are not a model's step.
+    pub declared_tools: Option<std::sync::Arc<std::collections::HashSet<String>>>,
+    /// What this step's model was given, lowercased: the system prompt, every
+    /// message that is not its own, and every tool result. The prompt's rule
+    /// is "never make up a web address; use what the owner gave you or what
+    /// a tool returned", and the web tools keep it: a site is opened only
+    /// when it is named here (`web_tool::unnamed_site`). `None` for callers
+    /// that are not a model's step.
+    pub given_text: Option<std::sync::Arc<str>>,
+    /// The id of the call this context runs, so a long call's progress
+    /// events name the call they belong to. Empty outside a model's step.
+    pub tool_call_id: String,
 }
 
 /// Canonical session key for an agent-bound workflow run: `agent:<id>:workflow:<run_id>`.
@@ -317,6 +448,18 @@ pub fn workflow_session_key(agent_id: &str, run_id: &str) -> String {
 }
 
 impl ToolContext {
+    /// This context for one call the permission check let run, reaching
+    /// what the check said (`GateVerdict::Run`). A context already offline
+    /// stays offline.
+    pub fn confined(&self, reach: crate::confine::Reach) -> std::borrow::Cow<'_, ToolContext> {
+        let reach = crate::confine::Reach { offline: reach.offline || self.reach.offline, ..reach };
+        if reach == self.reach {
+            std::borrow::Cow::Borrowed(self)
+        } else {
+            std::borrow::Cow::Owned(ToolContext { reach, ..self.clone() })
+        }
+    }
+
     pub fn new(origin: Origin) -> Self {
         Self {
             origin,
@@ -332,28 +475,44 @@ impl ToolContext {
 
     /// Whether the run's tool allowlist admits this call. `None` =
     /// unrestricted (every normal run). Entries are either a bare tool name
-    /// ("skill" — the whole tool) or a `tool:resource` compound
-    /// ("agent:memory") admitting only calls whose `resource` input matches —
-    /// bare `os` in an allowlist would otherwise hand a restricted run the
-    /// shell. Matching lives HERE so the runner's gate and the registry's
-    /// choke point can never drift apart.
-    pub fn whitelist_allows(&self, tool: &str, input: &serde_json::Value) -> bool {
+    /// ("use_skill" — the whole tool), a `tool:subject` compound admitting
+    /// only calls on that subject (`os:calendar`, `run_workflow:weekly`; see
+    /// `DynTool::subject`) — bare `os` in an allowlist would otherwise hand
+    /// a restricted run the whole desktop — or a `prefix*` family.
+    pub fn whitelist_allows(&self, t: &types::permissions::Target) -> bool {
         let Some(wl) = &self.tool_whitelist else {
             return true;
         };
-        if wl.contains(tool) {
+        if wl.contains(&t.tool) {
             return true;
         }
-        if let Some(res) = input.get("resource").and_then(|v| v.as_str()) {
-            if wl.contains(&format!("{tool}:{res}")) {
-                return true;
-            }
+        if let Some(subject) = &t.subject
+            && wl.contains(&format!("{}:{subject}", t.tool))
+        {
+            return true;
         }
         // Prefix entries ("mcp__monument__*") admit a tool family — how a
         // call-tree intent grants one MCP server's tools without naming each.
         wl.iter().any(|e| {
             e.strip_suffix('*')
-                .is_some_and(|prefix| !prefix.is_empty() && tool.starts_with(prefix))
+                .is_some_and(|prefix| !prefix.is_empty() && t.tool.starts_with(prefix))
+        })
+    }
+
+    /// The first of `paths` outside the folders this run may change (the
+    /// job's folder rules and the run's own fence), as the refusal; `None`
+    /// when every path is inside or nothing fences the run. For a call whose
+    /// paths the input can't show (a restore's manifest).
+    pub fn outside_folders(&self, verb: &str, paths: &[String]) -> Option<String> {
+        let grant = self.grant.as_ref()?;
+        let strings = |v: &[std::path::PathBuf]| -> Vec<String> {
+            v.iter().map(|p| p.to_string_lossy().into_owned()).collect()
+        };
+        crate::safeguard::outside_allowed(verb, paths, &strings(&grant.folders())).or_else(|| {
+            grant
+                .fence
+                .as_ref()
+                .and_then(|f| crate::safeguard::outside_allowed(verb, paths, &strings(f)))
         })
     }
 
@@ -378,6 +537,9 @@ impl ToolContext {
 
         channels.lock().await.insert(request_id.clone(), resp_tx);
 
+        // Waiting on the owner from before the card goes out: the run is not
+        // stalled while they decide, however long that takes.
+        let waiting = self.waiting.enter();
         let _ = tx
             .send(ai::StreamEvent::ask_request(
                 &request_id,
@@ -396,6 +558,7 @@ impl ToolContext {
                 None
             }
         };
+        drop(waiting);
         self.parked.store(false, std::sync::atomic::Ordering::SeqCst);
         answer
     }
@@ -404,6 +567,26 @@ impl ToolContext {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// While a question waits on the owner the run counts as waiting, and
+    /// stops the moment the answer arrives.
+    #[tokio::test]
+    async fn a_question_to_the_owner_is_a_wait() {
+        let (stream_tx, mut stream_rx) = tokio::sync::mpsc::channel(4);
+        let channels: AskChannels = Default::default();
+        let mut ctx = ToolContext::new(Origin::User);
+        ctx.stream_tx = Some(stream_tx);
+        ctx.ask_channels = Some(channels.clone());
+        let waiting = ctx.waiting.clone();
+        assert!(waiting.is_idle());
+        let asking = tokio::spawn(async move { ctx.ask_user("Which?", serde_json::json!([])).await });
+        let card = stream_rx.recv().await.expect("the card");
+        assert!(!waiting.is_idle(), "the run waits on the owner");
+        let id = card.error.clone().expect("request id");
+        channels.lock().await.remove(&id).unwrap().send("A".into()).unwrap();
+        assert_eq!(asking.await.unwrap().as_deref(), Some("A"));
+        assert!(waiting.is_idle(), "answered: nothing is waited on");
+    }
 
     /// A parked ask ends with the run: cancelling the run's token resolves
     /// the wait with no answer and withdraws the request from the channel

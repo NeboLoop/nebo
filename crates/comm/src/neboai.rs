@@ -377,7 +377,7 @@ impl CommPlugin for NeboAIPlugin {
         lease.claim();
 
         // WebSocket connect
-        let (ws_stream, _) = tokio_tungstenite::connect_async(&gateway)
+        let (ws_stream, _) = tls::connect_ws(&gateway)
             .await
             .map_err(|e| CommError::Other(format!("ws dial: {}", e)))?;
 

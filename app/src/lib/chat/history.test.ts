@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseMessages } from './history';
+import { parseMessages, lastRunError } from './history';
 
 // A tool row carries the outcome and duration the live stream showed; the
 // reloaded timeline must read the same ("Ran shell · <1s"), not fall back to
@@ -100,5 +100,61 @@ describe('parseMessages team posts', () => {
   it('leaves an underived team post as a plain user message', () => {
     const [msg] = parseMessages([row(true)] as never);
     expect((msg as { teamPost?: unknown }).teamPost).toBeUndefined();
+  });
+});
+
+// A checkpoint leaves ONE owner-visible system row flagged compactBoundary: it
+// reads as a divider between the rows around it and ends the open assistant
+// bubble. Any other system row stays out of the thread.
+describe('parseMessages compact boundary', () => {
+  const toolRow = (id: string, callId: string) => ({
+    id, role: 'assistant', content: '', createdAt: 0,
+    toolCalls: JSON.stringify([{ id: callId }]),
+    metadata: JSON.stringify({ toolCalls: [{ name: 'os', input: { resource: 'shell', action: 'exec' } }], contentBlocks: [{ type: 'tool', toolCallIndex: 0 }] }),
+  });
+  const boundary = {
+    id: 's1', role: 'system', content: 'Earlier conversation summarized', createdAt: 0,
+    metadata: JSON.stringify({ compactBoundary: true, reason: 'threshold' }),
+  };
+  const plainSystem = { id: 's2', role: 'system', content: 'internal', createdAt: 0 };
+
+  it('renders the boundary as one divider, drops plain system rows, and starts a new bubble after it', () => {
+    const msgs = parseMessages([
+      { id: 'u1', role: 'user', content: 'hi', createdAt: 0 },
+      toolRow('a1', 'c1'),
+      plainSystem,
+      boundary,
+      toolRow('a2', 'c2'),
+    ] as never);
+    const shape = msgs.map((m) => m.type === 'assistant' ? `${m.id}:${m.tools?.length ?? 0}` : m.type);
+    expect(shape).toEqual(['user', 'a1-0:1', 'compactBoundary', 'a2-0:1']);
+    expect(msgs[2]).toMatchObject({ type: 'compactBoundary', id: 's1' });
+  });
+});
+
+// A run that ended on an error leaves it in the thread (a system row flagged
+// runError): no bubble, and the chat raises its error banner from it when the
+// error is the newest row. A later row means the thread moved on.
+describe('run error rows', () => {
+  const user = { id: 'u1', role: 'user', content: 'Hi', createdAt: 0 };
+  const failed = {
+    id: 'e1', role: 'system', content: 'USAGE_LIMIT_EXCEEDED: no balance', createdAt: 1,
+    metadata: JSON.stringify({ runError: true }),
+  };
+
+  it('never renders as a bubble', () => {
+    expect(parseMessages([user, failed] as never).map((m) => m.type)).toEqual(['user']);
+  });
+
+  it('is the banner when it is the newest row', () => {
+    expect(lastRunError([user, failed] as never)).toBe('USAGE_LIMIT_EXCEEDED: no balance');
+    expect(lastRunError([failed] as never)).toBe('USAGE_LIMIT_EXCEEDED: no balance');
+  });
+
+  it('is not the banner once the thread moved on', () => {
+    const later = { id: 'u2', role: 'user', content: 'Try again', createdAt: 2 };
+    expect(lastRunError([user, failed, later] as never)).toBeNull();
+    expect(lastRunError([user] as never)).toBeNull();
+    expect(lastRunError([] as never)).toBeNull();
   });
 });

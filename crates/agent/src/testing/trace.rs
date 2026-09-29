@@ -67,11 +67,20 @@ pub struct TurnMetrics {
     pub approvals: usize,
     /// How the turn ended: `complete`, `cancelled` or `error`.
     pub end: String,
+    /// The turn's streamed reply text: what a reply check with `turn`
+    /// reads. Empty in traces from before it existed.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub reply: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TracedToolCall {
     pub sequence: usize,
+    /// The 1-based turn ([`TurnMetrics::turn`]) the call started in, so a
+    /// reader can tell which of the owner's messages it answered. 0 in
+    /// traces from before it was recorded.
+    #[serde(default)]
+    pub turn: usize,
     pub tool: String,
     pub arguments: serde_json::Value,
     pub response: TracedToolResponse,
@@ -196,7 +205,6 @@ pub struct ExperimentMetadata {
     pub git_commit: String,
     pub git_branch: String,
     pub strap_doc_hashes: HashMap<String, String>,
-    pub overrides: Vec<String>,
     pub runs_per_fixture: usize,
 }
 
@@ -303,8 +311,8 @@ impl std::fmt::Display for Verdict {
 
 pub fn compute_strap_hashes() -> HashMap<String, String> {
     let docs = [
-        "system", "web", "bot", "loop", "message", "event", "app",
-        "desktop", "organizer", "skill", "agent", "vm", "publisher", "emit",
+        "system", "bot", "message", "app",
+        "desktop", "organizer", "agent", "vm", "publisher",
     ];
     let mut hashes = HashMap::new();
     for name in &docs {
@@ -437,6 +445,7 @@ mod tests {
             cards: 0,
             approvals: 1,
             end: "complete".into(),
+            reply: "Two facts.".into(),
         }];
         let dir = std::env::temp_dir().join(format!("nebo-trace-turns-{}", std::process::id()));
         t.save(&dir).unwrap();

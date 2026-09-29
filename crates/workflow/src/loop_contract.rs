@@ -14,13 +14,14 @@ use crate::parser::Activity;
 /// One turn-loop execution for an activity — the whole activity, or one step
 /// of it: stream the model, execute tool calls, repeat until it answers in
 /// text, with workflow semantics honored by the implementation:
-/// deterministic sampling, scoped tool advertising, approval parking,
+/// deterministic sampling, a scoped tool listing, approval parking,
 /// the `exit` tool, iteration/token budgets, `requires_tools`.
 pub struct LoopTurn<'a> {
     pub activity: &'a Activity,
-    /// Fully built activity system prompt (context, inputs, skills, agent
-    /// identity) — used as-is, never merged with a chat persona.
-    pub system: String,
+    /// The activity's instructions (rules, skills, type, parameters, task,
+    /// inputs, prior results, controls). The loop tells them in the
+    /// conversation; the system prompt is the same for every turn.
+    pub instructions: String,
     /// The curated conversation so far — step prompts and step results, plus
     /// (on durable resume) the suspended in-loop transcript restored
     /// verbatim. The implementation seeds its own scratch history from this;
@@ -29,10 +30,10 @@ pub struct LoopTurn<'a> {
     /// The workflow's display name, so the loop can say which workflow a
     /// step belongs to (the tool guardrail's task evidence).
     pub workflow_name: &'a str,
-    /// Names the model may see schemas for: the activity's scoped set,
-    /// including `exit`, and `emit` when granted. Dispatch still falls back
-    /// to the full roster exactly as before — advertising is context
-    /// scoping, not a security boundary.
+    /// The activity's tools, including `exit`, and `emit` when granted: the
+    /// deferred ones are what its listing names. The tools it declares are
+    /// every turn's; dispatch falls back to the full roster — this is
+    /// context scoping, not a security boundary.
     pub advertised_tools: Vec<String>,
     pub agent_id: &'a str,
     /// Caller-resolved memory scope user id (rides ToolContext.user_id).

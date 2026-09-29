@@ -35,7 +35,7 @@ enum Check {
     TextMustNotContain(String),
     /// No text should appear alongside tool calls (silent execution)
     NoTextWithToolCalls,
-    /// The ask tool should be used (agent resource:"ask")
+    /// The ask tool should be used (ask_owner)
     UsesAskTool,
 }
 
@@ -178,21 +178,12 @@ fn evaluate_check(
                     .or_else(|| tc.get("tool_name"))
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
-                let input = tc.get("input").or_else(|| tc.get("arguments"));
-                if name == "agent" || name == "bot" {
-                    if let Some(args) = input {
-                        return args
-                            .get("resource")
-                            .and_then(|v| v.as_str())
-                            .is_some_and(|r| r == "ask");
-                    }
-                }
-                false
+                name == "ask_owner"
             });
             if found {
                 Ok(())
             } else {
-                Err("UsesAskTool: no agent(resource:\"ask\") call found".into())
+                Err("UsesAskTool: no ask_owner call found".into())
             }
         }
     }
@@ -356,7 +347,7 @@ fn eval_scenarios() -> Vec<Scenario> {
         Scenario {
             name: "no_file_creation",
             prompt: "Give me a summary of the top 5 news stories today.",
-            checks: vec![Check::NoToolCallNamed("os".into())],
+            checks: vec![Check::NoToolCallNamed("write_file".into())],
             timeout_secs: 60,
             tags: &["identity"],
         },
@@ -393,7 +384,7 @@ fn eval_scenarios() -> Vec<Scenario> {
             prompt: "Search for flights from Denver to Tokyo in June.",
             checks: vec![
                 Check::HasToolCall,
-                Check::ToolCallNamed("web".into()),
+                Check::ToolCallNamed("search_web".into()),
                 Check::MaxTextLength(50),
             ],
             timeout_secs: 30,
@@ -423,7 +414,7 @@ fn eval_scenarios() -> Vec<Scenario> {
         Scenario {
             name: "no_orphan_windows",
             prompt: "Open Google in Chrome and search for 'best pizza Denver'.",
-            checks: vec![Check::HasToolCall, Check::ToolCallNamed("web".into())],
+            checks: vec![Check::HasToolCall, Check::ToolCallNamed("browser_open".into())],
             timeout_secs: 30,
             tags: &["etiquette"],
         },
@@ -443,7 +434,13 @@ fn eval_scenarios() -> Vec<Scenario> {
 #[ignore] // Only run manually: cargo test -p nebo-server --test prompt_eval -- --ignored --nocapture
 async fn eval_prompt_via_janus() {
     let base_url = std::env::var("EVAL_NEBO_URL").unwrap_or_else(|_| "localhost:27895".to_string());
-    let ws_url = format!("ws://{}/ws", base_url);
+    // The owner's own client: it proves itself with this computer's install
+    // key, carried as the address's first segment.
+    let Some(key) = config::read_install_key() else {
+        eprintln!("No install key (start Nebo once, or set NEBO_MCP_API_KEY). Skipping eval.");
+        return;
+    };
+    let ws_url = format!("ws://{}/k/{}/ws", base_url, key);
     let section_filter = std::env::var("EVAL_SECTION").ok();
 
     // Quick connectivity check
@@ -451,8 +448,8 @@ async fn eval_prompt_via_janus() {
         Ok(_) => {}
         Err(e) => {
             eprintln!(
-                "Cannot connect to Nebo at {}. Is `make dev` running?\nError: {}",
-                ws_url, e
+                "Cannot connect to Nebo at ws://{}/ws. Is `make dev` running?\nError: {}",
+                base_url, e
             );
             eprintln!("Skipping eval.");
             return;

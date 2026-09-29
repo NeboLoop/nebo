@@ -17,20 +17,17 @@ struct Connection {
 
 /// Callback to register/unregister proxy tools in the agent's tool registry.
 pub trait ProxyToolRegistry: Send + Sync {
-    fn register_proxy(
-        &self,
-        name: &str,
-        original_name: &str,
-        description: &str,
-        schema: Option<serde_json::Value>,
-        integration_id: &str,
-    );
+    /// Register `tool` under its proxy `name` (`mcp__<server>__<tool>`).
+    fn register_proxy(&self, name: &str, tool: &McpToolDef, integration_id: &str);
     fn unregister_proxy(&self, name: &str);
     /// Called after a connect finishes registering a server's tools — the ONE
-    /// hook where the server's persisted tool-permission map reconciles with
-    /// the live tool list (new tools default to needs-approval, vanished tools
-    /// are pruned). `tool_names` are the server's original tool names.
-    fn tools_synced(&self, integration_id: &str, tool_names: &[String]);
+    /// hook where the server's tools get their permission rules: the
+    /// server's default (they ask until the owner says otherwise), and an
+    /// ask on each tool the server never offered before while its default
+    /// allows. `server_slug` is the tool-name prefix
+    /// (`mcp__<server_slug>__<tool>`); `tools` pairs each tool's own name
+    /// with its proxy name.
+    fn tools_synced(&self, integration_id: &str, server_slug: &str, tools: &[(String, String)]);
 }
 
 /// Launch spec for a local stdio MCP server, parsed from an integration's
@@ -121,8 +118,7 @@ impl Bridge {
 
         // Expose each external tool as its own proxy tool (`mcp__<server>__<tool>`)
         // carrying the server's real input schema, so the model calls it with correct
-        // arguments. This is the single canonical call pathway for MCP tools — the `mcp`
-        // STRAP tool itself only enumerates servers (mcp(action:"list")).
+        // arguments. This is the single canonical call pathway for MCP tools.
         let tool_names: Vec<String> = tools
             .iter()
             .map(|t| make_tool_name(server_type, &t.name))
@@ -130,19 +126,18 @@ impl Bridge {
         let original_names: Vec<String> = tools.iter().map(|t| t.name.clone()).collect();
 
         for (t, proxy_name) in tools.iter().zip(tool_names.iter()) {
-            self.registry.register_proxy(
-                proxy_name,
-                &t.name,
-                &t.description,
-                t.input_schema.clone(),
-                integration_id,
-            );
+            self.registry.register_proxy(proxy_name, t, integration_id);
         }
 
         // Every connect IS the tool sync (startup reconnect, settings connect,
-        // OAuth callback, refresh) — reconcile the persisted tool-permission
-        // map with what the server offers right now.
-        self.registry.tools_synced(integration_id, &original_names);
+        // OAuth callback, refresh): the server's tools get their default rule.
+        let synced: Vec<(String, String)> = original_names
+            .iter()
+            .cloned()
+            .zip(tool_names.iter().cloned())
+            .collect();
+        self.registry
+            .tools_synced(integration_id, &server_slug(server_type), &synced);
 
         let mut conns = self.connections.lock().await;
         conns.insert(
@@ -253,11 +248,39 @@ impl Bridge {
     }
 }
 
-/// Generate a namespaced tool name: mcp__{server_type}__{tool_name}
+/// Generate a namespaced tool name: mcp__{server_type}__{tool_name}, each
+/// part lowercased with anything outside `[a-z0-9_-]` written as `_` (the
+/// names providers accept).
 pub fn make_tool_name(server_type: &str, original: &str) -> String {
-    let st = server_type.to_lowercase().replace(' ', "_");
-    let tn = original.to_lowercase().replace(' ', "_");
-    format!("mcp__{}__{}", st, tn)
+    format!("mcp__{}__{}", server_slug(server_type), sanitize(original))
+}
+
+fn sanitize(part: &str) -> String {
+    part.to_lowercase()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '_' })
+        .collect()
+}
+
+/// MCP tool-name prefix for an integration — e.g. "monument.sh" →
+/// "monument_sh", "My GitHub" → "my_github".
+///
+/// DELIBERATELY not `comm::handle::slugify` (the routing-handle slugifier):
+/// the underscore alphabet here is load-bearing — these prefixes are baked
+/// into stored MCP tool names and permission rules, so the mapping must stay
+/// byte-stable even though it doesn't collapse runs the way handle slugs do.
+pub fn tool_name_prefix(name: &str) -> String {
+    name.to_lowercase()
+        .chars()
+        .map(|c| if c.is_alphanumeric() { c } else { '_' })
+        .collect::<String>()
+        .trim_matches('_')
+        .to_string()
+}
+
+/// The server part of its proxy tools' names (`mcp__<slug>__<tool>`).
+pub fn server_slug(server_type: &str) -> String {
+    sanitize(server_type)
 }
 
 #[cfg(test)]
@@ -279,5 +302,8 @@ mod tests {
             make_tool_name("slack", "Send Message"),
             "mcp__slack__send_message"
         );
+        // Anything a provider would refuse in a name becomes `_`.
+        assert_eq!(make_tool_name("docs.example", "files/read:v2"), "mcp__docs_example__files_read_v2");
+
     }
 }

@@ -9,6 +9,8 @@
   import { teachStart, teachStop, getToolOutput } from '$lib/api/nebo';
   import ShareArtifactModal from './ShareArtifactModal.svelte';
   import AskWidget from './AskWidget.svelte';
+  import ConsentChip from './ConsentChip.svelte';
+  import type { EmployeeConsentPayload } from './ConsentChip.svelte';
   import type { AskWidgetDef } from './AskWidget.svelte';
   import { renderMentionChips } from '$lib/mentions';
   import { downloadArtifact } from '$lib/chat/download';
@@ -22,12 +24,18 @@
   import Table from 'lucide-svelte/icons/table';
   import Presentation from 'lucide-svelte/icons/presentation';
   import type { UploadedAttachment } from '$lib/types/attachment';
+  import type { SessionGoalStatus } from '$lib/api/neboComponents';
   import { attSrc, stripAttachmentNotes } from '$lib/types/attachment';
   import { flushSync } from 'svelte';
   import type { Snippet } from 'svelte';
   import { getAttachmentType, formatFileSize, attachmentMediaUrl } from '$lib/types/attachment';
   import { NEAR_BOTTOM_PX, distanceFromBottom } from '$lib/chat/scroll';
   import { threadKey } from '$lib/chat/sessionKey';
+  import { openAsks } from '$lib/stores/permissionAsks';
+  import PermissionAskCard from '$lib/components/PermissionAskCard.svelte';
+  import type { HelperLine } from '$lib/chat/helpers';
+  import { stepMeta } from '$lib/chat/stepMeta';
+  import { turnBlocks, turnProse, noteLabel, type Fold, type TurnBlock, type TurnStep } from '$lib/chat/turnBlocks';
 
   interface Artifact {
     /** Stable container id — same across every version of this document. */
@@ -83,11 +91,12 @@
     | { type: 'user'; content: string; time?: string; attachments?: UploadedAttachment[]; pending?: boolean; teamPost?: TeamPost }
     | { type: 'thinking'; content: string; duration: string }
     | { type: 'ask'; requestId: string; prompt: string; widgets: AskWidgetDef[]; response?: string; cancelled?: boolean }
-    | { type: 'assistant'; content: string; time?: string; delegateAgentId?: string; delegateAgentName?: string; id?: string; attachments?: UploadedAttachment[]; tools?: ToolMsg[]; streaming?: boolean };
+    | { type: 'assistant'; content: string; time?: string; delegateAgentId?: string; delegateAgentName?: string; id?: string; attachments?: UploadedAttachment[]; tools?: ToolMsg[]; streaming?: boolean; fold?: Fold }
+    | { type: 'compactBoundary'; id?: string; time?: string };
 
   type AgentInfo = { id: string; name: string; color: string; initial: string; role: string; status: string; isApp?: boolean };
 
-  let { messages = [], agentName = 'Agent', agentId = '', threadId = '', sessionId = '', headerTitle = '', headerRight = '', placeholder = '', emptyIcon = '', emptyTitle = '', emptyDesc = '', allAgents = [], onteachsent, activityStatus = '', tokenUsage = null, contextStats = null, quotaWarning = '', chatError = '', onsend, onstop, onedit, onredo, onasksubmit, onrestoreversion, ondismisswarning, ondismisserror, onloadmore, isLoading = false, isLoadingMore = false, historyLoading = false, hasMore = false, allowAttachments = true, flowsPane, onopenruns, onsettings, isolated = false, isApp = false, onopenapp, onback, askQueueLength = 0, composerPrefill = '', onprefilled }: {
+  let { messages = [], agentName = 'Agent', agentId = '', threadId = '', sessionId = '', headerTitle = '', headerRight = '', placeholder = '', emptyIcon = '', emptyTitle = '', emptyDesc = '', allAgents = [], onteachsent, activityStatus = '', helpers = [], tokenUsage = null, goal = null, quotaWarning = '', chatError = '', recapText = '', onsend, onstop, onedit, onredo, onasksubmit, onrestoreversion, ondismisswarning, ondismisserror, onloadmore, isLoading = false, isLoadingMore = false, historyLoading = false, hasMore = false, allowAttachments = true, flowsPane, onopenruns, onsettings, memoryMode = 'single', folder = '', isApp = false, onopenapp, onback, askQueueLength = 0, composerPrefill = '', onprefilled }: {
     messages?: Message[];
     /** Employee-scoped views for the work pane. Omitted on chats with no
      *  employee behind them (channel setup help, the embed), and the matching
@@ -96,8 +105,11 @@
     /** Runs open as a modal over the workspace, not in the pane. */
     onopenruns?: () => void;
     onsettings?: () => void;
-    /** memory.context_isolated — this employee's conversations are sealed. */
-    isolated?: boolean;
+    /** memory.mode — "separate" or "confidential" keeps this employee's
+     *  conversations apart, and the header shows which. */
+    memoryMode?: string;
+    /** The folder a linked coding employee's conversation works in. */
+    folder?: string;
     /** This employee is an app: badge the header and offer Open App. */
     isApp?: boolean;
     onopenapp?: () => void;
@@ -121,10 +133,18 @@
     emptyDesc?: string;
     allAgents?: AgentInfo[];
     activityStatus?: string;
+    /** Helpers started from this conversation that are still working. */
+    helpers?: HelperLine[];
     tokenUsage?: { input: number; output: number; cacheRead?: number; cacheCreation?: number; overhead?: number } | null;
-    contextStats?: { files: number; filesReread: number; redundantReads: number; compactionPasses: number; evictions: number; spilledResults: number } | null;
+    /** The thread's agreed goal while it is worked toward; null hides the line. */
+    goal?: SessionGoalStatus | null;
     quotaWarning?: string;
     chatError?: string;
+    /** The owner recap for the last finished turn (`turn_recap`, WP2.5):
+     *  one or two plain sentences for coming back to the thread. Cleared by
+     *  the page on thread switch and on send — a stale recap from an
+     *  earlier turn never lingers under a newer one. */
+    recapText?: string;
     onsend?: (text: string, files: { file: File; id: string; previewUrl: string | null; isImage: boolean }[]) => void;
     onteachsent?: (message: string, sessionKey: string) => void;
     onstop?: () => void;
@@ -510,11 +530,8 @@
     elapsed_ms?: number;
     complete?: boolean;
   }
-  /** Live snapshot while running; final summary payload afterwards. */
+  /** The research run's live snapshot; its last one is marked complete. */
   function researchState(tool: ToolMsg): ResearchState | null {
-    if (tool.payload?.kind === 'research_summary') {
-      return { ...(tool.payload as ResearchState), complete: true, phase: 'complete' };
-    }
     if (tool.research && typeof tool.research === 'object') {
       return tool.research as ResearchState;
     }
@@ -601,12 +618,17 @@
     toAgentId?: string;
     threadKey?: string;
     text?: string;
-    reply?: string | null;
     [k: string]: unknown;
   }
   function coworkerEvents(tools: ToolMsg[] | undefined): CoworkerEventPayload[] {
     return (tools ?? [])
       .flatMap((t) => (t.payload?.kind === 'coworker_message' ? [t.payload as CoworkerEventPayload] : []));
+  }
+  // A drafted employee's consent line is the owner's to answer, never
+  // plumbing inside the collapsed tool group.
+  function consentLines(tools: ToolMsg[] | undefined): EmployeeConsentPayload[] {
+    return (tools ?? [])
+      .flatMap((t) => (t.payload?.kind === 'employee_consent' ? [t.payload as EmployeeConsentPayload] : []));
   }
   function nonCoworkerTools(tools: ToolMsg[] | undefined): ToolMsg[] {
     return (tools ?? []).filter((t) => t.payload?.kind !== 'coworker_message');
@@ -649,22 +671,11 @@
     editText = '';
   }
 
-  // The large-input pipeline replaces a huge pasted prompt with a pointer +
-  // summary FOR THE MODEL — but that replacement was stored as the user's
-  // message, so the transcript showed internal plumbing ("can be read with
-  // os(resource: ...)"). Render it as a clean note + the summary instead.
   // Attachment pointer notes ("[Attached: x.md (13 KB) — saved at /path...]",
   // audio variants) are appended to the prompt FOR THE MODEL — the transcript
   // already renders the real attachment chips, so the pointer text is
   // plumbing duplicated into the human view. Strip it from display only;
   // the stored content (the model's context) is untouched.
-
-  const LARGE_INPUT_RE = /^\[This message contained a large [\s\S]*?\((\d+) characters[\s\S]*?Here is a summary:\]\s*/;
-  function parseLargeInput(content: string): { chars: string; summary: string } | null {
-    const m = content.match(LARGE_INPUT_RE);
-    if (!m) return null;
-    return { chars: Number(m[1]).toLocaleString(), summary: content.slice(m[0].length) };
-  }
 
   function handleEditKeydown(e: KeyboardEvent, idx: number) {
     if (e.key === 'Escape') {
@@ -694,8 +705,8 @@
 
   // Auto-focus chat input when user starts typing anywhere
   function handleGlobalKeydown(e: KeyboardEvent) {
-    // Esc anywhere in the chat stops the running turn, the way it does in
-    // Claude Code. The composer handles its own Esc while it has focus.
+    // Esc anywhere in the chat stops the running turn, so stopping never
+    // depends on where focus is. The composer handles its own Esc while it has focus.
     if (e.key === 'Escape' && isLoading && !(document.activeElement as HTMLElement)?.isContentEditable
       && !document.querySelector('[data-modal-open]')) {
       e.preventDefault();
@@ -732,7 +743,7 @@
   let initialScrollDone = false;
   let prevScrollHeight = 0;
   let lastScrollTop = 0;
-  // Reserved room for the streaming reply (the claude.ai turn model): on send,
+  // Reserved room for the streaming reply: on send,
   // the user's message pins to the TOP of the viewport and a trailing spacer
   // reserves the rest of it. The reply streams INTO the reserved room — the
   // spacer shrinks 1:1 with content growth, total scroll height stays constant,
@@ -937,7 +948,7 @@
     }
   });
 
-  // Follow ("sticky") is an INTENT bit, per the reference ScrollBox model:
+  // Follow ("sticky") is an INTENT bit:
   // set by send / the scroll button / arriving at the bottom, cleared ONLY by
   // explicit user input (wheel up, touch drag) — NEVER inferred from scroll
   // events. Scroll events can come from our own programmatic pins arriving a
@@ -1008,20 +1019,17 @@
 
   // Tool timeline collapse state, keyed by the owning reply's id (stable across
   // re-renders — index keys would drift as new messages stream in).
-  // ── The activity panel: one per assistant turn ──────────────────────────
-  // A turn is every assistant segment between two user messages. Everything
-  // the model did before its answer — the one-line note it wrote before each
-  // tool call, and the tool calls themselves — is one panel, folded under a
-  // summary line ("Searched the web, read a page, ran a command"); the answer
-  // is the last segment's text and stands alone below it. Rows open on click.
+  // ── Activity groups: the work inside an assistant turn ──────────────────
+  // A turn is every assistant segment between two user messages. Its text
+  // segments read as prose or fold into the work as notes — the server's
+  // verdict (`turnBlocks`) — and each run of notes and tool calls between two
+  // paragraphs is one group under a summary line ("Searched the web, read a
+  // page, ran a command"). Rows open on click.
   type AssistantMsg = Extract<Message, { type: 'assistant' }>;
-  type ActivityStep =
-    | { kind: 'note'; key: string; lines: string[] }
-    | { kind: 'tool'; key: string; tool: ToolMsg };
+  type ActivityStep = TurnStep<ToolMsg>;
 
-  /** Open state per turn; unset means folded. A live turn stays folded too —
-   *  the summary line shimmers while the work happens, and the work is read
-   *  by whoever opens it. */
+  /** Open state per group; unset means folded — live or not. A long turn is
+   *  one shimmering summary line, not a card of every call it made. */
   let activityOpen = $state<Record<string, boolean>>({});
 
   function turnSegments(idx: number): AssistantMsg[] {
@@ -1033,23 +1041,9 @@
     }
     return out;
   }
-  /** The text of a segment that ran tools is a note about the next step; the
-   *  text of the segment that ran none is the answer. Consecutive notes fold
-   *  into one row whose label is the latest. */
-  function activitySteps(segs: AssistantMsg[], keyId: string): ActivityStep[] {
-    const steps: ActivityStep[] = [];
-    segs.forEach((seg, si) => {
-      const tools = shownTools(seg.tools);
-      const isAnswer = si === segs.length - 1 && nonCoworkerTools(seg.tools).length === 0;
-      const note = seg.content?.trim();
-      if (note && !isAnswer) {
-        const prev = steps[steps.length - 1];
-        if (prev?.kind === 'note') prev.lines.push(note);
-        else steps.push({ kind: 'note', key: `${keyId}-n${si}`, lines: [note] });
-      }
-      tools.forEach((tool, ti) => steps.push({ kind: 'tool', key: `${keyId}-${si}-${ti}`, tool }));
-    });
-    return steps;
+  /** The turn's prose and activity groups, in order. */
+  function blocksOf(segs: AssistantMsg[], keyId: string): TurnBlock<ToolMsg>[] {
+    return turnBlocks(segs, keyId, shownTools, (tools) => nonCoworkerTools(tools).length > 0);
   }
   /** The calls a user should see. A call that failed and was retried is the
    *  employee's business — nothing the user can act on — so it is left out,
@@ -1058,32 +1052,14 @@
     const all = nonCoworkerTools(tools);
     return $devMode ? all : all.filter((t) => t.status !== 'error');
   }
-  function turnAnswer(segs: AssistantMsg[]): string {
-    const last = segs[segs.length - 1];
-    return last && nonCoworkerTools(last.tools).length === 0 ? last.content : '';
-  }
   /** A note's row shows plain words; markdown marks are for the answer. */
   function plainNote(line: string): string {
     return line.replace(/[*_`#>]+/g, '').replace(/\s+/g, ' ').trim();
   }
-  /** What a tool row says after its label: the search query, the page's
-   *  address (as a link), or the plugin command. */
-  function stepMeta(tool: ToolMsg): { text: string; href?: string } | null {
-    const r = (tool.request ?? {}) as Record<string, unknown>;
-    const str = (k: string) => (typeof r[k] === 'string' ? (r[k] as string) : '');
-    const url = str('url');
-    if (url) return { text: url, href: url };
-    const query = str('query') || str('q');
-    if (query) return { text: query };
-    if (tool.name !== 'os') {
-      const cmd = str('command');
-      if (cmd) return { text: cmd };
-    }
-    return null;
-  }
+  /** The command a call ran, shown as code under its row. */
   function shellCommand(tool: ToolMsg): string {
     const r = (tool.request ?? {}) as Record<string, unknown>;
-    return tool.name === 'os' && typeof r.command === 'string' ? r.command : '';
+    return typeof r.command === 'string' ? r.command : '';
   }
   function canExpand(tool: ToolMsg): boolean {
     if (tool.status === 'running') return false;
@@ -1097,6 +1073,8 @@
   // readable page; the whole thing arrives when someone opens the row.
   let fullOutputs = $state<Record<string, string>>({});
   const outputChatId = $derived(threadId || sessionId);
+  const chatSessionKey = $derived(sessionId || (threadId ? threadKey(agentId, threadId) : ''));
+  const chatAsks = $derived(chatSessionKey ? $openAsks.filter((a) => a.sessionKey === chatSessionKey) : []);
   async function toggleResult(key: string, tool?: ToolMsg) {
     const opening = !expandedResults[key];
     expandedResults[key] = opening;
@@ -1134,15 +1112,6 @@
   function stepOutcome(tool: ToolMsg): string {
     const resource = (tool.request as { resource?: string } | undefined)?.resource;
     return tool.outcome ?? tool.label ?? $t('chat.usedTool', { values: { name: resource || tool.name } });
-  }
-  // Correct tool signature: MCP → "slug · tool", STRAP → "name · resource.action".
-  function strapSig(t: ToolMsg): string {
-    if (t.name.startsWith('mcp__')) {
-      return t.name.slice(5).replace('__', ' · ').replaceAll('_', ' ');
-    }
-    const req = t.request as { resource?: string; action?: string } | undefined;
-    if (req?.resource && req?.action) return `${t.name} · ${req.resource}.${req.action}`;
-    return t.name;
   }
   function workLineLabel(tools: ToolMsg[]): string {
     const running = tools.filter((t) => t.status === 'running');
@@ -1274,20 +1243,23 @@
         {#if isApp}
           <span class="text-[9px] uppercase tracking-wider px-1 py-px rounded bg-info/15 text-info font-semibold shrink-0">{$t('agent.appBadge')}</span>
         {/if}
-        {#if isolated}
+        {#if memoryMode === 'separate' || memoryMode === 'confidential'}
           <!-- Separate conversations only mean something when memory is sealed
                between them. MessageSquareLock = "this conversation is sealed";
                the plain Lock stays on the Settings toggle — that distinction
                is deliberate. Words live in the tooltip. -->
           <span
             class="self-center text-warning/80 shrink-0 tooltip tooltip-bottom"
-            data-tip={$t('agentIsolation.isolated')}
+            data-tip={$t(`agentIsolation.${memoryMode}`)}
           >
             <MessageSquareLock class="w-3 h-3" />
           </span>
         {/if}
         {#if headerTitle && headerTitle !== agentName}
           <span class="text-sm text-base-content/70 truncate">{headerTitle}</span>
+        {/if}
+        {#if folder}
+          <span class="text-xs text-base-content/50 truncate" title={folder}>{$t('chat.worksIn', { values: { folder } })}</span>
         {/if}
       </span>
       <div class="ml-auto max-lg:hidden flex items-center gap-0.5 shrink-0">
@@ -1305,7 +1277,7 @@
           {@render headerIcon(creationsOpen && paneView === 'work', $t('chat.work'), () => togglePane('work'), workIcon)}
         {/if}
         {#if onsettings}
-          {@render headerIcon(false, $t('settings.title'), onsettings, settingsIcon)}
+          {@render headerIcon(false, $t('nav.employeeSettings'), onsettings, settingsIcon)}
         {/if}
         {#if isApp && onopenapp}
           <button
@@ -1346,7 +1318,7 @@
               <li><button onclick={() => { (document.activeElement as HTMLElement)?.blur(); togglePane('work'); }}>{@render workIcon()}{$t('chat.work')}</button></li>
             {/if}
             {#if onsettings}
-              <li><button onclick={() => { (document.activeElement as HTMLElement)?.blur(); onsettings?.(); }}>{@render settingsIcon()}{$t('settings.title')}</button></li>
+              <li><button onclick={() => { (document.activeElement as HTMLElement)?.blur(); onsettings?.(); }}>{@render settingsIcon()}{$t('nav.employeeSettings')}</button></li>
             {/if}
           </ul>
         </div>
@@ -1394,11 +1366,12 @@
       </div>
     {/if}
 
-    <!-- The activity panel for one turn: notes and tool calls in order,
-         folded under a summary line. Rows open on click; a page's address
-         is a link. keyId = the turn's first segment id. -->
+    <!-- One activity group: notes and tool calls in order, folded under a
+         summary line until it is clicked, live or not. Rows open on click;
+         a page's address is a link. -->
     {#snippet activityPanel(steps: ActivityStep[], tools: ToolMsg[], keyId: string, live: boolean)}
       {@const open = activityOpen[keyId] ?? false}
+      {@const rows = open ? steps : []}
       <div class="max-w-[640px] my-1.5">
         <button
           type="button"
@@ -1410,11 +1383,13 @@
           <span class="shrink-0 transition-transform {open ? 'rotate-90' : ''}">&rsaquo;</span>
         </button>
 
-        {#if open}
+        {#if rows.length}
           <div class="mt-1.5 rounded-xl border border-base-300 bg-base-100 divide-y divide-base-300 overflow-hidden">
-            {#each steps as step (step.key)}
+            {#each rows as step (step.key)}
               {#if step.kind === 'note'}
-                {@const expandable = step.lines.length > 1}
+                {@const latest = step.lines[step.lines.length - 1]}
+                {@const label = noteLabel(latest)}
+                {@const expandable = step.lines.length > 1 || label !== latest.trim()}
                 {@const isExpanded = !!expandedResults[step.key]}
                 <div class="px-3 py-2 text-xs">
                   <button
@@ -1424,7 +1399,7 @@
                     aria-expanded={expandable ? isExpanded : undefined}
                     onclick={() => toggleResult(step.key)}
                   >
-                    <span class="truncate flex-1">{plainNote(step.lines[step.lines.length - 1])}</span>
+                    <span class="truncate flex-1">{plainNote(label)}</span>
                     {#if expandable}<span class="shrink-0 transition-transform {isExpanded ? 'rotate-90' : ''}">&rsaquo;</span>{/if}
                   </button>
                   {#if expandable && isExpanded}
@@ -1435,7 +1410,7 @@
                 </div>
               {:else}
                 {@const tool = step.tool}
-                {@const meta = stepMeta(tool)}
+                {@const meta = stepMeta(tool.request)}
                 {@const expandable = canExpand(tool)}
                 {@const isExpanded = !!expandedResults[step.key]}
                 {@const cmd = shellCommand(tool)}
@@ -1454,7 +1429,7 @@
                       <span class="shrink-0 text-base-content/70">{tool.status === 'running' ? (tool.label ?? tool.name) : stepOutcome(tool)}{#if tool.status === 'running' && tool.statusText}<span class="text-base-content/70 ml-1">{tool.statusText}</span>{/if}</span>
                       {#if tool.status === 'error'}<span class="shrink-0 text-error">{$t('chat.failed')}</span>{/if}
                       {#if meta && !meta.href}<span class="truncate text-base-content/80" title={meta.text}>{meta.text}</span>{/if}
-                      {#if $devMode}<span class="font-mono text-base-content/70 shrink-0">{strapSig(tool)}</span>{/if}
+                      {#if $devMode}<span class="font-mono text-base-content/70 shrink-0">{tool.name}</span>{/if}
                       {#if tool.durationMs}<span class="text-base-content/70 shrink-0">{fmtDuration(tool.durationMs)}</span>{/if}
                       {#if expandable && !meta?.href}<span class="shrink-0 text-base-content/70 transition-transform {isExpanded ? 'rotate-90' : ''}">&rsaquo;</span>{/if}
                     </button>
@@ -1646,12 +1621,6 @@
             <div class="py-2.5 px-3.5 rounded-xl text-sm leading-relaxed bg-base-200 {fromOwner ? 'rounded-br-sm' : 'rounded-bl-sm'} prose prose-sm max-w-none {msg.pending ? 'italic text-base-content/60' : ''} [&_p]:my-0 [&_ul]:my-1 [&_ol]:my-1 [&>:first-child]:mt-0 [&>:last-child]:mb-0">
               {#if tp}
                 {@html renderMarkdown(tp.text)}
-              {:else if parseLargeInput(msg.content)}
-                {@const li = parseLargeInput(msg.content)!}
-                <div class="not-prose mb-2 text-xs text-base-content/50">
-                  {$t('chat.largeInputNote', { values: { chars: li.chars } })}
-                </div>
-                {@html renderMarkdown(li.summary)}
               {:else}
                 {@html renderMarkdown(stripAttachmentNotes(msg.content))}
               {/if}
@@ -1748,6 +1717,9 @@
           {/if}
         </div>
 
+      {:else if msg.type === 'compactBoundary'}
+        <div class="divider my-4 text-xs text-base-content/50">{$t('chat.compactBoundary')}</div>
+
       {:else if msg.type === 'assistant'}
         {@const isTurnStart = idx === 0 || groupedMessages[idx - 1]?.type !== 'assistant'}
         <!-- One assistant TURN is one container, rendered from its first
@@ -1761,11 +1733,10 @@
           {@const lastIdx = idx + segs.length - 1}
           {@const lastOrigIdx = originalIndices[lastIdx]}
           {@const nextGroup = groupedMessages[lastIdx + 1]}
-          {@const isTurnEnd = nextGroup ? (nextGroup.type === 'user' || nextGroup.type === 'ask') : !isLoading}
+          {@const isTurnEnd = nextGroup ? (nextGroup.type === 'user' || nextGroup.type === 'ask' || nextGroup.type === 'compactBoundary') : !isLoading}
           {@const keyId = msg.id ?? `m${origIdx}`}
-          {@const turnTools = segs.flatMap((sg) => shownTools(sg.tools))}
-          {@const steps = activitySteps(segs, keyId)}
-          {@const answer = turnAnswer(segs)}
+          {@const blocks = blocksOf(segs, keyId)}
+          {@const answer = turnProse(blocks)}
           {@const turnAttachments = segs.flatMap((sg) => sg.attachments ?? [])}
           <div class="max-w-[640px] mt-3">
             {#if msg.delegateAgentName}
@@ -1775,15 +1746,16 @@
                 <span class="text-xs font-medium">{msg.delegateAgentName}</span>
               </div>
             {/if}
-            {#if steps.length}
-              {@render activityPanel(steps, turnTools, keyId, !isTurnEnd)}
-            {/if}
-            {#if answer}
-              <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
-              <div class="text-sm leading-relaxed prose prose-sm max-w-none" onclick={handleWorkMentionClick}>
-                {@html linkWorkMentions(renderMarkdown(answer), (last as any).workItems)}
-              </div>
-            {/if}
+            {#each blocks as block, bi (block.key)}
+              {#if block.kind === 'group'}
+                {@render activityPanel(block.steps, block.tools, block.key, !isTurnEnd && bi === blocks.length - 1)}
+              {:else}
+                <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
+                <div class="text-sm leading-relaxed prose prose-sm max-w-none" onclick={handleWorkMentionClick}>
+                  {@html linkWorkMentions(renderMarkdown(block.text), (last as any).workItems)}
+                </div>
+              {/if}
+            {/each}
             {#each segs.flatMap((sg) => coworkerEvents(sg.tools)) as ev, evIdx (evIdx)}
               <a
                 href={ev.threadKey ? cwHref(ev.threadKey) : undefined}
@@ -1794,6 +1766,9 @@
                 <span>{$t('chat.messagedCoworker')}</span>
                 <span class="font-medium text-base-content/80">{ev.to}</span>
               </a>
+            {/each}
+            {#each segs.flatMap((sg) => consentLines(sg.tools)) as consent, cIdx (cIdx)}
+              <ConsentChip {consent} />
             {/each}
           {#if turnAttachments.length}
             <div class="flex flex-wrap gap-2 mt-2">
@@ -1878,7 +1853,7 @@
       {/if}
     {/each}
 
-    <!-- Live working indicator (ChatGPT/Claude style): shown for the WHOLE run,
+    <!-- Live working indicator: shown for the WHOLE run,
          including while the reply text is streaming or a tool grinds after the
          last text chunk — not only before the first assistant message. -->
     {#if isLoading && groupedMessages.length > 0}
@@ -1887,9 +1862,19 @@
         <span class="text-sm text-base-content/70 animate-pulse">{activityStatus || $t('chat.working')}</span>
       </div>
     {/if}
-    {#if !isLoading && contextStats && (contextStats.redundantReads > 0 || contextStats.compactionPasses > 0)}
-      <div class="max-w-[640px] mt-2 text-xs text-base-content/70">
-        {$t('chat.contextStats', { values: { files: contextStats.filesReread, times: contextStats.redundantReads, passes: contextStats.compactionPasses } })}
+    {#if !isLoading && helpers.length > 0}
+      <div class="helper-status">
+        <span class="loading loading-dots loading-xs"></span>
+        <span>{helpers.length === 1
+          ? $t('chat.helperWorking', { values: { what: helpers[0].activity || helpers[0].description } })
+          : $t('chat.helpersWorking', { values: { n: helpers.length } })}</span>
+      </div>
+    {/if}
+    <!-- The owner recap (WP2.5): one or two plain sentences under the
+         finished turn, for coming back to this thread. -->
+    {#if !isLoading && recapText}
+      <div class="max-w-[640px] mt-2 text-xs text-base-content/60 italic">
+        {recapText}
       </div>
     {/if}
   </div>
@@ -1900,6 +1885,23 @@
   {/if}
   </div>
   </div>
+  {/if}
+
+  <!-- Agreed goal: what the work continues toward until a check confirms it -->
+  {#if goal}
+    <div class="max-w-3xl mx-auto w-full shrink-0 px-4 mb-2">
+      <div class="px-3 py-2 rounded-lg bg-base-200 text-xs text-base-content/80">
+        <span class="font-medium">{$t('chat.goalLine', { values: { condition: goal.condition, turns: goal.turns } })}</span>
+        {#if goal.last_reason}
+          <span> · {$t('chat.goalLastCheck', { values: { reason: goal.last_reason } })}</span>
+        {/if}
+        {#if goal.status === 'paused:stopped'}
+          <span class="text-warning"> · {$t('chat.goalStopped')}</span>
+        {:else if goal.status.startsWith('paused')}
+          <span class="text-warning"> · {$t('chat.goalPaused')}</span>
+        {/if}
+      </div>
+    </div>
   {/if}
 
   <!-- Quota warning banner -->
@@ -1950,6 +1952,16 @@
           <button type="button" class="btn btn-ghost btn-xs ml-auto" onclick={() => (teachError = '')}>✕</button>
         {/if}
       </div>
+    </div>
+  {/if}
+
+  <!-- The asks this chat's work is waiting on: the same card as the Inbox;
+       answered anywhere, it leaves everywhere. -->
+  {#if chatAsks.length > 0}
+    <div class="max-w-3xl mx-auto w-full shrink-0 px-4 mb-2 flex flex-col gap-2">
+      {#each chatAsks as ask (ask.id)}
+        <PermissionAskCard {ask} via="chat" />
+      {/each}
     </div>
   {/if}
 

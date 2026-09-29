@@ -142,7 +142,7 @@
 										<button
 											type="button"
 											class="text-base text-base-content/80 hover:text-error transition-colors"
-											title={$t('common.uninstall')}
+											title={$t('common.remove')}
 											onclick={() => uninstall(item)}
 											disabled={uninstallingId === item.id}
 										>
@@ -212,11 +212,13 @@
 
 {#if pendingUninstall}
 	<ConfirmModal
-		title={$t('marketplace.installedPage.uninstallConfirm', { values: { name: pendingUninstall.name } })}
+		title={isAgent(pendingUninstall)
+			? $t('common.removeTitle', { values: { name: pendingUninstall.name } })
+			: $t('marketplace.installedPage.uninstallConfirm', { values: { name: pendingUninstall.name } })}
 		message={isAgent(pendingUninstall)
 			? $t('marketplace.installedPage.uninstallAgentWarning', { values: { name: pendingUninstall.name } })
 			: $t('marketplace.installedPage.uninstallItemWarning', { values: { name: pendingUninstall.name } })}
-		confirmLabel={$t('common.uninstall')}
+		confirmLabel={isAgent(pendingUninstall) ? $t('common.remove') : $t('common.uninstall')}
 		busy={uninstallingId === pendingUninstall.id}
 		onCancel={() => (pendingUninstall = null)}
 		onConfirm={confirmUninstall}

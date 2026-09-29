@@ -1,0 +1,10 @@
+id: each-app-keeps-its-data-in-its-own-folder
+name: "Each app keeps its data in its own folder"
+description: |
+  An app's data folder (its NEBO_DATA_DIR, working directory and sidecar.log)
+  is appdata/agents/<agent id>: its own, keyed by its identity, never the
+  folder named after its code folder's parent that every app under
+  user/agents/ used to share.
+target_component: app-sidecars
+proof: sidecar_proof::scenarios::each_app_keeps_its_data_in_its_own_folder
+conversation: []

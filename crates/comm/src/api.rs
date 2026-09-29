@@ -61,18 +61,29 @@ const REST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 /// How long one file may take through the files door, either way.
 const FILE_TRANSFER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 
+/// Why a body read failed, in words that name a timeout as one: reqwest
+/// reports a body cut by the request's total timeout as "error decoding
+/// response body", which reads as a corrupt download.
+fn body_read_error(e: &reqwest::Error) -> String {
+    if e.is_timeout() {
+        format!("timed out after {}s", FILE_TRANSFER_TIMEOUT.as_secs())
+    } else {
+        e.to_string()
+    }
+}
+
 /// ONE process-wide HTTP client (connection pool). `NeboAIApi` values are
 /// constructed per call site (73 of them) — giving each its own `Client` gave
 /// each an EMPTY pool, so every NeboAI request paid a fresh TCP+TLS handshake
 /// (~300ms) before doing any work. `reqwest::Client` is an `Arc` around its
 /// pool: cloning here shares warm connections across every call site.
 static HTTP_CLIENT: std::sync::LazyLock<Client> = std::sync::LazyLock::new(|| {
-    Client::builder()
+    tls::http_client()
         .connect_timeout(std::time::Duration::from_secs(5))
         .timeout(REST_TIMEOUT)
         .pool_idle_timeout(std::time::Duration::from_secs(90))
         .build()
-        .unwrap_or_else(|_| Client::new())
+        .expect("reqwest REST client builder is infallible with these options")
 });
 
 impl NeboAIApi {
@@ -752,7 +763,12 @@ impl NeboAIApi {
     /// redirect, which reqwest would follow with the Authorization header attached.)
     async fn resolve_and_fetch_napp(&self, full_url: &str) -> Result<Vec<u8>, CommError> {
         let same_origin = full_url.starts_with(self.api_server.as_str());
-        let mut req = self.client.get(full_url);
+        // A `.napp` is a file, not a REST answer: the shared client's 15 s
+        // REST timeout covers the whole body, and a 1.7 MB plugin on a busy
+        // machine hit it mid-body — surfacing as "error decoding response
+        // body", reqwest's wording for a body cut by its total timeout
+        // (2026-09-26, two of three attempts). A file gets the file window.
+        let mut req = self.client.get(full_url).timeout(FILE_TRANSFER_TIMEOUT);
         if same_origin {
             req = req.bearer_auth(self.token());
         }
@@ -793,7 +809,7 @@ impl NeboAIApi {
         resp.bytes()
             .await
             .map(|b| b.to_vec())
-            .map_err(|e| CommError::Other(format!("read body: {}", e)))
+            .map_err(|e| CommError::Other(format!("read body: {}", body_read_error(&e))))
     }
 
     /// GET raw bytes with no Authorization header — for cross-host CDN blob URLs.
@@ -801,6 +817,7 @@ impl NeboAIApi {
         let resp = self
             .client
             .get(url)
+            .timeout(FILE_TRANSFER_TIMEOUT)
             .send()
             .await
             .map_err(|e| CommError::Other(format!("cdn fetch failed: {}", e)))?;
@@ -817,7 +834,7 @@ impl NeboAIApi {
         resp.bytes()
             .await
             .map(|b| b.to_vec())
-            .map_err(|e| CommError::Other(format!("read cdn body: {}", e)))
+            .map_err(|e| CommError::Other(format!("read cdn body: {}", body_read_error(&e))))
     }
 
     /// Uninstall a skill for this bot.
@@ -948,18 +965,18 @@ impl NeboAIApi {
         .await
     }
 
-    // ── Bot Identity ────────────────────────────────────────────────
+    // ── Bot Name ────────────────────────────────────────────────────
+    //
+    // The bot's name belongs to the owner: the web console and the phone
+    // rename it with the owner's session. Nebo only reads it; no call here
+    // writes it (`tests::the_bot_never_writes_its_own_name`).
 
-    /// Push bot name and agent info to NeboAI.
-    pub async fn update_bot_identity(&self, name: &str, role: &str) -> Result<(), CommError> {
-        let body = UpdateBotIdentityRequest {
-            name: name.into(),
-            role: role.into(),
-        };
-        self.do_void(
-            reqwest::Method::PUT,
+    /// This bot's record on NeboAI: the name the owner sees in every list.
+    pub async fn get_bot(&self) -> Result<BotRecord, CommError> {
+        self.do_json(
+            reqwest::Method::GET,
             &format!("/api/v1/bots/{}", self.bot_id),
-            Some(&body),
+            None::<&()>,
         )
         .await
     }
@@ -1285,23 +1302,48 @@ impl NeboAIApi {
         Ok(resp.bots)
     }
 
-    /// The agents a linked bot serves on its chat contract —
-    /// GET /t/{botId}/api/v1/agents through the hub's tunnel, which admits
-    /// this bot's token for a bot of the same owner.
-    pub async fn linked_bot_agents(&self, bot_id: &str) -> Result<Vec<LinkedAgent>, CommError> {
+    /// A linked bot's roster on its chat contract (`GET
+    /// /t/{botId}/api/v1/agents`, through the hub's tunnel, which admits
+    /// this bot's token for a bot of the same owner): its agents, and the
+    /// coding agents it can add (`runtimes`, empty from a link that adds
+    /// none).
+    pub async fn linked_bot_roster(&self, bot_id: &str) -> Result<LinkedRoster, CommError> {
+        self.do_json(
+            reqwest::Method::GET,
+            &format!("/t/{bot_id}/api/v1/agents"),
+            None::<&()>,
+        )
+        .await
+    }
+
+    /// Adds a new coding agent of `runtime` to a linked bot, in a folder of
+    /// its own (`POST /t/{botId}/api/v1/runtimes/{runtime}/agents`).
+    pub async fn add_linked_agent(&self, bot_id: &str, runtime: &str) -> Result<LinkedAgent, CommError> {
         #[derive(serde::Deserialize)]
         struct Response {
-            #[serde(default)]
-            agents: Vec<LinkedAgent>,
+            agent: LinkedAgent,
         }
         let resp: Response = self
             .do_json(
-                reqwest::Method::GET,
-                &format!("/t/{bot_id}/api/v1/agents"),
+                reqwest::Method::POST,
+                &format!("/t/{bot_id}/api/v1/runtimes/{runtime}/agents"),
                 None::<&()>,
             )
             .await?;
-        Ok(resp.agents)
+        Ok(resp.agent)
+    }
+
+    /// Stops a linked bot hosting one of its agents; its folder stays
+    /// (`DELETE /t/{botId}/api/v1/agents/{agentId}`).
+    pub async fn remove_linked_agent(&self, bot_id: &str, agent_id: &str) -> Result<(), CommError> {
+        let _: serde_json::Value = self
+            .do_json(
+                reqwest::Method::DELETE,
+                &format!("/t/{bot_id}/api/v1/agents/{agent_id}"),
+                None::<&()>,
+            )
+            .await?;
+        Ok(())
     }
 
     /// The connected account's own profile (id/email/displayName) —
@@ -1663,6 +1705,23 @@ impl NeboAIApi {
         .await
     }
 
+    /// This bot's own hosted email address and its sending state. A hub
+    /// without the address service answers 404, which callers read as "no
+    /// hosted address", never as a failure.
+    pub async fn bot_email(&self) -> Result<BotEmailInfo, CommError> {
+        self.do_json(reqwest::Method::GET, "/api/v1/bots/self/email", None::<&()>)
+            .await
+    }
+
+    /// Send mail from this bot's own address: new mail, mail to the owner
+    /// (`to_owner`), or a reply to mail it received (`inbound_email_id`). The
+    /// hub applies the bot's daily limit and shutoff and answers 403/429 when
+    /// they refuse it.
+    pub async fn send_bot_email(&self, req: &BotEmailSend) -> Result<serde_json::Value, CommError> {
+        self.do_json(reqwest::Method::POST, "/api/v1/bots/self/email", Some(req))
+            .await
+    }
+
     pub async fn delete_webhook(&self, id: &str) -> Result<(), CommError> {
         self.do_void(
             reqwest::Method::DELETE,
@@ -1715,11 +1774,11 @@ impl NeboAIApi {
         debug!(url = %url, filename = %filename, "uploading file");
 
         // Use a client with a longer timeout for uploads
-        let upload_client = Client::builder()
+        let upload_client = tls::http_client()
             .connect_timeout(std::time::Duration::from_secs(10))
             .timeout(FILE_TRANSFER_TIMEOUT)
             .build()
-            .unwrap_or_else(|_| Client::new());
+            .map_err(|e| CommError::Other(format!("upload client: {}", e)))?;
 
         let resp = upload_client
             .post(&url)
@@ -1745,6 +1804,50 @@ impl NeboAIApi {
     pub async fn download_file(&self, file_id: &str) -> Result<Vec<u8>, CommError> {
         let url = format!("{}/api/v1/files/{}", self.api_server, file_id);
         self.fetch_raw(&url, FILE_TRANSFER_TIMEOUT).await
+    }
+
+    // ── File share links ──────────────────────────────────────────────
+
+    /// The live link for a file this bot shared before, found by what the
+    /// bot calls the file (its Work-panel reference). Zero or one.
+    pub async fn file_shares(&self, source: &str) -> Result<Vec<crate::api_types::FileShare>, CommError> {
+        #[derive(serde::Deserialize)]
+        struct List {
+            #[serde(default)]
+            shares: Vec<crate::api_types::FileShare>,
+        }
+        let path = format!("/api/v1/shares?source={}", urlencoding::encode(source));
+        let list: List = self.do_json(reqwest::Method::GET, &path, None::<&()>).await?;
+        Ok(list.shares)
+    }
+
+    /// Share a file already stored through [`Self::upload_file`] by link.
+    pub async fn create_file_share(
+        &self,
+        file_id: &str,
+        source: &str,
+        settings: &crate::api_types::FileShareSettings,
+    ) -> Result<crate::api_types::FileShare, CommError> {
+        let mut body = serde_json::to_value(settings).map_err(|e| CommError::Other(e.to_string()))?;
+        body["fileId"] = serde_json::Value::String(file_id.to_string());
+        body["source"] = serde_json::Value::String(source.to_string());
+        self.do_json(reqwest::Method::POST, "/api/v1/shares", Some(&body)).await
+    }
+
+    /// Change who can open a link and until when.
+    pub async fn update_file_share(
+        &self,
+        id: &str,
+        settings: &crate::api_types::FileShareSettings,
+    ) -> Result<crate::api_types::FileShare, CommError> {
+        let path = format!("/api/v1/shares/{}", urlencoding::encode(id));
+        self.do_json(reqwest::Method::PUT, &path, Some(settings)).await
+    }
+
+    /// Turn a link off for good.
+    pub async fn revoke_file_share(&self, id: &str) -> Result<(), CommError> {
+        let path = format!("/api/v1/shares/{}", urlencoding::encode(id));
+        self.do_void(reqwest::Method::DELETE, &path, None::<&()>).await
     }
 
     // ── BotState ────────────────────────────────────────────────────
@@ -1805,7 +1908,9 @@ pub async fn redeem_code(
     bot_id: &str,
     runtime: &str,
 ) -> Result<RedeemCodeResponse, CommError> {
-    let client = Client::new();
+    let client = tls::http_client()
+        .build()
+        .map_err(|e| CommError::Other(format!("request failed: {}", e)))?;
     let url = format!("{}/api/v1/bots/connect/redeem", api_server);
     let body = RedeemCodeRequest {
         code: code.into(),
@@ -1917,6 +2022,28 @@ mod tests {
         api
     }
 
+    /// The bot's name is the owner's (the web console and the phone rename
+    /// it). Nebo reads it and never writes it: no request in this client
+    /// changes `/api/v1/bots/{id}`, so no stale local name can reach the hub.
+    #[test]
+    fn the_bot_never_writes_its_own_name() {
+        let source = include_str!("api.rs");
+        let mut rest = source;
+        let mut reads = 0;
+        while let Some(at) = rest.find("&format!(\"/api/v1/bots/{}\", self.bot_id)") {
+            let before = &rest[..at];
+            let method = before.rsplit("reqwest::Method::").next().unwrap_or("");
+            assert!(
+                method.starts_with("GET"),
+                "a {} request to /api/v1/bots/{{id}}",
+                method.split(',').next().unwrap_or("")
+            );
+            reads += 1;
+            rest = &rest[at + 1..];
+        }
+        assert_eq!(reads, 1, "the one read of the bot's record");
+    }
+
     #[tokio::test]
     async fn a_frozen_bot_sends_nothing_that_changes_anything() {
         let api = frozen_api();
@@ -2010,5 +2137,91 @@ mod tests {
         let desktop = rebuilt_api(url, None);
         let read = desktop.bot_update_status().await;
         assert!(matches!(read, Err(CommError::Http { status: 401, .. })), "{read:?}");
+    }
+
+    /// A hub keeping one file's link: it records each request (method, path,
+    /// body) and answers the way /api/v1/shares does.
+    async fn shares_hub() -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = seen.clone();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut sock, _)) = listener.accept().await else { return };
+                // Read the head, then as much body as it declares.
+                let mut raw_bytes = Vec::new();
+                let mut buf = vec![0u8; 16384];
+                loop {
+                    let n = sock.read(&mut buf).await.unwrap_or(0);
+                    raw_bytes.extend_from_slice(&buf[..n]);
+                    let text = String::from_utf8_lossy(&raw_bytes).to_string();
+                    let Some((head, body)) = text.split_once("\r\n\r\n") else {
+                        if n == 0 { break } else { continue }
+                    };
+                    let want = head
+                        .lines()
+                        .find_map(|l| l.to_ascii_lowercase().strip_prefix("content-length:").map(|v| v.trim().parse::<usize>().unwrap_or(0)))
+                        .unwrap_or(0);
+                    if body.len() >= want || n == 0 {
+                        break;
+                    }
+                }
+                let raw = String::from_utf8_lossy(&raw_bytes).to_string();
+                let line = raw.lines().next().unwrap_or("").to_string();
+                let body = raw.split("\r\n\r\n").nth(1).unwrap_or("").to_string();
+                log.lock().unwrap().push(format!("{line} {body}").trim().to_string());
+                let share = r#"{"id":"s1","url":"https://neboai.com/s/tok","filename":"Go-Live-Checklist.md","access":"password","hasPassword":true,"expiresAt":"","createdAt":"2026-09-28T00:00:00Z"}"#;
+                let (status, out) = if line.starts_with("GET /api/v1/shares?") {
+                    ("200 OK", format!(r#"{{"shares":[{share}]}}"#))
+                } else if line.starts_with("DELETE") {
+                    ("200 OK", r#"{"status":"revoked"}"#.to_string())
+                } else {
+                    ("200 OK", share.to_string())
+                };
+                let resp = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{out}",
+                    out.len()
+                );
+                let _ = sock.write_all(resp.as_bytes()).await;
+            }
+        });
+        (format!("http://{addr}"), seen)
+    }
+
+    /// Finding, creating, changing and turning off a link are one request
+    /// each to /api/v1/shares, with the file's reference as its source.
+    #[tokio::test]
+    async fn file_share_links_speak_the_hub_shares_api() {
+        let (url, seen) = shares_hub().await;
+        let api = NeboAIApi::new(url, "bot".into(), "token".into());
+        let found = api.file_shares("/api/v1/files/Go-Live Checklist.md").await.unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].url, "https://neboai.com/s/tok");
+        assert!(found[0].has_password);
+
+        let settings = crate::api_types::FileShareSettings {
+            access: "password".into(),
+            password: "hunter22".into(),
+            expires_at: String::new(),
+        };
+        let made = api.create_file_share("f1", "/api/v1/files/Go-Live Checklist.md", &settings).await.unwrap();
+        assert_eq!(made.id, "s1");
+        let keep = crate::api_types::FileShareSettings { access: "password".into(), ..Default::default() };
+        api.update_file_share("s1", &keep).await.unwrap();
+        api.revoke_file_share("s1").await.unwrap();
+
+        let seen = seen.lock().unwrap().clone();
+        assert_eq!(seen.len(), 4, "{seen:#?}");
+        assert!(seen[0].starts_with("GET /api/v1/shares?source=%2Fapi%2Fv1%2Ffiles%2FGo-Live%20Checklist.md "), "{}", seen[0]);
+        assert!(seen[1].starts_with("POST /api/v1/shares "), "{}", seen[1]);
+        let created: serde_json::Value = serde_json::from_str(seen[1].split_once("HTTP/1.1 ").unwrap().1).unwrap();
+        assert_eq!(created, serde_json::json!({"access": "password", "password": "hunter22", "fileId": "f1", "source": "/api/v1/files/Go-Live Checklist.md"}));
+        // Saving without a new password sends none, so the hub keeps it.
+        assert!(seen[2].starts_with("PUT /api/v1/shares/s1 "), "{}", seen[2]);
+        let updated: serde_json::Value = serde_json::from_str(seen[2].split_once("HTTP/1.1 ").unwrap().1).unwrap();
+        assert_eq!(updated, serde_json::json!({"access": "password"}));
+        assert!(seen[3].starts_with("DELETE /api/v1/shares/s1 "), "{}", seen[3]);
     }
 }

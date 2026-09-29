@@ -1,0 +1,8 @@
+id: sc32-a-team-reply-reaches-the-poster
+name: "SC32 — A team reply reaches the poster"
+description: |
+  A post into a team from a session: the lead's reply comes back to that session as a
+  notification, not only into the team thread (B2).
+target_component: staffed-company
+proof: staffed_proof::conversation::a_team_reply_reaches_the_poster
+conversation: []

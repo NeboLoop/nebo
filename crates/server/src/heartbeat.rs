@@ -7,7 +7,6 @@
 //! Coexists with AgentWorker workflow-bound heartbeats: AgentWorker runs
 //! workflows, this runs prompt-based chat dispatches.
 
-use std::collections::HashMap;
 
 use chrono::{Datelike, Local, NaiveTime, TimeZone};
 use tokio_util::sync::CancellationToken;
@@ -43,7 +42,7 @@ impl Enabled {
 /// main is not explicitly off. Entities with nothing to say, and agents no
 /// longer in the live registry, are not due for a timer.
 pub(crate) async fn enabled_entities(state: &AppState) -> Result<Vec<Enabled>, String> {
-    let (settings, global_permissions, heartbeat_md) = context(state)?;
+    let (settings, heartbeat_md) = context(state)?;
 
     let mut entities = state
         .store
@@ -101,7 +100,7 @@ pub(crate) async fn enabled_entities(state: &AppState) -> Result<Vec<Enabled>, S
             &entity.entity_id,
             Some(entity),
             &settings,
-            &global_permissions,
+            entity_config::permission_view(&state.store, &entity.entity_type, &entity.entity_id),
             &heartbeat_md,
         );
         if !resolved.heartbeat_enabled || resolved.heartbeat_interval_minutes <= 0 {
@@ -144,10 +143,10 @@ pub(crate) async fn fire(state: &AppState, entity_type: &str, entity_id: &str) -
     let config = ChatConfig {
         session_key: format!("heartbeat-{entity_type}-{entity_id}"),
         prompt: resolved.heartbeat_content.clone(),
-        system: String::new(),
         user_id: String::new(),
         channel: "heartbeat".into(),
         origin: Origin::System,
+        door: types::permissions::Door::Heartbeat,
         agent_id: if entity_type == "agent" { entity_id.to_string() } else { String::new() },
         cancel_token: CancellationToken::new(),
         lane: lanes::HEARTBEAT.to_string(),
@@ -159,15 +158,16 @@ pub(crate) async fn fire(state: &AppState, entity_type: &str, entity_id: &str) -
         origin_agent_id: None,
         mention_context: None,
         tool_scope: None,
-        plan_mode: false,
         channel_ctx: None,
         handoff_depth: 0,
         seed_taint: vec![],
         tool_allowlist: None,
         hidden_prompt: false,
+        coworker: None,
         audience: None,
         cwd: None,
         model_override: None,
+        client_id: None,
     };
 
     run_chat(state, config).await;
@@ -183,7 +183,7 @@ pub(crate) async fn fire(state: &AppState, entity_type: &str, entity_id: &str) -
 /// One entity's configuration as its heartbeat sees it now: its row
 /// resolved against global settings and HEARTBEAT.md.
 pub(crate) fn resolve(state: &AppState, entity_type: &str, entity_id: &str) -> Result<ResolvedEntityConfig, String> {
-    let (settings, global_permissions, heartbeat_md) = context(state)?;
+    let (settings, heartbeat_md) = context(state)?;
     let entity = state
         .store
         .get_entity_config(entity_type, entity_id)
@@ -193,12 +193,12 @@ pub(crate) fn resolve(state: &AppState, entity_type: &str, entity_id: &str) -> R
         entity_id,
         entity.as_ref(),
         &settings,
-        &global_permissions,
+        entity_config::permission_view(&state.store, entity_type, entity_id),
         &heartbeat_md,
     ))
 }
 
-fn context(state: &AppState) -> Result<(db::models::Setting, HashMap<String, bool>, String), String> {
+fn context(state: &AppState) -> Result<(db::models::Setting, String), String> {
     let settings = state
         .store
         .get_settings()
@@ -215,22 +215,13 @@ fn context(state: &AppState) -> Result<(db::models::Setting, HashMap<String, boo
             developer_mode: 0,
             auto_update: 1,
             full_access: 0,
-            guardrails: serde_json::json!({}),
             updated_at: 0,
         });
-    let global_permissions: HashMap<String, bool> = state
-        .store
-        .get_user_profile()
-        .ok()
-        .flatten()
-        .and_then(|p| p.tool_permissions)
-        .and_then(|json| serde_json::from_str(&json).ok())
-        .unwrap_or_default();
     let heartbeat_md = config::data_dir()
         .ok()
         .map(|d| std::fs::read_to_string(d.join("HEARTBEAT.md")).unwrap_or_default())
         .unwrap_or_default();
-    Ok((settings, global_permissions, heartbeat_md))
+    Ok((settings, heartbeat_md))
 }
 
 /// The first moment at or after `due` that falls inside the HH:MM window

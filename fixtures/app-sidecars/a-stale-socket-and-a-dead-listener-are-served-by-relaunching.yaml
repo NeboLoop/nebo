@@ -1,0 +1,10 @@
+id: a-stale-socket-and-a-dead-listener-are-served-by-relaunching
+name: "A stale socket and a dead listener are served by relaunching"
+description: |
+  A live process behind a leftover socket file that refuses every
+  connection. With the periodic probe far away, the request that cannot reach
+  it revives it through the supervisor's own restart path and is answered;
+  nothing keys on the socket file existing.
+target_component: app-sidecars
+proof: sidecar_proof::scenarios::a_stale_socket_and_a_dead_listener_are_served_by_relaunching
+conversation: []

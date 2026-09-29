@@ -1,0 +1,10 @@
+id: mp09-separate-conversations-still-share-one-memory
+name: "MP09 — Separate conversations still share one memory"
+description: |
+  Separate conversations is the mode the old isolation flag maps to, and it keeps what the flag did:
+  a fact the owner has the employee save in one conversation lands in its private memory
+  (`<owner>:agent:<id>`) and is recalled in another, past conversations stay searchable, and a
+  caller's conversation of the same employee still gets its own sealed memory.
+target_component: memory
+proof: staffed_proof::memory::separate_conversations_still_share_one_memory
+conversation: []

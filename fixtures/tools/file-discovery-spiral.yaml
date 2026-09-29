@@ -1,0 +1,63 @@
+id: file-discovery-spiral
+name: "File discovery — no path-guessing spiral"
+description: |
+  The user asks the model to find a screenshot on their Desktop. One is there,
+  under a name the model can't guess. The model should find it with ONE
+  well-aimed search (find through run_command, with a pattern) and name it —
+  NOT spiral through 5+ commands with different path guesses.
+target_component: run_command
+
+# The screenshot is put where the owner says it is, so the fixture measures
+# how directly the model finds a file, not what it does about a folder that
+# isn't there. Until 2026-09-28 the gate's home had no Desktop at all and
+# every run was grading the model's answer to a missing folder (gates
+# 36348199618 to 36384054926): a check-artifact. The file's name carries the
+# run's tag, so on a local run it never collides with the owner's own files,
+# and teardown removes exactly that file (never the Desktop folder).
+setup:
+  - "mkdir -p \"$HOME/Desktop\" && python3 -c \"import base64,os; open(os.path.expanduser('~/Desktop/Screenshot 2026-09-20 at 10.14.03 {{tag}}.png'),'wb').write(base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=='))\""
+teardown:
+  - "rm -f \"$HOME/Desktop/Screenshot 2026-09-20 at 10.14.03 {{tag}}.png\""
+
+conversation:
+  - role: user
+    content: "Find me a screenshot from my Desktop"
+
+tool_config:
+  run_command:
+    enabled: true
+
+prompt_assertions:
+  first_call:
+    - id: uses-search-pattern
+      text: "Model uses find (or ls/rg) with a pattern (e.g. *.png, screenshot*) — not a single hardcoded path guess"
+      severity: critical
+    - id: correct-tool
+      text: "Model uses run_command with a find/ls/rg pattern search — not individual read_file path checks"
+      severity: critical
+      check: { first_call: true, tool: run_command }
+  recovery:
+    - id: no-path-guessing-spiral
+      text: "Model does NOT guess paths repeatedly (e.g. trying Screenshot 2024-01-01.png, then Screenshot 2024-01-02.png, etc.)"
+      severity: critical
+    - id: max-three-calls
+      text: "Model makes no more than 3 tool calls total"
+      severity: critical
+      check: { max_tool_calls: 3 }
+    - id: finds-the-screenshot
+      text: "Model names the screenshot it found on the Desktop"
+      severity: critical
+      check: { reply_matches: "{{tag}}" }
+  cost:
+    - id: efficient-discovery
+      text: "Task completes in 1-2 tool calls"
+      severity: important
+
+ideal_behavior:
+  tool_calls: 2
+  total_tokens: 2000
+  narrative: |
+    Model issues a find for screenshot-like files on ~/Desktop
+    (e.g. run_command(command: "find ~/Desktop -iname '*screenshot*'",
+    description: "Find screenshots on the Desktop")) and names the one it
+    found. No spiral.

@@ -26,3 +26,76 @@ pub fn neboai_token(store: &db::Store) -> Option<String> {
     }
     Some(token)
 }
+
+/// The `neboai` profile-metadata key the bot's hosted address is kept under.
+const BOT_ADDRESS_KEY: &str = "bot_email";
+
+/// The bot's own hosted email address (`nanna-7kq@nebo.bot`) as the hub last
+/// gave it, kept with the rest of the NeboAI account info so a turn never
+/// asks the hub. `None` = not signed in to NeboAI, or the hub gave none.
+pub fn neboai_bot_address(store: &db::Store) -> Option<String> {
+    let profiles = store.list_all_active_auth_profiles_by_provider("neboai").ok()?;
+    let meta = profiles.first()?.metadata.as_deref()?;
+    let meta: serde_json::Map<String, serde_json::Value> = serde_json::from_str(meta).ok()?;
+    meta.get(BOT_ADDRESS_KEY)
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|a| !a.is_empty())
+        .map(str::to_string)
+}
+
+/// Keep the bot's hosted address with the NeboAI account info; `None` takes
+/// it away. Without a NeboAI profile there is nothing to keep it with.
+pub fn set_neboai_bot_address(store: &db::Store, address: Option<&str>) {
+    let Some(profile) = store
+        .list_all_active_auth_profiles_by_provider("neboai")
+        .ok()
+        .and_then(|p| p.into_iter().next())
+    else {
+        return;
+    };
+    let mut meta: serde_json::Map<String, serde_json::Value> =
+        profile.metadata.as_deref().and_then(|m| serde_json::from_str(m).ok()).unwrap_or_default();
+    let address = address.map(str::trim).filter(|a| !a.is_empty());
+    if meta.get(BOT_ADDRESS_KEY).and_then(|v| v.as_str()) == address {
+        return;
+    }
+    match address {
+        Some(a) => meta.insert(BOT_ADDRESS_KEY.into(), a.into()),
+        None => meta.remove(BOT_ADDRESS_KEY),
+    };
+    if let Err(e) = store.update_auth_profile_metadata(&profile.id, &serde_json::Value::Object(meta).to_string()) {
+        tracing::warn!(error = %e, "the bot's hosted address could not be kept with the account");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The address rides in the profile's metadata beside what is already
+    /// there; taking it away leaves the rest, and without a profile there is
+    /// no address.
+    #[test]
+    fn the_bots_address_is_kept_with_the_account() {
+        let path = std::env::temp_dir().join(format!("nebo-auth-{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let store = db::Store::new(path.to_str().unwrap()).unwrap();
+        set_neboai_bot_address(&store, Some("nanna-7kq@nebo.bot"));
+        assert_eq!(neboai_bot_address(&store), None, "no NeboAI account, nothing to keep it with");
+
+        store
+            .create_auth_profile("p1", "NeboAI", "neboai", "tok", None, None, 0, 1, Some("token"), Some(r#"{"janus_provider":"true"}"#))
+            .unwrap();
+        assert_eq!(neboai_bot_address(&store), None);
+        set_neboai_bot_address(&store, Some("nanna-7kq@nebo.bot"));
+        assert_eq!(neboai_bot_address(&store).as_deref(), Some("nanna-7kq@nebo.bot"));
+        let meta = |s: &db::Store| s.list_all_active_auth_profiles_by_provider("neboai").unwrap()[0].metadata.clone().unwrap();
+        assert!(meta(&store).contains("janus_provider"), "the rest of the account info stays");
+
+        set_neboai_bot_address(&store, None);
+        assert_eq!(neboai_bot_address(&store), None);
+        assert!(meta(&store).contains("janus_provider"));
+        let _ = std::fs::remove_file(&path);
+    }
+}

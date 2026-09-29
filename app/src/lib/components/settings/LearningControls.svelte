@@ -1,7 +1,6 @@
 <!--
   LearningControls — the per-employee self-improvement mode (Settings →
-  employee → Approvals, above the per-operation controls). Three states,
-  same segmented visual language as ApprovalControls:
+  employee → General). Three states, as a segmented control:
 
     Learn freely (auto)  — the review fork writes learned skills directly
     Ask me first (staged) — learnings become Inbox approval cards (default

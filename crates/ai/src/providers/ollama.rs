@@ -32,10 +32,10 @@ impl OllamaProvider {
         };
 
         Self {
-            client: Client::builder()
+            client: tls::http_client()
                 .timeout(std::time::Duration::from_secs(300)) // 5 min for local inference
                 .build()
-                .unwrap_or_default(),
+                .expect("reqwest Ollama client builder is infallible with these options"),
             base_url,
             model,
         }
@@ -341,10 +341,12 @@ pub async fn check_ollama_available(base_url: &str) -> bool {
     } else {
         base_url
     };
-    let client = Client::builder()
+    let Ok(client) = tls::http_client()
         .timeout(std::time::Duration::from_secs(2))
         .build()
-        .unwrap_or_default();
+    else {
+        return false;
+    };
 
     client
         .get(format!("{base_url}/api/tags"))
@@ -361,10 +363,10 @@ pub async fn list_ollama_models(base_url: &str) -> Result<Vec<String>, ProviderE
     } else {
         base_url
     };
-    let client = Client::builder()
+    let client = tls::http_client()
         .timeout(std::time::Duration::from_secs(5))
         .build()
-        .unwrap_or_default();
+        .map_err(|e| ProviderError::Request(e.to_string()))?;
 
     let resp = client
         .get(format!("{base_url}/api/tags"))
@@ -407,10 +409,10 @@ pub async fn ensure_ollama_model(base_url: &str, model: &str) -> Result<(), Prov
     } else {
         base_url
     };
-    let client = Client::builder()
+    let client = tls::http_client()
         .timeout(std::time::Duration::from_secs(1800)) // 30 min for large models
         .build()
-        .unwrap_or_default();
+        .map_err(|e| ProviderError::Request(format!("failed to pull {model}: {e}")))?;
 
     let resp = client
         .post(format!("{base_url}/api/pull"))

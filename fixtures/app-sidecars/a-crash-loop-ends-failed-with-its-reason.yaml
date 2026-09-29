@@ -1,0 +1,10 @@
+id: a-crash-loop-ends-failed-with-its-reason
+name: "A crash loop ends failed with its reason"
+description: |
+  A sidecar that exits on every start is retried a few times with backoff,
+  then shows failed with its exit status and its own last output, never the
+  generic "could not be reached", and does not flap. "Try again" brings it
+  back once fixed.
+target_component: app-sidecars
+proof: sidecar_proof::scenarios::a_crash_loop_ends_failed_with_its_reason
+conversation: []

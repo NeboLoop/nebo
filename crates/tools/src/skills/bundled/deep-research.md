@@ -21,7 +21,7 @@ Use this skill when the user says:
 - "What are the best practices for [topic]?"
 
 **Do NOT use for:**
-- Simple lookups answerable in 1-2 searches (just use the `web` tool directly)
+- Simple lookups answerable in 1-2 searches (just use `search_web` and `fetch_url` directly)
 - Debugging code or technical troubleshooting
 - Quick fact-checks or definitions
 - Time-sensitive queries needing an immediate one-line answer
@@ -53,7 +53,7 @@ Pick a **depth**:
 Weave the clarifying answers into a single refined question, then call:
 
 ```
-agent(resource: "research", action: "deep_research", query: "<refined question>", depth: "standard")
+deep_research(query: "<refined question>", depth: "standard")
 ```
 
 The harness runs deterministically and returns a finished, cited report. Under the hood it:

@@ -38,6 +38,10 @@ pub struct CreateTeamRequest {
     /// The lead (local agent id or exact name). Empty or absent = the owner leads.
     #[serde(default)]
     pub organizer_agent_id: String,
+    /// "temporary": assembled for one piece of work, disbanded once its
+    /// outcome reaches the owner (it needs a lead). Absent or "saved": stays.
+    #[serde(default)]
+    pub lifetime: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -148,6 +152,15 @@ pub async fn open_team(
     } else {
         resolve_label(&state, &body.organizer_agent_id)?
     };
+    let lifetime = match body.lifetime.as_deref() {
+        None | Some("saved") => tools::Lifetime::Saved,
+        Some("temporary") => tools::Lifetime::Temporary { report_to: String::new() },
+        Some(other) => {
+            return Err(to_error_response(types::NeboError::Validation(format!(
+                "lifetime is \"temporary\" or \"saved\", not {other:?}"
+            ))));
+        }
+    };
     let team = tools::team::create(
         comm.as_ref(),
         &state.store,
@@ -155,6 +168,7 @@ pub async fn open_team(
         &body.mission,
         &members,
         &organizer,
+        &lifetime,
     )
     .await
     .map_err(|e| to_error_response(types::NeboError::Validation(e)))?;
@@ -215,11 +229,16 @@ pub async fn send_team_message(
             attachments: body.attachments,
             team_id: team.id,
             from_agent_id: String::new(),
+            // The owner typed it: his own request.
+            by_owner: true,
+            owners_turn: None,
             text: text.to_string(),
             mention,
             handoff_depth: 0,
             provenance: Vec::new(),
             is_reply: false,
+            // The owner reads the team thread.
+            reply_to: None,
         },
     )
     .await
@@ -362,10 +381,18 @@ pub async fn remove_team(
     State(state): State<AppState>,
     Path(team_id): Path<String>,
 ) -> HandlerResult<serde_json::Value> {
-    state.store.delete_team(&team_id).map_err(to_error_response)?;
+    disband(&state, &team_id).map_err(|e| to_error_response(types::NeboError::Database(e)))?;
     Ok(Json(serde_json::json!({
         "message": "Team removed"
     })))
+}
+
+/// Remove a team: the owner's delete, and a temporary team's end once its
+/// outcome reached the owner. Its thread stays (see `remove_team`).
+pub(crate) fn disband(state: &AppState, team_id: &str) -> Result<(), String> {
+    state.store.delete_team(team_id).map_err(|e| format!("delete team: {e}"))?;
+    state.hub.broadcast(tools::team::TEAM_REMOVED_EVENT, serde_json::json!({ "teamId": team_id }));
+    Ok(())
 }
 
 #[cfg(test)]

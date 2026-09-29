@@ -1,0 +1,10 @@
+id: sc53-a-cascade-carries-the-client-that-asked
+name: "SC53 — A cascade carries the client that asked"
+description: |
+  Every dep_* event of a dependency cascade names the client whose install
+  it belongs to (the X-Nebo-Client header of the request that redeemed the
+  code), so another client's cascade never lands in this client's open
+  install modal. An install with no client behind it names none.
+target_component: staffed-company
+proof: staffed_proof::connections::a_cascade_carries_the_client_that_asked
+conversation: []

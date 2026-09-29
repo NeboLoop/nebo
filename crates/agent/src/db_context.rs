@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, HashSet};
 
 use chrono::{DateTime, Utc};
 use db::Store;
-use db::models::{AgentProfile, Memory, UserPreference, UserProfile};
+use db::models::{Memory, UserPreference, UserProfile};
 use regex::Regex;
 use tracing::{debug, info, warn};
 
@@ -19,7 +19,6 @@ pub struct InheritScope {
 
 /// Rich context loaded from the database for prompt assembly.
 pub struct DBContext {
-    pub agent: Option<AgentProfile>,
     pub user: Option<UserProfile>,
     pub preferences: Option<UserPreference>,
     pub personality_directive: Option<String>,
@@ -27,6 +26,9 @@ pub struct DBContext {
     /// Per-agent plugin accounts (plugin_slug, account_label, is_primary).
     /// Empty for agents that have no multi-account profiles configured.
     pub plugin_accounts: Vec<(String, String, bool)>,
+    /// Which memory the run's own scope is: where a `remember` without
+    /// `scope: "local"` goes.
+    pub scope: tools::memory_tools::MemoryScopeKind,
 }
 
 /// Load all database context needed for prompt assembly.
@@ -38,9 +40,6 @@ pub fn load_db_context(
     inherit_scopes: &[InheritScope],
 ) -> DBContext {
     let t0 = std::time::Instant::now();
-
-    let agent = store.get_agent_profile().ok().flatten();
-    let t_agent = t0.elapsed();
 
     let user = store.get_user_profile().ok().flatten();
     let t_user = t0.elapsed();
@@ -78,8 +77,7 @@ pub fn load_db_context(
     };
 
     info!(
-        agent_ms = t_agent.as_millis() as u64,
-        user_ms = (t_user - t_agent).as_millis() as u64,
+        user_ms = t_user.as_millis() as u64,
         prefs_ms = (t_prefs - t_user).as_millis() as u64,
         directive_ms = (t_directive - t_prefs).as_millis() as u64,
         memories_ms = (t_memories - t_directive).as_millis() as u64,
@@ -90,67 +88,29 @@ pub fn load_db_context(
     );
 
     DBContext {
-        agent,
         user,
         preferences,
         personality_directive,
         tacit_memories,
         plugin_accounts,
+        scope: tools::memory_tools::MemoryScopeKind::of(user_id),
     }
 }
 
 /// Format the DB context into a rich system prompt section.
-/// Produces 9 sections joined with separators, matching Go's FormatForSystemPrompt.
+/// Produces up to 6 sections joined with separators. Who the employee is
+/// (personality, soul, rules) is its identity attachment, never read here.
 pub fn format_for_system_prompt(ctx: &DBContext, agent_name: &str) -> String {
     let mut sections: Vec<String> = Vec::new();
 
-    // 1. Agent identity
-    if let Some(ref agent) = ctx.agent {
-        let personality = agent
-            .custom_personality
-            .as_deref()
-            .filter(|s| !s.is_empty())
-            .or_else(|| personality_preset_prompt(agent.personality_preset.as_deref()))
-            .unwrap_or("You are a capable AI employee.");
-        sections.push(format!("# Identity\n{}", personality));
-    }
-
-    // 2. Character (creature, role, vibe, emoji)
-    if let Some(ref agent) = ctx.agent {
-        let mut parts = Vec::new();
-        if let Some(ref creature) = agent.creature {
-            if !creature.is_empty() {
-                parts.push(format!("Creature: {}", creature));
-            }
-        }
-        if let Some(ref role) = agent.role {
-            if !role.is_empty() {
-                parts.push(format!("Role: {}", role));
-            }
-        }
-        if let Some(ref vibe) = agent.vibe {
-            if !vibe.is_empty() {
-                parts.push(format!("Vibe: {}", vibe));
-            }
-        }
-        if let Some(ref emoji) = agent.emoji {
-            if !emoji.is_empty() {
-                parts.push(format!("Emoji: {}", emoji));
-            }
-        }
-        if !parts.is_empty() {
-            sections.push(format!("# Character\n{}", parts.join("\n")));
-        }
-    }
-
-    // 3. Personality directive (learned from style observations)
+    // 1. Personality directive (learned from style observations)
     if let Some(ref directive) = ctx.personality_directive {
         if !directive.is_empty() {
             sections.push(format!("# Personality (Learned)\n{}", directive));
         }
     }
 
-    // 4. Communication style
+    // 2. Communication style
     {
         let mut parts = Vec::new();
 
@@ -164,35 +124,12 @@ pub fn format_for_system_prompt(ctx: &DBContext, agent_name: &str) -> String {
             }
         }
 
-        if let Some(ref agent) = ctx.agent {
-            if let Some(ref voice) = agent.voice_style {
-                if !voice.is_empty() {
-                    parts.push(format!("Voice: {}", voice));
-                }
-            }
-            if let Some(ref formality) = agent.formality {
-                if !formality.is_empty() {
-                    parts.push(format!("Formality: {}", formality));
-                }
-            }
-            if let Some(ref length) = agent.response_length {
-                if !length.is_empty() {
-                    parts.push(format!("Response length: {}", length));
-                }
-            }
-            if let Some(ref emoji_usage) = agent.emoji_usage {
-                if !emoji_usage.is_empty() {
-                    parts.push(format!("Emoji usage: {}", emoji_usage));
-                }
-            }
-        }
-
         if !parts.is_empty() {
             sections.push(format!("# Communication Style\n{}", parts.join("\n")));
         }
     }
 
-    // 5. User information
+    // 3. User information
     if let Some(ref user) = ctx.user {
         let mut parts = Vec::new();
         if let Some(ref name) = user.display_name {
@@ -238,29 +175,7 @@ pub fn format_for_system_prompt(ctx: &DBContext, agent_name: &str) -> String {
         }
     }
 
-    // 6. Agent rules
-    if let Some(ref agent) = ctx.agent {
-        if let Some(ref rules) = agent.agent_rules {
-            if !rules.is_empty() {
-                let sanitized = sanitize::sanitize_for_prompt(rules);
-                let formatted = format_structured_or_raw(&sanitized, "Rules");
-                sections.push(format!("# Agent Rules\n{}", formatted));
-            }
-        }
-    }
-
-    // 7. Tool notes
-    if let Some(ref agent) = ctx.agent {
-        if let Some(ref notes) = agent.tool_notes {
-            if !notes.is_empty() {
-                let sanitized = sanitize::sanitize_for_prompt(notes);
-                let formatted = format_structured_or_raw(&sanitized, "Tool Notes");
-                sections.push(format!("# Tool Notes\n{}", formatted));
-            }
-        }
-    }
-
-    // 7b. Connected accounts (only when the agent has multi-account plugins)
+    // 4. Connected accounts (only when the agent has multi-account plugins)
     if !ctx.plugin_accounts.is_empty() {
         let mut by_plugin: BTreeMap<&str, Vec<&(String, String, bool)>> = BTreeMap::new();
         for acct in &ctx.plugin_accounts {
@@ -289,7 +204,7 @@ pub fn format_for_system_prompt(ctx: &DBContext, agent_name: &str) -> String {
         ));
     }
 
-    // 8. What You Know (scored tacit memories, grouped by section tags)
+    // 5. What You Know (scored tacit memories, grouped by section tags)
     if !ctx.tacit_memories.is_empty() {
         let now = chrono::Utc::now();
         let mut values = Vec::new();
@@ -315,20 +230,53 @@ pub fn format_for_system_prompt(ctx: &DBContext, agent_name: &str) -> String {
         ));
     }
 
-    // 9. Memory quick reference (aligns with SECTION_MEMORY_DOCS)
-    sections.push(
+    // 6. Memory quick reference (aligns with SECTION_MEMORY_DOCS). It never
+    // says facts are saved on their own: it did ("Facts are automatically
+    // extracted from conversations"), and in 6 of 21 turns of
+    // suites/memory.yaml (2026-09-27) the model told the owner "Saved…"
+    // with no remember call, trusting that line.
+    sections.push(format!(
         "# Memory Quick Reference\n\
-         Facts are automatically extracted from conversations.\n\
+         A fact is saved only by a remember call that succeeds. When the owner asks you to save or remember \
+         something, call remember in that turn, and say it is saved only after the result says so.\n\
          Proactively save: user corrections, preferences, environment facts, recurring patterns.\n\
          Write as declarative facts (\"User prefers X\"), not directives (\"Always do X\").\n\
-         Use agent(resource: \"memory\", action: \"search\") to find memories.\n\
-         Use agent(resource: \"memory\", action: \"recall\", key: \"...\") for specific facts."
-            .to_string(),
-    );
+         Use recall(query: \"...\") to search memories, or recall with a saved key for one fact.\n\
+         Use remember(key, value) to save one. It goes to {} unless you pass scope \"local\": \
+         local memory is shared by every employee on this Nebo, and it is what the owner means by \
+         company memory, shared or for everyone. Tell the owner where a fact went in the result's words.",
+        ctx.scope.default_save()
+    ));
 
     let mut result = sections.join("\n\n---\n\n");
     result = result.replace("{agent_name}", agent_name);
     result
+}
+
+/// The owner's configured inputs for an employee (its `input_values` JSON),
+/// as a prompt section. `None` when nothing is set.
+pub fn format_configured_inputs(input_values: &str) -> Option<String> {
+    let vals = serde_json::from_str::<serde_json::Value>(input_values).ok()?;
+    let lines: Vec<String> = vals
+        .as_object()?
+        .iter()
+        .filter_map(|(key, val)| {
+            let display = match val {
+                serde_json::Value::String(s) if !s.is_empty() => s.clone(),
+                serde_json::Value::String(_) => return None,
+                other => other.to_string(),
+            };
+            Some(format!("- **{}**: {}", key, display))
+        })
+        .collect();
+    if lines.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "# Configured Inputs\nThe user has configured the following inputs for this agent. \
+         Use these values — do NOT ask the user for information that is already provided here.\n{}",
+        lines.join("\n")
+    ))
 }
 
 /// Character budget for the per-message recall slice (delivered as an
@@ -361,12 +309,45 @@ pub const PROMPT_RECALL_MIN_SCORE: f64 = 0.45;
 /// FTS-only tier.
 const RECALL_VECTOR_BUDGET_MS: u64 = 800;
 
-/// Join the recall search that the runner spawned before prompt assembly,
-/// enforcing [`RECALL_VECTOR_BUDGET_MS`]. Within budget → hybrid results flow
-/// unchanged. Past budget → degrade to a synchronous FTS-only search over the
-/// same read-scope chain — the documented fallback tier of the ONE recall
-/// pathway (this function), not a competing implementation. Both arms funnel
-/// through [`format_prompt_relevant_memories`] for dedupe/budget/formatting.
+/// Start the per-message recall search: the ONE hybrid pathway the memory
+/// tool uses (`agent::search::hybrid_search` behind the
+/// [`tools::HybridSearcher`] adapter — FTS + vector when an embedding
+/// provider exists, FTS-only otherwise) with the unrequested-recall floor.
+/// Spawned so it runs while the rest of the turn is assembled: its cost is a
+/// query-embedding network round trip (~650ms steady-state). Joined through
+/// [`recall_within_budget`].
+pub fn spawn_prompt_recall(
+    searcher: &std::sync::Arc<dyn tools::HybridSearcher>,
+    user_id: &str,
+    prompt: &str,
+) -> tokio::task::JoinHandle<(Vec<tools::HybridSearchResult>, std::time::Duration)> {
+    let searcher = searcher.clone();
+    let user_id = user_id.to_string();
+    let prompt = prompt.to_string();
+    let t_start = std::time::Instant::now();
+    tokio::spawn(async move {
+        let results = searcher
+            .search(
+                &prompt,
+                &user_id,
+                PROMPT_MEMORY_CANDIDATES,
+                // Relevance floor: with single-leg renormalization and the
+                // corrected BM25 orientation, both installs score real
+                // matches well above this — and a prompt with NO relevant
+                // memories injects NOTHING instead of the best of the
+                // irrelevant (which was 1.2k of noise on every turn, and
+                // what weak models answered instead of the ask).
+                Some(PROMPT_RECALL_MIN_SCORE),
+            )
+            .await;
+        (results, t_start.elapsed())
+    })
+}
+
+/// Join the recall search [`spawn_prompt_recall`] started, enforcing
+/// [`RECALL_VECTOR_BUDGET_MS`] and formatting the result for the prompt.
+/// Both arms of the budget funnel through [`format_prompt_relevant_memories`]
+/// for dedupe/budget/formatting.
 pub async fn join_prompt_recall(
     recall_task: tokio::task::JoinHandle<(Vec<tools::HybridSearchResult>, std::time::Duration)>,
     store: &Store,
@@ -375,6 +356,20 @@ pub async fn join_prompt_recall(
     existing_memory_ids: &HashSet<i64>,
     tacit_only: bool,
 ) -> (String, Vec<i64>) {
+    let results = recall_within_budget(recall_task, store, user_id, prompt).await;
+    format_prompt_relevant_memories(results, existing_memory_ids, tacit_only)
+}
+
+/// The recall search's results under [`RECALL_VECTOR_BUDGET_MS`]. Within
+/// budget → the hybrid results unchanged. Past budget → a synchronous
+/// FTS-only search over the same read-scope chain — the documented fallback
+/// tier of the ONE recall pathway, not a competing implementation.
+pub async fn recall_within_budget(
+    recall_task: tokio::task::JoinHandle<(Vec<tools::HybridSearchResult>, std::time::Duration)>,
+    store: &Store,
+    user_id: &str,
+    prompt: &str,
+) -> Vec<tools::HybridSearchResult> {
     let t_join = std::time::Instant::now();
     match tokio::time::timeout(
         std::time::Duration::from_millis(RECALL_VECTOR_BUDGET_MS),
@@ -387,10 +382,10 @@ pub async fn join_prompt_recall(
                 net_ms = net.as_millis() as u64,
                 "hybrid recall completed within budget"
             );
-            format_prompt_relevant_memories(results, existing_memory_ids, tacit_only)
+            results
         }
         // Spawned search panicked — no recall this turn.
-        Ok(Err(_)) => (String::new(), Vec::new()),
+        Ok(Err(_)) => Vec::new(),
         Err(_) => {
             warn!(
                 elapsed_ms = t_join.elapsed().as_millis() as u64,
@@ -400,57 +395,53 @@ pub async fn join_prompt_recall(
             // task, so the in-flight search finishes in the background — its
             // results are dropped for this turn, but its query-embedding lands
             // in the embedding cache, making a retry of this prompt cheap.
-            let scope_chain = crate::memory::memory_scope_chain(user_id);
-            let fts = store
-                .search_memories_fts(prompt, &scope_chain, PROMPT_MEMORY_CANDIDATES as i64)
-                .unwrap_or_default();
-            let results: Vec<tools::HybridSearchResult> = fts
-                .iter()
-                .filter_map(|(mem_id, rank)| {
-                    // No PROMPT_RECALL_MIN_SCORE here: that floor is
-                    // calibrated for cosine similarity, and BM25 magnitudes
-                    // are corpus-dependent (a clean single-term match in a
-                    // small store sits well below 0.45) — applying it emptied
-                    // this tier entirely. An FTS hit is already a literal
-                    // term match from the user's own prompt; normalize_bm25
-                    // orders, it does not gate.
-                    let score = crate::search::normalize_bm25(*rank);
-                    store.get_memory(*mem_id).ok().flatten().map(|m| {
-                        tools::HybridSearchResult {
-                            memory_id: Some(*mem_id),
-                            key: m.key,
-                            value: m.value,
-                            namespace: m.namespace,
-                            score,
-                        }
-                    })
-                })
-                .collect();
-            format_prompt_relevant_memories(results, existing_memory_ids, tacit_only)
+            literal_recall(store, user_id, prompt)
         }
     }
 }
 
-/// Filter, budget, and format hybrid-search results into the per-message
-/// recall slice (injected by the runner as an ephemeral stream reminder,
-/// NOT into the system prompt — keeping the prompt prefix byte-stable for
-/// prompt caching). The search itself is issued
-/// by the runner through the ONE hybrid pathway the memory tool uses
-/// (`agent::search::hybrid_search` behind the [`tools::HybridSearcher`]
-/// adapter — FTS + vector when an embedding provider exists, FTS-only
-/// otherwise, requested with `min_score = 0` because FTS-only scores sit
-/// below the vector-scale default floor and the old FTS injection had no
-/// floor either) and runs CONCURRENTLY with the rest of prompt assembly;
-/// this is the synchronous join step. Returns the formatted section
-/// (excluding memories already in the tacit identity slice) plus the ids of
-/// the memories actually injected, so the caller can bump access accounting.
-pub fn format_prompt_relevant_memories(
+/// The literal tier of the recall: a synchronous FTS search of the owner's
+/// words over the read-scope chain, local and fast (no network). The tier a
+/// recall falls back to past [`RECALL_VECTOR_BUDGET_MS`], and what the
+/// turn's first step reads when the hybrid search has not answered yet
+/// (`memory_context::RecallPrefetch::land`).
+pub fn literal_recall(store: &Store, user_id: &str, prompt: &str) -> Vec<tools::HybridSearchResult> {
+    let scope_chain = crate::memory::memory_scope_chain(user_id);
+    let fts = store
+        .search_memories_fts(prompt, &scope_chain, PROMPT_MEMORY_CANDIDATES as i64)
+        .unwrap_or_default();
+    fts.iter()
+        .filter_map(|(mem_id, rank)| {
+            // No PROMPT_RECALL_MIN_SCORE here: that floor is
+            // calibrated for cosine similarity, and BM25 magnitudes
+            // are corpus-dependent (a clean single-term match in a
+            // small store sits well below 0.45) — applying it emptied
+            // this tier entirely. An FTS hit is already a literal
+            // term match from the user's own prompt; normalize_bm25
+            // orders, it does not gate.
+            let score = crate::search::normalize_bm25(*rank);
+            store.get_memory(*mem_id).ok().flatten().map(|m| tools::HybridSearchResult {
+                memory_id: Some(*mem_id),
+                key: m.key,
+                value: m.value,
+                namespace: m.namespace,
+                scope: m.user_id,
+                score,
+            })
+        })
+        .collect()
+}
+
+/// The recall results that may be shown, best first: durable memories only,
+/// `tacit/` only when the audience is restricted, none in `skip` (the
+/// identity slice, memories already surfaced), within
+/// [`PROMPT_MEMORY_CHAR_BUDGET`].
+pub fn select_prompt_memories(
     results: Vec<tools::HybridSearchResult>,
-    existing_memory_ids: &HashSet<i64>,
+    skip: &HashSet<i64>,
     tacit_only: bool,
-) -> (String, Vec<i64>) {
-    let mut lines = Vec::new();
-    let mut injected_ids: Vec<i64> = Vec::new();
+) -> Vec<tools::HybridSearchResult> {
+    let mut picked: Vec<tools::HybridSearchResult> = Vec::new();
     let mut used_chars = 0usize;
     for r in results {
         // Session chunks with no parent memory are transcript fragments, not
@@ -462,26 +453,39 @@ pub fn format_prompt_relevant_memories(
         if tacit_only && !r.namespace.starts_with("tacit/") {
             continue;
         }
-        if existing_memory_ids.contains(&mem_id) || injected_ids.contains(&mem_id) {
+        if skip.contains(&mem_id) || picked.iter().any(|p| p.memory_id == Some(mem_id)) {
             continue;
         }
-        let line = format!("{}: {}", r.key, r.value);
-        if !lines.is_empty() && used_chars + line.len() > PROMPT_MEMORY_CHAR_BUDGET {
+        let chars = r.key.len() + 2 + r.value.len();
+        if !picked.is_empty() && used_chars + chars > PROMPT_MEMORY_CHAR_BUDGET {
             break;
         }
-        used_chars += line.len();
-        lines.push(line);
-        injected_ids.push(mem_id);
+        used_chars += chars;
+        picked.push(r);
     }
+    picked
+}
 
-    if lines.is_empty() {
+/// Format the selected recall results ([`select_prompt_memories`]) into the
+/// per-message recall slice (delivered on the message side, NOT in the
+/// system prompt — keeping the prompt prefix byte-stable for prompt
+/// caching). Returns the formatted section plus the ids of the memories
+/// actually injected, so the caller can bump access accounting.
+pub fn format_prompt_relevant_memories(
+    results: Vec<tools::HybridSearchResult>,
+    existing_memory_ids: &HashSet<i64>,
+    tacit_only: bool,
+) -> (String, Vec<i64>) {
+    let picked = select_prompt_memories(results, existing_memory_ids, tacit_only);
+    if picked.is_empty() {
         return (String::new(), Vec::new());
     }
+    let lines: Vec<String> = picked.iter().map(|r| format!("{}: {}", r.key, r.value)).collect();
+    let injected_ids: Vec<i64> = picked.iter().filter_map(|r| r.memory_id).collect();
 
     debug!(count = lines.len(), "injected prompt-relevant memories");
-    // No prompt heading here: the runner delivers this slice as an ephemeral
-    // stream reminder on the message side (keeping the system prompt
-    // byte-stable for prompt caching), so it supplies its own framing.
+    // No prompt heading here: the caller delivers this slice on the message
+    // side and supplies its own framing.
     (group_memories_by_section(&lines), injected_ids)
 }
 
@@ -537,39 +541,6 @@ fn group_memories_by_section(memories: &[String]) -> String {
     output.trim_end().to_string()
 }
 
-/// Try to parse as JSON array of strings and format as markdown list,
-/// otherwise return the raw text.
-fn format_structured_or_raw(text: &str, _label: &str) -> String {
-    // Try JSON array of strings
-    if let Ok(items) = serde_json::from_str::<Vec<String>>(text) {
-        return items
-            .iter()
-            .map(|item| format!("- {}", item))
-            .collect::<Vec<_>>()
-            .join("\n");
-    }
-
-    // Try JSON array of objects with "text" or "rule" field
-    if let Ok(items) = serde_json::from_str::<Vec<serde_json::Value>>(text) {
-        let lines: Vec<String> = items
-            .iter()
-            .filter_map(|item| {
-                item.get("text")
-                    .or_else(|| item.get("rule"))
-                    .or_else(|| item.get("note"))
-                    .and_then(|v| v.as_str())
-                    .map(|s| format!("- {}", s))
-            })
-            .collect();
-        if !lines.is_empty() {
-            return lines.join("\n");
-        }
-    }
-
-    // Raw text fallback
-    text.to_string()
-}
-
 /// Map language code to display name for the system prompt.
 fn language_display_name(code: &str) -> &'static str {
     match code {
@@ -622,39 +593,33 @@ fn memory_staleness_note(mem: &Memory, now: &DateTime<Utc>) -> String {
     }
 }
 
-/// Map personality preset names to prompt text.
-fn personality_preset_prompt(preset: Option<&str>) -> Option<&'static str> {
-    match preset? {
-        "professional" => Some(
-            "You are professional, precise, and efficient. You focus on accuracy and clear communication.",
-        ),
-        "friendly" => Some(
-            "You are warm, friendly, and approachable. You make people feel comfortable and supported.",
-        ),
-        "casual" => Some("You are laid-back and casual. You keep things light and conversational."),
-        "creative" => Some(
-            "You are creative, imaginative, and expressive. You bring fresh perspectives and ideas.",
-        ),
-        "analytical" => Some(
-            "You are methodical, detail-oriented, and data-driven. You think critically and provide thorough analysis.",
-        ),
-        _ => None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::Arc;
 
+    #[test]
+    fn configured_inputs_skip_empty_values() {
+        let out = format_configured_inputs(r#"{"market":"Denver","budget":500,"blank":""}"#).unwrap();
+        assert!(out.starts_with("# Configured Inputs\n"));
+        assert!(out.contains("- **market**: Denver") && out.contains("- **budget**: 500"));
+        assert!(!out.contains("blank"));
+        assert_eq!(format_configured_inputs(r#"{"blank":""}"#), None);
+        assert_eq!(format_configured_inputs("{}"), None);
+        assert_eq!(format_configured_inputs("not json"), None);
+    }
+
     /// Temp-file store: the r2d2 pool would give each `:memory:` connection
     /// its own database, so file-backed is required for cross-connection reads.
-    fn test_store(name: &str) -> (Arc<Store>, std::path::PathBuf) {
-        let path =
-            std::env::temp_dir().join(format!("nebo-{name}-{}.db", std::process::id()));
-        let _ = std::fs::remove_file(&path);
+    /// The directory outlives the store: bind it first (`let (_dir, store)`)
+    /// so it is removed only after the store is dropped. Never unlink a
+    /// database a live pool holds: the pool's next connection creates a new
+    /// file at the path and resets the old one's mapped `-shm` (SIGBUS).
+    fn test_store(name: &str) -> (tempfile::TempDir, Arc<Store>) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(format!("{name}.db"));
         let store = Arc::new(Store::new(&path.to_string_lossy()).unwrap());
-        (store, path)
+        (dir, store)
     }
 
     /// No embedding provider → hybrid search degrades to FTS-only and results
@@ -664,7 +629,7 @@ mod tests {
     async fn test_prompt_recall_fts_only_degradation() {
         use tools::HybridSearcher;
 
-        let (store, path) = test_store("recall-degradation-test");
+        let (_dir, store) = test_store("recall-degradation-test");
         store
             .upsert_memory(
                 "tacit/general",
@@ -707,8 +672,6 @@ mod tests {
         let (text, ids) = format_prompt_relevant_memories(results, &existing, false);
         assert!(text.is_empty());
         assert!(ids.is_empty());
-
-        let _ = std::fs::remove_file(&path);
     }
 
     /// The injected slice is bounded by PROMPT_MEMORY_CHAR_BUDGET, not a bare
@@ -717,7 +680,7 @@ mod tests {
     async fn test_prompt_recall_respects_char_budget() {
         use tools::HybridSearcher;
 
-        let (store, path) = test_store("recall-budget-test");
+        let (_dir, store) = test_store("recall-budget-test");
         let long_value = format!("zebra fact {}", "x".repeat(400));
         for i in 0..8 {
             store
@@ -745,8 +708,6 @@ mod tests {
             ids.len()
         );
         assert!(!text.is_empty());
-
-        let _ = std::fs::remove_file(&path);
     }
 
     /// Budget-met path: the spawned search completes inside
@@ -754,7 +715,7 @@ mod tests {
     /// (no FTS fallback involvement — the store holds nothing FTS could find).
     #[tokio::test]
     async fn test_join_recall_within_budget_returns_hybrid_results() {
-        let (store, path) = test_store("recall-join-fast-test");
+        let (_dir, store) = test_store("recall-join-fast-test");
         let task = tokio::spawn(async {
             (
                 vec![tools::HybridSearchResult {
@@ -762,6 +723,7 @@ mod tests {
                     key: "fact/vector".to_string(),
                     value: "vector-only recall content".to_string(),
                     namespace: "tacit/general".to_string(),
+                    scope: String::new(),
                     score: 0.9,
                 }],
                 std::time::Duration::from_millis(1),
@@ -775,8 +737,6 @@ mod tests {
             "hybrid results must flow unchanged: {text:?}"
         );
         assert_eq!(ids, vec![42]);
-
-        let _ = std::fs::remove_file(&path);
     }
 
     /// Budget-exceeded path: a slow vector leg (stubbed spawned search that
@@ -784,7 +744,7 @@ mod tests {
     /// FTS-matchable memory is returned, the late vector results are dropped.
     #[tokio::test]
     async fn test_join_recall_over_budget_degrades_to_fts() {
-        let (store, path) = test_store("recall-join-slow-test");
+        let (_dir, store) = test_store("recall-join-slow-test");
         store
             .upsert_memory(
                 "tacit/general",
@@ -803,6 +763,7 @@ mod tests {
                     key: "fact/late".to_string(),
                     value: "late vector content".to_string(),
                     namespace: "tacit/general".to_string(),
+                    scope: String::new(),
                     score: 0.9,
                 }],
                 std::time::Duration::from_secs(5),
@@ -821,65 +782,60 @@ mod tests {
         );
         assert_eq!(ids.len(), 1);
         assert_ne!(ids[0], 99);
-
-        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
     fn test_format_empty_context() {
         let ctx = DBContext {
-            agent: None,
             user: None,
             preferences: None,
             personality_directive: None,
             tacit_memories: vec![],
             plugin_accounts: vec![],
+            scope: tools::memory_tools::MemoryScopeKind::Private,
         };
         let result = format_for_system_prompt(&ctx, "Nebo");
         assert!(result.contains("Memory Quick Reference"));
     }
 
+    /// The old single profile (its Identity, Personality and Rules pages
+    /// are gone) never reaches the prompt: not its personality, character,
+    /// style, rules or tool notes. Those moved to each employee's soul and
+    /// the company layer (`server::old_profile`).
     #[test]
-    fn test_format_with_agent_profile() {
-        let agent = AgentProfile {
-            id: 1,
-            name: "TestBot".to_string(),
-            personality_preset: Some("friendly".to_string()),
-            custom_personality: None,
-            voice_style: Some("warm".to_string()),
-            response_length: Some("medium".to_string()),
-            emoji_usage: Some("moderate".to_string()),
-            formality: Some("casual".to_string()),
-            proactivity: None,
-            created_at: 0,
-            updated_at: 0,
-            emoji: Some("🤖".to_string()),
-            creature: Some("robot".to_string()),
-            vibe: Some("chill".to_string()),
-            avatar: None,
-            agent_rules: None,
-            tool_notes: None,
-            role: Some("assistant".to_string()),
-            quiet_hours_start: "22:00".to_string(),
-            quiet_hours_end: "08:00".to_string(),
-        };
-
-        let ctx = DBContext {
-            agent: Some(agent),
-            user: None,
-            preferences: None,
-            personality_directive: None,
-            tacit_memories: vec![],
-            plugin_accounts: vec![],
-        };
-
-        let result = format_for_system_prompt(&ctx, "TestBot");
-        assert!(result.contains("Identity"));
-        assert!(result.contains("friendly"));
-        assert!(result.contains("Character"));
-        assert!(result.contains("robot"));
-        assert!(result.contains("Communication Style"));
-        assert!(result.contains("warm"));
+    fn the_old_profile_never_reaches_the_prompt() {
+        let (_dir, store) = test_store("old_profile");
+        store.ensure_agent_profile().unwrap();
+        store
+            .update_agent_profile(
+                None,
+                Some("friendly"),
+                Some("You are {agent_name}, calm under pressure."),
+                Some("warm"),
+                Some("brief"),
+                Some("lots"),
+                Some("casual"),
+                None,
+                Some("🦉"),
+                Some("owl"),
+                Some("chill"),
+                Some("concierge"),
+                None,
+                Some("Never book travel without asking."),
+                Some("Use the shared drive for client files."),
+                None,
+                None,
+            )
+            .unwrap();
+        let ctx = load_db_context(&store, "", "", &[]);
+        let result = format_for_system_prompt(&ctx, "Ava");
+        for old in [
+            "calm under pressure", "warm, friendly", "# Identity", "# Character", "owl", "chill", "concierge",
+            "Voice:", "brief", "lots", "casual", "Never book travel", "# Agent Rules", "shared drive", "# Tool Notes",
+        ] {
+            assert!(!result.contains(old), "{old:?} reached the prompt: {result}");
+        }
+        assert!(result.contains("Memory Quick Reference"), "{result}");
     }
 
     #[test]
@@ -906,12 +862,12 @@ mod tests {
         };
 
         let ctx = DBContext {
-            agent: None,
             user: Some(user),
             preferences: None,
             personality_directive: None,
             tacit_memories: vec![],
             plugin_accounts: vec![],
+            scope: tools::memory_tools::MemoryScopeKind::Private,
         };
 
         let result = format_for_system_prompt(&ctx, "Nebo");
@@ -924,12 +880,12 @@ mod tests {
     #[test]
     fn test_format_with_personality_directive() {
         let ctx = DBContext {
-            agent: None,
             user: None,
             preferences: None,
             personality_directive: Some("Be concise and direct.".to_string()),
             tacit_memories: vec![],
             plugin_accounts: vec![],
+            scope: tools::memory_tools::MemoryScopeKind::Private,
         };
 
         let result = format_for_system_prompt(&ctx, "Nebo");
@@ -954,7 +910,6 @@ mod tests {
         };
 
         let ctx = DBContext {
-            agent: None,
             user: None,
             preferences: None,
             personality_directive: None,
@@ -963,72 +918,11 @@ mod tests {
                 score: 1.0,
             }],
             plugin_accounts: vec![],
+            scope: tools::memory_tools::MemoryScopeKind::Private,
         };
 
         let result = format_for_system_prompt(&ctx, "Nebo");
         assert!(result.contains("What You Know"));
         assert!(result.contains("favorite-color: blue"));
-    }
-
-    #[test]
-    fn test_format_structured_json_array() {
-        let json = r#"["Rule one", "Rule two", "Rule three"]"#;
-        let result = format_structured_or_raw(json, "Rules");
-        assert!(result.contains("- Rule one"));
-        assert!(result.contains("- Rule two"));
-    }
-
-    #[test]
-    fn test_format_structured_json_objects() {
-        let json = r#"[{"text": "Do this"}, {"text": "Do that"}]"#;
-        let result = format_structured_or_raw(json, "Rules");
-        assert!(result.contains("- Do this"));
-        assert!(result.contains("- Do that"));
-    }
-
-    #[test]
-    fn test_format_raw_fallback() {
-        let text = "Just plain text rules";
-        let result = format_structured_or_raw(text, "Rules");
-        assert_eq!(result, "Just plain text rules");
-    }
-
-    #[test]
-    fn test_agent_name_replacement() {
-        let agent = AgentProfile {
-            id: 1,
-            name: "Nebo".to_string(),
-            personality_preset: None,
-            custom_personality: Some("You are {agent_name}, a helpful bot.".to_string()),
-            voice_style: None,
-            response_length: None,
-            emoji_usage: None,
-            formality: None,
-            proactivity: None,
-            created_at: 0,
-            updated_at: 0,
-            emoji: None,
-            creature: None,
-            vibe: None,
-            avatar: None,
-            agent_rules: None,
-            tool_notes: None,
-            role: None,
-            quiet_hours_start: "22:00".to_string(),
-            quiet_hours_end: "08:00".to_string(),
-        };
-
-        let ctx = DBContext {
-            agent: Some(agent),
-            user: None,
-            preferences: None,
-            personality_directive: None,
-            tacit_memories: vec![],
-            plugin_accounts: vec![],
-        };
-
-        let result = format_for_system_prompt(&ctx, "Nebo");
-        assert!(result.contains("You are Nebo, a helpful bot."));
-        assert!(!result.contains("{agent_name}"));
     }
 }

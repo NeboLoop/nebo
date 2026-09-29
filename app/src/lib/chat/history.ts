@@ -1,11 +1,12 @@
 // History reload for a thread: the persisted rows become the same ChatMessage
 // shapes the live controller builds, so a reloaded thread reads like the live
 // one (same bubbles, same tool timeline, same outcome words and durations).
-import { toolDisplayName, artifactsToWorkItems, artifactsToAttachments } from '$lib/chat/controller.svelte';
+import { artifactsToWorkItems, artifactsToAttachments } from '$lib/chat/controller.svelte';
 import type { ChatMessage, TeamPost } from '$lib/chat/controller.svelte';
 import { formatTime } from '$lib/time';
 import type { ChatMessage as ApiChatMessage } from '$lib/api/neboComponents';
 import type { UploadedAttachment } from '$lib/types/attachment';
+import type { Fold } from '$lib/chat/turnBlocks';
 
 // --- Metadata shapes embedded in API ChatMessage.metadata ---
 interface ToolCallMeta {
@@ -18,6 +19,8 @@ interface ContentBlockMeta {
   type: 'text' | 'tool';
   text?: string;
   toolCallIndex?: number;
+  /** The verdict the stream gave this text segment (`text_verdict`). */
+  fold?: Fold;
 }
 
 interface MessageMeta {
@@ -34,6 +37,26 @@ interface MessageMeta {
    * to the envelope the model read; the list derives {teamId, teamName, from,
    * text} at read time. Only the derived object is carried onto the bubble. */
   teamPost?: boolean | TeamPost;
+  /** The owner-visible marker left where earlier conversation was summarized
+   * (role "system"). Every other system row stays hidden. */
+  compactBoundary?: boolean;
+  /** The error a failed run left in the thread (role "system"): shown on the
+   * chat's error banner, never as a bubble. */
+  runError?: boolean;
+}
+
+/** The error the thread's last run ended on, when that is the newest row:
+ * the stored twin of the live `chat_error` event, for a page that opens the
+ * thread after the event went out (a hire's first greeting, a reload). */
+export function lastRunError(rawMessages: ApiChatMessage[]): string | null {
+  const last = rawMessages[rawMessages.length - 1];
+  if (!last?.metadata) return null;
+  try {
+    const meta: MessageMeta = typeof last.metadata === 'string' ? JSON.parse(last.metadata) : last.metadata;
+    return meta?.runError === true ? last.content : null;
+  } catch {
+    return null;
+  }
 }
 
 
@@ -110,6 +133,11 @@ export function parseMessages(rawMessages: ApiChatMessage[]): ChatMessage[] {
       });
       continue;
     }
+    if (m.role === 'system' && meta?.compactBoundary === true) {
+      open = null;
+      result.push({ type: 'compactBoundary' as const, id: m.id, time: formatTime(m.createdAt) });
+      continue;
+    }
     if (m.role !== 'assistant') continue;
 
     const toolCalls: ToolCallMeta[] = meta?.toolCalls || [];
@@ -141,11 +169,11 @@ export function parseMessages(rawMessages: ApiChatMessage[]): ChatMessage[] {
       const request = parseToolInput(tc.input);
       const callId = callIds[callIdx] ?? '';
       (target.tools ??= []).push({
-        // Raw name so the display formats the signature. The persisted outcome
-        // is the same past-tense line the live stream showed; older rows without
-        // one fall back to the static display name.
+        // The persisted outcome is the same past-tense line the live stream
+        // showed (the tool's own words); older rows without one show the
+        // tool's name.
         name: tc.name || 'tool',
-        label: toolDisplayName(tc.name || 'tool', request),
+        label: tc.name || 'tool',
         ...(outcomesById.has(callId) ? { outcome: outcomesById.get(callId) } : {}),
         ...(durationsById.has(callId) ? { durationMs: durationsById.get(callId) } : {}),
         status: tc.status === 'error' ? 'error' : 'success',
@@ -164,6 +192,7 @@ export function parseMessages(rawMessages: ApiChatMessage[]): ChatMessage[] {
           // Text after this bubble ran tools starts a fresh bubble.
           if (!cur || cur.tools?.length) cur = newBubble(text);
           else cur.content = cur.content ? `${cur.content}\n${text}` : text;
+          if (block.fold === 'shown' || block.fold === 'folded') cur.fold = block.fold;
         } else if (block.type === 'tool' && block.toolCallIndex != null) {
           const tc = toolCalls[block.toolCallIndex];
           if (tc) { if (!cur) cur = newBubble(''); pushTool(cur, tc, block.toolCallIndex); }

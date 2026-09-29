@@ -1,16 +1,13 @@
-use std::path::{Path, PathBuf};
-use std::process::Stdio;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
 use serde::Deserialize;
-use tokio::io::AsyncReadExt;
 use tracing::{debug, info, warn};
 
 use crate::channel_bridge;
 use crate::origin::ToolContext;
-use crate::process;
-use crate::registry::{DynTool, ToolResult};
+use crate::registry::ToolResult;
 
 /// The exec budget when the call names no `timeout`.
 const EXEC_TIMEOUT_DEFAULT_SECS: u64 = 120;
@@ -31,6 +28,15 @@ pub const INSTALL_CARD_INSTALLED: &str = "installed";
 /// then called that "declined" — so the model offered the broken plugin
 /// eight more times.
 pub const CARD_FAILED_PREFIX: &str = "failed:";
+
+/// What a search that found no plugin to install says next. A bare "none
+/// are installable" left the next step to the model: in the v0.16.0 proof
+/// (36348199618, skill-plugin-choreography run 3) it offered to sign in to
+/// the service in the browser and do the job by hand.
+const NO_PLUGIN_NEXT: &str = "Tell the owner plainly what's missing: no plugin can do this here yet, so \
+     you can't. Say what they can do instead: do it themselves, or ask again once a plugin for it is in \
+     the marketplace. Don't attempt it another way on their behalf, such as through their account in the \
+     browser, unless they ask you to.";
 
 /// How a card (install, hire, connect) ended, read from the parked ask's
 /// answer. `done` is the value the card sends on success.
@@ -104,10 +110,6 @@ pub(crate) fn best_match<'a>(items: &'a [serde_json::Value], query: &str) -> &'a
         })
         .unwrap_or(&items[0])
 }
-
-/// The Google Workspace plugin's slug, named in the description only while
-/// it is installed.
-const GOOGLE_WORKSPACE_SLUG: &str = "gws";
 
 /// One deadline for a whole exec, auth recovery included. The runner caps a
 /// tool call at its own limit; a 120 s command followed by an auth probe,
@@ -191,88 +193,106 @@ fn out_of_time(text: String, original: &ToolResult) -> ToolResult {
     ToolResult::error(format!("{text}\n\nThe command's own result:\n{}", original.content))
 }
 
-/// STRAP domain tool for installed plugin binaries.
+/// Runs installed plugin binaries: the handlers behind the plugin tools
+/// (`plugin_tools`) and the operations plugins provide (`operation_tools`).
 ///
 /// Plugins ship with their own skills (`skills/` directory inside the plugin).
 /// These skills are the plugin's documentation — they describe the CLI syntax,
-/// flags, and examples. The skill loader indexes them like any other skill, so
-/// the ONE way to read one is skill(action: "load", name: "<skill name>"); this
-/// tool only names them.
+/// flags, and examples. The skill loader indexes them like any other skill;
+/// the plugin's tool only names them.
 ///
-/// When a plugin command fails due to stale OAuth credentials, the tool
+/// When a plugin command fails due to stale OAuth credentials, the runner
 /// automatically detects the auth failure and self-heals: first a SILENT
 /// token renewal via the manifest's `auth.commands.refresh` (when declared),
 /// and only then — in interactive chat — browser re-authentication via the
 /// plugin's `auth login` command, retrying the original command on success.
 /// Unattended runs (workflow/channel/schedule) never block on interactive
 /// login: the account is flagged `needs_reauth` and the turn ends.
-pub struct PluginTool {
+pub struct PluginRunner {
     plugin_store: Arc<napp::plugin::PluginStore>,
     db_store: Arc<db::Store>,
     broadcaster: Option<crate::web_tool::Broadcaster>,
 }
 
-#[derive(Debug, Deserialize)]
-struct PluginInput {
-    /// Plugin slug (e.g., "gws", "slack").
+/// One command run against an installed plugin.
+#[derive(Debug, Default, Deserialize)]
+pub(crate) struct PluginCall {
+    /// The installed plugin's slug.
     #[serde(default)]
-    resource: String,
-    /// Action: "exec" (default — run a plugin command) or "events"
-    /// (list the plugin's declared NDJSON watch events).
-    #[serde(default = "default_action")]
-    action: String,
-    /// CLI arguments passed to the plugin binary (required for exec).
+    pub(crate) slug: String,
+    /// Subcommand and flags passed to the plugin binary.
     #[serde(default)]
-    command: String,
+    pub(crate) command: String,
     /// Named flags passed directly to the binary without shell parsing.
     /// Each key becomes --key and the value is passed as a separate OS arg.
-    /// Use this for content that may contain special characters.
     #[serde(default)]
-    args: std::collections::HashMap<String, String>,
-    /// Optional timeout in seconds (default: 120).
+    pub(crate) args: std::collections::HashMap<String, String>,
+    /// Timeout in seconds (default: 120).
     #[serde(default)]
-    timeout: i64,
-    /// Search query for action: "discover" (marketplace plugin search).
-    #[serde(default)]
-    query: String,
-    /// Typed capability operation to invoke (e.g. "ledger.bill.create", or the
-    /// fully-qualified "accounting.ap-specialist.ledger.bill.create"). When set,
-    /// the port is resolved on its operation suffix to whichever installed plugin
-    /// declares that binding, and `input` is passed as flags — no `resource`/
-    /// `command` needed. This is the provider-agnostic port pathway.
-    #[serde(default)]
-    operation: String,
-    /// Typed input object for a port `operation`; each field becomes a `--key value` flag.
-    #[serde(default)]
-    input: serde_json::Value,
-    /// Plain-language summary the model attaches to a call; not used to run
-    /// anything, but it names the plugin when `resource` was left out.
-    #[serde(default)]
-    display: String,
+    pub(crate) timeout: i64,
 }
-/// `args: {command: "doctor"}` is the command, not a `--command` flag: the
-/// model nests the one field it was asked for under the object it was also
-/// offered, and the binary answers "unexpected argument '--command'" (live
-/// Auto-Categorizer thread, 2026-09-06). Lift it when `command` is empty.
-fn lift_args_command(pi: &mut PluginInput) {
-    if !pi.command.trim().is_empty() {
-        return;
+
+/// A plugin call's result, and whether the call reached the plugin. A send
+/// the call carried takes its outcome from this, never from the words in
+/// the result: one that never reached the plugin cannot have gone out.
+enum Exec {
+    /// Nebo refused or failed before the call reached the plugin: no
+    /// plugin process started, or its bridge never took the op.
+    NotReached(ToolResult),
+    /// The call reached the plugin — its process was started, or its
+    /// bridge took the op — and this is what came back.
+    Reached(ToolResult),
+}
+
+impl Exec {
+    fn result(&self) -> &ToolResult {
+        match self {
+            Exec::NotReached(r) | Exec::Reached(r) => r,
+        }
     }
-    for key in ["command", "cmd"] {
-        if let Some(v) = pi.args.remove(key) {
-            pi.command = v;
-            return;
+
+    fn into_result(self) -> ToolResult {
+        match self {
+            Exec::NotReached(r) | Exec::Reached(r) => r,
+        }
+    }
+
+    /// The same call, answered with `result`: a step after the call (the
+    /// auth self-heal) rewords the answer; it does not change whether the
+    /// plugin was reached.
+    fn answer(&self, result: ToolResult) -> Exec {
+        match self {
+            Exec::NotReached(_) => Exec::NotReached(result),
+            Exec::Reached(_) => Exec::Reached(result),
+        }
+    }
+
+    /// The call run again after this attempt: the plugin was reached if
+    /// either attempt reached it.
+    fn retried(&self, retry: Exec) -> Exec {
+        match retry {
+            Exec::NotReached(r) => self.answer(r),
+            reached => reached,
+        }
+    }
+
+    /// The outcome of a send the call carried. Only a plugin that was
+    /// reached vouches for it, in its own typed report.
+    fn send_outcome(self) -> crate::effects::SendOutcome {
+        match self {
+            Exec::NotReached(r) => crate::effects::SendOutcome::PreSendFailure(r.content),
+            Exec::Reached(r) => crate::effects::SendOutcome::from_plugin_output(&r.content),
         }
     }
 }
 
-// NOTE: gated operations also carry a `display` arg (declared in the tool
-// schema below) — the approval gate reads it from the RAW tool-call args
-// before dispatch, so it is deliberately absent from this struct and never
-// forwarded to the plugin binary.
-
-fn default_action() -> String {
-    "exec".to_string()
+/// The id a typed operation's input or result names a record by.
+pub fn record_id(v: &serde_json::Value) -> Option<String> {
+    match v.get("id")? {
+        serde_json::Value::String(s) if !s.is_empty() => Some(s.clone()),
+        serde_json::Value::Number(n) => Some(n.to_string()),
+        _ => None,
+    }
 }
 
 /// The `capability.resource.action` suffix a plugin binding matches on. A fully-
@@ -286,30 +306,6 @@ pub fn port_suffix(operation: &str) -> String {
     } else {
         operation.to_string()
     }
-}
-
-/// The calling department in a fully-qualified port (the first segment of
-/// `department.role.capability.resource.action`). `None` for a bare operation.
-/// Load-bearing: when a shared operation (e.g. `mail.message.send`) has multiple
-/// installed providers, the department is what selects the right one — without it
-/// two departments would collide on whichever provider happened to be first.
-fn port_department(operation: &str) -> Option<String> {
-    let parts: Vec<&str> = operation.split('.').collect();
-    if parts.len() > 3 {
-        Some(parts[0].to_string())
-    } else {
-        None
-    }
-}
-
-/// The capability a port targets (the first segment of the operation suffix,
-/// e.g. "ledger" for `…ledger.bill.create`).
-fn port_capability(operation: &str) -> String {
-    port_suffix(operation)
-        .split('.')
-        .next()
-        .unwrap_or_default()
-        .to_string()
 }
 
 /// Every plugin the owner has installed and not disabled — what EXISTS.
@@ -380,9 +376,9 @@ pub fn bound_providers(plugin_store: &napp::plugin::PluginStore, db_store: &db::
 /// once here and used wherever it is still needed — the same redirect used to
 /// be written out in a dozen places, and had already drifted (2026-09-19).
 pub const TOOL_INSTALL_DOOR: &str =
-    "A tool, connection or service installs through plugin(action: \"discover\", query: \"...\").";
+    "A tool, connection or service installs through find_plugins.";
 
-impl PluginTool {
+impl PluginRunner {
     pub fn new(
         plugin_store: Arc<napp::plugin::PluginStore>,
         db_store: Arc<db::Store>,
@@ -399,74 +395,18 @@ impl PluginTool {
         self
     }
 
+    pub(crate) fn plugin_store(&self) -> &napp::plugin::PluginStore {
+        &self.plugin_store
+    }
+
     /// Build a deduplicated list of active plugin slugs (installed + not disabled + ready).
-    fn active_slugs(&self) -> Vec<String> {
+    pub(crate) fn active_slugs(&self) -> Vec<String> {
         active_plugin_slugs(&self.plugin_store, &self.db_store)
     }
 
     /// What exists — see `installed_plugin_slugs`.
-    fn installed_slugs(&self) -> Vec<String> {
+    pub(crate) fn installed_slugs(&self) -> Vec<String> {
         installed_plugin_slugs(&self.plugin_store, &self.db_store)
-    }
-
-    /// Resolve a typed capability operation to (plugin slug, command) by scanning
-    /// active plugins' declared `interface_bindings`. Matches on the
-    /// `capability.resource.action` suffix, so a fully-qualified port
-    /// (`department.role.capability.resource.action`) binds the same as a bare op.
-    fn resolve_port(&self, operation: &str) -> Result<(String, String), String> {
-        let suffix = port_suffix(operation);
-        // Every installed provider that implements this operation.
-        let mut providers: Vec<(String, String)> = Vec::new();
-        for slug in self.active_slugs() {
-            if let Some(m) = self.plugin_store.get_manifest(&slug) {
-                if let Some(cmd) = m.interface_bindings.get(&suffix) {
-                    providers.push((slug, cmd.clone()));
-                }
-            }
-        }
-        match providers.len() {
-            0 => {
-                // Every operation an installed plugin does bind, so the model can
-                // see what IS available before going to the marketplace.
-                let mut bound: Vec<String> = Vec::new();
-                for slug in self.active_slugs() {
-                    if let Some(m) = self.plugin_store.get_manifest(&slug) {
-                        bound.extend(m.interface_bindings.keys().cloned());
-                    }
-                }
-                bound.sort();
-                bound.dedup();
-                let bound_desc = if bound.is_empty() {
-                    "none".to_string()
-                } else {
-                    bound.join(", ")
-                };
-                Err(format!(
-                    "no installed provider implements operation '{suffix}'. Bound operations: {bound_desc}. To add a provider: plugin(action: \"discover\", query: \"{}\").",
-                    port_capability(operation)
-                ))
-            }
-            1 => Ok(providers.into_iter().next().unwrap()),
-            _ => {
-                // Ambiguous: a shared operation (e.g. mail.message.send) with several
-                // providers. The calling DEPARTMENT's binding disambiguates — this is why
-                // the port carries department.role. Never guess; a wrong provider here
-                // could send from the wrong account or move money the wrong way.
-                let dept = port_department(operation);
-                let cap = port_capability(operation);
-                if let Some(bound) = self.department_provider(dept.as_deref(), &cap) {
-                    if let Some(p) = providers.iter().find(|(s, _)| *s == bound) {
-                        return Ok(p.clone());
-                    }
-                }
-                let names: Vec<&str> = providers.iter().map(|(s, _)| s.as_str()).collect();
-                Err(format!(
-                    "operation '{suffix}' is implemented by more than one installed plugin ({}). Call one of them directly: plugin(resource: \"<slug>\", command: \"{}\", args: {{...}}).",
-                    names.join(", "),
-                    cap
-                ))
-            }
-        }
     }
 
     /// The gated interface operation a raw exec command corresponds to, if any.
@@ -490,22 +430,6 @@ impl PluginTool {
         None
     }
 
-    /// The provider a department has bound for a capability (e.g. accounting's
-    /// `mail` → "postmark", support's `mail` → a different provider). This is what
-    /// makes resolution department-scoped and collision-free. Populated by the
-    /// install wizard's per-department capability binding; `None` until bound, so an
-    /// ambiguous port fails loudly rather than resolving to the wrong provider.
-    fn department_provider(&self, department: Option<&str>, capability: &str) -> Option<String> {
-        let _dept = department?;
-        let _ = capability;
-        // TICKET-02: the install wizard writes the per-department capability→provider
-        // binding (keyed "<department>.<capability>", e.g. "accounting.mail" → "postmark",
-        // "customer-support.mail" → a different provider); this reads it. Until that store
-        // exists, return None — so an ambiguous port fails loudly demanding a binding,
-        // never resolving to the wrong provider.
-        None
-    }
-
     /// (operation, provider-slug) for every port the installed plugins implement.
     fn bound_operations(&self) -> Vec<(String, String)> {
         let mut out = Vec::new();
@@ -518,71 +442,6 @@ impl PluginTool {
         }
         out.sort();
         out
-    }
-
-    /// List installed plugins (slug, version, enabled/disabled, signature status).
-    /// The direct answer to "what plugins are installed?" — parity with skill catalog.
-    fn handle_list(&self, ctx: &crate::ToolContext) -> ToolResult {
-        let installed = self.plugin_store.list_installed();
-        let agent_id = types::keyparser::extract_agent_id(&ctx.session_key);
-        if installed.is_empty() {
-            return ToolResult::ok(
-                "No plugins installed. Use plugin(action: \"discover\", query: \"<keyword>\") to \
-                 find plugins in the marketplace; installing offers the user a card to approve.",
-            );
-        }
-        let mut seen = std::collections::HashSet::new();
-        let mut lines = Vec::new();
-        for (slug, version, _path, sig) in &installed {
-            if !seen.insert(slug.clone()) {
-                continue;
-            }
-            let enabled = self
-                .db_store
-                .get_plugin_by_slug(slug)
-                .ok()
-                .flatten()
-                .map(|r| r.is_enabled != 0)
-                .unwrap_or(true);
-            // A plugin that needs a connected account says whether THIS
-            // employee has one. Live (2026-09-05): list said "enabled", the
-            // model ran commands, and every one failed with "no account is
-            // connected"; the state was known before the first call.
-            let needs_account = self
-                .plugin_store
-                .get_manifest(slug)
-                .and_then(|m| m.auth)
-                .and_then(|a| a.profile_dir_env)
-                .is_some();
-            let account = if !needs_account || agent_id.is_empty() {
-                String::new()
-            } else {
-                let labels: Vec<String> = self
-                    .db_store
-                    .list_plugin_account_profiles(&agent_id, slug)
-                    .unwrap_or_default()
-                    .into_iter()
-                    .map(|p| p.account_label)
-                    .collect();
-                if labels.is_empty() {
-                    ", no account connected for this employee: the user connects one in \
-                     Settings, Plugins before any exec"
-                        .to_string()
-                } else {
-                    format!(", connected: {}", labels.join(", "))
-                }
-            };
-            lines.push(format!(
-                "- {slug} v{version} ({}, signature: {sig}{account}); run it with \
-                 plugin(resource: \"{slug}\", action: \"exec\", command: \"...\")",
-                if enabled { "enabled" } else { "disabled" },
-            ));
-        }
-        ToolResult::ok(format!(
-            "{} installed plugin(s):\n{}",
-            lines.len(),
-            lines.join("\n")
-        ))
     }
 
     /// Search the NeboAI marketplace for plugins. In interactive chat the top
@@ -603,7 +462,26 @@ impl PluginTool {
         }])
     }
 
-    async fn handle_discover(&self, query: &str, ctx: &crate::ToolContext) -> ToolResult {
+    /// What the owner sees a plugin and its account called: the manifest's
+    /// display name ("Xero") and its `auth.label` ("Xero account"), each
+    /// falling back to the other rather than to the slug — a slug in
+    /// user-facing copy read as raw markdown on the phone (2026-09-26).
+    fn display_names(&self, slug: &str) -> (String, String) {
+        let manifest = self.plugin_store.get_manifest(slug);
+        let name = manifest
+            .as_ref()
+            .map(|m| m.name.clone())
+            .filter(|n| !n.is_empty())
+            .unwrap_or_else(|| slug.to_string());
+        let label = manifest
+            .and_then(|m| m.auth)
+            .map(|a| a.label)
+            .filter(|l| !l.is_empty())
+            .unwrap_or_else(|| format!("{name} account"));
+        (name, label)
+    }
+
+    pub(crate) async fn handle_discover(&self, query: &str, ctx: &crate::ToolContext) -> ToolResult {
         let api = match crate::build_neboai_api(&self.db_store) {
             Ok(a) => a,
             Err(e) => return ToolResult::error(format!("marketplace unavailable: {}", e)),
@@ -628,11 +506,11 @@ impl PluginTool {
         {
             return ToolResult::ok(format!(
                 "{slug} v{version} was already installed; nothing to discover or install. \
-                 Its skills are listed under Installed plugins in this tool's description — \
-                 skill(action: \"load\", name: \"<skill name>\") reads one, and \
-                 plugin(resource: \"{slug}\", action: \"exec\", command: \"...\") runs a command. \
-                 If a result says no account is connected, the user connects one in \
-                 Settings, Plugins; there is no command for that."
+                 Its tool is {tool}: its description names the skills that document its \
+                 commands (read one with use_skill). If a result says no account is \
+                 connected, the owner connects one in Settings, Plugins; there is no \
+                 command for that.",
+                tool = crate::plugin_tools::plugin_tool_name(&slug)
             ));
         }
         // No type straitjacket: the standalone services (Gmail, Drive, …) are
@@ -777,9 +655,10 @@ impl PluginTool {
                                         ) {
                                             CardAnswer::Done => format!(
                                                 "{top_name} {state} and its account is \
-                                                 connected. Continue the task NOW via \
-                                                 plugin(resource: \"{top_slug}\", ...) — no \
-                                                 setup narration."
+                                                 connected. Continue the task NOW with \
+                                                 {tool} (load it with find_tools) — no setup \
+                                                 narration.",
+                                                tool = crate::plugin_tools::plugin_tool_name(top_slug)
                                             ),
                                             CardAnswer::Failed(reason) => format!(
                                                 "{top_name} {state}, but connecting the \
@@ -802,9 +681,10 @@ impl PluginTool {
                                     }
                                 }
                                 return ToolResult::ok(format!(
-                                    "{top_name} {state}. Use it via plugin(resource: \
-                                     \"{top_slug}\", ...). If it needs an account, the connect \
-                                     card will appear on first use — no setup narration needed."
+                                    "{top_name} {state}. Use it through {tool} (load it with \
+                                     find_tools). If it needs an account, the connect card will \
+                                     appear on first use — no setup narration needed.",
+                                    tool = crate::plugin_tools::plugin_tool_name(top_slug)
                                 ));
                             }
                             // Not installed: say exactly why. Only a skip keeps
@@ -835,7 +715,7 @@ impl PluginTool {
                             // code): never fall back to narrating codes.
                             ToolResult::ok(format!(
                                 "{listing}\n\nAsk the user which one they want, then call \
-                                 discover again with its exact name to offer the install card. \
+                                 find_plugins again with its exact name to offer the install card. \
                                  Do NOT paste install codes into chat."
                             ))
                         } else {
@@ -850,11 +730,13 @@ impl PluginTool {
                     }
                 } else if matched > 0 {
                     ToolResult::ok(format!(
-                        "{} results matched but none are installable plugins/connectors.",
-                        matched
+                        "{matched} marketplace listings matched, but none is a plugin or connector, so \
+                         there is nothing to install for this. {NO_PLUGIN_NEXT}"
                     ))
                 } else {
-                    ToolResult::ok("No plugins found in the marketplace for that query.")
+                    ToolResult::ok(format!(
+                        "No plugin in the marketplace matched that query. {NO_PLUGIN_NEXT}"
+                    ))
                 }
     }
 
@@ -879,35 +761,8 @@ impl PluginTool {
         None
     }
 
-    /// List available services (top-level skill names) for a plugin.
-    /// The one installed plugin whose services include `<slug>-<first word>`
-    /// of the command, or None when no plugin or more than one qualifies.
-    fn infer_resource_for_command(&self, command: &str) -> Option<String> {
-        let first = command.split_whitespace().next()?.to_ascii_lowercase();
-        let words: Vec<String> = command
-            .split(|c: char| !c.is_alphanumeric() && c != '-' && c != '_')
-            .map(|w| w.to_ascii_lowercase())
-            .collect();
-        let mut slugs: Vec<String> = self
-            .plugin_store
-            .list_installed()
-            .into_iter()
-            .map(|(slug, ..)| slug)
-            .collect();
-        slugs.sort();
-        slugs.dedup();
-        let mut hits = slugs.into_iter().filter(|slug| {
-            let service = format!("{slug}-{first}");
-            words.iter().any(|w| w == &slug.to_ascii_lowercase())
-                || self.list_services(slug).iter().any(|(name, _)| *name == service)
-        });
-        match (hits.next(), hits.next()) {
-            (Some(slug), None) => Some(slug),
-            _ => None,
-        }
-    }
-
-    fn list_services(&self, slug: &str) -> Vec<(String, String)> {
+    /// The plugin's skills (name, description), from its `skills/` directory.
+    pub(crate) fn list_services(&self, slug: &str) -> Vec<(String, String)> {
         let skills_dir = match self.skills_dir(slug) {
             Some(d) => d,
             None => return Vec::new(),
@@ -963,490 +818,116 @@ impl PluginTool {
 
 }
 
-impl DynTool for PluginTool {
-    fn name(&self) -> &str {
-        "plugin"
-    }
-
-    fn description(&self) -> String {
-        let slugs = self.installed_slugs();
-        if slugs.is_empty() {
-            return "Run installed plugin binaries. No plugins are installed yet. When the user \
-                    asks for something no installed tool does (post a tweet, message a Slack \
-                    channel, look up an invoice), your FIRST move is plugin(action: \"discover\", \
-                    query: \"<keyword>\") — never tell the user to set something up in Settings \
-                    or to do it by hand before you have searched the marketplace. Discover is a \
-                    read-only search: run it without asking the user first; only installing \
-                    offers the user a card to approve. plugin(action: \"list\") shows what is \
-                    installed. Once one is installed, every command \
-                    call names it by the slug plugin(action: \"list\") shows: \
-                    plugin(resource: \"<slug>\", action: \"exec\", command: \"<subcommand and flags>\")."
-                .to_string();
-        }
-
-        let mut out = String::from(
-            "Run installed plugin binaries. plugin(action: \"list\") shows what's installed; \
-             plugin(action: \"discover\", query: \"…\") searches the marketplace (read-only; \
-             run it without asking — only installing offers a card).\n\n",
-        );
-        out.push_str("ALWAYS use this tool for channel messaging — Slack, Discord, Teams, and any other channel-backed plugin. \
-                      `plugin(resource: \"<channel-slug>\", command: \"upload|post|dm|reply ...\")` is the canonical pathway for \
-                      sending files, messages, and DMs out through a channel. \
-                      NEVER use `skill discover` or `skill help` to look up channel operations — channels are plugins, \
-                      not skills, and the skill catalog does not contain them.\n\n");
-        out.push_str("Usage: plugin(resource: \"<plugin-slug>\", action: \"exec\", command: \"<subcommand and flags>\")\n");
-        out.push_str("       plugin(resource: \"<plugin-slug>\", action: \"events\") — list declared NDJSON watch events\n");
-        out.push_str("`command` is passed straight to the plugin binary — the FIRST token is a service (e.g. calendar, gmail, drive), NOT the plugin name. \
-                      Grammar: `<service> <resource> <method> [flags]` (e.g. `calendar events list`).\n");
-        // Said only when that plugin is installed: a made-up example slug was
-        // copied verbatim by a live run and reported as "not installed".
-        // Mail is NOT named here: an employee whose mail is a different
-        // connected provider (gmail) was steered to google-workspace, which
-        // had no account for it, and the turn died on that first call. The
-        // typed ports below name the provider that actually sends.
-        if slugs.iter().any(|s| s == GOOGLE_WORKSPACE_SLUG) {
-            out.push_str(&format!("For Google Calendar/Drive use plugin(resource: \"{GOOGLE_WORKSPACE_SLUG}\", ...) when plugin(action: \"list\") shows an account connected for this employee; for the local Mac calendar use os(resource: \"calendar\").\n\n"));
-        } else {
-            out.push('\n');
-        }
-        out.push_str("Installed plugins:\n\n");
-
-        const PER_PLUGIN_BUDGET: usize = 4096;
-        const TOTAL_BUDGET: usize = 12_288;
-
-        let mut with_services: Vec<(String, Vec<(String, String)>)> = slugs
-            .iter()
-            .map(|s| (s.clone(), self.list_services(s)))
-            .collect();
-        with_services.sort_by(|a, b| b.1.len().cmp(&a.1.len()));
-
-        let mut overflow_slugs: Vec<String> = Vec::new();
-        for (slug, services) in &with_services {
-            let is_channel = self.plugin_store.get_channel_def(slug).is_some();
-            if services.is_empty() && !is_channel {
-                overflow_slugs.push(slug.clone());
-                continue;
-            }
-            // Listed whether or not its credentials are in place: readiness is
-            // workspace-level, and a plugin whose accounts are per-employee
-            // (shopify) never reads ready even with accounts connected — so a
-            // "not connected" marker here would be a lie. The exec path knows
-            // the truth per employee and says it when a command needs it.
-            let mut section = format!("### {}\n", slug);
-            // Channel plugins expose real-time messaging ops via the running
-            // bridge. Lead with the USE CASE (what the user asked for), not
-            // the syntax — agents that picked the wrong tool ("send me this
-            // file in slack" → markdown image link instead of upload) did so
-            // because the description listed commands without naming the
-            // intent each one serves. Replies to inbound messages are NOT
-            // listed: the bridge sends `op: reply` automatically when the
-            // agent's response comes back through channel dispatch; the
-            // agent never invokes a reply command directly.
-            if is_channel {
-                section.push_str("  Channel actions (use these instead of generating markdown links / image syntax):\n");
-                section.push_str(&format!("  - Share a file with someone in this channel: plugin(resource: \"{slug}\", command: \"upload --channel <id> --path <abs-path> [--caption <text>] [--thread_ts <ts>]\")\n"));
-                section.push_str(&format!("    Use this when the user says \"send/share/attach/grab/let me see/upload a file\" — pass the absolute local path; the bridge handles the upload to the platform.\n"));
-                section.push_str(&format!("  - Post an unsolicited message: plugin(resource: \"{slug}\", command: \"post --channel <id> --text <body> [--thread_ts <ts>]\")\n"));
-                section.push_str(&format!("    Use for proactive posts (briefings, alerts, workflow output) when not directly replying to an inbound message.\n"));
-                section.push_str(&format!("  - Direct message a specific user: plugin(resource: \"{slug}\", command: \"dm --user <id> --text <body>\")\n"));
-                section.push_str("  Note: replies to inbound channel messages are automatic — your normal text response goes through the bridge with no command needed. Do NOT include markdown image links (`![alt](url)`) for files — call `upload` instead.\n");
-                if !services.is_empty() {
-                    section.push_str("  Stateless commands (auth/init/doctor/sync etc.):\n");
+impl PluginRunner {
+    /// Perform a catalog operation the plugin `slug` binds. The binding
+    /// shapes the command: a template's placeholders take their fields, and
+    /// fields it does not name go on as `--key value` flags. The seat's
+    /// `clientKey` is the runtime's, never a flag: the same write under one
+    /// key runs once (`effects::guarded_write`).
+    pub(crate) async fn perform_operation(
+        &self,
+        ctx: &ToolContext,
+        slug: &str,
+        operation: &str,
+        mut input: serde_json::Value,
+    ) -> ToolResult {
+        let Some(binding) = self
+            .plugin_store
+            .get_manifest(slug)
+            .and_then(|m| m.interface_bindings.get(operation).cloned())
+        else {
+            return ToolResult::error(format!("{slug} no longer performs {operation}."));
+        };
+        let client_key = take_client_key(&mut input);
+        let (command, consumed) = match render_binding(operation, &binding, &input) {
+            Ok(x) => x,
+            Err(e) => return ToolResult::error(e),
+        };
+        let mut args = std::collections::HashMap::new();
+        if let serde_json::Value::Object(map) = &input {
+            for (k, v) in map {
+                if consumed.contains(k) || v.is_null() {
+                    continue;
                 }
-            }
-            let total = services.len();
-            let mut included = 0usize;
-            let mut truncated = false;
-            for (name, desc) in services {
-                let line = if desc.is_empty() {
-                    format!("  - {}\n", name)
-                } else {
-                    format!("  - {} — {}\n", name, desc)
+                let value = match v {
+                    serde_json::Value::String(s) => s.clone(),
+                    other => other.to_string(),
                 };
-                if section.len() + line.len() > PER_PLUGIN_BUDGET {
-                    truncated = true;
-                    break;
-                }
-                section.push_str(&line);
-                included += 1;
-            }
-            if truncated {
-                section.push_str(&format!(
-                    "  - … and {} more — use skill(action: \"discover\", query: \"{}\") for full list\n",
-                    total - included,
-                    slug
-                ));
-            }
-            section.push('\n');
-            if out.len() + section.len() > TOTAL_BUDGET {
-                overflow_slugs.push(slug.clone());
-                continue;
-            }
-            out.push_str(&section);
-        }
-
-        if !overflow_slugs.is_empty() {
-            out.push_str("Also installed: ");
-            out.push_str(&overflow_slugs.join(", "));
-            out.push_str("\nTheir skills are not listed here. Before the FIRST exec on any of them, \
-                          skill(action: \"discover\", query: \"<slug>\") names its skills and \
-                          skill(action: \"load\", name: \"<skill name>\") reads one — \
-                          a guessed command is a wasted turn and a failed step.\n");
-        }
-
-        out.push_str("\nEach line above is a skill name: skill(action: \"load\", name: \"<skill name>\") is its full usage — every command and flag. Read it BEFORE the first exec; do not guess a flag that is not in it.");
-
-        // Typed capability ports currently bound (provider-agnostic).
-        let ops = self.bound_operations();
-        if !ops.is_empty() {
-            out.push_str("\n\nTyped ports (provider-agnostic): call plugin(operation: \"<op>\", input: {...}). \
-                          The operation resolves to the bound provider below:\n");
-            for (op, slug) in &ops {
-                out.push_str(&format!("  - {op}  (via {slug})\n"));
+                args.insert(k.clone(), value);
             }
         }
-        out
+        let call = PluginCall { slug: slug.to_string(), command, args, timeout: 0 };
+        self.run_bound(ctx, &call, operation, &input, client_key.as_deref()).await
     }
 
-    fn schema(&self) -> serde_json::Value {
-        let mut props = serde_json::Map::new();
-        props.insert("resource".into(), Self::resource_schema(&self.installed_slugs()));
-        props.insert(
-            "action".into(),
-            serde_json::json!({
-                "type": "string",
-                "description": "Action: 'list' (installed plugins), 'discover' (search the marketplace by query), 'exec' (default — run a plugin command), or 'events' (the plugin's declared NDJSON watch events). A plugin's usage is its skills: skill(action: \"load\", name: \"<skill name>\").",
-                "enum": ["list", "discover", "exec", "events"],
-                "default": "exec"
-            }),
-        );
-        props.insert(
-            "query".into(),
-            serde_json::json!({
-                "type": "string",
-                "description": "Search query for action: 'discover'."
-            }),
-        );
-        props.insert(
-            "command".into(),
-            serde_json::json!({
-                "type": "string",
-                "description": "Subcommand and flags ONLY — the binary path is auto-resolved. Do NOT include the plugin name (e.g. for a plugin 'acme' with subcommand 'reports generate', pass 'reports generate --period month', NOT 'acme reports generate'). Use only commands listed in this tool's description or confirmed via a skill/help; do not guess syntax."
-            }),
-        );
-        props.insert(
-            "args".into(),
-            serde_json::json!({
-                "type": "object",
-                "description": "Named flags passed directly to the binary. Each key becomes --key with the value as a separate argument. Use this for content that may contain special characters (quotes, backticks, dollar signs, etc.). Example: {\"text\": \"Hello world!\", \"max\": \"5\"}",
-                "additionalProperties": { "type": "string" }
-            }),
-        );
-        props.insert(
-            "timeout".into(),
-            serde_json::json!({
-                "type": "integer",
-                "description": "Command timeout in seconds (default: 120)"
-            }),
-        );
-        props.insert(
-            "operation".into(),
-            serde_json::json!({
-                "type": "string",
-                "description": "Typed capability operation to invoke (provider-agnostic), e.g. 'ledger.bill.create' or the fully-qualified 'accounting.ap-specialist.ledger.bill.create'. Resolves on the operation suffix to whichever installed plugin declares that binding. Use this instead of resource/command to call a port; pass fields via `input`. See this tool's description for the operations currently bound."
-            }),
-        );
-        props.insert(
-            "input".into(),
-            serde_json::json!({
-                "type": "object",
-                "description": "Typed input for a port `operation`. Each field is passed to the bound plugin as a --key value flag, except `clientKey`: the idempotency key a write carries stays with the runtime — the same operation under the same key is performed once, and a later call returns the recorded result."
-            }),
-        );
-        props.insert(
-            "display".into(),
-            serde_json::json!({
-                "type": "string",
-                "description": "REQUIRED with any gated `operation` (money movement, outbound send, irreversible write): ONE plain-language sentence describing the action for the business owner's approval prompt. Use real names a non-technical person recognizes — company/person names, formatted amounts ('$2,500.00'), dates — never raw ids or cents. Example: 'Pay Acme Supplies $2,500.00 for bill #1042, due Jul 28'."
-            }),
-        );
-
-        serde_json::json!({
-            "type": "object",
-            "properties": serde_json::Value::Object(props),
-            "required": []
-        })
-    }
-
-    fn requires_approval(&self) -> bool {
-        false
-    }
-
-    /// A typed port call performs the `operation` it names; everything else
-    /// (list, discover, help, exec-by-slug) performs none. This is what the
-    /// runner's per-operation gate reads — the behaviour it had when the gate
-    /// matched on the tool's name.
-    fn operation_performed(&self, input: &serde_json::Value) -> Option<String> {
-        input
-            .get("operation")
-            .and_then(|v| v.as_str())
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(str::to_string)
-    }
-
-    fn requires_approval_for(&self, input: &serde_json::Value) -> bool {
-        // help, services, and events are read-only; exec needs approval
-        let action = input
-            .get("action")
-            .and_then(|v| v.as_str())
-            .unwrap_or("exec");
-        action == "exec"
-    }
-
-    fn is_concurrent_safe(&self, input: &serde_json::Value) -> bool {
-        let action = input
-            .get("action")
-            .and_then(|v| v.as_str())
-            .unwrap_or("exec");
-        // `discover` is read-only but can PARK on the inline install card
-        // (ask_user). A concurrently-executed tool races the model turn's
-        // stream teardown: the ask_request lands in a dropped channel and the
-        // oneshot waits forever (observed live on the first card test,
-        // 2026-08-22). Anything that may ask must run sequentially.
-        matches!(action, "list" | "events")
-    }
-
-    fn execute_dyn<'a>(
-        &'a self,
-        ctx: &'a ToolContext,
-        input: serde_json::Value,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolResult> + Send + 'a>> {
-        Box::pin(async move {
-            let mut pi: PluginInput = match serde_json::from_value(input) {
-                Ok(v) => v,
-                Err(e) => return ToolResult::error(format!("invalid input: {}", e)),
-            };
-            lift_args_command(&mut pi);
-
-            // Typed port pathway: an `operation` resolves to whichever installed plugin
-            // declares that binding (provider-agnostic), and `input` becomes flags. This
-            // is how a seat's capability port (`department.role.ledger.bill.create`) runs
-            // without naming a vendor tool.
-            if !pi.operation.is_empty() {
-                let (slug, command) = match self.resolve_port(&pi.operation) {
-                    Ok(x) => x,
-                    Err(e) => return ToolResult::error(e),
-                };
-                // The seat's idempotency key is the runtime's concern, not
-                // the plugin's: it comes out of the input before the binding
-                // renders, so it never reaches a command as `--clientKey`,
-                // and the same write asked for again under one key runs
-                // once (`effects::guarded_write`).
-                let client_key = take_client_key(&mut pi.input);
-                // The binding says how the call is shaped: a template's
-                // placeholders take their fields here, and only the fields it
-                // does not mention go on as `--key value` flags below.
-                let (command, consumed) = match render_binding(&pi.operation, &command, &pi.input) {
-                    Ok(x) => x,
-                    Err(e) => return ToolResult::error(e),
-                };
-                let mut args = pi.args.clone();
-                if let serde_json::Value::Object(map) = &pi.input {
-                    for (k, v) in map {
-                        if consumed.contains(k) {
-                            continue;
-                        }
-                        let sval = match v {
-                            serde_json::Value::String(s) => s.clone(),
-                            other => other.to_string(),
-                        };
-                        args.entry(k.clone()).or_insert(sval);
-                    }
-                }
-                let port_pi = PluginInput {
-                    resource: slug.clone(),
-                    action: "exec".to_string(),
-                    command,
-                    args,
-                    timeout: pi.timeout,
-                    query: String::new(),
-                    operation: String::new(),
-                    input: serde_json::Value::Null,
-                    display: String::new(),
-                };
-                if let Some(key) = client_key {
-                    return crate::effects::guarded_write(&self.db_store, ctx, &slug, &pi.operation, &key, || {
-                        self.run_port(&slug, &pi, &port_pi, ctx)
-                    })
-                    .await;
-                }
-                return self.run_port(&slug, &pi, &port_pi, ctx).await;
-            }
-
-            // `list` and `discover` don't need a plugin slug; `exec`/`events` do.
-            match pi.action.as_str() {
-                "list" => self.handle_list(ctx),
-                "discover" => self.handle_discover(&pi.query, ctx).await,
-                "exec" | "" => {
-                    // A command whose first word is one plugin's own service
-                    // (skills are named <slug>-<command>) names that plugin;
-                    // running it beats an error the model can only echo back.
-                    // doctor with no plugin named is doctor for every plugin:
-                    // the model wants the state of what is installed.
-                    if pi.resource.is_empty() && pi.command.trim() == "doctor" {
-                        let mut slugs: Vec<String> = self
-                            .plugin_store
-                            .list_installed()
-                            .into_iter()
-                            .map(|(slug, ..)| slug)
-                            .collect();
-                        slugs.sort();
-                        slugs.dedup();
-                        if slugs.is_empty() {
-                            return ToolResult::ok("No plugins installed; nothing to diagnose.");
-                        }
-                        let mut report = Vec::new();
-                        for slug in slugs {
-                            let one = PluginInput {
-                                resource: slug.clone(),
-                                action: "exec".to_string(),
-                                command: "doctor".to_string(),
-                                args: Default::default(),
-                                timeout: pi.timeout,
-                                query: String::new(),
-                                operation: String::new(),
-                                input: serde_json::Value::Null,
-                                display: String::new(),
-                            };
-                            let r = self.handle_exec(&one, ctx).await;
-                            report.push(format!("## {slug}\n{}", r.content.trim()));
-                        }
-                        return ToolResult::ok(report.join("\n\n"));
-                    }
-                    let pi = if pi.resource.is_empty() {
-                        match self.infer_resource_for_command(&format!("{} {}", pi.command, pi.display)) {
-                            Some(slug) => PluginInput { resource: slug, ..pi },
-                            None => {
-                                return ToolResult::error(
-                                    self.resource_required("exec", "exec\", command: \"doctor"),
-                                )
-                            }
-                        }
-                    } else {
-                        pi
-                    };
-                    // Raw exec must not be a side door around the per-employee
-                    // operation gate: a command that IS a gated bound operation
-                    // (e.g. ballast's `ingest` = kb.article.create) only runs
-                    // through the typed port, where the runner's OperationPolicy
-                    // gate (Blocked / Approval) applies. Observed live: an agent
-                    // whose kb.article.create was Blocked offered to run the
-                    // same write via exec instead.
-                    // The refusal carries the binding: a gate run (2026-09-23)
-                    // showed the model retrying the identical exec three times
-                    // and spawning a sub-agent because `input: {...}` named no
-                    // field it could fill.
-                    if let Some((op, template)) = self.gated_operation_for_command(&pi.resource, &pi.command) {
-                        return ToolResult::error(format!(
-                            "'{}' on {} is the gated operation '{op}'. Call it as \
-                             plugin(operation: \"{op}\", input: {{...}}, display: \"<plain-language \
-                             summary for the owner>\") so the owner's approval controls apply — \
-                             do not retry it through exec. The binding is `{template}`: each \
-                             {{field}} is an input field by that name, and input fields the \
-                             binding does not name are passed on as --key value flags.",
-                            pi.command, pi.resource
-                        ));
-                    }
-                    self.handle_exec(&pi, ctx).await
-                }
-                "events" => {
-                    if pi.resource.is_empty() {
-                        return ToolResult::error(self.resource_required("events", "events"));
-                    }
-                    self.handle_events(&pi.resource)
-                }
-                "search" | "skills" | "services" => ToolResult::error(format!(
-                    "action '{}' was removed in v0.10.0. Use action: \"list\" to see installed plugins, \"discover\" to search the marketplace, or call commands directly with action: \"exec\".",
-                    pi.action
-                )),
-                // A plugin's usage is its skills, and there is ONE reader:
-                // the skill tool. This tool no longer documents anything.
-                "help" | "docs" | "usage" => ToolResult::error(
-                    "A plugin's usage lives in its skills, which this tool lists by name under \
-                     Installed plugins. Read one with skill(action: \"load\", name: \"<skill name>\"), \
-                     or skill(action: \"discover\", query: \"<what you need>\") to find it."
-                        .to_string(),
-                ),
-                other => ToolResult::error(format!(
-                    "Unknown action: '{}'. Valid actions: list, discover, exec, events.",
-                    other
-                )),
-            }
-        })
-    }
-}
-
-impl PluginTool {
-    /// Run a resolved port call on the plugin that binds it.
+    /// Run a bound operation's command, through its one ledger row.
     ///
-    /// A customer-facing send goes through the effect ledger: recorded
-    /// before it goes, never sent twice for the same input in one run, held
-    /// when the outcome is unknown. The plugin vouches for the outcome with
-    /// a typed report on stdout (see `SendOutcome::from_plugin_output`); a
-    /// plugin that reports nothing typed leaves the send unknown, which
-    /// holds it — the words in an error are never the verdict.
-    async fn run_port(&self, slug: &str, pi: &PluginInput, port_pi: &PluginInput, ctx: &ToolContext) -> ToolResult {
-        if crate::effects::is_customer_send(&pi.operation) {
-            return crate::effects::guarded_send(&self.db_store, ctx, "messaging", slug, &pi.operation, &pi.input, || async {
-                let r = self.handle_exec(port_pi, ctx).await;
-                crate::effects::SendOutcome::from_plugin_output(&r.content)
-            })
+    /// A customer-facing send goes through the send ledger: recorded before
+    /// it goes, never sent twice for the same input in one run (or under the
+    /// same `clientKey` at all), held when the outcome is unknown. The
+    /// plugin vouches for the outcome with a typed report on stdout (see
+    /// `SendOutcome::from_plugin_output`); a plugin that reports nothing
+    /// typed leaves the send unknown, which holds it — the words in an error
+    /// are never the verdict. A send Nebo refused before the call reached
+    /// the plugin is failed (`Exec`). Any other write under a `clientKey`
+    /// goes through the write ledger. A send is never in both: one send with
+    /// two rows recorded two outcomes (live 2026-09-26: one failed, one held
+    /// pending forever).
+    async fn run_bound(
+        &self,
+        ctx: &ToolContext,
+        call: &PluginCall,
+        operation: &str,
+        input: &serde_json::Value,
+        client_key: Option<&str>,
+    ) -> ToolResult {
+        if crate::effects::is_customer_send(operation) {
+            return crate::effects::guarded_send(
+                &self.db_store,
+                ctx,
+                "messaging",
+                &call.slug,
+                operation,
+                input,
+                client_key,
+                || async { self.handle_exec(call, ctx).await.send_outcome() },
+            )
             .await;
         }
-        self.handle_exec(port_pi, ctx).await
-    }
-
-    /// The `resource` property: the installed slugs as an enum when there are
-    /// any. With none installed the enum is left out, because `enum: []`
-    /// makes every value schema-invalid and a validating provider then
-    /// rejects the right slug too (audit 2026-09-05).
-    fn resource_schema(slugs: &[String]) -> serde_json::Value {
-        let mut schema = serde_json::json!({
-            "type": "string",
-            "description": "Plugin slug: which installed plugin this call is about, as plugin(action: \"list\") shows it"
-        });
-        if !slugs.is_empty() {
-            schema["enum"] = serde_json::Value::Array(
-                slugs.iter().map(|s| serde_json::Value::String(s.clone())).collect(),
-            );
+        match client_key {
+            Some(key) => {
+                crate::effects::guarded_write(&self.db_store, ctx, &call.slug, operation, key, || async {
+                    self.handle_exec(call, ctx).await.into_result()
+                })
+                .await
+            }
+            None => self.handle_exec(call, ctx).await.into_result(),
         }
-        schema
     }
 
-    /// `resource` names which installed plugin a call is about. Said with
-    /// the plugins that are actually installed, because a made-up example
-    /// slug ("gws") was copied verbatim by a live run and then reported as
-    /// "not installed" (2026-09-05).
-    fn resource_required(&self, action: &str, example_tail: &str) -> String {
-        let installed: Vec<String> = self
-            .plugin_store
-            .list_installed()
-            .into_iter()
-            .map(|(slug, _, _, _)| slug)
-            .collect();
-        let choices = match installed.len() {
-            0 => "No plugin is installed; plugin(action: \"discover\", query: ...) finds one.".to_string(),
-            1 => format!("The only installed plugin is \"{}\".", installed[0]),
-            _ => format!("Installed plugins: {}.", installed.join(", ")),
-        };
-        format!(
-            "resource is required for action \"{action}\": the slug of the installed plugin. {choices} Example: plugin(resource: \"{}\", action: \"{example_tail}\")",
-            installed.first().map(String::as_str).unwrap_or("<slug>")
-        )
+    /// Run a command on an installed plugin (the `plugin__<slug>` tool). A
+    /// command that IS a gated bound operation is refused and pointed at its
+    /// operation tool: raw exec must not be a side door around the owner's
+    /// rules for that operation.
+    pub(crate) async fn run_command(&self, ctx: &ToolContext, call: &PluginCall) -> ToolResult {
+        // The refusal carries the binding: a gate run (2026-09-23) showed the
+        // model retrying the identical exec three times because it had no
+        // field names to fill.
+        if let Some((op, template)) = self.gated_operation_for_command(&call.slug, &call.command) {
+            return ToolResult::error(format!(
+                "'{}' on {} is the operation {op}, which the owner's approval rules cover. \
+                 Call {} instead (load it with find_tools) — do not retry it here. The \
+                 binding is `{template}`: each {{field}} is a parameter of that tool, and \
+                 fields the binding does not name are passed on as --key value flags.",
+                call.command,
+                call.slug,
+                crate::operation_tools::operation_tool_name(&op)
+            ));
+        }
+        self.handle_exec(call, ctx).await.into_result()
     }
 
-    fn handle_events(&self, slug: &str) -> ToolResult {
+    pub(crate) fn handle_events(&self, slug: &str) -> ToolResult {
         let events = self.plugin_store.get_events(slug);
         match events {
             Some(evts) if !evts.is_empty() => {
@@ -1465,9 +946,9 @@ impl PluginTool {
                     ));
                 }
                 result.push_str(&format!(
-                    "\nAgents can reference these via watch triggers:\n\
-                     agent(resource: \"registry\", action: \"create\", name: \"...\", automations: [\n  \
-                       {{\"name\": \"...\", \"plugin\": \"{}\", \"event\": \"<event-name>\", \"steps\": [...]}}])",
+                    "\nAn employee can run on these through a watch trigger in its agent.json \
+                     (create_employee with agent_json):\n  \
+                       {{\"workflows\": {{\"<name>\": {{\"trigger\": {{\"type\": \"watch\", \"plugin\": \"{}\", \"event\": \"<event-name>\"}}, \"activities\": [...]}}}}}}",
                     slug
                 ));
                 ToolResult::ok(result)
@@ -1480,7 +961,7 @@ impl PluginTool {
         }
     }
 
-    async fn handle_exec(&self, pi: &PluginInput, ctx: &ToolContext) -> ToolResult {
+    async fn handle_exec(&self, pi: &PluginCall, ctx: &ToolContext) -> Exec {
         // Channel-plugin messaging ops route through the running bridge sidecar's
         // stdin — never through a fresh CLI invocation. Two processes hitting the
         // same upstream socket race each other (we observed this with orphan
@@ -1498,13 +979,14 @@ impl PluginTool {
 
         let budget = ExecBudget::start(Self::exec_timeout(pi));
         let command_label = Self::command_label(pi);
-        let result = self.run_plugin_command(pi, ctx, budget.remaining()).await;
+        let first = self.run_plugin_command(pi, ctx, budget.remaining()).await;
+        let result = first.result();
 
         // On error, check if it's an auth failure and attempt self-heal:
         // silent refresh first (manifest `auth.commands.refresh`), interactive
         // browser login only as the last resort — and never when unattended.
         if result.is_error {
-            if let Some((binary, auth)) = self.plugin_store.get_auth_info(&pi.resource) {
+            if let Some((binary, auth)) = self.plugin_store.get_auth_info(&pi.slug) {
                 if is_auth_error(&result.content) {
                     // Resolve this agent's account profile for profile-dir
                     // plugins (e.g. gws) so the confirm probe and the silent
@@ -1522,7 +1004,7 @@ impl PluginTool {
                             self.db_store
                                 .resolve_plugin_account_profile(
                                     &agent_id,
-                                    &pi.resource,
+                                    &pi.slug,
                                     selected.as_deref(),
                                 )
                                 .ok()
@@ -1546,33 +1028,34 @@ impl PluginTool {
                     // Confirm with a fresh auth-status check (the one canonical
                     // decision, via PluginStore) if the command is available.
                     if auth.commands.status.is_some() {
-                        match bounded(&budget, &command_label, "the auth status check", self.probe_auth(&pi.resource, probe_dir)).await {
+                        match bounded(&budget, &command_label, "the auth status check", self.probe_auth(&pi.slug, probe_dir)).await {
                             // Status says authenticated — false positive, return original error
-                            Ok(Some(true)) => return result,
+                            Ok(Some(true)) => return first,
                             Ok(_) => {}
-                            Err(text) => return out_of_time(text, &result),
+                            Err(text) => return first.answer(out_of_time(text, result)),
                         }
                     }
 
-                    info!(plugin = %pi.resource, "auth failure detected");
+                    info!(plugin = %pi.slug, "auth failure detected");
+                    let (display_name, display_label) = self.display_names(&pi.slug);
 
                     // FIRST: silent, non-interactive token renewal when the
                     // manifest declares a refresh command. No user interruption,
                     // no browser — renew, re-probe, retry.
                     if auth.commands.refresh.is_some() {
-                        if let Err(text) = bounded(&budget, &command_label, "the silent token refresh", self.plugin_store.run_auth_refresh(&pi.resource, probe_dir)).await {
-                            return out_of_time(text, &result);
+                        if let Err(text) = bounded(&budget, &command_label, "the silent token refresh", self.plugin_store.run_auth_refresh(&pi.slug, probe_dir)).await {
+                            return first.answer(out_of_time(text, result));
                         }
-                        match bounded(&budget, &command_label, "the auth status check after the refresh", self.probe_auth(&pi.resource, probe_dir)).await {
+                        match bounded(&budget, &command_label, "the auth status check after the refresh", self.probe_auth(&pi.slug, probe_dir)).await {
                             Ok(Some(true)) => {
-                                info!(plugin = %pi.resource, "silent token refresh healed auth, retrying command");
+                                info!(plugin = %pi.slug, "silent token refresh healed auth, retrying command");
                                 return match budget.step(&command_label, "the retry after the refresh") {
-                                    Ok(given) => self.run_plugin_command(pi, ctx, given).await,
-                                    Err(text) => out_of_time(text, &result),
+                                    Ok(given) => first.retried(self.run_plugin_command(pi, ctx, given).await),
+                                    Err(text) => first.answer(out_of_time(text, result)),
                                 };
                             }
                             Ok(_) => {}
-                            Err(text) => return out_of_time(text, &result),
+                            Err(text) => return first.answer(out_of_time(text, result)),
                         }
                     }
 
@@ -1584,7 +1067,7 @@ impl PluginTool {
                         == crate::origin::ExecutionMode::Interactive
                         && ctx.ask_channels.is_some();
                     if !interactive {
-                        warn!(plugin = %pi.resource, "auth expired in unattended run; silent refresh failed");
+                        warn!(plugin = %pi.slug, "auth expired in unattended run; silent refresh failed");
                         if let Some(p) = profile.as_ref() {
                             if let Err(e) = self.db_store.set_plugin_account_reauth(&p.id, true) {
                                 warn!(error = %e, "failed to set plugin reauth flag");
@@ -1607,7 +1090,7 @@ impl PluginTool {
                             bc(
                                 "plugin_auth_error",
                                 serde_json::json!({
-                                    "plugin": &pi.resource,
+                                    "plugin": &pi.slug,
                                     "error": "Authentication expired and silent refresh failed",
                                 }),
                             );
@@ -1619,132 +1102,133 @@ impl PluginTool {
                         // No account at all is the owner's to connect: say
                         // so as data. An expired one is the reconnect notice's.
                         let need = (had_account == Some(false))
-                            .then(|| types::OwnerNeed::Account { plugin: pi.resource.clone() });
+                            .then(|| types::OwnerNeed::Account { plugin: pi.slug.clone() });
                         let refused = ToolResult::terminal(match (had_account, auth.commands.refresh.is_some()) {
                             (Some(false), _) => format!(
-                                "I couldn't reach **{}** — no account is connected for this \
+                                "I couldn't reach {display_name} — no account is connected for this \
                                  employee. Connect one in the employee's Settings, Plugins, \
-                                 then ask me again.",
-                                pi.resource
+                                 then ask me again."
                             ),
                             (Some(true), true) => format!(
-                                "I couldn't reach **{}** — its authentication expired and \
+                                "I couldn't reach {display_name} — its authentication expired and \
                                  automatic renewal didn't work. Please reconnect this account in \
-                                 the employee's Settings, Plugins, then ask me again.",
-                                pi.resource
+                                 the employee's Settings, Plugins, then ask me again."
                             ),
                             (Some(true), false) => format!(
-                                "I couldn't reach **{}** — its authentication expired, and this \
+                                "I couldn't reach {display_name} — its authentication expired, and this \
                                  plugin cannot renew itself. Please reconnect this account in the \
-                                 employee's Settings, Plugins, then ask me again.",
-                                pi.resource
+                                 employee's Settings, Plugins, then ask me again."
                             ),
                             (None, _) => format!(
-                                "I couldn't reach **{}** — it has no working sign-in: either it \
+                                "I couldn't reach {display_name} — it has no working sign-in: either it \
                                  was never connected, or its credentials stopped working. Connect \
-                                 it in Settings, Plugins, then ask me again.",
-                                pi.resource
+                                 it in Settings, Plugins, then ask me again."
                             ),
                         });
-                        return ToolResult { need, ..refused };
+                        return first.answer(ToolResult { need, ..refused });
                     }
 
-                    // A plugin whose account is entered in Nebo's own dialog
-                    // (auth type env) has no browser sign-in to fall through
-                    // to: its `auth login` takes the fields from the
-                    // environment, and run without them it serves a local
-                    // form and waits for minutes. Say where the account is
-                    // connected and end the turn.
+                    // Interactive chat: the ONE connect card — the widget the
+                    // install→connect chain and first use raise — and never a
+                    // login spawned on the bot's machine from inside the tool
+                    // call. The card's action runs the login on the client
+                    // that shows it, so an owner on the phone sees it. Live
+                    // (2026-09-26): the tool ran xero's login on the Mac while
+                    // the owner was on his phone; it exited 1 in two seconds
+                    // (its client id was never set), and the terminal result
+                    // ended the turn as a red bar showing raw markdown.
+
+                    // Sign-in details typed into Nebo's own dialog (auth type
+                    // env): the card collects no values, so there is nothing
+                    // to raise. Say what is missing as data; the model answers
+                    // the owner in prose and the turn ends normally.
                     if auth.auth_type == "env" {
-                        return ToolResult::terminal(format!(
-                            "I couldn't reach **{}** — no working account is connected for this \
-                             employee. Connect one in the employee's Settings, Plugins, then ask \
-                             me again.",
-                            pi.resource
-                        ))
-                        .with_need(types::OwnerNeed::Account { plugin: pi.resource.clone() });
-                    }
-
-                    // Interactive chat: fall through to today's browser OAuth path.
-                    // Broadcast re-auth request so frontend can show a notification
-                    if let Some(ref bc) = self.broadcaster {
-                        bc(
-                            "plugin_reauth_request",
-                            serde_json::json!({
-                                "plugin": &pi.resource,
-                                "label": &auth.label,
-                            }),
-                        );
-                    }
-
-                    // Attempt re-auth via plugin's auth login command
-                    let login_time = match budget.step(&command_label, "the browser login") {
-                        Ok(given) => given,
-                        Err(text) => return out_of_time(text, &result),
-                    };
-                    if self.run_auth_login(&pi.resource, &binary, &auth, login_time).await {
-                        info!(plugin = %pi.resource, "re-authentication succeeded, retrying command");
-
-                        // Broadcast success
-                        if let Some(ref bc) = self.broadcaster {
-                            bc(
-                                "plugin_auth_complete",
-                                serde_json::json!({ "plugin": &pi.resource }),
-                            );
-                        }
-
-                        return match budget.step(&command_label, "the retry after the login") {
-                            Ok(given) => self.run_plugin_command(pi, ctx, given).await,
-                            Err(text) => out_of_time(text, &result),
+                        let state = if had_account == Some(true) {
+                            "entered for this employee stopped working"
+                        } else {
+                            "have not been entered for this employee"
                         };
+                        return first.answer(ToolResult::error(format!(
+                            "{display_name} cannot be used: the {display_label} details {state}. \
+                             The owner enters them in {display_name}'s plugin settings. Tell the \
+                             owner that in plain words and stop; do not suggest commands."
+                        )));
                     }
 
-                    // Re-auth failed
-                    warn!(plugin = %pi.resource, "re-authentication failed");
-                    if let Some(ref bc) = self.broadcaster {
-                        bc(
-                            "plugin_auth_error",
-                            serde_json::json!({
-                                "plugin": &pi.resource,
-                                "error": "Re-authentication failed or timed out",
-                            }),
-                        );
+                    // Values the login itself needs (an OAuth app's client id
+                    // and secret, declared under `auth.env`) that nothing has
+                    // set: the login exits at once with "... is not set", on
+                    // the card too, so the card is not offered. Read from the
+                    // ONE env computation the login runs with.
+                    let login_env = napp::PluginRuntime::new(&pi.slug, binary.clone(), self.plugin_store.clone())
+                        .build_env();
+                    let mut unset: Vec<&str> = auth
+                        .env
+                        .keys()
+                        .map(String::as_str)
+                        .filter(|key| !login_env.iter().any(|(name, value)| name == key && !value.is_empty()))
+                        .collect();
+                    unset.sort_unstable();
+                    if !unset.is_empty() {
+                        return first.answer(ToolResult::error(format!(
+                            "{display_name} is not set up yet: {} {} no value, and no {display_label} can \
+                             be connected until the owner enters {} in {display_name}'s plugin settings. \
+                             Tell the owner that in plain words and stop; do not suggest commands.",
+                            unset.join(" and "),
+                            if unset.len() == 1 { "has" } else { "have" },
+                            if unset.len() == 1 { "it" } else { "them" },
+                        )));
                     }
 
-                    // Terminal: auth genuinely expired and reauth failed. End the
-                    // turn and surface to the user — do not let the agent keep
-                    // retrying/improvising (FRAMES.md Phase 1).
-                    let need = (had_account == Some(false))
-                        .then(|| types::OwnerNeed::Account { plugin: pi.resource.clone() });
-                    let refused = ToolResult::terminal(match had_account {
-                        Some(true) => format!(
-                            "I couldn't reach **{}** — its account is no longer authenticated and \
-                             signing in again didn't work. Please reconnect it in the employee's \
-                             Settings, Plugins, then ask me again.",
-                            pi.resource
-                        ),
-                        Some(false) => format!(
-                            "I couldn't reach **{}** — no account is connected for this employee, \
-                             and signing in didn't complete. Connect one in the employee's \
-                             Settings, Plugins, then ask me again.",
-                            pi.resource
-                        ),
-                        None => format!(
-                            "I couldn't reach **{}** — it has no working sign-in, and signing in \
-                             didn't complete. Connect it in Settings, Plugins, then ask me again.",
-                            pi.resource
-                        ),
-                    });
-                    return ToolResult { need, ..refused };
+                    let agent_id = types::keyparser::extract_agent_id(&ctx.session_key);
+                    if agent_id.is_empty() {
+                        return first.answer(ToolResult::error(format!(
+                            "{display_name} has no working sign-in, and this session belongs to no \
+                             employee a {display_label} could be connected for. Tell the owner in plain \
+                             words and stop."
+                        )));
+                    }
+                    let answer = ctx
+                        .ask_user(
+                            &format!(
+                                "I need your {display_label} connected to continue. Connect it on \
+                                 the card and I'll pick up right where I left off."
+                            ),
+                            Self::connect_account_widget(&pi.slug, &agent_id, &display_label),
+                        )
+                        .await;
+                    return match CardAnswer::read(answer.as_deref(), "connected") {
+                        CardAnswer::Done => {
+                            info!(plugin = %pi.slug, "account connected on the card, retrying command");
+                            // The owner's time on the card is not the command's:
+                            // the retry gets the full exec budget, as a launch
+                            // after the first-use card does.
+                            first.retried(self.run_plugin_command(pi, ctx, Self::exec_timeout(pi)).await)
+                        }
+                        CardAnswer::Failed(reason) => first.answer(ToolResult::error(format!(
+                            "Connecting the {display_label} failed: {reason}. Tell the owner that \
+                             error in plain words and stop. Do not offer the card again and do not \
+                             suggest commands."
+                        ))),
+                        CardAnswer::Skipped => first.answer(ToolResult::error(format!(
+                            "The owner skipped connecting the {display_label}, so {display_name} \
+                             cannot be used yet. Say so in plain words, do what can be done without \
+                             it, and do not offer the card again unless they ask."
+                        ))),
+                        CardAnswer::NoAnswer => first.answer(ToolResult::error(format!(
+                            "The {display_label} was not connected: no answer (the owner stopped \
+                             the run). Do not offer the card again."
+                        ))),
+                    };
                 }
             }
         }
 
-        result
+        first
     }
 
     /// The exec budget a call asked for, or the default.
-    fn exec_timeout(pi: &PluginInput) -> Duration {
+    fn exec_timeout(pi: &PluginCall) -> Duration {
         if pi.timeout > 0 {
             Duration::from_secs(pi.timeout as u64)
         } else {
@@ -1753,7 +1237,7 @@ impl PluginTool {
     }
 
     /// How a budget message names the command that ran.
-    fn command_label(pi: &PluginInput) -> String {
+    fn command_label(pi: &PluginCall) -> String {
         if pi.command.is_empty() {
             "the command".to_string()
         } else {
@@ -1763,15 +1247,15 @@ impl PluginTool {
 
     /// Execute a plugin command and return the result. Shared by initial call
     /// and retry; `timeout` is what is left of the exec budget.
-    async fn run_plugin_command(&self, pi: &PluginInput, ctx: &ToolContext, timeout: Duration) -> ToolResult {
+    async fn run_plugin_command(&self, pi: &PluginCall, ctx: &ToolContext, timeout: Duration) -> Exec {
         if pi.command.is_empty() && pi.args.is_empty() {
-            return ToolResult::error(
-                "command is required for exec. Run plugin(action: \"list\") to see installed plugins; each plugin's commands are shown in this tool's description (or load the plugin's skill for full syntax).",
-            );
+            return Exec::NotReached(ToolResult::error(
+                "command is required: the subcommand and flags, as the plugin's skills document them (read one with use_skill).",
+            ));
         }
 
         // Resolve binary path
-        let binary_path = match self.plugin_store.resolve(&pi.resource, "*") {
+        let binary_path = match self.plugin_store.resolve(&pi.slug, "*") {
             Some(p) => p,
             None => {
                 let slugs = self.installed_slugs();
@@ -1798,15 +1282,15 @@ impl PluginTool {
                 } else {
                     format!(" (disabled: {})", disabled.join(", "))
                 };
-                return ToolResult::error(format!(
+                return Exec::NotReached(ToolResult::error(format!(
                     "Plugin '{}' not found. Available: {}{}",
-                    pi.resource, available, disabled_desc
-                ));
+                    pi.slug, available, disabled_desc
+                )));
             }
         };
 
         debug!(
-            plugin = %pi.resource,
+            plugin = %pi.slug,
             command = %pi.command,
             args = ?pi.args,
             binary = %binary_path.display(),
@@ -1818,10 +1302,10 @@ impl PluginTool {
             match shlex::split(&pi.command) {
                 Some(a) => a,
                 None => {
-                    return ToolResult::error(format!(
+                    return Exec::NotReached(ToolResult::error(format!(
                         "Could not parse command '{}' (unbalanced quotes). Put values with quotes/special characters in args: {{\"key\": \"value\"}} instead.",
                         pi.command
-                    ));
+                    )));
                 }
             }
         } else {
@@ -1834,20 +1318,20 @@ impl PluginTool {
         // 2026-09-16). The model reads that as a bad query and starts guessing
         // at the command instead of dropping the pipe. Say what happened.
         if let Some(op) = shell_operator(&args) {
-            return ToolResult::error(format!(
+            return Exec::NotReached(ToolResult::error(format!(
                 "`{op}` is a shell operator and `{}` runs directly, with no shell — so `{op}` \
                  was handed to it as an argument and it refused. Run the command without it: the \
                  whole output comes back here for you to read. To get less back, narrow the \
                  command itself (a filter, a smaller query); there is no pipe to filter through.",
-                pi.resource
-            ));
+                pi.slug
+            )));
         }
 
         // Forgive a leading plugin-name token. Models often prefix the plugin
         // slug (e.g. `gws calendar events list`); the binary expects a service
         // first (`calendar events list`), so a leading `gws` makes it see
         // service "gws" → "Unknown service 'gws'". Drop it so both forms work.
-        if args.first().map(|a| a.eq_ignore_ascii_case(&pi.resource)) == Some(true) {
+        if args.first().map(|a| a.eq_ignore_ascii_case(&pi.slug)) == Some(true) {
             args.remove(0);
         }
 
@@ -1860,12 +1344,12 @@ impl PluginTool {
         if args.first().map(|a| a.eq_ignore_ascii_case("auth")) == Some(true) {
             if let Some(sub) = args.get(1).map(|s| s.to_ascii_lowercase()) {
                 if sub == "login" || sub == "logout" || sub == "setup" {
-                    return ToolResult::terminal(format!(
-                        "I can't sign in to or re-authenticate **{}** on my own — that's \
+                    let (display_name, _) = self.display_names(&pi.slug);
+                    return Exec::NotReached(ToolResult::terminal(format!(
+                        "I can't sign in to or re-authenticate {display_name} on my own — that's \
                          handled for you. If this account needs reconnecting, you can do it \
-                         in this agent's Settings, Plugins.",
-                        pi.resource
-                    ));
+                         in this agent's Settings, Plugins."
+                    )));
                 }
             }
         }
@@ -1890,7 +1374,7 @@ impl PluginTool {
         // account authed first to every account-less agent).
         let profile_dir_injection: Option<(String, String)> = match self
             .plugin_store
-            .get_manifest(&pi.resource)
+            .get_manifest(&pi.slug)
             .and_then(|m| m.auth)
             .and_then(|a| a.profile_dir_env)
         {
@@ -1902,7 +1386,7 @@ impl PluginTool {
                     self.db_store
                         .resolve_plugin_account_profile(
                             agent_id,
-                            &pi.resource,
+                            &pi.slug,
                             selected_account.as_deref(),
                         )
                         .ok()
@@ -1921,7 +1405,7 @@ impl PluginTool {
                             .as_deref()
                             .and_then(|a| {
                                 self.db_store
-                                    .list_plugin_account_profiles(a, &pi.resource)
+                                    .list_plugin_account_profiles(a, &pi.slug)
                                     .ok()
                             })
                             .unwrap_or_default()
@@ -1931,28 +1415,28 @@ impl PluginTool {
                         if let (Some(label), false) = (selected_account.as_deref(), connected.is_empty()) {
                             // Wrong label with accounts present: the model can
                             // fix this itself, so it stays a plain error.
-                            return ToolResult::error(format!(
+                            return Exec::NotReached(ToolResult::error(format!(
                                 "No {res} account named \"{label}\" for this agent. Connected \
                                  {res} accounts: {labels}. Retry with one of those exact labels \
                                  (or omit --account to use the primary).",
-                                res = pi.resource,
+                                res = pi.slug,
                                 labels = connected.join(", ")
-                            ));
+                            )));
                         }
                         let none_msg = format!(
                             "No {res} account is connected for this agent. Connect one in \
                              this agent's Settings, Plugins before using {res}.",
-                            res = pi.resource
+                            res = pi.slug
                         );
                         // doctor and help are how a model checks the state; the
                         // state is the answer, not an error to recover from.
                         let first = pi.command.split_whitespace().next().unwrap_or("");
                         if first == "doctor" || first == "help" || pi.command.contains("--help") {
-                            return ToolResult::ok(format!(
+                            return Exec::NotReached(ToolResult::ok(format!(
                                 "{res} {first}: not connected. {none_msg} Nothing else to \
                                  diagnose until then.",
-                                res = pi.resource
-                            ));
+                                res = pi.slug
+                            )));
                         }
                         // Nothing connected. Interactive chat renders an inline
                         // connect card via ask_user, which parks THIS tool call
@@ -1961,8 +1445,20 @@ impl PluginTool {
                         let interactive = crate::origin::ExecutionMode::from(ctx.origin)
                             == crate::origin::ExecutionMode::Interactive
                             && ctx.ask_channels.is_some();
+                        // Nothing connected and no card answered: every
+                        // command waits on it, a dry run included. Gate
+                        // 2026-09-26: after the bare line, runs searched
+                        // memory for a company id, asked the owner for one
+                        // and re-read skills, seven to ten calls each,
+                        // around a wall no call could move.
+                        let blocked = format!(
+                            "{none_msg} Until one is connected no {res} command can run, a dry run or a read \
+                             included. Tell the owner what you'll do once it's connected; don't look for \
+                             credentials or account ids anywhere else.",
+                            res = pi.slug
+                        );
                         let Some(agent_id) = agent_id.as_deref() else {
-                            return ToolResult::error(none_msg);
+                            return Exec::NotReached(ToolResult::error(blocked));
                         };
                         if !interactive {
                             // Unattended: the error steers to what IS connected
@@ -1979,7 +1475,7 @@ impl PluginTool {
                                 .unwrap_or_default()
                                 .into_iter()
                                 .map(|p| p.plugin_slug)
-                                .filter(|s| s != &pi.resource)
+                                .filter(|s| s != &pi.slug)
                                 .collect();
                             connected.sort();
                             connected.dedup();
@@ -1987,11 +1483,13 @@ impl PluginTool {
                                 .bound_operations()
                                 .into_iter()
                                 .filter(|(_, slug)| connected.contains(slug))
-                                .map(|(op, slug)| format!("{op} (via {slug})"))
+                                .map(|(op, slug)| {
+                                    format!("{} (via {slug})", crate::operation_tools::operation_tool_name(&op))
+                                })
                                 .collect();
                             if connected.is_empty() {
-                                return ToolResult::terminal(none_msg)
-                                    .with_need(types::OwnerNeed::Account { plugin: pi.resource.clone() });
+                                return Exec::NotReached(ToolResult::terminal(none_msg)
+                                    .with_need(types::OwnerNeed::Account { plugin: pi.slug.clone() }));
                             }
                             let mut msg = format!(
                                 "{none_msg} Connected for this employee: {}.",
@@ -1999,7 +1497,7 @@ impl PluginTool {
                             );
                             if !ports.is_empty() {
                                 msg.push_str(&format!(
-                                    " Typed ports those serve: {}; call plugin(operation: \"<op>\", input: {{...}}).",
+                                    " Operation tools those serve: {}.",
                                     ports.join(", ")
                                 ));
                             }
@@ -2007,15 +1505,9 @@ impl PluginTool {
                                 " Do the work with what is connected; if it cannot be done without \
                                  this account, exit the turn saying so instead of retrying it.",
                             );
-                            return ToolResult::error(msg);
+                            return Exec::NotReached(ToolResult::error(msg));
                         }
-                        let display_label = self
-                            .plugin_store
-                            .get_manifest(&pi.resource)
-                            .and_then(|m| m.auth)
-                            .map(|a| a.label)
-                            .filter(|l| !l.is_empty())
-                            .unwrap_or_else(|| pi.resource.clone());
+                        let (_, display_label) = self.display_names(&pi.slug);
                         let answer = ctx
                             .ask_user(
                                 &format!(
@@ -2024,20 +1516,20 @@ impl PluginTool {
                                      left off."
                                 ),
                                 Self::connect_account_widget(
-                                    &pi.resource,
+                                    &pi.slug,
                                     agent_id,
                                     &display_label,
                                 ),
                             )
                             .await;
                         if answer.as_deref() != Some("connected") {
-                            return ToolResult::error(none_msg);
+                            return Exec::NotReached(ToolResult::error(blocked));
                         }
                         match self
                             .db_store
                             .resolve_plugin_account_profile(
                                 agent_id,
-                                &pi.resource,
+                                &pi.slug,
                                 selected_account.as_deref(),
                             )
                             .ok()
@@ -2045,10 +1537,10 @@ impl PluginTool {
                         {
                             Some(p) => Some((env_name, p.config_dir)),
                             None => {
-                                return ToolResult::error(format!(
+                                return Exec::NotReached(ToolResult::error(format!(
                                     "The {res} account didn't finish connecting. {none_msg}",
-                                    res = pi.resource
-                                ));
+                                    res = pi.slug
+                                )));
                             }
                         }
                     }
@@ -2063,7 +1555,7 @@ impl PluginTool {
         // Per-invocation context goes through `with_env` so the runtime stays the
         // single place that knows how to assemble a plugin's environment.
         let mut runtime = napp::PluginRuntime::new(
-            &pi.resource,
+            &pi.slug,
             binary_path.clone(),
             self.plugin_store.clone(),
         )
@@ -2106,12 +1598,16 @@ impl PluginTool {
             .await;
 
         match result {
-            Err(napp::plugin_runtime::LaunchError::TimedOut { .. }) => ToolResult::error(format!(
+            // The process never started: the call did not reach the plugin.
+            Err(e @ napp::plugin_runtime::LaunchError::Spawn(_)) => {
+                Exec::NotReached(ToolResult::error(format!("Plugin '{}' command failed: {}", pi.slug, e)))
+            }
+            Err(napp::plugin_runtime::LaunchError::TimedOut { .. }) => Exec::Reached(ToolResult::error(format!(
                 "Plugin '{}' command timed out after {}s",
-                pi.resource,
+                pi.slug,
                 timeout.as_secs()
-            )),
-            Err(e) => ToolResult::error(format!("Plugin '{}' command failed: {}", pi.resource, e)),
+            ))),
+            Err(e) => Exec::Reached(ToolResult::error(format!("Plugin '{}' command failed: {}", pi.slug, e))),
             Ok(output) => {
                 let mut text = String::new();
 
@@ -2135,10 +1631,10 @@ impl PluginTool {
                         Some(code) => format!("exited with code {}", code),
                         None => "was terminated by a signal".to_string(),
                     };
-                    return ToolResult::error(format!(
+                    return Exec::Reached(ToolResult::error(format!(
                         "Plugin '{}' {}\n{}",
-                        pi.resource, how, text
-                    ));
+                        pi.slug, how, text
+                    )));
                 }
 
                 if text.is_empty() {
@@ -2169,10 +1665,10 @@ impl PluginTool {
                 // panel / chat cards. Same is_work_document gate; the mtime check
                 // keeps inputs the plugin only read (a spec, a template) out.
                 let result = ToolResult::ok(text);
-                match produced_work_document(&args, None, started) {
+                Exec::Reached(match produced_work_document(&args, None, started) {
                     Some(path) => result.with_image_url(path),
                     None => result,
-                }
+                })
             }
         }
     }
@@ -2188,9 +1684,9 @@ impl PluginTool {
     async fn route_through_bridge(
         &self,
         op: &str,
-        pi: &PluginInput,
+        pi: &PluginCall,
         ctx: &ToolContext,
-    ) -> ToolResult {
+    ) -> Exec {
         // Caller agent_id is encoded in session_key as "agent:<id>:..." for
         // channel and chat runs. For non-agent runs (cron without channel
         // context, system tasks) there's no agent to look up a bridge for.
@@ -2205,36 +1701,36 @@ impl PluginTool {
         };
 
         if agent_id.is_empty() {
-            return ToolResult::error(format!(
+            return Exec::NotReached(ToolResult::error(format!(
                 "Cannot route `{op}` to channel plugin `{}` — this run has no agent context. \
                  Channel ops only work inside agent-bound conversations or scheduled tasks \
                  that preserve their originating channel.",
-                pi.resource
-            ));
+                pi.slug
+            )));
         }
 
         let registry = match channel_bridge::channel_bridges() {
             Some(r) => r,
             None => {
-                return ToolResult::error(
+                return Exec::NotReached(ToolResult::error(
                     "Channel bridge registry not initialized — Nebo is still starting up.".to_string(),
-                );
+                ));
             }
         };
 
-        let key = channel_bridge::channel_bridge_key(&agent_id, &pi.resource);
+        let key = channel_bridge::channel_bridge_key(&agent_id, &pi.slug);
         let handle = {
             let guard = registry.read().await;
             guard.get(&key).cloned()
         };
         let Some(handle) = handle else {
-            return ToolResult::error(format!(
+            return Exec::NotReached(ToolResult::error(format!(
                 "Channel plugin `{}` is not running for agent `{}`. \
                  Enable it for this agent in Settings → Channels. \
                  (Real-time messaging ops {{reply, post, upload, dm}} only work \
                  when the bridge sidecar is live — there is no fallback CLI path.)",
-                pi.resource, agent_id
-            ));
+                pi.slug, agent_id
+            )));
         };
 
         // Build the op JSON. Args come from pi.args (named flags) plus any
@@ -2260,10 +1756,10 @@ impl PluginTool {
         let mut op_json = match build_op_json(op, &args) {
             Ok(v) => v,
             Err(e) => {
-                return ToolResult::error(format!(
+                return Exec::NotReached(ToolResult::error(format!(
                     "Channel op `{op}` for plugin `{}`: {e}",
-                    pi.resource
-                ));
+                    pi.slug
+                )));
             }
         };
 
@@ -2289,15 +1785,15 @@ impl PluginTool {
 
         if let Err(e) = handle.stdin_tx.send(op_json).await {
             handle.pending_ops.lock().await.remove(&req_id);
-            return ToolResult::error(format!(
+            return Exec::NotReached(ToolResult::error(format!(
                 "Bridge for plugin `{}` (agent `{}`) has closed its stdin ({e}). \
                  Restart the channel in Settings > Channels.",
-                pi.resource, agent_id
-            ));
+                pi.slug, agent_id
+            )));
         }
 
         info!(
-            plugin = %pi.resource,
+            plugin = %pi.slug,
             agent = %agent_id,
             op = %op,
             req_id = %req_id,
@@ -2308,21 +1804,22 @@ impl PluginTool {
         // case (large file uploads through `files.uploadV2`). Past that
         // it's almost certainly a stuck bridge — drop the pending entry
         // and surface a real timeout error instead of waiting forever.
-        match tokio::time::timeout(Duration::from_secs(30), result_rx).await {
+        // The bridge took the op: from here the call has reached the plugin.
+        Exec::Reached(match tokio::time::timeout(Duration::from_secs(30), result_rx).await {
             Ok(Ok(res)) if res.ok => ToolResult::ok(format!(
                 "Op `{op}` completed on plugin `{}` (agent `{}`, req_id {}).",
-                pi.resource, agent_id, req_id
+                pi.slug, agent_id, req_id
             )),
             Ok(Ok(res)) => ToolResult::error(format!(
                 "Op `{op}` on plugin `{}` failed: {}",
-                pi.resource,
+                pi.slug,
                 res.error.unwrap_or_else(|| "unknown error".into())
             )),
             Ok(Err(_)) => ToolResult::error(format!(
                 "Bridge for plugin `{}` (agent `{}`) closed before reporting \
                  the result of `{op}`. The op may or may not have run on the \
                  platform — check the channel for evidence and retry if needed.",
-                pi.resource, agent_id
+                pi.slug, agent_id
             )),
             Err(_) => {
                 handle.pending_ops.lock().await.remove(&req_id);
@@ -2330,10 +1827,10 @@ impl PluginTool {
                     "Op `{op}` on plugin `{}` timed out after 30s without a \
                      result from the bridge. The op may still complete \
                      asynchronously, but its outcome is unknown.",
-                    pi.resource
+                    pi.slug
                 ))
             }
-        }
+        })
     }
 
 
@@ -2352,156 +1849,6 @@ impl PluginTool {
                     .await
             }
             None => Some(self.plugin_store.check_auth_now(slug).await),
-        }
-    }
-
-    async fn run_auth_login(
-        &self,
-        slug: &str,
-        binary: &Path,
-        auth: &napp::plugin::PluginAuth,
-        budget: Duration,
-    ) -> bool {
-        let runtime = napp::PluginRuntime::new(slug, binary.to_path_buf(), self.plugin_store.clone());
-        let mut cmd = runtime.command(&auth.commands.login);
-        process::hide_window(&mut cmd);
-        cmd.stdin(Stdio::null());
-        cmd.stdout(Stdio::piped());
-        cmd.stderr(Stdio::piped());
-
-        let mut child = match cmd.spawn() {
-            Ok(c) => c,
-            Err(e) => {
-                warn!(plugin = %slug, error = %e, "failed to spawn auth login");
-                return false;
-            }
-        };
-
-        // Read stderr for OAuth URLs (plugins write the URL to stderr).
-        let stderr_handle = child.stderr.take();
-        let slug_owned = slug.to_string();
-        let broadcaster = self.broadcaster.clone();
-
-        let stderr_task = tokio::spawn(async move {
-            let mut all = String::new();
-            let mut opened = false;
-            if let Some(mut stream) = stderr_handle {
-                let mut buf = [0u8; 4096];
-                loop {
-                    let has_candidate = !opened && has_url_candidate(&all);
-                    let read_result = if has_candidate {
-                        match tokio::time::timeout(Duration::from_secs(1), stream.read(&mut buf))
-                            .await
-                        {
-                            Ok(r) => r,
-                            Err(_) => {
-                                // Timeout — treat URL as complete
-                                if let Some(url) = extract_url(&all, true) {
-                                    open_auth_url(&slug_owned, &url, &broadcaster);
-                                    opened = true;
-                                }
-                                continue;
-                            }
-                        }
-                    } else {
-                        stream.read(&mut buf).await
-                    };
-                    match read_result {
-                        Ok(0) => break,
-                        Ok(n) => {
-                            let chunk = String::from_utf8_lossy(&buf[..n]);
-                            debug!(plugin = %slug_owned, chunk = %chunk, "auth login stderr");
-                            all.push_str(&chunk);
-                            if !opened {
-                                if let Some(url) = extract_url(&all, false) {
-                                    open_auth_url(&slug_owned, &url, &broadcaster);
-                                    opened = true;
-                                }
-                            }
-                        }
-                        Err(_) => break,
-                    }
-                }
-            }
-            all
-        });
-
-        // Also read stdout (some plugins may write URL there)
-        let stdout_handle = child.stdout.take();
-        let slug_for_stdout = slug.to_string();
-        let broadcaster_for_stdout = self.broadcaster.clone();
-
-        let stdout_task = tokio::spawn(async move {
-            let mut all = String::new();
-            let mut opened = false;
-            if let Some(mut stream) = stdout_handle {
-                let mut buf = [0u8; 4096];
-                loop {
-                    let has_candidate = !opened && has_url_candidate(&all);
-                    let read_result = if has_candidate {
-                        match tokio::time::timeout(Duration::from_secs(1), stream.read(&mut buf))
-                            .await
-                        {
-                            Ok(r) => r,
-                            Err(_) => {
-                                if let Some(url) = extract_url(&all, true) {
-                                    open_auth_url(&slug_for_stdout, &url, &broadcaster_for_stdout);
-                                    opened = true;
-                                }
-                                continue;
-                            }
-                        }
-                    } else {
-                        stream.read(&mut buf).await
-                    };
-                    match read_result {
-                        Ok(0) => break,
-                        Ok(n) => {
-                            let chunk = String::from_utf8_lossy(&buf[..n]);
-                            debug!(plugin = %slug_for_stdout, chunk = %chunk, "auth login stdout");
-                            all.push_str(&chunk);
-                            if !opened {
-                                if let Some(url) = extract_url(&all, false) {
-                                    open_auth_url(&slug_for_stdout, &url, &broadcaster_for_stdout);
-                                    opened = true;
-                                }
-                            }
-                        }
-                        Err(_) => break,
-                    }
-                }
-            }
-            all
-        });
-
-        // Wait for the auth login process for what is left of the exec budget.
-        let login_result = tokio::time::timeout(budget, async {
-            let (stderr_out, stdout_out) = tokio::join!(stderr_task, stdout_task);
-            let _stderr = stderr_out.unwrap_or_default();
-            let _stdout = stdout_out.unwrap_or_default();
-            child.wait().await
-        })
-        .await;
-
-        match login_result {
-            Ok(Ok(status)) if status.success() => {
-                info!(plugin = %slug, "plugin re-authentication succeeded");
-                true
-            }
-            Ok(Ok(status)) => {
-                warn!(plugin = %slug, code = ?status.code(), "plugin re-authentication failed");
-                false
-            }
-            Ok(Err(e)) => {
-                warn!(plugin = %slug, error = %e, "plugin auth login process error");
-                false
-            }
-            Err(_) => {
-                warn!(plugin = %slug, secs = budget.as_secs(), "plugin auth login timed out");
-                // Kill the child process on timeout
-                let _ = child.kill().await;
-                false
-            }
         }
     }
 }
@@ -2583,7 +1930,7 @@ pub fn notify_plugin_needs_reauth(
         "{}'s connection to {} expired. Reconnect it in the agent's Settings, Plugins.",
         p.account_label, p.plugin_slug
     );
-    let action_url = format!("/{}/settings/accounts", p.agent_id);
+    let action_url = crate::owner_notify::link::accounts(&p.agent_id, Some(&p.plugin_slug));
     crate::owner_notify::emit(
         store,
         Some(&|ev, payload| broadcast(ev, payload)),
@@ -2614,53 +1961,6 @@ fn extract_and_strip_flag(args: &mut Vec<String>, name: &str) -> Option<String> 
     let value = args.remove(idx + 1);
     args.remove(idx);
     Some(value)
-}
-
-// ── URL extraction (duplicated from handlers/plugins.rs) ────────────
-
-/// Returns true if the text ends with an incomplete URL-like token.
-fn has_url_candidate(text: &str) -> bool {
-    let words: Vec<&str> = text.split_whitespace().collect();
-    if let Some(last) = words.last() {
-        let trimmed = last.trim_matches(|c: char| c == '"' || c == '\'' || c == '<' || c == '>');
-        (trimmed.starts_with("https://") || trimmed.starts_with("http://"))
-            && !text.ends_with(char::is_whitespace)
-    } else {
-        false
-    }
-}
-
-/// Extract the first HTTP(S) URL from accumulated output text.
-///
-/// When `complete` is false (streaming), only returns a URL that is followed by
-/// more text — avoids matching a partial URL still being written.
-/// When `complete` is true (after timeout), the last token is accepted.
-fn extract_url(text: &str, complete: bool) -> Option<String> {
-    let words: Vec<&str> = text.split_whitespace().collect();
-    for (i, word) in words.iter().enumerate() {
-        let trimmed = word.trim_matches(|c: char| c == '"' || c == '\'' || c == '<' || c == '>');
-        if trimmed.starts_with("https://") || trimmed.starts_with("http://") {
-            let is_last = i == words.len() - 1;
-            if complete || !is_last || text.ends_with(char::is_whitespace) {
-                return Some(trimmed.to_string());
-            }
-        }
-    }
-    None
-}
-
-/// Open an OAuth URL: broadcast via WebSocket so the frontend can call `window.open()`.
-fn open_auth_url(slug: &str, url: &str, broadcaster: &Option<crate::web_tool::Broadcaster>) {
-    info!(plugin = %slug, url = %url, "opening plugin OAuth URL for re-authentication");
-    if let Some(bc) = broadcaster {
-        bc(
-            "plugin_auth_url",
-            serde_json::json!({
-                "plugin": slug,
-                "url": url,
-            }),
-        );
-    }
 }
 
 /// The first shell operator sitting among parsed args, if any. A plugin runs
@@ -2940,23 +2240,27 @@ mod tests {
     }
     use super::*;
 
+    /// An expired sign-in opens that employee's accounts at that plugin,
+    /// where it is connected again.
     #[test]
-    fn args_command_is_the_command() {
-        let mut pi: PluginInput = serde_json::from_value(
-            serde_json::json!({"action": "exec", "resource": "quickbooks", "args": {"command": "doctor"}}),
-        )
-        .unwrap();
-        lift_args_command(&mut pi);
-        assert_eq!(pi.command, "doctor");
-        assert!(pi.args.is_empty());
-        // An explicit command wins; args stay as flags.
-        let mut pi: PluginInput = serde_json::from_value(
-            serde_json::json!({"command": "query run", "args": {"command": "x", "query": "SELECT 1"}}),
-        )
-        .unwrap();
-        lift_args_command(&mut pi);
-        assert_eq!(pi.command, "query run");
-        assert_eq!(pi.args.len(), 2);
+    fn an_expired_sign_in_opens_the_employees_accounts_at_the_plugin() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = db::Store::new(&dir.path().join("t.db").to_string_lossy()).unwrap();
+        let p = db::PluginAccountProfile {
+            id: "p1".into(),
+            agent_id: "emp".into(),
+            plugin_slug: "quickbooks".into(),
+            account_label: "Books".into(),
+            config_dir: String::new(),
+            is_primary: true,
+            needs_reauth: true,
+            reauth_notified: false,
+        };
+        notify_plugin_needs_reauth(&store, |_, _| {}, &p);
+        let user = store.ensure_local_user_id().unwrap();
+        let rows = store.list_user_notifications(&user, 10, 0).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].action_url.as_deref(), Some("/emp/settings/accounts?plugin=quickbooks"));
     }
 
     #[test]
@@ -3145,29 +2449,6 @@ mod tests {
     }
 
     #[test]
-    fn test_port_department_and_capability_scope_resolution() {
-        // The department is what disambiguates a shared operation across departments:
-        // accounting.collections-specialist.mail.message.send and
-        // customer-support.escalation-specialist.mail.message.send are the SAME operation
-        // but must be able to resolve to different providers.
-        assert_eq!(
-            port_department("accounting.collections-specialist.mail.message.send").as_deref(),
-            Some("accounting")
-        );
-        assert_eq!(
-            port_department("customer-support.escalation-specialist.mail.message.send").as_deref(),
-            Some("customer-support")
-        );
-        // Both target the same capability — hence the collision the department resolves.
-        assert_eq!(port_capability("accounting.collections-specialist.mail.message.send"), "mail");
-        assert_eq!(port_capability("customer-support.escalation-specialist.mail.message.send"), "mail");
-        assert_eq!(port_capability("accounting.ap-specialist.ledger.bill.create"), "ledger");
-        // A bare operation has no department (nothing to scope by).
-        assert_eq!(port_department("mail.message.send"), None);
-    }
-
-
-    #[test]
     fn test_workflow_session_key_round_trips_to_agent_id() {
         // The workflow engine builds its session key with this constructor;
         // per-agent plugin account resolution must recover the id from it.
@@ -3200,52 +2481,6 @@ mod tests {
         assert!(!is_auth_error("network timeout"));
         assert!(!is_auth_error("rate limited, try again later"));
         assert!(!is_auth_error("permission denied: /etc/shadow"));
-    }
-
-    #[test]
-    fn test_extract_url_streaming() {
-        // URL followed by more text → extracted
-        assert_eq!(
-            extract_url(
-                "Visit https://accounts.google.com/o/oauth2 to continue",
-                false
-            ),
-            Some("https://accounts.google.com/o/oauth2".to_string())
-        );
-        // URL as last token without trailing whitespace → NOT extracted (still streaming)
-        assert_eq!(
-            extract_url("Visit https://accounts.google.com/o/oauth2", false),
-            None
-        );
-        // URL as last token with trailing whitespace → extracted
-        assert_eq!(
-            extract_url("Visit https://accounts.google.com/o/oauth2 ", false),
-            Some("https://accounts.google.com/o/oauth2".to_string())
-        );
-    }
-
-    #[test]
-    fn test_extract_url_complete() {
-        // In complete mode, last token is accepted
-        assert_eq!(
-            extract_url("Visit https://accounts.google.com/o/oauth2", true),
-            Some("https://accounts.google.com/o/oauth2".to_string())
-        );
-    }
-
-    #[test]
-    fn test_extract_url_strips_quotes() {
-        assert_eq!(
-            extract_url("URL: \"https://example.com/auth\" done", false),
-            Some("https://example.com/auth".to_string())
-        );
-    }
-
-    #[test]
-    fn test_has_url_candidate() {
-        assert!(has_url_candidate("Visit https://example.com"));
-        assert!(!has_url_candidate("Visit https://example.com "));
-        assert!(!has_url_candidate("no url here"));
     }
 
     #[test]
@@ -3311,6 +2546,7 @@ mod tests {
 #[cfg(test)]
 mod budget_and_install_tests {
     use super::*;
+    use crate::registry::DynTool;
 
     fn stores(tmp: &std::path::Path) -> (Arc<napp::plugin::PluginStore>, Arc<db::Store>) {
         let installed = tmp.join("plugins");
@@ -3333,28 +2569,6 @@ mod budget_and_install_tests {
         )
         .unwrap();
         std::fs::write(version_dir.join(slug), b"#!/bin/sh\necho ok\n").unwrap();
-    }
-
-    /// With nothing installed the resource property carries no enum at all
-    /// (an empty enum makes every slug invalid), and the description says
-    /// where a slug comes from.
-    #[test]
-    fn no_plugins_means_no_enum_and_a_pointer_to_list() {
-        let tmp = tempfile::tempdir().unwrap();
-        let (plugin_store, db_store) = stores(tmp.path());
-        let tool = PluginTool::new(plugin_store, db_store);
-        let resource = &tool.schema()["properties"]["resource"];
-        assert!(resource.get("enum").is_none(), "{resource}");
-        assert!(resource["description"].as_str().unwrap().contains("plugin(action: \"list\")"));
-        let description = tool.description();
-        assert!(description.contains("plugin(resource: \"<slug>\""), "{description}");
-        assert!(description.contains("plugin(action: \"list\")"), "{description}");
-        assert!(!description.contains("gws"), "{description}");
-
-        install_fake(tmp.path(), "quickbooks");
-        let resource = &tool.schema()["properties"]["resource"];
-        assert_eq!(resource["enum"], serde_json::json!(["quickbooks"]));
-        assert!(!tool.description().contains("resource: \"gws\""));
     }
 
     /// A plugin whose accounts are per employee, with a manifest that says so.
@@ -3394,16 +2608,14 @@ mod budget_and_install_tests {
             .to_string(),
         )
         .unwrap();
-        let tool = PluginTool::new(plugin_store, db_store);
+        let runner = Arc::new(PluginRunner::new(plugin_store, db_store));
+        let tool = crate::plugin_tools::PluginCliTool::new(runner, "quickbooks");
         let ctx = ToolContext { session_key: "agent:ic:main".into(), ..Default::default() };
         let r = tool
-            .execute_dyn(
-                &ctx,
-                serde_json::json!({"resource": "quickbooks", "action": "exec", "command": "payment create --dry-run --json"}),
-            )
+            .execute_dyn(&ctx, serde_json::json!({"command": "payment create --dry-run --json"}))
             .await;
         assert!(r.is_error, "{}", r.content);
-        assert!(r.content.contains("ledger.payment.apply"), "{}", r.content);
+        assert!(r.content.contains("ledger.payment.apply") && r.content.contains("Call ledger_payment_apply"), "{}", r.content);
         assert!(r.content.contains("--customer-ref {customerRef}"), "the binding template is in the refusal: {}", r.content);
     }
 
@@ -3429,19 +2641,30 @@ mod budget_and_install_tests {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
-        let tool = PluginTool::new(plugin_store, db_store);
+        let tool = operation_tool(plugin_store, db_store, "quickbooks", "ledger_invoice_send");
         let ctx = ToolContext { session_key: "agent:ic:main".into(), ..Default::default() };
         let r = tool
-            .execute_dyn(
-                &ctx,
-                serde_json::json!({
-                    "operation": "accounting.ar-specialist.ledger.invoice.send",
-                    "input": {"invoiceId": "Invoice 1041", "sendTo": "ap@example.com"},
-                }),
-            )
+            .execute_dyn(&ctx, serde_json::json!({"invoiceId": "Invoice 1041", "sendTo": "ap@example.com"}))
             .await;
         assert!(!r.is_error, "{}", r.content);
         assert!(r.content.contains("invoice\nsend\nInvoice 1041\n--sendTo\nap@example.com"), "{}", r.content);
+    }
+
+    /// The operation tool `name` as the registry builds it from `slug`'s
+    /// bindings.
+    fn operation_tool(
+        plugin_store: Arc<napp::plugin::PluginStore>,
+        db_store: Arc<db::Store>,
+        slug: &str,
+        name: &str,
+    ) -> crate::operation_tools::OperationTool {
+        let runner = Arc::new(PluginRunner::new(plugin_store, db_store));
+        let provider: Arc<dyn crate::operation_tools::OperationProvider> =
+            Arc::new(crate::operation_tools::PluginProvider::new(runner, slug));
+        crate::operation_tools::operation_tools(&[provider])
+            .into_iter()
+            .find(|t| t.name() == name)
+            .unwrap_or_else(|| panic!("{slug} binds no {name}"))
     }
 
     /// A plugin that binds the given operations and, as its binary, runs the
@@ -3482,14 +2705,9 @@ mod budget_and_install_tests {
             serde_json::json!({"ledger.bill.create": "bill create --vendor-ref {vendorId}"}),
             &format!("#!/bin/sh\necho \"$@\" >> '{}'\nprintf '%s\\n' \"$@\"\n", calls.display()),
         );
-        let tool = PluginTool::new(plugin_store, db_store);
+        let tool = operation_tool(plugin_store, db_store, "quickbooks", "ledger_bill_create");
         let ctx = ToolContext { session_key: "agent:ap:main".into(), ..Default::default() };
-        let call = |key: &str| {
-            serde_json::json!({
-                "operation": "accounting.ap.ledger.bill.create",
-                "input": {"clientKey": key, "vendorId": "V7", "txnDate": "2026-09-13"},
-            })
-        };
+        let call = |key: &str| serde_json::json!({"clientKey": key, "vendorId": "V7", "txnDate": "2026-09-13"});
         let invocations = || std::fs::read_to_string(&calls).unwrap_or_default().lines().count();
 
         let first = tool.execute_dyn(&ctx, call("bill-77")).await;
@@ -3508,7 +2726,7 @@ mod budget_and_install_tests {
         assert!(!other.is_error && !other.content.contains("Already performed"), "{}", other.content);
         assert_eq!(invocations(), 2, "another key is another write");
 
-        let bare = serde_json::json!({"operation": "accounting.ap.ledger.bill.create", "input": {"vendorId": "V7"}});
+        let bare = serde_json::json!({"vendorId": "V7"});
         let r = tool.execute_dyn(&ctx, bare.clone()).await;
         assert!(!r.is_error && r.content.contains("bill\ncreate\n--vendor-ref\nV7"), "{}", r.content);
         let r = tool.execute_dyn(&ctx, bare).await;
@@ -3527,39 +2745,117 @@ mod budget_and_install_tests {
         let (plugin_store, db_store) = stores(tmp.path());
         install_account_plugin(tmp.path(), "gws", serde_json::json!({}));
         install_account_plugin(tmp.path(), "gmail", serde_json::json!({"mail.message.send": "send"}));
-        let tool = PluginTool::new(plugin_store, db_store.clone());
+        let tool = PluginRunner::new(plugin_store, db_store.clone());
         let ctx = ToolContext { session_key: "agent:ic:workflow:run-1".into(), ..Default::default() };
-        let pi: PluginInput = serde_json::from_value(
-            serde_json::json!({"action": "exec", "resource": "gws", "command": "calendar events list"}),
-        )
-        .unwrap();
+        let pi = PluginCall { slug: "gws".into(), command: "calendar events list".into(), ..Default::default() };
 
-        let r = tool.run_plugin_command(&pi, &ctx, Duration::from_secs(5)).await;
+        let r = tool.run_plugin_command(&pi, &ctx, Duration::from_secs(5)).await.into_result();
         assert!(r.is_error && r.terminal, "nothing connected at all: {}", r.content);
 
         db_store
             .upsert_plugin_account_profile("p1", "ic", "gmail", "sales@example.com", tmp.path().join("gmail-acct").to_str().unwrap())
             .unwrap();
-        let r = tool.run_plugin_command(&pi, &ctx, Duration::from_secs(5)).await;
+        let r = tool.run_plugin_command(&pi, &ctx, Duration::from_secs(5)).await.into_result();
         assert!(r.is_error && !r.terminal, "{}", r.content);
         assert!(r.content.contains("No gws account is connected"), "{}", r.content);
         assert!(r.content.contains("Connected for this employee: gmail"), "{}", r.content);
-        assert!(r.content.contains("mail.message.send (via gmail)"), "{}", r.content);
+        assert!(r.content.contains("Operation tools those serve: mail_message_send (via gmail)"), "{}", r.content);
     }
 
-    /// The roster never sends mail to google-workspace by name: the typed
-    /// port names the provider that sends for this install.
-    #[test]
-    fn the_roster_does_not_steer_mail_to_google_workspace() {
+    /// Live: three workflow sends from an employee with no gmail connected
+    /// sat pending for a day, each with a "check the provider's sent items"
+    /// notice. Nebo refused them before the plugin ran, so nothing could
+    /// have gone out: a send refused before the call reaches the plugin, or
+    /// whose process never started, is failed — not held as unknown.
+    #[tokio::test]
+    async fn a_send_refused_before_the_plugin_ran_is_failed_not_held() {
         let tmp = tempfile::tempdir().unwrap();
         let (plugin_store, db_store) = stores(tmp.path());
-        install_account_plugin(tmp.path(), GOOGLE_WORKSPACE_SLUG, serde_json::json!({}));
         install_account_plugin(tmp.path(), "gmail", serde_json::json!({"mail.message.send": "send"}));
-        let tool = PluginTool::new(plugin_store, db_store);
-        let d = tool.description();
-        assert!(d.contains("For Google Calendar/Drive use"), "{d}");
-        assert!(!d.contains("Calendar/Gmail"), "{d}");
-        assert!(d.contains("mail.message.send  (via gmail)"), "{d}");
+        let tool = operation_tool(plugin_store, db_store.clone(), "gmail", "mail_message_send");
+        let ctx = ToolContext { session_key: "agent:ic:workflow:run-1".into(), ..Default::default() };
+        let user = db_store.ensure_local_user_id().unwrap();
+        let held = |id: i64| db_store.get_notification(&format!("attention:effect:{id}"), &user).unwrap();
+
+        // No gmail account: refused before anything launches.
+        let input = serde_json::json!({"to": "lead@example.com", "subject": "Hi", "text": "hello"});
+        let r = tool.execute_dyn(&ctx, input).await;
+        assert!(r.is_error, "{}", r.content);
+        assert!(r.content.starts_with("No gmail account is connected for this agent."), "the refusal reaches the model as it was: {}", r.content);
+        let rows = db_store.engine_effects_for_run("run-1").unwrap();
+        assert_eq!(rows.len(), 1, "the send was recorded before it was attempted");
+        assert_eq!(rows[0].state, "failed", "{:?}", rows[0]);
+        assert!(held(rows[0].id).is_none(), "the owner is not asked to check a send that never left");
+
+        // Connected, but the plugin's binary cannot start: nothing launched.
+        db_store
+            .upsert_plugin_account_profile("p1", "ic", "gmail", "sales@example.com", tmp.path().join("gmail-acct").to_str().unwrap())
+            .unwrap();
+        let input = serde_json::json!({"to": "other@example.com", "subject": "Hi", "text": "hello"});
+        let r = tool.execute_dyn(&ctx, input).await;
+        assert!(r.is_error && r.content.contains("failed to start"), "{}", r.content);
+        let rows = db_store.engine_effects_for_run("run-1").unwrap();
+        assert_eq!(rows.len(), 2, "{rows:?}");
+        assert!(rows.iter().all(|e| e.state == "failed"), "{rows:?}");
+        assert!(rows.iter().all(|e| held(e.id).is_none()), "{rows:?}");
+        assert!(db_store.engine_pending_effects().unwrap().is_empty(), "nothing is left for reconciliation");
+    }
+
+    /// A send under a `clientKey` is one ledger row (live 2026-09-26: the
+    /// write ledger and the send ledger each wrote one for the same email,
+    /// and they recorded different outcomes). The same call under the same
+    /// key, in this run or a later one, is answered from that row.
+    #[tokio::test]
+    async fn a_send_under_a_client_key_is_one_ledger_row() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (plugin_store, db_store) = stores(tmp.path());
+        install_account_plugin(tmp.path(), "gmail", serde_json::json!({"mail.message.send": "send"}));
+        let tool = operation_tool(plugin_store, db_store.clone(), "gmail", "mail_message_send");
+        let ctx = ToolContext { session_key: "agent:ic:workflow:run-1".into(), ..Default::default() };
+        let input = serde_json::json!({"clientKey": "alert-1", "to": "lead@example.com", "subject": "Hi", "text": "hello"});
+        let r = tool.execute_dyn(&ctx, input.clone()).await;
+        assert!(r.is_error, "{}", r.content);
+        let rows = db_store.engine_effects_for_run("run-1").unwrap();
+        assert_eq!(rows.len(), 1, "one send, one row: {rows:?}");
+        assert_eq!((rows[0].class.as_str(), rows[0].state.as_str()), ("messaging", "failed"), "{rows:?}");
+        assert_eq!(rows[0].idem_key, crate::effects::write_key("ic", "mail.message.send", "alert-1"));
+        assert_eq!(rows[0].counterparty.as_deref(), Some("lead@example.com"));
+
+        // Sent under the key: a later run's same call is not sent again.
+        db_store.engine_effect_pending("run-1", "messaging", &rows[0].idem_key, "gmail", "", "lead@example.com").unwrap();
+        db_store.engine_effect_attempted(rows[0].id).unwrap();
+        db_store.engine_effect_completed(rows[0].id, Some("msg-1"), Some("Email sent"), 1).unwrap();
+        let later = ToolContext { session_key: "agent:ic:workflow:run-2".into(), ..Default::default() };
+        let again = tool.execute_dyn(&later, input).await;
+        assert!(!again.is_error && again.content.contains("Already sent"), "{}", again.content);
+        assert!(db_store.engine_effects_for_run("run-2").unwrap().is_empty(), "no second row");
+    }
+
+    /// Gate 2026-09-26 (correction-quickbooks-payment-dry-run): with nothing
+    /// connected and no card answered, the bare "not connected" line sent
+    /// runs looking for a company id in memory and asking the owner for one.
+    /// The result says every command waits on the connection, a dry run
+    /// included, and where not to look.
+    #[tokio::test]
+    async fn not_connected_says_every_command_waits_on_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (plugin_store, db_store) = stores(tmp.path());
+        install_account_plugin(tmp.path(), "gws", serde_json::json!({}));
+        let tool = PluginRunner::new(plugin_store, db_store);
+        let ctx = ToolContext { session_key: "eval:no-employee:run-1".into(), ..Default::default() };
+        let pi = PluginCall { slug: "gws".into(), command: "calendar events list --dry-run".into(), ..Default::default() };
+
+        let r = tool.run_plugin_command(&pi, &ctx, Duration::from_secs(5)).await.into_result();
+        assert!(r.is_error && !r.terminal, "{}", r.content);
+        assert!(r.content.starts_with("No gws account is connected for this agent."), "{}", r.content);
+        assert!(
+            r.content.ends_with(
+                "Until one is connected no gws command can run, a dry run or a read included. Tell the owner \
+                 what you'll do once it's connected; don't look for credentials or account ids anywhere else."
+            ),
+            "{}",
+            r.content
+        );
     }
 
     /// A best match that is already installed gets no install card: the
@@ -3569,7 +2865,7 @@ mod budget_and_install_tests {
     async fn discover_does_not_offer_to_install_what_is_installed() {
         let tmp = tempfile::tempdir().unwrap();
         let (plugin_store, db_store) = stores(tmp.path());
-        let tool = PluginTool::new(plugin_store, db_store);
+        let tool = PluginRunner::new(plugin_store, db_store);
         let ctx = ToolContext::default();
         let products = vec![serde_json::json!({
             "name": "QuickBooks Online", "slug": "quickbooks", "code": "PLUG-ABCD-1234",
@@ -3583,9 +2879,27 @@ mod budget_and_install_tests {
         let known = tool.offer("quickbooks", &ctx, &products, 1).await;
         assert!(!known.is_error, "{}", known.content);
         assert!(known.content.contains("QuickBooks Online was already installed"), "{}", known.content);
-        assert!(known.content.contains("plugin(resource: \"quickbooks\""), "{}", known.content);
+        assert!(known.content.contains("plugin__quickbooks"), "{}", known.content);
         assert!(!known.content.contains("Install it on the card"), "{}", known.content);
         assert!(!known.content.contains("owner's approval"), "{}", known.content);
+    }
+
+    /// The v0.16.0 proof (36348199618, skill-plugin-choreography run 3): a
+    /// search with nothing to install said only "none are installable", and
+    /// the model offered to do the job by hand through the owner's account in
+    /// the browser. Both endings with nothing to install say what to tell the
+    /// owner, and not to try it another way unasked.
+    #[tokio::test]
+    async fn a_search_with_nothing_to_install_says_what_to_tell_the_owner() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (plugin_store, db_store) = stores(tmp.path());
+        let tool = PluginRunner::new(plugin_store, db_store);
+        let ctx = ToolContext::default();
+        for matched in [0, 2] {
+            let r = tool.offer("post an update", &ctx, &[], matched).await;
+            assert!(!r.is_error, "{}", r.content);
+            assert!(r.content.ends_with(NO_PLUGIN_NEXT), "{matched} matched: {}", r.content);
+        }
     }
 
     /// Offer an install card in an interactive chat and end it the given
@@ -3593,7 +2907,7 @@ mod budget_and_install_tests {
     async fn install_card_ending(answer: Option<&str>) -> ToolResult {
         let tmp = tempfile::tempdir().unwrap();
         let (plugin_store, db_store) = stores(tmp.path());
-        let tool = PluginTool::new(plugin_store, db_store);
+        let tool = PluginRunner::new(plugin_store, db_store);
         let (stream_tx, mut stream_rx) = tokio::sync::mpsc::channel(4);
         let channels: crate::origin::AskChannels = Default::default();
         let mut ctx = ToolContext::new(crate::origin::Origin::User);
@@ -3683,13 +2997,12 @@ mod budget_and_install_tests {
             "doctor finished; the auth status check did not answer within the remaining 12 s of the 120 s exec budget."
         );
 
-        let named: PluginInput =
-            serde_json::from_value(serde_json::json!({"command": "doctor", "timeout": 45})).unwrap();
-        assert_eq!(PluginTool::exec_timeout(&named), Duration::from_secs(45));
-        assert_eq!(PluginTool::command_label(&named), "doctor");
-        let bare: PluginInput = serde_json::from_value(serde_json::json!({})).unwrap();
-        assert_eq!(PluginTool::exec_timeout(&bare), Duration::from_secs(EXEC_TIMEOUT_DEFAULT_SECS));
-        assert_eq!(PluginTool::command_label(&bare), "the command");
+        let named = PluginCall { command: "doctor".into(), timeout: 45, ..Default::default() };
+        assert_eq!(PluginRunner::exec_timeout(&named), Duration::from_secs(45));
+        assert_eq!(PluginRunner::command_label(&named), "doctor");
+        let bare = PluginCall::default();
+        assert_eq!(PluginRunner::exec_timeout(&bare), Duration::from_secs(EXEC_TIMEOUT_DEFAULT_SECS));
+        assert_eq!(PluginRunner::command_label(&bare), "the command");
     }
 
     /// The bound is real: a step that outlives what is left is cut off with
@@ -3729,5 +3042,173 @@ mod budget_and_install_tests {
         // A flag's own value is not an operator, however it looks.
         assert_eq!(shell_operator(&split("orders list --filter '>'")), None);
         assert_eq!(shell_operator(&split("products list --limit 20")), None);
+    }
+
+    /// A single-account plugin (no profile dir, like xero) whose commands
+    /// fail with an auth error until `<root>/connected` exists, and whose
+    /// login leaves `<root>/login-ran` behind — so a test can tell a card
+    /// from a login spawned on the bot's machine.
+    fn install_auth_plugin(root: &std::path::Path, slug: &str, auth: serde_json::Value) {
+        let version_dir = root.join("plugins").join(slug).join("0.1.0");
+        std::fs::create_dir_all(&version_dir).unwrap();
+        std::fs::write(
+            version_dir.join("plugin.json"),
+            serde_json::json!({
+                "id": slug, "slug": slug, "name": "Example Books", "version": "0.1.0", "platforms": {},
+                "auth": auth,
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let root = root.display();
+        let bin = version_dir.join(slug);
+        std::fs::write(
+            &bin,
+            format!(
+                "#!/bin/sh\nif [ \"$1 $2\" = \"auth login\" ]; then touch '{root}/login-ran'; exit 0; fi\n\
+                 if [ -f '{root}/connected' ]; then echo ok; exit 0; fi\n\
+                 echo 'not authenticated; run auth login'; exit 1\n"
+            ),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+    }
+
+    fn oauth_auth() -> serde_json::Value {
+        serde_json::json!({"type": "oauth_cli", "label": "Example account", "commands": {"login": "auth login"}})
+    }
+
+    /// Run a command that fails on auth in an interactive chat and end the
+    /// connect card the given way: `Some(value)` answers it, `None` stops the
+    /// run. Returns the result, the card that was shown (if one was), and
+    /// whether a login ran on this machine.
+    async fn auth_failure_ending(auth: serde_json::Value, answer: Option<&str>) -> (ToolResult, Option<ai::StreamEvent>, bool) {
+        let tmp = tempfile::tempdir().unwrap();
+        let (plugin_store, db_store) = stores(tmp.path());
+        install_auth_plugin(tmp.path(), "books", auth);
+        let tool = PluginRunner::new(plugin_store, db_store);
+        let (stream_tx, mut stream_rx) = tokio::sync::mpsc::channel(4);
+        let channels: crate::origin::AskChannels = Default::default();
+        let mut ctx = ToolContext::new(crate::origin::Origin::User);
+        ctx.session_key = "agent:ic:main".into();
+        ctx.stream_tx = Some(stream_tx);
+        ctx.ask_channels = Some(channels.clone());
+        let cancel = ctx.cancel_token.clone();
+        let pi = PluginCall { slug: "books".into(), command: "organisation get".into(), ..Default::default() };
+        let running = tokio::spawn(async move { tool.handle_exec(&pi, &ctx).await.into_result() });
+        let card = tokio::select! {
+            shown = stream_rx.recv() => shown,
+            _ = tokio::time::sleep(Duration::from_secs(5)) => None,
+        };
+        if let Some(request) = &card {
+            let request_id = request.error.clone().unwrap();
+            match answer {
+                Some(v) => {
+                    if v == "connected" {
+                        std::fs::write(tmp.path().join("connected"), b"").unwrap();
+                    }
+                    let tx = channels.lock().await.remove(&request_id).unwrap();
+                    tx.send(v.to_string()).unwrap();
+                }
+                None => cancel.cancel(),
+            }
+        }
+        let result = running.await.unwrap();
+        let login_ran = tmp.path().join("login-ran").exists();
+        (result, card, login_ran)
+    }
+
+    /// Live (2026-09-26, the owner on his phone): a plugin with no account
+    /// connected failed on auth, the tool ran the plugin's login on the bot's
+    /// Mac where nobody was, and the terminal result ended the turn as a red
+    /// bar. Now the ONE connect card is raised instead, with the account's
+    /// display label, no login runs here, and "connected" retries the command.
+    #[tokio::test]
+    async fn an_interactive_auth_failure_raises_the_connect_card_and_connected_retries() {
+        let (r, card, login_ran) = auth_failure_ending(oauth_auth(), Some("connected")).await;
+        let card = card.expect("the connect card is shown");
+        assert_eq!(card.text, "I need your Example account connected to continue. Connect it on the card and I'll pick up right where I left off.");
+        let widget = &card.widgets.unwrap()[0];
+        assert_eq!(widget["type"], "connect_account");
+        assert_eq!(widget["plugin"], "books");
+        assert_eq!(widget["agentId"], "ic");
+        assert_eq!(widget["label"], "Example account");
+        assert!(!login_ran, "no login is spawned on the bot's machine");
+        assert!(!r.is_error, "{}", r.content);
+        assert_eq!(r.content.trim(), "ok");
+    }
+
+    /// A skipped card is a plain error the model answers in prose, never a
+    /// terminal one that ends the turn with no text response.
+    #[tokio::test]
+    async fn a_skipped_connect_card_is_a_plain_error_not_a_terminal_one() {
+        let (r, card, login_ran) = auth_failure_ending(oauth_auth(), Some(crate::origin::SKIP_SENTINEL)).await;
+        assert!(card.is_some(), "the connect card is shown");
+        assert!(!login_ran);
+        assert!(r.is_error && !r.terminal, "{}", r.content);
+        assert!(r.content.starts_with("The owner skipped connecting the Example account, so Example Books cannot be used yet."), "{}", r.content);
+        assert!(!r.content.contains("**") && !r.content.contains("books"), "no markdown, no slug: {}", r.content);
+
+        let (r, _, _) = auth_failure_ending(oauth_auth(), Some("failed:Example: sign-in window closed")).await;
+        assert!(r.is_error && !r.terminal, "{}", r.content);
+        assert!(r.content.starts_with("Connecting the Example account failed: Example: sign-in window closed."), "{}", r.content);
+
+        let (r, _, _) = auth_failure_ending(oauth_auth(), None).await;
+        assert!(r.is_error && !r.terminal, "{}", r.content);
+        assert!(r.content.contains("no answer (the owner stopped the run)"), "{}", r.content);
+    }
+
+    /// The values a login itself needs (an OAuth app's client id and secret,
+    /// declared under `auth.env`) with nothing set: the login would exit at
+    /// once, on the card too — xero did, in two seconds — so no card is
+    /// raised and the error names what the owner has to enter.
+    #[tokio::test]
+    async fn unset_login_values_are_named_and_no_card_is_offered() {
+        let auth = serde_json::json!({
+            "type": "oauth_cli", "label": "Example account", "commands": {"login": "auth login"},
+            "env": {"BOOKS_CLIENT_ID": "", "BOOKS_CLIENT_SECRET": ""},
+        });
+        let (r, card, login_ran) = auth_failure_ending(auth, Some("connected")).await;
+        assert!(card.is_none(), "no card for a plugin whose login cannot start");
+        assert!(!login_ran);
+        assert!(r.is_error && !r.terminal, "{}", r.content);
+        assert!(
+            r.content.starts_with("Example Books is not set up yet: BOOKS_CLIENT_ID and BOOKS_CLIENT_SECRET have no value, and no Example account can be connected until the owner enters them in Example Books's plugin settings."),
+            "{}", r.content
+        );
+    }
+
+    /// Sign-in details typed into Nebo's own dialog (auth type env): the card
+    /// collects no values, so the error says what is missing and stays
+    /// non-terminal.
+    #[tokio::test]
+    async fn an_env_plugin_gets_a_plain_error_not_a_card() {
+        let auth = serde_json::json!({"type": "env", "label": "Example login", "env": {"BOOKS_API_KEY": ""}});
+        let (r, card, login_ran) = auth_failure_ending(auth, Some("connected")).await;
+        assert!(card.is_none());
+        assert!(!login_ran);
+        assert!(r.is_error && !r.terminal, "{}", r.content);
+        assert!(r.content.starts_with("Example Books cannot be used: the Example login details have not been entered for this employee."), "{}", r.content);
+    }
+
+    /// Unattended (nobody to ask): the result stays terminal, no login runs,
+    /// and the copy names the plugin, not its slug in markdown.
+    #[tokio::test]
+    async fn an_unattended_auth_failure_stays_terminal_with_no_login() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (plugin_store, db_store) = stores(tmp.path());
+        install_auth_plugin(tmp.path(), "books", oauth_auth());
+        let tool = PluginRunner::new(plugin_store, db_store);
+        let ctx = ToolContext { session_key: "agent:ic:workflow:run-1".into(), ..Default::default() };
+        let pi = PluginCall { slug: "books".into(), command: "organisation get".into(), ..Default::default() };
+        let r = tool.handle_exec(&pi, &ctx).await.into_result();
+        assert!(r.is_error && r.terminal, "{}", r.content);
+        assert!(r.content.starts_with("I couldn't reach Example Books — it has no working sign-in"), "{}", r.content);
+        assert!(!r.content.contains("**"), "{}", r.content);
+        assert!(!tmp.path().join("login-ran").exists(), "no login is spawned unattended");
     }
 }

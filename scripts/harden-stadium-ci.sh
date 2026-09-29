@@ -1,8 +1,19 @@
 #!/usr/bin/env bash
 # Harden the Linux runner VM on the house Mac mini (Lima VM "ci" on stadium).
-# Idempotent: re-run after adding a runner or rebuilding the VM.
+# Idempotent: re-run after adding a runner or rebuilding the VM. Two steps,
+# the host's first:
 #
+#   ssh stadium 'bash -s -- --host' < scripts/harden-stadium-ci.sh
 #   ssh stadium '/opt/homebrew/bin/limactl shell ci -- sudo bash -s' < scripts/harden-stadium-ci.sh
+#
+# The host step (2026-09-28): Lima's default template mounts the Mac's home
+# into the VM (read-only, at /Users/stadium). The harness gate runs
+# model-driven shell commands on this VM, and a gate run's `find /` listed
+# the owner's Mail attachments under /Users/stadium/Library/Mail. Nothing on
+# the VM uses the mount (no runner, unit, timer or workflow reads it), so the
+# VM mounts nothing of the host. The host step empties the VM's `mounts`,
+# restarting it only when no job is running on it; the VM step refuses to
+# finish while a host mount is still visible.
 #
 # Why (2026-09-22): the VM filled its disk (116 GB of Go build cache, nothing
 # ever pruned) and later OOM-killed both NeboLoop runner listeners while two
@@ -16,6 +27,25 @@
 #   - every minute the VM reports its disk and runner state to the cluster's
 #     alerting, so what still breaks reaches the owner by email.
 set -euo pipefail
+
+if [ "${1:-}" = "--host" ]; then
+  # On the Mac (macOS bash 3.2: nothing below this block runs here).
+  export PATH=/opt/homebrew/bin:$PATH
+  vm=ci
+  if limactl list "$vm" --format '{{json .Config.Mounts}}' | grep -qx -e 'null' -e '\[\]'; then
+    echo "$vm: mounts nothing of the host"
+    exit 0
+  fi
+  if limactl shell "$vm" -- pgrep -f 'Runner[.]Worker' >/dev/null; then
+    echo "$vm: a job is running; not restarting it. Run --host again when it is idle." >&2
+    exit 1
+  fi
+  limactl stop "$vm"
+  limactl edit "$vm" --tty=false --set '.mounts = []'
+  limactl start "$vm"
+  echo "$vm: host mounts removed; runners come back with the VM"
+  exit 0
+fi
 
 RUNNER_USER=stadium
 HOME_DIR=/home/stadium.guest
@@ -174,3 +204,13 @@ for unit in /etc/systemd/system/actions.runner.*.service; do
   printf '%-70s %s %s\n' "$name" "$(systemctl is-active "$name")" "$(systemctl show -p Slice --value "$name")"
 done
 systemctl show -p MemoryMax --value ci-neboloop.slice ci-payrollhub.slice
+
+# Nothing of the host is visible here (see the host step at the top). Rosetta's
+# mount is Lima's x86 translator, not a host folder.
+host_mounts=$(findmnt -rn -t virtiofs,9p -o TARGET | grep -vx /mnt/lima-rosetta || true)
+if [ -n "$host_mounts" ]; then
+  echo "HOST MOUNTS VISIBLE in the VM: $host_mounts" >&2
+  echo "run the host step: ssh stadium 'bash -s -- --host' < scripts/harden-stadium-ci.sh" >&2
+  exit 1
+fi
+echo "host mounts: none"

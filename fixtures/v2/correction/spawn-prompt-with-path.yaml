@@ -12,7 +12,7 @@ description: |
 target_component: tool
 
 setup:
-  - "mkdir -p {{scratch}}/Nebo/sessions && printf '{\"QueryResponse\":{\"Purchase\":[{\"Id\":\"1\",\"TotalAmt\":42.5,\"EntityRef\":{\"name\":\"Acme Supply\"},\"Line\":[{\"DetailType\":\"AccountBasedExpenseLineDetail\",\"AccountBasedExpenseLineDetail\":{\"AccountRef\":{\"name\":\"Office Supplies\"}}}]},{\"Id\":\"2\",\"TotalAmt\":19,\"EntityRef\":{\"name\":\"Corner Cafe\"},\"Line\":[]}]}}' > {{scratch}}/Nebo/sessions/purchases.txt"
+  - "mkdir -p {{scratch}}/Nebo/sessions && printf '{\"QueryResponse\":{\"Purchase\":[{\"Id\":\"1\",\"TotalAmt\":42.5,\"EntityRef\":{\"name\":\"Acme Supply\"},\"Line\":[{\"DetailType\":\"AccountBasedExpenseLineDetail\",\"AccountBasedExpenseLineDetail\":{\"AccountRef\":{\"name\":\"Office Supplies\"}}}]},{\"Id\":\"2\",\"TotalAmt\":19,\"EntityRef\":{\"name\":\"Corner Cafe\"},\"Line\":[{\"Amount\":19,\"DetailType\":\"AccountBasedExpenseLineDetail\",\"AccountBasedExpenseLineDetail\":{}}]}]}}' > {{scratch}}/Nebo/sessions/purchases.txt"
 teardown:
   - "rm -rf {{scratch}}"
 

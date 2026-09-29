@@ -235,10 +235,16 @@ pub fn merge_package_declaration(existing: &str, incoming: &str) -> String {
         return incoming.to_string();
     }
 
-    // Owner-set runtime state the filesystem knows nothing about. The isolation
-    // toggle has always ridden here; without it, every restart silently
-    // un-isolated employees whose whole point is sealed memory.
-    if let Some(iso) = ours.pointer("/memory/context_isolated").and_then(Value::as_bool) {
+    // Owner-set runtime state the filesystem knows nothing about. The memory
+    // mode (the isolation toggle before it) has always ridden here; without
+    // it, every restart silently un-isolated employees whose whole point is
+    // sealed memory. A package's old flag never overrides the owner's mode.
+    if let Some(mode) = ours.pointer("/memory/mode").and_then(Value::as_str) {
+        put(&mut theirs, "/memory/mode", Value::String(mode.to_string()));
+        if let Some(memory) = theirs.pointer_mut("/memory").and_then(Value::as_object_mut) {
+            memory.remove("context_isolated");
+        }
+    } else if let Some(iso) = ours.pointer("/memory/context_isolated").and_then(Value::as_bool) {
         put(&mut theirs, "/memory/context_isolated", Value::Bool(iso));
     }
 
@@ -469,16 +475,24 @@ mod tests {
         assert!(ifaces.iter().any(|v| v == "mail") && ifaces.iter().any(|v| v == "sms"));
     }
 
-    /// The isolation toggle keeps riding through, since this merge is now the
-    /// thing standing between a package's frontmatter and the row.
+    /// The owner's memory mode keeps riding through, since this merge is the
+    /// thing standing between a package's frontmatter and the row, and a
+    /// package that still ships the old isolation flag never overrides it.
     #[test]
-    fn the_isolation_toggle_still_survives_a_sync() {
-        let ours = r#"{"memory": {"context_isolated": true}}"#;
+    fn the_memory_mode_survives_a_sync() {
+        let ours = r#"{"memory": {"mode": "confidential"}}"#;
         let incoming = r#"{"memory": {"context_isolated": false, "topics": []}}"#;
         let merged: Value =
             serde_json::from_str(&merge_package_declaration(ours, incoming)).unwrap();
-        assert_eq!(merged["memory"]["context_isolated"], serde_json::json!(true));
+        assert_eq!(merged["memory"]["mode"], serde_json::json!("confidential"));
+        assert!(merged["memory"].get("context_isolated").is_none(), "{merged}");
         assert!(merged["memory"]["topics"].is_array(), "the package's own memory config still lands");
+
+        // A row not yet migrated keeps its flag the same way.
+        let ours = r#"{"memory": {"context_isolated": true}}"#;
+        let merged: Value =
+            serde_json::from_str(&merge_package_declaration(ours, incoming)).unwrap();
+        assert_eq!(merged["memory"]["context_isolated"], serde_json::json!(true));
     }
 
     /// The owner's edits are mirrored to `{napp_path}/agent.json`, and the

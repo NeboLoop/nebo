@@ -6,7 +6,7 @@ use tokio::sync::RwLock;
 use tools::ToolResult;
 use tracing::{debug, warn};
 
-use crate::runner::truncate_str;
+use tools::truncate_str;
 
 /// Total prompt cap to keep the summarizer call cheap.
 const PROMPT_CAP: usize = 2_000;
@@ -78,7 +78,9 @@ pub async fn summarize_tool_batch(
     let req = ChatRequest {
         tool_credential: None,
         chat_id: String::new(),
-        approval_channels: None,
+        ask_channels: None,
+        permission_mode: None,
+        linked_context: None,
         tool_choice: Default::default(),
         messages: vec![Message {
             role: "user".to_string(),
@@ -89,7 +91,6 @@ pub async fn summarize_tool_batch(
         max_tokens: 100,
         temperature: 0.0,
         system: SYSTEM_PROMPT.to_string(),
-        static_system: String::new(),
         model: aux_model,
         enable_thinking: false,
         metadata: None,
@@ -171,11 +172,12 @@ pub async fn one_line(
     let request = ChatRequest {
         tool_credential: None,
         chat_id: String::new(),
-        approval_channels: None,
+        ask_channels: None,
+        permission_mode: None,
+        linked_context: None,
         tool_choice: Default::default(),
         model,
         system: instruction.to_string(),
-        static_system: String::new(),
         messages: vec![Message {
             role: "user".to_string(),
             content: text.to_string(),

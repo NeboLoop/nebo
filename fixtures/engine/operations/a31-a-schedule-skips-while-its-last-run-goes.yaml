@@ -1,0 +1,11 @@
+id: a31-a-schedule-skips-while-its-last-run-goes
+name: "A31 — An inbox sweep that overlaps itself is skipped"
+description: |
+  A31 — By default a schedule that comes due while its last fire is still
+  going skips the occurrence: a prompt job while its turn runs, and a
+  workflow job while the workflow its fire started runs (the fire itself ended
+  when the workflow began), so an inbox sweep never processes the inbox twice.
+  Once both end, the next occurrences fire.
+target_component: engine
+proof: engine::proof::operations::a31_a_schedule_skips_while_its_last_run_goes
+conversation: []

@@ -11,18 +11,24 @@ pub mod backup;
 pub use backup::Backup;
 pub use pool::create_pool;
 pub use queries::agent_slug;
+pub use queries::InboundMailRow;
 pub use queries::{Assignment, NewAssignment};
 pub use queries::cron_ref;
-pub use queries::{OperationCounters, COMPANY_COUNTER_KEY};
+pub use queries::{EmployeeCeilingRow, EmployeeDraftRow, OWNER_MARK};
+pub use queries::{PermissionActivityFilter, PermissionActivityRow, PermissionAskRow, PermissionSpend, ask_wait_key};
 pub use queries::{
     AgentChanges, EngineEffect, EngineEvent, EngineRun, EngineWait, Enqueued, NewEvent, NewRun, NewWait,
     EVENT_LEASE_SECS, EVENT_MAX_ATTEMPTS,
 };
 pub use queries::cost_microcents;
 pub use queries::LicenseKeyRow;
+pub use queries::SessionGoal;
+pub use queries::{ToolNamingCell, tool_naming_places};
+pub use queries::{OwnerNeedRow, ToldNeed};
 pub use queries::PluginAccountProfile;
 pub use queries::WorkDocumentListing;
 pub use queries::{team_thread_key, Team, TeamMember, TeamMessage, TEAM_THREAD_PREFIX};
+pub use queries::{TemporaryClaim, TemporaryKind, TemporaryWork};
 pub use store::Store;
 
 /// Extension trait to convert `rusqlite::Error::QueryReturnedNoRows` into `Ok(None)`.

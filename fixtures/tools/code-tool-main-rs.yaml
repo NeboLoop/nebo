@@ -23,7 +23,7 @@ conversation:
     content: "There's a bug in /tmp/nebo-test/rs/src/main.rs: the area_is_product test fails. Find the function that's wrong and tell me the one-line fix. Don't edit anything."
 
 tool_config:
-  os:
+  read_file:
     enabled: true
   code:
     enabled: true
@@ -39,7 +39,7 @@ prompt_assertions:
       text: "The answer names `area` and says it should multiply (w * h) instead of add"
       severity: critical
     - id: no-edit
-      text: "No write or edit call is made"
+      text: "No write_file or edit_file call is made"
       severity: critical
   cost:
     - id: bounded
@@ -50,4 +50,4 @@ prompt_assertions:
 ideal_behavior:
   tool_calls: 2
   total_tokens: 4000
-  narrative: "code outline main.rs → read the area fn → 'change w + h to w * h'"
+  narrative: "code outline main.rs → read_file the area fn → 'change w + h to w * h'"

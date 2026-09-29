@@ -1,0 +1,7 @@
+id: sc41-an-assignment-outcome-reaches-the-assigner-when-it-happens
+name: "SC41 — An assignment outcome reaches the assigner when it happens"
+description: |
+  A closing case settles its assignment and the assigner's session is told at once, not at the end of a later run or at the next boot.
+target_component: staffed-company
+proof: staffed_proof::conversation::an_assignment_outcome_reaches_the_assigner_when_it_happens
+conversation: []

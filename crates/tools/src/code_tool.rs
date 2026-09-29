@@ -49,7 +49,6 @@ impl Default for CodeTool {
 
 /// Render an outline as indented factual lines: `kind name  [start-end]`.
 /// Capped at `cap` entries with a stated omission count — never a silent cut.
-/// ONE renderer, shared with the os file tool's outline-first reads.
 pub(crate) fn render_outline(symbols: &[syntax::Symbol], cap: usize) -> String {
     fn walk(
         symbols: &[syntax::Symbol],
@@ -101,7 +100,7 @@ fn resolve_source_file(raw: &str, action: &str) -> Result<(String, String, synta
         None => {
             return Err(ToolResult::error(format!(
                 "No compiled-in grammar for {path} — supported languages: {SUPPORTED_LANGS}. \
-                 Use os(resource: \"file\", action: \"read\"/\"grep\") for other files."
+                 Use read_file, or grep through run_command, for other files."
             )));
         }
     };
@@ -595,8 +594,8 @@ impl DynTool for CodeTool {
     fn description(&self) -> String {
         "Read-only code intelligence via in-process tree-sitter (rust, typescript, tsx, javascript, python, go, json, yaml, toml, bash, html, css, markdown).\n\n\
          Rules:\n\
-         - Use outline BEFORE reading a large source file blind — then read specific line ranges with os(resource: \"file\", action: \"read\", offset, limit).\n\
-         - This tool never edits. Edit through os(resource: \"file\", action: \"edit\") — its result already appends a syntax check for these languages.\n\
+         - Use outline BEFORE reading a large source file blind — then read specific line ranges with read_file (offset, limit).\n\
+         - This tool never edits. Edit through edit_file — its result already appends a syntax check for these languages.\n\
          - Lists are capped at 200 entries; a capped list ends with an explicit \"N more omitted\" line.\n\n\
          Actions:\n\
          - outline: symbol tree of one file (functions/classes/impls/methods with line ranges)\n\
@@ -638,12 +637,22 @@ impl DynTool for CodeTool {
         })
     }
 
-    fn requires_approval(&self) -> bool {
-        false
+    fn search_hint(&self) -> &str {
+        "code outline symbols definitions references"
     }
 
-    fn is_concurrent_safe(&self, _input: &Value) -> bool {
+    fn read_only(&self, _input: &Value) -> bool {
         true // every action is read-only
+    }
+
+    fn rule_key(&self, _input: &Value) -> String {
+        "code_intel".to_string()
+    }
+
+    /// Pre-interface: it settles its own call shapes (see
+    /// `DynTool::validates_input`).
+    fn validates_input(&self) -> bool {
+        false
     }
 
     fn execute_dyn<'a>(
@@ -832,11 +841,10 @@ mod tests {
         ));
     }
 
-    /// Every action is read-only and concurrent-safe; none needs approval.
+    /// Every action is read-only and concurrency-safe.
     #[test]
     fn code_tool_is_read_only_tier() {
         let tool = CodeTool::new();
-        assert!(!tool.requires_approval());
         for action in [
             "outline",
             "symbols",
@@ -848,8 +856,8 @@ mod tests {
             "references",
             "hover",
         ] {
-            assert!(tool.is_concurrent_safe(&json!({"action": action})), "{action}");
-            assert!(!tool.requires_approval_for(&json!({"action": action})), "{action}");
+            assert!(tool.read_only(&json!({"action": action})), "{action}");
+            assert!(tool.concurrency_safe(&json!({"action": action})), "{action}");
         }
     }
 

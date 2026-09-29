@@ -42,7 +42,7 @@ prompt_assertions:
       text: "The first tool call other than a find_tools load is create_team with name \"Operations-{{tag}}\" and members containing \"chief-of-staff-{{tag}}\" and \"executive-assistant-{{tag}}\""
       severity: critical
     - id: no-first-call-misses
-      text: "Every call is accepted: no tool result is an error — in particular no missing-parameter, InputValidationError (a deferred tool called before find_tools loaded it), unknown-employee, or \"no loop available\" error"
+      text: "Every call is accepted: no tool result is an error — in particular no missing-parameter, input error (a deferred tool called before find_tools loaded it), unknown-employee, or \"no loop available\" error"
       severity: critical
       check: { max_errors: 0 }
     - id: bounded

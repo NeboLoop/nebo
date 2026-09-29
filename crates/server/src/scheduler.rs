@@ -6,10 +6,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::process::Command;
 use tracing::{error, info, warn};
 
-use agent::RunRequest;
 use db::Store;
 use db::models::CronJob;
 use tools::Origin;
@@ -55,6 +53,7 @@ pub fn spawn(
             // Cleanup expired snapshots
             snapshot_store.cleanup();
             nightly_backup(&store, &state).await;
+            permission_digest(&state);
             crate::backup_ship::commit_if_due(&store, &state).await;
         }
     });
@@ -104,7 +103,7 @@ fn sweep(store: &Arc<Store>, workflow_manager: &Arc<dyn tools::workflows::Workfl
 /// Execute one fire of a job. Returns (success, output, error).
 pub(crate) async fn execute_job(state: &AppState, job: &CronJob) -> (bool, String, Option<String>) {
     match job.task_type.as_str() {
-        "bash" | "shell" | "" => execute_shell(&job.command).await,
+        "bash" | "shell" | "" => execute_shell(state, job).await,
         "agent" => execute_agent(state, job).await,
         "workflow" => execute_workflow_task(&*state.workflow_manager, &job.command).await,
         "agent_workflow" | "role_workflow" => {
@@ -119,23 +118,85 @@ pub(crate) async fn execute_job(state: &AppState, job: &CronJob) -> (bool, Strin
 }
 
 
-async fn execute_shell(command: &str) -> (bool, String, Option<String>) {
-    match Command::new("sh").arg("-c").arg(command).output().await {
-        Ok(output) => {
-            let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-            if output.status.success() {
-                (true, stdout, None)
-            } else {
-                let err = if stderr.is_empty() {
-                    format!("exit code: {}", output.status.code().unwrap_or(-1))
-                } else {
-                    stderr
-                };
-                (false, stdout, Some(err))
-            }
-        }
-        Err(e) => (false, String::new(), Some(e.to_string())),
+/// A scheduled command runs as its employee's command, through the one door
+/// every command goes through (`run_command` in the registry): the
+/// permission check under the employee's grant, Nebo's own files and server
+/// closed to it, Nebo's own settings out of its environment, and no network
+/// when the employee's web access is off. Nothing waits on an ask here: a
+/// step that needs the owner's OK is refused and recorded, and the failed
+/// fire tells the owner (`engine::settle_task`). It was `sh -c` with Nebo's
+/// whole environment and no check, the one command no fence reached.
+async fn execute_shell(state: &AppState, job: &CronJob) -> (bool, String, Option<String>) {
+    let agent_id = job.agent_id.as_deref().unwrap_or("");
+    let mut ctx = tools::ToolContext::new(Origin::System);
+    // No session key: nobody hears from a command that outlives its call,
+    // so a long one stops at its timeout instead of moving to the background.
+    ctx.session_id = format!("cron-{}", job.id);
+    ctx.door = types::permissions::Door::Schedule;
+    ctx.grant = Some(Arc::new(agent::harness::permissions::resolve_grant(&state.store, agent_id, None)));
+    ctx.cannot_wait = true;
+    let input = serde_json::json!({
+        "command": job.command,
+        "description": job.name,
+        // As long as run_command waits for any command.
+        "timeout": u64::MAX,
+    });
+    let result = state.tools.execute(&ctx, "run_command", input).await;
+    if result.is_error {
+        (false, String::new(), Some(result.content))
+    } else {
+        (true, result.content, None)
+    }
+}
+
+/// The turn a scheduled job runs: the job's message, with its standing
+/// instructions after it, written into the thread as the owner scheduled
+/// it, run by its employee under the employee's own grant (scheduling grants
+/// nothing new).
+fn scheduled_turn(
+    job: &CronJob,
+    prompt: &str,
+    session_key: &str,
+    agent_id: &str,
+    channel: &str,
+    channel_ctx: Option<tools::ChannelContext>,
+    cancel: tokio_util::sync::CancellationToken,
+) -> agent::TurnRequest {
+    use agent::harness::{Delivery, SeatRequest, TurnInput, TurnMode};
+
+    let text = match job.instructions.as_deref().map(str::trim).filter(|i| !i.is_empty()) {
+        Some(instructions) => format!("{prompt}\n\n{instructions}"),
+        None => prompt.to_string(),
+    };
+    agent::TurnRequest {
+        session_key: session_key.to_string(),
+        input: TurnInput::Owner { text, images: Vec::new(), attachments: Vec::new() },
+        seat: SeatRequest {
+            agent_id: agent_id.to_string(),
+            user_id: String::new(),
+            origin: Origin::System,
+            door: types::permissions::Door::Schedule,
+            mode: None,
+            ceiling: None,
+            cwd: None,
+            seed_taint: Vec::new(),
+            audience: None,
+            tool_allowlist: None,
+            tool_denial_hint: None,
+            handoff_depth: 0,
+            model_override: String::new(),
+            model_preference: None,
+            personality_snippet: None,
+            tool_scope: None,
+        },
+        mode: TurnMode::Chat,
+        delivery: Delivery {
+            channel: channel.to_string(),
+            channel_ctx,
+            mention_briefing: None,
+        },
+        cancel,
+        progress: None,
     }
 }
 
@@ -154,7 +215,6 @@ async fn execute_agent(state: &AppState, job: &CronJob) -> (bool, String, Option
         }
     }
 
-    let system = job.instructions.as_deref().unwrap_or("").to_string();
     // A job an employee scheduled runs AS that employee: its session key
     // carries the employee (tools scope to it — its workflows, its runs),
     // and its operation policy governs. Run as the owner's front desk, an
@@ -181,31 +241,11 @@ async fn execute_agent(state: &AppState, job: &CronJob) -> (bool, String, Option
         })
         .await;
 
-    // A cron run carried no operation policy, and a trusted origin with none
-    // passes every gated operation unattended. Resolve it the way chat does,
-    // and the employee's model with it.
-    let (entity_type, entity_id) = match agent_id {
-        Some(id) => ("agent", id),
-        None => ("main", "main"),
-    };
-    let (_, _, model_preference, _, _, operation_policy) = crate::chat_dispatch::entity_run_params(
-        crate::entity_config::resolve_for_chat(&state.store, entity_type, entity_id).as_ref(),
-    );
-    let req = RunRequest {
-        session_key: session_key.clone(),
-        prompt: prompt.to_string(),
-        system,
-        origin: Origin::System,
-        channel: "cron".to_string(),
-        agent_id: agent_id.unwrap_or_default().to_string(),
-        cancel_token,
-        operation_policy,
-        model_preference,
-        ..Default::default()
-    };
+    let req = scheduled_turn(job, prompt, &session_key, agent_id.unwrap_or_default(), "cron", None, cancel_token);
 
-    match state.runner.run(req).await {
-        Ok(mut rx) => {
+    match state.harness.start_turn(req).await {
+        Ok(handle) => {
+            let mut rx = handle.events;
             let mut full_text = String::new();
             while let Some(event) = rx.recv().await {
                 run_handle.touch();
@@ -240,7 +280,7 @@ async fn execute_agent(state: &AppState, job: &CronJob) -> (bool, String, Option
 }
 
 /// Fire a cron job whose originating channel context was captured at
-/// `event(create)` time. Runs the agent with the same `ChannelContext` the
+/// `create_schedule` time. Runs the agent with the same `ChannelContext` the
 /// inbound message would have carried, then writes the response to the
 /// channel-plugin bridge as an `op: "post"` so it lands in the originating
 /// thread.
@@ -298,29 +338,12 @@ async fn execute_agent_channel_bound(
         })
         .await;
 
-    let system = job.instructions.as_deref().unwrap_or("").to_string();
-    // The employee's own operation policy governs its cron runs exactly as it
-    // governs its chat turns; without it a scheduled run was ungated.
-    let (_, _, model_preference, _, _, operation_policy) = crate::chat_dispatch::entity_run_params(
-        crate::entity_config::resolve_for_chat(&state.store, "agent", agent_id).as_ref(),
-    );
-    let req = RunRequest {
-        session_key: session_key.clone(),
-        prompt: prompt.to_string(),
-        system,
-        origin: Origin::System,
-        channel: saved.kind.clone(),
-        agent_id: agent_id.to_string(),
-        cancel_token,
-        channel_ctx: Some(channel_ctx.clone()),
-        operation_policy,
-        model_preference,
-        ..Default::default()
-    };
+    let req = scheduled_turn(job, prompt, &session_key, agent_id, &saved.kind, Some(channel_ctx.clone()), cancel_token);
 
     let mut full_text = String::new();
-    match state.runner.run(req).await {
-        Ok(mut rx) => {
+    match state.harness.start_turn(req).await {
+        Ok(handle) => {
+            let mut rx = handle.events;
             while let Some(event) = rx.recv().await {
                 run_handle.touch();
                 match event.event_type {
@@ -357,47 +380,15 @@ async fn execute_agent_channel_bound(
     // Route the response back through the channel bridge as op:"post"
     // (not "reply" — there's no inbound placeholder to update; the agent is
     // posting on its own initiative).
-    let key = tools::channel_bridge_key(agent_id, &saved.kind);
-    let handle = match state.channel_bridges.read().await.get(&key).cloned() {
-        Some(h) => h,
-        None => {
-            warn!(
-                job = job.name.as_str(),
-                agent = agent_id,
-                plugin = saved.kind.as_str(),
-                "scheduler: response generated but channel bridge `{key}` is not running; dropping"
-            );
-            return (
-                false,
-                full_text,
-                Some(format!(
-                    "channel bridge `{key}` not running — enable {} for agent {} in Settings → Channels",
-                    saved.kind, agent_id
-                )),
-            );
-        }
-    };
-
-    let mut op = serde_json::Map::new();
-    op.insert("op".into(), serde_json::Value::String("post".into()));
-    op.insert(
-        "channel".into(),
-        serde_json::Value::String(saved.channel_id.clone()),
-    );
-    if let Some(ts) = &saved.thread_ts {
-        op.insert("thread_ts".into(), serde_json::Value::String(ts.clone()));
-    }
-    op.insert("text".into(), serde_json::Value::String(response));
-
-    if let Err(e) = handle.stdin_tx.send(serde_json::Value::Object(op)).await {
+    if let Err(e) = crate::channel_dispatch::post_to_channel(state, agent_id, &channel_ctx, response).await {
         warn!(
             job = job.name.as_str(),
             agent = agent_id,
             plugin = saved.kind.as_str(),
             error = %e,
-            "scheduler: failed to forward post to channel bridge"
+            "scheduler: channel-bound cron response not posted"
         );
-        return (false, full_text, Some(format!("bridge send: {e}")));
+        return (false, full_text, Some(e));
     }
 
     info!(
@@ -509,10 +500,11 @@ pub(crate) async fn execute_agent_workflow_task(
 
     let def_json = binding.to_workflow_json(binding_name);
     let inputs: serde_json::Value = serde_json::to_value(&binding.inputs).unwrap_or_default();
-    let emit_source = binding
+    let emit_sources: Vec<String> = binding
         .emit
-        .as_ref()
-        .map(|emit_name| workflow::events::emit_source_for(&agent_rec.name, emit_name));
+        .iter()
+        .map(|emit_name| workflow::events::emit_source_for(&agent_rec.name, emit_name))
+        .collect();
 
     match manager
         .run_inline(
@@ -521,7 +513,7 @@ pub(crate) async fn execute_agent_workflow_task(
             trigger,
             Some(binding_name.to_string()),
             agent_id,
-            emit_source,
+            emit_sources,
         )
         .await
     {
@@ -584,9 +576,118 @@ async fn nightly_backup(store: &Arc<Store>, state: &AppState) {
     );
 }
 
+/// The doors of runs nobody watches as they happen: heartbeats, workflows,
+/// schedules, helpers and coworker requests.
+const UNATTENDED_DOORS: &[&str] = &["heartbeat", "workflow", "schedule", "helper", "coworker"];
+
+/// Once a day, the owner's Inbox lists yesterday's actions from unattended
+/// runs that ran unreviewed because the permission check couldn't run
+/// (both judges down). One item per day under a stable id; none when there
+/// is nothing to list.
+fn permission_digest(state: &AppState) {
+    use std::sync::atomic::{AtomicI64, Ordering};
+    static LAST_DAY: AtomicI64 = AtomicI64::new(-1);
+    let today = now_secs() / 86_400;
+    let last = LAST_DAY.load(Ordering::Relaxed);
+    if last == today || LAST_DAY.compare_exchange(last, today, Ordering::Relaxed, Ordering::Relaxed).is_err() {
+        return;
+    }
+    if let Some(item) = permission_digest_item(&state.store, today - 1) {
+        crate::codes::push_inbox(state, item);
+    }
+}
+
+/// The digest item for one UTC day (days since the epoch), or `None` when
+/// no unattended run acted unreviewed that day.
+pub(crate) fn permission_digest_item(store: &Store, day: i64) -> Option<serde_json::Value> {
+    let (start, end) = (day * 86_400, (day + 1) * 86_400);
+    let rows: Vec<_> = match store.unreviewed_permission_activity(start, UNATTENDED_DOORS) {
+        Ok(rows) => rows.into_iter().filter(|r| r.created_at < end).collect(),
+        Err(e) => {
+            warn!(error = %e, "permission digest: activity unreadable");
+            return None;
+        }
+    };
+    if rows.is_empty() {
+        return None;
+    }
+    let name_of = |agent_id: &str| match store.get_agent(agent_id) {
+        Ok(Some(a)) if !a.name.is_empty() => a.name,
+        _ => "Your assistant".to_string(),
+    };
+    let lines: Vec<String> = rows
+        .iter()
+        .map(|r| format!("- {}: {} ({})", name_of(&r.agent_id), r.activity, r.door))
+        .collect();
+    let count = rows.len();
+    Some(serde_json::json!({
+        "id": format!("permission-digest:{day}"),
+        "type": "permission_digest",
+        "title": if count == 1 {
+            "1 action ran without a permission check".to_string()
+        } else {
+            format!("{count} actions ran without a permission check")
+        },
+        "body": format!(
+            "While no one was watching, {} because {}:\n{}",
+            if count == 1 { "this action ran" } else { "these actions ran" },
+            types::permissions::UNREVIEWED_REASON,
+            lines.join("\n")
+        ),
+    }))
+}
+
 fn now_secs() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn row(agent_id: &str, door: &str, activity: &str, unreviewed: bool, at: i64) -> db::PermissionActivityRow {
+        db::PermissionActivityRow {
+            agent_id: agent_id.into(),
+            door: door.into(),
+            tool: "browser".into(),
+            rule_key: "browser_click".into(),
+            activity: activity.into(),
+            decision: "allow".into(),
+            why: "{}".into(),
+            unreviewed,
+            created_at: at,
+            ..Default::default()
+        }
+    }
+
+    /// Yesterday's unreviewed actions from unattended runs, in one item;
+    /// none when there are none. Chat actions and reviewed ones stay out.
+    #[test]
+    fn unreviewed_appears_in_the_daily_digest() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(&dir.path().join("d.db").to_string_lossy()).unwrap();
+        let day = 20_000;
+        let at = day * 86_400 + 3_600;
+        assert!(permission_digest_item(&store, day).is_none(), "nothing to list: no item");
+        for r in [
+            row("", "heartbeat", "submitting the signup form", true, at),
+            row("", "workflow", "posting the weekly update", true, at + 1),
+            row("", "chat", "sending a reply", true, at + 2),
+            row("", "heartbeat", "reading a page", false, at + 3),
+            row("", "schedule", "the next day", true, at + 86_400),
+        ] {
+            store.record_permission_activity(&r).unwrap();
+        }
+        let item = permission_digest_item(&store, day).unwrap();
+        assert_eq!(item["id"], format!("permission-digest:{day}"));
+        assert_eq!(item["type"], "permission_digest");
+        assert_eq!(item["title"], "2 actions ran without a permission check");
+        let body = item["body"].as_str().unwrap();
+        assert!(body.contains(types::permissions::UNREVIEWED_REASON), "{body}");
+        assert!(body.contains("submitting the signup form (heartbeat)") && body.contains("posting the weekly update"));
+        assert!(!body.contains("sending a reply") && !body.contains("reading a page") && !body.contains("the next day"));
+    }
 }

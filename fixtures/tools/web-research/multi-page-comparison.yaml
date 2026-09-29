@@ -4,20 +4,26 @@ description: |
   The model must compare information across multiple sources to answer
   a question that requires cross-referencing. Tests whether the model
   visits multiple pages and doesn't stop at the first result.
-target_component: web
+target_component: search_web
 
 conversation:
   - role: user
     content: "What are the key differences between SQLite WAL mode and journal mode? Which should I use for a desktop app with concurrent reads?"
 
 tool_config:
-  web:
+  search_web:
+    enabled: true
+  fetch_url:
+    enabled: true
+  browser_open:
+    enabled: true
+  browser_read:
     enabled: true
 
 prompt_assertions:
   first_call:
     - id: starts-with-search
-      text: "Model's first call is web(action: 'search') about SQLite WAL vs journal"
+      text: "Model's first web call (after loading it with find_tools) is search_web about SQLite WAL vs journal"
       severity: critical
   recovery:
     - id: visits-multiple-sources
@@ -30,7 +36,7 @@ prompt_assertions:
       text: "Model's final answer compares both modes and gives a recommendation"
       severity: critical
     - id: page-transitions-work
-      text: "Every navigate call successfully loads a page (no repeated navigation failures)"
+      text: "Every browser_open call successfully loads a page (no repeated navigation failures)"
       severity: important
   cost:
     - id: reasonable-calls
@@ -44,7 +50,7 @@ ideal_behavior:
   tool_calls: 8
   total_tokens: 15000
   narrative: |
-    1. web(action: "search", query: "SQLite WAL mode vs journal mode differences") → results
-    2. navigate to sqlite.org docs or relevant article → read_page + scroll
-    3. navigate to another source (blog post, SO answer) → read_page
+    1. search_web(queries: ["SQLite WAL mode vs journal mode differences"]) → results
+    2. browser_open sqlite.org docs or relevant article → browser_read + scroll
+    3. browser_open another source (blog post, SO answer) → browser_read
     4. Synthesize comparison with recommendation for desktop use case

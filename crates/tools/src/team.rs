@@ -20,15 +20,18 @@ pub const TEAM_CREATED_EVENT: &str = "team_created";
 pub const TEAM_MESSAGE_EVENT: &str = "team_message";
 /// WS event after a team's name, mission, or members change; carries the team.
 pub const TEAM_UPDATED_EVENT: &str = "team_updated";
+/// WS event when a team is removed: the owner's delete, or a temporary team
+/// disbanding once its outcome reached the owner. Carries `teamId`.
+pub const TEAM_REMOVED_EVENT: &str = "team_removed";
 /// WS event when a member starts working on a post ("X is working").
 pub const TEAM_ACTIVITY_EVENT: &str = "team_activity";
 
 /// The one create call, as the model should write it.
-pub const CREATE_USAGE: &str = "team(action: \"create\", name: \"Operations\", mission: \"Keep the office running\", agents: [\"Chief of Staff\", \"Executive Assistant\"])";
+pub const CREATE_USAGE: &str = "create_team(name: \"Operations\", mission: \"Keep the office running\", members: [\"Chief of Staff\", \"Executive Assistant\"])";
 
 /// Wording for the empty state: teams are local, here is how to make one.
-/// Also the tail of the loop tool's no-loop answer — a Nebo outside every
-/// hub loop still has teams.
+/// Also the tail of the NeboAI loop tools' no-loop answer — a Nebo outside
+/// every hub loop still has teams.
 pub fn no_teams_hint() -> String {
     format!(
         "No teams yet on this Nebo; teams work locally and need no hub. Create one with {CREATE_USAGE}."
@@ -57,10 +60,16 @@ pub async fn create(
     mission: &str,
     member_list: &[TeamMember],
     organizer_agent_id: &str,
+    lifetime: &crate::workflows::Lifetime,
 ) -> Result<Team, String> {
     let name = name.trim();
     if name.is_empty() {
         return Err("team name required".to_string());
+    }
+    // A temporary team is assembled for one piece of work, with a lead who
+    // takes it and hands steps to the others.
+    if matches!(lifetime, crate::workflows::Lifetime::Temporary { .. }) && organizer_agent_id.is_empty() {
+        return Err("a temporary team needs a lead: name the employee who takes its work".to_string());
     }
     let mission = mission.trim();
 
@@ -86,7 +95,7 @@ pub async fn create(
     {
         return Err(format!(
             "A team named \"{}\" already exists (id: {}). Post into it with \
-             team(action: \"send\", team: \"{}\", text: \"...\"), or create a team with a \
+             send_message(to: \"{}\", message: \"...\"), or create a team with a \
              new, distinct name.",
             existing.name, existing.id, existing.name
         ));
@@ -103,6 +112,11 @@ pub async fn create(
     store
         .ensure_team_thread(&team.id, &team.name)
         .map_err(|e| format!("open team thread: {e}"))?;
+    if let crate::workflows::Lifetime::Temporary { report_to } = lifetime {
+        store
+            .mark_temporary(db::TemporaryKind::Team, "", &team.id, report_to)
+            .map_err(|e| format!("mark the team temporary: {e}"))?;
+    }
     Ok(team)
 }
 
@@ -233,7 +247,7 @@ pub fn resolve_team(store: &Store, label: &str) -> Result<Team, String> {
         format!("No team named \"{label}\". {}", no_teams_hint())
     } else {
         format!(
-            "No team named \"{label}\". Teams on this Nebo: {}. Use one of those names, or team(action: \"list\").",
+            "No team named \"{label}\". Teams on this Nebo: {}. Use one of those names; list_teams shows them all.",
             known.join(", ")
         )
     })
@@ -291,6 +305,14 @@ pub fn member_roster(store: &Store, team: &Team) -> Vec<(String, String)> {
         .collect()
 }
 
+/// The team's lead: the member on record as organizer, when it is still on
+/// the team. The ONE lead rule — a post that names nobody goes to it, a call
+/// opened from the team thread speaks with it, and the roster names it.
+pub fn lead_of(team: &Team) -> Option<&str> {
+    let lead = team.organizer_agent_id.as_str();
+    (!lead.is_empty() && team.members.iter().any(|m| m.agent_id == lead)).then_some(lead)
+}
+
 /// Every member's addressable id, in team order. A local member is addressed
 /// by its local agent id and a remote one by its hub agent id — the same id a
 /// mention token carries in each case, which is why one list serves both.
@@ -312,6 +334,21 @@ pub fn normalize_mentions(text: &str, roster: &[(String, String)]) -> String {
             let lower = t.to_lowercase();
             let Some(pos) = lower.find(&needle) else { break };
             t = format!("{}<@{}>{}", &t[..pos], id, &t[pos + needle.len()..]);
+        }
+    }
+    t
+}
+
+/// The other direction: every member's `<@id>` token written out as
+/// "@Name". Tokens are dispatch grammar — the record keeps them and the apps
+/// render them as chips — but an employee reading a post, native or linked
+/// from another runtime, reads names: a bare id tells it nothing, not even
+/// that the ask is its own.
+pub fn spell_mentions(text: &str, roster: &[(String, String)]) -> String {
+    let mut t = text.to_string();
+    for (id, name) in roster {
+        if !name.is_empty() {
+            t = t.replace(&format!("<@{id}>"), &format!("@{name}"));
         }
     }
     t
@@ -372,12 +409,29 @@ mod tests {
         Store::new(&path.to_string_lossy()).expect("store")
     }
 
+    const SAVED: crate::workflows::Lifetime = crate::workflows::Lifetime::Saved;
+
+    /// A temporary team is marked as such, reporting to the session that
+    /// assembled it, and it needs a lead; a saved one is not temporary.
+    #[tokio::test]
+    async fn a_temporary_team_needs_a_lead_and_is_marked() {
+        let s = store();
+        let temp = crate::workflows::Lifetime::Temporary { report_to: "agent:assistant:web".into() };
+        let err = create(None, &s, "Budget", "", &[TeamMember::local("ea"), TeamMember::local("bk")], "", &temp).await.unwrap_err();
+        assert!(err.contains("needs a lead"), "{err}");
+        let team = create(None, &s, "Budget", "", &[TeamMember::local("ea")], "chief", &temp).await.unwrap();
+        let work = s.temporary_work(db::TemporaryKind::Team, "", &team.id).unwrap().expect("marked temporary");
+        assert_eq!((work.report_to.as_str(), work.run_id), ("agent:assistant:web", None));
+        let kept = create(None, &s, "Ops", "", &[TeamMember::local("ea")], "chief", &SAVED).await.unwrap();
+        assert!(s.temporary_work(db::TemporaryKind::Team, "", &kept.id).unwrap().is_none());
+    }
+
     /// A team is created with NO comm plugin at all: local row, local
     /// thread, no hub channel.
     #[tokio::test]
     async fn create_without_a_hub() {
         let s = store();
-        let team = create(None, &s, "Operations", "Run the office", &[TeamMember::local("ea")], "chief")
+        let team = create(None, &s, "Operations", "Run the office", &[TeamMember::local("ea")], "chief", &SAVED)
             .await
             .unwrap();
         assert_eq!(members_of(&team), vec!["chief", "ea"]);
@@ -395,26 +449,56 @@ mod tests {
         let comm: Arc<dyn CommPlugin> = Arc::new(comm::LoopbackPlugin::new());
         comm.connect(std::collections::HashMap::new()).await.unwrap();
         assert!(comm.is_connected());
-        let team = create(Some(&comm), &s, "Sales", "", &[TeamMember::local("ea")], "chief")
+        let team = create(Some(&comm), &s, "Sales", "", &[TeamMember::local("ea")], "chief", &SAVED)
             .await
             .unwrap();
         assert_eq!(team.hub_channel_id, None);
         assert_eq!(team.name, "Sales");
     }
 
+    /// The owner renames a linked employee after it joined a team: it stays
+    /// on the team under its new name, and delegation reaches it by that
+    /// name, its handle or its id. Its link is untouched: the brain still
+    /// names the same linked agent.
+    #[tokio::test]
+    async fn a_renamed_linked_employee_stays_on_its_team_and_is_reached() {
+        let s = store();
+        s.create_agent("chief", None, "Chief of Staff", "", "---\nname: Chief of Staff\n---\n", "{}", None, None).unwrap();
+        let hired = s.create_agent("emp-linked", Some("linked"), "main", "", "---\nname: main\n---\n", "{}", None, None).unwrap();
+        let brain = ai::LinkedProvider::model_id("bot-1", "main");
+        s.upsert_entity_config("agent", &hired.id, &serde_json::json!({ "modelPreference": brain })).unwrap();
+        let team = create(None, &s, "Research", "", &[TeamMember::local(&hired.id)], "chief", &SAVED).await.unwrap();
+
+        s.update_agent(
+            &hired.id, "Scout", &hired.description, &hired.agent_md, &hired.frontmatter,
+            None, None, None, None, None, None, None, None, None, None,
+        )
+        .unwrap();
+
+        let team = s.get_team(&team.id).unwrap().unwrap();
+        assert_eq!(members_of(&team), vec!["chief", "emp-linked"]);
+        assert!(member_roster(&s, &team).contains(&("emp-linked".to_string(), "Scout".to_string())));
+        for label in ["Scout", "@scout", "emp-linked"] {
+            assert_eq!(resolve_agent(&s, label).map(|a| a.id), Some("emp-linked".to_string()), "{label}");
+        }
+        assert!(resolve_agent(&s, "main").is_none(), "the old name is nobody's now");
+        let config = s.get_entity_config("agent", "emp-linked").unwrap().unwrap();
+        assert_eq!(config.model_preference.as_deref(), Some(brain.as_str()));
+    }
+
     /// The two policies: no solo teams, no repeated names.
     #[tokio::test]
     async fn create_refuses_solo_and_repeated_names() {
         let s = store();
-        let err = create(None, &s, "Solo", "", &[], "chief").await.unwrap_err();
+        let err = create(None, &s, "Solo", "", &[], "chief", &SAVED).await.unwrap_err();
         assert!(err.contains("at least two employees"), "{err}");
-        let err = create(None, &s, "Solo", "", &[TeamMember::local("chief")], "chief")
+        let err = create(None, &s, "Solo", "", &[TeamMember::local("chief")], "chief", &SAVED)
             .await
             .unwrap_err();
         assert!(err.contains("at least two employees"), "{err}");
 
-        create(None, &s, "Ops", "", &[TeamMember::local("ea")], "chief").await.unwrap();
-        let err = create(None, &s, "ops", "", &[TeamMember::local("ea")], "chief")
+        create(None, &s, "Ops", "", &[TeamMember::local("ea")], "chief", &SAVED).await.unwrap();
+        let err = create(None, &s, "ops", "", &[TeamMember::local("ea")], "chief", &SAVED)
             .await
             .unwrap_err();
         assert!(err.contains("already exists"), "{err}");
@@ -432,6 +516,19 @@ mod tests {
         let ids = mentioned_members(&text, &["chief".to_string(), "ea".to_string()]);
         assert_eq!(ids, vec!["ea".to_string(), "chief".to_string()]);
         assert!(mentioned_members("nobody here", &["chief".to_string()]).is_empty());
+    }
+
+    /// A member reads names, never ids; the round trip through
+    /// `normalize_mentions` still dispatches to the same member.
+    #[test]
+    fn mentions_are_spelled_as_names_for_the_reader() {
+        let roster = vec![
+            ("9295191e".to_string(), "Hermes".to_string()),
+            ("ea".to_string(), "Executive Assistant".to_string()),
+        ];
+        let spelled = spell_mentions("<@9295191e> research this; <@ea> fyi; <@stranger> hi", &roster);
+        assert_eq!(spelled, "@Hermes research this; @Executive Assistant fyi; <@stranger> hi");
+        assert_eq!(normalize_mentions(&spelled, &roster), "<@9295191e> research this; <@ea> fyi; <@stranger> hi");
     }
 
     /// The lead arbitrates every turn, so it has to run on this machine. A

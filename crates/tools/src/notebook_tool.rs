@@ -61,7 +61,7 @@ impl DynTool for NotebookTool {
 
     fn description(&self) -> String {
         "Edit or inspect Jupyter notebook (.ipynb) cells. Notebooks are JSON — use this, \
-         not os(file, edit), for cell changes.\n\
+         not edit_file, for cell changes.\n\
          - notebook(action: \"read\", notebook_path: \"/path/nb.ipynb\") — list cells (index, id, type, preview)\n\
          - notebook(action: \"edit\", notebook_path, cell_id, new_source) — replace a cell's source\n\
          - notebook(action: \"edit\", notebook_path, cell_id, new_source, cell_type, edit_mode: \"insert\") — insert a new cell after cell_id (cell_type required)\n\
@@ -86,17 +86,38 @@ impl DynTool for NotebookTool {
         })
     }
 
-    fn requires_approval(&self) -> bool {
-        true
+
+
+    fn search_hint(&self) -> &str {
+        "jupyter notebook ipynb cells"
     }
 
-    /// Reading cells is read-only; only edits need approval.
-    fn requires_approval_for(&self, input: &Value) -> bool {
-        input.get("action").and_then(|v| v.as_str()) != Some("read")
-    }
-
-    fn is_concurrent_safe(&self, input: &Value) -> bool {
+    fn read_only(&self, input: &Value) -> bool {
         input.get("action").and_then(|v| v.as_str()) == Some("read")
+    }
+
+    fn rule_key(&self, input: &Value) -> String {
+        if self.read_only(input) { "read_file" } else { "edit_notebook" }.to_string()
+    }
+
+    fn rule_field(&self, input: &Value) -> Option<types::permissions::RuleField> {
+        let path = input.get("notebook_path").and_then(|v| v.as_str()).filter(|p| !p.is_empty())?;
+        Some(types::permissions::RuleField::Folder(crate::file_tool::expand_path(path).into()))
+    }
+
+    /// Notebook cells are file contents.
+    fn capability(&self, _input: &Value) -> Option<&'static str> {
+        Some("file")
+    }
+
+    fn emits_image(&self, input: &Value) -> bool {
+        !self.read_only(input)
+    }
+
+    /// Pre-interface: it settles its own call shapes (see
+    /// `DynTool::validates_input`).
+    fn validates_input(&self) -> bool {
+        false
     }
 
     fn execute_dyn<'a>(

@@ -1,0 +1,11 @@
+id: sc21-a-plugin-required-by-its-code-is-its-own-tool
+name: "SC21 — A plugin required by its install code is its own plugin__<slug> tool"
+description: |
+  Marketplace packages name their plugins in `requires.plugins` by install
+  code (PLUG-XXXX-XXXX). Installing a plugin by code records the code, so
+  the employee's job tools name the real `plugin__<slug>` tool, never a
+  tool named after the code. A qualified name maps to the same tool; a code
+  nothing here was installed from maps to none.
+target_component: staffed-company
+proof: staffed_proof::connections::a_plugin_required_by_its_code_is_its_own_tool
+conversation: []

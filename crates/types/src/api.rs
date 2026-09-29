@@ -113,6 +113,27 @@ pub struct DashboardResponse {
     pub recent_runs: Vec<DashboardRun>,
     pub runs_by_day: Vec<DashboardDay>,
     pub runs_by_employee: Vec<DashboardEmployeeRuns>,
+    /// Temporary work in progress: made for one piece of work, deleted once
+    /// its outcome reaches the owner.
+    pub temporary_work: Vec<DashboardTemporaryWork>,
+}
+
+/// A workflow or team made for one piece of work, while it is in progress.
+/// `status` is one of starting, working, waiting.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DashboardTemporaryWork {
+    /// workflow | team
+    pub kind: String,
+    pub name: String,
+    /// The employee whose workflow it is, or the team's lead.
+    pub agent_id: String,
+    pub agent_name: String,
+    pub status: String,
+    /// What it waits on, in plain words.
+    pub waiting_on: String,
+    pub run_id: Option<String>,
+    pub since: i64,
 }
 
 /// One employee card. `status` is one of working, waiting, idle, paused.
@@ -163,7 +184,8 @@ pub struct DashboardCounts {
 }
 
 /// Something waiting on the owner: a gated tool call in a chat (`kind` =
-/// "tool") or a workflow parked at an approval step (`kind` = "workflow").
+/// "tool") or a step parked on an ask (`kind` = "permission_ask"; `id` is
+/// the ask's).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DashboardApproval {

@@ -1,0 +1,17 @@
+id: ask-never-expires
+name: "An unanswered ask never expires; it comes back to the owner as a reminder"
+description: |
+  Owner decision (09-25, Harness-Fix-Plan "Long-running work"): every ask is
+  a durable wait in the engine with no default expiry. The 72-hour sweep that
+  turned an unanswered ask into a No is deleted. Silence never becomes a No.
+  A waiting ask resurfaces in the Inbox and on the phone instead.
+  This proof parks a heartbeat step on an ask through the real server, lets
+  its reminder timers come due twice (a day, then two days later), and
+  asserts each brings the Inbox card back unread while the ask stays open:
+  nothing ran, nothing was granted, the employee was never told no. The
+  owner then answers from the phone and the server's own engine loop resumes
+  the parked call, once.
+  A clock-driven wait, not a conversation, so it is a deterministic proof.
+target_component: permissions
+proof: harness::permissions::proof::an_unanswered_ask_never_expires_and_is_reminded
+conversation: []

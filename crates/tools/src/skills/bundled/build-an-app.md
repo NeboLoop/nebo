@@ -35,15 +35,13 @@ for something the owner will open again.
 
 ## Create It in One Call
 
-Create the app employee with the registry door. One call writes the folder,
+Create the app employee with create_employee. One call writes the folder,
 the manifest, the persona, and the page; the app appears in the owner's
 workforce within a few seconds (measured at about 1.5 s) and opens at
 `/apps/<id>/ui/`.
 
 ```
-agent(
-  resource: "registry",
-  action: "create",
+create_employee(
   name: "deal-board",
   description: "A board of open deals, sorted by close date.",
   app: {
@@ -61,8 +59,8 @@ Parameters, exactly:
 
 - `name` — the employee's name, and the folder its package lives in. It is NOT
   the app id: the id is a UUID, minted at create. The create result says it
-  ("Created agent 'deal-board' (id: ...)"), and
-  `agent(resource: "registry", action: "info", name: "deal-board")` says it
+  ("Created employee 'deal-board' (id: ...)"), and
+  `get_employee(name: "deal-board")` says it
   again later. The page is served at `/apps/<that id>/ui/`.
 - `description` — one line; it becomes the persona if you do not pass `agent_md`.
 - `app` — `{window, permissions}`. Passing it makes the employee an app.
@@ -163,16 +161,16 @@ HTML and JavaScript against the table above.
 
 ## Iterate
 
-Change an app the same way you made it — through the registry door. Never
+Change an app the same way you made it — through update_employee. Never
 hand-write the files: the tool is the one writer of an app's package, and it
 checks the manifest, the permissions and every `ui` path before a byte lands.
 
 ```
-agent(resource: "registry", action: "update", name: "deal-board",
-      ui: { "index.html": "<the whole new page>" })
+update_employee(name: "deal-board",
+                ui: { "index.html": "<the whole new page>" })
 ```
 
-`update` takes the same `ui`, `ui_jsx`, `app` and `agent_md` the create took.
+`update_employee` takes the same `ui`, `ui_jsx`, `app` and `agent_md` the create took.
 Each names what it replaces: a path in `ui` overwrites that one file and leaves
 the rest of the folder alone; `app` changes only the fields it carries; passing
 `agent_md` rewrites the persona. The page is read from disk on every request,
@@ -193,8 +191,8 @@ and the store survives that.
 
 2. **Deleting the folder does not delete the employee.** Removing
    `user/agents/<name>/` deactivates the employee (Nebo keeps the record so the
-   folder can come back). To delete it, use the registry door:
-   `agent(resource: "registry", action: "delete", name: "<name>")`, which removes
+   folder can come back). To delete it, use delete_employee:
+   `delete_employee(name: "<name>")`, which removes
    the record, the live registry entry, and the folder.
 
 ---

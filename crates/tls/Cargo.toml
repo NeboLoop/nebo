@@ -1,0 +1,25 @@
+[package]
+name = "nebo-tls"
+# Versioned on its own, not with the workspace: nebo-comm publishes to
+# crates.io and depends on this crate, so this one publishes too.
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Outbound TLS trust for Nebo: the OS trust store, kept when partly readable, bundled public roots when empty"
+keywords = ["neboai", "nebo", "tls", "rustls", "websocket"]
+categories = ["network-programming", "cryptography"]
+
+[dependencies]
+reqwest = { workspace = true }
+tokio = { workspace = true }
+tokio-tungstenite = { workspace = true }
+tracing = { workspace = true }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-native-certs = "0.8"
+webpki-roots = "1"
+
+[dev-dependencies]
+rcgen = "0.13"
+tokio-rustls = { version = "0.26", default-features = false }
+futures-util = "0.3"

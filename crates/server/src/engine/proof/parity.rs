@@ -40,7 +40,7 @@ fn parity_scheduled_jobs() {
     assert_eq!(w.s.engine_count_runs_for_ref("cron:1").unwrap(), 2, "the 23rd and the 31st ran; the 24th–30th never did");
 
     // Rescheduled: replaced. Disabled: gone.
-    w.s.upsert_cron_job("briefing", "0 30 9 * * *", "echo hi", "shell", None, None, None, true, None, None).unwrap();
+    w.s.upsert_cron_job("briefing", "0 30 9 * * *", "echo hi", "shell", None, None, None, true, None, None, None).unwrap();
     tick(&w.s, back + 10, &idle, &no_steer);
     let pending = w.s.engine_pending_timers("binding").unwrap();
     assert_eq!(pending.len(), 1);

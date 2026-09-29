@@ -4,7 +4,7 @@ use axum::Json;
 use axum::extract::State;
 use types::api::{
     DashboardApproval, DashboardCounts, DashboardDay, DashboardEmployee, DashboardEmployeeRuns,
-    DashboardResponse, DashboardRun,
+    DashboardResponse, DashboardRun, DashboardTemporaryWork,
 };
 
 use super::{HandlerResult, to_error_response};
@@ -31,14 +31,8 @@ pub async fn dashboard(State(state): State<AppState>) -> HandlerResult<Dashboard
     let agents = state.store.list_agents(1000, 0).map_err(to_error_response)?;
     let active_ids: HashSet<String> = state.agent_registry.read().await.keys().cloned().collect();
     let running = state.run_registry.list_all().await;
-    let tool_approvals: Vec<(String, crate::state::PendingToolApproval)> = state
-        .pending_tool_approvals
-        .lock()
-        .await
-        .iter()
-        .map(|(k, v)| (k.clone(), v.clone()))
-        .collect();
-    let parked = state.store.list_workflow_suspensions().unwrap_or_default();
+    let tool_approvals = crate::chat_dispatch::open_approval_cards(&state.approval_channels).await;
+    let asks = state.permission_asks.open(None).unwrap_or_default();
     let runs = state
         .store
         .list_workflow_runs_since(history_start, 2000)
@@ -55,7 +49,8 @@ pub async fn dashboard(State(state): State<AppState>) -> HandlerResult<Dashboard
     let name_of: HashMap<String, String> = agents.iter().map(|a| (a.id.clone(), a.name.clone())).collect();
     let name = |id: &str| name_of.get(id).cloned().unwrap_or_else(|| id.to_string());
 
-    // ---- approvals: gated tool calls in chats, workflows parked at a step
+    // ---- approvals: gated tool calls in chats, and the asks (any step,
+    // chat or unattended, parked on the owner)
     let mut approvals: Vec<DashboardApproval> = tool_approvals
         .iter()
         .map(|(id, a)| DashboardApproval {
@@ -68,15 +63,15 @@ pub async fn dashboard(State(state): State<AppState>) -> HandlerResult<Dashboard
             chat_id: Some(types::keyparser::parse_session_key(&a.session_key).chat_id).filter(|t| !t.is_empty()),
         })
         .collect();
-    for (run_id, agent_id, binding, display, created_at) in &parked {
+    for ask in &asks {
         approvals.push(DashboardApproval {
-            id: run_id.clone(),
-            kind: "workflow".into(),
-            agent_id: agent_id.clone(),
-            agent_name: name(agent_id),
-            summary: if display.is_empty() { binding.clone() } else { display.clone() },
-            since: *created_at,
-            chat_id: None,
+            id: ask.id.clone(),
+            kind: "permission_ask".into(),
+            agent_id: ask.agent_id.clone(),
+            agent_name: name(&ask.agent_id),
+            summary: ask.sentence.clone(),
+            since: ask.created_at,
+            chat_id: Some(types::keyparser::parse_session_key(&ask.session_key).chat_id).filter(|t| !t.is_empty()),
         });
     }
     approvals.sort_by_key(|a| a.since);
@@ -119,7 +114,7 @@ pub async fn dashboard(State(state): State<AppState>) -> HandlerResult<Dashboard
         });
         let latest = live_chat.or_else(|| state.store.get_latest_agent_chat(&a.id).ok().flatten());
         let latest_title = latest.as_ref().and_then(|c| display_title(&c.title));
-        let isolated = crate::workflow_manager::agent_context_isolated(&state.store, &a.id);
+        let isolated = crate::workflow_manager::agent_memory_mode(&state.store, &a.id).separates_conversations();
         let matters = state.store.count_agent_chats(&a.id).unwrap_or(0) as u32;
         let paused = !active_ids.contains(&a.id);
         let wf_now = live_wf.get(a.id.as_str()).copied();
@@ -268,7 +263,72 @@ pub async fn dashboard(State(state): State<AppState>) -> HandlerResult<Dashboard
         });
     }
 
-    Ok(Json(DashboardResponse { employees, counts, approvals, recent_runs, runs_by_day, runs_by_employee }))
+    let temporary_work = state
+        .store
+        .list_temporary_work()
+        .map_err(to_error_response)?
+        .into_iter()
+        .map(|w| temporary_card(&state.store, &w, &name))
+        .collect();
+
+    Ok(Json(DashboardResponse { employees, counts, approvals, recent_runs, runs_by_day, runs_by_employee, temporary_work }))
+}
+
+/// One piece of temporary work as the workforce view shows it: who has it,
+/// and what it waits on now.
+fn temporary_card(store: &db::Store, w: &db::TemporaryWork, name: &dyn Fn(&str) -> String) -> DashboardTemporaryWork {
+    let (title, agent_id) = match w.kind {
+        db::TemporaryKind::Workflow => (w.name.replace('-', " "), w.agent_id.clone()),
+        db::TemporaryKind::Team => match store.get_team(&w.name).ok().flatten() {
+            Some(team) => (team.name.clone(), tools::team::lead_of(&team).unwrap_or_default().to_string()),
+            None => (w.name.clone(), String::new()),
+        },
+    };
+    let run = w.run_id.as_deref().and_then(|r| store.engine_get_run(r).ok().flatten());
+    let (status, waiting_on) = match &run {
+        None => ("starting", not_started(store, w)),
+        Some(r) if r.state == "waiting" => ("waiting", waiting_for(store, r)),
+        Some(r) if matches!(r.state.as_str(), "done" | "failed" | "cancelled") => ("working", "Reporting its outcome".to_string()),
+        Some(_) => ("working", "Working".to_string()),
+    };
+    DashboardTemporaryWork {
+        kind: w.kind.as_str().to_string(),
+        name: title,
+        agent_name: if agent_id.is_empty() { String::new() } else { name(&agent_id) },
+        agent_id,
+        status: status.to_string(),
+        waiting_on,
+        run_id: w.run_id.clone(),
+        since: w.created_at,
+    }
+}
+
+/// What temporary work that has not started waits for: its trigger.
+fn not_started(store: &db::Store, w: &db::TemporaryWork) -> String {
+    if w.kind == db::TemporaryKind::Team {
+        return "Waiting for its work".to_string();
+    }
+    let row = store
+        .list_agent_workflows(&w.agent_id)
+        .ok()
+        .and_then(|rows| rows.into_iter().find(|b| b.binding_name == w.name));
+    match row.as_ref().map(|b| (b.trigger_type.as_str(), b.trigger_config.as_str())) {
+        Some(("event", sources)) => format!("Waiting for {}", sources.replace(',', ", ")),
+        Some(("schedule", _)) => "Waiting for its scheduled time".to_string(),
+        _ => "Starting".to_string(),
+    }
+}
+
+/// What a waiting run waits on: the owner's okay on an ask, or the reason
+/// its wait gives.
+fn waiting_for(store: &db::Store, run: &db::EngineRun) -> String {
+    if let Some(ask) = store.permission_ask_for_run(&run.id).ok().flatten().filter(|a| a.status == "open") {
+        return format!("Waiting for your okay: {}", ask.sentence);
+    }
+    match run.current_wait_id.and_then(|id| store.engine_get_wait(id).ok().flatten()) {
+        Some(wait) if !wait.reason.trim().is_empty() => format!("Waiting: {}", wait.reason.trim()),
+        _ => "Waiting".to_string(),
+    }
 }
 
 /// The sidebar's order: the primary employee first, then everyone by name,

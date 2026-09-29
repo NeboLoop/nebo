@@ -1,0 +1,9 @@
+id: mp06-an-enrolled-global-store-carries-a-save-to-a-second-bot
+name: "MP06 — An enrolled global store carries a save to a second bot"
+description: |
+  The global store is reached through its one door, the MCP integration at the memory address,
+  whose tools the seat knows as the global store's. A save one employee makes there is read by a
+  second bot's own client of the same store (a stand-in on loopback).
+target_component: memory
+proof: staffed_proof::memory::an_enrolled_global_store_carries_a_save_to_a_second_bot
+conversation: []

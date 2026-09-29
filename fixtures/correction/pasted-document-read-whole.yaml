@@ -21,18 +21,18 @@ conversation:
     content: "Read {{scratch}}/pasted-application.md and tell me the Total Unpaid Balance and the Underwriter Routing Code it lists."
 
 tool_config:
-  os:
+  read_file:
     enabled: true
 
 prompt_assertions:
   first_call:
     - id: read-first
-      text: "The first call is an os file read of {{scratch}}/pasted-application.md"
+      text: "The first call is read_file of {{scratch}}/pasted-application.md"
       severity: critical
-      check: { first_call: true, tool: os }
+      check: { first_call: true, tool: read_file, arg: path, contains: "pasted-application.md" }
   recovery:
     - id: one-read
-      text: "The file is read once; no second read of the same path, no offset or limit retries, no grep or shell to recover a clipped line"
+      text: "The file is read once; no second read of the same path, no offset or limit retries, no run_command grep or cat to recover a clipped line"
       severity: critical
       check: { max_tool_calls: 2 }
     - id: no-tool-errors

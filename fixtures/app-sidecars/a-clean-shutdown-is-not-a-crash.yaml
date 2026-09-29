@@ -1,0 +1,9 @@
+id: a-clean-shutdown-is-not-a-crash
+name: "A clean shutdown is not a crash"
+description: |
+  Nebo exiting, a hot reload or a deactivation stops the sidecar on purpose:
+  announced stopped (sidecar_state off, app_stopped), never crashed or
+  restarting, the process gone, nothing relaunching it.
+target_component: app-sidecars
+proof: sidecar_proof::scenarios::a_clean_shutdown_is_not_a_crash
+conversation: []

@@ -143,16 +143,6 @@ impl Store {
             .map_err(|e| NeboError::Database(e.to_string()))
     }
 
-    pub fn update_session_summary(&self, id: &str, summary: &str) -> Result<(), NeboError> {
-        let conn = self.conn()?;
-        conn.execute(
-            "UPDATE sessions SET summary = ?2, last_compacted_at = unixepoch(), updated_at = unixepoch() WHERE id = ?1",
-            params![id, summary],
-        )
-        .map_err(|e| NeboError::Database(e.to_string()))?;
-        Ok(())
-    }
-
     pub fn update_session_stats(
         &self,
         id: &str,
@@ -196,9 +186,9 @@ impl Store {
     pub fn reset_session(&self, id: &str) -> Result<(), NeboError> {
         let conn = self.conn()?;
         conn.execute(
-            "UPDATE sessions SET message_count = 0, token_count = 0, summary = NULL,
+            "UPDATE sessions SET message_count = 0, token_count = 0,
              last_compacted_at = NULL, compaction_count = 0, memory_flush_at = NULL,
-             memory_flush_compaction_count = NULL, active_task = NULL,
+             memory_flush_compaction_count = NULL,
              updated_at = unixepoch() WHERE id = ?1",
             params![id],
         )
@@ -275,36 +265,6 @@ impl Store {
         Ok(())
     }
 
-    pub fn get_session_active_task(&self, id: &str) -> Result<String, NeboError> {
-        let conn = self.conn()?;
-        conn.query_row(
-            "SELECT COALESCE(active_task, '') FROM sessions WHERE id = ?1",
-            params![id],
-            |row| row.get(0),
-        )
-        .map_err(|e| NeboError::Database(e.to_string()))
-    }
-
-    pub fn set_session_active_task(&self, id: &str, active_task: &str) -> Result<(), NeboError> {
-        let conn = self.conn()?;
-        conn.execute(
-            "UPDATE sessions SET active_task = ?2, updated_at = unixepoch() WHERE id = ?1",
-            params![id, active_task],
-        )
-        .map_err(|e| NeboError::Database(e.to_string()))?;
-        Ok(())
-    }
-
-    pub fn clear_session_active_task(&self, id: &str) -> Result<(), NeboError> {
-        let conn = self.conn()?;
-        conn.execute(
-            "UPDATE sessions SET active_task = NULL, updated_at = unixepoch() WHERE id = ?1",
-            params![id],
-        )
-        .map_err(|e| NeboError::Database(e.to_string()))?;
-        Ok(())
-    }
-
     pub fn get_session_last_embedded_message_id(&self, id: &str) -> Result<i64, NeboError> {
         let conn = self.conn()?;
         conn.query_row(
@@ -355,6 +315,39 @@ impl Store {
         Ok(())
     }
 
+    /// Keep `value` (JSON) under `field` of the session's metadata, beside
+    /// whatever else it holds; `None` removes the field. The server owns
+    /// each field's shape: where a woken turn replies (`replyRoute`) and as
+    /// whom it runs (`wakeSeat`).
+    pub fn set_session_meta(&self, id: &str, field: &str, value: Option<&str>) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        match value {
+            Some(value) => conn.execute(
+                "UPDATE sessions SET metadata = json_set(COALESCE(NULLIF(metadata, ''), '{}'), '$.' || ?2, json(?3)) WHERE id = ?1",
+                params![id, field, value],
+            ),
+            None => conn.execute(
+                "UPDATE sessions SET metadata = json_remove(COALESCE(NULLIF(metadata, ''), '{}'), '$.' || ?2) WHERE id = ?1",
+                params![id, field],
+            ),
+        }
+        .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    /// The JSON [`Self::set_session_meta`] keeps under `field`, if any.
+    pub fn session_meta(&self, id: &str, field: &str) -> Result<Option<String>, NeboError> {
+        let conn = self.conn()?;
+        conn.query_row(
+            "SELECT json_extract(COALESCE(NULLIF(metadata, ''), '{}'), '$.' || ?2) FROM sessions WHERE id = ?1",
+            params![id, field],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .optional()
+        .map(Option::flatten)
+        .map_err(|e| NeboError::Database(e.to_string()))
+    }
+
     /// Reset conversation-scoped counters without clearing session-level preferences.
     /// Preserves model_override, provider_override, auth_profile_override, send_policy,
     /// custom_label, verbose_level — only clears per-conversation state.
@@ -364,11 +357,7 @@ impl Store {
             "UPDATE sessions SET
                 message_count = 0,
                 token_count = 0,
-                summary = NULL,
                 last_compacted_at = NULL,
-                last_summarized_count = 0,
-                active_task = NULL,
-                work_tasks = NULL,
                 updated_at = unixepoch()
              WHERE id = ?1",
             params![id],
@@ -384,7 +373,6 @@ fn row_to_session(row: &rusqlite::Row) -> rusqlite::Result<Session> {
         name: row.get("name")?,
         scope: row.get("scope")?,
         scope_id: row.get("scope_id")?,
-        summary: row.get("summary")?,
         token_count: row.get("token_count")?,
         message_count: row.get("message_count")?,
         last_compacted_at: row.get("last_compacted_at")?,
@@ -402,9 +390,6 @@ fn row_to_session(row: &rusqlite::Row) -> rusqlite::Result<Session> {
         verbose_level: row.get("verbose_level")?,
         custom_label: row.get("custom_label")?,
         last_embedded_message_id: row.get("last_embedded_message_id")?,
-        active_task: row.get("active_task")?,
-        last_summarized_count: row.get("last_summarized_count")?,
-        work_tasks: row.get("work_tasks")?,
         active_chat_id: row.get("active_chat_id")?,
     })
 }
@@ -429,10 +414,9 @@ mod tests {
 
     #[test]
     fn test_session_chat_id_derivation_chain() {
-        let path = std::env::temp_dir().join(format!("nebo-sessq-test-{}.db", std::process::id()));
-        let path_str = path.to_string_lossy().to_string();
-        let _ = std::fs::remove_file(&path);
-        let store = Store::new(&path_str).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sessq-test.db");
+        let store = Store::new(&path.to_string_lossy()).unwrap();
 
         // No session row → no chat derivable (context-isolated memory fails
         // closed on this), while resolve_ keeps its synthetic fallback.
@@ -457,8 +441,6 @@ mod tests {
         store.create_session("s3", None, None, None, None).unwrap();
         assert_eq!(store.session_chat_id("s3"), None);
         assert_eq!(store.resolve_session_chat_id("s3"), "chat-s3");
-
-        let _ = std::fs::remove_file(&path);
     }
 }
 
@@ -507,16 +489,12 @@ mod counter_tests {
             .unwrap();
         store.set_session_label("s1", Some("My label")).unwrap();
         store.update_session_stats("s1", 5000, 12).unwrap();
-        store.set_session_active_task("s1", "doing things").unwrap();
-        store.update_session_summary("s1", "old summary").unwrap();
 
         store.reset_session_counters("s1").unwrap();
 
         let s = store.get_session("s1").unwrap().unwrap();
         assert_eq!(s.message_count, Some(0));
         assert_eq!(s.token_count, Some(0));
-        assert_eq!(s.summary, None, "stale summary must not carry over");
-        assert_eq!(s.active_task, None);
         assert_eq!(s.last_compacted_at, None);
         // Preferences survive.
         assert_eq!(s.model_override.as_deref(), Some("model-x"));
@@ -559,5 +537,28 @@ mod counter_tests {
         assert_eq!(fetched.scope_id.as_deref(), Some("rt"));
         assert_eq!(fetched.metadata.as_deref(), Some("{}"));
         assert_eq!(fetched.active_chat_id, None);
+    }
+
+    /// A metadata field is kept beside whatever else the metadata holds,
+    /// and clearing it leaves the rest.
+    #[test]
+    fn a_session_meta_field_round_trips_and_clears() {
+        let (_dir, store) = store();
+        store
+            .create_session("s-route", Some("agent:r:web"), None, None, Some(r#"{"keep":1}"#))
+            .unwrap();
+        assert_eq!(store.session_meta("s-route", "replyRoute").unwrap(), None);
+        store.set_session_meta("s-route", "replyRoute", Some(r#"{"kind":"comm","topic":"dm"}"#)).unwrap();
+        store.set_session_meta("s-route", "wakeSeat", Some(r#"{"origin":"comm"}"#)).unwrap();
+        let route: serde_json::Value =
+            serde_json::from_str(&store.session_meta("s-route", "replyRoute").unwrap().unwrap()).unwrap();
+        assert_eq!(route["topic"], "dm");
+        store.set_session_meta("s-route", "replyRoute", None).unwrap();
+        assert_eq!(store.session_meta("s-route", "replyRoute").unwrap(), None);
+        let meta: serde_json::Value =
+            serde_json::from_str(&store.get_session("s-route").unwrap().unwrap().metadata.unwrap()).unwrap();
+        assert_eq!(meta["keep"], 1);
+        assert_eq!(meta["wakeSeat"]["origin"], "comm");
+        assert_eq!(store.session_meta("missing", "replyRoute").unwrap(), None);
     }
 }

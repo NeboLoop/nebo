@@ -46,7 +46,7 @@ struct HookSubscription {
     caller: Arc<dyn HookCaller>,
     /// Per-subscription deadline; None = the dispatcher default (500 ms,
     /// sized for in-process plugin hooks). A shell hook that runs a build
-    /// needs minutes (the reference's tool-hook default is 10 min).
+    /// needs minutes (a shell tool hook defaults to 10 min).
     timeout: Option<Duration>,
 }
 

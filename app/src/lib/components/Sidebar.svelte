@@ -256,13 +256,13 @@
       {/each}
       <div class="h-px bg-base-content/5 my-1 mx-2"></div>
       <a href="/settings/account" class="flex items-center gap-2 py-1 px-2 rounded-md text-sm transition-colors {activePage === 'settings' ? 'bg-base-content/5 text-base-content font-medium' : 'text-base-content hover:bg-base-content/5 hover:text-base-content'}">
-        <span class="w-4 text-center text-sm">⚙</span> {$t('nav.settings')}
+        <span class="w-4 text-center text-sm">🏢</span> {$t('nav.botSettings')}
       </a>
       <button type="button" onclick={openWebBilling} class="w-full flex items-center gap-2 py-1 px-2 rounded-md text-sm transition-colors text-base-content hover:bg-base-content/5 hover:text-base-content cursor-pointer bg-transparent border-none text-left">
         <span class="w-4 text-center text-sm">↑</span> {$t('sidebar.upgrade')}
       </button>
     {:else}
-      <a href="/settings/account" class="w-7 h-7 mx-auto rounded-md border border-base-content/10 flex items-center justify-center text-sm cursor-pointer hover:bg-base-content/5" title={$t('nav.settings')}>⚙</a>
+      <a href="/settings/account" class="w-7 h-7 mx-auto rounded-md border border-base-content/10 flex items-center justify-center text-sm cursor-pointer hover:bg-base-content/5" title={$t('nav.botSettings')}>🏢</a>
     {/if}
   </div>
 </aside>

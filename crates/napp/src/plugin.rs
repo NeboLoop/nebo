@@ -82,6 +82,13 @@ pub struct PluginManifest {
     /// Trigger keywords for search matching (e.g., ["payment", "invoice", "billing"]).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub triggers: Vec<String>,
+    /// The skills a task starts from, in the order the publisher lists them:
+    /// the ones that find records and run reports across the plugin's data,
+    /// and its command basics. The plugin's tool names these before its
+    /// other skills, so a plugin with dozens of skills still shows where to
+    /// begin. Names that match no bundled skill are ignored.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub entry_skills: Vec<String>,
     /// Channel bridge capability. When present, this plugin can act as a
     /// bidirectional messaging bridge (e.g., Slack, Discord, Telegram).
     /// The user enables it per-agent in Settings → Plugins → Channel Routing.
@@ -1694,8 +1701,20 @@ impl PluginStore {
 
         // The previous install goes under this lock, so a concurrent caller
         // waits (above) instead of deleting the files this one is extracting.
-        let _ = self.remove(slug);
-        let result = self.install_from_napp_inner(slug, version, napp_data).await;
+        // The same bytes as what is installed change nothing, so nothing is
+        // removed: the remove-then-extract left the plugin gone for the
+        // length of the extraction, and a "Sign in" tap in that window found
+        // no plugin (2026-09-26, a reinstall of the version already on disk).
+        let result = match self.installed_copy_of(slug, napp_data) {
+            Some(binary) => {
+                info!(plugin = slug, path = %binary.display(), "same .napp already installed; kept in place");
+                Ok(binary)
+            }
+            None => {
+                let _ = self.remove(slug);
+                self.install_from_napp_inner(slug, version, napp_data).await
+            }
+        };
 
         // Release install lock
         {
@@ -1704,6 +1723,32 @@ impl PluginStore {
         }
 
         result
+    }
+
+    /// The binary of an install of exactly these `.napp` bytes, if one is in
+    /// place: a retained `<version>.napp` under the slug with the same bytes,
+    /// beside a version dir that still has its binary and is not quarantined.
+    fn installed_copy_of(&self, slug: &str, napp_data: &[u8]) -> Option<PathBuf> {
+        let slug_dir = self.installed_dir.join(slug);
+        for entry in std::fs::read_dir(&slug_dir).ok()?.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let Some(version) = name.strip_suffix(".napp") else {
+                continue;
+            };
+            if entry.metadata().map(|m| m.len()).ok() != Some(napp_data.len() as u64)
+                || std::fs::read(entry.path()).ok().as_deref() != Some(napp_data)
+            {
+                continue;
+            }
+            let version_dir = slug_dir.join(version);
+            if version_dir.join(".quarantined").exists() {
+                continue;
+            }
+            if let Some(binary) = self.find_binary_in_version_dir(&version_dir) {
+                return Some(binary);
+            }
+        }
+        None
     }
 
     /// Inner implementation of .napp-based plugin install.
@@ -2685,6 +2730,13 @@ pub enum PluginFsEvent {
 /// the global login, and the silent-refresh path did not) — the fourth instance
 /// of launch-path drift. One constructor, called by every spawn site, is the
 /// fix. Grep rule: no other code builds `NEBO_LOCAL_URL`.
+///
+/// The URL carries the plugin's credential as its first path segment
+/// (`/k/<token>`, `plugin_local_token`): the local API admits no caller
+/// without one, and a plugin joins its paths onto this base, so the
+/// credential rides every call it makes, a WebSocket's included, with no
+/// change to the plugin. It reaches only the routes plugins call
+/// (`server::middleware`).
 pub fn plugin_base_env() -> Vec<(String, String)> {
     let port = std::env::var("NEBO_PORT")
         .ok()
@@ -2692,8 +2744,15 @@ pub fn plugin_base_env() -> Vec<(String, String)> {
         .unwrap_or(types::constants::DEFAULT_PORT);
     vec![(
         "NEBO_LOCAL_URL".to_string(),
-        format!("http://127.0.0.1:{port}"),
+        format!("http://127.0.0.1:{port}/k/{}", plugin_local_token()),
     )]
+}
+
+/// The credential every plugin this Nebo starts reaches its local API with:
+/// made at boot, held in memory, handed out only in `NEBO_LOCAL_URL`.
+pub fn plugin_local_token() -> &'static str {
+    static TOKEN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    TOKEN.get_or_init(|| format!("{}{}", uuid::Uuid::new_v4().simple(), uuid::Uuid::new_v4().simple()))
 }
 
 /// Derive the environment variable name for a plugin binary path.
@@ -3255,6 +3314,7 @@ mod tests {
             permissions: None,
             category: String::new(),
             triggers: vec![],
+            entry_skills: vec![],
             channel: None,
             setup: None,
             interface_bindings: HashMap::new(),
@@ -3420,6 +3480,7 @@ mod tests {
             permissions: None,
             category: String::new(),
             triggers: vec![],
+            entry_skills: vec![],
             channel: None,
             setup: None,
             interface_bindings: HashMap::new(),
@@ -3885,5 +3946,41 @@ mod tests {
         let plugin: PluginManifest = serde_json::from_str(json).expect("plugin with setup must parse");
         assert!(plugin.setup.is_some());
         assert_eq!(plugin.setup.unwrap().steps.len(), 1);
+    }
+
+    /// A reinstall of the very bytes already installed keeps the plugin in
+    /// place: the same binary path comes back and the version dir is never
+    /// removed. The bytes here are no archive at all, so an install that
+    /// removed first and extracted second (the old order) fails and leaves
+    /// the plugin gone — which is what the owner's "Sign in" tap found.
+    #[tokio::test]
+    async fn a_reinstall_of_the_same_napp_keeps_the_plugin_in_place() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let plugins_dir = tmp.path().to_path_buf();
+        let user_dir = tmp.path().join("user_plugins");
+        std::fs::create_dir_all(&user_dir).unwrap();
+        let napp = b"the retained napp bytes, not an archive".to_vec();
+        let slug_dir = plugins_dir.join("xero");
+        let version_dir = slug_dir.join("0.1.0");
+        std::fs::create_dir_all(&version_dir).unwrap();
+        std::fs::write(slug_dir.join("0.1.0.napp"), &napp).unwrap();
+        let binary = version_dir.join("xero");
+        std::fs::write(&binary, b"#!/bin/sh\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let store = PluginStore::new(plugins_dir, user_dir, None);
+
+        let kept = store.install_from_napp("xero", "0.1.0", &napp).await.expect("the same bytes are a no-op");
+        assert_eq!(kept, binary);
+        assert!(binary.is_file(), "the plugin never left the disk");
+        assert!(store.resolve("xero", "*").is_some());
+
+        // Different bytes for the same version are a real reinstall, which
+        // extracts: these are no archive, so it fails.
+        let changed = b"other bytes".to_vec();
+        assert!(store.install_from_napp("xero", "0.1.0", &changed).await.is_err());
     }
 }

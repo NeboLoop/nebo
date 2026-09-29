@@ -541,33 +541,8 @@ pub fn load_from_dir(dir: &Path, source: AgentSource) -> Result<LoadedAgent, Nap
     } else {
         None
     };
-    let app_binary_path = if is_app {
-        // Look for sidecar binary in bin/ directory
-        let bin_dir = dir.join("bin");
-        if bin_dir.is_dir() {
-            std::fs::read_dir(&bin_dir).ok().and_then(|mut entries| {
-                entries.find_map(|e| {
-                    let p = e.ok()?.path();
-                    if p.is_file() { Some(p) } else { None }
-                })
-            })
-        } else {
-            // Also check for "binary" or "app" directly
-            let binary = dir.join("binary");
-            if binary.exists() {
-                Some(binary)
-            } else {
-                let app_bin = dir.join("app");
-                if app_bin.exists() {
-                    Some(app_bin)
-                } else {
-                    None
-                }
-            }
-        }
-    } else {
-        None
-    };
+    // The same rule the runtime launches with: one meaning of "has a program".
+    let app_binary_path = if is_app { crate::runtime::sidecar_binary(dir) } else { None };
 
     Ok(LoadedAgent {
         agent_def,

@@ -13,7 +13,6 @@ use std::sync::Arc;
 
 use tracing::{info, warn};
 
-use agent::RunRequest;
 use agent::lanes::make_task;
 use ai::StreamEventType;
 use tokio::sync::mpsc;
@@ -22,7 +21,7 @@ use tools::Origin;
 use crate::handlers::chat::PendingAsk;
 use crate::handlers::ws::ClientHub;
 use crate::run_registry::{RegisterParams, RunHandle, RunRegistry};
-use crate::state::{AppState, PendingToolApproval};
+use crate::state::AppState;
 
 /// A run parked on a question. The ONE pathway for every consumer that sees
 /// an `AskRequest` on a run's stream (the chat pipeline, coworker forwarding,
@@ -46,6 +45,19 @@ pub(crate) async fn announce_ask(
     }
     hub.broadcast("ask_request", ask.event_payload(session_key));
     ask
+}
+
+/// The owner's Stop on one session, from whichever surface it came (the
+/// loop's Stop button, a `/stop` typed in any channel, a voice "cancel"):
+/// every helper the session started stops, whichever turn started it, then
+/// the running turn. Returns whether a turn was running.
+pub(crate) async fn stop_session(
+    helpers: &agent::harness::delegation::Helpers,
+    runs: &RunRegistry,
+    session_key: &str,
+) -> bool {
+    helpers.stop_session(Some(session_key));
+    runs.cancel_by_session(session_key).await
 }
 
 /// The ONE way a parked question is answered, whichever surface the answer
@@ -74,6 +86,45 @@ pub(crate) async fn answer_ask(state: &AppState, request_id: &str, value: String
     tx.send(value).is_ok()
 }
 
+/// The ONE way an approval card is answered, whichever surface the answer
+/// came from (the app's approval modal, a loop reply): the gated call's
+/// oneshot receives the decision ("once", "always" or "deny") and every
+/// client still showing the card closes it (`approval_resolved`). Returns
+/// false when nothing was waiting on that request id.
+pub(crate) async fn answer_approval(state: &AppState, request_id: &str, decision: &str) -> bool {
+    let pending = state.approval_channels.lock().await.remove(request_id);
+    state.hub.broadcast(
+        "approval_resolved",
+        serde_json::json!({ "request_id": request_id, "decision": decision }),
+    );
+    pending.is_some_and(|p| p.answer.send(decision.to_string()).is_ok())
+}
+
+/// Record the card an approval was announced with on its open entry in
+/// `approval_channels`, the one record of open approvals: the dashboard
+/// lists it and a client that connects later is shown it, for as long as
+/// the answer can still be given. An approval nothing waits on is not
+/// recorded (there is no entry to hold it).
+pub(crate) async fn record_approval_card(
+    approvals: &tools::ApprovalChannels,
+    request_id: &str,
+    card: tools::ApprovalCard,
+) {
+    if let Some(pending) = approvals.lock().await.get_mut(request_id) {
+        pending.card = Some(card);
+    }
+}
+
+/// The approval cards still open, for a client that just connected and the
+/// dashboard: announced, and still answerable. Entries whose waiter went
+/// away are dropped here, the only other way a card closes besides a
+/// decision.
+pub(crate) async fn open_approval_cards(approvals: &tools::ApprovalChannels) -> Vec<(String, tools::ApprovalCard)> {
+    let mut open = approvals.lock().await;
+    open.retain(|_, p| p.is_open());
+    open.iter().filter_map(|(id, p)| p.card.clone().map(|c| (id.clone(), c))).collect()
+}
+
 /// A plugin landed on this Nebo, by whatever door: every question parked on
 /// an install card for it is answered "installed", exactly as the card's own
 /// button would have. Live (2026-09-22): the owner pasted the card's code in
@@ -95,28 +146,18 @@ pub(crate) async fn release_install_cards(state: &AppState, slug: &str) {
     }
 }
 
-/// A control notice that is status in passing, not how the run ended: a
-/// mid-stream reconnect. Surfaced, never recorded as the run's stop reason.
-pub(crate) fn is_transient_notice(event: &ai::StreamEvent) -> bool {
-    event.stop_reason.as_deref() == Some("stream_reconnecting")
-}
-
 /// The stop reason a control notice records for the run's end: the typed
 /// reason it carries, else the generic `control_stop`.
-pub(crate) fn control_stop_of(event: &ai::StreamEvent) -> Option<(String, String)> {
-    if is_transient_notice(event) {
-        return None;
-    }
+pub(crate) fn control_stop_of(event: &ai::StreamEvent) -> (String, String) {
     let reason = event
         .stop_reason
         .clone()
         .unwrap_or_else(|| "control_stop".to_string());
-    Some((reason, event.text.clone()))
+    (reason, event.text.clone())
 }
 
 /// How a drained run ended, for [`finish_turn`].
 pub(crate) struct TurnEnd<'a> {
-    pub session_key: &'a str,
     /// The identity the consumer owns: session_id, agentId, and for chat
     /// runs turn_id / originAgentId.
     pub payload: serde_json::Value,
@@ -129,15 +170,14 @@ pub(crate) struct TurnEnd<'a> {
 /// The ONE way a drained run tells the app its turn is over. Every consumer
 /// that drains a run's stream to its end (the chat pipeline here, the voice
 /// bridge in `handlers::voice`) ends through here: the question the run was
-/// parked on is released together with its unanswered oneshot, the run's
-/// gated tool approvals are dropped, and `chat_complete` is broadcast on the
+/// parked on is released together with its unanswered oneshot, and
+/// `chat_complete` is broadcast on the
 /// identity payload plus the run's artifacts and typed stop reason. Carries
 /// NO message content: streamed blocks finalize in place on the frontend.
 pub(crate) async fn finish_turn(
     hub: &ClientHub,
     run: &RunHandle,
     ask_channels: &tools::AskChannels,
-    pending_tool_approvals: &tokio::sync::Mutex<HashMap<String, PendingToolApproval>>,
     end: TurnEnd<'_>,
 ) {
     if let Some(ask) = run.take_pending_ask() {
@@ -146,8 +186,9 @@ pub(crate) async fn finish_turn(
         // question the run can no longer act on.
         ask_channels.lock().await.remove(&ask.request_id);
     }
-    // The run is over: nothing it asked can still be answered.
-    pending_tool_approvals.lock().await.retain(|_, a| a.session_key != end.session_key);
+    // An approval the run asked for stays open past the turn when something
+    // still waits on it (a suggested goal is decided whenever the owner gets
+    // to it): `approval_channels` closes it on the decision, not here.
     let mut payload = end.payload;
     payload["artifacts"] = serde_json::json!(end.artifacts);
     if let Some((reason, notice)) = end.control_stop {
@@ -157,42 +198,34 @@ pub(crate) async fn finish_turn(
     hub.broadcast("chat_complete", payload);
 }
 
-pub(crate) fn resolve_full_access(store: &db::Store) -> bool {
-    store
-        .get_settings()
-        .ok()
-        .flatten()
-        .map(|s| s.full_access == 1)
-        .unwrap_or(false)
-}
+/// The metadata key on the row a failed run leaves in its conversation.
+pub(crate) const RUN_ERROR_KEY: &str = "runError";
 
-/// True when a streamed text chunk is an orchestrator progress heartbeat —
-/// the transient `"\n_Working on: ..._\n"` / `"\n_Working..._\n"` status the
-/// sub-agent runner emits every 30s (`orchestrator.rs`). It's a "still alive"
-/// signal for the live activity indicator, never real content, so it must not
-/// land in a comm reply or a channel's final response.
-pub(crate) fn is_progress_heartbeat(text: &str) -> bool {
-    let trimmed = text.trim();
-    trimmed.starts_with("_Working") && trimmed.ends_with('_')
-}
-
-/// Remove orchestrator progress-heartbeat lines from a finalized response so
-/// the noise never appears in the message that replaces the streamed bubble.
-/// Operates line-wise; all non-heartbeat content (including blank lines) is
-/// preserved.
-pub(crate) fn strip_progress_heartbeats(s: &str) -> String {
-    s.lines()
-        .filter(|line| !is_progress_heartbeat(line))
-        .collect::<Vec<_>>()
-        .join("\n")
-        .trim()
-        .to_string()
+/// A run that ended on an error keeps it in the conversation, stored like any
+/// message: one `system` row stamped `{"runError": true}` whose text is the
+/// error the live `chat_error` event carried. The event reaches only a page
+/// already listening; a hire's first greeting fails before its thread has
+/// opened, and a reload loses the event too. The row is what the chat reads
+/// when the thread opens, and it shows it on the same error banner. The model
+/// never reads it (`get_chat_messages_since_checkpoint` leaves it out).
+fn record_run_error(harness: &agent::Harness, session_key: &str, error: &str) {
+    if error.is_empty() {
+        return;
+    }
+    let sessions = harness.sessions();
+    let Ok(session_id) = sessions.resolve_session_id_by_key(session_key) else {
+        return;
+    };
+    let metadata = serde_json::json!({ RUN_ERROR_KEY: true }).to_string();
+    if let Err(e) = sessions.append_message(&session_id, "system", error, None, None, Some(&metadata)) {
+        warn!(error = %e, session_key, "could not keep the run's error in its conversation");
+    }
 }
 
 /// The reply-text fragment of a stream event: `Some` ONLY for `Text` events.
 /// This is the ONE gate for what accumulates into user-visible reply text
 /// (desktop `full_response`, comm buffers, channel replies). `ControlNotice`
-/// (spiral backstop, circuit breaker, terminal tool error) and every other
+/// (step or spending limit, terminal tool error) and every other
 /// event type return `None` — run-control status must never render as
 /// assistant prose (the spiral instruction leaked verbatim into a customer
 /// Slack channel when it was emitted as Text).
@@ -208,10 +241,12 @@ pub(crate) fn reply_fragment(event: &ai::StreamEvent) -> Option<&str> {
 pub struct ChatConfig {
     pub session_key: String,
     pub prompt: String,
-    pub system: String,
     pub user_id: String,
     pub channel: String,
     pub origin: Origin,
+    /// The entry this run came through; recorded with every permission
+    /// decision.
+    pub door: types::permissions::Door,
     pub agent_id: String,
     pub cancel_token: tokio_util::sync::CancellationToken,
     /// Which lane to enqueue on (e.g., lanes::MAIN, lanes::COMM).
@@ -222,7 +257,9 @@ pub struct ChatConfig {
     pub entity_config: Option<crate::entity_config::ResolvedEntityConfig>,
     /// Images attached to the user's message (base64-encoded).
     pub images: Vec<ai::ImageContent>,
-    /// The files the owner attached, as uploaded; see `RunRequest::attachments`.
+    /// The files the owner attached, as uploaded (fileId, filename,
+    /// mimeType, size, url): kept on the user row so a reloaded transcript
+    /// still shows them.
     pub attachments: Vec<comm::wire::Attachment>,
     /// Display name for the entity (agent name or "Nebo"). Used in RunRegistry.
     pub entity_name: String,
@@ -236,8 +273,6 @@ pub struct ChatConfig {
     /// Tool scope name from agent.json. Restricts sidecar tools/skills/plugins
     /// to those declared in the named scope.
     pub tool_scope: Option<String>,
-    /// When true, agent presents a plan before executing tool calls (Plan Mode).
-    pub plan_mode: bool,
     /// Channel context (Slack/Discord/etc.) when this run was triggered by an
     /// inbound channel message. Propagated to `ToolContext.channel` so plugin
     /// uploads target the right destination. None for web UI / scheduled runs.
@@ -257,19 +292,28 @@ pub struct ChatConfig {
     /// platform-authored prompts like the christening self-introduction. The
     /// model sees it; the transcript never does.
     pub hidden_prompt: bool,
+    /// The coworker whose message the prompt is (display name): the input is
+    /// theirs — a colleague's information, never the owner's word. Set by
+    /// the coworker rail only.
+    pub coworker: Option<String>,
     /// Recall-for-audience: the agent id this run replies to (coworker rail
     /// only). `None` for owner-initiated runs.
     pub audience: Option<String>,
     /// Working directory for this run's shell commands and relative file
     /// paths. The WS is owner-authenticated, so an owner-supplied cwd is the
     /// owner choosing where their employee works: the same trust the desktop
-    /// app extends when it opens a project folder. Joined into a restricted
-    /// `allowed_paths` list so the file tools may work there (see `run_cwd`).
+    /// app extends when it opens a project folder. Joined to a folder-fenced
+    /// job's folders so the file tools may work there (see `run_cwd`).
     /// None = the process cwd.
     pub cwd: Option<std::path::PathBuf>,
     /// Explicit model for this run (the harness's `--model`); wins over the
     /// entity's model preference. None = the selector's choice.
     pub model_override: Option<String>,
+    /// The client that sent the owner's message (`EventOrigin::client_id`):
+    /// an approval the run asks for opens on that client. None when no
+    /// client started the run (a schedule, a channel, a coworker), and its
+    /// approvals open wherever the owner is.
+    pub client_id: Option<String>,
 }
 
 /// The model one conversation runs at, if its owner picked one from the
@@ -280,10 +324,10 @@ pub struct ChatConfig {
 /// a mid-conversation change applies to the next turn and leaves the
 /// transcript behind it untouched. Any failure to resolve is simply "no
 /// override" — the employee's preference still decides.
-fn chat_model_for_session(runner: &std::sync::Arc<agent::Runner>, session_key: &str) -> Option<String> {
-    let session_id = runner.sessions().resolve_session_id_by_key(session_key).ok()?;
-    let chat_id = runner.sessions().active_chat_id(&session_id);
-    runner
+fn chat_model_for_session(harness: &agent::Harness, session_key: &str) -> Option<String> {
+    let session_id = harness.sessions().resolve_session_id_by_key(session_key).ok()?;
+    let chat_id = harness.sessions().active_chat_id(&session_id);
+    harness
         .store()
         .get_chat(&chat_id)
         .ok()
@@ -369,39 +413,19 @@ async fn register_run(
     (agent_display_name, run_handle)
 }
 
-/// Derive the per-run permission / grant / model / personality / path values from
-/// an entity's resolved config. Identical in both run entrypoints (the RunRequest
-/// literal differs per entrypoint, so it stays inline). CODE_AUDITOR Rule 8.
-type EntityRunParams = (
-    Option<std::collections::HashMap<String, bool>>,
-    Option<std::collections::HashMap<String, String>>,
-    Option<String>,
-    Option<String>,
-    Vec<String>,
-    Option<tools::policy::OperationPolicy>,
-);
+/// The entity's model preference and personality snippet, for a run.
 pub(crate) fn entity_run_params(
     entity_config: Option<&crate::entity_config::ResolvedEntityConfig>,
-) -> EntityRunParams {
+) -> (Option<String>, Option<String>) {
     match entity_config {
-        Some(ec) => (
-            Some(ec.permissions.clone()),
-            Some(ec.resource_grants.clone()),
-            ec.model_preference.clone(),
-            ec.personality_snippet.clone(),
-            ec.allowed_paths.clone(),
-            ec.operation_policy
-                .as_deref()
-                .map(|j| tools::policy::OperationPolicy::from_json(Some(j))),
-        ),
-        None => (None, None, None, None, Vec::new(), None),
+        Some(ec) => (ec.model_preference.clone(), ec.personality_snippet.clone()),
+        None => (None, None),
     }
 }
 
-/// The run's working directory as `RunRequest` carries it, joined into the
-/// entity's `allowed_paths` when that list restricts the run. An empty list
-/// means unrestricted (`safeguard::check_path_scope`), and adding the cwd to
-/// it would turn "anywhere" into "only here", so an empty list stays empty.
+/// The run's working directory as the turn's seat carries it. The harness joins
+/// it to a folder-fenced job's folders (`types::permissions::folders_of`), so
+/// the file tools may work there; a job with no folders stays unfenced.
 /// Shared by both run entrypoints (CODE_AUDITOR Rule 8).
 ///
 /// This is also the one moment Nebo learns which repository an employee is
@@ -410,45 +434,166 @@ pub(crate) fn entity_run_params(
 /// reads that repository (`agents_export::place_known`). The render itself
 /// happened when the layers were applied; this only places it, and it never
 /// writes over the project's own `AGENTS.md`.
-pub(crate) fn run_cwd(
-    cwd: Option<&std::path::Path>,
-    allowed_paths: &mut Vec<String>,
-) -> Option<String> {
+pub(crate) fn run_cwd(cwd: Option<&std::path::Path>) -> Option<String> {
     let path = cwd?;
     crate::agents_export::place_known(path);
-    let cwd = path.to_string_lossy().into_owned();
-    if !allowed_paths.is_empty() && !allowed_paths.iter().any(|p| p == &cwd) {
-        allowed_paths.push(cwd.clone());
+    Some(path.to_string_lossy().into_owned())
+}
+
+/// The denial a coordinating organizer's allowlist teaches: delegating is the
+/// action (today the only chat allowlist is the workroom organizer's; phone
+/// callers build their turn in `voice.rs`).
+const ORGANIZER_DENIAL: &str = "You are coordinating a team: delegating IS the action here. \
+Address the coworker whose role owns this step — write their mention token with a specific ask \
+in your reply — instead of doing the step yourself.";
+
+/// The turn a chat asks for: the one mapping both run entrypoints use.
+fn turn_request(state: &AppState, config: &ChatConfig, run: &RunHandle) -> agent::TurnRequest {
+    use agent::harness::{Delivery, SeatRequest, TurnInput, TurnMode};
+
+    let (model_preference, personality_snippet) = entity_run_params(config.entity_config.as_ref());
+    let input = if config.prompt.is_empty() {
+        TurnInput::None
+    } else if config.hidden_prompt {
+        TurnInput::Platform { text: config.prompt.clone() }
+    } else if let Some(from) = &config.coworker {
+        TurnInput::Coworker { from: from.clone(), text: config.prompt.clone() }
+    } else {
+        TurnInput::Owner {
+            text: config.prompt.clone(),
+            images: config.images.clone(),
+            attachments: config.attachments.clone(),
+        }
+    };
+    // Which model this turn runs at, highest first: an explicit override on
+    // the request (the harness's `--model`), the conversation's own model
+    // (what the owner picked in the composer, stored on the chat row), the
+    // employee's preference, the selector's choice. Read per turn, so a
+    // change mid-conversation lands on the next turn.
+    let model_override = config
+        .model_override
+        .clone()
+        .filter(|m| !m.is_empty())
+        .or_else(|| chat_model_for_session(&state.harness, &config.session_key))
+        .unwrap_or_default();
+    agent::TurnRequest {
+        session_key: config.session_key.clone(),
+        input,
+        seat: SeatRequest {
+            agent_id: config.agent_id.clone(),
+            user_id: config.user_id.clone(),
+            origin: config.origin,
+            door: config.door.clone(),
+            mode: None,
+            ceiling: None,
+            cwd: run_cwd(config.cwd.as_deref()),
+            seed_taint: config.seed_taint.clone(),
+            audience: config.audience.clone(),
+            tool_allowlist: config.tool_allowlist.clone(),
+            tool_denial_hint: config.tool_allowlist.as_ref().map(|_| ORGANIZER_DENIAL.to_string()),
+            handoff_depth: config.comm_reply.as_ref().map(|c| c.handoff_depth).unwrap_or(config.handoff_depth),
+            model_override,
+            model_preference,
+            personality_snippet,
+            tool_scope: config.tool_scope.clone(),
+        },
+        mode: TurnMode::Chat,
+        delivery: Delivery {
+            channel: config.channel.clone(),
+            channel_ctx: config.channel_ctx.clone(),
+            mention_briefing: config.mention_context.clone(),
+        },
+        cancel: config.cancel_token.clone(),
+        progress: Some(agent::RunProgress {
+            run_id: run.run_id.clone(),
+            iteration_count: run.iteration_count.clone(),
+            tool_call_count: run.tool_call_count.clone(),
+            current_tool: run.current_tool.clone(),
+            waiting: run.waiting.clone(),
+            stalled: run.stalled.clone(),
+        }),
     }
-    Some(cwd)
+}
+
+/// New input says where this session's work comes from and who it is
+/// with: a loop or phone conversation, the owner in the app, a chat channel,
+/// a coworker. A turn a notification wakes later replies there and runs as
+/// the same party (`reply_route`). A prompt the platform wrote says neither.
+/// Both run entrypoints call it.
+fn remember_input(state: &AppState, config: &ChatConfig) {
+    if config.prompt.is_empty() || config.hidden_prompt {
+        return;
+    }
+    match (&config.comm_reply, config.origin) {
+        (Some(cr), _) => {
+            let route = crate::reply_route::ReplyRoute::comm(cr);
+            crate::reply_route::set(state, &config.session_key, &config.user_id, Some(&route));
+        }
+        // The coworker rail records its thread's route itself
+        // (`coworker::send_coworker_message`): the reply goes back to the
+        // sender or into the team, whether the turn serves a colleague's
+        // request or the owner's.
+        (None, _) if config.channel == crate::coworker::COWORKER_CHANNEL => {}
+        (None, Origin::User) => crate::reply_route::set(state, &config.session_key, &config.user_id, None),
+        (None, _) => {
+            if let Some(ctx) = &config.channel_ctx {
+                let route = crate::reply_route::ReplyRoute::Channel { channel_ctx: ctx.clone() };
+                crate::reply_route::set(state, &config.session_key, &config.user_id, Some(&route));
+            }
+        }
+    }
+    let seat = crate::reply_route::WakeSeat {
+        origin: config.origin,
+        door: config.door.clone(),
+        audience: config.audience.clone(),
+        tool_allowlist: config.tool_allowlist.as_ref().map(|l| l.iter().cloned().collect()),
+        channel_ctx: config.channel_ctx.clone(),
+    };
+    crate::reply_route::set_seat(state, &config.session_key, &config.user_id, &seat);
 }
 
 pub async fn run_chat(state: &AppState, config: ChatConfig) {
-    // Persistent-goals v1: a real (non-synthetic) message resets this session's
-    // auto-continuation budget and becomes the prompt the judge sees. Synthetic
-    // continuations (exact CONTINUATION_PREFIX) never reset — loop safety.
-    if !agent::goals::is_continuation_prompt(&config.prompt) {
-        state.goal_tracker.on_real_message(&config.session_key, &config.prompt);
+    // The owner's message answers the question open in this conversation,
+    // since typing a reply is the natural way to answer: the parked call
+    // gets it as the answer and the turn goes on. It starts no turn of its own.
+    let owner_writes = config.origin == Origin::User
+        && config.audience.is_none()
+        && !config.hidden_prompt
+        && !config.prompt.trim().is_empty();
+    if owner_writes
+        && let Some(ask) = state.run_registry.pending_ask_for_session(&config.session_key).await
+        && answer_ask(state, &ask.request_id, config.prompt.clone()).await
+    {
+        info!(session = %config.session_key, "the owner's message answered the open question");
+        return;
     }
-
+    remember_input(state, &config);
     let hub = state.hub.clone();
     let workroom_store = state.store.clone();
     let loopback_state = state.clone();
     let wake_state = state.clone();
     let wake_session_key = config.session_key.clone();
-    let runner = state.runner.clone();
+    let harness = state.harness.clone();
     let janus_usage = state.janus_usage.clone();
-    let presence_tracker = state.presence.clone();
-    let proactive_inbox = state.proactive_inbox.clone();
     let cleanup_tools = state.tools.clone();
+    // Each call's owner-facing labels and media flag come from its tool's spec.
+    let spec_tools = state.tools.clone();
     let plugin_store = state.plugin_store.clone();
     let pending_comm_asks = state.pending_comm_asks.clone();
     let pending_comm_approvals = state.pending_comm_approvals.clone();
-    let pending_tool_approvals = state.pending_tool_approvals.clone();
+    let ask_state = state.clone();
+    let approval_channels = state.approval_channels.clone();
     let ask_channels = state.ask_channels.clone();
     let run_registry = state.run_registry.clone();
+    let live_calls = state.live_calls.clone();
     let approvals_agent_id = config.agent_id.clone();
-    let comm_manager = if config.comm_reply.is_some() {
+    let approvals_origin = crate::handlers::ws::EventOrigin {
+        client_id: config.client_id.clone(),
+        session_id: config.session_key.clone(),
+    };
+    // The loop plugin serves loop conversations only: a reply routed to
+    // another channel (email) never reaches it, not even as a typing signal.
+    let comm_manager = if config.comm_reply.as_ref().is_some_and(|c| c.provider == "neboai") {
         Some(state.comm_manager.clone())
     } else {
         None
@@ -458,6 +603,18 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
     } else {
         None
     };
+    // A channel that takes one message per turn (email) gets the whole
+    // answer once, at the end: no stream chunks, no mid-turn segments, no
+    // tool activity.
+    let whole_turn = match &config.comm_reply {
+        Some(cr) if cr.provider != "neboai" => state
+            .channel_providers
+            .read()
+            .await
+            .get(&cr.provider)
+            .is_some_and(|p| p.whole_turns()),
+        _ => false,
+    };
 
     let sid = config.session_key.clone();
     let agent_id = config.agent_id.clone();
@@ -465,63 +622,12 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
     let lane = config.lane.clone();
     // Resolve display name + register the run (shared with run_chat_events).
     let (agent_display_name, run_handle) = register_run(state, &config).await;
+    let req = turn_request(state, &config, &run_handle);
 
-    // Persistent-goals v1: everything the completion hook needs to judge this
-    // run and re-dispatch a continuation through this same entry point.
-    let goals_state = state.clone();
-    let goals_params = AutoContinueParams {
-        session_key: config.session_key.clone(),
-        agent_id: config.agent_id.clone(),
-        user_id: config.user_id.clone(),
-        channel: config.channel.clone(),
-        system: config.system.clone(),
-        origin: config.origin,
-        lane: config.lane.clone(),
-        entity_name: agent_display_name.clone(),
-        entity_config: config.entity_config.clone(),
-        comm_reply: config.comm_reply.clone(),
-        tool_scope: config.tool_scope.clone(),
-        origin_agent_id: config.origin_agent_id.clone(),
-    };
-
-    // Destructure config fields before moving into closure
-    let prompt = config.prompt;
-    let system = config.system;
-    let user_id = config.user_id;
     let channel = config.channel;
     let origin = config.origin;
     let comm_reply = config.comm_reply;
-    let config_handoff_depth = config.handoff_depth;
-    let seed_taint = config.seed_taint.clone();
-    let audience = config.audience.clone();
-    let entity_cfg = config.entity_config;
-    let images = config.images;
     let origin_agent_id = config.origin_agent_id;
-    let mention_context = config.mention_context;
-    let tool_scope = config.tool_scope;
-    let plan_mode = config.plan_mode;
-    let run_cwd_path = config.cwd.clone();
-    // Which model this turn runs at. Precedence, highest first:
-    //   1. an explicit override on the request (the harness's `--model`),
-    //   2. the conversation's own model — what the owner picked in the
-    //      composer, stored on the chat row,
-    //   3. the employee's `model_preference` (Settings → General → MODEL),
-    //      applied inside the runner,
-    //   4. the selector's choice.
-    // Read per turn, so changing it mid-conversation lands on the next turn
-    // and rewrites nothing behind it. It rides the same `model_override`
-    // field a spawned sub-agent already inherits — no second pathway.
-    let run_model_override = config
-        .model_override
-        .clone()
-        .filter(|m| !m.is_empty())
-        .or_else(|| chat_model_for_session(&runner, &sid))
-        .unwrap_or_default();
-
-    // "Full Access" master flag (settings.full_access) — when on, the runner's
-    // per-tool approval gate is bypassed. Loaded here (state in scope) and moved
-    // into the run closure as a plain Copy bool. Default off (safe).
-    let full_access = resolve_full_access(&state.store);
 
     // For registering run-produced documents in the owner's web library
     // (fire-and-forget push after versioning).
@@ -540,8 +646,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
         hub.broadcast("chat_created", created_payload);
     }
 
-    let fairness_key = agent_id.clone();
-    let mut lane_task = make_task(&lane, format!("chat:{}", sid), async move {
+    let lane_task = make_task(&lane, format!("chat:{}", sid), async move {
         // RunHandle auto-unregisters from RunRegistry on drop (panic-safe).
         let _run_handle = run_handle;
 
@@ -574,81 +679,20 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
             }};
         }
 
-        // Extract per-entity overrides from resolved config
-        let (permissions, resource_grants, model_preference, personality_snippet, mut allowed_paths, operation_policy) =
-            entity_run_params(entity_cfg.as_ref());
-        let cwd = run_cwd(run_cwd_path.as_deref(), &mut allowed_paths);
-
-        // Build progress tracker from RunHandle's shared Arcs
-        let progress = agent::RunProgress {
-            run_id: _run_handle.run_id.clone(),
-            iteration_count: _run_handle.iteration_count.clone(),
-            tool_call_count: _run_handle.tool_call_count.clone(),
-            current_tool: _run_handle.current_tool.clone(),
-        };
-
-        let req = RunRequest {
-            session_key: sid.clone(),
-            prompt,
-            system,
-            user_id,
-            channel,
-            origin,
-            cancel_token: cancel_token.clone(),
-            agent_id: agent_id.clone(),
-            permissions,
-            operation_policy,
-            resource_grants,
-            model_preference,
-            personality_snippet,
-            images,
-            allowed_paths,
-            cwd,
-            model_override: run_model_override,
-            presence_tracker: Some(presence_tracker.clone()),
-            proactive_inbox: Some(proactive_inbox.clone()),
-            progress: Some(progress),
-            mention_context,
-            tool_allowlist: config.tool_allowlist.clone(),
-            hidden_prompt: config.hidden_prompt,
-            // Today the only ChatConfig-driven allowlist is the workroom
-            // organizer's coordination scope (phone callers build RunRequest
-            // directly in voice.rs) — so the denial teaches delegation. If a
-            // second allowlist caller appears, thread its own hint instead.
-            tool_denial_hint: config.tool_allowlist.as_ref().map(|_| {
-                "You are coordinating a team: delegating IS the action here. \
-                 Address the coworker whose role owns this step — write their \
-                 mention token with a specific ask in your reply — instead of \
-                 doing the step yourself."
-                    .to_string()
-            }),
-            tool_scope,
-            plan_mode,
-            full_access,
-            approval_relay: comm_reply.as_ref().map(|c| c.approval_relay).unwrap_or(false),
-            handoff_depth: comm_reply
-                .as_ref()
-                .map(|c| c.handoff_depth)
-                .unwrap_or(config_handoff_depth),
-            seed_taint: seed_taint.clone(),
-            audience: audience.clone(),
-            ..Default::default()
-        };
-
-        // Persistent-goals v1: (final assistant response, saw a stream error).
-        // Some(..) only when the run completed through the normal event loop.
-        let mut goal_outcome: Option<(String, bool)> = None;
         // Stall watchdog: the last time any event reached this loop.
         let mut last_event = tokio::time::Instant::now();
 
-        match runner.run(req).await {
-            Ok(mut rx) => {
+        match harness.start_turn(req).await {
+            Ok(handle) => {
+                let mut rx = handle.events;
                 let mut full_response = String::new();
-                let mut saw_stream_error = false;
                 // Typed run stop from a ControlNotice event: (stop_reason, notice).
                 // Carried on chat_complete so the UI can render a status line
                 // ("stopped: repeated tool calls") instead of prose.
                 let mut control_stop: Option<(String, String)> = None;
+                // The error the run ended on, kept in the conversation when
+                // the stream closes (`record_run_error`).
+                let mut run_error: Option<String> = None;
                 let mut text_buffer = String::new();
                 let mut last_flush = tokio::time::Instant::now();
                 // Tight coalesce window so text streams in small, token-smooth chunks
@@ -734,16 +778,18 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                             }
                             continue;
                         }
-                        next = agent::guardrails::next_event(&mut rx, last_event) => match next {
+                        next = agent::guardrails::next_event(&mut rx, last_event, &_run_handle.waiting) => match next {
                             agent::guardrails::Next::Event(e) => e,
                             agent::guardrails::Next::Closed => break,
-                            // Nothing has moved for the idle limit: end the run with a typed
-                            // reason the owner can read, and cancel whatever is still holding it.
+                            // Nothing has moved for the idle limit and nothing is waited on:
+                            // end the run with a typed reason the owner can read, and cancel
+                            // whatever is still holding it.
                             agent::guardrails::Next::Stalled => {
                                 let notice = agent::guardrails::stall_notice();
                                 tracing::warn!(session_id = %sid, "run stalled: no event for {}s", agent::guardrails::RUN_IDLE_LIMIT.as_secs());
-                                control_stop = Some((agent::guardrails::Exit::Stalled.label(), notice.clone()));
+                                control_stop = Some((agent::guardrails::STALLED.to_string(), notice.clone()));
                                 hub.broadcast("chat_error", ws_payload!("error": &notice,));
+                                _run_handle.stalled.store(true, std::sync::atomic::Ordering::SeqCst);
                                 cancel_token.cancel();
                                 break;
                             }
@@ -762,16 +808,8 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                             // status channel + recorded as the typed stop
                             // reason for chat_complete, never reply prose.
                             if reply_fragment(&event).is_none() {
-                                let reason = event
-                                    .stop_reason
-                                    .clone()
-                                    .unwrap_or_else(|| "control_stop".to_string());
-                                // A mid-stream reconnect is transient status —
-                                // surface it, but never record it as the run's
-                                // stop reason: the run continues and completes.
-                                if !is_transient_notice(&event) {
-                                    control_stop = Some((reason.clone(), event.text.clone()));
-                                }
+                                let (reason, notice) = control_stop_of(&event);
+                                control_stop = Some((reason.clone(), notice));
                                 hub.broadcast(
                                     "chat_error",
                                     ws_payload!(
@@ -791,6 +829,9 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                 if comm_reply.is_some() {
                                     comm_buffer.push_str("\n\n");
                                 }
+                                if whole_turn {
+                                    comm_segment.push_str("\n\n");
+                                }
                             }
                             needs_separator = false;
                             full_response.push_str(&event.text);
@@ -809,7 +850,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                             // Skip orchestrator progress heartbeats — the loop
                             // gets a live activity signal via send_typing()
                             // instead, without the "_Working on:_" spam.
-                            if comm_reply.is_some() && !is_progress_heartbeat(&event.text) {
+                            if comm_reply.is_some() {
                                 comm_buffer.push_str(&event.text);
                                 // Accumulate the current segment's full text (the
                                 // persisted Message body, flushed at the next tool
@@ -823,6 +864,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                 // reply: it is held and sent once, scrubbed
                                 // (see the final segment below).
                                 let should_flush = !origin.is_outside()
+                                    && !whole_turn
                                     && match last_comm_flush {
                                         None => true,
                                         Some(t) => t.elapsed().as_millis() as u64 >= COMM_COALESCE_MS,
@@ -884,8 +926,9 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                 // above the prose that follows — interleaved like
                                 // the desktop. Only fires when the segment has
                                 // prose, so consecutive tool calls in one round
-                                // don't each rotate.
-                                if !comm_segment.trim().is_empty() {
+                                // don't each rotate. A whole-turn channel keeps
+                                // accumulating: its one message is the turn's end.
+                                if !whole_turn && !comm_segment.trim().is_empty() {
                                     let mut seg_meta = std::collections::HashMap::new();
                                     if !agent_display_name.is_empty() {
                                         seg_meta.insert(
@@ -899,7 +942,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                         &channel_providers,
                                         comm::CommMessageType::Message,
                                         comm_stream_id.clone(),
-                                        strip_progress_heartbeats(&comm_segment),
+                                        comm_segment.trim().to_string(),
                                         seg_meta,
                                         &agent_display_name,
                                     )
@@ -915,7 +958,8 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                 // Humanize once and feed every consumer: the desktop
                                 // broadcast (friendly label), the loop emission, and the
                                 // typing indicator — one tool-naming source of truth.
-                                let (activity, _) = tools::humanize::tool_call(&tc.name, &tc.input);
+                                let activity = spec_tools.labels(&tc.name, &tc.input).await.0;
+                                _run_handle.show_activity(&activity);
                                 hub.broadcast(
                                     "tool_start",
                                     ws_payload!(
@@ -927,7 +971,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                 );
                                 // Mirror the tool event to the loop so it shows live
                                 // activity, like the local app.
-                                if let Some(cfg) = &comm_reply {
+                                if let Some(cfg) = comm_reply.as_ref().filter(|_| !whole_turn) {
                                     let request = tc.input.to_string();
                                     send_comm_tool_activity(
                                         cfg,
@@ -966,15 +1010,10 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                 .map(|tc| tc.id.as_str())
                                 .unwrap_or("");
                             // Humanize once for both the desktop broadcast and the loop.
-                            let outcome = event
-                                .tool_call
-                                .as_ref()
-                                .map(|tc| tools::humanize::tool_call(&tc.name, &tc.input).1)
-                                .unwrap_or_else(|| {
-                                    tools::humanize::outcome_label(tool_name)
-                                        .map(|s| s.to_string())
-                                        .unwrap_or_else(|| tools::humanize::raw_name(tool_name).1)
-                                });
+                            let outcome = match event.tool_call.as_ref() {
+                                Some(tc) => spec_tools.labels(&tc.name, &tc.input).await.1,
+                                None => tools::humanize::raw_name(tool_name).1,
+                            };
                             hub.broadcast(
                                 "tool_result",
                                 ws_payload!(
@@ -987,11 +1026,34 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                     "duration_ms": event.widgets.as_ref().and_then(|w| w.get("duration_ms")).cloned(),
                                 ),
                             );
+                            // A call parked on the owner, in a run from the
+                            // owner's loop or phone conversation: the ask's
+                            // card goes there too, and the owner's next
+                            // message there answers it.
+                            if let (Some(cfg), Some(ask_id)) = (
+                                comm_reply.as_ref().filter(|c| c.approval_relay),
+                                event
+                                    .widgets
+                                    .as_ref()
+                                    .and_then(|w| w.get("parked_ask"))
+                                    .and_then(|v| v.as_str()),
+                            ) {
+                                relay_ask(
+                                    &ask_state,
+                                    cfg,
+                                    &sid,
+                                    ask_id,
+                                    &comm_manager,
+                                    &channel_providers,
+                                    &agent_display_name,
+                                )
+                                .await;
+                            }
                             // Mirror the tool result to the loop so the timeline
                             // can show Request/Response like the local app —
                             // bounded by the same preview the desktop transcript
                             // gets, well under the 32KB frame.
-                            if let Some(cfg) = &comm_reply {
+                            if let Some(cfg) = comm_reply.as_ref().filter(|_| !whole_turn) {
                                 let response: String = event
                                     .text
                                     .trim()
@@ -1018,42 +1080,21 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                             // reference by /api/v1/files/<name> — for the LOCAL app (always,
                             // rendered inline) and comm replies (when replying to a channel;
                             // resolve_comm_attachments maps the same /api/v1/files prefix).
-                            // Reading an EXISTING image file returns it inline for
-                            // the model, but it is not run-produced media — 34
-                            // frame reads once attached 34 (broken) tiles to one
-                            // message. Only captures/generated media attach.
-                            let is_file_read = event
-                                .tool_call
-                                .as_ref()
-                                .map(|tc| tc.input["action"].as_str() == Some("read"))
-                                .unwrap_or(false);
-                            // The browser screenshots itself after every navigate,
-                            // click, type and scroll. Those are the model's eyes,
-                            // not media the owner asked for: one session clicking
-                            // through a Shopify admin hung ~60 near-identical and
-                            // blank frames on a single message. Only a screenshot
-                            // the model deliberately took attaches.
-                            // The same holds for desktop control: every observe and
-                            // every click/type returns the window, and a Simulator
-                            // session hung three frames on each reply while the
-                            // owner shouted to stop (2026-09-22). Only an explicit
-                            // os screenshot attaches.
-                            let is_incidental_browser_frame = event
-                                .tool_call
-                                .as_ref()
-                                .map(|tc| {
-                                    let action = tc.input["action"].as_str().unwrap_or("");
-                                    (tc.name == "web" && action != "screenshot")
-                                        || (tc.name == "os"
-                                            && matches!(
-                                                action,
-                                                "see" | "find" | "click" | "double_click" | "right_click"
-                                                    | "type" | "press" | "hotkey" | "move" | "scroll"
-                                                    | "drag" | "paste"
-                                            ))
-                                })
-                                .unwrap_or(false);
-                            if event.error.is_none() && !is_file_read && !is_incidental_browser_frame {
+                            // Only media the owner asked for attaches: a capture the
+                            // model took, or a document a call produced. A file read
+                            // returns an EXISTING image for the model, and the browser
+                            // and the desktop return the page or window after every act
+                            // — the tool's eyes (34 frame reads once hung 34 tiles on one
+                            // message; a Simulator session hung three frames on each
+                            // reply, 2026-09-22). The tool's spec says which it is.
+                            let owner_media = match event.tool_call.as_ref() {
+                                Some(tc) => match spec_tools.get(&tc.name).await {
+                                    Some(tool) => tool.emits_image(&tc.input),
+                                    None => true,
+                                },
+                                None => true,
+                            };
+                            if event.error.is_none() && owner_media {
                                 if let Some(url) = &event.image_url {
                                     if let Some(app_url) = to_app_artifact_url(url) {
                                         if !app_file_artifacts.contains(&app_url) {
@@ -1070,25 +1111,17 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                             needs_separator = true;
                         }
                         StreamEventType::Error => {
-                            saw_stream_error = true;
+                            let error = event.error.unwrap_or_default();
                             hub.broadcast(
                                 "chat_error",
                                 ws_payload!(
-                                    "error": event.error.unwrap_or_default(),
+                                    "error": &error,
                                 ),
                             );
+                            run_error = Some(error);
                         }
-                        StreamEventType::ContextStats => {
-                            if let Some(ref stats) = event.widgets {
-                                let mut payload = ws_payload!();
-                                if let (Some(obj), Some(src)) = (payload.as_object_mut(), stats.as_object()) {
-                                    for (k, v) in src {
-                                        obj.insert(k.clone(), v.clone());
-                                    }
-                                }
-                                hub.broadcast("context_stats", payload);
-                            }
-                        }
+                        // Kept on the stored reply by the harness; nothing to show.
+                        StreamEventType::ThinkingBlock => {}
                         StreamEventType::Usage => {
                             if let Some(ref usage) = event.usage {
                                 // The same `usage` event also carries the current Janus
@@ -1113,27 +1146,27 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                         }
                         StreamEventType::ApprovalRequest => {
                             if let Some(ref tc) = event.tool_call {
-                                let (summary, _) = tools::humanize::tool_call(&tc.name, &tc.input);
-                                pending_tool_approvals.lock().await.insert(
-                                    tc.id.clone(),
-                                    crate::state::PendingToolApproval {
+                                let summary = spec_tools.labels(&tc.name, &tc.input).await.0;
+                                let request = approvals_origin.stamp(serde_json::json!({
+                                    "request_id": tc.id,
+                                    "tool": tc.name,
+                                    "input": tc.input,
+                                    // Present when several gated calls share this card.
+                                    "batch": event.widgets.as_ref().and_then(|w| w.get("batch").cloned()),
+                                }));
+                                record_approval_card(
+                                    &approval_channels,
+                                    &tc.id,
+                                    tools::ApprovalCard {
+                                        event: request.clone(),
                                         session_key: sid.to_string(),
                                         agent_id: approvals_agent_id.clone(),
                                         summary,
                                         since: chrono::Utc::now().timestamp(),
                                     },
-                                );
-                                hub.broadcast(
-                                    "approval_request",
-                                    serde_json::json!({
-                                        "session_id": sid,
-                                        "request_id": tc.id,
-                                        "tool": tc.name,
-                                        "input": tc.input,
-                                        // Present when several gated calls share this card.
-                                        "batch": event.widgets.as_ref().and_then(|w| w.get("batch").cloned()),
-                                    }),
-                                );
+                                )
+                                .await;
+                                hub.broadcast("approval_request", request);
                                 // Relay the approval into the loop conversation
                                 // (personal contexts only) — otherwise the run
                                 // parks on a prompt the remote owner never sees.
@@ -1143,10 +1176,10 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                     .as_ref()
                                     .filter(|c| c.approval_relay)
                                 {
-                                    pending_comm_approvals
-                                        .lock()
-                                        .await
-                                        .insert(sid.to_string(), tc.id.clone());
+                                    pending_comm_approvals.lock().await.insert(
+                                        sid.to_string(),
+                                        crate::state::CommApproval::Waiting(tc.id.clone()),
+                                    );
                                     let mut meta = HashMap::new();
                                     meta.insert("kind".to_string(), "approval".to_string());
                                     meta.insert("request_id".to_string(), tc.id.clone());
@@ -1228,17 +1261,6 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                 }
                             }
                         }
-                        StreamEventType::PlanApproval => {
-                            let request_id = event.error.as_deref().unwrap_or("");
-                            let mut payload = ws_payload!(
-                                "request_id": request_id,
-                                "plan": event.text,
-                            );
-                            if let Some(tools) = &event.widgets {
-                                payload["tools"] = tools.clone();
-                            }
-                            hub.broadcast("plan_approval", payload);
-                        }
                         StreamEventType::RateLimit => {
                             if let Some(ref rl) = event.rate_limit {
                                 if rl.session_limit_credits.is_some()
@@ -1300,19 +1322,6 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                             hub.broadcast("subagent_start", payload);
                         }
                         StreamEventType::SubagentProgress => {
-                            // Structured research panel snapshot: forward as its
-                            // own event; the app renders the live research card.
-                            if let Some(ref p) = event.payload {
-                                if p.get("kind").and_then(|k| k.as_str())
-                                    == Some("research_progress")
-                                {
-                                    hub.broadcast(
-                                        "research_progress",
-                                        ws_payload!("data": p.clone()),
-                                    );
-                                    continue;
-                                }
-                            }
                             let mut payload = ws_payload!();
                             if let Some(ref w) = event.widgets {
                                 for (k, v) in w.as_object().into_iter().flatten() {
@@ -1329,6 +1338,23 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                 }
                             }
                             hub.broadcast("subagent_complete", payload);
+                        }
+                        StreamEventType::TextVerdict => {
+                            // The segment's text reaches the clients before
+                            // its verdict, and the verdict before the call
+                            // that closed it.
+                            if !text_buffer.is_empty() {
+                                hub.broadcast("chat_stream", ws_payload!("content": &text_buffer,));
+                                text_buffer.clear();
+                                last_flush = tokio::time::Instant::now();
+                            }
+                            hub.broadcast(
+                                "text_verdict",
+                                ws_payload!(
+                                    "segment": event.payload.as_ref().and_then(|p| p.get("segment")).cloned(),
+                                    "fold": &event.text,
+                                ),
+                            );
                         }
                         StreamEventType::ToolSummary => {
                             hub.broadcast(
@@ -1415,7 +1441,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                         };
 
                         // Flush any remaining streamed text
-                        if !comm_buffer.is_empty() && !origin.is_outside() {
+                        if !comm_buffer.is_empty() && !origin.is_outside() && !whole_turn {
                             let chunk = comm::CommMessage {
                                 id: comm_stream_id.clone(),
                                 from: String::new(),
@@ -1474,9 +1500,9 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                             // and never a file — the fences stop execution, this
                             // stops disclosure.
                             content: if origin.is_outside() {
-                                agent::harness::seat::scrub_outside_reply(&strip_progress_heartbeats(&comm_segment))
+                                agent::harness::seat::scrub_outside_reply(comm_segment.trim())
                             } else {
-                                strip_progress_heartbeats(&comm_segment)
+                                comm_segment.trim().to_string()
                             },
                             metadata: reply_meta,
                             timestamp: 0,
@@ -1612,11 +1638,11 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
 
                 // Resolve the active chat so run-produced documents can be
                 // versioned + persisted under a stable container.
-                let chat_id_for_artifacts = runner
+                let chat_id_for_artifacts = harness
                     .sessions()
                     .resolve_session_id_by_key(&sid)
                     .ok()
-                    .map(|session_id| runner.sessions().active_chat_id(&session_id));
+                    .map(|session_id| harness.sessions().active_chat_id(&session_id));
 
                 // Version each run-produced DOCUMENT (non-media) into its
                 // append-only chain and emit structured artifact objects; media
@@ -1624,13 +1650,13 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                 // frontend splits by type. Falls back to the bare URL on any error.
                 let chat_artifacts: Vec<serde_json::Value> = match &chat_id_for_artifacts {
                     Some(chat_id) if !app_file_artifacts.is_empty() => {
-                        let message_id = runner
+                        let message_id = harness
                             .store()
                             .latest_assistant_message_id(chat_id)
                             .ok()
                             .flatten();
                         version_app_artifacts(
-                            runner.store(),
+                            harness.store(),
                             chat_id,
                             message_id.as_deref(),
                             &app_file_artifacts,
@@ -1642,6 +1668,12 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                         .collect(),
                 };
 
+                // Kept before chat_complete, so a page that reloads the thread
+                // on completion reads it.
+                if let Some(error) = &run_error {
+                    record_run_error(&harness, &sid, error);
+                }
+
                 // Always send chat_complete (with any run-produced artifacts so
                 // the app renders them). When the run ended via a typed
                 // ControlNotice, the payload also carries the typed stop reason
@@ -1651,22 +1683,22 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                     &hub,
                     &_run_handle,
                     &ask_channels,
-                    &pending_tool_approvals,
                     TurnEnd {
-                        session_key: &sid,
                         payload: ws_payload!(),
                         artifacts: &chat_artifacts,
                         control_stop: control_stop.as_ref(),
                     },
                 )
                 .await;
+                // The owner on a call in this conversation hears it too.
+                crate::handlers::voice::say_on_call(&live_calls, &sid, &full_response);
 
                 // Persist the artifacts onto the turn's final assistant message so
                 // Work items + their version chain survive history reload (the live
                 // event above is the only other carrier).
                 if !chat_artifacts.is_empty() {
                     if let Some(chat_id) = &chat_id_for_artifacts {
-                        if let Err(e) = runner
+                        if let Err(e) = harness
                             .store()
                             .attach_artifacts_to_latest_assistant_message(chat_id, &chat_artifacts)
                         {
@@ -1684,7 +1716,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                             // rendered document, not text/markdown bytes. The
                             // blob stays reachable via the viewer's Download.
                             crate::codes::push_artifact_via(
-                                runner.store(),
+                                harness.store(),
                                 &neboai_api_url,
                                 serde_json::json!({
                                     "id": doc_id,
@@ -1698,27 +1730,25 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                     }
                 }
 
-                // Chat-title generation now happens once in the runner for every run
-                // path; the ChatTitleSink installed at startup broadcasts it + pushes
-                // it to the loop. (Was a duplicate generator coordinated by
-                // skip_title_gen — see Runner::ChatTitleSink.)
-
-                goal_outcome = Some((full_response, saw_stream_error));
+                // The chat title is generated after the turn by the harness; the
+                // ChatTitleSink bound at startup broadcasts it and pushes it to
+                // the loop.
             }
             Err(e) => {
                 warn!(error = %e, "agent run failed");
+                let error = e.to_string();
                 hub.broadcast(
                     "chat_error",
                     ws_payload!(
-                        "error": e.to_string(),
+                        "error": &error,
                     ),
                 );
+                record_run_error(&harness, &sid, &error);
                 finish_turn(
                     &hub,
                     &_run_handle,
                     &ask_channels,
-                    &pending_tool_approvals,
-                    TurnEnd { session_key: &sid, payload: ws_payload!(), artifacts: &[], control_stop: None },
+                    TurnEnd { payload: ws_payload!(), artifacts: &[], control_stop: None },
                 )
                 .await;
             }
@@ -1726,7 +1756,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
 
         // Clean up browser tabs for this session.
         // The extension tracks tabs by session UUID, not session_key, so resolve it.
-        let browser_session_id = runner
+        let browser_session_id = harness
             .store()
             .get_session_by_name(&sid)
             .ok()
@@ -1738,21 +1768,6 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
         // RunHandle unregisters from RunRegistry on drop (including panics)
         drop(_run_handle);
 
-        // Persistent-goals v1: judge the completed run and, if it left an
-        // explicit unfinished commitment, re-dispatch a synthetic continuation
-        // through run_chat. MUST run after the RunHandle drop above so the
-        // preemption check only sees OTHER runs for this session.
-        if let Some((assistant_response, saw_error)) = goal_outcome {
-            let cancelled = cancel_token.is_cancelled();
-            maybe_auto_continue(
-                goals_state,
-                goals_params,
-                assistant_response,
-                saw_error,
-                cancelled,
-            );
-        }
-
         // Session wake rail: stamp any wake batch this run carried, then
         // drain wakes that queued while the session was busy. MUST run after
         // the RunHandle drop so deliver() sees the session as idle.
@@ -1760,145 +1775,8 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
 
         Ok(())
     });
-    lane_task.fairness_key = Some(fairness_key);
 
     state.lanes.enqueue_async(&lane, lane_task);
-}
-
-/// Everything the auto-continuation hook needs to re-dispatch a synthetic
-/// user message through [`run_chat`] with the SAME identity, permissions, and
-/// reply routing as the run it follows.
-struct AutoContinueParams {
-    session_key: String,
-    agent_id: String,
-    user_id: String,
-    channel: String,
-    system: String,
-    origin: Origin,
-    lane: String,
-    entity_name: String,
-    entity_config: Option<crate::entity_config::ResolvedEntityConfig>,
-    comm_reply: Option<CommReplyConfig>,
-    tool_scope: Option<String>,
-    origin_agent_id: Option<String>,
-}
-
-/// Persistent-goals v1 completion hook (see `agent::goals`).
-///
-/// Called once per completed [`run_chat`] run, AFTER the run's handle has left
-/// the RunRegistry. Spawned so the lane task isn't held open; the plain-fn +
-/// spawn indirection also breaks the `run_chat` → hook → `run_chat` future
-/// type cycle. Order of checks: kill-switch → eligibility → budget peek →
-/// preemption (a real pending run wins, no judging) → judge (fail-closed) →
-/// budget consume → re-dispatch through `run_chat` (the ONE chat pathway).
-fn maybe_auto_continue(
-    state: AppState,
-    p: AutoContinueParams,
-    assistant_response: String,
-    saw_error: bool,
-    cancelled: bool,
-) {
-    tokio::spawn(async move {
-        use agent::goals;
-
-        if !goals::enabled() {
-            return;
-        }
-        // An outside conversation (a QR scan, an embedded chat, a phone
-        // caller) never earns owner-paid continuation turns: the judge read
-        // a visitor's fake tool narration as "an unfinished commitment" and
-        // re-dispatched twice (2026-09-05). Strangers get one answer per
-        // message, full stop.
-        if p.origin.is_outside() {
-            tracing::debug!(session = %p.session_key, "auto-continue: outside origin, not judged");
-            return;
-        }
-        if !goals::eligible_for_judging(&p.session_key, &assistant_response, saw_error, cancelled)
-        {
-            return;
-        }
-        // Continuation budget from guardrail settings (Settings → Developer);
-        // 0 disables auto-continuation entirely.
-        let continuation_limit = agent::guardrails::GuardrailConfig::from_json(
-            &state.store.get_guardrails().unwrap_or_else(|_| "{}".into()),
-        )
-        .max_auto_continuations;
-        // Cheap peek before paying for a judge call.
-        if !state.goal_tracker.has_budget(&p.session_key, continuation_limit) {
-            tracing::debug!(session = %p.session_key, "auto-continue: budget exhausted");
-            return;
-        }
-        // Preemption FIRST: a real queued/active message for this session wins
-        // — no judging. (Our own run already unregistered before this hook.)
-        if state.run_registry.is_session_active(&p.session_key).await {
-            tracing::debug!(session = %p.session_key, "auto-continue: preempted by pending run");
-            return;
-        }
-        // Judge against the last REAL user message (recorded at dispatch).
-        let last_user = match state.goal_tracker.last_real_prompt(&p.session_key) {
-            Some(s) if !s.is_empty() => s,
-            _ => return,
-        };
-        let decide = state.runner.decide();
-        let trace = ai::RequestTrace {
-            agent_id: p.agent_id.clone(),
-            ..ai::RequestTrace::new("continue_judge")
-        };
-        let reason = match goals::judge(decide.as_deref(), &trace, &last_user, &assistant_response).await {
-            goals::Verdict::Continue { reason } => reason,
-            goals::Verdict::Done => return,
-        };
-        // The judge call took time — re-check preemption before dispatching.
-        if state.run_registry.is_session_active(&p.session_key).await {
-            tracing::debug!(session = %p.session_key, "auto-continue: preempted during judging");
-            return;
-        }
-        if !state
-            .goal_tracker
-            .try_consume(&p.session_key, continuation_limit, &assistant_response)
-        {
-            tracing::debug!(
-                session = %p.session_key,
-                "auto-continue: budget exhausted or the turn repeated itself"
-            );
-            return;
-        }
-        tracing::info!(
-            session = %p.session_key,
-            reason = %reason,
-            "auto-continue: judge found an unfinished commitment; dispatching continuation"
-        );
-        let config = ChatConfig {
-            session_key: p.session_key,
-            prompt: goals::continuation_prompt(&reason),
-            system: p.system,
-            user_id: p.user_id,
-            channel: p.channel,
-            origin: p.origin,
-            agent_id: p.agent_id,
-            cancel_token: tokio_util::sync::CancellationToken::new(),
-            lane: p.lane,
-            comm_reply: p.comm_reply,
-            entity_config: p.entity_config,
-            images: Vec::new(),
-            attachments: Vec::new(),
-            entity_name: p.entity_name,
-            origin_agent_id: p.origin_agent_id,
-            mention_context: None,
-            tool_scope: p.tool_scope,
-            // Never re-trigger plan approval on an auto-continuation.
-            plan_mode: false,
-            channel_ctx: None,
-            handoff_depth: 0,
-            seed_taint: vec![],
-            tool_allowlist: None,
-            hidden_prompt: false,
-            audience: None,
-            cwd: None,
-            model_override: None,
-        };
-        run_chat(&state, config).await;
-    });
 }
 
 /// Run chat through the canonical agent dispatch path and return raw stream events.
@@ -1907,97 +1785,96 @@ fn maybe_auto_continue(
 /// stream events while preserving the agent lens: lane queueing, RunRegistry,
 /// persona, permissions, model preference, memory/session behavior, presence,
 /// and proactive inbox.
+/// The owner's `/compact` on session `session_key`: a turn of its own on
+/// the harness (`TurnInput::Compact`), so it is the turn's checkpoint with
+/// the same request, hooks and restore, and it waits for a running turn.
+/// `instructions` are the owner's words after `/compact`.
+pub async fn compact(state: &AppState, session_key: &str, agent_id: &str, instructions: &str) -> Result<(), String> {
+    let entity_config = if agent_id.is_empty() {
+        crate::entity_config::resolve_for_chat(&state.store, "main", "main")
+    } else {
+        crate::entity_config::resolve_for_chat(&state.store, "agent", agent_id)
+    };
+    let config = ChatConfig {
+        session_key: session_key.to_string(),
+        prompt: String::new(),
+        user_id: String::new(),
+        channel: "web".to_string(),
+        origin: Origin::User,
+        door: types::permissions::Door::Chat,
+        agent_id: agent_id.to_string(),
+        cancel_token: tokio_util::sync::CancellationToken::new(),
+        lane: types::constants::lanes::MAIN.to_string(),
+        comm_reply: None,
+        entity_config,
+        images: vec![],
+        attachments: vec![],
+        entity_name: String::new(),
+        origin_agent_id: None,
+        mention_context: None,
+        tool_scope: None,
+        channel_ctx: None,
+        handoff_depth: 0,
+        seed_taint: vec![],
+        tool_allowlist: None,
+        hidden_prompt: false,
+        coworker: None,
+        audience: None,
+        cwd: None,
+        model_override: None,
+        client_id: None,
+    };
+    let (_, run_handle) = register_run(state, &config).await;
+    let mut req = turn_request(state, &config, &run_handle);
+    req.input = agent::harness::TurnInput::Compact { instructions: instructions.to_string() };
+    let mut events = state.harness.start_turn(req).await.map_err(|e| e.to_string())?.events;
+    let mut outcome = Err("the compact ended without a checkpoint".to_string());
+    while let Some(event) = events.recv().await {
+        match event.event_type {
+            StreamEventType::Error => outcome = Err(event.error.unwrap_or(event.text)),
+            StreamEventType::Done if event.stop_reason.as_deref() == Some("compacted") => outcome = Ok(()),
+            _ => {}
+        }
+    }
+    outcome
+}
+
 pub async fn run_chat_events(
     state: &AppState,
     config: ChatConfig,
 ) -> Result<mpsc::Receiver<ai::StreamEvent>, types::NeboError> {
-    // Persistent-goals v1: real messages through this transport also reset the
-    // session's auto-continuation budget (continuations only dispatch via
-    // run_chat, so no prefix can arrive here — the guard keeps it symmetric).
-    if !agent::goals::is_continuation_prompt(&config.prompt) {
-        state.goal_tracker.on_real_message(&config.session_key, &config.prompt);
-    }
-
-    let runner = state.runner.clone();
-    let presence_tracker = state.presence.clone();
-    let proactive_inbox = state.proactive_inbox.clone();
+    let harness = state.harness.clone();
     let cleanup_tools = state.tools.clone();
 
+    remember_input(state, &config);
     let sid = config.session_key.clone();
-    let agent_id = config.agent_id.clone();
     let cancel_token = config.cancel_token.clone();
     let lane = config.lane.clone();
-    let full_access = resolve_full_access(&state.store);
 
     // Resolve display name + register the run (shared with run_chat).
     let (_agent_display_name, run_handle) = register_run(state, &config).await;
 
-    let (permissions, resource_grants, model_preference, personality_snippet, mut allowed_paths, operation_policy) =
-        entity_run_params(config.entity_config.as_ref());
-    let cwd = run_cwd(config.cwd.as_deref(), &mut allowed_paths);
-
-    let progress = agent::RunProgress {
-        run_id: run_handle.run_id.clone(),
-        iteration_count: run_handle.iteration_count.clone(),
-        tool_call_count: run_handle.tool_call_count.clone(),
-        current_tool: run_handle.current_tool.clone(),
-    };
-
-    let req = RunRequest {
-        session_key: sid.clone(),
-        prompt: config.prompt,
-        system: config.system,
-        user_id: config.user_id,
-        channel: config.channel,
-        origin: config.origin,
-        cancel_token: cancel_token.clone(),
-        agent_id: agent_id.clone(),
-        permissions,
-        operation_policy,
-        resource_grants,
-        model_preference,
-        personality_snippet,
-        images: config.images,
-        attachments: config.attachments,
-        allowed_paths,
-        cwd,
-        model_override: config
-            .model_override
-            .filter(|m| !m.is_empty())
-            .or_else(|| chat_model_for_session(&runner, &sid))
-            .unwrap_or_default(),
-        presence_tracker: Some(presence_tracker),
-        proactive_inbox: Some(proactive_inbox),
-        progress: Some(progress),
-        mention_context: config.mention_context,
-        tool_scope: config.tool_scope,
-        channel_ctx: config.channel_ctx,
-        full_access,
-        handoff_depth: config.handoff_depth,
-        seed_taint: config.seed_taint,
-        tool_allowlist: config.tool_allowlist,
-        hidden_prompt: config.hidden_prompt,
-        audience: config.audience,
-        ..Default::default()
-    };
+    let req = turn_request(state, &config, &run_handle);
 
     let (tx, rx) = mpsc::channel(64);
-    let fairness_key = agent_id.clone();
-    let mut lane_task = make_task(&lane, format!("chat:{}", sid), async move {
+    let lane_task = make_task(&lane, format!("chat:{}", sid), async move {
         let _run_handle = run_handle;
         let mut last_event = tokio::time::Instant::now();
-        match runner.run(req).await {
-            Ok(mut events) => loop {
+        match harness.start_turn(req).await {
+            Ok(handle) => {
+                let mut events = handle.events;
+                loop {
                 let event = tokio::select! {
                     _ = cancel_token.cancelled() => break,
-                    next = agent::guardrails::next_event(&mut events, last_event) => match next {
+                    next = agent::guardrails::next_event(&mut events, last_event, &_run_handle.waiting) => match next {
                         agent::guardrails::Next::Event(e) => e,
                         agent::guardrails::Next::Closed => break,
                         agent::guardrails::Next::Stalled => {
+                            _run_handle.stalled.store(true, std::sync::atomic::Ordering::SeqCst);
                             if tx
                                 .send(ai::StreamEvent::control_notice(
                                     agent::guardrails::stall_notice(),
-                                    agent::guardrails::Exit::Stalled.label(),
+                                    agent::guardrails::STALLED,
                                 ))
                                 .await
                                 .is_err()
@@ -2014,7 +1891,8 @@ pub async fn run_chat_events(
                 if tx.send(event).await.is_err() {
                     break;
                 }
-            },
+                }
+            }
             Err(e) => {
                 let _ = tx
                     .send(ai::StreamEvent { payload: None,
@@ -2034,7 +1912,7 @@ pub async fn run_chat_events(
             }
         }
 
-        let browser_session_id = runner
+        let browser_session_id = harness
             .store()
             .get_session_by_name(&sid)
             .ok()
@@ -2045,7 +1923,6 @@ pub async fn run_chat_events(
         drop(_run_handle);
         Ok(())
     });
-    lane_task.fairness_key = Some(fairness_key);
 
     state.lanes.enqueue_async(&lane, lane_task);
     Ok(rx)
@@ -2080,32 +1957,17 @@ pub(crate) async fn resolve_comm_attachments(
     };
 
     for artifact in artifacts {
-        // Map the artifact reference to a local path under <data_dir>/files/.
-        let path = if let Some(rel) = artifact.strip_prefix("/api/v1/files/") {
-            files_dir.join(rel)
-        } else if artifact.starts_with("http://") || artifact.starts_with("https://") {
+        let Some(path) = artifact_local_path(&files_dir, artifact) else {
             // Remote URL we didn't produce locally — skip (can't read bytes).
             warn!(url = %artifact, "skipping remote artifact for comm attachment");
             continue;
-        } else {
-            std::path::PathBuf::from(artifact)
         };
-
-        let data = match tokio::fs::read(&path).await {
-            Ok(b) => b,
-            Err(e) => {
-                warn!(path = %path.display(), error = %e, "failed to read run artifact for attachment");
-                continue;
-            }
-        };
-
         let filename = path
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| "file".to_string());
-        let mime = mime_from_extension(&path);
 
-        match mgr.upload_file(&filename, &mime, data, &[]).await {
+        match upload_local_file(mgr, &path).await {
             Ok(att) => out.push(att),
             Err(e) => {
                 warn!(filename = %filename, error = %e, "failed to upload run artifact attachment");
@@ -2145,6 +2007,37 @@ pub(crate) async fn resolve_comm_attachments(
         }
     }
     out
+}
+
+/// Map a Work-panel artifact reference — a local `/api/v1/files/<name>` URL
+/// or a path — to its file under `files_dir`. A remote URL has no local file.
+pub(crate) fn artifact_local_path(files_dir: &std::path::Path, artifact: &str) -> Option<std::path::PathBuf> {
+    if let Some(rel) = artifact.strip_prefix("/api/v1/files/") {
+        Some(files_dir.join(rel))
+    } else if artifact.starts_with("http://") || artifact.starts_with("https://") {
+        None
+    } else {
+        Some(std::path::PathBuf::from(artifact))
+    }
+}
+
+/// Read one local file and store it through the one upload path
+/// (`POST /api/v1/files/upload`, via the active comm plugin).
+pub(crate) async fn upload_local_file(
+    mgr: &comm::PluginManager,
+    path: &std::path::Path,
+) -> Result<comm::wire::Attachment, String> {
+    let data = tokio::fs::read(path)
+        .await
+        .map_err(|e| format!("read {}: {e}", path.display()))?;
+    let filename = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "file".to_string());
+    let mime = mime_from_extension(path);
+    mgr.upload_file(&filename, &mime, data, &[])
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// Infer a MIME type from a file extension for outbound comm attachments.
@@ -2462,6 +2355,54 @@ fn strip_local_image_markdown(text: &mut String) {
 /// channel. The single place outbound comm messages are assembled, so the loop
 /// receives the same kinds of events the local web hub does.
 #[allow(clippy::too_many_arguments)]
+/// Carry an ask a run parked a call on into the owner's loop or phone
+/// conversation the run came from, as a message offering the card's own
+/// answers (one ask, every surface: the Inbox, the phone's Inbox, the open
+/// chat, and this conversation). The owner's next message there answers it
+/// (`try_handle_comm_control`). Returns the message it sent.
+pub(crate) async fn relay_ask(
+    state: &AppState,
+    cfg: &CommReplyConfig,
+    session_key: &str,
+    ask_id: &str,
+    comm_manager: &Option<Arc<comm::PluginManager>>,
+    channel_providers: &Option<
+        Arc<tokio::sync::RwLock<HashMap<String, Arc<dyn comm::ChannelProvider>>>>,
+    >,
+    sender_name: &str,
+) -> Option<(String, HashMap<String, String>)> {
+    let ask = match state.permission_asks.get(ask_id) {
+        Ok(Some(ask)) => ask,
+        Ok(None) => return None,
+        Err(e) => {
+            warn!(ask = ask_id, error = ?e, "the parked ask could not be read to relay it");
+            return None;
+        }
+    };
+    let card = crate::handlers::permissions::card(state, &ask);
+    state.pending_comm_approvals.lock().await.insert(
+        session_key.to_string(),
+        crate::state::CommApproval::Ask(ask_id.to_string()),
+    );
+    let (text, meta) = crate::permission_asks::conversation_card(&card);
+    send_comm_msg(
+        cfg,
+        comm_manager,
+        channel_providers,
+        comm::CommMessageType::Message,
+        uuid::Uuid::new_v4().to_string(),
+        text.clone(),
+        meta.clone(),
+        sender_name,
+    )
+    .await;
+    // The run waits on the owner now: no "thinking…" in the conversation.
+    if let Some(cm) = comm_manager {
+        let _ = cm.send_typing(&cfg.conversation_id, false, None).await;
+    }
+    Some((text, meta))
+}
+
 async fn send_comm_msg(
     cfg: &CommReplyConfig,
     comm_manager: &Option<Arc<comm::PluginManager>>,
@@ -2646,7 +2587,100 @@ impl agent::ChatTitleSink for TitleBroadcaster {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_progress_heartbeat, reply_fragment, strip_progress_heartbeats};
+    use std::sync::Arc;
+
+    use super::reply_fragment;
+
+    /// A `/stop` from a channel stops what the Stop button stops: the
+    /// running turn, and every helper the session started, whichever turn
+    /// started it. A helper's cancel token is a child of the session's
+    /// token, so a stopped session token is a stopped helper.
+    #[tokio::test]
+    async fn stop_reaches_the_turn_and_every_helper_of_the_session() {
+        let path = std::env::temp_dir().join(format!("nebo-stop-{}.db", uuid::Uuid::new_v4()));
+        let store = Arc::new(db::Store::new(&path.to_string_lossy()).expect("store"));
+        let tools = Arc::new(tools::Registry::new(Arc::new(agent::Check::new(store.clone()))));
+        let harness = agent::Harness::new(
+            store.clone(),
+            tools.clone(),
+            Vec::new(),
+            agent::selector::ModelSelector::new(Default::default()),
+            Arc::new(agent::ConcurrencyController::new(Some(2))),
+            Arc::new(napp::HookDispatcher::new()),
+            None,
+            Default::default(),
+            None,
+        );
+        let helpers = agent::harness::delegation::Helpers::new(
+            store,
+            Arc::new(harness.sessions().clone()),
+            tools,
+            Arc::new(harness.clone()),
+            None,
+            None,
+        );
+        let runs = crate::run_registry::RunRegistry::new();
+        let key = "neboai:dm:conv-1";
+        let turn = tokio_util::sync::CancellationToken::new();
+        let run = runs
+            .register(crate::run_registry::RegisterParams {
+                session_key: key.to_string(),
+                entity_id: "assistant".to_string(),
+                entity_name: "Assistant".to_string(),
+                origin: "comm".to_string(),
+                channel: "neboai".to_string(),
+                cancel_token: turn.clone(),
+                parent_run_id: None,
+            })
+            .await;
+        let helper = helpers.session_token(key).child_token();
+        let other_session = helpers.session_token("neboai:dm:conv-2").child_token();
+
+        assert!(super::stop_session(&helpers, &runs, key).await, "a turn was running");
+        assert!(turn.is_cancelled(), "the running turn stops");
+        assert!(helper.is_cancelled(), "the session's background helper stops");
+        assert!(!other_session.is_cancelled(), "another conversation's helper runs on");
+        drop(run); // the turn ended on its cancel
+        assert!(!super::stop_session(&helpers, &runs, key).await, "nothing is running now");
+    }
+
+    /// A run that ended on an error keeps it in its conversation: one
+    /// `system` row stamped `runError`, carrying the error the live event
+    /// carried, in the owner's thread and never in the model's
+    /// conversation. An empty error leaves nothing.
+    #[test]
+    fn a_failed_run_keeps_its_error_in_the_thread() {
+        let path = std::env::temp_dir().join(format!("nebo-run-error-{}.db", uuid::Uuid::new_v4()));
+        let store = Arc::new(db::Store::new(&path.to_string_lossy()).expect("store"));
+        let tools = Arc::new(tools::Registry::new(Arc::new(agent::Check::new(store.clone()))));
+        let harness = agent::Harness::new(
+            store.clone(),
+            tools,
+            Vec::new(),
+            agent::selector::ModelSelector::new(Default::default()),
+            Arc::new(agent::ConcurrencyController::new(Some(2))),
+            Arc::new(napp::HookDispatcher::new()),
+            None,
+            Default::default(),
+            None,
+        );
+        let key = "agent:assistant:web";
+        let session = harness.sessions().get_or_create(key, "").expect("session");
+        harness.sessions().append_message(&session.id, "user", "Hello", None, None, None).expect("user row");
+
+        super::record_run_error(&harness, key, "");
+        assert_eq!(harness.sessions().get_messages(&session.id).unwrap().len(), 1, "an empty error leaves nothing");
+
+        super::record_run_error(&harness, key, "USAGE_LIMIT_EXCEEDED: no balance");
+        let thread = harness.sessions().get_messages(&session.id).unwrap();
+        let last = thread.last().expect("rows");
+        assert_eq!((last.role.as_str(), last.content.as_str()), ("system", "USAGE_LIMIT_EXCEEDED: no balance"));
+        let meta: serde_json::Value = serde_json::from_str(last.metadata.as_deref().unwrap()).unwrap();
+        assert_eq!(meta[super::RUN_ERROR_KEY], true);
+
+        let model = harness.sessions().get_messages_since_checkpoint(&session.id).unwrap();
+        assert_eq!(model.iter().map(|m| m.content.as_str()).collect::<Vec<_>>(), vec!["Hello"], "the model never reads it");
+    }
 
     #[test]
     fn only_text_events_are_reply_text() {
@@ -2654,44 +2688,17 @@ mod tests {
             reply_fragment(&ai::StreamEvent::text("real content")),
             Some("real content")
         );
-        // ControlNotice (spiral backstop / circuit breaker / terminal error)
+        // ControlNotice (step limit / spending limit / terminal error)
         // must never reach reply accumulators — this is the Slack-leak guard.
         assert_eq!(
             reply_fragment(&ai::StreamEvent::control_notice(
-                "Stopped: 'web(search)' was called 8 times this turn without progress.",
-                "repeated_tool_calls",
+                "Stopped after 100 steps, the most one turn takes.",
+                "max_steps",
             )),
             None
         );
         assert_eq!(reply_fragment(&ai::StreamEvent::error("boom")), None);
         assert_eq!(reply_fragment(&ai::StreamEvent::done()), None);
-    }
-
-    #[test]
-    fn detects_orchestrator_heartbeats() {
-        // The exact shapes orchestrator.rs emits (wrapped in surrounding newlines).
-        assert!(is_progress_heartbeat("\n_Working on: agent_\n"));
-        assert!(is_progress_heartbeat("\n_Working on: task: spawn_\n"));
-        assert!(is_progress_heartbeat("_Working..._"));
-    }
-
-    #[test]
-    fn leaves_real_content_alone() {
-        assert!(!is_progress_heartbeat("Working on the report now."));
-        assert!(!is_progress_heartbeat("_emphasis_ in the reply"));
-        assert!(!is_progress_heartbeat(
-            "Here are the diligence scores: 85/90."
-        ));
-    }
-
-    #[test]
-    fn strips_only_heartbeat_lines_preserving_content() {
-        let input =
-            "Here are the results.\n\n_Working on: agent_\nComposite score: 87.22\n_Working..._";
-        assert_eq!(
-            strip_progress_heartbeats(input),
-            "Here are the results.\n\nComposite score: 87.22"
-        );
     }
 }
 
@@ -2866,41 +2873,3 @@ mod session_key_contract_tests {
     }
 }
 
-#[cfg(test)]
-mod run_cwd_tests {
-    //! Locks how an owner-chosen cwd meets the entity's path restriction.
-    use super::run_cwd;
-    use std::path::Path;
-
-    /// A restricted run gains the cwd (once), so the file tools may work
-    /// there; the cwd is returned as the run's working directory.
-    #[test]
-    fn restricted_list_gains_the_cwd_once() {
-        let mut allowed = vec!["/home/me/docs".to_string()];
-        let cwd = run_cwd(Some(Path::new("/home/me/proj")), &mut allowed);
-        assert_eq!(cwd.as_deref(), Some("/home/me/proj"));
-        assert_eq!(allowed, vec!["/home/me/docs".to_string(), "/home/me/proj".to_string()]);
-
-        let mut already = vec!["/home/me/proj".to_string()];
-        run_cwd(Some(Path::new("/home/me/proj")), &mut already);
-        assert_eq!(already, vec!["/home/me/proj".to_string()], "no duplicate entry");
-    }
-
-    /// An empty list means unrestricted; adding the cwd would turn
-    /// "anywhere" into "only here", so it stays empty.
-    #[test]
-    fn unrestricted_run_stays_unrestricted() {
-        let mut allowed: Vec<String> = Vec::new();
-        let cwd = run_cwd(Some(Path::new("/home/me/proj")), &mut allowed);
-        assert_eq!(cwd.as_deref(), Some("/home/me/proj"));
-        assert!(allowed.is_empty());
-    }
-
-    /// No cwd: nothing changes and the run keeps the process cwd.
-    #[test]
-    fn no_cwd_changes_nothing() {
-        let mut allowed = vec!["/home/me/docs".to_string()];
-        assert_eq!(run_cwd(None, &mut allowed), None);
-        assert_eq!(allowed, vec!["/home/me/docs".to_string()]);
-    }
-}

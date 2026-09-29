@@ -8,8 +8,10 @@ use std::collections::HashMap;
 use tracing::{debug, info, warn};
 
 use comm::api::NeboAIApi;
+use tools::InstalledBy;
 use types::NeboError;
 
+use crate::handlers::ws::EventOrigin;
 use crate::state::AppState;
 
 // ── Code Detection ──────────────────────────────────────────────────
@@ -98,6 +100,43 @@ struct CodeHandlerResult {
     tier: Option<serde_json::Value>,
 }
 
+/// The wire name of a code's type (`"agent"`, `"plugin"`, …).
+fn code_type_name(code_type: CodeType) -> &'static str {
+    match code_type {
+        CodeType::Nebo => "nebo",
+        CodeType::Skill => "skill",
+        CodeType::Work => "workflow",
+        CodeType::Agent => "agent",
+        CodeType::Loop => "loop",
+        CodeType::Plugin => "plugin",
+        CodeType::App => "app",
+        CodeType::Collection => "collection",
+        CodeType::Connection => "connection",
+    }
+}
+
+/// What a finished install tells whoever is waiting on it: the one shape of
+/// the `code_result` broadcast and of the `POST /codes` reply, so the app
+/// that asked (the desktop's modal, the phone's card) reads the same keys
+/// either way and can go straight to configuring what was installed
+/// (`artifact_id` is an employee's own id; `needsAuth` says a plugin it
+/// needs is not connected yet, so it waits to start until it is).
+fn install_result(code: &str, code_type: &str, r: &CodeHandlerResult) -> serde_json::Value {
+    serde_json::json!({
+        "code": code,
+        "code_type": code_type,
+        "success": true,
+        "message": r.message,
+        "artifact_name": r.artifact_name,
+        "artifact_id": r.artifact_id,
+        "artifact_type": r.artifact_type.as_deref().unwrap_or(code_type),
+        "payment_required": r.checkout_url.is_some(),
+        "checkout_url": r.checkout_url,
+        "needsAuth": r.needs_auth,
+        "tier": r.tier,
+    })
+}
+
 /// Handle a detected code: broadcast processing event, dispatch to handler, broadcast result.
 /// The install work in flight right now: the codes being handled, so a code
 /// arriving twice (a second click) never starts a second install of the same
@@ -112,9 +151,20 @@ pub struct InFlightCodes {
 }
 
 /// Held for the life of one code's handling; the code leaves the set on drop.
+/// [`install`] takes it, not the code, so no door can install without
+/// claiming: the REST door skipped the claim and the hub's echo of a card
+/// tap found nothing in flight, asked "installed?" too early, and ran the
+/// whole install a second time (2026-09-26, one tap → three cycles).
 pub struct InFlightGuard<'a> {
     set: &'a InFlightCodes,
     code: String,
+}
+
+impl InFlightGuard<'_> {
+    /// The code this claim holds.
+    pub fn code(&self) -> &str {
+        &self.code
+    }
 }
 
 /// Held for the life of one dependency cascade; the count drops with it.
@@ -136,7 +186,8 @@ impl InFlightCodes {
         CascadeGuard(self)
     }
 
-    fn busy(&self) -> bool {
+    /// Is anything being installed locally right now?
+    pub(crate) fn busy(&self) -> bool {
         !self.codes.lock().unwrap_or_else(|e| e.into_inner()).is_empty()
             || self.cascades.load(std::sync::atomic::Ordering::SeqCst) > 0
     }
@@ -169,82 +220,85 @@ impl Drop for CascadeGuard<'_> {
     }
 }
 
-pub async fn handle_code(state: &AppState, code_type: CodeType, code: &str, session_id: &str) {
-    let Some(_in_flight) = state.codes_in_flight.begin(code) else {
+/// Install a code through its type's handler. Every door comes here:
+/// [`handle_code`] (the owner's app, a hire on the owner's account),
+/// [`handle_code_text`] (chat channels and the install tools) and
+/// [`submit_code`] (the REST door the app's hire cards use). `by` says
+/// whose act it is, which decides whether a hired employee gets its job.
+/// `claim` is the door's hold on the code in [`InFlightCodes`]: while it
+/// lives, a second door for the same code is refused and the hub's echo of
+/// this install waits (`settle`) instead of installing again. `origin` is
+/// who asked: the install's progress events (its dependency cascade too)
+/// carry it, so only that client renders them.
+async fn install(
+    state: &AppState,
+    code_type: CodeType,
+    claim: &InFlightGuard<'_>,
+    by: InstalledBy,
+    origin: &EventOrigin,
+) -> Result<CodeHandlerResult, NeboError> {
+    let code = claim.code();
+    match code_type {
+        CodeType::Nebo => handle_nebo_code(state, code).await,
+        CodeType::Skill => handle_skill_code(state, code, by, origin).await,
+        CodeType::Work => handle_work_code(state, code, by, origin).await,
+        CodeType::Agent => handle_agent_code(state, code, by, origin).await,
+        CodeType::Loop => handle_loop_code(state, code).await,
+        CodeType::Plugin => handle_plugin_code(state, code, origin).await,
+        CodeType::App => handle_app_code(state, code, by, origin).await,
+        CodeType::Collection => handle_collection_code(state, code, by, origin).await,
+        CodeType::Connection => handle_connection_code(state, code).await,
+    }
+}
+
+/// Install a code the owner entered in their own app (pasted in chat, a
+/// store tap) or hired on their account (the hub's install event), and
+/// report it to the app. `origin` is who asked: its install surface opens
+/// on that client only, and every other client just sees the result.
+pub async fn handle_code(state: &AppState, code_type: CodeType, code: &str, origin: &EventOrigin) {
+    let session_id = origin.session_id.as_str();
+    let Some(claim) = state.codes_in_flight.begin(code) else {
         info!(code, session_id, "code is already being handled; the first run reports the result");
         return;
     };
-    let (code_type_str, status_message) = match code_type {
-        CodeType::Nebo => ("nebo", "Connecting to NeboAI..."),
-        CodeType::Skill => ("skill", "Installing skill..."),
-        CodeType::Work => ("workflow", "Installing workflow..."),
-        CodeType::Agent => ("agent", "Installing agent..."),
-        CodeType::Loop => ("loop", "Joining loop..."),
-        CodeType::Plugin => ("plugin", "Installing plugin..."),
-        CodeType::App => ("app", "Installing app..."),
-        CodeType::Collection => ("collection", "Installing collection..."),
-        CodeType::Connection => ("connection", "Adding MCP connection..."),
+    let code_type_str = code_type_name(code_type);
+    let status_message = match code_type {
+        CodeType::Nebo => "Connecting to NeboAI...",
+        CodeType::Skill => "Installing skill...",
+        CodeType::Work => "Installing workflow...",
+        CodeType::Agent => "Installing agent...",
+        CodeType::Loop => "Joining loop...",
+        CodeType::Plugin => "Installing plugin...",
+        CodeType::App => "Installing app...",
+        CodeType::Collection => "Installing collection...",
+        CodeType::Connection => "Adding MCP connection...",
     };
 
     state.hub.broadcast(
         "code_processing",
-        serde_json::json!({
-            "session_id": session_id,
+        origin.stamp(serde_json::json!({
             "code": code,
             "code_type": code_type_str,
             "status_message": status_message,
-            // User-initiated from the desktop UI: the modal stays open for the
-            // user to read until they dismiss it.
-            "interactive": true,
-        }),
+        })),
     );
 
-    let result = match code_type {
-        CodeType::Nebo => handle_nebo_code(state, code).await,
-        CodeType::Skill => handle_skill_code(state, code).await,
-        CodeType::Work => handle_work_code(state, code).await,
-        CodeType::Agent => handle_agent_code(state, code).await,
-        CodeType::Loop => handle_loop_code(state, code).await,
-        CodeType::Plugin => handle_plugin_code(state, code).await,
-        CodeType::App => handle_app_code(state, code).await,
-        CodeType::Collection => handle_collection_code(state, code).await,
-        CodeType::Connection => handle_connection_code(state, code).await,
-    };
+    let result = install(state, code_type, &claim, InstalledBy::Owner, origin).await;
 
     match result {
         Ok(r) => {
-            let payment_required = r.checkout_url.is_some();
-            state.hub.broadcast(
-                "code_result",
-                serde_json::json!({
-                    "session_id": session_id,
-                    "code": code,
-                    "code_type": code_type_str,
-                    "success": true,
-                    "message": r.message,
-                    "artifact_name": r.artifact_name,
-                    "artifact_id": r.artifact_id,
-                    "artifact_type": r.artifact_type.as_deref().unwrap_or(code_type_str),
-                    "payment_required": payment_required,
-                    "checkout_url": r.checkout_url,
-                    "needsAuth": r.needs_auth,
-                    "tier": r.tier,
-                    "interactive": true,
-                }),
-            );
+            state.hub.broadcast("code_result", origin.stamp(install_result(code, code_type_str, &r)));
         }
         Err(e) => {
             warn!(code = code, error = %e, "code handling failed");
             state.hub.broadcast(
                 "code_result",
-                serde_json::json!({
-                    "session_id": session_id,
+                origin.stamp(serde_json::json!({
                     "code": code,
                     "code_type": code_type_str,
                     "success": false,
                     "error": e.to_string(),
-                    "interactive": true,
-                }),
+                })),
             );
         }
     }
@@ -256,12 +310,20 @@ pub async fn handle_code(state: &AppState, code_type: CodeType, code: &str, sess
     );
 }
 
-/// Handle a detected code and return a text response (for channel bridges).
+/// Handle a detected code and return a text response (for channel bridges
+/// and the install tools).
 ///
 /// Same logic as `handle_code` but returns the result as a string instead
-/// of broadcasting WebSocket events. Used by Slack, Telegram, etc.
-pub async fn handle_code_text(state: &AppState, code_type: CodeType, code: &str) -> String {
-    let Some(_in_flight) = state.codes_in_flight.begin(code) else {
+/// of broadcasting WebSocket events. Used by Slack, Telegram, etc. (`by` is
+/// [`InstalledBy::Other`]: a channel is not the owner's own app) and by the
+/// `hire_employee` and `install_skill` tools, which say whose run called them.
+pub async fn handle_code_text(
+    state: &AppState,
+    code_type: CodeType,
+    code: &str,
+    by: InstalledBy,
+) -> String {
+    let Some(claim) = state.codes_in_flight.begin(code) else {
         return format!("{code} is already being installed.");
     };
     let code_type_str = match code_type {
@@ -276,45 +338,34 @@ pub async fn handle_code_text(state: &AppState, code_type: CodeType, code: &str)
         CodeType::Connection => "connection",
     };
 
-    // Also broadcast for the frontend UI. Triggered remotely via a channel
-    // (loop, Slack, etc.) — no human is waiting on the desktop modal, so it
-    // auto-dismisses rather than blocking until manually closed.
+    // Also broadcast for the frontend UI. No client on this server asked
+    // (a channel, an employee's own call): every client sees the result, and
+    // none opens an install surface for it.
+    let origin = EventOrigin::default();
     state.hub.broadcast(
         "code_processing",
-        serde_json::json!({
+        origin.stamp(serde_json::json!({
             "code": code,
             "code_type": code_type_str,
             "status_message": format!("Installing {code_type_str}..."),
-            "interactive": false,
-        }),
+        })),
     );
 
-    let result = match code_type {
-        CodeType::Nebo => handle_nebo_code(state, code).await,
-        CodeType::Skill => handle_skill_code(state, code).await,
-        CodeType::Work => handle_work_code(state, code).await,
-        CodeType::Agent => handle_agent_code(state, code).await,
-        CodeType::Loop => handle_loop_code(state, code).await,
-        CodeType::Plugin => handle_plugin_code(state, code).await,
-        CodeType::App => handle_app_code(state, code).await,
-        CodeType::Collection => handle_collection_code(state, code).await,
-        CodeType::Connection => handle_connection_code(state, code).await,
-    };
+    let result = install(state, code_type, &claim, by, &origin).await;
 
     match result {
         Ok(r) => {
             // Broadcast for frontend
             state.hub.broadcast(
                 "code_result",
-                serde_json::json!({
+                origin.stamp(serde_json::json!({
                     "code": code,
                     "code_type": code_type_str,
                     "success": true,
                     "message": r.message,
                     "artifact_name": r.artifact_name,
                     "artifact_id": r.artifact_id,
-                    "interactive": false,
-                }),
+                })),
             );
 
             if let Some(url) = r.checkout_url {
@@ -325,6 +376,17 @@ pub async fn handle_code_text(state: &AppState, code_type: CodeType, code: &str)
         }
         Err(e) => {
             warn!(code = code, error = %e, "code handling failed (channel)");
+            // The processing event above is answered either way: a failure
+            // is the install's final state too, never a spinner left open.
+            state.hub.broadcast(
+                "code_result",
+                origin.stamp(serde_json::json!({
+                    "code": code,
+                    "code_type": code_type_str,
+                    "success": false,
+                    "error": e.to_string(),
+                })),
+            );
             format!("Failed to install {code_type_str}: {e}")
         }
     }
@@ -340,7 +402,12 @@ async fn handle_nebo_code(state: &AppState, code: &str) -> Result<CodeHandlerRes
     })
 }
 
-async fn handle_skill_code(state: &AppState, code: &str) -> Result<CodeHandlerResult, NeboError> {
+async fn handle_skill_code(
+    state: &AppState,
+    code: &str,
+    by: InstalledBy,
+    origin: &EventOrigin,
+) -> Result<CodeHandlerResult, NeboError> {
     let api = build_api_client(state)?;
 
     // Try to redeem code — may fail if already redeemed (re-install)
@@ -420,6 +487,7 @@ async fn handle_skill_code(state: &AppState, code: &str) -> Result<CodeHandlerRe
     // Cascade: resolve skill deps (tools[], dependencies[])
     if let Some(skill_dir) = skill_dir {
         let state_clone = state.clone();
+        let origin = origin.clone();
         tokio::spawn(async move {
             let skill_path = skill_dir.join("SKILL.md");
             if let Ok(data) = std::fs::read(&skill_path) {
@@ -427,7 +495,7 @@ async fn handle_skill_code(state: &AppState, code: &str) -> Result<CodeHandlerRe
                     let deps = crate::deps::extract_skill_deps(&skill);
                     if !deps.is_empty() {
                         let mut visited = std::collections::HashSet::new();
-                        crate::deps::resolve_cascade(&state_clone, deps, &mut visited).await;
+                        crate::deps::resolve_cascade(&state_clone, deps, &mut visited, by, &origin).await;
                     }
                 }
             }
@@ -441,7 +509,12 @@ async fn handle_skill_code(state: &AppState, code: &str) -> Result<CodeHandlerRe
     })
 }
 
-async fn handle_work_code(state: &AppState, code: &str) -> Result<CodeHandlerResult, NeboError> {
+async fn handle_work_code(
+    state: &AppState,
+    code: &str,
+    by: InstalledBy,
+    origin: &EventOrigin,
+) -> Result<CodeHandlerResult, NeboError> {
     let api = build_api_client(state)?;
 
     // Try to redeem code — may fail if already redeemed (re-install)
@@ -506,13 +579,14 @@ async fn handle_work_code(state: &AppState, code: &str) -> Result<CodeHandlerRes
     // Cascade: resolve workflow deps (skills, tools, sub-workflows)
     let state_clone = state.clone();
     let artifact_id_clone = artifact_id.clone();
+    let origin = origin.clone();
     tokio::spawn(async move {
         if let Ok(Some(wf)) = state_clone.store.get_workflow(&artifact_id_clone) {
             if let Ok(def) = workflow::parser::parse_workflow(&wf.definition) {
                 let deps = crate::deps::extract_workflow_deps(&def);
                 if !deps.is_empty() {
                     let mut visited = std::collections::HashSet::new();
-                    crate::deps::resolve_cascade(&state_clone, deps, &mut visited).await;
+                    crate::deps::resolve_cascade(&state_clone, deps, &mut visited, by, &origin).await;
                 }
             }
         }
@@ -534,6 +608,8 @@ async fn handle_work_code(state: &AppState, code: &str) -> Result<CodeHandlerRes
 async fn handle_collection_code(
     state: &AppState,
     code: &str,
+    by: InstalledBy,
+    origin: &EventOrigin,
 ) -> Result<CodeHandlerResult, NeboError> {
     let api = build_api_client(state)?;
 
@@ -619,7 +695,7 @@ async fn handle_collection_code(
 
     // Install every item via the canonical installer.
     let mut visited = std::collections::HashSet::new();
-    let result = crate::deps::resolve_cascade(state, deps, &mut visited).await;
+    let result = crate::deps::resolve_cascade(state, deps, &mut visited, by, origin).await;
 
     // Apps install through the agent path; detect & persist their app-specific
     // paths so they show up and launch as apps (the cascade only does the agent part).
@@ -641,7 +717,7 @@ async fn handle_collection_code(
     if !needs_setup.is_empty() {
         state.hub.broadcast(
             "dep_needs_setup",
-            serde_json::json!({ "items": needs_setup }),
+            origin.stamp(serde_json::json!({ "items": needs_setup })),
         );
     }
 
@@ -792,7 +868,7 @@ pub(crate) async fn finalize_skill_install(
     state.skill_loader.reload_from_disk().await;
 }
 
-/// Land a seat's declaration on its per-employee approval policy.
+/// Land a seat's declaration on its permission rules.
 ///
 /// The ONE routine for it (CODE_AUDITOR 8.1). Two entry points reach it, and
 /// they must not drift: `finalize_agent_install`, when a package arrives, and
@@ -800,70 +876,141 @@ pub(crate) async fn finalize_skill_install(
 /// settings page. A packaged employee and an owner-built one are the same
 /// object — so the thing that gives their declaration effect is one function,
 /// not two copies that forget different steps.
+///
+/// The package's `ceiling` is its own DECLARATION of what this employee
+/// performs and must not perform unattended — including operations no list
+/// of ours has ever heard of (an owner's own employee, built around their own
+/// capability). Each entry lands as an ask rule on the operation, written by
+/// the package: it asks until the owner says otherwise, and a package never
+/// replaces a rule the owner has written for the operation. A declaration
+/// restricts; it never grants (`napp` refuses any ceiling value but
+/// "approval" when it parses the manifest).
 pub(crate) fn apply_seat_declaration(
     store: &db::Store,
     agent_id: &str,
     config: &napp::agent::AgentConfig,
 ) {
-    // Seed the per-employee approval policy so a fresh install is
-    // protected out of the box: every gated operation of its bound
-    // interfaces defaults to "Needs approval" from install time —
-    // NOT from the first visit to the Approvals page. Seed-if-absent
-    // so a reinstall never clobbers the customer's tuned policy.
-    //
-    // The package's `ceiling` is its own DECLARATION of what this
-    // employee performs and must not perform unattended — including
-    // operations no list of ours has ever heard of (an owner's own
-    // employee, built around their own capability). Each entry lands
-    // as an unlocked `Approval` rule sourced `seat`, which is what
-    // makes the operation gateable at all: it appears on the
-    // Approvals screen, it asks until the owner says otherwise, the
-    // employee-wide default cannot loosen it, and — because it is
-    // NOT locked — the owner and the General Manager can still grant
-    // it. A declaration restricts; it never grants (see
-    // `OperationRule::may_grant`), and `napp` already refuses any
-    // ceiling value but "approval" when it parses the manifest.
-    if !config.requires.interfaces.is_empty() || !config.ceiling.is_empty() {
-        let existing = store
-            .get_entity_config("agent", agent_id)
-            .ok()
-            .flatten()
-            .and_then(|c| c.operation_policy);
-        let seeding = existing.is_none();
-        let mut policy =
-            tools::policy::OperationPolicy::from_json(existing.as_deref());
-        let mut added = 0usize;
-        for op in config.ceiling.keys() {
-            let suffix = tools::plugin_tool::port_suffix(op);
-            if suffix.is_empty() || policy.operations.contains_key(&suffix) {
-                continue; // never overwrite a law, a grant, or the owner's own row
-            }
-            policy.operations.insert(
-                suffix,
-                tools::policy::OperationRule {
-                    access: tools::policy::OperationAccess::Approval,
-                    source: Some("seat".to_string()),
-                    granted_at: Some(chrono::Utc::now().timestamp()),
-                    ..Default::default()
-                },
-            );
-            added += 1;
+    use types::permissions::{Effect, Rule, RuleKey, RuleSource, Scope, Writer};
+    let by = Writer::Package { package: agent_id.to_string() };
+    let mut landed = 0usize;
+    for op in config.ceiling.keys() {
+        let suffix = tools::plugin_tool::port_suffix(op);
+        if suffix.is_empty() {
+            continue;
         }
-        if seeding || added > 0 {
-            let patch = serde_json::json!({
-                "operationPolicy": policy.to_json()
-            });
-            if let Err(e) =
-                store.upsert_entity_config("agent", agent_id, &patch)
-            {
-                tracing::warn!(agent = agent_id, error = %e, "failed to seed default operation policy");
-            } else if added > 0 {
-                tracing::info!(
-                    agent = agent_id,
-                    declared = added,
-                    "the employee's declared ceiling landed as operations that ask"
-                );
-            }
+        let rule = Rule {
+            id: uuid::Uuid::new_v4().to_string(),
+            scope: Scope::Employee(agent_id.to_string()),
+            key: RuleKey::Operation(suffix),
+            field: None,
+            effect: Effect::Ask,
+            money: None,
+            source: RuleSource::Package { package: agent_id.to_string() },
+            locked: false,
+            created_at: chrono::Utc::now().timestamp(),
+        };
+        match store.write_permission_rule(&rule, &by) {
+            Ok(_) => landed += 1,
+            Err(e) => tracing::warn!(agent = agent_id, error = %e, "the declared ceiling did not land"),
+        }
+    }
+    if landed > 0 {
+        tracing::info!(agent = agent_id, declared = landed, "the employee's declared ceiling landed as operations that ask");
+    }
+}
+
+/// A declaration's needs, through the one needs step.
+async fn declared_needs(
+    name: &str,
+    agent_id: &str,
+    config: &napp::agent::AgentConfig,
+    installed: &[(String, Vec<String>)],
+    reader: &dyn tools::needs::DescriptionReader,
+) -> tools::needs::Needs {
+    let declared = tools::needs::DeclaredNeeds::of(config);
+    let src = tools::needs::JobSource {
+        name,
+        agent_id,
+        description: "",
+        skills: &[],
+        plugins: &[],
+        workflows: &[],
+        declared: Some(&declared),
+        installed,
+    };
+    tools::needs::work_out_needs(&src, reader).await
+}
+
+/// The owner's consent to an employee's declared needs (`requires.
+/// interfaces`, its plugins, its watches), read off its manifest with no
+/// model call and granted as standing allow rules for that employee. With
+/// no `before` it is a hire ([`hire`]: every door a package arrives through
+/// by the owner's act, and the owner's own create from a package) and grants
+/// every declared need the employee holds no rule on yet, so a reinstall or
+/// a rehire never undoes what the owner set; with the declaration as it was
+/// before the owner edited it, it grants only what the edit adds. An account
+/// a capability needs and no plugin binds yet reaches the owner through the
+/// Inbox needs flow (the binding's pre-flight), never as an ask.
+pub(crate) async fn grant_declared(state: &AppState, agent_id: &str, before: Option<&napp::agent::AgentConfig>) {
+    let Ok(Some(agent)) = state.store.get_agent(agent_id) else { return };
+    let Ok(config) = napp::agent::parse_agent_config(&agent.frontmatter) else { return };
+    let installed = agent::agent_worker::installed_interfaces(&state.plugin_store);
+    let reader = agent::harness::permissions::consent::AuxReader::new(state.harness.providers());
+    let declared = declared_needs(&agent.name, agent_id, &config, &installed, &reader).await;
+    let (needs, source) = match before {
+        None => {
+            let own = state
+                .store
+                .permission_rules_in(&types::permissions::Scope::Employee(agent_id.to_string()))
+                .unwrap_or_default();
+            let unset = |c: &String| {
+                !own.iter().any(|r| {
+                    r.field.is_none() && r.key == types::permissions::RuleKey::Capability(c.clone())
+                })
+            };
+            let needs = tools::needs::Needs {
+                capabilities: declared
+                    .capabilities
+                    .iter()
+                    .filter(|c| unset(c))
+                    .cloned()
+                    .collect(),
+                accounts: declared.accounts.clone(),
+            };
+            (
+                needs,
+                types::permissions::RuleSource::Hire {
+                    package: agent_id.to_string(),
+                },
+            )
+        }
+        Some(before) => {
+            let was = declared_needs(&agent.name, agent_id, before, &installed, &reader).await;
+            (tools::needs::added(&was, &declared), types::permissions::RuleSource::JobEdit)
+        }
+    };
+    if needs.is_empty() {
+        return;
+    }
+    match agent::harness::permissions::consent::grant_job(&state.store, agent_id, &needs, source) {
+        Ok(rules) => tracing::info!(agent = agent_id, granted = rules.len(), "the owner's consent granted the declared needs"),
+        Err(e) => tracing::warn!(agent = agent_id, error = %e, "the declared needs were not granted"),
+    }
+}
+
+/// A package arrived as a hire: the one grant, for every door an employee
+/// is hired through (a code in the owner's app, the Hire tap, a hire on the
+/// owner's account, the hire tools, a hire card, a collection). Only the
+/// owner's own act grants the job the package declares; an employee brought
+/// in by anyone else holds no job and asks before it acts.
+pub(crate) async fn hire(state: &AppState, agent_id: &str, by: InstalledBy) {
+    match by {
+        InstalledBy::Owner => grant_declared(state, agent_id, None).await,
+        InstalledBy::Other => {
+            info!(
+                agent = agent_id,
+                "hired by an act that isn't the owner's; no job granted, it asks first"
+            )
         }
     }
 }
@@ -962,7 +1109,12 @@ pub(crate) fn seed_learning_mode(store: &db::Store, agent_id: &str) -> bool {
     }
 }
 
-async fn handle_agent_code(state: &AppState, code: &str) -> Result<CodeHandlerResult, NeboError> {
+async fn handle_agent_code(
+    state: &AppState,
+    code: &str,
+    by: InstalledBy,
+    origin: &EventOrigin,
+) -> Result<CodeHandlerResult, NeboError> {
     let api = build_api_client(state)?;
 
     // Try to redeem code — may fail if already redeemed (re-install)
@@ -1066,6 +1218,7 @@ async fn handle_agent_code(state: &AppState, code: &str) -> Result<CodeHandlerRe
     // re-materialize of the same workflow rows is an idempotent upsert.
     if persist_result.is_some() {
         finalize_agent_install(state, &artifact_id, &artifact_name).await;
+        hire(state, &artifact_id, by).await;
     }
 
     // Cascade: resolve agent deps (plugins, skills) in background — don't block code_result
@@ -1102,9 +1255,10 @@ async fn handle_agent_code(state: &AppState, code: &str) -> Result<CodeHandlerRe
             if !deps.is_empty() {
                 let bg_state = state.clone();
                 let bg_name = artifact_name.clone();
+                let origin = origin.clone();
                 tokio::spawn(async move {
                     let mut visited = std::collections::HashSet::new();
-                    crate::deps::resolve_cascade(&bg_state, deps, &mut visited).await;
+                    crate::deps::resolve_cascade(&bg_state, deps, &mut visited, by, &origin).await;
                     info!(agent = %bg_name, "cascade: background dep resolution complete");
                 });
             }
@@ -1225,7 +1379,11 @@ async fn handle_loop_code(state: &AppState, code: &str) -> Result<CodeHandlerRes
     })
 }
 
-async fn handle_plugin_code(state: &AppState, code: &str) -> Result<CodeHandlerResult, NeboError> {
+async fn handle_plugin_code(
+    state: &AppState,
+    code: &str,
+    origin: &EventOrigin,
+) -> Result<CodeHandlerResult, NeboError> {
     let api = build_api_client(state)?;
 
     // Try to redeem code — may fail if already redeemed (re-install)
@@ -1288,10 +1446,10 @@ async fn handle_plugin_code(state: &AppState, code: &str) -> Result<CodeHandlerR
     // Broadcast installing event
     state.hub.broadcast(
         "plugin_installing",
-        serde_json::json!({
+        origin.stamp(serde_json::json!({
             "plugin": name,
             "platform": platform,
-        }),
+        })),
     );
 
     // Resolve by the canonical marketplace slug — NEVER derive it from the display
@@ -1306,16 +1464,16 @@ async fn handle_plugin_code(state: &AppState, code: &str) -> Result<CodeHandlerR
     let slug = slug_hint;
 
     // ONE plugin installer — resolve binary, download, install, register.
-    if let Err(e) = fetch_and_install_plugin(state, &api, &slug, &name).await {
+    if let Err(e) = fetch_and_install_plugin(state, &api, &slug, &name, Some(code)).await {
         state.hub.broadcast(
             "plugin_error",
-            serde_json::json!({ "plugin": name, "error": e.to_string() }),
+            origin.stamp(serde_json::json!({ "plugin": name, "error": e.to_string() })),
         );
         return Err(e);
     }
     state
         .hub
-        .broadcast("plugin_installed", serde_json::json!({ "plugin": name }));
+        .broadcast("plugin_installed", origin.stamp(serde_json::json!({ "plugin": name })));
     info!(code, plugin = %name, artifact_id = %artifact_id, "installed plugin");
 
     // Cascade plugin-to-plugin dependencies (e.g., digest → ffmpeg).
@@ -1370,11 +1528,11 @@ async fn handle_plugin_code(state: &AppState, code: &str) -> Result<CodeHandlerR
     if let Some(auth) = state.plugin_store.get_manifest(&slug).and_then(|m| m.auth) {
         state.hub.broadcast(
             "plugin_auth_required",
-            serde_json::json!({
+            origin.stamp(serde_json::json!({
                 "plugin": name,
                 "label": auth.label,
                 "description": auth.description,
-            }),
+            })),
         );
     }
 
@@ -1397,11 +1555,15 @@ async fn handle_plugin_code(state: &AppState, code: &str) -> Result<CodeHandlerR
 /// (`handle_plugin_code`) and the dependency cascade (`deps::install_plugin`) so
 /// their binary resolution and DB registration can't drift. Callers own their
 /// own surrounding concerns (progress broadcasts, child-dep handling, auth).
+/// `code` is the marketplace code it was installed from, when there is one
+/// (an update keeps the one recorded): an employee that names the plugin by
+/// that code reaches its tool.
 pub(crate) async fn fetch_and_install_plugin(
     state: &AppState,
     api: &NeboAIApi,
     slug: &str,
     name: &str,
+    code: Option<&str>,
 ) -> Result<(), NeboError> {
     let platform = napp::plugin::current_platform_key();
     let detail = api
@@ -1464,18 +1626,17 @@ pub(crate) async fn fetch_and_install_plugin(
     ) {
         warn!(plugin = %slug, error = %e, "failed to upsert plugin into DB registry");
     }
+    if let Some(code) = code
+        && let Err(e) = state
+            .store
+            .set_plugin_install_code(slug, &code.to_ascii_uppercase())
+    {
+        warn!(plugin = %slug, error = %e, "the plugin's install code was not recorded");
+    }
     let _ = state.store.upsert_artifact_update_pref(slug, "plugin", &version);
 
-    // Re-register the plugin tool + hooks so the new plugin is usable immediately.
-    // Always register (never gate on count) — the tool must stay present in the prompt.
-    state.tools.unregister("plugin").await;
-    state
-        .tools
-        .register(Box::new(tools::plugin_tool::PluginTool::new(
-            state.plugin_store.clone(),
-            state.store.clone(),
-        )))
-        .await;
+    // The new plugin's tool and the operations it binds are usable immediately.
+    state.tools.refresh_plugin_tools().await;
     if let Some(manifest) = state.plugin_store.get_manifest(slug) {
         if let Some(binary) = state.plugin_store.resolve(slug, "*") {
             let count =
@@ -1587,9 +1748,14 @@ pub(crate) async fn reconcile_app_fields(state: &AppState) {
     }
 }
 
-async fn handle_app_code(state: &AppState, code: &str) -> Result<CodeHandlerResult, NeboError> {
+async fn handle_app_code(
+    state: &AppState,
+    code: &str,
+    by: InstalledBy,
+    origin: &EventOrigin,
+) -> Result<CodeHandlerResult, NeboError> {
     // Apps use the same install flow as agents — they ARE agents with artifact_type="app"
-    let result = handle_agent_code(state, code).await?;
+    let result = handle_agent_code(state, code, by, origin).await?;
 
     // Detect & persist app-specific paths (ui/, bin/) so it's recognised as an app.
     reconcile_app_fields(state).await;
@@ -1613,6 +1779,7 @@ async fn handle_app_code(state: &AppState, code: &str) -> Result<CodeHandlerResu
 /// Returns: `{ "success": true, "message": "Installed skill: ..." }`
 pub async fn submit_code(
     axum::extract::State(state): axum::extract::State<AppState>,
+    headers: axum::http::HeaderMap,
     axum::response::Json(body): axum::response::Json<serde_json::Value>,
 ) -> Result<
     axum::response::Json<serde_json::Value>,
@@ -1639,28 +1806,26 @@ pub async fn submit_code(
         )
     })?;
 
-    let result = match code_type {
-        CodeType::Nebo => handle_nebo_code(&state, validated_code).await,
-        CodeType::Skill => handle_skill_code(&state, validated_code).await,
-        CodeType::Work => handle_work_code(&state, validated_code).await,
-        CodeType::Agent => handle_agent_code(&state, validated_code).await,
-        CodeType::Loop => handle_loop_code(&state, validated_code).await,
-        CodeType::Plugin => handle_plugin_code(&state, validated_code).await,
-        CodeType::App => handle_app_code(&state, validated_code).await,
-        CodeType::Collection => handle_collection_code(&state, validated_code).await,
-        CodeType::Connection => handle_connection_code(&state, validated_code).await,
+    // A second tap while the first is installing is one install, not two:
+    // the card's door claims the code like every other door does.
+    let Some(claim) = state.codes_in_flight.begin(validated_code) else {
+        return Err((
+            axum::http::StatusCode::CONFLICT,
+            axum::response::Json(types::api::ErrorResponse {
+                error: format!("{validated_code} is already being installed."),
+            }),
+        ));
     };
+    // The card that asked renders the install's progress; no other client does.
+    let origin = EventOrigin::of_request(&headers, String::new());
+    let result = install(&state, code_type, &claim, InstalledBy::Owner, &origin).await;
 
     match result {
-        Ok(r) => Ok(axum::response::Json(serde_json::json!({
-            "success": true,
-            "code": validated_code,
-            "codeType": format!("{:?}", code_type),
-            "message": r.message,
-            "artifact_name": r.artifact_name,
-            "payment_required": r.checkout_url.is_some(),
-            "checkout_url": r.checkout_url,
-        }))),
+        Ok(r) => {
+            let mut result = install_result(validated_code, code_type_name(code_type), &r);
+            result["codeType"] = serde_json::json!(format!("{:?}", code_type));
+            Ok(axum::response::Json(result))
+        }
         Err(e) => Err((
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
             axum::response::Json(types::api::ErrorResponse {
@@ -1938,7 +2103,7 @@ async fn persist_workflow_artifact(
 /// comms connect and the management-tunnel watcher — one resolution pathway.
 /// The machine's hostname for the manage console (".local" stripped). Env vars
 /// cover containers/Windows; the `hostname` command covers desktops.
-fn host_label() -> String {
+pub(crate) fn host_label() -> String {
     let from_env = std::env::var("COMPUTERNAME")
         .or_else(|_| std::env::var("HOSTNAME"))
         .ok()
@@ -1968,19 +2133,22 @@ pub(crate) fn push_inbox(state: &AppState, item: serde_json::Value) {
 
 /// Store-level variant for callers without an AppState (workflow manager).
 pub(crate) fn push_inbox_via(store: &db::Store, api_url: &str, item: serde_json::Value) {
-    let Some(bot_id) = config::read_bot_id() else {
+    let Some(api) = inbox_api(store, api_url) else {
         return;
     };
-    let Some(token) = auth::neboai_token(store) else {
-        return;
-    };
-    let api_server = api_url.to_string();
     tokio::spawn(async move {
-        let api = NeboAIApi::new(api_server, bot_id, token);
         if let Err(e) = api.push_inbox_item(&item).await {
-            debug!(error = %e, "owner inbox push failed (best-effort)");
+            // Best-effort, but never silent: a missed push is a card the
+            // owner's phone never showed.
+            warn!(item = %item["id"], error = %e, "owner inbox push failed");
         }
     });
+}
+
+/// The hub API that reaches the owner's Inbox; `None` when this bot has no
+/// NeboAI account, so there is no Inbox.
+pub(crate) fn inbox_api(store: &db::Store, api_url: &str) -> Option<NeboAIApi> {
+    Some(NeboAIApi::new(api_url.to_string(), config::read_bot_id()?, auth::neboai_token(store)?))
 }
 
 /// Fire-and-forget registration of a produced thing (document version, app)
@@ -2150,20 +2318,20 @@ pub async fn activate_neboai(state: &AppState) -> Result<(), NeboError> {
     // one pass per connect) — the platform only knows the employees we tell it.
     request_agent_reconcile(state, "gateway connect");
 
-    // Sync bot identity + refresh license keys in background (non-blocking)
+    // Refresh the bot's address and license keys in background (non-blocking)
     {
         let st = state.clone();
         tokio::spawn(async move {
-            // Sync bot identity (name) to NeboAI
-            sync_bot_identity(&st).await;
+            // The bot's own hosted address, as a sender of mail_message_send.
+            crate::mail_intake::refresh_bot_address(&st).await;
             // Refresh content protection license keys for sealed .napp files
             if let Err(e) = refresh_license_keys(&st).await {
                 warn!(error = %e, "license key refresh failed");
             }
-            // Backfill the owner's web inbox with any still-parked approvals —
+            // Backfill the owner's web inbox with any still-open asks —
             // pushes are best-effort, so reconnect is the reconcile point. The
             // upsert is idempotent on the item id.
-            reconcile_owner_inbox(&st);
+            crate::permission_asks::reconcile_inbox(&st);
             // Same self-heal for the app mirror: covers apps that arrived
             // outside the install-code path (hand-dropped dirs, restored
             // volumes) — boot's field sync runs pre-AppState and can't push.
@@ -2172,63 +2340,6 @@ pub async fn activate_neboai(state: &AppState) -> Result<(), NeboError> {
     }
 
     Ok(())
-}
-
-/// Re-push every parked workflow approval to the owner's web inbox. Called on
-/// NeboAI connect; idempotent (the hub upserts on the item id), so a missed
-/// best-effort push heals here.
-pub(crate) fn reconcile_owner_inbox(state: &AppState) {
-    let suspensions = match state.store.list_workflow_suspensions() {
-        Ok(s) => s,
-        Err(e) => {
-            warn!(error = %e, "owner inbox reconcile: failed to list suspensions");
-            return;
-        }
-    };
-    for (run_id, agent_id, binding_name, display, _created_at) in suspensions {
-        let approval_path = format!("/api/v1/agents/workflow-runs/{}/approval", run_id);
-        push_inbox(
-            state,
-            serde_json::json!({
-                "id": format!("wf-approval:{}", run_id),
-                "type": "approval",
-                "title": format!("{} needs your approval", binding_name),
-                "body": display,
-                "link": format!("/{}/runs/{}", agent_id, run_id),
-                "actions": {
-                    "buttons": [
-                        {"label": "Approve", "style": "primary", "method": "POST",
-                         "path": approval_path, "body": {"approved": true}},
-                        {"label": "Deny", "style": "danger", "method": "POST",
-                         "path": approval_path, "body": {"approved": false}},
-                    ],
-                    "status": {"method": "GET", "path": approval_path},
-                },
-            }),
-        );
-    }
-}
-
-/// Sync the bot's display name to NeboAI from the local agent profile.
-pub(crate) async fn sync_bot_identity(state: &AppState) {
-    let name = state
-        .store
-        .get_agent_profile()
-        .ok()
-        .flatten()
-        .map(|p| p.name)
-        .unwrap_or_default();
-    if name.is_empty() {
-        return;
-    }
-    let api = match build_api_client(state) {
-        Ok(a) => a,
-        Err(_) => return,
-    };
-    match api.update_bot_identity(&name, "").await {
-        Ok(_) => info!(name = %name, "synced bot identity to NeboAI"),
-        Err(e) => warn!(error = %e, "failed to sync bot identity"),
-    }
 }
 
 /// Debounce window between a reconcile request and its pass. Employee edits
@@ -2634,7 +2745,14 @@ async fn refresh_neboai_token(
         "client_id": "nbl_nebo_desktop",
     });
 
-    let resp = match reqwest::Client::new()
+    let client = match tls::http_client().build() {
+        Ok(client) => client,
+        Err(e) => {
+            warn!(error = %e, "OAuth refresh request failed");
+            return None;
+        }
+    };
+    let resp = match client
         .post(format!("{api_url}/oauth/token"))
         .json(&body)
         .send()
@@ -2724,7 +2842,7 @@ pub async fn redeem_nebo_code(state: &AppState, code: &str) -> Result<String, Ne
     .map_err(|e| NeboError::Internal(format!("store profile: {e}")))?;
     // Janus is live the moment the account is saved, as the OAuth door
     // leaves it — never only after a restart.
-    crate::handlers::provider::reload_providers(&state.store, &state.config, &state.runner).await;
+    crate::handlers::provider::reload_providers(&state.store, &state.config, &state.harness, state.local_host.as_ref()).await;
 
     // 3. Activate connection
     activate_neboai(state).await?;
@@ -2814,6 +2932,29 @@ pub(crate) async fn refresh_license_keys(state: &AppState) -> Result<(), NeboErr
 mod tests {
     use super::*;
 
+    /// The phone's card reads the `POST /codes` reply to configure what it
+    /// just hired, so the reply names the employee and whether a plugin it
+    /// needs still waits to be connected, in the keys `code_result` uses.
+    #[test]
+    fn an_install_result_names_what_to_configure() {
+        let hired = CodeHandlerResult {
+            message: "Installed agent: Receptionist".into(),
+            artifact_name: Some("Receptionist".into()),
+            artifact_id: Some("agent-123".into()),
+            needs_auth: true,
+            ..Default::default()
+        };
+        let r = install_result("AGNT-AAAA-BBBB", code_type_name(CodeType::Agent), &hired);
+        assert_eq!(r["success"], true);
+        assert_eq!(r["artifact_id"], "agent-123");
+        assert_eq!(r["artifact_type"], "agent");
+        assert_eq!(r["needsAuth"], true);
+        assert_eq!(r["payment_required"], false);
+        // A handler that names its own type keeps it.
+        let plugin = CodeHandlerResult { artifact_type: Some("plugin".into()), ..Default::default() };
+        assert_eq!(install_result("PLUG-AAAA-BBBB", "plugin", &plugin)["artifact_type"], "plugin");
+    }
+
     /// A code in hand or a cascade in progress both count as "installing";
     /// `settle` returns at once when neither is. Mutation check: drop the
     /// cascade count from `busy` and the second assertion fails.
@@ -2837,14 +2978,22 @@ mod tests {
     /// the fs watcher). The learning-mode seed is its first-time signal: it
     /// seeds once and reports true once. Mutation check: with the `has_mode`
     /// early return removed, the second assertion fails.
+    fn operation_rules(store: &db::Store, agent: &str) -> Vec<(String, types::permissions::Effect, types::permissions::RuleSource)> {
+        store
+            .permission_rules_in(&types::permissions::Scope::Employee(agent.to_string()))
+            .unwrap()
+            .into_iter()
+            .map(|r| (r.key.value().to_string(), r.effect, r.source))
+            .collect()
+    }
+
     /// Rule 8.1: an owner-built employee and a packaged one are the same object.
     /// The declaration an owner authors on the settings page and the one a
-    /// package ships go through THIS routine — so the policy they produce is
-    /// byte-identical, not merely similar. Mutation check: point `update_agent`
-    /// at its own copy of the seeding and this test still passes, which is why
-    /// it also asserts the routine is reached with the same argument shape.
+    /// package ships go through THIS routine — so the rules they produce are
+    /// the same, not merely similar.
     #[test]
     fn an_owner_authored_ceiling_lands_exactly_where_a_packaged_one_does() {
+        use types::permissions::{Effect, RuleSource};
         let dir = tempfile::tempdir().expect("tempdir");
         let store =
             db::Store::new(&dir.path().join("t.db").to_string_lossy()).expect("store");
@@ -2874,62 +3023,34 @@ mod tests {
         apply_seat_declaration(&store, "owner-built", &owner_built);
         let after = chrono::Utc::now().timestamp();
 
-        let read = |id: &str| {
-            let raw = store
-                .get_entity_config("agent", id)
-                .unwrap()
-                .unwrap()
-                .operation_policy;
-            tools::policy::OperationPolicy::from_json(raw.as_deref())
-        };
-        let from_package = read("packaged");
-        let from_owner = read("owner-built");
-
-        assert_eq!(from_owner.default, from_package.default);
-
-        // Same shape everywhere except the one field that is legitimately
-        // independent per call: strip `granted_at` before comparing, then
-        // check it separately below.
-        let without_grant_times = |ops: &std::collections::HashMap<String, tools::policy::OperationRule>| {
-            let mut ops = ops.clone();
-            for rule in ops.values_mut() {
-                rule.granted_at = None;
-            }
-            ops
-        };
-        assert_eq!(
-            without_grant_times(&from_owner.operations),
-            without_grant_times(&from_package.operations)
-        );
+        let from_package = operation_rules(&store, "packaged");
+        let from_owner = operation_rules(&store, "owner-built");
+        assert_eq!(from_package.len(), 1);
+        assert_eq!(from_owner.len(), 1);
+        assert_eq!((from_owner[0].0.as_str(), from_owner[0].1), (from_package[0].0.as_str(), from_package[0].1));
 
         // And it is a real gate, not a stored string: the declared operation
-        // asks, and it says the seat is why.
-        let rule = from_owner
-            .operations
-            .get("ledger.payment.apply")
-            .expect("the declared ceiling is on the policy");
-        assert_eq!(rule.access, tools::policy::OperationAccess::Approval);
-        assert_eq!(rule.source.as_deref(), Some("seat"));
+        // asks, and it says the package is why.
+        assert_eq!(from_owner[0].0, "ledger.payment.apply");
+        assert_eq!(from_owner[0].1, Effect::Ask);
+        assert_eq!(from_owner[0].2, RuleSource::Package { package: "owner-built".into() });
 
-        // Both grants landed inside the same call window — proof they came
-        // from the one routine's `now()`, without requiring the two
-        // independent stamps to be the identical wall-clock second.
-        for (label, ops) in [("owner-built", &from_owner.operations), ("packaged", &from_package.operations)] {
-            let granted_at = ops
-                .get("ledger.payment.apply")
-                .and_then(|r| r.granted_at)
-                .unwrap_or_else(|| panic!("{label}'s rule should carry a granted_at"));
-            assert!(
-                (before..=after).contains(&granted_at),
-                "{label}'s granted_at {granted_at} should land within the call window [{before}, {after}]"
-            );
+        // Both rules landed inside the same call window: they came from the
+        // one routine's `now()`.
+        for id in ["packaged", "owner-built"] {
+            let created = store
+                .permission_rules_in(&types::permissions::Scope::Employee(id.into()))
+                .unwrap()[0]
+                .created_at;
+            assert!((before..=after).contains(&created), "{id}'s rule landed at {created}, outside [{before}, {after}]");
         }
     }
 
     /// A second save must not undo what the owner has since decided. The
-    /// declaration seeds a row; it never overwrites one.
+    /// declaration seeds a rule; it never overwrites the owner's.
     #[test]
     fn re_applying_a_declaration_leaves_the_owners_own_decision_alone() {
+        use types::permissions::{Effect, Rule, RuleKey, RuleSource, Scope, Writer};
         let dir = tempfile::tempdir().expect("tempdir");
         let store =
             db::Store::new(&dir.path().join("t.db").to_string_lossy()).expect("store");
@@ -2940,51 +3061,31 @@ mod tests {
 
         apply_seat_declaration(&store, "emp", &config);
 
-        // The owner grants it on the Approvals page.
-        let mut policy = tools::policy::OperationPolicy::from_json(
-            store
-                .get_entity_config("agent", "emp")
-                .unwrap()
-                .unwrap()
-                .operation_policy
-                .as_deref(),
-        );
-        policy
-            .apply_edit(
-                "ledger.payment.apply",
-                tools::policy::OperationRule {
-                    access: tools::policy::OperationAccess::Always,
-                    source: Some("owner".to_string()),
-                    ..Default::default()
-                },
-            )
-            .expect("the owner may grant an unlocked declared operation");
+        // The owner allows it on the employee's Permissions page.
         store
-            .upsert_entity_config(
-                "agent",
-                "emp",
-                &serde_json::json!({ "operationPolicy": policy.to_json() }),
+            .write_permission_rule(
+                &Rule {
+                    id: "owner".into(),
+                    scope: Scope::Employee("emp".into()),
+                    key: RuleKey::Operation("ledger.payment.apply".into()),
+                    field: None,
+                    effect: Effect::Allow,
+                    money: None,
+                    source: RuleSource::Owner,
+                    locked: false,
+                    created_at: 1,
+                },
+                &Writer::Owner,
             )
-            .unwrap();
+            .expect("the owner may allow a declared operation");
 
         // Saving the settings page again re-applies the same declaration.
         apply_seat_declaration(&store, "emp", &config);
 
-        let after = tools::policy::OperationPolicy::from_json(
-            store
-                .get_entity_config("agent", "emp")
-                .unwrap()
-                .unwrap()
-                .operation_policy
-                .as_deref(),
-        );
-        let rule = after.operations.get("ledger.payment.apply").unwrap();
-        assert_eq!(
-            rule.access,
-            tools::policy::OperationAccess::Always,
-            "the owner's grant survives a re-save of the declaration"
-        );
-        assert_eq!(rule.source.as_deref(), Some("owner"));
+        let after = operation_rules(&store, "emp");
+        assert_eq!(after.len(), 1);
+        assert_eq!(after[0].1, Effect::Allow, "the owner's allow survives a re-save of the declaration");
+        assert_eq!(after[0].2, RuleSource::Owner);
     }
 
     #[test]

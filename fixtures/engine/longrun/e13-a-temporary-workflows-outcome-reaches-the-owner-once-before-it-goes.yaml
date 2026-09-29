@@ -1,0 +1,18 @@
+id: e13-a-temporary-workflows-outcome-reaches-the-owner-once-before-it-goes
+name: "E13 — A temporary workflow's outcome reaches the owner once, before it goes"
+description: |
+  E13 — A temporary workflow (owner, 09-25) is the same workflow with a
+  lifetime option: it runs once, and when that run has ended and its outcome
+  has reached the owner, its definition is deleted while its run history,
+  receipts and cost stay. This proof ends the one run and delivers the
+  outcome: it is written to the owner's Inbox and the session that started
+  the work is told, naming the run so the same work can be saved to run
+  again. Delivering it a second time (a crash between the report and the
+  delete) repeats nothing. The end-to-end half, from the owner's direction
+  to the workflow leaving the list and "every Monday at 8" saving it, is
+  crates/server/tests/long_running_work.rs.
+  Must never: a temporary workflow deleted before its outcome is written, or
+  an outcome told twice.
+target_component: engine
+proof: engine::proof::longrun::e13_a_temporary_workflows_outcome_reaches_the_owner_once_before_it_goes
+conversation: []

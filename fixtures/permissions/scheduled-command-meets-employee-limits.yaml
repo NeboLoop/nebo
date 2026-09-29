@@ -1,0 +1,23 @@
+id: scheduled-command-meets-employee-limits
+name: "A scheduled command meets its employee's permissions and Nebo's fences"
+description: |
+  A scheduled command ran as `sh -c` with Nebo's whole environment and no
+  permission check: a web-off employee could schedule `curl`, and any
+  employee could schedule a read of Nebo's settings file. It now runs
+  through run_command, the one door every command goes through, under its
+  employee's grant: the permission check, Nebo's own files and ports
+  closed, Nebo's own settings out of its environment, no network when web
+  access is off.
+  Nothing waits on an answer in a scheduled command, so a step that needs
+  the owner's OK is refused instead of parked, the decision is recorded
+  with why (cannot_wait), and the fire fails, which is the owner's notice.
+  This proof fires three jobs through the scheduler: a web-off employee's
+  curl to a page on this computer (the server sees no connection), a read
+  of settings.json (refused, no secret in the output), and a command an ask
+  rule covers (refused, the marker it would write never appears, no card
+  is parked, the refusal is in the activity record under the schedule
+  door).
+  Mechanical, no model: a deterministic proof through the real server.
+target_component: permissions
+proof: nebo_files_proof::a_scheduled_command_meets_its_employee_limits
+conversation: []

@@ -32,6 +32,24 @@ export interface ActiveTurnStatus {
 	currentTool: string
 }
 
+export interface ActivityPage {
+	rows: ActivityRow[]
+	total: number
+}
+
+export interface ActivityRow {
+	at: number
+	employeeId: string
+	employee: string
+	action: string
+	decision: string
+	why: string
+	door: string
+	unreviewed: boolean
+	decidedBy: string
+	verdict: string
+}
+
 export interface Advisor {
 	id: number
 	name: string
@@ -197,6 +215,17 @@ export interface Assignment {
 	closedAt?: number
 }
 
+export interface AuthLoginAccountResponse {
+	started: boolean
+	authUrl?: string
+	perAccount: boolean
+}
+
+export interface AuthLoginResponse {
+	started: boolean
+	authUrl?: string
+}
+
 export interface AuthProfile {
 	id: string
 	name: string
@@ -255,6 +284,29 @@ export interface BillingSubscription {
 	plan?: string
 	status?: string
 	currentPeriodEnd?: string
+}
+
+export interface BotEmailResponse {
+	address: string
+	employeeAddress: string
+	sendingEnabled: boolean
+	dailyLimit: number
+	sentToday: number
+}
+
+export interface BotLocation {
+	label: string
+	latitude?: number
+	longitude?: number
+}
+
+export interface BotLocationResponse {
+	location?: BotLocation
+}
+
+export interface BotNameResponse {
+	name: string
+	renameUrl: string
 }
 
 export interface CaseDetail {
@@ -345,6 +397,7 @@ export interface Chat {
 	userId?: string
 	sessionName?: string
 	model?: string
+	folder?: string
 }
 
 export interface ChatMessage {
@@ -367,6 +420,13 @@ export interface ChatMessagesResponse {
 	hasMore: boolean
 	activeRun?: ActiveTurnStatus
 	pendingAsk?: PendingAsk
+}
+
+export interface ChatRecap {
+	chatId: string
+	turnId: string
+	text: string
+	createdAt: number
 }
 
 export interface ChatStreamResponse {
@@ -431,6 +491,7 @@ export interface CronJob {
 	instructions?: string
 	agentId?: string
 	channelCtxJson?: string
+	overlapPolicy: string
 }
 
 export interface DashboardApproval {
@@ -498,6 +559,7 @@ export interface DashboardResponse {
 	recentRuns: DashboardRun[]
 	runsByDay: DashboardDay[]
 	runsByEmployee: DashboardEmployeeRuns[]
+	temporaryWork: DashboardTemporaryWork[]
 }
 
 export interface DashboardRun {
@@ -509,6 +571,17 @@ export interface DashboardRun {
 	endedAt?: number
 	outcome: string
 	detail: string
+}
+
+export interface DashboardTemporaryWork {
+	kind: string
+	name: string
+	agentId: string
+	agentName: string
+	status: string
+	waitingOn: string
+	runId?: string
+	since: number
 }
 
 export interface DetectInstallsResponse {
@@ -768,6 +841,13 @@ export interface MessageResponse {
 	message: string
 }
 
+export interface MoneyAmounts {
+	perActionCents?: number
+	perDayCents?: number
+	perDayCount?: number
+	perCounterpartyDayCents?: number
+}
+
 export interface Notification {
 	id: string
 	userId: string
@@ -884,6 +964,64 @@ export interface PendingWrite {
 	resolvedAt?: number
 }
 
+export interface PermissionAskCard {
+	id: string
+	kind: string
+	agentId: string
+	employee: string
+	sessionKey: string
+	sentence: string
+	reason: string
+	allowAlways: boolean
+	thisOnce: boolean
+	status: string
+	answer?: string
+	createdAt: number
+}
+
+export interface PermissionAsksResponse {
+	asks: PermissionAskCard[]
+}
+
+export interface PermissionGroup {
+	id: string
+	title: string
+	subtitle: string
+	default: PermissionSwitch
+	rows: PermissionSwitch[]
+}
+
+export interface PermissionItem {
+	id: string
+	sentence: string
+	removable: boolean
+	fromCompany: boolean
+	money?: MoneyAmounts
+}
+
+export interface PermissionSwitch {
+	id: string
+	sentence: string
+	value: string
+	inherited: boolean
+	inheritsFrom?: string
+	canInherit: boolean
+	locked: boolean
+}
+
+export interface PermissionsPage {
+	mode: string
+	modeFromCompany: boolean
+	companyMode: string
+	capabilities: PermissionSwitch[]
+	groups: PermissionGroup[]
+	specific: PermissionSwitch[]
+	money: PermissionItem[]
+	folders: PermissionItem[]
+	alwaysAsks: PermissionItem[]
+	fixed: PermissionItem[]
+}
+
 export interface PluginRegistry {
 	id: string
 	name: string
@@ -980,7 +1118,6 @@ export interface Session {
 	name?: string
 	scope?: string
 	scopeId?: string
-	summary?: string
 	tokenCount?: number
 	messageCount?: number
 	lastCompactedAt?: number
@@ -998,10 +1135,31 @@ export interface Session {
 	verboseLevel?: string
 	customLabel?: string
 	lastEmbeddedMessageId?: number
-	activeTask?: string
-	lastSummarizedCount?: number
-	workTasks?: string
 	activeChatId?: string
+}
+
+export interface SessionGoal {
+	sessionId: string
+	condition: string
+	source: string
+	status: string
+	turns: number
+	lastReason?: string
+	declined: string[]
+	createdAt: number
+	updatedAt: number
+}
+
+export interface SessionGoalResponse {
+	goal?: SessionGoalStatus
+}
+
+export interface SessionGoalStatus {
+	session_id: string
+	condition: string
+	turns: number
+	last_reason?: string
+	status: string
 }
 
 export interface Setting {
@@ -1015,28 +1173,10 @@ export interface Setting {
 	developerMode: boolean
 	autoUpdate: boolean
 	fullAccess: boolean
-	guardrails: unknown
 }
 
-export interface ShareChannel {
-	channelId: string
-	channelName: string
-	loopId: string
-	loopName: string
-}
-
-export interface ShareMember {
-	botId: string
-	botName: string
-	loopId: string
-	loopName: string
-	isOnline: boolean
-}
-
-export interface ShareTargetsResponse {
-	connected: boolean
-	channels: ShareChannel[]
-	members: ShareMember[]
+export interface ShareLinkResponse {
+	share?: FileShare
 }
 
 export interface SkillSecretInfo {
@@ -1246,6 +1386,11 @@ export interface AgentStatsResponse {
 	recentErrors: WorkflowRunError[]
 }
 
+export interface AnswerWorkflowRunApprovalResponse {
+	status: string
+	runId: string
+}
+
 export interface ApplyAgentUpdateResponse {
 	ok: boolean
 	agent: Agent
@@ -1253,15 +1398,6 @@ export interface ApplyAgentUpdateResponse {
 
 export interface ApplyUpdateResponse {
 	status: string
-}
-
-export interface AuthLoginAccountResponse {
-	started: boolean
-	perAccount: number
-}
-
-export interface AuthLoginResponse {
-	started: boolean
 }
 
 export interface AuthLogoutResponse {
@@ -1345,6 +1481,8 @@ export interface CreateAgentResponse {
 
 export interface CreateAgentWorkflowResponse {
 	workflow: unknown
+	temporary: unknown
+	runId: string
 }
 
 export interface CreateCompanionChatResponse {
@@ -1518,6 +1656,7 @@ export interface GetAgentResponse {
 	ceiling: unknown
 	pluginsNeedingAuth: unknown
 	needsSetup: unknown
+	memoryMode: unknown
 }
 
 export interface GetAgentSurfacesResponse {
@@ -1609,6 +1748,7 @@ export interface GetSessionMessagesResponse {
 
 export interface GetSettingsResponse {
 	settings: Setting
+	permissionJudgement: unknown
 }
 
 export interface GetSkillResponse {
@@ -1648,6 +1788,7 @@ export interface GetSystemInfoResponse {
 	os: unknown
 	arch: unknown
 	version: string
+	systemPackages: unknown
 }
 
 export interface GetTeamMessagesResponse {
@@ -1659,12 +1800,12 @@ export interface GetToolOutputResponse {
 	isError: boolean
 }
 
-export interface GetWorkflowApprovalStatusResponse {
-	status: string
-}
-
 export interface GetWorkflowResponse {
 	workflow: Workflow
+}
+
+export interface GetWorkflowRunApprovalResponse {
+	status: string
 }
 
 export interface HttpProxyResponse {
@@ -1774,7 +1915,7 @@ export interface ListIntegrationsResponse {
 }
 
 export interface ListLinkedAgentsResponse {
-	bots: LinkedBotEntry[]
+	computers: LinkedComputerEntry[]
 }
 
 export interface ListMemoriesResponse {
@@ -1783,7 +1924,7 @@ export interface ListMemoriesResponse {
 }
 
 export interface ListModelsResponse {
-	models: unknown
+	models: Record<string, unknown[]>
 	taskRouting: unknown
 	laneRouting: unknown
 	aliases: unknown[]
@@ -1943,10 +2084,6 @@ export interface NeboAIPhoneAnswerResponse {
 	ok: boolean
 }
 
-export interface NeboAIShareArtifactResponse {
-	shared: boolean
-}
-
 export interface OauthRelayResponse {
 	status: string
 	message: string
@@ -2014,9 +2151,17 @@ export interface ReloadAgentResponse {
 	agent: Agent
 }
 
+export interface RemoveAgentPermissionResponse {
+	message: string
+}
+
 export interface RemoveCollectionItemResponse {
 	collection: unknown
 	removedItem: string
+}
+
+export interface RemoveCompanyPermissionResponse {
+	message: string
 }
 
 export interface RemovePluginResponse {
@@ -2029,11 +2174,6 @@ export interface RemoveTeamResponse {
 
 export interface ResolveLearningResponse {
 	status: string
-}
-
-export interface ResolveWorkflowApprovalResponse {
-	status: string
-	runId: string
 }
 
 export interface RevertLearningResponse {
@@ -2096,6 +2236,10 @@ export interface SetSkillSecretResponse {
 
 export interface SetUpdateSettingsResponse {
 	ok: boolean
+}
+
+export interface SidecarStateResponse {
+	state: string
 }
 
 export interface StartHelpChatResponse {
@@ -2182,6 +2326,7 @@ export interface UpdateAgentResponse {
 
 export interface UpdateAgentWorkflowResponse {
 	workflow: unknown
+	temporary: unknown
 }
 
 export interface UpdateApplyResponse {
@@ -2221,8 +2366,13 @@ export interface UpdateModelResponse {
 	message: string
 }
 
+export interface UpdateResponse {
+	accepted: boolean
+}
+
 export interface UpdateSettingsResponse {
 	settings: Setting
+	permissionJudgement: unknown
 }
 
 export interface UpdateSkillResponse {
@@ -2303,6 +2453,13 @@ export interface UserUpdateProfileResponse {
 	profile: unknown
 }
 
+export interface WorkOutAgentNeedsResponse {
+	line: string
+	items: string[]
+	accounts: string[]
+	draftId: string | null
+}
+
 // ── Common Types ───────────────────────────────────────────────────
 
 export interface ErrorResponse {
@@ -2350,7 +2507,10 @@ export interface AgentListEntry {
 	department?: string
 	/** The employee this one answers to (local agent id); unset = answers to the owner. */
 	reportsTo?: string
+	/** Conversations are kept apart (memory.mode "separate" or "confidential"). */
 	isolated: boolean
+	/** memory.mode: "single", "separate" or "confidential". */
+	memoryMode: string
 	needsSetup: boolean
 	nappPath?: string
 	appWindowConfig?: AppWindowConfig
@@ -2452,6 +2612,20 @@ export interface EventSourceOption {
 	description?: string
 }
 
+export interface FileShare {
+	/** Only for changing or turning the link off; never shown. */
+	id: string
+	/** https://neboai.com/s/<token> */
+	url: string
+	filename: string
+	/** link (anyone with the link), password, or private (only you). */
+	access: 'link' | 'password' | 'private'
+	hasPassword: boolean
+	/** RFC 3339; empty = never. */
+	expiresAt: string
+	createdAt: string
+}
+
 export interface ImportItem {
 	kind: 'mcp_server' | 'skill' | 'agent' | 'memory' | 'session' | 'cron' | 'credential'
 	tier: 'content' | 'code' | 'reference'
@@ -2482,17 +2656,27 @@ export interface ImportOutcome {
 }
 
 export interface LinkedAgentEntry {
+	/** The agent's id, or `new:<runtime>` for a coding employee to start. */
 	id: string
 	name: string
+	/** "Hermes on Mac.lan"; "Works in a new folder on Mac.lan". */
 	description: string
+	/** The runtime it runs: "hermes", "codex". */
+	runtime: string
+	/** The bot a hire of it goes to (`linked.botId`). */
+	botId: string
+	/** Already on the team: shown, not hired again. */
+	hired: boolean
 }
 
-export interface LinkedBotEntry {
+export interface LinkedComputerEntry {
+	/** `computer:<hostname>`: a key, never a bot. */
 	id: string
+	/** "Mac.lan"; "This computer" for the computer this bot runs on. */
 	name: string
-	/** What runs the bot: "openclaw", "hermes". */
-	runtime: string
 	online: boolean
+	local: boolean
+	/** What is installed on it, one entry per app, in the order shown. */
 	agents: LinkedAgentEntry[]
 }
 
@@ -2547,11 +2731,11 @@ export type WSServerEventType =
 	| "chat_cancelled"
 	| "chat_message"
 	| "session_reset"
-	| "session_compact"
 	| "chat_complete"
 	| "chat_ack"
 	| "chat_stream"
 	| "chat_error"
+	| "session_compact"
 
 export interface AppActionEvent {
 	agentId: string
@@ -2574,12 +2758,6 @@ export interface ChatMessageEvent {
 	agentId: string
 	session_id: string
 	artifacts: unknown
-}
-
-export interface SessionCompactEvent {
-	session_id: string
-	success: boolean
-	error: string
 }
 
 export interface ChatCompleteEvent {

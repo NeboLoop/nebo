@@ -160,7 +160,7 @@ pub(crate) fn skip_paths(root: &Path) -> Vec<PathBuf> {
 ///
 /// A walk that came up empty may widen up to one of these roots and no
 /// further. Widening past one is how the gate's glob spiral happened
-/// (fixture `os-file-discovery-spiral`): the tool's own "widen the search"
+/// (fixture `file-discovery-spiral`): the tool's own "widen the search"
 /// hint proposed the parent of the folder just searched, twice, and walked
 /// `/home/<bot>/` up to `/home` and then to `/`, where the walk ran until
 /// the harness cancelled the run. `/` is never a root of the bot's own area,

@@ -15,11 +15,12 @@
  * 8. User calls interrupt() → stop TTS, send interrupt, → listening
  * 9. User calls stop() → cleanup everything → idle
  *
- * Based on Claude Desktop's VoiceSession (zMt) pattern.
+ * One store owns the session and every transition above.
  */
 
 import { writable, derived } from 'svelte/store';
 import { finishUserTranscript } from './voiceTranscript';
+import { loadVoiceChimes, type VoiceChimes } from './voiceChimes';
 import { backendWsBase } from '$lib/api/base';
 import { startPcmCapture, type AudioCaptureHandle } from '$lib/stores/audio';
 import { deviceManager } from '$lib/stores/devices';
@@ -131,6 +132,12 @@ const CALL_LOST_MESSAGE = 'The call dropped and could not be rejoined. Start it 
 /** A failure that arrived with nothing to say: the one thing still true. */
 const CALL_ENDED_MESSAGE = 'The call ended. Start it again.';
 
+/**
+ * The longest a call's audio is kept open, once the call is over, for its
+ * closing sound to finish.
+ */
+const GOODBYE_WAIT_MS = 1_000;
+
 // --- Store ---
 
 function createVoiceSessionStore() {
@@ -162,8 +169,22 @@ function createVoiceSessionStore() {
 	// TTS playback resources
 	let playbackCtx: AudioContext | null = null;
 	let pendingAudioChunks: Float32Array[] = [];
+	// The call's connect and disconnect sounds, decoded for the playback
+	// context when the call starts; null if they could not be.
+	let chimes: Promise<VoiceChimes | null> = Promise.resolve(null);
 	let currentSource: AudioBufferSourceNode | null = null;
 	let isPlayingAudio = false;
+	// Where playback is along the call's stream of reply audio, in ms, so a
+	// barge-in can tell the server how much of the reply was heard (it cuts
+	// the model's memory of the reply back to exactly that). `streamQueuedMs`
+	// is audio received, `streamPlayedMs` audio whose buffers finished, and
+	// the buffer playing now adds its elapsed time. Idle gaps between chunks
+	// never count. `replyStartMs` is where the current reply's audio begins.
+	let streamQueuedMs = 0;
+	let streamPlayedMs = 0;
+	let currentStartedAt = 0;
+	let currentDurationMs = 0;
+	let replyStartMs = 0;
 	// Whether the current trailing transcript entry is the agent's in-progress
 	// streamed response (deltas append to it; playback_end closes it).
 	let agentEntryOpen = false;
@@ -272,8 +293,14 @@ function createVoiceSessionStore() {
 
 		isPlayingAudio = true;
 		currentSource = source;
+		currentStartedAt = playbackCtx.currentTime;
+		currentDurationMs = merged.length / 24;
 
 		source.onended = () => {
+			// A source stopped by a barge-in is already accounted for, and a
+			// newer one may be playing.
+			if (currentSource !== source) return;
+			streamPlayedMs += currentDurationMs;
 			isPlayingAudio = false;
 			currentSource = null;
 			// If more chunks arrived during playback, flush again
@@ -285,8 +312,52 @@ function createVoiceSessionStore() {
 		source.start();
 	}
 
+	/**
+	 * One of the call's two sounds, on its own source straight to the speaker:
+	 * never part of the reply's stream, so a barge-in never cuts it and it
+	 * never counts as reply audio heard.
+	 */
+	function playChime(ctx: AudioContext, sound: AudioBuffer): AudioBufferSourceNode {
+		const source = ctx.createBufferSource();
+		source.buffer = sound;
+		source.connect(ctx.destination);
+		source.start();
+		return source;
+	}
+
+	/** Play [which] on the call's context, once the sounds are decoded. */
+	function chime(which: keyof VoiceChimes) {
+		const ctx = playbackCtx;
+		if (!ctx) return;
+		void chimes.then((c) => {
+			if (c && playbackCtx === ctx) playChime(ctx, c[which]);
+		});
+	}
+
+	/** Stream position of playback: finished buffers plus the one playing. */
+	function playedPositionMs(): number {
+		if (!currentSource || !playbackCtx) return streamPlayedMs;
+		const elapsed = (playbackCtx.currentTime - currentStartedAt) * 1000;
+		return streamPlayedMs + Math.min(Math.max(0, elapsed), currentDurationMs);
+	}
+
+	/** How much of the current reply has been heard, in whole ms. */
+	function replyPlayedMs(): number {
+		return Math.max(0, Math.round(playedPositionMs() - replyStartMs));
+	}
+
+	/** Barge-in upstream, with the heard position of the reply. */
+	function sendInterrupt(playedMs: number) {
+		if (ws && ws.readyState === WebSocket.OPEN) {
+			ws.send(JSON.stringify({ type: 'interrupt', playedMs }));
+		}
+	}
+
 	/** Stop any in-progress TTS playback. */
 	function stopPlayback() {
+		// Audio dropped here is never played: the stream ends where playback is.
+		streamPlayedMs = playedPositionMs();
+		streamQueuedMs = streamPlayedMs;
 		if (currentSource) {
 			try {
 				currentSource.stop();
@@ -299,8 +370,13 @@ function createVoiceSessionStore() {
 		isPlayingAudio = false;
 	}
 
-	/** Full cleanup of all resources. */
-	function cleanup() {
+	/**
+	 * Full cleanup of all resources. The microphone and the socket go at once.
+	 * With [goodbye] (the owner ended the call, or it failed) the closing sound
+	 * plays on the way out, and the playback context is let go only once it
+	 * has finished — at most GOODBYE_WAIT_MS.
+	 */
+	function cleanup(goodbye = false) {
 		clearTimers();
 		stopPlayback();
 		releaseWakeLock();
@@ -323,9 +399,30 @@ function createVoiceSessionStore() {
 		redialing = false;
 
 		if (playbackCtx) {
-			playbackCtx.close();
+			const ctx = playbackCtx;
 			playbackCtx = null;
+			if (goodbye) {
+				let closed = false;
+				const close = () => {
+					if (closed) return;
+					closed = true;
+					clearTimeout(cap);
+					ctx.close();
+				};
+				const cap = setTimeout(close, GOODBYE_WAIT_MS);
+				void chimes.then((c) => {
+					if (closed || !c) return close();
+					playChime(ctx, c.disconnect).onended = close;
+				});
+			} else {
+				ctx.close();
+			}
 		}
+	}
+
+	/** A call that was already announced as lost has had its closing sound. */
+	function saysGoodbye(): boolean {
+		return readState().status !== 'reconnecting';
 	}
 
 	/**
@@ -425,7 +522,10 @@ function createVoiceSessionStore() {
 			// lasts longer than the quiet window is worth a word.
 			quietTimer = setTimeout(() => {
 				quietTimer = null;
-				if (redialing) update((s) => ({ ...s, status: 'reconnecting' }));
+				if (!redialing) return;
+				update((s) => ({ ...s, status: 'reconnecting' }));
+				// The one sound that says the line went.
+				chime('disconnect');
 			}, RECONNECT_QUIET_MS);
 		}
 		// The half-heard sentence goes either way: it belongs to a dead socket.
@@ -466,7 +566,7 @@ function createVoiceSessionStore() {
 	}
 
 	function transitionToError(message: string) {
-		cleanup();
+		cleanup(saysGoodbye());
 		update((s) => ({
 			...s,
 			status: 'error',
@@ -485,6 +585,7 @@ function createVoiceSessionStore() {
 		if (event.data instanceof ArrayBuffer) {
 			const int16 = new Int16Array(event.data);
 			const float32 = int16ToFloat32(int16);
+			streamQueuedMs += int16.length / 24;
 			pendingAudioChunks.push(float32);
 			flushPlaybackQueue();
 			return;
@@ -504,6 +605,10 @@ function createVoiceSessionStore() {
 					} else {
 						log.info('Voice session initialized');
 					}
+					// Live — and after a first dial or a redial that was
+					// announced, the one sound that says so. A silent redial
+					// stays silent.
+					const announce = ['connecting', 'reconnecting'].includes(readState().status);
 					redialing = false;
 					if (quietTimer) {
 						clearTimeout(quietTimer);
@@ -515,22 +620,24 @@ function createVoiceSessionStore() {
 						status: 'listening',
 						conversationId: msg.conversationId ?? s.conversationId
 					}));
+					if (announce) chime('connect');
 					break;
 
-				case 'transcription_start':
+				case 'transcription_start': {
 					// Barge-in: the user's voice always wins. Kill local playback
 					// immediately — including tail audio still buffered after the
 					// server finished generating (status already 'listening') —
-					// and cancel upstream only mid-response (the server drops the
-					// cancel when nothing is in flight, so the race is harmless).
+					// and tell the server how much of the reply was heard, so the
+					// employee remembers saying only that. The server cancels
+					// only a response still in flight.
+					const playing = isPlayingAudio || pendingAudioChunks.length > 0;
+					const playedMs = replyPlayedMs();
 					stopPlayback();
-					if (readState().status === 'speaking') {
-						if (ws && ws.readyState === WebSocket.OPEN) {
-							ws.send(JSON.stringify({ type: 'interrupt' }));
-						}
-						update((s) => ({ ...s, status: 'listening' }));
-					}
+					const speaking = readState().status === 'speaking';
+					if (speaking || playing) sendInterrupt(playedMs);
+					if (speaking) update((s) => ({ ...s, status: 'listening' }));
 					break;
+				}
 
 				case 'transcription_text':
 					// Cumulative transcript (includes upstream corrections) —
@@ -566,6 +673,9 @@ function createVoiceSessionStore() {
 					break;
 
 				case 'playback_start':
+					// The reply's audio follows this frame: everything queued
+					// before it belongs to earlier replies.
+					replyStartMs = streamQueuedMs;
 					userEntryOpen = false;
 					update((s) => ({ ...s, status: 'speaking' }));
 					break;
@@ -690,6 +800,10 @@ function createVoiceSessionStore() {
 			try {
 				// Playback AudioContext (24kHz — matches the realtime output rate)
 				playbackCtx = new AudioContext({ sampleRate: 24000 });
+				chimes = loadVoiceChimes(playbackCtx).catch((err) => {
+					log.warn('Voice call sounds could not be loaded: ' + String(err));
+					return null;
+				});
 
 				// PARALLEL INIT: open the WebSocket and acquire the mic at the same
 				// time (serializing them wastes the slower of the two); mic chunks
@@ -750,7 +864,7 @@ function createVoiceSessionStore() {
 			if (current.status === 'idle') return;
 
 			log.info('Voice session stopped');
-			cleanup();
+			cleanup(saysGoodbye());
 			// boundChatId records what the call produced, so it has to outlive the
 			// call — the closer reads it to land in the thread voice just created.
 			// `start()` clears it for the next session.
@@ -764,11 +878,9 @@ function createVoiceSessionStore() {
 			const current = readState();
 			if (current.status !== 'speaking') return;
 
+			const playedMs = replyPlayedMs();
 			stopPlayback();
-
-			if (ws && ws.readyState === WebSocket.OPEN) {
-				ws.send(JSON.stringify({ type: 'interrupt' }));
-			}
+			sendInterrupt(playedMs);
 
 			update((s) => ({ ...s, status: 'listening' }));
 			log.info('Voice session interrupted');

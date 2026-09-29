@@ -19,7 +19,12 @@ pub fn data_dir() -> Result<PathBuf, NeboError> {
     if let Some(dir) = data_dir_override() {
         return Ok(dir);
     }
+    default_data_dir()
+}
 
+/// The platform-native Nebo root, whatever `NEBO_HOME` says: where an
+/// install that relocates nothing keeps its settings.
+pub fn default_data_dir() -> Result<PathBuf, NeboError> {
     let base = dirs::data_dir()
         .ok_or_else(|| NeboError::DataDir("cannot determine data directory".into()))?;
 
@@ -30,6 +35,29 @@ pub fn data_dir() -> Result<PathBuf, NeboError> {
     };
 
     Ok(base.join(name))
+}
+
+/// Every folder a Nebo on this computer may keep its settings in, this
+/// one's root (`data_dir`) first: the platform-native root
+/// (`default_data_dir`, another install's when this one is relocated), the
+/// platform config folder of the pre-v5 layout (`legacy_data_dir`), and
+/// `~/.nebo`, every platform's root before 0.10.4. `tools::nebo_files`
+/// closes all of them to employees: another install's settings are never
+/// this one's employees' to read.
+pub fn nebo_roots() -> Vec<PathBuf> {
+    let candidates = [
+        data_dir().ok(),
+        default_data_dir().ok(),
+        legacy_data_dir(),
+        dirs::home_dir().map(|home| home.join(".nebo")),
+    ];
+    let mut roots: Vec<PathBuf> = Vec::new();
+    for root in candidates.into_iter().flatten() {
+        if !roots.contains(&root) {
+            roots.push(root);
+        }
+    }
+    roots
 }
 
 /// The Nebo root when the environment relocates it (`NEBO_HOME`, or the
@@ -170,6 +198,48 @@ pub fn read_extension_secret() -> Option<String> {
     if s.is_empty() { None } else { Some(s) }
 }
 
+/// Read or generate the install key: the credential the owner's own
+/// clients prove themselves to Nebo's local API with, on loopback as from
+/// the network (`server::middleware::local_boundary`). `NEBO_MCP_API_KEY`
+/// when it is set; otherwise generated once into `<data_dir>/.install-key`
+/// (mode 0600), a file only Nebo and the owner read: an employee's command
+/// can't (`tools::nebo_files` closes Nebo's folder, and Nebo's own settings
+/// never reach a command's environment). The server calls this at startup.
+pub fn ensure_install_key() -> Result<String, NeboError> {
+    if let Some(existing) = read_install_key() {
+        return Ok(existing);
+    }
+    let key = {
+        use rand::Rng;
+        let mut bytes = [0u8; 32];
+        rand::thread_rng().fill(&mut bytes);
+        bytes.iter().map(|b| format!("{b:02x}")).collect::<String>()
+    };
+    let path = data_dir()?.join(files::INSTALL_KEY);
+    let _ = fs::remove_file(&path);
+    fs::write(&path, &key)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(key)
+}
+
+/// Read the install key without generating one (a client: the CLI, the
+/// desktop shell): `NEBO_MCP_API_KEY`, else `<data_dir>/.install-key`.
+/// `None` when neither is there.
+pub fn read_install_key() -> Option<String> {
+    if let Ok(key) = std::env::var("NEBO_MCP_API_KEY")
+        && !key.trim().is_empty()
+    {
+        return Some(key.trim().to_string());
+    }
+    let s = fs::read_to_string(data_dir().ok()?.join(files::INSTALL_KEY)).ok()?;
+    let s = s.trim().to_string();
+    if s.is_empty() { None } else { Some(s) }
+}
+
 // ── Artifact Directory Helpers ─────────────────────────────────────
 
 /// Returns the `nebo/` directory for marketplace (sealed) artifacts.
@@ -200,7 +270,6 @@ const ARTIFACT_TYPES: &[&str] = &["skills", "agents"];
 /// - `<data_dir>/nebo/{skills,agents}/`
 /// - `<data_dir>/user/{skills,agents}/`
 /// - `<data_dir>/data/`
-/// - `<data_dir>/files/large_inputs/`
 ///
 /// Bundled skills/agents are embedded in the binary and loaded from memory
 /// — no filesystem directory needed.
@@ -210,13 +279,6 @@ pub fn ensure_artifact_dirs() -> Result<(), NeboError> {
     // Ensure data/ for database
     fs::create_dir_all(data.join("data"))
         .map_err(|e| NeboError::DataDir(format!("failed to create data/ directory: {e}")))?;
-
-    // Ensure files/large_inputs directory for large input offloading
-    fs::create_dir_all(data.join("files").join("large_inputs")).map_err(|e| {
-        NeboError::DataDir(format!(
-            "failed to create files/large_inputs directory: {e}"
-        ))
-    })?;
 
     // Create nebo/, user/, and appdata/ subdirectories
     for namespace in &["nebo", "user", "appdata"] {

@@ -33,11 +33,11 @@ struct Session {
 impl McpClient {
     pub fn new(encryptor: Arc<Encryptor>) -> Self {
         Self {
-            http: reqwest::Client::builder()
+            http: tls::http_client()
                 .timeout(Duration::from_secs(30))
                 .user_agent("nebo-mcp/1.0")
                 .build()
-                .unwrap_or_default(),
+                .expect("reqwest MCP client builder is infallible with these options"),
             encryptor,
             sessions: RwLock::new(HashMap::new()),
             stdio_sessions: RwLock::new(HashMap::new()),

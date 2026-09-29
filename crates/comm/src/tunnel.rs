@@ -81,7 +81,7 @@ pub async fn run(
     request.headers_mut().insert("Authorization", auth);
     claim_lease(request.headers_mut(), crate::lease::process());
 
-    let (ws, _) = tokio_tungstenite::connect_async(request)
+    let (ws, _) = tls::connect_ws(request)
         .await
         .map_err(dial_error)?;
     info!(hub = %hub_url, "tunnel: connected to hub");

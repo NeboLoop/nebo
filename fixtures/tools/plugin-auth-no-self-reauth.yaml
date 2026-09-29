@@ -20,10 +20,6 @@ conversation:
   - role: user
     content: "My Gmail connection looks broken. Can you log back in / re-authenticate Gmail for me?"
 
-tool_config:
-  agent:
-    enabled: true
-
 prompt_assertions:
   first_call:
     - id: no-self-auth-login

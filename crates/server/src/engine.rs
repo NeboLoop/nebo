@@ -14,12 +14,25 @@
 //!    a finished turn's declared wait becomes the parent's next wait;
 //! 4. reap: pending effects are surfaced, transient events past the TTL go.
 //!
+//! Every ask is a run of kind `ask` waiting on the owner's answer. The
+//! answer is the signal that wakes it; its wait's timer is the next
+//! reminder. A woken ask goes to the asks (`resume_asks`): an answer is
+//! applied once, an open ask is brought back to the owner and waits again.
+//! Nothing expires an ask.
+//!
+//! Temporary work — a workflow or team made for one piece of work — runs
+//! once. When its run has ended, its outcome goes to the owner's Inbox and
+//! to the session that started it, and only then is it deleted
+//! (`finish_temporary_work`); its runs, receipts and cost stay.
+//!
 //! Schedules (cron jobs) are recurring timers: every enabled job holds ONE
 //! pending timer aimed at binding `cron:<id>`; a due timer becomes a run of
 //! kind `task` that `drive` executes; the next occurrence is armed from the
-//! consumed one. A job's fire never overlaps its previous fire (skipped and
-//! noted), and a fire missed by more than the catch-up window is skipped,
-//! never replayed as a storm.
+//! consumed one. What a fire does while the previous one — or the workflow
+//! it started — is still going is the job's overlap policy: skipped and
+//! noted (the default), buffered to start once it ends (one at most), or
+//! started anyway. A fire missed by more than the catch-up window is
+//! skipped, never replayed as a storm.
 //!
 //! Boot: runs the dead process left `running` are stamped `interrupted` and
 //! given their ONE resume (I-3). Cases enter through
@@ -35,7 +48,7 @@ use chrono::{Local, TimeZone};
 use tracing::{debug, info, warn};
 
 use crate::state::AppState;
-use db::models::CronJob;
+use db::models::{CronJob, OverlapPolicy};
 use db::{EngineEvent, EngineRun, NewEvent, Store};
 use tools::workflows::WorkflowManager;
 use workflow::cases::{needs_attention, parse_turn, settle_turn, start_child};
@@ -55,7 +68,7 @@ fn now() -> i64 {
 }
 
 /// What one tick did — returned so tests and logs can say it in numbers.
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct TickReport {
     pub claimed: usize,
     pub poisoned: usize,
@@ -73,6 +86,10 @@ pub struct TickReport {
     pub armed: usize,
     pub fired: usize,
     pub skipped: usize,
+    /// Schedule fires held back behind the one still going (overlap policy
+    /// buffer_one), and those released because it ended.
+    pub buffered: usize,
+    pub released: usize,
 }
 
 /// Boot sweep (I-3): nothing is left `running` by a process that is gone.
@@ -117,7 +134,7 @@ pub fn recover(store: &Store) -> usize {
 /// an AppState. `busy` answers whether a session has a live turn; a matched
 /// signal for a case whose turn is live is steered through `steer` instead
 /// of starting another turn.
-pub fn tick(store: &Store, t: i64, live: &dyn Fn(&str) -> Option<String>, steer: &dyn Fn(&str, &EngineEvent)) -> TickReport {
+pub fn tick(store: &Store, t: i64, live: &dyn Fn(&str) -> Option<String>, steer: &dyn Fn(&str, &EngineEvent) -> bool) -> TickReport {
     let mut report = TickReport::default();
     report.armed = arm_schedules(store, t);
     let (events, poisoned) = match store.engine_claim_events(t, CLAIM_BATCH) {
@@ -141,12 +158,15 @@ pub fn tick(store: &Store, t: i64, live: &dyn Fn(&str) -> Option<String>, steer:
     for event in &events {
         deliver(store, event, t, live, steer, &mut report);
     }
+    release_buffered_fires(store, t, &mut report);
 
     match store.engine_pending_effects() {
         Ok(pending) => {
             report.pending_effects = pending.len();
+            // A held send is the owner's question (`settle_held_sends`); a
+            // pending row is logged when its state changes, never per tick
+            // (live 2026-09-28: three held rows, 16,647 lines in a day).
             for e in &pending {
-                info!(effect = e.id, run = %e.run_id, class = %e.class, attempts = e.attempts, "engine: effect pending reconciliation");
                 // Money that was attempted and never confirmed is never
                 // retried by the engine: whoever owns the run is told, once,
                 // and reconciles by the provider's key.
@@ -155,8 +175,13 @@ pub fn tick(store: &Store, t: i64, live: &dyn Fn(&str) -> Option<String>, steer:
                     let agent_id = run.as_ref().map(|r| r.agent_id.clone()).unwrap_or_default();
                     let case = run.as_ref().and_then(|r| r.parent_run_id.as_deref()).and_then(|p| store.engine_get_run(p).ok().flatten());
                     let reason = format!("a {} charge could not be confirmed after {} attempt(s); it was not retried — confirm it with the provider under key {}", e.provider, e.attempts, e.idem_key);
-                    if let Err(err) = needs_attention(store, &agent_id, &e.run_id, &format!("effect:{}", e.id), case.as_ref(), &reason, t) {
-                        warn!(effect = e.id, error = %err, "engine: could not route the unconfirmed effect for attention");
+                    let subject = format!("effect:{}", e.id);
+                    let user = store.ensure_local_user_id().unwrap_or_default();
+                    let first = matches!(store.get_notification(&format!("attention:{subject}"), &user), Ok(None));
+                    match needs_attention(store, &agent_id, &e.run_id, &subject, case.as_ref(), &reason, t) {
+                        Ok(()) if first => info!(effect = e.id, run = %e.run_id, "engine: unconfirmed charge sent to the owner"),
+                        Ok(()) => {}
+                        Err(err) => warn!(effect = e.id, error = %err, "engine: could not route the unconfirmed effect for attention"),
                     }
                 }
             }
@@ -176,7 +201,7 @@ fn deliver(
     event: &EngineEvent,
     t: i64,
     live: &dyn Fn(&str) -> Option<String>,
-    steer: &dyn Fn(&str, &EngineEvent),
+    steer: &dyn Fn(&str, &EngineEvent) -> bool,
     report: &mut TickReport,
 ) {
     if event.target_type == "binding" {
@@ -417,7 +442,7 @@ fn live_turn(
     event: &EngineEvent,
     t: i64,
     live: &dyn Fn(&str) -> Option<String>,
-    steer: &dyn Fn(&str, &EngineEvent),
+    steer: &dyn Fn(&str, &EngineEvent) -> bool,
 ) -> LiveTurn {
     let child = match store.engine_live_child(&case.id) {
         Ok(Some(c)) => c,
@@ -425,20 +450,21 @@ fn live_turn(
     };
     match child.state.as_str() {
         "running" => {
-            // The runner says which session the turn is live on — the
-            // activity session under the turn's key. The event is queued for
-            // that session's NEXT model call and stays undelivered until the
-            // runner injects it — the injection stamps it. A turn that ends
-            // first never consumed it: its lease expires and the next tick
-            // routes it to the case's next wait, or by the reopen rules if
-            // the turn closed the case. No event is ever marked heard by a
-            // turn that could not hear it.
+            // The harness says which session the turn is live on — the
+            // activity session under the turn's key. The event becomes a
+            // notification row there: the turn's next step hears it, or the
+            // turn the harness hands it to when it lands after the last step.
+            // Written, it is delivered; a row that could not be written leaves
+            // the event for its lease to expire and the next tick to route.
             match live(&child.session_key) {
-                Some(session) => {
-                    steer(&session, event);
-                    LiveTurn::Handed
-                }
-                None => LiveTurn::Deferred,
+                Some(session) if steer(&session, event) => match store.engine_complete_event(event.id, t) {
+                    Ok(()) => LiveTurn::Handed,
+                    Err(e) => {
+                        warn!(event = event.id, error = %e, "engine: complete after steering failed");
+                        LiveTurn::Deferred
+                    }
+                },
+                _ => LiveTurn::Deferred,
             }
         }
         "queued" => match store.engine_append_pending_signal(&child.id, &event.payload) {
@@ -715,7 +741,7 @@ fn fire_binding_heartbeat(store: &Store, event: &EngineEvent, t: i64, report: &m
         return;
     }
     let wf_id = types::keyparser::agent_workflow_id(agent_id);
-    if store.has_running_run(&wf_id, binding).unwrap_or(false) || store.engine_has_live_run_for_ref(&event.target_id).unwrap_or(false) {
+    if store.has_live_run(&wf_id, Some(binding)).unwrap_or(false) || store.engine_has_live_run_for_ref(&event.target_id).unwrap_or(false) {
         info!(agent = agent_id, binding, "engine: previous heartbeat run still active; this one skipped");
         skip(store, "skipped: previous run still active", report);
         return;
@@ -747,8 +773,9 @@ fn fire_binding_heartbeat(store: &Store, event: &EngineEvent, t: i64, report: &m
 }
 
 /// A schedule's timer came due. Skip (and say why) when the job is gone or
-/// disabled, when its last fire is still running, or when the occurrence
-/// was missed by more than the catch-up window; otherwise queue ONE run.
+/// disabled, or when the occurrence was missed by more than the catch-up
+/// window; while its last fire is still going, do what its overlap policy
+/// says; otherwise queue ONE run.
 /// The next occurrence is armed on the following tick from this consumed one.
 fn fire_schedule(store: &Store, event: &EngineEvent, t: i64, report: &mut TickReport) {
     if event.target_id.starts_with("hb:") {
@@ -789,31 +816,121 @@ fn fire_schedule(store: &Store, event: &EngineEvent, t: i64, report: &mut TickRe
         skip(store, &format!("skipped: missed by {late}s, beyond the catch-up window"), report);
         return;
     }
-    match store.engine_has_live_run_for_ref(&cron_target(&job)) {
-        Ok(true) => {
-            info!(job = job.name.as_str(), "engine: previous fire still running; this occurrence skipped");
-            skip(store, "skipped: previous fire still running", report);
-            return;
+    // The job's overlap policy decides what an occurrence does while the
+    // last fire is still going (Temporal's schedule overlap policy).
+    let buffered = match job.overlap() {
+        OverlapPolicy::AllowAll => false,
+        policy => match previous_fire_live(store, &job) {
+            Ok(false) => false,
+            Ok(true) if policy == OverlapPolicy::Skip => {
+                info!(job = job.name.as_str(), "engine: previous fire still running; this occurrence skipped");
+                skip(store, "skipped: previous fire still running", report);
+                return;
+            }
+            Ok(true) => match store.engine_has_buffered_fire_for_ref(&cron_target(&job)) {
+                Ok(true) => {
+                    info!(job = job.name.as_str(), "engine: previous fire still running and one already waits; this occurrence skipped");
+                    skip(store, "skipped: previous fire still running and one already waits", report);
+                    return;
+                }
+                Ok(false) => true,
+                Err(e) => {
+                    warn!(job = job.name.as_str(), error = %e, "engine: overlap check failed; lease will expire and retry");
+                    return;
+                }
+            },
+            Err(e) => {
+                warn!(job = job.name.as_str(), error = %e, "engine: overlap check failed; lease will expire and retry");
+                return;
+            }
+        },
+    };
+    match store.queue_cron_run(&job, false, buffered).and_then(|_| store.engine_complete_event(event.id, t)) {
+        Ok(()) if buffered => {
+            report.buffered += 1;
+            info!(job = job.name.as_str(), "engine: previous fire still running; this occurrence waits for it");
         }
-        Ok(false) => {}
-        Err(e) => {
-            warn!(job = job.name.as_str(), error = %e, "engine: overlap check failed; lease will expire and retry");
-            return;
-        }
-    }
-    match store.queue_cron_run(&job, false).and_then(|_| store.engine_complete_event(event.id, t)) {
         Ok(()) => {
             report.fired += 1;
             info!(job = job.name.as_str(), "dispatching scheduled task");
-            // A one-shot has just had its only fire: done, not armed again.
-            if matches!(next_occurrence(&job.schedule, event.due_at.unwrap_or(t)), Ok(None)) {
-                match store.set_cron_job_enabled(job.id, false) {
-                    Ok(()) => info!(job_id = job.id, job = job.name.as_str(), "one-shot schedule fired; retired"),
-                    Err(e) => warn!(job_id = job.id, job = job.name.as_str(), error = %e, "engine: could not retire one-shot schedule"),
-                }
-            }
+            retire_spent_one_shot(store, &job, event.due_at.unwrap_or(t));
         }
         Err(e) => warn!(job = job.name.as_str(), error = %e, "engine: could not queue the scheduled run; lease will expire and retry"),
+    }
+}
+
+/// A one-shot whose only fire has just started is done: not armed again.
+/// A buffered fire starts when it is released, so it retires then.
+fn retire_spent_one_shot(store: &Store, job: &CronJob, due: i64) {
+    if matches!(next_occurrence(&job.schedule, due), Ok(None)) {
+        match store.set_cron_job_enabled(job.id, false) {
+            Ok(()) => info!(job_id = job.id, job = job.name.as_str(), "one-shot schedule fired; retired"),
+            Err(e) => warn!(job_id = job.id, job = job.name.as_str(), error = %e, "engine: could not retire one-shot schedule"),
+        }
+    }
+}
+
+/// Is the job's last fire still going? A fire is its engine run while that
+/// is queued or running — for a prompt or shell job, the whole of the work.
+/// A workflow job's fire ends as soon as the workflow it started is under
+/// way, so the workflow's own run counts too, until it ends (a run parked
+/// on an approval is still going).
+fn previous_fire_live(store: &Store, job: &CronJob) -> Result<bool, types::NeboError> {
+    if store.engine_has_live_run_for_ref(&cron_target(job))? {
+        return Ok(true);
+    }
+    match job.task_type.as_str() {
+        "agent_workflow" | "role_workflow" => match job.command.splitn(3, ':').collect::<Vec<_>>()[..] {
+            [_, agent_id, binding] => store.has_live_run(&types::keyparser::agent_workflow_id(agent_id), Some(binding)),
+            _ => Ok(false),
+        },
+        // A standalone workflow, or a binding by its scoped id
+        // (`agent:<id>:<binding>`, which `run` fires as the binding).
+        "workflow" => match job.command.strip_prefix("agent:").and_then(|rest| rest.split_once(':')) {
+            Some((agent_id, binding)) => store.has_live_run(&types::keyparser::agent_workflow_id(agent_id), Some(binding)),
+            None => store.has_live_run(&job.command, None),
+        },
+        _ => Ok(false),
+    }
+}
+
+/// Buffered fires (overlap policy buffer_one) start once the fire before
+/// them has ended: released to `queued`, `drive` runs them. One whose job
+/// is gone or switched off while it waited is cancelled with the reason.
+fn release_buffered_fires(store: &Store, t: i64, report: &mut TickReport) {
+    let waiting = match store.engine_buffered_fires() {
+        Ok(w) => w,
+        Err(e) => {
+            warn!(error = %e, "engine: could not read buffered fires");
+            return;
+        }
+    };
+    for run in waiting {
+        let job = run
+            .external_ref
+            .as_deref()
+            .and_then(|r| r.strip_prefix("cron:"))
+            .and_then(|id| id.parse::<i64>().ok())
+            .and_then(|id| store.get_cron_job(id).ok().flatten())
+            .filter(|j| j.enabled.unwrap_or(0) != 0);
+        let Some(job) = job else {
+            if let Err(e) = store.engine_set_run_state(&run.id, "cancelled", t, Some("its schedule was removed or switched off while it waited")) {
+                warn!(run = %run.id, error = %e, "engine: could not cancel a buffered fire");
+            }
+            continue;
+        };
+        match previous_fire_live(store, &job) {
+            Ok(true) => {}
+            Ok(false) => match store.engine_set_run_state(&run.id, "queued", t, None) {
+                Ok(_) => {
+                    report.released += 1;
+                    info!(job = job.name.as_str(), "engine: the previous fire ended; the buffered one starts");
+                    retire_spent_one_shot(store, &job, t);
+                }
+                Err(e) => warn!(run = %run.id, error = %e, "engine: could not release a buffered fire"),
+            },
+            Err(e) => warn!(job = job.name.as_str(), error = %e, "engine: overlap check failed; retried next tick"),
+        }
     }
 }
 
@@ -1111,15 +1228,15 @@ async fn drive(state: &AppState) {
         }
     }
 
+    settle_held_sends(store, &state.permission_asks);
+    resume_asks(store, &state.permission_asks, &state.tools, t);
+    finish_temporary_work(state).await;
+
     time_out_turns(state, t).await;
 
     // A turn the workflow ended, whose case has not heard it: the turn's
     // declared wait (or the default) becomes the case's next wait.
     for turn in store.engine_unsettled_turns(TURNS_PER_TICK).unwrap_or_default() {
-        // Wakes queued for a turn that ended before its next model call were
-        // never heard; their events are still undelivered and will be
-        // routed afresh. Drop the stale queue so nothing rides a dead session.
-        let _ = agent::steering::drain_wakes(&turn.session_key);
         let failed = turn.state != "done";
         let output = turn_output(&turn, t);
         if let Err(e) = settle_turn(store, &turn, output.as_deref(), failed, t) {
@@ -1128,28 +1245,217 @@ async fn drive(state: &AppState) {
     }
 }
 
+/// Sends that were attempted and whose outcome never came back: each held
+/// ledger row gets one card asking the owner whether it went out, in the
+/// conversation that sent it (the Inbox when that is no chat). His answer
+/// settles the row (`Asks::settle_send`); until then the card waits and comes
+/// back as a reminder, like any ask. Logged once, when the card is raised.
+pub fn settle_held_sends(store: &Store, asks: &agent::harness::permissions::Asks) {
+    let pending = match store.engine_pending_effects() {
+        Ok(p) => p,
+        Err(e) => {
+            warn!(error = %e, "engine: held sends unreadable");
+            return;
+        }
+    };
+    for e in pending.iter().filter(|e| e.class == "messaging" && e.attempts > 0) {
+        // The run it was sent from: a workflow run's own record, else the
+        // session the send ran in.
+        let (agent_id, session_key) = match store.engine_get_run(&e.run_id).ok().flatten() {
+            Some(run) => (run.agent_id, run.session_key),
+            None => (types::keyparser::extract_agent_id(&e.run_id), e.run_id.clone()),
+        };
+        match asks.raise_send_check(e, &agent_id, &session_key, held_send_sentence(e)) {
+            Ok(Some(ask)) => info!(effect = e.id, run = %e.run_id, ask, "engine: held send; the owner is asked whether it went out"),
+            Ok(None) => {}
+            Err(err) => warn!(effect = e.id, error = %err, "engine: the owner could not be asked about a held send"),
+        }
+    }
+}
+
+/// The card's line for a held send: what it was and who it was to.
+fn held_send_sentence(e: &db::EngineEffect) -> String {
+    // The ledger key names the operation (`send_key`, `write_key`).
+    let what = if e.idem_key.contains(":mail.message.send:") {
+        "an email"
+    } else if e.idem_key.contains(":sms.message.send:") {
+        "a text"
+    } else {
+        "a message"
+    };
+    let to = match e.counterparty.as_deref().filter(|c| !c.is_empty()) {
+        Some("owner") => " to you".to_string(),
+        Some(who) => format!(" to {who}"),
+        None => String::new(),
+    };
+    let via = if e.provider.is_empty() { String::new() } else { format!(" through {}", e.provider) };
+    format!("{what}{to}{via}, sent {}", chrono::DateTime::from_timestamp(e.created_at, 0).map(|d| d.format("%Y-%m-%d %H:%M UTC").to_string()).unwrap_or_default())
+}
+
+/// Asks whose wait woke — the owner's answer arrived, or a reminder came
+/// due: each goes to the asks, which apply an answer once, or bring the card
+/// back to the owner and wait again. Returns the tasks running allowed
+/// calls. An ask that could not be read stays queued for the next tick.
+pub fn resume_asks(store: &Store, asks: &agent::harness::permissions::Asks, registry: &Arc<tools::Registry>, t: i64) -> Vec<tokio::task::JoinHandle<()>> {
+    let mut running = Vec::new();
+    for run in store.engine_queued_runs_of_kind("ask", TURNS_PER_TICK).unwrap_or_default() {
+        match asks.resume(registry, &run.id, t) {
+            Ok(Some(task)) => running.push(task),
+            Ok(None) => {}
+            Err(e) => warn!(ask = %run.id, error = %e, "engine: ask not resumed; tried again next tick"),
+        }
+    }
+    running
+}
+
+/// Temporary work whose one run has ended (owner, 09-25): the outcome is
+/// delivered, then the workflow or team is deleted. An outcome that could
+/// not be written leaves the work for the next tick; a delete that fails
+/// is retried the same way.
+async fn finish_temporary_work(state: &AppState) {
+    let store = &state.store;
+    for (work, run) in store.ended_temporary_work().unwrap_or_default() {
+        let hub = state.hub.clone();
+        let broadcast = move |ev: &str, payload: serde_json::Value| hub.broadcast(ev, payload);
+        if let Err(e) = report_temporary_outcome(store, &work, &run, Some(&broadcast)) {
+            warn!(name = %work.name, run = %run.id, error = %e, "engine: temporary work's outcome not delivered; tried again next tick");
+            continue;
+        }
+        if !work.report_to.is_empty() {
+            crate::wake::deliver(state, &work.report_to).await;
+        }
+        let deleted = match work.kind {
+            db::TemporaryKind::Workflow => state.workflow_manager.delete(&work.agent_id, &work.name).await,
+            db::TemporaryKind::Team => crate::handlers::teams::disband(state, &work.name),
+        };
+        match deleted {
+            Ok(()) => info!(kind = work.kind.as_str(), name = %work.name, run = %run.id, "engine: temporary work reported and deleted"),
+            Err(e) => warn!(kind = work.kind.as_str(), name = %work.name, error = %e, "engine: temporary work reported; delete failed"),
+        }
+        // Reported either way: a thing already gone is not waited on again.
+        if let Err(e) = store.unmark_temporary(work.kind, &work.agent_id, &work.name) {
+            warn!(name = %work.name, error = %e, "engine: temporary work's row not cleared");
+        }
+    }
+}
+
+/// The outcome of a finished piece of temporary work, delivered: a row in
+/// the owner's Inbox, and a notification for the session that started it.
+/// Both are keyed by the run, so repeating this repeats nothing.
+pub fn report_temporary_outcome(
+    store: &Store,
+    work: &db::TemporaryWork,
+    run: &EngineRun,
+    broadcast: Option<&dyn Fn(&str, serde_json::Value)>,
+) -> Result<(), types::NeboError> {
+    let what = match work.kind {
+        db::TemporaryKind::Workflow => format!("The {} workflow", work.name.replace('-', " ")),
+        db::TemporaryKind::Team => {
+            let team = store.get_team(&work.name)?.map(|t| t.name).unwrap_or_else(|| work.name.clone());
+            if team.to_lowercase().contains("team") { format!("The {team}") } else { format!("The {team} team") }
+        }
+    };
+    let ended = match run.state.as_str() {
+        "done" => "finished",
+        "failed" => "failed",
+        _ => "was stopped",
+    };
+    let title = format!("{what} {ended}");
+    // A case's result is its closing status; its summary is what happened.
+    let said = if run.kind == "case" {
+        [Some(run.summary.as_str()), run.result.as_deref(), run.error.as_deref()]
+    } else {
+        [run.result.as_deref(), run.error.as_deref(), Some(run.summary.as_str())]
+    };
+    let outcome: String = said
+        .into_iter()
+        .flatten()
+        .map(str::trim)
+        .find(|s| !s.is_empty())
+        .unwrap_or("It left no outcome.")
+        .chars()
+        .take(1_500)
+        .collect();
+    let user_id = store.ensure_local_user_id()?;
+    let id = format!("temporary:{}", run.id);
+    let agent = (!work.agent_id.is_empty()).then_some(work.agent_id.as_str());
+    // The run is deleted below, so the item is its own place.
+    let n = tools::owner_notify::OwnerNotification {
+        id: &id,
+        kind: "info",
+        title: &title,
+        body: Some(&outcome),
+        action_url: None,
+        agent_id: agent,
+        loud: true,
+    };
+    // Written before anything is deleted: the outcome must reach the owner.
+    store.create_notification_if_not_exists(&id, &user_id, n.kind, n.title, n.body, Some(&n.link()), None, agent)?;
+    tools::owner_notify::emit(store, broadcast, &n);
+    if !work.report_to.is_empty() {
+        let saved_again = match work.kind {
+            db::TemporaryKind::Workflow => format!(
+                " It is temporary, so it is now deleted; create_workflow(from_run: \"{}\") saves the same work to run again.",
+                run.id
+            ),
+            db::TemporaryKind::Team => " It was a temporary team, so it has disbanded.".to_string(),
+        };
+        let text = format!("{title} (run {}).{saved_again}\n\nOutcome:\n{outcome}", run.id);
+        store.engine_enqueue_event(&NewEvent {
+            kind: TEMPORARY_WORK_ENDED,
+            target_type: "session",
+            target_id: &work.report_to,
+            payload: &text,
+            idem_key: &format!("{id}:report"),
+            ..Default::default()
+        })?;
+    }
+    Ok(())
+}
+
+/// The wake kind a finished piece of temporary work reports with.
+pub const TEMPORARY_WORK_ENDED: &str = "temporary_work.ended";
+
 // ── pre-flight: a binding's declared needs, before anything else ─────────
 
 /// Fire-time pre-flight (`crate::preflight`) for a workflow binding's fire:
-/// true runs it. A fire of no binding declares nothing and runs. Checked on
-/// every fire, before triage, at no token cost. The owner hears a missing
-/// need once (`crate::workflow_manager::tell_owner_need`).
+/// true runs it ([`preflight_fire`], handed the installed plugins).
 fn preflight_admits(state: &AppState, run: &EngineRun) -> bool {
-    let Some((agent_id, binding)) = crate::preflight::fire_binding(&state.store, run) else {
+    let installed = agent::agent_worker::installed_interfaces(&state.plugin_store);
+    preflight_fire(&state.store, &state.hub, &state.config.neboai.api_url, &installed, run, now())
+}
+
+/// Pre-flight for one fire: true runs it. A fire of no binding declares
+/// nothing and runs. Checked on every fire, before triage, at no token
+/// cost. The employee's needs the owner was told of are checked first, so a
+/// met one is resolved (`crate::workflow_manager::settle_owner_needs`); the
+/// owner hears a missing need once (`crate::workflow_manager::tell_owner_need`).
+/// `installed` as [`crate::preflight::unmet_need`] takes it.
+pub(crate) fn preflight_fire(
+    store: &Store,
+    hub: &crate::handlers::ws::ClientHub,
+    api_url: &str,
+    installed: &[(String, Vec<String>)],
+    run: &EngineRun,
+    t: i64,
+) -> bool {
+    let Some((agent_id, binding)) = crate::preflight::fire_binding(store, run) else {
         return true;
     };
-    let unmet = crate::preflight::unmet_need_now(&state.store, &state.plugin_store, &agent_id, &binding);
-    let announce = |need: &str| {
+    crate::workflow_manager::settle_owner_needs(store, api_url, installed, &agent_id);
+    let unmet = crate::preflight::unmet_need_now(store, installed, &agent_id, &binding);
+    let announce = |need: &types::OwnerNeed| {
         crate::workflow_manager::tell_owner_need(
-            &state.store,
-            &state.hub,
-            &state.config.neboai.api_url,
+            store,
+            hub,
+            api_url,
+            installed,
             &agent_id,
             &binding,
-            crate::preflight::Need::Recorded(need),
+            crate::preflight::Need::Known(need),
         );
     };
-    crate::preflight::admit(&state.store, run, &agent_id, &binding, unmet, now(), &announce)
+    crate::preflight::admit(store, run, &agent_id, &binding, unmet, t, &announce)
 }
 
 // ── heartbeat triage: one decision before a timer fire runs ──────────────
@@ -1188,13 +1494,14 @@ async fn triage_admits(state: &AppState, run: &EngineRun) -> bool {
         debug!(site = "heartbeat_triage", run = %run.id, binding = ?run.external_ref, "triage does not apply to this fire; running");
         return true;
     };
-    let decide = state.runner.decide();
+    let decide = state.decide.clone();
     let gate = triage::triage(decide.as_deref(), mode, &binding, TRIAGE_TIMEOUT).await;
     let tell = |duty: &str, held: &triage::HeldNeed| {
         crate::workflow_manager::tell_owner_need(
             &state.store,
             &state.hub,
             &state.config.neboai.api_url,
+            &agent::agent_worker::installed_interfaces(&state.plugin_store),
             &run.agent_id,
             duty,
             crate::preflight::Need::Judged(held),
@@ -1342,8 +1649,8 @@ pub(crate) fn triage_binding(store: &Store, run: &EngineRun, entity: Option<(Str
 
 /// What an employee declares its binding may need, as triage's
 /// `which_need` options: its `requires.interfaces`, its `requires.plugins`
-/// (named the way install names them; a marketplace code cannot be named
-/// offline), and the binding's watch plugin. Each name once.
+/// (by slug, qualified name or install code: [`crate::preflight::required_plugin`]),
+/// and the binding's watch plugin. Each name once.
 fn declared_needs(store: &Store, agent_id: &str, binding_name: &str) -> Vec<agent::heartbeat_triage::Declared> {
     use agent::heartbeat_triage::Declared;
     let Some(config) = store
@@ -1361,9 +1668,7 @@ fn declared_needs(store: &Store, agent_id: &str, binding_name: &str) -> Vec<agen
         }
     };
     for reference in &config.requires.plugins {
-        if crate::codes::detect_code(reference).is_none() {
-            add(Declared::Plugin(crate::deps::extract_simple_name(reference).to_string()));
-        }
+        add(Declared::Plugin(crate::preflight::required_plugin(store, reference)));
     }
     if let Some(napp::agent::AgentTrigger::Watch { plugin, .. }) = config.workflows.get(binding_name).map(|b| &b.trigger) {
         add(Declared::Capability(plugin.clone()));
@@ -1499,7 +1804,7 @@ async fn start_turn(state: &AppState, run: &EngineRun, t: i64) {
     inputs["_relaunch_run"] = serde_json::json!(run.id);
     match state
         .workflow_manager
-        .run_inline(definition, inputs, "case", binding, &run.agent_id, None)
+        .run_inline(definition, inputs, "case", binding, &run.agent_id, Vec::new())
         .await
     {
         Ok(_) => info!(run = %run.id, "engine: case turn started"),
@@ -1549,7 +1854,7 @@ async fn resume_after_approval(state: &AppState, run: &EngineRun, event_id: i64,
     inputs["_resume_run"] = serde_json::json!(run.id);
     match state
         .workflow_manager
-        .run_inline(definition, inputs, "approval", Some(binding), &agent_id, None)
+        .run_inline(definition, inputs, "approval", Some(binding), &agent_id, Vec::new())
         .await
     {
         Ok(_) => info!(run = %run.id, "engine: approval accepted; parked run resumed"),
@@ -1594,28 +1899,40 @@ pub fn spawn(state: AppState) {
                 continue;
             }
             let s = store.clone();
-            let runner = state.runner.clone();
+            let harness = state.harness.clone();
             let report = tokio::task::spawn_blocking(move || {
-                let live = |session: &str| runner.live_session_under(session);
-                let steer = |session: &str, event: &EngineEvent| {
-                    let content = agent::steering::wrap_system_reminder(&format!(
-                        "[Case event — not an owner message]\n{}:\n{}\n\nHandle this alongside your current work, and include the outcome in your report.",
-                        event.kind,
-                        event.payload.chars().take(2_000).collect::<String>()
-                    ));
-                    let taint = serde_json::from_str(&event.provenance).unwrap_or_default();
-                    agent::steering::push_wake(session, agent::steering::WakeEntry { wake_id: Some(event.id), content, taint });
-                };
+                let live = |session: &str| harness.live_session_under(session);
+                let steer = |session: &str, event: &EngineEvent| steer_into(harness.sessions(), session, event);
                 tick(&s, now(), &live, &steer)
             })
             .await
             .unwrap_or_default();
-            if report != TickReport::default() {
+            // Rows that stay pending while the owner decides are counted,
+            // not news: a tick is logged when it did something.
+            if (TickReport { pending_effects: 0, ..report.clone() }) != TickReport::default() {
                 info!(?report, "engine: tick");
             }
             drive(&state).await;
         }
     });
+}
+
+/// Hand a case event to the turn live on `session`: a notification row its
+/// next step loads (or the turn it hands the row to, when the row lands after
+/// its last step). `false` when the row could not be written.
+fn steer_into(sessions: &agent::SessionManager, session: &str, event: &EngineEvent) -> bool {
+    let text = agent::harness::delegation::notify::render_update(
+        &format!("A case event ({})", event.kind),
+        &event.payload.chars().take(2_000).collect::<String>(),
+    );
+    let taint: Vec<types::provenance::ProvenanceClass> = serde_json::from_str(&event.provenance).unwrap_or_default();
+    match agent::harness::delegation::notify::append_row(sessions, session, &text, &taint) {
+        Ok(()) => true,
+        Err(e) => {
+            warn!(session, event = event.id, error = %e, "engine: case event not written into the live turn");
+            false
+        }
+    }
 }
 
 /// The text a finished turn is settled on. A turn that exited early carries
@@ -1650,7 +1967,9 @@ mod tests {
     fn idle(_: &str) -> Option<String> {
         None
     }
-    fn no_steer(_: &str, _: &EngineEvent) {}
+    fn no_steer(_: &str, _: &EngineEvent) -> bool {
+        false
+    }
 
     fn binding<'a>() -> CaseBinding<'a> {
         CaseBinding {
@@ -1661,6 +1980,20 @@ mod tests {
             base_inputs: serde_json::json!({"tone": "warm"}),
             default_wait_secs: 3 * 86_400,
         }
+    }
+
+    /// Triage's needs list names a plugin required by its install code as
+    /// the plugin the code installed here, like one named by slug.
+    #[test]
+    fn the_needs_list_names_a_plugin_required_by_its_code() {
+        let s = store();
+        s.conn_exec_for_test(
+            r#"INSERT INTO agents (id, name, description, agent_md, frontmatter, updated_at) VALUES ('emp', 'E', '', '', '{"requires":{"plugins":["@acme/plugins/ledgerly","PLUG-PJ3Z-ECFV"]},"workflows":{"sweep":{"trigger":{"type":"heartbeat","interval":"30m"},"activities":[{"id":"a","intent":"sweep"}]}}}', 0)"#,
+        );
+        s.upsert_installed_plugin("coded-books", "Coded Books", "1.0.0", "", "", "", "").unwrap();
+        s.set_plugin_install_code("coded-books", "PLUG-PJ3Z-ECFV").unwrap();
+        let names: Vec<String> = declared_needs(&s, "emp", "sweep").iter().map(|d| d.name().to_string()).collect();
+        assert_eq!(names, ["ledgerly", "coded-books"]);
     }
 
     #[test]
@@ -1737,8 +2070,8 @@ mod tests {
     /// Seen live: the engine knows a case turn by its own session key, the
     /// runner marks the ACTIVITY session under it busy, and an exact-match
     /// "busy?" said no — so the customer's correction was deferred and the
-    /// turn closed the case without hearing it. The runner answers with the
-    /// live session under the key; steering goes there; a settle drains it.
+    /// turn closed the case without hearing it. The harness answers with the
+    /// live session under the key, and the event is written there.
     #[test]
     fn a_signal_that_lands_mid_turn_is_steered_into_the_activity_session_the_turn_runs_under() {
         let s = store();
@@ -1754,16 +2087,11 @@ mod tests {
         let handed = std::sync::Mutex::new(Vec::<(String, i64)>::new());
         let record = |session: &str, e: &EngineEvent| {
             handed.lock().unwrap().push((session.to_string(), e.id));
-            agent::steering::push_wake(session, agent::steering::WakeEntry { wake_id: Some(e.id), content: e.payload.clone(), taint: Default::default() });
+            true
         };
         let r = tick(&s, 200, &live, &record);
         assert_eq!((r.steered, r.children_started), (1, 0));
         assert_eq!(handed.lock().unwrap()[0].0, activity, "steered to the session the turn is live on");
-        // The queued wake sits under the activity key; the turn's key drains it.
-        let drained = agent::steering::drain_wakes("agent:a:workflow:turn-1");
-        assert_eq!(drained.len(), 1);
-        assert_eq!(drained[0].content, "11am, not 10am");
-        assert!(agent::steering::drain_wakes(activity).is_empty());
     }
 
     /// Seen live: a correction ("11am, not 10am") was claimed while the
@@ -1852,16 +2180,20 @@ mod tests {
         assert!(s.get_notification(&format!("attention:unreceipted:{}", turn.id), &user).unwrap().is_none());
     }
 
-    /// A signal handed to a running turn is heard only if the turn's next
-    /// model call injects it: the runner's stamp delivers it. A turn that
-    /// ends first never heard it — the event stays undelivered and rides
-    /// the case's next wait. Exactly one delivery either way.
+    /// A signal handed to a running turn is delivered when its row is
+    /// written into the turn's conversation (the turn, or the one it hands
+    /// the row to, hears it). A row that could not be written leaves the
+    /// event undelivered: it rides the case's next wait. Exactly one delivery
+    /// either way.
     #[test]
-    fn a_steered_signal_is_delivered_by_injection_or_rides_the_next_wait_never_lost() {
+    fn a_steered_signal_is_delivered_by_its_row_or_rides_the_next_wait_never_lost() {
         let s = store();
         let busy = |k: &str| Some(k.to_string());
         let steered = std::sync::Mutex::new(Vec::<i64>::new());
-        let record = |_: &str, e: &EngineEvent| steered.lock().unwrap().push(e.id);
+        let record = |_: &str, e: &EngineEvent| {
+            steered.lock().unwrap().push(e.id);
+            true
+        };
         let make = |s: &Store, case: &str, turn: &str, key: &str| {
             s.engine_create_run(&NewRun { id: case, kind: "case", session_key: "agent:a:case:k", agent_id: "a", lane: "main", ..Default::default() }).unwrap();
             s.engine_declare_wait(case, &NewWait { action: "trigger_child", on_kind: "signal", key, deadline: None, reason: "first contact", ..Default::default() }, 100).unwrap();
@@ -1870,22 +2202,20 @@ mod tests {
             s.engine_set_run_state(turn, "running", 150, None).unwrap();
         };
 
-        // Heard: the runner injects and stamps it.
+        // Written: delivered once, by its row.
         make(&s, "case-1", "turn-1", "email:x");
         s.engine_enqueue_event(&NewEvent { kind: "signal", target_type: "run", target_id: "email:x", payload: "reply", idem_key: "s1", durable: true, ..Default::default() }).unwrap();
         let r = tick(&s, 200, &busy, &record);
         assert_eq!((r.steered, r.children_started), (1, 0));
-        let id = steered.lock().unwrap()[0];
-        assert!(s.engine_claim_events(200 + db::EVENT_LEASE_SECS + 1, 10).unwrap().0.iter().any(|e| e.id == id), "not marked delivered by the hand-off");
-        s.engine_complete_events(&[id], 210).unwrap(); // what the runner does at injection
-        assert!(s.engine_claim_events(200 + 2 * (db::EVENT_LEASE_SECS + 1), 10).unwrap().0.is_empty(), "delivered once, by injection");
+        assert_eq!(steered.lock().unwrap().len(), 1);
+        assert!(s.engine_claim_events(200 + db::EVENT_LEASE_SECS + 1, 10).unwrap().0.is_empty(), "delivered once, by its row");
 
-        // Not heard: the turn ends before its next model call. The event
-        // outlives the turn and starts the next one — once.
+        // Not written: the event outlives the turn and starts the next one — once.
         make(&s, "case-2", "turn-2", "email:y");
         s.engine_enqueue_event(&NewEvent { kind: "signal", target_type: "run", target_id: "email:y", payload: "reply", idem_key: "s2", durable: true, ..Default::default() }).unwrap();
-        let r = tick(&s, 1_000, &busy, &record);
-        assert_eq!(r.steered, 1);
+        let unwritten = |_: &str, _: &EngineEvent| false;
+        let r = tick(&s, 1_000, &busy, &unwritten);
+        assert_eq!(r.steered, 0);
         s.complete_workflow_run("turn-2", "completed", 1, None, None, Some(r#"{"next":{"action":"wait","deadline":"3d"}}"#)).unwrap();
         let turn = s.engine_unsettled_turns(1).unwrap().remove(0);
         settle_turn(&s, &turn, turn.result.as_deref(), false, 1_100).unwrap();
@@ -2048,7 +2378,7 @@ mod tests {
     /// A job whose floor is `floor`: one consumed timer at that moment, the
     /// way a job that has fired before carries its floor.
     fn job(s: &Store, name: &str, schedule: &str, floor: i64) -> CronJob {
-        let j = s.create_cron_job(name, schedule, "echo hi", "shell", None, None, None, true, None, None).unwrap();
+        let j = s.create_cron_job(name, schedule, "echo hi", "shell", None, None, None, true, None, None, None).unwrap();
         let target = cron_target(&j);
         let db::Enqueued::Inserted(id) = s
             .engine_enqueue_event(&NewEvent { kind: "timer", target_type: "binding", target_id: &target, idem_key: &format!("{target}:floor"), due_at: Some(floor), ..Default::default() })
@@ -2115,7 +2445,7 @@ mod tests {
 
         // Rescheduled: the pending timer is replaced by one on the new schedule.
         tick(&s, local(2026, 8, 24, 9, 0, 6), &idle, &no_steer);
-        s.upsert_cron_job("briefing", "0 30 9 * * *", "echo hi", "shell", None, None, None, true, None, None).unwrap();
+        s.upsert_cron_job("briefing", "0 30 9 * * *", "echo hi", "shell", None, None, None, true, None, None, None).unwrap();
         let r = tick(&s, local(2026, 8, 24, 9, 0, 11), &idle, &no_steer);
         assert_eq!(r.armed, 1);
         let pending = s.engine_pending_timers("binding").unwrap();
@@ -2170,7 +2500,7 @@ mod tests {
     /// An employee's own job at `schedule`, with its floor consumed like
     /// [`job`]'s.
     fn employee_job(s: &Store, name: &str, schedule: &str, task_type: &str, command: &str, agent: &str, message: &str, floor: i64) -> CronJob {
-        let j = s.create_cron_job(name, schedule, command, task_type, Some(message), None, None, true, Some(agent), None).unwrap();
+        let j = s.create_cron_job(name, schedule, command, task_type, Some(message), None, None, true, Some(agent), None, None).unwrap();
         let target = cron_target(&j);
         let db::Enqueued::Inserted(id) = s
             .engine_enqueue_event(&NewEvent { kind: "timer", target_type: "binding", target_id: &target, idem_key: &format!("{target}:floor"), due_at: Some(floor), ..Default::default() })
@@ -2551,7 +2881,7 @@ mod tests {
         };
 
         // A fully autonomous employee: still a card, still no turn.
-        s.upsert_entity_config("agent", "ic", &serde_json::json!({"operationPolicy": {"default": "always"}})).unwrap();
+        s.set_permission_mode(&types::permissions::Scope::Employee("ic".into()), types::permissions::Mode::FullAccess).unwrap();
         let b = binding();
         let (case_id, t) = fail_four(&s, &b, "s-auto", "auto@x.com");
         let fault = s.engine_events_for("run", &case_id, 50).unwrap().into_iter().filter(|e| e.kind == "needs_attention").last().expect("recorded on the case");
@@ -2569,7 +2899,7 @@ mod tests {
     fn a_poisoned_event_reaches_the_case_it_was_aimed_at() {
         let s = store();
         let user = s.ensure_local_user_id().unwrap();
-        s.upsert_entity_config("agent", "a", &serde_json::json!({"operationPolicy": {"default": "always"}})).unwrap();
+        s.set_permission_mode(&types::permissions::Scope::Employee("a".into()), types::permissions::Mode::FullAccess).unwrap();
         s.engine_create_run(&NewRun { id: "case-1", kind: "case", session_key: "agent:a:case:k", agent_id: "a", lane: "main", inputs: Some(r#"{"_case":{"key":"email:x"}}"#), ..Default::default() }).unwrap();
         s.engine_bind_key("case-1", "email", "x").unwrap();
         s.engine_declare_wait("case-1", &NewWait { action: "trigger_child", on_kind: "signal", key: "email:x", deadline: None, reason: "waiting", ..Default::default() }, 100).unwrap();
@@ -2596,7 +2926,7 @@ mod tests {
     fn an_unconfirmed_charge_is_never_retried_and_the_owner_is_told_once() {
         let s = store();
         let user = s.ensure_local_user_id().unwrap();
-        s.upsert_entity_config("agent", "a", &serde_json::json!({"operationPolicy": {"default": "always"}})).unwrap();
+        s.set_permission_mode(&types::permissions::Scope::Employee("a".into()), types::permissions::Mode::FullAccess).unwrap();
         s.engine_create_run(&NewRun { id: "wf-1", kind: "workflow", session_key: "agent:a:workflow:wf-1", agent_id: "a", lane: "main", ..Default::default() }).unwrap();
         let charge = s.engine_effect_pending("wf-1", "financial", "charge:inv-1042", "stripe", "pi_1042", "").unwrap();
         let note = s.engine_effect_pending("wf-1", "messaging", "email:inv-1042", "smtp", "", "").unwrap();
@@ -2908,14 +3238,14 @@ mod tests {
         let t = now();
         s.conn_exec_for_test("INSERT INTO agents (id, name, description, agent_md, frontmatter, updated_at) VALUES ('emp', 'E', '', '', '', 0)");
         let job = s
-            .create_cron_job("status-check", "*/2 * * * *", "", "agent", Some("Check the engagement-desk run and report results."), None, None, true, Some("emp"), None)
+            .create_cron_job("status-check", "*/2 * * * *", "", "agent", Some("Check the engagement-desk run and report results."), None, None, true, Some("emp"), None, None)
             .unwrap();
         let key = db::cron_ref(job.id);
         past_fire(&s, "prev", &key, "emp", t, 120, "done", "The engagement-desk workflow no longer exists.\nDetails follow.");
         // A skipped fire after it is passed over.
         past_fire(&s, "skipped", &key, "emp", t, 5, "done", "");
         s.engine_set_run_result_tag("skipped", "skipped").unwrap();
-        let fire_id = s.queue_cron_run(&job, false).unwrap();
+        let fire_id = s.queue_cron_run(&job, false, false).unwrap();
         let fire = s.engine_get_run(&fire_id).unwrap().unwrap();
 
         let b = triage_binding(&s, &fire, None, t).expect("an employee's agent job is triaged");
@@ -2937,15 +3267,15 @@ mod tests {
         // A failed last run is a change.
         let s2 = store();
         s2.conn_exec_for_test("INSERT INTO agents (id, name, description, agent_md, frontmatter, updated_at) VALUES ('emp', 'E', '', '', '', 0)");
-        let job2 = s2.create_cron_job("status-check", "*/2 * * * *", "", "agent", Some("x"), None, None, true, Some("emp"), None).unwrap();
+        let job2 = s2.create_cron_job("status-check", "*/2 * * * *", "", "agent", Some("x"), None, None, true, Some("emp"), None, None).unwrap();
         past_fire(&s2, "prev", &db::cron_ref(job2.id), "emp", t, 120, "failed", "");
-        let fire2 = s2.engine_get_run(&s2.queue_cron_run(&job2, false).unwrap()).unwrap().unwrap();
+        let fire2 = s2.engine_get_run(&s2.queue_cron_run(&job2, false, false).unwrap()).unwrap().unwrap();
         assert!(triage_binding(&s2, &fire2, None, t).unwrap().flags.last_run_failed);
 
         // No run on record: a first run.
         let s3 = store();
-        let job3 = s3.create_cron_job("once", "0 5 10 23 8 * 2099", "", "agent", Some("Wake me"), None, None, true, Some("emp"), None).unwrap();
-        let fire3 = s3.engine_get_run(&s3.queue_cron_run(&job3, false).unwrap()).unwrap().unwrap();
+        let job3 = s3.create_cron_job("once", "0 5 10 23 8 * 2099", "", "agent", Some("Wake me"), None, None, true, Some("emp"), None, None).unwrap();
+        let fire3 = s3.engine_get_run(&s3.queue_cron_run(&job3, false, false).unwrap()).unwrap().unwrap();
         let b3 = triage_binding(&s3, &fire3, None, t).unwrap();
         assert!(b3.flags.first_run && b3.since_last_run.is_none());
         assert_eq!(b3.cadence, None, "a one-shot has no cadence");
@@ -2955,14 +3285,14 @@ mod tests {
     fn triage_does_not_apply_without_an_employee_to_a_run_now_or_to_a_shell_job() {
         let s = store();
         let t = now();
-        let shell = s.create_cron_job("sh", "*/2 * * * *", "echo hi", "shell", None, None, None, true, Some("emp"), None).unwrap();
-        let fire = s.engine_get_run(&s.queue_cron_run(&shell, false).unwrap()).unwrap().unwrap();
+        let shell = s.create_cron_job("sh", "*/2 * * * *", "echo hi", "shell", None, None, None, true, Some("emp"), None, None).unwrap();
+        let fire = s.engine_get_run(&s.queue_cron_run(&shell, false, false).unwrap()).unwrap().unwrap();
         assert!(triage_binding(&s, &fire, None, t).is_none());
-        let agentless = s.create_cron_job("check", "*/2 * * * *", "", "agent", Some("x"), None, None, true, None, None).unwrap();
-        let fire = s.engine_get_run(&s.queue_cron_run(&agentless, false).unwrap()).unwrap().unwrap();
+        let agentless = s.create_cron_job("check", "*/2 * * * *", "", "agent", Some("x"), None, None, true, None, None, None).unwrap();
+        let fire = s.engine_get_run(&s.queue_cron_run(&agentless, false, false).unwrap()).unwrap().unwrap();
         assert!(triage_binding(&s, &fire, None, t).is_none());
-        let agent = s.create_cron_job("mine", "*/2 * * * *", "", "agent", Some("x"), None, None, true, Some("emp"), None).unwrap();
-        let manual = s.engine_get_run(&s.queue_cron_run(&agent, true).unwrap()).unwrap().unwrap();
+        let agent = s.create_cron_job("mine", "*/2 * * * *", "", "agent", Some("x"), None, None, true, Some("emp"), None, None).unwrap();
+        let manual = s.engine_get_run(&s.queue_cron_run(&agent, true, false).unwrap()).unwrap().unwrap();
         assert!(triage_binding(&s, &manual, None, t).is_none());
         // The main agent's heartbeat has no employee id.
         s.engine_create_run(&NewRun { id: "hb-main", kind: "heartbeat", session_key: "heartbeat-main-main", agent_id: "", lane: "heartbeat", external_ref: Some("heartbeat:main:main"), ..Default::default() }).unwrap();

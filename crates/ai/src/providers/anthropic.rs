@@ -26,6 +26,150 @@ impl AnthropicProvider {
         }
     }
 
+    /// The request as the API receives it, cache markers placed.
+    fn api_request(&self, req: &ChatRequest) -> AnthropicApiRequest {
+        let (mut messages, system_prompt) = self.build_messages(req);
+
+        let model = if req.model.is_empty() {
+            self.model.clone()
+        } else {
+            req.model.clone()
+        };
+
+        let max_tokens = if req.max_tokens > 0 {
+            req.max_tokens
+        } else if req.enable_thinking {
+            16384
+        } else {
+            8192
+        };
+
+        // Build system blocks with caching.
+        //
+        // When `cache_breakpoints` are provided (byte offsets into `system_prompt`),
+        // we split the system prompt at those offsets and mark each prefix block
+        // with `cache_control: { type: "ephemeral" }` so that the stable prefix
+        // can be served from Anthropic's prompt cache at ~90% discount.
+        //
+        // Without breakpoints the whole prompt is sent as a single cached block.
+        let system_blocks = if !system_prompt.is_empty() {
+            if !req.cache_breakpoints.is_empty() {
+                let mut blocks = Vec::new();
+                let mut cursor = 0usize;
+                let prompt_len = system_prompt.len();
+
+                for &bp in &req.cache_breakpoints {
+                    // Clamp to prompt length and skip invalid/duplicate offsets
+                    let bp = bp.min(prompt_len);
+                    if bp <= cursor {
+                        continue;
+                    }
+                    blocks.push(SystemBlock {
+                        text: system_prompt[cursor..bp].to_string(),
+                        block_type: "text".to_string(),
+                        cache_control: Some(CacheControl {
+                            cache_type: "ephemeral".to_string(),
+                        }),
+                    });
+                    cursor = bp;
+                }
+
+                // Remaining tail (dynamic portion) — no cache_control
+                if cursor < prompt_len {
+                    blocks.push(SystemBlock {
+                        text: system_prompt[cursor..].to_string(),
+                        block_type: "text".to_string(),
+                        cache_control: None,
+                    });
+                }
+
+                // Guard: if somehow we produced nothing, fall back to single block
+                if blocks.is_empty() {
+                    Some(vec![SystemBlock {
+                        text: system_prompt,
+                        block_type: "text".to_string(),
+                        cache_control: Some(CacheControl {
+                            cache_type: "ephemeral".to_string(),
+                        }),
+                    }])
+                } else {
+                    Some(blocks)
+                }
+            } else {
+                Some(vec![SystemBlock {
+                    text: system_prompt,
+                    block_type: "text".to_string(),
+                    cache_control: Some(CacheControl {
+                        cache_type: "ephemeral".to_string(),
+                    }),
+                }])
+            }
+        } else {
+            None
+        };
+
+        // Build tools with cache_control on the last tool for definition caching
+        let tools: Option<Vec<AnthropicTool>> = if req.tools.is_empty() {
+            None
+        } else {
+            let tool_list: Vec<AnthropicTool> = req
+                .tools
+                .iter()
+                .map(|t| {
+                    let schema = t.input_schema.as_object().cloned().unwrap_or_default();
+                    AnthropicTool {
+                        name: t.name.clone(),
+                        description: t.description.clone(),
+                        input_schema: AnthropicInputSchema {
+                            schema_type: "object".to_string(),
+                            properties: schema.get("properties").cloned(),
+                            required: schema.get("required").and_then(|v| {
+                                v.as_array().map(|arr| {
+                                    arr.iter()
+                                        .filter_map(|v| v.as_str().map(String::from))
+                                        .collect()
+                                })
+                            }),
+                        },
+                    }
+                })
+                .collect();
+            Some(tool_list)
+        };
+
+        // Exactly one message marker, on the last message: a plain-text
+        // message becomes a text block to carry it, so each step reads the
+        // previous step's whole prefix from the cache. The tools carry none:
+        // they come before the system prompt, whose marker covers them.
+        mark_last_message(&mut messages);
+
+        // Map the cross-provider ToolChoice to Anthropic's shape (Auto → omitted).
+        let tool_choice = match &req.tool_choice {
+            ToolChoice::Auto => None,
+            ToolChoice::Any => Some(serde_json::json!({"type": "any"})),
+            ToolChoice::Tool(name) => Some(serde_json::json!({"type": "tool", "name": name})),
+            ToolChoice::None => Some(serde_json::json!({"type": "none"})),
+        };
+
+        AnthropicApiRequest {
+            model,
+            max_tokens,
+            messages,
+            system: system_blocks,
+            tools,
+            tool_choice,
+            stream: true,
+            thinking: if req.enable_thinking {
+                Some(ThinkingConfig {
+                    thinking_type: "enabled".to_string(),
+                    budget_tokens: 10000,
+                })
+            } else {
+                None
+            },
+        }
+    }
+
     /// Build Anthropic API messages from our generic format.
     fn build_messages(&self, req: &ChatRequest) -> (Vec<AnthropicMessage>, String) {
         let mut system_prompt = req.system.clone();
@@ -99,7 +243,16 @@ impl AnthropicProvider {
                     }
                 }
                 "assistant" => {
-                    let mut blocks = Vec::new();
+                    // Thinking first, each block as it came, as the API
+                    // requires for a turn that continues a tool loop.
+                    let mut blocks: Vec<ContentBlock> = msg
+                        .thinking
+                        .iter()
+                        .map(|b| match b.clone() {
+                            ThinkingBlock::Thinking { thinking, signature } => ContentBlock::Thinking { thinking, signature },
+                            ThinkingBlock::RedactedThinking { data } => ContentBlock::RedactedThinking { data },
+                        })
+                        .collect();
 
                     if !msg.content.is_empty() {
                         blocks.push(ContentBlock::Text {
@@ -195,6 +348,8 @@ impl AnthropicProvider {
         let mut current_tool_name = String::new();
         let mut input_buffer = String::new();
         let mut last_stop_reason: Option<String> = None;
+        // The thinking block being streamed, handed over whole at its stop.
+        let mut thinking: Option<ThinkingBlock> = None;
 
         let mut byte_stream = response.bytes_stream();
         let mut line_buf = String::new();
@@ -283,12 +438,26 @@ impl AnthropicProvider {
                                 }
                             }
                             "content_block_start" => {
-                                if let Some(block) = event.content_block
-                                    && block.block_type == "tool_use"
-                                {
-                                    current_tool_id = block.id.unwrap_or_default();
-                                    current_tool_name = block.name.unwrap_or_default();
-                                    input_buffer.clear();
+                                if let Some(block) = event.content_block {
+                                    match block.block_type.as_str() {
+                                        "tool_use" => {
+                                            current_tool_id = block.id.unwrap_or_default();
+                                            current_tool_name = block.name.unwrap_or_default();
+                                            input_buffer.clear();
+                                        }
+                                        "thinking" => {
+                                            thinking = Some(ThinkingBlock::Thinking {
+                                                thinking: block.thinking.unwrap_or_default(),
+                                                signature: block.signature.unwrap_or_default(),
+                                            });
+                                        }
+                                        "redacted_thinking" => {
+                                            thinking = Some(ThinkingBlock::RedactedThinking {
+                                                data: block.data.unwrap_or_default(),
+                                            });
+                                        }
+                                        _ => {}
+                                    }
                                 }
                             }
                             "content_block_delta" => {
@@ -305,9 +474,18 @@ impl AnthropicProvider {
                                             }
                                         }
                                         "thinking_delta" => {
-                                            if let Some(thinking) = delta.thinking {
-                                                let _ =
-                                                    tx.send(StreamEvent::thinking(thinking)).await;
+                                            if let Some(text) = delta.thinking {
+                                                if let Some(ThinkingBlock::Thinking { thinking: so_far, .. }) = thinking.as_mut() {
+                                                    so_far.push_str(&text);
+                                                }
+                                                let _ = tx.send(StreamEvent::thinking(text)).await;
+                                            }
+                                        }
+                                        "signature_delta" => {
+                                            if let (Some(part), Some(ThinkingBlock::Thinking { signature, .. })) =
+                                                (delta.signature, thinking.as_mut())
+                                            {
+                                                signature.push_str(&part);
                                             }
                                         }
                                         _ => {}
@@ -315,6 +493,9 @@ impl AnthropicProvider {
                                 }
                             }
                             "content_block_stop" => {
+                                if let Some(block) = thinking.take() {
+                                    let _ = tx.send(StreamEvent::thinking_block(block)).await;
+                                }
                                 if !current_tool_id.is_empty() {
                                     let input: serde_json::Value = serde_json::from_str(
                                         &input_buffer,
@@ -389,200 +570,8 @@ impl Provider for AnthropicProvider {
     }
 
     async fn stream(&self, req: &ChatRequest) -> Result<EventReceiver, ProviderError> {
-        let (mut messages, system_prompt) = self.build_messages(req);
-
-        let model = if req.model.is_empty() {
-            &self.model
-        } else {
-            &req.model
-        };
-
-        let max_tokens = if req.max_tokens > 0 {
-            req.max_tokens
-        } else if req.enable_thinking {
-            16384
-        } else {
-            8192
-        };
-
-        // Build system blocks with caching.
-        //
-        // When `cache_breakpoints` are provided (byte offsets into `system_prompt`),
-        // we split the system prompt at those offsets and mark each prefix block
-        // with `cache_control: { type: "ephemeral" }` so that the stable prefix
-        // can be served from Anthropic's prompt cache at ~90% discount.
-        //
-        // Fallback: if no breakpoints but `static_system` is set (legacy path),
-        // split at the static/dynamic boundary.  Otherwise send the whole prompt
-        // as a single cached block.
-        let system_blocks = if !system_prompt.is_empty() {
-            if !req.cache_breakpoints.is_empty() {
-                let mut blocks = Vec::new();
-                let mut cursor = 0usize;
-                let prompt_len = system_prompt.len();
-
-                for &bp in &req.cache_breakpoints {
-                    // Clamp to prompt length and skip invalid/duplicate offsets
-                    let bp = bp.min(prompt_len);
-                    if bp <= cursor {
-                        continue;
-                    }
-                    blocks.push(SystemBlock {
-                        text: system_prompt[cursor..bp].to_string(),
-                        block_type: "text".to_string(),
-                        cache_control: Some(CacheControl {
-                            cache_type: "ephemeral".to_string(),
-                        }),
-                    });
-                    cursor = bp;
-                }
-
-                // Remaining tail (dynamic portion) — no cache_control
-                if cursor < prompt_len {
-                    blocks.push(SystemBlock {
-                        text: system_prompt[cursor..].to_string(),
-                        block_type: "text".to_string(),
-                        cache_control: None,
-                    });
-                }
-
-                // Guard: if somehow we produced nothing, fall back to single block
-                if blocks.is_empty() {
-                    Some(vec![SystemBlock {
-                        text: system_prompt,
-                        block_type: "text".to_string(),
-                        cache_control: Some(CacheControl {
-                            cache_type: "ephemeral".to_string(),
-                        }),
-                    }])
-                } else {
-                    Some(blocks)
-                }
-            } else if !req.static_system.is_empty() && system_prompt.starts_with(&req.static_system)
-            {
-                let dynamic_suffix = system_prompt.strip_prefix(&req.static_system).unwrap_or("");
-                let mut blocks = vec![SystemBlock {
-                    text: req.static_system.clone(),
-                    block_type: "text".to_string(),
-                    cache_control: Some(CacheControl {
-                        cache_type: "ephemeral".to_string(),
-                    }),
-                }];
-                if !dynamic_suffix.is_empty() {
-                    blocks.push(SystemBlock {
-                        text: dynamic_suffix.to_string(),
-                        block_type: "text".to_string(),
-                        cache_control: None,
-                    });
-                }
-                Some(blocks)
-            } else {
-                Some(vec![SystemBlock {
-                    text: system_prompt,
-                    block_type: "text".to_string(),
-                    cache_control: Some(CacheControl {
-                        cache_type: "ephemeral".to_string(),
-                    }),
-                }])
-            }
-        } else {
-            None
-        };
-
-        // Build tools with cache_control on the last tool for definition caching
-        let tools: Option<Vec<AnthropicTool>> = if req.tools.is_empty() {
-            None
-        } else {
-            let mut tool_list: Vec<AnthropicTool> = req
-                .tools
-                .iter()
-                .map(|t| {
-                    let schema = t.input_schema.as_object().cloned().unwrap_or_default();
-                    AnthropicTool {
-                        name: t.name.clone(),
-                        description: t.description.clone(),
-                        input_schema: AnthropicInputSchema {
-                            schema_type: "object".to_string(),
-                            properties: schema.get("properties").cloned(),
-                            required: schema.get("required").and_then(|v| {
-                                v.as_array().map(|arr| {
-                                    arr.iter()
-                                        .filter_map(|v| v.as_str().map(String::from))
-                                        .collect()
-                                })
-                            }),
-                        },
-                        cache_control: None,
-                    }
-                })
-                .collect();
-            // Mark the last tool with cache_control for tool definition caching
-            if let Some(last) = tool_list.last_mut() {
-                last.cache_control = Some(CacheControl {
-                    cache_type: "ephemeral".to_string(),
-                });
-            }
-            Some(tool_list)
-        };
-
-        // Anthropic allows max 4 blocks with cache_control. Budget them:
-        // system blocks + last tool + remaining → last N messages.
-        let system_cache_count = system_blocks.as_ref().map_or(0, |blocks| {
-            blocks.iter().filter(|b| b.cache_control.is_some()).count()
-        });
-        let tool_cache_count = if tools.as_ref().map_or(false, |t| {
-            t.last().map_or(false, |last| last.cache_control.is_some())
-        }) {
-            1
-        } else {
-            0
-        };
-        let message_cache_budget = 4usize.saturating_sub(system_cache_count + tool_cache_count);
-
-        if message_cache_budget > 0 {
-            let len = messages.len();
-            for i in (0..len).rev().take(message_cache_budget) {
-                if let AnthropicContent::Blocks(ref mut blocks) = messages[i].content {
-                    if let Some(last_block) = blocks.last_mut() {
-                        let cc = Some(CacheControl {
-                            cache_type: "ephemeral".to_string(),
-                        });
-                        match last_block {
-                            ContentBlock::Text { cache_control, .. } => *cache_control = cc,
-                            ContentBlock::Image { cache_control, .. } => *cache_control = cc,
-                            ContentBlock::ToolUse { cache_control, .. } => *cache_control = cc,
-                            ContentBlock::ToolResult { cache_control, .. } => *cache_control = cc,
-                        }
-                    }
-                }
-            }
-        }
-
-        // Map the cross-provider ToolChoice to Anthropic's shape (Auto → omitted).
-        let tool_choice = match &req.tool_choice {
-            ToolChoice::Auto => None,
-            ToolChoice::Any => Some(serde_json::json!({"type": "any"})),
-            ToolChoice::Tool(name) => Some(serde_json::json!({"type": "tool", "name": name})),
-            ToolChoice::None => Some(serde_json::json!({"type": "none"})),
-        };
-
-        let api_req = AnthropicApiRequest {
-            model: model.to_string(),
-            max_tokens,
-            messages,
-            system: system_blocks,
-            tools,
-            tool_choice,
-            stream: true,
-            thinking: if req.enable_thinking {
-                Some(ThinkingConfig {
-                    thinking_type: "enabled".to_string(),
-                    budget_tokens: 10000,
-                })
-            } else {
-                None
-            },
-        };
+        let api_req = self.api_request(req);
+        let model = api_req.model.as_str();
 
         info!(
             model = model,
@@ -739,6 +728,10 @@ struct ImageSource {
 #[derive(Debug, Serialize)]
 #[serde(tag = "type")]
 enum ContentBlock {
+    #[serde(rename = "thinking")]
+    Thinking { thinking: String, signature: String },
+    #[serde(rename = "redacted_thinking")]
+    RedactedThinking { data: String },
     #[serde(rename = "text")]
     Text {
         text: String,
@@ -779,6 +772,31 @@ enum ToolResultContent {
     Blocks(Vec<ToolResultContentBlock>),
 }
 
+/// Put the one message cache marker on the last block of the last message.
+fn mark_last_message(messages: &mut [AnthropicMessage]) {
+    let Some(last) = messages.last_mut() else {
+        return;
+    };
+    if let AnthropicContent::Text(text) = &mut last.content {
+        let text = std::mem::take(text);
+        last.content = AnthropicContent::Blocks(vec![ContentBlock::Text { text, cache_control: None }]);
+    }
+    let AnthropicContent::Blocks(blocks) = &mut last.content else {
+        return;
+    };
+    let cc = Some(CacheControl {
+        cache_type: "ephemeral".to_string(),
+    });
+    match blocks.last_mut() {
+        Some(ContentBlock::Text { cache_control, .. })
+        | Some(ContentBlock::Image { cache_control, .. })
+        | Some(ContentBlock::ToolUse { cache_control, .. })
+        | Some(ContentBlock::ToolResult { cache_control, .. }) => *cache_control = cc,
+        // A thinking block can't carry a cache marker.
+        Some(ContentBlock::Thinking { .. }) | Some(ContentBlock::RedactedThinking { .. }) | None => {}
+    }
+}
+
 /// Content block types allowed inside a tool_result content array.
 #[derive(Debug, Serialize)]
 #[serde(tag = "type")]
@@ -794,8 +812,6 @@ struct AnthropicTool {
     name: String,
     description: String,
     input_schema: AnthropicInputSchema,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    cache_control: Option<CacheControl>,
 }
 
 #[derive(Debug, Serialize)]
@@ -862,6 +878,12 @@ struct AnthropicContentBlock {
     id: Option<String>,
     #[serde(default)]
     name: Option<String>,
+    #[serde(default)]
+    thinking: Option<String>,
+    #[serde(default)]
+    signature: Option<String>,
+    #[serde(default)]
+    data: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -875,6 +897,8 @@ struct AnthropicDelta {
     #[serde(default)]
     thinking: Option<String>,
     #[serde(default)]
+    signature: Option<String>,
+    #[serde(default)]
     stop_reason: Option<String>,
 }
 
@@ -883,3 +907,160 @@ struct AnthropicError {
     message: String,
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn request(messages: Vec<Message>) -> ChatRequest {
+        ChatRequest {
+            messages,
+            system: "SYSTEM".into(),
+            cache_breakpoints: vec![6],
+            tools: vec![ToolDefinition {
+                name: "read_file".into(),
+                description: "Reads a file.".into(),
+                input_schema: serde_json::json!({"type": "object", "properties": {}}),
+            }],
+            ..ChatRequest::new(RequestTrace::new("agent_turn"))
+        }
+    }
+
+    fn user(text: &str) -> Message {
+        Message { role: "user".into(), content: text.into(), ..Default::default() }
+    }
+
+    fn sent(req: &ChatRequest) -> serde_json::Value {
+        let provider = AnthropicProvider::new("key".into(), "claude".into());
+        serde_json::to_value(provider.api_request(req)).unwrap()
+    }
+
+    fn markers(v: &serde_json::Value) -> usize {
+        match v {
+            serde_json::Value::Object(o) => o.iter().map(|(k, v)| usize::from(k == "cache_control") + markers(v)).sum(),
+            serde_json::Value::Array(a) => a.iter().map(markers).sum(),
+            _ => 0,
+        }
+    }
+
+    /// Cache marker placement: the system prompt's marker, and exactly one
+    /// on the last message, which a plain-text message carries as a text
+    /// block. Before: none when the last row was plain text, and one on the
+    /// last tool.
+    #[test]
+    fn one_marker_on_the_last_message_even_when_it_is_plain_text() {
+        let body = sent(&request(vec![user("Hi"), Message { role: "assistant".into(), content: "Hello.".into(), ..Default::default() }, user("<system-reminder>\nIt is noon.\n</system-reminder>")]));
+        assert_eq!(markers(&body), 2, "the system prompt and the last message: {body}");
+        assert!(body["system"][0]["cache_control"].is_object());
+        assert!(body["tools"][0].get("cache_control").is_none(), "the tools carry none");
+        let last = body["messages"].as_array().unwrap().last().unwrap();
+        assert_eq!(last["content"][0]["text"], "<system-reminder>\nIt is noon.\n</system-reminder>");
+        assert!(last["content"][0]["cache_control"].is_object(), "{last}");
+        assert!(body["messages"][0]["content"].is_string(), "earlier messages stay as they are");
+    }
+
+    #[test]
+    fn a_tool_result_last_carries_the_marker_on_its_block() {
+        let call = Message {
+            role: "assistant".into(),
+            tool_calls: Some(serde_json::json!([{"id": "t1", "name": "read_file", "input": {}}])),
+            ..Default::default()
+        };
+        let result = Message {
+            role: "tool".into(),
+            tool_results: Some(serde_json::json!([{"tool_call_id": "t1", "content": "text"}])),
+            ..Default::default()
+        };
+        let body = sent(&request(vec![user("Read it"), call, result]));
+        assert_eq!(markers(&body), 2, "{body}");
+        let last = body["messages"].as_array().unwrap().last().unwrap();
+        assert!(last["content"][0]["cache_control"].is_object(), "{last}");
+    }
+
+    /// A thinking turn goes back with its blocks first, each unchanged:
+    /// signed thinking, then redacted thinking, then the text and the call.
+    #[test]
+    fn an_assistant_turn_sends_its_thinking_blocks_first() {
+        let call = Message {
+            role: "assistant".into(),
+            content: "Reading it.".into(),
+            tool_calls: Some(serde_json::json!([{"id": "t1", "name": "read_file", "input": {}}])),
+            thinking: vec![
+                ThinkingBlock::Thinking { thinking: "look first".into(), signature: "sig".into() },
+                ThinkingBlock::RedactedThinking { data: "opaque".into() },
+            ],
+            ..Default::default()
+        };
+        let result = Message {
+            role: "tool".into(),
+            tool_results: Some(serde_json::json!([{"tool_call_id": "t1", "content": "text"}])),
+            ..Default::default()
+        };
+        let body = sent(&request(vec![user("Read it"), call, result]));
+        let content = &body["messages"][1]["content"];
+        assert_eq!(content[0], serde_json::json!({"type": "thinking", "thinking": "look first", "signature": "sig"}));
+        assert_eq!(content[1], serde_json::json!({"type": "redacted_thinking", "data": "opaque"}));
+        assert_eq!(content[2]["type"], "text");
+        assert_eq!(content[3]["type"], "tool_use");
+    }
+
+    /// The stream's thinking comes out as its deltas (for the owner to
+    /// watch) and, at the block's stop, as one whole block with its
+    /// signature; a redacted block comes out whole.
+    #[tokio::test]
+    async fn a_streamed_thinking_block_is_handed_over_whole_with_its_signature() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 2048];
+            let _ = sock.read(&mut buf).await;
+            let events = [
+                r#"{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}}"#,
+                r#"{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"look "}}"#,
+                r#"{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"first"}}"#,
+                r#"{"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"sig-1"}}"#,
+                r#"{"type":"content_block_stop","index":0}"#,
+                r#"{"type":"content_block_start","index":1,"content_block":{"type":"redacted_thinking","data":"opaque"}}"#,
+                r#"{"type":"content_block_stop","index":1}"#,
+                r#"{"type":"content_block_start","index":2,"content_block":{"type":"tool_use","id":"t1","name":"read_file"}}"#,
+                r#"{"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"{}"}}"#,
+                r#"{"type":"content_block_stop","index":2}"#,
+                r#"{"type":"message_stop"}"#,
+            ];
+            let body: String = events.iter().map(|e| format!("data: {e}\n\n")).collect();
+            let resp = format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n{body}");
+            sock.write_all(resp.as_bytes()).await.unwrap();
+            sock.flush().await.unwrap();
+        });
+        let response = reqwest::get(format!("http://{addr}/")).await.unwrap();
+        let (tx, mut rx) = mpsc::channel(64);
+        AnthropicProvider::handle_stream(response, tx).await;
+        server.await.unwrap();
+        let mut deltas = String::new();
+        let mut blocks = Vec::new();
+        let mut order = Vec::new();
+        while let Ok(ev) = rx.try_recv() {
+            match ev.event_type {
+                StreamEventType::Thinking => deltas.push_str(&ev.text),
+                StreamEventType::ThinkingBlock => {
+                    blocks.extend(ev.block());
+                    order.push("block");
+                }
+                StreamEventType::ToolCall => order.push("call"),
+                _ => {}
+            }
+        }
+        assert_eq!(deltas, "look first");
+        assert_eq!(
+            blocks,
+            vec![
+                ThinkingBlock::Thinking { thinking: "look first".into(), signature: "sig-1".into() },
+                ThinkingBlock::RedactedThinking { data: "opaque".into() },
+            ]
+        );
+        assert_eq!(order, vec!["block", "block", "call"]);
+    }
+
+}

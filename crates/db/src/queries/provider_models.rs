@@ -144,7 +144,7 @@ impl Store {
              ON CONFLICT(provider, model_id) DO UPDATE SET
                  display_name = excluded.display_name,
                  description = excluded.description,
-                 context_window = excluded.context_window,
+                 context_window = COALESCE(excluded.context_window, provider_models.context_window),
                  input_price = excluded.input_price,
                  output_price = excluded.output_price,
                  capabilities = excluded.capabilities,

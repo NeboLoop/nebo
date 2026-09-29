@@ -1,0 +1,11 @@
+# v2 (new harness): parallel work. Fixtures written for the rewrite's tools
+# (fixtures/v2/MAPPING.md); no arm-A twin, because the old loop had no
+# delegate tool to fan out with.
+name: fan-out
+description: |
+  Parallel work is the model's shape as well as the executor's: independent
+  calls go in one response, and learning across many skills or files goes to
+  helpers that send back a digest. 2026-09-26: an employee loaded 28 skills
+  one per step and never delegated.
+fixtures:
+  - ../../fixtures/v2/tools/plugin-many-skills-fan-out.yaml

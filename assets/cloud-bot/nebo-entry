@@ -1,0 +1,22 @@
+#!/bin/sh
+# The cloud bot's entrypoint (Dockerfile): its home, its toolchains, then
+# the server.
+mkdir -p "$HOME" /data/toolchains
+[ -f "$HOME/.zshrc" ] || cp /etc/nebo/zshrc "$HOME/.zshrc" 2>/dev/null || true
+
+# A toolchain an older image installed in $HOME moves to where the image now
+# points it (a bot on its own volume kept it there), once, and the old path
+# stays as a link: `~/.cargo/env` and the like keep working.
+move() {
+  if [ -d "$1" ] && [ ! -L "$1" ] && [ ! -e "$2" ]; then
+    mkdir -p "$(dirname "$2")" && mv "$1" "$2" && ln -s "$2" "$1"
+  fi
+}
+move "$HOME/.cargo" "$CARGO_HOME"
+move "$HOME/.rustup" "$RUSTUP_HOME"
+move "$HOME/go" "$GOPATH"
+for lib in "$HOME"/.local/lib/python3*; do
+  move "$lib" "$PYTHONUSERBASE/lib/${lib##*/}"
+done
+
+exec nebo-cli serve "$@"

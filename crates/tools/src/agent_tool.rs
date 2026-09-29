@@ -7,7 +7,7 @@ use tracing::{info, warn};
 
 use crate::origin::ToolContext;
 use crate::plugin_tool::{CardAnswer, INSTALL_CARD_INSTALLED, TOOL_INSTALL_DOOR};
-use crate::registry::{DynTool, ToolResult};
+use crate::registry::ToolResult;
 use db::Store;
 
 /// The three places an employee can come from, as `info` reports them. A
@@ -20,10 +20,6 @@ const SOURCE_LOCAL_DATABASE: &str = "local employee (database only)";
 /// How much of a long persona `info` shows inline; the rest is in AGENT.md.
 const INFO_PERSONA_PREVIEW_BYTES: usize = 500;
 
-/// The registry's actions, the ONE list behind the unknown-action text.
-const REGISTRY_ACTIONS: &str =
-    "list, activate, deactivate, info, create, update, delete, install, reload, repair, setup, stats";
-
 /// A single active agent — its own bot with isolated persona and scoped capabilities.
 #[derive(Debug, Clone)]
 pub struct ActiveAgent {
@@ -31,7 +27,7 @@ pub struct ActiveAgent {
     pub agent_id: String,
     /// Human-readable display name.
     pub name: String,
-    /// Full AGENT.md body — becomes the system prompt identity.
+    /// Full AGENT.md body — told in the turn's identity row.
     pub agent_md: String,
     /// Parsed agent.json config (workflows, skills, triggers).
     pub config: Option<napp::agent::AgentConfig>,
@@ -152,6 +148,12 @@ pub struct PersonaTool {
     agent_loader: Arc<napp::AgentLoader>,
     /// Shared cell holding the canonical code installer (filled late by the server).
     code_installer: Arc<std::sync::RwLock<Option<Arc<dyn crate::bot_tool::CodeInstaller>>>>,
+    /// Shared cell holding the permission system's side of making and
+    /// changing jobs (filled late by the server, like `code_installer`).
+    job_consent: crate::needs::JobConsentCell,
+    /// The coworker rail (filled late by the server): what every employee
+    /// is doing right now, which the roster reports.
+    rail: crate::coworker::CoworkerRailCell,
 }
 
 /// A listing NeboAI published: its qualified name lives under the @neboai
@@ -180,7 +182,41 @@ impl PersonaTool {
             agent_registry,
             agent_loader,
             code_installer: Arc::new(std::sync::RwLock::new(None)),
+            job_consent: Arc::new(std::sync::RwLock::new(None)),
+            rail: crate::coworker::new_rail_cell(),
         }
+    }
+
+    /// Inject the shared coworker-rail cell (from the `Registry`): the
+    /// roster reports what each employee is doing through it.
+    pub fn with_coworker_rail(mut self, rail: crate::coworker::CoworkerRailCell) -> Self {
+        self.rail = rail;
+        self
+    }
+
+    /// What the company is doing right now, asked from `ctx`'s session,
+    /// with `detail_for`'s work read in detail. Empty until the server has
+    /// bound the rail.
+    async fn company_now(&self, ctx: &ToolContext, detail_for: Option<String>) -> Vec<crate::company::EmployeeNow> {
+        let rail = self.rail.read().ok().and_then(|r| r.clone());
+        match rail {
+            Some(rail) => {
+                rail.company_now(crate::company::CompanyQuery { caller_session: ctx.session_key.clone(), detail_for })
+                    .await
+            }
+            None => Vec::new(),
+        }
+    }
+
+    /// Inject the shared job-consent cell (from the `Registry`): create and
+    /// update draft a job, and grant it on the owner's yes, through it.
+    pub fn with_job_consent(mut self, cell: crate::needs::JobConsentCell) -> Self {
+        self.job_consent = cell;
+        self
+    }
+
+    fn job_consent(&self) -> Option<Arc<dyn crate::needs::JobConsent>> {
+        self.job_consent.read().ok().and_then(|c| c.clone())
     }
 
     /// Inject the shared canonical-installer cell (from the `Registry`). When set, the
@@ -194,40 +230,7 @@ impl PersonaTool {
         self
     }
 
-    pub async fn handle_action(&self, input: &serde_json::Value) -> ToolResult {
-        let action = input["action"].as_str().unwrap_or("");
-
-        match action {
-            "list" => self.handle_list().await,
-            "activate" => self.handle_activate(input).await,
-            "deactivate" => self.handle_deactivate(input).await,
-            "info" => self.handle_info(input).await,
-            "create" => self.handle_create(input).await,
-            "update" => self.handle_update(input).await,
-            "delete" => self.handle_delete(input).await,
-            "install" => self.handle_install(input).await,
-            "reload" => self.handle_reload(input).await,
-            "repair" => self.handle_repair(input).await,
-            "setup" => self.handle_setup(input).await,
-            "stats" => self.handle_stats(input).await,
-            _ => ToolResult::error(Self::unknown_action(action)),
-        }
-    }
-
-    /// The ONE text for an action the registry does not have. It names the
-    /// coworker message because `delegate` used to be an action here and old
-    /// straps and runs still send it (coworkers PRD, 2026-08-22: a name is
-    /// always a message, never a subagent wearing the target's persona).
-    fn unknown_action(action: &str) -> String {
-        format!(
-            "'{action}' is not a registry action. To read one employee use info (name); to change it use update; \
-             to list them use list. All actions: {REGISTRY_ACTIONS}. There is no delegate: work for a named coworker \
-             is a message, message(resource: \"coworker\", action: \"send\", to: \"<employee>\", text: \"<what you need>\"); \
-             anonymous extra hands for your own work are agent(resource: \"task\", action: \"spawn\", prompt: ...)."
-        )
-    }
-
-    async fn handle_list(&self) -> ToolResult {
+    pub(crate) async fn handle_list(&self, ctx: &ToolContext) -> ToolResult {
         // Get agents from loader cache
         let fs_agents = self.agent_loader.list().await;
         let installed: Vec<_> = fs_agents
@@ -245,7 +248,7 @@ impl PersonaTool {
         let db_agents = self.store.list_agents(100, 0).unwrap_or_default();
 
         if installed.is_empty() && user.is_empty() && db_agents.is_empty() {
-            return ToolResult::ok("No agents available.");
+            return ToolResult::ok("No employees yet.");
         }
 
         let mut lines = Vec::new();
@@ -329,22 +332,28 @@ impl PersonaTool {
         } else {
             format!("{} marketplace, {} user-created", installed.len(), user.len())
         };
-        ToolResult::ok(format!(
-            "{} agent(s)/app(s) ({}){}:\n{}",
+        let mut out = format!(
+            "{} employee(s)/app(s) ({}){}:\n{}",
             lines.len(),
             breakdown,
             status,
             lines.join("\n")
-        ))
+        );
+        let now = crate::company::render_all(&self.company_now(ctx, None).await);
+        if !now.is_empty() {
+            out.push_str("\n\n");
+            out.push_str(&now);
+        }
+        ToolResult::ok(out)
     }
 
-    async fn handle_activate(&self, input: &serde_json::Value) -> ToolResult {
+    pub(crate) async fn handle_activate(&self, input: &serde_json::Value) -> ToolResult {
         let name = input["name"].as_str().unwrap_or("");
         if name.is_empty() {
             return ToolResult::error(crate::errors::missing_param(
-                "activate",
+                "set_employee_active",
                 "name",
-                "agent(resource: \"registry\", action: \"activate\", name: \"chief-of-staff\")",
+                "set_employee_active(name: \"chief-of-staff\", active: true)",
             ));
         }
 
@@ -417,7 +426,7 @@ impl PersonaTool {
                     .await
                     .insert(agent_id.clone(), active);
 
-                let mut result = format!("Activated agent: {} (id: {})", agent_name, agent_id);
+                let mut result = format!("Turned on {} (id: {})", agent_name, agent_id);
                 if let Some(ref config) = loaded.config {
                     let wf_count = config.workflows.len();
                     let skill_count = config.skills.len();
@@ -435,13 +444,13 @@ impl PersonaTool {
                 ToolResult::ok(result)
             }
             None => ToolResult::error(format!(
-                "Agent '{}' not found. Use agent(resource: \"registry\", action: \"list\") to see available agents.",
+                "No employee named '{}'. list_employees shows every employee here.",
                 name
             )),
         }
     }
 
-    async fn handle_deactivate(&self, input: &serde_json::Value) -> ToolResult {
+    pub(crate) async fn handle_deactivate(&self, input: &serde_json::Value) -> ToolResult {
         let name = input["name"].as_str().unwrap_or("");
 
         let mut registry = self.agent_registry.write().await;
@@ -449,25 +458,21 @@ impl PersonaTool {
         if name.is_empty() {
             // Deactivate all agents
             if registry.is_empty() {
-                return ToolResult::ok("No agents are active.");
+                return ToolResult::ok("No employees are on.");
             }
             let names: Vec<String> = registry.values().map(|r| r.name.clone()).collect();
             registry.clear();
-            ToolResult::ok(format!("Deactivated all agents: {}", names.join(", ")))
+            ToolResult::ok(format!("Turned off every employee: {}", names.join(", ")))
         } else {
-            // Deactivate a specific agent by name or id
-            let lower = name.to_lowercase();
-            let key = registry
-                .iter()
-                .find(|(k, v)| k.to_lowercase() == lower || v.name.to_lowercase() == lower)
-                .map(|(k, _)| k.clone());
+            // Deactivate a specific agent: the live registry is keyed by id.
+            let key = self.find_agent_row(name).map(|a| a.id).filter(|id| registry.contains_key(id));
             match key {
                 Some(k) => {
                     let agent = registry.remove(&k).unwrap();
-                    ToolResult::ok(format!("Deactivated agent: {}", agent.name))
+                    ToolResult::ok(format!("Turned off {}", agent.name))
                 }
                 None => ToolResult::error(format!(
-                    "Agent '{}' is not active. Active agents: {}",
+                    "{} is not active. Employees that are on: {}",
                     name,
                     if registry.is_empty() {
                         "none".to_string()
@@ -483,19 +488,19 @@ impl PersonaTool {
         }
     }
 
-    async fn handle_info(&self, input: &serde_json::Value) -> ToolResult {
+    pub(crate) async fn handle_info(&self, input: &serde_json::Value, ctx: &ToolContext) -> ToolResult {
         let name = input["name"].as_str().unwrap_or("");
         if name.is_empty() {
             // Show all active agents
             let registry = self.agent_registry.read().await;
             if registry.is_empty() {
-                return ToolResult::ok("No agents are currently active.");
+                return ToolResult::ok("No employees are on.");
             }
             let mut lines = Vec::new();
             for (id, agent) in registry.iter() {
                 let preview = if agent.agent_md.len() > 200 {
                     format!(
-                        "(first 200 of {} bytes; full text via agent(resource: \"registry\", action: \"info\", name: \"{}\"))\n{}",
+                        "(first 200 of {} bytes; full text via get_employee(name: \"{}\"))\n{}",
                         agent.agent_md.len(),
                         agent.name,
                         crate::truncate_str(&agent.agent_md, 200)
@@ -513,12 +518,19 @@ impl PersonaTool {
         }
 
         match self.find_agent(name).await {
-            Some(loaded) => ToolResult::ok(Self::info_text(
-                &loaded,
-                self.agent_loader.user_dir(),
-                self.agent_loader.installed_dir(),
-            )),
-            None => ToolResult::error(format!("Agent '{}' not found.", name)),
+            Some(loaded) => {
+                let mut info = Self::info_text(&loaded, self.agent_loader.user_dir(), self.agent_loader.installed_dir());
+                // What it is doing right now, read in detail.
+                if let Some(id) = self.find_agent_row(name).map(|r| r.id) {
+                    let now = self.company_now(ctx, Some(id.clone())).await;
+                    if let Some(employee) = now.iter().find(|e| e.agent_id == id) {
+                        info.push_str("\n\n");
+                        info.push_str(&crate::company::render_one(employee));
+                    }
+                }
+                ToolResult::ok(info)
+            }
+            None => ToolResult::error(format!("No employee named '{}'.", name)),
         }
     }
 
@@ -627,23 +639,23 @@ impl PersonaTool {
                 // is sealed and edited through the tool, not on disk.
                 if loaded.source_path.is_dir() {
                     info.push_str(&format!(
-                        "\nFiles: {} (AGENT.md is the persona; agent.json holds inputs and workflows). Edit with agent(resource: \"registry\", action: \"update\", name, agent_md | prompt | automations), or edit the files and reload.\n",
+                        "\nFiles: {} (AGENT.md is the persona; agent.json holds inputs and workflows). Edit with update_employee(name, instructions | agent_md | automations), or edit the files and reload_employee.\n",
                         loaded.source_path.display()
                     ));
                 } else if let Some(napp) = loaded.napp_path.as_ref().filter(|p| p.is_file()) {
                     info.push_str(&format!(
-                        "\nFiles: sealed package {} (no editable files on disk; change it with agent(resource: \"registry\", action: \"update\")).\n",
+                        "\nFiles: sealed package {} (no editable files on disk; change it with update_employee).\n",
                         napp.display()
                     ));
                 } else {
                     info.push_str(
-                        "\nFiles: none on disk; this employee lives in the database. Do not search for its files. Change it with agent(resource: \"registry\", action: \"update\", name, agent_md | prompt | automations).\n",
+                        "\nFiles: none on disk; this employee lives in the database. Do not search for its files. Change it with update_employee(name, instructions | agent_md | automations).\n",
                     );
                 }
                 let body = Self::agent_body(&loaded.agent_md);
                 if body.is_empty() {
                     info.push_str(&format!(
-                        "\nPersona: none yet. This employee has no instructions; set them with agent(resource: \"registry\", action: \"update\", name: \"{}\", prompt: \"...\").",
+                        "\nPersona: none yet. This employee has no instructions; set them with update_employee(name: \"{}\", instructions: \"...\").",
                         loaded.agent_def.name
                     ));
                 } else if body.len() > INFO_PERSONA_PREVIEW_BYTES {
@@ -930,7 +942,7 @@ impl PersonaTool {
             };
             return ToolResult::ok(format!(
                 "Hired and on the roster: {}.{was_already} Reach them as employees (they appear in \
-                 agent(resource: \"registry\", action: \"list\")); no setup narration and no further search needed.",
+                 list_employees); no setup narration and no further search needed.",
                 names.join(", ")
             ));
         }
@@ -987,13 +999,305 @@ impl PersonaTool {
             .join(" ")
     }
 
-    async fn handle_create(&self, input: &serde_json::Value) -> ToolResult {
+    /// The employee a call names: its id, its name in any case, or its
+    /// short name (the slug create_employee reports) — the one resolver,
+    /// [`crate::team::resolve_agent`], for every employee tool.
+    fn find_agent_row(&self, name: &str) -> Option<db::models::Agent> {
+        crate::team::resolve_agent(&self.store, name)
+    }
+
+    /// Fields of an update that change what the job is.
+    const JOB_FIELDS: &[&str] =
+        &["description", "instructions", "agent_md", "automations", "add_automations", "update_automation"];
+
+    /// What a job is made from, read off a create or update call: its
+    /// words, the capability terms and plugins it declares, its workflows.
+    fn job_parts(input: &serde_json::Value) -> (String, Vec<String>, Vec<String>, Vec<napp::agent::WorkflowBinding>) {
+        let text: Vec<&str> = ["description", "instructions", "agent_md"]
+            .iter()
+            .filter_map(|k| input[*k].as_str())
+            .filter(|s| !s.trim().is_empty())
+            .collect();
+        let strings = |v: &serde_json::Value| -> Vec<String> {
+            v.as_array()
+                .map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect())
+                .unwrap_or_default()
+        };
+        let terms = strings(&input["requires"]["interfaces"]);
+        let plugins = strings(&input["requires"]["plugins"]);
+        let mut configs = Vec::new();
+        for key in ["automations", "add_automations"] {
+            if let Some(autos) = input[key].as_array().filter(|a| !a.is_empty())
+                && let Ok(json) = Self::build_agent_json_from_automations(autos)
+            {
+                configs.push(json.to_string());
+            }
+        }
+        match &input["agent_json"] {
+            serde_json::Value::String(raw) => configs.push(raw.clone()),
+            raw if raw.is_object() => configs.push(raw.to_string()),
+            _ => {}
+        }
+        let workflows = configs
+            .iter()
+            .filter_map(|c| napp::agent::parse_agent_config(c).ok())
+            .flat_map(|c| c.workflows.into_values())
+            .collect();
+        (text.join("\n\n"), terms, plugins, workflows)
+    }
+
+    /// The one needs step, for a create or update call. `agent_id`: the
+    /// employee the job is for, or for a new one the employee creating it.
+    async fn work_out(
+        consent: &dyn crate::needs::JobConsent,
+        agent_id: &str,
+        name: &str,
+        input: &serde_json::Value,
+    ) -> crate::needs::Needs {
+        let (description, terms, plugins, workflows) = Self::job_parts(input);
+        let src = crate::needs::JobSource {
+            name,
+            agent_id,
+            description: &description,
+            skills: &terms,
+            plugins: &plugins,
+            workflows: &workflows,
+            declared: None,
+            installed: &[],
+        };
+        crate::needs::work_out_needs(&src, consent).await
+    }
+
+    /// The employee whose run this call is: the one creating or editing.
+    fn creator_of(ctx: &ToolContext) -> String {
+        match &ctx.grant {
+            Some(g) => g.agent_id.clone(),
+            None => types::keyparser::extract_agent_id(&ctx.session_key),
+        }
+    }
+
+    /// Keep a draft of `input`, shown in this call's chat; its id and line.
+    fn draft(
+        &self,
+        ctx: &ToolContext,
+        kind: &str,
+        agent_id: &str,
+        name: &str,
+        input: &serde_json::Value,
+        needs: &crate::needs::Needs,
+    ) -> Result<(String, String), String> {
+        let creator_id = Self::creator_of(ctx);
+        let chat_id =
+            if ctx.session_id.is_empty() { String::new() } else { self.store.resolve_session_chat_id(&ctx.session_id) };
+        crate::needs::save_draft(
+            &self.store,
+            &crate::needs::Draft { kind, agent_id, creator_id: &creator_id, chat_id: &chat_id, name, input, needs },
+        )
+    }
+
+    /// The consent line as the chat shows it: an inline chip.
+    fn consent_payload(draft_id: &str, employee: &str, line: &str, needs: &crate::needs::Needs, adds: bool) -> serde_json::Value {
+        serde_json::json!({
+            "kind": "employee_consent",
+            "draftId": draft_id,
+            "employee": employee,
+            "line": line,
+            "adds": adds,
+            "items": needs.items().into_iter().map(|t| t.words).collect::<Vec<_>>(),
+        })
+    }
+
+    /// What the grant came to, for the model to tell the owner plainly.
+    fn granted_text(name: &str, g: &crate::needs::Granted, consented: bool) -> String {
+        use crate::needs::consent_line;
+        if consented {
+            return format!("\nThe owner agreed to this job: {}", consent_line(name, &g.granted));
+        }
+        let mut text =
+            String::from("\nThe owner has not said yes to this line in this chat, so this grants no more than you hold yourself.");
+        if !g.granted.is_empty() {
+            text.push_str(&format!(" Granted now: {}", consent_line(name, &g.granted)));
+        }
+        if g.card.is_some() {
+            text.push_str(&format!(
+                " One approval card went to the owner for the rest: \"{}\" Until they answer, {name} can't do that; \
+                 tell the owner plainly what is waiting and never say it can yet.",
+                consent_line(name, &g.extras)
+            ));
+        }
+        text
+    }
+
+    /// Create, in two steps: without `draft_id` the call drafts the
+    /// employee, works out its needs and answers with the one line to put to
+    /// the owner; with it, the drafted employee is created and its job
+    /// granted: in full when the owner said yes in this chat after the line
+    /// was shown, else no more than the run's own employee holds, with the
+    /// rest on one card to the owner.
+    pub(crate) async fn create_with_consent(&self, input: &serde_json::Value, ctx: &ToolContext) -> ToolResult {
+        let Some(consent) = self.job_consent() else {
+            return ToolResult::error("Employees can't be created right now: permissions aren't ready yet. Try again shortly.");
+        };
+        if let Some(draft_id) = input["draft_id"].as_str().filter(|d| !d.is_empty()) {
+            let (draft, drafted, needs) = match crate::needs::open_draft(&self.store, draft_id, "create") {
+                Ok(d) => d,
+                Err(e) => return ToolResult::error(e),
+            };
+            let consented = consent.owner_consented(ctx, Some(draft_id));
+            let id = uuid::Uuid::new_v4().to_string();
+            let created = self.handle_create(&drafted, &id).await;
+            if created.is_error {
+                return created;
+            }
+            let _ = self.store.use_employee_draft(draft_id);
+            let job = crate::needs::JobGrant {
+                agent_id: &id,
+                name: &draft.name,
+                needs: &needs,
+                draft_id,
+                consented,
+                created: true,
+            };
+            let said = match consent.grant(ctx, &job) {
+                Ok(g) => Self::granted_text(&draft.name, &g, consented),
+                Err(e) => format!("\nIts job was not granted ({e}); it asks before using anything beyond its own notes and tasks."),
+            };
+            return ToolResult { content: format!("{}{said}", created.content), ..created };
+        }
         let name = input["name"].as_str().unwrap_or("");
         if name.is_empty() {
             return ToolResult::error(crate::errors::missing_param(
-                "create",
+                "create_employee",
                 "name",
-                "agent(resource: \"registry\", action: \"create\", name: \"my-agent\", description: \"An agent that...\")",
+                "create_employee(name: \"Office Manager\", description: \"Keeps the office running...\")",
+            ));
+        }
+        if input["description"].as_str().unwrap_or("").is_empty() && input["agent_md"].as_str().unwrap_or("").is_empty() {
+            return ToolResult::error("either 'agent_md' or 'description' is required to create an employee");
+        }
+        if self.agent_loader.user_dir().join(name).exists() {
+            return ToolResult::error(format!(
+                "An employee named '{}' already exists. Change it with update_employee, or choose another name.",
+                name
+            ));
+        }
+        let display = Self::display_name(name);
+        let needs = Self::work_out(consent.as_ref(), &Self::creator_of(ctx), &display, input).await;
+        let (draft_id, line) = match self.draft(ctx, "create", "", &display, input, &needs) {
+            Ok(d) => d,
+            Err(e) => return ToolResult::error(e),
+        };
+        ToolResult::ok(format!(
+            "Drafted {display}; nothing is created yet. What it will be able to do, in one line:\n\"{line}\"\n\
+             If the owner's latest message already told you to create it now (\"create it\", \"just do it\", \
+             \"go ahead\"), call create_employee(draft_id: \"{draft_id}\") now and don't ask again: their \
+             request is their yes. Otherwise tell the owner that line in plain words and ask them to confirm; when \
+             they say yes, call create_employee(draft_id: \"{draft_id}\") and nothing else. Either way it creates \
+             exactly this job. If they want it different, draft again."
+        ))
+        .with_payload(Self::consent_payload(&draft_id, &display, &line, &needs, false))
+    }
+
+    /// Update. An edit that adds to the job works out its needs again. The
+    /// owner's own request is his yes: the edit is made at once and the
+    /// addition granted as his. Any other run drafts first, putting only what
+    /// is new to the owner; the update with `draft_id` applies the drafted
+    /// edit and grants the addition on his yes (an employee never widens
+    /// another: without it, the addition is one card to the owner). An edit
+    /// that adds nothing runs at once.
+    pub(crate) async fn update_with_consent(&self, input: &serde_json::Value, ctx: &ToolContext) -> ToolResult {
+        let consent = self.job_consent();
+        if let Some(draft_id) = input["draft_id"].as_str().filter(|d| !d.is_empty()) {
+            let Some(consent) = consent else {
+                return ToolResult::error("Jobs can't be changed right now: permissions aren't ready yet. Try again shortly.");
+            };
+            let (draft, drafted, needs) = match crate::needs::open_draft(&self.store, draft_id, "edit") {
+                Ok(d) => d,
+                Err(e) => return ToolResult::error(e),
+            };
+            let consented = consent.owner_consented(ctx, Some(draft_id));
+            let job = crate::needs::JobGrant {
+                agent_id: &draft.agent_id,
+                name: &draft.name,
+                needs: &needs,
+                draft_id,
+                consented,
+                created: false,
+            };
+            return self.apply_edit(ctx, consent.as_ref(), &drafted, &job).await;
+        }
+        let shapes_the_job = Self::JOB_FIELDS.iter().any(|k| !input[*k].is_null());
+        let name = input["name"].as_str().unwrap_or("");
+        let (Some(consent), true, false) = (consent, shapes_the_job, name.is_empty()) else {
+            return self.handle_update(input).await;
+        };
+        let Some(agent) = self.find_agent_row(name) else {
+            return self.handle_update(input).await;
+        };
+        let before = consent.job_of(&agent.id);
+        let after = Self::work_out(consent.as_ref(), &agent.id, &agent.name, input).await;
+        let new = crate::needs::added(&before, &after);
+        if new.is_empty() {
+            return self.handle_update(input).await;
+        }
+        if consent.owner_consented(ctx, None) {
+            let job = crate::needs::JobGrant {
+                agent_id: &agent.id,
+                name: &agent.name,
+                needs: &new,
+                draft_id: "",
+                consented: true,
+                created: false,
+            };
+            return self.apply_edit(ctx, consent.as_ref(), input, &job).await;
+        }
+        let (draft_id, line) = match self.draft(ctx, "edit", &agent.id, &agent.name, input, &new) {
+            Ok(d) => d,
+            Err(e) => return ToolResult::error(e),
+        };
+        ToolResult::ok(format!(
+            "Nothing is changed yet: this edit adds to {}'s job, and the owner didn't ask for it in this chat. Only \
+             what is new, in one line:\n\"{line}\"\n\
+             Tell the owner just that (not what the job already has) and ask them to confirm; when they say yes, \
+             call update_employee(draft_id: \"{draft_id}\") and nothing else.",
+            agent.name
+        ))
+        .with_payload(Self::consent_payload(&draft_id, &agent.name, &line, &new, true))
+    }
+
+    /// Make an edit and grant what it adds to the job, as `job` says: in
+    /// full on the owner's yes, else as one card to the owner. A drafted
+    /// edit is used up once it lands.
+    async fn apply_edit(
+        &self,
+        ctx: &ToolContext,
+        consent: &dyn crate::needs::JobConsent,
+        input: &serde_json::Value,
+        job: &crate::needs::JobGrant<'_>,
+    ) -> ToolResult {
+        let updated = self.handle_update(input).await;
+        if updated.is_error {
+            return updated;
+        }
+        if !job.draft_id.is_empty() {
+            let _ = self.store.use_employee_draft(job.draft_id);
+        }
+        let said = match consent.grant(ctx, job) {
+            Ok(g) => Self::granted_text(job.name, &g, job.consented),
+            Err(e) => format!("\nThe addition to its job was not granted ({e})."),
+        };
+        ToolResult { content: format!("{}{said}", updated.content), ..updated }
+    }
+
+    /// Create the employee `input` describes under `id`. Reached only
+    /// through [`Self::create_with_consent`], with the drafted input.
+    async fn handle_create(&self, input: &serde_json::Value, id: &str) -> ToolResult {
+        let name = input["name"].as_str().unwrap_or("");
+        if name.is_empty() {
+            return ToolResult::error(crate::errors::missing_param(
+                "create_employee",
+                "name",
+                "create_employee(name: \"Office Manager\", description: \"Keeps the office running...\")",
             ));
         }
 
@@ -1104,7 +1408,7 @@ impl PersonaTool {
 
         // The DB row's UUID, written into the manifest too: the loader keys
         // the directory by manifest id and would otherwise mint a second one.
-        let id = uuid::Uuid::new_v4().to_string();
+        let id = id.to_string();
 
         // The package through the ONE writer (`napp::write_user_agent`): the
         // manifest (with the row's id, the app fields when it is an app),
@@ -1153,7 +1457,7 @@ impl PersonaTool {
             }
         }
 
-        let mut result = format!("Created agent '{}' (id: {})", name, id);
+        let mut result = format!("Created employee '{}' (id: {})", name, id);
         if app_fields.is_some() {
             result.push_str(&Self::app_created_note(&id, &ui_files));
         }
@@ -1241,13 +1545,10 @@ impl PersonaTool {
     /// before a byte is written: a field this handler does not read would
     /// otherwise vanish and the result would still say "Updated".
     const UPDATE_FIELDS: &[&str] = &[
-        "resource",
-        "action",
         "name",
         "new_name",
         "description",
         "agent_md",
-        "prompt",
         "instructions",
         "input_values",
         "inputs",
@@ -1259,7 +1560,7 @@ impl PersonaTool {
         "app",
         "ui",
         "ui_jsx",
-        "agent",
+        "draft_id",
     ];
 
     fn unknown_update_fields(input: &serde_json::Value) -> Vec<String> {
@@ -1292,7 +1593,7 @@ impl PersonaTool {
     /// (a blank hire, or one created here without automations) has an empty
     /// column; that is an EMPTY config, not an invalid one. Read as `""` it
     /// fails validation with "EOF while parsing a value" and every update of
-    /// such an employee is refused (agent-update-description, 2026-09-17).
+    /// such an employee is refused (employee-update-description, 2026-09-17).
     fn stored_frontmatter(stored: &str) -> String {
         if stored.trim().is_empty() {
             "{}".to_string()
@@ -1314,40 +1615,30 @@ impl PersonaTool {
         let name = input["name"].as_str().unwrap_or("");
         if name.is_empty() {
             return ToolResult::error(crate::errors::missing_param(
-                "update",
+                "update_employee",
                 "name",
-                "agent(resource: \"registry\", action: \"update\", name: \"my-agent\", description: \"Updated description\")",
+                "update_employee(name: \"Office Manager\", description: \"Updated description\")",
             ));
         }
 
         let unknown = Self::unknown_update_fields(input);
         if !unknown.is_empty() {
             return ToolResult::error(format!(
-                "update does not handle {}; nothing was changed. Fields update acts on: {}.",
+                "update_employee does not handle {}; nothing was changed. Fields it acts on: {}.",
                 unknown.iter().map(|k| format!("`{k}`")).collect::<Vec<_>>().join(", "),
                 Self::UPDATE_FIELDS
                     .iter()
-                    .filter(|k| !matches!(**k, "resource" | "action" | "agent"))
                     .map(|k| format!("`{k}`"))
                     .collect::<Vec<_>>()
                     .join(", ")
             ));
         }
         // Find the agent in DB
-        let db_agent = match self.store.list_agents(500, 0) {
-            Ok(agents) => {
-                let lower = name.to_lowercase();
-                agents
-                    .into_iter()
-                    .find(|r| r.name.to_lowercase() == lower || r.id == name)
-            }
-            Err(e) => return ToolResult::error(format!("Failed to query agents: {}", e)),
-        };
-        let db_agent = match db_agent {
+        let db_agent = match self.find_agent_row(name) {
             Some(r) => r,
             None => {
                 return ToolResult::error(format!(
-                    "Agent '{}' not found. Use agent(resource: \"registry\", action: \"list\") to see available agents.",
+                    "No employee named '{}'. list_employees shows every employee here.",
                     name
                 ));
             }
@@ -1414,10 +1705,10 @@ impl PersonaTool {
                 changes.push("persona (AGENT.md) updated".to_string());
             }
         }
-        // Update the instructions only (`prompt` or `instructions`): the body
+        // Update the instructions only (`instructions`): the body
         // of AGENT.md, frontmatter kept. Said in the result by that name so
         // nobody reads it as a full AGENT.md replacement.
-        let instructions = ["prompt", "instructions"]
+        let instructions = ["instructions"]
             .iter()
             .find_map(|k| input[*k].as_str().filter(|v| !v.trim().is_empty()).map(|v| (*k, v)));
         if let Some((field, body)) = instructions {
@@ -1653,7 +1944,7 @@ impl PersonaTool {
                                 &trigger_config,
                                 Some(&binding.description),
                                 inputs_json.as_deref(),
-                                binding.emit.as_deref(),
+                                binding.emit_names().as_deref(),
                                 activities_json.as_deref(),
                                 connections_json.as_deref(),
                                 true,
@@ -1836,12 +2127,12 @@ impl PersonaTool {
             // Only a real change reaches the live agent; an update that
             // changed nothing must not say it did.
             if !changes.is_empty() {
-                changes.push("live agent updated".to_string());
+                changes.push("live employee updated".to_string());
             }
         }
 
         if changes.is_empty() {
-            return ToolResult::ok(format!("No changes made to agent '{}'.", current_name));
+            return ToolResult::ok(format!("No changes made to employee '{}'.", current_name));
         }
 
         // A header that says "Updated" over a list of failures was read as
@@ -1858,36 +2149,27 @@ impl PersonaTool {
             ));
         }
         ToolResult::ok(format!(
-            "Updated agent '{}' (id: {}):\n- {}",
+            "Updated employee '{}' (id: {}):\n- {}",
             current_name,
             agent_id,
             changes.join("\n- ")
         ))
     }
 
-    async fn handle_delete(&self, input: &serde_json::Value) -> ToolResult {
+    pub(crate) async fn handle_delete(&self, input: &serde_json::Value) -> ToolResult {
         let name = input["name"].as_str().unwrap_or("");
         if name.is_empty() {
             return ToolResult::error(crate::errors::missing_param(
-                "delete",
+                "delete_employee",
                 "name",
-                "agent(resource: \"registry\", action: \"delete\", name: \"my-agent\")",
+                "delete_employee(name: \"Office Manager\")",
             ));
         }
 
         // Find in DB
-        let db_agent = match self.store.list_agents(500, 0) {
-            Ok(agents) => {
-                let lower = name.to_lowercase();
-                agents
-                    .into_iter()
-                    .find(|r| r.name.to_lowercase() == lower || r.id == name)
-            }
-            Err(e) => return ToolResult::error(format!("Failed to query agents: {}", e)),
-        };
-        let db_agent = match db_agent {
+        let db_agent = match self.find_agent_row(name) {
             Some(r) => r,
-            None => return ToolResult::error(format!("Agent '{}' not found.", name)),
+            None => return ToolResult::error(format!("No employee named '{}'.", name)),
         };
 
         let agent_id = &db_agent.id;
@@ -1913,7 +2195,7 @@ impl PersonaTool {
         if user_dir.exists() {
             if let Err(e) = std::fs::remove_dir_all(&user_dir) {
                 return ToolResult::ok(format!(
-                    "Deleted agent '{}' from DB and registry, but failed to remove directory {}: {}",
+                    "Deleted {} from the roster, but failed to remove its directory {}: {}",
                     agent_name,
                     user_dir.display(),
                     e
@@ -1922,12 +2204,16 @@ impl PersonaTool {
         }
 
         ToolResult::ok(format!(
-            "Deleted agent '{}' (id: {}). Removed from DB, registry, and filesystem.",
+            "Deleted {} (id: {}): its record, workflows, schedules and files are gone.",
             agent_name, agent_id
         ))
     }
 
-    async fn handle_install(&self, input: &serde_json::Value) -> ToolResult {
+    pub(crate) async fn handle_install(
+        &self,
+        ctx: &ToolContext,
+        input: &serde_json::Value,
+    ) -> ToolResult {
         let code = input["code"].as_str().unwrap_or("").trim();
         if code.is_empty() {
             return ToolResult::error(
@@ -1943,7 +2229,7 @@ impl PersonaTool {
         let installer = self.code_installer.read().unwrap().clone();
         match installer {
             Some(installer) => {
-                let text = installer.install(code).await;
+                let text = installer.install(code, crate::InstalledBy::of(ctx)).await;
                 // The installer trait returns one String for both outcomes; a
                 // failure must reach the model as an error, never as success text.
                 if install_text_is_failure(&text) {
@@ -1958,31 +2244,22 @@ impl PersonaTool {
         }
     }
 
-    async fn handle_reload(&self, input: &serde_json::Value) -> ToolResult {
+    pub(crate) async fn handle_reload(&self, input: &serde_json::Value) -> ToolResult {
         let name = input["name"].as_str().unwrap_or("");
         if name.is_empty() {
             return ToolResult::error(crate::errors::missing_param(
-                "reload",
+                "reload_employee",
                 "name",
-                "agent(resource: \"registry\", action: \"reload\", name: \"my-agent\")",
+                "reload_employee(name: \"Office Manager\")",
             ));
         }
         let check_update = input["check_update"].as_bool().unwrap_or(false);
         let apply_update = input["apply_update"].as_bool().unwrap_or(false);
 
         // Find the agent in DB
-        let db_agent = match self.store.list_agents(500, 0) {
-            Ok(agents) => {
-                let lower = name.to_lowercase();
-                agents
-                    .into_iter()
-                    .find(|r| r.name.to_lowercase() == lower || r.id == name)
-            }
-            Err(e) => return ToolResult::error(format!("Failed to query agents: {}", e)),
-        };
-        let db_agent = match db_agent {
+        let db_agent = match self.find_agent_row(name) {
             Some(r) => r,
-            None => return ToolResult::error(format!("Agent '{}' not found.", name)),
+            None => return ToolResult::error(format!("No employee named '{}'.", name)),
         };
 
         let agent_id = &db_agent.id;
@@ -2141,7 +2418,7 @@ impl PersonaTool {
         }
 
         if changes.is_empty() {
-            return ToolResult::ok(format!("Agent '{}' is already in sync.", db_agent.name));
+            return ToolResult::ok(format!("{} is already in sync.", db_agent.name));
         }
 
         // Persist to DB
@@ -2171,7 +2448,7 @@ impl PersonaTool {
             active.name = current_name.clone();
             active.agent_md = current_md;
             active.config = napp::agent::parse_agent_config(&current_frontmatter).ok();
-            changes.push("live agent updated".to_string());
+            changes.push("live employee updated".to_string());
         }
 
         ToolResult::ok(format!(
@@ -2181,7 +2458,7 @@ impl PersonaTool {
         ))
     }
 
-    async fn handle_repair(&self, input: &serde_json::Value) -> ToolResult {
+    pub(crate) async fn handle_repair(&self, input: &serde_json::Value) -> ToolResult {
         let name_filter = input["name"].as_str().unwrap_or("");
         let mut fixes = Vec::new();
 
@@ -2190,15 +2467,12 @@ impl PersonaTool {
         let target_agents: Vec<&db::models::Agent> = if name_filter.is_empty() {
             agents.iter().collect()
         } else {
-            let lower = name_filter.to_lowercase();
-            agents
-                .iter()
-                .filter(|r| r.name.to_lowercase() == lower || r.id == name_filter)
-                .collect()
+            let wanted = self.find_agent_row(name_filter).map(|a| a.id);
+            agents.iter().filter(|r| Some(&r.id) == wanted.as_ref()).collect()
         };
 
         if target_agents.is_empty() && !name_filter.is_empty() {
-            return ToolResult::error(format!("Agent '{}' not found.", name_filter));
+            return ToolResult::error(format!("No employee named '{}'.", name_filter));
         }
 
         for agent in &target_agents {
@@ -2251,6 +2525,7 @@ impl PersonaTool {
                         None,
                         true,
                         Some(&agent.id),
+                        None,
                         None,
                     );
 
@@ -2445,7 +2720,7 @@ impl PersonaTool {
                 &trigger_config,
                 desc,
                 inputs_json.as_deref(),
-                binding.emit.as_deref(),
+                binding.emit_names().as_deref(),
                 activities_json.as_deref(),
                 connections_json.as_deref(),
                 true,
@@ -2470,6 +2745,7 @@ impl PersonaTool {
                         None,
                         true,
                         Some(agent_id),
+                        None,
                         None,
                     ) {
                         warn!(agent = agent_id, binding = %binding.binding_name, error = %e, "failed to register schedule trigger");
@@ -2981,31 +3257,22 @@ impl PersonaTool {
         Ok(serde_json::json!({ "workflows": workflows }))
     }
 
-    async fn handle_stats(&self, input: &serde_json::Value) -> ToolResult {
+    pub(crate) async fn handle_stats(&self, input: &serde_json::Value) -> ToolResult {
         let name = input["name"].as_str().unwrap_or("");
         if name.is_empty() {
             return ToolResult::error(crate::errors::missing_param(
-                "stats",
+                "employee_stats",
                 "name",
-                "agent(resource: \"registry\", action: \"stats\", name: \"my-agent\")",
+                "employee_stats(name: \"Office Manager\")",
             ));
         }
 
         // Resolve agent_id from DB
-        let db_agent = match self.store.list_agents(500, 0) {
-            Ok(agents) => {
-                let lower = name.to_lowercase();
-                agents
-                    .into_iter()
-                    .find(|r| r.name.to_lowercase() == lower || r.id == name)
-            }
-            Err(e) => return ToolResult::error(format!("Failed to query agents: {}", e)),
-        };
-        let db_agent = match db_agent {
+        let db_agent = match self.find_agent_row(name) {
             Some(r) => r,
             None => {
                 return ToolResult::error(format!(
-                    "Agent '{}' not found. Use agent(resource: \"registry\", action: \"list\") to see available agents.",
+                    "No employee named '{}'. list_employees shows every employee here.",
                     name
                 ));
             }
@@ -3103,28 +3370,19 @@ impl PersonaTool {
         ToolResult::ok(out)
     }
 
-    async fn handle_setup(&self, input: &serde_json::Value) -> ToolResult {
+    pub(crate) async fn handle_setup(&self, input: &serde_json::Value) -> ToolResult {
         let name = input["name"].as_str().unwrap_or("");
         if name.is_empty() {
             return ToolResult::error(crate::errors::missing_param(
-                "setup",
+                "setup_employee",
                 "name",
-                "agent(resource: \"registry\", action: \"setup\", name: \"my-agent\")",
+                "setup_employee(name: \"Office Manager\")",
             ));
         }
 
-        let db_agent = match self.store.list_agents(500, 0) {
-            Ok(agents) => {
-                let lower = name.to_lowercase();
-                agents
-                    .into_iter()
-                    .find(|r| r.name.to_lowercase() == lower || r.id == name)
-            }
-            Err(e) => return ToolResult::error(format!("Failed to query agents: {}", e)),
-        };
-        let db_agent = match db_agent {
+        let db_agent = match self.find_agent_row(name) {
             Some(r) => r,
-            None => return ToolResult::error(format!("Agent '{}' not found.", name)),
+            None => return ToolResult::error(format!("No employee named '{}'.", name)),
         };
 
         // The marker the frontend acts on rides in the structured payload channel
@@ -3144,82 +3402,75 @@ impl PersonaTool {
 
     /// Find an agent by name across loader cache and DB.
     async fn find_agent(&self, name: &str) -> Option<napp::agent_loader::LoadedAgent> {
+        // The employee the label names, by the one resolver; the loader is
+        // keyed by that employee's name.
+        let row = self.find_agent_row(name);
+        let key = row.as_ref().map_or(name, |r| r.name.as_str());
         // Check loader cache first (exact lowercase key)
-        if let Some(agent) = self.agent_loader.get_by_name(name).await {
+        if let Some(agent) = self.agent_loader.get_by_name(key).await {
             return Some(agent);
         }
         // Try normalized form: "chief-of-staff" → "chief of staff"
-        let normalized = name.to_lowercase().replace(['-', '_'], " ");
-        if normalized != name.to_lowercase() {
+        let normalized = key.to_lowercase().replace(['-', '_'], " ");
+        if normalized != key.to_lowercase() {
             if let Some(agent) = self.agent_loader.get_by_name(&normalized).await {
                 return Some(agent);
             }
         }
 
-        // Fallback: check DB (agents created via REST API or marketplace install).
-        // Matching uses the ONE normalizer (comm::handle::slugify) so a name
-        // resolves to the same agent on every rail — the loader probes above
-        // keep their space-form because that is the loader's own key format.
-        let slug = comm::handle::slugify(name);
-        if let Ok(db_agents) = self.store.list_agents(500, 0) {
-            for r in db_agents {
-                if comm::handle::slugify(&r.name) == slug || r.id == name {
-                    // The body is the persona after the frontmatter, as the
-                    // loader parses it; the raw file stays in `agent_md`.
-                    let agent_def = napp::agent::AgentDef {
-                        id: r.id.clone(),
-                        name: r.name.clone(),
-                        description: r.description.clone(),
-                        body: Self::agent_body(&r.agent_md),
-                    };
-                    let config = if !r.frontmatter.is_empty() {
-                        napp::agent::parse_agent_config(&r.frontmatter).ok()
-                    } else {
-                        None
-                    };
-                    // A row created in the app or by the tool lives under the
-                    // user directory and records that path. Reporting it as
-                    // "marketplace" at the installed root sent a live run on a
-                    // forty-call hunt through the wrong tree (2026-09-05).
-                    let dir = r.napp_path.clone().map(std::path::PathBuf::from);
-                    // The same classification `info` prints: only a path in
-                    // the installed tree (or a sealed .napp) is a marketplace
-                    // install; a row with no directory is a local employee.
-                    let source = if Self::source_label(
-                        dir.as_deref(),
-                        self.agent_loader.user_dir(),
-                        self.agent_loader.installed_dir(),
-                    ) == SOURCE_MARKETPLACE
-                    {
-                        napp::agent_loader::AgentSource::Installed
-                    } else {
-                        napp::agent_loader::AgentSource::User
-                    };
-                    // No recorded directory means the employee lives only in
-                    // the database; an empty path says so to `info`.
-                    let source_path = dir.clone().unwrap_or_default();
-                    return Some(napp::agent_loader::LoadedAgent {
-                        agent_def,
-                        config,
-                        source,
-                        napp_path: dir,
-                        source_path,
-                        version: None,
-                        agent_md: r.agent_md.clone(),
-                        frontmatter: r.frontmatter.clone(),
-                        description: r.description.clone(),
-                        id: Some(r.id.clone()),
-                        theme_css: None,
-                        is_app: false,
-                        app_ui_path: None,
-                        app_binary_path: None,
-                        app_window_config: None,
-                    });
-                }
-            }
-        }
-
-        None
+        // Fallback: the DB row (agents created via REST API or marketplace install).
+        let r = row?;
+        // The body is the persona after the frontmatter, as the
+        // loader parses it; the raw file stays in `agent_md`.
+        let agent_def = napp::agent::AgentDef {
+            id: r.id.clone(),
+            name: r.name.clone(),
+            description: r.description.clone(),
+            body: Self::agent_body(&r.agent_md),
+        };
+        let config = if !r.frontmatter.is_empty() {
+            napp::agent::parse_agent_config(&r.frontmatter).ok()
+        } else {
+            None
+        };
+        // A row created in the app or by the tool lives under the
+        // user directory and records that path. Reporting it as
+        // "marketplace" at the installed root sent a live run on a
+        // forty-call hunt through the wrong tree (2026-09-05).
+        let dir = r.napp_path.clone().map(std::path::PathBuf::from);
+        // The same classification `info` prints: only a path in
+        // the installed tree (or a sealed .napp) is a marketplace
+        // install; a row with no directory is a local employee.
+        let source = if Self::source_label(
+            dir.as_deref(),
+            self.agent_loader.user_dir(),
+            self.agent_loader.installed_dir(),
+        ) == SOURCE_MARKETPLACE
+        {
+            napp::agent_loader::AgentSource::Installed
+        } else {
+            napp::agent_loader::AgentSource::User
+        };
+        // No recorded directory means the employee lives only in
+        // the database; an empty path says so to `info`.
+        let source_path = dir.clone().unwrap_or_default();
+        Some(napp::agent_loader::LoadedAgent {
+            agent_def,
+            config,
+            source,
+            napp_path: dir,
+            source_path,
+            version: None,
+            agent_md: r.agent_md.clone(),
+            frontmatter: r.frontmatter.clone(),
+            description: r.description.clone(),
+            id: Some(r.id.clone()),
+            theme_css: None,
+            is_app: false,
+            app_ui_path: None,
+            app_binary_path: None,
+            app_window_config: None,
+        })
     }
 }
 
@@ -3243,11 +3494,11 @@ fn install_code_shape_error(code: &str) -> Option<String> {
     Some(format!(
         "'{code}' is not an install code. Codes are issued by the marketplace and look like \
          PREFIX-XXXX-XXXX (four letters, then two groups of four); they are never built from a \
-         name. To hire an employee, find it with agent(resource: \"registry\", action: \
-         \"discover\") — the card it offers installs it. {TOOL_INSTALL_DOOR} \
-         An employee that is already in the registry \
-         (agent(resource: \"registry\", action: \"list\")) needs no install: use info, \
-         update or reload on it."
+         name. To hire an employee, find it with find_employees — \
+         the card it offers installs it. {TOOL_INSTALL_DOOR} \
+         An employee that is already on the roster \
+         (list_employees) needs no install: use get_employee, \
+         update_employee or reload_employee on it."
     ))
 }
 
@@ -3259,302 +3510,6 @@ fn install_code_shape_error(code: &str) -> Option<String> {
 fn install_text_is_failure(text: &str) -> bool {
     let t = text.trim_start();
     t.starts_with("Failed to install") || t.contains("is not a valid install code")
-}
-
-impl DynTool for PersonaTool {
-    fn name(&self) -> &str {
-        "agents"
-    }
-
-    fn description(&self) -> String {
-        "Manage installed agents — who they are, what workflows they follow, what skills they need.\n\n\
-         Actions:\n\
-         - list: list available agents (installed + user-created)\n\
-         - activate: activate an agent (injects persona, registers triggers)\n\
-         - deactivate: deactivate an agent by name (or all agents if no name given)\n\
-         - info: show agent details (workflows, skills, triggers, persona)\n\
-         - create: create a new agent with structured automations (preferred) or raw agent_md/agent_json\n\
-         - update: edit any aspect of an existing agent — supports granular, non-destructive edits\n\
-         - delete: permanently remove an agent (DB, filesystem, registry, cron jobs)\n\
-         - install: install an agent from marketplace (AGNT-XXXX-XXXX)\n\
-         - setup: open the setup wizard for an agent (configure inputs and schedules)\n\
-         - reload: re-read AGENT.md + agent.json from filesystem and sync to DB (use after editing files on disk)\n\
-         - repair: fix invalid cron expressions, orphan cron jobs, and sync triggers (optional: name to target one agent)\n\
-         - stats: show workflow run statistics for an agent (total/completed/failed runs, tokens, errors)\n\
-         AUTOMATIONS (for create and update):\n\
-         Each automation needs: name, steps[], and ONE trigger pattern.\n\
-         Trigger type is AUTO-INFERRED from fields — just include the right field:\n\n\
-         Schedule (cron):\n  \
-           {\"name\": \"x\", \"schedule\": \"<cron-or-human>\", \"steps\": [...]}\n  \
-           schedule accepts: standard 5-field cron (\"0 7 * * *\"), 7-field (\"0 0 7 * * * *\"),\n  \
-           or human-readable (\"daily at 7am\", \"weekdays at 9:30am\", \"every 2 hours\").\n  \
-           All formats are auto-normalized to valid 7-field cron.\n\n\
-         Heartbeat (recurring interval):\n  \
-           {\"name\": \"x\", \"interval\": \"15m\", \"window\": \"08:00-18:00\", \"steps\": [...]}\n  \
-           interval: \"5m\", \"30m\", \"1h\", etc. window: optional time range.\n\n\
-         Event (reactive):\n  \
-           {\"name\": \"x\", \"sources\": [\"email.received\", \"calendar.changed\"], \"steps\": [...]}\n\n\
-         Watch (plugin NDJSON watcher):\n  \
-           {\"name\": \"x\", \"plugin\": \"<slug>\", \"event\": \"email.new\", \"steps\": [...]}\n  \
-           plugin: required plugin slug. event: optional plugin event name (resolves command from manifest).\n  \
-           command: optional CLI args (required if event not set). restart_delay_secs: default 5.\n  \
-           Auto-emits NDJSON output into EventBus as {plugin}.{event}. Steps are optional —\n  \
-           event-only watches (no steps) relay events without inline processing.\n\n\
-         Manual (on-demand):\n  \
-           {\"name\": \"x\", \"trigger\": \"manual\", \"steps\": [...]}\n\n\
-         Optional fields: emit (event name on completion), description (human label).\n\n\
-         APPS (an employee with its own web page — a tracker, a dashboard, a form) — pass `app` and/or `ui`/`ui_jsx` to create or update; never hand-write the files:\n  \
-           app: {\"window\": {\"title\", \"width\", \"height\", \"resizable\"}, \"permissions\": [\"storage:readwrite\"]} — both optional, {} is fine.\n  \
-             manifest.json gets \"artifact_type\": \"app\", the window block and permissions (default [\"storage:readwrite\"]; prefixes: storage:, network:, subagent:, filesystem:, tool:, shell:, memory:, oauth:).\n  \
-           ui: {\"index.html\": \"<!doctype html>...\", \"app.js\": \"...\"} — files written under the app's ui/ (paths relative to ui/, no .. or absolute paths). ui without app still makes an app.\n  \
-           ui_jsx: the source of ONE .jsx/.tsx file that `export default`s a React component — compiled to ui/index.html by the same converter as os(file, convert, to: \"html\") (Tailwind classes, bare npm imports OK, no relative imports), SDK script added for you.\n  \
-           The page loads <script src=\"/sdk/nebo.global.js\"></script> and gets the global NeboAppSDK (identity, storage, agents, janus, chat, surfaces). Its call list is the build-an-app skill — read that skill before writing a page; it is the one place the SDK contract is written down.\n  \
-           The app appears within seconds at /apps/<id>/ui — <id> is the UUID the create result reports, never the name (the loader watches the directory; no restart) — and in the Employees list.\n  \
-           agent(resource: \"registry\", action: \"create\", name: \"deal-tracker\", description: \"Tracks deals in a board\",\n    \
-             app: {\"window\": {\"title\": \"Deal Tracker\", \"width\": 900, \"height\": 700}},\n    \
-             ui: {\"index.html\": \"<!doctype html><html><head><script src=\\\"/sdk/nebo.global.js\\\"></script></head><body><script>NeboAppSDK.storage.getItem('deals').then(...)</script></body></html>\"})\n  \
-           agent(resource: \"registry\", action: \"update\", name: \"deal-tracker\", ui_jsx: \"export default function App() { return <div className=\\\"p-4\\\">...</div> }\")\n\n\
-         EXAMPLES:\n  \
-         agent(resource: \"registry\", action: \"create\", name: \"morning-briefing\", description: \"Daily executive briefing\",\n    \
-           automations: [{\"name\": \"daily-brief\", \"schedule\": \"0 7 * * *\",\n    \
-             \"steps\": [\"Gather top news headlines\", \"Check calendar for today\", \"Compose briefing\"],\n    \
-             \"emit\": \"briefing.ready\", \"description\": \"7am daily briefing\"}])\n  \
-         agent(resource: \"registry\", action: \"create\", name: \"email-monitor\", description: \"Checks email\",\n    \
-           automations: [{\"name\": \"check\", \"interval\": \"15m\", \"window\": \"08:00-18:00\",\n    \
-             \"steps\": [\"Check inbox for urgent emails and flag them\"]}])\n  \
-         agent(resource: \"registry\", action: \"update\", name: \"morning-briefing\", description: \"Updated description\")\n  \
-         agent(resource: \"registry\", action: \"update\", name: \"morning-briefing\",\n    \
-           add_automations: [{\"name\": \"evening-recap\", \"schedule\": \"daily at 6pm\",\n    \
-             \"steps\": [\"Summarize the day\"]}])\n  \
-         agent(resource: \"registry\", action: \"create\", name: \"inbox-watcher\", description: \"Watches for new emails\",\n    \
-           automations: [{\"name\": \"watch-email\", \"plugin\": \"<slug>\", \"event\": \"email.new\",\n    \
-             \"steps\": [\"Triage the incoming email\", \"Flag if urgent\"]}])\n  \
-         agent(resource: \"registry\", action: \"create\", name: \"email-relay\", description: \"Relays email events\",\n    \
-           automations: [{\"name\": \"relay\", \"plugin\": \"<slug>\", \"event\": \"email.new\",\n    \
-             \"description\": \"Event-only watch — no steps, just relays into EventBus\"}])\n  \
-         agent(resource: \"registry\", action: \"update\", name: \"morning-briefing\", remove_automations: [\"evening-recap\"])\n  \
-         agent(resource: \"registry\", action: \"delete\", name: \"morning-briefing\")\n  \
-         agent(resource: \"registry\", action: \"repair\")  — fix all agents\n  \
-         agent(resource: \"registry\", action: \"repair\", name: \"trading-bot\")  — fix one agent\n  \
-         agent(resource: \"registry\", action: \"install\", code: \"AGNT-ABCD-1234\")\n\n\
-         GRANULAR UPDATE (non-destructive — change one thing without affecting the rest):\n\n\
-         Update a SINGLE automation (change only what you specify):\n  \
-         agent(resource: \"registry\", action: \"update\", name: \"seo-auditor\", update_automation: {\n    \
-           \"name\": \"weekly-audit\", \"schedule\": \"0 8 * * 1\", \"description\": \"New label\"})\n  \
-         agent(resource: \"registry\", action: \"update\", name: \"seo-auditor\", update_automation: {\n    \
-           \"name\": \"weekly-audit\", \"steps\": [\"Step 1\", \"Step 2\", \"Step 3\"]})\n\n\
-         Toggle a single automation on/off:\n  \
-         agent(resource: \"registry\", action: \"update\", name: \"seo-auditor\", toggle_automation: \"weekly-audit\")\n\n\
-         Set user-supplied input values (feeds into every workflow run):\n  \
-         agent(resource: \"registry\", action: \"update\", name: \"seo-auditor\", input_values: {\n    \
-           \"site_url\": \"https://example.com\", \"report_frequency\": \"weekly\"})\n\n\
-         Update input field schema (dynamic form shown on Settings tab):\n  \
-         agent(resource: \"registry\", action: \"update\", name: \"seo-auditor\", inputs: [\n    \
-           {\"key\": \"site_url\", \"label\": \"Your website\", \"type\": \"text\", \"required\": true},\n    \
-           {\"key\": \"frequency\", \"label\": \"Report frequency\", \"type\": \"select\",\n     \
-             \"options\": [{\"value\": \"daily\", \"label\": \"Daily\"}, {\"value\": \"weekly\", \"label\": \"Weekly\"}]}])"
-            .to_string()
-    }
-
-    fn schema(&self) -> serde_json::Value {
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "action": {
-                    "type": "string",
-                    "description": "Action to perform",
-                    "enum": ["list", "activate", "deactivate", "info", "create", "update", "delete", "install", "reload", "repair", "setup", "stats"]
-                },
-                "name": {
-                    "type": "string",
-                    "description": "Agent name (for activate, deactivate, info, create, update, delete)"
-                },
-                "new_name": {
-                    "type": "string",
-                    "description": "New name to rename the agent to (for update only)"
-                },
-                "description": {
-                    "type": "string",
-                    "description": "Agent description (for create/update — auto-generates AGENT.md if agent_md not provided)"
-                },
-                "automations": {
-                    "type": "array",
-                    "description": "Structured automations. For create: sets initial automations. For update: REPLACES ALL existing automations. Trigger type is auto-inferred from fields: schedule→schedule, interval→heartbeat, sources→event, plugin→watch, otherwise manual.",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "name": { "type": "string", "description": "Automation binding name" },
-                            "trigger": { "type": "string", "enum": ["schedule", "heartbeat", "event", "watch", "manual"], "description": "Trigger type (optional — auto-inferred from schedule/interval/sources/plugin fields)" },
-                            "schedule": { "type": "string", "description": "Schedule — cron (5-field: '0 7 * * *' or 7-field: '0 0 7 * * * *') or human-readable ('every 30 seconds', 'daily at 7am', 'every 2 minutes', 'weekdays at 9:30am'). Auto-normalized. A schedule automation needs it." },
-                            "interval": { "type": "string", "description": "Interval — presence auto-sets trigger to heartbeat (e.g. '15m', '1h')" },
-                            "window": { "type": "string", "description": "Time window for heartbeat (e.g. '08:00-18:00')" },
-                            "sources": { "type": "array", "items": { "type": "string" }, "minItems": 1, "description": "Event sources — presence auto-sets trigger to event. An event automation needs at least one; an empty list is refused before anything is written." },
-                            "plugin": { "type": "string", "description": "Plugin slug for watch trigger: an installed plugin's slug, from plugin(action: \"list\"); presence auto-sets trigger to watch" },
-                            "event": { "type": "string", "description": "Plugin event name for watch trigger (e.g. 'email.new'). Resolves command from plugin manifest." },
-                            "command": { "type": "string", "description": "CLI args for watch trigger (e.g. 'gmail +watch --format ndjson'). Required if event not set." },
-                            "restart_delay_secs": { "type": "integer", "description": "Seconds before restarting watch process on crash (default: 5)" },
-                            "steps": { "type": "array", "items": { "type": "string" }, "description": "Activity steps — plain language instructions executed in order" },
-                            "emit": { "type": "string", "description": "Event to emit on completion (e.g. 'briefing.ready')" },
-                            "description": { "type": "string", "description": "Human-readable description of this automation" }
-                        },
-                        "required": ["name"]
-                    }
-                },
-                "add_automations": {
-                    "type": "array",
-                    "description": "Add new automations WITHOUT removing existing ones (for update only). Same format as automations.",
-                    "items": { "type": "object" }
-                },
-                "remove_automations": {
-                    "type": "array",
-                    "description": "Remove specific automations by name (for update only).",
-                    "items": { "type": "string" }
-                },
-                "update_automation": {
-                    "type": "object",
-                    "description": "Update a SINGLE existing automation by name without affecting others (for update only). Provide only the fields you want to change.",
-                    "properties": {
-                        "name": { "type": "string", "description": "Binding name to update (required)" },
-                        "description": { "type": "string", "description": "New description" },
-                        "steps": { "type": "array", "items": { "type": "string" }, "description": "Replace activity steps" },
-                        "schedule": { "type": "string", "description": "New cron schedule (changes trigger to schedule)" },
-                        "interval": { "type": "string", "description": "New interval (changes trigger to heartbeat)" },
-                        "window": { "type": "string", "description": "Time window for heartbeat" },
-                        "sources": { "type": "array", "items": { "type": "string" }, "description": "Event sources (changes trigger to event)" },
-                        "plugin": { "type": "string", "description": "Plugin slug (changes trigger to watch)" },
-                        "event": { "type": "string", "description": "Plugin event name for watch trigger" },
-                        "command": { "type": "string", "description": "CLI args for watch trigger" },
-                        "restart_delay_secs": { "type": "integer", "description": "Watch restart delay in seconds" },
-                        "emit": { "type": "string", "description": "Event to emit on completion" }
-                    },
-                    "required": ["name"]
-                },
-                "toggle_automation": {
-                    "type": "string",
-                    "description": "Toggle a single automation on/off by binding name (for update only)"
-                },
-                "input_values": {
-                    "type": "object",
-                    "description": "Set user-supplied input values for the agent (for update only). Key-value pairs matching the agent's input schema."
-                },
-                "inputs": {
-                    "type": "array",
-                    "description": "Update the input field schema (for update only). Array of field definitions with key, label, type (text/textarea/number/select/checkbox/radio), description, required, default, placeholder, options.",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "key": { "type": "string" },
-                            "label": { "type": "string" },
-                            "type": { "type": "string", "enum": ["text", "textarea", "number", "select", "checkbox", "radio", "path", "file"] },
-                            "description": { "type": "string" },
-                            "required": { "type": "boolean" },
-                            "default": {},
-                            "placeholder": { "type": "string" },
-                            "options": { "type": "array", "items": { "type": "object", "properties": { "value": { "type": "string" }, "label": { "type": "string" } } } }
-                        },
-                        "required": ["key", "label"]
-                    }
-                },
-                "agent_md": {
-                    "type": "string",
-                    "description": "AGENT.md persona content (for create/update — optional if description is provided on create)"
-                },
-                "agent_json": {
-                    "type": ["string", "object"],
-                    "description": "Raw agent.json with workflow bindings, triggers, skills (for create — use automations instead)"
-                },
-                "app": {
-                    "type": "object",
-                    "description": "For create/update: make this employee an app (manifest.json gets \"artifact_type\": \"app\", window, permissions). Both fields optional; {} is fine. Its page is served at /apps/<id>/ui and calls the global NeboAppSDK from /sdk/nebo.global.js.",
-                    "properties": {
-                        "window": {
-                            "type": "object",
-                            "description": "Window the desktop opens the app in.",
-                            "properties": {
-                                "title": { "type": "string" },
-                                "width": { "type": "integer", "description": "Default 1024" },
-                                "height": { "type": "integer", "description": "Default 768" },
-                                "resizable": { "type": "boolean", "description": "Default true" }
-                            }
-                        },
-                        "permissions": {
-                            "type": "array",
-                            "items": { "type": "string" },
-                            "description": "prefix:scope entries, default [\"storage:readwrite\"]. Prefixes: storage:, network:, subagent:, filesystem:, tool:, shell:, memory:, session:, oauth:, capability:. Unknown prefixes are refused."
-                        }
-                    }
-                },
-                "ui": {
-                    "type": "object",
-                    "description": "For create/update: the app's page files, relative path → content, written under <agent dir>/ui/ (e.g. {\"index.html\": \"...\", \"app.js\": \"...\"}). Relative paths only — no .. and no absolute paths. index.html must load <script src=\"/sdk/nebo.global.js\"></script> to use NeboAppSDK.",
-                    "additionalProperties": { "type": "string" }
-                },
-                "ui_jsx": {
-                    "type": "string",
-                    "description": "For create/update: the source of ONE .jsx/.tsx file that `export default`s a React component, compiled to ui/index.html by the same converter as os(file, convert, to: \"html\"); the NeboAppSDK script is added for you. Tailwind classes and bare npm imports work; relative imports do not."
-                },
-                "requires": {
-                    "type": "object",
-                    "description": "For create: what the employee needs, stored in agent.json. plugins: installed plugin slugs it uses; tools: tool names it has from turn 1 regardless of the conversation (e.g. \"code\"); interfaces: typed capability interfaces it binds (e.g. \"ledger\", \"mail\").",
-                    "properties": {
-                        "plugins": { "type": "array", "items": { "type": "string" } },
-                        "tools": { "type": "array", "items": { "type": "string" } },
-                        "interfaces": { "type": "array", "items": { "type": "string" } }
-                    }
-                },
-                "code": {
-                    "type": "string",
-                    "description": "Marketplace code (for install, e.g. AGNT-ABCD-1234)"
-                },
-                "check_update": {
-                    "type": "boolean",
-                    "description": "For reload: check if a newer version is available on NeboAI (marketplace agents only)"
-                },
-                "apply_update": {
-                    "type": "boolean",
-                    "description": "For reload: download and apply the latest version from NeboAI (marketplace agents only)"
-                },
-                "id": {
-                    "type": "string",
-                    "description": "Agent ID (alternative to name)"
-                }
-            },
-            "required": ["action"]
-        })
-    }
-
-    fn requires_approval(&self) -> bool {
-        false
-    }
-
-    fn execution_timeout(&self, input: &serde_json::Value) -> Option<std::time::Duration> {
-        // Deep research runs multi-minute pipelines BY DESIGN (quick ~2min,
-        // standard ~5-8, deep ~10-20 through Janus). The 300s runner default
-        // killed them mid-flight; give research its own generous budget (the
-        // harness has its own cancellation + per-phase bounds).
-        if input.get("action").and_then(|v| v.as_str()) == Some("deep_research") {
-            // Depth-dependent and topic-dependent — real runs can legitimately
-            // take up to an hour. The harness carries its own pacing guidance
-            // and salvage paths; this is the outer safety net, not the pace.
-            return Some(std::time::Duration::from_secs(60 * 60));
-        }
-        None
-    }
-
-    fn is_concurrent_safe(&self, input: &serde_json::Value) -> bool {
-        let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
-        matches!(action, "list" | "info" | "stats")
-    }
-
-    fn execute_dyn<'a>(
-        &'a self,
-        _ctx: &'a ToolContext,
-        input: serde_json::Value,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolResult> + Send + 'a>> {
-        // One dispatch: the agent tool's registry resource and a direct call
-        // land in the same match with the same texts.
-        Box::pin(async move { self.handle_action(&input).await })
-    }
 }
 
 #[cfg(test)]
@@ -3636,9 +3591,9 @@ mod tests {
 
     #[test]
     fn update_refuses_fields_it_does_not_handle() {
-        let call = serde_json::json!({"action": "update", "name": "Receptionist", "persona_text": "x"});
+        let call = serde_json::json!({"name": "Receptionist", "persona_text": "x"});
         assert_eq!(PersonaTool::unknown_update_fields(&call), vec!["persona_text".to_string()]);
-        let ok = serde_json::json!({"action": "update", "name": "Receptionist", "prompt": "x", "resource": "registry"});
+        let ok = serde_json::json!({"name": "Receptionist", "instructions": "x"});
         assert!(PersonaTool::unknown_update_fields(&ok).is_empty());
     }
 
@@ -3730,7 +3685,7 @@ mod tests {
         assert!(!text.contains("Description:"), "{text}");
         assert!(!text.contains(": -\n"), "{text}");
         assert!(
-            text.contains("Persona: none yet. This employee has no instructions; set them with agent(resource: \"registry\", action: \"update\", name: \"front-desk\", prompt: \"...\")."),
+            text.contains("Persona: none yet. This employee has no instructions; set them with update_employee(name: \"front-desk\", instructions: \"...\")."),
             "{text}"
         );
         assert!(!text.contains("name: front-desk"), "frontmatter echoed as persona: {text}");
@@ -3745,16 +3700,6 @@ mod tests {
 
         assert_eq!(PersonaTool::agent_body("plain prose"), "plain prose");
         assert_eq!(PersonaTool::agent_body("---\nname: x\n---\n"), "");
-    }
-
-    /// There is no delegate action; the unknown-action text says where the
-    /// work goes instead.
-    #[test]
-    fn an_unknown_registry_action_points_delegation_at_the_coworker_message() {
-        let text = PersonaTool::unknown_action("delegate");
-        assert!(text.starts_with("'delegate' is not a registry action"), "{text}");
-        assert!(text.contains("message(resource: \"coworker\", action: \"send\""), "{text}");
-        assert!(text.contains(REGISTRY_ACTIONS), "{text}");
     }
 
     /// The `ui` map the call carries: every path checked by the writer's

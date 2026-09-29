@@ -1,0 +1,1 @@
+{"name":"weekly-report","activities":[{"id":"gather","intent":"Gather the week","steps":["team(action: \"messages\", team: \"ops\")","loop(resource: \"channel\", action: \"send\", channel_id: \"c1\", text: \"Weekly report is out\")"],"tools":["team","loop"]}]}

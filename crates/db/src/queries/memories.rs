@@ -53,7 +53,9 @@ impl Store {
                 .collect::<Result<Vec<_>, _>>()
         } else {
             let exact = format!("%:agent:{}", agent_id);
-            let ctx = format!("%:agent:{}:ctx:%", agent_id);
+            // Every conversation scope under the private one (`:ctx:` and
+            // `:matter:`); agent ids hold no colon.
+            let ctx = format!("%:agent:{}:%", agent_id);
             let sql = format!(
                 "SELECT {COLS} FROM memories WHERE user_id LIKE ?1 OR user_id LIKE ?2 \
                  ORDER BY access_count DESC LIMIT ?3 OFFSET ?4"
@@ -96,23 +98,6 @@ impl Store {
                     accessed_at, access_count, user_id
              FROM memories WHERE id = ?1",
             params![id],
-            row_to_memory,
-        )
-        .optional()
-        .map_err(|e| NeboError::Database(e.to_string()))
-    }
-
-    pub fn get_memory_by_key(
-        &self,
-        namespace: &str,
-        key: &str,
-    ) -> Result<Option<Memory>, NeboError> {
-        let conn = self.conn()?;
-        conn.query_row(
-            "SELECT id, namespace, key, value, tags, metadata, created_at, updated_at,
-                    accessed_at, access_count, user_id
-             FROM memories WHERE namespace = ?1 AND key = ?2",
-            params![namespace, key],
             row_to_memory,
         )
         .optional()
@@ -295,15 +280,14 @@ impl Store {
         .map_err(|e| NeboError::Database(e.to_string()))
     }
 
-    /// Find a memory by key alone (no namespace/user_id filter).
-    /// Used as a last-resort fallback when scoped lookups fail.
-    pub fn find_memory_by_key(&self, key: &str) -> Result<Option<Memory>, NeboError> {
+    /// The memory stored under `key` in any namespace of ONE scope.
+    pub fn find_memory_by_key(&self, key: &str, user_id: &str) -> Result<Option<Memory>, NeboError> {
         let conn = self.conn()?;
         conn.query_row(
             "SELECT id, namespace, key, value, tags, metadata, created_at, updated_at,
                     accessed_at, access_count, user_id
-             FROM memories WHERE key = ?1 LIMIT 1",
-            params![key],
+             FROM memories WHERE key = ?1 AND user_id = ?2 LIMIT 1",
+            params![key, user_id],
             row_to_memory,
         )
         .optional()
@@ -357,7 +341,9 @@ impl Store {
     ) -> Result<Vec<Memory>, NeboError> {
         let conn = self.conn()?;
         let exact = format!("%:agent:{}", agent_id);
-        let ctx = format!("%:agent:{}:ctx:%", agent_id);
+        // Every conversation scope under the private one (`:ctx:` and
+        // `:matter:`); agent ids hold no colon.
+        let ctx = format!("%:agent:{}:%", agent_id);
         let mut stmt = conn
             .prepare(
                 "SELECT id, namespace, key, value, tags, metadata, created_at, updated_at,
@@ -422,7 +408,9 @@ impl Store {
                 .collect::<Result<Vec<_>, _>>()
         } else {
             let exact = format!("%:agent:{}", agent_id);
-            let ctx = format!("%:agent:{}:ctx:%", agent_id);
+            // Every conversation scope under the private one (`:ctx:` and
+            // `:matter:`); agent ids hold no colon.
+            let ctx = format!("%:agent:{}:%", agent_id);
             let sql = format!(
                 "SELECT {COLS} FROM memories WHERE (user_id LIKE ?1 OR user_id LIKE ?2) \
                  AND (namespace LIKE ?3 OR key LIKE ?3 OR value LIKE ?3 OR tags LIKE ?3) \
@@ -770,10 +758,9 @@ mod tests {
 
     #[test]
     fn test_delete_memories_by_namespace_prefix() {
-        let path = std::env::temp_dir().join(format!("nebo-memq-test-{}.db", std::process::id()));
-        let path_str = path.to_string_lossy().to_string();
-        let _ = std::fs::remove_file(&path);
-        let store = Store::new(&path_str).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("memq-test.db");
+        let store = Store::new(&path.to_string_lossy()).unwrap();
 
         store
             .upsert_memory("daily/2026-04-14", "old-fact", "v", None, None, "u1")
@@ -790,17 +777,13 @@ mod tests {
         assert_eq!(deleted, 2);
         assert_eq!(store.count_memories_by_namespace("daily/").unwrap(), 0);
         assert_eq!(store.count_memories_by_namespace("tacit/").unwrap(), 1);
-
-        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
     fn test_memory_scope_activity_bursts() {
-        let path =
-            std::env::temp_dir().join(format!("nebo-memq-activity-test-{}.db", std::process::id()));
-        let path_str = path.to_string_lossy().to_string();
-        let _ = std::fs::remove_file(&path);
-        let store = Store::new(&path_str).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("memq-activity-test.db");
+        let store = Store::new(&path.to_string_lossy()).unwrap();
 
         // Unwritten scope: zero events.
         assert_eq!(store.get_memory_scope_write_events("scope-a").unwrap(), 0);
@@ -832,17 +815,13 @@ mod tests {
             .unwrap();
         assert_eq!(store.get_memory_scope_write_events("scope-b").unwrap(), 1);
         assert_eq!(store.get_memory_scope_write_events("scope-a").unwrap(), 0);
-
-        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
     fn test_list_memories_missing_embeddings() {
-        let path =
-            std::env::temp_dir().join(format!("nebo-memq-embed-test-{}.db", std::process::id()));
-        let path_str = path.to_string_lossy().to_string();
-        let _ = std::fs::remove_file(&path);
-        let store = Store::new(&path_str).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("memq-embed-test.db");
+        let store = Store::new(&path.to_string_lossy()).unwrap();
         store
             .upsert_memory("tacit/general", "embedded", "value a", None, None, "u1")
             .unwrap();
@@ -890,7 +869,5 @@ mod tests {
         assert!(store.get_memory_chunk(orphan_chunk).unwrap().is_none());
         let missing_after = store.list_memories_missing_embeddings().unwrap();
         assert_eq!(missing_after.len(), 2);
-
-        let _ = std::fs::remove_file(&path);
     }
 }

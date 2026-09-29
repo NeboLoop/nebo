@@ -1,0 +1,30 @@
+id: full-access-runs-unconfined
+name: "Full access runs its commands unconfined; every other employee's stay confined"
+description: |
+  Every employee command ran inside the operating system's confinement
+  (Nebo's own files and ports closed, no network when web access is off).
+  On macOS that broke programs that start a sandbox of their own: Chrome
+  without --no-sandbox, `swift build`, Homebrew builds from source. The
+  owner's call: an employee with Full access ("Runs anything on this
+  computer without asking") runs its commands without it, on every
+  platform; every other employee keeps it.
+  The permission check decides it once per call (`permissions::reach`):
+  unconfined when the employee's grant is Full access and so is every grant
+  above it, so a helper runs as its parent does and never gets more. What
+  Full access doesn't lift: web access off keeps its commands offline (the
+  confinement then closes the network and nothing else; a computer that
+  can't do that refuses the command), the command's text is still checked
+  for Nebo's own files, and Nebo's own settings stay out of its environment.
+  This proof, through the real server, runs the same command for a Full
+  access employee and an Automatic one: it reads a log of Nebo's by a path
+  its text doesn't name, and on macOS starts a sandbox of its own. The Full
+  access employee's and its helper's do both; the Automatic employee's, a
+  Full access helper under it, and an Automatic helper under the Full
+  access employee do neither. A web-off Full access employee and its
+  helper reach no server and read the log. The decision itself, including
+  an employee made by an employee, is
+  harness::permissions::tests::only_full_access_all_the_way_up_runs_unconfined.
+  Mechanical, no model: a deterministic proof through the real server.
+target_component: permissions
+proof: nebo_files_proof::a_full_access_employee_runs_unconfined
+conversation: []

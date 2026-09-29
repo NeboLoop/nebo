@@ -1,0 +1,10 @@
+id: a-boot-failure-recovers-when-the-program-appears
+name: "A boot failure recovers when the program appears"
+description: |
+  The app's program is missing at boot: a permanent cause, shown with the
+  reason and "Reinstall", never retried as if it were a crash. The
+  supervisor keeps checking on its slow cadence, so the app serves as soon as
+  the program is back.
+target_component: app-sidecars
+proof: sidecar_proof::scenarios::a_boot_failure_recovers_when_the_program_appears
+conversation: []

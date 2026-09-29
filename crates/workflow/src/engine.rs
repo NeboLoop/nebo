@@ -54,23 +54,28 @@ pub(crate) fn producer_slug(store: &Store, agent_id: &str) -> String {
 /// The full registry (~38 tools, ~21k tokens of schemas) went out with EVERY
 /// LLM turn and invited small models to wander — web-searching for
 /// instructions the step already spells out, or shelling out to plugin
-/// binaries via `os` instead of the plugin tool. A tool is included when:
+/// binaries via `os` instead of the plugin's own tool. A tool is included when:
 ///
 /// - the activity DECLARES it in agent.json — `mcps` entries select that
-///   server's proxy tools (`mcp__<server>__*`), `cmds` (plugin commands)
-///   select the `plugin` tool — the authored contract comes first;
-/// - or its intent/steps/skill docs REFERENCE it — `<tool>(` — directly or
-///   through a legacy pre-STRAP name (`organizer(` → `os`, `gws(` →
-///   `plugin`; see `tools::registry::legacy_tool_aliases`), so imported
-///   workflows authored against old tool names still scope correctly;
-/// - or it is `message` (the delivery primitive — steps often say "alert"
-///   without naming it).
+///   server's proxy tools (`mcp__<server>__*`), `cmds` (plugin commands,
+///   the plugin's slug first) select that plugin's `plugin__<slug>` tool —
+///   the authored contract comes first;
+/// - or its intent/steps/skill docs REFERENCE it — `<tool>(` (stored
+///   workflows name the current tools: the upgrade moved every old name,
+///   `server::stored_tool_names`);
+/// - or it is a delivery primitive ([`DELIVERY_TOOLS`] — steps often say
+///   "alert" or "tell the owner" without naming a tool).
 ///
 /// When nothing is declared or referenced, fall back to the NON-DEFERRED
 /// roster only. Deferred tools (MCP proxies, heavyweight domain tools) are
 /// deferred precisely so their schemas don't ship until needed — the old
 /// fail-open-with-everything sent every connected MCP server's full schemas
 /// (~20k tokens/call) to activities whose agent.json declared `mcps: []`.
+/// What an activity always gets: the tools that deliver its result.
+/// A coworker is reached with send_message; the owner with message_owner or
+/// push_notification.
+const DELIVERY_TOOLS: [&str; 3] = ["send_message", "message_owner", "push_notification"];
+
 pub(crate) fn scoped_activity_tools<'a>(
     activity: &Activity,
     resolved_tools: &'a [Box<dyn DynTool>],
@@ -85,7 +90,7 @@ pub(crate) fn scoped_activity_tools<'a>(
             .iter()
             .filter(|t| {
                 let n = t.name();
-                n == "message"
+                DELIVERY_TOOLS.contains(&n)
                     || activity.tools.iter().any(|d| {
                         n == d || n.strip_prefix(d.as_str()).is_some_and(|r| r.starts_with('.'))
                     })
@@ -125,29 +130,27 @@ pub(crate) fn scoped_activity_tools<'a>(
             format!("mcp__{norm}")
         })
         .collect();
-    // Declared plugin commands run through the plugin tool ("emit" is the
+    // Declared plugin commands run through that plugin's tool ("emit" is the
     // event primitive, injected separately — it declares no plugin need).
-    let wants_plugin = activity.cmds.iter().any(|c| c != "emit");
-    // Legacy pre-STRAP names appearing in the text → their absorbing tool.
-    let alias_targets: HashSet<&'static str> = tools::registry::legacy_tool_aliases()
+    let plugin_tools: Vec<String> = activity
+        .cmds
         .iter()
-        .filter(|(alias, _)| text.contains(&format!("{alias}(")))
-        .map(|(_, target)| *target)
+        .filter(|c| c.as_str() != "emit")
+        .filter_map(|c| c.split_whitespace().next())
+        .map(tools::plugin_tools::plugin_tool_name)
         .collect();
-
     let referenced: Vec<&'a Box<dyn DynTool>> = resolved_tools
         .iter()
         .filter(|t| {
             let n = t.name();
-            n == "message"
+            DELIVERY_TOOLS.contains(&n)
                 || text.contains(&format!("{n}("))
-                || alias_targets.contains(n)
-                || (wants_plugin && n == "plugin")
+                || plugin_tools.iter().any(|p| p == n)
                 || mcp_prefixes.iter().any(|p| n.to_lowercase().starts_with(p.as_str()))
                 || activity.mcps.iter().any(|m| m == n)
         })
         .collect();
-    if referenced.iter().any(|t| t.name() != "message") {
+    if referenced.iter().any(|t| !DELIVERY_TOOLS.contains(&t.name())) {
         info!(
             activity = activity.id.as_str(),
             tools = referenced.len(),
@@ -198,20 +201,15 @@ pub enum WorkflowProgress {
     },
 }
 
-/// Approval-checkpoint context for a run: the employee's per-operation policy
-/// plus, on a post-approval re-run, the one-shot token authorizing exactly the
-/// call the owner saw. Matched on operation suffix + exact input hash — a call
-/// that drifted on re-derivation re-asks rather than executing something the
-/// owner never approved.
+/// Approval-checkpoint context for a run: an activity whose call the
+/// permission check parks suspends here for the owner.
 #[derive(Debug, Clone, Default)]
 pub struct CheckpointCtx {
-    pub operation_policy: Option<tools::policy::OperationPolicy>,
     /// The seat binding name (for the suspension row / notification).
     pub binding_name: String,
-    /// The run's inputs carry untrusted content (a watch/comm payload) —
-    /// the gate decides as `Origin::Comm` instead of trusted Workflow, so a
-    /// gated `Always` floors to Approval (WS2-R7: input taint, not just
-    /// origin; the payload steering the run arrived from outside).
+    /// The run's inputs carry untrusted content (a watch/comm payload): a
+    /// gated operation asks the owner (WS2-R7: input taint, not just origin;
+    /// the payload steering the run arrived from outside).
     pub tainted: bool,
 }
 
@@ -241,8 +239,9 @@ pub async fn execute_workflow(
     // server layer owns the scope derivation — see agent::memory). A bare
     // user_id made every workflow run read/write the global unowned "" scope
     // shared across all agents (isolation audit 2026-08-22, leak class 1).
-    // For context-isolated agents a workflow run has no matter, so callers
-    // pass writes_disabled=true — fail closed, reads still serve the scope.
+    // A workflow run is the owner's own automation, so it files into the
+    // employee's private memory (`resolve_memory_scope` with the Workflow
+    // origin); writes_disabled only when that derivation refuses them.
     memory_user_id: &str,
     memory_writes_disabled: bool,
     inputs: serde_json::Value,
@@ -266,7 +265,7 @@ pub async fn execute_workflow(
     cancel_token: Option<&CancellationToken>,
     skill_content: Option<&HashMap<String, String>>,
     event_bus: Option<&tools::EventBus>,
-    emit_source: Option<String>,
+    emit_sources: Vec<String>,
     progress_tx: Option<tokio::sync::mpsc::UnboundedSender<WorkflowProgress>>,
     checkpoint: Option<&CheckpointCtx>,
     resume: Option<ResumeState>,
@@ -291,13 +290,12 @@ pub async fn execute_workflow(
         }
     };
 
-    // Resolve emit source: prefer explicit parameter, fall back to _emit key in inputs
-    let resolved_emit = emit_source.or_else(|| {
-        inputs
-            .get("_emit")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string())
-    });
+    // The events to announce: the binding's, else the _emit key in inputs.
+    let resolved_emit: Vec<String> = if emit_sources.is_empty() {
+        inputs.get("_emit").and_then(|v| v.as_str()).map(types::strutil::name_list).unwrap_or_default()
+    } else {
+        emit_sources
+    };
 
     // Explicit connections → deterministic graph execution (forks parallel,
     // joins barriered, condition/loop routing engine-evaluated). No
@@ -342,10 +340,10 @@ pub async fn execute_workflow(
 
     for (idx, activity) in def.activities.iter().enumerate() {
         let is_last = idx == activity_count - 1;
-        let activity_emit = if is_last {
-            resolved_emit.as_deref()
+        let activity_emit: &[String] = if is_last {
+            &resolved_emit
         } else {
-            None
+            &[]
         };
         // Check for cancellation before each activity
         if let Some(token) = cancel_token {
@@ -669,7 +667,7 @@ pub(crate) async fn execute_activity_with_retry(
     loop_impl: &dyn ActivityLoop,
     tools: &[&Box<dyn DynTool>],
     skill_content: Option<&HashMap<String, String>>,
-    emit_source: Option<&str>,
+    emit_sources: &[String],
     store: &Arc<Store>,
     agent_id: &str,
     run_id: &str,
@@ -710,7 +708,7 @@ pub(crate) async fn execute_activity_with_retry(
             loop_impl,
             tools,
             skill_content,
-            emit_source,
+            emit_sources,
             store,
             agent_id,
             run_id,
@@ -768,7 +766,7 @@ pub async fn execute_activity(
     loop_impl: &dyn ActivityLoop,
     tools: &[&Box<dyn DynTool>],
     skill_content: Option<&HashMap<String, String>>,
-    emit_source: Option<&str>,
+    emit_sources: &[String],
     store: &Arc<Store>,
     agent_id: &str,
     run_id: &str,
@@ -784,8 +782,8 @@ pub async fn execute_activity(
     // The owner's per-run spending limit for this employee (0 = none). The
     // package's token_budget figures are estimates and never enforced.
     let spend_cap_microcents: i64 = store.agent_run_spend_cap_cents(agent_id) * 1_000_000;
-    // Detect if browser tool is available for this activity
-    let has_browser = tools.iter().any(|t| t.name() == "web");
+    // Detect if the browser tools are available for this activity
+    let has_browser = tools.iter().any(|t| t.name().starts_with("browser_"));
     let tool_names: Vec<String> = tools.iter().map(|t| t.name().to_string()).collect();
 
     // Trace builder — links every LLM call to this agent/run/workflow/action/step
@@ -801,26 +799,27 @@ pub async fn execute_activity(
         step_id,
     };
 
-    // Identity + memory continuity for agent-bound runs. Computed per
-    // activity so mid-run memory writes surface in later activities.
-    let agent_ctx = build_agent_context(store, agent_id);
+    // Memory continuity for agent-bound runs. Computed per activity so
+    // mid-run memory writes surface in later activities. The employee's
+    // identity is the loop's `identity` row, not part of the instructions.
+    let agent_ctx = build_agent_context(store, agent_id, memory_user_id);
 
     // If activity has steps, execute per-step. Otherwise, single-turn legacy path.
     if activity.steps.is_empty() {
         // No steps — legacy single-turn execution
-        let system = build_activity_prompt_with_context(
+        let instructions = build_activity_prompt_with_context(
             activity,
             prior_context,
             inputs,
             skill_content,
-            emit_source,
+            emit_sources,
             has_browser,
             &tool_names,
             agent_ctx.as_deref(),
         );
         let messages = vec![ai::Message {
             role: "user".into(),
-            // Typed nodes may have no intent — the system prompt carries the
+            // Typed nodes may have no intent — the instructions carry the
             // type contract and parameters; providers reject empty messages.
             content: if activity.intent.trim().is_empty() {
                 "Execute this activity as defined by its type and parameters.".to_string()
@@ -835,7 +834,7 @@ pub async fn execute_activity(
         };
         let turn = LoopTurn {
             activity,
-            system,
+            instructions,
             seed_messages: seed,
             workflow_name: &workflow.name,
             advertised_tools: tool_names.clone(),
@@ -870,13 +869,13 @@ pub async fn execute_activity(
         .seed_task_list(&list_id, &step_strs)
         .map_err(|e| WorkflowError::Database(e.to_string()))?;
 
-    // Build system prompt WITHOUT steps (they'll come as individual user messages)
-    let system = build_activity_prompt_no_steps(
+    // Build the instructions WITHOUT steps (they'll come as individual user messages)
+    let instructions = build_activity_prompt_no_steps(
         activity,
         prior_context,
         inputs,
         skill_content,
-        emit_source,
+        emit_sources,
         has_browser,
         &tool_names,
         agent_ctx.as_deref(),
@@ -933,7 +932,7 @@ pub async fn execute_activity(
         // Run this step through the ONE injected agentic loop.
         let turn = LoopTurn {
             activity,
-            system: system.clone(),
+            instructions: instructions.clone(),
             seed_messages: messages.clone(),
             workflow_name: &workflow.name,
             advertised_tools: tool_names.clone(),
@@ -1267,14 +1266,14 @@ async fn evaluate_step(
 /// input-inclusive budget would fail on turn 1 regardless of the model's work.
 /// Budgets are opt-in: an activity with no declared budget (max 0) is uncapped.
 
-/// Build the system prompt for a per-step activity (no steps section — steps come as user messages).
+/// Build the instructions for a per-step activity (no steps section — steps come as user messages).
 #[allow(clippy::too_many_arguments)]
 fn build_activity_prompt_no_steps(
     activity: &Activity,
     prior_context: &str,
     inputs: &serde_json::Value,
     skill_content: Option<&HashMap<String, String>>,
-    emit_source: Option<&str>,
+    emit_sources: &[String],
     has_browser: bool,
     tool_names: &[String],
     agent_context: Option<&str>,
@@ -1287,7 +1286,7 @@ fn build_activity_prompt_no_steps(
         prior_context,
         inputs,
         skill_content,
-        emit_source,
+        emit_sources,
         has_browser,
         tool_names,
         agent_context,
@@ -1322,7 +1321,7 @@ fn typed_node_preamble(activity_type: &str) -> Option<&'static str> {
         ),
         "code" => Some(
             "This is a code activity: write and run code in the configured language \
-             using the os tool. Return the program's output as your summary.",
+             with write_file and run_command. Return the program's output as your summary.",
         ),
         "transform" => Some(
             "This is a data-transform activity: reshape the prior results/inputs as the \
@@ -1330,8 +1329,8 @@ fn typed_node_preamble(activity_type: &str) -> Option<&'static str> {
         ),
         "agent" => Some(
             "This is a coworker activity: message the employee named in the parameters \
-             via message(resource: \"coworker\", action: \"send\", to: \"<name>\", \
-             text: \"<the task>\") and relay their reply.",
+             via send_message(to: \"<name>\", message: \"<the task>\") and relay \
+             their reply.",
         ),
         "connector" => Some(
             "This is an MCP connector activity: call the configured server's tool \
@@ -1342,57 +1341,45 @@ fn typed_node_preamble(activity_type: &str) -> Option<&'static str> {
     }
 }
 
-/// Per-agent identity + memory context injected into every activity prompt.
-/// Soul is who the agent IS (voice, values, boundaries); the memory slice
-/// gives scheduled runs continuity — most-used facts plus what happened most
-/// recently, including post-run outcome history. Recall is not learning, so
-/// this is NOT gated by learning_mode.
-fn build_agent_context(store: &Store, agent_id: &str) -> Option<String> {
+/// Per-agent memory context in every activity's instructions: the memory
+/// slice gives scheduled runs continuity — most-used facts plus what
+/// happened most recently, including post-run outcome history. Recall is
+/// not learning, so this is NOT gated by learning_mode. Who the agent is
+/// (SOUL.md, rules, AGENT.md) is the loop's `identity` row.
+fn build_agent_context(store: &Store, agent_id: &str, memory_user_id: &str) -> Option<String> {
     if agent_id.is_empty() {
         return None;
     }
-    let soul = store
-        .get_agent(agent_id)
-        .ok()
-        .flatten()
-        .and_then(|a| a.soul)
-        .filter(|s| !s.trim().is_empty());
-
-    // Base agent scope ONLY — never `:ctx:`-suffixed scopes. Context-isolated
-    // agents (law-firm matters, per-client engagements) keep each context's
-    // memories sealed from every other; a scheduled run has no case context,
-    // so it must see none of them. It gets the agent-wide slice only.
+    // Only what the run's own scope reads (`memory_scope_chain`), never a
+    // conversation's scope. An employee whose conversations are kept apart
+    // (law-firm matters, per-client engagements) keeps each one's memories
+    // sealed from every other; a scheduled run has no case context, so it
+    // sees none of them — and a Confidential employee's run, whose scope
+    // skips the private memory, sees none of that either.
+    let readable = tools::memory_tools::memory_scope_chain(memory_user_id);
     let mut memories = store.recent_memories_for_agent(agent_id, 8).unwrap_or_default();
     for m in store.list_memories_for_agent(agent_id, 8, 0).unwrap_or_default() {
         if !memories.iter().any(|e| e.id == m.id) {
             memories.push(m);
         }
     }
-    memories.retain(|m| !m.user_id.contains(":ctx:"));
+    memories.retain(|m| readable.contains(&m.user_id));
     memories.truncate(8);
 
-    if soul.is_none() && memories.is_empty() {
+    if memories.is_empty() {
         return None;
     }
 
-    let mut out = String::new();
-    if let Some(soul) = soul {
-        out.push_str("## Who You Are\n\nEmbody this personality and tone. This is who you ARE — your voice, values, and boundaries.\n\n");
-        out.push_str(&soul);
-        out.push_str("\n\n");
-    }
-    if !memories.is_empty() {
-        out.push_str("## Your Memory (recent and most-used)\n\n");
-        for m in &memories {
-            let mut value = m.value.replace('\n', " ");
-            if value.len() > 300 {
-                value.truncate(300);
-                value.push('…');
-            }
-            out.push_str(&format!("- [{}/{}] {}\n", m.namespace, m.key, value));
+    let mut out = String::from("## Your Memory (recent and most-used)\n\n");
+    for m in &memories {
+        let mut value = m.value.replace('\n', " ");
+        if value.len() > 300 {
+            value.truncate(300);
+            value.push('…');
         }
-        out.push('\n');
+        out.push_str(&format!("- [{}/{}] {}\n", m.namespace, m.key, value));
     }
+    out.push('\n');
     Some(out)
 }
 
@@ -1402,7 +1389,7 @@ fn build_activity_prompt_with_context(
     prior_context: &str,
     inputs: &serde_json::Value,
     skill_content: Option<&HashMap<String, String>>,
-    emit_source: Option<&str>,
+    emit_sources: &[String],
     has_browser: bool,
     tool_names: &[String],
     agent_context: Option<&str>,
@@ -1429,7 +1416,7 @@ fn build_activity_prompt_with_context(
           you found or did. Never end a step with zero text output — downstream activities depend \
           on your summary.\n\n");
 
-    // Identity + memory continuity for agent-bound runs (soul, recent history).
+    // Memory continuity for agent-bound runs (recent and most-used).
     if let Some(ctx) = agent_context {
         prompt.push_str(ctx);
     }
@@ -1455,19 +1442,17 @@ fn build_activity_prompt_with_context(
         prompt.push_str("## Available Tools\n");
         prompt.push_str("Your tools (case-sensitive, call ONLY these): ");
         prompt.push_str(&tool_names.join(", "));
-        prompt.push_str("\nDo NOT call any tool not in this list. Do NOT prefix tool names with mcp__ or any namespace.\n");
+        prompt.push_str("\nDo NOT call any tool not in this list. Use each name exactly as listed.\n");
         // A step phrased as a CLI command ("Run: gws calendar +agenda") must go
-        // through the plugin tool — running the bare binary via os/shell skips
-        // the per-account credential injection and fails with "not
+        // through the plugin's own tool — running the bare binary via os/shell
+        // skips the per-account credential injection and fails with "not
         // authenticated" even when the account is connected.
-        if tool_names.iter().any(|t| t == "plugin") {
+        if tool_names.iter().any(|t| tools::plugin_tools::plugin_slug(t).is_some()) {
             prompt.push_str(
-                "To run a plugin command (e.g. gws, slack, cos-store), ALWAYS use the plugin tool: \
-                 plugin(resource: \"<name>\", action: \"exec\", command: \"<the command>\"). \
-                 A step written as a shell command like `gws calendar +agenda --today` means \
-                 plugin(resource: \"gws\", action: \"exec\", command: \"calendar +agenda --today\"). \
-                 NEVER run a plugin binary through os or shell — only the plugin tool injects the \
-                 account credentials, so the shell path fails auth.\n",
+                "A step written as a plugin's command line, like `<name> calendar +agenda --today`, \
+                 runs through that plugin's own tool: plugin__<name> with command \
+                 \"calendar +agenda --today\". NEVER run a plugin binary through a shell — only \
+                 its tool injects the account credentials, so the shell path fails auth.\n",
             );
         }
         prompt.push('\n');
@@ -1544,33 +1529,45 @@ fn build_activity_prompt_with_context(
          because the engine reads the next wait from it.\n",
     );
     let has_emit_cmd = activity.cmds.iter().any(|c| c == "emit");
-    if has_emit_cmd && emit_source.is_none() {
+    if has_emit_cmd && emit_sources.is_empty() {
         prompt.push_str(
-            "- emit(source: \"...\", payload: {...}) — call this to announce \
+            "- emit_event(source: \"...\", payload: {...}) — call this to announce \
              your result to other workflows. Can be called multiple times, \
              once per item, if processing a collection.\n",
         );
     }
     prompt.push('\n');
 
-    // Browser automation guide — injected when web tool is available
+    // Browser automation guide — injected when the browser tools are available
     if has_browser {
         prompt.push_str("\n## Browser Automation Guide\n\
-            - Always call read_page FIRST before any click, fill, or navigate action.\n\
-            - Use element refs from the read_page output for click/fill/select — never guess selectors.\n\
-            - After navigate, wait briefly then read_page to see the new content.\n\
-            - For forms: click the field first, then type/fill the value.\n\
-            - If you cannot find an element, scroll down and read_page again.\n\
-            - Do NOT open new_tab unless you need multiple pages simultaneously.\n\
-            - Verify results with a final read_page after completing actions.\n\n");
+            - Call browser_read FIRST before acting on a page.\n\
+            - Use element refs from browser_read for browser_act and browser_fill_form — never guess.\n\
+            - After browser_open, check the page it returns before acting.\n\
+            - For forms: browser_fill_form, or click the field then type.\n\
+            - If you cannot find an element, scroll down and browser_read again.\n\
+            - Do NOT open a new tab unless you need multiple pages simultaneously.\n\
+            - Verify results with a final browser_read after completing actions.\n\n");
     }
 
     // Emit instruction — injected into last activity only when declared
-    if let Some(source) = emit_source {
-        prompt.push_str(&format!(
+    match emit_sources {
+        [] => {}
+        [source] => prompt.push_str(&format!(
             "\n## Output\nWhen you have completed your work, you MUST call the emit tool with:\n- source: \"{}\"\n- payload: your actual output or result (not a summary of what you did — the content itself)\n\nDo not say \"done\" or \"completed\". Call emit with the real output.\n",
             source
-        ));
+        )),
+        several => {
+            prompt.push_str(
+                "\n## Output\nWhen you have completed your work, call the emit tool once for each of these events that your result is:\n",
+            );
+            for source in several {
+                prompt.push_str(&format!("- source: \"{source}\"\n"));
+            }
+            prompt.push_str(
+                "Each call's payload is your actual output or result for that event (not a summary of what you did — the content itself).\n\nDo not say \"done\" or \"completed\". Call emit with the real output.\n",
+            );
+        }
     }
 
     prompt
@@ -1705,9 +1702,6 @@ mod engine_tests {
         fn schema(&self) -> serde_json::Value {
             serde_json::json!({})
         }
-        fn requires_approval(&self) -> bool {
-            false
-        }
         fn execute_dyn<'a>(
             &'a self,
             _ctx: &'a tools::ToolContext,
@@ -1719,7 +1713,7 @@ mod engine_tests {
     }
 
     fn fake_registry() -> Vec<Box<dyn DynTool>> {
-        ["plugin", "agent", "message", "os", "web", "browser"]
+        ["plugin__gws", "remember", "send_message", "message_owner", "push_notification", "os", "web", "browser"]
             .iter()
             .map(|n| Box::new(FakeTool(n)) as Box<dyn DynTool>)
             .collect()
@@ -1731,16 +1725,16 @@ mod engine_tests {
             "id": "sweep",
             "intent": "Mark noise read",
             "steps": [
-                "List: plugin(resource: \"gws\", action: \"exec\", command: \"gmail users messages list\")",
-                "Record ids: agent(resource: \"memory\", action: \"store\", key: \"x\")"
+                "List: plugin__gws(command: \"gmail users messages list\")",
+                "Record ids: remember(key: \"x\", value: \"...\")"
             ]
         }))
         .unwrap();
         let registry = fake_registry();
         let scoped = scoped_activity_tools(&activity, &registry, None, None);
         let names: Vec<&str> = scoped.iter().map(|t| t.name()).collect();
-        // plugin + agent referenced; message always rides along; os/web/browser stripped
-        assert_eq!(names, vec!["plugin", "agent", "message"]);
+        // plugin__gws + remember referenced; delivery always rides along; os/web/browser stripped
+        assert_eq!(names, vec!["plugin__gws", "remember", "send_message", "message_owner", "push_notification"]);
     }
 
     #[test]
@@ -1779,10 +1773,10 @@ mod engine_tests {
     }
 
     #[test]
-    fn test_scoped_activity_tools_resolves_legacy_alias() {
-        // Imported workflows authored pre-STRAP say `organizer(...)` — that
-        // tool no longer exists (folded into os). The alias table must scope
-        // this to os instead of matching nothing and blanketing the roster.
+    fn test_scoped_activity_tools_gives_an_old_name_no_special_treatment() {
+        // `organizer(` is no tool: nothing aliases it to `os`. It references
+        // nothing, so the step gets the non-deferred roster, as any step that
+        // names no tool does.
         let activity: Activity = serde_json::from_value(serde_json::json!({
             "id": "parse-brief",
             "intent": "List unread messages",
@@ -1791,14 +1785,13 @@ mod engine_tests {
         .unwrap();
         let registry = fake_registry();
         let scoped = scoped_activity_tools(&activity, &registry, None, None);
-        let names: Vec<&str> = scoped.iter().map(|t| t.name()).collect();
-        assert_eq!(names, vec!["message", "os"]);
+        assert_eq!(scoped.len(), registry.len());
     }
 
         #[test]
     fn test_scoped_activity_tools_honors_declared_mcps_and_cmds() {
         // agent.json declarations are the authored tool contract: mcps
-        // selects that server's proxy tools, cmds selects the plugin tool —
+        // selects that server's proxy tools, cmds selects the plugin's tool —
         // even when the step prose never writes a `tool(` call.
         let activity: Activity = serde_json::from_value(serde_json::json!({
             "id": "sync",
@@ -1814,7 +1807,7 @@ mod engine_tests {
         let scoped = scoped_activity_tools(&activity, &registry, None, Some(&deferred));
         let names: Vec<&str> = scoped.iter().map(|t| t.name()).collect();
         assert!(names.contains(&"mcp__monument__project"), "declared mcps scope in: {names:?}");
-        assert!(names.contains(&"plugin"), "declared cmds scope the plugin tool in: {names:?}");
+        assert!(names.contains(&"plugin__gws"), "declared cmds scope the plugin's tool in: {names:?}");
         assert!(!names.contains(&"web"), "undeclared tools stay out: {names:?}");
     }
 
@@ -1830,13 +1823,13 @@ mod engine_tests {
         let mut skills = HashMap::new();
         skills.insert(
             "gws-gmail-triage".to_string(),
-            "Use plugin(resource: \"gws\", action: \"exec\", ...) to triage.".to_string(),
+            "Use plugin__gws(command: \"gmail +triage\") to triage.".to_string(),
         );
         let registry = fake_registry();
-        // Step text never names a tool, but the skill doc shows plugin( usage
+        // Step text never names a tool, but the skill doc shows plugin__gws( usage
         let scoped = scoped_activity_tools(&activity, &registry, Some(&skills), None);
         let names: Vec<&str> = scoped.iter().map(|t| t.name()).collect();
-        assert_eq!(names, vec!["plugin", "message"]);
+        assert_eq!(names, vec!["plugin__gws", "send_message", "message_owner", "push_notification"]);
     }
 
     fn prompt_with_tools(tool_names: &[&str]) -> String {
@@ -1852,28 +1845,45 @@ mod engine_tests {
             "",
             &serde_json::json!({}),
             None,
-            None,
+            &[],
             false,
             &names,
             None,
         )
     }
 
+    /// A32: the last activity of a workflow that declares several events is
+    /// told every one of them; one event keeps its single instruction.
+    #[test]
+    fn the_last_activity_is_told_every_event_it_announces() {
+        let activity: Activity =
+            serde_json::from_value(serde_json::json!({"id": "report", "intent": "Report the scan"})).unwrap();
+        let prompt = |sources: &[String]| {
+            build_activity_prompt_with_context(&activity, "", &serde_json::json!({}), None, sources, false, &[], None)
+        };
+        let several = prompt(&["lpo.conversion.dropoff.detected".to_string(), "lpo.report.ready".to_string()]);
+        assert!(several.contains("once for each of these events"), "{several}");
+        assert!(several.contains("- source: \"lpo.conversion.dropoff.detected\"\n- source: \"lpo.report.ready\"\n"), "{several}");
+        let one = prompt(&["lpo.report.ready".to_string()]);
+        assert!(one.contains("you MUST call the emit tool with:\n- source: \"lpo.report.ready\""), "{one}");
+        assert!(!prompt(&[]).contains("## Output"));
+    }
+
     #[test]
     fn test_activity_prompt_routes_plugin_commands_through_plugin_tool() {
-        // A step written as a bare CLI command must be steered to the plugin
-        // tool — os/shell skips per-account credential injection.
-        let prompt = prompt_with_tools(&["plugin", "message"]);
-        assert!(prompt.contains("ALWAYS use the plugin tool"));
-        assert!(prompt.contains("NEVER run a plugin binary through os or shell"));
+        // A step written as a bare CLI command must be steered to the
+        // plugin's own tool — a shell skips per-account credential injection.
+        let prompt = prompt_with_tools(&["plugin__gws", "message"]);
+        assert!(prompt.contains("runs through that plugin's own tool: plugin__<name>"));
+        assert!(prompt.contains("NEVER run a plugin binary through a shell"));
     }
 
     #[test]
     fn test_activity_prompt_omits_plugin_guidance_without_plugin_tool() {
         let prompt = prompt_with_tools(&["os", "message"]);
-        assert!(!prompt.contains("ALWAYS use the plugin tool"));
+        assert!(!prompt.contains("plugin's own tool"));
         // Section spacing unchanged for the no-plugin case.
-        assert!(prompt.contains("or any namespace.\n\n"));
+        assert!(prompt.contains("exactly as listed.\n\n"));
     }
 
     #[test]
@@ -1889,7 +1899,7 @@ mod engine_tests {
             "",
             &serde_json::json!({}),
             None,
-            None,
+            &[],
             false,
             &[],
             None,
@@ -1910,7 +1920,7 @@ mod engine_tests {
             "",
             &serde_json::json!({}),
             None,
-            None,
+            &[],
             false,
             &[],
             None,

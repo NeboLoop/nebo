@@ -1,0 +1,74 @@
+id: memory-local-another-employee-recalls
+name: 'Memory: saved to local memory by one employee, recalled by another in a new conversation'
+description: |
+  The owner's model of memory (2026-09-27): local memory is shared by every employee on this
+  Nebo. One employee saves a fact the owner asks to go to local memory; a DIFFERENT employee, in a
+  conversation of its own, is asked for it and must find it through recall. The program checks read
+  what the tools answered: the save said "Saved to local memory" (the words the store returns only
+  for a row in the owner-wide scope; staffed_proof::memory proves the row), and the other
+  employee's recall returned the content.
+target_component: memory
+agent: office-manager-{{tag}}
+setup:
+- 'curl -sf -X POST ${NEBO_TEST_SERVER:-localhost:27895}/api/v1/agents -H ''Content-Type: application/json''
+  -d ''{"blank":true,"name":"office-manager-{{tag}}"}'' > /dev/null'
+- 'curl -sf -X POST ${NEBO_TEST_SERVER:-localhost:27895}/api/v1/agents -H ''Content-Type: application/json''
+  -d ''{"blank":true,"name":"scheduler-{{tag}}"}'' > /dev/null'
+teardown:
+- python3 -c "import json,urllib.request as u; s='http://${NEBO_TEST_SERVER:-localhost:27895}/api/v1';
+  ags=json.load(u.urlopen(s+'/agents'))['agents']; ids=[a['id'] for a in ags if a.get('name','')=='office-manager-{{tag}}'
+  or a.get('name','')=='scheduler-{{tag}}']; [u.urlopen(u.Request(s+'/agents/'+i, method='DELETE')) for
+  i in ids]"
+conversation:
+- role: user
+  content: 'Save this to local memory so the whole team has it: our standard packing checklist is labels,
+    packing tape, bubble wrap and the LANTERN-{{tag}} seal on every box.'
+- role: user
+  agent: scheduler-{{tag}}
+  content: What's our standard packing checklist? Check memory.
+tool_config:
+  remember:
+    enabled: true
+  recall:
+    enabled: true
+prompt_assertions:
+  first_call:
+  - id: saves-to-local
+    text: The first employee saves with remember, scope local, and the store answers that it was saved
+      to local memory
+    severity: critical
+    check:
+      tool: remember
+      arg: scope
+      equals: local
+      result_contains: Saved to local memory
+  recovery:
+  - id: other-employee-finds-it
+    text: The second employee's reply (turn two) gives the checklist with the LANTERN-{{tag}} seal, from its
+      own recall or the memory the turn recalled for it. Where the row is stored is proved by
+      suites/memory-proof.yaml
+    severity: critical
+    check:
+      turn: 2
+      reply_matches: LANTERN-{{tag}}
+  - id: no-tool-errors
+    text: Every call is accepted
+    severity: important
+    check:
+      max_errors: 0
+  - id: no-blame
+    text: If anything could not be found, the reply says so plainly. It never claims a memory was saved
+      somewhere other employees can see unless a tool result said 'Saved to local memory', and it never
+      blames another employee, a namespace (tacit, project, entity) or another employee's search for a
+      miss.
+    severity: important
+  cost:
+  - id: bounded
+    text: At most 5 tool calls across both conversations
+    severity: important
+    check:
+      max_tool_calls: 5
+ideal_behavior:
+  tool_calls: 2
+  narrative: 'Turn one: remember(key, value, scope: "local"), then "Saved to local memory." Turn two,
+    a different employee answers with the checklist, from recall or from the memory the turn recalled.'

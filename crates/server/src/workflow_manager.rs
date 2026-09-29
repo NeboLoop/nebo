@@ -38,7 +38,8 @@ fn binding_concurrency() -> usize {
 use ai::Provider;
 use tools::origin::ToolContext;
 use tools::registry::{DynTool, ToolResult};
-use tools::workflows::{WorkflowInfo, WorkflowManager, WorkflowRunInfo};
+use db::{TemporaryClaim, TemporaryKind};
+use tools::workflows::{Lifetime, SaveOptions, WorkflowInfo, WorkflowManager, WorkflowRunInfo};
 
 use crate::handlers::ws::ClientHub;
 
@@ -50,6 +51,10 @@ pub struct WorkflowManagerImpl {
     /// step evaluator and `decide` nodes run on it. None without Janus.
     decide: Option<Arc<ai::DecideClient>>,
     tools: Arc<tools::Registry>,
+    /// The installed plugins, read when a need is told to the owner: a
+    /// capability one binds is that plugin's need, and a need is met when
+    /// the plugin that meets it is here.
+    plugin_store: Arc<napp::plugin::PluginStore>,
     hub: Arc<ClientHub>,
     config: config::Config,
     /// Active run cancellation tokens, keyed by run_id.
@@ -86,6 +91,7 @@ impl WorkflowManagerImpl {
         providers: Arc<RwLock<Vec<Arc<dyn Provider>>>>,
         decide: Option<Arc<ai::DecideClient>>,
         tools: Arc<tools::Registry>,
+        plugin_store: Arc<napp::plugin::PluginStore>,
         hub: Arc<ClientHub>,
         config: config::Config,
         event_bus: Option<tools::EventBus>,
@@ -97,6 +103,7 @@ impl WorkflowManagerImpl {
             providers,
             decide,
             tools,
+            plugin_store,
             hub,
             config,
             active_runs: Arc::new(std::sync::Mutex::new(HashMap::new())),
@@ -206,7 +213,7 @@ impl WorkflowManagerImpl {
                     "recovery",
                     run.trigger_detail.clone(),
                     &agent_id,
-                    None,
+                    Vec::new(),
                 )
                 .await
             {
@@ -269,6 +276,9 @@ impl WorkflowManagerImpl {
             is_enabled: wf.is_enabled != 0,
             trigger_count: 0, // Triggers are now agent-owned
             activity_count,
+            temporary: false,
+            run_id: None,
+            employee: None,
         }
     }
 
@@ -427,6 +437,25 @@ impl WorkflowManagerImpl {
             }
         }
 
+        // A case workflow started with the person named in its inputs (its own or the caller's) works
+        // that person's case, as an event or a webhook naming them would:
+        // it opens (or reaches) their case, which waits days if need be for
+        // what it waits on. Returns the case.
+        if let Some(b) = workflow::cases::CaseBinding::from_binding(agent_id, binding_name, &def_json, binding) {
+            let key_spec = binding.case.as_ref().map(|c| c.key.as_str()).unwrap_or_default();
+            let aliases = workflow::cases::resolve_aliases(&merged, key_spec);
+            if !aliases.is_empty() {
+                let idem = format!("manual:{agent_id}:{binding_name}:{}", uuid::Uuid::new_v4());
+                let t = chrono::Utc::now().timestamp();
+                return match workflow::cases::route_signal(&self.store, &b, &aliases, &merged, "manual", &idem, t).map_err(|e| e.to_string())? {
+                    workflow::cases::Routed::Opened { case_id }
+                    | workflow::cases::Routed::Signaled { case_id }
+                    | workflow::cases::Routed::Reopened { case_id } => Ok(case_id),
+                    other => Err(format!("the case did not open: {other:?}")),
+                };
+            }
+        }
+
         // Synthesized envelope — same shape the EventDispatcher builds for
         // real events, via the same helper (workflow::events).
         workflow::events::insert_event_envelope(
@@ -438,10 +467,11 @@ impl WorkflowManagerImpl {
             &types::keyparser::agent_workflow_id(agent_id),
         );
 
-        let emit_source = binding
+        let emit_sources: Vec<String> = binding
             .emit
-            .as_ref()
-            .map(|emit_name| workflow::events::emit_source_for(&agent_rec.name, emit_name));
+            .iter()
+            .map(|emit_name| workflow::events::emit_source_for(&agent_rec.name, emit_name))
+            .collect();
 
         self.run_inline(
             def_json,
@@ -449,7 +479,7 @@ impl WorkflowManagerImpl {
             trigger_type,
             Some(binding_name.to_string()),
             agent_id,
-            emit_source,
+            emit_sources,
         )
         .await
     }
@@ -458,26 +488,13 @@ impl WorkflowManagerImpl {
 /// Split a binding-scoped workflow id (`agent:{agent_id}:{binding_name}`) —
 /// the id shape `resolve()` returns for agent bindings, matching the command
 /// format the cron scheduler already uses for them.
-/// The ONE agentic loop for workflow activities: the chat Runner, adapted
-/// (see `agent::workflow_loop`), with every turn at the employee's model as
-/// the entity resolver chat uses gives it.
-pub(crate) fn activity_loop(runner: Arc<agent::Runner>, store: Arc<db::Store>) -> Arc<dyn workflow::ActivityLoop> {
-    let entities = store.clone();
-    let employee_model: agent::workflow_loop::EmployeeModel = Arc::new(move |agent_id: &str| {
-        let (_, _, model_preference, _, _, _) = crate::chat_dispatch::entity_run_params(
-            crate::entity_config::resolve_for_chat(&entities, "agent", agent_id).as_ref(),
-        );
-        model_preference
-    });
-    Arc::new(agent::workflow_loop::RunnerActivityLoop::new(runner, store, employee_model))
-}
-
 fn split_binding_id(id: &str) -> Option<(&str, &str)> {
     id.strip_prefix("agent:")?.split_once(':')
 }
 
 /// Map an agent-owned binding row to the tool-facing WorkflowInfo shape.
-fn agent_workflow_to_info(wf: &db::models::AgentWorkflow) -> WorkflowInfo {
+fn agent_workflow_to_info(store: &db::Store, wf: &db::models::AgentWorkflow) -> WorkflowInfo {
+    let temporary = store.temporary_work(TemporaryKind::Workflow, &wf.agent_id, &wf.binding_name).ok().flatten();
     let activity_count = wf
         .activities
         .as_ref()
@@ -492,6 +509,9 @@ fn agent_workflow_to_info(wf: &db::models::AgentWorkflow) -> WorkflowInfo {
         is_enabled: wf.is_active != 0,
         trigger_count: if wf.trigger_type == "manual" { 0 } else { 1 },
         activity_count,
+        temporary: temporary.is_some(),
+        run_id: temporary.and_then(|t| t.run_id),
+        employee: store.get_agent(&wf.agent_id).ok().flatten().map(|a| a.name),
     }
 }
 
@@ -526,10 +546,19 @@ impl WorkflowManager for WorkflowManagerImpl {
             let mut out = Vec::new();
 
             // The agent's own bindings — the canonical store the panel reads.
-            if !agent_id.is_empty() {
-                match self.store.list_agent_workflows(agent_id) {
-                    Ok(bindings) => out.extend(bindings.iter().map(agent_workflow_to_info)),
-                    Err(e) => warn!(agent_id, error = %e, "failed to list agent workflows"),
+            // A conversation no employee owns can own no workflow (a save
+            // needs an employee), so there "yours" is every employee's:
+            // the release proof of 2026-09-27 listed 0 right after 13
+            // creates on an employee.
+            let owners = if agent_id.is_empty() {
+                self.store.list_agents(500, 0).unwrap_or_default()
+            } else {
+                self.store.get_agent(agent_id).ok().flatten().into_iter().collect()
+            };
+            for owner in owners {
+                match self.store.list_agent_workflows(&owner.id) {
+                    Ok(bindings) => out.extend(bindings.iter().map(|b| agent_workflow_to_info(&self.store, b))),
+                    Err(e) => warn!(agent_id = %owner.id, error = %e, "failed to list agent workflows"),
                 }
             }
 
@@ -641,7 +670,7 @@ impl WorkflowManager for WorkflowManagerImpl {
                             .iter()
                             .find(|b| b.binding_name == name_or_id || b.binding_name == key)
                         {
-                            let mut info = agent_workflow_to_info(b);
+                            let mut info = agent_workflow_to_info(&self.store, b);
                             // Binding-scoped id so run()/list_runs()/toggle()
                             // route to the binding, not the workflows table.
                             info.id = format!("agent:{}:{}", agent_id, b.binding_name);
@@ -782,14 +811,7 @@ impl WorkflowManager for WorkflowManagerImpl {
                 let tool_defs = tools_registry.list().await;
                 let resolved_tools: Vec<Box<dyn DynTool>> = tool_defs
                     .iter()
-                    .map(|td| {
-                        Box::new(RegistryTool {
-                            tool_name: td.name.clone(),
-                            tool_desc: td.description.clone(),
-                            tool_schema: td.input_schema.clone(),
-                            registry: tools_registry.clone(),
-                        }) as Box<dyn DynTool>
-                    })
+                    .map(|td| Box::new(RegistryTool::new(td, tools_registry.clone())) as Box<dyn DynTool>)
                     .collect();
 
                 info!(
@@ -845,7 +867,7 @@ impl WorkflowManager for WorkflowManagerImpl {
                     Some(&cancel_token),
                     skill_content.as_ref(),
                     event_bus.as_ref(),
-                    None,
+                    Vec::new(),
                     None,
                     None, // standalone run — no per-employee approval policy
                     None,
@@ -1058,32 +1080,24 @@ impl WorkflowManager for WorkflowManagerImpl {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + 'a>>
     {
         Box::pin(async move {
-            if let Ok(Some(_)) = self.store.get_agent(agent_ref) {
-                return Ok(agent_ref.to_string());
+            // The one resolver every employee tool uses: id, name in any
+            // case, or the short name create_employee reports.
+            if let Some(agent) = tools::team::resolve_agent(&self.store, agent_ref) {
+                return Ok(agent.id);
             }
             let agents = self
                 .store
                 .list_agents(500, 0)
                 .map_err(|e| format!("list_agents: {}", e))?;
-            let names: Vec<(&str, &str)> = agents
-                .iter()
-                .map(|a| (a.id.as_str(), a.name.as_str()))
-                .collect();
-            match find_agent_by_name(&names, agent_ref) {
-                Some(id) => Ok(id.to_string()),
-                None => Err(format!(
-                    "no agent matching '{}' — available: {}. To create a NEW agent \
-                     with duties, use agent(resource: \"registry\", action: \"create\", \
-                     name: \"...\", automations: [...]) first — workflows can only \
-                     attach to an agent that exists.",
-                    agent_ref,
-                    names
-                        .iter()
-                        .map(|(_, n)| *n)
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                )),
-            }
+            let names: Vec<&str> = agents.iter().map(|a| a.name.as_str()).collect();
+            Err(format!(
+                "no agent matching '{}' — available: {}. To create a NEW agent \
+                 with duties, use create_employee(name: \"...\", \
+                 automations: [...]) first — workflows can only \
+                 attach to an agent that exists.",
+                agent_ref,
+                names.join(", ")
+            ))
         })
     }
 
@@ -1092,10 +1106,11 @@ impl WorkflowManager for WorkflowManagerImpl {
         agent_id: &'a str,
         name: &'a str,
         definition: &'a str,
+        options: SaveOptions,
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<WorkflowInfo, String>> + Send + 'a>,
     > {
-        Box::pin(save_binding(self, agent_id, name, definition, false))
+        Box::pin(save_binding(self, agent_id, name, definition, false, options))
     }
 
     fn update<'a>(
@@ -1103,10 +1118,11 @@ impl WorkflowManager for WorkflowManagerImpl {
         agent_id: &'a str,
         name: &'a str,
         definition: &'a str,
+        options: SaveOptions,
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<WorkflowInfo, String>> + Send + 'a>,
     > {
-        Box::pin(save_binding(self, agent_id, name, definition, true))
+        Box::pin(save_binding(self, agent_id, name, definition, true, options))
     }
 
     fn tuning_sweep<'a>(
@@ -1206,7 +1222,7 @@ impl WorkflowManager for WorkflowManagerImpl {
         trigger_type: &'a str,
         trigger_detail: Option<String>,
         agent_id: &'a str,
-        emit_source: Option<String>,
+        emit_sources: Vec<String>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + 'a>>
     {
         Box::pin(async move {
@@ -1291,21 +1307,14 @@ impl WorkflowManager for WorkflowManagerImpl {
                     }
                     None => None,
                 };
-                let policy = self
-                    .store
-                    .get_entity_config("agent", agent_id)
-                    .ok()
-                    .flatten()
-                    .and_then(|c| c.operation_policy)
-                    .map(|j| tools::policy::OperationPolicy::from_json(Some(&j)));
                 let binding = trigger_detail
                     .as_deref()
                     .map(|d| d.split(':').next().unwrap_or(d).to_string())
                     .unwrap_or_default();
                 // WS2-R7: a watch/comm payload in the inputs means untrusted
                 // content steers this run (the live case: inbound factory email
-                // driving approval-gated CRM writes) — the checkpoint decides
-                // as Comm even though the origin is Workflow. The taint check
+                // driving approval-gated CRM writes) — gated operations ask
+                // even though the origin is Workflow. The taint check
                 // is deliberately the reserved keys the launch paths stamp.
                 //
                 // `_event_source` is the canonical envelope key
@@ -1325,15 +1334,9 @@ impl WorkflowManager for WorkflowManagerImpl {
                     || inputs.get("_watch_source").is_some()
                     || inputs.get("_comm_payload").is_some()
                     || external_event;
-                let ctx = if policy.is_some() || tainted {
-                    Some(workflow::engine::CheckpointCtx {
-                        operation_policy: policy,
-                        binding_name: binding,
-                        tainted,
-                    })
-                } else {
-                    None
-                };
+                // Every activity can park: a call the permission check asks
+                // about suspends the run for the owner.
+                let ctx = Some(workflow::engine::CheckpointCtx { binding_name: binding, tainted });
                 (inputs, ctx, resume_state, resume_run, relaunch_run)
             };
 
@@ -1362,6 +1365,31 @@ impl WorkflowManager for WorkflowManagerImpl {
             // to resolve per-agent plugin accounts and memory scope. The old
             // dash format resolved nothing (briefings ran with no account).
             let session_key = tools::workflow_session_key(agent_id, &run_id);
+            // Temporary work runs once (owner, 09-25): its first run claims
+            // it, a second never starts, and its trigger stops listening.
+            let fresh = resume_run_id.is_none() && relaunch_run_id.is_none();
+            let temporary_binding = trigger_detail
+                .as_deref()
+                .map(|d| d.split(':').next().unwrap_or(d).to_string())
+                .filter(|b| fresh && !b.is_empty());
+            if let Some(binding) = &temporary_binding {
+                match self.store.claim_temporary_run(TemporaryKind::Workflow, agent_id, binding, &run_id) {
+                    Ok(TemporaryClaim::NotTemporary) => {}
+                    Ok(TemporaryClaim::Claimed) => {
+                        if let Err(e) = self.store.set_agent_workflow_active(agent_id, binding, false) {
+                            warn!(agent_id, binding = %binding, error = %e, "temporary workflow's trigger not turned off");
+                        }
+                        workflow::triggers::unregister_single_agent_trigger(agent_id, binding, &self.store);
+                        info!(agent_id, binding = %binding, run_id = %run_id, "temporary workflow started its one run");
+                    }
+                    Ok(TemporaryClaim::AlreadyRan(first)) => {
+                        return Err(format!(
+                            "the temporary workflow '{binding}' already ran once (run {first}); save it to run it again"
+                        ));
+                    }
+                    Err(e) => return Err(format!("claim temporary run: {e}")),
+                }
+            }
             if resume_run_id.is_some() {
                 // Consume the suspension (the signal is being handled) and
                 // wake the parked run.
@@ -1388,7 +1416,13 @@ impl WorkflowManager for WorkflowManagerImpl {
                         // against exactly what it launched with.
                         Some(&definition_json),
                     )
-                    .map_err(|e| format!("create_workflow_run: {}", e))?;
+                    .map_err(|e| {
+                        // Never started: temporary work may claim its run again.
+                        if let Some(binding) = &temporary_binding {
+                            let _ = self.store.release_temporary_run(TemporaryKind::Workflow, agent_id, binding, &run_id);
+                        }
+                        format!("create_workflow_run: {}", e)
+                    })?;
             }
 
             // Create cancellation token
@@ -1418,6 +1452,7 @@ impl WorkflowManager for WorkflowManagerImpl {
             let failure_counts = self.failure_counts.clone();
             let wf_loop = self.workflow_loop.clone();
             let neboai_api_url = self.config.neboai.api_url.clone();
+            let plugin_store = self.plugin_store.clone();
             let run_id_clone = run_id.clone();
             let agent_id_owned = agent_id.to_string();
             let trigger = trigger_type.to_string();
@@ -1506,19 +1541,13 @@ impl WorkflowManager for WorkflowManagerImpl {
                 let mut tool_defs = tools_registry.list().await;
 
                 // The ethical wall reaches WORKFLOW runs too. The chat runner
-                // withholds company Memory from a context_isolated employee,
+                // withholds company Memory from a sealed run with no matter,
                 // but a workflow builds its own roster here — and an employee
                 // like an intake coordinator runs entirely through workflows,
                 // so a wall that covered only chat would cover nothing that
                 // matters. Memory is single-principal: unscoped access hands a
                 // sealed employee the whole company graph.
-                let isolated_employee = store
-                    .get_agent(&agent_id_owned)
-                    .ok()
-                    .flatten()
-                    .and_then(|a| napp::agent::parse_agent_config(&a.frontmatter).ok())
-                    .map(|c| c.memory.context_isolated)
-                    .unwrap_or(false);
+                let isolated_employee = agent_memory_mode(&store, &agent_id_owned).separates_conversations();
                 if isolated_employee {
                     let memory_url = config::memory_url();
                     let memory_ids: std::collections::HashSet<String> = if memory_url.is_empty() {
@@ -1551,7 +1580,7 @@ impl WorkflowManager for WorkflowManagerImpl {
                             info!(
                                 role = %agent_id_owned,
                                 withheld,
-                                "context_isolated employee: company Memory withheld from workflow run"
+                                "sealed employee: company Memory withheld from workflow run"
                             );
                         }
                     }
@@ -1559,14 +1588,7 @@ impl WorkflowManager for WorkflowManagerImpl {
 
                 let resolved_tools: Vec<Box<dyn tools::registry::DynTool>> = tool_defs
                     .iter()
-                    .map(|td| {
-                        Box::new(RegistryTool {
-                            tool_name: td.name.clone(),
-                            tool_desc: td.description.clone(),
-                            tool_schema: td.input_schema.clone(),
-                            registry: tools_registry.clone(),
-                        }) as Box<dyn tools::registry::DynTool>
-                    })
+                    .map(|td| Box::new(RegistryTool::new(td, tools_registry.clone())) as Box<dyn tools::registry::DynTool>)
                     .collect();
 
                 info!(
@@ -1692,7 +1714,7 @@ impl WorkflowManager for WorkflowManagerImpl {
                     Some(&cancel_token),
                     skill_content.as_ref(),
                     event_bus.as_ref(),
-                    emit_source,
+                    emit_sources,
                     Some(progress_tx),
                     checkpoint_ctx.as_ref(),
                     resume_state,
@@ -1749,13 +1771,15 @@ impl WorkflowManager for WorkflowManagerImpl {
                         record_run_outcome(&store, &agent_id_owned, &binding_name, "completed", &output);
                         // A standing outcome ends the run Ok; one blocked on a
                         // missing account is the owner's to fix.
-                        tell_owner_if_blocked(&store, &hub, &neboai_api_url, &agent_id_owned, &binding_name, &run_id_clone);
+                        let installed = agent::agent_worker::installed_interfaces(&plugin_store);
+                        tell_owner_if_blocked(&store, &hub, &neboai_api_url, &installed, &agent_id_owned, &binding_name, &run_id_clone);
                         info!(role = %agent_id_owned, run_id = %run_id_clone, "inline workflow completed");
                     }
                     Err(workflow::WorkflowError::AwaitingApproval { operation, display }) => {
                         // Not a failure: the run is parked (engine persisted the
-                        // suspension + awaiting_approval status). Tell the owner
-                        // in chat + Inbox; the approval endpoint resumes/denies.
+                        // suspension + awaiting_approval status) on an ask whose
+                        // one card is already with the owner; its answer
+                        // resumes or ends the run.
                         post_automation_message(
                             &store,
                             &hub,
@@ -1764,15 +1788,6 @@ impl WorkflowManager for WorkflowManagerImpl {
                                 "**Automation paused for your approval** — {} ({}): {}",
                                 binding_name, trigger, display
                             ),
-                        );
-                        notify_workflow_approval(
-                            &store,
-                            &hub,
-                            &neboai_api_url,
-                            &agent_id_owned,
-                            &run_id_clone,
-                            &binding_name,
-                            &display,
                         );
                         hub.broadcast(
                             "workflow_run_awaiting_approval",
@@ -1792,7 +1807,8 @@ impl WorkflowManager for WorkflowManagerImpl {
                         record_run_end(&store, &run_id_clone, &end);
                         if let RunEnd::Exited(reason) = &end {
                             record_run_outcome(&store, &agent_id_owned, &binding_name, "exited", reason);
-                            tell_owner_if_blocked(&store, &hub, &neboai_api_url, &agent_id_owned, &binding_name, &run_id_clone);
+                            let installed = agent::agent_worker::installed_interfaces(&plugin_store);
+                            tell_owner_if_blocked(&store, &hub, &neboai_api_url, &installed, &agent_id_owned, &binding_name, &run_id_clone);
                             hub.broadcast(
                                 "workflow_run_exited",
                                 serde_json::json!({
@@ -1908,14 +1924,15 @@ impl WorkflowManager for WorkflowManagerImpl {
         Box::pin(async move { self.cancel_run(run_id).await })
     }
 
-    fn announce_binding_need(&self, agent_id: &str, binding_name: &str, need: &str) {
+    fn announce_binding_need(&self, agent_id: &str, binding_name: &str, need: &types::OwnerNeed) {
         tell_owner_need(
             &self.store,
             &self.hub,
             &self.config.neboai.api_url,
+            &agent::agent_worker::installed_interfaces(&self.plugin_store),
             agent_id,
             binding_name,
-            crate::preflight::Need::Recorded(need),
+            crate::preflight::Need::Known(need),
         );
     }
 
@@ -1931,11 +1948,23 @@ impl WorkflowManager for WorkflowManagerImpl {
 ///
 /// Snapshots tool metadata at construction time and delegates execution to the
 /// shared Registry. This avoids holding the Registry's RwLock across await points.
-struct RegistryTool {
+pub(crate) struct RegistryTool {
     tool_name: String,
     tool_desc: String,
     tool_schema: serde_json::Value,
     registry: Arc<tools::Registry>,
+}
+
+impl RegistryTool {
+    /// The registry's tool `td`, as a workflow run's roster holds it.
+    pub(crate) fn new(td: &ai::ToolDefinition, registry: Arc<tools::Registry>) -> Self {
+        Self {
+            tool_name: td.name.clone(),
+            tool_desc: td.description.clone(),
+            tool_schema: td.input_schema.clone(),
+            registry,
+        }
+    }
 }
 
 impl DynTool for RegistryTool {
@@ -1951,9 +1980,6 @@ impl DynTool for RegistryTool {
         self.tool_schema.clone()
     }
 
-    fn requires_approval(&self) -> bool {
-        false // Workflows run headless
-    }
 
     fn execute_dyn<'a>(
         &'a self,
@@ -1988,159 +2014,132 @@ fn record_failure_should_notify(
 }
 
 /// Create an in-app notification for a workflow run failure, deep-linked to the run.
-/// Owner notification for a run parked at the approval checkpoint. Same
-/// Inbox + broadcast pathway as failure notifications; type "approval" so the
-/// Inbox can render Approve/Deny affordances against the approval endpoint.
-fn notify_workflow_approval(
-    store: &db::Store,
-    hub: &ClientHub,
-    api_url: &str,
-    agent_id: &str,
-    run_id: &str,
-    binding_name: &str,
-    display: &str,
-) {
-    let notif_id = format!("wf-approval:{}", run_id);
-    let title = format!("{} needs your approval", binding_name);
-    let action_url = format!("/{}/runs/{}", agent_id, run_id);
-    tools::owner_notify::emit(
-        store,
-        Some(&|ev, payload| hub.broadcast(ev, payload)),
-        &tools::owner_notify::OwnerNotification {
-            id: &notif_id,
-            kind: "approval",
-            title: &title,
-            body: Some(display),
-            action_url: Some(&action_url),
-            agent_id: Some(agent_id),
-            loud: false,
-        },
-    );
-    // Mirror to the owner's unified inbox at neboai.com/app. The item is
-    // self-describing: the buttons carry tunnel-relative resolve calls, so
-    // the hub renders and proxies them without learning bot route shapes.
-    let approval_path = format!("/api/v1/agents/workflow-runs/{}/approval", run_id);
-    crate::codes::push_inbox_via(
-        store,
-        api_url,
-        serde_json::json!({
-            "id": notif_id,
-            "type": "approval",
-            "title": title,
-            "body": display,
-            "link": action_url,
-            "actions": {
-                "buttons": [
-                    {"label": "Approve", "style": "primary", "method": "POST",
-                     "path": approval_path, "body": {"approved": true}},
-                    {"label": "Deny", "style": "danger", "method": "POST",
-                     "path": approval_path, "body": {"approved": false}},
-                ],
-                "status": {"method": "GET", "path": approval_path},
-            },
-        }),
-    );
-}
-
 /// Owner notification that an employee cannot do a duty until the owner
-/// supplies something (`crate::preflight::NeedNotice`). Same Inbox +
-/// broadcast pathway as failure notifications, mirrored to the owner's web
-/// inbox like approvals. Deep-linked to the one place that fixes it; never
-/// installs or connects anything itself.
+/// supplies something (`crate::preflight::NeedNotice`), on every surface
+/// through the one owner item (`tools::owner_notify`): its Inbox row and
+/// live broadcast, and its copy in the owner's web inbox, which pushes it to
+/// his phone and emails it on the first store of the id only. `fresh`: a
+/// need newly told is created; otherwise the item already telling it is
+/// restated in place (another duty is held on it), quietly, and an item the
+/// owner dismissed stays dismissed. Deep-linked to the one place that fixes
+/// it; never installs or connects anything itself.
 pub(crate) fn notify_binding_need(
     store: &db::Store,
     hub: &ClientHub,
     api_url: &str,
     agent_id: &str,
     notice: &crate::preflight::NeedNotice,
+    fresh: bool,
 ) {
-    tools::owner_notify::emit(
-        store,
-        Some(&|ev, payload| hub.broadcast(ev, payload)),
-        &tools::owner_notify::OwnerNotification {
-            id: &notice.id,
-            kind: "warning",
-            title: &notice.title,
-            body: Some(&notice.body),
-            action_url: Some(&notice.link),
-            agent_id: Some(agent_id),
-            loud: false,
-        },
-    );
-    crate::codes::push_inbox_via(
-        store,
-        api_url,
-        serde_json::json!({
-            "id": notice.id,
-            "type": "warning",
-            "title": notice.title,
-            "body": notice.body,
-            "link": notice.link,
-        }),
-    );
+    let n = tools::owner_notify::OwnerNotification {
+        id: &notice.id,
+        kind: "warning",
+        title: &notice.title,
+        body: Some(&notice.body),
+        action_url: Some(&notice.link),
+        agent_id: Some(agent_id),
+        loud: false,
+    };
+    let broadcast = |ev: &str, payload: serde_json::Value| hub.broadcast(ev, payload);
+    if fresh {
+        tools::owner_notify::emit(store, Some(&broadcast), &n);
+    } else if !tools::owner_notify::restate(store, Some(&broadcast), &n) {
+        return;
+    }
+    crate::codes::push_inbox_via(store, api_url, n.hub_item(serde_json::json!({})));
+}
+
+/// Forget every need `agent_id` stands on that is met now
+/// (`crate::preflight::need_met`), and resolve the item that told it: read
+/// here, resolved in the web inbox. A need that returns after this is told
+/// once more. `installed` as [`crate::preflight::unmet_need`] takes it.
+pub(crate) fn settle_owner_needs(store: &db::Store, api_url: &str, installed: &[(String, Vec<String>)], agent_id: &str) {
+    let holdings = crate::preflight::Holdings::of(store, installed, agent_id);
+    settle_met_needs(store, api_url, &holdings, agent_id);
+}
+
+fn settle_met_needs(store: &db::Store, api_url: &str, holdings: &crate::preflight::Holdings<'_>, agent_id: &str) {
+    let rows = match store.owner_needs_of(agent_id) {
+        Ok(rows) => rows,
+        Err(e) => {
+            warn!(role = %agent_id, error = %e, "could not read the needs told to the owner");
+            return;
+        }
+    };
+    for row in rows {
+        let need = types::OwnerNeed::from_key(&row.need_key);
+        if !crate::preflight::need_met(store, holdings, need.as_ref(), &row.basis) {
+            continue;
+        }
+        if !matches!(store.forget_owner_need(agent_id, &row.need_key), Ok(true)) {
+            continue;
+        }
+        info!(role = %agent_id, need = %row.need_key, duties = ?row.duties, "need met; the owner's item is resolved");
+        let user_id = store.ensure_local_user_id().unwrap_or_default();
+        if let Err(e) = store.mark_notification_read(&row.notice_id, &user_id) {
+            warn!(notice = %row.notice_id, error = %e, "met need's Inbox row not marked read");
+        }
+        crate::codes::push_inbox_via(store, api_url, serde_json::json!({ "id": row.notice_id, "resolved": true }));
+    }
 }
 
 /// Tell the owner, once, that an employee's duty stands on `need`
-/// (`crate::preflight::Need`): the reason its record names, what a blocked
-/// run's refusing tool named, or what heartbeat triage read its last
-/// outcome as standing on. Every held fire and blocked run comes here; only
-/// the first of a need is news (`db::Store::tell_binding_need`). The item
-/// opens the one place that fixes it; nothing is installed or connected.
+/// (`crate::preflight::Need`): what pre-flight, a watch trigger's start or
+/// a blocked run's refusing tool named, or what heartbeat triage read its
+/// last outcome as standing on. Every held fire and blocked run comes here.
+///
+/// Every source's need reduces to ONE key per missing thing
+/// (`crate::preflight::settle`), and the employee's needs are checked for
+/// what is met first, so a need met and back is news. Only the first of a
+/// need is news (`db::Store::tell_owner_need`), whichever duty and source
+/// noticed it: one item, pushed and emailed once. A duty newly held on a
+/// need already told restates that item's text to list every duty held on
+/// it; nothing is pushed or emailed again, and an item the owner dismissed
+/// stays dismissed until the need is met. The item opens the one place that
+/// fixes it; nothing is installed or connected. `installed` as
+/// [`crate::preflight::unmet_need`] takes it.
 pub(crate) fn tell_owner_need(
     store: &db::Store,
     hub: &ClientHub,
     api_url: &str,
+    installed: &[(String, Vec<String>)],
     agent_id: &str,
     binding_name: &str,
     need: crate::preflight::Need<'_>,
 ) {
-    use crate::preflight::{Need, account_need_notice, plugin_need_notice, something_needed_notice};
-    use agent::heartbeat_triage::Declared;
-    let key = need.key();
-    match store.tell_binding_need(agent_id, binding_name, &key) {
-        Ok(true) => {}
-        Ok(false) => return,
+    use crate::preflight::{Holdings, Need, SOMETHING, need_notice, settle};
+    let holdings = Holdings::of(store, installed, agent_id);
+    settle_met_needs(store, api_url, &holdings, agent_id);
+    let settled = settle(store, &holdings, &need);
+    let key = settled.as_ref().map(types::OwnerNeed::key).unwrap_or_else(|| SOMETHING.to_string());
+    let fresh_id = format!("need:{}", uuid::Uuid::new_v4());
+    let told = store.tell_owner_need(agent_id, &key, binding_name, &fresh_id, &holdings.basis(), chrono::Utc::now().timestamp());
+    let (id, duties, fresh) = match told {
+        Ok(db::ToldNeed::New) => (fresh_id, vec![binding_name.to_string()], true),
+        Ok(db::ToldNeed::Joined { notice_id, duties }) => (notice_id, duties, false),
+        Ok(db::ToldNeed::Already) => return,
         Err(e) => {
             warn!(role = %agent_id, binding = %binding_name, error = %e, "could not record the need told to the owner");
             return;
         }
-    }
+    };
     let employee = store
         .get_agent(agent_id)
         .ok()
         .flatten()
         .map(|a| a.name)
         .unwrap_or_else(|| agent_id.to_string());
-    // An installed plugin's name as the owner sees it.
-    let installed = |slug: &str| {
-        store.get_plugin_by_slug(slug).ok().flatten().map(|p| {
-            [&p.display_name, &p.name]
-                .into_iter()
-                .find(|n| !n.trim().is_empty())
-                .cloned()
-                .unwrap_or_else(|| slug.to_string())
-        })
+    let clause = match &need {
+        Need::Judged(held) => held.clause.as_str(),
+        Need::Known(_) => "",
     };
-    let notice = match need {
-        Need::Recorded(text) => plugin_need_notice(&employee, binding_name, text),
-        Need::Known(types::OwnerNeed::Account { plugin }) => {
-            let name = installed(plugin).unwrap_or_else(|| plugin.clone());
-            account_need_notice(&employee, agent_id, binding_name, (plugin, &name))
-        }
-        Need::Known(types::OwnerNeed::Plugin { plugin }) => {
-            plugin_need_notice(&employee, binding_name, &format!("needs the {plugin} plugin"))
-        }
-        Need::Judged(held) => match &held.which {
-            Some(Declared::Capability(c)) => plugin_need_notice(&employee, binding_name, &format!("needs a {c} plugin")),
-            Some(Declared::Plugin(p)) => match installed(p) {
-                Some(name) => account_need_notice(&employee, agent_id, binding_name, (p, &name)),
-                None => plugin_need_notice(&employee, binding_name, &format!("needs the {p} plugin")),
-            },
-            None => something_needed_notice(&employee, agent_id, binding_name, &held.clause),
-        },
-    };
-    info!(role = %agent_id, binding = %binding_name, need = %key, "binding stands on a need; owner told");
-    notify_binding_need(store, hub, api_url, agent_id, &notice);
+    let notice = need_notice(store, &id, &employee, agent_id, &duties, settled.as_ref(), clause);
+    if fresh {
+        info!(role = %agent_id, binding = %binding_name, need = %key, "binding stands on a need; owner told");
+    } else {
+        info!(role = %agent_id, binding = %binding_name, need = %key, duties = ?duties, "another duty stands on a need the owner was told; item restated");
+    }
+    notify_binding_need(store, hub, api_url, agent_id, &notice, fresh);
 }
 
 /// After a binding's run ends: a run blocked on something the refusing tool
@@ -2149,12 +2148,13 @@ pub(crate) fn tell_owner_if_blocked(
     store: &db::Store,
     hub: &ClientHub,
     api_url: &str,
+    installed: &[(String, Vec<String>)],
     agent_id: &str,
     binding_name: &str,
     run_id: &str,
 ) {
     if let Some(need) = crate::preflight::blocked_need(store, run_id) {
-        tell_owner_need(store, hub, api_url, agent_id, binding_name, crate::preflight::Need::Known(&need));
+        tell_owner_need(store, hub, api_url, installed, agent_id, binding_name, crate::preflight::Need::Known(&need));
     }
 }
 
@@ -2174,7 +2174,7 @@ fn notify_workflow_failure(
     } else {
         error
     };
-    let action_url = format!("/{}/runs/{}", agent_id, run_id);
+    let action_url = tools::owner_notify::link::run(agent_id, run_id);
 
     tools::owner_notify::emit(
         store,
@@ -2211,37 +2211,48 @@ fn learning_mode_for(store: &db::Store, agent_id: &str) -> String {
 /// slice, which is what makes dedup ("already published today") and error
 /// avoidance possible. Honors learning modes: written for auto and staged,
 /// skipped for off — an agent set to Off does not accumulate anything.
-/// Fail-closed read of an agent's `memory.context_isolated` flag: an empty
-/// frontmatter is a legitimate default (not isolated), but config that exists
-/// and cannot be parsed — or an agent row that cannot be read — counts as
-/// isolated. "Couldn't read the isolation flag" must never mean "not isolated"
-/// (isolation audit 2026-08-22, fail-open class).
-pub(crate) fn agent_context_isolated(store: &db::Store, agent_id: &str) -> bool {
+/// Fail-closed read of an agent's `memory.mode`: an empty frontmatter is a
+/// legitimate default (one conversation), but config that exists and cannot
+/// be parsed — or an agent row that cannot be read — counts as Confidential,
+/// the most sealed mode. "Couldn't read the setting" must never mean "not
+/// sealed" (isolation audit 2026-08-22, fail-open class).
+pub(crate) fn agent_memory_mode(store: &db::Store, agent_id: &str) -> napp::agent::MemoryMode {
     if agent_id.is_empty() {
-        return false;
+        return napp::agent::MemoryMode::Single;
     }
     match store.get_agent(agent_id) {
-        Ok(Some(a)) if a.frontmatter.is_empty() => false,
-        Ok(Some(a)) => napp::agent::parse_agent_config(&a.frontmatter)
-            .map(|c| c.memory.context_isolated)
-            .unwrap_or(true),
-        _ => true,
+        Ok(Some(a)) => memory_mode_of(&a.frontmatter),
+        _ => napp::agent::MemoryMode::Confidential,
     }
 }
 
-/// Memory scope a workflow run executes tools under. Workflow runs have no
-/// matter/chat context, so for context-isolated agents the scope stays the
-/// agent base and WRITES ARE DISABLED (fail closed) — reads still serve the
-/// agent scope.
+/// The memory mode a stored frontmatter declares, read the way the runtime
+/// enforces it (see [`agent_memory_mode`]).
+pub(crate) fn memory_mode_of(frontmatter: &str) -> napp::agent::MemoryMode {
+    if frontmatter.is_empty() {
+        return napp::agent::MemoryMode::Single;
+    }
+    napp::agent::parse_agent_config(frontmatter)
+        .map(|c| c.memory.mode)
+        .unwrap_or(napp::agent::MemoryMode::Confidential)
+}
+
+/// Memory scope a workflow run executes tools under: the ONE derivation, for
+/// the owner's own automation — the employee's private memory, never a
+/// conversation (a standalone run: the owner's local memory). A Confidential
+/// employee's run has no conversation, so it writes nothing and reads local
+/// memory only.
 fn workflow_memory_scope(store: &db::Store, agent_id: &str) -> (String, bool) {
     let owner = store.ensure_local_user_id().unwrap_or_default();
-    if agent_id.is_empty() {
-        return (owner, false);
-    }
-    (
-        agent::memory::agent_memory_scope(&owner, agent_id),
-        agent_context_isolated(store, agent_id),
-    )
+    let scope = agent::memory::resolve_memory_scope(
+        &owner,
+        agent_id,
+        agent_memory_mode(store, agent_id),
+        tools::Origin::Workflow,
+        None,
+        None,
+    );
+    (scope.user_id, scope.writes_disabled)
 }
 
 /// How a run that ended with an error is recorded. An evaluator's exit is the
@@ -2297,11 +2308,12 @@ fn record_run_outcome(store: &db::Store, agent_id: &str, binding: &str, status: 
     }
     let scope = agent::memory::agent_memory_scope(&owner, agent_id);
 
-    // Context-isolated agents keep case/matter data sealed per context. The
-    // outcome row lives in the SHARED agent scope, so for isolated agents it
-    // carries status only — run output could name a client or matter.
-    let context_isolated = agent_context_isolated(store, agent_id);
-    let detail: &str = if context_isolated { "" } else { detail };
+    // An employee whose conversations are kept apart keeps case/matter data
+    // sealed per conversation. The outcome row lives in the SHARED agent
+    // scope, so for such an employee it carries status only — run output
+    // could name a client or matter.
+    let sealed = agent_memory_mode(store, agent_id).separates_conversations();
+    let detail: &str = if sealed { "" } else { detail };
 
     let date = chrono::Utc::now().format("%Y-%m-%d %H:%M UTC");
     let mut gist = detail.replace('\n', " ");
@@ -2373,7 +2385,9 @@ async fn review_failed_workflow_run(
     let req = ai::ChatRequest {
         tool_credential: None,
         chat_id: String::new(),
-        approval_channels: None,
+        ask_channels: None,
+        permission_mode: None,
+        linked_context: None,
         tool_choice: Default::default(),
         messages: vec![ai::Message {
             role: "user".into(),
@@ -2384,7 +2398,6 @@ async fn review_failed_workflow_run(
         max_tokens: 700,
         temperature: 0.0,
         system: REVIEW_SYSTEM.to_string(),
-        static_system: String::new(),
         model: String::new(),
         enable_thinking: false,
         metadata: None,
@@ -2440,39 +2453,18 @@ async fn review_failed_workflow_run(
         .with_session(format!("agent:{}:workflow-review", agent_id), format!("wfreview-{}", uuid::Uuid::new_v4()));
     ctx.learned_write_agent = Some(agent_id.clone());
     ctx.learned_write_staged = staged;
-    ctx.tool_whitelist = Some(std::collections::HashSet::from(["skill".to_string()]));
+    ctx.tool_whitelist = Some(std::collections::HashSet::from(["save_skill".to_string()]));
 
     let input = serde_json::json!({
-        "action": "create",
         "name": name,
         "content": content,
     });
-    let result = registry.execute(&ctx, "skill", input).await;
+    let result = registry.execute(&ctx, "save_skill", input).await;
     if result.is_error {
         info!(agent = %agent_id, binding = %binding, result = %result.content.chars().take(160).collect::<String>(), "workflow lesson not saved");
     } else {
         info!(agent = %agent_id, binding = %binding, lesson = %name, staged, "workflow review saved lesson");
     }
-}
-
-/// Match an agent reference against (id, name) pairs: exact name
-/// (case-insensitive) first, then slug equality ("Content Creator Agent"
-/// matches "content-creator-agent"). Pure core of `resolve_agent`.
-fn find_agent_by_name<'a>(agents: &[(&'a str, &str)], agent_ref: &str) -> Option<&'a str> {
-    if let Some((id, _)) = agents
-        .iter()
-        .find(|(_, n)| n.eq_ignore_ascii_case(agent_ref))
-    {
-        return Some(id);
-    }
-    let want = slug(agent_ref);
-    if want.is_empty() {
-        return None;
-    }
-    agents
-        .iter()
-        .find(|(_, n)| slug(n) == want)
-        .map(|(id, _)| *id)
 }
 
 /// Resolve a tool-authored workflow definition's trigger. Accepts a `trigger`
@@ -2579,6 +2571,7 @@ async fn save_binding(
     name: &str,
     definition: &str,
     must_exist: bool,
+    options: SaveOptions,
 ) -> Result<WorkflowInfo, String> {
     use crate::handlers::agents::{build_trigger_json, flatten_trigger_config, write_agent_json_to_fs};
 
@@ -2591,6 +2584,11 @@ async fn save_binding(
             // unknown fields silently, which is how orphans were born.)
             let mut def: serde_json::Value = serde_json::from_str(definition)
                 .map_err(|e| format!("invalid workflow definition (not JSON): {}", e))?;
+            // The same piece of work a past run did: its definition, with
+            // what this save gives on top (a schedule, say).
+            if let Some(run_id) = &options.from_run {
+                def = definition_of_run(&mgr.store, run_id, def)?;
+            }
 
             // Convenience: a top-level `steps` array becomes ONE activity that
             // executes them in order — same simple-form semantics as agent
@@ -2707,6 +2705,7 @@ async fn save_binding(
             if let Some(e) = def.get("emit") {
                 binding_val["emit"] = e.clone();
             }
+            loadable_binding(&binding_val)?;
             fm["workflows"][binding_name.as_str()] = binding_val;
 
             mgr.store
@@ -2754,6 +2753,8 @@ async fn save_binding(
                 )
                 .map_err(|e| format!("upsert_agent_workflow: {}", e))?;
 
+            let temporary = apply_lifetime(&mgr.store, agent_id, &binding_name, options.lifetime.as_ref())?;
+
             // Register schedule cron rows now so the scheduler fires them within
             // a minute, even if the worker isn't restarted below.
             if let Ok(bindings) = mgr.store.list_agent_workflows(agent_id) {
@@ -2780,6 +2781,18 @@ async fn save_binding(
                 .and_then(|v| v.as_array())
                 .map(|a| a.len())
                 .unwrap_or(0);
+            // Temporary work with no trigger is for now: it starts as it is
+            // made. One with a trigger starts on its first fire.
+            let run_id = if temporary && trigger_type == "manual" && !must_exist {
+                Some(mgr.run_binding(agent_id, &binding_name, serde_json::json!({}), "manual").await.map_err(|e| {
+                    format!(
+                        "the temporary workflow '{binding_name}' was made but did not start: {e}. Start it with \
+                         run_workflow once that is fixed, or delete it."
+                    )
+                })?)
+            } else {
+                None
+            };
             Ok(WorkflowInfo {
                 id: binding_name.clone(),
                 name: name.to_string(),
@@ -2788,8 +2801,88 @@ async fn save_binding(
                 is_enabled: true,
                 trigger_count: if trigger_type == "manual" { 0 } else { 1 },
                 activity_count,
+                temporary,
+                run_id,
+                employee: Some(agent.name.clone()),
             })
     }
+}
+
+/// What a save accepts is what the employee's own config loads and runs
+/// ([`napp::agent::WorkflowBinding`]). The release proof of 2026-09-27
+/// saved 13 workflows whose steps were objects: each save said "created",
+/// and reload_employee then read 0 workflows (the loader skipped every one)
+/// and cleared their schedules.
+fn loadable_binding(binding: &serde_json::Value) -> Result<(), String> {
+    serde_json::from_value::<napp::agent::WorkflowBinding>(binding.clone()).map(|_| ()).map_err(|e| {
+        format!(
+            "invalid workflow definition: {e}. Shape: {{\"activities\": [{{\"id\": \"run\", \"intent\": \
+             \"what this accomplishes\", \"steps\": [\"concrete step 1\", \"concrete step 2\"]}}]}}: each step \
+             is one plain sentence."
+        )
+    })
+}
+
+/// A save's lifetime option, applied to a binding (owner, 09-25): temporary
+/// work is recorded as such, reporting to the session that made it; a
+/// workflow saved for good is no longer temporary, and is on (a temporary
+/// one that already ran had its trigger stopped). `None` leaves it as it
+/// is. Returns whether the binding is temporary now. The one rule for every
+/// door that saves a binding: the workflow tools and the app's API.
+pub(crate) fn apply_lifetime(store: &db::Store, agent_id: &str, binding: &str, lifetime: Option<&Lifetime>) -> Result<bool, String> {
+    match lifetime {
+        Some(Lifetime::Temporary { report_to }) => {
+            store.mark_temporary(TemporaryKind::Workflow, agent_id, binding, report_to).map_err(|e| format!("mark temporary: {e}"))?;
+            Ok(true)
+        }
+        Some(Lifetime::Saved) => {
+            let was = store.temporary_work(TemporaryKind::Workflow, agent_id, binding).map_err(|e| format!("read lifetime: {e}"))?;
+            if was.is_some() {
+                store.unmark_temporary(TemporaryKind::Workflow, agent_id, binding).map_err(|e| format!("save: {e}"))?;
+                store.set_agent_workflow_active(agent_id, binding, true).map_err(|e| format!("turn on: {e}"))?;
+            }
+            Ok(false)
+        }
+        None => Ok(store
+            .temporary_work(TemporaryKind::Workflow, agent_id, binding)
+            .map_err(|e| format!("read lifetime: {e}"))?
+            .is_some()),
+    }
+}
+
+/// The definition a past run ran with, as a binding definition, with
+/// `overlay`'s fields on top: the same piece of work, saved again (E14).
+fn definition_of_run(store: &db::Store, run_id: &str, overlay: serde_json::Value) -> Result<serde_json::Value, String> {
+    let run = store
+        .engine_get_run(run_id)
+        .map_err(|e| format!("read run {run_id}: {e}"))?
+        .ok_or_else(|| format!("no run {run_id}"))?;
+    let snapshot: serde_json::Value = run
+        .definition
+        .as_deref()
+        .and_then(|d| serde_json::from_str(d).ok())
+        .ok_or_else(|| format!("run {run_id} kept no definition to save"))?;
+    let mut def = serde_json::json!({});
+    for key in ["activities", "connections", "description"] {
+        if let Some(v) = snapshot.get(key).filter(|v| !v.is_null()) {
+            def[key] = v.clone();
+        }
+    }
+    // The snapshot's inputs are declarations ({"type", "default"}); a
+    // binding's are the default values.
+    if let Some(inputs) = snapshot.get("inputs").and_then(|v| v.as_object()).filter(|m| !m.is_empty()) {
+        def["inputs"] = inputs
+            .iter()
+            .map(|(k, v)| (k.clone(), v.get("default").cloned().unwrap_or_else(|| v.clone())))
+            .collect::<serde_json::Map<_, _>>()
+            .into();
+    }
+    if let Some(extra) = overlay.as_object() {
+        for (k, v) in extra {
+            def[k.as_str()] = v.clone();
+        }
+    }
+    Ok(def)
 }
 
 /// Apply a full workflow binding definition to an agent: frontmatter merge,
@@ -2993,7 +3086,9 @@ async fn workflow_tuning_sweep(
         let req = ai::ChatRequest {
             tool_credential: None,
             chat_id: String::new(),
-            approval_channels: None,
+            ask_channels: None,
+            permission_mode: None,
+            linked_context: None,
             tool_choice: Default::default(),
             messages: vec![ai::Message {
                 role: "user".into(),
@@ -3004,7 +3099,6 @@ async fn workflow_tuning_sweep(
             max_tokens: 1500,
             temperature: 0.0,
             system: TUNER_SYSTEM.to_string(),
-            static_system: String::new(),
             model: String::new(),
             enable_thinking: false,
             metadata: None,
@@ -3091,6 +3185,7 @@ async fn workflow_tuning_sweep(
                             kind: "info",
                             title: &format!("{} tuned its own workflow", agent.name),
                             body: Some(&gist),
+                            // Read, and undone if need be, in the Inbox.
                             action_url: None,
                             agent_id: Some(&agent.id),
                             loud: false,
@@ -3104,30 +3199,27 @@ async fn workflow_tuning_sweep(
                 }
             }
         } else {
-            tools::owner_notify::emit(
-                store,
-                Some(&|ev, payload| hub.broadcast(ev, payload)),
-                &tools::owner_notify::OwnerNotification {
-                    id: &format!("learn:{}", pending_id),
-                    kind: "approval",
-                    title: &format!("{} proposes a workflow change", agent.name),
-                    body: Some(&gist),
-                    action_url: None,
-                    agent_id: Some(&agent.id),
-                    loud: false,
-                },
-            );
+            // The proposal is its own place: it opens in full, with the
+            // change it would make and its Approve and Reject, wherever the
+            // owner taps it.
+            let (id, title) = (format!("learn:{}", pending_id), format!("{} proposes a workflow change", agent.name));
+            let n = tools::owner_notify::OwnerNotification {
+                id: &id,
+                kind: "approval",
+                title: &title,
+                body: Some(&gist),
+                action_url: None,
+                agent_id: Some(&agent.id),
+                loud: false,
+            };
+            tools::owner_notify::emit(store, Some(&|ev, payload| hub.broadcast(ev, payload)), &n);
             // Mirror the staged proposal to the owner's web inbox with its
             // self-describing resolve contract.
             let resolve_path = format!("/api/v1/agents/learnings/{}/resolve", pending_id);
             crate::codes::push_inbox_via(
                 store,
                 neboai_api_url,
-                serde_json::json!({
-                    "id": format!("learn:{}", pending_id),
-                    "type": "approval",
-                    "title": format!("{} proposes a workflow change", agent.name),
-                    "body": gist,
+                n.hub_item(serde_json::json!({
                     "actions": {
                         "buttons": [
                             {"label": "Approve", "style": "primary", "method": "POST",
@@ -3136,7 +3228,7 @@ async fn workflow_tuning_sweep(
                              "path": resolve_path, "body": {"approved": false}},
                         ],
                     },
-                }),
+                })),
             );
             info!(agent = %agent.name, binding, "tuning pass staged proposal to Inbox");
         }
@@ -3175,16 +3267,24 @@ fn post_automation_message(store: &db::Store, hub: &ClientHub, session_key: &str
 
 #[cfg(test)]
 mod trigger_tests {
-    use super::{find_agent_by_name, resolve_tool_trigger};
+    use super::{loadable_binding, resolve_tool_trigger};
 
+    /// The release proof's definition (plugin-many-skills-fan-out run 2,
+    /// call #38): steps written as objects. The employee's config can't
+    /// load it, so the save refuses it; plain-sentence steps save.
     #[test]
-    fn agent_ref_matches_name_and_slug() {
-        let agents = [("id-1", "Content Creator Agent"), ("id-2", "Map Master")];
-        assert_eq!(find_agent_by_name(&agents, "content creator agent"), Some("id-1"));
-        assert_eq!(find_agent_by_name(&agents, "content-creator-agent"), Some("id-1"));
-        assert_eq!(find_agent_by_name(&agents, "Map Master"), Some("id-2"));
-        assert_eq!(find_agent_by_name(&agents, "no-such-agent"), None);
-        assert_eq!(find_agent_by_name(&agents, ""), None);
+    fn a_save_refuses_what_the_employee_cannot_load() {
+        let trigger = serde_json::json!({"type": "manual"});
+        let objects = serde_json::json!({"trigger": trigger, "activities": [{"id": "run", "intent": "invoice-customer", "steps": [
+            {"name": "get-customer-info", "instruction": "Ask the owner for the customer name."}
+        ]}]});
+        let err = loadable_binding(&objects).unwrap_err();
+        assert!(err.starts_with("invalid workflow definition: "), "{err}");
+        assert!(err.contains("each step is one plain sentence"), "{err}");
+        let sentences = serde_json::json!({"trigger": trigger, "activities": [{"id": "run", "intent": "invoice-customer", "steps": [
+            "Ask the owner for the customer name."
+        ]}]});
+        assert_eq!(loadable_binding(&sentences), Ok(()));
     }
 
     #[test]
@@ -3255,6 +3355,18 @@ mod run_end_tests {
         assert_eq!(failed.status(), "failed");
         assert!(failed.message().contains("boom"));
     }
+    /// A failed run's item opens that run, wherever it is tapped.
+    #[test]
+    fn a_failed_run_opens_that_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = db::Store::new(&dir.path().join("t.db").to_string_lossy()).unwrap();
+        let hub = ClientHub::new();
+        notify_workflow_failure(&store, &hub, "emp", "run-1", "intake", "boom");
+        let user = store.ensure_local_user_id().unwrap();
+        let rows = store.list_user_notifications(&user, 10, 0).unwrap();
+        let row = rows.iter().find(|n| n.id == "wf-fail:run-1").unwrap();
+        assert_eq!(row.action_url.as_deref(), Some("/emp/runs/run-1"));
+    }
 }
 
 #[cfg(test)]
@@ -3291,7 +3403,8 @@ mod employee_model_tests {
     /// A workflow step on a linked employee runs at that employee's model,
     /// as a chat turn does: it reaches the linked provider addressed to its
     /// linked agent, and the default provider never sees it (B2: the step
-    /// fell back to janus/nebo-1 and the run failed).
+    /// fell back to janus/nebo-1 and the run failed). The step names no
+    /// model; the turn reads the employee's own.
     #[tokio::test]
     async fn a_workflow_step_on_a_linked_employee_reaches_its_linked_agent() {
         let dir = tempfile::tempdir().unwrap();
@@ -3309,9 +3422,9 @@ mod employee_model_tests {
             Arc::new(Recording { id: "janus", retryable: true, models: janus.clone() }),
             Arc::new(Recording { id: "linked", retryable: false, models: linked.clone() }),
         ];
-        let runner = Arc::new(agent::Runner::new(
+        let harness = agent::Harness::new(
             store.clone(),
-            Arc::new(tools::Registry::new(tools::Policy::new())),
+            Arc::new(tools::Registry::new(Arc::new(agent::Check::new(store.clone())))),
             providers,
             agent::selector::ModelSelector::new(Default::default()),
             Arc::new(agent::ConcurrencyController::new(Some(2))),
@@ -3319,7 +3432,7 @@ mod employee_model_tests {
             None,
             Default::default(),
             None,
-        ));
+        );
         let activity: workflow::parser::Activity = serde_json::from_value(serde_json::json!({
             "id": "run",
             "intent": "Reply with one line.",
@@ -3327,7 +3440,7 @@ mod employee_model_tests {
         .unwrap();
         let turn = workflow::LoopTurn {
             activity: &activity,
-            system: "You are an employee.".into(),
+            instructions: "You are an employee.".into(),
             seed_messages: vec![ai::Message {
                 role: "user".into(),
                 content: "Reply with exactly one line: scheduled ping.".into(),
@@ -3355,10 +3468,89 @@ mod employee_model_tests {
             turn_key: "run:".into(),
         };
 
-        let out = super::activity_loop(runner, store).run_turn(turn).await.expect("the step runs");
+        let workflow_loop = agent::harness::workflow_turn::WorkflowTurns::new(harness);
+        let out = workflow::ActivityLoop::run_turn(&workflow_loop, turn).await.expect("the step runs");
 
         assert_eq!(linked.lock().unwrap().as_slice(), ["bot-1/assistant"]);
         assert!(janus.lock().unwrap().is_empty(), "the default provider stood in for the linked agent");
         assert_eq!(out.text, "answered by linked");
+    }
+}
+
+#[cfg(test)]
+mod list_tests {
+    use std::sync::Arc;
+
+    use tools::workflows::{SaveOptions, WorkflowManager};
+
+    /// A loop no test here runs: saving and listing never start a turn.
+    struct NoLoop;
+
+    #[async_trait::async_trait]
+    impl workflow::ActivityLoop for NoLoop {
+        async fn run_turn(&self, _turn: workflow::LoopTurn<'_>) -> Result<workflow::LoopOutcome, workflow::WorkflowError> {
+            Err(workflow::WorkflowError::Provider("no turns in this test".into()))
+        }
+        async fn acquire_tool_permit(&self) -> tokio::sync::OwnedSemaphorePermit {
+            Arc::new(tokio::sync::Semaphore::new(1)).acquire_owned().await.unwrap()
+        }
+        fn cleanup(&self, _run_id: &str) {}
+    }
+
+    fn manager(store: Arc<db::Store>) -> super::WorkflowManagerImpl {
+        super::WorkflowManagerImpl::new(
+            store.clone(),
+            Arc::new(tokio::sync::RwLock::new(Vec::new())),
+            None,
+            Arc::new(tools::Registry::new(Arc::new(agent::Check::new(store)))),
+            Arc::new(napp::plugin::PluginStore::new(std::env::temp_dir().join("nebo-wm-plugins"), std::env::temp_dir().join("nebo-wm-user-plugins"), None)),
+            Arc::new(crate::handlers::ws::ClientHub::new()),
+            config::Config::default(),
+            None,
+            None,
+            Arc::new(NoLoop),
+        )
+    }
+
+    const STEPS: &str = r#"{"steps": ["Ask the owner for the customer name.", "Draft the invoice."]}"#;
+
+    /// Release proof of 2026-09-27 (plugin-many-skills-fan-out run 2, call
+    /// #52): thirteen create_workflow calls on the Billing Desk succeeded,
+    /// then list_workflows from the main conversation (no employee of its
+    /// own, so none of its own workflows) answered 0. There it lists every
+    /// employee's, each naming its employee; an employee's own list is its
+    /// own. A definition the employee's config can't load (steps written as
+    /// objects, calls #38–50) is refused and nothing is stored.
+    #[tokio::test]
+    async fn the_main_conversation_lists_every_employees_workflows() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(db::Store::new(&dir.path().join("nebo.db").to_string_lossy()).unwrap());
+        store.create_agent("bd-1", None, "Billing Desk 40458bec", "Billing.", "You bill.", "{}", None, None).unwrap();
+        store.create_agent("fd-1", None, "Front Desk", "Calls.", "You answer.", "{}", None, None).unwrap();
+        let mgr = manager(store.clone());
+        for name in ["invoice-customer", "record-customer-payment"] {
+            mgr.create("bd-1", name, STEPS, SaveOptions::default()).await.unwrap();
+        }
+        mgr.create("fd-1", "take-a-message", STEPS, SaveOptions::default()).await.unwrap();
+
+        let all = mgr.list("").await;
+        let mut seen: Vec<(String, String)> =
+            all.iter().map(|w| (w.employee.clone().unwrap_or_default(), w.name.clone())).collect();
+        seen.sort();
+        assert_eq!(
+            seen,
+            [
+                ("Billing Desk 40458bec".to_string(), "invoice-customer".to_string()),
+                ("Billing Desk 40458bec".to_string(), "record-customer-payment".to_string()),
+                ("Front Desk".to_string(), "take-a-message".to_string()),
+            ]
+        );
+        let own: Vec<String> = mgr.list("fd-1").await.into_iter().map(|w| w.name).collect();
+        assert_eq!(own, ["take-a-message"]);
+
+        let objects = r#"{"steps": [{"name": "get-customer-info", "instruction": "Ask the owner for the customer name."}]}"#;
+        let err = mgr.create("bd-1", "create-estimate", objects, SaveOptions::default()).await.unwrap_err();
+        assert!(err.starts_with("invalid workflow definition: "), "{err}");
+        assert_eq!(mgr.list("bd-1").await.len(), 2, "nothing was stored");
     }
 }

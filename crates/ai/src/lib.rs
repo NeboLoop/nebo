@@ -1,4 +1,3 @@
-pub mod call_budget;
 pub mod decide;
 pub mod embedding;
 pub mod http;
@@ -15,7 +14,7 @@ pub use embedding::{
     bytes_to_f32, f32_to_bytes,
 };
 pub use providers::{
-    AnthropicProvider, CLIProvider, GeminiProvider, LinkedProvider, LocalProvider, OllamaProvider,
-    OpenAIProvider,
+    AnthropicProvider, CLIProvider, GeminiProvider, LinkedProvider, LocalHost, LocalProvider,
+    OllamaProvider, OpenAIProvider, Relay,
 };
 pub use types::*;

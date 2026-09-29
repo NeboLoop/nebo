@@ -1,0 +1,19 @@
+id: builder-removed-capability-not-granted
+name: "Removing a capability chip in the builder before Create withholds it"
+description: |
+  PRD-Permissions §4.3 / §7 (Consent: builder): the builder runs the same
+  shared needs step (`tools::needs::work_out_needs`) as hire and chat
+  creation, deriving needs from the job description plus the skills,
+  plugins and workflows it is given, and shows the same capability line
+  above Create with each item removable. Technical design §2.12.6: "the
+  same line above Create, each capability removable before creating."
+  This proof drafts an employee whose derived needs include a capability
+  (e.g. web) the owner removes before the Create tap, and asserts the
+  created employee's allow rules include every remaining derived
+  capability but never the removed one — the create call, not the
+  drafting step, is what should be affected.
+  Purely mechanical (a chip removal is a set difference over rule rows),
+  so it is a deterministic proof rather than a conversation.
+target_component: permissions
+proof: harness::permissions::proof::builder_removed_capability_not_granted
+conversation: []

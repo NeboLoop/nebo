@@ -1,0 +1,11 @@
+id: sc62-the-primary-employee-passes-the-owners-request-on
+name: "SC62 — The primary employee passes the owner's request on; its own initiative stays its own"
+description: |
+  The owner asks the employee he talks to, in his own chat, to have a colleague do the work, and
+  it relays with send_message. The colleague's turn serves that one request of the owner's: its
+  command runs, its file is written, local memory takes it. A message the same employee sends
+  later on its own, in a turn a notification woke, is its own request: the colleague it asks is
+  refused in the coworker's words.
+target_component: staffed-company
+proof: staffed_proof::conversation::the_primary_employee_passes_the_owners_request_on_and_its_own_initiative_stays_its_own
+conversation: []

@@ -7,19 +7,24 @@ use tracing::{info, warn};
 use super::{HandlerResult, to_error_response};
 use crate::state::AppState;
 
-/// Rebuild AI providers from auth_profiles and reload them on the runner,
+/// Rebuild AI providers from auth_profiles and reload them on the harness,
 /// through the ONE builder startup uses (`build_providers`) — so a reload
 /// keeps what startup registers (the linked provider included). CLIs are
 /// re-detected live, so toggling a CLI provider works even when the app was
 /// launched from Finder/Start Menu with a minimal PATH.
-pub(crate) async fn reload_providers(store: &Arc<db::Store>, cfg: &config::Config, runner: &agent::Runner) {
-    let providers = crate::build_providers(store, cfg, Some(&config::detect_all_clis()));
+pub(crate) async fn reload_providers(
+    store: &Arc<db::Store>,
+    cfg: &config::Config,
+    harness: &agent::Harness,
+    local_host: Option<&Arc<ai::LocalHost>>,
+) {
+    let providers = crate::build_providers(store, cfg, Some(&config::detect_all_clis()), local_host);
     info!(count = providers.len(), "reloading providers");
-    runner.reload_providers(providers).await;
+    harness.reload_providers(providers).await;
 
     // Refresh the DB-held models in the selector (they're not in yaml)
-    crate::inject_db_models(store, runner.selector(), "ollama");
-    crate::inject_db_models(store, runner.selector(), "janus");
+    crate::inject_db_models(store, harness.selector(), "ollama");
+    crate::inject_db_models(store, harness.selector(), "janus");
 }
 
 /// GET /api/v1/providers
@@ -67,7 +72,7 @@ pub async fn create_provider(
         .map_err(to_error_response)?;
 
     // Reload providers on the runner
-    reload_providers(&state.store, &state.config, &state.runner).await;
+    reload_providers(&state.store, &state.config, &state.harness, state.local_host.as_ref()).await;
 
     Ok(Json(serde_json::json!(profile)))
 }
@@ -154,7 +159,7 @@ pub async fn update_provider(
     }
 
     // Reload providers on the runner
-    reload_providers(&state.store, &state.config, &state.runner).await;
+    reload_providers(&state.store, &state.config, &state.harness, state.local_host.as_ref()).await;
 
     let updated = state
         .store
@@ -173,7 +178,7 @@ pub async fn delete_provider(
         .delete_auth_profile(&id)
         .map_err(to_error_response)?;
     // Reload providers on the runner
-    reload_providers(&state.store, &state.config, &state.runner).await;
+    reload_providers(&state.store, &state.config, &state.harness, state.local_host.as_ref()).await;
     Ok(Json(serde_json::json!({"success": true})))
 }
 
@@ -265,7 +270,9 @@ async fn test_provider_connection(provider: &dyn ai::Provider) -> Result<String,
     let req = ai::ChatRequest {
         tool_credential: None,
         chat_id: String::new(),
-        approval_channels: None,
+        ask_channels: None,
+        permission_mode: None,
+        linked_context: None,
         tool_choice: Default::default(),
         messages: vec![ai::Message {
             role: "user".into(),
@@ -276,7 +283,6 @@ async fn test_provider_connection(provider: &dyn ai::Provider) -> Result<String,
         max_tokens: 16,
         temperature: 0.0,
         system: String::new(),
-        static_system: String::new(),
         model: String::new(),
         enable_thinking: false,
         metadata: None,
@@ -307,23 +313,17 @@ async fn test_provider_connection(provider: &dyn ai::Provider) -> Result<String,
     }
 }
 
-/// GET /api/v1/models — returns model catalog from DB + routing config from YAML.
-pub async fn list_models(State(state): State<AppState>) -> HandlerResult<serde_json::Value> {
-    // Opening the list is the moment it has to be current: pull from Janus first.
-    if let Err(e) = crate::sync_janus_models(&state.store, &state.config).await {
-        warn!(error = %e, "Janus model list sync failed; showing the last copy");
-    }
-    // Read models from the database (source of truth for model availability)
-    let all_models = state
-        .store
-        .list_all_provider_models()
-        .map_err(to_error_response)?;
-
-    // Group models by provider
+/// The models every picker reads (the composer's model menu, an employee's
+/// model, Settings → Routing, the phone), grouped by provider: chat models
+/// only. An embedding, audio or image model is never offered where a chat
+/// model is chosen; the embedding code path reads its own model.
+fn picker_models(
+    all_models: &[db::models::ProviderModel],
+) -> std::collections::HashMap<String, Vec<serde_json::Value>> {
     let mut models: std::collections::HashMap<String, Vec<serde_json::Value>> =
         std::collections::HashMap::new();
 
-    for m in &all_models {
+    for m in all_models {
         let capabilities: Vec<String> = m
             .capabilities
             .as_ref()
@@ -335,6 +335,9 @@ pub async fn list_models(State(state): State<AppState>) -> HandlerResult<serde_j
             .and_then(|k| serde_json::from_str(k).ok())
             .unwrap_or_default();
 
+        if !agent::selector::is_chat_model(&m.model_id, &capabilities, &kind) {
+            continue;
+        }
         let mut info = serde_json::json!({
             "id": m.model_id,
             "displayName": m.display_name,
@@ -356,16 +359,32 @@ pub async fn list_models(State(state): State<AppState>) -> HandlerResult<serde_j
 
         models.entry(m.provider.clone()).or_default().push(info);
     }
+    models
+}
+
+/// GET /api/v1/models — returns model catalog from DB + routing config from YAML.
+pub async fn list_models(State(state): State<AppState>) -> HandlerResult<serde_json::Value> {
+    // Opening the list is the moment it has to be current: pull from Janus first.
+    if let Err(e) = crate::sync_janus_models(&state.store, &state.config).await {
+        warn!(error = %e, "Janus model list sync failed; showing the last copy");
+    }
+    // Read models from the database (source of truth for model availability)
+    let all_models = state
+        .store
+        .list_all_provider_models()
+        .map_err(to_error_response)?;
+
+    let models = picker_models(&all_models);
 
     // Routing config comes from the YAML catalog (not per-model data).
     // Load fresh from disk so toggling CLI providers / models is reflected immediately.
     let cfg = config::ModelsConfig::load();
     // The synced speeds must be known to the selector, or a pin like
     // "janus/nebo-1-pro" fuzzy-matches to the nearest name it does know.
-    crate::inject_db_models(&state.store, state.runner.selector(), "janus");
+    crate::inject_db_models(&state.store, state.harness.selector(), "janus");
     let user_aliases: std::collections::HashMap<String, String> =
         cfg.aliases.iter().map(|a| (a.alias.clone(), a.model_id.clone())).collect();
-    state.runner.selector().rebuild_fuzzy(&user_aliases);
+    state.harness.selector().rebuild_fuzzy(&user_aliases);
 
     // Task routing
     let task_routing = cfg.task_routing.as_ref().map(|tr| {
@@ -530,7 +549,7 @@ pub async fn update_model(
 
     // Reload providers so model toggle takes effect immediately
     // (e.g., disabling all Janus models removes the Janus provider)
-    reload_providers(&state.store, &state.config, &state.runner).await;
+    reload_providers(&state.store, &state.config, &state.harness, state.local_host.as_ref()).await;
 
     Ok(Json(serde_json::json!({
         "message": format!("Model {} updated", model_id),
@@ -558,7 +577,7 @@ pub async fn update_cli_provider(
         .map_err(|e| to_error_response(types::NeboError::Validation(e)))?;
 
     // Reload providers so the toggle takes effect immediately
-    reload_providers(&state.store, &state.config, &state.runner).await;
+    reload_providers(&state.store, &state.config, &state.harness, state.local_host.as_ref()).await;
 
     Ok(Json(serde_json::json!({
         "message": format!("CLI provider {} updated", cli_id),
@@ -786,6 +805,50 @@ pub async fn local_models_status(
 }
 
 #[cfg(test)]
+mod picker_tests {
+    use super::*;
+
+    fn row(provider: &str, id: &str, caps: &str) -> db::models::ProviderModel {
+        db::models::ProviderModel {
+            id: format!("{provider}/{id}"),
+            provider: provider.into(),
+            model_id: id.into(),
+            display_name: id.into(),
+            description: None,
+            is_active: Some(1),
+            is_default: None,
+            context_window: Some(200_000),
+            input_price: None,
+            output_price: None,
+            capabilities: Some(caps.into()),
+            kind: None,
+            preferred: None,
+            seeded_version: None,
+            created_at: 0,
+            updated_at: 0,
+        }
+    }
+
+    /// The owner's provider_models rows: the list every picker reads holds
+    /// the chat speeds and never an embedding model.
+    #[test]
+    fn the_picker_list_holds_no_embedding_model() {
+        let chat = r#"["vision","tools","streaming","code","reasoning"]"#;
+        let rows = [
+            row("janus", "nebo-1", chat),
+            row("janus", "nebo-embed-small", r#"["embeddings"]"#),
+            row("janus", "nebo-embed-large", r#"["embeddings"]"#),
+            row("janus", "nebo-1-pro", chat),
+            row("openai", "text-embedding-3-small", "[]"),
+        ];
+        let listed = picker_models(&rows);
+        let ids: Vec<&str> = listed.values().flatten().filter_map(|m| m["id"].as_str()).collect();
+        assert_eq!(listed["janus"].len(), 2, "{ids:?}");
+        assert!(ids.iter().all(|id| !id.contains("embed")), "{ids:?}");
+    }
+}
+
+#[cfg(test)]
 mod reload_tests {
     use std::sync::Arc;
 
@@ -800,9 +863,9 @@ mod reload_tests {
         let store = Arc::new(db::Store::new(&dir.path().join("nebo.db").to_string_lossy()).unwrap());
         crate::seed_models_from_catalog(&store, &config::ModelsConfig::load());
         let cfg = config::Config::default();
-        let runner = agent::Runner::new(
+        let harness = agent::Harness::new(
             store.clone(),
-            Arc::new(tools::Registry::new(tools::Policy::new())),
+            Arc::new(tools::Registry::new(Arc::new(agent::Check::new(store.clone())))),
             Vec::new(),
             agent::selector::ModelSelector::new(Default::default()),
             Arc::new(agent::ConcurrencyController::new(Some(2))),
@@ -823,9 +886,9 @@ mod reload_tests {
             false,
         )
         .unwrap();
-        super::reload_providers(&store, &cfg, &runner).await;
+        super::reload_providers(&store, &cfg, &harness, None).await;
 
-        let ids: Vec<String> = runner.providers().read().await.iter().map(|p| p.id().to_string()).collect();
+        let ids: Vec<String> = harness.providers().read().await.iter().map(|p| p.id().to_string()).collect();
         assert!(ids.iter().any(|id| id == "janus"), "Janus is live after a code pairing: {ids:?}");
         assert!(ids.iter().any(|id| id == ai::providers::linked::ID), "the reload keeps the linked provider: {ids:?}");
     }

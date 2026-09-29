@@ -1,0 +1,10 @@
+id: sc56-the-point-person-relays-into-a-linked-employees-conversation
+name: "SC56 — The point person relays into a linked employee's conversation and hears back"
+description: |
+  send_message with a linked employee's conversation id goes into the conversation it already
+  has, not a new one; "new" starts another. The message and the answer are in the employee's own
+  thread. The answer comes back to the point person's conversation, is told to the owner, and is
+  said on his call when one is live there.
+target_component: staffed-company
+proof: staffed_proof::company::the_point_person_relays_into_a_linked_employees_conversation_and_hears_back
+conversation: []

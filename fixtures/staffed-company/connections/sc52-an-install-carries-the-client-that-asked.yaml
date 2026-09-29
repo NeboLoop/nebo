@@ -1,0 +1,11 @@
+id: sc52-an-install-carries-the-client-that-asked
+name: "SC52 — An install carries the client that asked"
+description: |
+  An install's code_processing and code_result name the client that asked
+  (its socket's or request's client_id) and the conversation, so only that
+  client opens the install surface: a hire from the phone no longer pops
+  dialogs on the desktop. The same install arriving as a hire on the owner's
+  account names no client.
+target_component: staffed-company
+proof: staffed_proof::connections::an_install_carries_the_client_that_asked
+conversation: []

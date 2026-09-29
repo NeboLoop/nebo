@@ -1,0 +1,61 @@
+id: owner-chat-edit-is-consent
+name: "Case 3 — the edit the owner types in his own chat runs without a card"
+description: |
+  Owner decision 2026-09-26: the owner's own message is consent for the
+  change it asks for. Case 3 (PRD-Permissions §4.4) asks before replacing
+  something the employee didn't create; the owner's main employee has no
+  work folders, so every edit of an existing file he asked for in chat came
+  back "Waiting for the owner to allow" and he got a card for the edit he
+  had just typed (18 of 59 error-correction failures). The check now reads
+  the turn: when the owner's own message in his own chat started it, a
+  replacement runs. A delete still asks (delete-not-its-own-asks), and so
+  does the same replacement from a workflow, a schedule, a coworker, a chat
+  channel or a visitor; Blocked and Needs approval on the employee's
+  settings stay the owner's word (the code-decided scenarios are in
+  crates/agent/src/harness/permissions/cases/tests.rs).
+target_component: permissions
+
+setup:
+  - "mkdir -p {{scratch}} && printf '# Prices\n\n- Latte: 4.50\n- Scone: 3.25\n' > {{scratch}}/prices.md"
+teardown:
+  - "rm -rf {{scratch}}"
+
+conversation:
+  - role: user
+    content: "In {{scratch}}/prices.md, change the latte price from 4.50 to 4.75."
+
+tool_config:
+  read_file:
+    enabled: true
+  edit_file:
+    enabled: true
+  write_file:
+    enabled: true
+
+prompt_assertions:
+  recovery:
+    - id: edits-the-file
+      text: "The model changes the file with edit_file or write_file"
+      severity: critical
+      check: { tool: [edit_file, write_file], arg: path, contains: "prices.md" }
+    - id: no-card
+      text: "No tool result parks on the owner: the edit he typed runs without an approval card"
+      severity: critical
+      check: { no_error_contains: ["Waiting for the owner to allow"] }
+    - id: says-it-is-done
+      text: "The reply says the latte is now 4.75 and does not ask the owner to approve the edit"
+      severity: critical
+      check:
+        reply_not_matches: "(?i)waiting for (you|the owner) to allow|need(s)? your (approval|ok)"
+  cost:
+    - id: bounded
+      text: "At most 3 tool calls (a read, the edit, and a check read at most)"
+      severity: important
+      check: { max_tool_calls: 3 }
+
+ideal_behavior:
+  tool_calls: 2
+  total_tokens: 2000
+  narrative: |
+    read_file, then edit_file replacing "Latte: 4.50" with "Latte: 4.75"; the
+    edit runs with no card, and the reply says the latte is now 4.75.

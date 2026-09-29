@@ -4,8 +4,9 @@ description: |
   Baseline task: ask a named employee to do something. The delegate action was
   removed — work for a named coworker is a MESSAGE (their session, their
   memory, owner-visible on both sides). Measures first-call naming accuracy
-  for the canonical pathway: message(resource: 'coworker', action: 'send').
-target_component: message
+  for the canonical pathway: send_message(to: <employee>), loaded with
+  find_tools first.
+target_component: send_message
 
 setup:
   - "curl -s -X POST ${NEBO_TEST_SERVER:-localhost:27895}/api/v1/agents -H 'Content-Type: application/json' -d '{\"blank\":true,\"name\":\"chief-of-staff\"}' > /dev/null"
@@ -18,28 +19,20 @@ conversation:
 
 prompt_assertions:
   first_call:
-    - id: calls-message
-      text: "Model's first call is the message tool (not agent.delegate — removed)"
-      check: { first_call: true, tool: message }
-      severity: critical
-    - id: uses-coworker-resource
-      text: "Model uses resource: 'coworker'"
-      check: { first_call: true, arg: resource, equals: "coworker" }
-      severity: critical
-    - id: uses-send-action
-      text: "Model uses action: 'send'"
-      check: { first_call: true, arg: action, equals: "send" }
+    - id: calls-send-message
+      text: "Model messages the employee with send_message (not a helper)"
+      check: { tool: send_message }
       severity: critical
     - id: has-recipient
       text: "Model addresses chief-of-staff"
-      check: { first_call: true, arg: to, contains: "chief" }
+      check: { tool: send_message, arg: to, contains: "chief" }
       severity: critical
   cost:
-    - id: single-call
-      text: "Task completes in 1 tool call"
-      check: { tool_calls: 1 }
+    - id: two-calls
+      text: "Task completes in at most 2 tool calls (find_tools to load send_message counts as one)"
+      check: { max_tool_calls: 2 }
       severity: important
 
 ideal_behavior:
-  tool_calls: 1
+  tool_calls: 2
   total_tokens: 2000

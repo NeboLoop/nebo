@@ -48,6 +48,70 @@ impl ClientHub {
     }
 }
 
+/// The `approval_request` frames for every approval card still open, as
+/// they were broadcast (origin included), for a client that just connected.
+pub(crate) async fn pending_approval_frames(state: &AppState) -> Vec<serde_json::Value> {
+    crate::chat_dispatch::open_approval_cards(&state.approval_channels)
+        .await
+        .into_iter()
+        .map(|(_, card)| serde_json::json!({ "type": "approval_request", "data": card.event }))
+        .collect()
+}
+
+/// The client and conversation that started a piece of work.
+///
+/// Every event is broadcast to every connected client, but an interactive
+/// surface (an install's progress and setup, a sign-in window, an approval)
+/// belongs to the client that started the work: the owner hired from his
+/// phone and came back to a desktop full of half-finished install dialogs
+/// (2026-09-27). Events about such work carry `client_id` and `session_id`
+/// (see [`EventOrigin::stamp`]), and a client opens the surface only for its
+/// own (`app/src/lib/websocket/origin.ts`, the one place that decides).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct EventOrigin {
+    /// The client that asked: the page's `X-Nebo-Client` header on a
+    /// request, or the `client_id` its socket sent when it connected. None
+    /// when no client on this server asked (a hire on the owner's account,
+    /// a channel, an employee's own call).
+    pub client_id: Option<String>,
+    /// The conversation it was asked in, when there is one.
+    pub session_id: String,
+}
+
+impl EventOrigin {
+    /// The request header a page names itself with.
+    pub const CLIENT_HEADER: &'static str = "x-nebo-client";
+
+    /// The origin of a request: the client its header names, asking in
+    /// `session_id`.
+    pub fn of_request(headers: &axum::http::HeaderMap, session_id: impl Into<String>) -> Self {
+        Self {
+            client_id: headers
+                .get(Self::CLIENT_HEADER)
+                .and_then(|v| v.to_str().ok())
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+                .map(str::to_string),
+            session_id: session_id.into(),
+        }
+    }
+
+    /// Work no client on this server asked for, in `session_id`.
+    pub fn unclaimed(session_id: impl Into<String>) -> Self {
+        Self { client_id: None, session_id: session_id.into() }
+    }
+
+    /// `payload` with this origin on it: `client_id` (null when unclaimed)
+    /// and `session_id`.
+    pub fn stamp(&self, mut payload: serde_json::Value) -> serde_json::Value {
+        if let Some(map) = payload.as_object_mut() {
+            map.insert("client_id".to_string(), serde_json::json!(self.client_id));
+            map.insert("session_id".to_string(), serde_json::json!(self.session_id));
+        }
+        payload
+    }
+}
+
 /// True when a WS handshake may reach a localhost-trust endpoint: either no
 /// Origin header (native clients — the Tauri shell, agents, relays), or an
 /// Origin whose host is loopback/Tauri (our own SPA, dev server, app iframes).
@@ -277,10 +341,10 @@ async fn handle_app_ws_message(state: &AppState, agent_id: &str, text: &str) {
                 let config = ChatConfig {
                     session_key,
                     prompt,
-                    system: String::new(),
                     user_id: String::new(),
                     channel: "app".to_string(),
                     origin: Origin::User,
+                    door: types::permissions::Door::Chat,
                     agent_id: agent_id.clone(),
                     cancel_token: CancellationToken::new(),
                     lane: lanes::EVENTS.to_string(),
@@ -292,15 +356,16 @@ async fn handle_app_ws_message(state: &AppState, agent_id: &str, text: &str) {
                     origin_agent_id: None,
                     mention_context: None,
                     tool_scope: None,
-                    plan_mode: false,
                     channel_ctx: None,
                     handoff_depth: 0,
                     seed_taint: vec![],
                     tool_allowlist: None,
                     hidden_prompt: false,
+                    coworker: None,
                     audience: None,
                     cwd: None,
                     model_override: None,
+                    client_id: None,
                 };
 
                 run_chat(&state_clone, config).await;
@@ -337,6 +402,10 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState, ua: String) {
     let mut lagged: u64 = 0;
     let mut hub_rx = state.hub.subscribe();
     let seen_ids: Arc<tokio::sync::Mutex<HashSet<String>>> = Default::default();
+    // Who this socket is (see `EventOrigin`): the page names itself in its
+    // handshake; a client that doesn't (the phone app) is this socket alone,
+    // so work it starts is never mistaken for another client's.
+    let mut client_id = format!("socket-{}", uuid::Uuid::new_v4());
 
     // Spawn periodic cleanup of stale runs in the global registry (10 min expiry).
     let cleanup_registry = state.run_registry.clone();
@@ -394,6 +463,18 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState, ua: String) {
             "type": "ask_request",
             "data": ask.event_payload(&session_key),
         });
+        if socket
+            .send(Message::Text(serde_json::to_string(&msg).unwrap_or_default().into()))
+            .await
+            .is_err()
+        {
+            return;
+        }
+    }
+    // The same for approval cards still open: a phone that was in the
+    // background when its run asked (its socket was down) shows the card
+    // when it comes back, instead of a goal waiting unseen.
+    for msg in pending_approval_frames(&state).await {
         if socket
             .send(Message::Text(serde_json::to_string(&msg).unwrap_or_default().into()))
             .await
@@ -468,16 +549,24 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState, ua: String) {
                                             seen.clear();
                                         }
                                     }
-                                    dispatch_chat(&state, &parsed).await;
+                                    dispatch_chat(&state, &parsed, &client_id).await;
                                 }
                                 "cancel" => {
-                                    let (_outcome, session_id) =
+                                    let (outcome, session_id) =
                                         apply_cancel(&parsed["data"], &state.run_registry).await;
+                                    // Stop means stop: the helpers the session
+                                    // started stop with it, whichever turn
+                                    // started them.
+                                    state.helpers.stop_session(match outcome {
+                                        CancelOutcome::AllFallback { .. } => None,
+                                        _ => Some(session_id.as_str()),
+                                    });
                                     state.hub.broadcast("chat_cancelled", serde_json::json!({
                                         "session_id": session_id,
                                     }));
                                 }
                                 "cancel_all" => {
+                                    state.helpers.stop_session(None);
                                     let count = state.run_registry.cancel_all().await;
                                     info!(count, "emergency cancel_all");
                                     state.hub.broadcast("chat_cancelled", serde_json::json!({
@@ -551,6 +640,13 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState, ua: String) {
                                 }
                                 "auth" | "connect" => {
                                     info!("ws received '{}' message, sending auth_ok", msg_type);
+                                    if let Some(named) = parsed["data"]["client_id"]
+                                        .as_str()
+                                        .map(str::trim)
+                                        .filter(|v| !v.is_empty())
+                                    {
+                                        client_id = named.to_string();
+                                    }
                                     let auth_ok = serde_json::json!({"type": "auth_ok"});
                                     match socket
                                         .send(Message::Text(serde_json::to_string(&auth_ok).unwrap().into()))
@@ -579,9 +675,9 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState, ua: String) {
                                         .unwrap_or("default")
                                         .to_string();
                                     // Resolve frontend session key to internal session ID
-                                    let result = state.runner.sessions()
+                                    let result = state.harness.sessions()
                                         .resolve_session_id_by_key(&session_key)
-                                        .and_then(|sid| state.runner.sessions().reset(&sid));
+                                        .and_then(|sid| state.harness.sessions().reset(&sid));
                                     let reply = match result {
                                         Ok(new_chat_id) => serde_json::json!({
                                             "type": "session_reset",
@@ -599,100 +695,8 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState, ua: String) {
                                         .as_str()
                                         .unwrap_or("default")
                                         .to_string();
-
-                                    let state_clone = state.clone();
-                                    let skey = session_key.clone();
-                                    tokio::spawn(async move {
-                                        // Resolve frontend session key to internal session ID
-                                        let internal_sid = match state_clone.runner.sessions()
-                                            .resolve_session_id_by_key(&skey) {
-                                            Ok(id) => id,
-                                            Err(_) => {
-                                                state_clone.hub.broadcast("session_compact", serde_json::json!({
-                                                    "session_id": skey, "success": false, "error": "session not found"
-                                                }));
-                                                return;
-                                            }
-                                        };
-
-                                        // 1. Get current messages
-                                        let messages = match state_clone.runner.sessions().get_messages(&internal_sid) {
-                                            Ok(msgs) => msgs,
-                                            Err(_) => {
-                                                state_clone.hub.broadcast("session_compact", serde_json::json!({
-                                                    "session_id": skey, "success": false, "error": "failed to load messages"
-                                                }));
-                                                return;
-                                            }
-                                        };
-
-                                        if messages.len() < 4 {
-                                            state_clone.hub.broadcast("session_compact", serde_json::json!({
-                                                "session_id": skey, "success": false, "error": "conversation too short to compact"
-                                            }));
-                                            return;
-                                        }
-
-                                        // 2. Gather compounding inputs: rolling summary + active task
-                                        let existing_summary = state_clone.runner.sessions()
-                                            .get_summary(&internal_sid)
-                                            .unwrap_or_default();
-                                        let active_task = state_clone.runner.sessions()
-                                            .get_active_task(&internal_sid)
-                                            .unwrap_or_default();
-
-                                        // 3. Call the one compaction pathway (structured
-                                        // compounding checkpoint; folds prior summaries).
-                                        let providers = state_clone.runner.providers();
-                                        let providers = providers.read().await;
-                                        let provider = match ai::default_provider(&providers) {
-                                            Some(p) => p.clone(),
-                                            None => {
-                                                state_clone.hub.broadcast("session_compact", serde_json::json!({
-                                                    "session_id": skey, "success": false, "error": "no AI provider available"
-                                                }));
-                                                return;
-                                            }
-                                        };
-                                        drop(providers);
-
-                                        let summary = match agent::pruning::build_llm_summary(
-                                            ai::RequestTrace::new("compaction"),
-                                            provider.as_ref(),
-                                            &messages,
-                                            &existing_summary,
-                                            &active_task,
-                                            "",
-                                        )
-                                        .await
-                                        {
-                                            Ok(s) => s,
-                                            Err(e) => {
-                                                state_clone.hub.broadcast("session_compact", serde_json::json!({
-                                                    "session_id": skey, "success": false, "error": format!("LLM error: {}", e)
-                                                }));
-                                                return;
-                                            }
-                                        };
-
-                                        // 4. Atomically replace the conversation with the summary.
-                                        // On failure the original conversation is left intact.
-                                        match state_clone.runner.sessions().compact_current_messages(
-                                            &internal_sid,
-                                            &format!("{}\n\n{}", agent::pruning::COMPACTION_MESSAGE_MARKER, summary),
-                                        ) {
-                                            Ok(()) => {
-                                                state_clone.hub.broadcast("session_compact", serde_json::json!({
-                                                    "session_id": skey, "success": true, "summary_length": summary.len()
-                                                }));
-                                            }
-                                            Err(e) => {
-                                                state_clone.hub.broadcast("session_compact", serde_json::json!({
-                                                    "session_id": skey, "success": false, "error": format!("failed to save summary: {}", e)
-                                                }));
-                                            }
-                                        }
-                                    });
+                                    let instructions = parsed["data"]["instructions"].as_str().unwrap_or("").to_string();
+                                    tokio::spawn(compact_session(state.clone(), session_key, String::new(), instructions));
                                 }
                                 "list_active_runs" => {
                                     let runs = state.run_registry.list_top_level().await;
@@ -765,11 +769,7 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState, ua: String) {
                                     } else {
                                         "once"
                                     };
-                                    state.pending_tool_approvals.lock().await.remove(&request_id);
-                                    let mut channels = state.approval_channels.lock().await;
-                                    if let Some(tx) = channels.remove(&request_id) {
-                                        let _ = tx.send(decision.to_string());
-                                    }
+                                    crate::chat_dispatch::answer_approval(&state, &request_id, decision).await;
                                 }
                                 "presence" => {
                                     let status = parsed["data"]["status"]
@@ -906,10 +906,10 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState, ua: String) {
                                         let config = ChatConfig {
                                             session_key,
                                             prompt,
-                                            system: String::new(),
                                             user_id: String::new(),
                                             channel: "web".to_string(),
                                             origin: Origin::User,
+                                            door: types::permissions::Door::Chat,
                                             agent_id: agent_id.clone(),
                                             cancel_token: CancellationToken::new(),
                                             lane: types::constants::lanes::EVENTS.to_string(),
@@ -920,15 +920,17 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState, ua: String) {
                                             entity_name: String::new(),
                                             origin_agent_id: None,
                                             mention_context: None,
-                                            tool_scope: None, plan_mode: false,
+                                            tool_scope: None,
                                             channel_ctx: None,
                                             handoff_depth: 0,
                                             seed_taint: vec![],
                                             tool_allowlist: None,
                                             hidden_prompt: false,
+                                            coworker: None,
                                             audience: None,
                                             cwd: None,
                                             model_override: None,
+                                            client_id: None,
                                         };
 
                                         run_chat(&state_clone, config).await;
@@ -1099,10 +1101,10 @@ async fn handle_builtin_slash(
                 session_id.to_string()
             };
             match state
-                .runner
+                .harness
                 .sessions()
                 .resolve_session_id_by_key(&session_key)
-                .and_then(|sid| state.runner.sessions().reset(&sid))
+                .and_then(|sid| state.harness.sessions().reset(&sid))
             {
                 Ok(new_chat_id) => {
                     state.hub.broadcast(
@@ -1126,17 +1128,22 @@ async fn handle_builtin_slash(
             // existed for threads ("Failed to clear: not found"), and
             // rotation wouldn't stick anyway — get_or_create pins a thread
             // session back to its URL-bound chat. Clear means clear: wipe
-            // this thread's messages in place.
+            // this thread's messages in place. A linked employee's session
+            // on its runtime is forgotten with them, so the agent starts
+            // fresh too instead of carrying on with everything before.
             if let Some(chat_id) = types::keyparser::chat_id_from_thread_key(session_id) {
-                return Some(match state.store.delete_chat_messages_by_chat_id(chat_id) {
+                let cleared = state
+                    .store
+                    .delete_chat_messages_by_chat_id(chat_id)
+                    .and_then(|()| state.store.set_chat_linked_session(chat_id, "", ""));
+                return Some(match cleared {
                     Ok(()) => {
                         if let Ok(sid) = state
-                            .runner
+                            .harness
                             .sessions()
                             .resolve_session_id_by_key(session_id)
                         {
                             let _ = state.store.reset_session_counters(&sid);
-                            let _ = state.store.update_session_summary(&sid, "");
                         }
                         state.hub.broadcast(
                             "session_reset",
@@ -1158,13 +1165,13 @@ async fn handle_builtin_slash(
                 session_id.to_string()
             };
             match state
-                .runner
+                .harness
                 .sessions()
                 .resolve_session_id_by_key(&session_key)
             {
                 Ok(sid) => {
                     // Rotate, don't delete — see the comm dispatch /clear arm.
-                    match state.runner.sessions().reset(&sid) {
+                    match state.harness.sessions().reset(&sid) {
                         Ok(new_chat_id) => {
                             state.hub.broadcast(
                                 "session_reset",
@@ -1191,6 +1198,7 @@ async fn handle_builtin_slash(
                 "| `/new` | Start a new conversation (preserves history) |",
                 "| `/clear` | Clear current conversation messages |",
                 "| `/compact` | Summarize & compress old messages |",
+                "| `/goal [end state \\| clear]` | Work until a check confirms the end state; starts now |",
                 "| `/model [name]` | Show or switch model |",
                 "| `/status` | Show agent & system status |",
                 "| `/help` | Show this help |",
@@ -1212,12 +1220,12 @@ async fn handle_builtin_slash(
                 session_id.to_string()
             };
             let msg_count = state
-                .runner
+                .harness
                 .sessions()
                 .resolve_session_id_by_key(&session_key)
                 .ok()
                 .and_then(|sid| {
-                    state.runner.sessions().get_messages(&sid).ok()
+                    state.harness.sessions().get_messages(&sid).ok()
                 })
                 .map(|m| m.len())
                 .unwrap_or(0);
@@ -1242,144 +1250,19 @@ async fn handle_builtin_slash(
         }
 
         "/compact" => {
-            // Trigger session compaction using the existing session_compact pipeline.
+            // A linked employee's agent keeps its own conversation: the owner
+            // compacts that, so `/compact` goes to it as his message, and the
+            // linked provider runs it where the agent offers it or says
+            // plainly that it can't.
+            if !agent_id.is_empty() && crate::company::linked_target(state, agent_id).is_some() {
+                return None;
+            }
             let session_key = if !agent_id.is_empty() {
                 types::keyparser::build_agent_session_key(agent_id, channel)
             } else {
                 session_id.to_string()
             };
-
-            let state_clone = state.clone();
-            let skey = session_key.clone();
-            let trace = ai::RequestTrace {
-                agent_id: agent_id.to_string(),
-                ..ai::RequestTrace::new("compaction")
-            };
-            tokio::spawn(async move {
-                let internal_sid = match state_clone.runner.sessions()
-                    .resolve_session_id_by_key(&skey) {
-                    Ok(id) => id,
-                    Err(_) => {
-                        state_clone.hub.broadcast("session_compact", serde_json::json!({
-                            "session_id": skey, "success": false, "error": "session not found"
-                        }));
-                        return;
-                    }
-                };
-
-                let messages = match state_clone.runner.sessions().get_messages(&internal_sid) {
-                    Ok(msgs) => msgs,
-                    Err(_) => {
-                        state_clone.hub.broadcast("session_compact", serde_json::json!({
-                            "session_id": skey, "success": false, "error": "failed to load messages"
-                        }));
-                        return;
-                    }
-                };
-
-                if messages.len() < 4 {
-                    state_clone.hub.broadcast("session_compact", serde_json::json!({
-                        "session_id": skey, "success": false, "error": "conversation too short to compact"
-                    }));
-                    return;
-                }
-
-                let mut transcript = String::new();
-                for msg in &messages {
-                    let role = match msg.role.as_str() {
-                        "user" => "User",
-                        "assistant" => "Assistant",
-                        _ => continue,
-                    };
-                    if !msg.content.is_empty() {
-                        transcript.push_str(&format!("{}: {}\n\n", role, msg.content));
-                    }
-                }
-
-                let providers = state_clone.runner.providers();
-                let providers = providers.read().await;
-                let provider = match ai::default_provider(&providers) {
-                    Some(p) => p.clone(),
-                    None => {
-                        state_clone.hub.broadcast("session_compact", serde_json::json!({
-                            "session_id": skey, "success": false, "error": "no AI provider available"
-                        }));
-                        return;
-                    }
-                };
-                drop(providers);
-
-                let summary_prompt = format!(
-                    "Summarize this conversation concisely. Capture all key decisions, facts, requests, and context. \
-                     This summary will replace the full conversation so nothing important should be lost.\n\n---\n\n{}",
-                    transcript
-                );
-
-                let req = ai::ChatRequest {
-                    tool_credential: None,
-                    chat_id: String::new(),
-                    approval_channels: None,
-                    tool_choice: Default::default(),
-                    messages: vec![ai::Message {
-                        role: "user".into(),
-                        content: summary_prompt,
-                        ..Default::default()
-                    }],
-                    tools: vec![],
-                    max_tokens: 2000,
-                    temperature: 0.0,
-                    system: "You are a conversation summarizer. Produce a concise summary that preserves all important context.".into(),
-                    static_system: String::new(),
-                    model: String::new(),
-                    enable_thinking: false,
-                    metadata: None,
-                    cache_breakpoints: vec![],
-                    cancel_token: None,
-                    trace,
-                };
-
-                let mut rx = match provider.stream(&req).await {
-                    Ok(rx) => rx,
-                    Err(e) => {
-                        state_clone.hub.broadcast("session_compact", serde_json::json!({
-                            "session_id": skey, "success": false, "error": format!("LLM error: {}", e)
-                        }));
-                        return;
-                    }
-                };
-
-                let mut summary = String::new();
-                while let Some(event) = rx.recv().await {
-                    if event.event_type == ai::StreamEventType::Text {
-                        summary.push_str(&event.text);
-                    }
-                }
-
-                if summary.is_empty() {
-                    state_clone.hub.broadcast("session_compact", serde_json::json!({
-                        "session_id": skey, "success": false, "error": "empty summary generated"
-                    }));
-                    return;
-                }
-
-                // Atomically replace the conversation with the summary.
-                // On failure the original conversation is left intact.
-                match state_clone.runner.sessions().compact_current_messages(
-                    &internal_sid,
-                    &format!("**Conversation Summary**\n\n{}", summary),
-                ) {
-                    Ok(()) => {
-                        state_clone.hub.broadcast("session_compact", serde_json::json!({
-                            "session_id": skey, "success": true, "summary_length": summary.len()
-                        }));
-                    }
-                    Err(e) => {
-                        state_clone.hub.broadcast("session_compact", serde_json::json!({
-                            "session_id": skey, "success": false, "error": format!("failed to save summary: {}", e)
-                        }));
-                    }
-                }
-            });
+            tokio::spawn(compact_session(state.clone(), session_key, agent_id.to_string(), args.to_string()));
             Some("Compacting conversation...".to_string())
         }
 
@@ -1486,7 +1369,6 @@ async fn apply_cancel(
 struct ChatPayload {
     session_id: String,
     prompt: String,
-    system: String,
     user_id: String,
     channel: String,
     agent_id: String,
@@ -1500,6 +1382,12 @@ struct ChatPayload {
     /// Explicit model for this run (empty = the selector's choice). The test
     /// harness's `--model` arrives here.
     model_override: String,
+    /// App-provided context (the chat embed's `setContext`), shown to the
+    /// model beside the prompt.
+    app_context: Option<String>,
+    /// The client whose socket sent it (`EventOrigin::client_id`); never
+    /// read from the message itself. None for a platform-written prompt.
+    client_id: Option<String>,
 }
 
 impl ChatPayload {
@@ -1511,18 +1399,25 @@ impl ChatPayload {
         Self {
             session_id: data["session_id"].as_str().unwrap_or("default").to_string(),
             prompt: data["prompt"].as_str().unwrap_or("").to_string(),
-            system: data["system"].as_str().unwrap_or("").to_string(),
             user_id: data["user_id"].as_str().unwrap_or("").to_string(),
             channel: data["channel"].as_str().unwrap_or("web").to_string(),
             agent_id: data["agent_id"].as_str().unwrap_or("").to_string(),
             scope: data["scope"].as_str().unwrap_or("").to_string(),
             cwd: data["cwd"].as_str().unwrap_or("").to_string(),
             model_override: data["model_override"].as_str().unwrap_or("").to_string(),
+            app_context: data.get("context").filter(|v| !v.is_null()).map(|v| {
+                if let Some(s) = v.as_str() {
+                    s.to_string()
+                } else {
+                    format!("App context: {}", v)
+                }
+            }),
             // Uploaded attachment metadata from the WS payload
             attachments: data
                 .get("attachments")
                 .and_then(|v| serde_json::from_value(v.clone()).ok())
                 .unwrap_or_default(),
+            client_id: None,
         }
     }
 }
@@ -1535,12 +1430,30 @@ impl ChatPayload {
 /// cloud bot's report run was killed twice by mobile disconnects. Runs finish
 /// server-side and persist; explicit cancellation goes through the RunRegistry
 /// (the "cancel" WS message), never through connection lifetime.
-async fn dispatch_chat(state: &AppState, msg: &serde_json::Value) {
-    let data = &msg["data"];
+async fn dispatch_chat(state: &AppState, msg: &serde_json::Value, client_id: &str) {
+    let mut payload = ChatPayload::parse(&msg["data"]);
+    payload.client_id = Some(client_id.to_string());
+    dispatch_payload(state, payload, false).await;
+}
+
+/// Run a platform-written prompt the owner never sees (a goal's kickoff) on
+/// `session_key`, through the same path as the owner's messages: while a
+/// turn runs there, it takes the prompt at its next step.
+pub(crate) async fn dispatch_hidden_prompt(state: &AppState, session_key: &str, prompt: String) {
+    let data = serde_json::json!({
+        "session_id": session_key,
+        "agent_id": types::keyparser::extract_agent_id(session_key),
+        "prompt": prompt,
+    });
+    dispatch_payload(state, ChatPayload::parse(&data), true).await;
+}
+
+/// One chat message, the owner's own (`hidden` false) or a platform-written
+/// prompt they never see.
+async fn dispatch_payload(state: &AppState, payload: ChatPayload, hidden: bool) {
     let ChatPayload {
         session_id,
         prompt,
-        system,
         user_id,
         channel,
         agent_id,
@@ -1548,7 +1461,9 @@ async fn dispatch_chat(state: &AppState, msg: &serde_json::Value) {
         attachments: ws_attachments,
         cwd,
         model_override,
-    } = ChatPayload::parse(data);
+        app_context,
+        client_id,
+    } = payload;
 
     info!(
         session_id = %session_id,
@@ -1569,7 +1484,8 @@ async fn dispatch_chat(state: &AppState, msg: &serde_json::Value) {
 
     // Intercept marketplace codes before they reach the agent
     if let Some((code_type, code)) = crate::codes::detect_code(&prompt) {
-        crate::codes::handle_code(state, code_type, code, &session_id).await;
+        let origin = EventOrigin { client_id: client_id.clone(), session_id: session_id.clone() };
+        crate::codes::handle_code(state, code_type, code, &origin).await;
         return;
     }
 
@@ -1688,6 +1604,31 @@ async fn dispatch_chat(state: &AppState, msg: &serde_json::Value) {
 
     info!(session_key = %session_key, agent_id = %agent_id, channel = %channel, "[THREAD-DEBUG] dispatch_chat final session_key");
 
+    // `/goal`: set, show or clear the agreed goal. Setting one starts work
+    // on it now: its kickoff runs as a hidden prompt through the same path as
+    // any message, so a running turn takes it at its next step.
+    let mut hidden_prompt = hidden;
+    let goal_command = if hidden { None } else { super::goal::command_args(&prompt).map(str::to_string) };
+    let prompt = match goal_command {
+        Some(args) => {
+            let reply = super::goal::slash(state, &session_key, &args);
+            state.hub.broadcast(
+                "chat_stream",
+                serde_json::json!({ "session_id": &session_key, "content": &reply.text }),
+            );
+            let Some(kickoff) = reply.kickoff else {
+                state.hub.broadcast(
+                    "chat_complete",
+                    serde_json::json!({ "session_id": &session_key }),
+                );
+                return;
+            };
+            hidden_prompt = true;
+            kickoff
+        }
+        None => prompt,
+    };
+
     // Resolve entity config for the active entity
     let entity_config = {
         let (etype, eid) = if !agent_id.is_empty() {
@@ -1712,11 +1653,11 @@ async fn dispatch_chat(state: &AppState, msg: &serde_json::Value) {
             chat_id.to_string()
         } else {
             state
-                .runner
+                .harness
                 .sessions()
                 .resolve_session_id_by_key(&session_key)
                 .ok()
-                .map(|sid| state.runner.sessions().active_chat_id(&sid))
+                .map(|sid| state.harness.sessions().active_chat_id(&sid))
                 .unwrap_or_default()
         };
         let slug = if !agent_id.is_empty() {
@@ -1772,7 +1713,7 @@ async fn dispatch_chat(state: &AppState, msg: &serde_json::Value) {
     // The relay markers are the canonical "this is the OWNER's own message
     // relayed by the bot" shape (same as the reconcile backfill) — without
     // them the web renders the mirrored prompt as the agent speaking.
-    if let Some(ref reply_cfg) = comm_reply {
+    if let Some(reply_cfg) = comm_reply.as_ref().filter(|_| !hidden_prompt) {
         let mut meta = std::collections::HashMap::new();
         meta.insert("relay".to_string(), "true".to_string());
         meta.insert("role".to_string(), "user".to_string());
@@ -1802,16 +1743,6 @@ async fn dispatch_chat(state: &AppState, msg: &serde_json::Value) {
     }
 
     // Extract app-provided context (sent by chat embed's setContext)
-    let app_context: Option<String> = data
-        .get("context")
-        .filter(|v| !v.is_null())
-        .map(|v| {
-            if let Some(s) = v.as_str() {
-                s.to_string()
-            } else {
-                format!("App context: {}", v)
-            }
-        });
 
     // @mentions route the message to the addressed agent(s). When the user
     // @mentions other agents, ONLY they respond — the thread's own agent stays
@@ -1823,10 +1754,10 @@ async fn dispatch_chat(state: &AppState, msg: &serde_json::Value) {
         let config = ChatConfig {
             session_key,
             prompt: prompt.clone(),
-            system,
             user_id: user_id.clone(),
             channel: channel.clone(),
             origin: Origin::User,
+            door: types::permissions::Door::Chat,
             agent_id: agent_id.clone(),
             cancel_token: CancellationToken::new(),
             lane: lanes::MAIN.to_string(),
@@ -1838,15 +1769,16 @@ async fn dispatch_chat(state: &AppState, msg: &serde_json::Value) {
             origin_agent_id: None,
             mention_context: app_context,
             tool_scope: if scope.is_empty() { None } else { Some(scope) },
-            plan_mode: false,
             channel_ctx: None,
             handoff_depth: 0,
             seed_taint: vec![],
             tool_allowlist: None,
-            hidden_prompt: false,
+            hidden_prompt,
+            coworker: None,
             audience: None,
             cwd: (!cwd.is_empty()).then(|| std::path::PathBuf::from(cwd)),
             model_override: (!model_override.is_empty()).then_some(model_override),
+            client_id: client_id.clone(),
         };
         run_chat(state, config).await;
     } else {
@@ -1867,6 +1799,7 @@ async fn dispatch_chat(state: &AppState, msg: &serde_json::Value) {
                     &channel,
                     &agent_id,
                     origin_matter.as_deref(),
+                    client_id.clone(),
                 )
                 .await;
             }
@@ -1895,6 +1828,7 @@ async fn fork_mention_chat(
     channel: &str,
     origin_agent_id: &str,
     origin_matter: Option<&str>,
+    client_id: Option<String>,
 ) {
     use crate::chat_dispatch::{ChatConfig, run_chat};
 
@@ -1924,10 +1858,10 @@ async fn fork_mention_chat(
     let chat_config = ChatConfig {
         session_key,
         prompt: contextualized,
-        system: String::new(),
         user_id: user_id.to_string(),
         channel: channel.to_string(),
         origin: Origin::User,
+        door: types::permissions::Door::Chat,
         agent_id: mentioned_id.to_string(),
         cancel_token: CancellationToken::new(),
         lane: lanes::MAIN.to_string(),
@@ -1938,15 +1872,17 @@ async fn fork_mention_chat(
         entity_name: String::new(),
         origin_agent_id: Some(origin_agent_id.to_string()),
         mention_context: None,
-        tool_scope: None, plan_mode: false,
+        tool_scope: None,
         channel_ctx: None,
         handoff_depth: 0,
         seed_taint: vec![],
         tool_allowlist: None,
         hidden_prompt: false,
+        coworker: None,
         audience: None,
         cwd: None,
         model_override: None,
+        client_id,
     };
 
     run_chat(state, chat_config).await;
@@ -1971,7 +1907,7 @@ fn inject_delegate_response(
     origin_agent_id: &str,
     channel: &str,
 ) {
-    let sessions = state.runner.sessions();
+    let sessions = state.harness.sessions();
 
     // Read the delegate's last assistant message
     let delegate_response = match sessions.resolve_session_id_by_key(delegate_session_key) {
@@ -2117,7 +2053,7 @@ pub async fn extension_ws_handler(
 
 /// Constant-time string comparison. The secret is fixed-length (64 hex chars),
 /// so the early length check leaks nothing useful.
-fn constant_time_eq(a: &str, b: &str) -> bool {
+pub(crate) fn constant_time_eq(a: &str, b: &str) -> bool {
     let (a, b) = (a.as_bytes(), b.as_bytes());
     if a.len() != b.len() {
         return false;
@@ -2252,6 +2188,37 @@ async fn handle_extension_ws(socket: WebSocket, bridge: Arc<browser::ExtensionBr
     }
 
     bridge.disconnect(conn_id).await;
+}
+
+#[cfg(test)]
+mod event_origin_tests {
+    use super::EventOrigin;
+    use axum::http::HeaderMap;
+
+    /// A page names itself on a request; the event about the work it asked
+    /// for carries that name and the conversation, whatever else it says.
+    #[test]
+    fn a_request_names_its_client_on_the_event() {
+        let mut headers = HeaderMap::new();
+        headers.insert(EventOrigin::CLIENT_HEADER, " desktop-page ".parse().unwrap());
+        let origin = EventOrigin::of_request(&headers, "store-install-a1");
+        assert_eq!(origin.client_id.as_deref(), Some("desktop-page"));
+        let payload = origin.stamp(serde_json::json!({ "code": "PLUG-AAAA-0001" }));
+        assert_eq!(payload["client_id"], "desktop-page");
+        assert_eq!(payload["session_id"], "store-install-a1");
+        assert_eq!(payload["code"], "PLUG-AAAA-0001");
+    }
+
+    /// No header (the phone app, a script): no client asked, and the event
+    /// says so rather than leaving the field out.
+    #[test]
+    fn a_request_without_a_name_is_unclaimed() {
+        let mut headers = HeaderMap::new();
+        headers.insert(EventOrigin::CLIENT_HEADER, "".parse().unwrap());
+        assert_eq!(EventOrigin::of_request(&headers, "s"), EventOrigin::unclaimed("s"));
+        let payload = EventOrigin::of_request(&HeaderMap::new(), "s").stamp(serde_json::json!({}));
+        assert!(payload.get("client_id").is_some_and(|v| v.is_null()));
+    }
 }
 
 #[cfg(test)]
@@ -2433,7 +2400,6 @@ mod chat_payload_tests {
             assert_eq!(p.session_id, "default");
             assert_eq!(p.channel, "web");
             assert_eq!(p.prompt, "");
-            assert_eq!(p.system, "");
             assert_eq!(p.user_id, "");
             assert_eq!(p.agent_id, "");
             assert_eq!(p.scope, "");
@@ -2448,7 +2414,6 @@ mod chat_payload_tests {
         let data = serde_json::json!({
             "session_id": "agent:a1:web",
             "prompt": "hello",
-            "system": "be terse",
             "user_id": "u1",
             "channel": "app",
             "agent_id": "a1",
@@ -2458,7 +2423,6 @@ mod chat_payload_tests {
         let p = ChatPayload::parse(&data);
         assert_eq!(p.session_id, "agent:a1:web");
         assert_eq!(p.prompt, "hello");
-        assert_eq!(p.system, "be terse");
         assert_eq!(p.user_id, "u1");
         assert_eq!(p.channel, "app");
         assert_eq!(p.agent_id, "a1");
@@ -2672,4 +2636,15 @@ mod cancel_precedence_tests {
         assert_eq!(outcome, CancelOutcome::NoActiveRuns);
         assert_eq!(session_id, "default");
     }
+}
+
+/// The owner's compact, from `/compact` or the `session_compact` message: a
+/// turn of its own that checkpoints the conversation
+/// (`chat_dispatch::compact`), the result broadcast as `session_compact`.
+async fn compact_session(state: AppState, session_key: String, agent_id: String, instructions: String) {
+    let result = match crate::chat_dispatch::compact(&state, &session_key, &agent_id, &instructions).await {
+        Ok(()) => serde_json::json!({ "session_id": session_key, "success": true }),
+        Err(e) => serde_json::json!({ "session_id": session_key, "success": false, "error": e }),
+    };
+    state.hub.broadcast("session_compact", result);
 }

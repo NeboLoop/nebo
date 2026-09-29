@@ -32,8 +32,8 @@ impl ChannelDispatchImpl {
 
 /// Server-side implementation of [`tools::CodeInstaller`] — routes any marketplace code
 /// through the canonical `codes::handle_code` pathway (the same one this dispatcher and
-/// the WS code-install flow use). Injected into the agent's `registry` install action so
-/// `agent(resource:"registry", action:"install", code:…)` installs AND cascades every
+/// the WS code-install flow use). Injected into `hire_employee` so
+/// `hire_employee(code:…)` installs AND cascades every
 /// artifact type (skills, plugins, agents, apps, collections) correctly.
 pub struct CodeInstallerImpl {
     state: AppState,
@@ -46,11 +46,15 @@ impl CodeInstallerImpl {
 }
 
 impl tools::CodeInstaller for CodeInstallerImpl {
-    fn install<'a>(&'a self, code: &'a str) -> Pin<Box<dyn Future<Output = String> + Send + 'a>> {
+    fn install<'a>(
+        &'a self,
+        code: &'a str,
+        by: tools::InstalledBy,
+    ) -> Pin<Box<dyn Future<Output = String> + Send + 'a>> {
         Box::pin(async move {
             match crate::codes::detect_code(code) {
                 Some((code_type, validated)) => {
-                    crate::codes::handle_code_text(&self.state, code_type, validated).await
+                    crate::codes::handle_code_text(&self.state, code_type, validated, by).await
                 }
                 None => format!(
                     "'{code}' is not a valid install code — expected PREFIX-XXXX-XXXX \
@@ -68,12 +72,19 @@ impl agent::ChannelDispatcher for ChannelDispatchImpl {
         session_key: &'a str,
         channel_ctx: tools::ChannelContext,
         prompt: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<String, String>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = Result<Option<String>, String>> + Send + 'a>> {
         Box::pin(async move {
             // Intercept install codes before they reach the agent
             if let Some((code_type, code)) = crate::codes::detect_code(prompt) {
-                let response = crate::codes::handle_code_text(&self.state, code_type, code).await;
-                return Ok(response);
+                // A code posted in a channel is not the owner's own act.
+                let response = crate::codes::handle_code_text(
+                    &self.state,
+                    code_type,
+                    code,
+                    tools::InstalledBy::Other,
+                )
+                .await;
+                return Ok(Some(response));
             }
 
             let entity_config =
@@ -84,7 +95,6 @@ impl agent::ChannelDispatcher for ChannelDispatchImpl {
             let config = crate::chat_dispatch::ChatConfig {
                 session_key: session_key.to_string(),
                 prompt: prompt.to_string(),
-                system: String::new(),
                 user_id: String::new(),
                 channel: channel_kind.clone(),
                 // A Slack/Discord/Teams interlocutor is a third party typing
@@ -97,6 +107,7 @@ impl agent::ChannelDispatcher for ChannelDispatchImpl {
                 // of the owner typing locally. The taint seed below was already
                 // calling this input untrusted; the origin now agrees with it.
                 origin: tools::Origin::Comm,
+                door: types::permissions::Door::Chat,
                 agent_id: agent_id.to_string(),
                 cancel_token: cancel_token.clone(),
                 lane: types::constants::lanes::COMM.to_string(),
@@ -108,7 +119,6 @@ impl agent::ChannelDispatcher for ChannelDispatchImpl {
                 origin_agent_id: None,
                 mention_context: None,
                 tool_scope: None,
-                plan_mode: false,
                 channel_ctx: Some(channel_ctx),
                 handoff_depth: 0,
                 // Remote channel interlocutors (Slack/Discord) are untrusted
@@ -116,9 +126,11 @@ impl agent::ChannelDispatcher for ChannelDispatchImpl {
                 seed_taint: vec![types::provenance::ProvenanceClass::Channel],
                 tool_allowlist: None,
                 hidden_prompt: false,
+                coworker: None,
                 audience: None,
                 cwd: None,
                 model_override: None,
+                client_id: None,
             };
             let channel = channel_kind.as_str();
 
@@ -126,10 +138,65 @@ impl agent::ChannelDispatcher for ChannelDispatchImpl {
                 .await
                 .map_err(|e| format!("channel dispatch error: {}", e))?;
 
-            Ok(collect_channel_reply(rx, &cancel_token, agent_id, channel, None)
-                .await
-                .0)
+            // A message the running turn took is answered by that turn's
+            // reply: nothing is posted for it, as in the app (A34).
+            let reply = collect_channel_reply(rx, &cancel_token, agent_id, channel, None).await;
+            Ok((!reply.queued).then_some(reply.text))
         })
+    }
+}
+
+/// Post `text` into a chat-channel conversation (a Slack channel or thread)
+/// through the employee's running bridge, as `op: "post"`: the employee
+/// speaks on its own, with no inbound message to answer. The one way a
+/// reply reaches a channel outside the inbound dispatch: a scheduled job
+/// bound to a channel, and a turn woken there by a notification.
+pub(crate) async fn post_to_channel(
+    state: &AppState,
+    agent_id: &str,
+    ctx: &tools::ChannelContext,
+    text: String,
+) -> Result<(), String> {
+    let key = tools::channel_bridge_key(agent_id, &ctx.kind);
+    let Some(handle) = state.channel_bridges.read().await.get(&key).cloned() else {
+        return Err(format!(
+            "channel bridge `{key}` not running — enable {} for agent {} in Settings → Channels",
+            ctx.kind, agent_id
+        ));
+    };
+    let mut op = serde_json::Map::new();
+    op.insert("op".into(), serde_json::Value::String("post".into()));
+    op.insert("channel".into(), serde_json::Value::String(ctx.channel_id.clone()));
+    if let Some(ts) = &ctx.thread_ts {
+        op.insert("thread_ts".into(), serde_json::Value::String(ts.clone()));
+    }
+    op.insert("text".into(), serde_json::Value::String(text));
+    handle
+        .stdin_tx
+        .send(serde_json::Value::Object(op))
+        .await
+        .map_err(|e| format!("bridge send: {e}"))
+}
+
+/// A turn in a chat-channel conversation that no inbound message started
+/// (a notification woke it): run it as the channel's inbound turns run and
+/// post its reply into the conversation (B14).
+pub(crate) async fn answer_in_channel(state: &AppState, config: crate::chat_dispatch::ChatConfig, ctx: tools::ChannelContext) {
+    let (agent_id, cancel_token, session_key) =
+        (config.agent_id.clone(), config.cancel_token.clone(), config.session_key.clone());
+    let rx = match crate::chat_dispatch::run_chat_events(state, config).await {
+        Ok(rx) => rx,
+        Err(e) => {
+            warn!(session = %session_key, error = %e, "channel turn not started");
+            return;
+        }
+    };
+    let reply = collect_channel_reply(rx, &cancel_token, &agent_id, &ctx.kind, None).await;
+    if reply.queued || reply.text.is_empty() {
+        return;
+    }
+    if let Err(e) = post_to_channel(state, &agent_id, &ctx, reply.text).await {
+        warn!(session = %session_key, error = %e, "channel reply not posted");
     }
 }
 
@@ -137,24 +204,44 @@ impl agent::ChannelDispatcher for ChannelDispatchImpl {
 /// internal status/progress notifications.
 ///
 /// Reply accumulation is gated by [`crate::chat_dispatch::reply_fragment`]:
-/// only `Text` events contribute. `ControlNotice` (spiral backstop, circuit
-/// breaker, terminal tool error) is run-control status and is ignored by type
+/// only `Text` events contribute. `ControlNotice` (step or spending limit,
+/// terminal tool error) is run-control status and is ignored by type
 /// — it must never land in a customer channel as prose.
 ///
+/// A drained run's reply.
+pub(crate) struct ChannelReply {
+    pub text: String,
+    /// Engine-stamped provenance of the run, so the coworker rail can label
+    /// a tainted reply.
+    pub provenance: Vec<types::provenance::ProvenanceClass>,
+    /// The input went into a turn already running in that session: `text` is
+    /// the busy line, not a reply; the running turn answers it.
+    pub queued: bool,
+    /// The run's last error, in the words the turn gave the owner ("Could
+    /// not connect to Hermes. Try again."). Not part of `text`: a customer
+    /// channel never hears it; the coworker rail says it where a reply that
+    /// never came would have gone.
+    pub error: Option<String>,
+}
+
 /// `owner`: when the run happens on the LOCAL machine for the local owner
 /// (coworker messages), approval and ask requests are forwarded to the owner's
 /// frontend (same broadcasts `run_chat` emits) and the run parks on its
 /// existing oneshot until the owner answers. When `None` (remote channels —
 /// Slack/Discord — with no approval surface), an approval request cancels the
-/// run with an honest notice, as before.
+/// run with an honest notice, as before. When `owner` carries a team, the
+/// member acknowledges in the team thread as its work starts — at the run's
+/// first tool call — and what it said up to then is that acknowledgement,
+/// not part of the reply.
 pub(crate) async fn collect_channel_reply(
     mut rx: tokio::sync::mpsc::Receiver<ai::StreamEvent>,
     cancel_token: &tokio_util::sync::CancellationToken,
     agent_id: &str,
     channel: &str,
     owner: Option<&crate::coworker::OwnerForward<'_>>,
-) -> (String, Vec<types::provenance::ProvenanceClass>) {
+) -> ChannelReply {
     let mut full_response = String::new();
+    let mut queued = false;
     // Channels have no status banner — the reply is the only surface. Keep the
     // last control-notice status line as a FALLBACK so a run that terminates
     // before producing any prose doesn't answer with silence (which reads as
@@ -163,22 +250,26 @@ pub(crate) async fn collect_channel_reply(
     // Engine-stamped provenance of the run (Done events) — returned to the
     // caller so the coworker rail can label tainted replies.
     let mut reply_provenance: Vec<types::provenance::ProvenanceClass> = Vec::new();
+    let mut error: Option<String> = None;
+    let mut work_started = false;
     while let Some(event) = rx.recv().await {
         if let Some(frag) = crate::chat_dispatch::reply_fragment(&event) {
-            // Skip orchestrator progress notifications — the
-            // "_Working on: ..._" heartbeat (shared predicate) and
-            // the background-task notice are status, not content.
-            if crate::chat_dispatch::is_progress_heartbeat(frag) {
-                continue;
-            }
-            if frag.trim() == "Working on this in the background..." {
-                continue;
-            }
             full_response.push_str(frag);
             continue;
         }
+        if event.event_type == StreamEventType::ToolCall && !work_started {
+            work_started = true;
+            if let Some(fw) = owner
+                && fw.acknowledge(full_response.trim())
+            {
+                full_response.clear();
+            }
+        }
         match event.event_type {
             StreamEventType::ControlNotice => {
+                if event.stop_reason.as_deref() == Some(agent::harness::session_gate::QUEUED_INTO_RUNNING_TURN) {
+                    queued = true;
+                }
                 if !event.text.trim().is_empty() {
                     last_control_notice = Some(event.text.clone());
                 }
@@ -190,13 +281,14 @@ pub(crate) async fn collect_channel_reply(
                     error = %event.text,
                     "channel chat error"
                 );
+                error = event.error.clone().filter(|e| !e.trim().is_empty());
             }
             StreamEventType::ApprovalRequest => {
                 if let Some(fw) = owner {
                     // Local owner has a real approval surface: forward and let
                     // the run park on its oneshot until they answer.
                     if let Some(ref tc) = event.tool_call {
-                        fw.forward_approval(tc);
+                        fw.forward_approval(tc).await;
                     }
                     continue;
                 }
@@ -229,23 +321,15 @@ pub(crate) async fn collect_channel_reply(
         }
     }
 
-    // Clean up any residual empty lines from filtered status messages
-    let reply = full_response
-        .lines()
-        .filter(|line| !line.trim().is_empty() || full_response.matches('\n').count() < 20)
-        .collect::<Vec<_>>()
-        .join("\n")
-        .trim()
-        .to_string();
+    let reply = full_response.trim().to_string();
 
     // Empty-reply fallback: surface the terminal status line rather than
     // silence. Real prose always wins — the notice never mixes into it.
-    if reply.is_empty() {
-        if let Some(notice) = last_control_notice {
-            return (notice.trim().to_string(), reply_provenance);
-        }
-    }
-    (reply, reply_provenance)
+    let text = match last_control_notice {
+        Some(notice) if reply.is_empty() => notice.trim().to_string(),
+        _ => reply,
+    };
+    ChannelReply { text, provenance: reply_provenance, queued, error }
 }
 
 #[cfg(test)]
@@ -263,8 +347,8 @@ mod tests {
             .await
             .unwrap();
         tx.send(ai::StreamEvent::control_notice(
-            "Stopped: 'web(search)' was called 8 times this turn without progress.",
-            "repeated_tool_calls",
+            "Stopped after 100 steps, the most one turn takes.",
+            "max_steps",
         ))
         .await
         .unwrap();
@@ -274,7 +358,7 @@ mod tests {
         tx.send(ai::StreamEvent::done()).await.unwrap();
         drop(tx);
 
-        let (reply, _) = collect_channel_reply(rx, &cancel, "agent-1", "slack", None).await;
+        let reply = collect_channel_reply(rx, &cancel, "agent-1", "slack", None).await.text;
         assert_eq!(
             reply,
             "Here is what I found so far.\nTwo listings match your filters."
@@ -299,10 +383,30 @@ mod tests {
         tx.send(ai::StreamEvent::done()).await.unwrap();
         drop(tx);
 
-        let (reply, _) = collect_channel_reply(rx, &cancel, "agent-1", "slack", None).await;
+        let reply = collect_channel_reply(rx, &cancel, "agent-1", "slack", None).await;
+        assert!(!reply.queued);
+        let reply = reply.text;
         assert_eq!(
             reply,
             "I couldn't reach gws — reconnect this account in Settings, then ask me again."
         );
+    }
+
+    /// Input that went into a turn already running is not answered by the
+    /// busy line: the collector says it was queued, so nobody reads that
+    /// line as the reply.
+    #[tokio::test]
+    async fn a_queued_input_is_not_a_reply() {
+        let (tx, rx) = tokio::sync::mpsc::channel(8);
+        let cancel = tokio_util::sync::CancellationToken::new();
+        tx.send(ai::StreamEvent::control_notice(
+            "Got it. I'll pick this up at my next step.",
+            agent::harness::session_gate::QUEUED_INTO_RUNNING_TURN,
+        ))
+        .await
+        .unwrap();
+        tx.send(ai::StreamEvent::done()).await.unwrap();
+        drop(tx);
+        assert!(collect_channel_reply(rx, &cancel, "agent-1", "coworker", None).await.queued);
     }
 }

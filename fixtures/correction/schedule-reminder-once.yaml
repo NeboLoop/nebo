@@ -1,0 +1,53 @@
+id: correction-schedule-reminder-once
+name: "Correction: a reminder is one create_schedule call, with no error"
+description: |
+  From the audit of 2026-09-05 (class B, F): the first reminder a model ever
+  set used to fail three times in a row (name, then the time, then the work),
+  because an early system prompt taught a shape the scheduling tool did not
+  take. create_schedule now names its fields in its schema: `name`, a time
+  (`at` once, or `cron`), and the work (`prompt`, or `command`). This fixture
+  pins the outcome: the reminder lands on the first create, with no error,
+  after at most loading the tool with find_tools.
+target_component: create_schedule
+
+teardown:
+  - "python3 -c \"import json,urllib.request as u; jobs=json.load(u.urlopen('http://${NEBO_TEST_SERVER:-localhost:27895}/api/v1/tasks')).get('tasks',[]); [u.urlopen(u.Request('http://${NEBO_TEST_SERVER:-localhost:27895}/api/v1/tasks/'+j['name'], method='DELETE')) for j in jobs if 'kristi' in j.get('name','').lower()]\" || true"
+
+conversation:
+  - role: user
+    content: "Remind me in 3 hours to call Kristi back."
+
+tool_config:
+  create_schedule:
+    enabled: true
+
+prompt_assertions:
+  first_call:
+    - id: uses-create-schedule
+      text: "The reminder is set with create_schedule (loaded with find_tools first)"
+      severity: critical
+      check: { tool: create_schedule }
+    - id: once-in-three-hours
+      text: "create_schedule runs once, three hours from now: at is \"in 3 hours\""
+      severity: critical
+      check: { tool: create_schedule, arg: at, matches: "(?i)3 ?(hours?|hrs?|h)\\b" }
+    - id: prompt-names-kristi
+      text: "The scheduled prompt is about calling Kristi back"
+      severity: important
+      check: { tool: create_schedule, arg: prompt, matches: "(?i)kristi" }
+  recovery:
+    - id: no-errors
+      text: "No tool result is an error"
+      severity: critical
+      check: { max_errors: 0 }
+    - id: reminder-lands
+      text: "A tool result says the schedule was created and when it fires"
+      severity: critical
+    - id: bounded
+      text: "At most 3 tool calls"
+      severity: critical
+      check: { max_tool_calls: 3 }
+
+ideal_behavior:
+  tool_calls: 2
+  narrative: "find_tools(query: \"select:create_schedule\") → create_schedule(name, at: \"in 3 hours\", prompt: \"Remind the owner to call Kristi back\"), then a one-line confirmation of when it fires."

@@ -209,7 +209,7 @@ Then tell them what you wrote and which employees will read it. Name them.
 
 **When the owner contradicts the layer, the layer is wrong.** Do not argue with the owner and do not keep a second version in memory. Edit the file, say which file changed, and let the employees read it. The owner's files are the interface and a save is an assertion.
 
-`pack create` writes the whole pack: it replaces the directory it names. To change one thing, either send the whole pack again with that one file changed, or write the single file in place under `<data_dir>/packs/<slug>/<folder>/<name>.md` with the `os` tool. Either way the watcher sees the write and the employees read it. Use `pack show` first so you are editing what is actually there, not what you remember writing.
+`pack create` writes the whole pack: it replaces the directory it names. To change one thing, either send the whole pack again with that one file changed, or write the single file in place under `<data_dir>/packs/<slug>/<folder>/<name>.md` with `write_file`. Either way the watcher sees the write and the employees read it. Use `pack show` first so you are editing what is actually there, not what you remember writing.
 
 **When something in the company layer turns out to be true for the whole trade, move it up.** Take it out of the company pack and put it in the industry pack, keeping the same id for a standard so nothing that reads it breaks. An industry pack that other companies will work by is published, which means review; a company pack is only ever this company's. Tell the owner that is what moving it up means before you do it.
 

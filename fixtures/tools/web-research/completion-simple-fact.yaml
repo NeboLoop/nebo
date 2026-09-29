@@ -4,20 +4,26 @@ description: |
   A simple factual question that can be answered from search results or
   one page visit. The model should answer quickly and NOT keep browsing
   for more sources when the answer is clear.
-target_component: web
+target_component: search_web
 
 conversation:
   - role: user
     content: "What is the current stable version of Node.js?"
 
 tool_config:
-  web:
+  search_web:
+    enabled: true
+  fetch_url:
+    enabled: true
+  browser_open:
+    enabled: true
+  browser_read:
     enabled: true
 
 prompt_assertions:
   first_call:
     - id: starts-with-search
-      text: "Model's first call is web(action: 'search') about Node.js version"
+      text: "Model's first web call (after loading it with find_tools) is search_web about Node.js version"
       severity: critical
   recovery:
     - id: answers-from-results
@@ -31,7 +37,7 @@ prompt_assertions:
       severity: important
   cost:
     - id: minimal-calls
-      text: "Task completes in 1-3 tool calls (search, optionally one navigate+read)"
+      text: "Task completes in 1-3 tool calls (search_web, optionally one fetch_url or browser_open+browser_read)"
       severity: critical
     - id: max-five-calls
       text: "Task completes in no more than 5 tool calls"
@@ -41,5 +47,5 @@ ideal_behavior:
   tool_calls: 1
   total_tokens: 3000
   narrative: |
-    1. web(action: "search", query: "Node.js current stable version") → read results → answer
+    1. search_web(queries: ["Node.js current stable version"]) → read results → answer
     Simple factual query — search results contain the answer directly.

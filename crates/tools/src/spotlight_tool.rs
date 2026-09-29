@@ -44,8 +44,8 @@ impl DynTool for SpotlightTool {
          The search is bounded: it starts from `dir`, or from the bot's own working area when no `dir` is given, \
          and gives up after 20 seconds. Pass `dir` whenever you know roughly where the file is.\n\n\
          Examples:\n  \
-         spotlight(action: \"search\", query: \"budget 2024\")\n  \
-         spotlight(action: \"search\", query: \"*.pdf\", dir: \"~/Documents\")"
+         os(resource: \"search\", action: \"search\", query: \"budget 2024\")\n  \
+         os(resource: \"search\", action: \"search\", query: \"*.pdf\", dir: \"~/Documents\")"
             .to_string()
     }
 
@@ -75,9 +75,6 @@ impl DynTool for SpotlightTool {
         })
     }
 
-    fn requires_approval(&self) -> bool {
-        false
-    }
 
     fn execution_timeout(&self, _input: &serde_json::Value) -> Option<std::time::Duration> {
         Some(SEARCH_EXECUTION_TIMEOUT)
@@ -295,7 +292,7 @@ fn took_too_long(query: &str, root: &Path, budget: Duration, partial: &[String])
 }
 
 /// Nothing matched — the same advice on every platform.
-const NOTHING_FOUND: &str = "No files found. To find files by name or extension pattern, use glob instead: os(resource: \"file\", action: \"glob\", pattern: \"*.ext\", path: \".\")";
+const NOTHING_FOUND: &str = "No files found. To find files by name or extension pattern, use find through run_command: find . -name \"*.ext\"";
 
 fn render(found: &[String], limit: usize) -> ToolResult {
     if found.is_empty() {
@@ -315,7 +312,7 @@ async fn handle_search(ctx: &ToolContext, input: &serde_json::Value) -> ToolResu
         return ToolResult::error(crate::errors::missing_param(
             "search",
             "query",
-            "spotlight(action: \"search\", query: \"budget report 2024\")",
+            "os(resource: \"search\", action: \"search\", query: \"budget report 2024\")",
         ));
     }
     #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
@@ -359,7 +356,7 @@ async fn handle_search(ctx: &ToolContext, input: &serde_json::Value) -> ToolResu
         }
         if walked.lines.is_empty() {
             return ToolResult::ok(format!(
-                "No files found under {}. Note: Spotlight does not index ~/Library — for app data pass dir: \"~/Library\". For name/extension patterns use glob: os(resource: \"file\", action: \"glob\", pattern: \"*.ext\", path: \".\")",
+                "No files found under {}. Note: Spotlight does not index ~/Library — for app data pass dir: \"~/Library\". For name/extension patterns use find through run_command: find . -name \"*.ext\"",
                 root.display()
             ));
         }
@@ -676,7 +673,7 @@ mod tests {
 
     /// The search door spawns through the same process-group helper as the
     /// shell door, so a grandchild dies with the command that started it.
-    /// The defect (gate fixture `os-shell-retry-spiral`): the wrapper was
+    /// The defect (gate fixture `run-command-retry-spiral`): the wrapper was
     /// killed at its deadline and the `find` it had started kept walking,
     /// reparented to init — sixteen of them on the CI VM at a load average
     /// near 22.

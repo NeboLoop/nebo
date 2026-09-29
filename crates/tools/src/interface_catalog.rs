@@ -51,16 +51,21 @@ struct Catalog {
     entries: HashMap<&'static str, Entry>,
     /// Gated operation suffixes, in catalogue order.
     gated: &'static [&'static str],
+    /// The capability terms, in catalogue order: the vocabulary a job's
+    /// needs are named in.
+    capabilities: &'static [&'static str],
 }
 
 fn parse(yaml: &str) -> Result<Catalog, String> {
     let capabilities: serde_yaml::Mapping = serde_yaml::from_str(yaml).map_err(|e| e.to_string())?;
     let mut entries = HashMap::new();
     let mut gated = Vec::new();
+    let mut terms: Vec<&'static str> = Vec::new();
     for (capability, operations) in capabilities {
         let capability = capability
             .as_str()
             .ok_or_else(|| format!("capability key {capability:?} is not a string"))?;
+        terms.push(Box::leak(capability.to_owned().into_boxed_str()));
         let operations: serde_yaml::Mapping =
             serde_yaml::from_value(operations).map_err(|e| format!("{capability}: {e}"))?;
         for (operation, spec) in operations {
@@ -91,7 +96,11 @@ fn parse(yaml: &str) -> Result<Catalog, String> {
     if gated.is_empty() {
         return Err("no operation is gated".to_string());
     }
-    Ok(Catalog { entries, gated: Box::leak(gated.into_boxed_slice()) })
+    Ok(Catalog {
+        entries,
+        gated: Box::leak(gated.into_boxed_slice()),
+        capabilities: Box::leak(terms.into_boxed_slice()),
+    })
 }
 
 fn catalog() -> &'static Catalog {
@@ -101,8 +110,21 @@ fn catalog() -> &'static Catalog {
     })
 }
 
+/// The operation as written first: a four-segment operation
+/// (`ledger.card.limit.set`) is its own entry, not the suffix of a port.
 fn entry(operation: &str) -> Option<&'static Entry> {
-    catalog().entries.get(port_suffix(operation).as_str())
+    let entries = &catalog().entries;
+    entries.get(operation).or_else(|| entries.get(port_suffix(operation).as_str()))
+}
+
+/// The catalog operation whose tool is `tool_name` (`ledger_bill_create` →
+/// `ledger.bill.create`), when the catalog has one.
+pub fn operation_named(tool_name: &str) -> Option<&'static str> {
+    catalog()
+        .entries
+        .keys()
+        .copied()
+        .find(|op| crate::operation_tools::operation_tool_name(op) == tool_name)
 }
 
 /// Whether the operation (bare op or fully-qualified port) is gated.
@@ -118,6 +140,11 @@ pub fn is_critical(operation: &str) -> bool {
 /// All gated operation suffixes (for building the per-employee policy UI list).
 pub fn gated_operations() -> &'static [&'static str] {
     catalog().gated
+}
+
+/// Every capability term the catalogue names, in catalogue order.
+pub fn capabilities() -> &'static [&'static str] {
+    catalog().capabilities
 }
 
 /// Capabilities the runtime performs itself: no plugin binding, no seat
@@ -389,7 +416,7 @@ mod tests {
     /// not drift. Skipped, with a note, when the sibling checkout is absent.
     #[test]
     fn departments_copy_matches_bundled() {
-        let path = "/Users/almatuck/workspaces/nebo/repos/departments/interfaces/_catalog.yaml";
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../../repos/departments/interfaces/_catalog.yaml");
         let Ok(theirs) = std::fs::read_to_string(path) else {
             eprintln!("skipped: {path} is not present on this machine");
             return;

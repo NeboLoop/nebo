@@ -1,39 +1,43 @@
+//! Which model a turn is sent to. The harness does not pick or roam models:
+//! Janus is the router. A turn runs on the model it was given (the owner's
+//! pick, the job's or a helper's speed), else the configured default, and
+//! any discrepancy (a name nobody knows, a provider that isn't loaded, a
+//! model that doesn't chat) sends [`DEFAULT_CHAT_MODEL`]. A failed call is
+//! retried on the same model (`model_call`): a model changes only for an
+//! explicitly configured fallback, and Nebo configures none.
+
 use std::collections::HashMap;
 use std::sync::RwLock;
-use std::time::{Duration, Instant};
 
 use config::ModelsConfig;
-use db::models::ChatMessage;
+use tracing::warn;
 
 use crate::fuzzy::FuzzyMatcher;
 
-/// Task types for model routing.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum TaskType {
-    Vision,
-    Audio,
-    Reasoning,
-    Code,
-    General,
-}
+/// The model every discrepancy resolves to: the gateway's default chat
+/// model, which Janus routes.
+pub const DEFAULT_CHAT_MODEL: &str = "janus/nebo-1";
 
-impl TaskType {
-    pub fn as_str(&self) -> &str {
-        match self {
-            TaskType::Vision => "vision",
-            TaskType::Audio => "audio",
-            TaskType::Reasoning => "reasoning",
-            TaskType::Code => "code",
-            TaskType::General => "general",
-        }
-    }
-}
+/// The window assumed for a model whose own is not known: the 200k every
+/// Janus pool reports, and the common window of current chat models.
+pub const DEFAULT_CONTEXT_WINDOW: usize = 200_000;
 
-/// Per-model failure tracking with exponential backoff.
-struct CooldownState {
-    failure_count: u32,
-    cooldown_until: Instant,
-}
+/// Capabilities or kinds that mark a model as not for chat.
+const NOT_CHAT: &[&str] = &[
+    "embeddings",
+    "embedding",
+    "embed",
+    "audio",
+    "transcription",
+    "speech",
+    "tts",
+    "image_generation",
+    "image-generation",
+    "rerank",
+];
+
+/// The CLI providers: their models are the CLI's own names, not catalog rows.
+const CLI_PROVIDERS: &[&str] = &["claude-code", "codex-cli", "gemini-cli"];
 
 /// Model information for routing decisions.
 #[derive(Debug, Clone)]
@@ -53,13 +57,38 @@ pub struct ModelInfo {
     pub active: bool,
 }
 
+/// Whether a model answers a conversation, from its id, capabilities and
+/// kinds. An embedding, audio or image model never does: it is used only by
+/// its own code path, and never offered where a chat model is chosen.
+pub fn is_chat_model(id: &str, capabilities: &[String], kind: &[String]) -> bool {
+    !id.to_ascii_lowercase().contains("embed")
+        && !capabilities
+            .iter()
+            .chain(kind)
+            .any(|c| NOT_CHAT.contains(&c.to_ascii_lowercase().as_str()))
+}
+
+impl ModelInfo {
+    /// Whether this model answers a conversation ([`is_chat_model`]).
+    pub fn chats(&self) -> bool {
+        is_chat_model(&self.id, &self.capabilities, &self.kind)
+    }
+}
+
+/// Only the chat models: what a name or a speed may resolve to.
+fn chat_models(models: &HashMap<String, Vec<ModelInfo>>) -> HashMap<String, Vec<ModelInfo>> {
+    models
+        .iter()
+        .map(|(p, list)| (p.clone(), list.iter().filter(|m| m.chats()).cloned().collect()))
+        .collect()
+}
+
 /// Model routing configuration.
 #[derive(Debug, Clone, Default)]
 pub struct ModelRoutingConfig {
-    /// Primary model for each task type.
+    /// The configured routes: "general" (a turn with no chosen model) and
+    /// "aux" (background work).
     pub task_routing: HashMap<String, String>,
-    /// Fallback models per task type.
-    pub task_fallbacks: HashMap<String, Vec<String>>,
     /// Default primary model.
     pub default_model: String,
     /// Provider -> list of models.
@@ -112,26 +141,13 @@ impl ModelRoutingConfig {
             provider_models.insert(provider_name.clone(), infos);
         }
 
-        // Build task routing from config
         let mut task_routing = HashMap::new();
-        let mut task_fallbacks = HashMap::new();
-        if let Some(ref tr) = models_cfg.task_routing {
-            if !tr.vision.is_empty() {
-                task_routing.insert("vision".to_string(), tr.vision.clone());
+        if let Some(tr) = models_cfg.task_routing.as_ref() {
+            for (route, model) in [("general", &tr.general), ("aux", &tr.aux)] {
+                if !model.is_empty() {
+                    task_routing.insert(route.to_string(), model.clone());
+                }
             }
-            if !tr.audio.is_empty() {
-                task_routing.insert("audio".to_string(), tr.audio.clone());
-            }
-            if !tr.reasoning.is_empty() {
-                task_routing.insert("reasoning".to_string(), tr.reasoning.clone());
-            }
-            if !tr.code.is_empty() {
-                task_routing.insert("code".to_string(), tr.code.clone());
-            }
-            if !tr.general.is_empty() {
-                task_routing.insert("general".to_string(), tr.general.clone());
-            }
-            task_fallbacks = tr.fallbacks.clone();
         }
 
         // Default model from config
@@ -143,7 +159,6 @@ impl ModelRoutingConfig {
 
         ModelRoutingConfig {
             task_routing,
-            task_fallbacks,
             default_model,
             provider_models,
             provider_credentials,
@@ -151,11 +166,9 @@ impl ModelRoutingConfig {
     }
 }
 
-/// Thread-safe model router with task classification and cooldown tracking.
+/// Thread-safe model resolution.
 pub struct ModelSelector {
     config: ModelRoutingConfig,
-    cooldowns: RwLock<HashMap<String, CooldownState>>,
-    excluded: RwLock<HashMap<String, bool>>,
     fuzzy: RwLock<Option<FuzzyMatcher>>,
     /// Provider IDs that are actually loaded (have running Provider instances).
     loaded_providers: RwLock<Vec<String>>,
@@ -166,14 +179,12 @@ pub struct ModelSelector {
 impl ModelSelector {
     pub fn new(config: ModelRoutingConfig) -> Self {
         let fuzzy = FuzzyMatcher::new(
-            &config.provider_models,
+            &chat_models(&config.provider_models),
             &HashMap::new(),
             &config.provider_credentials,
         );
         Self {
             config,
-            cooldowns: RwLock::new(HashMap::new()),
-            excluded: RwLock::new(HashMap::new()),
             fuzzy: RwLock::new(Some(fuzzy)),
             loaded_providers: RwLock::new(Vec::new()),
             runtime_models: RwLock::new(HashMap::new()),
@@ -187,7 +198,13 @@ impl ModelSelector {
     }
 
     /// Resolve a fuzzy model name (e.g. "sonnet", "opus") to a full model ID.
+    /// A linked agent's id (`linked/<bot>/<agent>`) is exact: it resolves to
+    /// itself, and a malformed one to nothing — never scored against the
+    /// model aliases, which would hand the employee another brain.
     pub fn resolve_fuzzy(&self, input: &str) -> Option<String> {
+        if parse_model_id(input).0 == ai::providers::linked::ID {
+            return ai::LinkedProvider::target(input).map(|_| input.to_string());
+        }
         let lock = self.fuzzy.read().unwrap();
         lock.as_ref().and_then(|f| f.resolve(input))
     }
@@ -219,311 +236,106 @@ impl ModelSelector {
                 .extend(v.iter().cloned());
         }
         let new_fuzzy =
-            FuzzyMatcher::new(&all_models, user_aliases, &self.config.provider_credentials);
+            FuzzyMatcher::new(&chat_models(&all_models), user_aliases, &self.config.provider_credentials);
         let mut lock = self.fuzzy.write().unwrap();
         *lock = Some(new_fuzzy);
-    }
-
-    /// Select the best model for the given messages.
-    pub fn select(&self, messages: &[ChatMessage]) -> String {
-        self.select_with_exclusions(messages, &[])
-    }
-
-    /// Select model, excluding specified model IDs.
-    pub fn select_with_exclusions(&self, messages: &[ChatMessage], exclude: &[String]) -> String {
-        let task = self.classify_task(messages);
-        self.select_for_task(&task, exclude)
-    }
-
-    /// Mark a model as failed with exponential backoff cooldown.
-    pub fn mark_failed(&self, model_id: &str) {
-        let mut cooldowns = self.cooldowns.write().unwrap();
-        let entry = cooldowns
-            .entry(model_id.to_string())
-            .or_insert(CooldownState {
-                failure_count: 0,
-                cooldown_until: Instant::now(),
-            });
-        entry.failure_count = entry.failure_count.saturating_add(1);
-        // Exponential backoff: 5s, 10s, 20s, 40s... capped at 1 hour. Saturating + a capped
-        // exponent — without this, a model that fails ~63 times overflows u64 (5 * 2^62) and
-        // panics WHILE holding this write lock, poisoning it for the whole process. The cap
-        // at 3600s means any exponent past ~10 is moot anyway.
-        let exp = entry.failure_count.saturating_sub(1).min(16);
-        let backoff_secs = 5u64.saturating_mul(2u64.saturating_pow(exp)).min(3600);
-        entry.cooldown_until = Instant::now() + Duration::from_secs(backoff_secs);
-
-        self.excluded
-            .write()
-            .unwrap()
-            .insert(model_id.to_string(), true);
-    }
-
-    /// Clear all failures and cooldowns.
-    pub fn clear_failed(&self) {
-        self.cooldowns.write().unwrap().clear();
-        self.excluded.write().unwrap().clear();
-    }
-
-    /// Check remaining cooldown for a model.
-    pub fn get_cooldown_remaining(&self, model_id: &str) -> Duration {
-        let cooldowns = self.cooldowns.read().unwrap();
-        match cooldowns.get(model_id) {
-            Some(state) => {
-                let now = Instant::now();
-                if state.cooldown_until > now {
-                    state.cooldown_until - now
-                } else {
-                    Duration::ZERO
-                }
-            }
-            None => Duration::ZERO,
-        }
     }
 
     /// Get model info by "provider/model" ID.
     pub fn get_model_info(&self, model_id: &str) -> Option<ModelInfo> {
         let (provider_id, model_name) = parse_model_id(model_id);
-        if let Some(models) = self.config.provider_models.get(provider_id) {
-            models.iter().find(|m| m.id == model_name).cloned()
-        } else {
-            None
-        }
-    }
-
-    /// Check if a model supports extended thinking/reasoning.
-    pub fn supports_thinking(&self, model_id: &str) -> bool {
-        if let Some(info) = self.get_model_info(model_id) {
-            let thinking_caps = ["thinking", "reasoning", "extended_thinking"];
-            if info
-                .capabilities
-                .iter()
-                .any(|c| thinking_caps.contains(&c.as_str()))
-            {
-                return true;
-            }
-        }
-
-        // Name-based fallback
-        let lower = model_id.to_lowercase();
-        lower.contains("opus") || lower.contains("o1") || lower.contains("o3")
-    }
-
-    /// Get the cheapest available model.
-    pub fn get_cheapest_model(&self) -> String {
-        let mut cheapest: Option<(String, f64)> = None;
-
-        for (provider_id, models) in &self.config.provider_models {
-            // Skip providers without credentials
-            if !self
-                .config
-                .provider_credentials
-                .get(provider_id)
-                .copied()
-                .unwrap_or(false)
-            {
-                continue;
-            }
-            for model in models {
-                if !model.active {
-                    continue;
-                }
-                let cost = model.input_price + model.output_price * 2.0;
-                let model_id = format!("{}/{}", provider_id, model.id);
-                if cheapest.is_none() || cost < cheapest.as_ref().unwrap().1 {
-                    cheapest = Some((model_id, cost));
-                }
-            }
-        }
-
-        if let Some((id, _)) = cheapest {
-            return id;
-        }
-
-        // Fallback: find any model with "cheap" or "fast" kind
-        for (provider_id, models) in &self.config.provider_models {
-            for model in models {
-                if model.active
-                    && (model.kind.contains(&"cheap".to_string())
-                        || model.kind.contains(&"fast".to_string()))
-                {
-                    return format!("{}/{}", provider_id, model.id);
-                }
-            }
-        }
-
-        self.config.default_model.clone()
-    }
-
-    /// Classify task type from messages.
-    pub fn classify_task(&self, messages: &[ChatMessage]) -> TaskType {
-        // Get last user message for keyword analysis
-        let last_user = messages.iter().rev().find(|m| m.role == "user");
-
-        let content = match last_user {
-            Some(m) => m.content.to_lowercase(),
-            None => return TaskType::General,
-        };
-
-        // Check for vision content (image data in the message)
-        if content.contains("data:image/")
-            || content.contains("\"type\":\"image\"")
-            || content.contains("\"type\": \"image\"")
-        {
-            return TaskType::Vision;
-        }
-
-        // Check for audio content
-        if content.contains("data:audio/") || content.contains("\"type\":\"audio\"") {
-            return TaskType::Audio;
-        }
-
-        // Reasoning keywords
-        let reasoning = [
-            "think through",
-            "analyze",
-            "prove",
-            "step by step",
-            "mathematical proof",
-            "logical reasoning",
-            "derive",
-            "theorem",
-            "hypothesis",
-            "contradict",
-            "paradox",
-            "evaluate the",
-            "compare and contrast",
-            "pros and cons",
-            "trade-offs",
-            "implications",
-        ];
-        if reasoning.iter().any(|kw| content.contains(kw)) {
-            return TaskType::Reasoning;
-        }
-
-        // Code keywords
-        let code = [
-            "code",
-            "function",
-            "implement",
-            "refactor",
-            "debug",
-            "python",
-            "javascript",
-            "typescript",
-            "react",
-            "rust",
-            "golang",
-            "java",
-            "swift",
-            "kotlin",
-            "sql",
-            "api",
-            "endpoint",
-            "database",
-            "algorithm",
-            "compile",
-            "syntax",
-            "variable",
-            "class",
-        ];
-        if code.iter().any(|kw| content.contains(kw)) {
-            return TaskType::Code;
-        }
-
-        TaskType::General
-    }
-
-    fn select_for_task(&self, task: &TaskType, exclude: &[String]) -> String {
-        let loaded = self.loaded_providers.read().unwrap();
-        let is_usable = |model_id: &str| -> bool {
-            if exclude.contains(&model_id.to_string()) {
-                return false;
-            }
-            // Check if the model's provider is actually loaded
-            if !loaded.is_empty() {
-                let (provider_id, _) = parse_model_id(model_id);
-                if !provider_id.is_empty() && !loaded.iter().any(|p| p == provider_id) {
-                    return false;
-                }
-            }
-            if self.excluded.read().unwrap().contains_key(model_id) {
-                if self.get_cooldown_remaining(model_id) > Duration::ZERO {
-                    return false;
-                }
-            }
-            true
-        };
-
-        // Try task-specific routing
-        let task_key = task.as_str();
-        if let Some(primary) = self.config.task_routing.get(task_key) {
-            if !primary.is_empty() && is_usable(primary) {
-                return primary.clone();
-            }
-        }
-
-        // Try fallbacks for this task type
-        if let Some(fallbacks) = self.config.task_fallbacks.get(task_key) {
-            for fb in fallbacks {
-                if !fb.is_empty() && is_usable(fb) {
-                    return fb.clone();
-                }
-            }
-        }
-
-        // Fall back to general routing
-        if task_key != "general" {
-            if let Some(general) = self.config.task_routing.get("general") {
-                if !general.is_empty() && is_usable(general) {
-                    return general.clone();
-                }
-            }
-        }
-
-        // Final fallback: default model
-        if !self.config.default_model.is_empty() && is_usable(&self.config.default_model) {
-            return self.config.default_model.clone();
-        }
-
-        // Last resort: any non-gateway available model (static yaml + runtime-discovered)
         let runtime = self.runtime_models.read().unwrap();
-        for source in [&self.config.provider_models, &*runtime] {
-            for (provider_id, models) in source {
-                if provider_id == "janus" {
-                    continue; // Skip gateway — prefer CLI or direct API
-                }
-                for model in models {
-                    let id = format!("{}/{}", provider_id, model.id);
-                    if model.active && is_usable(&id) {
-                        return id;
-                    }
-                }
+        runtime
+            .get(provider_id)
+            .and_then(|models| models.iter().find(|m| m.id == model_name))
+            .or_else(|| self.config.provider_models.get(provider_id)?.iter().find(|m| m.id == model_name))
+            .cloned()
+    }
+
+    /// The context window of `model_id` ("provider/model"): what the provider
+    /// reported for it (Janus's `/v1/models` `context_window`, synced into the
+    /// runtime models) or the catalog's number for a direct provider, else
+    /// [`DEFAULT_CONTEXT_WINDOW`].
+    pub fn context_window(&self, model_id: &str) -> usize {
+        self.get_model_info(model_id)
+            .and_then(|m| usize::try_from(m.context_window).ok())
+            .filter(|&w| w > 0)
+            .unwrap_or(DEFAULT_CONTEXT_WINDOW)
+    }
+
+    /// Whether `model_id` ("provider/model") thinks: its catalog or synced
+    /// capabilities list "thinking".
+    pub fn thinks(&self, model_id: &str) -> bool {
+        self.get_model_info(model_id)
+            .is_some_and(|m| m.capabilities.iter().any(|c| c == "thinking"))
+    }
+
+    /// The model a turn is sent to, resolved once at the turn's start:
+    /// `chosen` (the owner's pick, the job's or a helper's speed; a fuzzy
+    /// name resolves) when it is a chat model this bot can send to, else,
+    /// when nothing was chosen, the configured default (Settings → Routing
+    /// → General, which ships as [`DEFAULT_CHAT_MODEL`]). Any discrepancy
+    /// sends [`DEFAULT_CHAT_MODEL`].
+    ///
+    /// A linked agent's id is not a model choice: it is the employee a
+    /// linked bot runs, sent as it is, and never replaced by the default —
+    /// answered by anything else, the employee would be impersonated. When
+    /// its provider can't take it, the turn fails plainly.
+    pub fn resolve(&self, chosen: &str) -> String {
+        let chosen = chosen.trim();
+        if ai::LinkedProvider::target(chosen).is_some() {
+            return chosen.to_string();
+        }
+        if !chosen.is_empty() {
+            if self.sendable(chosen) {
+                return chosen.to_string();
             }
-        }
-
-        // If CLI providers are loaded, return empty so the runner uses
-        // index 0 (CLI provider, after reordering) instead of Janus.
-        let has_cli = loaded
-            .iter()
-            .any(|p| p == "claude-code" || p == "codex-cli" || p == "gemini-cli");
-        if has_cli {
-            return String::new();
-        }
-
-        // True last resort: gateway model
-        for source in [&self.config.provider_models, &*runtime] {
-            for (provider_id, models) in source {
-                for model in models {
-                    let id = format!("{}/{}", provider_id, model.id);
-                    if model.active && is_usable(&id) {
-                        return id;
-                    }
-                }
+            let id = self.resolve_fuzzy(chosen).unwrap_or_default();
+            if self.sendable(&id) {
+                return id;
             }
+            warn!(chosen, resolved = %id, "the chosen model is not a chat model this bot can send to; sending {DEFAULT_CHAT_MODEL}");
+            return DEFAULT_CHAT_MODEL.to_string();
         }
+        let configured = self
+            .config
+            .task_routing
+            .get("general")
+            .filter(|m| !m.is_empty())
+            .unwrap_or(&self.config.default_model);
+        if self.sendable(configured) {
+            return configured.clone();
+        }
+        DEFAULT_CHAT_MODEL.to_string()
+    }
 
-        self.config.default_model.clone()
+    /// The model background work runs on (chat titles and the other chores
+    /// that don't fork a turn's request): the configured aux route when it
+    /// is a chat model this bot can send to, else [`DEFAULT_CHAT_MODEL`].
+    /// Never the cheapest row: the embedding models are the cheapest rows.
+    pub fn background_model(&self) -> String {
+        match self.config.task_routing.get("aux").filter(|m| self.sendable(m)) {
+            Some(aux) => aux.clone(),
+            None => DEFAULT_CHAT_MODEL.to_string(),
+        }
+    }
+
+    /// A model a turn may be sent to: its provider is loaded (when the
+    /// loaded set is known) and it is a known chat model, or a model of a
+    /// loaded CLI provider.
+    fn sendable(&self, model_id: &str) -> bool {
+        let (provider_id, model_name) = parse_model_id(model_id);
+        if provider_id.is_empty() || model_name.is_empty() {
+            return false;
+        }
+        let loaded = self.loaded_providers.read().unwrap();
+        if !loaded.is_empty() && !loaded.iter().any(|p| p == provider_id) {
+            return false;
+        }
+        if CLI_PROVIDERS.contains(&provider_id) {
+            return !loaded.is_empty();
+        }
+        self.get_model_info(model_id).is_some_and(|m| m.chats())
     }
 }
 
@@ -550,49 +362,154 @@ mod tests {
         assert_eq!(m, "gpt-4o");
     }
 
-    #[test]
-    fn test_task_classification() {
-        let selector = ModelSelector::new(ModelRoutingConfig::default());
-
-        let msg = ChatMessage {
-            id: "1".into(),
-            chat_id: "c".into(),
-            role: "user".into(),
-            content: "Can you implement a function that sorts an array?".into(),
-            metadata: None,
-            created_at: 0,
-            day_marker: None,
-            tool_calls: None,
-            tool_results: None,
-            token_estimate: None,
-            html: None,
-        };
-        assert_eq!(selector.classify_task(&[msg]).as_str(), "code");
-    }
-
-    #[test]
-    fn test_cooldown_backoff() {
-        let selector = ModelSelector::new(ModelRoutingConfig::default());
-        selector.mark_failed("anthropic/claude-sonnet-4-5");
-        assert!(selector.get_cooldown_remaining("anthropic/claude-sonnet-4-5") > Duration::ZERO);
-        selector.clear_failed();
-        assert_eq!(
-            selector.get_cooldown_remaining("anthropic/claude-sonnet-4-5"),
-            Duration::ZERO
-        );
-    }
-
-    #[test]
-    fn test_cooldown_backoff_no_overflow() {
-        // Regression: a model that fails many times must NOT overflow the backoff math
-        // (5 * 2^n) and panic while holding the cooldown write lock (which poisons it).
-        let selector = ModelSelector::new(ModelRoutingConfig::default());
-        for _ in 0..200 {
-            selector.mark_failed("janus/nebo-1");
+    fn info(id: &str, context_window: i32) -> ModelInfo {
+        ModelInfo {
+            id: id.into(),
+            display_name: id.into(),
+            context_window,
+            input_price: 0.0,
+            output_price: 0.0,
+            cached_input_price: 0.0,
+            capabilities: vec![],
+            kind: vec![],
+            preferred: false,
+            active: true,
         }
-        // Backoff stays capped at 1 hour; the lock is still usable (not poisoned).
-        let remaining = selector.get_cooldown_remaining("janus/nebo-1");
-        assert!(remaining > Duration::ZERO && remaining <= Duration::from_secs(3600));
+    }
+
+    /// A Janus speed's window is the one Janus reported at the model sync,
+    /// injected at runtime: nothing in the catalog knows it.
+    #[test]
+    fn a_synced_janus_window_is_the_models_window() {
+        let mut config = ModelRoutingConfig::default();
+        config.provider_models.insert("janus".into(), vec![info("nebo-1", 0)]);
+        config.provider_models.insert("anthropic".into(), vec![info("claude-opus-4-6", 1_000_000)]);
+        let selector = ModelSelector::new(config);
+        selector.inject_provider_models("janus", vec![info("nebo-1", 200_000), info("nebo-1-pro", 131_072)]);
+        assert_eq!(selector.get_model_info("janus/nebo-1-pro").map(|m| m.context_window), Some(131_072));
+        assert_eq!(selector.context_window("janus/nebo-1-pro"), 131_072);
+        assert_eq!(selector.context_window("janus/nebo-1"), 200_000, "the synced row wins over the boot floor");
+        assert_eq!(selector.context_window("anthropic/claude-opus-4-6"), 1_000_000, "a direct provider keeps its catalog value");
+    }
+
+    /// A model whose window nothing reported gets the 200k default.
+    #[test]
+    fn an_unknown_window_is_the_one_default() {
+        let selector = ModelSelector::new(ModelRoutingConfig::default());
+        selector.inject_provider_models("ollama", vec![info("llama", 0)]);
+        assert_eq!(selector.context_window("ollama/llama"), DEFAULT_CONTEXT_WINDOW);
+        assert_eq!(selector.context_window("janus/never-heard-of-it"), DEFAULT_CONTEXT_WINDOW);
+        assert_eq!(DEFAULT_CONTEXT_WINDOW, 200_000);
+    }
+
+    /// The owner's provider_models on 2026-09-25: the gateway's chat speeds
+    /// and its embedding models, all active.
+    fn gateway() -> ModelSelector {
+        let with = |id: &str, window: i32, caps: &[&str]| ModelInfo {
+            capabilities: caps.iter().map(|c| c.to_string()).collect(),
+            ..info(id, window)
+        };
+        let chat = ["vision", "tools", "streaming", "code", "reasoning"];
+        let mut config = ModelRoutingConfig {
+            task_routing: [("general".to_string(), "janus/nebo-1".to_string())].into(),
+            default_model: "janus/nebo-1".into(),
+            ..Default::default()
+        };
+        config.provider_models.insert(
+            "janus".into(),
+            vec![
+                with("nebo-1", 200_000, &chat),
+                with("nebo-embed-small", 8_191, &["embeddings"]),
+                with("nebo-embed-large", 8_191, &["embeddings"]),
+                with("nebo-1-flash", 200_000, &chat),
+            ],
+        );
+        config.provider_credentials.insert("janus".into(), true);
+        let selector = ModelSelector::new(config);
+        selector.set_loaded_providers(vec!["janus".into()]);
+        selector
+    }
+
+    /// No path returns an embedding model: not the default, not a chosen
+    /// embedding model, not a name that fuzzy-matches one; and the chosen
+    /// model is what is sent.
+    #[test]
+    fn no_path_returns_an_embedding_model() {
+        let selector = gateway();
+        assert_eq!(selector.resolve(""), "janus/nebo-1", "the configured default");
+        assert_eq!(selector.resolve("janus/nebo-1-flash"), "janus/nebo-1-flash", "the chosen chat model is sent as chosen");
+        for chosen in ["janus/nebo-embed-small", "janus/nebo-embed-large", "nebo-embed-small", "embed"] {
+            assert_eq!(selector.resolve(chosen), DEFAULT_CHAT_MODEL, "{chosen} is never a chat model");
+        }
+        let mut config = ModelRoutingConfig {
+            task_routing: [("general".to_string(), "janus/nebo-embed-small".to_string())].into(),
+            ..Default::default()
+        };
+        config.provider_models.insert("janus".into(), vec![ModelInfo { capabilities: vec!["embeddings".into()], ..info("nebo-embed-small", 8_191) }]);
+        let misconfigured = ModelSelector::new(config);
+        misconfigured.set_loaded_providers(vec!["janus".into()]);
+        assert_eq!(misconfigured.resolve(""), DEFAULT_CHAT_MODEL, "an embedding model configured as the chat model");
+        assert_eq!(misconfigured.background_model(), DEFAULT_CHAT_MODEL, "background work never runs on an embedding model");
+    }
+
+    /// The speeds a helper or an employee may name are chat models only.
+    #[test]
+    fn named_speeds_are_chat_models_only() {
+        let selector = gateway();
+        selector.rebuild_fuzzy(&HashMap::new());
+        assert!(!selector.get_aliases_text().contains("embed"), "{}", selector.get_aliases_text());
+        assert_ne!(selector.resolve_fuzzy("nebo-embed-small").as_deref(), Some("janus/nebo-embed-small"));
+    }
+
+    /// Any discrepancy sends the gateway's default chat model: a name nobody
+    /// knows, a model whose provider isn't loaded.
+    #[test]
+    fn a_discrepancy_sends_the_default_chat_model() {
+        let selector = gateway();
+        assert_eq!(selector.resolve("janus/never-heard-of-it"), DEFAULT_CHAT_MODEL);
+        assert_eq!(selector.resolve("gibberish"), DEFAULT_CHAT_MODEL);
+        assert_eq!(selector.resolve("anthropic/claude-sonnet-4-5"), DEFAULT_CHAT_MODEL, "a provider this bot hasn't loaded");
+        assert_eq!(DEFAULT_CHAT_MODEL, "janus/nebo-1");
+    }
+
+    /// A linked employee's id is sent as it is: never fuzzy-matched onto a
+    /// model, never replaced by the default. Every other chosen name that
+    /// isn't a chat model this bot can send to still sends the default.
+    #[test]
+    fn a_linked_agent_is_sent_as_itself() {
+        let selector = gateway();
+        selector.set_loaded_providers(vec!["janus".into(), "linked".into()]);
+        selector.rebuild_fuzzy(&HashMap::new());
+        let hermes = ai::LinkedProvider::model_id("a736730b-86e3-4a70-9a44-5e51724acf6e", "hermes");
+        assert_eq!(selector.resolve(&hermes), hermes);
+        assert_eq!(selector.resolve_fuzzy(&hermes).as_deref(), Some(hermes.as_str()));
+        assert_eq!(selector.resolve_fuzzy("linked/nebo-1"), None, "a malformed linked id names nothing");
+        assert_eq!(selector.resolve("linked/nebo-1"), DEFAULT_CHAT_MODEL);
+        assert_eq!(selector.resolve("nebo-2-ultra-bogus"), DEFAULT_CHAT_MODEL, "a bogus preference");
+    }
+
+    /// Background work runs on the configured aux route when it is a chat
+    /// model, else the default chat model; never the cheapest row (the
+    /// embedding models are priced lowest).
+    #[test]
+    fn background_work_runs_on_a_chat_model() {
+        let selector = gateway();
+        assert_eq!(selector.background_model(), DEFAULT_CHAT_MODEL);
+        let mut config = ModelRoutingConfig {
+            task_routing: [("aux".to_string(), "janus/nebo-1-flash".to_string())].into(),
+            ..Default::default()
+        };
+        config.provider_models.insert("janus".into(), vec![ModelInfo { capabilities: vec!["tools".into()], ..info("nebo-1-flash", 200_000) }]);
+        assert_eq!(ModelSelector::new(config).background_model(), "janus/nebo-1-flash");
+    }
+
+    /// A model's real window is used, however small: a 32k local model
+    /// checkpoints at 32k.
+    #[test]
+    fn a_small_real_window_is_the_models_window() {
+        let selector = gateway();
+        selector.inject_provider_models("ollama", vec![info("small", 32_768)]);
+        assert_eq!(selector.context_window("ollama/small"), 32_768);
     }
 
     #[test]
@@ -685,7 +602,6 @@ mod tests {
 
         let config = ModelRoutingConfig {
             task_routing: HashMap::new(),
-            task_fallbacks: HashMap::new(),
             default_model: "anthropic/claude-sonnet-4".into(),
             provider_models,
             provider_credentials: creds,
@@ -695,21 +611,7 @@ mod tests {
         // Only load anthropic — openai models should be filtered out
         selector.set_loaded_providers(vec!["anthropic".into()]);
 
-        let msg = ChatMessage {
-            id: "1".into(),
-            chat_id: "c".into(),
-            role: "user".into(),
-            content: "hello".into(),
-            metadata: None,
-            created_at: 0,
-            day_marker: None,
-            tool_calls: None,
-            tool_results: None,
-            token_estimate: None,
-            html: None,
-        };
-
-        let selected = selector.select(&[msg]);
+        let selected = selector.resolve("");
         // Should pick an anthropic model since openai is not loaded
         assert!(
             selected.contains("anthropic"),
@@ -718,79 +620,14 @@ mod tests {
         );
     }
 
+    /// Nothing configured this bot can send to: the default chat model,
+    /// whatever else is loaded (no roaming to whichever provider is first).
     #[test]
-    fn test_cli_preferred_over_janus() {
-        // When only CLI + Janus are loaded (no direct API keys), the selector
-        // should return empty string so the runner defers to index 0 (CLI)
-        // instead of selecting a Janus model that burns Nebo credits.
-        let mut provider_models = HashMap::new();
-        provider_models.insert(
-            "janus".to_string(),
-            vec![ModelInfo {
-                id: "nebo-1".to_string(),
-                display_name: "Nebo 1".to_string(),
-                context_window: 200000,
-                input_price: 0.0,
-                output_price: 0.0,
-                cached_input_price: 0.0,
-                capabilities: vec![],
-                kind: vec![],
-                preferred: true,
-                active: true,
-            }],
-        );
-        provider_models.insert(
-            "anthropic".to_string(),
-            vec![ModelInfo {
-                id: "claude-sonnet-4-5".to_string(),
-                display_name: "Sonnet".to_string(),
-                context_window: 200000,
-                input_price: 3.0,
-                output_price: 15.0,
-                cached_input_price: 0.0,
-                capabilities: vec![],
-                kind: vec![],
-                preferred: true,
-                active: true,
-            }],
-        );
-
-        let mut creds = HashMap::new();
-        creds.insert("janus".into(), true);
-        creds.insert("anthropic".into(), false); // No API key
-
-        let config = ModelRoutingConfig {
-            task_routing: HashMap::new(),
-            task_fallbacks: HashMap::new(),
-            default_model: "anthropic/claude-sonnet-4-5".into(),
-            provider_models,
-            provider_credentials: creds,
-        };
-
+    fn nothing_sendable_configured_sends_the_default_chat_model() {
+        let mut config = ModelRoutingConfig { default_model: "anthropic/claude-sonnet-4-5".into(), ..Default::default() };
+        config.provider_models.insert("anthropic".into(), vec![info("claude-sonnet-4-5", 200_000)]);
         let selector = ModelSelector::new(config);
-        // Only janus + CLI loaded — no direct anthropic provider
         selector.set_loaded_providers(vec!["claude-code".into(), "janus".into()]);
-
-        let msg = ChatMessage {
-            id: "1".into(),
-            chat_id: "c".into(),
-            role: "user".into(),
-            content: "hello".into(),
-            metadata: None,
-            created_at: 0,
-            day_marker: None,
-            tool_calls: None,
-            tool_results: None,
-            token_estimate: None,
-            html: None,
-        };
-
-        let selected = selector.select(&[msg]);
-        // Should return empty (defer to runner index 0 = CLI), NOT "janus/nebo-1"
-        assert!(
-            selected.is_empty(),
-            "Expected empty string (defer to CLI), got: {}",
-            selected
-        );
+        assert_eq!(selector.resolve(""), DEFAULT_CHAT_MODEL);
     }
 }

@@ -7,6 +7,10 @@ use crate::state::AppState;
 pub fn public_routes() -> Router<AppState> {
     Router::new()
         .route(
+            "/phone/location",
+            axum::routing::put(handlers::phone_location::update),
+        )
+        .route(
             "/user/me/profile",
             axum::routing::get(handlers::user::get_profile),
         )

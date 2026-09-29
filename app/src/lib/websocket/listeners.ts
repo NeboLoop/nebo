@@ -14,10 +14,13 @@
 import { get } from 'svelte/store';
 import { t } from 'svelte-i18n';
 import { getWebSocketClient } from './client';
+import { opensHere } from './origin';
 import { notifications, pushNotification, loadNotifications, settleUpdateNotices } from '$lib/stores/notifications';
+import { askRaised, askSettled, loadOpenAsks } from '$lib/stores/permissionAsks';
 import { addToast, removeToast } from '$lib/stores/toast';
 import { onUpdateAvailable, onUpdateProgress, onUpdateReady, onUpdateError } from '$lib/stores/update';
 import { logger } from '$lib/monitoring';
+import { goto } from '$lib/nav';
 
 const log = logger.child({ component: 'WSListeners' });
 
@@ -41,6 +44,12 @@ export function attachWebSocketListeners(): void {
 
   // Bootstrap existing notifications (auth is ready at this point)
   loadNotifications();
+  void loadOpenAsks().catch(() => log.debug('Asks API unavailable'));
+
+  // --- Permission asks: one card everywhere; the first answer anywhere
+  // clears it everywhere. ---
+  unsubs.push(ws.on('permission_ask', (data: any) => askRaised(data)));
+  unsubs.push(ws.on('permission_ask_resolved', (data: any) => askSettled(data)));
 
   // --- Notifications: store + toast ---
   unsubs.push(
@@ -60,25 +69,44 @@ export function attachWebSocketListeners(): void {
       pushNotification(n);
       addToast(n.title || n.body, n.type === 'error' ? 'error' : 'info');
 
-      // Desktop: a NATIVE macOS notification — system-wide (shows over any app),
+      // Desktop: a NATIVE notification — system-wide (shows over any app),
       // auto-dismisses, and carries Nebo's icon. No webview window, so it cannot hang
-      // the app (an always-on-top transparent window did). No-ops on the web build.
+      // the app (an always-on-top transparent window did). A click on it opens the
+      // item's place, the same one its Inbox row and its phone push open (the
+      // `owner-item-open` listener below). No-ops on the web build.
       void (async () => {
         if (shownNotifIds.has(n.id)) return; // dedupe repeated broadcasts of the same id
         shownNotifIds.add(n.id);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        if (!(window as any).__TAURI_INTERNALS__) return;
         try {
           const notif = await import('@tauri-apps/plugin-notification');
           let granted = await notif.isPermissionGranted();
           if (!granted) granted = (await notif.requestPermission()) === 'granted';
           if (granted) {
-            notif.sendNotification({ title: n.title || 'Nebo', body: n.body || '' });
+            const { invoke } = await import('@tauri-apps/api/core');
+            await invoke('show_owner_notification', {
+              title: n.title || 'Nebo',
+              body: n.body || '',
+              // Every owner item names where it opens (the server's one link builder).
+              link: n.actionUrl ?? '',
+            });
           }
-        } catch {
-          /* web build — no Tauri runtime */
+        } catch (e) {
+          log.debug(`native notification not shown: ${String(e)}`);
         }
       })();
     })
   );
+
+  // A click on a native notification opens the item's place in the main window.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  if (typeof window !== 'undefined' && (window as any).__TAURI_INTERNALS__) {
+    void import('@tauri-apps/api/event')
+      .then(({ listen }) => listen<string>('owner-item-open', (e) => { if (e.payload) void goto(e.payload); }))
+      .then((stop) => unsubs.push(stop))
+      .catch(() => log.debug('owner-item-open listener not attached'));
+  }
 
   unsubs.push(
     ws.on('notification_created', (data: any) => {
@@ -124,24 +152,15 @@ export function attachWebSocketListeners(): void {
   );
 
   // --- Plugin OAuth: open the auth URL once, app-wide (the single owner). ---
-  // Always open — auth can be triggered by agent startup/watchers when no
-  // page-level UI is mounted. Components only track connect *state* via ws.on.
+  // Components only track connect *state* via ws.on. The server broadcasts to
+  // every connected client, but only the client that started the sign-in opens
+  // it: a second Nebo window (an old one left open after a restart) opened the
+  // same sign-in twice on 2026-09-06, and the phone's web app would open the
+  // desktop's (./origin.ts).
   unsubs.push(
     ws.on('plugin_auth_url', (data: any) => {
       if (typeof window === 'undefined' || !data?.url) return;
-      // The server broadcasts to every connected window; a second Nebo
-      // window (an old one left open after a restart) opened the same
-      // sign-in twice on 2026-09-06. Windows share this origin's storage,
-      // so the first one to claim the URL opens it and the others skip.
-      const key = 'nb:plugin-auth-opened';
-      try {
-        const seen = JSON.parse(localStorage.getItem(key) || '{}');
-        const now = Date.now();
-        if (seen.url === data.url && now - (seen.at || 0) < 20000) return;
-        localStorage.setItem(key, JSON.stringify({ url: data.url, at: now }));
-      } catch {
-        // storage unavailable: open anyway
-      }
+      if (!opensHere(data, 'nowhere')) return;
       // A blocked popup returns null. Silence here read as "Connect does
       // nothing" — say so instead.
       if (!window.open(data.url, '_blank')) {

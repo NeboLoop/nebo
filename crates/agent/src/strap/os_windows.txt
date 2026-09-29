@@ -1,6 +1,0 @@
-
-Windows notes: commands run in PowerShell. Use PowerShell cmdlets (Get-Process, Get-ChildItem, Invoke-WebRequest), not Unix commands.
-Paths: Windows paths (C:\...) and POSIX-style paths both work: `/tmp/...` maps to the user's temp directory (%TEMP%) and `~` to the home directory. When the user gives a POSIX path like /tmp/file.txt, pass it through unchanged: do NOT refuse it as "not a Windows path" and do NOT translate it yourself.
-- os(resource: "file", action: "read", path: "C:\Users\user\file.txt")
-- os(resource: "file", action: "share", path: "C:\Users\user\Documents\ai-trends-2026-2027.pptx")
-- os(resource: "shell", action: "exec", command: "Get-ChildItem")

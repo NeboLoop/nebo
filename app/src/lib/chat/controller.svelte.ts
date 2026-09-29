@@ -16,10 +16,13 @@ import { untrack } from 'svelte';
 import { getWebSocketClient } from '$lib/websocket/client';
 import type { AskWidgetDef } from '$lib/components/chat/AskWidget.svelte';
 import type { UploadedAttachment } from '$lib/types/attachment';
-import type { ChatMessagesResponse } from '$lib/api/neboComponents';
+import type { ChatMessagesResponse, SessionGoalStatus } from '$lib/api/neboComponents';
 import { sendClientEvent } from '$lib/api/gocliRequest';
 import { sendInstallCode } from '$lib/marketplace/installCodes';
-import { parseMessages } from '$lib/chat/history';
+import { parseMessages, lastRunError } from '$lib/chat/history';
+import { applyHelperEvent, type HelperLine } from '$lib/chat/helpers';
+import { isThinking, latestThought } from '$lib/chat/progress';
+import type { Fold } from '$lib/chat/turnBlocks';
 import { formatTime } from '$lib/time';
 import { get } from 'svelte/store';
 import { t } from 'svelte-i18n';
@@ -79,7 +82,7 @@ export interface ToolUse {
    *  Known kinds render as rich cards (e.g. search_results). */
   payload?: { kind: string; [k: string]: unknown };
   /** Live deep-research panel snapshot (research_progress events) — replaced
-   *  whole on every update; the final state comes from the result payload. */
+   *  whole on every update, the last one marked complete. */
   research?: { kind: string; [k: string]: unknown };
   /** The stored result was cut to a preview; `response` is its first
    *  characters. Opening the row fetches the rest by `toolId`. */
@@ -103,7 +106,11 @@ export type ChatMessage =
   | { type: 'user'; content: string; time?: string; id?: string; attachments?: UploadedAttachment[]; pending?: boolean; teamPost?: TeamPost }
   | { type: 'thinking'; content: string; duration: string }
   | { type: 'ask'; requestId: string; prompt: string; widgets: AskWidgetDef[]; response?: string; cancelled?: boolean }
-  | { type: 'assistant'; content: string; time?: string; delegateAgentId?: string; delegateAgentName?: string; id?: string; attachments?: UploadedAttachment[]; workItems?: WorkItem[]; tools?: ToolUse[]; streaming?: boolean };
+  /** `fold`: the server's verdict on this segment's text (`text_verdict`) —
+   *  prose or a note in the turn's work; `segment`: its index in the turn. */
+  | { type: 'assistant'; content: string; time?: string; delegateAgentId?: string; delegateAgentName?: string; id?: string; attachments?: UploadedAttachment[]; workItems?: WorkItem[]; tools?: ToolUse[]; streaming?: boolean; fold?: Fold; segment?: number }
+  /** The boundary the backend leaves where earlier conversation was summarized. */
+  | { type: 'compactBoundary'; id?: string; time?: string };
 
 export interface ChatControllerConfig {
   agentId: string;
@@ -123,52 +130,6 @@ export interface ChatControllerConfig {
 export interface SendOptions {
   /** If true, send without adding a user message to the chat. */
   silent?: boolean;
-}
-
-/** Build a display-friendly name for a tool call. */
-export function toolDisplayName(tool: string, input: Record<string, unknown>): string {
-  const resource = input.resource as string | undefined;
-  const action = input.action as string | undefined;
-  if (tool === 'plugin') {
-    const command = input.command as string | undefined;
-    const cmdPrefix = command?.split(/[\s+]/)[0];
-    if (resource && cmdPrefix) return `${resource}: ${cmdPrefix}`;
-    return resource || 'plugin';
-  }
-  if (tool === 'app' && action && input.app) return `${action} ${input.app}`;
-  // Sub-agent spawn: show description or truncated prompt instead of "task: spawn"
-  if (tool === 'agent' && resource === 'task' && action === 'spawn') {
-    const desc = input.description as string | undefined;
-    if (desc) return desc;
-    const prompt = input.prompt as string | undefined;
-    if (prompt) return prompt.length > 60 ? prompt.slice(0, 57) + '...' : prompt;
-    return 'spawning sub-agent';
-  }
-  if (resource && action) return `${resource}: ${action}`;
-  if (resource) return resource;
-  if (['event', 'skill'].includes(tool) && action) return action;
-  return tool;
-}
-
-function toolActivityLabel(toolName: string): string {
-  const labels: Record<string, string> = {
-    bash:    'running a command',
-    grep:    'searching files',
-    glob:    'finding files',
-    read:    'reading a file',
-    write:   'writing a file',
-    edit:    'editing a file',
-
-    web:     'searching the web',
-    browser: 'reading a page',
-    bot:     'thinking it through',
-    desktop: 'using the desktop',
-    event:   'checking the schedule',
-    loop:    'sending a message',
-
-    os:      'checking the workspace',
-  };
-  return labels[toolName] || 'working';
 }
 
 const IMAGE_VIDEO_EXTS = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'mp4', 'webm', 'mov'];
@@ -266,9 +227,15 @@ export function createChatController(config: ChatControllerConfig) {
   let chatError = $state('');
   let allAgents = $state<AgentInfo[]>([]);
   let activityStatus = $state('');
+  /** The thread's agreed goal while it is being worked toward (active or paused). */
+  let goal = $state<SessionGoalStatus | null>(null);
+  /** Helpers started from this conversation that are still working. */
+  let helpers = $state<HelperLine[]>([]);
 
   // --- Internal tracking ---
   let phaseStartTime = 0;
+  /** What the model has thought since its last call or text (`thinking`). */
+  let thought = '';
   let usageClearTimer: ReturnType<typeof setTimeout> | null = null;
   let activeSessionKey: string | undefined = config.sessionKey;
 
@@ -405,15 +372,9 @@ export function createChatController(config: ChatControllerConfig) {
     if (data.done) return;
     const aid = data.agentId || agentId;
     if (aid === agentId && !isLoading) { isLoading = true; phaseStartTime = Date.now(); }
-    let chunk = data.chunk || data.content || '';
-    // Extract "Working on:" status lines — show as activity indicator, not chat text
-    const STATUS_RE = /\n?_Working[^_]*_\n?/g;
-    const statusMatch = chunk.match(STATUS_RE);
-    if (statusMatch) {
-      activityStatus = statusMatch[statusMatch.length - 1].replace(/_/g, '').trim();
-      chunk = chunk.replace(STATUS_RE, '');
-    }
+    const chunk = data.chunk || data.content || '';
     if (!chunk) return;
+    thought = '';
     // Narration resuming after this reply already ran tools starts a FRESH bubble,
     // so each segment owns exactly the tools that followed it — the same grouping
     // history rebuilds from contentBlocks, and the way NeboLoop renders a turn.
@@ -468,6 +429,7 @@ export function createChatController(config: ChatControllerConfig) {
       isLoading = false;
       phaseStartTime = 0;
       activityStatus = '';
+      thought = '';
       // The turn a queued message waited on is over: it is in the thread now.
       messages = messages.map((m) => (m.type === 'user' && m.pending ? { ...m, pending: false } : m));
       if (usageClearTimer) clearTimeout(usageClearTimer);
@@ -530,11 +492,44 @@ export function createChatController(config: ChatControllerConfig) {
     const duration = elapsed >= 60
       ? `${Math.floor(elapsed / 60)}m ${elapsed % 60}s`
       : `${elapsed}s`;
-    messages = [...messages, {
-      type: 'thinking' as const,
-      content: data.content || '',
-      duration,
-    }];
+    // The stream carries thinking in pieces: one row per stretch of it, and
+    // the live line reads its latest sentence.
+    const piece = data.content || '';
+    const lastIdx = messages.length - 1;
+    const prev = messages[lastIdx];
+    if (thought && prev?.type === 'thinking') {
+      messages[lastIdx] = { ...prev, content: prev.content + piece, duration };
+    } else {
+      messages = [...messages, { type: 'thinking' as const, content: piece, duration }];
+    }
+    thought += piece;
+    const line = latestThought(thought);
+    if (line && aid === agentId) activityStatus = line;
+  }
+
+  /** The server's verdict on a text segment: the one just closed by the
+   *  call about to start (the open reply), or — at the end of a turn that
+   *  folded everything — an earlier one it now shows. */
+  function handleTextVerdict(data: any) {
+    if (!isMyEvent(data)) return;
+    const fold: Fold | undefined = data.fold === 'shown' || data.fold === 'folded' ? data.fold : undefined;
+    const segment = typeof data.segment === 'number' ? data.segment : undefined;
+    if (!fold || segment === undefined) return;
+    const aid = data.agentId || agentId;
+    flushPending(aid);
+    let idx = replyIndex(aid);
+    const open = idx === -1 ? null : messages[idx];
+    if (!(open?.type === 'assistant' && open.content && !open.tools?.length && !open.fold)) {
+      idx = -1;
+      for (let i = messages.length - 1; i >= 0; i--) {
+        const m = messages[i];
+        if (m.type === 'user' && !m.pending) break;
+        if (m.type === 'assistant' && m.segment === segment) { idx = i; break; }
+      }
+    }
+    if (idx === -1) return;
+    const m = messages[idx];
+    if (m.type === 'assistant') messages[idx] = { ...m, fold, segment };
   }
 
   function handleToolStart(data: any) {
@@ -545,6 +540,7 @@ export function createChatController(config: ChatControllerConfig) {
     // Flush buffered narration into the open reply, then attach the tool TO that
     // reply's timeline — tools live on the message, never as sibling entries.
     flushPending(aid);
+    thought = '';
     const idx = ensureReply(aid);
 
     let request: Record<string, unknown> = {};
@@ -566,9 +562,9 @@ export function createChatController(config: ChatControllerConfig) {
       };
       messages[idx] = { ...m, tools: [...(m.tools ?? []), tool] };
     }
-    // Prefer the backend's humanized label so the live indicator and the
-    // persisted timeline speak the same vocabulary; static map is the fallback.
-    activityStatus = data.label || toolActivityLabel(data.tool || '');
+    // The backend's label (each tool's own words) is the live indicator, so
+    // it and the persisted timeline speak the same vocabulary.
+    activityStatus = data.label || data.tool || '';
   }
 
   function handleToolResult(data: any) {
@@ -609,20 +605,6 @@ export function createChatController(config: ChatControllerConfig) {
         }],
       };
     }
-  }
-
-  // Where the session's tokens went (context_stats, one per turn).
-  let contextStats = $state<{ files: number; filesReread: number; redundantReads: number; compactionPasses: number; evictions: number; spilledResults: number } | null>(null);
-  function handleContextStats(data: any) {
-    if (!isMyEvent(data)) return;
-    contextStats = {
-      files: data.files || 0,
-      filesReread: data.files_reread || 0,
-      redundantReads: data.redundant_reads || 0,
-      compactionPasses: data.compaction_passes || 0,
-      evictions: data.evictions || 0,
-      spilledResults: data.spilled_results || 0,
-    };
   }
 
   function handleUsage(data: any) {
@@ -711,8 +693,19 @@ export function createChatController(config: ChatControllerConfig) {
     });
   }
 
+  function handleSubagentStart(data: any) {
+    if (!isMyEvent(data)) return;
+    helpers = applyHelperEvent(helpers, 'subagent_start', data);
+  }
+
+  function handleSubagentComplete(data: any) {
+    if (!isMyEvent(data)) return;
+    helpers = applyHelperEvent(helpers, 'subagent_complete', data);
+  }
+
   function handleSubagentProgress(data: any) {
     if (!isMyEvent(data)) return;
+    helpers = applyHelperEvent(helpers, 'subagent_progress', data);
     const op = data.current_operation as string | undefined;
     if (!op) return;
     // The delegate's current step IS this turn's live status: without it a
@@ -748,6 +741,7 @@ export function createChatController(config: ChatControllerConfig) {
     resetStreaming();
     phaseStartTime = 0;
     activityStatus = '';
+    thought = '';
     // A question nobody answered dies with the run: the card says so instead
     // of offering choices the tool will never read.
     messages = messages.map((m) =>
@@ -788,16 +782,19 @@ export function createChatController(config: ChatControllerConfig) {
   unsubs.push(onServer('chat_cancelled', handleChatCancelled));
   unsubs.push(onServer('thinking', handleThinking));
   unsubs.push(onServer('tool_start', handleToolStart));
+  unsubs.push(onServer('text_verdict', handleTextVerdict));
   unsubs.push(onServer('tool_result', handleToolResult));
 
   function handleResearchProgress(data: any) {
     if (!isMyEvent(data)) return;
     const snap = data?.data;
-    if (!snap || typeof snap !== 'object') return;
+    if (!snap || typeof snap !== 'object' || !data.task_id) return;
+    // The research runs in the background: its card is the deep_research
+    // call that started it, found by the run's task id.
     for (let i = messages.length - 1; i >= 0; i--) {
       const m = messages[i];
       if (m.type !== 'assistant' || !m.tools?.length) continue;
-      const ti = m.tools.findIndex((t) => t.status === 'running' && t.name === 'agent');
+      const ti = m.tools.findIndex((t) => t.payload?.kind === 'research_run' && t.payload?.task_id === data.task_id);
       if (ti === -1) continue;
       const tools = [...m.tools];
       tools[ti] = { ...tools[ti], research: snap };
@@ -806,14 +803,48 @@ export function createChatController(config: ChatControllerConfig) {
     }
   }
   unsubs.push(onServer('research_progress', handleResearchProgress));
+
+  // The run's progress snapshot (every 5 s, to every client): while this
+  // turn runs with no call running, the employee is thinking. Never starts
+  // or ends a turn; its own events do. Not an `onServer` handler: a
+  // broadcast every client gets proves nothing about this client's send.
+  function handleAgentProgress(data: any) {
+    // The model's own thought, when the stream carries it, outranks the tick.
+    if (thought || !isLoading || !isThinking(data?.runs, activeSessionKey ?? '')) return;
+    activityStatus = get(t)('chatInput.thinking');
+  }
+  unsubs.push(ws.on('agent_progress', handleAgentProgress));
   unsubs.push(onServer('usage', handleUsage));
-  unsubs.push(onServer('context_stats', handleContextStats));
   unsubs.push(onServer('quota_warning', handleQuotaWarning));
   unsubs.push(onServer('chat_error', handleChatError));
   unsubs.push(onServer('ask_request', handleAskRequest));
   unsubs.push(onServer('ask_answered', handleAskAnswered));
+  unsubs.push(onServer('subagent_start', handleSubagentStart));
   unsubs.push(onServer('subagent_progress', handleSubagentProgress));
+  unsubs.push(onServer('subagent_complete', handleSubagentComplete));
   unsubs.push(onServer('session_reset', handleSessionReset));
+
+  // The agreed goal: loaded with the thread, then kept by `goal_status`.
+  function showGoal(g: SessionGoalStatus | null | undefined) {
+    goal = g && (g.status === 'active' || g.status.startsWith('paused')) ? g : null;
+  }
+  function handleGoalStatus(data: any) {
+    if (!activeSessionKey || data?.session_id !== activeSessionKey) return;
+    showGoal(data as SessionGoalStatus);
+  }
+  unsubs.push(ws.on('goal_status', handleGoalStatus));
+
+  async function loadGoal() {
+    const key = activeSessionKey;
+    if (!key) return;
+    try {
+      const api = await import('$lib/api/nebo');
+      const resp = await api.getSessionGoal(encodeURIComponent(key));
+      if (key === activeSessionKey) showGoal(resp.goal);
+    } catch (e) {
+      console.warn('[chat] Failed to load the goal for', key, e);
+    }
+  }
 
   // --- Actions ---
 
@@ -965,10 +996,15 @@ export function createChatController(config: ChatControllerConfig) {
       }
       if (!resp) throw lastErr ?? new Error('no response');
       if (gen !== historyGen) return false;
+      void loadGoal();
       if (resp.messages?.length) {
         hasMore = !!resp.hasMore;
         oldestMessageId = resp.messages[0]?.id ?? null;
         messages = parseMessages(resp.messages);
+        // The last run ended on an error the page never heard live: the
+        // same banner the `chat_error` event raises.
+        const failed = lastRunError(resp.messages);
+        if (failed) chatError = failed;
       }
       // The thread is still working: show it now, not at the next event.
       const run = resp.activeRun;
@@ -1145,10 +1181,11 @@ export function createChatController(config: ChatControllerConfig) {
     get isLoading() { return isLoading; },
     set isLoading(v: boolean) { isLoading = v; },
     get tokenUsage() { return tokenUsage; },
-    get contextStats() { return contextStats; },
     get quotaWarning() { return quotaWarning; },
     get chatError() { return chatError; },
     get activityStatus() { return activityStatus; },
+    get goal() { return goal; },
+    get helpers() { return helpers; },
     set activityStatus(v: string) { activityStatus = v; },
     get askQueueLength() { return askQueue.length; },
     get allAgents() { return allAgents; },
@@ -1172,6 +1209,7 @@ export function createChatController(config: ChatControllerConfig) {
     setSessionKey(key: string) {
       if (key !== activeSessionKey) {
         activeSessionKey = key;
+        goal = null;
         clearDeliveryTimer();
         isLoading = false;
         activityStatus = '';

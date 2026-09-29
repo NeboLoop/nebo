@@ -2,7 +2,11 @@
 // second while the first is inside a 40 s shell command. Expect the second to
 // get an immediate status line and its own chat_complete while the first keeps
 // running, and the first's transcript to carry the queued message.
-const server = process.env.TEST_SERVER || 'localhost:27895';
+// The owner's own client: it proves itself to the local API with the install
+// key, as the address's first segment (scripts/install-key.sh).
+const key = (process.env.NEBO_MCP_API_KEY || (await import('node:fs')).readFileSync(
+  `${process.env.NEBO_HOME || `${process.env.HOME}/Library/Application Support/Nebo`}/.install-key`, 'utf8')).trim();
+const server = `${process.env.TEST_SERVER || 'localhost:27895'}/k/${key}`;
 const session = `probe:busy:${Date.now()}`;
 const ws = new WebSocket(`ws://${server}/ws`);
 const t0 = Date.now();

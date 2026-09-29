@@ -1,0 +1,12 @@
+id: sc19-the-shipped-phone-answers-a-parked-runs-ask
+name: "SC19 — The shipped phone answers a parked run's ask"
+description: |
+  The phone app released before nebo-mobile #68 answers a parked workflow
+  run by its run id (GET and POST /agents/workflow-runs/{run}/approval).
+  The run now parks on an ask: those routes read it as pending / approved /
+  denied and answer it through the ask's one answer path (Approve = This
+  once, Deny = No). The first answer anywhere wins; a run with no ask is
+  unknown and cannot be answered.
+target_component: staffed-company
+proof: staffed_proof::policy::the_shipped_phone_answers_a_parked_runs_ask
+conversation: []

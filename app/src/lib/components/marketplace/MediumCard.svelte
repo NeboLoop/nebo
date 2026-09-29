@@ -16,7 +16,7 @@
 		<div class="flex-1 min-w-0">
 			<p class="text-base font-bold truncate">{item.name}</p>
 		</div>
-		<PricePill price={item.price} installed={item.installed} />
+		<PricePill price={item.price} installed={item.installed} hire={item.type === 'agent'} />
 	</div>
 	<p class="text-sm text-base-content/60 line-clamp-2 leading-relaxed">{item.description}</p>
 	<InstallCode code={item.code} inline />

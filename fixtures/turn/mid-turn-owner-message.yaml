@@ -24,7 +24,11 @@ conversation:
     content: "Read {{scratch}}/part1.txt and follow the instruction inside it, one file at a time, until there are no more files. Then write all the facts, one per line, to {{scratch}}/facts.md."
 
 tool_config:
-  os:
+  read_file:
+    enabled: true
+  write_file:
+    enabled: true
+  edit_file:
     enabled: true
 
 prompt_assertions:
@@ -32,7 +36,7 @@ prompt_assertions:
     - id: read-first
       text: "The first call reads part1.txt"
       severity: important
-      check: { first_call: true, tool: os, arg: path, contains: "part1.txt" }
+      check: { first_call: true, tool: read_file, arg: path, contains: "part1.txt" }
   recovery:
     - id: answers-the-question
       text: "The owner's question is answered (144) while the chain is under way, not ignored and not saved for the end"
@@ -41,11 +45,11 @@ prompt_assertions:
     - id: carries-on
       text: "The chain continues after the answer, through part5.txt"
       severity: critical
-      check: { tool: os, arg: path, contains: "part5.txt" }
+      check: { tool: read_file, arg: path, contains: "part5.txt" }
     - id: finishes-the-job
       text: "facts.md is written"
       severity: critical
-      check: { tool: os, arg: path, contains: "facts.md" }
+      check: { tool: [write_file, edit_file], arg: path, contains: "facts.md" }
     - id: not-a-stop
       text: "The model does not treat the question as an instruction to stop, and does not ask whether it should continue"
       severity: critical

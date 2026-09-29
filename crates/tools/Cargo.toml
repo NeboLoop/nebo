@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+tls = { workspace = true }
 libc = "0.2"
 types = { workspace = true }
 ai = { workspace = true }
@@ -21,6 +22,7 @@ notify_crate = { workspace = true }
 chrono = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
+async-trait = { workspace = true }
 futures = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -52,6 +54,9 @@ shlex = "1"
 rayon = "1"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 pdf-extract = "0.12"
+jsonschema = { workspace = true }
+portable-pty = "0.9"
+vte = "0.15"
 
 [dev-dependencies]
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

@@ -59,6 +59,10 @@ start() {
   # answered from memory with no tool call). An empty URL means the server
   # wires no Memory integration; recall is the fresh NEBO_HOME's alone.
   export NEBOAI_MEMORY_URL="" RUST_LOG="info,nebo_agent=debug"
+  # The job's bin leads the server's PATH, as /usr/bin carries a cloud pod's
+  # Chromium: the browser tools find the job's `chromium` there (harness-gate.yml,
+  # "A browser for the server").
+  export PATH="$GATE_JOB/bin:$PATH"
 
   local port="$GATE_PORT"
   # A job cancelled mid-suite leaves its server on this runner's port (the
@@ -81,7 +85,7 @@ start() {
   mkdir -p "$GATE_JOB/server-logs"
   local log
   log="$GATE_JOB/server-logs/$(printf '%03d' "$(find "$GATE_JOB/server-logs" -name '*.log' | wc -l)").log"
-  nohup "$here/gate-sandbox.sh" "$GATE_JOB/bin/nebo-server" agent > "$log" 2>&1 &
+  nohup "$here/gate-sandbox.sh" --server "$GATE_JOB/bin/nebo-server" agent > "$log" 2>&1 &
   local server=$!
   echo "$server" > "$GATE_JOB/server.pid"
   # Every gate job is the same CI bot, and the bot has one lease. While
@@ -117,8 +121,10 @@ start() {
   fi
   curl -sf -m 2 "http://localhost:$port/health"
   echo
-  # The agent runs on Janus, the backend customers get.
-  curl -sf "http://localhost:$port/api/v1/providers" \
+  # The agent runs on Janus, the backend customers get. The local API answers
+  # only a caller that proves itself: this script holds the server's install
+  # key, which the server made in its NEBO_HOME.
+  curl -sf -H "Authorization: Bearer $(cat "$NEBO_HOME/.install-key")" "http://localhost:$port/api/v1/providers" \
     | jq -e '.profiles[] | select(.provider == "neboai" and .isActive)' >/dev/null \
     || { echo "no active NeboAI profile; the bot token did not seed"; exit 1; }
 }
@@ -142,10 +148,10 @@ stop() {
 fresh() {
   stop
   # Everything the last server and the runs against it could write: the bot's
-  # database and files, $HOME, /tmp and the working directory (restored from
-  # the export of the code under test).
+  # database and files, the runner's own Nebo folder, $HOME, /tmp and the
+  # working directory (restored from the export of the code under test).
   local d
-  for d in nebo-home home tmp work; do
+  for d in nebo-home runner-home home tmp work; do
     rm -rf "${GATE_JOB:?}/$d"
     mkdir -p "$GATE_JOB/$d"
   done

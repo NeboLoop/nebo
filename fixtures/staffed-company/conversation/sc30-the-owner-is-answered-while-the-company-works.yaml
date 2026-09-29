@@ -1,0 +1,10 @@
+id: sc30-the-owner-is-answered-while-the-company-works
+name: "SC30 — The owner is answered while the company works"
+description: |
+  The owner's question fans out to three coworkers and two helpers at once (one coworker
+  answers through its own helper). The owner's next message is answered at once while all
+  five work. Every result lands as a notification and is reported, combined, to the loop
+  conversation the owner asked in (PRD-Turn-Controller G4; Batch B).
+target_component: staffed-company
+proof: staffed_proof::conversation::the_owner_is_answered_while_the_company_works
+conversation: []

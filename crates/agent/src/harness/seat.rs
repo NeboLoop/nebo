@@ -1,6 +1,6 @@
-//! The seat a turn runs in: permissions, approval mode, grants, policy,
-//! paths, taint, memory scope, isolation and outside origins, resolved once
-//! per turn.
+//! The seat a turn runs in: its permission grant, taint, memory scope,
+//! isolation and outside origins, resolved once per turn; the grant is
+//! resolved by `permissions::resolve_grant`.
 
 use std::collections::HashSet;
 
@@ -9,7 +9,6 @@ use tracing::{debug, info, warn};
 use db::Store;
 
 use crate::memory::MemoryScope;
-use crate::runner::RunRequest;
 
 /// What a seat is resolved from: who is running, for whom, and where the
 /// words came from.
@@ -65,7 +64,7 @@ pub fn resolve_seat(store: &Store, key: &str, inputs: SeatInputs<'_>) -> Seat {
     // narrating comm-style, progress + action-confirm reminders, smaller streamed chunks — even
     // though the run itself is Autonomous. The person on the other end is waiting on a reply and
     // only sees messages, so they should get the same live experience as the local app.
-    let execution_mode = if crate::steering::channel_is_external(channel) {
+    let execution_mode = if channel_is_external(channel) {
         tools::ExecutionMode::Interactive
     } else {
         origin.into()
@@ -76,7 +75,8 @@ pub fn resolve_seat(store: &Store, key: &str, inputs: SeatInputs<'_>) -> Seat {
     // activation) — that must NOT default to "not isolated", or a copied
     // isolated employee silently runs unisolated (isolation audit 2026-08-22,
     // fail-open class). Fail closed: re-read the store row; empty frontmatter
-    // is the legitimate default, unparseable frontmatter counts as isolated.
+    // is the legitimate default, unparseable frontmatter counts as
+    // Confidential (the most sealed mode).
     let memory_config = agent
         .and_then(|e| e.config.as_ref())
         .map(|c| c.memory.clone())
@@ -92,10 +92,10 @@ pub fn resolve_seat(store: &Store, key: &str, inputs: SeatInputs<'_>) -> Seat {
                         warn!(
                             agent_id,
                             error = %e,
-                            "agent config unparseable — treating as context_isolated (fail closed)"
+                            "agent config unparseable — treating memory as confidential (fail closed)"
                         );
                         napp::agent::MemoryConfig {
-                            context_isolated: true,
+                            mode: napp::agent::MemoryMode::Confidential,
                             ..Default::default()
                         }
                     }
@@ -104,7 +104,7 @@ pub fn resolve_seat(store: &Store, key: &str, inputs: SeatInputs<'_>) -> Seat {
                 // fail closed like an unparseable config.
                 Ok(None) => Default::default(),
                 Err(_) => napp::agent::MemoryConfig {
-                    context_isolated: true,
+                    mode: napp::agent::MemoryMode::Confidential,
                     ..Default::default()
                 },
             }
@@ -117,8 +117,9 @@ pub fn resolve_seat(store: &Store, key: &str, inputs: SeatInputs<'_>) -> Seat {
     // Effective provenance write bar for this scope (trust-boundaries design
     // 2026-08-22): agent config `memory.write_bar` (kebab-case class names)
     // when declared — explicit [] is a deliberate opt-out — else the engine
-    // default: context-isolated scopes refuse channel/phone content (untrusted
-    // interlocutors never write case files); non-isolated scopes have no bar.
+    // default: an employee whose conversations are kept apart refuses
+    // channel/phone content (untrusted interlocutors never write case files);
+    // a one-conversation employee has no bar.
     let write_bar: Vec<types::provenance::ProvenanceClass> = match &memory_config.write_bar {
         Some(names) => names
             .iter()
@@ -130,7 +131,7 @@ pub fn resolve_seat(store: &Store, key: &str, inputs: SeatInputs<'_>) -> Seat {
                     .ok()
             })
             .collect(),
-        None if memory_config.context_isolated => vec![
+        None if memory_config.mode.separates_conversations() => vec![
             types::provenance::ProvenanceClass::Channel,
             types::provenance::ProvenanceClass::Phone,
         ],
@@ -160,20 +161,14 @@ pub fn resolve_seat(store: &Store, key: &str, inputs: SeatInputs<'_>) -> Seat {
     // every run falls through to the chat derivation below.
     let explicit_ctx = crate::memory::session_key_context(key);
 
-    // Context-isolated agents whose session key carries NO explicit segment
-    // (desktop chat threads) derive the context from the session's ACTIVE
-    // CHAT id — thread = matter — via the canonical session→chat resolution.
-    // Precedence: an explicit channel segment always wins over the chat
-    // derivation (see memory::resolve_memory_scope).
-    let chat_ctx = if memory_config.context_isolated
-        && !agent_id.is_empty()
-        && explicit_ctx.is_none()
-    {
+    // With no explicit segment, the conversation is the session's ACTIVE
+    // CHAT id via the canonical session→chat resolution. Whether this run's
+    // memory is bound to it is memory::resolve_memory_scope's decision.
+    let chat_ctx = if !agent_id.is_empty() && explicit_ctx.is_none() {
         store.session_chat_id(session_id)
     } else {
         None
     };
-    let has_context = explicit_ctx.is_some() || chat_ctx.is_some();
 
     // Canonical memory owner: the on-device local user id, NOT the loosely-passed
     // (often empty) request user_id. ALL memory scoping derives from this so the
@@ -186,19 +181,23 @@ pub fn resolve_seat(store: &Store, key: &str, inputs: SeatInputs<'_>) -> Seat {
 
     // Scope memory by agent: each agent gets its own memory namespace to prevent
     // cross-contamination. Main bot uses the raw owner; agents use
-    // "owner:agent:agent_id"; with context_isolated, further scoped to
-    // "owner:agent:agent_id:ctx:context_id". The ONE derivation — every read
-    // and write path inherits it.
+    // "owner:agent:agent_id", or one conversation's scope under it as the
+    // employee's memory mode decides. The ONE derivation — every read and
+    // write path inherits it.
     let memory_scope = crate::memory::resolve_memory_scope(
         &memory_owner,
         agent_id,
-        memory_config.context_isolated,
+        memory_config.mode,
+        origin,
         explicit_ctx.as_deref(),
         chat_ctx.as_deref(),
     );
-    // Fail-closed: context_isolated with no derivable context must NEVER write
-    // to the shared agent scope (readable from every isolation context — the
-    // exact leak the flag exists to prevent). The runner refuses the
+    // The conversation this run's memory is sealed to, if any — read back
+    // from the ONE derivation rather than re-decided here.
+    let sealed_ctx = crate::memory::scope_matter(&memory_scope.user_id).map(str::to_string);
+    // Fail-closed: a run whose memory must be bound to a conversation, with
+    // none derivable, must NEVER write to a scope every conversation reads
+    // (the exact leak the mode exists to prevent). The runner refuses the
     // extraction, flush, and personality paths through their existing gate;
     // transcript indexing and the memory tool's mutations check
     // memory_writes_disabled directly. Reads still serve the base agent scope
@@ -206,9 +205,21 @@ pub fn resolve_seat(store: &Store, key: &str, inputs: SeatInputs<'_>) -> Seat {
     if memory_scope.writes_disabled {
         warn!(
             session_id,
-            agent_id, "context_isolated: no context derivable — memory writes disabled for this run"
+            agent_id, "memory bound to a conversation but none derivable — memory writes disabled for this run"
         );
     }
+
+    // Build the inheritance chain for READ access, off the resolved scope:
+    // agent tacit/ (a Separate employee's sealed conversation only) + owner
+    // identity prefixes. Sibling conversation scopes are never in the chain.
+    let inherit_scopes = crate::memory::build_inherit_scopes(&memory_owner, agent_id, &memory_scope.user_id);
+
+    // This run's memory is bound to a conversation (or had to be and none
+    // was derivable) — read back from the ONE derivation, or, for a
+    // sub-agent, from the parent's resolved scope it runs under.
+    let memory_bound = sealed_ctx.is_some()
+        || memory_scope.writes_disabled
+        || (key.starts_with("subagent:") && tools::memory_tools::conversation_scope(user_id).is_some());
 
     // ── Sub-agent scope inheritance ────────────────────────────────────
     // Sub-agent runs (anonymous task spawns and persona delegations) execute
@@ -218,6 +229,8 @@ pub fn resolve_seat(store: &Store, key: &str, inputs: SeatInputs<'_>) -> Seat {
     // derivation above short-circuits to the raw owner scope with writes
     // enabled, and one task-spawn exfiltrates an isolated matter's data into
     // the scope every agent inherits (isolation audit 2026-08-22, leak #3).
+    // A Confidential parent's scope never reads the private memory, so its
+    // helpers inherit the seal with it.
     let memory = if key.starts_with("subagent:") {
         let parent_scope = if user_id.is_empty() {
             memory_scope.user_id
@@ -232,65 +245,40 @@ pub fn resolve_seat(store: &Store, key: &str, inputs: SeatInputs<'_>) -> Seat {
         memory_scope
     };
 
-    // Company Memory's confidentiality scope for this run. An isolated
-    // employee is sealed to ONE matter — the same context its own memory is
-    // scoped by — so it can remember its client without ever reaching another.
-    // The value is the platform's; it travels as a header the model can't set.
+    // Company Memory's confidentiality scope for this run. An employee whose
+    // run is bound to a conversation is sealed to ONE matter — the same
+    // context its own memory is scoped by — so it can remember its client
+    // without ever reaching another. The value is the platform's; it travels
+    // as a header the model can't set.
     //
-    // Sub-agents inherit it. A spawn carries an empty agent_id, so the
-    // context_isolated check below sees a default config and would hand the
-    // child UNSCOPED Memory — the company-Memory twin of isolation-audit
-    // leak #3. The parent's resolved scope arrives as the request user_id and
-    // ends in ":ctx:<id>" when the parent was sealed, so read the matter back
-    // out of it rather than trusting the child's own (absent) config.
+    // Sub-agents inherit it. A spawn carries an empty agent_id, so its own
+    // resolution sees no employee and would hand the child UNSCOPED Memory —
+    // the company-Memory twin of isolation-audit leak #3. The parent's
+    // resolved scope arrives as the request user_id and names its
+    // conversation when the parent was sealed, so read the matter back out of
+    // it rather than trusting the child's own (absent) config.
     let memory_matter: Option<String> = if key.starts_with("subagent:") {
-        user_id
-            .rsplit_once(":ctx:")
-            .map(|(_, ctx)| format!("matter/{ctx}"))
-    } else if memory_config.context_isolated {
-        explicit_ctx
-            .as_deref()
-            .or(chat_ctx.as_deref())
-            .map(|c| format!("matter/{c}"))
+        crate::memory::scope_matter(user_id).map(|ctx| format!("matter/{ctx}"))
     } else {
-        None
+        sealed_ctx.as_deref().map(|c| format!("matter/{c}"))
     };
-    // A sealed parent's child is sealed too, even though its own config says
-    // nothing: no matter derivable means no company Memory at all.
-    let inherits_isolation = key.starts_with("subagent:") && user_id.contains(":ctx:");
 
-    // Build the inheritance chain for READ access: agent tacit/ (context-
-    // isolated runs only) + owner identity prefixes. Sibling ctx scopes are
-    // never in the chain.
-    let inherit_scopes = crate::memory::build_inherit_scopes(
-        &memory_owner,
-        agent_id,
-        memory_config.context_isolated,
-        has_context,
-    );
-
-    // ── Ethical wall: an isolated employee gets no company Memory ──
-    // memory.context_isolated is per EMPLOYEE, while an MCP integration is
-    // bot-wide — one Nebo can host an isolated legal assistant alongside a
+    // ── Ethical wall: a sealed run with no matter gets no company Memory ──
+    // The memory mode is per EMPLOYEE, while an MCP integration is bot-wide
+    // — one Nebo can host a confidential legal assistant alongside a
     // receptionist that should see everything. So the wall lives in this
     // run's toolset, not in whether the server is installed.
     //
     // Company Memory is currently single-principal: any caller sees the
     // whole graph, unprojected (DESIGN §11's domain ∩ sensitivity
-    // projection is designed, not built). Handing that to an employee whose
-    // own memory is sealed per matter would break the promise its setting
-    // makes — one case, client, or matter never bleeding into another.
-    // Until Memory is matter-scoped, isolated employees simply don't get it.
-    // An isolated employee with a derivable matter gets MATTER-SCOPED
-    // Memory (the header on every call confines it server-side). Only when
-    // no matter can be derived does the blunt wall apply: unscoped access
-    // to a single-principal graph is exactly what isolation forbids.
-    let isolated_employee = inherits_isolation
-        || agent
-            .and_then(|e| e.config.as_ref())
-            .map(|c| c.memory.context_isolated)
-            .unwrap_or(false);
-    let company_memory_sealed = isolated_employee && memory_matter.is_none();
+    // projection is designed, not built). A run whose memory is bound to a
+    // conversation with a derivable matter gets MATTER-SCOPED Memory (the
+    // header on every call confines it server-side). Only when no matter can
+    // be derived does the blunt wall apply: unscoped access to a
+    // single-principal graph is exactly what sealing forbids. A run whose
+    // memory is not bound (the owner's own runs of a Single or Separate
+    // employee) is not walled.
+    let company_memory_sealed = memory_bound && memory_matter.is_none();
 
     Seat {
         memory,
@@ -304,54 +292,37 @@ pub fn resolve_seat(store: &Store, key: &str, inputs: SeatInputs<'_>) -> Seat {
     }
 }
 
-/// Withhold company Memory's tools from a sealed seat's toolset. Exact URL
-/// match, not a substring guess: a customer's own KB at some other host is
-/// their business and must not be withheld. Returns whether any Memory
-/// integration was found (and so whether the toolset was filtered).
-pub async fn seal_company_memory(
-    store: &Store,
-    tools: &tools::Registry,
-    agent_id: &str,
-    all_tool_defs: &mut Vec<ai::ToolDefinition>,
-    agent_tool_names: &mut HashSet<String>,
-) -> bool {
+/// The registered tools that reach company Memory: those proxied to an MCP
+/// integration at the Memory URL. Exact URL match, not a substring guess: a
+/// customer's own KB at some other host is their business and is never
+/// walled off. What a sealed seat walls off.
+pub async fn company_memory_tools(store: &Store, tools: &tools::Registry, agent_id: &str) -> HashSet<String> {
     let memory_url = config::memory_url();
-    let memory_integration_ids: HashSet<String> = if memory_url.is_empty() {
-        HashSet::new()
-    } else {
-        store
-            .list_mcp_integrations()
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|i| i.server_url.as_deref() == Some(memory_url.as_str()))
-            .map(|i| i.id)
-            .collect()
-    };
-    if memory_integration_ids.is_empty() {
-        return false;
+    if memory_url.is_empty() {
+        return HashSet::new();
     }
-    let mut memory_tool_names: HashSet<String> = HashSet::new();
-    for def in all_tool_defs.iter() {
+    let memory_integration_ids: HashSet<String> = store
+        .list_mcp_integrations()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|i| i.server_url.as_deref() == Some(memory_url.as_str()))
+        .map(|i| i.id)
+        .collect();
+    if memory_integration_ids.is_empty() {
+        return HashSet::new();
+    }
+    let mut walled = HashSet::new();
+    for def in tools.list().await {
         if let Some((integration_id, _)) = tools.mcp_proxy_info(&def.name).await
             && memory_integration_ids.contains(&integration_id)
         {
-            memory_tool_names.insert(def.name.clone());
+            walled.insert(def.name);
         }
     }
-    let (kept, withheld) = crate::tool_filter::withhold_memory_tools(
-        std::mem::take(all_tool_defs),
-        agent_tool_names,
-        &memory_tool_names,
-    );
-    *all_tool_defs = kept;
-    if withheld > 0 {
-        debug!(
-            agent = %agent_id,
-            withheld,
-            "context_isolated employee: company Memory withheld (no matter scoping yet)"
-        );
+    if !walled.is_empty() {
+        debug!(agent = %agent_id, walled = walled.len(), "sealed run: company Memory walled off (no matter)");
     }
-    true
+    walled
 }
 
 /// What a restricted run is told when its allowlist left it no tools.
@@ -387,6 +358,12 @@ pub(crate) fn restricted_run_notice(
         s.push_str(h);
     }
     Some(s)
+}
+
+/// An outside messaging channel (NeboLoop, Slack, …), not one of the app's
+/// own surfaces (web, cli, dm, voice). There the person only sees messages.
+fn channel_is_external(channel: &str) -> bool {
+    !matches!(channel, "" | "web" | "cli" | "dm" | "voice")
 }
 
 /// The last word on an outside conversation. Whatever the model wrote, a
@@ -433,22 +410,24 @@ pub fn scrub_outside_reply(text: &str) -> String {
 }
 
 /// The outside fence. A run whose words come from a stranger — a phone
-/// caller, a visitor from a QR scan or an embedded chat — never keeps Full
-/// Access (that is an owner-surface concept) and always carries a tool
-/// allowlist: the channel's policy when the owner enabled something, empty
-/// otherwise. An empty allowlist means the model is shown no tools at all and
+/// caller, a visitor from a QR scan or an embedded chat — always carries a
+/// tool allowlist (and never runs in Full Access: see [`run_grant`]): the
+/// channel's policy when the owner enabled something, empty otherwise. An empty allowlist means the model is shown no tools at all and
 /// the runner gate and the registry choke point refuse anything it invents.
 /// This is the ONE place the rule is applied; every ingress benefits.
-pub(crate) fn restrict_outside_origin(req: &mut RunRequest) {
-    if !req.origin.is_outside() {
+pub(crate) fn restrict_outside_origin(
+    origin: tools::Origin,
+    tool_allowlist: &mut Option<HashSet<String>>,
+    tool_denial_hint: &mut Option<String>,
+) {
+    if !origin.is_outside() {
         return;
     }
-    req.full_access = false;
-    if req.tool_allowlist.is_none() {
-        req.tool_allowlist = Some(std::collections::HashSet::new());
+    if tool_allowlist.is_none() {
+        *tool_allowlist = Some(HashSet::new());
     }
-    if req.tool_denial_hint.is_none() {
-        req.tool_denial_hint = Some(
+    if tool_denial_hint.is_none() {
+        *tool_denial_hint = Some(
             "That isn't part of this conversation. Don't mention a limit or refuse; answer kindly \
              from what you know, steer back to what this chat is for, and offer to pass a note \
              to the owner if it matters to them."
@@ -457,32 +436,40 @@ pub(crate) fn restrict_outside_origin(req: &mut RunRequest) {
     }
 }
 
-/// How a seat's tool calls are approved.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ApprovalMode {
-    /// Anything the seat's rules do not already allow asks the owner.
-    Ask,
-    /// File edits inside the seat's paths run without asking; the rest asks.
-    AcceptEdits,
-    /// Read-only until the owner approves the plan.
-    Plan,
-    /// Everything the seat's rules do not deny runs without asking.
-    FullAccess,
-    /// Anything that would ask is refused instead.
-    NeverAsk,
-    /// A classifier over the transcript decides what would ask.
-    Automatic,
-    /// A helper's or unattended run's asks go up to whoever can answer them
-    /// (the parent turn, or the owner over comm).
-    Relay,
+/// The grant a run holds: its employee's rules and mode (the run's own mode
+/// if it names one), the ceiling it can only narrow (an isolated helper's
+/// fence rides on it), and the project folder it works in. A stranger's run never holds Full Access:
+/// that is an owner-surface concept.
+pub(crate) fn run_grant(store: &Store, req: GrantRequest<'_>) -> types::permissions::Grant {
+    // A helper holds its parent's grant (mode, rules, money limits), under
+    // that grant as its ceiling: it can only narrow.
+    let mut grant = match req.ceiling {
+        Some(types::permissions::Ceiling::Parent { grant: parent }) => {
+            let mut own = (**parent).clone();
+            if let Some(mode) = req.mode {
+                own.mode = mode;
+            }
+            own
+        }
+        _ => crate::harness::permissions::resolve_grant(store, req.agent_id, req.mode),
+    };
+    if req.origin.is_outside() && grant.mode == types::permissions::Mode::FullAccess {
+        grant.mode = types::permissions::Mode::Automatic;
+    }
+    grant.ceiling = req.ceiling.cloned();
+    grant.fence = None;
+    grant.run_folders = req.cwd.iter().map(std::path::PathBuf::from).collect();
+    grant
 }
 
-/// What the approval check decides for one tool call.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ApprovalDecision {
-    Allow,
-    Deny,
-    Ask,
+/// What a run's grant is resolved from.
+pub(crate) struct GrantRequest<'a> {
+    pub agent_id: &'a str,
+    pub origin: tools::Origin,
+    /// A run override of the employee's mode.
+    pub mode: Option<types::permissions::Mode>,
+    pub ceiling: Option<&'a types::permissions::Ceiling>,
+    pub cwd: Option<&'a str>,
 }
 
 #[cfg(test)]
@@ -490,37 +477,45 @@ mod tests {
     use super::*;
 
     /// The outside fence: a run whose words come from a stranger (a QR scan,
-    /// an embedded widget, a phone line) never keeps Full Access and always
+    /// an embedded widget, a phone line) never runs in Full Access and always
     /// carries an allowlist — empty when the channel enables nothing — so the
     /// model is shown no tools and every gate below refuses the rest.
     #[test]
     fn outside_origins_lose_full_access_and_get_a_closed_allowlist() {
         use tools::Origin;
-        let mut req = RunRequest { origin: Origin::Visitor, full_access: true, ..Default::default() };
-        restrict_outside_origin(&mut req);
-        assert!(!req.full_access, "Full Access is an owner-surface concept; a visitor never has it");
-        assert_eq!(req.tool_allowlist.as_ref().map(|s| s.len()), Some(0), "no channel policy = zero tools");
-        assert!(req.tool_denial_hint.as_deref().unwrap_or("").contains("conversation"));
+        use types::permissions::{Mode, Scope};
+        let dir = tempfile::tempdir().unwrap();
+        let store = db::Store::new(&dir.path().join("t.db").to_string_lossy()).unwrap();
+        store.set_permission_mode(&Scope::Company, Mode::FullAccess).unwrap();
+
+        let grant = |origin: Origin| {
+            run_grant(&store, GrantRequest { agent_id: "", origin, mode: None, ceiling: None, cwd: None }).mode
+        };
+
+        let (mut allowlist, mut hint) = (None, None);
+        restrict_outside_origin(Origin::Visitor, &mut allowlist, &mut hint);
+        assert_eq!(grant(Origin::Visitor), Mode::Automatic, "Full Access is an owner-surface concept; a visitor never has it");
+        assert_eq!(allowlist.as_ref().map(|s| s.len()), Some(0), "no channel policy = zero tools");
+        assert!(hint.as_deref().unwrap_or("").contains("conversation"));
 
         // A channel that enabled something keeps exactly that.
-        let mut caller = RunRequest { origin: Origin::Caller, full_access: true, ..Default::default() };
-        caller.tool_allowlist = Some(["agent:memory".to_string()].into_iter().collect());
-        restrict_outside_origin(&mut caller);
-        assert!(!caller.full_access);
-        assert_eq!(caller.tool_allowlist.as_ref().map(|s| s.len()), Some(1));
+        let (mut allowlist, mut hint) = (Some(["agent:memory".to_string()].into_iter().collect()), None);
+        restrict_outside_origin(Origin::Caller, &mut allowlist, &mut hint);
+        assert_eq!(grant(Origin::Caller), Mode::Automatic);
+        assert_eq!(allowlist.as_ref().map(|s| s.len()), Some(1));
 
         // The owner's own surfaces are untouched.
-        let mut owner = RunRequest { origin: Origin::User, full_access: true, ..Default::default() };
-        restrict_outside_origin(&mut owner);
-        assert!(owner.full_access);
-        assert!(owner.tool_allowlist.is_none());
+        let (mut allowlist, mut hint) = (None, None);
+        restrict_outside_origin(Origin::User, &mut allowlist, &mut hint);
+        assert_eq!(grant(Origin::User), Mode::FullAccess);
+        assert!(allowlist.is_none());
     }
 
     /// The scrub is the guarantee: tool syntax and machine paths never reach
     /// a stranger, whatever the model narrated (2026-09-05, both live runs).
     #[test]
     fn outside_replies_never_carry_tool_syntax_or_paths() {
-        let narrated = "On it \u{2014} checking your desktop and SSH keys.\n\nos(resource: \"file\", action: \"list\", path: \"/Users/almatuck/Desktop\")\nos(resource: \"file\", action: \"list\", path: \"/Users/slmatuck/.ssh\")";
+        let narrated = "On it \u{2014} checking your desktop and SSH keys.\n\nos(resource: \"file\", action: \"list\", path: \"/Users/example/Desktop\")\nos(resource: \"file\", action: \"list\", path: \"/Users/example/.ssh\")";
         let out = scrub_outside_reply(narrated);
         assert!(!out.contains("os("), "{out}");
         assert!(!out.contains("/Users/"), "{out}");

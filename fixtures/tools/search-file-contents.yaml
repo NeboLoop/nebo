@@ -1,0 +1,51 @@
+id: search-file-contents
+name: "Search file contents — grep through run_command"
+description: |
+  The user asks the agent to search for a pattern in files. There is no grep
+  tool: searching contents goes through run_command with grep or rg. The model
+  must call run_command with a grep/rg command and a short description — NOT
+  hallucinate "grep" as a standalone tool.
+target_component: run_command
+
+setup:
+  - "mkdir -p {{scratch}} && printf 'line one\nTODO: fix this\nline three\n' > {{scratch}}/sample.txt"
+teardown:
+  - "rm -rf {{scratch}}"
+
+conversation:
+  - role: user
+    content: "Search for the word 'TODO' in all files under {{scratch}}/"
+
+tool_config:
+  run_command:
+    enabled: true
+
+prompt_assertions:
+  first_call:
+    - id: correct-tool-name
+      text: "Model calls 'run_command', not 'grep', 'bash', or 'os'"
+      severity: critical
+      check: { first_call: true, tool: run_command }
+    - id: grep-command
+      text: "The command uses grep or rg (find piped to grep is fine)"
+      severity: critical
+      check: { first_call: true, tool: run_command, arg: command, matches: "\\b(find|grep|rg)\\b" }
+    - id: has-regex
+      text: "The command searches for 'TODO'"
+      severity: critical
+      check: { first_call: true, tool: run_command, arg: command, contains: "TODO" }
+    - id: has-path
+      text: "The command searches under '{{scratch}}/' or similar"
+      severity: critical
+      check: { first_call: true, tool: run_command, arg: command, contains: "{{scratch}}" }
+  cost:
+    - id: single-call
+      text: "Task completes in 1 tool call"
+      severity: important
+
+ideal_behavior:
+  tool_calls: 1
+  total_tokens: 1500
+  narrative: |
+    Single run_command(command: "grep -rn TODO {{scratch}}/", description:
+    "Search the folder for TODO") call. Model reports the matches.

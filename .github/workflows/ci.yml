@@ -12,7 +12,11 @@ name: CI
 # merge ref — the better signal; direct pushes to main keep their own run.
 on:
   push:
-    branches: [main]
+    # harness/turn-controller is the rewrite's integration branch: its PRs are
+    # merged the moment they pass locally, which cancels their PR runs, so
+    # each merge is tested here at the branch tip. The cutover to main
+    # removes this entry along with the branch.
+    branches: [main, harness/turn-controller]
   pull_request:
 
 concurrency:
@@ -105,11 +109,14 @@ jobs:
           echo "RUSTFLAGS=-C link-arg=-L/usr/lib/${MULTIARCH} -C link-arg=-Wl,--no-as-needed -C link-arg=-lopenblas -C link-arg=-Wl,--as-needed" >> $GITHUB_ENV
 
       # nebo-server embeds app/build via rust-embed (spa.rs) — the derive needs
-      # the FOLDER to exist at compile time, but no test reads the embedded
-      # assets, so an empty directory suffices. Building the real frontend here
-      # would be minutes per run that the tests never observe.
+      # the FOLDER to exist at compile time. The only asset a test reads is the
+      # app shell (a signed-in browser gets index.html: nebo_files_proof), so a
+      # one-line shell stands in. Building the real frontend here would be
+      # minutes per run that the tests never observe.
       - name: Satisfy the frontend embed folder
-        run: mkdir -p app/build
+        run: |
+          mkdir -p app/build
+          printf '<!doctype html><html><head><title>Nebo</title></head><body></body></html>\n' > app/build/index.html
 
       # --exclude nebo: the desktop crate has no tests and its build script
       # wants ../app/build (frontendDist) — excluding it keeps this job free of

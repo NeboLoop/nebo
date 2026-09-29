@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+tls = { workspace = true }
 types = { workspace = true }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif", "bmp", "tiff"] }
 db = { workspace = true }
@@ -16,6 +17,14 @@ tokio-util = { workspace = true }
 # HTTP
 reqwest = { workspace = true }
 tokio-tungstenite = { workspace = true }
+
+# Coding agents hosted on this computer, and every linked agent reached
+# over Open Agent Link
+link-core = { workspace = true }
+nebo-runtimes = { workspace = true }
+oal-host = { workspace = true }
+oal-secure = { workspace = true }
+oal-relay = { workspace = true }
 
 # Serialization
 serde = { workspace = true }
@@ -39,12 +48,16 @@ llama-cpp-2 = { version = "0.1", optional = true }
 
 [features]
 local-inference = ["dep:llama-cpp-2"]
+# `LocalHost::host`: a scripted coding agent, for the server's proofs.
+test-agents = []
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
 [dev-dependencies]
+rusqlite = { workspace = true }
 rcgen = "0.13"
 tokio-rustls = "0.26"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 tempfile = "3"
+tokio = { workspace = true, features = ["test-util"] }

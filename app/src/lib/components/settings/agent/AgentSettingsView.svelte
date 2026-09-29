@@ -3,6 +3,7 @@
   import { goto } from '$lib/nav';
   import { t } from 'svelte-i18n';
   import { getContext, onDestroy, untrack } from 'svelte';
+  import { get } from 'svelte/store';
   import { AGENT_COLORS_MAP } from '$lib/tokens.js';
   import AgentAvatar from '$lib/components/AgentAvatar.svelte';
   import { getActivityType } from '$lib/utils/workflowTypes';
@@ -15,7 +16,7 @@
   import AlertTriangle from 'lucide-svelte/icons/alert-triangle';
   import Volume2 from 'lucide-svelte/icons/volume-2';
   import MemoryManager from '$lib/components/settings/MemoryManager.svelte';
-  import ApprovalControls from '$lib/components/settings/ApprovalControls.svelte';
+  import PermissionsSection from './PermissionsSection.svelte';
   import LearningControls from '$lib/components/settings/LearningControls.svelte';
   import IsolationControls from '$lib/components/settings/IsolationControls.svelte';
   import RunLimitControls from '$lib/components/settings/RunLimitControls.svelte';
@@ -23,8 +24,11 @@
   import type { AgentInputField } from '$lib/types/agentPage';
   import { installFlow } from '$lib/stores/installFlow';
   import { addToast } from '$lib/stores/toast';
-  import { capabilityLabel } from '$lib/utils/operationLabels';
   import { accountsSectionFor } from './sections';
+  import { botName, botRenameUrl, loadBotName, openBotRename, offerMatchingRename } from '$lib/stores/botName';
+
+  // The primary employee: the owner's personal assistant, named like the bot.
+  const PRIMARY_ID = 'assistant';
 
   const ctx = getContext<AgentPageContext>('agentPage');
   const agentId = $derived(ctx.agentId);
@@ -91,6 +95,9 @@
   // Name, voice and color are stored on this machine and never re-read, so
   // they are the owner's to change on every employee.
   const managed = $derived(!agent?.editable);
+  // A linked employee works in another app on the computer it is linked
+  // from: its persona is read there, but its name is the owner's here.
+  const linked = $derived(agent?.kind === 'linked');
 
   // A packaged employee is deleted only after the owner types its name: the
   // action uninstalls the package and erases its history, and the name is
@@ -269,7 +276,12 @@
     if (agent && agentId !== loadedIdentityFor) {
       loadedIdentityFor = agentId;
       editName = agent.name;
+      savedName = agent.name;
+      nameRequired = false;
+      botRenameOffer = null;
       editRole = agent.role;
+      jobCheckedRole = agent.role;
+      jobEdit = null;
       editColor = agent.color;
       editVoice = agent.voice ?? '';
       editLoopExposed = agent.loopExposed ?? false;
@@ -289,6 +301,22 @@
   function debounceIdentitySave() {
     if (identitySaveTimer) clearTimeout(identitySaveTimer);
     identitySaveTimer = setTimeout(() => saveIdentity(), 800);
+  }
+
+  // Clearing the name to retype it saves nothing while it is empty. Left
+  // empty, the last saved name comes back with a quiet hint: an employee
+  // always has a name.
+  let nameRequired = $state(false);
+
+  function nameTyped() {
+    if (editName.trim()) nameRequired = false;
+    debounceIdentitySave();
+  }
+
+  function nameLeft() {
+    if (editName.trim()) return;
+    editName = savedName;
+    nameRequired = true;
   }
 
   function selectColor(color: string) {
@@ -321,12 +349,65 @@
 
   let identityError = $state('');
 
+  // The bot and its primary employee start with the same name. Right after
+  // the primary is renamed, offer to rename the bot too — never silently.
+  // The bot's name is the owner's: it is renamed on the NeboAI web app, with
+  // the owner's own session.
+  let savedName = '';
+  let botRenameOffer = $state<string | null>(null);
+
+  async function offerBotRename(before: string) {
+    if (agentId !== PRIMARY_ID) return;
+    await loadBotName();
+    const bot = get(botName);
+    const now = editName.trim();
+    if (get(botRenameUrl) && (botRenameOffer !== null || offerMatchingRename(before, bot, now))) {
+      botRenameOffer = now && now !== bot ? now : null;
+    }
+  }
+
+  function acceptBotRename() {
+    openBotRename(get(botRenameUrl));
+    botRenameOffer = null;
+  }
+
+  // Editing the job runs the needs step again: what the new description adds
+  // shows as one line, and adding it grants it (the line's draft).
+  let jobEdit = $state<{ line: string; draftId: string } | null>(null);
+  let jobCheckedRole = '';
+
+  async function checkJobEdit() {
+    if (!agentId || managed || editRole === jobCheckedRole) return;
+    jobCheckedRole = editRole;
+    try {
+      const api = await import('$lib/api/nebo');
+      const res = await api.workOutAgentNeeds({ agentId, name: editName, description: editRole });
+      jobEdit = res.items.length > 0 && res.draftId ? { line: res.line, draftId: res.draftId } : null;
+    } catch {
+      jobEdit = null;
+    }
+  }
+
+  async function addJobEdit() {
+    if (!agentId || !jobEdit) return;
+    try {
+      const api = await import('$lib/api/nebo');
+      await api.updateAgent(agentId, { draftId: jobEdit.draftId });
+      jobEdit = null;
+      identitySaved = true;
+      setTimeout(() => identitySaved = false, 2000);
+    } catch (e) {
+      identityError = (e as Error)?.message || $t('agentSettings.saveFailed');
+    }
+  }
+
   async function saveIdentity() {
-    if (!agentId) return;
+    const name = editName.trim();
+    if (!agentId || !name) return;
     try {
       const api = await import('$lib/api/nebo');
       await api.updateAgent(agentId, {
-        name: editName,
+        name,
         description: editRole,
         color: editColor,
         voice: editVoice,
@@ -338,6 +419,10 @@
       identityError = '';
       identitySaved = true;
       setTimeout(() => identitySaved = false, 2000);
+      void checkJobEdit();
+      const before = savedName;
+      savedName = name;
+      void offerBotRename(before);
     } catch (e) {
       // A refused reporting line names the loop it would have closed, and a
       // taken name names the employee that has it. Swallowing that left the
@@ -345,6 +430,54 @@
       // another.
       identityError = (e as Error)?.message || $t('agentSettings.saveFailed');
     }
+  }
+
+  // --- Skills ---
+  let removingSkill = $state('');
+  async function removeSkill(skill: string) {
+    if (!agentId || removingSkill) return;
+    removingSkill = skill;
+    try {
+      const api = await import('$lib/api/nebo');
+      await api.updateAgent(agentId, { skills: skills.filter((s) => s !== skill) });
+      await ctx.refreshAgent();
+    } catch (e) {
+      addToast((e as Error)?.message || $t('agentSettings.saveFailed'), 'error');
+    } finally {
+      removingSkill = '';
+    }
+  }
+
+  // --- How to reach them ---
+  // The employee's own address (the bot's address plus its tag), read from
+  // the server so the tag is the one mail intake routes by.
+  let reachAddress = $state('');
+  let reachBotAddress = $state('');
+  let reachCopied = $state(false);
+  $effect(() => {
+    if (section !== 'reach' || !agentId) return;
+    const id = agentId;
+    untrack(() => {
+      void loadReachAddress(id);
+      void loadPhoneLines();
+      void loadChannels();
+    });
+  });
+  async function loadReachAddress(id: string) {
+    try {
+      const api = await import('$lib/api/nebo');
+      const r = await api.neboAIBotEmail(id);
+      reachAddress = r.employeeAddress ?? '';
+      reachBotAddress = r.address ?? '';
+    } catch {
+      reachAddress = '';
+      reachBotAddress = '';
+    }
+  }
+  function copyReachAddress() {
+    navigator.clipboard.writeText(reachAddress);
+    reachCopied = true;
+    setTimeout(() => (reachCopied = false), 2000);
   }
 
   // --- Persona auto-save (AGENT.md body) ---
@@ -551,82 +684,6 @@
   function setQuestionMoney(index: number, money: boolean) {
     questions = questions.map((q, i) => (i === index ? { ...q, money, default: money ? '' : q.default } : q));
     debounceQuestionsSave();
-  }
-
-  // --- Capabilities (agent.json `requires.interfaces`) ---
-  // What this employee is allowed to reach. The catalogue is what the company
-  // has actually connected; the selection lands in `requires.interfaces` on the
-  // same agent.json a package declares it in.
-  type CapabilityRow = {
-    capability: string;
-    providers: string[];
-    builtin: boolean;
-    gatedOperations: number;
-    bound: boolean;
-  };
-  let capabilityRows = $state<CapabilityRow[]>([]);
-  let boundCapabilities = $state<string[]>([]);
-  let capabilitiesLoading = $state(true);
-  let capabilitiesSaved = $state(false);
-  let capabilitiesError = $state('');
-  let loadedCapabilitiesFor = $state('');
-  let capabilitiesSaveTimer: ReturnType<typeof setTimeout> | null = null;
-
-  async function loadCapabilities(id: string) {
-    capabilitiesLoading = true;
-    capabilitiesError = '';
-    try {
-      const api = await import('$lib/api/nebo');
-      const resp = (await api.getAgentOperations(id)) as unknown as {
-        available?: CapabilityRow[];
-        interfaces?: string[];
-      };
-      capabilityRows = resp.available ?? [];
-      boundCapabilities = resp.interfaces ?? [];
-    } catch (e) {
-      capabilitiesError = e instanceof Error ? e.message : String(e);
-    } finally {
-      capabilitiesLoading = false;
-    }
-  }
-
-  // Depends on `section` and `agentId` only. The once-per-employee guard is
-  // read inside untrack, because the effect also writes it — reading it as a
-  // dependency is how a loader effect re-fires itself.
-  $effect(() => {
-    if (section !== 'capabilities') return;
-    const id = agentId;
-    if (!id) return;
-    untrack(() => {
-      if (id === loadedCapabilitiesFor) return;
-      loadedCapabilitiesFor = id;
-      void loadCapabilities(id);
-    });
-  });
-
-  function toggleCapability(capability: string, on: boolean) {
-    boundCapabilities = on
-      ? [...boundCapabilities, capability].sort()
-      : boundCapabilities.filter((c) => c !== capability);
-    capabilityRows = capabilityRows.map((r) =>
-      r.capability === capability ? { ...r, bound: on } : r,
-    );
-    if (capabilitiesSaveTimer) clearTimeout(capabilitiesSaveTimer);
-    capabilitiesSaveTimer = setTimeout(() => saveCapabilities(), 700);
-  }
-
-  async function saveCapabilities() {
-    const id = agentId;
-    if (!id) return;
-    capabilitiesError = '';
-    try {
-      const api = await import('$lib/api/nebo');
-      await api.updateAgent(id, { interfaces: boundCapabilities });
-      capabilitiesSaved = true;
-      setTimeout(() => (capabilitiesSaved = false), 2000);
-    } catch (e) {
-      capabilitiesError = e instanceof Error ? e.message : String(e);
-    }
   }
 
   // --- Channels ---
@@ -1205,7 +1262,7 @@
               <button
                 class="ml-1 py-0.5 px-2 rounded text-xs font-medium cursor-pointer border border-base-300 bg-base-100 hover:bg-base-200 transition-colors"
                 onclick={() => ctx.toggleAgentStatus(agentId)}
-              >{ctx.agentStatus(agentId) === 'paused' ? $t('agent.activate') : $t('sidebar.pause')}</button>
+              >{ctx.agentStatus(agentId) === 'paused' ? $t('agent.resume') : $t('sidebar.pause')}</button>
             {/if}
           </div>
         </div>
@@ -1235,10 +1292,12 @@
         <div class="text-sm">{$t('agentSettings.configuredCount', { values: { count: workflowEntries.length } })}</div>
       </div>
 
-      <div>
-        <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1.5">{$t('settingsMemories.created')}</div>
-        <div class="text-sm">Mar 12, 2026</div>
-      </div>
+      {#if agent?.installedAt}
+        <div>
+          <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1.5">{$t('settingsMemories.created')}</div>
+          <div class="text-sm">{new Date(agent.installedAt * 1000).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}</div>
+        </div>
+      {/if}
 
       <!-- Duplicate -->
       <div class="border-t border-base-300 pt-5 mt-3">
@@ -1272,7 +1331,7 @@
       {#if agent}
         <div class="border-t border-base-300 pt-5 mt-3">
           <div class="text-xs font-semibold uppercase tracking-wider text-error mb-2">{$t('agentSettings.dangerZone')}</div>
-          {#if showDeleteConfirm}
+          {#if showDeleteConfirm && agentId !== PRIMARY_ID}
             <div class="rounded-lg border border-error/30 bg-error/5 p-4">
               <div class="text-sm font-medium mb-1">{$t('agent.deleteTitle', { values: { name: agent?.name ?? '' } })}</div>
               {#if managed}
@@ -1302,8 +1361,11 @@
             <div class="flex flex-wrap items-center gap-2">
               <button class="btn btn-sm btn-outline" onclick={handleExportData} disabled={exporting}>{exporting ? $t('agentSettings.exporting') : $t('agentSettings.exportData')}</button>
               <button class="btn btn-error btn-sm btn-outline" onclick={() => showPurgeConfirm = true}>{$t('agentSettings.purgeData')}</button>
-              <button class="btn btn-error btn-sm btn-outline" onclick={() => showDeleteConfirm = true}>{$t('agentSettings.deleteAgent')}</button>
+              {#if agentId !== PRIMARY_ID}
+                <button class="btn btn-error btn-sm btn-outline" onclick={() => showDeleteConfirm = true}>{$t('agentSettings.deleteAgent')}</button>
+              {/if}
             </div>
+            {#if agentId === PRIMARY_ID}<div class="text-xs text-base-content/60 mt-2 leading-snug">{$t('agent.primaryUndeletable')}</div>{/if}
             {#if purgedNote}<div class="text-xs text-base-content/70 mt-2">{purgedNote}</div>{/if}
           {/if}
         </div>
@@ -1320,7 +1382,9 @@
       {#if identityError}
         <div class="rounded-lg border border-error/40 bg-error/10 px-3.5 py-2.5 text-xs text-error">{identityError}</div>
       {/if}
-      {#if managed}
+      {#if linked}
+        <div class="rounded-lg border border-base-300 bg-base-200/50 px-3.5 py-2.5 text-xs text-base-content/70">{$t('agentSettings.identityLinkedNote')}</div>
+      {:else if managed}
         <div class="rounded-lg border border-base-300 bg-base-200/50 px-3.5 py-2.5 text-xs text-base-content/70 flex items-start gap-3">
           <span class="flex-1">{$t('agentSettings.identityManagedNote')}</span>
           <button class="btn btn-xs btn-outline shrink-0" onclick={openDuplicate}>{$t('agentSettings.duplicateAgent')}</button>
@@ -1328,8 +1392,18 @@
       {/if}
       <label class="block">
         <span class="block text-xs font-semibold uppercase tracking-wider mb-1.5">{$t('agentSettings.agentName')}</span>
-        <input type="text" bind:value={editName} oninput={debounceIdentitySave} class="w-full py-[7px] px-2.5 rounded-md border border-base-300 text-sm bg-base-100 outline-none font-body disabled:opacity-60 disabled:cursor-not-allowed" />
+        <input type="text" bind:value={editName} oninput={nameTyped} onblur={nameLeft} class="w-full py-[7px] px-2.5 rounded-md border border-base-300 text-sm bg-base-100 outline-none font-body disabled:opacity-60 disabled:cursor-not-allowed" />
+        {#if nameRequired}
+          <span class="block text-xs text-base-content/60 mt-1">{$t('agentSettings.nameRequired')}</span>
+        {/if}
       </label>
+      {#if botRenameOffer}
+        <div class="flex flex-wrap items-center gap-2 rounded-lg border border-base-300 bg-base-200/40 px-3 py-2.5">
+          <span class="flex-1 min-w-0 text-sm">{$t('agentSettings.alsoRenameBot', { values: { name: botRenameOffer } })}</span>
+          <button type="button" class="btn btn-sm btn-primary" onclick={acceptBotRename}>{$t('agentSettings.renameBot')}</button>
+          <button type="button" class="btn btn-sm btn-ghost" onclick={() => (botRenameOffer = null)}>{$t('agentSettings.keepBotName', { values: { name: $botName } })}</button>
+        </div>
+      {/if}
       <div>
         <div class="text-xs font-semibold uppercase tracking-wider mb-1.5">{$t('agentSettings.voice')}</div>
         <div class="text-xs text-base-content/70 mb-2">{$t('agentSettings.voiceDesc')}</div>
@@ -1361,6 +1435,12 @@
         <span class="block text-xs font-semibold uppercase tracking-wider mb-1.5">{$t('agentSettings.role')}{#if managed} <span class="normal-case tracking-normal font-normal text-base-content/50">· {$t('agentSettings.fromPackage')}</span>{/if}</span>
         <textarea bind:value={editRole} oninput={debounceIdentitySave} disabled={managed} rows="3" class="w-full py-[7px] px-2.5 rounded-md border border-base-300 text-sm bg-base-100 outline-none font-body disabled:opacity-60 disabled:cursor-not-allowed resize-none"></textarea>
       </label>
+      {#if jobEdit}
+        <div class="flex flex-wrap items-center gap-3 rounded-lg border border-base-300 bg-base-200/40 px-3 py-2.5">
+          <span class="flex-1 min-w-0 text-sm">{jobEdit.line}</span>
+          <button type="button" class="btn btn-sm btn-primary" onclick={addJobEdit}>{$t('permissions.addJobEdit')}</button>
+        </div>
+      {/if}
       <div>
         <div class="text-xs font-semibold uppercase tracking-wider mb-1.5">{$t('agentSettings.color')}</div>
         <div class="flex gap-2 items-center">
@@ -1683,69 +1763,6 @@
         </button>
       </div>
 
-    {:else if section === 'capabilities'}
-      <div class="flex items-center justify-between gap-3 mb-1">
-        <div>
-          <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('agentSettings.capabilities')}</div>
-          <div class="text-xs text-base-content/70 mt-1">{$t('agentCapabilities.desc', { values: { name: agent?.name ?? '' } })}</div>
-        </div>
-        {#if capabilitiesSaved}
-          <span class="text-xs text-success flex items-center gap-1 shrink-0"><Check class="w-3 h-3" /> {$t('common.saved')}</span>
-        {/if}
-      </div>
-
-      {#if capabilitiesError}
-        <div class="alert alert-error mt-3 py-2 text-xs">
-          <AlertTriangle class="w-4 h-4 shrink-0" />
-          <span>{capabilitiesError}</span>
-        </div>
-      {/if}
-
-      {#if capabilitiesLoading}
-        <div class="py-6 flex justify-center"><span class="loading loading-spinner loading-sm"></span></div>
-      {:else if capabilityRows.length === 0}
-        <!-- The honest empty state: nothing is connected, so there is nothing
-             this employee could be given to reach. -->
-        <div class="mt-4 rounded-lg border border-base-300 bg-base-200/40 px-4 py-6 text-center">
-          <div class="text-sm font-medium">{$t('agentCapabilities.emptyTitle')}</div>
-          <div class="text-xs text-base-content/60 mt-1.5 max-w-md mx-auto">{$t('agentCapabilities.emptyBody')}</div>
-        </div>
-      {:else}
-        <div class="flex flex-col gap-2 mt-3">
-          {#each capabilityRows as row (row.capability)}
-            <label class="flex items-start gap-3 rounded-lg border border-base-300 bg-base-100 px-3 py-2.5 cursor-pointer hover:bg-base-200/50">
-              <input
-                type="checkbox"
-                checked={row.bound}
-                onchange={(e) => toggleCapability(row.capability, e.currentTarget.checked)}
-                class="checkbox checkbox-sm mt-0.5 shrink-0"
-              />
-              <span class="flex-1 min-w-0">
-                <span class="flex flex-wrap items-center gap-2">
-                  <span class="text-sm font-medium">{capabilityLabel(row.capability)}</span>
-                  {#if row.builtin}
-                    <span class="badge badge-ghost badge-xs">{$t('agentCapabilities.builtin')}</span>
-                  {/if}
-                  {#if row.gatedOperations > 0}
-                    <span class="badge badge-warning badge-xs">{$t('agentCapabilities.needsApproval', { values: { count: row.gatedOperations } })}</span>
-                  {/if}
-                </span>
-                <span class="block text-xs text-base-content/60 mt-0.5">
-                  {#if row.builtin}
-                    {$t('agentCapabilities.builtinDesc')}
-                  {:else if row.providers.length > 0}
-                    {$t('agentCapabilities.providedBy', { values: { providers: row.providers.join(', ') } })}
-                  {:else}
-                    {$t('agentCapabilities.noProvider')}
-                  {/if}
-                </span>
-              </span>
-            </label>
-          {/each}
-        </div>
-        <div class="text-xs text-base-content/50 mt-3">{$t('agentCapabilities.approvalsNote')}</div>
-      {/if}
-
     {:else if section === 'workflows'}
       <div class="flex items-center justify-between gap-3 mb-1">
         <div>
@@ -1845,10 +1862,73 @@
         <div class="flex items-center gap-2.5 py-2 px-3 rounded-lg border border-base-300 bg-base-100">
           <div class="w-7 h-7 rounded-md bg-base-200 flex items-center justify-center text-sm shrink-0">&#9889;</div>
           <span class="text-sm font-medium flex-1">{skill}</span>
-          <button class="text-sm text-error cursor-pointer bg-transparent border-none hover:opacity-70">{$t('common.remove')}</button>
+          {#if !managed}
+            <button class="text-sm text-error cursor-pointer bg-transparent border-none hover:opacity-70 disabled:opacity-50" onclick={() => removeSkill(skill)} disabled={removingSkill !== ''}>{$t('common.remove')}</button>
+          {/if}
         </div>
       {/each}
       <a href="/marketplace/skills" class="inline-flex items-center gap-1 text-sm text-primary font-medium mt-1">{$t('agentSettings.addFromMarketplace')}</a>
+
+    {:else if section === 'reach'}
+      <div class="mb-1">
+        <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('agentSettings.reach')}</div>
+        <div class="text-xs text-base-content/70 mt-1">{$t('agentSettings.reachBlurb', { values: { name: agent?.name ?? '' } })}</div>
+      </div>
+
+      <div>
+        <div class="text-xs font-semibold uppercase tracking-wider mb-1.5">{$t('agentSettings.reachEmail')}</div>
+        {#if reachAddress}
+          <div class="flex items-center gap-2 p-3 rounded-lg border border-base-300 bg-base-100" data-selectable>
+            <span class="font-mono text-sm truncate flex-1">{reachAddress}</span>
+            <button type="button" class="btn btn-xs btn-ghost shrink-0" onclick={copyReachAddress}>{reachCopied ? $t('agentSettings.copied') : $t('common.copy')}</button>
+          </div>
+          <div class="text-xs text-base-content/70 mt-1.5">{$t('agentSettings.reachEmailDesc', { values: { name: agent?.name ?? '' } })}</div>
+        {:else}
+          <div class="text-sm text-base-content/60">{$t('agentSettings.reachNoEmail')}</div>
+        {/if}
+      </div>
+
+      {#if reachBotAddress}
+        <div>
+          <div class="text-xs font-semibold uppercase tracking-wider mb-1.5">{$t('agentSettings.reachBotEmail')}</div>
+          <div class="flex items-center gap-2 p-3 rounded-lg border border-base-300 bg-base-200/50" data-selectable>
+            <span class="font-mono text-sm text-base-content/70 truncate flex-1">{reachBotAddress}</span>
+            <a href="/settings/account" class="text-xs font-medium text-primary shrink-0 no-underline hover:underline">{$t('agentSettings.changeInBotSettings')}</a>
+          </div>
+        </div>
+      {/if}
+
+      <div>
+        <div class="flex items-center justify-between mb-1.5">
+          <div class="text-xs font-semibold uppercase tracking-wider">{$t('agentSettings.phone')}</div>
+          <a href="/{agentId}/settings/phone" class="text-xs font-medium text-primary no-underline hover:underline">{$t('agentSettings.reachManage')}</a>
+        </div>
+        {#if phoneLines.length === 0}
+          <div class="text-sm text-base-content/60">{$t('agentSettings.reachNoPhone')}</div>
+        {:else}
+          <div class="flex flex-col gap-1.5">
+            {#each phoneLines as line (line.number)}
+              <div class="py-2 px-3 rounded-lg border border-base-300 bg-base-100 font-mono text-sm">{fmtPhone(line.number)}</div>
+            {/each}
+          </div>
+        {/if}
+      </div>
+
+      <div>
+        <div class="flex items-center justify-between mb-1.5">
+          <div class="text-xs font-semibold uppercase tracking-wider">{$t('agentSettings.channels')}</div>
+          <a href="/{agentId}/settings/channels" class="text-xs font-medium text-primary no-underline hover:underline">{$t('agentSettings.reachManage')}</a>
+        </div>
+        {#if channelList.filter((c) => c.enabled).length === 0}
+          <div class="text-sm text-base-content/60">{$t('agentSettings.reachNoChannels')}</div>
+        {:else}
+          <div class="flex flex-col gap-1.5">
+            {#each channelList.filter((c) => c.enabled) as ch (ch.pluginSlug)}
+              <div class="py-2 px-3 rounded-lg border border-base-300 bg-base-100 text-sm">{ch.name}</div>
+            {/each}
+          </div>
+        {/if}
+      </div>
 
     {:else if section === 'channels'}
       <div class="mb-1">
@@ -2243,12 +2323,12 @@
         </div>
       {/if}
 
-    {:else if section === 'approvals'}
+    {:else if section === 'permissions'}
       <div class="mb-1">
-        <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('agentSettings.approvals')}</div>
-        <div class="text-xs text-base-content/70 mt-1">{$t('agentSettings.approvalsBlurb')}</div>
+        <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('permissions.title')}</div>
+        <div class="text-xs text-base-content/70 mt-1">{$t('permissions.employeeDescription', { values: { name: agent?.name ?? '' } })}</div>
       </div>
-      <ApprovalControls {agentId} />
+      <PermissionsSection {agentId} name={agent?.name ?? ''} />
 
     {:else if section === 'memory'}
       <MemoryManager {agentId} />

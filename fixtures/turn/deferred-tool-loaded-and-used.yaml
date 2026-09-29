@@ -37,7 +37,7 @@ prompt_assertions:
     - id: finds-the-tool
       text: "The model searches for and loads the notebook tool instead of improvising with the file tools"
       severity: critical
-      check: { tool: tool_search }
+      check: { tool: find_tools }
   recovery:
     - id: uses-the-tool
       text: "The notebook tool edits the notebook"
@@ -63,6 +63,6 @@ prompt_assertions:
 ideal_behavior:
   tool_calls: 3
   narrative: |
-    tool_search("notebook") → notebook(read) → notebook(edit, cell_id:
+    find_tools("notebook") → notebook(read) → notebook(edit, cell_id:
     "intro", edit_mode: "insert", cell_type: "markdown", new_source: "Totals
     checked by the owner.") → "Inserted it after the title cell."

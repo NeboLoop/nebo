@@ -45,6 +45,10 @@ const DURABLE_TREES: &[&str] = &[
     "sessions",
     "learned",
     "nebo",
+    // What the employee installed for itself (`npm install -g`, `pip install
+    // --user`, `cargo install`, `go install`): the image points each
+    // installer here, as the rest of the home folder is scratch.
+    "toolchains",
     CHROMIUM_PROFILE,
 ];
 
@@ -1055,6 +1059,7 @@ pub(super) mod tests {
             "nebo/plugin-profiles",
             "sessions",
             "home/go",
+            "toolchains/npm",
             "logs",
             "cache/state-commit",
             "data/backups",
@@ -1089,6 +1094,7 @@ pub(super) mod tests {
                 "user",
                 "sessions",
                 "nebo",
+                "toolchains",
                 "chromium-profile"
             ]
         );
@@ -1136,6 +1142,7 @@ pub(super) mod tests {
                 "logs",
                 "nebo",
                 "sessions",
+                "toolchains",
                 "user"
             ]
         );

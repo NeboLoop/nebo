@@ -32,7 +32,7 @@ name: Harness gate
 #   HARNESS_P_NEBO_BOOT_TOKEN   arm A (the old loop) and arm P (the rewrite)
 #                               can only run at once as two bots
 #
-# The agent runs on Janus; Claude Code only measures. GATE_MODEL pins the
+# The agent runs on Janus; the claude CLI only judges. GATE_MODEL pins the
 # speed so a routing change cannot move the number.
 #
 # Runner: the house Mac mini's Lima VM (label neboloop), never a GitHub-hosted
@@ -57,7 +57,10 @@ name: Harness gate
 # Isolation. Every job gets its own directory (GATE_JOB) with an empty home,
 # /tmp, NEBO_HOME and working directory, and the server and the test runner
 # run in that view through scripts/gate-sandbox.sh (bubblewrap): no run sees
-# a file an earlier run left, another runner's work, or ~/harness-runs.
+# a file an earlier run left, another runner's work, or ~/harness-runs. The
+# server's view (where the model's commands run) leaves out the checkout and
+# the rest of the job directory too: no check, no earlier run's log or
+# traces, and not the runner's own Nebo folder (GATE_JOB/runner-home).
 # Every run of every fixture, replay thread or not, gets a fresh server with
 # an empty NEBO_HOME, home, /tmp and working directory (scripts/gate-run.sh,
 # through scripts/gate-server.sh fresh), so no run recalls another's memory,
@@ -71,7 +74,7 @@ name: Harness gate
 # Judging is offline. A proof run (scripts/arm-report.py) is dispatched with
 # judge off and runs=3: the gate records the traces and decides the program
 # checks, and the judge runs later on the owner's Mac against the traces kept
-# on the VM, under the Claude Code login there (no token):
+# on the VM, under the judge CLI's own login there (no token):
 #   nebo-cli test grade --traces ~/.cache/nebo-arm-runs/<run id> --grader sonnet
 # (the fetch and the whole recipe: Proof-Scorecard.md). It is the same grader
 # and the same checks `test run` uses. HARNESS_CLAUDE_OAUTH_TOKEN hit its
@@ -135,6 +138,10 @@ on:
         type: choice
         options: [a, p]
         default: a
+      steering:
+        description: "NEBO_STEERING for the server: switch named attachments off to measure them. Empty/on = all on; off = all off; a,b = only those; -a,-b = all but those"
+        type: string
+        default: ""
 
 concurrency:
   # A sweep's group carries its arm and code under test, so the two arms of a
@@ -170,6 +177,9 @@ jobs:
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
       GATE_ARM: ${{ inputs.arm || 'a' }}
       GATE_REF: ${{ inputs.ref }}
+      # The server's attachments switch, on every server the job starts
+      # (scripts/gate-server.sh start, and each fresh one gate-run.sh starts).
+      NEBO_STEERING: ${{ inputs.steering }}
     steps:
       - uses: actions/checkout@v4
 
@@ -204,7 +214,17 @@ jobs:
             protobuf-compiler \
             libopenblas-dev \
             python3-yaml \
-            bubblewrap
+            bubblewrap \
+            unzip \
+            libnss3 \
+            libgbm1 \
+            libasound2t64 \
+            libcups2t64 \
+            libatk-bridge2.0-0t64 \
+            libxcomposite1 \
+            libxdamage1 \
+            libxrandr2 \
+            libxkbcommon0
 
       - name: Configure OpenBLAS paths
         run: |
@@ -222,7 +242,7 @@ jobs:
         run: |
           job="${{ runner.temp }}/gate"
           rm -rf "$job"
-          mkdir -p "$job"/{home,tmp,work,bin,nebo-home,traces}
+          mkdir -p "$job"/{home,tmp,work,bin,nebo-home,runner-home,traces}
           echo "GATE_JOB=$job" >> "$GITHUB_ENV"
 
       # The runner (and the fixtures and suites) always come from this commit.
@@ -268,6 +288,33 @@ jobs:
           cp "src-tauri/binaries/rg-$triple" "$GATE_JOB/bin/rg"
           "$GATE_JOB/bin/rg" --version | head -1
 
+      # A browser, as a cloud bot has one: the cloud image installs Chromium
+      # (Dockerfile) and the browser tools drive it headless over CDP; the
+      # server finds it as `chromium` on its PATH (nebo_browser::Manager,
+      # chrome::find_chrome). The gate had none, so every browser_* call
+      # answered "isn't available on this cloud bot" and a click-and-read
+      # fixture could only guess (36348199618, web-browser-interaction 0/3).
+      # Ubuntu's apt Chromium is a snap, so this is Playwright's build of
+      # Chromium at a pinned revision, arm64 like this job's runner, kept in
+      # the runner's tool cache between jobs and linked into the server's
+      # bin; gate-sandbox.sh shows the server the directory it resolves to.
+      - name: A browser for the server, as a cloud bot has
+        env:
+          CHROMIUM_REVISION: "1243"
+        run: |
+          dir="${{ runner.tool_cache }}/chromium/$CHROMIUM_REVISION"
+          if [ ! -x "$dir/chrome-linux/chrome" ]; then
+            tmp="$(mktemp -d)"
+            curl -sSfL -o "$tmp/chromium.zip" "https://cdn.playwright.dev/builds/chromium/$CHROMIUM_REVISION/chromium-linux-arm64.zip"
+            unzip -q "$tmp/chromium.zip" -d "$tmp/unpacked"
+            rm -rf "$dir"
+            mkdir -p "$(dirname "$dir")"
+            mv "$tmp/unpacked" "$dir"
+            rm -rf "$tmp"
+          fi
+          ln -sfn "$dir/chrome-linux/chrome" "$GATE_JOB/bin/chromium"
+          "$GATE_JOB/bin/chromium" --version
+
       # A fresh NEBO_HOME, the arm's CI bot, Janus confirmed as the provider:
       # scripts/gate-server.sh says how and why.
       - name: Start a headless server
@@ -305,6 +352,20 @@ jobs:
           P_BOT_TOKEN: ${{ secrets.HARNESS_P_NEBO_BOT_TOKEN }}
           P_BOOT_TOKEN: ${{ secrets.HARNESS_P_NEBO_BOOT_TOKEN }}
         run: scripts/gate-run.sh suites/error-correction.yaml 1 "$GATE_JOB/traces/correction" scripts/gate-sandbox.sh "$GATE_JOB/bin/nebo-runner" test run --no-judge --model "$GATE_MODEL"
+
+      # Local memory shared across employees, private memory kept, nothing
+      # filed under one conversation, and no global memory on a Nebo that
+      # has no global store (this server has none: gate-server.sh).
+      - name: Memory suite, program checks
+        if: github.event_name != 'schedule' && !inputs.suites
+        env:
+          A_BOT_ID: ${{ secrets.HARNESS_NEBO_BOT_ID }}
+          A_BOT_TOKEN: ${{ secrets.HARNESS_NEBO_BOT_TOKEN }}
+          A_BOOT_TOKEN: ${{ secrets.HARNESS_NEBO_BOOT_TOKEN }}
+          P_BOT_ID: ${{ secrets.HARNESS_P_NEBO_BOT_ID }}
+          P_BOT_TOKEN: ${{ secrets.HARNESS_P_NEBO_BOT_TOKEN }}
+          P_BOOT_TOKEN: ${{ secrets.HARNESS_P_NEBO_BOOT_TOKEN }}
+        run: scripts/gate-run.sh suites/memory.yaml 1 "$GATE_JOB/traces/memory" scripts/gate-sandbox.sh "$GATE_JOB/bin/nebo-runner" test run --no-judge --model "$GATE_MODEL"
 
       # The VM has no node. Anthropic's native installer puts a standalone
       # `claude` in ~/.local/bin; it persists on the runner, so this is a

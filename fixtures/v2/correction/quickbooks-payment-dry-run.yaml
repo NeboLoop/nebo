@@ -29,7 +29,7 @@ description: |
   green here. The check now pins the error SHAPES this fixture is about —
   the "unexpected argument" and "exited with code" the CLI-guessing spiral
   produced, the "is required" / "is missing" of a missing parameter, the
-  "No such tool" / "No skill named" of a guessed name, and the "not found"
+  "There is no tool named" / "No skill named" of a guessed name, and the "not found"
   that says the setup above did not take — and leaves the not-connected
   result alone. What the gate proves is the call shape: the first call is
   plugin__quickbooks (or find_tools loading it) with the command at the top level, no shell, inside the
@@ -78,7 +78,7 @@ prompt_assertions:
       text: "No run_command call runs the quickbooks binary, pipes JSON into it, or sets QUICKBOOKS_* env vars"
       severity: critical
     - id: no-tool-errors
-      text: "No call is rejected for its shape: no 'unexpected argument', no 'exited with code', no missing 'is required' / 'is missing' parameter, no 'No such tool' or 'No skill named', and no 'not found' — which is either the setup above failing to install the plugin, or the model naming a skill or plugin that does not exist. A 'not connected' result is the machine's state, not a shape error, and does not count"
+      text: "No call is rejected for its shape: no 'unexpected argument', no 'exited with code', no missing 'is required' / 'is missing' parameter, no 'There is no tool named' or 'No skill named', and no 'not found' — which is either the setup above failing to install the plugin, or the model naming a skill or plugin that does not exist. A 'not connected' result is the machine's state, not a shape error, and does not count"
       severity: critical
       check:
         no_error_contains:
@@ -87,7 +87,7 @@ prompt_assertions:
           - "is required"
           - "not found"
           - "is missing"
-          - "No such tool"
+          - "There is no tool named"
           - "No skill named"
     - id: bounded
       text: "At most 5 tool calls (4 on the plugin, plus the find_tools call that loads plugin__quickbooks). Critical on a connected machine; on the gate bot (no merchant grant, 2026-09-23: 8 calls reading skills and probing before doctor said not connected) it is the model's cost to report, not the light that blocks a merge — the shape checks above are what the gate proves here."

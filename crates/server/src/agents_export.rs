@@ -826,13 +826,12 @@ pub fn rerender(state: &crate::state::AppState, applied: &std::collections::Hash
         .iter()
         .filter(|a| a.is_enabled == 1 && a.is_app.unwrap_or(0) == 0)
     {
-        let policy = tools::policy::OperationPolicy::from_json(
-            crate::entity_config::resolve_for_chat(&state.store, "agent", &seat.id)
-                .and_then(|c| c.operation_policy)
-                .as_deref(),
-        );
-        for (op, rule) in &policy.operations {
-            if rule.access == tools::policy::OperationAccess::Approval {
+        for rule in state
+            .store
+            .permission_rules_in(&types::permissions::Scope::Employee(seat.id.clone()))
+            .unwrap_or_default()
+        {
+            if let (types::permissions::RuleKey::Operation(op), types::permissions::Effect::Ask) = (&rule.key, rule.effect) {
                 ceilings.insert(op.clone());
             }
         }

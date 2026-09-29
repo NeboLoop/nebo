@@ -2,13 +2,14 @@ id: correction-work-name-in-definition
 name: "Correction — a workflow name inside the definition is still a name"
 description: |
   Found live on 2026-09-04: the model created three workflows for an employee
-  and put "name" inside the definition JSON. The work tool answered "name is
-  required" three times, though the name was in every request. It took a
-  fourth try with a top-level name. The tool now accepts either place; the
+  and put "name" inside the definition JSON. The workflow tool answered "name
+  is required" three times, though the name was in every request. It took a
+  fourth try with a top-level name. create_workflow accepts either place; the
   fixture pins that a create with the name in either place succeeds first
   time, and that a missing name is refused with directions, not a bare
-  "required".
-target_component: work
+  "required". create_workflow is deferred: loading it with find_tools first
+  is the expected path.
+target_component: create_workflow
 
 setup:
   - "curl -s -X POST ${NEBO_TEST_SERVER:-localhost:27895}/api/v1/agents -H 'Content-Type: application/json' -d '{\"blank\":true,\"name\":\"cs-agent-{{tag}}\"}' > /dev/null"
@@ -21,27 +22,27 @@ conversation:
     content: "Create this workflow for the employee cs-agent-{{tag}}, exactly as written, and do not run it: {\"name\": \"Handle Web Form Submission\", \"activities\": [{\"id\": \"capture\", \"intent\": \"Read the webhook payload for name, email and message\", \"steps\": [\"Extract name, email and message from the payload\"]}, {\"id\": \"classify\", \"intent\": \"Classify the inquiry\", \"steps\": [\"Pick one of: product question, billing, technical, complaint\"]}, {\"id\": \"respond\", \"intent\": \"Reply by email\", \"steps\": [\"Draft a warm reply and send it by email\"]}]}"
 
 tool_config:
-  work:
+  create_workflow:
     enabled: true
 
 prompt_assertions:
   first_call:
-    - id: creates-with-work
-      text: "The first call is work(action: create)"
+    - id: creates-with-create-workflow
+      text: "The workflow is created with create_workflow (loaded with find_tools first), for cs-agent-{{tag}}"
       severity: critical
-      check: { first_call: true, tool: work, arg: action, equals: create }
+      check: { tool: create_workflow, arg: employee, contains: "cs-agent-" }
   recovery:
     - id: first-create-succeeds
       text: "The create succeeds on the first try; no 'name is required' error appears in any tool result"
       severity: critical
     - id: bounded
-      text: "At most 2 tool calls (one create, at most one confirmation read)"
+      text: "At most 3 tool calls (find_tools, one create, at most one confirmation read)"
       severity: critical
-      check: { max_tool_calls: 2 }
+      check: { max_tool_calls: 3 }
     - id: reports-created
       text: "The final response says the workflow was created and names it Handle Web Form Submission"
       severity: important
 
 ideal_behavior:
-  tool_calls: 1
-  narrative: "One work(action: create) call with the name either top-level or inside the definition, then a one-line confirmation."
+  tool_calls: 2
+  narrative: "find_tools(query: \"select:create_workflow\") → one create_workflow call for employee cs-agent-{{tag}}, with the name either top-level or inside the definition, then a one-line confirmation."

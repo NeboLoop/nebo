@@ -1,0 +1,13 @@
+id: an-off-switch-wins-in-every-mode
+name: "An Off switch refuses in every mode"
+description: |
+  Owner ruling 2026-09-28: the Permissions page is one three-way switch
+  (Allow, Ask, Off), and a deny beats every mode. A switch set to Off,
+  on the company page or the employee's own, refuses the call in
+  Automatic, Ask, Plan and Full Access alike, and an employee's own Allow
+  never turns a company Off back on.
+  Purely rule precedence with no model involved, so it is a deterministic
+  proof rather than a conversation.
+target_component: permissions
+proof: harness::permissions::proof::an_off_switch_wins_in_every_mode
+conversation: []

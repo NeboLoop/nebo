@@ -246,16 +246,6 @@ fn agent_dir_name(name: &str) -> String {
         .to_string()
 }
 
-/// memory.context_isolated as the runtime enforces it — the DB frontmatter is
-/// the ONE source of truth for the toggle (the owner flips it in the DB; the
-/// file is not rewritten). Both list branches derive from here.
-fn isolated_from_frontmatter(frontmatter: &str) -> bool {
-    serde_json::from_str::<serde_json::Value>(frontmatter)
-        .ok()
-        .and_then(|fm| fm.pointer("/memory/context_isolated").and_then(|v| v.as_bool()))
-        .unwrap_or(false)
-}
-
 /// A message as a one-line preview: plain text, cut at `PREVIEW_CHARS`.
 const PREVIEW_CHARS: usize = 120;
 fn chat_preview(last_content: &str) -> String {
@@ -280,12 +270,13 @@ const PREVIEW_LOOKBACK: i64 = 6;
 
 /// A row the owner sees in the thread. Mirrors `last_visible_message_sql`
 /// in crates/db/src/queries/chats.rs (not a tool row, non-empty, not
-/// `"hidden":true`); `sql_visibility_rule_matches_thread_preview` fails if
+/// `"hidden":true`, not `"runError":true`); `sql_visibility_rule_matches_thread_preview` fails if
 /// that SQL changes without this predicate following.
 fn is_visible(m: &db::models::ChatMessage) -> bool {
     m.role != "tool"
         && !m.content.is_empty()
         && !m.metadata.as_deref().is_some_and(|raw| raw.contains("\"hidden\":true"))
+        && !m.metadata.as_deref().is_some_and(|raw| raw.contains("\"runError\":true"))
 }
 
 /// The thread's status line from its newest rows (oldest first, as the store
@@ -350,7 +341,8 @@ pub async fn list_agents(
         .collect();
 
     // Linked employees read "Offline" when their linked bot is, as the hub
-    // reports it — one hub call for the whole roster, only when one exists.
+    // reports it — one hub call for the whole roster, only when one exists —
+    // or, on this computer, when Nebo is not hosting their agent.
     let linked = linked_employees(&state, &db_rows);
     let offline = if linked.is_empty() {
         std::collections::HashMap::new()
@@ -359,7 +351,7 @@ pub async fn list_agents(
             Ok(api) => api.list_managed_bots().await.ok(),
             Err(_) => None,
         };
-        linked_offline(&linked, bots.as_deref())
+        linked_offline(&linked, bots.as_deref(), here(&state).as_ref())
     };
 
     let mut agents = Vec::with_capacity(fs_agents.len());
@@ -420,6 +412,10 @@ pub async fn list_agents(
             .unwrap_or_else(|| name.clone());
 
         let latest_thread = latest_thread_status(&state.store, &agent_id);
+        let memory_mode = match db_row {
+            Some(r) => crate::workflow_manager::memory_mode_of(&r.frontmatter),
+            None => loaded.config.as_ref().map(|c| c.memory.mode).unwrap_or_default(),
+        };
 
         let mut entry = serde_json::json!({
             "id": agent_id,
@@ -447,15 +443,15 @@ pub async fn list_agents(
             // The roster's "editable" affordance keys off nappPath — omitting
             // it made every agent look hand-editable.
             "nappPath": db_row.and_then(|r| r.napp_path.clone()),
-            // memory.context_isolated — the roster shows a lock on sealed
-            // employees, so the list must know without N getAgent round trips.
-            // ONE source of truth: DB frontmatter, because that is what the
-            // runtime enforces. No filesystem fallback when a DB row exists —
-            // a lock that overstates enforcement would lie to the owner.
-            "isolated": match db_row {
-                Some(r) => isolated_from_frontmatter(&r.frontmatter),
-                None => loaded.config.as_ref().map(|c| c.memory.context_isolated).unwrap_or(false),
-            },
+            // memory.mode — the roster lists a kept-apart employee's
+            // conversations and shows a lock, so the list must know without N
+            // getAgent round trips. `isolated` is whether the conversations
+            // are kept apart (Separate or Confidential). ONE source of truth:
+            // DB frontmatter, read as the runtime enforces it. No filesystem
+            // fallback when a DB row exists — a lock that overstates
+            // enforcement would lie to the owner.
+            "memoryMode": memory_mode,
+            "isolated": memory_mode.separates_conversations(),
             // The roster row's second line, without a per-employee round trip:
             // the latest thread's status line, and whether a restart cut it.
             "latestPreview": latest_thread.as_ref().and_then(|t| t.preview.clone()),
@@ -535,7 +531,8 @@ pub async fn list_agents(
             // hid every sealed employee whose files failed to load (a name
             // with "/" nests its folder and the loader misses it) — the rail
             // then showed no drill affordance until a click resolved it.
-            "isolated": isolated_from_frontmatter(&r.frontmatter),
+            "memoryMode": crate::workflow_manager::memory_mode_of(&r.frontmatter),
+            "isolated": crate::workflow_manager::memory_mode_of(&r.frontmatter).separates_conversations(),
             "needsSetup": false,
             "latestPreview": latest_thread.as_ref().and_then(|t| t.preview.clone()),
             "restarted": latest_thread.as_ref().is_some_and(|t| t.restarted),
@@ -638,10 +635,10 @@ fn spawn_agent_intro(state: &AppState, agent_id: &str, name: &str, brand_new: bo
     let config = crate::chat_dispatch::ChatConfig {
         session_key,
         prompt: intro,
-        system: String::new(),
         user_id: String::new(),
         channel: "web".to_string(),
         origin: tools::Origin::User,
+        door: types::permissions::Door::Chat,
         agent_id: agent_id.to_string(),
         cancel_token: tokio_util::sync::CancellationToken::new(),
         lane: types::constants::lanes::MAIN.to_string(),
@@ -653,15 +650,16 @@ fn spawn_agent_intro(state: &AppState, agent_id: &str, name: &str, brand_new: bo
         origin_agent_id: None,
         mention_context: None,
         tool_scope: None,
-        plan_mode: false,
         channel_ctx: None,
         handoff_depth: 0,
         seed_taint: vec![],
         tool_allowlist: None,
         hidden_prompt: true,
+        coworker: None,
         audience: None,
         cwd: None,
         model_override: None,
+        client_id: None,
     };
     let st = state.clone();
     tokio::spawn(async move {
@@ -672,19 +670,27 @@ fn spawn_agent_intro(state: &AppState, agent_id: &str, name: &str, brand_new: bo
 
 pub async fn create_agent(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     Json(body): Json<serde_json::Value>,
 ) -> HandlerResult<serde_json::Value> {
     // Blank agent: create a minimal agent and auto-activate it. The sidebar's
     // "+ new employee" flow names it at birth — hiring starts with a name.
     if body.get("blank").and_then(|v| v.as_bool()).unwrap_or(false) {
         let name = body["name"].as_str().filter(|n| !n.trim().is_empty());
-        return create_blank_agent(state, name).await;
+        // The builder's Create: the drafted job (`POST /agents/needs`), less
+        // the items the owner removed, named by their words.
+        let draft_id = body["draftId"].as_str().filter(|d| !d.is_empty());
+        let removed: Vec<String> = body["removed"]
+            .as_array()
+            .map(|a| a.iter().filter_map(|w| w.as_str().and_then(tools::needs::capability_for_words)).collect())
+            .unwrap_or_default();
+        return create_blank_agent(state, name, draft_id, &removed).await;
     }
     // Hire from a linked bot: the employee's brain is an agent on a linked
     // OpenClaw or Hermes install, driven through the link's chat contract.
     if let Some(linked) = body.get("linked") {
-        let (bot_id, agent_id) = linked_target(linked).map_err(to_error_response)?;
-        return create_linked_agent(state, &bot_id, &agent_id).await;
+        let (bot_id, agent_id, mode) = linked_target(linked).map_err(to_error_response)?;
+        return create_linked_agent(state, &bot_id, &agent_id, mode).await;
     }
 
     let agent_md = body["agentMd"].as_str().ok_or_else(|| {
@@ -817,6 +823,9 @@ pub async fn create_agent(
     // agent_installed broadcast, and the agent.installed lifecycle. Same call
     // the install code path, the deps cascade, and the fs watcher make.
     crate::codes::finalize_agent_install(&state, &id, &agent.name).await;
+    // The owner's create from a package is the hire: its declared needs
+    // become the job.
+    crate::codes::hire(&state, &id, tools::InstalledBy::Owner).await;
 
     // Cascade: resolve skill dependencies. Only marketplace-referenced skills are
     // separate installs — bare names are plugin-provided tool bindings (see
@@ -836,7 +845,12 @@ pub async fn create_agent(
 
     let cascade = if !deps.is_empty() {
         let mut visited = std::collections::HashSet::new();
-        Some(crate::deps::resolve_cascade(&state, deps, &mut visited).await)
+        // The page that created it renders the cascade's progress.
+        let origin = super::ws::EventOrigin::of_request(&headers, String::new());
+        Some(
+            crate::deps::resolve_cascade(&state, deps, &mut visited, tools::InstalledBy::Owner, &origin)
+                .await,
+        )
     } else {
         None
     };
@@ -1047,6 +1061,9 @@ pub async fn get_agent(
             "inputValues": input_values_json,
             "pluginsNeedingAuth": plugins_needing_auth,
             "needsSetup": needs_setup,
+            // memory.mode, read as the runtime enforces it (an agent.json
+            // that still carries the old isolation flag included).
+            "memoryMode": crate::workflow_manager::memory_mode_of(&agent.frontmatter),
         })))
     } else {
         Ok(Json(serde_json::json!({
@@ -1077,6 +1094,9 @@ pub async fn get_agent(
                 .unwrap_or_else(|| serde_json::json!({})),
             "pluginsNeedingAuth": plugins_needing_auth,
             "needsSetup": needs_setup,
+            // memory.mode, read as the runtime enforces it (an agent.json
+            // that still carries the old isolation flag included).
+            "memoryMode": crate::workflow_manager::memory_mode_of(&agent.frontmatter),
         })))
     }
 }
@@ -1160,19 +1180,20 @@ pub async fn update_agent(
     let agent_md = body["agentMd"].as_str().unwrap_or(&existing.agent_md);
     let (fm, _body) = parse_agent_md(agent_md).map_err(to_error_response)?;
 
-    // Body fields take priority over frontmatter (allows renaming without editing AGENT.md)
-    let name = body["name"].as_str().unwrap_or_else(|| {
+    // Body fields take priority over frontmatter (allows renaming without editing AGENT.md).
+    // Every employee's name is the owner's to change, a linked one's included:
+    // its link (bot and agent id) is what reaches it, never its name.
+    let name = body["name"].as_str().map(str::trim).unwrap_or_else(|| {
         if fm.name.is_empty() {
             &existing.name
         } else {
             &fm.name
         }
     });
-    if linked_rename(&existing, name) {
-        return Err(to_error_response(types::NeboError::Validation(format!(
-            "{}'s name is set on the linked bot.",
-            existing.name
-        ))));
+    if body.get("name").is_some() && name.is_empty() {
+        return Err(to_error_response(types::NeboError::Validation(
+            "A name is required.".into(),
+        )));
     }
     let description = body["description"].as_str().unwrap_or_else(|| {
         if fm.description.is_empty() {
@@ -1182,18 +1203,29 @@ pub async fn update_agent(
         }
     });
 
-    // Update agent_md frontmatter if name/description changed via body (not via agentMd)
+    // The employee's skills: `skills` in the body replaces the list (the
+    // Skills section's Remove), otherwise the AGENT.md's stand.
+    let skills: Vec<String> = match body.get("skills").and_then(|v| v.as_array()) {
+        Some(list) => list
+            .iter()
+            .filter_map(|s| s.as_str())
+            .map(str::to_string)
+            .collect(),
+        None => fm.skills.clone(),
+    };
+
+    // Update agent_md frontmatter if name/description/skills changed via body (not via agentMd)
     let final_agent_md = if body.get("agentMd").is_none()
-        && (name != fm.name.as_str() || description != fm.description.as_str())
+        && (name != fm.name.as_str() || description != fm.description.as_str() || skills != fm.skills)
     {
         // Rebuild agent_md with updated name/description in frontmatter
         let mut new_md = String::from("---\n");
         new_md.push_str(&format!("name: \"{}\"\n", name));
         new_md.push_str(&format!("description: \"{}\"\n", description));
         // Re-serialize other frontmatter fields
-        if !fm.skills.is_empty() {
+        if !skills.is_empty() {
             new_md.push_str(&format!("skills:\n"));
-            for s in &fm.skills {
+            for s in &skills {
                 new_md.push_str(&format!("  - \"{}\"\n", s));
             }
         }
@@ -1222,30 +1254,42 @@ pub async fn update_agent(
         .cloned()
         .unwrap_or(serde_json::json!({}));
 
-    // Memory config (context isolation, topics) survives every save — dropping
-    // it here silently un-isolated agents whose whole point is that one
-    // client's context never bleeds into another's. `contextIsolated` in the
-    // body toggles isolation from the General tab.
+    // Memory config (mode, topics) survives every save — dropping it here
+    // silently un-isolated agents whose whole point is that one client's
+    // context never bleeds into another's. `memoryMode` in the body
+    // ("single", "separate" or "confidential") sets it from the General tab.
     let mut memory_cfg = existing_fm
         .get("memory")
         .cloned()
         .unwrap_or(serde_json::json!({}));
-    if let Some(iso) = body["contextIsolated"].as_bool() {
-        // A phone line forces isolation: callers must never share memory.
-        // Checked live against the hub so removing the line is the only key.
-        if !iso && super::neboai::agent_has_phone_line(&state, &id).await {
+    if let Some(raw) = body.get("memoryMode") {
+        let mode: napp::agent::MemoryMode = serde_json::from_value(raw.clone()).map_err(|_| {
+            to_error_response(types::NeboError::Validation(
+                "memoryMode is \"single\", \"separate\" or \"confidential\".".into(),
+            ))
+        })?;
+        // A phone line keeps conversations apart: callers must never share
+        // memory. Checked live against the hub so removing the line is the
+        // only key.
+        if !mode.separates_conversations() && super::neboai::agent_has_phone_line(&state, &id).await {
             return Err(to_error_response(types::NeboError::Validation(
-                "Memory isolation stays on while a phone line is attached to this employee. Remove the line at neboai.com/manage/phone first.".into(),
+                "Conversations stay separate while a phone line is attached to this employee. Remove the line at neboai.com/manage/phone first.".into(),
             )));
         }
-        memory_cfg["context_isolated"] = serde_json::json!(iso);
+        if !memory_cfg.is_object() {
+            memory_cfg = serde_json::json!({});
+        }
+        memory_cfg["mode"] = serde_json::json!(mode);
+        if let Some(m) = memory_cfg.as_object_mut() {
+            m.remove("context_isolated");
+        }
     }
 
     let authored = AuthoredDeclaration::from_body(&body);
     let mut frontmatter_json = saved_frontmatter(
         &existing_fm,
         workflows,
-        serde_json::json!(fm.skills),
+        serde_json::json!(skills),
         fm.pricing
             .as_ref()
             .map(|p| serde_json::json!({ "model": p.model, "cost": p.cost })),
@@ -1349,6 +1393,14 @@ pub async fn update_agent(
     if let Ok(config) = napp::agent::parse_agent_config(&frontmatter_json.to_string()) {
         crate::codes::apply_seat_declaration(&state.store, &id, &config);
     }
+    // The owner binding an interface here is the consent to it: what the
+    // edit adds to the declaration joins the job.
+    if authored.interfaces.is_some() {
+        let was = if existing.frontmatter.trim().is_empty() { "{}" } else { existing.frontmatter.as_str() };
+        if let Ok(before) = napp::agent::parse_agent_config(was) {
+            crate::codes::grant_declared(&state, &id, Some(&before)).await;
+        }
+    }
 
     state.hub.broadcast(
         "agent_updated",
@@ -1377,7 +1429,86 @@ pub async fn update_agent(
         });
     }
 
+    // Save on the owner's page is the consent to the edit's line (drafted
+    // by `POST /agents/needs` with this agent): what it adds joins the job.
+    if let Some(draft_id) = body["draftId"].as_str().filter(|d| !d.is_empty()) {
+        match tools::needs::open_draft(&state.store, draft_id, "edit") {
+            Ok((row, _, added)) if row.agent_id == id => {
+                let source = types::permissions::RuleSource::JobEdit;
+                if let Err(e) = agent::harness::permissions::consent::grant_job(&state.store, &id, &added, source) {
+                    warn!(agent = %id, error = %e, "the edit's added needs were not granted");
+                }
+                let _ = state.store.use_employee_draft(draft_id);
+            }
+            Ok(_) => warn!(agent = %id, draft = draft_id, "an edit draft for another employee was ignored"),
+            Err(e) => warn!(agent = %id, error = %e, "the edit draft could not be used"),
+        }
+    }
+
     Ok(Json(serde_json::json!({ "agent": updated })))
+}
+
+/// POST /agents/needs — the one needs step for the owner's pages. With
+/// `typeConfig` (a package's agent.json), the line above Hire, read off the
+/// manifest with no model call. With `description`, the line above Create in
+/// the builder, drafted so Create grants what was shown; with `agentId` too,
+/// only what an edit adds, drafted for Save. Items and accounts are plain
+/// words; no rule string reaches the page.
+pub async fn work_out_agent_needs(
+    State(state): State<AppState>,
+    Json(body): Json<serde_json::Value>,
+) -> HandlerResult<serde_json::Value> {
+    use tools::needs::{self, DeclaredNeeds, Draft, JobSource};
+    let name = body["name"].as_str().map(str::trim).filter(|n| !n.is_empty()).unwrap_or("This employee");
+    let description = body["description"].as_str().unwrap_or("");
+    let agent_id = body["agentId"].as_str().unwrap_or("");
+    let declared = body
+        .get("typeConfig")
+        .filter(|v| v.is_object())
+        .and_then(|tc| napp::agent::parse_agent_config(&tc.to_string()).ok())
+        .map(|c| DeclaredNeeds::of(&c));
+    let installed = agent::agent_worker::installed_interfaces(&state.plugin_store);
+    let reader = agent::harness::permissions::consent::AuxReader::new(state.harness.providers());
+    let src = JobSource {
+        name,
+        agent_id,
+        description,
+        skills: &[],
+        plugins: &[],
+        workflows: &[],
+        declared: declared.as_ref(),
+        installed: &installed,
+    };
+    let mut worked_out = needs::work_out_needs(&src, &reader).await;
+    if declared.is_none() && !agent_id.is_empty() {
+        let before = agent::harness::permissions::consent::job_of(&state.store, agent_id).map_err(to_error_response)?;
+        worked_out = needs::added(&before, &worked_out);
+    }
+    let (draft_id, line) = if declared.is_some() {
+        (serde_json::Value::Null, needs::consent_line(name, &worked_out))
+    } else {
+        let input = serde_json::json!({ "name": name, "description": description });
+        let draft = Draft {
+            kind: if agent_id.is_empty() { "create" } else { "edit" },
+            agent_id,
+            creator_id: "",
+            chat_id: "",
+            name,
+            input: &input,
+            needs: &worked_out,
+        };
+        let (id, line) =
+            needs::save_draft(&state.store, &draft).map_err(|e| to_error_response(types::NeboError::Internal(e)))?;
+        (serde_json::Value::String(id), line)
+    };
+    let items: Vec<String> = worked_out.items().into_iter().map(|t| t.words).collect();
+    let accounts: Vec<&str> = worked_out.accounts.iter().filter_map(|a| needs::words_of(&a.capability)).collect();
+    Ok(Json(serde_json::json!({
+        "line": line,
+        "items": items,
+        "accounts": accounts,
+        "draftId": draft_id,
+    })))
 }
 
 /// DELETE /agents/{id}
@@ -1480,6 +1611,17 @@ pub async fn delete_agent(
 
     // Unsubscribe event triggers from dispatcher
     state.event_dispatcher.unsubscribe_agent(&id).await;
+
+    // A coding agent Nebo hosted on this computer for this employee stops
+    // with it. Its folder stays: the work in it is the owner's.
+    if let Some(local) = &state.local_host
+        && let Some(model) = state.store.get_entity_config("agent", &id).ok().flatten().and_then(|c| c.model_preference)
+        && let Some((bot, agent)) = ai::LinkedProvider::target(&model)
+        && local.bot_id().as_deref() == Some(bot)
+        && let Err(e) = local.remove(agent).await
+    {
+        warn!(agent = %id, error = %e, "the employee's coding agent was not removed");
+    }
 
     // DB cleanup only when the agent actually had DB rows. agent_workflows are
     // cascade-deleted via FK; chats before sessions (chats reference session names).
@@ -1675,7 +1817,7 @@ pub async fn process_agent_bindings(
             &trigger_config,
             desc,
             inputs_json.as_deref(),
-            binding.emit.as_deref(),
+            binding.emit_names().as_deref(),
             activities_json.as_deref(),
             connections_json.as_deref(),
             // Package content (install/activate) — owner rows are off limits.
@@ -1718,15 +1860,36 @@ pub async fn process_agent_bindings(
 async fn create_blank_agent(
     state: AppState,
     name: Option<&str>,
+    draft_id: Option<&str>,
+    removed: &[String],
 ) -> HandlerResult<serde_json::Value> {
     let id = uuid::Uuid::new_v4().to_string();
     let name = name.map(str::trim).unwrap_or("New Agent");
-    let agent_md = format!("---\nname: {:?}\ndescription: \"\"\n---\n", name);
+    let draft = match draft_id {
+        Some(d) => Some(
+            tools::needs::open_draft(&state.store, d, "create")
+                .map_err(|e| to_error_response(types::NeboError::Validation(e)))?,
+        ),
+        None => None,
+    };
+    let description = draft.as_ref().and_then(|(_, input, _)| input["description"].as_str()).unwrap_or("").trim();
+    let agent_md = format!("---\nname: {:?}\ndescription: {:?}\n---\n", name, description);
 
     let agent = state
         .store
-        .create_agent(&id, None, name, "", &agent_md, "{}", None, None)
+        .create_agent(&id, None, name, description, &agent_md, "{}", None, None)
         .map_err(to_error_response)?;
+
+    // Create is the owner's consent to the line it showed: the drafted
+    // needs, less what the owner removed, become the job.
+    if let (Some((row, _, needs)), Some(draft_id)) = (&draft, draft_id) {
+        let kept = needs.without(removed);
+        let source = types::permissions::RuleSource::Created { draft_id: draft_id.to_string() };
+        if let Err(e) = agent::harness::permissions::consent::grant_job(&state.store, &id, &kept, source) {
+            warn!(agent = %id, error = %e, "the builder's job was not granted");
+        }
+        let _ = state.store.use_employee_draft(&row.id);
+    }
 
     activate_hire(&state, &agent).await;
 
@@ -1772,8 +1935,13 @@ async fn activate_hire(state: &AppState, agent: &db::models::Agent) {
     );
 }
 
-/// The `linked: {botId, agentId}` option of the create-agent body.
-fn linked_target(linked: &serde_json::Value) -> Result<(String, String), types::NeboError> {
+/// The `linked: {botId, agentId, permissionMode?}` option of the
+/// create-agent body. `permissionMode` is the employee's permission mode
+/// (`ask`, `automatic`, `plan`, `full_access`), chosen at hire for a linked
+/// coding agent; without it the employee follows the company's.
+fn linked_target(
+    linked: &serde_json::Value,
+) -> Result<(String, String, Option<types::permissions::Mode>), types::NeboError> {
     let field = |key: &str| {
         linked[key]
             .as_str()
@@ -1782,18 +1950,46 @@ fn linked_target(linked: &serde_json::Value) -> Result<(String, String), types::
             .map(str::to_owned)
             .ok_or_else(|| types::NeboError::Validation(format!("linked.{key} required")))
     };
-    Ok((field("botId")?, field("agentId")?))
+    let mode = match linked["permissionMode"].as_str() {
+        None => None,
+        Some(name) => Some(types::permissions::Mode::parse(name).ok_or_else(|| {
+            types::NeboError::Validation(format!("linked.permissionMode {name:?} is not a permission mode"))
+        })?),
+    };
+    Ok((field("botId")?, field("agentId")?, mode))
 }
 
 /// Hire an agent of a linked bot as an employee of this bot: the row is
-/// `kind = "linked"`, its name and description are the contract roster's,
-/// its name is locked, and its brain is `linked/<bot>/<agent>` on the
-/// employee's model preference. Soul and rules stay the runtime's.
+/// `kind = "linked"`, its name and description start as the contract
+/// roster's, and its brain is `linked/<bot>/<agent>` on the employee's model
+/// preference. The name is then the owner's to change, like any employee's:
+/// the brain is what reaches the agent. Soul and rules stay the runtime's.
+///
+/// `agent_id` `new:<runtime>` (a "New Claude Code" row) is a new coding
+/// agent of that runtime: the computer starts one in a folder of its own,
+/// then it is hired. `bot_id` is this bot's own for this computer, where
+/// Nebo hosts it; any other bot's link adds it.
 async fn create_linked_agent(
     state: AppState,
     bot_id: &str,
     agent_id: &str,
+    mode: Option<types::permissions::Mode>,
 ) -> HandlerResult<serde_json::Value> {
+    if let Some(local) = state.local_host.clone().filter(|l| l.bot_id().as_deref() == Some(bot_id)) {
+        let runtime = agent_id.strip_prefix(NEW).unwrap_or(agent_id);
+        let hosted = local
+            .hire(runtime)
+            .await
+            .map_err(|e| to_error_response(types::NeboError::Validation(e)))?;
+        let description = format!("Works in {}", hosted.acp.workdir.display());
+        let hired = hire_linked(&state, bot_id, &hosted.id, &hosted.label, &description, mode).await;
+        if hired.is_err()
+            && let Err(e) = local.remove(&hosted.id).await
+        {
+            warn!(agent = %hosted.id, error = %e, "hire: the agent hosted for a failed hire was not removed");
+        }
+        return hired;
+    }
     let api = crate::codes::build_api_client(&state).map_err(to_error_response)?;
     let bots = api
         .list_managed_bots()
@@ -1808,26 +2004,92 @@ async fn create_linked_agent(
                 "That bot is not a linked bot of yours with chat.".into(),
             ))
         })?;
-    let roster = api.linked_bot_agents(bot_id).await.map_err(|e| {
+    if let Some(runtime) = agent_id.strip_prefix(NEW) {
+        let added = api.add_linked_agent(bot_id, runtime).await.map_err(|e| {
+            info!(bot_id, runtime, error = %e, "hire: the linked bot did not add the agent");
+            to_error_response(types::NeboError::Validation(refusal(&e, &bot.name)))
+        })?;
+        let hired = hire_linked(&state, bot_id, &added.id, &added.name, &added.description, mode).await;
+        if hired.is_err()
+            && let Err(e) = api.remove_linked_agent(bot_id, &added.id).await
+        {
+            warn!(bot_id, agent = %added.id, error = %e, "hire: the agent added for a failed hire was not removed");
+        }
+        return hired;
+    }
+    let roster = api.linked_bot_roster(bot_id).await.map_err(|e| {
         info!(bot_id, error = %e, "hire: the linked bot's roster did not answer");
         to_error_response(types::NeboError::Internal(format!(
             "Could not connect to {}. Try again.",
             bot.name
         )))
     })?;
-    let linked = roster.iter().find(|a| a.id == agent_id).ok_or_else(|| {
+    let linked = roster.agents.iter().find(|a| a.id == agent_id).ok_or_else(|| {
         to_error_response(types::NeboError::Validation(format!(
             "No agent {agent_id} on {}.",
             bot.name
         )))
     })?;
+    let runtime = if linked.runtime.is_empty() { &bot.runtime } else { &linked.runtime };
+    hire_linked(&state, bot_id, agent_id, agent_name(&linked.name, runtime), &linked.description, mode).await
+}
 
+/// What a "New <runtime>" row's agent id starts with: `new:claude-code`.
+/// Never an agent's own id (those are lowercase letters, digits and
+/// hyphens).
+const NEW: &str = "new:";
+
+/// A linked bot's refusal in the owner's words: the link's own sentence
+/// ("Codex isn't installed on this computer."), else that it can't be
+/// reached.
+fn refusal(e: &comm::CommError, bot: &str) -> String {
+    match e {
+        comm::CommError::Http { status, body } if *status < 500 => serde_json::from_str::<serde_json::Value>(body)
+            .ok()
+            .and_then(|b| b["error"].as_str().map(str::to_owned))
+            .unwrap_or_else(|| format!("Could not connect to {bot}. Try again.")),
+        _ => format!("Could not connect to {bot}. Try again."),
+    }
+}
+
+/// A coding agent installed on a computer, as a new employee to start: it
+/// works in a new folder of its own, `computer` naming the computer for the
+/// owner ("Mac.lan", "this computer"), started by the bot `bot_id`.
+fn new_row(runtime: &comm::api_types::LinkedRuntime, computer: &str, bot_id: &str) -> serde_json::Value {
+    serde_json::json!({
+        "id": format!("{NEW}{}", runtime.id),
+        "name": runtime.name,
+        "description": format!("Works in a new folder on {computer}"),
+        "runtime": runtime.id,
+        "botId": bot_id,
+        "hired": false,
+    })
+}
+
+/// The linked employee's row, brain and permission mode, and
+/// its activation: every linked hire, from any computer, ends here.
+async fn hire_linked(
+    state: &AppState,
+    bot_id: &str,
+    agent_id: &str,
+    name: &str,
+    description: &str,
+    mode: Option<types::permissions::Mode>,
+) -> HandlerResult<serde_json::Value> {
+    let brain = ai::LinkedProvider::model_id(bot_id, agent_id);
+    let rows = state.store.list_agents(1000, 0).map_err(to_error_response)?;
+    if let Some(hired) = hired_as(&rows, &linked_employees(state, &rows), &brain) {
+        return Err(to_error_response(types::NeboError::Validation(format!(
+            "That agent is already hired, as {}.",
+            hired.name
+        ))));
+    }
     let id = uuid::Uuid::new_v4().to_string();
-    let name = linked.name.trim();
+    let name = name.trim();
     let name = if name.is_empty() { agent_id } else { name };
     let agent_md = format!(
         "---\nname: {:?}\ndescription: {:?}\n---\n",
-        name, linked.description
+        name, description
     );
     let agent = state
         .store
@@ -1835,28 +2097,33 @@ async fn create_linked_agent(
             &id,
             Some("linked"),
             name,
-            &linked.description,
+            description,
             &agent_md,
             "{}",
             None,
             None,
         )
         .map_err(to_error_response)?;
-    state.store.lock_agent_name(&id).map_err(to_error_response)?;
     state
         .store
         .upsert_entity_config(
             "agent",
             &id,
-            &serde_json::json!({ "modelPreference": ai::LinkedProvider::model_id(bot_id, agent_id) }),
+            &serde_json::json!({ "modelPreference": brain }),
         )
         .map_err(to_error_response)?;
-    info!(agent = %id, bot_id, agent_id, "hired a linked agent");
+    if let Some(mode) = mode {
+        state
+            .store
+            .set_permission_mode(&types::permissions::Scope::Employee(id.clone()), mode)
+            .map_err(to_error_response)?;
+    }
+    info!(agent = %id, bot_id, agent_id, mode = ?mode, "hired a linked agent");
 
-    activate_hire(&state, &agent).await;
+    activate_hire(state, &agent).await;
 
-    // No introduction ceremony: the name is the linked agent's, not one the
-    // owner gave, and the runtime owns what it says first.
+    // No introduction ceremony: the name is the linked agent's until the
+    // owner changes it, and the runtime owns what it says first.
     Ok(Json(serde_json::json!({
         "agent": { "id": id, "name": agent.name },
         "activated": true,
@@ -1864,30 +2131,48 @@ async fn create_linked_agent(
     })))
 }
 
-/// GET /agents/linked — every linked bot of the owner's that has agents to
-/// hire, and those agents: what "Hire from another app" offers. Not signed
-/// in to NeboAI = nothing to hire from.
+/// GET /agents/linked — what "Hire from another app" offers, by computer:
+/// what is installed on each, one entry per app (Claude Code, Codex, Gemini
+/// CLI, OpenClaw, Hermes), each hired from the bot its row names (`botId`)
+/// and started as itself. Found as it is asked: each computer's host looks
+/// for its coding agents on every listing. Not signed in to NeboAI = only
+/// this computer's.
 pub async fn list_linked_agents(State(state): State<AppState>) -> HandlerResult<serde_json::Value> {
+    let here = this_computer(&state);
+    let this_host = crate::codes::host_label();
+    let hired = hired_linked(&state);
     let Ok(api) = crate::codes::build_api_client(&state) else {
-        return Ok(Json(serde_json::json!({ "bots": [] })));
+        return Ok(Json(serde_json::json!({ "computers": linked_computers(&[], &this_host, here, &hired) })));
     };
     let bots = api
         .list_managed_bots()
         .await
         .map_err(|e| to_error_response(types::NeboError::Internal(e.to_string())))?;
     let self_id = config::read_bot_id().unwrap_or_default();
-    let mut sources = Vec::new();
-    for bot in bots.iter().filter(|b| hire_source(b, &self_id)) {
-        let agents = match api.linked_bot_agents(&bot.id).await {
-            Ok(agents) => agents,
-            Err(e) => {
+    let sources: Vec<comm::api_types::ManagedBot> = bots.into_iter().filter(|b| hire_source(b, &self_id)).collect();
+    let rosters = futures::future::join_all(sources.iter().map(|bot| api.linked_bot_roster(&bot.id))).await;
+    let links: Vec<_> = sources
+        .into_iter()
+        .zip(rosters)
+        .map(|(bot, roster)| {
+            let roster = roster.unwrap_or_else(|e| {
                 info!(bot_id = %bot.id, error = %e, "linked bot's roster did not answer");
-                Vec::new()
-            }
-        };
-        sources.extend(source_entry(bot, agents));
-    }
-    Ok(Json(serde_json::json!({ "bots": sources })))
+                comm::api_types::LinkedRoster::default()
+            });
+            (bot, roster)
+        })
+        .collect();
+    Ok(Json(serde_json::json!({ "computers": linked_computers(&links, &this_host, here, &hired) })))
+}
+
+/// The linked agents already hired here, as (bot, agent).
+fn hired_linked(state: &AppState) -> std::collections::HashSet<(String, String)> {
+    let rows = state.store.list_agents(1000, 0).unwrap_or_default();
+    linked_employees(state, &rows)
+        .iter()
+        .filter_map(|(_, model)| ai::LinkedProvider::target(model))
+        .map(|(bot, agent)| (bot.to_owned(), agent.to_owned()))
+        .collect()
 }
 
 /// Whether a bot of the owner's is a place to hire from: another app's
@@ -1902,36 +2187,203 @@ fn hire_source(bot: &comm::api_types::ManagedBot, self_id: &str) -> bool {
         && bot.id != self_id
 }
 
-/// One hire source as the modal lists it; a bot with no agents to offer
-/// (its roster did not answer, or it has none) is not listed.
-fn source_entry(
-    bot: &comm::api_types::ManagedBot,
-    agents: Vec<comm::api_types::LinkedAgent>,
-) -> Option<serde_json::Value> {
-    (!agents.is_empty()).then(|| {
-        serde_json::json!({
-            "id": bot.id,
-            "name": bot.name,
-            "runtime": bot.runtime,
-            "online": bot.online,
-            "agents": agents,
+/// This computer while Nebo hosts its coding agents itself: the bot they
+/// are hired under, and the coding agents installed here.
+struct ThisComputer {
+    bot_id: String,
+    installed: Vec<comm::api_types::LinkedRuntime>,
+}
+
+/// This computer as a hire source, looked for now: the coding agents
+/// installed here that Nebo can host, each a new employee in a folder of
+/// its own. None without a bot to host them as, or while nebo-link hosts
+/// this computer's agents (its bot lists them then, like any computer's).
+fn this_computer(state: &AppState) -> Option<ThisComputer> {
+    let local = state.local_host.as_ref()?;
+    let bot_id = local.bot_id()?;
+    let installed: Vec<comm::api_types::LinkedRuntime> = local
+        .hireable()
+        .into_iter()
+        .map(|a| comm::api_types::LinkedRuntime { id: a.id, name: a.name })
+        .collect();
+    (!installed.is_empty()).then_some(ThisComputer { bot_id, installed })
+}
+
+/// The owner's computers as the hire list shows them: this one first
+/// ("This computer", `this_host` being its hostname), then each computer
+/// the owner's linked bots run on, once however many of its bots there
+/// are. A computer is its hostname; a bot that never reported one is a
+/// computer of its own, under its name.
+///
+/// Each lists what is installed on it, one entry per app, in one order
+/// (Claude Code, Codex, Gemini CLI, OpenCode, OpenClaw, Hermes): its apps'
+/// agents, named for what they are ([`agent_name`]), `hired` for one on the
+/// team already; and a coding agent installed there with none of its own to
+/// hire yet, started new in a folder of its own ([`NEW`]) by that computer.
+fn linked_computers(
+    links: &[(comm::api_types::ManagedBot, comm::api_types::LinkedRoster)],
+    this_host: &str,
+    here: Option<ThisComputer>,
+    hired: &std::collections::HashSet<(String, String)>,
+) -> Vec<serde_json::Value> {
+    let mut keys: Vec<&str> = here.as_ref().map(|_| this_host).into_iter().collect();
+    for (bot, _) in links {
+        if !keys.contains(&computer(bot)) {
+            keys.push(computer(bot));
+        }
+    }
+    let mut computers = Vec::new();
+    for key in keys {
+        let on: Vec<_> = links.iter().filter(|(bot, _)| computer(bot) == key).collect();
+        let local = key == this_host;
+        let place = match on.first().map(|(bot, _)| bot) {
+            _ if local => "this computer",
+            Some(bot) if bot.hostname.is_empty() => bot.name.as_str(),
+            _ => key,
+        };
+        let mut agents: Vec<(&str, serde_json::Value)> = on
+            .iter()
+            .flat_map(|(bot, roster)| roster.agents.iter().map(move |a| (bot, a)))
+            .map(|(bot, a)| {
+                let runtime = if a.runtime.is_empty() { bot.runtime.as_str() } else { a.runtime.as_str() };
+                let row = serde_json::json!({
+                    "id": a.id,
+                    "name": agent_name(&a.name, runtime),
+                    "description": format!("{} on {place}", app_name(runtime)),
+                    "runtime": runtime,
+                    "botId": bot.id,
+                    "hired": hired.contains(&(bot.id.clone(), a.id.clone())),
+                });
+                (runtime, row)
+            })
+            .collect();
+        let starts: Vec<(&comm::api_types::LinkedRuntime, &str)> = match &here {
+            Some(here) if local => here.installed.iter().map(|r| (r, here.bot_id.as_str())).collect(),
+            _ => starts(&on),
+        };
+        for (runtime, bot_id) in starts {
+            let unhired = agents.iter().any(|(r, row)| *r == runtime.id && row["hired"] == false);
+            if !unhired {
+                agents.push((runtime.id.as_str(), new_row(runtime, place, bot_id)));
+            }
+        }
+        agents.sort_by_key(|(runtime, _)| app_order(runtime));
+        computers.push(serde_json::json!({
+            "id": format!("computer:{key}"),
+            "name": if local { "This computer" } else { place },
+            "online": (local && here.is_some()) || on.iter().any(|(bot, _)| bot.online),
+            "local": local,
+            "agents": agents.into_iter().map(|(_, row)| row).collect::<Vec<_>>(),
+        }));
+    }
+    computers
+}
+
+/// Which computer a linked bot runs on: its hostname, else the bot itself.
+fn computer(bot: &comm::api_types::ManagedBot) -> &str {
+    if bot.hostname.is_empty() { &bot.id } else { &bot.hostname }
+}
+
+/// An app as the owner knows it, by its runtime (`openclaw`, `codex`).
+fn app_name(runtime: &str) -> &str {
+    match runtime {
+        "openclaw" => "OpenClaw",
+        "hermes" => "Hermes",
+        key => nebo_runtimes::acp::Agent::KNOWN
+            .into_iter()
+            .find(|a| a.key() == key)
+            .map_or(key, |a| a.name()),
+    }
+}
+
+/// Where an app's entries sit on a computer's list.
+fn app_order(runtime: &str) -> usize {
+    ["claude-code", "codex", "gemini", "opencode", "openclaw", "hermes"]
+        .iter()
+        .position(|r| *r == runtime)
+        .unwrap_or(usize::MAX)
+}
+
+/// A linked agent's name as the owner sees it: the one its app gave it,
+/// unless that is a name nobody chose (OpenClaw's "Assistant" and "main",
+/// Hermes' "default"), which reads as the app itself: "OpenClaw".
+fn agent_name<'a>(name: &'a str, runtime: &'a str) -> &'a str {
+    let name = name.trim();
+    let unnamed = name.is_empty() || ["assistant", "main", "default", "agent"].contains(&name.to_lowercase().as_str());
+    if unnamed { app_name(runtime) } else { name }
+}
+
+/// The coding agents one computer can start new, each by one of its bots
+/// that offers it: one running that coding agent itself, else one running
+/// another (the computer's coding agent host), else any; online before
+/// offline, then by id, so it is the same bot every time. Whichever bot it
+/// is, the computer starts the coding agent as itself, in a folder of its
+/// own.
+fn starts<'a>(
+    on: &[&'a (comm::api_types::ManagedBot, comm::api_types::LinkedRoster)],
+) -> Vec<(&'a comm::api_types::LinkedRuntime, &'a str)> {
+    let mut offered: Vec<&comm::api_types::LinkedRuntime> = Vec::new();
+    for r in on.iter().flat_map(|(_, roster)| &roster.runtimes) {
+        if !offered.iter().any(|o| o.id == r.id) {
+            offered.push(r);
+        }
+    }
+    let coding = |runtime: &str| offered.iter().any(|r| r.id == runtime);
+    offered
+        .iter()
+        .filter_map(|r| {
+            let bot = on
+                .iter()
+                .filter(|link| link.1.runtimes.iter().any(|o| o.id == r.id))
+                .map(|link| &link.0)
+                .min_by_key(|bot| {
+                    let kind = match () {
+                        _ if bot.runtime == r.id => 0,
+                        _ if coding(&bot.runtime) => 1,
+                        _ => 2,
+                    };
+                    (kind, !bot.online, bot.id.as_str())
+                })?;
+            Some((*r, bot.id.as_str()))
         })
+        .collect()
+}
+
+/// This computer's hosted agents as the roster reads them: the bot they are
+/// hired under, and the agents Nebo hosts now (none while nebo-link hosts
+/// this computer's agents).
+struct Here {
+    bot_id: String,
+    agents: Vec<String>,
+}
+
+fn here(state: &AppState) -> Option<Here> {
+    let local = state.local_host.as_ref()?;
+    Some(Here {
+        bot_id: local.bot_id()?,
+        agents: match local.oal() {
+            Some(_) => local.agents().into_iter().map(|a| a.id).collect(),
+            None => Vec::new(),
+        },
     })
 }
 
 /// Whether the roster's linked employees can be reached right now, by agent
 /// id: a linked employee is offline when the hub reports its linked bot
-/// offline, and when the hub itself cannot be asked (`bots` = None).
+/// offline, and when the hub itself cannot be asked (`bots` = None); one on
+/// this computer, when Nebo is not hosting its agent.
 fn linked_offline(
     linked: &[(String, String)],
     bots: Option<&[comm::api_types::ManagedBot]>,
+    here: Option<&Here>,
 ) -> std::collections::HashMap<String, bool> {
     linked
         .iter()
         .map(|(agent_id, model)| {
-            let online = ai::LinkedProvider::target(model)
-                .zip(bots)
-                .is_some_and(|((bot_id, _), bots)| bots.iter().any(|b| b.id == bot_id && b.online));
+            let online = ai::LinkedProvider::target(model).is_some_and(|(bot_id, agent)| match here {
+                Some(here) if here.bot_id == bot_id => here.agents.iter().any(|a| a == agent),
+                _ => bots.is_some_and(|bots| bots.iter().any(|b| b.id == bot_id && b.online)),
+            });
             (agent_id.clone(), !online)
         })
         .collect()
@@ -1953,10 +2405,16 @@ fn linked_employees(state: &AppState, rows: &[db::models::Agent]) -> Vec<(String
         .collect()
 }
 
-/// A write that would rename a linked employee (by `name` or through the
-/// AGENT.md frontmatter): the name is the linked agent's, locked at hire.
-fn linked_rename(existing: &db::models::Agent, name: &str) -> bool {
-    existing.kind.as_deref() == Some("linked") && name != existing.name
+/// The employee already running as the linked agent `brain` names, if one
+/// is hired. A linked agent is known by its link, never by its name: the
+/// owner may have renamed the employee since it was hired.
+fn hired_as<'a>(
+    rows: &'a [db::models::Agent],
+    linked: &[(String, String)],
+    brain: &str,
+) -> Option<&'a db::models::Agent> {
+    let (id, _) = linked.iter().find(|(_, model)| model == brain)?;
+    rows.iter().find(|r| &r.id == id)
 }
 
 /// A write that would change a linked employee's soul or rules: those are
@@ -2195,10 +2653,15 @@ pub async fn list_agent_workflows(
     let mut wf_map = serde_json::Map::new();
     for wf in &workflows {
         let trigger = reconstruct_trigger(&wf.trigger_type, &wf.trigger_config);
+        let temporary = state
+            .store
+            .temporary_work(db::TemporaryKind::Workflow, &id, &wf.binding_name)
+            .map_err(to_error_response)?;
         let mut entry = serde_json::json!({
             "trigger": trigger,
             "description": wf.description,
             "isActive": wf.is_active != 0,
+            "temporary": temporary.is_some(),
             "lastFired": wf.last_fired,
             "emit": wf.emit,
             "activities": wf.activities,
@@ -2711,10 +3174,11 @@ pub async fn run_agent_workflow(
         }
     }
 
-    let emit_source = binding
+    let emit_sources: Vec<String> = binding
         .emit
-        .as_ref()
-        .map(|emit_name| workflow::events::emit_source_for(&agent_rec.name, emit_name));
+        .iter()
+        .map(|emit_name| workflow::events::emit_source_for(&agent_rec.name, emit_name))
+        .collect();
 
     let run_id = state
         .workflow_manager
@@ -2724,7 +3188,7 @@ pub async fn run_agent_workflow(
             "manual",
             Some(binding_name),
             &id,
-            emit_source,
+            emit_sources,
         )
         .await
         .map_err(|e| to_error_response(types::NeboError::Internal(e)))?;
@@ -2790,6 +3254,9 @@ async fn hub_webhook_create(
         .create_webhook(&hub_id, label, workflow.unwrap_or(""))
         .await
         .map_err(|e| types::NeboError::Internal(format!("webhooks: {e}")))?;
+    // A webhook is an outside door: each delivery is a chat of its own
+    // (owner rule 09-25).
+    state.store.mark_multi_chat(&agent.id)?;
     // Echo the fields explicitly so the generated TS client carries the contract.
     Ok(serde_json::json!({
         "id": body["id"],
@@ -2969,41 +3436,17 @@ pub async fn activate_agent(
         }
     }
 
-    // Launch sidecar binary for app agents using the shared .napp runtime.
+    // Put an app's sidecar under its supervisor (replacing any it had), and
+    // wait for the first launch to settle so the app is up when this returns.
     if agent.is_app.unwrap_or(0) != 0 {
-        let old_lifecycle = {
-            let mut lifecycles = state.app_lifecycles.write().await;
-            lifecycles.remove(&agent_id)
-        };
-        if let Some(mut lifecycle) = old_lifecycle {
-            if let Err(e) = lifecycle.shutdown().await {
-                warn!(agent = %agent_id, error = %e, "failed to stop existing app sidecar");
-            }
-        }
-
-        if let Some(tool_dir) = app_tool_dir(&agent) {
-            let mut lifecycle = crate::app_lifecycle::AppLifecycle::new(
-                agent_id.clone(),
-                tool_dir,
-                state.hub.clone(),
-                state.tools.clone(),
-                state.skill_loader.clone(),
-                state.config.port,
-            );
-            match lifecycle.launch().await {
-                Ok(()) => {
-                    state
-                        .app_lifecycles
-                        .write()
-                        .await
-                        .insert(agent_id.clone(), lifecycle);
-                }
-                Err(e) => {
-                    warn!(agent = %agent_id, error = %e, "failed to launch app sidecar");
+        match crate::app_lifecycle::start(&state, &agent, true).await {
+            Some(lifecycle) => {
+                let settled = lifecycle.settled(crate::app_lifecycle::REQUEST_WAIT).await;
+                if !settled.is_running() {
+                    warn!(agent = %agent_id, state = %settled.wire(), "app sidecar is not running yet");
                 }
             }
-        } else {
-            warn!(agent = %agent_id, "app agent has no sidecar directory");
+            None => info!(agent = %agent_id, "app has no program to run"),
         }
     }
 
@@ -3044,15 +3487,7 @@ pub async fn deactivate_agent(
     // Stop autonomous agent worker (cancels heartbeat, event, schedule triggers)
     state.agent_workers.stop_agent(&id).await;
 
-    let lifecycle = {
-        let mut lifecycles = state.app_lifecycles.write().await;
-        lifecycles.remove(&id)
-    };
-    if let Some(mut lifecycle) = lifecycle {
-        if let Err(e) = lifecycle.shutdown().await {
-            warn!(agent = %id, error = %e, "failed to stop app sidecar");
-        }
-    }
+    crate::app_lifecycle::stop(&state, &id).await;
 
     let removed = state.agent_registry.write().await.remove(&id);
     match removed {
@@ -3250,7 +3685,7 @@ pub async fn duplicate_agent(
         );
     }
 
-    // Clone entity_config (heartbeat / permissions / model / personality / paths).
+    // Clone entity_config (heartbeat / model / personality).
     if let Ok(Some(cfg)) = state.store.get_entity_config("agent", &id) {
         let patch = serde_json::json!({
             "heartbeatEnabled": cfg.heartbeat_enabled,
@@ -3258,15 +3693,32 @@ pub async fn duplicate_agent(
             "heartbeatContent": cfg.heartbeat_content,
             "heartbeatWindowStart": cfg.heartbeat_window_start,
             "heartbeatWindowEnd": cfg.heartbeat_window_end,
-            "permissions": cfg.permissions,
-            "resourceGrants": cfg.resource_grants,
             "modelPreference": cfg.model_preference,
             "personalitySnippet": cfg.personality_snippet,
-            "allowedPaths": cfg.allowed_paths,
             "pinned": cfg.pinned,
             "multiChat": cfg.multi_chat,
         });
         let _ = state.store.upsert_entity_config("agent", &new_id, &patch);
+    }
+    // Clone its permissions: the rules and the mode the owner gave it.
+    let source_scope = types::permissions::Scope::Employee(id.clone());
+    for rule in state.store.permission_rules_in(&source_scope).unwrap_or_default() {
+        let by = match &rule.source {
+            types::permissions::RuleSource::Law { pack } => types::permissions::Writer::Package { package: pack.clone() },
+            types::permissions::RuleSource::Package { package } => types::permissions::Writer::Package { package: package.clone() },
+            _ => types::permissions::Writer::Owner,
+        };
+        let copy = types::permissions::Rule {
+            id: uuid::Uuid::new_v4().to_string(),
+            scope: types::permissions::Scope::Employee(new_id.clone()),
+            ..rule
+        };
+        if let Err(e) = state.store.write_permission_rule(&copy, &by) {
+            warn!(agent = %new_id, error = %e, "duplicate: a permission rule did not copy");
+        }
+    }
+    if let Ok(Some(mode)) = state.store.permission_mode(&source_scope) {
+        let _ = state.store.set_permission_mode(&types::permissions::Scope::Employee(new_id.clone()), mode);
     }
 
     // Auto-activate (use the source's soul/rules — the fresh agent row has none yet
@@ -3355,10 +3807,10 @@ pub async fn chat_with_agent(
     let config = crate::chat_dispatch::ChatConfig {
         session_key: session_key.clone(),
         prompt,
-        system: String::new(),
         user_id: String::new(),
         channel: "web".to_string(),
         origin: tools::Origin::User,
+        door: types::permissions::Door::Chat,
         agent_id: id.clone(),
         cancel_token: tokio_util::sync::CancellationToken::new(),
         lane: types::constants::lanes::MAIN.to_string(),
@@ -3369,15 +3821,17 @@ pub async fn chat_with_agent(
         entity_name: String::new(),
         origin_agent_id: None,
         mention_context: None,
-        tool_scope: None, plan_mode: false,
+        tool_scope: None,
         channel_ctx: None,
         handoff_depth: 0,
         seed_taint: vec![],
         tool_allowlist: None,
         hidden_prompt: false,
+        coworker: None,
         audience: None,
         cwd: None,
         model_override: None,
+        client_id: None,
     };
 
     crate::chat_dispatch::run_chat(&state, config).await;
@@ -3595,6 +4049,7 @@ pub async fn create_agent_workflow(
         .get("triggerConfig")
         .cloned()
         .unwrap_or(serde_json::json!({}));
+    let lifetime = body_lifetime(&body)?;
 
     // Parse existing frontmatter
     let mut fm: serde_json::Value =
@@ -3698,6 +4153,8 @@ pub async fn create_agent_workflow(
             true,
         )
         .map_err(to_error_response)?;
+    let temporary = crate::workflow_manager::apply_lifetime(&state.store, &id, binding_name, lifetime.as_ref())
+        .map_err(|e| to_error_response(types::NeboError::Database(e)))?;
 
     // The worker owns live trigger registration — restart it so the new
     // binding's trigger (heartbeat/watch/event/schedule) goes live now,
@@ -3707,6 +4164,20 @@ pub async fn create_agent_workflow(
     // Write to filesystem
     write_agent_json_to_fs(&agent.napp_path, &fm);
 
+    // Temporary work with no trigger is for now: it starts as it is made.
+    let run_id = if temporary && trigger_type == "manual" {
+        let binding_id = format!("agent:{id}:{binding_name}");
+        Some(
+            state
+                .workflow_manager
+                .run(&binding_id, serde_json::json!({}), "manual")
+                .await
+                .map_err(|e| to_error_response(types::NeboError::Validation(format!("made, but it did not start: {e}"))))?,
+        )
+    } else {
+        None
+    };
+
     let workflows = state
         .store
         .list_agent_workflows(&id)
@@ -3715,7 +4186,26 @@ pub async fn create_agent_workflow(
 
     Ok(Json(serde_json::json!({
         "workflow": wf,
+        "temporary": temporary,
+        "runId": run_id,
     })))
+}
+
+/// The body's `lifetime`: "temporary" (for one piece of work: it runs once
+/// and is deleted after its outcome reaches the owner), "saved", or absent
+/// (a new workflow is saved; an existing one keeps its lifetime). Made in
+/// the app, a temporary workflow's outcome reaches the owner in the Inbox.
+fn body_lifetime(
+    body: &serde_json::Value,
+) -> Result<Option<tools::Lifetime>, (StatusCode, Json<types::api::ErrorResponse>)> {
+    match body.get("lifetime").and_then(|v| v.as_str()) {
+        None => Ok(None),
+        Some("temporary") => Ok(Some(tools::Lifetime::Temporary { report_to: String::new() })),
+        Some("saved") => Ok(Some(tools::Lifetime::Saved)),
+        Some(other) => Err(to_error_response(types::NeboError::Validation(format!(
+            "lifetime is \"temporary\" or \"saved\", not {other:?}"
+        )))),
+    }
 }
 
 /// PUT /agents/{id}/workflows/{binding_name} — update an existing workflow binding.
@@ -3739,6 +4229,8 @@ pub async fn update_agent_workflow(
         .and_then(|w| w.get(&binding_name))
         .cloned()
         .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
+
+    let lifetime = body_lifetime(&body)?;
 
     // Determine old trigger type for cleanup
     let old_trigger_type = existing_binding
@@ -3857,6 +4349,8 @@ pub async fn update_agent_workflow(
             true,
         )
         .map_err(to_error_response)?;
+    let temporary = crate::workflow_manager::apply_lifetime(&state.store, &id, &binding_name, lifetime.as_ref())
+        .map_err(|e| to_error_response(types::NeboError::Database(e)))?;
 
     // If trigger type changed, clear the old cron row before re-sync.
     if body.get("triggerType").is_some() {
@@ -3878,6 +4372,7 @@ pub async fn update_agent_workflow(
 
     Ok(Json(serde_json::json!({
         "workflow": wf,
+        "temporary": temporary,
     })))
 }
 
@@ -4064,11 +4559,11 @@ pub async fn list_agent_chats(
     // Resolve active chat_id from the legacy web session (if it exists).
     let legacy_session_key = types::keyparser::build_agent_session_key(&id, "web");
     let active_chat_id = state
-        .runner
+        .harness
         .sessions()
         .resolve_session_id_by_key(&legacy_session_key)
         .ok()
-        .map(|sid| state.runner.sessions().active_chat_id(&sid))
+        .map(|sid| state.harness.sessions().active_chat_id(&sid))
         .unwrap_or_default();
 
     // Prefix query: catches both legacy `agent:<id>:web` and new `agent:<id>:thread:<uuid>`.
@@ -4112,6 +4607,8 @@ pub async fn list_agent_chats(
                 "id": chat.id,
                 "name": chat.title,
                 "title": chat.title,
+                // A linked coding employee's conversation: where it works.
+                "folder": chat.linked_folder,
                 "preview": preview,
                 "restarted": status.restarted,
                 "updatedAt": updated_at_relative,
@@ -4196,7 +4693,7 @@ pub(crate) fn create_agent_thread(
     let session_key = format!("agent:{}:thread:{}", agent_id, new_chat_id);
 
     // Creates a new session with active_chat_id = new_chat_id (via extract_chat_id_from_key).
-    state.runner.sessions().get_or_create(&session_key, "")?;
+    state.harness.sessions().get_or_create(&session_key, "")?;
 
     // Create the chat row linked to this session.
     let chat = state
@@ -4213,13 +4710,13 @@ pub async fn activate_agent_chat(
     let session_key = types::keyparser::build_agent_session_key(&id, "web");
 
     let session_id = state
-        .runner
+        .harness
         .sessions()
         .resolve_session_id_by_key(&session_key)
         .map_err(to_error_response)?;
 
     state
-        .runner
+        .harness
         .sessions()
         .set_active_chat(&session_id, &chat_id)
         .map_err(to_error_response)?;
@@ -4545,7 +5042,7 @@ pub async fn start_workflow_chat(
          Node types (ONLY these, ONLY inside call trees): \n\
          - greeting (params: text — spoken word-for-word; exactly one required)\n\
          - intent (params: name kebab-case unique, description, and the intent's grants as \
-           comma-separated strings — tools e.g. \"agent:memory, os:calendar\", workflows \
+           comma-separated strings — tools e.g. \"recall, os:calendar\", workflows \
            (this agent's workflow names), plugins (slugs), mcp (server names)). Grants are \
            ENFORCED: a caller in that intent can touch nothing else.\n\
          - transfer (params: when; to — WHO the caller is told they're being connected \
@@ -4584,7 +5081,7 @@ pub async fn start_workflow_chat(
         types::keyparser::build_agent_session_key(&id, "help:workflow");
 
     let session = state
-        .runner
+        .harness
         .sessions()
         .get_or_create(&session_key, "")
         .map_err(to_error_response)?;
@@ -4598,7 +5095,7 @@ pub async fn start_workflow_chat(
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
     if refresh {
-        if let Ok(messages) = state.runner.sessions().get_messages(&session.id) {
+        if let Ok(messages) = state.harness.sessions().get_messages(&session.id) {
             if let Some(sys) = messages.iter().find(|m| m.role == "system") {
                 state
                     .store
@@ -4614,9 +5111,9 @@ pub async fn start_workflow_chat(
 
     // Full seed (builder open / first visit): clear old messages and inject
     // fresh context so the AI sees the latest workflow state.
-    let _ = state.runner.sessions().clear_current_messages(&session.id);
+    let _ = state.harness.sessions().clear_current_messages(&session.id);
 
-    let _ = state.runner.sessions().append_message(
+    let _ = state.harness.sessions().append_message(
         &session.id,
         "system",
         &system_context,
@@ -4639,7 +5136,7 @@ pub async fn start_workflow_chat(
         }
     );
 
-    let _ = state.runner.sessions().append_message(
+    let _ = state.harness.sessions().append_message(
         &session.id,
         "assistant",
         &greeting,
@@ -4682,6 +5179,20 @@ pub async fn handle_available(
     Ok(Json(HandleAvailableResponse { available }))
 }
 
+/// The capabilities the company has connected: every interface its active
+/// plugins bind, with the plugins that bind it.
+pub fn connected_capabilities(state: &AppState) -> std::collections::BTreeMap<String, Vec<String>> {
+    let mut by_capability: std::collections::BTreeMap<String, Vec<String>> = std::collections::BTreeMap::new();
+    for slug in tools::plugin_tool::active_plugin_slugs(&state.plugin_store, &state.store) {
+        if let Some(manifest) = state.plugin_store.get_manifest(&slug) {
+            for capability in agent::agent_worker::interfaces_of(&manifest.interface_bindings) {
+                by_capability.entry(capability).or_default().push(slug.clone());
+            }
+        }
+    }
+    by_capability
+}
+
 /// GET /api/v1/agents/{id}/operations — the per-employee Approvals view.
 ///
 /// Lists every gated operation this employee can reach, with its three-state
@@ -4693,12 +5204,14 @@ pub async fn handle_available(
 ///     itself (`interface_catalog::is_builtin_capability`);
 ///   * everything this employee has been TOLD about — the `ceiling` its package
 ///     declares, and every operation already carrying a rule (a pack's law, the
-///     owner's own setting, the General Manager's grant). So an owner who builds
-///     their own employee around their own capability gets a row for it, and
-///     `decide` gates it, without that operation being in any list of ours.
+///     owner's own setting, a standing grant). So an owner who builds their
+///     own employee around their own capability gets a row for it, and the
+///     permission check decides it, without that operation being in any
+///     list of ours.
+///
 /// Writes go through the ONE canonical pathway — the entity-config PUT
-/// (`operationPolicy` patch key) — this endpoint is the read-side aggregation
-/// only (CODE_AUDITOR Rule 8).
+/// (`operationPolicy` patch key, written as rules) — this endpoint is the
+/// read-side aggregation only (CODE_AUDITOR Rule 8).
 pub async fn get_agent_operations(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -4724,18 +5237,7 @@ pub async fn get_agent_operations(
     // runtime performs itself and every seat can reach. An empty list is the
     // honest answer — nothing is connected yet — not a menu of things that
     // would fail on the first call.
-    let mut providers_by_capability: std::collections::BTreeMap<String, Vec<String>> =
-        std::collections::BTreeMap::new();
-    for slug in tools::plugin_tool::active_plugin_slugs(&state.plugin_store, &state.store) {
-        if let Some(manifest) = state.plugin_store.get_manifest(&slug) {
-            for capability in agent::agent_worker::interfaces_of(&manifest.interface_bindings) {
-                providers_by_capability
-                    .entry(capability)
-                    .or_default()
-                    .push(slug.clone());
-            }
-        }
-    }
+    let mut providers_by_capability = connected_capabilities(&state);
     for op in tools::interface_catalog::gated_operations() {
         let capability = op.split('.').next().unwrap_or("");
         if tools::interface_catalog::is_builtin_capability(capability) {
@@ -4770,15 +5272,26 @@ pub async fn get_agent_operations(
         })
         .collect();
 
-    // Stored per-employee policy (None = not configured yet).
-    let stored = state
+    // The seat's rules on operations (the old per-employee policy is now
+    // these rules), and the mode it runs in.
+    let rules = agent::harness::permissions::RuleSet::load(&state.store, &id).map_err(to_error_response)?;
+    let own: std::collections::HashMap<String, types::permissions::Rule> = state
         .store
-        .get_entity_config("agent", &id)
-        .ok()
-        .flatten()
-        .and_then(|c| c.operation_policy);
-    let configured = stored.is_some();
-    let policy = tools::policy::OperationPolicy::from_json(stored.as_deref());
+        .permission_rules_in(&types::permissions::Scope::Employee(id.clone()))
+        .map_err(to_error_response)?
+        .into_iter()
+        .filter_map(|r| match &r.key {
+            types::permissions::RuleKey::Operation(op) if r.field.is_none() => Some((op.clone(), r)),
+            _ => None,
+        })
+        .collect();
+    let configured = !own.is_empty();
+    let mode = agent::harness::permissions::rules::mode_of(&state.store, &id).map_err(to_error_response)?;
+    let access = |effect: types::permissions::Effect| match effect {
+        types::permissions::Effect::Allow => "always",
+        types::permissions::Effect::Ask => "approval",
+        types::permissions::Effect::Deny => "blocked",
+    };
 
     // Catalog rows this seat can reach, then the declared ones, in a stable
     // order and never the same operation twice.
@@ -4794,7 +5307,7 @@ pub async fn get_agent_operations(
     let mut declared: Vec<String> = ceiling
         .iter()
         .map(|op| tools::plugin_tool::port_suffix(op))
-        .chain(policy.operations.keys().cloned())
+        .chain(own.keys().cloned())
         .filter(|op| {
             !op.is_empty()
                 && !addresses
@@ -4810,106 +5323,58 @@ pub async fn get_agent_operations(
         .iter()
         .map(|op| {
             let suffix = tools::plugin_tool::port_suffix(op);
+            let rule = own.get(&suffix);
+            let target = types::permissions::Target {
+                tool: String::new(),
+                key: suffix.clone(),
+                operation: Some(op.clone()),
+                capability: None,
+                field: None,
+                subject: None,
+                read_only: false,
+                effects: types::permissions::CallEffects::unknown(),
+            };
+            // What the owner's own chat would get, in the permission
+            // check's order: a deny refuses and an ask rule asks in every
+            // mode; then Full Access runs it, Plan runs no change, and an
+            // allow runs it; else Ask mode asks and it runs inside the job.
+            // Untrusted origins (inbound email/DM, apps, skills, MCP,
+            // callers) additionally ask for gated operations at run time
+            // (WS2).
+            let effective = match (rules.decide(&target), mode) {
+                (Some((_, types::permissions::Effect::Deny)), _) => "blocked",
+                (Some((_, types::permissions::Effect::Ask)), _) => "approval",
+                (_, types::permissions::Mode::FullAccess) => "always",
+                (_, types::permissions::Mode::Plan) => "blocked",
+                (Some((_, types::permissions::Effect::Allow)), _) => "always",
+                (None, types::permissions::Mode::Ask) => "approval",
+                (None, _) => "always",
+            };
             serde_json::json!({
                 "operation": op,
                 "capability": op.split('.').next().unwrap_or(""),
                 "critical": tools::interface_catalog::is_critical(op),
-                "override": policy.operations.get(&suffix).map(|r| r.access.as_str()),
-                "locked": policy.operations.get(&suffix).map(|r| r.locked).unwrap_or(false),
-                "bounds": policy.operations.get(&suffix).and_then(|r| r.bounds.clone()),
-                // The Controls view shows the policy as configured — the
-                // trusted-origin resolution. Untrusted origins (inbound
-                // email/DM, apps, skills, MCP, callers) additionally floor
-                // gated Always to Approval at run time (WS2).
-                "effective": policy
-                    .decide(op, tools::Origin::User, &tools::policy::OperationParams::default(), None, None, true)
-                    .access
-                    .as_str(),
+                "override": rule.map(|r| access(r.effect)),
+                "locked": rule.map(|r| r.locked).unwrap_or(false),
+                "bounds": rule.and_then(|r| r.money.as_ref()).map(|m| serde_json::json!({
+                    "max_amount_cents": m.per_action_cents,
+                    "per_day_cents": m.per_day_cents,
+                    "per_day_count": m.per_day_count,
+                    "per_counterparty_day_cents": m.per_counterparty_day_cents,
+                })),
+                "effective": effective,
             })
         })
         .collect();
 
     Ok(Json(serde_json::json!({
-        "default": policy.default.as_str(),
+        "default": crate::entity_config::default_access(mode),
         "configured": configured,
         "interfaces": interfaces,
         "available": available,
         "operations": operations,
         "total": operations.len(),
     })))
-}
-
-#[derive(Deserialize)]
-pub struct WorkflowApprovalBody {
-    pub approved: bool,
-}
-
-/// POST /api/v1/agents/workflow-runs/{run_id}/approval — resolve a run parked
-/// at the approval checkpoint.
-///
-/// Deny → the suspension is dropped and the run completes as denied.
-/// Approve → the run is re-triggered through the ONE `run_inline` pathway with
-/// the reserved `_approved_op` input: a one-shot token (operation + exact input
-/// hash) that admits exactly the call the owner saw. Re-derivation that drifts
-/// from that call re-suspends rather than executing something unapproved.
-pub async fn resolve_workflow_approval(
-    State(state): State<AppState>,
-    Path(run_id): Path<String>,
-    Json(body): Json<WorkflowApprovalBody>,
-) -> HandlerResult<serde_json::Value> {
-    // The owner's answer is an event aimed at the run's live wait. The
-    // engine delivers it: the wait is released, the run re-queued, and the
-    // loop resumes it at the approved call (with the definition it started
-    // with) or ends it as denied. One answer per wait generation: a second
-    // click on the same card is a duplicate, not a second resume.
-    let run = state
-        .store
-        .engine_get_run(&run_id)
-        .map_err(to_error_response)?
-        .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
-    let enqueued = state.store.engine_answer_wait(&run_id, body.approved).map_err(to_error_response)?;
-    let status = if body.approved { "approved" } else { "denied" };
-    match enqueued {
-        db::Enqueued::Inserted(_) => {
-            info!(run_id, agent_id = %run.agent_id, status, "workflow approval recorded for the engine");
-        }
-        db::Enqueued::Duplicate => {
-            info!(run_id, "workflow approval already recorded; nothing more to do");
-        }
-    }
-    // Resolved-delta: clear the mirror row in the owner's web inbox no matter
-    // which surface answered.
-    crate::codes::push_inbox(
-        &state,
-        serde_json::json!({ "id": format!("wf-approval:{}", run_id), "resolved": true }),
-    );
-    Ok(Json(serde_json::json!({ "status": status, "runId": run_id })))
-}
-
-/// GET /api/v1/agents/workflow-runs/{run_id}/approval — approval status for
-/// the Inbox: "pending" while the suspension row exists, otherwise the run's
-/// resolved state (approved runs were superseded → "resumed", plus "denied" /
-/// "completed" / "failed"). Read-side only; the POST above is the resolver.
-pub async fn get_workflow_approval_status(
-    State(state): State<AppState>,
-    Path(run_id): Path<String>,
-) -> HandlerResult<serde_json::Value> {
-    let run_status = state
-        .store
-        .get_workflow_run(&run_id)
-        .ok()
-        .flatten()
-        .map(|r| r.status)
-        .unwrap_or_else(|| "unknown".to_string());
-    if run_status == "awaiting_approval" {
-        return Ok(Json(serde_json::json!({ "status": "pending" })));
-    }
-    // "resumed" means the owner approved and the run was re-executed.
-    let status = match run_status.as_str() {
-        "resumed" => "approved",
-        other => other,
-    };
-    Ok(Json(serde_json::json!({ "status": status })))
 }
 
 #[derive(serde::Deserialize)]
@@ -5075,11 +5540,11 @@ pub async fn resolve_learning(
         skills_read: std::sync::Arc::new(std::sync::Mutex::new(skills_read)),
         ..Default::default()
     };
-    let mut input = serde_json::json!({ "action": row.action, "name": row.target });
+    let mut input = serde_json::json!({ "name": row.target });
     if let Some(content) = body.content.as_deref().or(row.content.as_deref()) {
         input["content"] = serde_json::json!(content);
     }
-    let result = state.tools.execute(&ctx, "skill", input).await;
+    let result = state.tools.execute(&ctx, learned_write_tool(&row.action), input).await;
     if result.is_error {
         // Leave the row pending — the owner can retry after the cause clears.
         return Err(to_error_response(types::NeboError::Internal(format!(
@@ -5102,6 +5567,12 @@ pub async fn resolve_learning(
         );
     info!(id, agent_id = %row.agent_id, target = %row.target, action = %row.action, "learning approved and applied");
     Ok(Json(serde_json::json!({ "status": "approved" })))
+}
+
+/// The skill tool a learned write's action goes through: a create or an
+/// update is a save, a delete is a delete.
+fn learned_write_tool(action: &str) -> &'static str {
+    if action == "delete" { "delete_skill" } else { "save_skill" }
 }
 
 /// POST /api/v1/agents/learnings/{id}/revert — undo an APPLIED learned
@@ -5208,11 +5679,11 @@ pub async fn revert_learning(
         skills_read: std::sync::Arc::new(std::sync::Mutex::new(skills_read)),
         ..Default::default()
     };
-    let mut input = serde_json::json!({ "action": inverse_action, "name": row.target });
+    let mut input = serde_json::json!({ "name": row.target });
     if let Some(ref content) = inverse_content {
         input["content"] = serde_json::json!(content);
     }
-    let result = state.tools.execute(&ctx, "skill", input).await;
+    let result = state.tools.execute(&ctx, learned_write_tool(inverse_action), input).await;
     if result.is_error {
         return Err(to_error_response(types::NeboError::Internal(format!(
             "revert failed: {}",
@@ -5268,6 +5739,7 @@ mod thread_preview_tests {
             msg("tool", "{...}", None),
             msg("assistant", "", None),
             msg("user", "steering", Some(r#"{"hidden":true}"#)),
+            msg("system", "USAGE_LIMIT_EXCEEDED: no balance", Some(r#"{"runError":true}"#)),
         ];
         let t = thread_preview(&rows);
         assert_eq!(t.preview.as_deref(), Some("Comparing fares now."));
@@ -5313,6 +5785,7 @@ mod thread_preview_tests {
         assert!(rule.contains("m2.role != 'tool'"), "tool rows are hidden: {rule}");
         assert!(rule.contains("m2.content != ''"), "empty rows are hidden: {rule}");
         assert!(rule.contains(r#"NOT LIKE '%\"hidden\":true%'"#), "hidden rows are hidden: {rule}");
+        assert!(rule.contains(r#"NOT LIKE '%\"runError\":true%'"#), "run errors are not a line: {rule}");
     }
 }
 
@@ -5508,20 +5981,20 @@ mod frontmatter_save_tests {
             "tools": ["agent", "team"],
             "scopes": {"embed": {"tools": ["web"]}},
             "defaults": {"timezone": "America/Denver"},
-            "memory": {"context_isolated": true}
+            "memory": {"mode": "separate"}
         });
         let saved = saved_frontmatter(
             &on_file,
             serde_json::json!({"new": {}}),
             serde_json::json!(["b"]),
             None,
-            serde_json::json!({"context_isolated": false}),
+            serde_json::json!({"mode": "single"}),
             &AuthoredDeclaration::default(),
         );
         assert_eq!(saved["workflows"], serde_json::json!({"new": {}}));
         assert_eq!(saved["skills"], serde_json::json!(["b"]));
         assert!(saved["pricing"].is_null());
-        assert_eq!(saved["memory"]["context_isolated"], serde_json::json!(false));
+        assert_eq!(saved["memory"]["mode"], serde_json::json!("single"));
         for key in ["inputs", "requires", "tools", "scopes", "defaults"] {
             assert_eq!(saved[key], on_file[key], "{key} must survive a save");
         }
@@ -5529,7 +6002,7 @@ mod frontmatter_save_tests {
 
     #[test]
     fn an_empty_memory_config_is_removed_not_written_as_an_empty_object() {
-        let on_file = serde_json::json!({"memory": {"context_isolated": true}, "requires": {}});
+        let on_file = serde_json::json!({"memory": {"mode": "separate"}, "requires": {}});
         let saved = saved_frontmatter(
             &on_file,
             serde_json::json!({}),
@@ -5545,7 +6018,7 @@ mod frontmatter_save_tests {
 
 #[cfg(test)]
 mod linked_hire_tests {
-    use super::{hire_source, linked_offline, linked_persona_edit, linked_rename, linked_target, source_entry};
+    use super::{Here, NEW, ThisComputer, agent_name, hire_source, hired_as, linked_computers, linked_offline, linked_persona_edit, linked_target, refusal};
 
     fn agent_row(kind: Option<&str>, soul: Option<&str>) -> db::models::Agent {
         db::models::Agent {
@@ -5581,12 +6054,22 @@ mod linked_hire_tests {
         }
     }
 
-    /// The hire body names the linked bot and its agent, both plain ids.
+    /// The hire body names the linked bot and its agent, both plain ids,
+    /// and may choose the employee's permission mode.
     #[test]
     fn a_linked_hire_names_its_bot_and_agent() {
-        let (bot, agent) =
+        let (bot, agent, mode) =
             linked_target(&serde_json::json!({ "botId": " b1 ", "agentId": "coder" })).unwrap();
-        assert_eq!((bot.as_str(), agent.as_str()), ("b1", "coder"));
+        assert_eq!((bot.as_str(), agent.as_str(), mode), ("b1", "coder", None));
+        let (_, _, mode) = linked_target(
+            &serde_json::json!({ "botId": "b1", "agentId": "coder", "permissionMode": "full_access" }),
+        )
+        .unwrap();
+        assert_eq!(mode, Some(types::permissions::Mode::FullAccess));
+        assert!(
+            linked_target(&serde_json::json!({ "botId": "b1", "agentId": "coder", "permissionMode": "yolo" })).is_err(),
+            "an unknown mode is refused, never guessed"
+        );
         assert!(linked_target(&serde_json::json!({ "botId": "b1" })).is_err());
         assert!(linked_target(&serde_json::json!({ "botId": "", "agentId": "a" })).is_err());
         assert!(linked_target(&serde_json::json!({ "botId": "b/1", "agentId": "a" })).is_err());
@@ -5609,14 +6092,37 @@ mod linked_hire_tests {
             ("e-bad".to_owned(), "janus/nebo-1".to_owned()),
         ];
         let bots = [bot("b-up", true), bot("b-down", false)];
-        let offline = linked_offline(&linked, Some(&bots));
+        let offline = linked_offline(&linked, Some(&bots), None);
         assert_eq!(offline["e-up"], false);
         assert_eq!(offline["e-down"], true);
         assert_eq!(offline["e-gone"], true);
         assert_eq!(offline["e-bad"], true);
 
-        let unreachable = linked_offline(&linked, None);
+        let unreachable = linked_offline(&linked, None, None);
         assert!(unreachable.values().all(|off| *off));
+    }
+
+    /// An employee whose agent is on this computer reads Offline only when
+    /// Nebo does not host that agent (none hosted, or nebo-link hosts this
+    /// computer's agents); the hub is not asked about it.
+    #[test]
+    fn an_employee_on_this_computer_is_online_while_nebo_hosts_its_agent() {
+        let linked = vec![
+            ("e-here".to_owned(), "linked/self-bot/claude-code".to_owned()),
+            ("e-gone".to_owned(), "linked/self-bot/codex".to_owned()),
+        ];
+        let here = Here {
+            bot_id: "self-bot".into(),
+            agents: vec!["claude-code".into()],
+        };
+        let offline = linked_offline(&linked, None, Some(&here));
+        assert_eq!(offline["e-here"], false);
+        assert_eq!(offline["e-gone"], true);
+        let deferred = Here {
+            bot_id: "self-bot".into(),
+            agents: Vec::new(),
+        };
+        assert!(linked_offline(&linked, None, Some(&deferred)).values().all(|off| *off));
     }
 
     fn managed(id: &str, runtime: &str, chat: bool, shared: bool) -> comm::api_types::ManagedBot {
@@ -5645,32 +6151,209 @@ mod linked_hire_tests {
         assert!(!hire_source(&managed("old", "", true, false), me));
     }
 
-    /// A bot whose roster came back empty (offline, or nothing to offer) is
-    /// not listed; one with agents is, offline or not.
-    #[test]
-    fn a_hire_source_is_listed_only_with_agents() {
-        let agent = comm::api_types::LinkedAgent {
-            id: "assistant".into(),
-            name: "Hermes".into(),
-            description: String::new(),
+    fn link(id: &str, runtime: &str, hostname: &str, agents: &[(&str, &str, &str)], runtimes: &[&str]) -> (comm::api_types::ManagedBot, comm::api_types::LinkedRoster) {
+        let mut bot = managed(id, runtime, true, false);
+        bot.hostname = hostname.into();
+        bot.online = true;
+        let roster = comm::api_types::LinkedRoster {
+            agents: agents
+                .iter()
+                .map(|(id, name, runtime)| comm::api_types::LinkedAgent {
+                    id: (*id).into(),
+                    name: (*name).into(),
+                    description: String::new(),
+                    runtime: (*runtime).into(),
+                })
+                .collect(),
+            runtimes: runtimes.iter().map(|r| installed(r)).collect(),
         };
-        let bot = managed("hm", "hermes", true, false);
-        assert!(source_entry(&bot, Vec::new()).is_none());
-        let entry = source_entry(&bot, vec![agent]).unwrap();
-        assert_eq!(entry["runtime"], "hermes");
-        assert_eq!(entry["online"], false);
-        assert_eq!(entry["agents"][0]["name"], "Hermes");
+        (bot, roster)
     }
 
-    /// A linked employee's name is its linked agent's: a rename is refused,
-    /// the same name passes, and other employees rename freely.
+    fn installed(runtime: &str) -> comm::api_types::LinkedRuntime {
+        let name = match runtime {
+            "claude-code" => "Claude Code",
+            "codex" => "Codex",
+            "gemini" => "Gemini CLI",
+            other => other,
+        };
+        comm::api_types::LinkedRuntime { id: runtime.into(), name: name.into() }
+    }
+
+    const ALL: &[&str] = &["claude-code", "codex", "gemini"];
+
+    /// A computer's entries as (id, name, bot, hired).
+    fn entries(computer: &serde_json::Value) -> Vec<(&str, &str, &str, bool)> {
+        computer["agents"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| {
+                (
+                    r["id"].as_str().unwrap(),
+                    r["name"].as_str().unwrap(),
+                    r["botId"].as_str().unwrap(),
+                    r["hired"].as_bool().unwrap(),
+                )
+            })
+            .collect()
+    }
+
+    /// The owner's Mac with three bots on it (its coding agent host,
+    /// Hermes, OpenClaw), each offering the coding agents installed there:
+    /// the Mac is listed once, under its name, one entry per app in one
+    /// order. An app's own agent is hired as itself; a coding agent with
+    /// none to hire is started new, by the coding agent host, never by
+    /// Hermes or OpenClaw; one on the team is marked and another can still
+    /// be started.
     #[test]
-    fn a_linked_employee_keeps_its_name() {
-        let linked = agent_row(Some("linked"), None);
-        assert!(linked_rename(&linked, "Renamed"));
-        assert!(!linked_rename(&linked, "Danny"));
-        let plain = agent_row(None, None);
-        assert!(!linked_rename(&plain, "Renamed"));
+    fn a_computer_lists_each_installed_app_once_by_what_it_is() {
+        let links = [
+            link("oc", "openclaw", "Mac.lan", &[("assistant", "Assistant", "openclaw")], ALL),
+            link("hm", "hermes", "Mac.lan", &[("hermes", "Hermes", "")], ALL),
+            link("cc", "claude-code", "Mac.lan", &[("claude-code", "Claude Code", ""), ("codex", "Codex", "codex")], ALL),
+        ];
+        let hired = std::collections::HashSet::from([("cc".to_owned(), "claude-code".to_owned())]);
+        let computers = linked_computers(&links, "Other.lan", None, &hired);
+        assert_eq!(computers.len(), 1);
+        let mac = &computers[0];
+        assert_eq!((mac["id"].as_str(), mac["name"].as_str(), mac["local"].as_bool()), (Some("computer:Mac.lan"), Some("Mac.lan"), Some(false)));
+        assert_eq!(
+            entries(mac),
+            [
+                ("claude-code", "Claude Code", "cc", true),
+                ("new:claude-code", "Claude Code", "cc", false),
+                ("codex", "Codex", "cc", false),
+                ("new:gemini", "Gemini CLI", "cc", false),
+                ("assistant", "OpenClaw", "oc", false),
+                ("hermes", "Hermes", "hm", false),
+            ]
+        );
+        let said: Vec<(&str, &str)> = mac["agents"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| (a["description"].as_str().unwrap(), a["runtime"].as_str().unwrap()))
+            .collect();
+        assert_eq!(
+            said,
+            [
+                ("Claude Code on Mac.lan", "claude-code"),
+                ("Works in a new folder on Mac.lan", "claude-code"),
+                ("Codex on Mac.lan", "codex"),
+                ("Works in a new folder on Mac.lan", "gemini"),
+                ("OpenClaw on Mac.lan", "openclaw"),
+                ("Hermes on Mac.lan", "hermes"),
+            ]
+        );
+    }
+
+    /// OpenClaw's default agent reads as "OpenClaw", never "Assistant" or
+    /// "main", and Hermes' "default" as "Hermes"; an agent its owner named
+    /// keeps its name, with its app under it.
+    #[test]
+    fn an_unnamed_agent_is_named_for_its_app() {
+        assert_eq!(agent_name("Assistant", "openclaw"), "OpenClaw");
+        assert_eq!(agent_name("main", "openclaw"), "OpenClaw");
+        assert_eq!(agent_name("default", "hermes"), "Hermes");
+        assert_eq!(agent_name(" ", "codex"), "Codex");
+        assert_eq!(agent_name("Night Owl", "openclaw"), "Night Owl");
+        let links = [link("oc", "openclaw", "Mac.lan", &[("assistant", "main", ""), ("night-owl", "Night Owl", "")], &[])];
+        let mac = &linked_computers(&links, "", None, &Default::default())[0];
+        assert_eq!(entries(mac), [("assistant", "OpenClaw", "oc", false), ("night-owl", "Night Owl", "oc", false)]);
+        assert_eq!(mac["agents"][1]["description"], "OpenClaw on Mac.lan");
+    }
+
+    /// Only what is installed is offered: a coding agent no bot on the
+    /// computer reports installed has no entry, a computer with nothing
+    /// installed lists nothing, and each computer starts its own coding
+    /// agents: by a bot running that coding agent, then the computer's
+    /// coding agent host, and only with neither any other of its bots
+    /// (online first, then by id).
+    #[test]
+    fn only_what_is_installed_is_offered_on_its_own_computer() {
+        let mut down = link("oc-a", "openclaw", "Linux-box", &[], ALL);
+        down.0.online = false;
+        let links = [
+            link("cc", "claude-code", "Mac.lan", &[], &["claude-code", "codex"]),
+            link("cx", "codex", "Mac.lan", &[], &["codex"]),
+            down,
+            link("oc-b", "openclaw", "Linux-box", &[], &["codex"]),
+            link("hm", "hermes", "Linux-box", &[], &["codex"]),
+            link("pi", "hermes", "pi", &[], &[]),
+        ];
+        let computers = linked_computers(&links, "", None, &Default::default());
+        let names: Vec<&str> = computers.iter().map(|c| c["name"].as_str().unwrap()).collect();
+        assert_eq!(names, ["Mac.lan", "Linux-box", "pi"]);
+        assert_eq!(
+            entries(&computers[0]),
+            [("new:claude-code", "Claude Code", "cc", false), ("new:codex", "Codex", "cx", false)]
+        );
+        assert_eq!(
+            entries(&computers[1]),
+            [
+                ("new:claude-code", "Claude Code", "oc-a", false),
+                ("new:codex", "Codex", "hm", false),
+                ("new:gemini", "Gemini CLI", "oc-a", false),
+            ]
+        );
+        assert_eq!(computers[1]["agents"][1]["description"], "Works in a new folder on Linux-box");
+        assert!(computers[2]["agents"].as_array().unwrap().is_empty());
+        // The hire body's bot and agent id pass as they are.
+        let (bot, agent, _) = linked_target(&serde_json::json!({ "botId": "cx", "agentId": "new:codex" })).unwrap();
+        assert_eq!((bot.as_str(), agent.strip_prefix(NEW)), ("cx", Some("codex")));
+    }
+
+    /// While Nebo hosts this computer's coding agents itself, it comes first
+    /// as "This computer", with what is installed here and the agents of
+    /// apps linked on it; a bot that never reported a hostname is a computer
+    /// of its own, under its name. With nothing installed here and nothing
+    /// linked, there is nothing to list.
+    #[test]
+    fn this_computer_comes_first_and_unknown_computers_stand_alone() {
+        let links = [
+            link("old", "openclaw", "", &[("assistant", "Assistant", "")], &["codex"]),
+            link("hm", "hermes", "Mac.lan", &[("hermes", "Hermes", "")], ALL),
+        ];
+        let here = || ThisComputer { bot_id: "self-bot".into(), installed: vec![installed("codex")] };
+        let computers = linked_computers(&links, "Mac.lan", Some(here()), &Default::default());
+        let names: Vec<&str> = computers.iter().map(|c| c["name"].as_str().unwrap()).collect();
+        assert_eq!(names, ["This computer", "old"]);
+        assert_eq!(computers[0]["local"], true);
+        assert_eq!(entries(&computers[0]), [("new:codex", "Codex", "self-bot", false), ("hermes", "Hermes", "hm", false)]);
+        assert_eq!(computers[0]["agents"][0]["description"], "Works in a new folder on this computer");
+        assert_eq!(computers[0]["agents"][1]["description"], "Hermes on this computer");
+        assert_eq!(entries(&computers[1]), [("new:codex", "Codex", "old", false), ("assistant", "OpenClaw", "old", false)]);
+        assert_eq!(computers[1]["agents"][1]["description"], "OpenClaw on old");
+        assert_eq!(linked_computers(&[], "Mac.lan", Some(here()), &Default::default()).len(), 1);
+        assert!(linked_computers(&[], "Mac.lan", None, &Default::default()).is_empty());
+    }
+
+    /// A link's refusal reaches the owner in its own words.
+    #[test]
+    fn a_new_coding_agent_refusal_is_the_links_own() {
+        // A link's own sentence reaches the owner; anything else is plain.
+        let refused = comm::CommError::Http { status: 400, body: r#"{"error":"Codex isn't installed on this computer."}"#.into() };
+        assert_eq!(refusal(&refused, "Mac.lan"), "Codex isn't installed on this computer.");
+        let down = comm::CommError::Http { status: 502, body: "bad gateway".into() };
+        assert_eq!(refusal(&down, "Mac.lan"), "Could not connect to Mac.lan. Try again.");
+    }
+
+    /// A linked agent already hired is found by its link, whatever the owner
+    /// has renamed the employee since: a second hire of it is refused, and
+    /// another agent on the same bot is not mistaken for it.
+    #[test]
+    fn a_renamed_linked_employee_is_still_the_one_hired() {
+        let mut renamed = agent_row(Some("linked"), None);
+        renamed.name = "Scout".into();
+        let mut plain = agent_row(None, None);
+        plain.id = "emp-2".into();
+        let rows = vec![plain, renamed];
+        let brain = ai::LinkedProvider::model_id("bot-1", "main");
+        let linked = vec![("emp-1".to_string(), brain.clone())];
+        assert_eq!(hired_as(&rows, &linked, &brain).map(|a| a.name.as_str()), Some("Scout"));
+        let other = ai::LinkedProvider::model_id("bot-1", "research");
+        assert!(hired_as(&rows, &linked, &other).is_none());
     }
 
     /// Soul and rules belong to the runtime: a change is refused on a linked

@@ -2,7 +2,7 @@
   import { launchApp } from '$lib/apps/launcher';
   import FlowsPane from '$lib/components/flows/FlowsPane.svelte';
   import { goto } from '$lib/nav';
-  import { getContext, onMount, onDestroy } from 'svelte';
+  import { getContext, onMount, onDestroy, untrack } from 'svelte';
   import { t } from 'svelte-i18n';
   import { page } from '$app/stores';
   import { replaceState } from '$app/navigation';
@@ -16,6 +16,7 @@
   import { getWebSocketClient } from '$lib/websocket/client';
   import type { Agent, ChatMessage as ApiChatMessage } from '$lib/api/neboComponents';
   import { uploadFiles } from '$lib/api/upload';
+  import { getChat } from '$lib/api/nebo';
 
   const PENDING_SEND_PREFIX = 'nebo:pending-send:';
   const PENDING_ERROR_PREFIX = 'nebo:pending-error:';
@@ -38,6 +39,19 @@
   const chat = createChatController({
     agentId: initialAgentId,
     sessionKey: threadKey(initialAgentId, initialThreadId),
+  });
+
+  // The folder a linked coding employee's conversation works in: read when
+  // the thread opens and whenever a turn ends, since the owner can ask the
+  // employee to move to another folder in the conversation.
+  let chatFolder = $state('');
+  async function loadFolder(id: string) {
+    const row = await (getChat(id) as Promise<{ folder?: string | null }>).catch(() => null);
+    if (id === threadId) chatFolder = row?.folder ?? '';
+  }
+  $effect(() => {
+    const id = threadId;
+    if (id && !chat.isLoading) untrack(() => loadFolder(id));
   });
 
   /** The transcript, through the controller's ONE loader; resolves true when
@@ -138,10 +152,23 @@
     });
   });
 
+  // The owner recap (WP2.5): written after a chat turn finishes, for coming
+  // back to this thread. Live only — never fetched, never re-entered into a
+  // model request; cleared on thread switch and on the next send so it never
+  // outlives the turn it describes.
+  let recapText = $state('');
+  let recapUnsub: (() => void) | null = null;
+  onMount(() => {
+    recapUnsub = getWebSocketClient().on<{ chatId?: string; turnId?: string; text?: string }>('turn_recap', (d) => {
+      if (d?.chatId === threadId && d.text) recapText = d.text;
+    });
+  });
+
   onDestroy(() => {
     for (const off of activeRunUnsubs) off();
     activeRunUnsubs = [];
     voiceMsgUnsub?.();
+    recapUnsub?.();
     chat.destroy();
   });
 
@@ -151,7 +178,10 @@
       // guard must reset when the user clicks a different chat, or every later
       // switch skips loadMessages() and the transcript freezes on the chat the
       // send happened in.
-      if (lastThreadId && threadId !== lastThreadId) pendingSendStarted = false;
+      if (lastThreadId && threadId !== lastThreadId) {
+        pendingSendStarted = false;
+        recapText = ''; // a different thread's last turn, not this one's
+      }
       lastThreadId = threadId;
       const sk = threadKey(agentId, threadId);
       chat.setSessionKey(sk);
@@ -244,21 +274,27 @@
   onprefilled={clearAsk}
   onback={ctx.openList}
   onsettings={ctx.openSettings}
-  isolated={ctx.agent?.isolated ?? false}
+  memoryMode={ctx.agent?.memoryMode ?? 'single'}
+  folder={chatFolder}
   isApp={ctx.agent?.isApp ?? false}
   onopenapp={() => launchApp(ctx.agentId, ctx.agent?.name ?? 'App')}
 
   allAgents={chat.allAgents}
   tokenUsage={chat.tokenUsage}
-  contextStats={chat.contextStats}
+  goal={chat.goal}
   quotaWarning={chat.quotaWarning}
   chatError={chat.chatError}
+  {recapText}
   activityStatus={chat.activityStatus}
+  helpers={chat.helpers}
   askQueueLength={chat.askQueueLength}
   hasMore={chat.hasMore}
   isLoadingMore={chat.isLoadingMore}
   onloadmore={() => chat.loadHistory(threadId ?? '', { older: true })}
   onsend={async (text, files) => {
+    // A new turn is starting — the last one's recap no longer describes
+    // "where things stand".
+    recapText = '';
     if (threadId) {
       sessionStorage.removeItem(pendingSendKey(threadId));
       sessionStorage.removeItem(pendingErrorKey(threadId));

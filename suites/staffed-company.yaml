@@ -27,3 +27,41 @@ fixtures:
   - ../fixtures/staffed-company/migrations/sc15-migrations-run-forward-on-a-real-database.yaml
   - ../fixtures/staffed-company/layers/sc16-an-uploaded-pack-keeps-its-own-slug.yaml
   - ../fixtures/staffed-company/connections/sc17-an-install-by-another-door-answers-the-install-card.yaml
+  - ../fixtures/staffed-company/seats/sc18-every-hiring-door-grants-the-declared-job.yaml
+  - ../fixtures/staffed-company/policy/sc19-the-shipped-phone-answers-a-parked-runs-ask.yaml
+  - ../fixtures/staffed-company/policy/sc20-the-phones-default-is-the-employees-mode.yaml
+  - ../fixtures/staffed-company/connections/sc21-a-plugin-required-by-its-code-is-its-own-tool.yaml
+  - ../fixtures/staffed-company/policy/sc22-an-ask-reaches-the-owners-conversation.yaml
+  - ../fixtures/staffed-company/conversation/sc30-the-owner-is-answered-while-the-company-works.yaml
+  - ../fixtures/staffed-company/conversation/sc31-a-coworker-message-never-waits.yaml
+  - ../fixtures/staffed-company/conversation/sc32-a-team-reply-reaches-the-poster.yaml
+  - ../fixtures/staffed-company/conversation/sc33-one-employee-works-three-conversations-at-once.yaml
+  - ../fixtures/staffed-company/conversation/sc34-a-question-up-the-line-never-waits.yaml
+  - ../fixtures/staffed-company/conversation/sc35-a-woken-turn-replies-where-the-work-came-from.yaml
+  - ../fixtures/staffed-company/conversation/sc36-an-employees-team-post-goes-to-the-lead.yaml
+  - ../fixtures/staffed-company/conversation/sc37-the-owners-next-message-answers-the-open-question.yaml
+  - ../fixtures/staffed-company/conversation/sc38-a-coworkers-message-is-read-as-a-coworkers.yaml
+  - ../fixtures/staffed-company/conversation/sc39-a-woken-turn-keeps-the-seat-of-the-conversation-it-continues.yaml
+  - ../fixtures/staffed-company/conversation/sc40-an-update-for-a-finished-helper-tells-its-parent.yaml
+  - ../fixtures/staffed-company/conversation/sc41-an-assignment-outcome-reaches-the-assigner-when-it-happens.yaml
+  - ../fixtures/staffed-company/conversation/sc42-a-channel-message-during-a-running-turn-joins-it-silently.yaml
+  - ../fixtures/staffed-company/conversation/sc43-a-woken-turn-replies-in-the-chat-channel-it-came-from.yaml
+  - ../fixtures/staffed-company/connections/sc44-the-hubs-echo-of-a-card-install-installs-nothing-twice.yaml
+  - ../fixtures/staffed-company/connections/sc45-two-taps-on-one-install-card-start-one-install.yaml
+  - ../fixtures/staffed-company/conversation/sc46-a-team-member-acknowledges-in-the-thread-before-it-works.yaml
+  - ../fixtures/staffed-company/conversation/sc47-a-silent-team-member-is-announced-as-working.yaml
+  - ../fixtures/staffed-company/conversation/sc48-a-linked-team-member-acknowledges-and-an-unreachable-one-says-so.yaml
+  - ../fixtures/staffed-company/conversation/sc49-a-team-conversation-stays-in-the-team-thread.yaml
+  - ../fixtures/staffed-company/conversation/sc50-only-the-owners-proven-email-answers-for-the-owner.yaml
+  - ../fixtures/staffed-company/conversation/sc51-mail-to-an-employees-tag-reaches-that-employee.yaml
+  - ../fixtures/staffed-company/connections/sc52-an-install-carries-the-client-that-asked.yaml
+  - ../fixtures/staffed-company/connections/sc53-a-cascade-carries-the-client-that-asked.yaml
+  - ../fixtures/staffed-company/connections/sc54-an-open-approval-outlives-its-turn-and-reaches-a-client-that-connects-later.yaml
+  - ../fixtures/staffed-company/company/sc55-the-point-person-sees-what-everyone-is-doing.yaml
+  - ../fixtures/staffed-company/company/sc56-the-point-person-relays-into-a-linked-employees-conversation.yaml
+  - ../fixtures/staffed-company/company/sc57-a-busy-linked-conversation-is-never-sent-a-second-prompt.yaml
+  - ../fixtures/staffed-company/conversation/sc58-the-owners-team-post-carries-his-authority.yaml
+  - ../fixtures/staffed-company/conversation/sc59-a-deny-rule-still-wins-on-the-owners-team-post.yaml
+  - ../fixtures/staffed-company/conversation/sc60-the-lead-passes-the-owners-request-on-with-his-authority.yaml
+  - ../fixtures/staffed-company/conversation/sc61-the-lead-passes-the-owners-request-to-a-linked-teammate.yaml
+  - ../fixtures/staffed-company/conversation/sc62-the-primary-employee-passes-the-owners-request-on.yaml

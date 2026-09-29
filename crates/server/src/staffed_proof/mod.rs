@@ -32,8 +32,12 @@ use serde_json::{json, Value};
 
 use crate::state::AppState;
 
+mod company;
+mod company_agent;
 mod connections;
+mod conversation;
 mod layers;
+mod memory;
 mod migrations;
 mod policy;
 mod seats;
@@ -89,21 +93,38 @@ pub async fn session() -> Session {
 }
 
 /// The list the owner reads and the tests that run are one set, or this
-/// fails: every `#[tokio::test]`/`#[test]` in the scenario modules is named by
-/// exactly one fixture in `suites/staffed-company.yaml`, and every fixture
-/// names a scenario that exists.
+/// fails: every `#[tokio::test]`/`#[test]` in the staffed-company scenario
+/// modules is named by exactly one fixture in `suites/staffed-company.yaml`,
+/// and every fixture names a scenario that exists.
 #[test]
 fn every_proof_is_a_fixture_in_the_staffed_company_suite_and_every_fixture_proves_something() {
+    suite_and_proofs_are_one_set(
+        "suites/staffed-company.yaml",
+        &[
+            ("company", include_str!("company.rs")),
+            ("connections", include_str!("connections.rs")),
+            ("conversation", include_str!("conversation.rs")),
+            ("layers", include_str!("layers.rs")),
+            ("migrations", include_str!("migrations.rs")),
+            ("policy", include_str!("policy.rs")),
+            ("seats", include_str!("seats.rs")),
+        ],
+    );
+}
+
+/// The memory scenarios and `suites/memory-proof.yaml` are one set, the same
+/// way.
+#[test]
+fn every_memory_proof_is_a_fixture_in_the_memory_proof_suite_and_every_fixture_proves_something() {
+    suite_and_proofs_are_one_set("suites/memory-proof.yaml", &[("memory", include_str!("memory.rs"))]);
+}
+
+/// Every test in `sources` (module name, source) is named by exactly one
+/// fixture of `suite`, and every fixture of `suite` names one of them.
+fn suite_and_proofs_are_one_set(suite_path: &str, sources: &[(&str, &str)]) {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let sources = [
-        ("connections", include_str!("connections.rs")),
-        ("layers", include_str!("layers.rs")),
-        ("migrations", include_str!("migrations.rs")),
-        ("policy", include_str!("policy.rs")),
-        ("seats", include_str!("seats.rs")),
-    ];
     let mut proofs = std::collections::BTreeSet::new();
-    for (module, src) in sources {
+    for &(module, src) in sources {
         let mut lines = src.lines().peekable();
         while let Some(line) = lines.next() {
             if line.trim().starts_with("#[test]") || line.trim().starts_with("#[tokio::test") {
@@ -119,8 +140,7 @@ fn every_proof_is_a_fixture_in_the_staffed_company_suite_and_every_fixture_prove
             }
         }
     }
-    let suite = std::fs::read_to_string(root.join("suites/staffed-company.yaml"))
-        .expect("suites/staffed-company.yaml");
+    let suite = std::fs::read_to_string(root.join(suite_path)).expect(suite_path);
     let mut listed = std::collections::BTreeSet::new();
     for rel in suite.lines().filter_map(|l| l.trim().strip_prefix("- ")) {
         let path = root.join("suites").join(rel.trim());
@@ -134,7 +154,7 @@ fn every_proof_is_a_fixture_in_the_staffed_company_suite_and_every_fixture_prove
         assert!(listed.insert(proof.to_string()), "{proof} is listed twice");
     }
     let missing: Vec<_> = proofs.difference(&listed).collect();
-    assert!(missing.is_empty(), "scenarios with no fixture in suites/staffed-company.yaml: {missing:?}");
+    assert!(missing.is_empty(), "scenarios with no fixture in {suite_path}: {missing:?}");
     assert_eq!(listed.len(), proofs.len());
 }
 
@@ -146,10 +166,6 @@ pub struct Nebo {
     pub client: reqwest::Client,
     pub state: AppState,
     _tmp: tempfile::TempDir,
-}
-
-fn free_port() -> u16 {
-    std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
 }
 
 /// The directories a Nebo expects under its home. The server creates most of
@@ -185,10 +201,14 @@ impl Nebo {
         // the OnceCell that boots it; nothing reads NEBO_HOME earlier.
         unsafe { std::env::set_var("NEBO_HOME", &home) };
         *BOOTED.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        // Made before the server boots, which reads the same one.
+        let key = config::ensure_install_key().expect("install key");
 
-        let port = free_port();
+        // Port 0: the server takes whichever port the system assigns and
+        // holds it from its first line, so no other test's listener can
+        // land on it; the port is read back from its state below.
         let mut cfg = config::Config::default();
-        cfg.port = port;
+        cfg.port = 0;
         cfg.host = "127.0.0.1".to_string();
         cfg.database.sqlite_path = home.join("data").join("nebo.db").to_string_lossy().to_string();
         cfg.auth.access_secret = uuid::Uuid::new_v4().to_string();
@@ -211,12 +231,25 @@ impl Nebo {
         // with `User(DispatchGone), "runtime dropped the dispatch task"`. No
         // connection is kept: each request opens its own, on the runtime making
         // it, and that is the whole of it.
-        let client = reqwest::Client::builder()
+        // The owner's own client: it proves itself with the install key, as
+        // every caller of the local API does.
+        let mut auth = reqwest::header::HeaderMap::new();
+        auth.insert(reqwest::header::AUTHORIZATION, format!("Bearer {key}").parse().unwrap());
+        let client = tls::http_client()
             .pool_max_idle_per_host(0)
+            .default_headers(auth)
             .build()
             .expect("client");
-        let health = format!("http://127.0.0.1:{port}/health");
         let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
+        let state = loop {
+            assert!(tokio::time::Instant::now() < deadline, "the server did not come up in 90s");
+            if let Some(state) = BOOTED.lock().unwrap_or_else(|e| e.into_inner()).clone() {
+                break state;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        };
+        let port = state.config.port;
+        let health = format!("http://127.0.0.1:{port}/health");
         loop {
             assert!(tokio::time::Instant::now() < deadline, "the server did not come up in 90s");
             match client.get(&health).send().await {
@@ -224,11 +257,6 @@ impl Nebo {
                 _ => tokio::time::sleep(Duration::from_millis(100)).await,
             }
         }
-        let state = BOOTED
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone()
-            .expect("run() recorded its state");
         Nebo { home, port, client, state, _tmp: tmp }
     }
 
@@ -316,18 +344,43 @@ impl Nebo {
         self.store().get_agent(id).unwrap().unwrap_or_else(|| panic!("no agent {id}"))
     }
 
-    /// The seat's operation policy as the server stores it (`None` = never
-    /// configured).
-    pub fn stored_policy(&self, agent_id: &str) -> Option<tools::policy::OperationPolicy> {
+    /// The seat's own rules on operations, by operation.
+    pub fn operation_rules(&self, agent_id: &str) -> std::collections::HashMap<String, types::permissions::Rule> {
         self.store()
-            .get_entity_config("agent", agent_id)
+            .permission_rules_in(&types::permissions::Scope::Employee(agent_id.to_string()))
             .unwrap()
-            .and_then(|c| c.operation_policy)
-            .map(|j| tools::policy::OperationPolicy::from_json(Some(&j)))
+            .into_iter()
+            .filter_map(|r| match &r.key {
+                types::permissions::RuleKey::Operation(op) if r.field.is_none() => Some((op.clone(), r)),
+                _ => None,
+            })
+            .collect()
     }
 
-    pub fn policy(&self, agent_id: &str) -> tools::policy::OperationPolicy {
-        self.stored_policy(agent_id).unwrap_or_default()
+    /// How the one permission check decides a call on `op` (moving
+    /// `amount_cents`, if any) for the seat, from a run arriving over
+    /// `origin`.
+    pub fn decide(&self, agent_id: &str, op: &str, origin: tools::Origin, amount_cents: Option<i64>) -> types::permissions::Decision {
+        let grant = agent::resolve_grant(self.store(), agent_id, None);
+        let ctx = Self::ctx(agent_id, origin);
+        let input = json!({});
+        let cx = agent::harness::permissions::CheckCx { ctx: &ctx, input: &input, grant: &grant, store: self.store() };
+        let mut effects = types::permissions::CallEffects::unknown();
+        effects.money_cents = amount_cents;
+        let key = tools::plugin_tool::port_suffix(op);
+        // The operation's interface is its job capability, as its tool says.
+        let capability = key.split('.').next().filter(|c| tools::interface_catalog::capabilities().contains(c)).map(str::to_string);
+        let target = types::permissions::Target {
+            tool: tools::operation_tools::operation_tool_name(&key),
+            key,
+            operation: Some(op.to_string()),
+            capability,
+            field: None,
+            subject: None,
+            read_only: false,
+            effects,
+        };
+        agent::harness::permissions::decide(&cx, &target)
     }
 
     /// The company level of the policy, as the server stores it.
@@ -545,6 +598,68 @@ pub fn hub_offers_plugin(code: &str, slug: &str, name: &str) {
         .insert(code.to_string(), HubPlugin { slug: slug.to_string(), name: name.to_string() });
 }
 
+/// An employee the hub stand-in lists: redeemable by `code`, its package
+/// served at `GET /agents/{slug}` (its `agent.json` as `typeConfig`).
+#[derive(Clone)]
+struct HubAgent {
+    id: String,
+    name: String,
+    agent_json: Value,
+}
+
+impl HubAgent {
+    /// The slug the install derives from the name to fetch the package.
+    fn slug(&self) -> String {
+        self.name.to_lowercase().replace(' ', "-")
+    }
+}
+
+/// A collection the stand-in lists: redeemable by `code`, its items the
+/// employees under their own codes.
+#[derive(Clone)]
+struct HubCollection {
+    id: String,
+    name: String,
+    items: Vec<String>,
+}
+
+fn hub_agents() -> &'static Mutex<std::collections::HashMap<String, HubAgent>> {
+    static AGENTS: OnceLock<Mutex<std::collections::HashMap<String, HubAgent>>> = OnceLock::new();
+    AGENTS.get_or_init(Default::default)
+}
+
+fn hub_collections() -> &'static Mutex<std::collections::HashMap<String, HubCollection>> {
+    static COLLECTIONS: OnceLock<Mutex<std::collections::HashMap<String, HubCollection>>> = OnceLock::new();
+    COLLECTIONS.get_or_init(Default::default)
+}
+
+/// The hub stand-in lists an employee under `code` with id `id`, for every
+/// door that hires from the marketplace: the redeem, the package, and the
+/// detail by id the Hire tap and the account's install event read.
+pub fn hub_offers_agent(code: &str, id: &str, name: &str, agent_json: Value) {
+    hub_agents()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(code.to_string(), HubAgent { id: id.to_string(), name: name.to_string(), agent_json });
+}
+
+/// The hub stand-in lists a collection of the employees under `items` (their codes).
+pub fn hub_offers_collection(code: &str, id: &str, name: &str, items: &[&str]) {
+    hub_collections().lock().unwrap_or_else(|e| e.into_inner()).insert(
+        code.to_string(),
+        HubCollection { id: id.to_string(), name: name.to_string(), items: items.iter().map(|c| c.to_string()).collect() },
+    );
+}
+
+fn hub_agent_where(pred: impl Fn(&str, &HubAgent) -> bool) -> Option<(String, HubAgent)> {
+    hub_agents()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .find(|(code, a)| pred(code, a))
+        .map(|(code, a)| (code.clone(), a.clone()))
+}
+
 fn hub_plugin_by_slug(slug: &str) -> Option<HubPlugin> {
     hub_plugins()
         .lock()
@@ -552,6 +667,51 @@ fn hub_plugin_by_slug(slug: &str) -> Option<HubPlugin> {
         .values()
         .find(|p| p.slug == slug)
         .cloned()
+}
+
+/// The code the stand-in lists a plugin under, by its slug.
+fn hub_plugin_code(slug: &str) -> Option<String> {
+    hub_plugins()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .find(|(_, p)| p.slug == slug)
+        .map(|(code, _)| code.clone())
+}
+
+/// The artifact id the stand-in gives a plugin: what its redeem answers and
+/// what the hub's `tool_installed` echo of that redeem carries.
+pub fn hub_plugin_id(slug: &str) -> String {
+    format!("artifact-{slug}")
+}
+
+fn napp_downloads() -> &'static Mutex<std::collections::HashMap<String, usize>> {
+    static DOWNLOADS: OnceLock<Mutex<std::collections::HashMap<String, usize>>> = OnceLock::new();
+    DOWNLOADS.get_or_init(Default::default)
+}
+
+/// How many times the stand-in has served a plugin's `.napp`: one per
+/// install that reached the download.
+pub fn napp_downloads_of(slug: &str) -> usize {
+    napp_downloads().lock().unwrap_or_else(|e| e.into_inner()).get(slug).copied().unwrap_or(0)
+}
+
+fn download_holds() -> &'static Mutex<std::collections::HashMap<String, Arc<tokio::sync::Semaphore>>> {
+    static HOLDS: OnceLock<Mutex<std::collections::HashMap<String, Arc<tokio::sync::Semaphore>>>> = OnceLock::new();
+    HOLDS.get_or_init(Default::default)
+}
+
+/// The stand-in holds this plugin's `.napp` download until the returned
+/// release is called: an install through any door stays in flight, in its
+/// download, for exactly as long as the scenario needs it to.
+pub fn hub_holds_download(slug: &str) -> impl FnOnce() {
+    let hold = Arc::new(tokio::sync::Semaphore::new(0));
+    download_holds().lock().unwrap_or_else(|e| e.into_inner()).insert(slug.to_string(), hold.clone());
+    let slug = slug.to_string();
+    move || {
+        download_holds().lock().unwrap_or_else(|e| e.into_inner()).remove(&slug);
+        hold.add_permits(tokio::sync::Semaphore::MAX_PERMITS);
+    }
 }
 
 /// The `.napp` the stand-in serves: a raw tar.gz of `plugin.json` and the
@@ -586,21 +746,71 @@ fn hub_stand_in() -> String {
 
     let redeem = |axum::Json(body): axum::Json<Value>| async move {
         let code = body["code"].as_str().unwrap_or("").to_string();
-        let found = hub_plugins().lock().unwrap_or_else(|e| e.into_inner()).get(&code).cloned();
-        match found {
-            Some(p) => Ok(axum::Json(json!({
+        let artifact = |id: String, name: String, slug: String, kind: &str| {
+            axum::Json(json!({
                 "status": "installed",
-                "artifact": { "id": format!("artifact-{}", p.slug), "name": p.name, "slug": p.slug, "type": "plugin", "code": code },
-            }))),
+                "artifact": { "id": id, "name": name, "slug": slug, "type": kind, "code": code },
+            }))
+        };
+        if let Some(p) = hub_plugins().lock().unwrap_or_else(|e| e.into_inner()).get(&code).cloned() {
+            return Ok(artifact(hub_plugin_id(&p.slug), p.name, p.slug, "plugin"));
+        }
+        if let Some((_, a)) = hub_agent_where(|c, _| c == code) {
+            return Ok(artifact(a.id.clone(), a.name.clone(), a.slug(), "agent"));
+        }
+        match hub_collections().lock().unwrap_or_else(|e| e.into_inner()).get(&code).cloned() {
+            Some(c) => Ok(artifact(c.id, c.name.clone(), c.name.to_lowercase(), "collection")),
             None => Err(StatusCode::NOT_FOUND),
         }
+    };
+    let agent_package = |UrlPath(slug): UrlPath<String>| async move {
+        let (_, a) = hub_agent_where(|_, a| a.slug() == slug).ok_or(StatusCode::NOT_FOUND)?;
+        Ok::<_, StatusCode>(axum::Json(json!({
+            "id": a.id, "slug": a.slug(), "name": a.name, "version": "1.0.0",
+            "description": format!("{}, hired in the proof.", a.name),
+            "contentMd": format!("---\nname: {}\ndescription: {}, hired in the proof.\n---\n\n# {}\n", a.name, a.name, a.name),
+            "typeConfig": a.agent_json,
+        })))
+    };
+    // The detail by id resolves EVERY artifact type, as the hub's does: the
+    // account's install event carries only the id.
+    let artifact_detail = |UrlPath(id): UrlPath<String>| async move {
+        if let Some((slug, code)) = id
+            .strip_prefix("artifact-")
+            .and_then(|slug| hub_plugin_code(slug).map(|code| (slug.to_string(), code)))
+        {
+            let p = hub_plugin_by_slug(&slug).ok_or(StatusCode::NOT_FOUND)?;
+            return Ok(axum::Json(json!({
+                "id": id, "name": p.name, "slug": p.slug, "type": "plugin", "code": code, "version": "0.1.0",
+            })));
+        }
+        let (code, a) = hub_agent_where(|_, a| a.id == id).ok_or(StatusCode::NOT_FOUND)?;
+        Ok::<_, StatusCode>(axum::Json(json!({
+            "id": a.id, "name": a.name, "slug": a.slug(), "type": "agent", "code": code, "version": "1.0.0",
+        })))
+    };
+    let collection = |UrlPath(id): UrlPath<String>| async move {
+        let c = hub_collections()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .values()
+            .find(|c| c.id == id)
+            .cloned()
+            .ok_or(StatusCode::NOT_FOUND)?;
+        let items: Vec<Value> = c
+            .items
+            .iter()
+            .filter_map(|code| hub_agent_where(|c, _| c == code))
+            .map(|(code, a)| json!({ "code": code, "type": "agent", "name": a.name }))
+            .collect();
+        Ok::<_, StatusCode>(axum::Json(json!({ "id": c.id, "name": c.name, "items": items })))
     };
     let detail = |UrlPath(slug): UrlPath<String>| async move {
         let p = hub_plugin_by_slug(&slug).ok_or(StatusCode::NOT_FOUND)?;
         let napp = napp_of(&p);
         let platform = napp::plugin::current_platform_key();
         Ok::<_, StatusCode>(axum::Json(json!({
-            "id": format!("artifact-{}", p.slug), "slug": p.slug, "name": p.name, "version": "0.1.0",
+            "id": hub_plugin_id(&p.slug), "slug": p.slug, "name": p.name, "version": "0.1.0",
             "platforms": { platform: {
                 "binaryName": p.slug, "sha256": "", "signature": "", "size": napp.len(),
                 "downloadUrl": format!("/napp/{}", p.slug),
@@ -609,10 +819,18 @@ fn hub_stand_in() -> String {
     };
     let download = |UrlPath(slug): UrlPath<String>| async move {
         let p = hub_plugin_by_slug(&slug).ok_or(StatusCode::NOT_FOUND)?;
+        let hold = download_holds().lock().unwrap_or_else(|e| e.into_inner()).get(&slug).cloned();
+        if let Some(hold) = hold {
+            let _ = hold.acquire().await;
+        }
+        *napp_downloads().lock().unwrap_or_else(|e| e.into_inner()).entry(slug).or_insert(0) += 1;
         Ok::<_, StatusCode>(([(axum::http::header::CONTENT_TYPE, "application/octet-stream")], napp_of(&p)))
     };
     let app = axum::Router::new()
         .route("/api/v1/codes/redeem", post(redeem))
+        .route("/api/v1/agents/{slug}", get(agent_package))
+        .route("/api/v1/skills/{id}", get(artifact_detail))
+        .route("/api/v1/collections/{id}", get(collection))
         .route("/api/v1/plugins/{slug}", get(detail))
         .route("/napp/{slug}", get(download));
 

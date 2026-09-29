@@ -1,0 +1,10 @@
+id: sc61-the-lead-passes-the-owners-request-to-a-linked-teammate
+name: "SC61 — The lead passes the owner's request to a linked teammate with his authority"
+description: |
+  The lead names a linked teammate in its reply to the owner's team post. The linked
+  teammate's turn serves the owner's request: Nebo runs it on the owner's own surface with no
+  colleague's audience, its thread serves the owner's post (whatever it passes on is his
+  request too), the lead's words stay the lead's, and its runtime answers into the team.
+target_component: staffed-company
+proof: staffed_proof::conversation::the_lead_passes_the_owners_request_to_a_linked_teammate_with_his_authority
+conversation: []

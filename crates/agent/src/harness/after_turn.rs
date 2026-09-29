@@ -1,13 +1,23 @@
-//! After the turn: memory extraction scheduling, personality synthesis, the
-//! chat title and the background tool summary, moved here from `runner.rs`
-//! (WP1.5). WP2.7 turns extraction into a background pass over the finished
-//! exchange with no pre-gate and adds the review fork.
+//! After the turn: memory extraction, personality synthesis, the chat title,
+//! the self-improvement review and the background tool summary.
+//!
+//! Memory extraction: after each turn, one background call over the
+//! messages since the session's last extraction writes the durable
+//! memories it finds. There is no pre-gate. It is skipped when the employee already saved memory itself
+//! during those messages. One pass runs per session at a time; a turn that
+//! ends meanwhile becomes the trailing pass, which starts where the running
+//! one stopped. A pass covers its own turn, through the turn's last reply,
+//! and never a message after it: the owner's next message can land while
+//! the turn's tail still runs or before its pass starts, and a pass that
+//! took it would cover half of the next turn and leave the other half to a
+//! pass with too little to read.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
 use ai::{Provider, RequestTrace, StreamEvent};
 use db::Store;
+use db::models::ChatMessage;
 use napp::agent::MemoryTopic;
 use tokio::sync::{RwLock, mpsc};
 use tools::ToolResult;
@@ -19,8 +29,8 @@ use crate::harness::model_call::{prefer_non_gateway, resolve_aux};
 use crate::memory;
 use crate::session::SessionManager;
 
-/// Sink for a freshly auto-generated chat title. The runner writes the title to
-/// the store itself; the server installs a sink (`set_title_sink`) that
+/// Sink for a freshly auto-generated chat title. The harness writes the title
+/// to the store itself; the server installs a sink (`Harness::bind`) that
 /// broadcasts the change to connected clients and propagates it to the loop —
 /// concerns the agent crate can't reach. ONE sink, set once at startup, used by
 /// every run path (replaces the per-path title generators + the skip_title_gen
@@ -32,9 +42,9 @@ pub trait ChatTitleSink: Send + Sync {
 /// The ONE chat-title generator body (CODE_AUDITOR Rule 8). Names the chat on
 /// its first user turn and refines once at the third — language-independent
 /// (message count, not a default-title string) — and never clobbers a title
-/// the user set. Entered from the run loop after each turn and from
-/// Runner::spawn_title_generation for chats whose turns are persisted outside
-/// a run (voice).
+/// the user set. Entered after each chat turn and from
+/// `Harness::spawn_title_generation` for chats whose turns are stored outside
+/// a turn (voice).
 pub(crate) fn spawn_chat_title_generation(
     providers: Arc<RwLock<Vec<Arc<dyn Provider>>>>,
     store: Arc<Store>,
@@ -66,8 +76,8 @@ pub(crate) fn spawn_chat_title_generation(
             Ok(m) => m,
             _ => return,
         };
-        if messages.len() < 2 {
-            return; // need a user+assistant exchange to name from
+        if !messages.iter().any(|m| m.role == "user") {
+            return; // the owner's words name it, answered or not
         }
         // Use more of the conversation on the count-3 refinement.
         let take_n = if user_turns >= 3 { 8 } else { 4 };
@@ -162,128 +172,232 @@ pub(crate) async fn hand_off_tool_summary(
     }
 }
 
-/// What a finished run hands the memory extraction pass.
+/// What a finished turn hands the memory extraction service.
 pub(crate) struct MemoryExtraction<'a> {
     pub sessions: &'a SessionManager,
     pub session_id: &'a str,
     pub providers: &'a Arc<RwLock<Vec<Arc<dyn Provider>>>>,
     pub store: &'a Arc<Store>,
     pub concurrency: &'a Arc<ConcurrencyController>,
+    /// The extraction model's window: the conversation fills half of it.
+    pub selector: &'a Arc<crate::selector::ModelSelector>,
     pub embedding_provider: Option<&'a Arc<dyn ai::EmbeddingProvider>>,
-    /// The gate's judge: the runner's own decide handle (the one client the
-    /// server builds).
-    pub decide: Option<&'a Arc<ai::DecideClient>>,
+    /// Tells a memory write in the conversation: a call whose rule key is
+    /// `remember`.
+    pub tools: &'a Arc<tools::Registry>,
     pub memory_user_id: &'a str,
     pub memory_topics: &'a [MemoryTopic],
     pub memory_write_bar: &'a [ProvenanceClass],
     pub run_taint: &'a std::sync::Mutex<BTreeSet<ProvenanceClass>>,
-    /// The objective line: evidence for the gate.
-    pub objective: &'a str,
+    /// The session's agreed goal, when it has one: the one piece of context
+    /// extraction reads besides the messages.
+    pub goal: Option<&'a str>,
     pub skip_memory: bool,
-    pub gate_trace: RequestTrace,
     pub trace: RequestTrace,
 }
 
+/// One extraction pass, owned so it can run in the background and wait as
+/// a session's trailing pass.
+struct ExtractionJob {
+    sessions: SessionManager,
+    session_id: String,
+    /// The last reply of the turn this pass is for, as the turn ended:
+    /// where the pass stops. `None` when the conversation held no reply.
+    through: Option<String>,
+    providers: Arc<RwLock<Vec<Arc<dyn Provider>>>>,
+    store: Arc<Store>,
+    concurrency: Arc<ConcurrencyController>,
+    selector: Arc<crate::selector::ModelSelector>,
+    embedding_provider: Option<Arc<dyn ai::EmbeddingProvider>>,
+    tools: Arc<tools::Registry>,
+    memory_user_id: String,
+    memory_topics: Vec<MemoryTopic>,
+    taint: Vec<ProvenanceClass>,
+    goal: Option<String>,
+    trace: RequestTrace,
+}
+
+/// A session's extraction state: the cursor (the last message a pass
+/// covered), whether a pass is running, and the pass that arrived while it
+/// ran (only the latest is kept: it covers everything since the cursor).
+#[derive(Default)]
+struct SessionExtraction {
+    cursor: Option<String>,
+    running: bool,
+    trailing: Option<ExtractionJob>,
+}
+
+static EXTRACTIONS: std::sync::LazyLock<std::sync::Mutex<HashMap<String, SessionExtraction>>> =
+    std::sync::LazyLock::new(Default::default);
+
+fn extractions() -> std::sync::MutexGuard<'static, HashMap<String, SessionExtraction>> {
+    EXTRACTIONS.lock().unwrap_or_else(|p| p.into_inner())
+}
+
 impl MemoryExtraction<'_> {
-    /// Debounced memory extraction: only runs after 5s idle per session.
-    /// Extract from last exchange only (last user msg + assistant response + tool
-    /// calls) to avoid re-extracting facts from old messages and creating duplicates.
+    /// Hand the finished turn to the extraction service. It runs in the
+    /// background over the messages since the session's last extraction —
+    /// no pre-gate. A write bar the run's taint crosses, a run that skips
+    /// memory, or no provider hands nothing. A pass already running for the
+    /// session keeps this one as its trailing pass.
     pub(crate) async fn schedule(self) {
         let session_id = self.session_id;
-        let has_providers = !self.providers.read().await.is_empty();
-        let final_taint: Vec<ProvenanceClass> =
+        let taint: Vec<ProvenanceClass> =
             self.run_taint.lock().unwrap().iter().copied().collect();
-        let extraction_barred = final_taint
-            .iter()
-            .any(|c| self.memory_write_bar.contains(c));
-        if extraction_barred {
+        if taint.iter().any(|c| self.memory_write_bar.contains(c)) {
             info!(
                 session_id,
-                classes = %types::provenance::label_classes(&final_taint),
+                classes = %types::provenance::label_classes(&taint),
                 "memory extraction barred by scope write bar"
             );
+            return;
         }
-        if !self.skip_memory && has_providers && !extraction_barred {
-            let all_msgs = self.sessions.get_messages(session_id).unwrap_or_default();
-            // Find the last user message and take everything from there onward.
-            let last_exchange: Vec<_> = {
-                let last_user_idx = all_msgs.iter().rposition(|m| m.role == "user");
-                match last_user_idx {
-                    Some(idx) => all_msgs[idx..].to_vec(),
-                    None => vec![],
-                }
-            };
-            if last_exchange.len() >= 2 {
-                use crate::memory_debounce::MemoryDebouncer;
-                use std::sync::OnceLock;
-                static DEBOUNCER: OnceLock<MemoryDebouncer> = OnceLock::new();
-                let debouncer = DEBOUNCER.get_or_init(MemoryDebouncer::default);
+        if self.skip_memory || self.providers.read().await.is_empty() {
+            return;
+        }
+        let through = self
+            .sessions
+            .get_messages(session_id)
+            .ok()
+            .and_then(|all| all.iter().rev().find(|m| m.role == "assistant").map(|m| m.id.clone()));
+        let job = ExtractionJob {
+            sessions: self.sessions.clone(),
+            session_id: session_id.to_string(),
+            through,
+            providers: self.providers.clone(),
+            store: self.store.clone(),
+            concurrency: self.concurrency.clone(),
+            selector: self.selector.clone(),
+            embedding_provider: self.embedding_provider.cloned(),
+            tools: self.tools.clone(),
+            memory_user_id: self.memory_user_id.to_string(),
+            memory_topics: self.memory_topics.to_vec(),
+            taint,
+            goal: self.goal.map(str::to_string),
+            trace: self.trace,
+        };
+        {
+            let mut all = extractions();
+            let state = all.entry(job.session_id.clone()).or_default();
+            if state.running {
+                debug!(session_id, "memory extraction running; this turn waits as its trailing pass");
+                state.trailing = Some(job);
+                return;
+            }
+            state.running = true;
+        }
+        let handle = tokio::spawn(run_extractions(job));
+        crate::memory_flush::track_extraction(handle).await;
+    }
+}
 
-                let providers = self.providers.clone();
-                let store = self.store.clone();
-                let mem_uid = self.memory_user_id.to_string();
-                let session_id_owned = session_id.to_string();
-                let embed_prov = self.embedding_provider.cloned();
-                let topics = self.memory_topics.to_vec();
-                let taint = final_taint.clone();
-                let conc = self.concurrency.clone();
-                let decide = self.decide.cloned();
-                let objective = self.objective.to_string();
-                let gate_trace = self.gate_trace;
-                let trace = self.trace;
-
-                debouncer
-                    .schedule(session_id, move || async move {
-                        // One typed decision before the chat-model extraction:
-                        // skip only when the new turn plausibly holds nothing
-                        // durable; every doubt runs extraction as before.
-                        let gate_state = crate::memory_gate::gate_state(&last_exchange, &objective);
-                        if !crate::memory_gate::should_extract(
-                            decide.as_deref(),
-                            &gate_trace,
-                            &gate_state,
-                        )
-                        .await
-                        {
-                            debug!(
-                                session_id = session_id_owned,
-                                "memory extraction skipped: nothing durable in the turn"
-                            );
-                            return;
-                        }
-                        let resolved = {
-                            let prov_lock = providers.read().await;
-                            resolve_aux(&config::ModelsConfig::load(), &prov_lock)
-                                .or_else(|| {
-                                    prefer_non_gateway(&prov_lock).map(|p| (p, String::new()))
-                                })
-                                .map(|(p, m)| (conc.background(p), m))
-                        };
-                        if let Some((provider, aux_model)) = resolved
-                            && let Some(facts) = memory::extract_facts(
-                                trace,
-                                provider.as_ref(),
-                                &last_exchange,
-                                Some(&store),
-                                Some(&mem_uid),
-                                &topics,
-                                &aux_model,
-                            )
-                            .await
-                        {
-                            memory::store_facts(
-                                &store, &facts, &mem_uid, embed_prov, &topics, &taint,
-                            );
-                            debug!(
-                                session_id = session_id_owned,
-                                "extracted and stored memory facts"
-                            );
-                        }
-                    })
-                    .await;
+/// Run `job`, then each trailing pass that arrived meanwhile.
+async fn run_extractions(mut job: ExtractionJob) {
+    loop {
+        let cursor = extractions().get(&job.session_id).and_then(|s| s.cursor.clone());
+        let advanced = extract_once(&job, cursor.as_deref()).await;
+        let mut all = extractions();
+        let state = all.entry(job.session_id.clone()).or_default();
+        if advanced.is_some() {
+            state.cursor = advanced;
+        }
+        match state.trailing.take() {
+            Some(next) => job = next,
+            None => {
+                state.running = false;
+                return;
             }
         }
     }
+}
+
+/// One pass over the messages after `cursor`, through the end of the
+/// job's turn. Returns the new cursor: the last message the pass covered,
+/// or None when the pass failed and those messages wait for the next one.
+async fn extract_once(job: &ExtractionJob, cursor: Option<&str>) -> Option<String> {
+    let mut all = job.sessions.get_messages(&job.session_id).unwrap_or_default();
+    // A conversation that no longer holds the turn's end (a checkpoint, a
+    // new chat) is read whole.
+    if let Some(end) = job.through.as_deref().and_then(|t| all.iter().position(|m| m.id == t)) {
+        all.truncate(end + 1);
+    }
+    let last = all.last()?.id.clone();
+    let messages = messages_since(&all, cursor);
+    if messages.len() < 2 {
+        return Some(last);
+    }
+    // The employee saved memory itself during these messages: it already
+    // did the work this pass would do.
+    if wrote_memory(&job.tools, &messages).await {
+        debug!(session_id = %job.session_id, "memory extraction skipped: the employee wrote memory itself");
+        return Some(last);
+    }
+    let resolved = {
+        let prov_lock = job.providers.read().await;
+        resolve_aux(&config::ModelsConfig::load(), &prov_lock)
+            .or_else(|| prefer_non_gateway(&prov_lock).map(|p| (p, String::new())))
+            .map(|(p, m)| {
+                let window = job.selector.context_window(&format!("{}/{}", p.id(), m));
+                (job.concurrency.background(p), m, window)
+            })
+    };
+    let (provider, aux_model, window_tokens) = resolved?;
+    let facts = memory::extract_facts(
+        job.trace.clone(),
+        provider.as_ref(),
+        &messages,
+        Some((job.store.as_ref(), job.memory_user_id.as_str())),
+        &job.memory_topics,
+        &aux_model,
+        job.goal.as_deref(),
+        window_tokens,
+    )
+    .await?;
+    memory::store_facts(
+        &job.store,
+        &facts,
+        &job.memory_user_id,
+        job.embedding_provider.clone(),
+        &job.memory_topics,
+        &job.taint,
+    );
+    debug!(session_id = %job.session_id, "extracted and stored memory facts");
+    Some(last)
+}
+
+/// The messages after `cursor`, attachment rows left out (they are the
+/// system's words, not the conversation's). A cursor the conversation no
+/// longer holds (a checkpoint, a new chat, a restart) falls back to the
+/// last exchange: the last owner message and everything after it.
+fn messages_since(all: &[ChatMessage], cursor: Option<&str>) -> Vec<ChatMessage> {
+    let visible = |m: &&ChatMessage| crate::harness::reminders::attachment_kind(m).is_none();
+    let start = match cursor.and_then(|c| all.iter().position(|m| m.id == c)) {
+        Some(i) => i + 1,
+        None => match all.iter().rposition(|m| m.role == "user" && visible(&m)) {
+            Some(i) => i,
+            None => return Vec::new(),
+        },
+    };
+    all[start..].iter().filter(visible).cloned().collect()
+}
+
+/// Whether any assistant message calls a tool whose rule key is `remember`.
+async fn wrote_memory(tools: &tools::Registry, messages: &[ChatMessage]) -> bool {
+    for m in messages.iter().filter(|m| m.role == "assistant") {
+        let Some(calls) = m
+            .tool_calls
+            .as_deref()
+            .and_then(|tc| serde_json::from_str::<Vec<ai::ToolCall>>(tc).ok())
+        else {
+            continue;
+        };
+        for call in calls {
+            if tools.target(&call.name, &call.input).await.is_some_and(|t| t.key == "remember") {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// Background personality synthesis: if enough style observations exist,
@@ -306,6 +420,98 @@ pub(crate) async fn spawn_personality_synthesis(
         }
     });
     crate::memory_flush::track_extraction(handle).await;
+}
+
+/// The self-improvement review after a chat turn. Every
+/// `REVIEW_TURN_INTERVAL` turns without a skill the employee saved on its own,
+/// an employee that learns (`learning_mode` auto or staged) gets a forked
+/// turn over the conversation asking what should be learned. The fork runs
+/// in its own session, never touches the owner's thread, and can only save
+/// skills. One review runs per session at a time.
+pub(crate) fn start_review(h: &super::Harness, req: &super::TurnRequest, session_id: &str) {
+    let agent_id = req.seat.agent_id.as_str();
+    if agent_id.is_empty() {
+        return;
+    }
+    let learning = h
+        .store
+        .get_entity_config("agent", agent_id)
+        .ok()
+        .flatten()
+        .and_then(|c| c.learning_mode)
+        .map(|m| m.to_ascii_lowercase())
+        .unwrap_or_default();
+    let staged = learning == "staged";
+    if !(staged || learning == "auto")
+        || !crate::review_fork::should_review(session_id)
+        || !crate::review_fork::try_begin(session_id)
+    {
+        return;
+    }
+    let h = h.clone();
+    let fork = super::TurnRequest {
+        session_key: format!("fork:{session_id}:review-{}", uuid::Uuid::new_v4()),
+        input: super::TurnInput::Platform {
+            text: crate::review_fork::REVIEW_PROMPT.to_string(),
+        },
+        seat: super::SeatRequest {
+            origin: tools::Origin::System,
+            ..req.seat.clone()
+        },
+        mode: super::TurnMode::Fork(super::ForkKind::Review { staged }),
+        delivery: super::Delivery {
+            channel: req.delivery.channel.clone(),
+            channel_ctx: req.delivery.channel_ctx.clone(),
+            mention_briefing: None,
+        },
+        cancel: tokio_util::sync::CancellationToken::new(),
+        progress: None,
+    };
+    let session_id = session_id.to_string();
+    tokio::spawn(async move {
+        info!(session_id = %session_id, "self-improvement review starting");
+        match review(&h, &session_id, fork).await {
+            Ok(summary) => {
+                let line: String = summary.trim().chars().take(300).collect();
+                info!(session_id = %session_id, summary = %line, "self-improvement review finished");
+            }
+            Err(e) => tracing::warn!(session_id = %session_id, error = %e, "self-improvement review failed"),
+        }
+        crate::review_fork::finish(&session_id);
+    });
+}
+
+/// Replay the conversation into the fork's session (so its request shares
+/// the parent's cached prefix) and run the review turn to its end.
+async fn review(h: &super::Harness, session_id: &str, fork: super::TurnRequest) -> Result<String, String> {
+    let fork_session = h
+        .sessions
+        .get_or_create(&fork.session_key, &fork.seat.user_id)
+        .map_err(|e| format!("the review session could not be created: {e}"))?;
+    let messages = h
+        .sessions
+        .get_messages_since_checkpoint(session_id)
+        .map_err(|e| format!("the conversation could not be read: {e}"))?;
+    for m in &messages {
+        h.sessions
+            .append_message(
+                &fork_session.id,
+                &m.role,
+                &m.content,
+                m.tool_calls.as_deref(),
+                m.tool_results.as_deref(),
+                m.metadata.as_deref(),
+            )
+            .map_err(|e| format!("the conversation could not be replayed: {e}"))?;
+    }
+    let mut handle = h.start_turn(fork).await.map_err(|e| e.to_string())?;
+    let mut text = String::new();
+    while let Some(ev) = handle.events.recv().await {
+        if ev.event_type == ai::StreamEventType::Text {
+            text.push_str(&ev.text);
+        }
+    }
+    Ok(text)
 }
 
 #[cfg(test)]
@@ -331,6 +537,267 @@ mod tests {
             tool_summary_due(sid, t0 + TOOL_SUMMARY_MIN_GAP),
             "label resumes after the gap"
         );
+    }
+
+    /// A provider that records each extraction prompt and answers with
+    /// nothing to keep.
+    #[derive(Default)]
+    struct Recorder {
+        prompts: std::sync::Mutex<Vec<String>>,
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for Recorder {
+        fn id(&self) -> &str {
+            "recorder"
+        }
+        async fn stream(&self, req: &ai::ChatRequest) -> Result<ai::EventReceiver, ai::ProviderError> {
+            self.prompts
+                .lock()
+                .unwrap()
+                .push(req.messages.iter().map(|m| m.content.clone()).collect());
+            let (tx, rx) = mpsc::channel(4);
+            let _ = tx.send(StreamEvent::text("{}".to_string())).await;
+            let _ = tx.send(StreamEvent::done()).await;
+            Ok(rx)
+        }
+    }
+
+    struct Fixture {
+        store: Arc<Store>,
+        sessions: SessionManager,
+        session_id: String,
+        recorder: Arc<Recorder>,
+        providers: Arc<RwLock<Vec<Arc<dyn Provider>>>>,
+        concurrency: Arc<ConcurrencyController>,
+        selector: Arc<crate::selector::ModelSelector>,
+        tools: Arc<tools::Registry>,
+    }
+
+    impl Fixture {
+        async fn new() -> Self {
+            let path = std::env::temp_dir().join(format!("nebo-extract-{}.db", uuid::Uuid::new_v4()));
+            let store = Arc::new(Store::new(path.to_str().unwrap()).expect("test store"));
+            let sessions = SessionManager::new(store.clone());
+            let session_id = sessions.get_or_create("agent:a1:web", "").expect("session").id;
+            let recorder = Arc::new(Recorder::default());
+            let providers: Arc<RwLock<Vec<Arc<dyn Provider>>>> =
+                Arc::new(RwLock::new(vec![recorder.clone() as Arc<dyn Provider>]));
+            let tools = Arc::new(tools::Registry::new(Arc::new(
+                crate::harness::permissions::Check::new(store.clone()),
+            )));
+            for tool in tools::memory_tools::Memory::new(store.clone(), None, None).tools() {
+                tools.register(tool).await;
+            }
+            Fixture {
+                store,
+                sessions,
+                session_id,
+                recorder,
+                providers,
+                concurrency: Arc::new(ConcurrencyController::new(None)),
+                selector: Arc::new(crate::selector::ModelSelector::new(Default::default())),
+                tools,
+            }
+        }
+
+        fn say(&self, role: &str, text: &str, tool_calls: Option<serde_json::Value>) {
+            let calls = tool_calls.map(|c| c.to_string());
+            self.sessions
+                .append_message(&self.session_id, role, text, calls.as_deref(), None, None)
+                .expect("append");
+        }
+
+        /// End a turn: hand it to the service and wait for its passes.
+        async fn end_turn(&self, goal: Option<&str>) {
+            self.hand_off(goal).await;
+            self.passes_done().await;
+        }
+
+        /// Hand the ended turn to the service. On the test's one thread its
+        /// pass starts only once the test waits.
+        async fn hand_off(&self, goal: Option<&str>) {
+            let taint = std::sync::Mutex::new(BTreeSet::new());
+            MemoryExtraction {
+                sessions: &self.sessions,
+                session_id: &self.session_id,
+                providers: &self.providers,
+                store: &self.store,
+                concurrency: &self.concurrency,
+                selector: &self.selector,
+                embedding_provider: None,
+                tools: &self.tools,
+                memory_user_id: "local:agent:a1",
+                memory_topics: &[],
+                memory_write_bar: &[],
+                run_taint: &taint,
+                goal,
+                skip_memory: false,
+                trace: RequestTrace::new("memory_extract"),
+            }
+            .schedule()
+            .await;
+        }
+
+        async fn passes_done(&self) {
+            for _ in 0..400 {
+                if !extractions().get(&self.session_id).is_some_and(|s| s.running) {
+                    return;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+            panic!("the extraction never finished");
+        }
+
+        fn prompts(&self) -> Vec<String> {
+            self.recorder.prompts.lock().unwrap().clone()
+        }
+    }
+
+    /// A status exchange with nothing durable in it — what the old Jev gate
+    /// skipped — still gets its extraction call: nothing decides before it.
+    #[tokio::test]
+    async fn extraction_runs_without_a_gate() {
+        let f = Fixture::new().await;
+        f.say("user", "status?", None);
+        f.say("assistant", "All quiet.", None);
+        f.end_turn(None).await;
+        assert_eq!(f.prompts().len(), 1, "one extraction call per turn, ungated");
+
+        // The next turn covers only the messages since the last extraction.
+        f.say("user", "My accountant is Dana Lee; send her the quarterly numbers.", None);
+        f.say("assistant", "Noted.", None);
+        f.end_turn(None).await;
+        let prompts = f.prompts();
+        assert_eq!(prompts.len(), 2);
+        assert!(prompts[1].contains("Dana Lee"));
+        assert!(!prompts[1].contains("All quiet."), "the first turn is not extracted again");
+    }
+
+    /// When the employee saved memory itself during the messages, the pass
+    /// has nothing to add: no call, and the cursor moves past them.
+    #[tokio::test]
+    async fn extraction_skipped_when_employee_wrote_memory() {
+        let f = Fixture::new().await;
+        f.say("user", "Remember that invoices go out on the 1st.", None);
+        let store_call = serde_json::json!([{
+            "id": "call-1",
+            "name": "remember",
+            "input": {"key": "invoice/day", "value": "Invoices go out on the 1st"}
+        }]);
+        f.say("assistant", "", Some(store_call));
+        f.say("assistant", "Saved.", None);
+        f.end_turn(None).await;
+        assert!(f.prompts().is_empty(), "the employee already wrote memory");
+
+        // A recall is not a write.
+        f.say("user", "What day do invoices go out? I prefer email reminders.", None);
+        let recall_call = serde_json::json!([{
+            "id": "call-2",
+            "name": "recall",
+            "input": {"query": "invoice/day"}
+        }]);
+        f.say("assistant", "", Some(recall_call));
+        f.say("assistant", "On the 1st.", None);
+        f.end_turn(None).await;
+        let prompts = f.prompts();
+        assert_eq!(prompts.len(), 1);
+        assert!(prompts[0].contains("email reminders"));
+        assert!(!prompts[0].contains("Remember that invoices"), "the written range is behind the cursor");
+    }
+
+    /// A pass that starts after the owner's next message landed covers its
+    /// own turn only: the next turn, half-written when that pass read the
+    /// conversation, is left whole to its own pass. Before, the late pass
+    /// covered the next owner message alone and its pass got only the
+    /// reply: the facts in it were never extracted (the confidential memory
+    /// proof lost "the Harlow mediation" this way in about half its runs).
+    #[tokio::test]
+    async fn a_late_pass_leaves_the_next_turn_to_its_own_pass() {
+        let f = Fixture::new().await;
+        f.say("user", "Remember that invoices go out on the 1st.", None);
+        let store_call = serde_json::json!([{
+            "id": "call-1",
+            "name": "remember",
+            "input": {"key": "invoice/day", "value": "Invoices go out on the 1st"}
+        }]);
+        f.say("assistant", "", Some(store_call));
+        f.say("assistant", "Saved.", None);
+        f.hand_off(None).await;
+        // The owner's next message lands before that pass reads anything.
+        f.say("user", "Also, the mediation is set for the 9th.", None);
+        f.passes_done().await;
+        assert!(f.prompts().is_empty(), "the first turn wrote memory itself");
+
+        f.say("assistant", "Noted.", None);
+        f.end_turn(None).await;
+        let prompts = f.prompts();
+        assert_eq!(prompts.len(), 1, "the second turn gets its own extraction");
+        assert!(prompts[0].contains("mediation is set for the 9th") && prompts[0].contains("Noted."), "{}", prompts[0]);
+        assert!(!prompts[0].contains("invoices go out"), "the first turn is behind the cursor");
+    }
+
+    /// The owner's next message can land while the turn's tail still runs,
+    /// before its pass is even scheduled: the pass stops at the turn's last
+    /// reply, so that message is left to the turn that answers it.
+    #[tokio::test]
+    async fn a_message_during_the_turns_tail_is_the_next_turns() {
+        let f = Fixture::new().await;
+        f.say("user", "Remember that invoices go out on the 1st.", None);
+        let store_call = serde_json::json!([{
+            "id": "call-1",
+            "name": "remember",
+            "input": {"key": "invoice/day", "value": "Invoices go out on the 1st"}
+        }]);
+        f.say("assistant", "", Some(store_call));
+        f.say("assistant", "Saved.", None);
+        // The owner's next message lands before the turn hands off its pass.
+        f.say("user", "Also, the mediation is set for the 9th.", None);
+        f.end_turn(None).await;
+        assert!(f.prompts().is_empty(), "the first turn wrote memory itself");
+
+        f.say("assistant", "Noted.", None);
+        f.end_turn(None).await;
+        let prompts = f.prompts();
+        assert_eq!(prompts.len(), 1, "the second turn gets its own extraction");
+        assert!(prompts[0].contains("mediation is set for the 9th") && prompts[0].contains("Noted."), "{}", prompts[0]);
+    }
+
+    /// Extraction reads the messages and the agreed goal; attachment rows
+    /// never reach it.
+    #[tokio::test]
+    async fn extraction_input_is_the_conversation_and_the_goal() {
+        let f = Fixture::new().await;
+        f.say("user", "Draft the renewal letter for the client.", None);
+        let attachment = crate::harness::reminders::Attachment {
+            kind: "relevant_memories",
+            text: "Memories that may apply:\n- RECALLED-ROW: v".into(),
+            data: serde_json::Map::new(),
+        };
+        f.sessions
+            .append_message(
+                &f.session_id,
+                "user",
+                &crate::harness::reminders::wrap(&attachment.text),
+                None,
+                None,
+                Some(&attachment.metadata().to_string()),
+            )
+            .unwrap();
+        f.say("assistant", "Here is the draft.", None);
+        f.end_turn(Some("Send every renewal letter before Friday")).await;
+
+        let prompts = f.prompts();
+        assert_eq!(prompts.len(), 1);
+        assert!(prompts[0].contains("The agreed goal of this work: Send every renewal letter before Friday"));
+        assert!(prompts[0].contains("Draft the renewal letter"));
+        assert!(!prompts[0].contains("RECALLED-ROW"), "attachment rows are not the conversation");
+
+        // No goal, no goal line.
+        f.say("user", "Also copy the partner.", None);
+        f.say("assistant", "Done.", None);
+        f.end_turn(None).await;
+        assert!(!f.prompts()[1].contains("agreed goal"));
     }
 
     /// Sessions are rate-limited independently.

@@ -1,12 +1,15 @@
 #![recursion_limit = "256"]
 
 pub mod a2ui_tool;
+pub mod advisor_tools;
 pub mod agent_tool;
+pub mod ask_owner_tool;
 pub mod authority_tool;
 pub mod rules_tool;
 pub mod pack_tool;
 pub mod app_tool;
 pub mod assignments;
+pub mod bot_mail;
 pub mod bot_tool;
 pub mod capabilities;
 pub mod checkpoint;
@@ -15,15 +18,16 @@ pub mod humanize;
 pub mod installed;
 pub mod channel_bridge;
 pub mod code_tool;
+pub mod command_tools;
+pub mod confine;
+pub mod company;
 pub mod coworker;
 
-/// Cap on raw subprocess/tool output surfaced into context, in bytes (the
-/// truncation is byte-based, not character-based). ONE definition: shell and
-/// plugin execution truncate identically.
-/// Inline cap on a subprocess result (shell exec, plugin exec). 30 KB, the
-/// same as Claude Code's Bash default, and UNDER the runner's 50 KB spill
-/// threshold so the tool's own footer (which names where the full output
-/// was saved) is what the model reads — never a second preview on top.
+/// A subprocess result (shell exec, plugin exec) longer than this, in
+/// characters, is persisted and previewed, so one noisy command can't fill
+/// the context.
+/// Shell output is persisted by the registry at this size; plugin output
+/// is still cut to it (its own package moves it onto the spill path).
 pub(crate) const MAX_SUBPROCESS_OUTPUT: usize = 30_000;
 pub mod deep_research;
 pub mod desktop_daemon;
@@ -36,34 +40,54 @@ pub mod desktop_tool;
 pub mod domain;
 pub mod effects;
 pub mod emit_tool;
+pub mod employee_tools;
 pub mod errors;
 pub mod event_tool;
 pub mod events;
 pub mod execute_tool;
 pub mod exit_tool;
 pub mod file_tool;
+pub mod file_tools;
+pub mod find_tools;
+pub mod gate;
+pub mod goal_tool;
 pub mod grep_tool;
+pub mod helper_tools;
+pub mod history_tools;
+pub mod input_schema;
 pub mod interface_catalog;
 pub mod keychain_tool;
 pub mod loop_tool;
 pub mod lsp;
 pub mod mcp_tool;
 pub mod memory_guard;
+pub mod memory_tools;
 pub mod message_tool;
 pub mod music_tool;
+pub mod nebo_files;
+pub mod needs;
 pub mod notebook_tool;
+pub mod operation_tools;
 pub mod orchestrator;
 mod organizer;
 pub mod origin;
 pub mod os_tool;
 pub mod owner_notify;
+pub mod owner_tools;
+pub mod permission_request_tool;
 pub mod plan;
 pub mod plugin_tool;
+pub mod plugin_tools;
 pub mod policy;
+mod read_only_commands;
 pub mod process;
+pub mod profile_tools;
 pub mod publisher_tool;
 pub mod registry;
+pub mod rename_map;
 pub mod research;
+pub mod research_tools;
+pub mod result_shape;
 pub mod run_querier;
 pub mod safeguard;
 pub mod sandbox_policy;
@@ -73,12 +97,14 @@ pub mod sidecar_tool;
 pub mod skill_tool;
 pub mod skills;
 pub mod spotlight_tool;
-pub mod tool_search;
 pub mod vm_tool;
 pub mod walk_bounds;
 pub mod web_tool;
+pub mod system_packages;
+pub mod task_tools;
 pub mod team;
 pub mod team_tool;
+pub mod terminal;
 pub mod workflows;
 
 /// True when this Nebo runs as a cloud/container server rather than on a user's
@@ -93,12 +119,31 @@ pub mod workflows;
 /// nor `WAYLAND_DISPLAY` is headless by definition (a Linux desktop always has
 /// one). macOS/Windows are always treated as desktops.
 pub fn server_mode() -> bool {
-    if std::env::var_os("NEBO_SERVER_MODE").is_some() {
+    if cloud_bot() {
         return true;
     }
     cfg!(target_os = "linux")
         && std::env::var_os("DISPLAY").is_none()
         && std::env::var_os("WAYLAND_DISPLAY").is_none()
+}
+
+/// True when this Nebo is a cloud bot: the server image, which sets
+/// `NEBO_SERVER_MODE` (a headless Linux box of the owner's own is a server,
+/// never a cloud bot). A cloud bot is its own VM holding one customer's
+/// data; its package installer runs as root (`system_packages`).
+pub fn cloud_bot() -> bool {
+    std::env::var_os("NEBO_SERVER_MODE").is_some()
+}
+
+/// The tool that drives this computer's desktop, apps and settings
+/// (`os_tool::OsTool`).
+pub const DESKTOP_TOOL: &str = "os";
+
+/// Whether this computer has a desktop now: every Mac, Windows or Linux
+/// desktop, and a server while its on-demand desktop session is up
+/// (`desktop_session`). The desktop tool is listed only then.
+pub fn desktop_available() -> bool {
+    !server_mode() || desktop_session::active()
 }
 
 /// Truncate a string to at most `max_bytes` bytes without splitting a multi-byte
@@ -120,7 +165,7 @@ pub use agent_tool::{
 };
 pub use app_tool::AppTool;
 pub use bot_tool::{
-    AdvisorDeliberator, AgentTool, CodeInstaller, HybridSearchResult, HybridSearcher,
+    AdvisorDeliberator, CodeInstaller, HybridSearchResult, HybridSearcher, InstalledBy,
     MemoryEmbedder,
 };
 pub use channel_bridge::{
@@ -133,31 +178,31 @@ pub use coworker::{
 };
 pub use domain::*;
 pub use emit_tool::EmitTool;
-pub use event_tool::EventTool;
 pub use events::{Event, EventBus};
 pub use execute_tool::ExecuteTool;
 pub use exit_tool::{EXIT_SENTINEL, ExitTool};
 pub use file_tool::FileTool;
 pub use keychain_tool::KeychainTool;
-pub use loop_tool::LoopTool;
 pub use message_tool::MessageTool;
 pub use music_tool::MusicTool;
 pub use orchestrator::{
     FollowUp, OrchestratorHandle, SpawnRequest, SpawnResult, SubAgentOrchestrator, new_handle,
 };
 pub use origin::{
-    ApprovalChannels, AskChannels, ChannelContext, ExecutionMode, Origin, ToolContext,
+    ApprovalCard, ApprovalChannels, AskChannels, ChannelContext, ExecutionMode, Origin, PendingApproval,
+    ToolContext, Waiting,
     workflow_session_key,
 };
 pub use os_tool::OsTool;
-pub use policy::{AskMode, Policy, PolicyLevel};
+pub use gate::{GateVerdict, PermissionGate, ResolvedCall};
+pub use goal_tool::GoalSuggester;
 pub use process::ProcessRegistry;
 pub use registry::{Registry, ResourceKind, ToolResult};
 pub use shell_tool::ShellTool;
 pub use skill_tool::SkillTool;
-pub use tool_search::ToolSearchTool;
+pub use find_tools::FindToolsTool;
 pub use web_tool::WebTool;
-pub use workflows::{WorkTool, WorkflowInfo, WorkflowManager, WorkflowRunInfo};
+pub use workflows::{Lifetime, SaveOptions, WorkflowInfo, WorkflowManager, WorkflowRunInfo};
 
 /// Build a NeboAI API client from a Store (for tool install actions).
 pub(crate) fn build_neboai_api(store: &db::Store) -> Result<comm::api::NeboAIApi, String> {

@@ -87,7 +87,7 @@ pub async fn teach_stop(
          click-and-keystroke timeline of exactly what they did — then confirm the visual \
          context by viewing 5-6 spread keyframes from frames/ (there are {keyframes}; do \
          NOT read them all, and do not use sub-agents). Then save it as a learned skill \
-         with the skill tool — name it after the class of task, write out the steps you'd \
+         with save_skill — name it after the class of task, write out the steps you'd \
          follow to repeat it on your computer, and note which inputs varied. Open your \
          reply by thanking them briefly and saying what you learned, then ask whether you \
          should run this on a schedule or only when they ask. Do not mention this \
@@ -101,10 +101,10 @@ pub async fn teach_stop(
     let config = crate::chat_dispatch::ChatConfig {
         session_key: session_key.clone(),
         prompt: VISIBLE.to_string(),
-        system: String::new(),
         user_id: String::new(),
         channel: "web".to_string(),
         origin: tools::Origin::User,
+        door: types::permissions::Door::Chat,
         agent_id: agent_id.to_string(),
         cancel_token: tokio_util::sync::CancellationToken::new(),
         lane: types::constants::lanes::MAIN.to_string(),
@@ -116,15 +116,16 @@ pub async fn teach_stop(
         origin_agent_id: None,
         mention_context: Some(briefing),
         tool_scope: None,
-        plan_mode: false,
         channel_ctx: None,
         handoff_depth: 0,
         seed_taint: vec![],
         tool_allowlist: None,
         hidden_prompt: false,
+        coworker: None,
         audience: None,
         cwd: None,
         model_override: None,
+        client_id: None,
     };
     crate::chat_dispatch::run_chat(&state, config).await;
 

@@ -14,13 +14,20 @@ pub struct McpStdioBridge {
 }
 
 impl McpStdioBridge {
-    pub fn new(server_url: String, tools: Option<String>, exclude_tools: Option<String>) -> Self {
+    /// A bridge to the Nebo at `server_url`, proving itself to its local API
+    /// with the install key `key`, as every owner's client does.
+    pub fn new(server_url: String, key: String, tools: Option<String>, exclude_tools: Option<String>) -> Self {
+        let mut auth = reqwest::header::HeaderMap::new();
+        if let Ok(value) = format!("Bearer {key}").parse() {
+            auth.insert(reqwest::header::AUTHORIZATION, value);
+        }
         Self {
             server_url,
-            http: reqwest::Client::builder()
+            http: tls::http_client()
                 .timeout(Duration::from_secs(660)) // nebo chat can take up to 600s
+                .default_headers(auth)
                 .build()
-                .unwrap_or_default(),
+                .expect("reqwest bridge client builder is infallible with these options"),
             tool_allow: tools.map(|t| {
                 t.split(',')
                     .map(|s| s.trim().to_string())
@@ -258,6 +265,7 @@ mod tests {
     fn tool_list_parsing() {
         let bridge = McpStdioBridge::new(
             "http://localhost:1".to_string(),
+            "k".to_string(),
             Some("system, web ,,bot".to_string()),
             None,
         );
@@ -275,6 +283,7 @@ mod tests {
     fn tools_list_filtering() {
         let bridge = McpStdioBridge::new(
             "http://localhost:1".to_string(),
+            "k".to_string(),
             Some("system,web".to_string()),
             Some("web".to_string()),
         );
@@ -297,7 +306,7 @@ mod tests {
     /// unmodified — filtering never runs.
     #[test]
     fn no_filters_passthrough() {
-        let bridge = McpStdioBridge::new("http://localhost:1".to_string(), None, None);
+        let bridge = McpStdioBridge::new("http://localhost:1".to_string(), "k".to_string(), None, None);
         let request = r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#;
         let response = r#"{"result":{"tools":[{"name":"system"}]}}"#;
         assert_eq!(

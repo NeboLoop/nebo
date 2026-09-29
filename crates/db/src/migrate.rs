@@ -397,7 +397,10 @@ mod idempotency_tests {
         assert_eq!(count("SELECT COUNT(*) FROM engine_events WHERE kind = 'seen' AND idem_key = 'comm:sms-abc' AND delivered_at IS NOT NULL"), 1);
         // The fan-out keeps its parent link and states; tracking rows stay where they were.
         assert_eq!(one("SELECT state FROM engine_runs WHERE id = 'root'"), "done");
-        assert_eq!(one("SELECT state || ' ' || parent_run_id FROM engine_runs WHERE id = 'child'"), "queued root");
+        // The one loop's upgrade (0173) then fails the child the old
+        // orchestrator never ran; both become helper rows.
+        assert_eq!(one("SELECT state || ' ' || parent_run_id FROM engine_runs WHERE id = 'child'"), "failed root");
+        assert_eq!(one("SELECT kind FROM engine_runs WHERE id = 'root'"), "helper");
         assert_eq!(count("SELECT COUNT(*) FROM pending_tasks"), 1, "only the tracking row remains");
         // The parked workflow is a waiting run with its approval as its live wait.
         assert_eq!(one("SELECT state FROM engine_runs WHERE id = 'wf-park'"), "waiting");
@@ -415,8 +418,237 @@ mod idempotency_tests {
         // The store opens the upgraded file and finds nothing more to do.
         let store = crate::Store::new(&path_s).unwrap();
         assert_eq!(store.engine_get_run("wf-park").unwrap().unwrap().state, "waiting");
-        let queued = store.engine_queued_runs("main", 10).unwrap();
-        assert_eq!(queued.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), ["child"], "the pending child is queued on its old lane, ready to run");
+        assert!(store.engine_queued_runs("main", 10).unwrap().is_empty(), "nothing waits on the old orchestrator");
+    }
+
+    /// Every visible checkpoint row becomes a hidden boundary and one
+    /// owner-visible marker just before it; the model's conversation still
+    /// opens on the boundary and never holds a marker. Running it again
+    /// changes nothing.
+    #[test]
+    fn visible_checkpoint_rows_become_hidden_with_one_marker_each() {
+        let path = std::env::temp_dir().join(format!("nebo-upgrade-{}.db", uuid::Uuid::new_v4()));
+        let conn = Connection::open(&path).unwrap();
+        run_migrations_to(&conn, 182).unwrap();
+        conn.execute_batch(
+            "INSERT INTO chats (id, title) VALUES ('c', 'C');
+             INSERT INTO chat_messages (id, chat_id, role, content, created_at) VALUES ('u1', 'c', 'user', 'Build the billing employee.', 100);
+             INSERT INTO chat_messages (id, chat_id, role, content, metadata, created_at) VALUES ('b1', 'c', 'user', 'This conversation continues from an earlier part that was summarized:\n\nfirst', '{\"checkpoint\":true,\"reason\":\"threshold\"}', 200);
+             INSERT INTO chat_messages (id, chat_id, role, content, created_at) VALUES ('a1', 'c', 'assistant', 'Working.', 201);
+             INSERT INTO chat_messages (id, chat_id, role, content, metadata, created_at) VALUES ('b2', 'c', 'user', 'This conversation continues from an earlier part that was summarized:\n\nsecond', '{\"checkpoint\":true,\"reason\":\"overflow\"}', 300);
+             INSERT INTO chat_messages (id, chat_id, role, content, created_at) VALUES ('u2', 'c', 'user', 'Keep going.', 301);",
+        )
+        .unwrap();
+
+        run_migrations_to(&conn, 183).unwrap();
+        let count = |sql: &str| conn.query_row(sql, [], |r| r.get::<_, i64>(0)).unwrap();
+        let visible = "COALESCE(json_extract(metadata, '$.isMeta'), 0) NOT IN (1, 'true')";
+        assert_eq!(count(&format!("SELECT COUNT(*) FROM chat_messages WHERE content LIKE 'This conversation continues%' AND {visible}")), 0, "no summary is visible");
+        assert_eq!(count("SELECT COUNT(*) FROM chat_messages WHERE role = 'system' AND json_extract(metadata, '$.compactBoundary') = 1"), 2, "one marker per checkpoint");
+        assert_eq!(count("SELECT COUNT(*) FROM chat_messages WHERE json_extract(metadata, '$.reason') = 'overflow' AND role = 'system'"), 1, "the marker keeps the reason");
+        // Idempotent: the migration's statements, run again, change nothing.
+        conn.execute_batch(include_str!("../migrations/0183_checkpoint_summaries_hidden.sql")).unwrap();
+        assert_eq!(count("SELECT COUNT(*) FROM chat_messages"), 7);
+        drop(conn);
+
+        let store = crate::Store::new(&path.to_string_lossy()).unwrap();
+        let loaded = store.get_chat_messages_since_checkpoint("c").unwrap();
+        assert_eq!(loaded.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), ["b2", "u2"], "the model opens on the boundary, no marker");
+        let thread: Vec<String> = store.get_chat_messages("c").unwrap().iter().map(|m| format!("{}:{}", m.role, m.content.lines().next().unwrap_or(""))).collect();
+        assert_eq!(thread[0], "user:Build the billing employee.");
+        assert_eq!(thread[1], "system:Earlier conversation summarized", "the marker sits before its boundary: {thread:?}");
+    }
+
+    /// Each rolling summary becomes one checkpoint boundary row in its
+    /// session's active chat, placed before the last 80 visible rows (the
+    /// most the sliding window held) or before every row when there are
+    /// fewer, and the summary is cleared. The text is the boundary the
+    /// harness writes after `/compact` (`checkpoint::boundary_text`).
+    #[test]
+    fn a_rolling_summary_becomes_a_checkpoint_boundary() {
+        let path = std::env::temp_dir().join(format!("nebo-upgrade-{}.db", uuid::Uuid::new_v4()));
+        let conn = Connection::open(&path).unwrap();
+        run_migrations_to(&conn, 167).unwrap();
+        conn.execute_batch(
+            "INSERT INTO chats (id, title) VALUES ('long', 'Long'), ('short', 'Short');
+             INSERT INTO sessions (id, name, active_chat_id, summary, created_at, updated_at) VALUES ('s-long', 'agent:a:web', 'long', 'Owner wants the Q3 report.', 1, 1);
+             INSERT INTO sessions (id, name, active_chat_id, summary, created_at, updated_at) VALUES ('s-short', 'agent:b:web', 'short', 'Owner asked for a haiku.', 1, 1);
+             INSERT INTO sessions (id, name, active_chat_id, summary, created_at, updated_at) VALUES ('s-none', 'agent:c:web', NULL, '  ', 1, 1);",
+        )
+        .unwrap();
+        for i in 0..100 {
+            conn.execute(
+                "INSERT INTO chat_messages (id, chat_id, role, content, created_at) VALUES (?1, 'long', 'user', 'm', ?2)",
+                rusqlite::params![format!("l{i:03}"), 1_700_000_000 + i],
+            )
+            .unwrap();
+        }
+        for i in 0..3 {
+            conn.execute(
+                "INSERT INTO chat_messages (id, chat_id, role, content, created_at) VALUES (?1, 'short', 'user', 'm', ?2)",
+                rusqlite::params![format!("s{i}"), 1_700_000_000 + i],
+            )
+            .unwrap();
+        }
+
+        run_migrations_to(&conn, 168).unwrap();
+
+        let count = |sql: &str| conn.query_row(sql, [], |r| r.get::<_, i64>(0)).unwrap();
+        assert_eq!(count("SELECT COUNT(*) FROM sessions WHERE summary IS NOT NULL AND trim(summary) != ''"), 0, "every summary moved");
+        assert_eq!(count("SELECT COUNT(*) FROM chat_messages WHERE json_extract(metadata, '$.checkpoint') = 1"), 2, "one boundary per summary");
+        drop(conn);
+
+        let store = crate::Store::new(&path.to_string_lossy()).unwrap();
+        let long = store.get_chat_messages_since_checkpoint("long").unwrap();
+        assert_eq!(long.len(), 81, "the boundary and the 80 rows the window held");
+        assert_eq!(long[0].role, "user");
+        assert_eq!(
+            long[0].content,
+            "This conversation continues from an earlier part that was summarized:\n\nOwner wants the Q3 report.\n\n\
+             If you need a specific detail from before this summary (an exact snippet, an error message, something you \
+             wrote), the earlier conversation is still stored: search it with \
+             search_history(query: \"...\")."
+        );
+        assert_eq!(long[1].id, "l020");
+        let short = store.get_chat_messages_since_checkpoint("short").unwrap();
+        assert_eq!(short.len(), 4, "every row stays after the boundary");
+        assert!(short[0].content.contains("Owner asked for a haiku."));
+        assert_eq!(store.get_chat_messages("long").unwrap().len(), 102, "the thread keeps every row, and 0183 marks the boundary");
+    }
+
+    /// Owner rule (09-25): an employee reachable from outside is a
+    /// multi-chat employee. The upgrade converts the ones already bound — a
+    /// channel binding (Slack, the phone line's bridge) or loop exposure —
+    /// leaves the unbound alone, and is idempotent.
+    #[test]
+    fn the_upgrade_makes_every_bound_employee_multi_chat() {
+        let path = std::env::temp_dir().join(format!("nebo-upgrade-{}.db", uuid::Uuid::new_v4()));
+        let conn = Connection::open(&path).unwrap();
+        run_migrations_to(&conn, 178).unwrap();
+        conn.execute_batch(
+            "INSERT INTO agents (id, name, description, agent_md, frontmatter, loop_exposed) VALUES
+               ('desk', 'Front Desk', '', '', '{}', 0),
+               ('scout', 'Scout', '', '', '{}', 1),
+               ('quiet', 'Quiet', '', '', '{}', 0),
+               ('paused', 'Paused', '', '', '{}', 0);
+             INSERT INTO channel_bindings (agent_id, plugin_slug, is_enabled) VALUES
+               ('desk', 'phonecall', 1),
+               ('paused', 'slack', 0);
+             INSERT INTO entity_config (entity_type, entity_id, multi_chat, model_preference) VALUES
+               ('agent', 'desk', 0, 'janus/fast');",
+        )
+        .unwrap();
+        run_migrations_to(&conn, 179).unwrap();
+        let multi = |id: &str| -> Option<i64> {
+            conn.query_row(
+                "SELECT multi_chat FROM entity_config WHERE entity_type = 'agent' AND entity_id = ?1",
+                [id],
+                |r| r.get(0),
+            )
+            .ok()
+        };
+        assert_eq!(multi("desk"), Some(1), "a bound single-chat employee is converted");
+        assert_eq!(multi("scout"), Some(1), "loop exposure is a door; a row is created");
+        assert_eq!(multi("quiet"), None, "an unbound employee is untouched");
+        assert_eq!(multi("paused"), None, "a switched-off channel is not a door");
+        let model: String = conn
+            .query_row("SELECT model_preference FROM entity_config WHERE entity_id = 'desk'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(model, "janus/fast", "the rest of the row is kept");
+        let snapshot = || -> Vec<(String, Option<i64>)> {
+            let mut stmt = conn.prepare("SELECT entity_id, multi_chat FROM entity_config ORDER BY entity_id").unwrap();
+            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap().map(Result::unwrap).collect()
+        };
+        let before = snapshot();
+        conn.execute_batch(include_str!("../migrations/0179_bound_employees_are_multi_chat.sql")).unwrap();
+        assert_eq!(snapshot(), before, "running it again changes nothing");
+    }
+
+    /// The tools each MCP server offered at its last sync carry over from
+    /// the old per-server permissions, so nothing the owner already saw is
+    /// new at the upgrade; a server with no list starts with none.
+    #[test]
+    fn an_mcp_servers_known_tools_carry_over() {
+        let path = std::env::temp_dir().join(format!("nebo-upgrade-{}.db", uuid::Uuid::new_v4()));
+        let conn = Connection::open(&path).unwrap();
+        run_migrations_to(&conn, 176).unwrap();
+        conn.execute_batch(
+            r#"INSERT INTO mcp_integrations (id, name, server_type, auth_type, tool_permissions)
+                 VALUES ('seen', 'CRM', 'crm', 'none', '{"default":"allow","tools":{},"known":["lookup","update"]}');
+               INSERT INTO mcp_integrations (id, name, server_type, auth_type, tool_permissions)
+                 VALUES ('never', 'Docs', 'docs', 'none', NULL);"#,
+        )
+        .unwrap();
+        run_migrations_to(&conn, 177).unwrap();
+        drop(conn);
+        let store = crate::Store::new(&path.to_string_lossy()).unwrap();
+        assert_eq!(
+            store.get_mcp_known_tools("seen").unwrap(),
+            vec!["lookup", "update"]
+        );
+        assert!(store.get_mcp_known_tools("never").unwrap().is_empty());
+    }
+
+    /// The one loop's upgrade: the steering the old loop stored in threads
+    /// is deleted and everything else stays; the orchestrator's rows become
+    /// helper rows, a live one failed; the old session state columns go.
+    #[test]
+    fn the_one_loop_upgrade_deletes_stored_steering_and_retires_the_old_rows() {
+        let path = std::env::temp_dir().join(format!("nebo-upgrade-{}.db", uuid::Uuid::new_v4()));
+        let conn = Connection::open(&path).unwrap();
+        run_migrations_to(&conn, 172).unwrap();
+        conn.execute_batch(
+            r#"INSERT INTO chats (id, title) VALUES ('c', 'C');
+             INSERT INTO chat_messages (id, chat_id, role, content, metadata, created_at) VALUES
+               ('owner', 'c', 'user', 'Send the invoices.', NULL, 1),
+               ('nudge', 'c', 'user', '  Continue — your previous response committed to more work that isn''t done yet: the invoices. Keep going and finish it.', NULL, 2),
+               ('stamped', 'c', 'user', 'keep going', '{"autoContinue":true}', 3),
+               ('budget', 'c', 'user', 'You''ve reached the maximum number of tool-calling iterations allowed. Please provide a final response summarizing what you''ve found and accomplished so far, without calling any more tools.', NULL, 4),
+               ('room', 'c', 'user', 'Team Ops', '{"roomBriefing":true}', 5),
+               ('queued', 'c', 'user', '<system-reminder>
+Team Ops
+</system-reminder>', '{"isMeta":true}', 6),
+               ('attachment', 'c', 'user', '<system-reminder>
+Date
+</system-reminder>', '{"attachment":{"kind":"date_changed"},"isMeta":true}', 7),
+               ('notification', 'c', 'user', '<system-reminder>
+[Notification: not a message from the owner]
+</system-reminder>', '{"notification":true,"isMeta":true}', 8),
+               ('boundary', 'c', 'user', 'This conversation continues', '{"checkpoint":true}', 9),
+               ('odd', 'c', 'user', '<system-reminder>not json</system-reminder>', 'not json', 10),
+               ('reply', 'c', 'assistant', '<system-reminder> quoted', '{"isMeta":true}', 11);
+             INSERT INTO sessions (id, name, active_chat_id, active_task, created_at, updated_at) VALUES ('s', 'agent:a:web', 'c', 'invoices', 1, 1);
+             INSERT INTO engine_runs (id, kind, state, session_key, lane) VALUES
+               ('live', 'subagent', 'running', 'subagent:agent:a:web:live', 'subagent'),
+               ('done', 'subagent', 'done', 'subagent:agent:a:web:done', 'subagent'),
+               ('job', 'dag', 'queued', 'agent:a:web', 'subagent'),
+               ('wf', 'workflow', 'running', 'agent:a:workflow:wf', 'main');"#,
+        )
+        .unwrap();
+
+        run_migrations(&conn).unwrap();
+
+        let ids: Vec<String> = conn
+            .prepare("SELECT id FROM chat_messages ORDER BY created_at")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(ids, ["owner", "attachment", "notification", "boundary", "odd", "reply"]);
+        let one = |sql: &str| conn.query_row(sql, [], |r| r.get::<_, String>(0)).unwrap();
+        assert_eq!(one("SELECT kind || ' ' || state FROM engine_runs WHERE id = 'live'"), "helper failed");
+        assert_eq!(one("SELECT kind || ' ' || state FROM engine_runs WHERE id = 'done'"), "helper done");
+        assert_eq!(one("SELECT kind || ' ' || state FROM engine_runs WHERE id = 'job'"), "helper failed");
+        assert_eq!(one("SELECT kind || ' ' || state FROM engine_runs WHERE id = 'wf'"), "workflow running", "other runs are untouched");
+        let gone: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name IN ('active_task', 'summary', 'last_summarized_count', 'work_tasks')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(gone, 0, "the old loop's session columns are gone");
     }
 
     #[test]
@@ -468,7 +700,11 @@ mod idempotency_tests {
 
         let count = |sql: &str| conn.query_row(sql, [], |r| r.get::<_, i64>(0)).unwrap();
         assert_eq!(count("SELECT COUNT(*) FROM pragma_table_info('chats') WHERE name = 'linked_chat_id'"), 1);
-        assert_eq!(count("SELECT COUNT(*) FROM _nebo_migrations WHERE version = 166"), 0, "0166 is free");
+        let owner: String = conn
+            .query_row("SELECT name FROM _nebo_migrations WHERE version = 166", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(owner, "0166_permissions.sql", "0166 went to the migration that owns it, and ran");
+        assert_eq!(count("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'permission_rules'"), 1);
         let name: String = conn
             .query_row("SELECT name FROM _nebo_migrations WHERE version = 184", [], |r| r.get(0))
             .unwrap();
@@ -478,25 +714,320 @@ mod idempotency_tests {
         }
     }
 
-    /// A database migrated by a branch that numbered other migrations
-    /// 0166–0183 gets 0184 on top: a version it has not applied runs,
-    /// whatever the numbers recorded around it.
+    /// A database at 0183 (the branch's last before main's linked-chat
+    /// migration landed) gets 0184 on top, and every other record stays.
     #[test]
-    fn a_database_ahead_on_other_numbers_still_gets_0184() {
+    fn a_database_at_0183_gets_0184() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let conn = Connection::open(dir.path().join("ahead.db")).unwrap();
-        run_migrations_to(&conn, 165).unwrap();
+        let conn = Connection::open(dir.path().join("at-0183.db")).unwrap();
+        run_migrations_to(&conn, 183).unwrap();
+        let count = |sql: &str| conn.query_row(sql, [], |r| r.get::<_, i64>(0)).unwrap();
+        assert_eq!(count("SELECT COUNT(*) FROM pragma_table_info('chats') WHERE name = 'linked_chat_id'"), 0);
+
+        run_migrations(&conn).unwrap();
+
+        assert_eq!(count("SELECT COUNT(*) FROM pragma_table_info('chats') WHERE name = 'linked_chat_id'"), 1);
+        assert_eq!(count("SELECT COUNT(*) FROM _nebo_migrations WHERE version = 184"), 1);
+        assert_eq!(count("SELECT COUNT(*) FROM _nebo_migrations WHERE version = 166 AND name = '0166_permissions.sql'"), 1, "another migration's record is untouched");
+    }
+
+    /// A linked chat stored under the phone contract's id reaches the same
+    /// session under Open Agent Link: `<member>~<session>` loses its member,
+    /// a first member's raw session stays, and so does anything whose part
+    /// before a `~` could not be a member id.
+    #[test]
+    fn linked_chats_keep_their_sessions_under_open_agent_link() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let conn = Connection::open(dir.path().join("linked.db")).unwrap();
+        run_migrations_to(&conn, 184).unwrap();
+        for (id, linked) in [
+            ("local", Some("claude-code~s-1")),
+            ("member", Some("openclaw-2~agent:main:thread-9")),
+            ("first", Some("20260925_143012_ab12cd")),
+            ("odd", Some("agent:main:x~y")),
+            ("none", None),
+        ] {
+            conn.execute(
+                "INSERT INTO chats (id, title, created_at, updated_at, linked_chat_id) VALUES (?1, 't', 0, 0, ?2)",
+                rusqlite::params![id, linked],
+            )
+            .unwrap();
+        }
+
+        run_migrations(&conn).unwrap();
+
+        let linked = |id: &str| -> (Option<String>, Option<String>) {
+            conn.query_row("SELECT linked_chat_id, linked_agent_id FROM chats WHERE id = ?1", [id], |r| Ok((r.get(0)?, r.get(1)?)))
+                .unwrap()
+        };
+        assert_eq!(linked("local"), (Some("s-1".into()), None));
+        assert_eq!(linked("member"), (Some("agent:main:thread-9".into()), None));
+        assert_eq!(linked("first"), (Some("20260925_143012_ab12cd".into()), None));
+        assert_eq!(linked("odd"), (Some("agent:main:x~y".into()), None), "not a member's prefix");
+        assert_eq!(linked("none"), (None, None));
+    }
+
+    /// Sends Nebo refused before the plugin ran, held as "outcome unknown"
+    /// before the send path failed them itself (live 2026-09-26), are
+    /// failed on their recorded refusal and their false notices go. A row
+    /// whose plugin ran — untyped output, a failure after launch — is not
+    /// guessed at, and neither is a row already settled or a charge.
+    #[test]
+    fn sends_refused_before_the_plugin_ran_are_failed_and_nothing_else_is() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let conn = Connection::open(dir.path().join("presend.db")).unwrap();
+        run_migrations_to(&conn, 191).unwrap();
+        conn.execute("INSERT INTO users (id, email, password_hash) VALUES ('u1', 'o@example.com', 'x')", []).unwrap();
+        let notice = |why: &str| {
+            format!(
+                "A mail.message.send through gmail was attempted and the plugin reported no typed outcome: {why}. \
+                 It was not retried, because it may already have been delivered. Check the provider's sent items; ledger entry #1."
+            )
+        };
+        let refused = "No gmail account is connected for this agent. Connect one in this agent's Settings, Plugins before using gmail. Connected for this employee: shopify. Do the work with what is connected; if it cannot b";
+        for (id, class, state, why) in [
+            (5, "messaging", "pending", refused.to_string()),
+            (6, "messaging", "pending", "Plugin 'gmail' not found. Available: shopify".to_string()),
+            (7, "messaging", "pending", "Error: connection refused".to_string()),
+            (8, "messaging", "pending", "Plugin 'gmail' command failed: broken pipe".to_string()),
+            (9, "messaging", "completed", refused.to_string()),
+            (10, "financial", "pending", refused.to_string()),
+        ] {
+            conn.execute(
+                "INSERT INTO engine_effects (id, run_id, class, idem_key, provider, state, attempts) VALUES (?1, 'run-1', ?2, ?3, 'gmail', ?4, 1)",
+                rusqlite::params![id, class, format!("send:run-1:mail.message.send:{id}"), state],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO notifications (id, user_id, type, title, body) VALUES (?1, 'u1', 'needs_attention', 'A send could not be confirmed', ?2)",
+                rusqlite::params![format!("attention:effect:{id}"), notice(&why)],
+            )
+            .unwrap();
+        }
+
+        run_migrations(&conn).unwrap();
+        run_migrations(&conn).unwrap();
+
+        let row = |id: i64| -> (String, Option<String>) {
+            conn.query_row("SELECT state, result FROM engine_effects WHERE id = ?1", [id], |r| Ok((r.get(0)?, r.get(1)?))).unwrap()
+        };
+        let notice_kept = |id: i64| -> bool {
+            conn.query_row("SELECT COUNT(*) FROM notifications WHERE id = ?1", [format!("attention:effect:{id}")], |r| r.get::<_, i64>(0)).unwrap() == 1
+        };
+        for id in [5, 6] {
+            let (state, result) = row(id);
+            assert_eq!(state, "failed", "row {id}");
+            let result = result.unwrap_or_default();
+            assert!(result.starts_with("Not sent: Nebo refused it before the plugin ran. "), "{result}");
+            assert!(!result.contains("It was not retried"), "the refusal alone: {result}");
+            assert!(!notice_kept(id), "the false notice for {id} goes");
+        }
+        assert!(row(5).1.unwrap().contains("No gmail account is connected"));
+        for (id, state) in [(7, "pending"), (8, "pending"), (9, "completed"), (10, "pending")] {
+            assert_eq!(row(id).0, state, "row {id} is not guessed at");
+            assert!(notice_kept(id), "row {id}'s notice stays");
+        }
+    }
+
+    /// The team-post copies stored in members' threads leave them (the
+    /// owner's case, 2026-09-26: Neighbor Mail's chat held the owner's post
+    /// to Marketing & Growth and the Social Media Manager's answer). A copy
+    /// whose post is in the team thread goes; a copy whose original is
+    /// missing moves into the team thread as the team row it copied; the
+    /// restart note a copy caused goes. The team thread keeps its whole
+    /// history, an asked member's own work in its seat stays, and so does
+    /// everything in the member's direct chat that is its own. Running it
+    /// again changes nothing.
+    #[test]
+    fn team_post_copies_leave_member_threads_and_the_team_history_keeps_them() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let conn = Connection::open(dir.path().join("team-copies.db")).unwrap();
+        run_migrations_to(&conn, 186).unwrap();
+        let envelope = |from: &str, text: &str| {
+            format!("[Team \"Marketing & Growth\" — Grow the pipeline]\n[Post from {from}]\n\n{text}")
+        };
+        let copy = r#"{"teamId":"t1","teamPost":true}"#;
+        let team_row = |from: &str, id: &str| format!(r#"{{"senderName":"{from}","fromAgentId":"{id}","teamId":"t1","attachments":[]}}"#);
         conn.execute_batch(
-            "INSERT INTO _nebo_migrations (version, name) VALUES (166, '0166_permissions.sql'), (183, '0183_checkpoint_summaries_hidden.sql');",
+            "INSERT INTO agents (id, kind, name, description, agent_md, frontmatter) VALUES
+                ('smm', 'user', 'Social Media Manager', '', '', '{}'),
+                ('hermes', 'user', 'Hermes', '', '', '{}'),
+                ('nm', 'user', 'Neighbor Mail', '', '', '{}');
+             INSERT INTO sessions (id, name, active_chat_id, created_at, updated_at) VALUES
+                ('s-team', 'team:t1', 'team-chat', 0, 0),
+                ('s-seat-nm', 'agent:nm:coworker:team:t1', 'seat-nm', 0, 0),
+                ('s-seat-smm', 'agent:smm:coworker:team:t1', 'seat-smm', 0, 0),
+                ('s-direct', 'agent:nm:web', 'agent:nm:web', 0, 0);
+             INSERT INTO chats (id, title, session_name) VALUES
+                ('team-chat', 'Marketing & Growth', 'team:t1'),
+                ('seat-nm', 'Team: Marketing & Growth', 'agent:nm:coworker:team:t1'),
+                ('seat-smm', 'Team: Marketing & Growth', 'agent:smm:coworker:team:t1'),
+                ('agent:nm:web', 'USPS rates', 'agent:nm:web');",
+        )
+        .unwrap();
+        let insert = |id: &str, chat: &str, role: &str, content: &str, meta: Option<&str>, at: i64| {
+            conn.execute(
+                "INSERT INTO chat_messages (id, chat_id, role, content, metadata, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                rusqlite::params![id, chat, role, content, meta, at],
+            )
+            .unwrap();
+        };
+        // The team thread: the owner's post and the lead's answer.
+        insert("t-owner", "team-chat", "user", "add Hermes to this team", Some(&team_row("Owner", "")), 100);
+        insert("t-smm", "team-chat", "assistant", "I need to create Hermes first.", Some(&team_row("Social Media Manager", "smm")), 111);
+        // Neighbor Mail was never asked: copies of both, a copy of a Hermes
+        // post the team thread no longer has, and the restart note they caused.
+        insert("c-owner", "seat-nm", "user", &envelope("Owner", "add Hermes to this team"), Some(copy), 100);
+        insert("c-smm", "seat-nm", "user", &envelope("Social Media Manager", "I need to create Hermes first."), Some(copy), 112);
+        insert("c-hermes", "seat-nm", "user", &envelope("Hermes", "I'll research the landscape."), Some(copy), 200);
+        insert("c-note", "seat-nm", "assistant", "I was interrupted before I could finish.", Some(r#"{"restartNotice":true}"#), 5000);
+        // The lead was asked: its own work in its seat stays.
+        insert("l-ask", "seat-smm", "user", &envelope("Owner", "add Hermes to this team"), None, 101);
+        insert("l-reply", "seat-smm", "assistant", "I need to create Hermes first.", None, 110);
+        // Neighbor Mail's direct chat with the owner, plus one stray copy.
+        insert("d-ask", "agent:nm:web", "user", "what are the USPS rates?", None, 50);
+        insert("d-copy", "agent:nm:web", "user", &envelope("Owner", "add Hermes to this team"), Some(copy), 100);
+        insert("d-q", "agent:nm:web", "user", "and for flats?", None, 300);
+        insert("d-note", "agent:nm:web", "assistant", "I was interrupted before I could finish.", Some(r#"{"restartNotice":true}"#), 5000);
+
+        run_migrations(&conn).unwrap();
+
+        let ids = |chat: &str| -> Vec<String> {
+            let mut stmt = conn.prepare("SELECT id FROM chat_messages WHERE chat_id = ?1 ORDER BY created_at, rowid").unwrap();
+            stmt.query_map([chat], |r| r.get(0)).unwrap().map(|r| r.unwrap()).collect()
+        };
+        assert!(ids("seat-nm").is_empty(), "nothing of the team's is left in Neighbor Mail's seat: {:?}", ids("seat-nm"));
+        assert_eq!(ids("agent:nm:web"), ["d-ask", "d-q", "d-note"], "the direct chat keeps its own rows, and a real restart note");
+        assert_eq!(ids("seat-smm"), ["l-ask", "l-reply"], "an asked member's own work stays");
+        assert_eq!(ids("team-chat"), ["t-owner", "t-smm", "c-hermes"], "the team history keeps every post");
+        let (role, content, meta): (String, String, String) = conn
+            .query_row("SELECT role, content, metadata FROM chat_messages WHERE id = 'c-hermes'", [], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })
+            .unwrap();
+        assert_eq!(role, "assistant");
+        assert_eq!(content, "I'll research the landscape.", "unwrapped into the team row it copied");
+        let meta: serde_json::Value = serde_json::from_str(&meta).unwrap();
+        assert_eq!(meta["senderName"], "Hermes");
+        assert_eq!(meta["fromAgentId"], "hermes");
+        assert_eq!(meta["teamId"], "t1");
+        assert!(meta.get("teamPost").is_none(), "{meta}");
+
+        // Idempotent: the statements, run again, change nothing.
+        let count = || conn.query_row("SELECT COUNT(*) FROM chat_messages", [], |r| r.get::<_, i64>(0)).unwrap();
+        let before = count();
+        conn.execute_batch(&extract_goose_up(include_str!("../migrations/0187_team_posts_leave_member_threads.sql"))).unwrap();
+        assert_eq!(count(), before);
+    }
+
+    /// The owner's own conversations stop owning memory: rows a sealed
+    /// employee filed under one of the owner's threads or one workflow run
+    /// move up to the employee's private memory, the newest row keeps each
+    /// key, a duplicate goes, a different older value is kept beside it, and
+    /// a conversation with someone else stays sealed.
+    #[test]
+    fn memories_leave_the_owners_conversations_for_the_employees_private_memory() {
+        use rusqlite::OptionalExtension;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let conn = Connection::open(dir.path().join("memory-scope.db")).unwrap();
+        run_migrations_to(&conn, 187).unwrap();
+        conn.execute_batch(
+            "INSERT INTO sessions (id, name, active_chat_id, created_at, updated_at) VALUES
+                ('s1', 'agent:emp:thread:chat-1', 'chat-1', 0, 0),
+                ('s2', 'agent:emp:thread:chat-2', 'chat-2', 0, 0),
+                ('s3', 'agent:rec:thread:call-1', 'call-1', 0, 0);
+             INSERT INTO workflow_runs (id, workflow_id, trigger_type) VALUES ('run-1', 'agent:rec', 'schedule');
+             INSERT INTO memories (id, namespace, key, value, metadata, updated_at, user_id) VALUES
+                (1, 'project', 'deck', 'The deck is due Friday', NULL, '2026-01-01', 'o:agent:emp:ctx:chat-1'),
+                (2, 'project', 'deck', 'The deck moved to Monday', '{\"provenance\":[\"web\"]}', '2026-02-01', 'o:agent:emp:ctx:chat-2'),
+                (3, 'tacit/preferences', 'tone', 'Short and plain', NULL, '2026-01-01', 'o:agent:emp:ctx:chat-1'),
+                (4, 'tacit/preferences', 'tone', 'Short and plain', NULL, '2026-03-01', 'o:agent:emp'),
+                (5, 'project', 'workflow/pull', 'Voicemail sweep runs hourly', NULL, '2026-01-01', 'o:agent:rec:ctx:run-1:pull::0'),
+                (6, 'entity/default', 'person/caller', 'Caller asked about a refund', '{\"provenance\":[\"phone\"]}', '2026-01-01', 'o:agent:rec:ctx:call-1'),
+                (7, 'project', 'case/deadline', 'Matter 42 files on the 3rd', NULL, '2026-01-01', 'o:agent:emp:ctx:case-42'),
+                (8, 'project', 'recipes/soup', 'Lentil soup, 40 minutes', NULL, '2026-01-01', 'o');
+             INSERT INTO memory_chunks (id, memory_id, chunk_index, text, user_id) VALUES
+                (11, 1, 0, 'The deck is due Friday', 'o:agent:emp:ctx:chat-1'),
+                (13, 3, 0, 'Short and plain', 'o:agent:emp:ctx:chat-1');",
         )
         .unwrap();
 
         run_migrations(&conn).unwrap();
 
-        let count = |sql: &str| conn.query_row(sql, [], |r| r.get::<_, i64>(0)).unwrap();
-        assert_eq!(count("SELECT COUNT(*) FROM pragma_table_info('chats') WHERE name = 'linked_chat_id'"), 1);
-        assert_eq!(count("SELECT COUNT(*) FROM _nebo_migrations WHERE version = 184"), 1);
-        assert_eq!(count("SELECT COUNT(*) FROM _nebo_migrations WHERE version = 166 AND name = '0166_permissions.sql'"), 1, "another migration's record is untouched");
+        let row = |id: i64| -> Option<(String, String)> {
+            conn.query_row("SELECT key, user_id FROM memories WHERE id = ?1", [id], |r| Ok((r.get(0)?, r.get(1)?)))
+                .optional()
+                .unwrap()
+        };
+        let own = |id: i64, key: &str, scope: &str| assert_eq!(row(id), Some((key.to_string(), scope.to_string())), "row {id}");
+        own(2, "deck", "o:agent:emp");
+        own(1, "deck/earlier-1", "o:agent:emp");
+        own(4, "tone", "o:agent:emp");
+        assert_eq!(row(3), None, "a duplicate of the kept value goes");
+        own(5, "workflow/pull", "o:agent:rec");
+        own(6, "person/caller", "o:agent:rec:ctx:call-1");
+        own(7, "case/deadline", "o:agent:emp:ctx:case-42");
+        own(8, "recipes/soup", "o");
+        let chunk = |id: i64| -> Option<String> {
+            conn.query_row("SELECT user_id FROM memory_chunks WHERE id = ?1", [id], |r| r.get(0)).optional().unwrap()
+        };
+        assert_eq!(chunk(11).as_deref(), Some("o:agent:emp"), "a chunk follows its memory");
+        assert_eq!(chunk(13), None, "a removed duplicate's chunk goes with it");
+
+        // Idempotent: the statements, run again, change nothing.
+        let count = || conn.query_row("SELECT COUNT(*) FROM memories WHERE user_id LIKE '%:ctx:%'", [], |r| r.get::<_, i64>(0)).unwrap();
+        let before = (count(), conn.query_row("SELECT COUNT(*) FROM memories", [], |r| r.get::<_, i64>(0)).unwrap());
+        conn.execute_batch(&extract_goose_up(include_str!("../migrations/0188_memory_leaves_the_owners_conversations.sql"))).unwrap();
+        let after = (count(), conn.query_row("SELECT COUNT(*) FROM memories", [], |r| r.get::<_, i64>(0)).unwrap());
+        assert_eq!(before, after);
+        assert_eq!(before.0, 2, "only the conversations with someone else stay sealed");
+    }
+
+    /// The isolation flag becomes the memory mode it behaved as: off is one
+    /// conversation, on is separate conversations (so the primary employee,
+    /// sealed today, stays exactly as it is). A mode already named is kept,
+    /// the flag goes everywhere, and nothing else in the frontmatter moves.
+    #[test]
+    fn the_isolation_flag_becomes_the_memory_mode_it_behaved_as() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let conn = Connection::open(dir.path().join("memory-mode.db")).unwrap();
+        run_migrations_to(&conn, 189).unwrap();
+        conn.execute_batch(
+            r#"INSERT INTO agents (id, name, description, agent_md, frontmatter) VALUES
+                ('off', 'Off', '', '', '{"memory":{"context_isolated":false,"topics":[{"slug":"lead","description":"A lead"}]},"workflows":{}}'),
+                ('on', 'Nanna', '', '', '{"memory":{"context_isolated":true,"share_with":["*"]}}'),
+                ('named', 'Named', '', '', '{"memory":{"mode":"confidential","context_isolated":false}}'),
+                ('none', 'None', '', '', '{"workflows":{}}'),
+                ('blank', 'Blank', '', '', ''),
+                ('broken', 'Broken', '', '', '{not json');"#,
+        )
+        .unwrap();
+
+        run_migrations(&conn).unwrap();
+
+        let fm = |id: &str| -> String {
+            conn.query_row("SELECT frontmatter FROM agents WHERE id = ?1", [id], |r| r.get(0)).unwrap()
+        };
+        let memory = |id: &str| -> serde_json::Value { serde_json::from_str::<serde_json::Value>(&fm(id)).unwrap()["memory"].clone() };
+        assert_eq!(memory("off")["mode"], "single");
+        assert_eq!(memory("off")["topics"][0]["slug"], "lead", "the rest of memory is kept");
+        assert_eq!(memory("on")["mode"], "separate");
+        assert_eq!(memory("on")["share_with"][0], "*");
+        assert_eq!(memory("named")["mode"], "confidential", "a named mode is kept");
+        for id in ["off", "on", "named"] {
+            assert!(memory(id).get("context_isolated").is_none(), "{id}: the flag goes: {}", fm(id));
+        }
+        assert_eq!(fm("none"), r#"{"workflows":{}}"#, "no flag, nothing to map");
+        assert_eq!(fm("blank"), "");
+        assert_eq!(fm("broken"), "{not json", "unreadable frontmatter is left for the reader to fail closed on");
+
+        // Idempotent: the statements, run again, change nothing.
+        let all = || -> Vec<String> {
+            conn.prepare("SELECT frontmatter FROM agents ORDER BY id").unwrap().query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect()
+        };
+        let before = all();
+        conn.execute_batch(&extract_goose_up(include_str!("../migrations/0190_memory_mode.sql"))).unwrap();
+        assert_eq!(all(), before);
     }
 
     /// A migration file without goose markers is applied verbatim — the
@@ -505,5 +1036,46 @@ mod idempotency_tests {
     fn extract_goose_up_without_markers_uses_whole_file() {
         let sql = "CREATE TABLE bare (id INT);";
         assert_eq!(extract_goose_up(sql), sql);
+    }
+
+    /// At the upgrade, every open ask becomes a wait in the engine with its
+    /// first reminder a day out, and the asks the old 72-hour sweep settled
+    /// stay settled, as the declines they were. Nothing expires an ask now.
+    #[test]
+    fn open_asks_become_engine_waits_and_expired_ones_stay_declined() {
+        let path = std::env::temp_dir().join(format!("nebo-upgrade-{}.db", uuid::Uuid::new_v4()));
+        let conn = Connection::open(&path).unwrap();
+        run_migrations_to(&conn, 180).unwrap();
+        conn.execute_batch(
+            "INSERT INTO permission_asks (id, agent_id, session_key, door, ask_case, sentence, target, call, seat, status, created_at, expires_at)
+               VALUES ('open-1', 'emp', 'agent:emp:web', '\"chat\"', '{}', 'texting +15550142', '{}', '{}', '{}', 'open', 100, 259300);
+             INSERT INTO permission_asks (id, agent_id, session_key, door, ask_case, sentence, target, call, seat, status, answer, created_at, expires_at, answered_at)
+               VALUES ('old-1', 'emp', 'agent:emp:web', '\"chat\"', '{}', 'texting +15550177', '{}', '{}', '{}', 'expired', 'no', 100, 259300, 259300);",
+        )
+        .unwrap();
+        run_migrations_to(&conn, 181).unwrap();
+        let columns: Vec<String> = conn
+            .prepare("SELECT name FROM pragma_table_info('permission_asks')")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        assert!(!columns.iter().any(|c| c == "expires_at"), "no expiry: {columns:?}");
+        let old: (String, Option<String>) =
+            conn.query_row("SELECT status, answer FROM permission_asks WHERE id = 'old-1'", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert_eq!(old, ("answered".to_string(), Some("no".to_string())), "a settled ask stays settled");
+        drop(conn);
+        let store = crate::Store::new(&path.to_string_lossy()).unwrap();
+        let run = store.engine_get_run("open-1").unwrap().expect("the open ask is a run in the engine");
+        assert_eq!((run.kind.as_str(), run.state.as_str(), run.agent_id.as_str()), ("ask", "waiting", "emp"));
+        let wait = store.engine_get_wait(run.current_wait_id.expect("a live wait")).unwrap().unwrap();
+        assert_eq!((wait.action.as_str(), wait.on_kind.as_str(), wait.key.as_str()), ("resume", "answer", "ask:open-1"));
+        let due = wait.deadline.expect("the first reminder");
+        let now = chrono::Utc::now().timestamp();
+        assert!((now + 86_400 - 60..=now + 86_400 + 60).contains(&due), "a day out: {due}");
+        let timers = store.engine_pending_timers("wait").unwrap();
+        assert_eq!(timers.iter().filter(|e| e.target_id == wait.id.to_string()).count(), 1, "the reminder is the wait's timer");
+        assert!(store.engine_get_run("old-1").unwrap().is_none(), "a settled ask waits on nothing");
     }
 }

@@ -38,10 +38,14 @@ var typeOverrides = map[string]string{
 	"list_agents.primaryChristened": "boolean",
 	// Linked bots (OpenClaw, Hermes) with chat, and the agents each serves:
 	// what "Hire from <linked bot>" offers.
-	"list_linked_agents.bots": "LinkedBotEntry[]",
+	"list_linked_agents.computers": "LinkedComputerEntry[]",
 	// Blank-create (the Hire flow) returns the introduction thread so the
 	// UI can land the owner where the new employee is speaking.
 	"create_agent.threadId": "string | null",
+	// The one needs step: the plain line, and a draft only for an owner-made
+	// job (a package's line needs none).
+	"work_out_agent_needs.line": "string",
+	"work_out_agent_needs.draftId": "string | null",
 
 	// ── Run detail: human-readable projection derived server-side ──
 	"get_run.display": "RunDisplay",
@@ -77,6 +81,9 @@ var typeOverrides = map[string]string{
 	"publish_agent_workflow.key":          "string",
 	"publish_agent_workflow.keyPrefix":    "string",
 	"publish_agent_workflow.url":          "string",
+
+	// ── Model picker: provider id → that provider's models (a map, NOT an array) ──
+	"list_models.models": "Record<string, unknown[]>",
 
 	// ── Misc ──
 	"get_agent_stats.stats":       "AgentStats",
@@ -126,7 +133,10 @@ export interface RunDisplay {
 	department?: string
 	/** The employee this one answers to (local agent id); unset = answers to the owner. */
 	reportsTo?: string
+	/** Conversations are kept apart (memory.mode "separate" or "confidential"). */
 	isolated: boolean
+	/** memory.mode: "single", "separate" or "confidential". */
+	memoryMode: string
 	needsSetup: boolean
 	nappPath?: string
 	appWindowConfig?: AppWindowConfig
@@ -137,19 +147,44 @@ export interface RunDisplay {
 	offline?: boolean
 }`,
 
-	"LinkedBotEntry": `export interface LinkedBotEntry {
+	// comm::api_types::FileShare — the hub's link for a shared file.
+	"FileShare": `export interface FileShare {
+	/** Only for changing or turning the link off; never shown. */
 	id: string
+	/** https://neboai.com/s/<token> */
+	url: string
+	filename: string
+	/** link (anyone with the link), password, or private (only you). */
+	access: 'link' | 'password' | 'private'
+	hasPassword: boolean
+	/** RFC 3339; empty = never. */
+	expiresAt: string
+	createdAt: string
+}`,
+
+	"LinkedComputerEntry": `export interface LinkedComputerEntry {
+	/** ` + "`computer:<hostname>`" + `: a key, never a bot. */
+	id: string
+	/** "Mac.lan"; "This computer" for the computer this bot runs on. */
 	name: string
-	/** What runs the bot: "openclaw", "hermes". */
-	runtime: string
 	online: boolean
+	local: boolean
+	/** What is installed on it, one entry per app, in the order shown. */
 	agents: LinkedAgentEntry[]
 }`,
 
 	"LinkedAgentEntry": `export interface LinkedAgentEntry {
+	/** The agent's id, or ` + "`new:<runtime>`" + ` for a coding employee to start. */
 	id: string
 	name: string
+	/** "Hermes on Mac.lan"; "Works in a new folder on Mac.lan". */
 	description: string
+	/** The runtime it runs: "hermes", "codex". */
+	runtime: string
+	/** The bot a hire of it goes to (` + "`linked.botId`" + `). */
+	botId: string
+	/** Already on the team: shown, not hired again. */
+	hired: boolean
 }`,
 
 	"AppWindowConfig": `export interface AppWindowConfig {

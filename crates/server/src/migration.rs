@@ -542,6 +542,183 @@ pub fn migrate_orphaned_agent_crons(store: &db::Store) {
     }
 }
 
+// ── Phase 5c: Sidecar data out of the shared folders ─────────────────
+
+/// Written under `appdata/` once sidecar data has moved to per-artifact
+/// folders; it holds the record of what moved.
+const APP_DATA_MARKER: &str = ".app-data-per-app";
+
+/// A sidecar whose data may sit where the old rule put it.
+struct DataOwner {
+    /// Who it is, for the record (an agent id, a tool's folder name).
+    who: String,
+    /// Its code folder (the one holding `manifest.json`).
+    tool_dir: std::path::PathBuf,
+    /// Its own data folder now (`napp::app_data::data_dir`).
+    data_dir: std::path::PathBuf,
+}
+
+/// One-time move of sidecar data into per-artifact folders.
+///
+/// A sidecar's data folder used to be named after its code folder's PARENT,
+/// so every app under `user/agents/<Name>/` shared `appdata/plugins/agents/`
+/// and every loose tool under `user/tools/<name>/` shared
+/// `appdata/plugins/tools/`. Each app now has `appdata/agents/<agent id>/`
+/// and each tool `appdata/plugins/<slug>/` (`napp::app_data::data_dir`).
+/// This moves what the old rule wrote into those folders, before any sidecar
+/// starts. Marker: `appdata/.app-data-per-app`.
+pub fn migrate_app_data_per_app(data_dir: &Path, store: &db::Store) {
+    use napp::app_data::{DataKind, data_dir as own_dir};
+
+    if data_dir.join("appdata").join(APP_DATA_MARKER).exists() {
+        return;
+    }
+    let mut owners = Vec::new();
+    match store.list_agents(1000, 0) {
+        Ok(agents) => {
+            for agent in agents.iter().filter(|a| a.is_app.unwrap_or(0) != 0) {
+                let Some(tool_dir) = crate::handlers::agents::app_tool_dir(agent) else { continue };
+                if !crate::app_lifecycle::has_sidecar(agent, &tool_dir) {
+                    continue;
+                }
+                if let Some(dir) = own_dir(data_dir, DataKind::App, &agent.id) {
+                    owners.push(DataOwner { who: agent.id.clone(), tool_dir, data_dir: dir });
+                }
+            }
+        }
+        Err(e) => {
+            // Without the apps there is no knowing whose data is whose; try
+            // again next start rather than record a move that never ran.
+            warn!(error = %e, "could not list apps; sidecar data not moved this start");
+            return;
+        }
+    }
+    let user_tools = data_dir.join("user").join("tools");
+    for entry in std::fs::read_dir(&user_tools).into_iter().flatten().flatten() {
+        let tool_dir = entry.path();
+        let name = entry.file_name().to_string_lossy().to_string();
+        if !tool_dir.join("manifest.json").is_file() {
+            continue;
+        }
+        if let Some(dir) = own_dir(data_dir, DataKind::Tool, &name) {
+            owners.push(DataOwner { who: name, tool_dir, data_dir: dir });
+        }
+    }
+    move_shared_sidecar_data(data_dir, &owners);
+}
+
+/// Where the old rule put a sidecar's data: `appdata/<agents|plugins>/<name of
+/// the code folder's parent>/`, `agents` only for a manifest typed `agent`.
+/// `None` when the manifest cannot be read (the old launch refused those, so
+/// they never wrote data).
+fn legacy_sidecar_data_dir(data_dir: &Path, tool_dir: &Path) -> Option<std::path::PathBuf> {
+    let manifest = napp::Manifest::load(&tool_dir.join("manifest.json")).ok()?;
+    let slug = tool_dir
+        .parent()
+        .and_then(|p| p.file_name())
+        .and_then(|n| n.to_str())
+        .unwrap_or(&manifest.name)
+        .to_string();
+    let kind = if manifest.artifact_type == "agent" { "agents" } else { "plugins" };
+    Some(data_dir.join("appdata").join(kind).join(slug))
+}
+
+/// Move each owner's data from the folder the old rule gave it into its own.
+///
+/// - An old folder only one owner used moves to it, entry by entry, and is
+///   removed once empty.
+/// - An old folder more than one owner used (two apps, or an app and the
+///   plugin of the same name) cannot be split by ownership: each entry is
+///   copied to every owner that used it and the original stays.
+/// - Nothing is deleted or overwritten: an entry whose destination already
+///   exists stays where it was.
+///
+/// Every step is logged and written into the marker. Returns the record.
+fn move_shared_sidecar_data(data_dir: &Path, owners: &[DataOwner]) -> Vec<String> {
+    let appdata = data_dir.join("appdata");
+    let marker = appdata.join(APP_DATA_MARKER);
+    if marker.exists() {
+        return Vec::new();
+    }
+
+    // Old folder → the owners that used it.
+    let mut groups: Vec<(std::path::PathBuf, Vec<&DataOwner>)> = Vec::new();
+    for owner in owners {
+        let Some(old) = legacy_sidecar_data_dir(data_dir, &owner.tool_dir) else { continue };
+        if old == owner.data_dir {
+            continue;
+        }
+        match groups.iter_mut().find(|(o, _)| *o == old) {
+            Some((_, users)) => users.push(owner),
+            None => groups.push((old, vec![owner])),
+        }
+    }
+
+    let mut record = Vec::new();
+    for (old, users) in &groups {
+        let Ok(entries) = std::fs::read_dir(old) else { continue };
+        let mut entries: Vec<std::path::PathBuf> = entries.flatten().map(|e| e.path()).collect();
+        if entries.is_empty() {
+            continue;
+        }
+        entries.sort();
+        let plugin_too = old.parent() == Some(appdata.join("plugins").as_path())
+            && old.file_name().is_some_and(|slug| {
+                data_dir.join("nebo").join("plugins").join(slug).exists()
+                    || data_dir.join("user").join("plugins").join(slug).exists()
+            });
+        let shared = users.len() > 1 || plugin_too;
+        if shared {
+            let who: Vec<&str> = users.iter().map(|u| u.who.as_str()).collect();
+            let with = if plugin_too { " and the plugin of the same name" } else { "" };
+            record.push(format!(
+                "{} was used by {}{with}: copying each entry to each, originals kept",
+                old.display(),
+                who.join(", ")
+            ));
+        }
+        for entry in &entries {
+            let Some(name) = entry.file_name() else { continue };
+            for user in users {
+                let dest = user.data_dir.join(name);
+                let step = if dest.symlink_metadata().is_ok() {
+                    format!("{}: kept {} ({} already exists)", user.who, entry.display(), dest.display())
+                } else if let Err(e) = std::fs::create_dir_all(&user.data_dir) {
+                    format!("{}: kept {} (could not create {}: {e})", user.who, entry.display(), user.data_dir.display())
+                } else if shared {
+                    let copied = if entry.is_dir() {
+                        copy_dir_recursive(entry, &dest)
+                    } else {
+                        std::fs::copy(entry, &dest).map(|_| ())
+                    };
+                    match copied {
+                        Ok(()) => format!("{}: copied {} -> {}", user.who, entry.display(), dest.display()),
+                        Err(e) => format!("{}: kept {} (copy failed: {e})", user.who, entry.display()),
+                    }
+                } else {
+                    match std::fs::rename(entry, &dest) {
+                        Ok(()) => format!("{}: moved {} -> {}", user.who, entry.display(), dest.display()),
+                        Err(e) => format!("{}: kept {} (move failed: {e})", user.who, entry.display()),
+                    }
+                };
+                record.push(step);
+            }
+        }
+        if !shared && std::fs::remove_dir(old).is_ok() {
+            record.push(format!("removed the emptied {}", old.display()));
+        }
+    }
+
+    for step in &record {
+        info!("sidecar data: {step}");
+    }
+    let text = if record.is_empty() { "nothing to move\n".to_string() } else { record.join("\n") + "\n" };
+    if let Err(e) = std::fs::create_dir_all(&appdata).and_then(|()| std::fs::write(&marker, text)) {
+        warn!(error = %e, "could not record the sidecar data move; it runs again next start");
+    }
+    record
+}
+
 // ── Phase 6: Seed bundled .napp files from app resources ──────────
 
 /// Seed `.napp` files from app bundle resources into the data directory.
@@ -923,5 +1100,110 @@ mod tests {
 
         // Second call is a no-op (marker exists)
         seed_bundled_napps(data_dir);
+    }
+
+    // ── Sidecar data out of the shared folders ──
+
+    /// An app's code folder at `<data_dir>/<rel>` with a manifest, and the
+    /// folder its data belongs in now.
+    fn sidecar_app(data_dir: &Path, rel: &str, id: &str) -> DataOwner {
+        let tool_dir = data_dir.join(rel);
+        std::fs::create_dir_all(&tool_dir).unwrap();
+        std::fs::write(
+            tool_dir.join("manifest.json"),
+            serde_json::json!({ "id": id, "name": id, "version": "1.0.0", "artifact_type": "app" }).to_string(),
+        )
+        .unwrap();
+        let own = napp::app_data::data_dir(data_dir, napp::app_data::DataKind::App, id).unwrap();
+        DataOwner { who: id.to_string(), tool_dir, data_dir: own }
+    }
+
+    fn put(path: &Path, text: &str) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    }
+
+    fn text(path: &Path) -> String {
+        std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+    }
+
+    /// Two apps under `user/agents/` shared `appdata/plugins/agents/`: each
+    /// gets its own copy of everything, nothing is lost, and a second run is a
+    /// no-op.
+    #[test]
+    fn two_apps_sharing_the_old_folder_each_get_their_own() {
+        let tmp = TempDir::new().unwrap();
+        let home = tmp.path();
+        let apps = [sidecar_app(home, "user/agents/Mail", "mail-app"), sidecar_app(home, "user/agents/Board", "board-app")];
+        let shared = home.join("appdata/plugins/agents");
+        put(&shared.join("service_url"), "http://localhost:18083");
+        put(&shared.join("sidecar.log"), "both apps' lines\n");
+        put(&shared.join("db/app.db"), "rows");
+
+        let record = move_shared_sidecar_data(home, &apps);
+        assert!(record[0].contains("mail-app, board-app"), "{record:?}");
+
+        for id in ["mail-app", "board-app"] {
+            let own = home.join("appdata/agents").join(id);
+            assert_eq!(text(&own.join("service_url")), "http://localhost:18083");
+            assert_eq!(text(&own.join("sidecar.log")), "both apps' lines\n");
+            assert_eq!(text(&own.join("db/app.db")), "rows");
+        }
+        // Whose is whose is unknowable, so the originals stay.
+        assert_eq!(text(&shared.join("service_url")), "http://localhost:18083");
+        assert_eq!(text(&shared.join("db/app.db")), "rows");
+        assert!(text(&home.join("appdata").join(APP_DATA_MARKER)).contains("copied"));
+
+        put(&shared.join("late"), "x");
+        assert!(move_shared_sidecar_data(home, &apps).is_empty(), "the second run does nothing");
+        assert!(!home.join("appdata/agents/mail-app/late").exists());
+    }
+
+    /// The owner's case: one app used the old folder, so its data moves there
+    /// and the emptied folder goes; a file already in the new folder is never
+    /// overwritten, and the old one is kept beside it.
+    #[test]
+    fn a_folder_one_app_used_moves_to_it() {
+        let tmp = TempDir::new().unwrap();
+        let home = tmp.path();
+        let apps = [sidecar_app(home, "user/agents/neighbor-mail", "neighbor-mail")];
+        let old = home.join("appdata/plugins/agents");
+        put(&old.join("service_url"), "http://localhost:18083");
+        put(&old.join("sidecar.log"), "old log\n");
+        let own = home.join("appdata/agents/neighbor-mail");
+        put(&own.join("sidecar.log"), "new log\n");
+
+        move_shared_sidecar_data(home, &apps);
+
+        assert_eq!(text(&own.join("service_url")), "http://localhost:18083");
+        assert!(!old.join("service_url").exists(), "moved, not copied");
+        assert_eq!(text(&own.join("sidecar.log")), "new log\n", "never overwritten");
+        assert_eq!(text(&old.join("sidecar.log")), "old log\n", "kept where it was");
+
+        // Once everything in it has moved, the old folder goes.
+        std::fs::remove_file(old.join("sidecar.log")).unwrap();
+        put(&old.join("notes.json"), "{}");
+        std::fs::remove_file(home.join("appdata").join(APP_DATA_MARKER)).unwrap();
+        move_shared_sidecar_data(home, &apps);
+        assert_eq!(text(&own.join("notes.json")), "{}");
+        assert!(!old.exists(), "an emptied old folder is removed");
+    }
+
+    /// A marketplace app's old folder `appdata/plugins/<slug>/` that the
+    /// plugin of the same slug also uses is copied, never taken from the plugin.
+    #[test]
+    fn an_old_folder_a_plugin_also_uses_is_copied() {
+        let tmp = TempDir::new().unwrap();
+        let home = tmp.path();
+        let id = "7f1c0e2a-0000-4000-8000-000000000001";
+        let apps = [sidecar_app(home, "nebo/agents/gmail/1.0.0", id)];
+        std::fs::create_dir_all(home.join("nebo/plugins/gmail/2.0.0")).unwrap();
+        let old = home.join("appdata/plugins/gmail");
+        put(&old.join("token.json"), "secret");
+
+        move_shared_sidecar_data(home, &apps);
+
+        assert_eq!(text(&home.join("appdata/agents").join(id).join("token.json")), "secret");
+        assert_eq!(text(&old.join("token.json")), "secret", "the plugin keeps its file");
     }
 }

@@ -20,22 +20,22 @@ Break the user's query into 3-5 independent, focused subtasks. Each subtask shou
 - Be searchable via web search
 - Not depend on other subtasks' results
 
-Write your decomposition as a JSON array to `plan_initial.json` in the research directory using os(resource: "file", action: "write"). Format:
+Write your decomposition as a JSON array to `plan_initial.json` in the research directory using write_file. Format:
 ```json
 [{"id": "subtask-slug", "question": "specific question to answer"}]
 ```
 
-### 2. Spawn Workers
-Call `agent(action: "spawn_parallel")` with one task per subtask. Each task prompt must include:
+### 2. Start Workers
+Start one helper per subtask with `delegate`, all in one response so they run in parallel. Each helper's prompt must include:
 - The specific question to research
 - The research directory path for saving sources
-- Instructions to call `agent(action: "submit_findings")` when done
+- Instructions to call `submit_findings` when done
 
-Set `max_iterations: 10` for each worker. Workers use web(action: "search") and web(action: "fetch") only — never navigate.
+Keep each worker to a handful of searches. Workers use search_web and fetch_url only — never the browser.
 
 ### 3. Evaluate Results
 After workers complete, read their output files (`worker_<slug>.json`) from the research directory.
-- If critical gaps remain and this is the first wave, spawn 1-3 targeted follow-up workers
+- If critical gaps remain and this is the first wave, start 1-3 targeted follow-up workers
 - If gaps are minor or this is already a follow-up wave, proceed to synthesis
 - Maximum 2 waves total
 
@@ -47,20 +47,20 @@ Present the report to the user. Then write the report to `report.md` in the rese
 ### Rules
 - Stay in research mode until the report is delivered
 - If all workers return empty, tell the user honestly what was tried and what failed
-- Do not call agent(action: "research") from within research — you are already researching
+- Do not call quick_research from within research — you are already researching
 "#;
 
 /// Prompt prepended to each research worker's task.
 pub const RESEARCH_WORKER_PROMPT: &str = r#"You are a research worker with a single focused task. Follow these rules:
 
-1. Use ONLY `web(action: "search", query: "...")` to find sources and `web(action: "fetch", url: "...")` to read them. Never use navigate, desktop, system(shell), or any other tools.
+1. Use ONLY `search_web(queries: ["..."])` to find sources and `fetch_url(url: "...")` to read them. Never use the browser, desktop, system(shell), or any other tools.
 
 2. For each useful source, save the raw content:
    - Compute a short hash from the URL (first 8 chars of hex-encoded hash)
    - Write to `{research_dir}/sources/src_<hash>.txt` with format: "URL: <url>\n\n<content>"
 
 3. When you have enough information OR you've used 8+ iterations, stop and submit:
-   Call `agent(action: "submit_findings", subtask_id: "{subtask_id}", findings: [...], gaps: [...])`
+   Call `submit_findings(subtask_id: "{subtask_id}", findings: [...], gaps: [...])`
 
    Each finding: {"claim": "single sentence", "source_url": "https://...", "source_ref": "sources/src_<hash>.txt", "confidence": 0.0-1.0, "quote": "<=25 words verbatim"}
 

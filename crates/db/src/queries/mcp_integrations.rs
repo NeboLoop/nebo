@@ -1,4 +1,4 @@
-use rusqlite::params;
+use rusqlite::{OptionalExtension, params};
 
 use crate::Store;
 use crate::models::{McpCredentialFull, McpIntegration, McpIntegrationOAuth, McpOAuthConfig};
@@ -370,9 +370,8 @@ impl Store {
         Ok(())
     }
 
-    /// The per-server MCP tool-permission map (tools::policy::McpServerPermissions
-    /// JSON). None until the first sync or edit writes it — callers treat that
-    /// as all-defaults (everything asks).
+    /// The old per-server MCP tool-permission map (JSON), read once by the
+    /// permissions conversion. None: never written, everything asked.
     pub fn get_mcp_tool_permissions(&self, id: &str) -> Result<Option<String>, NeboError> {
         let conn = self.conn()?;
         match conn.query_row(
@@ -386,11 +385,28 @@ impl Store {
         }
     }
 
-    /// Persist the per-server MCP tool-permission map (JSON).
-    pub fn set_mcp_tool_permissions(&self, id: &str, json: &str) -> Result<(), NeboError> {
+    /// The tools (their own names) the server offered at its last sync.
+    pub fn get_mcp_known_tools(&self, id: &str) -> Result<Vec<String>, NeboError> {
         let conn = self.conn()?;
+        let json: Option<String> = conn
+            .query_row(
+                "SELECT known_tools FROM mcp_integrations WHERE id = ?1",
+                params![id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(json
+            .and_then(|j| serde_json::from_str(&j).ok())
+            .unwrap_or_default())
+    }
+
+    /// Record the tools the server offers now.
+    pub fn set_mcp_known_tools(&self, id: &str, tools: &[String]) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        let json = serde_json::to_string(tools).map_err(|e| NeboError::Database(e.to_string()))?;
         conn.execute(
-            "UPDATE mcp_integrations SET tool_permissions = ?1, updated_at = unixepoch() WHERE id = ?2",
+            "UPDATE mcp_integrations SET known_tools = ?1 WHERE id = ?2",
             params![json, id],
         )
         .map_err(|e| NeboError::Database(e.to_string()))?;

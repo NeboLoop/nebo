@@ -4,7 +4,7 @@ description: |
   The user asks for lines 500 to 520 of a three-line file. The read says the
   file has 3 lines and the offset is past the end. The model must report that
   and show what exists, not try other offsets or claim the file is empty.
-target_component: os
+target_component: read_file
 
 setup:
   - "mkdir -p {{scratch}} && printf 'one\ntwo\nthree\n' > {{scratch}}/short.txt"
@@ -16,13 +16,15 @@ conversation:
     content: "Show me lines 500 to 520 of {{scratch}}/short.txt."
 
 tool_config:
-  os:
+  read_file:
+    enabled: true
+  run_command:
     enabled: true
 
 prompt_assertions:
   first_call:
     - id: ranged-read
-      text: "Model reads the file with an offset (os file read with offset/limit, or sed -n 500,520p)"
+      text: "Model reads the file with an offset (read_file with offset/limit, or run_command sed -n 500,520p)"
       severity: important
   recovery:
     - id: reports-length

@@ -31,6 +31,8 @@ enum Commands {
     Serve,
     /// Start the agent only
     Agent,
+    /// Sign a browser in to this computer's Nebo: prints (and opens) a one-use link
+    Open,
     /// Interactive chat mode
     Chat {
         /// Enable interactive mode
@@ -103,7 +105,7 @@ enum StateCommands {
 enum McpCommands {
     /// Start MCP stdio bridge (requires a running Nebo server)
     Serve {
-        /// Comma-separated tool allowlist (e.g. "system,web,bot")
+        /// Comma-separated tool allowlist (e.g. "read_file,run_command")
         #[arg(long)]
         tools: Option<String>,
         /// Comma-separated tool denylist (e.g. "desktop,organizer")
@@ -125,9 +127,6 @@ enum TestCommands {
         /// Fixture YAML file (populates agent name from fixture)
         #[arg(long)]
         fixture: Option<String>,
-        /// Component overrides: "tool.shell:./overrides/shell-v2.md"
-        #[arg(long = "override")]
-        overrides: Option<Vec<String>>,
     },
     /// Run fixture(s) live against a running Nebo server
     Run {
@@ -137,9 +136,6 @@ enum TestCommands {
         /// Suite YAML (list of fixture paths)
         #[arg(long)]
         suite: Option<String>,
-        /// Component overrides
-        #[arg(long = "override")]
-        overrides: Option<Vec<String>>,
         /// Model to use (overrides server default)
         #[arg(long)]
         model: Option<String>,
@@ -199,10 +195,10 @@ enum TestCommands {
         #[arg(long)]
         force: bool,
     },
-    /// List runs that ended in a guard or reviewer stop, newest first
+    /// List runs that ended in a step or spending-limit stop, newest first
     Runs {
-        /// Comma-separated exit reasons to list (default: the guard and
-        /// reviewer stops; text_response is never a failure)
+        /// Comma-separated exit reasons to list (default: the step and
+        /// spending-limit stops; text_response is never a failure)
         #[arg(long, value_delimiter = ',')]
         exit_reason: Vec<String>,
         /// Maximum rows
@@ -542,6 +538,9 @@ async fn run() -> anyhow::Result<()> {
         Some(Commands::Relay) => {
             browser::extension_relay::run(config::read_extension_secret()).await?;
         }
+        Some(Commands::Open) => {
+            run_open(&cfg).await?;
+        }
         Some(Commands::Capabilities) => {
             println!("Nebo v{VERSION} — Platform Capabilities");
             println!();
@@ -571,7 +570,7 @@ async fn run() -> anyhow::Result<()> {
                 exclude_tools,
             } => {
                 let server_url = format!("http://{}:{}", cfg.host, cfg.port);
-                let bridge = mcp_serve::McpStdioBridge::new(server_url, tools, exclude_tools);
+                let bridge = mcp_serve::McpStdioBridge::new(server_url, install_key()?, tools, exclude_tools);
                 bridge.run().await?;
             }
         },
@@ -666,6 +665,45 @@ fn run_doctor(cfg: &config::Config) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// The install key this computer's Nebo made (`config::read_install_key`):
+/// how the CLI, as the owner's own client, proves itself to the local API.
+fn install_key() -> anyhow::Result<String> {
+    config::read_install_key().ok_or_else(|| {
+        anyhow::anyhow!("no install key: start Nebo once (it makes one in its folder), or set NEBO_MCP_API_KEY")
+    })
+}
+
+/// `nebo open`: a one-use sign-in link for a browser on this computer, from
+/// the running server (asked with the install key), printed and opened. The
+/// session it gives belongs to `localhost`, so it covers the Vite dev
+/// server too.
+async fn run_open(cfg: &config::Config) -> anyhow::Result<()> {
+    let base = format!("http://localhost:{}", cfg.port);
+    let reply: serde_json::Value = tls::http_client()
+        .build()?
+        .post(format!("{base}/api/v1/local-session/ticket"))
+        .bearer_auth(install_key()?)
+        .send()
+        .await
+        .map_err(|e| anyhow::anyhow!("cannot reach nebo server at {base} ({e}) — is Nebo running?"))?
+        .error_for_status()?
+        .json()
+        .await?;
+    let path = reply["path"].as_str().ok_or_else(|| anyhow::anyhow!("the server sent no sign-in link"))?;
+    let link = format!("{base}{path}");
+    println!("Open this link in a browser on this computer (it works once, for two minutes):\n{link}");
+    #[cfg(target_os = "macos")]
+    let opener = std::process::Command::new("open").arg(&link).status();
+    #[cfg(target_os = "windows")]
+    let opener = std::process::Command::new("explorer").arg(&link).status();
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let opener = std::process::Command::new("xdg-open").arg(&link).status();
+    if opener.is_err() {
+        println!("(No browser could be opened from here; copy the link.)");
+    }
+    Ok(())
+}
+
 async fn run_chat(
     cfg: &config::Config,
     interactive: bool,
@@ -677,7 +715,11 @@ async fn run_chat(
     // implementation called the provider directly with zero tools and no
     // system prompt, a competing pathway on which tool use was impossible.
     let url = format!("ws://{}:{}/ws", cfg.host, cfg.port);
-    let (ws, _) = tokio_tungstenite::connect_async(&url).await.map_err(|e| {
+    let mut request = tokio_tungstenite::tungstenite::client::IntoClientRequest::into_client_request(url.as_str())?;
+    request
+        .headers_mut()
+        .insert(reqwest::header::AUTHORIZATION, format!("Bearer {}", install_key()?).parse()?);
+    let (ws, _) = tls::connect_ws(request).await.map_err(|e| {
         anyhow::anyhow!("cannot reach nebo server at {url} ({e}) — is `nebo serve` running?")
     })?;
     use futures::{SinkExt, StreamExt};
@@ -804,16 +846,13 @@ async fn run_chat(
 
 /// Rows `nebo-cli test runs` prints when `--limit` is not given.
 const DEFAULT_RUNS_LIMIT: usize = 20;
-/// The exit reasons `test runs` lists by default: every guard and reviewer
-/// stop (`Exit::label()` names). `text_response` is how a good run ends and
-/// is deliberately absent. Parameterized labels match by bare name.
+/// The exit reasons `test runs` lists by default: a turn that ran out of
+/// steps and one that reached its spending limit (`TurnExit::label()`
+/// names). `text_response` is how a good run ends
+/// and is deliberately absent.
 const DEFAULT_FAILURE_EXIT_REASONS: &[&str] = &[
-    "reviewer_stop",
-    "repeated_tool_calls",
-    "runaway_tool_loop",
-    "same_error_loop",
-    "adaptive_limit_no_progress",
-    "max_iterations_reached",
+    agent::harness::delegation::collect::STOP_MAX_STEPS,
+    agent::harness::delegation::collect::STOP_SPEND_CAP,
 ];
 /// Where `test export` writes when `--out` is not given.
 const REPLAY_FIXTURE_DIR: &str = "fixtures/replay";
@@ -909,20 +948,17 @@ async fn run_test_command(cfg: &config::Config, command: TestCommands) -> anyhow
                 export.touched.len()
             );
         }
-        TestCommands::Prompt { fixture, overrides } => {
-            let overrides = engine::parse_overrides(&overrides.unwrap_or_default())
-                .map_err(|e| anyhow::anyhow!(e))?;
+        TestCommands::Prompt { fixture } => {
             let fix = fixture
                 .as_deref()
                 .map(|p| fixture::load_fixture(Path::new(p)))
                 .transpose()
                 .map_err(|e| anyhow::anyhow!(e))?;
-            engine::inspect_prompt(fix.as_ref(), &overrides);
+            engine::inspect_prompt(fix.as_ref());
         }
         TestCommands::Run {
             fixture: fixture_path,
             suite,
-            overrides,
             model,
             grader: grader_model,
             no_judge,
@@ -934,9 +970,6 @@ async fn run_test_command(cfg: &config::Config, command: TestCommands) -> anyhow
             json,
             experiment,
         } => {
-            let overrides = engine::parse_overrides(&overrides.unwrap_or_default())
-                .map_err(|e| anyhow::anyhow!(e))?;
-
             let fixtures = resolve_fixtures(fixture_path.as_deref(), suite.as_deref())?;
             if fixtures.is_empty() {
                 anyhow::bail!("No fixtures specified. Use --fixture or --suite.");
@@ -971,7 +1004,7 @@ async fn run_test_command(cfg: &config::Config, command: TestCommands) -> anyhow
                 println!("Running fixture: {} ({}x)", fix.id, runs);
 
                 let run_numbers = first_run..=first_run + runs - 1;
-                let mut traces = match scratch::run_bound(fix, &server, model.as_deref(), &overrides, run_numbers).await {
+                let mut traces = match scratch::run_bound(fix, &server, &install_key()?, model.as_deref(), run_numbers).await {
                     Ok(t) => t,
                     Err(e) => {
                         eprintln!("  FAILED: {}", e);
@@ -1052,7 +1085,7 @@ async fn run_test_command(cfg: &config::Config, command: TestCommands) -> anyhow
             }
 
             if let Some(ref exp_name) = experiment {
-                let metadata = engine::build_experiment_metadata(exp_name, &overrides, runs);
+                let metadata = engine::build_experiment_metadata(exp_name, runs);
 
                 // Load baseline scores if provided
                 let baseline_scores = if let Some(ref baseline_dir) = baseline {
@@ -1354,19 +1387,45 @@ async fn grade_kept_run(
     Ok(())
 }
 
-/// Run one deterministic proof — a named test in `nebo-server` — from the
-/// workspace root, in the check target directory so it never contends with
-/// a running `make dev`. The proof passes when the test does.
+/// Run one deterministic proof — a named test in the crate that owns it —
+/// from the workspace root, in the check target directory so it never
+/// contends with a running `make dev`. Both crates have a
+/// `harness::permissions` module, so a proof is looked for in the crate its
+/// prefix suggests (`harness::…` in `nebo-agent`, every other in
+/// `nebo-server`) and then in the other. It passes when exactly its test ran
+/// and passed: a name that matches no test runs nothing, and a proof that
+/// runs nothing proves nothing, so that fails.
 fn run_proof(proof: &str) -> anyhow::Result<()> {
     let root = workspace_root().ok_or_else(|| anyhow::anyhow!("not inside the Nebo workspace; proofs run from a checkout"))?;
     let target = std::env::var_os("CARGO_TARGET_DIR").unwrap_or_else(|| root.join("target-check").into());
-    let status = std::process::Command::new("cargo")
-        .args(["test", "-p", "nebo-server", "--lib", "--quiet", "--", proof, "--exact"])
-        .env("CARGO_TARGET_DIR", target)
-        .current_dir(&root)
-        .status()
-        .map_err(|e| anyhow::anyhow!("could not run cargo: {e}"))?;
-    if status.success() { Ok(()) } else { anyhow::bail!("{proof} failed ({status})") }
+    let order = if proof.starts_with("harness::") { ["nebo-agent", "nebo-server"] } else { ["nebo-server", "nebo-agent"] };
+    for package in order {
+        let out = std::process::Command::new("cargo")
+            .args(["test", "-p", package, "--lib", "--", proof, "--exact"])
+            .env("CARGO_TARGET_DIR", &target)
+            .current_dir(&root)
+            .stderr(std::process::Stdio::inherit())
+            .output()
+            .map_err(|e| anyhow::anyhow!("could not run cargo: {e}"))?;
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        print!("{stdout}");
+        if !out.status.success() {
+            anyhow::bail!("{proof} failed in {package} ({})", out.status);
+        }
+        if proofs_passed(&stdout) > 0 {
+            return Ok(());
+        }
+    }
+    anyhow::bail!("no test named {proof} in nebo-agent or nebo-server: the fixture proves nothing")
+}
+
+/// How many tests a libtest run passed, from its `test result:` lines.
+fn proofs_passed(stdout: &str) -> usize {
+    stdout
+        .lines()
+        .filter_map(|l| l.trim().strip_prefix("test result: ok. "))
+        .filter_map(|rest| rest.split(' ').next()?.parse::<usize>().ok())
+        .sum()
 }
 
 /// The Cargo workspace this binary was run inside, by walking up from the
@@ -1418,6 +1477,16 @@ mod tests {
     use super::*;
     use clap::CommandFactory;
     use clap::error::ErrorKind;
+
+    /// A proof run that matched no test passed nothing: it must not count.
+    #[test]
+    fn a_proof_that_ran_no_test_passed_nothing() {
+        let none = "\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 680 filtered out; finished in 0.00s\n";
+        assert_eq!(proofs_passed(none), 0);
+        let one = "\nrunning 1 test\ntest harness::permissions::proof::x ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 679 filtered out; finished in 0.20s\n";
+        assert_eq!(proofs_passed(one), 1);
+        assert_eq!(proofs_passed(""), 0);
+    }
 
     /// INVARIANT: the entire clap command tree is internally consistent — no
     /// conflicting ids, broken defaults, or invalid arg configurations in any
@@ -1498,10 +1567,9 @@ mod tests {
     }
 
     /// INVARIANT: `nebo test run` defaults — 1 run, server localhost:27895,
-    /// judge enabled (no_judge off), plain-table output — and repeated
-    /// --override flags accumulate in order.
+    /// judge enabled (no_judge off), plain-table output.
     #[test]
-    fn test_run_defaults_and_overrides() {
+    fn test_run_defaults() {
         let cli = Cli::try_parse_from(["nebo", "test", "run", "--fixture", "f.yaml"]).unwrap();
         match cli.command {
             Some(Commands::Test {
@@ -1516,20 +1584,6 @@ mod tests {
             }
             _ => panic!("expected Test Run"),
         }
-
-        let cli = Cli::try_parse_from([
-            "nebo", "test", "prompt", "--override", "a:b", "--override", "c:d",
-        ])
-        .unwrap();
-        match cli.command {
-            Some(Commands::Test { command: TestCommands::Prompt { overrides, .. } }) => {
-                assert_eq!(
-                    overrides.unwrap(),
-                    vec!["a:b".to_string(), "c:d".to_string()]
-                );
-            }
-            _ => panic!("expected Test Prompt"),
-        }
     }
 
     /// INVARIANT: `nebo test runs` splits `--exit-reason a,b` on commas and
@@ -1539,12 +1593,12 @@ mod tests {
     #[test]
     fn test_runs_and_export_parse() {
         let cli = Cli::try_parse_from([
-            "nebo", "test", "runs", "--exit-reason", "same_error_loop,stalled",
+            "nebo", "test", "runs", "--exit-reason", "max_steps,stalled",
         ])
         .unwrap();
         match cli.command {
             Some(Commands::Test { command: TestCommands::Runs { exit_reason, limit } }) => {
-                assert_eq!(exit_reason, vec!["same_error_loop".to_string(), "stalled".to_string()]);
+                assert_eq!(exit_reason, vec!["max_steps".to_string(), "stalled".to_string()]);
                 assert_eq!(limit, DEFAULT_RUNS_LIMIT);
             }
             _ => panic!("expected Test Runs"),
@@ -1572,13 +1626,12 @@ mod tests {
         }
     }
 
-    /// INVARIANT: the default failure list is the guard and reviewer stops
-    /// only; a text response is how a good run ends and must never be listed
-    /// as a failure by default.
+    /// INVARIANT: the default failure list is the turn's limit stops only; a text
+    /// response is how a good run ends and must never be listed as a failure
+    /// by default.
     #[test]
     fn default_failure_reasons_exclude_text_response() {
-        assert!(DEFAULT_FAILURE_EXIT_REASONS.contains(&"reviewer_stop"));
-        assert!(DEFAULT_FAILURE_EXIT_REASONS.contains(&"same_error_loop"));
+        assert_eq!(DEFAULT_FAILURE_EXIT_REASONS, ["max_steps", "spend_cap"]);
         assert!(!DEFAULT_FAILURE_EXIT_REASONS.iter().any(|r| r.starts_with("text_response")));
     }
 

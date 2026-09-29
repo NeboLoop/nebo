@@ -135,6 +135,9 @@ pub struct NewRun<'a> {
     pub definition: Option<&'a str>,
     pub inputs: Option<&'a str>,
     pub external_ref: Option<&'a str>,
+    /// The state it starts in; `None` = queued. A buffered schedule fire
+    /// starts `waiting` for the one before it to end.
+    pub state: Option<&'a str>,
 }
 
 #[derive(Debug, Clone)]
@@ -666,8 +669,8 @@ impl Store {
         let conn = self.conn()?;
         conn.execute(
             "INSERT INTO engine_runs (id, kind, state, session_key, agent_id, lane, parent_run_id, definition, inputs, external_ref)
-             VALUES (?1, ?2, 'queued', ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-            params![r.id, r.kind, r.session_key, r.agent_id, r.lane, r.parent_run_id, r.definition, r.inputs, r.external_ref],
+             VALUES (?1, ?2, COALESCE(?10, 'queued'), ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![r.id, r.kind, r.session_key, r.agent_id, r.lane, r.parent_run_id, r.definition, r.inputs, r.external_ref, r.state],
         )
         .db_err("engine_create_run")?;
         Ok(())
@@ -777,6 +780,25 @@ impl Store {
         Ok(rows)
     }
 
+    /// Runs of one kind that no process has finished: queued, running,
+    /// waiting or interrupted. Oldest first.
+    pub fn engine_live_runs_of_kind(&self, kind: &str) -> Result<Vec<EngineRun>, NeboError> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(&format!(
+                "SELECT {RUN_COLUMNS} FROM engine_runs
+                 WHERE kind = ?1 AND state IN ('queued', 'running', 'waiting', 'interrupted')
+                 ORDER BY created_at, id"
+            ))
+            .db_err("engine_live_runs_of_kind")?;
+        let rows = stmt
+            .query_map(params![kind], row_to_run)
+            .db_err("engine_live_runs_of_kind")?
+            .collect::<Result<Vec<_>, _>>()
+            .db_err("engine_live_runs_of_kind")?;
+        Ok(rows)
+    }
+
     /// Test-only: run one statement against the store (fixture setup that
     /// production code has no reason to do, such as backdating a row).
     #[doc(hidden)]
@@ -864,8 +886,40 @@ impl Store {
         .db_err("engine_count_runs_for_ref")
     }
 
+    /// The fires of a schedule buffered behind the one still going
+    /// (overlap policy buffer_one): task runs waiting on a `cron:` ref,
+    /// oldest first.
+    pub fn engine_buffered_fires(&self) -> Result<Vec<EngineRun>, NeboError> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(&format!(
+                "SELECT {RUN_COLUMNS} FROM engine_runs
+                 WHERE kind = 'task' AND state = 'waiting' AND substr(COALESCE(external_ref, ''), 1, 5) = 'cron:'
+                 ORDER BY created_at, id"
+            ))
+            .db_err("engine_buffered_fires")?;
+        let rows = stmt
+            .query_map([], row_to_run)
+            .db_err("engine_buffered_fires")?
+            .collect::<Result<Vec<_>, _>>()
+            .db_err("engine_buffered_fires")?;
+        Ok(rows)
+    }
+
+    /// Is a fire of this ref already buffered, waiting for the one before
+    /// it (overlap policy buffer_one holds one at most)?
+    pub fn engine_has_buffered_fire_for_ref(&self, external_ref: &str) -> Result<bool, NeboError> {
+        let conn = self.conn()?;
+        conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM engine_runs WHERE external_ref = ?1 AND kind = 'task' AND state = 'waiting')",
+            params![external_ref],
+            |r| r.get::<_, bool>(0),
+        )
+        .db_err("engine_has_buffered_fire_for_ref")
+    }
+
     /// Is a fire of this ref still queued or running? The overlap policy
-    /// (skip) asks before starting another.
+    /// asks before starting another.
     pub fn engine_has_live_run_for_ref(&self, external_ref: &str) -> Result<bool, NeboError> {
         let conn = self.conn()?;
         conn.query_row(
@@ -1499,6 +1553,32 @@ impl Store {
         tx.commit().db_err("engine_close_run commit")
     }
 
+    /// Close a run that is still open as `done`, with its waits superseded,
+    /// in one statement's worth of work: true when this call closed it,
+    /// false when it was already closed. The close is the claim, so work
+    /// that must happen once per run happens only for the caller that got
+    /// true.
+    pub fn engine_finish_run(&self, run_id: &str, now: i64) -> Result<bool, NeboError> {
+        let mut conn = self.conn()?;
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).db_err("engine_finish_run tx")?;
+        let closed = tx
+            .execute(
+                "UPDATE engine_runs SET state = 'done', ended_at = ?2, current_wait_id = NULL
+                 WHERE id = ?1 AND state NOT IN ('done', 'failed', 'cancelled')",
+                params![run_id, now],
+            )
+            .db_err("engine_finish_run run")?;
+        if closed == 1 {
+            tx.execute(
+                "UPDATE engine_waits SET superseded_at = ?2 WHERE run_id = ?1 AND superseded_at IS NULL",
+                params![run_id, now],
+            )
+            .db_err("engine_finish_run waits")?;
+        }
+        tx.commit().db_err("engine_finish_run commit")?;
+        Ok(closed == 1)
+    }
+
     // ── effects ────────────────────────────────────────────────────────
 
     /// Pending BEFORE it acts. A repeat of the same idem_key returns the
@@ -1521,7 +1601,8 @@ impl Store {
             "INSERT INTO engine_effects (run_id, class, idem_key, provider, provider_key, counterparty)
              VALUES (?1, ?2, ?3, ?4, ?5, NULLIF(?6, ''))
              ON CONFLICT(idem_key) DO UPDATE
-                 SET state = 'pending', attempts = 0, result = NULL, completed_at = NULL
+                 SET state = 'pending', attempts = 0, result = NULL, completed_at = NULL,
+                     class = excluded.class, counterparty = excluded.counterparty
                  WHERE engine_effects.state = 'failed'",
             params![run_id, class, idem_key, provider, provider_key, counterparty],
         )
@@ -1576,6 +1657,15 @@ impl Store {
             params![id, result, now],
         )
         .db_err("engine_effect_failed")?;
+        Ok(())
+    }
+
+    /// An attempted effect whose outcome is unknown is held: it stays
+    /// pending, with why on the row.
+    pub fn engine_effect_held(&self, id: i64, why: &str) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        conn.execute("UPDATE engine_effects SET result = ?2 WHERE id = ?1 AND state = 'pending'", params![id, why])
+            .db_err("engine_effect_held")?;
         Ok(())
     }
 

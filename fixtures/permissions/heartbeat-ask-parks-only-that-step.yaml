@@ -1,0 +1,23 @@
+id: heartbeat-ask-parks-only-that-step
+name: "A heartbeat's ask parks only that step; everything else finishes"
+description: |
+  PRD-Permissions §4.5 / §7 (Unattended): "unattended runs (heartbeats,
+  workflows, schedules, helpers) ask the same way. The parked step resumes
+  when the owner answers." §4.5 also: "it parks only that step. The
+  employee keeps doing everything else." Technical design §2.12.5: the
+  harness re-runs the check with the answer, executes the stored call with
+  the stored seat, and delivers the result as a notification; the resumed
+  run is re-queued at its parked call with the answer on it (§2.12.11 lists
+  "unattended runs blocked entirely by an ask: 0" as a hard target).
+  This proof runs a heartbeat with three independent steps, one of which
+  triggers a §2.12.4 ask (a first message to a new recipient); asserts the
+  other two steps complete in that same heartbeat tick, only the one step
+  is parked as a `permission_asks` row, and — once the owner answers from
+  the phone — the parked step resumes and completes without re-running the
+  steps that already finished.
+  A heartbeat tick is scheduler-driven, not a chat conversation, so it is a
+  deterministic proof, matching the engine's own heartbeat proof
+  (`fixtures/engine/operations/uc29-heartbeats-keep-the-window-and-never-stack.yaml`).
+target_component: permissions
+proof: harness::permissions::proof::heartbeat_ask_parks_only_that_step
+conversation: []

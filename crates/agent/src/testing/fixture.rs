@@ -76,6 +76,14 @@ fn is_first_turn(turn: &usize) -> bool {
 pub struct ConversationTurn {
     pub role: String,
     pub content: String,
+    /// The employee (id or name) this turn is sent to, in a NEW conversation
+    /// with that employee; the turns after it continue that conversation.
+    /// None: the conversation the fixture's `agent` started goes on. The way
+    /// to prove what outlives one conversation or crosses to another
+    /// employee: one employee saves, a different one (or the same one in a
+    /// new chat) is asked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -189,6 +197,11 @@ pub struct Check {
     pub tool_calls: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_tool_calls: Option<usize>,
+    /// Ceiling on the model calls (steps) of the whole run, every owner
+    /// turn's summed. Independent calls in one response are one step, so
+    /// this is what tells a batched run from the same calls one per step.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_model_calls: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_total_tokens: Option<usize>,
     /// Ceiling on tool results that came back as errors, whole trace.
@@ -200,6 +213,27 @@ pub struct Check {
     /// "not a valid install code", "timed out".
     #[serde(default, deserialize_with = "one_or_many", skip_serializing_if = "Vec::is_empty")]
     pub no_error_contains: Vec<String>,
+    /// No tool result, error or not, may contain any of these
+    /// (case-insensitive). The way to pin what must never reach the model:
+    /// a secret's field name, another run's marker.
+    #[serde(default, deserialize_with = "one_or_many", skip_serializing_if = "Vec::is_empty")]
+    pub no_result_contains: Vec<String>,
+    /// The result of a call the selector picks must contain this
+    /// (case-insensitive): what a tool actually answered, e.g. that a recall
+    /// found a fact another employee saved. Needs a call selector.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result_contains: Option<String>,
+    /// No call the selector picks may return a result containing any of
+    /// these (case-insensitive): `no_result_contains` narrowed to the named
+    /// tool, so a fact one call rightly echoes can be pinned out of another
+    /// tool's answers. Needs a call selector.
+    #[serde(default, deserialize_with = "one_or_many", skip_serializing_if = "Vec::is_empty")]
+    pub result_not_contains: Vec<String>,
+    /// The 1-based owner turn whose reply `reply_matches` and
+    /// `reply_not_matches` read, instead of every turn's joined: what one
+    /// turn answered, e.g. that another employee's reply gave the fact.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn: Option<usize>,
     /// Regex that must match the run's reply text: every owner turn's
     /// streamed reply joined, with the harness's card notes. The way to pin
     /// what was said: a question asked, a fact reported.

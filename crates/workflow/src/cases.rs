@@ -52,13 +52,19 @@ pub fn needs_attention(store: &Store, agent_id: &str, run_id: &str, subject: &st
         Some(_) => "A case needs your attention",
         None => "A run needs your attention",
     };
+    // A case opens on the employee's cases; anything else on this item in
+    // the Inbox's reader, which holds the whole reason.
+    let link = match case {
+        Some(_) if !agent_id.is_empty() => tools::owner_notify::link::cases(agent_id),
+        _ => tools::owner_notify::link::inbox_item(&idem),
+    };
     store.create_notification_if_not_exists(
         &idem,
         &user_id,
         "needs_attention",
         title,
         Some(reason),
-        Some("/dashboard?inbox=1"),
+        Some(&link),
         None,
         (!agent_id.is_empty()).then_some(agent_id),
     )
@@ -99,6 +105,9 @@ pub enum Routed {
     /// or declined. Nothing reopens; the signal is recorded and the owner
     /// is told.
     Refused { case_id: String, reason: String },
+    /// A temporary workflow works one case, and this signal names someone
+    /// else. Nothing opens; the signal is recorded as such.
+    Taken { case_id: String },
 }
 
 /// Closure reasons a later signal reactivates the same case from — the
@@ -206,21 +215,9 @@ pub fn normalize_alias(kind: &str, raw: &str) -> Option<String> {
     Some(v)
 }
 
-/// E.164 from what people type. Digits only; a leading `+` keeps the country
-/// code; ten digits are read as North American; eleven digits starting with
-/// 1 likewise. ponytail: no libphonenumber — anything else is kept as `+`
-/// plus its digits, which is exact-match stable even when not canonical.
+/// E.164 from what people type (see [`types::permissions::normalize_phone`]).
 pub fn normalize_phone(s: &str) -> Option<String> {
-    let digits: String = s.chars().filter(|c| c.is_ascii_digit()).collect();
-    if digits.len() < 7 {
-        return None;
-    }
-    let plus = s.trim_start().starts_with('+');
-    Some(match (plus, digits.len()) {
-        (false, 10) => format!("+1{digits}"),
-        (false, 11) if digits.starts_with('1') => format!("+{digits}"),
-        _ => format!("+{digits}"),
-    })
+    types::permissions::normalize_phone(s)
 }
 
 fn value_at(payload: &serde_json::Value, path: &str) -> Option<String> {
@@ -305,6 +302,13 @@ pub fn route_signal(
     }
     let source = format!("{}:{}:{}", b.agent_id, b.binding_name, channel);
     let (subject, merged) = store.engine_resolve_subject(aliases, &source, t)?;
+    // Whoever wrote in is someone this employee works with: replying to
+    // them is not speaking for the owner somewhere new.
+    for (kind, value) in aliases.iter().filter(|(k, _)| k == "email" || k == "phone") {
+        if let Err(e) = store.add_employee_counterparty(b.agent_id, value, "inbound") {
+            tracing::warn!(kind, error = %e, "inbound counterparty not recorded");
+        }
+    }
     for loser in &merged {
         for conflicted in store.engine_rekey_open_runs(loser, &subject)? {
             let reason = format!("two open cases now name one person after a merge: {conflicted} and the case for subject {subject}; keep one");
@@ -363,6 +367,14 @@ pub fn route_recorded(store: &Store, b: &CaseBinding<'_>, subject: &str, event_i
         return Ok(Routed::Signaled { case_id: case.id });
     }
 
+    // A temporary workflow works one case (owner, 09-25): once it has it,
+    // a signal for anyone else opens nothing.
+    let temporary = store.temporary_work(db::TemporaryKind::Workflow, b.agent_id, b.binding_name)?;
+    if let Some(first) = temporary.as_ref().and_then(|w| w.run_id.clone()) {
+        store.engine_supersede_event(event_id, t, "temporary workflow already works its one case")?;
+        return Ok(Routed::Taken { case_id: first });
+    }
+
     // No open case. What the person's LAST case of this type closed as
     // decides what happens now (owner's reopen rules, 2026-09-07).
     let previous = store.engine_last_closed_run_for_key(&key_type, &subject)?;
@@ -408,6 +420,15 @@ pub fn route_recorded(store: &Store, b: &CaseBinding<'_>, subject: &str, event_i
     }
 
     let case_id = uuid::Uuid::new_v4().to_string();
+    if temporary.is_some() {
+        match store.claim_temporary_run(db::TemporaryKind::Workflow, b.agent_id, b.binding_name, &case_id)? {
+            db::TemporaryClaim::AlreadyRan(first) => {
+                store.engine_supersede_event(event_id, t, "temporary workflow already works its one case")?;
+                return Ok(Routed::Taken { case_id: first });
+            }
+            db::TemporaryClaim::Claimed | db::TemporaryClaim::NotTemporary => {}
+        }
+    }
     let session_key = format!("agent:{}:case:{}", b.agent_id, case_id);
     let mut inputs = b.base_inputs.clone();
     inputs["_case"] = serde_json::json!({
@@ -430,6 +451,7 @@ pub fn route_recorded(store: &Store, b: &CaseBinding<'_>, subject: &str, event_i
         definition: Some(b.definition_json),
         inputs: Some(&inputs.to_string()),
         external_ref: None,
+        state: None,
     })?;
     if !store.engine_bind_key(&case_id, &key_type, &subject)? {
         // Lost a race to another opener; that case owns the key now.
@@ -466,7 +488,7 @@ pub enum Webhook {
     Case(Routed),
     /// Run it as every webhook runs: the definition, the binding's inputs,
     /// the payload for the envelope, and the source it emits to.
-    Plain { def_json: String, inputs: serde_json::Value, payload: serde_json::Value, emit: Option<String> },
+    Plain { def_json: String, inputs: serde_json::Value, payload: serde_json::Value, emit: Vec<String> },
 }
 
 /// The webhook payload: JSON bodies as JSON, anything else as a string.
@@ -529,17 +551,16 @@ pub fn start_child(store: &Store, parent: &EngineRun, event: &EngineEvent) -> Re
     inputs["_case"]["history"] = serde_json::json!(history_lines(store, &parent.id, &key));
     // What governs this turn, recorded with it: the workflow is read fresh
     // each turn on purpose, so the record says which one this turn ran
-    // under and what the employee's policy was at the time.
+    // under and the permission mode the employee ran in.
     inputs["_case"]["governance"] = serde_json::json!({
         "definition_hash": parent.definition.as_deref().map(fingerprint).unwrap_or_default(),
-        "policy_default": store
-            .get_entity_config("agent", &parent.agent_id)
+        "permission_mode": store
+            .permission_mode(&types::permissions::Scope::Employee(parent.agent_id.clone()))
             .ok()
             .flatten()
-            .and_then(|c| c.operation_policy)
-            .map(|j| tools::policy::OperationPolicy::from_json(Some(&j)))
-            .map(|p| format!("{:?}", p.default).to_lowercase())
-            .unwrap_or_else(|| "approval".to_string()),
+            .or_else(|| store.permission_mode(&types::permissions::Scope::Company).ok().flatten())
+            .unwrap_or_default()
+            .as_str(),
         "queued_at": chrono::Utc::now().timestamp(),
     });
     let binding = inputs["_case"]["binding"].as_str().unwrap_or("").to_string();
@@ -557,6 +578,7 @@ pub fn start_child(store: &Store, parent: &EngineRun, event: &EngineEvent) -> Re
         definition: parent.definition.as_deref(),
         inputs: Some(&inputs.to_string()),
         external_ref: None,
+        state: None,
     })?;
     store.insert_workflow_run_detail(
         &child_id,
@@ -955,6 +977,10 @@ pub fn open_assignment(store: &Store, req: &NewAssignmentRequest<'_>, t: i64) ->
         },
     });
     let definition = default_assignment_definition();
+    // The case links to the assigner's run when that run is the engine's (a
+    // workflow step, a case turn). A chat turn is not an engine run: the
+    // assignment row still names it, and the case stands on its own.
+    let case_parent = req.parent_run_id.filter(|id| store.engine_get_run(id).ok().flatten().is_some());
     store.create_assignment(&db::NewAssignment {
         id: &assignment_id,
         assigner_agent_id: req.assigner_agent_id,
@@ -972,10 +998,11 @@ pub fn open_assignment(store: &Store, req: &NewAssignmentRequest<'_>, t: i64) ->
         session_key: &session_key,
         agent_id: req.assignee_agent_id,
         lane: "main",
-        parent_run_id: req.parent_run_id,
+        parent_run_id: case_parent,
         definition: Some(&definition),
         inputs: Some(&inputs.to_string()),
         external_ref: None,
+        state: None,
     })?;
     if !store.engine_bind_key(&case_id, &key_type, &assignment_id)? {
         store.engine_close_run(&case_id, "cancelled", t)?;
@@ -1021,10 +1048,20 @@ pub fn assignment_state_for(status: &str) -> &'static str {
     }
 }
 
+static WAKE_BELL: std::sync::OnceLock<tokio::sync::mpsc::UnboundedSender<String>> = std::sync::OnceLock::new();
+
+/// The server installs the wake rail's bell once at boot, so code that only
+/// holds a store can have a session's pending wakes delivered now. A wake is
+/// durable before the bell rings; with no bell (a unit test) it is delivered
+/// at the next boot sweep.
+pub fn install_wake_bell(bell: tokio::sync::mpsc::UnboundedSender<String>) {
+    let _ = WAKE_BELL.set(bell);
+}
+
 /// Settle the assignment a closing case carried: the row closes once, the
-/// assigner is woken with the outcome, and `assignment.<state>` goes out as
-/// a company event with the assignee as producer. A case that carries no
-/// assignment is untouched.
+/// assigner is woken with the outcome — now, through the wake rail — and
+/// `assignment.<state>` goes out as a company event with the assignee as
+/// producer. A case that carries no assignment is untouched.
 pub fn settle_assignment(store: &Store, case_inputs: &serde_json::Value, status: &str, summary: &str, t: i64) -> Result<(), NeboError> {
     let a = &case_inputs["_assignment"];
     let Some(id) = a["id"].as_str().filter(|s| !s.is_empty()) else {
@@ -1045,8 +1082,11 @@ pub fn settle_assignment(store: &Store, case_inputs: &serde_json::Value, status:
         "assigner_agent_id": a["assigner_agent_id"],
     });
     let name = format!("assignment.{state}");
-    if let Some(session) = a["assigner_session_key"].as_str().filter(|s| !s.is_empty()) {
-        let _ = store.engine_enqueue_wake(session, &name, &payload.to_string(), "[]", 0);
+    if let Some(session) = a["assigner_session_key"].as_str().filter(|s| !s.is_empty())
+        && store.engine_enqueue_wake(session, &name, &payload.to_string(), "[]", 0).is_ok()
+        && let Some(bell) = WAKE_BELL.get()
+    {
+        let _ = bell.send(session.to_string());
     }
     let producer = store.get_agent(assignee).ok().flatten().map(|ag| db::agent_slug(&ag.name)).unwrap_or_else(|| assignee.to_string());
     crate::events::emit_company_event(&name, payload, &producer);
@@ -1130,6 +1170,27 @@ mod assignment_tests {
         assert_eq!(s.get_assignment(&id).unwrap().unwrap().state, "blocked");
         let (again, _) = s.engine_claim_session_events("agent:gm:web", t + 121).unwrap();
         assert!(again.is_empty());
+    }
+
+    /// Work assigned from a chat turn, which is no engine run: the case
+    /// opens standing on its own, and the assignment still names the run.
+    #[test]
+    fn an_assignment_from_a_chat_turn_opens_its_case() {
+        let s = store();
+        let req = NewAssignmentRequest {
+            assigner_agent_id: "gm",
+            assigner_name: "General Manager",
+            assigner_session_key: "agent:gm:web",
+            parent_run_id: Some("chat-run-1"),
+            assignee_agent_id: "bk",
+            subject: "Find the budget",
+            done_means: "A number",
+            due: None,
+        };
+        let id = open_assignment(&s, &req, 1_700_000_000).expect("opened from a chat turn");
+        let case = s.engine_run_for_key("case:assignment", &id).unwrap().expect("case bound");
+        assert_eq!(case.parent_run_id, None);
+        assert_eq!(s.get_assignment(&id).unwrap().unwrap().parent_run_id.as_deref(), Some("chat-run-1"));
     }
 
     #[test]

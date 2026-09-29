@@ -8,6 +8,7 @@ mod artifact_updates;
 mod channel_dispatch;
 pub mod chat_dispatch;
 pub mod codes;
+pub mod company;
 pub mod coworker;
 pub mod team;
 pub mod deps;
@@ -17,8 +18,11 @@ mod engine;
 mod heartbeat;
 mod workforce_reporter;
 pub mod import;
+pub mod local_access;
 pub mod middleware;
+mod mail_intake;
 mod migration;
+mod outside;
 mod plugin_commands;
 pub(crate) mod plugin_oauth;
 mod plugin_provider;
@@ -29,12 +33,22 @@ pub mod run_display;
 pub mod run_registry;
 mod scheduler;
 pub mod wake;
+mod reply_route;
 pub mod layers_update;
 #[cfg(test)]
 mod staffed_proof;
+#[cfg(all(test, unix))]
+mod sidecar_proof;
+#[cfg(test)]
+mod harness;
+#[cfg(test)]
+mod nebo_files_proof;
 mod spa;
 mod state;
 pub mod workflow_manager;
+mod old_profile;
+mod permission_asks;
+mod stored_tool_names;
 
 /// Truncate a string to at most `max_bytes` bytes without splitting a multi-byte
 /// UTF-8 character.
@@ -239,21 +253,10 @@ pub async fn sync_janus_models(store: &db::Store, cfg: &Config) -> Result<usize,
     let Some(token) = auth::neboai_token(store) else {
         return Ok(0);
     };
-    #[derive(serde::Deserialize)]
-    struct Entry {
-        id: String,
-        owned_by: String,
-        #[serde(default)]
-        name: String,
-        #[serde(default)]
-        description: String,
-    }
-    #[derive(serde::Deserialize)]
-    struct Listing {
-        data: Vec<Entry>,
-    }
     let url = format!("{}/v1/models", cfg.neboai.janus_url);
-    let resp = reqwest::Client::new()
+    let resp = tls::http_client()
+        .build()
+        .map_err(|e| e.to_string())?
         .get(&url)
         .bearer_auth(&token)
         .header("X-Bot-ID", config::read_bot_id().unwrap_or_default())
@@ -264,7 +267,32 @@ pub async fn sync_janus_models(store: &db::Store, cfg: &Config) -> Result<usize,
     if !resp.status().is_success() {
         return Err(format!("{} from {}", resp.status(), url));
     }
-    let listing: Listing = resp.json().await.map_err(|e| e.to_string())?;
+    let listing: JanusListing = resp.json().await.map_err(|e| e.to_string())?;
+    store_janus_listing(store, listing)
+}
+
+#[derive(serde::Deserialize)]
+struct JanusEntry {
+    id: String,
+    owned_by: String,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    description: String,
+    /// The tokens of context a request to this id may carry, as Janus reports
+    /// it (a pool's smallest member, capped at 200k).
+    #[serde(default)]
+    context_window: Option<i64>,
+}
+
+#[derive(serde::Deserialize)]
+struct JanusListing {
+    data: Vec<JanusEntry>,
+}
+
+/// Store the sellable entries of a Janus listing, each with the window Janus
+/// reported for it, and remove the synced rows it no longer lists.
+fn store_janus_listing(store: &db::Store, listing: JanusListing) -> Result<usize, String> {
     let mut listed: Vec<String> = Vec::new();
     for m in listing.data.into_iter().filter(|m| m.owned_by == "neboai") {
         let name = if m.name.is_empty() { m.id.clone() } else { m.name.clone() };
@@ -275,7 +303,7 @@ pub async fn sync_janus_models(store: &db::Store, cfg: &Config) -> Result<usize,
                 &m.id,
                 &name,
                 (!m.description.is_empty()).then_some(m.description.as_str()),
-                Some(200_000),
+                m.context_window.filter(|&w| w > 0),
                 None,
                 None,
                 Some(r#"["vision","tools","streaming","code","reasoning"]"#),
@@ -307,7 +335,8 @@ pub fn inject_db_models(store: &db::Store, selector: &agent::ModelSelector, prov
                 .map(|m| agent::selector::ModelInfo {
                     id: m.model_id.clone(),
                     display_name: m.display_name.clone(),
-                    context_window: m.context_window.unwrap_or(128_000) as i32,
+                    // Unknown = 0: the selector assumes its one default.
+                    context_window: m.context_window.unwrap_or(0) as i32,
                     input_price: 0.0,
                     output_price: 0.0,
                     cached_input_price: 0.0,
@@ -418,6 +447,33 @@ pub(crate) fn janus_api_key(store: Arc<db::Store>) -> ai::ApiKey {
 /// resolver the comms and tunnel paths use (`auth::neboai_token`, which
 /// honors the rotated-token cache), so a rotation or a login after boot needs
 /// no rebuild. Janus rejects a bare bot id as a bearer.
+/// A helper's progress on the owner's screen: `subagent_start`,
+/// `subagent_progress` and `subagent_complete`, addressed to the session
+/// that started it. Never text in anyone's conversation.
+fn helper_event_to_hub(hub: &handlers::ws::ClientHub, ev: agent::harness::delegation::HelperEvent) {
+    let name = match ev.event.event_type {
+        ai::StreamEventType::SubagentStart => "subagent_start",
+        ai::StreamEventType::SubagentProgress => "subagent_progress",
+        ai::StreamEventType::SubagentComplete => "subagent_complete",
+        _ => return,
+    };
+    let mut payload = serde_json::json!({
+        "session_id": ev.parent_session_key,
+        "agentId": types::keyparser::extract_agent_id(&ev.parent_session_key),
+    });
+    for (k, v) in ev.event.widgets.iter().flat_map(|w| w.as_object()).flatten() {
+        payload[k] = v.clone();
+    }
+    // A research run's panel snapshot: the app's research card, found by
+    // the run's task id.
+    if let Some(snapshot) = ev.event.payload.as_ref().filter(|p| p["kind"] == "research_progress") {
+        payload["data"] = snapshot.clone();
+        hub.broadcast("research_progress", payload);
+        return;
+    }
+    hub.broadcast(name, payload);
+}
+
 pub fn build_decide_client(store: Arc<db::Store>, cfg: &Config) -> Arc<ai::DecideClient> {
     Arc::new(ai::DecideClient::new(&cfg.neboai.janus_url, move || {
         Some(ai::Bearer {
@@ -431,6 +487,7 @@ pub fn build_providers(
     store: &Arc<db::Store>,
     cfg: &Config,
     cli_statuses: Option<&config::AllCliStatuses>,
+    local_host: Option<&Arc<ai::LocalHost>>,
 ) -> Vec<Arc<dyn ai::Provider>> {
     let profiles = match store.list_auth_profiles() {
         Ok(p) => p,
@@ -646,15 +703,21 @@ pub fn build_providers(
     }
 
     // The linked provider: one for every employee hired from a linked bot,
-    // addressed by `linked/<bot>/<agent>` on the employee's model preference.
-    // Always registered — it resolves the NeboAI token per call through the
-    // ONE resolver — and never a default or a fallback (`retryable` = false).
+    // addressed by `linked/<bot>/<agent>` on the employee's model preference,
+    // this computer's own agents (hosted by Nebo) included. Always
+    // registered — it resolves the NeboAI token per call through the ONE
+    // resolver — and never a default or a fallback (`retryable` = false).
     let token_store = store.clone();
-    providers.push(Arc::new(ai::LinkedProvider::new(
-        &cfg.neboai.api_url,
-        store.clone(),
-        Arc::new(move || auth::neboai_token(&token_store)),
-    )));
+    let relay = ai::Relay::Hub {
+        api_url: cfg.neboai.api_url.trim_end_matches('/').to_owned(),
+        token: Arc::new(move || auth::neboai_token(&token_store)),
+    };
+    // What a linked bot calls this Nebo once they are paired.
+    let device = match crate::codes::host_label() {
+        host if host.is_empty() => "Nebo".to_owned(),
+        host => format!("Nebo on {host}"),
+    };
+    providers.push(Arc::new(ai::LinkedProvider::new(relay, store.clone(), local_host.cloned(), &device)));
 
     providers
 }
@@ -712,7 +775,9 @@ async fn handle_comm_install_event(
             // re-download. Updates always re-install. The echo lands before our
             // own install has persisted (the hub emits it as the redeem is
             // recorded), so the check is only truthful once local install work
-            // — the code handler and its dependency cascade — has finished.
+            // — every door's code handler and its dependency cascade — has
+            // finished. `install` takes the claim itself, so no door (the
+            // card's REST door included) can be installing unseen here.
             state.codes_in_flight.settle().await;
             if event.event_type == "tool_installed"
                 && crate::handlers::store::is_installed(
@@ -732,11 +797,13 @@ async fn handle_comm_install_event(
                 .ok_or_else(|| format!("artifact {} has no install code", event.tool_id))?;
             let (code_type, validated) =
                 codes::detect_code(code).ok_or_else(|| format!("invalid install code: {code}"))?;
+            // A hire on the owner's account (the phone, the website): no
+            // client on this server asked, so none opens an install surface.
             codes::handle_code(
                 state,
                 code_type,
                 validated,
-                &format!("install-event-{}", event.tool_id),
+                &handlers::ws::EventOrigin::unclaimed(format!("install-event-{}", event.tool_id)),
             )
             .await;
             Ok(())
@@ -752,13 +819,19 @@ async fn handle_comm_install_event(
     }
 }
 
-pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
-    let port = cfg.port;
+pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
     let host = cfg.host.clone();
+    // The port is taken first and held until the server serves on it, so
+    // nothing else can take it while Nebo starts. Port 0 takes whichever
+    // port the system assigns, and everything below uses that one.
+    let std_listener =
+        TcpListener::bind(format!("{host}:{}", cfg.port)).map_err(|_| NeboError::PortInUse(cfg.port))?;
+    cfg.port = std_listener
+        .local_addr()
+        .map_err(|e| NeboError::Server(format!("failed to bind: {e}")))?
+        .port();
+    let port = cfg.port;
     let bind_addr = format!("{host}:{port}");
-
-    // Check port availability
-    TcpListener::bind(&bind_addr).map_err(|_| NeboError::PortInUse(port))?;
 
     if !quiet {
         println!("Starting server on http://localhost:{port}");
@@ -779,6 +852,9 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
 
     // Initialize database
     let store = Arc::new(db::Store::new(&cfg.database.sqlite_path)?);
+    // The old permission settings become rules once, before anything runs a
+    // tool: every call is decided by the rules from here on.
+    agent::migrate_legacy(&store)?;
 
     // BotLease (comm::lease): a cloud bot freezes itself whenever its lease
     // is not held; a desktop does not. A bot with NeboAI credentials is
@@ -1051,13 +1127,26 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         Err(_) => warn!("Janus model list sync timed out; catalog keeps its last copy"),
     }
 
+    // This computer's host. Where Nebo runs, Nebo hosts the coding agents the
+    // owner hires here, unless a nebo-link daemon of this OS user already
+    // does (one host per computer per OS user). One for the process: every
+    // provider build shares it, so a reload never restarts its agents.
+    let local_host = match (config::data_dir(), dirs::home_dir()) {
+        (Ok(data_dir), Some(home)) => ai::LocalHost::open(
+            Arc::new(config::read_bot_id),
+            data_dir.join("link"),
+            home,
+            link_core::machine::daemon_home(),
+        )
+        .inspect_err(|e| warn!(error = %e, "this computer's host is not available"))
+        .ok(),
+        _ => None,
+    };
+
     // Build AI providers from database auth profiles + active CLI providers
-    let mut providers = build_providers(&store, &cfg, Some(&cli_statuses));
+    let mut providers = build_providers(&store, &cfg, Some(&cli_statuses), local_host.as_ref());
 
     // Build tool registry with default tools
-    let mut policy = tools::Policy::new();
-    policy.level = tools::PolicyLevel::Full;
-    policy.ask_mode = tools::AskMode::Off;
     // No-op: Nebo uses the platform-native data directory (see config::data_dir).
     migration::migrate_data_dir();
 
@@ -1094,7 +1183,10 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         }
     }
 
-    let tool_registry = Arc::new(tools::Registry::new(policy));
+    // Every tool call passes the one permission check.
+    let check = Arc::new(agent::Check::new(store.clone()));
+    let permission_asks = check.asks();
+    let tool_registry = Arc::new(tools::Registry::new(check.clone()));
 
     // Create empty orchestrator handle (filled after Runner is built)
     let orch_handle = tools::new_handle();
@@ -1160,6 +1252,25 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // Must run AFTER seeding so newly seeded .napp files are picked up.
     migration::migrate_napp_extraction(&data_dir);
 
+    // Sidecar data out of the folders apps used to share, into each app's own,
+    // before any sidecar starts (one-time).
+    migration::migrate_app_data_per_app(&data_dir, &store);
+
+    // Stored shapes that name tools move onto the current tool set once,
+    // before anything loads an employee, a skill or a workflow.
+    stored_tool_names::upgrade(&store, &data_dir)?;
+
+    // The old single profile's persona, rules and tool notes move to the
+    // employees' souls and the company layer once, before any employee is
+    // loaded. A failed move is retried at the next start.
+    let moved_rules = match config::packs_dir().and_then(|dir| old_profile::upgrade(&store, &dir)) {
+        Ok(pack) => pack,
+        Err(e) => {
+            warn!(error = %e, "old agent profile not moved; retried at the next start");
+            None
+        }
+    };
+
     // Initialize plugin store for shared binary management
     let plugins_dir = data_dir.join("nebo").join("plugins");
     let _ = std::fs::create_dir_all(&plugins_dir);
@@ -1204,9 +1315,15 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // via gmail, …) read as unbound and fell back to the local app until then.
     // Off the boot path: each probe is one `auth status` per plugin, bounded by
     // AUTH_PROBE_TIMEOUT, and a slow one must not hold the server up.
+    // Readiness decides which operations a plugin provides, so the plugin
+    // tools are re-derived once it is known.
     tokio::spawn({
         let ps = plugin_store.clone();
-        async move { ps.refresh_auth_cache().await }
+        let tools = tool_registry.clone();
+        async move {
+            ps.refresh_auth_cache().await;
+            tools.refresh_plugin_tools().await;
+        }
     });
 
     // Append plugin-provided AI providers (e.g., openrouter, local model servers)
@@ -1318,7 +1435,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     advisor_loader.watch();
 
     // Build a second provider set for advisor deliberation (includes CLI providers)
-    let advisor_providers = build_providers(&store, &cfg, Some(&cli_statuses));
+    let advisor_providers = build_providers(&store, &cfg, Some(&cli_statuses), local_host.as_ref());
     let shared_providers = Arc::new(advisor_providers);
     let advisor_runner: Option<Arc<dyn tools::AdvisorDeliberator>> = if shared_providers.is_empty() {
         None
@@ -1329,17 +1446,10 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         )))
     };
 
-    // Structured-output sub-agent runner for the deep-research harness. Shares the same
-    // provider set; absent when no provider can force tool calls.
-    let structured_agent: Option<Arc<dyn tools::bot_tool::StructuredAgent>> =
-        if shared_providers.is_empty() {
-            None
-        } else {
-            Some(Arc::new(agent::structured_agent::StructuredRunner::new(
-                shared_providers.clone(),
-                tool_registry.clone(),
-            )))
-        };
+    // The deep-research pipeline's sub-agents run as helpers of the run, on
+    // the one loop; bound to the helper registry once it exists.
+    let structured_runner = Arc::new(agent::structured_agent::StructuredRunner::new(tool_registry.clone()));
+    let structured_agent: Option<Arc<dyn tools::bot_tool::StructuredAgent>> = Some(structured_runner.clone());
 
     // Build embedding provider for vector search (memory embedding + transcript indexing)
     let embedding_provider = build_embedding_provider(&store, &cfg);
@@ -1393,6 +1503,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         installed_tools_dir: data_dir.join("nebo").join("tools"),
         user_tools_dir: data_dir.join("user").join("tools"),
         neboai_url: Some(cfg.neboai.api_url.clone()),
+        home: data_dir.clone(),
     };
     let napp_registry = Arc::new(napp::Registry::new(napp_config, port));
 
@@ -1443,7 +1554,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     let run_querier_handle = tools::run_querier::new_handle();
 
     // The NeboAI comm plugin handle exists from startup; its `is_connected()`
-    // reflects live state. The loop tool holds this same handle, so it becomes
+    // reflects live state. The NeboAI loop tools hold this same handle, so they become
     // functional the moment the connection comes up — no registry rebuild needed.
     // (Also registered with the comm manager below.)
     let neboai_plugin: Arc<dyn comm::CommPlugin> = Arc::new(comm::NeboAIPlugin::new(Arc::new(
@@ -1472,10 +1583,10 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         )
         .await;
 
-    // ToolSearch meta-tool — always active, lets LLM discover deferred tools on demand.
+    // find_tools — always loaded; loads deferred tools on demand.
     // Must be registered after register_all_with_permissions since it needs Arc<Registry>.
     tool_registry
-        .register(Box::new(tools::ToolSearchTool::new(tool_registry.clone())))
+        .register(Box::new(tools::FindToolsTool::new(tool_registry.clone())))
         .await;
 
     // Initialize encryption: try OS keyring → file key → generate new
@@ -1524,11 +1635,6 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         hub_for_notify.broadcast(event_type, payload);
     });
     tool_registry.set_notify_fn(alert_notify_fn);
-
-    // Register the MCP enumeration tool — mcp(action:"list") lists connected servers.
-    // Each server's tools are exposed as their own mcp__<server>__<tool> proxy tools.
-    let mcp_tool = tools::mcp_tool::McpTool::new(tool_registry.mcp_proxy_roster());
-    tool_registry.register(Box::new(mcp_tool)).await;
 
     // Sync MCP integrations from DB — reconnect with stored OAuth tokens
     let bridge_init = bridge.clone();
@@ -1637,35 +1743,6 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
             .await;
     }
 
-    // Spawn tool supervisor (15s health check)
-    {
-        let registry = napp_registry.clone();
-        let hub_ref = hub.clone();
-        tokio::spawn(async move {
-            let supervisor = napp::supervisor::Supervisor::new();
-            let mut interval = tokio::time::interval(std::time::Duration::from_secs(15));
-            loop {
-                interval.tick().await;
-                let tools = registry.list_processes().await;
-                for tool in &tools {
-                    if tool.running {
-                        continue;
-                    }
-                    if supervisor.should_restart(&tool.id).await {
-                        supervisor.record_restart(&tool.id).await;
-                        hub_ref.broadcast(
-                            "tool_error",
-                            serde_json::json!({
-                                "toolId": tool.id,
-                                "error": "process died",
-                            }),
-                        );
-                    }
-                }
-            }
-        });
-    }
-
     // Create comm plugin manager
     let comm_manager = Arc::new(comm::PluginManager::new());
     {
@@ -1729,8 +1806,9 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     let hooks = Arc::new(napp::HookDispatcher::new());
     // Repo-level shell hooks (`.nebo/hooks.yaml`) ride the same dispatcher as
     // plugin hooks; exit 2 reaches the model, exit 0 attaches stdout. Which
-    // file applies is decided per call from the folder the call works in.
-    agent::shell_hooks::register_workspace_hooks(&hooks);
+    // file applies is decided per call from the folder the call works in, and
+    // its commands run through run_command as the call's employee.
+    agent::shell_hooks::register_workspace_hooks(&hooks, tool_registry.clone(), store.clone());
 
     // Per-run credentials for CLI providers' tool calls over /agent/mcp.
     let tool_credentials = agent::ToolCredentials::default();
@@ -1743,7 +1821,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     let decide_client = build_decide_client(store.clone(), &cfg);
     // Desktop control asks Jev which element "the Save button" is.
     tools::desktop_tool::set_decider(decide_client.clone());
-    let mut runner_builder = agent::Runner::new(
+    let mut harness = agent::Harness::new(
         store.clone(),
         tool_registry.clone(),
         providers,
@@ -1754,27 +1832,24 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         active_role_state.clone(),
         Some(skill_loader.clone()),
     )
-    .set_ask_channels(ask_channels.clone())
-    .set_approval_channels(approval_channels.clone())
+    .with_ask_channels(ask_channels.clone())
+    // Jev judges first the calls the permission check can't decide.
+    .with_decide(decide_client.clone())
     // Same adapter instance as the memory tool — one search pathway, one
-    // TurboVec index cache — powering per-message prompt recall.
-    .set_hybrid_searcher(hybrid_searcher);
-
+    // TurboVec index cache — powering the turn's recall.
+    .with_hybrid_searcher(hybrid_searcher);
     if let Some(ep) = embedding_provider.clone() {
-        runner_builder = runner_builder.set_embedding_provider(ep);
+        harness = harness.with_embedding_provider(ep);
     }
-    runner_builder = runner_builder.set_decide(decide_client);
-
-    let runner = Arc::new(runner_builder);
 
     // Spawn background memory consolidation sweep (30-min interval, per-scope
     // dedup/prune); the embedding provider keeps merged values' vectors fresh
     // and the decide client judges write-time contradiction pairs.
     agent::memory_consolidation::spawn_sweep(
         store.clone(),
-        runner.providers(),
+        harness.providers(),
         embedding_provider.clone(),
-        runner.decide(),
+        Some(decide_client.clone()),
     );
 
     // Create event bus and dispatcher for workflow-to-workflow events
@@ -1787,7 +1862,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         workflow::cases::CaseAssignmentOpener { store: store.clone() },
     ));
 
-    // Register EmitTool so it appears in tools list and is available to all
+    // Register emit_event so it appears in the tools list and is available to all
     // origins. One shared instance serves every employee, so it reads the
     // producing seat from the run's session key — an event raised from chat is
     // addressed by the same function the executors use.
@@ -1797,27 +1872,26 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         ))
         .await;
 
-    // The ONE agentic loop for workflow activities: the chat Runner, adapted
-    // (Phase 4 — the engine's second loop is deleted; see workflow::loop_contract).
-    let workflow_loop = workflow_manager::activity_loop(runner.clone(), store.clone());
+    // The ONE loop runs workflow activities too (see workflow::loop_contract).
+    let workflow_loop: Arc<dyn workflow::ActivityLoop> =
+        Arc::new(agent::harness::workflow_turn::WorkflowTurns::new(harness.clone()));
 
-    // Create workflow manager (needs runner's shared providers for background execution)
+    // Create workflow manager (needs the shared providers for background execution)
     let workflow_manager = Arc::new(workflow_manager::WorkflowManagerImpl::new(
         store.clone(),
-        runner.providers(),
-        runner.decide(),
+        harness.providers(),
+        Some(decide_client.clone()),
         tool_registry.clone(),
+        plugin_store.clone(),
         hub.clone(),
         cfg.clone(),
         Some(event_bus.clone()),
         Some(skill_loader.clone()),
         workflow_loop,
     ));
-    // Register WorkTool now that the manager exists
+    // Register the workflow tools now that the manager exists
     tool_registry
-        .register(Box::new(tools::WorkTool::new(
-            workflow_manager.clone() as Arc<dyn tools::WorkflowManager>
-        )))
+        .register_workflows(workflow_manager.clone() as Arc<dyn tools::WorkflowManager>)
         .await;
 
     // Create agent loader — embedded bundled + nebo/agents/ + user/agents/
@@ -1851,6 +1925,9 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         let fs_agents = agent_loader.list().await;
         let mut synced = 0usize;
         let mut created = 0usize;
+        // The rows the folders on disk are: matched by manifest id or by
+        // name, or created here. What the orphan sweep below keeps.
+        let mut on_disk: std::collections::HashSet<String> = std::collections::HashSet::new();
         for loaded in &fs_agents {
             // Match by manifest ID first (marketplace agents), then by name
             let db_agent = loaded
@@ -1928,6 +2005,8 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
                 }
             }
 
+            on_disk.insert(agent_id_for_bindings.clone());
+
             // Sync app fields (ui path, binary path, window config) to DB
             if loaded.is_app {
                 let _ = store.set_agent_app_fields(
@@ -1948,55 +2027,37 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
                 sync_agent_workflows(&store, &agent_id_for_bindings, config);
             }
         }
-        // Filesystem is the source of truth for which agents are active.
-        // Soft-deactivate any DB agent not on the filesystem — same policy as
-        // the fs-watcher's Removed branch. Do NOT delete: the user may re-add
-        // the directory; chats/sessions/memories must survive.
-        //
-        // Circuit breaker first: the scan swallows IO errors, so a boot that
-        // races a slow volume mount produces a PARTIAL listing that looks
-        // like mass deletion. One such boot deactivated a whole roster of
-        // employees. A real user removes agents one at a time — losing more
-        // than a third of the enabled roster in a single sweep means the
-        // scan is lying, not the user.
-        let fs_ids: std::collections::HashSet<String> = fs_agents
-            .iter()
-            .map(|a| a.id.clone().unwrap_or_else(|| a.agent_def.name.clone()))
-            .collect();
+        // Filesystem is the source of truth for which agents are active:
+        // soft-deactivate every DB agent no folder is (`orphan_sweep`) — same
+        // policy as the fs-watcher's Removed branch. Do NOT delete: the user
+        // may re-add the directory; chats/sessions/memories must survive.
         if let Ok(db_agents) = store.list_agents(1000, 0) {
-            let enabled: Vec<_> = db_agents
-                .iter()
-                .filter(|a| a.is_enabled != 0 && a.id != "assistant")
-                .collect();
-            let orphans: Vec<_> = enabled
-                .iter()
-                .filter(|a| !fs_ids.contains(&a.id))
-                .collect();
-            if !orphans.is_empty() && orphans.len() * 3 > enabled.len() {
-                warn!(
-                    orphans = orphans.len(),
-                    enabled = enabled.len(),
-                    scanned = fs_ids.len(),
+            match orphan_sweep(&db_agents, &on_disk) {
+                Err((orphans, enabled)) => warn!(
+                    orphans,
+                    enabled,
+                    scanned = on_disk.len(),
                     "agent scan would deactivate an implausible share of the roster — treating the scan as incomplete, deactivating nothing"
-                );
-            } else {
-                let mut deactivated = 0usize;
-                for db_agent in orphans {
-                    match store.set_agent_enabled(&db_agent.id, false) {
-                        Ok(()) => {
-                            deactivated += 1;
-                            info!(id = %db_agent.id, name = %db_agent.name, "deactivated orphan agent missing from filesystem (data preserved)");
-                        }
-                        Err(e) => {
-                            warn!(id = %db_agent.id, error = %e, "failed to deactivate orphan agent");
+                ),
+                Ok(orphans) => {
+                    let mut deactivated = 0usize;
+                    for db_agent in orphans {
+                        match store.set_agent_enabled(&db_agent.id, false) {
+                            Ok(()) => {
+                                deactivated += 1;
+                                info!(id = %db_agent.id, name = %db_agent.name, "deactivated orphan agent missing from filesystem (data preserved)");
+                            }
+                            Err(e) => {
+                                warn!(id = %db_agent.id, error = %e, "failed to deactivate orphan agent");
+                            }
                         }
                     }
-                }
-                if deactivated > 0 {
-                    info!(
-                        deactivated,
-                        "deactivated orphan agents missing from filesystem"
-                    );
+                    if deactivated > 0 {
+                        info!(
+                            deactivated,
+                            "deactivated orphan agents missing from filesystem"
+                        );
+                    }
                 }
             }
         }
@@ -2103,22 +2164,42 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         store.clone(),
     );
 
-    // Create orchestrator and fill the late-binding handle. The wake channel
-    // lets fire-and-forget task completions reach the session wake rail (R5)
-    // without the agent crate depending on server state — rows are durable
-    // before the send, so a dropped notification only delays to the boot sweep.
+    // The helper registry, and the helper tools' door onto it. The wake
+    // channel lets a helper's notification reach an owner session through
+    // the wake rail without the agent crate depending on server state — rows
+    // are durable before the send, so a dropped send only delays to the boot
+    // sweep. Helper progress goes to the owner's screen.
     let (wake_tx, mut wake_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
-    let orchestrator = agent::Orchestrator::new(runner.clone(), store.clone())
-        .with_lanes(lanes.clone())
-        .with_wake_notify(wake_tx);
+    // A settled assignment rings the same bell: its assigner hears the
+    // outcome now, not at the end of some later run.
+    workflow::cases::install_wake_bell(wake_tx.clone());
+    let (helper_ui_tx, mut helper_ui_rx) = tokio::sync::mpsc::unbounded_channel::<agent::harness::delegation::HelperEvent>();
+    let helpers = agent::harness::delegation::Helpers::new(
+        store.clone(),
+        Arc::new(harness.sessions().clone()),
+        tool_registry.clone(),
+        Arc::new(harness.clone()),
+        Some(wake_tx),
+        Some(helper_ui_tx),
+    );
+    structured_runner.bind(helpers.clone());
     if orch_handle
-        .set(Box::new(orchestrator) as Box<dyn tools::SubAgentOrchestrator>)
+        .set(Box::new(agent::harness::delegation::door::HelperDoor::new(helpers.clone(), harness.clone()))
+            as Box<dyn tools::SubAgentOrchestrator>)
         .is_err()
     {
-        panic!("orchestrator handle set twice");
+        panic!("helper door set twice");
+    }
+    {
+        let hub = hub.clone();
+        tokio::spawn(async move {
+            while let Some(ev) = helper_ui_rx.recv().await {
+                helper_event_to_hub(&hub, ev);
+            }
+        });
     }
 
-    // Recover incomplete sub-agent tasks from previous crash
+    // Helpers a restart interrupted fail and tell their owner session.
     orch_handle.get().unwrap().recover().await;
 
     // provider_models is seeded earlier, BEFORE build_providers (fresh-DB
@@ -2159,9 +2240,11 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         embedding_provider: embedding_provider.clone(),
         auth: auth_service,
         hub,
-        runner,
-        goal_tracker: Arc::new(agent::goals::GoalTracker::new()),
+        harness,
+        helpers,
+        decide: Some(decide_client),
         tools: tool_registry,
+        permission_asks: permission_asks.clone(),
         bridge,
         napp_registry,
         workflow_manager: workflow_manager.clone(),
@@ -2175,7 +2258,6 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         ask_channels: ask_channels.clone(),
         pending_comm_asks: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
         pending_comm_approvals: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
-        pending_tool_approvals: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
         channel_agent_triggers: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
         update_pending: Arc::new(tokio::sync::Mutex::new(None)),
         hooks,
@@ -2193,7 +2275,6 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         pending_layers: Arc::new(tokio::sync::RwLock::new(Vec::new())),
         presence: Arc::new(agent::PresenceTracker::new()),
         tunnel_online: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        proactive_inbox: Arc::new(agent::ProactiveInbox::new()),
         run_registry: run_registry::RunRegistry::new(),
         personal_loop_id: Arc::new(tokio::sync::RwLock::new(personal_loop_id_seed)),
         channel_providers: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
@@ -2204,7 +2285,38 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         channel_engagement: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
         store_cache: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         codes_in_flight: Arc::new(codes::InFlightCodes::default()),
+        local_host,
+        live_calls: Default::default(),
     };
+
+    // An ask's card and its answers reach the owner through the hub, the
+    // Inbox and the wake rail.
+    permission_asks.attach(Arc::new(permission_asks::OwnerSurfaces { state: state.clone() }));
+    // Runs parked on the old approval card become asks, once, now that the
+    // card has somewhere to go.
+    let inbox = codes::inbox_api(&state.store, &state.config.neboai.api_url).map(Arc::new);
+    let resolve_card = |id: String| {
+        let inbox = inbox.clone();
+        async move {
+            match inbox {
+                Some(api) => api.push_inbox_item(&serde_json::json!({ "id": id, "resolved": true })).await.map_err(|e| e.to_string()),
+                None => Ok(()),
+            }
+        }
+    };
+    if let Err(e) = stored_tool_names::convert_parked_approvals(&state.store, &state.tools, check.as_ref(), resolve_card).await {
+        warn!(error = %e, "parked approvals not converted");
+    }
+
+    // Replies to mail go back the way it came, one email per turn.
+    state.channel_providers.write().await.insert(
+        mail_intake::EMAIL_CHANNEL.to_string(),
+        Arc::new(mail_intake::EmailChannel::new(
+            state.store.clone(),
+            state.config.neboai.api_url.clone(),
+            state.harness.sessions().clone(),
+        )) as Arc<dyn comm::ChannelProvider>,
+    );
 
     // The proof suite (`staffed_proof`) boots this real server in-process and
     // reaches the same registry, loader and bus the handlers use. Test-only:
@@ -2229,8 +2341,10 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
                     Some(applied) => *packs = applied,
                     // Never applied anything: this install predates parking, or
                     // is new. Seed the snapshot from disk, which raises nothing.
+                    // The company rules moved from the old profile this start
+                    // are not in it: no seat has read them yet.
                     None => {
-                        for p in current.iter() {
+                        for p in current.iter().filter(|p| moved_rules.as_ref() != Some(&p.slug)) {
                             packs.insert(format!("{}:{}", p.layer.as_str(), p.slug), p.clone());
                         }
                         layers_update::save_applied(&packs);
@@ -2239,7 +2353,17 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
                 *state.pending_layers.write().await = layers_update::load_pending();
                 layers_update::first_read_for_unstamped_seats(&state, &packs);
             }
-            layers_update::detect_changes(&state, &dir).await;
+            // The rules moved from the old profile reached every employee
+            // before; the owner decided that, so their pack is applied rather
+            // than parked. Any other edit waiting stays parked.
+            match moved_rules {
+                Some(slug) => {
+                    layers_update::detect_and_apply(&state, &dir, Some(vec![slug])).await;
+                }
+                None => {
+                    layers_update::detect_changes(&state, &dir).await;
+                }
+            }
             let watch_state = state.clone();
             let watch_dir = dir.clone();
             let handle = tokio::runtime::Handle::current();
@@ -2264,14 +2388,40 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         });
     }
 
-    // Install the chat-title sink: the runner generates+persists titles for every
-    // run path, then this broadcasts the change + propagates it to the loop. One
-    // generator, set once (CODE_AUDITOR Rule 8).
-    state
-        .runner
-        .set_title_sink(std::sync::Arc::new(chat_dispatch::TitleBroadcaster::new(
-            state.clone(),
+    // A background command that ends reports to the session that started it,
+    // through the same rail.
+    {
+        let exit_state = state.clone();
+        state.tools.process_registry().set_exit_sink(Arc::new(move |exit: tools::process::CommandExit| {
+            wake::enqueue(&exit_state, &exit.caller.session_key, "task_done", &exit.render(), &[], 0);
+        }));
+    }
+
+    // Bind the harness's outlets: the chat-title sink (the harness generates
+    // and stores titles; this broadcasts them and pushes them to the loop),
+    // owner-facing events outside a turn, and the agreed goal's status,
+    // kickoffs and running work. Set once (CODE_AUDITOR Rule 8).
+    {
+        let hub = state.hub.clone();
+        state.harness.bind(agent::Outlets {
+            title_sink: Some(Arc::new(chat_dispatch::TitleBroadcaster::new(state.clone()))),
+            broadcast: Some(Arc::new(move |event: &str, payload: serde_json::Value| hub.broadcast(event, payload))),
+            goal_observer: Some(Arc::new(handlers::goal::GoalOutlet::new(state.clone()))),
+            answer_thread: Some({
+                let state = state.clone();
+                Arc::new(move |session_key: &str| {
+                    let state = state.clone();
+                    let key = session_key.to_string();
+                    tokio::spawn(async move { wake::answer_thread(&state, &key, 0, Vec::new()).await });
+                })
+            }),
+        });
+        // `suggest_goal` reaches the agreed goal through the harness.
+        state.tools.bind_goals(Arc::new(agent::harness::goal::GoalSuggestions::new(
+            state.harness.clone(),
+            state.approval_channels.clone(),
         )));
+    }
 
     // Wire the comm incoming-message handler now that AppState exists. Install
     // events route through the SAME canonical install pathway as store/code
@@ -2343,10 +2493,9 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         channel_dispatch::ChannelDispatchImpl::new(state.clone()),
     ));
 
-    // Wire the canonical marketplace-code installer into the agent's `registry` install
-    // action (late, like the channel dispatcher above — both need `AppState`, built
-    // after tool registration). With this set, `agent(resource:"registry",
-    // action:"install", code:"<ANY>")` routes through `codes::handle_code`, so skills,
+    // Wire the canonical marketplace-code installer into `hire_employee` (late, like
+    // the channel dispatcher above — both need `AppState`, built after tool
+    // registration). With this set, `hire_employee(code:"<ANY>")` routes through `codes::handle_code`, so skills,
     // plugins (binary + re-registration), agents, apps, and collections all install AND
     // cascade through the ONE canonical pathway — no per-type bypass.
     state
@@ -2355,8 +2504,16 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
             state.clone(),
         )));
 
+    // Wire consent to jobs into the agent's `registry` create and update
+    // (late, like the installer above): a create drafts, works out the needs
+    // and grants them on the owner's yes, through the ONE permission store.
+    state.tools.set_job_consent(Arc::new(agent::harness::permissions::consent::Consent::new(
+        state.permission_asks.clone(),
+        Arc::new(agent::harness::permissions::consent::AuxReader::new(state.harness.providers())),
+    )));
+
     // Wire the coworker message rail (late, like the installer above — it needs
-    // `AppState`). With this set, message(resource: "coworker") delivers real
+    // `AppState`). With this set, send_message to a coworker delivers real
     // agent→agent messages through the ONE chat pipeline.
     state
         .tools
@@ -2408,8 +2565,10 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         }
     }
 
-    // Launch sidecars for enabled app agents (restore after restart).
-    // Spawned as a background task so sidecar timeouts don't block server startup.
+    // Put every enabled app's sidecar under its supervisor (restore after
+    // restart). Supervision starts at once and launches in the background; a
+    // launch that fails is retried by the supervisor, never logged once and
+    // forgotten. An app with no program (UI-only) has nothing to start.
     {
         let startup_state = state.clone();
         tokio::spawn(async move {
@@ -2417,37 +2576,17 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
                 Ok(a) => a,
                 Err(_) => return,
             };
-            let mut launched = 0usize;
+            let mut supervised = 0usize;
             for agent in &agents {
                 if agent.is_enabled == 0 || agent.is_app.unwrap_or(0) == 0 {
                     continue;
                 }
-                if let Some(tool_dir) = handlers::agents::app_tool_dir(agent) {
-                    let mut lifecycle = app_lifecycle::AppLifecycle::new(
-                        agent.id.clone(),
-                        tool_dir,
-                        startup_state.hub.clone(),
-                        startup_state.tools.clone(),
-                        startup_state.skill_loader.clone(),
-                        startup_state.config.port,
-                    );
-                    match lifecycle.launch().await {
-                        Ok(()) => {
-                            startup_state
-                                .app_lifecycles
-                                .write()
-                                .await
-                                .insert(agent.id.clone(), lifecycle);
-                            launched += 1;
-                        }
-                        Err(e) => {
-                            warn!(agent = %agent.id, error = %e, "failed to launch app sidecar at startup");
-                        }
-                    }
+                if app_lifecycle::start(&startup_state, agent, true).await.is_some() {
+                    supervised += 1;
                 }
             }
-            if launched > 0 {
-                info!(count = launched, "launched app sidecars at startup");
+            if supervised > 0 {
+                info!(count = supervised, "supervising app sidecars at startup");
                 // Re-validate now that app skills are loaded — clears degraded
                 // flags set during early validation before sidecars were up.
                 tools::validate_agent_dependencies(
@@ -2485,7 +2624,8 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
                 let deps = crate::deps::extract_agent_deps_from_frontmatter(&frontmatter);
                 if !deps.is_empty() {
                     let mut visited = std::collections::HashSet::new();
-                    crate::deps::resolve_cascade(&cascade_state, deps, &mut visited).await;
+                    // The boot-time reconcile: no one's act is behind it.
+                    crate::deps::resolve_cascade(&cascade_state, deps, &mut visited, tools::InstalledBy::Other, &handlers::ws::EventOrigin::default()).await;
                 }
             }
         });
@@ -2677,6 +2817,11 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
             }
         });
     }
+
+    // A cloud bot's system folders are rebuilt on every restart: put back
+    // the packages its employees installed, in the background, so the boot
+    // never waits on the package mirrors (`tools::system_packages`).
+    tokio::spawn(tools::system_packages::reinstall());
 
     // Spawn background update checker (skip in debug/dev builds)
     if cfg!(debug_assertions) {
@@ -2872,17 +3017,12 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         .route("/health", axum::routing::get(health_handler))
         .route("/ready", axum::routing::get(ready_handler))
         .route("/server.json", axum::routing::get(spa::server_json))
-        // MCP endpoint for CLI providers (Claude Code, Codex, Gemini)
+        // MCP endpoint for CLI providers (claude, codex, gemini) and the
+        // owner's MCP clients: the boundary admits a live run credential or
+        // the install key.
         .route(
             "/agent/mcp",
-            axum::routing::post(handlers::mcp_server::agent_mcp_handler)
-                .layer(axum::middleware::from_fn_with_state(
-                    middleware::McpAuth {
-                        install_key: middleware::install_key(),
-                        credentials: state.tool_credentials.clone(),
-                    },
-                    middleware::mcp_api_key_auth,
-                )),
+            axum::routing::post(handlers::mcp_server::agent_mcp_handler),
         )
         // The OpenAI-shaped door: employees and workflows as models, behind a
         // key minted on the employee's Connect tab. Root-level because every
@@ -2924,10 +3064,11 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         .route("/apps/{agent_id}/ui/{*path}", axum::routing::get(handlers::apps::serve_app_ui))
         .route("/sdk/nebo.global.js", axum::routing::get(handlers::apps::serve_sdk_iife))
         .merge(http_routes)
-        // Before any route: the tunnel, this machine by Host, or the
-        // network with the install key (PRD Permissions §4.8).
+        // Before any route: the tunnel, or a caller that proves itself on
+        // this machine's Host, or the network with the install key (PRD
+        // Permissions §4.8).
         .layer(axum::middleware::from_fn_with_state(
-            middleware::Boundary::for_bind(&host, port),
+            middleware::Boundary::for_bind(&host, port, state.tool_credentials.clone(), state.app_lifecycles.clone()),
             middleware::local_boundary,
         ))
         .layer(axum::middleware::from_fn(middleware::security_headers))
@@ -2950,6 +3091,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     let shutdown_store = state.store.clone();
     let shutdown_lifecycles = state.app_lifecycles.clone();
     let shutdown_state = state.clone();
+    let shutdown_local_host = state.local_host.clone();
 
     if !quiet {
         info!("Server ready at http://localhost:{port}");
@@ -2964,12 +3106,11 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
             )));
         }
         eprintln!("WARNING: Server binding to {bind_addr} — remote access enabled");
-        if middleware::install_key().is_none() {
-            eprintln!(
-                "WARNING: NEBO_MCP_API_KEY is not set, so every request from the network is \
-                 refused. Only the NeboAI tunnel, this machine, and /health reach the server."
-            );
-        }
+        eprintln!(
+            "Every caller from the network sends the install key (NEBO_MCP_API_KEY, or the key \
+             in Nebo's folder, .install-key) as Authorization: Bearer <key>. Only the NeboAI \
+             tunnel and /health reach the server without it."
+        );
     }
 
     // Preconnect to AI provider to warm TCP+TLS (saves ~200ms on first call)
@@ -2977,19 +3118,27 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         let api_url = cfg.neboai.janus_url.clone();
         if !api_url.is_empty() {
             tokio::spawn(async move {
-                let client = reqwest::Client::new();
-                let _ = client.head(&api_url).send().await;
+                if let Ok(client) = tls::http_client().build() {
+                    let _ = client.head(&api_url).send().await;
+                }
             });
         }
     }
 
-    let listener = tokio::net::TcpListener::bind(&bind_addr)
-        .await
+    let listener = std_listener
+        .set_nonblocking(true)
+        .and_then(|()| tokio::net::TcpListener::from_std(std_listener))
         .map_err(|e| NeboError::Server(format!("failed to bind: {e}")))?;
+    // The local API: no command an employee runs connects to it.
+    if let Ok(addr) = listener.local_addr() {
+        types::own_ports::open(addr.port());
+    }
 
     // Connect info: the boundary tells this machine from the network by the
-    // peer address.
-    axum::serve(listener, app.into_make_service_with_connect_info::<std::net::SocketAddr>())
+    // peer address. A credential carried in the path comes off it before
+    // routing (`middleware::path_credential`).
+    let app = tower::ServiceExt::map_request(app, middleware::path_credential);
+    axum::serve(listener, axum::ServiceExt::into_make_service_with_connect_info::<std::net::SocketAddr>(app))
         .with_graceful_shutdown(async move {
             shutdown.await;
             info!("shutdown signal received — pausing scheduler, draining in-flight runs...");
@@ -3001,15 +3150,20 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
             agent::memory_flush::drain_extractions().await;
             info!("extractions drained, stopping app sidecars...");
             {
+                // Stopped on purpose: the supervisors publish Off, never a crash.
                 let mut lifecycles = shutdown_lifecycles.write().await;
-                for (id, lifecycle) in lifecycles.iter_mut() {
-                    if let Err(e) = lifecycle.shutdown().await {
-                        warn!(agent = %id, error = %e, "failed to stop sidecar on shutdown");
-                    }
+                for lifecycle in lifecycles.values() {
+                    lifecycle.shutdown().await;
                 }
                 lifecycles.clear();
             }
-            info!("app sidecars stopped, closing the browser and the desktop...");
+            info!("app sidecars stopped, stopping the coding agents Nebo hosts...");
+            // A turn another device started gets a moment to finish; then
+            // every agent Nebo hosts stops, its sessions kept for next time.
+            if let Some(local_host) = &shutdown_local_host {
+                local_host.shutdown(std::time::Duration::from_secs(10)).await;
+            }
+            info!("coding agents stopped, closing the browser and the desktop...");
             // Asked to exit, not killed: the browser releases its profile
             // whole, so nothing still writes into the data directory.
             shutdown_browser.shutdown().await;
@@ -3195,10 +3349,14 @@ async fn handle_agent_fs_events(
                                         crate::deps::extract_agent_deps_from_frontmatter(&fm);
                                     if !deps.is_empty() {
                                         let mut visited = std::collections::HashSet::new();
+                                        // An employee found on disk: its
+                                        // dependencies come with no one's act.
                                         crate::deps::resolve_cascade(
                                             &cascade_state,
                                             deps,
                                             &mut visited,
+                                            tools::InstalledBy::Other,
+                                            &handlers::ws::EventOrigin::default(),
                                         )
                                         .await;
                                     }
@@ -3441,6 +3599,100 @@ fn heal_agent_install_debris(nebo_dir: &std::path::Path) {
     }
 }
 
+/// The enabled employees the start-up sweep turns off: those no folder on
+/// disk is (`on_disk`: the rows the folders matched, by manifest id or by
+/// name, or created). Never the primary employee, and never a linked one: its
+/// hire is the row and its runtime lives on another computer, so it never had
+/// a folder. Sweeping by the id a folder names for itself, and sweeping
+/// linked employees, turned both off at every start, and the employees
+/// beside them were told they had left (live 2026-09-28: "Claude Code and
+/// Codex have been removed from the team").
+///
+/// Circuit breaker: the scan swallows IO errors, so a boot that races a slow
+/// volume mount produces a PARTIAL listing that looks like mass deletion. One
+/// such boot deactivated a whole roster of employees. A real user removes
+/// agents one at a time — losing more than a third of the enabled roster in a
+/// single sweep means the scan is lying, not the user: `Err((orphans,
+/// enabled))`, and nothing is turned off.
+fn orphan_sweep<'a>(
+    rows: &'a [db::models::Agent],
+    on_disk: &std::collections::HashSet<String>,
+) -> Result<Vec<&'a db::models::Agent>, (usize, usize)> {
+    let enabled: Vec<&db::models::Agent> = rows
+        .iter()
+        .filter(|a| a.is_enabled != 0 && a.id != "assistant" && a.kind.as_deref() != Some(ai::providers::linked::ID))
+        .collect();
+    let orphans: Vec<&db::models::Agent> = enabled.iter().copied().filter(|a| !on_disk.contains(&a.id)).collect();
+    if !orphans.is_empty() && orphans.len() * 3 > enabled.len() {
+        return Err((orphans.len(), enabled.len()));
+    }
+    Ok(orphans)
+}
+
+#[cfg(test)]
+mod orphan_sweep_tests {
+    use super::orphan_sweep;
+
+    fn row(id: &str, kind: Option<&str>) -> db::models::Agent {
+        db::models::Agent { id: id.into(), kind: kind.map(str::to_string), name: id.into(), is_enabled: 1, ..Default::default() }
+    }
+
+    /// A linked employee has no folder and is never swept; an employee whose
+    /// folder was matched by name is on disk under the row's own id; the one
+    /// row no folder is gets turned off.
+    #[test]
+    fn only_a_row_no_folder_is_gets_turned_off() {
+        let rows: Vec<db::models::Agent> = (0..6)
+            .map(|i| row(&format!("native-{i}"), Some("user")))
+            .chain([row("claude-code", Some("linked")), row("codex", Some("linked")), row("assistant", None)])
+            .collect();
+        let on_disk: std::collections::HashSet<String> = (0..5).map(|i| format!("native-{i}")).collect();
+        let swept: Vec<&str> = orphan_sweep(&rows, &on_disk).expect("a plausible sweep").iter().map(|a| a.id.as_str()).collect();
+        assert_eq!(swept, vec!["native-5"]);
+    }
+
+    /// A partial scan (most rows missing) turns nothing off.
+    #[test]
+    fn an_implausible_sweep_turns_nothing_off() {
+        let rows: Vec<db::models::Agent> = (0..3).map(|i| row(&format!("native-{i}"), Some("user"))).collect();
+        assert_eq!(orphan_sweep(&rows, &Default::default()).map(|v| v.len()), Err((3, 3)));
+    }
+}
+
+#[cfg(test)]
+mod janus_sync_tests {
+    use super::{JanusListing, seed_models_from_catalog, store_janus_listing};
+
+    /// Each synced Janus id carries the window Janus reported, and the
+    /// catalog seed, which has no Janus numbers, never erases it.
+    #[test]
+    fn the_sync_stores_each_ids_reported_window() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = db::Store::new(tmp.path().join("nebo.db").to_str().unwrap()).unwrap();
+        let listing: JanusListing = serde_json::from_value(serde_json::json!({"data": [
+            {"id": "nebo-1", "owned_by": "neboai", "name": "Default", "context_window": 200000},
+            {"id": "nebo-1-flash", "owned_by": "neboai", "name": "Fast", "context_window": 131072},
+            {"id": "qwen3.7-flash", "owned_by": "dashscope", "context_window": 1000000}
+        ]}))
+        .unwrap();
+        assert_eq!(store_janus_listing(&store, listing).unwrap(), 2);
+        let window = |id: &str| {
+            store
+                .list_provider_models("janus")
+                .unwrap()
+                .into_iter()
+                .find(|m| m.model_id == id)
+                .and_then(|m| m.context_window)
+        };
+        assert_eq!(window("nebo-1-flash"), Some(131_072));
+        assert_eq!(window("nebo-1"), Some(200_000));
+        // The embedded catalog, not the one in the data directory.
+        let catalog: config::ModelsConfig = serde_yaml::from_str(include_str!("../../config/src/models.yaml")).unwrap();
+        seed_models_from_catalog(&store, &catalog);
+        assert_eq!(window("nebo-1"), Some(200_000), "the seed keeps the synced window");
+    }
+}
+
 #[cfg(test)]
 mod install_debris_tests {
     use super::heal_agent_install_debris;
@@ -3486,10 +3738,10 @@ fn notify_skipped_workflows(
         let title = format!("{}: workflow '{}' is invalid and will not run", agent_name, binding);
         let body = format!(
             "agent.json has a workflow this system can't parse ({}). Fix the \
-             definition or recreate it with the work tool.",
+             definition or recreate it with create_workflow.",
             error
         );
-        let action_url = format!("/{}/settings/workflows", agent_id);
+        let action_url = tools::owner_notify::link::employee_settings(agent_id, "workflows");
         tools::owner_notify::emit(
             store,
             Some(&|ev, payload| hub.broadcast(ev, payload)),
@@ -3580,7 +3832,7 @@ fn sync_agent_workflows(store: &db::Store, agent_id: &str, config: &napp::agent:
             &trigger_config,
             desc,
             inputs_json.as_deref(),
-            binding.emit.as_deref(),
+            binding.emit_names().as_deref(),
             activities_json.as_deref(),
             connections_json.as_deref(),
             // Package sync — owner-modified rows are off limits.
@@ -3603,7 +3855,7 @@ async fn try_handle_comm_control(
     metadata: &std::collections::HashMap<String, String>,
 ) -> bool {
     if metadata.get("kind").map(String::as_str) == Some("stop") {
-        let cancelled = state.run_registry.cancel_by_session(session_key).await;
+        let cancelled = chat_dispatch::stop_session(&state.helpers, &state.run_registry, session_key).await;
         tracing::info!(session = %session_key, cancelled, "inbound comm stop command");
         return true;
     }
@@ -3619,13 +3871,44 @@ async fn try_handle_comm_control(
         // Asker already gone (timeout/cancel) — treat as a normal message.
     }
     // A pending relayed APPROVAL for this session: the message is the decision.
-    // Same decision strings the desktop ApprovalModal produces ("once"/
-    // "always"/"deny"); anything unrecognized denies — approvals fail closed.
     let pending_approval = {
         let approvals = state.pending_comm_approvals.lock().await;
         approvals.get(session_key).cloned()
     };
-    if let Some(request_id) = pending_approval {
+    // A permission ask: the reply is the owner's answer, through the ask's
+    // one answer path. An ask settled elsewhere first leaves this message an
+    // ordinary one.
+    if let Some(crate::state::CommApproval::Ask(ask_id)) = &pending_approval {
+        state.pending_comm_approvals.lock().await.remove(session_key);
+        let ask = match state.permission_asks.get(ask_id) {
+            Ok(Some(ask)) if ask.status == agent::harness::permissions::AskStatus::Open => ask,
+            _ => return false,
+        };
+        let card = crate::handlers::permissions::card(state, &ask);
+        let answer = crate::permission_asks::reply_answer(&card, answer);
+        return match state.permission_asks.answer(
+            ask_id,
+            answer,
+            agent::harness::permissions::AnsweredVia::Chat,
+        ) {
+            Ok(_) => {
+                tracing::info!(
+                    session = %session_key,
+                    answer = answer.as_str(),
+                    "inbound comm message answered the ask"
+                );
+                true
+            }
+            Err(e) => {
+                tracing::info!(session = %session_key, error = ?e, "the relayed ask was not answered by this message");
+                false
+            }
+        };
+    }
+    // A card the run waits on: the same decision strings the desktop
+    // ApprovalModal produces ("once"/"always"/"deny"); anything unrecognized
+    // denies — approvals fail closed.
+    if let Some(crate::state::CommApproval::Waiting(request_id)) = pending_approval {
         let normalized = answer.trim().to_lowercase();
         let decision = if normalized == "approve always" || normalized == "always" {
             "always"
@@ -3635,8 +3918,7 @@ async fn try_handle_comm_control(
             "deny"
         };
         state.pending_comm_approvals.lock().await.remove(session_key);
-        if let Some(tx) = state.approval_channels.lock().await.remove(&request_id) {
-            let _ = tx.send(decision.to_string());
+        if crate::chat_dispatch::answer_approval(state, &request_id, decision).await {
             tracing::info!(
                 session = %session_key,
                 decision,
@@ -3727,9 +4009,10 @@ async fn run_webhook_workflow(
         payload,
         "webhook",
     );
-    let emit_source = emit
-        .as_ref()
-        .map(|emit_name| workflow::events::emit_source_for(agent_slug, emit_name));
+    let emit_sources: Vec<String> = emit
+        .iter()
+        .map(|emit_name| workflow::events::emit_source_for(agent_slug, emit_name))
+        .collect();
 
     match state
         .workflow_manager
@@ -3739,7 +4022,7 @@ async fn run_webhook_workflow(
             "webhook",
             Some(binding_name.to_string()),
             agent_id,
-            emit_source,
+            emit_sources,
         )
         .await
     {
@@ -3870,6 +4153,17 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
         return;
     }
 
+    // Mail to the bot's hosted address: the ONE mail intake decides who it
+    // is from and which employee takes it. Before the echo checks below —
+    // the hub delivers it on the bot's own stream.
+    if msg.topic == "channels/inbound" {
+        match mail_intake::InboundMail::from_hub_envelope(&msg.content) {
+            Ok(mail) => mail_intake::intake(&state, mail).await,
+            Err(e) => tracing::warn!(error = %e, msg_id = %msg.id, "channels/inbound: not a message the intake takes"),
+        }
+        return;
+    }
+
     // Route install events to napp registry
     if msg.topic == "installs" {
         if let Ok(event) = serde_json::from_str::<napp::InstallEvent>(&msg.content) {
@@ -3963,20 +4257,29 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
             "agent_space: routing to role"
         );
 
-        let session_key = if is_personal && is_default_bot {
-            // Default bot: use the companion chat's actual session key
-            resolve_companion_session_key(&state)
-        } else if is_personal {
-            // Custom agent: use agent-scoped session key (matches frontend's agent:{id}:web)
-            types::keyparser::build_agent_session_key(&agent_id, "web")
-        } else {
-            // External loop: separate session
-            types::keyparser::build_session_key(
-                "neboai",
-                "agent_space",
-                &format!("{}:{}", agent_slug, msg.conversation_id),
-            )
-        };
+        // A text, a voicemail or a chat webhook is someone outside, delivered
+        // into the employee's one agent-space conversation: each gets a
+        // thread of its own (owner rule 09-25), never the owner's session
+        // and never another caller's.
+        let outside_party = outside::outside_party(&msg.content);
+        let agent_row = if is_default_bot { "assistant" } else { agent_id.as_str() };
+        let route = outside::agent_space_route(agent_row, outside_party.as_ref(), &msg.id, || {
+            if is_personal && is_default_bot {
+                // Default bot: use the companion chat's actual session key
+                resolve_companion_session_key(&state)
+            } else if is_personal {
+                // Custom agent: use agent-scoped session key (matches frontend's agent:{id}:web)
+                types::keyparser::build_agent_session_key(&agent_id, "web")
+            } else {
+                // External loop: separate session
+                types::keyparser::build_session_key(
+                    "neboai",
+                    "agent_space",
+                    &format!("{}:{}", agent_slug, msg.conversation_id),
+                )
+            }
+        });
+        let session_key = route.session_key;
 
         if handle_comm_slash_command(
             &state,
@@ -4004,7 +4307,9 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
                 .or_else(|| state.store.get_agent(&agent_id).ok().flatten().map(|a| a.name))
                 .unwrap_or_else(|| agent_slug.clone())
         };
-        if !is_default_bot {
+        if let Some((chat_id, title)) = &route.thread {
+            handlers::voice::ensure_chat_row(&state, chat_id, &session_key, title.as_deref());
+        } else if !is_default_bot {
             let _ = state
                 .store
                 .create_chat(&session_key, &format!("Agent: {}", agent_name));
@@ -4049,15 +4354,15 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
             return;
         }
 
-        // Webhook-originated events always run shell-restricted (Origin::Comm),
-        // even in the personal loop: the nbwh_ API key lives in external
-        // systems, so it must never confer owner-level (shell) privileges.
-        // See neboloop docs/PRD_WEBHOOKS.md §10.
+        // Someone outside always runs shell-restricted (Origin::Comm), even
+        // in the personal loop: a webhook's nbwh_ API key lives in external
+        // systems (neboloop docs/PRD_WEBHOOKS.md §10), and a texter is a
+        // stranger — neither confers the owner's privileges.
         let webhook_platform = serde_json::from_str::<serde_json::Value>(&msg.content)
             .ok()
             .and_then(|v| v.get("platformData").cloned())
             .filter(|p| p.get("channel").and_then(|c| c.as_str()) == Some("webhook"));
-        let is_webhook = webhook_platform.is_some();
+        let is_outside = outside_party.is_some();
 
         // Workflow-destination webhooks fire the bound workflow with the
         // payload and never run the agent chat: the key was minted for a
@@ -4077,10 +4382,10 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
         let config = chat_dispatch::ChatConfig {
             session_key,
             prompt,
-            system: String::new(),
             user_id: String::new(),
             channel: "neboai".to_string(),
-            origin: comm_origin(is_personal && !is_webhook),
+            origin: comm_origin(is_personal && !is_outside),
+            door: types::permissions::Door::Chat,
             agent_id: agent_id.clone(),
             cancel_token: tokio_util::sync::CancellationToken::new(),
             lane: types::constants::lanes::COMM.to_string(),
@@ -4089,7 +4394,7 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
                 topic: "agent_space".to_string(),
                 conversation_id: msg.conversation_id.clone(),
                 handoff_depth: handoff_depth_in,
-                approval_relay: is_personal && !is_webhook,
+                approval_relay: is_personal && !is_outside,
                 from_agent_id: agent_id.clone(),
             }),
             entity_config,
@@ -4098,15 +4403,17 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
             entity_name: agent_name.clone(),
             origin_agent_id: None,
             mention_context: None,
-            tool_scope: None, plan_mode: false,
+            tool_scope: None,
             channel_ctx: None,
             handoff_depth: handoff_depth_in,
             seed_taint: vec![],
             tool_allowlist: None,
             hidden_prompt: false,
+            coworker: None,
             audience: None,
             cwd: None,
             model_override: None,
+            client_id: None,
         };
 
         chat_dispatch::run_chat(&state, config).await;
@@ -4195,6 +4502,15 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
                 }
             }
         }
+        // A QR code or embed bound to an employee is an outside door. NeboAI
+        // binds it without telling this computer, so the first conversation
+        // through it is where the employee becomes multi-chat (owner rule
+        // 09-25). Each conversation is already its own session below.
+        if !agent_id.is_empty() {
+            if let Err(e) = state.store.mark_multi_chat(&agent_id) {
+                tracing::warn!(agent = %agent_id, error = %e, "could not record the embed door as multi-chat");
+            }
+        }
         let mention_context = build_embed_context(ctx, embed_info);
 
         let app_label = ctx
@@ -4246,7 +4562,6 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
         let config = chat_dispatch::ChatConfig {
             session_key,
             prompt,
-            system: String::new(),
             user_id: String::new(),
             channel: "neboai".to_string(),
             // A QR scan, an embedded widget, a public web chat: whoever typed
@@ -4254,6 +4569,7 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
             // Access, an allowlist that is empty until the channel's policy
             // says otherwise — enforced in the runner, not by prompt.
             origin: tools::Origin::Visitor,
+            door: types::permissions::Door::Chat,
             agent_id: agent_id.clone(),
             cancel_token: tokio_util::sync::CancellationToken::new(),
             lane: types::constants::lanes::COMM.to_string(),
@@ -4272,15 +4588,16 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
             origin_agent_id: None,
             mention_context,
             tool_scope: None,
-            plan_mode: false,
             channel_ctx: None,
             handoff_depth: handoff_depth_in,
             seed_taint: vec![],
             tool_allowlist: None,
             hidden_prompt: false,
+            coworker: None,
             audience: None,
             cwd: None,
             model_override: None,
+            client_id: None,
         };
 
         chat_dispatch::run_chat(&state, config).await;
@@ -4532,10 +4849,10 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
             let config = chat_dispatch::ChatConfig {
                 session_key,
                 prompt,
-                system: String::new(),
                 user_id: String::new(),
                 channel: "neboai".to_string(),
                 origin: comm_origin(is_personal),
+                door: types::permissions::Door::Chat,
                 agent_id: agent_id.clone(),
                 cancel_token: tokio_util::sync::CancellationToken::new(),
                 lane: types::constants::lanes::COMM.to_string(),
@@ -4553,15 +4870,17 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
                 entity_name: agent_name.clone(),
                 origin_agent_id: None,
                 mention_context: None,
-                tool_scope: None, plan_mode: false,
+                tool_scope: None,
                 channel_ctx: None,
                 handoff_depth: handoff_depth_in,
                 seed_taint: vec![],
                 tool_allowlist: None,
                 hidden_prompt: false,
+                coworker: None,
                 audience: None,
                 cwd: None,
                 model_override: None,
+                client_id: None,
             };
 
             chat_dispatch::run_chat(&state, config).await;
@@ -4643,10 +4962,10 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
         let config = chat_dispatch::ChatConfig {
             session_key,
             prompt,
-            system: String::new(),
             user_id: String::new(),
             channel: "neboai".to_string(),
             origin: tools::Origin::Comm,
+            door: types::permissions::Door::Chat,
             agent_id: agent_id.clone(),
             cancel_token: tokio_util::sync::CancellationToken::new(),
             lane: types::constants::lanes::COMM.to_string(),
@@ -4664,15 +4983,17 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
             entity_name: String::new(),
             origin_agent_id: None,
             mention_context: None,
-            tool_scope: None, plan_mode: false,
+            tool_scope: None,
             channel_ctx: None,
             handoff_depth: handoff_depth_in,
             seed_taint: vec![],
             tool_allowlist: None,
             hidden_prompt: false,
+            coworker: None,
             audience: None,
             cwd: None,
             model_override: None,
+            client_id: None,
         };
 
         chat_dispatch::run_chat(&state, config).await;
@@ -5364,8 +5685,8 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
                     "You are the lead for this request. The user asked you to work together with \
                      {peers} to produce ONE combined result. They are NOT replying here on their \
                      own — consult a peer when you need their expertise by messaging them: \
-                     message(resource: \"coworker\", action: \"send\", to: \"{first}\", \
-                     text: \"<what you need from them>\") — then write a single integrated \
+                     send_message(to: \"{first}\", message: \"<what you need from them>\") \
+                     — then write a single integrated \
                      answer yourself.",
                     peers = coordinator_peer_names.join(", "),
                     first = coordinator_peer_names.first().map(|s| s.as_str()).unwrap_or("the peer"),
@@ -5409,10 +5730,10 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
             let config = chat_dispatch::ChatConfig {
                 session_key,
                 prompt: prompt.clone(),
-                system: String::new(),
                 user_id: String::new(),
                 channel: "neboai".to_string(),
                 origin: tools::Origin::Comm,
+                door: types::permissions::Door::Chat,
                 agent_id: agent_id.clone(),
                 cancel_token: tokio_util::sync::CancellationToken::new(),
                 lane: types::constants::lanes::COMM.to_string(),
@@ -5431,7 +5752,6 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
                 origin_agent_id: None,
                 mention_context,
                 tool_scope: None,
-                plan_mode: false,
                 channel_ctx: None,
                 // This run continues an agent chain at depth_in — its own
                 // coworker sends must not reset the cap.
@@ -5443,21 +5763,41 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
                 // decompose/delegate/integrate, so its room runs carry a
                 // coordination-only tool surface — prose alone lost twice to
                 // "I could just do this myself". Experts keep the full roster;
-                // the work is theirs.
+                // the work is theirs. Coordination is the room, messages,
+                // the roster, the task list, assignments and memory; a helper would do
+                // the work itself, so the organizer gets none.
                 tool_allowlist: if organizer_run {
                     Some(
-                        ["loop", "message", "agent"]
-                            .into_iter()
-                            .map(String::from)
-                            .collect(),
+                        [
+                            "send_loop_message",
+                            "read_loop_channel",
+                            "loop_channel_members",
+                            "find_tools",
+                            "send_message",
+                            "list_employees",
+                            "get_employee",
+                            "create_task",
+                            "update_task",
+                            "get_task",
+                            "list_tasks",
+                            "assign_task",
+                            "list_assignments",
+                            "recall",
+                            "remember",
+                        ]
+                        .into_iter()
+                        .map(String::from)
+                        .collect(),
                     )
                 } else {
                     None
                 },
                 hidden_prompt: false,
+                coworker: None,
                 audience: None,
                 cwd: None,
                 model_override: None,
+                client_id: None,
             };
 
             chat_dispatch::run_chat(&state, config).await;
@@ -5510,7 +5850,7 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
 /// Resolve a role ID from an agent slug by scanning the active role registry.
 /// Resolve the companion chat's session key (matches what the frontend uses).
 /// Falls back to "web" if no companion chat exists yet.
-fn resolve_companion_session_key(state: &AppState) -> String {
+pub(crate) fn resolve_companion_session_key(state: &AppState) -> String {
     match state.store.get_companion_chat_by_user("companion-default") {
         Ok(Some(chat)) => {
             let key = chat.session_name.unwrap_or(chat.id);
@@ -5526,7 +5866,7 @@ fn resolve_companion_session_key(state: &AppState) -> String {
 /// desktop threads stay ONE continuous conversation (the secondary-agent
 /// counterpart of `resolve_companion_session_key`). Falls back to the agent's
 /// legacy `:web` session when the agent has no conversations yet.
-fn resolve_agent_session_key(state: &AppState, agent_id: &str) -> String {
+pub(crate) fn resolve_agent_session_key(state: &AppState, agent_id: &str) -> String {
     match state.store.get_latest_agent_chat(agent_id) {
         Ok(Some(chat)) => {
             let key = chat
@@ -5635,16 +5975,16 @@ async fn handle_comm_slash_command(
 
     let response = match cmd.as_str() {
         "/new" | "/reset" => {
-            let cancelled = state.run_registry.cancel_by_session(session_key).await;
+            let cancelled = chat_dispatch::stop_session(&state.helpers, &state.run_registry, session_key).await;
             if cancelled {
                 tracing::info!(session_key = %session_key, "cancelled active run before /new");
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             }
             match state
-                .runner
+                .harness
                 .sessions()
                 .resolve_session_id_by_key(session_key)
-                .and_then(|sid| state.runner.sessions().reset(&sid))
+                .and_then(|sid| state.harness.sessions().reset(&sid))
             {
                 Ok(_new_chat_id) => {
                     tracing::info!(
@@ -5658,7 +5998,7 @@ async fn handle_comm_slash_command(
         }
 
         "/clear" => {
-            let cancelled = state.run_registry.cancel_by_session(session_key).await;
+            let cancelled = chat_dispatch::stop_session(&state.helpers, &state.run_registry, session_key).await;
             if cancelled {
                 tracing::info!(session_key = %session_key, "cancelled active run before /clear");
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -5670,10 +6010,10 @@ async fn handle_comm_slash_command(
             // records-are-sacred stance as run dismissal. Destruction remains
             // an explicit act: delete-chat in the list, behind a confirm.
             match state
-                .runner
+                .harness
                 .sessions()
                 .resolve_session_id_by_key(session_key)
-                .and_then(|sid| state.runner.sessions().reset(&sid))
+                .and_then(|sid| state.harness.sessions().reset(&sid))
             {
                 Ok(_new_chat_id) => {
                     "Context cleared — fresh start. The previous conversation is still in your chat list.".to_string()
@@ -5683,7 +6023,7 @@ async fn handle_comm_slash_command(
         }
 
         "/stop" | "/cancel" | "/halt" => {
-            let cancelled = state.run_registry.cancel_by_session(session_key).await;
+            let cancelled = chat_dispatch::stop_session(&state.helpers, &state.run_registry, session_key).await;
             tracing::info!(
                 session_key = %session_key,
                 cancelled,
@@ -5698,11 +6038,11 @@ async fn handle_comm_slash_command(
 
         "/status" => {
             let msg_count = state
-                .runner
+                .harness
                 .sessions()
                 .resolve_session_id_by_key(session_key)
                 .ok()
-                .and_then(|sid| state.runner.sessions().get_messages(&sid).ok())
+                .and_then(|sid| state.harness.sessions().get_messages(&sid).ok())
                 .map(|m| m.len())
                 .unwrap_or(0);
 
@@ -5828,7 +6168,7 @@ fn build_embed_context(
             Some(record) => out.push_str(&format!(
                 " This conversation is with a prospective buyer standing at \"{}\" — they \
                  scanned its code. You are the seller's representative for this exact item. \
-                 Here is its record from Company Memory, complete and current: {}. Answer \
+                 Here is its record, complete and current: {}. Answer \
                  from it directly and confidently, as someone who knows this item well — no \
                  narration of what you are doing, no lookups, no web searches, no market \
                  estimates or figures from anywhere else, no remarks about records or stock \
@@ -6127,15 +6467,8 @@ fn cors_layer() -> CorsLayer {
     use axum::http::HeaderValue;
     use tower_http::cors::AllowOrigin;
 
-    let static_origins: Vec<HeaderValue> = [
-        "http://localhost:27895",
-        "http://127.0.0.1:27895",
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-        "http://localhost:4173",
-        "http://127.0.0.1:4173",
-    ]
-    .iter()
+    let static_origins: Vec<HeaderValue> = middleware::UI_ORIGINS
+        .iter()
     .filter_map(|o| o.parse().ok())
     .collect();
 

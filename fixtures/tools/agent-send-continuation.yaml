@@ -1,10 +1,10 @@
 id: agent-send-continuation
-name: "Continue a finished sub-agent with a follow-up (send)"
+name: "Continue a finished helper with a follow-up (send_message)"
 description: |
-  A sub-agent writes a file; the parent then sends that same sub-agent a
-  follow-up instead of spawning a new one. The follow-up names no path, so
-  only a child that kept its context can do it.
-target_component: agent
+  A helper writes a file; the parent then sends that same helper a
+  follow-up with send_message instead of starting a new one. The follow-up
+  names no path, so only a helper that kept its context can do it.
+target_component: delegate
 
 setup:
   - "rm -rf /tmp/nebo-test/send && mkdir -p /tmp/nebo-test/send"
@@ -13,30 +13,35 @@ teardown:
 
 conversation:
   - role: user
-    content: "Spawn one sub-agent (wait for it) with the os tool and tell it to write exactly the line 'hello' to /tmp/nebo-test/send/note.txt. When it is done, do NOT spawn another sub-agent: use the send action on that same sub-agent's task_id with this exact message: 'Change the file you just wrote so its entire content is exactly the two words: hello again' Then read the file yourself and tell me its final content."
+    content: "Start one helper (wait for it) and tell it to write exactly the line 'hello' to /tmp/nebo-test/send/note.txt. When it is done, do NOT start another helper: use send_message to that same helper's id with this exact message: 'Change the file you just wrote so its entire content is exactly the two words: hello again' Then read the file yourself and tell me its final content."
 
 tool_config:
-  os:
+  write_file:
     enabled: true
-  agent:
+  read_file:
+    enabled: true
+  delegate:
+    enabled: true
+  send_message:
     enabled: true
 
 prompt_assertions:
   first_call:
     - id: spawn-first
-      text: "The first call is agent task spawn (wait true or omitted) with the os tool passed"
+      text: "The first call is delegate, with background: false (the owner asked to wait for it)"
       severity: critical
-      check: { tool: agent, arg: action, equals: spawn }
+      check: { first_call: true, tool: delegate }
   recovery:
     - id: continued-not-respawned
-      text: "After the spawn, the model calls agent task send with the task_id it received; it calls spawn only once in the whole run"
+      text: "After the delegate call, the model calls send_message with the helper id it received; it calls delegate only once in the whole run"
       severity: critical
+      check: { tool: send_message, arg: message, contains: "hello again" }
     - id: file-updated
       text: "The final answer reports the file content as 'hello again' (read from the file, not assumed)"
       severity: critical
   cost:
     - id: bounded
-      text: "At most 5 tool calls (spawn, send, read, plus two)"
+      text: "At most 5 tool calls (delegate, send_message, read, plus two)"
       severity: important
       check: { max_tool_calls: 5 }
 
@@ -44,4 +49,5 @@ ideal_behavior:
   tool_calls: 3
   total_tokens: 9000
   narrative: |
-    spawn(wait, tools: [os]) → send(task_id, follow-up) → os file read → report.
+    delegate(background: false) → send_message(to: helper id, message: follow-up)
+    → read the file → report.

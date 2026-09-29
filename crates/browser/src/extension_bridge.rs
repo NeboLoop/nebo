@@ -273,8 +273,8 @@ impl ExtensionBridge {
 
         // Wait with timeout — 60s accommodates extension-side timeouts
         // (executeScript 45s + CDP sendCommand 30s + overhead).
-        // Claude's extension uses the same values; they don't have a bridge
-        // timeout because they use native messaging, so we must be generous.
+        // The extension's own timeouts bound the call; a native-messaging
+        // path would need no bridge timeout, so this one must be generous.
         let result = match tokio::time::timeout(std::time::Duration::from_secs(60), resp_rx).await {
             Ok(Ok(result)) => result,
             Ok(Err(_)) => {

@@ -25,6 +25,7 @@ pub use workflow::cases::{open_case_for, settle_turn, signal_or_open, CaseBindin
 mod concurrency;
 mod finance;
 mod legal;
+mod longrun;
 mod marketing;
 mod operations;
 mod parity;
@@ -48,6 +49,7 @@ fn every_proof_is_a_fixture_in_the_engine_suite_and_every_fixture_proves_somethi
         ("concurrency", include_str!("concurrency.rs")),
         ("finance", include_str!("finance.rs")),
         ("legal", include_str!("legal.rs")),
+        ("longrun", include_str!("longrun.rs")),
         ("marketing", include_str!("marketing.rs")),
         ("operations", include_str!("operations.rs")),
         ("parity", include_str!("parity.rs")),
@@ -94,7 +96,9 @@ pub struct World {
 pub fn idle(_: &str) -> Option<String> {
     None
 }
-pub fn no_steer(_: &str, _: &EngineEvent) {}
+pub fn no_steer(_: &str, _: &EngineEvent) -> bool {
+    false
+}
 
 /// A fresh store on its own file.
 pub fn fresh_store() -> Store {
@@ -215,7 +219,7 @@ impl World {
     pub async fn send(&self, agent: &str, run_id: &str, to: &str, text: &str, outcome: SendOutcome) -> tools::ToolResult {
         let ctx = Self::ctx(agent, run_id);
         let input = serde_json::json!({"to": to, "text": text});
-        guarded_send(&self.s, &ctx, "messaging", "mail-app", "mail.message.send", &input, || async { outcome }).await
+        guarded_send(&self.s, &ctx, "messaging", "mail-app", "mail.message.send", &input, None, || async { outcome }).await
     }
 
     /// The messages and answers still owed to someone: every non-timer
