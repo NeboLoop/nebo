@@ -66,7 +66,8 @@
 	import UserPlus from 'lucide-svelte/icons/user-plus';
 	import Download from 'lucide-svelte/icons/download';
 	import { getWebSocketClient } from '$lib/websocket/client';
-	import { authLoginAccount, submitCode } from '$lib/api/nebo';
+	import { authLoginAccount, listPlugins, submitCode } from '$lib/api/nebo';
+	import CredentialFields, { credentialsComplete, type AuthField } from '$lib/components/CredentialFields.svelte';
 
 	// connect_account: run the same OAuth pathway as Settings → Connected
 	// Accounts, then answer the parked ask_request so the tool call resumes.
@@ -74,6 +75,11 @@
 	let connectError = $state<string | null>(null);
 	let connectDone = $state(false);
 	let accountLabel = $state('Primary');
+	// A plugin that signs in with values (a store domain and a token) instead
+	// of a browser: the card asks for them, the same form as the employee's
+	// settings. Without them the sign-in can only fail.
+	let credFields = $state<AuthField[]>([]);
+	let creds = $state<Record<string, string>>({});
 
 	// install_plugin: redeem the marketplace code through the ONE install
 	// pathway (POST /codes → codes::handle_code), then answer the parked
@@ -112,21 +118,35 @@
 	}
 
 	async function startConnect(w: AskWidgetDef) {
-		if (connecting || !w.plugin || !w.agentId) return;
+		if (connecting || !w.plugin || !w.agentId || !credentialsComplete(credFields, creds)) return;
 		connecting = true;
 		connectError = null;
 		try {
 			await authLoginAccount(w.plugin, {
 				agentId: w.agentId,
 				accountLabel: accountLabel.trim() || 'Primary',
-				accountNumber: ''
+				accountNumber: '',
+				...(credFields.length ? { credentials: creds } : {})
 			});
-		} catch {
+		} catch (e) {
+			// The card stays open with what went wrong: the owner corrects it
+			// and signs in again, or skips.
 			connecting = false;
-			connectError = $t('chat.connectFailed');
-			fail(connectError);
+			connectError = e instanceof Error && e.message ? e.message : $t('chat.connectFailed');
 		}
 	}
+
+	$effect(() => {
+		const w = widgets?.[0];
+		if (w?.type !== 'connect_account' || !w.plugin || answered || disabled) return;
+		const slug = w.plugin;
+		listPlugins()
+			.then((resp) => {
+				const p = (resp.plugins as { slug: string; authType?: string; authFields?: AuthField[] }[]).find((x) => x.slug === slug);
+				credFields = p?.authType === 'env' ? (p.authFields ?? []) : [];
+			})
+			.catch(() => {});
+	});
 
 	$effect(() => {
 		const w = widgets?.[0];
@@ -144,7 +164,6 @@
 				if ((data.plugin as string) === w.plugin) {
 					connecting = false;
 					connectError = (data.error as string) || $t('chat.connectFailed');
-					fail(connectError);
 				}
 			}),
 		];
@@ -276,13 +295,18 @@
 			<button
 				type="button"
 				class="btn btn-sm btn-primary"
-				disabled={connecting}
+				disabled={connecting || !credentialsComplete(credFields, creds)}
 				onclick={() => widget && startConnect(widget)}
 			>
 				{#if connecting}<span class="loading loading-spinner loading-xs"></span>{/if}
 				{connecting ? $t('chat.connecting') : $t('chat.connect')}
 			</button>
 		</div>
+		{#if credFields.length > 0 && !connectDone}
+			<div class="mt-2 flex flex-col gap-2">
+				<CredentialFields fields={credFields} bind:values={creds} disabled={connecting} onenter={() => widget && startConnect(widget)} />
+			</div>
+		{/if}
 		<div class="mt-2 flex">
 			<button type="button" class="text-xs text-base-content/40 hover:text-base-content/70 cursor-pointer bg-transparent border-none px-0 ml-auto" onclick={() => submit(SKIP_VALUE)}>{$t('common.skip')}</button>
 		</div>
