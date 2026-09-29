@@ -1,0 +1,8 @@
+id: sc74-editing-a-team-to-what-it-already-is-changes-nothing
+name: "SC74 — Editing a team to what it already is changes nothing"
+description: |
+  Re-adding an employee who is already on the team was reported as an update. Editing a team to
+  what it already is writes nothing and answers changed: false; adding someone new changes it.
+target_component: staffed-company
+proof: staffed_proof::conversation::editing_a_team_to_what_it_already_is_changes_nothing
+conversation: []

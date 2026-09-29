@@ -94,6 +94,11 @@ pub struct TeamMessage {
     /// so it stays off the wire.
     #[serde(skip)]
     pub provenance: Vec<types::provenance::ProvenanceClass>,
+    /// Not a post: the divider where the owner cleared the team's
+    /// conversation (`/clear`). Everything before it stays in the thread;
+    /// no member is briefed with it again.
+    #[serde(default)]
+    pub cleared: bool,
 }
 
 fn row_to_team(row: &rusqlite::Row) -> rusqlite::Result<Team> {
@@ -129,6 +134,7 @@ fn message_from_row(m: ChatMessage) -> TeamMessage {
             provenance.push(class);
         }
     }
+    let cleared = m.role == "system" && meta["compactBoundary"] == true && meta["reason"] == "cleared";
     TeamMessage {
         id: m.id.clone(),
         from: meta["senderName"].as_str().unwrap_or("").to_string(),
@@ -138,6 +144,7 @@ fn message_from_row(m: ChatMessage) -> TeamMessage {
         attachments: meta["attachments"].as_array().cloned().unwrap_or_default(),
         created_at: m.created_at,
         provenance,
+        cleared,
     }
 }
 
@@ -320,6 +327,8 @@ impl Store {
     }
 
     /// The team's transcript, oldest first; `limit` keeps the newest rows.
+    /// Nebo's own rows (`isMeta`, such as the boundary a clear writes for
+    /// the model) are not part of it.
     pub fn list_team_messages(&self, team_id: &str, limit: usize) -> Result<Vec<TeamMessage>, NeboError> {
         let key = team_thread_key(team_id);
         let Some(session) = self.get_session_by_name(&key)? else {
@@ -329,6 +338,10 @@ impl Store {
             return Ok(Vec::new());
         };
         let mut rows = self.get_chat_messages(&chat_id)?;
+        rows.retain(|m| {
+            let meta: serde_json::Value = m.metadata.as_deref().and_then(|s| serde_json::from_str(s).ok()).unwrap_or_default();
+            meta["isMeta"] != true && meta["isMeta"] != "true"
+        });
         if limit > 0 && rows.len() > limit {
             rows.drain(..rows.len() - limit);
         }

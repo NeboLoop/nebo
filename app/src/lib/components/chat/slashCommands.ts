@@ -17,7 +17,7 @@ export interface CommandGroup {
 export const SLASH_COMMANDS: SlashCommand[] = [
   // Session
   { name: '/new',      category: 'Session', desc: 'Start a new conversation' },
-  { name: '/clear',    category: 'Session', desc: 'Clear current conversation' },
+  { name: '/clear',    category: 'Session', desc: 'Start fresh (every message is kept)' },
   { name: '/compact',  category: 'Session', desc: 'Summarize & clear old messages' },
   { name: '/goal',     category: 'Session', desc: 'Keep working until a check confirms the end state', args: '[end state | clear]' },
 

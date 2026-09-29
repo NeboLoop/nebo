@@ -427,6 +427,7 @@ impl Teams {
                 unknown.iter().map(|u| format!("\"{u}\"")).collect::<Vec<_>>().join(", ")
             ));
         }
+        let named = members.clone();
         // A lead named without a member list is added to the current members
         // rather than refused: naming a lead is the ask, not a roster edit.
         // Members named here are local ids; a remote member already on the
@@ -458,7 +459,10 @@ impl Teams {
             members.as_deref(),
             lead.as_deref(),
         ) {
-            Ok(updated) => {
+            Ok(team::Updated { team: same, changed: false }) => {
+                ToolResult::ok(Self::already(store, &same, named.as_deref(), lead.as_deref()))
+            }
+            Ok(team::Updated { team: updated, .. }) => {
                 if let Some(bc) = self.broadcast.as_ref() {
                     bc(team::TEAM_UPDATED_EVENT, serde_json::json!({ "team": updated }));
                 }
@@ -475,6 +479,56 @@ impl Teams {
                 .with_payload(serde_json::json!({ "kind": "team_updated", "team": updated }))
             }
             Err(e) => ToolResult::error(format!("Failed to update team \"{}\": {e}", t.name)),
+        }
+    }
+
+    /// Stop the team's work, when the owner asked the lead to: the rail
+    /// checks that the caller leads the team and serves the owner's own
+    /// request, and stops every other member's running work there.
+    pub async fn stop(&self, input: &serde_json::Value, ctx: &ToolContext) -> ToolResult {
+        let store = match self.store() {
+            Ok(s) => s,
+            Err(r) => return r,
+        };
+        let t = match team::resolve_team(store, input["team"].as_str().unwrap_or("")) {
+            Ok(t) => t,
+            Err(e) => return ToolResult::error(e),
+        };
+        let rail = self.rail.read().unwrap().clone();
+        let Some(rail) = rail else {
+            return ToolResult::error("Stopping a team is not available in this environment (no coworker rail wired).");
+        };
+        let stop = crate::coworker::TeamStop {
+            team_id: t.id,
+            from_agent_id: Self::caller_agent_id(store, ctx),
+            session_key: ctx.session_key.clone(),
+            owners_turn: crate::coworker::owners_turn(ctx),
+        };
+        match rail.stop_team(stop).await {
+            Ok(said) => ToolResult::ok(said),
+            Err(e) => ToolResult::error(e),
+        }
+    }
+
+    /// What `update_team` says when the team already is what it was asked
+    /// to be: the employees named are already on it, or the lead named
+    /// already leads it. Nothing changed, and it never claims otherwise.
+    fn already(store: &db::Store, team: &db::Team, named: Option<&[String]>, lead: Option<&str>) -> String {
+        let roster = team::member_roster(store, team);
+        let name_of = |id: &str| roster.iter().find(|(m, _)| m == id).map(|(_, n)| n.clone()).unwrap_or_else(|| id.to_string());
+        match (named, lead) {
+            (Some(ids), _) if !ids.is_empty() => {
+                let names: Vec<String> = ids.iter().map(|id| name_of(id)).collect();
+                let list = match names.split_last() {
+                    Some((last, rest)) if !rest.is_empty() => format!("{} and {last}", rest.join(", ")),
+                    _ => names.concat(),
+                };
+                let verb = if names.len() == 1 { "is" } else { "are" };
+                format!("{list} {verb} already on the {} team.", team.name)
+            }
+            (_, Some(id)) if !id.is_empty() => format!("{} already leads the {} team.", name_of(id), team.name),
+            (_, Some(_)) => format!("The {} team is already led by the owner.", team.name),
+            _ => format!("The {} team already has that name and mission.", team.name),
         }
     }
 
@@ -505,9 +559,10 @@ enum Kind {
     List,
     Members,
     Messages,
+    Stop,
 }
 
-const KINDS: &[Kind] = &[Kind::Create, Kind::Update, Kind::List, Kind::Members, Kind::Messages];
+const KINDS: &[Kind] = &[Kind::Create, Kind::Update, Kind::List, Kind::Members, Kind::Messages, Kind::Stop];
 
 impl Kind {
     fn name(self) -> &'static str {
@@ -517,6 +572,7 @@ impl Kind {
             Kind::List => "list_teams",
             Kind::Members => "team_members",
             Kind::Messages => "team_messages",
+            Kind::Stop => "stop_team",
         }
     }
 
@@ -527,6 +583,7 @@ impl Kind {
             Kind::List => "list the teams of employees",
             Kind::Members => "who is on a team",
             Kind::Messages => "read a team's conversation",
+            Kind::Stop => "stop the team's work when the owner asks",
         }
     }
 
@@ -543,6 +600,7 @@ impl Kind {
             Kind::List => "Lists the teams on this Nebo with their missions, leads and members.".to_string(),
             Kind::Members => "Lists who is on a team, and which member leads it.".to_string(),
             Kind::Messages => "Reads a team's conversation, most recent last.".to_string(),
+            Kind::Stop => "Stops the team's work at once: every other member's running work in the team's conversation. Only the team's lead can, and only when the owner asked for it.".to_string(),
         }
     }
 
@@ -591,6 +649,11 @@ impl Kind {
                 },
                 "required": ["team"]
             }),
+            Kind::Stop => serde_json::json!({
+                "type": "object",
+                "properties": { "team": team },
+                "required": ["team"]
+            }),
         }
     }
 
@@ -606,6 +669,7 @@ impl Kind {
             Kind::List => ("checking the teams".into(), "Checked the teams".into()),
             Kind::Members => (format!("checking who is on {}", named("team")), format!("Checked who is on {}", named("team"))),
             Kind::Messages => (format!("reading the {} team", named("team")), format!("Read the {} team", named("team"))),
+            Kind::Stop => (format!("stopping the {} team's work", named("team")), format!("Stopped the {} team's work", named("team"))),
         }
     }
 }
@@ -662,6 +726,7 @@ impl DynTool for TeamTool {
                 Kind::List => self.teams.list(),
                 Kind::Members => self.teams.members(&input),
                 Kind::Messages => self.teams.messages(&input),
+                Kind::Stop => self.teams.stop(&input, ctx).await,
             }
         })
     }
@@ -758,6 +823,32 @@ mod tests {
         let res = rig.call(&ctx, "update_team", json!({"team": "Back Office", "lead": "Nobody Here"})).await;
         assert!(res.is_error && res.content.contains("NOT changed"), "{}", res.content);
         assert_eq!(s.list_teams().unwrap()[0].organizer_agent_id, "ea");
+    }
+
+    /// Adding an employee who is already on the team says so, and changes
+    /// nothing: never "updated".
+    #[tokio::test]
+    async fn adding_an_employee_already_on_the_team_says_so() {
+        let s = store();
+        install(&s, "chief", "Chief of Staff");
+        install(&s, "ea", "Executive Assistant");
+        let rig = Rig::new(&s, None);
+        let ctx = as_employee("chief");
+        rig.call(&ctx, "create_team", json!({"name": "Operations", "members": ["Executive Assistant"]})).await;
+        let before = s.list_teams().unwrap()[0].clone();
+
+        let res = rig
+            .call(&ctx, "update_team", json!({"team": "Operations", "members": ["Chief of Staff", "Executive Assistant"]}))
+            .await;
+        assert!(!res.is_error, "{}", res.content);
+        assert_eq!(res.content, "Chief of Staff and Executive Assistant are already on the Operations team.");
+        let res = rig.call(&ctx, "update_team", json!({"team": "Operations", "members": ["Executive Assistant", "Chief of Staff"]})).await;
+        assert_eq!(res.content, "Executive Assistant and Chief of Staff are already on the Operations team.");
+        let res = rig.call(&ctx, "update_team", json!({"team": "Operations", "lead": "Chief of Staff"})).await;
+        assert_eq!(res.content, "Chief of Staff already leads the Operations team.");
+
+        let after = s.list_teams().unwrap()[0].clone();
+        assert_eq!((after.members, after.organizer_agent_id), (before.members, before.organizer_agent_id));
     }
 
     /// A comm plugin that reports no loops (loopback) is the same as none.

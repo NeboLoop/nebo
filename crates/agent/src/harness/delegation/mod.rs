@@ -329,6 +329,11 @@ pub struct HelperStatus {
     pub task_id: String,
     pub description: String,
     pub running: bool,
+    /// The helper's own session, where its steps are kept.
+    pub session_key: String,
+    /// What it is doing now: its latest progress line (its current tool
+    /// step), empty before its first.
+    pub activity: String,
 }
 
 /// A helper this process started.
@@ -353,6 +358,8 @@ struct Helper {
     /// Reports of earlier turns of this run, when input reached it as a
     /// turn ended; they lead the run's final result.
     earlier_reports: Vec<String>,
+    /// Its latest progress line, as the owner's screen was sent it.
+    activity: String,
 }
 
 /// The `helper_kind` a background work run is stored under: it runs code,
@@ -645,6 +652,7 @@ impl Helpers {
                     waiter: (!spec.background).then_some(tx),
                     held: None,
                     earlier_reports: Vec::new(),
+                    activity: String::new(),
                 },
             );
             req
@@ -699,6 +707,7 @@ impl Helpers {
                     waiter: None,
                     held: None,
                     earlier_reports: Vec::new(),
+                    activity: String::new(),
                 },
             );
             cancel
@@ -923,6 +932,7 @@ impl Helpers {
                 waiter: None,
                 held: None,
                 earlier_reports: Vec::new(),
+                activity: String::new(),
             });
             helper.running = true;
             helper.cancel = cancel;
@@ -1024,7 +1034,13 @@ impl Helpers {
             .helpers
             .iter()
             .filter(|(_, h)| h.parent_key == caller)
-            .map(|(id, h)| HelperStatus { task_id: id.clone(), description: h.description.clone(), running: h.running })
+            .map(|(id, h)| HelperStatus {
+                task_id: id.clone(),
+                description: h.description.clone(),
+                running: h.running,
+                session_key: h.session_key.clone(),
+                activity: h.activity.clone(),
+            })
             .collect();
         out.sort_by(|a, b| b.running.cmp(&a.running).then_with(|| a.task_id.cmp(&b.task_id)));
         out
@@ -1144,6 +1160,15 @@ impl Helpers {
     }
 
     fn emit(&self, parent_key: &str, event: ai::StreamEvent) {
+        // The helper's latest progress line is kept with it, so a screen
+        // that opens after the event still reads what it is doing.
+        if event.event_type == ai::StreamEventType::SubagentProgress
+            && let Some(widgets) = event.widgets.as_ref()
+            && let (Some(task_id), Some(activity)) = (widgets["task_id"].as_str(), widgets["current_operation"].as_str())
+            && let Some(helper) = self.state().helpers.get_mut(task_id)
+        {
+            helper.activity = activity.to_string();
+        }
         if let Some(ui) = &self.ui {
             let _ = ui.send(HelperEvent { parent_session_key: parent_key.to_string(), event });
         }
@@ -1933,7 +1958,16 @@ mod tests {
         let _child = rig.next_turn().await;
 
         let list = rig.helpers.list("agent:bookkeeper:web");
-        assert_eq!(list, vec![HelperStatus { task_id: id.clone(), description: "read the ledger".into(), running: true }]);
+        assert_eq!(
+            list,
+            vec![HelperStatus {
+                task_id: id.clone(),
+                description: "read the ledger".into(),
+                running: true,
+                session_key: helper_key("agent:bookkeeper:web", &id),
+                activity: String::new(),
+            }]
+        );
         assert!(rig.helpers.list("agent:ceo:web").is_empty());
         assert!(rig.helpers.read_output("agent:ceo:web", &id).is_err());
         assert!(rig.helpers.stop("agent:ceo:web", &id).is_err());

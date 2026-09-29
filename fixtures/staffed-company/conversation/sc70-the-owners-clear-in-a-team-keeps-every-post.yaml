@@ -1,0 +1,11 @@
+id: sc70-the-owners-clear-in-a-team-keeps-every-post
+name: "SC70 — The owner's /clear in a team keeps every post and its members start after it"
+description: |
+  The owner typed /clear in a team thread and it was posted to the team; the lead answered it
+  (2026-09-28). A command is run at the team's door and never posted: no member reads it, the
+  thread keeps every post and shows the divider where it was cleared, every member's seat is
+  cleared the way a chat is (a linked member's session is forgotten), and the next post reaches
+  the lead with nothing from before the clear.
+target_component: staffed-company
+proof: staffed_proof::conversation::the_owners_clear_in_a_team_keeps_every_post_and_its_members_start_after_it
+conversation: []

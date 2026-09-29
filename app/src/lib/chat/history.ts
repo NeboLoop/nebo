@@ -40,9 +40,13 @@ interface MessageMeta {
   /** A colleague's message (another employee's words): the server names
    * the colleague, and the words are theirs alone. */
   fromColleague?: string;
-  /** The owner-visible marker left where earlier conversation was summarized
-   * (role "system"). Every other system row stays hidden. */
+  /** The owner-visible marker left where earlier conversation was summarized,
+   * or where the owner cleared it (role "system"). Every other system row
+   * stays hidden. */
   compactBoundary?: boolean;
+  /** Why the marker was left: "cleared" when the owner cleared the
+   * conversation there; otherwise it was summarized. */
+  reason?: string;
   /** The error a failed run left in the thread (role "system"): shown on the
    * chat's error banner, never as a bubble. */
   runError?: boolean;
@@ -139,7 +143,12 @@ export function parseMessages(rawMessages: ApiChatMessage[]): ChatMessage[] {
     }
     if (m.role === 'system' && meta?.compactBoundary === true) {
       open = null;
-      result.push({ type: 'compactBoundary' as const, id: m.id, time: formatTime(m.createdAt) });
+      result.push({
+        type: 'compactBoundary' as const,
+        id: m.id,
+        time: formatTime(m.createdAt),
+        ...(meta.reason === 'cleared' ? { cleared: true } : {}),
+      });
       continue;
     }
     if (m.role !== 'assistant') continue;

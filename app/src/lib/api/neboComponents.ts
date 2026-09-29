@@ -1211,6 +1211,7 @@ export interface TeamMessage {
 	content: string
 	attachments: unknown[]
 	createdAt: number
+	cleared?: boolean
 }
 
 export interface User {
@@ -1626,6 +1627,7 @@ export interface EditMessageResponse {
 
 export interface EditTeamResponse {
 	team: Team
+	changed: boolean
 }
 
 export interface EnableAgentChannelResponse {
@@ -2217,6 +2219,7 @@ export interface SendTeamMessageResponse {
 	message: string
 	messageId: string
 	asked: string[]
+	command: string
 }
 
 export interface SetAgentChannelConfigResponse {
@@ -2258,6 +2261,11 @@ export interface StatusResponse {
 	setupComplete: unknown
 }
 
+export interface StopTeamWorkResponse {
+	message: string
+	stopped: string[]
+}
+
 export interface TeachStartResponse {
 	sessionId: string
 	dir: unknown
@@ -2269,6 +2277,10 @@ export interface TeachStopResponse {
 	keyframes: unknown
 	message: string
 	sessionKey: string
+}
+
+export interface TeamWorkingResponse {
+	working: TeamWorkEntry[]
 }
 
 export interface TestIntegrationResponse {
@@ -2705,6 +2717,17 @@ export interface RunDisplayEntry {
 export interface RunDisplay {
 	input: RunDisplayEntry | null
 	activities: Record<string, RunDisplayEntry>
+}
+
+export interface TeamWorkEntry {
+	kind: 'member' | 'helper'
+	agentId: string
+	member: string
+	title: string
+	taskId: string
+	activity: string
+	sessionKey: string
+	chatId: string
 }
 
 export interface ToolPermission {

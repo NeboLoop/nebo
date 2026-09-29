@@ -1131,17 +1131,15 @@ async fn handle_builtin_slash(
             // agent+channel key here pointed /clear at a session that never
             // existed for threads ("Failed to clear: not found"), and
             // rotation wouldn't stick anyway — get_or_create pins a thread
-            // session back to its URL-bound chat. Clear means clear: wipe
-            // this thread's messages in place. A linked employee's session
-            // on its runtime is forgotten with them, so the agent starts
+            // session back to its URL-bound chat. Clear clears CONTEXT,
+            // never records: every message stays in the thread, a marker
+            // shows where it was cleared, and the model's conversation
+            // starts after it (`checkpoint::clear`). A linked employee's
+            // session on its runtime is forgotten, so the agent starts
             // fresh too instead of carrying on with everything before.
             if let Some(chat_id) = types::keyparser::chat_id_from_thread_key(session_id) {
-                let cleared = state
-                    .store
-                    .delete_chat_messages_by_chat_id(chat_id)
-                    .and_then(|()| state.store.set_chat_linked_session(chat_id, "", ""));
-                return Some(match cleared {
-                    Ok(()) => {
+                return Some(match agent::harness::compact::checkpoint::clear(&state.store, chat_id) {
+                    Ok(_) => {
                         if let Ok(sid) = state
                             .harness
                             .sessions()
@@ -1200,7 +1198,7 @@ async fn handle_builtin_slash(
                 "| Command | Description |",
                 "|---|---|",
                 "| `/new` | Start a new conversation (preserves history) |",
-                "| `/clear` | Clear current conversation messages |",
+                "| `/clear` | Start fresh (every message is kept) |",
                 "| `/compact` | Summarize & compress old messages |",
                 "| `/goal [end state \\| clear]` | Work until a check confirms the end state; starts now |",
                 "| `/model [name]` | Show or switch model |",

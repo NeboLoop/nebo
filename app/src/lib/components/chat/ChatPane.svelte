@@ -92,11 +92,11 @@
     | { type: 'thinking'; content: string; duration: string }
     | { type: 'ask'; requestId: string; prompt: string; widgets: AskWidgetDef[]; response?: string; cancelled?: boolean }
     | { type: 'assistant'; content: string; time?: string; delegateAgentId?: string; delegateAgentName?: string; id?: string; attachments?: UploadedAttachment[]; tools?: ToolMsg[]; streaming?: boolean; fold?: Fold }
-    | { type: 'compactBoundary'; id?: string; time?: string };
+    | { type: 'compactBoundary'; id?: string; time?: string; cleared?: boolean };
 
   type AgentInfo = { id: string; name: string; color: string; initial: string; role: string; status: string; isApp?: boolean };
 
-  let { messages = [], agentName = 'Agent', agentId = '', threadId = '', sessionId = '', headerTitle = '', headerRight = '', placeholder = '', emptyIcon = '', emptyTitle = '', emptyDesc = '', allAgents = [], onteachsent, activityStatus = '', helpers = [], tokenUsage = null, goal = null, quotaWarning = '', chatError = '', recapText = '', onsend, onstop, onedit, onredo, onasksubmit, onrestoreversion, ondismisswarning, ondismisserror, onloadmore, isLoading = false, isLoadingMore = false, historyLoading = false, hasMore = false, allowAttachments = true, flowsPane, onopenruns, onsettings, memoryMode = 'single', folder = '', isApp = false, onopenapp, onback, askQueueLength = 0, composerPrefill = '', onprefilled }: {
+  let { messages = [], agentName = 'Agent', agentId = '', threadId = '', sessionId = '', headerTitle = '', headerRight = '', placeholder = '', emptyIcon = '', emptyTitle = '', emptyDesc = '', allAgents = [], onteachsent, activityStatus = '', helpers = [], tokenUsage = null, goal = null, quotaWarning = '', chatError = '', recapText = '', onsend, onstop, onedit, onredo, onasksubmit, onrestoreversion, ondismisswarning, ondismisserror, onloadmore, isLoading = false, isLoadingMore = false, historyLoading = false, hasMore = false, allowAttachments = true, flowsPane, onopenruns, onsettings, memoryMode = 'single', folder = '', isApp = false, onopenapp, onback, askQueueLength = 0, composerPrefill = '', onprefilled, readOnly = false }: {
     messages?: Message[];
     /** Employee-scoped views for the work pane. Omitted on chats with no
      *  employee behind them (channel setup help, the embed), and the matching
@@ -162,6 +162,10 @@
     hasMore?: boolean;
     /** Hide the attach affordance when the chat's send pathway ignores files. */
     allowAttachments?: boolean;
+    /** Watched from outside the conversation (a team member's work, opened
+     *  from the team's working strip): the transcript and its live steps,
+     *  no composer. */
+    readOnly?: boolean;
   } = $props();
 
   let composerRef = $state<{ focus: () => void; focusAndInsert: (char: string) => void; addFiles: (files: File[]) => void } | null>(null);
@@ -1721,7 +1725,7 @@
         </div>
 
       {:else if msg.type === 'compactBoundary'}
-        <div class="divider my-4 text-xs text-base-content/50">{$t('chat.compactBoundary')}</div>
+        <div class="divider my-4 text-xs text-base-content/50">{$t(msg.cleared ? 'chat.clearedBoundary' : 'chat.compactBoundary')}</div>
 
       {:else if msg.type === 'assistant'}
         {@const isTurnStart = idx === 0 || groupedMessages[idx - 1]?.type !== 'assistant'}
@@ -1969,6 +1973,7 @@
   {/if}
 
   <!-- Composer — sits on the home-indicator edge on phones. -->
+  {#if !readOnly}
   <div class="max-w-3xl mx-auto w-full shrink-0 max-md:pb-[env(safe-area-inset-bottom)]">
     <ChatComposer
       {agentName}
@@ -1987,6 +1992,7 @@
       bind:this={composerRef}
     />
   </div>
+  {/if}
 </div>
 
 <!-- Resize handle + Creations panel -->

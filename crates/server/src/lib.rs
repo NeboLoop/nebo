@@ -6062,7 +6062,7 @@ async fn handle_comm_slash_command(
 
         "/help" => {
             "/new — Start a new conversation (preserves history)\n\
-             /clear — Clear current conversation messages\n\
+             /clear — Start fresh (every message is kept)\n\
              /stop — Stop the current run\n\
              /status — Show session info\n\
              /help — Show this help"

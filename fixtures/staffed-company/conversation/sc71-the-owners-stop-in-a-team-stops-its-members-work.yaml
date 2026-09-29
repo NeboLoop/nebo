@@ -1,0 +1,10 @@
+id: sc71-the-owners-stop-in-a-team-stops-its-members-work
+name: "SC71 — The owner's Stop in a team stops its members' work and nothing else"
+description: |
+  "Stop everybody from what they're doing" (owner, 2026-09-28): the lead's "@everyone stop" was a
+  message and nothing stopped. The team's Stop cancels every member's running work in the team's
+  conversation at once and says who was stopped; the same members' other conversations keep
+  running.
+target_component: staffed-company
+proof: staffed_proof::conversation::the_owners_stop_in_a_team_stops_its_members_work_and_nothing_else
+conversation: []

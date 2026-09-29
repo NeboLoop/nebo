@@ -27,6 +27,14 @@ pub fn routes() -> Router<AppState> {
             axum::routing::get(handlers::teams::get_team_messages)
                 .post(handlers::teams::send_team_message),
         )
+        .route(
+            "/teams/{teamId}/stop",
+            axum::routing::post(handlers::teams::stop_team_work),
+        )
+        .route(
+            "/teams/{teamId}/working",
+            axum::routing::get(handlers::teams::team_working),
+        )
         // ── Aliases: the old workroom routes ──
         .route(
             "/workrooms",

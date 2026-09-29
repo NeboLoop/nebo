@@ -195,6 +195,19 @@ pub struct TeamPostReceipt {
     pub asked: Vec<String>,
 }
 
+/// An employee's ask to stop a team's work (`stop_team`): who asks, from
+/// which session, and whether the owner's own request started that turn.
+/// The rail decides whether it may: only the team's lead, and only on the
+/// owner's request (`server::coworker::seat_authority`).
+#[derive(Debug, Clone)]
+pub struct TeamStop {
+    pub team_id: String,
+    pub from_agent_id: String,
+    pub session_key: String,
+    /// As on `CoworkerMessage::owners_turn`.
+    pub owners_turn: Option<String>,
+}
+
 /// Implemented by the server (`CoworkerRailImpl`), consumed by
 /// `send_message` (coworkers and teams) and the escalation up a reporting line. `Pin<Box<dyn Future>>` for object safety — same seam
 /// shape as `SubAgentOrchestrator`.
@@ -209,6 +222,11 @@ pub trait CoworkerRail: Send + Sync {
         &self,
         post: TeamPost,
     ) -> Pin<Box<dyn Future<Output = Result<TeamPostReceipt, String>> + Send + '_>>;
+
+    /// Stop the team's work: every other member's running turn in its seat
+    /// for the team, and the helpers those turns started. Returns what the
+    /// caller reads: who was stopped, or why nothing was.
+    fn stop_team(&self, stop: TeamStop) -> Pin<Box<dyn Future<Output = Result<String, String>> + Send + '_>>;
 
     /// What every employee is doing right now, native and linked, read
     /// where each one's work runs (see [`crate::company`]). The rail that
