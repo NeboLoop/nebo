@@ -22,7 +22,7 @@
   import type { Team, TeamMessage } from '$lib/api/neboComponents';
   import { getWebSocketClient } from '$lib/websocket/client';
   import { parseMarkdown } from '$lib/markdown';
-  import { renderMentionChips } from '$lib/mentions';
+  import { EVERYONE, renderMentionChips } from '$lib/mentions';
   import TranscriptMessage from '$lib/components/chat/TranscriptMessage.svelte';
   import ChatComposer from '$lib/components/chat/ChatComposer.svelte';
   import { AGENT_COLORS_MAP } from '$lib/tokens.js';
@@ -71,10 +71,13 @@
   let membersOpen = $state(false);
 
   // The standard composer's mention autocomplete wants the roster in its
-  // AgentInfo shape — members only, since only members can be asked to act.
-  const composerAgents = $derived(
-    roster
+  // AgentInfo shape: @everyone first, always, then the members A to Z, since
+  // only members can be asked to act.
+  const composerAgents = $derived([
+    { id: EVERYONE, name: 'everyone', role: $t('teams.everyoneHint'), initial: '@', status: 'online', color: 'teal' },
+    ...roster
       .filter((a) => team.members.some((m) => m.agentId === a.id))
+      .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }))
       .map((a) => ({
         id: a.id,
         name: a.name,
@@ -82,8 +85,8 @@
         initial: a.initial,
         status: 'online',
         color: a.color ?? 'teal',
-      }))
-  );
+      })),
+  ]);
 
   // Dedupe key for the owner's optimistic send vs its server echo: the
   // server copy may carry normalized mention tokens, so tokens are stripped

@@ -3,6 +3,7 @@
   import { storage } from '$lib/storage';
   import { replaceState } from '$app/navigation';
   import { t } from 'svelte-i18n';
+  import { EVERYONE } from '$lib/mentions';
   import { Editor, Extension, Mark } from '@tiptap/core';
   import StarterKit from '@tiptap/starter-kit';
   import { Markdown } from 'tiptap-markdown';
@@ -17,7 +18,8 @@
         ...(this.parent?.() ?? {}),
         markdown: {
           serialize(state: any, node: any) {
-            state.write(`<@${node.attrs.id}>`);
+            // @everyone stays a plain word: the bot reads the word itself.
+            state.write(node.attrs.id === EVERYONE ? '@everyone' : `<@${node.attrs.id}>`);
           },
           parse: {},
         },

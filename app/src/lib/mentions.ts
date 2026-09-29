@@ -1,5 +1,9 @@
 import { AGENT_COLORS_MAP } from '$lib/tokens.js';
 
+/** The `@` picker entry that addresses the whole team, written as the plain
+ * word `@everyone` (the bot reads the word itself). */
+export const EVERYONE = 'everyone';
+
 export type MentionAgent = {
 	id: string;
 	name: string;

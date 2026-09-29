@@ -1861,6 +1861,7 @@
 		"viewOnly": "This conversation is view-only — employees talk here, you steer them in their own chats"
 	},
 	"teams": {
+		"everyoneHint": "The whole team",
 		"section": "Teams",
 		"emptyRoster": "Put two or more employees on a team and they share one conversation. Press + to start one, or ask any employee.",
 		"inTeam": "On this team",
