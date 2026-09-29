@@ -2,6 +2,7 @@
   import { page } from '$app/stores';
   import { goto } from '$lib/nav';
   import { t } from 'svelte-i18n';
+  import CredentialFields, { credentialsComplete, type AuthField } from '$lib/components/CredentialFields.svelte';
   import { getContext, onDestroy, untrack } from 'svelte';
   import { get } from 'svelte/store';
   import { AGENT_COLORS_MAP } from '$lib/tokens.js';
@@ -873,7 +874,6 @@
   type PluginAccount = { accountLabel: string; isPrimary: boolean; needsReauth?: boolean };
   // A credential the owner fills in when the plugin signs in with values
   // (mail servers, API keys) instead of a browser — as the manifest declares it.
-  type AuthField = { key: string; label: string; type: string; description: string; required: boolean };
   type AccountPlugin = { slug: string; name: string; description: string; authType: string; authFields: AuthField[]; accounts: PluginAccount[] };
   let accountPlugins = $state<AccountPlugin[]>([]);
   let accountsLoading = $state(false);
@@ -1228,7 +1228,7 @@
     const signIn = p.authFields.find((f) => /USER|EMAIL|LOGIN|ACCOUNT/.test(f.key.toUpperCase()));
     const label = addAccountLabel.trim() || (isPhone ? picked?.label || addAccountNumber : (signIn ? (addAccountCreds[signIn.key] ?? '').trim() : ''));
     if (!label || (isPhone && claimableNumbers.length > 0 && !addAccountNumber)) return;
-    if (p.authFields.some((f) => f.required && !(addAccountCreds[f.key] ?? '').trim())) return;
+    if (!credentialsComplete(p.authFields, addAccountCreds)) return;
     addAccountConnectingSlug = p.slug;
     addAccountError = null;
     try {
@@ -2520,20 +2520,7 @@
             </label>
           {/if}
         {:else}
-          {#each plugin.authFields as field (field.key)}
-            <label class="flex flex-col gap-1.5">
-              <span class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{field.label}{#if !field.required} <span class="normal-case tracking-normal font-normal">({$t('common.optional')})</span>{/if}</span>
-              <input
-                type={field.type === 'password' ? 'password' : field.type === 'number' ? 'number' : 'text'}
-                class="input input-sm input-bordered w-full text-sm font-body"
-                autocomplete={field.type === 'password' ? 'current-password' : 'off'}
-                bind:value={addAccountCreds[field.key]}
-                disabled={connecting}
-                onkeydown={(e) => { if (e.key === 'Enter') submitAddAccount(); }}
-              />
-              {#if field.description}<span class="text-xs text-base-content/50">{field.description}</span>{/if}
-            </label>
-          {/each}
+          <CredentialFields fields={plugin.authFields} bind:values={addAccountCreds} disabled={connecting} onenter={submitAddAccount} />
           <label class="flex flex-col gap-1.5">
             <span class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{plugin.authFields.length ? $t('agentSettings.accountLabelOptional') : $t('agentSettings.accountLabel')}</span>
             <input
@@ -2566,7 +2553,7 @@
             (plugin.slug === 'phonecall'
               ? claimableNumbers.length === 0 || !addAccountNumber
               : plugin.authFields.length
-                ? plugin.authFields.some((f) => f.required && !(addAccountCreds[f.key] ?? '').trim())
+                ? !credentialsComplete(plugin.authFields, addAccountCreds)
                 : !addAccountLabel.trim())}
           onclick={submitAddAccount}
         >{connecting
