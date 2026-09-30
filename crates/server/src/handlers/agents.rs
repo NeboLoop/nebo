@@ -4044,8 +4044,10 @@ pub(crate) fn flatten_trigger_config(
 }
 
 /// Write updated frontmatter back to filesystem agent.json if napp_path exists.
+/// An empty napp_path (the primary employee) has no folder: joined, it would
+/// name `agent.json` in the process's working directory.
 pub(crate) fn write_agent_json_to_fs(napp_path: &Option<String>, frontmatter: &serde_json::Value) {
-    if let Some(path) = napp_path {
+    if let Some(path) = napp_path.as_deref().filter(|p| !p.is_empty()) {
         let agent_json_path = std::path::Path::new(path).join("agent.json");
         if let Ok(pretty) = serde_json::to_string_pretty(frontmatter) {
             if let Err(e) = std::fs::write(&agent_json_path, &pretty) {
