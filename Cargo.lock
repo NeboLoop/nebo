@@ -5757,6 +5757,7 @@ dependencies = [
  "chrono-tz",
  "futures",
  "hex",
+ "image",
  "libc",
  "nebo-ai",
  "nebo-auth",

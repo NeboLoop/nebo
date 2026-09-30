@@ -86,6 +86,61 @@ pub fn normalize_for_llm(bytes: &[u8]) -> Option<(String, String)> {
     None
 }
 
+/// An image's width and height in pixels, read from its header without
+/// decoding it. None when the bytes aren't an image this crate can read.
+pub fn dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
+    image::ImageReader::new(Cursor::new(bytes))
+        .with_guessed_format()
+        .ok()?
+        .into_dimensions()
+        .ok()
+}
+
+/// An image ready for the vision helper, with its size as it was found.
+#[derive(Debug, Clone)]
+pub struct Picture {
+    pub image: crate::types::ImageContent,
+    pub width: u32,
+    pub height: u32,
+}
+
+impl Picture {
+    /// The picture in `bytes`: sent as it is when a provider takes it as it
+    /// is, else resized and re-encoded ([`normalize_for_llm`]). None when
+    /// the bytes aren't an image.
+    pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
+        let (width, height) = dimensions(bytes)?;
+        let as_is = crate::types::sniff_image_mime(bytes).filter(|_| base64_len(bytes.len()) <= MAX_BASE64);
+        let (media_type, data) = match as_is {
+            Some(mime) => (mime.to_string(), base64::engine::general_purpose::STANDARD.encode(bytes)),
+            None => normalize_for_llm(bytes)?,
+        };
+        Some(Self { image: crate::types::ImageContent { media_type, data }, width, height })
+    }
+
+    /// The picture a tool result points at: a `data:` URI or a local file.
+    /// None for anything else: a web URL, or a file that isn't an image (the
+    /// same channel carries a deck or a PDF a tool produced).
+    pub fn load(raw: &str) -> Option<Self> {
+        if let Some(rest) = raw.strip_prefix("data:") {
+            let (_, data) = rest.split_once(',')?;
+            return Self::from_bytes(&base64::engine::general_purpose::STANDARD.decode(data).ok()?);
+        }
+        if raw.starts_with("http://") || raw.starts_with("https://") {
+            return None;
+        }
+        Self::from_bytes(&std::fs::read(raw).ok()?)
+    }
+
+    /// The picture as it arrived with the owner's message (already sized
+    /// for a provider when the message was built).
+    pub fn attached(image: &crate::types::ImageContent) -> Option<Self> {
+        let bytes = base64::engine::general_purpose::STANDARD.decode(&image.data).ok()?;
+        let (width, height) = dimensions(&bytes)?;
+        Some(Self { image: image.clone(), width, height })
+    }
+}
+
 /// True when any pixel is actually transparent — images with an alpha channel
 /// that is fully opaque are photos in disguise and should take the JPEG path.
 fn image_uses_alpha(img: &image::DynamicImage) -> bool {
@@ -150,6 +205,48 @@ mod tests {
         let opaque = png_bytes(3000, 3000, 255);
         let (mime, _) = normalize_for_llm(&opaque).unwrap();
         assert_eq!(mime, "image/jpeg");
+    }
+
+    #[test]
+    fn dimensions_are_read_from_the_header() {
+        assert_eq!(dimensions(&png_bytes(4000, 3000, 255)), Some((4000, 3000)));
+        assert_eq!(dimensions(b"definitely not an image"), None);
+    }
+
+    /// A picture from a data URI or a file keeps the size it was found at;
+    /// one too large to send as it is is resized; anything that isn't an
+    /// image (a deck on the same channel) is none.
+    #[test]
+    fn a_picture_loads_from_a_data_uri_or_a_file_and_nothing_else_does() {
+        let bytes = png_bytes(640, 480, 255);
+        let uri = format!("data:image/png;base64,{}", base64::engine::general_purpose::STANDARD.encode(&bytes));
+        let p = Picture::load(&uri).expect("data uri");
+        assert_eq!((p.width, p.height, p.image.media_type.as_str()), (640, 480, "image/png"));
+
+        let path = std::env::temp_dir().join(format!("nebo-picture-{}.png", std::process::id()));
+        std::fs::write(&path, &bytes).unwrap();
+        assert!(Picture::load(path.to_str().unwrap()).is_some());
+        std::fs::write(&path, b"PK\x03\x04 a deck, not a picture").unwrap();
+        assert!(Picture::load(path.to_str().unwrap()).is_none());
+        let _ = std::fs::remove_file(&path);
+        assert!(Picture::load("https://example.com/a.png").is_none());
+    }
+
+    #[test]
+    fn a_picture_too_large_to_send_as_it_is_is_resized_and_keeps_its_size() {
+        // Noise does not compress: a 3000×3000 PNG of it is far past 5 MB.
+        let mut state = 7u32;
+        let img = image::RgbImage::from_fn(3000, 3000, |_, _| {
+            state = state.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+            image::Rgb([(state >> 16) as u8, (state >> 8) as u8, state as u8])
+        });
+        let mut big = Vec::new();
+        image::DynamicImage::ImageRgb8(img).write_to(&mut Cursor::new(&mut big), image::ImageFormat::Png).unwrap();
+        assert!(base64_len(big.len()) > MAX_BASE64);
+        let p = Picture::from_bytes(&big).expect("resized");
+        assert_eq!((p.width, p.height), (3000, 3000), "the size as found");
+        assert!(p.image.data.len() <= MAX_BASE64);
+        assert!(decode(&p.image.data).width() <= MAX_EDGE);
     }
 
     #[test]

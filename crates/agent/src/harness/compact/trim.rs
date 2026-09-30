@@ -5,23 +5,21 @@
 //! command, a web search or fetch: each tool says so, `DynTool::clearable`)
 //! are cleared first, all but the five most recent, and only when that saves
 //! at least 20k tokens. Each cleared result is saved through the one spill
-//! path and its place says where; a result with an image just reads as
-//! cleared. Everything else stays whole until a checkpoint.
+//! path and its place says where. Everything else stays whole until a
+//! checkpoint.
 //!
 //! Every rendering is frozen the first time it is chosen, keyed on the tool
 //! call id and persisted per chat, and applied on every later step, so the
 //! prompt prefix never changes under the cache once it has been sent.
 //!
-//! Screenshots are the one Nebo addition: a UI drive returns a picture on
-//! every step (about 1.5k tokens each) and only the newest ones say anything
-//! about the screen as it is now, so all but the two newest lose their
-//! image. The text of the result stays.
+//! No image is ever sent (`sidecar`: a picture is read into its result's
+//! text when the tool runs), so there is no picture here to trim.
 
 use std::collections::{HashMap, HashSet};
 
 use db::models::ChatMessage;
 
-use crate::pruning::{IMAGE_CHAR_ESTIMATE, estimate_message_tokens};
+use crate::pruning::estimate_message_tokens;
 
 /// Frozen renderings, keyed on the tool call id: the first rendering chosen
 /// for a result is the rendering forever (persisted per chat).
@@ -34,17 +32,11 @@ pub type Clearable = HashSet<String>;
 pub const KEEP_RECENT: usize = 5;
 /// Clearing runs only when it saves at least this many tokens.
 pub const MIN_TOKENS_SAVED: usize = 20_000;
-/// What a cleared result reads when it isn't saved (it carried an image, or
-/// saving it failed).
+/// What a cleared result reads when saving it failed.
 pub const CLEARED: &str = "[Earlier tool result removed to save space]";
 
-/// Image-bearing results that keep their image, newest first.
-const KEEP_RECENT_IMAGES: usize = 2;
-/// What a result whose image was dropped says in its place.
-const IMAGE_CLEARED: &str = "[Old screenshot cleared]";
-
-/// Apply every frozen rendering to `messages` and drop all but the newest
-/// screenshots. Returns the trimmed conversation and the tokens saved.
+/// Apply every frozen rendering to `messages`. Returns the trimmed
+/// conversation and the tokens saved.
 pub fn trim(messages: &[ChatMessage], frozen: &Frozen) -> (Vec<ChatMessage>, usize) {
     let mut out = messages.to_vec();
     let mut saved = 0;
@@ -55,12 +47,6 @@ pub fn trim(messages: &[ChatMessage], frozen: &Frozen) -> (Vec<ChatMessage>, usi
         let before = estimate_message_tokens(msg);
         replace_result(msg, rendering);
         saved += before.saturating_sub(estimate_message_tokens(msg));
-    }
-
-    let mut with_images: Vec<usize> = out.iter().enumerate().filter(|(_, m)| has_image(m)).map(|(i, _)| i).collect();
-    with_images.truncate(with_images.len().saturating_sub(KEEP_RECENT_IMAGES));
-    for i in with_images {
-        saved += drop_images(&mut out[i]) * IMAGE_CHAR_ESTIMATE / crate::CHARS_PER_TOKEN;
     }
 
     (out, saved)
@@ -95,8 +81,7 @@ pub fn clear_old_results(
         return 0;
     }
     for (id, msg) in candidates {
-        let rendering = if has_image(msg) { None } else { save(&result_text(msg)) };
-        frozen.insert(id.clone(), rendering.unwrap_or_else(|| CLEARED.to_string()));
+        frozen.insert(id.clone(), save(&result_text(msg)).unwrap_or_else(|| CLEARED.to_string()));
     }
     saved
 }
@@ -142,31 +127,6 @@ fn replace_result(msg: &mut ChatMessage, text: &str) {
     msg.tool_results = serde_json::to_string(&rows).ok();
     msg.content = text.to_string();
     msg.token_estimate = Some((text.len() / crate::CHARS_PER_TOKEN) as i64);
-}
-
-fn has_image(msg: &ChatMessage) -> bool {
-    result_rows(msg)
-        .iter()
-        .any(|r| r.get("image_url").and_then(|v| v.as_str()).is_some_and(|s| !s.is_empty()))
-}
-
-/// Drop every image of `msg`'s results, noting it in their text. Returns how
-/// many were dropped.
-fn drop_images(msg: &mut ChatMessage) -> usize {
-    let mut rows = result_rows(msg);
-    let mut dropped = 0;
-    for row in rows.iter_mut().filter_map(|r| r.as_object_mut()) {
-        if row.remove("image_url").and_then(|v| v.as_str().map(|s| !s.is_empty())).unwrap_or(false) {
-            dropped += 1;
-            let text = row.get("content").and_then(|c| c.as_str()).unwrap_or("");
-            let noted = if text.is_empty() { IMAGE_CLEARED.to_string() } else { format!("{text}\n{IMAGE_CLEARED}") };
-            row.insert("content".into(), noted.into());
-        }
-    }
-    if dropped > 0 {
-        msg.tool_results = serde_json::to_string(&rows).ok();
-    }
-    dropped
 }
 
 #[cfg(test)]
@@ -282,20 +242,5 @@ mod tests {
         let tools: Vec<&ChatMessage> = out.iter().filter(|m| m.role == "tool").collect();
         assert_eq!(content(tools[35]), "saved:1", "a result that fell out of the newest five clears next time");
         assert_eq!(content(tools[79]).len(), 4000);
-    }
-
-    /// Only the two newest screenshots keep their image; the text stays.
-    #[test]
-    fn only_the_two_newest_screenshots_keep_their_image() {
-        let mut msgs = vec![row("user", 1, None, None)];
-        for i in 0..4 {
-            let results = serde_json::json!([{ "tool_call_id": format!("s{i}"), "content": format!("step {i}"), "image_url": "/api/v1/files/s.png" }]).to_string();
-            msgs.push(row("tool", 1, None, Some(results)));
-        }
-        let (out, saved) = trim(&msgs, &Frozen::new());
-        let images: Vec<bool> = out.iter().skip(1).map(has_image).collect();
-        assert_eq!(images, vec![false, false, true, true]);
-        assert_eq!(content(&out[1]), format!("step 0\n{IMAGE_CLEARED}"));
-        assert!(saved > 0);
     }
 }

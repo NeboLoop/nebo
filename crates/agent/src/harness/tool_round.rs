@@ -318,72 +318,42 @@ pub(crate) async fn run_tool_round(
         results[idx] = Some((tc, result));
     }
 
-    // Sidecar vision verification — only for providers that can't include
-    // images directly in tool results. Vision-capable providers (Anthropic,
-    // Gemini) get the raw image passed through instead.
+    // The vision helper (`sidecar`): no image enters the conversation. A
+    // result that carries a picture is looked at by the helper, and its
+    // reading, in text, joins the result; the picture stays on the result
+    // for the owner's app and for delivery and never reaches the model.
+    // A `question` on the call (a second look at a detail) is the helper's
+    // to answer.
     let mut had_image: Vec<usize> = Vec::new();
-    {
-        let main_supports_images = {
-            let prov_lock = providers.read().await;
-            ai::default_provider(&prov_lock).is_some_and(|p| p.supports_tool_result_images())
-        };
+    let helper = ai::default_provider(&providers.read().await);
+    if let Some(provider) = helper {
+        let mut looks = FuturesUnordered::new();
+        for (idx, entry) in results.iter().enumerate() {
+            let Some((tc, result)) = entry else { continue };
+            let Some(raw) = result.image_url.as_deref() else { continue };
+            let Some(picture) = ai::image_norm::Picture::load(raw) else { continue };
+            had_image.push(idx);
+            let reference = image_reference(tc, raw);
+            let context = format!("Where it came from: {} returned it ({}).", tc.name, truncate_str(&result.content, 300));
+            let question = tc.input.get("question").and_then(|q| q.as_str()).map(str::to_string);
+            let prov = provider.clone();
+            let trace = side_trace("image_read");
+            looks.push(async move {
+                let reading = crate::sidecar::look(trace, prov.as_ref(), &picture, &context, question.as_deref()).await;
+                (idx, crate::sidecar::note(&reference, Some((picture.width, picture.height)), reading.as_deref()))
+            });
+        }
 
-        if !main_supports_images {
-            let sidecar_provider = {
-                let prov_lock = providers.read().await;
-                ai::default_provider(&prov_lock)
-            };
-            if let Some(provider) = sidecar_provider {
-                let mut sidecar_futures = FuturesUnordered::new();
-
-                for (idx, entry) in results.iter().enumerate() {
-                    if let Some((tc, result)) = entry
-                        && let Some(ref image_url) = result.image_url {
-                        had_image.push(idx);
-                        let image_url = image_url.clone();
-                        let action_ctx = format!("{} — {}", tc.name, result.content);
-                        let prov = provider.clone();
-                        let trace = side_trace("screenshot_verify");
-                        sidecar_futures.push(async move {
-                            let verification = crate::sidecar::verify_screenshot(
-                                trace,
-                                prov.as_ref(),
-                                &image_url,
-                                &action_ctx,
-                            )
-                            .await;
-                            (idx, verification)
-                        });
-                    }
-                }
-
-                while let Some((idx, verification)) = tokio::select! {
-                    _ = cancel_token.cancelled() => {
-                        info!(session_id, "run cancelled during sidecar verification");
-                        return RoundOutcome::Cancelled;
-                    }
-                    next = sidecar_futures.next() => next
-                } {
-                    if let Some((_, ref mut result)) = results[idx] {
-                        match verification {
-                            Some(text) => result
-                                .content
-                                .push_str(&format!("\n\n[Screen Visual]\n{}", text)),
-                            // Sidecar couldn't describe it — still tell the model an
-                            // image exists, so it never claims "no image was returned."
-                            None => result.content.push_str(
-                                "\n\n[Screen Visual] A screenshot was captured (saved and \
-                                 available to the user), but automatic description was \
-                                 unavailable. Acknowledge the capture — do NOT say the tool \
-                                 returned no image.",
-                            ),
-                        }
-                        // The main model is non-vision, so the raw image is useless to it;
-                        // always drop it (otherwise the provider silently strips it and the
-                        // model is left blind with no signal).
-                        result.image_url = None;
-                    }
-                }
+        while let Some((idx, note)) = tokio::select! {
+            _ = cancel_token.cancelled() => {
+                info!(session_id, "run cancelled while an image was read");
+                return RoundOutcome::Cancelled;
+            }
+            next = looks.next() => next
+        } {
+            if let Some((_, ref mut result)) = results[idx] {
+                result.content.push_str("\n\n");
+                result.content.push_str(&note);
             }
         }
     }
@@ -565,6 +535,18 @@ fn is_desktop_act(target: &types::permissions::Target) -> bool {
         target.key.as_str(),
         "desktop_click" | "desktop_type" | "desktop_key" | "desktop_scroll" | "desktop_drag"
     )
+}
+
+/// How the conversation names an image a tool returned: the path the call
+/// read, else the file the result points at, else the tool that took it.
+fn image_reference(tc: &ai::ToolCall, image_url: &str) -> String {
+    if let Some(path) = tc.input.get("path").and_then(|p| p.as_str()).filter(|p| !p.is_empty()) {
+        return path.to_string();
+    }
+    if !image_url.starts_with("data:") {
+        return image_url.to_string();
+    }
+    format!("the image {} returned", tc.name)
 }
 
 /// JSON shape for tool results stored in the DB. Includes optional image_url

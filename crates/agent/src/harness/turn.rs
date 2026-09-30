@@ -58,6 +58,20 @@ use crate::selector;
 /// never stops calling tools can't run forever.
 pub const DEFAULT_MAX_STEPS: u32 = 100;
 
+/// Checkpoints a turn takes for itself with no progress between them
+/// before it stops instead of taking another. Progress is a call that
+/// changes something (a tool that isn't read-only): reading, summarizing
+/// and reading again is the loop this stops (2026-09-30: an employee read
+/// a plan image, summarized, read it again, a dozen times, and never drew
+/// the plans).
+pub const MAX_CHECKPOINTS_WITHOUT_PROGRESS: usize = 2;
+
+/// What the owner is told when the turn stops on
+/// [`MAX_CHECKPOINTS_WITHOUT_PROGRESS`].
+pub const CONTEXT_STALLED: &str = "I stopped here: the material I'm working from is too large to hold in one go. \
+I summarized my notes twice and was about to read the same things again without getting further. Ask me to carry \
+on with a smaller piece (one file, one page or one section at a time) and I'll pick it up from there.";
+
 /// What one turn runs with, fixed for the turn.
 pub struct TurnContext {
     pub harness: Harness,
@@ -174,6 +188,9 @@ pub struct TurnState {
     pub model: String,
     /// Checkpoints taken this turn.
     pub checkpoints: usize,
+    /// Checkpoints taken since the last call that changed something
+    /// ([`MAX_CHECKPOINTS_WITHOUT_PROGRESS`]).
+    checkpoints_since_progress: usize,
     /// The last reply answered the owner's mid-turn message and the work
     /// goes on: the owner has their answer, so a reply with nothing in it
     /// ends the turn.
@@ -262,6 +279,9 @@ pub enum TurnExit {
     AwaitingApproval,
     /// The owner's `/compact` wrote its checkpoint.
     Compacted,
+    /// The conversation kept filling up with no progress between
+    /// checkpoints ([`MAX_CHECKPOINTS_WITHOUT_PROGRESS`]); the owner was told.
+    ContextStalled,
     GoalMet {
         reason: String,
     },
@@ -289,6 +309,7 @@ impl TurnExit {
             TurnExit::Refused(_) => "refused".into(),
             TurnExit::AwaitingApproval => "awaiting_approval".into(),
             TurnExit::Compacted => "compacted".into(),
+            TurnExit::ContextStalled => "context_stalled".into(),
             TurnExit::GoalMet { .. } => "goal_met".into(),
             TurnExit::GoalImpossible { .. } => "goal_impossible".into(),
             TurnExit::GoalPaused(_) => "goal_paused".into(),
@@ -849,6 +870,7 @@ pub(crate) async fn prepare(
         seen: Vec::new(),
         model: turn_model,
         checkpoints: 0,
+        checkpoints_since_progress: 0,
         answered_owner: false,
         owner_intent: None,
         last_call: None,
@@ -945,6 +967,7 @@ async fn store_input(h: &Harness, session_id: &str, req: &TurnRequest) -> Result
     if text.is_empty() {
         return Ok(());
     }
+    let readings = read_pictures(h, req, text, images, attachments).await;
     conversation::persist_input(
         &h.sessions,
         session_id,
@@ -952,11 +975,50 @@ async fn store_input(h: &Harness, session_id: &str, req: &TurnRequest) -> Result
             text,
             images,
             attachments,
+            readings: &readings,
             hidden,
             by_owner: !hidden && owner_speaks(req),
             coworker,
         },
     )
+}
+
+/// The vision helper's reading of each picture the owner attached, once,
+/// as the message is stored: the conversation keeps the readings and never
+/// the pictures (`sidecar`). The owner's app still shows the pictures from
+/// the row's attachments.
+async fn read_pictures(
+    h: &Harness,
+    req: &TurnRequest,
+    text: &str,
+    images: &[ai::ImageContent],
+    attachments: &[comm::wire::Attachment],
+) -> Vec<String> {
+    if images.is_empty() {
+        return Vec::new();
+    }
+    let Some(provider) = ai::default_provider(&h.providers.read().await) else {
+        return Vec::new();
+    };
+    let files: Vec<&comm::wire::Attachment> = attachments.iter().filter(|a| a.mime_type.starts_with("image/")).collect();
+    let context = format!("The owner attached this image to their message: \"{}\"", tools::truncate_str(text, 500));
+    let looks = images.iter().enumerate().map(|(n, image)| {
+        let reference = files
+            .get(n)
+            .filter(|_| files.len() == images.len())
+            .map(|a| crate::uploads::by_id(&a.file_id).map_or_else(|| a.filename.clone(), |p| p.to_string_lossy().into_owned()))
+            .unwrap_or_else(|| "the image the owner attached".to_string());
+        let (provider, context) = (provider.clone(), context.clone());
+        let trace = RequestTrace { agent_id: req.seat.agent_id.clone(), ..RequestTrace::new("image_read") };
+        async move {
+            let Some(picture) = ai::image_norm::Picture::attached(image) else {
+                return crate::sidecar::note(&reference, None, None);
+            };
+            let reading = crate::sidecar::look(trace, provider.as_ref(), &picture, &context, None).await;
+            crate::sidecar::note(&reference, Some((picture.width, picture.height)), reading.as_deref())
+        }
+    });
+    futures::future::join_all(looks).await
 }
 
 /// The name of the employee a helper works for.
@@ -1198,6 +1260,9 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
                 st.step -= 1;
                 continue;
             }
+            if let Some(exit) = stalled(cx, st).await {
+                return exit;
+            }
             match checkpoint(cx, st, &window, heard_through, &request, compact::checkpoint::CheckpointReason::Threshold, None).await {
                 Ok(()) => continue,
                 Err(e) => warn!(session_id = sid, error = %e, "checkpoint failed; sending the conversation as it is"),
@@ -1362,6 +1427,8 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
                 // overflow retries.
                 let outcome = if clear_old_results(cx, st, &conversation).await {
                     Ok(Transition::OverflowCleared)
+                } else if let Some(exit) = stalled(cx, st).await {
+                    return exit;
                 } else if st.trigger.tripped() {
                     Err("the checkpoint breaker has tripped".to_string())
                 } else {
@@ -1853,6 +1920,23 @@ fn build_request(
     }
 }
 
+/// The turn is due another checkpoint of its own with none of its last
+/// [`MAX_CHECKPOINTS_WITHOUT_PROGRESS`] followed by progress: it stops and
+/// tells the owner plainly, instead of summarizing and re-reading again on
+/// the owner's usage. None while the turn may checkpoint.
+async fn stalled(cx: &TurnContext, st: &TurnState) -> Option<TurnExit> {
+    if st.checkpoints_since_progress < MAX_CHECKPOINTS_WITHOUT_PROGRESS {
+        return None;
+    }
+    warn!(
+        session_id = %cx.session_id,
+        checkpoints = st.checkpoints_since_progress,
+        "the conversation keeps filling up with no progress: ending the turn"
+    );
+    let _ = cx.tx.send(StreamEvent::control_notice(CONTEXT_STALLED, "context_stalled")).await;
+    Some(TurnExit::ContextStalled)
+}
+
 /// Checkpoint the conversation: the pre-checkpoint memory flush, the
 /// summary forked from the step's request, the boundary row and the restore
 /// rows. `heard_through` is the last row the step's conversation was
@@ -1929,6 +2013,7 @@ async fn checkpoint(
     st.trigger.record(&outcome);
     outcome?;
     st.checkpoints += 1;
+    st.checkpoints_since_progress += 1;
     st.seen.clear();
     Ok(())
 }
@@ -2072,6 +2157,12 @@ async fn tool_round(
     };
     if let Some(result) = &results.saved_memory {
         st.saves.saved(st.step, result);
+    }
+    for tc in tool_calls.iter() {
+        if !h.tools.read_only(&tc.name, &tc.input).await {
+            st.checkpoints_since_progress = 0;
+            break;
+        }
     }
     for tc in tool_calls.iter() {
         if h.tools.target(&tc.name, &tc.input).await.is_some_and(|t| t.key == super::owner_command::RUN_COMMAND) {
@@ -2547,9 +2638,16 @@ mod tests {
             "scripted"
         }
 
+        fn supports_vision(&self) -> bool {
+            true
+        }
+
         async fn stream(&self, req: &ChatRequest) -> Result<ai::EventReceiver, ai::ProviderError> {
             if req.trace.purpose != "agent_turn" {
                 self.side.lock().unwrap().push(req.clone());
+            }
+            if req.trace.purpose == "image_read" {
+                return Ok(events(vec![StreamEvent::text(PLAN_READING)], None));
             }
             if req.trace.purpose == "done_check" {
                 let verdict = self.verdicts.lock().unwrap().pop_front().unwrap_or(r#"{"met": true, "reason": "done"}"#);
@@ -6405,6 +6503,176 @@ mod tests {
         let summaries = model.side.lock().unwrap().iter().filter(|r| r.trace.purpose == "checkpoint").count();
         assert_eq!(summaries, compact::checkpoint::MAX_FAILURES as usize, "three tries, then the breaker");
         assert!(!stored(&h).iter().any(|m| m.content.starts_with(compact::checkpoint::BOUNDARY_LEAD)), "none applied");
+    }
+
+    /// What the scripted vision helper reads in every image.
+    const PLAN_READING: &str = "WHAT IT IS: a site plot plan. TEXT: \"COVERED DECK 12'-0\\\" x 16'-0\\\"\", \"LOT 610\".";
+    const PLAN: &str = "/tmp/nebo-plans/SF 610 PLOT PLAN WITH COVERED DECK (2).png";
+
+    /// A PNG of noise: it doesn't compress, so `side` pixels a side is
+    /// about `3 × side²` bytes.
+    fn noise_png(side: u32) -> Vec<u8> {
+        let mut state = 7u32;
+        let img = image::RgbImage::from_fn(side, side, |_, _| {
+            state = state.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+            image::Rgb([(state >> 16) as u8, (state >> 8) as u8, state as u8])
+        });
+        let mut out = Vec::new();
+        image::DynamicImage::ImageRgb8(img).write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png).unwrap();
+        out
+    }
+
+    /// `read_file` of an image, as the file tool returns it: a line naming
+    /// the file and the picture inline as a data URI.
+    struct PlanFile(String);
+
+    impl tools::registry::DynTool for PlanFile {
+        fn name(&self) -> &str {
+            "read_file"
+        }
+        fn description(&self) -> String {
+            "reads a file".into()
+        }
+        fn schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object", "properties": {"path": {"type": "string"}, "question": {"type": "string"}}})
+        }
+        fn read_only(&self, _input: &serde_json::Value) -> bool {
+            true
+        }
+        fn execute_dyn<'a>(
+            &'a self,
+            _ctx: &'a tools::ToolContext,
+            _input: serde_json::Value,
+        ) -> Pin<Box<dyn Future<Output = tools::ToolResult> + Send + 'a>> {
+            Box::pin(async move { tools::ToolResult::ok(format!("[image: {PLAN}]")).with_image_url(self.0.clone()) })
+        }
+    }
+
+    /// No image ever reaches the model: no request the main loop sends
+    /// carries a picture, on a message or on a tool result.
+    fn assert_no_image_sent(calls: &[ChatRequest]) {
+        for (n, call) in calls.iter().enumerate() {
+            for m in &call.messages {
+                assert!(m.images.is_none(), "call {n} sent a picture on a {} message", m.role);
+                let results = m.tool_results.as_ref().map(|r| r.to_string()).unwrap_or_default();
+                assert!(!results.contains("image_url") && !results.contains("data:image"), "call {n} sent a picture on a result");
+            }
+        }
+    }
+
+    /// The plot-plan loop (2026-09-30): a 4 MB plan PNG read into the
+    /// conversation counted as a million tokens, so every step after the
+    /// read checkpointed, the summary dropped the picture, the employee read
+    /// it again, and the plans were never drawn. Now the vision helper reads
+    /// the picture once and the conversation holds its reading: the work
+    /// finishes with no checkpoint, and no request carries the picture. A
+    /// question about it later is another look by the helper, answered in
+    /// text, never the picture put back into the conversation.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_large_plan_image_is_read_by_the_helper_and_the_work_finishes() {
+        use base64::Engine;
+        let png = noise_png(1_200);
+        assert!(png.len() > 4_000_000, "a plan this large is past what a provider takes as it is");
+        let uri = format!("data:image/png;base64,{}", base64::engine::general_purpose::STANDARD.encode(&png));
+        let model = Scripted::new(vec![
+            Step::Call("read_file", serde_json::json!({"path": PLAN})),
+            Step::Reacting(|req| {
+                let seen = req.messages.iter().filter_map(|m| m.tool_results.as_ref()).map(|r| r.to_string()).collect::<String>();
+                assert!(seen.contains("COVERED DECK") && seen.contains("1200×1200 px"), "the reading is in the result: {seen}");
+                Step::Say("Here are the plans, drawn from the plot plan.")
+            }),
+            Step::Call("read_file", serde_json::json!({"path": PLAN, "question": "How deep is the covered deck?"})),
+            Step::Say("The covered deck is 12 feet deep."),
+        ]);
+        let h = harness_selecting(&model, vec![Box::new(PlanFile(uri))], gateway_selector("scripted/nebo-1", 200_000)).await;
+
+        let events = run_turn(&h, owner("Draw the landscape plans from the plot plan.")).await;
+        assert_eq!(exit_of(&events), "text_response");
+        let follow_up = run_turn(&h, owner("How deep is the covered deck?")).await;
+        assert_eq!(exit_of(&follow_up), "text_response");
+
+        let calls = model.calls();
+        assert_eq!(calls.len(), 4, "read, answer, look again, answer: no re-read loop");
+        assert_no_image_sent(&calls);
+        let side = model.side.lock().unwrap().clone();
+        assert_eq!(side.iter().filter(|r| r.trace.purpose == "checkpoint").count(), 0, "no checkpoint");
+        let looks: Vec<&ChatRequest> = side.iter().filter(|r| r.trace.purpose == "image_read").collect();
+        assert_eq!(looks.len(), 2, "one look per read");
+        for look in &looks {
+            let image = &look.messages[0].images.as_ref().expect("the helper sees the picture")[0];
+            assert!(image.data.len() <= 5 * 1024 * 1024, "sized for the provider");
+        }
+        assert!(looks[1].messages[0].content.contains("Question: How deep is the covered deck?"), "the question goes to the helper");
+    }
+
+    /// A picture the owner attaches is read once, as the message is stored:
+    /// the row keeps the reading, and every later request reads it in the
+    /// message's text, never as a picture.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_attached_picture_is_read_once_and_the_model_reads_text() {
+        use base64::Engine;
+        let picture = ai::ImageContent {
+            media_type: "image/png".into(),
+            data: base64::engine::general_purpose::STANDARD.encode(noise_png(64)),
+        };
+        let model = Scripted::new(vec![Step::Say("That's a plot plan."), Step::Say("Still the same plan.")]);
+        let h = harness(&model).await;
+        let mut first = owner("What is this?");
+        first.input = TurnInput::Owner { text: "What is this?".into(), images: vec![picture], attachments: Vec::new() };
+        run_turn(&h, first).await;
+        run_turn(&h, owner("And now?")).await;
+
+        let calls = model.calls();
+        assert_no_image_sent(&calls);
+        for call in &calls {
+            assert!(texts(call).iter().any(|t| t.starts_with("What is this?") && t.contains("COVERED DECK")), "the reading rides the message");
+        }
+        let looks = model.side.lock().unwrap().iter().filter(|r| r.trace.purpose == "image_read").count();
+        assert_eq!(looks, 1, "read once, not on every request");
+    }
+
+    /// The loop breaker: the provider keeps refusing the window and the
+    /// model keeps only reading. Two checkpoints with no progress between
+    /// them, then the turn stops and says so plainly, instead of a third
+    /// summary and another read on the owner's usage.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn checkpoints_never_fire_more_than_twice_without_progress() {
+        let model = Scripted::new(vec![
+            Step::Overflow,
+            Step::Call("echo", serde_json::json!({})),
+            Step::Overflow,
+            Step::Call("echo", serde_json::json!({})),
+            Step::Overflow,
+            Step::Say("never sent"),
+        ]);
+        let h = harness(&model).await;
+        let events = run_turn(&h, owner("Read the plans and draw them.")).await;
+        assert_eq!(exit_of(&events), "context_stalled");
+        let notice = events
+            .iter()
+            .find(|e| e.event_type == ai::StreamEventType::ControlNotice && e.text == CONTEXT_STALLED);
+        assert!(notice.is_some(), "the owner is told plainly");
+        let summaries = model.side.lock().unwrap().iter().filter(|r| r.trace.purpose == "checkpoint").count();
+        assert_eq!(summaries, MAX_CHECKPOINTS_WITHOUT_PROGRESS);
+    }
+
+    /// A call that changes something is progress: a turn that checkpoints
+    /// between real work is never stopped by the breaker.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn checkpoints_between_real_work_never_stop_the_turn() {
+        let model = Scripted::new(vec![
+            Step::Overflow,
+            Step::Call("writer", serde_json::json!({})),
+            Step::Overflow,
+            Step::Call("writer", serde_json::json!({})),
+            Step::Overflow,
+            Step::Say("All three plans are drawn."),
+        ]);
+        let h = harness(&model).await;
+        let events = run_turn(&h, owner("Draw the three plans.")).await;
+        assert_eq!(exit_of(&events), "text_response");
+        let summaries = model.side.lock().unwrap().iter().filter(|r| r.trace.purpose == "checkpoint").count();
+        assert!(summaries > MAX_CHECKPOINTS_WITHOUT_PROGRESS, "{summaries}");
     }
 
     /// A stored model is never trusted as the turn's model: a conversation

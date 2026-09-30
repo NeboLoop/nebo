@@ -433,11 +433,10 @@ impl FileTool {
                 } else if n > 0
                     && let Some(reason) = binary_reason(&sample[..n], n)
                 {
-                    // Images: return them INLINE as a viewable image (data URL) so the model
-                    // actually sees the pixels. The runner renders
-                    // image_url inline for multimodal providers and routes it through the vision
-                    // sidecar otherwise. One canonical "read an image" path; never make the model
-                    // guess the contents.
+                    // Images: return the picture on image_url (a data URL). The runner hands it
+                    // to the vision helper, whose written reading is what the model gets; the
+                    // picture itself never enters the conversation. One canonical "read an
+                    // image" path; never make the model guess the contents.
                     let mime = match std::path::Path::new(&path)
                         .extension()
                         .and_then(|e| e.to_str())
@@ -893,9 +892,9 @@ impl FileTool {
     /// SAME `image_url` artifact channel write uses, so the chat dispatcher renders
     /// it as a card (and uploads it on a loop reply) — no re-generation, no copy.
     ///
-    /// Any file type is allowed: the provider layer sniffs magic bytes and omits
-    /// non-image bytes from the model payload (see `ai::image_source_to_base64`),
-    /// so a `.pptx`/`.zip` path is carried as an attachment, never a bogus image.
+    /// Any file type is allowed: only a file that decodes as an image is read
+    /// by the vision helper (`ai::image_norm::Picture::load`), so a
+    /// `.pptx`/`.zip` path is carried as an attachment, never a bogus image.
     fn handle_share(&self, input: &FileInput) -> ToolResult {
         if input.path.is_empty() {
             return ToolResult::error(errors::missing_param(

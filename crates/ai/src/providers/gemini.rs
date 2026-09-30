@@ -128,16 +128,6 @@ impl GeminiProvider {
                                         response,
                                     },
                                 });
-                                // Include screenshot image inline if present
-                                if let Some((mime_type, data)) = r
-                                    .image_url
-                                    .as_deref()
-                                    .and_then(crate::types::image_source_to_base64)
-                                {
-                                    parts.push(GeminiPart::InlineData {
-                                        inline_data: GeminiInlineData { mime_type, data },
-                                    });
-                                }
                             }
                             if !parts.is_empty() {
                                 // Function responses go in a "user" role content
@@ -187,10 +177,6 @@ impl GeminiProvider {
 impl Provider for GeminiProvider {
     fn id(&self) -> &str {
         "google"
-    }
-
-    fn supports_tool_result_images(&self) -> bool {
-        true
     }
 
     fn supports_vision(&self) -> bool {
@@ -734,8 +720,6 @@ struct SessionToolResult {
     content: String,
     #[serde(default)]
     is_error: bool,
-    #[serde(default)]
-    image_url: Option<String>,
 }
 
 
