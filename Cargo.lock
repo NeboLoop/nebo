@@ -5150,8 +5150,8 @@ checksum = "2e126dda6f34391ab7b444f9922055facc83c07a910da3eb16f1e4d9c45dc777"
 
 [[package]]
 name = "link-core"
-version = "0.1.0"
-source = "git+https://github.com/NeboLoop/nebo-link?rev=419e5705a861685c06ed290379a56823c3abe797#419e5705a861685c06ed290379a56823c3abe797"
+version = "0.1.1"
+source = "git+https://github.com/NeboLoop/nebo-link?rev=6ba0f5f86e3ae7c51e6b7c991919f9e9fc1fd260#6ba0f5f86e3ae7c51e6b7c991919f9e9fc1fd260"
 dependencies = [
  "bytes",
  "dirs",
@@ -6042,8 +6042,8 @@ dependencies = [
 
 [[package]]
 name = "nebo-runtimes"
-version = "0.1.0"
-source = "git+https://github.com/NeboLoop/nebo-link?rev=419e5705a861685c06ed290379a56823c3abe797#419e5705a861685c06ed290379a56823c3abe797"
+version = "0.1.1"
+source = "git+https://github.com/NeboLoop/nebo-link?rev=6ba0f5f86e3ae7c51e6b7c991919f9e9fc1fd260#6ba0f5f86e3ae7c51e6b7c991919f9e9fc1fd260"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -6603,8 +6603,8 @@ dependencies = [
 
 [[package]]
 name = "oal-host"
-version = "0.1.0"
-source = "git+https://github.com/NeboLoop/nebo-link?rev=419e5705a861685c06ed290379a56823c3abe797#419e5705a861685c06ed290379a56823c3abe797"
+version = "0.1.1"
+source = "git+https://github.com/NeboLoop/nebo-link?rev=6ba0f5f86e3ae7c51e6b7c991919f9e9fc1fd260#6ba0f5f86e3ae7c51e6b7c991919f9e9fc1fd260"
 dependencies = [
  "base64 0.22.1",
  "futures",
@@ -6627,8 +6627,8 @@ dependencies = [
 
 [[package]]
 name = "oal-relay"
-version = "0.1.0"
-source = "git+https://github.com/NeboLoop/nebo-link?rev=419e5705a861685c06ed290379a56823c3abe797#419e5705a861685c06ed290379a56823c3abe797"
+version = "0.1.1"
+source = "git+https://github.com/NeboLoop/nebo-link?rev=6ba0f5f86e3ae7c51e6b7c991919f9e9fc1fd260#6ba0f5f86e3ae7c51e6b7c991919f9e9fc1fd260"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -6650,8 +6650,8 @@ dependencies = [
 
 [[package]]
 name = "oal-secure"
-version = "0.1.0"
-source = "git+https://github.com/NeboLoop/nebo-link?rev=419e5705a861685c06ed290379a56823c3abe797#419e5705a861685c06ed290379a56823c3abe797"
+version = "0.1.1"
+source = "git+https://github.com/NeboLoop/nebo-link?rev=6ba0f5f86e3ae7c51e6b7c991919f9e9fc1fd260#6ba0f5f86e3ae7c51e6b7c991919f9e9fc1fd260"
 dependencies = [
  "base64 0.22.1",
  "bytes",
