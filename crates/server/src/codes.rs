@@ -649,6 +649,7 @@ async fn handle_collection_code(
     // code or with an unrecognized type are logged and skipped — never silently
     // dropped (Rule 6.1: log and continue).
     let mut deps = Vec::new();
+    let mut connectors: Vec<(String, String)> = Vec::new(); // (code, artifact id)
     let mut has_app = false;
     for item in &items {
         let item_code = item.get("code").and_then(|c| c.as_str()).unwrap_or("");
@@ -676,6 +677,13 @@ async fn handle_collection_code(
             "agent" | "app" => crate::deps::DepType::Agent,
             "plugin" => crate::deps::DepType::Plugin,
             "workflow" => crate::deps::DepType::Workflow,
+            // Connectors install through the same door a CONN- code uses, before
+            // the employees that need them (below).
+            "connector" => {
+                let target = item.get("targetId").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                connectors.push((item_code.to_string(), target));
+                continue;
+            }
             other => {
                 warn!(collection = %artifact_id, item_type = other, code = item_code, "unrecognized collection item type — skipping");
                 continue;
@@ -691,11 +699,37 @@ async fn handle_collection_code(
             slug: item_slug,
         });
     }
-    let total = deps.len();
+    let total = deps.len() + connectors.len();
+
+    // Connectors first: an employee in the collection may need its tools.
+    let (mut connectors_installed, mut connectors_failed) = (0usize, 0usize);
+    for (conn_code, target) in &connectors {
+        let already = !target.is_empty()
+            && state.store.get_artifact_update_pref(target, "connector").ok().flatten().is_some();
+        if already {
+            connectors_installed += 1;
+            continue;
+        }
+        match handle_connection_code(state, conn_code).await {
+            Ok(_) => connectors_installed += 1,
+            Err(e) => {
+                connectors_failed += 1;
+                warn!(collection = %artifact_id, code = %conn_code, error = %e, "collection connector install failed");
+            }
+        }
+    }
 
     // Install every item via the canonical installer.
     let mut visited = std::collections::HashSet::new();
-    let result = crate::deps::resolve_cascade(state, deps, &mut visited, by, origin).await;
+    let mut result = crate::deps::resolve_cascade(state, deps, &mut visited, by, origin).await;
+    result.installed_count += connectors_installed;
+    result.failed_count += connectors_failed;
+
+    // Record the collection itself, so the hub's echo of this install (and any
+    // later tool_installed for it) is recognised as already installed instead of
+    // re-running every item — the loop of 2026-09-30.
+    let version = coll.get("version").and_then(|v| v.as_str()).unwrap_or("1.0.0");
+    let _ = state.store.upsert_artifact_update_pref(&artifact_id, "collection", version);
 
     // Apps install through the agent path; detect & persist their app-specific
     // paths so they show up and launch as apps (the cascade only does the agent part).

@@ -782,14 +782,16 @@ async fn handle_comm_install_event(
             // card's REST door included) can be installing unseen here.
             state.codes_in_flight.settle().await;
             if event.event_type == "tool_installed"
-                && crate::handlers::store::is_installed(
-                    &item.slug,
-                    &item.name,
-                    artifact_type,
-                    &state.store,
-                )
+                && installed_here(state, &event.tool_id, &item.slug, &item.name, artifact_type)
             {
                 tracing::debug!(tool_id = %event.tool_id, slug = %item.slug, "install event: already installed, skipping");
+                return Ok(());
+            }
+            // Backstop against any echo the check above misses: the same
+            // artifact is never re-installed from install events more than
+            // twice a minute.
+            if !install_event_allowed(&event.tool_id, std::time::Instant::now()) {
+                tracing::warn!(tool_id = %event.tool_id, slug = %item.slug, "install event: repeated within a minute, skipping (install echo loop guard)");
                 return Ok(());
             }
             let code = item
@@ -818,6 +820,62 @@ async fn handle_comm_install_event(
                 .await
                 .map_err(|e| e.to_string())
         }
+    }
+}
+
+/// Is this artifact already installed here? Agents, skills and plugins are on
+/// disk; connectors and collections are recorded when they install (the update
+/// table), so they are checked there. Before this, a connector or collection
+/// was looked up as a skill folder, never found, and every `tool_installed`
+/// echo re-installed it — for a collection, every item, forever.
+fn installed_here(state: &AppState, tool_id: &str, slug: &str, name: &str, artifact_type: &str) -> bool {
+    match artifact_type {
+        "connector" | "collection" => state
+            .store
+            .get_artifact_update_pref(tool_id, artifact_type)
+            .ok()
+            .flatten()
+            .is_some(),
+        _ => crate::handlers::store::is_installed(slug, name, artifact_type, &state.store),
+    }
+}
+
+/// Echo-loop breaker for hub install events: at most two installs of the same
+/// artifact per minute from events. ponytail: one process-wide map, pruned on
+/// use; per-bot state is the process.
+fn install_event_allowed(tool_id: &str, now: std::time::Instant) -> bool {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    static RECENT: OnceLock<Mutex<HashMap<String, Vec<std::time::Instant>>>> = OnceLock::new();
+    const WINDOW: std::time::Duration = std::time::Duration::from_secs(60);
+    const MAX: usize = 2;
+    let mut map = RECENT.get_or_init(|| Mutex::new(HashMap::new())).lock().unwrap_or_else(|e| e.into_inner());
+    map.retain(|_, hits| {
+        hits.retain(|t| now.duration_since(*t) < WINDOW);
+        !hits.is_empty()
+    });
+    let hits = map.entry(tool_id.to_string()).or_default();
+    if hits.len() >= MAX {
+        return false;
+    }
+    hits.push(now);
+    true
+}
+
+#[cfg(test)]
+mod install_echo_tests {
+    use super::install_event_allowed;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn the_same_artifact_installs_at_most_twice_a_minute_from_events() {
+        let t0 = Instant::now();
+        let id = "echo-test-artifact";
+        assert!(install_event_allowed(id, t0));
+        assert!(install_event_allowed(id, t0 + Duration::from_secs(1)));
+        assert!(!install_event_allowed(id, t0 + Duration::from_secs(2)), "third within a minute is the loop");
+        assert!(install_event_allowed("another-artifact", t0 + Duration::from_secs(2)), "others unaffected");
+        assert!(install_event_allowed(id, t0 + Duration::from_secs(62)), "allowed again after the window");
     }
 }
 
