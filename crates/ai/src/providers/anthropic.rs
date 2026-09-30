@@ -300,29 +300,9 @@ impl AnthropicProvider {
                             {
                                 continue;
                             }
-                            let content = if let Some((media_type, data)) = r
-                                .image_url
-                                .as_deref()
-                                .and_then(crate::types::image_source_to_base64)
-                            {
-                                ToolResultContent::Blocks(vec![
-                                    ToolResultContentBlock::Text {
-                                        text: r.content.clone(),
-                                    },
-                                    ToolResultContentBlock::Image {
-                                        source: ImageSource {
-                                            source_type: "base64".to_string(),
-                                            media_type,
-                                            data,
-                                        },
-                                    },
-                                ])
-                            } else {
-                                ToolResultContent::Text(r.content.clone())
-                            };
                             blocks.push(ContentBlock::ToolResult {
                                 tool_use_id: r.tool_call_id,
-                                content,
+                                content: r.content,
                                 is_error: r.is_error,
                                 cache_control: None,
                             });
@@ -561,10 +541,6 @@ impl Provider for AnthropicProvider {
         "anthropic"
     }
 
-    fn supports_tool_result_images(&self) -> bool {
-        true
-    }
-
     fn supports_vision(&self) -> bool {
         true
     }
@@ -662,8 +638,6 @@ struct SessionToolResult {
     content: String,
     #[serde(default)]
     is_error: bool,
-    #[serde(default)]
-    image_url: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -755,21 +729,12 @@ enum ContentBlock {
     #[serde(rename = "tool_result")]
     ToolResult {
         tool_use_id: String,
-        content: ToolResultContent,
+        content: String,
         #[serde(skip_serializing_if = "std::ops::Not::not")]
         is_error: bool,
         #[serde(skip_serializing_if = "Option::is_none")]
         cache_control: Option<CacheControl>,
     },
-}
-
-/// Anthropic tool_result content: a plain string or an array of content blocks
-/// (text + image). The API accepts both formats.
-#[derive(Debug, Serialize)]
-#[serde(untagged)]
-enum ToolResultContent {
-    Text(String),
-    Blocks(Vec<ToolResultContentBlock>),
 }
 
 /// Put the one message cache marker on the last block of the last message.
@@ -795,16 +760,6 @@ fn mark_last_message(messages: &mut [AnthropicMessage]) {
         // A thinking block can't carry a cache marker.
         Some(ContentBlock::Thinking { .. }) | Some(ContentBlock::RedactedThinking { .. }) | None => {}
     }
-}
-
-/// Content block types allowed inside a tool_result content array.
-#[derive(Debug, Serialize)]
-#[serde(tag = "type")]
-enum ToolResultContentBlock {
-    #[serde(rename = "text")]
-    Text { text: String },
-    #[serde(rename = "image")]
-    Image { source: ImageSource },
 }
 
 #[derive(Debug, Serialize)]

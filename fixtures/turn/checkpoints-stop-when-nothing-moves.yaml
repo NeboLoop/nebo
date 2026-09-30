@@ -1,0 +1,11 @@
+id: checkpoints-stop-when-nothing-moves
+name: "Two checkpoints with no progress, then the turn stops and says so"
+description: |
+  The safety net under the summarize-and-re-read loop: a turn that
+  checkpoints twice with nothing but reads between them does not take a
+  third summary. It ends and tells the owner plainly that the material is
+  too large to hold in one go and to ask for a smaller piece, with no
+  retries spending usage.
+target_component: harness
+proof: harness::turn::tests::checkpoints_never_fire_more_than_twice_without_progress
+conversation: []

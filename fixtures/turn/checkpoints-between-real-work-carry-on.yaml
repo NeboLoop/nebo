@@ -1,0 +1,9 @@
+id: checkpoints-between-real-work-carry-on
+name: "Checkpoints between real work never stop the turn"
+description: |
+  A call that changes something is progress: a long turn that checkpoints
+  between writes keeps going and finishes; only reading, summarizing and
+  reading again trips the breaker.
+target_component: harness
+proof: harness::turn::tests::checkpoints_between_real_work_never_stop_the_turn
+conversation: []

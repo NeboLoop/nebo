@@ -1,0 +1,11 @@
+id: an-attached-picture-is-read-once
+name: "A picture the owner attaches is read once and the model reads text"
+description: |
+  A picture attached in chat (desktop, phone or web) is read by the vision
+  helper once, as the message is stored. The row keeps the reading (the
+  owner's app still shows the picture from the attachment), and every
+  later request reads it in the message's text, never as a picture and
+  never described again on each request.
+target_component: harness
+proof: harness::turn::tests::an_attached_picture_is_read_once_and_the_model_reads_text
+conversation: []

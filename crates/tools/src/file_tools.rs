@@ -288,8 +288,8 @@ impl DynTool for ReadFileTool {
          - Reads up to 2000 lines by default; for large files read only the part you need.\n\
          - Lines come back numbered from 1.\n\
          - Reads images, PDFs, Word/Excel/PowerPoint files and notebooks.\n\
-         - A directory, missing file or empty file returns an error instead of content.\n\
-         - Don't re-read a file you just edited to check it — edit_file and write_file fail loudly if the change didn't apply."
+         - A directory, missing or empty file is an error.\n\
+         - Don't re-read a file you just edited: edit_file and write_file fail loudly if it didn't apply."
             .to_string()
     }
 
@@ -299,7 +299,8 @@ impl DynTool for ReadFileTool {
             "properties": {
                 "path": { "type": "string", "description": "Absolute path of the file to read." },
                 "offset": { "type": "integer", "description": "Line to start from. Only for files too large to read at once." },
-                "limit": { "type": "integer", "description": "Number of lines to read. Only for files too large to read at once." }
+                "limit": { "type": "integer", "description": "Number of lines to read, with offset." },
+                "question": { "type": "string", "description": "Images: what to look for." }
             },
             "required": ["path"]
         })

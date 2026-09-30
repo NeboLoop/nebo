@@ -1,0 +1,16 @@
+id: a-large-image-is-read-by-the-vision-helper
+name: "A large plan image is read by the vision helper and the work finishes"
+description: |
+  Live 2026-09-30 (v0.16.1, a landscape designer employee): reading a plot
+  plan PNG put the picture's data URI in the conversation, the step after
+  it estimated at over a million tokens, so every step checkpointed; the
+  summary dropped the picture, the employee read it again, and the plans
+  were never drawn ("Read ... .png" / "Earlier conversation summarized",
+  a dozen times). No image enters the conversation now: a 4 MB plan read
+  goes to the vision helper once, the result carries its written reading
+  and size, the work finishes with no checkpoint, and no request the main
+  loop sends carries a picture. A question about the plan later is another
+  look by the helper (read_file with question), answered in text.
+target_component: harness
+proof: harness::turn::tests::a_large_plan_image_is_read_by_the_helper_and_the_work_finishes
+conversation: []

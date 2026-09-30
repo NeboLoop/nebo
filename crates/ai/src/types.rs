@@ -792,17 +792,11 @@ pub trait Provider: Send + Sync {
         false
     }
 
-    /// Whether this provider supports images in tool result content blocks.
-    /// When true, the runner will pass screenshot images directly to the model
-    /// instead of converting them to text via the sidecar vision model.
-    fn supports_tool_result_images(&self) -> bool {
-        false
-    }
-
-    /// Whether this provider puts `Message::images` on the wire. When false the
-    /// runner describes attached images through the sidecar first — a provider
-    /// that ignores the field would otherwise drop the user's image in silence
-    /// and answer as if nothing had been attached.
+    /// Whether this provider puts `Message::images` on the wire. Only the
+    /// vision helper ever sends an image (an employee's conversation holds
+    /// its written reading, never the picture); on a provider that doesn't,
+    /// the helper says it could not read the image instead of answering as
+    /// if it had seen nothing.
     fn supports_vision(&self) -> bool {
         false
     }
@@ -898,35 +892,6 @@ impl ProviderError {
     }
 }
 
-/// Check if an error indicates context window overflow.
-/// Resolve a tool-result image reference into `(media_type, base64_data)` for
-/// provider payloads. Accepts a `data:` URI or a local image file path (format
-/// sniffed from magic bytes, never the extension). Returns None for anything
-/// unreadable, non-image, or over the 5MB provider base64 cap — callers omit
-/// the image block instead of sending garbage bytes labeled image/png.
-pub fn image_source_to_base64(raw: &str) -> Option<(String, String)> {
-    use base64::Engine;
-    const MAX_BASE64_LEN: usize = 5 * 1024 * 1024; // Anthropic hard limit
-    if let Some(rest) = raw.strip_prefix("data:") {
-        let (header, data) = rest.split_once(',')?;
-        if data.len() > MAX_BASE64_LEN {
-            return None;
-        }
-        let media_type = header.strip_suffix(";base64").unwrap_or(header);
-        return Some((media_type.to_string(), data.to_string()));
-    }
-    if raw.starts_with("http://") || raw.starts_with("https://") {
-        return None;
-    }
-    let bytes = std::fs::read(raw).ok()?;
-    let media_type = sniff_image_mime(&bytes)?;
-    let data = base64::engine::general_purpose::STANDARD.encode(&bytes);
-    if data.len() > MAX_BASE64_LEN {
-        return None;
-    }
-    Some((media_type.to_string(), data))
-}
-
 /// Identify an image from its magic bytes. Returns None for anything that is
 /// not an image a provider will accept — never trust a declared MIME type.
 pub fn sniff_image_mime(bytes: &[u8]) -> Option<&'static str> {
@@ -945,6 +910,7 @@ pub fn sniff_image_mime(bytes: &[u8]) -> Option<&'static str> {
     None
 }
 
+/// Check if an error indicates context window overflow.
 pub fn is_context_overflow(err: &ProviderError) -> bool {
     matches!(err, ProviderError::ContextOverflow)
         || matches!(err, ProviderError::Api { code, message, .. }
@@ -1146,30 +1112,6 @@ impl Provider for ProfiledProvider {
 
     async fn stream(&self, req: &ChatRequest) -> Result<EventReceiver, ProviderError> {
         self.inner.stream(req).await
-    }
-}
-
-#[cfg(test)]
-mod image_source_tests {
-    use super::*;
-
-    #[test]
-    fn data_uri_passes_through_and_junk_is_rejected() {
-        let (mt, data) = image_source_to_base64("data:image/jpeg;base64,/9j/AAAA").unwrap();
-        assert_eq!(mt, "image/jpeg");
-        assert_eq!(data, "/9j/AAAA");
-        // Non-data, non-file strings must be dropped, not sent as fake base64 PNG
-        assert!(image_source_to_base64("https://example.com/x.png").is_none());
-        assert!(image_source_to_base64("/nonexistent/path.png").is_none());
-        // A real file that isn't an image must be rejected by magic-byte sniff
-        let tmp = std::env::temp_dir().join("nebo_img_norm_test.png");
-        std::fs::write(&tmp, b"definitely not a png").unwrap();
-        assert!(image_source_to_base64(tmp.to_str().unwrap()).is_none());
-        // A real PNG-magic file round-trips to a proper data pair
-        std::fs::write(&tmp, b"\x89PNG\r\n\x1a\nrest-of-file").unwrap();
-        let (mt, _) = image_source_to_base64(tmp.to_str().unwrap()).unwrap();
-        assert_eq!(mt, "image/png");
-        let _ = std::fs::remove_file(&tmp);
     }
 }
 

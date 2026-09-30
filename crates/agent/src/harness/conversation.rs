@@ -390,6 +390,9 @@ pub(crate) struct InputRow<'a> {
     pub text: &'a str,
     pub images: &'a [ai::ImageContent],
     pub attachments: &'a [comm::wire::Attachment],
+    /// The vision helper's reading of each picture, in order
+    /// ([`IMAGE_READINGS`]): what the model reads for them.
+    pub readings: &'a [String],
     /// A prompt the platform wrote: the model reads it, the owner's thread
     /// hides it.
     pub hidden: bool,
@@ -426,6 +429,17 @@ pub(crate) fn mark_owner(metadata: &mut serde_json::Value) {
 pub(crate) fn persist_input(sessions: &SessionManager, session_id: &str, input: InputRow<'_>) -> Result<(), String> {
     let metadata = images_to_store(input.images, input.attachments)
         .map(|images| serde_json::json!({ "images": images }).to_string());
+
+    let metadata = if input.readings.is_empty() {
+        metadata
+    } else {
+        let mut value: serde_json::Value = metadata
+            .as_deref()
+            .and_then(|m| serde_json::from_str(m).ok())
+            .unwrap_or_else(|| serde_json::json!({}));
+        value[IMAGE_READINGS] = serde_json::json!(input.readings);
+        Some(value.to_string())
+    };
 
     let metadata = if input.attachments.is_empty() {
         metadata
@@ -549,25 +563,12 @@ pub(crate) fn convert_messages(messages: &[ChatMessage], model: &str) -> Vec<Mes
                 .metadata
                 .as_ref()
                 .and_then(|m| serde_json::from_str::<serde_json::Value>(m).ok());
-            // A picture the owner attached is stored once, as an attachment;
-            // read it back from the upload store so the model sees it again on
-            // every later turn. `images` is the older shape (rows written
-            // before attachments carried an id) and rows that still have it.
-            let from_attachments: Vec<ai::ImageContent> = meta
-                .as_ref()
-                .and_then(|v| v.get("attachments").cloned())
-                .and_then(|v| serde_json::from_value::<Vec<comm::wire::Attachment>>(v).ok())
-                .unwrap_or_default()
-                .iter()
-                .filter_map(crate::uploads::image)
-                .collect();
-            let images = if from_attachments.is_empty() {
-                meta.as_ref()
-                    .and_then(|v| v.get("images").cloned())
-                    .and_then(|v| serde_json::from_value::<Vec<ai::ImageContent>>(v).ok())
-            } else {
-                Some(from_attachments)
-            };
+            // No image reaches the model: a picture the owner attached is
+            // read as the vision helper's reading stored with the row
+            // (`sidecar`), and a tool result's picture is already read into
+            // its text, so its `image_url` stays behind for the owner's app.
+            let tool_results = tool_results.map(without_images);
+            let pictures = pictures_of(meta.as_ref());
             // A message that arrived while the turn was running is stored as
             // sent; the model reads it framed with who sent it. A colleague's
             // message is stored as their words, marked as theirs in its
@@ -579,6 +580,7 @@ pub(crate) fn convert_messages(messages: &[ChatMessage], model: &str) -> Vec<Mes
                     _ => msg.content.clone(),
                 },
             };
+            let content = if pictures.is_empty() { content } else { format!("{content}\n\n{}", pictures.join("\n\n")) };
 
             let thinking = thinking_for(meta.as_ref(), model);
             Some(Message {
@@ -586,11 +588,61 @@ pub(crate) fn convert_messages(messages: &[ChatMessage], model: &str) -> Vec<Mes
                 content,
                 tool_calls,
                 tool_results,
-                images,
+                images: None,
                 thinking,
             })
         })
         .collect()
+}
+
+/// The metadata key a user row keeps the vision helper's readings of its
+/// pictures under, one per picture, in order.
+pub(crate) const IMAGE_READINGS: &str = "imageReadings";
+
+/// Tool results as the model reads them: every `image_url` left out (the
+/// picture was read into the result's text when it ran).
+fn without_images(mut results: serde_json::Value) -> serde_json::Value {
+    if let Some(rows) = results.as_array_mut() {
+        for row in rows.iter_mut().filter_map(|r| r.as_object_mut()) {
+            row.remove("image_url");
+        }
+    }
+    results
+}
+
+/// What the model reads for the pictures a user row carries: the vision
+/// helper's reading of each, stored with the row. A picture from before
+/// readings were stored (or one the helper could not read) is named, with
+/// where its file is when this machine has it, so the model can look at it
+/// with `read_file` instead of claiming there was none.
+fn pictures_of(meta: Option<&serde_json::Value>) -> Vec<String> {
+    let Some(meta) = meta else { return Vec::new() };
+    let readings: Vec<String> = meta
+        .get(IMAGE_READINGS)
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .unwrap_or_default();
+    if !readings.is_empty() {
+        return readings;
+    }
+    let attached: Vec<comm::wire::Attachment> = meta
+        .get("attachments")
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .unwrap_or_default();
+    let mut notes: Vec<String> = attached
+        .iter()
+        .filter(|a| a.mime_type.starts_with("image/"))
+        .map(|a| {
+            let reference = crate::uploads::by_id(&a.file_id)
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_else(|| a.filename.clone());
+            crate::sidecar::note(&reference, None, None)
+        })
+        .collect();
+    if notes.is_empty() {
+        let stored = meta.get("images").and_then(|v| v.as_array()).map_or(0, Vec::len);
+        notes = (0..stored).map(|_| crate::sidecar::note("an image the owner attached", None, None)).collect();
+    }
+    notes
 }
 
 /// Sanitize message ordering: ensure tool results immediately follow their
@@ -823,7 +875,7 @@ mod tests {
         persist_input(
             &sessions,
             &sid,
-            InputRow { text: &text, images: &[], attachments: &[], hidden: false, by_owner: true, coworker: None },
+            InputRow { text: &text, images: &[], attachments: &[], readings: &[], hidden: false, by_owner: true, coworker: None },
         )
         .expect("stored");
         let rows = sessions.get_messages(&sid).expect("rows");
@@ -1054,7 +1106,7 @@ mod tests {
 
 #[cfg(test)]
 mod attachment_storage_tests {
-    use super::images_to_store;
+    use super::{ChatMessage, IMAGE_READINGS, convert_messages, images_to_store};
 
     fn attachment(mime: &str) -> comm::wire::Attachment {
         comm::wire::Attachment {
@@ -1100,5 +1152,50 @@ mod attachment_storage_tests {
     #[test]
     fn a_message_without_pictures_stores_none() {
         assert!(images_to_store(&[], &[]).is_none());
+    }
+
+    fn stored_row(role: &str, content: &str, metadata: Option<serde_json::Value>, tool_results: Option<serde_json::Value>) -> ChatMessage {
+        ChatMessage {
+            id: uuid::Uuid::new_v4().to_string(),
+            chat_id: "c".into(),
+            role: role.into(),
+            content: content.into(),
+            metadata: metadata.map(|m| m.to_string()),
+            created_at: 0,
+            day_marker: None,
+            tool_calls: None,
+            tool_results: tool_results.map(|r| r.to_string()),
+            token_estimate: None,
+            html: None,
+        }
+    }
+
+    /// The guard: whatever a row carries (the owner's attached picture, its
+    /// bytes, a tool result's data URI), the model reads text. A read
+    /// picture is its reading; one with no reading is named, never dropped
+    /// in silence.
+    #[test]
+    fn no_picture_ever_reaches_the_model() {
+        let rows = vec![
+            stored_row(
+                "user",
+                "What is this?",
+                Some(serde_json::json!({ "images": [picture()], "attachments": [attachment("image/jpeg")], IMAGE_READINGS: ["[Image: photo.jpg] a plot plan"] })),
+                None,
+            ),
+            stored_row(
+                "tool",
+                "",
+                None,
+                Some(serde_json::json!([{ "tool_call_id": "c1", "content": "[image: /p.png]\n\n[Image: /p.png] reading", "image_url": "data:image/png;base64,AAAA" }])),
+            ),
+            stored_row("user", "An older one", Some(serde_json::json!({ "images": [picture()] })), None),
+        ];
+        let sent = convert_messages(&rows, "");
+        assert!(sent.iter().all(|m| m.images.is_none()));
+        assert!(sent[0].content.starts_with("What is this?") && sent[0].content.contains("a plot plan"));
+        let results = sent[1].tool_results.as_ref().unwrap().to_string();
+        assert!(!results.contains("image_url") && results.contains("reading"), "{results}");
+        assert!(sent[2].content.contains("an image the owner attached") && sent[2].content.contains("could not read it"));
     }
 }

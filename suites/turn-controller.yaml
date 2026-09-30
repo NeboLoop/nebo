@@ -28,6 +28,11 @@ fixtures:
   - ../fixtures/tools/agent-spawn-parallel.yaml
   # Checkpoint, recap, one reminder path
   - ../fixtures/turn/checkpoint-keeps-every-owner-message.yaml
+  - ../fixtures/turn/checkpoints-stop-when-nothing-moves.yaml
+  - ../fixtures/turn/checkpoints-between-real-work-carry-on.yaml
+  # No image in the conversation: the vision helper reads it
+  - ../fixtures/turn/a-large-image-is-read-by-the-vision-helper.yaml
+  - ../fixtures/turn/an-attached-picture-is-read-once.yaml
   - ../fixtures/turn/recap-never-in-context.yaml
   - ../fixtures/turn/no-steering-in-stored-thread.yaml
   # Tool surface
