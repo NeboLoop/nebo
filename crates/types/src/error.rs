@@ -49,6 +49,12 @@ pub enum NeboError {
     #[error("validation error: {0}")]
     Validation(String),
 
+    // A remote server Nebo depends on (an MCP server, a webhook target, …)
+    // failed, timed out, or is untrustworthy. The message is already written
+    // for the person reading it — same rule as `Validation`.
+    #[error("{0}")]
+    Upstream(String),
+
     // Generic
     #[error("{0}")]
     Internal(String),
@@ -67,7 +73,7 @@ impl NeboError {
     /// message, not a prefix plus one.
     pub fn client_message(&self) -> String {
         match self {
-            Self::Validation(message) => message.clone(),
+            Self::Validation(message) | Self::Upstream(message) => message.clone(),
             other => other.to_string(),
         }
     }
@@ -81,6 +87,7 @@ impl NeboError {
             Self::RateLimit => 429,
             Self::ContextOverflow => 413,
             Self::Validation(_) => 400,
+            Self::Upstream(_) => 502,
             _ => 500,
         }
     }
