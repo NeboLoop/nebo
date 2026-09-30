@@ -848,7 +848,7 @@
     ></div>
 
     <div
-      class="relative w-full max-w-sm max-h-[85vh] flex flex-col rounded-2xl bg-base-100 border border-base-content/10 shadow-2xl overflow-hidden"
+      class="relative w-full max-w-sm h-[min(36rem,85vh)] flex flex-col rounded-2xl bg-base-100 border border-base-content/10 shadow-2xl overflow-hidden"
       role="presentation"
       onkeydown={handleKeydown}
     >
@@ -864,8 +864,8 @@
         </button>
       </div>
 
-      <!-- Body -->
-      <div class="px-5 py-6 overflow-y-auto">
+      <!-- Body: fixed-height window; the list scrolls inside, the footer stays put -->
+      <div class="flex-1 min-h-0 px-5 py-6 overflow-y-auto">
         {#if phase === 'installing'}
           <div class="flex flex-col items-center gap-4">
             {#if progressTotal > 1}
