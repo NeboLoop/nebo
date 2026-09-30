@@ -19,6 +19,13 @@
 //! (`transport: "binary"`), so no base64 framing and no resampling anywhere
 //! in the chain. The JSON-transport delta events are still handled as a
 //! fallback in case the server ignores the transport hint.
+//!
+//! The line is kept for the whole call. It is pinged while the call is quiet
+//! (a muted owner listening to his employee work sends no audio for minutes),
+//! and a line that drops mid-call anyway is dialled again at once: a new
+//! session, the same configuration, and the call so far in its instructions.
+//! The client hears the next reply, not the drop; only when every redial fails
+//! does it get [`ConversationEvent::Error`], in plain words.
 
 use base64::Engine as _;
 use bytes::Bytes;
@@ -31,7 +38,7 @@ use tokio_tungstenite::tungstenite::protocol::Message;
 use tracing::{debug, info, warn};
 
 use crate::VoiceError;
-use crate::conversation::ConversationEvent;
+use crate::conversation::{CALL_ENDED, ConversationEvent};
 
 /// Wire audio format for both directions of a realtime session.
 ///
@@ -164,10 +171,28 @@ pub enum RealtimeCommand {
 }
 
 /// Start a realtime session. Returns the command sender and the event
-/// receiver; the socket task runs until `Close`, upstream close, or error.
+/// receiver; the socket task runs until `Close`, the client going away, or a
+/// dropped line that could not be brought back.
 pub async fn connect(
     cfg: RealtimeConfig,
 ) -> Result<(mpsc::Sender<RealtimeCommand>, mpsc::Receiver<ConversationEvent>), VoiceError> {
+    let ws = dial(&cfg).await?;
+    info!(endpoint = %cfg.endpoint, model = %cfg.model, "realtime session connected");
+
+    let (cmd_tx, cmd_rx) = mpsc::channel::<RealtimeCommand>(64);
+    let (event_tx, event_rx) = mpsc::channel::<ConversationEvent>(64);
+
+    tokio::spawn(run_session(ws, cfg, cmd_rx, event_tx));
+
+    Ok((cmd_tx, event_rx))
+}
+
+type Socket = tokio_tungstenite::WebSocketStream<
+    tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+>;
+
+/// Open the socket to the realtime endpoint.
+async fn dial(cfg: &RealtimeConfig) -> Result<Socket, VoiceError> {
     let mut url = format!("{}?model={}", cfg.endpoint, cfg.model);
     if let Some(cid) = &cfg.conversation_id {
         url.push_str(&format!("&conversation_id={}", cid));
@@ -196,14 +221,7 @@ pub async fn connect(
     let (ws, _resp) = tls::connect_ws(request)
         .await
         .map_err(|e| VoiceError::Realtime(format!("realtime dial failed: {e}")))?;
-    info!(endpoint = %cfg.endpoint, model = %cfg.model, "realtime session connected");
-
-    let (cmd_tx, cmd_rx) = mpsc::channel::<RealtimeCommand>(64);
-    let (event_tx, event_rx) = mpsc::channel::<ConversationEvent>(64);
-
-    tokio::spawn(run_session(ws, cfg, cmd_rx, event_tx));
-
-    Ok((cmd_tx, event_rx))
+    Ok(ws)
 }
 
 /// Build the `session.update` frame from the config.
@@ -241,138 +259,115 @@ fn session_update(cfg: &RealtimeConfig) -> Value {
     json!({ "type": "session.update", "session": session })
 }
 
+/// A ping goes to the realtime endpoint this often. A quiet line is not an
+/// idle one: the owner can sit muted for minutes while his employee works,
+/// and a socket that carries nothing for that long is closed by whatever
+/// counts silence on the way (on 2026-09-30 the relay's socket closed a live
+/// call after two minutes with no audio from the phone). Every ping proves
+/// the call is still there, and its pong proves the far end is.
+#[cfg(not(test))]
+const PING_EVERY: std::time::Duration = std::time::Duration::from_secs(15);
+#[cfg(test)]
+const PING_EVERY: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// Nothing at all heard from the far end for this long, pongs included: the
+/// line is dead even though no error said so, and it is dialled again.
+#[cfg(not(test))]
+const DEAD_AFTER: std::time::Duration = std::time::Duration::from_secs(40);
+#[cfg(test)]
+const DEAD_AFTER: std::time::Duration = std::time::Duration::from_millis(350);
+
+/// A line that drops mid-call is dialled again after each of these in turn,
+/// all within a couple of seconds; after the last one fails the call ends.
+#[cfg(not(test))]
+const REDIAL_DELAYS: [std::time::Duration; 3] = [
+    std::time::Duration::ZERO,
+    std::time::Duration::from_millis(500),
+    std::time::Duration::from_millis(1500),
+];
+#[cfg(test)]
+const REDIAL_DELAYS: [std::time::Duration; 3] = [
+    std::time::Duration::ZERO,
+    std::time::Duration::from_millis(10),
+    std::time::Duration::from_millis(20),
+];
+
+/// How long one redial may take before it counts as failed.
+const DIAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(4);
+
+/// A line that stayed up this long was a good one: the next drop gets the
+/// full set of redials again. One that drops sooner shares the count, so a
+/// far end that takes the call and drops it at once cannot loop forever.
+const STABLE_AFTER: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// How much of the call so far a redialled session is given, at most.
+const RECAP_TURNS: usize = 16;
+const RECAP_CHARS: usize = 4_000;
+
+/// How one socket's part of the call ended.
+enum Ended {
+    /// The call is over: `Close`, the command channel gone, or the client
+    /// gone (the event channel closed).
+    Done,
+    /// The line dropped under a live call. The reason is for the log.
+    Lost(String),
+}
+
+/// The session task: one call, over as many sockets as it takes. A line that
+/// drops mid-call is dialled again (a new session, the same configuration,
+/// and the call so far) without the client seeing anything but the next
+/// reply; only when the redials run out does the client hear that the call
+/// ended, in plain words, with the reason in the log.
 async fn run_session(
-    ws: tokio_tungstenite::WebSocketStream<
-        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
-    >,
+    ws: Socket,
     cfg: RealtimeConfig,
     mut cmd_rx: mpsc::Receiver<RealtimeCommand>,
     event_tx: mpsc::Sender<ConversationEvent>,
 ) {
-    let (mut sink, mut stream) = ws.split();
-
-    // Configure the session before any audio flows.
-    if let Err(e) = sink
-        .send(Message::Text(session_update(&cfg).to_string().into()))
-        .await
-    {
-        let _ = event_tx
-            .send(ConversationEvent::Error(format!("session.update failed: {e}")))
-            .await;
-        return;
-    }
-
     let mut state = SessionState::default();
+    let mut memory = CallMemory::default();
+    let mut deferred: Vec<RealtimeCommand> = Vec::new();
+    let mut ws = Some(ws);
+    let mut failures = 0usize;
 
-    loop {
-        tokio::select! {
-            cmd = cmd_rx.recv() => {
-                let Some(cmd) = cmd else { break };
-                let result = match cmd {
-                    RealtimeCommand::Audio(pcm) => {
-                        // transport: "binary" — raw codec bytes, no base64.
-                        sink.send(Message::Binary(pcm.to_vec().into())).await
-                    }
-                    RealtimeCommand::Text(text) => {
-                        let item = json!({
-                            "type": "conversation.item.create",
-                            "item": {
-                                "type": "message",
-                                "role": "user",
-                                "content": [{ "type": "input_text", "text": text }],
-                            },
-                        });
-                        match sink.send(Message::Text(item.to_string().into())).await {
-                            Ok(()) => {
-                                sink.send(Message::Text(
-                                    json!({ "type": "response.create" }).to_string().into(),
-                                ))
-                                .await
-                            }
-                            Err(e) => Err(e),
-                        }
-                    }
-                    RealtimeCommand::Interrupt { played_ms } => {
-                        let mut sent = Ok(());
-                        for frame in interrupt_frames(
-                            &mut state,
-                            played_ms,
-                            std::time::Instant::now(),
-                            cfg.audio_format,
-                        ) {
-                            sent = sink.send(Message::Text(frame.to_string().into())).await;
-                            if sent.is_err() {
-                                break;
-                            }
-                        }
-                        sent
-                    }
-                    RealtimeCommand::ToolOutput { call_id, output } => {
-                        let item = json!({
-                            "type": "conversation.item.create",
-                            "item": {
-                                "type": "function_call_output",
-                                "call_id": call_id,
-                                "output": output,
-                            },
-                        });
-                        sink.send(Message::Text(item.to_string().into())).await
-                    }
-                    RealtimeCommand::ToolOutputsDone => {
-                        sink.send(Message::Text(
-                            json!({ "type": "response.create" }).to_string().into(),
-                        ))
-                        .await
-                    }
-                    RealtimeCommand::Close => {
-                        let _ = sink.send(Message::Close(None)).await;
-                        break;
-                    }
-                };
-                if let Err(e) = result {
-                    let _ = event_tx
-                        .send(ConversationEvent::Error(format!("realtime send failed: {e}")))
-                        .await;
-                    break;
-                }
+    while let Some(socket) = ws.take() {
+        let up_since = std::time::Instant::now();
+        let ended = drive_socket(
+            socket,
+            &cfg,
+            &mut cmd_rx,
+            &event_tx,
+            &mut state,
+            &mut memory,
+            &mut deferred,
+        )
+        .await;
+        let Ended::Lost(reason) = ended else { break };
+        if up_since.elapsed() >= STABLE_AFTER {
+            failures = 0;
+        }
+        warn!(reason = %reason, "realtime line dropped mid-call; dialling again");
+
+        // What the dropped socket owed the client is settled now: the
+        // utterance in progress ends with the words heard so far, and a
+        // reply that was playing stops. The client stays on the call.
+        if settle_lost_socket(&event_tx, &mut state, &mut memory).await.is_err() {
+            break;
+        }
+
+        match redial(&cfg, &mut cmd_rx, &mut deferred, &mut failures).await {
+            Redial::Connected(socket) => {
+                info!(endpoint = %cfg.endpoint, "realtime line re-established; the call carries on");
+                memory.resumed = true;
+                ws = Some(*socket);
             }
-
-            msg = stream.next() => {
-                match msg {
-                    Some(Ok(Message::Binary(data))) => {
-                        // transport: "binary" — model audio in the session's
-                        // format, raw.
-                        if reply_audio(
-                            Bytes::from(data),
-                            std::time::Instant::now(),
-                            &event_tx,
-                            &mut state,
-                        )
-                        .await
-                        .is_err()
-                        {
-                            break;
-                        }
-                    }
-                    Some(Ok(Message::Text(text))) => {
-                        if handle_server_event(&text, &event_tx, &mut state).await.is_err()
-                        {
-                            break;
-                        }
-                    }
-                    Some(Ok(Message::Close(frame))) => {
-                        info!(?frame, "realtime upstream closed");
-                        break;
-                    }
-                    Some(Ok(_)) => {} // ping/pong handled by tungstenite
-                    Some(Err(e)) => {
-                        let _ = event_tx
-                            .send(ConversationEvent::Error(format!("realtime stream error: {e}")))
-                            .await;
-                        break;
-                    }
-                    None => break,
-                }
+            Redial::Done => break,
+            Redial::Failed => {
+                warn!("realtime line could not be re-established; ending the call");
+                let _ = event_tx
+                    .send(ConversationEvent::Error(CALL_ENDED.to_string()))
+                    .await;
+                break;
             }
         }
     }
@@ -383,6 +378,391 @@ async fn run_session(
     }
 
     debug!("realtime session task ended");
+}
+
+/// One socket's part of the call: configure it (on a redialled socket, with
+/// the call so far), then relay until the call ends or the line drops.
+async fn drive_socket(
+    socket: Socket,
+    cfg: &RealtimeConfig,
+    cmd_rx: &mut mpsc::Receiver<RealtimeCommand>,
+    event_tx: &mpsc::Sender<ConversationEvent>,
+    state: &mut SessionState,
+    memory: &mut CallMemory,
+    deferred: &mut Vec<RealtimeCommand>,
+) -> Ended {
+    let (mut sink, mut stream) = socket.split();
+
+    // Configure the session before any audio flows.
+    let update = if memory.resumed {
+        let mut resumed = cfg.clone();
+        resumed.instructions.push_str(&memory.recap());
+        session_update(&resumed)
+    } else {
+        session_update(cfg)
+    };
+    if let Err(e) = sink.send(Message::Text(update.to_string().into())).await {
+        return Ended::Lost(format!("session.update failed: {e}"));
+    }
+    // A reply that was owed when the line dropped is asked for again: the
+    // new session has the question in the call so far.
+    if std::mem::take(&mut memory.reanswer)
+        && let Err(e) = sink
+            .send(Message::Text(json!({ "type": "response.create" }).to_string().into()))
+            .await
+    {
+        return Ended::Lost(format!("realtime send failed: {e}"));
+    }
+    // What the handler sent while the line was being dialled goes out now.
+    for cmd in std::mem::take(deferred) {
+        match send_command(&mut sink, cmd, cfg, state, memory).await {
+            Ok(true) => {}
+            Ok(false) => return Ended::Done,
+            Err(e) => return Ended::Lost(format!("realtime send failed: {e}")),
+        }
+    }
+
+    let mut ping = tokio::time::interval_at(tokio::time::Instant::now() + PING_EVERY, PING_EVERY);
+    ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut last_heard = std::time::Instant::now();
+
+    loop {
+        tokio::select! {
+            cmd = cmd_rx.recv() => {
+                let Some(cmd) = cmd else { return Ended::Done };
+                match send_command(&mut sink, cmd, cfg, state, memory).await {
+                    Ok(true) => {}
+                    Ok(false) => return Ended::Done,
+                    Err(e) => return Ended::Lost(format!("realtime send failed: {e}")),
+                }
+            }
+
+            msg = stream.next() => {
+                last_heard = std::time::Instant::now();
+                match msg {
+                    Some(Ok(Message::Binary(data))) => {
+                        // transport: "binary" — model audio in the session's
+                        // format, raw.
+                        if reply_audio(
+                            Bytes::from(data),
+                            std::time::Instant::now(),
+                            event_tx,
+                            state,
+                        )
+                        .await
+                        .is_err()
+                        {
+                            return Ended::Done;
+                        }
+                    }
+                    Some(Ok(Message::Text(text))) => {
+                        memory.observe(&text);
+                        if handle_server_event(&text, event_tx, state).await.is_err() {
+                            return Ended::Done;
+                        }
+                    }
+                    Some(Ok(Message::Close(frame))) => {
+                        return Ended::Lost(format!("closed by the far end: {frame:?}"));
+                    }
+                    Some(Ok(_)) => {} // ping/pong handled by tungstenite
+                    Some(Err(e)) => return Ended::Lost(format!("realtime stream error: {e}")),
+                    None => return Ended::Lost("realtime stream ended".into()),
+                }
+            }
+
+            _ = ping.tick() => {
+                if last_heard.elapsed() > DEAD_AFTER {
+                    return Ended::Lost(format!(
+                        "nothing heard for {} ms, pongs included",
+                        last_heard.elapsed().as_millis()
+                    ));
+                }
+                if let Err(e) = sink.send(Message::Ping(Vec::new().into())).await {
+                    return Ended::Lost(format!("realtime ping failed: {e}"));
+                }
+            }
+        }
+    }
+}
+
+/// Send one command upstream. `Ok(false)`: the call is closed.
+async fn send_command<S>(
+    sink: &mut S,
+    cmd: RealtimeCommand,
+    cfg: &RealtimeConfig,
+    state: &mut SessionState,
+    memory: &mut CallMemory,
+) -> Result<bool, tokio_tungstenite::tungstenite::Error>
+where
+    S: futures::Sink<Message, Error = tokio_tungstenite::tungstenite::Error> + Unpin,
+{
+    match cmd {
+        RealtimeCommand::Audio(pcm) => {
+            // transport: "binary" — raw codec bytes, no base64.
+            sink.send(Message::Binary(pcm.to_vec().into())).await?;
+        }
+        RealtimeCommand::Text(text) => {
+            let item = json!({
+                "type": "conversation.item.create",
+                "item": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{ "type": "input_text", "text": text }],
+                },
+            });
+            sink.send(Message::Text(item.to_string().into())).await?;
+            sink.send(Message::Text(
+                json!({ "type": "response.create" }).to_string().into(),
+            ))
+            .await?;
+        }
+        RealtimeCommand::Interrupt { played_ms } => {
+            for frame in interrupt_frames(
+                state,
+                played_ms,
+                std::time::Instant::now(),
+                cfg.audio_format,
+            ) {
+                sink.send(Message::Text(frame.to_string().into())).await?;
+            }
+        }
+        RealtimeCommand::ToolOutput { call_id, output } => {
+            let item = if memory.orphans.remove(&call_id) {
+                // The call it answers was made on a line that dropped: the
+                // session on this one never saw it, so the result arrives
+                // as words, not as that call's output.
+                json!({
+                    "type": "conversation.item.create",
+                    "item": {
+                        "type": "message",
+                        "role": "user",
+                        "content": [{
+                            "type": "input_text",
+                            "text": format!("(The result of the task you started earlier: {output})"),
+                        }],
+                    },
+                })
+            } else {
+                memory.open_calls.remove(&call_id);
+                json!({
+                    "type": "conversation.item.create",
+                    "item": {
+                        "type": "function_call_output",
+                        "call_id": call_id,
+                        "output": output,
+                    },
+                })
+            };
+            sink.send(Message::Text(item.to_string().into())).await?;
+        }
+        RealtimeCommand::ToolOutputsDone => {
+            sink.send(Message::Text(
+                json!({ "type": "response.create" }).to_string().into(),
+            ))
+            .await?;
+        }
+        RealtimeCommand::Close => {
+            let _ = sink.send(Message::Close(None)).await;
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// Close out what a dropped socket owed the client, and start the next
+/// socket's turn-taking fresh (the session is already initialized as far as
+/// the client knows).
+async fn settle_lost_socket(
+    event_tx: &mpsc::Sender<ConversationEvent>,
+    state: &mut SessionState,
+    memory: &mut CallMemory,
+) -> Result<(), ()> {
+    if state.utterance != Utterance::Closed {
+        event_tx
+            .send(ConversationEvent::TranscriptionEnd)
+            .await
+            .map_err(|_| ())?;
+    }
+    if state.playing {
+        event_tx
+            .send(ConversationEvent::PlaybackEnd)
+            .await
+            .map_err(|_| ())?;
+    }
+    memory.lost(state.response_active);
+    *state = SessionState {
+        initialized: state.initialized,
+        ..Default::default()
+    };
+    Ok(())
+}
+
+enum Redial {
+    Connected(Box<Socket>),
+    /// The call was closed while the line was being dialled.
+    Done,
+    /// Every redial failed.
+    Failed,
+}
+
+/// Dial the line again, at most `REDIAL_DELAYS.len()` times counting the
+/// failures already spent on this stretch of the call. Commands keep coming
+/// while it dials: audio and barge-ins belong to the dead line and are
+/// dropped, `Close` ends the call, everything else waits for the new line.
+async fn redial(
+    cfg: &RealtimeConfig,
+    cmd_rx: &mut mpsc::Receiver<RealtimeCommand>,
+    deferred: &mut Vec<RealtimeCommand>,
+    failures: &mut usize,
+) -> Redial {
+    while *failures < REDIAL_DELAYS.len() {
+        let delay = REDIAL_DELAYS[*failures];
+        *failures += 1;
+        let attempt = *failures;
+        let dialling = async {
+            tokio::time::sleep(delay).await;
+            tokio::time::timeout(DIAL_TIMEOUT, dial(cfg)).await
+        };
+        tokio::pin!(dialling);
+        loop {
+            tokio::select! {
+                dialled = &mut dialling => {
+                    match dialled {
+                        Ok(Ok(socket)) => return Redial::Connected(Box::new(socket)),
+                        Ok(Err(e)) => warn!(attempt, error = %e, "realtime redial failed"),
+                        Err(_) => warn!(attempt, "realtime redial timed out"),
+                    }
+                    break;
+                }
+                cmd = cmd_rx.recv() => match cmd {
+                    None | Some(RealtimeCommand::Close) => return Redial::Done,
+                    Some(RealtimeCommand::Audio(_)) | Some(RealtimeCommand::Interrupt { .. }) => {}
+                    Some(other) => deferred.push(other),
+                },
+            }
+        }
+    }
+    Redial::Failed
+}
+
+/// What a redialled session needs to carry the call on: the call so far, the
+/// tool calls still out, and whether a reply was owed.
+#[derive(Default)]
+struct CallMemory {
+    /// Finished turns, oldest first: (is_user, text, the user item's id).
+    turns: std::collections::VecDeque<(bool, String, Option<String>)>,
+    /// The assistant's reply being spoken: its words so far.
+    speaking: Option<String>,
+    /// Tool calls handed to the client whose output has not gone out yet.
+    open_calls: std::collections::HashSet<String>,
+    /// Calls made on a line that dropped: their outputs go out as words.
+    orphans: std::collections::HashSet<String>,
+    /// A reply was in flight when the line dropped: ask for it again.
+    reanswer: bool,
+    /// This call has been redialled: its session.update carries the recap.
+    resumed: bool,
+}
+
+impl CallMemory {
+    /// Note what one server event says about the call.
+    fn observe(&mut self, text: &str) {
+        let Ok(ev) = serde_json::from_str::<Value>(text) else {
+            return;
+        };
+        match ev.get("type").and_then(|t| t.as_str()).unwrap_or("") {
+            "conversation.item.input_audio_transcription.completed" => {
+                let Some(t) = ev.get("transcript").and_then(|v| v.as_str()) else {
+                    return;
+                };
+                if t.is_empty() {
+                    return;
+                }
+                let item = ev.get("item_id").and_then(|v| v.as_str()).map(str::to_string);
+                // A longer finished transcript for the same item replaces
+                // the shorter one: it is the same utterance going on.
+                if let Some(turn) = self
+                    .turns
+                    .iter_mut()
+                    .rev()
+                    .find(|(user, _, id)| *user && item.is_some() && *id == item)
+                {
+                    turn.1 = t.to_string();
+                } else {
+                    self.push((true, t.to_string(), item));
+                }
+            }
+            "response.output_audio_transcript.delta" | "response.text.delta" => {
+                if let Some(d) = ev.get("delta").and_then(|v| v.as_str()) {
+                    self.speaking.get_or_insert_with(String::new).push_str(d);
+                }
+            }
+            "response.done" => self.close_reply(),
+            "response.function_call_arguments.done" => {
+                if let Some(id) = ev.get("call_id").and_then(|v| v.as_str())
+                    && !id.is_empty()
+                {
+                    self.open_calls.insert(id.to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn close_reply(&mut self) {
+        if let Some(words) = self.speaking.take()
+            && !words.trim().is_empty()
+        {
+            self.push((false, words.trim().to_string(), None));
+        }
+    }
+
+    fn push(&mut self, turn: (bool, String, Option<String>)) {
+        self.turns.push_back(turn);
+        while self.turns.len() > RECAP_TURNS {
+            self.turns.pop_front();
+        }
+    }
+
+    /// The line dropped: the reply being spoken is as far as it got, the
+    /// calls still out can no longer be answered as calls, and a reply in
+    /// flight is owed again.
+    fn lost(&mut self, response_active: bool) {
+        self.close_reply();
+        self.orphans.extend(self.open_calls.drain());
+        self.reanswer = response_active;
+    }
+
+    /// The instructions' tail for a redialled session: the call so far,
+    /// newest last, at most `RECAP_CHARS`.
+    fn recap(&self) -> String {
+        let mut lines: Vec<String> = Vec::new();
+        let mut used = 0;
+        for (user, text, _) in self.turns.iter().rev() {
+            let line = format!("{}: {}", if *user { "They" } else { "You" }, text);
+            if used + line.len() > RECAP_CHARS && !lines.is_empty() {
+                break;
+            }
+            used += line.len();
+            lines.push(line);
+        }
+        lines.reverse();
+        let mut out = String::from(
+            "\n\n---\n\nThis call is already under way. Carry it on from where it is, \
+             as the same conversation: do not greet again, and do not mention any \
+             interruption.",
+        );
+        if !self.orphans.is_empty() {
+            out.push_str(
+                " A task you started is still running; its result will arrive as a \
+                 message, and you relay it then.",
+            );
+        }
+        if !lines.is_empty() {
+            out.push_str("\n\nThe call so far, oldest first:\n");
+            out.push_str(&lines.join("\n"));
+        }
+        out
+    }
 }
 
 /// Turn-taking state of one realtime session, owned by the session task and
@@ -736,8 +1116,10 @@ async fn handle_server_event(
             if msg.contains("Cancellation failed") {
                 warn!(frame = %text, "benign realtime cancel race (ignored)");
             } else {
+                // The provider's words stay in the log; the client says the
+                // call ended, plainly.
                 warn!(frame = %text, "realtime upstream error");
-                send(ConversationEvent::Error(msg.to_string())).await?;
+                send(ConversationEvent::Error(CALL_ENDED.to_string())).await?;
             }
         }
         // Deliberately ignored: item bookkeeping, argument streaming deltas
@@ -1353,8 +1735,244 @@ mod tests {
         .await
         .unwrap();
         match rx.recv().await {
-            Some(ConversationEvent::Error(m)) => assert!(m.contains("insufficient balance")),
+            // Plain words for the client; the provider's message is logged.
+            Some(ConversationEvent::Error(m)) => assert_eq!(m, CALL_ENDED),
             other => panic!("expected only the real error, got {other:?}"),
         }
+    }
+
+    // ── The line under a live call ──────────────────────────────────────
+
+    use tokio::net::TcpListener;
+    use tokio_tungstenite::tungstenite::Message as WsMessage;
+
+    type Served = tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>;
+
+    async fn listener() -> (TcpListener, RealtimeConfig) {
+        let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let cfg = RealtimeConfig {
+            endpoint: format!("ws://{}/v1/realtime", l.local_addr().unwrap()),
+            instructions: "You are the owner's assistant.".into(),
+            ..Default::default()
+        };
+        (l, cfg)
+    }
+
+    async fn accept(l: &TcpListener) -> Served {
+        let (stream, _) = l.accept().await.unwrap();
+        tokio_tungstenite::accept_async(stream).await.unwrap()
+    }
+
+    /// The next text frame the far end receives, parsed (pings skipped).
+    async fn next_json(ws: &mut Served) -> Value {
+        loop {
+            match ws.next().await {
+                Some(Ok(WsMessage::Text(t))) => return serde_json::from_str(&t).unwrap(),
+                Some(Ok(WsMessage::Ping(_) | WsMessage::Pong(_))) => continue,
+                other => panic!("expected a text frame, got {other:?}"),
+            }
+        }
+    }
+
+    async fn say(ws: &mut Served, frame: Value) {
+        ws.send(WsMessage::Text(frame.to_string().into())).await.unwrap();
+    }
+
+    fn errors(events: &[ConversationEvent]) -> Vec<String> {
+        events
+            .iter()
+            .filter_map(|e| match e {
+                ConversationEvent::Error(m) => Some(m.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The 2026-09-30 drop, on the desktop's side: the line to the voice
+    /// service is cut with no closing handshake, mid-call, with a task the
+    /// employee started still running. The session dials again at once, gives
+    /// the new session its instructions and the call so far, turns the
+    /// running task's result into words the new session can use, and carries
+    /// on: the client sees no error and no second start.
+    #[tokio::test]
+    async fn a_dropped_line_is_redialled_and_the_call_carries_on() {
+        let (l, cfg) = listener().await;
+        let (seen_tx, seen_rx) = tokio::sync::oneshot::channel::<Vec<Value>>();
+        let server = tokio::spawn(async move {
+            let mut first = accept(&l).await;
+            let update = next_json(&mut first).await;
+            assert_eq!(update["type"], "session.update");
+            assert!(!update["session"]["instructions"].as_str().unwrap().contains("under way"));
+            say(&mut first, json!({"type": "session.created"})).await;
+            say(&mut first, json!({
+                "type": "conversation.item.input_audio_transcription.completed",
+                "item_id": "i1", "transcript": "Book the flight to Denver."
+            })).await;
+            say(&mut first, json!({"type": "response.output_audio_transcript.delta", "delta": "On it."})).await;
+            say(&mut first, json!({"type": "response.done", "response": {"id": "r1"}})).await;
+            say(&mut first, json!({
+                "type": "response.function_call_arguments.done",
+                "call_id": "c1", "name": "nebo", "arguments": "{\"task\":\"book\"}"
+            })).await;
+            // Cut: no close frame, the socket just goes.
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            drop(first);
+
+            let mut second = accept(&l).await;
+            let mut seen = vec![next_json(&mut second).await];
+            say(&mut second, json!({"type": "session.created"})).await;
+            seen.push(next_json(&mut second).await); // the task's result
+            seen.push(next_json(&mut second).await); // response.create
+            match second.next().await {
+                Some(Ok(WsMessage::Binary(b))) => assert_eq!(&b[..], &[1u8, 2, 3]),
+                other => panic!("expected the caller's audio on the new line, got {other:?}"),
+            }
+            let _ = seen_tx.send(seen);
+            // Hold the line until the client closes it.
+            while let Some(Ok(m)) = second.next().await {
+                if matches!(m, WsMessage::Close(_)) {
+                    break;
+                }
+            }
+        });
+
+        let (tx, mut rx) = connect(cfg).await.unwrap();
+        let mut events = Vec::new();
+        // Wait for the tool call, as the handler does, before answering it.
+        loop {
+            let e = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+                .await
+                .expect("events stopped")
+                .expect("session ended");
+            let is_call = matches!(e, ConversationEvent::ToolCall { .. });
+            events.push(e);
+            if is_call {
+                break;
+            }
+        }
+        // The task finishes after the line dropped.
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        tx.send(RealtimeCommand::ToolOutput { call_id: "c1".into(), output: "Booked, seat 12A.".into() })
+            .await
+            .unwrap();
+        tx.send(RealtimeCommand::ToolOutputsDone).await.unwrap();
+        tx.send(RealtimeCommand::Audio(Bytes::from_static(&[1, 2, 3]))).await.unwrap();
+
+        let seen = tokio::time::timeout(std::time::Duration::from_secs(5), seen_rx)
+            .await
+            .expect("the call never reached the new line")
+            .unwrap();
+        let instructions = seen[0]["session"]["instructions"].as_str().unwrap();
+        assert!(instructions.starts_with("You are the owner's assistant."), "{instructions}");
+        assert!(instructions.contains("already under way"), "{instructions}");
+        assert!(instructions.contains("They: Book the flight to Denver."), "{instructions}");
+        assert!(instructions.contains("You: On it."), "{instructions}");
+        assert!(instructions.contains("still running"), "{instructions}");
+        assert_eq!(seen[1]["item"]["type"], "message");
+        assert!(seen[1]["item"]["content"][0]["text"].as_str().unwrap().contains("Booked, seat 12A."));
+        assert_eq!(seen[2]["type"], "response.create");
+
+        tx.send(RealtimeCommand::Close).await.unwrap();
+        while let Ok(Some(e)) = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv()).await {
+            events.push(e);
+        }
+        server.await.unwrap();
+        assert!(errors(&events).is_empty(), "the client saw {:?}", errors(&events));
+        assert_eq!(count(&events, |e| matches!(e, ConversationEvent::SessionInitialized)), 1);
+    }
+
+    /// When the line cannot be brought back, the call ends once, in plain
+    /// words — never the socket's own error text.
+    #[tokio::test]
+    async fn the_call_ends_plainly_when_the_line_cannot_come_back() {
+        let (l, cfg) = listener().await;
+        let server = tokio::spawn(async move {
+            let mut ws = accept(&l).await;
+            next_json(&mut ws).await;
+            say(&mut ws, json!({"type": "session.created"})).await;
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            // The service is gone: the socket drops and nothing answers again.
+            drop(ws);
+            drop(l);
+        });
+
+        let (_tx, mut rx) = connect(cfg).await.unwrap();
+        let mut events = Vec::new();
+        while let Ok(Some(e)) = tokio::time::timeout(std::time::Duration::from_secs(10), rx.recv()).await {
+            events.push(e);
+        }
+        server.await.unwrap();
+        assert_eq!(errors(&events), vec![CALL_ENDED.to_string()]);
+        assert!(!CALL_ENDED.contains("WebSocket") && !CALL_ENDED.contains("error"));
+    }
+
+    /// A quiet call is not an idle one: with nothing said either way, the
+    /// session still pings the far end, so nothing that counts silence on
+    /// the way closes it.
+    #[tokio::test]
+    async fn a_quiet_line_is_pinged() {
+        let (l, cfg) = listener().await;
+        let server = tokio::spawn(async move {
+            let mut ws = accept(&l).await;
+            next_json(&mut ws).await;
+            let mut pings = 0;
+            let until = tokio::time::Instant::now() + PING_EVERY * 5;
+            while let Ok(Some(Ok(m))) = tokio::time::timeout_at(until, ws.next()).await {
+                if matches!(m, WsMessage::Ping(_)) {
+                    pings += 1;
+                }
+            }
+            pings
+        });
+        let (tx, _rx) = connect(cfg).await.unwrap();
+        let pings = server.await.unwrap();
+        assert!(pings >= 3, "only {pings} pings on a quiet line");
+        drop(tx);
+    }
+
+    /// A far end that stops answering, with no error to say so (no pongs,
+    /// no frames), is taken for dead and dialled again.
+    #[tokio::test]
+    async fn a_far_end_that_stops_answering_is_redialled() {
+        let (l, cfg) = listener().await;
+        let server = tokio::spawn(async move {
+            let mut first = accept(&l).await;
+            next_json(&mut first).await;
+            // Never read again: the pings go unanswered.
+            let started = tokio::time::Instant::now();
+            let mut second = accept(&l).await;
+            let update = next_json(&mut second).await;
+            drop(first);
+            (started.elapsed(), update)
+        });
+        let (tx, _rx) = connect(cfg).await.unwrap();
+        let (after, update) = tokio::time::timeout(std::time::Duration::from_secs(5), server)
+            .await
+            .expect("a dead far end was never redialled")
+            .unwrap();
+        assert_eq!(update["type"], "session.update");
+        assert!(after >= DEAD_AFTER, "redialled after {after:?}, before the line was dead");
+        drop(tx);
+    }
+
+    /// The recap a redialled session gets stays inside its budget and keeps
+    /// the newest turns; one utterance's longer finished transcript replaces
+    /// the shorter one.
+    #[test]
+    fn recap_keeps_the_newest_turns_within_budget() {
+        let mut m = CallMemory::default();
+        m.observe(r#"{"type":"conversation.item.input_audio_transcription.completed","item_id":"a","transcript":"Hi"}"#);
+        m.observe(r#"{"type":"conversation.item.input_audio_transcription.completed","item_id":"a","transcript":"Hi there"}"#);
+        assert_eq!(m.turns.len(), 1);
+        assert_eq!(m.turns[0].1, "Hi there");
+        for i in 0..40 {
+            m.observe(&json!({"type": "response.text.delta", "delta": format!("reply {i} {}", "x".repeat(300))}).to_string());
+            m.observe(r#"{"type":"response.done"}"#);
+        }
+        let recap = m.recap();
+        assert!(recap.len() < RECAP_CHARS + 400, "recap is {} chars", recap.len());
+        assert!(recap.contains("reply 39"));
+        assert!(!recap.contains("reply 0 "));
+        assert!(!recap.contains("still running"));
     }
 }

@@ -11,6 +11,12 @@
 
 use bytes::Bytes;
 
+/// What the client is told when a call ends on a failure: one plain sentence,
+/// the same every time. Transport and provider detail (a reset socket, a
+/// refused dial, the provider's own error text) goes to the log, never to a
+/// screen.
+pub const CALL_ENDED: &str = "The call ended. Start it again.";
+
 /// Events emitted by a voice conversation engine to the client.
 #[derive(Debug, Clone)]
 pub enum ConversationEvent {
@@ -43,6 +49,7 @@ pub enum ConversationEvent {
     /// The upstream conversation id (xAI resumption) — reconnect with it to
     /// resume history within its 30-minute expiry window.
     ConversationId(String),
-    /// An error occurred.
+    /// The call ended on a failure. The text is what the client shows, as
+    /// is: a plain sentence such as [`CALL_ENDED`], never error detail.
     Error(String),
 }
