@@ -5,7 +5,6 @@ const STRAP_CODE: &str = include_str!("strap/code.txt");
 const STRAP_MESSAGE: &str = include_str!("strap/message.txt");
 const STRAP_EXECUTE: &str = include_str!("strap/execute.txt");
 const STRAP_VM: &str = include_str!("strap/vm.txt");
-const STRAP_PUBLISHER: &str = include_str!("strap/publisher.txt");
 
 // OS sub-context docs (keyword-activated, extend the OS tool)
 #[cfg(target_os = "windows")]
@@ -29,7 +28,6 @@ pub fn strap_tool_doc(tool_name: &str) -> Option<&'static str> {
         "message" => Some(STRAP_MESSAGE),
         "execute" => Some(STRAP_EXECUTE),
         "vm" => Some(STRAP_VM),
-        "publisher" => Some(STRAP_PUBLISHER),
         _ => None,
     }
 }

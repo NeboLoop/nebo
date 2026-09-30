@@ -7,6 +7,9 @@ license.workspace = true
 [features]
 # A real sidecar process for supervision tests (`napp::test_sidecar`).
 test-sidecar = []
+# Sealed .napp fixtures signed by a throwaway key (`napp::test_signing`).
+# Enable from dev-dependencies only — never in a shipped build.
+test-signing = []
 
 [dependencies]
 tls = { workspace = true }

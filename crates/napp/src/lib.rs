@@ -17,6 +17,8 @@ pub mod signing;
 pub mod supervisor;
 #[cfg(all(unix, any(test, feature = "test-sidecar")))]
 pub mod test_sidecar;
+#[cfg(any(test, feature = "test-signing"))]
+pub mod test_signing;
 pub mod user_agent;
 pub mod version;
 

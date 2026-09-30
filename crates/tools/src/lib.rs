@@ -82,7 +82,6 @@ pub mod policy;
 mod read_only_commands;
 pub mod process;
 pub mod profile_tools;
-pub mod publisher_tool;
 pub mod registry;
 pub mod rename_map;
 pub mod research;

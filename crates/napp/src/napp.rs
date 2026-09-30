@@ -84,6 +84,11 @@ pub fn unwrap_napp(data: &[u8], public_key: &VerifyingKey) -> Result<Vec<u8>, Na
 /// verifying first-party bundled `.napp` files without network access.
 pub fn unwrap_napp_builtin(data: &[u8]) -> Result<Vec<u8>, NappError> {
     let key = crate::signing::builtin_verifying_key()?;
+    // Test builds also accept the throwaway fixture key (see `test_signing`).
+    #[cfg(any(test, feature = "test-signing"))]
+    if let Ok(payload) = unwrap_napp(data, &crate::test_signing::verifying_key()) {
+        return Ok(payload);
+    }
     unwrap_napp(data, &key)
 }
 

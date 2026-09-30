@@ -59,6 +59,7 @@ portable-pty = "0.9"
 vte = "0.15"
 
 [dev-dependencies]
+napp = { workspace = true, features = ["test-signing"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 flate2 = "1"
 tar = "0.4"

@@ -54,12 +54,9 @@ const OUTSIDE_KEYS: &[&str] = &[
     "fetch_url",
     "http_request",
     "browser_*",
-    // Code, scripts, machines, publishing.
+    // Code, scripts, machines.
     "run_skill_script",
     "vm_*",
-    "publish_app",
-    "list_publications",
-    "publication_status",
     "code_intel",
     "search_computer",
     // Desktop control, apps, settings, secrets.
@@ -346,7 +343,7 @@ mod tests {
             for key in [
                 "read_file", "write_file", "run_command", "desktop_screenshot", "mail_message_send",
                 "contacts_search", "fetch_url", "search_web", "browser_open", "run_skill_script",
-                "vm_run", "publish_app", "code_intel", "desktop_click", "keychain_get",
+                "vm_run", "code_intel", "desktop_click", "keychain_get",
                 "system_settings", "list_employees", "delegate", "search_history", "get_profile",
                 "plugin__gws", "app_open", "send_loop_message", "sms_message_send",
                 "edit_notebook", "search_computer", "find_plugins", "push_notification",
