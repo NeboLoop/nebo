@@ -43,7 +43,7 @@ pub(super) async fn set_raw(app: &str, window: usize, path: &str, value: &str, _
 pub(super) async fn text_raw(image: &std::path::Path) -> Result<String, String> {
     let out = tokio::time::timeout(
         Duration::from_secs(20),
-        tokio::process::Command::new("tesseract")
+        command::new::<tokio::process::Command>("tesseract", command::Console::Hidden)
             .arg(image)
             .arg("-")
             .arg("tsv")
@@ -97,7 +97,7 @@ async fn run(args: &[String], timeout: Duration) -> Result<String, String> {
     use std::process::Stdio;
     use tokio::io::AsyncWriteExt;
 
-    let mut cmd = tokio::process::Command::new("python3");
+    let mut cmd = command::new::<tokio::process::Command>("python3", command::Console::Hidden);
     cmd.arg("-")
         .args(args)
         .stdin(Stdio::piped())

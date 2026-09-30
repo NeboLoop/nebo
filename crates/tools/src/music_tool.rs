@@ -469,7 +469,7 @@ async fn handle_shuffle(_input: &serde_json::Value) -> ToolResult {
 
 #[cfg(target_os = "macos")]
 async fn run_osascript(script: &str) -> ToolResult {
-    match tokio::process::Command::new("osascript")
+    match command::new::<tokio::process::Command>("osascript", command::Console::Hidden)
         .arg("-e")
         .arg(script)
         .output()
@@ -493,7 +493,7 @@ async fn run_osascript(script: &str) -> ToolResult {
 
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 async fn run_command(cmd: &str, args: &[&str]) -> ToolResult {
-    match tokio::process::Command::new(cmd).args(args).output().await {
+    match command::new::<tokio::process::Command>(cmd, command::Console::Hidden).args(args).output().await {
         Ok(output) if output.status.success() => {
             let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
             ToolResult::ok(if text.is_empty() {
@@ -526,7 +526,7 @@ async fn run_powershell(script: &str) -> ToolResult {
 
 #[cfg(target_os = "linux")]
 fn which(cmd: &str) -> bool {
-    std::process::Command::new("which")
+    command::new::<std::process::Command>("which", command::Console::Hidden)
         .arg(cmd)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())

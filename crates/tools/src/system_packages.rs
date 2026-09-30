@@ -189,7 +189,7 @@ pub async fn reinstall() {
 
 /// Run `sudo -n apt-get <args>`; the last lines of its output on failure.
 async fn apt(args: &[&str]) -> Result<(), String> {
-    let out = tokio::process::Command::new("sudo")
+    let out = command::new::<tokio::process::Command>("sudo", command::Console::Hidden)
         .arg("-n")
         .arg("apt-get")
         .args(args)

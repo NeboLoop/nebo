@@ -1,0 +1,13 @@
+[package]
+name = "nebo-command"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The one constructor for every child process Nebo starts"
+
+# No dependencies: `tokio::process::Command` is made from the std one
+# (tokio's own `From`), so callers bring tokio and this crate needs none.
+
+[dev-dependencies]
+tokio = { workspace = true }

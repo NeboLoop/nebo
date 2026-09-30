@@ -1370,7 +1370,7 @@ fn read_office_document(path: &str) -> Option<ToolResult> {
 
     // The plugin exports its binary path; fall back to PATH for a dev checkout.
     let bin = std::env::var("NEBO_OFFICE_BIN").unwrap_or_else(|_| "nebo-office".to_string());
-    let output = std::process::Command::new(&bin).arg("read").arg(path).output().ok()?;
+    let output = command::new::<std::process::Command>(&bin, command::Console::Hidden).arg("read").arg(path).output().ok()?;
 
     if !output.status.success() {
         let err = String::from_utf8_lossy(&output.stderr);

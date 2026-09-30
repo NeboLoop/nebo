@@ -227,7 +227,7 @@ fn open_url(url: &str) {
     let cmd = ("xdg-open", vec![url]);
     #[cfg(target_os = "windows")]
     let cmd = ("cmd", vec!["/C", "start", url]);
-    let _ = std::process::Command::new(cmd.0).args(cmd.1).spawn();
+    let _ = command::new::<std::process::Command>(cmd.0, command::Console::Hidden).args(cmd.1).spawn();
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

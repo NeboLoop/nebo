@@ -142,7 +142,7 @@ async fn handle_wifi(action: &str) -> ToolResult {
     match action {
         "status" => run_command("networksetup", &["-getairportpower", "en0"]).await,
         "toggle" => {
-            let output = tokio::process::Command::new("networksetup")
+            let output = command::new::<tokio::process::Command>("networksetup", command::Console::Hidden)
                 .args(["-getairportpower", "en0"])
                 .output()
                 .await;
@@ -210,7 +210,7 @@ async fn handle_darkmode(action: &str) -> ToolResult {
         }
         "toggle" => {
             // Get current, then set opposite
-            let check = tokio::process::Command::new("osascript")
+            let check = command::new::<tokio::process::Command>("osascript", command::Console::Hidden)
                 .args(["-e", "tell application \"System Events\" to tell appearance preferences to return dark mode"])
                 .output()
                 .await;
@@ -361,7 +361,7 @@ async fn handle_wifi(action: &str) -> ToolResult {
         "toggle" => {
             if which("nmcli") {
                 // Check current state
-                let output = tokio::process::Command::new("nmcli")
+                let output = command::new::<tokio::process::Command>("nmcli", command::Console::Hidden)
                     .args(["-t", "-f", "WIFI", "radio"])
                     .output()
                     .await;
@@ -379,7 +379,7 @@ async fn handle_wifi(action: &str) -> ToolResult {
                 run_command("nmcli", &["radio", "wifi", new_state]).await
             } else if which("rfkill") {
                 // Toggle via rfkill — check current and flip
-                let output = tokio::process::Command::new("rfkill")
+                let output = command::new::<tokio::process::Command>("rfkill", command::Console::Hidden)
                     .args(["list", "wifi"])
                     .output()
                     .await;
@@ -411,7 +411,7 @@ async fn handle_bluetooth(action: &str) -> ToolResult {
     match action {
         "status" => {
             if which("bluetoothctl") {
-                let output = tokio::process::Command::new("bluetoothctl")
+                let output = command::new::<tokio::process::Command>("bluetoothctl", command::Console::Hidden)
                     .arg("show")
                     .output()
                     .await;
@@ -427,7 +427,7 @@ async fn handle_bluetooth(action: &str) -> ToolResult {
                     Err(e) => ToolResult::error(format!("Could not run bluetoothctl: {}", e)),
                 }
             } else if which("rfkill") {
-                let output = tokio::process::Command::new("rfkill")
+                let output = command::new::<tokio::process::Command>("rfkill", command::Console::Hidden)
                     .args(["list", "bluetooth"])
                     .output()
                     .await;
@@ -450,7 +450,7 @@ async fn handle_bluetooth(action: &str) -> ToolResult {
         "toggle" => {
             if which("bluetoothctl") {
                 // Check current state
-                let output = tokio::process::Command::new("bluetoothctl")
+                let output = command::new::<tokio::process::Command>("bluetoothctl", command::Console::Hidden)
                     .arg("show")
                     .output()
                     .await;
@@ -467,7 +467,7 @@ async fn handle_bluetooth(action: &str) -> ToolResult {
                 };
                 run_command("bluetoothctl", &["power", new_state]).await
             } else if which("rfkill") {
-                let output = tokio::process::Command::new("rfkill")
+                let output = command::new::<tokio::process::Command>("rfkill", command::Console::Hidden)
                     .args(["list", "bluetooth"])
                     .output()
                     .await;
@@ -564,7 +564,7 @@ async fn handle_info() -> ToolResult {
         }
     }
     // Kernel
-    if let Ok(out) = tokio::process::Command::new("uname")
+    if let Ok(out) = command::new::<tokio::process::Command>("uname", command::Console::Hidden)
         .arg("-r")
         .output()
         .await
@@ -586,7 +586,7 @@ async fn handle_info() -> ToolResult {
         }
     }
     // Memory
-    if let Ok(out) = tokio::process::Command::new("free")
+    if let Ok(out) = command::new::<tokio::process::Command>("free", command::Console::Hidden)
         .args(["-h"])
         .output()
         .await
@@ -602,7 +602,7 @@ async fn handle_info() -> ToolResult {
         }
     }
     // Uptime
-    if let Ok(out) = tokio::process::Command::new("uptime")
+    if let Ok(out) = command::new::<tokio::process::Command>("uptime", command::Console::Hidden)
         .arg("-p")
         .output()
         .await
@@ -700,7 +700,7 @@ async fn handle_wifi(action: &str) -> ToolResult {
             let find_script = "Get-NetAdapter -Physical | Where-Object { \
                 $_.InterfaceDescription -match 'Wireless|Wi-Fi|WiFi' } | \
                 Select-Object -First 1 -ExpandProperty Name";
-            let output = tokio::process::Command::new("powershell")
+            let output = command::new::<tokio::process::Command>("powershell", command::Console::Hidden)
                 .args(["-NoProfile", "-Command", find_script])
                 .output()
                 .await;
@@ -712,7 +712,7 @@ async fn handle_wifi(action: &str) -> ToolResult {
                     }
                     // Check current state
                     let status_script = format!("(Get-NetAdapter -Name '{}').Status", adapter);
-                    let status_out = tokio::process::Command::new("powershell")
+                    let status_out = command::new::<tokio::process::Command>("powershell", command::Console::Hidden)
                         .args(["-NoProfile", "-Command", &status_script])
                         .output()
                         .await;
@@ -757,7 +757,7 @@ async fn handle_darkmode(action: &str) -> ToolResult {
                  Select-Object -ExpandProperty AppsUseLightTheme",
                 reg_path
             );
-            let output = tokio::process::Command::new("powershell")
+            let output = command::new::<tokio::process::Command>("powershell", command::Console::Hidden)
                 .args(["-NoProfile", "-Command", &script])
                 .output()
                 .await;
@@ -780,7 +780,7 @@ async fn handle_darkmode(action: &str) -> ToolResult {
                  Select-Object -ExpandProperty AppsUseLightTheme",
                 reg_path
             );
-            let output = tokio::process::Command::new("powershell")
+            let output = command::new::<tokio::process::Command>("powershell", command::Console::Hidden)
                 .args(["-NoProfile", "-Command", &check])
                 .output()
                 .await;
@@ -1012,7 +1012,7 @@ async fn handle_mute(_mute: bool) -> ToolResult {
 
 #[cfg(target_os = "macos")]
 async fn run_osascript(script: &str) -> ToolResult {
-    match tokio::process::Command::new("osascript")
+    match command::new::<tokio::process::Command>("osascript", command::Console::Hidden)
         .arg("-e")
         .arg(script)
         .output()
@@ -1036,7 +1036,7 @@ async fn run_osascript(script: &str) -> ToolResult {
 
 #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
 async fn run_command(cmd: &str, args: &[&str]) -> ToolResult {
-    match tokio::process::Command::new(cmd).args(args).output().await {
+    match command::new::<tokio::process::Command>(cmd, command::Console::Hidden).args(args).output().await {
         Ok(output) if output.status.success() => {
             let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
             ToolResult::ok(if text.is_empty() {
@@ -1080,7 +1080,7 @@ async fn run_powershell(script: &str) -> ToolResult {
 
 #[cfg(target_os = "linux")]
 fn which(cmd: &str) -> bool {
-    std::process::Command::new("which")
+    command::new::<std::process::Command>("which", command::Console::Hidden)
         .arg(cmd)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())

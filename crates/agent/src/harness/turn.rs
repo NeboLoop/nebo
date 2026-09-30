@@ -5360,7 +5360,7 @@ mod tests {
             ..Default::default()
         });
         let spawn = |key: &str, what: &str| {
-            let mut cmd = tokio::process::Command::new("sleep");
+            let mut cmd = command::new::<tokio::process::Command>("sleep", command::Console::Hidden);
             cmd.arg("30");
             let caller = tools::process::Caller { session_key: key.into(), description: what.into() };
             h.tools.process_registry().spawn(cmd, "sleep 30", tools::process::Spawn::Background(Some(caller)), false, &[])

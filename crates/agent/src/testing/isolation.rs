@@ -219,7 +219,7 @@ fn gate_run_starts_a_fresh_server_before_every_run() {
     let log = t.join("log");
 
     let run = |entry: &str, runs: &str| {
-        std::process::Command::new("bash")
+        command::new::<std::process::Command>("bash", command::Console::Hidden)
             .arg(t.join("scripts/gate-run.sh"))
             .args([entry, runs, "out", "bash"])
             .arg(t.join("runner.sh"))

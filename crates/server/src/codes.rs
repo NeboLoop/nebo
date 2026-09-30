@@ -2109,7 +2109,7 @@ pub(crate) fn host_label() -> String {
         .ok()
         .filter(|s| !s.trim().is_empty());
     let name = from_env.or_else(|| {
-        std::process::Command::new("hostname")
+        command::new::<std::process::Command>("hostname", command::Console::Hidden)
             .output()
             .ok()
             .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())

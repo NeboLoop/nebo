@@ -72,7 +72,7 @@ impl ProcessManager {
             .map_err(|e| format!("failed to create work dir: {e}"))?;
 
         // Build command
-        let mut cmd = Command::new("/bin/bash");
+        let mut cmd = command::new::<Command>("/bin/bash", command::Console::Hidden);
         cmd.arg("-c").arg(&format!(
             "{} {}",
             params.command,

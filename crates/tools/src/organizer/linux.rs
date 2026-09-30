@@ -308,7 +308,7 @@ async fn mail_accounts() -> ToolResult {
 
     // Check notmuch config
     if which_exists("notmuch") {
-        let result = tokio::process::Command::new("notmuch")
+        let result = command::new::<tokio::process::Command>("notmuch", command::Console::Hidden)
             .args(["config", "get", "user.primary_email"])
             .output()
             .await;

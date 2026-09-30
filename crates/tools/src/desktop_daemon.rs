@@ -113,7 +113,7 @@ impl DesktopDaemon {
     }
 
     async fn spawn() -> Result<DaemonProcess, String> {
-        let mut child = Command::new("powershell")
+        let mut child = command::new::<Command>("powershell", command::Console::Hidden)
             .args(["-NoProfile", "-NoLogo", "-Command", "-"])
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())

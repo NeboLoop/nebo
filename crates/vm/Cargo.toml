@@ -7,6 +7,7 @@ repository.workspace = true
 description = "Lightweight VM sandbox for isolated code execution"
 
 [dependencies]
+command = { workspace = true }
 tls = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }

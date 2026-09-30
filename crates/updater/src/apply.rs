@@ -29,7 +29,7 @@ fn run_pre_apply() {
 
 /// Health check: run "nebo --version" on the new binary.
 fn health_check(binary_path: &Path) -> Result<(), UpdateError> {
-    let output = std::process::Command::new(binary_path)
+    let output = command::new::<std::process::Command>(binary_path, command::Console::Hidden)
         .arg("--version")
         .output()
         .map_err(|e| UpdateError::Other(format!("health check failed: {}", e)))?;
@@ -104,7 +104,7 @@ fn spawn_detached_sh(script: &str) -> Result<(), UpdateError> {
     let path = std::env::temp_dir().join(format!("nebo-update-helper-{}.sh", uuid::Uuid::new_v4()));
     std::fs::write(&path, script)?;
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))?;
-    let mut cmd = std::process::Command::new("sh");
+    let mut cmd = command::new::<std::process::Command>("sh", command::Console::Detached);
     cmd.arg(&path)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
@@ -173,7 +173,7 @@ fn apply_app_bundle(dmg_path: &Path, data_dir: &Path) -> Result<(), UpdateError>
     use std::process::Command;
 
     // 1. Mount the DMG.
-    let mount_output = Command::new("hdiutil")
+    let mount_output = command::new::<Command>("hdiutil", command::Console::Hidden)
         .args(["attach", "-nobrowse", "-noverify", "-noautoopen"])
         .arg(dmg_path)
         .output()
@@ -196,7 +196,7 @@ fn apply_app_bundle(dmg_path: &Path, data_dir: &Path) -> Result<(), UpdateError>
         .ok_or_else(|| UpdateError::Other("failed to parse mount point".into()))?;
 
     let detach = |mp: &str| {
-        let _ = Command::new("hdiutil").args(["detach", mp]).output();
+        let _ = command::new::<Command>("hdiutil", command::Console::Hidden).args(["detach", mp]).output();
     };
 
     // 2. Find Nebo.app in the mounted DMG.
@@ -239,7 +239,7 @@ fn apply_app_bundle(dmg_path: &Path, data_dir: &Path) -> Result<(), UpdateError>
         return Err(UpdateError::Other(format!("create staging dir: {}", e)));
     }
     let staged_app = staging_dir.join("Nebo.app");
-    let cp_output = Command::new("cp")
+    let cp_output = command::new::<Command>("cp", command::Console::Hidden)
         .args(["-R"])
         .arg(&source_app)
         .arg(&staged_app)
@@ -393,18 +393,12 @@ del \"%~f0\"\r
 
 #[cfg(target_os = "windows")]
 fn spawn_detached_cmd(script: &str) -> Result<(), UpdateError> {
-    use std::os::windows::process::CommandExt;
-    const DETACHED_PROCESS: u32 = 0x0000_0008;
-    const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-
     let path =
         std::env::temp_dir().join(format!("nebo-update-helper-{}.cmd", uuid::Uuid::new_v4()));
     std::fs::write(&path, script)?;
-    std::process::Command::new("cmd")
+    command::new::<std::process::Command>("cmd", command::Console::Detached)
         .arg("/C")
         .arg(&path)
-        .creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -605,7 +599,7 @@ fn apply_direct(new_binary_path: &Path, mode: ApplyMode) -> Result<(), UpdateErr
 
     // Spawn new process and exit
     let args: Vec<String> = std::env::args().skip(1).collect();
-    std::process::Command::new(&current_exe)
+    command::new::<std::process::Command>(&current_exe, command::Console::Inherit)
         .args(&args)
         .spawn()
         .map_err(|e| UpdateError::Other(format!("start new process: {}", e)))?;

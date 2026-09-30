@@ -10,6 +10,10 @@
 //!   that lacked kill_on_drop leaked a process on every timed-out call — 330
 //!   orphans on a customer box in 30 hours, until it ran out of file descriptors
 //!   and every outbound request began failing.
+//! - **Windows console windows.** ~160 `Command::new` sites; a handful set
+//!   `CREATE_NO_WINDOW`. Every other child the desktop app started — git,
+//!   powershell, `where`, MCP servers, sidecars — opened a console window, so
+//!   opening Nebo on Windows opened a bunch of terminals.
 //! - **HTTP clients.** ~30 `Client::builder()` sites, so TLS configuration could
 //!   not be fixed in one place. When macOS securityd wedged on that same box, the
 //!   OS returned an EMPTY trust store, every certificate was rejected, and there
@@ -61,8 +65,8 @@ fn declared_cfg_test(module: &Path) -> bool {
     false
 }
 
-/// Every `.rs` file under `crates/` that ships — no `tests/` directory, and no
-/// module the crate declares `#[cfg(test)]`.
+/// Every `.rs` file under `crates/` and `src-tauri/src/` that ships — no
+/// `tests/` directory, and no module the crate declares `#[cfg(test)]`.
 fn source_files() -> Vec<PathBuf> {
     fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
         let Ok(entries) = std::fs::read_dir(dir) else {
@@ -85,6 +89,7 @@ fn source_files() -> Vec<PathBuf> {
     }
     let mut out = Vec::new();
     walk(&repo_root().join("crates"), &mut out);
+    walk(&repo_root().join("src-tauri").join("src"), &mut out);
     out
 }
 
@@ -127,10 +132,12 @@ fn plugin_launches_go_through_plugin_runtime() {
         "agent/src/agent_worker.rs",
     ];
 
-    let offenders = count_matches("Command::new", |p| {
+    let in_launch_files = |p: &Path| {
         let s = p.to_string_lossy().replace('\\', "/");
         PLUGIN_LAUNCH_FILES.iter().any(|f| s.ends_with(f))
-    });
+    };
+    let mut offenders = count_matches("Command::new", in_launch_files);
+    offenders.extend(count_matches("command::new", in_launch_files));
 
     assert!(
         offenders.is_empty(),
@@ -201,5 +208,55 @@ fn timed_process_waits_always_kill_on_drop() {
         "timeout(_, cmd.output()) without kill_on_drop — the dropped future \
          abandons the child and it runs forever. Set cmd.kill_on_drop(true) \
          before the wait.\nOffending files: {offenders:#?}"
+    );
+}
+
+/// Every child process is made by `command::new` (`crates/command`), which
+/// sets the Windows creation flags from the `Console` its caller names.
+///
+/// A raw `Command::new` starts a console program with no flags, and from the
+/// desktop app — which has no console — Windows gives it a window of its own.
+/// That is how opening Nebo on Windows opened a bunch of terminals: a handful of
+/// ~160 sites remembered `CREATE_NO_WINDOW`. `creation_flags` outside the
+/// constructor is a second place deciding the same thing. Test code (`tests/`
+/// and `#[cfg(test)]` module files) may start what it likes.
+#[test]
+fn child_processes_are_made_by_the_one_constructor() {
+    const CONSTRUCTOR: &str = "crates/command/src/lib.rs";
+
+    /// `needle` where it starts a path segment: `Command::new(` but not
+    /// `CommandBuilder::new(` or a `FooCommand::new(`.
+    fn starts_segment(line: &str, needle: &str) -> bool {
+        line.match_indices(needle).any(|(i, _)| {
+            !line[..i].chars().next_back().is_some_and(|c| c.is_alphanumeric() || c == '_')
+        })
+    }
+
+    let mut offenders = Vec::new();
+    for file in source_files() {
+        let path = file.to_string_lossy().replace('\\', "/");
+        if path.ends_with(CONSTRUCTOR) {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(&file) else {
+            continue;
+        };
+        for (n, line) in text.lines().enumerate() {
+            if line.trim_start().starts_with("//") {
+                continue;
+            }
+            if starts_segment(line, "Command::new(") || line.contains("creation_flags(") {
+                offenders.push(format!("{path}:{}: {}", n + 1, line.trim()));
+            }
+        }
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "Start a child with `command::new(program, command::Console::Hidden)` (or \
+         `Console::Detached` / `Console::Inherit`, see crates/command), never \
+         `Command::new` or `creation_flags` — on Windows a child made any other way \
+         opens a console window.\n{}",
+        offenders.join("\n")
     );
 }

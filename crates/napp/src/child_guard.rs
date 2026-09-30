@@ -135,7 +135,7 @@ pub fn reap_existing_for(binary_path: &std::path::Path) -> usize {
         return 0;
     }
 
-    let out = match Command::new("ps")
+    let out = match command::new::<Command>("ps", command::Console::Hidden)
         .args(["-A", "-o", "pid=,command="])
         .output()
     {
@@ -176,7 +176,7 @@ pub fn reap_existing_for(binary_path: &std::path::Path) -> usize {
     if killed > 0 {
         // Brief grace, then SIGKILL holdouts.
         std::thread::sleep(Duration::from_millis(200));
-        let out2 = Command::new("ps")
+        let out2 = command::new::<Command>("ps", command::Console::Hidden)
             .args(["-A", "-o", "pid=,command="])
             .output();
         if let Ok(o2) = out2 {
@@ -262,7 +262,7 @@ pub fn cleanup_orphans_at_startup() -> usize {
         use std::process::Command;
 
         // ps -A -o pid=,ppid=,command=  (portable across BSD/macOS/Linux)
-        let out = match Command::new("ps")
+        let out = match command::new::<Command>("ps", command::Console::Hidden)
             .args(["-A", "-o", "pid=,ppid=,command="])
             .output()
         {

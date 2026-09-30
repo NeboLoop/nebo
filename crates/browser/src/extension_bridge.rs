@@ -488,7 +488,7 @@ async fn detect_default_browser() -> String {
     #[cfg(target_os = "macos")]
     {
         // Use macOS defaults command to read the HTTPS handler
-        let output = tokio::process::Command::new("defaults")
+        let output = command::new::<tokio::process::Command>("defaults", command::Console::Hidden)
             .args([
                 "read",
                 "com.apple.LaunchServices/com.apple.launchservices.secure",

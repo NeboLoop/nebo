@@ -13,7 +13,7 @@ use tracing::info;
 pub async fn start_vm(
     config: &VmConfig,
 ) -> VmResult<tokio::process::Child> {
-    let mut cmd = tokio::process::Command::new("qemu-system-x86_64");
+    let mut cmd = command::new::<tokio::process::Command>("qemu-system-x86_64", command::Console::Hidden);
 
     cmd.args([
         "-enable-kvm",
@@ -49,7 +49,7 @@ pub async fn check_requirements() -> Vec<String> {
     let mut issues = Vec::new();
 
     // Check QEMU availability
-    match tokio::process::Command::new("qemu-system-x86_64")
+    match command::new::<tokio::process::Command>("qemu-system-x86_64", command::Console::Hidden)
         .arg("--version")
         .output()
         .await

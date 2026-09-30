@@ -464,7 +464,7 @@ pub(crate) async fn ensure_pdf_preview(
         tokio::fs::create_dir_all(&previews_dir)
             .await
             .map_err(|e| format!("create previews dir: {e}"))?;
-        let output = tokio::process::Command::new(&bin)
+        let output = command::new::<tokio::process::Command>(&bin, command::Console::Hidden)
             .arg("pdf")
             .arg("convert")
             .arg(source)

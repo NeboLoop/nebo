@@ -125,7 +125,7 @@ fn platform() -> Option<Platform> {
     static PLATFORM: OnceLock<Option<Platform>> = OnceLock::new();
     *PLATFORM.get_or_init(|| {
         let works = |program: &str, args: &[&str]| {
-            std::process::Command::new(program)
+            command::new::<std::process::Command>(program, command::Console::Hidden)
                 .args(args)
                 .stdin(std::process::Stdio::null())
                 .stdout(std::process::Stdio::null())
@@ -351,11 +351,11 @@ mod tests {
         let prefix = c.prefix().expect("confinable");
         let mut cmd = match prefix.split_first() {
             Some((program, args)) => {
-                let mut cmd = std::process::Command::new(program);
+                let mut cmd = command::new::<std::process::Command>(program, command::Console::Hidden);
                 cmd.args(args).arg("bash");
                 cmd
             }
-            None => std::process::Command::new("bash"),
+            None => command::new::<std::process::Command>("bash", command::Console::Hidden),
         };
         cmd.arg("-c").arg(command);
         let out = spawn_with(c.closed_ports, || cmd.output()).unwrap();

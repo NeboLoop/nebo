@@ -62,7 +62,7 @@ pub async fn run_live(
             // Setup and teardown address the server under test as
             // `${NEBO_TEST_SERVER:-localhost:27895}`, so a fixture runs against
             // any port the runner was pointed at, not only the dev server.
-            let output = std::process::Command::new("sh")
+            let output = command::new::<std::process::Command>("sh", command::Console::Hidden)
                 .arg("-c")
                 .arg(cmd)
                 .env("NEBO_TEST_SERVER", server)
@@ -84,7 +84,7 @@ pub async fn run_live(
         // Run teardown commands after each run (even if the run failed)
         for cmd in &fixture.teardown {
             info!(fixture = %fixture.id, run = %run_id, cmd = %cmd, "running teardown");
-            let _ = std::process::Command::new("sh")
+            let _ = command::new::<std::process::Command>("sh", command::Console::Hidden)
                 .arg("-c")
                 .arg(cmd)
                 .env("NEBO_TEST_SERVER", server)
@@ -800,7 +800,7 @@ fn agent_id_in(list: &Value, agent: &str) -> Option<String> {
 
 /// Build experiment metadata from current git state.
 pub fn build_experiment_metadata(name: &str, runs: usize) -> ExperimentMetadata {
-    let git_commit = std::process::Command::new("git")
+    let git_commit = command::new::<std::process::Command>("git", command::Console::Hidden)
         .args(["rev-parse", "HEAD"])
         .output()
         .ok()
@@ -808,7 +808,7 @@ pub fn build_experiment_metadata(name: &str, runs: usize) -> ExperimentMetadata 
         .map(|s| s.trim().to_string())
         .unwrap_or_else(|| "unknown".to_string());
 
-    let git_branch = std::process::Command::new("git")
+    let git_branch = command::new::<std::process::Command>("git", command::Console::Hidden)
         .args(["rev-parse", "--abbrev-ref", "HEAD"])
         .output()
         .ok()

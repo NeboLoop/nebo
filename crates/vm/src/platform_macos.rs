@@ -74,7 +74,7 @@ async fn ensure_helper() -> VmResult<PathBuf> {
     std::fs::write(&source_path, VM_HELPER_SOURCE)?;
 
     info!("compiling native VM helper (Virtualization.framework)…");
-    let output = tokio::process::Command::new("swiftc")
+    let output = command::new::<tokio::process::Command>("swiftc", command::Console::Hidden)
         .args(["-O", "-framework", "Virtualization"])
         .arg("-o")
         .arg(&binary_path)
@@ -103,7 +103,7 @@ pub async fn start_vm(
 ) -> VmResult<tokio::process::Child> {
     let helper = ensure_helper().await?;
 
-    let mut cmd = tokio::process::Command::new(&helper);
+    let mut cmd = command::new::<tokio::process::Command>(&helper, command::Console::Hidden);
     cmd.arg("start")
         .arg("--memory-mb")
         .arg(config.memory_mb.to_string())
@@ -126,7 +126,7 @@ pub async fn start_vm(
 
 /// Stop a VM by sending SIGTERM to the helper process.
 pub async fn stop_vm(helper_pid: u32) -> VmResult<()> {
-    let _ = tokio::process::Command::new("kill")
+    let _ = command::new::<tokio::process::Command>("kill", command::Console::Hidden)
         .arg("-TERM")
         .arg(helper_pid.to_string())
         .output()
@@ -144,7 +144,7 @@ pub async fn check_requirements() -> Vec<String> {
     let mut issues = Vec::new();
 
     // Check swiftc availability
-    match tokio::process::Command::new("swiftc")
+    match command::new::<tokio::process::Command>("swiftc", command::Console::Hidden)
         .arg("--version")
         .output()
         .await
@@ -154,7 +154,7 @@ pub async fn check_requirements() -> Vec<String> {
     }
 
     // Check macOS version (need 13+ for Virtualization.framework Linux VMs)
-    match tokio::process::Command::new("sw_vers")
+    match command::new::<tokio::process::Command>("sw_vers", command::Console::Hidden)
         .arg("-productVersion")
         .output()
         .await

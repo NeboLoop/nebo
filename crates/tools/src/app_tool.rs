@@ -281,7 +281,7 @@ async fn handle_info(app: &str) -> ToolResult {
         ));
     };
 
-    let output = tokio::process::Command::new("mdls")
+    let output = command::new::<tokio::process::Command>("mdls", command::Console::Hidden)
         .args([
             "-name",
             "kMDItemDisplayName",
@@ -341,7 +341,7 @@ async fn handle_frontmost() -> ToolResult {
 
 #[cfg(target_os = "macos")]
 async fn run_osascript(script: &str) -> ToolResult {
-    match tokio::process::Command::new("osascript")
+    match command::new::<tokio::process::Command>("osascript", command::Console::Hidden)
         .arg("-e")
         .arg(script)
         .output()
@@ -419,7 +419,7 @@ async fn handle_launch(app: &str) -> ToolResult {
         ))
     } else {
         // Try launching directly
-        match tokio::process::Command::new(app).spawn() {
+        match command::new::<tokio::process::Command>(app, command::Console::Hidden).spawn() {
             Ok(_) => ToolResult::ok(format!("Launched '{}'", app)),
             Err(e) => ToolResult::error(format!("Failed to launch '{}': {}", app, e)),
         }
@@ -429,7 +429,7 @@ async fn handle_launch(app: &str) -> ToolResult {
 #[cfg(target_os = "linux")]
 async fn handle_quit(app: &str) -> ToolResult {
     // Find PID by name and send SIGTERM
-    let output = tokio::process::Command::new("pgrep")
+    let output = command::new::<tokio::process::Command>("pgrep", command::Console::Hidden)
         .args(["-f", app])
         .output()
         .await;
@@ -457,7 +457,7 @@ async fn handle_quit(app: &str) -> ToolResult {
 async fn handle_quit_all() -> ToolResult {
     if which("wmctrl") {
         // Get list of windows and close each
-        let output = tokio::process::Command::new("wmctrl")
+        let output = command::new::<tokio::process::Command>("wmctrl", command::Console::Hidden)
             .args(["-l"])
             .output()
             .await;
@@ -468,7 +468,7 @@ async fn handle_quit_all() -> ToolResult {
                 let mut failed = 0;
                 for line in lines.lines() {
                     if let Some(wid) = line.split_whitespace().next() {
-                        let r = tokio::process::Command::new("wmctrl")
+                        let r = command::new::<tokio::process::Command>("wmctrl", command::Console::Hidden)
                             .args(["-i", "-c", wid])
                             .output()
                             .await;
@@ -504,7 +504,7 @@ async fn handle_activate(app: &str) -> ToolResult {
             app
         ))
     } else if which("xdotool") {
-        let output = tokio::process::Command::new("xdotool")
+        let output = command::new::<tokio::process::Command>("xdotool", command::Console::Hidden)
             .args(["search", "--name", app])
             .output()
             .await;
@@ -534,7 +534,7 @@ async fn handle_activate(app: &str) -> ToolResult {
 #[cfg(target_os = "linux")]
 async fn handle_hide(app: &str) -> ToolResult {
     if which("xdotool") {
-        let output = tokio::process::Command::new("xdotool")
+        let output = command::new::<tokio::process::Command>("xdotool", command::Console::Hidden)
             .args(["search", "--name", app])
             .output()
             .await;
@@ -581,7 +581,7 @@ async fn handle_info(app: &str) -> ToolResult {
         }
     }
     // Fallback: try to get process info
-    let output = tokio::process::Command::new("ps")
+    let output = command::new::<tokio::process::Command>("ps", command::Console::Hidden)
         .args(["aux"])
         .output()
         .await;
@@ -782,7 +782,7 @@ async fn handle_frontmost() -> ToolResult {
 
 #[cfg(target_os = "linux")]
 async fn run_command(cmd: &str, args: &[&str]) -> ToolResult {
-    match tokio::process::Command::new(cmd).args(args).output().await {
+    match command::new::<tokio::process::Command>(cmd, command::Console::Hidden).args(args).output().await {
         Ok(output) if output.status.success() => {
             let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
             ToolResult::ok(if text.is_empty() {
@@ -812,7 +812,7 @@ async fn run_command(cmd: &str, args: &[&str]) -> ToolResult {
 /// script's own output rather than echoing the whole script text back.
 #[cfg(target_os = "windows")]
 async fn run_powershell(script: &str) -> ToolResult {
-    match tokio::process::Command::new("powershell")
+    match command::new::<tokio::process::Command>("powershell", command::Console::Hidden)
         .args(["-NoProfile", "-Command", script])
         .output()
         .await
@@ -847,7 +847,7 @@ fn escape_powershell(s: &str) -> String {
 
 #[cfg(target_os = "linux")]
 fn which(cmd: &str) -> bool {
-    std::process::Command::new("which")
+    command::new::<std::process::Command>("which", command::Console::Hidden)
         .arg(cmd)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())

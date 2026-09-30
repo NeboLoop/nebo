@@ -89,7 +89,7 @@ pub enum MergeOutcome {
 }
 
 async fn git(cwd: &Path, args: &[&str]) -> Result<String, String> {
-    let out = Command::new("git")
+    let out = command::new::<Command>("git", command::Console::Hidden)
         .args(args)
         .current_dir(cwd)
         .env("GIT_TERMINAL_PROMPT", "0")

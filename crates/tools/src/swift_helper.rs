@@ -42,7 +42,7 @@ pub async fn ensure_compiled(name: &str, source: &str, frameworks: &[&str]) -> O
     let source_path = bin_dir.join(format!("{name}.swift"));
     std::fs::write(&source_path, source).ok()?;
     tracing::info!(name, "compiling native Swift helper…");
-    let mut cmd = tokio::process::Command::new("swiftc");
+    let mut cmd = command::new::<tokio::process::Command>("swiftc", command::Console::Hidden);
     cmd.arg("-O");
     for f in frameworks {
         cmd.args(["-framework", f]);

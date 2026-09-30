@@ -90,7 +90,7 @@ pub fn set_recording(on: bool) {
 }
 
 fn nice(cmd: &str) -> Command {
-    let mut c = Command::new("nice");
+    let mut c = command::new::<Command>("nice", command::Console::Hidden);
     c.arg("-n").arg("10").arg(cmd);
     c
 }
@@ -179,7 +179,7 @@ pub async fn ensure_started() -> Result<u16, String> {
     // Wait for the display to accept connections before starting clients.
     let mut ready = false;
     for _ in 0..50 {
-        if Command::new("xdpyinfo")
+        if command::new::<Command>("xdpyinfo", command::Console::Hidden)
             .arg("-display")
             .arg(DISPLAY)
             .stdout(std::process::Stdio::null())
@@ -298,7 +298,7 @@ pub async fn start_recording() -> Result<(String, std::path::PathBuf), String> {
     std::fs::create_dir_all(&frames_dir).map_err(|e| format!("teach dir: {e}"))?;
 
     // Human-viewable replay of the whole demonstration.
-    let video = Command::new("ffmpeg")
+    let video = command::new::<Command>("ffmpeg", command::Console::Hidden)
         .args([
             "-loglevel", "error",
             "-f", "x11grab", "-framerate", "10", "-i", DISPLAY,
@@ -312,7 +312,7 @@ pub async fn start_recording() -> Result<(String, std::path::PathBuf), String> {
         .map_err(|e| format!("recorder failed to start: {e}"))?;
 
     // Deduped ~1fps keyframes — the distillation pass reads these, not video.
-    let frames = Command::new("ffmpeg")
+    let frames = command::new::<Command>("ffmpeg", command::Console::Hidden)
         .args([
             "-loglevel", "error",
             "-f", "x11grab", "-framerate", "2", "-i", DISPLAY,
@@ -328,7 +328,7 @@ pub async fn start_recording() -> Result<(String, std::path::PathBuf), String> {
     // Raw input event log (clicks, keys, focus) — parsed at distill time.
     let events_file = std::fs::File::create(dir.join("events.log"))
         .map_err(|e| format!("events log: {e}"))?;
-    let events = Command::new("xinput")
+    let events = command::new::<Command>("xinput", command::Console::Hidden)
         .args(["test-xi2", "--root"])
         .env("DISPLAY", DISPLAY)
         .stdin(std::process::Stdio::null())

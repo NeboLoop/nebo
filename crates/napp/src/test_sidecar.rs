@@ -19,7 +19,7 @@ pub fn binary() -> &'static Path {
         std::fs::write(&src, SOURCE).expect("write fixture source");
         let out = dir.join("test-sidecar");
         let rustc = std::env::var("RUSTC").unwrap_or_else(|_| "rustc".into());
-        let status = std::process::Command::new(rustc)
+        let status = command::new::<std::process::Command>(rustc, command::Console::Hidden)
             .args(["--edition", "2021", "-O", "-o"])
             .arg(&out)
             .arg(&src)

@@ -42,7 +42,7 @@ impl StdioSession {
         args: &[String],
         env: &HashMap<String, String>,
     ) -> Result<Arc<Self>, McpError> {
-        let mut child = tokio::process::Command::new(command)
+        let mut child = command::new::<tokio::process::Command>(command, command::Console::Hidden)
             .args(args)
             .envs(env)
             .stdin(Stdio::piped())

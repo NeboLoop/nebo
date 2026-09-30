@@ -264,9 +264,9 @@ fn show_owner_notification(app: tauri::AppHandle, title: String, body: String, l
 /// open the containing directory.
 fn reveal_in_file_manager(path: &std::path::Path) {
     #[cfg(target_os = "macos")]
-    let _ = std::process::Command::new("open").arg("-R").arg(path).spawn();
+    let _ = command::new::<std::process::Command>("open", command::Console::Hidden).arg("-R").arg(path).spawn();
     #[cfg(target_os = "windows")]
-    let _ = std::process::Command::new("explorer")
+    let _ = command::new::<std::process::Command>("explorer", command::Console::Hidden)
         .arg(format!("/select,{}", path.display()))
         .spawn();
     #[cfg(target_os = "linux")]

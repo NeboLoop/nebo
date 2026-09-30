@@ -323,7 +323,7 @@ pub fn install_manifest(
                 continue;
             }
             let manifest_path_normalized = manifest_path.replace('/', "\\");
-            match std::process::Command::new("reg")
+            match command::new::<std::process::Command>("reg", command::Console::Hidden)
                 .args([
                     "add",
                     reg_key,
@@ -432,7 +432,7 @@ pub fn needs_manifest_update(nebo_binary_path: &str, local_extension_id: &str) -
                 continue;
             }
             // Check if registry key exists and points to the right manifest
-            if let Ok(output) = std::process::Command::new("reg")
+            if let Ok(output) = command::new::<std::process::Command>("reg", command::Console::Hidden)
                 .args(["query", reg_key, "/ve"])
                 .output()
             {
