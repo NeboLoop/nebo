@@ -1397,7 +1397,8 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
             CallOutcome::Cancelled | CallOutcome::CancelledInBackoff => return TurnExit::Cancelled,
             CallOutcome::Exhausted => return TurnExit::ProviderFailed("the provider's retries ran out".into()),
             CallOutcome::Failed(e) => {
-                let _ = cx.tx.send(StreamEvent::error(format!("Agent error: {e}"))).await;
+                // The call's own words, already written for the owner.
+                let _ = cx.tx.send(StreamEvent::error(e.clone())).await;
                 return TurnExit::ProviderFailed(e);
             }
         };

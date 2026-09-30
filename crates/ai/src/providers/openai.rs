@@ -436,7 +436,18 @@ impl OpenAIProvider {
                                             .await;
                                     }
                                 }
-                                let _ = tx.send(StreamEvent::error(msg.to_string())).await;
+                                // The gateway says whether a retry can
+                                // change the answer. A content filter every
+                                // route refused, a validation error: the same
+                                // request gets the same answer, so the runner
+                                // shows it once instead of asking again.
+                                let event = StreamEvent::error(msg.to_string());
+                                let event = if is_final_error(err_obj, code) {
+                                    event.non_retryable(code)
+                                } else {
+                                    event
+                                };
+                                let _ = tx.send(event).await;
                                 finished = true;
                                 errored = true;
                                 break 'outer;
@@ -997,6 +1008,13 @@ fn go_duration_secs(s: &str) -> Option<u64> {
     Some(total.ceil() as u64)
 }
 
+/// Whether a gateway error envelope says a retry gets the same answer:
+/// `retryable: false`, or a content filter (final by definition — the
+/// gateway already tried every route before answering).
+fn is_final_error(err: &serde_json::Value, code: &str) -> bool {
+    code == CONTENT_FILTERED || err.get("retryable").and_then(|r| r.as_bool()) == Some(false)
+}
+
 /// Map HTTP error status + body to our ProviderError type.
 fn map_http_error(
     status: u16,
@@ -1006,14 +1024,13 @@ fn map_http_error(
     retry_after_secs: Option<u64>,
 ) -> ProviderError {
     // Try to parse as OpenAI error JSON: {"error":{"message":"...", "code":"..."}}
-    let (msg, code) = if let Ok(v) = serde_json::from_str::<serde_json::Value>(body) {
+    let (msg, code, is_final) = if let Ok(v) = serde_json::from_str::<serde_json::Value>(body) {
         let err = &v["error"];
-        (
-            err["message"].as_str().unwrap_or(body).to_string(),
-            err["code"].as_str().unwrap_or("").to_string(),
-        )
+        let code = err["code"].as_str().unwrap_or("").to_string();
+        let is_final = is_final_error(err, &code);
+        (err["message"].as_str().unwrap_or(body).to_string(), code, is_final)
     } else {
-        (body.to_string(), String::new())
+        (body.to_string(), String::new(), false)
     };
 
     match status {
@@ -1047,6 +1064,16 @@ fn map_http_error(
                 return ProviderError::ContextOverflow;
             }
 
+            // A final answer from the gateway is shown as it wrote it; the
+            // diagnostics go to the log.
+            if is_final {
+                warn!(status, model, url, code = %code, error = %msg, "provider refused the request; a retry gets the same answer");
+                return ProviderError::Api {
+                    code,
+                    message: msg,
+                    retryable: false,
+                };
+            }
             // Include HTTP status, model, and endpoint for diagnostics
             let detailed = format!(
                 "{} (HTTP {} · model: {} · {})",
@@ -1682,5 +1709,81 @@ mod tests {
         assert!(heads[0].contains("authorization: bearer token-at-build"), "{}", heads[0]);
         assert!(heads[1].contains("authorization: bearer token-rotated"), "{}", heads[1]);
         assert!(!heads[1].contains("token-at-build"), "{}", heads[1]);
+    }
+
+    /// Serves one SSE body and returns every event `handle_stream` made of it.
+    async fn events_of(body: &'static str) -> Vec<StreamEvent> {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 2048];
+            let _ = sock.read(&mut buf).await;
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n{body}"
+            );
+            sock.write_all(resp.as_bytes()).await.unwrap();
+            sock.flush().await.unwrap();
+        });
+        let response = reqwest::get(format!("http://{addr}/")).await.unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(32);
+        OpenAIProvider::handle_stream(response, tx).await;
+        server.await.unwrap();
+        let mut events = Vec::new();
+        while let Ok(ev) = rx.try_recv() {
+            events.push(ev);
+        }
+        events
+    }
+
+    /// The gateway's content-filter answer (every route refused) arrives as
+    /// an in-stream error marked `retryable: false`: the runner must get it
+    /// as final, in the gateway's words.
+    #[tokio::test]
+    async fn a_final_stream_error_reaches_the_runner_as_final() {
+        let events = events_of(concat!(
+            "data: {\"error\":{\"message\":\"This request couldn't be completed. Try rephrasing it.\",",
+            "\"type\":\"invalid_request_error\",\"code\":\"CONTENT_FILTERED\",\"retryable\":false,\"request_id\":\"r1\"}}\n\n",
+            "data: [DONE]\n\n"
+        ))
+        .await;
+        let error = events.iter().find(|e| e.event_type == StreamEventType::Error).expect("an error event");
+        assert!(error.is_non_retryable());
+        assert_eq!(error.error.as_deref(), Some("This request couldn't be completed. Try rephrasing it."));
+
+        // The same code with no `retryable` field is final too.
+        let events = events_of(
+            "data: {\"error\":{\"message\":\"refused\",\"type\":\"server_error\",\"code\":\"CONTENT_FILTERED\"}}\n\n",
+        )
+        .await;
+        assert!(events.iter().any(|e| e.is_non_retryable()));
+
+        // A retryable error stays retryable.
+        let events = events_of(
+            "data: {\"error\":{\"message\":\"busy\",\"type\":\"server_error\",\"code\":\"PROVIDER_UNAVAILABLE\",\"retryable\":true}}\n\n",
+        )
+        .await;
+        let error = events.iter().find(|e| e.event_type == StreamEventType::Error).expect("an error event");
+        assert!(!error.is_non_retryable());
+    }
+
+    /// Before the stream opens: a final answer is not retryable and reads
+    /// as the gateway wrote it; the HTTP diagnostics stay in the log.
+    #[test]
+    fn a_final_http_error_is_not_retryable_and_reads_plainly() {
+        let body = r#"{"error":{"message":"This request couldn't be completed. Try rephrasing it.","type":"server_error","code":"CONTENT_FILTERED","retryable":false}}"#;
+        match map_http_error(502, body, "nebo-1-flash", "https://gateway.example.com/v1", None) {
+            ProviderError::Api { code, message, retryable } => {
+                assert_eq!(code, "CONTENT_FILTERED");
+                assert_eq!(message, "This request couldn't be completed. Try rephrasing it.");
+                assert!(!retryable);
+            }
+            other => panic!("expected an API error, got {other:?}"),
+        }
+        let body = r#"{"error":{"message":"busy","type":"server_error","code":"PROVIDER_UNAVAILABLE","retryable":true}}"#;
+        match map_http_error(502, body, "nebo-1-flash", "https://gateway.example.com/v1", None) {
+            ProviderError::Api { retryable, .. } => assert!(retryable),
+            other => panic!("expected an API error, got {other:?}"),
+        }
     }
 }
