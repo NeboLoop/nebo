@@ -2390,6 +2390,8 @@ async fn handle_conversation_session(
     }
     // A model response is owed or playing: nothing new is said over it.
     let mut responding = false;
+    // When the client last sent anything at all (audio, a frame, a ping).
+    let mut client_heard = tokio::time::Instant::now();
 
     loop {
         tokio::select! {
@@ -2636,8 +2638,22 @@ async fn handle_conversation_session(
             // A turn ran in this conversation outside the call.
             Some(reply) = heard_rx.recv() => to_say.push(reply),
 
+            // The cost backstop for a call nobody is on. The realtime line
+            // pings its far end, so the voice service no longer counts a
+            // quiet call as an abandoned one; the client is what says the
+            // call is still wanted. Every client sends something steadily
+            // (the phone pings every 10 s, the web a KeepAlive every 4 s, a
+            // phone line carries audio), so a client silent this long is
+            // gone without having said so.
+            _ = tokio::time::sleep_until(client_heard + VOICE_CLIENT_GONE_AFTER) => {
+                info!("voice client silent too long; ending the call");
+                let _ = rt_tx.send(RealtimeCommand::Close).await;
+                break;
+            }
+
             // Messages from the WebSocket client -> upstream
             ws_msg = socket.recv() => {
+                client_heard = tokio::time::Instant::now();
                 match ws_msg {
                     Some(Ok(Message::Binary(data))) => {
                         // PCM Int16 LE mono @ 24kHz — forwarded verbatim
@@ -2730,6 +2746,11 @@ async fn handle_conversation_session(
         state.harness.spawn_title_generation(&ctx.session_key, cid);
     }
 }
+
+/// How long a voice client may send nothing at all, not even a ping, before
+/// the call is taken as abandoned and closed (the voice service's own idle
+/// backstop is the same five minutes).
+const VOICE_CLIENT_GONE_AFTER: std::time::Duration = std::time::Duration::from_secs(300);
 
 /// Character cap for the persona body in a realtime session. The realtime
 /// context is for identity + operating rules — bulk knowledge stays behind
