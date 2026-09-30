@@ -59,6 +59,7 @@ fixtures:
   - ../fixtures/staffed-company/connections/sc52-an-install-carries-the-client-that-asked.yaml
   - ../fixtures/staffed-company/connections/sc53-a-cascade-carries-the-client-that-asked.yaml
   - ../fixtures/staffed-company/connections/sc54-an-open-approval-outlives-its-turn-and-reaches-a-client-that-connects-later.yaml
+  - ../fixtures/staffed-company/connections/sc77-a-list-of-codes-installs-one-by-one-and-a-failure-is-its-own-line.yaml
   - ../fixtures/staffed-company/company/sc55-the-point-person-sees-what-everyone-is-doing.yaml
   - ../fixtures/staffed-company/company/sc56-the-point-person-relays-into-a-linked-employees-conversation.yaml
   - ../fixtures/staffed-company/company/sc57-a-busy-linked-conversation-is-never-sent-a-second-prompt.yaml

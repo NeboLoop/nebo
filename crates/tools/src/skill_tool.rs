@@ -932,10 +932,11 @@ fn source_words(source: &SkillSource) -> &'static str {
 }
 
 /// The canonical installer returns one string for success and failure; these
-/// are the failure shapes it produces (`codes::handle_code_text` and the
-/// code-format check in the server's `CodeInstallerImpl`).
+/// are the failure shapes it produces (`codes::handle_code_text`, whose
+/// failures start "Couldn't install", and the code-format check in the
+/// server's `CodeInstallerImpl`).
 fn install_failed(msg: &str) -> bool {
-    msg.starts_with("Failed to install") || msg.contains("is not a valid install code")
+    msg.starts_with("Couldn't install") || msg.contains("is not a valid install code")
 }
 
 fn str_field<'a>(input: &'a serde_json::Value, key: &str) -> &'a str {
@@ -1369,7 +1370,7 @@ mod tests {
 
     #[test]
     fn install_failures_are_detected_and_sources_are_words() {
-        assert!(install_failed("Failed to install skill: not found"));
+        assert!(install_failed("Couldn't install SKIL-AAAA-BBBB: the code isn't valid."));
         assert!(install_failed("'SKIL-1' is not a valid install code (e.g. ...)"));
         assert!(!install_failed("Installed skill 'foo' (v1.2)"));
         assert_eq!(source_words(&SkillSource::Learned), "a learned skill of this employee");

@@ -1,0 +1,15 @@
+id: sc77-a-list-of-codes-installs-one-by-one-and-a-failure-is-its-own-line
+name: "SC77 — A list of codes installs one by one, and a failure is its own line"
+description: |
+  A chat message of nothing but install codes (a numbered list, bullets,
+  commas, the punctuation a copy picks up, a code repeated) installs each
+  code once, in the order given, through the one door a single code uses
+  (handle_code), and the reply streams a line per code as each finishes.
+  A connector this account can't see and a code nobody issued are their own
+  plain lines ("it isn't available to your account. Ask its publisher to
+  share it." / "the code isn't valid."), and the code after them still
+  installs. A list opens no client's install surface. Twenty-six codes
+  install nothing and the reply says the limit is 25.
+target_component: staffed-company
+proof: staffed_proof::connections::a_list_of_codes_installs_one_by_one_and_a_failure_is_its_own_line
+conversation: []
