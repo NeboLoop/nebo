@@ -74,6 +74,24 @@ pub fn model_refusal_notice(model: &str, detail: &str) -> String {
     )
 }
 
+/// Where the owner reads why a request was blocked and what to do about it.
+pub const BLOCKED_REQUESTS_URL: &str = "https://neboai.com/help/blocked-requests";
+
+/// What the owner reads when the provider's answer is final: a request
+/// every route's content filter refused says what to do about it, with the
+/// page that explains it as a plain URL (a phone shows the text as is);
+/// anything else reads as the gateway wrote it.
+fn final_words(code: &str, message: &str) -> String {
+    if code == ai::CONTENT_FILTERED {
+        return format!(
+            "This request couldn't be completed. Something earlier in this \
+             conversation may be what's blocked. Running /compact often helps. \
+             Learn more: {BLOCKED_REQUESTS_URL}"
+        );
+    }
+    message.to_string()
+}
+
 /// Retry backoff: exponential 500ms × 2^(n−1) capped at 32s, plus 0–25% jitter.
 /// An explicit provider Retry-After wins outright.
 fn retry_backoff(attempt: usize, retry_after_secs: Option<u64>) -> Duration {
@@ -492,10 +510,13 @@ pub(crate) async fn call_model(call: ModelCall<'_>, st: &mut CallState, state: &
             if e.is_retryable() {
                 st.retryable_retries += 1;
                 if st.retryable_retries > MAX_RETRYABLE_RETRIES {
-                    return CallOutcome::Failed(format!(
-                        "Service temporarily unavailable after {} retries: {}",
-                        MAX_RETRYABLE_RETRIES, e
-                    ));
+                    warn!(
+                        session_id,
+                        retries = MAX_RETRYABLE_RETRIES,
+                        error = %e,
+                        "retries ran out; ending the turn"
+                    );
+                    return CallOutcome::Failed(could_not_connect(selector, selected_model));
                 }
                 // Busy or rate-limited: the same model again after the
                 // wait the provider asked for.
@@ -506,7 +527,12 @@ pub(crate) async fn call_model(call: ModelCall<'_>, st: &mut CallState, state: &
                 return CallOutcome::Retry(RetryWhy::Transient);
             }
 
-            return CallOutcome::Failed(format!("Provider error: {}", e));
+            // Final: in the gateway's words, written for the owner; the
+            // details are already in the log above.
+            return CallOutcome::Failed(match &e {
+                ProviderError::Api { code, message, .. } => final_words(code, message),
+                _ => e.to_string(),
+            });
         }
     };
 
@@ -514,6 +540,10 @@ pub(crate) async fn call_model(call: ModelCall<'_>, st: &mut CallState, state: &
     let mut assistant_content = String::new();
     let mut tool_calls: Vec<ai::ToolCall> = Vec::new();
     let mut stream_error: Option<String> = None;
+    // The provider marked the error final: a retry gets the same answer.
+    // Its code ("" when it sent none) picks the words the owner reads.
+    let mut stream_error_final = false;
+    let mut stream_error_code = String::new();
     let mut last_retry_after: Option<u64> = None;
     let mut stop_reason: Option<String> = None;
     let mut t_first_token: Option<std::time::Instant> = None;
@@ -662,6 +692,8 @@ pub(crate) async fn call_model(call: ModelCall<'_>, st: &mut CallState, state: &
             StreamEventType::Error => {
                 warn!(session_id, error = ?event.error, "stream error event");
                 stream_error = event.error.clone();
+                stream_error_final = event.is_non_retryable();
+                stream_error_code = event.error_code().to_string();
                 // Don't forward to user yet — classify after stream ends
             }
             StreamEventType::Usage => {
@@ -846,6 +878,9 @@ pub(crate) async fn call_model(call: ModelCall<'_>, st: &mut CallState, state: &
         // re-send the identical payload, so letting one through costs the
         // owner the whole retry budget and tells him nothing new.
         let deterministic = ai::is_deterministic_request_error(&err);
+        // The provider said so itself (the gateway's `retryable: false`, a
+        // content filter every route refused): neither ladder runs.
+        let asks_again = provider.retryable() && !deterministic && !stream_error_final;
 
         // Mid-stream cutoff continuation: partial text the user already
         // watched stream would die with the retry below (which skips the
@@ -880,7 +915,7 @@ pub(crate) async fn call_model(call: ModelCall<'_>, st: &mut CallState, state: &
         };
 
         // Layer 1: Transient errors (connection reset, timeout, EOF)
-        if provider.retryable() && !deterministic && ai::is_transient_error(&err) {
+        if asks_again && ai::is_transient_error(&err) {
             st.transient_retries += 1;
             if st.transient_retries <= MAX_TRANSIENT_RETRIES {
                 let why = save_partial();
@@ -898,8 +933,7 @@ pub(crate) async fn call_model(call: ModelCall<'_>, st: &mut CallState, state: &
         }
 
         // Layer 2: Retryable errors (rate_limit, billing, provider errors)
-        let is_retryable = provider.retryable()
-            && !deterministic
+        let is_retryable = asks_again
             && (err.is_retryable()
                 || reason == "rate_limit"
                 || reason == "billing"
@@ -908,11 +942,14 @@ pub(crate) async fn call_model(call: ModelCall<'_>, st: &mut CallState, state: &
         if is_retryable {
             st.retryable_retries += 1;
             if st.retryable_retries > MAX_RETRYABLE_RETRIES {
+                warn!(
+                    session_id,
+                    retries = MAX_RETRYABLE_RETRIES,
+                    error = %err_msg,
+                    "retries ran out; ending the turn"
+                );
                 let _ = tx
-                    .send(StreamEvent::error(format!(
-                        "Service temporarily unavailable after {} retries: {}",
-                        MAX_RETRYABLE_RETRIES, err_msg
-                    )))
+                    .send(StreamEvent::error(could_not_connect(selector, selected_model)))
                     .await;
                 return CallOutcome::Exhausted;
             }
@@ -937,7 +974,9 @@ pub(crate) async fn call_model(call: ModelCall<'_>, st: &mut CallState, state: &
             );
         }
         let _ = tx
-            .send(StreamEvent::error(if deterministic {
+            .send(StreamEvent::error(if stream_error_final {
+                final_words(&stream_error_code, err_msg)
+            } else if deterministic {
                 model_refusal_notice(model_override, err_msg)
             } else {
                 err_msg.clone()
@@ -1439,6 +1478,179 @@ mod tests {
                     "the provider's own ack ended the stream well inside the grace period: {elapsed:?}"
                 );
             }
+        }
+    }
+
+    /// The gateway's answer when every route's content filter refused.
+    const FILTERED: &str = "This request couldn't be completed. Try rephrasing it.";
+
+    /// A provider whose every call ends the same way: one stream event, or
+    /// a refusal before the stream opens.
+    enum Answers {
+        Streams(StreamEvent),
+        Refuses(ProviderError),
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for Answers {
+        fn id(&self) -> &str {
+            "janus"
+        }
+        async fn stream(&self, _req: &ChatRequest) -> Result<ai::EventReceiver, ProviderError> {
+            let event = match self {
+                Answers::Streams(event) => event.clone(),
+                Answers::Refuses(e) => return Err(e.clone()),
+            };
+            let (tx, rx) = mpsc::channel(4);
+            tokio::spawn(async move {
+                let _ = tx.send(event).await;
+                let _ = tx.send(StreamEvent::done()).await;
+            });
+            Ok(rx)
+        }
+    }
+
+    /// One call to `provider` from state `st`: what it returned, and the
+    /// error text the owner was shown.
+    async fn call_once(provider: Answers, st: &mut CallState) -> (CallOutcome, Vec<String>) {
+        let rig = Rig::new();
+        let sessions = SessionManager::new(rig.store.clone());
+        let providers: RwLock<Vec<Arc<dyn Provider>>> = RwLock::new(vec![Arc::new(provider)]);
+        let token = CancellationToken::new();
+        let request = ChatRequest {
+            model: "nebo-1-flash".to_string(),
+            cancel_token: Some(token.clone()),
+            ..ChatRequest::new(ai::RequestTrace::new("agent_turn"))
+        };
+        let (tx, mut rx_out) = mpsc::channel(16);
+        let (tool_calls_out, _tc_rx) = mpsc::unbounded_channel();
+        let mut folds = crate::harness::text_fold::TurnFolds::default();
+        let mut state = RunState::default();
+        let outcome = call_model(
+            ModelCall {
+                request,
+                providers: &providers,
+                selector: &rig.selector,
+                concurrency: &rig.concurrency,
+                priority: crate::concurrency::Priority::Owner,
+                sessions: &sessions,
+                cancel: &token,
+                tx: &tx,
+                session_id: "s1",
+                step: 0,
+                step_started: std::time::Instant::now(),
+                selected_provider_id: "janus",
+                selected_model: "janus/nebo-1-flash",
+                model_override: "janus/nebo-1-flash",
+                context_limit: 100_000,
+                tool_credential: None,
+                tool_calls_out,
+                folds: &mut folds,
+                heard_through: None,
+                tool_names: vec![],
+            },
+            st,
+            &mut state,
+        )
+        .await;
+        drop(tx);
+        let mut shown = Vec::new();
+        while let Ok(event) = rx_out.try_recv() {
+            if let Some(error) = event.error {
+                shown.push(error);
+            }
+        }
+        (outcome, shown)
+    }
+
+    /// What the owner reads when every route's content filter refused the
+    /// request: what to do about it, and the page that explains it as a
+    /// plain URL, so a phone showing the text as is can open it.
+    const BLOCKED: &str = "This request couldn't be completed. Something earlier in this \
+        conversation may be what's blocked. Running /compact often helps. \
+        Learn more: https://neboai.com/help/blocked-requests";
+
+    /// The live failure (09-30): the gateway said a content filter refused
+    /// the request and that a retry gets the same answer, and the runner
+    /// asked five more times, then told the owner the service was
+    /// "temporarily unavailable". The gateway's answer is final: it is
+    /// shown once, and nothing is asked again.
+    #[tokio::test]
+    async fn a_content_filtered_stream_is_shown_once_and_never_retried() {
+        let mut st = CallState::default();
+        let refused = StreamEvent::error(FILTERED).non_retryable(ai::CONTENT_FILTERED);
+        let (outcome, shown) = call_once(Answers::Streams(refused), &mut st).await;
+        match outcome {
+            CallOutcome::Reply(reply) => assert_eq!(reply.stream_error.as_deref(), Some(FILTERED)),
+            _ => panic!("a final error ends the call with the reply, not a retry"),
+        }
+        assert_eq!((st.retryable_retries, st.transient_retries), (0, 0), "nothing was asked again");
+        assert_eq!(shown, vec![BLOCKED.to_string()], "shown once, saying what to do");
+    }
+
+    /// Any other final answer is shown once, as the gateway wrote it.
+    #[tokio::test]
+    async fn a_final_stream_error_reads_as_the_gateway_wrote_it() {
+        let mut st = CallState::default();
+        let refused = StreamEvent::error("That model isn't available.").non_retryable("MODEL_NOT_SUPPORTED");
+        let (outcome, shown) = call_once(Answers::Streams(refused), &mut st).await;
+        assert!(matches!(outcome, CallOutcome::Reply(_)));
+        assert_eq!(st.retryable_retries, 0);
+        assert_eq!(shown, vec!["That model isn't available.".to_string()]);
+    }
+
+    /// The same final answers before the stream opens (a plain HTTP error):
+    /// no retry, no prefix of ours.
+    #[tokio::test]
+    async fn a_final_refusal_before_the_stream_reads_plainly() {
+        let mut st = CallState::default();
+        let refused = ProviderError::Api {
+            code: ai::CONTENT_FILTERED.into(),
+            message: FILTERED.into(),
+            retryable: false,
+        };
+        let (outcome, _) = call_once(Answers::Refuses(refused), &mut st).await;
+        match outcome {
+            CallOutcome::Failed(text) => assert_eq!(text, BLOCKED),
+            _ => panic!("a final refusal fails the call"),
+        }
+        assert_eq!(st.retryable_retries, 0);
+
+        let refused = ProviderError::Api {
+            code: "MODEL_NOT_SUPPORTED".into(),
+            message: "That model isn't available.".into(),
+            retryable: false,
+        };
+        let (outcome, _) = call_once(Answers::Refuses(refused), &mut st).await;
+        match outcome {
+            CallOutcome::Failed(text) => assert_eq!(text, "That model isn't available."),
+            _ => panic!("a final refusal fails the call"),
+        }
+    }
+
+    /// Retries that run out end the turn in plain words — what happened and
+    /// what to do — never "temporarily unavailable", never the upstream's
+    /// own text (that goes to the log).
+    #[tokio::test]
+    async fn exhausted_retries_say_plainly_what_happened() {
+        let could_not = "Could not connect to nebo-1-flash. Try again.";
+
+        let mut st = CallState { retryable_retries: MAX_RETRYABLE_RETRIES, ..CallState::default() };
+        let busy = StreamEvent::error("vendor-x said: upstream busy");
+        let (outcome, shown) = call_once(Answers::Streams(busy), &mut st).await;
+        assert!(matches!(outcome, CallOutcome::Exhausted));
+        assert_eq!(shown, vec![could_not.to_string()]);
+
+        let mut st = CallState { retryable_retries: MAX_RETRYABLE_RETRIES, ..CallState::default() };
+        let busy = ProviderError::Api {
+            code: "PROVIDER_UNAVAILABLE".into(),
+            message: "vendor-x said: upstream busy".into(),
+            retryable: true,
+        };
+        let (outcome, _) = call_once(Answers::Refuses(busy), &mut st).await;
+        match outcome {
+            CallOutcome::Failed(text) => assert_eq!(text, could_not),
+            _ => panic!("retries that ran out fail the call"),
         }
     }
 }

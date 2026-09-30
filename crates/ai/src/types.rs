@@ -160,6 +160,38 @@ impl StreamEvent {
         self.payload.clone().and_then(|p| serde_json::from_value(p).ok())
     }
 
+    /// Mark an Error event as final: the provider said the same request
+    /// gets the same answer (the gateway's `retryable: false`, a content
+    /// filter every route refused), so the runner shows it and stops.
+    /// `code` is the provider's error code, "" when it sent none.
+    pub fn non_retryable(mut self, code: impl Into<String>) -> Self {
+        self.payload = Some(serde_json::json!({ "retryable": false, "code": code.into() }));
+        self
+    }
+
+    /// Whether this is an Error event the provider marked final.
+    pub fn is_non_retryable(&self) -> bool {
+        self.event_type == StreamEventType::Error
+            && self
+                .payload
+                .as_ref()
+                .and_then(|p| p.get("retryable"))
+                .and_then(|r| r.as_bool())
+                == Some(false)
+    }
+
+    /// The provider's code on a final Error event ("" when it sent none).
+    pub fn error_code(&self) -> &str {
+        if !self.is_non_retryable() {
+            return "";
+        }
+        self.payload
+            .as_ref()
+            .and_then(|p| p.get("code"))
+            .and_then(|c| c.as_str())
+            .unwrap_or("")
+    }
+
     /// A whole thinking block (ThinkingBlock events), carried in `payload`.
     pub fn thinking_block(block: ThinkingBlock) -> Self {
         let mut event = Self::thinking("");
@@ -811,6 +843,10 @@ pub trait ProfileTracker {
     /// Record an error with a cooldown hint string (e.g., "rate_limit:60s").
     fn record_error(&self, cooldown: &str);
 }
+
+/// The gateway's code for a request its content filters refused on every
+/// route it could take. Final: the gateway already tried them all.
+pub const CONTENT_FILTERED: &str = "CONTENT_FILTERED";
 
 /// Error from an AI provider.
 #[derive(Debug, Clone, thiserror::Error)]

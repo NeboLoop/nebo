@@ -35,6 +35,7 @@
   import PermissionAskCard from '$lib/components/PermissionAskCard.svelte';
   import WaitingAsksBar from '$lib/components/chat/WaitingAsksBar.svelte';
   import type { HelperLine } from '$lib/chat/helpers';
+  import { trailingLink } from '$lib/chat/errorLink';
   import { stepMeta } from '$lib/chat/stepMeta';
   import { turnBlocks, turnProse, noteLabel, type Fold, type TurnBlock, type TurnStep } from '$lib/chat/turnBlocks';
 
@@ -1934,7 +1935,12 @@
           {#if isOutOfBalance}
             {$t('chat.outOfBalance')}
           {:else}
-            {chatError}
+            {@const link = trailingLink(chatError)}
+            {#if link}
+              {link.text} <a class="link" href={link.url} target="_blank" rel="noopener noreferrer">{link.label}</a>
+            {:else}
+              {chatError}
+            {/if}
           {/if}
         </span>
         <div class="flex items-center gap-2 shrink-0">
