@@ -117,8 +117,15 @@ mod tests {
         const PARENT: &str = "NEBO_COMMAND_DETACHED_PARENT";
         if let Some(done) = std::env::var_os(PARENT) {
             let done = std::path::PathBuf::from(done);
+            // On Windows, a script run by `cmd /C` as the updater runs its
+            // helper: console programs (`ping`) in a wait, then the work.
+            // (A command line given to `cmd` directly would need its own
+            // quoting; a script file needs none.)
             let (program, args): (&str, Vec<String>) = if cfg!(windows) {
-                ("cmd", vec!["/C".into(), format!("ping -n 3 127.0.0.1 >NUL & echo done> \"{}\"", done.display())])
+                let script = done.with_extension("cmd");
+                std::fs::write(&script, format!("@echo off\r\nping -n 3 127.0.0.1 >NUL\r\necho done> \"{}\"\r\n", done.display()))
+                    .expect("helper script");
+                ("cmd", vec!["/C".into(), script.display().to_string()])
             } else {
                 ("sh", vec!["-c".into(), format!("sleep 2; echo done > '{}'", done.display())])
             };
