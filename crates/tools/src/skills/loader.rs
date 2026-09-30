@@ -207,18 +207,15 @@ impl Loader {
         let count = manifest.skills.len();
         let mut loaded = manifest.into_skill_map();
 
-        // Re-inject license keys for sealed skills (keys are runtime-only, not in manifest)
+        // Re-inject license keys for sealed skills (keys are runtime-only, not in
+        // manifest), resolving the artifact id the way the cold scan does.
         let keys = self.license_keys.read().await;
         for skill in loaded.values_mut() {
             if let Some(ref napp_path) = skill.napp_path {
-                // Extract artifact_id from the napp path (filename without extension)
-                if let Some(artifact_id) = napp_path
-                    .file_stem()
-                    .and_then(|s| s.to_str())
+                if let Some(key) =
+                    read_artifact_id_from_napp(napp_path).and_then(|id| keys.get(&id))
                 {
-                    if let Some(key) = keys.get(artifact_id) {
-                        skill.license_key = Some(*key);
-                    }
+                    skill.license_key = Some(*key);
                 }
             }
         }
@@ -366,7 +363,7 @@ impl Loader {
 
         let count = loaded.len();
         *self.skills.write().await = loaded;
-        info!(count, installed_dir = %self.installed_dir.display(), user_dir = %self.user_dir.display(), "loaded skills (cold start)");
+        info!(count, installed_dir = %self.installed_dir.display(), user_dir = %self.user_dir.display(), "loaded skills from disk");
         count
     }
 
@@ -957,18 +954,19 @@ impl Loader {
 
     /// Start watching for filesystem changes and reload on modification.
     /// Returns a JoinHandle that runs until cancelled.
-    pub fn watch(&self) -> tokio::task::JoinHandle<()> {
+    pub fn watch(self: &Arc<Self>) -> tokio::task::JoinHandle<()> {
+        let this = Arc::clone(self);
         let user_dir = self.user_dir.clone();
         let installed_dir = self.installed_dir.clone();
         let learned_dir = self.learned_dir.clone();
         let agent_dirs = self.agent_dirs.clone();
-        let skills = self.skills.clone();
-        let plugin_store = self.plugin_store.clone();
         let watcher_paused = self.watcher_paused.clone();
-        let plugins_dir = plugin_store
+        let plugins_dir = self
+            .plugin_store
             .as_ref()
             .map(|ps| ps.plugins_dir().to_path_buf());
-        let user_plugins_dir = plugin_store
+        let user_plugins_dir = self
+            .plugin_store
             .as_ref()
             .map(|ps| ps.user_plugins_dir().to_path_buf());
 
@@ -1166,127 +1164,10 @@ impl Loader {
                         last_reload = std::time::Instant::now();
 
                         debug!("skills directory changed, reloading");
-                        let mut loaded = HashMap::new();
-
-                        // Reload embedded bundled skills (frontmatter only)
-                        for (name, content) in super::bundled::BUNDLED_SKILLS {
-                            match parse_skill_frontmatter(content.as_bytes()) {
-                                Ok(mut skill) => {
-                                    skill.enabled = true;
-                                    skill.source = SkillSource::Installed;
-                                    loaded.insert(skill.name.clone(), skill);
-                                }
-                                Err(e) => {
-                                    warn!(skill = name, error = %e, "failed to parse bundled skill on reload");
-                                }
-                            }
-                        }
-
-                        if installed_dir.exists() {
-                            for mut skill in
-                                load_skills_from_nested_dir(&installed_dir, SkillSource::Installed)
-                            {
-                                skill.enabled = true;
-                                loaded.insert(skill.name.clone(), skill);
-                            }
-                        }
-
-                        // Reload skills embedded in marketplace plugins
-                        if let Some(ref pdir) = plugins_dir {
-                            if pdir.exists() {
-                                if let Ok(entries) = std::fs::read_dir(pdir) {
-                                    for entry in entries.flatten() {
-                                        let slug_dir = entry.path();
-                                        if !slug_dir.is_dir() {
-                                            continue;
-                                        }
-                                        let plugin_slug =
-                                            match slug_dir.file_name().and_then(|n| n.to_str()) {
-                                                Some(s) => s.to_string(),
-                                                None => continue,
-                                            };
-                                        for mut skill in load_skills_from_nested_dir(
-                                            &slug_dir,
-                                            SkillSource::Installed,
-                                        ) {
-                                            skill.enabled = true;
-                                            if !skill.plugins.iter().any(|p| p.name == plugin_slug)
-                                            {
-                                                skill.plugins.push(
-                                                    super::skill::PluginDependency {
-                                                        name: plugin_slug.clone(),
-                                                        version: "*".to_string(),
-                                                        optional: false,
-                                                    },
-                                                );
-                                            }
-                                            loaded.insert(skill.name.clone(), skill);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        // Reload skills embedded in user plugins
-                        if let Some(ref updir) = user_plugins_dir {
-                            if updir.exists() {
-                                if let Ok(entries) = std::fs::read_dir(updir) {
-                                    for entry in entries.flatten() {
-                                        let slug_dir = entry.path();
-                                        if !slug_dir.is_dir() {
-                                            continue;
-                                        }
-                                        let plugin_slug =
-                                            match slug_dir.file_name().and_then(|n| n.to_str()) {
-                                                Some(s) => s.to_string(),
-                                                None => continue,
-                                            };
-                                        for mut skill in load_skills_from_nested_dir(
-                                            &slug_dir,
-                                            SkillSource::Installed,
-                                        ) {
-                                            skill.enabled = true;
-                                            if !skill.plugins.iter().any(|p| p.name == plugin_slug)
-                                            {
-                                                skill.plugins.push(
-                                                    super::skill::PluginDependency {
-                                                        name: plugin_slug.clone(),
-                                                        version: "*".to_string(),
-                                                        optional: false,
-                                                    },
-                                                );
-                                            }
-                                            loaded.insert(skill.name.clone(), skill);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        if user_dir.exists() {
-                            for skill in load_skills_from_dir(&user_dir, SkillSource::User) {
-                                loaded.insert(skill.name.clone(), skill);
-                            }
-                        }
-
-                        load_employee_skills(&agent_dirs, &mut loaded);
-
-                        if let Some(ref ldir) = learned_dir {
-                            load_learned_skills(ldir, &mut loaded);
-                        }
-
-                        verify_dependencies(&mut loaded, plugin_store.as_deref());
-
-                        let count = loaded.len();
-                        // Update manifest for next warm start
-                        let hashes = manifest::compute_hashes(&loaded);
-                        let manifest = SkillManifest::from_skill_map(&loaded, &hashes);
-                        let manifest_path = installed_dir.join(".skill-manifest.json");
-                        if let Err(e) = manifest.save(&manifest_path) {
-                            warn!(error = %e, "failed to write skill manifest after reload");
-                        }
-
-                        *skills.write().await = loaded;
+                        // The same scan the boot runs — sealed skills, the
+                        // disabled-plugin gate, every tier. A second copy of
+                        // the loader here drifted and dropped sealed skills.
+                        let count = this.reload_from_disk().await;
                         info!(count, "reloaded skills after filesystem change");
                     }
                     Err(e) => {
@@ -2421,6 +2302,114 @@ Triage instructions.
             seen, "Second wording",
             "the watcher must reload a package's own procedure when it changes"
         );
+    }
+
+    const SEALED_ARTIFACT_ID: &str = "0b7e5c2a-sealed-closer";
+    const SEALED_KEY: [u8; 32] = [9u8; 32];
+
+    /// Lay a sealed (paid) skill out the way the marketplace install does:
+    /// `<installed>/closer/1.0.0.napp` plus a sibling holding only the
+    /// partial-extracted manifest.json. SKILL.md stays inside the archive.
+    fn install_sealed_skill(installed: &Path) {
+        let skill_md =
+            "---\nname: closer\ndescription: Close the deal\n---\n\nSealed closing procedure.\n";
+        let manifest =
+            format!(r#"{{"id":"{SEALED_ARTIFACT_ID}","name":"closer","version":"1.0.0"}}"#);
+        let dir = installed.join("closer");
+        std::fs::create_dir_all(dir.join("1.0.0")).unwrap();
+        std::fs::write(
+            dir.join("1.0.0.napp"),
+            napp::test_signing::sealed_napp(
+                &[
+                    ("SKILL.md", skill_md.as_bytes()),
+                    ("manifest.json", manifest.as_bytes()),
+                ],
+                &SEALED_KEY,
+            ),
+        )
+        .unwrap();
+        std::fs::write(dir.join("1.0.0").join("manifest.json"), &manifest).unwrap();
+    }
+
+    async fn sealed_loader(installed: &Path, user: &Path) -> Arc<Loader> {
+        let loader = Arc::new(Loader::new(installed.to_path_buf(), user.to_path_buf()));
+        loader
+            .set_license_keys(HashMap::from([(
+                SEALED_ARTIFACT_ID.to_string(),
+                SEALED_KEY,
+            )]))
+            .await;
+        loader.load_all().await;
+        loader
+    }
+
+    async fn assert_sealed_skill_usable(loader: &Loader, when: &str) {
+        let skill = loader
+            .get("closer", None)
+            .await
+            .unwrap_or_else(|| panic!("{when}: the sealed skill must still load for use_skill"));
+        assert!(skill.enabled, "{when}: the sealed skill must stay enabled");
+        assert!(
+            skill.template.contains("Sealed closing procedure."),
+            "{when}: the sealed body must decrypt, got {:?}",
+            skill.template
+        );
+        assert!(
+            loader.list(None).await.iter().any(|s| s.name == "closer"),
+            "{when}: the sealed skill must stay listed"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_sealed_skill_survives_a_watcher_reload() {
+        let installed = TempDir::new().unwrap();
+        let user = TempDir::new().unwrap();
+        install_sealed_skill(installed.path());
+        create_skill_md(
+            user.path(),
+            "notes",
+            &package_skill_md("notes", "First wording"),
+        );
+
+        let loader = sealed_loader(installed.path(), user.path()).await;
+        assert_sealed_skill_usable(&loader, "after the initial load").await;
+        let handle = loader.watch();
+
+        // Change an unrelated skill until the reload is observed (same
+        // no-fixed-sleep pattern as the package watcher test above).
+        let notes = user.path().join("notes").join("SKILL.md");
+        let mut reloaded = false;
+        for _ in 0..80 {
+            std::fs::write(&notes, package_skill_md("notes", "Second wording")).unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(125)).await;
+            if loader
+                .get("notes", None)
+                .await
+                .is_some_and(|s| s.description == "Second wording")
+            {
+                reloaded = true;
+                break;
+            }
+        }
+        handle.abort();
+        assert!(
+            reloaded,
+            "the watcher must reload after a skill file changes"
+        );
+        assert_sealed_skill_usable(&loader, "after a watcher reload").await;
+    }
+
+    #[tokio::test]
+    async fn test_sealed_skill_keeps_its_key_on_warm_start() {
+        let installed = TempDir::new().unwrap();
+        let user = TempDir::new().unwrap();
+        install_sealed_skill(installed.path());
+
+        sealed_loader(installed.path(), user.path()).await;
+        assert!(installed.path().join(".skill-manifest.json").exists());
+
+        let warm = sealed_loader(installed.path(), user.path()).await;
+        assert_sealed_skill_usable(&warm, "after a warm start").await;
     }
 
     #[tokio::test]
