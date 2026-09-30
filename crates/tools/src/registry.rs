@@ -1380,11 +1380,6 @@ impl Registry {
             self.register_workflows(manager).await;
         }
 
-        self.register(Box::new(crate::publisher_tool::PublisherTool::new(
-            store.clone(),
-        )))
-        .await;
-
         // Notebook tool (.ipynb cell editing) — deferred (activated when the user
         // mentions notebooks / Jupyter / .ipynb).
         self.register(Box::new(crate::notebook_tool::NotebookTool::new()))
@@ -2410,7 +2405,7 @@ pub(crate) mod tests {
     /// Each tool package removes its names; nothing is ever added.
     const PRE_INTERFACE_TOOLS: &[&str] = &[
         "a2ui", "authority", "code", "execute", "exit", "message", "notebook", "os", "pack",
-        "publisher", "rules", "vm",
+        "rules", "vm",
     ];
 
     /// The enum-dispatch surfaces the interface allows (device surfaces).
@@ -2483,7 +2478,7 @@ pub(crate) mod tests {
 
     #[test]
     fn the_pre_interface_list_is_closed_and_the_allowed_surfaces_are_the_device_ones() {
-        assert_eq!(PRE_INTERFACE_TOOLS.len(), 12, "packages only remove names from this list");
+        assert_eq!(PRE_INTERFACE_TOOLS.len(), 11, "packages only remove names from this list");
         assert!(ENUM_SURFACES.iter().all(|(t, _)| is_tool_name(t)));
     }
 
@@ -2556,7 +2551,7 @@ pub(crate) mod tests {
     }
 
     /// Deferred: everything but the core. Code, loop, work, emit, pack,
-    /// rules, a2ui, publisher, notebook, vm and authority are listed and
+    /// rules, a2ui, notebook, vm and authority are listed and
     /// loadable, never dropped. The pre-interface tools stay core until
     /// their package replaces them.
     #[tokio::test]
@@ -2583,7 +2578,7 @@ pub(crate) mod tests {
         for name in ["read_output", "stop_task", "list_processes", "send_input", "share_file", "convert_file", "checkpoint_files", "list_checkpoints", "restore_checkpoint", "write_plan", "check_plan"] {
             assert!(deferred.contains(name), "{name} is deferred");
         }
-        for name in ["code", "notebook", "vm", "publisher", "authority", "pack", "rules", "list_schedules", "list_teams"] {
+        for name in ["code", "notebook", "vm", "authority", "pack", "rules", "list_schedules", "list_teams"] {
             assert!(deferred.contains(name), "{name} is deferred");
         }
         // The plugin family: the events reader, one tool per installed

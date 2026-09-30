@@ -902,69 +902,6 @@ impl NeboAIApi {
         .await
     }
 
-    // ── Publishing ────────────────────────────────────────────────
-
-    /// Create or update a skill artifact on NeboAI.
-    pub async fn publish_skill(
-        &self,
-        name: &str,
-        description: &str,
-        manifest_content: &str,
-        version: &str,
-        visibility: &str,
-    ) -> Result<serde_json::Value, CommError> {
-        let body = serde_json::json!({
-            "name": name,
-            "description": description,
-            "type": "skill",
-            "manifestContent": manifest_content,
-            "version": version,
-            "visibility": visibility,
-        });
-        self.do_json(reqwest::Method::POST, "/api/v1/skills", Some(&body))
-            .await
-    }
-
-    /// Create or update an agent artifact on NeboAI.
-    pub async fn publish_agent(
-        &self,
-        name: &str,
-        description: &str,
-        manifest_content: &str,
-        version: &str,
-        visibility: &str,
-        agent_json: Option<&str>,
-    ) -> Result<serde_json::Value, CommError> {
-        let mut body = serde_json::json!({
-            "name": name,
-            "description": description,
-            "type": "agent",
-            "manifestContent": manifest_content,
-            "version": version,
-            "visibility": visibility,
-        });
-        if let Some(aj) = agent_json {
-            body["typeConfig"] = serde_json::from_str(aj).unwrap_or(serde_json::json!({}));
-        }
-        self.do_json(reqwest::Method::POST, "/api/v1/skills", Some(&body))
-            .await
-    }
-
-    /// Submit an artifact for marketplace review.
-    pub async fn submit_for_review(
-        &self,
-        artifact_id: &str,
-        version: &str,
-    ) -> Result<serde_json::Value, CommError> {
-        let body = serde_json::json!({ "version": version });
-        self.do_json(
-            reqwest::Method::POST,
-            &format!("/api/v1/skills/{}/submit", artifact_id),
-            Some(&body),
-        )
-        .await
-    }
-
     // ── Bot Name ────────────────────────────────────────────────────
     //
     // The bot's name belongs to the owner: the web console and the phone
