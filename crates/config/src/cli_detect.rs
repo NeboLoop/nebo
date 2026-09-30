@@ -66,7 +66,7 @@ pub fn ensure_full_path() {
                 "/opt/homebrew/sbin".into(),
             ]);
             // Try to get the real shell PATH via login shell
-            if let Ok(output) = Command::new("/bin/zsh")
+            if let Ok(output) = command::new::<Command>("/bin/zsh", command::Console::Hidden)
                 .args(["-l", "-c", "echo $PATH"])
                 .stdin(std::process::Stdio::null())
                 .stdout(std::process::Stdio::piped())
@@ -145,18 +145,11 @@ fn check_cli_status(command: &str) -> CliStatus {
     };
 
     // Run --version with a 3s timeout
-    let mut cmd = Command::new(&path);
+    let mut cmd = command::new::<Command>(&path, command::Console::Hidden);
     cmd.arg("--version")
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null());
-
-    // Windows: suppress console window flash
-    #[cfg(target_os = "windows")]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(types::constants::CREATE_NO_WINDOW);
-    }
 
     if let Ok(output) = cmd.spawn().and_then(|child| {
         // Wait with timeout by polling

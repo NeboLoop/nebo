@@ -693,11 +693,11 @@ async fn run_open(cfg: &config::Config) -> anyhow::Result<()> {
     let link = format!("{base}{path}");
     println!("Open this link in a browser on this computer (it works once, for two minutes):\n{link}");
     #[cfg(target_os = "macos")]
-    let opener = std::process::Command::new("open").arg(&link).status();
+    let opener = command::new::<std::process::Command>("open", command::Console::Hidden).arg(&link).status();
     #[cfg(target_os = "windows")]
-    let opener = std::process::Command::new("explorer").arg(&link).status();
+    let opener = command::new::<std::process::Command>("explorer", command::Console::Hidden).arg(&link).status();
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    let opener = std::process::Command::new("xdg-open").arg(&link).status();
+    let opener = command::new::<std::process::Command>("xdg-open", command::Console::Hidden).arg(&link).status();
     if opener.is_err() {
         println!("(No browser could be opened from here; copy the link.)");
     }
@@ -1164,7 +1164,7 @@ fn resolve_fixtures(
         let root = suite_dir.parent().unwrap_or(Path::new("."));
         for script in &suite.scripts {
             println!("suite {}: running {script}", suite.name);
-            let status = std::process::Command::new("bash")
+            let status = command::new::<std::process::Command>("bash", command::Console::Inherit)
                 .arg(script)
                 .current_dir(root)
                 .status()
@@ -1400,7 +1400,7 @@ fn run_proof(proof: &str) -> anyhow::Result<()> {
     let target = std::env::var_os("CARGO_TARGET_DIR").unwrap_or_else(|| root.join("target-check").into());
     let order = if proof.starts_with("harness::") { ["nebo-agent", "nebo-server"] } else { ["nebo-server", "nebo-agent"] };
     for package in order {
-        let out = std::process::Command::new("cargo")
+        let out = command::new::<std::process::Command>("cargo", command::Console::Inherit)
             .args(["test", "-p", package, "--lib", "--", proof, "--exact"])
             .env("CARGO_TARGET_DIR", &target)
             .current_dir(&root)

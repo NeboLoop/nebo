@@ -429,7 +429,7 @@ fn chat_db_path() -> Option<String> {
 /// for this caller (which identifier or text matched nothing).
 #[cfg(target_os = "macos")]
 async fn run_sqlite3(db_path: &str, query: &str, empty: &str) -> ToolResult {
-    let output = tokio::process::Command::new("sqlite3")
+    let output = command::new::<tokio::process::Command>("sqlite3", command::Console::Hidden)
         .args(["-header", "-separator", "|", db_path, query])
         .output()
         .await;
@@ -471,7 +471,7 @@ async fn run_sqlite3(db_path: &str, query: &str, empty: &str) -> ToolResult {
 #[cfg(target_os = "macos")]
 async fn run_osascript_stdin(script: &str, ok_text: &str) -> ToolResult {
     use tokio::io::AsyncWriteExt;
-    let mut child = match tokio::process::Command::new("osascript")
+    let mut child = match command::new::<tokio::process::Command>("osascript", command::Console::Hidden)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())

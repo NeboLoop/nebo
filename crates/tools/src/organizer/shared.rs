@@ -240,7 +240,7 @@ pub async fn run_osascript(script: &str) -> ToolResult {
 /// Run an AppleScript via `osascript -e`, typed for the send ledger.
 #[cfg(target_os = "macos")]
 pub async fn run_osascript_typed(script: &str) -> Ran {
-    let child = match tokio::process::Command::new("osascript")
+    let child = match command::new::<tokio::process::Command>("osascript", command::Console::Hidden)
         .arg("-e")
         .arg(script)
         .stdout(std::process::Stdio::piped())
@@ -258,7 +258,7 @@ pub async fn run_osascript_typed(script: &str) -> Ran {
 /// Uses direct exec (no shell) — safe from shell injection.
 #[cfg(target_os = "linux")]
 pub async fn run_command(cmd: &str, args: &[&str]) -> ToolResult {
-    let child = match tokio::process::Command::new(cmd)
+    let child = match command::new::<tokio::process::Command>(cmd, command::Console::Hidden)
         .args(args)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -297,7 +297,7 @@ pub async fn run_command_with_stdin_typed(cmd: &str, args: &[&str], stdin_data: 
     use std::process::Stdio;
     use tokio::io::AsyncWriteExt;
 
-    let mut child = match tokio::process::Command::new(cmd)
+    let mut child = match command::new::<tokio::process::Command>(cmd, command::Console::Hidden)
         .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -324,12 +324,11 @@ pub async fn run_powershell(script: &str) -> ToolResult {
 /// `run_powershell`, typed for the send ledger.
 #[cfg(target_os = "windows")]
 pub async fn run_powershell_typed(script: &str) -> Ran {
-    let mut cmd = tokio::process::Command::new("powershell");
+    let mut cmd = command::new::<tokio::process::Command>("powershell", command::Console::Hidden);
     cmd.args(["-NoProfile", "-Command", script]);
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
     cmd.kill_on_drop(true);
-    crate::process::hide_window(&mut cmd);
 
     let child = match cmd.spawn() {
         Ok(c) => c,
@@ -486,7 +485,7 @@ mod tests {
     fn test_exit_error_names_command_code_and_output() {
         #[cfg(unix)]
         {
-            let output = std::process::Command::new("sh")
+            let output = command::new::<std::process::Command>("sh", command::Console::Hidden)
                 .args(["-c", "echo out; echo err 1>&2; exit 3"])
                 .output()
                 .unwrap();
@@ -494,7 +493,7 @@ mod tests {
             assert!(msg.starts_with("sh exited 3: "), "{msg}");
             assert!(msg.contains("out") && msg.contains("err"), "{msg}");
 
-            let silent = std::process::Command::new("sh")
+            let silent = command::new::<std::process::Command>("sh", command::Console::Hidden)
                 .args(["-c", "exit 2"])
                 .output()
                 .unwrap();

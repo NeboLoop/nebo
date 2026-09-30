@@ -317,7 +317,7 @@ impl ExecuteTool {
 
         // Execute via sh -c (or powershell on Windows)
         let (shell, shell_args) = crate::process::shell_command();
-        let mut cmd = tokio::process::Command::new(&shell);
+        let mut cmd = command::new::<tokio::process::Command>(&shell, command::Console::Hidden);
         for arg in &shell_args {
             cmd.arg(arg);
         }
@@ -356,7 +356,6 @@ impl ExecuteTool {
             cmd.env("PATH", plugin_store.path_with_plugins());
         }
 
-        crate::process::hide_window(&mut cmd);
         cmd.current_dir(tmp_dir.path());
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());

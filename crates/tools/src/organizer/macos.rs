@@ -727,7 +727,7 @@ end tell"#,
         std::time::Duration::from_secs(180)
     };
 
-    let child = match tokio::process::Command::new("osascript")
+    let child = match command::new::<tokio::process::Command>("osascript", command::Console::Hidden)
         .arg("-e")
         .arg(&script)
         .stdout(std::process::Stdio::piped())

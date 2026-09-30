@@ -480,11 +480,11 @@ impl ShellTool {
         let (shell, shell_args) = process::shell_command();
         let mut cmd = match prefix.split_first() {
             Some((program, args)) => {
-                let mut cmd = tokio::process::Command::new(program);
+                let mut cmd = command::new::<tokio::process::Command>(program, command::Console::Hidden);
                 cmd.args(args).arg(&shell);
                 cmd
             }
-            None => tokio::process::Command::new(&shell),
+            None => command::new::<tokio::process::Command>(&shell, command::Console::Hidden),
         };
         for arg in &shell_args {
             cmd.arg(arg);
@@ -584,13 +584,13 @@ impl ShellTool {
 
     async fn list_processes(&self, filter: &str) -> ToolResult {
         #[cfg(unix)]
-        let cmd_result = tokio::process::Command::new("ps")
+        let cmd_result = command::new::<tokio::process::Command>("ps", command::Console::Hidden)
             .args(["aux"])
             .output()
             .await;
 
         #[cfg(windows)]
-        let cmd_result = tokio::process::Command::new("tasklist")
+        let cmd_result = command::new::<tokio::process::Command>("tasklist", command::Console::Hidden)
             .args(["/V"])
             .output()
             .await;
@@ -648,7 +648,7 @@ impl ShellTool {
             } else {
                 signal.trim_start_matches("SIG")
             };
-            let result = Command::new("kill")
+            let result = command::new::<Command>("kill", command::Console::Hidden)
                 .args([&format!("-{}", sig), &pid.to_string()])
                 .output();
 
@@ -668,7 +668,7 @@ impl ShellTool {
         #[cfg(windows)]
         {
             let _ = signal;
-            let result = std::process::Command::new("taskkill")
+            let result = command::new::<std::process::Command>("taskkill", command::Console::Hidden)
                 .args(["/PID", &pid.to_string(), "/F"])
                 .output();
 
@@ -706,7 +706,7 @@ impl ShellTool {
 
         #[cfg(unix)]
         {
-            let output = tokio::process::Command::new("ps")
+            let output = command::new::<tokio::process::Command>("ps", command::Console::Hidden)
                 .args(&args)
                 .output()
                 .await;
@@ -729,7 +729,7 @@ impl ShellTool {
 
         #[cfg(windows)]
         {
-            let output = tokio::process::Command::new("tasklist")
+            let output = command::new::<tokio::process::Command>("tasklist", command::Console::Hidden)
                 .args(["/FI", &format!("PID eq {}", pid), "/V"])
                 .output()
                 .await;

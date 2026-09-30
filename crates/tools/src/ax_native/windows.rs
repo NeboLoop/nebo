@@ -241,7 +241,7 @@ fn failure_text(code: Option<i32>, stderr: &str) -> String {
 }
 
 async fn run(script: &str, timeout: Duration) -> Result<String, String> {
-    let mut cmd = tokio::process::Command::new("powershell");
+    let mut cmd = command::new::<tokio::process::Command>("powershell", command::Console::Hidden);
     cmd.args(["-NoProfile", "-NonInteractive", "-EncodedCommand", &encoded_command(script)])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())

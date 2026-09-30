@@ -174,7 +174,7 @@ pub fn detect_install_method() -> &'static str {
             return "app_bundle";
         }
 
-        if std::process::Command::new("dpkg")
+        if command::new::<std::process::Command>("dpkg", command::Console::Hidden)
             .args(["-S", &path])
             .output()
             .map(|o| o.status.success())

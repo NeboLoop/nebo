@@ -187,7 +187,7 @@ pub fn detect_servers() -> Vec<(String, Option<String>)> {
         .map(|spec| {
             let found = find_server(&spec.bin, None);
             let detail = found.map(|path| {
-                std::process::Command::new(&path)
+                command::new::<std::process::Command>(&path, command::Console::Hidden)
                     .args(&spec.version_args)
                     .output()
                     .ok()
@@ -490,7 +490,7 @@ impl Drop for Server {
 
 impl Server {
     fn spawn(spec: &ServerSpec, bin_path: &Path, root: &Path) -> std::io::Result<Self> {
-        let mut cmd = std::process::Command::new(bin_path);
+        let mut cmd = command::new::<std::process::Command>(bin_path, command::Console::Hidden);
         cmd.args(&spec.args)
             .current_dir(root)
             .stdin(std::process::Stdio::piped())

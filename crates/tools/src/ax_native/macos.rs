@@ -45,7 +45,7 @@ pub(super) async fn run(args: &[String], deadline: Duration) -> Result<String, S
 /// killed and whatever it had written is returned if it got as far as the
 /// header — a partial walk is still a walk — otherwise an error.
 async fn run_cmd(program: &Path, args: &[String], deadline: Duration) -> Result<String, String> {
-    let mut child = tokio::process::Command::new(program)
+    let mut child = command::new::<tokio::process::Command>(program, command::Console::Hidden)
         .args(args)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())

@@ -243,7 +243,7 @@ fn name_pattern(query: &str) -> String {
 /// filesystem with `-xdev`, and with every path in `skip` pruned by name
 /// before find ever asks the kernel about it.
 fn find_command(root: &Path, query: &str, skip: &[PathBuf]) -> tokio::process::Command {
-    let mut cmd = tokio::process::Command::new("find");
+    let mut cmd = command::new::<tokio::process::Command>("find", command::Console::Hidden);
     // `-xdev` keeps the walk on one filesystem: a virtiofs, NFS or SMB mount
     // under the root is never entered, so a directory read can never block
     // forever in the kernel. The named prunes below cover what `-xdev` cannot
@@ -331,7 +331,7 @@ async fn handle_search(ctx: &ToolContext, input: &serde_json::Value) -> ToolResu
 
     #[cfg(target_os = "macos")]
     {
-        let mut cmd = tokio::process::Command::new("mdfind");
+        let mut cmd = command::new::<tokio::process::Command>("mdfind", command::Console::Hidden);
         cmd.arg("-onlyin").arg(&root).arg(query);
         let indexed = run_search(cmd, limit, deadline).await;
 
@@ -371,7 +371,7 @@ async fn handle_search(ctx: &ToolContext, input: &serde_json::Value) -> ToolResu
     #[cfg(target_os = "linux")]
     {
         // The index first, when the box has one.
-        let mut cmd = tokio::process::Command::new("plocate");
+        let mut cmd = command::new::<tokio::process::Command>("plocate", command::Console::Hidden);
         cmd.arg("-l").arg(limit.to_string()).arg(query);
         let indexed = run_search(cmd, limit, deadline).await;
 
@@ -407,7 +407,7 @@ async fn handle_search(ctx: &ToolContext, input: &serde_json::Value) -> ToolResu
             name_pattern(query).replace('\'', "''"),
             limit
         );
-        let mut cmd = tokio::process::Command::new("powershell");
+        let mut cmd = command::new::<tokio::process::Command>("powershell", command::Console::Hidden);
         cmd.args(["-NoProfile", "-Command", &script]);
         let walked = run_search(cmd, limit, deadline).await;
 
@@ -447,7 +447,7 @@ mod tests {
 
     /// A pid is gone (or a reaped-any-moment zombie) — not still walking the disk.
     fn still_running(pid: u32) -> bool {
-        let out = std::process::Command::new("ps")
+        let out = command::new::<std::process::Command>("ps", command::Console::Hidden)
             .args(["-o", "state=", "-p", &pid.to_string()])
             .output()
             .expect("ps runs");
@@ -659,7 +659,7 @@ mod tests {
     /// and its partial output survives.
     #[tokio::test]
     async fn a_slow_command_is_killed_at_the_deadline_with_its_partial_output() {
-        let mut cmd = tokio::process::Command::new("sh");
+        let mut cmd = command::new::<tokio::process::Command>("sh", command::Console::Hidden);
         cmd.args(["-c", "echo first; echo second; sleep 30"]);
         let started = Instant::now();
         let ran = run_search(cmd, 50, started + Duration::from_millis(600)).await;
@@ -686,7 +686,7 @@ mod tests {
             line!()
         ));
         let _ = std::fs::remove_file(&file);
-        let mut cmd = tokio::process::Command::new("sh");
+        let mut cmd = command::new::<tokio::process::Command>("sh", command::Console::Hidden);
         cmd.arg("-c")
             .arg(format!("sleep 30 & echo $! > {}; wait", file.display()));
 

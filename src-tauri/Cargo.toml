@@ -8,6 +8,7 @@ license.workspace = true
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+command = { workspace = true }
 mimalloc = { workspace = true }
 # Tauri
 tauri = { version = "2", features = ["tray-icon", "image-png"] }

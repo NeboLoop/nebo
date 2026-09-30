@@ -197,7 +197,7 @@ impl Runtime {
         env.push(("NEBO_APP_TOKEN".into(), app_token.clone()));
 
         // Launch process
-        let mut cmd = Command::new(&binary);
+        let mut cmd = command::new::<Command>(&binary, command::Console::Hidden);
         cmd.env_clear();
         for (k, v) in &env {
             cmd.env(k, v);

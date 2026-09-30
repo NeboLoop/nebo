@@ -37,7 +37,7 @@ pub fn find_chrome() -> Option<PathBuf> {
             "microsoft-edge",
         ];
         for name in &names {
-            if let Ok(output) = std::process::Command::new("which").arg(name).output() {
+            if let Ok(output) = command::new::<std::process::Command>("which", command::Console::Hidden).arg(name).output() {
                 if output.status.success() {
                     let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
                     if !path.is_empty() {
@@ -63,7 +63,7 @@ pub fn find_chrome() -> Option<PathBuf> {
             }
         }
         // Try registry
-        if let Ok(output) = std::process::Command::new("reg")
+        if let Ok(output) = command::new::<std::process::Command>("reg", command::Console::Hidden)
             .args([
                 "query",
                 r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\chrome.exe",
@@ -138,7 +138,7 @@ impl RunningChrome {
             args.push("--no-sandbox".to_string());
         }
 
-        let child = Command::new(&exe_path)
+        let child = command::new::<Command>(&exe_path, command::Console::Hidden)
             .args(&args)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -249,7 +249,7 @@ mod tests {
     /// A child running `script`, given a moment to get there (a trap set
     /// before the ask arrives).
     async fn spawn(script: &str) -> tokio::process::Child {
-        let child = Command::new("sh").args(["-c", script]).spawn().expect("sh");
+        let child = command::new::<Command>("sh", command::Console::Hidden).args(["-c", script]).spawn().expect("sh");
         tokio::time::sleep(Duration::from_millis(200)).await;
         child
     }

@@ -18,7 +18,7 @@ async fn ensure_helper() -> Option<PathBuf> {
 pub async fn run_pim(domain: &str, action: &str, args: &[(&str, &str)]) -> Option<ToolResult> {
     let helper = ensure_helper().await?;
 
-    let mut cmd = tokio::process::Command::new(&helper);
+    let mut cmd = command::new::<tokio::process::Command>(&helper, command::Console::Hidden);
     cmd.arg(domain).arg(action);
     for (key, value) in args {
         cmd.arg(format!("--{}", key)).arg(value);

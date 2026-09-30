@@ -1061,7 +1061,7 @@ impl PluginStore {
         let path_env = self.path_with_plugins();
         let resolved_env = self.resolved_auth_env(slug);
         let args: Vec<&str> = refresh_cmd.split_whitespace().collect();
-        let mut cmd = tokio::process::Command::new(&binary_path);
+        let mut cmd = command::new::<tokio::process::Command>(&binary_path, command::Console::Hidden);
         cmd.args(&args);
         cmd.env("PATH", &path_env);
         // Silent refresh is the FIRST path to break when this is missing: a
@@ -2798,7 +2798,7 @@ async fn run_auth_status_check_inner(
     };
     let resolved_env = store.resolved_auth_env(slug);
     let args: Vec<&str> = status_cmd.split_whitespace().collect();
-    let mut cmd = tokio::process::Command::new(&binary_path);
+    let mut cmd = command::new::<tokio::process::Command>(&binary_path, command::Console::Hidden);
     cmd.args(&args);
     cmd.env("PATH", path_env);
     // Status must see the same world a real command would — a probe that can't

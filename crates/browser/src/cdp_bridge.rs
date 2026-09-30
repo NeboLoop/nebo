@@ -219,7 +219,7 @@ impl CdpBridge {
         types::own_ports::open(port);
         info!(port, binary = %self.config.binary.display(), "launching Obscura (CDP tier-2)");
 
-        let mut cmd = Command::new(&self.config.binary);
+        let mut cmd = command::new::<Command>(&self.config.binary, command::Console::Hidden);
         if self.config.chromium {
             // Headless Chromium exposes the same CDP endpoint Obscura serves.
             // --no-sandbox: in the cloud pod the Kata VM is the sandbox and the

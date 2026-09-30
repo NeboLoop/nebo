@@ -292,7 +292,7 @@ async fn handle_add(input: &serde_json::Value) -> ToolResult {
     // of them ended the string and ran the rest as a command of its own.
     let output = async {
         use tokio::io::AsyncWriteExt;
-        let mut child = tokio::process::Command::new("secret-tool")
+        let mut child = command::new::<tokio::process::Command>("secret-tool", command::Console::Hidden)
             .args(["store", "--label", label, "service", service, "account", account])
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
@@ -382,7 +382,7 @@ async fn handle_find(input: &serde_json::Value) -> ToolResult {
         _ => return ToolResult::error(errors::missing_param("find", "label", "os(resource: \"keychain\", action: \"find\", label: \"myapp\")")),
     };
     // List all credentials and filter by target name
-    let output = tokio::process::Command::new("cmdkey")
+    let output = command::new::<tokio::process::Command>("cmdkey", command::Console::Hidden)
         .arg("/list")
         .output()
         .await;
@@ -490,7 +490,7 @@ async fn handle_delete(_input: &serde_json::Value) -> ToolResult {
 #[cfg(target_os = "macos")]
 #[allow(dead_code)]
 async fn run_osascript(script: &str) -> ToolResult {
-    match tokio::process::Command::new("osascript")
+    match command::new::<tokio::process::Command>("osascript", command::Console::Hidden)
         .arg("-e")
         .arg(script)
         .output()
@@ -518,7 +518,7 @@ const CMDKEY_NO_OUTPUT: &str = "(cmdkey exited 0 and printed nothing)";
 /// means for this call (a stored empty secret, a completed store, no matches).
 #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
 async fn run_command(cmd: &str, args: &[&str], on_empty: &str) -> ToolResult {
-    match tokio::process::Command::new(cmd).args(args).output().await {
+    match command::new::<tokio::process::Command>(cmd, command::Console::Hidden).args(args).output().await {
         Ok(output) if output.status.success() => {
             let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
             ToolResult::ok(if text.is_empty() {
@@ -575,7 +575,7 @@ async fn run_powershell(script: &str) -> ToolResult {
 
 #[cfg(target_os = "linux")]
 fn which(cmd: &str) -> bool {
-    std::process::Command::new("which")
+    command::new::<std::process::Command>("which", command::Console::Hidden)
         .arg(cmd)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -598,7 +598,7 @@ mod tests {
 
     #[test]
     fn command_failed_names_exit_code_and_message() {
-        let out = std::process::Command::new("sh")
+        let out = command::new::<std::process::Command>("sh", command::Console::Hidden)
             .args(["-c", "echo bad args >&2; exit 3"])
             .output()
             .expect("sh runs");
@@ -606,7 +606,7 @@ mod tests {
         assert!(text.starts_with("`security` exited 3: bad args."), "{text}");
         assert!(text.contains("Fix the arguments if the message names one"), "{text}");
 
-        let silent = std::process::Command::new("sh")
+        let silent = command::new::<std::process::Command>("sh", command::Console::Hidden)
             .args(["-c", "exit 1"])
             .output()
             .expect("sh runs");

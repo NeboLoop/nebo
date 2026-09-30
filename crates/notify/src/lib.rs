@@ -14,7 +14,7 @@ pub fn send(_title: &str, _body: &str) {
 #[allow(dead_code)] // Used when send() is re-enabled with tauri-plugin-notification
 fn send_platform(title: &str, body: &str) -> Result<(), String> {
     let script = format!("display notification \"{}\" with title \"{}\"", body, title);
-    Command::new("osascript")
+    command::new::<Command>("osascript", command::Console::Hidden)
         .args(["-e", &script])
         .output()
         .map_err(|e| e.to_string())?;
@@ -24,7 +24,7 @@ fn send_platform(title: &str, body: &str) -> Result<(), String> {
 #[cfg(target_os = "linux")]
 #[allow(dead_code)]
 fn send_platform(title: &str, body: &str) -> Result<(), String> {
-    Command::new("notify-send")
+    command::new::<Command>("notify-send", command::Console::Hidden)
         .args([title, body])
         .output()
         .map_err(|e| e.to_string())?;
@@ -46,7 +46,7 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($template)
 "#,
         title, body
     );
-    Command::new("powershell")
+    command::new::<Command>("powershell", command::Console::Hidden)
         .args(["-NoProfile", "-NonInteractive", "-Command", &ps])
         .output()
         .map_err(|e| e.to_string())?;

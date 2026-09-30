@@ -266,7 +266,7 @@ impl PluginRuntime {
     /// them through a string and re-splitting mangles anything containing spaces
     /// or quotes.
     pub fn command_args(&self, args: &[String]) -> tokio::process::Command {
-        let mut cmd = tokio::process::Command::new(&self.binary_path);
+        let mut cmd = command::new::<tokio::process::Command>(&self.binary_path, command::Console::Hidden);
         cmd.args(args);
         cmd.env_clear();
         for (k, v) in self.build_env() {
@@ -280,14 +280,6 @@ impl PluginRuntime {
         let _ = std::fs::create_dir_all(&data_dir);
         cmd.current_dir(&data_dir);
         cmd.kill_on_drop(true);
-        // No console window on Windows. Lived at every call site before this;
-        // a caller that forgot it flashed a black box at the user on every
-        // plugin invocation.
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            cmd.creation_flags(types::constants::CREATE_NO_WINDOW);
-        }
         cmd
     }
 

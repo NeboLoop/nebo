@@ -9,6 +9,7 @@ name = "nebo-cli"
 path = "src/main.rs"
 
 [dependencies]
+command = { workspace = true }
 tls = { workspace = true }
 mimalloc = { workspace = true }
 types = { workspace = true }

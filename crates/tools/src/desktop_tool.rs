@@ -1401,7 +1401,7 @@ fn wait_for_label(input: &serde_json::Value) -> String {
 async fn paste_text(text: &str) -> ToolResult {
     #[cfg(target_os = "macos")]
     {
-        let before = tokio::process::Command::new("pbpaste").output().await.ok().map(|o| o.stdout);
+        let before = command::new::<tokio::process::Command>("pbpaste", command::Console::Hidden).output().await.ok().map(|o| o.stdout);
         if let Err(e) = pbcopy(text.as_bytes()).await {
             return ToolResult::error(format!("could not stage the text on the clipboard: {e}"));
         }
@@ -1419,7 +1419,7 @@ async fn paste_text(text: &str) -> ToolResult {
 #[cfg(target_os = "macos")]
 async fn pbcopy(bytes: &[u8]) -> Result<(), String> {
     use tokio::io::AsyncWriteExt;
-    let mut child = tokio::process::Command::new("pbcopy")
+    let mut child = command::new::<tokio::process::Command>("pbcopy", command::Console::Hidden)
         .stdin(std::process::Stdio::piped())
         .spawn()
         .map_err(|e| e.to_string())?;
@@ -2068,7 +2068,7 @@ async fn handle_clipboard(action: &str, input: &serde_json::Value) -> ToolResult
 async fn clipboard_read() -> ToolResult {
     #[cfg(target_os = "macos")]
     {
-        return match tokio::process::Command::new("pbpaste").output().await {
+        return match command::new::<tokio::process::Command>("pbpaste", command::Console::Hidden).output().await {
             Ok(output) => {
                 let text = String::from_utf8_lossy(&output.stdout).to_string();
                 ToolResult::ok(if text.is_empty() {
@@ -2105,7 +2105,7 @@ async fn clipboard_read() -> ToolResult {
 async fn clipboard_write(text: &str) -> ToolResult {
     #[cfg(target_os = "macos")]
     {
-        let mut child = match tokio::process::Command::new("pbcopy")
+        let mut child = match command::new::<tokio::process::Command>("pbcopy", command::Console::Hidden)
             .stdin(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .spawn()
@@ -2884,7 +2884,7 @@ async fn capture_screenshot(input: &serde_json::Value) -> ToolResult {
             args.extend_from_slice(&["-l".to_string(), id.to_string(), "-o".to_string()]);
             args.push(tmp_path.clone());
             let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-            let out = tokio::process::Command::new("screencapture").args(&arg_refs).output().await;
+            let out = command::new::<tokio::process::Command>("screencapture", command::Console::Hidden).args(&arg_refs).output().await;
             // The rest of this function reads `result`; a window-id capture
             // produces it directly.
             match out {
@@ -2923,7 +2923,7 @@ async fn capture_screenshot(input: &serde_json::Value) -> ToolResult {
                 args.extend_from_slice(&["-R".to_string(), region.to_string()]);
                 args.push(tmp_path.clone());
                 let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-                tokio::process::Command::new("screencapture")
+                command::new::<tokio::process::Command>("screencapture", command::Console::Hidden)
                     .args(&arg_refs)
                     .output()
                     .await
@@ -2936,7 +2936,7 @@ async fn capture_screenshot(input: &serde_json::Value) -> ToolResult {
         } else {
             base_args.push(tmp_path.clone());
             let arg_refs: Vec<&str> = base_args.iter().map(|s| s.as_str()).collect();
-            tokio::process::Command::new("screencapture")
+            command::new::<tokio::process::Command>("screencapture", command::Console::Hidden)
                 .args(&arg_refs)
                 .output()
                 .await
@@ -3008,7 +3008,7 @@ $g.Dispose()
 $bmp.Dispose()"#,
             escape_powershell(&tmp_path)
         );
-        tokio::process::Command::new("powershell")
+        command::new::<tokio::process::Command>("powershell", command::Console::Hidden)
             .args(["-NoProfile", "-Command", &ps_script])
             .output()
             .await
@@ -4515,7 +4515,7 @@ async fn run_osascript(script: &str) -> ToolResult {
 /// scripts that are deliberately blocking on the user.
 #[cfg(target_os = "macos")]
 async fn run_osascript_raw(script: &str, deadline: Option<Duration>) -> Result<String, String> {
-    let mut cmd = tokio::process::Command::new("osascript");
+    let mut cmd = command::new::<tokio::process::Command>("osascript", command::Console::Hidden);
     cmd.arg("-e").arg(script);
     // Without this a timed-out osascript keeps running, holding its Apple Event
     // session open and slowing every later capture.
@@ -4624,7 +4624,7 @@ fn key_name_to_code(key: &str) -> Result<&'static str, String> {
 /// target the session; on a real desktop the inherited environment wins.
 /// Never sets DISPLAY process-wide.
 fn x11_command(cmd: &str) -> tokio::process::Command {
-    let c = tokio::process::Command::new(cmd);
+    let c = command::new::<tokio::process::Command>(cmd, command::Console::Hidden);
     #[cfg(target_os = "linux")]
     {
         let mut c = c;
@@ -4725,7 +4725,7 @@ async fn run_powershell(script: &str) -> ToolResult {
 
 #[cfg(target_os = "linux")]
 fn which(cmd: &str) -> bool {
-    std::process::Command::new("which")
+    command::new::<std::process::Command>("which", command::Console::Hidden)
         .arg(cmd)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -4736,7 +4736,7 @@ fn which(cmd: &str) -> bool {
 
 #[cfg(target_os = "linux")]
 async fn pipe_to_command(cmd: &str, args: &[&str], text: &str) -> ToolResult {
-    let mut child = match tokio::process::Command::new(cmd)
+    let mut child = match command::new::<tokio::process::Command>(cmd, command::Console::Hidden)
         .args(args)
         .stdin(std::process::Stdio::piped())
         .spawn()

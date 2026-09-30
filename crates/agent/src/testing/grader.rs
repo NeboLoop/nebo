@@ -86,7 +86,7 @@ async fn grade(
 
 /// Grade using the `claude` CLI directly — no Nebo server dependency for grading.
 async fn grade_with_claude_code(prompt: &str, model: &str) -> Result<String, String> {
-    let mut cmd = tokio::process::Command::new("claude");
+    let mut cmd = command::new::<tokio::process::Command>("claude", command::Console::Hidden);
     cmd.args([
         "--print",
         "--verbose",

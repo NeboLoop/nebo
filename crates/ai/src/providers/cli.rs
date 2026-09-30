@@ -157,7 +157,7 @@ impl Provider for CLIProvider {
             prompt
         };
 
-        let mut cmd = tokio::process::Command::new(&self.command);
+        let mut cmd = command::new::<tokio::process::Command>(&self.command, command::Console::Hidden);
         cmd.args(&args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -179,12 +179,6 @@ impl Provider for CLIProvider {
         // forces API-key auth, breaking OAuth subscriptions.)
         cmd.env("CLAUDE_CODE_DISABLE_AUTO_MEMORY", "1")
             .env("CLAUDE_CODE_DISABLE_CLAUDE_MDS", "1");
-
-        // Windows: suppress console window flash for GUI app
-        #[cfg(target_os = "windows")]
-        {
-            cmd.creation_flags(types::constants::CREATE_NO_WINDOW);
-        }
 
         // Unix: set process group for clean shutdown
         #[cfg(unix)]

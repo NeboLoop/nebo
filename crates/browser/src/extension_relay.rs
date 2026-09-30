@@ -234,7 +234,7 @@ fn detect_parent_browser() -> String {
     #[cfg(unix)]
     {
         let ppid = std::os::unix::process::parent_id();
-        if let Ok(output) = std::process::Command::new("ps")
+        if let Ok(output) = command::new::<std::process::Command>("ps", command::Console::Hidden)
             .args(["-p", &ppid.to_string(), "-o", "comm="])
             .output()
         {

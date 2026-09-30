@@ -386,7 +386,6 @@ impl ProcessRegistry {
         if pty {
             return self.spawn_terminal(&cmd, command, foreground, notify, closed_ports).await;
         }
-        hide_window(&mut cmd);
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
         // A foreground command has nobody to type into it: input it waits
@@ -838,33 +837,6 @@ pub fn clean_powershell_stderr(stderr: &str) -> String {
     }
 }
 
-/// Configure a Command to not flash a console window on Windows.
-///
-/// On Windows, subprocess spawning creates a visible console window by default.
-/// This sets the types::constants::CREATE_NO_WINDOW creation flag to suppress it.
-/// No-op on non-Windows platforms.
-#[cfg(target_os = "windows")]
-pub fn hide_window(cmd: &mut tokio::process::Command) {
-    cmd.creation_flags(types::constants::CREATE_NO_WINDOW);
-}
-
-#[cfg(not(target_os = "windows"))]
-pub fn hide_window(_cmd: &mut tokio::process::Command) {
-    // No-op on Unix
-}
-
-/// Configure a std::process::Command to not flash a console window on Windows.
-#[cfg(target_os = "windows")]
-pub fn hide_window_std(cmd: &mut std::process::Command) {
-    use std::os::windows::process::CommandExt;
-    cmd.creation_flags(types::constants::CREATE_NO_WINDOW);
-}
-
-#[cfg(not(target_os = "windows"))]
-pub fn hide_window_std(_cmd: &mut std::process::Command) {
-    // No-op on Unix
-}
-
 /// Return a sanitized copy of the environment.
 /// Delegates to `napp::plugin_runtime::sanitized_env` — the canonical implementation.
 pub fn sanitized_env() -> Vec<(String, String)> {
@@ -1018,7 +990,7 @@ mod group_tests {
     #[tokio::test]
     async fn a_timed_out_command_takes_its_children_with_it() {
         let file = pid_file();
-        let mut cmd = Command::new("sh");
+        let mut cmd = command::new::<Command>("sh", command::Console::Hidden);
         cmd.arg("-c").arg(format!("sleep 30 & echo $! > {}; wait", file.display()));
         cmd.stdout(Stdio::null()).stderr(Stdio::null());
         let out = output_within(cmd, Duration::from_millis(400)).await.unwrap();
@@ -1043,7 +1015,7 @@ mod group_tests {
     #[tokio::test]
     async fn a_child_the_kill_cannot_reach_does_not_hold_up_the_answer() {
         let file = pid_file();
-        let mut cmd = Command::new("sh");
+        let mut cmd = command::new::<Command>("sh", command::Console::Hidden);
         cmd.arg("-c").arg(escaped_child_command(&file));
 
         let started = std::time::Instant::now();
@@ -1077,7 +1049,7 @@ mod group_tests {
 
     #[tokio::test]
     async fn a_timed_out_command_keeps_what_it_printed() {
-        let mut cmd = Command::new("sh");
+        let mut cmd = command::new::<Command>("sh", command::Console::Hidden);
         cmd.arg("-c").arg("echo before; sleep 30; echo after");
         let out = output_within(cmd, Duration::from_millis(500)).await.unwrap();
         match out {
@@ -1089,7 +1061,7 @@ mod group_tests {
     }
 
     fn sh(command: &str) -> Command {
-        let mut cmd = Command::new("sh");
+        let mut cmd = command::new::<Command>("sh", command::Console::Hidden);
         cmd.arg("-c").arg(command);
         cmd
     }

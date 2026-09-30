@@ -280,7 +280,7 @@ async fn handle_dnd_status() -> ToolResult {
             Err(e) => {
                 // Legacy (pre-Focus) preference, still a real DND flag on
                 // old systems; on new ones the key is absent.
-                let legacy = tokio::process::Command::new("defaults")
+                let legacy = command::new::<tokio::process::Command>("defaults", command::Console::Hidden)
                     .args(["read", "com.apple.ncprefs", "dnd_prefs"])
                     .output()
                     .await;
@@ -311,7 +311,7 @@ async fn handle_dnd_status() -> ToolResult {
     #[cfg(target_os = "linux")]
     {
         // Try D-Bus to check GNOME DND
-        let output = tokio::process::Command::new("dbus-send")
+        let output = command::new::<tokio::process::Command>("dbus-send", command::Console::Hidden)
             .args([
                 "--session",
                 "--print-reply",
@@ -446,7 +446,7 @@ mod focus_tests {
 
 #[cfg(target_os = "windows")]
 async fn run_powershell(script: &str) -> ToolResult {
-    let output = tokio::process::Command::new("powershell")
+    let output = command::new::<tokio::process::Command>("powershell", command::Console::Hidden)
         .args(["-NoProfile", "-Command", script])
         .output()
         .await;
