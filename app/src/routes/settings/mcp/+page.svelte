@@ -113,10 +113,23 @@
     if (oauthPollingId) return;
     const api = await import('$lib/api/nebo');
     if (!authUrl) {
-      const oauthResp = await api.getOauthUrl(id) as { authUrl?: string };
-      authUrl = oauthResp?.authUrl;
+      try {
+        const oauthResp = await api.getOauthUrl(id) as { authUrl?: string };
+        authUrl = oauthResp?.authUrl;
+      } catch (err) {
+        // The backend already wrote a plain, specific reason (bad certificate,
+        // unreachable server, no sign-in offered, ...) into err.message.
+        updateIntegrationById(id, {
+          connectionStatus: 'error',
+          lastError: err instanceof Error && err.message ? err.message : $t('settingsMcp.oauthStartFailed'),
+        });
+        return;
+      }
     }
-    if (!authUrl) return;
+    if (!authUrl) {
+      updateIntegrationById(id, { connectionStatus: 'error', lastError: $t('settingsMcp.oauthStartFailed') });
+      return;
+    }
     window.open(authUrl, '_blank');
     updateIntegrationById(id, { connectionStatus: 'disconnected', lastError: $t('settingsMcp.waitingOauth') });
     // Poll for OAuth completion — the callback stores tokens and the connect call succeeds
@@ -229,9 +242,10 @@
           updateIntegrationById(id, { isEnabled: true, connectionStatus: 'connected' });
         }
       } catch {
-        // Connect failed — for OAuth, try starting the flow
+        // Connect failed — for OAuth, try starting the flow (it reports its
+        // own specific error; nothing more to do here).
         if (item.authType === 'oauth') {
-          try { await startOAuthFlow(id); } catch { updateIntegrationById(id, { lastError: $t('settingsMcp.oauthStartFailed') }); }
+          await startOAuthFlow(id);
         } else {
           updateIntegrationById(id, { connectionStatus: 'error', lastError: $t('settingsMcp.connectionFailed') });
         }
@@ -290,9 +304,14 @@
       const resp = await api.reauthenticateIntegration(id) as { authUrl?: string };
       if (resp?.authUrl) {
         await startOAuthFlow(id, resp.authUrl);
+      } else {
+        updateIntegrationById(id, { lastError: $t('settingsMcp.reauthFailed') });
       }
-    } catch {
-      updateIntegrationById(id, { lastError: $t('settingsMcp.reauthFailed') });
+    } catch (err) {
+      // The backend already wrote a plain, specific reason into err.message.
+      updateIntegrationById(id, {
+        lastError: err instanceof Error && err.message ? err.message : $t('settingsMcp.reauthFailed'),
+      });
     }
   }
 

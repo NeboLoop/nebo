@@ -1059,6 +1059,85 @@ fn pre_registered_oauth(state: &AppState, metadata: Option<&str>) -> Option<PreR
     })
 }
 
+/// Why OAuth discovery against a server's `.well-known/oauth-authorization-server`
+/// failed. `reqwest`/`rustls` carry no structured kind for this — only a
+/// message — so this is read from that message rather than the error's type.
+#[derive(Debug, PartialEq, Eq)]
+enum OAuthDiscoveryFailure {
+    /// The server's TLS certificate is invalid, expired, self-signed, or
+    /// doesn't cover the name we connected to.
+    InvalidCertificate,
+    /// The server could not be reached at all (DNS, refused, timed out).
+    Unreachable,
+    /// The server answered but doesn't publish OAuth metadata, or the body
+    /// isn't the metadata document the flow needs.
+    NoOAuthSupport,
+    /// Anything else.
+    Other,
+}
+
+fn classify_oauth_discovery_error(detail: &str) -> OAuthDiscoveryFailure {
+    let lower = detail.to_lowercase();
+
+    // rustls stringifies every trust failure (expired, self-signed, wrong
+    // name, unknown issuer, ...) as "invalid peer certificate: <reason>".
+    const CERT_MARKERS: &[&str] = &["certificate", "self signed", "self-signed", "ssl"];
+    if CERT_MARKERS.iter().any(|m| lower.contains(m)) {
+        return OAuthDiscoveryFailure::InvalidCertificate;
+    }
+
+    const UNREACHABLE_MARKERS: &[&str] = &[
+        "dns error",
+        "failed to lookup address",
+        "name or service not known",
+        "nodename nor servname",
+        "no route to host",
+        "connection refused",
+        "network is unreachable",
+        "timed out",
+        "timeout",
+        "connection reset",
+    ];
+    if UNREACHABLE_MARKERS.iter().any(|m| lower.contains(m)) {
+        return OAuthDiscoveryFailure::Unreachable;
+    }
+
+    // A non-2xx from the well-known endpoint (McpError::Auth's
+    // "OAuth discovery returned <status>") or a body that isn't valid
+    // metadata (a decode error on the response) both mean the server
+    // doesn't actually offer the sign-in flow at that address.
+    const NO_OAUTH_MARKERS: &[&str] = &[
+        "oauth discovery returned",
+        "error decoding response body",
+        "decoding",
+    ];
+    if NO_OAUTH_MARKERS.iter().any(|m| lower.contains(m)) {
+        return OAuthDiscoveryFailure::NoOAuthSupport;
+    }
+
+    OAuthDiscoveryFailure::Other
+}
+
+/// Turn a failed OAuth discovery call into the plain, specific error a person
+/// reads on their phone or desktop. The raw cause (`err`) belongs in logs,
+/// never in the response — see the `tracing::warn!` at the call site.
+fn oauth_discovery_error(server_name: &str, err: &mcp::McpError) -> types::NeboError {
+    match classify_oauth_discovery_error(&err.to_string()) {
+        OAuthDiscoveryFailure::InvalidCertificate => types::NeboError::Upstream(format!(
+            "Couldn't connect securely to {server_name}: its security certificate isn't valid. The server's owner needs to fix it."
+        )),
+        OAuthDiscoveryFailure::Unreachable => types::NeboError::Upstream(format!(
+            "Couldn't reach {server_name}. Check the address, or try again later."
+        )),
+        OAuthDiscoveryFailure::NoOAuthSupport => types::NeboError::Validation(format!(
+            "{server_name} didn't offer a sign-in. Check the address, or use an API key instead."
+        )),
+        OAuthDiscoveryFailure::Other => types::NeboError::Upstream(format!(
+            "Couldn't start sign-in for {server_name}. Try again."
+        )),
+    }
+}
+
 /// Start an OAuth flow for an integration and return the authorization URL.
 /// The ONE flow-start pathway (add-time connect and reauthenticate both land
 /// here): a pre-registered client from metadata when present, otherwise
@@ -1094,7 +1173,13 @@ async fn start_oauth_flow(
                     .discover_oauth(server_url)
                     .await
                     .map_err(|e| {
-                        types::NeboError::Internal(format!("OAuth discovery failed: {e}"))
+                        warn!(
+                            integration = %integration.id,
+                            server_url = %server_url,
+                            error = %e,
+                            "OAuth discovery failed"
+                        );
+                        oauth_discovery_error(&integration.name, &e)
                     })?;
                 info!(
                     integration = %integration.id,
@@ -1559,6 +1644,107 @@ mod tests {
         assert_eq!(
             derive_public_base(Some("neboai.com"), 27895, Some("")),
             "http://localhost:27895"
+        );
+    }
+
+    // ── OAuth discovery error classification ────────────────────────────
+    // These fake the *messages* real transport errors produce (rustls,
+    // reqwest, our own status-check) rather than the transport errors
+    // themselves, since reqwest::Error and rustls's error types have no
+    // public constructor for an arbitrary failure. The messages below are
+    // copied verbatim from what those libraries are documented/observed to
+    // print, so the classifier is exercised on realistic input.
+    use super::{OAuthDiscoveryFailure, classify_oauth_discovery_error, oauth_discovery_error};
+
+    #[test]
+    fn certificate_problems_are_classified_as_invalid_certificate() {
+        for detail in [
+            "HTTP error: error sending request for url (https://example.com/.well-known/oauth-authorization-server): error trying to connect: invalid peer certificate: UnknownIssuer",
+            "HTTP error: error trying to connect: invalid peer certificate: Expired",
+            "HTTP error: error trying to connect: invalid peer certificate: NotValidForName",
+            "HTTP error: self signed certificate",
+        ] {
+            assert_eq!(
+                classify_oauth_discovery_error(detail),
+                OAuthDiscoveryFailure::InvalidCertificate,
+                "detail: {detail}"
+            );
+        }
+    }
+
+    #[test]
+    fn network_problems_are_classified_as_unreachable() {
+        for detail in [
+            "HTTP error: error sending request for url (https://nope.invalid/.well-known/oauth-authorization-server): error trying to connect: dns error: failed to lookup address information: Name or service not known",
+            "HTTP error: error trying to connect: tcp connect error: Connection refused (os error 61)",
+            "HTTP error: error sending request for url (https://slow.example.com/.well-known/oauth-authorization-server): operation timed out",
+            "HTTP error: error trying to connect: No route to host (os error 65)",
+        ] {
+            assert_eq!(
+                classify_oauth_discovery_error(detail),
+                OAuthDiscoveryFailure::Unreachable,
+                "detail: {detail}"
+            );
+        }
+    }
+
+    #[test]
+    fn missing_or_malformed_metadata_is_classified_as_no_oauth_support() {
+        for detail in [
+            "auth error: OAuth discovery returned 404 Not Found",
+            "auth error: OAuth discovery returned 500 Internal Server Error",
+            "HTTP error: error decoding response body",
+        ] {
+            assert_eq!(
+                classify_oauth_discovery_error(detail),
+                OAuthDiscoveryFailure::NoOAuthSupport,
+                "detail: {detail}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_unrecognized_message_falls_back_to_other() {
+        assert_eq!(
+            classify_oauth_discovery_error("something odd happened"),
+            OAuthDiscoveryFailure::Other
+        );
+    }
+
+    #[test]
+    fn oauth_discovery_error_writes_a_plain_message_naming_the_server() {
+        let cert_err = mcp::McpError::Other(
+            "HTTP error: error trying to connect: invalid peer certificate: UnknownIssuer".into(),
+        );
+        let nebo_err = oauth_discovery_error("Monument", &cert_err);
+        assert_eq!(
+            nebo_err.client_message(),
+            "Couldn't connect securely to Monument: its security certificate isn't valid. The server's owner needs to fix it."
+        );
+        assert_eq!(nebo_err.status_code(), 502);
+        // Never leaks the transport detail to the person reading it.
+        assert!(!nebo_err.client_message().to_lowercase().contains("reqwest"));
+        assert!(!nebo_err.client_message().to_lowercase().contains("rustls"));
+
+        let unreachable_err = mcp::McpError::Other("dns error: failed to lookup address".into());
+        assert_eq!(
+            oauth_discovery_error("Monument", &unreachable_err).client_message(),
+            "Couldn't reach Monument. Check the address, or try again later."
+        );
+
+        let no_metadata_err =
+            mcp::McpError::Auth("OAuth discovery returned 404 Not Found".into());
+        let nebo_err = oauth_discovery_error("Monument", &no_metadata_err);
+        assert_eq!(
+            nebo_err.client_message(),
+            "Monument didn't offer a sign-in. Check the address, or use an API key instead."
+        );
+        assert_eq!(nebo_err.status_code(), 400);
+
+        let other_err = mcp::McpError::Other("gremlins".into());
+        assert_eq!(
+            oauth_discovery_error("Monument", &other_err).client_message(),
+            "Couldn't start sign-in for Monument. Try again."
         );
     }
 }
