@@ -651,6 +651,18 @@ pub fn hub_offers_collection(code: &str, id: &str, name: &str, items: &[&str]) {
     );
 }
 
+fn hub_hidden_connectors() -> &'static Mutex<std::collections::HashMap<String, String>> {
+    static HIDDEN: OnceLock<Mutex<std::collections::HashMap<String, String>>> = OnceLock::new();
+    HIDDEN.get_or_init(Default::default)
+}
+
+/// A connector the hub stand-in redeems under `code` but will not show this
+/// account: its detail answers 404, as the hub's does for an artifact the
+/// caller can't see.
+pub fn hub_hides_connector(code: &str, name: &str) {
+    hub_hidden_connectors().lock().unwrap_or_else(|e| e.into_inner()).insert(code.to_string(), name.to_string());
+}
+
 fn hub_agent_where(pred: impl Fn(&str, &HubAgent) -> bool) -> Option<(String, HubAgent)> {
     hub_agents()
         .lock()
@@ -757,6 +769,9 @@ fn hub_stand_in() -> String {
         }
         if let Some((_, a)) = hub_agent_where(|c, _| c == code) {
             return Ok(artifact(a.id.clone(), a.name.clone(), a.slug(), "agent"));
+        }
+        if let Some(name) = hub_hidden_connectors().lock().unwrap_or_else(|e| e.into_inner()).get(&code).cloned() {
+            return Ok(artifact(format!("hidden-{code}"), name.clone(), name.to_lowercase(), "connector"));
         }
         match hub_collections().lock().unwrap_or_else(|e| e.into_inner()).get(&code).cloned() {
             Some(c) => Ok(artifact(c.id, c.name.clone(), c.name.to_lowercase(), "collection")),

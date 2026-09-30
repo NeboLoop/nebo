@@ -3504,12 +3504,12 @@ fn install_code_shape_error(code: &str) -> Option<String> {
 
 /// Whether a [`CodeInstaller::install`] result string reports a failure. The
 /// installer returns one String for both outcomes (`server::codes::handle_code_text`
-/// renders errors as "Failed to install {kind}: {e}", and an unparseable code as
+/// renders errors as "Couldn't install {code}: {reason}", and an unparseable code as
 /// "'{code}' is not a valid install code"); the tool result must carry
 /// `is_error` for those, so the model never reads a failed install as done.
 fn install_text_is_failure(text: &str) -> bool {
     let t = text.trim_start();
-    t.starts_with("Failed to install") || t.contains("is not a valid install code")
+    t.starts_with("Couldn't install") || t.contains("is not a valid install code")
 }
 
 #[cfg(test)]
@@ -3579,7 +3579,7 @@ mod tests {
 
     #[test]
     fn install_failure_text_is_detected() {
-        assert!(install_text_is_failure("Failed to install plugin: 404 not found"));
+        assert!(install_text_is_failure("Couldn't install PLUG-AAAA-BBBB. Try again."));
         assert!(install_text_is_failure(
             "'XYZ' is not a valid install code — expected PREFIX-XXXX-XXXX"
         ));

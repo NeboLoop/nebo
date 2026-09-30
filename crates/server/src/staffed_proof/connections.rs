@@ -673,3 +673,111 @@ async fn two_taps_on_one_install_card_start_one_install() {
     nebo.state.tools.refresh_plugin_tools().await;
     nebo.store().delete_auth_profile(&profile).unwrap();
 }
+
+/// A message of nothing but install codes installs them one after another,
+/// in the order given, each through the one door a single code uses, and
+/// the reply is a line per code as each finishes. The owner pasted a
+/// connector code with a parenthesis on it and it went to the model as chat;
+/// a numbered list with the punctuation a copy picks up reads as its codes,
+/// once each. A code that fails is its own plain line, and the codes after it
+/// still install: a connector this account can't see says so, and a code
+/// nobody issued says it isn't valid, never NeboAI's raw answer. A list opens
+/// no client's install surface (each code's setup would replace the last
+/// one's). More than the most one message installs installs nothing and
+/// says so.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_list_of_codes_installs_one_by_one_and_a_failure_is_its_own_line() {
+    use crate::handlers::ws::{EventOrigin, HubEvent};
+    const FIRST: &str = "PLUG-BTCH-0001";
+    const HIDDEN: &str = "CONN-H1DE-0001";
+    const GONE: &str = "PLUG-G0NE-0001";
+    const LAST: &str = "PLUG-BTCH-0002";
+    const SESSION: &str = "agent:main:web:code-list";
+    let nebo = session().await;
+    hub_offers_plugin(FIRST, "batch-ledger-a", "Batch Ledger A");
+    hub_offers_plugin(LAST, "batch-ledger-b", "Batch Ledger B");
+    hub_hides_connector(HIDDEN, "Hidden Desk");
+    let profile = uuid::Uuid::new_v4().to_string();
+    nebo.store()
+        .create_auth_profile(&profile, "NeboAI", "neboai", "proof-token", None, None, 0, 1, Some("token"), None)
+        .unwrap();
+
+    let message = format!("1. {FIRST})\n2. `{HIDDEN}`,\n\u{2022} {GONE};\n- \"{LAST}\"\n{FIRST}.");
+    let codes = crate::codes::detect_codes(&message).expect("a message of nothing but codes");
+    let order: Vec<&str> = codes.iter().map(|(_, code)| *code).collect();
+    assert_eq!(order, [FIRST, HIDDEN, GONE, LAST], "in the order given, each once");
+
+    // What this conversation's socket hears.
+    let heard = |rx: &mut tokio::sync::broadcast::Receiver<HubEvent>| {
+        let mut out = Vec::new();
+        loop {
+            match rx.try_recv() {
+                Ok(e) if e.payload["session_id"] == SESSION => out.push(e),
+                Ok(_) | Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {}
+                Err(_) => break,
+            }
+        }
+        out
+    };
+    let mut desktop = nebo.state.hub.subscribe();
+    let asking = EventOrigin { client_id: Some("desk-page".to_string()), session_id: SESSION.to_string() };
+    let lines = crate::codes::handle_code_message(&nebo.state, &codes, &asking, "main").await;
+    assert_eq!(
+        lines,
+        [
+            "Installed plugin: Batch Ledger A",
+            "Couldn't install CONN-H1DE-0001: it isn't available to your account. Ask its publisher to share it.",
+            "Couldn't install PLUG-G0NE-0001: the code isn't valid.",
+            "Installed plugin: Batch Ledger B",
+        ]
+    );
+    assert!(nebo.state.plugin_store.resolve("batch-ledger-a", "*").is_some(), "the first code installed");
+    assert!(nebo.state.plugin_store.resolve("batch-ledger-b", "*").is_some(), "the code after two failures installed");
+
+    let events = heard(&mut desktop);
+    let reply: Vec<&str> =
+        events.iter().filter(|e| e.event_type == "chat_stream").filter_map(|e| e.payload["content"].as_str()).collect();
+    assert_eq!(
+        reply,
+        [
+            "Installing 4 codes, one at a time:\n\n",
+            "- Installed plugin: Batch Ledger A\n",
+            "- Couldn't install CONN-H1DE-0001: it isn't available to your account. Ask its publisher to share it.\n",
+            "- Couldn't install PLUG-G0NE-0001: the code isn't valid.\n",
+            "- Installed plugin: Batch Ledger B\n",
+        ],
+        "a line per code, as each finished"
+    );
+    assert_eq!(events.last().map(|e| e.event_type.as_str()), Some("chat_complete"), "then the reply is whole");
+    for e in events.iter().filter(|e| e.event_type.starts_with("code_")) {
+        assert!(e.payload["client_id"].is_null(), "a list opens no install surface: {}", e.payload);
+    }
+    let failed = events
+        .iter()
+        .find(|e| e.event_type == "code_result" && e.payload["code"] == HIDDEN)
+        .expect("the hidden connector's result");
+    assert_eq!(failed.payload["success"], false);
+    assert_eq!(
+        failed.payload["error"],
+        "Couldn't install CONN-H1DE-0001: it isn't available to your account. Ask its publisher to share it."
+    );
+
+    // Too many for one message: nothing installs, and the reply says why.
+    let many: Vec<String> = (0..=crate::codes::MAX_CODES_PER_MESSAGE).map(|i| format!("SKIL-CAP0-{i:04}")).collect();
+    let many = many.join("\n");
+    let many_codes = crate::codes::detect_codes(&many).expect("a long list is still a list");
+    let lines = crate::codes::handle_code_message(&nebo.state, &many_codes, &asking, "main").await;
+    assert_eq!(lines, ["That's 26 codes. I can install up to 25 at a time, so send them in smaller batches."]);
+    assert!(
+        !heard(&mut desktop).iter().any(|e| e.event_type == "code_processing"),
+        "nothing started installing"
+    );
+
+    // Leave the shared server as it was found.
+    for slug in ["batch-ledger-a", "batch-ledger-b"] {
+        let _ = nebo.state.plugin_store.remove(slug);
+        let _ = nebo.store().delete_installed_plugin(slug);
+    }
+    nebo.state.tools.refresh_plugin_tools().await;
+    nebo.store().delete_auth_profile(&profile).unwrap();
+}

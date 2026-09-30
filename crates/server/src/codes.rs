@@ -37,12 +37,68 @@ fn is_crockford_base32(s: &str) -> bool {
     s.bytes().all(|b| CROCKFORD.contains(&b))
 }
 
-/// Detect if a prompt is exactly a marketplace code.
+/// The most codes one message installs. A list longer than this is answered
+/// with the limit, and nothing is installed: a paste that long is more likely
+/// a mistake than a plan, and each code can take a minute.
+pub const MAX_CODES_PER_MESSAGE: usize = 25;
+
+/// The install codes a message holds, when it holds nothing else.
+///
+/// One code or a list: separated by spaces, commas, semicolons or new lines,
+/// as bullets or a numbered list. The punctuation a copy picks up around a
+/// code is ignored: quotes, backticks, brackets, a full stop ("CONN-V1PR-K421)"
+/// was copied out of a sentence that way and went to the model as chat).
+/// Each code once, in the order given. `None` when the message has any other
+/// word in it ("install CONN-…", "CONN-… please"): that is chat.
+pub fn detect_codes(text: &str) -> Option<Vec<(CodeType, &str)>> {
+    let mut codes: Vec<(CodeType, &str)> = Vec::new();
+    for token in text.split(|c: char| c.is_whitespace() || c == ',' || c == ';') {
+        let core = token.trim_matches(|c: char| !c.is_alphanumeric());
+        if core.is_empty() {
+            continue; // a bullet, a dash, a stray bracket
+        }
+        if list_number(core) == Some("") && core.len() < token.len() {
+            continue; // "1." "2)" "(3)": a numbered list's marker
+        }
+        // A marker written against its code: "1.CONN-…".
+        let found = code_at(core).or_else(|| list_number(core).and_then(code_at))?;
+        if !codes.iter().any(|(_, seen)| seen.eq_ignore_ascii_case(found.1)) {
+            codes.push(found);
+        }
+    }
+    (!codes.is_empty()).then_some(codes)
+}
+
+/// A message that is exactly one install code, for the doors that take one
+/// (the REST door, the install tools, the hub's install event). The same
+/// reading as [`detect_codes`]: the punctuation around it is ignored.
+pub fn detect_code(text: &str) -> Option<(CodeType, &str)> {
+    match detect_codes(text)?.as_slice() {
+        [one] => Some(*one),
+        _ => None,
+    }
+}
+
+/// What follows a numbered list's marker at the start of `token`: one to
+/// three digits, then `.` or `)` — or nothing at all, which is how a marker
+/// looks once the punctuation around it is trimmed ("1." "(3)").
+fn list_number(token: &str) -> Option<&str> {
+    let digits = token.bytes().take_while(u8::is_ascii_digit).count();
+    if !(1..=3).contains(&digits) {
+        return None;
+    }
+    let rest = &token[digits..];
+    if rest.is_empty() {
+        return Some(rest);
+    }
+    rest.strip_prefix(['.', ')'])
+}
+
+/// `token`, when it is exactly one install code.
 ///
 /// Code format: `PREFIX-XXXX-XXXX` where XXXX = 4 Crockford Base32 characters.
-pub fn detect_code(prompt: &str) -> Option<(CodeType, &str)> {
-    let trimmed = prompt.trim();
-    let upper = trimmed.to_ascii_uppercase();
+fn code_at(token: &str) -> Option<(CodeType, &str)> {
+    let upper = token.to_ascii_uppercase();
 
     // Must match PREFIX-XXXX-XXXX exactly
     let (prefix, code_type) = if upper.starts_with("NEBO-") {
@@ -81,8 +137,8 @@ pub fn detect_code(prompt: &str) -> Option<(CodeType, &str)> {
         return None;
     }
 
-    // Return the original trimmed input (preserving case as entered)
-    Some((code_type, trimmed))
+    // The code as entered (its case preserved)
+    Some((code_type, token))
 }
 
 // ── Code Dispatch ───────────────────────────────────────────────────
@@ -238,6 +294,10 @@ async fn install(
     origin: &EventOrigin,
 ) -> Result<CodeHandlerResult, NeboError> {
     let code = claim.code();
+    // Every code but a pairing one is redeemed on the owner's NeboAI account.
+    if code_type != CodeType::Nebo && neboai_token(state).is_none() {
+        return Err(NeboError::Upstream(NOT_SIGNED_IN.to_string()));
+    }
     match code_type {
         CodeType::Nebo => handle_nebo_code(state, code).await,
         CodeType::Skill => handle_skill_code(state, code, by, origin).await,
@@ -255,11 +315,12 @@ async fn install(
 /// store tap) or hired on their account (the hub's install event), and
 /// report it to the app. `origin` is who asked: its install surface opens
 /// on that client only, and every other client just sees the result.
-pub async fn handle_code(state: &AppState, code_type: CodeType, code: &str, origin: &EventOrigin) {
+/// Returns the line the owner reads about it ([`outcome_line`]).
+pub async fn handle_code(state: &AppState, code_type: CodeType, code: &str, origin: &EventOrigin) -> String {
     let session_id = origin.session_id.as_str();
     let Some(claim) = state.codes_in_flight.begin(code) else {
         info!(code, session_id, "code is already being handled; the first run reports the result");
-        return;
+        return format!("{code} is already being installed.");
     };
     let code_type_str = code_type_name(code_type);
     let status_message = match code_type {
@@ -284,6 +345,7 @@ pub async fn handle_code(state: &AppState, code_type: CodeType, code: &str, orig
     );
 
     let result = install(state, code_type, &claim, InstalledBy::Owner, origin).await;
+    let line = outcome_line(code, &result);
 
     match result {
         Ok(r) => {
@@ -297,17 +359,69 @@ pub async fn handle_code(state: &AppState, code_type: CodeType, code: &str, orig
                     "code": code,
                     "code_type": code_type_str,
                     "success": false,
-                    "error": e.to_string(),
+                    "error": line,
                 })),
             );
         }
     }
+    line
+}
 
-    // Always send chat_complete so frontend resets loading state
+/// Install the codes one chat message held ([`detect_codes`]), one after
+/// another in the order given, each through the ONE door a single code uses
+/// ([`handle_code`]), and answer in the conversation as each finishes: one
+/// line per code. A code that fails is its line; the rest still install.
+///
+/// One code opens the asking client's install surface, as it always has.
+/// A list opens none: each code's setup would replace the last one's before
+/// the owner saw it, so the lines are the report, and a hired employee is
+/// set up from its own page afterwards. More than
+/// [`MAX_CODES_PER_MESSAGE`] installs nothing and says so. `agent_id` is the
+/// conversation's employee, so the reply lands under it.
+pub async fn handle_code_message(
+    state: &AppState,
+    codes: &[(CodeType, &str)],
+    origin: &EventOrigin,
+    agent_id: &str,
+) -> Vec<String> {
+    let say = |content: &str| {
+        state.hub.broadcast(
+            "chat_stream",
+            serde_json::json!({ "session_id": origin.session_id, "agentId": agent_id, "content": content }),
+        );
+    };
+    let mut lines = Vec::new();
+    match codes {
+        [] => {}
+        [(code_type, code)] => {
+            let line = handle_code(state, *code_type, code, origin).await;
+            say(&line);
+            lines.push(line);
+        }
+        _ if codes.len() > MAX_CODES_PER_MESSAGE => {
+            let line = format!(
+                "That's {} codes. I can install up to {MAX_CODES_PER_MESSAGE} at a time, so send them in smaller batches.",
+                codes.len()
+            );
+            say(&line);
+            lines.push(line);
+        }
+        _ => {
+            say(&format!("Installing {} codes, one at a time:\n\n", codes.len()));
+            let quiet = EventOrigin::unclaimed(origin.session_id.clone());
+            for (code_type, code) in codes {
+                let line = handle_code(state, *code_type, code, &quiet).await;
+                say(&format!("- {line}\n"));
+                lines.push(line);
+            }
+        }
+    }
+    // The reply is whole: the conversation stops showing work.
     state.hub.broadcast(
         "chat_complete",
-        serde_json::json!({ "session_id": session_id }),
+        serde_json::json!({ "session_id": origin.session_id, "agentId": agent_id }),
     );
+    lines
 }
 
 /// Handle a detected code and return a text response (for channel bridges
@@ -352,6 +466,7 @@ pub async fn handle_code_text(
     );
 
     let result = install(state, code_type, &claim, by, &origin).await;
+    let line = outcome_line(code, &result);
 
     match result {
         Ok(r) => {
@@ -367,12 +482,6 @@ pub async fn handle_code_text(
                     "artifact_id": r.artifact_id,
                 })),
             );
-
-            if let Some(url) = r.checkout_url {
-                format!("{}. Payment required: {}", r.message, url)
-            } else {
-                r.message
-            }
         }
         Err(e) => {
             warn!(code = code, error = %e, "code handling failed (channel)");
@@ -384,12 +493,70 @@ pub async fn handle_code_text(
                     "code": code,
                     "code_type": code_type_str,
                     "success": false,
-                    "error": e.to_string(),
+                    "error": line,
                 })),
             );
-            format!("Failed to install {code_type_str}: {e}")
         }
     }
+    line
+}
+
+// ── What the Owner Reads ────────────────────────────────────────────
+
+/// The start of every line that reports a code that did not install. The
+/// install tools read it to mark their result an error (`install_failed` in
+/// the tools crate), so the model never takes a failed install for done.
+pub const INSTALL_FAILED: &str = "Couldn't install";
+
+/// Why NeboAI said no, when the owner can act on it.
+const NOT_AVAILABLE: &str = "it isn't available to your account. Ask its publisher to share it.";
+const NOT_VALID: &str = "the code isn't valid.";
+const NOT_SIGNED_IN: &str = "this Nebo isn't signed in to NeboAI. Sign in, then send the code again.";
+
+/// The line the owner reads about one code: what installed (or what it
+/// costs), or why it did not, plain and about that code. What went wrong in
+/// detail is in the log, never here: "fetch connector 84fe…: NeboAI returned
+/// 404: {"error":"skill not found"}" was what an owner read (2026-09-30).
+fn outcome_line(code: &str, result: &Result<CodeHandlerResult, NeboError>) -> String {
+    match result {
+        Ok(r) => match &r.checkout_url {
+            Some(url) => format!("{}. Payment required: {url}", r.message),
+            None => r.message.clone(),
+        },
+        // Written for the person reading it (`NeboError::client_message`).
+        Err(NeboError::Upstream(reason) | NeboError::Validation(reason)) => {
+            format!("{INSTALL_FAILED} {code}: {reason}")
+        }
+        Err(_) => format!("{INSTALL_FAILED} {code}. Try again."),
+    }
+}
+
+/// What an install asked NeboAI for. The same 404 means two things: to a
+/// code being redeemed, that there is no such code; to what a redeemed code
+/// points at, that this account can't see it.
+#[derive(Clone, Copy, Debug)]
+enum HubStep {
+    Redeem,
+    Fetch,
+}
+
+/// NeboAI's answer to an install step that failed, as the error the install
+/// returns: a refusal the owner can act on becomes its reason
+/// ([`outcome_line`] shows it), anything else stays the detail it was and
+/// reads as "try again". What NeboAI said is logged either way.
+fn hub_refusal(step: HubStep, what: &str, e: comm::CommError) -> NeboError {
+    let status = match &e {
+        comm::CommError::Http { status, .. } => Some(*status),
+        _ => None,
+    };
+    let reason = match (step, status) {
+        (_, Some(401)) => NOT_SIGNED_IN,
+        (_, Some(403)) | (HubStep::Fetch, Some(404)) => NOT_AVAILABLE,
+        (HubStep::Redeem, Some(404)) => NOT_VALID,
+        _ => return NeboError::Internal(format!("{what}: {e}")),
+    };
+    warn!(what, ?step, error = %e, "NeboAI refused an install step");
+    NeboError::Upstream(reason.to_string())
 }
 
 // ── Per-Type Handlers ───────────────────────────────────────────────
@@ -427,40 +594,18 @@ async fn handle_skill_code(
         }
     }
 
-    let artifact_id;
-    let name;
-
-    if let Ok(ref resp) = redeem_result {
-        artifact_id = resp.artifact.id.clone();
-        name = resp.artifact.name.clone();
-    } else {
-        // Redemption failed (likely already redeemed) — look up by code
-        warn!(
-            code,
-            "skill redeem failed, attempting to look up artifact by code"
-        );
-        let products = api
-            .list_products(Some("skill"), None, None, None, None)
-            .await
-            .map_err(|e| NeboError::Internal(format!("list_products: {e}")))?;
-        let items = products
-            .get("products")
-            .and_then(|v| v.as_array())
-            .or_else(|| products.get("results").and_then(|v| v.as_array()))
-            .or_else(|| products.get("skills").and_then(|v| v.as_array()));
-        let found = items.and_then(|arr| {
-            arr.iter()
-                .find(|item| item.get("code").and_then(|c| c.as_str()) == Some(code))
-        });
-        if let Some(item) = found {
-            artifact_id = item["id"].as_str().unwrap_or("").to_string();
-            name = item["name"].as_str().unwrap_or("").to_string();
-        } else {
-            return Err(NeboError::Internal(format!(
-                "install_skill: code not found: {code}"
-            )));
+    let (artifact_id, name) = match redeem_result {
+        Ok(resp) => (resp.artifact.id, resp.artifact.name),
+        Err(redeem_err) => {
+            // Redemption failed (likely already redeemed) — look up by code.
+            // Not found there either, and the redeem's answer is the reason.
+            warn!(code, error = %redeem_err, "skill redeem failed, attempting to look up artifact by code");
+            match find_product_by_code(&api, "skill", code).await {
+                Some((id, name, _)) => (id, name),
+                None => return Err(hub_refusal(HubStep::Redeem, "redeem skill code", redeem_err)),
+            }
         }
-    }
+    };
 
     // Fetch artifact content from NeboAI and persist to filesystem
     let skill_dir = match tools::persist_skill_from_api(
@@ -534,40 +679,18 @@ async fn handle_work_code(
         }
     }
 
-    let artifact_id;
-    let artifact_name;
-
-    if let Ok(ref resp) = redeem_result {
-        artifact_id = resp.artifact.id.clone();
-        artifact_name = resp.artifact.name.clone();
-    } else {
-        // Redemption failed (likely already redeemed) — look up by code
-        warn!(
-            code,
-            "workflow redeem failed, attempting to look up artifact by code"
-        );
-        let products = api
-            .list_products(Some("workflow"), None, None, None, None)
-            .await
-            .map_err(|e| NeboError::Internal(format!("list_products: {e}")))?;
-        let items = products
-            .get("products")
-            .and_then(|v| v.as_array())
-            .or_else(|| products.get("results").and_then(|v| v.as_array()))
-            .or_else(|| products.get("workflows").and_then(|v| v.as_array()));
-        let found = items.and_then(|arr| {
-            arr.iter()
-                .find(|item| item.get("code").and_then(|c| c.as_str()) == Some(code))
-        });
-        if let Some(item) = found {
-            artifact_id = item["id"].as_str().unwrap_or("").to_string();
-            artifact_name = item["name"].as_str().unwrap_or("").to_string();
-        } else {
-            return Err(NeboError::Internal(format!(
-                "install_workflow: code not found: {code}"
-            )));
+    let (artifact_id, artifact_name) = match redeem_result {
+        Ok(resp) => (resp.artifact.id, resp.artifact.name),
+        Err(redeem_err) => {
+            // Redemption failed (likely already redeemed) — look up by code.
+            // Not found there either, and the redeem's answer is the reason.
+            warn!(code, error = %redeem_err, "workflow redeem failed, attempting to look up artifact by code");
+            match find_product_by_code(&api, "workflow", code).await {
+                Some((id, name, _)) => (id, name),
+                None => return Err(hub_refusal(HubStep::Redeem, "redeem workflow code", redeem_err)),
+            }
         }
-    }
+    };
 
     // Fetch artifact content from NeboAI and persist to DB + filesystem
     if let Err(e) =
@@ -618,7 +741,7 @@ async fn handle_collection_code(
     let resp = api
         .redeem_code(code)
         .await
-        .map_err(|e| NeboError::Internal(format!("redeem collection code: {e}")))?;
+        .map_err(|e| hub_refusal(HubStep::Redeem, "redeem collection code", e))?;
 
     let artifact_id = resp.artifact.id.clone();
     let artifact_name = resp.artifact.name.clone();
@@ -638,7 +761,7 @@ async fn handle_collection_code(
     let coll = api
         .get_collection(&artifact_id)
         .await
-        .map_err(|e| NeboError::Internal(format!("get collection {artifact_id}: {e}")))?;
+        .map_err(|e| hub_refusal(HubStep::Fetch, &format!("get collection {artifact_id}"), e))?;
     let items = coll
         .get("items")
         .and_then(|v| v.as_array())
@@ -779,7 +902,7 @@ async fn handle_connection_code(
     let resp = api
         .redeem_code(code)
         .await
-        .map_err(|e| NeboError::Internal(format!("redeem connection code: {e}")))?;
+        .map_err(|e| hub_refusal(HubStep::Redeem, "redeem connection code", e))?;
     let artifact_id = resp.artifact.id.clone();
     let artifact_name = resp.artifact.name.clone();
 
@@ -799,7 +922,7 @@ async fn handle_connection_code(
     let detail = api
         .get_skill(&artifact_id)
         .await
-        .map_err(|e| NeboError::Internal(format!("fetch connector {artifact_id}: {e}")))?;
+        .map_err(|e| hub_refusal(HubStep::Fetch, &format!("fetch connector {artifact_id}"), e))?;
     let raw = detail.manifest.ok_or_else(|| {
         NeboError::Internal(format!("connector '{artifact_name}' has no MCP config"))
     })?;
@@ -1168,42 +1291,18 @@ async fn handle_agent_code(
         }
     }
 
-    let artifact_id;
-    let artifact_name;
-
-    if let Ok(ref resp) = redeem_result {
-        artifact_id = resp.artifact.id.clone();
-        artifact_name = resp.artifact.name.clone();
-    } else {
-        // Redemption failed (likely already redeemed) — look up by code in local DB
-        // or fetch detail from NeboAI to get the artifact ID
-        warn!(
-            code,
-            "redeem failed, attempting to look up artifact by code"
-        );
-        // Search products to find the artifact by code
-        let products = api
-            .list_products(Some("agent"), None, None, None, None)
-            .await
-            .map_err(|e| NeboError::Internal(format!("list_products: {e}")))?;
-        let items = products
-            .get("products")
-            .and_then(|v| v.as_array())
-            .or_else(|| products.get("results").and_then(|v| v.as_array()))
-            .or_else(|| products.get("skills").and_then(|v| v.as_array()));
-        let found = items.and_then(|arr| {
-            arr.iter()
-                .find(|item| item.get("code").and_then(|c| c.as_str()) == Some(code))
-        });
-        if let Some(item) = found {
-            artifact_id = item["id"].as_str().unwrap_or("").to_string();
-            artifact_name = item["name"].as_str().unwrap_or("").to_string();
-        } else {
-            return Err(NeboError::Internal(format!(
-                "install_agent: code not found: {code}"
-            )));
+    let (artifact_id, artifact_name) = match redeem_result {
+        Ok(resp) => (resp.artifact.id, resp.artifact.name),
+        Err(redeem_err) => {
+            // Redemption failed (likely already redeemed) — look up by code.
+            // Not found there either, and the redeem's answer is the reason.
+            warn!(code, error = %redeem_err, "agent redeem failed, attempting to look up artifact by code");
+            match find_product_by_code(&api, "agent", code).await {
+                Some((id, name, _)) => (id, name),
+                None => return Err(hub_refusal(HubStep::Redeem, "redeem agent code", redeem_err)),
+            }
         }
-    }
+    };
 
     // Clean reinstall: if agent already exists, fully remove it first
     if let Ok(Some(existing)) = state.store.get_agent(&artifact_id) {
@@ -1405,7 +1504,7 @@ async fn handle_loop_code(state: &AppState, code: &str) -> Result<CodeHandlerRes
     let resp = api
         .join_loop(code)
         .await
-        .map_err(|e| NeboError::Internal(format!("join_loop: {e}")))?;
+        .map_err(|e| hub_refusal(HubStep::Redeem, "join_loop", e))?;
     Ok(CodeHandlerResult {
         message: format!("Joined loop {}", resp.loop_id),
         artifact_name: Some(resp.loop_id),
@@ -1437,43 +1536,18 @@ async fn handle_plugin_code(
         }
     }
 
-    let artifact_id;
-    let name;
-    let slug_hint;
-
-    if let Ok(ref resp) = redeem_result {
-        artifact_id = resp.artifact.id.clone();
-        name = resp.artifact.name.clone();
-        slug_hint = resp.artifact.slug.clone();
-    } else {
-        // Redemption failed (likely already redeemed) — look up by code
-        warn!(
-            code,
-            "plugin redeem failed, attempting to look up artifact by code"
-        );
-        let products = api
-            .list_products(Some("plugin"), None, None, None, None)
-            .await
-            .map_err(|e| NeboError::Internal(format!("list_products: {e}")))?;
-        let items = products
-            .get("products")
-            .and_then(|v| v.as_array())
-            .or_else(|| products.get("results").and_then(|v| v.as_array()))
-            .or_else(|| products.get("plugins").and_then(|v| v.as_array()));
-        let found = items.and_then(|arr| {
-            arr.iter()
-                .find(|item| item.get("code").and_then(|c| c.as_str()) == Some(code))
-        });
-        if let Some(item) = found {
-            artifact_id = item["id"].as_str().unwrap_or("").to_string();
-            name = item["name"].as_str().unwrap_or("").to_string();
-            slug_hint = item["slug"].as_str().unwrap_or("").to_string();
-        } else {
-            return Err(NeboError::Internal(format!(
-                "install_plugin: code not found: {code}"
-            )));
+    let (artifact_id, name, slug_hint) = match redeem_result {
+        Ok(resp) => (resp.artifact.id, resp.artifact.name, resp.artifact.slug),
+        Err(redeem_err) => {
+            // Redemption failed (likely already redeemed) — look up by code.
+            // Not found there either, and the redeem's answer is the reason.
+            warn!(code, error = %redeem_err, "plugin redeem failed, attempting to look up artifact by code");
+            match find_product_by_code(&api, "plugin", code).await {
+                Some(found) => found,
+                None => return Err(hub_refusal(HubStep::Redeem, "redeem plugin code", redeem_err)),
+            }
         }
-    }
+    };
 
     let platform = napp::plugin::current_platform_key();
 
@@ -1603,7 +1677,7 @@ pub(crate) async fn fetch_and_install_plugin(
     let detail = api
         .get_plugin::<napp::plugin::PluginManifest>(slug, &platform)
         .await
-        .map_err(|e| NeboError::Internal(format!("fetch plugin detail for {slug}: {e}")))?;
+        .map_err(|e| hub_refusal(HubStep::Fetch, &format!("fetch plugin detail for {slug}"), e))?;
     let version = if detail.version.is_empty() {
         "1.0.0".to_string()
     } else {
@@ -1952,6 +2026,25 @@ async fn sweep_plugin_auth(state: &AppState) -> Vec<serde_json::Value> {
 }
 
 // ── API Client Helper ───────────────────────────────────────────────
+
+/// The marketplace listing whose install code is `code`, among the `kind`
+/// products: (id, name, slug). How an install finds what a code it has
+/// already redeemed points at, when a second redeem is refused.
+async fn find_product_by_code(api: &NeboAIApi, kind: &str, code: &str) -> Option<(String, String, String)> {
+    let products = match api.list_products(Some(kind), None, None, None, None).await {
+        Ok(products) => products,
+        Err(e) => {
+            warn!(code, kind, error = %e, "list_products failed looking up a code");
+            return None;
+        }
+    };
+    let items = ["products", "results", &format!("{kind}s"), "skills"]
+        .into_iter()
+        .find_map(|key| products.get(key).and_then(|v| v.as_array()))?;
+    let item = items.iter().find(|item| item.get("code").and_then(|c| c.as_str()) == Some(code))?;
+    let field = |key: &str| item[key].as_str().unwrap_or("").to_string();
+    Some((field("id"), field("name"), field("slug")))
+}
 
 pub(crate) fn build_api_client(state: &AppState) -> Result<NeboAIApi, NeboError> {
     let bot_id =
@@ -3224,6 +3317,116 @@ mod tests {
             detect_code("  NEBO-A1B2-C3D4  "),
             Some((CodeType::Nebo, _))
         ));
+    }
+
+    /// Codes copied out of a sentence or a page keep the punctuation around
+    /// them; it is not part of the code ("CONN-V1PR-K421)" went to the model
+    /// as chat, 2026-09-30).
+    #[test]
+    fn a_code_with_punctuation_around_it_is_still_a_code() {
+        for input in [
+            "CONN-V1PR-K421)",
+            "(CONN-V1PR-K421)",
+            "`CONN-V1PR-K421`",
+            "\"CONN-V1PR-K421\".",
+            "\u{201c}CONN-V1PR-K421\u{201d}",
+            "**CONN-V1PR-K421**",
+            "[CONN-V1PR-K421]",
+            " CONN-V1PR-K421, ",
+            "- CONN-V1PR-K421",
+            "\u{2022} CONN-V1PR-K421",
+            "1. CONN-V1PR-K421",
+            "1.CONN-V1PR-K421",
+            "2) CONN-V1PR-K421",
+            "(3) CONN-V1PR-K421",
+        ] {
+            let (kind, code) = detect_code(input).unwrap_or_else(|| panic!("{input:?} should be a code"));
+            assert_eq!(kind, CodeType::Connection, "{input:?}");
+            assert_eq!(code, "CONN-V1PR-K421", "{input:?}");
+        }
+    }
+
+    /// A message of codes is every code in it, in order, each once; how the
+    /// list is written does not matter.
+    #[test]
+    fn a_list_of_codes_is_every_code_in_order_once() {
+        let message = "Here:\n1. SKIL-AAAA-BBBB\n2. PLUG-CCCC-DDDD";
+        assert!(detect_codes(message).is_none(), "a word before the list makes it chat");
+
+        let message = "1. SKIL-AAAA-BBBB)\n2) `plug-cccc-dddd`,\n\u{2022} CONN-EEEE-FFFF; AGNT-GGGG-HHHH\n- skil-aaaa-bbbb\n\n  COLL-JJJJ-KKKK.";
+        let codes = detect_codes(message).expect("a list of codes");
+        let got: Vec<(CodeType, &str)> = codes;
+        assert_eq!(
+            got,
+            [
+                (CodeType::Skill, "SKIL-AAAA-BBBB"),
+                (CodeType::Plugin, "plug-cccc-dddd"),
+                (CodeType::Connection, "CONN-EEEE-FFFF"),
+                (CodeType::Agent, "AGNT-GGGG-HHHH"),
+                (CodeType::Collection, "COLL-JJJJ-KKKK"),
+            ],
+            "in the order given, a repeat (any case) once"
+        );
+        assert_eq!(detect_codes("SKIL-AAAA-BBBB,PLUG-CCCC-DDDD").map(|c| c.len()), Some(2));
+        // A repeated code is still one code, for the doors that take one.
+        assert_eq!(detect_code("SKIL-AAAA-BBBB SKIL-AAAA-BBBB"), Some((CodeType::Skill, "SKIL-AAAA-BBBB")));
+        // Two codes are not one code.
+        assert!(detect_code("SKIL-AAAA-BBBB PLUG-CCCC-DDDD").is_none());
+        // Long lists are still lists: the limit is the chat door's to say.
+        let many: Vec<String> = (0..40).map(|i| format!("SKIL-AAAA-{i:04}")).collect();
+        assert_eq!(detect_codes(&many.join(" ")).map(|c| c.len()), Some(40));
+    }
+
+    /// Any other word keeps a message chat: the owner is talking about a
+    /// code, not handing one over.
+    #[test]
+    fn a_code_among_other_words_is_chat() {
+        for input in [
+            "install CONN-V1PR-K421",
+            "CONN-V1PR-K421 please",
+            "CONN-V1PR-K421 and SKIL-AAAA-BBBB",
+            "what is CONN-V1PR-K421?",
+            "CONN-V1PR-K421 2",
+            "CONN-V1PR-K421 \u{8c22}\u{8c22}",
+            "1.",
+            "- -",
+            "",
+        ] {
+            assert!(detect_codes(input).is_none(), "{input:?} is chat");
+        }
+    }
+
+    /// NeboAI saying no reads as a reason the owner can act on; its raw
+    /// answer never reaches them. A 404 on the redeem is a code nobody issued;
+    /// on what a redeemed code points at, something this account can't see.
+    #[test]
+    fn a_hub_refusal_reads_as_a_plain_reason() {
+        let http = |status: u16| comm::CommError::Http { status, body: r#"{"error":"skill not found"}"#.into() };
+        let line = |step: HubStep, e: comm::CommError| outcome_line("CONN-V1PR-K421", &Err(hub_refusal(step, "fetch connector 84fe5be6", e)));
+        let not_available = "Couldn't install CONN-V1PR-K421: it isn't available to your account. Ask its publisher to share it.";
+        assert_eq!(line(HubStep::Fetch, http(404)), not_available);
+        assert_eq!(line(HubStep::Fetch, http(403)), not_available);
+        assert_eq!(line(HubStep::Redeem, http(403)), not_available);
+        assert_eq!(line(HubStep::Redeem, http(404)), "Couldn't install CONN-V1PR-K421: the code isn't valid.");
+        assert_eq!(
+            line(HubStep::Redeem, http(401)),
+            "Couldn't install CONN-V1PR-K421: this Nebo isn't signed in to NeboAI. Sign in, then send the code again."
+        );
+        for other in [http(500), http(400), comm::CommError::Transport("connection reset".into())] {
+            assert_eq!(line(HubStep::Fetch, other), "Couldn't install CONN-V1PR-K421. Try again.");
+        }
+        // Nothing of what NeboAI said, and no Rust error taxonomy.
+        let internal = outcome_line("CONN-V1PR-K421", &Err(NeboError::Internal("create MCP integration(s): boom".into())));
+        assert_eq!(internal, "Couldn't install CONN-V1PR-K421. Try again.");
+        // A success says what installed; a paid one where to pay.
+        let paid = CodeHandlerResult {
+            message: "Skill requires payment: Writer".into(),
+            checkout_url: Some("https://pay.example.com/x".into()),
+            ..Default::default()
+        };
+        assert_eq!(outcome_line("SKIL-AAAA-BBBB", &Ok(paid)), "Skill requires payment: Writer. Payment required: https://pay.example.com/x");
+        let installed = CodeHandlerResult { message: "Installed skill: Writer".into(), ..Default::default() };
+        assert_eq!(outcome_line("SKIL-AAAA-BBBB", &Ok(installed)), "Installed skill: Writer");
     }
 
     #[test]

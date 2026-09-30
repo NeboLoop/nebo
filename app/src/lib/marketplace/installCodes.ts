@@ -11,8 +11,9 @@
 import { installFlow } from '$lib/stores/installFlow';
 import { getWebSocketClient } from '$lib/websocket/client';
 
-/** PREFIX-XXXX-XXXX (Crockford Base32). Covers every install-code family. */
-export const CODE_RE = /^(NEBO|SKIL|WORK|AGNT|LOOP|PLUG|APPS|COLL|CONN)-[0-9A-Z]{4}-[0-9A-Z]{4}$/i;
+/** PREFIX-XXXX-XXXX (Crockford Base32: no I, L, O or U). Covers every install-code family. */
+export const CODE_RE =
+  /^(NEBO|SKIL|WORK|AGNT|LOOP|PLUG|APPS|COLL|CONN)-[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z]{4}$/i;
 
 const TYPE_BY_PREFIX: Record<string, string> = {
   NEBO: 'nebo',
@@ -38,12 +39,42 @@ const STATUS_BY_TYPE: Record<string, string> = {
   connection: 'Adding MCP connection...',
 };
 
-/** The normalized code and its resolved type, or null if `text` isn't a code. */
-export function matchInstallCode(text: string): { code: string; codeType: string } | null {
-  const code = text.trim().toUpperCase();
+/** One code, normalized, and its resolved type. */
+export interface InstallCode {
+  code: string;
+  codeType: string;
+}
+
+/** Punctuation (anything but letters and digits) at either end of a token. */
+const EDGE_PUNCTUATION = /^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu;
+
+/** `token` as a code, or null. */
+function codeAt(token: string): InstallCode | null {
+  const code = token.toUpperCase();
   const m = code.match(CODE_RE);
-  if (!m) return null;
-  return { code, codeType: TYPE_BY_PREFIX[m[1].toUpperCase()] || 'code' };
+  return m ? { code, codeType: TYPE_BY_PREFIX[m[1]] || 'code' } : null;
+}
+
+/**
+ * The install codes a message holds, when it holds nothing else — the same
+ * reading as the server's `detect_codes` (crates/server/src/codes.rs), which
+ * installs them: one code or a list (spaces, commas, semicolons, new lines,
+ * bullets, a numbered list), the punctuation a copy picks up around each
+ * ignored ("CONN-V1PR-K421)"), each code once, in the order given. Null when
+ * the message has any other word in it: that is chat.
+ */
+export function matchInstallCodes(text: string): InstallCode[] | null {
+  const codes: InstallCode[] = [];
+  for (const token of text.split(/[\s,;]+/)) {
+    const core = token.replace(EDGE_PUNCTUATION, '');
+    if (!core) continue; // a bullet, a dash, a stray bracket
+    if (/^\d{1,3}$/.test(core) && core.length < token.length) continue; // "1." "2)" "(3)"
+    // A numbered list's marker written against its code: "1.CONN-…".
+    const found = codeAt(core) ?? codeAt(core.replace(/^\d{1,3}[.)]/, ''));
+    if (!found) return null;
+    if (!codes.some((c) => c.code === found.code)) codes.push(found);
+  }
+  return codes.length ? codes : null;
 }
 
 /**
@@ -53,27 +84,35 @@ export function matchInstallCode(text: string): { code: string; codeType: string
  * (modal opened).
  */
 export function dispatchInstallStart(text: string): boolean {
-  const match = matchInstallCode(text);
-  if (!match) return false;
+  const codes = matchInstallCodes(text);
+  if (codes?.length !== 1) return false;
+  openInstallModal(codes[0]);
+  return true;
+}
+
+function openInstallModal(match: InstallCode) {
   installFlow.openCode({
     code: match.code,
     codeType: match.codeType,
     statusMessage: STATUS_BY_TYPE[match.codeType] || 'Processing...',
   });
-  return true;
 }
 
 /**
- * The ONE way to submit an install code: open the install modal instantly
- * (dispatchInstallStart) and deliver the code to the backend — over the
- * WebSocket when connected, over HTTP (chatWithAgent) when not, never a
- * silent drop. The chat "working" spinner is never engaged: the install
- * modal owns all feedback and no agent reply streams back.
+ * The ONE way to submit install codes: deliver the message to the backend —
+ * over the WebSocket when connected, over HTTP (chatWithAgent) when not,
+ * never a silent drop — which installs each code in turn and answers in the
+ * conversation with a line per code. One code also opens the install modal
+ * instantly, for its setup. A list opens none: each code's setup would
+ * replace the last one's, so the reply's lines are the report. The chat
+ * "working" spinner is not engaged here; the reply's stream engages it.
  *
- * Returns false (and does nothing) when `text` isn't an install code.
+ * Returns false (and does nothing) when `text` isn't only install codes.
  */
 export function sendInstallCode(text: string, agentId: string, sessionId?: string): boolean {
-  if (!dispatchInstallStart(text)) return false;
+  const codes = matchInstallCodes(text);
+  if (!codes) return false;
+  if (codes.length === 1) openInstallModal(codes[0]);
   const prompt = text.trim();
   void (async () => {
     try {

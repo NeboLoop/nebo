@@ -1500,10 +1500,12 @@ async fn dispatch_payload(state: &AppState, payload: ChatPayload, hidden: bool) 
         }),
     );
 
-    // Intercept marketplace codes before they reach the agent
-    if let Some((code_type, code)) = crate::codes::detect_code(&prompt) {
+    // Intercept marketplace codes before they reach the agent: a message of
+    // nothing but codes installs them, one after another, and the reply is a
+    // line per code.
+    if let Some(codes) = crate::codes::detect_codes(&prompt) {
         let origin = EventOrigin { client_id: client_id.clone(), session_id: session_id.clone() };
-        crate::codes::handle_code(state, code_type, code, &origin).await;
+        crate::codes::handle_code_message(state, &codes, &origin, &agent_id).await;
         return;
     }
 
