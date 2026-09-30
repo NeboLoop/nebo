@@ -24,10 +24,19 @@ pub enum Console {
     /// unless it is one of the two cases below. Its piped or inherited
     /// stdio still works; there is just no window.
     Hidden,
-    /// Outlives Nebo: detached from Nebo's console and process group, and no
-    /// window (`DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP |
-    /// CREATE_NO_WINDOW`). The updater's helper, which swaps the install in
-    /// after Nebo exits and must not die with it.
+    /// Outlives Nebo: its own process group and its own hidden console
+    /// (`CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW`). The updater's helper,
+    /// which swaps the install in after Nebo exits and must not die with it.
+    ///
+    /// Not `DETACHED_PROCESS`: that leaves the helper with no console at all,
+    /// so Windows opens a new window for every console program the helper
+    /// script starts (`tasklist`, `find`, `ping` in its wait loop), and it
+    /// makes Windows ignore `CREATE_NO_WINDOW`. With `CREATE_NO_WINDOW` alone
+    /// the helper gets a console of its own that is never shown and its
+    /// children share it. It is still detached from Nebo: that console is
+    /// not Nebo's (closing Nebo's never reaches it), the new process group
+    /// keeps Nebo's Ctrl+C from reaching it, and a Windows child is not ended
+    /// when its parent exits.
     Detached,
     /// Shares Nebo's own console: no flag at all. Only for a child whose
     /// output belongs in the terminal the user started Nebo from — a CLI
@@ -41,12 +50,11 @@ pub enum Console {
 impl Console {
     /// The Windows process-creation flags for this choice.
     pub const fn creation_flags(self) -> u32 {
-        const DETACHED_PROCESS: u32 = 0x0000_0008;
         const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         match self {
             Console::Hidden => CREATE_NO_WINDOW,
-            Console::Detached => DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW,
+            Console::Detached => CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW,
             Console::Inherit => 0,
         }
     }
@@ -85,8 +93,67 @@ mod tests {
     #[test]
     fn every_child_is_hidden_and_the_updater_helper_also_detached() {
         assert_eq!(Console::Hidden.creation_flags(), 0x0800_0000);
-        assert_eq!(Console::Detached.creation_flags(), 0x0800_0208);
+        assert_eq!(Console::Detached.creation_flags(), 0x0800_0200);
         assert_eq!(Console::Inherit.creation_flags(), 0);
+    }
+
+    /// `DETACHED_PROCESS` (0x8) leaves the helper with no console, so every
+    /// program its script starts opens a window, and Windows ignores
+    /// `CREATE_NO_WINDOW` beside it. No choice may carry it.
+    #[test]
+    fn no_choice_leaves_a_child_without_a_console() {
+        const DETACHED_PROCESS: u32 = 0x0000_0008;
+        for console in [Console::Hidden, Console::Detached, Console::Inherit] {
+            assert_eq!(console.creation_flags() & DETACHED_PROCESS, 0, "{console:?}");
+        }
+    }
+
+    /// The updater's helper outlives the process that started it. This test
+    /// runs itself again as the parent: that process starts the helper as
+    /// `Console::Detached` and exits at once; the helper finishes its work
+    /// after the parent is gone.
+    #[test]
+    fn a_detached_child_outlives_its_parent() {
+        const PARENT: &str = "NEBO_COMMAND_DETACHED_PARENT";
+        if let Some(done) = std::env::var_os(PARENT) {
+            let done = std::path::PathBuf::from(done);
+            let (program, args): (&str, Vec<String>) = if cfg!(windows) {
+                ("cmd", vec!["/C".into(), format!("ping -n 3 127.0.0.1 >NUL & echo done> \"{}\"", done.display())])
+            } else {
+                ("sh", vec!["-c".into(), format!("sleep 2; echo done > '{}'", done.display())])
+            };
+            // The helper outlives this process: that is what is tested.
+            #[allow(clippy::zombie_processes)]
+            let _helper = new::<std::process::Command>(program, Console::Detached)
+                .args(&args)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .expect("helper starts");
+            return;
+        }
+
+        let dir = std::env::temp_dir().join(format!("nebo-command-detached-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let done = dir.join("done");
+        let parent = std::process::Command::new(std::env::current_exe().expect("test binary"))
+            .args(["--exact", "tests::a_detached_child_outlives_its_parent", "--test-threads=1"])
+            .env(PARENT, &done)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .expect("parent runs");
+        assert!(parent.success(), "the parent started the helper and exited");
+        assert!(!done.exists(), "the helper was still at work when its parent exited");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while !done.exists() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        assert!(done.exists(), "the detached helper ran to the end after its parent was gone");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

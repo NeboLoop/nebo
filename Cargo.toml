@@ -162,16 +162,16 @@ tls = { path = "crates/tls", package = "nebo-tls", version = "0.1" }
 command = { path = "crates/command", package = "nebo-command" }
 # Hosting coding agents on this computer (Nebo is the host where it runs).
 # Pinned to a nebo-link commit, as nebo-link pins nebo-comm to a nebo one.
-link-core = { git = "https://github.com/NeboLoop/nebo-link", rev = "12c5b89e0e155f847eaf04df594a41fad6d11f53" }
+link-core = { git = "https://github.com/NeboLoop/nebo-link", rev = "9559c1d793f236cb2dfd0c2c9bd097ecb7c349fd" }
 # Without `preserve-order`: Nebo never rewrites a runtime's config, and the
 # feature would turn every serde_json map in Nebo from sorted to insertion order.
-nebo-runtimes = { git = "https://github.com/NeboLoop/nebo-link", rev = "12c5b89e0e155f847eaf04df594a41fad6d11f53", default-features = false }
+nebo-runtimes = { git = "https://github.com/NeboLoop/nebo-link", rev = "9559c1d793f236cb2dfd0c2c9bd097ecb7c349fd", default-features = false }
 # Nebo is an Open Agent Link client of every linked bot, and the host of its
 # own computer's agents in process: the host, the end-to-end encryption, and
 # the relay client (a self-hosted relay; NeboAI's is reached by its tunnel).
-oal-host = { git = "https://github.com/NeboLoop/nebo-link", rev = "12c5b89e0e155f847eaf04df594a41fad6d11f53" }
-oal-secure = { git = "https://github.com/NeboLoop/nebo-link", rev = "12c5b89e0e155f847eaf04df594a41fad6d11f53" }
-oal-relay = { git = "https://github.com/NeboLoop/nebo-link", rev = "12c5b89e0e155f847eaf04df594a41fad6d11f53", default-features = false }
+oal-host = { git = "https://github.com/NeboLoop/nebo-link", rev = "9559c1d793f236cb2dfd0c2c9bd097ecb7c349fd" }
+oal-secure = { git = "https://github.com/NeboLoop/nebo-link", rev = "9559c1d793f236cb2dfd0c2c9bd097ecb7c349fd" }
+oal-relay = { git = "https://github.com/NeboLoop/nebo-link", rev = "9559c1d793f236cb2dfd0c2c9bd097ecb7c349fd", default-features = false }
 
 # A2UI protocol
 a2ui-types = { path = "crates/a2ui/a2ui-types" }

@@ -139,3 +139,9 @@ jobs:
         shell: bash
         run: |
           ls -la "$CARGO_TARGET_DIR/release/nebo.exe" "$CARGO_TARGET_DIR"/release/bundle/nsis/*.exe
+
+      # What only Windows can show: every child's console flags, and the
+      # updater's helper outliving the process that started it.
+      - name: Child-process constructor on Windows
+        shell: bash
+        run: cargo test -p nebo-command
