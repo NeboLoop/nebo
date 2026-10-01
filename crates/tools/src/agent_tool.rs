@@ -3459,6 +3459,7 @@ impl PersonaTool {
             app_ui_path: None,
             app_binary_path: None,
             app_window_config: None,
+            app_permissions: Vec::new(),
         })
     }
 }
@@ -3634,6 +3635,7 @@ mod tests {
             app_ui_path: None,
             app_binary_path: None,
             app_window_config: None,
+            app_permissions: Vec::new(),
         }
     }
 

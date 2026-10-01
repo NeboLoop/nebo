@@ -132,10 +132,12 @@ fn job_properties() -> serde_json::Map<String, serde_json::Value> {
                         "title": { "type": "string" },
                         "width": { "type": "integer", "description": "Default 1024." },
                         "height": { "type": "integer", "description": "Default 768." },
-                        "resizable": { "type": "boolean", "description": "Default true." }
+                        "resizable": { "type": "boolean", "description": "Default true." },
+                        "fullscreen": { "type": "boolean", "description": "The page takes the whole screen (a game). Default false." },
+                        "orientation": { "type": "string", "enum": ["portrait", "landscape", "any"], "description": "Default portrait." }
                     }
                 },
-                "permissions": { "type": "array", "items": { "type": "string" }, "description": "prefix:scope entries, default [\"storage:readwrite\"]." }
+                "permissions": { "type": "array", "items": { "type": "string" }, "description": "prefix:scope entries, default [\"storage:readwrite\"]; device:motion for the gyroscope and accelerometer." }
             }
         },
         "ui": { "type": "object", "additionalProperties": { "type": "string" }, "description": "The app's page files: relative path → content, e.g. {\"index.html\": \"...\"}." },

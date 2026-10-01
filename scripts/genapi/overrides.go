@@ -157,6 +157,8 @@ export interface RunDisplay {
 	needsSetup: boolean
 	nappPath?: string
 	appWindowConfig?: AppWindowConfig
+	/** Apps only: how the page asks to be shown (manifest window + device:motion). */
+	appWindow?: AppWindow
 	loadError?: string
 	/** "linked" for an employee hired from a linked bot; unset otherwise. */
 	kind?: string
@@ -214,6 +216,18 @@ export interface RunDisplay {
 	height: number
 	resizable: boolean
 	title?: string
+	/** The page takes the whole screen (a game). Unset = false. */
+	fullscreen?: boolean
+	/** Unset = portrait. */
+	orientation?: 'portrait' | 'landscape' | 'any'
+}`,
+
+	// napp::manifest::AppWindow — `appWindow` on an app employee.
+	"AppWindow": `export interface AppWindow {
+	fullscreen: boolean
+	orientation: 'portrait' | 'landscape' | 'any'
+	/** The manifest declares device:motion. */
+	motion: boolean
 }`,
 
 	"EnrichedChat": `export interface EnrichedChat {

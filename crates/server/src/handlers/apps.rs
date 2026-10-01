@@ -145,20 +145,23 @@ pub struct JanusRequest {
     system: Option<String>,
 }
 
-/// Resolve the UI directory path for an app agent.
-async fn resolve_app_ui_path(state: &AppState, agent_id: &str) -> Option<PathBuf> {
+/// Resolve the UI directory for an app agent, and whether its manifest
+/// declares `device:motion` (the page may then read the gyroscope and
+/// accelerometer).
+async fn resolve_app_ui(state: &AppState, agent_id: &str) -> Option<(PathBuf, bool)> {
     let agents = state.agent_loader.list().await;
     let fs_match = agents.iter().find(|a| {
         a.id.as_deref() == Some(agent_id)
             || a.agent_def.name.eq_ignore_ascii_case(agent_id)
     });
+    let motion = fs_match.and_then(|a| a.app_window()).is_some_and(|w| w.motion);
     if let Some(p) = fs_match.and_then(|a| a.app_ui_path.clone()) {
-        return Some(p);
+        return Some((p, motion));
     }
     // Fall back to DB
     if let Ok(Some(a)) = state.store.get_agent(agent_id) {
         if let Some(p) = a.app_ui_path {
-            return Some(PathBuf::from(p));
+            return Some((PathBuf::from(p), motion));
         }
     }
     None
@@ -170,7 +173,7 @@ pub async fn serve_app_ui_root(
     Path(agent_id): Path<String>,
     headers: HeaderMap,
 ) -> Response {
-    serve_app_ui_inner(&state, &agent_id, "", range_header(&headers)).await
+    serve_app_ui_inner(&state, &agent_id, "", &headers).await
 }
 
 /// GET /apps/{agent_id}/ui/*path — serve static app assets with SPA fallback.
@@ -179,15 +182,15 @@ pub async fn serve_app_ui(
     Path((agent_id, path)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> Response {
-    serve_app_ui_inner(&state, &agent_id, &path, range_header(&headers)).await
+    serve_app_ui_inner(&state, &agent_id, &path, &headers).await
 }
 
 fn range_header(headers: &HeaderMap) -> Option<&str> {
     headers.get(header::RANGE).and_then(|v| v.to_str().ok())
 }
 
-async fn serve_app_ui_inner(state: &AppState, agent_id: &str, path: &str, range: Option<&str>) -> Response {
-    let ui_path = match resolve_app_ui_path(state, agent_id).await {
+async fn serve_app_ui_inner(state: &AppState, agent_id: &str, path: &str, headers: &HeaderMap) -> Response {
+    let (ui_path, motion) = match resolve_app_ui(state, agent_id).await {
         Some(p) => p,
         None => return StatusCode::NOT_FOUND.into_response(),
     };
@@ -217,58 +220,198 @@ async fn serve_app_ui_inner(state: &AppState, agent_id: &str, path: &str, range:
         }
     };
 
-    let is_entry = matches!(target.file_name().and_then(|n| n.to_str()), Some("index.html" | "200.html"));
-    if !is_entry {
-        if let Some(resp) = serve_app_ui_range(&target, range).await {
-            return resp;
-        }
-    }
+    // With App Developer mode on, entry HTML also carries the developer
+    // script (console capture, reload, floating console), and nothing is
+    // cached at all.
+    let developer = state
+        .store
+        .app_developer_mode()
+        .then(|| app_employee_name(state, agent_id));
+    serve_ui_file(&target, headers, developer.as_deref(), motion).await
+}
 
-    match fs::read(&target).await {
-        Ok(contents) => {
-            let mime = mime_from_path(&target);
+/// Whether the file is an app's entry HTML (the SPA fallback included).
+fn is_entry_html(target: &StdPath) -> bool {
+    matches!(target.file_name().and_then(|n| n.to_str()), Some("index.html" | "200.html"))
+}
 
-            // Entry HTML gets the SDK's documented meta-tag escape hatches
-            // (nebo-app-id / nebo-base-url), mirroring Tauri's neboapp_bridge
-            // for the HTTP path. The prefix (e.g. /t/<botID> through the
-            // tunnel) is only knowable in the browser, so a head-first inline
-            // script derives both from location before the SDK loads. Apps
-            // that ship their own meta tags win — the script only fills gaps.
-            //
-            // With App Developer mode on, entry HTML also carries the
-            // developer script (console capture, reload, floating console).
-            let contents = if is_entry {
-                let developer = state
-                    .store
-                    .app_developer_mode()
-                    .then(|| app_employee_name(state, agent_id));
-                inject_app_bridge(contents, developer.as_deref())
-            } else {
-                contents
-            };
-
-            let mut response = Response::new(Body::from(contents));
-            response.headers_mut().insert(
-                header::CONTENT_TYPE,
-                HeaderValue::from_str(mime)
-                    .unwrap_or(HeaderValue::from_static("application/octet-stream")),
-            );
-            // An app's files change while it is open (an employee is building
-            // it), so every load asks again: an hour's cache kept the phone on
-            // the old main.js and the employee renaming files to get past it.
-            response
-                .headers_mut()
-                .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
-            if !is_entry {
-                response
-                    .headers_mut()
-                    .insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
-            }
-            response
-        }
+/// Serve one resolved app file, cached by the one rule for app files:
+///
+/// 1. A content-hashed name (`main-0a8ksftt.js`, what an app build emits)
+///    is kept for a year: a rebuild renames it, so there is nothing to bust.
+/// 2. Everything else (`index.html`, `assets/hero.mp4`) is `no-cache` with a
+///    strong `ETag`: every open asks, and an unchanged file answers `304`
+///    with no body. Because `index.html` is always asked for, it always
+///    names the newest hashed files.
+/// 3. With App Developer mode on (`developer` is the app employee's name),
+///    every file is `no-store`: the guaranteed way past any cache while an
+///    employee is building.
+///
+/// `motion`: the manifest declares `device:motion`, so the page's
+/// Permissions-Policy lets it read the gyroscope and accelerometer.
+async fn serve_ui_file(target: &StdPath, headers: &HeaderMap, developer: Option<&str>, motion: bool) -> Response {
+    let is_entry = is_entry_html(target);
+    let meta = match fs::metadata(target).await {
+        Ok(m) => m,
         Err(e) => {
             warn!(path = %target.display(), error = %e, "failed to read app UI file");
-            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
+
+    let mut response = if is_entry {
+        // Entry HTML gets the SDK's documented meta-tag escape hatches
+        // (nebo-app-id / nebo-base-url), mirroring Tauri's neboapp_bridge
+        // for the HTTP path. The prefix (e.g. /t/<botID> through the
+        // tunnel) is only knowable in the browser, so a head-first inline
+        // script derives both from location before the SDK loads. Apps
+        // that ship their own meta tags win — the script only fills gaps.
+        let contents = match fs::read(target).await {
+            Ok(c) => inject_app_bridge(c, developer),
+            Err(e) => {
+                warn!(path = %target.display(), error = %e, "failed to read app UI file");
+                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+            }
+        };
+        // The tag is of what goes out (the injected scripts included), so a
+        // Nebo update that changes them is a changed page.
+        let etag = body_etag(&contents);
+        if developer.is_none() && not_modified(headers, &etag) {
+            not_modified_response(&etag)
+        } else {
+            let mut r = Response::new(Body::from(contents));
+            set_etag(&mut r, developer, &etag);
+            r
+        }
+    } else {
+        let etag = file_etag(&meta);
+        if developer.is_none() && not_modified(headers, &etag) {
+            not_modified_response(&etag)
+        } else {
+            // A range whose If-Range names an older file gets the whole new one.
+            let range = if if_range_holds(headers, &etag) { range_header(headers) } else { None };
+            let mut r = match serve_app_ui_range(target, range).await {
+                Some(r) => r,
+                None => match fs::read(target).await {
+                    Ok(contents) => Response::new(Body::from(contents)),
+                    Err(e) => {
+                        warn!(path = %target.display(), error = %e, "failed to read app UI file");
+                        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                    }
+                },
+            };
+            r.headers_mut().insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
+            set_etag(&mut r, developer, &etag);
+            r
+        }
+    };
+
+    // A 304 carries no body, so no content type either.
+    let has_body = response.status() != StatusCode::NOT_MODIFIED;
+    let h = response.headers_mut();
+    if has_body {
+        h.insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_str(mime_from_path(target))
+                .unwrap_or(HeaderValue::from_static("application/octet-stream")),
+        );
+    }
+    h.insert(header::CACHE_CONTROL, HeaderValue::from_static(app_file_cache_control(target, developer.is_some())));
+    if motion {
+        h.insert(
+            "permissions-policy",
+            HeaderValue::from_static(crate::middleware::PERMISSIONS_POLICY_WITH_MOTION),
+        );
+    }
+    response
+}
+
+/// The `Cache-Control` an app file goes out with (see `serve_ui_file`).
+fn app_file_cache_control(target: &StdPath, developer: bool) -> &'static str {
+    if developer {
+        "no-store"
+    } else if !is_entry_html(target) && is_content_hashed(target) {
+        "public, max-age=31536000, immutable"
+    } else {
+        "no-cache"
+    }
+}
+
+/// A file whose name carries its content hash: `<name>-<hash>.<ext>`, the
+/// hash 8 to 64 letters and digits of one case (`main-0a8ksftt.js` from an
+/// app build, `chunk-5JFTZ4CW.js`, `app-a1b2c3d4.css`) with a digit set
+/// between two letters somewhere in it, which a hash nearly always has and a
+/// hand-made name ("hero-section2", "map-1stfloor", "shot-20260930") does
+/// not. A hashed file caught by mistake would be kept for a year, so the
+/// rule leans the other way: a real hash it misses is only asked about on
+/// each open, like any other file.
+fn is_content_hashed(target: &StdPath) -> bool {
+    let Some(name) = target.file_name().and_then(|n| n.to_str()) else {
+        return false;
+    };
+    let Some((stem, ext)) = name.split_once('.') else {
+        return false;
+    };
+    let Some((base, hash)) = stem.rsplit_once('-') else {
+        return false;
+    };
+    if base.is_empty() || ext.is_empty() || !(8..=64).contains(&hash.len()) {
+        return false;
+    }
+    let b = hash.as_bytes();
+    let one_case = b.iter().all(|c| c.is_ascii_digit() || c.is_ascii_lowercase())
+        || b.iter().all(|c| c.is_ascii_digit() || c.is_ascii_uppercase());
+    one_case
+        && b.windows(3).any(|w| w[0].is_ascii_alphabetic() && w[1].is_ascii_digit() && w[2].is_ascii_alphabetic())
+}
+
+/// Strong tag for a file on disk, from its size and modification time.
+fn file_etag(meta: &std::fs::Metadata) -> String {
+    let mtime = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    format!("\"{:x}-{:x}\"", meta.len(), mtime)
+}
+
+/// Strong tag for a body built here (entry HTML after injection).
+fn body_etag(body: &[u8]) -> String {
+    use sha2::Digest;
+    let digest = sha2::Sha256::digest(body);
+    format!("\"e-{}\"", hex::encode(&digest[..16]))
+}
+
+/// `If-None-Match` names this tag (weak comparison, as the header asks).
+fn not_modified(headers: &HeaderMap, etag: &str) -> bool {
+    let Some(inm) = headers.get(header::IF_NONE_MATCH).and_then(|v| v.to_str().ok()) else {
+        return false;
+    };
+    inm.split(',').map(str::trim).any(|t| t == "*" || t.trim_start_matches("W/") == etag)
+}
+
+/// A range applies: no `If-Range`, or one naming exactly this file (strong
+/// comparison; a date or another tag means the client's copy is stale).
+fn if_range_holds(headers: &HeaderMap, etag: &str) -> bool {
+    match headers.get(header::IF_RANGE).and_then(|v| v.to_str().ok()) {
+        None => true,
+        Some(v) => v.trim() == etag,
+    }
+}
+
+fn not_modified_response(etag: &str) -> Response {
+    let mut r = Response::new(Body::empty());
+    *r.status_mut() = StatusCode::NOT_MODIFIED;
+    set_etag(&mut r, None, etag);
+    r
+}
+
+/// Tag the response, except with App Developer mode on (nothing is kept).
+fn set_etag(r: &mut Response, developer: Option<&str>, etag: &str) {
+    if developer.is_none() {
+        if let Ok(v) = HeaderValue::from_str(etag) {
+            r.headers_mut().insert(header::ETAG, v);
         }
     }
 }
@@ -284,7 +427,6 @@ async fn serve_app_ui_range(target: &std::path::Path, range: Option<&str>) -> Op
         let h = r.headers_mut();
         h.insert(header::CONTENT_TYPE, HeaderValue::from_static(mime_from_path(target)));
         h.insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
-        h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
         if let Ok(v) = HeaderValue::from_str(&content_range) {
             h.insert(header::CONTENT_RANGE, v);
         }
@@ -1582,5 +1724,189 @@ mod media_serving_tests {
         assert_eq!(past.headers()[header::CONTENT_RANGE], "bytes */256");
 
         assert!(serve_app_ui_range(&film, None).await.is_none());
+    }
+}
+
+#[cfg(test)]
+mod app_file_caching_tests {
+    use super::*;
+
+    fn req(pairs: &[(header::HeaderName, &str)]) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        for (k, v) in pairs {
+            h.insert(k.clone(), HeaderValue::from_str(v).unwrap());
+        }
+        h
+    }
+
+    fn get<'a>(r: &'a Response, name: header::HeaderName) -> Option<&'a str> {
+        r.headers().get(name).and_then(|v| v.to_str().ok())
+    }
+
+    async fn body(r: Response) -> Vec<u8> {
+        axum::body::to_bytes(r.into_body(), 1 << 20).await.unwrap().to_vec()
+    }
+
+    fn ui() -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let ui = dir.path().to_path_buf();
+        std::fs::create_dir_all(ui.join("assets")).unwrap();
+        std::fs::write(ui.join("index.html"), "<html><head></head><body>hi</body></html>").unwrap();
+        std::fs::write(ui.join("main-0a8ksftt.js"), "console.log(1)").unwrap();
+        std::fs::write(ui.join("assets/hero.mp4"), (0..=255u8).collect::<Vec<_>>()).unwrap();
+        (dir, ui)
+    }
+
+    // What a build emits is hashed; what a person names is not.
+    #[test]
+    fn content_hashed_names_are_told_from_hand_made_ones() {
+        let hashed = |n: &str| is_content_hashed(StdPath::new(n));
+        for name in ["main-0a8ksftt.js", "index-zh3p2264.js", "chunk-5JFTZ4CW.js", "app-a1b2c3d4.css", "assets/tex-9f8e7d6c5b4a.ktx2", "main-0a8ksftt.min.js"] {
+            assert!(hashed(name), "{name} is hashed");
+        }
+        for name in [
+            "index.html", "main.js", "assets/hero.mp4", "hero-section2.png", "map-1stfloor.png",
+            "shot-20260930.png", "sprite-walking01.png", "bg-heroImage.png", "a1b2c3d4.js", "-0a8ksftt.js", "main-0a8ksftt",
+            "main-0a8k.js",
+        ] {
+            assert!(!hashed(name), "{name} is not hashed");
+        }
+    }
+
+    // A hashed file is kept for a year, and still tagged.
+    #[tokio::test]
+    async fn a_hashed_file_is_immutable_for_a_year() {
+        let (_d, ui) = ui();
+        let r = serve_ui_file(&ui.join("main-0a8ksftt.js"), &HeaderMap::new(), None, false).await;
+        assert_eq!(r.status(), StatusCode::OK);
+        assert_eq!(get(&r, header::CACHE_CONTROL), Some("public, max-age=31536000, immutable"));
+        assert!(get(&r, header::ETAG).is_some_and(|t| t.starts_with('"')));
+        assert_eq!(get(&r, header::CONTENT_TYPE), Some("application/javascript; charset=utf-8"));
+    }
+
+    // A hand-named asset asks every time, and an unchanged one costs a 304.
+    #[tokio::test]
+    async fn a_plain_asset_revalidates_and_answers_304_when_unchanged() {
+        let (_d, ui) = ui();
+        let film = ui.join("assets/hero.mp4");
+        let first = serve_ui_file(&film, &HeaderMap::new(), None, false).await;
+        assert_eq!(first.status(), StatusCode::OK);
+        assert_eq!(get(&first, header::CACHE_CONTROL), Some("no-cache"));
+        assert_eq!(get(&first, header::ACCEPT_RANGES), Some("bytes"));
+        let etag = get(&first, header::ETAG).unwrap().to_string();
+        assert!(!etag.starts_with("W/"), "a strong tag");
+        assert_eq!(body(first).await.len(), 256);
+
+        let again = serve_ui_file(&film, &req(&[(header::IF_NONE_MATCH, &etag)]), None, false).await;
+        assert_eq!(again.status(), StatusCode::NOT_MODIFIED);
+        assert_eq!(get(&again, header::ETAG), Some(etag.as_str()));
+        assert_eq!(get(&again, header::CACHE_CONTROL), Some("no-cache"));
+        assert!(get(&again, header::CONTENT_TYPE).is_none());
+        assert!(body(again).await.is_empty());
+
+        // Weak and listed forms of the same tag match too; another does not.
+        let listed = format!("\"other\", W/{etag}");
+        let r = serve_ui_file(&film, &req(&[(header::IF_NONE_MATCH, &listed)]), None, false).await;
+        assert_eq!(r.status(), StatusCode::NOT_MODIFIED);
+        let r = serve_ui_file(&film, &req(&[(header::IF_NONE_MATCH, "\"other\"")]), None, false).await;
+        assert_eq!(r.status(), StatusCode::OK);
+
+        // A changed file is a new tag: the old one gets the new bytes.
+        std::fs::write(&film, b"new film").unwrap();
+        let changed = serve_ui_file(&film, &req(&[(header::IF_NONE_MATCH, &etag)]), None, false).await;
+        assert_eq!(changed.status(), StatusCode::OK);
+        assert_ne!(get(&changed, header::ETAG), Some(etag.as_str()));
+        assert_eq!(body(changed).await, b"new film");
+    }
+
+    // index.html is never kept without asking, and its tag covers what goes out.
+    #[tokio::test]
+    async fn the_entry_page_revalidates_and_answers_304() {
+        let (_d, ui) = ui();
+        let index = ui.join("index.html");
+        let first = serve_ui_file(&index, &HeaderMap::new(), None, false).await;
+        assert_eq!(get(&first, header::CACHE_CONTROL), Some("no-cache"));
+        assert_eq!(get(&first, header::CONTENT_TYPE), Some("text/html; charset=utf-8"));
+        let etag = get(&first, header::ETAG).unwrap().to_string();
+        assert!(String::from_utf8(body(first).await).unwrap().contains("data-nebo-bridge"));
+
+        let again = serve_ui_file(&index, &req(&[(header::IF_NONE_MATCH, &etag)]), None, false).await;
+        assert_eq!(again.status(), StatusCode::NOT_MODIFIED);
+        assert!(body(again).await.is_empty());
+
+        std::fs::write(&index, "<html><head></head><body>v2</body></html>").unwrap();
+        let changed = serve_ui_file(&index, &req(&[(header::IF_NONE_MATCH, &etag)]), None, false).await;
+        assert_eq!(changed.status(), StatusCode::OK);
+    }
+
+    // App Developer mode: nothing is stored, nothing is tagged, nothing is a 304.
+    #[tokio::test]
+    async fn app_developer_mode_stores_nothing() {
+        let (_d, ui) = ui();
+        for name in ["index.html", "main-0a8ksftt.js", "assets/hero.mp4"] {
+            let file = ui.join(name);
+            let tagged = serve_ui_file(&file, &HeaderMap::new(), None, false).await;
+            let etag = get(&tagged, header::ETAG).unwrap().to_string();
+            let r = serve_ui_file(&file, &req(&[(header::IF_NONE_MATCH, &etag)]), Some("Kart"), false).await;
+            assert_eq!(r.status(), StatusCode::OK, "{name}");
+            assert_eq!(get(&r, header::CACHE_CONTROL), Some("no-store"), "{name}");
+            assert!(get(&r, header::ETAG).is_none(), "{name}");
+        }
+        let page = serve_ui_file(&ui.join("index.html"), &HeaderMap::new(), Some("Kart"), false).await;
+        assert!(String::from_utf8(body(page).await).unwrap().contains("data-nebo-devtools"));
+    }
+
+    // Ranges carry the tag and the rule; an If-Range naming an older file gets the whole new one.
+    #[tokio::test]
+    async fn ranges_follow_the_tag() {
+        let (_d, ui) = ui();
+        let film = ui.join("assets/hero.mp4");
+        let etag = get(&serve_ui_file(&film, &HeaderMap::new(), None, false).await, header::ETAG).unwrap().to_string();
+
+        let part = serve_ui_file(&film, &req(&[(header::RANGE, "bytes=10-19"), (header::IF_RANGE, &etag)]), None, false).await;
+        assert_eq!(part.status(), StatusCode::PARTIAL_CONTENT);
+        assert_eq!(get(&part, header::CONTENT_RANGE), Some("bytes 10-19/256"));
+        assert_eq!(get(&part, header::ETAG), Some(etag.as_str()));
+        assert_eq!(get(&part, header::CACHE_CONTROL), Some("no-cache"));
+        assert_eq!(body(part).await, (10..=19u8).collect::<Vec<_>>());
+
+        let stale = serve_ui_file(&film, &req(&[(header::RANGE, "bytes=10-19"), (header::IF_RANGE, "\"old\"")]), None, false).await;
+        assert_eq!(stale.status(), StatusCode::OK);
+        assert_eq!(body(stale).await.len(), 256);
+    }
+
+    // `device:motion` opens the gyroscope and accelerometer to that page only.
+    #[tokio::test]
+    async fn device_motion_opens_the_sensors_for_the_page() {
+        let (_d, ui) = ui();
+        let r = serve_ui_file(&ui.join("index.html"), &HeaderMap::new(), None, true).await;
+        let policy = get(&r, header::HeaderName::from_static("permissions-policy")).unwrap();
+        assert!(policy.contains("accelerometer=(self)") && policy.contains("gyroscope=(self)"), "{policy}");
+        let r = serve_ui_file(&ui.join("index.html"), &HeaderMap::new(), None, false).await;
+        assert!(r.headers().get("permissions-policy").is_none(), "the default comes from the middleware");
+    }
+
+    // The security middleware keeps a page's own policy and gives every other response the default.
+    #[tokio::test]
+    async fn the_security_layer_keeps_a_pages_own_policy() {
+        use tower::ServiceExt;
+        let app = axum::Router::new()
+            .route(
+                "/motion",
+                axum::routing::get(|| async {
+                    ([("permissions-policy", crate::middleware::PERMISSIONS_POLICY_WITH_MOTION)], "m")
+                }),
+            )
+            .route("/plain", axum::routing::get(|| async { "p" }))
+            .layer(axum::middleware::from_fn(crate::middleware::security_headers));
+        let call = |path: &'static str| {
+            let app = app.clone();
+            async move {
+                let r = app.oneshot(axum::http::Request::get(path).body(Body::empty()).unwrap()).await.unwrap();
+                r.headers()["permissions-policy"].to_str().unwrap().to_string()
+            }
+        };
+        assert_eq!(call("/motion").await, crate::middleware::PERMISSIONS_POLICY_WITH_MOTION);
+        assert_eq!(call("/plain").await, crate::middleware::PERMISSIONS_POLICY);
     }
 }

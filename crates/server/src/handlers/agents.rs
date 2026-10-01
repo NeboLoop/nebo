@@ -496,6 +496,11 @@ pub async fn list_agents(
         if let Some(ref wc) = loaded.app_window_config {
             entry["appWindowConfig"] = serde_json::to_value(wc).unwrap_or_default();
         }
+        // How the app asks to be shown (fullscreen, orientation, motion):
+        // the phone's app view reads this; absent means a plain page.
+        if let Some(w) = loaded.app_window() {
+            entry["appWindow"] = serde_json::to_value(w).unwrap_or_default();
+        }
         agents.push(entry);
     }
 
@@ -512,6 +517,7 @@ pub async fn list_agents(
         }
         let latest_thread = latest_thread_status(&state.store, &r.id);
         let files_expected = r.napp_path.as_deref().is_some_and(|p| !p.is_empty());
+        let app_window = (r.is_app.unwrap_or(0) != 0).then(|| stored_app_window(r.app_window_config.as_deref()));
         agents.push(serde_json::json!({
             "id": r.id,
             "name": r.name,
@@ -522,6 +528,7 @@ pub async fn list_agents(
             "source": "user",
             "version": serde_json::Value::Null,
             "isApp": r.is_app.unwrap_or(0) != 0,
+            "appWindow": app_window,
             "isEnabled": r.is_enabled != 0,
             "inputValues": r.input_values,
             "installedAt": r.installed_at,
@@ -873,6 +880,13 @@ pub async fn create_agent(
 }
 
 /// GET /agents/{id}
+/// `appWindow` for an app row whose files the loader does not hold: the
+/// window stored with the row, and no permissions known (so no motion).
+fn stored_app_window(window_json: Option<&str>) -> napp::manifest::AppWindow {
+    let window = window_json.and_then(|s| serde_json::from_str::<napp::manifest::AppWindowConfig>(s).ok());
+    napp::manifest::AppWindow::from_manifest(window.as_ref(), &[])
+}
+
 pub async fn get_agent(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -1047,6 +1061,17 @@ pub async fn get_agent(
     let input_values_json = agent.input_values.clone();
 
     if is_app {
+        // Read from the app's manifest as loaded (its permissions say
+        // whether it reads motion); the row's stored window when the
+        // loader does not hold it.
+        let app_window = state
+            .agent_loader
+            .list()
+            .await
+            .into_iter()
+            .find(|a| a.id.as_deref() == Some(agent.id.as_str()) || a.agent_def.name.eq_ignore_ascii_case(&agent.name))
+            .and_then(|a| a.app_window())
+            .unwrap_or_else(|| stored_app_window(agent.app_window_config.as_deref()));
         Ok(Json(serde_json::json!({
             "agent": {
                 "id": agent.id,
@@ -1056,6 +1081,7 @@ pub async fn get_agent(
                 "isEnabled": agent.is_enabled,
                 "kind": agent.kind,
                 "appWindowConfig": agent.app_window_config,
+                "appWindow": app_window,
                 "inputValues": agent.input_values,
                 "installedAt": agent.installed_at,
                 "updatedAt": agent.updated_at,
@@ -6526,5 +6552,24 @@ mod linked_hire_tests {
         assert!(!linked_persona_edit(&linked, &serde_json::json!({ "name": "Dan" })));
         let plain = agent_row(None, Some("calm"));
         assert!(!linked_persona_edit(&plain, &serde_json::json!({ "soul": "loud" })));
+    }
+}
+
+#[cfg(test)]
+mod app_window_tests {
+    use super::*;
+
+    // An app row the loader does not hold still says how it is shown, from
+    // the window stored with it: the same `appWindow` shape the phone reads.
+    #[test]
+    fn a_stored_window_reads_as_app_window() {
+        let stored = r#"{"width":420,"height":800,"resizable":false,"title":"Kart","fullscreen":true,"orientation":"landscape"}"#;
+        assert_eq!(
+            serde_json::to_value(stored_app_window(Some(stored))).unwrap(),
+            serde_json::json!({"fullscreen": true, "orientation": "landscape", "motion": false})
+        );
+        let today = serde_json::json!({"fullscreen": false, "orientation": "portrait", "motion": false});
+        assert_eq!(serde_json::to_value(stored_app_window(None)).unwrap(), today);
+        assert_eq!(serde_json::to_value(stored_app_window(Some("not json"))).unwrap(), today);
     }
 }

@@ -149,6 +149,59 @@ pub struct AppWindowConfig {
     pub resizable: bool,
     #[serde(default)]
     pub title: Option<String>,
+    /// The page takes the whole screen: on the phone, no app bar, no safe
+    /// area (the page pads itself with `env(safe-area-inset-*)`), the system
+    /// bars hidden and the screen kept awake. A game asks for this.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub fullscreen: bool,
+    /// `portrait` (the default), `landscape` or `any`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub orientation: Option<String>,
+}
+
+/// The orientations a window may ask for; the first is the default.
+pub const WINDOW_ORIENTATIONS: &[&str] = &["portrait", "landscape", "any"];
+
+/// The permission an app declares to read the gyroscope and accelerometer.
+pub const DEVICE_MOTION: &str = "device:motion";
+
+impl AppWindowConfig {
+    /// Refuse an orientation no view knows how to show.
+    pub fn validate(&self) -> Result<(), NappError> {
+        match self.orientation.as_deref() {
+            Some(o) if !WINDOW_ORIENTATIONS.contains(&o) => Err(NappError::Manifest(format!(
+                "window.orientation must be one of {}, not {o:?}",
+                WINDOW_ORIENTATIONS.join(", ")
+            ))),
+            _ => Ok(()),
+        }
+    }
+}
+
+/// How an app asks to be shown, as every client reads it (`appWindow` on an
+/// employee): the manifest's `window.fullscreen` and `window.orientation`,
+/// and whether its permissions include `device:motion`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct AppWindow {
+    pub fullscreen: bool,
+    pub orientation: &'static str,
+    pub motion: bool,
+}
+
+impl AppWindow {
+    /// From the manifest's window block (absent = the defaults) and its
+    /// permissions. An orientation no view knows reads as portrait.
+    pub fn from_manifest(window: Option<&AppWindowConfig>, permissions: &[String]) -> Self {
+        let orientation = window
+            .and_then(|w| w.orientation.as_deref())
+            .and_then(|o| WINDOW_ORIENTATIONS.iter().find(|k| **k == o).copied())
+            .unwrap_or(WINDOW_ORIENTATIONS[0]);
+        Self {
+            fullscreen: window.is_some_and(|w| w.fullscreen),
+            orientation,
+            motion: permissions.iter().any(|p| p == DEVICE_MOTION),
+        }
+    }
 }
 
 fn default_window_width() -> u32 {
@@ -168,6 +221,8 @@ impl Default for AppWindowConfig {
             height: 768,
             resizable: true,
             title: None,
+            fullscreen: false,
+            orientation: None,
         }
     }
 }
@@ -206,6 +261,7 @@ const VALID_PERMISSION_PREFIXES: &[&str] = &[
     "oauth:",
     "user:",
     "hook:",
+    "device:",
 ];
 
 /// Every permission must carry a known prefix. The one check for a
@@ -278,6 +334,9 @@ impl Manifest {
         }
 
         validate_permissions(&self.permissions)?;
+        if let Some(window) = &self.window {
+            window.validate()?;
+        }
 
         // Overrides require hook: permission
         for override_name in &self.overrides {
@@ -327,6 +386,41 @@ impl Manifest {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // The window block a game declares, read the way every client gets it.
+    #[test]
+    fn app_window_reads_the_window_block_and_device_motion() {
+        let m: Manifest = serde_json::from_str(
+            r#"{"id":"kart","name":"Kart","version":"1.0.0","type":"app",
+                "permissions":["storage:readwrite","device:motion"],
+                "window":{"title":"Kart","width":420,"height":800,"resizable":false,"fullscreen":true,"orientation":"landscape"}}"#,
+        )
+        .unwrap();
+        m.validate().unwrap();
+        let w = AppWindow::from_manifest(m.window.as_ref(), &m.permissions);
+        assert_eq!(w, AppWindow { fullscreen: true, orientation: "landscape", motion: true });
+        assert_eq!(
+            serde_json::to_value(&w).unwrap(),
+            serde_json::json!({"fullscreen": true, "orientation": "landscape", "motion": true})
+        );
+
+        // Missing = today's view: not fullscreen, portrait, no motion.
+        let today = AppWindow::from_manifest(None, &[]);
+        assert_eq!(today, AppWindow { fullscreen: false, orientation: "portrait", motion: false });
+        let plain: AppWindowConfig = serde_json::from_str(r#"{"title":"Deals"}"#).unwrap();
+        assert_eq!(AppWindow::from_manifest(Some(&plain), &["storage:readwrite".into()]), today);
+
+        // An orientation no view knows reads as portrait, and a write refuses it.
+        let odd: AppWindowConfig = serde_json::from_str(r#"{"orientation":"sideways"}"#).unwrap();
+        assert_eq!(AppWindow::from_manifest(Some(&odd), &[]).orientation, "portrait");
+        assert!(odd.validate().is_err());
+
+        // A window written back keeps its old shape when the new keys are unset.
+        assert_eq!(
+            serde_json::to_value(&plain).unwrap(),
+            serde_json::json!({"width": 1024, "height": 768, "resizable": true, "title": "Deals"})
+        );
+    }
 
     /// The permission check a tool call uses is the manifest's own: a known
     /// prefix passes, anything else is named in the error.

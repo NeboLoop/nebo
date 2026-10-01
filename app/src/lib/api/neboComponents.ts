@@ -164,6 +164,17 @@ export interface ApiKey {
 	revokedAt?: number
 }
 
+export interface AppListing {
+	appId: string
+	artifactId: string
+	draft: string
+	status: string
+	version: string
+	notes: string
+	chatSession: string
+	updatedAt: number
+}
+
 export interface ApplyInstallResponse {
 	outcome: ImportOutcome
 }
@@ -2236,6 +2247,10 @@ export interface SearchMessagesResponse {
 	messages: ChatMessage[]
 }
 
+export interface SendDevlogResponse {
+	prompt: unknown
+}
+
 export interface SendTeamMessageResponse {
 	message: string
 	messageId: string
@@ -2549,6 +2564,8 @@ export interface AgentListEntry {
 	needsSetup: boolean
 	nappPath?: string
 	appWindowConfig?: AppWindowConfig
+	/** Apps only: how the page asks to be shown (manifest window + device:motion). */
+	appWindow?: AppWindow
 	loadError?: string
 	/** "linked" for an employee hired from a linked bot; unset otherwise. */
 	kind?: string
@@ -2604,11 +2621,22 @@ export interface AliasEntry {
 	command: string
 }
 
+export interface AppWindow {
+	fullscreen: boolean
+	orientation: 'portrait' | 'landscape' | 'any'
+	/** The manifest declares device:motion. */
+	motion: boolean
+}
+
 export interface AppWindowConfig {
 	width: number
 	height: number
 	resizable: boolean
 	title?: string
+	/** The page takes the whole screen (a game). Unset = false. */
+	fullscreen?: boolean
+	/** Unset = portrait. */
+	orientation?: 'portrait' | 'landscape' | 'any'
 }
 
 export interface Capability {
