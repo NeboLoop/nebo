@@ -348,19 +348,25 @@ pub(crate) async fn start(h: Harness, mut req: TurnRequest) -> Result<TurnHandle
         resume_goal(&h, &session.id);
     }
 
+    // The row a queued owner message was written as, when it carries
+    // pictures still to be read.
+    let mut queued_row = None;
     let admission = if matches!(req.input, TurnInput::Compact { .. }) {
         match session_gate::admit_when_free(&h.active_turns, &req.session_key, progress.clone(), req.cancel.clone()).await {
             Some(guard) => Admission::Admitted(guard),
             None => return Err(HarnessError::Failed("The compact was stopped before it started.".into())),
         }
     } else {
-        let queue = || queue_input(&h, &session.id, &req);
+        let queue = || queued_row = queue_input(&h, &session.id, &req);
         session_gate::admit_or_queue(&h.active_turns, &req.session_key, progress.clone(), req.cancel.clone(), queue).await
     };
     let (tx, rx) = mpsc::channel(100);
     match admission {
         Admission::Queued { status } => {
             info!(session_id = %session.id, "input on a busy session queued into the running turn");
+            if let Some(row_id) = queued_row {
+                tokio::spawn(read_queued_pictures(h.clone(), req, row_id));
+            }
             // A send fails only when the caller dropped the receiver.
             let _ = tx
                 .send(StreamEvent::control_notice(status, session_gate::QUEUED_INTO_RUNNING_TURN))
@@ -450,10 +456,14 @@ fn resume_goal(h: &Harness, session_id: &str) {
 }
 
 /// Write a busy session's input where its running turn hears it at the
-/// next step. Runs under the admission lock.
-fn queue_input(h: &Harness, session_id: &str, req: &TurnRequest) {
+/// next step. Runs under the admission lock. The owner's message keeps the
+/// files it carries, as a message that starts a turn does: the thread shows
+/// them where they were shared, and the running turn reads them. Returns the
+/// row's id when it carries pictures for the vision helper to read.
+fn queue_input(h: &Harness, session_id: &str, req: &TurnRequest) -> Option<String> {
+    let mut pictures_row = None;
     let written = match &req.input {
-        TurnInput::Owner { text, .. } => {
+        TurnInput::Owner { text, images, attachments } => {
             let via = if req.delivery.channel.is_empty() {
                 "chat"
             } else {
@@ -466,6 +476,7 @@ fn queue_input(h: &Harness, session_id: &str, req: &TurnRequest) {
             if owner_speaks(req) {
                 conversation::mark_owner(&mut meta);
             }
+            conversation::mark_files(&mut meta, images, attachments);
             h.sessions
                 .append_message(
                     session_id,
@@ -475,7 +486,11 @@ fn queue_input(h: &Harness, session_id: &str, req: &TurnRequest) {
                     None,
                     Some(&meta.to_string()),
                 )
-                .map(|_| ())
+                .map(|row| {
+                    if !images.is_empty() {
+                        pictures_row = Some(row.id);
+                    }
+                })
         }
         TurnInput::Platform { text } | TurnInput::Spoken { task: text, .. } => h
             .sessions
@@ -514,6 +529,23 @@ fn queue_input(h: &Harness, session_id: &str, req: &TurnRequest) {
         if let Err(e) = r.write(&h.sessions, session_id) {
             warn!(session_id, error = %e, "could not queue the briefing into the running turn");
         }
+    }
+    pictures_row
+}
+
+/// The vision helper's reading of the pictures on a queued owner message,
+/// put on its row once read. Until then the running turn reads where each
+/// picture is and can look at it itself (`conversation::pictures_of`).
+async fn read_queued_pictures(h: Harness, req: TurnRequest, row_id: String) {
+    let TurnInput::Owner { text, images, attachments } = &req.input else {
+        return;
+    };
+    let readings = read_pictures(&h, &req, text, images, attachments).await;
+    if readings.is_empty() {
+        return;
+    }
+    if let Err(e) = h.store.set_chat_message_metadata(&row_id, &format!("$.{}", conversation::IMAGE_READINGS), &serde_json::json!(readings)) {
+        warn!(row_id, error = %e, "could not keep the readings of a queued message's pictures");
     }
 }
 
@@ -3643,6 +3675,52 @@ mod tests {
             2,
             "the turn's own input and the owner's queued message; not the channel's"
         );
+    }
+
+    /// A file the owner shares while a turn runs (a screenshot from the
+    /// composer during a call, whose hand-off is working) is queued into the
+    /// turn with the file on its row, as a message that starts a turn keeps
+    /// it: the thread shows it where it was shared, and the model reads where
+    /// it is. Live 2026-10-01: three copies of a screenshot reached the bot's
+    /// uploads and no row ever named them.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_file_queued_into_a_running_turn_stays_on_its_row() {
+        let model = Arc::new(Scripted::default());
+        let h = harness(&model).await;
+        let h2 = h.clone();
+        let hook: Hook = Box::pin(async move {
+            let mut shared = owner("[Attached: deck.pptx]");
+            shared.input = TurnInput::Owner {
+                text: "[Attached: deck.pptx]".into(),
+                images: Vec::new(),
+                attachments: vec![comm::wire::Attachment {
+                    file_id: "f-deck".into(),
+                    filename: "deck.pptx".into(),
+                    mime_type: "application/vnd.openxmlformats-officedocument.presentationml.presentation".into(),
+                    size: 4096,
+                    url: "https://example.test/api/v1/files/f-deck".into(),
+                    thumbnail_url: None,
+                    width: None,
+                    height: None,
+                    duration: None,
+                }],
+            };
+            let mut queued = h2.start_turn(shared).await.expect("queued");
+            while queued.events.recv().await.is_some() {}
+        });
+        *model.script.lock().unwrap() = VecDeque::from(vec![
+            Step::During(Box::new(Step::Call("echo", serde_json::json!({}))), hook),
+            Step::Say("Done."),
+            Step::Say(""),
+        ]);
+        run_turn(&h, owner("Echo something")).await;
+        let row = stored(&h)
+            .into_iter()
+            .find(|m| m.content == "[Attached: deck.pptx]")
+            .expect("the shared file's row");
+        let meta: serde_json::Value = serde_json::from_str(row.metadata.as_deref().unwrap_or("{}")).unwrap();
+        assert_eq!(meta["arrivedMidTurn"], true, "it was queued into the running turn: {meta}");
+        assert_eq!(meta["attachments"][0]["fileId"], "f-deck", "the file rides its row: {meta}");
     }
 
     /// A call parked on the owner names its ask on the tool-result event, so

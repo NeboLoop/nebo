@@ -385,6 +385,19 @@ pub(crate) fn images_to_store<'a>(
     (stored < images.len()).then_some(images)
 }
 
+/// Put the files an owner's message carries on its row's metadata: the
+/// attachments (what the owner's app shows, and where each file is), and the
+/// picture bytes no attachment covers. Every owner row carries them the same
+/// way, whether it starts a turn or is queued into a running one.
+pub(crate) fn mark_files(metadata: &mut serde_json::Value, images: &[ai::ImageContent], attachments: &[comm::wire::Attachment]) {
+    if let Some(images) = images_to_store(images, attachments) {
+        metadata["images"] = serde_json::json!(images);
+    }
+    if !attachments.is_empty() {
+        metadata["attachments"] = serde_json::json!(attachments);
+    }
+}
+
 /// A turn's input as it is stored.
 pub(crate) struct InputRow<'a> {
     pub text: &'a str,
@@ -427,29 +440,13 @@ pub(crate) fn mark_owner(metadata: &mut serde_json::Value) {
 /// Store a turn's input as its user row, the owner's words whole; pictures
 /// no attachment covers are stored as bytes.
 pub(crate) fn persist_input(sessions: &SessionManager, session_id: &str, input: InputRow<'_>) -> Result<(), String> {
-    let metadata = images_to_store(input.images, input.attachments)
-        .map(|images| serde_json::json!({ "images": images }).to_string());
-
-    let metadata = if input.readings.is_empty() {
-        metadata
-    } else {
-        let mut value: serde_json::Value = metadata
-            .as_deref()
-            .and_then(|m| serde_json::from_str(m).ok())
-            .unwrap_or_else(|| serde_json::json!({}));
-        value[IMAGE_READINGS] = serde_json::json!(input.readings);
-        Some(value.to_string())
-    };
-
-    let metadata = if input.attachments.is_empty() {
-        metadata
-    } else {
-        let mut value: serde_json::Value = metadata
-            .as_deref()
-            .and_then(|m| serde_json::from_str(m).ok())
-            .unwrap_or_else(|| serde_json::json!({}));
-        value["attachments"] = serde_json::json!(input.attachments);
-        Some(value.to_string())
+    let metadata = {
+        let mut value = serde_json::json!({});
+        mark_files(&mut value, input.images, input.attachments);
+        if !input.readings.is_empty() {
+            value[IMAGE_READINGS] = serde_json::json!(input.readings);
+        }
+        value.as_object().is_some_and(|m| !m.is_empty()).then(|| value.to_string())
     };
 
     // A platform-authored prompt stays in the model's history and out
