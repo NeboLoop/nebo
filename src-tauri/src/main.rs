@@ -57,11 +57,23 @@ fn focused_app(app: &tauri::AppHandle) -> Option<String> {
     })
 }
 
+/// Whether a window (by its label) is an app window showing one of the
+/// owner's own apps: the only ones published from here. One installed from
+/// the marketplace is its maker's.
+fn shows_own_app(label: &str) -> bool {
+    label
+        .strip_prefix("app-")
+        .is_some_and(|id| !id.is_empty() && server::handlers::apps::desktop_is_own_app(id))
+}
+
 /// Publish from an app window's native menu: bring up the main window and
 /// open the app's chat, which starts the same guided publish as the chat's
 /// Publish button, with the app's own employee.
 fn publish_focused_app(app: &tauri::AppHandle) {
     let Some(agent_id) = focused_app(app) else { return };
+    if !server::handlers::apps::desktop_is_own_app(&agent_id) {
+        return;
+    }
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.unminimize();
         let _ = w.show();
@@ -415,7 +427,9 @@ fn resolve_app_ui_dir(agent_id: &str) -> Option<PathBuf> {
 }
 
 /// Generate the bridge script + meta tags injected into every HTML page served
-/// via the neboapp:// protocol.
+/// via the neboapp:// protocol, followed by what the HTTP path adds by the
+/// same rule (`desktop_developer_script`): the owner's own app gets the
+/// developer script; one installed from the marketplace gets nothing.
 ///
 /// WebKit treats custom-scheme pages as opaque origins and silently blocks
 /// cross-origin fetch to `http://localhost:*`. The bridge intercepts fetch and
@@ -438,8 +452,10 @@ fn neboapp_bridge(agent_id: &str) -> String {
             r#"var X=XMLHttpRequest.prototype.open;"#,
             r#"XMLHttpRequest.prototype.open=function(){{"#,
             r#"arguments[1]=rw(arguments[1]);return X.apply(this,arguments)}}}})();</script>"#,
+            "{dev}",
         ),
-        id = agent_id
+        id = agent_id,
+        dev = server::handlers::apps::desktop_developer_script(agent_id),
     )
 }
 
@@ -980,7 +996,9 @@ fn main() {
             }
             match event {
                 tauri::WindowEvent::Focused(focused) => {
-                    let is_app = window.label().starts_with("app-");
+                    // Only an app window showing one of the owner's own apps
+                    // offers "Publish This App…".
+                    let is_app = shows_own_app(window.label());
                     // macOS: the File menu's item is live only for an app window.
                     #[cfg(target_os = "macos")]
                     if let Some(item) = PUBLISH_APP_ITEM.get() {

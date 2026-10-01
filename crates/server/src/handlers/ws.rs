@@ -143,6 +143,16 @@ pub(crate) fn origin_is_trusted(headers: &axum::http::HeaderMap) -> bool {
     matches!(host, "localhost" | "127.0.0.1" | "::1" | "tauri.localhost")
 }
 
+/// The app's own desktop window (`neboapp://<agentId>`) opening its own
+/// socket: its page is the app's, and nothing else's.
+fn from_its_desktop_window(headers: &axum::http::HeaderMap, agent_id: &str) -> bool {
+    headers
+        .get(axum::http::header::ORIGIN)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|o| o.strip_prefix("neboapp://"))
+        .is_some_and(|host| !agent_id.is_empty() && host.trim_end_matches('/').eq_ignore_ascii_case(agent_id))
+}
+
 /// GET /ws — Main client WebSocket endpoint.
 pub async fn client_ws_handler(
     State(state): State<AppState>,
@@ -169,7 +179,7 @@ pub async fn app_ws_handler(
     headers: axum::http::HeaderMap,
     ws: WebSocketUpgrade,
 ) -> Response {
-    if !origin_is_trusted(&headers) {
+    if !origin_is_trusted(&headers) && !from_its_desktop_window(&headers, &agent_id) {
         warn!(agent = %agent_id, "ws/app: rejected upgrade from untrusted origin");
         return axum::http::StatusCode::FORBIDDEN.into_response();
     }
@@ -2235,7 +2245,7 @@ mod event_origin_tests {
 
 #[cfg(test)]
 mod origin_guard_tests {
-    use super::origin_is_trusted;
+    use super::{from_its_desktop_window, origin_is_trusted};
     use axum::http::{HeaderMap, HeaderValue, header::ORIGIN};
 
     fn with_origin(origin: &str) -> HeaderMap {
@@ -2276,6 +2286,17 @@ mod origin_guard_tests {
         ] {
             assert!(!origin_is_trusted(&with_origin(o)), "{o} should be rejected");
         }
+    }
+
+    /// A desktop app window opens its own app's socket and no other's.
+    #[test]
+    fn an_app_window_opens_its_own_apps_socket() {
+        assert!(!origin_is_trusted(&with_origin("neboapp://app-1")));
+        assert!(from_its_desktop_window(&with_origin("neboapp://app-1"), "app-1"));
+        assert!(!from_its_desktop_window(&with_origin("neboapp://app-2"), "app-1"));
+        assert!(!from_its_desktop_window(&with_origin("http://evil.com"), "app-1"));
+        assert!(!from_its_desktop_window(&HeaderMap::new(), "app-1"));
+        assert!(!from_its_desktop_window(&with_origin("neboapp://"), ""));
     }
 }
 

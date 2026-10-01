@@ -229,6 +229,7 @@ async fn serve_app_ui_inner(state: &AppState, agent_id: &str, path: &str, header
     let devtools = own.as_ref().map(|a| Devtools {
         employee: &a.name,
         console: state.store.app_developer_mode(),
+        desktop: None,
     });
     serve_ui_file(&target, headers, devtools, motion).await
 }
@@ -240,6 +241,58 @@ async fn serve_app_ui_inner(state: &AppState, agent_id: &str, path: &str, header
 struct Devtools<'a> {
     employee: &'a str,
     console: bool,
+    /// The desktop's app window (`neboapp://<id>/`), where the page's own
+    /// address names no route: the app's id and the pass its socket carries.
+    desktop: Option<DesktopPage<'a>>,
+}
+
+/// What the developer script in a desktop app window is told, since its
+/// address (`neboapp://<id>/`) is not one of this server's.
+#[derive(Debug, Clone, Copy)]
+struct DesktopPage<'a> {
+    app_id: &'a str,
+    /// A pass for this one app's socket (`napp::app_view`): the window's
+    /// WebSocket goes to this server directly, carrying no session.
+    pass: &'a str,
+    port: u16,
+}
+
+/// How long a desktop app window's socket pass lasts: longer than a window
+/// stays open between reloads; each load gets a new one.
+const DESKTOP_PASS_TTL: std::time::Duration = std::time::Duration::from_secs(7 * 24 * 3600);
+
+/// The store and port the desktop's `neboapp://` handler answers from. It
+/// runs in this process, outside the router, so `run` hands it them here.
+static DESKTOP: std::sync::OnceLock<(std::sync::Arc<db::Store>, u16)> = std::sync::OnceLock::new();
+
+/// Called once by `run`: the desktop's app windows read this store.
+pub(crate) fn serve_desktop_from(store: std::sync::Arc<db::Store>, port: u16) {
+    let _ = DESKTOP.set((store, port));
+}
+
+/// For the desktop's `neboapp://` handler: what an app's entry page carries
+/// after the desktop bridge, by the one rule the HTTP path follows
+/// (`serve_app_ui_inner`): the owner's own app gets the developer script
+/// (console capture and the reload listener, the floating console with App
+/// Developer mode on); an app installed from the marketplace gets nothing.
+pub fn desktop_developer_script(agent_id: &str) -> String {
+    DESKTOP.get().map(|(store, port)| desktop_script(store, *port, agent_id)).unwrap_or_default()
+}
+
+/// For the desktop's app-window menu: whether `agent_id` is one of the
+/// owner's own apps, the only ones built and published from here.
+pub fn desktop_is_own_app(agent_id: &str) -> bool {
+    DESKTOP.get().is_some_and(|(store, _)| own_app(store, agent_id).is_some())
+}
+
+fn desktop_script(store: &db::Store, port: u16, agent_id: &str) -> String {
+    let Some(app) = own_app(store, agent_id) else { return String::new() };
+    let pass = napp::app_view::grant(&app.id, DESKTOP_PASS_TTL);
+    developer_script(Devtools {
+        employee: &app.name,
+        console: store.app_developer_mode(),
+        desktop: Some(DesktopPage { app_id: &app.id, pass: &pass, port }),
+    })
 }
 
 impl Devtools<'_> {
@@ -510,10 +563,17 @@ fn inject_app_bridge(contents: Vec<u8>, devtools: Option<Devtools<'_>>) -> Vec<u
 /// the floating console shows (App Developer mode).
 fn developer_script(d: Devtools<'_>) -> String {
     const SCRIPT: &str = include_str!("app_devtools.js");
+    let mut config = serde_json::json!({ "employee": d.employee, "console": d.console });
+    if let Some(w) = d.desktop {
+        // Its fetches go through the window's own scheme (the desktop proxies
+        // them to this server); its socket comes here with the pass.
+        let id = urlencoding::encode(w.app_id);
+        config["appId"] = w.app_id.into();
+        config["api"] = format!("neboapp://{id}/api/v1/apps/{id}").into();
+        config["socket"] = format!("ws://127.0.0.1:{}/k/{}/ws/app/{id}", w.port, w.pass).into();
+    }
     // `<` escaped: a name can never close the script element.
-    let config = serde_json::json!({ "employee": d.employee, "console": d.console })
-        .to_string()
-        .replace('<', "\\u003c");
+    let config = config.to_string().replace('<', "\\u003c");
     format!(
         "<script data-nebo-devtools>{}</script>",
         SCRIPT.replace("__NEBO_DEVTOOLS_CONFIG__", &config)
@@ -692,10 +752,27 @@ fn devlog_target(store: &db::Store, agent_id: &str, headers: &axum::http::Header
 }
 
 /// The devlog routes' gate: [`devlog_target`], then the same app-token
-/// check every app route makes.
+/// check every app route makes, or the install key: the desktop's app
+/// window posts through its `neboapp://` proxy, the owner's own client,
+/// which proves itself with the key.
 async fn devlog_gate(state: &AppState, agent_id: &str, headers: &axum::http::HeaderMap) -> Result<(), Response> {
     devlog_target(&state.store, agent_id, headers).map_err(|s| s.into_response())?;
+    if bearer_is(headers, config::read_install_key().as_deref()) {
+        return Ok(());
+    }
     validate_app_token(state, agent_id, headers).await
+}
+
+/// Whether the request's bearer token is `key`.
+fn bearer_is(headers: &axum::http::HeaderMap, key: Option<&str>) -> bool {
+    let token = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "));
+    match (token, key) {
+        (Some(t), Some(k)) => !k.is_empty() && crate::handlers::ws::constant_time_eq(t, k),
+        _ => false,
+    }
 }
 
 /// POST /apps/{agent_id}/devlog — the developer script's console batches,
@@ -1618,7 +1695,36 @@ mod developer_mode_tests {
     const PAGE: &str = "<!doctype html><html><head><script src=\"main.js\"></script></head><body></body></html>";
 
     fn dev(employee: &str, console: bool) -> Option<Devtools<'_>> {
-        Some(Devtools { employee, console })
+        Some(Devtools { employee, console, desktop: None })
+    }
+
+    /// The desktop's app window carries what a served page carries, by the
+    /// same rule: the owner's own app gets the developer script, told its
+    /// routes and its socket's pass; an installed app gets nothing.
+    #[test]
+    fn a_desktop_app_window_gets_the_developer_script_by_the_same_rule() {
+        let (_d, store) = store();
+        app(&store, "app-a", "Racer");
+        app(&store, "app-m", "Bought");
+        store.set_agent_napp_path("app-m", "/data/nebo/agents/bought.napp").unwrap();
+
+        assert_eq!(desktop_script(&store, 27895, "app-m"), "", "installed: no developer tooling");
+        assert_eq!(desktop_script(&store, 27895, "nope"), "");
+
+        let quiet = desktop_script(&store, 27895, "app-a");
+        assert!(quiet.contains("data-nebo-devtools") && quiet.contains(r#""console":false"#), "{quiet}");
+        assert!(quiet.contains(r#""appId":"app-a""#) && quiet.contains(r#""api":"neboapp://app-a/api/v1/apps/app-a""#));
+        let pass = quiet
+            .split("ws://127.0.0.1:27895/k/")
+            .nth(1)
+            .and_then(|r| r.split_once("/ws/app/app-a\""))
+            .map(|(p, _)| p.to_string())
+            .expect("the socket and its pass");
+        assert!(napp::app_view::admits(&pass, "app-a") && !napp::app_view::admits(&pass, "app-m"));
+
+        developer_mode(&store, true);
+        assert!(desktop_script(&store, 27895, "Racer").contains(r#""console":true"#), "by name, the console shows");
+        assert_eq!(desktop_script(&store, 27895, "app-m"), "", "installed, mode on");
     }
 
     #[test]
@@ -1646,6 +1752,17 @@ mod developer_mode_tests {
         let on = String::from_utf8(inject_app_bridge(PAGE.as_bytes().to_vec(), dev("</script><b>x", true))).unwrap();
         assert_eq!(on.matches("</script>").count(), 3, "{on}");
         assert!(on.contains(r"\u003c/script>\u003cb>x"));
+    }
+
+    #[test]
+    fn the_install_key_is_the_desktop_windows_proof() {
+        let mut h = axum::http::HeaderMap::new();
+        assert!(!bearer_is(&h, Some("key-1")));
+        h.insert(header::AUTHORIZATION, "Bearer key-1".parse().unwrap());
+        assert!(bearer_is(&h, Some("key-1")));
+        assert!(!bearer_is(&h, Some("key-2")));
+        assert!(!bearer_is(&h, None));
+        assert!(!bearer_is(&h, Some("")));
     }
 
     #[test]
@@ -1894,12 +2011,12 @@ mod app_file_caching_tests {
             let file = ui.join(name);
             let tagged = serve_ui_file(&file, &HeaderMap::new(), None, false).await;
             let etag = get(&tagged, header::ETAG).unwrap().to_string();
-            let r = serve_ui_file(&file, &req(&[(header::IF_NONE_MATCH, &etag)]), Some(Devtools { employee: "Kart", console: true }), false).await;
+            let r = serve_ui_file(&file, &req(&[(header::IF_NONE_MATCH, &etag)]), Some(Devtools { employee: "Kart", console: true, desktop: None }), false).await;
             assert_eq!(r.status(), StatusCode::OK, "{name}");
             assert_eq!(get(&r, header::CACHE_CONTROL), Some("no-store"), "{name}");
             assert!(get(&r, header::ETAG).is_none(), "{name}");
         }
-        let page = serve_ui_file(&ui.join("index.html"), &HeaderMap::new(), Some(Devtools { employee: "Kart", console: true }), false).await;
+        let page = serve_ui_file(&ui.join("index.html"), &HeaderMap::new(), Some(Devtools { employee: "Kart", console: true, desktop: None }), false).await;
         assert!(String::from_utf8(body(page).await).unwrap().contains("data-nebo-devtools"));
     }
 
