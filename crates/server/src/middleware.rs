@@ -100,6 +100,15 @@ fn auth_error(message: &str) -> Response {
         .into_response()
 }
 
+/// The Permissions-Policy every response carries unless its handler set one.
+pub const PERMISSIONS_POLICY: &str =
+    "accelerometer=(), camera=(self), geolocation=(), gyroscope=(), magnetometer=(), microphone=(self), payment=(), usb=()";
+
+/// The same policy for an app page whose manifest declares `device:motion`:
+/// the page may read the accelerometer and gyroscope (a tilt-to-steer game).
+pub const PERMISSIONS_POLICY_WITH_MOTION: &str =
+    "accelerometer=(self), camera=(self), geolocation=(), gyroscope=(self), magnetometer=(), microphone=(self), payment=(), usb=()";
+
 /// Security headers applied to all routes (no CSP — that's per-route).
 /// HSTS, Permissions-Policy, X-Frame-Options, X-Content-Type-Options,
 /// X-XSS-Protection, Referrer-Policy.
@@ -113,12 +122,11 @@ pub async fn security_headers(request: Request, next: Next) -> Response {
         || request.uri().path().starts_with("/work/");
     let mut response = next.run(request).await;
     let headers = response.headers_mut();
-    headers.insert(
-        "permissions-policy",
-        "accelerometer=(), camera=(self), geolocation=(), gyroscope=(), magnetometer=(), microphone=(self), payment=(), usb=()"
-            .parse()
-            .unwrap(),
-    );
+    // A handler that set its own (an app page that declares
+    // `device:motion`) keeps it; everything else gets the default.
+    if !headers.contains_key("permissions-policy") {
+        headers.insert("permissions-policy", axum::http::HeaderValue::from_static(PERMISSIONS_POLICY));
+    }
     headers.insert(
         "strict-transport-security",
         "max-age=31536000; includeSubDomains; preload"

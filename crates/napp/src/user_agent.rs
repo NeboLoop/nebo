@@ -44,14 +44,18 @@ impl AppFields {
             None => None,
             Some(window) if !window.is_object() => {
                 return Err(NappError::Other(
-                    "`app.window` must be an object: {\"title\", \"width\", \"height\", \"resizable\"}. Nothing was written."
+                    "`app.window` must be an object: {\"title\", \"width\", \"height\", \"resizable\", \"fullscreen\", \"orientation\"}. Nothing was written."
                         .into(),
                 ));
             }
-            Some(window) => Some(
-                serde_json::from_value::<AppWindowConfig>(window.clone())
-                    .map_err(|e| NappError::Other(format!("`app.window` is invalid and was not saved: {e}")))?,
-            ),
+            Some(window) => {
+                let window = serde_json::from_value::<AppWindowConfig>(window.clone())
+                    .map_err(|e| NappError::Other(format!("`app.window` is invalid and was not saved: {e}")))?;
+                window
+                    .validate()
+                    .map_err(|e| NappError::Other(format!("`app.window` is invalid and was not saved: {e}")))?;
+                Some(window)
+            }
         };
         let permissions = match obj.get("permissions") {
             None => None,
@@ -363,6 +367,26 @@ mod tests {
         let m = manifest_in(dir2.path());
         assert_eq!(m["permissions"], json!(["storage:read", "network:outbound"]));
         assert!(m.get("window").is_none());
+    }
+
+    /// A game's window (fullscreen, landscape) and `device:motion` reach the
+    /// manifest as written; an orientation no view knows is refused unwritten.
+    #[test]
+    fn a_game_window_and_device_motion_reach_the_manifest() {
+        let app = AppFields::from_json(&json!({
+            "window": {"title": "Kart", "fullscreen": true, "orientation": "landscape"},
+            "permissions": ["storage:readwrite", "device:motion"]
+        }))
+        .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        write_user_agent(dir.path(), &package(Some(app), Vec::new())).unwrap();
+        let m = manifest_in(dir.path());
+        assert_eq!(m["window"]["fullscreen"], true);
+        assert_eq!(m["window"]["orientation"], "landscape");
+        assert_eq!(m["permissions"], json!(["storage:readwrite", "device:motion"]));
+
+        let err = AppFields::from_json(&json!({"window": {"orientation": "sideways"}})).unwrap_err();
+        assert!(err.to_string().contains("orientation"), "{err}");
     }
 
     /// A page without an `app` block still makes an app.

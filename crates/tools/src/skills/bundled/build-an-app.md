@@ -64,12 +64,14 @@ Parameters, exactly:
   again later. The page is served at `/apps/<that id>/ui/`.
 - `description` — one line; it becomes the persona if you do not pass `agent_md`.
 - `app` — `{window, permissions}`. Passing it makes the employee an app.
-  - `window`: `title`, `width`, `height`, `resizable` — those four and no
-    others. Defaults are 1024 x 768, resizable, titled after the employee.
+  - `window`: `title`, `width`, `height`, `resizable`, `fullscreen`,
+    `orientation` — those six and no others. Defaults are 1024 x 768,
+    resizable, titled after the employee, not fullscreen, portrait. See
+    "Games and Full-Screen Pages" below for the last two.
   - `permissions`: strings in `prefix:scope` form. `storage:readwrite` for the
     key-value store, `subagent:<employee-id>` to invoke another employee (your
     own employee needs no permission), `network:<host>` or `network:*` for the
-    HTTP proxy.
+    HTTP proxy, `device:motion` for the gyroscope and accelerometer.
 - `ui` — a map of relative path to file content. `index.html` is the entry;
   every other file lands beside it and is served at `/apps/<id>/ui/<path>`.
 - `ui_jsx` — one JSX source instead of `ui`; it is converted to `ui/index.html`.
@@ -156,6 +158,40 @@ Start every app from here and grow it.
 Pass it as `ui: { "index.html": "<that page>" }`. If the page shows the
 employee's id and name, the wiring is right; everything after that is ordinary
 HTML and JavaScript against the table above.
+
+---
+
+## Games and Full-Screen Pages
+
+A game, a film or any page that wants the whole screen says so in `window`,
+and the phone's app view follows it:
+
+```
+app: {
+  window: { title: "Kart", fullscreen: true, orientation: "landscape" },
+  permissions: ["storage:readwrite", "device:motion"]
+}
+```
+
+- `fullscreen: true` — no app bar and no safe-area padding; the system bars
+  hide and the screen stays awake. Pad the page yourself with
+  `env(safe-area-inset-top)` and friends (add `viewport-fit=cover` to the
+  viewport meta). Pull-to-refresh is off, so a downward swipe is the game's.
+  The owner leaves through a small close button in the top-left corner; keep
+  your own controls clear of it.
+- `orientation` — `"portrait"` (the default), `"landscape"` or `"any"`.
+- `device:motion` (a permission) — lets the page read `devicemotion` and
+  `deviceorientation` (tilt to steer). On iPhone the page must also call
+  `DeviceMotionEvent.requestPermission()` from a tap; ask on the same first
+  tap that starts the sound, since phones also want a tap before Web Audio
+  plays.
+- Video plays inline: `<video autoplay muted loop playsinline>` works, and
+  setting `currentTime` from a scroll handler scrubs it.
+- Caching: `index.html` and hand-named files are checked on every open (an
+  unchanged file costs one round trip and no bytes). A file named with a
+  content hash, `main-0a8ksftt.js` (what `bun build` writes with
+  `[name]-[hash].[ext]` naming), is kept for a year, so a rebuild must give
+  changed files new names. Never rename files by hand to get past a cache.
 
 ---
 

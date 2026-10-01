@@ -61,6 +61,17 @@ pub struct LoadedAgent {
     pub app_binary_path: Option<PathBuf>,
     /// Window config from manifest.json.
     pub app_window_config: Option<crate::manifest::AppWindowConfig>,
+    /// The app's manifest permissions (empty for a non-app).
+    pub app_permissions: Vec<String>,
+}
+
+impl LoadedAgent {
+    /// How the app asks to be shown (`appWindow`); `None` for a non-app.
+    pub fn app_window(&self) -> Option<crate::manifest::AppWindow> {
+        self.is_app.then(|| {
+            crate::manifest::AppWindow::from_manifest(self.app_window_config.as_ref(), &self.app_permissions)
+        })
+    }
 }
 
 /// Events emitted by the filesystem watcher when agent content changes on disk.
@@ -407,6 +418,7 @@ fn load_from_embedded(
         app_ui_path: None,
         app_binary_path: None,
         app_window_config: None,
+        app_permissions: Vec::new(),
     })
 }
 
@@ -461,7 +473,7 @@ pub fn load_from_dir(dir: &Path, source: AgentSource) -> Result<LoadedAgent, Nap
     };
 
     // Read version, id, display name, description, and app config from manifest.json if available
-    let (version, id, manifest_name, manifest_desc, artifact_type, window_config) = {
+    let (version, id, manifest_name, manifest_desc, artifact_type, window_config, manifest_permissions) = {
         let manifest_path = dir.join("manifest.json");
         if manifest_path.exists() {
             let raw = std::fs::read_to_string(&manifest_path).ok();
@@ -484,12 +496,13 @@ pub fn load_from_dir(dir: &Path, source: AgentSource) -> Result<LoadedAgent, Nap
                         .as_str()
                         .or_else(|| v["type"].as_str())
                         .map(String::from),
-                    manifest_full.and_then(|m| m.window),
+                    manifest_full.as_ref().and_then(|m| m.window.clone()),
+                    manifest_full.map(|m| m.permissions).unwrap_or_default(),
                 ),
-                None => (None, None, None, None, None, None),
+                None => (None, None, None, None, None, None, Vec::new()),
             }
         } else {
-            (None, None, None, None, None, None)
+            (None, None, None, None, None, None, Vec::new())
         }
     };
 
@@ -560,6 +573,7 @@ pub fn load_from_dir(dir: &Path, source: AgentSource) -> Result<LoadedAgent, Nap
         app_ui_path,
         app_binary_path,
         app_window_config: window_config,
+        app_permissions: if is_app { manifest_permissions } else { Vec::new() },
     })
 }
 
@@ -785,6 +799,7 @@ fn load_from_sealed_napp(
         app_ui_path: None,
         app_binary_path: None,
         app_window_config: None,
+        app_permissions: Vec::new(),
     })
 }
 
@@ -913,6 +928,38 @@ mod tests {
             Some("binary"),
             "bin/ sidecar must resolve"
         );
+    }
+
+    // A game's manifest: the window block and `device:motion` come through
+    // as `appWindow`; an app with neither reads as today's view.
+    #[test]
+    fn an_apps_window_and_motion_come_from_its_manifest() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        std::fs::write(dir.join("AGENT.md"), "---\nname: Kart\n---\n# Kart").unwrap();
+        std::fs::write(
+            dir.join("manifest.json"),
+            r#"{"id":"kart","name":"Kart","version":"1.0.0","type":"app",
+                "permissions":["storage:readwrite","device:motion"],
+                "window":{"title":"Kart","fullscreen":true,"orientation":"landscape"}}"#,
+        )
+        .unwrap();
+        let loaded = load_from_dir(dir, AgentSource::Installed).expect("load app");
+        assert_eq!(
+            loaded.app_window(),
+            Some(crate::manifest::AppWindow { fullscreen: true, orientation: "landscape", motion: true })
+        );
+
+        std::fs::write(dir.join("manifest.json"), r#"{"id":"kart","name":"Kart","version":"1.0.0","type":"app"}"#)
+            .unwrap();
+        let plain = load_from_dir(dir, AgentSource::Installed).expect("load app");
+        assert_eq!(
+            plain.app_window(),
+            Some(crate::manifest::AppWindow { fullscreen: false, orientation: "portrait", motion: false })
+        );
+
+        std::fs::write(dir.join("manifest.json"), r#"{"id":"kart","name":"Kart","version":"1.0.0"}"#).unwrap();
+        assert_eq!(load_from_dir(dir, AgentSource::Installed).unwrap().app_window(), None);
     }
 
     // Install-state truthfulness: an existing-but-EMPTY agent dir (debris from
