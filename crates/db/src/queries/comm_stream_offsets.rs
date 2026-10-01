@@ -44,6 +44,29 @@ impl Store {
 mod tests {
     use crate::Store;
 
+    /// The harness gate seeds a fresh home with a database holding only this
+    /// table (scripts/gate-server.sh, carry_seed); the store must migrate
+    /// everything else onto it and keep the offsets.
+    #[test]
+    fn a_database_seeded_with_only_offsets_migrates_and_keeps_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nebo.db");
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS comm_stream_offsets (
+                    bot_id TEXT NOT NULL, stream TEXT NOT NULL, acked_seq INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL DEFAULT (unixepoch()), PRIMARY KEY (bot_id, stream));
+                 INSERT INTO comm_stream_offsets (bot_id, stream, acked_seq) VALUES ('bot', 'installs', 10193);",
+            )
+            .unwrap();
+        }
+        let store = Store::new(path.to_str().unwrap()).unwrap();
+        assert_eq!(store.comm_stream_offset("bot", "installs").unwrap(), 10193);
+        store.record_comm_stream_offset("bot", "installs", 10200).unwrap();
+        assert_eq!(store.comm_stream_offset("bot", "installs").unwrap(), 10200);
+    }
+
     #[test]
     fn offsets_persist_per_bot_and_stream_and_never_regress() {
         let path = std::env::temp_dir().join(format!(
