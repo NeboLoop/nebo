@@ -1078,6 +1078,8 @@
 		"stopped": "stoppad",
 		"pageDescription": "Utvecklarverktyg och avancerade inställningar.",
 		"devModeHint": "Visa avancerade inställningar som Leverantörer, Routing och Hemligheter.",
+		"appDevMode": "Apputvecklarläge",
+		"appDevModeHint": "Anställda som bygger appar kan ladda om dem och läsa deras konsol, och varje öppen app visar en konsol som du kan öppna.",
 		"defaultRoutingNote": "Som standard skickar Nebo alla förfrågningar genom Nebo-1/Janus-gatewayen. Aktivera utvecklarläget för att konfigurera egna leverantörer och routingregler.",
 		"sideloadApp": "Sidladda app",
 		"appPathPlaceholder": "/sökväg/till/din/app",

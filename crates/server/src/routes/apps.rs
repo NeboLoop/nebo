@@ -67,5 +67,9 @@ pub fn routes() -> Router<AppState> {
             "/apps/{agent_id}/identity",
             routing::get(apps::get_identity),
         )
+        // App Developer mode: the developer script's console batches, and
+        // its "Send to <employee>".
+        .route("/apps/{agent_id}/devlog", routing::post(apps::post_devlog))
+        .route("/apps/{agent_id}/devlog/send", routing::post(apps::send_devlog))
         .layer(cors)
 }

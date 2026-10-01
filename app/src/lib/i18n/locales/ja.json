@@ -1078,6 +1078,8 @@
 		"stopped": "停止",
 		"pageDescription": "開発者ツールと高度な設定。",
 		"devModeHint": "プロバイダー、ルーティング、シークレットなどの高度な設定を表示します。",
+		"appDevMode": "アプリ開発者モード",
+		"appDevModeHint": "アプリを作る従業員がアプリを再読み込みし、コンソールを読めるようになります。開いている各アプリには、開けるコンソールが表示されます。",
 		"defaultRoutingNote": "デフォルトでは、NeboはすべてのリクエストをNebo-1 / Janusゲートウェイ経由でルーティングします。開発者モードを有効にすると、独自のプロバイダーとルーティングルールを設定できます。",
 		"sideloadApp": "アプリをサイドロード",
 		"appPathPlaceholder": "/path/to/your/app",

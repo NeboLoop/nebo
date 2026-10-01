@@ -1078,6 +1078,8 @@
 		"stopped": "중지됨",
 		"pageDescription": "개발자 도구 및 고급 설정입니다.",
 		"devModeHint": "제공자, 라우팅, 시크릿 같은 고급 설정을 표시합니다.",
+		"appDevMode": "앱 개발자 모드",
+		"appDevModeHint": "앱을 만드는 직원이 앱을 새로 고치고 콘솔을 읽을 수 있으며, 열려 있는 각 앱에 열 수 있는 콘솔이 표시됩니다.",
 		"defaultRoutingNote": "기본적으로 Nebo는 모든 요청을 Nebo-1 / Janus 게이트웨이를 통해 라우팅합니다. 개발자 모드를 활성화하면 자체 제공자와 라우팅 규칙을 설정할 수 있습니다.",
 		"sideloadApp": "앱 사이드로드",
 		"appPathPlaceholder": "/path/to/your/app",

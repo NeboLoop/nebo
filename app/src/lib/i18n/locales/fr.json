@@ -1078,6 +1078,8 @@
 		"stopped": "arrêté",
 		"pageDescription": "Outils de développement et paramètres avancés.",
 		"devModeHint": "Afficher les paramètres avancés comme Fournisseurs, Routage et Secrets.",
+		"appDevMode": "Mode développeur d'apps",
+		"appDevModeHint": "Les employés qui créent des apps peuvent les recharger et lire leur console, et chaque app ouverte affiche une console que vous pouvez ouvrir.",
 		"defaultRoutingNote": "Par défaut, Nebo achemine toutes les requêtes via la passerelle Nebo-1 / Janus. Activez le mode développeur pour configurer vos propres fournisseurs et règles de routage.",
 		"sideloadApp": "Charger une app locale",
 		"appPathPlaceholder": "/chemin/vers/votre/app",

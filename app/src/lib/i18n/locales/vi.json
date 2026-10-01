@@ -1078,6 +1078,8 @@
 		"stopped": "đã dừng",
 		"pageDescription": "Công cụ nhà phát triển và cài đặt nâng cao.",
 		"devModeHint": "Hiện các cài đặt nâng cao như Nhà cung cấp, Định tuyến và Bí mật.",
+		"appDevMode": "Chế độ nhà phát triển ứng dụng",
+		"appDevModeHint": "Nhân viên xây dựng ứng dụng có thể tải lại và đọc bảng điều khiển của chúng, và mỗi ứng dụng đang mở hiển thị một bảng điều khiển bạn có thể mở.",
 		"defaultRoutingNote": "Theo mặc định, Nebo định tuyến tất cả yêu cầu qua cổng Nebo-1 / Janus. Bật chế độ nhà phát triển để cấu hình nhà cung cấp và quy tắc định tuyến riêng.",
 		"sideloadApp": "Sideload ứng dụng",
 		"appPathPlaceholder": "/duong-dan/den/ung-dung",

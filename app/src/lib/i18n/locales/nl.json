@@ -1078,6 +1078,8 @@
 		"stopped": "gestopt",
 		"pageDescription": "Ontwikkelaarstools en geavanceerde instellingen.",
 		"devModeHint": "Toon geavanceerde instellingen zoals Providers, Routering en Geheimen.",
+		"appDevMode": "App-ontwikkelaarsmodus",
+		"appDevModeHint": "Medewerkers die apps bouwen kunnen ze herladen en hun console lezen, en elke geopende app toont een console die je kunt openen.",
 		"defaultRoutingNote": "Standaard stuurt Nebo alle verzoeken via de Nebo-1 / Janus-gateway. Schakel de ontwikkelaarsmodus in om je eigen providers en routeringsregels te configureren.",
 		"sideloadApp": "App sideloaden",
 		"appPathPlaceholder": "/pad/naar/je/app",

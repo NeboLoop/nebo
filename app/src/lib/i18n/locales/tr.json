@@ -1078,6 +1078,8 @@
 		"stopped": "durduruldu",
 		"pageDescription": "Geliştirici araçları ve gelişmiş ayarlar.",
 		"devModeHint": "Sağlayıcılar, Yönlendirme ve Gizli Anahtarlar gibi gelişmiş ayarları göster.",
+		"appDevMode": "Uygulama Geliştirici modu",
+		"appDevModeHint": "Uygulama geliştiren çalışanlar uygulamaları yeniden yükleyebilir ve konsollarını okuyabilir; her açık uygulama açabileceğiniz bir konsol gösterir.",
 		"defaultRoutingNote": "Varsayılan olarak Nebo, tüm istekleri Nebo-1 / Janus ağ geçidi üzerinden yönlendirir. Kendi sağlayıcılarınızı ve yönlendirme kurallarınızı yapılandırmak için geliştirici modunu etkinleştirin.",
 		"sideloadApp": "Uygulamayı Yandan Yükle",
 		"appPathPlaceholder": "/path/to/your/app",

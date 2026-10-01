@@ -1078,6 +1078,8 @@
 		"stopped": "arrestato",
 		"pageDescription": "Strumenti per sviluppatori e impostazioni avanzate.",
 		"devModeHint": "Mostra impostazioni avanzate come Provider, Routing e Segreti.",
+		"appDevMode": "Modalità sviluppatore app",
+		"appDevModeHint": "I dipendenti che creano app possono ricaricarle e leggerne la console, e ogni app aperta mostra una console che puoi aprire.",
 		"defaultRoutingNote": "Per impostazione predefinita, Nebo instrada tutte le richieste attraverso il gateway Nebo-1 / Janus. Attiva la modalità sviluppatore per configurare provider e regole di routing personalizzati.",
 		"sideloadApp": "Sideload app",
 		"appPathPlaceholder": "/percorso/alla/tua/app",

@@ -1078,6 +1078,8 @@
 		"stopped": "parado",
 		"pageDescription": "Ferramentas de programador e definições avançadas.",
 		"devModeHint": "Mostrar definições avançadas como Fornecedores, Encaminhamento e Segredos.",
+		"appDevMode": "Modo de programador de apps",
+		"appDevModeHint": "Os funcionários que criam apps podem recarregá-las e ler a consola, e cada app aberta mostra uma consola que pode abrir.",
 		"defaultRoutingNote": "Por predefinição, o Nebo encaminha todos os pedidos através do gateway Nebo-1 / Janus. Ative o modo de programador para configurar os seus próprios fornecedores e regras de encaminhamento.",
 		"sideloadApp": "Carregar aplicação local",
 		"appPathPlaceholder": "/caminho/para/a/sua/aplicacao",
