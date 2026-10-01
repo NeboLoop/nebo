@@ -10,13 +10,32 @@ import { askBandStatus, askNotificationId, setApprovalStatus } from './notificat
 /** A permission card's answers, or a held send's (did it go out?). */
 export type AskAnswer = 'allow_always' | 'this_once' | 'no' | 'sent' | 'not_sent';
 
-/** Open asks, oldest first. The chat shows its own session's. */
+/** Open asks, oldest first. A chat shows the ones its own flow raised. */
 export const openAsks = writable<PermissionAskCard[]>([]);
+
+/** Asks settled while the app is open, as they were settled: a chat keeps
+ *  each of its own in place as a one-line receipt. */
+export const settledAsks = writable<PermissionAskCard[]>([]);
 
 export async function loadOpenAsks(): Promise<void> {
   const { listPermissionAsks } = await import('$lib/api/nebo');
   const res = await listPermissionAsks();
   openAsks.set(res.asks ?? []);
+}
+
+/** What a chat shows: only the asks its own flow raised (`chatId`), never
+ *  one from a schedule, a workflow, another employee's run or another chat
+ *  (those live in the Inbox). Settled ones keep their place as a receipt;
+ *  the open ones come last, at the bottom beside the composer. */
+export function chatAsksOf(
+  open: PermissionAskCard[],
+  settled: PermissionAskCard[],
+  chatId: string
+): PermissionAskCard[] {
+  if (!chatId) return [];
+  const mine = (a: PermissionAskCard) => a.chatId === chatId;
+  const openHere = open.filter(mine);
+  return [...settled.filter((a) => mine(a) && !openHere.some((o) => o.id === a.id)), ...openHere];
 }
 
 /** A new ask was raised. */
@@ -29,6 +48,7 @@ export function askRaised(card: PermissionAskCard): void {
  *  work it was for ended. */
 export function askSettled(card: PermissionAskCard): void {
   openAsks.update((list) => list.filter((a) => a.id !== card.id));
+  settledAsks.update((list) => [...list.filter((a) => a.id !== card.id), card]);
   setApprovalStatus(askNotificationId(card.id), askBandStatus(card.status));
 }
 

@@ -539,9 +539,12 @@
   .agent-working-dot { animation: none; }
 }
 
-/* ===== Permission ask card: one step waits on the owner ===== */
+/* ===== Permission ask card: one step waits on the owner =====
+   The same family as the install and question cards in the chat. It
+   arrives at the bottom of the conversation and rises in; answered, it
+   collapses in place to a one-line receipt. */
 .permission-ask-card {
-  @apply rounded-2xl border border-warning/60 bg-warning/10 px-4 py-3 flex flex-col gap-1.5;
+  @apply rounded-xl bg-base-200 px-4 py-3 mb-1 max-w-md flex flex-col gap-1.5;
 }
 .permission-ask-title {
   @apply m-0 text-sm font-semibold;
@@ -553,23 +556,31 @@
   @apply text-base-content/60;
 }
 .permission-ask-actions {
-  @apply flex flex-wrap gap-1.5 pt-1;
+  @apply flex flex-wrap gap-2 pt-1;
 }
 .permission-ask-settled {
-  @apply m-0 text-xs font-medium text-base-content/60;
+  @apply flex;
 }
 .permission-ask-error {
   @apply m-0 text-xs text-error;
 }
-
-/* Several of a chat's asks waiting: one small line at the top with the
-   count (a click goes to the oldest), Decline all and a close. The asks are
-   cards in the conversation; this never holds them. */
-.pending-asks-strip {
-  @apply shrink-0 flex items-center gap-1 border-b border-warning/40 bg-warning/10 px-[18px] py-1;
+.ask-rise {
+  animation: ask-rise 240ms ease-out both;
 }
-.pending-asks-count {
-  @apply flex-1 min-w-0 truncate text-left text-sm font-semibold text-base-content py-1;
+@keyframes ask-rise {
+  from {
+    opacity: 0;
+    transform: translateY(16px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ask-rise {
+    animation: none;
+  }
 }
 
 /* The consent line: what an employee will be able to do, in plain words,

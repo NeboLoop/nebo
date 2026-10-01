@@ -33,10 +33,9 @@
   import { getAttachmentType, formatFileSize, attachmentMediaUrl } from '$lib/types/attachment';
   import { NEAR_BOTTOM_PX, distanceFromBottom } from '$lib/chat/scroll';
   import { threadKey } from '$lib/chat/sessionKey';
-  import { openAsks } from '$lib/stores/permissionAsks';
+  import { openAsks, settledAsks, chatAsksOf } from '$lib/stores/permissionAsks';
   import { publishRequest } from '$lib/stores/appPublish';
   import PermissionAskCard from '$lib/components/PermissionAskCard.svelte';
-  import PendingAsksStrip, { askCardId } from '$lib/components/chat/PendingAsksStrip.svelte';
   import type { HelperLine } from '$lib/chat/helpers';
   import { trailingLink } from '$lib/chat/errorLink';
   import { stepMeta } from '$lib/chat/stepMeta';
@@ -1108,7 +1107,8 @@
   let fullOutputs = $state<Record<string, string>>({});
   const outputChatId = $derived(threadId || sessionId);
   const chatSessionKey = $derived(sessionId || (threadId ? threadKey(agentId, threadId) : ''));
-  const chatAsks = $derived(chatSessionKey ? $openAsks.filter((a) => a.sessionKey === chatSessionKey) : []);
+  // Only the asks this conversation's own flow raised, inline at the bottom.
+  const chatAsks = $derived(chatAsksOf($openAsks, $settledAsks, threadId));
   async function toggleResult(key: string, tool?: ToolMsg) {
     const opening = !expandedResults[key];
     expandedResults[key] = opening;
@@ -1375,8 +1375,6 @@
     </div>
   {/if}
 
-  <!-- Several of this chat's asks waiting: how many, and Decline all. -->
-  <PendingAsksStrip asks={chatAsks} />
 
   <!-- Messages / Empty state -->
   {#if !hasMessages && historyLoading}
@@ -1915,7 +1913,7 @@
          same card as the Inbox; answered anywhere, it leaves everywhere.
          Never pinned over the chat or the composer. -->
     {#each chatAsks as ask (ask.id)}
-      <div id={askCardId(ask.id)} class="mt-2">
+      <div class="mt-2 ask-rise">
         <PermissionAskCard {ask} via="chat" />
       </div>
     {/each}

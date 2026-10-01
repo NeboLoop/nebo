@@ -1520,8 +1520,8 @@ export function listPermissionActivity(agentId?: string, door?: string, decision
 /**
  * @description "List permission asks"
  */
-export function listPermissionAsks(session?: string) {
-	return webapi.get<components.PermissionAsksResponse>(`/api/v1/permissions/asks`, { session })
+export function listPermissionAsks(session?: string, chat?: string) {
+	return webapi.get<components.PermissionAsksResponse>(`/api/v1/permissions/asks`, { session, chat })
 }
 
 /**

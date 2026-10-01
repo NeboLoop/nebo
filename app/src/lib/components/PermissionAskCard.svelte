@@ -3,8 +3,10 @@
   waits on the owner: who wants to do what, why it asked, and three answers.
   A `send_check` card asks instead whether a send whose outcome never came
   back went out: It went out · It didn't go out.
-  The same card sits in the open chat, the Inbox and the dashboard; the first
-  answer anywhere wins and `permission_ask_resolved` clears it everywhere.
+  The same card sits in the chat whose own flow raised it, the Inbox and the
+  dashboard; the first answer anywhere wins. Answered, it collapses to a
+  one-line receipt: Approved · always, Approved · once, Denied, or No longer
+  needed.
 -->
 <script lang="ts">
   import { t } from 'svelte-i18n';
@@ -43,7 +45,7 @@
       <button type="button" class="btn btn-ghost btn-sm rounded-full" disabled={busy} onclick={() => answer('not_sent')}>{$t('permissionAsk.notSent')}</button>
     </div>
   {:else if shown.status === 'answered'}
-    <p class="permission-ask-settled">{$t(shown.answer === 'sent' ? 'permissionAsk.sent' : 'permissionAsk.notSent')}</p>
+    <div class="permission-ask-settled"><span class="badge badge-primary badge-sm">{$t(shown.answer === 'sent' ? 'permissionAsk.sent' : 'permissionAsk.notSent')}</span></div>
   {:else if shown.status === 'open'}
     <div class="permission-ask-actions">
       {#if shown.allowAlways}
@@ -55,11 +57,11 @@
       <button type="button" class="btn btn-ghost btn-sm rounded-full" disabled={busy} onclick={() => answer('no')}>{$t('permissionAsk.no')}</button>
     </div>
   {:else if shown.status === 'allowed'}
-    <p class="permission-ask-settled">{$t(shown.answer === 'allow_always' ? 'permissionAsk.allowedAlways' : 'permissionAsk.allowedOnce')}</p>
+    <div class="permission-ask-settled"><span class="badge badge-primary badge-sm">{$t(shown.answer === 'allow_always' ? 'permissionAsk.allowedAlways' : 'permissionAsk.allowedOnce')}</span></div>
   {:else if shown.status === 'declined'}
-    <p class="permission-ask-settled">{$t('permissionAsk.declined')}</p>
+    <div class="permission-ask-settled"><span class="badge badge-ghost badge-sm">{$t('permissionAsk.declined')}</span></div>
   {:else}
-    <p class="permission-ask-settled">{$t('permissionAsk.withdrawn')}</p>
+    <div class="permission-ask-settled"><span class="badge badge-ghost badge-sm">{$t('permissionAsk.withdrawn')}</span></div>
   {/if}
   {#if failed}
     <p class="permission-ask-error">{$t('permissionAsk.failed')}</p>

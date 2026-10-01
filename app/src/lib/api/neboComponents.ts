@@ -987,6 +987,7 @@ export interface PermissionAskCard {
 	thisOnce: boolean
 	status: string
 	answer?: string
+	chatId: string
 	createdAt: number
 }
 

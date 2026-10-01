@@ -232,12 +232,12 @@ fn parked_shape(ask: &PendingAsk) -> ParkedShape {
 
 /// A permission ask as a waiting ask.
 fn from_permission(state: &AppState, ask: &Ask) -> Waiting {
-    permission_waiting(state, &crate::handlers::permissions::card(state, ask))
+    permission_waiting(&crate::handlers::permissions::card(state, ask))
 }
 
-fn permission_waiting(state: &AppState, c: &PermissionAskCard) -> Waiting {
+fn permission_waiting(c: &PermissionAskCard) -> Waiting {
     let offered = crate::permission_asks::offered(c);
-    let chat_id = tools::owner_notify::link::conversation(&state.store, &c.session_key);
+    let chat_id = c.chat_id.clone();
     Waiting {
         card: WaitingAsk {
             id: c.id.clone(),
@@ -626,7 +626,7 @@ pub(crate) async fn question_settled(state: &AppState, request_id: &str) {
 /// calls are told, and every pinned bar updated. (Its Inbox row and push
 /// are the permission surfaces' own.)
 pub(crate) fn permission_raised(state: &AppState, card: &PermissionAskCard) {
-    let w = permission_waiting(state, card);
+    let w = permission_waiting(card);
     crate::handlers::voice::tell_calls(&state.live_calls, &w.card);
     spawn_changed(state);
 }

@@ -194,6 +194,11 @@ pub struct Ask {
     pub status: AskStatus,
     /// The workflow run parked on this ask.
     pub run_id: Option<String>,
+    /// The owner's conversation whose own flow raised the ask, the one chat
+    /// its card shows in. None for everything else (a schedule, a workflow,
+    /// a heartbeat, another employee's run, a helper): those reach the
+    /// owner through the Inbox and a push, never a chat.
+    pub chat_id: Option<String>,
     pub created_at: i64,
 }
 
@@ -219,6 +224,7 @@ impl Ask {
             sentence: row.sentence,
             status,
             run_id: row.run_id,
+            chat_id: row.chat_id.filter(|c| !c.is_empty()),
             created_at: row.created_at,
         })
     }
@@ -367,6 +373,7 @@ impl Asks {
             },
             status: AskStatus::Open,
             run_id: None,
+            chat_id: originating_chat(&cx.ctx.door, &cx.ctx.session_key),
             created_at: now,
         };
         if let Err(e) = self.raise(&ask) {
@@ -381,7 +388,7 @@ impl Asks {
             id: ask.id.clone(),
             agent_id: ask.agent_id.clone(),
             session_key: ask.session_key.clone(),
-            chat_id: None,
+            chat_id: ask.chat_id.clone(),
             door: json(&ask.door),
             ask_case: json(&ask.case),
             sentence: ask.sentence.clone(),
@@ -440,6 +447,7 @@ impl Asks {
             },
             status: AskStatus::Open,
             run_id: None,
+            chat_id: None,
             created_at: now,
         };
         self.raise(&ask)?;
@@ -493,7 +501,16 @@ impl Asks {
             .into_iter()
             .filter_map(Ask::from_row)
             .filter(|a| match &a.run_id {
-                Some(run) if self.parked_run_is_gone(run) => {
+                // Seen ended, not merely unfound: a run still being written
+                // is left to the reminder's own check.
+                Some(run)
+                    if self
+                        .store
+                        .engine_get_run(run)
+                        .ok()
+                        .flatten()
+                        .is_some_and(|r| matches!(r.state.as_str(), "done" | "failed" | "cancelled")) =>
+                {
                     if let Err(e) = self.withdraw(a.clone(), now) {
                         tracing::warn!(ask = %a.id, error = %e, "ask whose run ended not withdrawn");
                     }
@@ -665,6 +682,7 @@ impl Asks {
             Some(_) => Door::Workflow,
             None => Door::Chat,
         };
+        let chat_id = originating_chat(&door, session_key);
         let ask = Ask {
             id: id.clone(),
             agent_id: agent_id.to_string(),
@@ -694,6 +712,7 @@ impl Asks {
             },
             status: AskStatus::Open,
             run_id: None,
+            chat_id,
             created_at: chrono::Utc::now().timestamp(),
         };
         self.raise(&ask)?;
@@ -800,6 +819,19 @@ impl Asks {
             }
         }))
     }
+}
+
+/// The owner's conversation an ask raised through `door` on `session_key`
+/// belongs to: the chat thread itself, when the owner's own conversation
+/// (typed or spoken) raised it. Read from the thread's own key, never
+/// guessed: a schedule, a workflow, a heartbeat, a coworker's request or a
+/// helper has none, and its ask goes to the Inbox.
+pub fn originating_chat(door: &Door, session_key: &str) -> Option<String> {
+    if !matches!(door, Door::Chat | Door::Voice) || types::keyparser::is_subagent_key(session_key) {
+        return None;
+    }
+    let chat = types::keyparser::chat_id_from_thread_key(session_key)?;
+    (!chat.is_empty() && !chat.contains(':')).then(|| chat.to_string())
 }
 
 /// The id of the one ask a held send's ledger row gets.
@@ -1351,6 +1383,7 @@ mod tests {
             },
             status: AskStatus::Open,
             run_id: None,
+            chat_id: None,
             created_at: 0,
         };
         let rule = allow_always_rules(&store, &ask).unwrap().remove(0);
@@ -1392,6 +1425,7 @@ mod tests {
             },
             status: AskStatus::Open,
             run_id: None,
+            chat_id: None,
             created_at: 0,
         }
     }
@@ -1468,6 +1502,32 @@ mod tests {
         let deny = command_rule(Effect::Deny, "rm");
         let ask = shell_ask(AskCase::AskRule { rule_id: deny.id.clone() }, "$CMD -rf x", vec![deny]);
         assert!(!ask.allow_always_offered(&store));
+    }
+
+    /// An ask belongs to the chat whose own flow raised it, read from the
+    /// thread's key, never guessed. Asks from a schedule, a heartbeat, a
+    /// workflow, a coworker's request or a helper have no chat: they live in
+    /// the Inbox (live 2026-10-01: a scheduled run's 18 asks filled a chat).
+    #[tokio::test]
+    async fn an_ask_names_only_the_chat_that_raised_it() {
+        let r = rig().await;
+        let chat_of = |id: &str| r.asks.get(id).unwrap().unwrap().chat_id;
+        let here = r.park("agent:emp:thread:c-1", Door::Chat, "+15550142").await;
+        assert_eq!(chat_of(&here).as_deref(), Some("c-1"));
+        let spoken = r.park("agent:emp:thread:c-2", Door::Voice, "+15550142").await;
+        assert_eq!(chat_of(&spoken).as_deref(), Some("c-2"));
+        for (key, door) in [
+            (KEY, Door::Heartbeat),
+            ("agent:emp:cron:morning", Door::Schedule),
+            ("workflow:wf-1", Door::Workflow),
+            ("agent:emp:thread:c-1", Door::Coworker { from: "gm".into() }),
+            ("subagent:agent:emp:thread:c-1:h-1", Door::Helper),
+            ("subagent:agent:emp:thread:c-1:h-2", Door::Chat),
+            ("agent:emp:web", Door::Chat),
+        ] {
+            let id = r.park(key, door.clone(), "+15550177").await;
+            assert_eq!(chat_of(&id), None, "{key} via {door:?}");
+        }
     }
 
     #[tokio::test]
