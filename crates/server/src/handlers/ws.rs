@@ -1613,6 +1613,13 @@ async fn dispatch_payload(state: &AppState, payload: ChatPayload, hidden: bool) 
 
     info!(session_key = %session_key, agent_id = %agent_id, channel = %channel, "[THREAD-DEBUG] dispatch_chat final session_key");
 
+    // Files the owner shares while on a call in this conversation: the call
+    // hears of them now, before the turn that reads them answers.
+    if !hidden && !attachments.is_empty() {
+        let names = attachments.iter().map(|a| a.filename.clone()).collect();
+        super::voice::shared_on_call(&state.live_calls, &session_key, names);
+    }
+
     // `/goal`: set, show or clear the agreed goal. Setting one starts work
     // on it now: its kickoff runs as a hidden prompt through the same path as
     // any message, so a running turn takes it at its next step.

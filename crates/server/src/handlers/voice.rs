@@ -1043,6 +1043,10 @@ pub enum CallNews {
     Reply(String),
     /// This waits on the owner's answer.
     Ask(super::asks::WaitingAsk),
+    /// The owner put these files (their names) into the conversation while
+    /// on the call: they are rows in the thread now, and a turn there is
+    /// reading them.
+    Shared(Vec<String>),
 }
 
 /// Hand `reply`, what a turn in conversation `session_key` said, to the
@@ -1059,6 +1063,34 @@ pub(crate) fn say_on_call(calls: &LiveCalls, session_key: &str, reply: &str) {
         // The reply is in the conversation either way; only the call misses it.
         warn!(session_key, error = %e, "voice: a reply for the call could not be handed to it");
     }
+}
+
+/// Tell the owner's call in conversation `session_key`, if one is live, that
+/// he just put `files` (their names) into it: from the composer while
+/// talking. The files are the thread's rows already and the turn they start
+/// reads them; the call hears of them at once, so it never says it has seen
+/// nothing (live 2026-10-01: a screenshot shared mid-call, then "No, I
+/// haven't seen the screenshot yet").
+pub(crate) fn shared_on_call(calls: &LiveCalls, session_key: &str, files: Vec<String>) {
+    if files.is_empty() {
+        return;
+    }
+    let call = calls.lock().unwrap_or_else(|e| e.into_inner()).get(session_key).cloned();
+    if let Some(call) = call
+        && let Err(e) = call.try_send(CallNews::Shared(files))
+    {
+        // The files are in the conversation either way; only the call misses the news.
+        warn!(session_key, error = %e, "voice: shared files could not be told to the call");
+    }
+}
+
+/// What the voice model is told when the owner shares files during the call.
+fn shared_on_call_line(files: &[String]) -> String {
+    format!(
+        "(The owner just shared {} in our conversation. It is in the thread now, and you are reading it; \
+         what it shows comes to you shortly. Tell the owner, in a few words, that you have it.)",
+        files.join(", ")
+    )
 }
 
 /// Put `ask`, something now waiting on the owner's answer, to every call he
@@ -1136,9 +1168,11 @@ fn heard_on_call(replies: &[String]) -> String {
 fn news_to_say(news: Vec<CallNews>, waiting: &std::collections::HashSet<String>, told: &mut std::collections::HashSet<String>) -> String {
     let mut replies = Vec::new();
     let mut asks = Vec::new();
+    let mut shared = Vec::new();
     for n in news {
         match n {
             CallNews::Reply(r) => replies.push(r),
+            CallNews::Shared(files) => shared.extend(files),
             CallNews::Ask(a) => {
                 if waiting.contains(&a.id) && told.insert(a.id.clone()) {
                     asks.push(super::asks::on_call(&a));
@@ -1147,6 +1181,9 @@ fn news_to_say(news: Vec<CallNews>, waiting: &std::collections::HashSet<String>,
         }
     }
     let mut parts = Vec::new();
+    if !shared.is_empty() {
+        parts.push(shared_on_call_line(&shared));
+    }
     if !replies.is_empty() {
         parts.push(heard_on_call(&replies));
     }
@@ -3288,6 +3325,23 @@ mod voice_prompt_tests {
                 break;
             }
         }
+    }
+
+    /// A file the owner shares from the composer while on the call is news
+    /// for that call alone, said at once: it never says it has seen nothing.
+    #[tokio::test]
+    async fn a_file_shared_during_the_call_is_told_to_it() {
+        let calls: LiveCalls = Default::default();
+        let (tx, mut on_it) = mpsc::channel(4);
+        let _on = OnCall::join(&calls, "agent:pm:thread:c1", tx);
+        shared_on_call(&calls, "agent:pm:thread:c1", vec!["screenshot.png".into()]);
+        shared_on_call(&calls, "agent:pm:thread:other", vec!["not-this-call.pdf".into()]);
+        shared_on_call(&calls, "agent:pm:thread:c1", Vec::new());
+        let news = on_it.recv().await.expect("the call is told");
+        assert!(on_it.try_recv().is_err(), "only its own conversation, and only real files");
+        let said = news_to_say(vec![news], &Default::default(), &mut Default::default());
+        assert!(said.contains("The owner just shared screenshot.png in our conversation."), "{said}");
+        assert!(said.contains("you have it"), "{said}");
     }
 
     /// Every live call hears what waits on the owner, from any conversation;
