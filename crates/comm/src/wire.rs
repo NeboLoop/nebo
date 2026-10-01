@@ -76,6 +76,12 @@ pub struct AuthResultPayload {
     /// The lease TTL the hub applies to each acquisition and renewal.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub lease_ttl_secs: u64,
+    /// AUTH_FAIL `wrong_cell`: the cell the account lives in.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub cell: String,
+    /// AUTH_FAIL `wrong_cell`: the address to dial in that cell.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub url: String,
 }
 
 fn is_zero(n: &u64) -> bool {

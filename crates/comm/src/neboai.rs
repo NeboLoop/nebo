@@ -98,6 +98,9 @@ pub struct NeboAIPlugin {
     drained: Arc<AtomicBool>,
     /// Durable acked offsets of the bot's own streams.
     offsets: Arc<dyn StreamOffsets>,
+    /// Set by the read loop when the hub closed the connection naming the
+    /// cell the account lives in; the next connect dials there first.
+    redirect_to: Arc<std::sync::Mutex<Option<crate::cell::Redirect>>>,
 }
 
 impl NeboAIPlugin {
@@ -118,6 +121,7 @@ impl NeboAIPlugin {
             disconnect_notify: Arc::new(Notify::new()),
             drained: Arc::new(AtomicBool::new(false)),
             offsets,
+            redirect_to: Arc::new(std::sync::Mutex::new(None)),
         }
     }
 
@@ -380,14 +384,6 @@ impl CommPlugin for NeboAIPlugin {
         let lease = crate::lease::process();
         lease.claim();
 
-        // WebSocket connect
-        let (ws_stream, _) = tokio::time::timeout(crate::reconnect::DIAL_TIMEOUT, tls::connect_ws(&gateway))
-            .await
-            .map_err(|_| CommError::Other("ws dial: timed out".into()))?
-            .map_err(|e| CommError::Other(format!("ws dial: {}", e)))?;
-
-        let (mut write, mut read) = ws_stream.split();
-
         // Send CONNECT frame — carries the bot's configured identity so the
         // loop agent reflects the local Identity settings. Identity fields are
         // plumbed in via the same config map as bot_id/token (see
@@ -434,28 +430,33 @@ impl CommPlugin for NeboAIPlugin {
         )
         .map_err(|e| CommError::Other(e.to_string()))?;
 
-        // The lease a grant confers is measured from this send.
-        let connect_sent = std::time::Instant::now();
-        write
-            .send(WsMessage::Binary(connect_frame.into()))
-            .await
-            .map_err(|e| CommError::Other(format!("send connect: {}", e)))?;
-
-        // Read AUTH response (with 10s timeout)
-        let auth_msg = tokio::time::timeout(std::time::Duration::from_secs(10), read.next())
-            .await
-            .map_err(|_| CommError::Other("auth timeout".into()))?
-            .ok_or_else(|| CommError::Other("connection closed during auth".into()))?
-            .map_err(|e| CommError::Other(format!("read auth: {}", e)))?;
-
-        let auth_data = match auth_msg {
-            WsMessage::Binary(data) => data.to_vec(),
-            other => {
-                return Err(CommError::Other(format!(
-                    "unexpected ws message: {:?}",
-                    other
-                )));
+        // Dial and authenticate. A cell the account does not live in names
+        // the one it does: dial there within half a second, quietly, at most
+        // twice in a row (crate::cell). A close naming another cell on the
+        // last connection sends the first dial there.
+        let mut redirects = crate::cell::Redirects::new();
+        let moved = self.redirect_to.lock().unwrap_or_else(|e| e.into_inner()).take();
+        let mut dial_url = moved
+            .and_then(|r| redirects.follow(&gateway, &r))
+            .unwrap_or_else(|| gateway.clone());
+        let (write, read, connect_sent, auth_data) = loop {
+            let redirect = match dial_and_auth(&dial_url, &connect_frame).await? {
+                Auth::Answered { write, read, connect_sent, data } => {
+                    break (write, read, connect_sent, data);
+                }
+                Auth::Redirected(redirect) => redirect,
+            };
+            if let Some(ref dl) = *self.devlog.read().await {
+                dl.event(&format!("REDIRECT cell={} url={}", redirect.cell, redirect.url));
             }
+            let Some(next) = redirects.follow(&gateway, &redirect) else {
+                return Err(CommError::Other(format!(
+                    "not following the hub to cell {}",
+                    redirect.cell
+                )));
+            };
+            tokio::time::sleep(crate::cell::jitter()).await;
+            dial_url = next;
         };
 
         let (auth_header, auth_payload) = frame::decode(&auth_data)
@@ -566,6 +567,7 @@ impl CommPlugin for NeboAIPlugin {
         // A drain seen on an earlier connection says nothing about this one.
         self.drained.store(false, Ordering::SeqCst);
         let drained_for_read = self.drained.clone();
+        let redirect_for_read = self.redirect_to.clone();
         let maps_for_read = self.conv_maps.clone();
         let stream_acks = StreamAcks {
             bot_id: bot_id.clone(),
@@ -584,6 +586,7 @@ impl CommPlugin for NeboAIPlugin {
                 connected_for_read,
                 notify_for_read,
                 drained_for_read,
+                redirect_for_read,
                 send_tx,
                 stream_acks,
             )
@@ -1101,6 +1104,8 @@ impl CommPlugin for NeboAIPlugin {
         self.disconnect_notify.notified().await;
         if self.drained.swap(false, Ordering::SeqCst) {
             crate::reconnect::Disconnect::Drain
+        } else if self.redirect_to.lock().unwrap_or_else(|e| e.into_inner()).is_some() {
+            crate::reconnect::Disconnect::Redirect
         } else {
             crate::reconnect::Disconnect::Dropped
         }
@@ -1263,6 +1268,80 @@ impl StreamAcks {
 }
 
 /// Read loop — receives WebSocket messages, decodes frames, dispatches.
+/// The hub's answer to one dial and CONNECT.
+enum Auth {
+    /// AUTH_OK or a refusal other than a redirect: `data` is the frame.
+    Answered {
+        write: SplitSink<WsStream, WsMessage>,
+        read: SplitStream<WsStream>,
+        /// When CONNECT was sent: the lease a grant confers runs from here.
+        connect_sent: std::time::Instant,
+        data: Vec<u8>,
+    },
+    /// The account lives in another cell (`crate::cell`).
+    Redirected(crate::cell::Redirect),
+}
+
+/// Dial `url`, send `connect_frame` and read the hub's answer: an HTTP 421,
+/// an AUTH_FAIL `wrong_cell` carrying an address, or a close with
+/// [`crate::cell::REDIRECT_CLOSE_CODE`] is a redirect.
+async fn dial_and_auth(url: &str, connect_frame: &[u8]) -> Result<Auth, CommError> {
+    let ws_stream = match tokio::time::timeout(crate::reconnect::DIAL_TIMEOUT, tls::connect_ws(url))
+        .await
+        .map_err(|_| CommError::Other("ws dial: timed out".into()))?
+    {
+        Ok((ws, _)) => ws,
+        Err(e) => {
+            return match crate::cell::Redirect::from_dial_error(&e) {
+                Some(redirect) => Ok(Auth::Redirected(redirect)),
+                None => Err(CommError::Other(format!("ws dial: {}", e))),
+            };
+        }
+    };
+    let (mut write, mut read) = ws_stream.split();
+
+    let connect_sent = std::time::Instant::now();
+    write
+        .send(WsMessage::Binary(connect_frame.to_vec().into()))
+        .await
+        .map_err(|e| CommError::Other(format!("send connect: {}", e)))?;
+
+    // Read AUTH response (with 10s timeout)
+    let auth_msg = tokio::time::timeout(std::time::Duration::from_secs(10), read.next())
+        .await
+        .map_err(|_| CommError::Other("auth timeout".into()))?
+        .ok_or_else(|| CommError::Other("connection closed during auth".into()))?
+        .map_err(|e| CommError::Other(format!("read auth: {}", e)))?;
+
+    let data = match auth_msg {
+        WsMessage::Binary(data) => data.to_vec(),
+        WsMessage::Close(Some(ref f)) => {
+            if let Some(redirect) = crate::cell::Redirect::from_close(u16::from(f.code), f.reason.as_str()) {
+                return Ok(Auth::Redirected(redirect));
+            }
+            return Err(CommError::Other(format!("unexpected ws message: {:?}", auth_msg)));
+        }
+        other => {
+            return Err(CommError::Other(format!(
+                "unexpected ws message: {:?}",
+                other
+            )));
+        }
+    };
+    if let Ok((header, payload)) = frame::decode(&data) {
+        if header.frame_type == frame::TYPE_AUTH_FAIL {
+            let result: wire::AuthResultPayload = serde_json::from_slice(payload).unwrap_or_default();
+            if result.reason == crate::cell::WRONG_CELL_REASON && !result.url.is_empty() {
+                return Ok(Auth::Redirected(crate::cell::Redirect {
+                    cell: result.cell,
+                    url: result.url,
+                }));
+            }
+        }
+    }
+    Ok(Auth::Answered { write, read, connect_sent, data })
+}
+
 async fn read_loop(
     mut read: SplitStream<WsStream>,
     handler: Option<MessageHandler>,
@@ -1274,6 +1353,7 @@ async fn read_loop(
     connected: Arc<AtomicBool>,
     disconnect_notify: Arc<Notify>,
     drained: Arc<AtomicBool>,
+    redirect_to: Arc<std::sync::Mutex<Option<crate::cell::Redirect>>>,
     send_tx: mpsc::Sender<Vec<u8>>,
     mut stream_acks: StreamAcks,
 ) {
@@ -1339,6 +1419,14 @@ async fn read_loop(
                         {
                             info!("neboai: hub is draining this connection; redialing");
                             drained.store(true, Ordering::SeqCst);
+                        } else if let Some(redirect) = reason
+                            .as_ref()
+                            .and_then(|f| crate::cell::Redirect::from_close(u16::from(f.code), f.reason.as_str()))
+                        {
+                            // The account lives in another cell: the next
+                            // connect dials there (crate::cell), quietly.
+                            info!(cell = %redirect.cell, "neboai: hub names another cell; redialing there");
+                            *redirect_to.lock().unwrap_or_else(|e| e.into_inner()) = Some(redirect);
                         } else {
                             info!(code = ?code, "neboai: hub closed the connection");
                         }
@@ -2133,5 +2221,191 @@ mod tests {
             connect_refused_with("stale token").await,
             CommError::Other(reason) if reason == "auth failed: stale token"
         ));
+    }
+
+    /// How a fake cell answers each dial.
+    #[derive(Clone)]
+    enum FakeCell {
+        /// AUTH_OK, then hold the connection until the client goes.
+        Home,
+        /// AUTH_OK, then close with 4421 naming `url` (the account moved).
+        MovesAway(String),
+        /// AUTH_FAIL `wrong_cell` naming `url`.
+        WrongCell(String),
+        /// A 4421 close naming `url` in place of the AUTH answer.
+        ClosesTo(String),
+        /// An HTTP 421 refusal of the upgrade naming `url`.
+        Refuses(String),
+    }
+
+    async fn bind_cell() -> (tokio::net::TcpListener, String) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("ws://{}/ws", listener.local_addr().unwrap());
+        (listener, url)
+    }
+
+    /// Serve every dial to `listener` as `cell`; the count is how many dials
+    /// it took.
+    fn serve_cell(
+        listener: tokio::net::TcpListener,
+        cell: FakeCell,
+    ) -> Arc<std::sync::atomic::AtomicUsize> {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio_tungstenite::tungstenite::protocol::CloseFrame;
+        use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
+        let dials = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = dials.clone();
+        tokio::spawn(async move {
+            loop {
+                let (mut tcp, _) = listener.accept().await.unwrap();
+                counted.fetch_add(1, Ordering::SeqCst);
+                let cell = cell.clone();
+                tokio::spawn(async move {
+                    let redirect = |url: &str| serde_json::json!({"cell": "2", "url": url}).to_string();
+                    if let FakeCell::Refuses(url) = &cell {
+                        let mut head = [0u8; 4096];
+                        let _ = tcp.read(&mut head).await;
+                        let body = serde_json::json!({"error": "wrong_cell", "cell": "2", "url": url}).to_string();
+                        let reply = format!(
+                            "HTTP/1.1 421 Misdirected Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                            body.len()
+                        );
+                        let _ = tcp.write_all(reply.as_bytes()).await;
+                        return;
+                    }
+                    let mut ws = tokio_tungstenite::accept_async(tcp).await.unwrap();
+                    let _ = ws.next().await; // CONNECT
+                    let close_to = |url: &str| {
+                        WsMessage::Close(Some(CloseFrame {
+                            code: CloseCode::from(crate::cell::REDIRECT_CLOSE_CODE),
+                            reason: redirect(url).into(),
+                        }))
+                    };
+                    match cell {
+                        FakeCell::Home | FakeCell::MovesAway(_) => {
+                            let ok = server_frame(frame::TYPE_AUTH_OK, [0; 16], 0, serde_json::json!({"ok": true}));
+                            ws.send(ok).await.unwrap();
+                            if let FakeCell::MovesAway(url) = &cell {
+                                let _ = ws.send(close_to(url)).await;
+                            }
+                        }
+                        FakeCell::WrongCell(url) => {
+                            let fail = serde_json::json!({"ok": false, "reason": "wrong_cell", "cell": "2", "url": url});
+                            let _ = ws.send(server_frame(frame::TYPE_AUTH_FAIL, [0; 16], 0, fail)).await;
+                        }
+                        FakeCell::ClosesTo(url) => {
+                            let _ = ws.send(close_to(&url)).await;
+                        }
+                        FakeCell::Refuses(_) => unreachable!(),
+                    }
+                    while let Some(Ok(_)) = ws.next().await {}
+                });
+            }
+        });
+        dials
+    }
+
+    fn cell_config(gateway: &str) -> HashMap<String, String> {
+        HashMap::from([
+            ("gateway".to_string(), gateway.to_string()),
+            ("bot_id".to_string(), "bot-under-test".to_string()),
+            ("token".to_string(), "test-token".to_string()),
+            ("api_server".to_string(), "http://127.0.0.1:9".to_string()),
+        ])
+    }
+
+    /// A cell the account does not live in names the one it does, by any of
+    /// its three signals; the bot connects there, quietly: nothing reaches
+    /// the owner's handlers and no disconnect is reported.
+    #[tokio::test]
+    async fn a_cell_redirect_is_followed_quietly() {
+        for wrong in [FakeCell::WrongCell as fn(String) -> FakeCell, FakeCell::ClosesTo, FakeCell::Refuses] {
+            let (home_listener, home_url) = bind_cell().await;
+            let (wrong_listener, wrong_url) = bind_cell().await;
+            let home = serve_cell(home_listener, FakeCell::Home);
+            let wrong = serve_cell(wrong_listener, wrong(home_url));
+
+            let plugin = NeboAIPlugin::new(Arc::new(MemOffsets::default()));
+            let seen = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let counted = seen.clone();
+            plugin.set_message_handler(Arc::new(move |_| {
+                counted.fetch_add(1, Ordering::SeqCst);
+            }));
+            plugin.connect(cell_config(&wrong_url)).await.expect("connected in the home cell");
+            assert!(plugin.is_connected());
+            assert_eq!(wrong.load(Ordering::SeqCst), 1);
+            assert_eq!(home.load(Ordering::SeqCst), 1);
+            assert!(
+                tokio::time::timeout(std::time::Duration::from_millis(300), plugin.wait_disconnect())
+                    .await
+                    .is_err(),
+                "a followed redirect is not a disconnect"
+            );
+            assert_eq!(seen.load(Ordering::SeqCst), 0, "nothing reaches the owner");
+            plugin.disconnect().await.ok();
+        }
+    }
+
+    /// A close naming another cell mid-session is a quiet redirect, and the
+    /// next connect dials that cell first.
+    #[tokio::test]
+    async fn an_account_moved_mid_session_redials_its_new_cell() {
+        let (home_listener, home_url) = bind_cell().await;
+        let (old_listener, old_url) = bind_cell().await;
+        let home = serve_cell(home_listener, FakeCell::Home);
+        let old = serve_cell(old_listener, FakeCell::MovesAway(home_url));
+
+        let plugin = NeboAIPlugin::new(Arc::new(MemOffsets::default()));
+        plugin.connect(cell_config(&old_url)).await.unwrap();
+        let how = tokio::time::timeout(std::time::Duration::from_secs(10), plugin.wait_disconnect())
+            .await
+            .expect("the close is reported");
+        assert_eq!(how, crate::reconnect::Disconnect::Redirect);
+        plugin.connect(cell_config(&old_url)).await.unwrap();
+        assert_eq!(old.load(Ordering::SeqCst), 1, "the old cell is not dialed again");
+        assert_eq!(home.load(Ordering::SeqCst), 1);
+        plugin.disconnect().await.ok();
+    }
+
+    /// Cells that keep pointing at each other are followed twice, then the
+    /// connect fails like any refusal and the caller backs off.
+    #[tokio::test]
+    async fn a_redirect_loop_is_capped() {
+        let (a_listener, a_url) = bind_cell().await;
+        let (b_listener, b_url) = bind_cell().await;
+        let (c_listener, c_url) = bind_cell().await;
+        let a = serve_cell(a_listener, FakeCell::WrongCell(b_url));
+        let b = serve_cell(b_listener, FakeCell::WrongCell(c_url));
+        let c = serve_cell(c_listener, FakeCell::WrongCell(a_url.clone()));
+
+        let plugin = NeboAIPlugin::new(Arc::new(MemOffsets::default()));
+        let err = plugin.connect(cell_config(&a_url)).await.unwrap_err();
+        assert!(matches!(err, CommError::Other(ref m) if m.contains("not following")), "{err:?}");
+        let dials = [&a, &b, &c].map(|n| n.load(Ordering::SeqCst));
+        assert_eq!(dials, [1, 1, 1], "two redirects followed, the third refused");
+        assert!(!plugin.is_connected());
+    }
+
+    /// A redirect to a host outside NeboAI is never dialed.
+    #[tokio::test]
+    async fn a_redirect_to_a_foreign_host_is_refused() {
+        for foreign in ["wss://evil.example/ws", "wss://neboai.com.evil.example/ws", "ws://10.0.0.1/ws"] {
+            let (listener, url) = bind_cell().await;
+            let dials = serve_cell(listener, FakeCell::WrongCell(foreign.to_string()));
+            let plugin = NeboAIPlugin::new(Arc::new(MemOffsets::default()));
+            let err = plugin.connect(cell_config(&url)).await.unwrap_err();
+            assert!(matches!(err, CommError::Other(ref m) if m.contains("not following")), "{foreign}: {err:?}");
+            assert_eq!(dials.load(Ordering::SeqCst), 1);
+        }
+    }
+
+    /// A `wrong_cell` refusal that names no address is an ordinary refusal.
+    #[tokio::test]
+    async fn a_wrong_cell_without_an_address_is_an_ordinary_refusal() {
+        let (listener, url) = bind_cell().await;
+        serve_cell(listener, FakeCell::WrongCell(String::new()));
+        let plugin = NeboAIPlugin::new(Arc::new(MemOffsets::default()));
+        let err = plugin.connect(cell_config(&url)).await.unwrap_err();
+        assert!(matches!(err, CommError::Other(ref m) if m == "auth failed: wrong_cell"), "{err:?}");
     }
 }

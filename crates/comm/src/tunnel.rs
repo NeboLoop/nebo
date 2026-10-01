@@ -60,6 +60,12 @@ pub const REVOKED_CLOSE_REASON: &str = "revoked";
 /// [`crate::reconnect::DIAL_TIMEOUT`]. The caller owns reconnect and backoff
 /// ([`crate::reconnect::Backoff`]). [`TunnelError::Revoked`] is final: the
 /// bot was removed from NeboAI.
+///
+/// A cell that does not hold the account (a 421 on the dial, or a
+/// [`crate::cell::REDIRECT_CLOSE_CODE`] close) names the one that does, and
+/// `run` dials it within half a second, at most
+/// [`crate::cell::MAX_REDIRECTS`] times in a row; past that, or for an
+/// address outside NeboAI, it fails like a refused dial.
 pub async fn run(
     hub_url: &str,
     token: &str,
@@ -76,6 +82,46 @@ pub async fn run(
     }
     let _offline = Offline(online);
     verify_hub_url(hub_url)?;
+    // A cell the account does not live in names the one it does; follow it
+    // quietly, a bounded number of times (crate::cell).
+    let mut redirects = crate::cell::Redirects::new();
+    let mut url = hub_url.to_string();
+    loop {
+        let started = std::time::Instant::now();
+        let redirect = match session(&url, token, local_addr, online).await? {
+            Ended::Closed(how) => return Ok(how),
+            Ended::Redirected(redirect) => redirect,
+        };
+        online.store(false, std::sync::atomic::Ordering::Relaxed);
+        if started.elapsed() >= crate::reconnect::HEALTHY {
+            redirects.session_up();
+        }
+        let Some(next) = redirects.follow(hub_url, &redirect) else {
+            return Err(TunnelError::Dial(format!(
+                "not following the hub to cell {}",
+                redirect.cell
+            )));
+        };
+        tokio::time::sleep(crate::cell::jitter()).await;
+        url = next;
+    }
+}
+
+/// How one tunnel session ended.
+enum Ended {
+    /// The hub closed it ([`run`]'s result).
+    Closed(Disconnect),
+    /// The account lives in another cell: dial there.
+    Redirected(crate::cell::Redirect),
+}
+
+/// Dial `hub_url` once and serve the session until it ends.
+async fn session(
+    hub_url: &str,
+    token: &str,
+    local_addr: &str,
+    online: &std::sync::atomic::AtomicBool,
+) -> Result<Ended, TunnelError> {
     let mut request = hub_url
         .into_client_request()
         .map_err(|e| TunnelError::Dial(format!("bad hub url: {e}")))?;
@@ -85,10 +131,16 @@ pub async fn run(
     request.headers_mut().insert("Authorization", auth);
     claim_lease(request.headers_mut(), crate::lease::process());
 
-    let (ws, _) = tokio::time::timeout(crate::reconnect::DIAL_TIMEOUT, tls::connect_ws(request))
+    let ws = match tokio::time::timeout(crate::reconnect::DIAL_TIMEOUT, tls::connect_ws(request))
         .await
         .map_err(|_| TunnelError::Dial("timed out".into()))?
-        .map_err(dial_error)?;
+    {
+        Ok((ws, _)) => ws,
+        Err(e) => match crate::cell::Redirect::from_dial_error(&e) {
+            Some(redirect) => return Ok(Ended::Redirected(redirect)),
+            None => return Err(dial_error(e)),
+        },
+    };
     info!(hub = %hub_url, "tunnel: connected to hub");
     online.store(true, std::sync::atomic::Ordering::Relaxed);
 
@@ -98,33 +150,35 @@ pub async fn run(
         yamux::Config::default(),
         yamux::Mode::Server,
     );
-    let was_revoked = || closed.get().is_some_and(|(code, reason)| is_revoked(code, &reason));
-    let was_drained = || {
-        closed
-            .get()
-            .is_some_and(|(code, _)| Disconnect::from_close_code(code) == Disconnect::Drain)
-    };
     loop {
-        match futures::future::poll_fn(|cx| conn.poll_next_inbound(cx)).await {
-            Some(Ok(stream)) => {
-                let addr = local_addr.to_string();
-                tokio::spawn(async move {
-                    if let Err(e) = proxy_stream(stream, &addr).await {
-                        debug!(error = %e, "tunnel: stream closed with error");
-                    }
-                });
-            }
-            Some(Err(_)) | None if was_revoked() => return Err(TunnelError::Revoked),
-            Some(Err(_)) | None if was_drained() => {
-                info!("tunnel: hub is draining this connection");
-                return Ok(Disconnect::Drain);
-            }
-            Some(Err(e)) => return Err(TunnelError::Mux(e.to_string())),
-            None => {
-                info!("tunnel: hub closed the connection");
-                return Ok(Disconnect::Dropped);
-            }
+        let ended = futures::future::poll_fn(|cx| conn.poll_next_inbound(cx)).await;
+        if let Some(Ok(stream)) = ended {
+            let addr = local_addr.to_string();
+            tokio::spawn(async move {
+                if let Err(e) = proxy_stream(stream, &addr).await {
+                    debug!(error = %e, "tunnel: stream closed with error");
+                }
+            });
+            continue;
         }
+        let close = closed.get();
+        if close.as_ref().is_some_and(|(code, reason)| is_revoked(*code, reason)) {
+            return Err(TunnelError::Revoked);
+        }
+        if close.as_ref().is_some_and(|(code, _)| Disconnect::from_close_code(*code) == Disconnect::Drain) {
+            info!("tunnel: hub is draining this connection");
+            return Ok(Ended::Closed(Disconnect::Drain));
+        }
+        if let Some(redirect) = close.and_then(|(code, reason)| crate::cell::Redirect::from_close(code, &reason)) {
+            return Ok(Ended::Redirected(redirect));
+        }
+        return match ended {
+            Some(Err(e)) => Err(TunnelError::Mux(e.to_string())),
+            _ => {
+                info!("tunnel: hub closed the connection");
+                Ok(Ended::Closed(Disconnect::Dropped))
+            }
+        };
     }
 }
 
@@ -512,6 +566,137 @@ mod tests {
             refused_with("503 Service Unavailable", r#"{"error":"bot has been revoked"}"#).await,
             Err(TunnelError::Dial(_))
         ));
+    }
+
+    /// How a fake cell answers each tunnel dial.
+    #[derive(Clone)]
+    enum FakeCell {
+        /// Accept, then close with `code` and `reason`.
+        Closes(CloseCode, String),
+        /// Refuse the upgrade with a 421 naming `url`.
+        Refuses(String),
+    }
+
+    async fn bind_cell() -> (tokio::net::TcpListener, String) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("ws://{}/tunnel/connect", listener.local_addr().unwrap());
+        (listener, url)
+    }
+
+    fn moved_to(url: &str) -> String {
+        serde_json::json!({"cell": "2", "url": url}).to_string()
+    }
+
+    /// Serve every dial as `cell`, counting the dials that carried the
+    /// bot's token.
+    fn serve_cell(listener: tokio::net::TcpListener, cell: FakeCell) -> std::sync::Arc<std::sync::atomic::AtomicUsize> {
+        use futures::SinkExt;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio_tungstenite::tungstenite::protocol::CloseFrame;
+        let dials = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = dials.clone();
+        tokio::spawn(async move {
+            loop {
+                let (mut sock, _) = listener.accept().await.unwrap();
+                let counted = counted.clone();
+                let cell = cell.clone();
+                tokio::spawn(async move {
+                    match cell {
+                        FakeCell::Refuses(url) => {
+                            let mut head = [0u8; 4096];
+                            let n = sock.read(&mut head).await.unwrap_or(0);
+                            if String::from_utf8_lossy(&head[..n]).contains("Bearer t\r\n") {
+                                counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                            }
+                            let body = serde_json::json!({"error": "wrong_cell", "cell": "2", "url": url}).to_string();
+                            let reply = format!(
+                                "HTTP/1.1 421 Misdirected Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                                body.len()
+                            );
+                            let _ = sock.write_all(reply.as_bytes()).await;
+                        }
+                        FakeCell::Closes(code, reason) => {
+                            let check = |req: &tokio_tungstenite::tungstenite::handshake::server::Request,
+                                         resp| {
+                                if req.headers().get("Authorization").is_some_and(|v| v == "Bearer t") {
+                                    counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                                }
+                                Ok(resp)
+                            };
+                            let mut ws = tokio_tungstenite::accept_hdr_async(sock, check).await.unwrap();
+                            let _ = ws.send(WsMessage::Close(Some(CloseFrame { code, reason: reason.into() }))).await;
+                            let _ = ws.close(None).await;
+                        }
+                    }
+                });
+            }
+        });
+        dials
+    }
+
+    async fn run_from(url: &str) -> Result<Disconnect, TunnelError> {
+        let online = std::sync::atomic::AtomicBool::new(false);
+        tokio::time::timeout(Duration::from_secs(10), run(url, "t", "127.0.0.1:9", &online))
+            .await
+            .expect("run ends")
+    }
+
+    /// A cell the account does not live in names the one it does, before or
+    /// after the upgrade; the tunnel dials there with the same token, and the
+    /// session it gets there decides the outcome.
+    #[tokio::test]
+    async fn a_cell_redirect_is_followed() {
+        let redirect = CloseCode::from(crate::cell::REDIRECT_CLOSE_CODE);
+        for refuse_on_dial in [true, false] {
+            let (home_listener, home_url) = bind_cell().await;
+            let (wrong_listener, wrong_url) = bind_cell().await;
+            let home = serve_cell(home_listener, FakeCell::Closes(CloseCode::Restart, "drain".into()));
+            let wrong = serve_cell(
+                wrong_listener,
+                if refuse_on_dial {
+                    FakeCell::Refuses(home_url.clone())
+                } else {
+                    FakeCell::Closes(redirect, moved_to(&home_url))
+                },
+            );
+            assert!(matches!(run_from(&wrong_url).await, Ok(Disconnect::Drain)));
+            assert_eq!(wrong.load(std::sync::atomic::Ordering::SeqCst), 1);
+            assert_eq!(home.load(std::sync::atomic::Ordering::SeqCst), 1, "the home cell got the token");
+        }
+    }
+
+    /// Cells that keep pointing at each other are followed twice; the third
+    /// redirect fails the run like a refused dial, and the watcher backs off.
+    #[tokio::test]
+    async fn a_redirect_loop_is_capped() {
+        let redirect = CloseCode::from(crate::cell::REDIRECT_CLOSE_CODE);
+        let (a_listener, a_url) = bind_cell().await;
+        let (b_listener, b_url) = bind_cell().await;
+        let (c_listener, c_url) = bind_cell().await;
+        let a = serve_cell(a_listener, FakeCell::Refuses(b_url));
+        let b = serve_cell(b_listener, FakeCell::Closes(redirect, moved_to(&c_url)));
+        let c = serve_cell(c_listener, FakeCell::Refuses(a_url.clone()));
+        let ended = run_from(&a_url).await;
+        assert!(matches!(ended, Err(TunnelError::Dial(ref m)) if m.starts_with("not following")), "{ended:?}");
+        let dials = [&a, &b, &c].map(|n| n.load(std::sync::atomic::Ordering::SeqCst));
+        assert_eq!(dials, [1, 1, 1]);
+    }
+
+    /// A redirect outside NeboAI is refused: the token never leaves for it.
+    #[tokio::test]
+    async fn a_redirect_to_a_foreign_host_is_refused() {
+        let redirect = CloseCode::from(crate::cell::REDIRECT_CLOSE_CODE);
+        for cell in [
+            FakeCell::Refuses("wss://evil.example/tunnel/connect".into()),
+            FakeCell::Closes(redirect, moved_to("wss://neboai.com.evil.example/tunnel/connect")),
+            FakeCell::Closes(redirect, moved_to("ws://10.0.0.1/tunnel/connect")),
+        ] {
+            let (listener, url) = bind_cell().await;
+            let dials = serve_cell(listener, cell);
+            let ended = run_from(&url).await;
+            assert!(matches!(ended, Err(TunnelError::Dial(ref m)) if m.starts_with("not following")), "{ended:?}");
+            assert_eq!(dials.load(std::sync::atomic::Ordering::SeqCst), 1);
+        }
     }
 
     /// A hub that takes the TCP connection but never answers the upgrade

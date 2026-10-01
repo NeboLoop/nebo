@@ -1,5 +1,6 @@
 pub mod api;
 pub mod api_types;
+pub mod cell;
 pub mod compress;
 pub mod dedup;
 pub mod devlog;
