@@ -2088,10 +2088,16 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
                     napp::AgentSource::Installed => Some("installed"),
                     napp::AgentSource::User => Some("user"),
                 };
+                // A manifest named like another employee is added under the
+                // first free "<name> 2": names are unique, and the employee
+                // still appears.
+                let name = store
+                    .free_agent_name(&loaded.agent_def.name, None)
+                    .unwrap_or_else(|_| loaded.agent_def.name.clone());
                 match store.create_agent(
                     &agent_id,
                     kind,
-                    &loaded.agent_def.name,
+                    &name,
                     &loaded.description,
                     &loaded.agent_md,
                     &loaded.frontmatter,
@@ -3508,10 +3514,16 @@ async fn handle_agent_fs_events(
                         napp::AgentSource::Installed => Some("installed"),
                         napp::AgentSource::User => Some("user"),
                     };
+                    // A manifest named like another employee is added under the
+                    // first free "<name> 2": names are unique, and the employee
+                    // still appears.
+                    let name = state.store
+                        .free_agent_name(&loaded.agent_def.name, None)
+                        .unwrap_or_else(|_| loaded.agent_def.name.clone());
                     match state.store.create_agent(
                         &agent_id,
                         kind,
-                        &loaded.agent_def.name,
+                        &name,
                         &loaded.description,
                         &loaded.agent_md,
                         &loaded.frontmatter,
