@@ -234,12 +234,12 @@ async fn serve_app_ui_inner(state: &AppState, agent_id: &str, path: &str) -> Res
                 HeaderValue::from_str(mime)
                     .unwrap_or(HeaderValue::from_static("application/octet-stream")),
             );
-            if !is_entry {
-                response.headers_mut().insert(
-                    header::CACHE_CONTROL,
-                    HeaderValue::from_static("public, max-age=3600"),
-                );
-            }
+            // An app's files change while it is open (an employee is building
+            // it), so every load asks again: an hour's cache kept the phone on
+            // the old main.js and the employee renaming files to get past it.
+            response
+                .headers_mut()
+                .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
             response
         }
         Err(e) => {
