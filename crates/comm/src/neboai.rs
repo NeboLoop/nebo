@@ -477,7 +477,7 @@ impl CommPlugin for NeboAIPlugin {
                 warn!(bot_id = %bot_id, "neboai: this bot was removed from NeboAI");
                 return Err(CommError::Revoked);
             }
-            return Err(CommError::Other(format!("auth failed: {}", result.reason)));
+            return Err(CommError::AuthFailed(result.reason));
         }
 
         if auth_header.frame_type != frame::TYPE_AUTH_OK {
@@ -1318,6 +1318,9 @@ async fn dial_and_auth(url: &str, connect_frame: &[u8]) -> Result<Auth, CommErro
         WsMessage::Close(Some(ref f)) => {
             if let Some(redirect) = crate::cell::Redirect::from_close(u16::from(f.code), f.reason.as_str()) {
                 return Ok(Auth::Redirected(redirect));
+            }
+            if u16::from(f.code) == crate::reconnect::TRY_AGAIN_LATER_CLOSE_CODE {
+                return Err(CommError::TryAgainLater);
             }
             return Err(CommError::Other(format!("unexpected ws message: {:?}", auth_msg)));
         }
@@ -2228,7 +2231,7 @@ mod tests {
         ));
         assert!(matches!(
             connect_refused_with("stale token").await,
-            CommError::Other(reason) if reason == "auth failed: stale token"
+            CommError::AuthFailed(reason) if reason == "stale token"
         ));
     }
 
@@ -2415,6 +2418,132 @@ mod tests {
         serve_cell(listener, FakeCell::WrongCell(String::new()));
         let plugin = NeboAIPlugin::new(Arc::new(MemOffsets::default()));
         let err = plugin.connect(cell_config(&url)).await.unwrap_err();
-        assert!(matches!(err, CommError::Other(ref m) if m == "auth failed: wrong_cell"), "{err:?}");
+        assert!(matches!(err, CommError::AuthFailed(ref m) if m == "wrong_cell"), "{err:?}");
+    }
+
+    /// How a fake gateway answers one dial.
+    #[derive(Clone, Copy)]
+    enum Busy {
+        /// AUTH_FAIL with this reason.
+        Refuses(&'static str),
+        /// Close 1013 Try Again Later before answering.
+        TryAgainLater,
+        /// AUTH_OK.
+        Grants,
+    }
+
+    /// A hub that answers its dials in the order of `script`, recording the
+    /// token each CONNECT carried and when it arrived.
+    async fn busy_gateway(
+        script: Vec<Busy>,
+    ) -> (String, Arc<Mutex<Vec<(String, std::time::Instant)>>>) {
+        use tokio_tungstenite::tungstenite::protocol::CloseFrame;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("ws://{}/ws", listener.local_addr().unwrap());
+        let connects = Arc::new(Mutex::new(Vec::new()));
+        let seen = connects.clone();
+        tokio::spawn(async move {
+            for answer in script {
+                let (tcp, _) = listener.accept().await.unwrap();
+                let mut ws = tokio_tungstenite::accept_async(tcp).await.unwrap();
+                let (connect, payload) = client_frame(ws.next().await.unwrap().unwrap());
+                assert_eq!(connect.frame_type, frame::TYPE_CONNECT);
+                let token = payload["token"].as_str().unwrap_or("").to_string();
+                seen.lock().unwrap().push((token, std::time::Instant::now()));
+                let reply = match answer {
+                    Busy::Refuses(reason) => server_frame(
+                        frame::TYPE_AUTH_FAIL,
+                        [0; 16],
+                        0,
+                        serde_json::json!({"ok": false, "reason": reason}),
+                    ),
+                    Busy::TryAgainLater => WsMessage::Close(Some(CloseFrame {
+                        code: crate::reconnect::TRY_AGAIN_LATER_CLOSE_CODE.into(),
+                        reason: "try again later".into(),
+                    })),
+                    Busy::Grants => server_frame(frame::TYPE_AUTH_OK, [0; 16], 0, serde_json::json!({"ok": true})),
+                };
+                let _ = ws.send(reply).await;
+                if matches!(answer, Busy::Grants) {
+                    tokio::spawn(async move { while let Some(Ok(_)) = ws.next().await {} });
+                }
+            }
+        });
+        (url, connects)
+    }
+
+    /// A hub too busy to answer (`lease_unavailable` during a lease-store
+    /// failover, or a 1013 close) is dialed again with the SAME token, never
+    /// a refreshed one, each time after a jittered, doubling wait, and the
+    /// connection comes up. Only a refused token asks for a refresh.
+    #[tokio::test]
+    async fn a_busy_hub_is_dialed_again_after_a_jittered_wait_with_the_same_token() {
+        for busy in [Busy::Refuses("lease_unavailable"), Busy::TryAgainLater] {
+            let (url, connects) = busy_gateway(vec![busy, busy, Busy::Grants]).await;
+            let plugin = NeboAIPlugin::new(Arc::new(MemOffsets::default()));
+            let waits = Arc::new(Mutex::new(Vec::new()));
+            let recorded = waits.clone();
+            crate::reconnect::dial_through_busy(
+                || plugin.connect(cell_config(&url)),
+                |wait| {
+                    recorded.lock().unwrap().push(wait);
+                    tokio::time::sleep(wait)
+                },
+            )
+            .await
+            .expect("connected once the hub had room");
+            assert!(plugin.is_connected());
+
+            let connects = connects.lock().unwrap().clone();
+            let waits = waits.lock().unwrap().clone();
+            assert_eq!(connects.len(), 3, "two refusals, then the grant");
+            assert!(connects.iter().all(|(token, _)| token == "test-token"), "the token is never refreshed");
+            assert_eq!(waits.len(), 2);
+            for (n, ceiling) in [1u64, 2].into_iter().enumerate() {
+                assert!(waits[n] <= std::time::Duration::from_secs(ceiling), "wait {n}: {:?}", waits[n]);
+                let spaced = connects[n + 1].1 - connects[n].1;
+                assert!(spaced >= waits[n], "dial {} came {spaced:?} after the last, before its {:?} wait", n + 1, waits[n]);
+            }
+            plugin.disconnect().await.ok();
+        }
+
+        // Read by the reason code: busy, a refused token, anything else.
+        use crate::ConnectRefusal;
+        for reason in ["lease_unavailable", "lease_required", "auth_unavailable"] {
+            assert_eq!(CommError::AuthFailed(reason.into()).connect_refusal(), ConnectRefusal::Busy, "{reason}");
+        }
+        assert_eq!(CommError::TryAgainLater.connect_refusal(), ConnectRefusal::Busy);
+        for reason in crate::TOKEN_REFUSALS {
+            assert_eq!(CommError::AuthFailed(reason.into()).connect_refusal(), ConnectRefusal::Token, "{reason}");
+        }
+        for other in [
+            CommError::AuthFailed("bot ownership mismatch".into()),
+            CommError::LeaseHeld,
+            CommError::Revoked,
+            CommError::Other("auth failed: lease_unavailable".into()),
+        ] {
+            assert_eq!(other.connect_refusal(), ConnectRefusal::Other, "{other:?}");
+        }
+    }
+
+    /// A busy hub is dialed again only so many times; then the caller's own
+    /// backoff takes over. A refusal that is not busy is never redialed here.
+    #[tokio::test]
+    async fn busy_redials_are_capped_and_other_refusals_pass_straight_through() {
+        let (url, connects) = busy_gateway(vec![Busy::TryAgainLater; crate::reconnect::BUSY_REDIALS + 1]).await;
+        let plugin = NeboAIPlugin::new(Arc::new(MemOffsets::default()));
+        let err = crate::reconnect::dial_through_busy(|| plugin.connect(cell_config(&url)), |_| async {})
+            .await
+            .unwrap_err();
+        assert!(matches!(err, CommError::TryAgainLater), "{err:?}");
+        assert_eq!(connects.lock().unwrap().len(), crate::reconnect::BUSY_REDIALS + 1);
+
+        let (url, connects) = busy_gateway(vec![Busy::Refuses("stale token")]).await;
+        let err = crate::reconnect::dial_through_busy(|| plugin.connect(cell_config(&url)), |_| async {})
+            .await
+            .unwrap_err();
+        assert!(matches!(err, CommError::AuthFailed(ref r) if r == "stale token"), "{err:?}");
+        assert_eq!(err.connect_refusal(), crate::ConnectRefusal::Token);
+        assert_eq!(connects.lock().unwrap().len(), 1, "a refused token is not redialed with the same token");
     }
 }

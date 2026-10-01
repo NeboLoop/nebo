@@ -22,8 +22,16 @@
 //!   within a second and thousands of bots dropped together spread out.
 //! - A session that stayed up for 10 s was healthy: the next wait starts
 //!   from the beginning again.
+//! - A CONNECT the hub turns away as busy (a 1013 close, `auth_unavailable`,
+//!   a `lease_*` it could not decide) is dialed again here with the same
+//!   token, after the same jittered, doubling wait, a few times before the
+//!   caller's own backoff takes over ([`dial_through_busy`]). The token is
+//!   never refreshed for it.
 
+use std::future::Future;
 use std::time::Duration;
+
+use crate::{CommError, ConnectRefusal};
 
 /// How long a connected hub address may take to finish TLS and the upgrade
 /// before the dial moves on to the next address (`tls::connect_ws`).
@@ -32,6 +40,14 @@ pub const DIAL_TIMEOUT: Duration = tls::HANDSHAKE_TIMEOUT;
 /// The close code the hub sends when the pod holding a connection drains
 /// (1012 Service Restart, reason "drain").
 pub const DRAIN_CLOSE_CODE: u16 = 1012;
+
+/// The close code the hub answers a CONNECT with when it is too busy to
+/// take it (1013 Try Again Later).
+pub const TRY_AGAIN_LATER_CLOSE_CODE: u16 = 1013;
+
+/// How many times a CONNECT the hub turned away as busy is dialed again by
+/// [`dial_through_busy`] before the caller's own backoff takes over.
+pub const BUSY_REDIALS: usize = 4;
 
 /// First wait of the backoff, doubled per attempt.
 const BASE: Duration = Duration::from_secs(1);
@@ -116,6 +132,31 @@ impl Backoff {
             }
         }
     }
+}
+
+/// Dial, and while the hub turns the CONNECT away as busy
+/// ([`ConnectRefusal::Busy`]) dial again, up to [`BUSY_REDIALS`] times,
+/// each after a [`Backoff`] wait (full jitter under a doubling cap), so bots
+/// turned away together come back spread out. `sleep` waits out each pause
+/// (`tokio::time::sleep`). Quiet: nothing here reaches the owner.
+pub async fn dial_through_busy<T, D, DF, S, SF>(mut dial: D, mut sleep: S) -> Result<T, CommError>
+where
+    D: FnMut() -> DF,
+    DF: Future<Output = Result<T, CommError>>,
+    S: FnMut(Duration) -> SF,
+    SF: Future<Output = ()>,
+{
+    let mut backoff = Backoff::new();
+    let mut result = dial().await;
+    for _ in 0..BUSY_REDIALS {
+        match &result {
+            Err(e) if e.connect_refusal() == ConnectRefusal::Busy => {}
+            _ => break,
+        }
+        sleep(backoff.wait(Disconnect::Dropped, Duration::ZERO)).await;
+        result = dial().await;
+    }
+    result
 }
 
 /// A uniformly random duration in `0..=max`, millisecond resolution.
