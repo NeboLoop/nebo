@@ -212,7 +212,7 @@ const summary = await nebo.janus.complete({
 
 #### Global SDK (HTMX, vanilla HTML)
 
-The bundle defines one global, `NeboAppSDK`. `NeboAppSDK.nebo` is the same singleton the ES module exports, and every module (`identity`, `storage`, `agents`, `janus`, `chat`, `surfaces`) is also on `NeboAppSDK` directly. There is no bare `nebo` global — take it off `NeboAppSDK` first.
+The bundle defines one global, `NeboAppSDK`. `NeboAppSDK.nebo` is the same singleton the ES module exports, and every module (`identity`, `storage`, `agents`, `janus`, `decide`, `chat`, `surfaces`) is also on `NeboAppSDK` directly. There is no bare `nebo` global — take it off `NeboAppSDK` first.
 
 ```html
 <script src="/sdk/nebo.global.js"></script>
@@ -414,7 +414,7 @@ Call the LLM directly — no agent persona, no memory, no tool use.
 ```typescript
 nebo.janus.complete(options: {
   messages: Array<{ role: string; content: string }>,
-  model?: string,        // e.g. "claude-sonnet-4-20250514"
+  model?: string,        // optional; Nebo picks one when omitted
   temperature?: number,
   max_tokens?: number,
   system?: string
@@ -422,6 +422,50 @@ nebo.janus.complete(options: {
 
 nebo.janus.stream(options): AsyncGenerator<string>
 ```
+
+#### Decide (Typed Decisions)
+
+Ask named questions about some data and get each answer with probabilities and a confidence, in one fast call. Nothing is written as text: use it for judgments (is this lead hot, which category, how urgent) and keep counting, dates and thresholds in your own code.
+
+```typescript
+nebo.decide(request: {
+  state: unknown,  // text or any JSON: a record, a list of records
+  questions: Record<string,
+    | { type: 'choice', instructions: string, criteria: Record<string, string> } // 2 to 255 options
+    | { type: 'score',  instructions: string, criteria: string[] }               // 2 to 10 levels, lowest first
+    | { type: 'noul',   instructions: string }                                   // one statement, no criteria
+  >
+}): Promise<{
+  model: string,
+  answers: Record<string, {
+    type: 'choice' | 'score' | 'noul',
+    choice?: string,       // choice: the option picked
+    score?: number,        // score: fractional, 0 = the first level
+    noul?: number,         // noul: probability the statement holds
+    confidence?: number,   // choice and score: 0 to 1
+    probabilities: Record<string, number>
+  }>,
+  usage: { input_tokens: number, output_tokens: number, cost_micro: number }
+}>
+```
+
+```typescript
+const { answers } = await nebo.decide({
+  state: { company: 'Example Co', status: 'asked for a quote today' },
+  questions: {
+    tier: { type: 'choice', instructions: 'How warm is this lead, judging by `status`?',
+            criteria: { hot: 'ready to buy', warm: 'interested', cold: 'not now', other: "can't tell" } },
+    reply: { type: 'noul', instructions: '`status` asks us for a reply.' }
+  }
+});
+if (answers.tier.choice === 'hot' && answers.tier.confidence > 0.8) flagLead();
+```
+
+- The whole question lives in `instructions`; name the state's fields in backticks. The question's name only labels its answer. Add an escape option (`other`) when a choice list is not complete.
+- Very long state is shortened in the middle before it is sent; keep it to the fields the questions need.
+- It throws with the reason when a question is malformed, when the bot is not signed in to NeboAI, or when the decision cannot be made.
+- The app's employee has a `decide` tool that takes the same request, so it can judge records it reads from the app's data.
+- Billed to the bot owner's NeboAI account like any model call. See pricing at https://neboai.com/pricing.
 
 #### HTTP Proxy
 
@@ -1331,7 +1375,7 @@ What the marketplace does with the bundle:
 - The root `manifest.json` is kept as the app's manifest (window and permissions reach the installed package); it must be valid JSON.
 - Files under `skills/<name>/` follow the skill rules inside their folder: `SKILL.md` is kept, `scripts/` and `bin/` may hold any type, everything else keeps the allowlist.
 - Limits: a file over 10 MB is skipped and counted in `filesSkipped`; over 50 MB in total is refused. The result also reports `uiFilesStored`.
-- For a private or loop app the installable package is rebuilt on every upload, so the next install gets it. Bots that already installed the app get the change when it is installed again, or when a higher version number is published (Nebo checks every few hours and applies an update with the owner's yes, or automatically when automatic updates are on for that app). Public, unlisted and invite-only apps keep their approved package until a new version passes review.
+- For a private or loop app the installable package is rebuilt on every upload and Nebo tells the bots that installed the app: one that is online reinstalls it right away, one that is offline when it next connects. No version bump is needed. Public, unlisted and invite-only apps keep their approved package until a new version passes review, and installed bots get that version the same way once it is approved.
 
 ### App with a sidecar
 
