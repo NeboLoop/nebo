@@ -95,6 +95,30 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// chain.
 pub(crate) const MAX_HANDOFF_DEPTH: u8 = 3;
 
+/// How many times employees' own messages may set work off on one rail in
+/// five minutes: a loop channel, or one employee's messages to one
+/// colleague. The backstop under the hop cap, so a chain can't run on even
+/// when its depth was lost somewhere.
+pub(crate) const AGENT_TRIGGERS_PER_5_MIN: usize = 6;
+
+/// One more agent-set-off piece of work on `rail`, when fewer than `cap`
+/// were in the last five minutes: counted and allowed. The ONE rate
+/// ceiling on agent-to-agent chains, for the loop channel and the
+/// coworker rail alike.
+pub(crate) async fn agent_trigger_allowed(state: &AppState, rail: &str, cap: usize) -> bool {
+    let mut triggers = state.channel_agent_triggers.lock().await;
+    let entry = triggers.entry(rail.to_string()).or_default();
+    let cutoff = std::time::Instant::now() - std::time::Duration::from_secs(300);
+    while entry.front().is_some_and(|t| *t < cutoff) {
+        entry.pop_front();
+    }
+    if entry.len() >= cap {
+        return false;
+    }
+    entry.push_back(std::time::Instant::now());
+    true
+}
+
 /// Handoff depth for a DIRECT inbound comm dispatch (DM / agent_space /
 /// embed). Agent-authored messages carry senderKind:"agent" (+ optional
 /// handoffDepth) — a directed message from an agent IS a handoff, so the
@@ -4101,7 +4125,7 @@ async fn try_handle_comm_control(
     metadata: &std::collections::HashMap<String, String>,
 ) -> bool {
     if metadata.get("kind").map(String::as_str) == Some("stop") {
-        let cancelled = chat_dispatch::stop_session(&state.helpers, &state.run_registry, session_key).await;
+        let cancelled = chat_dispatch::stop_session(&state.store, &state.helpers, &state.run_registry, session_key).await;
         tracing::info!(session = %session_key, cancelled, "inbound comm stop command");
         return true;
     }
@@ -5519,7 +5543,7 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
         let (depth_cap, rate_cap) = if workroom.is_some() {
             (12u8, 30usize)
         } else {
-            (MAX_HANDOFF_DEPTH, 6usize)
+            (MAX_HANDOFF_DEPTH, AGENT_TRIGGERS_PER_5_MIN)
         };
         if sender_is_agent && mentioned && handoff_depth_in >= depth_cap {
             tracing::info!(
@@ -5530,24 +5554,15 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
             );
             return;
         }
-        if sender_is_agent && mentioned {
-            // Rate limit per channel per 5 minutes, even if depth metadata was
-            // stripped somewhere.
-            let mut triggers = state.channel_agent_triggers.lock().await;
-            let entry = triggers.entry(msg.conversation_id.clone()).or_default();
-            let cutoff = std::time::Instant::now() - std::time::Duration::from_secs(300);
-            while entry.front().map(|t| *t < cutoff).unwrap_or(false) {
-                entry.pop_front();
-            }
-            if entry.len() >= rate_cap {
-                tracing::warn!(
-                    conv_id = %msg.conversation_id,
-                    cap = rate_cap,
-                    "agent-trigger rate limit hit for channel — skipping dispatch"
-                );
-                return;
-            }
-            entry.push_back(std::time::Instant::now());
+        // Rate limit per channel per 5 minutes, even if depth metadata was
+        // stripped somewhere.
+        if sender_is_agent && mentioned && !agent_trigger_allowed(&state, &msg.conversation_id, rate_cap).await {
+            tracing::warn!(
+                conv_id = %msg.conversation_id,
+                cap = rate_cap,
+                "agent-trigger rate limit hit for channel — skipping dispatch"
+            );
+            return;
         }
         // Human replies may be answering a relayed ask/approval — consume them
         // before any dispatch decision (fixes: channel asks were unanswerable).
@@ -6259,7 +6274,7 @@ async fn handle_comm_slash_command(
 
     let response = match cmd.as_str() {
         "/new" | "/reset" => {
-            let cancelled = chat_dispatch::stop_session(&state.helpers, &state.run_registry, session_key).await;
+            let cancelled = chat_dispatch::stop_session(&state.store, &state.helpers, &state.run_registry, session_key).await;
             if cancelled {
                 tracing::info!(session_key = %session_key, "cancelled active run before /new");
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -6282,7 +6297,7 @@ async fn handle_comm_slash_command(
         }
 
         "/clear" => {
-            let cancelled = chat_dispatch::stop_session(&state.helpers, &state.run_registry, session_key).await;
+            let cancelled = chat_dispatch::stop_session(&state.store, &state.helpers, &state.run_registry, session_key).await;
             if cancelled {
                 tracing::info!(session_key = %session_key, "cancelled active run before /clear");
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -6307,7 +6322,7 @@ async fn handle_comm_slash_command(
         }
 
         "/stop" | "/cancel" | "/halt" => {
-            let cancelled = chat_dispatch::stop_session(&state.helpers, &state.run_registry, session_key).await;
+            let cancelled = chat_dispatch::stop_session(&state.store, &state.helpers, &state.run_registry, session_key).await;
             tracing::info!(
                 session_key = %session_key,
                 cancelled,

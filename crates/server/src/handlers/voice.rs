@@ -2712,6 +2712,7 @@ async fn handle_conversation_session(
                             // gone and there is nothing left to describe.
                             let before = state.harness.active_turn_status(&ctx.session_key);
                             let cancelled = crate::chat_dispatch::stop_session(
+                                &state.store,
                                 &state.helpers,
                                 &state.run_registry,
                                 &ctx.session_key,

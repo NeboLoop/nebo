@@ -464,7 +464,7 @@ pub(crate) async fn stop(state: &AppState, team: &db::Team, by: StopBy<'_>, targ
             continue;
         }
         let (seat, _) = crate::coworker::team_seat(&member_id, team);
-        if crate::chat_dispatch::stop_session(&state.helpers, &state.run_registry, &seat).await {
+        if crate::chat_dispatch::stop_session(&state.store, &state.helpers, &state.run_registry, &seat).await {
             state.hub.broadcast(
                 tools::team::TEAM_ACTIVITY_EVENT,
                 serde_json::json!({ "teamId": team.id, "agentId": member_id, "agentName": name, "state": "stopped" }),

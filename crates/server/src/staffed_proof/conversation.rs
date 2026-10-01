@@ -1533,6 +1533,57 @@ async fn a_coworkers_message_is_read_as_a_coworkers() {
     }
 }
 
+/// The owner's Stop in the conversation he is watching stops the colleagues
+/// it asked, and the ones they asked in turn, through the one stop: their
+/// work ends, and no answer from them wakes the stopped conversation.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_owners_stop_reaches_the_coworkers_his_conversation_asked() {
+    let nebo = session().await;
+    let asker = nebo.hire("Proof DS Asker", json!({ "workflows": {} })).await;
+    let middle = nebo.hire("Proof DS Middle", json!({ "workflows": {} })).await;
+    let last = nebo.hire("Proof DS Last", json!({ "workflows": {} })).await;
+    let rules: Vec<Rule> = vec![
+        Box::new(|t| {
+            if !t.opener().contains("MARK-DS1") {
+                return None;
+            }
+            Some(if t.has_tool_results() {
+                Step::held("ds-mid", "DS-MIDDLE-DONE")
+            } else {
+                Step::call(vec![("send_message", json!({"to": "Proof DS Last", "message": "MARK-DS2 count the stock"}))])
+            })
+        }),
+        worker("MARK-DS2", "ds-last", "DS-LAST-RESULT"),
+    ];
+    let rig = Rig::new(&nebo, rules).await;
+    let from = format!("agent:{asker}:web");
+    rig.open_session(&from);
+    let ctx = tools::ToolContext::new(Origin::User).with_session(from.clone(), "s1");
+    let sent = nebo
+        .tool(&ctx, "send_message", json!({"to": "Proof DS Middle", "message": "MARK-DS1 check the stock"}))
+        .await;
+    assert!(!sent.is_error, "{}", sent.content);
+    let (middle_thread, last_thread) =
+        (format!("agent:{middle}:coworker:{asker}"), format!("agent:{last}:coworker:{middle}"));
+    rig.until(30, "the chain reaches the last colleague", || rig.company.calls_naming("MARK-DS2") > 0).await;
+
+    let stopped = crate::chat_dispatch::stop_session(
+        nebo.store(),
+        &nebo.state.helpers,
+        &nebo.state.run_registry,
+        &from,
+    )
+    .await;
+    assert!(stopped, "the chain's work was running");
+    rig.until(30, "the chain's work stops", || !rig.busy(&middle_thread) && !rig.busy(&last_thread)).await;
+    rig.company.open("ds-mid");
+    rig.company.open("ds-last");
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    assert!(rig.notifications(&from).is_empty(), "nothing wakes the stopped conversation: {:?}", rig.notifications(&from));
+    assert_eq!(nebo.store().open_asks(&from).unwrap(), 0);
+    assert_eq!(nebo.store().open_asks(&middle_thread).unwrap(), 0);
+}
+
 /// A colleague's message is the colleague's thread, never the owner's chat
 /// (2026-09-28: the owner opened his coding employee and landed in "Are you
 /// still there", another employee's message to it). The exchange is stored

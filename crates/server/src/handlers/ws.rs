@@ -587,7 +587,7 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState, ua: String) {
                                 }
                                 "cancel" => {
                                     let (_, session_id) =
-                                        apply_cancel(&parsed["data"], &state.helpers, &state.run_registry).await;
+                                        apply_cancel(&state.store, &parsed["data"], &state.helpers, &state.run_registry).await;
                                     state.hub.broadcast("chat_cancelled", serde_json::json!({
                                         "session_id": session_id,
                                     }));
@@ -1353,6 +1353,7 @@ enum CancelOutcome {
 /// Returns the outcome and the session key to echo in the `chat_cancelled`
 /// broadcast.
 async fn apply_cancel(
+    store: &db::Store,
     data: &serde_json::Value,
     helpers: &agent::harness::delegation::Helpers,
     registry: &crate::run_registry::RunRegistry,
@@ -1376,7 +1377,7 @@ async fn apply_cancel(
         info!(entity_id, count, "cancelled runs by entity_id");
         return (CancelOutcome::Entity { count }, session_key);
     }
-    let outcome = if crate::chat_dispatch::stop_session(helpers, registry, &session_key).await {
+    let outcome = if crate::chat_dispatch::stop_session(store, helpers, registry, &session_key).await {
         info!(session = %session_key, "cancelled the conversation's run");
         CancelOutcome::Session
     } else {
@@ -2579,6 +2580,11 @@ mod cancel_precedence_tests {
             .await
     }
 
+    fn store() -> db::Store {
+        let path = std::env::temp_dir().join(format!("nebo-cancel-{}.db", uuid::Uuid::new_v4()));
+        db::Store::new(&path.to_string_lossy()).expect("store")
+    }
+
     fn helpers() -> Arc<Helpers> {
         let path = std::env::temp_dir().join(format!("nebo-cancel-{}.db", uuid::Uuid::new_v4()));
         let store = Arc::new(db::Store::new(&path.to_string_lossy()).expect("store"));
@@ -2621,7 +2627,7 @@ mod cancel_precedence_tests {
             "entity_id": "a",
             "session_id": "agent:a:thread:c1",
         });
-        let (outcome, session_id) = apply_cancel(&data, &helpers(), &registry).await;
+        let (outcome, session_id) = apply_cancel(&store(), &data, &helpers(), &registry).await;
         assert_eq!(outcome, CancelOutcome::RunId);
         assert_eq!(session_id, "agent:a:main");
         assert!(ta.is_cancelled());
@@ -2641,7 +2647,7 @@ mod cancel_precedence_tests {
             "entity_id": "a",
             "session_id": "agent:a:main",
         });
-        let (outcome, _) = apply_cancel(&data, &helpers(), &registry).await;
+        let (outcome, _) = apply_cancel(&store(), &data, &helpers(), &registry).await;
         assert_eq!(outcome, CancelOutcome::RunIdMiss);
         assert!(!token.is_cancelled());
     }
@@ -2664,7 +2670,7 @@ mod cancel_precedence_tests {
             "entity_id": "x",
             "session_id": "agent:y:main",
         });
-        let (outcome, _) = apply_cancel(&data, &helpers(), &registry).await;
+        let (outcome, _) = apply_cancel(&store(), &data, &helpers(), &registry).await;
         assert_eq!(outcome, CancelOutcome::Entity { count: 2 });
         assert!(ta.is_cancelled());
         assert!(tb.is_cancelled());
@@ -2687,7 +2693,7 @@ mod cancel_precedence_tests {
         let _h3 = reg(&registry, "agent:b:thread:c2", "b", &other).await;
 
         let data = serde_json::json!({ "session_id": "agent:a:thread:c1", "agent_id": "a" });
-        let (outcome, session_id) = apply_cancel(&data, &helpers(), &registry).await;
+        let (outcome, session_id) = apply_cancel(&store(), &data, &helpers(), &registry).await;
         assert_eq!(outcome, CancelOutcome::Session);
         assert_eq!(session_id, "agent:a:thread:c1");
         assert!(thread.is_cancelled());
@@ -2711,7 +2717,7 @@ mod cancel_precedence_tests {
         let _h3 = reg(&registry, "agent:b:web", "b", &other).await;
 
         let data = serde_json::json!({ "agent_id": "a" });
-        let (outcome, session_id) = apply_cancel(&data, &helpers(), &registry).await;
+        let (outcome, session_id) = apply_cancel(&store(), &data, &helpers(), &registry).await;
         assert_eq!(outcome, CancelOutcome::Session);
         assert_eq!(session_id, "agent:a:web");
         assert!(mine.is_cancelled());
@@ -2719,7 +2725,7 @@ mod cancel_precedence_tests {
         assert!(!other.is_cancelled());
 
         let data = serde_json::json!({ "agent_id": "a", "channel": "help:mail" });
-        let (outcome, _) = apply_cancel(&data, &helpers(), &registry).await;
+        let (outcome, _) = apply_cancel(&store(), &data, &helpers(), &registry).await;
         assert_eq!(outcome, CancelOutcome::Session);
         assert!(help.is_cancelled());
         assert!(!other.is_cancelled());
@@ -2735,7 +2741,7 @@ mod cancel_precedence_tests {
         let _duty = reg(&registry, "agent:b:thread:c2", "b", &other).await;
 
         let data = serde_json::json!({ "session_id": "agent:a:thread:ended", "agent_id": "a" });
-        let (outcome, session_id) = apply_cancel(&data, &helpers(), &registry).await;
+        let (outcome, session_id) = apply_cancel(&store(), &data, &helpers(), &registry).await;
         assert!(
             !other.is_cancelled(),
             "another employee's run keeps running"
@@ -2747,6 +2753,7 @@ mod cancel_precedence_tests {
         );
 
         let (outcome, _) = apply_cancel(
+            &store(),
             &serde_json::json!({ "session_id": "stale-key" }),
             &helpers(),
             &registry,
@@ -2767,7 +2774,7 @@ mod cancel_precedence_tests {
         let theirs = helpers.session_token("agent:b:thread:c2").child_token();
 
         let data = serde_json::json!({ "session_id": "agent:a:thread:c1", "agent_id": "a" });
-        let (outcome, _) = apply_cancel(&data, &helpers, &registry).await;
+        let (outcome, _) = apply_cancel(&store(), &data, &helpers, &registry).await;
         assert_eq!(outcome, CancelOutcome::NothingLive);
         assert!(
             mine.is_cancelled(),
