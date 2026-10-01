@@ -2893,7 +2893,8 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
                     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                 } else {
                     // A dropped connection is redialed after its jittered
-                    // wait: up to 3 s for a hub drain, under 1 s for a
+                    // wait: up to 500 ms for a hub drain, up to 5 s for a
+                    // hard cut, under 1 s for a
                     // first drop, longer for repeated ones.
                     if let Some(how) = dropped {
                         tokio::time::sleep(backoff.wait(how, connected_at.elapsed())).await;
@@ -2957,8 +2958,9 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
                 };
                 let started = std::time::Instant::now();
                 let hub_url = tunnel_state.config.neboai.tunnel_url.clone();
-                // A hub drain redials within 3 s and leaves the backoff
-                // where it was; a session that ended any other way, or a
+                // A hub drain redials within 500 ms and leaves the backoff
+                // where it was; a hard cut's first redial comes within 5 s;
+                // a session that ended any other way, or a
                 // dial that failed, waits a jittered backoff that starts
                 // over once a session has been up 10 s (comm::reconnect).
                 let delay = match comm::tunnel::run(&hub_url, &token, &local_addr, &tunnel_state.tunnel_online).await {
