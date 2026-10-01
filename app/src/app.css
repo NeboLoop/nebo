@@ -562,25 +562,14 @@
   @apply m-0 text-xs text-error;
 }
 
-/* What waits on the owner's answer, pinned at the top of the chat he is in:
-   who is waiting, on what, and its answers to tap. */
-.waiting-asks-bar {
-  @apply shrink-0 flex flex-col gap-1.5 border-b border-warning/40 bg-warning/10 px-[18px] py-2;
+/* Several of a chat's asks waiting: one small line at the top with the
+   count (a click goes to the oldest), Decline all and a close. The asks are
+   cards in the conversation; this never holds them. */
+.pending-asks-strip {
+  @apply shrink-0 flex items-center gap-1 border-b border-warning/40 bg-warning/10 px-[18px] py-1;
 }
-.waiting-ask {
-  @apply flex flex-wrap items-center gap-x-3 gap-y-1;
-}
-.waiting-ask-line {
-  @apply m-0 flex-1 min-w-0 text-sm text-base-content;
-}
-.waiting-ask-who {
-  @apply font-semibold;
-}
-.waiting-ask-actions {
-  @apply flex flex-wrap gap-1;
-}
-.waiting-ask-error {
-  @apply m-0 w-full text-xs text-error;
+.pending-asks-count {
+  @apply flex-1 min-w-0 truncate text-left text-sm font-semibold text-base-content py-1;
 }
 
 /* The consent line: what an employee will be able to do, in plain words,

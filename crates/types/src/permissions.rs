@@ -399,6 +399,9 @@ pub enum Why {
     AnsweredOnce { ask_id: String },
     /// The owner already said no to this same call in this session.
     Declined { ask_id: String },
+    /// The same employee already asked the owner this (the same call, or
+    /// the same new person) and he has not answered yet: one card, not two.
+    AlreadyAsked { ask_id: String },
     Judged { by: String, reason: String },
     Unreviewed { reason: String },
     /// It needed the owner's OK and nothing in the run could wait for one

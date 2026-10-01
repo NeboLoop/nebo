@@ -36,7 +36,7 @@
   import { openAsks } from '$lib/stores/permissionAsks';
   import { publishRequest } from '$lib/stores/appPublish';
   import PermissionAskCard from '$lib/components/PermissionAskCard.svelte';
-  import WaitingAsksBar from '$lib/components/chat/WaitingAsksBar.svelte';
+  import PendingAsksStrip, { askCardId } from '$lib/components/chat/PendingAsksStrip.svelte';
   import type { HelperLine } from '$lib/chat/helpers';
   import { trailingLink } from '$lib/chat/errorLink';
   import { stepMeta } from '$lib/chat/stepMeta';
@@ -1375,8 +1375,8 @@
     </div>
   {/if}
 
-  <!-- What waits on the owner's answer, from any employee, pinned here. -->
-  <WaitingAsksBar sessionKey={chatSessionKey} />
+  <!-- Several of this chat's asks waiting: how many, and Decline all. -->
+  <PendingAsksStrip asks={chatAsks} />
 
   <!-- Messages / Empty state -->
   {#if !hasMessages && historyLoading}
@@ -1911,6 +1911,15 @@
       {/if}
     {/each}
 
+    <!-- The asks this chat's work is waiting on, in the conversation: the
+         same card as the Inbox; answered anywhere, it leaves everywhere.
+         Never pinned over the chat or the composer. -->
+    {#each chatAsks as ask (ask.id)}
+      <div id={askCardId(ask.id)} class="mt-2">
+        <PermissionAskCard {ask} via="chat" />
+      </div>
+    {/each}
+
     <!-- Live working indicator: shown for the WHOLE run,
          including while the reply text is streaming or a tool grinds after the
          last text chunk — not only before the first assistant message. -->
@@ -2015,16 +2024,6 @@
           <button type="button" class="btn btn-ghost btn-xs ml-auto" onclick={() => (teachError = '')}>✕</button>
         {/if}
       </div>
-    </div>
-  {/if}
-
-  <!-- The asks this chat's work is waiting on: the same card as the Inbox;
-       answered anywhere, it leaves everywhere. -->
-  {#if chatAsks.length > 0}
-    <div class="max-w-3xl mx-auto w-full shrink-0 px-4 mb-2 flex flex-col gap-2">
-      {#each chatAsks as ask (ask.id)}
-        <PermissionAskCard {ask} via="chat" />
-      {/each}
     </div>
   {/if}
 

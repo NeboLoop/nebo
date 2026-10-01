@@ -1085,6 +1085,7 @@ fn why_sentence(store: &db::Store, decision: &str, why: &str, door: &str) -> (St
         Why::BasicWork => "Everyday work every employee does, like notes, tasks and memory".into(),
         Why::AnsweredOnce { .. } => "You allowed it once".into(),
         Why::Declined { .. } => "You already said no to this".into(),
+        Why::AlreadyAsked { .. } => "It was already waiting on your answer".into(),
         Why::Judged { reason, .. } => format!("Reviewed automatically: {}", reason.trim_end_matches('.')),
         Why::Unreviewed { .. } => return ("The permission check couldn't run, so this wasn't reviewed".into(), true),
         Why::HardLimit { limit } => match limit.as_str() {
