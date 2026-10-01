@@ -119,10 +119,13 @@ pub trait CommPlugin: Send + Sync {
     /// Find-or-create a channel by name; returns its channel_id. Idempotent —
     /// re-calling with the same name returns the existing channel. Lets a
     /// workflow self-create a channel (e.g. #daily-briefing) before posting.
+    /// With `members` (hub agent ids, a team's), a new channel that holds
+    /// exactly those agents, never one matched by name.
     async fn ensure_channel(
         &self,
         _name: &str,
         _description: Option<&str>,
+        _members: &[String],
     ) -> Result<String, CommError> {
         Err(CommError::Other("not supported".into()))
     }

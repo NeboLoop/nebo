@@ -306,7 +306,16 @@ impl NeboAIPlugin {
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             }
-            found.ok_or_else(|| CommError::Other(format!("no conversation for {}", msg.to)))?
+            // Messages straight to another bot are retired on the hub
+            // (2026-03-15): two bots' employees talk in a channel both are
+            // members of. Said plainly, never a silent no-op.
+            found.ok_or_else(|| {
+                CommError::Other(format!(
+                    "{} is not a conversation this Nebo has. Messages straight to another bot are not \
+                     available; employees on different computers work together in a team's channel.",
+                    msg.to
+                ))
+            })?
         } else {
             return Err(CommError::Other("no conversation_id or recipient".into()));
         };
@@ -410,6 +419,7 @@ impl NeboAIPlugin {
                 .get("fromAgentName")
                 .cloned()
                 .unwrap_or_default(),
+            agent_id: msg.metadata.get("agentId").cloned().unwrap_or_default(),
         })
         .map_err(|e| CommError::Other(e.to_string()))?;
 
@@ -574,6 +584,7 @@ impl NeboAIPlugin {
             // Main-bot surface sends (dm/chat/typing) carry no agent identity.
             from_agent_id: String::new(),
             from_agent_name: String::new(),
+            agent_id: String::new(),
         })
         .map_err(|e| CommError::Other(e.to_string()))?;
 
@@ -1052,6 +1063,7 @@ impl CommPlugin for NeboAIPlugin {
         &self,
         name: &str,
         description: Option<&str>,
+        members: &[String],
     ) -> Result<String, CommError> {
         let api = self
             .inner
@@ -1060,6 +1072,18 @@ impl CommPlugin for NeboAIPlugin {
             .api
             .clone()
             .ok_or(CommError::NotConnected)?;
+
+        // A channel for exactly these agents (a team's) is always a new one,
+        // keyed by the id the hub returns: a channel is never matched by name,
+        // and the hub numbers a name that is taken.
+        if !members.is_empty() {
+            let loops = api.list_bot_loops().await?;
+            let loop_id = loops
+                .first()
+                .map(|l| l.loop_id.clone())
+                .ok_or_else(|| CommError::Other("no loop available to create a channel in".to_string()))?;
+            return api.create_channel(&loop_id, name, description, members).await;
+        }
 
         let want = sanitize_channel_name(name);
 
@@ -1081,7 +1105,7 @@ impl CommPlugin for NeboAIPlugin {
             .ok_or_else(|| {
                 CommError::Other("no loop available to create a channel in".to_string())
             })?;
-        api.create_channel(&loop_id, name, description).await?;
+        api.create_channel(&loop_id, name, description, &[]).await?;
 
         // Re-list to return the canonical channel_id the send path uses.
         let channels = api.list_bot_channels().await?;

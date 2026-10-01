@@ -27,6 +27,7 @@ use tools::coworker::{Authority, CoworkerMessage, TeamDelivery, TeamPost, TeamPo
 
 use crate::addressing::{self, NoLead, Room, Said};
 use crate::state::AppState;
+use types::provenance::ProvenanceClass;
 
 /// Who wrote a team row, for `record`. Everything that happens on this Nebo
 /// is `Local`: the owner (empty id) or one of this Nebo's employees, whose
@@ -35,7 +36,7 @@ use crate::state::AppState;
 /// the name and whether it was a person or an employee.
 pub(crate) enum TeamSender<'a> {
     Local(&'a str),
-    Hub { agent_id: &'a str, name: &'a str, is_agent: bool },
+    Hub { agent_id: &'a str, name: &'a str, from: crate::HubSender },
 }
 
 /// Post into a team. Boxed because a member's reply is itself a post (the
@@ -124,7 +125,7 @@ pub(crate) fn post(
 
         // 3. The optional hub mirror (before fan-out so a slow hub never
         // delays the members; best effort either way).
-        mirror_to_hub(&state, &team, &text, &sender_name, &post, &remote_asks).await;
+        let mirrored = mirror_to_hub(&state, &team, &text, &sender_name, &post, &remote_asks).await;
 
         // Whose request the post is: the owner's own when he typed it; one
         // of his passed on when the member posting (its reply, or a post
@@ -140,10 +141,18 @@ pub(crate) fn post(
             )
         };
 
+        // A member on another computer was asked only when the post went
+        // out to it: with no hub, or no channel, nobody is told it was.
         let mut asked: Vec<String> = Vec::new();
-        for m in &remote_asks {
-            let name = if m.name.is_empty() { m.agent_id.clone() } else { m.name.clone() };
-            asked.push(name);
+        if mirrored {
+            for m in &remote_asks {
+                let name = roster
+                    .iter()
+                    .find(|(id, _)| *id == m.agent_id)
+                    .map(|(_, name)| name.clone())
+                    .unwrap_or_else(|| m.agent_id.clone());
+                asked.push(name);
+            }
         }
 
         // 2. The asks over the local rail. A remote member is not on it — it
@@ -219,6 +228,7 @@ pub(crate) fn record(
     attachments: &serde_json::Value,
     provenance: &[types::provenance::ProvenanceClass],
 ) -> Result<(db::TeamMessage, String), String> {
+    let untrusted = matches!(sender, TeamSender::Hub { from, .. } if from != crate::HubSender::Owner);
     let (from_agent_id, sender_name, role) = match sender {
         TeamSender::Local("") => ("", "Owner".to_string(), "user"),
         TeamSender::Local(id) => (
@@ -232,13 +242,18 @@ pub(crate) fn record(
                 .unwrap_or_else(|| id.to_string()),
             "assistant",
         ),
-        TeamSender::Hub { agent_id, name, is_agent } => {
-            (agent_id, name.to_string(), if is_agent { "assistant" } else { "user" })
+        TeamSender::Hub { agent_id, name, from } => {
+            let (name, role) = hub_row_sender(name, from);
+            (agent_id, name, role)
         }
     };
+    let mut provenance = provenance.to_vec();
+    if untrusted && !provenance.contains(&ProvenanceClass::Channel) {
+        provenance.push(ProvenanceClass::Channel);
+    }
     let message = state
         .store
-        .append_team_message(team, role, text, &sender_name, from_agent_id, attachments, provenance)
+        .append_team_message(team, role, text, &sender_name, from_agent_id, attachments, &provenance)
         .map_err(|e| format!("record team post: {e}"))?;
     state.hub.broadcast(
         tools::team::TEAM_MESSAGE_EVENT,
@@ -256,9 +271,30 @@ pub(crate) fn record(
     Ok((message, sender_name))
 }
 
+/// A post that came through the hub as the team's record shows it: its
+/// name and its row's role. Who it is from is decided once, by
+/// `crate::hub_sender` (the seam on trusting the hub). Only the owner's own
+/// post reads as the owner's; anything else is channel content (`record`
+/// marks it, so a member briefed with it reads it as such and its run
+/// carries the taint) and never reads as the owner — one naming itself
+/// "Owner", or nobody, is "Someone on another computer".
+fn hub_row_sender(name: &str, from: crate::HubSender) -> (String, &'static str) {
+    if from == crate::HubSender::Owner {
+        return (crate::coworker::OWNER.to_string(), "user");
+    }
+    let name = name.trim();
+    let name = if name.is_empty() || name.eq_ignore_ascii_case(crate::coworker::OWNER) {
+        "Someone on another computer".to_string()
+    } else {
+        name.to_string()
+    };
+    (name, if from == crate::HubSender::Agent { "assistant" } else { "user" })
+}
+
 /// Forward a post to the team's hub channel, if the team is mirrored and
 /// the hub is connected. Local mention tokens become hub tokens for
-/// employees the hub knows; failures are logged, never returned.
+/// employees the hub knows. Returns whether it went out; a failure is
+/// logged.
 async fn mirror_to_hub(
     state: &AppState,
     team: &db::Team,
@@ -266,15 +302,15 @@ async fn mirror_to_hub(
     sender_name: &str,
     post: &TeamPost,
     remote_asks: &[&db::TeamMember],
-) {
+) -> bool {
     let Some(channel_id) = team.hub_channel_id.as_deref().filter(|c| !c.is_empty()) else {
-        return;
+        return false;
     };
     let Some(plugin) = state.comm_manager.active_plugin().await else {
-        return;
+        return false;
     };
     if !plugin.is_connected() {
-        return;
+        return false;
     }
     let mut content = text.to_string();
     if content.contains("<@") {
@@ -303,17 +339,8 @@ async fn mirror_to_hub(
             content.push_str(&format!(" {token}"));
         }
     }
-    let mut metadata = std::collections::HashMap::new();
-    metadata.insert("senderName".to_string(), sender_name.to_string());
-    if post.from_agent_id.is_empty() {
-        metadata.insert("role".to_string(), "user".to_string());
-    } else {
-        metadata.insert("senderKind".to_string(), "agent".to_string());
-        metadata.insert("fromAgentName".to_string(), sender_name.to_string());
-        if post.handoff_depth > 0 {
-            metadata.insert("handoffDepth".to_string(), post.handoff_depth.to_string());
-        }
-    }
+    let hub_id = crate::chat_dispatch::hub_agent_id(&state.store, &post.from_agent_id);
+    let metadata = mirror_metadata(post, sender_name, hub_id);
     let msg = comm::CommMessage {
         id: uuid::Uuid::new_v4().to_string(),
         from: String::new(),
@@ -324,7 +351,7 @@ async fn mirror_to_hub(
         content,
         metadata,
         timestamp: 0,
-        human_injected: post.from_agent_id.is_empty(),
+        human_injected: post.by_owner,
         human_id: None,
         task_id: None,
         correlation_id: None,
@@ -333,8 +360,121 @@ async fn mirror_to_hub(
         error: None,
         attachments: Vec::new(),
     };
-    if let Err(e) = state.comm_manager.send(msg).await {
-        tracing::warn!(error = %e, team = %team.id, "team: hub mirror send failed (team stays local)");
+    match state.comm_manager.send(msg).await {
+        Ok(_) => true,
+        Err(e) => {
+            tracing::warn!(error = %e, team = %team.id, "team: hub mirror send failed (team stays local)");
+            false
+        }
+    }
+}
+
+/// What a team post carries to the hub about who wrote it. The owner's own
+/// post (`by_owner`, set only by the team door he typed it in) carries the
+/// owner-relay mark; anything else — an employee's post, the main employee's
+/// — is the bot's (`senderKind: agent`), whatever its words say.
+fn mirror_metadata(post: &TeamPost, sender_name: &str, hub_id: Option<String>) -> std::collections::HashMap<String, String> {
+    if post.by_owner {
+        return crate::chat_dispatch::owner_relay_metadata();
+    }
+    let mut metadata = std::collections::HashMap::new();
+    metadata.insert("senderName".to_string(), sender_name.to_string());
+    metadata.insert("senderKind".to_string(), "agent".to_string());
+    // No fromAgentId: this bot's own deliveries without one are its echo
+    // (`handle_comm_message`), so the post is not recorded twice.
+    if !post.from_agent_id.is_empty() {
+        metadata.insert("fromAgentName".to_string(), sender_name.to_string());
+    }
+    if let Some(hub_id) = hub_id {
+        metadata.insert("agentId".to_string(), hub_id);
+    }
+    if post.handoff_depth > 0 {
+        metadata.insert("handoffDepth".to_string(), post.handoff_depth.to_string());
+    }
+    metadata
+}
+
+/// The owner's Stop for a team's members on other computers: one stop to
+/// the team's hub channel, which each of those Nebos takes as a stop of
+/// every employee's work in that channel (`try_handle_channel_control`).
+/// Returns whether it went out.
+pub(crate) async fn stop_on_hub(state: &AppState, team: &db::Team) -> bool {
+    let Some(channel_id) = team.hub_channel_id.as_deref().filter(|c| !c.is_empty()) else {
+        return false;
+    };
+    let mut metadata = std::collections::HashMap::new();
+    metadata.insert("kind".to_string(), "stop".to_string());
+    metadata.insert("senderKind".to_string(), "agent".to_string());
+    let msg = comm::CommMessage {
+        id: uuid::Uuid::new_v4().to_string(),
+        from: String::new(),
+        to: String::new(),
+        topic: channel_id.to_string(),
+        conversation_id: channel_id.to_string(),
+        msg_type: comm::CommMessageType::LoopChannel,
+        content: "/stop".to_string(),
+        metadata,
+        timestamp: 0,
+        human_injected: false,
+        human_id: None,
+        task_id: None,
+        correlation_id: None,
+        task_status: None,
+        artifacts: Vec::new(),
+        error: None,
+        attachments: Vec::new(),
+    };
+    match state.comm_manager.send(msg).await {
+        Ok(_) => true,
+        Err(e) => {
+            tracing::warn!(error = %e, team = %team.id, "team: the stop did not reach the hub");
+            false
+        }
+    }
+}
+
+#[cfg(test)]
+mod hub_sender_tests {
+    use crate::HubSender;
+
+    fn post(from: &str, by_owner: bool) -> tools::coworker::TeamPost {
+        tools::coworker::TeamPost {
+            attachments: vec![],
+            team_id: "t1".into(),
+            from_agent_id: from.into(),
+            by_owner,
+            owners_turn: None,
+            text: "hi".into(),
+            mention: vec![],
+            handoff_depth: 1,
+            provenance: vec![],
+            reply_to: None,
+        }
+    }
+
+    /// Only the owner's own team post carries the owner-relay mark to the
+    /// hub; an employee's post, or the main employee's, never carries it or
+    /// role=user.
+    #[test]
+    fn only_the_owners_post_is_relayed_as_his() {
+        let owners = super::mirror_metadata(&post("", true), "Owner", None);
+        assert_eq!(owners.get("relayedForOwner").map(String::as_str), Some("true"));
+        for (from, name) in [("emp-1", "Pam"), ("", "Nebo")] {
+            let m = super::mirror_metadata(&post(from, false), name, Some("hub-pam".into()));
+            assert!(m.get("relayedForOwner").is_none() && m.get("role").is_none(), "{m:?}");
+            assert_eq!(m.get("senderKind").map(String::as_str), Some("agent"));
+        }
+    }
+
+    /// A hub row reads as the owner only when the seam says it is his;
+    /// otherwise never, whatever it calls itself.
+    #[test]
+    fn a_hub_row_never_reads_as_the_owner_unless_it_is_his() {
+        assert_eq!(super::hub_row_sender("Owner", HubSender::Person), ("Someone on another computer".to_string(), "user"));
+        assert_eq!(super::hub_row_sender(" owner ", HubSender::Agent).0, "Someone on another computer");
+        assert_eq!(super::hub_row_sender("", HubSender::Agent).0, "Someone on another computer");
+        assert_eq!(super::hub_row_sender("Scout", HubSender::Agent), ("Scout".to_string(), "assistant"));
+        assert_eq!(super::hub_row_sender("Alma", HubSender::Owner), ("Owner".to_string(), "user"));
     }
 }
 

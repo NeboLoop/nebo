@@ -120,6 +120,80 @@ pub(crate) async fn agent_trigger_allowed(state: &AppState, rail: &str, cap: usi
     true
 }
 
+/// Whether the hub stamps who sent each message it delivers — senderKind
+/// ("agent" from a bot, "user" from a person's phone or web, "visitor"
+/// from an embed), senderBotId, senderAccountId, senderAgentId and
+/// relayedForOwner — over whatever the sender wrote. False until the stamping hub is live in production (hub
+/// team-channels contract, reaching production with neboloop's hub pin
+/// bump); until then every one of those fields is the far side's own
+/// claim. THE switch: flip it when the stamping hub is live, and
+/// [`hub_sender`] trusts the stamped fields — nothing else changes.
+pub(crate) const HUB_STAMPS_SENDERS: bool = false;
+
+/// Who a message the hub delivered is from, as this Nebo acts on it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HubSender {
+    /// This Nebo's owner, from his own phone or web connection.
+    Owner,
+    /// A person, before the hub stamps senders: what a sender's own label
+    /// says, as before. Once stamped, nobody is this — every sender that is
+    /// not the owner is an agent.
+    Person,
+    /// An employee or bot: a coworker's message — depth-capped, rate-limited,
+    /// never answering an approval, never the owner's authority.
+    Agent,
+}
+
+/// THE SEAM between what the hub says about a sender and what this Nebo
+/// trusts. `stamped` is [`HUB_STAMPS_SENDERS`] (a parameter so both sides
+/// are proven). Stamped, the owner is exactly:
+/// - a "user" sender on `owner_account` (his own phone or web), or
+/// - an "agent" sender marked relayedForOwner on `owner_account` (his own
+///   words, relayed by one of his bots: `chat_dispatch::owner_relay_metadata`);
+/// and every other sender is an agent: a coworker's message. relayedForOwner
+/// alone, role, senderName and fromAgentId never count.
+/// Not stamped: nobody is the owner; the sender's own senderKind label (or
+/// an agent id) says agent, else a person, as before.
+pub(crate) fn hub_sender(
+    metadata: &std::collections::HashMap<String, String>,
+    owner_account: Option<&str>,
+    stamped: bool,
+) -> HubSender {
+    let kind = metadata.get("senderKind").map(String::as_str).unwrap_or("");
+    if stamped {
+        let account = metadata.get("senderAccountId").map(String::as_str).filter(|a| !a.is_empty());
+        let his = account.is_some() && account == owner_account.filter(|o| !o.is_empty());
+        let relayed = metadata.get("relayedForOwner").map(String::as_str) == Some("true");
+        return match kind {
+            "user" if his => HubSender::Owner,
+            "agent" if his && relayed => HubSender::Owner,
+            _ => HubSender::Agent,
+        };
+    }
+    let has_agent_id = metadata.get("fromAgentId").is_some_and(|id| !id.is_empty());
+    if kind == "agent" || has_agent_id { HubSender::Agent } else { HubSender::Person }
+}
+
+/// The employee a hub message is attributed to: the hub-checked
+/// senderAgentId once the hub stamps senders (`stamped`), the sender's own
+/// fromAgentId label before. Part of the seam: nothing else reads either.
+pub(crate) fn hub_sender_agent(metadata: &std::collections::HashMap<String, String>, stamped: bool) -> String {
+    let key = if stamped { "senderAgentId" } else { "fromAgentId" };
+    metadata.get(key).cloned().unwrap_or_default()
+}
+
+/// The account that owns this bot, as the NeboAI sign-in recorded it.
+fn owner_account(store: &db::Store) -> Option<String> {
+    store
+        .list_all_active_auth_profiles_by_provider("neboai")
+        .ok()?
+        .into_iter()
+        .find_map(|p| {
+            let meta: std::collections::HashMap<String, String> = serde_json::from_str(p.metadata.as_deref()?).ok()?;
+            meta.get("owner_id").cloned().filter(|o| !o.is_empty())
+        })
+}
+
 /// Handoff depth for a DIRECT inbound comm dispatch (DM / agent_space /
 /// embed). Agent-authored messages carry senderKind:"agent" (+ optional
 /// handoffDepth) — a directed message from an agent IS a handoff, so the
@@ -3933,6 +4007,90 @@ mod janus_sync_tests {
 }
 
 #[cfg(test)]
+mod channel_stop_tests {
+    use super::{HubSender, hub_sender, sessions_of_channel};
+
+    fn meta(pairs: &[(&str, &str)]) -> std::collections::HashMap<String, String> {
+        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    }
+
+    /// Until the hub stamps senders, nobody on it is the owner, whatever a
+    /// message says; an agent label or id still marks an agent.
+    #[test]
+    fn before_the_hub_stamps_senders_nobody_is_the_owner() {
+        let owner = Some("acct-owner");
+        let claims = meta(&[("senderKind", "user"), ("senderAccountId", "acct-owner"), ("role", "user")]);
+        assert_eq!(hub_sender(&claims, owner, false), HubSender::Person);
+        assert_eq!(hub_sender(&meta(&[("senderKind", "agent")]), owner, false), HubSender::Agent);
+        assert_eq!(hub_sender(&meta(&[("fromAgentId", "emp-1")]), owner, false), HubSender::Agent);
+        assert_eq!(hub_sender(&meta(&[]), owner, false), HubSender::Person);
+    }
+
+    /// Once stamped: the owner is a "user" sender on his own account, or
+    /// his own words relayed by one of his bots on his account; everyone
+    /// else is an agent. A mark without his account never counts.
+    #[test]
+    fn a_stamped_sender_is_the_owner_only_on_his_own_account() {
+        let owner = Some("acct-owner");
+        let m = |pairs: &[(&str, &str)]| hub_sender(&meta(pairs), owner, true);
+        assert_eq!(m(&[("senderKind", "user"), ("senderAccountId", "acct-owner")]), HubSender::Owner);
+        assert_eq!(
+            m(&[("senderKind", "agent"), ("senderAccountId", "acct-owner"), ("relayedForOwner", "true")]),
+            HubSender::Owner
+        );
+        assert_eq!(m(&[("senderKind", "agent"), ("senderAccountId", "acct-owner"), ("role", "user")]), HubSender::Agent);
+        assert_eq!(m(&[("senderKind", "agent"), ("senderAccountId", "acct-other"), ("relayedForOwner", "true")]), HubSender::Agent);
+        assert_eq!(m(&[("senderKind", "agent"), ("relayedForOwner", "true")]), HubSender::Agent);
+        assert_eq!(m(&[("senderKind", "user"), ("senderAccountId", "acct-other")]), HubSender::Agent);
+        assert_eq!(m(&[("senderKind", "user")]), HubSender::Agent);
+        assert_eq!(m(&[("senderKind", "visitor")]), HubSender::Agent);
+        assert_eq!(m(&[]), HubSender::Agent);
+        let no_owner = meta(&[("senderKind", "user"), ("senderAccountId", "acct-owner")]);
+        assert_eq!(hub_sender(&no_owner, None, true), HubSender::Agent);
+    }
+
+    /// Another account's bot relaying (or spoofing) its own owner's words is
+    /// stamped "user" with that account and its bot: never this owner's
+    /// authority, a coworker's message.
+    #[test]
+    fn another_accounts_relayed_owner_is_a_coworker() {
+        let other = meta(&[
+            ("senderKind", "user"),
+            ("senderAccountId", "acct-other"),
+            ("senderBotId", "bot-other"),
+            ("relayedForOwner", "true"),
+        ]);
+        assert_eq!(hub_sender(&other, Some("acct-owner"), true), HubSender::Agent);
+    }
+
+    /// Attribution reads the hub-checked agent id once stamped, the label
+    /// before; never the label once stamped.
+    #[test]
+    fn attribution_follows_the_stamp() {
+        let m = meta(&[("fromAgentId", "label"), ("senderAgentId", "hub-checked")]);
+        assert_eq!(super::hub_sender_agent(&m, true), "hub-checked");
+        assert_eq!(super::hub_sender_agent(&m, false), "label");
+        assert_eq!(super::hub_sender_agent(&meta(&[("fromAgentId", "label")]), true), "");
+    }
+
+    /// A stop in a channel reaches each employee's own session in it, and
+    /// the conversation's own; never another conversation's.
+    #[test]
+    fn a_channel_stop_reaches_every_employees_session_in_it() {
+        let live = [
+            "neboai:channel:c1:ann".to_string(),
+            "neboai:channel:c1:bo".to_string(),
+            "neboai:channel:c10:ann".to_string(),
+            "neboai:dm:c1".to_string(),
+        ];
+        assert_eq!(
+            sessions_of_channel("neboai:channel:c1", &live),
+            ["neboai:channel:c1:ann", "neboai:channel:c1:bo", "neboai:channel:c1"]
+        );
+    }
+}
+
+#[cfg(test)]
 mod napp_path_repair_tests {
     use super::repair_napp_path;
 
@@ -4239,6 +4397,7 @@ async fn try_handle_channel_control(
     conversation_id: &str,
     answer: &str,
     metadata: &std::collections::HashMap<String, String>,
+    from: HubSender,
 ) -> bool {
     let needle = format!("channel:{}", conversation_id);
     let ask_key = {
@@ -4247,19 +4406,44 @@ async fn try_handle_channel_control(
             .find(|(k, q)| k.contains(&needle) && !q.is_empty())
             .map(|(k, _)| k.clone())
     };
-    let approval_key = {
+    // An approval in a channel is the owner's alone: anyone else in it
+    // (another bot's employee, a person) never answers one.
+    let approval_key = if from == HubSender::Owner {
         let approvals = state.pending_comm_approvals.lock().await;
         approvals.keys().find(|k| k.contains(&needle)).cloned()
+    } else {
+        None
     };
     if let Some(key) = ask_key.or(approval_key) {
         return try_handle_comm_control(state, &key, answer, metadata).await;
     }
-    // No pending controls — still honor an explicit stop.
-    if metadata.get("kind").map(String::as_str) == Some("stop") {
-        let key = types::keyparser::build_session_key("neboai", "channel", conversation_id);
-        return try_handle_comm_control(state, &key, answer, metadata).await;
-    }
     false
+}
+
+/// A stop in a channel stops every employee's work there: each runs in a
+/// session of its own (`neboai:channel:<conv>:<agent>`), so stopping the
+/// conversation's bare key alone left them running — a team's Stop from
+/// another Nebo reached nobody. Taken from any sender: it only ever stops
+/// work.
+async fn stop_channel(state: &AppState, conversation_id: &str) {
+    let base = types::keyparser::build_session_key("neboai", "channel", conversation_id);
+    let live: Vec<String> = state.run_registry.list_all().await.into_iter().map(|r| r.session_key).collect();
+    let mut cancelled = false;
+    for key in sessions_of_channel(&base, &live) {
+        cancelled |= chat_dispatch::stop_session(&state.store, &state.helpers, &state.run_registry, &key).await;
+    }
+    tracing::info!(conv_id = %conversation_id, cancelled, "inbound channel stop command");
+}
+
+/// The conversation's own session `base` and every employee's session in
+/// it (`<base>:<agent>`), among the `live` session keys, then `base`.
+fn sessions_of_channel(base: &str, live: &[String]) -> Vec<String> {
+    let per_agent = format!("{base}:");
+    let mut out: Vec<String> = live.iter().filter(|k| k.starts_with(&per_agent)).cloned().collect();
+    out.sort();
+    out.dedup();
+    out.push(base.to_string());
+    out
 }
 
 /// Origin for an inbound NeboLoop message. The owner operating their own machine
@@ -5437,6 +5621,12 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
         if text.is_empty() {
             return;
         }
+        if msg.metadata.get("kind").map(String::as_str) == Some("stop") {
+            stop_channel(&state, &msg.conversation_id).await;
+            return;
+        }
+        // Who sent it, as far as this Nebo trusts the hub (`hub_sender`).
+        let from = hub_sender(&msg.metadata, owner_account(&state.store).as_deref(), HUB_STAMPS_SENDERS);
 
         // Sender label: prefer the senderName carried in the content JSON
         // (the web sender embeds it), else a short prefix of the sender id.
@@ -5474,20 +5664,18 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
             None => None,
         };
         if let Some(ref room) = workroom {
-            let from_agent_id = msg.metadata.get("fromAgentId").cloned().unwrap_or_default();
+            let from_agent_id = hub_sender_agent(&msg.metadata, HUB_STAMPS_SENDERS);
             let sender_name = msg
                 .metadata
                 .get("fromAgentName")
                 .cloned()
                 .unwrap_or_else(|| sender_label.clone());
-            let is_agent = !from_agent_id.is_empty()
-                || msg.metadata.get("senderKind").map(String::as_str) == Some("agent");
             // The ONE writer of a team row (`team::record`): the row and the
             // `team_message` event every open team view renders.
             if let Err(e) = team::record(
                 &state,
                 room,
-                team::TeamSender::Hub { agent_id: &from_agent_id, name: &sender_name, is_agent },
+                team::TeamSender::Hub { agent_id: &from_agent_id, name: &sender_name, from },
                 &text,
                 &serde_json::to_value(&msg.attachments).unwrap_or_default(),
                 &[],
@@ -5626,8 +5814,7 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
         // mentioned agents like any message — but they never open or extend a
         // follow-up window, their depth is capped so mention chains terminate,
         // and a per-channel rate limit backstops everything.
-        let sender_is_agent =
-            msg.metadata.get("senderKind").map(String::as_str) == Some("agent");
+        let sender_is_agent = from == HubSender::Agent;
         let handoff_depth_in: u8 = msg
             .metadata
             .get("handoffDepth")
@@ -5666,7 +5853,7 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
         // Human replies may be answering a relayed ask/approval — consume them
         // before any dispatch decision (fixes: channel asks were unanswerable).
         if !sender_is_agent
-            && try_handle_channel_control(&state, &msg.conversation_id, text.trim(), &msg.metadata)
+            && try_handle_channel_control(&state, &msg.conversation_id, text.trim(), &msg.metadata, from)
                 .await
         {
             return;

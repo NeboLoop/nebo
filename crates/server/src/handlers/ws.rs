@@ -1763,10 +1763,7 @@ async fn dispatch_payload(state: &AppState, payload: ChatPayload, hidden: bool) 
     // relayed by the bot" shape (same as the reconcile backfill) — without
     // them the web renders the mirrored prompt as the agent speaking.
     if let Some(reply_cfg) = comm_reply.as_ref().filter(|_| !hidden_prompt) {
-        let mut meta = std::collections::HashMap::new();
-        meta.insert("relay".to_string(), "true".to_string());
-        meta.insert("role".to_string(), "user".to_string());
-        meta.insert("senderName".to_string(), "You".to_string());
+        let meta = crate::chat_dispatch::owner_relay_metadata();
         let user_msg = comm::CommMessage {
             id: uuid::Uuid::new_v4().to_string(),
             from: String::new(),

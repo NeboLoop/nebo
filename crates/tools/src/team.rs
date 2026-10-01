@@ -101,7 +101,7 @@ pub async fn create(
         ));
     }
 
-    let hub_channel_id = mirror_to_hub(comm, name, mission).await;
+    let hub_channel_id = mirror_to_hub(comm, name, mission, &hub_members(store, &members)).await;
 
     let id = uuid::Uuid::new_v4().to_string();
     let team = store
@@ -205,14 +205,36 @@ pub fn update(
         .ok_or_else(|| "team vanished during update".to_string())
 }
 
-/// Best-effort hub mirror: a channel in the bot's hub loop, only when the
-/// plugin is connected AND reports a loop. Every failure is None + a log
-/// line — the hub is never on the team's critical path.
+/// The team's members as the hub knows them: a local employee by its hub
+/// agent id (`loop_agent_id`, set while it is on the hub), a remote one by
+/// the hub id it was added with. A local employee not on the hub has none.
+fn hub_members(store: &Store, members: &[TeamMember]) -> Vec<String> {
+    members
+        .iter()
+        .filter_map(|m| {
+            if m.is_local() {
+                store.get_agent(&m.agent_id).ok().flatten().and_then(|a| a.loop_agent_id).filter(|id| !id.is_empty())
+            } else {
+                Some(m.agent_id.clone())
+            }
+        })
+        .collect()
+}
+
+/// Best-effort hub mirror: a channel that holds exactly the team's members
+/// (`members`, hub ids), only when the plugin is connected AND reports a
+/// loop, and some member is on the hub. Never a loop-wide channel, never one
+/// matched by name. Every failure is None + a log line — the hub is never on
+/// the team's critical path.
 async fn mirror_to_hub(
     comm: Option<&Arc<dyn CommPlugin>>,
     name: &str,
     mission: &str,
+    members: &[String],
 ) -> Option<String> {
+    if members.is_empty() {
+        return None;
+    }
     let comm = comm?;
     if !comm.is_connected() {
         return None;
@@ -226,7 +248,7 @@ async fn mirror_to_hub(
         }
     }
     match comm
-        .ensure_channel(name, (!mission.is_empty()).then_some(mission))
+        .ensure_channel(name, (!mission.is_empty()).then_some(mission), members)
         .await
     {
         Ok(channel_id) => Some(channel_id),
@@ -299,8 +321,14 @@ pub fn resolve_agent(store: &Store, label: &str) -> Option<db::models::Agent> {
 /// employee at any time and the team must not show a stale label. A remote
 /// member has no local roster to ask, so the name recorded when it joined is
 /// what gets shown.
+///
+/// Names may repeat across Nebos, never on one: a remote member whose name
+/// another member has is qualified with the computer it is on ("Bookkeeper
+/// (on 5e1f0000)"), so a bare name always means this Nebo's employee and
+/// never silently another computer's.
 pub fn member_roster(store: &Store, team: &Team) -> Vec<(String, String)> {
-    team.members
+    let named: Vec<(String, String)> = team
+        .members
         .iter()
         .map(|m| {
             let name = if m.is_local() {
@@ -316,6 +344,23 @@ pub fn member_roster(store: &Store, team: &Team) -> Vec<(String, String)> {
                 m.name.clone()
             };
             (m.agent_id.clone(), name)
+        })
+        .collect();
+    team.members
+        .iter()
+        .zip(&named)
+        .map(|(m, (id, name))| {
+            let shared = named
+                .iter()
+                .filter(|(other, n)| other != id && comm::handle::slugify(n) == comm::handle::slugify(name))
+                .count()
+                > 0;
+            let name = if shared && !m.is_local() {
+                format!("{name} (on {})", m.bot_id.chars().take(8).collect::<String>())
+            } else {
+                name.clone()
+            };
+            (id.clone(), name)
         })
         .collect()
 }
@@ -338,17 +383,34 @@ pub fn member_ids(team: &Team) -> Vec<String> {
 /// Inside a team, an exact member name after '@' normalizes to that member's
 /// mention token. Employees naturally write "@Executive Assistant"; the
 /// owner's composer writes tokens. One token grammar for dispatch.
+///
+/// A name matches whole ("@Ann" never takes the start of "@Anna"), the
+/// longest names first, and a name two members answer to is left as written:
+/// it addresses neither rather than a guess.
 pub fn normalize_mentions(text: &str, roster: &[(String, String)]) -> String {
+    let mut names: Vec<&(String, String)> = roster.iter().filter(|(_, n)| !n.is_empty()).collect();
+    names.sort_by_key(|(_, n)| std::cmp::Reverse(n.chars().count()));
     let mut t = text.to_string();
-    for (id, name) in roster {
-        if name.is_empty() {
+    for (id, name) in names {
+        let shared = roster.iter().filter(|(_, n)| n.eq_ignore_ascii_case(name)).count() > 1;
+        if shared {
             continue;
         }
         let needle = format!("@{}", name).to_lowercase();
+        let mut from = 0;
         loop {
             let lower = t.to_lowercase();
-            let Some(pos) = lower.find(&needle) else { break };
-            t = format!("{}<@{}>{}", &t[..pos], id, &t[pos + needle.len()..]);
+            let Some(pos) = lower[from..].find(&needle).map(|p| p + from) else { break };
+            let end = pos + needle.len();
+            // A whole name, and never the inside of a token already written.
+            let whole = !lower[end..].chars().next().is_some_and(|c| c.is_alphanumeric());
+            if !whole || lower[..pos].ends_with('<') || lower.len() != t.len() {
+                from = end;
+                continue;
+            }
+            let token = format!("<@{id}>");
+            t = format!("{}{token}{}", &t[..pos], &t[end..]);
+            from = pos + token.len();
         }
     }
     t
@@ -531,6 +593,45 @@ mod tests {
         let ids = mentioned_members(&text, &["chief".to_string(), "ea".to_string()]);
         assert_eq!(ids, vec!["ea".to_string(), "chief".to_string()]);
         assert!(mentioned_members("nobody here", &["chief".to_string()]).is_empty());
+    }
+
+    /// A name matches whole and the longest first; a name two members
+    /// answer to addresses neither.
+    #[test]
+    fn a_mention_takes_a_whole_name_and_never_guesses() {
+        let roster = vec![
+            ("hub-ann".to_string(), "Ann".to_string()),
+            ("anna".to_string(), "Anna".to_string()),
+            ("ann-lee".to_string(), "Ann Lee".to_string()),
+        ];
+        assert_eq!(normalize_mentions("@Anna and @Ann, then @ann lee", &roster), "<@anna> and <@hub-ann>, then <@ann-lee>");
+        let twice = vec![("a".to_string(), "Bookkeeper".to_string()), ("b".to_string(), "bookkeeper".to_string())];
+        assert_eq!(normalize_mentions("@Bookkeeper go", &twice), "@Bookkeeper go");
+    }
+
+    /// Names repeat across Nebos: the remote one is qualified with its
+    /// computer, so the bare name is this Nebo's employee.
+    #[test]
+    fn a_remote_member_named_like_another_is_qualified() {
+        let s = store();
+        s.create_agent("bk", None, "Bookkeeper", "", "", "{}", None, None).unwrap();
+        let remote = |bot: &str, id: &str, name: &str| TeamMember { bot_id: bot.to_string(), agent_id: id.to_string(), name: name.to_string() };
+        s.create_team(
+            "t1",
+            "Books",
+            "",
+            &[TeamMember::local("bk"), remote("5e1f0000-aaaa", "hub-1", "Bookkeeper"), remote("77770000-bbbb", "hub-2", "Scout")],
+            "bk",
+            None,
+        )
+        .unwrap();
+        let team = s.get_team("t1").unwrap().unwrap();
+        let roster = member_roster(&s, &team);
+        assert_eq!(
+            roster.iter().map(|(_, n)| n.as_str()).collect::<Vec<_>>(),
+            ["Bookkeeper", "Bookkeeper (on 5e1f0000)", "Scout"]
+        );
+        assert_eq!(normalize_mentions("@Bookkeeper and @Bookkeeper (on 5e1f0000)", &roster), "<@bk> and <@hub-1>");
     }
 
     /// A member reads names, never ids; the round trip through

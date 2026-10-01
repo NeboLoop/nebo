@@ -278,10 +278,10 @@ impl LoopCore {
         (tokens, unresolved)
     }
 
-    /// A message to a hub bot (`to`) or a hub channel (`channel_id`), with an
-    /// optional file and, in a channel, mentions to hand it to.
+    /// A message to a hub channel (`channel_id`), with an optional file and
+    /// mentions to hand it to. Messages straight to another bot are retired
+    /// on the hub: `validate` says so before anything is sent.
     async fn send(&self, input: &serde_json::Value, handoff_depth: u8) -> ToolResult {
-        let to = str_field(input, "to");
         let channel_id = str_field(input, "channel_id");
         let text = str_field(input, "text");
         let path = str_field(input, "path");
@@ -306,7 +306,7 @@ impl LoopCore {
         };
         let mut mention_tokens: Vec<String> = Vec::new();
         let mut unresolved: Vec<String> = Vec::new();
-        if !channel_id.is_empty() && !mention_names.is_empty() {
+        if !mention_names.is_empty() {
             let (tokens, missing) = self.resolve_mentions(channel_id, &mention_names).await;
             mention_tokens = tokens;
             unresolved = missing;
@@ -344,18 +344,13 @@ impl LoopCore {
         } else {
             format!("{} {}", mention_tokens.join(" "), text)
         };
-        let (msg_to, topic, msg_type) = if channel_id.is_empty() {
-            (to.to_string(), String::new(), comm::CommMessageType::Message)
-        } else {
-            (String::new(), channel_id.to_string(), comm::CommMessageType::LoopChannel)
-        };
         let msg = comm::CommMessage {
             id: uuid::Uuid::new_v4().to_string(),
             from: String::new(),
-            to: msg_to,
-            conversation_id: topic.clone(),
-            topic,
-            msg_type,
+            to: String::new(),
+            conversation_id: channel_id.to_string(),
+            topic: channel_id.to_string(),
+            msg_type: comm::CommMessageType::LoopChannel,
             content,
             metadata,
             timestamp: 0,
@@ -370,13 +365,6 @@ impl LoopCore {
         };
 
         match self.comm.send(msg).await {
-            Ok(()) if channel_id.is_empty() => {
-                if had_file {
-                    ToolResult::ok(format!("Message with the attached file sent to {}", to))
-                } else {
-                    ToolResult::ok(format!("Message sent to {}", to))
-                }
-            }
             Ok(()) => {
                 let mut note = if had_file {
                     format!("Sent to channel {} with the attached file.", channel_id)
@@ -401,7 +389,7 @@ impl LoopCore {
     async fn ensure_channel(&self, input: &serde_json::Value) -> ToolResult {
         let name = str_field(input, "name");
         let description = Some(str_field(input, "description")).filter(|s| !s.is_empty());
-        match self.comm.ensure_channel(name, description).await {
+        match self.comm.ensure_channel(name, description, &[]).await {
             Ok(channel_id) => ToolResult::ok(format!(
                 "Channel \"{}\" is ready (channel_id: {}). Post to it with \
                  send_loop_message(channel_id: \"{}\", text: \"...\").",
@@ -599,7 +587,7 @@ impl Kind {
 
     fn description(self) -> &'static str {
         match self {
-            Kind::SendMessage => "Sends a message on the NeboAI hub: to a channel (`channel_id`) or to a bot on another machine (`to`, its agent id).\n\
+            Kind::SendMessage => "Sends a message to a NeboAI hub channel (`channel_id`). Employees on another computer are reached in a channel both are members of: a team's channel, for work together.\n\
                 - `path` attaches a local file; success is reported only once it is delivered.\n\
                 - In a channel, `mention` hands the message to employees by name: they pick it up and run.\n\
                 - Not for employees or teams on this Nebo: use send_message.",
@@ -627,7 +615,6 @@ impl Kind {
                 "type": "object",
                 "properties": {
                     "channel_id": { "type": "string", "description": "The hub channel to post to." },
-                    "to": { "type": "string", "description": "A bot's agent id on another machine, for a direct message." },
                     "text": { "type": "string", "description": "The message." },
                     "path": { "type": "string", "description": "Absolute path of a local file to attach." },
                     "mention": { "type": "array", "items": { "type": "string" }, "description": "Employees in the channel to hand this message to, by name." }
@@ -690,9 +677,13 @@ impl Kind {
         if self != Kind::SendMessage {
             return Ok(());
         }
-        let (channel_id, to) = (str_field(input, "channel_id"), str_field(input, "to"));
-        if channel_id.is_empty() == to.is_empty() {
-            return Err("Give exactly one of `channel_id` (a hub channel) or `to` (a bot's agent id).".into());
+        if !str_field(input, "to").is_empty() {
+            return Err("Messages straight to a bot on another computer are not available. Put the employees in a \
+                        team and post there, or post in a channel both are members of with `channel_id`."
+                .into());
+        }
+        if str_field(input, "channel_id").is_empty() {
+            return Err("Give the hub channel to post to in `channel_id`.".into());
         }
         if str_field(input, "text").is_empty() && str_field(input, "path").is_empty() {
             return Err("Give the message in `text`, a file in `path`, or both.".into());
@@ -701,10 +692,7 @@ impl Kind {
     }
 
     fn labels(self, input: &serde_json::Value) -> (String, String) {
-        let target = Some(str_field(input, "channel_id"))
-            .filter(|c| !c.is_empty())
-            .map(|c| format!("channel {c}"))
-            .unwrap_or_else(|| str_field(input, "to").to_string());
+        let target = format!("channel {}", str_field(input, "channel_id"));
         match self {
             Kind::SendMessage => (format!("messaging {target}"), format!("Messaged {target}")),
             Kind::EnsureChannel => ("setting up a hub channel".into(), "Set up a hub channel".into()),
@@ -879,7 +867,9 @@ mod tests {
         let hub = tools(LoopCore::new(connected().await, None));
         let send = hub.iter().find(|t| t.name() == "send_loop_message").unwrap();
         assert!(send.validate_input(&json!({"channel_id": "c1", "text": "hi"})).is_ok());
-        assert!(send.validate_input(&json!({"to": "agent-1", "path": "/tmp/a.pdf"})).is_ok());
+        assert!(send.validate_input(&json!({"channel_id": "c1", "path": "/tmp/a.pdf"})).is_ok());
+        let retired = send.validate_input(&json!({"to": "agent-1", "text": "hi"})).unwrap_err();
+        assert!(retired.contains("not available") && retired.contains("team"), "{retired}");
         assert!(send.validate_input(&json!({"channel_id": "c1", "to": "agent-1", "text": "hi"})).is_err());
         assert!(send.validate_input(&json!({"text": "hi"})).is_err());
         assert!(send.validate_input(&json!({"channel_id": "c1"})).is_err());

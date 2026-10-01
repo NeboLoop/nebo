@@ -139,6 +139,11 @@ pub struct SendPayload {
     pub from_agent_id: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub from_agent_name: String,
+    /// The speaking employee's HUB agent id (its `loop_agent_id`) on a
+    /// channel send: the hub admits a channel send from a member of that
+    /// channel only. Empty for main-bot sends and anything not a channel.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub agent_id: String,
 }
 
 /// MESSAGE_DELIVERY frame payload (server -> client).

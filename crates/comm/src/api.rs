@@ -1119,18 +1119,22 @@ impl NeboAIApi {
         loop_id: &str,
         name: &str,
         description: Option<&str>,
+        members: &[String],
     ) -> Result<String, CommError> {
         #[derive(serde::Serialize)]
         struct CreateChannelBody<'a> {
             name: &'a str,
             #[serde(skip_serializing_if = "Option::is_none")]
             description: Option<&'a str>,
+            /// Hub agent ids: the channel holds exactly these agents.
+            #[serde(skip_serializing_if = "<[String]>::is_empty")]
+            members: &'a [String],
         }
         let resp = self
             .do_json::<serde_json::Value>(
                 reqwest::Method::POST,
                 &format!("/api/v1/loops/{}/channels", loop_id),
-                Some(&CreateChannelBody { name, description }),
+                Some(&CreateChannelBody { name, description, members }),
             )
             .await?;
         // Accept both envelope shapes ({channel:{id}} and flat {id}).
