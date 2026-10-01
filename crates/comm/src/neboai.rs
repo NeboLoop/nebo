@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 
 use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt, StreamExt};
@@ -22,7 +22,7 @@ use crate::ulid::UlidGen;
 use crate::wire;
 use crate::{
     AgentCard, ChannelMemberItem, ChannelMessageItem, CommError, CommMessage, CommMessageType,
-    CommPlugin, LoopChannelInfo, LoopInfo, MessageHandler, StreamOffsets,
+    CommPlugin, LoopChannelInfo, LoopInfo, MessageHandler, Outbox, StreamOffsets,
 };
 
 type WsStream = tokio_tungstenite::WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
@@ -101,6 +101,40 @@ pub struct NeboAIPlugin {
     /// Set by the read loop when the hub closed the connection naming the
     /// cell the account lives in; the next connect dials there first.
     redirect_to: Arc<std::sync::Mutex<Option<crate::cell::Redirect>>>,
+    /// Where every durable outbound message waits until it is sent
+    /// (`with_outbox`); none sends straight through.
+    outbox: Option<Arc<dyn Outbox>>,
+    /// One pass over the outbox at a time, so messages leave in order.
+    flushing: tokio::sync::Mutex<()>,
+    /// The current connection's AUTH_OK (unix ms); 0 before the first.
+    connected_since: Arc<AtomicI64>,
+    /// The current connection's hub dedupes a repeated msg id (AUTH_OK
+    /// feature [`MSG_DEDUP`]), so a send that may have reached it can go
+    /// again.
+    hub_dedupes: AtomicBool,
+}
+
+/// The AUTH_OK feature saying the hub stores and delivers a SEND that
+/// repeats an earlier one's msg id only once.
+pub const MSG_DEDUP: &str = "msg_dedup";
+
+/// A reconnect's backlog goes out at the hub's sustained send rate (one a
+/// second) once this many have used up the connection's burst allowance
+/// (the gateway's is 20, shared with the bot's other sends). The hub drops
+/// what goes over the limit without a word to a bot.
+const FLUSH_BURST: usize = 10;
+
+/// With a deduping hub, a handed-off message is kept until its connection
+/// has stayed up this long after (the reconnect policy's healthy session),
+/// and sent again if that connection drops first. The hub confirms nothing,
+/// so a connection that lived on is the confirmation.
+const CONFIRMED_AFTER_MS: i64 = crate::reconnect::HEALTHY.as_millis() as i64;
+
+fn unix_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
 }
 
 impl NeboAIPlugin {
@@ -122,7 +156,277 @@ impl NeboAIPlugin {
             ended: Arc::new(std::sync::Mutex::new(None)),
             offsets,
             redirect_to: Arc::new(std::sync::Mutex::new(None)),
+            outbox: None,
+            flushing: tokio::sync::Mutex::new(()),
+            connected_since: Arc::new(AtomicI64::new(0)),
+            hub_dedupes: AtomicBool::new(false),
         }
+    }
+
+    /// Keep every durable outbound message in `outbox` until it is sent.
+    pub fn with_outbox(mut self, outbox: Arc<dyn Outbox>) -> Self {
+        self.outbox = Some(outbox);
+        self
+    }
+
+    /// One pass over the outbox, oldest first. Each message that never left
+    /// is handed to the connection; one that may have left on an earlier
+    /// connection (or process) goes again only where the hub dedupes by msg
+    /// id, and is otherwise dropped, since a second copy would be stored and
+    /// shown twice. The pass stops at the first message that has to wait for
+    /// a connection, so a conversation's messages never pass each other.
+    /// Returns the messages refused for good in this pass, by id.
+    async fn flush(&self) -> HashMap<String, CommError> {
+        let mut refused = HashMap::new();
+        let Some(ref outbox) = self.outbox else {
+            return refused;
+        };
+        let _one_pass = self.flushing.lock().await;
+        // Nothing goes without a connection, and whether its hub dedupes is
+        // not known before one.
+        if !self.connected.load(Ordering::SeqCst) {
+            return refused;
+        }
+        let dedupes = self.hub_dedupes.load(Ordering::SeqCst);
+        let since = self.connected_since.load(Ordering::SeqCst);
+        let mut sent = 0;
+        for (msg, handed_off) in outbox.pending() {
+            let id = msg.id.clone();
+            match handed_off {
+                // Out on this connection, waiting for it to live on.
+                Some(at) if since > 0 && at >= since => {
+                    if unix_ms() - at >= CONFIRMED_AFTER_MS {
+                        self.confirmed(&id);
+                    }
+                    continue;
+                }
+                Some(_) if !dedupes => {
+                    warn!(msg_id = %id, "comm message may have reached the hub before the connection dropped; not sent again");
+                    outbox.remove(&id);
+                    continue;
+                }
+                _ => {}
+            }
+            if sent >= FLUSH_BURST {
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            }
+            // The same wire id on every send of the message: what a
+            // deduping hub recognizes a second copy by.
+            let msg_id = uuid::Uuid::parse_str(&id)
+                .map(|u| *u.as_bytes())
+                .unwrap_or_else(|_| self.ulid_gen.next());
+            let frame = match self.encode_send(&msg, msg_id).await {
+                Ok(frame) => frame,
+                Err(CommError::NotConnected | CommError::Paused | CommError::NoActivePlugin) => break,
+                Err(e) => {
+                    warn!(msg_id = %id, error = %e, "comm message refused for good; dropped");
+                    outbox.remove(&id);
+                    refused.insert(id, e);
+                    continue;
+                }
+            };
+            // From here its bytes may leave.
+            outbox.handed_off(&id, Some(unix_ms()));
+            if self.queue_send(frame).await.is_err() {
+                // The connection went before the frame was queued: never left.
+                outbox.handed_off(&id, None);
+                break;
+            }
+            sent += 1;
+            if !dedupes {
+                // Never sent again, so nothing to keep.
+                self.confirmed(&id);
+            }
+        }
+        refused
+    }
+
+    /// The one place a handed-off message counts as delivered and leaves
+    /// the outbox. Today that is the heuristic in `flush` (its connection
+    /// lived on for [`CONFIRMED_AFTER_MS`], or the hub cannot dedupe a
+    /// resend anyway); a hub acknowledging each SEND would call this from
+    /// the read loop instead.
+    fn confirmed(&self, id: &str) {
+        if let Some(ref outbox) = self.outbox {
+            outbox.remove(id);
+        }
+    }
+
+    /// Encode one message as a SEND frame for the current connection.
+    /// Refused with `NotConnected` while there is none and `Paused` while
+    /// this process's lease is not held (another process may be the bot
+    /// now); any other refusal means it can never be sent.
+    async fn encode_send(&self, msg: &CommMessage, msg_id: [u8; 16]) -> Result<Vec<u8>, CommError> {
+        if crate::lease::process().frozen() {
+            return Err(CommError::Paused);
+        }
+        if !self.connected.load(Ordering::SeqCst) {
+            return Err(CommError::NotConnected);
+        }
+
+        // LoopChannel sends carry the CHANNEL ID (the loop tool has no access to
+        // the channel→conversation map). But the gateway routes channel messages
+        // by the channel's distinct conversation_id, on the fixed "channel" stream.
+        // Resolve here — without this the SendPayload targets a conversation that
+        // doesn't exist and the message is silently dropped (the send reports
+        // success because it's fire-and-forget). Done before taking `inner` so the
+        // join-on-miss path doesn't deadlock on the lock.
+        let loop_channel_conv = if matches!(msg.msg_type, CommMessageType::LoopChannel) {
+            let channel_id = if !msg.conversation_id.is_empty() {
+                msg.conversation_id.clone()
+            } else {
+                msg.topic.clone()
+            };
+            Some(self.resolve_channel_conv(&channel_id).await?)
+        } else {
+            None
+        };
+
+        // Find conversation for the topic/target
+        let conv_id = if let Some(ref c) = loop_channel_conv {
+            c.clone()
+        } else if !msg.conversation_id.is_empty() {
+            msg.conversation_id.clone()
+        } else if !msg.to.is_empty() {
+            // Try agent space first, then DM peer lookup. Right after a
+            // connect the maps are still filling from JOIN results (a queued
+            // message goes out then), so a miss waits briefly, as a channel's
+            // does in `resolve_channel_conv`.
+            let mut found = None;
+            for _ in 0..30 {
+                let maps = self.conv_maps.read().await;
+                found = maps
+                    .agent_space_by_slug
+                    .get(&msg.to)
+                    .or_else(|| maps.dm_by_peer.get(&msg.to))
+                    .cloned();
+                drop(maps);
+                if found.is_some() {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+            found.ok_or_else(|| CommError::Other(format!("no conversation for {}", msg.to)))?
+        } else {
+            return Err(CommError::Other("no conversation_id or recipient".into()));
+        };
+
+        let stream = if loop_channel_conv.is_some() {
+            // Channel messages always go out on the fixed "channel" stream
+            // (mirrors the agent's channel-reply path), not the channel UUID.
+            "channel"
+        } else if msg.topic.is_empty() {
+            // Default to agent_space if we resolved via agent slug, else dm
+            let maps = self.conv_maps.read().await;
+            if !msg.to.is_empty() && maps.agent_space_by_slug.contains_key(&msg.to) {
+                "agent_space"
+            } else {
+                "dm"
+            }
+        } else if msg.topic == "embed" {
+            // Embed replies go out on the "chat" stream — the web widget listens
+            // for non-ephemeral streams and merges `type: "stream"` chunks,
+            // finalizing on the closing typeless message (like agent space).
+            "chat"
+        } else {
+            &msg.topic
+        };
+        let mut content = serde_json::json!({ "text": msg.content });
+        // Streaming chunks AND tool-activity are ephemeral — transient signals
+        // the frontend assembles live, not persisted/backfilled as bubbles.
+        let ephemeral = matches!(
+            msg.msg_type,
+            CommMessageType::Stream | CommMessageType::ToolActivity
+        );
+        // Tag the message type so the frontend can route it: streaming chunks
+        // (`type: "stream"`) accumulate into one bubble; `tool_activity`
+        // collapses into the "Used N tools" timeline; etc. The closing
+        // CommMessageType::Message stays TYPELESS so the web finalizes
+        // (replaces) the accumulated streaming bubble with the full text.
+        if !matches!(msg.msg_type, CommMessageType::Message) {
+            if let Ok(serde_json::Value::String(t)) = serde_json::to_value(&msg.msg_type) {
+                content["type"] = serde_json::Value::String(t);
+            }
+        }
+        // Metadata rides nested under content.metadata — the canonical place
+        // the web reads (attachToolActivity, suggestions, ask options, stop
+        // filters all read content.metadata.*). Root-level copies remain for
+        // older web fallback readers (content.senderName); drop them once no
+        // deployed frontend reads root fields.
+        if !msg.metadata.is_empty() {
+            content["metadata"] = serde_json::to_value(&msg.metadata).unwrap_or_default();
+        }
+        if let serde_json::Value::Object(ref mut map) = content {
+            for (k, v) in &msg.metadata {
+                if k != "metadata" {
+                    map.insert(k.clone(), serde_json::Value::String(v.clone()));
+                }
+            }
+        }
+        // Include file/image/video attachments if present
+        if !msg.attachments.is_empty() {
+            content["attachments"] = serde_json::to_value(&msg.attachments)
+                .unwrap_or_default();
+        }
+        // The message's own id rides every send of it, a resend from the
+        // outbox included, so a receiver can tell a second copy from a new
+        // message: the hub stamps each send with a fresh id of its own. Set
+        // after the metadata copies so a lifted `clientId` never replaces it.
+        if !ephemeral && !msg.id.is_empty() {
+            content["clientId"] = serde_json::Value::String(msg.id.clone());
+        }
+
+        if let Some(ref dl) = *self.devlog.read().await {
+            dl.outbound(stream, &conv_id, &msg.content);
+        }
+
+        // Instrument the RESPONSE: what identity we attach to a reply. The
+        // sending agent rides the wire as fromAgentId/fromAgentName (stamped
+        // into msg.metadata by the dispatcher); senderName in content remains
+        // for older web readers.
+        tracing::info!(
+            target: "neboai_identity",
+            conv_id = %conv_id,
+            stream = %stream,
+            msg_type = ?msg.msg_type,
+            to = %msg.to,
+            from = %msg.from,
+            sender_name = ?msg.metadata.get("senderName"),
+            meta_keys = ?msg.metadata.keys().collect::<Vec<_>>(),
+            "OUTBOUND send() — what identity we attach to the response"
+        );
+
+        let payload = serde_json::to_vec(&wire::SendPayload {
+            conversation_id: conv_id,
+            stream: stream.to_string(),
+            content,
+            from_agent_id: msg
+                .metadata
+                .get("fromAgentId")
+                .cloned()
+                .unwrap_or_default(),
+            from_agent_name: msg
+                .metadata
+                .get("fromAgentName")
+                .cloned()
+                .unwrap_or_default(),
+        })
+        .map_err(|e| CommError::Other(e.to_string()))?;
+
+        // Stream chunks are ephemeral (fanout-only, not persisted): only the
+        // final Message is durable, so history replay shows one clean message
+        // rather than the intermediate fragments.
+        let flags = if ephemeral { frame::FLAG_EPHEMERAL } else { 0 };
+        frame::encode(
+            Header {
+                frame_type: frame::TYPE_SEND_MESSAGE,
+                flags,
+                msg_id,
+                ..Default::default()
+            },
+            &payload,
+        )
+        .map_err(|e| CommError::Other(e.to_string()))
     }
 
     /// Returns the rotated bot JWT from the last AUTH_OK, if any.
@@ -204,7 +508,7 @@ impl NeboAIPlugin {
         let tx = inner.send_tx.as_ref().ok_or(CommError::NotConnected)?;
         tx.send(data)
             .await
-            .map_err(|_| CommError::Other("send channel closed".into()))
+            .map_err(|_| CommError::NotConnected)
     }
 
     /// Join a bot stream (e.g. "chat", "installs", "dm") from its last acked
@@ -494,7 +798,14 @@ impl CommPlugin for NeboAIPlugin {
         }
 
         // Parse AUTH_OK to extract rotated token (if present)
-        if let Ok(auth_result) = serde_json::from_slice::<wire::AuthResultPayload>(auth_payload) {
+        let auth_result = serde_json::from_slice::<wire::AuthResultPayload>(auth_payload);
+        self.hub_dedupes.store(
+            auth_result
+                .as_ref()
+                .is_ok_and(|r| r.features.iter().any(|f| f == MSG_DEDUP)),
+            Ordering::SeqCst,
+        );
+        if let Ok(auth_result) = auth_result {
             // The lease this process now holds; epoch 0 = a hub that issues
             // none. An unreadable AUTH_OK leaves the lease unconfirmed.
             let ttl = match auth_result.lease_ttl_secs {
@@ -549,6 +860,7 @@ impl CommPlugin for NeboAIPlugin {
             inner.cancel = Some(cancel.clone());
             inner.api = Some(api);
         }
+        self.connected_since.store(unix_ms(), Ordering::SeqCst);
         self.connected.store(true, Ordering::SeqCst);
 
         // Clone what the read loop needs (handler is in separate sync lock)
@@ -657,165 +969,36 @@ impl CommPlugin for NeboAIPlugin {
         api.upload_file(filename, mime_type, data, fields).await
     }
 
-    async fn send(&self, msg: CommMessage) -> Result<(), CommError> {
-        if !self.connected.load(Ordering::SeqCst) {
-            return Err(CommError::NotConnected);
-        }
-
-        // LoopChannel sends carry the CHANNEL ID (the loop tool has no access to
-        // the channel→conversation map). But the gateway routes channel messages
-        // by the channel's distinct conversation_id, on the fixed "channel" stream.
-        // Resolve here — without this the SendPayload targets a conversation that
-        // doesn't exist and the message is silently dropped (the send reports
-        // success because it's fire-and-forget). Done before taking `inner` so the
-        // join-on-miss path doesn't deadlock on the lock.
-        let loop_channel_conv = if matches!(msg.msg_type, CommMessageType::LoopChannel) {
-            let channel_id = if !msg.conversation_id.is_empty() {
-                msg.conversation_id.clone()
-            } else {
-                msg.topic.clone()
-            };
-            Some(self.resolve_channel_conv(&channel_id).await?)
-        } else {
-            None
-        };
-
-        let inner = self.inner.read().await;
-
-        // Find conversation for the topic/target
-        let conv_id = if let Some(ref c) = loop_channel_conv {
-            c.clone()
-        } else if !msg.conversation_id.is_empty() {
-            msg.conversation_id.clone()
-        } else if !msg.to.is_empty() {
-            // Try agent space first, then DM peer lookup
-            let maps = self.conv_maps.read().await;
-            if let Some(conv) = maps.agent_space_by_slug.get(&msg.to) {
-                conv.clone()
-            } else {
-                maps.dm_by_peer
-                    .get(&msg.to)
-                    .cloned()
-                    .ok_or_else(|| CommError::Other(format!("no conversation for {}", msg.to)))?
-            }
-        } else {
-            return Err(CommError::Other("no conversation_id or recipient".into()));
-        };
-
-        let stream = if loop_channel_conv.is_some() {
-            // Channel messages always go out on the fixed "channel" stream
-            // (mirrors the agent's channel-reply path), not the channel UUID.
-            "channel"
-        } else if msg.topic.is_empty() {
-            // Default to agent_space if we resolved via agent slug, else dm
-            let maps = self.conv_maps.read().await;
-            if !msg.to.is_empty() && maps.agent_space_by_slug.contains_key(&msg.to) {
-                "agent_space"
-            } else {
-                "dm"
-            }
-        } else if msg.topic == "embed" {
-            // Embed replies go out on the "chat" stream — the web widget listens
-            // for non-ephemeral streams and merges `type: "stream"` chunks,
-            // finalizing on the closing typeless message (like agent space).
-            "chat"
-        } else {
-            &msg.topic
-        };
-        let mut content = serde_json::json!({ "text": msg.content });
-        // Streaming chunks AND tool-activity are ephemeral — transient signals
-        // the frontend assembles live, not persisted/backfilled as bubbles.
-        let ephemeral = matches!(
+    async fn send(&self, mut msg: CommMessage) -> Result<(), CommError> {
+        // Streaming chunks and tool activity are transient signals: one that
+        // missed its moment is worth nothing later.
+        let transient = matches!(
             msg.msg_type,
             CommMessageType::Stream | CommMessageType::ToolActivity
         );
-        // Tag the message type so the frontend can route it: streaming chunks
-        // (`type: "stream"`) accumulate into one bubble; `tool_activity`
-        // collapses into the "Used N tools" timeline; etc. The closing
-        // CommMessageType::Message stays TYPELESS so the web finalizes
-        // (replaces) the accumulated streaming bubble with the full text.
-        if !matches!(msg.msg_type, CommMessageType::Message) {
-            if let Ok(serde_json::Value::String(t)) = serde_json::to_value(&msg.msg_type) {
-                content["type"] = serde_json::Value::String(t);
-            }
+        let Some(outbox) = self.outbox.as_ref().filter(|_| !transient) else {
+            let frame = self.encode_send(&msg, self.ulid_gen.next()).await?;
+            return self.queue_send(frame).await;
+        };
+        // The message's id from here on, on the wire too: a monotonic one,
+        // the same on every send of it.
+        let msg_id = self.ulid_gen.next();
+        msg.id = uuid_from_bytes(&msg_id);
+        if !outbox.put(&msg) {
+            let frame = self.encode_send(&msg, msg_id).await?;
+            return self.queue_send(frame).await;
         }
-        // Metadata rides nested under content.metadata — the canonical place
-        // the web reads (attachToolActivity, suggestions, ask options, stop
-        // filters all read content.metadata.*). Root-level copies remain for
-        // older web fallback readers (content.senderName); drop them once no
-        // deployed frontend reads root fields.
-        if !msg.metadata.is_empty() {
-            content["metadata"] = serde_json::to_value(&msg.metadata).unwrap_or_default();
+        let id = msg.id.clone();
+        // Queued behind anything older; Ok once sent or kept for the next
+        // connection, an error only when it was refused for good.
+        match self.flush().await.remove(&id) {
+            Some(e) => Err(e),
+            None => Ok(()),
         }
-        if let serde_json::Value::Object(ref mut map) = content {
-            for (k, v) in &msg.metadata {
-                if k != "metadata" {
-                    map.insert(k.clone(), serde_json::Value::String(v.clone()));
-                }
-            }
-        }
-        // Include file/image/video attachments if present
-        if !msg.attachments.is_empty() {
-            content["attachments"] = serde_json::to_value(&msg.attachments)
-                .unwrap_or_default();
-        }
+    }
 
-        if let Some(ref dl) = *self.devlog.read().await {
-            dl.outbound(stream, &conv_id, &msg.content);
-        }
-
-        // Instrument the RESPONSE: what identity we attach to a reply. The
-        // sending agent rides the wire as fromAgentId/fromAgentName (stamped
-        // into msg.metadata by the dispatcher); senderName in content remains
-        // for older web readers.
-        tracing::info!(
-            target: "neboai_identity",
-            conv_id = %conv_id,
-            stream = %stream,
-            msg_type = ?msg.msg_type,
-            to = %msg.to,
-            from = %msg.from,
-            sender_name = ?msg.metadata.get("senderName"),
-            meta_keys = ?msg.metadata.keys().collect::<Vec<_>>(),
-            "OUTBOUND send() — what identity we attach to the response"
-        );
-
-        let payload = serde_json::to_vec(&wire::SendPayload {
-            conversation_id: conv_id,
-            stream: stream.to_string(),
-            content,
-            from_agent_id: msg
-                .metadata
-                .get("fromAgentId")
-                .cloned()
-                .unwrap_or_default(),
-            from_agent_name: msg
-                .metadata
-                .get("fromAgentName")
-                .cloned()
-                .unwrap_or_default(),
-        })
-        .map_err(|e| CommError::Other(e.to_string()))?;
-
-        // Stream chunks are ephemeral (fanout-only, not persisted): only the
-        // final Message is durable, so history replay shows one clean message
-        // rather than the intermediate fragments.
-        let flags = if ephemeral { frame::FLAG_EPHEMERAL } else { 0 };
-        let encoded = frame::encode(
-            Header {
-                frame_type: frame::TYPE_SEND_MESSAGE,
-                flags,
-                msg_id: self.ulid_gen.next(),
-                ..Default::default()
-            },
-            &payload,
-        )
-        .map_err(|e| CommError::Other(e.to_string()))?;
-
-        let tx = inner.send_tx.as_ref().ok_or(CommError::NotConnected)?;
-        tx.send(encoded)
-            .await
-            .map_err(|_| CommError::Other("send channel closed".into()))
+    async fn send_pending(&self) {
+        self.flush().await;
     }
 
     async fn subscribe(&self, topic: &str) -> Result<(), CommError> {
@@ -1512,6 +1695,17 @@ async fn read_loop(
                                     metadata.insert(k.clone(), val.to_string());
                                 }
                             }
+                        }
+                        // The sender's own id for this message, the same on
+                        // every send of it (an outbox resend included): what
+                        // tells a second copy from a new message.
+                        if let Some(client_id) = delivery
+                            .content
+                            .get("clientId")
+                            .and_then(|v| v.as_str())
+                            .filter(|v| !v.is_empty())
+                        {
+                            metadata.insert("clientId".to_string(), client_id.to_string());
                         }
                         if !delivery.agent_id.is_empty() {
                             metadata.insert("agent_id".to_string(), delivery.agent_id.clone());

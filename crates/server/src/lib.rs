@@ -1700,9 +1700,10 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // reflects live state. The NeboAI loop tools hold this same handle, so they become
     // functional the moment the connection comes up — no registry rebuild needed.
     // (Also registered with the comm manager below.)
-    let neboai_plugin: Arc<dyn comm::CommPlugin> = Arc::new(comm::NeboAIPlugin::new(Arc::new(
-        StoreStreamOffsets(store.clone()),
-    )));
+    let neboai_plugin: Arc<dyn comm::CommPlugin> = Arc::new(
+        comm::NeboAIPlugin::new(Arc::new(StoreStreamOffsets(store.clone())))
+            .with_outbox(Arc::new(StoreOutbox(store.clone()))),
+    );
 
     tool_registry.set_plugin_store(plugin_store.clone());
     tool_registry
@@ -4356,6 +4357,60 @@ impl comm::StreamOffsets for StoreStreamOffsets {
     }
 }
 
+/// The comm plugin's outbox, kept in the database so what a dropped
+/// connection or a restart left unsent goes out on the next connection. A
+/// failed write sends straight through, as before the outbox; a failed read
+/// leaves the messages for the next pass.
+struct StoreOutbox(Arc<db::Store>);
+
+impl comm::Outbox for StoreOutbox {
+    fn put(&self, msg: &comm::CommMessage) -> bool {
+        let written = serde_json::to_string(msg)
+            .map_err(|e| e.to_string())
+            .and_then(|json| self.0.put_comm_outbox(&msg.id, &json).map_err(|e| e.to_string()));
+        if let Err(e) = written {
+            warn!(msg_id = %msg.id, error = %e, "comm outbox write failed; sending without it");
+            return false;
+        }
+        true
+    }
+
+    fn pending(&self) -> Vec<(comm::CommMessage, Option<i64>)> {
+        let (rows, dropped) = match self.0.pending_comm_outbox() {
+            Ok(found) => found,
+            Err(e) => {
+                warn!(error = %e, "comm outbox read failed");
+                return Vec::new();
+            }
+        };
+        if dropped > 0 {
+            warn!(dropped, "comm outbox past its ceiling; oldest messages dropped as undeliverable");
+        }
+        rows.into_iter()
+            .filter_map(|(id, json, handed_off_at)| match serde_json::from_str(&json) {
+                Ok(msg) => Some((msg, handed_off_at)),
+                Err(e) => {
+                    warn!(msg_id = %id, error = %e, "unreadable comm outbox message dropped");
+                    let _ = self.0.remove_comm_outbox(&id);
+                    None
+                }
+            })
+            .collect()
+    }
+
+    fn handed_off(&self, id: &str, at: Option<i64>) {
+        if let Err(e) = self.0.hand_off_comm_outbox(id, at) {
+            warn!(msg_id = %id, error = %e, "comm outbox hand-off mark failed");
+        }
+    }
+
+    fn remove(&self, id: &str) {
+        if let Err(e) = self.0.remove_comm_outbox(id) {
+            warn!(msg_id = %id, error = %e, "comm outbox delete failed; it may be sent again");
+        }
+    }
+}
+
 /// Spawn a comm message back through the ONE inbound pathway from inside a
 /// chat run. Plain-fn + spawn indirection — the same shape as the
 /// auto-continue hook — so run_chat's future never contains
@@ -4365,6 +4420,58 @@ pub(crate) fn spawn_comm_loopback(state: AppState, msg: comm::CommMessage) {
     tokio::spawn(async move {
         handle_comm_message(state, msg).await;
     });
+}
+
+/// Durable inbound dedupe: true when this message was processed before. A
+/// redelivery repeats the hub's wire id; a sender's resend (its outbox after
+/// a dropped connection or a restart) gets a fresh wire id from the hub but
+/// repeats the sender's own id (`clientId`), so both are recorded. Fails
+/// open: losing dedupe for one message beats dropping it.
+fn already_processed(store: &db::Store, msg: &comm::CommMessage) -> bool {
+    let mut keys = Vec::new();
+    // Transient frames carry a nil uuid and never reach here with side effects.
+    if !msg.id.is_empty() && !msg.id.starts_with("00000000-") {
+        keys.push(msg.id.clone());
+    }
+    if let Some(client_id) = msg.metadata.get("clientId").filter(|c| !c.is_empty()) {
+        keys.push(format!("client:{}:{}", msg.from, client_id));
+    }
+    let mut repeat = false;
+    for key in keys {
+        match store.mark_comm_message_seen(&key) {
+            Ok(first_time) => repeat |= !first_time,
+            Err(e) => tracing::warn!(error = %e, "comm dedupe check failed — processing anyway"),
+        }
+    }
+    repeat
+}
+
+#[cfg(test)]
+mod already_processed_tests {
+    use super::*;
+
+    fn delivery(wire_id: &str, from: &str, client_id: &str) -> comm::CommMessage {
+        let mut msg: comm::CommMessage = serde_json::from_value(serde_json::json!({
+            "id": wire_id, "from": from, "to": "", "type": "message", "content": "hi",
+        }))
+        .unwrap();
+        msg.metadata.insert("clientId".into(), client_id.into());
+        msg
+    }
+
+    /// A sender's resend arrives with a fresh wire id from the hub but its
+    /// own id repeated: processed once. The same id from another sender, or
+    /// a new id from the same sender, is a new message.
+    #[test]
+    fn a_resend_with_a_new_wire_id_is_processed_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = db::Store::new(&dir.path().join("nebo.db").to_string_lossy()).unwrap();
+        assert!(!already_processed(&store, &delivery("w1", "bot-a", "c1")));
+        assert!(already_processed(&store, &delivery("w2", "bot-a", "c1")), "the resend");
+        assert!(!already_processed(&store, &delivery("w3", "bot-b", "c1")));
+        assert!(!already_processed(&store, &delivery("w4", "bot-a", "c2")));
+        assert!(already_processed(&store, &delivery("w4", "bot-a", "c2")), "a hub redelivery");
+    }
 }
 
 pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
@@ -4389,18 +4496,9 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
     // lasted. Wire msg_ids are unique per delivery; seeing one twice is
     // always a redelivery. Skip only messages with a real id — transient
     // frames carry a nil uuid and never reach here with side effects.
-    if !msg.id.is_empty() && !msg.id.starts_with("00000000-") {
-        match state.store.mark_comm_message_seen(&msg.id) {
-            Ok(first_time) if !first_time => {
-                tracing::info!(msg_id = %msg.id, topic = %msg.topic, "dropping redelivered comm message (already processed)");
-                return;
-            }
-            Err(e) => {
-                // Fail open: losing dedupe for one message beats dropping it.
-                tracing::warn!(error = %e, "comm dedupe check failed — processing anyway");
-            }
-            _ => {}
-        }
+    if already_processed(&state.store, &msg) {
+        tracing::info!(msg_id = %msg.id, topic = %msg.topic, "dropping redelivered comm message (already processed)");
+        return;
     }
 
     // A provider revoked a plugin account on ITS side (an Intuit disconnect,

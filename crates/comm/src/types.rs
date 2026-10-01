@@ -98,6 +98,25 @@ pub trait StreamOffsets: Send + Sync {
     fn record(&self, bot_id: &str, stream: &str, seq: u64);
 }
 
+/// Durable outbound messages. Every message that is not a transient signal
+/// is put here before it is sent, and marked the moment it is handed to the
+/// connection (from then on its bytes may have left). What a dropped
+/// connection or a restart left here goes out on the next connection, oldest
+/// first, with the same id. The hub sends a bot no confirmation of a send,
+/// so a handed-off message is only sent again where the hub dedupes by id.
+pub trait Outbox: Send + Sync {
+    /// Keep `msg` until it is sent. False when it could not be kept.
+    fn put(&self, msg: &CommMessage) -> bool;
+    /// What waits, oldest first, within the outbox's bounds: each message
+    /// with when it was last handed to a connection (unix ms), if ever.
+    fn pending(&self) -> Vec<(CommMessage, Option<i64>)>;
+    /// Mark a message handed to a connection at `at` (unix ms), or clear
+    /// the mark (`None`) when it turned out never to have left.
+    fn handed_off(&self, id: &str, at: Option<i64>);
+    /// Forget a message that was sent or refused for good.
+    fn remove(&self, id: &str);
+}
+
 /// Type of a comm message.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
