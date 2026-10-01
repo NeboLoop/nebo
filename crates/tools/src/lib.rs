@@ -7,6 +7,7 @@ pub mod ask_owner_tool;
 pub mod authority_tool;
 pub mod rules_tool;
 pub mod pack_tool;
+pub mod app_console;
 pub mod app_tool;
 pub mod assignments;
 pub mod bot_mail;

@@ -1078,6 +1078,8 @@
 		"stopped": "dihentikan",
 		"pageDescription": "Alat pembangun dan tetapan lanjutan.",
 		"devModeHint": "Tunjukkan tetapan lanjutan seperti Pembekal, Penghalaan, dan Rahsia.",
+		"appDevMode": "Mod Pembangun Aplikasi",
+		"appDevModeHint": "Pekerja yang membina aplikasi boleh memuat semulanya dan membaca konsolnya, dan setiap aplikasi yang dibuka menunjukkan konsol yang boleh anda buka.",
 		"defaultRoutingNote": "Secara lalai, Nebo menghalakan semua permintaan melalui gerbang Nebo-1 / Janus. Dayakan mod pembangun untuk mengkonfigurasi pembekal dan peraturan penghalaan anda sendiri.",
 		"sideloadApp": "Muat Sisi Aplikasi",
 		"appPathPlaceholder": "/laluan/ke/aplikasi/anda",

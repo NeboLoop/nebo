@@ -1078,6 +1078,8 @@
 		"stopped": "detenido",
 		"pageDescription": "Herramientas de desarrollador y configuración avanzada.",
 		"devModeHint": "Muestra opciones avanzadas como Proveedores, Enrutamiento y Secretos.",
+		"appDevMode": "Modo de desarrollo de apps",
+		"appDevModeHint": "Los empleados que crean apps pueden recargarlas y leer su consola, y cada app abierta muestra una consola que puedes abrir.",
 		"defaultRoutingNote": "De forma predeterminada, Nebo enruta todas las solicitudes a través de la puerta de enlace Nebo-1 / Janus. Activa el modo desarrollador para configurar tus propios proveedores y reglas de enrutamiento.",
 		"sideloadApp": "Cargar app local",
 		"appPathPlaceholder": "/ruta/a/tu/app",

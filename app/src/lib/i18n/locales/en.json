@@ -1087,6 +1087,8 @@
 		"stopped": "stopped",
 		"pageDescription": "Developer tools and advanced settings.",
 		"devModeHint": "Show advanced settings like Providers, Routing, and Secrets.",
+		"appDevMode": "App Developer mode",
+		"appDevModeHint": "Employees that build apps can reload them and read their console, and each open app shows a console you can open.",
 		"defaultRoutingNote": "By default, Nebo routes all requests through the Nebo-1 / Janus gateway. Enable developer mode to configure your own providers and routing rules.",
 		"sideloadApp": "Sideload App",
 		"appPathPlaceholder": "/path/to/your/app",

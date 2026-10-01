@@ -1075,6 +1075,8 @@
 		"stopped": "已停止",
 		"pageDescription": "开发者工具和高级设置。",
 		"devModeHint": "显示提供商、路由和密钥等高级设置。",
+		"appDevMode": "应用开发者模式",
+		"appDevModeHint": "构建应用的员工可以重新加载应用并读取其控制台，每个打开的应用都会显示一个可打开的控制台。",
 		"defaultRoutingNote": "默认情况下，Nebo 将所有请求路由到 Nebo-1 / Janus 网关。启用开发者模式以配置你自己的提供商和路由规则。",
 		"sideloadApp": "侧载应用",
 		"appPathPlaceholder": "/path/to/your/app",

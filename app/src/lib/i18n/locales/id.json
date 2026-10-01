@@ -1078,6 +1078,8 @@
 		"stopped": "dihentikan",
 		"pageDescription": "Alat pengembang dan pengaturan lanjutan.",
 		"devModeHint": "Tampilkan pengaturan lanjutan seperti Penyedia, Perutean, dan Rahasia.",
+		"appDevMode": "Mode Pengembang Aplikasi",
+		"appDevModeHint": "Karyawan yang membangun aplikasi dapat memuat ulang dan membaca konsolnya, dan setiap aplikasi yang terbuka menampilkan konsol yang bisa Anda buka.",
 		"defaultRoutingNote": "Secara bawaan, Nebo merutekan semua permintaan melalui gerbang Nebo-1 / Janus. Aktifkan mode pengembang untuk mengonfigurasi penyedia dan aturan perutean Anda sendiri.",
 		"sideloadApp": "Muat Aplikasi Lokal",
 		"appPathPlaceholder": "/jalur/ke/aplikasi/anda",

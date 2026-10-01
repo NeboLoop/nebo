@@ -1078,6 +1078,8 @@
 		"stopped": "gestoppt",
 		"pageDescription": "Entwickler-Tools und erweiterte Einstellungen.",
 		"devModeHint": "Zeige erweiterte Einstellungen wie Provider, Routing und Secrets.",
+		"appDevMode": "App-Entwicklermodus",
+		"appDevModeHint": "Mitarbeiter, die Apps bauen, können sie neu laden und ihre Konsole lesen, und jede geöffnete App zeigt eine Konsole, die du öffnen kannst.",
 		"defaultRoutingNote": "Standardmäßig leitet Nebo alle Anfragen über das Nebo-1/Janus-Gateway. Aktiviere den Entwicklermodus, um eigene Provider und Routing-Regeln zu konfigurieren.",
 		"sideloadApp": "App sideloaden",
 		"appPathPlaceholder": "/pfad/zu/deiner/app",

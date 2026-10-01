@@ -222,8 +222,15 @@ async fn serve_app_ui_inner(state: &AppState, agent_id: &str, path: &str) -> Res
             // tunnel) is only knowable in the browser, so a head-first inline
             // script derives both from location before the SDK loads. Apps
             // that ship their own meta tags win — the script only fills gaps.
+            //
+            // With App Developer mode on, entry HTML also carries the
+            // developer script (console capture, reload, floating console).
             let contents = if is_entry {
-                inject_app_bridge(contents)
+                let developer = state
+                    .store
+                    .app_developer_mode()
+                    .then(|| app_employee_name(state, agent_id));
+                inject_app_bridge(contents, developer.as_deref())
             } else {
                 contents
             };
@@ -254,20 +261,51 @@ async fn serve_app_ui_inner(state: &AppState, agent_id: &str, path: &str) -> Res
 /// `nebo-base-url` meta tags computed from the page's own location, which is
 /// the only place the public prefix (`/t/<botID>` through the tunnel, nothing
 /// on desktop) is knowable. Skips tags the app already declares.
-fn inject_app_bridge(contents: Vec<u8>) -> Vec<u8> {
+///
+/// `developer` is `Some(<the app employee's name>)` when App Developer mode
+/// is on: the developer script follows the bridge, before any of the app's
+/// own scripts, so it sees the app's first log line.
+fn inject_app_bridge(contents: Vec<u8>, developer: Option<&str>) -> Vec<u8> {
     const BRIDGE: &str = r#"<script data-nebo-bridge>(function(){var m=location.pathname.match(/^(.*?)\/apps\/([^/]+)\/ui(?:\/|$)/);if(!m)return;function add(n,c){if(document.querySelector('meta[name="'+n+'"]'))return;var e=document.createElement('meta');e.setAttribute('name',n);e.setAttribute('content',c);document.head.appendChild(e);}add('nebo-app-id',decodeURIComponent(m[2]));add('nebo-base-url',location.origin+m[1]);})();</script>"#;
     let html = match String::from_utf8(contents) {
         Ok(h) => h,
         Err(e) => return e.into_bytes(), // non-UTF-8: serve verbatim
     };
+    let scripts = match developer {
+        Some(employee) => format!("{BRIDGE}{}", developer_script(employee)),
+        None => BRIDGE.to_string(),
+    };
     let lower = html.to_ascii_lowercase();
     let out = if let Some(idx) = lower.find("<head>") {
         let at = idx + "<head>".len();
-        format!("{}{}{}", &html[..at], BRIDGE, &html[at..])
+        format!("{}{}{}", &html[..at], scripts, &html[at..])
     } else {
-        format!("{}{}", BRIDGE, html)
+        format!("{}{}", scripts, html)
     };
     out.into_bytes()
+}
+
+/// The developer script (`app_devtools.js`) as an inline `<script>`, told
+/// the app employee's name for its "Send to <employee>" button.
+fn developer_script(employee: &str) -> String {
+    const SCRIPT: &str = include_str!("app_devtools.js");
+    // `<` escaped: a name can never close the script element.
+    let config = serde_json::json!({ "employee": employee }).to_string().replace('<', "\\u003c");
+    format!(
+        "<script data-nebo-devtools>{}</script>",
+        SCRIPT.replace("__NEBO_DEVTOOLS_CONFIG__", &config)
+    )
+}
+
+/// The name the app's employee goes by (its id when the row is gone).
+fn app_employee_name(state: &AppState, agent_id: &str) -> String {
+    state
+        .store
+        .get_agent(agent_id)
+        .ok()
+        .flatten()
+        .map(|a| a.name)
+        .unwrap_or_else(|| agent_id.to_string())
 }
 
 /// GET /sdk/nebo.global.js — serve the app SDK IIFE build for vanilla/HTMX apps.
@@ -380,6 +418,140 @@ pub async fn list_storage(
             warn!(error = %e, "app storage list failed");
             StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
+    }
+}
+
+/// The longest batch one devlog POST keeps.
+const DEVLOG_MAX_BATCH: usize = 200;
+
+/// One console line the developer script sends.
+#[derive(Debug, Deserialize)]
+struct DevlogEntry {
+    #[serde(default)]
+    level: String,
+    #[serde(default)]
+    message: String,
+    #[serde(default)]
+    source: String,
+    #[serde(default)]
+    time: i64,
+}
+
+#[derive(Debug, Deserialize)]
+struct DevlogBatch {
+    #[serde(default)]
+    entries: Vec<DevlogEntry>,
+}
+
+/// Whether `agent_id`'s console may be written or sent from this request,
+/// before the app's token is checked: App Developer mode is on, the id is
+/// an app, and a page that names itself (its Referer, an app page at
+/// `/apps/<id>/ui/`) is that same app — one app's page never writes into
+/// another app's console.
+fn devlog_target(store: &db::Store, agent_id: &str, headers: &axum::http::HeaderMap) -> Result<(), StatusCode> {
+    if !store.app_developer_mode() {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    match store.get_agent(agent_id) {
+        Ok(Some(a)) if a.is_app.unwrap_or(0) != 0 => {}
+        _ => return Err(StatusCode::NOT_FOUND),
+    }
+    let page_app = headers
+        .get(header::REFERER)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|r| r.split("/apps/").nth(1))
+        .and_then(|rest| rest.split_once("/ui").map(|(id, _)| id.to_string()));
+    if let Some(page_app) = page_app {
+        let page_app = urlencoding::decode(&page_app).map(|c| c.into_owned()).unwrap_or(page_app);
+        if page_app != agent_id {
+            return Err(StatusCode::FORBIDDEN);
+        }
+    }
+    Ok(())
+}
+
+/// The devlog routes' gate: [`devlog_target`], then the same app-token
+/// check every app route makes.
+async fn devlog_gate(state: &AppState, agent_id: &str, headers: &axum::http::HeaderMap) -> Result<(), Response> {
+    devlog_target(&state.store, agent_id, headers).map_err(|s| s.into_response())?;
+    validate_app_token(state, agent_id, headers).await
+}
+
+/// POST /apps/{agent_id}/devlog — the developer script's console batches,
+/// kept in the app's ring for `app_console`. The body is read whatever its
+/// content type: a page's last batch goes by `sendBeacon`.
+pub async fn post_devlog(
+    State(state): State<AppState>,
+    Path(agent_id): Path<String>,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    if let Err(r) = devlog_gate(&state, &agent_id, &headers).await {
+        return r;
+    }
+    match keep_devlog(&agent_id, &body) {
+        Ok(_) => StatusCode::NO_CONTENT.into_response(),
+        Err(s) => s.into_response(),
+    }
+}
+
+/// Keep one devlog body's entries in the app's ring; how many were kept.
+fn keep_devlog(agent_id: &str, body: &[u8]) -> Result<usize, StatusCode> {
+    let batch: DevlogBatch = serde_json::from_slice(body).map_err(|_| StatusCode::BAD_REQUEST)?;
+    Ok(tools::app_console::record(
+        agent_id,
+        batch
+            .entries
+            .iter()
+            .take(DEVLOG_MAX_BATCH)
+            .map(|e| (e.level.as_str(), e.message.as_str(), e.source.as_str(), e.time)),
+    ))
+}
+
+/// The errors "Send to <employee>" sends at most.
+const DEVLOG_SEND_ERRORS: usize = 20;
+
+/// The message "Send to <employee>" posts: the app's last errors, as its
+/// console recorded them. `None` when there are none.
+fn devlog_send_prompt(app_name: &str, entries: &[tools::app_console::Entry]) -> Option<String> {
+    let errors: Vec<&tools::app_console::Entry> = entries.iter().filter(|e| e.level == "error").collect();
+    if errors.is_empty() {
+        return None;
+    }
+    let skip = errors.len().saturating_sub(DEVLOG_SEND_ERRORS);
+    let lines: Vec<String> = errors[skip..].iter().map(|e| tools::app_console::format_entry(e)).collect();
+    Some(format!(
+        "These errors came up in {app_name} (from its console):\n\n```\n{}\n```\n\nPlease fix them.",
+        lines.join("\n")
+    ))
+}
+
+/// POST /apps/{agent_id}/devlog/send — "Send to <employee>": the app's last
+/// errors go into the app employee's chat, through the same door as the
+/// owner's own message to that employee (`chat_with_agent`).
+pub async fn send_devlog(
+    State(state): State<AppState>,
+    Path(agent_id): Path<String>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    if let Err(r) = devlog_gate(&state, &agent_id, &headers).await {
+        return r;
+    }
+    let name = app_employee_name(&state, &agent_id);
+    let entries = tools::app_console::recent(&agent_id, None, tools::app_console::RING_CAPACITY);
+    let Some(prompt) = devlog_send_prompt(&name, &entries) else {
+        return (StatusCode::UNPROCESSABLE_ENTITY, axum::Json(serde_json::json!({"error": "No errors to send."})))
+            .into_response();
+    };
+    match crate::handlers::agents::chat_with_agent(
+        State(state.clone()),
+        Path(agent_id),
+        axum::Json(serde_json::json!({ "prompt": prompt })),
+    )
+    .await
+    {
+        Ok(r) => r.into_response(),
+        Err(e) => e.into_response(),
     }
 }
 
@@ -1119,5 +1291,119 @@ mod connection_origin_tests {
         assert!(!app_connection_origin_allowed(&h));
         h.insert("x-nebo-tunnel-auth", "forged".parse().unwrap());
         assert!(!app_connection_origin_allowed(&h));
+    }
+}
+
+#[cfg(test)]
+mod developer_mode_tests {
+    use super::*;
+    use tools::registry::DynTool;
+
+    fn store() -> (tempfile::TempDir, std::sync::Arc<db::Store>) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = db::Store::new(dir.path().join("test.db").to_str().unwrap()).unwrap();
+        (dir, std::sync::Arc::new(store))
+    }
+
+    fn developer_mode(store: &db::Store, on: bool) {
+        store.update_settings(None, None, None, None, None, None, None, None, None, Some(on)).unwrap();
+    }
+
+    fn app(store: &db::Store, id: &str, name: &str) {
+        store.create_agent(id, Some("agent"), name, "", "", "{}", None, None).unwrap();
+        store.set_agent_app_fields(id, true, Some("/tmp/ui"), None, None).unwrap();
+    }
+
+    fn from_page(app: &str) -> axum::http::HeaderMap {
+        let mut h = axum::http::HeaderMap::new();
+        h.insert(header::REFERER, format!("https://neboai.com/t/bot-1/apps/{app}/ui/index.html").parse().unwrap());
+        h
+    }
+
+    const PAGE: &str = "<!doctype html><html><head><script src=\"main.js\"></script></head><body></body></html>";
+
+    #[test]
+    fn the_developer_script_is_injected_only_with_the_mode_on() {
+        let off = String::from_utf8(inject_app_bridge(PAGE.as_bytes().to_vec(), None)).unwrap();
+        assert!(off.contains("data-nebo-bridge"), "the bridge is always there");
+        assert!(!off.contains("data-nebo-devtools"), "no developer script with the mode off");
+        assert!(!off.contains("__neboDevtools"));
+
+        let on = String::from_utf8(inject_app_bridge(PAGE.as_bytes().to_vec(), Some("Kart Racer"))).unwrap();
+        let bridge = on.find("data-nebo-bridge").unwrap();
+        let dev = on.find("data-nebo-devtools").expect("the developer script");
+        let app = on.find("main.js").unwrap();
+        assert!(bridge < dev && dev < app, "after the bridge, before the app's own scripts");
+        assert!(on.contains(r#"{"employee":"Kart Racer"}"#), "told the employee's name");
+        assert!(!on.contains("__NEBO_DEVTOOLS_CONFIG__"));
+        assert_eq!(on.matches("</script>").count(), 3, "bridge, developer script, the app's own");
+    }
+
+    #[test]
+    fn a_name_can_never_close_the_script() {
+        let on = String::from_utf8(inject_app_bridge(PAGE.as_bytes().to_vec(), Some("</script><b>x"))).unwrap();
+        assert_eq!(on.matches("</script>").count(), 3, "{on}");
+        assert!(on.contains(r"\u003c/script>\u003cb>x"));
+    }
+
+    #[test]
+    fn the_devlog_routes_take_only_this_apps_own_page_with_the_mode_on() {
+        let (_d, store) = store();
+        app(&store, "app-a", "Racer");
+        app(&store, "app-b", "Notes");
+        store.create_agent("emp-1", Some("agent"), "Bookkeeper", "", "", "{}", None, None).unwrap();
+
+        assert_eq!(devlog_target(&store, "app-a", &from_page("app-a")), Err(StatusCode::NOT_FOUND), "mode off");
+        developer_mode(&store, true);
+        assert_eq!(devlog_target(&store, "app-a", &from_page("app-a")), Ok(()));
+        assert_eq!(
+            devlog_target(&store, "app-a", &axum::http::HeaderMap::new()),
+            Ok(()),
+            "no Referer: the app token decides"
+        );
+        assert_eq!(
+            devlog_target(&store, "app-b", &from_page("app-a")),
+            Err(StatusCode::FORBIDDEN),
+            "one app's page never writes another app's console"
+        );
+        assert_eq!(devlog_target(&store, "emp-1", &from_page("emp-1")), Err(StatusCode::NOT_FOUND), "not an app");
+        assert_eq!(devlog_target(&store, "nope", &from_page("nope")), Err(StatusCode::NOT_FOUND));
+    }
+
+    #[tokio::test]
+    async fn devlog_entries_reach_app_console() {
+        let (_d, store) = store();
+        let id = format!("app-{}", uuid::Uuid::new_v4().simple());
+        app(&store, &id, "Kart Racer");
+        let body = serde_json::json!({"entries": [
+            {"level": "log", "message": "booted", "source": "console", "time": 1_700_000_000_000i64},
+            {"level": "error", "message": "Uncaught TypeError: car is undefined (/main.js:12:5)", "source": "error", "time": 1_700_000_000_500i64},
+            {"level": "error", "message": "GET /track.json \u{2192} 404 Not Found", "source": "network", "time": 1_700_000_001_000i64}
+        ]});
+        assert_eq!(keep_devlog(&id, body.to_string().as_bytes()), Ok(3));
+        assert_eq!(keep_devlog(&id, b"not json"), Err(StatusCode::BAD_REQUEST));
+        assert_eq!(tools::app_console::error_count(&id), 2);
+
+        let tool = tools::app_console::AppConsoleTool::new(store.clone());
+        let ctx = tools::ToolContext::default();
+        let off = tool.execute_dyn(&ctx, serde_json::json!({"app": "Kart Racer"})).await;
+        assert!(off.is_error && off.content.contains("App Developer mode is off"), "{}", off.content);
+
+        developer_mode(&store, true);
+        let read = tool.execute_dyn(&ctx, serde_json::json!({"app": "Kart Racer"})).await;
+        assert!(!read.is_error, "{}", read.content);
+        let booted = read.content.find("booted").unwrap();
+        let uncaught = read.content.find("Uncaught TypeError").unwrap();
+        let network = read.content.find("/track.json").unwrap();
+        assert!(booted < uncaught && uncaught < network, "newest last: {}", read.content);
+
+        let last = tools::app_console::recent(&id, None, 10).last().unwrap().seq;
+        let none = tool.execute_dyn(&ctx, serde_json::json!({"app": id, "since": last})).await;
+        assert!(none.content.contains("nothing new"), "{}", none.content);
+
+        let prompt = devlog_send_prompt("Kart Racer", &tools::app_console::recent(&id, None, 500)).unwrap();
+        assert!(prompt.contains("Uncaught TypeError") && prompt.contains("/track.json"), "{prompt}");
+        assert!(!prompt.contains("booted"), "only errors are sent");
+        assert_eq!(devlog_send_prompt("Kart Racer", &[]), None);
     }
 }

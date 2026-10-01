@@ -1078,6 +1078,8 @@
 		"stopped": "zatrzymano",
 		"pageDescription": "Narzędzia deweloperskie i ustawienia zaawansowane.",
 		"devModeHint": "Pokaż zaawansowane ustawienia, takie jak Dostawcy, Routing i Sekrety.",
+		"appDevMode": "Tryb dewelopera aplikacji",
+		"appDevModeHint": "Pracownicy budujący aplikacje mogą je przeładować i czytać ich konsolę, a każda otwarta aplikacja pokazuje konsolę, którą możesz otworzyć.",
 		"defaultRoutingNote": "Domyślnie Nebo kieruje wszystkie żądania przez bramę Nebo-1 / Janus. Włącz tryb deweloperski, aby skonfigurować własnych dostawców i reguły routingu.",
 		"sideloadApp": "Wgraj aplikację ręcznie",
 		"appPathPlaceholder": "/ścieżka/do/twojej/aplikacji",

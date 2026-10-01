@@ -2,8 +2,39 @@
   import SettingsHeader from '$lib/components/settings/SettingsHeader.svelte';
   import { t } from 'svelte-i18n';
   import { devMode } from '$lib/stores/devmode.js';
+  import * as api from '$lib/api/nebo';
+  import { onMount } from 'svelte';
 
   let appPath = $state('');
+
+  // App Developer mode is the bot's setting (every device sees the same):
+  // the developer tools for employees that build apps, and a console in
+  // each open app.
+  let appDevMode = $state(false);
+  let appDevSaving = $state(false);
+
+  onMount(async () => {
+    try {
+      const res = await api.getSettings();
+      appDevMode = !!res.settings?.appDeveloperMode;
+    } catch {
+      // The toggle stays off; turning it on saves and reads back.
+    }
+  });
+
+  async function toggleAppDevMode() {
+    const next = !appDevMode;
+    appDevMode = next;
+    appDevSaving = true;
+    try {
+      const res = await api.updateSettings({ appDeveloperMode: next });
+      appDevMode = !!res.settings?.appDeveloperMode;
+    } catch {
+      appDevMode = !next;
+    } finally {
+      appDevSaving = false;
+    }
+  }
 
   const sideloadedApps = [
     { name: 'My Custom Tool', path: '~/projects/custom-tool', status: 'running' as const },
@@ -27,6 +58,17 @@
 <p class="text-sm text-base-content/40 mb-6">{$t('settingsDeveloper.defaultRoutingNote')}</p>
 
 {#if $devMode}
+  <!-- App Developer mode -->
+  <div class="p-4 rounded-xl border border-base-content/10 bg-base-100 mb-6">
+    <div class="flex items-center justify-between gap-4">
+      <div>
+        <div class="text-sm font-semibold">{$t('settingsDeveloper.appDevMode')}</div>
+        <div class="text-xs text-base-content/50">{$t('settingsDeveloper.appDevModeHint')}</div>
+      </div>
+      <input type="checkbox" class="toggle toggle-sm toggle-primary" checked={appDevMode} disabled={appDevSaving} onchange={toggleAppDevMode} aria-label={$t('settingsDeveloper.appDevMode')} />
+    </div>
+  </div>
+
   <!-- Sideload app -->
   <div class="mb-6">
     <h3 class="text-base font-semibold mb-3">{$t('settingsDeveloper.sideloadApp')}</h3>

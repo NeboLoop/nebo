@@ -1078,6 +1078,8 @@
 		"stopped": "parado",
 		"pageDescription": "Ferramentas de desenvolvedor e configurações avançadas.",
 		"devModeHint": "Mostrar configurações avançadas como Provedores, Roteamento e Segredos.",
+		"appDevMode": "Modo de desenvolvedor de apps",
+		"appDevModeHint": "Funcionários que criam apps podem recarregá-los e ler o console, e cada app aberto mostra um console que você pode abrir.",
 		"defaultRoutingNote": "Por padrão, o Nebo roteia todas as requisições pelo gateway Nebo-1 / Janus. Ative o modo desenvolvedor para configurar seus próprios provedores e regras de roteamento.",
 		"sideloadApp": "Carregar App Externo",
 		"appPathPlaceholder": "/caminho/para/seu/app",
