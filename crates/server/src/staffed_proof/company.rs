@@ -581,6 +581,38 @@ async fn the_point_person_relays_into_a_linked_employees_conversation_and_hears_
     coder.leave(&nebo).await;
 }
 
+/// A message to a linked employee whose thread is still working on the
+/// last one is queued, never dropped: the running turn hears it next, in
+/// the conversation it names.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_message_to_a_busy_thread_is_queued_into_the_conversation_it_names() {
+    const BOT: &str = "5e1f0000-0000-4000-8000-0000000c0a58";
+    let nebo = session().await;
+    let coder = Linked::hire(&nebo, BOT, "Proof Point Queue").await;
+    let (_asking, ctx) = assistant_thread(&nebo, "Owner queue");
+    let first = nebo
+        .tool(&ctx, "send_message", json!({ "to": "Proof Point Queue", "message": "BRIEF look at the build.", "conversation": "new" }))
+        .await;
+    assert!(!first.is_error, "{}", first.content);
+    nebo.wait_until(30, "the first message is being worked on", || coder.prompts().len() == 1).await;
+    let thread = format!("agent:{}:coworker:{}", coder.id, tools::team_tool::PRIMARY_AGENT_ID);
+    assert!(nebo.state.harness.is_session_busy(&thread), "the thread is still working");
+
+    let second = nebo
+        .tool(&ctx, "send_message", json!({ "to": "Proof Point Queue", "message": "And the docs.", "conversation": "new" }))
+        .await;
+    assert!(!second.is_error, "queued, not refused: {}", second.content);
+    nebo.wait_until(60, "the queued message reaches a new conversation", || {
+        coder
+            .prompts()
+            .iter()
+            .any(|p| p["session"] == "s-2" && p["prompt"].as_str().unwrap_or("").contains("And the docs."))
+    })
+    .await;
+    assert_eq!(coder.prompts()[0]["session"], "s-1", "the running call kept its own conversation");
+    coder.leave(&nebo).await;
+}
+
 /// Never two prompts in flight on one linked conversation: while the
 /// linked employee's turn runs there, a message into it is not sent, and
 /// the point person is told so plainly, with what to do instead. A

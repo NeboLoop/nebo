@@ -194,8 +194,11 @@ pub(crate) async fn send_coworker_message(
     // the legacy key-named chat shape.
     let thread_session = ensure_conversation_thread(&state, &thread_key, &thread_title)?;
     // A linked employee's conversation the sender named: the thread speaks
-    // into it from this message on. While the thread's own turn runs, that
-    // turn has its conversation already, so nothing is switched under it.
+    // into it from this message on. While the thread's own turn runs, the
+    // message is queued into that turn like any message to a busy thread
+    // (`run_in_thread`), and the call that hears it is the turn's next one:
+    // the running call keeps the session it began in, so the thread is
+    // pointed at the named conversation now, unless it is already there.
     if let Some(conversation) = msg.conversation.as_ref() {
         // A conversation it already has may be the session behind one of
         // the owner's own conversations: only his request goes into it. A
@@ -206,12 +209,21 @@ pub(crate) async fn send_coworker_message(
                  Send it with conversation: \"new\" to start one of its own."
             ));
         }
-        if state.harness.is_session_busy(&thread_key) {
-            return Err(format!(
-                "{to_name} is still answering your last message. Nothing was sent: send this when its reply comes."
-            ));
+        let already_there = match conversation {
+            tools::coworker::Conversation::Existing(id) => state.harness.is_session_busy(&thread_key)
+                && state
+                    .store
+                    .get_chat(&state.harness.sessions().active_chat_id(&thread_session))
+                    .ok()
+                    .flatten()
+                    .and_then(|chat| chat.linked_chat_id)
+                    .as_deref()
+                    == Some(id.as_str()),
+            tools::coworker::Conversation::New => false,
+        };
+        if !already_there {
+            crate::company::open_conversation(&state, &to_id, &to_name, &thread_session, conversation).await?;
         }
-        crate::company::open_conversation(&state, &to_id, &to_name, &thread_session, conversation).await?;
     }
 
     // What the member reads: the post with every mention written out as

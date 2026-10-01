@@ -250,9 +250,7 @@ impl ConcurrencyController {
         // Trim to current memory immediately — the first monitor probe is 30s
         // out, and a small machine restarting into a queue of pending work
         // could overcommit before it lands. Same heuristic as the monitor.
-        let mut sys = sysinfo::System::new();
-        sys.refresh_memory();
-        let mem_limit = (sys.available_memory() / 1_048_576 / MB_PER_LLM_CALL) as usize;
+        let mem_limit = (available_mb() / MB_PER_LLM_CALL) as usize;
         controller.set_ceiling(mem_limit.min(max_ceiling));
 
         controller
@@ -429,6 +427,23 @@ impl Provider for BackgroundProvider {
     }
 }
 
+/// Memory this machine can give to calls now, in MB: the one reading the
+/// ceiling and the monitor both size from (blocking).
+fn available_mb() -> u64 {
+    let mut sys = sysinfo::System::new();
+    sys.refresh_memory();
+    usable_mb(sys.available_memory(), sys.free_memory())
+}
+
+/// The larger of the "available" and the free figure. On macOS "available"
+/// is free + inactive + purgeable less the compressor's pages, which reads
+/// 0 once compression is heavy: a 96 GB Mac with 1.9 GB free read 0, and
+/// every employee on the bot shared two calls at a time (2026-10-01). Free
+/// memory is always at least that much.
+fn usable_mb(available: u64, free: u64) -> u64 {
+    available.max(free) / 1_048_576
+}
+
 /// Spawn the background resource monitor that adjusts the ceiling every 30s.
 pub fn spawn_monitor(controller: Arc<ConcurrencyController>) {
     tokio::spawn(async move {
@@ -438,12 +453,7 @@ pub fn spawn_monitor(controller: Arc<ConcurrencyController>) {
 
             // sysinfo calls are blocking — use spawn_blocking
             let probe = match tokio::task::spawn_blocking(|| {
-                use sysinfo::System;
-                let mut sys = System::new();
-                sys.refresh_memory();
-                let available_mb = sys.available_memory() / 1_048_576;
-                let load = System::load_average().one;
-                (available_mb, load)
+                (available_mb(), sysinfo::System::load_average().one)
             })
             .await
             {
@@ -477,6 +487,16 @@ pub fn spawn_monitor(controller: Arc<ConcurrencyController>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A heavily compressed Mac reads 0 "available": the ceiling is sized
+    /// from its free memory instead, never from nothing.
+    #[test]
+    fn an_empty_available_reading_falls_back_to_free_memory() {
+        const MB: u64 = 1_048_576;
+        assert_eq!(usable_mb(0, 1_954 * MB), 1_954);
+        assert_eq!(usable_mb(8_000 * MB, 2_000 * MB), 8_000);
+        assert_eq!(usable_mb(0, 0), 0);
+    }
 
     #[test]
     fn test_controller_creation() {
