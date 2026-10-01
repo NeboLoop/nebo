@@ -40,8 +40,14 @@ fn is_crockford_base32(s: &str) -> bool {
 /// Detect if a prompt is exactly a marketplace code.
 ///
 /// Code format: `PREFIX-XXXX-XXXX` where XXXX = 4 Crockford Base32 characters.
+/// Punctuation around the code is ignored: codes get copied out of sentences
+/// and pages with quotes, backticks, brackets or a full stop attached
+/// ("CONN-V1PR-K421)" arrived that way and went to the model as chat).
 pub fn detect_code(prompt: &str) -> Option<(CodeType, &str)> {
-    let trimmed = prompt.trim();
+    let trimmed = prompt
+        .trim()
+        .trim_matches(|c: char| !c.is_ascii_alphanumeric())
+        .trim();
     let upper = trimmed.to_ascii_uppercase();
 
     // Must match PREFIX-XXXX-XXXX exactly
@@ -2939,6 +2945,19 @@ pub(crate) async fn refresh_license_keys(state: &AppState) -> Result<(), NeboErr
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_code_with_punctuation_around_it_is_still_a_code() {
+        for input in ["CONN-V1PR-K421)", "(CONN-V1PR-K421)", "`CONN-V1PR-K421`", "\"CONN-V1PR-K421\".", " CONN-V1PR-K421, "] {
+            let (kind, code) = detect_code(input).unwrap_or_else(|| panic!("{input:?} should be a code"));
+            assert!(matches!(kind, CodeType::Connection), "{input:?}");
+            assert_eq!(code, "CONN-V1PR-K421", "{input:?}");
+        }
+        // Words around it still make it a sentence, not a code.
+        assert!(detect_code("install CONN-V1PR-K421").is_none());
+        assert!(detect_code("CONN-V1PR-K421 please").is_none());
+    }
+
     use super::*;
 
     /// The phone's card reads the `POST /codes` reply to configure what it
