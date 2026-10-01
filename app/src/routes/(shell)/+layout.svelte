@@ -400,6 +400,7 @@
           // A linked employee's persona is the linked bot's: read there, not edited here.
           editable: !a.nappPath && a.kind !== 'linked',
           isApp: a.isApp ?? false,
+          appWindow: a.appWindow,
           kind: a.kind,
           offline: a.offline ?? false,
           loopExposed: a.loopExposed ?? false,
@@ -1044,7 +1045,7 @@
       goto(`/${id}/settings/general`);
     } else if (action === 'open-app') {
       const a = allAgents.find(ag => ag.id === id);
-      launchApp(id, a?.name || 'App');
+      launchApp(id, a?.name || 'App', { fullscreen: a?.appWindow?.fullscreen });
     } else if (action === 'delete') {
       const a = allAgents.find(ag => ag.id === id);
       deleteTyped = '';

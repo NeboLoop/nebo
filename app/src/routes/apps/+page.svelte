@@ -38,6 +38,7 @@
     icon: typeof LayoutDashboard;
     color: string;
     description: string;
+    fullscreen: boolean;
   };
 
   const menuItems = [
@@ -60,14 +61,14 @@
     openMenuId = openMenuId === appId ? null : appId;
   }
 
-  function handleMenuItem(e: MouseEvent, appId: string, appName: string, itemId: string) {
+  function handleMenuItem(e: MouseEvent, app: AppEntry, itemId: string) {
     e.stopPropagation();
     openMenuId = null;
     if (itemId === 'open') {
-      launchApp(appId, appName);
+      launchApp(app.id, app.name, { fullscreen: app.fullscreen });
     } else {
       const section = itemId === 'settings' ? 'general' : itemId;
-      goto(`/${appId}/settings/${section}`);
+      goto(`/${app.id}/settings/${section}`);
     }
   }
 
@@ -93,6 +94,7 @@
           icon: pickIcon(a.id || a.name),
           color: COLOR_CYCLE[entries.length % COLOR_CYCLE.length],
           description: a.description || '',
+          fullscreen: a.appWindow?.fullscreen ?? false,
         });
       }
       entries.sort((a, b) => a.name.localeCompare(b.name));
@@ -123,8 +125,8 @@
           {@const c = AGENT_COLORS_MAP[app.color as keyof typeof AGENT_COLORS_MAP]}
           <div
             class="p-5 rounded-lg border border-base-300 bg-base-200/50 cursor-pointer hover:border-primary/50 hover:shadow-sm transition-all text-left group relative"
-            onclick={() => launchApp(app.id, app.name)}
-            onkeydown={(e) => { if (e.key === 'Enter') launchApp(app.id, app.name); }}
+            onclick={() => launchApp(app.id, app.name, { fullscreen: app.fullscreen })}
+            onkeydown={(e) => { if (e.key === 'Enter') launchApp(app.id, app.name, { fullscreen: app.fullscreen }); }}
             role="button"
             tabindex="0"
           >
@@ -149,7 +151,7 @@
                   {/if}
                   <button
                     class="w-full text-left px-3 py-1.5 text-sm hover:bg-base-200/50 transition-colors cursor-pointer {item.id === 'open' ? 'font-medium' : ''}"
-                    onclick={(e) => handleMenuItem(e, app.id, app.name, item.id)}
+                    onclick={(e) => handleMenuItem(e, app, item.id)}
                   >{$t(item.label)}</button>
                 {/each}
               </div>

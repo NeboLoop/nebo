@@ -104,6 +104,11 @@ fn load_state(label: &str) -> Option<WindowState> {
 
 /// Read current window geometry, convert physical → logical, and write to disk.
 fn save_state(window: &tauri::Window) {
+    // A fullscreen app window (a game) is the screen's size, not a size the
+    // person chose: keep the windowed size it had.
+    if window.is_fullscreen().unwrap_or_default() {
+        return;
+    }
     let Ok(scale) = window.scale_factor() else {
         return;
     };
