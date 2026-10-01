@@ -1126,7 +1126,7 @@ Multiple versions can coexist. Each skill resolves to the highest installed vers
 
 - **SHA256 verification:** Every binary is hashed on upload. On download, the hash is verified before the binary is written to disk. Any mismatch = download rejected.
 - **ED25519 signatures:** Binaries are signed with NeboAI's ED25519 key. Signatures are verified on download when the signing key is available.
-- **Quarantine:** If a plugin is revoked (security issue, policy violation), Nebo deletes the binary and writes a `.quarantined` marker. The plugin becomes unresolvable, and any skills depending on it are dropped from the loaded set.
+- **Quarantine:** If NeboAI withdraws a plugin from the marketplace (security issue, policy violation), every bot that installed it deletes the binary of each installed version, writes a `.quarantined` marker, turns the plugin off and restarts the employees that used it. The plugin becomes unresolvable, and any skills depending on it are dropped from the loaded set. Its data and connected accounts are kept, and the owner is told: "<name> is turned off. NeboAI withdrew <name> from the marketplace, so it is turned off here. Everything it saved is kept."
 - **No network required after install:** Once downloaded, `resolve()` is fully local. Works offline.
 
 ---
