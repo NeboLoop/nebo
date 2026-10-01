@@ -959,20 +959,37 @@ async fn resolve_coworker(state: &AppState, to: &str) -> Result<(String, String)
     // By name — the ONE normalizer (comm::handle::slugify), so "Q&A Bot" is
     // addressable by the same key on every rail (the old per-site rules
     // produced three different keys for one agent; audit finding 7).
-    let normalized = comm::handle::slugify(to);
-    if let Ok(agents) = state.store.list_agents(500, 0) {
-        if let Some(a) = agents
-            .iter()
-            .find(|a| comm::handle::slugify(&a.name) == normalized)
-        {
-            return Ok((a.id.clone(), a.name.clone()));
-        }
+    if let Ok(agents) = state.store.list_agents(500, 0)
+        && let Some(found) = named(&agents, to)?
+    {
+        return Ok(found);
     }
     Err(format!(
         "No employee named '{}' is installed. list_employees \
          shows the roster — coworker messages go to installed employees only.",
         to
     ))
+}
+
+/// The employee in `agents` that `to` names, by the ONE normalizer
+/// (`comm::handle::slugify`). Two employees that answer to one name are never
+/// guessed between: the one spelled exactly as written, else none — the
+/// sender is shown each with its id and sends again by id.
+fn named(agents: &[db::models::Agent], to: &str) -> Result<Option<(String, String)>, String> {
+    let normalized = comm::handle::slugify(to);
+    let named: Vec<&db::models::Agent> = agents.iter().filter(|a| comm::handle::slugify(&a.name) == normalized).collect();
+    let exact: Vec<&db::models::Agent> = named.iter().copied().filter(|a| a.name.trim().eq_ignore_ascii_case(to.trim())).collect();
+    match (named.as_slice(), exact.as_slice()) {
+        ([], _) => Ok(None),
+        ([a], _) | (_, [a]) => Ok(Some((a.id.clone(), a.name.clone()))),
+        (many, _) => {
+            let who: Vec<String> = many.iter().map(|a| format!("{} (id {})", a.name, a.id)).collect();
+            Err(format!(
+                "Not sent: more than one employee is named '{to}': {}. Send it again with the id of the one you mean.",
+                who.join(", ")
+            ))
+        }
+    }
 }
 
 /// Ensure an installed agent is activated (registry entry + worker) before a
@@ -1055,10 +1072,27 @@ pub(crate) fn origin_matter_context(
 #[cfg(test)]
 mod tests {
     use super::{
-        coworker_thread_keys, parse_team_envelope, team_context, team_envelope,
+        coworker_thread_keys, named, parse_team_envelope, team_context, team_envelope,
         OWNER,
     };
     use types::provenance::ProvenanceClass;
+
+    fn employee(id: &str, name: &str) -> db::models::Agent {
+        db::models::Agent { id: id.into(), name: name.into(), ..Default::default() }
+    }
+
+    /// A name is never guessed between two employees that answer to it: the
+    /// sender is told each one's id. One spelled exactly as written is no
+    /// guess; one employee by any spelling is the one.
+    #[test]
+    fn an_ambiguous_name_is_refused_with_the_candidates() {
+        let roster = [employee("a1", "Sales Advisor"), employee("a2", "sales-advisor"), employee("b", "Pam")];
+        assert_eq!(named(&roster, "pam").unwrap(), Some(("b".into(), "Pam".into())));
+        assert_eq!(named(&roster, "Nobody").unwrap(), None);
+        assert_eq!(named(&roster, "SALES ADVISOR").unwrap(), Some(("a1".into(), "Sales Advisor".into())));
+        let refused = named(&roster, "sales_advisor").unwrap_err();
+        assert!(refused.contains("Sales Advisor (id a1)") && refused.contains("sales-advisor (id a2)"), "{refused}");
+    }
 
     /// The envelope is written and read in one place, so what a member's model
     /// sees and what the owner's transcript shows can never disagree. Every

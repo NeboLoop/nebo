@@ -109,6 +109,31 @@ impl Store {
         }
     }
 
+    /// `name` when no other employee has it, else the first of "<name> 2",
+    /// "<name> 3", ... that none has, matched as [`Store::agent_name_taken`]
+    /// matches. How a name the owner did not choose — a package's, a linked
+    /// runtime's — is made unique, so an install never fails over a name.
+    /// `except_id` is the row being named.
+    pub fn free_agent_name(&self, name: &str, except_id: Option<&str>) -> Result<String, NeboError> {
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare("SELECT id, name FROM agents").db_err("free_agent_name")?;
+        let taken: std::collections::HashSet<String> = stmt
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+            .db_err("free_agent_name")?
+            .flatten()
+            .filter(|(id, _)| except_id != Some(id.as_str()))
+            .map(|(_, name)| agent_slug(&name))
+            .collect();
+        let name = name.trim();
+        if agent_slug(name).is_empty() || !taken.contains(&agent_slug(name)) {
+            return Ok(name.to_string());
+        }
+        Ok((2..)
+            .map(|n| format!("{name} {n}"))
+            .find(|candidate| !taken.contains(&agent_slug(candidate)))
+            .expect("an unbounded counter finds a free name"))
+    }
+
     /// The employee whose name slugs to `slug` — how the public API names one.
     pub fn get_agent_by_slug(&self, slug: &str) -> Result<Option<Agent>, NeboError> {
         let conn = self.conn()?;
@@ -397,6 +422,9 @@ impl Store {
         name: &str,
         description: &str,
     ) -> Result<(), NeboError> {
+        // A manifest name another employee has is never taken: names are
+        // unique, and the row keeps the one it has.
+        let name = if !name.trim().is_empty() && self.agent_name_taken(name, Some(id))?.is_some() { "" } else { name };
         let conn = self.conn()?;
         conn.execute(
             "UPDATE agents SET name = CASE WHEN ?2 != '' AND name_locked = 0 THEN ?2 ELSE name END,
@@ -1539,5 +1567,42 @@ mod boot_sync_tests {
         s.conn_exec_for_test("UPDATE agents SET updated_at = 10 WHERE id = 'emp'");
         s.sync_agent_identity("emp", "Clerk", "Keeps the books").unwrap();
         assert!(settings_changed(), "a new manifest description is a change");
+    }
+}
+
+/// Employee names are unique: a name the owner did not choose is numbered
+/// free, and a package's name never lands on another employee's.
+#[cfg(test)]
+mod unique_name_tests {
+    use crate::Store;
+
+    fn store() -> Store {
+        let path = std::env::temp_dir().join(format!("nebo-unique-name-test-{}.db", uuid::Uuid::new_v4()));
+        Store::new(&path.to_string_lossy()).expect("store")
+    }
+
+    #[test]
+    fn a_taken_name_is_numbered_free() {
+        let s = store();
+        assert_eq!(s.free_agent_name(" Bookkeeper ", None).unwrap(), "Bookkeeper");
+        s.create_agent("a", None, "Bookkeeper", "", "", "{}", None, None).unwrap();
+        s.create_agent("b", None, "bookkeeper 2", "", "", "{}", None, None).unwrap();
+        assert_eq!(s.free_agent_name("BOOKKEEPER", None).unwrap(), "BOOKKEEPER 3");
+        // The row being named keeps its own name.
+        assert_eq!(s.free_agent_name("Bookkeeper", Some("a")).unwrap(), "Bookkeeper");
+    }
+
+    #[test]
+    fn a_manifest_sync_never_takes_another_employees_name() {
+        let s = store();
+        s.create_agent("mine", None, "Bookkeeper", "", "", "{}", None, None).unwrap();
+        s.create_agent("pkg", None, "Bookkeeper 2", "", "", "{}", None, None).unwrap();
+        s.sync_agent_identity("pkg", "Bookkeeper", "Keeps the books.").unwrap();
+        let pkg = s.get_agent("pkg").unwrap().unwrap();
+        assert_eq!(pkg.name, "Bookkeeper 2");
+        assert_eq!(pkg.description, "Keeps the books.", "the rest of the sync still lands");
+        // A free manifest name still heals.
+        s.sync_agent_identity("pkg", "Ledger Keeper", "").unwrap();
+        assert_eq!(s.get_agent("pkg").unwrap().unwrap().name, "Ledger Keeper");
     }
 }

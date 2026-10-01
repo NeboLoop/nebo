@@ -768,9 +768,12 @@ pub async fn persist_agent_from_api(
         } else {
             db::declaration::merge_package_declaration(&existing.frontmatter, &frontmatter_str)
         };
+        // The package's name, unless another employee has it: an update
+        // never fails over a name (`free_agent_name`).
+        let name = store.free_agent_name(name, Some(artifact_id)).unwrap_or_else(|_| name.to_string());
         let _ = store.update_agent(
             artifact_id,
-            name,
+            &name,
             &description,
             &manifest_text,
             &frontmatter_str,
@@ -786,11 +789,15 @@ pub async fn persist_agent_from_api(
             None,
         );
     } else {
+        // A package named like an employee the owner already has is hired
+        // under the first free "<name> 2", "<name> 3": the install never
+        // fails over a name, and the owner can rename it.
+        let name = store.free_agent_name(name, None).map_err(|e| format!("create_agent: {e}"))?;
         let _ = store
             .create_agent(
                 artifact_id,
                 Some(code),
-                name,
+                &name,
                 &description,
                 &manifest_text,
                 &frontmatter_str,

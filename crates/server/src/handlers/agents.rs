@@ -2129,6 +2129,12 @@ async fn hire_linked(
     let id = uuid::Uuid::new_v4().to_string();
     let name = name.trim();
     let name = if name.is_empty() { agent_id } else { name };
+    // The owner's own name was refused before anything started when another
+    // employee has it (`create_linked_agent`); a default one — the runtime's,
+    // the roster's — is numbered free, so a second hire of one runtime is
+    // "Claude Code 2" rather than a refusal.
+    let name = state.store.free_agent_name(name, None).map_err(to_error_response)?;
+    let name = name.as_str();
     let agent_md = format!(
         "---\nname: {:?}\ndescription: {:?}\n---\n",
         name, description
@@ -3637,33 +3643,13 @@ pub async fn duplicate_agent(
         .filter(|s| !s.is_empty());
     let new_name = match explicit {
         Some(requested) => {
-            if state
-                .store
-                .get_agent_by_name(requested)
-                .map_err(to_error_response)?
-                .is_some()
-            {
-                return Err(to_error_response(types::NeboError::Validation(format!(
-                    "an agent named \"{requested}\" already exists"
-                ))));
-            }
+            state.store.agent_name_free(requested, None).map_err(to_error_response)?;
             requested.to_string()
         }
-        None => {
-            let base = format!("{} (Copy)", source.name);
-            let mut candidate = base.clone();
-            let mut n = 2;
-            while state
-                .store
-                .get_agent_by_name(&candidate)
-                .map_err(to_error_response)?
-                .is_some()
-            {
-                candidate = format!("{base} {n}");
-                n += 1;
-            }
-            candidate
-        }
+        None => state
+            .store
+            .free_agent_name(&format!("{} (Copy)", source.name), None)
+            .map_err(to_error_response)?,
     };
     let color = body.get("color").and_then(|v| v.as_str());
 
