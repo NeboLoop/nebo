@@ -54,6 +54,10 @@ pub struct PermissionAskCard {
     pub status: String,
     /// allow_always | this_once | no | sent | not_sent, once answered.
     pub answer: Option<String>,
+    /// The owner's conversation whose own flow raised it: the one chat its
+    /// card shows in. Empty when no chat raised it (a schedule, a workflow,
+    /// another employee's run): it lives in the Inbox only.
+    pub chat_id: String,
     pub created_at: i64,
 }
 
@@ -78,6 +82,7 @@ pub(crate) fn card(state: &AppState, ask: &Ask) -> PermissionAskCard {
         this_once: ask.this_once_offered(),
         status: status.to_string(),
         answer: answer.map(|a| a.as_str().to_string()),
+        chat_id: ask.chat_id.clone().unwrap_or_default(),
         created_at: ask.created_at,
     }
 }
@@ -105,8 +110,10 @@ fn ask_error(e: AskError) -> (axum::http::StatusCode, Json<types::api::ErrorResp
 
 #[derive(Debug, Deserialize)]
 pub struct ListAsksQuery {
-    /// Only the asks of this session (the open chat).
+    /// Only the asks of this session.
     pub session: Option<String>,
+    /// Only the asks this conversation's own flow raised: what a chat shows.
+    pub chat: Option<String>,
 }
 
 /// The asks waiting on the owner.
@@ -116,13 +123,20 @@ pub struct PermissionAsksResponse {
 }
 
 /// GET /api/v1/permissions/asks — the asks waiting on the owner, oldest
-/// first; `?session=` narrows them to one chat.
+/// first. `?chat=` is what a chat shows: only the asks that conversation's
+/// own flow raised, never one from a schedule, a workflow or another run.
+/// `?session=` narrows them to one session.
 pub async fn list_permission_asks(
     State(state): State<AppState>,
     Query(q): Query<ListAsksQuery>,
 ) -> HandlerResult<PermissionAsksResponse> {
     let asks = state.permission_asks.open(q.session.as_deref()).map_err(ask_error)?;
-    Ok(Json(PermissionAsksResponse { asks: asks.iter().map(|a| card(&state, a)).collect() }))
+    let asks = asks
+        .iter()
+        .filter(|a| q.chat.as_deref().is_none_or(|chat| a.chat_id.as_deref() == Some(chat)))
+        .map(|a| card(&state, a))
+        .collect();
+    Ok(Json(PermissionAsksResponse { asks }))
 }
 
 /// GET /api/v1/permissions/asks/{id} — one ask and where it stands.
