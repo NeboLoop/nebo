@@ -2754,7 +2754,8 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
         });
     }
 
-    // Reconnect watcher with exponential backoff + wall-clock drift detection.
+    // Reconnect watcher with jittered backoff (comm::reconnect) + wall-clock
+    // drift detection.
     // Uses dual select: periodic poll OR instant notification from wait_disconnect().
     // Wall-clock drift detects system sleep/wake (tokio timers freeze during sleep).
     if cfg.is_neboai_enabled() {
@@ -2770,20 +2771,27 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
                 _ = tokio::time::sleep(std::time::Duration::from_secs(60)) => {}
                 _ = comm::lease::process().until_lost() => {}
             }
-            let mut backoff_secs: u64 = if comm::lease::process().is_lost() {
-                comm::lease::RENEW_EVERY.as_secs()
+            // While connected, how often the connection is looked at.
+            const POLL: std::time::Duration = std::time::Duration::from_secs(30);
+            let mut backoff = comm::reconnect::Backoff::new();
+            // When the current connection came up (boot connected it).
+            let mut connected_at = std::time::Instant::now();
+            let mut wait = if comm::lease::process().is_lost() {
+                comm::lease::RENEW_EVERY
             } else {
-                30
+                POLL
             };
             loop {
                 let before_sleep = std::time::SystemTime::now();
+                let mut dropped = None;
 
                 tokio::select! {
-                    // Branch 1: periodic backoff poll
-                    _ = tokio::time::sleep(std::time::Duration::from_secs(backoff_secs)) => {}
+                    // Branch 1: periodic poll, or the wait before a retry
+                    _ = tokio::time::sleep(wait) => {}
                     // Branch 2: instant notification when read loop exits unexpectedly
-                    _ = reconnect_state.comm_manager.wait_disconnect() => {
-                        info!("neboai: disconnect notification received, will reconnect");
+                    how = reconnect_state.comm_manager.wait_disconnect() => {
+                        info!(ended = ?how, "neboai: disconnected, will reconnect");
+                        dropped = Some(how);
                     }
                 }
 
@@ -2791,8 +2799,7 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
                 let elapsed_wall = std::time::SystemTime::now()
                     .duration_since(before_sleep)
                     .unwrap_or_default();
-                let expected = std::time::Duration::from_secs(backoff_secs);
-                let drift = elapsed_wall.saturating_sub(expected);
+                let drift = elapsed_wall.saturating_sub(wait);
                 let was_asleep = drift > std::time::Duration::from_secs(10);
 
                 if was_asleep {
@@ -2808,9 +2815,17 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
                     // Tear down stale connection (read/write loops may still be blocked)
                     reconnect_state.comm_manager.shutdown().await;
                     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                } else if reconnect_state.comm_manager.is_connected().await {
-                    backoff_secs = 30;
-                    continue;
+                } else {
+                    // A dropped connection is redialed after its jittered
+                    // wait: up to 3 s for a hub drain, under 1 s for a
+                    // first drop, longer for repeated ones.
+                    if let Some(how) = dropped {
+                        tokio::time::sleep(backoff.wait(how, connected_at.elapsed())).await;
+                    }
+                    if reconnect_state.comm_manager.is_connected().await {
+                        wait = POLL;
+                        continue;
+                    }
                 }
 
                 match codes::activate_neboai(&reconnect_state).await {
@@ -2827,16 +2842,17 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
                                 warn!("neboai: failed to persist rotated token: {}", e);
                             }
                         }
-                        backoff_secs = 30;
+                        connected_at = std::time::Instant::now();
+                        wait = POLL;
                     }
                     Err(_) if comm::lease::process().is_lost() => {
                         // Another running copy holds the bot. Ask again at
                         // the renewal cadence: its lease lapses within one
                         // TTL of it stopping.
-                        backoff_secs = comm::lease::RENEW_EVERY.as_secs();
+                        wait = comm::lease::RENEW_EVERY;
                     }
                     Err(_) => {
-                        backoff_secs = (backoff_secs * 2).min(600);
+                        wait = backoff.wait(comm::reconnect::Disconnect::Dropped, std::time::Duration::ZERO);
                     }
                 }
             }
@@ -2851,7 +2867,7 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
         let tunnel_state = state.clone();
         let local_addr = format!("127.0.0.1:{}", cfg.port);
         tokio::spawn(async move {
-            let mut backoff_secs: u64 = 30;
+            let mut backoff = comm::reconnect::Backoff::new();
             loop {
                 // Only the process holding the bot's lease may hold its
                 // tunnel; the dial names that lease (comm::tunnel).
@@ -2865,20 +2881,25 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
                 };
                 let started = std::time::Instant::now();
                 let hub_url = tunnel_state.config.neboai.tunnel_url.clone();
-                match comm::tunnel::run(&hub_url, &token, &local_addr, &tunnel_state.tunnel_online).await {
-                    Ok(()) => info!("tunnel: closed by hub, redialing"),
-                    Err(e) => info!("tunnel: {e}"),
-                }
-                // A connection that lived a while earns a quick redial;
-                // repeated fast failures back off like the comms watcher.
-                let delay = if started.elapsed() > std::time::Duration::from_secs(60) {
-                    backoff_secs = 30;
-                    5
-                } else {
-                    backoff_secs = (backoff_secs * 2).min(600);
-                    backoff_secs
+                // A hub drain redials within 3 s and leaves the backoff
+                // where it was; a session that ended any other way, or a
+                // dial that failed, waits a jittered backoff that starts
+                // over once a session has been up 10 s (comm::reconnect).
+                let delay = match comm::tunnel::run(&hub_url, &token, &local_addr, &tunnel_state.tunnel_online).await {
+                    Ok(how) => {
+                        info!(ended = ?how, "tunnel: closed by hub, redialing");
+                        backoff.wait(how, started.elapsed())
+                    }
+                    Err(e @ comm::tunnel::TunnelError::Mux(_)) => {
+                        info!("tunnel: {e}");
+                        backoff.wait(comm::reconnect::Disconnect::Dropped, started.elapsed())
+                    }
+                    Err(e) => {
+                        info!("tunnel: {e}");
+                        backoff.wait(comm::reconnect::Disconnect::Dropped, std::time::Duration::ZERO)
+                    }
                 };
-                tokio::time::sleep(std::time::Duration::from_secs(delay)).await;
+                tokio::time::sleep(delay).await;
             }
         });
     }

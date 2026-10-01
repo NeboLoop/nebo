@@ -29,6 +29,8 @@ use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use tokio_util::compat::FuturesAsyncReadCompatExt;
 use tracing::{debug, info};
 
+use crate::reconnect::Disconnect;
+
 /// How long the hub may stay silent before the bot declares the tunnel dead.
 /// The hub's yamux keepalive writes every 30s, so three missed keepalives.
 const HUB_SILENCE: Duration = Duration::from_secs(90);
@@ -52,16 +54,18 @@ pub const REVOKED_CLOSE_REASON: &str = "revoked";
 
 /// Dial the hub and serve tunnel streams until the connection closes.
 ///
-/// Returns `Ok(())` on a clean close by the hub and an error on dial/auth/mux
-/// failure; the caller owns reconnect and backoff (the watcher in
-/// `crates/server`, mirroring the comms reconnect watcher).
-/// [`TunnelError::Revoked`] is final: the bot was removed from NeboAI.
+/// Returns how the hub closed the session — [`Disconnect::Drain`] when its
+/// pod drained (1012), [`Disconnect::Dropped`] for any other clean close —
+/// and an error on dial/auth/mux failure. A dial gives up after
+/// [`crate::reconnect::DIAL_TIMEOUT`]. The caller owns reconnect and backoff
+/// ([`crate::reconnect::Backoff`]). [`TunnelError::Revoked`] is final: the
+/// bot was removed from NeboAI.
 pub async fn run(
     hub_url: &str,
     token: &str,
     local_addr: &str,
     online: &std::sync::atomic::AtomicBool,
-) -> Result<(), TunnelError> {
+) -> Result<Disconnect, TunnelError> {
     // `online` is true exactly while the hub holds this session — the
     // switchboard can reach us — and false the moment it does not.
     struct Offline<'a>(&'a std::sync::atomic::AtomicBool);
@@ -81,19 +85,25 @@ pub async fn run(
     request.headers_mut().insert("Authorization", auth);
     claim_lease(request.headers_mut(), crate::lease::process());
 
-    let (ws, _) = tls::connect_ws(request)
+    let (ws, _) = tokio::time::timeout(crate::reconnect::DIAL_TIMEOUT, tls::connect_ws(request))
         .await
+        .map_err(|_| TunnelError::Dial("timed out".into()))?
         .map_err(dial_error)?;
     info!(hub = %hub_url, "tunnel: connected to hub");
     online.store(true, std::sync::atomic::Ordering::Relaxed);
 
-    let revoked = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let closed = HubClose::default();
     let mut conn = yamux::Connection::new(
-        WsIo::new(ws, HUB_SILENCE, revoked.clone()),
+        WsIo::new(ws, HUB_SILENCE, closed.clone()),
         yamux::Config::default(),
         yamux::Mode::Server,
     );
-    let was_revoked = || revoked.load(std::sync::atomic::Ordering::Relaxed);
+    let was_revoked = || closed.get().is_some_and(|(code, reason)| is_revoked(code, &reason));
+    let was_drained = || {
+        closed
+            .get()
+            .is_some_and(|(code, _)| Disconnect::from_close_code(code) == Disconnect::Drain)
+    };
     loop {
         match futures::future::poll_fn(|cx| conn.poll_next_inbound(cx)).await {
             Some(Ok(stream)) => {
@@ -105,13 +115,38 @@ pub async fn run(
                 });
             }
             Some(Err(_)) | None if was_revoked() => return Err(TunnelError::Revoked),
+            Some(Err(_)) | None if was_drained() => {
+                info!("tunnel: hub is draining this connection");
+                return Ok(Disconnect::Drain);
+            }
             Some(Err(e)) => return Err(TunnelError::Mux(e.to_string())),
             None => {
                 info!("tunnel: hub closed the connection");
-                return Ok(());
+                return Ok(Disconnect::Dropped);
             }
         }
     }
+}
+
+/// The close frame the hub ended the tunnel with (code, reason), shared
+/// between the carrier that reads it and `run`, which tells a revoke and a
+/// drain from a routine close.
+#[derive(Clone, Default)]
+struct HubClose(std::sync::Arc<std::sync::Mutex<Option<(u16, String)>>>);
+
+impl HubClose {
+    fn set(&self, code: u16, reason: &str) {
+        *self.0.lock().unwrap_or_else(|e| e.into_inner()) = Some((code, reason.to_string()));
+    }
+
+    fn get(&self) -> Option<(u16, String)> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+}
+
+/// 1008 [`REVOKED_CLOSE_REASON`]: the bot was removed from NeboAI.
+fn is_revoked(code: u16, reason: &str) -> bool {
+    code == u16::from(CloseCode::Policy) && reason == REVOKED_CLOSE_REASON
 }
 
 /// A refused dial is [`TunnelError::Revoked`] when the hub says the bot was
@@ -413,7 +448,7 @@ mod tests {
         use tokio_tungstenite::tungstenite::protocol::CloseFrame;
 
         // A hub that accepts the tunnel, then closes it with `code, reason`.
-        async fn closed_with(code: CloseCode, reason: &'static str) -> Result<(), TunnelError> {
+        async fn closed_with(code: CloseCode, reason: &'static str) -> Result<Disconnect, TunnelError> {
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let addr = listener.local_addr().unwrap();
             tokio::spawn(async move {
@@ -434,10 +469,22 @@ mod tests {
             closed_with(CloseCode::Policy, REVOKED_CLOSE_REASON).await,
             Err(TunnelError::Revoked)
         ));
-        assert!(closed_with(CloseCode::Restart, "drain").await.is_ok());
+        assert!(matches!(
+            closed_with(CloseCode::Restart, "drain").await,
+            Ok(Disconnect::Drain)
+        ));
+        // Any other close is a routine drop, not a drain.
+        assert!(matches!(
+            closed_with(CloseCode::Normal, "").await,
+            Ok(Disconnect::Dropped)
+        ));
+        assert!(matches!(
+            closed_with(CloseCode::Away, "going away").await,
+            Ok(Disconnect::Dropped)
+        ));
 
         // A hub that refuses the dial with `status` and `body`.
-        async fn refused_with(status: &'static str, body: &'static str) -> Result<(), TunnelError> {
+        async fn refused_with(status: &'static str, body: &'static str) -> Result<Disconnect, TunnelError> {
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let addr = listener.local_addr().unwrap();
             tokio::spawn(async move {
@@ -465,6 +512,24 @@ mod tests {
             refused_with("503 Service Unavailable", r#"{"error":"bot has been revoked"}"#).await,
             Err(TunnelError::Dial(_))
         ));
+    }
+
+    /// A hub that takes the TCP connection but never answers the upgrade
+    /// fails the dial after the dial timeout instead of hanging the watcher.
+    #[tokio::test]
+    async fn a_dial_the_hub_never_answers_times_out() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (_sock, _) = listener.accept().await.unwrap();
+            futures::future::pending::<()>().await;
+        });
+        let online = std::sync::atomic::AtomicBool::new(false);
+        let started = std::time::Instant::now();
+        let ended = run(&format!("ws://{addr}/tunnel"), "t", "127.0.0.1:9", &online).await;
+        assert!(matches!(ended, Err(TunnelError::Dial(_))), "{ended:?}");
+        let took = started.elapsed();
+        assert!(took >= crate::reconnect::DIAL_TIMEOUT && took < crate::reconnect::DIAL_TIMEOUT * 2, "{took:?}");
     }
 
     /// A hub that goes silent must fail the read rather than hang forever —
@@ -508,28 +573,28 @@ mod tests {
 /// silence past `hub_silence` means the hub is gone; failing the read unwinds
 /// the session and the watcher redials.
 ///
-/// A close frame saying the bot was revoked (1008 [`REVOKED_CLOSE_REASON`])
-/// sets `revoked`, so `run` can tell that close from a routine one.
+/// The hub's close frame is kept in `closed`, so `run` can tell a revoke
+/// (1008 [`REVOKED_CLOSE_REASON`]) and a drain (1012) from a routine close.
 struct WsIo {
     ws: WebSocketStream<MaybeTlsStream<TcpStream>>,
     buf: tokio_tungstenite::tungstenite::Bytes,
     hub_silence: Duration,
     deadline: Pin<Box<tokio::time::Sleep>>,
-    revoked: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    closed: HubClose,
 }
 
 impl WsIo {
     fn new(
         ws: WebSocketStream<MaybeTlsStream<TcpStream>>,
         hub_silence: Duration,
-        revoked: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        closed: HubClose,
     ) -> Self {
         Self {
             ws,
             buf: tokio_tungstenite::tungstenite::Bytes::new(),
             hub_silence,
             deadline: Box::pin(tokio::time::sleep(hub_silence)),
-            revoked,
+            closed,
         }
     }
 }
@@ -560,10 +625,8 @@ impl AsyncRead for WsIo {
                     self.buf = data;
                 }
                 Poll::Ready(Some(Ok(WsMessage::Close(frame)))) => {
-                    if frame.is_some_and(|f| {
-                        f.code == CloseCode::Policy && f.reason.as_str() == REVOKED_CLOSE_REASON
-                    }) {
-                        self.revoked.store(true, std::sync::atomic::Ordering::Relaxed);
+                    if let Some(f) = frame {
+                        self.closed.set(u16::from(f.code), f.reason.as_str());
                     }
                     return Poll::Ready(Ok(0));
                 }

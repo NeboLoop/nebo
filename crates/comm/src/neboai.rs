@@ -93,6 +93,9 @@ pub struct NeboAIPlugin {
     connected: Arc<AtomicBool>,
     /// Signalled when the read loop exits unexpectedly (not via cancel).
     disconnect_notify: Arc<Notify>,
+    /// Set by the read loop when the hub ended the connection with a drain
+    /// (1012); taken by `wait_disconnect`.
+    drained: Arc<AtomicBool>,
     /// Durable acked offsets of the bot's own streams.
     offsets: Arc<dyn StreamOffsets>,
 }
@@ -113,6 +116,7 @@ impl NeboAIPlugin {
             devlog: RwLock::new(None),
             connected: Arc::new(AtomicBool::new(false)),
             disconnect_notify: Arc::new(Notify::new()),
+            drained: Arc::new(AtomicBool::new(false)),
             offsets,
         }
     }
@@ -377,8 +381,9 @@ impl CommPlugin for NeboAIPlugin {
         lease.claim();
 
         // WebSocket connect
-        let (ws_stream, _) = tls::connect_ws(&gateway)
+        let (ws_stream, _) = tokio::time::timeout(crate::reconnect::DIAL_TIMEOUT, tls::connect_ws(&gateway))
             .await
+            .map_err(|_| CommError::Other("ws dial: timed out".into()))?
             .map_err(|e| CommError::Other(format!("ws dial: {}", e)))?;
 
         let (mut write, mut read) = ws_stream.split();
@@ -558,6 +563,9 @@ impl CommPlugin for NeboAIPlugin {
         let devlog_for_read = self.devlog.read().await.clone();
         let connected_for_read = self.connected.clone();
         let notify_for_read = self.disconnect_notify.clone();
+        // A drain seen on an earlier connection says nothing about this one.
+        self.drained.store(false, Ordering::SeqCst);
+        let drained_for_read = self.drained.clone();
         let maps_for_read = self.conv_maps.clone();
         let stream_acks = StreamAcks {
             bot_id: bot_id.clone(),
@@ -575,6 +583,7 @@ impl CommPlugin for NeboAIPlugin {
                 devlog_for_read,
                 connected_for_read,
                 notify_for_read,
+                drained_for_read,
                 send_tx,
                 stream_acks,
             )
@@ -1088,8 +1097,13 @@ impl CommPlugin for NeboAIPlugin {
             .cloned()
     }
 
-    async fn wait_disconnect(&self) {
+    async fn wait_disconnect(&self) -> crate::reconnect::Disconnect {
         self.disconnect_notify.notified().await;
+        if self.drained.swap(false, Ordering::SeqCst) {
+            crate::reconnect::Disconnect::Drain
+        } else {
+            crate::reconnect::Disconnect::Dropped
+        }
     }
 
     async fn send_typing(
@@ -1259,6 +1273,7 @@ async fn read_loop(
     devlog: Option<DevLog>,
     connected: Arc<AtomicBool>,
     disconnect_notify: Arc<Notify>,
+    drained: Arc<AtomicBool>,
     send_tx: mpsc::Sender<Vec<u8>>,
     mut stream_acks: StreamAcks,
 ) {
@@ -1315,6 +1330,17 @@ async fn read_loop(
                     WsMessage::Close(reason) => {
                         if let Some(ref dl) = devlog {
                             dl.event(&format!("CLOSE frame received: {:?}", reason));
+                        }
+                        let code = reason.as_ref().map(|f| u16::from(f.code));
+                        // A drain is a deploy moving the bot to another pod:
+                        // planned, so it is told apart and redialed quietly.
+                        if code.map(crate::reconnect::Disconnect::from_close_code)
+                            == Some(crate::reconnect::Disconnect::Drain)
+                        {
+                            info!("neboai: hub is draining this connection; redialing");
+                            drained.store(true, Ordering::SeqCst);
+                        } else {
+                            info!(code = ?code, "neboai: hub closed the connection");
                         }
                         break;
                     }
@@ -2016,6 +2042,55 @@ mod tests {
             "the JOIN result maps the stream it names"
         );
         plugin.disconnect().await.unwrap();
+    }
+
+    /// The comms close code is read in every build: a hub drain (1012) is
+    /// told apart from any other close, and from a connection that just ends.
+    #[tokio::test]
+    async fn a_drain_close_is_told_apart_from_other_drops() {
+        use tokio_tungstenite::tungstenite::protocol::CloseFrame;
+        use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
+
+        // A hub that grants the connection, then ends it with `close`
+        // (None: drops the socket without a close frame).
+        async fn ended_with(close: Option<CloseCode>) -> crate::reconnect::Disconnect {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            tokio::spawn(async move {
+                let (tcp, _) = listener.accept().await.unwrap();
+                let mut ws = tokio_tungstenite::accept_async(tcp).await.unwrap();
+                let _ = ws.next().await; // CONNECT
+                ws.send(server_frame(frame::TYPE_AUTH_OK, [0; 16], 0, serde_json::json!({"ok": true})))
+                    .await
+                    .unwrap();
+                match close {
+                    Some(code) => {
+                        let frame = CloseFrame { code, reason: "drain".into() };
+                        let _ = ws.send(WsMessage::Close(Some(frame))).await;
+                        // Drain until the client answers the close.
+                        while let Some(Ok(_)) = ws.next().await {}
+                    }
+                    None => drop(ws),
+                }
+            });
+            let plugin = NeboAIPlugin::new(Arc::new(MemOffsets::default()));
+            let config = HashMap::from([
+                ("gateway".to_string(), format!("ws://{addr}/ws")),
+                ("bot_id".to_string(), "bot-under-test".to_string()),
+                ("token".to_string(), "test-token".to_string()),
+                ("api_server".to_string(), "http://127.0.0.1:9".to_string()),
+            ]);
+            plugin.connect(config).await.unwrap();
+            tokio::time::timeout(std::time::Duration::from_secs(10), plugin.wait_disconnect())
+                .await
+                .expect("the drop is reported")
+        }
+
+        use crate::reconnect::Disconnect;
+        assert_eq!(ended_with(Some(CloseCode::Restart)).await, Disconnect::Drain);
+        assert_eq!(ended_with(Some(CloseCode::Normal)).await, Disconnect::Dropped);
+        assert_eq!(ended_with(Some(CloseCode::Error)).await, Disconnect::Dropped);
+        assert_eq!(ended_with(None).await, Disconnect::Dropped);
     }
 
     /// The hub's refusal of a removed bot is `Revoked`; any other refusal

@@ -394,17 +394,18 @@ impl PluginManager {
         }
     }
 
-    /// Wait for the active plugin to report an unexpected disconnect.
-    /// Returns immediately if no active plugin. Callers should loop and reconnect.
-    pub async fn wait_disconnect(&self) {
+    /// Wait for the active plugin to report an unexpected disconnect, and
+    /// say how the connection ended.
+    /// Never returns if no active plugin. Callers should loop and reconnect.
+    pub async fn wait_disconnect(&self) -> crate::reconnect::Disconnect {
         let plugin = {
             let inner = self.inner.read().await;
             inner.active.clone()
         };
         if let Some(p) = plugin {
-            p.wait_disconnect().await;
+            p.wait_disconnect().await
         } else {
-            std::future::pending::<()>().await;
+            std::future::pending().await
         }
     }
 

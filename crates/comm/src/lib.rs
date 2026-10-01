@@ -9,6 +9,7 @@ pub mod lease;
 mod loopback;
 mod manager;
 pub mod neboai;
+pub mod reconnect;
 pub mod roster;
 pub mod tunnel;
 mod types;
@@ -175,10 +176,11 @@ pub trait CommPlugin: Send + Sync {
         None
     }
 
-    /// Wait for an unexpected disconnect (read loop failure).
+    /// Wait for an unexpected disconnect (read loop failure), and say how
+    /// the connection ended (a hub drain or any other drop).
     /// Default implementation never returns (plugin doesn't support disconnect notification).
-    async fn wait_disconnect(&self) {
-        std::future::pending::<()>().await;
+    async fn wait_disconnect(&self) -> reconnect::Disconnect {
+        std::future::pending().await
     }
 
     /// Send a transient "typing" signal on a conversation. The signal is sent
