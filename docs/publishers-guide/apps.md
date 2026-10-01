@@ -463,7 +463,7 @@ if (answers.tier.choice === 'hot' && answers.tier.confidence > 0.8) flagLead();
 
 - The whole question lives in `instructions`; name the state's fields in backticks. The question's name only labels its answer. Add an escape option (`other`) when a choice list is not complete.
 - Very long state is shortened in the middle before it is sent; keep it to the fields the questions need.
-- It throws with the reason: a malformed question (the route answers 400), no work left on the owner's account (429; retrying does not help until the account is funded), the bot not signed in to NeboAI (503), or the decision service failing (502).
+- It throws an `Error` whose message is the reason; the error has no status code, so compare the message if you need to tell them apart. A malformed question (the route answers 400, with what is wrong); no work left on the owner's account (429, "You've used all the work included in your account. Choose a plan or add credits to continue."; retrying does not help until the account is funded); too many decisions at once (429, "Too many decisions at once. Try again in a moment.", after the bot has retried once); the bot not signed in to NeboAI (503, "Decisions need NeboAI connected. Sign in to NeboAI and try again."); or the decision service failing (502).
 - The app's employee has a `decide` tool that takes the same request, so it can judge records it reads from the app's data.
 - Billed to the bot owner's NeboAI account like any model call. See pricing at https://neboai.com/pricing.
 
@@ -1376,6 +1376,8 @@ What the marketplace does with the bundle:
 - Files under `skills/<name>/` follow the skill rules inside their folder: `SKILL.md` is kept, `scripts/` and `bin/` may hold any type, everything else keeps the allowlist.
 - Limits: a file over 10 MB is skipped and counted in `filesSkipped`; over 50 MB in total is refused. The result also reports `uiFilesStored`.
 - For a private or loop app the installable package is rebuilt on every upload and Nebo tells the bots that installed the app: one that is online puts the rebuilt package in place right away, one that is offline when it next connects. No version bump is needed, and the owner's settings, schedules and data for the app are kept. Public, unlisted and invite-only apps keep their approved package until a new version passes review; once it is approved, installed bots offer it in Settings → Updates for the owner's yes, or apply it right away when automatic updates are on for that app.
+- An update never grants new permissions: a permission the new version adds is asked for when the app first needs it.
+- If NeboAI withdraws an app from the marketplace, every bot that installed it turns it off and tells the owner: "<name> is turned off. NeboAI withdrew <name> from the marketplace, so it is turned off here. Everything it saved is kept." Nothing is deleted.
 
 ### App with a sidecar
 
