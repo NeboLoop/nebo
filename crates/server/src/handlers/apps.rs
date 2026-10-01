@@ -621,6 +621,10 @@ pub async fn serve_sdk_iife() -> Response {
 }
 
 /// GET/PUT/DELETE /apps/{agent_id}/storage/{key} — app-scoped KV storage.
+///
+/// The one store an app's page and its employee share (`tools::app_data`,
+/// which owns the encoding). Every write tells the app's open views
+/// (`app_data_changed`), so a second window of the same app refreshes too.
 pub async fn get_storage(
     State(state): State<AppState>,
     Path((agent_id, key)): Path<(String, String)>,
@@ -629,8 +633,7 @@ pub async fn get_storage(
     if let Err(r) = validate_app_token(&state, &agent_id, &headers).await {
         return r;
     }
-    let plugin_name = format!("app:{}", agent_id);
-    match state.store.get_plugin_setting(&plugin_name, &key) {
+    match tools::app_data::read(&state.store, &agent_id, &key) {
         Ok(Some(v)) => axum::Json(serde_json::json!({ "key": key, "value": v })).into_response(),
         Ok(None) => StatusCode::NOT_FOUND.into_response(),
         Err(e) => {
@@ -649,17 +652,18 @@ pub async fn put_storage(
     if let Err(r) = validate_app_token(&state, &agent_id, &headers).await {
         return r;
     }
-    let plugin_name = format!("app:{}", agent_id);
     let value = match body.get("value") {
         Some(v) => v.to_string(),
         None => return StatusCode::BAD_REQUEST.into_response(),
     };
-    // Ensure plugin_registry entry exists for storage
-    if let Err(e) = state.store.ensure_plugin_registry_entry(&plugin_name) {
-        warn!(error = %e, "failed to ensure plugin registry for app storage");
-    }
-    match state.store.set_plugin_setting(&plugin_name, &key, &value) {
-        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+    match tools::app_data::write(&state.store, &agent_id, &key, &value) {
+        Ok(()) => {
+            state.hub.broadcast(
+                tools::app_data::CHANGED_EVENT,
+                tools::app_data::changed(&agent_id, &[&key], "set", "page"),
+            );
+            StatusCode::NO_CONTENT.into_response()
+        }
         Err(e) => {
             warn!(error = %e, "app storage put failed");
             StatusCode::INTERNAL_SERVER_ERROR.into_response()
@@ -675,10 +679,14 @@ pub async fn delete_storage(
     if let Err(r) = validate_app_token(&state, &agent_id, &headers).await {
         return r;
     }
-    let plugin_name = format!("app:{}", agent_id);
-    // Delete by setting empty — plugin_settings doesn't have a delete, use set with empty
-    match state.store.set_plugin_setting(&plugin_name, &key, "") {
-        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+    match tools::app_data::remove(&state.store, &agent_id, &key) {
+        Ok(()) => {
+            state.hub.broadcast(
+                tools::app_data::CHANGED_EVENT,
+                tools::app_data::changed(&agent_id, &[&key], "delete", "page"),
+            );
+            StatusCode::NO_CONTENT.into_response()
+        }
         Err(e) => {
             warn!(error = %e, "app storage delete failed");
             StatusCode::INTERNAL_SERVER_ERROR.into_response()
@@ -694,8 +702,7 @@ pub async fn list_storage(
     if let Err(r) = validate_app_token(&state, &agent_id, &headers).await {
         return r;
     }
-    let plugin_name = format!("app:{}", agent_id);
-    match state.store.list_plugin_settings(&plugin_name) {
+    match tools::app_data::list(&state.store, &agent_id) {
         Ok(items) => axum::Json(serde_json::json!({ "items": items })).into_response(),
         Err(e) => {
             warn!(error = %e, "app storage list failed");

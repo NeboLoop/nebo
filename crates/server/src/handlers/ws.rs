@@ -191,6 +191,25 @@ pub async fn app_ws_handler(
     }
 }
 
+/// Whether a hub event belongs on app `agent_id`'s page. An event that
+/// names an app (`appId`: its data changed, a reload) or a surface of an
+/// employee (`agent:<id>:<view>`, an A2UI message) reaches only that app's
+/// page; one app never sees another's data or cards. Every other event
+/// passes as before.
+pub(crate) fn reaches_app(agent_id: &str, event: &HubEvent) -> bool {
+    let p = &event.payload;
+    if let Some(app) = p.get("appId").and_then(|v| v.as_str()) {
+        return app == agent_id;
+    }
+    if event.event_type == "a2ui_message" {
+        let surface = p.get("surface_id").and_then(|v| v.as_str()).unwrap_or("");
+        if let Some(owner) = surface.strip_prefix("agent:").and_then(|r| r.split(':').next()) {
+            return owner == agent_id;
+        }
+    }
+    true
+}
+
 async fn handle_app_ws(socket: WebSocket, agent_id: String, state: AppState) {
     info!(agent = %agent_id, "app ws client connected");
     let mut hub_rx = state.hub.subscribe();
@@ -215,6 +234,9 @@ async fn handle_app_ws(socket: WebSocket, agent_id: String, state: AppState) {
             result = hub_rx.recv() => {
                 match result {
                     Ok(event) => {
+                        if !reaches_app(&agent_id, &event) {
+                            continue;
+                        }
                         let msg = serde_json::json!({
                             "type": event.event_type,
                             "data": event.payload,
@@ -2818,4 +2840,30 @@ async fn compact_session(state: AppState, session_key: String, agent_id: String,
         Err(e) => serde_json::json!({ "session_id": session_key, "success": false, "error": e }),
     };
     state.hub.broadcast("session_compact", result);
+}
+
+#[cfg(test)]
+mod app_event_tests {
+    use super::{HubEvent, reaches_app};
+
+    fn ev(kind: &str, payload: serde_json::Value) -> HubEvent {
+        HubEvent { event_type: kind.to_string(), payload }
+    }
+
+    /// One app's data changes, reloads and cards reach that app's page only;
+    /// events that name no app pass as before.
+    #[test]
+    fn an_app_page_hears_only_its_own_apps_events() {
+        let changed = ev("app_data_changed", serde_json::json!({ "appId": "crm", "keys": ["contacts"] }));
+        assert!(reaches_app("crm", &changed));
+        assert!(!reaches_app("notes", &changed));
+
+        let card = ev("a2ui_message", serde_json::json!({ "surface_id": "agent:crm:main", "message": {} }));
+        assert!(reaches_app("crm", &card));
+        assert!(!reaches_app("notes", &card));
+
+        let other = ev("a2ui_message", serde_json::json!({ "surface_id": "chat-1", "message": {} }));
+        assert!(reaches_app("notes", &other));
+        assert!(reaches_app("crm", &ev("a2ui_action_status", serde_json::json!({ "surface_id": "x" }))));
+    }
 }
