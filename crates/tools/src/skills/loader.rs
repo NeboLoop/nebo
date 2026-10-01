@@ -1429,6 +1429,18 @@ pub fn resolve_skill_path(skills_dir: &Path, name: &str) -> Option<PathBuf> {
     None
 }
 
+/// The marker a revoked skill carries (NeboAI withdrew it): the same name
+/// a quarantined plugin version carries.
+pub const QUARANTINE_MARKER: &str = ".quarantined";
+
+/// Whether the skill in `dir` is quarantined: the marker beside its SKILL.md
+/// or one level up (the versioned `<name>/<version>/` layout keeps the
+/// install's `.artifact_id` at either). A quarantined skill is never loaded;
+/// its files stay on disk.
+pub fn is_quarantined(dir: &Path) -> bool {
+    dir.join(QUARANTINE_MARKER).exists() || dir.parent().is_some_and(|p| p.join(QUARANTINE_MARKER).exists())
+}
+
 /// Load skills from extracted .napp directories in a directory tree.
 ///
 /// Recursively walks the directory looking for SKILL.md marker files
@@ -1437,7 +1449,9 @@ fn load_skills_from_nested_dir(dir: &Path, source: SkillSource) -> Vec<Skill> {
     // Phase 1: collect all skill directories (fast single-pass walk)
     let mut skill_dirs = Vec::new();
     napp::reader::walk_for_marker(dir, "SKILL.md", &mut |skill_dir| {
-        skill_dirs.push(skill_dir.to_path_buf());
+        if !is_quarantined(skill_dir) {
+            skill_dirs.push(skill_dir.to_path_buf());
+        }
     });
 
     // Phase 2: parse SKILL.md files in parallel
@@ -1505,8 +1519,11 @@ fn scan_sealed_napps(dir: &Path, license_keys: &HashMap<String, [u8; 32]>, out: 
         if path.extension().and_then(|e| e.to_str()) != Some("napp") {
             continue;
         }
-        // Check if sibling extracted directory has a SKILL.md (free content, already loaded)
         let sibling = path.with_extension("");
+        if dir.join(QUARANTINE_MARKER).exists() || sibling.join(QUARANTINE_MARKER).exists() {
+            continue;
+        }
+        // Check if sibling extracted directory has a SKILL.md (free content, already loaded)
         if sibling.is_dir() && find_skill_md(&sibling).is_some() {
             continue; // Free content — already loaded by load_skills_from_nested_dir
         }
@@ -1594,7 +1611,7 @@ fn load_skills_from_dir(dir: &Path, source: SkillSource) -> Vec<Skill> {
     let subdirs: Vec<PathBuf> = entries
         .flatten()
         .map(|e| e.path())
-        .filter(|p| p.is_dir())
+        .filter(|p| p.is_dir() && !p.join(QUARANTINE_MARKER).exists())
         .collect();
 
     // Phase 2: parse SKILL.md files in parallel
@@ -1807,6 +1824,24 @@ platform:
 
 Windows specific instructions.
 "#;
+
+    // A skill NeboAI revoked carries the quarantine marker and is never
+    // loaded again, wherever it was installed; its files stay.
+    #[test]
+    fn a_quarantined_skill_is_not_loaded() {
+        let tmp = TempDir::new().unwrap();
+        create_skill_extracted(tmp.path(), "@acme/leads", "1.0.0", BASIC_SKILL.as_bytes());
+        assert_eq!(load_skills_from_nested_dir(tmp.path(), SkillSource::Installed).len(), 1);
+        std::fs::write(tmp.path().join("@acme/leads").join(QUARANTINE_MARKER), "revoked").unwrap();
+        assert!(load_skills_from_nested_dir(tmp.path(), SkillSource::Installed).is_empty());
+        assert!(tmp.path().join("@acme/leads/1.0.0/SKILL.md").exists(), "its files stay");
+
+        let user = TempDir::new().unwrap();
+        create_skill_md(user.path(), "notes", BASIC_SKILL);
+        assert_eq!(load_skills_from_dir(user.path(), SkillSource::User).len(), 1);
+        std::fs::write(user.path().join("notes").join(QUARANTINE_MARKER), "revoked").unwrap();
+        assert!(load_skills_from_dir(user.path(), SkillSource::User).is_empty());
+    }
 
     #[tokio::test]
     async fn test_load_all() {

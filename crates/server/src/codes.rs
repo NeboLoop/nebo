@@ -1787,7 +1787,7 @@ fn workflow_targets_plugin(trigger_type: &str, trigger_config: &str, slug: &str)
 /// Agents whose triggers reference this plugin slug — channel bindings
 /// (`plugin_slug`) or watch workflows (`trigger_config.plugin`). Returned as
 /// (agent_id, agent_name) so their workers can be restarted after a binary swap.
-async fn find_agents_using_plugin(store: &db::Store, slug: &str) -> Vec<(String, String)> {
+pub(crate) async fn find_agents_using_plugin(store: &db::Store, slug: &str) -> Vec<(String, String)> {
     let mut out: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     for agent in store.list_agents(1000, 0).unwrap_or_default() {
         let uses_channel = store

@@ -6,6 +6,7 @@ pub mod agents_export;
 pub mod app_lifecycle;
 pub mod backup_ship;
 mod artifact_updates;
+mod revocation;
 mod channel_dispatch;
 pub mod chat_dispatch;
 pub mod codes;
@@ -775,7 +776,8 @@ async fn handle_comm_install_event(
             let artifact_type = item.artifact_type.as_deref().unwrap_or("skill");
             // Dedup the self-echo: a fresh "tool_installed" for something already
             // present (e.g. the device that just installed it) skips the redundant
-            // re-download. Updates always re-install. The echo lands before our
+            // re-download. An update of something installed here goes through the
+            // update core instead (`artifact_updates::on_update_notice`). The echo lands before our
             // own install has persisted (the hub emits it as the redeem is
             // recorded), so the check is only truthful once local install work
             // — every door's code handler and its dependency cascade — has
@@ -786,6 +788,11 @@ async fn handle_comm_install_event(
                 && installed_here(state, &event.tool_id, &item.slug, &item.name, artifact_type)
             {
                 tracing::debug!(tool_id = %event.tool_id, slug = %item.slug, "install event: already installed, skipping");
+                return Ok(());
+            }
+            if event.event_type == "tool_updated"
+                && artifact_updates::on_update_notice(state, &api, &event, &detail).await
+            {
                 return Ok(());
             }
             // Backstop against any echo the check above misses: the same
@@ -813,8 +820,12 @@ async fn handle_comm_install_event(
             .await;
             Ok(())
         }
+        "tool_revoked" => {
+            revocation::revoke(state, event).await;
+            Ok(())
+        }
         _ => {
-            // tool_uninstalled / tool_revoked — no download; registry path.
+            // tool_uninstalled — no download; registry path.
             state
                 .napp_registry
                 .handle_install_event(event)
@@ -2555,7 +2566,7 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
                         });
                         return;
                     }
-                    if let Ok(event) = serde_json::from_str::<napp::InstallEvent>(&msg.content) {
+                    if let Some(event) = napp::InstallEvent::parse(&msg.content) {
                         tokio::spawn(async move {
                             handle_installs_message(&st, event).await;
                         });
@@ -4418,7 +4429,7 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
             app_listing::handle_review(&state, review).await;
             return;
         }
-        if let Ok(event) = serde_json::from_str::<napp::InstallEvent>(&msg.content) {
+        if let Some(event) = napp::InstallEvent::parse(&msg.content) {
             handle_installs_message(&state, event).await;
             return;
         }

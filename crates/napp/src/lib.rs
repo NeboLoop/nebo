@@ -95,6 +95,81 @@ pub struct InstallEvent {
     pub payload: serde_json::Value,
 }
 
+impl InstallEvent {
+    /// An "installs" message as an install event. Until neboloop #428
+    /// (2026-10-01) the hub sent update and revoke notices as
+    /// `{"type":"skillUpdated"|"skillRevoked","skillId",...}`, and notices
+    /// queued for an offline bot before then keep that shape when they are
+    /// drained; they are read as `tool_updated` / `tool_revoked` with the
+    /// fields renamed, so none is lost.
+    pub fn parse(content: &str) -> Option<Self> {
+        if let Ok(event) = serde_json::from_str::<Self>(content) {
+            return Some(event);
+        }
+        let v: serde_json::Value = serde_json::from_str(content).ok()?;
+        let event_type = match v.get("type")?.as_str()? {
+            "skillUpdated" => "tool_updated",
+            "skillRevoked" => "tool_revoked",
+            _ => return None,
+        };
+        let tool_id = v.get("skillId")?.as_str()?.to_string();
+        let mut payload = serde_json::Map::new();
+        for (old, new) in [
+            ("skillName", "name"),
+            ("version", "version"),
+            ("permissionsAdded", "permissions_added"),
+            ("permissionsRemoved", "permissions_removed"),
+            ("updatedAt", "updated_at"),
+            ("reason", "reason"),
+            ("revokedAt", "revoked_at"),
+        ] {
+            if let Some(value) = v.get(old) {
+                payload.insert(new.to_string(), value.clone());
+            }
+        }
+        Some(Self { event_type: event_type.to_string(), tool_id, payload: serde_json::Value::Object(payload) })
+    }
+}
+
+#[cfg(test)]
+mod install_event_tests {
+    use super::InstallEvent;
+
+    #[test]
+    fn the_install_event_shape_reads_as_it_is() {
+        let e = InstallEvent::parse(
+            r#"{"type":"tool_updated","tool_id":"a1","payload":{"name":"CRM","version":"0.1.3","artifact_type":"app"},"signature":"s","key_id":"k"}"#,
+        )
+        .unwrap();
+        assert_eq!((e.event_type.as_str(), e.tool_id.as_str()), ("tool_updated", "a1"));
+        assert_eq!(e.payload["version"], "0.1.3");
+    }
+
+    // Notices queued before neboloop #428 drain in the old shape.
+    #[test]
+    fn a_notice_queued_before_428_is_still_read() {
+        let up = InstallEvent::parse(
+            r#"{"type":"skillUpdated","skillId":"a1","skillName":"CRM","version":"0.1.3","permissionsAdded":["network"],"permissionsRemoved":[],"updatedAt":"2026-09-30T10:00:00Z"}"#,
+        )
+        .unwrap();
+        assert_eq!((up.event_type.as_str(), up.tool_id.as_str()), ("tool_updated", "a1"));
+        assert_eq!(up.payload["name"], "CRM");
+        assert_eq!(up.payload["version"], "0.1.3");
+        assert_eq!(up.payload["permissions_added"][0], "network");
+        assert_eq!(up.payload["updated_at"], "2026-09-30T10:00:00Z");
+
+        let gone = InstallEvent::parse(
+            r#"{"type":"skillRevoked","skillId":"a2","skillName":"Leads","reason":"malware","revokedAt":"2026-09-30T10:00:00Z"}"#,
+        )
+        .unwrap();
+        assert_eq!((gone.event_type.as_str(), gone.tool_id.as_str()), ("tool_revoked", "a2"));
+        assert_eq!(gone.payload["reason"], "malware");
+
+        assert!(InstallEvent::parse(r#"{"type":"something_else","skillId":"a3"}"#).is_none());
+        assert!(InstallEvent::parse("not json").is_none());
+    }
+}
+
 /// Quarantine event emitted when a tool is quarantined.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QuarantineEvent {
