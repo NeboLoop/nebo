@@ -463,7 +463,7 @@ if (answers.tier.choice === 'hot' && answers.tier.confidence > 0.8) flagLead();
 
 - The whole question lives in `instructions`; name the state's fields in backticks. The question's name only labels its answer. Add an escape option (`other`) when a choice list is not complete.
 - Very long state is shortened in the middle before it is sent; keep it to the fields the questions need.
-- It throws with the reason when a question is malformed, when the bot is not signed in to NeboAI, or when the decision cannot be made.
+- It throws with the reason: a malformed question (the route answers 400), no work left on the owner's account (429; retrying does not help until the account is funded), the bot not signed in to NeboAI (503), or the decision service failing (502).
 - The app's employee has a `decide` tool that takes the same request, so it can judge records it reads from the app's data.
 - Billed to the bot owner's NeboAI account like any model call. See pricing at https://neboai.com/pricing.
 

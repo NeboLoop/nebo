@@ -40,9 +40,13 @@ pub fn decider() -> Option<&'static DecideClient> {
 pub enum DecideError {
     /// The request is malformed; the text says which part.
     Invalid(String),
-    /// No decision client (NeboAI not connected).
+    /// No decision client, or no NeboAI sign-in to call it with.
     Unavailable,
-    /// The decision service refused or failed.
+    /// Nothing on the owner's account can pay for it (Janus's funding 429).
+    Unfunded,
+    /// Too many decisions at once (a throttling 429 that outlasted the retry).
+    Busy,
+    /// The decision service failed.
     Failed(String),
 }
 
@@ -51,7 +55,27 @@ impl std::fmt::Display for DecideError {
         match self {
             Self::Invalid(e) => f.write_str(e),
             Self::Unavailable => f.write_str("Decisions need NeboAI connected. Sign in to NeboAI and try again."),
+            Self::Unfunded => f.write_str(
+                "You've used all the work included in your account. Choose a plan or add credits to continue.",
+            ),
+            Self::Busy => f.write_str("Too many decisions at once. Try again in a moment."),
             Self::Failed(e) => write!(f, "The decision could not be made: {e}"),
+        }
+    }
+}
+
+impl From<ai::ProviderError> for DecideError {
+    /// What the decision service's answer means to the caller: Janus's 400
+    /// (and 422) is the request's fault and keeps Janus's words, its funding
+    /// 429 is the account's, no sign-in is NeboAI not connected, and only
+    /// the rest is the service failing.
+    fn from(e: ai::ProviderError) -> Self {
+        match e {
+            ai::ProviderError::Auth(_) => Self::Unavailable,
+            ai::ProviderError::RateLimit { .. } => Self::Busy,
+            ai::ProviderError::Api { code, .. } if code == ai::decide::USAGE_LIMIT_EXCEEDED => Self::Unfunded,
+            ai::ProviderError::Api { code, message, .. } if code == "400" || code == "422" => Self::Invalid(message),
+            other => Self::Failed(other.to_string()),
         }
     }
 }
@@ -94,7 +118,7 @@ pub async fn decide(client: Option<&DecideClient>, trace: &RequestTrace, input: 
     let d = client
         .decide(trace, &state, &asked)
         .await
-        .map_err(|e| DecideError::Failed(e.to_string()))?;
+        .map_err(DecideError::from)?;
     Ok(json!({
         "model": d.model,
         "answers": d.answers,
