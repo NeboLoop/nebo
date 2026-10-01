@@ -526,6 +526,14 @@ impl NeboAIApi {
         .await
     }
 
+    /// Every artifact NeboAI has withdrawn from the marketplace, of any type
+    /// (`GET /api/v1/apps/revocations`).
+    pub async fn list_revocations(&self) -> Result<Vec<Revocation>, CommError> {
+        let resp: RevocationsResponse =
+            self.do_json(reqwest::Method::GET, "/api/v1/apps/revocations", None::<&()>).await?;
+        Ok(resp.revocations.unwrap_or_default())
+    }
+
     /// List top/popular skills.
     pub async fn list_top_skills(
         &self,
