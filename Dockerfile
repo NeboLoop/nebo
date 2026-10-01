@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1
 # Headless Nebo server image (one per SaaS tenant).
 # Frontend is built on the host (pnpm) and embedded via rust-embed; this image
 # compiles the binary and copies the prebuilt app/build in.
@@ -21,29 +22,62 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       cmake clang libclang-dev pkg-config protobuf-compiler \
       libssl-dev libopenblas-dev libwayland-dev libxkbcommon-dev \
     && rm -rf /var/lib/apt/lists/*
-RUN rustup component add rustfmt   # whisper-rs-sys bindgen needs it
-RUN cargo install cargo-chef --locked
 WORKDIR /src
+# The toolchain pinned in rust-toolchain.toml, installed HERE, once, in the
+# cached base. Without it the cook step below compiled every dependency with
+# the image's stable rustc, then the workspace build (which sees the pin)
+# downloaded 1.95 and compiled every dependency AGAIN — the dep layer never
+# saved a minute.
+COPY rust-toolchain.toml .
+RUN rustup toolchain install \
+    && rustup component add rustfmt   # whisper-rs-sys bindgen needs it
+RUN cargo install cargo-chef --locked
+# sccache, prebuilt and checksum-pinned: the shared compile cache (see
+# docker/server-cargo.sh).
+ARG SCCACHE_VERSION=0.18.0
+RUN set -eu; \
+    case "$(uname -m)" in \
+      x86_64) sum=45f1447fbe231e3037bde351ef70677dd212216c8d62ae7ca409fecc4d6acc89 ;; \
+      aarch64) sum=2b3284d5da3b46a47dc4229e75bb7b88ac4aa99c8d754fb7d2f84997e5a4354a ;; \
+      *) echo "no sccache build for $(uname -m)"; exit 1 ;; \
+    esac; \
+    name="sccache-v${SCCACHE_VERSION}-$(uname -m)-unknown-linux-musl"; \
+    curl -fsSL -o /tmp/sccache.tgz "https://github.com/mozilla/sccache/releases/download/v${SCCACHE_VERSION}/${name}.tar.gz"; \
+    echo "${sum}  /tmp/sccache.tgz" | sha256sum -c -; \
+    tar -xzf /tmp/sccache.tgz -C /tmp; \
+    install -m 0755 "/tmp/${name}/sccache" /usr/local/bin/sccache; \
+    rm -rf /tmp/sccache.tgz "/tmp/${name}"
+COPY docker/server-cargo.sh /usr/local/bin/server-cargo
 
 FROM chef AS planner
 COPY . .
 RUN cargo chef prepare --recipe-path recipe.json
 
 FROM chef AS build
-# `-l openblas` is REQUIRED — turbovec's `cblas_sgemm` reference otherwise goes
-# unresolved at link time (blas-src is a link-only shim the linker drops).
-# `--no-as-needed` forces the lib to stay on the link line regardless of
-# placement; flip back to `--as-needed` so unrelated libs still get pruned.
-# Same flags as .github/workflows/release.yml (tested on arm64 + amd64).
+# Compile cache (docker/server-cargo.sh). The bucket coordinates are build args;
+# the keys arrive only as BuildKit secrets, which never enter a layer or the
+# layer cache key. A build without them runs uncached, exactly as before.
+ARG SCCACHE_BUCKET=""
+ARG SCCACHE_ENDPOINT=""
+ARG SCCACHE_REGION=""
+ARG SCCACHE_S3_KEY_PREFIX=""
+ENV SCCACHE_BUCKET=${SCCACHE_BUCKET} SCCACHE_ENDPOINT=${SCCACHE_ENDPOINT} \
+    SCCACHE_REGION=${SCCACHE_REGION} SCCACHE_S3_KEY_PREFIX=${SCCACHE_S3_KEY_PREFIX} \
+    SCCACHE_S3_USE_SSL=true
 COPY --from=planner /src/recipe.json recipe.json
-RUN MULTIARCH=$(dpkg-architecture -qDEB_HOST_MULTIARCH) && \
-    export RUSTFLAGS="-C link-arg=-L/usr/lib/${MULTIARCH} -C link-arg=-Wl,--no-as-needed -C link-arg=-lopenblas -C link-arg=-Wl,--as-needed" && \
-    cargo chef cook --profile server --recipe-path recipe.json -p nebo-cli
+RUN --mount=type=secret,id=sccache_key,env=AWS_ACCESS_KEY_ID \
+    --mount=type=secret,id=sccache_secret,env=AWS_SECRET_ACCESS_KEY \
+    server-cargo cargo chef cook --profile server --recipe-path recipe.json -p nebo-cli
 COPY . .
 RUN test -d app/build || { echo "app/build missing — run 'cd app && pnpm build' on the host first"; exit 1; }
-RUN MULTIARCH=$(dpkg-architecture -qDEB_HOST_MULTIARCH) && \
-    export RUSTFLAGS="-C link-arg=-L/usr/lib/${MULTIARCH} -C link-arg=-Wl,--no-as-needed -C link-arg=-lopenblas -C link-arg=-Wl,--as-needed" && \
-    cargo build --profile server -p nebo-cli
+# The binary moves out and target/ goes in the same step: this layer then holds
+# one file instead of gigabytes of intermediate artifacts that change on every
+# commit, which is what made exporting the layer cache take five minutes.
+RUN --mount=type=secret,id=sccache_key,env=AWS_ACCESS_KEY_ID \
+    --mount=type=secret,id=sccache_secret,env=AWS_SECRET_ACCESS_KEY \
+    server-cargo cargo build --profile server -p nebo-cli \
+    && install -m 0755 target/server/nebo-cli /usr/local/bin/nebo-cli \
+    && rm -rf target
 
 FROM debian:bookworm-slim
 # Runtime .so for the GUI crates the binary links (loaded but unused on a server).
@@ -95,7 +129,7 @@ RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
 # would reject, so a broken rule fails the build, not the bot.
 COPY assets/cloud-bot/sudoers /etc/sudoers.d/nebo-packages
 RUN chmod 0440 /etc/sudoers.d/nebo-packages && visudo -cf /etc/sudoers.d/nebo-packages
-COPY --from=build /src/target/server/nebo-cli /usr/local/bin/nebo-cli
+COPY --from=build /usr/local/bin/nebo-cli /usr/local/bin/nebo-cli
 # The computer's face: a 3-launcher dock (Chromium / Terminal / Files) instead
 # of xfce's placeholder gears, and the default ~/.zshrc oh-my-zsh seed. The
 # panel default applies only until the user customizes (their config lands on
