@@ -716,6 +716,15 @@ fn main() {
                     Some(key) => req.set("Authorization", &format!("Bearer {key}")),
                     None => req,
                 };
+                // And names the page it carries (`neboapp://<id>`): an app
+                // window reaches only its own app's routes.
+                let page_origin = request
+                    .headers()
+                    .get("origin")
+                    .and_then(|v| v.to_str().ok())
+                    .map(str::to_string)
+                    .unwrap_or_else(|| format!("neboapp://{agent_id}"));
+                let req = req.set("Origin", &page_origin);
                 let result = if matches!(method, "POST" | "PUT" | "PATCH") && !req_body.is_empty() {
                     req.set("Content-Type", &content_type_in)
                         .send_bytes(&req_body)

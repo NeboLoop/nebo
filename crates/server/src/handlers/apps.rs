@@ -38,6 +38,9 @@ async fn validate_app_token(
     if crate::middleware::came_through_tunnel(headers) {
         return Ok(());
     }
+    if desktop_window_reaches(headers, agent_id, config::read_install_key().as_deref()) {
+        return Ok(());
+    }
 
     let token = headers
         .get(header::AUTHORIZATION)
@@ -65,6 +68,15 @@ async fn validate_app_token(
     }
 
     Ok(())
+}
+
+/// The desktop's app window reaching its own app's routes (storage, agents,
+/// janus, identity, ...): its `neboapp://` proxy is the owner's own client
+/// and proves itself with the install key, and it passes on the page's
+/// origin, `neboapp://<id>`, by the rule the app socket admits a window by
+/// (`ws::from_its_desktop_window`). A window reaches only its own app.
+fn desktop_window_reaches(headers: &axum::http::HeaderMap, agent_id: &str, install_key: Option<&str>) -> bool {
+    bearer_is(headers, install_key) && crate::handlers::ws::from_its_desktop_window(headers, agent_id)
 }
 
 /// Check that the app has `network:{domain}` permission for the target URL.
@@ -1759,6 +1771,39 @@ mod developer_mode_tests {
         let on = String::from_utf8(inject_app_bridge(PAGE.as_bytes().to_vec(), dev("</script><b>x", true))).unwrap();
         assert_eq!(on.matches("</script>").count(), 3, "{on}");
         assert!(on.contains(r"\u003c/script>\u003cb>x"));
+    }
+
+    /// The SDK in a desktop app window (`neboapp://<id>`, proxied with the
+    /// install key and the page's origin) reaches its own app's store and
+    /// round-trips a value; another app's routes, a missing or wrong key,
+    /// and a request naming no window are refused.
+    #[test]
+    fn a_desktop_window_reaches_its_own_apps_store_and_no_other() {
+        let (_d, store) = store();
+        app(&store, "crm", "CRM");
+        let window = |origin: Option<&str>, key: &str| {
+            let mut h = axum::http::HeaderMap::new();
+            h.insert(header::AUTHORIZATION, format!("Bearer {key}").parse().unwrap());
+            if let Some(o) = origin {
+                h.insert(header::ORIGIN, o.parse().unwrap());
+            }
+            h
+        };
+        let own = window(Some("neboapp://crm"), "key-1");
+        assert!(desktop_window_reaches(&own, "crm", Some("key-1")));
+        assert!(!desktop_window_reaches(&own, "notes", Some("key-1")), "another app's routes");
+        assert!(!desktop_window_reaches(&own, "crm", Some("key-2")), "a wrong key");
+        assert!(!desktop_window_reaches(&own, "crm", None), "no key on this install");
+        assert!(!desktop_window_reaches(&window(None, "key-1"), "crm", Some("key-1")), "no window named");
+        assert!(!desktop_window_reaches(&window(Some("http://evil.test"), "key-1"), "crm", Some("key-1")));
+
+        // What put_storage then get_storage do for that window.
+        let contact = serde_json::json!({ "name": "John Smith", "phone": "+1 555 0100" });
+        let sent = serde_json::Value::String(contact.to_string()).to_string();
+        tools::app_data::write(&store, "crm", "contact:john", &sent).unwrap();
+        let raw = tools::app_data::read(&store, "crm", "contact:john").unwrap().unwrap();
+        assert_eq!(tools::app_data::decode(&raw), contact);
+        assert_eq!(tools::app_data::read(&store, "notes", "contact:john").unwrap(), None);
     }
 
     #[test]

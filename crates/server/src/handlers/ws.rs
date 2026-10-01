@@ -145,7 +145,7 @@ pub(crate) fn origin_is_trusted(headers: &axum::http::HeaderMap) -> bool {
 
 /// The app's own desktop window (`neboapp://<agentId>`) opening its own
 /// socket: its page is the app's, and nothing else's.
-fn from_its_desktop_window(headers: &axum::http::HeaderMap, agent_id: &str) -> bool {
+pub(crate) fn from_its_desktop_window(headers: &axum::http::HeaderMap, agent_id: &str) -> bool {
     headers
         .get(axum::http::header::ORIGIN)
         .and_then(|v| v.to_str().ok())
