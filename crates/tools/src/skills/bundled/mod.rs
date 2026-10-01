@@ -186,6 +186,14 @@ mod bundled_skill_tests {
                 "the bundle does not export `{name}` — the skill's contract has drifted"
             );
         }
+        // The store is shared with the app's employee, and the page hears
+        // its writes: the skill says so and the bundle carries it.
+        assert!(content.contains("`storage.onChange(cb)"), "the skill names storage.onChange");
+        assert!(content.contains("app_data(action:"), "the skill shows the employee's app_data tool");
+        assert!(
+            bundle.contains("onChange") && bundle.contains("app_data_changed"),
+            "the bundle must carry storage.onChange on the app_data_changed event"
+        );
         // The two renamed at the top level, said as such.
         assert!(content.contains("NeboAppSDK.neboFetch"), "nebo.fetch is exported as neboFetch");
         assert!(content.contains("NeboAppSDK.NeboWebSocket"), "nebo.WebSocket is exported as NeboWebSocket");

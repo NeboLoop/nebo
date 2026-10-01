@@ -238,6 +238,19 @@ impl Store {
         Ok(())
     }
 
+    /// Remove a non-secret plugin setting by plugin name and key.
+    pub fn delete_plugin_setting(&self, plugin_name: &str, key: &str) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "DELETE FROM plugin_settings
+             WHERE plugin_id = (SELECT id FROM plugin_registry WHERE name = ?1)
+               AND setting_key = ?2 AND is_secret = 0",
+            params![plugin_name, key],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(())
+    }
+
     /// Ensure a plugin_registry entry exists for a skill so we can store settings.
     pub fn ensure_skill_plugin(&self, skill_name: &str) -> Result<(), NeboError> {
         let conn = self.conn()?;

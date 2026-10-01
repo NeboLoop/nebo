@@ -154,6 +154,7 @@ What it exposes, one line each:
 | `storage.getItem(key): Promise<any \| null>` | Read one key of the app's key-value store. JSON values come back parsed. |
 | `storage.setItem(key, value): Promise<void>` | Write one key. Non-strings are JSON-encoded. |
 | `storage.removeItem(key)`, `storage.keys(): Promise<string[]>`, `storage.clear()` | The rest of the store. |
+| `storage.onChange(cb): () => void` | `cb({appId, keys, action, source})` after every write to the store: `source` is `"employee"` when the app's employee changed it (`app_data`), `"page"` when another open view did. Re-read and redraw there. Returns a function that stops listening. |
 | `agents.invoke(message, {agent?, data?}): Promise<{text, tools?}>` | Ask an employee, wait for the answer. `agent` names another employee (needs `subagent:<id>`). |
 | `agents.stream(message, {agent?, data?}): AsyncGenerator<{text, done}>` | The same, streamed. |
 | `janus.complete({messages, model?, temperature?, max_tokens?, system?}): Promise<string>` | A raw model call: no persona, no memory, no tools. |
@@ -255,6 +256,32 @@ manifest or persona change is picked up by the watcher within a few seconds.
 
 Keep state in `storage`, not in the page: the window is closed and reopened,
 and the store survives that.
+
+---
+
+## Your App's Data
+
+The page's `storage` and the app employee's `app_data` tool are one store:
+the same keys, the same values. A contact the owner adds by talking to the
+app's employee is the contact the page shows, and one typed into the page is
+one the employee can find.
+
+```
+app_data(action: "set",   key: "contacts", value: [{ "name": "John Smith", "phone": "+1 555 0100" }])
+app_data(action: "get",   key: "contacts")
+app_data(action: "query", where: { "name": "john smith" })   // searches inside a list, item by item
+app_data(action: "query", text: "smith", prefix: "contact:", limit: 5)
+app_data(action: "list",  prefix: "contact:")
+app_data(action: "delete", key: "draft")
+```
+
+- Only the app's own employee has the tool, and only for its own app. A
+  coworker that needs the data asks the app's employee ("give me John
+  Smith's number") and gets the answer back; nothing else reads the store.
+- After a `set` or `delete` every open view hears it. Write the page so it
+  redraws: `storage.onChange(() => load())`.
+- Pick keys the page and the employee can both find: one key holding a list
+  (`contacts`), or one key per record under a prefix (`contact:<id>`).
 
 ---
 

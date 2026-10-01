@@ -768,6 +768,8 @@ pub(crate) async fn prepare(
     // The app developer pack: the owner's own app always has it for itself;
     // App Developer mode opens it to its teammates (`app_dev::withheld`).
     withheld.extend(tools::app_dev::withheld(&h.store, &req.seat.agent_id));
+    // An app's own data: only an app employee reaches its store.
+    withheld.extend(tools::app_data::withheld(&h.store, &req.seat.agent_id));
     let withheld_tools = Arc::new(withheld);
     let job_tools = match agent.as_ref() {
         Some(a) => {
@@ -835,6 +837,12 @@ pub(crate) async fn prepare(
     let identity = match me.as_ref().and_then(tools::app_dev::self_build_line) {
         Some(line) => format!("{identity}\n{line}"),
         None => identity,
+    };
+    // And that its app's data is its own to read and change (`app_data`).
+    let identity = if tools::app_data::withheld(&h.store, &req.seat.agent_id).is_empty() {
+        format!("{identity}\n\n{}", tools::app_data::SELF_LINE)
+    } else {
+        identity
     };
 
     // The relevant-memories search runs while the steps go on; a step lands

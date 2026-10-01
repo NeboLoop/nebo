@@ -1117,4 +1117,59 @@ mod tests {
         set_at_pointer(&mut root, "/y", json!(2));
         assert_eq!(root, json!({"x": 1, "y": 2}));
     }
+
+    /// An app employee renders a card from its own app's data: what the
+    /// page stored (`app_data`, the page's `storage`) goes into a surface's
+    /// data model, and the A2UI message reaches that app's page and no other
+    /// app's.
+    #[tokio::test]
+    async fn a_card_from_app_data_reaches_only_its_own_app() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::new(dir.path().join("t.db").to_str().unwrap()).unwrap());
+        let hub = Arc::new(ClientHub::new());
+        let mut rx = hub.subscribe();
+        let mgr = A2UIManager::new(hub, store.clone(), Arc::new(NeboCatalogProvider::new()));
+
+        // The page saved a contact (storage.setItem("contact:john", {...})).
+        let contact = json!({ "name": "John Smith", "phone": "+1 555 0100" });
+        tools::app_data::write(&store, "crm", "contact:john", &tools::app_data::encode(&contact)).unwrap();
+
+        // The employee reads it back (app_data get) and shows it.
+        let raw = tools::app_data::read(&store, "crm", "contact:john").unwrap().unwrap();
+        let sid = mgr
+            .create_surface("crm", "contact", "app", "https://a2ui.org/specification/v0_9/basic_catalog.json", None)
+            .await
+            .unwrap();
+        mgr.update_components(
+            &sid,
+            vec![
+                json!({ "id": "root", "component": "Card", "child": "body" }),
+                json!({ "id": "body", "component": "Column", "children": ["name", "phone"] }),
+                json!({ "id": "name", "component": "Text", "text": { "path": "/contact/name" } }),
+                json!({ "id": "phone", "component": "Text", "text": { "path": "/contact/phone" } }),
+            ],
+        )
+        .await
+        .unwrap();
+        mgr.update_data_model(&sid, Some("/contact"), tools::app_data::decode(&raw))
+            .await
+            .unwrap();
+
+        let mut events = Vec::new();
+        while let Ok(ev) = rx.try_recv() {
+            events.push(ev);
+        }
+        assert_eq!(events.len(), 3);
+        let data = events.last().unwrap();
+        assert_eq!(data.event_type, "a2ui_message");
+        assert_eq!(data.payload["surface_id"], "agent:crm:contact");
+        assert_eq!(data.payload["message"]["updateDataModel"]["value"], contact);
+        for ev in &events {
+            assert!(crate::handlers::ws::reaches_app("crm", ev));
+            assert!(!crate::handlers::ws::reaches_app("notes", ev));
+        }
+        // The page reloads later: the card is in the surface's replay.
+        let replay = mgr.get_agent_replay_messages("crm").await;
+        assert!(replay.iter().any(|m| m.to_string().contains("+1 555 0100")), "{replay:?}");
+    }
 }

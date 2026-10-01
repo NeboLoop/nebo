@@ -38,6 +38,9 @@ async fn validate_app_token(
     if crate::middleware::came_through_tunnel(headers) {
         return Ok(());
     }
+    if desktop_window_reaches(headers, agent_id, config::read_install_key().as_deref()) {
+        return Ok(());
+    }
 
     let token = headers
         .get(header::AUTHORIZATION)
@@ -65,6 +68,15 @@ async fn validate_app_token(
     }
 
     Ok(())
+}
+
+/// The desktop's app window reaching its own app's routes (storage, agents,
+/// janus, identity, ...): its `neboapp://` proxy is the owner's own client
+/// and proves itself with the install key, and it passes on the page's
+/// origin, `neboapp://<id>`, by the rule the app socket admits a window by
+/// (`ws::from_its_desktop_window`). A window reaches only its own app.
+fn desktop_window_reaches(headers: &axum::http::HeaderMap, agent_id: &str, install_key: Option<&str>) -> bool {
+    bearer_is(headers, install_key) && crate::handlers::ws::from_its_desktop_window(headers, agent_id)
 }
 
 /// Check that the app has `network:{domain}` permission for the target URL.
@@ -621,6 +633,10 @@ pub async fn serve_sdk_iife() -> Response {
 }
 
 /// GET/PUT/DELETE /apps/{agent_id}/storage/{key} — app-scoped KV storage.
+///
+/// The one store an app's page and its employee share (`tools::app_data`,
+/// which owns the encoding). Every write tells the app's open views
+/// (`app_data_changed`), so a second window of the same app refreshes too.
 pub async fn get_storage(
     State(state): State<AppState>,
     Path((agent_id, key)): Path<(String, String)>,
@@ -629,8 +645,7 @@ pub async fn get_storage(
     if let Err(r) = validate_app_token(&state, &agent_id, &headers).await {
         return r;
     }
-    let plugin_name = format!("app:{}", agent_id);
-    match state.store.get_plugin_setting(&plugin_name, &key) {
+    match tools::app_data::read(&state.store, &agent_id, &key) {
         Ok(Some(v)) => axum::Json(serde_json::json!({ "key": key, "value": v })).into_response(),
         Ok(None) => StatusCode::NOT_FOUND.into_response(),
         Err(e) => {
@@ -649,17 +664,18 @@ pub async fn put_storage(
     if let Err(r) = validate_app_token(&state, &agent_id, &headers).await {
         return r;
     }
-    let plugin_name = format!("app:{}", agent_id);
     let value = match body.get("value") {
         Some(v) => v.to_string(),
         None => return StatusCode::BAD_REQUEST.into_response(),
     };
-    // Ensure plugin_registry entry exists for storage
-    if let Err(e) = state.store.ensure_plugin_registry_entry(&plugin_name) {
-        warn!(error = %e, "failed to ensure plugin registry for app storage");
-    }
-    match state.store.set_plugin_setting(&plugin_name, &key, &value) {
-        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+    match tools::app_data::write(&state.store, &agent_id, &key, &value) {
+        Ok(()) => {
+            state.hub.broadcast(
+                tools::app_data::CHANGED_EVENT,
+                tools::app_data::changed(&agent_id, &[&key], "set", "page"),
+            );
+            StatusCode::NO_CONTENT.into_response()
+        }
         Err(e) => {
             warn!(error = %e, "app storage put failed");
             StatusCode::INTERNAL_SERVER_ERROR.into_response()
@@ -675,10 +691,14 @@ pub async fn delete_storage(
     if let Err(r) = validate_app_token(&state, &agent_id, &headers).await {
         return r;
     }
-    let plugin_name = format!("app:{}", agent_id);
-    // Delete by setting empty — plugin_settings doesn't have a delete, use set with empty
-    match state.store.set_plugin_setting(&plugin_name, &key, "") {
-        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+    match tools::app_data::remove(&state.store, &agent_id, &key) {
+        Ok(()) => {
+            state.hub.broadcast(
+                tools::app_data::CHANGED_EVENT,
+                tools::app_data::changed(&agent_id, &[&key], "delete", "page"),
+            );
+            StatusCode::NO_CONTENT.into_response()
+        }
         Err(e) => {
             warn!(error = %e, "app storage delete failed");
             StatusCode::INTERNAL_SERVER_ERROR.into_response()
@@ -694,8 +714,7 @@ pub async fn list_storage(
     if let Err(r) = validate_app_token(&state, &agent_id, &headers).await {
         return r;
     }
-    let plugin_name = format!("app:{}", agent_id);
-    match state.store.list_plugin_settings(&plugin_name) {
+    match tools::app_data::list(&state.store, &agent_id) {
         Ok(items) => axum::Json(serde_json::json!({ "items": items })).into_response(),
         Err(e) => {
             warn!(error = %e, "app storage list failed");
@@ -1752,6 +1771,39 @@ mod developer_mode_tests {
         let on = String::from_utf8(inject_app_bridge(PAGE.as_bytes().to_vec(), dev("</script><b>x", true))).unwrap();
         assert_eq!(on.matches("</script>").count(), 3, "{on}");
         assert!(on.contains(r"\u003c/script>\u003cb>x"));
+    }
+
+    /// The SDK in a desktop app window (`neboapp://<id>`, proxied with the
+    /// install key and the page's origin) reaches its own app's store and
+    /// round-trips a value; another app's routes, a missing or wrong key,
+    /// and a request naming no window are refused.
+    #[test]
+    fn a_desktop_window_reaches_its_own_apps_store_and_no_other() {
+        let (_d, store) = store();
+        app(&store, "crm", "CRM");
+        let window = |origin: Option<&str>, key: &str| {
+            let mut h = axum::http::HeaderMap::new();
+            h.insert(header::AUTHORIZATION, format!("Bearer {key}").parse().unwrap());
+            if let Some(o) = origin {
+                h.insert(header::ORIGIN, o.parse().unwrap());
+            }
+            h
+        };
+        let own = window(Some("neboapp://crm"), "key-1");
+        assert!(desktop_window_reaches(&own, "crm", Some("key-1")));
+        assert!(!desktop_window_reaches(&own, "notes", Some("key-1")), "another app's routes");
+        assert!(!desktop_window_reaches(&own, "crm", Some("key-2")), "a wrong key");
+        assert!(!desktop_window_reaches(&own, "crm", None), "no key on this install");
+        assert!(!desktop_window_reaches(&window(None, "key-1"), "crm", Some("key-1")), "no window named");
+        assert!(!desktop_window_reaches(&window(Some("http://evil.test"), "key-1"), "crm", Some("key-1")));
+
+        // What put_storage then get_storage do for that window.
+        let contact = serde_json::json!({ "name": "John Smith", "phone": "+1 555 0100" });
+        let sent = serde_json::Value::String(contact.to_string()).to_string();
+        tools::app_data::write(&store, "crm", "contact:john", &sent).unwrap();
+        let raw = tools::app_data::read(&store, "crm", "contact:john").unwrap().unwrap();
+        assert_eq!(tools::app_data::decode(&raw), contact);
+        assert_eq!(tools::app_data::read(&store, "notes", "contact:john").unwrap(), None);
     }
 
     #[test]

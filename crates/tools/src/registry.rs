@@ -1352,6 +1352,12 @@ impl Registry {
             }
         }
 
+        // An app employee's own data (`app_data`): the store its page reads
+        // and writes. Withheld from every employee that is not an app
+        // (`app_data::withheld`).
+        self.register(Box::new(crate::app_data::AppDataTool::new(store.clone(), broadcaster.clone())))
+            .await;
+
         // The developer pack for apps (deferred): offered to the owner's own
         // app for itself, and under App Developer mode to app employees and
         // their teammates (`app_dev::withheld`).
@@ -2438,7 +2444,10 @@ pub(crate) mod tests {
     ];
 
     /// The enum-dispatch surfaces the interface allows (device surfaces).
-    const ENUM_SURFACES: &[(&str, &str)] = &[("code_intel", "operation"), ("browser_act", "action")];
+    /// And an app's own store (`app_data`): one tool over one store, its
+    /// five operations a parameter (owner, 2026-10-01).
+    const ENUM_SURFACES: &[(&str, &str)] =
+        &[("code_intel", "operation"), ("browser_act", "action"), ("app_data", "action")];
 
     /// The invariants every tool of the new interface meets (tools doc
     /// §7.2): a search hint, a lean description, a snake_case (or
