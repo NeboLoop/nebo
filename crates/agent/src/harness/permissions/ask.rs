@@ -455,6 +455,19 @@ impl Asks {
         })
     }
 
+    /// The open ask the same employee already raised about this same new
+    /// person on the same key: a second card would ask the owner the same
+    /// thing again. Live 2026-10-01: the same first email to the same new
+    /// customer was asked twice, from two sessions.
+    pub(super) fn waiting_already(&self, agent_id: &str, t: &Target, case: &AskCase) -> Option<String> {
+        let AskCase::NewCounterparty { who } = case else { return None };
+        let rows = self.store.open_permission_asks(None).ok()?;
+        rows.into_iter().filter_map(Ask::from_row).find_map(|a| {
+            let same_person = matches!(&a.case, AskCase::NewCounterparty { who: was } if was.eq_ignore_ascii_case(who));
+            (a.agent_id == agent_id && a.target.key == t.key && same_person).then_some(a.id)
+        })
+    }
+
     pub fn get(&self, id: &str) -> Result<Option<Ask>, AskError> {
         let row = self.store.get_permission_ask(id).map_err(|e| AskError::Store(e.to_string()))?;
         Ok(row.and_then(Ask::from_row))
@@ -470,10 +483,25 @@ impl Asks {
     }
 
     /// The asks waiting on the owner, oldest first; `session_key` narrows
-    /// them to one session (the open chat).
+    /// them to one session (the open chat). One whose parked workflow run
+    /// has ended is no longer needed: it is withdrawn here, the moment any
+    /// surface looks, not left standing until its next reminder a day on.
     pub fn open(&self, session_key: Option<&str>) -> Result<Vec<Ask>, AskError> {
         let rows = self.store.open_permission_asks(session_key).map_err(|e| AskError::Store(e.to_string()))?;
-        Ok(rows.into_iter().filter_map(Ask::from_row).collect())
+        let now = chrono::Utc::now().timestamp();
+        Ok(rows
+            .into_iter()
+            .filter_map(Ask::from_row)
+            .filter(|a| match &a.run_id {
+                Some(run) if self.parked_run_is_gone(run) => {
+                    if let Err(e) = self.withdraw(a.clone(), now) {
+                        tracing::warn!(ask = %a.id, error = %e, "ask whose run ended not withdrawn");
+                    }
+                    false
+                }
+                _ => true,
+            })
+            .collect())
     }
 
     /// The owner's answer. The first answer anywhere wins; a later one
@@ -967,6 +995,15 @@ pub fn cannot_wait_text(sentence: &str, case: &AskCase, door: &Door) -> String {
         "Didn't run: {sentence}. It needs the owner's OK, and {} can't wait for one. {}",
         Door::unattended_words(door.label()),
         reason_of(case)
+    )
+}
+
+/// What the model hears for a call the owner is already being asked about.
+pub fn already_waiting_text(sentence: &str) -> String {
+    format!(
+        "An earlier ask for this is still waiting for the owner's OK, so this ({sentence}) wasn't \
+         asked again. You'll be told when he answers; then do it if it's still needed. Don't ask \
+         again now; carry on with other work."
     )
 }
 
@@ -1675,6 +1712,53 @@ mod tests {
         // A second wake of the closed run applies nothing twice.
         assert!(r.asks.resume(&r.reg, &id, created + 5 * day).unwrap().is_none());
         assert_eq!((r.ran(1), r.seen.notes().len(), r.seen.reminded.lock().unwrap().len()), (1, 1, 2));
+    }
+
+    /// Live 2026-10-01: the same first email to the same new customer was
+    /// asked twice while the first ask still waited. Another message to the
+    /// same new person from the same employee is not a second card: the
+    /// model hears it is already waiting.
+    #[tokio::test]
+    async fn a_new_person_waiting_is_asked_about_once() {
+        let r = rig().await;
+        let c = ctx(KEY, Door::Chat);
+        let first = r.reg.execute(&c, "text", json!({ "to": "+15550199", "body": "Your card expires" })).await;
+        assert!(first.parked_ask.is_some(), "{}", first.content);
+        assert!(matches!(
+            r.asks.get(first.parked_ask.as_deref().unwrap()).unwrap().unwrap().case,
+            AskCase::NewCounterparty { .. }
+        ));
+        let second = r.reg.execute(&c, "text", json!({ "to": "+15550199", "body": "A reminder" })).await;
+        assert!(second.parked_ask.is_none() && second.content.starts_with("An earlier ask"), "{}", second.content);
+        assert_eq!(r.seen.cards(), 1);
+        assert_eq!(r.asks.open(None).unwrap().len(), 1);
+        // Another new person is a question of its own.
+        let other = r.reg.execute(&c, "text", json!({ "to": "+15550188", "body": "Your card expires" })).await;
+        assert!(other.parked_ask.is_some(), "{}", other.content);
+        assert_eq!(r.seen.cards(), 2);
+    }
+
+    /// An ask whose parked workflow run has ended is no longer needed the
+    /// moment anything lists the open asks: withdrawn (not a No), its card
+    /// cleared everywhere, nothing run, nothing released.
+    #[tokio::test]
+    async fn an_ask_whose_run_ended_leaves_the_open_list_at_once() {
+        let r = rig().await;
+        let id = r.park("workflow:wf-7", Door::Workflow, "+15550142").await;
+        r.store
+            .engine_create_run(&db::NewRun { id: "run-7", kind: "workflow", session_key: "workflow:wf-7", agent_id: "emp", lane: "main", ..Default::default() })
+            .unwrap();
+        r.store.link_permission_ask_run(&id, "run-7").unwrap();
+        assert_eq!(r.asks.open(None).unwrap().len(), 1, "its run still waits on it");
+        r.store.engine_set_run_state("run-7", "cancelled", 1, None).unwrap();
+        assert!(r.asks.open(None).unwrap().is_empty(), "no longer needed");
+        assert_eq!(r.asks.get(&id).unwrap().unwrap().status, AskStatus::Withdrawn);
+        assert_eq!(*r.seen.resolved.lock().unwrap(), vec![(id.clone(), AskStatus::Withdrawn)]);
+        assert!(r.seen.released.lock().unwrap().is_empty());
+        assert_eq!(r.ran(1), 0);
+        // Listed again: nothing more happens.
+        assert!(r.asks.open(None).unwrap().is_empty());
+        assert_eq!(r.seen.resolved.lock().unwrap().len(), 1);
     }
 
     /// An ask whose parked workflow run is gone is withdrawn at its next

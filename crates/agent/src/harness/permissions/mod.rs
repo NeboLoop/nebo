@@ -92,6 +92,20 @@ impl PermissionGate for Check {
                 why: Why::Declined { ask_id },
             };
         }
+        // The same employee already asked the owner about this same new
+        // person and he has not answered yet: one card, not another. Live
+        // 2026-10-01: the same email to the same new customer was asked
+        // twice, from two sessions. A workflow step still parks on its own
+        // ask: its run waits on that answer.
+        if let Decision::Ask { case } = &decision
+            && !matches!(ctx.door, types::permissions::Door::Workflow)
+            && let Some(ask_id) = self.asks.waiting_already(&grant.agent_id, t, case)
+        {
+            decision = Decision::Deny {
+                reason: ask::already_waiting_text(&call.tool.activity(call.input)),
+                why: Why::AlreadyAsked { ask_id },
+            };
+        }
         // Nothing can wait for the answer: the call is refused, not asked.
         if let Decision::Ask { case } = &decision
             && ctx.cannot_wait
