@@ -1263,10 +1263,9 @@ impl Registry {
             }
         }
 
-        // The developer pack's app tools (App Developer mode): a screenshot
-        // of an app as served, and publishing it with the owner. Every run
-        // that does not build an app has them withheld
-        // (`app_dev::withheld`).
+        // The developer pack's app tools: a screenshot of an app as served,
+        // and publishing it with the owner. Every run that does not build
+        // one of the owner's apps has them withheld (`app_dev::withheld`).
         let shot_browser = self.browser_manager.read().unwrap().clone();
         self.register(Box::new(crate::app_publish::AppScreenshotTool::new(store.clone(), shot_browser)))
             .await;
@@ -1353,9 +1352,9 @@ impl Registry {
             }
         }
 
-        // The developer pack for apps (deferred): offered only under App
-        // Developer mode, to app employees and their teammates
-        // (`app_dev::withheld`).
+        // The developer pack for apps (deferred): offered to the owner's own
+        // app for itself, and under App Developer mode to app employees and
+        // their teammates (`app_dev::withheld`).
         for tool in crate::app_dev::tools(store.clone(), broadcaster.clone()) {
             self.register(tool).await;
         }

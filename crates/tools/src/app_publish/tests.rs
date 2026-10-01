@@ -257,7 +257,7 @@ fn the_persona_is_typed_as_an_app_for_the_hub() {
 fn the_bundle_carries_the_package_and_every_page_file() {
     let (dir, store) = temp_store();
     let pkg = seed_app(&store, dir.path(), "app-1", "Kart Racer");
-    let (zip, pages) = build_bundle("# Kart", Some(&pkg), &pkg.join("ui")).unwrap();
+    let (zip, pages) = build_bundle("# Kart", Some(&pkg), &pkg.join("ui"), None).unwrap();
     assert_eq!(pages, 2);
     let mut archive = zip::ZipArchive::new(std::io::Cursor::new(zip)).unwrap();
     let mut names: Vec<String> = (0..archive.len())
@@ -281,7 +281,7 @@ fn the_bundle_carries_the_package_and_every_page_file() {
     let empty = dir.path().join("empty-ui");
     std::fs::create_dir_all(&empty).unwrap();
     assert!(
-        build_bundle("# x", None, &empty)
+        build_bundle("# x", None, &empty, None)
             .unwrap_err()
             .contains("empty")
     );
@@ -293,10 +293,74 @@ fn the_bundle_carries_the_package_and_every_page_file() {
     )
     .unwrap();
     assert!(
-        build_bundle("# x", None, &big)
+        build_bundle("# x", None, &big, None)
             .unwrap_err()
             .contains("at most 10 MB")
     );
+}
+
+/// The bundle carries the employee's own skills under `skills/<name>/`: the
+/// package's skill folders and the plain-named skills its agent.json lists
+/// from the bot's skills folder, by the hub's rules: its SKILL.md and the
+/// types a skill may carry, scripts of any type, no dot files, build
+/// folders or reserved names, no marketplace references, and the same
+/// per-file limit as every bundle file.
+#[test]
+fn the_bundle_carries_the_employees_own_skills() {
+    let (dir, store) = temp_store();
+    let pkg = seed_app(&store, dir.path(), "app-1", "Kart Racer");
+    let put = |p: PathBuf, body: &[u8]| {
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, body).unwrap();
+    };
+    let tune = pkg.join("skills/tune-karts");
+    put(tune.join("SKILL.md"), b"---\nname: tune-karts\n---\nTune.");
+    put(tune.join("references/tracks.md"), b"three tracks");
+    put(tune.join("scripts/lap-timer"), b"#!/bin/sh\necho lap");
+    put(tune.join("assets/logo.png"), b"png");
+    put(tune.join("notes.exe"), b"no");
+    put(tune.join(".DS_Store"), b"no");
+    put(tune.join("node_modules/x/index.js"), b"no");
+    put(tune.join("dist/out.js"), b"no");
+    put(tune.join("agent.json"), b"{}");
+    // A folder without a SKILL.md is not a skill.
+    put(pkg.join("skills/scratch/notes.md"), b"no");
+
+    let user_skills = dir.path().join("user-skills");
+    put(user_skills.join("score-board/SKILL.md"), b"---\nname: score-board\n---\nScores.");
+    put(user_skills.join("score-board/template.html"), b"<table>");
+    put(user_skills.join("not-mine/SKILL.md"), b"---\nname: not-mine\n---\n");
+    std::fs::write(
+        pkg.join("agent.json"),
+        r#"{"skills": ["score-board", "tune-karts", "@acme/skills/web-search@^1.0.0", "../escape", "missing"]}"#,
+    )
+    .unwrap();
+
+    let (zip, _) = build_bundle("# Kart", Some(&pkg), &pkg.join("ui"), Some(&user_skills)).unwrap();
+    let archive = zip::ZipArchive::new(std::io::Cursor::new(zip)).unwrap();
+    let mut skills: Vec<String> = archive
+        .file_names()
+        .filter(|n| n.starts_with("skills/"))
+        .map(String::from)
+        .collect();
+    skills.sort();
+    assert_eq!(
+        skills,
+        vec![
+            "skills/score-board/SKILL.md",
+            "skills/score-board/template.html",
+            "skills/tune-karts/SKILL.md",
+            "skills/tune-karts/assets/logo.png",
+            "skills/tune-karts/references/tracks.md",
+            "skills/tune-karts/scripts/lap-timer",
+        ]
+    );
+    assert!(archive.file_names().any(|n| n == "ui/index.html"), "the page still ships");
+
+    // A skill file past the hub's limit is refused in words, like any file.
+    put(tune.join("references/huge.md"), &vec![b'x'; (MAX_BUNDLE_FILE + 1) as usize]);
+    let err = build_bundle("# Kart", Some(&pkg), &pkg.join("ui"), Some(&user_skills)).unwrap_err();
+    assert!(err.contains("skills/tune-karts/references/huge.md") && err.contains("at most 10 MB"), "{err}");
 }
 
 // ── Who gets the pack ───────────────────────────────────────────────
@@ -334,13 +398,31 @@ fn the_publish_tools_are_in_the_one_developer_pack() {
         )
         .unwrap();
     let ours = [APP_SCREENSHOT, APP_LISTING, APP_SUBMIT];
-    for who in ["app-1", "dev-1", "acct-1"] {
+    // Mode off: the owner's own app builds and publishes itself.
+    let withheld = crate::app_dev::withheld(&store, "app-1");
+    assert!(
+        ours.iter().all(|t| !withheld.iter().any(|w| w == t)),
+        "mode off: the app itself gets them"
+    );
+    for who in ["dev-1", "acct-1"] {
         let withheld = crate::app_dev::withheld(&store, who);
         assert!(
             ours.iter().all(|t| withheld.iter().any(|w| w == t)),
             "mode off: {who} gets none of them"
         );
     }
+    // An app installed from the marketplace never does, mode or not.
+    seed_app(&store, dir.path(), "app-9", "Bought Game");
+    store.set_agent_napp_path("app-9", "/data/nebo/agents/bought-game.napp").unwrap();
+    for on in [false, true] {
+        set_mode(&store, on);
+        let withheld = crate::app_dev::withheld(&store, "app-9");
+        assert!(
+            ours.iter().all(|t| withheld.iter().any(|w| w == t)),
+            "an installed app is never built here (mode {on})"
+        );
+    }
+    set_mode(&store, false);
     set_mode(&store, true);
     for who in ["app-1", "dev-1"] {
         let withheld = crate::app_dev::withheld(&store, who);
@@ -535,38 +617,36 @@ async fn submit_is_impossible_without_the_owners_explicit_yes() {
     assert_eq!(r.payload.as_ref().unwrap()["kind"], "app_listing");
 }
 
-/// With the mode off neither tool does anything.
+/// With the mode off an app works only on itself: its own listing, never
+/// another app's, and an app installed from the marketplace not at all.
 #[tokio::test]
-async fn the_tools_refuse_with_the_mode_off() {
+async fn with_the_mode_off_an_app_publishes_only_itself() {
     let (dir, store) = temp_store();
     seed_app(&store, dir.path(), "app-1", "Kart Racer");
-    let ctx = ToolContext {
+    seed_app(&store, dir.path(), "app-2", "Note Pad");
+    seed_app(&store, dir.path(), "app-9", "Bought Game");
+    store.set_agent_napp_path("app-9", "/data/nebo/agents/bought-game.napp").unwrap();
+    let ctx = |who: &str| ToolContext {
         origin: crate::origin::Origin::User,
-        session_key: "agent:app-1:web".into(),
+        session_key: format!("agent:{who}:web"),
         ..Default::default()
     };
     let publisher = Arc::new(Publisher::new(store.clone()).with_hub(Arc::new(FakeHub::default())));
-    assert!(
-        AppListingTool(publisher.clone())
-            .execute_dyn(&ctx, json!({}))
-            .await
-            .content
-            .contains("App Developer mode is off")
-    );
-    assert!(
-        AppSubmitTool(publisher)
-            .execute_dyn(&ctx, json!({}))
-            .await
-            .content
-            .contains("App Developer mode is off")
-    );
+    let listing = AppListingTool(publisher.clone());
+    let mine = listing.execute_dyn(&ctx("app-1"), json!({})).await;
+    assert!(!mine.is_error, "{}", mine.content);
+    assert!(mine.content.contains("Kart Racer"), "{}", mine.content);
+
+    let other = listing.execute_dyn(&ctx("app-1"), json!({"app": "Note Pad"})).await;
+    assert!(other.is_error && other.content.contains("App Developer mode is off"), "{}", other.content);
+    let other = AppSubmitTool(publisher).execute_dyn(&ctx("app-1"), json!({"app": "app-2"})).await;
+    assert!(other.is_error && other.content.contains("App Developer mode is off"), "{}", other.content);
     let shot = AppScreenshotTool::new(store.clone(), None).with_hub(Arc::new(FakeHub::default()));
-    assert!(
-        shot.execute_dyn(&ctx, json!({}))
-            .await
-            .content
-            .contains("App Developer mode is off")
-    );
+    let other = shot.execute_dyn(&ctx("app-1"), json!({"app": "Note Pad"})).await;
+    assert!(other.is_error && other.content.contains("App Developer mode is off"), "{}", other.content);
+
+    let bought = listing.execute_dyn(&ctx("app-9"), json!({})).await;
+    assert!(bought.is_error && bought.content.contains("installed from the marketplace"), "{}", bought.content);
 }
 
 /// A draft call saves the listing and shows it, with what keeps it from

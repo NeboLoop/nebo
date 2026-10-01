@@ -1,4 +1,4 @@
-//! Publishing an app from a conversation (App Developer mode).
+//! Publishing an app from a conversation.
 //!
 //! The owner taps Publish on an app's chat; the app's employee drafts the
 //! marketplace listing from the app's manifest and code, takes screenshots
@@ -14,9 +14,9 @@
 //! listing was submitted from.
 //!
 //! The tools (`app_screenshot`, `app_listing`, `app_submit`) belong to the
-//! developer pack (`app_dev::TOOLS`): offered only while App Developer mode
-//! is on, and only to an app's employee and its teammates
-//! (`app_dev::withheld`).
+//! developer pack (`app_dev::TOOLS`): the owner's own app always publishes
+//! itself, and App Developer mode opens them to an app's teammates
+//! (`app_dev::withheld`, `app_dev::may_work_on`).
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -49,13 +49,21 @@ fn is_app(agent: &db::models::Agent) -> bool {
     agent.is_app.unwrap_or(0) != 0
 }
 
-/// The refusal a pack tool gives when the mode is off (defense in depth:
-/// the run never lists the tool then).
-fn mode_off() -> ToolResult {
-    ToolResult::error(
-        "App Developer mode is off on this bot (Bot settings, Developer). The owner turns it on to \
-         build, check and publish apps from a conversation.",
-    )
+/// The app a pack tool works on ([`resolve_app`]), when the caller may
+/// work on it (`app_dev::may_work_on`: itself, when it is one of the
+/// owner's own apps, or any app under App Developer mode).
+fn permitted_app(
+    store: &db::Store,
+    ctx: &ToolContext,
+    named: Option<&str>,
+) -> Result<db::models::Agent, String> {
+    let app = resolve_app(store, ctx, named)?;
+    let caller = types::keyparser::extract_agent_id(&ctx.session_key);
+    if crate::app_dev::may_work_on(store, &caller, &app) {
+        Ok(app)
+    } else {
+        Err(crate::app_dev::not_yours(&app))
+    }
 }
 
 /// The app a call is about: the one it names (by name or id), else the
@@ -587,14 +595,20 @@ pub fn with_app_frontmatter(agent_md: &str) -> String {
 // ── The bundle ──────────────────────────────────────────────────────
 
 /// The app's bundle for the hub: AGENT.md (typed as an app), agent.json,
-/// manifest.json, and every file of the page under `ui/`, as a .zip.
+/// manifest.json, the employee's own skills under `skills/` ([`own_skills`]),
+/// and every file of the page under `ui/`, as a .zip.
 /// Returns the bytes and how many page files it carries. Dot files and
 /// folders never ship; a file or a bundle past the hub's limits is refused
 /// here, in words, rather than cut there.
+///
+/// `user_skills` is the bot's `user/skills/` folder, where a skill the
+/// employee's agent.json names by plain name lives when it is not in the
+/// package.
 pub fn build_bundle(
     agent_md: &str,
     package: Option<&Path>,
     ui: &Path,
+    user_skills: Option<&Path>,
 ) -> Result<(Vec<u8>, usize), String> {
     use std::io::Write;
     let mut buf = std::io::Cursor::new(Vec::new());
@@ -635,6 +649,10 @@ pub fn build_bundle(
             }
         }
     }
+    for (name, path) in own_skills(package, user_skills) {
+        let data = std::fs::read(&path).map_err(|e| format!("reading {}: {e}", path.display()))?;
+        add(&mut zip, &name, &data)?;
+    }
     let mut pages = 0usize;
     let mut pending = vec![ui.to_path_buf()];
     let mut files: Vec<PathBuf> = Vec::new();
@@ -672,6 +690,136 @@ pub fn build_bundle(
         return Err("The app's page folder is empty: there is nothing to publish yet.".to_string());
     }
     Ok((buf.into_inner(), pages))
+}
+
+/// Folders the hub drops from a bundle wherever they appear (neboloop
+/// `skill_bundle.go`, `bundleSkipDirs`); every dot folder goes too.
+const SKILL_SKIP_DIRS: &[&str] = &[
+    "node_modules",
+    "target",
+    "build",
+    "out",
+    "dist",
+    "__pycache__",
+    "venv",
+];
+/// Names the system owns, never a skill's own file (neboloop
+/// `skill_files.go`, `reservedSkillFiles`); a skill's own SKILL.md is the
+/// one exception.
+const SKILL_RESERVED_FILES: &[&str] = &[
+    "SKILL.md",
+    "AGENT.md",
+    "PLUGIN.md",
+    "agent.json",
+    "plugin.json",
+    "manifest.json",
+    "signatures.json",
+];
+/// The file types a skill may carry (neboloop `skill_files.go`,
+/// `allowedSkillFileExts`); files under its `scripts/` or `bin/` may be
+/// any type.
+const SKILL_FILE_TYPES: &[&str] = &[
+    "sh", "ps1", "py", "js", "ts", "md", "json", "yaml", "yml", "txt", "csv", "toml", "cfg", "html",
+    "css", "sql", "rb", "png", "jpg", "jpeg", "gif", "svg", "webp", "ico", "bmp", "pdf", "woff",
+    "woff2", "ttf", "otf",
+];
+
+/// Whether the hub keeps a skill's file, by its path inside the skill's
+/// folder (`SKILL.md`, `scripts/run`, `references/notes.md`).
+fn skill_file_kept(rest: &str) -> bool {
+    let parts: Vec<&str> = rest.split('/').collect();
+    if parts
+        .iter()
+        .any(|p| p.is_empty() || p.starts_with('.') || SKILL_SKIP_DIRS.contains(p))
+    {
+        return false;
+    }
+    let base = parts[parts.len() - 1];
+    if rest == "SKILL.md" {
+        return true;
+    }
+    if base == "Thumbs.db" || SKILL_RESERVED_FILES.contains(&base) {
+        return false;
+    }
+    if parts.len() > 1 && matches!(parts[0], "scripts" | "bin") {
+        return true;
+    }
+    Path::new(base)
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| SKILL_FILE_TYPES.contains(&e.to_ascii_lowercase().as_str()))
+}
+
+/// A skill's name as a folder: one plain path segment.
+fn plain_skill_name(name: &str) -> bool {
+    !name.is_empty()
+        && !name.starts_with('.')
+        && !name.starts_with('@')
+        && !name.contains(['/', '\\'])
+        && !name.contains("..")
+}
+
+/// The employee's own skills, as `(path in the bundle, file on disk)` under
+/// `skills/<name>/`: every skill folder in its package's `skills/` (what an
+/// employee package ships and the loader keys to that employee), then each
+/// skill its agent.json names by plain name that lives in the bot's
+/// `user/skills/` instead. A marketplace reference (`@org/skills/name`) is a
+/// dependency the hub installs on its own and is never copied; what the
+/// employee learned on this bot stays here. Files the hub would not keep
+/// ([`skill_file_kept`]) and links are left out; sizes are checked by the
+/// bundle like every other file.
+pub fn own_skills(package: Option<&Path>, user_skills: Option<&Path>) -> Vec<(String, PathBuf)> {
+    let mut skills: Vec<(String, PathBuf)> = Vec::new();
+    if let Some(dir) = package.map(|p| p.join("skills")) {
+        let mut found: Vec<(String, PathBuf)> = std::fs::read_dir(&dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|e| {
+                let name = e.file_name().to_string_lossy().to_string();
+                let path = e.path();
+                let is_dir = std::fs::symlink_metadata(&path).is_ok_and(|m| m.is_dir());
+                (is_dir && plain_skill_name(&name) && path.join("SKILL.md").is_file()).then_some((name, path))
+            })
+            .collect();
+        found.sort();
+        skills.extend(found);
+    }
+    let named: Vec<String> = package
+        .and_then(|p| std::fs::read_to_string(p.join("agent.json")).ok())
+        .and_then(|j| serde_json::from_str::<Value>(&j).ok())
+        .and_then(|v| v.get("skills").and_then(|s| s.as_array()).cloned())
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|s| s.as_str().map(str::trim).map(String::from))
+        .collect();
+    if let Some(user) = user_skills {
+        for name in named {
+            if !plain_skill_name(&name) || skills.iter().any(|(n, _)| *n == name) {
+                continue;
+            }
+            let dir = user.join(&name);
+            if std::fs::symlink_metadata(&dir).is_ok_and(|m| m.is_dir()) && dir.join("SKILL.md").is_file() {
+                skills.push((name, dir));
+            }
+        }
+    }
+    let mut out = Vec::new();
+    for (name, dir) in skills {
+        let mut files: Vec<(String, PathBuf)> = walkdir::WalkDir::new(&dir)
+            .follow_links(false)
+            .into_iter()
+            .filter_map(Result::ok)
+            .filter(|e| e.file_type().is_file())
+            .filter_map(|e| {
+                let rest = e.path().strip_prefix(&dir).ok()?.to_string_lossy().replace('\\', "/");
+                skill_file_kept(&rest).then(|| (format!("skills/{name}/{rest}"), e.path().to_path_buf()))
+            })
+            .collect();
+        files.sort();
+        out.extend(files);
+    }
+    out
 }
 
 // ── The hub ─────────────────────────────────────────────────────────
@@ -1016,10 +1164,7 @@ impl AppScreenshotTool {
     }
 
     async fn shoot(&self, ctx: &ToolContext, input: &Value) -> ToolResult {
-        if !self.store.app_developer_mode() {
-            return mode_off();
-        }
-        let app = match resolve_app(&self.store, ctx, input["app"].as_str()) {
+        let app = match permitted_app(&self.store, ctx, input["app"].as_str()) {
             Ok(a) => a,
             Err(e) => return ToolResult::error(e),
         };
@@ -1292,10 +1437,7 @@ impl Publisher {
 
     /// The app a call is about, with the mode checked first.
     fn app(&self, ctx: &ToolContext, input: &Value) -> Result<db::models::Agent, ToolResult> {
-        if !self.store.app_developer_mode() {
-            return Err(mode_off());
-        }
-        resolve_app(&self.store, ctx, input["app"].as_str()).map_err(ToolResult::error)
+        permitted_app(&self.store, ctx, input["app"].as_str()).map_err(ToolResult::error)
     }
 
     /// Draft the listing (or redraft it with the owner's changes) and show
@@ -1392,7 +1534,8 @@ impl Publisher {
         let Some(ui) = disk.ui.as_deref() else {
             return ToolResult::error(format!("{} has no page folder to publish.", app.name));
         };
-        let (bundle, _pages) = match build_bundle(&disk.agent_md, disk.package.as_deref(), ui) {
+        let user_skills = config::user_dir().ok().map(|d| d.join("skills"));
+        let (bundle, _pages) = match build_bundle(&disk.agent_md, disk.package.as_deref(), ui, user_skills.as_deref()) {
             Ok(b) => b,
             Err(e) => return ToolResult::error(e),
         };

@@ -40,6 +40,37 @@ static LAST_OPENED_URL: Mutex<Option<(String, Instant)>> = Mutex::new(None);
 /// Debounce sleep/wake reconnect — Tauri fires RunEvent::Resumed many times per wake.
 static LAST_RESUME: Mutex<Option<Instant>> = Mutex::new(None);
 
+/// The menu id of an app window's "Publish This App…".
+const PUBLISH_APP_MENU_ID: &str = "publish_app";
+const PUBLISH_APP_MENU_TEXT: &str = "Publish This App…";
+
+/// macOS: the app menu's "Publish This App…", enabled while an app window
+/// (`app-<agentId>`) has focus.
+#[cfg(target_os = "macos")]
+static PUBLISH_APP_ITEM: std::sync::OnceLock<tauri::menu::MenuItem<tauri::Wry>> = std::sync::OnceLock::new();
+
+/// The app a focused app window shows, by its label `app-<agentId>`.
+fn focused_app(app: &tauri::AppHandle) -> Option<String> {
+    app.webview_windows().into_iter().find_map(|(label, w)| {
+        let id = label.strip_prefix("app-")?;
+        (!id.is_empty() && w.is_focused().unwrap_or(false)).then(|| id.to_string())
+    })
+}
+
+/// Publish from an app window's native menu: bring up the main window and
+/// open the app's chat, which starts the same guided publish as the chat's
+/// Publish button, with the app's own employee.
+fn publish_focused_app(app: &tauri::AppHandle) {
+    let Some(agent_id) = focused_app(app) else { return };
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.unminimize();
+        let _ = w.show();
+        let _ = w.set_focus();
+        let id = serde_json::to_string(&agent_id).unwrap_or_default();
+        let _ = w.eval(&format!("if(window.__NEBO_PUBLISH_APP__)window.__NEBO_PUBLISH_APP__({id})"));
+    }
+}
+
 /// Domains that Stripe's PaymentElement, Link, hCaptcha, and 3D-Secure need to load inside the webview.
 fn is_stripe_domain(host: &str) -> bool {
     host.ends_with(".stripe.com")
@@ -854,6 +885,19 @@ fn main() {
                         .build(app)?;
                     first.insert(&check, 1)?;
                 }
+                // "Publish This App…" in the File menu, live while an app
+                // window has focus (see `on_window_event`).
+                let publish = MenuItemBuilder::with_id(PUBLISH_APP_MENU_ID, PUBLISH_APP_MENU_TEXT)
+                    .enabled(false)
+                    .build(app)?;
+                let file = app_menu.items()?.into_iter().find_map(|item| match item {
+                    MenuItemKind::Submenu(sub) if sub.text().is_ok_and(|t| t == "File") => Some(sub),
+                    _ => None,
+                });
+                if let Some(file) = file {
+                    file.prepend(&publish)?;
+                    let _ = PUBLISH_APP_ITEM.set(publish);
+                }
                 app.set_menu(app_menu)?;
                 app.on_menu_event(|app, event| {
                     if event.id().as_ref() == "check_update" {
@@ -868,6 +912,14 @@ fn main() {
                     }
                 });
             }
+
+            // An app window's "Publish This App…" (its menu on Windows and
+            // Linux, the File menu on macOS).
+            app.on_menu_event(|app, event| {
+                if event.id().as_ref() == PUBLISH_APP_MENU_ID {
+                    publish_focused_app(app);
+                }
+            });
 
             // Global hotkey: Cmd+Shift+Space (macOS) / Ctrl+Shift+Space (others)
             // Toggles a floating prompt window for quick input
@@ -895,6 +947,30 @@ fn main() {
         })
         .on_window_event(|window, event| {
             match event {
+                tauri::WindowEvent::Focused(focused) => {
+                    let is_app = window.label().starts_with("app-");
+                    // macOS: the File menu's item is live only for an app window.
+                    #[cfg(target_os = "macos")]
+                    if let Some(item) = PUBLISH_APP_ITEM.get() {
+                        if *focused || is_app {
+                            let _ = item.set_enabled(*focused && is_app);
+                        }
+                    }
+                    // Windows and Linux: an app window carries its own small
+                    // menu with the one item, set the first time it is focused.
+                    #[cfg(not(target_os = "macos"))]
+                    if *focused && is_app && window.menu().is_none() {
+                        use tauri::menu::{Menu, Submenu};
+                        let handle = window.app_handle();
+                        let menu = MenuItemBuilder::with_id(PUBLISH_APP_MENU_ID, PUBLISH_APP_MENU_TEXT)
+                            .build(handle)
+                            .and_then(|item| Submenu::with_items(handle, "App", true, &[&item]))
+                            .and_then(|sub| Menu::with_items(handle, &[&sub]));
+                        if let Ok(menu) = menu {
+                            let _ = window.set_menu(menu);
+                        }
+                    }
+                }
                 tauri::WindowEvent::CloseRequested { api, .. } => {
                     save_state(window);
                     if window.label() == "main" {

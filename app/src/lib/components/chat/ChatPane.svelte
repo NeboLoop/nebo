@@ -34,7 +34,7 @@
   import { NEAR_BOTTOM_PX, distanceFromBottom } from '$lib/chat/scroll';
   import { threadKey } from '$lib/chat/sessionKey';
   import { openAsks } from '$lib/stores/permissionAsks';
-  import { appDeveloperMode, loadAppDeveloperMode } from '$lib/stores/appDeveloperMode';
+  import { publishRequest } from '$lib/stores/appPublish';
   import PermissionAskCard from '$lib/components/PermissionAskCard.svelte';
   import WaitingAsksBar from '$lib/components/chat/WaitingAsksBar.svelte';
   import type { HelperLine } from '$lib/chat/helpers';
@@ -101,7 +101,7 @@
 
   type AgentInfo = { id: string; name: string; color: string; initial: string; role: string; status: string; isApp?: boolean };
 
-  let { messages = [], agentName = 'Agent', agentId = '', threadId = '', sessionId = '', headerTitle = '', headerRight = '', placeholder = '', emptyIcon = '', emptyTitle = '', emptyDesc = '', allAgents = [], onteachsent, activityStatus = '', helpers = [], tokenUsage = null, goal = null, quotaWarning = '', chatError = '', recapText = '', onsend, onstop, onedit, onredo, onasksubmit, onrestoreversion, ondismisswarning, ondismisserror, onloadmore, isLoading = false, isLoadingMore = false, historyLoading = false, hasMore = false, allowAttachments = true, flowsPane, onopenruns, onsettings, memoryMode = 'single', folder = '', isApp = false, onopenapp, onback, askQueueLength = 0, composerPrefill = '', onprefilled, readOnly = false }: {
+  let { messages = [], agentName = 'Agent', agentId = '', threadId = '', sessionId = '', headerTitle = '', headerRight = '', placeholder = '', emptyIcon = '', emptyTitle = '', emptyDesc = '', allAgents = [], onteachsent, activityStatus = '', helpers = [], tokenUsage = null, goal = null, quotaWarning = '', chatError = '', recapText = '', onsend, onstop, onedit, onredo, onasksubmit, onrestoreversion, ondismisswarning, ondismisserror, onloadmore, isLoading = false, isLoadingMore = false, historyLoading = false, hasMore = false, allowAttachments = true, flowsPane, onopenruns, onsettings, memoryMode = 'single', folder = '', isApp = false, ownApp = false, onopenapp, onback, askQueueLength = 0, composerPrefill = '', onprefilled, readOnly = false }: {
     messages?: Message[];
     /** Employee-scoped views for the work pane. Omitted on chats with no
      *  employee behind them (channel setup help, the embed), and the matching
@@ -117,6 +117,9 @@
     folder?: string;
     /** This employee is an app: badge the header and offer Open App. */
     isApp?: boolean;
+    /** An app made on this bot, not installed from the marketplace: it builds
+     *  and publishes itself, so its chat offers Publish. */
+    ownApp?: boolean;
     onopenapp?: () => void;
     /** Mobile back-to-list. A real navigation (goto) so the URL changes and
      *  the browser back button stays truthful; rendered only when provided. */
@@ -1018,16 +1021,21 @@
    *  raced it: two programmatic scrolls in one frame window, and the pin's
    *  settle loop outlived its suppression flag, so the turn-scroll's events
    *  read as user movement and killed follow (the 0.12.7 no-scroll bug). */
-  // App Developer mode: an app's chat offers Publish, which starts the
-  // guided listing with the app's employee (the owner confirms on a card
-  // before anything is submitted). Read from the bot when an app's chat opens.
-  $effect(() => {
-    if (isApp) void loadAppDeveloperMode();
-  });
-  const canPublish = $derived(isApp && !readOnly && !!onsend && $appDeveloperMode);
+  // The owner's own app's chat offers Publish, which starts the guided
+  // listing with the app's employee (the owner confirms on a card before
+  // anything is submitted). An app installed from the marketplace never
+  // does. The desktop app window's menu asks for the same through
+  // `publishRequest`, answered here once this app's chat is open.
+  const canPublish = $derived(isApp && ownApp && !readOnly && !!onsend);
   function publishApp() {
     handleSend($t('agent.publishStarter'), []);
   }
+  $effect(() => {
+    if (canPublish && agentId && $publishRequest === agentId) {
+      publishRequest.set(null);
+      publishApp();
+    }
+  });
 
   function handleSend(
     text: string,

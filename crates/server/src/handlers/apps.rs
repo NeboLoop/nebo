@@ -220,14 +220,44 @@ async fn serve_app_ui_inner(state: &AppState, agent_id: &str, path: &str, header
         }
     };
 
-    // With App Developer mode on, entry HTML also carries the developer
-    // script (console capture, reload, floating console), and nothing is
-    // cached at all.
-    let developer = state
-        .store
-        .app_developer_mode()
-        .then(|| app_employee_name(state, agent_id));
-    serve_ui_file(&target, headers, developer.as_deref(), motion).await
+    // Developer tooling goes only into the owner's own apps, never into one
+    // installed from the marketplace (`app_dev::is_own_app`). An own app's
+    // entry HTML always carries the developer script's console capture and
+    // reload listener, so its employee builds it without a setting; App
+    // Developer mode adds the floating console, and nothing is cached.
+    let own = own_app(&state.store, agent_id);
+    let devtools = own.as_ref().map(|a| Devtools {
+        employee: &a.name,
+        console: state.store.app_developer_mode(),
+    });
+    serve_ui_file(&target, headers, devtools, motion).await
+}
+
+/// The developer script an app page carries: whose page it is (for "Send
+/// to <employee>"), and whether App Developer mode's floating console shows.
+/// Present only for the owner's own apps.
+#[derive(Debug, Clone, Copy)]
+struct Devtools<'a> {
+    employee: &'a str,
+    console: bool,
+}
+
+impl Devtools<'_> {
+    /// App Developer mode is on: nothing is stored or tagged.
+    fn no_store(d: Option<Devtools<'_>>) -> bool {
+        d.is_some_and(|d| d.console)
+    }
+}
+
+/// The app row `agent_id` (an id, or a name) names, when it is one of the
+/// owner's own apps.
+fn own_app(store: &db::Store, agent_id: &str) -> Option<db::models::Agent> {
+    store
+        .get_agent(agent_id)
+        .ok()
+        .flatten()
+        .or_else(|| store.get_agent_by_name(agent_id).ok().flatten())
+        .filter(tools::app_dev::is_own_app)
 }
 
 /// Whether the file is an app's entry HTML (the SPA fallback included).
@@ -243,14 +273,15 @@ fn is_entry_html(target: &StdPath) -> bool {
 ///    strong `ETag`: every open asks, and an unchanged file answers `304`
 ///    with no body. Because `index.html` is always asked for, it always
 ///    names the newest hashed files.
-/// 3. With App Developer mode on (`developer` is the app employee's name),
-///    every file is `no-store`: the guaranteed way past any cache while an
-///    employee is building.
+/// 3. With App Developer mode on (`devtools` with its console), every file
+///    is `no-store`: the guaranteed way past any cache while an employee is
+///    building.
 ///
 /// `motion`: the manifest declares `device:motion`, so the page's
 /// Permissions-Policy lets it read the gyroscope and accelerometer.
-async fn serve_ui_file(target: &StdPath, headers: &HeaderMap, developer: Option<&str>, motion: bool) -> Response {
+async fn serve_ui_file(target: &StdPath, headers: &HeaderMap, devtools: Option<Devtools<'_>>, motion: bool) -> Response {
     let is_entry = is_entry_html(target);
+    let no_store = Devtools::no_store(devtools);
     let meta = match fs::metadata(target).await {
         Ok(m) => m,
         Err(e) => {
@@ -267,7 +298,7 @@ async fn serve_ui_file(target: &StdPath, headers: &HeaderMap, developer: Option<
         // script derives both from location before the SDK loads. Apps
         // that ship their own meta tags win — the script only fills gaps.
         let contents = match fs::read(target).await {
-            Ok(c) => inject_app_bridge(c, developer),
+            Ok(c) => inject_app_bridge(c, devtools),
             Err(e) => {
                 warn!(path = %target.display(), error = %e, "failed to read app UI file");
                 return StatusCode::INTERNAL_SERVER_ERROR.into_response();
@@ -276,16 +307,16 @@ async fn serve_ui_file(target: &StdPath, headers: &HeaderMap, developer: Option<
         // The tag is of what goes out (the injected scripts included), so a
         // Nebo update that changes them is a changed page.
         let etag = body_etag(&contents);
-        if developer.is_none() && not_modified(headers, &etag) {
+        if !no_store && not_modified(headers, &etag) {
             not_modified_response(&etag)
         } else {
             let mut r = Response::new(Body::from(contents));
-            set_etag(&mut r, developer, &etag);
+            set_etag(&mut r, no_store, &etag);
             r
         }
     } else {
         let etag = file_etag(&meta);
-        if developer.is_none() && not_modified(headers, &etag) {
+        if !no_store && not_modified(headers, &etag) {
             not_modified_response(&etag)
         } else {
             // A range whose If-Range names an older file gets the whole new one.
@@ -301,7 +332,7 @@ async fn serve_ui_file(target: &StdPath, headers: &HeaderMap, developer: Option<
                 },
             };
             r.headers_mut().insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
-            set_etag(&mut r, developer, &etag);
+            set_etag(&mut r, no_store, &etag);
             r
         }
     };
@@ -316,7 +347,7 @@ async fn serve_ui_file(target: &StdPath, headers: &HeaderMap, developer: Option<
                 .unwrap_or(HeaderValue::from_static("application/octet-stream")),
         );
     }
-    h.insert(header::CACHE_CONTROL, HeaderValue::from_static(app_file_cache_control(target, developer.is_some())));
+    h.insert(header::CACHE_CONTROL, HeaderValue::from_static(app_file_cache_control(target, no_store)));
     if motion {
         h.insert(
             "permissions-policy",
@@ -403,13 +434,13 @@ fn if_range_holds(headers: &HeaderMap, etag: &str) -> bool {
 fn not_modified_response(etag: &str) -> Response {
     let mut r = Response::new(Body::empty());
     *r.status_mut() = StatusCode::NOT_MODIFIED;
-    set_etag(&mut r, None, etag);
+    set_etag(&mut r, false, etag);
     r
 }
 
 /// Tag the response, except with App Developer mode on (nothing is kept).
-fn set_etag(r: &mut Response, developer: Option<&str>, etag: &str) {
-    if developer.is_none() {
+fn set_etag(r: &mut Response, no_store: bool, etag: &str) {
+    if !no_store {
         if let Ok(v) = HeaderValue::from_str(etag) {
             r.headers_mut().insert(header::ETAG, v);
         }
@@ -451,17 +482,17 @@ async fn serve_app_ui_range(target: &std::path::Path, range: Option<&str>) -> Op
 /// the only place the public prefix (`/t/<botID>` through the tunnel, nothing
 /// on desktop) is knowable. Skips tags the app already declares.
 ///
-/// `developer` is `Some(<the app employee's name>)` when App Developer mode
-/// is on: the developer script follows the bridge, before any of the app's
-/// own scripts, so it sees the app's first log line.
-fn inject_app_bridge(contents: Vec<u8>, developer: Option<&str>) -> Vec<u8> {
+/// `devtools` is set for the owner's own apps: the developer script follows
+/// the bridge, before any of the app's own scripts, so it sees the app's
+/// first log line.
+fn inject_app_bridge(contents: Vec<u8>, devtools: Option<Devtools<'_>>) -> Vec<u8> {
     const BRIDGE: &str = r#"<script data-nebo-bridge>(function(){var m=location.pathname.match(/^(.*?)\/apps\/([^/]+)\/ui(?:\/|$)/);if(!m)return;function add(n,c){if(document.querySelector('meta[name="'+n+'"]'))return;var e=document.createElement('meta');e.setAttribute('name',n);e.setAttribute('content',c);document.head.appendChild(e);}add('nebo-app-id',decodeURIComponent(m[2]));add('nebo-base-url',location.origin+m[1]);})();</script>"#;
     let html = match String::from_utf8(contents) {
         Ok(h) => h,
         Err(e) => return e.into_bytes(), // non-UTF-8: serve verbatim
     };
-    let scripts = match developer {
-        Some(employee) => format!("{BRIDGE}{}", developer_script(employee)),
+    let scripts = match devtools {
+        Some(d) => format!("{BRIDGE}{}", developer_script(d)),
         None => BRIDGE.to_string(),
     };
     let lower = html.to_ascii_lowercase();
@@ -475,11 +506,14 @@ fn inject_app_bridge(contents: Vec<u8>, developer: Option<&str>) -> Vec<u8> {
 }
 
 /// The developer script (`app_devtools.js`) as an inline `<script>`, told
-/// the app employee's name for its "Send to <employee>" button.
-fn developer_script(employee: &str) -> String {
+/// the app employee's name for its "Send to <employee>" button and whether
+/// the floating console shows (App Developer mode).
+fn developer_script(d: Devtools<'_>) -> String {
     const SCRIPT: &str = include_str!("app_devtools.js");
     // `<` escaped: a name can never close the script element.
-    let config = serde_json::json!({ "employee": employee }).to_string().replace('<', "\\u003c");
+    let config = serde_json::json!({ "employee": d.employee, "console": d.console })
+        .to_string()
+        .replace('<', "\\u003c");
     format!(
         "<script data-nebo-devtools>{}</script>",
         SCRIPT.replace("__NEBO_DEVTOOLS_CONFIG__", &config)
@@ -633,16 +667,14 @@ struct DevlogBatch {
 }
 
 /// Whether `agent_id`'s console may be written or sent from this request,
-/// before the app's token is checked: App Developer mode is on, the id is
-/// an app, and a page that names itself (its Referer, an app page at
-/// `/apps/<id>/ui/`) is that same app — one app's page never writes into
-/// another app's console.
+/// before the app's token is checked: the id is one of the owner's own apps
+/// (the ones whose pages carry the developer script; never one installed
+/// from the marketplace), and a page that names itself (its Referer, an app
+/// page at `/apps/<id>/ui/`) is that same app — one app's page never writes
+/// into another app's console.
 fn devlog_target(store: &db::Store, agent_id: &str, headers: &axum::http::HeaderMap) -> Result<(), StatusCode> {
-    if !store.app_developer_mode() {
-        return Err(StatusCode::NOT_FOUND);
-    }
     match store.get_agent(agent_id) {
-        Ok(Some(a)) if a.is_app.unwrap_or(0) != 0 => {}
+        Ok(Some(a)) if tools::app_dev::is_own_app(&a) => {}
         _ => return Err(StatusCode::NOT_FOUND),
     }
     let page_app = headers
@@ -1585,39 +1617,50 @@ mod developer_mode_tests {
 
     const PAGE: &str = "<!doctype html><html><head><script src=\"main.js\"></script></head><body></body></html>";
 
+    fn dev(employee: &str, console: bool) -> Option<Devtools<'_>> {
+        Some(Devtools { employee, console })
+    }
+
     #[test]
-    fn the_developer_script_is_injected_only_with_the_mode_on() {
+    fn the_developer_script_is_injected_only_into_the_owners_own_apps() {
         let off = String::from_utf8(inject_app_bridge(PAGE.as_bytes().to_vec(), None)).unwrap();
         assert!(off.contains("data-nebo-bridge"), "the bridge is always there");
-        assert!(!off.contains("data-nebo-devtools"), "no developer script with the mode off");
+        assert!(!off.contains("data-nebo-devtools"), "no developer script in an installed app");
         assert!(!off.contains("__neboDevtools"));
 
-        let on = String::from_utf8(inject_app_bridge(PAGE.as_bytes().to_vec(), Some("Kart Racer"))).unwrap();
+        let quiet = String::from_utf8(inject_app_bridge(PAGE.as_bytes().to_vec(), dev("Kart Racer", false))).unwrap();
+        assert!(quiet.contains(r#""console":false"#) && quiet.contains(r#""employee":"Kart Racer""#), "reload and capture, no console: {quiet}");
+
+        let on = String::from_utf8(inject_app_bridge(PAGE.as_bytes().to_vec(), dev("Kart Racer", true))).unwrap();
         let bridge = on.find("data-nebo-bridge").unwrap();
         let dev = on.find("data-nebo-devtools").expect("the developer script");
         let app = on.find("main.js").unwrap();
         assert!(bridge < dev && dev < app, "after the bridge, before the app's own scripts");
-        assert!(on.contains(r#"{"employee":"Kart Racer"}"#), "told the employee's name");
+        assert!(on.contains(r#""console":true"#) && on.contains(r#""employee":"Kart Racer""#), "told the employee's name and to show the console");
         assert!(!on.contains("__NEBO_DEVTOOLS_CONFIG__"));
         assert_eq!(on.matches("</script>").count(), 3, "bridge, developer script, the app's own");
     }
 
     #[test]
     fn a_name_can_never_close_the_script() {
-        let on = String::from_utf8(inject_app_bridge(PAGE.as_bytes().to_vec(), Some("</script><b>x"))).unwrap();
+        let on = String::from_utf8(inject_app_bridge(PAGE.as_bytes().to_vec(), dev("</script><b>x", true))).unwrap();
         assert_eq!(on.matches("</script>").count(), 3, "{on}");
         assert!(on.contains(r"\u003c/script>\u003cb>x"));
     }
 
     #[test]
-    fn the_devlog_routes_take_only_this_apps_own_page_with_the_mode_on() {
+    fn the_devlog_routes_take_only_an_own_apps_own_page() {
         let (_d, store) = store();
         app(&store, "app-a", "Racer");
         app(&store, "app-b", "Notes");
+        app(&store, "app-m", "Bought");
+        store.set_agent_napp_path("app-m", "/data/nebo/agents/bought.napp").unwrap();
         store.create_agent("emp-1", Some("agent"), "Bookkeeper", "", "", "{}", None, None).unwrap();
 
-        assert_eq!(devlog_target(&store, "app-a", &from_page("app-a")), Err(StatusCode::NOT_FOUND), "mode off");
+        assert_eq!(devlog_target(&store, "app-a", &from_page("app-a")), Ok(()), "an own app, mode off");
+        assert_eq!(devlog_target(&store, "app-m", &from_page("app-m")), Err(StatusCode::NOT_FOUND), "installed");
         developer_mode(&store, true);
+        assert_eq!(devlog_target(&store, "app-m", &from_page("app-m")), Err(StatusCode::NOT_FOUND), "installed, mode on");
         assert_eq!(devlog_target(&store, "app-a", &from_page("app-a")), Ok(()));
         assert_eq!(
             devlog_target(&store, "app-a", &axum::http::HeaderMap::new()),
@@ -1651,6 +1694,10 @@ mod developer_mode_tests {
         let ctx = tools::ToolContext::default();
         let off = tool.execute_dyn(&ctx, serde_json::json!({"app": "Kart Racer"})).await;
         assert!(off.is_error && off.content.contains("App Developer mode is off"), "{}", off.content);
+        // With the mode off the app reads its own console.
+        let own = tools::ToolContext { session_key: format!("agent:{id}:web"), ..Default::default() };
+        let mine = tool.execute_dyn(&own, serde_json::json!({})).await;
+        assert!(!mine.is_error && mine.content.contains("booted"), "{}", mine.content);
 
         developer_mode(&store, true);
         let read = tool.execute_dyn(&ctx, serde_json::json!({"app": "Kart Racer"})).await;
@@ -1847,12 +1894,12 @@ mod app_file_caching_tests {
             let file = ui.join(name);
             let tagged = serve_ui_file(&file, &HeaderMap::new(), None, false).await;
             let etag = get(&tagged, header::ETAG).unwrap().to_string();
-            let r = serve_ui_file(&file, &req(&[(header::IF_NONE_MATCH, &etag)]), Some("Kart"), false).await;
+            let r = serve_ui_file(&file, &req(&[(header::IF_NONE_MATCH, &etag)]), Some(Devtools { employee: "Kart", console: true }), false).await;
             assert_eq!(r.status(), StatusCode::OK, "{name}");
             assert_eq!(get(&r, header::CACHE_CONTROL), Some("no-store"), "{name}");
             assert!(get(&r, header::ETAG).is_none(), "{name}");
         }
-        let page = serve_ui_file(&ui.join("index.html"), &HeaderMap::new(), Some("Kart"), false).await;
+        let page = serve_ui_file(&ui.join("index.html"), &HeaderMap::new(), Some(Devtools { employee: "Kart", console: true }), false).await;
         assert!(String::from_utf8(body(page).await).unwrap().contains("data-nebo-devtools"));
     }
 
