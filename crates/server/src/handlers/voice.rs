@@ -784,6 +784,8 @@ async fn drain_voice_run(
                 if let Some(tc) = event.tool_call.as_ref() {
                     let activity = state.tools.labels(&tc.name, &tc.input).await.0;
                     run_handle.show_activity(&activity);
+                    // The call waiting on this run hears the step too.
+                    progress_on_call(&state.live_calls, &session_key, &activity);
                     state.hub.broadcast(
                         "tool_start",
                         serde_json::json!({
@@ -1047,7 +1049,64 @@ pub enum CallNews {
     /// on the call: they are rows in the thread now, and a turn there is
     /// reading them.
     Shared(Vec<String>),
+    /// A step the call's own hand-off just started, as a few spoken words
+    /// ("Now editing."): said while the owner waits on a long run, at most
+    /// one every [`NARRATE_EVERY`], and dropped once the run is done.
+    Progress(String),
 }
+
+/// Tell the owner's call in conversation `session_key`, if one is live, that
+/// its hand-off started a step labelled `activity` (the same label the
+/// thread's step row shows). Only what reads well aloud goes: never a path,
+/// a file name or a command.
+pub(crate) fn progress_on_call(calls: &LiveCalls, session_key: &str, activity: &str) {
+    let Some(line) = spoken_step(activity) else { return };
+    let call = calls.lock().unwrap_or_else(|e| e.into_inner()).get(session_key).cloned();
+    if let Some(call) = call {
+        // A full queue only means this step is not said; the next one is.
+        let _ = call.try_send(CallNews::Progress(line));
+    }
+}
+
+/// A step's activity label as a few words to say aloud, or `None` when
+/// nothing of it reads well. The label's leading plain words only ("editing
+/// main.js" → "Now editing."; "using web (search)" → "Now using web
+/// search."): the first word with a path, a dot, a digit or a symbol in it
+/// ends the phrase, so no file name, path or code is ever read out. At most
+/// five words, and it must start with a verb in -ing, as every label does.
+fn spoken_step(activity: &str) -> Option<String> {
+    let first = activity.lines().next()?.trim();
+    let mut words: Vec<&str> = Vec::new();
+    for raw in first.split_whitespace() {
+        let punct = |c: char| matches!(c, '(' | ')' | ',' | ';' | ':' | '.' | '!' | '?');
+        let w = raw.trim_matches(punct);
+        // A dot anywhere but the end (".env", "v2.js") is a name, not a word.
+        let plain = w.chars().next().is_some_and(char::is_alphabetic)
+            && w.chars().all(|c| c.is_alphabetic() || c == '-' || c == '\'')
+            && !raw.trim_end_matches(punct).contains('.');
+        if !plain || words.len() == 5 {
+            break;
+        }
+        words.push(w);
+    }
+    let verb = words.first()?.to_lowercase();
+    if !verb.ends_with("ing") {
+        return None;
+    }
+    let mut rest = words[1..].join(" ");
+    if !rest.is_empty() {
+        rest.insert(0, ' ');
+    }
+    Some(format!("Now {verb}{rest}."))
+}
+
+/// The least time between two things said on a call during a hand-off: a
+/// step is spoken only after this long with nothing said.
+const NARRATE_EVERY: std::time::Duration = std::time::Duration::from_secs(9);
+
+/// How long a spoken step may hold back the hand-off's answer: past this
+/// the answer goes, said or not.
+const NARRATION_HOLD: std::time::Duration = std::time::Duration::from_secs(6);
 
 /// Hand `reply`, what a turn in conversation `session_key` said, to the
 /// owner's call there, if one is live. The chat pipeline calls it as each
@@ -1173,6 +1232,8 @@ fn news_to_say(news: Vec<CallNews>, waiting: &std::collections::HashSet<String>,
         match n {
             CallNews::Reply(r) => replies.push(r),
             CallNews::Shared(files) => shared.extend(files),
+            // Steps are said while a run is out, never retold after it.
+            CallNews::Progress(_) => {}
             CallNews::Ask(a) => {
                 if waiting.contains(&a.id) && told.insert(a.id.clone()) {
                     asks.push(super::asks::on_call(&a));
@@ -2474,6 +2535,14 @@ async fn handle_conversation_session(
     }
     // A model response is owed or playing: nothing new is said over it.
     let mut responding = false;
+    // Spoken steps while a hand-off runs: the newest step not yet said, the
+    // last thing said aloud (and when), whether a step is being said now
+    // (since when), and whether the hand-off's answer waits for it to end.
+    let mut step: Option<String> = None;
+    let mut step_said = String::new();
+    let mut quiet_since = tokio::time::Instant::now();
+    let mut narrating: Option<tokio::time::Instant> = None;
+    let mut owe_continuation = false;
     // When the client last sent anything at all (audio, a frame, a ping).
     let mut client_heard = tokio::time::Instant::now();
 
@@ -2510,6 +2579,7 @@ async fn handle_conversation_session(
                     }
                     ConversationEvent::PlaybackStart => {
                         responding = true;
+                        quiet_since = tokio::time::Instant::now();
                         ledger.reply_started();
                         Some(serde_json::json!({"type": "playback_start"}))
                     }
@@ -2518,6 +2588,14 @@ async fn handle_conversation_session(
                     // a delegated run answered, which makes it noise.
                     ConversationEvent::PlaybackEnd => {
                         responding = false;
+                        quiet_since = tokio::time::Instant::now();
+                        // A spoken step is over: the answer it held back goes now.
+                        if narrating.take().is_some() && std::mem::take(&mut owe_continuation) {
+                            if rt_tx.send(RealtimeCommand::ToolOutputsDone).await.is_err() {
+                                break;
+                            }
+                            responding = true;
+                        }
                         Some(serde_json::json!({"type": "playback_end"}))
                     }
                     ConversationEvent::ResponseText(text) => {
@@ -2538,6 +2616,8 @@ async fn handle_conversation_session(
                         // The response became a tool call: its continuation
                         // is owed when the outputs are in.
                         responding = false;
+                        // A hand-off's first step waits a full interval from here.
+                        quiet_since = tokio::time::Instant::now();
                         info!(
                             tool = %name,
                             call_id = %call_id,
@@ -2712,15 +2792,48 @@ async fn handle_conversation_session(
                 }
                 pending_tools = pending_tools.saturating_sub(1);
                 if pending_tools == 0 {
-                    if rt_tx.send(RealtimeCommand::ToolOutputsDone).await.is_err() {
-                        break;
+                    // The run is done: its steps are no longer news.
+                    step = None;
+                    if narrating.is_some() {
+                        // A step is being said: the answer follows it rather
+                        // than talking over it.
+                        owe_continuation = true;
+                    } else {
+                        if rt_tx.send(RealtimeCommand::ToolOutputsDone).await.is_err() {
+                            break;
+                        }
+                        responding = true;
                     }
-                    responding = true;
                 }
             }
 
-            // A turn ran in this conversation outside the call.
-            Some(reply) = heard_rx.recv() => to_say.push(reply),
+            // A spoken step that never said it ended holds the answer no longer.
+            _ = tokio::time::sleep_until(narrating.unwrap_or_else(tokio::time::Instant::now) + NARRATION_HOLD),
+                if owe_continuation => {
+                narrating = None;
+                owe_continuation = false;
+                if rt_tx.send(RealtimeCommand::ToolOutputsDone).await.is_err() {
+                    break;
+                }
+                responding = true;
+            }
+
+            // The next spoken step comes due. Only while that is still ahead:
+            // a step held back by the owner speaking waits for the event
+            // that frees the line, never on a timer already past.
+            _ = tokio::time::sleep_until(quiet_since + NARRATE_EVERY),
+                if step.is_some() && narrating.is_none() && quiet_since.elapsed() < NARRATE_EVERY => {}
+
+            // A turn ran in this conversation outside the call, or the call's
+            // own hand-off started a step.
+            Some(news) = heard_rx.recv() => match news {
+                CallNews::Progress(line) => {
+                    if pending_tools > 0 && line != step_said {
+                        step = Some(line);
+                    }
+                }
+                other => to_say.push(other),
+            },
 
             // The cost backstop for a call nobody is on. The realtime line
             // pings its far end, so the voice service no longer counts a
@@ -2793,6 +2906,25 @@ async fn handle_conversation_session(
                     }
                 }
             }
+        }
+
+        // While the call waits on its hand-off, the newest step is said once
+        // the line has been quiet long enough: the owner is not speaking,
+        // nothing else is being said, and the turn waiting is the run's.
+        if pending_tools > 0
+            && !responding
+            && narrating.is_none()
+            && !ledger.open
+            && ledger.turn.delegated
+            && quiet_since.elapsed() >= NARRATE_EVERY
+            && let Some(line) = step.take()
+        {
+            if rt_tx.send(RealtimeCommand::Say(line.clone())).await.is_err() {
+                break;
+            }
+            step_said = line;
+            narrating = Some(tokio::time::Instant::now());
+            quiet_since = tokio::time::Instant::now();
         }
 
         // What came into the conversation is said when the call is free:
@@ -3114,6 +3246,40 @@ mod voice_prompt_tests {
     /// The client's frames: `Stop` is the goodbye (it ended the call as an
     /// "unknown conversation WS message" before), and `interrupt` carries the
     /// played position when the client knows it.
+    /// A step is said in a few plain words: never a file name, a path or a
+    /// command, and nothing at all when no plain verb leads the label.
+    #[test]
+    fn steps_are_said_without_paths_or_code() {
+        assert_eq!(spoken_step("editing main.js").as_deref(), Some("Now editing."));
+        assert_eq!(spoken_step("reading /data/user/agents/Kart/ui/index.html").as_deref(), Some("Now reading."));
+        assert_eq!(spoken_step("running `bun build src/main.ts`").as_deref(), Some("Now running."));
+        assert_eq!(spoken_step("using web (search)").as_deref(), Some("Now using web search."));
+        assert_eq!(spoken_step("searching the web for kart physics tips today").as_deref(), Some("Now searching the web for kart."));
+        assert_eq!(
+            spoken_step("leave plan mode and carry out the plan in plan.md:\nstep one"),
+            None
+        );
+        assert_eq!(spoken_step("Used send invoice"), None);
+        assert_eq!(spoken_step(""), None);
+        assert_eq!(spoken_step("writing v2_main.js"), Some("Now writing.".into()));
+        assert_eq!(spoken_step("reading .env"), Some("Now reading.".into()));
+    }
+
+    /// A step reaches the call on that conversation, and only that one.
+    #[tokio::test]
+    async fn a_step_reaches_the_call_on_its_conversation() {
+        let calls: LiveCalls = Default::default();
+        let (tx, mut rx) = mpsc::channel(4);
+        let _on = OnCall::join(&calls, "agent:a:thread:t", tx);
+        progress_on_call(&calls, "agent:a:thread:other", "editing styles.css");
+        progress_on_call(&calls, "agent:a:thread:t", "editing styles.css");
+        match rx.try_recv() {
+            Ok(CallNews::Progress(line)) => assert_eq!(line, "Now editing."),
+            other => panic!("expected a step, got {other:?}"),
+        }
+        assert!(rx.try_recv().is_err());
+    }
+
     #[test]
     fn client_frames_parse() {
         assert_eq!(client_frame(r#"{"type":"Stop"}"#), ClientFrame::Stop);

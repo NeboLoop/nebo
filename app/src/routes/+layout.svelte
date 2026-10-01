@@ -129,9 +129,15 @@
       await goto(`/${encodeURIComponent(agentId)}/threads`);
     };
 
+    // The main window answers the app windows' voice pills with its one call.
+    const stopVoiceBridge = import('$lib/apps/voiceBridge').then(({ startAppVoiceBridge }) => startAppVoiceBridge());
+    // A voice pill speaks to the main window over Tauri events only: no
+    // socket of its own, no second set of notifications.
+    const voicePill = appPath(location.pathname).startsWith('/voice-pill');
+
     // Connect WebSocket once onboarding is done, then attach event listeners
     const unsub = onboardingComplete.subscribe(complete => {
-      if (complete) {
+      if (complete && !voicePill) {
         import('$lib/websocket/client').then(({ getWebSocketClient }) => {
           const ws = getWebSocketClient();
           if (!ws.isConnected()) {
@@ -148,6 +154,7 @@
 
     return () => {
       unsub();
+      void stopVoiceBridge.then((stop) => stop());
       window.removeEventListener('error', onError);
       window.removeEventListener('unhandledrejection', onRejection);
       window.removeEventListener('pageshow', onPageShow);
@@ -202,7 +209,9 @@
     }
   }
 
-  const isEmbed = $derived(appPath($page.url.pathname).startsWith('/chat-embed'));
+  // An app window's voice pill: a window too small for anything but itself.
+  const isVoicePill = $derived(appPath($page.url.pathname).startsWith('/voice-pill'));
+  const isEmbed = $derived(appPath($page.url.pathname).startsWith('/chat-embed') || isVoicePill);
 </script>
 
 <svelte:window onkeydown={handleGlobalKeydown} oncontextmenu={handleContextMenu} />
@@ -252,6 +261,7 @@
 <!-- Mounted for the embed too: the chat an app frames is the same chat, so a
      hire card, an install code, or a tool approval inside the iframe needs the
      same modals the shell has. Only the shell's own chrome stays out. -->
+{#if !isVoicePill}
 <Toast />
 <!-- The ONE install/configure modal for the whole app. Opened via the
      installFlow store (product/configure) or window nebo:code_* events (code
@@ -261,6 +271,7 @@
      (runner pauses an OFF-capability tool call). Mounted once here so it shows
      over any view; sends the decision back via `approval_response`. -->
 <ApprovalGate />
+{/if}
 {#if !isEmbed}
   <CommandPalette bind:show={$commandPaletteOpen} />
   <UpgradeSuccessModal

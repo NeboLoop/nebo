@@ -44,11 +44,23 @@
 		consented = true;
 	}
 
-	// Auto-start voice session on mount (once consented)
+	// Auto-start voice session on mount (once consented), and again after an
+	// error clears, as before. A live call that went idle was ended somewhere
+	// else (an app window's voice pill): that closes this overlay rather than
+	// starting the call again.
+	let prev = '';
+	// Closed from here: this overlay's own close already ran.
+	let closing = false;
 	$effect(() => {
-		if (consented && status === 'idle') {
+		if (!consented || closing) return;
+		const was = prev;
+		prev = status;
+		if (status !== 'idle') return;
+		if (was === '' || was === 'idle' || was === 'error') {
 			log.info('VoiceModeOverlay mounted, starting session for agent: ' + agentId);
 			voiceSession.start(agentId, chatId, teamId);
+		} else {
+			onclose();
 		}
 	});
 
@@ -74,6 +86,7 @@
 	});
 
 	function handleClose() {
+		closing = true;
 		voiceSession.stop();
 		onclose();
 	}
@@ -83,6 +96,7 @@
 	}
 
 	function handleStop() {
+		closing = true;
 		voiceSession.stop();
 		onclose();
 	}

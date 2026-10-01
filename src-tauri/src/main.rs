@@ -174,6 +174,33 @@ fn save_state(window: &tauri::Window) {
     }
 }
 
+/// An app window's voice pill (`voice-<id>`, opened by the frontend's
+/// `openVoicePill`): a small child window that lives outside the app's page,
+/// so the page reloading never touches the call it drives. It sits inside the
+/// app window's bottom-right corner; this keeps it there as the app window
+/// moves or resizes, and closes it with the app window.
+fn voice_pill_of(window: &tauri::Window) -> Option<tauri::WebviewWindow> {
+    let id = window.label().strip_prefix("app-")?;
+    window.app_handle().get_webview_window(&format!("voice-{id}"))
+}
+
+/// Gap between the pill and the app window's corner, logical pixels (the
+/// frontend's `VOICE_PILL_MARGIN`).
+const VOICE_PILL_MARGIN: f64 = 16.0;
+
+fn pin_voice_pill(window: &tauri::Window) {
+    let Some(pill) = voice_pill_of(window) else { return };
+    let (Ok(at), Ok(size), Ok(own), Ok(scale)) =
+        (window.inner_position(), window.inner_size(), pill.outer_size(), window.scale_factor())
+    else {
+        return;
+    };
+    let margin = (VOICE_PILL_MARGIN * scale) as i32;
+    let x = at.x + size.width as i32 - own.width as i32 - margin;
+    let y = at.y + size.height as i32 - own.height as i32 - margin;
+    let _ = pill.set_position(tauri::PhysicalPosition::new(x.max(at.x), y.max(at.y)));
+}
+
 /// Tauri command: get saved window state for a given label.
 /// Returns { x, y, width, height } or null if no saved state.
 #[tauri::command]
@@ -946,6 +973,11 @@ fn main() {
             Ok(())
         })
         .on_window_event(|window, event| {
+            // An app window's voice pill has no place, menu or state of its
+            // own: it follows its app window (see `pin_voice_pill`).
+            if window.label().starts_with("voice-") {
+                return;
+            }
             match event {
                 tauri::WindowEvent::Focused(focused) => {
                     let is_app = window.label().starts_with("app-");
@@ -981,7 +1013,13 @@ fn main() {
                     }
                     // App windows (app-*) close normally — state was saved above.
                 }
+                tauri::WindowEvent::Destroyed => {
+                    if let Some(pill) = voice_pill_of(window) {
+                        let _ = pill.close();
+                    }
+                }
                 tauri::WindowEvent::Moved(_) | tauri::WindowEvent::Resized(_) => {
+                    pin_voice_pill(window);
                     // Only save after the main window has been fully initialized.
                     // App windows are always ready (created by user action).
                     let ready = window.label() != "main"

@@ -6,6 +6,7 @@
  */
 
 import { withBase } from '$lib/nav';
+import { openVoicePill } from './voiceBridge';
 
 export interface AppWindowConfig {
 	width: number;
@@ -45,6 +46,7 @@ export async function launchApp(
 			if (existing) {
 				try {
 					await existing.setFocus();
+					openVoicePill(agentId, label, cfg.title).catch((err) => console.error('[launchApp] voice pill:', err));
 					return;
 				} catch {
 					// Window was closed — destroy stale handle and create a new one
@@ -71,6 +73,10 @@ export async function launchApp(
 			});
 			wv.once('tauri://error', (e) => {
 				console.error('[launchApp] Tauri window error:', e);
+			});
+			// The app's voice pill rides on the window, outside its page.
+			wv.once('tauri://created', () => {
+				openVoicePill(agentId, label, cfg.title).catch((err) => console.error('[launchApp] voice pill:', err));
 			});
 			return;
 		} catch (err) {

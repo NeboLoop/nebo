@@ -162,6 +162,13 @@ pub enum RealtimeCommand {
     /// One executed tool result. Queue every parallel call's output BEFORE
     /// sending [`RealtimeCommand::ToolOutputsDone`].
     ToolOutput { call_id: String, output: String },
+    /// Speak these words as they are, outside the model: the provider's
+    /// `force_message` (text to speech, its own response lifecycle, no
+    /// `response.create`). What a long hand-off says while the owner waits
+    /// ("Now editing."). The owner can talk over it. A provider that refuses
+    /// it is not a failed call: the refusal is logged, and the session says
+    /// nothing more this way.
+    Say(String),
     /// All tool outputs submitted — request the model's continuation.
     /// Callers must wait for current audio playback to finish first, or the
     /// next response overlaps the tail of the current one.
@@ -555,6 +562,13 @@ where
             };
             sink.send(Message::Text(item.to_string().into())).await?;
         }
+        RealtimeCommand::Say(text) => {
+            if state.say_refused {
+                return Ok(true);
+            }
+            state.say_pending = true;
+            sink.send(Message::Text(say_frame(&text).to_string().into())).await?;
+        }
         RealtimeCommand::ToolOutputsDone => {
             sink.send(Message::Text(
                 json!({ "type": "response.create" }).to_string().into(),
@@ -567,6 +581,19 @@ where
         }
     }
     Ok(true)
+}
+
+/// The frame that speaks `text` verbatim (see [`RealtimeCommand::Say`]).
+fn say_frame(text: &str) -> Value {
+    json!({
+        "type": "conversation.item.create",
+        "item": {
+            "type": "force_message",
+            "role": "assistant",
+            "interruptible": true,
+            "content": [{ "type": "output_text", "text": text }],
+        },
+    })
 }
 
 /// Close out what a dropped socket owed the client, and start the next
@@ -771,6 +798,11 @@ impl CallMemory {
 struct SessionState {
     /// `SessionInitialized` has been sent.
     initialized: bool,
+    /// A [`RealtimeCommand::Say`] went out and its response has not started:
+    /// an `error` now is its refusal, not the call's.
+    say_pending: bool,
+    /// The provider refused a `Say`: no more are sent this call.
+    say_refused: bool,
     /// A model response is in flight (response.created seen, no response.done
     /// yet). Barge-in near the end of a response otherwise races the cancel:
     /// the client still hears buffered audio, sends Interrupt, and upstream
@@ -1035,6 +1067,7 @@ async fn handle_server_event(
         // speech and drops it, silent, when they go on. Playback starts with
         // the response's first audio (`reply_audio`).
         "response.created" => {
+            state.say_pending = false;
             state.response_active = true;
             state.discard_audio = false;
             state.pending_item = None;
@@ -1115,6 +1148,11 @@ async fn handle_server_event(
             // the client tear the whole call down on every tail barge-in.
             if msg.contains("Cancellation failed") {
                 warn!(frame = %text, "benign realtime cancel race (ignored)");
+            } else if std::mem::take(&mut state.say_pending) {
+                // Words said on the session's behalf were refused. The call
+                // is fine; it just stops saying them.
+                state.say_refused = true;
+                warn!(frame = %text, "realtime refused a spoken update; no more this call");
             } else {
                 // The provider's words stay in the log; the client says the
                 // call ended, plainly.
@@ -1952,6 +1990,46 @@ mod tests {
             .unwrap();
         assert_eq!(update["type"], "session.update");
         assert!(after >= DEAD_AFTER, "redialled after {after:?}, before the line was dead");
+        drop(tx);
+    }
+
+    /// A spoken update goes out as the provider's force message, verbatim,
+    /// with no `response.create` (the force message is its own turn). A
+    /// refusal of it is logged, never the end of the call, and no further
+    /// update is sent; the call carries on.
+    #[tokio::test]
+    async fn a_spoken_update_is_said_verbatim_and_a_refusal_is_not_the_call() {
+        let (l, cfg) = listener().await;
+        let server = tokio::spawn(async move {
+            let mut ws = accept(&l).await;
+            next_json(&mut ws).await; // session.update
+            say(&mut ws, json!({"type": "session.created"})).await;
+            let said = next_json(&mut ws).await;
+            say(&mut ws, json!({"type": "error", "error": {"message": "unknown item type"}})).await;
+            // The next frame is the typed text, not a second update.
+            let next = next_json(&mut ws).await;
+            // The line stays up while the call's events are read.
+            (said, next, ws, l)
+        });
+        let (tx, mut rx) = connect(cfg).await.unwrap();
+        tx.send(RealtimeCommand::Say("Now editing.".into())).await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        tx.send(RealtimeCommand::Say("Now checking.".into())).await.unwrap();
+        tx.send(RealtimeCommand::Text("hello".into())).await.unwrap();
+        let (said, next, _line, _l) = tokio::time::timeout(std::time::Duration::from_secs(5), server)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(said["type"], "conversation.item.create");
+        assert_eq!(said["item"]["type"], "force_message");
+        assert_eq!(said["item"]["role"], "assistant");
+        assert_eq!(said["item"]["content"][0]["text"], "Now editing.");
+        assert_eq!(next["item"]["type"], "message", "a refused update was sent again: {next}");
+        let mut events = Vec::new();
+        while let Ok(Some(e)) = tokio::time::timeout(std::time::Duration::from_millis(200), rx.recv()).await {
+            events.push(e);
+        }
+        assert!(errors(&events).is_empty(), "a refused update ended the call");
         drop(tx);
     }
 
