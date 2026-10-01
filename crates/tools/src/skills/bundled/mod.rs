@@ -32,6 +32,9 @@ pub const BUNDLED_SKILLS: &[(&str, &str)] = &[
     // nowhere an employee can read at runtime; without it every app page
     // is written against a global that does not exist.
     ("build-an-app", include_str!("build-an-app.md")),
+    // How an app goes to the marketplace with the owner, in conversation
+    // (App Developer mode): screenshots, the listing, the owner's yes.
+    ("publish-an-app", include_str!("publish-an-app.md")),
 ];
 
 // ── Bundled Agents ──────────────────────────────────────────────────

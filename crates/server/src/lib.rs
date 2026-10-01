@@ -46,6 +46,7 @@ mod harness;
 #[cfg(test)]
 mod nebo_files_proof;
 mod spa;
+mod app_listing;
 mod state;
 pub mod workflow_manager;
 mod old_profile;
@@ -2497,6 +2498,12 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
             .set_message_handler(Arc::new(move |msg: comm::CommMessage| {
                 let st = handler_state.clone();
                 if msg.topic == "installs" {
+                    if let Some(review) = app_listing::is_review(&msg.content) {
+                        tokio::spawn(async move {
+                            app_listing::handle_review(&st, review).await;
+                        });
+                        return;
+                    }
                     if let Ok(event) = serde_json::from_str::<napp::InstallEvent>(&msg.content) {
                         tokio::spawn(async move {
                             handle_installs_message(&st, event).await;
@@ -4341,6 +4348,11 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
 
     // Route install events to napp registry
     if msg.topic == "installs" {
+        // A published app's review outcome (`app_listing`).
+        if let Some(review) = app_listing::is_review(&msg.content) {
+            app_listing::handle_review(&state, review).await;
+            return;
+        }
         if let Ok(event) = serde_json::from_str::<napp::InstallEvent>(&msg.content) {
             handle_installs_message(&state, event).await;
             return;

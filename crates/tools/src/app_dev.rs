@@ -23,7 +23,15 @@ pub const APP_STATUS: &str = "app_status";
 pub const APP_CONSOLE: &str = "app_console";
 /// The developer pack: offered only under App Developer mode, and only to
 /// app employees and their teammates.
-pub const TOOLS: [&str; 3] = [APP_RELOAD, APP_STATUS, APP_CONSOLE];
+pub const TOOLS: [&str; 6] = [
+    APP_RELOAD,
+    APP_STATUS,
+    APP_CONSOLE,
+    // Publishing an app with the owner (`app_publish`).
+    crate::app_publish::APP_SCREENSHOT,
+    crate::app_publish::APP_LISTING,
+    crate::app_publish::APP_SUBMIT,
+];
 
 /// The WS event every open view of an app reloads on; its payload is
 /// `{"appId": "<the app employee's id>"}`.

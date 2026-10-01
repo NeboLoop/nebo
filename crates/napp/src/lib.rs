@@ -1,6 +1,7 @@
 pub mod agent;
 pub mod agent_loader;
 pub mod app_data;
+pub mod app_view;
 pub mod child_guard;
 pub mod hooks;
 pub mod manifest;

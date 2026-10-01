@@ -98,6 +98,24 @@ impl ActionExecutor {
         Err(BrowserError::ExtensionNotConnected)
     }
 
+    /// Execute a browser tool in the built-in headless browser alone, never
+    /// the owner's Chrome: work the owner should not see open in his own
+    /// browser (an app's listing screenshots). Errors when there is no
+    /// built-in browser on this machine.
+    pub async fn execute_headless(
+        &self,
+        tool: &str,
+        args: &serde_json::Value,
+        session_id: &str,
+    ) -> Result<serde_json::Value, BrowserError> {
+        let cdp = self
+            .cdp
+            .as_ref()
+            .ok_or_else(|| BrowserError::Other("no built-in browser on this machine".into()))?;
+        info!(tool = tool, backend = "cdp", "executing headless browser action");
+        cdp.execute(tool, args, session_id).await
+    }
+
     /// Execute multiple actions: extension batch (one round-trip) → CDP (sequential), failing
     /// over on error.
     pub async fn batch_execute(

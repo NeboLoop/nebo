@@ -2738,14 +2738,20 @@ pub enum PluginFsEvent {
 /// change to the plugin. It reaches only the routes plugins call
 /// (`server::middleware`).
 pub fn plugin_base_env() -> Vec<(String, String)> {
-    let port = std::env::var("NEBO_PORT")
-        .ok()
-        .and_then(|v| v.parse::<u16>().ok())
-        .unwrap_or(types::constants::DEFAULT_PORT);
+    let port = local_port();
     vec![(
         "NEBO_LOCAL_URL".to_string(),
         format!("http://127.0.0.1:{port}/k/{}", plugin_local_token()),
     )]
+}
+
+/// The port this Nebo's local API listens on, by the one rule every local
+/// caller uses: `NEBO_PORT`, else the default.
+pub fn local_port() -> u16 {
+    std::env::var("NEBO_PORT")
+        .ok()
+        .and_then(|v| v.parse::<u16>().ok())
+        .unwrap_or(types::constants::DEFAULT_PORT)
 }
 
 /// The credential every plugin this Nebo starts reaches its local API with:

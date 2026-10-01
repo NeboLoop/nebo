@@ -17,6 +17,7 @@ use std::time::Duration;
 
 use base64::Engine;
 use chromiumoxide::cdp::browser_protocol::browser::CloseParams;
+use chromiumoxide::cdp::browser_protocol::emulation::SetDeviceMetricsOverrideParams;
 use chromiumoxide::cdp::browser_protocol::page::CaptureScreenshotFormat;
 use chromiumoxide::cdp::js_protocol::runtime::EvaluateParams;
 use chromiumoxide::page::ScreenshotParams;
@@ -432,24 +433,36 @@ impl CdpBridge {
             }
             "screenshot" => {
                 let page = self.page_for(session_id).await?;
-                let shot = tokio::time::timeout(
-                    EVAL_TIMEOUT,
-                    page.screenshot(
-                        ScreenshotParams::builder()
-                            .format(CaptureScreenshotFormat::Jpeg)
-                            .quality(75)
-                            .build(),
-                    ),
-                )
-                .await
-                .map_err(|_| BrowserError::Timeout("cdp screenshot timed out".into()))?
-                .map_err(|e| BrowserError::Other(format!("cdp screenshot: {e}")))?;
+                // A viewport asked for (an app's listing shot at phone or
+                // desktop size): the page is laid out at that size first.
+                // Best effort: a browser that can't emulate keeps its own.
+                let size = |k: &str| args.get(k).and_then(|v| v.as_u64()).filter(|n| (100..=4000).contains(n));
+                if let (Some(width), Some(height)) = (size("width"), size("height")) {
+                    let mobile = args.get("mobile").and_then(|v| v.as_bool()).unwrap_or(width < 768);
+                    let metrics = SetDeviceMetricsOverrideParams::new(width as i64, height as i64, 1.0, mobile);
+                    if let Ok(Ok(_)) = tokio::time::timeout(EVAL_TIMEOUT, page.execute(metrics)).await {
+                        tokio::time::sleep(Duration::from_millis(300)).await;
+                    }
+                }
+                let png = args.get("format").and_then(|v| v.as_str()) == Some("png");
+                let params = if png {
+                    ScreenshotParams::builder().format(CaptureScreenshotFormat::Png).build()
+                } else {
+                    ScreenshotParams::builder()
+                        .format(CaptureScreenshotFormat::Jpeg)
+                        .quality(75)
+                        .build()
+                };
+                let shot = tokio::time::timeout(EVAL_TIMEOUT, page.screenshot(params))
+                    .await
+                    .map_err(|_| BrowserError::Timeout("cdp screenshot timed out".into()))?
+                    .map_err(|e| BrowserError::Other(format!("cdp screenshot: {e}")))?;
                 let viewport = self
                     .page_call(&page, "[window.innerWidth, window.innerHeight]")
                     .await?;
                 Ok(json!({
                     "data": base64::engine::general_purpose::STANDARD.encode(shot),
-                    "format": "jpeg",
+                    "format": if png { "png" } else { "jpeg" },
                     "encoding": "base64",
                     "width": viewport.get(0),
                     "height": viewport.get(1),
