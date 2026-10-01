@@ -454,6 +454,18 @@ pub(crate) async fn stop(state: &AppState, team: &db::Team, by: StopBy<'_>, targ
         return Ok(vec![format!("{name}'s helper ({})", helper.description)]);
     }
     let mut stopped: Vec<String> = Vec::new();
+    // Members on other computers: the stop goes to them through the team's
+    // hub channel, the one way they hear the team.
+    let remote_wanted = team.members.iter().any(|m| {
+        !m.is_local()
+            && match target {
+                Target::Member(id) => m.agent_id == id,
+                _ => true,
+            }
+    });
+    if remote_wanted && crate::team::stop_on_hub(state, team).await {
+        tracing::info!(team = %team.id, "team stop sent to the members on other computers");
+    }
     for (member_id, name) in roster {
         let local = team.members.iter().any(|m| m.agent_id == member_id && m.is_local());
         let wanted = match target {

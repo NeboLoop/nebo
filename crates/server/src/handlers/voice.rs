@@ -1504,7 +1504,7 @@ impl TurnSink {
                 }
             }
             if let Some((conv, stream)) = self.loop_relay.as_ref() {
-                relay_loop_turn(state, conv, stream, role, text);
+                relay_loop_turn(state, conv, stream, role, text, self.phone_title.is_none());
             }
         }
     }
@@ -2058,19 +2058,16 @@ async fn handle_conversation_ws(mut socket: WebSocket, state: AppState, mut q: C
 }
 
 /// Relay one finished voice turn into a loop conversation so the loop UI
-/// shows the transcript live. User turns carry the owner-relay metadata the
-/// loop renders as the owner speaking through another channel; agent turns go
-/// out as normal agent messages (the loop attributes them to the bot).
-fn relay_loop_turn(state: &AppState, conv_id: &str, stream: &str, role: &str, content: &str) {
+/// shows the transcript live. The owner's own turns (`owner_call`: his call,
+/// not a phone caller's) carry the owner-relay metadata; every other turn
+/// goes out as the bot's (the loop attributes it to the bot).
+fn relay_loop_turn(state: &AppState, conv_id: &str, stream: &str, role: &str, content: &str, owner_call: bool) {
     let manager = state.comm_manager.clone();
-    let mut metadata = std::collections::HashMap::new();
-    if role == "user" {
-        metadata.insert("relay".to_string(), "true".to_string());
-        metadata.insert("role".to_string(), "user".to_string());
-        metadata.insert("senderName".to_string(), "You".to_string());
+    let mut metadata = if role == "user" && owner_call {
+        crate::chat_dispatch::owner_relay_metadata()
     } else {
-        metadata.insert("senderKind".to_string(), "agent".to_string());
-    }
+        std::collections::HashMap::from([("senderKind".to_string(), "agent".to_string())])
+    };
     metadata.insert("via".to_string(), "voice".to_string());
     let msg = comm::CommMessage {
         id: uuid::Uuid::new_v4().to_string(),

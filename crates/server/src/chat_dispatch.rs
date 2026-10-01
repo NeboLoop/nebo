@@ -1431,6 +1431,13 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                         // bots apply the handoff guardrails (never treat an agent
                         // reply as a human sender) and the depth cap can't reset.
                         reply_meta.insert("senderKind".to_string(), "agent".to_string());
+                        // In a channel the hub admits the replying employee
+                        // by its own hub id.
+                        if reply_config.topic == "channel" {
+                            if let Some(hub_id) = hub_agent_id(&workroom_store, &reply_config.from_agent_id) {
+                                reply_meta.insert("agentId".to_string(), hub_id);
+                            }
+                        }
                         if reply_config.handoff_depth > 0 {
                             reply_meta.insert(
                                 "handoffDepth".to_string(),
@@ -1444,7 +1451,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                             reply_topic = %reply_config.topic,
                             reply_conv = %reply_config.conversation_id,
                             response_len = full_response.len(),
-                            "RESPONSE: agent reply — attaching ONLY senderName (no agent id on the wire)"
+                            "RESPONSE: agent reply — senderName, and in a channel the replying employee's hub id"
                         );
 
                         // Resolve run-produced file artifacts to uploaded attachments
@@ -2421,6 +2428,30 @@ pub(crate) async fn relay_ask(
         let _ = cm.send_typing(&cfg.conversation_id, false, None).await;
     }
     Some((text, meta))
+}
+
+/// What the owner's own words carry when this bot relays them to the hub:
+/// the relay marks the loop renders as the owner speaking through another
+/// surface, and `relayedForOwner`, which the hub stamps over (a receiving
+/// Nebo trusts it only with the owner's account the hub stamped beside it:
+/// `crate::hub_sender`). THE one place they are written. Only code holding
+/// the owner's own words calls it — his chat, his voice call, his team post
+/// — never anything a tool, a model or a comm message decides.
+pub(crate) fn owner_relay_metadata() -> HashMap<String, String> {
+    [("relay", "true"), ("role", "user"), ("senderName", "You"), ("relayedForOwner", "true")]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect()
+}
+
+/// An employee's HUB agent id (`loop_agent_id`), which a channel send
+/// carries as `agentId`: the hub admits a channel send only from a member of
+/// that channel.
+pub(crate) fn hub_agent_id(store: &db::Store, agent_id: &str) -> Option<String> {
+    if agent_id.is_empty() {
+        return None;
+    }
+    store.get_agent(agent_id).ok().flatten().and_then(|a| a.loop_agent_id).filter(|id| !id.is_empty())
 }
 
 async fn send_comm_msg(

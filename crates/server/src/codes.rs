@@ -2810,12 +2810,15 @@ async fn reconcile_agents(state: &AppState) -> Result<(), NeboError> {
                 if m.content.trim().is_empty() {
                     continue;
                 }
-                let mut meta = std::collections::HashMap::new();
-                if m.role == "user" {
-                    meta.insert("relay".to_string(), "true".to_string());
-                    meta.insert("role".to_string(), "user".to_string());
-                    meta.insert("senderName".to_string(), "You".to_string());
+                // Only a row the owner wrote is relayed as his; a coworker's
+                // message stored in the chat goes out as the bot's.
+                let owners = m.role == "user" && owner_wrote(m.metadata.as_deref());
+                let mut meta = if owners {
+                    crate::chat_dispatch::owner_relay_metadata()
                 } else {
+                    std::collections::HashMap::from([("senderKind".to_string(), "agent".to_string())])
+                };
+                if !owners {
                     meta.insert("senderName".to_string(), agent_display.clone());
                 }
                 let msg = comm::CommMessage {
@@ -2828,7 +2831,7 @@ async fn reconcile_agents(state: &AppState) -> Result<(), NeboError> {
                     content: m.content,
                     metadata: meta,
                     timestamp: 0,
-                    human_injected: m.role == "user",
+                    human_injected: owners,
                     human_id: None,
                     task_id: None,
                     correlation_id: None,
@@ -3457,5 +3460,26 @@ mod in_flight_tests {
         assert!(codes.begin("PLUG-OTHER-0000").is_some(), "another code is unaffected");
         drop(first);
         assert!(codes.begin("PLUG-RYX9-G8HT").is_some(), "free again once the first run ends");
+    }
+}
+
+/// Whether a stored row is the owner's own words: it carries
+/// [`db::OWNER_MARK`], which only the harness writes for his input.
+fn owner_wrote(metadata: Option<&str>) -> bool {
+    metadata
+        .and_then(|m| serde_json::from_str::<serde_json::Value>(m).ok())
+        .and_then(|m| m.get(db::OWNER_MARK).and_then(|v| v.as_bool()))
+        == Some(true)
+}
+
+#[cfg(test)]
+mod owner_relay_tests {
+    /// The reconcile backfill relays a row as the owner's only when the
+    /// owner wrote it; a coworker's row in the same chat never is.
+    #[test]
+    fn only_the_owners_own_row_is_relayed_as_his() {
+        assert!(super::owner_wrote(Some(r#"{"owner":true}"#)));
+        assert!(!super::owner_wrote(Some(r#"{"from":"coworker","coworker":"Pam"}"#)));
+        assert!(!super::owner_wrote(None));
     }
 }
