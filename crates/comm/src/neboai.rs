@@ -93,9 +93,9 @@ pub struct NeboAIPlugin {
     connected: Arc<AtomicBool>,
     /// Signalled when the read loop exits unexpectedly (not via cancel).
     disconnect_notify: Arc<Notify>,
-    /// Set by the read loop when the hub ended the connection with a drain
-    /// (1012); taken by `wait_disconnect`.
-    drained: Arc<AtomicBool>,
+    /// How the last connection ended (a drain, a hard cut, another close),
+    /// set by the read loop and taken by `wait_disconnect`.
+    ended: Arc<std::sync::Mutex<Option<crate::reconnect::Disconnect>>>,
     /// Durable acked offsets of the bot's own streams.
     offsets: Arc<dyn StreamOffsets>,
     /// Set by the read loop when the hub closed the connection naming the
@@ -119,7 +119,7 @@ impl NeboAIPlugin {
             devlog: RwLock::new(None),
             connected: Arc::new(AtomicBool::new(false)),
             disconnect_notify: Arc::new(Notify::new()),
-            drained: Arc::new(AtomicBool::new(false)),
+            ended: Arc::new(std::sync::Mutex::new(None)),
             offsets,
             redirect_to: Arc::new(std::sync::Mutex::new(None)),
         }
@@ -564,9 +564,9 @@ impl CommPlugin for NeboAIPlugin {
         let devlog_for_read = self.devlog.read().await.clone();
         let connected_for_read = self.connected.clone();
         let notify_for_read = self.disconnect_notify.clone();
-        // A drain seen on an earlier connection says nothing about this one.
-        self.drained.store(false, Ordering::SeqCst);
-        let drained_for_read = self.drained.clone();
+        // How an earlier connection ended says nothing about this one.
+        *self.ended.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        let ended_for_read = self.ended.clone();
         let redirect_for_read = self.redirect_to.clone();
         let maps_for_read = self.conv_maps.clone();
         let stream_acks = StreamAcks {
@@ -585,7 +585,7 @@ impl CommPlugin for NeboAIPlugin {
                 devlog_for_read,
                 connected_for_read,
                 notify_for_read,
-                drained_for_read,
+                ended_for_read,
                 redirect_for_read,
                 send_tx,
                 stream_acks,
@@ -1102,12 +1102,13 @@ impl CommPlugin for NeboAIPlugin {
 
     async fn wait_disconnect(&self) -> crate::reconnect::Disconnect {
         self.disconnect_notify.notified().await;
-        if self.drained.swap(false, Ordering::SeqCst) {
+        let ended = self.ended.lock().unwrap_or_else(|e| e.into_inner()).take();
+        if ended == Some(crate::reconnect::Disconnect::Drain) {
             crate::reconnect::Disconnect::Drain
         } else if self.redirect_to.lock().unwrap_or_else(|e| e.into_inner()).is_some() {
             crate::reconnect::Disconnect::Redirect
         } else {
-            crate::reconnect::Disconnect::Dropped
+            ended.unwrap_or(crate::reconnect::Disconnect::Dropped)
         }
     }
 
@@ -1286,10 +1287,9 @@ enum Auth {
 /// an AUTH_FAIL `wrong_cell` carrying an address, or a close with
 /// [`crate::cell::REDIRECT_CLOSE_CODE`] is a redirect.
 async fn dial_and_auth(url: &str, connect_frame: &[u8]) -> Result<Auth, CommError> {
-    let ws_stream = match tokio::time::timeout(crate::reconnect::DIAL_TIMEOUT, tls::connect_ws(url))
-        .await
-        .map_err(|_| CommError::Other("ws dial: timed out".into()))?
-    {
+    // Each address the hostname resolves to is tried in a random order,
+    // within its own connect and handshake limits (`tls::connect_ws`).
+    let ws_stream = match tls::connect_ws(url).await {
         Ok((ws, _)) => ws,
         Err(e) => {
             return match crate::cell::Redirect::from_dial_error(&e) {
@@ -1352,7 +1352,7 @@ async fn read_loop(
     devlog: Option<DevLog>,
     connected: Arc<AtomicBool>,
     disconnect_notify: Arc<Notify>,
-    drained: Arc<AtomicBool>,
+    ended: Arc<std::sync::Mutex<Option<crate::reconnect::Disconnect>>>,
     redirect_to: Arc<std::sync::Mutex<Option<crate::cell::Redirect>>>,
     send_tx: mpsc::Sender<Vec<u8>>,
     mut stream_acks: StreamAcks,
@@ -1364,6 +1364,12 @@ async fn read_loop(
         ));
     }
 
+    // An established connection that ends with no close frame (a read
+    // error, an EOF, a silent hub) is a hard cut (crate::reconnect).
+    let cut = || {
+        *ended.lock().unwrap_or_else(|e| e.into_inner()) =
+            Some(crate::reconnect::Disconnect::from_close(None));
+    };
     loop {
         tokio::select! {
             result = tokio::time::timeout(std::time::Duration::from_secs(120), read.next()) => {
@@ -1374,12 +1380,14 @@ async fn read_loop(
                         if let Some(ref dl) = devlog {
                             dl.error(&format!("read error: {}", e));
                         }
+                        cut();
                         break;
                     }
                     Ok(None) => {
                         if let Some(ref dl) = devlog {
                             dl.event("DISCONNECTED (stream ended)");
                         }
+                        cut();
                         break;
                     }
                     Err(_) => {
@@ -1389,6 +1397,7 @@ async fn read_loop(
                         if let Some(ref dl) = devlog {
                             dl.event("READ_TIMEOUT (120s) — treating as disconnect");
                         }
+                        cut();
                         break;
                     }
                 };
@@ -1412,13 +1421,13 @@ async fn read_loop(
                             dl.event(&format!("CLOSE frame received: {:?}", reason));
                         }
                         let code = reason.as_ref().map(|f| u16::from(f.code));
+                        // A close frame without a code still closed cleanly.
+                        let how = crate::reconnect::Disconnect::from_close(Some(code.unwrap_or(1005)));
+                        *ended.lock().unwrap_or_else(|e| e.into_inner()) = Some(how);
                         // A drain is a deploy moving the bot to another pod:
                         // planned, so it is told apart and redialed quietly.
-                        if code.map(crate::reconnect::Disconnect::from_close_code)
-                            == Some(crate::reconnect::Disconnect::Drain)
-                        {
+                        if how == crate::reconnect::Disconnect::Drain {
                             info!("neboai: hub is draining this connection; redialing");
-                            drained.store(true, Ordering::SeqCst);
                         } else if let Some(redirect) = reason
                             .as_ref()
                             .and_then(|f| crate::cell::Redirect::from_close(u16::from(f.code), f.reason.as_str()))
@@ -2178,7 +2187,7 @@ mod tests {
         assert_eq!(ended_with(Some(CloseCode::Restart)).await, Disconnect::Drain);
         assert_eq!(ended_with(Some(CloseCode::Normal)).await, Disconnect::Dropped);
         assert_eq!(ended_with(Some(CloseCode::Error)).await, Disconnect::Dropped);
-        assert_eq!(ended_with(None).await, Disconnect::Dropped);
+        assert_eq!(ended_with(None).await, Disconnect::Cut);
     }
 
     /// The hub's refusal of a removed bot is `Revoked`; any other refusal

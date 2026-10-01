@@ -54,10 +54,13 @@ pub const REVOKED_CLOSE_REASON: &str = "revoked";
 
 /// Dial the hub and serve tunnel streams until the connection closes.
 ///
-/// Returns how the hub closed the session — [`Disconnect::Drain`] when its
-/// pod drained (1012), [`Disconnect::Dropped`] for any other clean close —
-/// and an error on dial/auth/mux failure. A dial gives up after
-/// [`crate::reconnect::DIAL_TIMEOUT`]. The caller owns reconnect and backoff
+/// Returns how an established session ended — [`Disconnect::Drain`] when
+/// the hub closed with 1012, [`Disconnect::Cut`] when it ended with no close
+/// frame (a reset, an EOF, a mux error, a silent hub),
+/// [`Disconnect::Dropped`] for any other close — and an error when the dial
+/// or the handshake failed. A dial tries every address the
+/// hub's hostname resolves to, in a random order, and fails only when each
+/// has refused or timed out (`tls::connect_ws`). The caller owns reconnect and backoff
 /// ([`crate::reconnect::Backoff`]). [`TunnelError::Revoked`] is final: the
 /// bot was removed from NeboAI.
 ///
@@ -131,10 +134,9 @@ async fn session(
     request.headers_mut().insert("Authorization", auth);
     claim_lease(request.headers_mut(), crate::lease::process());
 
-    let ws = match tokio::time::timeout(crate::reconnect::DIAL_TIMEOUT, tls::connect_ws(request))
-        .await
-        .map_err(|_| TunnelError::Dial("timed out".into()))?
-    {
+    // Each address the hostname resolves to is tried in a random order,
+    // within its own connect and handshake limits (`tls::connect_ws`).
+    let ws = match tls::connect_ws(request).await {
         Ok((ws, _)) => ws,
         Err(e) => match crate::cell::Redirect::from_dial_error(&e) {
             Some(redirect) => return Ok(Ended::Redirected(redirect)),
@@ -165,20 +167,24 @@ async fn session(
         if close.as_ref().is_some_and(|(code, reason)| is_revoked(*code, reason)) {
             return Err(TunnelError::Revoked);
         }
-        if close.as_ref().is_some_and(|(code, _)| Disconnect::from_close_code(*code) == Disconnect::Drain) {
-            info!("tunnel: hub is draining this connection");
-            return Ok(Ended::Closed(Disconnect::Drain));
-        }
-        if let Some(redirect) = close.and_then(|(code, reason)| crate::cell::Redirect::from_close(code, &reason)) {
+        if let Some(redirect) = close
+            .as_ref()
+            .and_then(|(code, reason)| crate::cell::Redirect::from_close(*code, reason))
+        {
             return Ok(Ended::Redirected(redirect));
         }
-        return match ended {
-            Some(Err(e)) => Err(TunnelError::Mux(e.to_string())),
-            _ => {
-                info!("tunnel: hub closed the connection");
-                Ok(Ended::Closed(Disconnect::Dropped))
-            }
-        };
+        // Classified exactly as the comms connection is
+        // (`Disconnect::from_close`): 1012 is a drain, another close code a
+        // drop, and an end with no close frame — a mux or socket error, an
+        // EOF, a hub gone silent — a hard cut.
+        let how = Disconnect::from_close(close.as_ref().map(|(code, _)| *code));
+        match (&how, ended) {
+            (Disconnect::Drain, _) => info!("tunnel: hub is draining this connection"),
+            (Disconnect::Cut, Some(Err(e))) => info!(error = %e, "tunnel: connection to the hub was cut"),
+            (Disconnect::Cut, _) => info!("tunnel: connection to the hub was cut"),
+            _ => info!("tunnel: hub closed the connection"),
+        }
+        return Ok(Ended::Closed(how));
     }
 }
 
@@ -715,6 +721,90 @@ mod tests {
         assert!(matches!(ended, Err(TunnelError::Dial(_))), "{ended:?}");
         let took = started.elapsed();
         assert!(took >= crate::reconnect::DIAL_TIMEOUT && took < crate::reconnect::DIAL_TIMEOUT * 2, "{took:?}");
+    }
+
+    /// How a fake hub ends an established tunnel.
+    #[derive(Clone, Copy)]
+    enum HubEnd {
+        /// A 1012 close frame (a planned restart).
+        Restart,
+        /// The TCP connection dropped with no close frame (a node dying).
+        HardCut,
+    }
+
+    /// A hub that upgrades every tunnel dial, ends the first session as
+    /// `end` says, and keeps every later one open. Returns the instant each
+    /// dial arrived.
+    fn serve_hub(
+        listener: tokio::net::TcpListener,
+        end: HubEnd,
+    ) -> std::sync::Arc<std::sync::Mutex<Vec<std::time::Instant>>> {
+        use futures::SinkExt;
+        use tokio_tungstenite::tungstenite::protocol::CloseFrame;
+        let dials = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = dials.clone();
+        tokio::spawn(async move {
+            loop {
+                let (sock, _) = listener.accept().await.unwrap();
+                let first = {
+                    let mut seen = seen.lock().unwrap();
+                    seen.push(std::time::Instant::now());
+                    seen.len() == 1
+                };
+                tokio::spawn(async move {
+                    let mut ws = tokio_tungstenite::accept_async(sock).await.unwrap();
+                    if !first {
+                        futures::future::pending::<()>().await;
+                    }
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    match end {
+                        HubEnd::Restart => {
+                            let frame = CloseFrame { code: CloseCode::Restart, reason: "drain".into() };
+                            let _ = ws.send(WsMessage::Close(Some(frame))).await;
+                            let _ = ws.close(None).await;
+                        }
+                        HubEnd::HardCut => drop(ws),
+                    }
+                });
+            }
+        });
+        dials
+    }
+
+    /// The watcher's loop (Nebo's and Nebo Link's): run the tunnel, wait
+    /// what the shared backoff says, run it again. Returns how the first
+    /// session ended and the gap between its end and the redial reaching
+    /// the hub.
+    async fn redial_after(end: HubEnd) -> (Disconnect, Duration) {
+        let (listener, url) = bind_cell().await;
+        let dials = serve_hub(listener, end);
+        let online = std::sync::atomic::AtomicBool::new(false);
+        let mut backoff = crate::reconnect::Backoff::new();
+        let started = std::time::Instant::now();
+        let how = run(&url, "t", "127.0.0.1:9", &online).await.expect("the session came up");
+        let ended = std::time::Instant::now();
+        tokio::time::sleep(backoff.wait(how, started.elapsed())).await;
+        let online2 = std::sync::atomic::AtomicBool::new(false);
+        let _ = tokio::time::timeout(Duration::from_millis(300), run(&url, "t", "127.0.0.1:9", &online2)).await;
+        let dials = dials.lock().unwrap().clone();
+        assert_eq!(dials.len(), 2, "one redial");
+        (how, dials[1].saturating_duration_since(ended))
+    }
+
+    /// A 1012 is redialed within half a second and a hard cut within five,
+    /// both straight away rather than after a backoff step, and both
+    /// classified exactly as the comms connection classifies them.
+    #[tokio::test]
+    async fn an_established_tunnel_that_ends_is_redialed_promptly() {
+        for _ in 0..3 {
+            let (how, gap) = redial_after(HubEnd::Restart).await;
+            assert_eq!(how, Disconnect::Drain);
+            assert!(gap < Duration::from_millis(500) + Duration::from_millis(250), "{gap:?}");
+        }
+
+        let (how, gap) = redial_after(HubEnd::HardCut).await;
+        assert_eq!(how, Disconnect::Cut);
+        assert!(gap < Duration::from_secs(5) + Duration::from_millis(250), "{gap:?}");
     }
 
     /// A hub that goes silent must fail the read rather than hang forever —
