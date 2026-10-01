@@ -261,6 +261,25 @@ impl Store {
         Ok(())
     }
 
+    /// When an update of this artifact to `version` was last applied here
+    /// (unix seconds), if ever. A hub update notice for a version already
+    /// applied after the notice was sent is a repeat.
+    pub fn artifact_update_applied_at(
+        &self,
+        artifact_id: &str,
+        artifact_type: &str,
+        version: &str,
+    ) -> Result<Option<i64>, NeboError> {
+        let conn = self.conn()?;
+        conn.query_row(
+            "SELECT MAX(applied_at) FROM artifact_update_history
+             WHERE artifact_id = ?1 AND artifact_type = ?2 AND to_version = ?3 AND status = 'applied'",
+            params![artifact_id, artifact_type, version],
+            |row| row.get(0),
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))
+    }
+
     /// Most-recent-first upgrade history (capped).
     pub fn list_artifact_update_history(
         &self,

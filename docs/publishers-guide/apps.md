@@ -1375,7 +1375,7 @@ What the marketplace does with the bundle:
 - The root `manifest.json` is kept as the app's manifest (window and permissions reach the installed package); it must be valid JSON.
 - Files under `skills/<name>/` follow the skill rules inside their folder: `SKILL.md` is kept, `scripts/` and `bin/` may hold any type, everything else keeps the allowlist.
 - Limits: a file over 10 MB is skipped and counted in `filesSkipped`; over 50 MB in total is refused. The result also reports `uiFilesStored`.
-- For a private or loop app the installable package is rebuilt on every upload and Nebo tells the bots that installed the app: one that is online reinstalls it right away, one that is offline when it next connects. No version bump is needed. Public, unlisted and invite-only apps keep their approved package until a new version passes review, and installed bots get that version the same way once it is approved.
+- For a private or loop app the installable package is rebuilt on every upload and Nebo tells the bots that installed the app: one that is online puts the rebuilt package in place right away, one that is offline when it next connects. No version bump is needed, and the owner's settings, schedules and data for the app are kept. Public, unlisted and invite-only apps keep their approved package until a new version passes review; once it is approved, installed bots offer it in Settings → Updates for the owner's yes, or apply it right away when automatic updates are on for that app.
 
 ### App with a sidecar
 

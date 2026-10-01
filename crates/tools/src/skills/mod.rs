@@ -15,7 +15,7 @@ pub fn hash_skill_file(path: &std::path::Path) -> String {
         .map(|b| format!("{:016x}", xxhash_rust::xxh3::xxh3_64(&b)))
         .unwrap_or_default()
 }
-pub use loader::{Loader, resolve_skill_path, write_skill};
+pub use loader::{Loader, QUARANTINE_MARKER, is_quarantined, resolve_skill_path, write_skill};
 pub use skill::{
     Skill, SkillRequirement, SkillSource, SkillSummary, parse_skill_frontmatter, parse_skill_md,
     split_frontmatter, walk_resources_filtered,
