@@ -675,3 +675,41 @@ async fn reading_a_job_names_the_employee_it_is_for() {
     assert_eq!(sent[0].trace.purpose, "job_needs");
     assert_eq!(sent[0].trace.agent_id, "clerk-7");
 }
+
+/// An employee hired in conversation lives only in the database. Asked to
+/// build its own app, it becomes the app: one update gives it a folder and
+/// its page, and it stays the same employee. It used to be refused ("no
+/// directory on disk"), so it hired a second "<name> Game" employee to hold
+/// the page and could never change itself (Solitaire, 2026-10-01).
+#[tokio::test]
+async fn an_employee_hired_in_chat_becomes_its_own_app() {
+    let c = chat(vec![]).owner_turn();
+    let id = blank(&c, "Solitaire");
+    assert!(c.store.get_agent(&id).unwrap().unwrap().napp_path.is_none(), "starts with no folder");
+
+    let r = c
+        .call(
+            "update_employee",
+            json!({
+                "name": "Solitaire",
+                "app": { "window": { "title": "Solitaire" } },
+                "ui": { "index.html": "<!doctype html><title>Solitaire</title><p>deal</p>" }
+            }),
+        )
+        .await;
+    assert!(!r.is_error, "{}", r.content);
+
+    let row = c.store.get_agent(&id).unwrap().unwrap();
+    let dir = std::path::PathBuf::from(row.napp_path.expect("the folder is recorded on the row"));
+    assert!(dir.join("ui").join("index.html").is_file(), "the page is written under its own folder");
+    let manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.join("manifest.json")).unwrap()).unwrap();
+    assert_eq!(manifest["id"], json!(id), "the folder carries this employee's id, not a new one");
+    assert_eq!(manifest["type"], json!("app"));
+    assert_eq!(c.store.list_agents(100, 0).unwrap().iter().filter(|a| a.name.starts_with("Solitaire")).count(), 1, "no second employee");
+
+    // A second update finds the recorded folder and only changes the page.
+    let again = c.call("update_employee", json!({ "name": "Solitaire", "ui": { "index.html": "<!doctype html><p>v2</p>" } })).await;
+    assert!(!again.is_error, "{}", again.content);
+    assert_eq!(std::fs::read_to_string(dir.join("ui").join("index.html")).unwrap(), "<!doctype html><p>v2</p>");
+}
