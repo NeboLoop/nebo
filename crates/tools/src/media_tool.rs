@@ -83,7 +83,7 @@ impl Media {
             base_url: base_url.trim_end_matches('/').to_string(),
             bot_id,
             store,
-            client: reqwest::Client::new(),
+            client: tls::http_client().build().expect("http client"),
             polling: Polling::default(),
         }
     }
@@ -1261,7 +1261,7 @@ mod tests {
             assert_eq!(std::fs::read(&path).unwrap(), b"MP4");
             return;
         };
-        let made = std::process::Command::new(&ffmpeg)
+        let made = command::new::<std::process::Command>(&ffmpeg, command::Console::Hidden)
             .args([
                 "-y",
                 "-loglevel",
