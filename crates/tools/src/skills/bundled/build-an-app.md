@@ -133,8 +133,9 @@ differently at the top level than on the instance, because a bare `fetch` or
 `WebSocket` export would shadow the browser's: `nebo.fetch` is exported as
 `NeboAppSDK.neboFetch`, and `nebo.WebSocket` as `NeboAppSDK.NeboWebSocket`.
 The full top-level export list is `nebo`, `identity`, `storage`, `agents`,
-`janus`, `surfaces`, `chat`, `a2ui`, `neboFetch`, `NeboWebSocket`, `NeboSDK`,
-`NeboSurfaces`, `NeboA2UI`, `getAppId`, `getBaseUrl`, `setAppId`, `setBaseUrl`.
+`janus`, `decide`, `surfaces`, `chat`, `a2ui`, `neboFetch`, `NeboWebSocket`,
+`NeboSDK`, `NeboSurfaces`, `NeboA2UI`, `getAppId`, `getBaseUrl`, `setAppId`,
+`setBaseUrl`.
 
 ```html
 <script src="/sdk/nebo.global.js"></script>
@@ -159,6 +160,7 @@ What it exposes, one line each:
 | `agents.stream(message, {agent?, data?}): AsyncGenerator<{text, done}>` | The same, streamed. |
 | `janus.complete({messages, model?, temperature?, max_tokens?, system?}): Promise<string>` | A raw model call: no persona, no memory, no tools. |
 | `janus.stream(same): AsyncGenerator<string>` | The same, streamed. |
+| `decide({state, questions}): Promise<{model, answers, usage}>` | Typed decisions in one fast call, no text generated: each named question is `{type: "choice", instructions, criteria: {option: description}}`, `{type: "score", instructions, criteria: [levels, lowest first]}` or `{type: "noul", instructions}`; each answer carries `choice` / `score` / `noul`, `confidence` and `probabilities`. Throws with the reason when the request is malformed or NeboAI is not connected. See Typed Decisions. |
 | `nebo.fetch(pathOrUrl, init?)` — top level `NeboAppSDK.neboFetch` | Relative path goes to the app's own sidecar API; absolute `http(s)://` goes through Nebo's proxy (needs `network:<host>`). |
 | `new nebo.WebSocket()` — top level `new NeboAppSDK.NeboWebSocket()` | Live socket to the app's employee at `/ws/app/<id>`; reconnects with backoff. `send(data)`, `close()`, `onopen/onmessage/onerror/onclose`. No arguments. |
 | `surfaces.connect()`, `surfaces.on(type, handler)`, `surfaces.send(name, payload)`, `surfaces.state` | Typed events from the employee (`text_content`, `state_delta`, `surface_update`, ...). `on("*", h)` hears all. |
@@ -282,6 +284,41 @@ app_data(action: "delete", key: "draft")
   redraws: `storage.onChange(() => load())`.
 - Pick keys the page and the employee can both find: one key holding a list
   (`contacts`), or one key per record under a prefix (`contact:<id>`).
+
+---
+
+## Typed Decisions
+
+When the app needs a judgment rather than text (is this lead hot, which
+category does this ticket belong to, how urgent is it), ask for a typed
+decision instead of a model call. The page uses `decide`; the app's employee
+has the `decide` tool with the same request. One round trip answers every
+question with probabilities and a confidence, billed to the owner's NeboAI
+account like every model call.
+
+```js
+const { answers } = await NeboAppSDK.decide({
+  state: lead,   // text or JSON: keep it to the fields the questions need
+  questions: {
+    tier:  { type: "choice", instructions: "How warm is this lead, by `status` and `last_contact`?",
+             criteria: { hot: "ready to buy now", warm: "interested, not yet", cold: "no interest", other: "can't tell" } },
+    fit:   { type: "score", instructions: "How well does `company` fit our customers?", criteria: ["poor", "fair", "good", "great"] },
+    reply: { type: "noul", instructions: "`message` asks us for a reply." },
+  },
+});
+if (answers.tier.choice === "hot" && answers.tier.confidence > 0.8) flag(lead);
+```
+
+```
+decide(state: <records from app_data>, questions: { "tier": { "type": "choice", "instructions": "...", "criteria": { ... } } })
+```
+
+- The whole question lives in `instructions`; name the state's fields in
+  backticks. The question's key only names the answer.
+- Include an escape option (`other`, `unclear`) when a choice is not
+  exhaustive. A score is fractional: `1.5` is between the second and third
+  level.
+- Counting, dates and thresholds stay in code; ask only what needs judgment.
 
 ---
 

@@ -222,10 +222,6 @@ pub(crate) fn param_str<'a>(activity: &'a Activity, key: &str) -> &'a str {
         .unwrap_or("")
 }
 
-/// Jev caps a Choice at 255 options and a Score at 10 levels.
-const DECIDE_CHOICE_MAX: usize = 255;
-const DECIDE_SCORE_MAX: usize = 10;
-
 /// The questions a `decide` activity asks, in the Jev wire shape
 /// (`{ "<name>": { "type": "choice"|"score"|"noul", "instructions", "criteria" } }`).
 /// Accepts an object or a JSON string (the builder's textarea). The same
@@ -261,57 +257,14 @@ pub(crate) fn decide_questions(
         ));
     }
 
-    let mut out = std::collections::BTreeMap::new();
-    for (name, raw) in questions {
+    for name in questions.keys() {
         if name == "model" || name == "defaulted" {
             return Err(format!(
                 "decide activity '{id}': question '{name}' collides with the output's {name} field"
             ));
         }
-        let kind = raw
-            .get("type")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-        if !matches!(kind.as_str(), "choice" | "score" | "noul") {
-            return Err(format!(
-                "decide activity '{id}': question '{name}' has type '{kind}' — expected choice, score or noul"
-            ));
-        }
-        if kind == "noul" && raw.get("criteria").is_some() {
-            return Err(format!(
-                "decide activity '{id}': noul question '{name}' takes no criteria (it judges one statement)"
-            ));
-        }
-        let question: ai::Question = serde_json::from_value(raw).map_err(|e| {
-            format!("decide activity '{id}': question '{name}' is malformed: {e}")
-        })?;
-        let (instructions, count, range) = match &question {
-            ai::Question::Choice { instructions, criteria } => {
-                (instructions, Some(criteria.len()), 2..=DECIDE_CHOICE_MAX)
-            }
-            ai::Question::Score { instructions, criteria } => {
-                (instructions, Some(criteria.len()), 2..=DECIDE_SCORE_MAX)
-            }
-            ai::Question::Noul { instructions } => (instructions, None, 0..=0),
-        };
-        if instructions.trim().is_empty() {
-            return Err(format!(
-                "decide activity '{id}': question '{name}' needs instructions"
-            ));
-        }
-        if let Some(n) = count {
-            if !range.contains(&n) {
-                return Err(format!(
-                    "decide activity '{id}': {kind} question '{name}' needs {} to {} criteria, has {n}",
-                    range.start(),
-                    range.end()
-                ));
-            }
-        }
-        out.insert(name, question);
     }
-    Ok(out)
+    ai::decide::questions(&questions).map_err(|e| format!("decide activity '{id}': {e}"))
 }
 
 /// The answers a `decide` activity records when no decision can be had: the

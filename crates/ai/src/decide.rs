@@ -90,6 +90,69 @@ impl Question {
     }
 }
 
+/// Jev caps a Choice at 255 options and a Score at 10 levels.
+pub const CHOICE_MAX: usize = 255;
+pub const SCORE_MAX: usize = 10;
+
+/// Most bytes of state one decision sends, about 6k tokens and under the
+/// decision service's state limit; past this a state is clipped at both
+/// ends ([`clip`]).
+pub const STATE_CAP: usize = 24_000;
+
+/// Typed questions from their wire shape
+/// (`{ "<name>": { "type": "choice"|"score"|"noul", "instructions", "criteria" } }`),
+/// checked the way Jev will check them: a known type, instructions, and 2
+/// to [`CHOICE_MAX`] options or 2 to [`SCORE_MAX`] levels. Every error
+/// names the question. The one validator for every door that takes
+/// authored questions (a workflow `decide` node, the `decide` tool, an
+/// app's `nebo.decide`).
+pub fn questions(
+    raw: &serde_json::Map<String, serde_json::Value>,
+) -> Result<BTreeMap<String, Question>, String> {
+    if raw.is_empty() {
+        return Err("questions must name at least one question".to_string());
+    }
+    let mut out = BTreeMap::new();
+    for (name, spec) in raw {
+        let kind = spec.get("type").and_then(|v| v.as_str()).unwrap_or("");
+        if !matches!(kind, "choice" | "score" | "noul") {
+            return Err(format!(
+                "question '{name}' has type '{kind}' — expected choice, score or noul"
+            ));
+        }
+        if kind == "noul" && spec.get("criteria").is_some() {
+            return Err(format!(
+                "noul question '{name}' takes no criteria (it judges one statement)"
+            ));
+        }
+        let question: Question = serde_json::from_value(spec.clone())
+            .map_err(|e| format!("question '{name}' is malformed: {e}"))?;
+        let (instructions, count, range) = match &question {
+            Question::Choice { instructions, criteria } => {
+                (instructions, Some(criteria.len()), 2..=CHOICE_MAX)
+            }
+            Question::Score { instructions, criteria } => {
+                (instructions, Some(criteria.len()), 2..=SCORE_MAX)
+            }
+            Question::Noul { instructions } => (instructions, None, 0..=0),
+        };
+        if instructions.trim().is_empty() {
+            return Err(format!("question '{name}' needs instructions"));
+        }
+        if let Some(n) = count {
+            if !range.contains(&n) {
+                return Err(format!(
+                    "{kind} question '{name}' needs {} to {} criteria, has {n}",
+                    range.start(),
+                    range.end()
+                ));
+            }
+        }
+        out.insert(name.clone(), question);
+    }
+    Ok(out)
+}
+
 /// The answer to one question. Serializes back to the wire shape (absent
 /// fields omitted) so a workflow node can record it as its output.
 #[derive(Debug, Clone, Serialize, Deserialize)]

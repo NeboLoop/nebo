@@ -9,6 +9,7 @@ pub mod rules_tool;
 pub mod pack_tool;
 pub mod app_console;
 pub mod app_data;
+pub mod decide_tool;
 pub mod app_tool;
 pub mod app_dev;
 pub mod app_publish;

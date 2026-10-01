@@ -632,9 +632,6 @@ fn input_target(input: &serde_json::Value) -> (&str, Option<(i64, i64)>) {
     (element_ref, coordinate)
 }
 
-/// Jev (TypeSafe through Janus), when the server installed it: picks the
-/// element an input action means from the elements that can take it.
-static DECIDER: std::sync::OnceLock<std::sync::Arc<ai::DecideClient>> = std::sync::OnceLock::new();
 /// Jev's misses per capture: two on one screen and the model drives until
 /// the screen changes.
 static JEV_MISSES: std::sync::Mutex<Vec<(String, u8)>> = std::sync::Mutex::new(Vec::new());
@@ -675,11 +672,6 @@ fn remember_act(act: String, fingerprint: u64) {
             acts.drain(..n - 20);
         }
     }
-}
-
-/// Installed once at server boot.
-pub fn set_decider(client: std::sync::Arc<ai::DecideClient>) {
-    let _ = DECIDER.set(client);
 }
 
 /// What an element offers, for the choice list Jev reads.
@@ -727,7 +719,9 @@ async fn jev_pick(action: &str, target: &str, snap: &Snapshot) -> Result<(String
     if misses >= 2 {
         return Err("Jev missed twice on this screen; choose the ref yourself until the screen changes".into());
     }
-    let Some(client) = DECIDER.get() else {
+    // Jev (TypeSafe through Janus), when the server installed it: picks the
+    // element an input action means from the elements that can take it.
+    let Some(client) = crate::decide_tool::decider() else {
         return Err("Jev is not available here; choose the ref yourself".into());
     };
     let described: Vec<(String, String)> = candidates.iter().map(|e| (e.id.clone(), describe_for_pick(e))).collect();
