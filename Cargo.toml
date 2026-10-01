@@ -256,9 +256,13 @@ codegen-units = 16
 strip = true
 
 # Server-image profile (Dockerfile only): trades a few % runtime perf for a
-# ~3x faster compile — fat LTO + one codegen unit on the 4-core CI runner was
-# 24 of the image build's 30 minutes. Desktop releases keep [profile.release].
+# fast compile — fat LTO + one codegen unit on the 4-core CI runner was 24 of
+# the image build's 30 minutes. No cross-crate LTO either: thin LTO re-ran
+# code generation for the whole program on every build (over 3 of a warm
+# build's 5.5 compile minutes), and it is the one step the shared compile
+# cache can never serve. Within-crate optimization is unchanged. Desktop
+# releases keep [profile.release].
 [profile.server]
 inherits = "release"
-lto = "thin"
+lto = false
 codegen-units = 16
