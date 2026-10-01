@@ -106,6 +106,7 @@ The permissions that are actively enforced at the app API layer:
 |------------|---------------|
 | `network:{domain}` | Make HTTP requests to that domain through the CORS-free proxy (e.g. `network:api.zillow.com`). Use `network:*` to allow any domain. Checked per-request against the target URL's host. |
 | `subagent:{agentId}` | Invoke that specific agent via `nebo.agents.invoke({ agent })`. Declared per target agent. Invoking the app's own agent needs no permission. |
+| `device:motion` | The page's `Permissions-Policy` allows `accelerometer` and `gyroscope` for itself, so `devicemotion` and `deviceorientation` fire. Every other app page keeps motion sensors blocked. On iPhone the page must also call `DeviceMotionEvent.requestPermission()` from a tap. |
 
 Other prefixes (`storage:`, `memory:`, `filesystem:`, `shell:`, `oauth:`, …) are accepted by manifest validation but not yet enforced at the app API layer. The storage, agent-invoke, and janus endpoints are instead gated by the app's per-launch auth token (see Environment Variables).
 
@@ -117,8 +118,12 @@ Other prefixes (`storage:`, `memory:`, `filesystem:`, `shell:`, `oauth:`, …) a
 | `width` | 1024 | Default width (pixels) |
 | `height` | 768 | Default height (pixels) |
 | `resizable` | true | Allow user resize |
+| `fullscreen` | false | Open over the whole screen. Desktop: a full-screen window (its size is never saved as the windowed size). Phone: no app bar or safe-area padding, system bars hidden, screen kept awake, no pull-to-refresh, the iOS edge swipe off (Android back walks the page's history, then closes), and a Close pill in the top-left corner that fades after 3 seconds and comes back on a touch near the top. |
+| `orientation` | `"portrait"` | `"portrait"`, `"landscape"` or `"any"` on the phone. Any other value is refused when the manifest is written; the phone returns to its normal orientations on close. |
 
-Nebo remembers window position and size per app — the user's last arrangement is restored on reopen.
+There are no `min_width` / `min_height` fields. Nebo remembers window position and size per app: the user's last arrangement is restored on reopen.
+
+A full-screen page should pad itself with `env(safe-area-inset-*)` (and `viewport-fit=cover` in its viewport meta) and keep controls clear of the top-left corner.
 
 ---
 
@@ -160,7 +165,18 @@ neboapp://{agent_id}/
 
 This gives each app its own origin with `/` as the root URL. Your app's assets load from their natural paths (`/style.css`, `/app.js`, etc.) — no base URL configuration needed. Any framework works out of the box.
 
-In the browser fallback, apps are served at `/apps/{agent_id}/ui/index.html`.
+In the browser fallback, and on the phone and web through the bot's tunnel, apps are served at `/apps/{agent_id}/ui/`.
+
+### Serving rules
+
+- **Content types.** Each file is served with its real type: `html htm`, `js mjs`, `css`, `json map`, `txt`, images (`png jpg jpeg gif svg ico webp avif ktx2`), fonts (`woff woff2 ttf otf`), `wasm`, video (`mp4 m4v webm mov`), sound (`mp3 wav ogg oga opus m4a aac flac`) and 3D models (`glb gltf`). Extensions match regardless of case. Anything else is `application/octet-stream`, which the browser will not use as media or a model.
+- **Range requests.** Every file except the entry HTML answers a single `Range: bytes=` request with `206` and `Content-Range`, reading only those bytes, and a range starting past the end with `416`; responses carry `Accept-Ranges: bytes`. Multi-range requests get the whole file. WebKit will not play or seek a video whose server ignores ranges.
+- **Caching.**
+  - A content-hashed name (`<name>-<hash>.<ext>`, the hash 8 to 64 letters and digits of one case with a digit between two letters, such as `main-0a8ksftt.js` or `chunk-5JFTZ4CW.js`) is `public, max-age=31536000, immutable`. Hand-made names like `hero-section2.png` or `shot-20260930.png` are not treated as hashed.
+  - Everything else, `index.html` included, is `no-cache` with a strong `ETag`; `If-None-Match` answers `304` with no body. The entry HTML's tag covers the scripts Nebo injects, so a Nebo update counts as a changed page. A range whose `If-Range` names an older file gets the whole new file.
+  - With App Developer mode on, every file is `no-store`.
+- **Size.** Each page file may be at most 10 MB, the marketplace's per-file limit, so whatever publishes also installs.
+- **Video on the phone.** The app view plays media inline without a tap, so `<video muted playsinline autoplay loop>` plays in place and `currentTime` can be set from scroll.
 
 ### Using the SDK
 
@@ -392,8 +408,10 @@ const resp = await nebo.fetch('/apps/my-app/api/data');
 
 Real-time connection to the app's agent.
 
+`nebo.WebSocket()` takes no path; it always connects to the app's own channel (`/ws/app/{appId}`).
+
 ```typescript
-const ws = new nebo.WebSocket('/apps/my-app/ws');
+const ws = new nebo.WebSocket();
 ws.addEventListener('message', (evt) => { ... });
 ws.send('event-name', { key: 'value' });
 ws.close();
@@ -1246,22 +1264,47 @@ Navigate to the Apps tab in Nebo and click your app. The sidecar launches on fir
 
 ---
 
+## Building and Publishing from Nebo
+
+An employee can build an app two ways, chosen by what the owner says:
+
+- "Build me an app for X" creates a **new app employee** (`create_employee` with `app` and `ui`).
+- "You are the app" or "build yourself" turns the **current employee into the app** (`update_employee` on its own name with `app` and `ui`). It keeps its chat, memory and persona. An employee hired in conversation gets its own package folder on that first update and stays itself; no second employee is created.
+- If it is unclear, the employee asks once.
+
+Everyday tools stay with the built-in `build-an-app` skill. Rich pages and games go to the App Studio skill from the marketplace.
+
+An app the owner made on this bot (not installed from the marketplace) always has the developer pack for itself: `app_reload`, `app_status`, `app_console`, `app_screenshot`, `app_listing`, `app_submit`. Its page always carries the reload listener and console capture, so reload and console work with no setting. App Developer mode (Bot settings, Developer) opens the pack to teammates on any of the owner's apps, adds the floating console, and serves files `no-store`. Apps installed from the marketplace never get developer tooling: nothing is injected into their pages, their console routes return 404, and the tools refuse them, mode or not.
+
+**Publishing yourself.** "Publish yourself" means `app_listing`, then `app_screenshot`, then `app_submit`. The owner can also start it with **Publish** in the app's chat, on the phone's app screen (top bar, or a pill beside Close when full screen), or with **Publish This App…** on desktop (macOS File menu while an app window has focus; an **App** menu on the app window on Windows and Linux). The listing needs a name, a short description of 10 to 500 characters, a semver version, 1 to 10 screenshots and a category. Nothing is submitted until the owner answers **Submit for review** on the card in the chat; voice can answer it. The package carries AGENT.md, agent.json, manifest.json, `ui/` and the employee's own skills under `skills/<name>/` (its package's `skills/` folders plus plain-named skills its agent.json lists from the user's skills). Marketplace skill references and learned skills are not included. A file over 10 MB or a total over 50 MB is refused before anything is sent.
+
+---
+
 ## Publishing to NeboAI
 
-### Via MCP Server
+### Page-only app (no sidecar)
 
 ```
 1. developer(resource: account, action: select, id: "your-dev-account-id")
-2. agent(action: create, name: "deal-tracker", manifestContent: "# Deal Tracker\n...")
-3. agent(action: binary-token, id: "AGENT_ID")
-4. Upload agent.json via the returned curl command (config=@agent.json)
+2. agent(action: create, name: "deal-tracker", manifestContent: "<AGENT.md>")
+   The AGENT.md frontmatter must say artifact_type: app, and any value
+   containing ": " must be quoted.
+3. agent(action: bundle-token, id: "AGENT_ID")
+4. Run the returned curl with a .zip of AGENT.md, agent.json, manifest.json,
+   ui/ and any skills/<name>/ folders. The token lasts 5 minutes.
 5. agent(action: submit, id: "AGENT_ID", version: "1.0.0")
 ```
 
-The `agent(action: binary-token)` upload accepts the agent definition only — it uploads `agent.json` as `config` (`config=@agent.json`) with no platform field, stored as the agent's type config.
+What the marketplace does with the bundle:
 
-### App Sidecar Binaries
+- `ui/**` becomes the app's page. Allowed types are the skill file types plus sound, video, `wasm`, `glb`/`gltf`, `mjs`, `avif`, `jsx`, `tsx` and `map`. Dot files, dot folders and `node_modules/` are dropped; build folders like `dist/` are kept inside `ui/`.
+- The root `manifest.json` is kept as the app's manifest (window and permissions reach the installed package); it must be valid JSON.
+- Files under `skills/<name>/` follow the skill rules inside their folder: `SKILL.md` is kept, `scripts/` and `bin/` may hold any type, everything else keeps the allowlist.
+- Limits: a file over 10 MB is skipped and counted in `filesSkipped`; over 50 MB in total is refused. The result also reports `uiFilesStored`.
+- The installable package is rebuilt on every upload. For an active app that is not public (private, unlisted, loop), installed bots are told at once and update. A public app reaches installed bots only when a reviewed version is approved.
 
-> **Per-platform app sidecar binaries are not uploaded through the agent tool.** The agent `binary-token` path uploads `agent.json` only — there is no platform/file field on it. The per-platform binary upload (with `platform` and `file` fields) exists for **plugins**, not for the app/agent path. App sidecar binary distribution either goes through the plugin path or is currently unsupported via the agent tool.
+### App with a sidecar
 
-Apps without a sidecar (pure frontend) only need the manifest, UI files, and `agent.json` — no binary upload.
+`agent(action: binary-token, id)` returns a curl for `POST /api/v1/developer/apps/{id}/binaries` with `file` (the sidecar for one `platform`, packed under `bin/`) and `ui` (a tar.gz of the built page, packed under `ui/`). Repeat per platform. An app that declares a sidecar needs at least one platform binary for its version before submit.
+
+Apps without a sidecar need no binary upload.
