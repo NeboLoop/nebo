@@ -127,6 +127,10 @@ pub trait CommPlugin: Send + Sync {
         Err(CommError::Other("not supported".into()))
     }
 
+    /// Send what a dropped connection or a restart left in the plugin's
+    /// outbox (`Outbox`), oldest first. Run after every connect.
+    async fn send_pending(&self) {}
+
     /// Retrieve and consume a rotated auth token (if the gateway issued one).
     /// Returns `None` for plugins that don't support token rotation.
     async fn take_rotated_token(&self) -> Option<String> {

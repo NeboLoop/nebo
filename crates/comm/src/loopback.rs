@@ -8,6 +8,8 @@ use crate::{AgentCard, CommError, CommMessage, CommPlugin, MessageHandler};
 /// In-memory comm plugin for testing. Delivers sent messages back to the handler.
 pub struct LoopbackPlugin {
     inner: RwLock<Inner>,
+    /// This process's lease: a frozen process sends nothing.
+    pub(crate) lease: &'static crate::lease::Lease,
 }
 
 struct Inner {
@@ -26,6 +28,7 @@ impl LoopbackPlugin {
                 topics: HashSet::new(),
                 agent_id: String::new(),
             }),
+            lease: crate::lease::process(),
         }
     }
 
@@ -84,6 +87,9 @@ impl CommPlugin for LoopbackPlugin {
     }
 
     async fn send(&self, msg: CommMessage) -> Result<(), CommError> {
+        if self.lease.frozen() {
+            return Err(CommError::Paused);
+        }
         let inner = self.inner.read().unwrap();
         if !inner.connected {
             return Err(CommError::NotConnected);

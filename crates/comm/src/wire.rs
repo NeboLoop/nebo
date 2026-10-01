@@ -82,6 +82,10 @@ pub struct AuthResultPayload {
     /// AUTH_FAIL `wrong_cell`: the address to dial in that cell.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub url: String,
+    /// What this hub does beyond the base protocol. `msg_dedup`: a SEND
+    /// repeating an earlier one's msg id is stored and delivered once.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub features: Vec<String>,
 }
 
 fn is_zero(n: &u64) -> bool {

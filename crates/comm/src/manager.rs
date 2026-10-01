@@ -118,18 +118,15 @@ impl PluginManager {
         inner.active.clone()
     }
 
-    /// Send a message through the active plugin. Refused with
+    /// Send a message through the active plugin. The plugin refuses it with
     /// `CommError::Paused` while this process's lease is not held (cloud
-    /// bots): another process may be the bot now.
+    /// bots), and `NotConnected` while it is down — unless it keeps an
+    /// outbox (`Outbox`), which holds the message for the next connection.
     pub async fn send(&self, msg: CommMessage) -> Result<(), CommError> {
-        if self.lease.frozen() {
-            return Err(CommError::Paused);
-        }
-        let inner = self.inner.read().await;
-        let active = inner.active.as_ref().ok_or(CommError::NoActivePlugin)?;
-        if !active.is_connected() {
-            return Err(CommError::NotConnected);
-        }
+        let active = {
+            let inner = self.inner.read().await;
+            inner.active.clone().ok_or(CommError::NoActivePlugin)?
+        };
         active.send(msg).await
     }
 
@@ -291,7 +288,11 @@ impl PluginManager {
             inner.active.clone().ok_or(CommError::NoActivePlugin)?
         };
         // Lock released — safe to do network I/O
-        plugin.connect(config).await
+        plugin.connect(config).await?;
+        // What waited for this connection goes out behind the connect, not
+        // in its way (its caller persists the rotated token next).
+        tokio::spawn(async move { plugin.send_pending().await });
+        Ok(())
     }
 
     /// Check if the active plugin is connected.
@@ -443,7 +444,9 @@ mod tests {
         lease.claim();
         let mut manager = PluginManager::new();
         manager.lease = lease;
-        manager.register(Arc::new(crate::LoopbackPlugin::new())).await;
+        let mut loopback = crate::LoopbackPlugin::new();
+        loopback.lease = lease;
+        manager.register(Arc::new(loopback)).await;
         manager.set_active("loopback").await.unwrap();
         manager.connect_active(HashMap::new()).await.unwrap();
 
