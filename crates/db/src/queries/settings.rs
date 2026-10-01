@@ -10,7 +10,8 @@ impl Store {
         match conn.query_row(
             "SELECT id, auto_install_deps, auto_approve_read, auto_approve_write,
                     auto_approve_bash, heartbeat_interval_minutes, comm_enabled,
-                    comm_plugin, developer_mode, auto_update, full_access, updated_at
+                    comm_plugin, developer_mode, auto_update, full_access, updated_at,
+                    app_developer_mode
              FROM settings WHERE id = 1",
             [],
             |row| {
@@ -27,6 +28,7 @@ impl Store {
                     auto_update: row.get(9)?,
                     full_access: row.get(10)?,
                     updated_at: row.get(11)?,
+                    app_developer_mode: row.get(12)?,
                 })
             },
         ) {
@@ -47,6 +49,7 @@ impl Store {
         comm_plugin: Option<&str>,
         developer_mode: Option<bool>,
         auto_update: Option<bool>,
+        app_developer_mode: Option<bool>,
     ) -> Result<(), NeboError> {
         let conn = self.conn()?;
         // Ensure settings row exists
@@ -77,6 +80,7 @@ impl Store {
         maybe_set!(comm_plugin, "comm_plugin");
         maybe_set!(developer_mode, "developer_mode");
         maybe_set!(auto_update, "auto_update");
+        maybe_set!(app_developer_mode, "app_developer_mode");
 
         if updates.is_empty() {
             return Ok(());
@@ -134,12 +138,24 @@ impl Store {
         if let Some(v) = auto_update {
             stmt.raw_bind_parameter(idx, v as i64)
                 .map_err(|e| NeboError::Database(e.to_string()))?;
+            idx += 1;
+        }
+        if let Some(v) = app_developer_mode {
+            stmt.raw_bind_parameter(idx, v as i64)
+                .map_err(|e| NeboError::Database(e.to_string()))?;
             let _ = idx + 1;
         }
 
         stmt.raw_execute()
             .map_err(|e| NeboError::Database(e.to_string()))?;
         Ok(())
+    }
+
+    /// Whether App Developer mode is on (Bot settings). Off when the
+    /// settings row cannot be read: the developer pack is never offered by
+    /// accident.
+    pub fn app_developer_mode(&self) -> bool {
+        matches!(self.get_settings(), Ok(Some(s)) if s.app_developer_mode != 0)
     }
 
     /// The bot's Location, or `None` when the owner has not set one.
@@ -390,10 +406,30 @@ mod tests {
         store
             .update_settings(
                 Some(true),
-                None, None, None, None, None, None, None, None,
+                None, None, None, None, None, None, None, None, None,
             )
             .unwrap();
         let s = store.get_settings().unwrap().unwrap();
         assert_eq!(s.auto_install_deps, 1);
+    }
+
+    /// App Developer mode is off by default, turns on alone, and the
+    /// accessor reads it.
+    #[test]
+    fn app_developer_mode_round_trips() {
+        let store = temp_store();
+        assert!(!store.app_developer_mode());
+
+        store
+            .update_settings(None, None, None, None, None, None, None, None, None, Some(true))
+            .unwrap();
+        assert!(store.app_developer_mode());
+        let s = store.get_settings().unwrap().unwrap();
+        assert_eq!(s.auto_install_deps, 0);
+
+        store
+            .update_settings(None, None, None, None, None, None, None, None, None, Some(false))
+            .unwrap();
+        assert!(!store.app_developer_mode());
     }
 }
