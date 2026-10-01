@@ -1,7 +1,7 @@
 {
   "identifier": "default",
-  "description": "Default capabilities for the main window and app windows",
-  "windows": ["main", "prompt", "app-*"],
+  "description": "Default capabilities for the main window, app windows and their voice pills",
+  "windows": ["main", "prompt", "app-*", "voice-*"],
   "remote": {
     "urls": ["http://localhost:*", "neboapp://*"]
   },

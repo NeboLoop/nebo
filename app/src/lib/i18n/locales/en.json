@@ -2869,7 +2869,12 @@
 		"consentBody": "Voice conversation streams your microphone audio to a cloud voice service for processing while a call is active. Audio leaves this computer. Typing in chat stays local as always.",
 		"consentAccept": "Enable voice",
 		"consentDecline": "Not now",
-		"cloudIndicator": "Audio is streaming to the cloud"
+		"cloudIndicator": "Audio is streaming to the cloud",
+		"talkTo": "Talk to {name}",
+		"isSpeaking": "{name} is speaking",
+		"callEnded": "The call ended.",
+		"tryAgain": "Try again",
+		"onAnotherCall": "On a call with another employee"
 	},
 	"flows": {
 		"none": "No flows yet",
