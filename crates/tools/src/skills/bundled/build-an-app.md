@@ -31,6 +31,14 @@ single global on the page: `NeboAppSDK`. Nothing to install, nothing to build.
 Do not use this for a document, a spreadsheet, or a one-off answer. An app is
 for something the owner will open again.
 
+**Rich apps and games go to App Studio.** When the owner wants something that
+should look designed rather than generated (a landing app, a showcase, a
+cinematic page, anything with generated art or film, a game), install and
+follow the App Studio skill: it adds the brief, design boards, generated
+assets, a real build and a quality gate on top of what this page teaches.
+Create the app here first (create_employee), then let App Studio take it from
+there. Everyday tools (a tracker, a form, a small dashboard) stay here.
+
 ---
 
 ## Create It in One Call
@@ -197,9 +205,12 @@ app: {
 
 ## Iterate
 
-Change an app the same way you made it — through update_employee. Never
-hand-write the files: the tool is the one writer of an app's package, and it
-checks the manifest, the permissions and every `ui` path before a byte lands.
+Change an app the same way you made it — through update_employee. It is the
+one writer of an app's package (manifest, permissions, persona) and checks
+every `ui` path before a byte lands. The one exception is a built app (App
+Studio): its build tool writes the page's files straight into the app's
+served folder, which `app_status` names; the package itself still changes
+only through update_employee.
 
 ```
 update_employee(name: "deal-board",
