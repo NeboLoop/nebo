@@ -357,11 +357,37 @@ Scoped KV store — persists across app restarts.
 
 ```typescript
 nebo.storage.setItem(key: string, value: any): Promise<void>
-nebo.storage.getItem(key: string): Promise<any | null>
+nebo.storage.getItem(key: string): Promise<any | null>   // exactly what setItem stored
 nebo.storage.removeItem(key: string): Promise<void>
 nebo.storage.keys(): Promise<string[]>
 nebo.storage.clear(): Promise<void>
+nebo.storage.onChange(handler: (change: {
+  appId: string;
+  keys: string[];
+  action: 'set' | 'delete';
+  source: 'employee' | 'page';
+}) => void): () => void                                  // returns "stop listening"
 ```
+
+##### Your App's Data
+
+The page's storage and the app's employee share **one store**: the same keys and the same values. The app's employee has a built-in tool for its own app's data: it can read a key, save any JSON value, delete a key, list keys by prefix, and search (field contains text, any case; nested fields like `phone.mobile`; a key holding a list is searched item by item). So a contact the owner adds by talking to the employee shows on the page, and one typed into the page is one the employee can find.
+
+- **Only the app's own employee** reaches the store, and only for its own app. Another employee asks the app's employee for what it needs. Other apps never see it.
+- **Every write is announced.** A save or delete by the employee (`source: "employee"`) or by any open window of the app, including this one (`source: "page"`), calls every `onChange` handler. Redraw there:
+
+```typescript
+async function load() {
+  render((await nebo.storage.getItem('contacts')) ?? []);
+}
+load();
+nebo.storage.onChange((c) => { if (c.keys.includes('contacts')) load(); });
+```
+
+- **Pick keys both sides can find:** one key holding a list (`contacts`), or one key per record under a prefix (`contact:42`). Describe the shape in AGENT.md so the employee uses the same keys.
+- A string that is itself valid JSON, such as `"42"` or `"true"`, comes back parsed. Wrap it in an object if the type matters.
+- There is no quota, but each value is sent in one request; keep it well under 2 MB and move large or relational data to a sidecar.
+- `setItem` and `removeItem` do not throw when a write is refused; read back anything that must not be lost.
 
 #### Agents
 
@@ -426,6 +452,8 @@ ws.close();
 The App SDK package (`@neboai/app-sdk`) provides three standalone integration patterns for apps that need direct control over agent communication, beyond what the `nebo` global object offers.
 
 ### Surfaces API
+
+> **What Nebo sends today.** App pages receive A2UI cards from the app's employee (render them with `nebo.a2ui` after `surfaces.connect()`; the SDK has no renderer, so bundle `@a2ui/web_core` and pass its MessageProcessor to `nebo.a2ui.init()`) and storage changes (`nebo.storage.onChange`). A card reaches only the app it was made for, a click on it goes to that app's employee, and a page opened after a card was sent does not receive it. The typed events below (`text_content`, `state_snapshot`, `state_delta` and the rest) are defined in the SDK but are not sent to app pages yet, and nothing answers `surfaces.send()`. Use `storage.onChange` for live data.
 
 Receives structured agent events without coupling to the Nebo chat UI. Use this when your app renders its own output and needs raw event data.
 
