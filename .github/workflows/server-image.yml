@@ -126,6 +126,8 @@ jobs:
     permissions:
       contents: read
       packages: write
+    outputs:
+      tag: ${{ steps.vars.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
 
@@ -187,6 +189,60 @@ jobs:
             type=registry,ref=ghcr.io/neboloop/nebo-server:buildcache
             type=gha
           cache-to: type=registry,ref=ghcr.io/neboloop/nebo-server:buildcache,mode=max,compression=zstd,oci-mediatypes=true
+
+  # ─── Cloud fleet: pin the released image as the fleet default ─────────
+  # Cloud bots never update themselves: they run the image the platform
+  # pins (provisioner.image in the k8s repo's neboloop/config/neboloop.yaml),
+  # and auto-update bots roll onto it a few per tick behind the health gate.
+  # For a release tag, this opens a PR there moving the pin to the image just
+  # built and merges it (GitOps: Flux applies it; nothing here touches the
+  # cluster). Needs the K8S_REPO_TOKEN secret (a token that can push
+  # branches to, and merge PRs in, NeboLoop/k8s); without it, nothing is
+  # changed and the step says so. A PR that can't be merged stays open.
+  fleet-default:
+    needs: [build]
+    if: ${{ github.ref_type == 'tag' && needs.build.result == 'success' }}
+    runs-on: ubuntu-latest # orchestration only
+    steps:
+      - name: Pin the fleet default to this release's image
+        env:
+          GH_TOKEN: ${{ secrets.K8S_REPO_TOKEN }}
+          IMAGE_TAG: ${{ needs.build.outputs.tag }}
+          RELEASE: ${{ github.ref_name }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::warning::K8S_REPO_TOKEN is not set: the fleet default was not moved. Pin ghcr.io/neboloop/nebo-server:$IMAGE_TAG in NeboLoop/k8s neboloop/config/neboloop.yaml (provisioner.image) by PR."
+            exit 0
+          fi
+          case "$IMAGE_TAG" in main-*) ;; *) echo "::error::unexpected image tag $IMAGE_TAG"; exit 1 ;; esac
+          git clone --quiet --depth 1 "https://x-access-token:${GH_TOKEN}@github.com/NeboLoop/k8s.git" k8s
+          cd k8s
+          FILE=neboloop/config/neboloop.yaml
+          LINE="  image: \"ghcr.io/neboloop/nebo-server:${IMAGE_TAG}\""
+          [ "$(grep -c '^  image: "ghcr.io/neboloop/nebo-server:' "$FILE")" = 1 ] \
+            || { echo "::error::expected exactly one provisioner.image line in $FILE"; exit 1; }
+          if grep -qxF "$LINE" "$FILE"; then
+            echo "The fleet default is already $IMAGE_TAG."
+            exit 0
+          fi
+          sed -i "s|^  image: \"ghcr.io/neboloop/nebo-server:.*\"\$|${LINE}|" "$FILE"
+          git diff --stat
+          BRANCH="fleet-default/${RELEASE}"
+          git config user.name "nebo-release"
+          git config user.email "nebo-release@users.noreply.github.com"
+          git checkout -q -b "$BRANCH"
+          git commit -qam "neboloop: fleet default nebo-server:${IMAGE_TAG} (${RELEASE})"
+          git push -q --force origin "$BRANCH"
+          URL=$(gh pr view "$BRANCH" -R NeboLoop/k8s --json url -q .url 2>/dev/null) \
+            || URL=$(gh pr create -R NeboLoop/k8s --base main --head "$BRANCH" \
+                 --title "neboloop: fleet default nebo-server:${IMAGE_TAG} (${RELEASE})" \
+                 --body "Moves provisioner.image to the server image built for ${RELEASE} (ghcr.io/neboloop/nebo-server:${IMAGE_TAG}). Opened by the nebo server-image workflow, run ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}.")
+          echo "PR: $URL"
+          if gh pr merge "$URL" --squash --delete-branch; then
+            echo "Merged: Flux moves the fleet default to $IMAGE_TAG."
+          else
+            echo "::warning::$URL could not be merged from CI; it is open for a person to merge."
+          fi
 
   amd64-runner-down:
     needs: [amd64-runner, build]
