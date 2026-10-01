@@ -442,6 +442,7 @@ pub fn resolve_for_chat(
         developer_mode: 0,
         auto_update: 1,
         full_access: 0,
+        app_developer_mode: 0,
         updated_at: 0,
     });
 

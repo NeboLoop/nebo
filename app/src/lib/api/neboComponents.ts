@@ -1173,6 +1173,7 @@ export interface Setting {
 	developerMode: boolean
 	autoUpdate: boolean
 	fullAccess: boolean
+	appDeveloperMode: boolean
 }
 
 export interface ShareLinkResponse {

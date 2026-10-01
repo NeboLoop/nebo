@@ -148,6 +148,7 @@ pub async fn update_settings(
             body["commPlugin"].as_str(),
             body["developerMode"].as_bool(),
             body["autoUpdate"].as_bool(),
+            body["appDeveloperMode"].as_bool(),
         )
         .map_err(to_error_response)?;
     // Full Access is the company's permission mode; every other employee
