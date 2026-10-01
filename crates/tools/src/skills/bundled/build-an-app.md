@@ -41,7 +41,36 @@ there. Everyday tools (a tracker, a form, a small dashboard) stay here.
 
 ---
 
+## Two Ways to Build: Yourself or a New Employee
+
+An app can be built two ways. Pick by what the owner says:
+
+- **You become the app** when they put it on you: "you are the app", "let's
+  build you", "make yourself a game". One update gives you a page and makes
+  you an app; you stay yourself, with your chat, memory and persona, the
+  owner can talk to you while the page reloads, and you can publish yourself.
+- **A new app employee** when they ask for an app as a separate thing ("make
+  me an app for my orders") or it is another employee's job: Create It in One
+  Call, below.
+- **Not clear which?** Ask once, in your first reply: "Should I become this
+  app, or build it as a new one?"
+
+Becoming the app:
+
+```
+update_employee(
+  name: "<your own name>",
+  app: { window: { title: "Solitaire", fullscreen: true, orientation: "landscape" } },
+  ui: { "index.html": "<!doctype html>..." }
+)
+```
+
+This works for an employee hired in conversation too: the first update
+gives you your own folder. After that you change your page the same way.
+
 ## Create It in One Call
+
+For an app that is a NEW employee.
 
 Create the app employee with create_employee. One call writes the folder,
 the manifest, the persona, and the page; the app appears in the owner's

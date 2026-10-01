@@ -1768,6 +1768,39 @@ impl PersonaTool {
         // `app` block changes only the fields it names, and a manifest
         // already on disk keeps everything the writer is not given.
         if input.get("app").is_some() || input.get("ui").is_some() || input.get("ui_jsx").is_some() {
+            // An employee hired in conversation lives only in the database. When
+            // it becomes an app (an employee building its own page), it gets its
+            // package folder now, through the one writer, exactly as a create
+            // makes one: the employee stays itself instead of a second "<name>
+            // app" employee being hired to hold the page.
+            let never_had_folder = db_agent.napp_path.as_deref().map(str::trim).unwrap_or("").is_empty();
+            let agent_dir = if !agent_dir.is_dir() && never_had_folder {
+                let dir = napp::free_agent_dir(self.agent_loader.user_dir(), &current_name);
+                if let Err(e) = std::fs::create_dir_all(&dir) {
+                    return ToolResult::error(format!("Failed to create the app's folder: {}", e));
+                }
+                let package = napp::AgentPackage {
+                    id: agent_id,
+                    name: &current_name,
+                    description: &current_desc,
+                    agent_md: &current_md,
+                    agent_json: Some(current_frontmatter.as_str()),
+                    app: None,
+                    ui: Vec::new(),
+                };
+                if let Err(e) = napp::write_user_agent(&dir, &package) {
+                    let _ = std::fs::remove_dir_all(&dir);
+                    return ToolResult::error(e.to_string());
+                }
+                if let Err(e) = self.store.set_agent_napp_path(agent_id, &dir.to_string_lossy()) {
+                    let _ = std::fs::remove_dir_all(&dir);
+                    return ToolResult::error(format!("Failed to record the app's folder: {}", e));
+                }
+                changes.push(format!("gave '{}' its own folder at {}", current_name, dir.display()));
+                dir
+            } else {
+                agent_dir.clone()
+            };
             if !agent_dir.is_dir() {
                 return ToolResult::error(format!(
                     "'{}' has no directory on disk (it lives in the database), so app and ui cannot be written. Nothing was changed.",
