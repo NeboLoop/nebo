@@ -4574,6 +4574,34 @@ mod tests {
         assert_eq!(run.reads, 3, "and the work carries on with real reads");
     }
 
+    /// The owner's bot, 2026-10-01 (0.16.7, "Auto"): answering the owner
+    /// with tools off, the model wrote a read as a tag named after the tool.
+    fn writes_a_tagged_read_while_answering(req: &ChatRequest) -> Step {
+        if req.tool_choice == ai::ToolChoice::None {
+            return Step::Text(
+                "Let me look at the movement code:\n\n<system-read>\n<parameter<path>\n\
+                 /Users/owner/Library/Application Support/Nebo/user/agents/Kart Racer/ui/js/kart.js\n</parameter_>"
+                    .to_string(),
+                None,
+            );
+        }
+        answers_and_reads_on(req)
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_tool_named_tag_while_answering_the_owner_never_reaches_him() {
+        let run = interrupted(At::DuringCall, |_| Act::Message(TWELVE), writes_a_tagged_read_while_answering, Some("aside")).await;
+        let shown = shown_text(&run.events);
+        assert!(shown.contains("Let me look at the movement code:"), "{shown}");
+        for leak in ["<system-read>", "<parameter", "Kart Racer", "kart.js"] {
+            assert!(!shown.contains(leak), "shown to the owner: {leak:?}\n{shown}");
+        }
+        assert!(replies(&run.rows).iter().all(|r| !r.contains("<system-read>")), "{:?}", replies(&run.rows));
+        let answered = run.calls.iter().position(|c| c.tool_choice == ai::ToolChoice::None).expect("the answer step");
+        assert!(told_of_text_call(&run.calls[answered + 1], "read"), "the step after the answer is told the read didn't run");
+        assert_eq!(run.reads, 3, "and the work carries on with real reads");
+    }
+
     /// A model that only ever writes its call as text is asked for the call
     /// a bounded number of times; then the turn ends on what it said.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
