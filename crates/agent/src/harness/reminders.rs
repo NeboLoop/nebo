@@ -52,14 +52,22 @@ const NOTE_OPEN: &str = "<system-reminder>";
 /// space stands for any run of whitespace, or none. 2026-09-27 release-fix
 /// proof (`mid-turn-owner-message`, run 2): on the tools-off answer step
 /// the model wrote `<function_name>read_file</function_name>` and a path
-/// into the owner's reply.
+/// into the owner's reply. 2026-10-01 (0.16.7, owner's bot, "Auto"): on
+/// the same tools-off step the model wrote `<system-read_file>` and a
+/// file path, a tag named after the tool, which no form here caught.
 const TEXT_CALLS: &[(&str, char)] = &[
     ("<function_name>", '<'),
     ("<function=", '>'),
     ("<invoke name=\"", '"'),
     ("<tool_call> {\"name\" : \"", '"'),
     ("<tool_call> <function=", '>'),
+    ("<tool_call> <", '>'),
+    ("<|tool_call|> {\"name\" : \"", '"'),
     ("<function_calls> <invoke name=\"", '"'),
+    // A tag named after the tool, bare or behind a prefix.
+    ("<system-", '>'),
+    ("<tool-", '>'),
+    ("<", '>'),
 ];
 
 /// Where a reply left its own voice, and so ends ([`NoteFence`]).
@@ -665,6 +673,11 @@ mod tests {
             "<invoke name=\"read_file\">\n<parameter name=\"path\">/tmp/a.txt</parameter>\n</invoke>",
             "<function_calls>\n<invoke name=\"read_file\">\n</invoke>\n</function_calls>",
             "   <function_name>read_file</function_name>",
+            "<|tool_call|>{\"name\": \"read_file\", \"arguments\": {}}<|/tool_call|>",
+            "<tool_call>\n<read_file>\n<path>/tmp/a.txt</path>\n</read_file>\n</tool_call>",
+            "<read_file>\n<path>/tmp/a.txt</path>\n</read_file>",
+            "<tool-read_file>\n<path>/tmp/a.txt</path>",
+            "<system-read_file>\n<parameter<path>\n/tmp/a.txt\n</parameter_>",
         ] {
             for piece in [1, 3, 1000] {
                 let mut fence = step_fence();
@@ -695,6 +708,10 @@ mod tests {
             "<tool_call> is a tag some models use.",
             "It ends mid-way: <function_name>read_fi",
             "Ends on an opening line:\n<function_name>read_fi",
+            "A call in the format you asked about:\n```xml\n<system-read_file>\n<parameter<path>\n/tmp/a.txt\n</parameter_>\n```\nThat is all.",
+            "Wrap each argument in a `<parameter>` tag:\n```\n<read_file>\n<parameter name=\"path\">a.txt</parameter>\n</read_file>\n```",
+            "<parameter> tags hold the arguments, and <read_file> names the tool.",
+            "<read_files> is not a tool, nor is <system-prompt>.",
         ] {
             for piece in [1, 2, 5, 100] {
                 let mut fence = step_fence();
@@ -715,6 +732,22 @@ mod tests {
         assert_eq!(fence.finish(), "");
         assert_eq!(fence.push("<function_name>read_file</function_name>"), "");
         assert_eq!(fence.cut(), Some(&Cut::Call("read_file".into())));
+    }
+
+    /// The owner's bot, 2026-10-01 (0.16.7, "Auto"): the tools-off answer
+    /// step wrote a read out as a tag named after the tool, path and all.
+    #[test]
+    fn the_incident_markup_is_never_shown() {
+        let answer = "The grip model is pulling velocity sideways too aggressively. Let me look at the movement code:\n\n";
+        let reply = format!(
+            "{answer}<system-read_file>\n<parameter<path>\n/Users/owner/Library/Application Support/Nebo/user/agents/Kart Racer/ui/js/kart.js\n</parameter_>"
+        );
+        for piece in [1, 2, 3, 5, 8, 1000] {
+            let mut fence = step_fence();
+            let shown = streamed_through(&mut fence, &reply, piece);
+            assert_eq!(shown, answer, "pieces of {piece}");
+            assert_eq!(fence.cut(), Some(&Cut::Call("read_file".into())), "pieces of {piece}");
+        }
     }
 
     #[test]
