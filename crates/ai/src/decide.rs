@@ -313,15 +313,35 @@ impl DecideClient {
     }
 }
 
+/// The code Janus answers a 429 with when nothing on the account can pay
+/// (every spend pool empty). The chat path reads the same code.
+pub const USAGE_LIMIT_EXCEEDED: &str = "USAGE_LIMIT_EXCEEDED";
+
 /// Map a non-success status to the provider error the caller falls back on.
-/// 429 and 5xx (Janus relays an upstream 529 as 502) are the retryable ones.
+/// A throttling 429 and 5xx (Janus relays an upstream 529 as 502) are the
+/// retryable ones. A 429 carrying [`USAGE_LIMIT_EXCEEDED`] is not
+/// throttling: a retry gets the same answer until the account is funded, so
+/// it comes back as a final `Api` error with that code.
 fn classify(status: u16, text: String) -> ProviderError {
+    let envelope = serde_json::from_str::<serde_json::Value>(&text).ok();
+    let field = |name: &str| {
+        envelope
+            .as_ref()
+            .and_then(|v| v.get("error"))
+            .and_then(|e| e.get(name))
+            .and_then(|c| c.as_str())
+            .map(str::to_owned)
+    };
+    let message = field("message").unwrap_or_else(|| text.clone());
     match status {
         401 | 403 => ProviderError::Auth(text),
+        429 if field("code").as_deref() == Some(USAGE_LIMIT_EXCEEDED) || text.contains(USAGE_LIMIT_EXCEEDED) => {
+            ProviderError::Api { code: USAGE_LIMIT_EXCEEDED.to_string(), message, retryable: false }
+        }
         429 => ProviderError::RateLimit { retry_after_secs: None },
         code => ProviderError::Api {
             code: code.to_string(),
-            message: text,
+            message,
             retryable: code >= 500,
         },
     }
@@ -384,6 +404,27 @@ mod tests {
         assert!(!classify(401, String::new()).is_retryable());
         assert!(matches!(classify(401, String::new()), ProviderError::Auth(_)));
         assert!(matches!(classify(429, String::new()), ProviderError::RateLimit { .. }));
+    }
+
+    #[test]
+    fn a_funding_429_is_final_and_says_so() {
+        let body = r#"{"error":{"code":"USAGE_LIMIT_EXCEEDED","message":"no balance","retryable":false}}"#;
+        let err = classify(429, body.into());
+        assert!(!err.is_retryable(), "nothing can pay: a retry gets the same answer");
+        match err {
+            ProviderError::Api { code, message, .. } => {
+                assert_eq!(code, USAGE_LIMIT_EXCEEDED);
+                assert_eq!(message, "no balance");
+            }
+            other => panic!("expected the funding refusal, got {other:?}"),
+        }
+        // A bad request keeps its status and Janus's own words.
+        match classify(400, r#"{"error":{"message":"criteria must be an object"}}"#.into()) {
+            ProviderError::Api { code, message, retryable } => {
+                assert_eq!((code.as_str(), message.as_str(), retryable), ("400", "criteria must be an object", false));
+            }
+            other => panic!("expected a 400, got {other:?}"),
+        }
     }
 
     #[test]

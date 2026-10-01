@@ -976,7 +976,9 @@ pub async fn janus_decide(
 }
 
 /// The decision itself, once the app is admitted: 400 for a malformed
-/// request, 503 without NeboAI, 502 when the service fails.
+/// request (ours or Janus's), 429 when nothing on the account can pay or
+/// decisions are throttled, 503 without NeboAI, 502 only when the service
+/// itself fails.
 async fn decide_for_app(client: Option<&ai::DecideClient>, app_id: &str, body: &serde_json::Value) -> Response {
     let trace = ai::RequestTrace { agent_id: app_id.to_string(), ..ai::RequestTrace::new("app_decide") };
     match tools::decide_tool::decide(client, &trace, body).await {
@@ -985,6 +987,9 @@ async fn decide_for_app(client: Option<&ai::DecideClient>, app_id: &str, body: &
             let status = match e {
                 tools::decide_tool::DecideError::Invalid(_) => StatusCode::BAD_REQUEST,
                 tools::decide_tool::DecideError::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
+                tools::decide_tool::DecideError::Unfunded | tools::decide_tool::DecideError::Busy => {
+                    StatusCode::TOO_MANY_REQUESTS
+                }
                 tools::decide_tool::DecideError::Failed(_) => StatusCode::BAD_GATEWAY,
             };
             (status, axum::Json(serde_json::json!({ "error": e.to_string() }))).into_response()
@@ -1900,6 +1905,72 @@ mod developer_mode_tests {
         assert_eq!(decide_for_app(None, "crm", &ask).await.status(), StatusCode::SERVICE_UNAVAILABLE);
         let bad = serde_json::json!({ "state": "x", "questions": { "q": { "type": "maybe", "instructions": "?" } } });
         assert_eq!(decide_for_app(Some(&client), "crm", &bad).await.status(), StatusCode::BAD_REQUEST);
+    }
+
+    /// A decision service answering `status` with `body` on every call,
+    /// counting the calls.
+    async fn janus_answering(status: &'static str, body: &'static str) -> (ai::DecideClient, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = calls.clone();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut sock, _)) = listener.accept().await else { return };
+                counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let mut buf = vec![0u8; 16384];
+                let mut got = String::new();
+                while !got.contains("\"questions\"") {
+                    let n = sock.read(&mut buf).await.unwrap_or(0);
+                    if n == 0 {
+                        break;
+                    }
+                    got.push_str(&String::from_utf8_lossy(&buf[..n]));
+                }
+                let reply = format!("HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len());
+                let _ = sock.write_all(reply.as_bytes()).await;
+            }
+        });
+        let client = ai::DecideClient::new(&format!("http://{addr}"), || {
+            Some(ai::Bearer { token: "owner-token".into(), bot_id: Some("bot-1".into()) })
+        });
+        (client, calls)
+    }
+
+    /// The route says what Janus said: its 400 is the page's bad request,
+    /// its funding 429 is "nothing can pay" in plain words and is asked
+    /// once (a retry gets the same answer), no sign-in is 503, and 502 is
+    /// left for the service failing.
+    #[tokio::test]
+    async fn a_decision_refused_by_janus_keeps_its_reason() {
+        let ask = serde_json::json!({ "state": "x", "questions": { "q": { "type": "noul", "instructions": "Is it?" } } });
+        async fn answer(r: Response) -> (StatusCode, String) {
+            let status = r.status();
+            let body = axum::body::to_bytes(r.into_body(), 1 << 20).await.unwrap();
+            let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            (status, v["error"].as_str().unwrap_or_default().to_string())
+        }
+
+        let (client, calls) = janus_answering(
+            "429 Too Many Requests",
+            r#"{"error":{"code":"USAGE_LIMIT_EXCEEDED","message":"no balance","retryable":false}}"#,
+        )
+        .await;
+        let (status, error) = answer(decide_for_app(Some(&client), "crm", &ask).await).await;
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+        assert!(error.contains("used all the work included in your account"), "{error}");
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1, "a funding 429 is never retried");
+
+        let (client, _) = janus_answering("400 Bad Request", r#"{"error":{"message":"criteria must be an object"}}"#).await;
+        let (status, error) = answer(decide_for_app(Some(&client), "crm", &ask).await).await;
+        assert_eq!((status, error.as_str()), (StatusCode::BAD_REQUEST, "criteria must be an object"));
+
+        let (client, _) = janus_answering("500 Internal Server Error", r#"{"error":{"message":"boom"}}"#).await;
+        assert_eq!(decide_for_app(Some(&client), "crm", &ask).await.status(), StatusCode::BAD_GATEWAY);
+
+        let signed_out = ai::DecideClient::new("http://127.0.0.1:9", || None);
+        assert_eq!(decide_for_app(Some(&signed_out), "crm", &ask).await.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
 
     #[test]
