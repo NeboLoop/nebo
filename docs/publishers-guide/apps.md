@@ -1303,7 +1303,7 @@ What the marketplace does with the bundle:
 - The root `manifest.json` is kept as the app's manifest (window and permissions reach the installed package); it must be valid JSON.
 - Files under `skills/<name>/` follow the skill rules inside their folder: `SKILL.md` is kept, `scripts/` and `bin/` may hold any type, everything else keeps the allowlist.
 - Limits: a file over 10 MB is skipped and counted in `filesSkipped`; over 50 MB in total is refused. The result also reports `uiFilesStored`.
-- The installable package is rebuilt on every upload. For an active app that is not public (private, unlisted, loop), installed bots are told at once and update. A public app reaches installed bots only when a reviewed version is approved.
+- For a private or loop app the installable package is rebuilt on every upload, so the next install gets it. Bots that already installed the app get the change when it is installed again, or when a higher version number is published (Nebo checks every few hours and applies an update with the owner's yes, or automatically when automatic updates are on for that app). Public, unlisted and invite-only apps keep their approved package until a new version passes review.
 
 ### App with a sidecar
 
