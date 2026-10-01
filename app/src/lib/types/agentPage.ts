@@ -1,4 +1,4 @@
-import type { Team } from '$lib/api/neboComponents'
+import type { AppWindow, Team } from '$lib/api/neboComponents'
 // Types for the [agentId] layout context shared across child routes.
 
 /** Input field configuration for agent setup forms. */
@@ -128,6 +128,8 @@ export interface AgentDisplay {
 	handle?: string
 	editable?: boolean
 	isApp?: boolean
+	/** Apps only: how the page asks to be shown (fullscreen, orientation, motion). */
+	appWindow?: AppWindow
 	/** "linked" for an employee hired from a linked bot. */
 	kind?: string
 	/** Linked employees only: the linked bot cannot be reached right now. */

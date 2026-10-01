@@ -277,7 +277,7 @@
   memoryMode={ctx.agent?.memoryMode ?? 'single'}
   folder={chatFolder}
   isApp={ctx.agent?.isApp ?? false}
-  onopenapp={() => launchApp(ctx.agentId, ctx.agent?.name ?? 'App')}
+  onopenapp={() => launchApp(ctx.agentId, ctx.agent?.name ?? 'App', { fullscreen: ctx.agent?.appWindow?.fullscreen })}
 
   allAgents={chat.allAgents}
   tokenUsage={chat.tokenUsage}

@@ -12,6 +12,8 @@ export interface AppWindowConfig {
 	height: number;
 	resizable: boolean;
 	title?: string;
+	/** The manifest's `window.fullscreen`: the window opens taking the whole screen (a game). */
+	fullscreen?: boolean;
 }
 
 const DEFAULT_CONFIG: AppWindowConfig = {
@@ -64,7 +66,8 @@ export async function launchApp(
 				height: saved?.height ?? cfg.height,
 				x: saved?.x,
 				y: saved?.y,
-				resizable: cfg.resizable
+				resizable: cfg.resizable,
+				fullscreen: cfg.fullscreen ?? false
 			});
 			wv.once('tauri://error', (e) => {
 				console.error('[launchApp] Tauri window error:', e);
