@@ -173,7 +173,7 @@ mod bundled_skill_tests {
         let bundle = std::fs::read_to_string(&bundle)
             .unwrap_or_else(|e| panic!("the served SDK bundle must be readable at {}: {e}", bundle.display()));
         for name in [
-            "nebo", "identity", "storage", "agents", "janus", "surfaces", "chat", "a2ui",
+            "nebo", "identity", "storage", "agents", "janus", "decide", "surfaces", "chat", "a2ui",
             "neboFetch", "NeboWebSocket", "NeboSDK", "NeboSurfaces", "NeboA2UI", "getAppId",
             "getBaseUrl", "setAppId", "setBaseUrl",
         ] {
@@ -194,6 +194,11 @@ mod bundled_skill_tests {
             bundle.contains("onChange") && bundle.contains("app_data_changed"),
             "the bundle must carry storage.onChange on the app_data_changed event"
         );
+        // Typed decisions: the page's `decide` and the employee's tool reach
+        // the one app route.
+        assert!(content.contains("`decide({state, questions})"), "the skill names decide");
+        assert!(content.contains("decide(state:"), "the skill shows the employee's decide tool");
+        assert!(bundle.contains("/janus/decide"), "the bundle must post decisions to the app's janus/decide route");
         // The two renamed at the top level, said as such.
         assert!(content.contains("NeboAppSDK.neboFetch"), "nebo.fetch is exported as neboFetch");
         assert!(content.contains("NeboAppSDK.NeboWebSocket"), "nebo.WebSocket is exported as NeboWebSocket");

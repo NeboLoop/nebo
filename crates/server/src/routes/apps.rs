@@ -46,6 +46,10 @@ pub fn routes() -> Router<AppState> {
             "/apps/{agent_id}/janus/stream",
             routing::post(apps::janus_stream),
         )
+        .route(
+            "/apps/{agent_id}/janus/decide",
+            routing::post(apps::janus_decide),
+        )
         .route("/apps/{agent_id}/storage", routing::get(apps::list_storage))
         .route(
             "/apps/{agent_id}/storage/{key}",

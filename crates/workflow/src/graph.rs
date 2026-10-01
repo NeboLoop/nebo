@@ -1005,7 +1005,7 @@ async fn run_decide<'a>(
 /// Most bytes of state one `decide` node sends, about 6k tokens and under
 /// the decision service's state limit. A whole event payload or tool result
 /// can be far larger; past this the state is clipped at both ends.
-const DECIDE_STATE_CAP: usize = 24_000;
+const DECIDE_STATE_CAP: usize = ai::decide::STATE_CAP;
 
 /// Clip a `decide` node's state to [`DECIDE_STATE_CAP`] bytes of JSON. A
 /// state within the cap goes as it is; a larger one goes as its JSON text,

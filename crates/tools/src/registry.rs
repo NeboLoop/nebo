@@ -1358,6 +1358,10 @@ impl Registry {
         self.register(Box::new(crate::app_data::AppDataTool::new(store.clone(), broadcaster.clone())))
             .await;
 
+        // Typed decisions (`decide`, deferred): Jev through the owner's
+        // Janus, for any employee and notably an app's over its app_data.
+        self.register(Box::new(crate::decide_tool::DecideTool)).await;
+
         // The developer pack for apps (deferred): offered to the owner's own
         // app for itself, and under App Developer mode to app employees and
         // their teammates (`app_dev::withheld`).

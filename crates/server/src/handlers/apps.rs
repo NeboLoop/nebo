@@ -882,7 +882,7 @@ pub async fn invoke_agent(
     if let Err(r) = validate_app_token(&state, &agent_id, &headers).await {
         return r;
     }
-    let (target_agent_id, agent_name) = match validate_app_agent(&state, &agent_id, body.agent.as_deref()) {
+    let (target_agent_id, agent_name) = match validate_app_agent(&state.store, &agent_id, body.agent.as_deref()) {
         Ok(v) => v,
         Err(e) => return to_error_response(e).into_response(),
     };
@@ -906,7 +906,7 @@ pub async fn stream_agent(
         return r;
     }
     let (target_agent_id, agent_name) =
-        match validate_app_agent(&state, &agent_id, body.agent.as_deref()) {
+        match validate_app_agent(&state.store, &agent_id, body.agent.as_deref()) {
             Ok(v) => v,
             Err(e) => return to_error_response(e).into_response(),
         };
@@ -927,7 +927,7 @@ pub async fn janus_complete(
     if let Err(r) = validate_app_token(&state, &agent_id, &headers).await {
         return r;
     }
-    if let Err(e) = validate_app_agent(&state, &agent_id, None) {
+    if let Err(e) = validate_app_agent(&state.store, &agent_id, None) {
         return to_error_response(e).into_response();
     }
     match run_janus_collect(&state, body).await {
@@ -948,11 +948,48 @@ pub async fn janus_stream(
     if let Err(r) = validate_app_token(&state, &agent_id, &headers).await {
         return r;
     }
-    if let Err(e) = validate_app_agent(&state, &agent_id, None) {
+    if let Err(e) = validate_app_agent(&state.store, &agent_id, None) {
         return to_error_response(e).into_response();
     }
     let stream = run_janus_sse(state, body).await;
     Sse::new(stream).into_response()
+}
+
+/// POST /apps/{agent_id}/janus/decide — a typed decision for the app's page
+/// (`nebo.decide`): the same request and the same decision client as the
+/// `decide` tool (`tools::decide_tool::decide`), billed to the owner's
+/// NeboAI account. Admitted like `janus/complete`: the app's own token, the
+/// owner's tunnel, or its own desktop window; the id must be an app.
+pub async fn janus_decide(
+    State(state): State<AppState>,
+    Path(agent_id): Path<String>,
+    headers: axum::http::HeaderMap,
+    axum::Json(body): axum::Json<serde_json::Value>,
+) -> Response {
+    if let Err(r) = validate_app_token(&state, &agent_id, &headers).await {
+        return r;
+    }
+    if let Err(e) = validate_app_agent(&state.store, &agent_id, None) {
+        return to_error_response(e).into_response();
+    }
+    decide_for_app(state.decide.as_deref(), &agent_id, &body).await
+}
+
+/// The decision itself, once the app is admitted: 400 for a malformed
+/// request, 503 without NeboAI, 502 when the service fails.
+async fn decide_for_app(client: Option<&ai::DecideClient>, app_id: &str, body: &serde_json::Value) -> Response {
+    let trace = ai::RequestTrace { agent_id: app_id.to_string(), ..ai::RequestTrace::new("app_decide") };
+    match tools::decide_tool::decide(client, &trace, body).await {
+        Ok(out) => axum::Json(out).into_response(),
+        Err(e) => {
+            let status = match e {
+                tools::decide_tool::DecideError::Invalid(_) => StatusCode::BAD_REQUEST,
+                tools::decide_tool::DecideError::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
+                tools::decide_tool::DecideError::Failed(_) => StatusCode::BAD_GATEWAY,
+            };
+            (status, axum::Json(serde_json::json!({ "error": e.to_string() }))).into_response()
+        }
+    }
 }
 
 fn connected_profile(
@@ -1158,20 +1195,18 @@ pub async fn restart_sidecar(State(state): State<AppState>, Path(agent_id): Path
 }
 
 fn validate_app_agent(
-    state: &AppState,
+    store: &db::Store,
     app_agent_id: &str,
     override_agent: Option<&str>,
 ) -> Result<(String, String), types::NeboError> {
-    let app = state
-        .store
+    let app = store
         .get_agent(app_agent_id)?
         .ok_or(types::NeboError::NotFound)?;
     if app.is_app.unwrap_or(0) == 0 {
         return Err(types::NeboError::Unauthorized);
     }
     if let Some(target) = override_agent {
-        let agent = state
-            .store
+        let agent = store
             .get_agent(target)?
             .ok_or(types::NeboError::NotFound)?;
         return Ok((agent.id, agent.name));
@@ -1804,6 +1839,67 @@ mod developer_mode_tests {
         let raw = tools::app_data::read(&store, "crm", "contact:john").unwrap().unwrap();
         assert_eq!(tools::app_data::decode(&raw), contact);
         assert_eq!(tools::app_data::read(&store, "notes", "contact:john").unwrap(), None);
+    }
+
+    /// `nebo.decide` (POST /apps/{id}/janus/decide) is admitted like
+    /// janus/complete: a desktop window reaches only its own app's route by
+    /// the install key and its origin, and the id must be an app. Admitted,
+    /// the request goes to the one decision client, traced as the app.
+    #[tokio::test]
+    async fn an_apps_decision_is_its_own_and_goes_to_the_one_client() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let (_d, store) = store();
+        app(&store, "crm", "CRM");
+        store.create_agent("emp-1", Some("agent"), "Bookkeeper", "", "", "{}", None, None).unwrap();
+
+        let mut own = axum::http::HeaderMap::new();
+        own.insert(header::AUTHORIZATION, "Bearer key-1".parse().unwrap());
+        own.insert(header::ORIGIN, "neboapp://crm".parse().unwrap());
+        assert!(desktop_window_reaches(&own, "crm", Some("key-1")));
+        assert!(!desktop_window_reaches(&own, "notes", Some("key-1")), "another app's decide route");
+        assert!(!desktop_window_reaches(&own, "crm", Some("key-2")), "a wrong install key");
+        assert!(validate_app_agent(&store, "crm", None).is_ok());
+        assert!(matches!(validate_app_agent(&store, "emp-1", None), Err(types::NeboError::Unauthorized)), "not an app");
+        assert!(matches!(validate_app_agent(&store, "nope", None), Err(types::NeboError::NotFound)));
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        let log = seen.clone();
+        tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 16384];
+            let mut got = String::new();
+            while !got.contains("\"questions\"") {
+                let n = sock.read(&mut buf).await.unwrap();
+                if n == 0 {
+                    break;
+                }
+                got.push_str(&String::from_utf8_lossy(&buf[..n]));
+            }
+            *log.lock().unwrap() = got;
+            let body = r#"{"model":"jev-1.13.0","answers":{"hot":{"type":"noul","noul":0.92}},"usage":{"input_tokens":40,"output_tokens":1,"cost_micro":4}}"#;
+            let reply = format!("HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len());
+            sock.write_all(reply.as_bytes()).await.unwrap();
+        });
+        let client = ai::DecideClient::new(&format!("http://{addr}"), || {
+            Some(ai::Bearer { token: "owner-token".into(), bot_id: Some("bot-1".into()) })
+        });
+        let ask = serde_json::json!({ "state": { "status": "wants a quote" }, "questions": { "hot": { "type": "noul", "instructions": "`status` is a buying signal." } } });
+
+        let ok = decide_for_app(Some(&client), "crm", &ask).await;
+        assert_eq!(ok.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(ok.into_body(), 1 << 20).await.unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["answers"]["hot"]["noul"], 0.92);
+        assert_eq!(v["usage"]["cost_micro"], 4);
+        let sent = seen.lock().unwrap().to_lowercase();
+        assert!(sent.contains("authorization: bearer owner-token") && sent.contains("x-bot-id: bot-1"), "billed to the owner: {sent}");
+        assert!(sent.contains("x-purpose: app_decide") && sent.contains("x-agent-id: crm"), "traced as the app: {sent}");
+
+        assert_eq!(decide_for_app(None, "crm", &ask).await.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let bad = serde_json::json!({ "state": "x", "questions": { "q": { "type": "maybe", "instructions": "?" } } });
+        assert_eq!(decide_for_app(Some(&client), "crm", &bad).await.status(), StatusCode::BAD_REQUEST);
     }
 
     #[test]

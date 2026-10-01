@@ -1927,8 +1927,9 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
         Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()));
 
     let decide_client = build_decide_client(store.clone(), &cfg);
-    // Desktop control asks Jev which element "the Save button" is.
-    tools::desktop_tool::set_decider(decide_client.clone());
+    // Desktop control asks Jev which element "the Save button" is, and an
+    // employee's `decide` tool asks it typed questions.
+    tools::decide_tool::set_decider(decide_client.clone());
     let mut harness = agent::Harness::new(
         store.clone(),
         tool_registry.clone(),
