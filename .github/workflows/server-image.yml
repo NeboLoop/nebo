@@ -1,8 +1,9 @@
 name: nebo-server-image
 
 # Builds the headless Nebo server image (amd64) for the SaaS/cluster deploy and
-# pushes it to GHCR. Frontend is built on the runner (pinned pnpm 10, matching
-# release.yml) and embedded via rust-embed; the Rust binary compiles in Docker.
+# pushes it to GHCR. The frontend is built on a hosted runner (pinned pnpm 10,
+# matching release.yml) while the build droplet boots, and embedded via
+# rust-embed; the Rust binary compiles in Docker.
 # Build an image when we actually want to ship one — NOT on every backend
 # commit. The old `push: branches:[main] paths:[crates/**, ...]` trigger fired a
 # cold ~32min build on every commit and burned the org's Actions minutes.
@@ -62,10 +63,14 @@ jobs:
           EOS
           sed -i "s|__JIT__|${{ steps.jit.outputs.config }}|" user-data.sh
           # --ssh-keys suppresses DigitalOcean's root-password email; nobody logs in.
-          # nyc3 capacity comes and goes per size: the first 16 GB / 320 GB shape
-          # that boots wins; any other error is fatal.
+          # nyc3 capacity comes and goes per size: the first shape that boots
+          # wins; any other error is fatal. Dedicated 16-vCPU shapes come first:
+          # the link step and the biggest crates are CPU-bound, and the box
+          # lives ~15 minutes (well under a dollar). The shared 8-vCPU shapes
+          # are the fallback. Every shape needs >= 320 GB of disk (the
+          # snapshot's minimum).
           id=""
-          for size in s-8vcpu-16gb s-8vcpu-16gb-amd s-8vcpu-16gb-intel s-4vcpu-16gb-320gb-intel; do
+          for size in c2-16vcpu-32gb c2-16vcpu-32gb-intel s-8vcpu-16gb s-8vcpu-16gb-amd s-8vcpu-16gb-intel s-4vcpu-16gb-320gb-intel; do
             if id=$(doctl compute droplet create "nebo-img-amd64-${{ github.run_id }}" \
                 --region nyc3 --size "$size" --image "$image" \
                 --tag-names nebo-ci-runner,run-${{ github.run_id }} \
@@ -90,12 +95,9 @@ jobs:
           done
           echo "runner never came online"; exit 1
 
-  build:
-    needs: [amd64-runner]
-    runs-on: [self-hosted, Linux, X64, "nebo-img-${{ github.run_id }}"]
-    permissions:
-      contents: read
-      packages: write
+  # Runs alongside the droplet boot, so the build job starts with it in hand.
+  frontend:
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -110,6 +112,27 @@ jobs:
           pnpm install --frozen-lockfile
           pnpm exec svelte-kit sync
           pnpm run build
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: app-build
+          path: app/build
+          include-hidden-files: true
+          retention-days: 1
+
+  build:
+    needs: [amd64-runner, frontend]
+    runs-on: [self-hosted, Linux, X64, "nebo-img-${{ github.run_id }}"]
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: app-build
+          path: app/build
 
       - uses: docker/setup-buildx-action@v3
 
@@ -140,17 +163,30 @@ jobs:
       # Layer cache lives in GHCR, not GHA: the Rust dep layer alone is >1GB
       # and the repo's whole GHA cache is capped at 10GB, so GHA evicted the
       # dep layer between builds and every "warm" build ran cold. GHCR has no
-      # cap. The gha cache-from stays only as a transition fallback.
+      # cap. The gha cache-from stays only as a transition fallback. zstd
+      # packs and unpacks the big dep layer several times faster than gzip;
+      # it applies to the cache only, not to the pushed image.
+      #
+      # Compile cache: a private Spaces bucket shared by every build
+      # (docker/server-cargo.sh). Its keys go in as BuildKit secrets, never as
+      # build args, so no layer and no cache key ever holds them.
       - uses: docker/build-push-action@v6
         with:
           context: .
           platforms: linux/amd64
           push: true
           tags: ghcr.io/neboloop/nebo-server:${{ steps.vars.outputs.tag }}
+          build-args: |
+            SCCACHE_BUCKET=nebo-ci-cache
+            SCCACHE_ENDPOINT=nyc3.digitaloceanspaces.com
+            SCCACHE_REGION=us-east-1
+          secrets: |
+            sccache_key=${{ secrets.SCCACHE_SPACES_KEY }}
+            sccache_secret=${{ secrets.SCCACHE_SPACES_SECRET }}
           cache-from: |
             type=registry,ref=ghcr.io/neboloop/nebo-server:buildcache
             type=gha
-          cache-to: type=registry,ref=ghcr.io/neboloop/nebo-server:buildcache,mode=max
+          cache-to: type=registry,ref=ghcr.io/neboloop/nebo-server:buildcache,mode=max,compression=zstd,oci-mediatypes=true
 
   amd64-runner-down:
     needs: [amd64-runner, build]
