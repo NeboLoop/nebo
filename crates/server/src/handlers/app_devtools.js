@@ -6,14 +6,20 @@
   // under one prefixed root, so it can't touch the app and the app can't
   // touch it.
   if (window.__neboDevtools) return;
+  var CFG = __NEBO_DEVTOOLS_CONFIG__;
+  // A served page works out its app and routes from its own address (the
+  // public prefix, /t/<botID> through the tunnel, is only knowable here).
+  // The desktop's app window (neboapp://<id>/) is told them.
   var m = location.pathname.match(/^(.*?)\/apps\/([^/]+)\/ui(?:\/|$)/);
-  if (!m) return;
+  if (!m && !CFG.appId) return;
   window.__neboDevtools = true;
 
-  var CFG = __NEBO_DEVTOOLS_CONFIG__;
-  var prefix = m[1];
-  var appId = decodeURIComponent(m[2]);
-  var api = location.origin + prefix + '/api/v1/apps/' + encodeURIComponent(appId);
+  var prefix = m ? m[1] : '';
+  var appId = CFG.appId || decodeURIComponent(m[2]);
+  var api = CFG.api || location.origin + prefix + '/api/v1/apps/' + encodeURIComponent(appId);
+  var socketUrl =
+    CFG.socket ||
+    (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + prefix + '/ws/app/' + encodeURIComponent(appId);
   var devlogUrl = api + '/devlog';
   var KEEP = 300;
   var logs = [];
@@ -167,7 +173,7 @@
   function listen(delay) {
     var ws;
     try {
-      ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + prefix + '/ws/app/' + encodeURIComponent(appId));
+      ws = new WebSocket(socketUrl);
     } catch (e) {
       return;
     }

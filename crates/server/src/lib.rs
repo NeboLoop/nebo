@@ -959,6 +959,7 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
 
     // Initialize database
     let store = Arc::new(db::Store::new(&cfg.database.sqlite_path)?);
+    handlers::apps::serve_desktop_from(store.clone(), port);
     // The old permission settings become rules once, before anything runs a
     // tool: every call is decided by the rules from here on.
     agent::migrate_legacy(&store)?;

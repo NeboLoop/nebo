@@ -617,7 +617,9 @@ impl GenerateMediaTool {
     }
 
     /// The app named, else the employee running the call when it is an app,
-    /// else the workspace.
+    /// else the workspace. Only ever one of the owner's own apps: one
+    /// installed from the marketplace is its maker's, and nothing is written
+    /// into its folder (the developer pack's rule, `app_dev::is_own_app`).
     fn target(&self, ctx: &ToolContext, input: &Value) -> Result<Target, String> {
         let app = match str_of(input, "app") {
             Some(named) => {
@@ -634,6 +636,9 @@ impl GenerateMediaTool {
                         found.name
                     ));
                 }
+                if !crate::app_dev::is_own_app(&found) {
+                    return Err(crate::app_dev::not_yours(&found));
+                }
                 Some(found)
             }
             None => {
@@ -642,7 +647,7 @@ impl GenerateMediaTool {
                     .get_agent(&me)
                     .ok()
                     .flatten()
-                    .filter(|a| crate::app_dev::served_dir(a).is_some())
+                    .filter(|a| crate::app_dev::served_dir(a).is_some() && crate::app_dev::is_own_app(a))
             }
         };
         if let Some(app) = app {
@@ -961,6 +966,33 @@ mod tests {
             max: Duration::from_millis(20),
             limit: Duration::from_secs(5),
         }
+    }
+
+    /// Nothing is ever written into an app installed from the marketplace:
+    /// naming it is refused, and its own employee's files go to the
+    /// workspace. The owner's own apps still get theirs.
+    #[test]
+    fn an_installed_apps_folder_is_never_written() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Arc::new(db::Store::new(&tmp.path().join("t.db").to_string_lossy()).unwrap());
+        for (id, name) in [("app-own", "Racer"), ("app-bought", "Bought")] {
+            store.create_agent(id, Some("agent"), name, "", "", "{}", None, None).unwrap();
+            store.set_agent_app_fields(id, true, Some(&format!("/tmp/{id}/ui")), None, None).unwrap();
+        }
+        store.set_agent_napp_path("app-bought", "/data/nebo/agents/bought.napp").unwrap();
+        let tool = GenerateMediaTool::new(Media::new(String::new(), String::new(), None), store);
+        let ctx = ToolContext::default();
+
+        let own = tool.target(&ctx, &serde_json::json!({"app": "Racer"})).unwrap();
+        assert_eq!(own.base, PathBuf::from("/tmp/app-own/ui"));
+
+        let named = tool.target(&ctx, &serde_json::json!({"app": "Bought"})).err().expect("refused");
+        assert!(named.contains("installed from the marketplace"), "{named}");
+
+        let me = ToolContext { session_key: "agent:app-bought:web".to_string(), ..Default::default() };
+        let mine = tool.target(&me, &serde_json::json!({})).unwrap();
+        assert_ne!(mine.base, PathBuf::from("/tmp/app-bought/ui"), "its own call goes to the workspace");
+        assert_eq!(mine.label, "the workspace");
     }
 
     #[test]
