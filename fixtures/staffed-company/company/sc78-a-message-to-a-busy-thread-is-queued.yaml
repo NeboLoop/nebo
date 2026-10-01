@@ -1,0 +1,9 @@
+id: sc78-a-message-to-a-busy-thread-is-queued
+name: "SC78 — A message to a busy thread is queued into the conversation it names"
+description: |
+  A message to a linked employee whose thread is still working on the last one is never dropped:
+  it is queued into the running turn, and the call that hears it runs in the conversation the
+  message names, while the running call keeps its own.
+target_component: staffed-company
+proof: staffed_proof::company::a_message_to_a_busy_thread_is_queued_into_the_conversation_it_names
+conversation: []

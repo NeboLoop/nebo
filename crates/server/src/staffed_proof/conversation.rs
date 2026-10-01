@@ -1505,8 +1505,15 @@ async fn a_coworkers_message_is_read_as_a_coworkers() {
         .tool(&ctx, "send_message", json!({"to": "Proof 54 Clerk", "message": "MARK-C54-SECOND and the receipt"}))
         .await;
     assert!(!second.is_error, "{}", second.content);
-    rig.company.open("c54");
     let thread = format!("agent:{clerk}:coworker:{sender}");
+    // A message is admitted on the lane after send_message returns: the
+    // first call is let go only once the second is stored in the running
+    // turn, which is what this scenario is about.
+    rig.until(20, "the second message is in the running turn", || {
+        rig.thread(&thread).iter().any(|m| m.role == "user" && m.content.contains("MARK-C54-SECOND"))
+    })
+    .await;
+    rig.company.open("c54");
     rig.until(30, "the second message is heard", || {
         rig.thread(&thread).iter().any(|m| m.role == "assistant" && m.content.starts_with("HEARD-AS"))
     })
@@ -1735,7 +1742,10 @@ async fn a_channel_message_during_a_running_turn_joins_it_silently() {
         let (d, ctx) = (dispatcher.clone(), ctx.clone());
         tokio::spawn(async move { d.dispatch("", CHANNEL, ctx, "MARK-34A price the Rivera order").await })
     };
-    rig.until(20, "the first turn is running", || nebo.state.harness.is_session_busy(CHANNEL)).await;
+    // The second message is about one that lands while the first call is
+    // out: the turn being busy is not enough (it may still be preparing, and
+    // a row stored then is in the first call already).
+    rig.until(20, "the first call is out", || rig.company.calls_naming("MARK-34A") > 0).await;
     let second = dispatcher
         .dispatch("", CHANNEL, ctx, "MARK-34B and the Chen order")
         .await

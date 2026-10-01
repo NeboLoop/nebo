@@ -7,7 +7,8 @@ use serde_json::{Value, json};
 /// Not a test when the harness runs it: the coding agent a linked employee
 /// runs as (`NEBO_PROOF_COMPANY` names the file it writes what it was told
 /// to). A prompt that says HOLD starts a long refactor: a tool call running
-/// and words said, until it is cancelled. Any other prompt is answered at
+/// and words said, until it is cancelled. One that says BRIEF is answered
+/// "BRIEF-DONE." three seconds later. Any other prompt is answered at
 /// once with "ANSWER: 3 files left." Each `session/new` is a session of its
 /// own, `s-1`, `s-2`, ..., noted with the folder it was opened in.
 #[test]
@@ -81,6 +82,19 @@ fn fake_company_agent() {
                     );
                     say(&session, "Working through the refactor.");
                     held.insert(session, id.clone());
+                } else if text.contains("BRIEF") {
+                    // A short piece of work: answered on its own after a
+                    // moment, so a message can arrive while it runs.
+                    let (id, session) = (id.clone(), session.clone());
+                    std::thread::spawn(move || {
+                        std::thread::sleep(std::time::Duration::from_secs(3));
+                        let mut out = std::io::stdout().lock();
+                        let chunk = json!({ "jsonrpc": "2.0", "method": "session/update", "params": { "sessionId": session,
+                            "update": { "sessionUpdate": "agent_message_chunk", "content": { "type": "text", "text": "BRIEF-DONE." } } } });
+                        writeln!(out, "{chunk}").unwrap();
+                        writeln!(out, "{}", json!({ "jsonrpc": "2.0", "id": id, "result": { "stopReason": "end_turn" } })).unwrap();
+                        out.flush().unwrap();
+                    });
                 } else {
                     say(&session, "ANSWER: 3 files left.");
                     reply(json!({ "stopReason": "end_turn" }));
