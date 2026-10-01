@@ -10,7 +10,7 @@ async fn main() {
     let local_addr = args.next().expect("usage: tunnel_spike <hub_ws_url> <local_addr>");
     let online = std::sync::atomic::AtomicBool::new(false);
     match nebo_comm::tunnel::run(&hub_url, "spike-token", &local_addr, &online).await {
-        Ok(()) => println!("tunnel closed cleanly"),
+        Ok(how) => println!("tunnel closed cleanly ({how:?})"),
         Err(e) => eprintln!("tunnel error: {e}"),
     }
 }
