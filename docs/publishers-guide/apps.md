@@ -125,6 +125,8 @@ There are no `min_width` / `min_height` fields. Nebo remembers window position a
 
 A full-screen page should pad itself with `env(safe-area-inset-*)` (and `viewport-fit=cover` in its viewport meta) and keep controls clear of the top-left corner.
 
+**Voice.** Every app opened in the Nebo desktop app or on the phone shows a small voice control in its bottom-right corner, so the owner can talk to the app's employee while it works on the page. The control sits outside your page, so reloading the page never drops the call. On desktop it is a bar about 300 by 48 pixels, 16 pixels in from the window's bottom-right corner. On the phone it is a round 48-point button inside the safe area that the owner can drag to either side; in a full-screen app it folds back to that button a few seconds into a call. Keep important controls clear of the bottom-right corner. During a long task on a call, the employee says short updates such as "Now editing." and never reads out file names or commands.
+
 ---
 
 ## AGENT.md — The Persona
