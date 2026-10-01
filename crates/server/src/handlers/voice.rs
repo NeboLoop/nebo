@@ -745,6 +745,10 @@ async fn drain_voice_run(
     let mut last_notice = String::new();
     let mut control_stop: Option<(String, String)> = None;
     let mut last_event = tokio::time::Instant::now();
+    // The run's steps reach the open thread as a typed chat's do (the same
+    // tool_start / tool_result the chat pipeline sends), so the owner sees
+    // the work while the call waits for its reply.
+    let turn_id = uuid::Uuid::new_v4().to_string();
     loop {
         let event = match agent::guardrails::next_event(&mut rx, last_event, &run_handle.waiting).await {
             agent::guardrails::Next::Event(e) => e,
@@ -775,6 +779,49 @@ async fn drain_voice_run(
                 if let Some(tx) = spoken.take() {
                     let _ = tx.send(out.clone());
                 }
+            }
+            ai::StreamEventType::ToolCall => {
+                if let Some(tc) = event.tool_call.as_ref() {
+                    let activity = state.tools.labels(&tc.name, &tc.input).await.0;
+                    run_handle.show_activity(&activity);
+                    state.hub.broadcast(
+                        "tool_start",
+                        serde_json::json!({
+                            "session_id": session_key,
+                            "agentId": agent_id,
+                            "turn_id": turn_id,
+                            "tool_id": tc.id,
+                            "tool": tc.name,
+                            "input": tc.input,
+                            "label": activity,
+                        }),
+                    );
+                }
+            }
+            ai::StreamEventType::ToolResult => {
+                let (tool_id, tool_name) = event
+                    .tool_call
+                    .as_ref()
+                    .map(|tc| (tc.id.as_str(), tc.name.as_str()))
+                    .unwrap_or(("", ""));
+                let outcome = match event.tool_call.as_ref() {
+                    Some(tc) => state.tools.labels(&tc.name, &tc.input).await.1,
+                    None => tools::humanize::raw_name(tool_name).1,
+                };
+                state.hub.broadcast(
+                    "tool_result",
+                    serde_json::json!({
+                        "session_id": session_key,
+                        "agentId": agent_id,
+                        "turn_id": turn_id,
+                        "tool_id": tool_id,
+                        "tool_name": tool_name,
+                        "result": event.text,
+                        "is_error": event.error.is_some(),
+                        "outcome": outcome,
+                        "payload": event.payload,
+                    }),
+                );
             }
             _ => {}
         }
