@@ -10,6 +10,7 @@ pub mod pack_tool;
 pub mod app_console;
 pub mod app_tool;
 pub mod app_dev;
+pub mod app_publish;
 pub mod assignments;
 pub mod bot_mail;
 pub mod bot_tool;

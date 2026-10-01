@@ -11,6 +11,7 @@ pub mod backup;
 pub use backup::Backup;
 pub use pool::create_pool;
 pub use queries::{Addressing, AddressingState};
+pub use queries::AppListing;
 pub use queries::agent_slug;
 pub use queries::{AUTOMATION_KEY, is_automation_notice};
 pub use queries::InboundMailRow;

@@ -10,6 +10,8 @@
   import ShareArtifactModal from './ShareArtifactModal.svelte';
   import AskWidget from './AskWidget.svelte';
   import ConsentChip from './ConsentChip.svelte';
+  import AppListingCard from './AppListingCard.svelte';
+  import type { AppListingPayload } from './AppListingCard.svelte';
   import type { EmployeeConsentPayload } from './ConsentChip.svelte';
   import type { AskWidgetDef } from './AskWidget.svelte';
   import { renderMentionChips } from '$lib/mentions';
@@ -32,6 +34,7 @@
   import { NEAR_BOTTOM_PX, distanceFromBottom } from '$lib/chat/scroll';
   import { threadKey } from '$lib/chat/sessionKey';
   import { openAsks } from '$lib/stores/permissionAsks';
+  import { appDeveloperMode, loadAppDeveloperMode } from '$lib/stores/appDeveloperMode';
   import PermissionAskCard from '$lib/components/PermissionAskCard.svelte';
   import WaitingAsksBar from '$lib/components/chat/WaitingAsksBar.svelte';
   import type { HelperLine } from '$lib/chat/helpers';
@@ -636,6 +639,12 @@
     return (tools ?? [])
       .flatMap((t) => (t.payload?.kind === 'employee_consent' ? [t.payload as EmployeeConsentPayload] : []));
   }
+  // An app's marketplace listing is the owner's to read, never plumbing
+  // inside the collapsed tool group.
+  function appListings(tools: ToolMsg[] | undefined): AppListingPayload[] {
+    return (tools ?? [])
+      .flatMap((t) => (t.payload?.kind === 'app_listing' ? [t.payload as AppListingPayload] : []));
+  }
   function nonCoworkerTools(tools: ToolMsg[] | undefined): ToolMsg[] {
     return (tools ?? []).filter((t) => t.payload?.kind !== 'coworker_message');
   }
@@ -1009,6 +1018,17 @@
    *  raced it: two programmatic scrolls in one frame window, and the pin's
    *  settle loop outlived its suppression flag, so the turn-scroll's events
    *  read as user movement and killed follow (the 0.12.7 no-scroll bug). */
+  // App Developer mode: an app's chat offers Publish, which starts the
+  // guided listing with the app's employee (the owner confirms on a card
+  // before anything is submitted). Read from the bot when an app's chat opens.
+  $effect(() => {
+    if (isApp) void loadAppDeveloperMode();
+  });
+  const canPublish = $derived(isApp && !readOnly && !!onsend && $appDeveloperMode);
+  function publishApp() {
+    handleSend($t('agent.publishStarter'), []);
+  }
+
   function handleSend(
     text: string,
     files: { file: File; id: string; previewUrl: string | null; isImage: boolean }[],
@@ -1294,6 +1314,15 @@
             {$t('agent.openApp')}
           </button>
         {/if}
+        {#if canPublish}
+          <button
+            class="btn btn-outline btn-xs max-md:btn-sm gap-1 ml-1 shrink-0"
+            onclick={publishApp}
+          >
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><polyline points="7 8 12 3 17 8"/><path d="M5 15v4a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-4"/></svg>
+            {$t('agent.publishApp')}
+          </button>
+        {/if}
       </div>
 
       <!-- Narrow widths: the icon row collapses into one labeled menu — five
@@ -1303,6 +1332,12 @@
           <button class="btn btn-primary btn-sm gap-1" onclick={onopenapp}>
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
             {$t('agent.openApp')}
+          </button>
+        {/if}
+        {#if canPublish}
+          <button class="btn btn-outline btn-sm gap-1" onclick={publishApp}>
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><polyline points="7 8 12 3 17 8"/><path d="M5 15v4a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-4"/></svg>
+            {$t('agent.publishApp')}
           </button>
         {/if}
         <div class="dropdown dropdown-end">
@@ -1781,6 +1816,9 @@
             {/each}
             {#each segs.flatMap((sg) => consentLines(sg.tools)) as consent, cIdx (cIdx)}
               <ConsentChip {consent} />
+            {/each}
+            {#each segs.flatMap((sg) => appListings(sg.tools)).slice(-1) as listing, lIdx (lIdx)}
+              <AppListingCard {listing} />
             {/each}
           {#if turnAttachments.length}
             <div class="flex flex-wrap gap-2 mt-2">

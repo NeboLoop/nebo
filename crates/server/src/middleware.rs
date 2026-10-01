@@ -435,6 +435,13 @@ impl Boundary {
         if plugin_route(path) && [bearer, path_credential].into_iter().flatten().any(|t| crate::handlers::ws::constant_time_eq(t, plugins)) {
             return true;
         }
+        // Nebo's own headless browser opening one app (`napp::app_view`):
+        // its pass reaches that app's page and routes, nothing else.
+        if let (Some(pass), Some(app)) = (path_credential, napp::app_view::app_of_path(path))
+            && napp::app_view::admits(pass, app)
+        {
+            return true;
+        }
         if let (Some(token), Some(app)) = (bearer, app_of(path)) {
             let lifecycle = self.apps.read().await.get(app).cloned();
             if let Some(lifecycle) = lifecycle {
@@ -650,6 +657,7 @@ mod boundary_tests {
             .route("/api/v1/plugins/{slug}/proxy/{*rest}", axum::routing::get(echo))
             .route("/api/v1/plugins/{slug}/toggle", axum::routing::post(echo))
             .route("/api/v1/apps/{id}/storage", axum::routing::get(echo))
+            .route("/apps/{id}/ui/{*path}", axum::routing::get(echo))
             .route("/agent/mcp", axum::routing::post(echo))
             .route("/v1/models", axum::routing::get(echo))
             .route("/api/v1/files/{*path}", axum::routing::get(echo))
@@ -951,6 +959,23 @@ mod boundary_tests {
         }
         assert!(plugin_route("/ws/voice/conversation") && plugin_route("/api/v1/phone/call"));
         assert!(!plugin_route("/api/v1/phone/lines") && !plugin_route("/api/v1/plugins//proxy/x") && !plugin_route("/api/v1/plugins/x/proxyish"));
+    }
+
+    /// Nebo's headless browser opening one app (`napp::app_view`): its pass
+    /// reaches that app's page and routes, never another app's or anything
+    /// else, and nothing once revoked.
+    #[tokio::test]
+    async fn an_app_view_pass_opens_its_own_app_alone() {
+        let pass = napp::app_view::grant("a1", std::time::Duration::from_secs(60));
+        let (code, path) = send(loopback_bind(), request("GET", &format!("/k/{pass}/apps/a1/ui/index.html"), LOCAL, &[HOST])).await;
+        assert_eq!((code, path.as_str()), (StatusCode::OK, "/apps/a1/ui/index.html"));
+        assert_eq!(send(loopback_bind(), request("GET", &format!("/k/{pass}/api/v1/apps/a1/storage"), LOCAL, &[HOST])).await.0, StatusCode::OK);
+        for other in ["/apps/a2/ui/index.html", "/api/v1/apps/a2/storage", "/api/v1/agents"] {
+            let (code, _) = send(loopback_bind(), request("GET", &format!("/k/{pass}{other}"), LOCAL, &[HOST])).await;
+            assert_eq!(code, StatusCode::UNAUTHORIZED, "{other}");
+        }
+        napp::app_view::revoke(&pass);
+        assert_eq!(send(loopback_bind(), request("GET", &format!("/k/{pass}/apps/a1/ui/index.html"), LOCAL, &[HOST])).await.0, StatusCode::UNAUTHORIZED);
     }
 
     #[test]

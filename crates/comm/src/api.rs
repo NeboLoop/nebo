@@ -1684,6 +1684,80 @@ impl NeboAIApi {
             .await
     }
 
+    // ── The hub's MCP: the publish path ───────────────────────────────
+
+    /// Call one tool on the hub's MCP server (`{api_server}/mcp`, JSON-RPC
+    /// `tools/call`), as this bot's owner: the hub takes the bot's own token
+    /// there under the same checks as its REST API. The NeboLoop MCP is the
+    /// one publish path (create, update, bundle-token, submit); nothing else
+    /// in Nebo publishes. Returns the tool's structured output, else its text
+    /// parsed as JSON, else the text. A tool error is the hub's refusal, with
+    /// its words.
+    pub async fn mcp_tool(&self, tool: &str, arguments: serde_json::Value) -> Result<serde_json::Value, CommError> {
+        self.gate(&reqwest::Method::POST)?;
+        let url = format!("{}/mcp", self.api_server.trim_end_matches('/'));
+        debug!(url = %url, tool, "hub mcp");
+        let body = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": { "name": tool, "arguments": arguments },
+        });
+        let resp = self
+            .client
+            .post(&url)
+            .bearer_auth(self.token())
+            .header(reqwest::header::ACCEPT, "application/json, text/event-stream")
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| CommError::Transport(e.to_string()))?;
+        let status = resp.status();
+        let text = resp.text().await.map_err(|e| CommError::Transport(e.to_string()))?;
+        if !status.is_success() {
+            return Err(CommError::Http { status: status.as_u16(), body: text });
+        }
+        mcp_tool_output(&text)
+    }
+
+    /// Upload an artifact's bundle (a .zip) with the upload token the hub's
+    /// MCP `bundle-token` minted (`POST /api/v1/skills/{id}/bundle`). Returns
+    /// the hub's account of what it stored.
+    pub async fn upload_bundle(
+        &self,
+        artifact_id: &str,
+        upload_token: &str,
+        zip: Vec<u8>,
+    ) -> Result<serde_json::Value, CommError> {
+        self.gate(&reqwest::Method::POST)?;
+        let part = reqwest::multipart::Part::bytes(zip)
+            .file_name("bundle.zip")
+            .mime_str("application/zip")
+            .map_err(|e| CommError::Other(format!("invalid mime type: {}", e)))?;
+        let form = reqwest::multipart::Form::new().part("file", part);
+        let url = format!("{}/api/v1/skills/{}/bundle", self.api_server, artifact_id);
+        // HTTP/1.1: large multipart bodies over HTTP/2 have cut mid-stream.
+        let client = tls::http_client()
+            .http1_only()
+            .connect_timeout(std::time::Duration::from_secs(10))
+            .timeout(FILE_TRANSFER_TIMEOUT)
+            .build()
+            .map_err(|e| CommError::Other(format!("upload client: {}", e)))?;
+        let resp = client
+            .post(&url)
+            .bearer_auth(upload_token)
+            .multipart(form)
+            .send()
+            .await
+            .map_err(|e| CommError::Transport(e.to_string()))?;
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        if !status.is_success() {
+            return Err(CommError::Http { status: status.as_u16(), body: text });
+        }
+        serde_json::from_str(&text).map_err(|e| CommError::Transport(format!("decode bundle response: {e}")))
+    }
+
     // ── File Upload / Download ────────────────────────────────────────
 
     /// Upload a file to NeboAI for attachment to a message.
@@ -1943,9 +2017,65 @@ pub struct AgentChatSync {
     pub last_activity_at: Option<String>,
 }
 
+/// The output of one MCP `tools/call` response body: plain JSON or a
+/// server-sent-events stream whose `data:` lines carry the JSON-RPC reply.
+/// A JSON-RPC error or a tool result marked `isError` is the hub's refusal.
+pub(crate) fn mcp_tool_output(body: &str) -> Result<serde_json::Value, CommError> {
+    let trimmed = body.trim();
+    let reply: serde_json::Value = if trimmed.starts_with('{') {
+        serde_json::from_str(trimmed).map_err(|e| CommError::Transport(format!("hub mcp reply: {e}")))?
+    } else {
+        trimmed
+            .lines()
+            .filter_map(|l| l.strip_prefix("data:"))
+            .filter_map(|d| serde_json::from_str::<serde_json::Value>(d.trim()).ok())
+            .find(|v| v.get("result").is_some() || v.get("error").is_some())
+            .ok_or_else(|| CommError::Transport("hub mcp reply carried no result".into()))?
+    };
+    if let Some(err) = reply.get("error") {
+        let message = err.get("message").and_then(|m| m.as_str()).unwrap_or("the hub refused the call");
+        return Err(CommError::Other(message.to_string()));
+    }
+    let result = reply.get("result").cloned().unwrap_or_default();
+    let text: String = result
+        .get("content")
+        .and_then(|c| c.as_array())
+        .map(|parts| {
+            parts
+                .iter()
+                .filter_map(|p| p.get("text").and_then(|t| t.as_str()))
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .unwrap_or_default();
+    if result.get("isError").and_then(|v| v.as_bool()).unwrap_or(false) {
+        return Err(CommError::Other(if text.is_empty() { "the hub refused the call".into() } else { text }));
+    }
+    if let Some(structured) = result.get("structuredContent").filter(|v| !v.is_null()) {
+        return Ok(structured.clone());
+    }
+    Ok(serde_json::from_str(&text).unwrap_or(serde_json::Value::String(text)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The hub's MCP answers as an event stream or plain JSON: the tool's
+    /// structured output is what a caller gets, and a tool error or a
+    /// JSON-RPC error is a refusal in the hub's words.
+    #[test]
+    fn an_mcp_reply_is_its_structured_output_or_a_refusal() {
+        let sse = "event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"{\\\"id\\\":\\\"a1\\\"}\"}],\"structuredContent\":{\"id\":\"a1\",\"status\":\"active\"}}}\n\n";
+        assert_eq!(mcp_tool_output(sse).unwrap()["status"], "active");
+        let text_only = r#"{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"{\"token\":\"t\"}"}]}}"#;
+        assert_eq!(mcp_tool_output(text_only).unwrap()["token"], "t");
+        let tool_error = r#"{"jsonrpc":"2.0","id":1,"result":{"isError":true,"content":[{"type":"text","text":"description is required for marketplace submission"}]}}"#;
+        assert!(mcp_tool_output(tool_error).unwrap_err().to_string().contains("description is required"));
+        let rpc_error = r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32602,"message":"unknown tool"}}"#;
+        assert!(mcp_tool_output(rpc_error).unwrap_err().to_string().contains("unknown tool"));
+        assert!(mcp_tool_output("event: ping\n\n").is_err());
+    }
 
     /// A client on a frozen lease, pointed at a port nothing listens on: a
     /// refused request never reaches the network, a read does (and fails

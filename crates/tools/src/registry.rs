@@ -1263,6 +1263,17 @@ impl Registry {
             }
         }
 
+        // The developer pack's app tools (App Developer mode): a screenshot
+        // of an app as served, and publishing it with the owner. Every run
+        // that does not build an app has them withheld
+        // (`app_dev::withheld`).
+        let shot_browser = self.browser_manager.read().unwrap().clone();
+        self.register(Box::new(crate::app_publish::AppScreenshotTool::new(store.clone(), shot_browser)))
+            .await;
+        let publisher = Arc::new(crate::app_publish::Publisher::new(store.clone()));
+        self.register(Box::new(crate::app_publish::AppListingTool(publisher.clone()))).await;
+        self.register(Box::new(crate::app_publish::AppSubmitTool(publisher))).await;
+
         // The packs this company works by (R8): create, add, list, show, remove.
         self.register(Box::new(crate::pack_tool::PackTool)).await;
 

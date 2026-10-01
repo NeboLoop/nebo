@@ -6253,6 +6253,7 @@ dependencies = [
  "walkdir",
  "which 7.0.3",
  "xxhash-rust",
+ "zip 8.6.0",
 ]
 
 [[package]]
