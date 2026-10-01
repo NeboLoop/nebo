@@ -7,7 +7,7 @@ use std::path::{Path as StdPath, PathBuf};
 
 use axum::body::Body;
 use axum::extract::{Path, State};
-use axum::http::{HeaderValue, StatusCode, header};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::sse::{Event, Sse};
 use axum::response::{IntoResponse, Response};
 use futures::Stream;
@@ -168,19 +168,25 @@ async fn resolve_app_ui_path(state: &AppState, agent_id: &str) -> Option<PathBuf
 pub async fn serve_app_ui_root(
     State(state): State<AppState>,
     Path(agent_id): Path<String>,
+    headers: HeaderMap,
 ) -> Response {
-    serve_app_ui_inner(&state, &agent_id, "").await
+    serve_app_ui_inner(&state, &agent_id, "", range_header(&headers)).await
 }
 
 /// GET /apps/{agent_id}/ui/*path — serve static app assets with SPA fallback.
 pub async fn serve_app_ui(
     State(state): State<AppState>,
     Path((agent_id, path)): Path<(String, String)>,
+    headers: HeaderMap,
 ) -> Response {
-    serve_app_ui_inner(&state, &agent_id, &path).await
+    serve_app_ui_inner(&state, &agent_id, &path, range_header(&headers)).await
 }
 
-async fn serve_app_ui_inner(state: &AppState, agent_id: &str, path: &str) -> Response {
+fn range_header(headers: &HeaderMap) -> Option<&str> {
+    headers.get(header::RANGE).and_then(|v| v.to_str().ok())
+}
+
+async fn serve_app_ui_inner(state: &AppState, agent_id: &str, path: &str, range: Option<&str>) -> Response {
     let ui_path = match resolve_app_ui_path(state, agent_id).await {
         Some(p) => p,
         None => return StatusCode::NOT_FOUND.into_response(),
@@ -211,10 +217,16 @@ async fn serve_app_ui_inner(state: &AppState, agent_id: &str, path: &str) -> Res
         }
     };
 
+    let is_entry = matches!(target.file_name().and_then(|n| n.to_str()), Some("index.html" | "200.html"));
+    if !is_entry {
+        if let Some(resp) = serve_app_ui_range(&target, range).await {
+            return resp;
+        }
+    }
+
     match fs::read(&target).await {
         Ok(contents) => {
             let mime = mime_from_path(&target);
-            let is_entry = matches!(target.file_name().and_then(|n| n.to_str()), Some("index.html" | "200.html"));
 
             // Entry HTML gets the SDK's documented meta-tag escape hatches
             // (nebo-app-id / nebo-base-url), mirroring Tauri's neboapp_bridge
@@ -247,11 +259,46 @@ async fn serve_app_ui_inner(state: &AppState, agent_id: &str, path: &str) -> Res
             response
                 .headers_mut()
                 .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+            if !is_entry {
+                response
+                    .headers_mut()
+                    .insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
+            }
             response
         }
         Err(e) => {
             warn!(path = %target.display(), error = %e, "failed to read app UI file");
             StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
+/// Answer a `Range` request for an app asset: 206 with just those bytes, or
+/// 416 past the end. None means no range applies; the caller sends the file.
+async fn serve_app_ui_range(target: &std::path::Path, range: Option<&str>) -> Option<Response> {
+    use tokio::io::{AsyncReadExt, AsyncSeekExt};
+    let len = fs::metadata(target).await.ok()?.len();
+    let reply = |status: StatusCode, body: Vec<u8>, content_range: String| {
+        let mut r = Response::new(Body::from(body));
+        *r.status_mut() = status;
+        let h = r.headers_mut();
+        h.insert(header::CONTENT_TYPE, HeaderValue::from_static(mime_from_path(target)));
+        h.insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
+        h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+        if let Ok(v) = HeaderValue::from_str(&content_range) {
+            h.insert(header::CONTENT_RANGE, v);
+        }
+        r
+    };
+    match byte_range(range, len) {
+        ByteRange::Full => None,
+        ByteRange::Unsatisfiable => Some(reply(StatusCode::RANGE_NOT_SATISFIABLE, Vec::new(), format!("bytes */{len}"))),
+        ByteRange::Partial(start, end) => {
+            let mut file = fs::File::open(target).await.ok()?;
+            file.seek(std::io::SeekFrom::Start(start)).await.ok()?;
+            let mut buf = vec![0u8; (end - start + 1) as usize];
+            file.read_exact(&mut buf).await.ok()?;
+            Some(reply(StatusCode::PARTIAL_CONTENT, buf, format!("bytes {start}-{end}/{len}")))
         }
     }
 }
@@ -1219,23 +1266,97 @@ pub async fn get_identity(
 }
 
 /// Determine MIME type from file extension.
-fn mime_from_path(path: &std::path::Path) -> &'static str {
-    match path.extension().and_then(|e| e.to_str()) {
-        Some("html") => "text/html; charset=utf-8",
-        Some("js") | Some("mjs") => "application/javascript; charset=utf-8",
+/// Content type of a file an app page ships. The one table for the HTTP path
+/// and the desktop `neboapp://` path, so a file types the same on both. With
+/// `nosniff` on, a wrong type here is a broken asset (a model or film served as
+/// octet-stream never loads).
+pub fn mime_from_path(path: &std::path::Path) -> &'static str {
+    let ext = path.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase());
+    match ext.as_deref() {
+        Some("html" | "htm") => "text/html; charset=utf-8",
+        Some("js" | "mjs") => "application/javascript; charset=utf-8",
         Some("css") => "text/css; charset=utf-8",
-        Some("json") => "application/json",
+        Some("json" | "map") => "application/json",
+        Some("txt") => "text/plain; charset=utf-8",
         Some("png") => "image/png",
-        Some("jpg") | Some("jpeg") => "image/jpeg",
+        Some("jpg" | "jpeg") => "image/jpeg",
         Some("gif") => "image/gif",
         Some("svg") => "image/svg+xml",
         Some("ico") => "image/x-icon",
+        Some("webp") => "image/webp",
+        Some("avif") => "image/avif",
+        Some("ktx2") => "image/ktx2",
         Some("woff") => "font/woff",
         Some("woff2") => "font/woff2",
         Some("ttf") => "font/ttf",
+        Some("otf") => "font/otf",
         Some("wasm") => "application/wasm",
+        Some("mp4" | "m4v") => "video/mp4",
+        Some("webm") => "video/webm",
+        Some("mov") => "video/quicktime",
+        Some("mp3") => "audio/mpeg",
+        Some("wav") => "audio/wav",
+        Some("ogg" | "oga") => "audio/ogg",
+        Some("opus") => "audio/opus",
+        Some("m4a") => "audio/mp4",
+        Some("aac") => "audio/aac",
+        Some("flac") => "audio/flac",
+        Some("glb") => "model/gltf-binary",
+        Some("gltf") => "model/gltf+json",
         _ => "application/octet-stream",
     }
+}
+
+/// What a request's `Range` header asks of a file `len` bytes long.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ByteRange {
+    /// No usable range: send the whole file (200). Multi-range requests land
+    /// here too; serving the whole file is a valid answer to them.
+    Full,
+    /// Inclusive byte offsets to send (206).
+    Partial(u64, u64),
+    /// A range that starts past the end (416).
+    Unsatisfiable,
+}
+
+/// Resolve a single `bytes=` range. Media elements scrub and seek with these;
+/// WebKit will not play a video whose server answers them with a plain 200.
+pub fn byte_range(header: Option<&str>, len: u64) -> ByteRange {
+    let Some(spec) = header.and_then(|h| h.trim().strip_prefix("bytes=")) else {
+        return ByteRange::Full;
+    };
+    if spec.contains(',') {
+        return ByteRange::Full;
+    }
+    let Some((a, b)) = spec.trim().split_once('-') else {
+        return ByteRange::Full;
+    };
+    let (a, b) = (a.trim(), b.trim());
+    if a.is_empty() {
+        // Suffix: the last n bytes.
+        return match b.parse::<u64>() {
+            Ok(0) => ByteRange::Unsatisfiable,
+            Ok(_) if len == 0 => ByteRange::Unsatisfiable,
+            Ok(n) => ByteRange::Partial(len.saturating_sub(n), len - 1),
+            Err(_) => ByteRange::Full,
+        };
+    }
+    let Ok(start) = a.parse::<u64>() else {
+        return ByteRange::Full;
+    };
+    if start >= len {
+        return ByteRange::Unsatisfiable;
+    }
+    let end = if b.is_empty() {
+        len - 1
+    } else {
+        match b.parse::<u64>() {
+            Ok(e) if e >= start => e.min(len - 1),
+            Ok(_) => return ByteRange::Unsatisfiable,
+            Err(_) => return ByteRange::Full,
+        }
+    };
+    ByteRange::Partial(start, end)
 }
 
 #[cfg(test)]
@@ -1405,5 +1526,61 @@ mod developer_mode_tests {
         assert!(prompt.contains("Uncaught TypeError") && prompt.contains("/track.json"), "{prompt}");
         assert!(!prompt.contains("booted"), "only errors are sent");
         assert_eq!(devlog_send_prompt("Kart Racer", &[]), None);
+    }
+}
+
+#[cfg(test)]
+mod media_serving_tests {
+    use super::*;
+
+    // Every range form a media element sends, resolved against a 1000-byte file.
+    #[test]
+    fn ranges_resolve_like_a_browser_expects() {
+        let r = |h| byte_range(Some(h), 1000);
+        assert_eq!(r("bytes=0-99"), ByteRange::Partial(0, 99));
+        assert_eq!(r("bytes=500-"), ByteRange::Partial(500, 999));
+        assert_eq!(r("bytes=-100"), ByteRange::Partial(900, 999));
+        assert_eq!(r("bytes=900-5000"), ByteRange::Partial(900, 999));
+        assert_eq!(r("bytes=-5000"), ByteRange::Partial(0, 999));
+        assert_eq!(r("bytes=1000-"), ByteRange::Unsatisfiable);
+        assert_eq!(r("bytes=50-10"), ByteRange::Unsatisfiable);
+        assert_eq!(r("bytes=-0"), ByteRange::Unsatisfiable);
+        assert_eq!(r("bytes=0-1,5-9"), ByteRange::Full);
+        assert_eq!(r("items=0-9"), ByteRange::Full);
+        assert_eq!(byte_range(None, 1000), ByteRange::Full);
+        assert_eq!(byte_range(Some("bytes=0-"), 0), ByteRange::Unsatisfiable);
+    }
+
+    // A model or film served as octet-stream never loads under nosniff.
+    #[test]
+    fn media_files_carry_their_real_type() {
+        let t = |name: &str| mime_from_path(std::path::Path::new(name));
+        assert_eq!(t("a/tri.glb"), "model/gltf-binary");
+        assert_eq!(t("scene.gltf"), "model/gltf+json");
+        assert_eq!(t("film.MP4"), "video/mp4");
+        assert_eq!(t("loop.webm"), "video/webm");
+        assert_eq!(t("hit.mp3"), "audio/mpeg");
+        assert_eq!(t("tex.ktx2"), "image/ktx2");
+        assert_eq!(t("index.htm"), "text/html; charset=utf-8");
+    }
+
+    #[tokio::test]
+    async fn a_range_reads_only_those_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let film = dir.path().join("film.mp4");
+        std::fs::write(&film, (0..=255u8).collect::<Vec<_>>()).unwrap();
+
+        let resp = serve_app_ui_range(&film, Some("bytes=10-19")).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::PARTIAL_CONTENT);
+        assert_eq!(resp.headers()[header::CONTENT_RANGE], "bytes 10-19/256");
+        assert_eq!(resp.headers()[header::CONTENT_TYPE], "video/mp4");
+        let body = axum::body::to_bytes(resp.into_body(), 1024).await.unwrap();
+        assert_eq!(body.as_ref(), (10..=19u8).collect::<Vec<_>>().as_slice());
+
+        let past = serve_app_ui_range(&film, Some("bytes=300-")).await.unwrap();
+        assert_eq!(past.status(), StatusCode::RANGE_NOT_SATISFIABLE);
+        assert_eq!(past.headers()[header::CONTENT_RANGE], "bytes */256");
+
+        assert!(serve_app_ui_range(&film, None).await.is_none());
     }
 }

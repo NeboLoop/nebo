@@ -11,7 +11,7 @@ use crate::NappError;
 use crate::manifest::Manifest;
 
 const MAX_BINARY_SIZE: u64 = 500 * 1024 * 1024; // 500MB
-const MAX_UI_FILE_SIZE: u64 = 5 * 1024 * 1024; // 5MB
+const MAX_UI_FILE_SIZE: u64 = 10 * 1024 * 1024; // 10MB, the hub's per-file cap: what publishes installs
 const MAX_METADATA_SIZE: u64 = 1024 * 1024; // 1MB
 
 // .napp envelope constants

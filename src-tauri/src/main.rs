@@ -380,29 +380,6 @@ fn neboapp_bridge(agent_id: &str) -> String {
     )
 }
 
-/// Simple MIME type detection from file extension.
-fn mime_from_extension(path: &std::path::Path) -> &'static str {
-    match path.extension().and_then(|e| e.to_str()) {
-        Some("html" | "htm") => "text/html; charset=utf-8",
-        Some("css") => "text/css; charset=utf-8",
-        Some("js" | "mjs") => "application/javascript; charset=utf-8",
-        Some("json") => "application/json; charset=utf-8",
-        Some("png") => "image/png",
-        Some("jpg" | "jpeg") => "image/jpeg",
-        Some("gif") => "image/gif",
-        Some("svg") => "image/svg+xml",
-        Some("ico") => "image/x-icon",
-        Some("woff") => "font/woff",
-        Some("woff2") => "font/woff2",
-        Some("ttf") => "font/ttf",
-        Some("wasm") => "application/wasm",
-        Some("webp") => "image/webp",
-        Some("avif") => "image/avif",
-        Some("mp4") => "video/mp4",
-        Some("webm") => "video/webm",
-        _ => "application/octet-stream",
-    }
-}
 
 // ────────────────────────────────────────────────────────────────────────
 
@@ -559,8 +536,45 @@ fn main() {
             };
 
             if file_path.is_file() {
+                let mime = server::handlers::apps::mime_from_path(&file_path);
+                // Assets answer Range requests: WebKit seeks and scrubs video
+                // with them and will not play one served whole with a 200.
+                if !mime.starts_with("text/html") {
+                    use server::handlers::apps::{ByteRange, byte_range};
+                    let range = request.headers().get("range").and_then(|v| v.to_str().ok());
+                    let len = std::fs::metadata(&file_path).map(|m| m.len()).unwrap_or(0);
+                    match byte_range(range, len) {
+                        ByteRange::Full => {}
+                        ByteRange::Unsatisfiable => {
+                            return http::Response::builder()
+                                .status(416)
+                                .header("Content-Range", format!("bytes */{len}"))
+                                .header("Access-Control-Allow-Origin", "*")
+                                .body(Vec::new())
+                                .unwrap();
+                        }
+                        ByteRange::Partial(start, end) => {
+                            use std::io::{Read, Seek, SeekFrom};
+                            let mut buf = vec![0u8; (end - start + 1) as usize];
+                            let read = std::fs::File::open(&file_path).and_then(|mut f| {
+                                f.seek(SeekFrom::Start(start))?;
+                                f.read_exact(&mut buf)
+                            });
+                            if read.is_ok() {
+                                return http::Response::builder()
+                                    .status(206)
+                                    .header("Content-Type", mime)
+                                    .header("Content-Range", format!("bytes {start}-{end}/{len}"))
+                                    .header("Accept-Ranges", "bytes")
+                                    .header("Access-Control-Allow-Origin", "*")
+                                    .body(buf)
+                                    .unwrap();
+                            }
+                        }
+                    }
+                }
                 if let Ok(data) = std::fs::read(&file_path) {
-                    let is_html = mime_from_extension(&file_path).starts_with("text/html");
+                    let is_html = mime.starts_with("text/html");
                     let body = if is_html {
                         let html = String::from_utf8_lossy(&data);
                         let bridge = neboapp_bridge(agent_id);
@@ -571,7 +585,8 @@ fn main() {
                     };
                     return http::Response::builder()
                         .status(200)
-                        .header("Content-Type", mime_from_extension(&file_path))
+                        .header("Content-Type", mime)
+                        .header("Accept-Ranges", if is_html { "none" } else { "bytes" })
                         .header("Access-Control-Allow-Origin", "*")
                         .body(body)
                         .unwrap();
