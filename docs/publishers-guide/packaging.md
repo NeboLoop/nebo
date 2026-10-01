@@ -129,7 +129,7 @@ Skills from Anthropic, OpenAI, OpenClaw, and other Agent Skills-compatible platf
 
 ### Apps — Agent + Frontend UI
 
-Apps are agents with their own UI. They use the `agents` qualified name type with `artifact_type: "app"` in their manifest. An app is a **directory** containing an `AGENT.md`, a `manifest.json`, and a `ui/` subdirectory with the frontend.
+Apps are agents with their own UI. They use the `agents` qualified name type, with `artifact_type: app` in the AGENT.md frontmatter (what the marketplace reads) and `"type": "app"` in manifest.json. An app is a **directory** containing an `AGENT.md`, a `manifest.json`, and a `ui/` subdirectory with the frontend.
 
 ```
 my-app/
@@ -151,8 +151,8 @@ The `manifest.json` extends the standard agent manifest with app-specific fields
   "name": "@acme/agents/deal-tracker",
   "version": "1.0.0",
   "description": "Track real estate deals with AI-powered analysis.",
-  "artifact_type": "app",
-  "permissions": ["storage:readwrite", "subagent:invoke", "network:outbound"],
+  "type": "app",
+  "permissions": ["storage:readwrite", "network:api.example.com"],
   "window": {
     "title": "Deal Tracker",
     "width": 1024,
@@ -164,15 +164,15 @@ The `manifest.json` extends the standard agent manifest with app-specific fields
 
 | Field | Description |
 |-------|-------------|
-| `artifact_type` | Must be `"app"` — this is what distinguishes apps from regular agents |
-| `permissions` | Capabilities the app requires (storage, network, subagent, etc.) |
-| `window` | Default window dimensions and title for the desktop app |
+| `type` | Must be `"app"`: this is what distinguishes apps from regular agents (Nebo also reads the older `artifact_type`) |
+| `permissions` | `prefix:scope` capabilities the app requires (`storage:readwrite`, `network:<host>`, `subagent:<id>`, `device:motion`, ...) |
+| `window` | `title`, `width`, `height`, `resizable`, plus `fullscreen` and `orientation` (`portrait`, `landscape`, `any`) for games and full-screen pages |
 
 Apps use the `@neboai/app-sdk` for storage, agent invocation, identity, embedded chat, and direct LLM calls. See [Apps](apps.md) for the full spec.
 
 **User/development path:** Place app directories in `~/.nebo/user/agents/` and iterate. Hot-reload picks up changes.
 
-**Marketplace distribution:** Apps are packaged as sealed `.napp` archives like agents. The `.napp` assembler emits the agent payload (`manifest.json`, `agent.json`, `AGENT.md`, `signatures.json`) — the `ui/` directory is **not** bundled into the `.napp` via this path. App frontend and sidecar binaries are delivered through the separate per-platform binary upload (sidecar) path; the exact UI delivery mechanism for marketplace apps is handled outside the agent `.napp` assembly.
+**Marketplace distribution:** Apps are packaged as sealed `.napp` archives like agents. The marketplace builds the package from the agent payload (`manifest.json`, `agent.json`, `AGENT.md`, `signatures.json`), the page under `ui/`, the employee's own skills under `skills/<name>/`, and the sidecar under `bin/` when there is one. A page-only app uploads all of it as one bundle; see [Apps](apps.md#publishing-to-neboai).
 
 ### Workflows and Agents — .napp Archive
 
@@ -215,7 +215,7 @@ For workflows and agents, the `.napp` is **never extracted**. Nebo reads files d
 | Skill | Directory on disk (marketplace: sealed `.napp`) | Frontmatter is source of truth; marketplace archives are signed |
 | Workflow | `.napp` sealed | Archive is the signed artifact — continuous integrity |
 | Agent | `.napp` sealed | Archive is the signed artifact — continuous integrity |
-| App | Directory (dev) / `.napp` sealed (marketplace) | Same as agent — the `.napp` carries the agent payload; `ui/` is not bundled into it |
+| App | Directory (dev) / `.napp` sealed (marketplace) | Same as agent; the `.napp` carries the agent payload plus `ui/` (and `bin/` for a sidecar) |
 
 ### License-Key Sealed Archives
 
