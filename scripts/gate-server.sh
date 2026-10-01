@@ -25,6 +25,47 @@ set -euo pipefail
 : "${GATE_PORT:?set GATE_PORT}"
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# What one server leaves the next, per arm, on the VM (never in the sandbox):
+# the token the hub rotated to and the bot's stream offsets. Every boot used
+# to start from the 2026-09-26 secret token, which the hub refused as stale
+# before the boot token got it in, and from offset 0, so the hub replayed the
+# CI bot's whole stream (10,193 messages on 2026-10-01) every 10-30 s. Only
+# these two carry over; the bot's memory, chats and files still start empty.
+carry_dir() { echo "$HOME/harness-cache/${GATE_ARM:-none}"; }
+
+carry_save() {
+  local dir; dir="$(carry_dir)"; mkdir -p "$dir"
+  local home="$GATE_JOB/nebo-home"
+  [ -s "$home/neboai_token.cache" ] && cp "$home/neboai_token.cache" "$dir/token.tmp" && mv "$dir/token.tmp" "$dir/token"
+  [ -f "$home/data/nebo.db" ] || return 0
+  python3 - "$home/data/nebo.db" "$dir/offsets.tmp" <<'PY' && mv "$dir/offsets.tmp" "$dir/offsets.json" || rm -f "$dir/offsets.tmp"
+import json, sqlite3, sys
+con = sqlite3.connect(sys.argv[1])
+rows = con.execute("SELECT bot_id, stream, acked_seq FROM comm_stream_offsets").fetchall()
+json.dump(rows, open(sys.argv[2], "w"))
+PY
+}
+
+# Before a fresh home's first boot: the offsets go in a database holding only
+# their table (migration 0164's shape, CREATE TABLE IF NOT EXISTS there keeps
+# them); the server migrates everything else onto it.
+carry_seed() {
+  local dir; dir="$(carry_dir)"
+  local home="$NEBO_HOME"
+  [ -s "$dir/offsets.json" ] && [ ! -e "$home/data/nebo.db" ] || return 0
+  mkdir -p "$home/data"
+  python3 - "$home/data/nebo.db" "$dir/offsets.json" <<'PY' || rm -f "$home/data/nebo.db"
+import json, sqlite3, sys
+con = sqlite3.connect(sys.argv[1])
+con.execute("""CREATE TABLE IF NOT EXISTS comm_stream_offsets (
+    bot_id TEXT NOT NULL, stream TEXT NOT NULL, acked_seq INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL DEFAULT (unixepoch()), PRIMARY KEY (bot_id, stream))""")
+con.executemany("INSERT OR REPLACE INTO comm_stream_offsets (bot_id, stream, acked_seq) VALUES (?, ?, ?)",
+                json.load(open(sys.argv[2])))
+con.commit()
+PY
+}
+
 start() {
   # Each arm's bot by name; this picks one and never falls back to the other
   # (an unset arm-P secret must fail, not run as A).
@@ -53,6 +94,10 @@ start() {
   # enabled, the same first-boot path a cloud pod takes; NEBO_BOOT_TOKEN is
   # what the hub accepts once that token has gone stale.
   export NEBO_HOME="$GATE_JOB/nebo-home" NEBO_SERVER_MODE=1
+  # The token the hub last rotated this bot to, when an earlier server left one.
+  local carried; carried="$(carry_dir)/token"
+  [ -s "$carried" ] && NEBO_BOT_TOKEN="$(cat "$carried")" && export NEBO_BOT_TOKEN
+  carry_seed
   # No company Memory on the gate: the shared KB at kb.neboai.com is keyed on
   # the bot, so every earlier gate run leaked into each fixture (2026-09-23:
   # "you declined the X card" on a fixture's FIRST run, and one run in three
@@ -143,6 +188,7 @@ stop() {
     sleep 2
   done
   rm -f "$GATE_JOB/server.pid"
+  carry_save || true
 }
 
 fresh() {
