@@ -115,6 +115,30 @@ impl Store {
         Ok(())
     }
 
+    /// The owner stopped `asker_session`: nobody waits for the answers to
+    /// what it asked and has not heard yet. Returns the conversations those
+    /// asks were working in, so their work stops too.
+    pub fn withdraw_asks(&self, asker_session: &str) -> Result<Vec<String>, NeboError> {
+        let mut conn = self.conn()?;
+        let tx = conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .db_err("withdraw_asks tx")?;
+        let open = select(&tx, "asker_session = ?1 AND state != 'answered'", asker_session, "withdraw_asks")?;
+        tx.execute(
+            "DELETE FROM addressings WHERE asker_session = ?1 AND state != 'answered'",
+            params![asker_session],
+        )
+        .db_err("withdraw_asks")?;
+        tx.commit().db_err("withdraw_asks commit")?;
+        let mut seats: Vec<String> = Vec::new();
+        for a in open {
+            if !seats.contains(&a.seat_session) {
+                seats.push(a.seat_session);
+            }
+        }
+        Ok(seats)
+    }
+
     /// The addressings `seat_session` has not answered yet, oldest first.
     pub fn unanswered_in_seat(&self, seat_session: &str) -> Result<Vec<Addressing>, NeboError> {
         let conn = self.conn()?;
@@ -269,6 +293,22 @@ mod tests {
         s.open_addressing("p2", "m1", "t1", &seat("m1"), LEAD, "lead", 2).unwrap();
         let answered = s.answer_seat(&seat("m1"), "both done", "[]", 1, 3).unwrap();
         assert_eq!(answered.iter().map(|a| a.post_id.as_str()).collect::<Vec<_>>(), vec!["p1", "p2"]);
+    }
+
+    /// The owner's stop withdraws what a conversation asked and is still
+    /// waiting on, and names where that work runs; an answer it already has
+    /// stays.
+    #[test]
+    fn a_stop_withdraws_the_open_asks() {
+        let s = store();
+        s.open_addressing("p1", "m1", "", "agent:m1:coworker:main", "chat", "", 1).unwrap();
+        s.open_addressing("p2", "m2", "", "agent:m2:coworker:main", "chat", "", 1).unwrap();
+        s.open_addressing("p3", "m3", "", "agent:m3:coworker:main", "chat", "", 1).unwrap();
+        s.answer_seat("agent:m3:coworker:main", "done", "[]", 1, 2).unwrap();
+        assert_eq!(s.withdraw_asks("chat").unwrap(), vec!["agent:m1:coworker:main", "agent:m2:coworker:main"]);
+        assert_eq!(s.open_asks("chat").unwrap(), 0);
+        assert!(s.answer_seat("agent:m1:coworker:main", "late", "[]", 1, 3).unwrap().is_empty(), "nobody hears a late answer");
+        assert!(s.withdraw_asks("chat").unwrap().is_empty());
     }
 
     /// A delivery that failed is withdrawn; collecting moves only an open

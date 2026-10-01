@@ -45,16 +45,35 @@ pub(crate) async fn announce_ask(state: &AppState, session_key: &str, event: &ai
 }
 
 /// The owner's Stop on one session, from whichever surface it came (the
-/// loop's Stop button, a `/stop` typed in any channel, a voice "cancel"):
-/// every helper the session started stops, whichever turn started it, then
-/// the running turn. Returns whether a turn was running.
+/// loop's Stop button, a `/stop` typed in any channel, a voice "cancel", a
+/// team's Stop on each member's seat): every helper the session started
+/// stops, whichever turn started it, then the running turn. The colleagues
+/// it asked and is still waiting on stop with it, and the ones they asked,
+/// down the chain: nobody waits for their answers any more, so none wakes
+/// the stopped conversation. Returns whether a turn was running in any of
+/// them.
 pub(crate) async fn stop_session(
+    store: &db::Store,
     helpers: &agent::harness::delegation::Helpers,
     runs: &RunRegistry,
     session_key: &str,
 ) -> bool {
-    helpers.stop_session(Some(session_key));
-    runs.cancel_by_session(session_key).await
+    let mut running = false;
+    let mut chain = vec![session_key.to_string()];
+    let mut stopped: Vec<String> = Vec::new();
+    while let Some(key) = chain.pop() {
+        if key.is_empty() || stopped.contains(&key) {
+            continue;
+        }
+        match store.withdraw_asks(&key) {
+            Ok(asked) => chain.extend(asked),
+            Err(e) => warn!(session = %key, error = %e, "stop: what the conversation asked was not withdrawn"),
+        }
+        helpers.stop_session(Some(&key));
+        running |= runs.cancel_by_session(&key).await;
+        stopped.push(key);
+    }
+    running
 }
 
 /// The ONE way a parked question is answered, whichever surface the answer
@@ -2613,7 +2632,7 @@ mod tests {
             None,
         );
         let helpers = agent::harness::delegation::Helpers::new(
-            store,
+            store.clone(),
             Arc::new(harness.sessions().clone()),
             tools,
             Arc::new(harness.clone()),
@@ -2637,12 +2656,12 @@ mod tests {
         let helper = helpers.session_token(key).child_token();
         let other_session = helpers.session_token("neboai:dm:conv-2").child_token();
 
-        assert!(super::stop_session(&helpers, &runs, key).await, "a turn was running");
+        assert!(super::stop_session(&store, &helpers, &runs, key).await, "a turn was running");
         assert!(turn.is_cancelled(), "the running turn stops");
         assert!(helper.is_cancelled(), "the session's background helper stops");
         assert!(!other_session.is_cancelled(), "another conversation's helper runs on");
         drop(run); // the turn ended on its cancel
-        assert!(!super::stop_session(&helpers, &runs, key).await, "nothing is running now");
+        assert!(!super::stop_session(&store, &helpers, &runs, key).await, "nothing is running now");
     }
 
     /// A run that ended on an error keeps it in its conversation: one

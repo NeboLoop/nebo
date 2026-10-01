@@ -1,0 +1,9 @@
+id: sc79-the-owners-stop-reaches-the-coworkers-his-conversation-asked
+name: "SC79 — The owner's stop reaches the coworkers his conversation asked"
+description: |
+  The owner's Stop in the conversation he is watching stops the colleagues it asked, and the
+  ones they asked in turn, through the one stop: their work ends, and no answer from them wakes
+  the stopped conversation.
+target_component: staffed-company
+proof: staffed_proof::conversation::the_owners_stop_reaches_the_coworkers_his_conversation_asked
+conversation: []

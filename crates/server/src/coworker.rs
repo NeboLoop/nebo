@@ -149,6 +149,22 @@ pub(crate) async fn send_coworker_message(
         }
     }
 
+    // The ceiling on a chain the owner did not start himself: an
+    // employee's own messages to one colleague set work off at most
+    // `AGENT_TRIGGERS_PER_5_MIN` times in five minutes. His own request,
+    // passed straight on, is never held back.
+    let owners_own = msg.handoff_depth == 0 && authority.owners_request().is_some();
+    if msg.team.is_none() && !owners_own {
+        let rail = format!("coworker:{}:{}", msg.from_agent_id, to_id);
+        if !crate::agent_trigger_allowed(&state, &rail, crate::AGENT_TRIGGERS_PER_5_MIN).await {
+            return Err(format!(
+                "Not sent: you have messaged {to_name} {} times in the last five minutes. Finish with what you have, \
+                 or report back to whoever asked you.",
+                crate::AGENT_TRIGGERS_PER_5_MIN
+            ));
+        }
+    }
+
     let from_name = if msg.from_agent_id.is_empty() {
         // Main-bot sends: run_chat resolves the main entity's display name the
         // same way ("Nebo" when no agent). Only the owner's own post is the
