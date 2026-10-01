@@ -180,7 +180,6 @@ jobs:
             SCCACHE_BUCKET=nebo-ci-cache
             SCCACHE_ENDPOINT=nyc3.digitaloceanspaces.com
             SCCACHE_REGION=us-east-1
-            SCCACHE_S3_KEY_PREFIX=nebo-server/
           secrets: |
             sccache_key=${{ secrets.SCCACHE_SPACES_KEY }}
             sccache_secret=${{ secrets.SCCACHE_SPACES_SECRET }}

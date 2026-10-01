@@ -21,6 +21,8 @@ export RUSTFLAGS="-C link-arg=-L/usr/lib/${MULTIARCH} -C link-arg=-Wl,--no-as-ne
 
 cache=""
 if [ -n "${SCCACHE_BUCKET:-}" ] && [ -n "${AWS_ACCESS_KEY_ID:-}" ] && [ -n "${AWS_SECRET_ACCESS_KEY:-}" ]; then
+  # Everything this image compiles lives under one prefix of the bucket.
+  export SCCACHE_S3_KEY_PREFIX=nebo-server/
   if sccache --start-server; then
     cache=1
     # cc-rs picks sccache up from RUSTC_WRAPPER; the cmake crate (whisper.cpp)
