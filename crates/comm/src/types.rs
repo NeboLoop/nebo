@@ -36,11 +36,54 @@ pub enum CommError {
     /// only redeeming a new code from the owner brings it back.
     #[error("this bot was removed from NeboAI")]
     Revoked,
+    /// The hub turned the CONNECT away with AUTH_FAIL and this reason
+    /// (other than `lease_held` and [`REVOKED_REASON`], which have their own
+    /// variants). What the dialer does next is
+    /// [`CommError::connect_refusal`].
+    #[error("auth failed: {0}")]
+    AuthFailed(String),
+    /// The hub closed the dial with 1013 Try Again Later
+    /// ([`crate::reconnect::TRY_AGAIN_LATER_CLOSE_CODE`]) before answering
+    /// the CONNECT: it is too busy to take it now.
+    #[error("the hub asked to try again later")]
+    TryAgainLater,
 }
 
 /// The reason the hub gives, on CONNECT (AUTH_FAIL) and on the REST API
 /// (401 `{"error": ...}`), when it refuses a removed bot.
 pub const REVOKED_REASON: &str = "bot has been revoked";
+
+/// The AUTH_FAIL reasons that mean the token itself was refused (the hub's
+/// gateway, `comms/gateway/conn.go`). Only these are worth a token refresh.
+pub const TOKEN_REFUSALS: [&str; 3] = ["invalid token", "token is required", "stale token"];
+
+/// What a refused CONNECT asks of the dialer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConnectRefusal {
+    /// The token was refused ([`TOKEN_REFUSALS`]): refresh it, then dial.
+    Token,
+    /// The hub is busy: a 1013 close, `auth_unavailable`, or a lease it
+    /// could not decide (`lease_*`). The token is fine; dial again after a
+    /// jittered wait ([`crate::reconnect::dial_through_busy`]).
+    Busy,
+    /// Anything else: the caller's own reconnect backoff.
+    Other,
+}
+
+impl CommError {
+    /// What this error, from a CONNECT, asks of the dialer. Decided by the
+    /// hub's reason code, never by how the error reads.
+    pub fn connect_refusal(&self) -> ConnectRefusal {
+        match self {
+            CommError::TryAgainLater => ConnectRefusal::Busy,
+            CommError::AuthFailed(reason) if TOKEN_REFUSALS.contains(&reason.as_str()) => ConnectRefusal::Token,
+            CommError::AuthFailed(reason) if reason == "auth_unavailable" || reason.starts_with("lease_") => {
+                ConnectRefusal::Busy
+            }
+            _ => ConnectRefusal::Other,
+        }
+    }
+}
 
 /// Thread-safe message handler callback.
 pub type MessageHandler = Arc<dyn Fn(CommMessage) + Send + Sync>;

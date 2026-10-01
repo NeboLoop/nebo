@@ -2374,45 +2374,48 @@ pub async fn activate_neboai(state: &AppState) -> Result<(), NeboError> {
         .await
         .map_err(|e| NeboError::Internal(format!("set_active: {e}")))?;
 
-    let mut connect_result = state.comm_manager.connect_active(config.clone()).await;
+    // A hub too busy to answer the CONNECT (a 1013 close, a lease it could
+    // not decide) is dialed again after a jittered wait with the same token
+    // (`comm::reconnect::dial_through_busy`): never a token refresh, and
+    // bots turned away together come back spread out. Only a token the hub
+    // refused (`comm::ConnectRefusal::Token`) is refreshed.
+    let dial = |config: &HashMap<String, String>| {
+        let config = config.clone();
+        comm::reconnect::dial_through_busy(
+            move || state.comm_manager.connect_active(config.clone()),
+            tokio::time::sleep,
+        )
+    };
+    let mut connect_result = dial(&config).await;
 
     // Every rotated token a rebuilt cloud pod restored is stale. Its boot
     // credential (NEBO_BOOT_TOKEN in its Secret) is exempt from rotation and
     // connects it under the lease; AUTH_OK hands back a fresh rotated token,
     // persisted below as always.
-    if let Err(ref e) = connect_result
-        && e.to_string().contains("stale token")
+    if let Err(comm::CommError::AuthFailed(reason)) = &connect_result
+        && reason == "stale token"
         && let Some(provisioned) =
             comm::api::provisioned_credential().filter(|p| Some(p) != config.get("token"))
     {
         info!("NeboAI token stale; connecting with the provisioned credential");
         let mut boot_config = config.clone();
         boot_config.insert("token".into(), provisioned);
-        connect_result = state.comm_manager.connect_active(boot_config).await;
+        connect_result = dial(&boot_config).await;
     }
 
-    // If connect fails with stale token, try refreshing via OAuth
-    if let Err(ref e) = connect_result {
-        let err_msg = e.to_string();
-        if err_msg.contains("stale token") || err_msg.contains("auth failed") {
-            info!("NeboAI token stale, attempting OAuth refresh");
-            if let Some(new_token) = refresh_neboai_token(state, profile).await {
-                // Retry connect with fresh token
-                let mut retry_config = config;
-                retry_config.insert("token".into(), new_token);
-                state
-                    .comm_manager
-                    .connect_active(retry_config)
-                    .await
-                    .map_err(|e| NeboError::Internal(format!("connect after refresh: {e}")))?;
-            } else {
-                return Err(NeboError::Internal(format!(
-                    "connect: {err_msg} (refresh failed)"
-                )));
-            }
-        } else {
-            return Err(NeboError::Internal(format!("connect: {err_msg}")));
+    if let Err(e) = connect_result {
+        if e.connect_refusal() != comm::ConnectRefusal::Token {
+            return Err(NeboError::Internal(format!("connect: {e}")));
         }
+        info!("NeboAI token refused ({e}), attempting OAuth refresh");
+        let Some(new_token) = refresh_neboai_token(state, profile).await else {
+            return Err(NeboError::Internal(format!("connect: {e} (refresh failed)")));
+        };
+        let mut retry_config = config;
+        retry_config.insert("token".into(), new_token);
+        dial(&retry_config)
+            .await
+            .map_err(|e| NeboError::Internal(format!("connect after refresh: {e}")))?;
     }
 
     // Persist rotated JWT so next reconnect uses the fresh token
