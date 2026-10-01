@@ -4,6 +4,8 @@
 //! - The hub closes with 1012 ("drain") when the pod holding the connection
 //!   shuts down for a deploy. That is planned: the bot redials after a random
 //!   0–3 s, the backoff does not advance, and nothing is shown to anyone.
+//! - A close that names another cell (`crate::cell`) is redialed there after
+//!   a random 0–500 ms, also without advancing the backoff.
 //! - Any other drop, and every failed dial, waits a random time between zero
 //!   and `min(30 s, 1 s × 2^n)` (full jitter), so the first redial comes
 //!   within a second and thousands of bots dropped together spread out.
@@ -24,7 +26,7 @@ const BASE: Duration = Duration::from_secs(1);
 /// Longest wait of the backoff.
 const CAP: Duration = Duration::from_secs(30);
 /// A session up this long was healthy: the backoff starts over.
-const HEALTHY: Duration = Duration::from_secs(10);
+pub(crate) const HEALTHY: Duration = Duration::from_secs(10);
 /// Longest wait before redialing after a drain.
 const DRAIN_JITTER: Duration = Duration::from_secs(3);
 
@@ -34,6 +36,9 @@ pub enum Disconnect {
     /// The hub closed with [`DRAIN_CLOSE_CODE`]: its pod is going away for a
     /// deploy, and another one is ready.
     Drain,
+    /// The hub closed with [`crate::cell::REDIRECT_CLOSE_CODE`]: the
+    /// account lives in another cell, which the next dial goes to.
+    Redirect,
     /// Anything else: an error, a reset, a silent hub, or another close.
     Dropped,
 }
@@ -70,6 +75,7 @@ impl Backoff {
         }
         match ended {
             Disconnect::Drain => random_up_to(DRAIN_JITTER),
+            Disconnect::Redirect => crate::cell::jitter(),
             Disconnect::Dropped => {
                 let ceiling = BASE
                     .checked_mul(1u32 << self.attempt.min(16))
@@ -83,7 +89,7 @@ impl Backoff {
 }
 
 /// A uniformly random duration in `0..=max`, millisecond resolution.
-fn random_up_to(max: Duration) -> Duration {
+pub(crate) fn random_up_to(max: Duration) -> Duration {
     let mut bytes = [0u8; 8];
     if getrandom::getrandom(&mut bytes).is_err() {
         return max / 2;
