@@ -1,6 +1,17 @@
 //! Apps an employee builds: where each one's files are served from, and the
-//! developer pack (`app_reload`, `app_status`, `app_console`) offered under
-//! App Developer mode.
+//! developer pack (`app_reload`, `app_status`, `app_console`, and publishing
+//! with `app_screenshot` / `app_listing` / `app_submit`).
+//!
+//! Who gets the pack, by one rule ([`withheld`], [`may_work_on`]):
+//! - The owner's own app (made on this bot, not installed from the
+//!   marketplace: [`is_own_app`]) always builds and publishes ITSELF. No
+//!   setting is needed for an app to reload, check, read the console of,
+//!   screenshot and publish its own page.
+//! - App Developer mode widens it to teammates: every app employee and
+//!   whoever works beside one may use the pack on any of the owner's apps,
+//!   and the page grows the floating console.
+//! - An app installed from the marketplace never gets developer tooling in
+//!   its page, mode or not (the server's `serve_app_ui`).
 //!
 //! `agents.app_ui_path` is the one record of an app's location: it is what
 //! the server serves the app from. Every employee is told it for each app
@@ -21,8 +32,8 @@ use crate::web_tool::Broadcaster;
 pub const APP_RELOAD: &str = "app_reload";
 pub const APP_STATUS: &str = "app_status";
 pub const APP_CONSOLE: &str = "app_console";
-/// The developer pack: offered only under App Developer mode, and only to
-/// app employees and their teammates.
+/// The developer pack: offered to the owner's own app for itself, and under
+/// App Developer mode to app employees and their teammates.
 pub const TOOLS: [&str; 6] = [
     APP_RELOAD,
     APP_STATUS,
@@ -58,6 +69,60 @@ pub fn app_location(row: &db::models::Agent) -> Option<String> {
     served_dir(row).map(|dir| location_line(&row.name, dir))
 }
 
+/// Whether an app is the owner's own: made on this bot (a loose package in
+/// `user/agents/`, or a database-only row), never one installed from the
+/// marketplace (a sealed `.napp`, or a package under `nebo/agents/`). Only
+/// the owner's own apps carry developer tooling and build themselves.
+pub fn is_own_app(row: &db::models::Agent) -> bool {
+    if row.is_app.unwrap_or(0) == 0 {
+        return false;
+    }
+    let installed_root = config::nebo_dir().ok().map(|d| d.join("agents"));
+    !row
+        .napp_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .map(Path::new)
+        .is_some_and(|p| {
+            p.extension().is_some_and(|e| e == "napp")
+                || installed_root.as_deref().is_some_and(|root| p.starts_with(root))
+        })
+}
+
+/// Whether `caller` may use the developer pack on `app`: only ever one of
+/// the owner's own apps, and with App Developer mode off only when the
+/// caller is that app.
+pub fn may_work_on(store: &db::Store, caller: &str, app: &db::models::Agent) -> bool {
+    is_own_app(app) && (store.app_developer_mode() || (!caller.is_empty() && app.id == caller))
+}
+
+/// The refusal for a call [`may_work_on`] turns down.
+pub fn not_yours(app: &db::models::Agent) -> String {
+    if !is_own_app(app) {
+        return format!(
+            "{} was installed from the marketplace: its page is its maker's, so it is not built or published from here.",
+            app.name
+        );
+    }
+    format!(
+        "App Developer mode is off, so an app works only on itself here and {} is not you. The owner turns the mode \
+         on in Settings → Developer to let employees work on each other's apps.",
+        app.name
+    )
+}
+
+/// What an app employee that builds itself reads about the pack.
+pub fn self_build_line(row: &db::models::Agent) -> Option<String> {
+    is_own_app(row).then(|| {
+        "You build and publish yourself. After changing your files, app_reload refreshes every open view of you and \
+         app_console shows what you logged; app_status says what is served. When the owner asks to publish you \
+         (\"publish yourself\"), draft the listing with app_listing, add screenshots with app_screenshot, show it, \
+         and send it with app_submit once they say so."
+            .to_string()
+    })
+}
+
 /// The apps on this bot: every app row with a served folder.
 fn apps(store: &db::Store) -> Vec<db::models::Agent> {
     store
@@ -68,11 +133,18 @@ fn apps(store: &db::Store) -> Vec<db::models::Agent> {
         .collect()
 }
 
-/// The developer tools a seat is not offered: all of them unless App
-/// Developer mode is on and the seat works on an app (it is one, it reports
-/// to one or one reports to it, or it shares a team with one).
+/// The developer tools a seat is not offered: none when the seat is one of
+/// the owner's own apps (it builds itself), or when App Developer mode is
+/// on and the seat works on an app (it is one, it reports to one or one
+/// reports to it, or it shares a team with one); all of them otherwise.
 pub fn withheld(store: &db::Store, agent_id: &str) -> Vec<String> {
-    if store.app_developer_mode() && works_on_apps(store, agent_id) {
+    let builds_itself = !agent_id.is_empty()
+        && store
+            .get_agent(agent_id)
+            .ok()
+            .flatten()
+            .is_some_and(|a| is_own_app(&a));
+    if builds_itself || (store.app_developer_mode() && works_on_apps(store, agent_id)) {
         Vec::new()
     } else {
         TOOLS.iter().map(|t| t.to_string()).collect()
@@ -86,7 +158,7 @@ fn works_on_apps(store: &db::Store, agent_id: &str) -> bool {
     let all = store.list_agents(1000, 0).unwrap_or_default();
     let app_ids: HashSet<&str> = all
         .iter()
-        .filter(|a| served_dir(a).is_some())
+        .filter(|a| served_dir(a).is_some() && is_own_app(a))
         .map(|a| a.id.as_str())
         .collect();
     if app_ids.is_empty() {
@@ -169,19 +241,27 @@ struct AppDev {
 }
 
 impl AppDev {
-    /// The app a call names, or the error the model reads: App Developer
-    /// mode off, no such app, or an employee that is not an app.
-    fn app(&self, input: &Value) -> Result<db::models::Agent, String> {
-        if !self.store.app_developer_mode() {
-            return Err(
-                "App Developer mode is off. The owner turns it on in Settings → Developer.".into(),
-            );
+    /// The app a call names, or the error the model reads: no such app, an
+    /// employee that is not an app, or (App Developer mode off) an app that
+    /// is not the caller itself.
+    fn app(&self, ctx: &ToolContext, input: &Value) -> Result<db::models::Agent, String> {
+        let caller = types::keyparser::extract_agent_id(&ctx.session_key);
+        let row = self.named_app(input, &caller)?;
+        if may_work_on(&self.store, &caller, &row) {
+            Ok(row)
+        } else {
+            Err(not_yours(&row))
         }
+    }
+
+    /// The app `input` names, else the caller itself.
+    fn named_app(&self, input: &Value, caller: &str) -> Result<db::models::Agent, String> {
         let label = input
             .get("app")
             .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .trim();
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .unwrap_or(caller);
         let names = || {
             apps(&self.store)
                 .into_iter()
@@ -205,9 +285,8 @@ fn app_schema() -> Value {
     json!({
         "type": "object",
         "properties": {
-            "app": { "type": "string", "description": "The app employee's name or id." }
-        },
-        "required": ["app"]
+            "app": { "type": "string", "description": "The app employee's name or id; leave it out when you are the app." }
+        }
     })
 }
 
@@ -251,9 +330,9 @@ impl DynTool for AppReloadTool {
         format!("Reloaded {}", app_label(input))
     }
 
-    fn execute_dyn<'a>(&'a self, _ctx: &'a ToolContext, input: Value) -> Fut<'a> {
+    fn execute_dyn<'a>(&'a self, ctx: &'a ToolContext, input: Value) -> Fut<'a> {
         Box::pin(async move {
-            let app = match self.0.app(&input) {
+            let app = match self.0.app(ctx, &input) {
                 Ok(a) => a,
                 Err(e) => return ToolResult::error(e),
             };
@@ -302,9 +381,9 @@ impl DynTool for AppStatusTool {
         format!("Checked {}", app_label(input))
     }
 
-    fn execute_dyn<'a>(&'a self, _ctx: &'a ToolContext, input: Value) -> Fut<'a> {
+    fn execute_dyn<'a>(&'a self, ctx: &'a ToolContext, input: Value) -> Fut<'a> {
         Box::pin(async move {
-            let app = match self.0.app(&input) {
+            let app = match self.0.app(ctx, &input) {
                 Ok(a) => a,
                 Err(e) => return ToolResult::error(e),
             };
@@ -656,10 +735,11 @@ mod tests {
         );
     }
 
-    /// The developer pack is withheld while App Developer mode is off; on,
-    /// it is offered to the app, its teammate, and nobody else.
+    /// The owner's own app always has the developer pack for itself; App
+    /// Developer mode opens it to its teammate, and nobody else ever gets
+    /// it. An app installed from the marketplace never does.
     #[test]
-    fn tools_are_withheld_unless_the_mode_is_on_and_the_seat_works_on_an_app() {
+    fn an_app_builds_itself_and_the_mode_opens_the_pack_to_its_team() {
         let tmp = tempfile::tempdir().unwrap();
         let store = store(tmp.path());
         app_row(&store, "app-1", "Puzzler", &tmp.path().join("ui"));
@@ -702,11 +782,13 @@ mod tests {
             )
             .unwrap();
 
-        assert_eq!(
-            withheld(&store, "app-1").len(),
-            TOOLS.len(),
-            "mode off: withheld from the app too"
-        );
+        app_row(&store, "app-9", "Bought Game", &tmp.path().join("ui9"));
+        store
+            .set_agent_napp_path("app-9", "/data/nebo/agents/bought-game.napp")
+            .unwrap();
+        assert!(withheld(&store, "app-1").is_empty(), "mode off: the app builds itself");
+        assert_eq!(withheld(&store, "dev-1").len(), TOOLS.len(), "mode off: not its teammate");
+        assert_eq!(withheld(&store, "app-9").len(), TOOLS.len(), "never an installed app");
         store
             .update_settings(
                 None,
@@ -728,6 +810,7 @@ mod tests {
             TOOLS.len(),
             "not on the app's team"
         );
+        assert_eq!(withheld(&store, "app-9").len(), TOOLS.len(), "never an installed app, mode on");
     }
 
     /// A web file written for an app outside its served folder gets the

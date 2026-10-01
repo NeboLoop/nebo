@@ -102,6 +102,7 @@
   onsettings={ctx.openSettings}
   memoryMode={ctx.agent?.memoryMode ?? 'single'}
   isApp={ctx.agent?.isApp ?? false}
+  ownApp={ctx.agent?.ownApp ?? false}
   onopenapp={() => launchApp(ctx.agentId, ctx.agent?.name ?? 'App', { fullscreen: ctx.agent?.appWindow?.fullscreen })}
 
   placeholder={$t('chat.startNewThreadWith', { values: { name: agent?.name ?? '' } })}

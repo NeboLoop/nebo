@@ -400,6 +400,7 @@
           // A linked employee's persona is the linked bot's: read there, not edited here.
           editable: !a.nappPath && a.kind !== 'linked',
           isApp: a.isApp ?? false,
+          ownApp: (a.isApp ?? false) && a.source !== 'installed',
           appWindow: a.appWindow,
           kind: a.kind,
           offline: a.offline ?? false,

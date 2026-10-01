@@ -128,6 +128,8 @@ export interface AgentDisplay {
 	handle?: string
 	editable?: boolean
 	isApp?: boolean
+	/** An app made on this bot, not installed from the marketplace: it builds and publishes itself. */
+	ownApp?: boolean
 	/** Apps only: how the page asks to be shown (fullscreen, orientation, motion). */
 	appWindow?: AppWindow
 	/** "linked" for an employee hired from a linked bot. */

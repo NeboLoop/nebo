@@ -1,8 +1,10 @@
 (function () {
-  // App Developer mode's console, injected into an app's entry HTML by the
-  // bot (handlers/apps.rs). Self-contained: no network loads, and every
-  // style lives in this element's shadow root under one prefixed root, so
-  // it can't touch the app and the app can't touch it.
+  // The developer script, injected into the entry HTML of the owner's own
+  // apps by the bot (handlers/apps.rs): console capture and reload always,
+  // the floating console under App Developer mode. Self-contained: no
+  // network loads, and every style lives in this element's shadow root
+  // under one prefixed root, so it can't touch the app and the app can't
+  // touch it.
   if (window.__neboDevtools) return;
   var m = location.pathname.match(/^(.*?)\/apps\/([^/]+)\/ui(?:\/|$)/);
   if (!m) return;
@@ -456,6 +458,9 @@
     render();
   }
 
+  // The floating console is App Developer mode's; without it the page
+  // still sends its console to the employee and reloads when asked.
+  if (CFG.console === false) return;
   if (document.body) mount();
   else document.addEventListener('DOMContentLoaded', mount);
 })();

@@ -120,6 +120,15 @@
       await checkForUpdates();
     };
 
+    // The desktop app window's "Publish This App" menu item: open the app's
+    // chat, which starts the guided publish with the app's own employee.
+    (window as any).__NEBO_PUBLISH_APP__ = async (agentId: string) => {
+      if (!agentId) return;
+      const { publishRequest } = await import('$lib/stores/appPublish');
+      publishRequest.set(agentId);
+      await goto(`/${encodeURIComponent(agentId)}/threads`);
+    };
+
     // Connect WebSocket once onboarding is done, then attach event listeners
     const unsub = onboardingComplete.subscribe(complete => {
       if (complete) {
@@ -144,6 +153,7 @@
       window.removeEventListener('pageshow', onPageShow);
       clearInterval(splashWatchdog);
       delete (window as any).__NEBO_CHECK_UPDATE__;
+      delete (window as any).__NEBO_PUBLISH_APP__;
       import('$lib/websocket/listeners').then(({ detachWebSocketListeners }) => {
         detachWebSocketListeners();
       });

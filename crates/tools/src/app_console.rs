@@ -147,8 +147,8 @@ impl AppConsoleTool {
         Self { store }
     }
 
-    /// The app named `app` (its id or its name), as `(id, name)`.
-    fn resolve(&self, app: &str) -> Result<(String, String), String> {
+    /// The app named `app` (its id or its name).
+    fn resolve(&self, app: &str) -> Result<db::models::Agent, String> {
         let app = app.trim();
         if app.is_empty() {
             return Err("Name the app: app_console(app: \"<app name or id>\").".into());
@@ -165,7 +165,7 @@ impl AppConsoleTool {
             }
         };
         match agent {
-            Some(a) if a.is_app.unwrap_or(0) != 0 => Ok((a.id, a.name)),
+            Some(a) if a.is_app.unwrap_or(0) != 0 => Ok(a),
             Some(a) => Err(format!("{} is not an app.", a.name)),
             None => Err(format!("No app named \"{app}\".")),
         }
@@ -189,10 +189,9 @@ impl DynTool for AppConsoleTool {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "app": {"type": "string", "description": "The app's name or id."},
+                "app": {"type": "string", "description": "The app's name or id; leave it out when you are the app."},
                 "since": {"type": "integer", "description": "Only entries after this number (from the last call)."}
-            },
-            "required": ["app"]
+            }
         })
     }
 
@@ -214,19 +213,22 @@ impl DynTool for AppConsoleTool {
 
     fn execute_dyn<'a>(
         &'a self,
-        _ctx: &'a ToolContext,
+        ctx: &'a ToolContext,
         input: serde_json::Value,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolResult> + Send + 'a>> {
         Box::pin(async move {
-            if !self.store.app_developer_mode() {
-                return ToolResult::error(
-                    "App Developer mode is off. The owner turns it on in Settings → Developer.",
-                );
-            }
-            let (id, name) = match self.resolve(input["app"].as_str().unwrap_or("")) {
+            // The app named, else the caller itself; with App Developer mode
+            // off an app reads only its own console.
+            let caller = types::keyparser::extract_agent_id(&ctx.session_key);
+            let named = input["app"].as_str().map(str::trim).filter(|a| !a.is_empty()).unwrap_or(&caller);
+            let app = match self.resolve(named) {
                 Ok(v) => v,
                 Err(e) => return ToolResult::error(e),
             };
+            if !crate::app_dev::may_work_on(&self.store, &caller, &app) {
+                return ToolResult::error(crate::app_dev::not_yours(&app));
+            }
+            let (id, name) = (app.id, app.name);
             let since = input["since"].as_u64();
             ToolResult::ok(render(&name, &recent(&id, since, MAX_RETURNED), since))
         })
