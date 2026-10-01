@@ -36,6 +36,8 @@ const FILE_KEYS: &[&str] = &[
     "check_plan",
     "exit_plan_mode",
     "edit_notebook",
+    // Makes image and video files (and spends the plan's balance).
+    "generate_media",
 ];
 /// Looking at the screen.
 const CAPTURE_KEYS: &[&str] = &["desktop_screenshot", "desktop_see"];

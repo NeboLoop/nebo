@@ -648,20 +648,10 @@ impl WebCore {
         ))
     }
 
-    /// Bearer token for Janus calls. Parity with the LLM provider
-    /// (build_providers): the Janus token is the NeboAI token, resolved per
-    /// call through `auth::neboai_token` (it rotates on every comms connect) —
-    /// a `janus` provider row never exists, so looking one up sent a bare
-    /// bot_id and Janus replied 401 on every search, silently degrading tier 0
-    /// to the scrape tiers. Shared by search and extract so the auth
-    /// construction can never drift between the two. The bool is whether the
-    /// token came from a real `neboai` profile — the bare bot_id fallback is
-    /// a known 401 cause, so callers surface it in their failure reasons.
+    /// Bearer token for Janus calls: the one Janus auth (`crate::janus`),
+    /// shared by search, extract and media generation.
     fn janus_bearer(&self, cfg: &JanusSearchConfig) -> (String, bool) {
-        match self.store.as_ref().and_then(|s| auth::neboai_token(s)) {
-            Some(key) => (key, true),
-            None => (cfg.bot_id.clone(), false),
-        }
+        crate::janus::bearer(self.store.as_deref(), &cfg.bot_id)
     }
 
     /// Search via the Janus gateway's `/v1/search` endpoint. Janus owns the
