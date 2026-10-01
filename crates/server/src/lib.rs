@@ -841,6 +841,30 @@ fn installed_here(state: &AppState, tool_id: &str, slug: &str, name: &str, artif
     }
 }
 
+/// Where a release the hub announces goes: the background update checker,
+/// which looks for it at a random moment inside the announcement's window
+/// (`updater::push`). Unset where nothing self-updates (dev builds, cloud
+/// pods, which follow the image the platform pins), so there the
+/// announcement is dropped.
+static UPDATE_NUDGES: std::sync::OnceLock<tokio::sync::mpsc::UnboundedSender<updater::Nudge>> =
+    std::sync::OnceLock::new();
+
+/// Takes a hub release announcement (`software_update` on the installs
+/// stream). Returns whether `content` was one.
+fn take_release_announcement(content: &str) -> bool {
+    let Some(announcement) = updater::Announcement::parse(content) else {
+        return false;
+    };
+    match UPDATE_NUDGES.get() {
+        Some(nudges) => {
+            tracing::info!(product = %announcement.product, version = %announcement.version, urgent = announcement.urgent, "a release was announced");
+            let _ = nudges.send(updater::Nudge::Announced(announcement));
+        }
+        None => tracing::debug!(version = %announcement.version, "a release was announced; this copy doesn't update itself"),
+    }
+    true
+}
+
 /// Echo-loop breaker for hub install events: at most two installs of the same
 /// artifact per minute from events. ponytail: one process-wide map, pruned on
 /// use; per-bot state is the process.
@@ -877,6 +901,28 @@ mod install_echo_tests {
         assert!(!install_event_allowed(id, t0 + Duration::from_secs(2)), "third within a minute is the loop");
         assert!(install_event_allowed("another-artifact", t0 + Duration::from_secs(2)), "others unaffected");
         assert!(install_event_allowed(id, t0 + Duration::from_secs(62)), "allowed again after the window");
+    }
+}
+
+#[cfg(test)]
+mod release_announcement_tests {
+    use super::{UPDATE_NUDGES, take_release_announcement};
+
+    #[test]
+    fn an_announcement_reaches_the_update_checker_and_nothing_else_does() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        UPDATE_NUDGES.set(tx).unwrap();
+        assert!(take_release_announcement(
+            r#"{"type":"software_update","product":"nebo","version":"0.17.0","urgent":true,"window_s":120}"#
+        ));
+        match rx.try_recv().unwrap() {
+            updater::Nudge::Announced(a) => {
+                assert_eq!((a.product.as_str(), a.version.as_str(), a.urgent, a.window_s), ("nebo", "0.17.0", true, 120));
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        assert!(!take_release_announcement(r#"{"type":"tool_installed","tool_id":"t"}"#), "install events go on to the installer");
+        assert!(rx.try_recv().is_err());
     }
 }
 
@@ -2498,6 +2544,9 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
             .set_message_handler(Arc::new(move |msg: comm::CommMessage| {
                 let st = handler_state.clone();
                 if msg.topic == "installs" {
+                    if take_release_announcement(&msg.content) {
+                        return;
+                    }
                     if let Some(review) = app_listing::is_review(&msg.content) {
                         tokio::spawn(async move {
                             app_listing::handle_review(&st, review).await;
@@ -2950,6 +2999,15 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
         let download_hub = state.hub.clone();
         let update_store = state.store.clone();
         let update_pending = state.update_pending.clone();
+        // Releases the hub announces nudge the checker; one that isn't
+        // urgent waits until no run is going.
+        let (nudge_tx, nudges) = tokio::sync::mpsc::unbounded_channel();
+        let _ = UPDATE_NUDGES.set(nudge_tx);
+        let runs = state.run_registry.clone();
+        let idle: updater::IdleFn = Box::new(move || {
+            let runs = runs.clone();
+            Box::pin(async move { runs.list_top_level().await.is_empty() })
+        });
         tokio::spawn(async move {
             let checker = updater::BackgroundChecker::new(
                 updater::NEBO,
@@ -3032,7 +3090,8 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
                         });
                     }
                 },
-            );
+            )
+            .nudged_by(nudges, idle);
             let cancel = tokio_util::sync::CancellationToken::new();
             checker.run(cancel).await;
         });
@@ -4348,6 +4407,10 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
 
     // Route install events to napp registry
     if msg.topic == "installs" {
+        // A release NeboAI announced: the update checker looks for it.
+        if take_release_announcement(&msg.content) {
+            return;
+        }
         // A published app's review outcome (`app_listing`).
         if let Some(review) = app_listing::is_review(&msg.content) {
             app_listing::handle_review(&state, review).await;

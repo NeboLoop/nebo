@@ -17,6 +17,7 @@ tokio-util = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }
 futures = { workspace = true }
+rand = { workspace = true }
 uuid = { workspace = true }
 libc = "0.2"
 ed25519-dalek = "2"

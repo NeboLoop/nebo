@@ -1,4 +1,7 @@
 mod apply;
+pub mod push;
+
+pub use push::{Announcement, Nudge};
 
 use std::borrow::Cow;
 use std::sync::Mutex;
@@ -414,13 +417,24 @@ pub fn set_pre_apply_hook(f: Box<dyn Fn() + Send>) {
     apply::set_pre_apply_hook(f);
 }
 
-/// Periodically checks for updates in the background.
+/// Whether nothing is running that an update would interrupt (an agent turn,
+/// a run). Asked before a release that isn't urgent is acted on.
+pub type IdleFn = Box<dyn Fn() -> futures::future::BoxFuture<'static, bool> + Send + Sync>;
+
+/// How long after it starts the checker first looks: the app boots first.
+const FIRST_CHECK: Duration = Duration::from_secs(30);
+
+/// Periodically checks for updates in the background, and sooner when nudged
+/// ([`BackgroundChecker::nudged_by`]): a release the hub announced, or the
+/// comms connection coming up. Every look is the same [`check`]; what the
+/// caller does with a newer release (download, verify, stage) is unchanged.
 pub struct BackgroundChecker {
     feed: Feed,
     version: String,
     interval: Duration,
     notify: Box<dyn Fn(CheckResult) + Send + Sync>,
     last_notified: Mutex<Option<String>>,
+    nudges: Mutex<Option<(tokio::sync::mpsc::UnboundedReceiver<Nudge>, IdleFn)>>,
 }
 
 impl BackgroundChecker {
@@ -436,25 +450,55 @@ impl BackgroundChecker {
             interval,
             notify: Box::new(notify),
             last_notified: Mutex::new(None),
+            nudges: Mutex::new(None),
         }
     }
 
-    /// Run the periodic check loop. Blocks until the token is cancelled.
+    /// Also looks when nudged: each [`Nudge`] on `nudges` is scheduled the
+    /// way [`push`] describes, and `idle` says whether nothing is running.
+    pub fn nudged_by(self, nudges: tokio::sync::mpsc::UnboundedReceiver<Nudge>, idle: IdleFn) -> Self {
+        *self.nudges.lock().unwrap() = Some((nudges, idle));
+        self
+    }
+
+    /// Run the check loop. Blocks until the token is cancelled.
     pub async fn run(&self, cancel: tokio_util::sync::CancellationToken) {
-        // Initial delay: let the app boot
-        tokio::select! {
-            _ = tokio::time::sleep(Duration::from_secs(30)) => {},
-            _ = cancel.cancelled() => return,
-        }
+        use rand::Rng;
+        use tokio::time::{Instant, sleep_until};
 
-        self.check_once().await;
-
-        let mut interval = tokio::time::interval(self.interval);
-        interval.tick().await; // consume immediate tick
+        let (mut nudges, idle) = match self.nudges.lock().unwrap().take() {
+            Some((rx, idle)) => (Some(rx), Some(idle)),
+            None => (None, None),
+        };
+        let mut schedule = push::Schedule::new(&self.feed.binary, &self.version);
+        let mut next_poll = Instant::now() + FIRST_CHECK;
         loop {
+            let due = schedule.due();
             tokio::select! {
-                _ = interval.tick() => self.check_once().await,
                 _ = cancel.cancelled() => return,
+                _ = sleep_until(next_poll) => {
+                    self.check_once().await;
+                    schedule.checked(Instant::now());
+                    next_poll = Instant::now() + self.interval;
+                }
+                nudge = async { nudges.as_mut()?.recv().await }, if nudges.is_some() => match nudge {
+                    Some(nudge) => {
+                        let rand = rand::thread_rng().gen_range(0.0..1.0);
+                        schedule.nudge(nudge, Instant::now(), rand);
+                    }
+                    // The sender is gone: polls only from here on.
+                    None => nudges = None,
+                },
+                _ = sleep_until(due.unwrap_or(next_poll)), if due.is_some() => {
+                    let idle = match &idle {
+                        Some(idle) => idle().await,
+                        None => true,
+                    };
+                    if schedule.fire(Instant::now(), idle) == push::Fire::Check {
+                        self.check_once().await;
+                        schedule.checked(Instant::now());
+                    }
+                }
             }
         }
     }
@@ -858,5 +902,79 @@ mod tests {
         verify(&r)
             .await
             .expect("an unsigned feed verifies by hash only");
+    }
+
+    // ── the checker, nudged ──────────────────────────────────────────
+
+    /// A feed whose version.json points at v2.0.0, and a checker on it at
+    /// 1.0.0 nudged by the returned sender; `idle` answers its idle question.
+    /// Every notified release lands on the returned receiver.
+    async fn nudged_checker(
+        idle: bool,
+    ) -> (
+        tokio::sync::mpsc::UnboundedSender<Nudge>,
+        tokio::sync::mpsc::UnboundedReceiver<String>,
+        tokio_util::sync::CancellationToken,
+    ) {
+        let version = serde_json::json!({ "version": "v2.0.0" }).to_string().into_bytes();
+        let base = serve(vec![("/version.json".into(), version)]).await;
+        let feed = Feed {
+            base_url: base.into(),
+            binary: "nebo-link".into(),
+            checksums: "SHA256SUMS".into(),
+            signing_key: None,
+        };
+        let (found_tx, found) = tokio::sync::mpsc::unbounded_channel();
+        let (nudge, nudges) = tokio::sync::mpsc::unbounded_channel();
+        let checker = BackgroundChecker::new(feed, "1.0.0".into(), Duration::from_secs(6 * 3600), move |r| {
+            let _ = found_tx.send(r.latest_version);
+        })
+        .nudged_by(nudges, Box::new(move || Box::pin(async move { idle })));
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let stop = cancel.clone();
+        tokio::spawn(async move { checker.run(stop).await });
+        (nudge, found, cancel)
+    }
+
+    fn announcement(product: &str, urgent: bool) -> Nudge {
+        Nudge::Announced(Announcement {
+            product: product.into(),
+            version: "2.0.0".into(),
+            urgent,
+            window_s: 0,
+        })
+    }
+
+    async fn found_within(found: &mut tokio::sync::mpsc::UnboundedReceiver<String>, secs: u64) -> Option<String> {
+        tokio::time::timeout(Duration::from_secs(secs), found.recv()).await.ok().flatten()
+    }
+
+    #[tokio::test]
+    async fn an_announcement_looks_at_once_instead_of_at_the_next_poll() {
+        let (nudge, mut found, cancel) = nudged_checker(false).await;
+        nudge.send(announcement("nebo-link", true)).unwrap();
+        assert_eq!(found_within(&mut found, 10).await.as_deref(), Some("v2.0.0"));
+        cancel.cancel();
+    }
+
+    #[tokio::test]
+    async fn another_products_announcement_is_ignored() {
+        let (nudge, mut found, cancel) = nudged_checker(true).await;
+        nudge.send(announcement("nebo", true)).unwrap();
+        assert_eq!(found_within(&mut found, 3).await, None, "nothing looks before the first poll");
+        cancel.cancel();
+    }
+
+    #[tokio::test]
+    async fn a_normal_announcement_waits_while_something_runs() {
+        let (nudge, mut found, cancel) = nudged_checker(false).await;
+        nudge.send(announcement("nebo-link", false)).unwrap();
+        assert_eq!(found_within(&mut found, 3).await, None, "busy: it waits");
+        cancel.cancel();
+
+        let (nudge, mut found, cancel) = nudged_checker(true).await;
+        nudge.send(announcement("nebo-link", false)).unwrap();
+        assert_eq!(found_within(&mut found, 10).await.as_deref(), Some("v2.0.0"), "idle: it looks");
+        cancel.cancel();
     }
 }
