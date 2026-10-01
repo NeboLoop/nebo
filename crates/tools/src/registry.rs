@@ -1274,6 +1274,18 @@ impl Registry {
         self.register(Box::new(crate::app_publish::AppListingTool(publisher.clone()))).await;
         self.register(Box::new(crate::app_publish::AppSubmitTool(publisher))).await;
 
+        // Images and video made through Janus (`generate_media`), saved into
+        // an app's folder or the workspace.
+        if let Ok(cfg) = config::Config::load_embedded() {
+            let media = crate::media_tool::Media::new(
+                cfg.neboai.janus_url.clone(),
+                config::read_bot_id().unwrap_or_default(),
+                Some(store.clone()),
+            );
+            self.register(Box::new(crate::media_tool::GenerateMediaTool::new(media, store.clone())))
+                .await;
+        }
+
         // The packs this company works by (R8): create, add, list, show, remove.
         self.register(Box::new(crate::pack_tool::PackTool)).await;
 
