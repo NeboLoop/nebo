@@ -30,7 +30,7 @@ pub use pack::{
     commit_change, copy_tree, load_pack, scan_packs, unified_diff, watch_packs,
 };
 pub use registry::{Registry, RegistryConfig};
-pub use user_agent::{AgentPackage, AppFields, read_ui_files, write_user_agent};
+pub use user_agent::{AgentPackage, AppFields, free_agent_dir, read_ui_files, write_user_agent};
 pub use runtime::{Process, Runtime};
 pub use plugin_runtime::PluginRuntime;
 pub use signing::{RevocationChecker, SigningKeyProvider, builtin_verifying_key};

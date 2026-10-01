@@ -574,10 +574,12 @@ pub async fn list_agents(
     })))
 }
 
-/// The directory a user-owned employee's package lives in: `user/agents/<dir
-/// name>`, the ONE place a user agent's files go.
+/// The directory a NEW user-owned employee's package goes in: `user/agents/
+/// <dir name>`, or the next free "<dir name> N" when a renamed employee still
+/// holds that folder. Named once at creation; a rename never moves it, and
+/// every later write goes through the row's `napp_path`.
 fn user_agent_dir(name: &str) -> Option<std::path::PathBuf> {
-    Some(config::user_dir().ok()?.join("agents").join(agent_dir_name(name)))
+    Some(napp::free_agent_dir(&config::user_dir().ok()?.join("agents"), &agent_dir_name(name)))
 }
 
 /// Write a user-owned employee's package to `user/agents/<name>/` and record
@@ -3685,7 +3687,9 @@ pub async fn duplicate_agent(
         .map(str::trim)
         .filter(|p| !p.is_empty())
         .map(std::path::PathBuf::from)
-        .or_else(|| user_agent_dir(&source.name));
+        .or_else(|| {
+            config::user_dir().ok().map(|d| d.join("agents").join(agent_dir_name(&source.name)))
+        });
     let (source_app, source_ui) = match source_dir {
         Some(dir) => (
             std::fs::read_to_string(dir.join("manifest.json"))

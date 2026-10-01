@@ -1006,6 +1006,19 @@ impl PersonaTool {
         crate::team::resolve_agent(&self.store, name)
     }
 
+    /// The folder an employee's package lives in: the row's `napp_path`,
+    /// recorded when it was made and never derived again. A rename changes
+    /// only the display name, so the name is the folder only for a row that
+    /// never recorded one.
+    fn package_dir(&self, row: &db::models::Agent) -> std::path::PathBuf {
+        row.napp_path
+            .as_deref()
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| self.agent_loader.user_dir().join(&row.name))
+    }
+
     /// Fields of an update that change what the job is.
     const JOB_FIELDS: &[&str] =
         &["description", "instructions", "agent_md", "automations", "add_automations", "update_automation"];
@@ -1175,7 +1188,7 @@ impl PersonaTool {
         if input["description"].as_str().unwrap_or("").is_empty() && input["agent_md"].as_str().unwrap_or("").is_empty() {
             return ToolResult::error("either 'agent_md' or 'description' is required to create an employee");
         }
-        if self.agent_loader.user_dir().join(name).exists() {
+        if self.store.get_agent_by_name(name).ok().flatten().is_some() {
             return ToolResult::error(format!(
                 "An employee named '{}' already exists. Change it with update_employee, or choose another name.",
                 name
@@ -1393,14 +1406,15 @@ impl PersonaTool {
             None => None,
         };
 
-        let agent_dir = self.agent_loader.user_dir().join(name);
-        if agent_dir.exists() {
+        if self.store.get_agent_by_name(name).ok().flatten().is_some() {
             return ToolResult::error(format!(
-                "Agent '{}' already exists at {}. Use action: \"update\" to change it, or choose another name.",
-                name,
-                agent_dir.display()
+                "Agent '{}' already exists. Use action: \"update\" to change it, or choose another name.",
+                name
             ));
         }
+        // A free folder: one named for the employee may still hold another
+        // employee that was renamed (a rename never moves its folder).
+        let agent_dir = napp::free_agent_dir(self.agent_loader.user_dir(), name);
 
         if let Err(e) = std::fs::create_dir_all(&agent_dir) {
             return ToolResult::error(format!("Failed to create directory: {}", e));
@@ -1651,26 +1665,12 @@ impl PersonaTool {
         let mut current_frontmatter = Self::stored_frontmatter(&db_agent.frontmatter);
         let mut changes = Vec::new();
 
-        // Update name (rename)
+        // Update name (rename): the display name only. The folder stays
+        // where it is (`package_dir`); moving it with the name once left a
+        // row pointing at a folder that no longer existed.
+        let agent_dir = self.package_dir(&db_agent);
         if let Some(new_name) = input["new_name"].as_str() {
             if !new_name.is_empty() && new_name != current_name {
-                // Rename filesystem directory if it exists
-                let old_dir = self.agent_loader.user_dir().join(&current_name);
-                let new_dir = self.agent_loader.user_dir().join(new_name);
-                if old_dir.exists() {
-                    if new_dir.exists() {
-                        return ToolResult::error(format!(
-                            "Cannot rename: '{}' already exists",
-                            new_name
-                        ));
-                    }
-                    if let Err(e) = std::fs::rename(&old_dir, &new_dir) {
-                        return ToolResult::error(format!("Failed to rename directory: {}", e));
-                    }
-                    let _ = self
-                        .store
-                        .set_agent_napp_path(agent_id, &new_dir.to_string_lossy());
-                }
                 changes.push(format!("renamed to '{}'", new_name));
                 current_name = new_name.to_string();
             }
@@ -1698,7 +1698,6 @@ impl PersonaTool {
                 }
                 current_md = candidate;
                 // Write to filesystem
-                let agent_dir = self.agent_loader.user_dir().join(&current_name);
                 if agent_dir.exists() {
                     let _ = std::fs::write(agent_dir.join("AGENT.md"), &current_md);
                 }
@@ -1720,7 +1719,6 @@ impl PersonaTool {
                 ));
             }
             current_md = candidate;
-            let agent_dir = self.agent_loader.user_dir().join(&current_name);
             if agent_dir.exists() {
                 let _ = std::fs::write(agent_dir.join("AGENT.md"), &current_md);
             }
@@ -1755,7 +1753,6 @@ impl PersonaTool {
                     serde_json::from_str(&current_frontmatter).unwrap_or(serde_json::json!({}));
                 fm["inputs"] = schema.clone();
                 current_frontmatter = fm.to_string();
-                let agent_dir = self.agent_loader.user_dir().join(&current_name);
                 if let Err(e) = Self::validated_frontmatter(&current_frontmatter) {
                     return ToolResult::error(e);
                 }
@@ -1771,7 +1768,6 @@ impl PersonaTool {
         // `app` block changes only the fields it names, and a manifest
         // already on disk keeps everything the writer is not given.
         if input.get("app").is_some() || input.get("ui").is_some() || input.get("ui_jsx").is_some() {
-            let agent_dir = self.agent_loader.user_dir().join(&current_name);
             if !agent_dir.is_dir() {
                 return ToolResult::error(format!(
                     "'{}' has no directory on disk (it lives in the database), so app and ui cannot be written. Nothing was changed.",
@@ -1908,7 +1904,6 @@ impl PersonaTool {
                     }
 
                     current_frontmatter = fm.to_string();
-                    let agent_dir = self.agent_loader.user_dir().join(&current_name);
                     if let Err(e) = Self::validated_frontmatter(&current_frontmatter) {
                         return ToolResult::error(e);
                     }
@@ -2008,7 +2003,6 @@ impl PersonaTool {
                 current_frontmatter = existing.to_string();
 
                 // Write to filesystem
-                let agent_dir = self.agent_loader.user_dir().join(&current_name);
                 if let Err(e) = Self::validated_frontmatter(&current_frontmatter) {
                     return ToolResult::error(e);
                 }
@@ -2030,7 +2024,6 @@ impl PersonaTool {
                 current_frontmatter = existing.to_string();
 
                 // Write to filesystem so agent.json matches the DB
-                let agent_dir = self.agent_loader.user_dir().join(&current_name);
                 if let Err(e) = Self::validated_frontmatter(&current_frontmatter) {
                     return ToolResult::error(e);
                 }
@@ -2082,7 +2075,6 @@ impl PersonaTool {
                 current_frontmatter = existing.to_string();
 
                 // Write merged agent.json to filesystem
-                let agent_dir = self.agent_loader.user_dir().join(&current_name);
                 if let Err(e) = Self::validated_frontmatter(&current_frontmatter) {
                     return ToolResult::error(e);
                 }
@@ -2190,9 +2182,10 @@ impl PersonaTool {
             return ToolResult::error(format!("Failed to delete agent from DB: {}", e));
         }
 
-        // Remove filesystem directory (user-created only)
-        let user_dir = self.agent_loader.user_dir().join(agent_name);
-        if user_dir.exists() {
+        // Remove filesystem directory (user-created only): the row's own
+        // folder, which a rename never moved.
+        let user_dir = self.package_dir(&db_agent);
+        if user_dir.parent() == Some(self.agent_loader.user_dir()) && user_dir.exists() {
             if let Err(e) = std::fs::remove_dir_all(&user_dir) {
                 return ToolResult::ok(format!(
                     "Deleted {} from the roster, but failed to remove its directory {}: {}",
@@ -2356,11 +2349,7 @@ impl PersonaTool {
         }
 
         // --- Filesystem reload ---
-        let agent_dir = if let Some(ref napp_path) = db_agent.napp_path {
-            std::path::PathBuf::from(napp_path)
-        } else {
-            self.agent_loader.user_dir().join(&db_agent.name)
-        };
+        let agent_dir = self.package_dir(&db_agent);
 
         if !agent_dir.exists() {
             if changes.is_empty() {
@@ -2583,7 +2572,7 @@ impl PersonaTool {
                             );
 
                             // Also update agent.json on disk
-                            let agent_dir = self.agent_loader.user_dir().join(&agent.name);
+                            let agent_dir = self.package_dir(&agent);
                             if agent_dir.join("agent.json").exists() {
                                 let _ = std::fs::write(agent_dir.join("agent.json"), &new_fm);
                             }

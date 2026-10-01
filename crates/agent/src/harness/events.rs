@@ -788,14 +788,22 @@ const TEAM_WORDS: ListingWords = ListingWords {
 };
 
 /// The employees listing: every enabled employee but the one named
-/// `except`, with what it does.
+/// `except`, with what it does; an app also says where its files are
+/// served from (`tools::app_dev::app_location`), the one place to edit them.
 pub fn employees_listing(store: &db::Store, except: &str) -> Listing {
     store
         .list_agents(100, 0)
         .unwrap_or_default()
         .into_iter()
         .filter(|a| a.is_enabled == 1 && a.name != except)
-        .map(|a| (a.name, a.description))
+        .map(|a| {
+            let line = match tools::app_dev::app_location(&a) {
+                Some(location) if a.description.trim().is_empty() => location,
+                Some(location) => format!("{} {location}", a.description.trim_end()),
+                None => a.description,
+            };
+            (a.name, line)
+        })
         .collect()
 }
 
@@ -1353,5 +1361,25 @@ mod tests {
         let gone = LinedDelta::between(&now, &Listing::new()).unwrap();
         let helpers = attachment_for(&TurnEvent::HelperTypes(gone)).unwrap();
         assert_eq!(helpers.text, format!("{}\n- invoice", HELPER_WORDS.removed));
+    }
+
+    /// Every coworker of an app reads, in the employees listing, where the
+    /// app's files are served from; a coworker that is not an app does not.
+    #[test]
+    fn the_employees_listing_says_where_an_app_is_served_from() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = db::Store::new(&tmp.path().join("t.db").to_string_lossy()).unwrap();
+        let md = "---\nname: x\n---\n";
+        store.create_agent("app-1", Some("user"), "Puzzler", "Runs the puzzle game.", md, "{}", None, None).unwrap();
+        store.set_agent_app_fields("app-1", true, Some("/data/user/agents/Puzzler/ui"), None, None).unwrap();
+        store.create_agent("dev-1", Some("user"), "Level Designer", "Designs levels.", md, "{}", None, None).unwrap();
+
+        let listing = employees_listing(&store, "Level Designer");
+        assert_eq!(
+            listing.get("Puzzler").map(String::as_str),
+            Some("Runs the puzzle game. Puzzler is an app; its files are served from `/data/user/agents/Puzzler/ui` — edit them there.")
+        );
+        let listing = employees_listing(&store, "Puzzler");
+        assert_eq!(listing.get("Level Designer").map(String::as_str), Some("Designs levels."));
     }
 }

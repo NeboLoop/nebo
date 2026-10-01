@@ -765,6 +765,9 @@ pub(crate) async fn prepare(
     if seat.company_memory_sealed {
         withheld.extend(seat::company_memory_tools(&h.store, &h.tools, &req.seat.agent_id).await);
     }
+    // The app developer pack: App Developer mode on, and only for an app
+    // employee or its teammates.
+    withheld.extend(tools::app_dev::withheld(&h.store, &req.seat.agent_id));
     let withheld_tools = Arc::new(withheld);
     let job_tools = match agent.as_ref() {
         Some(a) => {
@@ -821,6 +824,12 @@ pub(crate) async fn prepare(
         persona: agent.as_ref().map(|a| prompt::inputs::persona_body(&a.agent_md)),
     }
     .text();
+    // An app employee reads where its own files are served from, the line
+    // its coworkers read about it in the employees listing.
+    let identity = match h.store.get_agent(&req.seat.agent_id).ok().flatten().as_ref().and_then(tools::app_dev::app_location) {
+        Some(location) => format!("{identity}\n\n{location}"),
+        None => identity,
+    };
 
     // The relevant-memories search runs while the steps go on; a step lands
     // it once it has finished.

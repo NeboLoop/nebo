@@ -1116,7 +1116,7 @@ impl Registry {
         use crate::command_tools::*;
         use crate::file_tools::*;
         let plugins = self.plugin_store.read().unwrap().clone();
-        let machine = Arc::new(Machine::new(self.process_registry.clone(), plugins));
+        let machine = Arc::new(Machine::new(self.process_registry.clone(), plugins).with_store(helpers.store.clone()));
         // Startup: a poisoned lock here is a bug to surface, not a state to handle.
         *self.read_state.write().unwrap() = Some(machine.file.read_state());
         let tools: Vec<Box<dyn DynTool>> = vec![
@@ -1328,6 +1328,13 @@ impl Registry {
             for tool in crate::employee_tools::tools(persona) {
                 self.register(Box::new(tool)).await;
             }
+        }
+
+        // The developer pack for apps (deferred): offered only under App
+        // Developer mode, to app employees and their teammates
+        // (`app_dev::withheld`).
+        for tool in crate::app_dev::tools(store.clone(), broadcaster.clone()) {
+            self.register(tool).await;
         }
 
         // The schedule tools (reminders and recurring jobs).
