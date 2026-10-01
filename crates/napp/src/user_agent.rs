@@ -183,6 +183,21 @@ pub fn read_ui_files(dir: &Path) -> Result<Vec<(PathBuf, Vec<u8>)>, NappError> {
     Ok(files)
 }
 
+/// A folder under `root` for a new employee named `dir_name`: that name, or
+/// the first of "<name> 2", "<name> 3", ... not yet taken. Folders are named
+/// once, when an employee is made, and never follow a rename, so the name's
+/// own folder may belong to an employee that has since been renamed.
+pub fn free_agent_dir(root: &Path, dir_name: &str) -> PathBuf {
+    let first = root.join(dir_name);
+    if !first.exists() {
+        return first;
+    }
+    (2..)
+        .map(|n| root.join(format!("{dir_name} {n}")))
+        .find(|dir| !dir.exists())
+        .expect("an unbounded range always finds a free name")
+}
+
 /// Write a user-owned employee's package to `dir`, which is created when
 /// missing. A manifest already there is kept and layered on (its `id` and
 /// `name` stand; a missing `id` is filled in); the app fields go over it.

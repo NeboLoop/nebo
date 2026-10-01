@@ -2015,6 +2015,7 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
                     &loaded.agent_def.name,
                     &loaded.description,
                 );
+                repair_napp_path(&store, &db_agent, loaded.id.as_deref(), &loaded.source_path);
                 agent_id_for_bindings = db_agent.id.clone();
                 synced += 1;
             } else {
@@ -3354,6 +3355,32 @@ fn shutdown_signal() -> Result<impl std::future::Future<Output = ()>, NeboError>
     })
 }
 
+/// Point a row whose recorded folder is gone at the folder that holds its
+/// manifest. A rename once moved or re-made folders under the new name and
+/// left `napp_path` on one that no longer existed; the folder whose manifest
+/// `id` is the row's id is the employee. A row with no folder recorded (the
+/// primary employee) and one whose folder exists are left alone. Its
+/// `app_ui_path` follows from the same folder (`set_agent_app_fields`).
+fn repair_napp_path(
+    store: &db::Store,
+    row: &db::models::Agent,
+    manifest_id: Option<&str>,
+    folder: &std::path::Path,
+) -> bool {
+    let Some(recorded) = row.napp_path.as_deref().map(str::trim).filter(|p| !p.is_empty()) else {
+        return false;
+    };
+    if manifest_id != Some(row.id.as_str())
+        || std::path::Path::new(recorded).exists()
+        || !folder.exists()
+        || std::path::Path::new(recorded) == folder
+    {
+        return false;
+    }
+    info!(agent = %row.id, from = recorded, to = %folder.display(), "employee folder repointed to the one holding its manifest");
+    store.set_agent_napp_path(&row.id, &folder.to_string_lossy()).is_ok()
+}
+
 /// Process filesystem agent change events: sync DB, update registry, broadcast WS.
 async fn handle_agent_fs_events(
     state: AppState,
@@ -3390,6 +3417,7 @@ async fn handle_agent_fs_events(
                         &loaded.agent_def.name,
                         &loaded.description,
                     );
+                    repair_napp_path(&state.store, existing, loaded.id.as_deref(), &loaded.source_path);
                     existing.id.clone()
                 } else {
                     // Create new DB record
@@ -3776,6 +3804,39 @@ mod janus_sync_tests {
         let catalog: config::ModelsConfig = serde_yaml::from_str(include_str!("../../config/src/models.yaml")).unwrap();
         seed_models_from_catalog(&store, &catalog);
         assert_eq!(window("nebo-1"), Some(200_000), "the seed keeps the synced window");
+    }
+}
+
+#[cfg(test)]
+mod napp_path_repair_tests {
+    use super::repair_napp_path;
+
+    /// A row left on a folder that no longer exists (a rename once re-made
+    /// the folder under the new name) is repointed at startup to the folder
+    /// whose manifest id is its own; a row whose folder exists, and a
+    /// folder holding another employee's manifest, change nothing.
+    #[test]
+    fn a_missing_folder_is_repointed_to_the_one_holding_its_manifest() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = db::Store::new(tmp.path().join("nebo.db").to_str().unwrap()).unwrap();
+        let agents = tmp.path().join("agents");
+        let gone = agents.join("Puzzle Game Developer");
+        let actual = agents.join("Puzzler");
+        std::fs::create_dir_all(&actual).unwrap();
+        store.create_agent("emp-1", Some("user"), "Puzzler", "", "---\nname: Puzzler\n---\n", "{}", None, None).unwrap();
+        store.set_agent_napp_path("emp-1", &gone.to_string_lossy()).unwrap();
+        let row = || store.get_agent("emp-1").unwrap().unwrap();
+
+        assert!(!repair_napp_path(&store, &row(), Some("someone-else"), &actual), "another employee's folder");
+        assert_eq!(row().napp_path.as_deref(), Some(gone.to_str().unwrap()));
+
+        assert!(repair_napp_path(&store, &row(), Some("emp-1"), &actual));
+        assert_eq!(row().napp_path.as_deref(), Some(actual.to_str().unwrap()));
+
+        let other = agents.join("Elsewhere");
+        std::fs::create_dir_all(&other).unwrap();
+        assert!(!repair_napp_path(&store, &row(), Some("emp-1"), &other), "a folder that exists stays");
+        assert_eq!(row().napp_path.as_deref(), Some(actual.to_str().unwrap()));
     }
 }
 

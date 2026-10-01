@@ -720,6 +720,39 @@ mod tests {
         assert!(store.get_agent(id).unwrap().is_none());
     }
 
+    /// A rename changes the display name only: the folder stays where it
+    /// is, `napp_path` keeps pointing at it, and later writes land there.
+    #[tokio::test]
+    async fn a_rename_keeps_the_folder_and_napp_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(db::Store::new(&dir.path().join("e.db").to_string_lossy()).unwrap());
+        let id = "5f0c0d3e-1d7a-4c51-9b7e-2f3f6a0b9c11";
+        let md = "---\nname: puzzle-game-developer\n---\nYou build the puzzle game.";
+        store.create_agent(id, Some("user"), "Puzzle Game Developer", "Builds a puzzle game.", md, "", None, None).unwrap();
+        let folder = dir.path().join("b").join("Puzzle Game Developer");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join("AGENT.md"), md).unwrap();
+        store.set_agent_napp_path(id, &folder.to_string_lossy()).unwrap();
+        let loader = Arc::new(napp::AgentLoader::new(dir.path().join("a"), dir.path().join("b")));
+        let live = Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new()));
+        let family = tools(PersonaTool::new(store.clone(), live, loader));
+
+        let r = tool(&family, "update_employee")
+            .execute_dyn(
+                &ToolContext::default(),
+                json!({"name": "Puzzle Game Developer", "new_name": "Puzzler", "instructions": "You build and polish the puzzle game."}),
+            )
+            .await;
+        assert!(!r.is_error, "{}", r.content);
+
+        let row = store.get_agent(id).unwrap().unwrap();
+        assert_eq!(row.name, "Puzzler");
+        assert_eq!(row.napp_path.as_deref(), Some(folder.to_str().unwrap()), "napp_path never follows the name");
+        assert!(!dir.path().join("b").join("Puzzler").exists(), "no folder under the new name");
+        let written = std::fs::read_to_string(folder.join("AGENT.md")).unwrap();
+        assert!(written.contains("polish the puzzle game"), "the edit lands in the recorded folder: {written}");
+    }
+
     /// Making an employee goes through the one consent step: with the
     /// permission system not yet bound, nothing is created.
     #[tokio::test]

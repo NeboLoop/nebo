@@ -23,6 +23,9 @@ use crate::shell_tool::ShellTool;
 pub struct Machine {
     pub file: FileTool,
     pub shell: ShellTool,
+    /// The roster, for the note a web file written outside its app's
+    /// served folder gets (`app_dev::misplaced_web_file_note`).
+    pub store: Option<Arc<db::Store>>,
 }
 
 impl Machine {
@@ -31,7 +34,31 @@ impl Machine {
         if let Some(ps) = plugins {
             shell = shell.with_plugin_store(ps);
         }
-        Self { file: FileTool::new(), shell }
+        Self { file: FileTool::new(), shell, store: None }
+    }
+
+    pub fn with_store(mut self, store: Option<Arc<db::Store>>) -> Self {
+        self.store = store;
+        self
+    }
+
+    /// A written file's result, with the app location note when the file is
+    /// a web file for an app but outside the folder the app is served from.
+    fn with_app_note(&self, ctx: &ToolContext, input: &Value, result: ToolResult) -> ToolResult {
+        let (Some(store), false) = (self.store.as_ref(), result.is_error) else {
+            return result;
+        };
+        let Some(path) = input.get("path").and_then(|p| p.as_str()) else {
+            return result;
+        };
+        let path = match ctx.cwd.as_deref() {
+            Some(cwd) if std::path::Path::new(path).is_relative() => std::path::Path::new(cwd).join(path),
+            _ => std::path::PathBuf::from(path),
+        };
+        match crate::app_dev::misplaced_web_file_note(store, &path) {
+            Some(note) => ToolResult { content: format!("{}\n{note}", result.content), ..result },
+            None => result,
+        }
     }
 
     /// Each verify command gets this long; a build that needs more belongs in
@@ -473,7 +500,8 @@ impl DynTool for EditFileTool {
         Box::pin(async move {
             let mut call = input;
             call["action"] = json!("edit");
-            self.0.file.execute(ctx, call)
+            let result = self.0.file.execute(ctx, call.clone());
+            self.0.with_app_note(ctx, &call, result)
         })
     }
 }
@@ -576,7 +604,8 @@ impl DynTool for WriteFileTool {
                 "path": input.get("path").cloned().unwrap_or_default(),
                 "content": input.get("content").cloned().unwrap_or_default(),
             });
-            self.0.file.execute(ctx, call)
+            let result = self.0.file.execute(ctx, call);
+            self.0.with_app_note(ctx, &input, result)
         })
     }
 }
