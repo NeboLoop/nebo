@@ -89,7 +89,7 @@ impl Backoff {
 }
 
 /// A uniformly random duration in `0..=max`, millisecond resolution.
-pub(crate) fn random_up_to(max: Duration) -> Duration {
+pub fn random_up_to(max: Duration) -> Duration {
     let mut bytes = [0u8; 8];
     if getrandom::getrandom(&mut bytes).is_err() {
         return max / 2;

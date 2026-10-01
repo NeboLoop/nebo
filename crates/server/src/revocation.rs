@@ -16,10 +16,17 @@
 //! plugin's versions are quarantined (binary removed, data and accounts
 //! kept) and it is disabled, and a connector's integrations are disabled
 //! (credentials kept). The owner is told once, in plain words.
+//!
+//! Only what is still on is turned off, so a revoke is quiet the second
+//! time. That is what lets the startup sweep ([`spawn_sweep`]) run through
+//! the same path: a revoke drained to a bot older than #543 was lost, and
+//! revoke did nothing on 0.16.5 in any shape, so once per start the bot asks
+//! the hub what it has withdrawn and revokes each one here.
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::state::AppState;
 
@@ -42,8 +49,10 @@ impl Found {
     }
 }
 
-/// Find everything installed here that `artifact_id` names. `skill_roots`
-/// are the folders skills install into (marketplace and user).
+/// Find everything installed here, and still on, that `artifact_id` names:
+/// an enabled employee or app, a skill not quarantined, a plugin with a
+/// version not quarantined, an enabled connector. `skill_roots` are the
+/// folders skills install into (marketplace and user).
 pub(crate) fn find(
     store: &db::Store,
     plugins: &napp::plugin::PluginStore,
@@ -51,7 +60,12 @@ pub(crate) fn find(
     artifact_id: &str,
 ) -> Found {
     let mut found = Found {
-        employee: store.get_agent(artifact_id).ok().flatten().map(|a| (a.id, a.name)),
+        employee: store
+            .get_agent(artifact_id)
+            .ok()
+            .flatten()
+            .filter(|a| a.is_enabled != 0)
+            .map(|a| (a.id, a.name)),
         ..Default::default()
     };
     for root in skill_roots {
@@ -64,7 +78,7 @@ pub(crate) fn find(
             if found.plugins.contains(&slug) {
                 continue;
             }
-            if plugins.get_manifest(&slug).is_some_and(|m| m.id == artifact_id) {
+            if plugins.get_manifest(&slug).is_some_and(|m| m.id == artifact_id) && plugin_on(plugins, &slug) {
                 found.plugins.push(slug);
             }
         }
@@ -73,18 +87,31 @@ pub(crate) fn find(
         .list_mcp_integrations_by_artifact(artifact_id)
         .unwrap_or_default()
         .into_iter()
+        .filter(|i| i.is_enabled != Some(0))
         .map(|i| i.id)
         .collect();
     found
 }
 
+/// A plugin is on while any installed version of it is not quarantined.
+fn plugin_on(plugins: &napp::plugin::PluginStore, slug: &str) -> bool {
+    [plugins.plugins_dir(), plugins.user_plugins_dir()].into_iter().any(|root| {
+        std::fs::read_dir(root.join(slug)).is_ok_and(|entries| {
+            entries.flatten().any(|e| e.path().is_dir() && !e.path().join(".quarantined").exists())
+        })
+    })
+}
+
 /// Skill folders under `dir` whose install recorded `artifact_id`: the
 /// `.artifact_id` sidecar every skill install writes, or an `id` in its
-/// manifest.json (the two places a skill uninstall reads it from). Skills sit
-/// at most a scope, a name and a version deep (`@acme/leads/1.0.0`).
+/// manifest.json (the two places a skill uninstall reads it from), and not
+/// quarantined already. Skills sit at most a scope, a name and a version
+/// deep (`@acme/leads/1.0.0`).
 fn skill_dirs_with_id(dir: &Path, artifact_id: &str, depth: usize, out: &mut Vec<PathBuf>) {
     if depth > 0 && records_id(dir, artifact_id) {
-        out.push(dir.to_path_buf());
+        if !tools::skills::is_quarantined(dir) {
+            out.push(dir.to_path_buf());
+        }
         return;
     }
     if depth >= 3 {
@@ -145,7 +172,7 @@ pub(crate) async fn revoke(state: &AppState, event: napp::InstallEvent) {
         warn!(artifact = %artifact_id, error = %e, "revoke: legacy tool registry");
     }
     if found.is_empty() {
-        info!(artifact = %artifact_id, "revoke: nothing installed here carries this id");
+        debug!(artifact = %artifact_id, "revoke: nothing on here carries this id");
         return;
     }
 
@@ -191,6 +218,53 @@ pub(crate) async fn revoke(state: &AppState, event: napp::InstallEvent) {
     }
 
     tell_owner(state, &artifact_id, &event.payload, &found);
+}
+
+/// How long after a start the sweep asks the hub, plus up to as long again
+/// at random, so bots started together do not all ask at one moment.
+const SWEEP_AFTER_START: Duration = Duration::from_secs(60);
+
+/// Once per start (an upgrade is a start), sweep for what the hub withdrew
+/// while this bot could not hear it. In the background: nothing waits on
+/// it, and a failure is logged and dropped.
+pub(crate) fn spawn_sweep(state: AppState) {
+    tokio::spawn(async move {
+        tokio::time::sleep(SWEEP_AFTER_START + comm::reconnect::random_up_to(SWEEP_AFTER_START)).await;
+        // Only the running copy that holds the bot changes anything.
+        comm::lease::process().granted_or_unleased().await;
+        while crate::codes::neboai_token(&state).is_none() {
+            tokio::time::sleep(Duration::from_secs(60)).await;
+        }
+        sweep(&state).await;
+    });
+}
+
+/// Ask the hub what it has withdrawn from the marketplace and revoke each
+/// through [`revoke`], which turns off what is on here and tells the owner.
+/// Nothing withdrawn is on here: nothing happens and nothing is shown.
+pub(crate) async fn sweep(state: &AppState) {
+    let api = match crate::codes::build_api_client(state) {
+        Ok(api) => api,
+        Err(e) => {
+            debug!(error = %e, "revocation sweep: not connected to NeboAI");
+            return;
+        }
+    };
+    let withdrawn = match api.list_revocations().await {
+        Ok(list) => list,
+        Err(e) => {
+            info!(error = %e, "revocation sweep: the hub's withdrawn list could not be read; nothing swept");
+            return;
+        }
+    };
+    for item in withdrawn {
+        let event = napp::InstallEvent {
+            event_type: "tool_revoked".to_string(),
+            tool_id: item.id,
+            payload: serde_json::json!({ "name": item.name }),
+        };
+        revoke(state, event).await;
+    }
 }
 
 /// One notice per revoked artifact, in plain words.
@@ -292,9 +366,11 @@ mod tests {
         // plugin version loses its binary and keeps its manifest.
         quarantine_skill(&skill, REASON).unwrap();
         assert!(tools::skills::is_quarantined(&skill));
+        assert!(find(&store, &plugins, &[skills.clone()], id).skill_dirs.is_empty(), "a quarantined skill is off");
         assert!(skill.join("SKILL.md").exists());
         quarantine_plugin(&plugins, "lead-api", REASON);
         assert!(v.join(".quarantined").exists() && v.join("plugin.json").exists());
+        assert!(find(&store, &plugins, &[skills.clone()], id).plugins.is_empty(), "a quarantined plugin is off");
     }
 
     #[test]
@@ -305,5 +381,202 @@ mod tests {
         for word in ["restart", "offline", "sleep", "flap", "may be"] {
             assert!(!body.to_lowercase().contains(word), "{body}");
         }
+    }
+
+    /// What one proof installs of a kind, as each kind's install records it.
+    enum Installed {
+        Employee(String),
+        Skill(PathBuf),
+        Plugin(PathBuf),
+        Connector(String),
+    }
+
+    /// Put an item of `kind` with hub id `id` in place on the proof server
+    /// the way its install leaves it.
+    fn install(state: &AppState, kind: &str, id: &str, name: &str) -> Installed {
+        match kind {
+            "employee" | "app" => {
+                state.store.create_agent(id, None, name, "", "", "{}", None, None).unwrap();
+                if kind == "app" {
+                    state.store.set_agent_app_fields(id, true, None, None, None).unwrap();
+                }
+                Installed::Employee(id.to_string())
+            }
+            "skill" => {
+                let dir = config::nebo_dir().unwrap().join("skills").join(name.to_lowercase().replace(' ', "-"));
+                std::fs::create_dir_all(&dir).unwrap();
+                std::fs::write(dir.join("SKILL.md"), format!("---\nname: {name}\ndescription: {name}\n---\n\nSteps.\n")).unwrap();
+                std::fs::write(dir.join(".artifact_id"), id).unwrap();
+                Installed::Skill(dir)
+            }
+            "plugin" => {
+                let slug = name.to_lowercase().replace(' ', "-");
+                let v = state.plugin_store.plugins_dir().join(&slug).join("1.0.0");
+                std::fs::create_dir_all(&v).unwrap();
+                std::fs::write(
+                    v.join("plugin.json"),
+                    serde_json::json!({ "id": id, "slug": slug, "name": name, "version": "1.0.0", "platforms": {} }).to_string(),
+                )
+                .unwrap();
+                Installed::Plugin(v)
+            }
+            _ => {
+                let integration = format!("int-{id}");
+                state
+                    .store
+                    .create_mcp_integration(&integration, name, "http", Some("https://x.example"), "none", None, Some(id))
+                    .unwrap();
+                Installed::Connector(integration)
+            }
+        }
+    }
+
+    fn is_on(state: &AppState, item: &Installed) -> bool {
+        match item {
+            Installed::Employee(id) => state.store.get_agent(id).unwrap().unwrap().is_enabled != 0,
+            Installed::Skill(dir) => !tools::skills::is_quarantined(dir),
+            Installed::Plugin(v) => !v.join(".quarantined").exists(),
+            Installed::Connector(id) => state.store.get_mcp_integration(id).unwrap().unwrap().is_enabled != Some(0),
+        }
+    }
+
+    fn remove(state: &AppState, item: &Installed) {
+        match item {
+            Installed::Employee(id) => {
+                let _ = state.store.delete_agent(id);
+            }
+            Installed::Skill(dir) => {
+                let _ = std::fs::remove_dir_all(dir);
+            }
+            Installed::Plugin(v) => {
+                let _ = std::fs::remove_dir_all(v.parent().unwrap());
+            }
+            Installed::Connector(id) => {
+                let _ = state.store.delete_mcp_integration(id);
+            }
+        }
+    }
+
+    /// The ids of the revoke notices the owner was shown for `tag`'s items.
+    fn notices(rx: &mut tokio::sync::broadcast::Receiver<crate::handlers::ws::HubEvent>, tag: &str) -> Vec<String> {
+        let mut ids = Vec::new();
+        loop {
+            let ev = match rx.try_recv() {
+                Ok(ev) => ev,
+                Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => continue,
+                Err(_) => break,
+            };
+            let id = ev.payload["id"].as_str().unwrap_or("");
+            if ev.event_type == "notification" && id.starts_with(&format!("revoked:{tag}")) {
+                ids.push(id.to_string());
+            }
+        }
+        ids.sort();
+        ids
+    }
+
+    const KINDS: [&str; 5] = ["employee", "app", "skill", "plugin", "connector"];
+
+    // A revoke drained to a bot older than #543 was lost, and none worked on
+    // 0.16.5. The sweep asks the hub what it has withdrawn and turns each
+    // kind off through the one revoke, with its notice; what the hub did
+    // not withdraw stays on. A second sweep finds nothing on and is quiet.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn the_sweep_turns_off_what_the_hub_withdrew_and_leaves_the_rest_on() {
+        use crate::staffed_proof::{hub_lists, session};
+        let nebo = session().await;
+        let state = nebo.state.clone();
+        let profile = uuid::Uuid::new_v4().to_string();
+        state
+            .store
+            .create_auth_profile(&profile, "NeboAI", "neboai", "proof-token", None, None, 0, 1, Some("token"), None)
+            .unwrap();
+        let tag = uuid::Uuid::new_v4().simple().to_string()[..8].to_string();
+
+        let mut items = Vec::new();
+        for kind in KINDS {
+            for withdrawn in [true, false] {
+                let id = format!("{tag}-{kind}-{}", if withdrawn { "gone" } else { "kept" });
+                let name = format!("Sweep {kind} {tag} {}", if withdrawn { "gone" } else { "kept" });
+                hub_lists(&id, Some((&name, kind, "1.0.0", withdrawn)));
+                items.push((id.clone(), withdrawn, install(&state, kind, &id, &name)));
+            }
+        }
+
+        let mut rx = state.hub.subscribe();
+        sweep(&state).await;
+        for (id, withdrawn, item) in &items {
+            assert_eq!(is_on(&state, item), !withdrawn, "{id}");
+        }
+        let mut expected: Vec<String> =
+            items.iter().filter(|(_, w, _)| *w).map(|(id, _, _)| format!("revoked:{id}")).collect();
+        expected.sort();
+        assert_eq!(notices(&mut rx, &tag), expected, "one notice per withdrawn item");
+
+        sweep(&state).await;
+        assert!(notices(&mut rx, &tag).is_empty(), "nothing still on: the second sweep is quiet");
+
+        for (id, _, item) in &items {
+            remove(&state, item);
+            hub_lists(id, None);
+        }
+        state.skill_loader.reload_from_disk().await;
+        state.store.delete_auth_profile(&profile).unwrap();
+    }
+
+    // An app and a connector, sent the hub's legacy shapes
+    // (`skillUpdated` / `skillRevoked` with `skillId`) as #543 reads them:
+    // the update is checked against what is installed and offered, keeping
+    // the install; the revoke turns each off.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn an_app_and_a_connector_hear_the_legacy_update_and_revoke() {
+        use crate::staffed_proof::{hub_lists, session};
+        let nebo = session().await;
+        let state = nebo.state.clone();
+        let profile = uuid::Uuid::new_v4().to_string();
+        state
+            .store
+            .create_auth_profile(&profile, "NeboAI", "neboai", "proof-token", None, None, 0, 1, Some("token"), None)
+            .unwrap();
+        let tag = uuid::Uuid::new_v4().simple().to_string()[..8].to_string();
+
+        for (kind, row_type) in [("app", "agent"), ("connector", "connector")] {
+            let id = format!("{tag}-{kind}");
+            let name = format!("Legacy {kind} {tag}");
+            hub_lists(&id, Some((&name, kind, "1.1.0", false)));
+            let item = install(&state, kind, &id, &name);
+            state.store.upsert_artifact_update_pref(&id, row_type, "1.0.0").unwrap();
+
+            let updated = napp::InstallEvent::parse(
+                &serde_json::json!({
+                    "type": "skillUpdated", "skillId": id, "skillName": name, "version": "1.1.0",
+                    "artifactType": kind, "permissionsAdded": [], "permissionsRemoved": [],
+                    "updatedAt": chrono::Utc::now().to_rfc3339(),
+                })
+                .to_string(),
+            )
+            .unwrap();
+            crate::handle_comm_install_event(&state, updated).await.expect("the update notice");
+            let pref = state.store.get_artifact_update_pref(&id, row_type).unwrap().unwrap();
+            assert_eq!((pref.local_version.as_str(), pref.remote_version.as_str()), ("1.0.0", "1.1.0"), "{kind}");
+            assert_eq!(pref.update_available, 1, "{kind}: offered");
+            assert!(is_on(&state, &item), "{kind}: the update keeps it installed and on");
+
+            let revoked = napp::InstallEvent::parse(
+                &serde_json::json!({
+                    "type": "skillRevoked", "skillId": id, "skillName": name, "artifactType": kind,
+                    "reason": "Revoked by admin", "revokedAt": chrono::Utc::now().to_rfc3339(),
+                })
+                .to_string(),
+            )
+            .unwrap();
+            crate::handle_comm_install_event(&state, revoked).await.expect("the revoke notice");
+            assert!(!is_on(&state, &item), "{kind}: the revoke turns it off");
+
+            remove(&state, &item);
+            let _ = state.store.delete_artifact_update_pref(&id, row_type);
+            hub_lists(&id, None);
+        }
+        state.store.delete_auth_profile(&profile).unwrap();
     }
 }

@@ -142,6 +142,23 @@ pub struct ReviewsResponse {
     pub distribution: [i64; 5],
 }
 
+/// An artifact NeboAI has withdrawn from the marketplace (revoked), as
+/// `GET /api/v1/apps/revocations` lists it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Revocation {
+    pub id: String,
+    #[serde(default)]
+    pub name: String,
+}
+
+/// `GET /api/v1/apps/revocations`: every withdrawn artifact, of any type.
+/// The hub sends `null` for an empty list.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RevocationsResponse {
+    #[serde(default)]
+    pub revocations: Option<Vec<Revocation>>,
+}
+
 // ── Skill Types ──────────────────────────────────────────────────────
 
 /// Compact skill in list responses.
@@ -1053,4 +1070,24 @@ pub struct BotEmailSend {
     pub agent_id: String,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub chat_id: String,
+}
+
+#[cfg(test)]
+mod revocations_tests {
+    use super::RevocationsResponse;
+
+    // The hub's shape (sqlc row: id, name, slug, version, revoked_at), and
+    // its `null` for an empty list.
+    #[test]
+    fn the_hubs_revocation_list_reads() {
+        let r: RevocationsResponse = serde_json::from_str(
+            r#"{"revocations":[{"id":"5b0c1f0e-0000-4000-8000-000000000001","name":"Lead Finder","slug":"lead-finder","version":"1.2.0","revoked_at":"2026-10-01T10:00:00Z"}]}"#,
+        )
+        .unwrap();
+        let list = r.revocations.unwrap();
+        assert_eq!((list[0].id.as_str(), list[0].name.as_str()), ("5b0c1f0e-0000-4000-8000-000000000001", "Lead Finder"));
+
+        let empty: RevocationsResponse = serde_json::from_str(r#"{"revocations":null}"#).unwrap();
+        assert!(empty.revocations.unwrap_or_default().is_empty());
+    }
 }

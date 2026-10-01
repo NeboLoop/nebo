@@ -3161,6 +3161,12 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // Spawn marketplace artifact update checker (6h default, staggered API calls)
     artifact_updates::spawn(state.clone());
 
+    // Once per start: turn off what NeboAI withdrew while this bot could
+    // not hear it (`revocation::spawn_sweep`).
+    if cfg.is_neboai_enabled() {
+        revocation::spawn_sweep(state.clone());
+    }
+
     // Spawn periodic agent_progress broadcaster — broadcasts active run snapshots
     // to all connected clients every 5 seconds so the frontend stays in sync.
     // The tick after the last run ends sends ONE empty snapshot, so a client

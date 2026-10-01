@@ -651,6 +651,39 @@ pub fn hub_offers_collection(code: &str, id: &str, name: &str, items: &[&str]) {
     );
 }
 
+/// An artifact the stand-in's detail by id answers for, and whether NeboAI
+/// has withdrawn it (its revocation list names it).
+#[derive(Clone)]
+struct HubArtifact {
+    name: String,
+    kind: String,
+    version: String,
+    withdrawn: bool,
+}
+
+fn hub_artifacts() -> &'static Mutex<std::collections::HashMap<String, HubArtifact>> {
+    static ARTIFACTS: OnceLock<Mutex<std::collections::HashMap<String, HubArtifact>>> = OnceLock::new();
+    ARTIFACTS.get_or_init(Default::default)
+}
+
+/// The hub stand-in lists artifact `id` (`kind`, at `version`): its detail
+/// by id answers for it, and when `withdrawn` the revocation list
+/// (`GET /apps/revocations`) names it. `None` takes it off the stand-in.
+pub fn hub_lists(id: &str, listed: Option<(&str, &str, &str, bool)>) {
+    let mut artifacts = hub_artifacts().lock().unwrap_or_else(|e| e.into_inner());
+    match listed {
+        Some((name, kind, version, withdrawn)) => {
+            artifacts.insert(
+                id.to_string(),
+                HubArtifact { name: name.to_string(), kind: kind.to_string(), version: version.to_string(), withdrawn },
+            );
+        }
+        None => {
+            artifacts.remove(id);
+        }
+    }
+}
+
 fn hub_hidden_connectors() -> &'static Mutex<std::collections::HashMap<String, String>> {
     static HIDDEN: OnceLock<Mutex<std::collections::HashMap<String, String>>> = OnceLock::new();
     HIDDEN.get_or_init(Default::default)
@@ -790,6 +823,12 @@ fn hub_stand_in() -> String {
     // The detail by id resolves EVERY artifact type, as the hub's does: the
     // account's install event carries only the id.
     let artifact_detail = |UrlPath(id): UrlPath<String>| async move {
+        if let Some(a) = hub_artifacts().lock().unwrap_or_else(|e| e.into_inner()).get(&id).cloned() {
+            return Ok(axum::Json(json!({
+                "id": id, "name": a.name, "slug": a.name.to_lowercase().replace(' ', "-"), "type": a.kind,
+                "code": "", "version": a.version,
+            })));
+        }
         if let Some((slug, code)) = id
             .strip_prefix("artifact-")
             .and_then(|slug| hub_plugin_code(slug).map(|code| (slug.to_string(), code)))
@@ -841,8 +880,19 @@ fn hub_stand_in() -> String {
         *napp_downloads().lock().unwrap_or_else(|e| e.into_inner()).entry(slug).or_insert(0) += 1;
         Ok::<_, StatusCode>(([(axum::http::header::CONTENT_TYPE, "application/octet-stream")], napp_of(&p)))
     };
+    let revocations = || async {
+        let withdrawn: Vec<Value> = hub_artifacts()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .filter(|(_, a)| a.withdrawn)
+            .map(|(id, a)| json!({ "id": id, "name": a.name, "slug": "", "version": a.version, "revoked_at": "2026-10-01T00:00:00Z" }))
+            .collect();
+        axum::Json(json!({ "revocations": withdrawn }))
+    };
     let app = axum::Router::new()
         .route("/api/v1/codes/redeem", post(redeem))
+        .route("/api/v1/apps/revocations", get(revocations))
         .route("/api/v1/agents/{slug}", get(agent_package))
         .route("/api/v1/skills/{id}", get(artifact_detail))
         .route("/api/v1/collections/{id}", get(collection))

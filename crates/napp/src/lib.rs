@@ -116,6 +116,7 @@ impl InstallEvent {
         let mut payload = serde_json::Map::new();
         for (old, new) in [
             ("skillName", "name"),
+            ("artifactType", "artifact_type"),
             ("version", "version"),
             ("permissionsAdded", "permissions_added"),
             ("permissionsRemoved", "permissions_removed"),
@@ -149,12 +150,13 @@ mod install_event_tests {
     #[test]
     fn a_notice_queued_before_428_is_still_read() {
         let up = InstallEvent::parse(
-            r#"{"type":"skillUpdated","skillId":"a1","skillName":"CRM","version":"0.1.3","permissionsAdded":["network"],"permissionsRemoved":[],"updatedAt":"2026-09-30T10:00:00Z"}"#,
+            r#"{"type":"skillUpdated","skillId":"a1","skillName":"CRM","version":"0.1.3","artifactType":"app","permissionsAdded":["network"],"permissionsRemoved":[],"updatedAt":"2026-09-30T10:00:00Z"}"#,
         )
         .unwrap();
         assert_eq!((up.event_type.as_str(), up.tool_id.as_str()), ("tool_updated", "a1"));
         assert_eq!(up.payload["name"], "CRM");
         assert_eq!(up.payload["version"], "0.1.3");
+        assert_eq!(up.payload["artifact_type"], "app");
         assert_eq!(up.payload["permissions_added"][0], "network");
         assert_eq!(up.payload["updated_at"], "2026-09-30T10:00:00Z");
 
