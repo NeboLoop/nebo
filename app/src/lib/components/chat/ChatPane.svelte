@@ -7,7 +7,7 @@
   import WorkViewer from './WorkViewer.svelte';
   import DesktopView from './DesktopView.svelte';
   import { teachStart, teachStop, getToolOutput } from '$lib/api/nebo';
-  import { computerActions, watchesComputer } from '$lib/chat/teach';
+  import { watchesComputer, offersVirtualComputer, teachFailure, SCREEN_RECORDING_SETTINGS } from '$lib/chat/teach';
   import { ownScreen } from '$lib/stores/ownScreen';
   import ShareArtifactModal from './ShareArtifactModal.svelte';
   import AskWidget from './AskWidget.svelte';
@@ -191,26 +191,46 @@
   // Teach-a-task: record a demonstration, then hand the artifacts to the
   // employee to study (the normal run does the learning — vision + file +
   // skill tools; a voluntary skill save is the organic learning pathway).
-  // On the owner's own computer it records the owner's real screen, right
-  // here, with no window; a cloud bot records on its computer, watched in
-  // the full-window view ($lib/chat/teach).
+  // ONE action, `teach`, behind the header's one monitor icon and the
+  // composer's entry. The bot decides where it records from its real
+  // platform: a desktop host records the owner's own screen right here, with
+  // no window; a cloud bot records on its computer, watched full-window
+  // ($lib/chat/teach).
   let teachActive = $state(false);
+  let teachStarting = $state(false);
   let teachError = $state('');
+  /** The start failed for want of macOS Screen Recording permission. */
+  let teachNeedsPermission = $state(false);
   let teachSeconds = $state(0);
   let teachTimer: ReturnType<typeof setInterval> | null = null;
-  const computer = $derived(computerActions($ownScreen, $devMode));
+  /** On a host bot in Developer mode the icon also offers the virtual computer. */
+  const teachChoice = $derived(offersVirtualComputer($ownScreen, $devMode));
   /** The recording under way is of this computer's own screen. */
   let teachLocal = $state(false);
 
-  /** `where` is the bot's default when left out: its own screen if it has one. */
+  /** Start, or stop the recording under way. */
+  function teach() {
+    if (teachActive) void stopTeach();
+    else void startTeach();
+  }
+
+  /** `where` is the bot's own choice when left out (its platform decides);
+   *  only Developer mode's virtual computer names one. */
   async function startTeach(where?: 'local' | 'computer') {
+    if (teachStarting || teachActive) return;
     teachError = '';
+    teachNeedsPermission = false;
+    teachStarting = true;
     let res;
     try {
       res = await teachStart(where ? { where } : {});
     } catch (e) {
-      teachError = e instanceof Error ? e.message : String(e);
+      const failure = teachFailure(e);
+      teachError = failure.needsScreenPermission ? $t('chat.teachNeedsScreenPermission') : failure.message;
+      teachNeedsPermission = failure.needsScreenPermission;
       return;
+    } finally {
+      teachStarting = false;
     }
     teachLocal = !watchesComputer(res?.where);
     if (!teachLocal) computerFull = true;
@@ -1296,9 +1316,6 @@
         {#snippet computerIcon()}
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
         {/snippet}
-        {#snippet virtualComputerIcon()}
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><circle cx="6.5" cy="6.5" r="0.6"/><circle cx="9" cy="6.5" r="0.6"/></svg>
-        {/snippet}
         {#snippet flowsIcon()}
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="6" height="6" rx="1.5"/><rect x="15" y="15" width="6" height="6" rx="1.5"/><path d="M9 6h4a2 2 0 0 1 2 2v10"/></svg>
         {/snippet}
@@ -1356,11 +1373,27 @@
 
 
 
-        {#if computer.teach}
-          {@render headerIcon(teachActive, $t('chatInput.teachTask'), () => (teachActive ? stopTeach() : startTeach('local')), computerIcon)}
-        {/if}
-        {#if computer.computer}
-          {@render headerIcon(computerFull, $t('chat.botComputer'), () => (computerFull = true), computer.teach ? virtualComputerIcon : computerIcon)}
+        <!-- ONE monitor icon: Teach a task. The bot records where it can,
+             its host's own screen or its computer. On a host bot in
+             Developer mode the same icon also offers the virtual computer. -->
+        {#if teachChoice && !teachActive}
+          <div class="dropdown dropdown-end" data-teach-icon>
+            <div
+              tabindex="0"
+              role="button"
+              title={$t('chatInput.teachTask')}
+              aria-label={$t('chatInput.teachTask')}
+              class="w-7 h-7 rounded-md flex items-center justify-center cursor-pointer transition-colors {computerFull || teachStarting
+                ? 'text-primary bg-primary/10'
+                : 'text-base-content/60 hover:text-base-content hover:bg-base-200'}"
+            >{@render computerIcon()}</div>
+            <ul class="dropdown-content menu z-[55] mt-1 w-56 rounded-box border border-base-300 bg-base-100 p-1.5 shadow-lg">
+              <li><button onclick={() => { (document.activeElement as HTMLElement)?.blur(); teach(); }}>{$t('chatInput.teachTask')}</button></li>
+              <li><button onclick={() => { (document.activeElement as HTMLElement)?.blur(); computerFull = true; }}>{$t('chat.openVirtualComputer')}</button></li>
+            </ul>
+          </div>
+        {:else}
+          <span class="contents" data-teach-icon>{@render headerIcon(teachActive || teachStarting || computerFull, $t('chatInput.teachTask'), teach, computerIcon)}</span>
         {/if}
         {#if flowsPane}
           {@render headerIcon(creationsOpen && paneView === 'flows', $t('nav.flows'), () => togglePane('flows'), flowsIcon)}
@@ -2073,10 +2106,13 @@
   {/if}
 
   <!-- Teach-a-task record bar -->
-  {#if teachActive || teachError}
+  {#if teachActive || teachStarting || teachError}
     <div class="max-w-3xl mx-auto w-full shrink-0 mb-2">
       <div class="flex items-center gap-2.5 rounded-lg px-3 py-2 {teachError ? 'bg-error/10 text-error' : 'bg-error/10'}">
-        {#if teachActive}
+        {#if teachStarting}
+          <span class="loading loading-spinner loading-xs"></span>
+          <span class="text-sm">{$t('chat.teachStarting')}</span>
+        {:else if teachActive}
           <span class="w-2 h-2 rounded-full bg-error animate-pulse"></span>
           <span class="text-sm">{$t('chat.watchingAndLearning', { values: { name: agentName } })}</span>
           <span class="text-xs tabular-nums text-base-content/60">{fmtTeach(teachSeconds)}</span>
@@ -2088,7 +2124,11 @@
           </button>
         {:else}
           <span class="text-sm">{teachError}</span>
-          <button type="button" class="btn btn-ghost btn-xs ml-auto" onclick={() => (teachError = '')}>✕</button>
+          {#if teachNeedsPermission}
+            <!-- The one fix there is: switch Nebo on in Screen Recording. -->
+            <a href={SCREEN_RECORDING_SETTINGS} target="_blank" rel="noopener" class="btn btn-xs btn-outline btn-error normal-case shrink-0 ml-auto no-underline">{$t('chat.openScreenRecordingSettings')}</a>
+          {/if}
+          <button type="button" class="btn btn-ghost btn-xs {teachNeedsPermission ? '' : 'ml-auto'}" onclick={() => { teachError = ''; teachNeedsPermission = false; }}>✕</button>
         {/if}
       </div>
     </div>
@@ -2108,7 +2148,7 @@
       {onstop}
       {isLoading}
       {allowAttachments}
-      onteach={startTeach}
+      onteach={teach}
       prefill={composerPrefill}
       {onprefilled}
       bind:this={composerRef}

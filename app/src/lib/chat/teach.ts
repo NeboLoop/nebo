@@ -1,25 +1,37 @@
-// Teach-a-task: where a demonstration is recorded, and what the chat
-// header's monitor icon does about it.
+// Teach-a-task: ONE action, behind the chat header's one monitor icon and
+// the composer's Teach a task entry alike.
 //
-// A bot on the owner's own computer records the owner's real screen: the
-// owner does the task where they always do it, with no new window and no
-// virtual machine. A cloud bot (or a headless server) has no screen of its
-// own and records on its virtual computer, watched in the full-window view.
-// On a bot with its own screen that virtual computer is still there, behind
-// Developer mode.
+// Where it records is the bot's to say, from its real platform: a bot on a
+// Mac, Windows or Linux desktop host records the owner's own screen, right
+// where they work, with no window and no virtual machine; a cloud bot or a
+// headless server has no screen and records on its computer, watched in the
+// full-window view. The app never guesses: it asks the bot to start, and
+// the bot's answer (`where`) says which it did.
 
-/** The header's computer actions for this bot. `ownScreen` is null until
- *  the bot has said; until then the header behaves as it always did. */
-export function computerActions(
-	ownScreen: boolean | null,
-	devMode: boolean
-): { teach: boolean; computer: boolean } {
-	if (ownScreen === true) return { teach: true, computer: devMode };
-	return { teach: false, computer: true };
-}
-
-/** Whether a recording the bot started (teach/start's `where`) is watched
- *  in the full-window computer view. Only a local recording is not. */
+/** Whether a recording the bot started (teach/start's `where`) is watched in
+ *  the full-window computer view. Only a recording of the host's own screen
+ *  is not. */
 export function watchesComputer(where: unknown): boolean {
 	return where !== 'local';
+}
+
+/** Whether the one icon offers a choice instead of starting at once: only on
+ *  a host bot in Developer mode, where the virtual computer is still
+ *  reachable. Everyone else gets the one action. */
+export function offersVirtualComputer(ownScreen: boolean | null, devMode: boolean): boolean {
+	return ownScreen === true && devMode;
+}
+
+/** The settings pane that grants Screen Recording on macOS. */
+export const SCREEN_RECORDING_SETTINGS =
+	'x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture';
+
+/** What a failed start means for the owner: the message, and whether it is
+ *  the missing Screen Recording permission (which gets the settings button). */
+export function teachFailure(e: unknown): { message: string; needsScreenPermission: boolean } {
+	const data = (e as { response?: { data?: { reason?: unknown } } })?.response?.data;
+	return {
+		message: e instanceof Error ? e.message : String(e),
+		needsScreenPermission: data?.reason === 'screen_recording_permission'
+	};
 }

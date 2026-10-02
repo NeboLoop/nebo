@@ -301,6 +301,12 @@ impl TeachWhere {
     }
 }
 
+/// The error a local recording returns when this computer will not let Nebo
+/// record its screen (macOS Screen Recording permission). The teach handler
+/// recognises it and tells the app, which offers the settings pane.
+pub const SCREEN_RECORDING_PERMISSION: &str = "Nebo needs Screen Recording permission to watch you do the task. \
+     Turn on Nebo in System Settings > Privacy & Security > Screen Recording, then try again.";
+
 /// Whether this Nebo runs on a computer with a screen of its own, the one
 /// the owner sits at. Not a cloud bot, not a headless server.
 pub fn own_screen() -> bool {
@@ -427,8 +433,13 @@ pub async fn start_recording(where_: TeachWhere) -> Result<(String, std::path::P
     std::fs::create_dir_all(&frames_dir).map_err(|e| format!("teach dir: {e}"))?;
 
     if where_ == TeachWhere::Local {
-        // The capture command picks its format; the decoder sniffs it.
-        let scratch = dir.join(if cfg!(target_os = "macos") { ".capture.jpg" } else { ".capture.png" });
+        if !crate::desktop_tool::screen_recording_allowed() {
+            let _ = std::fs::remove_dir_all(&dir);
+            return Err(SCREEN_RECORDING_PERMISSION.into());
+        }
+        // The capture command picks its format; the decoder sniffs it. Not a
+        // dot-file: macOS screencapture refuses to write one (and exits 0).
+        let scratch = dir.join(if cfg!(target_os = "macos") { "capture.jpg" } else { "capture.png" });
         let first = match local_keyframe(&scratch).await {
             Ok(f) => f,
             Err(e) => {
