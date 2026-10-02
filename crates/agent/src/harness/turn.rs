@@ -559,10 +559,12 @@ async fn read_queued_pictures(h: Harness, req: TurnRequest, row_id: String) {
 
 /// The admitted turn's task: prepare, drive, finish; then, while input
 /// arrived after the last step, the next turn on the same slot. A turn the
-/// owner stopped runs nothing more on it, on anything: its stream has ended,
-/// and nothing — not even a message of his own the stopped turn never
-/// answered — starts another one for him. Stop means stop; a message he
-/// sends after it starts its own turn the normal way, once the slot is free.
+/// owner stopped runs nothing more on it: its stream has ended. What he sent
+/// while it ran and no step of it heard is carried past the stop
+/// (`conversation::carry_past_stop`) and answered at once by ONE turn of its
+/// own the app runs (`answer_thread`), with a fresh stop of its own, its
+/// tools, and his messages read as his next ones: the stop ended the work it
+/// cut short, never what he asked next.
 async fn run(
     h: Harness,
     req: TurnRequest,
@@ -571,9 +573,11 @@ async fn run(
     guard: TurnGuard,
     tx: mpsc::Sender<StreamEvent>,
 ) {
+    let session_key = req.session_key.clone();
     let mut req = Some(req);
     let mut taint = BTreeSet::new();
     let mut exit = TurnExit::Answered;
+    let mut carried = 0;
     while let Some(next) = req.take() {
         let (cx, mut st) = match prepare(&h, next, &session_id, progress.clone(), tx.clone()).await {
             Ok(prepared) => prepared,
@@ -593,19 +597,29 @@ async fn run(
         // closes first: input arriving from here on waits for it and starts
         // its own turn, so everything before is visible now.
         guard.close();
-        if exit != TurnExit::Cancelled && input_landed_after(&h, &session_id, &st.seen) {
+        if exit == TurnExit::Cancelled {
+            carried = conversation::carry_past_stop(&h.sessions, &h.store, &session_id, &st.seen);
+        } else if input_landed_after(&h, &session_id, &st.seen) {
             info!(session_id, "input arrived after the last step: the next turn hears it");
             guard.reopen();
             req = Some(follow_up(cx.request));
         }
     }
     // The slot is closing, so no row is written into this turn from here:
-    // what the owner typed and no answer followed is all in the thread now,
-    // unanswered — a stop never starts a turn of its own to answer it.
+    // what the owner sent while it ran is in the thread now.
     let _ = tx
         .send(StreamEvent::done_with_reason(exit.label()).with_provenance(taint.into_iter().collect()))
         .await;
     drop(guard);
+    if carried > 0 {
+        match h.answer_thread() {
+            Some(answer) => {
+                info!(session_id, carried, "the stop leaves the owner's messages unanswered: a turn answers them now");
+                answer(&session_key);
+            }
+            None => warn!(session_id, "no app runs a turn for the messages carried past the stop; they wait for his next one"),
+        }
+    }
 }
 
 /// What a turn was asked, in words: an app's history names its versions
@@ -4079,8 +4093,9 @@ mod tests {
     enum Act {
         Message(&'static str),
         Stop(tokio_util::sync::CancellationToken),
-        /// A message, then the stop button before any step hears it.
-        MessageThenStop(&'static str, tokio_util::sync::CancellationToken),
+        /// Messages (with their files), then the stop button before any
+        /// step hears them.
+        QueueThenStop(Mutex<Vec<TurnRequest>>, tokio_util::sync::CancellationToken),
     }
 
     /// The owner's act, done once, from wherever the step loop is when
@@ -4099,16 +4114,23 @@ mod tests {
             match &self.act {
                 Act::Stop(cancel) => cancel.cancel(),
                 Act::Message(text) => self.queue(text).await,
-                Act::MessageThenStop(text, cancel) => {
-                    self.queue(text).await;
+                Act::QueueThenStop(sent, cancel) => {
+                    let sent: Vec<TurnRequest> = std::mem::take(&mut *sent.lock().unwrap());
+                    for req in sent {
+                        self.queue_request(req).await;
+                    }
                     cancel.cancel();
                 }
             }
         }
 
         async fn queue(&self, text: &str) {
+            self.queue_request(owner(text)).await;
+        }
+
+        async fn queue_request(&self, req: TurnRequest) {
             let h = self.h.get().expect("the harness is bound").clone();
-            let mut handle = h.start_turn(owner(text)).await.expect("queued");
+            let mut handle = h.start_turn(req).await.expect("queued");
             let first = handle.events.recv().await.expect("the busy line");
             assert_eq!(first.stop_reason.as_deref(), Some(session_gate::QUEUED_INTO_RUNNING_TURN));
         }
@@ -4358,38 +4380,198 @@ mod tests {
         (outlets, asked)
     }
 
-    /// The owner types while the employee works, then presses stop before
-    /// any step hears the message. The stop ends the work, and nothing
-    /// starts a turn to answer the message it never heard: stop means stop,
-    /// whether or not it leaves something unanswered (live incident: a
-    /// linked bot's daemon restart replayed the owner's pre-stop "Looks like
-    /// you got stuck" ahead of the message he actually sent next). He
-    /// answers it himself, the normal way, by sending it again or something
-    /// new; that next message starts its own turn once the slot is free.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn a_stop_never_auto_answers_a_message_it_never_heard() {
-        for at in [At::DuringCall, At::WhileStreaming, At::DuringTools] {
-            let (outlets, mut asked) = asking_outlets(None);
-            let run = interrupted_with(
-                at,
-                |req| Act::MessageThenStop(STOP_READING, req.cancel.clone()),
-                reads_on,
-                Some("stop"),
-                |h| h.bind(outlets),
-            )
-            .await;
-            assert_eq!(exit_of(&run.events), "cancelled", "{at:?}: the stop ends the work");
-            let carries = |c: &ChatRequest| texts(c).iter().any(|t| t.contains(STOP_READING));
-            assert!(!run.calls.iter().any(carries), "{at:?}: the stopped turn never heard it");
-            let key = tokio::time::timeout(std::time::Duration::from_millis(300), asked.recv()).await.ok().flatten();
-            assert_eq!(key, None, "{at:?}: nothing auto-answers a message the stop never heard");
-        }
+    const LOOK_AT_IT: &str = "Did you look at the screenshot?";
+    const AND_THE_LOGS: &str = "And check the logs too.";
 
+    /// The turn the app runs for a session the harness asks it to answer
+    /// (`answer_thread`): the thread already holds its input, the owner's own
+    /// seat, a stop of its own.
+    fn answering_turn() -> TurnRequest {
+        TurnRequest { input: TurnInput::None, ..owner("") }
+    }
+
+    /// A model that does what the owner's latest words ask: a read for
+    /// them, then an answer; it never reads on for the stopped work.
+    fn does_what_was_asked(req: &ChatRequest) -> Step {
+        let asked = req.messages.iter().rposition(|m| m.content.contains(LOOK_AT_IT) || m.content.contains(AND_THE_LOGS));
+        let read_since = asked.is_some_and(|at| req.messages[at..].iter().any(|m| m.role == "tool"));
+        if read_since { Step::Say("Looked at it: the scene renders black.") } else { Step::Call("read", serde_json::json!({})) }
+    }
+
+    /// The owner's queued messages, then the stop, at `at`; the app's
+    /// answering turn is recorded (`asking_outlets`).
+    async fn queued_then_stopped(at: At, sent: Vec<TurnRequest>) -> (Interrupted, Option<String>, mpsc::UnboundedReceiver<String>) {
+        let (outlets, mut asked) = asking_outlets(None);
+        let sent = Mutex::new(sent);
+        let run = interrupted_with(at, move |req| Act::QueueThenStop(sent, req.cancel.clone()), reads_on, Some("aside"), |h| h.bind(outlets)).await;
+        let key = tokio::time::timeout(std::time::Duration::from_millis(500), asked.recv()).await.ok().flatten();
+        (run, key, asked)
+    }
+
+    /// The rows after the stop's line, as stored.
+    fn after_the_stop(h: &Harness) -> Vec<ChatMessage> {
+        let rows = stored(h);
+        let at = rows.iter().rposition(|m| m.content == reminders::wrap(conversation::INTERRUPT_MESSAGE)).expect("the stop is recorded");
+        rows[at + 1..].to_vec()
+    }
+
+    fn meta_of(m: &ChatMessage) -> serde_json::Value {
+        serde_json::from_str(m.metadata.as_deref().unwrap_or("{}")).unwrap()
+    }
+
+    /// The owner types while the employee works, then presses stop before
+    /// any step hears the message. The stop ends the work, and the message
+    /// is answered at once by ONE turn of its own (2026-10-02, Ostrion: the
+    /// stop swallowed "did you look at the screenshot?"): carried past the
+    /// stop as his next message, it starts a turn that runs normally — its
+    /// tools on, no "carry on" note, no stop carried over — and does the
+    /// work he asked for.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_message_queued_before_a_stop_starts_a_turn_that_does_the_work() {
+        for at in [At::DuringCall, At::WhileStreaming, At::DuringTools] {
+            let (run, key, _asked) = queued_then_stopped(at, vec![owner(LOOK_AT_IT)]).await;
+            assert_eq!(exit_of(&run.events), "cancelled", "{at:?}: the stop ends the work");
+            let carries = |c: &ChatRequest| texts(c).iter().any(|t| t.contains(LOOK_AT_IT));
+            assert!(!run.calls.iter().any(carries), "{at:?}: the stopped turn never heard it");
+            assert_eq!(key.as_deref(), Some(KEY), "{at:?}: a turn answers it at once");
+
+            // Carried past the stop as his next message, once.
+            let after = after_the_stop(&run.h);
+            let theirs: Vec<&ChatMessage> = after.iter().filter(|m| m.content == LOOK_AT_IT).collect();
+            assert_eq!(theirs.len(), 1, "{at:?}: {after:?}");
+            assert_eq!(stored(&run.h).iter().filter(|m| m.content == LOOK_AT_IT).count(), 1, "{at:?}: never twice in the thread");
+            let meta = meta_of(theirs[0]);
+            assert!(meta.get("arrivedMidTurn").is_none(), "{at:?}: no longer a message into running work: {meta}");
+            assert_eq!(meta[conversation::AFTER_STOP], true, "{at:?}: {meta}");
+
+            // The app's turn for it does the work.
+            *run.model.script.lock().unwrap() = (0..4).map(|_| Step::Reacting(does_what_was_asked)).collect();
+            let before = run.model.calls().len();
+            let events = run_turn(&run.h, answering_turn()).await;
+            assert_eq!(exit_of(&events), "text_response", "{at:?}: it runs to its answer, no stop carried over");
+            let calls = run.model.calls()[before..].to_vec();
+            assert!(carries(&calls[0]), "{at:?}: its first step hears the message");
+            assert!(!hears_owner(&calls[0]), "{at:?}: read as his next message, not as running work's interruption");
+            assert!(calls.iter().all(|c| c.tool_choice == ai::ToolChoice::Auto), "{at:?}: tools on: the stop is not his intent for it");
+            let rows = stored(&run.h);
+            let asked_at = rows.iter().rposition(|m| m.content == LOOK_AT_IT).unwrap();
+            assert!(rows[asked_at..].iter().any(|m| m.role == "tool"), "{at:?}: a tool call happened for it");
+            assert_eq!(rows.last().unwrap().content, "Looked at it: the scene renders black.", "{at:?}");
+        }
+    }
+
+    /// Two messages queued before the stop: ONE turn answers both, in the
+    /// order he sent them.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn two_messages_queued_before_a_stop_are_one_turn_in_order() {
+        let (run, key, mut asked) = queued_then_stopped(At::DuringTools, vec![owner(LOOK_AT_IT), owner(AND_THE_LOGS)]).await;
+        assert_eq!(exit_of(&run.events), "cancelled");
+        assert_eq!(key.as_deref(), Some(KEY));
+        let again = tokio::time::timeout(std::time::Duration::from_millis(300), asked.recv()).await.ok().flatten();
+        assert_eq!(again, None, "one turn for both");
+        let said: Vec<String> = after_the_stop(&run.h).into_iter().filter(|m| !meta_of(m)["isMeta"].as_bool().unwrap_or(false)).map(|m| m.content).collect();
+        assert_eq!(said, [LOOK_AT_IT, AND_THE_LOGS], "in order, after the stop");
+
+        *run.model.script.lock().unwrap() = (0..4).map(|_| Step::Reacting(does_what_was_asked)).collect();
+        let before = run.model.calls().len();
+        run_turn(&run.h, answering_turn()).await;
+        let first = texts(&run.model.calls()[before]).join("\n");
+        let (look, logs) = (first.find(LOOK_AT_IT), first.find(AND_THE_LOGS));
+        assert!(look.is_some() && logs.is_some() && look < logs, "one step hears both, in order: {first}");
+    }
+
+    /// A message with a file, queued before the stop: the file stays on it
+    /// past the stop, as the thread shows it and the model reads it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_file_queued_before_a_stop_stays_on_its_message() {
+        let mut shared = owner(LOOK_AT_IT);
+        let attachment = comm::wire::Attachment {
+            file_id: "f-shot".into(),
+            filename: "screen.pdf".into(),
+            mime_type: "application/pdf".into(),
+            size: 4096,
+            url: "https://example.test/api/v1/files/f-shot".into(),
+            thumbnail_url: None,
+            width: None,
+            height: None,
+            duration: None,
+        };
+        shared.input = TurnInput::Owner { text: LOOK_AT_IT.into(), images: Vec::new(), attachments: vec![attachment] };
+        let (run, key, _asked) = queued_then_stopped(At::DuringTools, vec![shared]).await;
+        assert_eq!(key.as_deref(), Some(KEY));
+        let after = after_the_stop(&run.h);
+        let row = after.iter().find(|m| m.content == LOOK_AT_IT).expect("carried past the stop");
+        let meta = meta_of(row);
+        assert_eq!(meta["attachments"][0]["fileId"], "f-shot", "{meta}");
+        assert_eq!(meta["attachments"][0]["filename"], "screen.pdf", "{meta}");
+        assert_eq!(meta[db::OWNER_MARK], true, "still his own word: {meta}");
+    }
+
+    /// A message that joined the running work and was answered there is
+    /// done: a stop after it runs nothing for it again.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_message_joined_mid_turn_is_not_run_again_after_a_stop() {
+        const ASIDE: &str = "While you're at it: what's 12 times 12?";
+        let req = owner("Read part one and follow it to the end, then summarize.");
+        let message = Arc::new(Owner { h: Default::default(), act: Act::Message(ASIDE), done: Default::default() });
+        let stop = Arc::new(Owner { h: Default::default(), act: Act::Stop(req.cancel.clone()), done: Default::default() });
+        let mut script: Vec<Step> = (0..12).map(|_| Step::Reacting(answers_and_reads_on)).collect();
+        script[1] = Step::During(Box::new(Step::Reacting(answers_and_reads_on)), message.hook());
+        script[3] = Step::During(Box::new(Step::Reacting(answers_and_reads_on)), stop.hook());
+        let model = Scripted::new(script);
+        let reader = PartReader { runs: Default::default(), during_second: None };
+        let h = harness_with(&model, vec![Box::new(reader)]).await.with_decide(jev_reading("aside").await);
+        let _ = message.h.set(h.clone());
+        let (outlets, mut asked) = asking_outlets(None);
+        h.bind(outlets);
+        let events = run_turn(&h, req).await;
+        assert_eq!(exit_of(&events), "cancelled");
+        assert!(model.calls().iter().any(hears_owner), "the message joined the work");
+        assert!(stored(&h).iter().any(|m| m.content == "144."), "and was answered there");
+        let key = tokio::time::timeout(std::time::Duration::from_millis(300), asked.recv()).await.ok().flatten();
+        assert_eq!(key, None, "nothing runs it a second time");
+        assert_eq!(stored(&h).iter().filter(|m| m.content == ASIDE).count(), 1);
+        assert!(stored(&h).iter().all(|m| meta_of(m).get(conversation::AFTER_STOP).is_none()), "nothing carried past the stop");
+    }
+
+    /// A stop with nothing queued starts nothing: stop means stop.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_stop_with_nothing_queued_starts_nothing() {
         let (outlets, mut asked) = asking_outlets(None);
         let run = interrupted_with(At::DuringTools, |req| Act::Stop(req.cancel.clone()), reads_on, None, |h| h.bind(outlets)).await;
         assert_eq!(exit_of(&run.events), "cancelled");
         let key = tokio::time::timeout(std::time::Duration::from_millis(300), asked.recv()).await.ok().flatten();
         assert_eq!(key, None, "nothing unanswered: no turn after the stop");
+    }
+
+    /// A message the owner queued into work that a stop then ended, left
+    /// where it landed (a thread from before the stop carried them), never
+    /// waits for a later turn as running work's interruption: that turn's
+    /// "carry on" note would resume the stopped work (2026-10-02, Ostrion's
+    /// next message after the stop).
+    #[test]
+    fn nothing_before_a_stop_waits_as_an_interruption() {
+        let row = |id: &str, role: &str, content: &str, meta: Option<serde_json::Value>| ChatMessage {
+            id: id.into(),
+            chat_id: "c".into(),
+            role: role.into(),
+            content: content.into(),
+            metadata: meta.map(|m| m.to_string()),
+            created_at: 0,
+            day_marker: None,
+            tool_calls: None,
+            tool_results: None,
+            token_estimate: None,
+            html: None,
+        };
+        let messages = vec![
+            row("1", "user", "Fix the renderer.", None),
+            row("2", "user", LOOK_AT_IT, Some(MidTurnFrom::Owner { via: "web".into() }.value())),
+            row("3", "user", &reminders::wrap(conversation::INTERRUPT_MESSAGE), Some(serde_json::json!({"isMeta": true}))),
+            row("4", "user", "Give me the full file path.", None),
+        ];
+        assert_eq!(conversation::owner_waiting(&messages), None);
+        assert!(conversation::owner_waiting(&messages[..2]).is_some(), "before the stop it waits");
     }
 
     /// The agreed goal is paused, the goal line tells the owner (its paused

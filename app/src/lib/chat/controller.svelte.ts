@@ -755,6 +755,18 @@ export function createChatController(config: ChatControllerConfig) {
     );
   }
 
+  // A turn started in this conversation without a send from here: the one
+  // the bot runs at once for the messages queued behind work the owner
+  // stopped (the stop carries them past it), or any other turn on this
+  // thread. The conversation is working again from its first moment, not
+  // from its first token.
+  function handleChatCreated(data: any) {
+    if (!activeSessionKey || data?.session_id !== activeSessionKey) return;
+    if (isLoading) return;
+    isLoading = true;
+    phaseStartTime = Date.now();
+  }
+
   // --- Subscribe to WS events ---
   const unsubs: (() => void)[] = [];
   // A chat frame can pass the `readyState === OPEN` check and still be discarded
@@ -786,6 +798,7 @@ export function createChatController(config: ChatControllerConfig) {
   unsubs.push(onServer('chat_complete', handleChatComplete));
   unsubs.push(onServer('chat_message', handleChatMessage));
   unsubs.push(onServer('chat_cancelled', handleChatCancelled));
+  unsubs.push(onServer('chat_created', handleChatCreated));
   unsubs.push(onServer('thinking', handleThinking));
   unsubs.push(onServer('tool_start', handleToolStart));
   unsubs.push(onServer('text_verdict', handleTextVerdict));
