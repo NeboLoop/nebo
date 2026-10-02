@@ -999,9 +999,8 @@ fn devlog_send_prompt(app_name: &str, entries: &[tools::app_console::Entry]) -> 
 /// POST /apps/{agent_id}/devlog/send — "Send to <employee>": the app's last
 /// errors go into the conversation the owner has open with the app's
 /// employee (the one with the latest activity; a new thread when there is
-/// none), through the
-/// same door as the owner's own message to that employee
-/// (`chat_with_agent`), and the employee works on them there. It answers
+/// none), through the same path as a message he types in its composer
+/// (`ws::dispatch_owner_message`), and the employee works on them there. It answers
 /// `{"status": "dispatched", ...}` only once the message is on its way;
 /// anything else is an `{"error": ...}` the page shows as it is.
 pub async fn send_devlog(
@@ -1026,8 +1025,7 @@ pub async fn send_devlog(
     // The conversation the owner is in with the employee: the one with the
     // latest activity (the rule a phone or loop message to the employee
     // follows, `resolve_agent_session_key`), so the errors and the work on
-    // them land where he reads; a new thread when there is none. A phone
-    // conversation gets the reply on the phone (`chat_with_agent`).
+    // them land where he reads; a new thread when there is none.
     let session_key = match state.store.get_latest_agent_chat(&agent_id) {
         Ok(Some(_)) => crate::resolve_agent_session_key(&state, &agent_id),
         _ => match crate::handlers::agents::create_agent_thread(&state, &agent_id) {
@@ -1038,16 +1036,14 @@ pub async fn send_devlog(
             }
         },
     };
-    match crate::handlers::agents::chat_with_agent(
-        State(state.clone()),
-        Path(agent_id),
-        axum::Json(serde_json::json!({ "prompt": prompt, "sessionKey": session_key })),
-    )
-    .await
-    {
-        Ok(r) => r.into_response(),
-        Err(e) => e.into_response(),
-    }
+    // The composer's own path (live 2026-10-02: through `chat_with_agent`
+    // the owner's open chat never showed the message or the reply until he
+    // left it and came back): every open view of the conversation, here or
+    // on his phone, shows the message and streams the work on it. A phone
+    // conversation the session last answered gets the reply too.
+    let reply_to = crate::reply_route::of(&state, &session_key).and_then(|r| r.comm_reply());
+    crate::handlers::ws::dispatch_owner_message(&state, &session_key, &agent_id, prompt, reply_to).await;
+    axum::Json(serde_json::json!({ "sessionId": session_key, "agentId": agent_id, "status": "dispatched" })).into_response()
 }
 
 /// The errors the page sent with "Send to <employee>" (`{"entries": [...]}`,
@@ -2628,5 +2624,120 @@ mod app_file_caching_tests {
         };
         assert_eq!(call("/motion").await, crate::middleware::PERMISSIONS_POLICY_WITH_MOTION);
         assert_eq!(call("/plain").await, crate::middleware::PERMISSIONS_POLICY);
+    }
+}
+
+/// The developer console, as it runs in a browser.
+#[cfg(test)]
+mod developer_console_tests {
+    use super::*;
+
+    /// `html`, as the bot serves an owner's own app's entry page (the
+    /// developer script with its floating console), run in a headless
+    /// Chrome for eight seconds of page time; then the console is opened and
+    /// what it shows comes back: its rows, whether Send is enabled, and its
+    /// status line. None when this machine has no Chrome.
+    fn console_after(html: &str) -> Option<serde_json::Value> {
+        let chrome = browser::chrome::find_chrome()?;
+        const PROBE: &str = r#"<script>setTimeout(function(){var sh=document.querySelector('nebo-devtools').shadowRoot;sh.querySelector('.ndt-fab').click();setTimeout(function(){document.title=JSON.stringify({rows:[].map.call(sh.querySelectorAll('.ndt-row .ndt-msg'),function(e){return e.textContent}),send:!sh.querySelector('.ndt-primary').disabled,sendLabel:sh.querySelector('.ndt-primary').title,status:sh.querySelector('.ndt-status').textContent})},50)},7000)</script>"#;
+        let page = inject_app_bridge(
+            html.replace("</body>", &format!("{PROBE}</body>")).into_bytes(),
+            Some(Devtools { employee: "Proof", console: true, desktop: None }),
+            None,
+        );
+        // Where an app page is served from (`/apps/<id>/ui/`): the script
+        // finds its app by its own address.
+        let dir = tempfile::tempdir().unwrap();
+        let ui = dir.path().join("apps/proof/ui");
+        std::fs::create_dir_all(&ui).unwrap();
+        let file = ui.join("index.html");
+        std::fs::write(&file, page).unwrap();
+        // Chrome prints the page and may then linger: the page is read up
+        // to its end and the browser is closed.
+        let mut chrome = std::process::Command::new(chrome)
+            .args(["--headless=new", "--disable-gpu", "--no-first-run", "--no-default-browser-check"])
+            .arg(format!("--user-data-dir={}", dir.path().join("profile").display()))
+            .args(["--window-size=800,600", "--virtual-time-budget=9000", "--dump-dom"])
+            .arg(format!("file://{}", file.display()))
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let mut stdout = chrome.stdout.take().unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            use std::io::Read;
+            let (mut dom, mut buf) = (Vec::new(), [0u8; 8192]);
+            while let Ok(n) = stdout.read(&mut buf) {
+                if n == 0 {
+                    break;
+                }
+                dom.extend_from_slice(&buf[..n]);
+                if dom.windows(7).any(|w| w == b"</html>") {
+                    break;
+                }
+            }
+            let _ = tx.send(dom);
+        });
+        let dom = rx.recv_timeout(std::time::Duration::from_secs(90)).unwrap_or_default();
+        let _ = chrome.kill();
+        let _ = chrome.wait();
+        let dom = String::from_utf8_lossy(&dom);
+        let title = dom.split("<title>").nth(1)?.split("</title>").next()?;
+        let title = title.replace("&quot;", "\"").replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&");
+        Some(serde_json::from_str(&title).unwrap_or_else(|e| panic!("{e}: {title}")))
+    }
+
+    /// The console catches what goes wrong before the app's own code runs:
+    /// a script that throws first thing, and a script that never loads.
+    #[test]
+    fn the_console_catches_an_early_error_and_a_failed_script_load() {
+        let html = "<!doctype html><html><head><title>t</title><script>throw new Error('EARLY-BOOM before the app')</script>\
+                    <script src=\"missing-MARK.js\"></script></head><body><h1>App</h1></body></html>";
+        let Some(shown) = console_after(html) else {
+            eprintln!("no Chrome on this machine — skipping");
+            return;
+        };
+        let rows = shown["rows"].to_string();
+        assert!(rows.contains("EARLY-BOOM before the app"), "{shown}");
+        assert!(rows.contains("Failed to load") && rows.contains("missing-MARK.js"), "{shown}");
+        assert_eq!(shown["send"], true, "{shown}");
+    }
+
+    /// Nothing logged: Send is off and says why, never pressable as if it
+    /// worked. A page that draws nothing with no error says that instead.
+    #[test]
+    fn with_nothing_to_send_send_says_so_and_a_blank_page_is_named() {
+        let Some(quiet) = console_after("<!doctype html><html><head><title>t</title></head><body><h1>Fine</h1></body></html>") else {
+            eprintln!("no Chrome on this machine — skipping");
+            return;
+        };
+        assert_eq!(quiet["rows"], serde_json::json!([]), "{quiet}");
+        assert_eq!(quiet["send"], false, "{quiet}");
+        assert_eq!(quiet["sendLabel"], "No errors to send.", "{quiet}");
+        assert_eq!(quiet["status"], "No errors to send.", "{quiet}");
+
+        let blank = console_after("<!doctype html><html><head><title>t</title></head><body><div id=\"root\"></div></body></html>").unwrap();
+        assert!(
+            blank["rows"].to_string().contains("The page loaded but drew nothing"),
+            "{blank}"
+        );
+    }
+
+    /// A small canvas stretched over the one that draws (live 2026-10-02:
+    /// a global `canvas { width: 100% }` rule laid a 150-pixel minimap over a
+    /// whole 3D game, which looked black with nothing in its console).
+    #[test]
+    fn a_canvas_stretched_over_the_drawing_is_named() {
+        let html = "<!doctype html><html><head><title>t</title><style>canvas{position:absolute;top:0;left:0;width:100%;height:100%}</style></head>\
+                    <body><canvas id=\"view\" width=\"800\" height=\"600\"></canvas><canvas id=\"minimap\" width=\"150\" height=\"150\"></canvas></body></html>";
+        let Some(shown) = console_after(html) else {
+            eprintln!("no Chrome on this machine — skipping");
+            return;
+        };
+        let named = shown["rows"].as_array().unwrap().iter().filter_map(|r| r.as_str()).any(|r| {
+            r.contains("<canvas id=\"minimap\"> drawn at 150\u{d7}150 is stretched to ") && r.contains("over the canvas under it")
+        });
+        assert!(named, "{shown}");
     }
 }

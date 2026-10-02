@@ -1,0 +1,9 @@
+id: sc82-an-apps-console-send-shows-live-in-the-open-chat
+name: "SC82 — An app's console send shows live in the owner's open chat"
+description: |
+  "Send to <employee>" goes the way a message typed in the composer goes: every open view of the
+  conversation hears the message itself, then each tool line and the streamed reply as the
+  employee works on the errors, without the owner leaving the chat and coming back.
+target_component: staffed-company
+proof: staffed_proof::conversation::an_apps_console_send_shows_live_in_the_open_chat
+conversation: []

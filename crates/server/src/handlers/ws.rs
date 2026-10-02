@@ -1443,6 +1443,10 @@ struct ChatPayload {
     /// that sent it knows this message, and not another, arrived. None for a
     /// platform-written prompt.
     message_id: Option<String>,
+    /// Where the reply also goes when no NeboAI conversation mirrors this
+    /// chat: the conversation the session last answered (its reply route),
+    /// set by a server caller (the app console's Send to), never by a frame.
+    reply_to: Option<crate::chat_dispatch::CommReplyConfig>,
 }
 
 impl ChatPayload {
@@ -1474,6 +1478,7 @@ impl ChatPayload {
                 .unwrap_or_default(),
             client_id: None,
             message_id: None,
+            reply_to: None,
         }
     }
 }
@@ -1542,6 +1547,28 @@ pub(crate) async fn dispatch_hidden_prompt(state: &AppState, session_key: &str, 
     dispatch_payload(state, ChatPayload::parse(&data), true).await;
 }
 
+/// The owner's message `prompt` to employee `agent_id` in conversation
+/// `session_key`, sent from somewhere other than a chat composer (the app
+/// console's Send to): the composer's own path, so every open view of the
+/// conversation shows it and streams the reply. `reply_to` is where the
+/// reply also goes when no NeboAI conversation mirrors the chat.
+pub(crate) async fn dispatch_owner_message(
+    state: &AppState,
+    session_key: &str,
+    agent_id: &str,
+    prompt: String,
+    reply_to: Option<crate::chat_dispatch::CommReplyConfig>,
+) {
+    let data = serde_json::json!({
+        "session_id": session_key,
+        "agent_id": agent_id,
+        "prompt": prompt,
+    });
+    let mut payload = ChatPayload::parse(&data);
+    payload.reply_to = reply_to;
+    dispatch_payload(state, payload, false).await;
+}
+
 /// One chat message, the owner's own (`hidden` false) or a platform-written
 /// prompt they never see.
 async fn dispatch_payload(state: &AppState, payload: ChatPayload, hidden: bool) {
@@ -1558,6 +1585,7 @@ async fn dispatch_payload(state: &AppState, payload: ChatPayload, hidden: bool) 
         app_context,
         client_id,
         message_id,
+        reply_to,
     } = payload;
 
     info!(
@@ -1827,6 +1855,25 @@ async fn dispatch_payload(state: &AppState, payload: ChatPayload, hidden: bool) 
         if let Err(e) = state.comm_manager.send(user_msg).await {
             warn!(error = %e, "failed to forward user prompt to NeboAI");
         }
+    }
+    let comm_reply = comm_reply.or(reply_to);
+
+    // Every open view of this conversation shows the owner's message as it
+    // is sent: another window, the phone, a message from the app console.
+    // The client that typed it (`client_id`) already shows it.
+    if !hidden_prompt {
+        state.hub.broadcast(
+            "chat_user_message",
+            serde_json::json!({
+                "session_id": &session_key,
+                "agentId": &agent_id,
+                "id": uuid::Uuid::new_v4().to_string(),
+                "content": &prompt,
+                "createdAt": chrono::Utc::now().timestamp_millis(),
+                "client_id": &client_id,
+                "message_id": &message_id,
+            }),
+        );
     }
 
     // Extract app-provided context (sent by chat embed's setContext)

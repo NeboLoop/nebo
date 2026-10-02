@@ -120,6 +120,118 @@
     push('error', 'Unhandled promise rejection: ' + str(ev.reason), 'promise');
   });
 
+  // A script, style or fetch the page's security policy blocked fails with
+  // no error event of its own.
+  document.addEventListener('securitypolicyviolation', function (ev) {
+    push(
+      'error',
+      'Blocked by the page\'s security policy (' + ev.violatedDirective + '): ' + short(ev.blockedURI || 'inline code'),
+      'security'
+    );
+  });
+
+  // A page can fail with no error at all: the app drew nothing, or a canvas
+  // stretched over the page hides the one that draws (live 2026-10-02: a
+  // 150-pixel minimap stretched over a whole 3D game by a global canvas
+  // rule; the game looked black and the console stayed empty). The page is
+  // looked at once it has loaded, and again after the owner uses it.
+  var said = {};
+  function finding(message) {
+    if (said[message]) return;
+    said[message] = true;
+    push('error', message, 'page');
+  }
+  function visible(e, w, h) {
+    var r = e.getBoundingClientRect();
+    if (r.width < 1 || r.height < 1 || r.right <= 0 || r.bottom <= 0 || r.left >= w || r.top >= h) return null;
+    var cs = getComputedStyle(e);
+    return cs.visibility === 'hidden' || Number(cs.opacity) === 0 ? null : r;
+  }
+  function drewSomething(w, h) {
+    if ((document.body.innerText || '').trim()) return true;
+    var media = document.body.querySelectorAll('img,canvas,svg,video,iframe,object,embed');
+    for (var i = 0; i < media.length; i++) if (visible(media[i], w, h)) return true;
+    var all = document.body.getElementsByTagName('*');
+    for (var j = 0; j < all.length && j < 3000; j++) {
+      var e = all[j];
+      if (e.tagName === 'SCRIPT' || e.tagName === 'STYLE' || !visible(e, w, h)) continue;
+      var cs = getComputedStyle(e);
+      if (cs.backgroundImage !== 'none') return true;
+      if (cs.backgroundColor && !/^(transparent|rgba\(.*,\s*0\))$/.test(cs.backgroundColor)) return true;
+    }
+    return false;
+  }
+  function name(e) {
+    return '<' + e.tagName.toLowerCase() + (e.id ? ' id="' + e.id + '"' : '') + '>';
+  }
+  // Blank with no error, and still blank a few seconds on (an app waiting
+  // on its first fetch draws late).
+  function blank() {
+    var w = window.innerWidth;
+    var h = window.innerHeight;
+    var errors = logs.some(function (e) {
+      return e.level === 'error';
+    });
+    return !!document.body && w > 0 && h > 0 && !errors && !drewSomething(w, h);
+  }
+  function lookAtPage(again) {
+    var w = window.innerWidth;
+    var h = window.innerHeight;
+    if (!document.body || !w || !h) return;
+    if (blank()) {
+      if (again) finding('The page loaded but drew nothing: no text, picture or canvas is on screen.');
+      else
+        setTimeout(function () {
+          try {
+            lookAtPage(true);
+          } catch (e) {}
+        }, 3000);
+    }
+    // A canvas drawn small and stretched over another canvas: it hides the
+    // one under it (a canvas the pointer passes through is still painted).
+    var canvases = [];
+    var all = document.body.querySelectorAll('canvas');
+    for (var i = 0; i < all.length; i++) {
+      var r = visible(all[i], w, h);
+      if (r) canvases.push({ e: all[i], r: r });
+    }
+    canvases.forEach(function (a) {
+      var pixelArt = /pixelated|crisp-edges/.test(getComputedStyle(a.e).imageRendering || '');
+      if (pixelArt || a.e.width * 2 > a.r.width || a.e.height * 2 > a.r.height) return;
+      var hides = canvases.some(function (b) {
+        if (b === a || !(a.e.compareDocumentPosition(b.e) & Node.DOCUMENT_POSITION_PRECEDING)) return false;
+        var ow = Math.min(a.r.right, b.r.right) - Math.max(a.r.left, b.r.left);
+        var oh = Math.min(a.r.bottom, b.r.bottom) - Math.max(a.r.top, b.r.top);
+        return ow > 0 && oh > 0 && ow * oh >= 0.5 * b.r.width * b.r.height;
+      });
+      if (hides) {
+        finding(
+          'A ' + name(a.e) + ' drawn at ' + a.e.width + '\u00d7' + a.e.height + ' is stretched to ' +
+            Math.round(a.r.width) + '\u00d7' + Math.round(a.r.height) +
+            ' over the canvas under it, which cannot be seen (a CSS rule sizing every canvas?).'
+        );
+      }
+    });
+  }
+  var lookTimer = null;
+  function lookSoon(ms) {
+    clearTimeout(lookTimer);
+    lookTimer = setTimeout(function () {
+      try {
+        lookAtPage();
+      } catch (e) {}
+    }, ms);
+  }
+  if (document.readyState === 'complete') lookSoon(2500);
+  else window.addEventListener('load', function () {
+    lookSoon(2500);
+  });
+  ['pointerup', 'keyup'].forEach(function (t) {
+    window.addEventListener(t, function () {
+      lookSoon(2000);
+    }, true);
+  });
+
   function netFail(method, url, status, text) {
     var what = status ? status + (text ? ' ' + text : '') : 'network error' + (text ? ': ' + text : '');
     push('error', method + ' ' + short(url) + ' → ' + what, 'network');
@@ -377,6 +489,7 @@
 
     var tab = 'console';
     var pending = false;
+    var sending = false;
 
     function render() {
       pending = false;
@@ -396,7 +509,12 @@
       tabNetwork.setAttribute('aria-label', 'Network' + (failed.length ? ', ' + failed.length + ' failed' : ''));
       tabConsole.setAttribute('aria-selected', String(tab === 'console'));
       tabNetwork.setAttribute('aria-selected', String(tab === 'network'));
-      send.disabled = errors === 0;
+      // Nothing to send: the button says so and never looks like it works.
+      send.disabled = errors === 0 || sending;
+      send.title = errors === 0 ? 'No errors to send.' : sendName;
+      send.setAttribute('aria-label', errors === 0 ? sendName + ': no errors to send' : sendName);
+      if (errors === 0 && !sending && !status.textContent) status.textContent = 'No errors to send.';
+      if (errors > 0 && status.textContent === 'No errors to send.') status.textContent = '';
       if (sheet.hidden) {
         badge.hidden = unseen === 0;
         badge.textContent = unseen > 99 ? '99+' : String(unseen);
@@ -503,9 +621,6 @@
       location.reload();
     });
     send.addEventListener('click', function () {
-      flush();
-      send.disabled = true;
-      status.textContent = 'Sending…';
       // The request carries the page's own errors too: a batch still on its
       // way (or lost) can never leave the employee with nothing. The bot
       // keeps each once, with what it already holds. Nothing here is
@@ -513,6 +628,15 @@
       var errors = logs.filter(function (e) {
         return e.level === 'error';
       });
+      if (!errors.length) {
+        status.textContent = 'No errors to send.';
+        render();
+        return;
+      }
+      flush();
+      sending = true;
+      send.disabled = true;
+      status.textContent = 'Sending…';
       var body = JSON.stringify({ entries: errors.slice(-50) });
       setTimeout(function () {
         origFetch(api + '/devlog/send', {
@@ -539,7 +663,10 @@
           .catch(function () {
             status.textContent = 'Could not send. Try again.';
           })
-          .then(render);
+          .then(function () {
+            sending = false;
+            render();
+          });
       }, 300);
     });
 
