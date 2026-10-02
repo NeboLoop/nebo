@@ -281,6 +281,12 @@ fn decide_rules(cx: &CheckCx<'_>, t: &Target) -> Result<Decision, Automatic> {
     if t.effects.widens {
         return Ok(Decision::Ask { case: AskCase::Widens });
     }
+    // Deleting an employee is the owner's to say, each time, in every mode,
+    // Full Access and his own chat included: no employee deletes another,
+    // or itself, on its own (2026-10-01: one deleted an app to "rename" it).
+    if t.effects.removes_employee {
+        return Ok(Decision::Ask { case: AskCase::RemovesEmployee });
+    }
     // An ask rule asks in every mode, Full Access included: the owner wrote
     // it to be asked, and a mode is not a reason to skip him.
     if let Some((rule, Effect::Ask)) = decided {

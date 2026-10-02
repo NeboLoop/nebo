@@ -1684,32 +1684,26 @@ pub async fn delete_agent(
         _ => {}
     }
 
-    // Clean up filesystem. Remove the exact directory the loader read from
+    // Clean up filesystem: the exact directory the loader read from
     // (source_path) for filesystem-only agents, plus the conventional napp /
-    // installed (nebo/agents) / user (user/agents) locations by slug.
-    if let Some(ref sp) = source_path {
-        if sp.is_dir() {
-            let _ = std::fs::remove_dir_all(sp);
-        } else if sp.is_file() {
-            let _ = std::fs::remove_file(sp);
-        }
-    }
-    if let Some(ref napp_path) = napp_path {
-        let path = std::path::Path::new(napp_path);
-        if path.exists() {
-            let _ = std::fs::remove_dir_all(path);
-        }
-    }
+    // installed (nebo/agents) / user (user/agents) locations by slug. Each
+    // goes to the trash (`napp::trash`), kept there for its days and never
+    // removed on the spot: an app's source is the owner's work.
+    let trash = state.agent_loader.trash_dir();
+    let mut gone: Vec<std::path::PathBuf> = Vec::new();
+    gone.extend(source_path.clone());
+    gone.extend(napp_path.as_deref().map(std::path::PathBuf::from));
     if let Ok(nebo_dir) = config::nebo_dir() {
-        let dir = nebo_dir.join("agents").join(&slug);
-        if dir.exists() {
-            let _ = std::fs::remove_dir_all(&dir);
-        }
+        gone.push(nebo_dir.join("agents").join(&slug));
     }
     if let Ok(user_dir) = config::user_dir() {
-        let dir = user_dir.join("agents").join(&slug);
-        if dir.exists() {
-            let _ = std::fs::remove_dir_all(&dir);
+        gone.push(user_dir.join("agents").join(&slug));
+    }
+    for path in gone {
+        if path.exists()
+            && let Err(e) = napp::trash::discard(&path, &trash)
+        {
+            warn!(agent = %id, path = %path.display(), error = %e, "deleted employee's files left in place");
         }
     }
 

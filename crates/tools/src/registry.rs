@@ -1304,6 +1304,23 @@ impl Registry {
             broadcaster.clone(),
             self.coworker_rail.clone(),
         ));
+        // The live roster and the employee loader: the employee tools and an
+        // employee's own rename (`update_profile`) share them.
+        let agent_reg = active_agent.unwrap_or_else(|| {
+            std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new()))
+        });
+        let agent_loader = self
+            .agent_loader
+            .read()
+            .unwrap()
+            .clone()
+            .unwrap_or_else(|| {
+                let data = config::data_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+                Arc::new(napp::AgentLoader::new(
+                    data.join("nebo").join("agents"),
+                    data.join("user").join("agents"),
+                ))
+            });
         let families = [
             crate::memory_tools::Memory::new(store.clone(), hybrid_searcher, memory_embedder).tools(),
             crate::helper_tools::Helpers::new(store.clone(), orchestrator.clone(), teams.clone(), self.coworker_rail.clone()).tools(),
@@ -1311,7 +1328,7 @@ impl Registry {
             crate::history_tools::History::new(store.clone()).tools(),
             crate::advisor_tools::Advisors::new(store.clone(), advisor_runner).tools(),
             crate::research_tools::Research::new(structured_agent, orchestrator.clone()).tools(),
-            crate::profile_tools::Profile::new(store.clone(), self.notify_fn.clone()).tools(),
+            crate::profile_tools::Profile::new(store.clone(), self.notify_fn.clone(), agent_loader.clone(), agent_reg.clone()).tools(),
             crate::owner_tools::Owner::new(store.clone(), self.notify_fn.clone()).tools(),
             vec![
                 Box::new(crate::ask_owner_tool::AskOwnerTool::new(store.clone(), self.coworker_rail.clone())) as Box<dyn DynTool>,
@@ -1327,26 +1344,12 @@ impl Registry {
         // The employee tools (deferred): the roster, hiring, and making,
         // changing and removing employees.
         {
-            let agent_reg = active_agent.unwrap_or_else(|| {
-                std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new()))
-            });
-            let agent_loader = self
-                .agent_loader
-                .read()
-                .unwrap()
-                .clone()
-                .unwrap_or_else(|| {
-                    let data = config::data_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-                    Arc::new(napp::AgentLoader::new(
-                        data.join("nebo").join("agents"),
-                        data.join("user").join("agents"),
-                    ))
-                });
             let persona =
                 crate::agent_tool::PersonaTool::new(store.clone(), agent_reg, agent_loader)
                     .with_code_installer(self.code_installer.clone())
                     .with_job_consent(self.job_consent.clone())
-                    .with_coworker_rail(self.coworker_rail.clone());
+                    .with_coworker_rail(self.coworker_rail.clone())
+                    .with_notify_fn(self.notify_fn.clone());
             for tool in crate::employee_tools::tools(persona) {
                 self.register(Box::new(tool)).await;
             }

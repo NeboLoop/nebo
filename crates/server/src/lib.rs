@@ -1849,8 +1849,15 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // Wire owner alerts (message notify/alert) to the frontend: the message tool
     // broadcasts a `notification` event through this callback, which the bell + the
     // desktop HUD pick up. Boundary-clean — crates/tools never touches ClientHub.
+    // An employee renamed by a tool reaches the loop's roster as one renamed
+    // from the owner's pages does: the ONE reconcile, requested here.
+    let comm_manager = Arc::new(comm::PluginManager::new());
     let hub_for_notify = hub.clone();
+    let comm_for_notify = comm_manager.clone();
     let alert_notify_fn: tools::message_tool::NotifyFn = Arc::new(move |event_type, payload| {
+        if event_type == "agent_updated" {
+            comm_for_notify.request_agent_sync();
+        }
         hub_for_notify.broadcast(event_type, payload);
     });
     tool_registry.set_notify_fn(alert_notify_fn);
@@ -1962,8 +1969,7 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
             .await;
     }
 
-    // Create comm plugin manager
-    let comm_manager = Arc::new(comm::PluginManager::new());
+    // The comm plugin manager (made above, with the notify callback)
     {
         let loopback_plugin = Arc::new(comm::LoopbackPlugin::new());
         comm_manager.register(neboai_plugin.clone()).await;

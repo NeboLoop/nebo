@@ -299,6 +299,41 @@ impl Store {
         Ok(())
     }
 
+    /// Rename an employee in place: the same row, id, settings, schedules,
+    /// memory and chats, under `name` (unique, as every name is; the owner's
+    /// choice, so manifest syncs never undo it). `moved` is its folder's
+    /// move `(from, to)`, already made on disk: every path the row records
+    /// under `from` is repointed in the same write, so the row never names
+    /// a folder that is gone.
+    pub fn rename_agent(&self, id: &str, name: &str, moved: Option<(&str, &str)>) -> Result<(), NeboError> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(NeboError::Validation("An employee needs a name.".into()));
+        }
+        self.agent_name_free(name, Some(id))?;
+        let (from, to) = moved.unwrap_or(("", ""));
+        let conn = self.conn()?;
+        let changed = conn
+            .execute(
+                "UPDATE agents SET name = ?2, name_locked = 1,
+                        napp_path = CASE WHEN ?3 != '' AND napp_path = ?3 THEN ?4
+                                         WHEN ?3 != '' AND substr(napp_path, 1, length(?3) + 1) = ?3 || ?5 THEN ?4 || substr(napp_path, length(?3) + 1)
+                                         ELSE napp_path END,
+                        app_ui_path = CASE WHEN ?3 != '' AND substr(app_ui_path, 1, length(?3) + 1) = ?3 || ?5 THEN ?4 || substr(app_ui_path, length(?3) + 1)
+                                           ELSE app_ui_path END,
+                        app_binary_path = CASE WHEN ?3 != '' AND substr(app_binary_path, 1, length(?3) + 1) = ?3 || ?5 THEN ?4 || substr(app_binary_path, length(?3) + 1)
+                                               ELSE app_binary_path END,
+                        updated_at = unixepoch()
+                 WHERE id = ?1",
+                params![id, name, from, to, std::path::MAIN_SEPARATOR.to_string()],
+            )
+            .db_err("rename_agent")?;
+        if changed == 0 {
+            return Err(NeboError::NotFound);
+        }
+        Ok(())
+    }
+
     /// Set an agent's "Expose to Loop" flag. Used to seed the primary agent's
     /// default (ON) at row creation; the toggle save path uses `update_agent`.
     /// Exposure is an outside door, so the employee becomes multi-chat.

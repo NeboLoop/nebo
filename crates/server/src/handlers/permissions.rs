@@ -1167,6 +1167,7 @@ fn ask_sentence(store: &db::Store, case: &AskCase) -> String {
         },
         AskCase::AskMode => "Ask mode: it asks before changing anything".into(),
         AskCase::Widens => "It would give an employee more room, which only you can do".into(),
+        AskCase::RemovesEmployee => "It would delete an employee, which needs your OK every time".into(),
         AskCase::CreatedExtras { capabilities } => {
             let needs: Vec<String> = capabilities.iter().map(|c| lower_first(&capability_phrase(c))).collect();
             format!("An employee it made needs more than it holds: {}", needs.join(", "))

@@ -20,6 +20,7 @@ pub mod supervisor;
 pub mod test_sidecar;
 #[cfg(any(test, feature = "test-signing"))]
 pub mod test_signing;
+pub mod trash;
 pub mod user_agent;
 pub mod version;
 
