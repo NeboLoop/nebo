@@ -358,6 +358,8 @@ The fix loop, in this order, every time:
    1280x800 for a desktop app). The screenshot loads the page the way the
    phone does, says what it shows, and ends with that load's console, word
    for word. `app_status` when a file is MISSING or "(outside the app)".
+   A game is proved in play: screenshot `index.html?play=1` (it skips the
+   start screen), never the menu; for 3D, see `references/games.md` 7a.
 6. Report to the owner only when the console has no errors AND the
    screenshot shows the change. Otherwise fix (the table below) and loop.
    Never say it changed because the build ran.
