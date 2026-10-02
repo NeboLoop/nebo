@@ -92,6 +92,10 @@ impl AskOwnerTool {
         }
         let options = input.get("options").cloned().unwrap_or_else(|| json!([]));
         let multi_select = input["multi_select"].as_bool().unwrap_or(false);
+        let labels: Vec<String> = options
+            .as_array()
+            .map(|a| a.iter().filter_map(|o| o.as_str().map(str::to_string)).collect())
+            .unwrap_or_default();
         let widgets =
             json!([{ "type": "options", "multiSelect": multi_select, "options": options }]);
         match ctx.ask_user(question, widgets).await {
@@ -99,13 +103,38 @@ impl AskOwnerTool {
                 "The owner skipped this question. Make a reasonable assumption and carry on, but \
                  tell them what you assumed.",
             ),
-            Some(response) => ToolResult::ok(json!({ "response": response }).to_string()),
+            Some(response) => ToolResult::ok(answer(&labels, multi_select, &response).to_string()),
             None => ToolResult::error(
                 "No app is connected to show the question. Make a reasonable decision and \
                  proceed, or set out the options in your reply.",
             ),
         }
     }
+}
+
+/// The owner's answer as the employee reads it. On a card with options,
+/// only an answer that is one of them (on a multi-select card, several
+/// joined by ", ") is a pick; anything else is his own words and picks
+/// nothing. Live 2026-10-02: the owner typed "k" while a choice waited, and
+/// the employee told him "you picked option A".
+fn answer(options: &[String], multi_select: bool, response: &str) -> Value {
+    if options.is_empty() {
+        return json!({ "response": response });
+    }
+    let is_option = |p: &str| options.iter().any(|o| o == p.trim());
+    if is_option(response) {
+        return if multi_select { json!({ "picked": [response.trim()] }) } else { json!({ "picked": response.trim() }) };
+    }
+    if multi_select {
+        let parts: Vec<&str> = response.split(", ").map(str::trim).collect();
+        if parts.iter().all(|p| is_option(p)) {
+            return json!({ "picked": parts });
+        }
+    }
+    json!({
+        "own_words": response,
+        "note": "He wrote this himself: it is none of the options, so nothing was picked. Take it as what he wrote; if it doesn't settle the question, ask again.",
+    })
 }
 
 impl DynTool for AskOwnerTool {
@@ -117,7 +146,7 @@ impl DynTool for AskOwnerTool {
         "Asks the owner one question; the work waits for the answer.\n\
          - Only for real ambiguity you can't resolve: readings that lead to different work, or a choice only the owner can make.\n\
          - A clear instruction your permission mode allows is carried out, never asked back to confirm it or how you'll do it.\n\
-         - Give `options` for a choice; leave them out for a free answer."
+         - To have the owner pick, give `options`: buttons in his chat on desktop and phone. Never list them in text or draw a panel. Leave them out for a free answer."
             .to_string()
     }
 
@@ -204,5 +233,80 @@ mod tests {
             "{}",
             r.content
         );
+    }
+
+    /// Ask with the owner at the keyboard: the card that goes out, and the
+    /// result once `reply` answers it, as the WS `ask_response` does.
+    async fn asked(input: Value, reply: &str) -> (ai::StreamEvent, ToolResult) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::new(&dir.path().join("a.db").to_string_lossy()).unwrap());
+        let tool = AskOwnerTool::new(store, crate::coworker::new_rail_cell());
+        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+        let channels: crate::origin::AskChannels = Default::default();
+        let ctx = ToolContext {
+            origin: crate::origin::Origin::User,
+            stream_tx: Some(tx),
+            ask_channels: Some(channels.clone()),
+            ..Default::default()
+        };
+        let run = tokio::spawn(async move { tool.execute_dyn(&ctx, input).await });
+        let card = rx.recv().await.expect("the card goes out");
+        let id = card.error.clone().expect("the card has its request id");
+        channels.lock().await.remove(&id).expect("the call waits on it").send(reply.to_string()).unwrap();
+        (card, run.await.unwrap())
+    }
+
+    /// Live 2026-10-02: asked "can you use the cards?", Chief drew an A2UI
+    /// panel nobody saw. A pick for the owner is this card: its options go
+    /// out as buttons, and the one he taps comes back as his pick.
+    #[tokio::test]
+    async fn a_pick_goes_out_as_buttons_and_the_tapped_option_is_the_pick() {
+        let q = json!({"question": "What should I focus on first?", "options": ["Invoicing", "Marketing", "A project"]});
+        let (card, r) = asked(q, "Marketing").await;
+        assert_eq!(card.text, "What should I focus on first?");
+        let widgets = card.widgets.expect("the card has its options");
+        assert_eq!(widgets[0]["type"], "options");
+        assert_eq!(widgets[0]["options"], json!(["Invoicing", "Marketing", "A project"]));
+        assert!(!r.is_error, "{}", r.content);
+        let v: Value = serde_json::from_str(&r.content).unwrap();
+        assert_eq!(v["picked"], "Marketing", "{v}");
+
+        // Several, on a multi-select card.
+        let q = json!({"question": "Which days?", "options": ["Mon", "Tue", "Wed"], "multi_select": true});
+        let (_, r) = asked(q, "Mon, Wed").await;
+        let v: Value = serde_json::from_str(&r.content).unwrap();
+        assert_eq!(v["picked"], json!(["Mon", "Wed"]), "{v}");
+    }
+
+    /// Live 2026-10-02: the owner typed "k" while a choice waited and was
+    /// told "you picked option A". Words that are none of the options pick
+    /// nothing, and the employee is told so.
+    #[tokio::test]
+    async fn his_own_words_are_never_a_pick() {
+        for words in ["k", "Marketing and invoicing"] {
+            let q = json!({"question": "What should I focus on first?", "options": ["Invoicing", "Marketing", "A project"]});
+            let (_, r) = asked(q, words).await;
+            let v: Value = serde_json::from_str(&r.content).unwrap();
+            assert!(v.get("picked").is_none(), "{words}: {v}");
+            assert_eq!(v["own_words"], words);
+            assert!(v["note"].as_str().unwrap().contains("nothing was picked"), "{v}");
+        }
+        // A free question has no options to pick from: the answer is the answer.
+        let (_, r) = asked(json!({"question": "What's the client's name?"}), "Acme").await;
+        assert_eq!(serde_json::from_str::<Value>(&r.content).unwrap(), json!({"response": "Acme"}));
+    }
+
+    /// The model is told where the card shows and that it is the way to have
+    /// the owner pick.
+    #[test]
+    fn the_description_makes_it_the_way_to_have_the_owner_pick() {
+        let dir = tempfile::tempdir().unwrap();
+        let tool = AskOwnerTool::new(
+            Arc::new(Store::new(&dir.path().join("a.db").to_string_lossy()).unwrap()),
+            crate::coworker::new_rail_cell(),
+        );
+        let d = tool.description();
+        assert!(d.contains("To have the owner pick, give `options`: buttons in his chat on desktop and phone"), "{d}");
+        assert!(d.contains("Never list them in text or draw a panel"), "{d}");
     }
 }

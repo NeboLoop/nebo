@@ -108,7 +108,7 @@ pub fn withheld(store: &db::Store, agent_id: &str) -> Vec<String> {
     }
 }
 
-fn is_app(store: &db::Store, agent_id: &str) -> bool {
+pub(crate) fn is_app(store: &db::Store, agent_id: &str) -> bool {
     !agent_id.is_empty()
         && store
             .get_agent(agent_id)

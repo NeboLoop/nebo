@@ -2586,7 +2586,11 @@ pub(crate) mod tests {
     /// confirm a plan it chose for his clear instruction and the question
     /// froze his voice call: ask_owner says it is for real ambiguity only
     /// and never asks a clear instruction back (ask_owner 759, +111): 16,513.
-    const CORE_DEFINITION_CHARS_BUDGET: usize = 16_513;
+    /// The owner, 2026-10-02, after an employee drew a choice as an A2UI
+    /// panel no app shows and then invented his pick: ask_owner says its
+    /// options are the buttons in his chat on desktop and phone, the way to
+    /// have him pick (ask_owner 853, +94): 16,606.
+    const CORE_DEFINITION_CHARS_BUDGET: usize = 16_606;
 
     #[tokio::test]
     async fn the_always_loaded_set_stays_within_its_budget() {

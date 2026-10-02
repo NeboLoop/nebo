@@ -1,0 +1,12 @@
+id: sc84-a-pick-for-the-owner-is-the-ask-card-and-only-a-tapped-option-is-a-pick
+name: "SC84 — A pick for the owner is the ask card; only a tapped option is a pick"
+description: |
+  Live 2026-10-02 on his phone: asked "can you use the cards?", an employee drew an A2UI panel
+  no app shows, said "a card panel on the side", took the owner's "k" as "you picked option A",
+  and drew the next question the same way. Now an employee that is not an app is never offered
+  a2ui; a pick goes out as the ask card both apps render, its options as buttons; words of his
+  own that are none of the options reach the employee as his words, never a pick, and it asks
+  again; the option he taps reaches it as the pick.
+target_component: staffed-company
+proof: staffed_proof::conversation::a_pick_for_the_owner_is_the_ask_card_and_only_a_tapped_option_is_a_pick
+conversation: []
