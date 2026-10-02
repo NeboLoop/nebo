@@ -3855,7 +3855,14 @@ pub async fn chat_with_agent(
         }
     }
 
-    let session_key = types::keyparser::build_agent_session_key(&id, "web");
+    // A caller may name one of this employee's own threads (`sessionKey`);
+    // otherwise the message goes to its web session, as before.
+    let thread_prefix = format!("agent:{}:thread:", id);
+    let session_key = body["sessionKey"]
+        .as_str()
+        .filter(|k| k.starts_with(&thread_prefix))
+        .map(str::to_string)
+        .unwrap_or_else(|| types::keyparser::build_agent_session_key(&id, "web"));
 
     let entity_config = crate::entity_config::resolve_for_chat(&state.store, "agent", &id);
 

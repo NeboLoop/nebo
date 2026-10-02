@@ -550,10 +550,41 @@ async fn serve_app_ui_range(target: &std::path::Path, range: Option<&str>) -> Op
 /// `devtools` is set for the owner's own apps: the developer script follows
 /// the bridge, before any of the app's own scripts, so it sees the app's
 /// first log line.
+/// An entry page's `src="/…"` and `href="/…"` (Vite's default `base: '/'`)
+/// made relative. On the phone the page is served under
+/// `/t/<bot>/apps/<id>/ui/`, so a root path leaves that prefix and the app
+/// loads blank; `./…` stays inside it. Protocol-relative `//…` is untouched.
+/// ponytail: the entry HTML only; a root path built into the app's own JS
+/// (a dynamic import) still needs `base: './'`, which App Studio's gate asks for.
+fn relative_root_paths(html: &str) -> String {
+    let mut out = html.to_string();
+    for attr in ["src=\"/", "href=\"/", "src='/", "href='/"] {
+        let quote = &attr[attr.len() - 2..attr.len() - 1];
+        let name = &attr[..attr.len() - 2];
+        let mut result = String::with_capacity(out.len());
+        let mut rest = out.as_str();
+        while let Some(i) = rest.find(attr) {
+            let after = &rest[i + attr.len()..];
+            result.push_str(&rest[..i]);
+            if after.starts_with('/') {
+                result.push_str(attr);
+            } else {
+                result.push_str(name);
+                result.push_str(quote);
+                result.push_str("./");
+            }
+            rest = after;
+        }
+        result.push_str(rest);
+        out = result;
+    }
+    out
+}
+
 fn inject_app_bridge(contents: Vec<u8>, devtools: Option<Devtools<'_>>) -> Vec<u8> {
     const BRIDGE: &str = r#"<script data-nebo-bridge>(function(){var m=location.pathname.match(/^(.*?)\/apps\/([^/]+)\/ui(?:\/|$)/);if(!m)return;function add(n,c){if(document.querySelector('meta[name="'+n+'"]'))return;var e=document.createElement('meta');e.setAttribute('name',n);e.setAttribute('content',c);document.head.appendChild(e);}add('nebo-app-id',decodeURIComponent(m[2]));add('nebo-base-url',location.origin+m[1]);})();</script>"#;
     let html = match String::from_utf8(contents) {
-        Ok(h) => h,
+        Ok(h) => relative_root_paths(&h),
         Err(e) => return e.into_bytes(), // non-UTF-8: serve verbatim
     };
     let scripts = match devtools {
@@ -860,10 +891,19 @@ pub async fn send_devlog(
         return (StatusCode::UNPROCESSABLE_ENTITY, axum::Json(serde_json::json!({"error": "No errors to send."})))
             .into_response();
     };
+    // Into the employee's latest thread, the chat the owner sees; a new
+    // thread when it has none. Its old web session is a chat nobody opens.
+    let session_key = match state.store.get_latest_agent_chat(&agent_id) {
+        Ok(Some(chat)) => format!("agent:{}:thread:{}", agent_id, chat.id),
+        _ => match crate::handlers::agents::create_agent_thread(&state, &agent_id) {
+            Ok((_, key)) => key,
+            Err(e) => return to_error_response(e).into_response(),
+        },
+    };
     match crate::handlers::agents::chat_with_agent(
         State(state.clone()),
         Path(agent_id),
-        axum::Json(serde_json::json!({ "prompt": prompt })),
+        axum::Json(serde_json::json!({ "prompt": prompt, "sessionKey": session_key })),
     )
     .await
     {
@@ -2291,5 +2331,20 @@ mod app_file_caching_tests {
         };
         assert_eq!(call("/motion").await, crate::middleware::PERMISSIONS_POLICY_WITH_MOTION);
         assert_eq!(call("/plain").await, crate::middleware::PERMISSIONS_POLICY);
+    }
+}
+
+#[cfg(test)]
+mod relative_root_paths_tests {
+    use super::relative_root_paths;
+
+    #[test]
+    fn root_paths_stay_inside_the_app_prefix() {
+        let html = r#"<script type="module" src="/assets/index-a1.js"></script><link rel="stylesheet" href='/assets/index-b2.css'><img src="//cdn.example/x.png"><a href="./ok">"#;
+        let out = relative_root_paths(html);
+        assert!(out.contains(r#"src="./assets/index-a1.js""#), "{out}");
+        assert!(out.contains(r#"href='./assets/index-b2.css'"#), "{out}");
+        assert!(out.contains(r#"src="//cdn.example/x.png""#), "protocol-relative untouched: {out}");
+        assert!(out.contains(r#"href="./ok""#), "{out}");
     }
 }
