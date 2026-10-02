@@ -328,8 +328,8 @@ impl TurnExit {
 // ── Admit ────────────────────────────────────────────────────────────────
 
 /// Admit `req` on its session and drive it on its own task. A busy
-/// session takes the input as a mid-turn row and the handle carries the
-/// busy line.
+/// session takes the input as a mid-turn row, and the handle carries only
+/// the typed `QUEUED_INTO_RUNNING_TURN` stop: no words, nothing announced.
 pub(crate) async fn start(h: Harness, mut req: TurnRequest) -> Result<TurnHandle, HarnessError> {
     if h.providers.read().await.is_empty() {
         return Err(HarnessError::Failed(
@@ -370,14 +370,15 @@ pub(crate) async fn start(h: Harness, mut req: TurnRequest) -> Result<TurnHandle
     };
     let (tx, rx) = mpsc::channel(100);
     match admission {
-        Admission::Queued { status } => {
+        Admission::Queued { stopped } => {
             info!(session_id = %session.id, "input on a busy session queued into the running turn");
             if let Some(row_id) = queued_row {
                 tokio::spawn(read_queued_pictures(h.clone(), req, row_id));
             }
             // A send fails only when the caller dropped the receiver.
+            let notice = if stopped { session_gate::STOPPED_WHILE_WAITING } else { "" };
             let _ = tx
-                .send(StreamEvent::control_notice(status, session_gate::QUEUED_INTO_RUNNING_TURN))
+                .send(StreamEvent::control_notice(notice, session_gate::QUEUED_INTO_RUNNING_TURN))
                 .await;
             let _ = tx.send(StreamEvent::done()).await;
         }
@@ -3623,7 +3624,9 @@ mod tests {
 
     /// The owner speaks while a tool round runs: the next step's call
     /// carries their words as typed, with the harness's note beside them,
-    /// and their caller hears the turn is busy.
+    /// and their caller gets only the typed queued stop, no words: nothing
+    /// announces the message (2026-10-02: the owner heard "Still on the
+    /// last thing" on every message).
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn mid_turn_owner_message_heard_next_step() {
         let model = Arc::new(Scripted::default());
@@ -3633,7 +3636,7 @@ mod tests {
         let hook: Hook = Box::pin(async move {
             let mut handle = h2.start_turn(owner("Also check the calendar")).await.expect("queued");
             let first = handle.events.recv().await.expect("status");
-            let _ = busy_tx.send(first.stop_reason);
+            let _ = busy_tx.send((first.stop_reason, first.text));
         });
         *model.script.lock().unwrap() = VecDeque::from(vec![
             Step::During(Box::new(Step::Call("echo", serde_json::json!({}))), hook),
@@ -3642,7 +3645,9 @@ mod tests {
         ]);
         let events = run_turn(&h, owner("Echo something")).await;
         assert_eq!(exit_of(&events), "text_response");
-        assert_eq!(busy_rx.await.unwrap().as_deref(), Some(session_gate::QUEUED_INTO_RUNNING_TURN));
+        let (reason, said) = busy_rx.await.unwrap();
+        assert_eq!(reason.as_deref(), Some(session_gate::QUEUED_INTO_RUNNING_TURN));
+        assert_eq!(said, "", "no busy line");
         let calls = model.calls();
         assert_eq!(calls.len(), 3, "heard inside the same turn: the answer, then the step that ends it");
         assert!(!texts(&calls[0]).iter().any(|t| t.contains("Also check the calendar")));
@@ -4131,7 +4136,7 @@ mod tests {
         async fn queue_request(&self, req: TurnRequest) {
             let h = self.h.get().expect("the harness is bound").clone();
             let mut handle = h.start_turn(req).await.expect("queued");
-            let first = handle.events.recv().await.expect("the busy line");
+            let first = handle.events.recv().await.expect("the queued stop");
             assert_eq!(first.stop_reason.as_deref(), Some(session_gate::QUEUED_INTO_RUNNING_TURN));
         }
 

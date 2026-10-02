@@ -531,8 +531,8 @@ impl Recorder {
             }
             Some("chat_complete") => {
                 // A message typed mid-turn gets its own short stream that
-                // ends at once with the typed "queued" stop; the real turn is
-                // still running.
+                // ends at once with the typed "queued" stop and no words; the
+                // real turn is still running.
                 if data["stop_reason"].as_str() == Some("queued_into_running_turn") {
                     return Step::Continue;
                 }
@@ -549,9 +549,6 @@ impl Recorder {
                 }
                 Step::Continue
             }
-            // The queued message's status line ("still on the last
-            // thing…"): the real turn is still running.
-            Some("chat_error") if data["stop_reason"].as_str() == Some("queued_into_running_turn") => Step::Continue,
             Some("chat_error") => {
                 let err = data["error"].as_str().unwrap_or("unknown error").to_string();
                 self.text.insert(0, format!("[run stopped: {err}]\n"));

@@ -10,8 +10,9 @@ use tokio_util::sync::CancellationToken;
 /// A turn in flight on one session. The runner admits ONE per session key: a
 /// second request while it runs is appended to the session as the owner's next
 /// message (the loop reloads history every iteration, so the model hears it at
-/// its next step) and the caller gets a status line instead of a second worker
-/// on the same job. Live 2026-09-03: four voice "status?" calls started four
+/// its next step) instead of starting a second worker on the same job. Nothing
+/// announces it: the message shows pending on its own bubble, and the running
+/// turn's answer covers it. Live 2026-09-03: four voice "status?" calls started four
 /// more runs on one thread; they fought over one file for five minutes.
 pub struct ActiveTurn {
     pub started: std::time::Instant,
@@ -31,14 +32,14 @@ pub struct ActiveTurn {
 
 pub type ActiveTurns = Arc<std::sync::Mutex<HashMap<String, ActiveTurn>>>;
 
-/// Admit a turn on `session_key`, or say why not. Check and insert are one
-/// step under the lock so two callers cannot both pass.
+/// Admit a turn on `session_key`; `None` while another turn holds it. Check
+/// and insert are one step under the lock so two callers cannot both pass.
 pub fn admit_turn(
     turns: &ActiveTurns,
     session_key: &str,
     progress: RunProgress,
     cancel_token: CancellationToken,
-) -> Result<TurnGuard, String> {
+) -> Option<TurnGuard> {
     admit(turns, session_key, progress, cancel_token, true)
 }
 
@@ -48,25 +49,27 @@ fn admit(
     progress: RunProgress,
     cancel_token: CancellationToken,
     takes_input: bool,
-) -> Result<TurnGuard, String> {
+) -> Option<TurnGuard> {
     let mut map = turns.lock().unwrap_or_else(|p| p.into_inner());
-    if let Some(active) = map.get(session_key) {
-        return Err(busy_status_line(active));
+    if map.contains_key(session_key) {
+        return None;
     }
     map.insert(
         session_key.to_string(),
         ActiveTurn { started: std::time::Instant::now(), progress, cancel_token, closing: false, takes_input },
     );
-    Ok(TurnGuard { turns: turns.clone(), session_key: session_key.to_string() })
+    Some(TurnGuard { turns: turns.clone(), session_key: session_key.to_string() })
 }
 
 /// What admission did with a turn's input.
 pub enum Admission {
     /// The session was free: the caller runs the turn.
     Admitted(TurnGuard),
-    /// A turn is running: the input went into it as a mid-turn row. `status`
-    /// is the busy line the caller shows (typed `QUEUED_INTO_RUNNING_TURN`).
-    Queued { status: String },
+    /// The input went into the thread as a mid-turn row (typed
+    /// `QUEUED_INTO_RUNNING_TURN`). A running turn hears it at its next step
+    /// and nothing is said about it; `stopped` when the new turn was stopped
+    /// while it waited for the slot instead, and the caller says so.
+    Queued { stopped: bool },
 }
 
 /// How often a waiting turn looks at the slot again.
@@ -109,15 +112,11 @@ pub async fn admit_or_queue(
                     return Admission::Admitted(TurnGuard { turns: turns.clone(), session_key: session_key.to_string() });
                 }
                 Some(active) if active.hears_new_input() || cancel_token.is_cancelled() => {
-                    let status = if active.hears_new_input() {
-                        busy_status_line(active)
-                    } else {
-                        STOPPED_WHILE_WAITING.to_string()
-                    };
+                    let stopped = !active.hears_new_input();
                     if let Some(queue) = queue.take() {
                         queue();
                     }
-                    return Admission::Queued { status };
+                    return Admission::Queued { stopped };
                 }
                 Some(_) => {}
             }
@@ -140,7 +139,7 @@ pub async fn admit_when_free(
     cancel_token: CancellationToken,
 ) -> Option<TurnGuard> {
     loop {
-        if let Ok(guard) = admit(turns, session_key, progress.clone(), cancel_token.clone(), false) {
+        if let Some(guard) = admit(turns, session_key, progress.clone(), cancel_token.clone(), false) {
             return Some(guard);
         }
         tokio::select! {
@@ -166,9 +165,9 @@ pub fn turn_is_closing(turns: &ActiveTurns, session_key: &str) -> bool {
 /// starts nothing and stays in the conversation.
 pub const STOPPED_WHILE_WAITING: &str = "Stopped. Your message is in the conversation for the next turn.";
 
-/// The typed stop reason a busy session answers with. Consumers render it as
-/// status (chat: a note under the message, spinner kept; voice: read aloud),
-/// never as the employee's reply.
+/// The typed stop reason of input that went into the thread for a turn
+/// already running. It carries no words: consumers keep the spinner and mark
+/// the owner's message pending, never a banner, a toast or a spoken line.
 pub const QUEUED_INTO_RUNNING_TURN: &str = "queued_into_running_turn";
 
 /// Releases the session when the run's task ends, however it ends.
@@ -249,8 +248,8 @@ impl ActiveTurn {
 }
 
 /// The live counters as one phrase ("3 minutes in, 12 tool calls so far,
-/// currently running os: exec"). The busy line below and voice's `status`
-/// tool both read it, so they never describe the same run differently.
+/// currently running os: exec"), for voice's `status` and `cancel` answers
+/// when the owner asks.
 pub fn progress_phrase(st: &ActiveTurnStatus) -> String {
     let elapsed = if st.elapsed_secs < 90 {
         format!("{} seconds", st.elapsed_secs)
@@ -268,16 +267,6 @@ pub fn progress_phrase(st: &ActiveTurnStatus) -> String {
         n => format!(", {n} tool calls so far"),
     };
     format!("{elapsed} in{calls_part}, currently {doing}")
-}
-
-/// What a second caller hears while a turn is busy. Built from the live
-/// counters, no model call; read aloud by voice, shown as status in chat.
-pub fn busy_status_line(active: &ActiveTurn) -> String {
-    format!(
-        "Still on the last thing, {}. I'll pick this up at my next step; if that work \
-         finishes first, your message is waiting in the thread.",
-        progress_phrase(&active.status())
-    )
 }
 
 /// Shared atomic counters for live run progress reporting.
@@ -312,28 +301,24 @@ mod tests {
     }
 
     /// The live failure: a second request on a busy session must not become a
-    /// second worker. It is refused with a status line, and the session opens
-    /// again the moment the first turn's guard drops.
+    /// second worker. It is refused, and the session opens again the moment
+    /// the first turn's guard drops.
     #[test]
     fn one_turn_per_session_and_the_guard_reopens_it() {
         let turns: ActiveTurns = Arc::new(std::sync::Mutex::new(HashMap::new()));
         let first = admit_turn(&turns, "agent:a:thread:t", progress(), CancellationToken::new()).expect("first turn admitted");
-        let second = admit_turn(&turns, "agent:a:thread:t", progress(), CancellationToken::new());
-        let status = match second {
-            Err(s) => s,
-            Ok(_) => panic!("a second turn was admitted on a busy session"),
-        };
-        assert!(status.contains("3 tool calls") && status.contains("running os: exec"), "{status}");
-        assert!(!status.contains('\u{2014}'), "no em dash in owner copy");
-        assert!(!status.contains("stop") && !status.contains("will answer"), "promises only what the code does: {status}");
+        assert!(
+            admit_turn(&turns, "agent:a:thread:t", progress(), CancellationToken::new()).is_none(),
+            "a second turn was admitted on a busy session"
+        );
         assert!(session_is_busy(&turns, "agent:a:thread:t"));
         let st = active_turn_status(&turns, "agent:a:thread:t").expect("status while busy");
         assert_eq!((st.tool_calls, st.current_tool.as_str()), (3, "os: exec"));
         assert!(active_turn_status(&turns, "agent:a:thread:other").is_none());
-        assert!(admit_turn(&turns, "agent:a:thread:other", progress(), CancellationToken::new()).is_ok(), "other sessions are unaffected");
+        assert!(admit_turn(&turns, "agent:a:thread:other", progress(), CancellationToken::new()).is_some(), "other sessions are unaffected");
         drop(first);
         assert!(!session_is_busy(&turns, "agent:a:thread:t"));
-        assert!(admit_turn(&turns, "agent:a:thread:t", progress(), CancellationToken::new()).is_ok(), "released when the guard drops");
+        assert!(admit_turn(&turns, "agent:a:thread:t", progress(), CancellationToken::new()).is_some(), "released when the guard drops");
     }
 
     /// The engine knows a case turn by its own session; the harness marks
@@ -370,8 +355,8 @@ mod tests {
         assert!(turn_is_closing(&turns, "k"), "a stopped turn is closing too");
     }
 
-    /// Input for a busy session goes into the running turn and the caller
-    /// gets the busy line; a closing turn is waited for and the new turn
+    /// Input for a busy session goes into the running turn with nothing said
+    /// about it; a closing turn is waited for and the new turn
     /// runs itself, its input never written into the closing one.
     #[tokio::test]
     async fn busy_input_is_queued_and_a_closing_turn_is_waited_for() {
@@ -382,7 +367,7 @@ mod tests {
             queued.store(true, std::sync::atomic::Ordering::SeqCst)
         })
         .await;
-        assert!(matches!(admission, Admission::Queued { ref status } if status.contains("3 tool calls")));
+        assert!(matches!(admission, Admission::Queued { stopped: false }), "joined, not stopped");
         assert!(queued.load(std::sync::atomic::Ordering::SeqCst), "the input was written into the running turn");
 
         running.close();
@@ -465,7 +450,7 @@ mod tests {
         let kept = std::sync::atomic::AtomicBool::new(false);
         let started = tokio::time::Instant::now();
         let admission = admit_or_queue(&turns, "k", progress(), stop, || kept.store(true, std::sync::atomic::Ordering::SeqCst)).await;
-        assert!(matches!(admission, Admission::Queued { .. }), "no turn of its own");
+        assert!(matches!(admission, Admission::Queued { stopped: true }), "no turn of its own");
         assert!(kept.load(std::sync::atomic::Ordering::SeqCst), "the message is written into the thread");
         assert!(started.elapsed() < std::time::Duration::from_secs(2), "the stop is heard at once");
         drop(closing);

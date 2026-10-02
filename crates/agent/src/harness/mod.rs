@@ -307,7 +307,7 @@ impl Harness {
 
     /// Admit the turn and drive it on its own task; its events stream on the
     /// handle. On a busy session the input is queued into the running turn
-    /// and the handle carries the busy line.
+    /// and the handle carries only the typed queued stop, no words.
     pub async fn start_turn(&self, req: TurnRequest) -> Result<TurnHandle, HarnessError> {
         turn::start(self.clone(), req).await
     }

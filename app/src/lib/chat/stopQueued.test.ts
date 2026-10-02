@@ -47,7 +47,7 @@ describe('Stop with a queued message', () => {
 		chat.send('Fix the renderer.');
 		chat.send('Did you look at the screenshot?');
 		// The bot queued the second behind the running work.
-		server('chat_error', { session_id: KEY, stop_reason: 'queued_into_running_turn' });
+		server('chat_complete', { session_id: KEY, stop_reason: 'queued_into_running_turn', stop_notice: '' });
 		expect(userMessages(chat).at(-1)?.pending).toBe(true);
 
 		chat.stop();
@@ -88,6 +88,44 @@ describe('Stop with a queued message', () => {
 		const chat = createChatController({ agentId: 'a', sessionKey: KEY });
 		server('chat_created', { session_id: 'agent:a:thread:other', agentId: 'a' });
 		expect(chat.isLoading).toBe(false);
+		chat.destroy();
+	});
+});
+
+/**
+ * Live 2026-10-02: a message sent while the employee worked raised a red
+ * "Still on the last thing, 5 seconds in, currently thinking…" banner over
+ * the composer. The message is simply taken in: its own stream ends with the
+ * typed queued stop and no words, and the only sign is "Pending" on its
+ * bubble. No banner (the composer's error banner reads `chatError`), and the
+ * work keeps showing as running.
+ */
+describe('A message during a run', () => {
+	beforeEach(() => {
+		sent.length = 0;
+		handlers.clear();
+	});
+
+	it('is taken in with no banner: only its bubble reads pending', () => {
+		const chat = createChatController({ agentId: 'a', sessionKey: KEY });
+		chat.send('Fix the renderer.');
+		server('chat_created', { session_id: KEY, agentId: 'a' });
+		chat.send('Also the header.');
+		server('chat_complete', { session_id: KEY, agentId: 'a', stop_reason: 'queued_into_running_turn', stop_notice: '' });
+
+		expect(chat.chatError).toBe('');
+		expect(chat.isLoading).toBe(true);
+		const users = userMessages(chat);
+		expect(users.at(-1)?.pending).toBe(true);
+		expect(users.at(0)?.pending).toBeFalsy();
+		expect(chat.messages.some((m) => m.type !== 'user')).toBe(false);
+
+		// The running turn answers both: the message is no longer pending.
+		server('chat_stream', { session_id: KEY, agentId: 'a', content: 'Fixed both.' });
+		server('chat_complete', { session_id: KEY, agentId: 'a' });
+		expect(chat.isLoading).toBe(false);
+		expect(userMessages(chat).every((m) => !m.pending)).toBe(true);
+		expect(chat.chatError).toBe('');
 		chat.destroy();
 	});
 });

@@ -1810,6 +1810,77 @@ async fn a_channel_message_during_a_running_turn_joins_it_silently() {
     assert!(reply.contains("HEARD-34B"), "the running turn answered the second message: {reply}");
 }
 
+/// The owner's messages while a turn runs are taken in with no busy notice
+/// anywhere (live 2026-10-02: a red "Still on the last thing, 5 seconds in,
+/// currently thinking…" banner over the composer, and the same line spoken
+/// on his call). A typed one: no chat_error, and its turn's end carries only
+/// the typed queued stop, no words, which the app shows as "Pending" on his
+/// bubble. A spoken one: the call is handed nothing to say. The running
+/// turn hears both and its answer covers them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_message_during_a_running_turn_is_taken_in_with_no_busy_notice() {
+    let nebo = session().await;
+    const KEY: &str = "proof:app:busy-bz";
+    let rules: Vec<Rule> = vec![Box::new(|t| {
+        if !t.opener().contains("MARK-BZ1") {
+            return None;
+        }
+        if t.says("MARK-BZ2") && t.says("MARK-BZ3") && t.answered("FIRST-BZ") && !t.answered("HEARD-BZ") {
+            return Some(Step::say("HEARD-BZ: both."));
+        }
+        (!t.answered("FIRST-BZ")).then(|| Step::held("gbz", "FIRST-BZ"))
+    })];
+    let rig = Rig::new(&nebo, rules).await;
+    let mut hub = nebo.state.hub.subscribe();
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let collect = {
+        let seen = seen.clone();
+        tokio::spawn(async move {
+            loop {
+                match hub.recv().await {
+                    Ok(e) if e.payload["session_id"] == KEY => seen.lock().unwrap().push(e),
+                    Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(_) => break,
+                }
+            }
+        })
+    };
+    rig.owner_writes(KEY, "", None, "MARK-BZ1 price the Rivera order").await;
+    rig.until(20, "the first call is out", || rig.company.calls_naming("MARK-BZ1") > 0).await;
+
+    rig.owner_writes(KEY, "", None, "MARK-BZ2 and the Chen order").await;
+    let spoken = crate::handlers::voice::run_delegated_task(&nebo.state, KEY, "MARK-BZ3 and the third", "And the third.", None).await;
+    assert!(spoken.joined, "the spoken task joined the running turn: {}", spoken.text);
+    assert!(spoken.told.is_empty());
+    rig.company.open("gbz");
+    rig.until(30, "the running turn answers both", || {
+        rig.thread(KEY).iter().any(|m| m.role == "assistant" && m.content.contains("HEARD-BZ"))
+    })
+    .await;
+    rig.until(20, "the turn is over", || !rig.busy(KEY)).await;
+
+    collect.abort();
+    let seen = std::mem::take(&mut *seen.lock().unwrap());
+    let busy_words = ["Still on the last thing", "pick this up", "is waiting in the thread", "seconds in", "currently thinking"];
+    for e in &seen {
+        assert_ne!(e.event_type, "chat_error", "no error event for a message taken in: {}", e.payload);
+        let text = e.payload.to_string();
+        assert!(!busy_words.iter().any(|w| text.contains(w)), "{} announced it: {text}", e.event_type);
+    }
+    let queued: Vec<_> = seen
+        .iter()
+        .filter(|e| {
+            e.event_type == "chat_complete"
+                && e.payload["stop_reason"] == agent::harness::session_gate::QUEUED_INTO_RUNNING_TURN
+        })
+        .collect();
+    assert_eq!(queued.len(), 2, "each message taken in ends with the typed queued stop");
+    assert!(queued.iter().all(|e| e.payload["stop_notice"] == ""), "with no words");
+    for m in rig.thread(KEY) {
+        assert!(!busy_words.iter().any(|w| m.content.contains(w)), "the thread kept a busy line: {}", m.content);
+    }
+}
+
 /// B14: a turn woken by a helper's result in a Slack conversation posts
 /// its reply into that conversation (its thread), as a loop or phone turn
 /// replies to its own (B13).
