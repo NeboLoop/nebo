@@ -435,7 +435,6 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState, ua: String) {
     let mut sent: u64 = 0;
     let mut lagged: u64 = 0;
     let mut hub_rx = state.hub.subscribe();
-    let seen_ids: Arc<tokio::sync::Mutex<HashSet<String>>> = Default::default();
     // Who this socket is (see `EventOrigin`): the page names itself in its
     // handshake; a client that doesn't (the phone app) is this socket alone,
     // so work it starts is never mistaken for another client's.
@@ -572,16 +571,14 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState, ua: String) {
                             let msg_type = parsed["type"].as_str().unwrap_or("");
                             match msg_type {
                                 "chat" => {
-                                    // Idempotency: skip duplicate messages
-                                    if let Some(msg_id) = parsed.get("message_id").and_then(|v| v.as_str()) {
-                                        let mut seen = seen_ids.lock().await;
-                                        if !seen.insert(msg_id.to_string()) {
-                                            debug!("duplicate message_id {}, skipping", msg_id);
-                                            continue;
-                                        }
-                                        if seen.len() > 1000 {
-                                            seen.clear();
-                                        }
+                                    // Idempotency: a frame already taken, on this socket or
+                                    // an earlier one, is acknowledged again and not run.
+                                    if let Some(msg_id) = parsed.get("message_id").and_then(|v| v.as_str())
+                                        && !first_delivery(msg_id)
+                                    {
+                                        debug!("duplicate message_id {}, skipping", msg_id);
+                                        state.hub.broadcast("chat_ack", chat_ack(&parsed["data"]["session_id"], Some(msg_id), "duplicate"));
+                                        continue;
                                     }
                                     dispatch_chat(&state, &parsed, &client_id).await;
                                 }
@@ -1439,6 +1436,10 @@ struct ChatPayload {
     /// The client whose socket sent it (`EventOrigin::client_id`); never
     /// read from the message itself. None for a platform-written prompt.
     client_id: Option<String>,
+    /// The frame's own `message_id`, echoed on its `chat_ack` so the client
+    /// that sent it knows this message, and not another, arrived. None for a
+    /// platform-written prompt.
+    message_id: Option<String>,
 }
 
 impl ChatPayload {
@@ -1469,8 +1470,46 @@ impl ChatPayload {
                 .and_then(|v| serde_json::from_value(v.clone()).ok())
                 .unwrap_or_default(),
             client_id: None,
+            message_id: None,
         }
     }
+}
+
+/// How many chat `message_id`s the bot remembers for [`first_delivery`].
+const DELIVERIES_KEPT: usize = 4096;
+
+/// True the first time the bot sees this chat `message_id`, on any socket.
+///
+/// A phone that sent a message and lost its socket before the ack came back
+/// sends it again, with the same id, on the socket it dials next. Remembered
+/// per socket, that second copy was a second turn; remembered here, it is
+/// acknowledged and dropped. The oldest ids are forgotten first.
+fn first_delivery(message_id: &str) -> bool {
+    static SEEN: std::sync::LazyLock<std::sync::Mutex<(HashSet<String>, std::collections::VecDeque<String>)>> =
+        std::sync::LazyLock::new(Default::default);
+    let mut seen = SEEN.lock().unwrap_or_else(|e| e.into_inner());
+    let (ids, order) = &mut *seen;
+    if !ids.insert(message_id.to_string()) {
+        return false;
+    }
+    order.push_back(message_id.to_string());
+    while order.len() > DELIVERIES_KEPT {
+        if let Some(old) = order.pop_front() {
+            ids.remove(&old);
+        }
+    }
+    true
+}
+
+/// The `chat_ack` a chat frame is answered with: its session, the frame's
+/// own `message_id` when it carried one, and whether it was taken
+/// (`accepted`) or had been already (`duplicate`).
+fn chat_ack(session_id: &serde_json::Value, message_id: Option<&str>, status: &str) -> serde_json::Value {
+    serde_json::json!({
+        "session_id": session_id.as_str().unwrap_or("default"),
+        "message_id": message_id,
+        "status": status,
+    })
 }
 
 /// Dispatch a chat message to the agent runner via the unified chat pipeline.
@@ -1484,6 +1523,7 @@ impl ChatPayload {
 async fn dispatch_chat(state: &AppState, msg: &serde_json::Value, client_id: &str) {
     let mut payload = ChatPayload::parse(&msg["data"]);
     payload.client_id = Some(client_id.to_string());
+    payload.message_id = msg["message_id"].as_str().map(str::to_string);
     dispatch_payload(state, payload, false).await;
 }
 
@@ -1514,6 +1554,7 @@ async fn dispatch_payload(state: &AppState, payload: ChatPayload, hidden: bool) 
         model_override,
         app_context,
         client_id,
+        message_id,
     } = payload;
 
     info!(
@@ -1527,10 +1568,7 @@ async fn dispatch_payload(state: &AppState, payload: ChatPayload, hidden: bool) 
     // Send ACK immediately so the client knows the message was received
     state.hub.broadcast(
         "chat_ack",
-        serde_json::json!({
-            "session_id": &session_id,
-            "status": "accepted",
-        }),
+        chat_ack(&serde_json::json!(&session_id), message_id.as_deref(), "accepted"),
     );
 
     // Intercept marketplace codes before they reach the agent: a message of
@@ -2869,5 +2907,29 @@ mod app_event_tests {
         let other = ev("a2ui_message", serde_json::json!({ "surface_id": "chat-1", "message": {} }));
         assert!(reaches_app("notes", &other));
         assert!(reaches_app("crm", &ev("a2ui_action_status", serde_json::json!({ "surface_id": "x" }))));
+    }
+}
+
+#[cfg(test)]
+mod delivery_tests {
+    use super::{DELIVERIES_KEPT, chat_ack, first_delivery};
+
+    /// A message sent again after its socket dropped, with the same id on a
+    /// new socket, is taken once; the ack names the message it answers.
+    #[test]
+    fn a_message_sent_twice_is_taken_once_and_its_ack_names_it() {
+        let id = format!("phone-{}", uuid::Uuid::new_v4());
+        assert!(first_delivery(&id));
+        assert!(!first_delivery(&id), "the second copy is a duplicate, whichever socket carries it");
+        let ack = chat_ack(&serde_json::json!("agent:a:thread:t"), Some(&id), "duplicate");
+        assert_eq!(ack["message_id"], id.as_str());
+        assert_eq!(ack["session_id"], "agent:a:thread:t");
+        assert_eq!(chat_ack(&serde_json::Value::Null, None, "accepted")["session_id"], "default");
+
+        // The memory is bounded: the oldest ids are forgotten first.
+        for _ in 0..DELIVERIES_KEPT {
+            first_delivery(&format!("fill-{}", uuid::Uuid::new_v4()));
+        }
+        assert!(first_delivery(&id));
     }
 }

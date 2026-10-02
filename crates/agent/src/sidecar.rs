@@ -14,7 +14,7 @@
 
 use ai::image_norm::Picture;
 use ai::{ChatRequest, Message, Provider, StreamEventType};
-use tracing::debug;
+use tracing::{debug, warn};
 
 const READER_SYSTEM: &str = "You are the eyes of an AI employee. Its own conversation never holds \
 images: you look at this one for it, and what you write is all it will ever know of the image. Be \
@@ -37,6 +37,15 @@ what you can actually see and say plainly what is illegible. Never invent conten
 
 /// Most tokens one reading takes.
 const READING_TOKENS: i32 = 1_500;
+
+/// The longest one look may take, from asking to the last word. The owner's
+/// message waits on the readings of its pictures before it is stored and
+/// its turn starts (`harness::turn::read_pictures`), so a helper that never
+/// answers would hold the employee at "Working…" for good. Past this the
+/// look is given up and the note says the image could not be read; the
+/// pictures on one message are read side by side, so this bounds the whole
+/// step too.
+pub const READING_LIMIT: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// Resolve the sidecar model for the provider that will serve the request.
 /// Empty string lets the provider pick.
@@ -90,25 +99,32 @@ pub async fn look(
         trace,
     };
 
-    let mut rx = match provider.stream(&req).await {
-        Ok(rx) => rx,
-        Err(e) => {
-            debug!("image reading failed: {e}");
-            return None;
+    let reading = async {
+        let mut rx = match provider.stream(&req).await {
+            Ok(rx) => rx,
+            Err(e) => {
+                debug!("image reading failed: {e}");
+                return None;
+            }
+        };
+        let mut text = String::new();
+        while let Some(event) = rx.recv().await {
+            match event.event_type {
+                StreamEventType::Text => text.push_str(&event.text),
+                StreamEventType::Done | StreamEventType::Error => break,
+                _ => {}
+            }
         }
+        let text = text.trim();
+        (!text.is_empty()).then(|| text.to_string())
     };
-
-    let mut text = String::new();
-    while let Some(event) = rx.recv().await {
-        match event.event_type {
-            StreamEventType::Text => text.push_str(&event.text),
-            StreamEventType::Done | StreamEventType::Error => break,
-            _ => {}
+    match tokio::time::timeout(READING_LIMIT, reading).await {
+        Ok(reading) => reading,
+        Err(_) => {
+            warn!("image reading gave no answer within {READING_LIMIT:?}; the note says it could not be read");
+            None
         }
     }
-
-    let text = text.trim();
-    (!text.is_empty()).then(|| text.to_string())
 }
 
 /// What the conversation holds for one image: its reference and size, the
@@ -142,5 +158,46 @@ mod tests {
         assert!(n.contains("/plans/site.png, 4000×3000 px") && n.contains("DECK 12'x16'") && n.contains("question"));
         let blind = note("/plans/site.png", None, None);
         assert!(blind.contains("could not read it") && blind.contains("don't claim there was no image"));
+    }
+
+    /// A vision model that takes the request and never answers.
+    struct Silent;
+
+    #[async_trait::async_trait]
+    impl Provider for Silent {
+        fn id(&self) -> &str {
+            "silent"
+        }
+        fn supports_vision(&self) -> bool {
+            true
+        }
+        async fn stream(&self, _req: &ChatRequest) -> Result<ai::EventReceiver, ai::ProviderError> {
+            let (tx, rx) = tokio::sync::mpsc::channel(1);
+            // Held open and never written: the answer that never comes.
+            std::mem::forget(tx);
+            Ok(rx)
+        }
+    }
+
+    /// A helper that never answers gives up within the limit, and the
+    /// owner's message goes on with a note that the image could not be read.
+    #[tokio::test(start_paused = true)]
+    async fn a_look_that_never_answers_gives_up_within_the_limit() {
+        let picture = Picture {
+            image: ai::ImageContent { media_type: "image/png".into(), data: String::new() },
+            width: 10,
+            height: 10,
+        };
+        let started = tokio::time::Instant::now();
+        // Bounded from outside too, so a look with no limit fails here rather than hanging.
+        let reading = tokio::time::timeout(
+            READING_LIMIT * 2,
+            look(ai::RequestTrace::new("image_read"), &Silent, &picture, "attached", None),
+        )
+        .await
+        .expect("the look never gave up");
+        assert!(reading.is_none());
+        assert!(started.elapsed() <= READING_LIMIT + std::time::Duration::from_secs(1));
+        assert!(note("photo.png", Some((10, 10)), reading.as_deref()).contains("could not read it"));
     }
 }
