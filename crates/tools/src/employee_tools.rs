@@ -174,8 +174,8 @@ impl Kind {
             Kind::FindEmployees => "search the marketplace for employees to hire",
             Kind::HireEmployee => "install an employee by marketplace code",
             Kind::CreateEmployee => "make a new employee with duties",
-            Kind::UpdateEmployee => "change an employee's instructions or workflows",
-            Kind::DeleteEmployee => "permanently remove an employee",
+            Kind::UpdateEmployee => "rename or change an employee or app",
+            Kind::DeleteEmployee => "delete an employee, the owner approving each time",
             Kind::SetEmployeeActive => "turn an employee on or off",
             Kind::SetupEmployee => "open an employee's setup form",
             Kind::RepairEmployee => "fix an employee's broken schedules",
@@ -209,19 +209,25 @@ impl Kind {
                 - Every recurring duty goes in `automations`: each becomes the employee's own workflow, run as it. Never make separate schedules for it.\n\
                 - Steps must be concrete — which tools, files and destinations, what to check, what to produce — because the workflow runs unattended on these words alone.\n\
                 - `app` or `ui`/`ui_jsx` makes it an app with its own page; load the build-an-app skill before writing one.\n\
-                - To change an employee that exists, use update_employee."
+                - To change an employee that exists, its name included, use update_employee."
                 .to_string(),
             Kind::UpdateEmployee => "Changes an existing employee; only what you pass changes.\n\
+                - To rename an employee or an app, pass `new_name`. A rename keeps everything: the same employee, \
+                with its id, settings, schedules, memory, chats and files (an app keeps its page, source, built files, \
+                data and address). Never delete and re-create an employee to rename it.\n\
                 - `instructions` replaces its instructions and keeps the rest; `agent_md` replaces its whole AGENT.md.\n\
                 - `automations` replaces ALL its workflows. To change some, use add_automations, remove_automations, update_automation or toggle_automation.\n\
                 - `input_values` sets the values its workflows read; `inputs` changes the form that asks for them.\n\
-                - `new_name` renames it.\n\
                 - The owner's own request in this chat is their yes: a change they asked for is made in the one call, whatever it adds to its job. Don't make one they didn't ask for without asking.\n\
                 - Anywhere else, an edit that adds to its job drafts first: tell the owner only what is new, and on their yes call again with only the `draft_id`."
                 .to_string(),
-            Kind::DeleteEmployee => "Permanently deletes an employee: its record, workflows, schedules and the files it was made with.\n\
-                - It can't be undone; only when the owner asked for it."
-                .to_string(),
+            Kind::DeleteEmployee => format!(
+                "Deletes an employee: its record, workflows and schedules. Its files go to the trash for {} days.\n\
+                - Only when the owner asked to delete it. The owner approves every delete on a card first.\n\
+                - To rename an employee or an app, use update_employee with `new_name`, never delete and re-create.\n\
+                - To stop one without losing it, turn it off with set_employee_active(active: false).",
+                napp::trash::KEEP_DAYS
+            ),
             Kind::SetEmployeeActive => "Turns an employee on or off: on loads it and starts its schedules; off unloads it.".to_string(),
             Kind::SetupEmployee => "Opens an employee's setup form in the app, where the owner fills in its inputs and schedules.".to_string(),
             Kind::RepairEmployee => "Fixes employees' schedules: invalid schedule expressions, schedules left behind and triggers out of step with the workflows.\n\
@@ -287,7 +293,10 @@ impl Kind {
             Kind::UpdateEmployee => {
                 let mut props = job_properties();
                 props.insert("name".into(), name_param());
-                props.insert("new_name".into(), json!({ "type": "string", "description": "Rename it to this." }));
+                props.insert(
+                    "new_name".into(),
+                    json!({ "type": "string", "description": "Rename it to this. It stays the same employee and keeps everything." }),
+                );
                 props.insert(
                     "instructions".into(),
                     json!({ "type": "string", "description": "Its new instructions: the body of AGENT.md, replaced; its settings and workflows stay." }),
@@ -378,7 +387,9 @@ impl Kind {
     fn effects(self, input: &serde_json::Value) -> CallEffects {
         let named = || str_field(input, "name").map(str::to_string).into_iter().collect::<Vec<_>>();
         match self {
-            Kind::DeleteEmployee => CallEffects { deletes: named(), publishes: Knowable::No, ..CallEffects::default() },
+            Kind::DeleteEmployee => {
+                CallEffects { deletes: named(), publishes: Knowable::No, removes_employee: true, ..CallEffects::default() }
+            }
             Kind::UpdateEmployee => CallEffects { overwrites: named(), publishes: Knowable::No, ..CallEffects::default() },
             Kind::ReloadEmployee if input.get("apply_update").and_then(|v| v.as_bool()) == Some(true) => {
                 CallEffects { overwrites: named(), publishes: Knowable::No, ..CallEffects::default() }
@@ -722,37 +733,137 @@ mod tests {
         assert!(store.get_agent(id).unwrap().is_none());
     }
 
-    /// A rename changes the display name only: the folder stays where it
-    /// is, `napp_path` keeps pointing at it, and later writes land there.
+    /// An app employee, its folder named for it under the loader's user
+    /// folder, with a page, source, settings, a workflow and a schedule.
+    fn app_employee(dir: &std::path::Path, store: &db::Store, id: &str, name: &str) -> std::path::PathBuf {
+        let md = format!("---\nname: {name}\n---\nYou are {name}.");
+        store.create_agent(id, Some("user"), name, "A game.", &md, "", None, None).unwrap();
+        let folder = dir.join("b").join(name);
+        std::fs::create_dir_all(folder.join("ui").join("assets")).unwrap();
+        std::fs::create_dir_all(folder.join("src")).unwrap();
+        std::fs::write(folder.join("AGENT.md"), &md).unwrap();
+        std::fs::write(folder.join("ui").join("index.html"), "<div id=root></div>").unwrap();
+        std::fs::write(folder.join("ui").join("assets").join("index.js"), "built").unwrap();
+        std::fs::write(folder.join("src").join("App.tsx"), "export default function App() {}").unwrap();
+        store.set_agent_napp_path(id, &folder.to_string_lossy()).unwrap();
+        let ui = folder.join("ui");
+        store.set_agent_app_fields(id, true, Some(&ui.to_string_lossy()), None, Some("{\"fullscreen\":true}")).unwrap();
+        store.update_agent_input_values(id, "{\"level\":\"hard\"}").unwrap();
+        store
+            .upsert_agent_workflow(id, "nightly", "schedule", "0 3 * * *", Some("Nightly"), None, None, None, None, false)
+            .unwrap();
+        store
+            .create_cron_job(&format!("agent-{id}-nightly"), "0 3 * * *", "", "agent", None, None, None, true, Some(id), None, None)
+            .unwrap();
+        folder
+    }
+
+    fn family_in(dir: &std::path::Path, store: &Arc<db::Store>) -> Vec<EmployeeTool> {
+        let loader = Arc::new(napp::AgentLoader::new(dir.join("a"), dir.join("b")));
+        let live = Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new()));
+        tools(PersonaTool::new(store.clone(), live, loader))
+    }
+
+    /// 2026-10-01: told there was no rename, an employee deleted the app
+    /// "Tweet" and made "Flip-Flap", and the app's source went with it. A
+    /// rename is the same employee under a new name: its id, settings,
+    /// workflows, schedules, page, source and built files all stay, and its
+    /// folder moves with the name, the row repointed with it.
     #[tokio::test]
-    async fn a_rename_keeps_the_folder_and_napp_path() {
+    async fn a_rename_keeps_everything_and_moves_the_folder() {
         let dir = tempfile::tempdir().unwrap();
         let store = Arc::new(db::Store::new(&dir.path().join("e.db").to_string_lossy()).unwrap());
-        let id = "5f0c0d3e-1d7a-4c51-9b7e-2f3f6a0b9c11";
-        let md = "---\nname: puzzle-game-developer\n---\nYou build the puzzle game.";
-        store.create_agent(id, Some("user"), "Puzzle Game Developer", "Builds a puzzle game.", md, "", None, None).unwrap();
-        let folder = dir.path().join("b").join("Puzzle Game Developer");
-        std::fs::create_dir_all(&folder).unwrap();
-        std::fs::write(folder.join("AGENT.md"), md).unwrap();
-        store.set_agent_napp_path(id, &folder.to_string_lossy()).unwrap();
-        let loader = Arc::new(napp::AgentLoader::new(dir.path().join("a"), dir.path().join("b")));
-        let live = Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new()));
-        let family = tools(PersonaTool::new(store.clone(), live, loader));
+        let id = "ab788706-2a52-4b38-8a5b-2d2335ef8475";
+        let old = app_employee(dir.path(), &store, id, "Tweet");
+        let family = family_in(dir.path(), &store);
+
+        let r = tool(&family, "update_employee")
+            .execute_dyn(&ToolContext::default(), json!({"name": "Tweet", "new_name": "Flip-Flap"}))
+            .await;
+        assert!(!r.is_error, "{}", r.content);
+        assert!(r.content.contains("the same employee"), "{}", r.content);
+
+        let row = store.get_agent(id).unwrap().expect("the same row, by the same id");
+        assert_eq!(row.name, "Flip-Flap");
+        assert_eq!(row.input_values, "{\"level\":\"hard\"}", "its settings stay");
+        assert_eq!(row.app_window_config.as_deref(), Some("{\"fullscreen\":true}"));
+        let moved = dir.path().join("b").join("Flip-Flap");
+        assert_eq!(row.napp_path.as_deref(), Some(moved.to_str().unwrap()), "the row names the moved folder");
+        assert_eq!(row.app_ui_path.as_deref(), Some(moved.join("ui").to_str().unwrap()), "its page is served from there");
+        assert!(!old.exists(), "no folder left under the old name");
+        assert_eq!(std::fs::read_to_string(moved.join("src").join("App.tsx")).unwrap(), "export default function App() {}");
+        assert_eq!(std::fs::read_to_string(moved.join("ui").join("assets").join("index.js")).unwrap(), "built");
+        assert_eq!(store.list_agent_workflows(id).unwrap().len(), 1, "its workflows stay");
+        let schedules = store.list_cron_jobs(100, 0).unwrap();
+        assert!(schedules.iter().any(|j| j.name == format!("agent-{id}-nightly")), "its schedules stay");
+
+        // A later edit lands in the moved folder.
+        let r = tool(&family, "update_employee")
+            .execute_dyn(&ToolContext::default(), json!({"name": "Flip-Flap", "instructions": "You are a flapping game."}))
+            .await;
+        assert!(!r.is_error, "{}", r.content);
+        assert!(std::fs::read_to_string(moved.join("AGENT.md")).unwrap().contains("a flapping game"));
+    }
+
+    /// Names are unique per bot: a rename onto another employee's name, in
+    /// any spelling, is refused and changes nothing, files included.
+    #[tokio::test]
+    async fn a_rename_onto_a_taken_name_is_refused_and_changes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(db::Store::new(&dir.path().join("e.db").to_string_lossy()).unwrap());
+        let folder = app_employee(dir.path(), &store, "tweet-id", "Tweet");
+        store.create_agent("other", None, "Flip Flap", "", "", "{}", None, None).unwrap();
+        let family = family_in(dir.path(), &store);
 
         let r = tool(&family, "update_employee")
             .execute_dyn(
                 &ToolContext::default(),
-                json!({"name": "Puzzle Game Developer", "new_name": "Puzzler", "instructions": "You build and polish the puzzle game."}),
+                json!({"name": "Tweet", "new_name": "flip-flap", "description": "A different game."}),
             )
             .await;
-        assert!(!r.is_error, "{}", r.content);
+        assert!(r.is_error, "{}", r.content);
+        assert!(r.content.contains("already have an employee named \"Flip Flap\""), "{}", r.content);
+        let row = store.get_agent("tweet-id").unwrap().unwrap();
+        assert_eq!((row.name.as_str(), row.description.as_str()), ("Tweet", "A game."), "nothing was changed");
+        assert_eq!(row.napp_path.as_deref(), Some(folder.to_str().unwrap()));
+        assert!(folder.join("src").join("App.tsx").exists());
+    }
 
-        let row = store.get_agent(id).unwrap().unwrap();
-        assert_eq!(row.name, "Puzzler");
-        assert_eq!(row.napp_path.as_deref(), Some(folder.to_str().unwrap()), "napp_path never follows the name");
-        assert!(!dir.path().join("b").join("Puzzler").exists(), "no folder under the new name");
-        let written = std::fs::read_to_string(folder.join("AGENT.md")).unwrap();
-        assert!(written.contains("polish the puzzle game"), "the edit lands in the recorded folder: {written}");
+    /// A delete never wipes an app's files: they are moved whole into the
+    /// trash, where they can be put back.
+    #[tokio::test]
+    async fn a_deleted_apps_files_are_kept_in_the_trash() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(db::Store::new(&dir.path().join("e.db").to_string_lossy()).unwrap());
+        let folder = app_employee(dir.path(), &store, "tweet-id", "Tweet");
+        let family = family_in(dir.path(), &store);
+
+        let r = tool(&family, "delete_employee").execute_dyn(&ToolContext::default(), json!({"name": "Tweet"})).await;
+        assert!(!r.is_error, "{}", r.content);
+        assert!(store.get_agent("tweet-id").unwrap().is_none());
+        assert!(!folder.exists());
+        let trash = dir.path().join("trash");
+        let slot = std::fs::read_dir(&trash).unwrap().next().unwrap().unwrap().path();
+        let kept = slot.join("Tweet");
+        assert!(r.content.contains(&kept.display().to_string()), "the result says where: {}", r.content);
+        assert_eq!(std::fs::read_to_string(kept.join("src").join("App.tsx")).unwrap(), "export default function App() {}");
+        assert_eq!(std::fs::read_to_string(kept.join("ui").join("index.html")).unwrap(), "<div id=root></div>");
+    }
+
+    /// The model reads how to rename where it looks: the search hint and
+    /// update_employee say rename keeps everything; delete_employee says
+    /// never to delete to rename, and that the owner approves each one.
+    #[test]
+    fn rename_is_offered_where_the_model_looks() {
+        let (family, _dir) = family();
+        let update = tool(&family, "update_employee");
+        assert!(update.search_hint().contains("rename"));
+        assert!(update.description().contains("A rename keeps everything"), "{}", update.description());
+        assert!(update.description().contains("Never delete and re-create"), "{}", update.description());
+        let delete = tool(&family, "delete_employee").description();
+        assert!(delete.contains("never delete and re-create") && delete.contains("approves every delete"), "{delete}");
+        assert!(tool(&family, "delete_employee").effects(&json!({"name": "Tweet"})).removes_employee);
+        assert!(!update.effects(&json!({"name": "Tweet", "new_name": "Flip-Flap"})).removes_employee);
     }
 
     /// Making an employee goes through the one consent step: with the

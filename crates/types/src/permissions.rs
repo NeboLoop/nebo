@@ -49,6 +49,10 @@ pub struct CallEffects {
     /// limit). Only the owner does that: it always asks, in every mode.
     #[serde(default)]
     pub widens: bool,
+    /// The call deletes an employee. Only the owner says yes to that, each
+    /// time, in every mode: never "Allow always".
+    #[serde(default)]
+    pub removes_employee: bool,
 }
 
 impl CallEffects {
@@ -539,6 +543,9 @@ pub enum AskCase {
     AskMode,
     /// The call gives an employee more room; only the owner does that.
     Widens,
+    /// The call deletes an employee: the owner answers every one, once or
+    /// no.
+    RemovesEmployee,
     /// An employee made by an employee needs more than its creator holds:
     /// the one card at creation, listing the extras.
     CreatedExtras { capabilities: Vec<String> },

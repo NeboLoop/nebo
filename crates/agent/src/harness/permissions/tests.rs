@@ -801,3 +801,42 @@ fn a_fenced_job_gains_the_runs_folder() {
     g.run_folders.push("/home/me/docs".into());
     assert_eq!(g.folders().len(), 2, "no duplicate folder");
 }
+
+/// 2026-10-01: in Full Access, asked by the owner to rename an app, an
+/// employee deleted it instead, and nothing asked. A delete of an employee
+/// asks the owner every time, in every mode, his own chat included, on a
+/// card offering only "This once" and "No"; until he answers, the employee
+/// is there. A run that can't wait for him is refused.
+#[tokio::test]
+async fn deleting_an_employee_asks_the_owner_every_time() {
+    let (dir, store) = store();
+    store.create_agent("tweet", Some("user"), "Tweet", "A game.", "", "{}", None, None).unwrap();
+    let loader = Arc::new(napp::AgentLoader::new(dir.path().join("a"), dir.path().join("b")));
+    let live = Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new()));
+    let reg = Registry::new(Arc::new(Check::new(store.clone())));
+    for t in tools::employee_tools::tools(tools::agent_tool::PersonaTool::new(store.clone(), live, loader)) {
+        reg.register(Box::new(t)).await;
+    }
+    for (who, mode) in [("assistant", Mode::FullAccess), ("chief", Mode::Automatic)] {
+        let mut c = with_mode(ctx(&store, who, Origin::User), mode);
+        c.owner_request = true;
+        let parked = reg.execute(&c, "delete_employee", json!({"name": "Tweet"})).await;
+        let id = parked.parked_ask.clone().unwrap_or_else(|| panic!("{mode:?}: {}", parked.content));
+        assert!(store.get_agent("tweet").unwrap().is_some(), "{mode:?}: nothing is deleted before the owner says yes");
+        let row = store.get_permission_ask(&id).unwrap().expect("the ask is written");
+        assert_eq!(serde_json::from_str::<AskCase>(&row.ask_case).unwrap(), AskCase::RemovesEmployee);
+        let ask = Check::new(store.clone()).asks().get(&id).unwrap().expect("the ask");
+        assert!(!ask.allow_always_offered(&store) && ask.this_once_offered(), "{mode:?}: once or no, never always");
+    }
+    // Nothing can wait for him: refused, never run.
+    let mut c = with_mode(ctx(&store, "worker", Origin::User), Mode::FullAccess);
+    c.cannot_wait = true;
+    let refused = reg.execute(&c, "delete_employee", json!({"name": "Tweet"})).await;
+    assert!(refused.is_error && refused.parked_ask.is_none(), "{}", refused.content);
+    assert!(store.get_agent("tweet").unwrap().is_some());
+    // His "This once" runs exactly that delete.
+    let c = ToolContext { answered_ask: Some("an-answered-ask".into()), ..with_mode(ctx(&store, "assistant", Origin::User), Mode::FullAccess) };
+    let ran = reg.execute(&c, "delete_employee", json!({"name": "Tweet"})).await;
+    assert!(!ran.is_error, "{}", ran.content);
+    assert!(store.get_agent("tweet").unwrap().is_none());
+}

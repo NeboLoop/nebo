@@ -16,11 +16,20 @@ pub struct Profile {
     /// The registry's broadcast cell: a rename emits the same
     /// `agent_updated` event the updateAgent handler does.
     notify_fn: Arc<std::sync::RwLock<Option<NotifyFn>>>,
+    /// The employee loader and the live roster: a rename is the ONE rename
+    /// (`agent_tool::rename_employee`), which moves the employee's folder.
+    agent_loader: Arc<napp::AgentLoader>,
+    live: crate::agent_tool::AgentRegistry,
 }
 
 impl Profile {
-    pub fn new(store: Arc<Store>, notify_fn: Arc<std::sync::RwLock<Option<NotifyFn>>>) -> Self {
-        Self { store, notify_fn }
+    pub fn new(
+        store: Arc<Store>,
+        notify_fn: Arc<std::sync::RwLock<Option<NotifyFn>>>,
+        agent_loader: Arc<napp::AgentLoader>,
+        live: crate::agent_tool::AgentRegistry,
+    ) -> Self {
+        Self { store, notify_fn, agent_loader, live }
     }
 
     pub fn tools(self) -> Vec<Box<dyn DynTool>> {
@@ -87,35 +96,39 @@ impl Profile {
                 ));
             }
         };
-        let new_name = if name.is_empty() {
-            existing.name.clone()
-        } else {
-            name.to_string()
-        };
         let new_desc = if role.is_empty() {
             existing.description.clone()
         } else {
             role.to_string()
         };
+        // The name through the ONE rename: the same employee, its folder
+        // moved with it.
+        let folder = match crate::agent_tool::rename_employee(&self.store, &self.agent_loader, &self.live, &agent_id, name).await {
+            Ok(folder) => folder,
+            Err(e) => return ToolResult::error(format!("Not renamed: {e}")),
+        };
+        let new_name = if name.is_empty() { existing.name.clone() } else { name.to_string() };
         // The same store.update_agent the updateAgent handler uses (one
-        // canonical write path).
-        if let Err(e) = self.store.update_agent(
-            &agent_id,
-            &new_name,
-            &new_desc,
-            &existing.agent_md,
-            &existing.frontmatter,
-            existing.pricing_model.as_deref(),
-            existing.pricing_cost,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-        ) {
+        // canonical write path) for the role.
+        if !role.is_empty()
+            && let Err(e) = self.store.update_agent(
+                &agent_id,
+                &new_name,
+                &new_desc,
+                &existing.agent_md,
+                &existing.frontmatter,
+                existing.pricing_model.as_deref(),
+                existing.pricing_cost,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+        {
             return ToolResult::error(format!(
                 "Failed to update agent record: {}. Do not retry — this is a database error.",
                 e
@@ -139,8 +152,10 @@ impl Profile {
             "Updated identity{}{}. This takes effect in new conversations.",
             if name.is_empty() {
                 String::new()
+            } else if folder.is_empty() {
+                format!(": name is now '{}', and everything else is kept", name)
             } else {
-                format!(": name is now '{}'", name)
+                format!(": name is now '{}', and everything else is kept ({folder})", name)
             },
             if role.is_empty() {
                 String::new()
@@ -254,7 +269,7 @@ impl DynTool for ProfileTool {
     fn description(&self) -> String {
         match self.op {
             ProfileOp::Get => "Reads this bot's account: its id, the model this conversation runs on, and the plan, subscription status, renewal and balance.".to_string(),
-            ProfileOp::Update => "Renames you or changes your role, everywhere the owner sees it. It changes your own name only, never the bot's. When the owner says to use a different name, call this: remembering the name alone doesn't change it. Takes effect in new conversations.".to_string(),
+            ProfileOp::Update => "Renames you or changes your role, everywhere the owner sees it. A rename keeps everything: you stay the same employee, with your id, settings, schedules, memory, chats and files (an app keeps its page, source and data). Never delete yourself to rename. It changes your own name only, never the bot's. When the owner says to use a different name, call this: remembering the name alone doesn't change it. Takes effect in new conversations.".to_string(),
             ProfileOp::OpenBilling => "Opens the account's billing portal in the owner's browser.".to_string(),
         }
     }
@@ -329,6 +344,14 @@ impl DynTool for ProfileTool {
 mod tests {
     use super::*;
 
+    fn loader(dir: &tempfile::TempDir) -> Arc<napp::AgentLoader> {
+        Arc::new(napp::AgentLoader::new(dir.path().join("installed"), dir.path().join("agents")))
+    }
+
+    fn live() -> crate::agent_tool::AgentRegistry {
+        Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new()))
+    }
+
     #[test]
     fn a_subscription_reports_missing_fields_as_not_reported() {
         let v = json!({"plan": "solo", "status": "active", "secret_field": "x"});
@@ -352,7 +375,7 @@ mod tests {
         for (id, name) in [(crate::team_tool::PRIMARY_AGENT_ID, "Nanna"), ("books", "Bookkeeper")] {
             store.create_agent(id, None, name, "", "", "{}", None, None).unwrap();
         }
-        let tools = Profile::new(store.clone(), Arc::new(std::sync::RwLock::new(None))).tools();
+        let tools = Profile::new(store.clone(), Arc::new(std::sync::RwLock::new(None)), loader(&dir), live()).tools();
         let ctx = ToolContext { session_key: "agent:books:web".into(), ..Default::default() };
 
         let out = tools[1].execute_dyn(&ctx, json!({"name": "Penny", "role": "Books"})).await;
@@ -373,11 +396,41 @@ mod tests {
         assert_eq!(store.get_agent_profile().unwrap().unwrap().name, "Nebo");
     }
 
+    /// "Rename yourself": an app renaming itself is the ONE rename, so it
+    /// stays the same employee and its folder moves with the name; a name
+    /// another employee has is refused.
+    #[tokio::test]
+    async fn an_app_renaming_itself_keeps_everything() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::new(&dir.path().join("p.db").to_string_lossy()).unwrap());
+        store.create_agent("tweet", Some("user"), "Tweet", "A game.", "", "{}", None, None).unwrap();
+        store.create_agent("other", None, "Bookkeeper", "", "", "{}", None, None).unwrap();
+        let folder = dir.path().join("agents").join("Tweet");
+        std::fs::create_dir_all(folder.join("src")).unwrap();
+        std::fs::write(folder.join("src").join("App.tsx"), "game").unwrap();
+        store.set_agent_napp_path("tweet", &folder.to_string_lossy()).unwrap();
+        let tools = Profile::new(store.clone(), Arc::new(std::sync::RwLock::new(None)), loader(&dir), live()).tools();
+        let ctx = ToolContext { session_key: "agent:tweet:web".into(), ..Default::default() };
+
+        let out = tools[1].execute_dyn(&ctx, json!({"name": "bookkeeper"})).await;
+        assert!(out.is_error && out.content.contains("already have an employee named"), "{}", out.content);
+        assert_eq!(store.get_agent("tweet").unwrap().unwrap().name, "Tweet");
+
+        let out = tools[1].execute_dyn(&ctx, json!({"name": "Flip-Flap"})).await;
+        assert!(!out.is_error, "{}", out.content);
+        let row = store.get_agent("tweet").unwrap().unwrap();
+        assert_eq!((row.name.as_str(), row.description.as_str()), ("Flip-Flap", "A game."));
+        let moved = dir.path().join("agents").join("Flip-Flap");
+        assert_eq!(row.napp_path.as_deref(), Some(moved.to_str().unwrap()));
+        assert_eq!(std::fs::read_to_string(moved.join("src").join("App.tsx")).unwrap(), "game");
+        assert!(!folder.exists());
+    }
+
     #[test]
     fn an_update_needs_a_name_or_a_role() {
         let dir = tempfile::tempdir().unwrap();
         let store = Arc::new(Store::new(&dir.path().join("p.db").to_string_lossy()).unwrap());
-        let tools = Profile::new(store, Arc::new(std::sync::RwLock::new(None))).tools();
+        let tools = Profile::new(store, Arc::new(std::sync::RwLock::new(None)), loader(&dir), live()).tools();
         assert!(tools[1].validate_input(&json!({})).is_err());
         assert!(
             tools[1]

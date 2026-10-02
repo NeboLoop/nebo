@@ -49,6 +49,87 @@ pub type AgentRegistry = Arc<RwLock<HashMap<String, ActiveAgent>>>;
 /// Legacy alias — callers that only need the old behavior can still compile.
 pub type ActiveAgentState = AgentRegistry;
 
+/// The ONE rename, behind `update_employee(new_name)` and an employee's own
+/// `update_profile(name)`: the same employee under a new name. Its row, id,
+/// settings, schedules, memory and chats stay as they are; an app keeps its
+/// page, source, built files, data and address (`/apps/<id>/`, by id). A
+/// folder named for the old name moves to the new one, and the row is
+/// repointed in the same write (`Store::rename_agent`); when the row can't
+/// be written the folder goes back. Names are unique per bot. Returns what
+/// to tell the caller about the folder, empty when it stayed.
+///
+/// 2026-10-01: told "Nebo doesn't let me rename an employee", an employee
+/// deleted an app and made a new one, and the app's source went with it.
+pub async fn rename_employee(
+    store: &Store,
+    loader: &napp::AgentLoader,
+    live: &AgentRegistry,
+    id: &str,
+    new_name: &str,
+) -> Result<String, String> {
+    let new_name = new_name.trim();
+    let row = match store.get_agent(id) {
+        Ok(Some(row)) => row,
+        Ok(None) => return Err(format!("There is no employee '{id}' here to rename.")),
+        Err(e) => return Err(format!("The employee could not be read: {e}")),
+    };
+    if new_name.is_empty() || new_name == row.name {
+        return Ok(String::new());
+    }
+    store.agent_name_free(new_name, Some(id)).map_err(|e| e.to_string())?;
+    let from = row.napp_path.as_deref().map(str::trim).filter(|p| !p.is_empty()).map(std::path::PathBuf::from);
+    let to = from.as_ref().and_then(|f| renamed_folder(loader.user_dir(), f, &row.name, new_name));
+    let moved = match (&from, &to) {
+        (Some(from), Some(to)) => match std::fs::rename(from, to) {
+            Ok(()) => Some((from.to_string_lossy().to_string(), to.to_string_lossy().to_string())),
+            Err(e) => {
+                warn!(agent = %id, error = %e, "rename: the folder stays where it is");
+                None
+            }
+        },
+        _ => None,
+    };
+    if let Err(e) = store.rename_agent(id, new_name, moved.as_ref().map(|(f, t)| (f.as_str(), t.as_str()))) {
+        if let Some((from, to)) = &moved
+            && let Err(back) = std::fs::rename(to, from)
+        {
+            warn!(agent = %id, error = %back, "rename refused, and the folder could not be moved back");
+        }
+        return Err(e.to_string());
+    }
+    if let Some(active) = live.write().await.get_mut(id) {
+        active.name = new_name.to_string();
+    }
+    if moved.is_some() {
+        loader.load_all().await;
+    }
+    info!(agent = %id, from = %row.name, to = %new_name, "employee renamed");
+    Ok(moved.map(|(_, to)| format!("its folder is now {to}")).unwrap_or_default())
+}
+
+/// Where an employee's folder goes when it is renamed: beside it, under the
+/// new name. Only a folder the owner's employees are made in (`user_root`)
+/// and named for the employee (in any spelling) moves. `None` for anything
+/// else — a marketplace package, a "<name> 2" — when the new name can't be
+/// one folder name, or when that folder is taken: the folder then stays,
+/// and the row keeps pointing at it.
+fn renamed_folder(
+    user_root: &std::path::Path,
+    folder: &std::path::Path,
+    old_name: &str,
+    new_name: &str,
+) -> Option<std::path::PathBuf> {
+    let one_name = !new_name.starts_with('.')
+        && !new_name.contains(['/', '\\', ':'])
+        && std::path::Path::new(new_name).components().count() == 1;
+    if folder.parent()? != user_root {
+        return None;
+    }
+    let target = user_root.join(new_name);
+    let named_for_it = db::agent_slug(&folder.file_name()?.to_string_lossy()) == db::agent_slug(old_name);
+    (named_for_it && one_name && folder.is_dir() && !target.exists()).then_some(target)
+}
+
 /// Validate agent→skill dependencies for all active agents.
 ///
 /// For each agent that declares required skills (via `config.skills`), checks
@@ -154,6 +235,9 @@ pub struct PersonaTool {
     /// The coworker rail (filled late by the server): what every employee
     /// is doing right now, which the roster reports.
     rail: crate::coworker::CoworkerRailCell,
+    /// The registry's broadcast cell: a rename emits `agent_updated`, which
+    /// the owner's pages patch in place and the loop's roster follows.
+    notify_fn: Arc<std::sync::RwLock<Option<crate::message_tool::NotifyFn>>>,
 }
 
 /// A listing NeboAI published: its qualified name lives under the @neboai
@@ -184,7 +268,14 @@ impl PersonaTool {
             code_installer: Arc::new(std::sync::RwLock::new(None)),
             job_consent: Arc::new(std::sync::RwLock::new(None)),
             rail: crate::coworker::new_rail_cell(),
+            notify_fn: Arc::new(std::sync::RwLock::new(None)),
         }
+    }
+
+    /// Inject the registry's broadcast cell (filled late by the server).
+    pub fn with_notify_fn(mut self, notify_fn: Arc<std::sync::RwLock<Option<crate::message_tool::NotifyFn>>>) -> Self {
+        self.notify_fn = notify_fn;
+        self
     }
 
     /// Inject the shared coworker-rail cell (from the `Registry`): the
@@ -1665,15 +1756,15 @@ impl PersonaTool {
         let mut current_frontmatter = Self::stored_frontmatter(&db_agent.frontmatter);
         let mut changes = Vec::new();
 
-        // Update name (rename): the display name only. The folder stays
-        // where it is (`package_dir`); moving it with the name once left a
-        // row pointing at a folder that no longer existed.
+        // A rename (`new_name`) is the ONE rename (`rename_employee`), made
+        // once the rest of the update is written. A name another employee
+        // has is refused here, before anything changes.
         let agent_dir = self.package_dir(&db_agent);
-        if let Some(new_name) = input["new_name"].as_str() {
-            if !new_name.is_empty() && new_name != current_name {
-                changes.push(format!("renamed to '{}'", new_name));
-                current_name = new_name.to_string();
-            }
+        let new_name = input["new_name"].as_str().map(str::trim).filter(|n| !n.is_empty() && *n != current_name);
+        if let Some(new_name) = new_name
+            && let Err(e) = self.store.agent_name_free(new_name, Some(agent_id))
+        {
+            return ToolResult::error(format!("{e} Nothing was changed."));
         }
 
         // Update description
@@ -2141,6 +2232,26 @@ impl PersonaTool {
             return ToolResult::error(format!("Failed to update agent in DB: {}", e));
         }
 
+        if let Some(new_name) = new_name {
+            match rename_employee(&self.store, &self.agent_loader, &self.agent_registry, agent_id, new_name).await {
+                Ok(folder) => {
+                    if let Some(notify) = self.notify_fn.read().ok().and_then(|g| g.clone()) {
+                        notify(
+                            "agent_updated",
+                            serde_json::json!({ "agentId": agent_id, "name": new_name, "description": current_desc }),
+                        );
+                    }
+                    changes.push(format!(
+                        "renamed from '{current_name}' to '{new_name}': the same employee, with its id, settings, \
+                         schedules, memory, chats and files{}",
+                        if folder.is_empty() { String::new() } else { format!("; {folder}") }
+                    ));
+                    current_name = new_name.to_string();
+                }
+                Err(e) => changes.push(format!("failed to rename to '{new_name}': {e}")),
+            }
+        }
+
         // Update live registry if agent is active
         let mut registry = self.agent_registry.write().await;
         if let Some(active) = registry.get_mut(agent_id) {
@@ -2200,6 +2311,25 @@ impl PersonaTool {
         let agent_id = &db_agent.id;
         let agent_name = &db_agent.name;
 
+        // Its files first, into the trash (`napp::trash`): never removed on
+        // the spot. Only a folder the owner's employees are made in moves; a
+        // marketplace package stays where it is. When they can't be moved
+        // nothing is deleted.
+        let user_dir = self.package_dir(&db_agent);
+        let kept = if user_dir.parent() == Some(self.agent_loader.user_dir()) && user_dir.exists() {
+            match napp::trash::discard(&user_dir, &self.agent_loader.trash_dir()) {
+                Ok(kept) => Some(kept),
+                Err(e) => {
+                    return ToolResult::error(format!(
+                        "{agent_name} was not deleted: its files at {} could not be moved to the trash ({e}).",
+                        user_dir.display()
+                    ));
+                }
+            }
+        } else {
+            None
+        };
+
         // Remove from live registry
         self.agent_registry.write().await.remove(agent_id);
 
@@ -2210,29 +2340,24 @@ impl PersonaTool {
         // Delete agent workflows from DB
         let _ = self.store.delete_agent_workflows(agent_id);
 
-        // Delete agent from DB
+        // Delete agent from DB, keeping the name its id had for history.
+        let _ = self.store.tombstone_agent(agent_id, agent_name, chrono::Utc::now().timestamp());
         if let Err(e) = self.store.delete_agent(agent_id) {
             return ToolResult::error(format!("Failed to delete agent from DB: {}", e));
         }
-
-        // Remove filesystem directory (user-created only): the row's own
-        // folder, which a rename never moved.
-        let user_dir = self.package_dir(&db_agent);
-        if user_dir.parent() == Some(self.agent_loader.user_dir()) && user_dir.exists() {
-            if let Err(e) = std::fs::remove_dir_all(&user_dir) {
-                return ToolResult::ok(format!(
-                    "Deleted {} from the roster, but failed to remove its directory {}: {}",
-                    agent_name,
-                    user_dir.display(),
-                    e
-                ));
-            }
+        if kept.is_some() {
+            self.agent_loader.load_all().await;
         }
 
-        ToolResult::ok(format!(
-            "Deleted {} (id: {}): its record, workflows, schedules and files are gone.",
-            agent_name, agent_id
-        ))
+        ToolResult::ok(match kept {
+            Some(kept) => format!(
+                "Deleted {agent_name} (id: {agent_id}): its record, workflows and schedules are gone. Its files are kept \
+                 in the trash for {} days at {}.",
+                napp::trash::KEEP_DAYS,
+                kept.display()
+            ),
+            None => format!("Deleted {agent_name} (id: {agent_id}): its record, workflows and schedules are gone."),
+        })
     }
 
     pub(crate) async fn handle_install(

@@ -212,6 +212,12 @@ impl AgentLoader {
         &self.installed_dir
     }
 
+    /// Where a deleted employee's files are kept ([`crate::trash`]): beside
+    /// the user agents directory, outside every folder the loader scans.
+    pub fn trash_dir(&self) -> PathBuf {
+        self.user_dir.parent().unwrap_or(&self.user_dir).join("trash")
+    }
+
     /// Start watching for filesystem changes, reload on modification, and emit
     /// diff events through the returned channel for DB/registry/WS sync.
     pub fn watch(

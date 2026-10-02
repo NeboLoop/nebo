@@ -241,7 +241,10 @@ impl Ask {
                 .ok()
                 .flatten()
                 .is_some_and(|r| !r.locked && r.effect == Effect::Ask),
-            AskCase::Widens | AskCase::CompanyMoney { .. } | AskCase::UnconfirmedSend { .. } => false,
+            AskCase::Widens
+            | AskCase::RemovesEmployee
+            | AskCase::CompanyMoney { .. }
+            | AskCase::UnconfirmedSend { .. } => false,
             _ => true,
         };
         loosenable && allow_always_rules(store, self).is_some()
@@ -281,6 +284,7 @@ pub fn reason_of(case: &AskCase) -> &'static str {
         AskCase::AskRule { .. } => "This needs your OK every time.",
         AskCase::AskMode => "This employee asks before it changes anything.",
         AskCase::Widens => "Only you can give an employee more room.",
+        AskCase::RemovesEmployee => "Deleting an employee needs your OK every time.",
         AskCase::CreatedExtras { .. } => "It was made by another employee and needs more than that employee has.",
         AskCase::UnconfirmedSend { .. } => {
             "Nebo couldn't confirm it went out. Check the sent items, then say whether it did."
@@ -857,6 +861,7 @@ pub fn allow_always_rules(store: &db::Store, ask: &Ask) -> Option<Vec<Rule>> {
             | AskCase::CompanyMoney { .. }
             | AskCase::NewCounterparty { .. }
             | AskCase::Widens
+            | AskCase::RemovesEmployee
             | AskCase::CreatedExtras { .. }
             | AskCase::UnconfirmedSend { .. }
     );
@@ -941,6 +946,7 @@ fn allow_always_rule(store: &db::Store, ask: &Ask) -> Rule {
         AskCase::Irreversible { .. }
         | AskCase::AskMode
         | AskCase::Widens
+        | AskCase::RemovesEmployee
         | AskCase::CreatedExtras { .. }
         | AskCase::UnconfirmedSend { .. }
         | AskCase::CompanyMoney { .. } => (call_key(), t.field.clone(), None),
