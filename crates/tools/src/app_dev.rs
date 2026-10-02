@@ -553,7 +553,7 @@ pub fn status_text(name: &str, dir: &Path, errors: usize) -> String {
     } else {
         out.push("It loads:".into());
         for r in &loads {
-            match local_ref(r) {
+            match local_ref(r).or_else(|| root_ref(dir, r)) {
                 None => out.push(format!("- {r} (outside the app)")),
                 Some(rel) if dir.join(&rel).is_file() => {
                     out.push(format!("- {rel}"));
@@ -728,6 +728,15 @@ fn join_inside(base: &str, spec: &str) -> Option<String> {
     (!parts.is_empty()).then(|| parts.join("/"))
 }
 
+/// A root-absolute page reference (`/assets/index-1a2b3c4d.js`, what a
+/// Vite build without `base: './'` writes) that names a file in the app's
+/// folder: the server serves it from there, so it is the app's file.
+fn root_ref(dir: &Path, r: &str) -> Option<String> {
+    let path = r.strip_prefix('/').filter(|p| !p.starts_with('/'))?;
+    let path = path.split(['?', '#']).next().unwrap_or("");
+    (!path.is_empty() && !path.split('/').any(|seg| seg == "..") && dir.join(path).is_file()).then(|| path.to_string())
+}
+
 /// A page reference as a path inside the app's folder, or `None` when it
 /// points outside the app (another site, a data URL, the bot's root).
 fn local_ref(r: &str) -> Option<String> {
@@ -824,6 +833,26 @@ mod tests {
             text.contains("Console errors in open views: 2 (read them with app_console)."),
             "{text}"
         );
+    }
+
+    /// A build that wrote root paths (`/assets/...`, Vite without
+    /// `base: './'`) loads the app's own files: the server serves them from
+    /// the app's folder, so app_status counts them as loaded.
+    #[test]
+    fn status_counts_a_root_path_to_the_apps_own_file_as_loaded() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ui = tmp.path().join("ui");
+        std::fs::create_dir_all(ui.join("assets")).unwrap();
+        std::fs::write(
+            ui.join("index.html"),
+            r#"<html><head><script type="module" crossorigin src="/assets/index-C_-Z6QB_.js"></script><script src="/sdk/nebo.global.js"></script></head><body></body></html>"#,
+        )
+        .unwrap();
+        std::fs::write(ui.join("assets").join("index-C_-Z6QB_.js"), "console.log(1)").unwrap();
+        let text = status_text("Flip-Flap", &ui, 0);
+        assert!(text.contains("- assets/index-C_-Z6QB_.js\n"), "{text}");
+        assert!(text.contains("- /sdk/nebo.global.js (outside the app)"), "{text}");
+        assert!(!text.contains("Not loaded by"), "{text}");
     }
 
     /// The owner's own app always has the developer pack for itself; App

@@ -506,21 +506,35 @@
       flush();
       send.disabled = true;
       status.textContent = 'Sending…';
-      // The bot sends the errors it holds for this app, so the batch above
-      // goes first.
+      // The request carries the page's own errors too: a batch still on its
+      // way (or lost) can never leave the employee with nothing. The bot
+      // keeps each once, with what it already holds. Nothing here is
+      // cleared, so a failed send is sent again by the same button.
+      var errors = logs.filter(function (e) {
+        return e.level === 'error';
+      });
+      var body = JSON.stringify({ entries: errors.slice(-50) });
       setTimeout(function () {
         origFetch(api + '/devlog/send', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: '{}',
+          body: body,
           credentials: 'same-origin'
         })
           .then(function (r) {
-            status.textContent = r.ok
-              ? 'Sent to ' + (CFG.employee || 'the employee') + '.'
-              : r.status === 422
-                ? 'No errors to send.'
-                : 'Could not send. Try again.';
+            // "Sent" only on the bot's own word that the message is on its
+            // way (`status: dispatched`); its refusal is shown as it says it.
+            return r
+              .json()
+              .catch(function () {
+                return {};
+              })
+              .then(function (b) {
+                status.textContent =
+                  r.ok && b && b.status === 'dispatched'
+                    ? 'Sent to ' + (CFG.employee || 'the employee') + '. It is working on them in your chat.'
+                    : (b && typeof b.error === 'string' && b.error) || 'Could not send. Try again.';
+              });
           })
           .catch(function () {
             status.textContent = 'Could not send. Try again.';

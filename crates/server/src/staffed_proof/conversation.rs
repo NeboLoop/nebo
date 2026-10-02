@@ -3348,3 +3348,83 @@ async fn the_teams_working_list_names_members_and_helpers_and_a_rows_stop_stops_
     let again = nebo.post_ok(&format!("/teams/{TEAM}/stop"), &json!({})).await;
     assert_eq!(again["message"], "Nothing was running in the team.", "{again}");
 }
+
+/// "Send to <employee>" in an app's console: the app's errors land in the
+/// conversation the owner has open with the app's employee — never its
+/// legacy web conversation, which no client opens — and the employee works
+/// on them there. The page hears "dispatched" only then; with nothing to
+/// send, or the employee turned off, it is told so.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_apps_console_errors_land_in_the_owners_open_chat() {
+    let nebo = session().await;
+    let app = nebo.hire("Proof Flip App", json!({ "workflows": {} })).await;
+    nebo.activate(&app).await;
+    let ui = nebo.home.join("user/agents/proof-flip-app-ui/ui");
+    std::fs::create_dir_all(&ui).unwrap();
+    nebo.store().set_agent_app_fields(&app, true, Some(&ui.to_string_lossy()), None, None).unwrap();
+    let rules: Vec<Rule> = vec![Box::new(|t| t.opener().contains("MARK-FLIP").then(|| Step::say("FLIP-FIXING: on it.")))];
+    let rig = Rig::new(&nebo, rules).await;
+    let web = format!("agent:{app}:web");
+
+    // The owner's open conversation with the app's employee.
+    let opened = nebo.post_ok(&format!("/agents/{app}/chats"), &json!({})).await;
+    let thread = opened["sessionKey"].as_str().expect("thread").to_string();
+
+    let (status, body) = nebo.post(&format!("/apps/{app}/devlog/send"), &json!({})).await;
+    assert_eq!((status, body["error"].as_str()), (422, Some("No errors to send.")), "{body}");
+
+    let (status, body) = nebo
+        .post(
+            &format!("/apps/{app}/devlog"),
+            &json!({ "entries": [
+                { "level": "log", "message": "booted", "source": "console", "time": 1_700_000_000_000i64 },
+                { "level": "error", "message": "Failed to load /assets/index-MARK-FLIP.js", "source": "resource", "time": 1_700_000_000_500i64 }
+            ] }),
+        )
+        .await;
+    assert_eq!(status, 204, "{body}");
+
+    // The page sends its errors with the press too: one its batches already
+    // brought is kept once, and a network failure no batch brought arrives.
+    let page = json!({ "entries": [
+        { "level": "error", "message": "Failed to load /assets/index-MARK-FLIP.js", "source": "resource", "time": 1_700_000_000_500i64 },
+        { "level": "error", "message": "GET /levels/1.json \u{2192} 404 Not Found", "source": "network", "time": 1_700_000_000_900i64 }
+    ] });
+    let sent = nebo.post_ok(&format!("/apps/{app}/devlog/send"), &page).await;
+    assert_eq!(sent["status"], "dispatched", "{sent}");
+    assert_eq!(sent["sessionId"].as_str(), Some(thread.as_str()), "{sent}");
+    rig.until(30, "the employee works on the errors in the owner's open chat", || {
+        rig.thread(&thread).iter().any(|m| m.role == "assistant" && m.content.contains("FLIP-FIXING"))
+    })
+    .await;
+    let rows = rig.thread(&thread);
+    let asked = rows.iter().find(|m| m.role == "user").expect("the errors message");
+    assert!(
+        asked.content.contains("These errors came up in Proof Flip App")
+            && asked.content.contains("Failed to load /assets/index-MARK-FLIP.js")
+            && asked.content.contains("GET /levels/1.json \u{2192} 404 Not Found")
+            && !asked.content.contains("booted"),
+        "{}",
+        asked.content
+    );
+    assert_eq!(asked.content.matches("index-MARK-FLIP.js").count(), 1, "each error once: {}", asked.content);
+    assert!(rig.thread(&web).is_empty(), "nothing lands in the hidden web conversation");
+
+    // Turned off: refused, in words the page shows, never "dispatched".
+    nebo.post_ok(&format!("/agents/{app}/deactivate"), &json!({})).await;
+    let (status, body) = nebo.post(&format!("/apps/{app}/devlog/send"), &page).await;
+    assert_eq!(status, 409, "{body}");
+    assert_eq!(body["error"], "Proof Flip App is turned off. Turn it on, then send again.", "{body}");
+    assert!(body.get("status").is_none(), "{body}");
+
+    // The errors were kept: the same press, once it is back on, sends them.
+    nebo.activate(&app).await;
+    let again = nebo.post_ok(&format!("/apps/{app}/devlog/send"), &page).await;
+    assert_eq!((again["status"].as_str(), again["sessionId"].as_str()), (Some("dispatched"), Some(thread.as_str())), "{again}");
+    rig.until(30, "the retried errors reach the same chat and are worked on", || {
+        let rows = rig.thread(&thread);
+        rows.iter().filter(|m| m.role == "user" && m.content.contains("These errors came up")).count() == 2
+            && rows.iter().filter(|m| m.role == "assistant" && m.content.contains("FLIP-FIXING")).count() == 2
+    })
+    .await;
+}

@@ -1,0 +1,10 @@
+id: sc80-an-apps-console-errors-land-in-the-owners-open-chat
+name: "SC80 — An app's console errors land in the owner's open chat"
+description: |
+  "Send to <employee>" in an app's developer console puts the app's errors in the conversation
+  the owner has open with the app's employee, never its hidden legacy web conversation, and the
+  employee works on them there. The page is told "dispatched" only then; with nothing to send, or
+  the employee turned off, it is told so in words it shows.
+target_component: staffed-company
+proof: staffed_proof::conversation::an_apps_console_errors_land_in_the_owners_open_chat
+conversation: []
