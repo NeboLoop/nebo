@@ -170,7 +170,7 @@ fn scheduled_turn(
     };
     agent::TurnRequest {
         session_key: session_key.to_string(),
-        input: TurnInput::Owner { text, images: Vec::new(), attachments: Vec::new() },
+        input: TurnInput::Owner { text, images: Vec::new(), attachments: Vec::new(), message_id: None },
         seat: SeatRequest {
             agent_id: agent_id.to_string(),
             user_id: String::new(),

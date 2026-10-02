@@ -472,7 +472,7 @@ fn resume_goal(h: &Harness, session_id: &str) {
 fn queue_input(h: &Harness, session_id: &str, req: &TurnRequest) -> Option<String> {
     let mut pictures_row = None;
     let written = match &req.input {
-        TurnInput::Owner { text, images, attachments } => {
+        TurnInput::Owner { text, images, attachments, message_id } => {
             let via = if req.delivery.channel.is_empty() {
                 "chat"
             } else {
@@ -486,6 +486,9 @@ fn queue_input(h: &Harness, session_id: &str, req: &TurnRequest) -> Option<Strin
                 conversation::mark_owner(&mut meta);
             }
             conversation::mark_files(&mut meta, images, attachments);
+            if let Some(id) = message_id.as_deref().filter(|id| !id.is_empty()) {
+                meta[conversation::MESSAGE_ID] = serde_json::json!(id);
+            }
             h.sessions
                 .append_message(
                     session_id,
@@ -546,7 +549,7 @@ fn queue_input(h: &Harness, session_id: &str, req: &TurnRequest) -> Option<Strin
 /// put on its row once read. Until then the running turn reads where each
 /// picture is and can look at it itself (`conversation::pictures_of`).
 async fn read_queued_pictures(h: Harness, req: TurnRequest, row_id: String) {
-    let TurnInput::Owner { text, images, attachments } = &req.input else {
+    let TurnInput::Owner { text, images, attachments, .. } = &req.input else {
         return;
     };
     let readings = read_pictures(&h, &req, text, images, attachments).await;
@@ -1055,7 +1058,7 @@ pub(crate) async fn prepare(
 async fn store_input(h: &Harness, session_id: &str, req: &TurnRequest) -> Result<(), String> {
     let (text, images, attachments, hidden, coworker): (&str, &[ai::ImageContent], &[comm::wire::Attachment], bool, Option<&str>) =
         match &req.input {
-            TurnInput::Owner { text, images, attachments } => (text, images, attachments, false, None),
+            TurnInput::Owner { text, images, attachments, .. } => (text, images, attachments, false, None),
             TurnInput::Platform { text } | TurnInput::Spoken { task: text, .. } => (text, &[], &[], true, None),
             TurnInput::Coworker { from, text } => (text, &[], &[], false, Some(from.as_str())),
             TurnInput::Notification(c) => {
@@ -1244,6 +1247,12 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
             Ok(c) => c,
             Err(e) => return TurnExit::ProviderFailed(format!("failed to load the conversation: {e}")),
         };
+        // The owner's messages queued behind the work are this step's now:
+        // every client moves them from waiting into the conversation.
+        let taken = conversation::take_in(&h.store, &mut conversation);
+        if !taken.is_empty() {
+            let _ = cx.tx.send(StreamEvent::taken_in(taken)).await;
+        }
         if conversation::mid_turn_message_landed(&conversation, &st.seen) && st.step > 1 {
             st.transition = Transition::MidTurnInput;
         }
@@ -3024,6 +3033,7 @@ mod tests {
                 text: text.into(),
                 images: Vec::new(),
                 attachments: Vec::new(),
+                message_id: None,
             },
             seat: SeatRequest {
                 agent_id: String::new(),
@@ -3856,6 +3866,7 @@ mod tests {
             shared.input = TurnInput::Owner {
                 text: "[Attached: deck.pptx]".into(),
                 images: Vec::new(),
+                message_id: None,
                 attachments: vec![comm::wire::Attachment {
                     file_id: "f-deck".into(),
                     filename: "deck.pptx".into(),
@@ -4101,6 +4112,9 @@ mod tests {
         /// Messages (with their files), then the stop button before any
         /// step hears them.
         QueueThenStop(Mutex<Vec<TurnRequest>>, tokio_util::sync::CancellationToken),
+        /// Messages sent from a client (with their client ids), and then,
+        /// when `withdraw`, each taken back before any step hears it.
+        Send(Mutex<Vec<TurnRequest>>, bool),
     }
 
     /// The owner's act, done once, from wherever the step loop is when
@@ -4125,6 +4139,22 @@ mod tests {
                         self.queue_request(req).await;
                     }
                     cancel.cancel();
+                }
+                Act::Send(sent, withdraw) => {
+                    let sent: Vec<TurnRequest> = std::mem::take(&mut *sent.lock().unwrap());
+                    let mut ids = Vec::new();
+                    for req in sent {
+                        if let TurnInput::Owner { message_id: Some(id), .. } = &req.input {
+                            ids.push(id.clone());
+                        }
+                        self.queue_request(req).await;
+                    }
+                    if *withdraw {
+                        let h = self.h.get().expect("the harness is bound");
+                        for id in ids {
+                            assert!(h.withdraw_queued(KEY, &id), "taken back before any step heard it");
+                        }
+                    }
                 }
             }
         }
@@ -4465,6 +4495,79 @@ mod tests {
         }
     }
 
+    /// The owner's message as a client sends it, under its own id.
+    fn sent(text: &str, id: &str) -> TurnRequest {
+        let mut req = owner(text);
+        if let TurnInput::Owner { message_id, .. } = &mut req.input {
+            *message_id = Some(id.into());
+        }
+        req
+    }
+
+    /// The client ids each `TakenIn` event names, in order.
+    fn taken_in(events: &[StreamEvent]) -> Vec<Vec<String>> {
+        events
+            .iter()
+            .filter(|e| e.event_type == ai::StreamEventType::TakenIn)
+            .map(|e| serde_json::from_value(e.payload.as_ref().unwrap()["message_ids"].clone()).unwrap())
+            .collect()
+    }
+
+    /// A message the owner sends while the employee works waits behind the
+    /// work until a step takes it in. That step names it, by the id his
+    /// client sent it under, once, wherever in the step loop it landed:
+    /// every client moves it from waiting into the conversation then. Once
+    /// taken in, it can no longer be taken back.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_queued_message_is_named_once_by_the_step_that_takes_it_in() {
+        for at in EVERY_POINT {
+            let run = interrupted(at, |_| Act::Send(Mutex::new(vec![sent(STOP_READING, "m-1")]), false), reads_on, Some("stop")).await;
+            assert_eq!(taken_in(&run.events), [["m-1"]], "{at:?}: named once");
+            let carries = |c: &ChatRequest| texts(c).iter().any(|t| t.contains(STOP_READING));
+            assert!(run.calls.iter().any(carries), "{at:?}: heard");
+            let row = run.rows.iter().find(|m| m.content == STOP_READING).expect("in the thread");
+            assert_eq!(meta_of(row)[conversation::TAKEN_IN], true, "{at:?}");
+            assert!(!run.h.withdraw_queued(KEY, "m-1"), "{at:?}: taken in, it stays");
+            assert!(stored(&run.h).iter().any(|m| m.content == STOP_READING), "{at:?}");
+        }
+    }
+
+    /// A queued message the owner takes back before any step heard it is
+    /// never heard: its row is gone and the work runs on as if it was never
+    /// sent.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_queued_message_taken_back_is_never_heard() {
+        for at in [At::DuringCall, At::DuringTools] {
+            let run = interrupted(at, |_| Act::Send(Mutex::new(vec![sent(STOP_READING, "m-1")]), true), reads_on, Some("stop")).await;
+            let carries = |c: &ChatRequest| texts(c).iter().any(|t| t.contains(STOP_READING));
+            assert!(!run.calls.iter().any(carries), "{at:?}: no step heard it");
+            assert!(taken_in(&run.events).is_empty(), "{at:?}");
+            assert!(!run.rows.iter().any(|m| m.content == STOP_READING), "{at:?}: gone from the thread");
+            assert_eq!(run.reads, 3, "{at:?}: the work ran on");
+        }
+    }
+
+    /// Stop with a message queued: the stopped turn never heard it, and the
+    /// turn that answers it at once takes it in at its first step, named by
+    /// its client id.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_message_carried_past_a_stop_is_taken_in_by_the_turn_that_answers_it() {
+        let (run, key, _asked) = queued_then_stopped(At::DuringTools, vec![sent(LOOK_AT_IT, "m-1")]).await;
+        assert_eq!(key.as_deref(), Some(KEY));
+        assert!(taken_in(&run.events).is_empty(), "the stopped turn never heard it");
+        let carried = after_the_stop(&run.h).into_iter().find(|m| m.content == LOOK_AT_IT).expect("carried past the stop");
+        assert_eq!(meta_of(&carried)[conversation::MESSAGE_ID], "m-1", "it keeps its client id");
+
+        *run.model.script.lock().unwrap() = (0..4).map(|_| Step::Reacting(does_what_was_asked)).collect();
+        let events = run_turn(&run.h, answering_turn()).await;
+        assert_eq!(taken_in(&events), [["m-1"]]);
+        let first = events.iter().position(|e| e.event_type == ai::StreamEventType::TakenIn).unwrap();
+        assert!(
+            events[..first].iter().all(|e| !matches!(e.event_type, ai::StreamEventType::Text | ai::StreamEventType::ToolCall)),
+            "named before any of the answer"
+        );
+    }
+
     /// Two messages queued before the stop: ONE turn answers both, in the
     /// order he sent them.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -4501,7 +4604,7 @@ mod tests {
             height: None,
             duration: None,
         };
-        shared.input = TurnInput::Owner { text: LOOK_AT_IT.into(), images: Vec::new(), attachments: vec![attachment] };
+        shared.input = TurnInput::Owner { text: LOOK_AT_IT.into(), images: Vec::new(), attachments: vec![attachment], message_id: None };
         let (run, key, _asked) = queued_then_stopped(At::DuringTools, vec![shared]).await;
         assert_eq!(key.as_deref(), Some(KEY));
         let after = after_the_stop(&run.h);
@@ -7084,7 +7187,7 @@ mod tests {
         let model = Scripted::new(vec![Step::Say("That's a plot plan."), Step::Say("Still the same plan.")]);
         let h = harness(&model).await;
         let mut first = owner("What is this?");
-        first.input = TurnInput::Owner { text: "What is this?".into(), images: vec![picture], attachments: Vec::new() };
+        first.input = TurnInput::Owner { text: "What is this?".into(), images: vec![picture], attachments: Vec::new(), message_id: None };
         run_turn(&h, first).await;
         run_turn(&h, owner("And now?")).await;
 
@@ -7133,7 +7236,7 @@ mod tests {
                 let model = Scripted::new(vec![Step::Say("START does nothing: the tap never reaches the game."), Step::Say("Same recording.")]);
                 let h = harness(&model).await;
                 let mut first = owner("doesn't work");
-                first.input = TurnInput::Owner { text: "doesn't work".into(), images: Vec::new(), attachments: vec![attachment] };
+                first.input = TurnInput::Owner { text: "doesn't work".into(), images: Vec::new(), attachments: vec![attachment], message_id: None };
                 run_turn(&h, first).await;
                 run_turn(&h, owner("And now?")).await;
 

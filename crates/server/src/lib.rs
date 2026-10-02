@@ -5013,6 +5013,7 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
             cwd: None,
             model_override: None,
             client_id: None,
+            message_id: None,
         };
 
         chat_dispatch::run_chat(&state, config).await;
@@ -5197,6 +5198,7 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
             cwd: None,
             model_override: None,
             client_id: None,
+            message_id: None,
         };
 
         chat_dispatch::run_chat(&state, config).await;
@@ -5480,6 +5482,7 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
                 cwd: None,
                 model_override: None,
                 client_id: None,
+                message_id: None,
             };
 
             chat_dispatch::run_chat(&state, config).await;
@@ -5593,6 +5596,7 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
             cwd: None,
             model_override: None,
             client_id: None,
+            message_id: None,
         };
 
         chat_dispatch::run_chat(&state, config).await;
@@ -6392,6 +6396,7 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
                 cwd: None,
                 model_override: None,
                 client_id: None,
+                message_id: None,
             };
 
             chat_dispatch::run_chat(&state, config).await;

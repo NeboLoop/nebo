@@ -156,6 +156,7 @@ pub async fn teach_stop(
         cwd: None,
         model_override: None,
         client_id: None,
+        message_id: None,
     };
     crate::chat_dispatch::run_chat(&state, config).await;
 

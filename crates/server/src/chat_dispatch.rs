@@ -329,6 +329,10 @@ pub struct ChatConfig {
     /// client started the run (a schedule, a channel, a coworker), and its
     /// approvals open wherever the owner is.
     pub client_id: Option<String>,
+    /// The id the client sent the owner's message under (the chat frame's
+    /// `message_id`). A message queued into running work keeps it, and the
+    /// events about it (queued, heard) name it. None when no client sent it.
+    pub message_id: Option<String>,
 }
 
 /// The model one conversation runs at, if its owner picked one from the
@@ -478,6 +482,7 @@ fn turn_request(state: &AppState, config: &ChatConfig, run: &RunHandle) -> agent
             text: config.prompt.clone(),
             images: config.images.clone(),
             attachments: config.attachments.clone(),
+            message_id: config.message_id.clone(),
         }
     };
     // Which model this turn runs at, highest first: an explicit override on
@@ -648,6 +653,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
 
     let channel = config.channel;
     let origin = config.origin;
+    let message_id = config.message_id;
     let comm_reply = config.comm_reply;
     let origin_agent_id = config.origin_agent_id;
 
@@ -1385,6 +1391,17 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                 ),
                             );
                         }
+                        StreamEventType::TakenIn => {
+                            // The owner's messages queued behind the work
+                            // are the step's now: every client moves them
+                            // from waiting into the conversation.
+                            hub.broadcast(
+                                "chat_taken_in",
+                                ws_payload!(
+                                    "message_ids": event.payload.as_ref().and_then(|p| p.get("message_ids")).cloned(),
+                                ),
+                            );
+                        }
                         StreamEventType::ToolSummary => {
                             hub.broadcast(
                                 "tool_summary",
@@ -1715,11 +1732,17 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                 // ControlNotice, the payload also carries the typed stop reason
                 // + status line so the UI can render e.g. "stopped: repeated
                 // tool calls" as status, never prose.
+                // Input that joined a running turn: which message the bot
+                // holds behind the work, by the id its client sent it under.
+                let mut payload = ws_payload!();
+                if control_stop.as_ref().is_some_and(|(reason, _)| reason == agent::harness::session_gate::QUEUED_INTO_RUNNING_TURN) {
+                    payload["message_id"] = serde_json::json!(&message_id);
+                }
                 finish_turn(
                     &ask_state,
                     &_run_handle,
                     TurnEnd {
-                        payload: ws_payload!(),
+                        payload,
                         artifacts: &chat_artifacts,
                         control_stop: control_stop.as_ref(),
                     },
@@ -1857,6 +1880,7 @@ pub async fn compact(state: &AppState, session_key: &str, agent_id: &str, instru
         cwd: None,
         model_override: None,
         client_id: None,
+        message_id: None,
     };
     let (_, run_handle) = register_run(state, &config).await;
     let mut req = turn_request(state, &config, &run_handle);

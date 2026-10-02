@@ -678,6 +678,7 @@ fn spawn_agent_intro(state: &AppState, agent_id: &str, name: &str, brand_new: bo
         cwd: None,
         model_override: None,
         client_id: None,
+        message_id: None,
     };
     let st = state.clone();
     tokio::spawn(async move {
@@ -3907,6 +3908,7 @@ pub async fn chat_with_agent(
         cwd: None,
         model_override: None,
         client_id: None,
+        message_id: None,
     };
 
     crate::chat_dispatch::run_chat(&state, config).await;
