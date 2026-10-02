@@ -392,6 +392,66 @@ fn rename_role_files_recursive(dir: &Path) -> usize {
 /// migration is needed. This is kept as a no-op so the call site compiles.
 pub fn migrate_data_dir() {}
 
+// ── Stored schedules a model wrote minute first with a stray field ──
+/// Repair schedules a model wrote minute first with one stray field.
+///
+/// create_schedule once told models "six fields starting with seconds", and
+/// stored what they wrote as written. Models wrote `30 8 * * * *` meaning
+/// 8:30 every day; read seconds-first it fired EVERY HOUR at :08:30
+/// (2026-09-30, 48 runs). The rule, shared with the strict input reader
+/// (`PersonaTool::minute_first_with_stray_field`): exactly six fields,
+/// `M H * * * W` — field 1 a plain minute 1–59 (a nonzero seconds field
+/// nothing else writes), field 2 a plain hour 0–23, fields 3–5 `*`, field 6
+/// `*` or plain weekdays (digits 0–7 or SUN–SAT, ranges and lists, no
+/// steps) — becomes `0 M H * * W *`. With 0 first (`0 7 * * * *`: every
+/// hour at :07, or 07:00?) the row is two-way and left as is.
+/// Only rows a tool or the tasks API stored as given are considered: an
+/// employee's workflow binding (`agent-…`, `workflow-…`, a workflow task
+/// type) is stored normalized and is left as is. Any other six-field row is
+/// left as is and logged with why; a seven-field row is never touched, so a
+/// repaired row never matches again (idempotent). Each rewrite is logged
+/// with id, name, old and new: setting `old` back undoes it. Must run
+/// before anything reads the schedules (the orphan-cron conversion, the
+/// scheduler). Returns how many rows were rewritten.
+pub fn repair_minute_first_crons(store: &db::Store) -> usize {
+    let jobs = match store.list_cron_jobs(100_000, 0) {
+        Ok(jobs) => jobs,
+        Err(e) => {
+            warn!(error = %e, "cron repair: could not read schedules");
+            return 0;
+        }
+    };
+    let mut repaired = 0;
+    for job in jobs {
+        let fields = job.schedule.split_whitespace().count();
+        let ends_in_year = job
+            .schedule
+            .split_whitespace()
+            .last()
+            .is_some_and(|y| y.len() == 4 && y.chars().all(|c| c.is_ascii_digit()));
+        if fields != 6 || ends_in_year {
+            continue;
+        }
+        let stored_normalized = job.name.starts_with("agent-")
+            || job.name.starts_with("workflow-")
+            || matches!(job.task_type.as_str(), "workflow" | "agent_workflow" | "role_workflow");
+        let meant = tools::PersonaTool::minute_first_with_stray_field(&job.schedule);
+        match meant {
+            Some(new) if !stored_normalized => match store.replace_cron_job_schedule(job.id, &job.schedule, &new) {
+                Ok(true) => {
+                    repaired += 1;
+                    info!(id = job.id, name = %job.name, old = %job.schedule, new = %new, "cron repair: rewrote a minute-first schedule with a stray field");
+                }
+                Ok(false) => info!(id = job.id, name = %job.name, schedule = %job.schedule, "cron repair: left as is: changed while being read"),
+                Err(e) => warn!(id = job.id, name = %job.name, error = %e, "cron repair: could not rewrite"),
+            },
+            Some(_) => info!(id = job.id, name = %job.name, schedule = %job.schedule, "cron repair: left as is: a workflow binding's schedule, stored normalized"),
+            None => info!(id = job.id, name = %job.name, schedule = %job.schedule, "cron repair: left as is: six fields that can be read two ways (or seconds-first); read seconds-first"),
+        }
+    }
+    repaired
+}
+
 // ── Phase 5b: Orphaned agent crons → agent workflows ─────────────────
 
 /// One-time self-heal: convert generic assistant-owned cron jobs that carry a
@@ -971,6 +1031,54 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    /// Rows a model wrote minute first with a stray field are rewritten to
+    /// what was meant; every other row is left as is; a second run changes
+    /// nothing.
+    #[test]
+    fn minute_first_crons_with_a_stray_field_are_repaired_once() {
+        let tmp = TempDir::new().unwrap();
+        let store = db::Store::new(&tmp.path().join("nebo.db").to_string_lossy()).unwrap();
+        let add = |name: &str, schedule: &str, task_type: &str| {
+            store
+                .create_cron_job(name, schedule, "", task_type, Some("x"), None, None, true, Some("assistant"), None, None)
+                .unwrap();
+        };
+        // Rewritten: a nonzero first field can only be the minute.
+        add("cfo-cash-position", "30 8 * * * *", "agent");
+        add("weekday-review", "30 10 * * * 1-5", "agent");
+        add("nightly-shell", "30 2 * * * *", "bash");
+        // Left as is.
+        add("cfo-morning-bank-sync", "0 7 * * * *", "agent"); // every hour at :07, or 07:00
+        add("hourly", "0 0 * * * *", "agent");
+        add("briefing", "0 30 9 * * *", "agent");
+        add("weekday-briefing", "0 0 9 * * MON-FRI", "agent");
+        add("agent-emp-sweep", "30 8 * * * *", "agent_workflow");
+        add("seven", "0 30 8 * * * *", "agent");
+        add("five", "30 8 * * *", "agent");
+        add("once", "48 13 27 7 * 2026", "agent");
+
+        assert_eq!(repair_minute_first_crons(&store), 3);
+        let schedule = |name: &str| store.get_cron_job_by_name(name).unwrap().unwrap().schedule;
+        assert_eq!(schedule("cfo-cash-position"), "0 30 8 * * * *");
+        assert_eq!(schedule("weekday-review"), "0 30 10 * * MON-FRI *");
+        assert_eq!(schedule("nightly-shell"), "0 30 2 * * * *");
+        for (name, kept) in [
+            ("cfo-morning-bank-sync", "0 7 * * * *"),
+            ("hourly", "0 0 * * * *"),
+            ("briefing", "0 30 9 * * *"),
+            ("weekday-briefing", "0 0 9 * * MON-FRI"),
+            ("agent-emp-sweep", "30 8 * * * *"),
+            ("seven", "0 30 8 * * * *"),
+            ("five", "30 8 * * *"),
+            ("once", "48 13 27 7 * 2026"),
+        ] {
+            assert_eq!(schedule(name), kept, "{name} is left as is");
+        }
+
+        assert_eq!(repair_minute_first_crons(&store), 0, "a second run changes nothing");
+        assert_eq!(schedule("cfo-cash-position"), "0 30 8 * * * *");
+    }
 
     #[test]
     fn test_migrate_skills() {

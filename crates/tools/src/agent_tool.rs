@@ -20,6 +20,11 @@ const SOURCE_LOCAL_DATABASE: &str = "local employee (database only)";
 /// How much of a long persona `info` shows inline; the rest is in AGENT.md.
 const INFO_PERSONA_PREVIEW_BYTES: usize = 500;
 
+/// The one schedule format a tool asks for, with examples that cannot be
+/// misread: five fields, minute first, no seconds.
+pub const CRON_FORMAT: &str = "Write five fields, minute first: minute hour day month weekday. \
+\"30 8 * * *\" is 8:30 every day, \"0 9 * * 1-5\" is 9:00 on weekdays, \"0 * * * *\" is every hour on the hour.";
+
 /// A single active agent — its own bot with isolated persona and scoped capabilities.
 #[derive(Debug, Clone)]
 pub struct ActiveAgent {
@@ -1995,7 +2000,10 @@ impl PersonaTool {
                         let trigger = match trigger_type {
                             "schedule" => {
                                 let raw = update_obj["schedule"].as_str().unwrap_or("0 9 * * *");
-                                let cron = Self::normalize_cron(raw);
+                                let cron = match Self::parse_cron_input(raw) {
+                                    Ok(cron) => cron,
+                                    Err(e) => return ToolResult::error(format!("automation '{binding_name}': {e} Nothing was changed.")),
+                                };
                                 serde_json::json!({ "type": "schedule", "cron": cron })
                             }
                             "heartbeat" => {
@@ -2929,16 +2937,11 @@ impl PersonaTool {
         // expression contains it. Route through fix_dow_field: human_to_cron emits Unix
         // dow numbers (1-5, 0) that the Quartz-convention cron crate would misread.
         let lower = trimmed.to_lowercase();
-        if lower.starts_with("every ")
-            || lower.starts_with("at ")
-            || lower.contains(" at ")
-            || lower.contains("daily")
-            || lower.contains("weekly")
-            || lower.contains("hourly")
-            || lower.contains("weekday")
-            || lower.contains("weekend")
-        {
-            return Self::fix_dow_field(&Self::human_to_cron(&lower));
+        if Self::is_phrase(&lower) {
+            // A stored phrase nothing recognises keeps the old reading
+            // (9am daily); new input never gets here (`parse_cron_input`
+            // refuses it).
+            return Self::fix_dow_field(&Self::human_to_cron(&lower).unwrap_or_else(|| "0 0 9 * * * *".to_string()));
         }
 
         // Pre-process: fix H:MM or HH:MM notation in fields (e.g. "0 9:30 * * 1-5")
@@ -2966,6 +2969,103 @@ impl PersonaTool {
             _ => format!("0 {} * * * *", processed), // best effort
         };
         Self::fix_dow_field(&seven_field)
+    }
+
+    /// Whether a schedule is a phrase ("every hour", "weekdays at 9am")
+    /// rather than cron fields. " at " catches "weekdays at 9am" /
+    /// "mornings at 8" — no real cron expression contains it.
+    fn is_phrase(lower: &str) -> bool {
+        lower.starts_with("every ")
+            || lower.starts_with("at ")
+            || lower.contains(" at ")
+            || lower.contains("daily")
+            || lower.contains("weekly")
+            || lower.contains("hourly")
+            || lower.contains("weekday")
+            || lower.contains("weekend")
+    }
+
+    /// Read a schedule someone is setting now (a tool call, a workflow
+    /// definition), strictly. The one format is standard five-field cron,
+    /// minute first: `minute hour day month weekday` ("30 8 * * *" is 8:30
+    /// every day). Also read: a phrase Nebo recognises ("every hour",
+    /// "weekdays at 9am"), five fields plus a four-digit year (one date), and
+    /// the seven-field form Nebo stores and shows. Six fields without a year
+    /// are refused, never guessed: they are seconds-first or minute-first
+    /// with a stray field, and reading "30 8 * * * *" (meant: 8:30 daily)
+    /// seconds-first ran a job every hour for two days (2026-09-30). A
+    /// phrase nothing recognises is refused too, not read as 9am. Returns
+    /// the normalized seven-field cron.
+    pub fn parse_cron_input(expr: &str) -> Result<String, String> {
+        let trimmed = expr.trim();
+        let lower = trimmed.to_lowercase();
+        let normalized = if trimmed.is_empty() {
+            return Err(format!("The schedule is empty. {CRON_FORMAT}"));
+        } else if Self::is_phrase(&lower) {
+            let cron = Self::human_to_cron(&lower)
+                .ok_or_else(|| format!("Could not read the schedule \"{trimmed}\". {CRON_FORMAT}"))?;
+            Self::fix_dow_field(&cron)
+        } else {
+            let processed = Self::fix_time_notation(trimmed);
+            let fields: Vec<&str> = processed.split_whitespace().collect();
+            let ends_in_year = fields.last().is_some_and(|y| y.len() == 4 && y.chars().all(|c| c.is_ascii_digit()));
+            match fields.len() {
+                5 | 7 => {}
+                6 if ends_in_year => {}
+                6 => {
+                    let meant = match Self::minute_first_with_stray_field(&processed) {
+                        Some(_) => format!(
+                            " If you meant {:0>2}:{:0>2}, write \"{} {} * * {}\".",
+                            fields[1], fields[0], fields[0], fields[1], fields[5]
+                        ),
+                        None => String::new(),
+                    };
+                    return Err(format!(
+                        "\"{trimmed}\" has six fields, which can be read two ways (seconds first, or a stray field), so it was not set.{meant} {CRON_FORMAT}"
+                    ));
+                }
+                n => return Err(format!("\"{trimmed}\" has {n} fields. {CRON_FORMAT}")),
+            }
+            Self::normalize_cron(trimmed)
+        };
+        normalized
+            .parse::<cron::Schedule>()
+            .map_err(|e| format!("Could not read the schedule \"{trimmed}\" ({e}). {CRON_FORMAT}"))?;
+        Ok(normalized)
+    }
+
+    /// The shape a model writes when it means five-field, minute-first cron
+    /// and adds one stray field: `M H * * * W` with M a minute 1–59 (never
+    /// 0), H an hour 0–23, three wildcards, then a weekday (`*`, or days
+    /// such as `1-5`, `MON,WED`; no steps). Read seconds-first, as six fields
+    /// are, it runs EVERY HOUR at H minutes and M seconds past — a nonzero
+    /// seconds field nothing else writes (the editors and every documented
+    /// example put 0 there), so the meaning is not in doubt: H:M on the days
+    /// W. With 0 first (`0 7 * * * *`) it is truly two-way — every hour at
+    /// :07, or 07:00 — and is not taken. Returns the meant schedule in the
+    /// stored seven-field form (`0 M H * * W *`, days translated by
+    /// `fix_dow_field`), or None for any other shape. `parse_cron_input`
+    /// names it when it refuses; the boot repair of stored schedules
+    /// rewrites only rows of exactly this shape.
+    pub fn minute_first_with_stray_field(expr: &str) -> Option<String> {
+        let f: Vec<&str> = expr.split_whitespace().collect();
+        let number = |s: &str, min: u32, max: u32| {
+            (1..=2).contains(&s.len())
+                && s.chars().all(|c| c.is_ascii_digit())
+                && s.parse::<u32>().is_ok_and(|n| (min..=max).contains(&n))
+        };
+        const DAYS: [&str; 7] = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
+        let day = |d: &str| d.len() == 1 && number(d, 0, 7) || DAYS.contains(&d.to_ascii_uppercase().as_str());
+        let weekday = |s: &str| {
+            s == "*"
+                || s.split(',').all(|part| (1..=2).contains(&part.split('-').count()) && part.split('-').all(day))
+        };
+        (f.len() == 6
+            && number(f[0], 1, 59)
+            && number(f[1], 0, 23)
+            && f[2..5].iter().all(|x| *x == "*")
+            && weekday(f[5]))
+            .then(|| Self::fix_dow_field(&format!("0 {} {} * * {} *", f[0], f[1], f[5])))
     }
 
     /// Translate numeric day-of-week values from the Unix convention
@@ -3051,60 +3151,61 @@ impl PersonaTool {
     /// Convert human-readable schedule expressions to 7-field cron.
     ///
     /// Handles: "every N seconds/minutes/hours", "daily at Ham/Hpm",
-    ///          "hourly", "weekly", "every weekday at H:MM"
-    pub fn human_to_cron(expr: &str) -> String {
+    ///          "every day at H:MM", "hourly", "weekly",
+    ///          "every weekday at H:MM". None: a phrase it does not know.
+    pub fn human_to_cron(expr: &str) -> Option<String> {
         let lower = expr.trim().to_lowercase();
 
         // "every N seconds" → */N * * * * * *
         if lower.contains("second") {
             if let Some(n) = Self::extract_number(&lower) {
-                return format!("*/{} * * * * * *", n);
+                return Some(format!("*/{} * * * * * *", n));
             }
-            return "*/30 * * * * * *".to_string(); // default: every 30s
+            return Some("*/30 * * * * * *".to_string()); // default: every 30s
         }
 
         // "every N minutes" → 0 */N * * * * *
         if lower.contains("minute") {
             if let Some(n) = Self::extract_number(&lower) {
-                return format!("0 */{} * * * * *", n);
+                return Some(format!("0 */{} * * * * *", n));
             }
-            return "0 */5 * * * * *".to_string(); // default: every 5min
+            return Some("0 */5 * * * * *".to_string()); // default: every 5min
         }
 
         // "every N hours" or "hourly" → 0 0 */N * * * *
         if lower.contains("hour") {
             if let Some(n) = Self::extract_number(&lower) {
-                return format!("0 0 */{} * * * *", n);
+                return Some(format!("0 0 */{} * * * *", n));
             }
-            return "0 0 * * * * *".to_string(); // every hour
+            return Some("0 0 * * * * *".to_string()); // every hour
         }
 
-        // "daily at H" / "daily at H:MM" / "daily at Ham/Hpm"
-        if lower.contains("daily") || lower.starts_with("at ") {
+        // "daily at H" / "every day at H:MM" / "daily at Ham/Hpm"
+        if lower.contains("daily") || lower.contains("every day") || lower.starts_with("at ") {
             let (hour, minute) = Self::extract_time(&lower);
-            return format!("0 {} {} * * * *", minute, hour);
+            return Some(format!("0 {} {} * * * *", minute, hour));
         }
 
         // "weekly" → Sunday at midnight
         if lower.contains("weekly") {
             let (hour, minute) = Self::extract_time(&lower);
-            return format!("0 {} {} * * 0 *", minute, hour);
+            return Some(format!("0 {} {} * * 0 *", minute, hour));
         }
 
         // "weekday" / "weekdays" → Mon-Fri
         if lower.contains("weekday") {
             let (hour, minute) = Self::extract_time(&lower);
-            return format!("0 {} {} * * 1-5 *", minute, hour);
+            return Some(format!("0 {} {} * * 1-5 *", minute, hour));
         }
 
         // "weekend" / "weekends" → Sat-Sun
         if lower.contains("weekend") {
             let (hour, minute) = Self::extract_time(&lower);
-            return format!("0 {} {} * * 0,6 *", minute, hour);
+            return Some(format!("0 {} {} * * 0,6 *", minute, hour));
         }
 
-        // Fallback: daily at 9am
-        "0 0 9 * * * *".to_string()
+        // Not a phrase it knows: no guess.
+        None
     }
 
     /// Extract the first number from a string.
@@ -3372,7 +3473,8 @@ impl PersonaTool {
                              Example: {{\"name\": \"{binding_name}\", \"schedule\": \"0 9 * * 1-5\", \"steps\": [\"...\"]}}. Nothing was written."
                         )
                     })?;
-                    let cron = Self::normalize_cron(raw);
+                    let cron = Self::parse_cron_input(raw)
+                        .map_err(|e| format!("automation '{binding_name}': {e} Nothing was written."))?;
                     serde_json::json!({ "type": "schedule", "cron": cron })
                 }
                 "heartbeat" => {
@@ -4087,6 +4189,90 @@ export default function App({ label }: Props = { label: "hi" }) { return <div>{l
             PersonaTool::normalize_cron("48 13 27 7 * 2026"),
             "0 48 13 27 7 * 2026"
         );
+    }
+
+    /// The next `n` moments a normalized cron fires, from a fixed instant.
+    fn next_fires(cron: &str, n: usize) -> Vec<chrono::DateTime<chrono::Utc>> {
+        let schedule: cron::Schedule = cron.parse().expect("parses");
+        let from = chrono::DateTime::parse_from_rfc3339("2026-10-02T00:00:00Z").unwrap().with_timezone(&chrono::Utc);
+        schedule.after(&from).take(n).collect()
+    }
+
+    /// Five fields, minute first, is the one input format: "30 8 * * *" is
+    /// 8:30 every day, never every hour.
+    #[test]
+    fn five_field_input_is_minute_first() {
+        let daily = PersonaTool::parse_cron_input("30 8 * * *").unwrap();
+        assert_eq!(daily, "0 30 8 * * * *");
+        let fires = next_fires(&daily, 3);
+        assert!(fires.windows(2).all(|w| w[1] - w[0] == chrono::Duration::hours(24)), "{fires:?}");
+        assert!(fires.iter().all(|t| t.format("%H:%M:%S").to_string() == "08:30:00"), "{fires:?}");
+        assert_eq!(PersonaTool::parse_cron_input("0 9 * * 1-5").unwrap(), "0 0 9 * * MON-FRI *");
+        // The stored seven-field form and a dated one-shot are read too.
+        assert_eq!(PersonaTool::parse_cron_input("0 30 8 * * * *").unwrap(), "0 30 8 * * * *");
+        assert_eq!(PersonaTool::parse_cron_input("48 13 27 7 * 2026").unwrap(), "0 48 13 27 7 * 2026");
+    }
+
+    /// Six fields without a year are refused, not guessed: seconds first or
+    /// a stray field, they read two ways. The refusal names the five-field
+    /// cron the model likely meant.
+    #[test]
+    fn six_field_input_is_refused_with_the_one_format() {
+        let stray = PersonaTool::parse_cron_input("30 8 * * * *").unwrap_err();
+        assert!(stray.contains("six fields") && stray.contains("08:30") && stray.contains("\"30 8 * * *\""), "{stray}");
+        let sec_first = PersonaTool::parse_cron_input("0 30 8 * * *").unwrap_err();
+        assert!(sec_first.contains("six fields") && sec_first.contains("minute hour day month weekday"), "{sec_first}");
+        assert!(PersonaTool::parse_cron_input("0 0 * * * *").is_err());
+        assert!(PersonaTool::parse_cron_input("8 * *").is_err());
+        assert!(PersonaTool::parse_cron_input("").is_err());
+        assert!(PersonaTool::parse_cron_input("61 8 * * *").is_err(), "a cron that does not parse is refused");
+    }
+
+    /// "Every hour" style input is hourly only when it says so.
+    #[test]
+    fn hourly_only_when_meant() {
+        for hourly in ["every hour", "hourly", "0 * * * *"] {
+            let cron = PersonaTool::parse_cron_input(hourly).unwrap();
+            assert_eq!(cron, "0 0 * * * * *", "{hourly}");
+            let fires = next_fires(&cron, 3);
+            assert!(fires.windows(2).all(|w| w[1] - w[0] == chrono::Duration::hours(1)), "{hourly}: {fires:?}");
+        }
+        assert_eq!(PersonaTool::parse_cron_input("every 2 hours").unwrap(), "0 0 */2 * * * *");
+        for daily in ["30 8 * * *", "every day at 8:30", "daily at 8:30am"] {
+            let cron = PersonaTool::parse_cron_input(daily).unwrap();
+            assert_eq!(cron, "0 30 8 * * * *", "{daily}");
+        }
+        // A phrase nothing recognises is refused, not read as 9am.
+        assert!(PersonaTool::parse_cron_input("every morning at 8").is_err());
+    }
+
+    /// The rule the strict reader names and the boot repair applies:
+    /// `M H * * * W` is minute first with a stray field; anything else is
+    /// left alone.
+    #[test]
+    fn minute_first_with_stray_field_is_exactly_one_shape() {
+        let meant = PersonaTool::minute_first_with_stray_field;
+        assert_eq!(meant("30 8 * * * *").as_deref(), Some("0 30 8 * * * *"));
+        assert_eq!(meant("30 10 * * * 1-5").as_deref(), Some("0 30 10 * * MON-FRI *"));
+        assert_eq!(meant("15 9 * * * MON,WED").as_deref(), Some("0 15 9 * * MON,WED *"));
+        assert_eq!(meant("5 0 * * * *").as_deref(), Some("0 5 0 * * * *"));
+        for alone in [
+            "0 7 * * * *",       // two-way: every hour at :07, or 07:00
+            "0 15 * * * 1-5",    // two-way: weekdays every hour at :15, or 15:00
+            "0 0 * * * *",       // every hour on the hour, read seconds first
+            "0 30 8 * * *",      // seconds first: minute 30 cannot be an hour
+            "0 0 9 * * 1-5",     // seconds first: an hour in field 3
+            "30 24 * * * *",     // no hour 24
+            "*/30 8 * * * *",    // a step, not a minute
+            "30 */2 * * * *",    // a step, not an hour
+            "30 8 * * * */2",    // a step in the weekday
+            "30 8 * * * 2026",   // a year, not a weekday
+            "30 8 1 * * *",      // a day of month
+            "30 8 * * *",        // five fields
+            "0 30 8 * * * *",    // seven fields
+        ] {
+            assert_eq!(meant(alone), None, "{alone}");
+        }
     }
 
     #[test]

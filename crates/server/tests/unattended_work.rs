@@ -164,6 +164,69 @@ async fn a_scheduled_job_runs_as_its_employee_with_its_rules_and_instructions() 
     assert!(says(&turn, "Always cite the ledger page."), "with the employee's rules");
 }
 
+/// U3b: every run of a schedule starts a fresh conversation. The owner
+/// reads all of them in the job's one thread; the model reads only the run
+/// it is doing, with one line on how the last one ended. Carried in one
+/// conversation, forty identical requests made the model refuse the job
+/// (2026-10-02).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn each_run_of_a_schedule_starts_a_fresh_conversation() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    const ASK: &str = "Report the cash position.";
+    const REPLIES: [&str; 3] = ["Cash report one.", "Cash report two.", "Cash report three."];
+    let runs = Arc::new(AtomicUsize::new(0));
+    let counted = runs.clone();
+    let (server, calls) = server_with(Arc::new(move |purpose, messages| {
+        if main_call(purpose) && says(messages, ASK) {
+            Reply::Text(REPLIES[counted.fetch_add(1, Ordering::SeqCst).min(2)])
+        } else {
+            Reply::Text("ok")
+        }
+    }))
+    .await;
+    let keeper = hire_blank(&server, "Keeper").await;
+    let job = server
+        .post_json(
+            "/tasks",
+            &json!({"name": "cash-position", "schedule": "30 8 * * *", "taskType": "agent", "agentId": keeper, "message": ASK}),
+        )
+        .await;
+    assert!(job.status().is_success(), "the job is scheduled: {}", job.status());
+    let store = server.db_store();
+    let job_id = store.get_cron_job_by_name("cash-position").unwrap().expect("the job").id;
+
+    for n in 1..=3 {
+        let fired = server.post_json("/tasks/cash-position/run", &json!({})).await;
+        assert!(fired.status().is_success(), "run {n} fires");
+        eventually(60, "the run to finish", async || {
+            let finished = store.list_cron_history(job_id, 10, 0).ok()?.iter().filter(|r| r.finished_at.is_some()).count();
+            (finished >= n).then_some(())
+        })
+        .await;
+    }
+
+    let turns: Vec<Vec<Value>> = calls
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(p, b)| main_call(p) && says(b["messages"].as_array().unwrap(), ASK))
+        .map(|(_, b)| b["messages"].as_array().unwrap().clone())
+        .collect();
+    assert_eq!(turns.len(), 3, "one model request per run");
+    let third = &turns[2];
+    assert!(!says(third, REPLIES[0]) && !says(third, REPLIES[1]), "the third run never sees the first two: {third:#?}");
+    let asked = third.iter().filter(|m| m["content"].as_str().is_some_and(|c| c.contains(ASK))).count();
+    assert_eq!(asked, 1, "only this run's request: {third:#?}");
+    assert!(says(third, "The last run"), "with one line on how the last run ended: {third:#?}");
+
+    let key = format!("agent:{keeper}:cron:cash-position");
+    let session = store.get_session_by_name(&key).unwrap().expect("the job's session");
+    let thread = store.get_chat_messages(&store.resolve_session_chat_id(&session.id)).unwrap();
+    for reply in REPLIES {
+        assert!(thread.iter().any(|m| m.content.contains(reply)), "the owner's thread keeps every run: {reply}");
+    }
+}
+
 /// U4: a coworker runs under its own permissions, never the asker's. The
 /// asker works in Full Access; the coworker in Ask. Asked to write a file,
 /// the coworker's call is decided as the coworker, through the coworker

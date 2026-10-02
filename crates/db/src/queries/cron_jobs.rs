@@ -145,6 +145,20 @@ impl Store {
         Ok(())
     }
 
+    /// Set a job's schedule only while it still reads `old`, so a repair
+    /// never overwrites a schedule changed since it was read. Whether it
+    /// was set.
+    pub fn replace_cron_job_schedule(&self, id: i64, old: &str, new: &str) -> Result<bool, NeboError> {
+        let conn = self.conn()?;
+        let changed = conn
+            .execute(
+                "UPDATE cron_jobs SET schedule = ?3 WHERE id = ?1 AND schedule = ?2",
+                params![id, old, new],
+            )
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(changed == 1)
+    }
+
     pub fn enable_cron_job_by_name(&self, name: &str) -> Result<(), NeboError> {
         let conn = self.conn()?;
         conn.execute(

@@ -322,6 +322,40 @@ pub fn clear(store: &db::Store, chat_id: &str) -> Result<ChatMessage, types::Neb
     Ok(marker)
 }
 
+/// The boundary each fire of a schedule starts its conversation on.
+pub const SCHEDULED_RUN_BOUNDARY: &str = "This is a new run of a scheduled job. The job is meant to repeat: \
+each run is separate and expected, so do the job now from the message that follows. Earlier runs are not part \
+of this conversation.";
+/// The `reason` a scheduled run's boundary carries.
+pub const SCHEDULED_RUN: &str = "scheduled_run";
+
+/// A fresh conversation for one fire of a scheduled job in its standing
+/// thread `chat_id`: a hidden boundary (`isMeta`, so the owner's thread
+/// shows the runs one after another, unmarked) from which the model's
+/// conversation loads (`Store::get_chat_messages_since_checkpoint`), so a
+/// run never resends, or answers to, the transcripts of the runs before
+/// it. `last_run` is a line on how the previous run ended (when and
+/// whether it succeeded), never its transcript. A linked employee's session
+/// on its runtime is forgotten too, as `clear` does. Rows are never deleted.
+pub fn fresh_run(store: &db::Store, chat_id: &str, last_run: Option<&str>) -> Result<(), types::NeboError> {
+    let text = match last_run.map(str::trim).filter(|l| !l.is_empty()) {
+        Some(last) => format!("{SCHEDULED_RUN_BOUNDARY}\n\n{last}"),
+        None => SCHEDULED_RUN_BOUNDARY.to_string(),
+    };
+    store.create_chat_message_for_runner(
+        &uuid::Uuid::new_v4().to_string(),
+        chat_id,
+        "user",
+        &text,
+        None,
+        None,
+        None,
+        Some(&serde_json::json!({ "checkpoint": true, "isMeta": true, "reason": SCHEDULED_RUN }).to_string()),
+        None,
+    )?;
+    store.set_chat_linked_session(chat_id, "", "")
+}
+
 /// Checkpoint the conversation: hooks, summary, boundary row, restore rows.
 pub async fn checkpoint(cx: &CheckpointContext<'_>, why: CheckpointReason) -> Result<Checkpoint, String> {
     if cx.conversation.is_empty() {
