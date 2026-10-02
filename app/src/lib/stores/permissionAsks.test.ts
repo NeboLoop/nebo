@@ -23,6 +23,7 @@ function ask(id: string, chatId: string, status = 'open', createdAt = 1): Permis
 		thisOnce: true,
 		status,
 		chatId,
+		blocking: false,
 		createdAt
 	};
 }

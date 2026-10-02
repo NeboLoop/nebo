@@ -266,6 +266,8 @@
 		"goalStopped": "Paused the goal. Say the word to pick it back up.",
 		"resumedActivity": "Still working: {tool}",
 		"waitingForYou": "Waiting for you",
+		"waitingOnYou": "{name} is waiting on you",
+		"seeConversation": "See conversation",
 		"waitingOnYourAnswer": "{name} is waiting on your answer:",
 		"waitingOpen": "Open",
 		"waitingAsksLabel": "Waiting on your answer",

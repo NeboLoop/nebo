@@ -83,6 +83,13 @@ impl AskPushes {
         }
     }
 
+    /// A blocking ask (a run is parked on the answer): its own item, out at
+    /// once, never held for a burst — the owner is told now, wherever he
+    /// is, and answers it from the notification itself.
+    pub(crate) fn now(&self, ask: Queued) {
+        (self.send)(ask.item);
+    }
+
     /// Close the window: what is still waiting goes out as one hub item.
     pub(crate) fn flush(&self) {
         let asks = std::mem::take(&mut *self.pending.lock().unwrap_or_else(|e| e.into_inner()));
@@ -263,6 +270,29 @@ mod tests {
         pushes.settled("ask-02");
         let items = hub.items.lock().unwrap().clone();
         assert_eq!(items[1], serde_json::json!({ "id": "permission-asks:ask-02", "resolved": true }));
+    }
+
+    /// Live 2026-10-02: Bookkeeper's workflow step parked on the owner's OK.
+    /// A blocking ask is pushed at once, on its own, even while a burst is
+    /// gathering; the burst still goes out as one push after it.
+    #[tokio::test]
+    async fn a_blocking_ask_is_pushed_at_once_on_its_own() {
+        let (pushes, hub) = rig(W);
+        pushes.queue(vec![ask(1, "Ava"), ask(2, "Ava")]);
+        let mut bk = ask(3, "Bookkeeper");
+        bk.item["blocking"] = serde_json::json!(true);
+        pushes.now(bk);
+        {
+            let items = hub.items.lock().unwrap();
+            assert_eq!(items.len(), 1, "out before the window closes");
+            assert_eq!(items[0]["id"], "permission-ask:ask-03");
+            assert_eq!(items[0]["blocking"], true);
+        }
+        settle().await;
+        let items = hub.items.lock().unwrap().clone();
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[1]["title"], "Ava: 2 decisions waiting", "never part of the burst");
+        assert_eq!(*hub.pushes.lock().unwrap(), 2);
     }
 
     /// A bot with 29 asks already open when it upgrades: its first sync is

@@ -21,14 +21,28 @@
       {@const Icon = iconMap[toast.type]}
       <div class="pointer-events-auto flex items-center gap-2.5 px-4 py-3 rounded-xl border shadow-lg backdrop-blur-sm {colorMap[toast.type]}">
         <Icon class="w-4 h-4 shrink-0" />
-        <span class="text-sm font-medium text-base-content flex-1">{toast.message}</span>
-        {#if toast.action}
-          <a
-            href={toast.action.url}
-            target="_blank"
-            rel="noopener noreferrer"
+        {#if toast.action?.onClick}
+          {@const run = toast.action.onClick}
+          <button
+            type="button"
+            onclick={() => { removeToast(toast.id); run(); }}
+            class="text-sm font-medium text-base-content flex-1 text-left cursor-pointer bg-transparent border-none p-0"
+          >{toast.message}</button>
+          <button
+            type="button"
+            onclick={() => { removeToast(toast.id); run(); }}
             class="btn btn-xs btn-primary shrink-0"
-          >{toast.action.label}</a>
+          >{toast.action.label}</button>
+        {:else}
+          <span class="text-sm font-medium text-base-content flex-1">{toast.message}</span>
+          {#if toast.action?.url}
+            <a
+              href={toast.action.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              class="btn btn-xs btn-primary shrink-0"
+            >{toast.action.label}</a>
+          {/if}
         {/if}
         <button
           onclick={() => removeToast(toast.id)}

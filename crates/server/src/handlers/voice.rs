@@ -303,8 +303,8 @@ fn voice_tools(transfer: bool, telephony: bool, intents: &[String]) -> Vec<serde
         tools.push(serde_json::json!({
             "type": "function",
             "name": "answer_ask",
-            "description": "Give the owner's spoken answer to something waiting on their answer: an \
-                            employee's question or a permission. Use the ask id you were told with \
+            "description": "Give the owner's spoken answer to something waiting on their answer in \
+                            this conversation: an employee's question or a permission. Use the ask id you were told with \
                             it, never one you made up. Call it only after they answered out loud, \
                             with their words exactly as they said them, in their language. If the \
                             result says it isn't an answer, ask them again. Never starts work.",
@@ -855,12 +855,16 @@ fn voice_reply(out: &str, last_notice: &str) -> String {
 /// from the call's own transcript: his words, in his language, are what the
 /// decision reads, never the voice model's retelling (its `answer` stands in
 /// only when the transcript has nothing). It counts only after he spoke
-/// (`spoke_at`, unix seconds, after the ask was raised). Returns whether it
-/// answered, and what the voice model hears; an id that names nothing
-/// waiting is an error that lists what does.
+/// (`spoke_at`, unix seconds, after the ask was raised). Only an ask that
+/// waits in the call's own conversation (`session_key`) is answered on it:
+/// another conversation's is decided on its own card, never by the employee
+/// on this call (live 2026-10-02). Returns whether it answered, and what
+/// the voice model hears; an id that names nothing waiting here is an error
+/// that lists what does.
 pub(crate) async fn answer_ask_on_call(
     state: &AppState,
     decide: Option<&ai::DecideClient>,
+    session_key: &str,
     input: &serde_json::Value,
     heard: &str,
     spoke_at: i64,
@@ -868,8 +872,18 @@ pub(crate) async fn answer_ask_on_call(
     let id = input["ask_id"].as_str().unwrap_or_default().trim();
     let waiting = super::asks::waiting(state, None).await;
     let Some(w) = waiting.iter().find(|w| w.card.id == id) else {
-        return (false, unknown_ask(id, &waiting));
+        return (false, unknown_ask(id, session_key, &waiting));
     };
+    if w.card.session_key != session_key {
+        return (
+            false,
+            format!(
+                "That is {employee}'s, from another conversation: it is answered on its card (the notification, the \
+                 phone or the Inbox), never on this call. Nothing was answered. Tell the owner that in a few words.",
+                employee = w.card.employee
+            ),
+        );
+    }
     if spoke_at <= w.card.created_at {
         return (
             false,
@@ -915,10 +929,11 @@ pub(crate) async fn answer_ask_on_call(
 }
 
 /// What the voice model hears for an ask id that names nothing waiting: the
-/// real ones, with their ids.
-fn unknown_ask(id: &str, waiting: &[super::asks::Waiting]) -> String {
+/// real ones in this conversation, with their ids.
+fn unknown_ask(id: &str, session_key: &str, waiting: &[super::asks::Waiting]) -> String {
+    let waiting: Vec<&super::asks::Waiting> = waiting.iter().filter(|w| w.card.session_key == session_key).collect();
     if waiting.is_empty() {
-        return format!("No ask {id} is waiting, and nothing is waiting on the owner's answer.");
+        return format!("No ask {id} is waiting, and nothing in this conversation is waiting on the owner's answer.");
     }
     let lines: Vec<String> = waiting.iter().map(|w| format!("- ask {}: {}", w.card.id, super::asks::waiting_line(&w.card))).collect();
     format!("No ask {id} is waiting. These are:\n{}", lines.join("\n"))
@@ -1034,8 +1049,8 @@ pub(crate) fn pick_voice_chat(
 /// turn that runs in that conversation outside the call (a woken turn that
 /// hears a coworker's reply, a helper's result) is said aloud on it
 /// ([`say_on_call`]): what reaches his conversation reaches his ear. What
-/// waits on his answer, from any employee in any conversation, is put to
-/// every one of them ([`tell_calls`]).
+/// waits on his answer in that conversation is put to him there; a blocking
+/// ask from anywhere else is only announced ([`tell_calls`]).
 pub type LiveCalls = std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, mpsc::Sender<CallNews>>>>;
 
 /// What reaches a live call from outside it.
@@ -1043,8 +1058,11 @@ pub type LiveCalls = std::sync::Arc<std::sync::Mutex<std::collections::HashMap<S
 pub enum CallNews {
     /// A turn in the call's conversation said this.
     Reply(String),
-    /// This waits on the owner's answer.
+    /// This waits on the owner's answer, in the call's own conversation.
     Ask(super::asks::WaitingAsk),
+    /// A blocking ask from another conversation: announced once, never
+    /// answered here.
+    Notice(super::asks::WaitingAsk),
     /// The owner put these files (their names) into the conversation while
     /// on the call: they are rows in the thread now, and a turn there is
     /// reading them.
@@ -1152,10 +1170,22 @@ fn shared_on_call_line(files: &[String]) -> String {
     )
 }
 
-/// Put `ask`, something now waiting on the owner's answer, to every call he
-/// is on, whichever conversation it waits in: the call speaks it, naming who
-/// asks, and his spoken answer goes to its id (live 2026-09-29: an
-/// employee's question sat unseen for ten minutes while he was on a call).
+/// What a call on conversation `call_key` is told of `ask`: put to the
+/// owner when it waits in that conversation (his spoken answer goes to its
+/// id); announced, never answered, when it is a blocking ask from another
+/// conversation (live 2026-09-29: an employee's question sat unseen for ten
+/// minutes while he was on a call); nothing otherwise — a non-blocking ask
+/// from elsewhere is the Inbox's and the push's. An ask is never decided by
+/// the employee on the call (live 2026-10-02: "Told Bookkeeper no.").
+pub(crate) fn news_of(call_key: &str, ask: &super::asks::WaitingAsk) -> Option<CallNews> {
+    if ask.session_key == call_key {
+        return Some(CallNews::Ask(ask.clone()));
+    }
+    ask.blocking.then(|| CallNews::Notice(ask.clone()))
+}
+
+/// Tell every call the owner is on of `ask`, something now waiting on his
+/// answer, as [`news_of`] says.
 pub(crate) fn tell_calls(calls: &LiveCalls, ask: &super::asks::WaitingAsk) {
     let live: Vec<(String, mpsc::Sender<CallNews>)> = calls
         .lock()
@@ -1164,7 +1194,8 @@ pub(crate) fn tell_calls(calls: &LiveCalls, ask: &super::asks::WaitingAsk) {
         .map(|(k, c)| (k.clone(), c.clone()))
         .collect();
     for (key, call) in live {
-        if let Err(e) = call.try_send(CallNews::Ask(ask.clone())) {
+        let Some(news) = news_of(&key, ask) else { continue };
+        if let Err(e) = call.try_send(news) {
             // The ask is on every other surface either way.
             warn!(session_key = %key, ask = %ask.id, error = %e, "voice: a waiting ask could not be handed to the call");
         }
@@ -1220,6 +1251,15 @@ fn heard_on_call(replies: &[String]) -> String {
     )
 }
 
+/// The news to say now and what waits for after it: another conversation's
+/// notices go in a response of their own, once the rest is said, so that
+/// response alone is kept out of the transcript.
+fn notices_last(news: Vec<CallNews>) -> (Vec<CallNews>, Vec<CallNews>) {
+    let (notices, rest): (Vec<CallNews>, Vec<CallNews>) =
+        news.into_iter().partition(|n| matches!(n, CallNews::Notice(_)));
+    if rest.is_empty() { (notices, Vec::new()) } else { (rest, notices) }
+}
+
 /// What the call says next from the news held for it: the replies to retell,
 /// then each ask still waiting that it hasn't been told of. `waiting` is the
 /// ids waiting on the owner now; `told` the ids the call already heard, and
@@ -1237,6 +1277,11 @@ fn news_to_say(news: Vec<CallNews>, waiting: &std::collections::HashSet<String>,
             CallNews::Ask(a) => {
                 if waiting.contains(&a.id) && told.insert(a.id.clone()) {
                     asks.push(super::asks::on_call(&a));
+                }
+            }
+            CallNews::Notice(a) => {
+                if waiting.contains(&a.id) && told.insert(a.id.clone()) {
+                    asks.push(super::asks::notice_on_call(&a));
                 }
             }
         }
@@ -1258,10 +1303,13 @@ fn news_to_say(news: Vec<CallNews>, waiting: &std::collections::HashSet<String>,
 /// answered from this line that it could only see its own conversation. What
 /// anyone else is doing is the `nebo` tool's to answer (list_employees).
 ///
-/// What waits on the owner's answer, from anyone, is said with it, each with
-/// its id: a waiting question is never silent.
+/// What waits on the owner's answer in this conversation is said with it,
+/// each with its id: a waiting question is never silent. A blocking ask from
+/// another conversation is named without one: it is answered on its card,
+/// never on this call.
 fn voice_status_line(
     st: Option<&agent::harness::session_gate::ActiveTurnStatus>,
+    call_key: &str,
     waiting: &[super::asks::WaitingAsk],
 ) -> String {
     let mut line = match st {
@@ -1272,7 +1320,15 @@ fn voice_status_line(
         None => "Nothing is running in this conversation. For what other employees are doing, use nebo.".to_string(),
     };
     for w in waiting {
-        line.push_str(&format!("\n- ask {}: {}", w.id, super::asks::waiting_line(w)));
+        match news_of(call_key, w) {
+            Some(CallNews::Ask(_)) => line.push_str(&format!("\n- ask {}: {}", w.id, super::asks::waiting_line(w))),
+            Some(_) => line.push_str(&format!(
+                "\n- {}: {} (another conversation's; answered on its card, never on this call)",
+                super::asks::waiting_on_you(&w.employee),
+                super::asks::notice_question(w)
+            )),
+            None => {}
+        }
     }
     line
 }
@@ -1971,7 +2027,9 @@ async fn handle_conversation_ws(mut socket: WebSocket, state: AppState, mut q: C
              short question, in the language they are speaking, saying who asks. When they \
              answer, call `answer_ask` with the ask id you were told and their words exactly \
              as they said them; never make up an id. They can also answer it in the Nebo app \
-             on any of their devices, where it is pinned at the top of the chat.",
+             on any of their devices, where it is pinned at the top of the chat. When you are \
+             given a notice that another employee is waiting on them elsewhere, say it once in \
+             one short sentence and nothing more: it is answered on its card, never by you.",
         );
     }
     // Where the call runs, from the builder a text turn's rows come from:
@@ -2528,10 +2586,14 @@ async fn handle_conversation_session(
     // What already waits on the owner's answer when he calls is the first
     // thing the call says: a waiting question is never silent.
     if caller_ctx.is_none() {
-        to_say.extend(super::asks::waiting(&state, None).await.into_iter().map(|w| CallNews::Ask(w.card)));
+        to_say.extend(super::asks::waiting(&state, None).await.iter().filter_map(|w| news_of(&ctx.session_key, &w.card)));
     }
     // A model response is owed or playing: nothing new is said over it.
     let mut responding = false;
+    // The model is saying another conversation's notice: heard, never sent
+    // to the client as transcript text (live 2026-10-02: Bookkeeper's ask,
+    // spoken on Flip-Flap's call, showed in Flip-Flap's chat).
+    let mut unseen_speech = false;
     // Spoken steps while a hand-off runs: the newest step not yet said, the
     // last thing said aloud (and when), whether a step is being said now
     // (since when), and whether the hand-off's answer waits for it to end.
@@ -2555,6 +2617,7 @@ async fn handle_conversation_session(
                     ConversationEvent::SessionInitialized =>
                         Some(serde_json::json!({"type": "session_initialized"})),
                     ConversationEvent::TranscriptionStart => {
+                        unseen_speech = false;
                         ledger.utterance_started();
                         Some(serde_json::json!({"type": "transcription_start"}))
                     }
@@ -2597,7 +2660,7 @@ async fn handle_conversation_session(
                     }
                     ConversationEvent::ResponseText(text) => {
                         ledger.speech(&text);
-                        Some(serde_json::json!({"type": "response_text", "text": text}))
+                        (!unseen_speech).then(|| serde_json::json!({"type": "response_text", "text": text}))
                     }
                     ConversationEvent::ConversationId(id) =>
                         Some(serde_json::json!({"type": "conversation_id", "id": id})),
@@ -2613,6 +2676,7 @@ async fn handle_conversation_session(
                         // The response became a tool call: its continuation
                         // is owed when the outputs are in.
                         responding = false;
+                        unseen_speech = false;
                         // A hand-off's first step waits a full interval from here.
                         quiet_since = tokio::time::Instant::now();
                         info!(
@@ -2664,6 +2728,7 @@ async fn handle_conversation_session(
                             told.extend(waiting.iter().map(|w| w.id.clone()));
                             let line = voice_status_line(
                                 state.harness.active_turn_status(&ctx.session_key).as_ref(),
+                                &ctx.session_key,
                                 &waiting,
                             );
                             if tool_done_tx
@@ -2684,6 +2749,7 @@ async fn handle_conversation_session(
                             let (ok, line) = answer_ask_on_call(
                                 &state,
                                 state.decide.as_deref(),
+                                &ctx.session_key,
                                 &decode_tool_arguments(&arguments),
                                 &ledger.since_reply(),
                                 ledger.spoke_at,
@@ -2933,7 +2999,18 @@ async fn handle_conversation_session(
             // An ask answered or dropped while it waited here is not said.
             let waiting: std::collections::HashSet<String> =
                 super::asks::waiting(&state, None).await.into_iter().map(|w| w.card.id).collect();
-            let say = news_to_say(std::mem::take(&mut to_say), &waiting, &mut told);
+            // Another conversation's notice is said on its own, after the
+            // rest, and only aloud: it is never text in this conversation.
+            let (now, later) = notices_last(std::mem::take(&mut to_say));
+            let mut unseen = now.iter().all(|n| matches!(n, CallNews::Notice(_)));
+            let mut say = news_to_say(now, &waiting, &mut told);
+            if say.is_empty() {
+                // Nothing else to say after all: the notices go now.
+                unseen = true;
+                say = news_to_say(later, &waiting, &mut told);
+            } else {
+                to_say = later;
+            }
             if !say.is_empty() {
                 let rows = ledger.relayed();
                 sink.write(&state, &mut socket, rows).await;
@@ -2941,6 +3018,7 @@ async fn handle_conversation_session(
                     break;
                 }
                 responding = true;
+                unseen_speech = unseen;
             }
         }
     }
@@ -3312,11 +3390,11 @@ mod voice_prompt_tests {
     fn status_line_reads_the_counters_or_says_idle() {
         let st = agent::harness::session_gate::ActiveTurnStatus { elapsed_secs: 200, tool_calls: 2, current_tool: "os: exec".into() };
         assert_eq!(
-            voice_status_line(Some(&st), &[]),
+            voice_status_line(Some(&st), "agent:a:thread:c1", &[]),
             "Still working in this conversation: 3 minutes in, 2 tool calls so far, currently running os: exec."
         );
         assert_eq!(
-            voice_status_line(None, &[]),
+            voice_status_line(None, "agent:a:thread:c1", &[]),
             "Nothing is running in this conversation. For what other employees are doing, use nebo."
         );
     }
@@ -3398,7 +3476,8 @@ mod voice_prompt_tests {
         let key = format!("agent:a:thread:{}", uuid::Uuid::new_v4());
         let mut events = state.hub.subscribe();
         let run_handle = register(&state, &key).await;
-        // A call the owner is on elsewhere hears the question.
+        // A call the owner is on elsewhere is told of the question, only as
+        // a notice: it is answered in its own conversation or on its card.
         let (call_tx, mut call) = mpsc::channel(8);
         let _on_call = OnCall::join(&state.live_calls, "agent:b:thread:elsewhere", call_tx);
         // The tool side of the ask: a oneshot the drain must leave alone
@@ -3432,7 +3511,7 @@ mod voice_prompt_tests {
         assert!(state.ask_channels.lock().await.contains_key("req-1"), "the answer channel waits while parked");
         let told = tokio::time::timeout(std::time::Duration::from_secs(5), call.recv()).await.unwrap().unwrap();
         match told {
-            CallNews::Ask(w) => assert_eq!((w.id.as_str(), w.question.as_str(), w.kind.as_str()), ("req-1", "Send it?", "question")),
+            CallNews::Notice(w) => assert_eq!((w.id.as_str(), w.question.as_str(), w.kind.as_str()), ("req-1", "Send it?", "question")),
             other => panic!("the call was told {other:?}"),
         }
         loop {
@@ -3508,44 +3587,87 @@ mod voice_prompt_tests {
         assert!(said.contains("you have it"), "{said}");
     }
 
-    /// Every live call hears what waits on the owner, from any conversation;
-    /// what the call says names who asks and the real id, once, and never an
-    /// ask that was answered while it waited.
+    /// Live 2026-10-02: the owner was on a call with Flip-Flap when
+    /// Bookkeeper's workflow step parked on his OK. The call was put the
+    /// ask ("Bookkeeper asks: OK to go ahead with …? Allow always, this
+    /// once, or no?"), he said "No.", and Flip-Flap answered it: "Told
+    /// Bookkeeper no." Now a call hears what waits in ITS conversation as
+    /// an ask to put to him, once, with the real id; a blocking ask from
+    /// another conversation only as a notice (no id, no answer asked for);
+    /// a non-blocking one from elsewhere not at all.
     #[tokio::test]
-    async fn a_waiting_ask_is_put_to_every_call_once() {
+    async fn a_call_is_put_only_its_own_conversations_asks() {
         let calls: LiveCalls = Default::default();
-        let (a_tx, mut a) = mpsc::channel(4);
-        let (b_tx, mut b) = mpsc::channel(4);
-        let _a = OnCall::join(&calls, "agent:nanna:thread:t1", a_tx);
-        let _b = OnCall::join(&calls, "agent:ava:thread:t9", b_tx);
+        let (own_tx, mut own) = mpsc::channel(4);
+        let (flip_tx, mut flip) = mpsc::channel(4);
+        let _own = OnCall::join(&calls, "agent:nanna:thread:t1", own_tx);
+        let _flip = OnCall::join(&calls, "agent:flip-flap:thread:web", flip_tx);
         let w = crate::handlers::asks::tests::question("bf8e2c67", "Set up the stand-up?", &["Yes", "No"]).card;
         tell_calls(&calls, &w);
-        let (Some(CallNews::Ask(on_a)), Some(CallNews::Ask(on_b))) = (a.recv().await, b.recv().await) else {
-            panic!("both calls are told");
-        };
-        assert_eq!((on_a.id.as_str(), on_b.id.as_str()), ("bf8e2c67", "bf8e2c67"));
+        let Some(CallNews::Ask(on_own)) = own.recv().await else { panic!("its own call is put the ask") };
+        let Some(CallNews::Notice(on_flip)) = flip.recv().await else { panic!("another call is only told of it") };
+        assert_eq!((on_own.id.as_str(), on_flip.id.as_str()), ("bf8e2c67", "bf8e2c67"));
 
         let waiting: std::collections::HashSet<String> = ["bf8e2c67".to_string()].into();
         let mut told = std::collections::HashSet::new();
-        let said = news_to_say(vec![CallNews::Reply("Three files left.".into()), CallNews::Ask(on_a.clone())], &waiting, &mut told);
+        let said = news_to_say(vec![CallNews::Reply("Three files left.".into()), CallNews::Ask(on_own.clone())], &waiting, &mut told);
         assert!(said.contains("Three files left.") && said.contains("It is not something the owner said."), "{said}");
         assert!(said.contains("Nanna is waiting on the owner's answer, ask bf8e2c67"), "{said}");
         assert!(said.contains("call answer_ask with ask_id \"bf8e2c67\""), "{said}");
-        assert_eq!(news_to_say(vec![CallNews::Ask(on_a.clone())], &waiting, &mut told), "", "told once");
+        assert_eq!(news_to_say(vec![CallNews::Ask(on_own.clone())], &waiting, &mut told), "", "told once");
         let mut fresh = std::collections::HashSet::new();
-        assert_eq!(news_to_say(vec![CallNews::Ask(on_b)], &Default::default(), &mut fresh), "", "answered meanwhile");
+        assert_eq!(news_to_say(vec![CallNews::Ask(on_own)], &Default::default(), &mut fresh), "", "answered meanwhile");
+
+        // On Flip-Flap's call: a notice in one sentence, never the ask.
+        let mut told = std::collections::HashSet::new();
+        let said = news_to_say(vec![CallNews::Notice(on_flip.clone())], &waiting, &mut told);
+        assert!(said.contains("\"Nanna is waiting on you: Set up the stand-up?\""), "{said}");
+        assert!(said.contains("never answer it yourself") && said.contains("never on this call"), "{said}");
+        assert!(!said.contains("bf8e2c67") && !said.contains("answer_ask"), "no id to answer it with: {said}");
+        assert!(!said.contains("Yes or no") && !said.contains("Allow always"), "no answer asked for: {said}");
+        assert_eq!(news_to_say(vec![CallNews::Notice(on_flip)], &waiting, &mut told), "", "announced once");
+
+        // A permission ask nothing is parked on, from elsewhere: the Inbox's
+        // and the push's, never a call's.
+        let mut quiet = w.clone();
+        quiet.blocking = false;
+        quiet.session_key = "agent:bookkeeper:workflow:w1".into();
+        assert!(news_of("agent:flip-flap:thread:web", &quiet).is_none());
+        tell_calls(&calls, &quiet);
+        assert!(flip.try_recv().is_err() && own.try_recv().is_err(), "no call hears it");
     }
 
-    /// `status` says who waits on what, with each id: a waiting question is
-    /// never silent.
+    /// Another conversation's notice is a response of its own, after the
+    /// rest: that response alone is kept out of the transcript.
+    #[test]
+    fn notices_are_said_last_on_their_own() {
+        let w = crate::handlers::asks::tests::question("bf8e2c67", "Set up the stand-up?", &["Yes", "No"]).card;
+        let (now, later) = notices_last(vec![CallNews::Notice(w.clone()), CallNews::Reply("Three files left.".into())]);
+        assert!(matches!(now.as_slice(), [CallNews::Reply(_)]), "{now:?}");
+        assert!(matches!(later.as_slice(), [CallNews::Notice(_)]), "{later:?}");
+        let (now, later) = notices_last(vec![CallNews::Notice(w)]);
+        assert!(matches!(now.as_slice(), [CallNews::Notice(_)]) && later.is_empty());
+    }
+
+    /// `status` says what waits in this conversation, with each id: a
+    /// waiting question is never silent. Another conversation's blocking
+    /// ask is named without an id; it is answered on its card.
     #[test]
     fn status_names_what_waits_on_the_owner() {
         let w = crate::handlers::asks::tests::question("bf8e2c67", "Set up the stand-up?", &["Yes", "No"]).card;
-        let line = voice_status_line(None, &[w]);
+        let line = voice_status_line(None, "agent:nanna:thread:t1", std::slice::from_ref(&w));
         assert!(
             line.ends_with("\n- ask bf8e2c67: Nanna is waiting on your answer: Set up the stand-up?"),
             "{line}"
         );
+        let elsewhere = voice_status_line(None, "agent:flip-flap:thread:web", &[w]);
+        assert!(
+            elsewhere.ends_with(
+                "\n- Nanna is waiting on you: Set up the stand-up? (another conversation's; answered on its card, never on this call)"
+            ),
+            "{elsewhere}"
+        );
+        assert!(!elsewhere.contains("bf8e2c67"), "{elsewhere}");
     }
 
     /// The owner's words since the model's last reply, from the transcript:

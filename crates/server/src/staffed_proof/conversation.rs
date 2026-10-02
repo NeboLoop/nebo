@@ -1425,14 +1425,16 @@ async fn a_question_is_put_to_the_owners_call_and_his_spoken_yes_answers_it_in_a
     .enumerate()
     {
         // The task parks on the question: it comes back to the call with
-        // its real id, and every other call he is on is told it.
+        // its real id, and every other call he is on is told of it.
         let reply = crate::handlers::voice::run_delegated_task(state, &key, &format!("OWNER-V round {round}: {heard_in}"), heard_in, None).await;
         let ask = state.run_registry.pending_ask_for_session(&key).await.expect("the run is parked on the question");
         assert_eq!(reply.told, [ask.request_id.clone()], "{}", reply.text);
         assert!(reply.text.contains(&format!("ask_id \"{}\"", ask.request_id)), "{}", reply.text);
         assert!(reply.text.contains(QUESTION) && reply.text.contains(&format!("{YES} or {NO}")), "{}", reply.text);
+        // The other call is only told of it: a notice, never put to him
+        // there to answer (live 2026-10-02: "Told Bookkeeper no.").
         let told = tokio::time::timeout(Duration::from_secs(10), call.recv()).await.expect("the other call is told").unwrap();
-        let crate::handlers::voice::CallNews::Ask(told) = told else { panic!("told {told:?}") };
+        let crate::handlers::voice::CallNews::Notice(told) = told else { panic!("told {told:?}") };
         assert_eq!(told.id, ask.request_id);
 
         // Words that are no answer start nothing: no task queues behind the
@@ -1448,6 +1450,7 @@ async fn a_question_is_put_to_the_owners_call_and_his_spoken_yes_answers_it_in_a
         let (ok, said) = crate::handlers::voice::answer_ask_on_call(
             state,
             Some(&jev),
+            &key,
             &json!({ "ask_id": ask.request_id, "answer": "yes" }),
             words,
             spoke,

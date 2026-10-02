@@ -988,6 +988,7 @@ export interface PermissionAskCard {
 	status: string
 	answer?: string
 	chatId: string
+	blocking: boolean
 	createdAt: number
 }
 
@@ -1288,6 +1289,7 @@ export interface WaitingAsk {
 	values: string[]
 	freeText: boolean
 	answerable: boolean
+	blocking: boolean
 	createdAt: number
 }
 

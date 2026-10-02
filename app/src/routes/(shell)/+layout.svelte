@@ -273,6 +273,9 @@
       $page.params.threadId === c.id
     );
   }
+  /** Employees a run of theirs is parked on the owner's answer for: the
+   *  roster's "Waiting for you" marker. Live from `asks_waiting`. */
+  const waitingForYou = $derived(new Set($waitingAsks.filter((w) => w.blocking).map((w) => w.agentId)));
   /** The newest live verb for an employee, capitalized, or '' when idle. */
   function workingLabel(id: string): string {
     const labels = Object.values(working[id] ?? {});
@@ -1617,6 +1620,9 @@
                 <span class="text-sm font-medium truncate min-w-0">{a.name}</span>
                 {#if a.isApp}
                   <span class="text-[9px] uppercase tracking-wider px-1 py-px rounded bg-info/15 text-info font-semibold shrink-0">{$t('agent.appBadge')}</span>
+                {/if}
+                {#if waitingForYou.has(a.id)}
+                  <span class="badge badge-warning badge-xs shrink-0" data-testid="waiting-for-you">{$t('chat.waitingForYou')}</span>
                 {/if}
                 <span class="flex-1"></span>
                 <!-- No per-row time here: employees without chats have none,

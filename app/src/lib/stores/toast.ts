@@ -2,10 +2,12 @@ import { writable } from 'svelte/store';
 
 export type ToastType = 'success' | 'error' | 'info' | 'warning';
 
-/** Optional clickable action rendered in the toast (opens `url` in a new tab). */
+/** Optional clickable action rendered in the toast: opens `url` in a new tab,
+ *  or runs `onClick` here (a click on the message runs it too). */
 export interface ToastAction {
   label: string;
-  url: string;
+  url?: string;
+  onClick?: () => void;
 }
 
 export interface Toast {
