@@ -213,13 +213,26 @@
     '.ndt .ndt-badge{position:absolute;top:-4px;right:-4px;min-width:20px;height:20px;padding:0 5px;border-radius:10px;background:#dc2626;color:#fff;font-size:11px;font-weight:700;line-height:20px;text-align:center}' +
     '.ndt [hidden]{display:none!important}' +
     '.ndt .ndt-sheet{position:fixed;left:0;right:0;bottom:0;margin:0 auto;max-width:720px;height:min(60vh,520px);background:#111827;border-radius:14px 14px 0 0;box-shadow:0 -8px 30px rgba(0,0,0,.4);pointer-events:auto;display:flex;flex-direction:column;padding:0 env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)}' +
-    '.ndt .ndt-bar{display:flex;align-items:center;gap:4px;padding:6px 8px;border-bottom:1px solid #1f2937;flex-wrap:wrap}' +
-    '.ndt .ndt-tab,.ndt .ndt-btn{min-height:44px;min-width:44px;padding:0 12px;border:0;border-radius:8px;background:transparent;color:#d1d5db;font:inherit;font-weight:600;cursor:pointer}' +
+    // One row on every phone: never wraps, never scrolls. The two-segment
+    // toggle on the left gives way first (its labels clip) on the narrowest
+    // screen; Send and the icon buttons keep their size.
+    '.ndt .ndt-bar{display:flex;flex-wrap:nowrap;align-items:center;gap:0;padding:6px;border-bottom:1px solid #1f2937;overflow:hidden}' +
+    '.ndt .ndt-seg{display:flex;flex:0 1 auto;min-width:0;padding:2px;border-radius:10px;background:#0b1220}' +
+    '.ndt .ndt-tab{position:relative;flex:0 1 auto;min-width:0;min-height:40px;padding:0 8px;border:0;border-radius:8px;background:transparent;color:#9ca3af;font:inherit;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer}' +
     '.ndt .ndt-tab[aria-selected="true"]{background:#1f2937;color:#fff}' +
-    '.ndt .ndt-btn{background:#1f2937}' +
-    '.ndt .ndt-primary{background:#2563eb;color:#fff}' +
+    // The count is a badge on the segment's corner, never more width.
+    '.ndt .ndt-tab.ndt-has-count{padding-right:14px}' +
+    '.ndt .ndt-tab .ndt-count{position:absolute;top:2px;right:1px;min-width:15px;height:15px;padding:0 4px;border-radius:8px;background:#dc2626;color:#fff;font-size:10px;font-weight:700;line-height:15px;text-align:center}' +
+    '.ndt .ndt-btn{position:relative;flex:none;display:inline-flex;align-items:center;justify-content:center;gap:6px;min-height:44px;min-width:44px;padding:0;border:0;border-radius:8px;background:transparent;color:#d1d5db;font:inherit;font-weight:600;white-space:nowrap;cursor:pointer}' +
+    '.ndt .ndt-btn svg{width:20px;height:20px;flex:none}' +
+    '.ndt .ndt-primary{gap:5px;padding:0 11px 0 9px;margin:0 2px 0 6px;background:#2563eb;color:#fff}' +
+    '.ndt .ndt-primary svg{width:16px;height:16px}' +
     '.ndt .ndt-btn:disabled{opacity:.5;cursor:default}' +
-    '.ndt .ndt-spacer{flex:1}' +
+    '.ndt .ndt-lbl{display:none}' +
+    '@media (min-width:560px){.ndt .ndt-lbl{display:inline}.ndt .ndt-icon{padding:0 10px}}' +
+    '.ndt .ndt-btn,.ndt .ndt-tab{-webkit-touch-callout:none;-webkit-user-select:none;user-select:none}' +
+    '.ndt .ndt-tip{position:absolute;top:-34px;right:12px;padding:4px 8px;border-radius:6px;background:#374151;color:#fff;font-size:12px;font-weight:600;white-space:nowrap;pointer-events:none}' +
+    '.ndt .ndt-spacer{flex:1 1 0;min-width:0}' +
     '.ndt .ndt-list{flex:1;overflow:auto;-webkit-overflow-scrolling:touch;font:12px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace;margin:0;padding:0;list-style:none}' +
     '.ndt .ndt-row{display:flex;gap:8px;padding:6px 12px;border-bottom:1px solid #1f2937;white-space:pre-wrap;word-break:break-word}' +
     '.ndt .ndt-time{color:#6b7280;flex:none}' +
@@ -230,6 +243,19 @@
     '.ndt .ndt-debug{color:#9ca3af}' +
     '.ndt .ndt-empty{padding:24px 12px;color:#9ca3af;text-align:center;font-family:inherit}' +
     '.ndt .ndt-status{padding:4px 12px 8px;color:#9ca3af;font-size:12px;min-height:1em}';
+
+  // The bar's icons (stroke icons, the button's own colour).
+  function svg(body) {
+    return (
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+      body +
+      '</svg>'
+    );
+  }
+  var ICON_SEND = svg('<line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>');
+  var ICON_RELOAD = svg('<polyline points="23 4 23 10 17 10"></polyline><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path>');
+  var ICON_CLEAR = svg('<polyline points="3 6 5 6 21 6"></polyline><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path><path d="M10 11v6"></path><path d="M14 11v6"></path><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"></path>');
+  var ICON_CLOSE = svg('<line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line>');
 
   var ICON =
     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="4 17 10 11 4 5"></polyline><line x1="12" y1="19" x2="20" y2="19"></line></svg>';
@@ -275,27 +301,63 @@
     sheet.setAttribute('aria-label', 'App console');
     sheet.hidden = true;
 
+    // One row: Console | Network on the left; Send, then reload, clear and
+    // close as icons on the right (their words show beside them on a wide
+    // screen, and are always their accessible names).
     var bar = el('div', 'ndt-bar');
-    var tabConsole = el('button', 'ndt-tab', 'Console');
-    var tabNetwork = el('button', 'ndt-tab', 'Network');
+    var seg = el('div', 'ndt-seg');
+    seg.setAttribute('role', 'tablist');
+    var tabConsole = el('button', 'ndt-tab');
+    var tabNetwork = el('button', 'ndt-tab');
+    var consoleCount = el('span', 'ndt-count');
+    var networkCount = el('span', 'ndt-count');
+    tabConsole.appendChild(document.createTextNode('Console'));
+    tabConsole.appendChild(consoleCount);
+    tabNetwork.appendChild(document.createTextNode('Network'));
+    tabNetwork.appendChild(networkCount);
     [tabConsole, tabNetwork].forEach(function (t) {
       t.type = 'button';
       t.setAttribute('role', 'tab');
+      seg.appendChild(t);
     });
     var spacer = el('span', 'ndt-spacer');
-    var reload = el('button', 'ndt-btn', 'Reload');
-    var send = el('button', 'ndt-btn ndt-primary', CFG.employee ? 'Send to ' + CFG.employee : 'Send errors');
-    var clear = el('button', 'ndt-btn', 'Clear');
-    var close = el('button', 'ndt-btn', '✕');
-    close.setAttribute('aria-label', 'Close the app console');
-    [reload, send, clear, close].forEach(function (b) {
+    function iconButton(cls, icon, label, name) {
+      var b = el('button', 'ndt-btn ' + cls);
       b.type = 'button';
+      b.innerHTML = icon;
+      b.appendChild(el('span', cls === 'ndt-primary' ? null : 'ndt-lbl', label));
+      b.setAttribute('aria-label', name);
+      b.title = name;
+      return b;
+    }
+    var sendName = CFG.employee ? 'Send to ' + CFG.employee : 'Send errors';
+    var send = iconButton('ndt-primary', ICON_SEND, 'Send', sendName);
+    var reload = iconButton('ndt-icon', ICON_RELOAD, 'Reload', 'Reload');
+    var clear = iconButton('ndt-icon', ICON_CLEAR, 'Clear', 'Clear');
+    var close = iconButton('ndt-icon', ICON_CLOSE, 'Close', 'Close');
+    close.setAttribute('aria-label', 'Close the app console');
+    // A long press on Send names who it goes to (a phone has no hover).
+    var tip = el('span', 'ndt-tip', sendName);
+    tip.hidden = true;
+    var tipTimer = null;
+    send.addEventListener('pointerdown', function () {
+      clearTimeout(tipTimer);
+      tipTimer = setTimeout(function () {
+        tip.hidden = false;
+      }, 450);
     });
-    bar.appendChild(tabConsole);
-    bar.appendChild(tabNetwork);
+    ['pointerup', 'pointercancel', 'pointerleave'].forEach(function (t) {
+      send.addEventListener(t, function () {
+        clearTimeout(tipTimer);
+        setTimeout(function () {
+          tip.hidden = true;
+        }, t === 'pointerup' && !tip.hidden ? 1200 : 0);
+      });
+    });
+    bar.appendChild(seg);
     bar.appendChild(spacer);
-    bar.appendChild(reload);
     bar.appendChild(send);
+    bar.appendChild(reload);
     bar.appendChild(clear);
     bar.appendChild(close);
 
@@ -305,6 +367,7 @@
     sheet.appendChild(bar);
     sheet.appendChild(list);
     sheet.appendChild(status);
+    sheet.appendChild(tip);
 
     root.appendChild(fab);
     root.appendChild(sheet);
@@ -323,8 +386,14 @@
       var failed = logs.filter(function (e) {
         return e.source === 'network';
       });
-      tabConsole.textContent = 'Console' + (logs.length ? ' (' + logs.length + ')' : '');
-      tabNetwork.textContent = 'Network' + (failed.length ? ' (' + failed.length + ')' : '');
+      consoleCount.hidden = errors === 0;
+      tabConsole.classList.toggle('ndt-has-count', errors > 0);
+      tabNetwork.classList.toggle('ndt-has-count', failed.length > 0);
+      consoleCount.textContent = errors > 99 ? '99+' : String(errors);
+      tabConsole.setAttribute('aria-label', 'Console' + (errors ? ', ' + errors + (errors === 1 ? ' error' : ' errors') : ''));
+      networkCount.hidden = failed.length === 0;
+      networkCount.textContent = failed.length > 99 ? '99+' : String(failed.length);
+      tabNetwork.setAttribute('aria-label', 'Network' + (failed.length ? ', ' + failed.length + ' failed' : ''));
       tabConsole.setAttribute('aria-selected', String(tab === 'console'));
       tabNetwork.setAttribute('aria-selected', String(tab === 'network'));
       send.disabled = errors === 0;
