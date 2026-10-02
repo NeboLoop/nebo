@@ -2654,7 +2654,7 @@ mod developer_console_tests {
         std::fs::write(&file, page).unwrap();
         // Chrome prints the page and may then linger: the page is read up
         // to its end and the browser is closed.
-        let mut chrome = std::process::Command::new(chrome)
+        let mut chrome = command::new::<std::process::Command>(chrome, command::Console::Hidden)
             .args(["--headless=new", "--disable-gpu", "--no-first-run", "--no-default-browser-check"])
             .arg(format!("--user-data-dir={}", dir.path().join("profile").display()))
             .args(["--window-size=800,600", "--virtual-time-budget=9000", "--dump-dom"])
