@@ -1027,6 +1027,15 @@ impl Registry {
         // The handle is an `Arc` snapshot: no registry lock is held across
         // the tool future (a tool can park for minutes on an ask card while
         // plugin installs re-register tools).
+        // An app's files are saved before the turn first changes them
+        // (`app_history`), so the owner can always go back.
+        if !tool.read_only(&input) {
+            let store = self.store.read().ok().and_then(|s| s.clone());
+            if let Some(store) = store {
+                crate::app_history::before_change(&store, ctx, tool.as_ref(), &input).await;
+            }
+        }
+
         let threshold = crate::result_shape::threshold(tool.max_result_chars(&input));
         let mut result = tool.execute_dyn(ctx, input.clone()).await;
         if !result.is_error {

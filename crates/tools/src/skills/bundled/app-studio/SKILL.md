@@ -20,7 +20,7 @@ triggers:
   - interactive story
   - app studio
 metadata:
-  version: "0.2.0"
+  version: "0.2.1"
 ---
 
 # App Studio
@@ -72,7 +72,12 @@ Design Depth section adds the studio method on top, from this skill's
 10. **Files under 20 KB each.** A bigger single write gets cut off. Split the page
     into modules (`app.tsx`, `board.tsx`, `scene.ts`).
 11. **Never bust the cache by hand** (`?v=2`, renaming files). `app_reload` is the reload.
-12. **Never revert to older code** the owner rejected. Change forward from what is there.
+12. **Never bring back code the owner rejected.** Restoring a version he asks
+    for, or the last good one after a bad change, is fine (rule 13).
+13. **Fix the smallest thing that's broken.** Never rewrite working code to fix
+    a bug. Before any large change, say what you'll change and why. The app's
+    history is saved automatically: if a change makes things worse, restore the
+    last good version instead of rewriting.
 
 ## Step 0: Whose app is it?
 
@@ -354,6 +359,15 @@ ready. Open it from your workforce."
 
 ## When It Breaks
 
+One loop for every fix:
+
+1. Reproduce: `app_screenshot`.
+2. Read its console and the screenshot (`app_console` for more).
+3. Make the minimal change to the one file at fault.
+4. `app_reload`, then Verify (Step 4).
+5. Still broken, or worse: restore the last good version, then try a
+   different small change.
+
 | Symptom | Cause | Fix |
 |---|---|---|
 | Blank page; console: `Failed to load /assets/index-....js`, or a module "MIME type text/html" error | A path starts with `/`; it left `ui/` and got Nebo's own page | Make it relative. Vite: `base: './'`, rebuild |
@@ -374,6 +388,16 @@ ready. Open it from your workforce."
 | Two sessions keep overwriting each other | Two writers on one app | One writer: answer pasted errors in the building session |
 | The owner wants a new name | A rename, not a new app | `update_employee(name: "<old>", new_name: "<new>")`. Never delete |
 | `app_console` shows nothing at all | No view has loaded the page since the change | `app_screenshot`, then `app_console` again |
+| A change made it worse, or the owner wants it back ("how it was this morning") | | `app_status(history: true)`, pick the version by time, `app_reload(restore: "<id>")`. Never rewrite from memory |
+
+## Version History
+
+Nebo saves the app folder (`ui/`, `src/`, build files; never `node_modules/`
+or `dist/`) before and after every turn that changes it. `app_status(history: true)`
+lists the versions: id, time, what changed. `app_reload(restore: "<id>")` puts
+the page and source back and reloads; the employee's settings stay. A restore
+is a new version, so restoring the version before it undoes it. A renamed app
+keeps its history; a deleted one keeps it in the trash.
 
 ## Design Depth (the studio method)
 
