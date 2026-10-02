@@ -35,8 +35,26 @@ on, each as '<description> @ (<x>,<y>)' at its approximate center.\n\n\
 When you are asked a question, answer it first and precisely, then give the reading. Report only \
 what you can actually see and say plainly what is illegible. Never invent content. No preamble.";
 
+const WATCHER_SYSTEM: &str = "You are the eyes of an AI employee. Its own conversation never holds \
+images or video: you watch this video for it, as frames taken from it in order, each with the moment \
+it was taken, and what you write is all it will ever know of the video. Be thorough and exact.\n\n\
+Write a structured reading in these parts:\n\
+WHAT IT IS: the kind of video (a screen recording of an app or a web page, camera footage, ...) and \
+its subject, in a sentence or two.\n\
+TIMELINE: what happens, in order, by moment: \"at 0:03 the user taps START; nothing changes; at 0:06 \
+...\". Say what changed from one frame to the next, and what did not change where a change was \
+expected (a tap with no response, a spinner that never ends, an error that appears).\n\
+TEXT: the legible text that matters, verbatim, with when it is on screen.\n\
+OUTCOME: how it ends, and what the person who made it seems to be showing (a bug, a step, a result).\n\n\
+You see only the frames: say \"between 0:03 and 0:04\" rather than inventing what happened between \
+them. Report only what you can actually see and say plainly what is illegible. Never invent content. \
+No preamble.";
+
 /// Most tokens one reading takes.
 const READING_TOKENS: i32 = 1_500;
+
+/// Most tokens one video's reading takes.
+const WATCHING_TOKENS: i32 = 2_000;
 
 /// The longest one look may take, from asking to the last word. The owner's
 /// message waits on the readings of its pictures before it is stored and
@@ -44,7 +62,8 @@ const READING_TOKENS: i32 = 1_500;
 /// answers would hold the employee at "Working…" for good. Past this the
 /// look is given up and the note says the image could not be read; the
 /// pictures on one message are read side by side, so this bounds the whole
-/// step too.
+/// step too. A video's whole reading, its frames taken and watched, has the
+/// same bound (`video::read`).
 pub const READING_LIMIT: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// Resolve the sidecar model for the provider that will serve the request.
@@ -74,6 +93,42 @@ pub async fn look(
     if let Some(q) = question.map(str::trim).filter(|q| !q.is_empty()) {
         ask.push_str(&format!("\nQuestion: {q}"));
     }
+    read(trace, provider, READER_SYSTEM, ask, vec![picture.image.clone()], READING_TOKENS).await
+}
+
+/// One watch of a video, as frames in order, each with the moment it was
+/// taken (seconds from the start): the helper's reading of what happens, in
+/// text. `context` says where the video came from. None when the helper
+/// could not answer.
+pub async fn watch(
+    trace: ai::RequestTrace,
+    provider: &dyn Provider,
+    frames: &[(f64, Picture)],
+    duration: Option<f64>,
+    context: &str,
+) -> Option<String> {
+    if !provider.supports_vision() || frames.is_empty() {
+        return None;
+    }
+    let long = duration.map(|d| format!(", {} long", crate::video::clock(d))).unwrap_or_default();
+    let mut ask = format!("{context}\nThese are {} frames from the video{long}, in order:", frames.len());
+    for (n, (at, picture)) in frames.iter().enumerate() {
+        ask.push_str(&format!("\nimage {}: at {} ({}×{} px)", n + 1, crate::video::clock(*at), picture.width, picture.height));
+    }
+    let images = frames.iter().map(|(_, p)| p.image.clone()).collect();
+    read(trace, provider, WATCHER_SYSTEM, ask, images, WATCHING_TOKENS).await
+}
+
+/// One call to the helper: `ask` and `images` under `system`, answered in
+/// text, given up past [`READING_LIMIT`].
+async fn read(
+    trace: ai::RequestTrace,
+    provider: &dyn Provider,
+    system: &str,
+    ask: String,
+    images: Vec<ai::ImageContent>,
+    max_tokens: i32,
+) -> Option<String> {
     let req = ChatRequest {
         tool_credential: None,
         chat_id: String::new(),
@@ -84,13 +139,13 @@ pub async fn look(
         messages: vec![Message {
             role: "user".to_string(),
             content: ask,
-            images: Some(vec![picture.image.clone()]),
+            images: Some(images),
             ..Default::default()
         }],
         tools: vec![],
-        max_tokens: READING_TOKENS,
+        max_tokens,
         temperature: 0.0,
-        system: READER_SYSTEM.to_string(),
+        system: system.to_string(),
         model: sidecar_model(provider.id()),
         enable_thinking: false,
         metadata: None,
@@ -103,7 +158,7 @@ pub async fn look(
         let mut rx = match provider.stream(&req).await {
             Ok(rx) => rx,
             Err(e) => {
-                debug!("image reading failed: {e}");
+                debug!("vision reading failed: {e}");
                 return None;
             }
         };
@@ -121,7 +176,7 @@ pub async fn look(
     match tokio::time::timeout(READING_LIMIT, reading).await {
         Ok(reading) => reading,
         Err(_) => {
-            warn!("image reading gave no answer within {READING_LIMIT:?}; the note says it could not be read");
+            warn!("vision reading gave no answer within {READING_LIMIT:?}; the note says it could not be read");
             None
         }
     }
@@ -142,6 +197,44 @@ pub fn note(reference: &str, size: Option<(u32, u32)>, reading: Option<&str>) ->
             "[Image: {reference}{size}. The vision helper could not read it this time. Say so plainly if the \
              work depends on it; don't claim there was no image.]"
         ),
+    }
+}
+
+/// What the conversation holds for one video: its reference and length,
+/// the helper's reading, and each frame's file with its moment, so a frame
+/// can be looked at again. With no reading, it says a video is there, could
+/// not be read and why (`problem`), so the model never guesses at it.
+pub fn video_note(
+    reference: &str,
+    duration: Option<f64>,
+    frames: &[crate::video::Frame],
+    reading: Option<&str>,
+    problem: Option<&str>,
+) -> String {
+    let long = duration.map(|d| format!(", {} long", crate::video::clock(d))).unwrap_or_default();
+    let listed = if frames.is_empty() {
+        String::new()
+    } else {
+        let lines: Vec<String> =
+            frames.iter().map(|f| format!("{} {}", crate::video::clock(f.at), f.path.display())).collect();
+        format!(
+            " Its frames are files; to check a moment, look at one with read_file(path, question: \"...\"):\n{}",
+            lines.join("\n")
+        )
+    };
+    match reading {
+        Some(reading) => format!(
+            "[Video: {reference}{long}. A vision helper watched it for you as {} frames in order: this reading is \
+             what you have of it.{listed}]\n{reading}",
+            frames.len()
+        ),
+        None => {
+            let why = problem.unwrap_or("the vision helper gave no answer");
+            format!(
+                "[Video: {reference}{long}. Could not read this video: {why}. Say so plainly if the work depends on \
+                 it; don't guess at what it shows.{listed}]"
+            )
+        }
     }
 }
 
@@ -199,5 +292,30 @@ mod tests {
         assert!(reading.is_none());
         assert!(started.elapsed() <= READING_LIMIT + std::time::Duration::from_secs(1));
         assert!(note("photo.png", Some((10, 10)), reading.as_deref()).contains("could not read it"));
+    }
+
+    /// A helper that never answers a video gives up within the same limit:
+    /// the owner's message goes on, its note says the video could not be
+    /// read, and the frames are still named so one can be looked at.
+    #[tokio::test(start_paused = true)]
+    async fn a_watch_that_never_answers_gives_up_and_the_message_goes_on() {
+        let picture = Picture {
+            image: ai::ImageContent { media_type: "image/jpeg".into(), data: String::new() },
+            width: 10,
+            height: 10,
+        };
+        let started = tokio::time::Instant::now();
+        let reading = tokio::time::timeout(
+            READING_LIMIT * 2,
+            watch(ai::RequestTrace::new("video_read"), &Silent, &[(0.0, picture.clone()), (1.0, picture)], Some(2.0), "attached"),
+        )
+        .await
+        .expect("the watch never gave up");
+        assert!(reading.is_none());
+        assert!(started.elapsed() <= READING_LIMIT + std::time::Duration::from_secs(1));
+        let frames = [crate::video::Frame { at: 1.0, path: "/frames/at-0m01.jpg".into() }];
+        let n = video_note("recording.mp4", Some(2.0), &frames, reading.as_deref(), None);
+        assert!(n.contains("Could not read this video") && n.contains("don't guess"), "{n}");
+        assert!(n.contains("0:01 /frames/at-0m01.jpg"), "{n}");
     }
 }

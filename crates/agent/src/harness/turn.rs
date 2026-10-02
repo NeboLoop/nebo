@@ -464,7 +464,7 @@ fn resume_goal(h: &Harness, session_id: &str) {
 /// next step. Runs under the admission lock. The owner's message keeps the
 /// files it carries, as a message that starts a turn does: the thread shows
 /// them where they were shared, and the running turn reads them. Returns the
-/// row's id when it carries pictures for the vision helper to read.
+/// row's id when it carries pictures or videos for the vision helper to read.
 fn queue_input(h: &Harness, session_id: &str, req: &TurnRequest) -> Option<String> {
     let mut pictures_row = None;
     let written = match &req.input {
@@ -492,7 +492,7 @@ fn queue_input(h: &Harness, session_id: &str, req: &TurnRequest) -> Option<Strin
                     Some(&meta.to_string()),
                 )
                 .map(|row| {
-                    if !images.is_empty() {
+                    if !images.is_empty() || attachments.iter().any(|a| crate::video::is_video(&a.filename, &a.mime_type)) {
                         pictures_row = Some(row.id);
                     }
                 })
@@ -1068,10 +1068,11 @@ async fn store_input(h: &Harness, session_id: &str, req: &TurnRequest) -> Result
     )
 }
 
-/// The vision helper's reading of each picture the owner attached, once,
-/// as the message is stored: the conversation keeps the readings and never
-/// the pictures (`sidecar`). The owner's app still shows the pictures from
-/// the row's attachments.
+/// The vision helper's reading of each picture and each video the owner
+/// attached, once, as the message is stored: the conversation keeps the
+/// readings and never the pictures (`sidecar`). The owner's app still shows
+/// the files from the row's attachments. A video is watched as frames in
+/// order (`video::read`); its note is there even when it could not be read.
 async fn read_pictures(
     h: &Harness,
     req: &TurnRequest,
@@ -1079,31 +1080,48 @@ async fn read_pictures(
     images: &[ai::ImageContent],
     attachments: &[comm::wire::Attachment],
 ) -> Vec<String> {
-    if images.is_empty() {
+    let videos: Vec<&comm::wire::Attachment> =
+        attachments.iter().filter(|a| crate::video::is_video(&a.filename, &a.mime_type)).collect();
+    if images.is_empty() && videos.is_empty() {
         return Vec::new();
     }
-    let Some(provider) = ai::default_provider(&h.providers.read().await) else {
-        return Vec::new();
+    let provider = ai::default_provider(&h.providers.read().await);
+    let trace = |purpose| RequestTrace { agent_id: req.seat.agent_id.clone(), ..RequestTrace::new(purpose) };
+    let pictures = async {
+        let Some(provider) = provider.clone().filter(|_| !images.is_empty()) else {
+            return Vec::new();
+        };
+        let files: Vec<&comm::wire::Attachment> = attachments.iter().filter(|a| a.mime_type.starts_with("image/")).collect();
+        let context = format!("The owner attached this image to their message: \"{}\"", tools::truncate_str(text, 500));
+        let looks = images.iter().enumerate().map(|(n, image)| {
+            let reference = files
+                .get(n)
+                .filter(|_| files.len() == images.len())
+                .map(|a| crate::uploads::by_id(&a.file_id).map_or_else(|| a.filename.clone(), |p| p.to_string_lossy().into_owned()))
+                .unwrap_or_else(|| "the image the owner attached".to_string());
+            let (provider, context, trace) = (provider.clone(), context.clone(), trace("image_read"));
+            async move {
+                let Some(picture) = ai::image_norm::Picture::attached(image) else {
+                    return crate::sidecar::note(&reference, None, None);
+                };
+                let reading = crate::sidecar::look(trace, provider.as_ref(), &picture, &context, None).await;
+                crate::sidecar::note(&reference, Some((picture.width, picture.height)), reading.as_deref())
+            }
+        });
+        futures::future::join_all(looks).await
     };
-    let files: Vec<&comm::wire::Attachment> = attachments.iter().filter(|a| a.mime_type.starts_with("image/")).collect();
-    let context = format!("The owner attached this image to their message: \"{}\"", tools::truncate_str(text, 500));
-    let looks = images.iter().enumerate().map(|(n, image)| {
-        let reference = files
-            .get(n)
-            .filter(|_| files.len() == images.len())
-            .map(|a| crate::uploads::by_id(&a.file_id).map_or_else(|| a.filename.clone(), |p| p.to_string_lossy().into_owned()))
-            .unwrap_or_else(|| "the image the owner attached".to_string());
-        let (provider, context) = (provider.clone(), context.clone());
-        let trace = RequestTrace { agent_id: req.seat.agent_id.clone(), ..RequestTrace::new("image_read") };
-        async move {
-            let Some(picture) = ai::image_norm::Picture::attached(image) else {
-                return crate::sidecar::note(&reference, None, None);
-            };
-            let reading = crate::sidecar::look(trace, provider.as_ref(), &picture, &context, None).await;
-            crate::sidecar::note(&reference, Some((picture.width, picture.height)), reading.as_deref())
-        }
+    // A video's message carries its sound's transcript (the server's
+    // attachment notes), so the helper hears what was said as it watches.
+    let context = format!("The owner attached this video to their message: \"{}\"", tools::truncate_str(text, 2_000));
+    let watches = videos.iter().map(|a| {
+        let file = crate::uploads::by_id(&a.file_id);
+        let reference = file.as_ref().map_or_else(|| a.filename.clone(), |p| p.to_string_lossy().into_owned());
+        let (provider, context, trace) = (provider.clone(), context.clone(), trace("video_read"));
+        async move { crate::video::read(trace, provider.as_deref(), file.as_deref(), &a.file_id, &reference, &context).await }
     });
-    futures::future::join_all(looks).await
+    let (mut readings, watched) = futures::future::join(pictures, futures::future::join_all(watches)).await;
+    readings.extend(watched);
+    readings
 }
 
 /// The name of the employee a helper works for.
@@ -2753,6 +2771,9 @@ mod tests {
             }
             if req.trace.purpose == "image_read" {
                 return Ok(events(vec![StreamEvent::text(PLAN_READING)], None));
+            }
+            if req.trace.purpose == "video_read" {
+                return Ok(events(vec![StreamEvent::text(VIDEO_READING)], None));
             }
             if req.trace.purpose == "done_check" {
                 let verdict = self.verdicts.lock().unwrap().pop_front().unwrap_or(r#"{"met": true, "reason": "done"}"#);
@@ -6853,6 +6874,62 @@ mod tests {
         }
         let looks = model.side.lock().unwrap().iter().filter(|r| r.trace.purpose == "image_read").count();
         assert_eq!(looks, 1, "read once, not on every request");
+    }
+
+    /// What the scripted vision helper writes about every video.
+    const VIDEO_READING: &str = "TIMELINE: at 0:01 the user taps START; nothing changes; at 0:03 still the start screen.";
+
+    /// A screen recording the owner attaches ("doesn't work") is watched
+    /// once, as the message is stored: the helper sees its frames in order,
+    /// and every later request reads the reading and the frames' files in
+    /// the message's text, never a picture. Skipped without ffmpeg.
+    #[test]
+    fn an_attached_video_is_watched_once_and_the_model_reads_what_happens() {
+        crate::test_home::with_home(|_| {
+            let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+            rt.block_on(async {
+                let Some(ffmpeg) = which::which("ffmpeg").ok() else { return };
+                let file_id = "0145f9fa-video-test";
+                let video = crate::uploads::dir().unwrap().join(crate::uploads::file_name(file_id, "ScreenRecording.mp4"));
+                let made = command::new::<std::process::Command>(&ffmpeg, command::Console::Hidden)
+                    .args(["-y", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc=duration=4:size=320x240:rate=10"])
+                    .args(["-c:v", "libx264", "-pix_fmt", "yuv420p"])
+                    .arg(&video)
+                    .status()
+                    .unwrap();
+                assert!(made.success());
+                let attachment = comm::wire::Attachment {
+                    file_id: file_id.into(),
+                    filename: "ScreenRecording.mp4".into(),
+                    mime_type: "video/mp4".into(),
+                    size: 1,
+                    url: String::new(),
+                    thumbnail_url: None,
+                    width: None,
+                    height: None,
+                    duration: None,
+                };
+                let model = Scripted::new(vec![Step::Say("START does nothing: the tap never reaches the game."), Step::Say("Same recording.")]);
+                let h = harness(&model).await;
+                let mut first = owner("doesn't work");
+                first.input = TurnInput::Owner { text: "doesn't work".into(), images: Vec::new(), attachments: vec![attachment] };
+                run_turn(&h, first).await;
+                run_turn(&h, owner("And now?")).await;
+
+                let calls = model.calls();
+                assert_no_image_sent(&calls);
+                for call in &calls {
+                    let said = texts(call).into_iter().find(|t| t.starts_with("doesn't work")).expect("the owner's message");
+                    assert!(said.contains(VIDEO_READING) && said.contains("[Video: ") && said.contains("0:00 "), "{said}");
+                }
+                let side = model.side.lock().unwrap().clone();
+                let watches: Vec<&ChatRequest> = side.iter().filter(|r| r.trace.purpose == "video_read").collect();
+                assert_eq!(watches.len(), 1, "watched once, not on every request");
+                let ask = &watches[0].messages[0];
+                assert!(ask.images.as_ref().is_some_and(|f| f.len() >= 4), "the helper sees the frames");
+                assert!(ask.content.contains("doesn't work") && ask.content.contains("image 1: at 0:00"), "{}", ask.content);
+            })
+        });
     }
 
     /// The loop breaker: the provider keeps refusing the window and the

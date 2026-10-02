@@ -6839,6 +6839,36 @@ fn transcription_endpoint(state: &state::AppState) -> Option<(String, String, St
     ))
 }
 
+/// The note for a sound an attachment carries: its transcript, or why there
+/// is none. `named` is what the transcriber is handed the sound as (its
+/// extension says the format); `filename` and `size` are the attachment's.
+async fn transcript_note(state: &state::AppState, filename: &str, size: u64, named: &str, bytes: Vec<u8>) -> String {
+    use crate::attachments::{note, Kind};
+    let audio = |body: &str| note(Kind::Audio, filename, size, body);
+    match transcription_endpoint(state) {
+        Some((key, base_url, model)) => {
+            match ai::transcribe::transcribe(&ai::RequestTrace::new("transcribe"), &key, &base_url, &model, named, bytes).await {
+                Ok(text) if text.is_empty() => audio(
+                    "transcribed, but no speech was found in it. Say so rather than \
+                     guessing at its contents.",
+                ),
+                Ok(text) => format!("{}\n{}", audio("transcript follows"), text),
+                Err(e) => {
+                    tracing::warn!(file = %filename, error = %e, "transcription failed");
+                    audio(&format!(
+                        "transcription failed: {e}. Tell the user you could not listen \
+                         to it; do NOT guess at what it says."
+                    ))
+                }
+            }
+        }
+        None => audio(
+            "no transcription provider is configured, so its contents are unknown. Tell \
+             the user to add an OpenAI key or sign in to NeboAI.",
+        ),
+    }
+}
+
 /// Convert image attachments to AI vision content and append a note to the
 /// prompt for every attachment, so the agent knows what arrived and where the
 /// file is. Every note is built by `attachments::note` — the one shape the
@@ -6945,42 +6975,47 @@ async fn process_comm_attachments(
             continue;
         }
 
+        // A video is watched by the vision helper as the message is stored
+        // (`agent::video`); here it is named, and its sound, when it has any
+        // that isn't silence, is transcribed as an audio file's is.
+        if agent::video::is_video(&att.filename, &att.mime_type) {
+            let Some(path) = &saved else {
+                prompt.push_str(&note(
+                    Kind::File,
+                    &att.filename,
+                    att.size,
+                    "a video that could not be saved to disk. Tell the user it is unavailable rather \
+                     than guessing at what it shows.",
+                ));
+                continue;
+            };
+            let sound = agent::video::sound(std::path::Path::new(path)).await;
+            let heard = match &sound {
+                Ok(Some(_)) => "Its sound is transcribed below.".to_string(),
+                Ok(None) => "It has no sound.".to_string(),
+                Err(e) => format!("Its sound could not be listened to: {e}."),
+            };
+            prompt.push_str(&note(
+                Kind::File,
+                &att.filename,
+                att.size,
+                &format!(
+                    "a video, saved at {path}. A vision helper watches it for you; what it saw comes with \
+                     this message. {heard}"
+                ),
+            ));
+            if let Ok(Some(flac)) = sound {
+                let stem = std::path::Path::new(&att.filename).file_stem().map_or_else(|| "sound".into(), |s| s.to_string_lossy());
+                prompt.push_str(&transcript_note(state, &att.filename, att.size, &format!("{stem}.flac"), flac).await);
+            }
+            continue;
+        }
+
         // Audio is inert to every provider we ship, so it becomes text here or
         // it never reaches the model at all.
         if matches!(Kind::of(&att.filename, &att.mime_type), Kind::Audio) {
             let audio = |body: &str| note(Kind::Audio, &att.filename, att.size, body);
-            let spoken = match transcription_endpoint(state) {
-                Some((key, base_url, model)) => {
-                    match ai::transcribe::transcribe(
-                        &ai::RequestTrace::new("transcribe"),
-                        &key,
-                        &base_url,
-                        &model,
-                        &att.filename,
-                        bytes.clone(),
-                    )
-                    .await
-                    {
-                        Ok(text) if text.is_empty() => audio(
-                            "transcribed, but no speech was found in it. Say so rather than \
-                             guessing at its contents.",
-                        ),
-                        Ok(text) => format!("{}\n{}", audio("transcript follows"), text),
-                        Err(e) => {
-                            tracing::warn!(file = %att.filename, error = %e, "transcription failed");
-                            audio(&format!(
-                                "transcription failed: {e}. Tell the user you could not listen \
-                                 to it; do NOT guess at what it says."
-                            ))
-                        }
-                    }
-                }
-                None => audio(
-                    "no transcription provider is configured, so its contents are unknown. Tell \
-                     the user to add an OpenAI key or sign in to NeboAI.",
-                ),
-            };
-            prompt.push_str(&spoken);
+            prompt.push_str(&transcript_note(state, &att.filename, att.size, &att.filename, bytes.clone()).await);
             // The audio file itself stays reachable — a transcript is not always
             // what the user is asking about.
             if let Some(path) = &saved {
