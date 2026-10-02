@@ -434,7 +434,7 @@ impl OpenAIProvider {
                             match serde_json::from_str(&data) {
                                 Ok(r) => r,
                                 Err(e) => {
-                                    warn!(error = %e, data = &data, "failed to parse SSE chunk");
+                                    warn!(error = %e, data = %::types::redact::redact(&data), "failed to parse SSE chunk");
                                     continue;
                                 }
                             };
@@ -758,7 +758,7 @@ impl Provider for OpenAIProvider {
 
         // Debug: log the full request body on first few requests to diagnose Janus errors
         if let Ok(body_json) = serde_json::to_string(&body_val) {
-            debug!(body = %body_json, "OpenAI request body");
+            debug!(body = %::types::redact::redact(&body_json), "OpenAI request body");
         }
 
         let url = format!("{}/chat/completions", self.base_url);

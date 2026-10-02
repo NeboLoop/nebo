@@ -967,7 +967,7 @@ async fn handle_server_event(
     state: &mut SessionState,
 ) -> Result<(), ()> {
     let Ok(ev) = serde_json::from_str::<Value>(text) else {
-        warn!(frame = %text, "unparseable realtime event");
+        warn!(frame = %::types::redact::redact(text), "unparseable realtime event");
         return Ok(());
     };
     let typ = ev.get("type").and_then(|t| t.as_str()).unwrap_or("");
@@ -1025,7 +1025,7 @@ async fn handle_server_event(
         "conversation.item.input_audio_transcription.updated" => {
             let item = ev.get("item_id").and_then(|v| v.as_str());
             if item.is_some() && item == state.closed_item.as_deref() {
-                debug!(frame = %text, "transcript for a closed utterance (dropped)");
+                debug!(frame = %::types::redact::redact(text), "transcript for a closed utterance (dropped)");
             } else if let Some(t) = ev.get("transcript").and_then(|v| v.as_str()) {
                 if state.utterance == Utterance::Closed {
                     state.utterance = Utterance::Open { transcribed: false };
@@ -1048,7 +1048,7 @@ async fn handle_server_event(
             if state.utterance == Utterance::Closed
                 || (item.is_some() && item == state.closed_item.as_deref())
             {
-                debug!(frame = %text, "transcript for a closed utterance (dropped)");
+                debug!(frame = %::types::redact::redact(text), "transcript for a closed utterance (dropped)");
             } else if let Some(t) = ev.get("transcript").and_then(|v| v.as_str())
                 && !t.is_empty()
             {
@@ -1107,7 +1107,7 @@ async fn handle_server_event(
             let name = ev.get("name").and_then(|v| v.as_str()).unwrap_or("");
             let arguments = ev.get("arguments").and_then(|v| v.as_str()).unwrap_or("{}");
             if call_id.is_empty() || name.is_empty() {
-                warn!(frame = %text, "function call event missing call_id/name");
+                warn!(frame = %::types::redact::redact(text), "function call event missing call_id/name");
             } else {
                 send(ConversationEvent::ToolCall {
                     call_id: call_id.to_string(),
@@ -1147,16 +1147,16 @@ async fn handle_server_event(
             // turn-taking, not a session failure — surfacing it as Error made
             // the client tear the whole call down on every tail barge-in.
             if msg.contains("Cancellation failed") {
-                warn!(frame = %text, "benign realtime cancel race (ignored)");
+                warn!(frame = %::types::redact::redact(text), "benign realtime cancel race (ignored)");
             } else if std::mem::take(&mut state.say_pending) {
                 // Words said on the session's behalf were refused. The call
                 // is fine; it just stops saying them.
                 state.say_refused = true;
-                warn!(frame = %text, "realtime refused a spoken update; no more this call");
+                warn!(frame = %::types::redact::redact(text), "realtime refused a spoken update; no more this call");
             } else {
                 // The provider's words stay in the log; the client says the
                 // call ended, plainly.
-                warn!(frame = %text, "realtime upstream error");
+                warn!(frame = %::types::redact::redact(text), "realtime upstream error");
                 send(ConversationEvent::Error(CALL_ENDED.to_string())).await?;
             }
         }

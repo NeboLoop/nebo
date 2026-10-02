@@ -188,7 +188,7 @@ impl NeboAIApi {
     ) -> Result<T, CommError> {
         self.gate(&method)?;
         let url = format!("{}{}", self.api_server, path);
-        debug!(method = %method, url = %url, "neboai api");
+        debug!(method = %method, url = %::types::redact::redact(&url), "neboai api");
 
         let read = method == reqwest::Method::GET;
         let resp = match self
@@ -287,7 +287,7 @@ impl NeboAIApi {
             url.push('?');
             url.push_str(q);
         }
-        debug!(method = %method, url = %url, "neboai plugin proxy");
+        debug!(method = %method, url = %::types::redact::redact(&url), "neboai plugin proxy");
         let resp = self
             .client
             .request(method, &url)
@@ -735,7 +735,7 @@ impl NeboAIApi {
         } else {
             format!("{}{}", self.api_server, url)
         };
-        debug!(url = %full_url, "downloading .napp archive");
+        debug!(url = %::types::redact::redact(&full_url), "downloading .napp archive");
         // The plugin CDN (EdgeLB) intermittently drops connections — a single send
         // failure shouldn't kill an install when a retry succeeds in ~1s. Retry with a
         // short backoff, but ONLY for transient failures (send errors, 5xx). A 4xx like
@@ -1708,7 +1708,7 @@ impl NeboAIApi {
     pub async fn mcp_tool(&self, tool: &str, arguments: serde_json::Value) -> Result<serde_json::Value, CommError> {
         self.gate(&reqwest::Method::POST)?;
         let url = format!("{}/mcp", self.api_server.trim_end_matches('/'));
-        debug!(url = %url, tool, "hub mcp");
+        debug!(url = %::types::redact::redact(&url), tool, "hub mcp");
         let body = serde_json::json!({
             "jsonrpc": "2.0",
             "id": 1,
@@ -1794,7 +1794,7 @@ impl NeboAIApi {
         let form = form.part("file", part);
 
         let url = format!("{}/api/v1/files/upload", self.api_server);
-        debug!(url = %url, filename = %filename, "uploading file");
+        debug!(url = %::types::redact::redact(&url), filename = %filename, "uploading file");
 
         // Use a client with a longer timeout for uploads
         let upload_client = tls::http_client()

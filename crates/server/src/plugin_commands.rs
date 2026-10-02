@@ -52,7 +52,7 @@ pub async fn try_dispatch(state: &AppState, prompt: &str, session_id: &str) -> O
                 }
             };
 
-            info!(plugin = %slug, command = %cmd_name, args = %args, session_id, "executing plugin slash command");
+            info!(plugin = %slug, command = %cmd_name, args_len = args.len(), session_id, "executing plugin slash command");
 
             return Some(execute(&binary, &cmd_def.command, args, slug, state.plugin_store.clone()).await);
         }

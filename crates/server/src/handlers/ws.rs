@@ -569,7 +569,7 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState, ua: String) {
             Some(msg) = socket.recv() => {
                 match msg {
                     Ok(Message::Text(text)) => {
-                        info!("ws client message: {}", text);
+                        log_client_frame(&text);
                         if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&text) {
                             let msg_type = parsed["type"].as_str().unwrap_or("");
                             match msg_type {
@@ -2271,6 +2271,92 @@ async fn handle_extension_ws(socket: WebSocket, bridge: Arc<browser::ExtensionBr
     }
 
     bridge.disconnect(conn_id).await;
+}
+
+/// Log one client frame. The `auth` frame carries the owner's session token,
+/// so the raw text NEVER reaches a log: info gets the type, size and ids;
+/// debug adds the frame through the one redaction helper.
+fn log_client_frame(text: &str) {
+    let parsed = serde_json::from_str::<serde_json::Value>(text).ok();
+    let field = |k: &str| {
+        parsed
+            .as_ref()
+            .and_then(|v| v.get(k).or_else(|| v.get("data").and_then(|d| d.get(k))))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string()
+    };
+    let msg_type = field("type");
+    info!(
+        msg_type = %msg_type,
+        bytes = text.len(),
+        session_id = %field("session_id"),
+        agent_id = %field("agent_id"),
+        "ws client frame"
+    );
+    if tracing::enabled!(tracing::Level::DEBUG) {
+        let mut frame = types::redact::redact(text);
+        types::strutil::safe_truncate(&mut frame, 2000);
+        debug!(msg_type = %msg_type, frame = %frame, "ws client frame (redacted)");
+    }
+}
+
+#[cfg(test)]
+mod client_frame_log_tests {
+    use std::io::Write;
+    use std::sync::{Arc, Mutex};
+
+    /// Captures everything a subscriber writes.
+    #[derive(Clone, Default)]
+    struct Buf(Arc<Mutex<Vec<u8>>>);
+    impl Write for Buf {
+        fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(b);
+            Ok(b.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn captured(level: tracing::Level, frame: &str) -> String {
+        let buf = Buf::default();
+        let sink = buf.clone();
+        let sub = tracing_subscriber::fmt()
+            .with_max_level(level)
+            .with_ansi(false)
+            .with_writer(move || sink.clone())
+            .finish();
+        tracing::subscriber::with_default(sub, || super::log_client_frame(frame));
+        String::from_utf8(buf.0.lock().unwrap().clone()).unwrap()
+    }
+
+    /// A fake token; the assertion is that it never reaches the log.
+    const FAKE: &str = "fake-session-token-not-real-42";
+
+    #[test]
+    fn auth_frame_never_logs_the_token_at_info_or_debug() {
+        let frame = format!(
+            r#"{{"type":"auth","data":{{"token":"{FAKE}","client_id":"desk-1"}},"timestamp":"2026-10-01T00:00:00Z"}}"#
+        );
+        for level in [tracing::Level::INFO, tracing::Level::DEBUG] {
+            let out = captured(level, &frame);
+            assert!(out.contains("ws client frame"), "{level}: no log line");
+            assert!(out.contains("msg_type=auth"), "{level}: type missing");
+            assert!(out.contains(&format!("bytes={}", frame.len())), "{level}: size missing");
+            assert!(!out.contains(FAKE), "{level}: the token reached the log");
+        }
+        let debug = captured(tracing::Level::DEBUG, &frame);
+        assert!(debug.contains("[redacted]"), "debug shows the redacted frame");
+        assert!(debug.contains("desk-1"), "debug keeps the ids");
+    }
+
+    #[test]
+    fn non_json_frame_with_a_bearer_is_redacted() {
+        let frame = format!("Authorization: Bearer {FAKE}");
+        let out = captured(tracing::Level::DEBUG, &frame);
+        assert!(!out.contains(FAKE), "the token reached the log");
+    }
 }
 
 #[cfg(test)]

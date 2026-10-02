@@ -148,7 +148,7 @@ impl Redirects {
     /// `configured` on its normal backoff.
     pub fn follow(&mut self, configured: &str, redirect: &Redirect) -> Option<String> {
         if !allowed(configured, &redirect.url) {
-            warn!(cell = %redirect.cell, url = %redirect.url, "hub: refusing a redirect outside NeboAI");
+            warn!(cell = %redirect.cell, url = %::types::redact::redact(&redirect.url), "hub: refusing a redirect outside NeboAI");
             self.followed = 0;
             return None;
         }
@@ -158,7 +158,7 @@ impl Redirects {
             return None;
         }
         self.followed += 1;
-        info!(cell = %redirect.cell, url = %redirect.url, "hub: account lives in another cell; redialing there");
+        info!(cell = %redirect.cell, url = %::types::redact::redact(&redirect.url), "hub: account lives in another cell; redialing there");
         Some(redirect.url.clone())
     }
 }

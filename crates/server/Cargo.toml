@@ -71,9 +71,11 @@ libc = "0.2"
 # Staging a layer write in a copy of the pack so the real loader can refuse it
 # before it lands.
 tempfile = "3"
+tracing-subscriber = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"
+tracing-subscriber = { workspace = true }
 # `util` for `ServiceExt::oneshot`, which drives a router in a test the way a
 # real request drives it. The main dependency does not need it.
 tower = { workspace = true, features = ["util"] }

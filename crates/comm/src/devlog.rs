@@ -112,7 +112,7 @@ fn format_timestamp() -> String {
 
 /// Truncate content to ~200 chars for readability.
 fn truncate_content(content: &str) -> String {
-    let clean = content.replace('\n', " ");
+    let clean = ::types::redact::redact(content).replace('\n', " ");
     if clean.chars().count() <= 200 {
         clean
     } else {

@@ -742,7 +742,7 @@ impl Relay {
         match body["code"].as_str().map(PairingCode::parse) {
             Some(Ok(code)) if (200..300).contains(&status) => Ok(code),
             _ => {
-                info!(bot, status, %body, "linked: the linked bot gave no pairing code");
+                info!(bot, status, body = %::types::redact::redact(&body.to_string()), "linked: the linked bot gave no pairing code");
                 Err(Unreached::Offline)
             }
         }

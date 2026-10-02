@@ -75,7 +75,7 @@ impl StdioSession {
                         continue;
                     }
                     let Ok(msg) = serde_json::from_str::<Value>(&line) else {
-                        debug!(line = %line, "MCP stdio: non-JSON line from server");
+                        debug!(line = %::types::redact::redact(&line), "MCP stdio: non-JSON line from server");
                         continue;
                     };
                     if let Some(id) = msg.get("id").and_then(|v| v.as_i64()) {

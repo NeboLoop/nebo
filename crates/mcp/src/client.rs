@@ -420,7 +420,7 @@ pub(crate) fn parse_call_result(tool_name: &str, result: &serde_json::Value) -> 
     let content = if parts.is_empty() {
         warn!(
             tool = tool_name,
-            result_preview = %result.to_string().chars().take(500).collect::<String>(),
+            result_preview = %::types::redact::redact(&result.to_string()).chars().take(500).collect::<String>(),
             "MCP tool returned no renderable content"
         );
         "(tool returned no content)".to_string()
@@ -451,9 +451,9 @@ fn parse_sse_json(text: &str) -> Result<serde_json::Value, McpError> {
 
     debug!(
         event_type = ?event_type,
-        data_preview = ?last_data.as_ref().map(|d| d.chars().take(300).collect::<String>()),
+        data_preview = ?last_data.as_ref().map(|d| ::types::redact::redact(d).chars().take(300).collect::<String>()),
         raw_lines = text.lines().count(),
-        raw_preview = %text.chars().take(500).collect::<String>(),
+        raw_preview = %::types::redact::redact(text).chars().take(500).collect::<String>(),
         "parsing SSE response"
     );
 
@@ -461,14 +461,14 @@ fn parse_sse_json(text: &str) -> Result<serde_json::Value, McpError> {
         Some(json_str) => serde_json::from_str(&json_str).map_err(|e| {
             warn!(
                 error = %e,
-                data = %json_str.chars().take(200).collect::<String>(),
+                data = %::types::redact::redact(&json_str).chars().take(200).collect::<String>(),
                 "SSE data JSON parse failed"
             );
             McpError::Other(format!("SSE data is not valid JSON: {e}"))
         }),
         None => {
             warn!(
-                raw = %text.chars().take(500).collect::<String>(),
+                raw = %::types::redact::redact(text).chars().take(500).collect::<String>(),
                 "no data: line found in SSE response"
             );
             Err(McpError::Other("No data found in SSE response".to_string()))

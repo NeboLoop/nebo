@@ -187,7 +187,7 @@ impl OllamaProvider {
                 let resp: OllamaStreamResponse = match serde_json::from_str(&line) {
                     Ok(r) => r,
                     Err(e) => {
-                        debug!("failed to parse Ollama response: {e}, line: {line}");
+                        debug!(error = %e, line = %::types::redact::redact(&line), "failed to parse Ollama response");
                         continue;
                     }
                 };

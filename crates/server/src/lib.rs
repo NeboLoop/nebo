@@ -3362,7 +3362,7 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
         .layer(
             TraceLayer::new_for_http()
                 .make_span_with(|request: &axum::http::Request<_>| {
-                    tracing::info_span!("http", method = %request.method(), uri = %request.uri())
+                    tracing::info_span!("http", method = %request.method(), uri = %::types::redact::redact(&request.uri().to_string()))
                 })
                 .on_failure(|error: tower_http::classify::ServerErrorsFailureClass, latency: std::time::Duration, _span: &tracing::Span| {
                     tracing::error!(%error, latency_ms = latency.as_millis(), "request failed");

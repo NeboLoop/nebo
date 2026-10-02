@@ -143,7 +143,7 @@ async fn session(
             None => return Err(dial_error(e)),
         },
     };
-    info!(hub = %hub_url, "tunnel: connected to hub");
+    info!(hub = %::types::redact::redact(hub_url), "tunnel: connected to hub");
     online.store(true, std::sync::atomic::Ordering::Relaxed);
 
     let closed = HubClose::default();
@@ -326,7 +326,7 @@ async fn proxy_stream(stream: yamux::Stream, local_addr: &str) -> io::Result<()>
         .nth(1)
         .unwrap_or("");
     if is_blocked_path(path) {
-        debug!(path = %path, "tunnel: refused blocked local surface");
+        debug!(path = %::types::redact::redact(path), "tunnel: refused blocked local surface");
         return deny(&mut stream, "not reachable through the tunnel").await;
     }
 
