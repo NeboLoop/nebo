@@ -173,15 +173,115 @@ async fn resolve_app_ui(state: &AppState, agent_id: &str) -> Option<(PathBuf, bo
     });
     let motion = fs_match.and_then(|a| a.app_window()).is_some_and(|w| w.motion);
     if let Some(p) = fs_match.and_then(|a| a.app_ui_path.clone()) {
-        return Some((p, motion));
+        return served_ui_dir(p).map(|p| (p, motion));
     }
     // Fall back to DB
     if let Ok(Some(a)) = state.store.get_agent(agent_id) {
         if let Some(p) = a.app_ui_path {
-            return Some((PathBuf::from(p), motion));
+            return served_ui_dir(PathBuf::from(p)).map(|p| (p, motion));
         }
     }
     None
+}
+
+/// The one folder an app's page is served from: its `ui/`. A recorded path
+/// that names the app's package folder instead (its root holds the build's
+/// source `index.html`, which points at `./src/main.tsx`) is taken to its
+/// `ui/`; a package with no `ui/` serves nothing.
+fn served_ui_dir(recorded: PathBuf) -> Option<PathBuf> {
+    if recorded.file_name().is_some_and(|n| n == "ui") {
+        return Some(recorded);
+    }
+    let ui = recorded.join("ui");
+    ui.is_dir().then_some(ui)
+}
+
+/// The file a request for `path` inside an app's `ui/` is answered with:
+/// the file itself, else for a page route (no extension, or `.html`) the
+/// entry page (`index.html`, then `200.html`). A missing script, style or
+/// asset is a 404, never the entry page: HTML sent for a module script is
+/// refused by the browser with a misleading MIME or CORS error.
+fn resolve_ui_file(ui: &StdPath, path: &str) -> Result<PathBuf, StatusCode> {
+    let clean_path = path.trim_start_matches('/');
+    if clean_path.contains("..") {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let file_path = ui.join(clean_path);
+    if file_path.is_file() {
+        return Ok(file_path);
+    }
+    let ext = StdPath::new(clean_path).extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase());
+    if !matches!(ext.as_deref(), None | Some("html" | "htm")) {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    ["index.html", "200.html"].into_iter().map(|f| ui.join(f)).find(|f| f.is_file()).ok_or(StatusCode::NOT_FOUND)
+}
+
+/// Where an app page's root-absolute references (`/assets/x.js`,
+/// `url(/fonts/a.woff)`) really live: the app's `ui/`, reached from the
+/// served file by `prefix` (`./`, `../`, or `ui/` for the slashless root).
+/// A page is served under a sub-path (`/apps/<id>/ui/` on the bot,
+/// `/t/<bot>/apps/<id>/ui/` through the tunnel), so a root path left as it
+/// is lands on the bot's or the hub's own root and misses.
+#[derive(Debug, Clone)]
+struct Rebase<'a> {
+    ui: &'a StdPath,
+    prefix: String,
+}
+
+impl<'a> Rebase<'a> {
+    /// For the file at `rel` (the request path inside `ui/`, as the browser
+    /// sees it); `rel` empty is the slashless root `/apps/<id>/ui`.
+    fn new(ui: &'a StdPath, rel: &str) -> Self {
+        let prefix = if rel.is_empty() {
+            "ui/".to_string()
+        } else {
+            match rel.trim_start_matches('/').matches('/').count() {
+                0 => "./".to_string(),
+                n => "../".repeat(n),
+            }
+        };
+        Rebase { ui, prefix }
+    }
+
+    /// The `ui/` file a root path names, when there is one.
+    fn names_a_file(&self, root_path: &str) -> bool {
+        let path = root_path.split(['?', '#']).next().unwrap_or("");
+        !path.is_empty() && !path.contains("..") && self.ui.join(path).is_file()
+    }
+
+    /// `text` (an entry page or a stylesheet) with each root-absolute
+    /// `src`/`href`/`poster` attribute and CSS `url()` that names a file in
+    /// `ui/` made relative to it. Anything else (another site, the bot's
+    /// own `/sdk/` and `/api/`, a file the app does not have) is left alone.
+    fn apply(&self, text: &str) -> String {
+        static ATTR: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+        static URL: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+        let attr = ATTR.get_or_init(|| {
+            regex::Regex::new(r#"(?i)(\b(?:src|href|poster)\s*=\s*["'])/([^/"'][^"']*)"#).unwrap()
+        });
+        let url = URL.get_or_init(|| regex::Regex::new(r#"(?i)(\burl\(\s*["']?)/([^/"')][^"')]*)"#).unwrap());
+        let swap = |c: &regex::Captures<'_>| {
+            if self.names_a_file(&c[2]) {
+                format!("{}{}{}", &c[1], self.prefix, &c[2])
+            } else {
+                c[0].to_string()
+            }
+        };
+        let text = attr.replace_all(text, swap);
+        url.replace_all(&text, swap).into_owned()
+    }
+
+    /// The names at the top of `ui/`, which the page's bridge rewrites a
+    /// root-absolute `fetch`/XHR into (a model, a texture, a level file).
+    fn roots(&self) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(self.ui)
+            .map(|d| d.flatten().filter_map(|e| e.file_name().to_str().map(str::to_string)).collect())
+            .unwrap_or_default();
+        names.retain(|n| !n.starts_with('.'));
+        names.sort();
+        names
+    }
 }
 
 /// GET /apps/{agent_id}/ui/ — serve the app's index.html at the root path.
@@ -212,29 +312,9 @@ async fn serve_app_ui_inner(state: &AppState, agent_id: &str, path: &str, header
         None => return StatusCode::NOT_FOUND.into_response(),
     };
 
-    // Sanitize path to prevent directory traversal
-    let clean_path = path.trim_start_matches('/');
-    if clean_path.contains("..") {
-        return StatusCode::BAD_REQUEST.into_response();
-    }
-
-    let file_path = ui_path.join(clean_path);
-
-    // Try the exact file first, then SPA fallback (index.html, then 200.html)
-    let target = if file_path.is_file() {
-        file_path
-    } else {
-        let index = ui_path.join("index.html");
-        if index.is_file() {
-            index
-        } else {
-            let fallback = ui_path.join("200.html");
-            if fallback.is_file() {
-                fallback
-            } else {
-                return StatusCode::NOT_FOUND.into_response();
-            }
-        }
+    let target = match resolve_ui_file(&ui_path, path) {
+        Ok(t) => t,
+        Err(s) => return s.into_response(),
     };
 
     // Developer tooling goes only into the owner's own apps, never into one
@@ -248,7 +328,15 @@ async fn serve_app_ui_inner(state: &AppState, agent_id: &str, path: &str, header
         console: state.store.app_developer_mode(),
         desktop: None,
     });
-    serve_ui_file(&target, headers, devtools, motion).await
+    // The entry page is rebased for the address the browser asked for; a
+    // stylesheet for its own place in `ui/`.
+    let at = if is_entry_html(&target) {
+        path.to_string()
+    } else {
+        target.strip_prefix(&ui_path).map(|p| p.to_string_lossy().replace('\\', "/")).unwrap_or_default()
+    };
+    let rebase = Rebase::new(&ui_path, &at);
+    serve_ui_file(&target, headers, devtools, motion, Some(&rebase)).await
 }
 
 /// The developer script an app page carries: whose page it is (for "Send
@@ -345,13 +433,28 @@ fn is_entry_html(target: &StdPath) -> bool {
 ///    names the newest hashed files.
 /// 3. With App Developer mode on (`devtools` with its console), every file
 ///    is `no-store`: the guaranteed way past any cache while an employee is
-///    building.
+///    building. The owner's own app (`devtools`, mode on or off) has its
+///    entry page `no-store` always: a rebuild shows on the next load.
 ///
 /// `motion`: the manifest declares `device:motion`, so the page's
 /// Permissions-Policy lets it read the gyroscope and accelerometer.
-async fn serve_ui_file(target: &StdPath, headers: &HeaderMap, devtools: Option<Devtools<'_>>, motion: bool) -> Response {
+///
+/// `rebase`: the entry page and a stylesheet have their root-absolute
+/// references to the app's own files made relative ([`Rebase`]); the
+/// response also lets the page's own origin read it (`crossorigin` module
+/// scripts and stylesheets send one).
+async fn serve_ui_file(
+    target: &StdPath,
+    headers: &HeaderMap,
+    devtools: Option<Devtools<'_>>,
+    motion: bool,
+    rebase: Option<&Rebase<'_>>,
+) -> Response {
     let is_entry = is_entry_html(target);
-    let no_store = Devtools::no_store(devtools);
+    let is_css = mime_from_path(target).starts_with("text/css");
+    // The owner's own app (`devtools`) is being built: its entry page is
+    // never kept, so the next open or reload always names the newest build.
+    let no_store = Devtools::no_store(devtools) || (is_entry && devtools.is_some());
     let meta = match fs::metadata(target).await {
         Ok(m) => m,
         Err(e) => {
@@ -368,7 +471,7 @@ async fn serve_ui_file(target: &StdPath, headers: &HeaderMap, devtools: Option<D
         // script derives both from location before the SDK loads. Apps
         // that ship their own meta tags win — the script only fills gaps.
         let contents = match fs::read(target).await {
-            Ok(c) => inject_app_bridge(c, devtools),
+            Ok(c) => inject_app_bridge(c, devtools, rebase),
             Err(e) => {
                 warn!(path = %target.display(), error = %e, "failed to read app UI file");
                 return StatusCode::INTERNAL_SERVER_ERROR.into_response();
@@ -376,6 +479,23 @@ async fn serve_ui_file(target: &StdPath, headers: &HeaderMap, devtools: Option<D
         };
         // The tag is of what goes out (the injected scripts included), so a
         // Nebo update that changes them is a changed page.
+        let etag = body_etag(&contents);
+        if !no_store && not_modified(headers, &etag) {
+            not_modified_response(&etag)
+        } else {
+            let mut r = Response::new(Body::from(contents));
+            set_etag(&mut r, no_store, &etag);
+            r
+        }
+    } else if let (true, Some(rebase)) = (is_css, rebase) {
+        // A stylesheet goes out rebased, whole, tagged by what goes out.
+        let contents = match fs::read_to_string(target).await {
+            Ok(c) => rebase.apply(&c).into_bytes(),
+            Err(e) => {
+                warn!(path = %target.display(), error = %e, "failed to read app UI file");
+                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+            }
+        };
         let etag = body_etag(&contents);
         if !no_store && not_modified(headers, &etag) {
             not_modified_response(&etag)
@@ -418,6 +538,10 @@ async fn serve_ui_file(target: &StdPath, headers: &HeaderMap, devtools: Option<D
         );
     }
     h.insert(header::CACHE_CONTROL, HeaderValue::from_static(app_file_cache_control(target, no_store)));
+    if let Some(origin) = own_origin(headers) {
+        h.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, origin);
+        h.append(header::VARY, HeaderValue::from_static("Origin"));
+    }
     if motion {
         h.insert(
             "permissions-policy",
@@ -425,6 +549,17 @@ async fn serve_ui_file(target: &StdPath, headers: &HeaderMap, devtools: Option<D
         );
     }
     response
+}
+
+/// The request's `Origin` when it is the page's own: the same host the
+/// request was sent to (a `crossorigin` module script or stylesheet on a
+/// page served from here, over the tunnel or on this machine). Another
+/// site's origin gets nothing.
+fn own_origin(headers: &HeaderMap) -> Option<HeaderValue> {
+    let origin = headers.get(header::ORIGIN)?;
+    let host = headers.get(header::HOST)?.to_str().ok()?;
+    let origin_host = origin.to_str().ok()?.split_once("://")?.1;
+    origin_host.eq_ignore_ascii_case(host).then(|| origin.clone())
 }
 
 /// The `Cache-Control` an app file goes out with (see `serve_ui_file`).
@@ -555,46 +690,28 @@ async fn serve_app_ui_range(target: &std::path::Path, range: Option<&str>) -> Op
 /// `devtools` is set for the owner's own apps: the developer script follows
 /// the bridge, before any of the app's own scripts, so it sees the app's
 /// first log line.
-/// An entry page's `src="/…"` and `href="/…"` (Vite's default `base: '/'`)
-/// made relative. On the phone the page is served under
-/// `/t/<bot>/apps/<id>/ui/`, so a root path leaves that prefix and the app
-/// loads blank; `./…` stays inside it. Protocol-relative `//…` is untouched.
-/// ponytail: the entry HTML only; a root path built into the app's own JS
-/// (a dynamic import) still needs `base: './'`, which App Studio's gate asks for.
-fn relative_root_paths(html: &str) -> String {
-    let mut out = html.to_string();
-    for attr in ["src=\"/", "href=\"/", "src='/", "href='/"] {
-        let quote = &attr[attr.len() - 2..attr.len() - 1];
-        let name = &attr[..attr.len() - 2];
-        let mut result = String::with_capacity(out.len());
-        let mut rest = out.as_str();
-        while let Some(i) = rest.find(attr) {
-            let after = &rest[i + attr.len()..];
-            result.push_str(&rest[..i]);
-            if after.starts_with('/') {
-                result.push_str(attr);
-            } else {
-                result.push_str(name);
-                result.push_str(quote);
-                result.push_str("./");
-            }
-            rest = after;
-        }
-        result.push_str(rest);
-        out = result;
-    }
-    out
-}
-
-fn inject_app_bridge(contents: Vec<u8>, devtools: Option<Devtools<'_>>) -> Vec<u8> {
-    const BRIDGE: &str = r#"<script data-nebo-bridge>(function(){var m=location.pathname.match(/^(.*?)\/apps\/([^/]+)\/ui(?:\/|$)/);if(!m)return;function add(n,c){if(document.querySelector('meta[name="'+n+'"]'))return;var e=document.createElement('meta');e.setAttribute('name',n);e.setAttribute('content',c);document.head.appendChild(e);}add('nebo-app-id',decodeURIComponent(m[2]));add('nebo-base-url',location.origin+m[1]);})();</script>"#;
+fn inject_app_bridge(contents: Vec<u8>, devtools: Option<Devtools<'_>>, rebase: Option<&Rebase<'_>>) -> Vec<u8> {
+    // `R`: the names at the top of the app's `ui/`. A root-absolute fetch or
+    // XHR into one of them (`fetch('/models/bird.glb')`, a Three.js loader)
+    // is sent to the app's own `ui/`, where the file is.
+    const BRIDGE: &str = r#"<script data-nebo-bridge>(function(){var m=location.pathname.match(/^(.*?)\/apps\/([^/]+)\/ui(?:\/|$)/);if(!m)return;function add(n,c){if(document.querySelector('meta[name="'+n+'"]'))return;var e=document.createElement('meta');e.setAttribute('name',n);e.setAttribute('content',c);document.head.appendChild(e);}add('nebo-app-id',decodeURIComponent(m[2]));add('nebo-base-url',location.origin+m[1]);var R=__NEBO_UI_ROOTS__;if(!R.length)return;var B=m[1]+'/apps/'+m[2]+'/ui/';function rw(u){if(typeof u!=='string')return u;var o=location.origin,p=u;if(p.indexOf(o+'/')===0)p=p.slice(o.length);else if(p.charAt(0)!=='/'||p.charAt(1)==='/')return u;if(p.indexOf(B)===0)return u;var s=p.slice(1).split(/[\/?#]/)[0];return R.indexOf(s)<0?u:B+p.slice(1);}var F=window.fetch;if(typeof F==='function')window.fetch=function(i,o){if(typeof i==='string')i=rw(i);else if(i&&typeof i.url==='string'&&rw(i.url)!==i.url)i=new Request(rw(i.url),i);return F.call(this,i,o);};var X=XMLHttpRequest.prototype.open;XMLHttpRequest.prototype.open=function(){if(arguments.length>1)arguments[1]=rw(String(arguments[1]));return X.apply(this,arguments);};})();</script>"#;
     let html = match String::from_utf8(contents) {
-        Ok(h) => relative_root_paths(&h),
+        Ok(h) => h,
         Err(e) => return e.into_bytes(), // non-UTF-8: serve verbatim
     };
+    let roots = rebase.map(Rebase::roots).unwrap_or_default();
+    // `<` escaped: a file name can never close the script element.
+    let bridge = BRIDGE.replace(
+        "__NEBO_UI_ROOTS__",
+        &serde_json::to_string(&roots).unwrap_or_else(|_| "[]".into()).replace('<', "\\u003c"),
+    );
+    let html = match rebase {
+        Some(r) => r.apply(&html),
+        None => html,
+    };
     let scripts = match devtools {
-        Some(d) => format!("{BRIDGE}{}", developer_script(d)),
-        None => BRIDGE.to_string(),
+        Some(d) => format!("{bridge}{}", developer_script(d)),
+        None => bridge,
     };
     let lower = html.to_ascii_lowercase();
     let out = if let Some(idx) = lower.find("<head>") {
@@ -880,29 +997,45 @@ fn devlog_send_prompt(app_name: &str, entries: &[tools::app_console::Entry]) -> 
 }
 
 /// POST /apps/{agent_id}/devlog/send — "Send to <employee>": the app's last
-/// errors go into the app employee's chat, through the same door as the
-/// owner's own message to that employee (`chat_with_agent`).
+/// errors go into the conversation the owner has open with the app's
+/// employee (the one with the latest activity; a new thread when there is
+/// none), through the
+/// same door as the owner's own message to that employee
+/// (`chat_with_agent`), and the employee works on them there. It answers
+/// `{"status": "dispatched", ...}` only once the message is on its way;
+/// anything else is an `{"error": ...}` the page shows as it is.
 pub async fn send_devlog(
     State(state): State<AppState>,
     Path(agent_id): Path<String>,
     headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
 ) -> Response {
     if let Err(r) = devlog_gate(&state, &agent_id, &headers).await {
         return r;
     }
+    keep_page_errors(&agent_id, &body);
+    let refuse = |status: StatusCode, error: String| (status, axum::Json(serde_json::json!({ "error": error }))).into_response();
     let name = app_employee_name(&state, &agent_id);
     let entries = tools::app_console::recent(&agent_id, None, tools::app_console::RING_CAPACITY);
     let Some(prompt) = devlog_send_prompt(&name, &entries) else {
-        return (StatusCode::UNPROCESSABLE_ENTITY, axum::Json(serde_json::json!({"error": "No errors to send."})))
-            .into_response();
+        return refuse(StatusCode::UNPROCESSABLE_ENTITY, "No errors to send.".into());
     };
-    // Into the employee's latest thread, the chat the owner sees; a new
-    // thread when it has none. Its old web session is a chat nobody opens.
+    if !state.agent_registry.read().await.contains_key(&agent_id) {
+        return refuse(StatusCode::CONFLICT, format!("{name} is turned off. Turn it on, then send again."));
+    }
+    // The conversation the owner is in with the employee: the one with the
+    // latest activity (the rule a phone or loop message to the employee
+    // follows, `resolve_agent_session_key`), so the errors and the work on
+    // them land where he reads; a new thread when there is none. A phone
+    // conversation gets the reply on the phone (`chat_with_agent`).
     let session_key = match state.store.get_latest_agent_chat(&agent_id) {
-        Ok(Some(chat)) => format!("agent:{}:thread:{}", agent_id, chat.id),
+        Ok(Some(_)) => crate::resolve_agent_session_key(&state, &agent_id),
         _ => match crate::handlers::agents::create_agent_thread(&state, &agent_id) {
             Ok((_, key)) => key,
-            Err(e) => return to_error_response(e).into_response(),
+            Err(e) => {
+                warn!(error = %e, agent_id = %agent_id, "could not open a conversation for the app's errors");
+                return refuse(StatusCode::INTERNAL_SERVER_ERROR, format!("Could not send to {name}. Try again."));
+            }
         },
     };
     match crate::handlers::agents::chat_with_agent(
@@ -915,6 +1048,23 @@ pub async fn send_devlog(
         Ok(r) => r.into_response(),
         Err(e) => e.into_response(),
     }
+}
+
+/// The errors the page sent with "Send to <employee>" (`{"entries": [...]}`,
+/// or nothing), kept in the app's console beside what its batches already
+/// brought, each once: the send never depends on a batch having landed.
+fn keep_page_errors(agent_id: &str, body: &[u8]) {
+    let Ok(page) = serde_json::from_slice::<DevlogBatch>(body) else { return };
+    let held = tools::app_console::recent(agent_id, None, tools::app_console::RING_CAPACITY);
+    tools::app_console::record(
+        agent_id,
+        page.entries
+            .iter()
+            .take(DEVLOG_MAX_BATCH)
+            .filter(|e| e.level == "error")
+            .filter(|e| !held.iter().any(|h| h.time_ms == e.time && h.message == e.message))
+            .map(|e| (e.level.as_str(), e.message.as_str(), e.source.as_str(), e.time)),
+    );
 }
 
 /// POST /apps/{agent_id}/agents/invoke — run the app's agent and collect text.
@@ -1833,15 +1983,15 @@ mod developer_mode_tests {
 
     #[test]
     fn the_developer_script_is_injected_only_into_the_owners_own_apps() {
-        let off = String::from_utf8(inject_app_bridge(PAGE.as_bytes().to_vec(), None)).unwrap();
+        let off = String::from_utf8(inject_app_bridge(PAGE.as_bytes().to_vec(), None, None)).unwrap();
         assert!(off.contains("data-nebo-bridge"), "the bridge is always there");
         assert!(!off.contains("data-nebo-devtools"), "no developer script in an installed app");
         assert!(!off.contains("__neboDevtools"));
 
-        let quiet = String::from_utf8(inject_app_bridge(PAGE.as_bytes().to_vec(), dev("Kart Racer", false))).unwrap();
+        let quiet = String::from_utf8(inject_app_bridge(PAGE.as_bytes().to_vec(), dev("Kart Racer", false), None)).unwrap();
         assert!(quiet.contains(r#""console":false"#) && quiet.contains(r#""employee":"Kart Racer""#), "reload and capture, no console: {quiet}");
 
-        let on = String::from_utf8(inject_app_bridge(PAGE.as_bytes().to_vec(), dev("Kart Racer", true))).unwrap();
+        let on = String::from_utf8(inject_app_bridge(PAGE.as_bytes().to_vec(), dev("Kart Racer", true), None)).unwrap();
         let bridge = on.find("data-nebo-bridge").unwrap();
         let dev = on.find("data-nebo-devtools").expect("the developer script");
         let app = on.find("main.js").unwrap();
@@ -1853,7 +2003,7 @@ mod developer_mode_tests {
 
     #[test]
     fn a_name_can_never_close_the_script() {
-        let on = String::from_utf8(inject_app_bridge(PAGE.as_bytes().to_vec(), dev("</script><b>x", true))).unwrap();
+        let on = String::from_utf8(inject_app_bridge(PAGE.as_bytes().to_vec(), dev("</script><b>x", true), None)).unwrap();
         assert_eq!(on.matches("</script>").count(), 3, "{on}");
         assert!(on.contains(r"\u003c/script>\u003cb>x"));
     }
@@ -2205,7 +2355,7 @@ mod app_file_caching_tests {
     #[tokio::test]
     async fn a_hashed_file_is_immutable_for_a_year() {
         let (_d, ui) = ui();
-        let r = serve_ui_file(&ui.join("main-0a8ksftt.js"), &HeaderMap::new(), None, false).await;
+        let r = serve_ui_file(&ui.join("main-0a8ksftt.js"), &HeaderMap::new(), None, false, None).await;
         assert_eq!(r.status(), StatusCode::OK);
         assert_eq!(get(&r, header::CACHE_CONTROL), Some("public, max-age=31536000, immutable"));
         assert!(get(&r, header::ETAG).is_some_and(|t| t.starts_with('"')));
@@ -2217,7 +2367,7 @@ mod app_file_caching_tests {
     async fn a_plain_asset_revalidates_and_answers_304_when_unchanged() {
         let (_d, ui) = ui();
         let film = ui.join("assets/hero.mp4");
-        let first = serve_ui_file(&film, &HeaderMap::new(), None, false).await;
+        let first = serve_ui_file(&film, &HeaderMap::new(), None, false, None).await;
         assert_eq!(first.status(), StatusCode::OK);
         assert_eq!(get(&first, header::CACHE_CONTROL), Some("no-cache"));
         assert_eq!(get(&first, header::ACCEPT_RANGES), Some("bytes"));
@@ -2225,7 +2375,7 @@ mod app_file_caching_tests {
         assert!(!etag.starts_with("W/"), "a strong tag");
         assert_eq!(body(first).await.len(), 256);
 
-        let again = serve_ui_file(&film, &req(&[(header::IF_NONE_MATCH, &etag)]), None, false).await;
+        let again = serve_ui_file(&film, &req(&[(header::IF_NONE_MATCH, &etag)]), None, false, None).await;
         assert_eq!(again.status(), StatusCode::NOT_MODIFIED);
         assert_eq!(get(&again, header::ETAG), Some(etag.as_str()));
         assert_eq!(get(&again, header::CACHE_CONTROL), Some("no-cache"));
@@ -2234,14 +2384,14 @@ mod app_file_caching_tests {
 
         // Weak and listed forms of the same tag match too; another does not.
         let listed = format!("\"other\", W/{etag}");
-        let r = serve_ui_file(&film, &req(&[(header::IF_NONE_MATCH, &listed)]), None, false).await;
+        let r = serve_ui_file(&film, &req(&[(header::IF_NONE_MATCH, &listed)]), None, false, None).await;
         assert_eq!(r.status(), StatusCode::NOT_MODIFIED);
-        let r = serve_ui_file(&film, &req(&[(header::IF_NONE_MATCH, "\"other\"")]), None, false).await;
+        let r = serve_ui_file(&film, &req(&[(header::IF_NONE_MATCH, "\"other\"")]), None, false, None).await;
         assert_eq!(r.status(), StatusCode::OK);
 
         // A changed file is a new tag: the old one gets the new bytes.
         std::fs::write(&film, b"new film").unwrap();
-        let changed = serve_ui_file(&film, &req(&[(header::IF_NONE_MATCH, &etag)]), None, false).await;
+        let changed = serve_ui_file(&film, &req(&[(header::IF_NONE_MATCH, &etag)]), None, false, None).await;
         assert_eq!(changed.status(), StatusCode::OK);
         assert_ne!(get(&changed, header::ETAG), Some(etag.as_str()));
         assert_eq!(body(changed).await, b"new film");
@@ -2252,18 +2402,18 @@ mod app_file_caching_tests {
     async fn the_entry_page_revalidates_and_answers_304() {
         let (_d, ui) = ui();
         let index = ui.join("index.html");
-        let first = serve_ui_file(&index, &HeaderMap::new(), None, false).await;
+        let first = serve_ui_file(&index, &HeaderMap::new(), None, false, None).await;
         assert_eq!(get(&first, header::CACHE_CONTROL), Some("no-cache"));
         assert_eq!(get(&first, header::CONTENT_TYPE), Some("text/html; charset=utf-8"));
         let etag = get(&first, header::ETAG).unwrap().to_string();
         assert!(String::from_utf8(body(first).await).unwrap().contains("data-nebo-bridge"));
 
-        let again = serve_ui_file(&index, &req(&[(header::IF_NONE_MATCH, &etag)]), None, false).await;
+        let again = serve_ui_file(&index, &req(&[(header::IF_NONE_MATCH, &etag)]), None, false, None).await;
         assert_eq!(again.status(), StatusCode::NOT_MODIFIED);
         assert!(body(again).await.is_empty());
 
         std::fs::write(&index, "<html><head></head><body>v2</body></html>").unwrap();
-        let changed = serve_ui_file(&index, &req(&[(header::IF_NONE_MATCH, &etag)]), None, false).await;
+        let changed = serve_ui_file(&index, &req(&[(header::IF_NONE_MATCH, &etag)]), None, false, None).await;
         assert_eq!(changed.status(), StatusCode::OK);
     }
 
@@ -2273,15 +2423,30 @@ mod app_file_caching_tests {
         let (_d, ui) = ui();
         for name in ["index.html", "main-0a8ksftt.js", "assets/hero.mp4"] {
             let file = ui.join(name);
-            let tagged = serve_ui_file(&file, &HeaderMap::new(), None, false).await;
+            let tagged = serve_ui_file(&file, &HeaderMap::new(), None, false, None).await;
             let etag = get(&tagged, header::ETAG).unwrap().to_string();
-            let r = serve_ui_file(&file, &req(&[(header::IF_NONE_MATCH, &etag)]), Some(Devtools { employee: "Kart", console: true, desktop: None }), false).await;
+            let r = serve_ui_file(&file, &req(&[(header::IF_NONE_MATCH, &etag)]), Some(Devtools { employee: "Kart", console: true, desktop: None }), false, None).await;
             assert_eq!(r.status(), StatusCode::OK, "{name}");
             assert_eq!(get(&r, header::CACHE_CONTROL), Some("no-store"), "{name}");
             assert!(get(&r, header::ETAG).is_none(), "{name}");
         }
-        let page = serve_ui_file(&ui.join("index.html"), &HeaderMap::new(), Some(Devtools { employee: "Kart", console: true, desktop: None }), false).await;
+        let page = serve_ui_file(&ui.join("index.html"), &HeaderMap::new(), Some(Devtools { employee: "Kart", console: true, desktop: None }), false, None).await;
         assert!(String::from_utf8(body(page).await).unwrap().contains("data-nebo-devtools"));
+    }
+
+    // The owner's own app, App Developer mode off: its entry page is never
+    // kept (a rebuild shows on the next load); its files keep the one rule.
+    #[tokio::test]
+    async fn an_own_apps_entry_page_is_never_kept() {
+        let (_d, ui) = ui();
+        let own = Some(Devtools { employee: "Kart", console: false, desktop: None });
+        let page = serve_ui_file(&ui.join("index.html"), &HeaderMap::new(), own, false, None).await;
+        assert_eq!(get(&page, header::CACHE_CONTROL), Some("no-store"));
+        assert!(get(&page, header::ETAG).is_none());
+        let hashed = serve_ui_file(&ui.join("main-0a8ksftt.js"), &HeaderMap::new(), own, false, None).await;
+        assert_eq!(get(&hashed, header::CACHE_CONTROL), Some("public, max-age=31536000, immutable"));
+        let film = serve_ui_file(&ui.join("assets/hero.mp4"), &HeaderMap::new(), own, false, None).await;
+        assert_eq!(get(&film, header::CACHE_CONTROL), Some("no-cache"));
     }
 
     // Ranges carry the tag and the rule; an If-Range naming an older file gets the whole new one.
@@ -2289,16 +2454,16 @@ mod app_file_caching_tests {
     async fn ranges_follow_the_tag() {
         let (_d, ui) = ui();
         let film = ui.join("assets/hero.mp4");
-        let etag = get(&serve_ui_file(&film, &HeaderMap::new(), None, false).await, header::ETAG).unwrap().to_string();
+        let etag = get(&serve_ui_file(&film, &HeaderMap::new(), None, false, None).await, header::ETAG).unwrap().to_string();
 
-        let part = serve_ui_file(&film, &req(&[(header::RANGE, "bytes=10-19"), (header::IF_RANGE, &etag)]), None, false).await;
+        let part = serve_ui_file(&film, &req(&[(header::RANGE, "bytes=10-19"), (header::IF_RANGE, &etag)]), None, false, None).await;
         assert_eq!(part.status(), StatusCode::PARTIAL_CONTENT);
         assert_eq!(get(&part, header::CONTENT_RANGE), Some("bytes 10-19/256"));
         assert_eq!(get(&part, header::ETAG), Some(etag.as_str()));
         assert_eq!(get(&part, header::CACHE_CONTROL), Some("no-cache"));
         assert_eq!(body(part).await, (10..=19u8).collect::<Vec<_>>());
 
-        let stale = serve_ui_file(&film, &req(&[(header::RANGE, "bytes=10-19"), (header::IF_RANGE, "\"old\"")]), None, false).await;
+        let stale = serve_ui_file(&film, &req(&[(header::RANGE, "bytes=10-19"), (header::IF_RANGE, "\"old\"")]), None, false, None).await;
         assert_eq!(stale.status(), StatusCode::OK);
         assert_eq!(body(stale).await.len(), 256);
     }
@@ -2307,11 +2472,138 @@ mod app_file_caching_tests {
     #[tokio::test]
     async fn device_motion_opens_the_sensors_for_the_page() {
         let (_d, ui) = ui();
-        let r = serve_ui_file(&ui.join("index.html"), &HeaderMap::new(), None, true).await;
+        let r = serve_ui_file(&ui.join("index.html"), &HeaderMap::new(), None, true, None).await;
         let policy = get(&r, header::HeaderName::from_static("permissions-policy")).unwrap();
         assert!(policy.contains("accelerometer=(self)") && policy.contains("gyroscope=(self)"), "{policy}");
-        let r = serve_ui_file(&ui.join("index.html"), &HeaderMap::new(), None, false).await;
+        let r = serve_ui_file(&ui.join("index.html"), &HeaderMap::new(), None, false, None).await;
         assert!(r.headers().get("permissions-policy").is_none(), "the default comes from the middleware");
+    }
+
+    /// A Vite build without `base: './'`: root paths to its own files.
+    fn vite_build() -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let ui = dir.path().join("ui");
+        std::fs::create_dir_all(ui.join("assets")).unwrap();
+        std::fs::create_dir_all(ui.join("fonts")).unwrap();
+        std::fs::write(
+            ui.join("index.html"),
+            concat!(
+                "<!doctype html><html><head>",
+                r#"<link rel="icon" type="image/svg+xml" href="/favicon.svg">"#,
+                r#"<script type="module" crossorigin src="/assets/index-C_-Z6QB_.js"></script>"#,
+                r#"<link rel="stylesheet" crossorigin href="/assets/index-Bx1y2z3q.css">"#,
+                r#"<script src="/sdk/nebo.global.js"></script>"#,
+                r#"<script src="https://cdn.example.com/three.js"></script>"#,
+                "</head><body><div id=\"root\"></div></body></html>",
+            ),
+        )
+        .unwrap();
+        std::fs::write(ui.join("favicon.svg"), "<svg/>").unwrap();
+        std::fs::write(ui.join("assets/index-C_-Z6QB_.js"), "console.log('flap')").unwrap();
+        std::fs::write(ui.join("assets/index-Bx1y2z3q.css"), "@font-face{src:url(/fonts/a.woff2)}body{background:url('/gone.png')}").unwrap();
+        std::fs::write(ui.join("fonts/a.woff2"), "w").unwrap();
+        (dir, ui)
+    }
+
+    /// Where the browser goes for `reference` on the page at `page`.
+    fn browser_resolves(page: &str, reference: &str) -> String {
+        url::Url::parse(page).unwrap().join(reference).unwrap().path().to_string()
+    }
+
+    /// The `src` of the page's module script, as served.
+    fn module_src(html: &str) -> String {
+        let at = html.find(r#"type="module" crossorigin src=""#).expect("module script") + r#"type="module" crossorigin src=""#.len();
+        html[at..].split('"').next().unwrap().to_string()
+    }
+
+    // A ui/ built with absolute /assets paths loads its JS: on the phone
+    // (through the tunnel), on the bot, at a deep route and at the slashless root.
+    #[tokio::test]
+    async fn a_build_with_root_asset_paths_loads_its_js() {
+        let (_d, ui) = vite_build();
+        for (page, rel) in [
+            ("https://neboai.com/t/bot-1/apps/app-1/ui/index.html", "index.html"),
+            ("http://localhost:27895/apps/app-1/ui/index.html", "index.html"),
+            ("https://neboai.com/t/bot-1/apps/app-1/ui/level/3", "level/3"),
+            ("https://neboai.com/t/bot-1/apps/app-1/ui", ""),
+        ] {
+            let target = resolve_ui_file(&ui, rel).unwrap();
+            let rebase = Rebase::new(&ui, rel);
+            let html = String::from_utf8(body(serve_ui_file(&target, &HeaderMap::new(), None, false, Some(&rebase)).await).await).unwrap();
+            let src = module_src(&html);
+            let asked = browser_resolves(page, &src);
+            let inside = asked.split("/apps/app-1/ui/").nth(1).unwrap_or_else(|| panic!("{page}: {src} leaves the app: {asked}"));
+            let js = resolve_ui_file(&ui, inside).unwrap();
+            let r = serve_ui_file(&js, &HeaderMap::new(), None, false, Some(&Rebase::new(&ui, inside))).await;
+            assert_eq!(r.status(), StatusCode::OK, "{page}");
+            assert_eq!(get(&r, header::CONTENT_TYPE), Some("application/javascript; charset=utf-8"), "{page}");
+            assert_eq!(body(r).await, b"console.log('flap')", "{page}");
+            assert!(browser_resolves(page, &html[html.find("rel=\"icon\"").unwrap()..].split('"').nth(5).unwrap()).ends_with("/apps/app-1/ui/favicon.svg"), "{html}");
+            // The bot's own routes and other sites are left alone.
+            assert!(html.contains(r#"src="/sdk/nebo.global.js""#), "{html}");
+            assert!(html.contains(r#"src="https://cdn.example.com/three.js""#), "{html}");
+            // The bridge sends a root-absolute fetch into the app's files.
+            assert!(html.contains(r#"var R=["assets","favicon.svg","fonts","index.html"]"#), "{html}");
+        }
+
+        // A stylesheet's root paths resolve from its own place; a file the app lacks is left as written.
+        let css = ui.join("assets/index-Bx1y2z3q.css");
+        let r = serve_ui_file(&css, &HeaderMap::new(), None, false, Some(&Rebase::new(&ui, "assets/index-Bx1y2z3q.css"))).await;
+        assert_eq!(get(&r, header::CONTENT_TYPE), Some("text/css; charset=utf-8"));
+        assert!(get(&r, header::ETAG).is_some());
+        let text = String::from_utf8(body(r).await).unwrap();
+        assert_eq!(text, "@font-face{src:url(../fonts/a.woff2)}body{background:url('/gone.png')}");
+    }
+
+    // A module script with crossorigin loads: the page's own origin may read
+    // it (over the tunnel and on this machine), another site may not.
+    #[tokio::test]
+    async fn a_module_script_with_crossorigin_loads() {
+        let (_d, ui) = vite_build();
+        let js = ui.join("assets/index-C_-Z6QB_.js");
+        for (origin, host) in [("https://neboai.com", "neboai.com"), ("http://localhost:27895", "localhost:27895")] {
+            let h = req(&[(header::ORIGIN, origin), (header::HOST, host), (header::HeaderName::from_static("sec-fetch-mode"), "cors")]);
+            let r = serve_ui_file(&js, &h, None, false, Some(&Rebase::new(&ui, "assets/index-C_-Z6QB_.js"))).await;
+            assert_eq!(r.status(), StatusCode::OK, "{origin}");
+            assert_eq!(get(&r, header::CONTENT_TYPE), Some("application/javascript; charset=utf-8"), "{origin}");
+            assert_eq!(get(&r, header::ACCESS_CONTROL_ALLOW_ORIGIN), Some(origin), "{origin}");
+            assert!(r.headers().get_all(header::VARY).iter().any(|v| v == "Origin"), "{origin}");
+        }
+        let foreign = req(&[(header::ORIGIN, "https://evil.example"), (header::HOST, "neboai.com")]);
+        let r = serve_ui_file(&js, &foreign, None, false, None).await;
+        assert!(r.headers().get(header::ACCESS_CONTROL_ALLOW_ORIGIN).is_none());
+        // A missing script is a 404, never the entry page in its place.
+        assert_eq!(resolve_ui_file(&ui, "assets/index-old.js"), Err(StatusCode::NOT_FOUND));
+    }
+
+    // The app folder's own index.html (the build's source, pointing at
+    // ./src/main.tsx) is never served: only ui/ is.
+    #[tokio::test]
+    async fn the_root_index_html_is_never_served() {
+        let (dir, ui) = vite_build();
+        let pkg = dir.path();
+        std::fs::create_dir_all(pkg.join("src")).unwrap();
+        std::fs::write(pkg.join("index.html"), r#"<html><head></head><body><script type="module" src="./src/main.tsx"></script></body></html>"#).unwrap();
+        std::fs::write(pkg.join("src/main.tsx"), "export {}").unwrap();
+
+        assert_eq!(served_ui_dir(ui.clone()), Some(ui.clone()));
+        assert_eq!(served_ui_dir(pkg.to_path_buf()), Some(ui.clone()), "a recorded package folder serves its ui/");
+        let bare = tempfile::tempdir().unwrap();
+        std::fs::write(bare.path().join("index.html"), "<p>source</p>").unwrap();
+        assert_eq!(served_ui_dir(bare.path().to_path_buf()), None, "a package with no ui/ serves nothing");
+
+        for rel in ["", "index.html", "level/3", "src/main.tsx", "../index.html", "%2e%2e/index.html"] {
+            match resolve_ui_file(&ui, rel) {
+                Ok(f) => {
+                    assert_eq!(f, ui.join("index.html"), "{rel}");
+                    let html = String::from_utf8(body(serve_ui_file(&f, &HeaderMap::new(), None, false, Some(&Rebase::new(&ui, rel))).await).await).unwrap();
+                    assert!(!html.contains("main.tsx") && html.contains("index-C_-Z6QB_.js"), "{rel}: {html}");
+                }
+                Err(s) => assert!(s == StatusCode::NOT_FOUND || s == StatusCode::BAD_REQUEST, "{rel}: {s}"),
+            }
+        }
+        assert_eq!(resolve_ui_file(&ui, "src/main.tsx"), Err(StatusCode::NOT_FOUND));
+        assert_eq!(resolve_ui_file(&ui, "../index.html"), Err(StatusCode::BAD_REQUEST));
     }
 
     // The security middleware keeps a page's own policy and gives every other response the default.
@@ -2336,20 +2628,5 @@ mod app_file_caching_tests {
         };
         assert_eq!(call("/motion").await, crate::middleware::PERMISSIONS_POLICY_WITH_MOTION);
         assert_eq!(call("/plain").await, crate::middleware::PERMISSIONS_POLICY);
-    }
-}
-
-#[cfg(test)]
-mod relative_root_paths_tests {
-    use super::relative_root_paths;
-
-    #[test]
-    fn root_paths_stay_inside_the_app_prefix() {
-        let html = r#"<script type="module" src="/assets/index-a1.js"></script><link rel="stylesheet" href='/assets/index-b2.css'><img src="//cdn.example/x.png"><a href="./ok">"#;
-        let out = relative_root_paths(html);
-        assert!(out.contains(r#"src="./assets/index-a1.js""#), "{out}");
-        assert!(out.contains(r#"href='./assets/index-b2.css'"#), "{out}");
-        assert!(out.contains(r#"src="//cdn.example/x.png""#), "protocol-relative untouched: {out}");
-        assert!(out.contains(r#"href="./ok""#), "{out}");
     }
 }

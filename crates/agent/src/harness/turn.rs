@@ -123,6 +123,9 @@ pub struct TurnContext {
     pub review_fork: Option<crate::review_fork::ReviewForkCtx>,
     /// The employee's own tools the run's tool scope leaves out.
     pub withheld_tools: Arc<HashSet<String>>,
+    /// Deferred tools this seat is declared from its first step
+    /// (`tools::app_dev::preloaded`), never behind tool search.
+    pub preloaded_tools: Arc<HashSet<String>>,
 }
 
 impl TurnContext {
@@ -800,6 +803,12 @@ pub(crate) async fn prepare(
     // An app's own data: only an app employee reaches its store.
     withheld.extend(tools::app_data::withheld(&h.store, &req.seat.agent_id));
     let withheld_tools = Arc::new(withheld);
+    let preloaded_tools: Arc<HashSet<String>> = Arc::new(
+        tools::app_dev::preloaded(&h.store, &req.seat.agent_id)
+            .into_iter()
+            .filter(|t| !withheld_tools.contains(t))
+            .collect(),
+    );
     let job_tools = match agent.as_ref() {
         Some(a) => {
             prompt::inputs::job_tools(
@@ -1013,6 +1022,7 @@ pub(crate) async fn prepare(
         after_turn,
         review_fork,
         withheld_tools,
+        preloaded_tools,
     };
     // Entering and leaving Plan mode are rows, told once each (the
     // plan_mode and plan_mode_exit attachments), so the prompt stays
@@ -1285,6 +1295,7 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
             workflow: cx.workflow(),
             mode: &cx.request.mode,
             withheld: &cx.withheld_tools,
+            preloaded: &cx.preloaded_tools,
             desktop: tools::desktop_available(),
         };
         let surface = tool_surface::surface(&h.tools, &conversation, &surface_seat).await;
@@ -4824,6 +4835,29 @@ mod tests {
         let listing = texts(&model.calls()[0]).into_iter().find(|t| t.contains("available through find_tools")).expect("the listing");
         assert!(listing.contains("\nremind: set a reminder for later"), "{listing}");
         assert!(listing.contains("\nweather\n") || listing.ends_with("\nweather"), "a tool with no hint is its name: {listing}");
+    }
+
+    /// An app employee under App Developer mode has the code tool declared
+    /// from its first step, not listed behind tool search; with the mode
+    /// off it stays deferred, as for everyone.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_app_employee_has_the_code_tool_up_front_only_under_app_developer_mode() {
+        for on in [true, false] {
+            let model = Scripted::new(vec![Step::Say("Noted.")]);
+            let code = Box::new(Echo { name: tools::app_dev::CODE_TOOL, deferred: true, read_only: true });
+            let h = harness_with(&model, vec![code]).await;
+            h.store.create_agent("ops", Some("agent"), "Flip-Flap", "", "", "{}", None, None).unwrap();
+            h.store.set_agent_app_fields("ops", true, Some("/tmp/flip/ui"), None, None).unwrap();
+            h.store.update_settings(None, None, None, None, None, None, None, None, None, Some(on)).unwrap();
+            let mut req = owner("Fix the tap.");
+            req.seat.agent_id = "ops".into();
+            run_turn(&h, req).await;
+            let first = &model.calls()[0];
+            let declared = first.tools.iter().any(|t| t.name == tools::app_dev::CODE_TOOL);
+            let listing = texts(first).into_iter().find(|t| t.contains("available through find_tools")).unwrap_or_default();
+            let listed = listing.lines().any(|l| l == "code" || l.starts_with("code:"));
+            assert_eq!((declared, listed), (on, !on), "mode on: {on}; listing: {listing}");
+        }
     }
 
     /// The tools array heads the cached prefix, so a load may only append

@@ -1276,10 +1276,33 @@ fn relativize_path(path: &str, base: &str) -> String {
         .unwrap_or_else(|_| path.to_string())
 }
 
-/// Extensions that count as user-facing "Work" products (reports, sheets, designs,
-/// images). Code/config/scratch files are deliberately excluded so the Work panel
-/// surfaces deliverables, not noise.
+/// Whether a file a write, an edit or a command produced is shown to the owner
+/// as a "Work" card on the reply: a user-facing product (report, sheet,
+/// design, image) by its extension, and never one of an employee's own
+/// working files. Code/config/scratch files are deliberately excluded so the
+/// Work panel surfaces deliverables, not noise. An explicit share (`share`)
+/// attaches any file; this is only the side effect of making one.
 pub(crate) fn is_work_document(path: &str) -> bool {
+    has_work_extension(path) && !in_employee_package(Path::new(path))
+}
+
+/// An employee's own package folder (`user/agents/<name>/`, or an installed
+/// one under `nebo/agents/`): its persona, its app's sources (`src/App.tsx`)
+/// and served page (`ui/`). An app employee edits these on every turn; they
+/// are its work in progress, never a deliverable, so no card is attached
+/// for them (live 2026-10-02: every reply from an app carried an
+/// "App.tsx — Code" card, even after the owner asked it to stop).
+fn in_employee_package(path: &Path) -> bool {
+    let roots = [config::user_dir().ok(), config::nebo_dir().ok()];
+    roots.into_iter().flatten().map(|d| d.join("agents")).any(|agents| {
+        path.starts_with(&agents)
+            || std::fs::canonicalize(&agents).is_ok_and(|real| {
+                std::fs::canonicalize(path.parent().unwrap_or(path)).is_ok_and(|p| p.starts_with(&real))
+            })
+    })
+}
+
+fn has_work_extension(path: &str) -> bool {
     const WORK_EXTS: &[&str] = &[
         "md", "pdf", "csv", "xlsx", "xls", "docx", "doc", "pptx", "ppt", "html", "png",
         "jpg", "jpeg", "gif", "svg", "webp", "mp4", "webm", "mov", "jsx", "tsx",

@@ -1,0 +1,9 @@
+id: sc81-an-apps-own-files-never-ride-its-replies-as-cards
+name: "SC81 — An app's own files never ride its replies as cards"
+description: |
+  An edit-and-rebuild turn in an app employee's chat attaches no card for the app's own sources
+  (src/App.tsx) or its served page (ui/), while a document it makes for the owner still comes as
+  a card.
+target_component: staffed-company
+proof: staffed_proof::conversation::an_apps_own_files_never_ride_its_replies_as_cards
+conversation: []

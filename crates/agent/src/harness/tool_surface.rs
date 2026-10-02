@@ -272,6 +272,10 @@ pub struct SurfaceInputs<'a> {
     /// tool scope leaves out ([`scope_withheld`]) and a sealed seat's company
     /// Memory (`seat::company_memory_tools`); never listed.
     pub withheld: &'a HashSet<String>,
+    /// Deferred tools this seat is declared from its first step, never
+    /// listed behind tool search (`tools::app_dev::preloaded`: `code` for an
+    /// app employee under App Developer mode).
+    pub preloaded: &'a HashSet<String>,
     /// Whether this computer has a desktop now (`tools::desktop_available`):
     /// the desktop tool is listed only then.
     pub desktop: bool,
@@ -330,7 +334,12 @@ pub async fn surface(
     conversation: &[ChatMessage],
     seat: &SurfaceInputs<'_>,
 ) -> Surface {
-    let deferred = tools.get_deferred_names().await;
+    let deferred: HashSet<String> = tools
+        .get_deferred_names()
+        .await
+        .into_iter()
+        .filter(|n| !seat.preloaded.contains(n))
+        .collect();
     let all = tools.list().await;
     let loaded = loaded(conversation);
     let declared = declared(&all, &deferred, &loaded);
@@ -338,7 +347,7 @@ pub async fn surface(
         .deferred_entries()
         .await
         .into_iter()
-        .filter(|e| seat.offers(&e.definition.name))
+        .filter(|e| deferred.contains(&e.definition.name) && seat.offers(&e.definition.name))
         .map(|e| (e.definition.name, e.search_hint.trim().to_string()))
         .collect();
     let announced = crate::harness::events::announced("tools_available", conversation);
@@ -425,6 +434,7 @@ mod tests {
             workflow: None,
             mode: &crate::harness::TurnMode::Chat,
             withheld: &none,
+            preloaded: &none,
             desktop,
         };
         assert!(seat(true).offers(tools::DESKTOP_TOOL));
