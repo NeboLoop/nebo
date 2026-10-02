@@ -41,6 +41,11 @@ async fn validate_app_token(
     if desktop_window_reaches(headers, agent_id, config::read_install_key().as_deref()) {
         return Ok(());
     }
+    // The app's page as Nebo's headless browser opened it for a screenshot:
+    // its console and its own calls are the app's.
+    if crate::middleware::app_view_admits(headers, agent_id) {
+        return Ok(());
+    }
 
     let token = headers
         .get(header::AUTHORIZATION)

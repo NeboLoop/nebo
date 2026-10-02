@@ -22,6 +22,11 @@ pub struct Manager {
     bridge: Arc<ExtensionBridge>,
     /// Tier-2 built-in Chrome (CDP), launched lazily on first fallback use.
     cdp: Option<Arc<CdpBridge>>,
+    /// The built-in browser that opens this computer's own pages and draws
+    /// them (an app as the bot serves it on 127.0.0.1, for its screenshots),
+    /// launched lazily on first use: always a stock Chromium. None when this
+    /// machine has none.
+    own_pages: Option<Arc<CdpBridge>>,
 }
 
 /// Status info for a browser profile.
@@ -39,7 +44,7 @@ impl Manager {
         // Obscura (stealth). Fallback: a stock Chromium/Chrome on PATH — the
         // cloud image ships one, so cloud bots get programmatic browsing too.
         // None only when neither exists (→ tier-3 direct fetch).
-        let cdp = find_obscura(&data_dir)
+        let found = find_obscura(&data_dir)
             .map(|binary| ObscuraConfig {
                 binary,
                 storage_dir: Some(PathBuf::from(&data_dir).join("obscura-profile")),
@@ -55,20 +60,42 @@ impl Manager {
                     log_path: Some(PathBuf::from(&data_dir).join("logs").join("chromium.log")),
                     chromium: true,
                 })
-            })
-            .map(|cfg| {
-                let bridge = Arc::new(CdpBridge::new(cfg));
-                // Idle teardown for the built-in browser: without it the
-                // chromium tree stays resident forever once launched
-                // (observed: 6.7 days on a cloud bot). NEBO_BROWSER_IDLE_SECS
-                // overrides the 10-minute default; 0 disables.
-                let idle = std::env::var("NEBO_BROWSER_IDLE_SECS")
-                    .ok()
-                    .and_then(|v| v.parse::<u64>().ok())
-                    .unwrap_or(600);
-                bridge.spawn_idle_reaper(std::time::Duration::from_secs(idle));
-                bridge
             });
+        // Idle teardown for the built-in browser: without it the chromium
+        // tree stays resident forever once launched (observed: 6.7 days on a
+        // cloud bot). NEBO_BROWSER_IDLE_SECS overrides the 10-minute
+        // default; 0 disables.
+        let idle = std::time::Duration::from_secs(
+            std::env::var("NEBO_BROWSER_IDLE_SECS")
+                .ok()
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(600),
+        );
+        let launch = |cfg: ObscuraConfig| {
+            let bridge = Arc::new(CdpBridge::new(cfg));
+            bridge.spawn_idle_reaper(idle);
+            bridge
+        };
+        let chromium = found.as_ref().is_some_and(|cfg| cfg.chromium);
+        let cdp = found.map(&launch);
+        // Obscura draws nothing (no layout or paint engine: a screenshot is
+        // refused) and refuses this computer's own addresses, so Nebo's own
+        // pages open in a stock Chromium: the browsing one when that is what
+        // this machine has, else one of its own, with its own profile, never
+        // the owner's.
+        let own_pages = if chromium {
+            cdp.clone()
+        } else {
+            crate::chrome::find_chrome().map(|binary| {
+                launch(ObscuraConfig {
+                    binary,
+                    storage_dir: Some(PathBuf::from(&data_dir).join("chromium-own-pages")),
+                    stealth: false,
+                    log_path: Some(PathBuf::from(&data_dir).join("logs").join("chromium-own-pages.log")),
+                    chromium: true,
+                })
+            })
+        };
         Self {
             config,
             data_dir,
@@ -76,6 +103,7 @@ impl Manager {
             sessions: RwLock::new(HashMap::new()),
             bridge: Arc::new(ExtensionBridge::new()),
             cdp,
+            own_pages,
         }
     }
 
@@ -92,7 +120,7 @@ impl Manager {
     /// never disagree. Do not re-expose those checks on `Manager` — a second facade over
     /// the same `bridge`/`cdp` state is what lets the two drift and hide bugs.
     pub fn executor(&self) -> Option<ActionExecutor> {
-        Some(ActionExecutor::new(self.bridge.clone(), self.cdp.clone()))
+        Some(ActionExecutor::new(self.bridge.clone(), self.cdp.clone(), self.own_pages.clone()))
     }
 
     /// Launch a managed Chrome instance for a profile.
