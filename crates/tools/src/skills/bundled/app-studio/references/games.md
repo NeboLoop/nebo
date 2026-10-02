@@ -221,6 +221,36 @@ document.addEventListener('visibilitychange', () => { if (document.hidden) save(
 - The play area: `touch-action: none` and `user-select: none`; pull to
   refresh is already off for fullscreen apps.
 
+## 7a. 3D scenes (three.js)
+
+Each rule here is a real bug that left a game black or broken on the phone.
+
+- **Size follows the container.** The app view can start at 0×0 and a
+  fullscreen game rotates after load. Watch the container with a
+  `ResizeObserver` and call `renderer.setSize(w, h, false)` plus
+  `camera.aspect = w / h; camera.updateProjectionMatrix()` on every change.
+  `false` keeps the canvas's CSS size; never let `setSize` write pixel sizes.
+- **Never style every canvas.** A global `canvas { width: 100%; height: 100% }`
+  also stretches a minimap or HUD canvas over the whole game. Size the 3D
+  canvas by its own selector, and give every other canvas an explicit CSS
+  `width` and `height`.
+- **Light for the three.js version you use.** r155+ uses physical units:
+  intensities around 1 to 3, `renderer.toneMapping = ACESFilmicToneMapping`.
+  A night scene still needs a sky fill (hemisphere), a key (moon), and a
+  light that travels with the player. `MeshBasicMaterial` ignores light: use
+  it only for things that glow.
+- **Start in open space.** The player's spawn must be outside every wall and
+  building. Check it against the level data, not by eye.
+- **One engine.** Create the renderer once per mount and dispose it fully on
+  unmount (stop the loop, `renderer.dispose()`, remove its canvas, disconnect
+  observers and listeners); React's development mode mounts twice.
+- **Ship production code.** The build sets `process.env.NODE_ENV` to
+  `"production"` (Vite does; any other bundler must `define` it), clears the
+  previous build's files, and rewrites `ui/index.html` to the new bundle.
+- **Prove it in play.** The game reads `?play=1` and skips its start screen,
+  so `app_screenshot` of `index.html?play=1` shows the scene, not the menu.
+  A dark or flat screenshot is the bug; no debug cubes left behind.
+
 ## 8. Multiplayer
 
 The page opens a WebSocket straight to the game server; nothing goes
