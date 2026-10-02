@@ -403,6 +403,7 @@ async fn handle_app_ws_message(state: &AppState, agent_id: &str, text: &str) {
                     cwd: None,
                     model_override: None,
                     client_id: None,
+                    message_id: None,
                 };
 
                 run_chat(&state_clone, config).await;
@@ -590,6 +591,21 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState, ua: String) {
                                         apply_cancel(&state.store, &parsed["data"], &state.helpers, &state.run_registry).await;
                                     state.hub.broadcast("chat_cancelled", serde_json::json!({
                                         "session_id": session_id,
+                                    }));
+                                }
+                                "chat_withdraw" => {
+                                    // The owner takes back a message queued behind running
+                                    // work before a step took it in. Every client hears
+                                    // whether it was: one a step already took in stays.
+                                    let session_id = parsed["data"]["session_id"].as_str().unwrap_or("");
+                                    let message_id = parsed["data"]["message_id"].as_str().unwrap_or("");
+                                    let withdrawn = !session_id.is_empty()
+                                        && !message_id.is_empty()
+                                        && state.harness.withdraw_queued(session_id, message_id);
+                                    state.hub.broadcast("chat_withdrawn", serde_json::json!({
+                                        "session_id": session_id,
+                                        "message_id": message_id,
+                                        "withdrawn": withdrawn,
                                     }));
                                 }
                                 "cancel_all" => {
@@ -959,6 +975,7 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState, ua: String) {
                                             cwd: None,
                                             model_override: None,
                                             client_id: None,
+                                            message_id: None,
                                         };
 
                                         run_chat(&state_clone, config).await;
@@ -1913,6 +1930,7 @@ async fn dispatch_payload(state: &AppState, payload: ChatPayload, hidden: bool) 
             cwd: (!cwd.is_empty()).then(|| std::path::PathBuf::from(cwd)),
             model_override: (!model_override.is_empty()).then_some(model_override),
             client_id: client_id.clone(),
+            message_id: message_id.clone(),
         };
         run_chat(state, config).await;
     } else {
@@ -2013,6 +2031,7 @@ async fn fork_mention_chat(
         cwd: None,
         model_override: None,
         client_id,
+        message_id: None,
     };
 
     run_chat(state, chat_config).await;

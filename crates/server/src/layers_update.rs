@@ -157,6 +157,7 @@ async fn run_for_seat(state: &AppState, seat: &db::models::Agent, change: &Layer
         cwd: None,
         model_override: None,
         client_id: None,
+        message_id: None,
     };
     run_chat(state, config).await;
 

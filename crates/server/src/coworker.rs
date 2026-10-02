@@ -577,6 +577,7 @@ pub(crate) async fn run_in_thread(
         cwd: None,
         model_override: None,
         client_id: None,
+        message_id: None,
     };
 
     let rx = run_chat_events(state, config)

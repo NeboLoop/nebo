@@ -83,6 +83,11 @@ pub enum StreamEventType {
     /// `{"segment": n}`, the segment's index in the turn). Sent by the
     /// harness, never by a provider ([`StreamEvent::text_verdict`]).
     TextVerdict,
+    /// The owner's messages queued behind running work that a step took in,
+    /// by the ids their clients sent them under (`payload`:
+    /// `{"message_ids": [...]}`). Sent by the harness, never by a provider
+    /// ([`StreamEvent::taken_in`]).
+    TakenIn,
 }
 
 /// Token usage statistics from a streaming response.
@@ -205,6 +210,14 @@ impl StreamEvent {
         let mut event = Self::text(fold);
         event.event_type = StreamEventType::TextVerdict;
         event.payload = Some(serde_json::json!({ "segment": segment }));
+        event
+    }
+
+    /// The owner's queued messages a step took in, by their client ids.
+    pub fn taken_in(message_ids: Vec<String>) -> Self {
+        let mut event = Self::text("");
+        event.event_type = StreamEventType::TakenIn;
+        event.payload = Some(serde_json::json!({ "message_ids": message_ids }));
         event
     }
 

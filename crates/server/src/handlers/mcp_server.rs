@@ -295,7 +295,7 @@ async fn handle_chat_send(state: &AppState, input: &serde_json::Value) -> (Strin
 
     let req = agent::TurnRequest {
         session_key,
-        input: agent::harness::TurnInput::Owner { text: message, images: Vec::new(), attachments: Vec::new() },
+        input: agent::harness::TurnInput::Owner { text: message, images: Vec::new(), attachments: Vec::new(), message_id: None },
         seat: agent::harness::SeatRequest {
             agent_id: String::new(),
             user_id: String::new(),

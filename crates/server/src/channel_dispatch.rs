@@ -131,6 +131,7 @@ impl agent::ChannelDispatcher for ChannelDispatchImpl {
                 cwd: None,
                 model_override: None,
                 client_id: None,
+                message_id: None,
             };
             let channel = channel_kind.as_str();
 

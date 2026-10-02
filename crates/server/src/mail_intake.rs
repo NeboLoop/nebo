@@ -639,6 +639,7 @@ pub(crate) async fn intake(state: &AppState, mail: InboundMail) {
         cwd: None,
         model_override: None,
         client_id: None,
+        message_id: None,
     };
     chat_dispatch::run_chat(state, config).await;
 }

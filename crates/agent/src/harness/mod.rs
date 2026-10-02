@@ -312,6 +312,15 @@ impl Harness {
         turn::start(self.clone(), req).await
     }
 
+    /// The owner takes back a message he queued behind running work on
+    /// `key`, by the id his client sent it under, before a step took it in:
+    /// nothing reads it. False when a step already took it in.
+    pub fn withdraw_queued(&self, key: &str, message_id: &str) -> bool {
+        self.sessions
+            .resolve_session_id_by_key(key)
+            .is_ok_and(|session_id| conversation::withdraw(&self.sessions, &self.store, &session_id, message_id))
+    }
+
     /// Whether a turn is running on `key`.
     pub fn is_session_busy(&self, key: &str) -> bool {
         session_gate::session_is_busy(&self.active_turns, key)
@@ -379,6 +388,10 @@ pub enum TurnInput {
         text: String,
         images: Vec<ai::ImageContent>,
         attachments: Vec<comm::wire::Attachment>,
+        /// The id the client sent it under (the chat frame's `message_id`),
+        /// when a client sent it. Queued into running work, the row keeps it
+        /// (`conversation::MESSAGE_ID`) and the step that hears it names it.
+        message_id: Option<String>,
     },
     /// A prompt the platform writes and the owner never sees (christening,
     /// a phone caller's task).

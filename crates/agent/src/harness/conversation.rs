@@ -155,6 +155,8 @@ pub(crate) fn carry_past_stop(sessions: &SessionManager, store: &db::Store, sess
     let Some(last_seen) = seen.last().map(|m| m.id.as_str()) else {
         return 0;
     };
+    // A withdrawal never races the carry: a message is carried or taken back.
+    let _queued = QUEUED.lock().unwrap_or_else(|p| p.into_inner());
     let Ok(fresh) = sessions.get_messages_since_checkpoint(session_id) else {
         return 0;
     };
@@ -188,6 +190,88 @@ pub(crate) fn carry_past_stop(sessions: &SessionManager, store: &db::Store, sess
         info!(session_id, carried, "the owner's messages no step heard are carried past the stop");
     }
     carried
+}
+
+/// The metadata key on an owner's message queued into running work: the id
+/// the client sent it under (the chat frame's `message_id`). The step that
+/// hears it names it (`take_in`), and the owner takes it back by it
+/// (`withdraw`). A message carried past a stop keeps it.
+pub(crate) const MESSAGE_ID: &str = "messageId";
+
+/// The metadata key set on a queued owner message once a step took it in.
+pub(crate) const TAKEN_IN: &str = "takenIn";
+
+/// Taking a queued message in, taking it back, and carrying it past a stop
+/// are one at a time: a message is heard or withdrawn, never both.
+static QUEUED: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// The owner's queued message on a row, still waiting for a step: its
+/// client id, when it has one and no step took it in yet.
+fn waiting_id(m: &ChatMessage) -> Option<String> {
+    if m.role != "user" {
+        return None;
+    }
+    let meta: serde_json::Value = serde_json::from_str(m.metadata.as_deref()?).ok()?;
+    if meta.get(TAKEN_IN).and_then(|v| v.as_bool()) == Some(true) {
+        return None;
+    }
+    meta.get(MESSAGE_ID).and_then(|v| v.as_str()).filter(|id| !id.is_empty()).map(str::to_string)
+}
+
+/// The owner's queued messages this step takes in, by the ids the client
+/// sent them under: each is marked taken in, so it is named once. One the
+/// owner withdrew since `conversation` was read is gone from it, and the
+/// step never hears it.
+pub(crate) fn take_in(store: &db::Store, conversation: &mut Vec<ChatMessage>) -> Vec<String> {
+    if !conversation.iter().any(|m| waiting_id(m).is_some()) {
+        return Vec::new();
+    }
+    let _queued = QUEUED.lock().unwrap_or_else(|p| p.into_inner());
+    let mut taken = Vec::new();
+    let mut withdrawn = HashSet::new();
+    for m in conversation.iter() {
+        let Some(id) = waiting_id(m) else {
+            continue;
+        };
+        match store.get_chat_message(&m.id) {
+            Ok(Some(_)) => {
+                if let Err(e) = store.set_chat_message_metadata(&m.id, &format!("$.{TAKEN_IN}"), &serde_json::json!(true)) {
+                    warn!(row_id = %m.id, error = %e, "could not mark the owner's queued message taken in");
+                }
+                taken.push(id);
+            }
+            Ok(None) => {
+                withdrawn.insert(m.id.clone());
+            }
+            Err(e) => warn!(row_id = %m.id, error = %e, "could not read the owner's queued message"),
+        }
+    }
+    conversation.retain(|m| !withdrawn.contains(&m.id));
+    taken
+}
+
+/// The owner takes back a message he queued behind running work, by the id
+/// his client sent it under, before any step heard it: its row goes, and
+/// nothing reads it. False when a step already took it in, or no such
+/// message waits in the conversation.
+pub(crate) fn withdraw(sessions: &SessionManager, store: &db::Store, session_id: &str, message_id: &str) -> bool {
+    let _queued = QUEUED.lock().unwrap_or_else(|p| p.into_inner());
+    let Ok(rows) = sessions.get_messages_since_checkpoint(session_id) else {
+        return false;
+    };
+    let Some(row) = rows.iter().rev().find(|m| waiting_id(m).as_deref() == Some(message_id)) else {
+        return false;
+    };
+    match store.delete_chat_message(&row.id) {
+        Ok(()) => {
+            info!(session_id, "the owner withdrew a message queued behind running work");
+            true
+        }
+        Err(e) => {
+            warn!(session_id, error = %e, "could not withdraw the owner's queued message");
+            false
+        }
+    }
 }
 
 /// The line the thread carries after a turn was cut short.
