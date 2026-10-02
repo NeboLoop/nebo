@@ -27,6 +27,7 @@
   import { menuAnchor, deleteChatRow } from '$lib/chat/chatMenu';
   import { conversationLists, teammateLabel, teammateName } from '$lib/chat/teammates';
   import { conversationTitle } from '$lib/chat/sessionKey';
+  import { endsRun } from '$lib/chat/runEnd';
   import NewEmployeeModal from '$lib/components/NewEmployeeModal.svelte';
   import { unreadCount } from '$lib/stores/notifications';
   import { slide } from 'svelte/transition';
@@ -601,7 +602,8 @@
     onWsEvent('nebo:chat_created', (data) => markWorking(data?.agentId, data?.session_id));
     onWsEvent('nebo:thinking', (data) => markWorking(data?.agentId, data?.session_id));
     onWsEvent('nebo:tool_start', (data) => markWorking(data?.agentId, data?.session_id, data?.label ?? ''));
-    onWsEvent('nebo:chat_complete', (data) => clearWorking(data?.agentId, data?.session_id));
+    // A queued message's own chat_complete: the run it joined is still going.
+    onWsEvent('nebo:chat_complete', (data) => { if (endsRun(data)) clearWorking(data?.agentId, data?.session_id); });
     onWsEvent('nebo:chat_error', (data) => clearWorking(data?.agentId, data?.session_id));
     onWsEvent('nebo:chat_cancelled', (data) => clearWorking(data?.agentId, data?.session_id));
     onWsEvent('nebo:agent_progress', (data) => {

@@ -12,6 +12,7 @@
   import type { ChatMessage } from '$lib/chat/controller.svelte';
   import { toMentionAgent } from '$lib/chat/roster';
   import { conversationTitle, threadKey } from '$lib/chat/sessionKey';
+  import { endsRun } from '$lib/chat/runEnd';
   import { formatTime } from '$lib/time';
   import { getWebSocketClient } from '$lib/websocket/client';
   import type { Agent, ChatMessage as ApiChatMessage } from '$lib/api/neboComponents';
@@ -119,7 +120,7 @@
       if (!isFirstRunEvent(data)) return;
       // A message sent meanwhile was taken into the first run, which is still
       // going: the controller marks it pending.
-      if (data.stop_reason === 'queued_into_running_turn') return;
+      if (!endsRun(data)) return;
       chat.isLoading = false;
       // Successful runs persist messages — reload so IDs match the DB.
       // Provider errors reject before persistence; skip reload so we keep the
