@@ -1,6 +1,6 @@
 //! NeboAI WebSocket plugin — implements `CommPlugin` for the NeboAI comms
 //! gateway. Connects via tokio-tungstenite, authenticates with binary framing,
-//! and dispatches typed messages (installs, chat, DMs, loop channels, voice).
+//! and dispatches typed messages (installs, chat, loop channels, agent spaces, voice).
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -45,14 +45,6 @@ const BOT_STREAMS: &[&str] = &[
 pub struct ChannelMeta {
     pub channel_id: String,
     pub channel_name: String,
-    pub loop_id: String,
-}
-
-/// DM peer tracked after JOIN responses.
-#[derive(Debug, Clone)]
-pub struct DmPeer {
-    pub peer_id: String,
-    pub peer_type: String, // "bot" or "person"
     pub loop_id: String,
 }
 
@@ -288,18 +280,14 @@ impl NeboAIPlugin {
         } else if !msg.conversation_id.is_empty() {
             msg.conversation_id.clone()
         } else if !msg.to.is_empty() {
-            // Try agent space first, then DM peer lookup. Right after a
-            // connect the maps are still filling from JOIN results (a queued
-            // message goes out then), so a miss waits briefly, as a channel's
-            // does in `resolve_channel_conv`.
+            // An employee's agent space, by slug. Right after a connect the
+            // maps are still filling from JOIN results (a queued message goes
+            // out then), so a miss waits briefly, as a channel's does in
+            // `resolve_channel_conv`.
             let mut found = None;
             for _ in 0..30 {
                 let maps = self.conv_maps.read().await;
-                found = maps
-                    .agent_space_by_slug
-                    .get(&msg.to)
-                    .or_else(|| maps.dm_by_peer.get(&msg.to))
-                    .cloned();
+                found = maps.agent_space_by_slug.get(&msg.to).cloned();
                 drop(maps);
                 if found.is_some() {
                     break;
@@ -491,16 +479,6 @@ impl NeboAIPlugin {
         self.conv_maps.read().await.channel_meta.clone()
     }
 
-    /// Snapshot of DM conversations.
-    pub async fn dm_conversations(&self) -> HashMap<String, DmPeer> {
-        self.conv_maps.read().await.dm_convs.clone()
-    }
-
-    /// Get the DM conversation ID for a peer.
-    pub async fn dm_conversation_for_peer(&self, peer_id: &str) -> Option<String> {
-        self.conv_maps.read().await.dm_by_peer.get(peer_id).cloned()
-    }
-
     /// Get the agent space conversation ID for an agent slug.
     pub async fn agent_space_for_slug(&self, slug: &str) -> Option<String> {
         self.conv_maps
@@ -606,13 +584,6 @@ impl NeboAIPlugin {
     /// Acknowledge messages up to seq in a conversation.
     pub async fn ack(&self, conversation_id: &str, acked_seq: u64) -> Result<(), CommError> {
         self.queue_send(encode_ack(conversation_id, acked_seq)?).await
-    }
-
-    /// Send a DM on a conversation.
-    pub async fn send_dm(&self, conversation_id: &str, text: &str) -> Result<(), CommError> {
-        let content = serde_json::json!({ "text": text });
-        self.send_on_conversation(conversation_id, "dm", content, false)
-            .await
     }
 
     /// Send a chat message.
@@ -1346,7 +1317,6 @@ enum JoinUpdate {
         conversation_id: String,
     },
     Channel(ChannelMeta, String),       // meta, conversation_id
-    Dm(DmPeer, String),                 // peer, conversation_id
     AgentSpace(AgentSpaceMeta, String), // meta, conversation_id
     Embed {
         stream: String, // "embed:{oauthClientId}"
@@ -1361,8 +1331,6 @@ struct ConvMaps {
     channel_convs: HashMap<String, String>,
     channel_by_conv: HashMap<String, String>,
     channel_meta: HashMap<String, ChannelMeta>,
-    dm_convs: HashMap<String, DmPeer>,
-    dm_by_peer: HashMap<String, String>,
     agent_space_convs: HashMap<String, AgentSpaceMeta>, // conv_id → meta
     agent_space_by_slug: HashMap<String, String>,       // slug → conv_id
     agent_space_by_id: HashMap<String, String>,         // agent_id → conv_id
@@ -1391,11 +1359,6 @@ impl ConvMaps {
                     .insert(conv_id.clone(), meta.channel_id.clone());
                 self.channel_convs.insert(meta.channel_id.clone(), conv_id);
                 self.channel_meta.insert(meta.channel_id.clone(), meta);
-            }
-            JoinUpdate::Dm(peer, conv_id) => {
-                self.dm_by_peer
-                    .insert(peer.peer_id.clone(), conv_id.clone());
-                self.dm_convs.insert(conv_id, peer);
             }
             JoinUpdate::AgentSpace(meta, conv_id) => {
                 // The 'general' chat (or a pre-chats server sending no chat
@@ -1860,12 +1823,6 @@ async fn read_loop(
                                     &result.conversation_id.get(..8).unwrap_or(&result.conversation_id),
                                     &result.loop_id.get(..8).unwrap_or(&result.loop_id),
                                 )
-                            } else if !result.peer_id.is_empty() {
-                                format!(
-                                    "dm peer={} conv={}",
-                                    result.peer_id,
-                                    &result.conversation_id.get(..8).unwrap_or(&result.conversation_id),
-                                )
                             } else {
                                 format!(
                                     "stream conv={}",
@@ -1895,18 +1852,6 @@ async fn read_loop(
                                         loop_id: result.loop_id.clone(),
                                         chat_id: result.chat_id.clone(),
                                         chat_title: result.chat_title.clone(),
-                                    },
-                                    result.conversation_id,
-                                ))
-                                .await;
-                        } else if !result.peer_id.is_empty() {
-                            // DM join (still active for gateways that haven't migrated)
-                            let _ = join_tx
-                                .send(JoinUpdate::Dm(
-                                    DmPeer {
-                                        peer_id: result.peer_id,
-                                        peer_type: result.peer_type,
-                                        loop_id: result.loop_id,
                                     },
                                     result.conversation_id,
                                 ))
