@@ -433,7 +433,8 @@ fn is_entry_html(target: &StdPath) -> bool {
 ///    names the newest hashed files.
 /// 3. With App Developer mode on (`devtools` with its console), every file
 ///    is `no-store`: the guaranteed way past any cache while an employee is
-///    building.
+///    building. The owner's own app (`devtools`, mode on or off) has its
+///    entry page `no-store` always: a rebuild shows on the next load.
 ///
 /// `motion`: the manifest declares `device:motion`, so the page's
 /// Permissions-Policy lets it read the gyroscope and accelerometer.
@@ -451,7 +452,9 @@ async fn serve_ui_file(
 ) -> Response {
     let is_entry = is_entry_html(target);
     let is_css = mime_from_path(target).starts_with("text/css");
-    let no_store = Devtools::no_store(devtools);
+    // The owner's own app (`devtools`) is being built: its entry page is
+    // never kept, so the next open or reload always names the newest build.
+    let no_store = Devtools::no_store(devtools) || (is_entry && devtools.is_some());
     let meta = match fs::metadata(target).await {
         Ok(m) => m,
         Err(e) => {
@@ -995,7 +998,8 @@ fn devlog_send_prompt(app_name: &str, entries: &[tools::app_console::Entry]) -> 
 
 /// POST /apps/{agent_id}/devlog/send — "Send to <employee>": the app's last
 /// errors go into the conversation the owner has open with the app's
-/// employee ([`owner_thread`], a new one when there is none), through the
+/// employee (the one with the latest activity; a new thread when there is
+/// none), through the
 /// same door as the owner's own message to that employee
 /// (`chat_with_agent`), and the employee works on them there. It answers
 /// `{"status": "dispatched", ...}` only once the message is on its way;
@@ -1019,9 +1023,14 @@ pub async fn send_devlog(
     if !state.agent_registry.read().await.contains_key(&agent_id) {
         return refuse(StatusCode::CONFLICT, format!("{name} is turned off. Turn it on, then send again."));
     }
-    let session_key = match owner_thread(&state.store, &agent_id) {
-        Some(key) => key,
-        None => match crate::handlers::agents::create_agent_thread(&state, &agent_id) {
+    // The conversation the owner is in with the employee: the one with the
+    // latest activity (the rule a phone or loop message to the employee
+    // follows, `resolve_agent_session_key`), so the errors and the work on
+    // them land where he reads; a new thread when there is none. A phone
+    // conversation gets the reply on the phone (`chat_with_agent`).
+    let session_key = match state.store.get_latest_agent_chat(&agent_id) {
+        Ok(Some(_)) => crate::resolve_agent_session_key(&state, &agent_id),
+        _ => match crate::handlers::agents::create_agent_thread(&state, &agent_id) {
             Ok((_, key)) => key,
             Err(e) => {
                 warn!(error = %e, agent_id = %agent_id, "could not open a conversation for the app's errors");
@@ -1056,20 +1065,6 @@ fn keep_page_errors(agent_id: &str, body: &[u8]) {
             .filter(|e| !held.iter().any(|h| h.time_ms == e.time && h.message == e.message))
             .map(|e| (e.level.as_str(), e.message.as_str(), e.source.as_str(), e.time)),
     );
-}
-
-/// The owner's conversation with employee `agent_id` that is open now: the
-/// thread (`agent:<id>:thread:<chat>`) with the latest activity. The app's
-/// legacy `agent:<id>:web` conversation is never it: no client opens that
-/// one, so what lands there is never seen.
-fn owner_thread(store: &db::Store, agent_id: &str) -> Option<String> {
-    let thread = format!("{}thread:", types::keyparser::agent_session_prefix(agent_id));
-    store
-        .list_recent_agent_chats(agent_id, 50)
-        .ok()?
-        .into_iter()
-        .filter_map(|(chat, _)| chat.session_name)
-        .find(|key| key.starts_with(&thread))
 }
 
 /// POST /apps/{agent_id}/agents/invoke — run the app's agent and collect text.
@@ -2212,25 +2207,6 @@ mod developer_mode_tests {
         assert_eq!(devlog_target(&store, "nope", &from_page("nope")), Err(StatusCode::NOT_FOUND));
     }
 
-    // "Send to <employee>" goes to the conversation the owner has open: the
-    // latest thread, even when the legacy web conversation (which no client
-    // opens) has newer rows; with no thread there is none to pick.
-    #[test]
-    fn errors_go_to_the_owners_open_thread_never_the_hidden_web_chat() {
-        let (_d, store) = store();
-        app(&store, "app-f", "Flip-Flap");
-        assert_eq!(owner_thread(&store, "app-f"), None);
-        let thread = "agent:app-f:thread:c-1";
-        store.create_chat_for_session("c-1", thread, "New Chat", None).unwrap();
-        store.create_chat_message("m-1", "c-1", "user", "make it flap", None).unwrap();
-        std::thread::sleep(std::time::Duration::from_millis(1100));
-        let web = "agent:app-f:web";
-        store.create_chat_for_session(web, web, web, None).unwrap();
-        store.create_chat_message("m-2", web, "user", "These errors came up in Flip-Flap", None).unwrap();
-        assert_eq!(owner_thread(&store, "app-f").as_deref(), Some(thread));
-        assert_eq!(owner_thread(&store, "app-other"), None);
-    }
-
     #[tokio::test]
     async fn devlog_entries_reach_app_console() {
         let (_d, store) = store();
@@ -2456,6 +2432,21 @@ mod app_file_caching_tests {
         }
         let page = serve_ui_file(&ui.join("index.html"), &HeaderMap::new(), Some(Devtools { employee: "Kart", console: true, desktop: None }), false, None).await;
         assert!(String::from_utf8(body(page).await).unwrap().contains("data-nebo-devtools"));
+    }
+
+    // The owner's own app, App Developer mode off: its entry page is never
+    // kept (a rebuild shows on the next load); its files keep the one rule.
+    #[tokio::test]
+    async fn an_own_apps_entry_page_is_never_kept() {
+        let (_d, ui) = ui();
+        let own = Some(Devtools { employee: "Kart", console: false, desktop: None });
+        let page = serve_ui_file(&ui.join("index.html"), &HeaderMap::new(), own, false, None).await;
+        assert_eq!(get(&page, header::CACHE_CONTROL), Some("no-store"));
+        assert!(get(&page, header::ETAG).is_none());
+        let hashed = serve_ui_file(&ui.join("main-0a8ksftt.js"), &HeaderMap::new(), own, false, None).await;
+        assert_eq!(get(&hashed, header::CACHE_CONTROL), Some("public, max-age=31536000, immutable"));
+        let film = serve_ui_file(&ui.join("assets/hero.mp4"), &HeaderMap::new(), own, false, None).await;
+        assert_eq!(get(&film, header::CACHE_CONTROL), Some("no-cache"));
     }
 
     // Ranges carry the tag and the rule; an If-Range naming an older file gets the whole new one.

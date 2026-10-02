@@ -341,18 +341,26 @@ built tags are correct; leave them.
 
 ## Step 4: Verify (after every change)
 
-1. `app_status`: nothing is MISSING, and the only lines marked
-   "(outside the app)" are the SDK tag and `https://` libraries. A local file
-   marked "(outside the app)" starts with `/`: fix the path or the `base`.
-2. `app_reload`.
-3. `app_screenshot(width: 390, height: 844)` (a phone; add 1280x800 for a
-   desktop app). It loads the page in Nebo's own browser, the way the phone
-   does, tells you what it shows, and ends with that load's console: every
-   error and failed file, word for word.
-4. The screenshot's console line says "no errors" and the screen shows the
-   app. Errors: fix them (the table below), then Verify again. Never say
-   done while it lists one. `app_console` reads more (the owner's open
-   views, everything newer than `since`).
+The fix loop, in this order, every time:
+
+1. Find the code with `code`, not by reading whole files:
+   `code(action: "outline", path)`, then `definition` / `references` at a
+   line and column to reach what to change.
+2. After each edit: `code(action: "parse_check", path)`, then
+   `code(action: "diagnostics", path)` on every file you touched. Fix
+   what they list before building. (A `.ts`/`.tsx` file with no language
+   server is checked by the project's own `tsc`.)
+3. Build (Lane A: `update_employee` compiles; Lane B: the build command).
+   A build error is the result: read it, fix it, build again. Never go on
+   past a failed build.
+4. `app_reload`. It says whether a view was open to reload.
+5. `app_console`, and `app_screenshot(width: 390, height: 844)` (add
+   1280x800 for a desktop app). The screenshot loads the page the way the
+   phone does, says what it shows, and ends with that load's console, word
+   for word. `app_status` when a file is MISSING or "(outside the app)".
+6. Report to the owner only when the console has no errors AND the
+   screenshot shows the change. Otherwise fix (the table below) and loop.
+   Never say it changed because the build ran.
 
 Only then tell the owner it is ready, in product words: "Your Orbit app is
 ready. Open it from your workforce."

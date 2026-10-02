@@ -3861,14 +3861,21 @@ pub async fn chat_with_agent(
         }
     }
 
-    // A caller may name one of this employee's own threads (`sessionKey`);
-    // otherwise the message goes to its web session, as before.
-    let thread_prefix = format!("agent:{}:thread:", id);
-    let session_key = body["sessionKey"]
+    // A caller may name one of this employee's own conversations
+    // (`sessionKey`: a thread, or the one the owner's phone writes in);
+    // otherwise the message goes to its web session, as before. A named
+    // conversation answers where its owner last wrote: the reply goes back
+    // to the phone or loop conversation it came from (`reply_route`), like a
+    // woken turn's, or the owner reading it there never sees it.
+    let named = body["sessionKey"]
         .as_str()
-        .filter(|k| k.starts_with(&thread_prefix))
-        .map(str::to_string)
-        .unwrap_or_else(|| types::keyparser::build_agent_session_key(&id, "web"));
+        .filter(|k| k.starts_with(&types::keyparser::agent_session_prefix(&id)))
+        .map(str::to_string);
+    let comm_reply = named
+        .as_deref()
+        .and_then(|k| crate::reply_route::of(&state, k))
+        .and_then(|r| r.comm_reply());
+    let session_key = named.unwrap_or_else(|| types::keyparser::build_agent_session_key(&id, "web"));
 
     let entity_config = crate::entity_config::resolve_for_chat(&state.store, "agent", &id);
 
@@ -3882,7 +3889,7 @@ pub async fn chat_with_agent(
         agent_id: id.clone(),
         cancel_token: tokio_util::sync::CancellationToken::new(),
         lane: types::constants::lanes::MAIN.to_string(),
-        comm_reply: None,
+        comm_reply,
         entity_config,
         images: vec![],
         attachments: vec![],

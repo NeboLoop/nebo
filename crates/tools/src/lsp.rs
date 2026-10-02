@@ -342,7 +342,7 @@ fn lang_for_path(table: &[ServerSpec], path: &Path) -> Option<(usize, String, St
 /// PATH-only lookup (`which`-style). `paths` overrides the PATH variable for
 /// tests; production passes None (the process environment). Detection NEVER
 /// installs or downloads anything.
-fn find_server(bin: &str, paths: Option<&std::ffi::OsStr>) -> Option<PathBuf> {
+pub(crate) fn find_server(bin: &str, paths: Option<&std::ffi::OsStr>) -> Option<PathBuf> {
     let env_path = std::env::var_os("PATH");
     let search = paths.map(|p| p.to_os_string()).or(env_path)?;
     which::which_in(bin, Some(search), "/").ok()

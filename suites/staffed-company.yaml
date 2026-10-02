@@ -83,3 +83,4 @@ fixtures:
   - ../fixtures/staffed-company/conversation/sc76-a-question-is-put-to-the-owners-call-and-his-spoken-yes-answers-it-in-any-language.yaml
   - ../fixtures/staffed-company/conversation/sc79-the-owners-stop-reaches-the-coworkers-his-conversation-asked.yaml
   - ../fixtures/staffed-company/conversation/sc80-an-apps-console-errors-land-in-the-owners-open-chat.yaml
+  - ../fixtures/staffed-company/conversation/sc81-an-apps-own-files-never-ride-its-replies-as-cards.yaml

@@ -212,6 +212,9 @@ pub(crate) fn reaches_app(agent_id: &str, event: &HubEvent) -> bool {
 
 async fn handle_app_ws(socket: WebSocket, agent_id: String, state: AppState) {
     info!(agent = %agent_id, "app ws client connected");
+    // Open while this page is: `app_reload` tells its employee whether a
+    // view is there to reload.
+    let _view = tools::app_dev::view_opened(&agent_id);
     let mut hub_rx = state.hub.subscribe();
     let (mut sender, mut receiver) = socket.split();
 

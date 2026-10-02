@@ -507,6 +507,106 @@ fn handle_diagnostics(input: &Value, lsp: &dyn crate::lsp::LspProvider) -> ToolR
     }
 }
 
+/// `diagnostics` for a TypeScript file on a machine with no TypeScript
+/// language server (the usual case: `typescript-language-server` is seldom
+/// installed): the project's own compiler, `tsc --noEmit`, from the
+/// nearest `node_modules/typescript` (what a Vite or App Studio build
+/// installed), run by node, else bun (on PATH or Nebo's bundled one). `None`
+/// when the file is not TypeScript; a language server's answer when one is
+/// there.
+async fn tsc_diagnostics(input: &Value, lsp: &dyn crate::lsp::LspProvider) -> Option<ToolResult> {
+    let raw = input.get("path").and_then(|v| v.as_str()).unwrap_or("");
+    let (path, source) = resolve_lsp_file(raw, "diagnostics").ok()?;
+    let file = Path::new(&path);
+    let ext = file.extension()?.to_string_lossy().to_ascii_lowercase();
+    if !matches!(ext.as_str(), "ts" | "tsx" | "mts" | "cts") {
+        return None;
+    }
+    match lsp.diagnostics(file, &source) {
+        Err(crate::lsp::Unavailable::NoServer { .. }) => {}
+        Ok(report) => return Some(ToolResult::ok(format!("{path}\n{}", crate::lsp::render_diagnostics(&report, 30)))),
+        Err(u) => return Some(ToolResult::ok(lsp_unavailable_line(&u))),
+    }
+    let none = "(no language server for TypeScript detected";
+    let Some(run) = TscRun::find(file, runtime_on_this_machine()) else {
+        return Some(ToolResult::ok(format!(
+            "{none}, and no TypeScript compiler in this project's node_modules or no node/bun to run it. \
+             parse_check finds syntax errors; the build reports type errors.)"
+        )));
+    };
+    let mut cmd = command::new::<tokio::process::Command>(&run.runtime, command::Console::Hidden);
+    cmd.args(&run.args).current_dir(&run.root).kill_on_drop(true);
+    let out = match tokio::time::timeout(std::time::Duration::from_secs(90), cmd.output()).await {
+        Ok(Ok(o)) => o,
+        Ok(Err(e)) => return Some(ToolResult::ok(format!("{none}; the project's tsc did not start: {e})"))),
+        Err(_) => return Some(ToolResult::ok(format!("{none}; the project's tsc took over 90 s and was stopped)"))),
+    };
+    let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    let errors: Vec<&str> = text.lines().filter(|l| l.contains("error TS")).collect();
+    let head = format!("{path}\nChecked with the project's TypeScript compiler (tsc --noEmit; no language server here).");
+    Some(ToolResult::ok(if errors.is_empty() && out.status.success() {
+        format!("{head}\nNo type errors.")
+    } else if errors.is_empty() {
+        format!("{head}\ntsc exited with {}:\n{}", out.status, text.lines().take(30).collect::<Vec<_>>().join("\n"))
+    } else {
+        let shown: Vec<&str> = errors.iter().take(30).copied().collect();
+        let more = errors.len().saturating_sub(shown.len());
+        format!(
+            "{head}\n{} type error{}:\n{}{}",
+            errors.len(),
+            if errors.len() == 1 { "" } else { "s" },
+            shown.join("\n"),
+            if more > 0 { format!("\n... and {more} more") } else { String::new() }
+        )
+    }))
+}
+
+/// A JavaScript runtime to run the project's compiler with: node, else bun,
+/// on PATH, else Nebo's bundled bun.
+fn runtime_on_this_machine() -> Option<std::path::PathBuf> {
+    crate::lsp::find_server("node", None)
+        .or_else(|| crate::lsp::find_server("bun", None))
+        .or_else(|| {
+            let bundled = if cfg!(windows) {
+                std::env::temp_dir().join("nebo-runtimes").join("bun.exe")
+            } else {
+                std::path::PathBuf::from("/tmp/nebo-runtimes/bun")
+            };
+            bundled.is_file().then_some(bundled)
+        })
+}
+
+/// One `tsc --noEmit` run for a file: the runtime, the compiler's script
+/// and its arguments, from the project that holds the compiler.
+#[derive(Debug, PartialEq)]
+struct TscRun {
+    runtime: std::path::PathBuf,
+    root: std::path::PathBuf,
+    args: Vec<String>,
+}
+
+impl TscRun {
+    /// The nearest folder above `file` with `node_modules/typescript`: its
+    /// `tsconfig.json` decides the check when there is one, else the file is
+    /// checked alone with the settings a Vite React app uses.
+    fn find(file: &Path, runtime: Option<std::path::PathBuf>) -> Option<Self> {
+        let root = file.ancestors().skip(1).find(|d| d.join("node_modules/typescript/bin/tsc").is_file())?;
+        let tsc = root.join("node_modules/typescript/bin/tsc").to_string_lossy().into_owned();
+        let mut args = vec![tsc, "--noEmit".to_string(), "--pretty".to_string(), "false".to_string()];
+        if root.join("tsconfig.json").is_file() {
+            args.extend(["-p".to_string(), root.to_string_lossy().into_owned()]);
+        } else {
+            args.extend(
+                ["--skipLibCheck", "--jsx", "react-jsx", "--target", "es2020", "--module", "esnext",
+                 "--moduleResolution", "bundler", "--esModuleInterop", "--allowImportingTsExtensions"]
+                    .map(str::to_string),
+            );
+            args.push(file.to_string_lossy().into_owned());
+        }
+        Some(TscRun { runtime: runtime?, root: root.to_path_buf(), args })
+    }
+}
+
 /// definition and references share the one implementation — the request and
 /// the result noun are the only differences.
 fn handle_locations(action: &str, input: &Value, lsp: &dyn crate::lsp::LspProvider) -> ToolResult {
@@ -603,7 +703,7 @@ impl DynTool for CodeTool {
          - parse_check: tree-sitter syntax errors for one file (line, col, message)\n\
          - query: structural search with a tree-sitter query (s-expression) over one file\n\
          - context: the enclosing symbol chain + sibling symbols for a line (edit anchoring)\n\
-         - diagnostics: language-server diagnostics for one file — ONLY when that language's server (rust-analyzer, typescript-language-server, pyright, gopls, clangd) is already installed on this machine; otherwise returns a factual \"(no language server ... detected)\" line\n\
+         - diagnostics: language-server diagnostics for one file — when that language's server (rust-analyzer, typescript-language-server, pyright, gopls, clangd) is installed on this machine; a .ts/.tsx file with none is checked by the project's own TypeScript compiler (tsc --noEmit from its node_modules); otherwise a factual \"(no language server ... detected)\" line\n\
          - definition / references / hover: language-server navigation and type info at line + col (same availability as diagnostics)\n\n\
          Examples:\n  \
          code(action: \"outline\", path: \"/src/runner.rs\")\n  \
@@ -669,7 +769,10 @@ impl DynTool for CodeTool {
                 "parse_check" => handle_parse_check(&input),
                 "query" => handle_query(&input),
                 "context" => handle_context(&input),
-                "diagnostics" => handle_diagnostics(&input, lsp.as_ref()),
+                "diagnostics" => match tsc_diagnostics(&input, lsp.as_ref()).await {
+                    Some(r) => r,
+                    None => handle_diagnostics(&input, lsp.as_ref()),
+                },
                 "definition" | "references" => handle_locations(action, &input, lsp.as_ref()),
                 "hover" => handle_hover(&input, lsp.as_ref()),
                 other => ToolResult::error(format!(
@@ -936,6 +1039,70 @@ mod tests {
             assert!(!r.is_error, "{input}: {}", r.content);
             assert_eq!(r.content, expect, "{input}");
         }
+    }
+
+    /// A TypeScript project with no language server: diagnostics runs the
+    /// project's own compiler, found beside the file, checking the project
+    /// when it has a tsconfig and the file alone otherwise.
+    #[test]
+    fn typescript_diagnostics_find_the_projects_own_compiler() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = dir.path().join("Flip-Flap");
+        fs::create_dir_all(app.join("node_modules/typescript/bin")).unwrap();
+        fs::create_dir_all(app.join("src")).unwrap();
+        fs::write(app.join("node_modules/typescript/bin/tsc"), "").unwrap();
+        let file = app.join("src/App.tsx");
+        fs::write(&file, "export const n: number = 1;\n").unwrap();
+        let node = std::path::PathBuf::from("/usr/bin/node");
+        let run = TscRun::find(&file, Some(node.clone())).expect("the project's compiler");
+        assert_eq!(run.root, app);
+        assert_eq!(run.runtime, node);
+        assert!(run.args[0].ends_with("node_modules/typescript/bin/tsc") && run.args.contains(&"--noEmit".to_string()));
+        assert_eq!(run.args.last().map(String::as_str), file.to_str(), "the file alone, with no tsconfig");
+        fs::write(app.join("tsconfig.json"), "{}").unwrap();
+        let run = TscRun::find(&file, Some(node.clone())).unwrap();
+        assert_eq!(run.args[run.args.len() - 2..], ["-p".to_string(), app.to_string_lossy().into_owned()]);
+        assert_eq!(TscRun::find(&file, None), None, "nothing to run it with");
+        let elsewhere = dir.path().join("loose.ts");
+        fs::write(&elsewhere, "").unwrap();
+        assert_eq!(TscRun::find(&elsewhere, Some(node)), None, "no compiler above the file");
+    }
+
+    /// The check runs and its type errors come back as the employee's
+    /// diagnostics (a stand-in compiler, run by whatever runtime this
+    /// machine has); a clean run says so; a file that is not TypeScript
+    /// keeps the language-server answer.
+    #[tokio::test]
+    async fn typescript_diagnostics_report_the_compilers_errors() {
+        if runtime_on_this_machine().is_none() {
+            eprintln!("no node or bun here: the run itself is not exercised");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let app = dir.path().join("app");
+        fs::create_dir_all(app.join("node_modules/typescript/bin")).unwrap();
+        fs::create_dir_all(app.join("src")).unwrap();
+        let tsc = app.join("node_modules/typescript/bin/tsc");
+        fs::write(
+            &tsc,
+            "if (process.argv.includes('--noEmit')) { console.log(\"src/App.tsx(3,7): error TS2322: Type 'string' is not assignable to type 'number'.\"); process.exit(2); }",
+        )
+        .unwrap();
+        let file = app.join("src/App.tsx");
+        fs::write(&file, "export const n: number = 'x';\n").unwrap();
+        let input = json!({"action": "diagnostics", "path": file.to_str().unwrap()});
+        let r = tsc_diagnostics(&input, &crate::lsp::NoServers).await.expect("TypeScript gets the compiler");
+        assert!(!r.is_error, "{}", r.content);
+        assert!(r.content.contains("Checked with the project's TypeScript compiler"), "{}", r.content);
+        assert!(r.content.contains("1 type error:\nsrc/App.tsx(3,7): error TS2322"), "{}", r.content);
+
+        fs::write(&tsc, "process.exit(0);").unwrap();
+        let r = tsc_diagnostics(&input, &crate::lsp::NoServers).await.unwrap();
+        assert!(r.content.ends_with("No type errors."), "{}", r.content);
+
+        let rs = app.join("m.rs");
+        fs::write(&rs, RUST_SRC).unwrap();
+        assert!(tsc_diagnostics(&json!({"path": rs.to_str().unwrap()}), &crate::lsp::NoServers).await.is_none());
     }
 
     /// With a server up (mocked), each action renders its factual result:

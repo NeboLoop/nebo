@@ -48,6 +48,38 @@ pub const TOOLS: [&str; 6] = [
 /// `{"appId": "<the app employee's id>"}`.
 pub const RELOAD_EVENT: &str = "app_reload";
 
+fn open_sockets() -> &'static std::sync::Mutex<std::collections::HashMap<String, usize>> {
+    static OPEN: OnceLock<std::sync::Mutex<std::collections::HashMap<String, usize>>> = OnceLock::new();
+    OPEN.get_or_init(Default::default)
+}
+
+/// One open page of an app: its event socket (`/ws/app/<id>`), the one an
+/// `app_reload` reaches. Held while the socket is open.
+pub struct OpenView(String);
+
+impl Drop for OpenView {
+    fn drop(&mut self) {
+        let mut open = open_sockets().lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(n) = open.get_mut(&self.0) {
+            *n = n.saturating_sub(1);
+            if *n == 0 {
+                open.remove(&self.0);
+            }
+        }
+    }
+}
+
+/// An app's page opened its event socket (the server's app socket calls it).
+pub fn view_opened(app_id: &str) -> OpenView {
+    *open_sockets().lock().unwrap_or_else(|e| e.into_inner()).entry(app_id.to_string()).or_insert(0) += 1;
+    OpenView(app_id.to_string())
+}
+
+/// Whether any page of the app is open now (phone, desktop window, browser).
+pub fn has_open_view(app_id: &str) -> bool {
+    open_sockets().lock().unwrap_or_else(|e| e.into_inner()).get(app_id).is_some_and(|n| *n > 0)
+}
+
 /// The line every employee reads about an app: the one place its files go.
 pub fn location_line(name: &str, ui_path: &str) -> String {
     format!("{name} is an app; its files are served from `{ui_path}` — edit them there.")
@@ -151,6 +183,29 @@ pub fn withheld(store: &db::Store, agent_id: &str) -> Vec<String> {
         Vec::new()
     } else {
         TOOLS.iter().map(|t| t.to_string()).collect()
+    }
+}
+
+/// The code tool (`code`: outline, parse_check, diagnostics, definition,
+/// references): an app employee's way into its own sources.
+pub const CODE_TOOL: &str = "code";
+
+/// Deferred tools an app employee is declared from its first step instead
+/// of behind tool search: with App Developer mode on, the code tool, so its
+/// fix loop (parse_check and diagnostics after every edit, definition and
+/// references instead of reading whole files) needs no search. With the
+/// mode off, nothing: it stays deferred as for everyone.
+pub fn preloaded(store: &db::Store, agent_id: &str) -> Vec<String> {
+    let is_app = !agent_id.is_empty()
+        && store
+            .get_agent(agent_id)
+            .ok()
+            .flatten()
+            .is_some_and(|a| a.is_app.unwrap_or(0) != 0);
+    if is_app && store.app_developer_mode() {
+        vec![CODE_TOOL.to_string()]
+    } else {
+        Vec::new()
     }
 }
 
@@ -386,8 +441,19 @@ impl DynTool for AppReloadTool {
                 }
                 return ToolResult::error("Reloading open views is not available on this bot.");
             };
+            if !has_open_view(&app.id) {
+                return ToolResult::ok(format!(
+                    "{restored}No view of {} is open right now, so nothing reloaded. It loads the build now in its \
+                     folder the next time it is opened.",
+                    app.name
+                ));
+            }
             broadcast(RELOAD_EVENT, json!({ "appId": app.id }));
-            ToolResult::ok(format!("{restored}Sent a reload to every open view of {}.", app.name))
+            ToolResult::ok(format!(
+                "{restored}Reloaded every open view of {}: each loads the build now in its folder (its entry page is \
+                 never cached). Check it with app_console and app_screenshot before telling the owner it changed.",
+                app.name
+            ))
         })
     }
 }
@@ -853,6 +919,21 @@ mod tests {
         assert!(text.contains("- assets/index-C_-Z6QB_.js\n"), "{text}");
         assert!(text.contains("- /sdk/nebo.global.js (outside the app)"), "{text}");
         assert!(!text.contains("Not loaded by"), "{text}");
+    }
+
+    /// The code tool is up front for an app employee only with App
+    /// Developer mode on; never for anyone else.
+    #[test]
+    fn the_code_tool_is_preloaded_for_an_app_only_under_the_mode() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = store(tmp.path());
+        app_row(&store, "app-1", "Flip-Flap", &tmp.path().join("ui"));
+        store.create_agent("emp-1", Some("user"), "Bookkeeper", "", "---\nname: x\n---\n", "{}", None, None).unwrap();
+        assert!(preloaded(&store, "app-1").is_empty(), "mode off: deferred as for everyone");
+        store.update_settings(None, None, None, None, None, None, None, None, None, Some(true)).unwrap();
+        assert_eq!(preloaded(&store, "app-1"), vec![CODE_TOOL.to_string()]);
+        assert!(preloaded(&store, "emp-1").is_empty(), "not an app");
+        assert!(preloaded(&store, "").is_empty());
     }
 
     /// The owner's own app always has the developer pack for itself; App

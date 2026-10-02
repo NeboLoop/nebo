@@ -3350,10 +3350,12 @@ async fn the_teams_working_list_names_members_and_helpers_and_a_rows_stop_stops_
 }
 
 /// "Send to <employee>" in an app's console: the app's errors land in the
-/// conversation the owner has open with the app's employee — never its
-/// legacy web conversation, which no client opens — and the employee works
-/// on them there. The page hears "dispatched" only then; with nothing to
-/// send, or the employee turned off, it is told so.
+/// conversation the owner is in with the app's employee, and the employee
+/// works on them there. In the app on this machine that is his open thread;
+/// when he last wrote from his phone (a hub conversation), the work goes
+/// back to the phone. The page hears "dispatched" only then; with nothing to
+/// send, or the employee turned off, it is told so, and the same press sends
+/// again once it can.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_apps_console_errors_land_in_the_owners_open_chat() {
     let nebo = session().await;
@@ -3362,15 +3364,20 @@ async fn an_apps_console_errors_land_in_the_owners_open_chat() {
     let ui = nebo.home.join("user/agents/proof-flip-app-ui/ui");
     std::fs::create_dir_all(&ui).unwrap();
     nebo.store().set_agent_app_fields(&app, true, Some(&ui.to_string_lossy()), None, None).unwrap();
-    let rules: Vec<Rule> = vec![Box::new(|t| t.opener().contains("MARK-FLIP").then(|| Step::say("FLIP-FIXING: on it.")))];
+    let rules: Vec<Rule> = vec![
+        Box::new(|t| t.new_text().contains("MARK-FLIP").then(|| Step::say("FLIP-FIXING: on it."))),
+        Box::new(|t| t.new_text().contains("OWNER-FLIP-PHONE").then(|| Step::say("PHONE-ACK"))),
+    ];
     let rig = Rig::new(&nebo, rules).await;
     let web = format!("agent:{app}:web");
+    let send = format!("/apps/{app}/devlog/send");
+    let fixing = |key: &str| rig.thread(key).iter().filter(|m| m.role == "assistant" && m.content.contains("FLIP-FIXING")).count();
 
-    // The owner's open conversation with the app's employee.
+    // The owner's open conversation with the app's employee, here.
     let opened = nebo.post_ok(&format!("/agents/{app}/chats"), &json!({})).await;
     let thread = opened["sessionKey"].as_str().expect("thread").to_string();
 
-    let (status, body) = nebo.post(&format!("/apps/{app}/devlog/send"), &json!({})).await;
+    let (status, body) = nebo.post(&send, &json!({})).await;
     assert_eq!((status, body["error"].as_str()), (422, Some("No errors to send.")), "{body}");
 
     let (status, body) = nebo
@@ -3390,13 +3397,10 @@ async fn an_apps_console_errors_land_in_the_owners_open_chat() {
         { "level": "error", "message": "Failed to load /assets/index-MARK-FLIP.js", "source": "resource", "time": 1_700_000_000_500i64 },
         { "level": "error", "message": "GET /levels/1.json \u{2192} 404 Not Found", "source": "network", "time": 1_700_000_000_900i64 }
     ] });
-    let sent = nebo.post_ok(&format!("/apps/{app}/devlog/send"), &page).await;
+    let sent = nebo.post_ok(&send, &page).await;
     assert_eq!(sent["status"], "dispatched", "{sent}");
     assert_eq!(sent["sessionId"].as_str(), Some(thread.as_str()), "{sent}");
-    rig.until(30, "the employee works on the errors in the owner's open chat", || {
-        rig.thread(&thread).iter().any(|m| m.role == "assistant" && m.content.contains("FLIP-FIXING"))
-    })
-    .await;
+    rig.until(30, "the employee works on the errors in the owner's open chat", || fixing(&thread) == 1).await;
     let rows = rig.thread(&thread);
     let asked = rows.iter().find(|m| m.role == "user").expect("the errors message");
     assert!(
@@ -3408,23 +3412,111 @@ async fn an_apps_console_errors_land_in_the_owners_open_chat() {
         asked.content
     );
     assert_eq!(asked.content.matches("index-MARK-FLIP.js").count(), 1, "each error once: {}", asked.content);
-    assert!(rig.thread(&web).is_empty(), "nothing lands in the hidden web conversation");
+    assert!(rig.thread(&web).is_empty(), "nothing lands in a conversation the owner is not in");
+
+    // He writes from his phone (a hub conversation), later than the thread.
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    rig.owner_writes(&web, &app, Some("conv-flip-phone"), "OWNER-FLIP-PHONE the bird won't fly").await;
+    rig.until(30, "the phone conversation is answered", || rig.loop_.all("conv-flip-phone").contains("PHONE-ACK")).await;
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    let sent = nebo.post_ok(&send, &page).await;
+    assert_eq!((sent["status"].as_str(), sent["sessionId"].as_str()), (Some("dispatched"), Some(web.as_str())), "{sent}");
+    rig.until(30, "the work on the errors reaches his phone", || rig.loop_.all("conv-flip-phone").contains("FLIP-FIXING")).await;
+    assert_eq!(fixing(&thread), 1, "the thread he left is not written to");
 
     // Turned off: refused, in words the page shows, never "dispatched".
     nebo.post_ok(&format!("/agents/{app}/deactivate"), &json!({})).await;
-    let (status, body) = nebo.post(&format!("/apps/{app}/devlog/send"), &page).await;
+    let (status, body) = nebo.post(&send, &page).await;
     assert_eq!(status, 409, "{body}");
     assert_eq!(body["error"], "Proof Flip App is turned off. Turn it on, then send again.", "{body}");
     assert!(body.get("status").is_none(), "{body}");
 
     // The errors were kept: the same press, once it is back on, sends them.
     nebo.activate(&app).await;
-    let again = nebo.post_ok(&format!("/apps/{app}/devlog/send"), &page).await;
-    assert_eq!((again["status"].as_str(), again["sessionId"].as_str()), (Some("dispatched"), Some(thread.as_str())), "{again}");
-    rig.until(30, "the retried errors reach the same chat and are worked on", || {
-        let rows = rig.thread(&thread);
-        rows.iter().filter(|m| m.role == "user" && m.content.contains("These errors came up")).count() == 2
-            && rows.iter().filter(|m| m.role == "assistant" && m.content.contains("FLIP-FIXING")).count() == 2
+    let again = nebo.post_ok(&send, &page).await;
+    assert_eq!(again["status"], "dispatched", "{again}");
+    rig.until(30, "the retried errors are worked on", || fixing(&web) == 2).await;
+}
+
+/// An app employee's own working files never ride its replies as cards
+/// (live 2026-10-02: every reply from Flip-Flap carried "App.tsx — Code",
+/// even after the owner asked it to stop): an edit-and-rebuild turn in its
+/// chat attaches nothing for its sources or its served page, while a
+/// document it makes for the owner still comes as a card.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_apps_own_files_never_ride_its_replies_as_cards() {
+    let nebo = session().await;
+    let app = nebo.hire("Proof Card App", json!({ "workflows": {} })).await;
+    nebo.activate(&app).await;
+    nebo.store()
+        .set_permission_mode(&types::permissions::Scope::Employee(app.clone()), types::permissions::Mode::FullAccess)
+        .unwrap();
+    let package = PathBuf::from(nebo.agent(&app).napp_path.expect("package folder"));
+    assert!(package.starts_with(nebo.home.join("user/agents")), "{}", package.display());
+    std::fs::create_dir_all(package.join("src")).unwrap();
+    std::fs::create_dir_all(package.join("ui")).unwrap();
+    let source = package.join("src/App.tsx");
+    std::fs::write(&source, "export const speed = 1;\n").unwrap();
+    nebo.store().set_agent_app_fields(&app, true, Some(&package.join("ui").to_string_lossy()), None, None).unwrap();
+    let out = tempfile::tempdir().unwrap();
+    let report = out.path().join("cards-report.md");
+    let (src, page, doc) = (
+        source.to_string_lossy().to_string(),
+        package.join("ui/index.html").to_string_lossy().to_string(),
+        report.to_string_lossy().to_string(),
+    );
+    // Read the source, then edit it, write the page, rebuild and write a
+    // document for the owner, then answer.
+    let steps = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let rules: Vec<Rule> = vec![Box::new(move |t| {
+        if !t.opener().contains("MARK-CARDS") {
+            return None;
+        }
+        match steps.fetch_add(1, std::sync::atomic::Ordering::SeqCst) {
+            0 => return Some(Step::call(vec![("read_file", json!({ "path": src }))])),
+            1 => {}
+            _ => return Some(Step::say("CARDS-DONE")),
+        }
+        Some(Step::call(vec![
+            ("edit_file", json!({ "path": src, "old_string": "speed = 1", "new_string": "speed = 2" })),
+            ("write_file", json!({ "path": page, "content": "<!doctype html><html><head></head><body>v2</body></html>" })),
+            ("run_command", json!({ "command": "echo built", "description": "Rebuild" })),
+            ("write_file", json!({ "path": doc, "content": "# What changed\n" })),
+        ]))
+    })];
+    let rig = Rig::new(&nebo, rules).await;
+    let opened = nebo.post_ok(&format!("/agents/{app}/chats"), &json!({})).await;
+    let thread = opened["sessionKey"].as_str().expect("thread").to_string();
+    rig.owner_writes(&thread, &app, None, "MARK-CARDS make the bird faster").await;
+    rig.until(30, "the turn ends", || {
+        rig.thread(&thread).iter().any(|m| m.role == "assistant" && m.content.contains("CARDS-DONE"))
     })
     .await;
+    assert!(
+        std::fs::read_to_string(&source).unwrap().contains("speed = 2"),
+        "the edit ran: {}",
+        tool_results(&rig, &thread)
+    );
+    let chat_id = thread.rsplit(':').next().unwrap().to_string();
+    let cards = |rows: Vec<db::models::ChatMessage>| -> Vec<String> {
+        rows.into_iter()
+            .filter_map(|m| m.metadata)
+            .filter_map(|meta| serde_json::from_str::<Value>(&meta).ok())
+            .flat_map(|v| v["artifacts"].as_array().cloned().unwrap_or_default())
+            .map(|a| a["filename"].as_str().map(str::to_string).unwrap_or_else(|| a.to_string()))
+            .collect()
+    };
+    let mut attached = Vec::new();
+    for _ in 0..50 {
+        attached = cards(nebo.store().get_chat_messages(&chat_id).unwrap_or_default());
+        if !attached.is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(attached.iter().any(|a| a.contains("cards-report.md")), "a document still comes as a card: {attached:?}");
+    assert!(
+        !attached.iter().any(|a| a.contains("App.tsx") || a.contains("index.html")),
+        "the app's own files never do: {attached:?}"
+    );
 }
