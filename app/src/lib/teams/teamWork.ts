@@ -3,6 +3,7 @@
 // helper a member started there. Loaded once from GET /teams/{id}/working,
 // then kept by the events the work already sends — never polled.
 import type { TeamWorkEntry } from '$lib/api/neboComponents';
+import { endsRun } from '$lib/chat/runEnd';
 
 export type WorkEntry = TeamWorkEntry;
 
@@ -38,6 +39,7 @@ interface EventData {
 	teamId?: unknown;
 	agentId?: unknown;
 	state?: unknown;
+	stop_reason?: unknown;
 	runs?: { sessionKey?: string; activity?: string }[];
 }
 
@@ -84,7 +86,8 @@ export function applyWorkEvent(
 		case 'chat_error':
 		case 'chat_cancelled': {
 			const agentId = seatMember(data.session_id, teamId);
-			if (!agentId) return list;
+			// A queued message's own completion: the member is still at work.
+			if (!agentId || !endsRun(data)) return list;
 			return without((e) => !(e.kind === 'member' && e.agentId === agentId));
 		}
 		case 'team_activity': {

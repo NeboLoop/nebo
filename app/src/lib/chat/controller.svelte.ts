@@ -20,6 +20,7 @@ import type { ChatMessagesResponse, SessionGoalStatus } from '$lib/api/neboCompo
 import { sendClientEvent } from '$lib/api/gocliRequest';
 import { sendInstallCode } from '$lib/marketplace/installCodes';
 import { parseMessages, lastRunError } from '$lib/chat/history';
+import { endsRun } from '$lib/chat/runEnd';
 import { applyHelperEvent, type HelperLine } from '$lib/chat/helpers';
 import { isThinking, latestThought } from '$lib/chat/progress';
 import type { Fold } from '$lib/chat/turnBlocks';
@@ -395,7 +396,7 @@ export function createChatController(config: ChatControllerConfig) {
     if (!isMyEvent(data)) return;
     // The queued message's own completion: the first turn is still running.
     // It carries no words; the message shows pending, and nothing else.
-    if (data.stop_reason === QUEUED_INTO_RUNNING_TURN) {
+    if (!endsRun(data)) {
       setLastUserPending(true);
       return;
     }
@@ -636,7 +637,6 @@ export function createChatController(config: ChatControllerConfig) {
   // typed stop on chat_complete, no words. The message itself shows as
   // pending (italic) until that turn completes; no banner, no toast, and the
   // spinner stays because the first turn is still running.
-  const QUEUED_INTO_RUNNING_TURN = 'queued_into_running_turn';
   function setLastUserPending(pending: boolean) {
     for (let i = messages.length - 1; i >= 0; i--) {
       const m = messages[i];

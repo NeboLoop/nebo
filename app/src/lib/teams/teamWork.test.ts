@@ -57,4 +57,16 @@ describe('team work list', () => {
 		expect(stopBody(list[0])).toEqual({ agentId: 'bo' });
 		expect(stopBody(list[1])).toEqual({ agentId: 'ann', taskId: 'h-3' });
 	});
+
+	// A message sent to a member while it works is taken into its running
+	// turn; that message's own stream ends with the queued stop at once. The
+	// member is still at work until its run ends.
+	it("keeps a member working through a queued message's completion until its run ends", () => {
+		let list: WorkEntry[] = [];
+		list = apply(list, 'tool_start', { session_id: seatKey('ann', TEAM), label: 'Pricing the order' });
+		list = apply(list, 'chat_complete', { session_id: seatKey('ann', TEAM), stop_reason: 'queued_into_running_turn', stop_notice: '' });
+		expect(list.map((e) => [e.title, e.activity])).toEqual([['Ann', 'Pricing the order']]);
+		list = apply(list, 'chat_complete', { session_id: seatKey('ann', TEAM) });
+		expect(list).toEqual([]);
+	});
 });
