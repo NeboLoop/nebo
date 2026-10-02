@@ -3,20 +3,19 @@
   goal, a coworker's call), as a card in the chat that raised it: the same
   card as a permission ask, at the bottom beside the composer, never a dialog
   over the screen. Allow always · This once · No; answered anywhere, it
-  collapses in place to its receipt.
+  collapses in place to its muted one-line receipt (AskReceipt).
 -->
 <script lang="ts">
   import { t } from 'svelte-i18n';
   import { answerApproval, type Approval } from '$lib/stores/approvals';
 
+  import AskReceipt from './AskReceipt.svelte';
+
   let { approval }: { approval: Approval } = $props();
+  const title = $derived($t('permissionAsk.title', { values: { name: approval.agent } }));
 </script>
 
-<div class="permission-ask-card">
-  <p class="permission-ask-title">{$t('permissionAsk.title', { values: { name: approval.agent } })}</p>
-  {#if approval.headline}
-    <p class="permission-ask-sentence">{approval.headline}</p>
-  {/if}
+{#snippet facts()}
   {#if approval.detailRows && approval.detailRows.length > 0}
     <div class="approval-ask-facts">
       {#each approval.detailRows as row (row.label)}
@@ -37,15 +36,30 @@
       <p class="approval-ask-detail">{approval.actionDetail}</p>
     {/if}
   {/if}
-  {#if !approval.decision}
+{/snippet}
+
+{#if !approval.decision}
+  <div class="ask-card permission-ask-card">
+    <p class="permission-ask-title">{title}</p>
+    {#if approval.headline}
+      <p class="permission-ask-sentence">{approval.headline}</p>
+    {/if}
+    {@render facts()}
     <div class="permission-ask-actions">
       <button type="button" class="btn btn-primary btn-sm rounded-full" onclick={() => answerApproval(approval.requestId, 'always')}>{$t('permissionAsk.allowAlways')}</button>
       <button type="button" class="btn btn-sm rounded-full" onclick={() => answerApproval(approval.requestId, 'once')}>{$t('permissionAsk.thisOnce')}</button>
       <button type="button" class="btn btn-ghost btn-sm rounded-full" onclick={() => answerApproval(approval.requestId, 'deny')}>{$t('permissionAsk.no')}</button>
     </div>
-  {:else if approval.decision === 'deny'}
-    <div class="permission-ask-settled"><span class="badge badge-ghost badge-sm">{$t('permissionAsk.declined')}</span></div>
-  {:else}
-    <div class="permission-ask-settled"><span class="badge badge-primary badge-sm">{$t(approval.decision === 'always' ? 'permissionAsk.allowedAlways' : 'permissionAsk.allowedOnce')}</span></div>
-  {/if}
-</div>
+  </div>
+{:else}
+  <AskReceipt
+    lead={$t(approval.decision === 'deny' ? 'permissionAsk.declined' : approval.decision === 'always' ? 'permissionAsk.allowedAlways' : 'permissionAsk.allowedOnce')}
+    subject={approval.headline || title}
+  >
+    <p class="permission-ask-title">{title}</p>
+    {#if approval.headline}
+      <p class="permission-ask-sentence">{approval.headline}</p>
+    {/if}
+    {@render facts()}
+  </AskReceipt>
+{/if}

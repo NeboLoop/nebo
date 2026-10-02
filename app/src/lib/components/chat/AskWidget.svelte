@@ -66,6 +66,7 @@
 	import UserPlus from 'lucide-svelte/icons/user-plus';
 	import Download from 'lucide-svelte/icons/download';
 	import { getWebSocketClient } from '$lib/websocket/client';
+	import AskReceipt from './AskReceipt.svelte';
 	import { authLoginAccount, listPlugins, submitCode } from '$lib/api/nebo';
 	import CredentialFields, { credentialsComplete, type AuthField } from '$lib/components/CredentialFields.svelte';
 
@@ -185,6 +186,16 @@
 	let otherText = $state('');
 
 	const answered = $derived(response != null);
+	/** The question on one line, for the receipt: its first line, markdown marks dropped. */
+	const question = $derived(
+		(prompt ?? '')
+			.split('\n')
+			.map((l) => l.replace(/\[([^\]]*)\]\([^)]*\)/g, '$1').replace(/[*_`#>]/g, '').trim())
+			.find(Boolean) ?? ''
+	);
+	/** What the owner chose, as the receipt marks it: the options picked, and any typed "Other" answer. */
+	const chosen = $derived(answered && response !== SKIP_VALUE && !response?.startsWith(FAILED_PREFIX) ? (response ?? '').split(', ') : []);
+	const typedAnswers = $derived(options.length > 0 ? chosen.filter((c) => !options.some((o) => o.label === c)) : []);
 	const wasSkipped = $derived(response === SKIP_VALUE);
 	const failedReason = $derived(response?.startsWith(FAILED_PREFIX) ? response.slice(FAILED_PREFIX.length) : null);
 
@@ -220,26 +231,33 @@
 
 <svelte:window onkeydown={onKeydown} />
 
-<div class="rounded-xl bg-base-200 px-4 py-3 mb-1 max-w-md">
+{#if answered || cancelled || disabled}
+	<AskReceipt
+		lead={answered && !wasSkipped ? $t('chat.askedReceipt') : cancelled && !answered ? $t('common.cancelled') : $t('common.skipped')}
+		subject={question}
+		answer={answered && !wasSkipped ? (failedReason ?? response) : ''}
+		failed={failedReason != null}
+	>
+		<div class="prose prose-sm max-w-none [&_p]:my-1 [&>:first-child]:mt-0 [&>:last-child]:mb-0">{@html promptHtml}</div>
+		{#if options.length > 0 || typedAnswers.length > 0}
+			<ul class="ask-receipt-options">
+				{#each options as option}
+					<li class="ask-receipt-option" class:ask-receipt-chosen={chosen.includes(option.label)}>
+						{#if chosen.includes(option.label)}<Check class="ask-receipt-mark" />{:else}<span class="ask-receipt-mark-none"></span>{/if}
+						{option.label}
+					</li>
+				{/each}
+				{#each typedAnswers as typed}
+					<li class="ask-receipt-option ask-receipt-chosen"><Check class="ask-receipt-mark" />{typed}</li>
+				{/each}
+			</ul>
+		{/if}
+	</AskReceipt>
+{:else}
+<div class="ask-card">
 	<div class="text-sm font-medium mb-2 prose prose-sm max-w-none [&_p]:my-1 [&>:first-child]:mt-0 [&>:last-child]:mb-0">{@html promptHtml}</div>
 
-	{#if answered}
-		{#if wasSkipped}
-			<div class="badge badge-ghost badge-sm">{$t('common.skipped')}</div>
-		{:else if failedReason != null}
-			<div class="text-xs text-error">{failedReason}</div>
-		{:else}
-			<div class="flex flex-wrap gap-1">
-				{#each (response ?? '').split(', ') as item}
-					<div class="badge badge-primary badge-sm">{item}</div>
-				{/each}
-			</div>
-		{/if}
-	{:else if cancelled}
-		<div class="badge badge-ghost badge-sm">{$t('common.cancelled')}</div>
-	{:else if disabled}
-		<div class="badge badge-ghost badge-sm">{$t('common.skipped')}</div>
-	{:else if widget?.type === 'install_plugin' || widget?.type === 'hire_employee'}
+	{#if widget?.type === 'install_plugin' || widget?.type === 'hire_employee'}
 		{@const hiring = widget.type === 'hire_employee'}
 		<div class="flex items-center gap-3 rounded-lg border border-base-300 bg-base-100 px-3 py-2.5">
 			<div class="rounded-md bg-base-200 p-2">
@@ -261,7 +279,7 @@
 				{#if installError}
 					<div class="text-xs text-error">{installError}</div>
 				{:else if hireList.length <= 1 && widget.description}
-					<div class="text-xs text-base-content/60 line-clamp-2">{widget.description}</div>
+					<div class="text-xs text-base-content/70 line-clamp-2">{widget.description}</div>
 				{/if}
 			</div>
 			<button
@@ -277,7 +295,7 @@
 			</button>
 		</div>
 		<div class="mt-2 flex">
-			<button type="button" class="text-xs text-base-content/40 hover:text-base-content/70 cursor-pointer bg-transparent border-none px-0 ml-auto" onclick={() => submit(SKIP_VALUE)}>{$t('common.skip')}</button>
+			<button type="button" class="text-xs text-base-content/70 hover:text-base-content cursor-pointer bg-transparent border-none px-0 ml-auto" onclick={() => submit(SKIP_VALUE)}>{$t('common.skip')}</button>
 		</div>
 	{:else if widget?.type === 'connect_account'}
 		<div class="flex items-center gap-3 rounded-lg border border-base-300 bg-base-100 px-3 py-2.5">
@@ -289,7 +307,7 @@
 				{#if connectError}
 					<div class="text-xs text-error">{connectError}</div>
 				{:else}
-					<div class="text-xs text-base-content/60">{$t('chat.connectAccountHint')}</div>
+					<div class="text-xs text-base-content/70">{$t('chat.connectAccountHint')}</div>
 				{/if}
 			</div>
 			<button
@@ -308,7 +326,7 @@
 			</div>
 		{/if}
 		<div class="mt-2 flex">
-			<button type="button" class="text-xs text-base-content/40 hover:text-base-content/70 cursor-pointer bg-transparent border-none px-0 ml-auto" onclick={() => submit(SKIP_VALUE)}>{$t('common.skip')}</button>
+			<button type="button" class="text-xs text-base-content/70 hover:text-base-content cursor-pointer bg-transparent border-none px-0 ml-auto" onclick={() => submit(SKIP_VALUE)}>{$t('common.skip')}</button>
 		</div>
 	{:else}
 		{#if widget?.label}
@@ -382,10 +400,11 @@
 					</button>
 				{/if}
 				{#if !showOther}
-					<button type="button" class="text-xs text-base-content/60 hover:text-base-content cursor-pointer bg-transparent border-none px-0" onclick={() => (showOther = true)}>{$t('chat.other')}</button>
+					<button type="button" class="text-xs text-base-content/80 hover:text-base-content cursor-pointer bg-transparent border-none px-0" onclick={() => (showOther = true)}>{$t('chat.other')}</button>
 				{/if}
-				<button type="button" class="text-xs text-base-content/40 hover:text-base-content/70 cursor-pointer bg-transparent border-none px-0 ml-auto" onclick={() => submit(SKIP_VALUE)}>{$t('common.skip')}</button>
+				<button type="button" class="text-xs text-base-content/70 hover:text-base-content cursor-pointer bg-transparent border-none px-0 ml-auto" onclick={() => submit(SKIP_VALUE)}>{$t('common.skip')}</button>
 			</div>
 		</div>
 	{/if}
 </div>
+{/if}
