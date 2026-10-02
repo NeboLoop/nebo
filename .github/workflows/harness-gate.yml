@@ -180,6 +180,13 @@ jobs:
       # The server's attachments switch, on every server the job starts
       # (scripts/gate-server.sh start, and each fresh one gate-run.sh starts).
       NEBO_STEERING: ${{ inputs.steering }}
+      # The hub's connection gateway canary (NeboLoop/hub): the CI bot is the
+      # first bot to hold its comms and tunnel sockets on the gateway. Repo
+      # variables, set by NeboLoop/k8s scripts/cell-switch.sh harness on|off;
+      # unset, these are the image's own defaults (comms.neboai.com,
+      # api.neboai.com), so nothing changes.
+      NEBOAI_COMMS_URL: ${{ vars.HARNESS_NEBOAI_COMMS_URL || 'wss://comms.neboai.com/ws' }}
+      NEBOAI_TUNNEL_URL: ${{ vars.HARNESS_NEBOAI_TUNNEL_URL || 'wss://api.neboai.com/tunnel/connect' }}
     steps:
       - uses: actions/checkout@v4
 
