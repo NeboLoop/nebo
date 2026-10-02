@@ -564,6 +564,24 @@
 .permission-ask-error {
   @apply m-0 text-xs text-error;
 }
+.approval-ask-facts {
+  @apply rounded-lg bg-base-100 divide-y divide-base-content/5;
+}
+.approval-ask-fact {
+  @apply flex items-center justify-between gap-4 px-3 py-1.5;
+}
+.approval-ask-fact-label {
+  @apply text-xs text-base-content/60;
+}
+.approval-ask-fact-value {
+  @apply text-sm font-medium text-right break-all;
+}
+.approval-ask-more {
+  @apply text-xs text-base-content/40 cursor-pointer select-none;
+}
+.approval-ask-detail {
+  @apply m-0 mt-1 rounded-lg bg-base-100 p-2 font-mono text-xs break-all;
+}
 .ask-rise {
   animation: ask-rise 240ms ease-out both;
 }

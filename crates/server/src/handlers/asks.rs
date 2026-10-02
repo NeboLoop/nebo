@@ -356,6 +356,21 @@ fn exact_option(options: &[String], words: &str) -> Option<usize> {
     options.iter().position(|o| norm(o) == said)
 }
 
+/// The permission answer a short word names, beside the card's own labels
+/// ("Allow always", "This once", "No"): "always", "once" and "deny" (the
+/// words the app's buttons read for a day) are the same answers.
+fn permission_word(w: &Waiting, words: &str) -> Option<usize> {
+    let Answers::Permission(answers) = &w.answers else { return None };
+    let said = words.trim().trim_end_matches(['.', '!', '?']).trim().to_lowercase();
+    let meant = match said.as_str() {
+        "always" => Answer::AllowAlways,
+        "once" => Answer::ThisOnce,
+        "deny" => Answer::No,
+        _ => return None,
+    };
+    answers.iter().position(|a| *a == meant)
+}
+
 /// What a permission answer means, for the decision: the card's labels are
 /// short, and the owner says "yes" or "go ahead" far more often.
 fn permission_meaning(answer: Answer) -> &'static str {
@@ -451,7 +466,7 @@ pub(crate) async fn read_reply(
     if words.trim().is_empty() {
         return Reading::NotAnAnswer;
     }
-    if let Some(i) = exact_option(&w.card.options, words) {
+    if let Some(i) = exact_option(&w.card.options, words).or_else(|| permission_word(w, words)) {
         return Reading::Option(i);
     }
     let Some(client) = decide else {
@@ -841,6 +856,46 @@ pub(crate) mod tests {
 
     /// Words that repeat an option are that option with no decision; with
     /// no decision anything else is not an answer, and nothing is guessed.
+    /// The card's words, and the short ones, answer a permission ask
+    /// without a decision: "Allow always" / "always", "This once" / "once",
+    /// "No" / "deny".
+    #[tokio::test]
+    async fn the_cards_words_and_the_short_ones_answer_a_permission() {
+        let w = Waiting {
+            card: WaitingAsk {
+                id: "p1".into(),
+                kind: "permission".into(),
+                agent_id: "a".into(),
+                employee: "Ava".into(),
+                session_key: String::new(),
+                chat_id: String::new(),
+                question: "OK to go ahead?".into(),
+                options: vec!["Allow always".into(), "This once".into(), "No".into()],
+                values: vec!["allow_always".into(), "this_once".into(), "no".into()],
+                free_text: false,
+                answerable: true,
+                created_at: 0,
+            },
+            answers: Answers::Permission(vec![Answer::AllowAlways, Answer::ThisOnce, Answer::No]),
+        };
+        for (words, i) in [
+            ("Allow always", 0),
+            ("allow always", 0),
+            ("always", 0),
+            ("Always.", 0),
+            ("This once", 1),
+            ("this once", 1),
+            ("once", 1),
+            ("No", 2),
+            ("no", 2),
+            ("deny", 2),
+            ("Deny!", 2),
+        ] {
+            assert_eq!(read_reply(None, &w, words, "").await, Reading::Option(i), "{words}");
+        }
+        assert_eq!(read_reply(None, &w, "maybe later", "").await, Reading::NotAnAnswer);
+    }
+
     #[tokio::test]
     async fn with_no_decision_only_an_exact_option_answers() {
         let w = question("q1", INCIDENT, &[YES, NO]);
