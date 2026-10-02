@@ -580,8 +580,10 @@ async fn run(
                 break;
             }
         };
+        tools::app_history::begin_turn(&session_id, &asked(&cx.request.input));
         exit = drive_turn(&cx, &mut st).await;
         finish(&cx, &mut st, &exit).await;
+        tools::app_history::end_turn(&session_id, || last_reply(&h, &session_id)).await;
         taint.extend(cx.taint.lock().unwrap_or_else(|p| p.into_inner()).iter().copied());
 
         // Input stored after the last step was not in any call. The slot
@@ -601,6 +603,28 @@ async fn run(
         .send(StreamEvent::done_with_reason(exit.label()).with_provenance(taint.into_iter().collect()))
         .await;
     drop(guard);
+}
+
+/// What a turn was asked, in words: an app's history names its versions
+/// with it (`tools::app_history`).
+fn asked(input: &TurnInput) -> String {
+    match input {
+        TurnInput::Owner { text, .. } | TurnInput::Platform { text } | TurnInput::Coworker { text, .. } => text.clone(),
+        TurnInput::Spoken { said, task } => if said.trim().is_empty() { task } else { said }.clone(),
+        TurnInput::Compact { .. } | TurnInput::Notification(_) | TurnInput::None => String::new(),
+    }
+}
+
+/// The turn's last reply, which describes what it changed.
+fn last_reply(h: &Harness, session_id: &str) -> String {
+    h.store
+        .get_recent_chat_messages(&h.sessions.active_chat_id(session_id), 4)
+        .unwrap_or_default()
+        .into_iter()
+        .rev()
+        .find(|m| m.role == "assistant" && !m.content.trim().is_empty())
+        .map(|m| m.content)
+        .unwrap_or_default()
 }
 
 /// The owner ended the work (the stop button, or a message of his that

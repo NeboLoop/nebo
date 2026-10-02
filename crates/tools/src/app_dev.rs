@@ -118,7 +118,10 @@ pub fn self_build_line(row: &db::models::Agent) -> Option<String> {
         "You build and publish yourself. After changing your files, app_reload refreshes every open view of you and \
          app_console shows what you logged; app_status says what is served. When the owner asks to publish you \
          (\"publish yourself\"), draft the listing with app_listing, add screenshots with app_screenshot, show it, \
-         and send it with app_submit once they say so."
+         and send it with app_submit once they say so. Fix the smallest thing that's broken; never rewrite working code \
+         to fix a bug, and say what you'll change and why before any large change. Your history is saved automatically: \
+         when a change makes things worse, restore the last good version (app_status(history: true), then \
+         app_reload(restore: \"<id>\")) instead of rewriting."
             .to_string()
     })
 }
@@ -290,6 +293,31 @@ fn app_schema() -> Value {
     })
 }
 
+/// `app_status`'s input: the app, and `history` for its saved versions.
+fn status_schema() -> Value {
+    let mut schema = app_schema();
+    schema["properties"]["history"] = json!({
+        "type": "boolean",
+        "description": "true: list the app's saved versions (id, time, what changed) instead of its files."
+    });
+    schema
+}
+
+/// `app_reload`'s input: the app, and `restore` to go back to a version.
+fn reload_schema() -> Value {
+    let mut schema = app_schema();
+    schema["properties"]["restore"] = json!({
+        "type": "string",
+        "description": "A version id from app_status(history: true): puts the app's files back to that version, then reloads."
+    });
+    schema
+}
+
+/// The version a call asks to restore, when it asks.
+fn restore_id(input: &Value) -> Option<&str> {
+    input.get("restore").and_then(|v| v.as_str()).map(str::trim).filter(|v| !v.is_empty())
+}
+
 fn app_label(input: &Value) -> &str {
     input
         .get("app")
@@ -310,24 +338,33 @@ impl DynTool for AppReloadTool {
 
     fn description(&self) -> String {
         "Reloads every open view of an app (the owner's phone, a desktop window, a browser tab) so it runs the files as they are now. \
-         Use it after changing an app's files; never rename files to get past a stale copy."
+         Use it after changing an app's files; never rename files to get past a stale copy.\n\
+         restore: \"<version id>\" first puts the app's page and source back to a saved version (app_status(history: true) lists \
+         them), as a new version, so a restore can itself be undone. Use it when the owner asks to go back (\"put it back to how it \
+         was this morning\") and when a change made the app worse: restore the last good version instead of rewriting."
             .to_string()
     }
 
     fn schema(&self) -> Value {
-        app_schema()
+        reload_schema()
     }
 
     fn search_hint(&self) -> &str {
-        "reload refresh open app views"
+        "reload refresh open app views restore version undo"
     }
 
     fn activity(&self, input: &Value) -> String {
-        format!("reloading {}", app_label(input))
+        match restore_id(input) {
+            Some(_) => format!("restoring {}", app_label(input)),
+            None => format!("reloading {}", app_label(input)),
+        }
     }
 
     fn outcome(&self, input: &Value) -> String {
-        format!("Reloaded {}", app_label(input))
+        match restore_id(input) {
+            Some(_) => format!("Restored {}", app_label(input)),
+            None => format!("Reloaded {}", app_label(input)),
+        }
     }
 
     fn execute_dyn<'a>(&'a self, ctx: &'a ToolContext, input: Value) -> Fut<'a> {
@@ -336,11 +373,21 @@ impl DynTool for AppReloadTool {
                 Ok(a) => a,
                 Err(e) => return ToolResult::error(e),
             };
+            let restored = match restore_id(&input) {
+                Some(id) => match restore_version(&app, id).await {
+                    Ok(text) => text,
+                    Err(e) => return ToolResult::error(e),
+                },
+                None => String::new(),
+            };
             let Some(broadcast) = self.0.broadcaster.as_ref() else {
+                if !restored.is_empty() {
+                    return ToolResult::ok(restored);
+                }
                 return ToolResult::error("Reloading open views is not available on this bot.");
             };
             broadcast(RELOAD_EVENT, json!({ "appId": app.id }));
-            ToolResult::ok(format!("Sent a reload to every open view of {}.", app.name))
+            ToolResult::ok(format!("{restored}Sent a reload to every open view of {}.", app.name))
         })
     }
 }
@@ -357,16 +404,18 @@ impl DynTool for AppStatusTool {
     fn description(&self) -> String {
         "Shows an app as it is served: its folder, every file with size and time changed, the entry page and the scripts and \
          styles it loads, which of those are missing, which files the page does not load, and the console error count. \
-         Use it first when an edit does not show."
+         Use it first when an edit does not show.\n\
+         history: true lists the app's saved versions instead (id, time, what changed): Nebo saves them automatically before \
+         and after each turn that changes the app. Go back to one with app_reload(restore: \"<id>\")."
             .to_string()
     }
 
     fn schema(&self) -> Value {
-        app_schema()
+        status_schema()
     }
 
     fn search_hint(&self) -> &str {
-        "app files entry scripts not showing"
+        "app files entry scripts not showing history versions"
     }
 
     fn read_only(&self, _input: &Value) -> bool {
@@ -388,13 +437,55 @@ impl DynTool for AppStatusTool {
                 Err(e) => return ToolResult::error(e),
             };
             let dir = PathBuf::from(served_dir(&app).unwrap_or_default());
-            ToolResult::ok(status_text(
-                &app.name,
-                &dir,
-                crate::app_console::error_count(&app.id),
-            ))
+            let folder = crate::app_history::app_folder(&app);
+            if input.get("history").and_then(|v| v.as_bool()) == Some(true) {
+                let Some(folder) = folder else {
+                    return ToolResult::error(format!("{} has no app folder to keep a history of.", app.name));
+                };
+                let name = app.name.clone();
+                return match tokio::task::spawn_blocking(move || crate::app_history::list(&folder, 30)).await {
+                    Ok(Ok(versions)) => ToolResult::ok(crate::app_history::describe(&name, &versions)),
+                    Ok(Err(e)) => ToolResult::error(format!("{name}'s history could not be read: {e}")),
+                    Err(e) => ToolResult::error(format!("{name}'s history could not be read: {e}")),
+                };
+            }
+            let history = match folder {
+                Some(folder) => tokio::task::spawn_blocking(move || crate::app_history::status_line(&folder))
+                    .await
+                    .unwrap_or_default(),
+                None => String::new(),
+            };
+            let status = status_text(&app.name, &dir, crate::app_console::error_count(&app.id));
+            ToolResult::ok(if history.is_empty() { status } else { format!("{status}\n{history}") })
         })
     }
+}
+
+/// Put `app`'s files back to version `id` (`app_history::restore`): what
+/// the model reads, ending with how to undo it.
+async fn restore_version(app: &db::models::Agent, id: &str) -> Result<String, String> {
+    let Some(folder) = crate::app_history::app_folder(app) else {
+        return Err(format!("{} has no app folder to restore.", app.name));
+    };
+    let (name, id) = (app.name.clone(), id.to_string());
+    let done = tokio::task::spawn_blocking(move || crate::app_history::restore(&folder, &id))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| format!("{name} was not restored: {e}"))?;
+    let to = format!(
+        "version {} ({}, \"{}\")",
+        done.to.id,
+        crate::app_history::local_time(&done.to.at),
+        done.to.message
+    );
+    Ok(match (&done.saved, &done.undo) {
+        (None, _) => format!("{name}'s files already match {to}; nothing changed. "),
+        (Some(saved), Some(undo)) => format!(
+            "{name}'s page and source are back to {to}, saved as version {}. To undo, restore version {}. ",
+            saved.id, undo.id
+        ),
+        (Some(saved), None) => format!("{name}'s page and source are back to {to}, saved as version {}. ", saved.id),
+    })
 }
 
 /// The most files `app_status` lists.
