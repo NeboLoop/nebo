@@ -39,6 +39,7 @@ reqwest = { workspace = true }
 shellexpand = { workspace = true }
 browser = { workspace = true }
 comm = { workspace = true }
+sysinfo = { workspace = true }
 mcp = { workspace = true }
 updater = { workspace = true }
 cron = { workspace = true }

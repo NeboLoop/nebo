@@ -1126,6 +1126,10 @@ export interface ScanInstallResponse {
 	needsConfirmation: boolean
 }
 
+export interface SendFeedbackResponse {
+	status: string
+}
+
 export interface Session {
 	id: string
 	name?: string

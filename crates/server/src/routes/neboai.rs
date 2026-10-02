@@ -107,6 +107,13 @@ pub fn routes() -> Router<AppState> {
             "/neboai/reconnect",
             axum::routing::post(handlers::neboai::force_reconnect),
         )
+        // Feedback to the NeboAI team from the account menu: up to five
+        // screenshots ride along, so the door is wider than axum's 2 MiB.
+        .route(
+            "/neboai/feedback",
+            axum::routing::post(handlers::feedback::send_feedback)
+                .layer(axum::extract::DefaultBodyLimit::max(64 << 20)),
+        )
         .route(
             "/neboai/share",
             axum::routing::get(handlers::neboai::share_link)

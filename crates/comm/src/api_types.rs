@@ -966,6 +966,25 @@ pub struct FileShareSettings {
     pub expires_at: String,
 }
 
+// ── Feedback to the NeboAI team ──────────────────────────────────────
+
+/// Feedback from the app's menu, as `POST /api/v1/support/feedback` takes
+/// it: the hub files it as a support ticket in the team's inbox.
+/// `attachments` are file ids from the one upload path
+/// (`POST /api/v1/files/upload`); `diagnostics` is absent when the person
+/// turned them off, and is already redacted.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct SupportFeedback {
+    pub message: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub diagnostics: Option<std::collections::BTreeMap<String, String>>,
+    /// `desktop` or `phone`.
+    pub source: String,
+}
+
 // ── Managed bots (the owner's account) ───────────────────────────────
 
 /// One bot on the owner's account, as `GET /api/v1/manage/bots` lists it.

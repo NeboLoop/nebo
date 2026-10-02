@@ -1371,6 +1371,13 @@ export function neboAIEntitlements() {
 }
 
 /**
+ * @description "Send feedback"
+ */
+export function sendFeedback(req: Record<string, unknown> = {}) {
+	return webapi.post<components.SendFeedbackResponse>(`/api/v1/neboai/feedback`, req)
+}
+
+/**
  * @description "Nebo a i janus usage"
  */
 export function neboAIJanusUsage() {

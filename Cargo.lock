@@ -6144,6 +6144,7 @@ dependencies = [
  "serde_yaml",
  "sha2",
  "shellexpand",
+ "sysinfo",
  "tar",
  "tempfile",
  "tokio",
