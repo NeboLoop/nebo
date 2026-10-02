@@ -115,8 +115,11 @@
       chat.setError(message);
       settleFirstRun({ clearPendingSend: false });
     }));
-    activeRunUnsubs.push(ws.on<{ agentId?: string; session_id?: string }>('chat_complete', (data) => {
+    activeRunUnsubs.push(ws.on<{ agentId?: string; session_id?: string; stop_reason?: string }>('chat_complete', (data) => {
       if (!isFirstRunEvent(data)) return;
+      // A message sent meanwhile was taken into the first run, which is still
+      // going: the controller marks it pending.
+      if (data.stop_reason === 'queued_into_running_turn') return;
       chat.isLoading = false;
       // Successful runs persist messages — reload so IDs match the DB.
       // Provider errors reject before persistence; skip reload so we keep the

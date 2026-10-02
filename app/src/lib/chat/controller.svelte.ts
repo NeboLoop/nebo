@@ -394,7 +394,11 @@ export function createChatController(config: ChatControllerConfig) {
   function handleChatComplete(data: any) {
     if (!isMyEvent(data)) return;
     // The queued message's own completion: the first turn is still running.
-    if (data.stop_reason === QUEUED_INTO_RUNNING_TURN) return;
+    // It carries no words; the message shows pending, and nothing else.
+    if (data.stop_reason === QUEUED_INTO_RUNNING_TURN) {
+      setLastUserPending(true);
+      return;
+    }
     const aid = data.agentId || agentId;
     // Flush any buffered streamed text into the open reply before finalizing.
     flushPending(aid);
@@ -628,9 +632,10 @@ export function createChatController(config: ChatControllerConfig) {
   }
 
   // Sent while the employee was still working: the server appended it to the
-  // thread for the running turn's next step. The message itself shows as
-  // pending (italic) until that turn completes; the employee says nothing
-  // about it, and the spinner stays because the first turn is still running.
+  // thread for the running turn's next step and ends its own stream with this
+  // typed stop on chat_complete, no words. The message itself shows as
+  // pending (italic) until that turn completes; no banner, no toast, and the
+  // spinner stays because the first turn is still running.
   const QUEUED_INTO_RUNNING_TURN = 'queued_into_running_turn';
   function setLastUserPending(pending: boolean) {
     for (let i = messages.length - 1; i >= 0; i--) {
@@ -646,10 +651,6 @@ export function createChatController(config: ChatControllerConfig) {
 
   function handleChatError(data: any) {
     if (!isMyEvent(data)) return;
-    if (data.stop_reason === QUEUED_INTO_RUNNING_TURN) {
-      setLastUserPending(true);
-      return;
-    }
     isLoading = false;
     resetStreaming();
     phaseStartTime = 0;

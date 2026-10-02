@@ -832,6 +832,13 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                             if reply_fragment(&event).is_none() {
                                 let (reason, notice) = control_stop_of(&event);
                                 control_stop = Some((reason.clone(), notice));
+                                // Input that joined a running turn is not an
+                                // error and is announced nowhere: its typed
+                                // stop on chat_complete marks the message
+                                // pending, and nothing else.
+                                if reason == agent::harness::session_gate::QUEUED_INTO_RUNNING_TURN {
+                                    continue;
+                                }
                                 hub.broadcast(
                                     "chat_error",
                                     ws_payload!(

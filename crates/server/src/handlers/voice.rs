@@ -270,8 +270,7 @@ fn voice_tools(transfer: bool, telephony: bool, intents: &[String]) -> Vec<serde
                         asking to stop work (use `cancel`), or your own words read back to you. \
                         Pass the request restated with the \
                         spoken context needed to complete it. It runs the full toolchain and \
-                        returns the result for you to relay aloud. If the result says the last \
-                        task is still running and this message is waiting, say exactly that.",
+                        returns the result for you to relay aloud.",
         "parameters": nebo_params
     })];
     if !telephony {
@@ -687,11 +686,12 @@ pub(crate) async fn run_delegated_task(
                 cancel_token,
                 spoken_tx,
             ));
-            spoken_rx.await.unwrap_or_else(|_| VOICE_RUN_VANISHED.to_string())
+            spoken_rx.await.unwrap_or_else(|_| Some(VOICE_RUN_VANISHED.to_string()))
         }
-        Err(e) => format!("The task failed: {e}"),
+        Err(e) => Some(format!("The task failed: {e}")),
     };
-    let mut reply = DelegatedReply { text, told: Vec::new() };
+    let joined = text.is_none();
+    let mut reply = DelegatedReply { text: text.unwrap_or_default(), told: Vec::new(), joined: false };
     if caller.is_none() {
         for w in super::asks::waiting(state, Some(session_key)).await {
             if w.card.created_at >= started {
@@ -702,7 +702,8 @@ pub(crate) async fn run_delegated_task(
         }
     }
     if reply.text.trim().is_empty() {
-        reply.text = VOICE_RUN_SILENT.to_string();
+        reply.joined = joined;
+        reply.text = if joined { JOINED_RUNNING_WORK } else { VOICE_RUN_SILENT }.to_string();
     }
     reply
 }
@@ -712,7 +713,16 @@ pub(crate) async fn run_delegated_task(
 pub(crate) struct DelegatedReply {
     pub text: String,
     pub told: Vec<String>,
+    /// The task went into the turn already running in this conversation,
+    /// which answers it: nothing is said for it now (`text` is only for the
+    /// voice model), and the call is not asked to speak.
+    pub joined: bool,
 }
+
+/// What the voice model is handed for a task that joined the work already
+/// running: never spoken, never a status line.
+const JOINED_RUNNING_WORK: &str = "Taken into the work already running in this conversation; its answer \
+     covers this. Say nothing about it now.";
 
 /// Spoken when the drain task ended without ever producing a reply (it
 /// panicked): the phone must hear something, and it must be true.
@@ -735,13 +745,13 @@ async fn drain_voice_run(
     mut rx: mpsc::Receiver<ai::StreamEvent>,
     run_handle: RunHandle,
     cancel_token: tokio_util::sync::CancellationToken,
-    spoken: tokio::sync::oneshot::Sender<String>,
+    spoken: tokio::sync::oneshot::Sender<Option<String>>,
 ) {
     let mut spoken = Some(spoken);
     let mut out = String::new();
-    // Typed run status (a busy session's "still on the last thing", a
-    // stall) stands in for a reply only when there is none; progress
-    // notices are superseded by the text that follows.
+    // Typed run status (a stall, a stop) stands in for a reply only when
+    // there is none; progress notices are superseded by the text that
+    // follows.
     let mut last_notice = String::new();
     let mut control_stop: Option<(String, String)> = None;
     let mut last_event = tokio::time::Instant::now();
@@ -777,7 +787,7 @@ async fn drain_voice_run(
             ai::StreamEventType::AskRequest => {
                 announce_ask(&state, &session_key, &event).await;
                 if let Some(tx) = spoken.take() {
-                    let _ = tx.send(out.clone());
+                    let _ = tx.send(Some(out.clone()));
                 }
             }
             ai::StreamEventType::ToolCall => {
@@ -829,7 +839,14 @@ async fn drain_voice_run(
         }
     }
     if let Some(tx) = spoken.take() {
-        let _ = tx.send(voice_reply(&out, &last_notice));
+        // Input that joined the turn already running here says nothing: that
+        // turn's answer covers it (`None`).
+        let joined = out.trim().is_empty()
+            && last_notice.is_empty()
+            && control_stop
+                .as_ref()
+                .is_some_and(|(reason, _)| reason == agent::harness::session_gate::QUEUED_INTO_RUNNING_TURN);
+        let _ = tx.send((!joined).then(|| voice_reply(&out, &last_notice)));
     }
     finish_turn(
         &state,
@@ -972,6 +989,7 @@ pub(crate) async fn before_task(
                 w.card.employee
             ),
             told: vec![w.card.id.clone()],
+            joined: false,
         });
     }
     let parked = here.iter().find(|w| w.card.kind == "question")?;
@@ -982,6 +1000,7 @@ pub(crate) async fn before_task(
             super::asks::on_call(&parked.card)
         ),
         told: vec![parked.card.id.clone()],
+        joined: false,
     })
 }
 
@@ -2021,8 +2040,7 @@ async fn handle_conversation_ws(mut socket: WebSocket, state: AppState, mut q: C
              you to stop or cancel the work, call `cancel` and read back what it says; if \
              it is not clear they mean the running work, ask in one short sentence first. \
              While a task runs, \
-             say you are on it once. If a result says the last task is still running and \
-             the message is waiting, say that instead of on it. When you are told an employee \
+             say you are on it once. When you are told an employee \
              is waiting on the user's answer, put the question to them right away in one \
              short question, in the language they are speaking, saying who asks. When they \
              answer, call `answer_ask` with the ask id you were told and their words exactly \
@@ -2483,8 +2501,10 @@ async fn handle_conversation_session(
 
     // Completed tool executions flow back through this channel so the select
     // loop below owns all rt_tx sends (all outputs before one continuation).
-    // Each carries the ids of the waiting asks its output told the call of.
-    let (tool_done_tx, mut tool_done_rx) = mpsc::channel::<(String, String, Vec<String>)>(8);
+    // Each carries the ids of the waiting asks its output told the call of,
+    // and whether it is an answer to say (a task that joined the work already
+    // running is not: that work's answer covers it).
+    let (tool_done_tx, mut tool_done_rx) = mpsc::channel::<(String, String, Vec<String>, bool)>(8);
     let mut pending_tools: usize = 0;
 
     // Runs one tool call off the select loop; its output comes back through
@@ -2524,6 +2544,7 @@ async fn handle_conversation_session(
             // tool brain); anything else the model improvises
             // still runs through the policy-gated registry.
             let mut told = Vec::new();
+            let mut speak = true;
             let output = if name == "nebo" {
                 let task = input
                     .get("task")
@@ -2554,6 +2575,7 @@ async fn handle_conversation_session(
                     }
                     let reply = run_delegated_task(&state, &ctx.session_key, task, &said, caller.as_ref()).await;
                     told = reply.told;
+                    speak = !reply.joined;
                     reply.text
                 };
                 serde_json::json!({ "ok": true, "content": content })
@@ -2566,7 +2588,7 @@ async fn handle_conversation_session(
                     "content": result.content,
                 })
             };
-            let _ = done.send((call_id, output.to_string(), told)).await;
+            let _ = done.send((call_id, output.to_string(), told, speak)).await;
         });
     };
     // `nebo` calls that answer an utterance whose user row is not written
@@ -2602,6 +2624,8 @@ async fn handle_conversation_session(
     let mut quiet_since = tokio::time::Instant::now();
     let mut narrating: Option<tokio::time::Instant> = None;
     let mut owe_continuation = false;
+    // An output since the last continuation is an answer to say.
+    let mut answer_owed = false;
     // When the client last sent anything at all (audio, a frame, a ping).
     let mut client_heard = tokio::time::Instant::now();
 
@@ -2710,6 +2734,7 @@ async fn handle_conversation_session(
                                     })
                                     .to_string(),
                                     Vec::new(),
+                                    true,
                                 ))
                                 .await;
                             let _ = socket
@@ -2736,6 +2761,7 @@ async fn handle_conversation_session(
                                     call_id,
                                     serde_json::json!({"ok": true, "content": line}).to_string(),
                                     Vec::new(),
+                                    true,
                                 ))
                                 .await
                                 .is_err()
@@ -2761,6 +2787,7 @@ async fn handle_conversation_session(
                                     call_id,
                                     serde_json::json!({"ok": ok, "content": line}).to_string(),
                                     Vec::new(),
+                                    true,
                                 ))
                                 .await
                                 .is_err()
@@ -2788,6 +2815,7 @@ async fn handle_conversation_session(
                                     call_id,
                                     serde_json::json!({"ok": true, "content": line}).to_string(),
                                     Vec::new(),
+                                    true,
                                 ))
                                 .await
                                 .is_err()
@@ -2813,6 +2841,7 @@ async fn handle_conversation_session(
                                     })
                                     .to_string(),
                                     Vec::new(),
+                                    true,
                                 ))
                                 .await;
                             if socket
@@ -2849,8 +2878,9 @@ async fn handle_conversation_session(
 
             // Finished tool executions -> upstream. ALL outputs first, then
             // exactly one continuation once nothing is outstanding.
-            Some((call_id, output, told_by_it)) = tool_done_rx.recv() => {
+            Some((call_id, output, told_by_it, speak)) = tool_done_rx.recv() => {
                 told.extend(told_by_it);
+                answer_owed |= speak;
                 if rt_tx.send(RealtimeCommand::ToolOutput { call_id, output }).await.is_err() {
                     break;
                 }
@@ -2858,15 +2888,19 @@ async fn handle_conversation_session(
                 if pending_tools == 0 {
                     // The run is done: its steps are no longer news.
                     step = None;
-                    if narrating.is_some() {
-                        // A step is being said: the answer follows it rather
-                        // than talking over it.
-                        owe_continuation = true;
-                    } else {
-                        if rt_tx.send(RealtimeCommand::ToolOutputsDone).await.is_err() {
-                            break;
+                    // Only tasks that joined the work already running: nothing
+                    // to say, so the model is not asked to speak.
+                    if std::mem::take(&mut answer_owed) {
+                        if narrating.is_some() {
+                            // A step is being said: the answer follows it
+                            // rather than talking over it.
+                            owe_continuation = true;
+                        } else {
+                            if rt_tx.send(RealtimeCommand::ToolOutputsDone).await.is_err() {
+                                break;
+                            }
+                            responding = true;
                         }
-                        responding = true;
                     }
                 }
             }
@@ -3505,7 +3539,7 @@ mod voice_prompt_tests {
             .await
             .expect("the call hears back before the run ends")
             .unwrap();
-        assert_eq!(spoken, "Checking. ", "what it said before the question");
+        assert_eq!(spoken.as_deref(), Some("Checking. "), "what it said before the question");
         let parked = state.run_registry.pending_ask_for_session(&key).await.expect("card recorded on the run");
         assert_eq!(parked.request_id, "req-1");
         assert!(state.ask_channels.lock().await.contains_key("req-1"), "the answer channel waits while parked");
@@ -3561,13 +3595,58 @@ mod voice_prompt_tests {
         tx.send(ai::StreamEvent::text("both.")).await.unwrap();
         drop(tx);
         drain.await.unwrap();
-        assert_eq!(spoken_rx.await.unwrap(), "Booked both.");
+        assert_eq!(spoken_rx.await.unwrap().as_deref(), Some("Booked both."));
         loop {
             let e = events.recv().await.unwrap();
             if e.event_type == "chat_complete" && e.payload["session_id"] == key.as_str() {
                 break;
             }
         }
+    }
+
+    /// Live 2026-10-02: every word the owner said while a task ran was
+    /// answered aloud with "Still on the last thing, 5 seconds in, currently
+    /// thinking…". Input that joins the running turn now says nothing: the
+    /// call is handed no line to speak, and the turn's end carries only the
+    /// typed queued stop (no words, no chat_error).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn drain_voice_run_says_nothing_for_input_that_joined_the_running_turn() {
+        let nebo = crate::staffed_proof::session().await;
+        let state = nebo.state.clone();
+        let key = format!("agent:a:thread:{}", uuid::Uuid::new_v4());
+        let mut events = state.hub.subscribe();
+        let run_handle = register(&state, &key).await;
+        let (tx, rx) = tokio::sync::mpsc::channel(8);
+        let (spoken_tx, spoken_rx) = tokio::sync::oneshot::channel();
+        let drain = tokio::spawn(super::drain_voice_run(
+            state.clone(),
+            key.clone(),
+            "a".into(),
+            rx,
+            run_handle,
+            tokio_util::sync::CancellationToken::new(),
+            spoken_tx,
+        ));
+        tx.send(ai::StreamEvent::control_notice("", agent::harness::session_gate::QUEUED_INTO_RUNNING_TURN))
+            .await
+            .unwrap();
+        tx.send(ai::StreamEvent::done()).await.unwrap();
+        drop(tx);
+        drain.await.unwrap();
+        assert_eq!(spoken_rx.await.unwrap(), None, "nothing to say");
+        let done = loop {
+            let e = events.recv().await.unwrap();
+            assert!(
+                !(e.event_type == "chat_error" && e.payload["session_id"] == key.as_str()),
+                "no error event: {}",
+                e.payload
+            );
+            if e.event_type == "chat_complete" && e.payload["session_id"] == key.as_str() {
+                break e;
+            }
+        };
+        assert_eq!(done.payload["stop_reason"], agent::harness::session_gate::QUEUED_INTO_RUNNING_TURN);
+        assert_eq!(done.payload["stop_notice"], "", "no words");
     }
 
     /// A file the owner shares from the composer while on the call is news

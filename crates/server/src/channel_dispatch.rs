@@ -214,8 +214,8 @@ pub(crate) struct ChannelReply {
     /// Engine-stamped provenance of the run, so the coworker rail can label
     /// a tainted reply.
     pub provenance: Vec<types::provenance::ProvenanceClass>,
-    /// The input went into a turn already running in that session: `text` is
-    /// the busy line, not a reply; the running turn answers it.
+    /// The input went into a turn already running in that session: there is
+    /// no reply to post; the running turn answers it.
     pub queued: bool,
     /// The run's last error, in the words the turn gave the owner ("Could
     /// not connect to Hermes. Try again."). Not part of `text`: a customer
@@ -392,21 +392,20 @@ mod tests {
         );
     }
 
-    /// Input that went into a turn already running is not answered by the
-    /// busy line: the collector says it was queued, so nobody reads that
-    /// line as the reply.
+    /// Input that went into a turn already running posts nothing: the
+    /// queued stop carries no words, and the collector says it was queued,
+    /// so nothing is posted for it.
     #[tokio::test]
     async fn a_queued_input_is_not_a_reply() {
         let (tx, rx) = tokio::sync::mpsc::channel(8);
         let cancel = tokio_util::sync::CancellationToken::new();
-        tx.send(ai::StreamEvent::control_notice(
-            "Got it. I'll pick this up at my next step.",
-            agent::harness::session_gate::QUEUED_INTO_RUNNING_TURN,
-        ))
-        .await
-        .unwrap();
+        tx.send(ai::StreamEvent::control_notice("", agent::harness::session_gate::QUEUED_INTO_RUNNING_TURN))
+            .await
+            .unwrap();
         tx.send(ai::StreamEvent::done()).await.unwrap();
         drop(tx);
-        assert!(collect_channel_reply(rx, &cancel, "agent-1", "coworker", None).await.queued);
+        let reply = collect_channel_reply(rx, &cancel, "agent-1", "coworker", None).await;
+        assert!(reply.queued);
+        assert_eq!(reply.text, "", "nothing to post");
     }
 }
