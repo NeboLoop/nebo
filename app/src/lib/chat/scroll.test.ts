@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
 	NEAR_BOTTOM_PX,
+	captureAnchor,
+	restoredScrollTop,
 	autoScrollAfterUserScroll,
 	distanceFromBottom,
 	isNearBottom,
@@ -236,5 +238,50 @@ describe('send-then-stream follow scenario', () => {
 				forceFollow: false,
 			}),
 		).toBe(true);
+	});
+});
+
+describe('captureAnchor / restoredScrollTop: closing the file viewer returns to the same place', () => {
+	// Rows are laid out top to bottom; `viewTop` is the scroller's top edge.
+	const layout = (heights: number[], scrollTop: number, viewTop = 50) => {
+		let y = viewTop - scrollTop;
+		return heights.map((h) => {
+			const r = { top: y, bottom: y + h };
+			y += h;
+			return r;
+		});
+	};
+
+	it('keeps the row being read at the same distance from the top across a reflow', () => {
+		// Narrow column (pane open): taller rows. The reader is mid-transcript.
+		const narrow = [400, 600, 300, 500, 400];
+		const before = { scrollTop: 700, scrollHeight: 2200, clientHeight: 600 };
+		const anchor = captureAnchor(before, 50, layout(narrow, 700));
+		expect(anchor.atBottom).toBe(false);
+		expect(anchor.index).toBe(1); // row 1 spans 400–1000, in view at 700
+		expect(anchor.offset).toBe(-300);
+
+		// Pane closed: the column widens and every row gets shorter. With the
+		// old scrollTop the view would land past the rows being read.
+		const wide = [200, 300, 150, 250, 200];
+		const after = { scrollTop: 500, scrollHeight: 1100, clientHeight: 600 }; // clamped
+		const top = restoredScrollTop(anchor, after, 50, layout(wide, 500));
+		// Row 1 starts at 200 in the wide layout; 300px of it was above the edge.
+		expect(top).toBe(500);
+		expect(layout(wide, top)[1].top - 50).toBe(-300);
+	});
+
+	it('the end of the conversation stays the end', () => {
+		const before = { scrollTop: 1600, scrollHeight: 2200, clientHeight: 600 };
+		const anchor = captureAnchor(before, 50, layout([2200], 1600));
+		expect(anchor.atBottom).toBe(true);
+		const after = { scrollTop: 0, scrollHeight: 1100, clientHeight: 600 };
+		expect(restoredScrollTop(anchor, after, 50, layout([1100], 0))).toBe(500);
+	});
+
+	it('never scrolls past the rows into empty space', () => {
+		const anchor = { atBottom: false, index: 9, offset: 0 };
+		const m = { scrollTop: 4000, scrollHeight: 1100, clientHeight: 600 };
+		expect(restoredScrollTop(anchor, m, 50, layout([1100], 0))).toBe(500);
 	});
 });

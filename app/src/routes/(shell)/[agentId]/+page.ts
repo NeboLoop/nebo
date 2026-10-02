@@ -1,31 +1,18 @@
 import { redirect } from '@sveltejs/kit';
 import { withBase } from '$lib/nav';
+import { employeeLanding } from '$lib/chat/openEmployee';
 
 // /{id} is where a sidebar row lands. The click itself only navigates (a
 // real link, so the URL changes at once and the route preloads on hover);
 // deciding where the employee opens happens HERE, in the route's load, in
-// one round trip: an app opens its overview, an isolated employee its list
-// of matters, everyone else their latest conversation (or the new-chat page
-// when they have none). Before this, the row's click handler awaited two
-// requests before calling goto, and a busy backend made every click stall.
+// one round trip (`employeeLanding`): an isolated employee its list of
+// matters, everyone else — apps included — their latest conversation (or
+// the new-chat page when they have none). Before this, the row's click
+// handler awaited two requests before calling goto, and a busy backend made
+// every click stall.
 export const ssr = false;
 
 export async function load({ params }) {
 	const api = await import('$lib/api/nebo');
-	const id = params.agentId;
-	const [detail, chats] = await Promise.all([
-		api.getAgent(id).catch(() => null),
-		api.listAgentChats(id).catch(() => null)
-	]);
-	let target = `/${id}/threads`;
-	if (detail?.agent?.isApp) {
-		target = `/${id}/overview`;
-	} else {
-		const mode = detail?.memoryMode;
-		const isolated = mode === 'separate' || mode === 'confidential';
-		const latest = chats?.chats?.[0]?.id;
-		if (isolated) target = `/${id}/threads?list=${encodeURIComponent(id)}`;
-		else if (latest) target = `/${id}/threads/${latest}`;
-	}
-	redirect(307, withBase(target));
+	redirect(307, withBase(await employeeLanding(api, params.agentId)));
 }

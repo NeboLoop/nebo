@@ -11,7 +11,7 @@
   import { createChatController } from '$lib/chat/controller.svelte';
   import type { ChatMessage } from '$lib/chat/controller.svelte';
   import { toMentionAgent } from '$lib/chat/roster';
-  import { threadKey } from '$lib/chat/sessionKey';
+  import { conversationTitle, threadKey } from '$lib/chat/sessionKey';
   import { formatTime } from '$lib/time';
   import { getWebSocketClient } from '$lib/websocket/client';
   import type { Agent, ChatMessage as ApiChatMessage } from '$lib/api/neboComponents';
@@ -267,7 +267,7 @@
   agentId={agentId}
   {threadId}
   onteachsent={(message) => chat.noteSent(message)}
-  headerTitle={thread?.name ?? $t('chat.thread')}
+  headerTitle={conversationTitle(thread, agent?.name ?? $t('chat.thread'))}
   headerRight={$t('chat.work')}
   onopenruns={ctx.openRuns}
   composerPrefill={askPrefill}

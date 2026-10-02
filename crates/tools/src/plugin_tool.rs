@@ -1928,13 +1928,16 @@ pub(crate) fn produced_work_document(
 ) -> Option<String> {
     let cutoff = started - std::time::Duration::from_secs(1);
     args.iter().rev().find_map(|a| {
-        if !crate::file_tool::is_work_document(a) {
-            return None;
-        }
         let path = match base {
             Some(b) if std::path::Path::new(a).is_relative() => b.join(a.as_str()),
             _ => std::path::PathBuf::from(a.as_str()),
         };
+        // Judged on the resolved path: a relative `src/App.tsx` run in an
+        // employee's own package folder is its working file, not a
+        // deliverable — checked bare, it passed the package test.
+        if !crate::file_tool::is_work_document(&path.to_string_lossy()) {
+            return None;
+        }
         let fresh = std::fs::metadata(&path)
             .and_then(|m| m.modified())
             .map(|m| m >= cutoff)
