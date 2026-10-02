@@ -930,7 +930,7 @@ mod tests {
         app_row(&store, "app-1", "Flip-Flap", &tmp.path().join("ui"));
         store.create_agent("emp-1", Some("user"), "Bookkeeper", "", "---\nname: x\n---\n", "{}", None, None).unwrap();
         assert!(preloaded(&store, "app-1").is_empty(), "mode off: deferred as for everyone");
-        store.update_settings(None, None, None, None, None, None, None, None, None, Some(true)).unwrap();
+        store.update_settings(None, None, None, None, None, None, None, Some(true), None, Some(true)).unwrap();
         assert_eq!(preloaded(&store, "app-1"), vec![CODE_TOOL.to_string()]);
         assert!(preloaded(&store, "emp-1").is_empty(), "not an app");
         assert!(preloaded(&store, "").is_empty());
@@ -999,7 +999,7 @@ mod tests {
                 None,
                 None,
                 None,
-                None,
+                Some(true),
                 None,
                 Some(true),
             )

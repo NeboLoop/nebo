@@ -151,11 +151,12 @@ impl Store {
         Ok(())
     }
 
-    /// Whether App Developer mode is on (Bot settings). Off when the
-    /// settings row cannot be read: the developer pack is never offered by
-    /// accident.
+    /// Whether App Developer mode is in effect (Bot settings): it counts only
+    /// while Developer mode is on, the same rule the desktop and phone apps
+    /// show. Off when the settings row cannot be read: the developer pack is
+    /// never offered by accident.
     pub fn app_developer_mode(&self) -> bool {
-        matches!(self.get_settings(), Ok(Some(s)) if s.app_developer_mode != 0)
+        matches!(self.get_settings(), Ok(Some(s)) if s.app_developer_mode != 0 && s.developer_mode != 0)
     }
 
     /// The bot's Location, or `None` when the owner has not set one.
@@ -433,8 +434,13 @@ mod tests {
         let store = temp_store();
         assert!(!store.app_developer_mode());
 
+        // App Developer alone does not count: it needs Developer mode.
         store
             .update_settings(None, None, None, None, None, None, None, None, None, Some(true))
+            .unwrap();
+        assert!(!store.app_developer_mode());
+        store
+            .update_settings(None, None, None, None, None, None, None, Some(true), None, None)
             .unwrap();
         assert!(store.app_developer_mode());
         let s = store.get_settings().unwrap().unwrap();
