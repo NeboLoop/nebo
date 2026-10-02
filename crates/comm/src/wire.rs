@@ -202,10 +202,6 @@ pub struct JoinResultPayload {
     pub channel_name: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub loop_id: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub peer_id: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub peer_type: String, // "bot" or "person"
     /// Agent ID for agent space joins.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub agent_id: String,
@@ -395,8 +391,6 @@ mod tests {
             channel_id: "chan-1".into(),
             channel_name: "general".into(),
             loop_id: "loop-1".into(),
-            peer_id: String::new(),
-            peer_type: String::new(),
             agent_id: String::new(),
             agent_slug: String::new(),
             conv_type: String::new(),
@@ -420,8 +414,6 @@ mod tests {
             channel_id: String::new(),
             channel_name: String::new(),
             loop_id: "loop-1".into(),
-            peer_id: String::new(),
-            peer_type: String::new(),
             agent_id: "agent-456".into(),
             agent_slug: "researcher".into(),
             conv_type: String::new(),

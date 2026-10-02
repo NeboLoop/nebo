@@ -854,16 +854,6 @@ pub struct TaskResult {
     pub error: Option<String>,
 }
 
-/// Direct message from another bot or person.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DirectMessage {
-    pub from: String,
-    pub content: String,
-    #[serde(default)]
-    pub peer_type: String,
-}
-
 /// Channel message from a loop channel.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
