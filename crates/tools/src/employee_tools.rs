@@ -90,7 +90,7 @@ fn automation_item() -> serde_json::Value {
         "properties": {
             "name": { "type": "string", "description": "Workflow name, e.g. weekday-page-check." },
             "description": { "type": "string", "description": "What the duty is, in a line." },
-            "schedule": { "type": "string", "description": "When it runs: a cron (\"0 9 * * 1-5\") or a phrase (\"weekdays at 9am\", \"every 2 hours\")." },
+            "schedule": { "type": "string", "description": "When it runs: five-field cron, minute first (\"30 8 * * *\" is 8:30 every day, \"0 9 * * 1-5\" is 9:00 on weekdays), or a phrase (\"weekdays at 9am\", \"every 2 hours\")." },
             "interval": { "type": "string", "description": "Instead of a schedule: run every interval (\"15m\", \"1h\")." },
             "window": { "type": "string", "description": "With interval: the hours it runs in, e.g. \"08:00-18:00\"." },
             "sources": { "type": "array", "items": { "type": "string" }, "minItems": 1, "description": "Instead of a schedule: the events that start it, e.g. \"email.received\"." },

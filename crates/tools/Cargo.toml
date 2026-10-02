@@ -22,6 +22,7 @@ comm = { workspace = true }
 mcp = { workspace = true }
 notify_crate = { workspace = true }
 chrono = { workspace = true }
+cron = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
 async-trait = { workspace = true }

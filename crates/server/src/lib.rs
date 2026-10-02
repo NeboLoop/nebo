@@ -1108,6 +1108,9 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // Self-heal pre-v0.12.13 chat-created agents: convert assistant-owned
     // generic crons carrying a named agent's duty into that agent's own
     // workflow bindings. Must run before the scheduler spawns.
+    // Schedules a model wrote minute first with a stray sixth field fired
+    // every hour; repair them before anything reads them.
+    migration::repair_minute_first_crons(&store);
     migration::migrate_orphaned_agent_crons(&store);
     // The API handler used to leave an empty, titled row beside every
     // conversation it ran; they sat in each employee's chat list forever.

@@ -6204,6 +6204,7 @@ dependencies = [
  "async-trait",
  "base64 0.22.1",
  "chrono",
+ "cron",
  "dirs",
  "flate2",
  "futures",

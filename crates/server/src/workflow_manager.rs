@@ -2473,8 +2473,9 @@ async fn review_failed_workflow_run(
 /// error, never a silent downgrade to manual — that downgrade is how an agent
 /// shipped seven never-firing workflows while reporting "active with proper
 /// schedules" (2026-08-01). Manual stays the default only when no trigger was
-/// asked for at all. Schedule crons must parse once normalized; human phrases
-/// ("weekdays at 9am") are fine — that's what normalize_cron is for.
+/// asked for at all. Schedule crons are read strictly
+/// (`PersonaTool::parse_cron_input`): five fields minute first, or a phrase
+/// ("weekdays at 9am"); an ambiguous six-field cron is refused, not guessed.
 fn resolve_tool_trigger(
     def: &serde_json::Value,
 ) -> Result<(String, serde_json::Value), String> {
@@ -2545,15 +2546,7 @@ fn resolve_tool_trigger(
                     .to_string(),
             );
         }
-        let normalized = tools::PersonaTool::normalize_cron(raw);
-        if normalized.parse::<cron::Schedule>().is_err() {
-            return Err(format!(
-                "invalid cron expression {:?} (normalized to {:?}) — use standard \
-                 5-field cron like \"0 9 * * MON-FRI\" or a phrase like \
-                 \"weekdays at 9am\"",
-                raw, normalized
-            ));
-        }
+        tools::PersonaTool::parse_cron_input(raw)?;
     }
     Ok((trigger_type, trigger_config))
 }

@@ -200,6 +200,40 @@ fn scheduled_turn(
     }
 }
 
+/// Every fire of a job starts a fresh conversation in the job's one thread
+/// (`checkpoint::fresh_run`): the owner reads every run there, one after
+/// another, but the model reads only this run, with one line on how the last
+/// one ended. Carried in one conversation, each fire resent every earlier
+/// run and the model, seeing the same request forty times, refused it
+/// ("This is the 40th identical request", 2026-10-02). The first fire has
+/// nothing before it.
+fn start_fresh(state: &AppState, job: &CronJob, session_key: &str) {
+    let Ok(Some(session)) = state.store.get_session_by_name(session_key) else {
+        return;
+    };
+    let chat_id = state.store.resolve_session_chat_id(&session.id);
+    let last_run = state
+        .store
+        .list_cron_history(job.id, 5, 0)
+        .unwrap_or_default()
+        .into_iter()
+        .find(|run| run.finished_at.is_some())
+        .map(|run| {
+            let at = run.started_at.unwrap_or_default();
+            match (run.success, run.error) {
+                (Some(1), _) => format!("The last run ({at} UTC) finished."),
+                (_, Some(error)) => format!(
+                    "The last run ({at} UTC) failed: {}",
+                    error.trim().chars().take(300).collect::<String>()
+                ),
+                _ => format!("The last run ({at} UTC) did not finish."),
+            }
+        });
+    if let Err(e) = agent::harness::compact::checkpoint::fresh_run(&state.store, &chat_id, last_run.as_deref()) {
+        warn!(job = job.name.as_str(), error = %e, "scheduler: could not start the run on a fresh conversation");
+    }
+}
+
 async fn execute_agent(state: &AppState, job: &CronJob) -> (bool, String, Option<String>) {
     let prompt = job.message.as_deref().unwrap_or(&job.command);
 
@@ -225,6 +259,7 @@ async fn execute_agent(state: &AppState, job: &CronJob) -> (bool, String, Option
         Some(id) => format!("agent:{}:cron:{}", id, job.name),
         None => format!("cron-{}", job.name),
     };
+    start_fresh(state, job, &session_key);
     let cancel_token = tokio_util::sync::CancellationToken::new();
 
     // Register in the global RunRegistry so cron runs are visible and cancellable

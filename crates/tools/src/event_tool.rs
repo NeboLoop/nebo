@@ -48,7 +48,7 @@ impl Kind {
     fn description(self) -> &'static str {
         match self {
             Kind::Create => "Schedules a reminder or other work to run later, once or on a repeat.\n\
-                - `at` runs it once, a relative time from now (\"in 20 minutes\", \"in 3 hours\"). `cron` sets a clock time or a repeat, six fields starting with seconds: \"0 0 9 * * 1-5\" is 9am on weekdays, \"0 30 8 * * *\" is 8:30 every morning.\n\
+                - `at` runs it once, a relative time from now (\"in 20 minutes\", \"in 3 hours\"). `cron` sets a clock time or a repeat: five fields, minute hour day month weekday, no seconds. \"30 8 * * *\" is 8:30 every day, \"0 9 * * 1-5\" is 9am on weekdays.\n\
                 - `prompt` is what you do when it fires, with your tools and memory; `command` runs a shell command instead.\n\
                 - It runs with your own permissions: scheduling grants nothing new.\n\
                 - Not for checking on work in progress: helpers report back when they finish, and a run's outcome lands in its history. Never schedule a check on a run.",
@@ -68,7 +68,7 @@ impl Kind {
                 "properties": {
                     "name": { "type": "string", "description": "A short unique name, e.g. \"call-back-kristi\"." },
                     "at": { "type": "string", "description": "Run once, this long from now: \"in 5 minutes\", \"in 2 hours\"." },
-                    "cron": { "type": "string", "description": "Run at a clock time or on a repeat: second minute hour day month weekday." },
+                    "cron": { "type": "string", "description": "Run at a clock time or on a repeat: minute hour day month weekday." },
                     "prompt": { "type": "string", "description": "What to do when it fires; you run it with your tools and memory." },
                     "command": { "type": "string", "description": "A shell command to run instead of a prompt." },
                     "overlap": {
@@ -198,6 +198,9 @@ impl DynTool for ScheduleTool {
         let (prompt, command) = (str_field(input, "prompt"), str_field(input, "command"));
         if prompt.is_empty() == command.is_empty() {
             return Err("Give exactly one of `prompt` (what you do when it fires) or `command` (a shell command).".into());
+        }
+        if !cron.is_empty() {
+            crate::PersonaTool::parse_cron_input(cron)?;
         }
         if !at.is_empty() && parse_relative_time(at).is_none() {
             return Err(format!(
@@ -525,7 +528,7 @@ mod tests {
         let create = tool(&s, "create_schedule");
         let ok = json!({"name": "call-back", "at": "in 3 hours", "prompt": "Remind the owner to call back"});
         assert!(create.validate_input(&ok).is_ok());
-        assert!(create.validate_input(&json!({"name": "x", "cron": "0 0 9 * * 1-5", "command": "echo hi"})).is_ok());
+        assert!(create.validate_input(&json!({"name": "x", "cron": "0 9 * * 1-5", "command": "echo hi"})).is_ok());
         let no_time = create.validate_input(&json!({"name": "x", "prompt": "p"})).unwrap_err();
         assert!(no_time.contains("`at`") && no_time.contains("`cron`"), "{no_time}");
         assert!(create.validate_input(&json!({"name": "x", "at": "in 1 hour", "cron": "0 0 9 * * *", "prompt": "p"})).is_err());
@@ -533,6 +536,25 @@ mod tests {
         assert!(no_work.contains("`prompt`") && no_work.contains("`command`"), "{no_work}");
         let clock = create.validate_input(&json!({"name": "x", "at": "3pm", "prompt": "p"})).unwrap_err();
         assert!(clock.contains("\"3pm\"") && clock.contains("`cron`"), "{clock}");
+    }
+
+    /// The cron a model writes is read strictly: five fields minute first
+    /// is the one format; six fields are refused, never guessed. "30 8 * * * *"
+    /// (meant 8:30 daily) once ran every hour.
+    #[test]
+    fn a_create_takes_five_field_cron_and_refuses_six() {
+        let (s, _d) = store();
+        let create = tool(&s, "create_schedule");
+        assert!(create.validate_input(&json!({"name": "x", "cron": "30 8 * * *", "prompt": "p"})).is_ok());
+        assert!(create.validate_input(&json!({"name": "x", "cron": "every hour", "prompt": "p"})).is_ok());
+        let six = create.validate_input(&json!({"name": "x", "cron": "30 8 * * * *", "prompt": "p"})).unwrap_err();
+        assert!(six.contains("six fields") && six.contains("\"30 8 * * *\""), "{six}");
+        let sec_first = create.validate_input(&json!({"name": "x", "cron": "0 30 8 * * *", "prompt": "p"})).unwrap_err();
+        assert!(sec_first.contains("five fields"), "{sec_first}");
+        let guess = create.validate_input(&json!({"name": "x", "cron": "every morning at 8", "prompt": "p"})).unwrap_err();
+        assert!(guess.contains("Could not read"), "{guess}");
+        let description = Kind::Create.description();
+        assert!(description.contains("\"30 8 * * *\" is 8:30 every day") && !description.contains("seconds:"), "{description}");
     }
 
     /// Create, list, pause, resume and delete, each through its own tool.
