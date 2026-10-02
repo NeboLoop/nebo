@@ -33,6 +33,7 @@ pub mod search_adapter;
 pub mod selector;
 pub mod session;
 pub mod uploads;
+pub mod video;
 #[cfg(test)]
 mod test_home;
 pub mod sidecar;
