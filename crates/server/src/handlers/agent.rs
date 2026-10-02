@@ -325,7 +325,8 @@ pub async fn get_status(State(state): State<AppState>) -> HandlerResult<serde_js
 
 /// GET /api/v1/agent/system-info
 ///
-/// `systemPackages` is a cloud bot's: the packages its employees installed
+/// `ownScreen` says whether this bot runs on a computer with a screen of
+/// its own. `systemPackages` is a cloud bot's: the packages its employees installed
 /// and where putting them back after the last restart stands
 /// (`tools::system_packages`). Null elsewhere.
 pub async fn get_system_info() -> HandlerResult<serde_json::Value> {
@@ -342,6 +343,10 @@ pub async fn get_system_info() -> HandlerResult<serde_json::Value> {
         "arch": std::env::consts::ARCH,
         "version": env!("CARGO_PKG_VERSION"),
         "systemPackages": system_packages,
+        // A screen of its own (a desktop the owner sits at): teach-a-task
+        // records there. Without one (a cloud bot, a headless server) it
+        // records on the bot's virtual computer.
+        "ownScreen": tools::desktop_session::own_screen(),
     })))
 }
 

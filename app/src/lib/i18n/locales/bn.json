@@ -330,6 +330,7 @@
 		"computerUnavailableHint": "কর্মীর কম্পিউটার Linux ইনস্টলেশন ও ক্লাউড কর্মীদের ক্ষেত্রে চলে।",
 		"watchingAndLearning": "{name} দেখছেন এবং শিখছেন",
 		"stopRecording": "রেকর্ডিং থামান",
+		"teachLocalHint": "Do the task on this screen as you normally would, then stop.",
 		"recordTask": "কাজ রেকর্ড করুন",
 		"recording": "রেকর্ড হচ্ছে",
 		"connectFailed": "সংযোগ সম্পূর্ণ হয়নি। আবার চেষ্টা করুন।",

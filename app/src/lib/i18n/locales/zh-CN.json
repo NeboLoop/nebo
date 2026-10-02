@@ -327,6 +327,7 @@
 		"computerUnavailableHint": "员工的电脑可在 Linux 安装版和云端员工上运行。",
 		"watchingAndLearning": "{name} 正在旁观学习",
 		"stopRecording": "停止录制",
+		"teachLocalHint": "Do the task on this screen as you normally would, then stop.",
 		"recordTask": "录制任务",
 		"recording": "正在录制",
 		"connectFailed": "登录未完成。请重试。",

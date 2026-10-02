@@ -330,6 +330,7 @@
 		"computerUnavailableHint": "社員のコンピュータはLinuxインストールとクラウド社員で動作します。",
 		"watchingAndLearning": "{name}が見て学んでいます",
 		"stopRecording": "記録を停止",
+		"teachLocalHint": "Do the task on this screen as you normally would, then stop.",
 		"recordTask": "タスクを記録",
 		"recording": "記録中",
 		"connectFailed": "サインインが完了しませんでした。もう一度お試しください。",

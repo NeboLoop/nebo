@@ -59,11 +59,12 @@ fn focused_app(app: &tauri::AppHandle) -> Option<String> {
 
 /// Whether a window (by its label) is an app window showing one of the
 /// owner's own apps: the only ones published from here. One installed from
-/// the marketplace is its maker's.
+/// the marketplace is its maker's. Offered only under App Developer mode
+/// (with Developer mode on), like the chat's Publish button.
 fn shows_own_app(label: &str) -> bool {
     label
         .strip_prefix("app-")
-        .is_some_and(|id| !id.is_empty() && server::handlers::apps::desktop_is_own_app(id))
+        .is_some_and(|id| !id.is_empty() && server::handlers::apps::desktop_offers_publish(id))
 }
 
 /// Publish from an app window's native menu: bring up the main window and
@@ -71,7 +72,7 @@ fn shows_own_app(label: &str) -> bool {
 /// Publish button, with the app's own employee.
 fn publish_focused_app(app: &tauri::AppHandle) {
     let Some(agent_id) = focused_app(app) else { return };
-    if !server::handlers::apps::desktop_is_own_app(&agent_id) {
+    if !server::handlers::apps::desktop_offers_publish(&agent_id) {
         return;
     }
     if let Some(w) = app.get_webview_window("main") {
@@ -1069,6 +1070,12 @@ fn main() {
                         if let Ok(menu) = menu {
                             let _ = window.set_menu(menu);
                         }
+                    }
+                    // App Developer mode turned off since: the app window's
+                    // menu goes with it.
+                    #[cfg(not(target_os = "macos"))]
+                    if *focused && !is_app && window.label().starts_with("app-") && window.menu().is_some() {
+                        let _ = window.remove_menu();
                     }
                 }
                 tauri::WindowEvent::CloseRequested { api, .. } => {

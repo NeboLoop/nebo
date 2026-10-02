@@ -330,6 +330,7 @@
 		"computerUnavailableHint": "Máy tính của nhân viên chạy trên bản cài Linux và nhân viên trên đám mây.",
 		"watchingAndLearning": "{name} đang xem và học",
 		"stopRecording": "Dừng ghi",
+		"teachLocalHint": "Do the task on this screen as you normally would, then stop.",
 		"recordTask": "Ghi lại tác vụ",
 		"recording": "Đang ghi",
 		"connectFailed": "Đăng nhập chưa hoàn tất. Hãy thử lại.",

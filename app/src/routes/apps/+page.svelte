@@ -41,15 +41,13 @@
     fullscreen: boolean;
   };
 
+  // Open the app, or its employee settings. Every settings section (persona,
+  // skills, workflows, memory, permissions) lives inside those settings; a
+  // second door to each here only duplicated them, and "Runs" pointed at a
+  // settings section that never existed.
   const menuItems = [
     { id: 'open', label: 'apps.openApp' },
-    { id: 'runs', label: 'apps.runs' },
     { id: 'settings', label: 'nav.settings' },
-    { id: 'workflows', label: 'marketplace.workflows' },
-    { id: 'persona', label: 'agent.persona' },
-    { id: 'skills', label: 'commandPalette.skills' },
-    { id: 'memory', label: 'apps.memory' },
-    { id: 'permissions', label: 'commandPalette.permissions' },
   ];
 
   let apps = $state<AppEntry[]>([]);
@@ -67,8 +65,7 @@
     if (itemId === 'open') {
       launchApp(app.id, app.name, { fullscreen: app.fullscreen });
     } else {
-      const section = itemId === 'settings' ? 'general' : itemId;
-      goto(`/${app.id}/settings/${section}`);
+      goto(`/${app.id}/settings/general`);
     }
   }
 
@@ -146,7 +143,7 @@
             {#if openMenuId === app.id}
               <div class="absolute top-12 right-3 z-50 w-44 py-1 rounded-lg border border-base-300 bg-base-100 shadow-lg">
                 {#each menuItems as item}
-                  {#if item.id === 'runs'}
+                  {#if item.id === 'settings'}
                     <div class="h-px bg-base-content/10 my-1"></div>
                   {/if}
                   <button

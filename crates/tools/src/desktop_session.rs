@@ -255,18 +255,144 @@ pub async fn ensure_started() -> Result<u16, String> {
 
 // --- Teach-a-task recording -------------------------------------------------
 //
-// A recording is a mode of the live session: ffmpeg captures the SAME X
-// display x11vnc serves (one canonical frame source) into a human-viewable
-// mp4 plus a deduped ~1fps keyframe series, and xinput logs the raw input
-// events. Artifacts land in the bot's own home so they're visible in its
-// file manager: ~/teach-sessions/<id>/{session.mp4, frames/, events.log}.
+// Two places a demonstration can be recorded (`TeachWhere`):
+//
+// - Local: the owner's own screen, on the computer this Nebo runs on. The
+//   owner simply does the task where they always do it; a sampler takes a
+//   full-screen still about once a second and keeps the ones that changed.
+//   No window, no virtual machine, no ffmpeg.
+// - Computer: the bot's on-demand virtual desktop. ffmpeg captures the SAME
+//   X display x11vnc serves (one canonical frame source) into a
+//   human-viewable mp4 plus a deduped ~1fps keyframe series, and xinput logs
+//   the raw input events.
+//
+// Artifacts land in the bot's own home: ~/teach-sessions/<id>/{frames/, and
+// for the computer session.mp4, events.log, timeline.md}.
+
+/// Where a teach-a-task demonstration is recorded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TeachWhere {
+    /// This computer's own screen: the owner's desktop.
+    Local,
+    /// The bot's virtual computer (the on-demand desktop session).
+    Computer,
+}
+
+impl TeachWhere {
+    /// The caller's choice, or the default. A bot with a screen of its own
+    /// (a Mac, a Windows or Linux desktop) records there; a cloud bot or a
+    /// headless server has none and records on its virtual computer, and
+    /// refuses `local`.
+    pub fn resolve(requested: Option<&str>, own_screen: bool) -> Result<Self, String> {
+        match requested.map(str::trim).filter(|r| !r.is_empty()) {
+            None => Ok(if own_screen { Self::Local } else { Self::Computer }),
+            Some("local") if own_screen => Ok(Self::Local),
+            Some("local") => Err("this bot has no screen of its own to record; record on its computer instead".into()),
+            Some("computer") => Ok(Self::Computer),
+            Some(other) => Err(format!("where must be \"local\" or \"computer\", not {other:?}")),
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Local => "local",
+            Self::Computer => "computer",
+        }
+    }
+}
+
+/// Whether this Nebo runs on a computer with a screen of its own, the one
+/// the owner sits at. Not a cloud bot, not a headless server.
+pub fn own_screen() -> bool {
+    !crate::server_mode()
+}
+
+// One recording at a time: the variants' size difference costs nothing.
+#[allow(clippy::large_enum_variant)]
+enum Recorder {
+    Computer { video: Child, frames: Child, events: Child },
+    Local { stop: tokio_util::sync::CancellationToken, sampler: tokio::task::JoinHandle<()> },
+}
 
 struct RecInner {
     id: String,
     dir: std::path::PathBuf,
-    video: Child,
-    frames: Child,
-    events: Child,
+    recorder: Recorder,
+}
+
+/// How often the local recording looks at the screen.
+const LOCAL_FRAME_EVERY: Duration = Duration::from_secs(1);
+/// Local keyframes are scaled to this width: enough to read a screen,
+/// small enough that a few minutes of them stay cheap to study.
+const LOCAL_FRAME_MAX_WIDTH: u32 = 1280;
+const LOCAL_FRAME_QUALITY: u8 = 70;
+
+/// A captured screen (any format the image crate reads) as a keyframe JPEG.
+/// Deterministic, so an unchanged screen yields the same bytes and is
+/// skipped by the sampler.
+fn to_keyframe(raw: &[u8]) -> Result<Vec<u8>, String> {
+    let img = image::ImageReader::new(std::io::Cursor::new(raw))
+        .with_guessed_format()
+        .map_err(|e| e.to_string())?
+        .decode()
+        .map_err(|e| e.to_string())?;
+    let img = if img.width() > LOCAL_FRAME_MAX_WIDTH {
+        img.resize(LOCAL_FRAME_MAX_WIDTH, u32::MAX, image::imageops::FilterType::Triangle)
+    } else {
+        img
+    };
+    let mut out = std::io::Cursor::new(Vec::new());
+    let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, LOCAL_FRAME_QUALITY);
+    img.to_rgb8().write_with_encoder(encoder).map_err(|e| e.to_string())?;
+    Ok(out.into_inner())
+}
+
+/// One still of the owner's screen as a keyframe.
+async fn local_keyframe(scratch: &std::path::Path) -> Result<Vec<u8>, String> {
+    let path = scratch.to_string_lossy().into_owned();
+    crate::desktop_tool::capture_full_screen(&path).await?;
+    let raw = tokio::fs::read(scratch).await.map_err(|e| format!("screen capture: {e}"))?;
+    let _ = tokio::fs::remove_file(scratch).await;
+    tokio::task::spawn_blocking(move || to_keyframe(&raw))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// Keeps sampling the owner's screen until stopped, writing each frame that
+/// differs from the last as frames/NNNN.jpg after `first`.
+async fn sample_local(
+    frames_dir: std::path::PathBuf,
+    scratch: std::path::PathBuf,
+    first: Vec<u8>,
+    stop: tokio_util::sync::CancellationToken,
+) {
+    let mut written = 1usize;
+    let mut last = first;
+    let mut tick = tokio::time::interval(LOCAL_FRAME_EVERY);
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    tick.tick().await; // the first tick is immediate; `first` covers it
+    loop {
+        tokio::select! {
+            _ = stop.cancelled() => break,
+            _ = tick.tick() => {}
+        }
+        let frame = match local_keyframe(&scratch).await {
+            Ok(f) => f,
+            Err(e) => {
+                warn!(error = %e, "teach: a local frame was not captured");
+                continue;
+            }
+        };
+        if frame == last {
+            continue;
+        }
+        written += 1;
+        if let Err(e) = tokio::fs::write(frames_dir.join(format!("{written:04}.jpg")), &frame).await {
+            warn!(error = %e, "teach: a local frame was not saved");
+        }
+        last = frame;
+    }
+    let _ = tokio::fs::remove_file(&scratch).await;
 }
 
 static REC: OnceLock<tokio::sync::Mutex<Option<RecInner>>> = OnceLock::new();
@@ -281,10 +407,13 @@ fn teach_root() -> std::path::PathBuf {
     std::path::Path::new(&home).join("teach-sessions")
 }
 
-/// Start recording the live desktop. Returns (session_id, session_dir).
-/// One recording at a time; the desktop must be up (start it first).
-pub async fn start_recording() -> Result<(String, std::path::PathBuf), String> {
-    if !active() {
+/// Start recording a demonstration `where_`. Returns (session_id,
+/// session_dir). One recording at a time. On the computer the desktop must
+/// be up (start it first); locally the first frame is taken before this
+/// returns, so a screen that cannot be recorded (on macOS, Screen Recording
+/// permission) is refused here rather than recorded as nothing.
+pub async fn start_recording(where_: TeachWhere) -> Result<(String, std::path::PathBuf), String> {
+    if where_ == TeachWhere::Computer && !active() {
         return Err("the desktop is not running. Start it first: open the Computer panel (it connects /ws/desktop, which starts the desktop) or POST /api/v1/desktop/teach/start, which starts it before recording".into());
     }
     let mut rec = rec_slot().lock().await;
@@ -296,6 +425,24 @@ pub async fn start_recording() -> Result<(String, std::path::PathBuf), String> {
     let dir = teach_root().join(&id);
     let frames_dir = dir.join("frames");
     std::fs::create_dir_all(&frames_dir).map_err(|e| format!("teach dir: {e}"))?;
+
+    if where_ == TeachWhere::Local {
+        // The capture command picks its format; the decoder sniffs it.
+        let scratch = dir.join(if cfg!(target_os = "macos") { ".capture.jpg" } else { ".capture.png" });
+        let first = match local_keyframe(&scratch).await {
+            Ok(f) => f,
+            Err(e) => {
+                let _ = std::fs::remove_dir_all(&dir);
+                return Err(e);
+            }
+        };
+        std::fs::write(frames_dir.join("0001.jpg"), &first).map_err(|e| format!("teach frame: {e}"))?;
+        let stop = tokio_util::sync::CancellationToken::new();
+        let sampler = tokio::spawn(sample_local(frames_dir, scratch, first, stop.clone()));
+        info!(session = %id, "teach recording started on this computer's screen");
+        *rec = Some(RecInner { id: id.clone(), dir: dir.clone(), recorder: Recorder::Local { stop, sampler } });
+        return Ok((id, dir));
+    }
 
     // Human-viewable replay of the whole demonstration.
     let video = command::new::<Command>("ffmpeg", command::Console::Hidden)
@@ -339,7 +486,7 @@ pub async fn start_recording() -> Result<(String, std::path::PathBuf), String> {
 
     set_recording(true);
     info!(session = %id, "teach recording started");
-    *rec = Some(RecInner { id: id.clone(), dir: dir.clone(), video, frames, events });
+    *rec = Some(RecInner { id: id.clone(), dir: dir.clone(), recorder: Recorder::Computer { video, frames, events } });
     Ok((id, dir))
 }
 
@@ -347,23 +494,30 @@ pub async fn start_recording() -> Result<(String, std::path::PathBuf), String> {
 /// keyframe_count). No recording in progress is an error.
 pub async fn stop_recording() -> Result<(String, std::path::PathBuf, usize), String> {
     let mut rec = rec_slot().lock().await;
-    let Some(mut inner) = rec.take() else {
+    let Some(inner) = rec.take() else {
         return Err("no recording in progress".into());
     };
-    set_recording(false);
-
-    // Ask ffmpeg to finalize (write the moov atom) instead of killing it.
-    for child in [&mut inner.video, &mut inner.frames] {
-        if let Some(mut stdin) = child.stdin.take() {
-            use tokio::io::AsyncWriteExt;
-            let _ = stdin.write_all(b"q").await;
+    match inner.recorder {
+        Recorder::Local { stop, sampler } => {
+            stop.cancel();
+            let _ = tokio::time::timeout(Duration::from_secs(10), sampler).await;
+        }
+        Recorder::Computer { mut video, mut frames, mut events } => {
+            set_recording(false);
+            // Ask ffmpeg to finalize (write the moov atom) instead of killing it.
+            for child in [&mut video, &mut frames] {
+                if let Some(mut stdin) = child.stdin.take() {
+                    use tokio::io::AsyncWriteExt;
+                    let _ = stdin.write_all(b"q").await;
+                }
+            }
+            let _ = tokio::time::timeout(Duration::from_secs(10), video.wait()).await;
+            let _ = tokio::time::timeout(Duration::from_secs(10), frames.wait()).await;
+            let _ = video.kill().await;
+            let _ = frames.kill().await;
+            let _ = events.kill().await;
         }
     }
-    let _ = tokio::time::timeout(Duration::from_secs(10), inner.video.wait()).await;
-    let _ = tokio::time::timeout(Duration::from_secs(10), inner.frames.wait()).await;
-    let _ = inner.video.kill().await;
-    let _ = inner.frames.kill().await;
-    let _ = inner.events.kill().await;
 
     let count = std::fs::read_dir(inner.dir.join("frames"))
         .map(|d| d.count())
@@ -530,6 +684,34 @@ async fn stop_inner(mut inner: Inner) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn teach_records_locally_by_default_on_a_bot_with_its_own_screen() {
+        assert_eq!(TeachWhere::resolve(None, true), Ok(TeachWhere::Local));
+        assert_eq!(TeachWhere::resolve(Some(""), true), Ok(TeachWhere::Local));
+        assert_eq!(TeachWhere::resolve(Some("computer"), true), Ok(TeachWhere::Computer));
+    }
+
+    #[test]
+    fn teach_records_on_the_computer_when_the_bot_has_no_screen() {
+        assert_eq!(TeachWhere::resolve(None, false), Ok(TeachWhere::Computer));
+        assert_eq!(TeachWhere::resolve(Some("computer"), false), Ok(TeachWhere::Computer));
+        assert!(TeachWhere::resolve(Some("local"), false).is_err());
+        assert!(TeachWhere::resolve(Some("elsewhere"), true).is_err());
+    }
+
+    #[test]
+    fn keyframes_are_scaled_and_identical_screens_encode_identically() {
+        let img = image::RgbImage::from_pixel(2560, 1600, image::Rgb([40, 80, 120]));
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgb8(img).write_to(&mut png, image::ImageFormat::Png).unwrap();
+        let a = to_keyframe(png.get_ref()).unwrap();
+        let b = to_keyframe(png.get_ref()).unwrap();
+        assert_eq!(a, b, "an unchanged screen must be skipped");
+        let decoded = image::load_from_memory(&a).unwrap();
+        assert_eq!(decoded.width(), LOCAL_FRAME_MAX_WIDTH);
+        assert_eq!(decoded.height(), 800);
+    }
 
     // Real xinput test-xi2 shapes: a click at 386,300 then "re" typed —
     // the opening of the field session that proved keystrokes carry the task.

@@ -1,12 +1,14 @@
 <script lang="ts">
   import { openWebBilling } from '$lib/billing';
   import { t } from 'svelte-i18n';
-  import { devMode } from '$lib/stores/devmode.js';
+  import { devMode, appDeveloperMode } from '$lib/stores/devmode.js';
   import ChatComposer from './ChatComposer.svelte';
   import AgentAvatar from '$lib/components/AgentAvatar.svelte';
   import WorkViewer from './WorkViewer.svelte';
   import DesktopView from './DesktopView.svelte';
   import { teachStart, teachStop, getToolOutput } from '$lib/api/nebo';
+  import { computerActions, watchesComputer } from '$lib/chat/teach';
+  import { ownScreen } from '$lib/stores/ownScreen';
   import ShareArtifactModal from './ShareArtifactModal.svelte';
   import AskWidget from './AskWidget.svelte';
   import ConsentChip from './ConsentChip.svelte';
@@ -186,24 +188,32 @@
   // help chat, the embed) pass nothing and the icons don't render.
   let paneView = $state<PaneView>('work');
 
-  // Teach-a-task: record a demonstration on the bot's computer, then hand
-  // the artifacts to the agent to study (the normal run does the learning —
-  // vision + file + skill tools; a voluntary skill save is the organic
-  // learning pathway).
+  // Teach-a-task: record a demonstration, then hand the artifacts to the
+  // employee to study (the normal run does the learning — vision + file +
+  // skill tools; a voluntary skill save is the organic learning pathway).
+  // On the owner's own computer it records the owner's real screen, right
+  // here, with no window; a cloud bot records on its computer, watched in
+  // the full-window view ($lib/chat/teach).
   let teachActive = $state(false);
   let teachError = $state('');
   let teachSeconds = $state(0);
   let teachTimer: ReturnType<typeof setInterval> | null = null;
+  const computer = $derived(computerActions($ownScreen, $devMode));
+  /** The recording under way is of this computer's own screen. */
+  let teachLocal = $state(false);
 
-  async function startTeach() {
+  /** `where` is the bot's default when left out: its own screen if it has one. */
+  async function startTeach(where?: 'local' | 'computer') {
     teachError = '';
+    let res;
     try {
-      await teachStart();
+      res = await teachStart(where ? { where } : {});
     } catch (e) {
       teachError = e instanceof Error ? e.message : String(e);
       return;
     }
-    computerFull = true;
+    teachLocal = !watchesComputer(res?.where);
+    if (!teachLocal) computerFull = true;
     teachActive = true;
     teachSeconds = 0;
     teachTimer = setInterval(() => (teachSeconds += 1), 1000);
@@ -356,6 +366,8 @@
   // Preview ↔ Code toggle for the active artifact (compiled artifacts pair
   // their source via codeUrl; plain html shows its own markup).
   let viewSource = $state(false);
+  // Leaving Developer mode puts the artifact back to its preview.
+  $effect(() => { if (!$devMode) viewSource = false; });
 
   // Share dialog for the active artifact (loop channels / members).
   let shareOpen = $state(false);
@@ -1063,7 +1075,8 @@
   // anything is submitted). An app installed from the marketplace never
   // does. The desktop app window's menu asks for the same through
   // `publishRequest`, answered here once this app's chat is open.
-  const canPublish = $derived(isApp && ownApp && !readOnly && !!onsend);
+  // Publishing is an app builder's tool: App Developer mode only.
+  const canPublish = $derived(isApp && ownApp && !readOnly && !!onsend && $appDeveloperMode);
   function publishApp() {
     handleSend($t('agent.publishStarter'), []);
   }
@@ -1283,6 +1296,9 @@
         {#snippet computerIcon()}
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
         {/snippet}
+        {#snippet virtualComputerIcon()}
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><circle cx="6.5" cy="6.5" r="0.6"/><circle cx="9" cy="6.5" r="0.6"/></svg>
+        {/snippet}
         {#snippet flowsIcon()}
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="6" height="6" rx="1.5"/><rect x="15" y="15" width="6" height="6" rx="1.5"/><path d="M9 6h4a2 2 0 0 1 2 2v10"/></svg>
         {/snippet}
@@ -1340,7 +1356,12 @@
 
 
 
-        {@render headerIcon(computerFull, $t('chat.botComputer'), () => (computerFull = true), computerIcon)}
+        {#if computer.teach}
+          {@render headerIcon(teachActive, $t('chatInput.teachTask'), () => (teachActive ? stopTeach() : startTeach('local')), computerIcon)}
+        {/if}
+        {#if computer.computer}
+          {@render headerIcon(computerFull, $t('chat.botComputer'), () => (computerFull = true), computer.teach ? virtualComputerIcon : computerIcon)}
+        {/if}
         {#if flowsPane}
           {@render headerIcon(creationsOpen && paneView === 'flows', $t('nav.flows'), () => togglePane('flows'), flowsIcon)}
         {/if}
@@ -2059,6 +2080,9 @@
           <span class="w-2 h-2 rounded-full bg-error animate-pulse"></span>
           <span class="text-sm">{$t('chat.watchingAndLearning', { values: { name: agentName } })}</span>
           <span class="text-xs tabular-nums text-base-content/60">{fmtTeach(teachSeconds)}</span>
+          {#if teachLocal}
+            <span class="text-xs text-base-content/60 truncate max-md:hidden">{$t('chat.teachLocalHint')}</span>
+          {/if}
           <button type="button" class="btn btn-error btn-xs ml-auto normal-case" onclick={stopTeach}>
             {$t('chat.stopRecording')}
           </button>
@@ -2100,7 +2124,7 @@
   <div class="fixed inset-0 z-[80] bg-neutral flex flex-col">
     <DesktopView
       onclose={() => (computerFull = false)}
-      onrecord={() => (teachActive ? stopTeach() : startTeach())}
+      onrecord={() => (teachActive ? stopTeach() : startTeach('computer'))}
       recording={teachActive}
     />
   </div>
@@ -2190,7 +2214,9 @@
           {paneView === 'flows' ? $t('nav.flows') : creationsTitle || $t('chat.work')}
         </span>
       {/if}
-      {#if activeArtifact?.url && (activeArtifact.codeUrl || activeArtifact.url.endsWith('.html') || activeArtifact.url.endsWith('.md') || activeArtifact.url.endsWith('.txt'))}
+      <!-- Preview / Code: reading an artifact's source is a builder's view,
+           Developer mode only. -->
+      {#if $devMode && activeArtifact?.url && (activeArtifact.codeUrl || activeArtifact.url.endsWith('.html') || activeArtifact.url.endsWith('.md') || activeArtifact.url.endsWith('.txt'))}
         <div class="flex items-center rounded-md bg-base-200 p-0.5 shrink-0">
           <button
             class="py-0.5 px-2 rounded text-xs cursor-pointer border-none transition-colors {!viewSource ? 'bg-base-100 font-medium shadow-sm' : 'bg-transparent text-base-content/60 hover:text-base-content'}"

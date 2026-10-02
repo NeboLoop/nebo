@@ -330,6 +330,7 @@
 		"computerUnavailableHint": "직원의 컴퓨터는 Linux 설치본과 클라우드 직원에서 동작합니다.",
 		"watchingAndLearning": "{name}이(가) 지켜보며 배우고 있습니다",
 		"stopRecording": "기록 중지",
+		"teachLocalHint": "Do the task on this screen as you normally would, then stop.",
 		"recordTask": "작업 기록",
 		"recording": "기록 중",
 		"connectFailed": "로그인이 완료되지 않았습니다. 다시 시도하세요.",

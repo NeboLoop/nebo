@@ -32,7 +32,6 @@
   import { slide } from 'svelte/transition';
   import { logger } from '$lib/monitoring';
   import MessageSquareLock from 'lucide-svelte/icons/message-square-lock';
-  import SettingsIcon from 'lucide-svelte/icons/settings';
   import Search from 'lucide-svelte/icons/search';
 
   // Sidebar drill choreography: siblings collapse, the clicked row rides to
@@ -1203,7 +1202,6 @@
     get workflowStats() { return workflowStats; },
     get workflowRuns() { return workflowRuns; },
     get isApp() { return agent?.isApp ?? false; },
-    get devMode() { return $devMode; },
     get agentStatuses() { return agentStatuses; },
     get roster() { return allAgents; },
     get teams() { return teams; },
@@ -1260,10 +1258,13 @@
         {$t('agent.newChat')}
       </button>
     {/if}
-    <button class="flex items-center gap-2.5 w-full px-3 py-1.5 text-sm text-left cursor-pointer bg-transparent border-none hover:bg-base-200 transition-colors" onclick={() => ctxAction('copy-id')}>
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="text-base-content/50"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
-      {$t('agent.copyAgentId')}
-    </button>
+    <!-- The raw id is for people wiring things up: Developer mode only. -->
+    {#if $devMode}
+      <button class="flex items-center gap-2.5 w-full px-3 py-1.5 text-sm text-left cursor-pointer bg-transparent border-none hover:bg-base-200 transition-colors" onclick={() => ctxAction('copy-id')}>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="text-base-content/50"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+        {$t('agent.copyAgentId')}
+      </button>
+    {/if}
     <button class="flex items-center gap-2.5 w-full px-3 py-1.5 text-sm text-left cursor-pointer bg-transparent border-none hover:bg-base-200 transition-colors" onclick={() => ctxAction('settings')}>
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-base-content/50"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
       {$t('nav.employeeSettings')}
@@ -1506,14 +1507,15 @@
 
 <CollapsibleRail
   section="workspace"
-  title="Nebo"
   mobileOpen={listOpen}
   onmobileclose={closeList}
   tour="agents"
 >
   {#snippet leading()}
-    <a href="/" class="shrink-0 flex items-center text-base-content" title="Nebo">
-      <BrandMark class="w-5 h-5" />
+    <!-- The mark and the word are ONE link Home. -->
+    <a href="/" class="flex-1 min-w-0 flex items-center gap-2 text-base-content no-underline cursor-pointer rounded-md" title="Nebo">
+      <BrandMark class="w-5 h-5 shrink-0" />
+      <span class="text-sm font-semibold truncate">Nebo</span>
     </a>
   {/snippet}
 
@@ -1653,18 +1655,8 @@
               <svg class="shrink-0 text-base-content/70" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 3 11 8 6 13"/></svg>
             {/if}
           </a>
-          {#if isPinned}
-            <!-- The employee's settings must be reachable from the drilled
-                 list too — not only from inside an open chat. Same canonical
-                 route the context menu uses. -->
-            <button
-              class="shrink-0 p-1.5 rounded-field bg-transparent border-none cursor-pointer text-base-content/50 hover:text-base-content hover:bg-base-100 transition-colors"
-              onclick={(e) => { e.stopPropagation(); goto(`/${a.id}/settings/general`); }}
-              title={$t('nav.employeeSettings')}
-            >
-              <SettingsIcon class="w-4 h-4" />
-            </button>
-          {/if}
+          <!-- No gear on the row: the chat header's gear (and the row's
+               right-click menu) open the same employee settings. -->
         </div>
       {/each}
       {#if drilledAgent}
@@ -1845,6 +1837,7 @@
 
 <AgentSettingsModal
   open={settingsSection !== null}
+  {agentId}
   section={settingsSection ?? 'general'}
   agentName={agent?.name ?? ''}
   agentRole={agent?.role ?? ''}

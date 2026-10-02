@@ -330,6 +330,7 @@
 		"computerUnavailableHint": "คอมพิวเตอร์ของพนักงานทำงานบนการติดตั้งแบบ Linux และพนักงานบนคลาวด์",
 		"watchingAndLearning": "{name} กำลังดูและเรียนรู้",
 		"stopRecording": "หยุดบันทึก",
+		"teachLocalHint": "Do the task on this screen as you normally would, then stop.",
 		"recordTask": "บันทึกงาน",
 		"recording": "กำลังบันทึก",
 		"connectFailed": "การเข้าสู่ระบบยังไม่เสร็จ ลองอีกครั้ง",

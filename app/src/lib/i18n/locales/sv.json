@@ -330,6 +330,7 @@
 		"computerUnavailableHint": "Medarbetarens dator körs på Linux-installationer och hos molnmedarbetare.",
 		"watchingAndLearning": "{name} tittar på och lär sig",
 		"stopRecording": "Stoppa inspelning",
+		"teachLocalHint": "Do the task on this screen as you normally would, then stop.",
 		"recordTask": "Spela in uppgift",
 		"recording": "Spelar in",
 		"connectFailed": "Inloggningen slutfördes inte. Försök igen.",

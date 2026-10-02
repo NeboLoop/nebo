@@ -330,6 +330,7 @@
 		"computerUnavailableHint": "Komputer karyawan berjalan di instalasi Linux dan karyawan cloud.",
 		"watchingAndLearning": "{name} sedang menonton dan belajar",
 		"stopRecording": "Hentikan perekaman",
+		"teachLocalHint": "Do the task on this screen as you normally would, then stop.",
 		"recordTask": "Rekam tugas",
 		"recording": "Merekam",
 		"connectFailed": "Proses masuk tidak selesai. Coba lagi.",

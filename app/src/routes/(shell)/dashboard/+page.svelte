@@ -18,7 +18,7 @@
   import List from 'lucide-svelte/icons/list';
   import Network from 'lucide-svelte/icons/network';
   import Check from 'lucide-svelte/icons/check';
-  import { goto } from '$lib/nav';
+  import { goto, withBase } from '$lib/nav';
   import * as api from '$lib/api/nebo';
   import type * as components from '$lib/api/neboComponents';
   import { getWebSocketClient } from '$lib/websocket/client';
@@ -525,8 +525,10 @@
                      (or what comes next), the actions. -->
                 <div class="rounded-2xl border p-4 grid grid-rows-[auto_1fr_auto_auto] gap-3 min-w-0 shadow-sm bg-base-100 {working ? 'border-success/60' : e.status === 'waiting' ? 'border-warning/70' : 'border-base-content/15'}">
                   <div class="flex items-center gap-3 min-w-0">
-                    <AgentAvatar name={e.name} color={colors[e.id]} />
-                    <span class="font-semibold text-[15px] truncate">{e.name}</span>
+                    <!-- Name and avatar open the employee, landing where the
+                         sidebar's first click does (its latest conversation). -->
+                    <a href={withBase(`/${e.id}`)} class="shrink-0 cursor-pointer" tabindex="-1" aria-hidden="true" data-employee-link><AgentAvatar name={e.name} color={colors[e.id]} /></a>
+                    <a href={withBase(`/${e.id}`)} class="font-semibold text-[15px] truncate cursor-pointer no-underline text-inherit hover:underline" data-employee-link>{e.name}</a>
                     <!-- No pill means idle: the pill is reserved for a state worth noticing. -->
                     {#if e.status !== 'idle'}
                       <span class="ml-auto text-[10px] font-semibold uppercase tracking-wider px-2 py-px rounded-full shrink-0 flex items-center gap-1 {working ? 'bg-success text-success-content' : e.status === 'waiting' ? 'bg-warning text-warning-content' : 'bg-base-content/5 text-base-content/55'}">
@@ -577,8 +579,8 @@
                 <!-- Real columns: avatar, name, status, detail, actions. Every
                      row's status and detail start on the same x. -->
                 <div class="px-4 py-2.5 grid grid-cols-[36px_minmax(0,1fr)_auto_auto] md:grid-cols-[36px_minmax(0,1.2fr)_5.5rem_minmax(0,2fr)_auto] items-center gap-3 min-w-0 {working ? 'bg-success/5' : ''}">
-                  <AgentAvatar name={e.name} color={colors[e.id]} />
-                  <span class="font-semibold text-[15px] truncate min-w-0">{e.name}</span>
+                  <a href={withBase(`/${e.id}`)} class="cursor-pointer" tabindex="-1" aria-hidden="true" data-employee-link><AgentAvatar name={e.name} color={colors[e.id]} /></a>
+                  <a href={withBase(`/${e.id}`)} class="font-semibold text-[15px] truncate min-w-0 cursor-pointer no-underline text-inherit hover:underline" data-employee-link>{e.name}</a>
                   <span class="justify-self-start text-[10px] font-semibold uppercase tracking-wider px-2 py-px rounded-full {working ? 'bg-success text-success-content' : e.status === 'waiting' ? 'bg-warning text-warning-content' : 'bg-base-content/5 text-base-content/55'} {e.status === 'idle' ? 'invisible' : ''}">{$t(`dashboard.status.${e.status}`)}</span>
                   <div class="hidden md:block min-w-0 text-xs truncate text-base-content/70">{working ? `${e.task} · ${e.activity}` : e.lastDetail ? `${e.lastDetail} · ${e.activity}` : e.activity}</div>
                   <div class="grid grid-cols-[6.5rem_auto] items-center gap-3 text-xs shrink-0">

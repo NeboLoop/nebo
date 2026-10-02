@@ -330,6 +330,7 @@
 		"computerUnavailableHint": "Çalışan bilgisayarı Linux kurulumlarında ve bulut çalışanlarında çalışır.",
 		"watchingAndLearning": "{name} izliyor ve öğreniyor",
 		"stopRecording": "Kaydı durdur",
+		"teachLocalHint": "Do the task on this screen as you normally would, then stop.",
 		"recordTask": "Görevi kaydet",
 		"recording": "Kaydediyor",
 		"connectFailed": "Bağlantı tamamlanmadı. Tekrar deneyin.",

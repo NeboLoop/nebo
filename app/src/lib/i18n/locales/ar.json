@@ -330,6 +330,7 @@
 		"computerUnavailableHint": "يعمل حاسوب الموظف على تثبيتات Linux والموظفين السحابيين.",
 		"watchingAndLearning": "{name} يشاهد ويتعلّم",
 		"stopRecording": "إيقاف التسجيل",
+		"teachLocalHint": "Do the task on this screen as you normally would, then stop.",
 		"recordTask": "تسجيل مهمة",
 		"recording": "جارٍ التسجيل",
 		"connectFailed": "لم يكتمل تسجيل الدخول. حاول مرة أخرى.",

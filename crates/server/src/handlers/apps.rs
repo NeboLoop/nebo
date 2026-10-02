@@ -384,10 +384,15 @@ pub fn desktop_developer_script(agent_id: &str) -> String {
     DESKTOP.get().map(|(store, port)| desktop_script(store, *port, agent_id)).unwrap_or_default()
 }
 
-/// For the desktop's app-window menu: whether `agent_id` is one of the
-/// owner's own apps, the only ones built and published from here.
-pub fn desktop_is_own_app(agent_id: &str) -> bool {
-    DESKTOP.get().is_some_and(|(store, _)| own_app(store, agent_id).is_some())
+/// For the desktop's app-window menu: whether "Publish This App…" is offered
+/// for `agent_id`. Only one of the owner's own apps (the only ones built and
+/// published from here), and only under App Developer mode, which counts
+/// while Developer mode is on: the same gate as the chat's Publish button.
+pub fn desktop_offers_publish(agent_id: &str) -> bool {
+    DESKTOP.get().is_some_and(|(store, _)| {
+        let developer = matches!(store.get_settings(), Ok(Some(s)) if s.developer_mode != 0);
+        developer && store.app_developer_mode() && own_app(store, agent_id).is_some()
+    })
 }
 
 fn desktop_script(store: &db::Store, port: u16, agent_id: &str) -> String {
