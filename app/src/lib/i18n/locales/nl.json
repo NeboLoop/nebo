@@ -330,6 +330,7 @@
 		"computerUnavailableHint": "De computer van de medewerker draait op Linux-installaties en bij cloudmedewerkers.",
 		"watchingAndLearning": "{name} kijkt mee en leert",
 		"stopRecording": "Opname stoppen",
+		"teachLocalHint": "Do the task on this screen as you normally would, then stop.",
 		"recordTask": "Taak opnemen",
 		"recording": "Neemt op",
 		"connectFailed": "Inloggen is niet afgerond. Probeer het opnieuw.",

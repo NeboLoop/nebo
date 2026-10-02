@@ -2990,18 +2990,7 @@ async fn capture_screenshot(input: &serde_json::Value) -> ToolResult {
 
     #[cfg(target_os = "windows")]
     let result = {
-        let ps_script = format!(
-            r#"Add-Type -AssemblyName System.Windows.Forms
-Add-Type -AssemblyName System.Drawing
-$screen = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
-$bmp = New-Object System.Drawing.Bitmap($screen.Width, $screen.Height)
-$g = [System.Drawing.Graphics]::FromImage($bmp)
-$g.CopyFromScreen($screen.Location, [System.Drawing.Point]::Empty, $screen.Size)
-$bmp.Save('{}')
-$g.Dispose()
-$bmp.Dispose()"#,
-            escape_powershell(&tmp_path)
-        );
+        let ps_script = windows_screen_script(&tmp_path);
         command::new::<tokio::process::Command>("powershell", command::Console::Hidden)
             .args(["-NoProfile", "-Command", &ps_script])
             .output()
@@ -3043,6 +3032,67 @@ $bmp.Dispose()"#,
             ToolResult::error(msg)
         }
         Err(e) => ToolResult::error(format!("Failed to run screenshot tool: {}", e)),
+    }
+}
+
+/// The PowerShell that saves the primary screen to `path` (PNG).
+#[cfg(target_os = "windows")]
+fn windows_screen_script(path: &str) -> String {
+    format!(
+        r#"Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+$screen = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+$bmp = New-Object System.Drawing.Bitmap($screen.Width, $screen.Height)
+$g = [System.Drawing.Graphics]::FromImage($bmp)
+$g.CopyFromScreen($screen.Location, [System.Drawing.Point]::Empty, $screen.Size)
+$bmp.Save('{}')
+$g.Dispose()
+$bmp.Dispose()"#,
+        escape_powershell(path)
+    )
+}
+
+/// One still of this computer's whole screen, written to `path` in the
+/// platform's own format (JPEG on macOS, PNG elsewhere). Teach-a-task's local
+/// recording samples the owner's real screen with it; the screenshot tool
+/// above adds app/region framing and the vision encoding on top.
+pub(crate) async fn capture_full_screen(path: &str) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    let out = command::new::<tokio::process::Command>("screencapture", command::Console::Hidden)
+        .args(["-x", "-t", "jpg", path])
+        .output()
+        .await;
+    #[cfg(target_os = "linux")]
+    let out = if which("gnome-screenshot") {
+        x11_command("gnome-screenshot").args(["-f", path]).output().await
+    } else if which("scrot") {
+        x11_command("scrot").args([path]).output().await
+    } else if which("grim") {
+        x11_command("grim").args([path]).output().await
+    } else {
+        return Err("recording this screen needs gnome-screenshot, scrot or grim".into());
+    };
+    #[cfg(target_os = "windows")]
+    let out = command::new::<tokio::process::Command>("powershell", command::Console::Hidden)
+        .args(["-NoProfile", "-Command", &windows_screen_script(path)])
+        .output()
+        .await;
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    {
+        let _ = path;
+        return Err("recording the screen is not supported on this platform".into());
+    }
+    #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+    match out {
+        Ok(o) if o.status.success() => Ok(()),
+        Ok(o) => {
+            let mut msg = format!("screen capture failed: {}", String::from_utf8_lossy(&o.stderr).trim());
+            if cfg!(target_os = "macos") {
+                msg.push_str(". On macOS this usually means Screen Recording permission is missing for Nebo.");
+            }
+            Err(msg)
+        }
+        Err(e) => Err(format!("screen capture failed to start: {e}")),
     }
 }
 

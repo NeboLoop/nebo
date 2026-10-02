@@ -330,6 +330,7 @@
 		"computerUnavailableHint": "Компьютер сотрудника работает на установках Linux и у облачных сотрудников.",
 		"watchingAndLearning": "{name} смотрит и учится",
 		"stopRecording": "Остановить запись",
+		"teachLocalHint": "Do the task on this screen as you normally would, then stop.",
 		"recordTask": "Записать задачу",
 		"recording": "Идёт запись",
 		"connectFailed": "Вход не завершён. Попробуйте ещё раз.",

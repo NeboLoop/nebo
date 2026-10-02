@@ -330,6 +330,7 @@
 		"computerUnavailableHint": "המחשב של העובד פועל בהתקנות Linux ובעובדי ענן.",
 		"watchingAndLearning": "{name} צופה ולומד",
 		"stopRecording": "עצור הקלטה",
+		"teachLocalHint": "Do the task on this screen as you normally would, then stop.",
 		"recordTask": "הקלט משימה",
 		"recording": "מקליט",
 		"connectFailed": "ההתחברות לא הושלמה. נסה שוב.",

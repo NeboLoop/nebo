@@ -330,6 +330,7 @@
 		"computerUnavailableHint": "El ordenador del empleado funciona en instalaciones Linux y en empleados en la nube.",
 		"watchingAndLearning": "{name} está mirando y aprendiendo",
 		"stopRecording": "Detener grabación",
+		"teachLocalHint": "Do the task on this screen as you normally would, then stop.",
 		"recordTask": "Grabar tarea",
 		"recording": "Grabando",
 		"connectFailed": "El inicio de sesión no se completó. Inténtalo de nuevo.",

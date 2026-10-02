@@ -25,7 +25,9 @@
   import type { AgentInputField } from '$lib/types/agentPage';
   import { installFlow } from '$lib/stores/installFlow';
   import { addToast } from '$lib/stores/toast';
-  import { accountsSectionFor } from './sections';
+  import { accountsSectionFor, visibleParts, type AgentSettingsPart } from './sections';
+  import { devMode } from '$lib/stores/devmode';
+  import { tick } from 'svelte';
   import { botName, botRenameUrl, loadBotName, openBotRename, offerMatchingRename } from '$lib/stores/botName';
 
   // The primary employee: the owner's personal assistant, named like the bot.
@@ -40,10 +42,21 @@
   const workflowEntries = $derived(ctx.workflowEntries);
   const workflowStats = $derived(ctx.workflowStats);
 
-  // Which section to show is passed in — this view is mounted by the settings
-  // modal, not by a route, so it must not read the URL itself.
-  let { section = 'general' }: { section?: string } = $props();
-  const isFullHeightEditor = $derived(section === 'persona' || section === 'soul');
+  // Which page to show is passed in — this view is mounted by the settings
+  // modal, not by a route, so it must not read the URL itself. A page is
+  // built from parts (sections.ts); `focus` names the part an old deep link
+  // asked for, scrolled into view on open.
+  let { tab = 'general', focus = null }: { tab?: string; focus?: AgentSettingsPart | null } = $props();
+  const parts = $derived(visibleParts(tab, $devMode));
+  const has = (p: AgentSettingsPart) => parts.includes(p);
+
+  function scrollToPart(p: AgentSettingsPart) {
+    void tick().then(() => document.getElementById(`agent-settings-${p}`)?.scrollIntoView({ block: 'start' }));
+  }
+  $effect(() => {
+    const f = focus;
+    if (f && parts.includes(f)) untrack(() => scrollToPart(f));
+  });
 
   function createNewWorkflow(callTree = false) {
     const existing = workflowEntries.map(([name]: [string, WorkflowConfig]) => name);
@@ -456,12 +469,10 @@
   let reachBotAddress = $state('');
   let reachCopied = $state(false);
   $effect(() => {
-    if (section !== 'reach' || !agentId) return;
+    if (!has('reach') || !agentId) return;
     const id = agentId;
     untrack(() => {
       void loadReachAddress(id);
-      void loadPhoneLines();
-      void loadChannels();
     });
   });
   async function loadReachAddress(id: string) {
@@ -704,13 +715,13 @@
   let helpChat = $state<ReturnType<typeof createChatController> | null>(null);
   let helpSessionKey = $state<string | null>(null);
 
-  $effect(() => { if (section === 'channels') loadChannels(); });
+  $effect(() => { if (has('channels')) untrack(() => loadChannels()); });
 
   // Listen for plugin auth WS events when on channels section
   const channelAuthUnsubs: (() => void)[] = [];
 
   $effect(() => {
-    if (section !== 'channels') return;
+    if (!has('channels')) return;
     const ws = getWebSocketClient();
     channelAuthUnsubs.push(
       // plugin_auth_url is opened once, globally, in listeners.ts — not here.
@@ -731,6 +742,7 @@
         }
       }),
     );
+    return () => { channelAuthUnsubs.forEach(fn => fn()); channelAuthUnsubs.length = 0; };
   });
 
   onDestroy(() => channelAuthUnsubs.forEach(fn => fn()));
@@ -751,10 +763,10 @@
     // IS adding an account. The old credentials modal here was a dead end
     // that could never configure them; send the user to the real flow.
     if (ch.pluginSlug === 'phonecall') {
-      // Phone has its own settings section; Connected Accounts filters
-      // phonecall OUT, so this used to land on an empty page with nothing
-      // to click. Send the owner where attaching a number actually happens.
-      goto(`/${agentId}/settings/phone`);
+      // Phone has its own section, on this same page; Connected Accounts
+      // filters phonecall OUT. Take the owner to where attaching a number
+      // actually happens.
+      scrollToPart('phone');
       return;
     }
     channelAuthModal = ch;
@@ -893,14 +905,14 @@
   let claimableLoading = $state(false);
   let claimableError = $state<string | null>(null);
 
-  $effect(() => { if (section === 'accounts' || section === 'phone') loadAccounts(); });
+  $effect(() => { if (has('accounts') || has('phone')) untrack(() => loadAccounts()); });
 
   // Lines the hub has assigned to this employee at neboai.com/manage/phone.
   // Assignment lives hub-side (a number is an account asset), so this is a
   // receipt — the local phonecall plugin is only the bridge that answers.
   type PhoneLine = { number: string; status: string; agentId?: string; businessName?: string };
   let phoneLines = $state<PhoneLine[]>([]);
-  $effect(() => { if (section === 'phone') loadPhoneLines(); });
+  $effect(() => { if (has('phone')) untrack(() => loadPhoneLines()); });
   async function loadPhoneLines() {
     try {
       const api = await import('$lib/api/nebo');
@@ -920,7 +932,7 @@
   let hookWorkflow = $state('');
   let hookBusy = $state<string | null>(null);
   let copiedHook = $state('');
-  $effect(() => { if (section === 'webhooks') loadWebhooks(); });
+  $effect(() => { if (has('webhooks')) untrack(() => loadWebhooks()); });
   async function loadWebhooks() {
     webhooksLoading = true;
     webhooksError = null;
@@ -991,7 +1003,7 @@
   let keyLabel = $state('');
   let keyWorkflows = $state<string[]>([]);
   let keyBusy = $state<string | null>(null);
-  $effect(() => { if (section === 'api') loadApiKeys(); });
+  $effect(() => { if (has('api')) untrack(() => loadApiKeys()); });
   async function loadApiKeys() {
     apiKeysError = null;
     try {
@@ -1067,14 +1079,13 @@
   // Phone gets its own settings section — a phone line reads as a capability
   // of the employee, not "an account" — but both sections render the SAME
   // accounts machinery, just filtered: phonecall here, everything else there.
-  const shownPlugins = $derived(
-    accountPlugins.filter((p) => accountsSectionFor(p.slug) === section)
-  );
+  const pluginsFor = (kind: 'accounts' | 'phone') =>
+    accountPlugins.filter((p) => accountsSectionFor(p.slug) === kind);
 
   const accountAuthUnsubs: (() => void)[] = [];
 
   $effect(() => {
-    if (section !== 'accounts' && section !== 'phone') return;
+    if (!has('accounts') && !has('phone')) return;
     const ws = getWebSocketClient();
     accountAuthUnsubs.push(
       // plugin_auth_url is opened once, globally, in listeners.ts — not here.
@@ -1242,1103 +1253,1107 @@
   }
 </script>
 
-<div class="flex-1 p-6 {isFullHeightEditor ? 'min-h-0 flex flex-col overflow-hidden' : 'overflow-y-auto'}">
-  <div class="max-w-[480px] flex flex-col gap-5 {isFullHeightEditor ? 'flex-1 min-h-0 w-full' : ''}">
+<div class="flex-1 p-6 overflow-y-auto">
+  <div class="max-w-[480px] flex flex-col gap-5">
+    <!-- Each part is its own section, rendered wherever a page lists it. -->
+    {#each parts as part (part)}
+      <section id="agent-settings-{part}" class="flex flex-col gap-5 scroll-mt-4 not-first:pt-6 not-first:border-t not-first:border-base-300">
+        {#if part === 'general'}{@render generalPart()}
+        {:else if part === 'identity'}{@render identityPart()}
+        {:else if part === 'persona'}{@render personaPart()}
+        {:else if part === 'soul'}{@render soulPart()}
+        {:else if part === 'rules'}{@render rulesPart()}
+        {:else if part === 'configure'}{@render configurePart()}
+        {:else if part === 'questions'}{@render questionsPart()}
+        {:else if part === 'skills'}{@render skillsPart()}
+        {:else if part === 'workflows'}{@render workflowsPart()}
+        {:else if part === 'reach'}{@render reachPart()}
+        {:else if part === 'phone'}{@render accountsPart('phone')}
+        {:else if part === 'channels'}{@render channelsPart()}
+        {:else if part === 'accounts'}{@render accountsPart('accounts')}
+        {:else if part === 'permissions'}{@render permissionsPart()}
+        {:else if part === 'webhooks'}{@render webhooksPart()}
+        {:else if part === 'api'}{@render apiPart()}
+        {:else if part === 'memory'}{@render memoryPart()}
+        {/if}
+      </section>
+    {/each}
+  </div>
+</div>
 
-    {#if section === 'general'}
-      <div>
-        <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('agentSettings.general')}</div>
-        <div class="text-xs text-base-content/70 mt-1">{$t('agentSettings.generalBlurb')}</div>
+{#snippet generalPart()}
+  <div>
+    <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('agentSettings.general')}</div>
+    <div class="text-xs text-base-content/70 mt-1">{$t('agentSettings.generalBlurb')}</div>
+  </div>
+  <div class="flex items-start gap-4 pb-5 border-b border-base-300">
+    <AgentAvatar name={agent?.name ?? ''} color={agent?.color} size="lg" />
+    <div class="flex-1 min-w-0">
+      <div class="text-sm font-semibold">{agent?.name}</div>
+      <div class="text-xs text-base-content/70">{agent?.role}</div>
+      <div class="flex items-center gap-2 mt-1.5">
+        <div class="w-[7px] h-[7px] rounded-full shrink-0 {ctx.agentStatus(agentId) === 'online' ? 'bg-success' : ctx.agentStatus(agentId) === 'running' ? 'bg-warning animate-pulse' : 'bg-base-content/30'}"></div>
+        <span class="text-xs text-base-content/50">{$t(statusLabel(ctx.agentStatus(agentId)))}</span>
+        {#if agentId !== 'assistant'}
+          <button
+            class="ml-1 py-0.5 px-2 rounded text-xs font-medium cursor-pointer border border-base-300 bg-base-100 hover:bg-base-200 transition-colors"
+            onclick={() => ctx.toggleAgentStatus(agentId)}
+          >{ctx.agentStatus(agentId) === 'paused' ? $t('agent.resume') : $t('sidebar.pause')}</button>
+        {/if}
       </div>
-      <div class="flex items-start gap-4 pb-5 border-b border-base-300">
-        <AgentAvatar name={agent?.name ?? ''} color={agent?.color} size="lg" />
-        <div class="flex-1 min-w-0">
-          <div class="text-sm font-semibold">{agent?.name}</div>
-          <div class="text-xs text-base-content/70">{agent?.role}</div>
-          <div class="flex items-center gap-2 mt-1.5">
-            <div class="w-[7px] h-[7px] rounded-full shrink-0 {ctx.agentStatus(agentId) === 'online' ? 'bg-success' : ctx.agentStatus(agentId) === 'running' ? 'bg-warning animate-pulse' : 'bg-base-content/30'}"></div>
-            <span class="text-xs text-base-content/50">{$t(statusLabel(ctx.agentStatus(agentId)))}</span>
-            {#if agentId !== 'assistant'}
-              <button
-                class="ml-1 py-0.5 px-2 rounded text-xs font-medium cursor-pointer border border-base-300 bg-base-100 hover:bg-base-200 transition-colors"
-                onclick={() => ctx.toggleAgentStatus(agentId)}
-              >{ctx.agentStatus(agentId) === 'paused' ? $t('agent.resume') : $t('sidebar.pause')}</button>
-            {/if}
+    </div>
+  </div>
+
+  {#if !agent?.editable}
+    <div class="rounded-lg border border-base-300 bg-base-200/50 px-3.5 py-2.5">
+      <div class="text-xs text-base-content/70">{$t('agentSettings.configManagedPrefix')} <span class="font-mono">agent.json</span> {$t('agentSettings.configManagedSuffix')}</div>
+    </div>
+  {/if}
+
+  <!-- Model, spending limit, self-improvement, conversations and memory. -->
+  <ModelControls {agentId} />
+
+  <RunLimitControls {agentId} />
+
+  <LearningControls {agentId} />
+
+  <IsolationControls {agentId} />
+
+  <div>
+    <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1.5">{$t('settingsSkills.title')}</div>
+    <div class="text-sm">{skills.length > 0 ? skills.join(', ') : $t('agentSettings.noneAssigned')}</div>
+  </div>
+
+  <div>
+    <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1.5">{$t('marketplace.workflows')}</div>
+    <div class="text-sm">{$t('agentSettings.configuredCount', { values: { count: workflowEntries.length } })}</div>
+  </div>
+
+  {#if agent?.installedAt}
+    <div>
+      <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1.5">{$t('settingsMemories.created')}</div>
+      <div class="text-sm">{new Date(agent.installedAt * 1000).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}</div>
+    </div>
+  {/if}
+
+  <!-- Duplicate -->
+  <div class="border-t border-base-300 pt-5 mt-3">
+    <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-2">{$t('sidebar.duplicate')}</div>
+    {#if showDuplicate}
+      <div class="rounded-lg border border-base-300 bg-base-200/50 p-4">
+        <div class="text-sm font-medium mb-1">{$t('agentSettings.duplicateTitle', { values: { name: agent?.name ?? '' } })}</div>
+        <div class="text-xs text-base-content/70 mb-3">{$t('agentSettings.duplicateDesc')}</div>
+        <input
+          class="input input-bordered input-sm w-full mb-2"
+          placeholder={$t('agentSettings.duplicateNamePlaceholder')}
+          bind:value={duplicateName}
+          disabled={duplicating}
+          onkeydown={(e) => { if (e.key === 'Enter') handleDuplicate(); }}
+        />
+        {#if duplicateError}
+          <div class="text-xs text-error mb-2">{duplicateError}</div>
+        {/if}
+        <div class="flex items-center gap-2">
+          <button class="btn btn-primary btn-sm" onclick={handleDuplicate} disabled={duplicating || !duplicateName.trim()}>{duplicating ? $t('agentSettings.duplicating') : $t('agentSettings.createCopy')}</button>
+          <button class="btn btn-ghost btn-sm" onclick={() => showDuplicate = false} disabled={duplicating}>{$t('common.cancel')}</button>
+        </div>
+      </div>
+    {:else}
+      <button class="btn btn-sm btn-outline" onclick={openDuplicate}>{$t('agentSettings.duplicateAgent')}</button>
+    {/if}
+  </div>
+
+  <!-- Danger zone. Every employee can be let go, packaged or not: deleting a
+       packaged one uninstalls it, and the server tears it down either way. -->
+  {#if agent}
+    <div class="border-t border-base-300 pt-5 mt-3">
+      <div class="text-xs font-semibold uppercase tracking-wider text-error mb-2">{$t('agentSettings.dangerZone')}</div>
+      {#if showDeleteConfirm && agentId !== PRIMARY_ID}
+        <div class="rounded-lg border border-error/30 bg-error/5 p-4">
+          <div class="text-sm font-medium mb-1">{$t('agent.deleteTitle', { values: { name: agent?.name ?? '' } })}</div>
+          {#if managed}
+            <div class="text-xs text-base-content/70 mb-1">{$t('agent.packagedDeleteWhy', { values: { name: agent?.name ?? '' } })}</div>
+            <div class="text-xs text-base-content/70 mb-3">{$t('agent.packagedDeleteConsequences')}</div>
+            <label class="block mb-3">
+              <span class="block text-xs font-semibold uppercase tracking-wider mb-1.5">{$t('agent.typeNameToConfirmPrefix')} <code class="normal-case font-mono tracking-normal font-medium text-[12px] text-base-content bg-base-200 border border-base-300 rounded px-1.5 py-0.5">{agent?.name ?? ''}</code> {$t('agent.typeNameToConfirmSuffix')}</span>
+              <input type="text" bind:value={deleteTyped} autocomplete="off" class="w-full py-[7px] px-2.5 rounded-md border border-error/40 text-sm bg-base-100 outline-none font-body" />
+            </label>
+          {:else}
+            <div class="text-xs text-base-content/70 mb-3">{$t('agentSettings.deleteWarning')}</div>
+          {/if}
+          <div class="flex items-center gap-2">
+            <button class="btn btn-error btn-sm" onclick={handleDeleteAgent} disabled={deleting || !deleteArmed}>{deleting ? $t('agentSettings.deleting') : $t('agentSettings.deleteAgent')}</button>
+            <button class="btn btn-ghost btn-sm" onclick={() => { showDeleteConfirm = false; deleteTyped = ''; }}>{$t('common.cancel')}</button>
           </div>
         </div>
-      </div>
-
-      {#if !agent?.editable}
-        <div class="rounded-lg border border-base-300 bg-base-200/50 px-3.5 py-2.5">
-          <div class="text-xs text-base-content/70">{$t('agentSettings.configManagedPrefix')} <span class="font-mono">agent.json</span> {$t('agentSettings.configManagedSuffix')}</div>
-        </div>
-      {/if}
-
-      <LearningControls {agentId} />
-
-      <IsolationControls {agentId} />
-
-      <RunLimitControls {agentId} />
-
-      <ModelControls {agentId} />
-
-      <div>
-        <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1.5">{$t('settingsSkills.title')}</div>
-        <div class="text-sm">{skills.length > 0 ? skills.join(', ') : $t('agentSettings.noneAssigned')}</div>
-      </div>
-
-      <div>
-        <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1.5">{$t('marketplace.workflows')}</div>
-        <div class="text-sm">{$t('agentSettings.configuredCount', { values: { count: workflowEntries.length } })}</div>
-      </div>
-
-      {#if agent?.installedAt}
-        <div>
-          <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1.5">{$t('settingsMemories.created')}</div>
-          <div class="text-sm">{new Date(agent.installedAt * 1000).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}</div>
-        </div>
-      {/if}
-
-      <!-- Duplicate -->
-      <div class="border-t border-base-300 pt-5 mt-3">
-        <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-2">{$t('sidebar.duplicate')}</div>
-        {#if showDuplicate}
-          <div class="rounded-lg border border-base-300 bg-base-200/50 p-4">
-            <div class="text-sm font-medium mb-1">{$t('agentSettings.duplicateTitle', { values: { name: agent?.name ?? '' } })}</div>
-            <div class="text-xs text-base-content/70 mb-3">{$t('agentSettings.duplicateDesc')}</div>
-            <input
-              class="input input-bordered input-sm w-full mb-2"
-              placeholder={$t('agentSettings.duplicateNamePlaceholder')}
-              bind:value={duplicateName}
-              disabled={duplicating}
-              onkeydown={(e) => { if (e.key === 'Enter') handleDuplicate(); }}
-            />
-            {#if duplicateError}
-              <div class="text-xs text-error mb-2">{duplicateError}</div>
-            {/if}
-            <div class="flex items-center gap-2">
-              <button class="btn btn-primary btn-sm" onclick={handleDuplicate} disabled={duplicating || !duplicateName.trim()}>{duplicating ? $t('agentSettings.duplicating') : $t('agentSettings.createCopy')}</button>
-              <button class="btn btn-ghost btn-sm" onclick={() => showDuplicate = false} disabled={duplicating}>{$t('common.cancel')}</button>
-            </div>
+      {:else if showPurgeConfirm}
+        <div class="rounded-lg border border-error/30 bg-error/5 p-4">
+          <div class="text-xs text-base-content/70 mb-3">{$t('agentSettings.purgeConfirm')}</div>
+          <div class="flex items-center gap-2">
+            <button class="btn btn-error btn-sm" onclick={handlePurgeData} disabled={purging}>{purging ? $t('agentSettings.purging') : $t('agentSettings.purgeData')}</button>
+            <button class="btn btn-ghost btn-sm" onclick={() => showPurgeConfirm = false}>{$t('common.cancel')}</button>
           </div>
-        {:else}
-          <button class="btn btn-sm btn-outline" onclick={openDuplicate}>{$t('agentSettings.duplicateAgent')}</button>
-        {/if}
-      </div>
-
-      <!-- Danger zone. Every employee can be let go, packaged or not: deleting a
-           packaged one uninstalls it, and the server tears it down either way. -->
-      {#if agent}
-        <div class="border-t border-base-300 pt-5 mt-3">
-          <div class="text-xs font-semibold uppercase tracking-wider text-error mb-2">{$t('agentSettings.dangerZone')}</div>
-          {#if showDeleteConfirm && agentId !== PRIMARY_ID}
-            <div class="rounded-lg border border-error/30 bg-error/5 p-4">
-              <div class="text-sm font-medium mb-1">{$t('agent.deleteTitle', { values: { name: agent?.name ?? '' } })}</div>
-              {#if managed}
-                <div class="text-xs text-base-content/70 mb-1">{$t('agent.packagedDeleteWhy', { values: { name: agent?.name ?? '' } })}</div>
-                <div class="text-xs text-base-content/70 mb-3">{$t('agent.packagedDeleteConsequences')}</div>
-                <label class="block mb-3">
-                  <span class="block text-xs font-semibold uppercase tracking-wider mb-1.5">{$t('agent.typeNameToConfirmPrefix')} <code class="normal-case font-mono tracking-normal font-medium text-[12px] text-base-content bg-base-200 border border-base-300 rounded px-1.5 py-0.5">{agent?.name ?? ''}</code> {$t('agent.typeNameToConfirmSuffix')}</span>
-                  <input type="text" bind:value={deleteTyped} autocomplete="off" class="w-full py-[7px] px-2.5 rounded-md border border-error/40 text-sm bg-base-100 outline-none font-body" />
-                </label>
-              {:else}
-                <div class="text-xs text-base-content/70 mb-3">{$t('agentSettings.deleteWarning')}</div>
-              {/if}
-              <div class="flex items-center gap-2">
-                <button class="btn btn-error btn-sm" onclick={handleDeleteAgent} disabled={deleting || !deleteArmed}>{deleting ? $t('agentSettings.deleting') : $t('agentSettings.deleteAgent')}</button>
-                <button class="btn btn-ghost btn-sm" onclick={() => { showDeleteConfirm = false; deleteTyped = ''; }}>{$t('common.cancel')}</button>
-              </div>
-            </div>
-          {:else if showPurgeConfirm}
-            <div class="rounded-lg border border-error/30 bg-error/5 p-4">
-              <div class="text-xs text-base-content/70 mb-3">{$t('agentSettings.purgeConfirm')}</div>
-              <div class="flex items-center gap-2">
-                <button class="btn btn-error btn-sm" onclick={handlePurgeData} disabled={purging}>{purging ? $t('agentSettings.purging') : $t('agentSettings.purgeData')}</button>
-                <button class="btn btn-ghost btn-sm" onclick={() => showPurgeConfirm = false}>{$t('common.cancel')}</button>
-              </div>
-            </div>
-          {:else}
-            <div class="flex flex-wrap items-center gap-2">
-              <button class="btn btn-sm btn-outline" onclick={handleExportData} disabled={exporting}>{exporting ? $t('agentSettings.exporting') : $t('agentSettings.exportData')}</button>
-              <button class="btn btn-error btn-sm btn-outline" onclick={() => showPurgeConfirm = true}>{$t('agentSettings.purgeData')}</button>
-              {#if agentId !== PRIMARY_ID}
-                <button class="btn btn-error btn-sm btn-outline" onclick={() => showDeleteConfirm = true}>{$t('agentSettings.deleteAgent')}</button>
-              {/if}
-            </div>
-            {#if agentId === PRIMARY_ID}<div class="text-xs text-base-content/60 mt-2 leading-snug">{$t('agent.primaryUndeletable')}</div>{/if}
-            {#if purgedNote}<div class="text-xs text-base-content/70 mt-2">{purgedNote}</div>{/if}
+        </div>
+      {:else}
+        <div class="flex flex-wrap items-center gap-2">
+          <button class="btn btn-sm btn-outline" onclick={handleExportData} disabled={exporting}>{exporting ? $t('agentSettings.exporting') : $t('agentSettings.exportData')}</button>
+          <button class="btn btn-error btn-sm btn-outline" onclick={() => showPurgeConfirm = true}>{$t('agentSettings.purgeData')}</button>
+          {#if agentId !== PRIMARY_ID}
+            <button class="btn btn-error btn-sm btn-outline" onclick={() => showDeleteConfirm = true}>{$t('agentSettings.deleteAgent')}</button>
           {/if}
         </div>
+        {#if agentId === PRIMARY_ID}<div class="text-xs text-base-content/60 mt-2 leading-snug">{$t('agent.primaryUndeletable')}</div>{/if}
+        {#if purgedNote}<div class="text-xs text-base-content/70 mt-2">{purgedNote}</div>{/if}
       {/if}
+    </div>
+  {/if}
+{/snippet}
 
-    {:else if section === 'identity'}
-      <div class="relative mb-1">
-        <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('settings.navItems.identity')}</div>
-        <div class="text-xs text-base-content/70 mt-1">{$t('agentSettings.identityBlurb')}</div>
-        {#if identitySaved}
-          <span class="absolute right-0 top-0 text-xs text-success flex items-center gap-1"><Check class="w-3 h-3" /> {$t('common.saved')}</span>
+{#snippet identityPart()}
+  <div class="relative mb-1">
+    <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('settings.navItems.identity')}</div>
+    <div class="text-xs text-base-content/70 mt-1">{$t('agentSettings.identityBlurb')}</div>
+    {#if identitySaved}
+      <span class="absolute right-0 top-0 text-xs text-success flex items-center gap-1"><Check class="w-3 h-3" /> {$t('common.saved')}</span>
+    {/if}
+  </div>
+  {#if identityError}
+    <div class="rounded-lg border border-error/40 bg-error/10 px-3.5 py-2.5 text-xs text-error">{identityError}</div>
+  {/if}
+  {#if linked}
+    <div class="rounded-lg border border-base-300 bg-base-200/50 px-3.5 py-2.5 text-xs text-base-content/70">{$t('agentSettings.identityLinkedNote')}</div>
+  {:else if managed}
+    <div class="rounded-lg border border-base-300 bg-base-200/50 px-3.5 py-2.5 text-xs text-base-content/70 flex items-start gap-3">
+      <span class="flex-1">{$t('agentSettings.identityManagedNote')}</span>
+      <button class="btn btn-xs btn-outline shrink-0" onclick={openDuplicate}>{$t('agentSettings.duplicateAgent')}</button>
+    </div>
+  {/if}
+  <label class="block">
+    <span class="block text-xs font-semibold uppercase tracking-wider mb-1.5">{$t('agentSettings.agentName')}</span>
+    <input type="text" bind:value={editName} oninput={nameTyped} onblur={nameLeft} class="w-full py-[7px] px-2.5 rounded-md border border-base-300 text-sm bg-base-100 outline-none font-body disabled:opacity-60 disabled:cursor-not-allowed" />
+    {#if nameRequired}
+      <span class="block text-xs text-base-content/60 mt-1">{$t('agentSettings.nameRequired')}</span>
+    {/if}
+  </label>
+  {#if botRenameOffer}
+    <div class="flex flex-wrap items-center gap-2 rounded-lg border border-base-300 bg-base-200/40 px-3 py-2.5">
+      <span class="flex-1 min-w-0 text-sm">{$t('agentSettings.alsoRenameBot', { values: { name: botRenameOffer } })}</span>
+      <button type="button" class="btn btn-sm btn-primary" onclick={acceptBotRename}>{$t('agentSettings.renameBot')}</button>
+      <button type="button" class="btn btn-sm btn-ghost" onclick={() => (botRenameOffer = null)}>{$t('agentSettings.keepBotName', { values: { name: $botName } })}</button>
+    </div>
+  {/if}
+  <div>
+    <div class="text-xs font-semibold uppercase tracking-wider mb-1.5">{$t('agentSettings.voice')}</div>
+    <div class="text-xs text-base-content/70 mb-2">{$t('agentSettings.voiceDesc')}</div>
+    <div class="flex gap-2 items-center flex-wrap">
+      {#each AGENT_VOICES as v (v.id)}
+        <div
+          class="flex items-center rounded-md border transition-colors {(editVoice || 'eve') === v.id ? 'border-base-content bg-base-200' : 'border-base-300 bg-base-100 hover:bg-base-200/50'}"
+        >
+          <button
+            class="pl-3 pr-1.5 py-1.5 text-sm font-medium bg-transparent border-none cursor-pointer"
+            onclick={() => selectVoice(v.id)}
+          >{v.label}</button>
+          <button
+            class="pr-2.5 pl-1 py-1.5 grid place-items-center bg-transparent border-none cursor-pointer text-base-content/50 hover:text-base-content transition-colors"
+            title={$t('agentSettings.voiceSample')}
+            onclick={(e) => playVoiceSample(v.id, e)}
+          >
+            {#if samplePlaying === v.id}
+              <span class="loading loading-bars loading-xs"></span>
+            {:else}
+              <Volume2 class="w-3.5 h-3.5" />
+            {/if}
+          </button>
+        </div>
+      {/each}
+    </div>
+  </div>
+  <label class="block">
+    <span class="block text-xs font-semibold uppercase tracking-wider mb-1.5">{$t('agentSettings.role')}{#if managed} <span class="normal-case tracking-normal font-normal text-base-content/50">· {$t('agentSettings.fromPackage')}</span>{/if}</span>
+    <textarea bind:value={editRole} oninput={debounceIdentitySave} disabled={managed} rows="3" class="w-full py-[7px] px-2.5 rounded-md border border-base-300 text-sm bg-base-100 outline-none font-body disabled:opacity-60 disabled:cursor-not-allowed resize-none"></textarea>
+  </label>
+  {#if jobEdit}
+    <div class="flex flex-wrap items-center gap-3 rounded-lg border border-base-300 bg-base-200/40 px-3 py-2.5">
+      <span class="flex-1 min-w-0 text-sm">{jobEdit.line}</span>
+      <button type="button" class="btn btn-sm btn-primary" onclick={addJobEdit}>{$t('permissions.addJobEdit')}</button>
+    </div>
+  {/if}
+  <div>
+    <div class="text-xs font-semibold uppercase tracking-wider mb-1.5">{$t('agentSettings.color')}</div>
+    <div class="flex gap-2 items-center">
+      {#each ['violet', 'green', 'sky', 'amber', 'rose', 'mint', 'slate', 'peach'] as color}
+        {@const c = AGENT_COLORS_MAP[color]}
+        <button
+          class="w-7 h-7 rounded-lg border-2 transition-colors {c.solidClass} {editColor === color ? 'border-base-content' : 'border-transparent'} cursor-pointer"
+          title={color}
+          onclick={() => selectColor(color)}
+        ></button>
+      {/each}
+      {#if editColor}
+        <button
+          class="text-xs text-base-content/50 hover:text-base-content cursor-pointer bg-transparent border-none ml-1"
+          onclick={() => selectColor(editColor)}
+        >{$t('agentSettings.colorReset')}</button>
+      {:else}
+        <span class="text-xs text-base-content/40 ml-1">{$t('agentSettings.colorDefault')}</span>
+      {/if}
+    </div>
+  </div>
+  <div class="pt-5 border-t border-base-300 flex flex-col gap-4">
+    <div>
+      <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('agentSettings.structure')}</div>
+      <div class="text-xs text-base-content/70 mt-1">{$t('agentSettings.structureBlurb')}</div>
+    </div>
+    <label class="block">
+      <span class="block text-xs font-semibold uppercase tracking-wider mb-1.5">{$t('agentSettings.department')}</span>
+      <input
+        type="text"
+        list="nebo-departments"
+        bind:value={editDepartment}
+        oninput={debounceIdentitySave}
+        placeholder={$t('agentSettings.departmentPlaceholder')}
+        class="w-full py-[7px] px-2.5 rounded-md border border-base-300 text-sm bg-base-100 outline-none font-body"
+      />
+      <datalist id="nebo-departments">
+        {#each knownDepartments as d (d)}
+          <option value={d}></option>
+        {/each}
+      </datalist>
+    </label>
+    <label class="block">
+      <span class="block text-xs font-semibold uppercase tracking-wider mb-1.5">{$t('agentSettings.reportsTo')}</span>
+      <select
+        class="select select-bordered select-sm w-full font-body"
+        value={editReportsTo}
+        onchange={(e) => selectReportsTo(e.currentTarget.value)}
+      >
+        <option value="">{$t('agentSettings.reportsToOwner')}</option>
+        {#each reportsToOptions as a (a.id)}
+          <option value={a.id}>{a.name}</option>
+        {/each}
+      </select>
+      <span class="block text-xs text-base-content/70 mt-1.5">{$t('agentSettings.reportsToHint')}</span>
+    </label>
+  </div>
+  <div>
+    <div class="text-xs font-semibold uppercase tracking-wider mb-1.5">{$t('automations.status')}</div>
+    <div class="flex items-center gap-1.5 text-sm">
+      <div class="w-[7px] h-[7px] rounded-full shrink-0 {(agent?.status ?? 'idle') === 'online' ? 'bg-success' : (agent?.status ?? 'idle') === 'running' ? 'bg-warning animate-pulse' : 'bg-base-content/30'}"></div>
+      {$t(statusLabel(agent?.status ?? 'idle'))}
+    </div>
+  </div>
+{/snippet}
+
+{#snippet personaPart()}
+  <div class="shrink-0">
+    <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('agentPersona.title')}</div>
+    <div class="text-xs text-base-content/70 mt-1">{$t('agentSettings.personaDesc')}</div>
+  </div>
+  {#if !agent?.editable}
+    <div class="shrink-0 rounded-lg border border-base-300 bg-base-200/50 px-3.5 py-2.5 text-xs text-base-content/70 flex items-start gap-3">
+      <span class="flex-1">{$t('agentSettings.packageManagedNote')}</span>
+      <button class="btn btn-xs btn-outline shrink-0" onclick={openDuplicate}>{$t('agentSettings.duplicateAgent')}</button>
+    </div>
+  {/if}
+  <textarea
+    bind:value={editPersona}
+    oninput={debouncePersonaSave}
+    disabled={!agent?.editable}
+    placeholder={$t('agentSettings.personaPlaceholder')}
+    rows="16"
+    class="w-full py-[7px] px-2.5 rounded-md border border-base-300 text-sm max-md:text-base bg-base-100 outline-none resize-y font-mono leading-relaxed disabled:opacity-60 disabled:cursor-not-allowed"
+  ></textarea>
+  <div class="shrink-0 flex items-center justify-end gap-3">
+    {#if personaSaved}
+      <span class="text-xs text-success flex items-center gap-1"><Check class="w-3 h-3" /> {$t('common.saved')}</span>
+    {/if}
+    <button
+      class="btn btn-primary btn-sm"
+      disabled={!agent?.editable}
+      onclick={() => { if (personaSaveTimer) clearTimeout(personaSaveTimer); savePersona(); }}
+    >{$t('common.save')}</button>
+  </div>
+{/snippet}
+
+{#snippet soulPart()}
+  <div class="shrink-0">
+    <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('settings.navItems.soul')}</div>
+    <div class="text-xs text-base-content/70 mt-1">{$t('agentSettings.soulDesc')}</div>
+  </div>
+  {#if !agent?.editable}
+    <div class="shrink-0 rounded-lg border border-base-300 bg-base-200/50 px-3.5 py-2.5 text-xs text-base-content/70 flex items-start gap-3">
+      <span class="flex-1">{$t('agentSettings.packageManagedNote')}</span>
+      <button class="btn btn-xs btn-outline shrink-0" onclick={openDuplicate}>{$t('agentSettings.duplicateAgent')}</button>
+    </div>
+  {/if}
+  <textarea
+    bind:value={editSoul}
+    oninput={debounceSoulSave}
+    disabled={!agent?.editable}
+    placeholder={$t('agentSettings.soulPlaceholder')}
+    rows="16"
+    class="w-full py-[7px] px-2.5 rounded-md border border-base-300 text-sm max-md:text-base bg-base-100 outline-none resize-y font-mono leading-relaxed disabled:opacity-60 disabled:cursor-not-allowed"
+  ></textarea>
+  <div class="shrink-0 flex items-center justify-end gap-3">
+    {#if soulSaved}
+      <span class="text-xs text-success flex items-center gap-1"><Check class="w-3 h-3" /> {$t('common.saved')}</span>
+    {/if}
+    <button
+      class="btn btn-primary btn-sm"
+      disabled={!agent?.editable}
+      onclick={() => { if (soulSaveTimer) clearTimeout(soulSaveTimer); saveSoul(); }}
+    >{$t('common.save')}</button>
+  </div>
+{/snippet}
+
+{#snippet rulesPart()}
+  <div class="flex items-center justify-between mb-1">
+    <div>
+      <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('settings.navItems.rules')}</div>
+      <div class="text-xs text-base-content/70 mt-1">{$t('agentSettings.rulesDesc')}</div>
+    </div>
+    {#if rulesSaved}
+      <span class="text-xs text-success flex items-center gap-1"><Check class="w-3 h-3" /> {$t('common.saved')}</span>
+    {/if}
+  </div>
+  {#if !agent?.editable}
+    <div class="shrink-0 rounded-lg border border-base-300 bg-base-200/50 px-3.5 py-2.5 text-xs text-base-content/70 flex items-start gap-3">
+      <span class="flex-1">{$t('agentSettings.packageManagedNote')}</span>
+      <button class="btn btn-xs btn-outline shrink-0" onclick={openDuplicate}>{$t('agentSettings.duplicateAgent')}</button>
+    </div>
+  {/if}
+  <textarea rows="20"
+    bind:value={editRules}
+    oninput={debounceRulesSave}
+    disabled={!agent?.editable}
+    placeholder={$t('agentSettings.rulesPlaceholder')}
+    class="w-full py-[7px] px-2.5 rounded-md border border-base-300 text-sm max-md:text-base bg-base-100 outline-none resize-y font-mono leading-relaxed disabled:opacity-60 disabled:cursor-not-allowed"
+  ></textarea>
+
+  <!-- The employee's package review writes into these Rules, between two
+       markers; the stamp says what it was reviewed against. Editable
+       like the rest: what the owner writes outside the markers is kept
+       by the next review. -->
+  {#if agent?.contextStamp}
+    {@const stamp = (() => { try { return JSON.parse(agent?.contextStamp ?? '{}'); } catch { return {}; } })()}
+    {#if stamp.against}
+      <div class="mt-2 text-xs text-base-content/60">
+        {$t('agentSettings.contextAgainst', { values: { against: stamp.against } })}
+        {#if stamp.status && stamp.status !== 'written'}
+          <span class="ml-2 badge badge-warning badge-xs">{$t('agentSettings.contextStale')}</span>
         {/if}
       </div>
-      {#if identityError}
-        <div class="rounded-lg border border-error/40 bg-error/10 px-3.5 py-2.5 text-xs text-error">{identityError}</div>
-      {/if}
-      {#if linked}
-        <div class="rounded-lg border border-base-300 bg-base-200/50 px-3.5 py-2.5 text-xs text-base-content/70">{$t('agentSettings.identityLinkedNote')}</div>
-      {:else if managed}
-        <div class="rounded-lg border border-base-300 bg-base-200/50 px-3.5 py-2.5 text-xs text-base-content/70 flex items-start gap-3">
-          <span class="flex-1">{$t('agentSettings.identityManagedNote')}</span>
-          <button class="btn btn-xs btn-outline shrink-0" onclick={openDuplicate}>{$t('agentSettings.duplicateAgent')}</button>
+    {/if}
+  {/if}
+{/snippet}
+
+{#snippet configurePart()}
+  <div class="flex items-center justify-between gap-3 mb-1">
+    <div>
+      <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('agent.configure')}</div>
+      <div class="text-xs text-base-content/70 mt-1">{$t('agentConfigure.inputsCustomize', { values: { name: agent?.name ?? '' } })}</div>
+    </div>
+    {#if configFields.length > 0}
+      <button type="button" class="btn btn-sm btn-primary shrink-0" onclick={openConfigure}>{$t('agent.configure')}</button>
+    {/if}
+  </div>
+
+  {#if configFields.length === 0}
+    <div class="text-center py-6 text-sm">{$t('agentConfigure.noInputs')}</div>
+  {:else}
+    <dl class="flex flex-col gap-3 mt-3">
+      {#each configFields as field (field.key)}
+        {@const saved = configValues[field.key]}
+        {@const val = saved === undefined || saved === null || saved === '' ? field.default : saved}
+        {@const isEmpty = val === undefined || val === null || val === ''}
+        <div class="border-b border-base-content/10 pb-3 last:border-0">
+          <dt class="text-sm font-medium">{field.label || field.key}</dt>
+          {#if field.description}<dd class="text-xs text-base-content/50 mt-0.5">{field.description}</dd>{/if}
+          <dd class="text-sm mt-1 whitespace-pre-wrap {isEmpty ? 'text-base-content/40 italic' : ''}">{isEmpty ? $t('common.notSet') : String(val)}</dd>
         </div>
-      {/if}
-      <label class="block">
-        <span class="block text-xs font-semibold uppercase tracking-wider mb-1.5">{$t('agentSettings.agentName')}</span>
-        <input type="text" bind:value={editName} oninput={nameTyped} onblur={nameLeft} class="w-full py-[7px] px-2.5 rounded-md border border-base-300 text-sm bg-base-100 outline-none font-body disabled:opacity-60 disabled:cursor-not-allowed" />
-        {#if nameRequired}
-          <span class="block text-xs text-base-content/60 mt-1">{$t('agentSettings.nameRequired')}</span>
-        {/if}
-      </label>
-      {#if botRenameOffer}
-        <div class="flex flex-wrap items-center gap-2 rounded-lg border border-base-300 bg-base-200/40 px-3 py-2.5">
-          <span class="flex-1 min-w-0 text-sm">{$t('agentSettings.alsoRenameBot', { values: { name: botRenameOffer } })}</span>
-          <button type="button" class="btn btn-sm btn-primary" onclick={acceptBotRename}>{$t('agentSettings.renameBot')}</button>
-          <button type="button" class="btn btn-sm btn-ghost" onclick={() => (botRenameOffer = null)}>{$t('agentSettings.keepBotName', { values: { name: $botName } })}</button>
-        </div>
-      {/if}
-      <div>
-        <div class="text-xs font-semibold uppercase tracking-wider mb-1.5">{$t('agentSettings.voice')}</div>
-        <div class="text-xs text-base-content/70 mb-2">{$t('agentSettings.voiceDesc')}</div>
-        <div class="flex gap-2 items-center flex-wrap">
-          {#each AGENT_VOICES as v (v.id)}
-            <div
-              class="flex items-center rounded-md border transition-colors {(editVoice || 'eve') === v.id ? 'border-base-content bg-base-200' : 'border-base-300 bg-base-100 hover:bg-base-200/50'}"
-            >
-              <button
-                class="pl-3 pr-1.5 py-1.5 text-sm font-medium bg-transparent border-none cursor-pointer"
-                onclick={() => selectVoice(v.id)}
-              >{v.label}</button>
-              <button
-                class="pr-2.5 pl-1 py-1.5 grid place-items-center bg-transparent border-none cursor-pointer text-base-content/50 hover:text-base-content transition-colors"
-                title={$t('agentSettings.voiceSample')}
-                onclick={(e) => playVoiceSample(v.id, e)}
-              >
-                {#if samplePlaying === v.id}
-                  <span class="loading loading-bars loading-xs"></span>
-                {:else}
-                  <Volume2 class="w-3.5 h-3.5" />
-                {/if}
-              </button>
-            </div>
-          {/each}
-        </div>
-      </div>
-      <label class="block">
-        <span class="block text-xs font-semibold uppercase tracking-wider mb-1.5">{$t('agentSettings.role')}{#if managed} <span class="normal-case tracking-normal font-normal text-base-content/50">· {$t('agentSettings.fromPackage')}</span>{/if}</span>
-        <textarea bind:value={editRole} oninput={debounceIdentitySave} disabled={managed} rows="3" class="w-full py-[7px] px-2.5 rounded-md border border-base-300 text-sm bg-base-100 outline-none font-body disabled:opacity-60 disabled:cursor-not-allowed resize-none"></textarea>
-      </label>
-      {#if jobEdit}
-        <div class="flex flex-wrap items-center gap-3 rounded-lg border border-base-300 bg-base-200/40 px-3 py-2.5">
-          <span class="flex-1 min-w-0 text-sm">{jobEdit.line}</span>
-          <button type="button" class="btn btn-sm btn-primary" onclick={addJobEdit}>{$t('permissions.addJobEdit')}</button>
-        </div>
-      {/if}
-      <div>
-        <div class="text-xs font-semibold uppercase tracking-wider mb-1.5">{$t('agentSettings.color')}</div>
-        <div class="flex gap-2 items-center">
-          {#each ['violet', 'green', 'sky', 'amber', 'rose', 'mint', 'slate', 'peach'] as color}
-            {@const c = AGENT_COLORS_MAP[color]}
-            <button
-              class="w-7 h-7 rounded-lg border-2 transition-colors {c.solidClass} {editColor === color ? 'border-base-content' : 'border-transparent'} cursor-pointer"
-              title={color}
-              onclick={() => selectColor(color)}
-            ></button>
-          {/each}
-          {#if editColor}
-            <button
-              class="text-xs text-base-content/50 hover:text-base-content cursor-pointer bg-transparent border-none ml-1"
-              onclick={() => selectColor(editColor)}
-            >{$t('agentSettings.colorReset')}</button>
-          {:else}
-            <span class="text-xs text-base-content/40 ml-1">{$t('agentSettings.colorDefault')}</span>
-          {/if}
-        </div>
-      </div>
-      <div class="pt-5 border-t border-base-300 flex flex-col gap-4">
-        <div>
-          <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('agentSettings.structure')}</div>
-          <div class="text-xs text-base-content/70 mt-1">{$t('agentSettings.structureBlurb')}</div>
-        </div>
-        <label class="block">
-          <span class="block text-xs font-semibold uppercase tracking-wider mb-1.5">{$t('agentSettings.department')}</span>
+      {/each}
+    </dl>
+  {/if}
+{/snippet}
+
+{#snippet questionsPart()}
+  <!-- Authoring the questions themselves. An owner builds an employee that
+       asks for what it needs to know, with the same rules a package's
+       questions follow: a semantic id, a label written as the question,
+       what it does until the question is answered, and no default when the
+       value is money. -->
+  <div class="flex items-center justify-between gap-3 mb-1">
+    <div>
+      <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('agentQuestions.title')}</div>
+      <div class="text-xs text-base-content/70 mt-1">{$t('agentQuestions.desc')}</div>
+    </div>
+    {#if questionsSaved}
+      <span class="text-xs text-success flex items-center gap-1 shrink-0"><Check class="w-3 h-3" /> {$t('common.saved')}</span>
+    {/if}
+  </div>
+
+  {#if questionsError}
+    <div class="alert alert-error mt-3 py-2 text-xs">
+      <AlertTriangle class="w-4 h-4 shrink-0" />
+      <span>{questionsError}</span>
+    </div>
+  {/if}
+
+  <div class="flex flex-col gap-3 mt-3">
+    {#each questions as q, i (i)}
+      <div class="rounded-lg border border-base-300 bg-base-200/40 p-3 flex flex-col gap-2">
+        <div class="flex items-start gap-2">
           <input
             type="text"
-            list="nebo-departments"
-            bind:value={editDepartment}
-            oninput={debounceIdentitySave}
-            placeholder={$t('agentSettings.departmentPlaceholder')}
-            class="w-full py-[7px] px-2.5 rounded-md border border-base-300 text-sm bg-base-100 outline-none font-body"
+            bind:value={q.label}
+            oninput={debounceQuestionsSave}
+            placeholder={$t('agentQuestions.labelPlaceholder')}
+            class="input input-sm input-bordered flex-1 font-medium"
           />
-          <datalist id="nebo-departments">
-            {#each knownDepartments as d (d)}
-              <option value={d}></option>
-            {/each}
-          </datalist>
+          <button
+            type="button"
+            class="btn btn-sm btn-ghost text-error shrink-0"
+            onclick={() => removeQuestion(i)}
+          >{$t('common.remove')}</button>
+        </div>
+
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+          <label class="flex flex-col gap-1">
+            <span class="text-xs text-base-content/60">{$t('agentQuestions.semanticId')}</span>
+            <input
+              type="text"
+              bind:value={q.id}
+              oninput={debounceQuestionsSave}
+              placeholder="finance.ap.invoice_mailbox"
+              class="input input-sm input-bordered font-mono"
+            />
+          </label>
+          <label class="flex flex-col gap-1">
+            <span class="text-xs text-base-content/60">{$t('agentQuestions.key')}</span>
+            <input
+              type="text"
+              bind:value={q.key}
+              oninput={debounceQuestionsSave}
+              placeholder="invoice_mailbox"
+              class="input input-sm input-bordered font-mono"
+            />
+          </label>
+          <label class="flex flex-col gap-1">
+            <span class="text-xs text-base-content/60">{$t('agentQuestions.type')}</span>
+            <select bind:value={q.type} onchange={debounceQuestionsSave} class="select select-sm select-bordered">
+              {#each QUESTION_TYPES as ty (ty)}
+                <option value={ty}>{ty}</option>
+              {/each}
+            </select>
+          </label>
+          <label class="flex flex-col gap-1">
+            <span class="text-xs text-base-content/60">{$t('agentQuestions.scope')}</span>
+            <select bind:value={q.scope} onchange={debounceQuestionsSave} class="select select-sm select-bordered">
+              <option value="company">{$t('agentQuestions.scopeCompany')}</option>
+              <option value="seat">{$t('agentQuestions.scopeSeat')}</option>
+            </select>
+          </label>
+        </div>
+
+        <label class="flex flex-col gap-1">
+          <span class="text-xs text-base-content/60">{$t('agentQuestions.missing')}</span>
+          <input
+            type="text"
+            bind:value={q.missing}
+            oninput={debounceQuestionsSave}
+            placeholder={$t('agentQuestions.missingPlaceholder')}
+            class="input input-sm input-bordered"
+          />
         </label>
-        <label class="block">
-          <span class="block text-xs font-semibold uppercase tracking-wider mb-1.5">{$t('agentSettings.reportsTo')}</span>
-          <select
-            class="select select-bordered select-sm w-full font-body"
-            value={editReportsTo}
-            onchange={(e) => selectReportsTo(e.currentTarget.value)}
-          >
-            <option value="">{$t('agentSettings.reportsToOwner')}</option>
-            {#each reportsToOptions as a (a.id)}
-              <option value={a.id}>{a.name}</option>
-            {/each}
-          </select>
-          <span class="block text-xs text-base-content/70 mt-1.5">{$t('agentSettings.reportsToHint')}</span>
-        </label>
-      </div>
-      <div>
-        <div class="text-xs font-semibold uppercase tracking-wider mb-1.5">{$t('automations.status')}</div>
-        <div class="flex items-center gap-1.5 text-sm">
-          <div class="w-[7px] h-[7px] rounded-full shrink-0 {(agent?.status ?? 'idle') === 'online' ? 'bg-success' : (agent?.status ?? 'idle') === 'running' ? 'bg-warning animate-pulse' : 'bg-base-content/30'}"></div>
-          {$t(statusLabel(agent?.status ?? 'idle'))}
-        </div>
-      </div>
 
-    {:else if section === 'persona'}
-      <div class="shrink-0">
-        <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('agentPersona.title')}</div>
-        <div class="text-xs text-base-content/70 mt-1">{$t('agentSettings.personaDesc')}</div>
-      </div>
-      {#if !agent?.editable}
-        <div class="shrink-0 rounded-lg border border-base-300 bg-base-200/50 px-3.5 py-2.5 text-xs text-base-content/70 flex items-start gap-3">
-          <span class="flex-1">{$t('agentSettings.packageManagedNote')}</span>
-          <button class="btn btn-xs btn-outline shrink-0" onclick={openDuplicate}>{$t('agentSettings.duplicateAgent')}</button>
+        <div class="flex flex-wrap items-center gap-4">
+          <label class="flex items-center gap-2 text-xs cursor-pointer">
+            <input type="checkbox" bind:checked={q.required} onchange={debounceQuestionsSave} class="checkbox checkbox-xs" />
+            <span>{$t('agentQuestions.required')}</span>
+          </label>
+          <label class="flex items-center gap-2 text-xs cursor-pointer">
+            <input
+              type="checkbox"
+              checked={q.money}
+              onchange={(e) => setQuestionMoney(i, e.currentTarget.checked)}
+              class="checkbox checkbox-xs"
+            />
+            <span>{$t('agentQuestions.money')}</span>
+          </label>
+          <label class="flex items-center gap-2 text-xs flex-1 min-w-[12rem]">
+            <span class="text-base-content/60 shrink-0">{$t('agentQuestions.default')}</span>
+            <input
+              type="text"
+              bind:value={q.default}
+              oninput={debounceQuestionsSave}
+              disabled={q.money}
+              placeholder={q.money ? $t('agentQuestions.noMoneyDefault') : ''}
+              class="input input-xs input-bordered flex-1 disabled:opacity-60 disabled:cursor-not-allowed"
+            />
+          </label>
         </div>
-      {/if}
-      <textarea
-        bind:value={editPersona}
-        oninput={debouncePersonaSave}
-        disabled={!agent?.editable}
-        placeholder={$t('agentSettings.personaPlaceholder')}
-        class="w-full flex-1 min-h-0 py-[7px] px-2.5 rounded-md border border-base-300 text-sm max-md:text-base bg-base-100 outline-none resize-none font-mono leading-relaxed disabled:opacity-60 disabled:cursor-not-allowed"
-      ></textarea>
-      <div class="shrink-0 flex items-center justify-end gap-3">
-        {#if personaSaved}
-          <span class="text-xs text-success flex items-center gap-1"><Check class="w-3 h-3" /> {$t('common.saved')}</span>
-        {/if}
-        <button
-          class="btn btn-primary btn-sm"
-          disabled={!agent?.editable}
-          onclick={() => { if (personaSaveTimer) clearTimeout(personaSaveTimer); savePersona(); }}
-        >{$t('common.save')}</button>
-      </div>
 
-    {:else if section === 'soul'}
-      <div class="shrink-0">
-        <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('settings.navItems.soul')}</div>
-        <div class="text-xs text-base-content/70 mt-1">{$t('agentSettings.soulDesc')}</div>
-      </div>
-      {#if !agent?.editable}
-        <div class="shrink-0 rounded-lg border border-base-300 bg-base-200/50 px-3.5 py-2.5 text-xs text-base-content/70 flex items-start gap-3">
-          <span class="flex-1">{$t('agentSettings.packageManagedNote')}</span>
-          <button class="btn btn-xs btn-outline shrink-0" onclick={openDuplicate}>{$t('agentSettings.duplicateAgent')}</button>
-        </div>
-      {/if}
-      <textarea
-        bind:value={editSoul}
-        oninput={debounceSoulSave}
-        disabled={!agent?.editable}
-        placeholder={$t('agentSettings.soulPlaceholder')}
-        class="w-full flex-1 min-h-0 py-[7px] px-2.5 rounded-md border border-base-300 text-sm max-md:text-base bg-base-100 outline-none resize-none font-mono leading-relaxed disabled:opacity-60 disabled:cursor-not-allowed"
-      ></textarea>
-      <div class="shrink-0 flex items-center justify-end gap-3">
-        {#if soulSaved}
-          <span class="text-xs text-success flex items-center gap-1"><Check class="w-3 h-3" /> {$t('common.saved')}</span>
-        {/if}
-        <button
-          class="btn btn-primary btn-sm"
-          disabled={!agent?.editable}
-          onclick={() => { if (soulSaveTimer) clearTimeout(soulSaveTimer); saveSoul(); }}
-        >{$t('common.save')}</button>
-      </div>
-
-    {:else if section === 'rules'}
-      <div class="flex items-center justify-between mb-1">
-        <div>
-          <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('settings.navItems.rules')}</div>
-          <div class="text-xs text-base-content/70 mt-1">{$t('agentSettings.rulesDesc')}</div>
-        </div>
-        {#if rulesSaved}
-          <span class="text-xs text-success flex items-center gap-1"><Check class="w-3 h-3" /> {$t('common.saved')}</span>
-        {/if}
-      </div>
-      {#if !agent?.editable}
-        <div class="shrink-0 rounded-lg border border-base-300 bg-base-200/50 px-3.5 py-2.5 text-xs text-base-content/70 flex items-start gap-3">
-          <span class="flex-1">{$t('agentSettings.packageManagedNote')}</span>
-          <button class="btn btn-xs btn-outline shrink-0" onclick={openDuplicate}>{$t('agentSettings.duplicateAgent')}</button>
-        </div>
-      {/if}
-      <textarea rows="20"
-        bind:value={editRules}
-        oninput={debounceRulesSave}
-        disabled={!agent?.editable}
-        placeholder={$t('agentSettings.rulesPlaceholder')}
-        class="w-full py-[7px] px-2.5 rounded-md border border-base-300 text-sm max-md:text-base bg-base-100 outline-none resize-y font-mono leading-relaxed disabled:opacity-60 disabled:cursor-not-allowed"
-      ></textarea>
-
-      <!-- The employee's package review writes into these Rules, between two
-           markers; the stamp says what it was reviewed against. Editable
-           like the rest: what the owner writes outside the markers is kept
-           by the next review. -->
-      {#if agent?.contextStamp}
-        {@const stamp = (() => { try { return JSON.parse(agent?.contextStamp ?? '{}'); } catch { return {}; } })()}
-        {#if stamp.against}
-          <div class="mt-2 text-xs text-base-content/60">
-            {$t('agentSettings.contextAgainst', { values: { against: stamp.against } })}
-            {#if stamp.status && stamp.status !== 'written'}
-              <span class="ml-2 badge badge-warning badge-xs">{$t('agentSettings.contextStale')}</span>
-            {/if}
+        {#if q.money}
+          <div class="text-xs text-warning flex items-start gap-1.5">
+            <AlertTriangle class="w-3.5 h-3.5 shrink-0 mt-px" />
+            <span>{$t('agentQuestions.moneyNote')}</span>
           </div>
         {/if}
-      {/if}
-    {:else if section === 'configure'}
-      <div class="flex items-center justify-between gap-3 mb-1">
-        <div>
-          <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('agent.configure')}</div>
-          <div class="text-xs text-base-content/70 mt-1">{$t('agentConfigure.inputsCustomize', { values: { name: agent?.name ?? '' } })}</div>
-        </div>
-        {#if configFields.length > 0}
-          <button type="button" class="btn btn-sm btn-primary shrink-0" onclick={openConfigure}>{$t('agent.configure')}</button>
-        {/if}
       </div>
+    {/each}
+  </div>
 
-      {#if configFields.length === 0}
-        <div class="text-center py-6 text-sm">{$t('agentConfigure.noInputs')}</div>
-      {:else}
-        <dl class="flex flex-col gap-3 mt-3">
-          {#each configFields as field (field.key)}
-            {@const saved = configValues[field.key]}
-            {@const val = saved === undefined || saved === null || saved === '' ? field.default : saved}
-            {@const isEmpty = val === undefined || val === null || val === ''}
-            <div class="border-b border-base-content/10 pb-3 last:border-0">
-              <dt class="text-sm font-medium">{field.label || field.key}</dt>
-              {#if field.description}<dd class="text-xs text-base-content/50 mt-0.5">{field.description}</dd>{/if}
-              <dd class="text-sm mt-1 whitespace-pre-wrap {isEmpty ? 'text-base-content/40 italic' : ''}">{isEmpty ? $t('common.notSet') : String(val)}</dd>
+  <button type="button" class="btn btn-sm btn-outline mt-3" onclick={addQuestion}>
+    {$t('agentQuestions.add')}
+  </button>
+{/snippet}
+
+{#snippet skillsPart()}
+  <div class="mb-1">
+    <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('settings.navItems.skills')}</div>
+    <div class="text-xs text-base-content/70 mt-1">{$t('agentSettings.skillsAssignedTo', { values: { name: agent?.name ?? '' } })}</div>
+  </div>
+  {#each skills as skill}
+    <div class="flex items-center gap-2.5 py-2 px-3 rounded-lg border border-base-300 bg-base-100">
+      <div class="w-7 h-7 rounded-md bg-base-200 flex items-center justify-center text-sm shrink-0">&#9889;</div>
+      <span class="text-sm font-medium flex-1">{skill}</span>
+      {#if !managed}
+        <button class="text-sm text-error cursor-pointer bg-transparent border-none hover:opacity-70 disabled:opacity-50" onclick={() => removeSkill(skill)} disabled={removingSkill !== ''}>{$t('common.remove')}</button>
+      {/if}
+    </div>
+  {/each}
+  <a href="/marketplace/skills" class="inline-flex items-center gap-1 text-sm text-primary font-medium mt-1">{$t('agentSettings.addFromMarketplace')}</a>
+{/snippet}
+
+{#snippet workflowsPart()}
+  <div class="flex items-center justify-between gap-3 mb-1">
+    <div>
+      <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('marketplace.workflows')}</div>
+      <div class="text-xs text-base-content/70 mt-1">{$t('agentSettings.automatedSequencesFor', { values: { name: agent?.name ?? '' } })}</div>
+    </div>
+    {#if workflowEntries.length > 0}
+      <button
+        class="flex items-center gap-1.5 py-1 px-2.5 rounded-lg border border-base-300 text-xs font-medium cursor-pointer bg-base-100 hover:bg-base-200 transition-colors shrink-0"
+        onclick={() => ctx.openCanvas()}
+        title={$t('agentSettings.openCanvasEditor')}
+      >
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="8" y="14" width="7" height="7" rx="1"/><line x1="6.5" y1="10" x2="11.5" y2="14"/><line x1="17.5" y1="10" x2="11.5" y2="14"/></svg>
+        {$t('agentSettings.canvas')}
+      </button>
+    {/if}
+  </div>
+
+  <!-- Stats cards -->
+  {#if workflowStats.totalRuns > 0}
+    <div class="grid grid-cols-4 gap-2 mb-4">
+      <div class="rounded-lg border border-base-300 bg-base-100 p-2.5 text-center">
+        <div class="text-base font-semibold">{workflowStats.totalRuns}</div>
+        <div class="text-xs text-base-content/50">{$t('agentActivity.totalRuns')}</div>
+      </div>
+      <div class="rounded-lg border border-base-300 bg-base-100 p-2.5 text-center">
+        <div class="text-base font-semibold text-success">{workflowStats.completed}</div>
+        <div class="text-xs text-base-content/50">{$t('common.completed')}</div>
+      </div>
+      <div class="rounded-lg border border-base-300 bg-base-100 p-2.5 text-center">
+        <div class="text-base font-semibold {workflowStats.failed > 0 ? 'text-error' : ''}">{workflowStats.failed}</div>
+        <div class="text-xs text-base-content/50">{$t('common.failed')}</div>
+      </div>
+      <div class="rounded-lg border border-base-300 bg-base-100 p-2.5 text-center">
+        <div class="text-base font-semibold font-mono">{workflowStats.avgDuration}</div>
+        <div class="text-xs text-base-content/50">{$t('agentActivity.avgDuration')}</div>
+      </div>
+    </div>
+  {/if}
+
+  {#if workflowEntries.length === 0}
+    <div class="text-center py-8 text-sm">
+      {$t('agentSettings.noWorkflows')}
+    </div>
+  {:else}
+    <div class="flex flex-col gap-2">
+      {#each workflowEntries as [name, wf]}
+        {@const purchased = wf.source === 'marketplace'}
+        <div class="rounded-lg border border-base-300 bg-base-100 overflow-hidden">
+          <div class="flex items-start gap-3 p-3.5">
+            <div class="w-[22px] h-[22px] rounded flex items-center justify-center text-sm shrink-0 mt-0.5 {wf.isActive !== false ? 'bg-primary/10 text-primary' : 'bg-base-200 text-base-content/40'}">
+              {#if wf.trigger?.type === 'schedule'}&#8635;{:else if wf.trigger?.type === 'event'}&#9889;{:else if wf.trigger?.type === 'watch'}&#128065;{:else if wf.trigger?.type === 'heartbeat'}&#10084;{:else}&#9654;{/if}
             </div>
-          {/each}
-        </dl>
-      {/if}
 
-      <!-- Authoring the questions themselves. An owner builds an employee that
-           asks for what it needs to know, with the same rules a package's
-           questions follow: a semantic id, a label written as the question,
-           what it does until the question is answered, and no default when the
-           value is money. -->
-      <div class="mt-6 pt-5 border-t border-base-content/10">
-        <div class="flex items-center justify-between gap-3 mb-1">
-          <div>
-            <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('agentQuestions.title')}</div>
-            <div class="text-xs text-base-content/70 mt-1">{$t('agentQuestions.desc')}</div>
+            <button class="flex-1 min-w-0 text-left cursor-pointer bg-transparent border-none p-0" onclick={() => ctx.openWorkflow(name, wf)}>
+              <div class="flex items-center gap-1.5">
+                <span class="text-sm font-medium">{name}</span>
+                {#if purchased}
+                  <span class="py-0 px-1.5 rounded bg-base-200 text-xs font-mono">{$t('nav.marketplace')}</span>
+                {/if}
+                {#if wf.isActive === false}
+                  <span class="py-0 px-1.5 rounded bg-base-200 text-xs text-base-content/50">{$t('common.paused')}</span>
+                {/if}
+              </div>
+              <div class="text-xs text-base-content/70 mt-0.5 truncate">{wf.description}</div>
+              <div class="flex items-center gap-2 mt-1.5 flex-wrap">
+                <span class="text-xs text-base-content/50 font-mono">{triggerSummary(wf)}</span>
+                <span class="text-xs text-base-content/30">&middot;</span>
+                <span class="text-xs text-base-content/50 font-mono inline-flex items-center gap-1">{(wf.activities?.length ?? 0) === 1 ? $t('agentSettings.activityCountSingular', { values: { count: 1 } }) : $t('agentSettings.activityCount', { values: { count: wf.activities?.length ?? 0 } })}{#each [...new Set((wf.activities ?? []).map((a: WorkflowActivity) => a.type).filter(Boolean))] as t}<span class="inline-block" title={getActivityType(t).label}>{getActivityType(t).icon}</span>{/each}</span>
+                {#if wf.lastFired}
+                  <span class="text-xs text-base-content/30">&middot;</span>
+                  <span class="text-xs text-base-content/50 font-mono">{$t('agentSettings.lastFired', { values: { time: formatLastFired(wf.lastFired) } })}</span>
+                {/if}
+                {#if wf.emit}
+                  <span class="text-xs text-base-content/30">&middot;</span>
+                  <span class="text-xs text-accent/70 font-mono">&#8594; {wf.emit}</span>
+                {/if}
+              </div>
+            </button>
+
+            <input type="checkbox" class="toggle toggle-sm toggle-primary shrink-0 mt-1" checked={wf.isActive !== false} role="switch" aria-checked={wf.isActive !== false} onchange={() => ctx.toggleWorkflow(name)} />
           </div>
-          {#if questionsSaved}
-            <span class="text-xs text-success flex items-center gap-1 shrink-0"><Check class="w-3 h-3" /> {$t('common.saved')}</span>
-          {/if}
         </div>
+      {/each}
+    </div>
+  {/if}
 
-        {#if questionsError}
-          <div class="alert alert-error mt-3 py-2 text-xs">
-            <AlertTriangle class="w-4 h-4 shrink-0" />
-            <span>{questionsError}</span>
-          </div>
-        {/if}
+  <button class="mt-3 w-full py-2.5 rounded-lg border border-dashed border-base-300 text-sm text-primary font-medium cursor-pointer bg-transparent hover:bg-base-200 transition-colors" onclick={() => createNewWorkflow()}>{$t('agentSettings.newWorkflow')}</button>
+  <button class="mt-2 w-full py-2.5 rounded-lg border border-dashed border-base-300 text-sm text-primary font-medium cursor-pointer bg-transparent hover:bg-base-200 transition-colors" onclick={() => createNewWorkflow(true)}>{$t('flows.newCallTree')}</button>
+{/snippet}
 
-        <div class="flex flex-col gap-3 mt-3">
-          {#each questions as q, i (i)}
-            <div class="rounded-lg border border-base-300 bg-base-200/40 p-3 flex flex-col gap-2">
-              <div class="flex items-start gap-2">
-                <input
-                  type="text"
-                  bind:value={q.label}
-                  oninput={debounceQuestionsSave}
-                  placeholder={$t('agentQuestions.labelPlaceholder')}
-                  class="input input-sm input-bordered flex-1 font-medium"
-                />
-                <button
-                  type="button"
-                  class="btn btn-sm btn-ghost text-error shrink-0"
-                  onclick={() => removeQuestion(i)}
-                >{$t('common.remove')}</button>
-              </div>
+{#snippet reachPart()}
+  <div class="mb-1">
+    <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('agentSettings.reach')}</div>
+    <div class="text-xs text-base-content/70 mt-1">{$t('agentSettings.reachBlurb', { values: { name: agent?.name ?? '' } })}</div>
+  </div>
 
-              <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                <label class="flex flex-col gap-1">
-                  <span class="text-xs text-base-content/60">{$t('agentQuestions.semanticId')}</span>
-                  <input
-                    type="text"
-                    bind:value={q.id}
-                    oninput={debounceQuestionsSave}
-                    placeholder="finance.ap.invoice_mailbox"
-                    class="input input-sm input-bordered font-mono"
-                  />
-                </label>
-                <label class="flex flex-col gap-1">
-                  <span class="text-xs text-base-content/60">{$t('agentQuestions.key')}</span>
-                  <input
-                    type="text"
-                    bind:value={q.key}
-                    oninput={debounceQuestionsSave}
-                    placeholder="invoice_mailbox"
-                    class="input input-sm input-bordered font-mono"
-                  />
-                </label>
-                <label class="flex flex-col gap-1">
-                  <span class="text-xs text-base-content/60">{$t('agentQuestions.type')}</span>
-                  <select bind:value={q.type} onchange={debounceQuestionsSave} class="select select-sm select-bordered">
-                    {#each QUESTION_TYPES as ty (ty)}
-                      <option value={ty}>{ty}</option>
-                    {/each}
-                  </select>
-                </label>
-                <label class="flex flex-col gap-1">
-                  <span class="text-xs text-base-content/60">{$t('agentQuestions.scope')}</span>
-                  <select bind:value={q.scope} onchange={debounceQuestionsSave} class="select select-sm select-bordered">
-                    <option value="company">{$t('agentQuestions.scopeCompany')}</option>
-                    <option value="seat">{$t('agentQuestions.scopeSeat')}</option>
-                  </select>
-                </label>
-              </div>
+  <div>
+    <div class="text-xs font-semibold uppercase tracking-wider mb-1.5">{$t('agentSettings.reachEmail')}</div>
+    {#if reachAddress}
+      <div class="flex items-center gap-2 p-3 rounded-lg border border-base-300 bg-base-100" data-selectable>
+        <span class="font-mono text-sm truncate flex-1">{reachAddress}</span>
+        <button type="button" class="btn btn-xs btn-ghost shrink-0" onclick={copyReachAddress}>{reachCopied ? $t('agentSettings.copied') : $t('common.copy')}</button>
+      </div>
+      <div class="text-xs text-base-content/70 mt-1.5">{$t('agentSettings.reachEmailDesc', { values: { name: agent?.name ?? '' } })}</div>
+    {:else}
+      <div class="text-sm text-base-content/60">{$t('agentSettings.reachNoEmail')}</div>
+    {/if}
+  </div>
 
-              <label class="flex flex-col gap-1">
-                <span class="text-xs text-base-content/60">{$t('agentQuestions.missing')}</span>
-                <input
-                  type="text"
-                  bind:value={q.missing}
-                  oninput={debounceQuestionsSave}
-                  placeholder={$t('agentQuestions.missingPlaceholder')}
-                  class="input input-sm input-bordered"
-                />
-              </label>
+  {#if reachBotAddress}
+    <div>
+      <div class="text-xs font-semibold uppercase tracking-wider mb-1.5">{$t('agentSettings.reachBotEmail')}</div>
+      <div class="flex items-center gap-2 p-3 rounded-lg border border-base-300 bg-base-200/50" data-selectable>
+        <span class="font-mono text-sm text-base-content/70 truncate flex-1">{reachBotAddress}</span>
+        <a href="/settings/account" class="text-xs font-medium text-primary shrink-0 no-underline hover:underline">{$t('agentSettings.changeInBotSettings')}</a>
+      </div>
+    </div>
+  {/if}
+{/snippet}
 
-              <div class="flex flex-wrap items-center gap-4">
-                <label class="flex items-center gap-2 text-xs cursor-pointer">
-                  <input type="checkbox" bind:checked={q.required} onchange={debounceQuestionsSave} class="checkbox checkbox-xs" />
-                  <span>{$t('agentQuestions.required')}</span>
-                </label>
-                <label class="flex items-center gap-2 text-xs cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={q.money}
-                    onchange={(e) => setQuestionMoney(i, e.currentTarget.checked)}
-                    class="checkbox checkbox-xs"
-                  />
-                  <span>{$t('agentQuestions.money')}</span>
-                </label>
-                <label class="flex items-center gap-2 text-xs flex-1 min-w-[12rem]">
-                  <span class="text-base-content/60 shrink-0">{$t('agentQuestions.default')}</span>
-                  <input
-                    type="text"
-                    bind:value={q.default}
-                    oninput={debounceQuestionsSave}
-                    disabled={q.money}
-                    placeholder={q.money ? $t('agentQuestions.noMoneyDefault') : ''}
-                    class="input input-xs input-bordered flex-1 disabled:opacity-60 disabled:cursor-not-allowed"
-                  />
-                </label>
-              </div>
-
-              {#if q.money}
-                <div class="text-xs text-warning flex items-start gap-1.5">
-                  <AlertTriangle class="w-3.5 h-3.5 shrink-0 mt-px" />
-                  <span>{$t('agentQuestions.moneyNote')}</span>
-                </div>
+{#snippet channelsPart()}
+  <div class="mb-1">
+    <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('agentSettings.channels')}</div>
+    <div class="text-xs text-base-content/70 mt-1">{$t('agentSettings.channelsDesc', { values: { name: agent?.name ?? '' } })}</div>
+  </div>
+  <div class="flex items-center gap-3 py-2.5 px-3 rounded-lg border border-base-300 bg-base-100 mb-3">
+    <div class="flex-1 min-w-0">
+      <div class="text-sm font-medium">{$t('agentSettings.exposeToLoop')}</div>
+      <div class="text-xs text-base-content/70 mt-0.5">{$t('agentSettings.exposeToLoopDesc')}</div>
+    </div>
+    <input
+      type="checkbox"
+      class="toggle toggle-sm toggle-primary shrink-0"
+      bind:checked={editLoopExposed}
+      role="switch"
+      aria-checked={editLoopExposed}
+      onchange={saveLoopExposed}
+    />
+  </div>
+  {#if channelsLoading}
+    <div class="text-xs text-base-content/50 py-6 text-center">{$t('agentSettings.loadingChannels')}</div>
+  {:else if channelList.length === 0}
+    <div class="py-8 text-center">
+      <div class="text-sm text-base-content/50 mb-2">{$t('agentSettings.noChannelPlugins')}</div>
+      <a href="/marketplace/plugins" class="inline-flex items-center gap-1 text-sm text-primary font-medium">{$t('agentSettings.browseMarketplaceArrow')}</a>
+    </div>
+  {:else}
+    <div class="flex flex-col gap-2">
+      {#each channelList as ch}
+        <div class="flex items-center gap-3 py-2.5 px-3 rounded-lg border border-base-300 bg-base-100">
+          <div class="flex-1 min-w-0">
+            <div class="flex items-center gap-2">
+              <span class="text-sm font-medium">{ch.name}</span>
+              {#if ch.needsAuth && !ch.authenticated}
+                <span class="text-xs text-warning font-medium">{$t('agentSettings.setupRequired')}</span>
               {/if}
             </div>
-          {/each}
-        </div>
-
-        <button type="button" class="btn btn-sm btn-outline mt-3" onclick={addQuestion}>
-          {$t('agentQuestions.add')}
-        </button>
-      </div>
-
-    {:else if section === 'workflows'}
-      <div class="flex items-center justify-between gap-3 mb-1">
-        <div>
-          <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('marketplace.workflows')}</div>
-          <div class="text-xs text-base-content/70 mt-1">{$t('agentSettings.automatedSequencesFor', { values: { name: agent?.name ?? '' } })}</div>
-        </div>
-        {#if workflowEntries.length > 0}
-          <button
-            class="flex items-center gap-1.5 py-1 px-2.5 rounded-lg border border-base-300 text-xs font-medium cursor-pointer bg-base-100 hover:bg-base-200 transition-colors shrink-0"
-            onclick={() => ctx.openCanvas()}
-            title={$t('agentSettings.openCanvasEditor')}
-          >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="8" y="14" width="7" height="7" rx="1"/><line x1="6.5" y1="10" x2="11.5" y2="14"/><line x1="17.5" y1="10" x2="11.5" y2="14"/></svg>
-            {$t('agentSettings.canvas')}
-          </button>
-        {/if}
-      </div>
-
-      <!-- Stats cards -->
-      {#if workflowStats.totalRuns > 0}
-        <div class="grid grid-cols-4 gap-2 mb-4">
-          <div class="rounded-lg border border-base-300 bg-base-100 p-2.5 text-center">
-            <div class="text-base font-semibold">{workflowStats.totalRuns}</div>
-            <div class="text-xs text-base-content/50">{$t('agentActivity.totalRuns')}</div>
+            {#if ch.description}
+              <div class="text-xs text-base-content/70 mt-0.5">{ch.description}</div>
+            {/if}
           </div>
-          <div class="rounded-lg border border-base-300 bg-base-100 p-2.5 text-center">
-            <div class="text-base font-semibold text-success">{workflowStats.completed}</div>
-            <div class="text-xs text-base-content/50">{$t('common.completed')}</div>
-          </div>
-          <div class="rounded-lg border border-base-300 bg-base-100 p-2.5 text-center">
-            <div class="text-base font-semibold {workflowStats.failed > 0 ? 'text-error' : ''}">{workflowStats.failed}</div>
-            <div class="text-xs text-base-content/50">{$t('common.failed')}</div>
-          </div>
-          <div class="rounded-lg border border-base-300 bg-base-100 p-2.5 text-center">
-            <div class="text-base font-semibold font-mono">{workflowStats.avgDuration}</div>
-            <div class="text-xs text-base-content/50">{$t('agentActivity.avgDuration')}</div>
-          </div>
-        </div>
-      {/if}
-
-      {#if workflowEntries.length === 0}
-        <div class="text-center py-8 text-sm">
-          {$t('agentSettings.noWorkflows')}
-        </div>
-      {:else}
-        <div class="flex flex-col gap-2">
-          {#each workflowEntries as [name, wf]}
-            {@const purchased = wf.source === 'marketplace'}
-            <div class="rounded-lg border border-base-300 bg-base-100 overflow-hidden">
-              <div class="flex items-start gap-3 p-3.5">
-                <div class="w-[22px] h-[22px] rounded flex items-center justify-center text-sm shrink-0 mt-0.5 {wf.isActive !== false ? 'bg-primary/10 text-primary' : 'bg-base-200 text-base-content/40'}">
-                  {#if wf.trigger?.type === 'schedule'}&#8635;{:else if wf.trigger?.type === 'event'}&#9889;{:else if wf.trigger?.type === 'watch'}&#128065;{:else if wf.trigger?.type === 'heartbeat'}&#10084;{:else}&#9654;{/if}
-                </div>
-
-                <button class="flex-1 min-w-0 text-left cursor-pointer bg-transparent border-none p-0" onclick={() => ctx.openWorkflow(name, wf)}>
-                  <div class="flex items-center gap-1.5">
-                    <span class="text-sm font-medium">{name}</span>
-                    {#if purchased}
-                      <span class="py-0 px-1.5 rounded bg-base-200 text-xs font-mono">{$t('nav.marketplace')}</span>
-                    {/if}
-                    {#if wf.isActive === false}
-                      <span class="py-0 px-1.5 rounded bg-base-200 text-xs text-base-content/50">{$t('common.paused')}</span>
-                    {/if}
-                  </div>
-                  <div class="text-xs text-base-content/70 mt-0.5 truncate">{wf.description}</div>
-                  <div class="flex items-center gap-2 mt-1.5 flex-wrap">
-                    <span class="text-xs text-base-content/50 font-mono">{triggerSummary(wf)}</span>
-                    <span class="text-xs text-base-content/30">&middot;</span>
-                    <span class="text-xs text-base-content/50 font-mono inline-flex items-center gap-1">{(wf.activities?.length ?? 0) === 1 ? $t('agentSettings.activityCountSingular', { values: { count: 1 } }) : $t('agentSettings.activityCount', { values: { count: wf.activities?.length ?? 0 } })}{#each [...new Set((wf.activities ?? []).map((a: WorkflowActivity) => a.type).filter(Boolean))] as t}<span class="inline-block" title={getActivityType(t).label}>{getActivityType(t).icon}</span>{/each}</span>
-                    {#if wf.lastFired}
-                      <span class="text-xs text-base-content/30">&middot;</span>
-                      <span class="text-xs text-base-content/50 font-mono">{$t('agentSettings.lastFired', { values: { time: formatLastFired(wf.lastFired) } })}</span>
-                    {/if}
-                    {#if wf.emit}
-                      <span class="text-xs text-base-content/30">&middot;</span>
-                      <span class="text-xs text-accent/70 font-mono">&#8594; {wf.emit}</span>
-                    {/if}
-                  </div>
+          {#if ch.needsAuth && !ch.authenticated}
+            <button
+              class="btn btn-sm btn-outline btn-primary"
+              onclick={() => openAuthModal(ch)}
+            >{$t('settingsPlugins.connect')}</button>
+          {:else}
+            <div class="flex items-center gap-2">
+              {#if ch.needsAuth}
+                <button
+                  class="btn btn-xs btn-ghost text-base-content/50"
+                  title={$t('agentSettings.updateCredentials')}
+                  onclick={() => openAuthModal(ch)}
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" class="w-3.5 h-3.5"><path fill-rule="evenodd" d="M11.013 2.513a1.75 1.75 0 0 1 2.475 2.474L6.226 12.25a2.751 2.751 0 0 1-.892.596l-2.047.848a.75.75 0 0 1-.98-.98l.848-2.047a2.75 2.75 0 0 1 .596-.892l7.262-7.262Z" clip-rule="evenodd" /></svg>
                 </button>
-
-                <input type="checkbox" class="toggle toggle-sm toggle-primary shrink-0 mt-1" checked={wf.isActive !== false} role="switch" aria-checked={wf.isActive !== false} onchange={() => ctx.toggleWorkflow(name)} />
-              </div>
+              {/if}
+              <input
+                type="checkbox"
+                class="toggle toggle-sm toggle-primary shrink-0"
+                checked={ch.enabled}
+                disabled={channelTogglingSlug === ch.pluginSlug}
+                role="switch"
+                aria-checked={ch.enabled}
+                onchange={() => toggleChannel(ch.pluginSlug, ch.enabled)}
+              />
             </div>
-          {/each}
-        </div>
-      {/if}
-
-      <button class="mt-3 w-full py-2.5 rounded-lg border border-dashed border-base-300 text-sm text-primary font-medium cursor-pointer bg-transparent hover:bg-base-200 transition-colors" onclick={() => createNewWorkflow()}>{$t('agentSettings.newWorkflow')}</button>
-      <button class="mt-2 w-full py-2.5 rounded-lg border border-dashed border-base-300 text-sm text-primary font-medium cursor-pointer bg-transparent hover:bg-base-200 transition-colors" onclick={() => createNewWorkflow(true)}>New Call Tree — design what a phone line handles</button>
-
-    {:else if section === 'skills'}
-      <div class="mb-1">
-        <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('settings.navItems.skills')}</div>
-        <div class="text-xs text-base-content/70 mt-1">{$t('agentSettings.skillsAssignedTo', { values: { name: agent?.name ?? '' } })}</div>
-      </div>
-      {#each skills as skill}
-        <div class="flex items-center gap-2.5 py-2 px-3 rounded-lg border border-base-300 bg-base-100">
-          <div class="w-7 h-7 rounded-md bg-base-200 flex items-center justify-center text-sm shrink-0">&#9889;</div>
-          <span class="text-sm font-medium flex-1">{skill}</span>
-          {#if !managed}
-            <button class="text-sm text-error cursor-pointer bg-transparent border-none hover:opacity-70 disabled:opacity-50" onclick={() => removeSkill(skill)} disabled={removingSkill !== ''}>{$t('common.remove')}</button>
           {/if}
         </div>
       {/each}
-      <a href="/marketplace/skills" class="inline-flex items-center gap-1 text-sm text-primary font-medium mt-1">{$t('agentSettings.addFromMarketplace')}</a>
+    </div>
+    <a href="/marketplace/plugins" class="inline-flex items-center gap-1 text-sm text-primary font-medium mt-2">{$t('agentSettings.addFromMarketplace')}</a>
+  {/if}
+{/snippet}
 
-    {:else if section === 'reach'}
-      <div class="mb-1">
-        <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('agentSettings.reach')}</div>
-        <div class="text-xs text-base-content/70 mt-1">{$t('agentSettings.reachBlurb', { values: { name: agent?.name ?? '' } })}</div>
-      </div>
-
-      <div>
-        <div class="text-xs font-semibold uppercase tracking-wider mb-1.5">{$t('agentSettings.reachEmail')}</div>
-        {#if reachAddress}
-          <div class="flex items-center gap-2 p-3 rounded-lg border border-base-300 bg-base-100" data-selectable>
-            <span class="font-mono text-sm truncate flex-1">{reachAddress}</span>
-            <button type="button" class="btn btn-xs btn-ghost shrink-0" onclick={copyReachAddress}>{reachCopied ? $t('agentSettings.copied') : $t('common.copy')}</button>
-          </div>
-          <div class="text-xs text-base-content/70 mt-1.5">{$t('agentSettings.reachEmailDesc', { values: { name: agent?.name ?? '' } })}</div>
+{#snippet accountsPart(kind: 'accounts' | 'phone')}
+  <div class="mb-1">
+    <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t(kind === 'phone' ? 'agentSettings.phone' : 'agentSettings.connectedAccounts')}</div>
+    <div class="text-xs text-base-content/70 mt-1">{$t(kind === 'phone' ? 'agentSettings.phoneDesc' : 'agentSettings.accountsDesc', { values: { name: agent?.name ?? '' } })}</div>
+  </div>
+  {#if kind === 'phone' && phoneLines.length > 0}
+    <div class="flex flex-col gap-2">
+      {#each phoneLines as line (line.number)}
+        <div class="flex items-center gap-2 rounded-lg border border-base-300 bg-base-100 px-3.5 py-2.5">
+          {#if pluginsFor(kind).length > 0}
+            <Check class="w-3.5 h-3.5 text-success shrink-0" />
+          {:else}
+            <AlertTriangle class="w-3.5 h-3.5 text-warning shrink-0" />
+          {/if}
+          <span class="text-sm font-medium">{fmtPhone(line.number)}</span>
+          <span class="text-xs text-base-content/50 truncate flex-1">{pluginsFor(kind).length > 0 ? line.status : $t('agentSettings.phoneNotAnsweringHere')}{line.businessName ? ` · ${line.businessName}` : ''}</span>
+          <a href="https://neboai.com/manage/phone" target="_blank" rel="noopener" class="text-xs text-primary font-medium shrink-0">{$t('agentSettings.managePhone')}</a>
+        </div>
+      {/each}
+    </div>
+  {/if}
+  {#if accountsLoading}
+    <div class="text-xs text-base-content/50 py-6 text-center">{$t('agentSettings.loadingAccounts')}</div>
+  {:else if accountsLoadError}
+    <div class="py-8 text-center space-y-3">
+      <div class="text-sm text-error">{accountsLoadError}</div>
+      <button type="button" class="btn btn-sm btn-outline" onclick={() => loadAccounts()}>{$t('agentSettings.tryAgain')}</button>
+    </div>
+  {:else if pluginsFor(kind).length === 0}
+    <div class="py-8 text-center">
+      {#if kind === 'phone'}
+        <div class="text-sm text-base-content/50 mb-2">{$t(phoneLines.length > 0 ? 'agentSettings.phoneNeedsPlugin' : 'agentSettings.noPhonePlugin', { values: { name: agent?.name ?? '' } })}</div>
+        {#if phoneLines.length > 0}
+          <button class="btn btn-sm btn-primary" onclick={answerPhoneHere} disabled={phoneAnswerBusy}>{$t(phoneAnswerBusy ? 'agentSettings.phoneAnswerHereBusy' : 'agentSettings.phoneAnswerHere')}</button>
+          {#if phoneAnswerError}<div class="text-xs text-error mt-2">{phoneAnswerError}</div>{/if}
         {:else}
-          <div class="text-sm text-base-content/60">{$t('agentSettings.reachNoEmail')}</div>
-        {/if}
-      </div>
-
-      {#if reachBotAddress}
-        <div>
-          <div class="text-xs font-semibold uppercase tracking-wider mb-1.5">{$t('agentSettings.reachBotEmail')}</div>
-          <div class="flex items-center gap-2 p-3 rounded-lg border border-base-300 bg-base-200/50" data-selectable>
-            <span class="font-mono text-sm text-base-content/70 truncate flex-1">{reachBotAddress}</span>
-            <a href="/settings/account" class="text-xs font-medium text-primary shrink-0 no-underline hover:underline">{$t('agentSettings.changeInBotSettings')}</a>
-          </div>
-        </div>
-      {/if}
-
-      <div>
-        <div class="flex items-center justify-between mb-1.5">
-          <div class="text-xs font-semibold uppercase tracking-wider">{$t('agentSettings.phone')}</div>
-          <a href="/{agentId}/settings/phone" class="text-xs font-medium text-primary no-underline hover:underline">{$t('agentSettings.reachManage')}</a>
-        </div>
-        {#if phoneLines.length === 0}
-          <div class="text-sm text-base-content/60">{$t('agentSettings.reachNoPhone')}</div>
-        {:else}
-          <div class="flex flex-col gap-1.5">
-            {#each phoneLines as line (line.number)}
-              <div class="py-2 px-3 rounded-lg border border-base-300 bg-base-100 font-mono text-sm">{fmtPhone(line.number)}</div>
-            {/each}
-          </div>
-        {/if}
-      </div>
-
-      <div>
-        <div class="flex items-center justify-between mb-1.5">
-          <div class="text-xs font-semibold uppercase tracking-wider">{$t('agentSettings.channels')}</div>
-          <a href="/{agentId}/settings/channels" class="text-xs font-medium text-primary no-underline hover:underline">{$t('agentSettings.reachManage')}</a>
-        </div>
-        {#if channelList.filter((c) => c.enabled).length === 0}
-          <div class="text-sm text-base-content/60">{$t('agentSettings.reachNoChannels')}</div>
-        {:else}
-          <div class="flex flex-col gap-1.5">
-            {#each channelList.filter((c) => c.enabled) as ch (ch.pluginSlug)}
-              <div class="py-2 px-3 rounded-lg border border-base-300 bg-base-100 text-sm">{ch.name}</div>
-            {/each}
-          </div>
-        {/if}
-      </div>
-
-    {:else if section === 'channels'}
-      <div class="mb-1">
-        <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('agentSettings.channels')}</div>
-        <div class="text-xs text-base-content/70 mt-1">{$t('agentSettings.channelsDesc', { values: { name: agent?.name ?? '' } })}</div>
-      </div>
-      <div class="flex items-center gap-3 py-2.5 px-3 rounded-lg border border-base-300 bg-base-100 mb-3">
-        <div class="flex-1 min-w-0">
-          <div class="text-sm font-medium">{$t('agentSettings.exposeToLoop')}</div>
-          <div class="text-xs text-base-content/70 mt-0.5">{$t('agentSettings.exposeToLoopDesc')}</div>
-        </div>
-        <input
-          type="checkbox"
-          class="toggle toggle-sm toggle-primary shrink-0"
-          bind:checked={editLoopExposed}
-          role="switch"
-          aria-checked={editLoopExposed}
-          onchange={saveLoopExposed}
-        />
-      </div>
-      {#if channelsLoading}
-        <div class="text-xs text-base-content/50 py-6 text-center">{$t('agentSettings.loadingChannels')}</div>
-      {:else if channelList.length === 0}
-        <div class="py-8 text-center">
-          <div class="text-sm text-base-content/50 mb-2">{$t('agentSettings.noChannelPlugins')}</div>
           <a href="/marketplace/plugins" class="inline-flex items-center gap-1 text-sm text-primary font-medium">{$t('agentSettings.browseMarketplaceArrow')}</a>
-        </div>
+        {/if}
       {:else}
-        <div class="flex flex-col gap-2">
-          {#each channelList as ch}
-            <div class="flex items-center gap-3 py-2.5 px-3 rounded-lg border border-base-300 bg-base-100">
-              <div class="flex-1 min-w-0">
-                <div class="flex items-center gap-2">
-                  <span class="text-sm font-medium">{ch.name}</span>
-                  {#if ch.needsAuth && !ch.authenticated}
-                    <span class="text-xs text-warning font-medium">{$t('agentSettings.setupRequired')}</span>
-                  {/if}
-                </div>
-                {#if ch.description}
-                  <div class="text-xs text-base-content/70 mt-0.5">{ch.description}</div>
-                {/if}
-              </div>
-              {#if ch.needsAuth && !ch.authenticated}
-                <button
-                  class="btn btn-sm btn-outline btn-primary"
-                  onclick={() => openAuthModal(ch)}
-                >{$t('settingsPlugins.connect')}</button>
-              {:else}
-                <div class="flex items-center gap-2">
-                  {#if ch.needsAuth}
-                    <button
-                      class="btn btn-xs btn-ghost text-base-content/50"
-                      title={$t('agentSettings.updateCredentials')}
-                      onclick={() => openAuthModal(ch)}
-                    >
-                      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" class="w-3.5 h-3.5"><path fill-rule="evenodd" d="M11.013 2.513a1.75 1.75 0 0 1 2.475 2.474L6.226 12.25a2.751 2.751 0 0 1-.892.596l-2.047.848a.75.75 0 0 1-.98-.98l.848-2.047a2.75 2.75 0 0 1 .596-.892l7.262-7.262Z" clip-rule="evenodd" /></svg>
-                    </button>
-                  {/if}
-                  <input
-                    type="checkbox"
-                    class="toggle toggle-sm toggle-primary shrink-0"
-                    checked={ch.enabled}
-                    disabled={channelTogglingSlug === ch.pluginSlug}
-                    role="switch"
-                    aria-checked={ch.enabled}
-                    onchange={() => toggleChannel(ch.pluginSlug, ch.enabled)}
-                  />
-                </div>
+        <div class="text-sm text-base-content/50 mb-2">{$t('agentSettings.noMultiAccountPlugins')}</div>
+        <a href="/marketplace/plugins" class="inline-flex items-center gap-1 text-sm text-primary font-medium">{$t('agentSettings.browseMarketplaceArrow')}</a>
+      {/if}
+    </div>
+  {:else}
+    <div class="flex flex-col gap-3">
+      {#each pluginsFor(kind) as plugin (plugin.slug)}
+        <div class="rounded-lg border border-base-300 bg-base-100 overflow-hidden">
+          <div class="flex items-start gap-3 p-3.5">
+            <div class="flex-1 min-w-0">
+              <div class="text-sm font-medium">{plugin.name}</div>
+              {#if plugin.description}
+                <div class="text-xs text-base-content/70 mt-0.5">{plugin.description}</div>
               {/if}
             </div>
-          {/each}
-        </div>
-        <a href="/marketplace/plugins" class="inline-flex items-center gap-1 text-sm text-primary font-medium mt-2">{$t('agentSettings.addFromMarketplace')}</a>
-      {/if}
-
-    {:else if section === 'webhooks'}
-      <div class="mb-1">
-        <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('agentSettings.webhooks')}</div>
-        <div class="text-xs text-base-content/70 mt-1">{$t('agentSettings.webhooksDesc', { values: { name: agent?.name ?? '' } })}</div>
-      </div>
-
-      <div class="rounded-lg border border-base-300 bg-base-100 p-3.5 flex flex-col gap-2">
-        <div class="text-sm font-medium">{$t('agentSettings.webhookNew')}</div>
-        <label class="flex flex-col gap-1">
-          <span class="text-xs text-base-content/60">{$t('agentSettings.webhookLabelField')}</span>
-          <input class="input input-sm input-bordered w-full" placeholder={$t('agentSettings.webhookLabelPlaceholder')} bind:value={hookLabel} onkeydown={(e) => { if (e.key === 'Enter') mintWebhook(); }} />
-        </label>
-        <div class="flex flex-col sm:flex-row gap-2">
-          <select class="select select-sm select-bordered flex-1" bind:value={hookWorkflow}>
-            <option value="">{$t('agentSettings.webhookTargetChat', { values: { name: agent?.name ?? '' } })}</option>
-            {#each workflowEntries as [wfName] (wfName)}
-              <option value={wfName}>{$t('agentSettings.webhookTargetWorkflow', { values: { name: wfName } })}</option>
-            {/each}
-          </select>
-          <button class="btn btn-sm btn-primary" onclick={mintWebhook} disabled={!hookLabel.trim() || !!hookBusy}>{hookBusy === 'mint' ? $t('agentSettings.webhookMinting') : $t('agentSettings.webhookMint')}</button>
-        </div>
-        <div class="text-xs text-base-content/50">{$t('agentSettings.webhookTargetHint', { values: { name: agent?.name ?? '' } })}</div>
-      </div>
-
-      {#if minted}
-        <div class="rounded-lg border border-warning/40 bg-warning/5 p-3.5 flex flex-col gap-2">
-          <div class="text-sm font-medium">{minted.label}</div>
-          <div class="text-xs text-warning">{$t('agentSettings.webhookKeyOnce')}</div>
-          <div class="flex items-center gap-1.5">
-            <code class="text-xs font-mono bg-base-200 rounded px-2 py-1 flex-1 min-w-0 truncate">{minted.url}</code>
-            <button class="btn btn-xs btn-ghost shrink-0 min-w-20" onclick={() => copyHook('url', minted?.url ?? '')}>{copiedHook === 'url' ? $t('agentSettings.copied') : $t('agentSettings.copy')}</button>
+            <button
+              class="btn btn-sm btn-outline btn-primary shrink-0"
+              onclick={() => openAddAccount(plugin)}
+            >{$t('agentSettings.addAccount')}</button>
           </div>
-          <div class="flex items-center gap-1.5">
-            <code class="text-xs font-mono bg-base-200 rounded px-2 py-1 flex-1 min-w-0 truncate">{minted.key}</code>
-            <button class="btn btn-xs btn-ghost shrink-0 min-w-20" onclick={() => copyHook('key', minted?.key ?? '')}>{copiedHook === 'key' ? $t('agentSettings.copied') : $t('agentSettings.copy')}</button>
-          </div>
-          <div class="flex items-start gap-1.5">
-            <code class="text-xs font-mono bg-base-200 rounded px-2 py-1 flex-1 min-w-0 whitespace-pre-wrap break-all">{curlFor(minted)}</code>
-            <button class="btn btn-xs btn-ghost shrink-0 min-w-20" onclick={() => copyHook('curl', curlFor(minted!))}>{copiedHook === 'curl' ? $t('agentSettings.copied') : $t('agentSettings.copy')}</button>
-          </div>
-        </div>
-      {/if}
-
-      {#if webhooksError}
-        <div class="text-xs text-error">{webhooksError}</div>
-      {/if}
-      {#if webhooksLoading && webhooks.length === 0}
-        <div class="text-xs text-base-content/50 py-6 text-center">{$t('agentSettings.webhooksLoading')}</div>
-      {:else if webhooks.length === 0}
-        <div class="text-xs text-base-content/50 py-6 text-center">{$t('agentSettings.webhooksNone')}</div>
-      {:else}
-        <div class="flex flex-col gap-2">
-          {#each webhooks as h (h.id)}
-            <div class="rounded-lg border border-base-300 bg-base-100 px-3.5 py-2.5 flex items-center gap-3">
-              <div class="flex-1 min-w-0">
-                <div class="text-sm font-medium truncate">{h.label}</div>
-                <div class="text-xs text-base-content/50 truncate">
-                  {h.workflowName ? $t('agentSettings.webhookTargetWorkflow', { values: { name: h.workflowName } }) : $t('agentSettings.webhookTargetChat', { values: { name: agent?.name ?? '' } })}
-                  · <span class="font-mono">{h.keyPrefix}…</span>
-                  · {h.lastUsedAt ? $t('agentSettings.webhookLastUsed', { values: { when: new Date(h.lastUsedAt).toLocaleString() } }) : $t('agentSettings.webhookNeverUsed')}
+          {#if plugin.accounts.length > 0}
+            <div class="border-t border-base-content/10">
+              {#each plugin.accounts as acct (acct.accountLabel)}
+                <div class="flex items-center gap-2 px-3.5 py-2 border-b border-base-content/5 last:border-b-0">
+                  {#if acct.needsReauth}
+                    <AlertTriangle class="w-3.5 h-3.5 text-warning shrink-0" />
+                  {:else}
+                    <Check class="w-3.5 h-3.5 text-success shrink-0" />
+                  {/if}
+                  <span class="text-sm truncate flex-1">{acct.accountLabel}</span>
+                  {#if acct.isPrimary}
+                    <span class="py-0.5 px-2 rounded bg-accent/15 text-accent text-xs font-medium shrink-0">{$t('agentSettings.primary')}</span>
+                  {/if}
+                  {#if acct.needsReauth}
+                    <span class="py-0.5 px-2 rounded bg-warning/15 text-warning text-xs font-medium shrink-0">{$t('statusBadge.expired')}</span>
+                    <button
+                      class="btn btn-xs btn-warning btn-outline shrink-0"
+                      onclick={() => reconnectAccount(plugin.slug, acct.accountLabel)}
+                      disabled={addAccountConnectingSlug === plugin.slug}
+                    >{$t('agentSettings.reconnect')}</button>
+                  {/if}
+                  <button
+                    class="btn btn-xs btn-ghost text-error shrink-0"
+                    onclick={() => disconnectAccount(plugin.slug, acct.accountLabel)}
+                    title={$t('agentSettings.disconnectAccountTitle')}
+                    aria-label={$t('agentSettings.disconnectAccountLabel', { values: { label: acct.accountLabel } })}
+                  >{$t('settingsPlugins.disconnect')}</button>
                 </div>
-                <div class="text-xs text-base-content/50 truncate font-mono">{h.url}</div>
-              </div>
-              <button class="btn btn-xs btn-ghost shrink-0 min-w-20" onclick={() => copyHook(h.id, h.url)}>{copiedHook === h.id ? $t('agentSettings.copied') : $t('agentSettings.copyUrl')}</button>
-              <button class="btn btn-xs btn-ghost text-error shrink-0" disabled={hookBusy === h.id} onclick={() => revokeWebhook(h.id)}>{$t('agentSettings.webhookRevoke')}</button>
+              {/each}
             </div>
-          {/each}
+          {:else}
+            <div class="border-t border-base-content/10 px-3.5 py-2">
+              <span class="text-xs text-base-content/50">{$t('agentSettings.noAccountsYet')}</span>
+            </div>
+          {/if}
         </div>
-      {/if}
+      {/each}
+    </div>
+  {/if}
+{/snippet}
 
+{#snippet permissionsPart()}
+  <div class="mb-1">
+    <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('permissions.title')}</div>
+    <div class="text-xs text-base-content/70 mt-1">{$t('permissions.employeeDescription', { values: { name: agent?.name ?? '' } })}</div>
+  </div>
+  <PermissionsSection {agentId} name={agent?.name ?? ''} />
+{/snippet}
 
-    {:else if section === 'api'}
-      <div class="mb-1">
-        <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('agentSettings.apiKeys')}</div>
-        <div class="text-xs text-base-content/70 mt-1">{$t('agentSettings.apiKeysDesc', { values: { name: agent?.name ?? '' } })}</div>
+{#snippet webhooksPart()}
+  <div class="mb-1">
+    <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('agentSettings.webhooks')}</div>
+    <div class="text-xs text-base-content/70 mt-1">{$t('agentSettings.webhooksDesc', { values: { name: agent?.name ?? '' } })}</div>
+  </div>
+
+  <div class="rounded-lg border border-base-300 bg-base-100 p-3.5 flex flex-col gap-2">
+    <div class="text-sm font-medium">{$t('agentSettings.webhookNew')}</div>
+    <label class="flex flex-col gap-1">
+      <span class="text-xs text-base-content/60">{$t('agentSettings.webhookLabelField')}</span>
+      <input class="input input-sm input-bordered w-full" placeholder={$t('agentSettings.webhookLabelPlaceholder')} bind:value={hookLabel} onkeydown={(e) => { if (e.key === 'Enter') mintWebhook(); }} />
+    </label>
+    <div class="flex flex-col sm:flex-row gap-2">
+      <select class="select select-sm select-bordered flex-1" bind:value={hookWorkflow}>
+        <option value="">{$t('agentSettings.webhookTargetChat', { values: { name: agent?.name ?? '' } })}</option>
+        {#each workflowEntries as [wfName] (wfName)}
+          <option value={wfName}>{$t('agentSettings.webhookTargetWorkflow', { values: { name: wfName } })}</option>
+        {/each}
+      </select>
+      <button class="btn btn-sm btn-primary" onclick={mintWebhook} disabled={!hookLabel.trim() || !!hookBusy}>{hookBusy === 'mint' ? $t('agentSettings.webhookMinting') : $t('agentSettings.webhookMint')}</button>
+    </div>
+    <div class="text-xs text-base-content/50">{$t('agentSettings.webhookTargetHint', { values: { name: agent?.name ?? '' } })}</div>
+  </div>
+
+  {#if minted}
+    <div class="rounded-lg border border-warning/40 bg-warning/5 p-3.5 flex flex-col gap-2">
+      <div class="text-sm font-medium">{minted.label}</div>
+      <div class="text-xs text-warning">{$t('agentSettings.webhookKeyOnce')}</div>
+      <div class="flex items-center gap-1.5">
+        <code class="text-xs font-mono bg-base-200 rounded px-2 py-1 flex-1 min-w-0 truncate">{minted.url}</code>
+        <button class="btn btn-xs btn-ghost shrink-0 min-w-20" onclick={() => copyHook('url', minted?.url ?? '')}>{copiedHook === 'url' ? $t('agentSettings.copied') : $t('agentSettings.copy')}</button>
       </div>
+      <div class="flex items-center gap-1.5">
+        <code class="text-xs font-mono bg-base-200 rounded px-2 py-1 flex-1 min-w-0 truncate">{minted.key}</code>
+        <button class="btn btn-xs btn-ghost shrink-0 min-w-20" onclick={() => copyHook('key', minted?.key ?? '')}>{copiedHook === 'key' ? $t('agentSettings.copied') : $t('agentSettings.copy')}</button>
+      </div>
+      <div class="flex items-start gap-1.5">
+        <code class="text-xs font-mono bg-base-200 rounded px-2 py-1 flex-1 min-w-0 whitespace-pre-wrap break-all">{curlFor(minted)}</code>
+        <button class="btn btn-xs btn-ghost shrink-0 min-w-20" onclick={() => copyHook('curl', curlFor(minted!))}>{copiedHook === 'curl' ? $t('agentSettings.copied') : $t('agentSettings.copy')}</button>
+      </div>
+    </div>
+  {/if}
 
-      <!-- Endpoint -->
-      <div class="rounded-lg border border-base-300 bg-base-100 divide-y divide-base-content/10">
-        {#if apiSwitchboardUrl}
-          <div class="px-3.5 py-2.5 flex items-center gap-3">
-            <div class="flex-1 min-w-0">
-              <div class="text-xs text-base-content/50 flex items-center gap-1.5">
-                <span class="inline-block w-2 h-2 rounded-full {apiSwitchboardOnline ? 'bg-success' : 'bg-base-content/30'}"></span>
-                {$t(apiSwitchboardOnline ? 'agentSettings.apiSwitchboardOnline' : 'agentSettings.apiSwitchboardOffline')}
-              </div>
-              <code class="text-sm font-mono break-all">{apiSwitchboardUrl}</code>
-            </div>
-            <button class="btn btn-xs btn-ghost shrink-0 min-w-20" onclick={() => copyHook('sb', apiSwitchboardUrl)}>{copiedHook === 'sb' ? $t('agentSettings.copied') : $t('agentSettings.copy')}</button>
-          </div>
-        {/if}
-        <div class="px-3.5 py-2.5 flex items-center gap-3">
+  {#if webhooksError}
+    <div class="text-xs text-error">{webhooksError}</div>
+  {/if}
+  {#if webhooksLoading && webhooks.length === 0}
+    <div class="text-xs text-base-content/50 py-6 text-center">{$t('agentSettings.webhooksLoading')}</div>
+  {:else if webhooks.length === 0}
+    <div class="text-xs text-base-content/50 py-6 text-center">{$t('agentSettings.webhooksNone')}</div>
+  {:else}
+    <div class="flex flex-col gap-2">
+      {#each webhooks as h (h.id)}
+        <div class="rounded-lg border border-base-300 bg-base-100 px-3.5 py-2.5 flex items-center gap-3">
           <div class="flex-1 min-w-0">
-            <div class="text-xs text-base-content/50">{$t('agentSettings.apiLocalUrl')}</div>
-            <code class="text-sm font-mono break-all">{apiLocalUrl}</code>
-          </div>
-          <button class="btn btn-xs btn-ghost shrink-0 min-w-20" onclick={() => copyHook('local', apiLocalUrl)}>{copiedHook === 'local' ? $t('agentSettings.copied') : $t('agentSettings.copy')}</button>
-        </div>
-      </div>
-
-      <!-- Models -->
-      <div class="mt-3 mb-1 text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('agentSettings.apiModels')}</div>
-      <div class="rounded-lg border border-base-300 bg-base-100 divide-y divide-base-content/10">
-        {#each apiModels as m (m.id)}
-          <div class="px-3.5 py-2.5 flex items-center gap-3">
-            <div class="flex-1 min-w-0">
-              <code class="text-sm font-mono break-all">{m.id}</code>
-              <div class="text-xs text-base-content/50">
-                {m.kind === 'employee' ? $t('agentSettings.apiModelEmployee', { values: { name: m.name } }) : $t('agentSettings.apiModelWorkflow', { values: { name: m.name } })}
-                · {$t(m.memory === 'isolated' ? 'agentSettings.apiMemoryIsolated' : 'agentSettings.apiMemoryShared')}
-              </div>
+            <div class="text-sm font-medium truncate">{h.label}</div>
+            <div class="text-xs text-base-content/50 truncate">
+              {h.workflowName ? $t('agentSettings.webhookTargetWorkflow', { values: { name: h.workflowName } }) : $t('agentSettings.webhookTargetChat', { values: { name: agent?.name ?? '' } })}
+              · <span class="font-mono">{h.keyPrefix}…</span>
+              · {h.lastUsedAt ? $t('agentSettings.webhookLastUsed', { values: { when: new Date(h.lastUsedAt).toLocaleString() } }) : $t('agentSettings.webhookNeverUsed')}
             </div>
-            <button class="btn btn-xs btn-ghost shrink-0 min-w-20" onclick={() => copyHook(m.id, m.id)}>{copiedHook === m.id ? $t('agentSettings.copied') : $t('agentSettings.copy')}</button>
+            <div class="text-xs text-base-content/50 truncate font-mono">{h.url}</div>
+          </div>
+          <button class="btn btn-xs btn-ghost shrink-0 min-w-20" onclick={() => copyHook(h.id, h.url)}>{copiedHook === h.id ? $t('agentSettings.copied') : $t('agentSettings.copyUrl')}</button>
+          <button class="btn btn-xs btn-ghost text-error shrink-0" disabled={hookBusy === h.id} onclick={() => revokeWebhook(h.id)}>{$t('agentSettings.webhookRevoke')}</button>
+        </div>
+      {/each}
+    </div>
+  {/if}
+{/snippet}
+
+{#snippet apiPart()}
+  <div class="mb-1">
+    <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('agentSettings.apiKeys')}</div>
+    <div class="text-xs text-base-content/70 mt-1">{$t('agentSettings.apiKeysDesc', { values: { name: agent?.name ?? '' } })}</div>
+  </div>
+
+  <!-- Endpoint -->
+  <div class="rounded-lg border border-base-300 bg-base-100 divide-y divide-base-content/10">
+    {#if apiSwitchboardUrl}
+      <div class="px-3.5 py-2.5 flex items-center gap-3">
+        <div class="flex-1 min-w-0">
+          <div class="text-xs text-base-content/50 flex items-center gap-1.5">
+            <span class="inline-block w-2 h-2 rounded-full {apiSwitchboardOnline ? 'bg-success' : 'bg-base-content/30'}"></span>
+            {$t(apiSwitchboardOnline ? 'agentSettings.apiSwitchboardOnline' : 'agentSettings.apiSwitchboardOffline')}
+          </div>
+          <code class="text-sm font-mono break-all">{apiSwitchboardUrl}</code>
+        </div>
+        <button class="btn btn-xs btn-ghost shrink-0 min-w-20" onclick={() => copyHook('sb', apiSwitchboardUrl)}>{copiedHook === 'sb' ? $t('agentSettings.copied') : $t('agentSettings.copy')}</button>
+      </div>
+    {/if}
+    <div class="px-3.5 py-2.5 flex items-center gap-3">
+      <div class="flex-1 min-w-0">
+        <div class="text-xs text-base-content/50">{$t('agentSettings.apiLocalUrl')}</div>
+        <code class="text-sm font-mono break-all">{apiLocalUrl}</code>
+      </div>
+      <button class="btn btn-xs btn-ghost shrink-0 min-w-20" onclick={() => copyHook('local', apiLocalUrl)}>{copiedHook === 'local' ? $t('agentSettings.copied') : $t('agentSettings.copy')}</button>
+    </div>
+  </div>
+
+  <!-- Models -->
+  <div class="mt-3 mb-1 text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('agentSettings.apiModels')}</div>
+  <div class="rounded-lg border border-base-300 bg-base-100 divide-y divide-base-content/10">
+    {#each apiModels as m (m.id)}
+      <div class="px-3.5 py-2.5 flex items-center gap-3">
+        <div class="flex-1 min-w-0">
+          <code class="text-sm font-mono break-all">{m.id}</code>
+          <div class="text-xs text-base-content/50">
+            {m.kind === 'employee' ? $t('agentSettings.apiModelEmployee', { values: { name: m.name } }) : $t('agentSettings.apiModelWorkflow', { values: { name: m.name } })}
+            · {$t(m.memory === 'isolated' ? 'agentSettings.apiMemoryIsolated' : 'agentSettings.apiMemoryShared')}
+          </div>
+        </div>
+        <button class="btn btn-xs btn-ghost shrink-0 min-w-20" onclick={() => copyHook(m.id, m.id)}>{copiedHook === m.id ? $t('agentSettings.copied') : $t('agentSettings.copy')}</button>
+      </div>
+    {/each}
+  </div>
+  <div class="text-xs text-base-content/50 mt-1">{$t('agentSettings.apiModelsHint')}</div>
+
+  <!-- Keys -->
+  <div class="mt-4 mb-1 flex items-center justify-between gap-3">
+    <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('agentSettings.apiKeysList')}</div>
+    {#if !showNewKey}
+      <button class="btn btn-xs btn-primary" onclick={() => (showNewKey = true)}>{$t('agentSettings.apiKeyNew')}</button>
+    {/if}
+  </div>
+  {#if showNewKey}
+    <div class="rounded-lg border border-base-300 bg-base-100 p-3.5 flex flex-col gap-2">
+      <label class="flex flex-col gap-1">
+        <span class="text-xs text-base-content/60">{$t('agentSettings.apiKeyLabelField')}</span>
+        <input class="input input-sm input-bordered w-full" placeholder={$t('agentSettings.apiKeyLabelPlaceholder')} bind:value={keyLabel} onkeydown={(e) => { if (e.key === 'Enter') mintApiKey(); }} />
+      </label>
+      <div class="text-xs text-base-content/60">{$t('agentSettings.apiKeyModelsField')}</div>
+      <div class="flex flex-col gap-1 text-xs">
+        {#each apiModels as m (m.id)}
+          <label class="inline-flex items-center gap-2 {m.kind === 'employee' ? 'opacity-70' : 'cursor-pointer'}">
+            <input type="checkbox" class="checkbox checkbox-xs" checked={m.kind === 'employee' || keyWorkflows.includes(m.name)} disabled={m.kind === 'employee'} onchange={() => toggleKeyWorkflow(m.name)} />
+            <code class="font-mono">{m.id}</code>
+          </label>
+        {/each}
+      </div>
+      <div class="text-xs text-base-content/60">{$t('agentSettings.apiKeyToolsField')}</div>
+      <div class="rounded-lg border border-base-300 divide-y divide-base-content/10 max-h-64 overflow-y-auto">
+        {#each apiTools as tool (tool.name)}
+          <div class="px-3 py-2">
+            <div class="text-xs font-medium"><code class="font-mono">{tool.name}</code> <span class="text-base-content/50 font-normal">{tool.description}</span></div>
+            <div class="flex flex-wrap gap-x-3 gap-y-1 mt-1 text-xs">
+              {#each tool.entries as e (e.id)}
+                <label class="inline-flex items-center gap-1 {e.floor ? 'opacity-70' : 'cursor-pointer'}">
+                  <input type="checkbox" class="checkbox checkbox-xs" checked={e.floor || keyTools.includes(e.id)} disabled={e.floor} onchange={() => toggleKeyTool(e.id)} />
+                  <span class="font-mono">{e.label}</span>
+                </label>
+              {/each}
+            </div>
           </div>
         {/each}
       </div>
-      <div class="text-xs text-base-content/50 mt-1">{$t('agentSettings.apiModelsHint')}</div>
-
-      <!-- Keys -->
-      <div class="mt-4 mb-1 flex items-center justify-between gap-3">
-        <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('agentSettings.apiKeysList')}</div>
-        {#if !showNewKey}
-          <button class="btn btn-xs btn-primary" onclick={() => (showNewKey = true)}>{$t('agentSettings.apiKeyNew')}</button>
-        {/if}
+      <div class="text-xs text-base-content/50">{$t('agentSettings.apiKeyHint')}</div>
+      <div class="flex gap-2 justify-end">
+        <button class="btn btn-sm btn-ghost" onclick={() => { showNewKey = false; keyLabel = ''; keyWorkflows = []; keyTools = []; }}>{$t('agentSettings.cancel')}</button>
+        <button class="btn btn-sm btn-primary" onclick={mintApiKey} disabled={!keyLabel.trim() || !!keyBusy}>{keyBusy === 'mint' ? $t('agentSettings.webhookMinting') : $t('agentSettings.webhookMint')}</button>
       </div>
-      {#if showNewKey}
-        <div class="rounded-lg border border-base-300 bg-base-100 p-3.5 flex flex-col gap-2">
-          <label class="flex flex-col gap-1">
-            <span class="text-xs text-base-content/60">{$t('agentSettings.apiKeyLabelField')}</span>
-            <input class="input input-sm input-bordered w-full" placeholder={$t('agentSettings.apiKeyLabelPlaceholder')} bind:value={keyLabel} onkeydown={(e) => { if (e.key === 'Enter') mintApiKey(); }} />
-          </label>
-          <div class="text-xs text-base-content/60">{$t('agentSettings.apiKeyModelsField')}</div>
-          <div class="flex flex-col gap-1 text-xs">
-            {#each apiModels as m (m.id)}
-              <label class="inline-flex items-center gap-2 {m.kind === 'employee' ? 'opacity-70' : 'cursor-pointer'}">
-                <input type="checkbox" class="checkbox checkbox-xs" checked={m.kind === 'employee' || keyWorkflows.includes(m.name)} disabled={m.kind === 'employee'} onchange={() => toggleKeyWorkflow(m.name)} />
-                <code class="font-mono">{m.id}</code>
-              </label>
-            {/each}
-          </div>
-          <div class="text-xs text-base-content/60">{$t('agentSettings.apiKeyToolsField')}</div>
-          <div class="rounded-lg border border-base-300 divide-y divide-base-content/10 max-h-64 overflow-y-auto">
-            {#each apiTools as tool (tool.name)}
-              <div class="px-3 py-2">
-                <div class="text-xs font-medium"><code class="font-mono">{tool.name}</code> <span class="text-base-content/50 font-normal">{tool.description}</span></div>
-                <div class="flex flex-wrap gap-x-3 gap-y-1 mt-1 text-xs">
-                  {#each tool.entries as e (e.id)}
-                    <label class="inline-flex items-center gap-1 {e.floor ? 'opacity-70' : 'cursor-pointer'}">
-                      <input type="checkbox" class="checkbox checkbox-xs" checked={e.floor || keyTools.includes(e.id)} disabled={e.floor} onchange={() => toggleKeyTool(e.id)} />
-                      <span class="font-mono">{e.label}</span>
-                    </label>
-                  {/each}
-                </div>
-              </div>
-            {/each}
-          </div>
-          <div class="text-xs text-base-content/50">{$t('agentSettings.apiKeyHint')}</div>
-          <div class="flex gap-2 justify-end">
-            <button class="btn btn-sm btn-ghost" onclick={() => { showNewKey = false; keyLabel = ''; keyWorkflows = []; keyTools = []; }}>{$t('agentSettings.cancel')}</button>
-            <button class="btn btn-sm btn-primary" onclick={mintApiKey} disabled={!keyLabel.trim() || !!keyBusy}>{keyBusy === 'mint' ? $t('agentSettings.webhookMinting') : $t('agentSettings.webhookMint')}</button>
-          </div>
-        </div>
-      {/if}
+    </div>
+  {/if}
 
-      {#if mintedKey}
-        <div class="rounded-lg border border-base-300 bg-base-100 p-3.5 flex flex-col gap-3">
-          <div>
-            <div class="text-sm font-medium">{$t('agentSettings.apiKeyReady', { values: { label: mintedKey.key.label } })}</div>
-            <div class="text-xs text-base-content/60 mt-0.5">{$t('agentSettings.apiKeyOnce')}</div>
-          </div>
-          <div>
-            <div class="text-xs text-base-content/50 mb-1">{$t('agentSettings.apiKeySecret')}</div>
-            <div class="flex items-start gap-1.5">
-              <code class="text-sm font-mono bg-base-200 rounded px-2 py-1.5 flex-1 min-w-0 break-all">{mintedKey.secret}</code>
-              <button class="btn btn-xs btn-ghost shrink-0 min-w-20" onclick={() => copyHook('secret', mintedKey?.secret ?? '')}>{copiedHook === 'secret' ? $t('agentSettings.copied') : $t('agentSettings.copy')}</button>
-            </div>
-          </div>
-          <div>
-            <div class="flex items-center gap-2 mb-1">
-              <div class="text-xs text-base-content/50">{$t('agentSettings.apiQuickStart')}</div>
-              <div class="join">
-                <button class="join-item btn btn-xs {snippetLang === 'curl' ? 'btn-active' : 'btn-ghost'}" onclick={() => (snippetLang = 'curl')}>curl</button>
-                <button class="join-item btn btn-xs {snippetLang === 'python' ? 'btn-active' : 'btn-ghost'}" onclick={() => (snippetLang = 'python')}>Python</button>
-              </div>
-            </div>
-            <div class="flex items-start gap-1.5">
-              <pre class="text-xs font-mono bg-base-200 rounded px-2 py-1.5 flex-1 min-w-0 overflow-x-auto whitespace-pre">{snippetLang === 'curl' ? curlForKey(mintedKey) : pythonForKey(mintedKey)}</pre>
-              <button class="btn btn-xs btn-ghost shrink-0 min-w-20" onclick={() => copyHook('snippet', snippetLang === 'curl' ? curlForKey(mintedKey!) : pythonForKey(mintedKey!))}>{copiedHook === 'snippet' ? $t('agentSettings.copied') : $t('agentSettings.copy')}</button>
-            </div>
-          </div>
-          <div class="flex justify-end">
-            <button class="btn btn-xs btn-ghost" onclick={() => (mintedKey = null)}>{$t('agentSettings.apiKeyStored')}</button>
-          </div>
-        </div>
-      {/if}
-
-      {#if apiKeysError}
-        <div class="text-xs text-error">{apiKeysError}</div>
-      {/if}
-      {#if apiKeys.length === 0}
-        <div class="text-xs text-base-content/50 py-6 text-center">{$t('agentSettings.apiKeysNone')}</div>
-      {:else}
-        <div class="rounded-lg border border-base-300 bg-base-100 divide-y divide-base-content/10">
-          {#each apiKeys as k (k.id)}
-            <div class="px-3.5 py-2.5 flex items-center gap-3">
-              <div class="flex-1 min-w-0">
-                <div class="text-sm font-medium truncate">{k.label} <span class="font-mono text-xs text-base-content/50">{k.keyPrefix}…</span></div>
-                <div class="text-xs text-base-content/50 truncate">
-                  {k.models.length === 1 ? $t('agentSettings.apiKeyOneModel') : $t('agentSettings.apiKeyModelsCount', { values: { n: k.models.length } })}
-                  · {$t('agentSettings.apiKeyToolsCount', { values: { n: k.tools.length } })}
-                  · {k.lastUsedAt ? $t('agentSettings.webhookLastUsed', { values: { when: new Date(k.lastUsedAt * 1000).toLocaleString() } }) : $t('agentSettings.webhookNeverUsed')}
-                  · {$t('agentSettings.apiKeyCreated', { values: { when: new Date(k.createdAt * 1000).toLocaleDateString() } })}
-                </div>
-              </div>
-              <button class="btn btn-xs btn-ghost text-error shrink-0" disabled={keyBusy === k.id} onclick={() => revokeApiKey(k.id)}>{$t('agentSettings.webhookRevoke')}</button>
-            </div>
-          {/each}
-        </div>
-      {/if}
-
-    {:else if section === 'accounts' || section === 'phone'}
-      <div class="mb-1">
-        <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t(section === 'phone' ? 'agentSettings.phone' : 'agentSettings.connectedAccounts')}</div>
-        <div class="text-xs text-base-content/70 mt-1">{$t(section === 'phone' ? 'agentSettings.phoneDesc' : 'agentSettings.accountsDesc', { values: { name: agent?.name ?? '' } })}</div>
+  {#if mintedKey}
+    <div class="rounded-lg border border-base-300 bg-base-100 p-3.5 flex flex-col gap-3">
+      <div>
+        <div class="text-sm font-medium">{$t('agentSettings.apiKeyReady', { values: { label: mintedKey.key.label } })}</div>
+        <div class="text-xs text-base-content/60 mt-0.5">{$t('agentSettings.apiKeyOnce')}</div>
       </div>
-      {#if section === 'phone' && phoneLines.length > 0}
-        <div class="flex flex-col gap-2">
-          {#each phoneLines as line (line.number)}
-            <div class="flex items-center gap-2 rounded-lg border border-base-300 bg-base-100 px-3.5 py-2.5">
-              {#if shownPlugins.length > 0}
-                <Check class="w-3.5 h-3.5 text-success shrink-0" />
-              {:else}
-                <AlertTriangle class="w-3.5 h-3.5 text-warning shrink-0" />
-              {/if}
-              <span class="text-sm font-medium">{fmtPhone(line.number)}</span>
-              <span class="text-xs text-base-content/50 truncate flex-1">{shownPlugins.length > 0 ? line.status : $t('agentSettings.phoneNotAnsweringHere')}{line.businessName ? ` · ${line.businessName}` : ''}</span>
-              <a href="https://neboai.com/manage/phone" target="_blank" rel="noopener" class="text-xs text-primary font-medium shrink-0">{$t('agentSettings.managePhone')}</a>
-            </div>
-          {/each}
+      <div>
+        <div class="text-xs text-base-content/50 mb-1">{$t('agentSettings.apiKeySecret')}</div>
+        <div class="flex items-start gap-1.5">
+          <code class="text-sm font-mono bg-base-200 rounded px-2 py-1.5 flex-1 min-w-0 break-all">{mintedKey.secret}</code>
+          <button class="btn btn-xs btn-ghost shrink-0 min-w-20" onclick={() => copyHook('secret', mintedKey?.secret ?? '')}>{copiedHook === 'secret' ? $t('agentSettings.copied') : $t('agentSettings.copy')}</button>
         </div>
-      {/if}
-      {#if accountsLoading}
-        <div class="text-xs text-base-content/50 py-6 text-center">{$t('agentSettings.loadingAccounts')}</div>
-      {:else if accountsLoadError}
-        <div class="py-8 text-center space-y-3">
-          <div class="text-sm text-error">{accountsLoadError}</div>
-          <button type="button" class="btn btn-sm btn-outline" onclick={() => loadAccounts()}>{$t('agentSettings.tryAgain')}</button>
-        </div>
-      {:else if shownPlugins.length === 0}
-        <div class="py-8 text-center">
-          {#if section === 'phone'}
-            <div class="text-sm text-base-content/50 mb-2">{$t(phoneLines.length > 0 ? 'agentSettings.phoneNeedsPlugin' : 'agentSettings.noPhonePlugin', { values: { name: agent?.name ?? '' } })}</div>
-            {#if phoneLines.length > 0}
-              <button class="btn btn-sm btn-primary" onclick={answerPhoneHere} disabled={phoneAnswerBusy}>{$t(phoneAnswerBusy ? 'agentSettings.phoneAnswerHereBusy' : 'agentSettings.phoneAnswerHere')}</button>
-              {#if phoneAnswerError}<div class="text-xs text-error mt-2">{phoneAnswerError}</div>{/if}
-            {:else}
-              <a href="/marketplace/plugins" class="inline-flex items-center gap-1 text-sm text-primary font-medium">{$t('agentSettings.browseMarketplaceArrow')}</a>
-            {/if}
-          {:else}
-            <div class="text-sm text-base-content/50 mb-2">{$t('agentSettings.noMultiAccountPlugins')}</div>
-            <a href="/marketplace/plugins" class="inline-flex items-center gap-1 text-sm text-primary font-medium">{$t('agentSettings.browseMarketplaceArrow')}</a>
-          {/if}
-        </div>
-      {:else}
-        <div class="flex flex-col gap-3">
-          {#each shownPlugins as plugin (plugin.slug)}
-            <div class="rounded-lg border border-base-300 bg-base-100 overflow-hidden">
-              <div class="flex items-start gap-3 p-3.5">
-                <div class="flex-1 min-w-0">
-                  <div class="text-sm font-medium">{plugin.name}</div>
-                  {#if plugin.description}
-                    <div class="text-xs text-base-content/70 mt-0.5">{plugin.description}</div>
-                  {/if}
-                </div>
-                <button
-                  class="btn btn-sm btn-outline btn-primary shrink-0"
-                  onclick={() => openAddAccount(plugin)}
-                >{$t('agentSettings.addAccount')}</button>
-              </div>
-              {#if plugin.accounts.length > 0}
-                <div class="border-t border-base-content/10">
-                  {#each plugin.accounts as acct (acct.accountLabel)}
-                    <div class="flex items-center gap-2 px-3.5 py-2 border-b border-base-content/5 last:border-b-0">
-                      {#if acct.needsReauth}
-                        <AlertTriangle class="w-3.5 h-3.5 text-warning shrink-0" />
-                      {:else}
-                        <Check class="w-3.5 h-3.5 text-success shrink-0" />
-                      {/if}
-                      <span class="text-sm truncate flex-1">{acct.accountLabel}</span>
-                      {#if acct.isPrimary}
-                        <span class="py-0.5 px-2 rounded bg-accent/15 text-accent text-xs font-medium shrink-0">{$t('agentSettings.primary')}</span>
-                      {/if}
-                      {#if acct.needsReauth}
-                        <span class="py-0.5 px-2 rounded bg-warning/15 text-warning text-xs font-medium shrink-0">{$t('statusBadge.expired')}</span>
-                        <button
-                          class="btn btn-xs btn-warning btn-outline shrink-0"
-                          onclick={() => reconnectAccount(plugin.slug, acct.accountLabel)}
-                          disabled={addAccountConnectingSlug === plugin.slug}
-                        >{$t('agentSettings.reconnect')}</button>
-                      {/if}
-                      <button
-                        class="btn btn-xs btn-ghost text-error shrink-0"
-                        onclick={() => disconnectAccount(plugin.slug, acct.accountLabel)}
-                        title={$t('agentSettings.disconnectAccountTitle')}
-                        aria-label={$t('agentSettings.disconnectAccountLabel', { values: { label: acct.accountLabel } })}
-                      >{$t('settingsPlugins.disconnect')}</button>
-                    </div>
-                  {/each}
-                </div>
-              {:else}
-                <div class="border-t border-base-content/10 px-3.5 py-2">
-                  <span class="text-xs text-base-content/50">{$t('agentSettings.noAccountsYet')}</span>
-                </div>
-              {/if}
-            </div>
-          {/each}
-        </div>
-      {/if}
-
-    {:else if section === 'permissions'}
-      <div class="mb-1">
-        <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('permissions.title')}</div>
-        <div class="text-xs text-base-content/70 mt-1">{$t('permissions.employeeDescription', { values: { name: agent?.name ?? '' } })}</div>
       </div>
-      <PermissionsSection {agentId} name={agent?.name ?? ''} />
+      <div>
+        <div class="flex items-center gap-2 mb-1">
+          <div class="text-xs text-base-content/50">{$t('agentSettings.apiQuickStart')}</div>
+          <div class="join">
+            <button class="join-item btn btn-xs {snippetLang === 'curl' ? 'btn-active' : 'btn-ghost'}" onclick={() => (snippetLang = 'curl')}>curl</button>
+            <button class="join-item btn btn-xs {snippetLang === 'python' ? 'btn-active' : 'btn-ghost'}" onclick={() => (snippetLang = 'python')}>Python</button>
+          </div>
+        </div>
+        <div class="flex items-start gap-1.5">
+          <pre class="text-xs font-mono bg-base-200 rounded px-2 py-1.5 flex-1 min-w-0 overflow-x-auto whitespace-pre">{snippetLang === 'curl' ? curlForKey(mintedKey) : pythonForKey(mintedKey)}</pre>
+          <button class="btn btn-xs btn-ghost shrink-0 min-w-20" onclick={() => copyHook('snippet', snippetLang === 'curl' ? curlForKey(mintedKey!) : pythonForKey(mintedKey!))}>{copiedHook === 'snippet' ? $t('agentSettings.copied') : $t('agentSettings.copy')}</button>
+        </div>
+      </div>
+      <div class="flex justify-end">
+        <button class="btn btn-xs btn-ghost" onclick={() => (mintedKey = null)}>{$t('agentSettings.apiKeyStored')}</button>
+      </div>
+    </div>
+  {/if}
 
-    {:else if section === 'memory'}
-      <MemoryManager {agentId} />
+  {#if apiKeysError}
+    <div class="text-xs text-error">{apiKeysError}</div>
+  {/if}
+  {#if apiKeys.length === 0}
+    <div class="text-xs text-base-content/50 py-6 text-center">{$t('agentSettings.apiKeysNone')}</div>
+  {:else}
+    <div class="rounded-lg border border-base-300 bg-base-100 divide-y divide-base-content/10">
+      {#each apiKeys as k (k.id)}
+        <div class="px-3.5 py-2.5 flex items-center gap-3">
+          <div class="flex-1 min-w-0">
+            <div class="text-sm font-medium truncate">{k.label} <span class="font-mono text-xs text-base-content/50">{k.keyPrefix}…</span></div>
+            <div class="text-xs text-base-content/50 truncate">
+              {k.models.length === 1 ? $t('agentSettings.apiKeyOneModel') : $t('agentSettings.apiKeyModelsCount', { values: { n: k.models.length } })}
+              · {$t('agentSettings.apiKeyToolsCount', { values: { n: k.tools.length } })}
+              · {k.lastUsedAt ? $t('agentSettings.webhookLastUsed', { values: { when: new Date(k.lastUsedAt * 1000).toLocaleString() } }) : $t('agentSettings.webhookNeverUsed')}
+              · {$t('agentSettings.apiKeyCreated', { values: { when: new Date(k.createdAt * 1000).toLocaleDateString() } })}
+            </div>
+          </div>
+          <button class="btn btn-xs btn-ghost text-error shrink-0" disabled={keyBusy === k.id} onclick={() => revokeApiKey(k.id)}>{$t('agentSettings.webhookRevoke')}</button>
+        </div>
+      {/each}
+    </div>
+  {/if}
+{/snippet}
 
-    {:else}
-      <div class="text-center py-10 text-sm">{$t('agentSettings.unknownSection')}</div>
-    {/if}
-
-  </div>
-</div>
+{#snippet memoryPart()}
+  <MemoryManager {agentId} />
+{/snippet}
 
 <!-- Channel Auth Modal -->
 {#if channelAuthModal}

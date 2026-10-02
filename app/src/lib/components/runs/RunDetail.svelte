@@ -2,6 +2,7 @@
   import { getContext } from 'svelte';
   import { t } from 'svelte-i18n';
   import { page } from '$app/stores';
+  import { devMode } from '$lib/stores/devmode';
   import { getWebSocketClient } from '$lib/websocket/client';
   import PrettyJson from '$lib/components/PrettyJson.svelte';
   import type { AgentPageContext, AgentRun, WorkflowActivity } from '$lib/types/agentPage';
@@ -158,6 +159,8 @@
     return typeof inp === 'string' && inp.length > 0 ? inp : null;
   });
   let showRawInput = $state(false);
+  // Leaving Developer mode puts the input back to its readable form.
+  $effect(() => { if (!$devMode) showRawInput = false; });
 
   const inputSummary = $derived(display?.input ?? null);
   function activitySummary(id: string): RunDisplayEntry | null {
@@ -314,7 +317,8 @@
         <div class="mb-4">
           <div class="flex items-center justify-between mb-1">
             <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('agentActivity.input')}</div>
-            {#if runInputData || inputSummary}
+            <!-- Raw input is for people wiring things up: Developer mode only. -->
+            {#if $devMode && (runInputData || inputSummary)}
               <button type="button" class="btn btn-ghost btn-xs" onclick={() => (showRawInput = !showRawInput)}>
                 {showRawInput ? $t('agentActivity.viewPretty') : $t('agentActivity.viewRaw')}
               </button>

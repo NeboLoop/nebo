@@ -26,16 +26,32 @@ fn teach_err(e: &str) -> Response {
         .into_response()
 }
 
-/// POST /api/v1/desktop/teach/start — begin recording a demonstration on the
-/// live desktop. Starts the desktop if needed.
-pub async fn teach_start(State(_state): State<AppState>) -> Response {
-    if let Err(e) = tools::desktop_session::ensure_started().await {
+/// POST /api/v1/desktop/teach/start — begin recording a demonstration.
+/// `where` picks the screen: "local" (this computer's own screen, the default
+/// on a bot that has one) or "computer" (the bot's virtual desktop, the
+/// default and only choice on a cloud bot; started if needed).
+pub async fn teach_start(
+    State(_state): State<AppState>,
+    body: Option<Json<serde_json::Value>>,
+) -> Response {
+    let requested = body.as_ref().and_then(|b| b["where"].as_str());
+    let where_ = match tools::desktop_session::TeachWhere::resolve(
+        requested,
+        tools::desktop_session::own_screen(),
+    ) {
+        Ok(w) => w,
+        Err(e) => return teach_err(&e),
+    };
+    if where_ == tools::desktop_session::TeachWhere::Computer
+        && let Err(e) = tools::desktop_session::ensure_started().await
+    {
         return teach_err(&e);
     }
-    match tools::desktop_session::start_recording().await {
+    match tools::desktop_session::start_recording(where_).await {
         Ok((id, dir)) => axum::Json(serde_json::json!({
             "sessionId": id,
             "dir": dir.to_string_lossy(),
+            "where": where_.as_str(),
         }))
         .into_response(),
         Err(e) => teach_err(&e),
@@ -81,12 +97,26 @@ pub async fn teach_stop(
 
     const VISIBLE: &str = "I just demonstrated a task for you on your computer — \
         watch the recording back and learn how to do it.";
+    // The virtual computer logs every click and keystroke into timeline.md;
+    // a recording of the owner's own screen is keyframes only.
+    let study = if dir.join("timeline.md").exists() {
+        format!(
+            "Start with timeline.md — the reconstructed click-and-keystroke timeline of \
+             exactly what they did — then confirm the visual context by viewing 5-6 spread \
+             keyframes from frames/ (there are {keyframes}; do NOT read them all, and do not \
+             use sub-agents)."
+        )
+    } else {
+        format!(
+            "There is no click-and-keystroke timeline for this one: it was recorded as \
+             screenshots of their screen. View about 8 keyframes from frames/, spread from \
+             first to last (there are {keyframes}, numbered in order; do NOT read them all, \
+             and do not use sub-agents), and work out the steps from what changes between them."
+        )
+    };
     let briefing = format!(
         "The owner just demonstrated a task on this computer (teach session {id}). The \
-         recording is in {dir}. Start with timeline.md — the reconstructed \
-         click-and-keystroke timeline of exactly what they did — then confirm the visual \
-         context by viewing 5-6 spread keyframes from frames/ (there are {keyframes}; do \
-         NOT read them all, and do not use sub-agents). Then save it as a learned skill \
+         recording is in {dir}. {study} Then save it as a learned skill \
          with save_skill — name it after the class of task, write out the steps you'd \
          follow to repeat it on your computer, and note which inputs varied. Open your \
          reply by thanking them briefly and saying what you learned, then ask whether you \
@@ -94,7 +124,7 @@ pub async fn teach_stop(
          briefing, the session id, or file paths unless asked.",
         id = id,
         dir = dir.to_string_lossy(),
-        keyframes = keyframes,
+        study = study,
     );
 
     let entity_config = crate::entity_config::resolve_for_chat(&state.store, "agent", agent_id);

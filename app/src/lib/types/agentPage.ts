@@ -174,7 +174,6 @@ export interface AgentPageContext {
 	readonly workflowStats: WorkflowStatsLocal
 	readonly workflowRuns: unknown[]
 	readonly isApp: boolean
-	readonly devMode: boolean
 	readonly agentStatuses: Record<string, string>
 	/** The sidebar's employee roster — one source for names and colors. */
 	readonly roster: AgentDisplay[]

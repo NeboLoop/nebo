@@ -9,6 +9,7 @@
 -->
 <script lang="ts">
   import { getContext } from 'svelte';
+  import { devMode } from '$lib/stores/devmode';
   import { t } from 'svelte-i18n';
   import { getActivityType } from '$lib/utils/workflowTypes';
   import type { AgentPageContext, WorkflowConfig, WorkflowActivity } from '$lib/types/agentPage';
@@ -178,6 +179,34 @@
     </div>
   </div>
 
+  {#snippet flowSummary(name: string, wf: WorkflowConfig, purchased: boolean)}
+    <div class="flex items-center gap-1.5 flex-wrap">
+      <span class="text-sm font-medium">{name}</span>
+      {#if purchased}
+        <span class="py-0 px-1.5 rounded bg-base-200 text-xs font-mono">{$t('nav.marketplace')}</span>
+      {/if}
+      {#if wf.isActive === false}
+        <span class="py-0 px-1.5 rounded bg-base-200 text-xs text-base-content/50">{$t('common.paused')}</span>
+      {/if}
+    </div>
+    {#if wf.description}
+      <div class="text-xs text-base-content/70 mt-0.5 truncate">{wf.description}</div>
+    {/if}
+    <div class="flex items-center gap-1.5 mt-1.5 flex-wrap">
+      <span class="text-xs text-base-content/50 font-mono">{triggerSummary(wf)}</span>
+      <span class="text-xs text-base-content/30">&middot;</span>
+      <span class="text-xs text-base-content/50 font-mono inline-flex items-center gap-1">{(wf.activities?.length ?? 0) === 1 ? $t('agentSettings.activityCountSingular', { values: { count: 1 } }) : $t('agentSettings.activityCount', { values: { count: wf.activities?.length ?? 0 } })}{#each [...new Set((wf.activities ?? []).map((a: WorkflowActivity) => a.type).filter(Boolean))] as ty}<span class="inline-block" title={getActivityType(ty).label}>{getActivityType(ty).icon}</span>{/each}</span>
+      {#if wf.lastFired}
+        <span class="text-xs text-base-content/30">&middot;</span>
+        <span class="text-xs text-base-content/50 font-mono">{$t('agentSettings.lastFired', { values: { time: formatLastFired(wf.lastFired) } })}</span>
+      {/if}
+      {#if wf.emit}
+        <span class="text-xs text-base-content/30">&middot;</span>
+        <span class="text-xs text-accent/70 font-mono">&#8594; {wf.emit}</span>
+      {/if}
+    </div>
+  {/snippet}
+
   <div class="flex-1 min-h-0 overflow-y-auto p-3 flex flex-col gap-2">
     <!-- Two across, not four: this is a 450px rail, not a settings page. -->
     {#if stats.totalRuns > 0}
@@ -218,33 +247,18 @@
               {#if wf.trigger?.type === 'schedule'}&#8635;{:else if wf.trigger?.type === 'event'}&#9889;{:else if wf.trigger?.type === 'watch'}&#128065;{:else if wf.trigger?.type === 'heartbeat'}&#10084;{:else}&#9654;{/if}
             </div>
 
-            <button class="flex-1 min-w-0 text-left cursor-pointer bg-transparent border-none p-0" onclick={() => ctx.openWorkflow(name, wf)}>
-              <div class="flex items-center gap-1.5 flex-wrap">
-                <span class="text-sm font-medium">{name}</span>
-                {#if purchased}
-                  <span class="py-0 px-1.5 rounded bg-base-200 text-xs font-mono">{$t('nav.marketplace')}</span>
-                {/if}
-                {#if wf.isActive === false}
-                  <span class="py-0 px-1.5 rounded bg-base-200 text-xs text-base-content/50">{$t('common.paused')}</span>
-                {/if}
+            <!-- The workflow canvas is a builder's tool: in Developer mode the
+                 row opens it; otherwise the row is a summary, and the switch
+                 beside it stays the everyday control. -->
+            {#if $devMode}
+              <button class="flex-1 min-w-0 text-left cursor-pointer bg-transparent border-none p-0" onclick={() => ctx.openWorkflow(name, wf)}>
+                {@render flowSummary(name, wf, purchased)}
+              </button>
+            {:else}
+              <div class="flex-1 min-w-0">
+                {@render flowSummary(name, wf, purchased)}
               </div>
-              {#if wf.description}
-                <div class="text-xs text-base-content/70 mt-0.5 truncate">{wf.description}</div>
-              {/if}
-              <div class="flex items-center gap-1.5 mt-1.5 flex-wrap">
-                <span class="text-xs text-base-content/50 font-mono">{triggerSummary(wf)}</span>
-                <span class="text-xs text-base-content/30">&middot;</span>
-                <span class="text-xs text-base-content/50 font-mono inline-flex items-center gap-1">{(wf.activities?.length ?? 0) === 1 ? $t('agentSettings.activityCountSingular', { values: { count: 1 } }) : $t('agentSettings.activityCount', { values: { count: wf.activities?.length ?? 0 } })}{#each [...new Set((wf.activities ?? []).map((a: WorkflowActivity) => a.type).filter(Boolean))] as ty}<span class="inline-block" title={getActivityType(ty).label}>{getActivityType(ty).icon}</span>{/each}</span>
-                {#if wf.lastFired}
-                  <span class="text-xs text-base-content/30">&middot;</span>
-                  <span class="text-xs text-base-content/50 font-mono">{$t('agentSettings.lastFired', { values: { time: formatLastFired(wf.lastFired) } })}</span>
-                {/if}
-                {#if wf.emit}
-                  <span class="text-xs text-base-content/30">&middot;</span>
-                  <span class="text-xs text-accent/70 font-mono">&#8594; {wf.emit}</span>
-                {/if}
-              </div>
-            </button>
+            {/if}
 
             <input
               type="checkbox"

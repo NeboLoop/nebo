@@ -1826,6 +1826,7 @@ export interface GetSystemInfoResponse {
 	arch: unknown
 	version: string
 	systemPackages: unknown
+	ownScreen: unknown
 }
 
 export interface GetTeamMessagesResponse {
@@ -2308,6 +2309,7 @@ export interface StopTeamWorkResponse {
 export interface TeachStartResponse {
 	sessionId: string
 	dir: unknown
+	where: unknown
 }
 
 export interface TeachStopResponse {
