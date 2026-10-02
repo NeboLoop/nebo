@@ -1543,7 +1543,8 @@ mod tests {
 }
 
 /// Building in App Studio is building in App Developer mode: loading the
-/// `app-studio` skill turns the mode on, so the developer tools reach every
+/// `app-studio` skill turns it on, with Developer mode (App Developer counts
+/// only while Developer is on), so the developer tools reach every
 /// one of the owner's own apps (not only the app itself), pages are served
 /// uncached and carry the floating console. Returns what the load says.
 pub(crate) fn app_studio_developer_mode(store: &db::Store, skill: &str) -> Option<&'static str> {
@@ -1551,9 +1552,9 @@ pub(crate) fn app_studio_developer_mode(store: &db::Store, skill: &str) -> Optio
         return None;
     }
     store
-        .update_settings(None, None, None, None, None, None, None, None, None, Some(true))
+        .update_settings(None, None, None, None, None, None, None, Some(true), None, Some(true))
         .ok()
-        .map(|_| "App Developer mode is now on (Settings, Developer): app_status, app_reload, app_console and app_screenshot work on any of the owner's apps. ")
+        .map(|_| "Developer mode and App Developer mode are now on (Settings, Developer): app_status, app_reload, app_console and app_screenshot work on any of the owner's apps. ")
 }
 
 #[cfg(test)]
@@ -1568,6 +1569,8 @@ mod app_studio_mode_tests {
         assert!(!store.app_developer_mode());
         assert!(super::app_studio_developer_mode(&store, "app-studio").is_some());
         assert!(store.app_developer_mode());
+        let s = store.get_settings().unwrap().unwrap();
+        assert_eq!(s.developer_mode, 1, "App Studio turns Developer mode on with App Developer");
         assert!(super::app_studio_developer_mode(&store, "app-studio").is_none(), "said once");
     }
 }

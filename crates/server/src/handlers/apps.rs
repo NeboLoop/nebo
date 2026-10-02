@@ -1933,7 +1933,7 @@ mod developer_mode_tests {
     }
 
     fn developer_mode(store: &db::Store, on: bool) {
-        store.update_settings(None, None, None, None, None, None, None, None, None, Some(on)).unwrap();
+        store.update_settings(None, None, None, None, None, None, None, Some(on), None, Some(on)).unwrap();
     }
 
     fn app(store: &db::Store, id: &str, name: &str) {
