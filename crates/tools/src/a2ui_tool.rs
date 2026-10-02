@@ -79,6 +79,63 @@ pub struct SurfaceSummary {
 }
 
 // ---------------------------------------------------------------------------
+// Who sees a surface
+// ---------------------------------------------------------------------------
+
+/// `a2ui` is withheld from every employee that is not an app: only an app's
+/// own page draws A2UI surfaces. The chat on desktop and phone has no
+/// renderer, so for any other employee the tool drew panels nobody saw — Chief
+/// told the owner "a card panel on the side" that never appeared, then took
+/// his "k" for option A (live 2026-10-02). A question to the owner is
+/// `ask_owner`'s card, which both apps show.
+pub fn withheld(store: &db::Store, agent_id: &str) -> Vec<String> {
+    if crate::app_data::is_app(store, agent_id) {
+        Vec::new()
+    } else {
+        vec!["a2ui".to_string()]
+    }
+}
+
+/// Whether the owner can see a surface `agent_id` draws in this run, or why
+/// nothing appeared. Only an open page of the app draws one; a voice call
+/// has no screen and a messaging channel shows text.
+fn sight(ctx: &ToolContext, agent_id: &str) -> Result<(), &'static str> {
+    if ctx.door == types::permissions::Door::Voice {
+        return Err("the owner is on a voice call, which has no screen");
+    }
+    if ctx.channel.is_some() {
+        return Err("the owner is writing from a messaging channel, which shows only text");
+    }
+    if !crate::app_dev::has_open_view(agent_id) {
+        return Err("no page of your app is open, and the chat on desktop and phone can't draw A2UI surfaces");
+    }
+    Ok(())
+}
+
+/// What the model is told when nothing was shown.
+pub const NOT_SHOWN: &str = "Nothing appeared on the owner's screen: never say a panel or card is showing. To have \
+him pick or answer, call ask_owner (its options are buttons in his chat); otherwise say it in your reply.";
+
+/// A drawing call's result: what was done, and plainly whether the owner
+/// sees it.
+fn drawn(mut done: serde_json::Value, sight: Result<(), &'static str>) -> ToolResult {
+    match sight {
+        Ok(()) => {
+            done["shown"] = json!("on your app's open page, if the page draws A2UI surfaces");
+            done["answers"] = json!(
+                "What the owner presses there comes back to you as a message. Until one does, nothing is chosen: a typed reply is a message, never a pick."
+            );
+        }
+        Err(why) => {
+            done["shown"] = json!(false);
+            done["why"] = json!(why);
+            done["next"] = json!(NOT_SHOWN);
+        }
+    }
+    ToolResult::ok(done.to_string())
+}
+
+// ---------------------------------------------------------------------------
 // A2UIDomainTool
 // ---------------------------------------------------------------------------
 
@@ -112,7 +169,7 @@ impl A2UIDomainTool {
         DomainSchemaConfig {
             domain: "a2ui".to_string(),
             description:
-                "Manage A2UI interactive surfaces for rich agent UIs. Surfaces render interactive components (text, buttons, inputs, etc.) in the Nebo frontend."
+                "Draws A2UI surfaces (text, buttons, inputs) on your app's own page. The chat on desktop and phone can't show them, and the result says whether anything was shown. To ask the owner a question or have him pick, use ask_owner."
                     .to_string(),
             resources,
             fields: vec![
@@ -312,6 +369,14 @@ impl A2UIDomainTool {
         types::keyparser::extract_agent_id(&ctx.session_key)
     }
 
+    /// The agent a surface id names (`agent:{id}:{view}`), or the session's.
+    fn surface_agent(surface_id: &str, params: &serde_json::Value, ctx: &ToolContext) -> String {
+        types::keyparser::agent_id_from_surface_id(surface_id)
+            .filter(|id| !id.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| Self::resolve_agent_id(params, ctx))
+    }
+
     async fn handle_surface(
         &self,
         action: &str,
@@ -342,19 +407,24 @@ impl A2UIDomainTool {
                     );
                 }
 
-                match self
+                let sid = match self
                     .host
                     .create_surface(agent_id, view_id, surface_type, catalog_id, theme)
                     .await
                 {
-                    Ok(sid) => {
-                        debug!("a2ui: created surface {}", sid);
-                        ToolResult::ok(
-                            json!({ "surface_id": sid, "status": "created" }).to_string(),
-                        )
+                    Ok(sid) => sid,
+                    Err(e) => return ToolResult::error(format!("Failed to create surface: {e}")),
+                };
+                debug!("a2ui: created surface {}", sid);
+                // Components given with the create are its first content: a
+                // create that dropped them left an empty surface (live
+                // 2026-10-02).
+                if let Some(components) = params.get("components").and_then(|v| v.as_array()) {
+                    if let Err(e) = self.host.update_components(&sid, components.clone()).await {
+                        return ToolResult::error(format!("Created {sid}, but its components failed: {e}"));
                     }
-                    Err(e) => ToolResult::error(format!("Failed to create surface: {e}")),
                 }
+                drawn(json!({ "surface_id": sid, "status": "created" }), sight(ctx, agent_id))
             }
 
             "update_components" => {
@@ -376,9 +446,9 @@ impl A2UIDomainTool {
                 };
 
                 match self.host.update_components(surface_id, components).await {
-                    Ok(()) => ToolResult::ok(
-                        json!({ "surface_id": surface_id, "status": "components_updated" })
-                            .to_string(),
+                    Ok(()) => drawn(
+                        json!({ "surface_id": surface_id, "status": "components_updated" }),
+                        sight(ctx, &Self::surface_agent(surface_id, params, ctx)),
                     ),
                     Err(e) => ToolResult::error(format!("Failed to update components: {e}")),
                 }
@@ -404,8 +474,9 @@ impl A2UIDomainTool {
                 };
 
                 match self.host.update_data_model(surface_id, path, value).await {
-                    Ok(()) => ToolResult::ok(
-                        json!({ "surface_id": surface_id, "status": "data_updated" }).to_string(),
+                    Ok(()) => drawn(
+                        json!({ "surface_id": surface_id, "status": "data_updated" }),
+                        sight(ctx, &Self::surface_agent(surface_id, params, ctx)),
                     ),
                     Err(e) => ToolResult::error(format!("Failed to update data: {e}")),
                 }
@@ -467,9 +538,9 @@ impl A2UIDomainTool {
                     .navigate_view(agent_id, from_view, target_view, nav_params, &views_json)
                     .await
                 {
-                    Ok(sid) => ToolResult::ok(
-                        json!({ "surface_id": sid, "status": "navigated", "view": target_view })
-                            .to_string(),
+                    Ok(sid) => drawn(
+                        json!({ "surface_id": sid, "status": "navigated", "view": target_view }),
+                        sight(ctx, agent_id),
                     ),
                     Err(e) => ToolResult::error(format!("Failed to navigate: {e}")),
                 }
@@ -510,5 +581,123 @@ impl A2UIDomainTool {
                 "Unknown action: {other}. Use: create, update_components, update_data, navigate, delete, list"
             )),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    /// A host that does what it is told and keeps the components it got.
+    #[derive(Default)]
+    struct Host {
+        components: Mutex<Vec<(String, usize)>>,
+    }
+
+    impl A2UIHost for Host {
+        fn create_surface(&self, agent_id: &str, view_id: &str, _: &str, _: &str, _: Option<serde_json::Value>) -> Pin<Box<dyn Future<Output = Result<String, String>> + Send + '_>> {
+            let sid = format!("agent:{agent_id}:{view_id}");
+            Box::pin(async move { Ok(sid) })
+        }
+        fn update_components(&self, surface_id: &str, components: Vec<serde_json::Value>) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + '_>> {
+            self.components.lock().unwrap().push((surface_id.to_string(), components.len()));
+            Box::pin(async { Ok(()) })
+        }
+        fn update_data_model(&self, _: &str, _: Option<&str>, _: serde_json::Value) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + '_>> {
+            Box::pin(async { Ok(()) })
+        }
+        fn delete_surface(&self, _: &str) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + '_>> {
+            Box::pin(async { Ok(()) })
+        }
+        fn list_surfaces(&self, _: &str) -> Pin<Box<dyn Future<Output = Vec<SurfaceSummary>> + Send + '_>> {
+            Box::pin(async { Vec::new() })
+        }
+        fn navigate_view(&self, agent_id: &str, _: &str, to: &str, _: Option<serde_json::Value>, _: &serde_json::Value) -> Pin<Box<dyn Future<Output = Result<String, String>> + Send + '_>> {
+            let sid = format!("agent:{agent_id}:{to}");
+            Box::pin(async move { Ok(sid) })
+        }
+    }
+
+    fn ctx(agent: &str, door: types::permissions::Door) -> ToolContext {
+        ToolContext {
+            session_key: format!("agent:{agent}:web"),
+            door,
+            ..Default::default()
+        }
+    }
+
+    /// Chief's call, as he made it (live 2026-10-02): a choice drawn with
+    /// `create`, components and all.
+    fn chiefs_panel() -> serde_json::Value {
+        json!({"action": "create", "view_id": "interview", "surface_type": "panel", "components": [
+            {"id": "q1-title", "type": "text", "props": {"content": "1. What's the most important thing to focus on right now?"}},
+            {"id": "q1-opt-a", "type": "button", "props": {"content": "Finishing pending invoicing and getting paid"}},
+            {"id": "q1-opt-b", "type": "button", "props": {"content": "Marketing that's been running this month"}}
+        ]})
+    }
+
+    fn read(r: &ToolResult) -> serde_json::Value {
+        assert!(!r.is_error, "{}", r.content);
+        serde_json::from_str(&r.content).unwrap()
+    }
+
+    /// Only an app's page draws A2UI: every other employee is never offered
+    /// the tool, and a question to the owner is ask_owner's card.
+    #[test]
+    fn only_an_app_employee_is_offered_a2ui() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = db::Store::new(&dir.path().join("t.db").to_string_lossy()).unwrap();
+        store.create_agent("chief", Some("user"), "Chief", "", "---\nname: x\n---\n", "{}", None, None).unwrap();
+        store.create_agent("crm", Some("user"), "CRM", "", "---\nname: x\n---\n", "{}", None, None).unwrap();
+        store.set_agent_app_fields("crm", true, Some("/tmp/ui"), None, None).unwrap();
+        assert_eq!(withheld(&store, "chief"), vec!["a2ui".to_string()]);
+        assert_eq!(withheld(&store, ""), vec!["a2ui".to_string()]);
+        assert!(withheld(&store, "crm").is_empty());
+        let d = A2UIDomainTool::new(Arc::new(Host::default())).description();
+        assert!(d.contains("The chat on desktop and phone can't show them") && d.contains("use ask_owner"), "{d}");
+    }
+
+    /// Where nothing can draw the surface — no page of the app open, a voice
+    /// call, a messaging channel — the result says plainly that nothing was
+    /// shown and sends the employee to ask_owner; it never reads as shown.
+    #[tokio::test]
+    async fn a_surface_nobody_can_see_is_said_to_be_unseen() {
+        let tool = A2UIDomainTool::new(Arc::new(Host::default()));
+        let unseen = [
+            (ctx("chief-unseen", types::permissions::Door::Chat), "no page of your app is open"),
+            (ctx("chief-unseen", types::permissions::Door::Voice), "voice call"),
+            (
+                ToolContext { channel: Some(Default::default()), ..ctx("chief-unseen", types::permissions::Door::Chat) },
+                "messaging channel",
+            ),
+        ];
+        for (ctx, why) in unseen {
+            for input in [
+                chiefs_panel(),
+                json!({"action": "update_components", "surface_id": "agent:chief-unseen:interview", "components": [{"id": "t", "type": "text", "props": {"content": "Question 2"}}]}),
+                json!({"action": "update_data", "surface_id": "agent:chief-unseen:interview", "path": "/answers/q1", "value": "b"}),
+            ] {
+                let v = read(&tool.execute_dyn(&ctx, input.clone()).await);
+                assert_eq!(v["shown"], false, "{input}: {v}");
+                assert!(v["why"].as_str().unwrap().contains(why), "{v}");
+                assert_eq!(v["next"], NOT_SHOWN);
+                assert!(NOT_SHOWN.contains("never say a panel or card is showing") && NOT_SHOWN.contains("call ask_owner"));
+            }
+        }
+    }
+
+    /// On an app whose page is open, the surface is drawn there, and the
+    /// components a create carries are its content.
+    #[tokio::test]
+    async fn an_open_app_page_shows_the_surface_with_the_components_it_was_created_with() {
+        let host = Arc::new(Host::default());
+        let tool = A2UIDomainTool::new(host.clone());
+        let _page = crate::app_dev::view_opened("crm-open-page");
+        let v = read(&tool.execute_dyn(&ctx("crm-open-page", types::permissions::Door::Chat), chiefs_panel()).await);
+        assert_eq!(v["surface_id"], "agent:crm-open-page:interview");
+        assert!(v["shown"].as_str().unwrap().contains("open page"), "{v}");
+        assert!(v["answers"].as_str().unwrap().contains("a typed reply is a message, never a pick"), "{v}");
+        assert_eq!(*host.components.lock().unwrap(), vec![("agent:crm-open-page:interview".to_string(), 3)]);
     }
 }

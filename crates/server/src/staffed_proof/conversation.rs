@@ -1376,6 +1376,108 @@ async fn the_owners_answer_answers_the_open_question_and_a_new_message_is_new() 
     assert!(nebo.state.run_registry.pending_ask_for_session(OWNER).await.is_none(), "the card is closed");
 }
 
+/// Live 2026-10-02, on his phone: asked "can you use the cards?", Chief
+/// drew an A2UI panel no app shows, said "a card panel on the side", took
+/// the owner's "k" as "you picked option A", and drew the next question the
+/// same way. A pick for the owner is the ask card both apps show: the
+/// employee is never offered a2ui (only an app's own page draws it), the
+/// card goes out with the options as buttons, words of his own that are
+/// none of them reach the employee as his words and never as a pick, and
+/// the option he taps reaches it as the pick.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_pick_for_the_owner_is_the_ask_card_and_only_a_tapped_option_is_a_pick() {
+    const OPTIONS: [&str; 3] = ["Invoicing", "Marketing", "A project"];
+    let nebo = session().await;
+    const OWNER: &str = "agent:proof-pick:web";
+    let offered_a2ui = Arc::new(std::sync::Mutex::new(Vec::<bool>::new()));
+    let seen = offered_a2ui.clone();
+    let rules: Vec<Rule> = vec![Box::new(move |t| {
+        if !t.opener().contains("OWNER-PICK") {
+            return None;
+        }
+        let request = serde_json::to_string(t.req).unwrap_or_default();
+        seen.lock().unwrap().push(t.req.tools.iter().any(|d| d.name == "a2ui") || request.contains("a2ui"));
+        let ask = || {
+            Step::call(vec![(
+                "ask_owner",
+                json!({"question": "What should I focus on first?", "options": OPTIONS}),
+            )])
+        };
+        if !t.has_tool_results() {
+            return Some(ask());
+        }
+        let result: Value = t
+            .since_last_answer()
+            .iter()
+            .filter_map(|m| m.tool_results.as_ref())
+            .last()
+            .and_then(|r| r.as_array().and_then(|a| a.last()).cloned())
+            .and_then(|r| {
+                let c = r["content"].as_str()?;
+                serde_json::from_str(&c[c.find('{')?..=c.rfind('}')?]).ok()
+            })
+            .unwrap_or_default();
+        // The model reads what the result says: a pick only when it names one.
+        Some(match (result["picked"].as_str(), result["own_words"].as_str()) {
+            (Some(picked), _) => Step::say(format!("ANSWER-PICK picked {picked}.")),
+            (None, Some(words)) if !t.answered("ANSWER-PICK own words") => {
+                // Asked again, as the result tells it to.
+                let mut again = ask();
+                again.events.insert(0, ai::StreamEvent::text(format!("ANSWER-PICK own words \"{words}\", no pick. ")));
+                again
+            }
+            _ => Step::say(format!("ANSWER-PICK unreadable {result}")),
+        })
+    })];
+    let rig = Rig::new(&nebo, rules).await;
+    let mut hub = nebo.state.hub.subscribe();
+    let card = |hub: &mut tokio::sync::broadcast::Receiver<crate::handlers::ws::HubEvent>| loop {
+        match hub.try_recv() {
+            Ok(e) if e.event_type == "ask_request" && e.payload["session_id"] == OWNER => break Some(e.payload),
+            Ok(_) => continue,
+            Err(_) => break None,
+        }
+    };
+
+    rig.owner_writes(OWNER, "", None, "OWNER-PICK can you use the cards?").await;
+    rig.until(20, "the question is open on the conversation", || {
+        futures::executor::block_on(nebo.state.run_registry.pending_ask_for_session(OWNER)).is_some()
+    })
+    .await;
+    // The card both apps render: the question, its options as buttons.
+    let first = card(&mut hub).expect("an ask_request went out to the apps");
+    assert_eq!(first["prompt"], "What should I focus on first?");
+    assert_eq!(first["widgets"][0]["type"], "options");
+    assert_eq!(first["widgets"][0]["options"], json!(OPTIONS));
+
+    // He writes "k" in the card's own answer (the phone's "Other…"),
+    // through the socket's one answer path.
+    let asked = first["request_id"].as_str().unwrap().to_string();
+    assert!(crate::chat_dispatch::answer_ask(&nebo.state, &asked, "k".to_string()).await);
+    rig.until(20, "the employee asks again", || {
+        futures::executor::block_on(nebo.state.run_registry.pending_ask_for_session(OWNER))
+            .is_some_and(|a| a.request_id != asked)
+    })
+    .await;
+    let said = |rig: &Rig<'_>| -> Vec<String> {
+        rig.thread(OWNER).into_iter().filter(|m| m.role == "assistant").map(|m| m.content).collect()
+    };
+    assert!(said(&rig).iter().any(|c| c.contains("ANSWER-PICK own words \"k\", no pick.")), "{:?}", said(&rig));
+    assert!(!said(&rig).iter().any(|c| c.contains("picked")), "his \"k\" was never a pick: {:?}", said(&rig));
+
+    // He taps Marketing: that is the pick.
+    let second = card(&mut hub).expect("the second card went out");
+    let again = second["request_id"].as_str().unwrap().to_string();
+    assert!(crate::chat_dispatch::answer_ask(&nebo.state, &again, "Marketing".to_string()).await);
+    rig.until(20, "the turn goes on with his pick", || {
+        said(&rig).iter().any(|c| c.contains("ANSWER-PICK picked Marketing."))
+    })
+    .await;
+    assert!(nebo.state.run_registry.pending_ask_for_session(OWNER).await.is_none(), "the card is closed");
+    let offered = offered_a2ui.lock().unwrap().clone();
+    assert!(!offered.is_empty() && offered.iter().all(|a2ui| !a2ui), "a2ui was offered to an employee no app draws it for: {offered:?}");
+}
+
 /// Live 2026-09-29, on the owner's call while he drove: the employee asked
 /// a question the call never put to him, the voice model answered an
 /// invented ask id, and six restated "yes" tasks queued behind the frozen

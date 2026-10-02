@@ -820,6 +820,8 @@ pub(crate) async fn prepare(
     withheld.extend(tools::app_dev::withheld(&h.store, &req.seat.agent_id));
     // An app's own data: only an app employee reaches its store.
     withheld.extend(tools::app_data::withheld(&h.store, &req.seat.agent_id));
+    // A2UI surfaces: only an app's own page draws them.
+    withheld.extend(tools::a2ui_tool::withheld(&h.store, &req.seat.agent_id));
     let withheld_tools = Arc::new(withheld);
     let preloaded_tools: Arc<HashSet<String>> = Arc::new(
         tools::app_dev::preloaded(&h.store, &req.seat.agent_id)
