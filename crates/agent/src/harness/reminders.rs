@@ -173,11 +173,20 @@ impl NoteFence {
                 self.held.len() - keep
             }
         };
+        let mut shown = String::new();
         let mut at = 0;
         let mut call = None;
         while at < limit {
             let Some(c) = self.held[at..].chars().next() else { break };
             if !self.in_code && !c.is_whitespace() && self.line.trim().is_empty() {
+                match echoed_marker_line(&self.held[at..], last) {
+                    Some(Some(len)) => {
+                        at += len;
+                        continue;
+                    }
+                    Some(None) => break,
+                    None => {}
+                }
                 match self.opening(&self.held[at..], last) {
                     Opening::Call(name) => {
                         call = Some(name);
@@ -195,11 +204,12 @@ impl NoteFence {
             } else {
                 self.line.push(c);
             }
+            shown.push(c);
             at += c.len_utf8();
         }
         let reached_note = call.is_none() && note_at.is_some_and(|n| at >= n);
         let rest = self.held.split_off(at);
-        let shown = std::mem::replace(&mut self.held, rest);
+        self.held = rest;
         if let Some(name) = call {
             self.cut = Some(Cut::Call(name));
             self.held.clear();
@@ -250,6 +260,34 @@ impl NoteFence {
             Some(c) if c == ends && self.tools.iter().any(|t| t == name) => Opening::Call(name.to_string()),
             _ => Opening::No,
         }
+    }
+}
+
+/// What the model echoed when it repeated the mid-turn answer's old note
+/// to itself (2026-10-01, the owner's bot: `*tools off*` before and after
+/// replies, and `tools off**tools off`, on later steps whose tools were on
+/// too). Nebo's notes no longer say it; a line that is only this is never
+/// the owner's to read.
+const ECHOED_MARKER: &str = "toolsoff";
+
+/// Whether a line opening `text` is only the echoed marker
+/// ([`ECHOED_MARKER`]), emphasis and repeats included: `Some(Some(len))`
+/// to drop `len` bytes (its line break too), `Some(None)` while it can't
+/// tell, `None` when it is not.
+fn echoed_marker_line(text: &str, last: bool) -> Option<Option<usize>> {
+    let end = text.find('\n');
+    let line = &text[..end.unwrap_or(text.len())];
+    let letters: String =
+        line.chars().filter(|c| !c.is_whitespace() && !matches!(c, '*' | '_' | '~')).flat_map(char::to_lowercase).collect();
+    if !letters.chars().zip(ECHOED_MARKER.chars().cycle()).all(|(a, b)| a == b) {
+        return None;
+    }
+    let whole = !letters.is_empty() && letters.chars().count() % ECHOED_MARKER.len() == 0;
+    match end {
+        Some(at) if whole => Some(Some(at + 1)),
+        None if last && whole => Some(Some(text.len())),
+        None if !last => Some(None),
+        _ => None,
     }
 }
 
@@ -747,6 +785,27 @@ mod tests {
             let shown = streamed_through(&mut fence, &reply, piece);
             assert_eq!(shown, answer, "pieces of {piece}");
             assert_eq!(fence.cut(), Some(&Cut::Call("read_file".into())), "pieces of {piece}");
+        }
+    }
+
+    /// The owner's bot, 2026-10-01: the model echoed the old mid-turn
+    /// note as `*tools off*` lines before and after its replies, even on
+    /// steps whose tools were on. Those lines never reach the owner; words
+    /// that only start like them do.
+    #[test]
+    fn an_echoed_tools_off_line_is_never_shown() {
+        for (reply, shown) in [
+            ("*tools off*\n\nCreating it now.\n\n*tools off*", "\nCreating it now.\n\n"),
+            ("tools off**tools off\nOn it.", "On it."),
+            ("**Tools off**\nOn it.", "On it."),
+            ("Tools are ready.\nToo late for that.", "Tools are ready.\nToo late for that."),
+            ("Take your time.", "Take your time."),
+            ("The tools off switch is in settings.", "The tools off switch is in settings."),
+            ("```\n*tools off*\n```", "```\n*tools off*\n```"),
+        ] {
+            for piece in [1, 2, 3, 100] {
+                assert_eq!(streamed_through(&mut step_fence(), reply, piece), shown, "{reply:?} in pieces of {piece}");
+            }
         }
     }
 

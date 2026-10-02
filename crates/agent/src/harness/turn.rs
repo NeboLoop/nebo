@@ -12,11 +12,12 @@
 //! 5. the model is called.
 //!
 //! A step whose conversation holds the owner's mid-turn message with no
-//! reply after it is that reply, with tools off. What the message asks for
-//! is decided first (`owner_intent`): a stop ends the turn on the reply,
-//! and the goal pauses; a redirect or an aside takes another step, where
-//! the work goes on. Input queued while a step is built takes the step
-//! again with it.
+//! reply after it hears it. What the message asks for is decided first
+//! (`owner_intent`): a redirect or an aside joins the work, and the step
+//! goes out with its tools, so the reply answers him and carries on; a stop
+//! (or a message nothing could decide) is answered in words, the one step
+//! with tools off, the turn ends on that reply and the goal pauses. Input
+//! queued while a step is built takes the step again with it.
 //!
 //! A reply with tool calls runs its tool round and takes another step. A
 //! reply without tool calls passes the end checks (`turn_end`); one that
@@ -198,6 +199,10 @@ pub struct TurnState {
     /// What the owner's waiting message asks for, with the row id of the
     /// latest one it was decided for; taken by the reply that answers it.
     owner_intent: Option<(String, OwnerIntent)>,
+    /// The latest of the owner's mid-turn messages a reply has heard: a
+    /// message that joins the work is heard by one step, and the steps
+    /// after it are the work's.
+    owner_heard: Option<String>,
     /// The last call that got a reply: the recap forks it.
     last_call: Option<LastCall>,
     persisted_renderings: HashSet<String>,
@@ -928,6 +933,7 @@ pub(crate) async fn prepare(
         checkpoints_since_progress: 0,
         answered_owner: false,
         owner_intent: None,
+        owner_heard: None,
         last_call: None,
         persisted_renderings: HashSet::new(),
         trim_checked: HashSet::new(),
@@ -1174,23 +1180,21 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
         if conversation::mid_turn_message_landed(&conversation, &st.seen) && st.step > 1 {
             st.transition = Transition::MidTurnInput;
         }
-        // The owner spoke and has no answer yet: this step is the answer,
-        // with tools off, whatever the model's momentum. What his message
-        // asks for is decided before it, once per message, and the step's
-        // note says what happens after the answer. A linked runtime runs
-        // its own loop.
+        // The owner spoke and has no answer yet: this step hears him. What
+        // his message asks for is decided before it, once per message, and
+        // the step's note says what happens. A linked runtime runs its own
+        // loop.
         let waiting = if cx.linked {
             None
         } else {
             conversation::owner_waiting(&conversation::order_as_heard(conversation.clone()))
         };
-        let reply_in_words = waiting.is_some();
         // The owner's message takes the step a correction would have had.
-        if reply_in_words {
+        if waiting.is_some() {
             st.correcting = None;
         }
         let correcting = st.correcting;
-        if let Some(w) = waiting
+        if let Some(w) = waiting.as_ref()
             && st.owner_intent.as_ref().is_none_or(|(latest, _)| *latest != w.latest)
         {
             let intent = match owner_intent::recorded(&conversation, &w.latest) {
@@ -1216,8 +1220,23 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
                 }
             };
             info!(session_id = sid, intent = intent.as_str(), "the owner's message is answered at this step");
-            st.owner_intent = Some((w.latest, intent));
+            st.owner_intent = Some((w.latest.clone(), intent));
         }
+        let intent_now = waiting
+            .as_ref()
+            .and_then(|w| st.owner_intent.as_ref().filter(|(latest, _)| *latest == w.latest).map(|(_, intent)| *intent));
+        // A stop, or a message nothing could decide, is answered in words
+        // and ends the work: the one step whose tools are off, because
+        // nothing more runs after the owner said stop.
+        let reply_in_words = intent_now.is_some_and(OwnerIntent::ends_work);
+        // A message that joins the work is heard by this step, with the
+        // step's tools: the reply answers it and carries on (2026-10-01:
+        // answered with tools off mid-work, the model wrote its calls out
+        // as text and echoed the note's "tools off" into the chat).
+        let joins = waiting
+            .as_ref()
+            .filter(|w| !reply_in_words && st.owner_heard.as_deref() != Some(w.latest.as_str()))
+            .map(|w| w.latest.clone());
         let surface_seat = SurfaceInputs {
             agent_id: cx.agent_id(),
             allowlist: cx.request.seat.tool_allowlist.as_ref(),
@@ -1253,7 +1272,8 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
         st.usage.system_overhead_tokens = overhead_tokens(&surface.declared);
         let window = trim(st, &conversation);
         st.usage.last_request_estimate = pruning::estimate_total_tokens(&window);
-        let window = conversation::sanitize_message_order(conversation::order_as_heard(window));
+        let window = conversation::scrub_replies(conversation::order_as_heard(window), &h.tools.get_tool_names().await);
+        let window = conversation::sanitize_message_order(window);
         // Rows stored after this one arrive while the step runs: a
         // checkpoint's summary never reads them.
         let heard_through = conversation.last().map(|m| m.id.as_str());
@@ -1414,8 +1434,8 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
         let mut executor = ToolExecutor::new(&round_cx);
         let reply_heard_through = st.seen.last().map(|m| m.id.clone());
         let (tool_calls_out, mut streamed_calls) = mpsc::unbounded_channel();
-        // Tools are off for the owner's answer: nothing streamed starts. A
-        // correction's calls run only once the harness has checked them.
+        // Tools are off for the answer to a stop: nothing streamed starts.
+        // A correction's calls run only once the harness has checked them.
         if reply_in_words || correcting.is_some() {
             streamed_calls.close();
         }
@@ -1543,6 +1563,9 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
             return correct(cx, st, &round_cx, executor, correction, tool_calls, provider.handles_tools()).await;
         }
         let after_owner_answer = std::mem::replace(&mut st.answered_owner, false);
+        if let Some(latest) = &joins {
+            st.owner_heard = Some(latest.clone());
+        }
         st.last_call = Some(LastCall {
             request: fork_of.clone(),
             provider: provider.clone(),
@@ -1554,7 +1577,7 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
             tool_calls.clear();
         }
         if reply_in_words {
-            // The owner's answer went out with tools off: a call the
+            // The answer to a stop went out with tools off: a call the
             // provider sent anyway is neither run nor stored.
             tool_calls.clear();
             block_order.retain(|b| !matches!(b, Block::Tool(_)));
@@ -1611,14 +1634,17 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
         }
         // The owner has their answer. A stop ends the work here, whatever
         // the model would do next: tools never come back, and the goal
-        // pauses. Otherwise the next step, with tools back, carries on.
+        // pauses.
         if reply_in_words && !text.trim().is_empty() {
             let intent = st.owner_intent.take().map_or(OwnerIntent::Undecided, |(_, intent)| intent);
-            if intent.ends_work() {
-                info!(session_id = sid, intent = intent.as_str(), "the owner's message ends the work: the turn ends on the answer");
-                pause_goal_for_the_owner(cx);
-                return TurnExit::Answered;
-            }
+            info!(session_id = sid, intent = intent.as_str(), "the owner's message ends the work: the turn ends on the answer");
+            pause_goal_for_the_owner(cx);
+            return TurnExit::Answered;
+        }
+        // The step that heard a message joining the work answered it in
+        // words only: the work goes on at the next step.
+        if joins.is_some() && text_call.is_none() && !text.trim().is_empty() {
+            let intent = st.owner_intent.take().map_or(OwnerIntent::Aside, |(_, intent)| intent);
             st.answered_owner = true;
             st.reminders.add(&TurnEvent::MidTurnAnswered(intent));
             st.transition = Transition::MidTurnAnswered;
@@ -3553,10 +3579,49 @@ mod tests {
         assert!(texts(&calls[1]).iter().any(|t| t == "Also check the calendar"), "heard at the next step, as typed");
         let note = events::attachment_for(&TurnEvent::MidTurnMessage { via: "web".into(), intent: OwnerIntent::Aside }).unwrap();
         assert_eq!(texts(&calls[1]).last(), Some(&reminders::wrap(&note.text)), "the harness's note says what the step does");
-        assert_eq!(calls[1].tool_choice, ai::ToolChoice::None, "answered with tools off");
-        assert_eq!(calls[2].tool_choice, ai::ToolChoice::Auto, "tools are back after the answer");
+        assert_eq!(calls[1].tool_choice, ai::ToolChoice::Auto, "the message joins the work: its step keeps its tools");
+        assert!(!calls[1].tools.is_empty(), "the step that hears him has its whole tool surface");
+        assert_eq!(calls[2].tool_choice, ai::ToolChoice::Auto);
+        assert!(calls.iter().all(|c| texts(c).iter().all(|t| !t.contains("tools off") && !t.contains("tools are off"))));
         let answered = events::attachment_for(&TurnEvent::MidTurnAnswered(OwnerIntent::Aside)).unwrap();
         assert_eq!(texts(&calls[2]).last(), Some(&reminders::wrap(&answered.text)), "the step after the answer is told to go on");
+    }
+
+    /// The owner's message joins the running work (2026-10-01: 48 messages
+    /// typed into running work that day, each answered on a step with its
+    /// tools off; 24 of those replies wrote calls out as text, and the
+    /// model echoed the note's "tools off" on later steps too). The step
+    /// that hears him keeps its tools: it answers him and makes its call in
+    /// the same reply, the call runs, and no note says tools are off.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_message_to_running_work_joins_it_with_tools() {
+        for intent in ["aside", "redirect"] {
+            let model = Arc::new(Scripted::default());
+            let h = harness(&model).await.with_decide(jev_reading(intent).await);
+            let h2 = h.clone();
+            let hook: Hook = Box::pin(async move {
+                let mut handle = h2.start_turn(owner("Use the other file too")).await.expect("queued");
+                let _ = handle.events.recv().await;
+            });
+            *model.script.lock().unwrap() = VecDeque::from(vec![
+                Step::During(Box::new(Step::Call("echo", serde_json::json!({}))), hook),
+                Step::NarratedCall("Will do, adding it now.", "echo", serde_json::json!({})),
+                Step::Say("Both files are in."),
+            ]);
+            let events = run_turn(&h, owner("Echo something")).await;
+            assert_eq!(exit_of(&events), "text_response", "{intent}");
+            let calls = model.calls();
+            assert_eq!(calls.len(), 3, "{intent}: heard, called and answered in one turn");
+            assert!(hears_owner(&calls[1]), "{intent}");
+            assert!(calls.iter().all(|c| c.tool_choice == ai::ToolChoice::Auto && !c.tools.is_empty()), "{intent}: tools stay on");
+            let results = calls[2].messages.iter().filter(|m| m.role == "tool").count();
+            assert_eq!(results, 2, "{intent}: the call made while answering him ran");
+            for c in &calls {
+                assert!(texts(c).iter().all(|t| !t.to_lowercase().contains("tools off") && !t.contains("tools are off")), "{intent}");
+            }
+            let shown = shown_text(&events);
+            assert!(shown.contains("Will do, adding it now.") && !shown.to_lowercase().contains("tools off"), "{intent}: {shown}");
+        }
     }
 
     /// The owner writes while the model is answering: the answer never saw
@@ -4061,6 +4126,12 @@ mod tests {
 
     const STOP_READING: &str = "Stop reading and tell me what you have so far.";
 
+    /// Whether this request is the step that hears the owner's mid-turn
+    /// message: its newest row is the harness's note about it.
+    fn hears_owner(req: &ChatRequest) -> bool {
+        req.messages.last().is_some_and(|m| m.content.contains("reached you while you were working"))
+    }
+
     fn reads_in(req: &ChatRequest) -> usize {
         req.messages.iter().filter(|m| m.role == "tool").count()
     }
@@ -4069,7 +4140,7 @@ mod tests {
     /// may not call tools, it answers and tries to read on anyway; once it
     /// has said it stopped, it has nothing more to say.
     fn reads_on(req: &ChatRequest) -> Step {
-        if req.tool_choice == ai::ToolChoice::None {
+        if hears_owner(req) {
             return Step::Narrated("Stopping as asked. So far: parts one and two.", "read");
         }
         if req.messages.iter().any(|m| m.role == "assistant" && m.content.starts_with("Stopping as asked")) {
@@ -4080,7 +4151,7 @@ mod tests {
 
     /// The owner asks an aside: the model answers it and reads on.
     fn answers_and_reads_on(req: &ChatRequest) -> Step {
-        if req.tool_choice == ai::ToolChoice::None {
+        if hears_owner(req) {
             return Step::Say("144.");
         }
         if reads_in(req) < 3 { Step::Call("read", serde_json::json!({})) } else { Step::Say("All three parts are read.") }
@@ -4193,8 +4264,8 @@ mod tests {
             let run =
                 interrupted(at, |_| Act::Message("While you're at it: what's 12 times 12?"), answers_and_reads_on, Some("aside")).await;
             let heard = if at == At::AfterLoad { 1 } else { 2 };
-            assert_eq!(run.calls[heard].tool_choice, ai::ToolChoice::None, "{at:?}");
-            assert!(run.calls[heard + 1..].iter().all(|c| c.tool_choice == ai::ToolChoice::Auto), "{at:?}: tools are back after the reply");
+            assert!(hears_owner(&run.calls[heard]), "{at:?}");
+            assert!(run.calls.iter().all(|c| c.tool_choice == ai::ToolChoice::Auto), "{at:?}: an aside never turns tools off");
             assert_eq!(run.reads, 3, "{at:?}: the chain carries on after the answer");
             assert_eq!(exit_of(&run.events), "text_response");
             let said: Vec<&str> =
@@ -4332,7 +4403,7 @@ mod tests {
     /// tools, it answers and tries a read anyway, and with its tools back it
     /// reads on to the end, whatever it said and whatever it was told.
     fn answers_then_reads_on(req: &ChatRequest) -> Step {
-        if req.tool_choice == ai::ToolChoice::None {
+        if hears_owner(req) {
             return Step::Narrated("Stopping as asked. So far: parts one and two.", "read");
         }
         if reads_in(req) < 3 { Step::Call("read", serde_json::json!({})) } else { Step::Say("All three parts are read.") }
@@ -4369,7 +4440,8 @@ mod tests {
     async fn a_redirect_is_answered_and_the_work_goes_on_as_it_now_asks() {
         let run =
             interrupted(At::DuringCall, |_| Act::Message("Read them backwards from here."), answers_and_reads_on, Some("redirect")).await;
-        assert_eq!(run.calls[2].tool_choice, ai::ToolChoice::None);
+        assert!(hears_owner(&run.calls[2]));
+        assert!(run.calls.iter().all(|c| c.tool_choice == ai::ToolChoice::Auto), "a redirect never turns tools off");
         assert_eq!(run.reads, 3, "the work goes on after the answer");
         let answered = events::attachment_for(&TurnEvent::MidTurnAnswered(OwnerIntent::Redirect)).unwrap();
         assert_eq!(texts(&run.calls[3]).last(), Some(&reminders::wrap(&answered.text)));
@@ -4380,7 +4452,7 @@ mod tests {
     /// Told to answer "in words", it writes the number out, as the proof
     /// run's model did.
     fn spells_out_when_told_in_words(req: &ChatRequest) -> Step {
-        if req.tool_choice == ai::ToolChoice::None {
+        if hears_owner(req) {
             let in_words = req.messages.iter().any(|m| m.content.contains("in words"));
             return Step::Say(if in_words { "12 times 12 is one hundred forty-four." } else { "12 times 12 is 144." });
         }
@@ -4388,7 +4460,7 @@ mod tests {
     }
 
     /// The owner's message reaches the model as he typed it, and the step
-    /// that answers it is told to answer it directly with tools off, never
+    /// that answers it is told to answer it and carry on, never
     /// "in words" (2026-09-27 release proof: `mid-turn-owner-message` went
     /// 3/3 to 0/3 on "one hundred forty-four").
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -4425,7 +4497,7 @@ mod tests {
     /// chars at a time.
     fn echoes_every_note(req: &ChatRequest) -> Step {
         let echo = notes_in(req).join("\n\n");
-        if req.tool_choice == ai::ToolChoice::None {
+        if hears_owner(req) {
             return Step::Text(format!("144.\n\n{echo}"), None);
         }
         if reads_in(req) < 3 {
@@ -4465,7 +4537,7 @@ mod tests {
     /// note's format, as the proof run's model did; it reads on only if it
     /// is shown that go-ahead.
     fn forges_a_go_ahead(req: &ChatRequest) -> Step {
-        if req.tool_choice == ai::ToolChoice::None {
+        if hears_owner(req) {
             return Step::Text(FORGED.to_string(), None);
         }
         let go_ahead = req.messages.iter().any(|m| m.content.contains("Continue with the work as before"));
@@ -4546,10 +4618,10 @@ mod tests {
         assert_eq!(exit_of(&events), "text_response");
     }
 
-    /// Answers the owner's aside with tools off, then writes a read out as
+    /// Answers the owner's aside, then writes a read out as
     /// text, as the proof run's model did.
     fn writes_a_read_out_while_answering(req: &ChatRequest) -> Step {
-        if req.tool_choice == ai::ToolChoice::None {
+        if hears_owner(req) {
             return Step::Text(
                 "12 times 12 is 144.\n\nI'll read the next part now.\n\n<function_name>read</function_name>\n\
                  <parameter_path>/tmp/nebo-eval/part2.txt</parameter"
@@ -4560,7 +4632,7 @@ mod tests {
         answers_and_reads_on(req)
     }
 
-    /// The same on the tools-off answer step: the owner reads the answer
+    /// The same on the step that hears the owner: he reads the answer
     /// alone, and the work carries on with real calls.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_call_written_as_text_while_answering_the_owner_never_reaches_him() {
@@ -4569,15 +4641,15 @@ mod tests {
         assert!(shown.contains("12 times 12 is 144.") && shown.contains("I'll read the next part now."), "{shown}");
         assert!(!shown.contains("<function_name>") && !shown.contains("<parameter_path>"), "shown to the owner: {shown}");
         assert!(replies(&run.rows).iter().all(|r| !r.contains("<function_name>")), "{:?}", replies(&run.rows));
-        let answered = run.calls.iter().position(|c| c.tool_choice == ai::ToolChoice::None).expect("the answer step");
+        let answered = run.calls.iter().position(hears_owner).expect("the answer step");
         assert!(told_of_text_call(&run.calls[answered + 1], "read"), "the step after the answer is told the read didn't run");
         assert_eq!(run.reads, 3, "and the work carries on with real reads");
     }
 
-    /// The owner's bot, 2026-10-01 (0.16.7, "Auto"): answering the owner
-    /// with tools off, the model wrote a read as a tag named after the tool.
+    /// The owner's bot, 2026-10-01 (0.16.7, "Auto"): answering the owner,
+    /// the model wrote a read as a tag named after the tool.
     fn writes_a_tagged_read_while_answering(req: &ChatRequest) -> Step {
-        if req.tool_choice == ai::ToolChoice::None {
+        if hears_owner(req) {
             return Step::Text(
                 "Let me look at the movement code:\n\n<system-read>\n<parameter<path>\n\
                  /Users/owner/Library/Application Support/Nebo/user/agents/Kart Racer/ui/js/kart.js\n</parameter_>"
@@ -4597,7 +4669,7 @@ mod tests {
             assert!(!shown.contains(leak), "shown to the owner: {leak:?}\n{shown}");
         }
         assert!(replies(&run.rows).iter().all(|r| !r.contains("<system-read>")), "{:?}", replies(&run.rows));
-        let answered = run.calls.iter().position(|c| c.tool_choice == ai::ToolChoice::None).expect("the answer step");
+        let answered = run.calls.iter().position(hears_owner).expect("the answer step");
         assert!(told_of_text_call(&run.calls[answered + 1], "read"), "the step after the answer is told the read didn't run");
         assert_eq!(run.reads, 3, "and the work carries on with real reads");
     }
@@ -5504,8 +5576,7 @@ mod tests {
     /// itself, and sends `input` into it while the summary is written.
     /// Returns what the step after the checkpoint read. `calls` is how many
     /// model calls the second turn's task makes in all: an owner's message
-    /// (an aside) is answered with tools off and the step after the answer
-    /// ends the turn.
+    /// (an aside) is answered, and the step after the answer ends the turn.
     async fn input_during_a_checkpoint(input: TurnRequest, calls: usize) -> (Vec<StreamEvent>, Vec<String>, Vec<ChatMessage>) {
         let model = Scripted::new(vec![Step::Say("First answer."), Step::Overflow, Step::Say("Answered."), Step::Say("")]);
         let h = harness(&model).await.with_decide(jev_reading("aside").await);
@@ -6854,7 +6925,7 @@ mod tests {
     /// array only growing at its end (a `find_tools` load), and the earlier
     /// messages untouched, with this step's rows after them. That holds
     /// within a turn, through a message queued into the running turn, its
-    /// answer in words (tools off, then back) and a thinking block, and from
+    /// answer and a thinking block, and from
     /// one turn to the next.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn each_request_starts_with_the_one_before_it() {
@@ -6879,7 +6950,7 @@ mod tests {
         run_turn(&h, on("scripted/deep", "Once more.")).await;
         let calls = model.calls();
         assert_eq!((first_turn, calls.len()), (5, 7), "five steps, then two");
-        assert_eq!(calls[1].tool_choice, ai::ToolChoice::None, "the queued message is answered with tools off");
+        assert_eq!(calls[1].tool_choice, ai::ToolChoice::Auto, "the queued message joins the work with its tools");
 
         let mut grew = Vec::new();
         for (n, pair) in calls.windows(2).enumerate() {

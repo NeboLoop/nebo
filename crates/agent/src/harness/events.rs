@@ -93,9 +93,11 @@ pub enum TurnEvent {
     /// The last reply wrote a call to this tool out as text: it was cut
     /// there, and the call did not run (`reminders::NoteFence`).
     TextCall(String),
-    /// The owner's message reached the running work and this step answers
-    /// it, with tools off. The note says what happens after the answer,
-    /// as the harness decided it (`owner_intent`); it stores the intent.
+    /// The owner's message reached the running work and this step hears
+    /// it. A message that joins the work is answered with tools on, and the
+    /// work goes on; a stop is answered in words and the work ends there.
+    /// The note says which, as the harness decided it (`owner_intent`); it
+    /// stores the intent.
     MidTurnMessage { via: String, intent: OwnerIntent },
     /// The last reply answered the owner's mid-turn message, and the work
     /// goes on: as it was (an aside) or as the message changed it (a
@@ -417,24 +419,27 @@ pub fn attachment_for(e: &TurnEvent) -> Option<Attachment> {
         TurnEvent::MidTurnMessage { via, intent } => {
             let next = match intent {
                 OwnerIntent::Stop => {
-                    "They asked you to stop: the work ends with that reply. Tell them what you have so far."
+                    "They asked you to stop: answer them in your next reply, and the work ends with it. Tell them \
+                     what you have so far."
                 }
-                OwnerIntent::Redirect => "After that reply the work goes on, the way their message now asks.",
+                OwnerIntent::Redirect => {
+                    "It joins the work: answer it in your next reply and carry on the way it now asks, calling \
+                     tools as the work needs them."
+                }
                 OwnerIntent::Aside => {
-                    "After that reply the work goes on where you left off, so don't ask whether to continue."
+                    "It joins the work: answer it in your next reply and carry on where you left off, calling tools \
+                     as the work needs them. Don't ask whether to continue."
                 }
                 OwnerIntent::Undecided => {
-                    "The work pauses after that reply until they write again: if it isn't finished, say where it stands."
+                    "Answer it in your next reply. The work pauses after it until they write again: if it isn't \
+                     finished, say where it stands."
                 }
             };
             let mut data = serde_json::Map::new();
             data.insert(owner_intent::NOTE_FIELD.into(), intent.as_str().into());
             return Some(Attachment {
                 kind: "mid_turn_message",
-                text: format!(
-                    "The owner's latest message reached you while you were working (via {via}). Answer it directly \
-                     in your next reply; tools are off for that reply. {next}"
-                ),
+                text: format!("The owner's latest message reached you while you were working (via {via}). {next}"),
                 data,
             });
         }
