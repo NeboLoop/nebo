@@ -679,3 +679,26 @@ async fn a_draft_is_saved_and_shown_with_whats_missing() {
     assert_eq!(saved.visibility, "unlisted");
     assert_eq!(saved.category.as_deref(), Some("Games"));
 }
+
+/// A page broken the way built apps broke on the phone (an absolute
+/// `/assets` path) logs a failed module load during the screenshot's own
+/// load; the screenshot's result carries those lines, and only that load's.
+#[test]
+fn a_screenshot_reports_the_console_errors_of_its_own_load() {
+    let app = "app-shot-console-test";
+    crate::app_console::record(app, [("log", "an older run", "console", 1)]);
+    let mark = crate::app_console::recent(app, None, 1).last().map(|e| e.seq);
+    crate::app_console::record(
+        app,
+        [
+            ("log", "ready", "console", 2),
+            ("error", "Failed to load module script: MIME type text/html (/assets/index-Ckm_4mnt.js)", "error", 3),
+            ("error", "GET /assets/index-Ckm_4mnt.js 404", "network", 4),
+        ],
+    );
+    let text = super::load_console(&crate::app_console::recent(app, mark, 200));
+    assert!(text.contains("2 error or warning lines"), "{text}");
+    assert!(text.contains("/assets/index-Ckm_4mnt.js 404"), "{text}");
+    assert!(!text.contains("an older run"), "{text}");
+    assert!(super::load_console(&[]).contains("no errors"));
+}

@@ -381,8 +381,9 @@ impl SkillCore {
             .as_deref()
             .map(|d| format!("This skill's files are in: {}\n\n", d.display()))
             .unwrap_or_default();
+        let studio = self.store.as_deref().and_then(|store| app_studio_developer_mode(store, &skill.name)).unwrap_or_default();
         ToolResult::ok(format!(
-            "Loaded skill '{}'. Follow its instructions:\n\n{base}{body}{}",
+            "Loaded skill '{}'. {studio}Follow its instructions:\n\n{base}{body}{}",
             skill.name,
             files_line(&skill.name, skill.list_resources().unwrap_or_default())
         ))
@@ -1538,5 +1539,35 @@ mod tests {
         for bad in ["../../foo", "..", "a/../b", "foo/bar", "foo\\bar", "/etc", ".", ""] {
             assert!(SkillCore::user_skill_dir(bad).is_err(), "expected rejection for {:?}", bad);
         }
+    }
+}
+
+/// Building in App Studio is building in App Developer mode: loading the
+/// `app-studio` skill turns the mode on, so the developer tools reach every
+/// one of the owner's own apps (not only the app itself), pages are served
+/// uncached and carry the floating console. Returns what the load says.
+pub(crate) fn app_studio_developer_mode(store: &db::Store, skill: &str) -> Option<&'static str> {
+    if skill != "app-studio" || store.app_developer_mode() {
+        return None;
+    }
+    store
+        .update_settings(None, None, None, None, None, None, None, None, None, Some(true))
+        .ok()
+        .map(|_| "App Developer mode is now on (Settings, Developer): app_status, app_reload, app_console and app_screenshot work on any of the owner's apps. ")
+}
+
+#[cfg(test)]
+mod app_studio_mode_tests {
+    /// Loading App Studio turns App Developer mode on, once; any other skill
+    /// leaves it alone.
+    #[test]
+    fn loading_app_studio_turns_on_app_developer_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = db::Store::new(&dir.path().join("t.db").to_string_lossy()).unwrap();
+        assert!(super::app_studio_developer_mode(&store, "deep-research").is_none());
+        assert!(!store.app_developer_mode());
+        assert!(super::app_studio_developer_mode(&store, "app-studio").is_some());
+        assert!(store.app_developer_mode());
+        assert!(super::app_studio_developer_mode(&store, "app-studio").is_none(), "said once");
     }
 }

@@ -208,7 +208,7 @@ impl Kind {
                 - On their yes, or at once when they already told you to create it, call again with only the `draft_id`: that creates exactly the drafted job. If they want it different, draft again.\n\
                 - Every recurring duty goes in `automations`: each becomes the employee's own workflow, run as it. Never make separate schedules for it.\n\
                 - Steps must be concrete — which tools, files and destinations, what to check, what to produce — because the workflow runs unattended on these words alone.\n\
-                - `app` or `ui`/`ui_jsx` makes it an app with its own page; load the build-an-app skill before writing one.\n\
+                - `app` or `ui`/`ui_jsx` makes it an app with its own page; load the app-studio skill before writing one.\n\
                 - To change an employee that exists, its name included, use update_employee."
                 .to_string(),
             Kind::UpdateEmployee => "Changes an existing employee; only what you pass changes.\n\

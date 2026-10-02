@@ -165,9 +165,9 @@ The `ui/` directory contains your app's static frontend. Any framework works —
 neboapp://{agent_id}/
 ```
 
-This gives each app its own origin with `/` as the root URL. Your app's assets load from their natural paths (`/style.css`, `/app.js`, etc.) — no base URL configuration needed. Any framework works out of the box.
+In the browser, and on the phone and web through the bot's tunnel, the same `ui/` is served under a prefix: `/apps/{agent_id}/ui/` and `https://neboai.com/t/{bot_id}/apps/{agent_id}/ui/`.
 
-In the browser fallback, and on the phone and web through the bot's tunnel, apps are served at `/apps/{agent_id}/ui/`.
+**Every path your page uses must be relative** (`./app.js`, `./assets/hero.webp`). A root path (`/app.js`, Vite's default `/assets/...`) works in the desktop window, where `ui/` is the origin's root, and fails everywhere else: on the phone it leaves the tunnel prefix and 404s. Build tools need a relative base (Vite: `base: './'`; SvelteKit: `paths.relative: true`). Load the SDK the same way, relative to `ui/index.html`: `<script src="../../../sdk/nebo.global.js"></script>`.
 
 ### Serving rules
 
@@ -215,7 +215,7 @@ const summary = await nebo.janus.complete({
 The bundle defines one global, `NeboAppSDK`. `NeboAppSDK.nebo` is the same singleton the ES module exports, and every module (`identity`, `storage`, `agents`, `janus`, `decide`, `chat`, `surfaces`) is also on `NeboAppSDK` directly. There is no bare `nebo` global — take it off `NeboAppSDK` first.
 
 ```html
-<script src="/sdk/nebo.global.js"></script>
+<script src="../../../sdk/nebo.global.js"></script>
 <script>
   const { nebo } = NeboAppSDK;
   async function loadData() {
@@ -1182,7 +1182,7 @@ This is transparent — no configuration needed. Any API call that returns agent
 
 ## Framework Notes
 
-The `neboapp://` custom protocol gives each app its own origin at `/`, so all frameworks work without special base URL configuration.
+Every framework needs a relative base, because the page is served under a prefix everywhere except the desktop window (see Entry Point).
 
 ### SvelteKit
 
@@ -1199,7 +1199,8 @@ const config = {
       assets: '../ui',
       fallback: 'index.html',
       strict: false
-    })
+    }),
+    paths: { relative: true }
   }
 };
 
@@ -1208,11 +1209,11 @@ export default config;
 
 ### HTMX
 
-HTMX apps work natively. The SDK bridge injects `<meta name="htmx-config" content='{"selfRequestsOnly":false}'>` automatically so HTMX can make requests to the Nebo server. Use the global SDK (`/sdk/nebo.global.js`) for storage and agent invocation.
+HTMX apps work natively. The SDK bridge injects `<meta name="htmx-config" content='{"selfRequestsOnly":false}'>` automatically so HTMX can make requests to the Nebo server. Use the global SDK (`../../../sdk/nebo.global.js` from `ui/index.html`) for storage and agent invocation.
 
 ### React / Vue / Solid / Vanilla
 
-No special configuration needed. Build your app normally and place the output in `ui/`.
+Build with a relative base and write the output into `ui/` (Vite: `base: './'`, `build.outDir` pointing at `ui/`). Keep the project (package.json, `src/`, `node_modules/`) beside `ui/`, never inside it.
 
 ---
 
@@ -1256,7 +1257,7 @@ think more deeply about what they wrote.
 <head>
   <meta charset="utf-8" />
   <meta name="nebo-app-id" content="journal" />
-  <script src="/sdk/nebo.global.js"></script>
+  <script src="../../../sdk/nebo.global.js"></script>
 </head>
 <body>
   <h1>Journal</h1>
@@ -1346,7 +1347,7 @@ An employee can build an app two ways, chosen by what the owner says:
 - "You are the app" or "build yourself" turns the **current employee into the app** (`update_employee` on its own name with `app` and `ui`). It keeps its chat, memory and persona. An employee hired in conversation gets its own package folder on that first update and stays itself; no second employee is created.
 - If it is unclear, the employee asks once.
 
-Everyday tools stay with the built-in `build-an-app` skill. Rich pages and games go to the App Studio skill from the marketplace.
+The built-in `app-studio` skill (App Studio) covers every app, from a tracker to a designed game: where files go, TypeScript and JSX compiled by Nebo on write (`.ts`, `.tsx` and `.jsx` files in `ui` become `.js`, sources kept in `src/`) or a Vite build where the bot has node, the verify loop, and the design method. Loading it turns App Developer mode on.
 
 An app the owner made on this bot (not installed from the marketplace) always has the developer pack for itself: `app_reload`, `app_status`, `app_console`, `app_screenshot`, `app_listing`, `app_submit`. Its page always carries the reload listener and console capture, so reload and console work with no setting. App Developer mode (Bot settings, Developer) opens the pack to teammates on any of the owner's apps, adds the floating console, and serves files `no-store`. Apps installed from the marketplace never get developer tooling: nothing is injected into their pages, their console routes return 404, and the tools refuse them, mode or not.
 

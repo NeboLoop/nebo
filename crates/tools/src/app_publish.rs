@@ -1206,6 +1206,9 @@ impl AppScreenshotTool {
         }
         let wait = Duration::from_millis(input["wait_ms"].as_u64().unwrap_or(1500).min(10_000));
 
+        // What the page logs while it loads lands in the app's console ring
+        // (its developer script posts it); the shot reports this load's lines.
+        let console_mark = crate::app_console::recent(&app.id, None, 1).last().map(|e| e.seq);
         // A pass that opens this app alone, for as long as the shot takes.
         let pass = napp::app_view::grant(&app.id, Duration::from_secs(120));
         let url = format!(
@@ -1317,8 +1320,34 @@ impl AppScreenshotTool {
                 ));
             }
         }
+        text.push_str(&load_console(&crate::app_console::recent(&app.id, console_mark, 200)));
         ToolResult::ok(text).with_image_url(local.to_string_lossy().to_string())
     }
+}
+
+/// What a screenshot's own load put in the app's console: its errors and
+/// warnings word for word, so a broken page reaches the employee in the
+/// call that looked at it, not only when someone opens the console.
+pub(crate) fn load_console(entries: &[crate::app_console::Entry]) -> String {
+    let worth: Vec<&crate::app_console::Entry> =
+        entries.iter().filter(|e| e.level == "error" || e.level == "warn").collect();
+    let logged = entries.len() - worth.len();
+    if worth.is_empty() {
+        return format!(
+            "\nConsole during this load: no errors ({logged} other line{}).",
+            if logged == 1 { "" } else { "s" }
+        );
+    }
+    let mut out = format!(
+        "\nConsole during this load: {} error or warning line{}. Fix them before saying the app works:",
+        worth.len(),
+        if worth.len() == 1 { "" } else { "s" }
+    );
+    for e in worth.iter().take(20) {
+        out.push_str("\n");
+        out.push_str(&crate::app_console::format_entry(e));
+    }
+    out
 }
 
 /// A folder name from an app's name.

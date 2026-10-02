@@ -27,15 +27,38 @@ pub const BUNDLED_SKILLS: &[(&str, &str)] = &[
     // Bundled because a fresh Nebo must know the procedure before it has a
     // company: without it the owner would hand-write the markdown folders.
     ("company-layers", include_str!("company-layers.md")),
-    // How an app (an employee with a page) is created, wired to the SDK
-    // global, and iterated on. Bundled because the SDK contract lives
-    // nowhere an employee can read at runtime; without it every app page
-    // is written against a global that does not exist.
-    ("build-an-app", include_str!("build-an-app.md")),
+    // App Studio: the one skill for building any app or game (an employee
+    // with a page), from a tracker to a designed game. The body is the
+    // mechanics (where files go, the two lanes, verify, the SDK contract);
+    // the design method ships as on-demand references in
+    // `BUNDLED_SKILL_FILES`. Bundled because the SDK contract and the
+    // serving rules live nowhere an employee can read at runtime.
+    ("app-studio", include_str!("app-studio/SKILL.md")),
     // How an app goes to the marketplace with the owner, in conversation
     // (App Developer mode): screenshots, the listing, the owner's yes.
     ("publish-an-app", include_str!("publish-an-app.md")),
 ];
+
+/// Files a bundled skill carries beside its SKILL.md: `(skill, relative
+/// path, content)`. Read with `read_skill_file` and run with `execute`
+/// exactly like an installed skill's files, from memory.
+pub const BUNDLED_SKILL_FILES: &[(&str, &str, &str)] = &[
+    ("app-studio", "references/brief.md", include_str!("app-studio/references/brief.md")),
+    ("app-studio", "references/design-recipe.md", include_str!("app-studio/references/design-recipe.md")),
+    ("app-studio", "references/boards-and-assets.md", include_str!("app-studio/references/boards-and-assets.md")),
+    ("app-studio", "references/wow-catalog.md", include_str!("app-studio/references/wow-catalog.md")),
+    ("app-studio", "references/film-scrub.md", include_str!("app-studio/references/film-scrub.md")),
+    ("app-studio", "references/kit.md", include_str!("app-studio/references/kit.md")),
+    ("app-studio", "references/games.md", include_str!("app-studio/references/games.md")),
+    ("app-studio", "references/gate.md", include_str!("app-studio/references/gate.md")),
+    ("app-studio", "scripts/gate.js", include_str!("app-studio/scripts/gate.js")),
+    ("app-studio", "LICENSE-THIRD-PARTY.txt", include_str!("app-studio/LICENSE-THIRD-PARTY.txt")),
+];
+
+/// The files bundled with skill `name`, by relative path.
+pub fn bundled_files(name: &str) -> impl Iterator<Item = (&'static str, &'static str)> + '_ {
+    BUNDLED_SKILL_FILES.iter().filter(move |(s, _, _)| *s == name).map(|(_, p, c)| (*p, *c))
+}
 
 // ── Bundled Agents ──────────────────────────────────────────────────
 
@@ -108,13 +131,13 @@ mod bundled_skill_tests {
     /// `NeboAppSDK`; a page written against a bare `nebo` global throws, so
     /// the skill has to spell the global and warn off the wrong one.
     #[test]
-    fn the_build_an_app_skill_loads_with_its_triggers_and_the_real_global() {
+    fn the_app_studio_skill_loads_with_its_triggers_and_the_real_global() {
         let (_, content) = BUNDLED_SKILLS
             .iter()
-            .find(|(k, _)| *k == "build-an-app")
-            .expect("build-an-app is registered");
+            .find(|(k, _)| *k == "app-studio")
+            .expect("app-studio is registered");
         let skill = super::super::parse_skill_frontmatter(content.as_bytes()).expect("parses");
-        assert_eq!(skill.name, "build-an-app");
+        assert_eq!(skill.name, "app-studio");
         for trigger in ["make an app", "dashboard", "app interface"] {
             assert!(
                 skill.triggers.iter().any(|t| t == trigger),
@@ -138,8 +161,8 @@ mod bundled_skill_tests {
     fn the_app_skill_changes_an_app_through_the_tool_not_the_file_door() {
         let (_, content) = BUNDLED_SKILLS
             .iter()
-            .find(|(k, _)| *k == "build-an-app")
-            .expect("build-an-app is registered");
+            .find(|(k, _)| *k == "app-studio")
+            .expect("app-studio is registered");
         let iterate = content
             .split("## Iterate")
             .nth(1)
@@ -166,8 +189,8 @@ mod bundled_skill_tests {
     fn every_sdk_name_the_skill_promises_is_exported_by_the_served_bundle() {
         let (_, content) = BUNDLED_SKILLS
             .iter()
-            .find(|(k, _)| *k == "build-an-app")
-            .expect("build-an-app is registered");
+            .find(|(k, _)| *k == "app-studio")
+            .expect("app-studio is registered");
         let bundle = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../app/static/sdk/nebo.global.js");
         let bundle = std::fs::read_to_string(&bundle)
@@ -202,6 +225,48 @@ mod bundled_skill_tests {
         // The two renamed at the top level, said as such.
         assert!(content.contains("NeboAppSDK.neboFetch"), "nebo.fetch is exported as neboFetch");
         assert!(content.contains("NeboAppSDK.NeboWebSocket"), "nebo.WebSocket is exported as NeboWebSocket");
+    }
+
+    /// The paths an app page uses resolve at all three addresses Nebo serves
+    /// it from (desktop `neboapp://<id>/`, `/apps/<id>/ui/`, and the phone's
+    /// `/t/<bot>/apps/<id>/ui/`). A leading `/` works only on the desktop:
+    /// apps built that way were blank on the phone (2026-10-01). So the skill
+    /// and the tool both load the SDK relatively, the Vite recipe sets
+    /// `base: './'`, and a rename never deletes.
+    #[test]
+    fn app_studio_teaches_paths_that_work_on_the_phone() {
+        let (_, content) = BUNDLED_SKILLS.iter().find(|(k, _)| *k == "app-studio").expect("registered");
+        assert!(content.contains(r#"<script src="../../../sdk/nebo.global.js"></script>"#), "the relative SDK tag");
+        assert!(content.contains("base: './'"), "Vite builds with relative paths");
+        assert!(content.contains("outDir: '../ui'"), "Vite builds into ui/");
+        assert!(content.contains("new_name:"), "rename keeps the employee");
+        assert!(
+            !content.contains(r#"<script src="/sdk/nebo.global.js">"#),
+            "no page in the skill loads the SDK by an absolute path"
+        );
+        for (_, _, file) in BUNDLED_SKILL_FILES {
+            assert!(!file.contains(r#"src="/sdk/nebo.global.js""#), "no reference loads the SDK absolutely");
+            assert!(!file.contains("build-an-app") && !file.contains("nebo-app.md"), "no dangling skill names");
+        }
+        assert!(
+            crate::agent_tool::PersonaTool::APP_SDK_SCRIPT.contains(r#"src="../../../sdk/nebo.global.js""#),
+            "what create/update_employee tell the employee matches the skill"
+        );
+    }
+
+    /// Every reference the skill points to ships with it, and its gate takes
+    /// the `execute` tool's arguments.
+    #[test]
+    fn app_studio_ships_every_file_it_names() {
+        let (_, content) = BUNDLED_SKILLS.iter().find(|(k, _)| *k == "app-studio").expect("registered");
+        let files: Vec<&str> = bundled_files("app-studio").map(|(p, _)| p).collect();
+        for named in ["brief.md", "design-recipe.md", "boards-and-assets.md", "wow-catalog.md", "film-scrub.md", "kit.md", "games.md", "gate.md"] {
+            assert!(content.contains(named), "the skill points to {named}");
+            assert!(files.contains(&format!("references/{named}").as_str()), "references/{named} ships");
+        }
+        assert!(files.contains(&"scripts/gate.js") && files.contains(&"LICENSE-THIRD-PARTY.txt"));
+        let gate = bundled_files("app-studio").find(|(p, _)| *p == "scripts/gate.js").unwrap().1;
+        assert!(gate.contains("SKILL_ARGS"), "the gate reads execute's arguments");
     }
 }
 

@@ -11,7 +11,7 @@ mod jsx;
 mod xlsx;
 
 pub use docx::markdown_to_docx;
-pub use jsx::{jsx_to_html, JsxLang};
+pub use jsx::{jsx_to_html, transpile_module, JsxLang};
 pub use xlsx::csv_to_xlsx;
 
 use std::sync::OnceLock;

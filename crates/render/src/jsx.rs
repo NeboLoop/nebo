@@ -14,7 +14,7 @@
 use swc_core::common::comments::SingleThreadedComments;
 use swc_core::common::errors::{Handler, HANDLER};
 use swc_core::common::{sync::Lrc, FileName, Globals, Mark, SourceMap, GLOBALS};
-use swc_core::ecma::ast::{EsVersion, ImportDecl, ModuleDecl, ModuleItem, Program, Str};
+use swc_core::ecma::ast::{EsVersion, ExportAll, ImportDecl, ModuleDecl, ModuleItem, NamedExport, Program, Str};
 use swc_core::ecma::codegen::{text_writer::JsWriter, Emitter};
 use swc_core::ecma::parser::{lexer::Lexer, EsSyntax, Parser, StringInput, Syntax, TsSyntax};
 use swc_core::ecma::transforms::base::resolver;
@@ -49,30 +49,56 @@ pub fn jsx_to_html(source: &str, title: &str, lang: JsxLang) -> Result<String, R
         .replace("__CODE_JSON__", &code_json))
 }
 
+/// Compile one TS/TSX/JSX module of an app page to a browser ES module, by
+/// the file's extension (`.ts`, `.tsx`, `.jsx`). Unlike [`jsx_to_html`] it is
+/// one file among many: relative imports stay, renamed to the `.js` file this
+/// produces (`./board.tsx` → `./board.js`, `./board` → `./board.js`); bare
+/// npm imports go to esm.sh pinned to one React, as there. No type checking:
+/// types are stripped. An error names the line and column.
+pub fn transpile_module(source: &str, path: &str) -> Result<String, RenderError> {
+    let ext = path.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+    let (syntax, ts) = match ext.as_str() {
+        "tsx" => (Syntax::Typescript(TsSyntax { tsx: true, ..Default::default() }), true),
+        "ts" | "mts" => (Syntax::Typescript(TsSyntax::default()), true),
+        "jsx" => (Syntax::Es(EsSyntax { jsx: true, ..Default::default() }), false),
+        _ => return Err(RenderError::Input(format!("{path}: only .ts, .tsx and .jsx files are compiled"))),
+    };
+    compile(source, path, syntax, ts, false)
+}
+
 /// SWC pipeline: parse → resolve → strip types (tsx) → JSX automatic runtime
 /// → rewrite bare imports to esm.sh → codegen.
 fn transform(source: &str, lang: JsxLang) -> Result<String, RenderError> {
+    let syntax = match lang {
+        JsxLang::Jsx => Syntax::Es(EsSyntax { jsx: true, ..Default::default() }),
+        JsxLang::Tsx => Syntax::Typescript(TsSyntax { tsx: true, ..Default::default() }),
+    };
+    compile(source, "component", syntax, lang == JsxLang::Tsx, true)
+}
+
+/// The one SWC pipeline. `single_file`: the artifact shape (a default export,
+/// no file imports); otherwise an app module among others.
+fn compile(source: &str, name: &str, syntax: Syntax, ts: bool, single_file: bool) -> Result<String, RenderError> {
     let cm: Lrc<SourceMap> = Default::default();
     // Transform-time diagnostics are surfaced via returned errors; the
     // handler sink just satisfies passes that report through HANDLER.
     let handler = Handler::with_emitter_writer(Box::new(std::io::sink()), Some(cm.clone()));
     let fm = cm.new_source_file(
-        Lrc::new(FileName::Custom("component".into())),
+        Lrc::new(FileName::Custom(name.into())),
         source.to_string(),
     );
-
-    let syntax = match lang {
-        JsxLang::Jsx => Syntax::Es(EsSyntax { jsx: true, ..Default::default() }),
-        JsxLang::Tsx => Syntax::Typescript(TsSyntax { tsx: true, ..Default::default() }),
+    let at = |span: swc_core::common::Span| {
+        let loc = cm.lookup_char_pos(span.lo);
+        format!("{name}:{}:{}", loc.line, loc.col_display + 1)
     };
     let comments = SingleThreadedComments::default();
     let lexer = Lexer::new(syntax, EsVersion::latest(), StringInput::from(&*fm), Some(&comments));
     let mut parser = Parser::new_from(lexer);
     let program = parser
         .parse_program()
-        .map_err(|e| RenderError::Input(format!("JSX parse error: {}", e.kind().msg())))?;
+        .map_err(|e| RenderError::Input(format!("{} parse error: {}", at(swc_core::common::Spanned::span(&e)), e.kind().msg())))?;
     if let Some(e) = parser.take_errors().into_iter().next() {
-        return Err(RenderError::Input(format!("JSX parse error: {}", e.kind().msg())));
+        return Err(RenderError::Input(format!("{} parse error: {}", at(swc_core::common::Spanned::span(&e)), e.kind().msg())));
     }
 
     // The component must export default — that's what the shell mounts.
@@ -83,7 +109,7 @@ fn transform(source: &str, lang: JsxLang) -> Result<String, RenderError> {
                 | ModuleItem::ModuleDecl(ModuleDecl::ExportDefaultExpr(_))
         )
     }));
-    if !has_default {
+    if single_file && !has_default {
         return Err(RenderError::Input(
             "the component must `export default` a React component (e.g. `export default function App() { … }`)"
                 .into(),
@@ -98,9 +124,9 @@ fn transform(source: &str, lang: JsxLang) -> Result<String, RenderError> {
             let mut program = program.apply(resolver(
                 unresolved_mark,
                 top_level_mark,
-                lang == JsxLang::Tsx,
+                ts,
             ));
-            if lang == JsxLang::Tsx {
+            if ts {
                 program = program.apply(tsx(
                     cm.clone(),
                     TsConfig::default(),
@@ -122,7 +148,7 @@ fn transform(source: &str, lang: JsxLang) -> Result<String, RenderError> {
                 unresolved_mark,
             ));
 
-            let mut rewrite = RewriteImports { error: None };
+            let mut rewrite = RewriteImports { error: None, single_file };
             program.visit_mut_with(&mut visit_mut_pass(&mut rewrite));
             if let Some(msg) = rewrite.error {
                 return Err(RenderError::Input(msg));
@@ -146,14 +172,61 @@ fn transform(source: &str, lang: JsxLang) -> Result<String, RenderError> {
 }
 
 /// Rewrite bare npm import specifiers to esm.sh, pinned to one React.
-/// File-path imports are rejected: artifacts are single-file components.
+/// File-path imports are rejected for a single-file artifact; in an app
+/// module they stay relative and name the compiled `.js` file.
 struct RewriteImports {
     error: Option<String>,
+    single_file: bool,
 }
 
 impl VisitMut for RewriteImports {
     fn visit_mut_import_decl(&mut self, n: &mut ImportDecl) {
-        let src = n.src.value.to_string_lossy().to_string();
+        if let Some(mapped) = self.map(&n.src.value.to_string_lossy()) {
+            n.src = Box::new(Str::from(swc_core::atoms::Atom::from(mapped)));
+        }
+    }
+
+    fn visit_mut_named_export(&mut self, n: &mut NamedExport) {
+        if let Some(src) = n.src.as_mut()
+            && let Some(mapped) = self.map(&src.value.to_string_lossy())
+        {
+            **src = Str::from(swc_core::atoms::Atom::from(mapped));
+        }
+    }
+
+    fn visit_mut_export_all(&mut self, n: &mut ExportAll) {
+        if let Some(mapped) = self.map(&n.src.value.to_string_lossy()) {
+            n.src = Box::new(Str::from(swc_core::atoms::Atom::from(mapped)));
+        }
+    }
+}
+
+impl RewriteImports {
+    /// The specifier the browser loads instead, or None to keep it.
+    fn map(&mut self, src: &str) -> Option<String> {
+        let src = src.to_string();
+        if !self.single_file && (src.starts_with("./") || src.starts_with("../")) {
+            if src.ends_with(".css") || src.ends_with(".scss") {
+                self.error = Some(format!(
+                    "import \"{src}\": a page module cannot import a stylesheet. Link it from index.html instead: <link rel=\"stylesheet\" href=\"{src}\">"
+                ));
+                return None;
+            }
+            let (stem, ext) = match src.rsplit_once('/') {
+                Some((_, file)) if file.contains('.') => src.rsplit_once('.').map(|(s, e)| (s.to_string(), e.to_string())).unwrap(),
+                _ => (src.clone(), String::new()),
+            };
+            return match ext.as_str() {
+                "ts" | "tsx" | "jsx" | "mts" | "" => Some(format!("{stem}.js")),
+                _ => None,
+            };
+        }
+        if !self.single_file && src.starts_with('/') {
+            self.error = Some(format!(
+                "import \"{src}\" starts with \"/\": the page is served under a prefix on the phone, so it would not load. Use a relative path (\"./...\")."
+            ));
+            return None;
+        }
         let mapped = if src == "react" {
             format!("https://esm.sh/react@{REACT_VERSION}")
         } else if src == "react/jsx-runtime" || src == "react/jsx-dev-runtime" {
@@ -167,7 +240,7 @@ impl VisitMut for RewriteImports {
                 "import \"{src}\" is a file path — interactive artifacts are single-file \
                  components. Inline that code into the component and convert again"
             ));
-            return;
+            return None;
         } else if src.starts_with("@/") || src.starts_with("~/") {
             // shadcn-style project aliases — they exist in other tools' artifact
             // runtimes, not here. Without this check they fail at view time with
@@ -177,13 +250,13 @@ impl VisitMut for RewriteImports {
                  shadcn/ui are not available here. Build that UI with plain JSX elements \
                  styled with Tailwind classes (or a real npm package), then convert again"
             ));
-            return;
+            return None;
         } else if src.starts_with("http://") || src.starts_with("https://") {
-            return;
+            return None;
         } else {
             format!("https://esm.sh/{src}?deps=react@{REACT_VERSION},react-dom@{REACT_VERSION}")
         };
-        n.src = Box::new(Str::from(swc_core::atoms::Atom::from(mapped)));
+        Some(mapped)
     }
 }
 
@@ -299,5 +372,42 @@ export default function App() { return <div>{helper()}</div>; }
         let src = r#"export function App() { return <div>hi</div>; }"#;
         let err = jsx_to_html(src, "c.jsx", JsxLang::Jsx).expect_err("must reject");
         assert!(err.to_string().contains("export default"), "corrective: {err}");
+    }
+
+    /// An app's TSX module compiles to a browser module: types gone, JSX
+    /// compiled, its own files imported as the `.js` they become, npm
+    /// packages from esm.sh, the pinned three kept pinned.
+    #[test]
+    fn an_app_module_compiles_with_relative_imports() {
+        let src = r#"
+import { useState } from "react";
+import * as THREE from "three@0.170.0";
+import { startScene } from "./scene";
+import type { Config } from "./config.ts";
+export { tune } from "./tune.tsx";
+type P = { n: number };
+export default function App({ n }: P) { const [x] = useState<number>(n); return <p>{x}{THREE.REVISION}</p>; }
+startScene();
+"#;
+        let js = transpile_module(src, "app.tsx").expect("compiles");
+        assert!(js.contains(r#""./scene.js""#), "{js}");
+        assert!(js.contains(r#""./tune.js""#), "{js}");
+        assert!(js.contains("https://esm.sh/three@0.170.0?deps=react@18.3.1"), "{js}");
+        assert!(js.contains("https://esm.sh/react@18.3.1/jsx-runtime"), "{js}");
+        assert!(!js.contains("type P") && !js.contains("<p>"), "{js}");
+        let ts = transpile_module("export const speed: number = 3;\n", "config.ts").expect("ts");
+        assert!(ts.contains("export const speed = 3"), "{ts}");
+    }
+
+    /// What goes wrong says where, so the employee fixes it without asking.
+    #[test]
+    fn an_app_module_error_names_file_line_and_column() {
+        let err = transpile_module("const a = 1;\nconst b = (;\n", "board.jsx").unwrap_err().to_string();
+        assert!(err.contains("board.jsx:2:"), "{err}");
+        let err = transpile_module("import './app.css';\n", "app.tsx").unwrap_err().to_string();
+        assert!(err.contains("<link rel=\"stylesheet\""), "{err}");
+        let err = transpile_module("import x from '/assets/x.js';\nconsole.log(x);\n", "app.tsx").unwrap_err().to_string();
+        assert!(err.contains("relative path"), "{err}");
+        assert!(transpile_module("x", "app.vue").is_err());
     }
 }
