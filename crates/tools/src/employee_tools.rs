@@ -174,7 +174,7 @@ impl Kind {
             Kind::FindEmployees => "search the marketplace for employees to hire",
             Kind::HireEmployee => "install an employee by marketplace code",
             Kind::CreateEmployee => "make a new employee with duties",
-            Kind::UpdateEmployee => "rename an employee or app, or change its job",
+            Kind::UpdateEmployee => "rename or change an employee or app",
             Kind::DeleteEmployee => "delete an employee, the owner approving each time",
             Kind::SetEmployeeActive => "turn an employee on or off",
             Kind::SetupEmployee => "open an employee's setup form",
