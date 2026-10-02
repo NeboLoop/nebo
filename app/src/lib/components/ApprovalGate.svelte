@@ -3,16 +3,13 @@
 
   The runner pauses a tool call when a capability is OFF (and Full Access is off)
   or a gated interface operation needs approval, and emits `approval_request`;
-  this gate shows the ApprovalModal and sends the user's decision back via
-  `approval_response`. Mounted once in the root layout so it works regardless of
-  which view is open. FIFO queue — one modal at a time.
+  this gate files it in the approvals store, and the chat whose own session
+  raised it shows it as a card at the bottom beside the composer
+  (ApprovalAskCard). Nothing here renders: an approval is never a dialog over
+  the screen (owner, 2026-10-01). The first answer anywhere settles the card
+  everywhere (`approval_resolved`).
 
-  Whose card it is: a run the owner started from another client (the phone, a
-  second window) asks there, never here; a run no client started (a schedule, a
-  coworker) asks wherever the owner is ($lib/websocket/origin). The first answer
-  anywhere closes the card everywhere (`approval_resolved`).
-
-  Rendering rule: the modal must read like a sentence to a non-technical owner.
+  Rendering rule: the card must read like a sentence to a non-technical owner.
   Gated operations carry a model-written `display` headline (real names, real
   amounts); the fact rows below it are computed deterministically from the actual
   call arguments (cents → dollars, camelCase → words) so the headline is always
@@ -21,28 +18,9 @@
 -->
 <script lang="ts">
   import { t } from 'svelte-i18n';
-  import ApprovalModal from '$lib/components/ApprovalModal.svelte';
   import { onWsEvent } from '$lib/websocket/subscribe';
-  import { getWebSocketClient } from '$lib/websocket/client';
-  import { opensHere } from '$lib/websocket/origin';
   import * as api from '$lib/api/nebo';
-
-  interface DetailRow {
-    label: string;
-    value: string;
-  }
-
-  interface PendingApproval {
-    requestId: string;
-    agent: string;
-    actionType: string;
-    actionDetail: string;
-    headline?: string;
-    detailRows?: DetailRow[];
-  }
-
-  let queue = $state<PendingApproval[]>([]);
-  const current = $derived(queue[0] ?? null);
+  import { approvalRaised, approvalSettled, type Approval, type ApprovalRow as DetailRow } from '$lib/stores/approvals';
 
   // Agent display names, resolved once per session (the runner event carries the
   // session key `agent:<id>:...`, not a name).
@@ -102,7 +80,7 @@
   function describe(
     tool: string,
     input: Record<string, unknown> | undefined
-  ): Omit<PendingApproval, 'requestId' | 'agent'> {
+  ): Omit<Approval, 'requestId' | 'agent' | 'sessionId'> {
     const str = (v: unknown) => (typeof v === 'string' ? v : undefined);
 
     // A call that carries its own sentence for the owner (an operation, a
@@ -142,9 +120,6 @@
     };
   }
 
-  /** Requests already answered somewhere, so a late card never opens. */
-  const resolved = new Set<string>();
-
   onWsEvent<{
     request_id?: string;
     agentName?: string;
@@ -155,7 +130,6 @@
     batch?: { id: string; tool: string; input?: Record<string, unknown> }[] | null;
   }>('approval_request', async (d) => {
     if (!d?.request_id) return;
-    if (!opensHere(d, 'everywhere')) return;
     // Several gated calls in one step: one card listing each action, one decision.
     const described =
       d.batch && d.batch.length > 1
@@ -173,41 +147,12 @@
       d.agentName ??
       (await resolveAgentName(d.session_id)) ??
       $t('components.approvalGate.yourAgent');
-    if (resolved.has(d.request_id)) return; // answered elsewhere while the name resolved
-    queue = [...queue, { requestId: d.request_id, agent, ...described }];
+    approvalRaised({ requestId: d.request_id, sessionId: d.session_id ?? '', agent, ...described });
   });
 
-  // Answered anywhere (here, another client, a loop reply): the card closes.
-  onWsEvent<{ request_id?: string }>('approval_resolved', (d) => {
+  // Answered anywhere (here, another client, a loop reply): the card settles.
+  onWsEvent<{ request_id?: string; decision?: string }>('approval_resolved', (d) => {
     if (!d?.request_id) return;
-    resolved.add(d.request_id);
-    queue = queue.filter((a) => a.requestId !== d.request_id);
+    approvalSettled(d.request_id, d.decision ?? 'deny');
   });
-
-  function respond(approved: boolean, always: boolean) {
-    const req = queue[0];
-    if (!req) return;
-    getWebSocketClient().send('approval_response', {
-      request_id: req.requestId,
-      approved,
-      always,
-    });
-    queue = queue.slice(1);
-  }
 </script>
-
-{#if current}
-  {#key current.requestId}
-    <ApprovalModal
-      show={true}
-      agent={current.agent}
-      actionType={current.actionType}
-      actionDetail={current.actionDetail}
-      headline={current.headline}
-      detailRows={current.detailRows}
-      onApprove={() => respond(true, false)}
-      onApproveAlways={() => respond(true, true)}
-      onDeny={() => respond(false, false)}
-    />
-  {/key}
-{/if}

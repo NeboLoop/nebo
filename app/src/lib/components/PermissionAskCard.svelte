@@ -5,8 +5,8 @@
   back went out: It went out · It didn't go out.
   The same card sits in the chat whose own flow raised it, the Inbox and the
   dashboard; the first answer anywhere wins. Answered, it collapses to a
-  one-line receipt: Approved · always, Approved · once, Denied, or No longer
-  needed.
+  one-line receipt: Allowed · always, Allowed · this once, Declined, or No
+  longer needed.
 -->
 <script lang="ts">
   import { t } from 'svelte-i18n';

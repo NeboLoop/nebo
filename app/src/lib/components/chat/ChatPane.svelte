@@ -34,6 +34,8 @@
   import { NEAR_BOTTOM_PX, distanceFromBottom } from '$lib/chat/scroll';
   import { threadKey } from '$lib/chat/sessionKey';
   import { openAsks, settledAsks, chatAsksOf } from '$lib/stores/permissionAsks';
+  import { approvals, chatApprovalsOf } from '$lib/stores/approvals';
+  import ApprovalAskCard from '$lib/components/chat/ApprovalAskCard.svelte';
   import { publishRequest } from '$lib/stores/appPublish';
   import PermissionAskCard from '$lib/components/PermissionAskCard.svelte';
   import type { HelperLine } from '$lib/chat/helpers';
@@ -1109,6 +1111,8 @@
   const chatSessionKey = $derived(sessionId || (threadId ? threadKey(agentId, threadId) : ''));
   // Only the asks this conversation's own flow raised, inline at the bottom.
   const chatAsks = $derived(chatAsksOf($openAsks, $settledAsks, threadId));
+  // The approvals this chat's own session raised, the same way.
+  const chatApprovals = $derived(chatApprovalsOf($approvals, chatSessionKey));
   async function toggleResult(key: string, tool?: ToolMsg) {
     const opening = !expandedResults[key];
     expandedResults[key] = opening;
@@ -1915,6 +1919,11 @@
     {#each chatAsks as ask (ask.id)}
       <div class="mt-2 ask-rise">
         <PermissionAskCard {ask} via="chat" />
+      </div>
+    {/each}
+    {#each chatApprovals as approval (approval.requestId)}
+      <div class="mt-2 ask-rise">
+        <ApprovalAskCard {approval} />
       </div>
     {/each}
 
