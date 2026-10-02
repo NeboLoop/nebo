@@ -134,6 +134,67 @@ pub(crate) fn record_interrupt(sessions: &SessionManager, session_id: &str, why:
     info!(session_id, open_calls = open.len(), ?why, "interrupt recorded");
 }
 
+/// The metadata key on an owner's message carried past a stop: he sent it
+/// while the stopped turn ran, and no step of it heard it.
+pub(crate) const AFTER_STOP: &str = "afterStop";
+
+/// The owner's messages queued into a turn that was cut short, which no
+/// step of it heard (stored after `seen`, the conversation its last step
+/// was built from), are carried past the stop: each is stored again after
+/// the interrupt line, as he sent it (his words, his files, his mark),
+/// and no longer as a message into running work, so the turn that answers
+/// them reads them as his next messages, in order, after the stop. Their
+/// first rows go. Returns how many were carried.
+///
+/// Left where they landed, they read as already behind the stop: nothing
+/// answered them (2026-10-02, Ostrion: "did you look at the screenshot?"
+/// landed 2 s after the step's request left, Stop cut that step off, and
+/// the question sat unanswered until a later turn took it up as running
+/// work's interruption and carried the stopped work on).
+pub(crate) fn carry_past_stop(sessions: &SessionManager, store: &db::Store, session_id: &str, seen: &[ChatMessage]) -> usize {
+    let Some(last_seen) = seen.last().map(|m| m.id.as_str()) else {
+        return 0;
+    };
+    let Ok(fresh) = sessions.get_messages_since_checkpoint(session_id) else {
+        return 0;
+    };
+    let mut unheard: Vec<&ChatMessage> = fresh
+        .iter()
+        .rev()
+        .take_while(|m| m.id != last_seen)
+        .filter(|m| m.role == "user" && matches!(arrived_mid_turn(m), Some(MidTurnFrom::Owner { .. })))
+        .collect();
+    unheard.reverse();
+    let mut carried = 0;
+    for m in unheard {
+        let mut meta: serde_json::Value =
+            m.metadata.as_deref().and_then(|j| serde_json::from_str(j).ok()).unwrap_or_else(|| serde_json::json!({}));
+        if let Some(fields) = meta.as_object_mut() {
+            fields.remove("arrivedMidTurn");
+            fields.remove("via");
+            fields.insert(AFTER_STOP.into(), serde_json::json!(true));
+        }
+        match sessions.append_message(session_id, "user", &m.content, None, None, Some(&meta.to_string())) {
+            Ok(_) => {
+                if let Err(e) = store.delete_chat_message(&m.id) {
+                    warn!(session_id, error = %e, "the carried message's first row stays");
+                }
+                carried += 1;
+            }
+            Err(e) => warn!(session_id, error = %e, "could not carry the owner's message past the stop"),
+        }
+    }
+    if carried > 0 {
+        info!(session_id, carried, "the owner's messages no step heard are carried past the stop");
+    }
+    carried
+}
+
+/// The line the thread carries after a turn was cut short.
+fn is_interrupt_line(m: &ChatMessage) -> bool {
+    m.role == "user" && is_meta(m) && (m.content == Interrupt::Owner.line() || m.content == Interrupt::Stalled.line())
+}
+
 /// Who a message queued into a running turn came from. Every sender's words
 /// are stored as typed with this mark (`metadata`); the loop hears the row at
 /// its next step (`mid_turn_message_landed`). A parent's or a coworker's
@@ -238,10 +299,13 @@ pub(crate) struct OwnerWaiting {
 /// `messages` as heard (`order_as_heard`); `None` when there are none. A
 /// reply that only calls tools answers nothing: the model is still on its
 /// old plan. A parent's or a coworker's message never waits here: they are
-/// information for the work.
+/// information for the work. Nothing before a stop waits either: the work
+/// it was sent into has ended (`carry_past_stop` carries what no step
+/// heard), and a later turn that took it up as that work's interruption
+/// would carry the stopped work on.
 pub(crate) fn owner_waiting(messages: &[ChatMessage]) -> Option<OwnerWaiting> {
     let owners = |m: &ChatMessage| m.role == "user" && matches!(arrived_mid_turn(m), Some(MidTurnFrom::Owner { .. }));
-    let since = messages.iter().rposition(is_worded_reply).map_or(0, |at| at + 1);
+    let since = messages.iter().rposition(|m| is_worded_reply(m) || is_interrupt_line(m)).map_or(0, |at| at + 1);
     let waiting: Vec<&ChatMessage> = messages[since..].iter().filter(|m| owners(m)).collect();
     let latest = *waiting.last()?;
     let first = messages.iter().position(|m| m.id == waiting[0].id).unwrap_or(since);
