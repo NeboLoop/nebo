@@ -272,6 +272,12 @@ fn save_artifact(rel_path: String, save_name: String) -> Result<String, String> 
 /// The event the main window opens an owner item's place on
 /// (`app/src/lib/websocket/listeners.ts`).
 const OWNER_ITEM_OPEN: &str = "owner-item-open";
+/// The event the main window opens a blocking ask's card on, over whatever
+/// screen the owner is on: never a navigation.
+const OWNER_ASK_OPEN: &str = "owner-ask-open";
+/// The event a blocking ask's notification button answers it on, by the
+/// option's place in its answers.
+const OWNER_ASK_ANSWER: &str = "owner-ask-answer";
 
 /// Tauri command: an owner item's native banner. A click on it brings Nebo
 /// forward and opens the item's place: `link`, the same address its Inbox
@@ -279,14 +285,34 @@ const OWNER_ITEM_OPEN: &str = "owner-item-open";
 /// platform's own (NSUserNotificationCenter, the toast's activation, the
 /// desktop bus's default action), on a thread of its own so nothing here
 /// waits on the owner.
+///
+/// A blocking ask's banner names the ask (`ask`): a click opens its card over
+/// the screen the owner is on, and where the platform has notification
+/// buttons (the desktop bus), each of its `answers` answers it there and
+/// then; he never leaves the chat he is in.
 #[tauri::command]
-fn show_owner_notification(app: tauri::AppHandle, title: String, body: String, link: String) {
+fn show_owner_notification(
+    app: tauri::AppHandle,
+    title: String,
+    body: String,
+    link: String,
+    ask: Option<String>,
+    answers: Option<Vec<String>>,
+) {
     let spawned = std::thread::Builder::new().name("owner-banner".into()).spawn(move || {
         let mut banner = notify_rust::Notification::new();
         banner.summary(&title).body(&body).auto_icon();
         // A click on the body is the desktop bus's "default" action.
         #[cfg(all(unix, not(target_os = "macos")))]
         banner.action("default", "Open");
+        #[cfg(all(unix, not(target_os = "macos")))]
+        if ask.is_some() {
+            for (i, label) in answers.iter().flatten().enumerate() {
+                banner.action(&format!("answer:{i}"), label);
+            }
+        }
+        #[cfg(not(all(unix, not(target_os = "macos"))))]
+        let _ = &answers;
         // The toast is Nebo's once installed; a build run from its target
         // directory has no registered app id to show it under.
         #[cfg(windows)]
@@ -317,10 +343,25 @@ fn show_owner_notification(app: tauri::AppHandle, title: String, body: String, l
             ) {
                 return;
             }
+            if let (Some(ask), notify_rust::NotificationResponse::Action(action)) = (ask.as_ref(), response)
+                && let Some(index) = action.strip_prefix("answer:").and_then(|i| i.parse::<usize>().ok())
+            {
+                // Answered from the notification: nothing comes forward.
+                if let Err(e) = app.emit_to("main", OWNER_ASK_ANSWER, serde_json::json!({ "ask": ask, "index": index })) {
+                    tracing::warn!(error = %e, "owner banner: the ask's answer was not delivered");
+                }
+                return;
+            }
             if let Some(w) = app.get_webview_window("main") {
                 let _ = w.unminimize();
                 let _ = w.show();
                 let _ = w.set_focus();
+            }
+            if let Some(ask) = ask.as_ref() {
+                if let Err(e) = app.emit_to("main", OWNER_ASK_OPEN, ask) {
+                    tracing::warn!(error = %e, "owner banner: the ask's card was not opened");
+                }
+                return;
             }
             if let Err(e) = app.emit_to("main", OWNER_ITEM_OPEN, &link) {
                 tracing::warn!(error = %e, "owner banner: the item's place was not opened");

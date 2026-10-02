@@ -58,6 +58,9 @@ pub struct PermissionAskCard {
     /// card shows in. Empty when no chat raised it (a schedule, a workflow,
     /// another employee's run): it lives in the Inbox only.
     pub chat_id: String,
+    /// A run is parked on the answer (a workflow step waits on it): the
+    /// owner is told at once, wherever he is, and never in another chat.
+    pub blocking: bool,
     pub created_at: i64,
 }
 
@@ -83,6 +86,9 @@ pub(crate) fn card(state: &AppState, ask: &Ask) -> PermissionAskCard {
         status: status.to_string(),
         answer: answer.map(|a| a.as_str().to_string()),
         chat_id: ask.chat_id.clone().unwrap_or_default(),
+        // A workflow step parks its run on the ask the moment it raises it
+        // (the run is linked just after the card goes out).
+        blocking: ask.run_id.is_some() || matches!(ask.door, types::permissions::Door::Workflow),
         created_at: ask.created_at,
     }
 }

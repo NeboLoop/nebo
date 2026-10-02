@@ -11,10 +11,12 @@ import { answerAsk, type AskAnswer } from './permissionAsks';
 /** Oldest first. */
 export const waitingAsks = writable<WaitingAsk[]>([]);
 
-export async function loadWaitingAsks(): Promise<void> {
+export async function loadWaitingAsks(): Promise<WaitingAsk[]> {
   const { listWaitingAsks } = await import('$lib/api/nebo');
   const res = await listWaitingAsks();
-  waitingAsks.set(res.asks ?? []);
+  const asks = res.asks ?? [];
+  waitingAsks.set(asks);
+  return asks;
 }
 
 /** The whole list, as `asks_waiting` carries it. */

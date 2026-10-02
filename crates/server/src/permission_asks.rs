@@ -17,16 +17,28 @@ pub(crate) fn inbox_id(ask_id: &str) -> String {
 }
 
 /// The card's headline: "{Employee} wants your OK", or for a held send
-/// "Did {Employee}'s message go out?".
+/// "Did {Employee}'s message go out?". An ask a run is parked on is
+/// "{Employee} is waiting on you".
 fn title(c: &PermissionAskCard) -> String {
     if c.kind == AskKind::SendCheck.as_str() {
         return format!("Did {}'s message go out?", c.employee);
     }
+    if c.blocking {
+        return crate::handlers::asks::waiting_on_you(&c.employee);
+    }
     format!("{} wants your OK", c.employee)
 }
 
-/// What it wants to do and why it asked.
+/// The most of what it wants to do a blocking ask's notice says; the card
+/// holds the rest.
+const SHORT_SENTENCE: usize = 120;
+
+/// What it wants to do and why it asked. A blocking ask's notice says only
+/// the short question: "OK to go ahead with …?".
 fn body(c: &PermissionAskCard) -> String {
+    if c.blocking && c.kind != AskKind::SendCheck.as_str() {
+        return short_question(c);
+    }
     let mut sentence = c.sentence.clone();
     if let Some(first) = sentence.get(..1) {
         sentence.replace_range(..1, &first.to_uppercase());
@@ -59,6 +71,16 @@ pub(crate) fn question(c: &PermissionAskCard) -> String {
         return format!("Did {sentence} go out?");
     }
     format!("OK to go ahead with {sentence}? {}", c.reason.trim())
+}
+
+/// "OK to go ahead with …?", what it wants clipped to [`SHORT_SENTENCE`].
+pub(crate) fn short_question(c: &PermissionAskCard) -> String {
+    let sentence = c.sentence.trim().trim_end_matches('.');
+    let short = match sentence.char_indices().nth(SHORT_SENTENCE) {
+        Some((cut, _)) => format!("{}…", sentence[..cut].trim_end()),
+        None => sentence.to_string(),
+    };
+    format!("OK to go ahead with {short}?")
 }
 
 /// The card as a message in the owner's loop or phone conversation, which
@@ -132,24 +154,37 @@ fn with_item<R>(
         agent_id: (!c.agent_id.is_empty()).then_some(c.agent_id.as_str()),
         loud: true,
     };
-    f(
-        &n,
-        serde_json::json!({
-            "chatId": chat_id,
-            "actions": { "buttons": buttons, "status": { "method": "GET", "path": path } },
-        }),
-    )
+    let mut hub_only = serde_json::json!({
+        "chatId": chat_id,
+        "actions": { "buttons": buttons, "status": { "method": "GET", "path": path } },
+    });
+    if c.blocking && let (Some(item), serde_json::Value::Object(b)) =
+        (hub_only.as_object_mut(), crate::handlers::asks::blocking_fields())
+    {
+        item.extend(b);
+    }
+    f(&n, hub_only)
 }
 
 /// Put the card before the owner: its Inbox row in this Inbox at once, and
 /// its hub copy (the phone's push) gathered with the rest of its burst
 /// ([`crate::ask_push`]). Idempotent on the item id.
-fn surface(state: &AppState, c: &PermissionAskCard) {
+///
+/// An ask a run is parked on (blocking) is never held for a burst: its hub
+/// copy goes at once, on its own, and the phone presents it even in the
+/// foreground. When it is raised its Inbox row here is quiet: the app's one
+/// loud signal for it is the blocking notice it raises from the waiting list
+/// (`asks_waiting`), whose click opens the card over the chat the owner is
+/// in, never another chat. A `reminder` is loud again; the app shows it as
+/// the same blocking notice.
+fn surface(state: &AppState, c: &PermissionAskCard, reminder: bool) {
     let queued = with_item(c, |n, hub_only| {
-        tools::owner_notify::emit(&state.store, Some(&|ev, payload| state.hub.broadcast(ev, payload)), n);
+        let n = tools::owner_notify::OwnerNotification { loud: n.loud && (!c.blocking || reminder), ..*n };
+        tools::owner_notify::emit(&state.store, Some(&|ev, payload| state.hub.broadcast(ev, payload)), &n);
         queued(state, c, n.hub_item(hub_only))
     });
-    crate::ask_push::global(state).queue(vec![queued]);
+    let pushes = crate::ask_push::global(state);
+    if c.blocking { pushes.now(queued) } else { pushes.queue(vec![queued]) }
 }
 
 /// The ask as it waits for its push.
@@ -173,7 +208,7 @@ impl AskSurfaces for OwnerSurfaces {
     fn card(&self, ask: &Ask) {
         let state = &self.state;
         let c = card(state, ask);
-        surface(state, &c);
+        surface(state, &c, false);
         state.hub.broadcast("permission_ask", serde_json::to_value(&c).unwrap_or_default());
         crate::handlers::asks::permission_raised(state, &c);
     }
@@ -186,7 +221,7 @@ impl AskSurfaces for OwnerSurfaces {
         if let Err(e) = state.store.resurface_notification(&id, &user_id) {
             warn!(ask = %c.id, error = %e, "ask's Inbox row not brought back");
         }
-        surface(state, &c);
+        surface(state, &c, true);
         state.hub.broadcast("permission_ask", serde_json::to_value(&c).unwrap_or_default());
         crate::handlers::asks::permission_raised(state, &c);
         info!(ask = %c.id, "ask still open; the owner was reminded");
@@ -265,6 +300,7 @@ mod tests {
             status: "open".into(),
             answer: None,
             chat_id: String::new(),
+            blocking: false,
             created_at: 0,
         }
     }
@@ -290,6 +326,36 @@ mod tests {
         assert_eq!(item["agentId"], "ava");
         assert_eq!(item["chatId"], "c-9");
         assert_eq!(item["actions"]["buttons"].as_array().map(Vec::len), Some(3));
+    }
+
+    /// Live 2026-10-02: Bookkeeper's workflow step parked on the owner's OK
+    /// while he was in Flip-Flap's chat. A blocking ask's item says who is
+    /// waiting on him and the short question, carries its three answers for
+    /// the lock screen, asks for the time-sensitive level, and opens the
+    /// Inbox item (no chat raised it), never the chat he is in.
+    #[test]
+    fn a_blocking_ask_says_who_is_waiting_and_answers_from_the_notification() {
+        let mut c = card(true, true);
+        c.employee = "Bookkeeper".into();
+        c.blocking = true;
+        c.sentence = format!("draft: debit Ask Client $17,519.79 {}", "and credit the offset ".repeat(10));
+        c.reason = "This needs your OK every time.".into();
+        let (link, item) = with_item(&c, |n, extra| (n.link(), n.hub_item(extra)));
+        assert_eq!(item["title"], "Bookkeeper is waiting on you");
+        let body = item["body"].as_str().unwrap();
+        assert!(body.starts_with("OK to go ahead with draft: debit Ask Client $17,519.79") && body.ends_with("…?"), "{body}");
+        assert!(body.chars().count() < 160, "short: {body}");
+        assert_eq!(item["blocking"], true);
+        assert_eq!(item["interruptionLevel"], "time-sensitive");
+        let labels: Vec<&str> =
+            item["actions"]["buttons"].as_array().unwrap().iter().map(|b| b["label"].as_str().unwrap()).collect();
+        assert_eq!(labels, ["Allow always", "This once", "No"]);
+        assert_eq!(link, "/inbox?m=permission-ask%3Aa1");
+
+        // One nothing is parked on keeps its card's words and its burst.
+        let (_, quiet) = with_item(&card(true, true), |n, extra| (n.link(), n.hub_item(extra)));
+        assert_eq!(quiet["title"], "Ava wants your OK");
+        assert!(quiet.get("blocking").is_none() && quiet.get("interruptionLevel").is_none());
     }
 
     #[test]

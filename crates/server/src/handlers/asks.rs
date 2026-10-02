@@ -59,6 +59,11 @@ pub struct WaitingAsk {
     /// Whether it can be answered in words at all. An install or sign-in
     /// card is done in the app.
     pub answerable: bool,
+    /// A run is parked on the answer (a question always; a permission ask
+    /// when a workflow step waits on it). The owner is told at once,
+    /// wherever he is — a push, the desktop's notice — and it is decided on
+    /// its card, never by the chat he happens to be in.
+    pub blocking: bool,
     /// Unix seconds when it started waiting.
     pub created_at: i64,
 }
@@ -121,6 +126,20 @@ pub(crate) async fn waiting(state: &AppState, session: Option<&str>) -> Vec<Wait
     out
 }
 
+/// How many blocking asks wait on the owner, by employee id: what the
+/// roster's "Waiting for you" marker counts.
+pub(crate) async fn blocking_by_employee(state: &AppState) -> std::collections::HashMap<String, usize> {
+    count_blocking(waiting(state, None).await.iter().map(|w| &w.card))
+}
+
+fn count_blocking<'a>(asks: impl Iterator<Item = &'a WaitingAsk>) -> std::collections::HashMap<String, usize> {
+    let mut by = std::collections::HashMap::new();
+    for w in asks.filter(|w| w.blocking) {
+        *by.entry(w.agent_id.clone()).or_insert(0) += 1;
+    }
+    by
+}
+
 fn employee_of(state: &AppState, session_key: &str) -> (String, String) {
     let agent_id = types::keyparser::extract_agent_id(session_key);
     let employee = crate::handlers::permissions::employee_name(state, &agent_id);
@@ -145,6 +164,7 @@ fn from_parked(state: &AppState, session_key: &str, ask: &PendingAsk) -> Waiting
             values: shape.values,
             free_text: shape.free_text,
             answerable: shape.answerable,
+            blocking: true,
             created_at: ask.created_at,
         },
         answers: Answers::Question,
@@ -254,6 +274,7 @@ fn permission_waiting(c: &PermissionAskCard) -> Waiting {
                 .collect(),
             free_text: false,
             answerable: true,
+            blocking: c.blocking,
             created_at: c.created_at,
         },
         answers: Answers::Permission(offered.into_iter().map(|(_, a)| a).collect()),
@@ -298,6 +319,38 @@ pub(crate) fn on_call(w: &WaitingAsk) -> String {
         id = w.id,
         question = w.question.trim(),
     )
+}
+
+/// The most of a question a notice in another conversation says.
+const NOTICE_CHARS: usize = 160;
+
+/// A blocking ask from ANOTHER conversation, as a call is told of it: a
+/// notice and nothing more. The call names who waits and on what, in one
+/// short sentence; it never asks for the answer, never answers it, and
+/// carries no id to answer it with. The ask is decided on its own card —
+/// the notification, the phone, the Inbox, or the conversation that raised
+/// it — never by the employee the owner is talking to (live 2026-10-02: on
+/// a call with Flip-Flap the owner was put Bookkeeper's workflow ask, said
+/// "No.", and Flip-Flap answered it: "Told Bookkeeper no.").
+pub(crate) fn notice_on_call(w: &WaitingAsk) -> String {
+    format!(
+        "(A notice, not a request, and not this conversation's: {employee} is waiting on the owner elsewhere. Tell \
+         the owner once, in one short sentence, in the language they are speaking on this call: \"{headline}: \
+         {question}\". Nothing more: don't ask them for the answer and never answer it yourself. It is answered on \
+         its card (the notification, the phone or the Inbox), never on this call.)",
+        employee = w.employee,
+        headline = waiting_on_you(&w.employee),
+        question = notice_question(w),
+    )
+}
+
+/// The question as a notice says it, clipped to [`NOTICE_CHARS`].
+pub(crate) fn notice_question(w: &WaitingAsk) -> String {
+    let q = w.question.trim();
+    match q.char_indices().nth(NOTICE_CHARS) {
+        Some((cut, _)) => format!("{}…", q[..cut].trim_end()),
+        None => q.to_string(),
+    }
 }
 
 /// "A", "A or B", "A, B, or C".
@@ -599,12 +652,28 @@ pub(crate) fn push_id(request_id: &str) -> String {
     format!("question-ask:{request_id}")
 }
 
+/// "Ava is waiting on you": the headline of a blocking ask on every
+/// surface that tells the owner of it (the push, the desktop's notice, a
+/// call in another conversation).
+pub(crate) fn waiting_on_you(employee: &str) -> String {
+    format!("{employee} is waiting on you")
+}
+
+/// What a blocking ask's hub item carries beside its words: it is pushed on
+/// its own, at once (never held for a batch), and the phone presents it
+/// even in the foreground, at iOS's time-sensitive level. The hub passes
+/// both on to the push (`data.blocking`, `aps.interruption-level`).
+pub(crate) fn blocking_fields() -> serde_json::Value {
+    serde_json::json!({ "blocking": true, "interruptionLevel": "time-sensitive" })
+}
+
 /// A parked question as the owner's hub item, which pushes it to his phone:
 /// who is waiting, on what, and a link into the conversation where it waits
-/// (the pinned bar there answers it). `askId` names the ask.
+/// (the pinned bar there answers it). `askId` names the ask. A parked
+/// question always blocks its run.
 pub(crate) fn push_item(w: &WaitingAsk) -> serde_json::Value {
     let id = push_id(&w.id);
-    let title = format!("{} is waiting on your answer", w.employee);
+    let title = waiting_on_you(&w.employee);
     let link = tools::owner_notify::link::chat(&w.agent_id, &w.chat_id);
     let n = tools::owner_notify::OwnerNotification {
         id: &id,
@@ -615,7 +684,10 @@ pub(crate) fn push_item(w: &WaitingAsk) -> serde_json::Value {
         agent_id: (!w.agent_id.is_empty()).then_some(w.agent_id.as_str()),
         loud: true,
     };
-    n.hub_item(serde_json::json!({ "chatId": w.chat_id, "askId": w.id }))
+    let mut extra = blocking_fields();
+    extra["chatId"] = serde_json::json!(w.chat_id);
+    extra["askId"] = serde_json::json!(w.id);
+    n.hub_item(extra)
 }
 
 /// A run parked on a question: the owner's live calls are told now, the
@@ -697,6 +769,7 @@ pub(crate) mod tests {
                 values: shape.values,
                 free_text: shape.free_text,
                 answerable: shape.answerable,
+                blocking: true,
                 created_at: 100,
             },
             answers: Answers::Question,
@@ -874,6 +947,7 @@ pub(crate) mod tests {
                 values: vec!["allow_always".into(), "this_once".into(), "no".into()],
                 free_text: false,
                 answerable: true,
+                blocking: false,
                 created_at: 0,
             },
             answers: Answers::Permission(vec![Answer::AllowAlways, Answer::ThisOnce, Answer::No]),
@@ -1041,7 +1115,9 @@ pub(crate) mod tests {
         assert_eq!(item["chatId"], "t1");
         assert_eq!(item["askId"], "bf8e2c67");
         assert_eq!(item["agentId"], "nanna");
-        assert_eq!(item["title"], "Nanna is waiting on your answer");
+        assert_eq!(item["title"], "Nanna is waiting on you");
         assert_eq!(item["body"], INCIDENT);
+        assert_eq!(item["blocking"], true, "a parked question blocks its run");
+        assert_eq!(item["interruptionLevel"], "time-sensitive");
     }
 }

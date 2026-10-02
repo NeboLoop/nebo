@@ -27,6 +27,7 @@ const question: WaitingAsk = {
 	values: ['Yes, set it up', 'No'],
 	freeText: true,
 	answerable: true,
+	blocking: true,
 	createdAt: 1
 };
 const permission: WaitingAsk = {

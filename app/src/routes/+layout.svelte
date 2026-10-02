@@ -57,6 +57,7 @@
   import { theme } from '$lib/stores/theme.js';
   import { onboardingComplete, onboardingChecked, backendReady, backendChecking, checkOnboardingStatus, retryBackendConnection } from '$lib/stores/onboarding';
   import Toast from '$lib/components/Toast.svelte';
+  import AskPopover from '$lib/components/AskPopover.svelte';
   import { unreadCount, loadNotifications } from '$lib/stores/notifications';
   import { commandPaletteOpen } from '$lib/stores/commandPalette';
   import CommandPalette from '$lib/components/CommandPalette.svelte';
@@ -263,6 +264,10 @@
      same modals the shell has. Only the shell's own chrome stays out. -->
 {#if !isVoicePill}
 <Toast />
+<!-- A blocking ask's card over whatever screen the owner is on, opened only
+     by his click on its toast or OS notification; he answers without
+     leaving the chat he is in. -->
+<AskPopover />
 <!-- The ONE install/configure modal for the whole app. Opened via the
      installFlow store (product/configure) or window nebo:code_* events (code
      paste). Mounted once here so two install modals can never stack. -->

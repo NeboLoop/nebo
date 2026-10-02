@@ -267,12 +267,12 @@ async fn owners_call_ask_is_asked_aloud_and_answered_by_voice() {
     // An id the voice model made up answers nothing, and the voice model
     // hears the real one.
     let invented = json!({ "ask_id": "0", "answer": "yes" });
-    let (ok, refused) = crate::handlers::voice::answer_ask_on_call(state, Some(&jev), &invented, "yes", created + 5).await;
+    let (ok, refused) = crate::handlers::voice::answer_ask_on_call(state, Some(&jev), &key, &invented, "yes", created + 5).await;
     assert!(!ok && refused.starts_with("No ask 0 is waiting"), "{refused}");
     assert!(refused.contains(&format!("ask {ask_id}:")), "the real id is named: {refused}");
     assert_eq!(asks.get(&ask_id).unwrap().unwrap().status, agent::harness::permissions::AskStatus::Open);
     // Not yet: the owner hasn't spoken since it was asked.
-    let (ok, early) = crate::handlers::voice::answer_ask_on_call(state, Some(&jev), &yes, "yes", created).await;
+    let (ok, early) = crate::handlers::voice::answer_ask_on_call(state, Some(&jev), &key, &yes, "yes", created).await;
     assert!(!ok && early.contains("hasn't answered since this was asked"), "{early}");
     // Not a client claiming a spoken answer.
     let (status, _) = nebo
@@ -284,7 +284,7 @@ async fn owners_call_ask_is_asked_aloud_and_answered_by_voice() {
 
     // He says yes: read as "This once", answered via voice, and the parked
     // call runs once.
-    let (ok, heard) = crate::handlers::voice::answer_ask_on_call(state, Some(&jev), &yes, "yes", created + 2).await;
+    let (ok, heard) = crate::handlers::voice::answer_ask_on_call(state, Some(&jev), &key, &yes, "yes", created + 2).await;
     assert!(ok && heard.starts_with("Answered \"This once\""), "{heard}");
     let row = nebo.store().get_permission_ask(&ask_id).unwrap().unwrap();
     assert_eq!((row.answer.as_deref(), row.answered_via.as_deref()), (Some("this_once"), Some("voice")));
@@ -297,7 +297,7 @@ async fn owners_call_ask_is_asked_aloud_and_answered_by_voice() {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     assert_eq!(count(&ran)[1], 1, "the parked call ran once");
-    let (ok, again) = crate::handlers::voice::answer_ask_on_call(state, Some(&jev), &yes, "yes", created + 9).await;
+    let (ok, again) = crate::handlers::voice::answer_ask_on_call(state, Some(&jev), &key, &yes, "yes", created + 9).await;
     assert!(!ok && again.contains(&format!("No ask {ask_id} is waiting")), "{again}");
     assert_eq!(count(&ran)[1], 1);
 }
@@ -576,8 +576,8 @@ async fn a_linked_agents_ask_is_answered_once_in_its_own_turn() {
     let (jev, _) = crate::handlers::asks::tests::table_jev(&[("always, don't ask me again", "option_2")]).await;
     let say = |id: &str, answer: &str| json!({ "ask_id": id, "answer": answer });
     let voice = |input: Value, heard: &'static str, at: i64| {
-        let jev = &jev;
-        async move { crate::handlers::voice::answer_ask_on_call(state, Some(jev), &input, heard, at).await }
+        let (jev, key) = (&jev, &key);
+        async move { crate::handlers::voice::answer_ask_on_call(state, Some(jev), key, &input, heard, at).await }
     };
     let (_, early) = voice(say("call_1", "always"), "always, don't ask me again", card.created_at).await;
     assert!(early.contains("hasn't answered since this was asked"), "{early}");
@@ -636,4 +636,190 @@ async fn a_linked_agents_ask_is_answered_once_in_its_own_turn() {
         ],
         "each task sent once after the employee's mode, each ask answered once by its kind"
     );
+}
+
+/// The owner's chats and calls while another employee's ask waits:
+/// Flip-Flap's chat with a call on it, and his chief of staff's chat with a
+/// call on it. Each chat holds one real reply.
+struct OwnerElsewhere {
+    flip_chat: String,
+    flip_key: String,
+    flip_call: tokio::sync::mpsc::Receiver<crate::handlers::voice::CallNews>,
+    pa_chat: String,
+    pa_call: tokio::sync::mpsc::Receiver<crate::handlers::voice::CallNews>,
+}
+
+fn owner_elsewhere(nebo: &Nebo) -> OwnerElsewhere {
+    let store = nebo.store();
+    let chat = |agent: &str, reply: &str| {
+        let chat = uuid::Uuid::new_v4().to_string();
+        store.create_chat(&chat, "Proof").unwrap();
+        store.create_chat_message(&uuid::Uuid::new_v4().to_string(), &chat, "assistant", reply, None).unwrap();
+        let key = format!("agent:{agent}:thread:{chat}");
+        let (tx, rx) = tokio::sync::mpsc::channel(8);
+        nebo.state.live_calls.lock().unwrap().insert(key.clone(), tx);
+        (chat, key, rx)
+    };
+    let (flip_chat, flip_key, flip_call) = chat("flip-flap", "Try \"TAP TO FLY!\" again.");
+    let (pa_chat, _, pa_call) = chat("assistant", "Morning. Two things on your plate.");
+    OwnerElsewhere { flip_chat, flip_key, flip_call, pa_chat, pa_call }
+}
+
+impl OwnerElsewhere {
+    /// Every call he is on is told of `ask_id` only as a notice: no id to
+    /// answer it with, no answer asked for.
+    async fn told_only_of(&mut self, ask_id: &str) {
+        for call in [&mut self.flip_call, &mut self.pa_call] {
+            let news = tokio::time::timeout(Duration::from_secs(10), call.recv())
+                .await
+                .expect("the call is told of it")
+                .unwrap();
+            let crate::handlers::voice::CallNews::Notice(w) = news else { panic!("put to another chat's call: {news:?}") };
+            assert_eq!(w.id, ask_id);
+            let said = crate::handlers::asks::notice_on_call(&w);
+            assert!(!said.contains(ask_id) && !said.contains("answer_ask"), "{said}");
+        }
+    }
+
+    /// Not a word of it in either chat: each holds only its own reply.
+    fn chats_untouched(&self, nebo: &Nebo) {
+        for (chat, reply) in [(&self.flip_chat, "Try \"TAP TO FLY!\" again."), (&self.pa_chat, "Morning. Two things on your plate.")] {
+            let rows: Vec<String> = nebo.store().get_chat_messages(chat).unwrap().into_iter().map(|m| m.content).collect();
+            assert_eq!(rows, [reply], "nothing landed in the chat he is in");
+        }
+    }
+}
+
+/// Live 2026-10-02, 7:12 AM: the owner was talking with Flip-Flap when
+/// Bookkeeper's workflow step parked on his OK. The ask came into Flip-Flap's
+/// conversation ("Bookkeeper asks: OK to go ahead with …? Allow always, this
+/// once, or no?"), he said "No.", and Flip-Flap decided it: "Told Bookkeeper
+/// no." Now the ask blocks a run, so it reaches him at once — its Inbox item,
+/// a push of its own, and on each call only a notice — and it never lands in
+/// Flip-Flap's chat or his chief of staff's; Flip-Flap's call can't answer
+/// it. His answer from the Inbox card reaches Bookkeeper's run.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_workflow_ask_never_lands_in_the_chat_the_owner_is_in() {
+    let nebo = session().await;
+    let state = &nebo.state;
+    let agent = format!("bk-{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
+    let run = format!("run-{}", uuid::Uuid::new_v4().simple());
+    let key = format!("agent:{agent}:workflow:{run}:triage::1");
+    let (names, _ran) = heartbeat_steps(&nebo, &agent.replace('-', "_")).await;
+    let mut ctx = ToolContext::new(Origin::Workflow).with_session(&key, "workflow");
+    ctx.door = Door::Workflow;
+    let mut owner = owner_elsewhere(&nebo);
+    let mut hub = state.hub.subscribe();
+
+    let parked = nebo.tool(&ctx, &names[1], json!({ "to": "+15550142" })).await;
+    let ask_id = parked.parked_ask.clone().expect("the step parks on the owner");
+    nebo.store().link_permission_ask_run(&ask_id, &run).unwrap();
+
+    // It blocks Bookkeeper's run and no chat raised it.
+    let waiting = crate::handlers::asks::waiting(state, None).await;
+    let w = waiting.iter().find(|w| w.card.id == ask_id).expect("it waits on the owner");
+    assert!(w.card.blocking && w.card.chat_id.is_empty(), "{:?}", w.card);
+
+    // Each call he is on hears only a notice; Flip-Flap's call can't decide it.
+    owner.told_only_of(&ask_id).await;
+    let (jev, _) = crate::handlers::asks::tests::table_jev(&[("No.", "option_3")]).await;
+    let (ok, said) = crate::handlers::voice::answer_ask_on_call(
+        state,
+        Some(&jev),
+        &owner.flip_key,
+        &json!({ "ask_id": ask_id, "answer": "No." }),
+        "No.",
+        w.card.created_at + 5,
+    )
+    .await;
+    assert!(!ok && said.contains("never on this call"), "{said}");
+    assert_eq!(nebo.store().get_permission_ask(&ask_id).unwrap().unwrap().status, "open", "Flip-Flap decided nothing");
+
+    // Its Inbox item: who is waiting on him, opening in the Inbox. The app's
+    // loud signal is its blocking notice, so the row itself is quiet.
+    let user = nebo.store().ensure_local_user_id().unwrap();
+    let inbox = nebo.store().get_notification(&format!("permission-ask:{ask_id}"), &user).unwrap().expect("the Inbox has it");
+    assert!(inbox.title.ends_with(" is waiting on you"), "{}", inbox.title);
+    assert_eq!(inbox.action_url.as_deref(), Some(format!("/inbox?m=permission-ask%3A{ask_id}").as_str()));
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    let mut quiet = false;
+    while tokio::time::Instant::now() < deadline && !quiet {
+        let Ok(Ok(e)) = tokio::time::timeout(Duration::from_millis(200), hub.recv()).await else { continue };
+        assert!(
+            !(e.event_type == "notification" && e.payload["id"] == format!("permission-ask:{ask_id}")),
+            "the row is quiet"
+        );
+        quiet = e.event_type == "notification_created" && e.payload["id"] == format!("permission-ask:{ask_id}");
+    }
+    assert!(quiet, "the Inbox row was broadcast");
+    owner.chats_untouched(&nebo);
+
+    // He answers No on the Inbox card: Bookkeeper's run hears it.
+    let answered = nebo
+        .post_ok(&format!("/permissions/asks/{ask_id}/answer"), &json!({ "answer": "no", "via": "inbox" }))
+        .await;
+    assert_eq!(answered["status"], "declined");
+    let approval = nebo.get_ok(&format!("/agents/workflow-runs/{run}/approval")).await;
+    assert_eq!(approval["status"], "denied", "{approval}");
+    owner.chats_untouched(&nebo);
+}
+
+/// The same rule for a coworker's run: a question Bookkeeper asks the owner
+/// while handling a colleague's request waits in Bookkeeper's own thread
+/// with that colleague. Flip-Flap's and the chief of staff's calls are only
+/// told of it, neither chat gets a word of it, Flip-Flap's call can't answer
+/// it, and the owner's answer reaches Bookkeeper's run.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_coworker_ask_never_lands_in_the_chat_the_owner_is_in() {
+    let nebo = session().await;
+    let state = &nebo.state;
+    let agent = format!("bk-{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
+    let key = format!("agent:{agent}:coworker:controller");
+    let mut owner = owner_elsewhere(&nebo);
+    let handle = state
+        .run_registry
+        .register(crate::run_registry::RegisterParams {
+            session_key: key.clone(),
+            entity_id: agent.clone(),
+            entity_name: "Bookkeeper".into(),
+            origin: "comm".into(),
+            channel: "coworker".into(),
+            cancel_token: tokio_util::sync::CancellationToken::new(),
+            parent_run_id: None,
+        })
+        .await;
+    let (tx, rx) = tokio::sync::oneshot::channel::<String>();
+    state.ask_channels.lock().await.insert("req-bk".into(), tx);
+    let event = ai::StreamEvent::ask_request(
+        "req-bk",
+        "Post the draft entry to the offset account?",
+        Some(json!([{ "type": "options", "options": ["Yes", "No"] }])),
+    );
+    let ask = crate::chat_dispatch::announce_ask(state, &key, &event).await;
+    assert_eq!(ask.request_id, "req-bk");
+    let waiting = crate::handlers::asks::waiting(state, None).await;
+    let w = waiting.iter().find(|w| w.card.id == "req-bk").expect("it waits on the owner");
+    assert!(w.card.blocking, "a parked question blocks its run");
+    assert_eq!(w.card.session_key, key);
+
+    owner.told_only_of("req-bk").await;
+    let (jev, _) = crate::handlers::asks::tests::table_jev(&[("Yes.", "option_1")]).await;
+    let (ok, said) = crate::handlers::voice::answer_ask_on_call(
+        state,
+        Some(&jev),
+        &owner.flip_key,
+        &json!({ "ask_id": "req-bk", "answer": "Yes." }),
+        "Yes.",
+        w.card.created_at + 5,
+    )
+    .await;
+    assert!(!ok && said.contains("never on this call"), "{said}");
+    owner.chats_untouched(&nebo);
+
+    // His answer from the card reaches Bookkeeper's run.
+    assert!(crate::chat_dispatch::answer_ask(state, "req-bk", "Yes".into()).await);
+    let got = tokio::time::timeout(Duration::from_secs(5), rx).await.expect("the run hears it").unwrap();
+    assert_eq!(got, "Yes");
+    owner.chats_untouched(&nebo);
+    drop(handle);
 }

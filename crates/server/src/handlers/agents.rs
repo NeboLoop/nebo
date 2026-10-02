@@ -357,6 +357,10 @@ pub async fn list_agents(
         linked_offline(&linked, bots.as_deref(), here(&state).as_ref())
     };
 
+    // How many blocking asks each employee waits on the owner with: the
+    // roster's "Waiting for you" marker (desktop and phone).
+    let waiting_for_you = crate::handlers::asks::blocking_by_employee(&state).await;
+
     let mut agents = Vec::with_capacity(fs_agents.len());
     let mut matched_db_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
     for loaded in &fs_agents {
@@ -461,6 +465,7 @@ pub async fn list_agents(
             "restarted": latest_thread.as_ref().is_some_and(|t| t.restarted),
             "kind": db_row.and_then(|r| r.kind.clone()),
             "offline": offline.get(&agent_id).copied(),
+            "waitingForYou": waiting_for_you.get(&agent_id).copied().unwrap_or(0),
         });
         // Derive needsSetup from config inputs vs stored input_values
         let needs_setup = if let Some(ref cfg) = loaded.config {
@@ -548,6 +553,7 @@ pub async fn list_agents(
             "restarted": latest_thread.as_ref().is_some_and(|t| t.restarted),
             "kind": r.kind,
             "offline": offline.get(&r.id).copied(),
+            "waitingForYou": waiting_for_you.get(&r.id).copied().unwrap_or(0),
             "loadError": if files_expected {
                 serde_json::Value::String("agent files failed to load — this employee cannot run correctly; delete it or repair its files".into())
             } else {

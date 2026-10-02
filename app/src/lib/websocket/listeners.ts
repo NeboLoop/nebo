@@ -17,7 +17,9 @@ import { getWebSocketClient } from './client';
 import { opensHere } from './origin';
 import { notifications, pushNotification, loadNotifications, settleUpdateNotices } from '$lib/stores/notifications';
 import { askRaised, askSettled, loadOpenAsks } from '$lib/stores/permissionAsks';
-import { loadWaitingAsks, setWaitingAsks } from '$lib/stores/waitingAsks';
+import { loadWaitingAsks, setWaitingAsks, waitingAsks } from '$lib/stores/waitingAsks';
+import { newBlockingAsks, seedBlockingAsks, openAsk, answerById } from '$lib/stores/blockingAsks';
+import type { WaitingAsk } from '$lib/api/neboComponents';
 import { addToast, removeToast } from '$lib/stores/toast';
 import { onUpdateAvailable, onUpdateProgress, onUpdateReady, onUpdateError } from '$lib/stores/update';
 import { logger } from '$lib/monitoring';
@@ -37,6 +39,43 @@ const unsubs: (() => void)[] = [];
 // fire a second banner.
 const shownNotifIds = new Set<string>();
 
+/** The waiting blocking ask an Inbox row (`permission-ask:<id>`) is for. */
+function blockingAskOf(notificationId: string): WaitingAsk | undefined {
+  const id = notificationId.startsWith('permission-ask:') ? notificationId.slice('permission-ask:'.length) : '';
+  return id ? get(waitingAsks).find((a) => a.id === id && a.blocking) : undefined;
+}
+
+/** A blocking ask reaches the owner wherever he is in the app, never inside
+ *  the chat he is in: a toast that fades on its own, and the OS notification.
+ *  A click on either opens its card over the current screen. */
+function tellBlockingAsk(ask: WaitingAsk): void {
+  const title = get(t)('chat.waitingOnYou', { values: { name: ask.employee } });
+  addToast(`${title}: ${ask.question}`, 'warning', 10000, {
+    label: get(t)('chat.waitingOpen'),
+    onClick: () => openAsk(ask.id),
+  });
+  void (async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    if (!(window as any).__TAURI_INTERNALS__) return;
+    try {
+      const notif = await import('@tauri-apps/plugin-notification');
+      let granted = await notif.isPermissionGranted();
+      if (!granted) granted = (await notif.requestPermission()) === 'granted';
+      if (!granted) return;
+      const { invoke } = await import('@tauri-apps/api/core');
+      await invoke('show_owner_notification', {
+        title,
+        body: ask.question,
+        link: '',
+        ask: ask.id,
+        answers: ask.answerable ? ask.options : [],
+      });
+    } catch (e) {
+      log.debug(`blocking ask notification not shown: ${String(e)}`);
+    }
+  })();
+}
+
 export function attachWebSocketListeners(): void {
   if (attached) return;
   attached = true;
@@ -54,8 +93,15 @@ export function attachWebSocketListeners(): void {
 
   // --- Everything waiting on the owner's answer, from every employee: the
   // pinned bar's list, loaded once and replaced whole on every change. ---
-  void loadWaitingAsks().catch(() => log.debug('Waiting asks API unavailable'));
-  unsubs.push(ws.on('asks_waiting', (data: any) => setWaitingAsks(data)));
+  void loadWaitingAsks()
+    .then(seedBlockingAsks)
+    .catch(() => log.debug('Waiting asks API unavailable'));
+  unsubs.push(
+    ws.on('asks_waiting', (data: any) => {
+      setWaitingAsks(data);
+      for (const ask of newBlockingAsks(data?.asks ?? [])) tellBlockingAsk(ask);
+    })
+  );
 
   // --- Notifications: store + toast ---
   unsubs.push(
@@ -73,6 +119,13 @@ export function attachWebSocketListeners(): void {
         agentId: data.agentId || undefined,
       };
       pushNotification(n);
+      // A blocking ask brought back as a reminder: its own notice, whose
+      // click opens the card over the screen the owner is on.
+      const blocking = blockingAskOf(n.id);
+      if (blocking) {
+        tellBlockingAsk(blocking);
+        return;
+      }
       addToast(n.title || n.body, n.type === 'error' ? 'error' : 'info');
 
       // Desktop: a NATIVE notification — system-wide (shows over any app),
@@ -105,13 +158,22 @@ export function attachWebSocketListeners(): void {
     })
   );
 
-  // A click on a native notification opens the item's place in the main window.
+  // A click on a native notification opens the item's place in the main window;
+  // on a blocking ask's, its card over the screen the owner is on, and its
+  // action buttons (where the OS has them) answer it there and then.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   if (typeof window !== 'undefined' && (window as any).__TAURI_INTERNALS__) {
     void import('@tauri-apps/api/event')
-      .then(({ listen }) => listen<string>('owner-item-open', (e) => { if (e.payload) void goto(e.payload); }))
-      .then((stop) => unsubs.push(stop))
-      .catch(() => log.debug('owner-item-open listener not attached'));
+      .then(async ({ listen }) => {
+        unsubs.push(await listen<string>('owner-item-open', (e) => { if (e.payload) void goto(e.payload); }));
+        unsubs.push(await listen<string>('owner-ask-open', (e) => { if (e.payload) openAsk(e.payload); }));
+        unsubs.push(
+          await listen<{ ask: string; index: number }>('owner-ask-answer', (e) => {
+            if (e.payload?.ask) void answerById(e.payload.ask, e.payload.index);
+          })
+        );
+      })
+      .catch(() => log.debug('owner notification listeners not attached'));
   }
 
   unsubs.push(
