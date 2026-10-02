@@ -26,6 +26,7 @@
   import ConfirmModal from '$lib/components/settings/ConfirmModal.svelte';
   import { menuAnchor, deleteChatRow } from '$lib/chat/chatMenu';
   import { conversationLists, teammateLabel, teammateName } from '$lib/chat/teammates';
+  import { conversationTitle } from '$lib/chat/sessionKey';
   import NewEmployeeModal from '$lib/components/NewEmployeeModal.svelte';
   import { unreadCount } from '$lib/stores/notifications';
   import { slide } from 'svelte/transition';
@@ -1065,8 +1066,10 @@
   let chatDeleteTarget = $state<{ agentId: string; chatId: string; name: string } | null>(null);
   let chatDeleting = $state(false);
 
-  function chatName(c: EnrichedChat) {
-    return c.title || c.name;
+  /** A conversation's name on screen; never the raw session key a legacy
+   *  chat is stored under — the employee's name stands in for it. */
+  function chatName(c: EnrichedChat, aid: string) {
+    return conversationTitle(c, allAgents.find((a) => a.id === aid)?.name || $t('chat.thread'));
   }
 
   function handleChatContext(e: MouseEvent, aid: string, chatId: string) {
@@ -1109,7 +1112,7 @@
     closeChatCtxMenu();
     const chat = apiThreads[aid]?.find((c) => c.id === chatId);
     if (!chat) return;
-    chatRenaming = { agentId: aid, chatId, value: chatName(chat) };
+    chatRenaming = { agentId: aid, chatId, value: chatName(chat, aid) };
   }
 
   $effect(() => {
@@ -1126,7 +1129,7 @@
     chatRenaming = null;
     const chats = apiThreads[aid] ?? [];
     const chat = chats.find((c) => c.id === chatId);
-    if (!chat || !trimmed || trimmed === chatName(chat)) return;
+    if (!chat || !trimmed || trimmed === chatName(chat, aid)) return;
     try {
       const api = await import('$lib/api/nebo');
       await api.updateChat(chatId, { title: trimmed });
@@ -1152,7 +1155,7 @@
     const { agentId: aid, chatId } = chatCtxMenu;
     closeChatCtxMenu();
     const chat = apiThreads[aid]?.find((c) => c.id === chatId);
-    if (chat) chatDeleteTarget = { agentId: aid, chatId, name: chatName(chat) };
+    if (chat) chatDeleteTarget = { agentId: aid, chatId, name: chatName(chat, aid) };
   }
 
   async function confirmDeleteChat() {
@@ -1706,7 +1709,7 @@
                 aria-haspopup="menu"
               >
                 <div class="flex items-baseline gap-2">
-                  <span class="text-sm truncate flex-1 min-w-0">{c.title || c.name}</span>
+                  <span class="text-sm truncate flex-1 min-w-0">{chatName(c, drilledAgent.id)}</span>
                   <span class="text-xs text-base-content/45 shrink-0">{dayLabel(c.updatedAtEpoch)}</span>
                 </div>
                 <div class="text-xs text-base-content/55 truncate">{#if c.restarted}<span class="badge badge-ghost badge-xs mr-1 align-middle">{$t('sidebar.restarted')}</span>{/if}{c.preview}</div>

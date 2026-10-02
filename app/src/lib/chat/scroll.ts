@@ -83,3 +83,43 @@ export function messagesScrollKey(
 	const streaming = last.streaming ? '1' : '0';
 	return `${messages.length}:${last.type}:${contentLen}:${toolsLen}:${streaming}`;
 }
+
+/** One transcript row's edges, in viewport pixels (getBoundingClientRect). */
+export interface RowEdges {
+	top: number;
+	bottom: number;
+}
+
+/** The reader's place in the transcript: at its end, or the first row still
+ *  in view and how far below the scroller's top edge that row starts. */
+export interface ScrollAnchor {
+	atBottom: boolean;
+	index: number;
+	offset: number;
+}
+
+/** Where the reader is, taken before the transcript column changes width
+ *  (the Work pane opening or closing reflows every row). */
+export function captureAnchor(m: ScrollMetrics, viewTop: number, rows: ReadonlyArray<RowEdges>): ScrollAnchor {
+	if (isNearBottom(m)) return { atBottom: true, index: -1, offset: 0 };
+	const index = rows.findIndex((r) => r.bottom > viewTop);
+	if (index === -1) return { atBottom: true, index: -1, offset: 0 };
+	return { atBottom: false, index, offset: rows[index].top - viewTop };
+}
+
+/** The scrollTop that puts the reader back where `anchor` says, once the
+ *  rows have reflowed: the end stays the end, and a row in view keeps its
+ *  distance from the top edge. */
+export function restoredScrollTop(
+	anchor: ScrollAnchor,
+	m: ScrollMetrics,
+	viewTop: number,
+	rows: ReadonlyArray<RowEdges>,
+): number {
+	const max = Math.max(0, m.scrollHeight - m.clientHeight);
+	if (anchor.atBottom) return max;
+	const row = rows[anchor.index];
+	if (!row) return Math.min(m.scrollTop, max);
+	const top = m.scrollTop + (row.top - viewTop) - anchor.offset;
+	return Math.max(0, Math.min(max, top));
+}

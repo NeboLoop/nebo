@@ -3460,6 +3460,7 @@ async fn an_apps_own_files_never_ride_its_replies_as_cards() {
     nebo.store().set_agent_app_fields(&app, true, Some(&package.join("ui").to_string_lossy()), None, None).unwrap();
     let out = tempfile::tempdir().unwrap();
     let report = out.path().join("cards-report.md");
+    let pkg = package.to_string_lossy().to_string();
     let (src, page, doc) = (
         source.to_string_lossy().to_string(),
         package.join("ui/index.html").to_string_lossy().to_string(),
@@ -3481,6 +3482,9 @@ async fn an_apps_own_files_never_ride_its_replies_as_cards() {
             ("edit_file", json!({ "path": src, "old_string": "speed = 1", "new_string": "speed = 2" })),
             ("write_file", json!({ "path": page, "content": "<!doctype html><html><head></head><body>v2</body></html>" })),
             ("run_command", json!({ "command": "echo built", "description": "Rebuild" })),
+            // A command run in the package that names a source by its
+            // relative path: still the app's own file, never a card.
+            ("run_command", json!({ "command": "touch src/App.tsx", "cwd": pkg, "description": "Rebuild" })),
             ("write_file", json!({ "path": doc, "content": "# What changed\n" })),
         ]))
     })];

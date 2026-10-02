@@ -10,6 +10,7 @@
   import MiniMonth from './MiniMonth.svelte';
   import type { Agent, Chat } from '$lib/api/neboComponents';
   import { formatRelative } from '$lib/time';
+  import { conversationTitle } from '$lib/chat/sessionKey';
 
   let { activePage = 'home', activeChat = '', enabled = null, onToggleAgent = null, marketplaceTab = '' } = $props();
   let collapsed = $state(false);
@@ -51,7 +52,7 @@
       if (chatResp?.chats?.length) {
         chats = chatResp.chats.map(c => ({
           id: c.id,
-          title: c.title,
+          title: conversationTitle(c, $t('chat.thread')),
           agent: '',
           agentColor: 'teal',
           updatedAt: formatRelative(c.updatedAt * 1000, 'short'),

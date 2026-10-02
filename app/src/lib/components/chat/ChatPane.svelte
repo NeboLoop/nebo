@@ -28,10 +28,10 @@
   import type { UploadedAttachment } from '$lib/types/attachment';
   import type { SessionGoalStatus } from '$lib/api/neboComponents';
   import { attSrc, stripAttachmentNotes } from '$lib/types/attachment';
-  import { flushSync } from 'svelte';
+  import { flushSync, tick } from 'svelte';
   import type { Snippet } from 'svelte';
   import { getAttachmentType, formatFileSize, attachmentMediaUrl } from '$lib/types/attachment';
-  import { NEAR_BOTTOM_PX, distanceFromBottom } from '$lib/chat/scroll';
+  import { NEAR_BOTTOM_PX, distanceFromBottom, captureAnchor, restoredScrollTop } from '$lib/chat/scroll';
   import { threadKey } from '$lib/chat/sessionKey';
   import { openAsks, settledAsks, chatAsksOf } from '$lib/stores/permissionAsks';
   import { approvals, chatApprovalsOf } from '$lib/stores/approvals';
@@ -406,9 +406,9 @@
     const a = artifacts.find(x => x.documentId === id);
     if (a) creationsTitle = a.title;
     // WorkViewer owns fetching + rendering (text/binary/media per format).
-    // Opening the panel narrows the chat column and reflows the transcript —
-    // re-pin to the bottom so the message you clicked from stays in view.
-    requestAnimationFrame(() => scrollToBottom());
+    // Opening the panel narrows the chat column and reflows the transcript;
+    // openPane keeps the reader's place, so the message you clicked from
+    // stays where it was.
   }
   const CREATIONS_MIN = 220;
   // The chat column must stay usable no matter how wide the panel goes —
@@ -456,23 +456,59 @@
   // containerEl wraps the chat column AND the pane, so its width doesn't change
   // when the pane opens — half of it is half either way.
   function openPane(view: PaneView) {
-    paneView = view;
-    creationsOpen = true;
-    // Opening Work with nothing selected shows the artifact list — never
-    // auto-pick a file the user didn't ask for.
-    if (view === 'work' && activeArtifactId && !documentVersions.has(activeArtifactId)) {
-      activeArtifactId = null; // stale selection from another thread
-      activeVersion = null;
-    }
-    if (!userResized && containerEl) {
-      creationsFraction = 0.5;
-      creationsWidth = clampPanelWidth(containerEl.getBoundingClientRect().width * creationsFraction);
-    }
+    keepPlace(() => {
+      paneView = view;
+      creationsOpen = true;
+      // Opening Work with nothing selected shows the artifact list — never
+      // auto-pick a file the user didn't ask for.
+      if (view === 'work' && activeArtifactId && !documentVersions.has(activeArtifactId)) {
+        activeArtifactId = null; // stale selection from another thread
+        activeVersion = null;
+      }
+      if (!userResized && containerEl) {
+        creationsFraction = 0.5;
+        creationsWidth = clampPanelWidth(containerEl.getBoundingClientRect().width * creationsFraction);
+      }
+    });
   }
 
   function closePane() {
-    creationsOpen = false;
-    workFull = false;
+    keepPlace(() => {
+      creationsOpen = false;
+      workFull = false;
+    });
+  }
+
+  /** Change the pane and keep the reader's place in the transcript. The pane
+   *  opening or closing changes the chat column's width and reflows every
+   *  row: the scroll offset that showed the conversation before no longer
+   *  does (closing a file viewer left the owner looking at an empty column
+   *  under the header, 2026-10-02). The place is taken before the change and
+   *  given back once the rows have reflowed — the end of the conversation
+   *  stays the end, a row being read stays where it was. */
+  function keepPlace(change: () => void) {
+    const scroller = messagesContainer;
+    const content = messagesContent;
+    const rowsOf = (c: HTMLElement) => Array.from(c.children, (el) => el.getBoundingClientRect());
+    const anchor = scroller && content
+      ? captureAnchor(scroller, scroller.getBoundingClientRect().top, rowsOf(content))
+      : null;
+    change();
+    if (!anchor) return;
+    scrollingProgrammatically = true;
+    programmaticUntil = performance.now() + 300;
+    void tick().then(() => requestAnimationFrame(() => {
+      const el = messagesContainer;
+      const c = messagesContent;
+      if (!el || !c) {
+        scrollingProgrammatically = false;
+        return;
+      }
+      el.scrollTop = restoredScrollTop(anchor, el, el.getBoundingClientRect().top, rowsOf(c));
+      lastScrollTop = el.scrollTop;
+      if (anchor.atBottom) autoScrollEnabled = true;
+      requestAnimationFrame(() => { scrollingProgrammatically = false; });
+    }));
   }
 
   /** Toggle a pane view from the header: same view closes, different switches. */

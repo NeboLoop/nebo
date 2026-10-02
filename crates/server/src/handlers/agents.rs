@@ -4683,6 +4683,7 @@ pub async fn list_agent_chats(
 
     // Format response
     let now = chrono::Utc::now().timestamp();
+    let employee = state.store.get_agent(&id).ok().flatten().map(|a| a.name).unwrap_or_default();
     let mut chats = Vec::new();
     let mut teammates = Vec::new();
     for (chat, msg_count, last_content) in &enriched_chats {
@@ -4700,10 +4701,11 @@ pub async fn list_agent_chats(
             types::keyparser::Conversation::Owner => None,
             _ => Some(teammate_name(&state, &conversation, chat)),
         };
+        let title = shown_title(&chat.title, &employee);
         let row = serde_json::json!({
             "id": chat.id,
-            "name": chat.title,
-            "title": chat.title,
+            "name": title,
+            "title": title,
             "kind": conversation.kind(),
             "with": with,
             // A linked coding employee's conversation: where it works.
@@ -4729,6 +4731,16 @@ pub async fn list_agent_chats(
         "activeChatId": active_chat_id,
         "total": total,
     })))
+}
+
+/// A conversation's title as the owner sees it. A chat the runner made for
+/// a session that had no row yet (the legacy `agent:<id>:web` one the app
+/// console's Send to writes in) is titled with its own session key; the
+/// employee's name stands in for it, so a raw key never reaches a screen.
+fn shown_title(title: &str, employee: &str) -> String {
+    let t = title.trim();
+    let raw_key = t.starts_with("agent:") && !t.contains(char::is_whitespace);
+    if t.is_empty() || raw_key { employee.to_string() } else { title.to_string() }
 }
 
 /// Who is on the other side of an employee's thread with a colleague or a
@@ -5828,6 +5840,24 @@ pub async fn revert_learning(
     );
     info!(id, agent_id = %row.agent_id, target = %row.target, action = %row.action, "learning reverted");
     Ok(Json(serde_json::json!({ "status": "reverted" })))
+}
+
+#[cfg(test)]
+mod shown_title_tests {
+    use super::shown_title;
+
+    /// A legacy web chat is titled with its own session key; the list shows
+    /// the employee's name instead. A real title, and one that merely
+    /// mentions an agent, stay as they are.
+    #[test]
+    fn a_raw_session_key_is_never_a_chat_title() {
+        let key = "agent:ae6bc1be-9981-400e-95e2-6d3e1a713c29:web";
+        assert_eq!(shown_title(key, "Flip-Flap"), "Flip-Flap");
+        assert_eq!(shown_title("", "Flip-Flap"), "Flip-Flap");
+        assert_eq!(shown_title("agent:x:thread:y", ""), "");
+        assert_eq!(shown_title("Ten levels for the game", "Flip-Flap"), "Ten levels for the game");
+        assert_eq!(shown_title("agent: who owns billing", "Flip-Flap"), "agent: who owns billing");
+    }
 }
 
 #[cfg(test)]
