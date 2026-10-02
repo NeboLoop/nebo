@@ -352,7 +352,7 @@ fn chat_model_for_session(harness: &agent::Harness, session_key: &str) -> Option
 }
 
 /// Configuration for sending a reply back through a communication channel.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct CommReplyConfig {
     pub provider: String, // "neboai", or future: "slack", "discord"
     pub topic: String,

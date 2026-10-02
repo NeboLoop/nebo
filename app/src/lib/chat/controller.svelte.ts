@@ -24,6 +24,8 @@ import { applyHelperEvent, type HelperLine } from '$lib/chat/helpers';
 import { isThinking, latestThought } from '$lib/chat/progress';
 import type { Fold } from '$lib/chat/turnBlocks';
 import { formatTime } from '$lib/time';
+import { clientId } from '$lib/websocket/origin';
+import { userMessageRow } from '$lib/chat/userMessage';
 import { get } from 'svelte/store';
 import { t } from 'svelte-i18n';
 
@@ -741,6 +743,16 @@ export function createChatController(config: ChatControllerConfig) {
     resetStreaming();
   }
 
+  // The owner's message, sent into this conversation from somewhere else
+  // (another window, the phone, an app console's "Send to"): it shows as it
+  // is sent, before the work on it streams in. The turn's own events start
+  // the working state.
+  function handleUserMessage(data: any) {
+    const row = userMessageRow(data, activeSessionKey, clientId);
+    if (!row || messages.some((m) => 'id' in m && m.id === row.id)) return;
+    messages = [...messages, { id: row.id, type: 'user' as const, content: row.content, time: formatTime(row.createdAt) }];
+  }
+
   function handleChatCancelled(data: any) {
     if (!isMyEvent(data)) return;
     isLoading = false;
@@ -799,6 +811,7 @@ export function createChatController(config: ChatControllerConfig) {
   unsubs.push(onServer('chat_message', handleChatMessage));
   unsubs.push(onServer('chat_cancelled', handleChatCancelled));
   unsubs.push(onServer('chat_created', handleChatCreated));
+  unsubs.push(ws.on('chat_user_message', handleUserMessage));
   unsubs.push(onServer('thinking', handleThinking));
   unsubs.push(onServer('tool_start', handleToolStart));
   unsubs.push(onServer('text_verdict', handleTextVerdict));

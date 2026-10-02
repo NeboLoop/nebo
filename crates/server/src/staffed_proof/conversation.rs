@@ -3438,6 +3438,77 @@ async fn an_apps_console_errors_land_in_the_owners_open_chat() {
     rig.until(30, "the retried errors are worked on", || fixing(&web) == 2).await;
 }
 
+/// "Send to <employee>" goes the way a message typed in the composer goes
+/// (live 2026-10-02: the owner's open chat with Ostrion showed neither the
+/// errors nor the work on them until he left the chat and came back): every
+/// open view of the conversation hears the message itself, then every tool
+/// line and the reply as the employee works, all on the one conversation.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_apps_console_send_shows_live_in_the_open_chat() {
+    let nebo = session().await;
+    let app = nebo.hire("Proof Live App", json!({ "workflows": {} })).await;
+    nebo.activate(&app).await;
+    nebo.store()
+        .set_permission_mode(&types::permissions::Scope::Employee(app.clone()), types::permissions::Mode::FullAccess)
+        .unwrap();
+    let ui = nebo.home.join("user/agents/proof-live-app-ui/ui");
+    std::fs::create_dir_all(&ui).unwrap();
+    let page = ui.join("index.html");
+    std::fs::write(&page, "<div id=root></div>").unwrap();
+    nebo.store().set_agent_app_fields(&app, true, Some(&ui.to_string_lossy()), None, None).unwrap();
+    let path = page.to_string_lossy().to_string();
+    let steps = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let rules: Vec<Rule> = vec![Box::new(move |t| {
+        if !t.opener().contains("MARK-LIVE") {
+            return None;
+        }
+        Some(match steps.fetch_add(1, std::sync::atomic::Ordering::SeqCst) {
+            0 | 1 => Step::call(vec![("read_file", json!({ "path": path }))]),
+            _ => Step::say("LIVE-FIXED: the page draws now."),
+        })
+    })];
+    let _rig = Rig::new(&nebo, rules).await;
+    let opened = nebo.post_ok(&format!("/agents/{app}/chats"), &json!({})).await;
+    let thread = opened["sessionKey"].as_str().expect("thread").to_string();
+
+    let mut desktop = nebo.state.hub.subscribe();
+    let errors = json!({ "entries": [
+        { "level": "error", "message": "Uncaught TypeError: MARK-LIVE scene is null", "source": "error", "time": 1_700_000_000_000i64 }
+    ] });
+    let sent = nebo.post_ok(&format!("/apps/{app}/devlog/send"), &errors).await;
+    assert_eq!((sent["status"].as_str(), sent["sessionId"].as_str()), (Some("dispatched"), Some(thread.as_str())), "{sent}");
+
+    let mut heard: Vec<(String, Value)> = Vec::new();
+    loop {
+        let e = tokio::time::timeout(Duration::from_secs(30), desktop.recv())
+            .await
+            .unwrap_or_else(|_| panic!("the run finishes in the open chat: {heard:?}"))
+            .unwrap();
+        if e.payload["session_id"].as_str() != Some(thread.as_str()) {
+            continue;
+        }
+        let done = e.event_type == "chat_complete";
+        heard.push((e.event_type, e.payload));
+        if done {
+            break;
+        }
+    }
+    let kinds: Vec<&str> = heard.iter().map(|(k, _)| k.as_str()).collect();
+    let at = |kind: &str| kinds.iter().position(|k| *k == kind).unwrap_or_else(|| panic!("no {kind} in {kinds:?}"));
+    let said = &heard[at("chat_user_message")].1;
+    assert!(said["content"].as_str().is_some_and(|c| c.contains("MARK-LIVE scene is null")), "{said}");
+    assert!(said["client_id"].is_null(), "no composer here typed it, so every view shows it: {said}");
+    assert_eq!(said["agentId"], app.as_str(), "{said}");
+    assert_eq!(kinds.iter().filter(|k| **k == "tool_start").count(), 2, "every tool line, live: {kinds:?}");
+    assert!(at("chat_user_message") < at("tool_start"), "the message, then the work: {kinds:?}");
+    let streamed: String = heard
+        .iter()
+        .filter(|(k, _)| k == "chat_stream")
+        .filter_map(|(_, p)| p["content"].as_str())
+        .collect();
+    assert!(streamed.contains("LIVE-FIXED"), "the reply streams into the open chat: {kinds:?}");
+}
+
 /// An app employee's own working files never ride its replies as cards
 /// (live 2026-10-02: every reply from Flip-Flap carried "App.tsx — Code",
 /// even after the owner asked it to stop): an edit-and-rebuild turn in its
