@@ -118,7 +118,7 @@ impl Provider for PluginProvider {
                             }
                         }
                         None => {
-                            warn!(provider = %provider_id, line = %line, "unparseable NDJSON line");
+                            warn!(provider = %provider_id, line = %::types::redact::redact(&line), "unparseable NDJSON line");
                         }
                     }
                 }

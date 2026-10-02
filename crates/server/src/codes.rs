@@ -2910,7 +2910,7 @@ async fn refresh_neboai_token(
     if !resp.status().is_success() {
         let status = resp.status();
         let text = resp.text().await.unwrap_or_default();
-        warn!(status = %status, body = %text, "OAuth refresh failed");
+        warn!(status = %status, body = %::types::redact::redact(&text), "OAuth refresh failed");
         return None;
     }
 

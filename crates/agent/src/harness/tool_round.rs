@@ -952,7 +952,7 @@ async fn run_call(
     }
 
     let _permit = concurrency.acquire_tool_permit().await;
-    let input_str = tc.input.to_string();
+    let input_str = ::types::redact::redact(&tc.input.to_string());
     info!(tool = %tc.name, id = %tc.id, input = %truncate_str(&input_str, 500), "executing tool");
     // Each tool's own timeout; the loop has none of its own.
     let budget = tools.execution_timeout(&tc.name, &tc.input).await;

@@ -5918,6 +5918,7 @@ dependencies = [
  "futures",
  "getrandom 0.2.17",
  "nebo-tls",
+ "nebo-types",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
@@ -5986,6 +5987,7 @@ dependencies = [
  "hex",
  "nebo-command",
  "nebo-tls",
+ "nebo-types",
  "rand 0.8.5",
  "reqwest 0.12.28",
  "serde",
@@ -6151,6 +6153,7 @@ dependencies = [
  "tower 0.5.3",
  "tower-http",
  "tracing",
+ "tracing-subscriber",
  "url",
  "urlencoding",
  "uuid",
@@ -6260,6 +6263,7 @@ dependencies = [
 name = "nebo-types"
 version = "0.16.6"
 dependencies = [
+ "regex",
  "serde",
  "serde_json",
  "tempfile",
@@ -6333,6 +6337,7 @@ dependencies = [
  "bytes",
  "futures",
  "nebo-tls",
+ "nebo-types",
  "serde_json",
  "thiserror 2.0.18",
  "tokio",

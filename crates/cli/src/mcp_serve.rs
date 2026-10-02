@@ -65,7 +65,7 @@ impl McpStdioBridge {
                 continue;
             }
 
-            debug!(request = %line, "MCP stdin");
+            debug!(request = %::types::redact::redact(&line), "MCP stdin");
 
             // Forward to Nebo server
             let response = self.forward_request(&line).await;

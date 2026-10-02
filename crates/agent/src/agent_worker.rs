@@ -2357,8 +2357,8 @@ async fn channel_loop(
                                 agent = %agent_id,
                                 channel = %channel_name,
                                 session = %session_key,
-                                text = %text,
-                                payload = %payload,
+                                text = %::types::redact::redact(&text),
+                                payload = %::types::redact::redact(&payload.to_string()),
                                 "channel inbound: full payload"
                             );
 
@@ -2536,7 +2536,7 @@ async fn channel_loop(
                                             agent = %agent,
                                             channel = %ch,
                                             session = %session_key,
-                                            payload = %reply_line.trim(),
+                                            payload = %::types::redact::redact(reply_line.trim()),
                                             "channel outbound: full payload"
                                         );
                                     }

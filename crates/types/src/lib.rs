@@ -8,6 +8,7 @@ pub mod owner_need;
 pub mod pathres;
 pub mod permissions;
 pub mod provenance;
+pub mod redact;
 pub mod strutil;
 pub mod timeutil;
 

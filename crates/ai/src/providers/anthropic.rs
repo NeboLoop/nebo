@@ -368,7 +368,7 @@ impl AnthropicProvider {
                         let event: AnthropicStreamEvent = match serde_json::from_str(&data) {
                             Ok(e) => e,
                             Err(e) => {
-                                debug!("failed to parse Anthropic event: {e}, data: {data}");
+                                debug!(error = %e, data = %::types::redact::redact(&data), "failed to parse Anthropic event");
                                 continue;
                             }
                         };

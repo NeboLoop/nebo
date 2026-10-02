@@ -86,8 +86,41 @@ impl Write for RotatingFile {
 /// `<data_dir>/logs/<name>`, rotated. None when there is no data dir to log
 /// into (the terminal layer still runs).
 pub fn log_file(name: &str) -> Option<RotatingFile> {
-    let dir = crate::data_dir().ok()?;
-    RotatingFile::open(dir.join("logs").join(name)).ok()
+    let dir = crate::data_dir().ok()?.join("logs");
+    purge_pre_redaction_logs(&dir);
+    RotatingFile::open(dir.join(name)).ok()
+}
+
+/// Written once the logs from before redaction are gone.
+const PURGED_MARKER: &str = ".pre-redaction-logs-purged";
+
+/// Before 0.16.7 the server logged every WebSocket client frame raw, and the
+/// `auth` frame carries the owner's session token, so `nebo.log` (and its
+/// rotations, and the dev-build `neboai.log` traffic log) can hold it. On the
+/// first start of a version that redacts, those files are DELETED — not
+/// redacted in place: deleting is certain, a pattern pass over 120 MB is not.
+/// Whoever creates the marker does the purge, so it runs exactly once even
+/// when two processes start together.
+fn purge_pre_redaction_logs(dir: &Path) {
+    if std::fs::create_dir_all(dir).is_err() {
+        return;
+    }
+    let first = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(dir.join(PURGED_MARKER))
+        .is_ok();
+    if !first {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name == "nebo.log" || name.starts_with("nebo.log.") || name == "neboai.log" {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
 }
 
 #[cfg(test)]
@@ -117,5 +150,34 @@ mod tests {
         let f = RotatingFile::with_limits(&path, 100, 3).unwrap();
         assert_eq!(f.written, 0);
         assert_eq!(std::fs::metadata(f.numbered(1)).unwrap().len(), 500);
+    }
+
+    #[test]
+    fn logs_from_before_redaction_are_deleted_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let logs = dir.path().join("logs");
+        std::fs::create_dir_all(&logs).unwrap();
+        let old = ["nebo.log", "nebo.log.1", "nebo.log.5", "neboai.log"];
+        for f in old {
+            std::fs::write(logs.join(f), "ws client message: fake-token-not-real").unwrap();
+        }
+        let kept = ["update.log", "chromium.log", "nebo-crash.log"];
+        for f in kept {
+            std::fs::write(logs.join(f), "kept").unwrap();
+        }
+
+        purge_pre_redaction_logs(&logs);
+        for f in old {
+            assert!(!logs.join(f).exists(), "{f} must be deleted");
+        }
+        for f in kept {
+            assert!(logs.join(f).exists(), "{f} is not ours to delete");
+        }
+        assert!(logs.join(PURGED_MARKER).exists());
+
+        // The next start leaves the new, redacted log alone.
+        std::fs::write(logs.join("nebo.log"), "redacted").unwrap();
+        purge_pre_redaction_logs(&logs);
+        assert!(logs.join("nebo.log").exists(), "purge runs once");
     }
 }

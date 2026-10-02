@@ -2954,7 +2954,7 @@ async fn handle_conversation_session(
                             break;
                         }
                         ClientFrame::Unknown => {
-                            warn!(msg = %text, "unknown conversation WS message");
+                            warn!(bytes = text.len(), "unknown conversation WS message");
                         }
                     },
                     Some(Ok(Message::Close(_))) | None => {
