@@ -18,7 +18,7 @@ fn set_mode(store: &db::Store, on: bool) {
             None,
             None,
             None,
-            None,
+            Some(on),
             None,
             Some(on),
         )

@@ -1,0 +1,9 @@
+id: sc83-a-message-during-a-running-turn-is-taken-in-with-no-busy-notice
+name: "SC83 — A message during a running turn is taken in with no busy notice"
+description: |
+  The owner's messages while a turn runs are taken in with no busy notice anywhere: no
+  chat_error and no words on the typed one (the app shows "Pending" on his bubble), nothing
+  handed to his call for a spoken one; the running turn hears both and answers them.
+target_component: staffed-company
+proof: staffed_proof::conversation::a_message_during_a_running_turn_is_taken_in_with_no_busy_notice
+conversation: []

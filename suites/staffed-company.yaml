@@ -85,3 +85,4 @@ fixtures:
   - ../fixtures/staffed-company/conversation/sc80-an-apps-console-errors-land-in-the-owners-open-chat.yaml
   - ../fixtures/staffed-company/conversation/sc81-an-apps-own-files-never-ride-its-replies-as-cards.yaml
   - ../fixtures/staffed-company/conversation/sc82-an-apps-console-send-shows-live-in-the-open-chat.yaml
+  - ../fixtures/staffed-company/conversation/sc83-a-message-during-a-running-turn-is-taken-in-with-no-busy-notice.yaml
