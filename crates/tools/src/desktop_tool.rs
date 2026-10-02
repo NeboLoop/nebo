@@ -3052,6 +3052,34 @@ $bmp.Dispose()"#,
     )
 }
 
+/// Whether this app may record the screen. On macOS that is the Screen
+/// Recording permission (Privacy & Security): without it a capture still
+/// "succeeds" but shows only the desktop picture, so it must be asked
+/// before recording, never inferred from the image. When it is missing this
+/// also asks macOS to list Nebo there (the system prompt, shown once), so
+/// the owner only has to switch it on. Other platforms need no permission.
+pub(crate) fn screen_recording_allowed() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        #[link(name = "CoreGraphics", kind = "framework")]
+        unsafe extern "C" {
+            fn CGPreflightScreenCaptureAccess() -> bool;
+            fn CGRequestScreenCaptureAccess() -> bool;
+        }
+        // SAFETY: both take no arguments and only read or prompt for this
+        // process's own TCC entry.
+        unsafe {
+            if CGPreflightScreenCaptureAccess() {
+                return true;
+            }
+            CGRequestScreenCaptureAccess();
+        }
+        false
+    }
+    #[cfg(not(target_os = "macos"))]
+    true
+}
+
 /// One still of this computer's whole screen, written to `path` in the
 /// platform's own format (JPEG on macOS, PNG elsewhere). Teach-a-task's local
 /// recording samples the owner's real screen with it; the screenshot tool
@@ -3084,7 +3112,10 @@ pub(crate) async fn capture_full_screen(path: &str) -> Result<(), String> {
     }
     #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
     match out {
-        Ok(o) if o.status.success() => Ok(()),
+        // A capture that "succeeds" without writing the file is a failure:
+        // macOS screencapture exits 0 after refusing a destination it won't
+        // write (a dot-file name, for one) and only says so on stderr.
+        Ok(o) if o.status.success() && std::path::Path::new(path).is_file() => Ok(()),
         Ok(o) => {
             let mut msg = format!("screen capture failed: {}", String::from_utf8_lossy(&o.stderr).trim());
             if cfg!(target_os = "macos") {

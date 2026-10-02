@@ -54,7 +54,17 @@ pub async fn teach_start(
             "where": where_.as_str(),
         }))
         .into_response(),
-        Err(e) => teach_err(&e),
+        // Missing Screen Recording permission is named, so the app can offer
+        // the settings pane instead of a bare error.
+        Err(e) if e == tools::desktop_session::SCREEN_RECORDING_PERMISSION => (
+            axum::http::StatusCode::BAD_REQUEST,
+            axum::Json(serde_json::json!({ "error": e, "reason": "screen_recording_permission" })),
+        )
+            .into_response(),
+        Err(e) => {
+            warn!(error = %e, where_ = where_.as_str(), "teach: recording did not start");
+            teach_err(&e)
+        }
     }
 }
 
