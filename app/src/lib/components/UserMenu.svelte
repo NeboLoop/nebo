@@ -2,12 +2,14 @@
   import { t } from 'svelte-i18n';
   import { onMount } from 'svelte';
   import UpdateBanner from '$lib/components/UpdateBanner.svelte';
+  import FeedbackModal from '$lib/components/FeedbackModal.svelte';
 
   let displayName = $state('');
   let planName = $state('Free');
 
   let { collapsed = false } = $props();
   let open = $state(false);
+  let feedbackOpen = $state(false);
 
   onMount(async () => {
     try {
@@ -34,6 +36,7 @@
     { href: '/settings/account', label: 'settings.navItems.account', icon: '👤' },
     { href: '/settings/billing', label: 'settings.navItems.billing', icon: '💳' },
     null,
+    { action: 'feedback', label: 'userMenu.provideFeedback', icon: '✉' },
     { href: '/settings/about', label: 'userMenu.aboutNebo', icon: 'ℹ' },
   ];
 </script>
@@ -46,6 +49,15 @@
       {#each menuItems as item}
         {#if item === null}
           <div class="h-px bg-base-300 mx-2 my-1"></div>
+        {:else if 'action' in item}
+          <button
+            type="button"
+            class="w-full flex items-center gap-2 px-3 py-1.5 text-sm text-left hover:bg-base-200 transition-colors bg-transparent border-none cursor-pointer"
+            onclick={() => { open = false; feedbackOpen = true; }}
+          >
+            <span class="w-4 text-center text-sm" aria-hidden="true">{item.icon}</span>
+            {$t(item.label)}
+          </button>
         {:else}
           <a
             href={item.href}
@@ -74,3 +86,5 @@
     {/if}
   </button>
 </div>
+
+<FeedbackModal open={feedbackOpen} onclose={() => (feedbackOpen = false)} />

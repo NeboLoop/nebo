@@ -10,6 +10,7 @@ pub mod browser;
 pub mod chat;
 pub mod commander;
 pub mod entity_config;
+pub mod feedback;
 pub mod files;
 pub mod goal;
 pub mod import;

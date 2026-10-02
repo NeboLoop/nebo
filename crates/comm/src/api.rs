@@ -416,6 +416,17 @@ impl NeboAIApi {
         .await
     }
 
+    /// File feedback with NeboAI support (`POST /api/v1/support/feedback`):
+    /// a ticket in the team's inbox. The one place the desktop names the
+    /// route.
+    pub async fn send_support_feedback(
+        &self,
+        feedback: &crate::api_types::SupportFeedback,
+    ) -> Result<(), CommError> {
+        self.do_void(reqwest::Method::POST, "/api/v1/support/feedback", Some(feedback))
+            .await
+    }
+
     pub async fn get_marketplace_map(&self) -> Result<serde_json::Value, CommError> {
         self.do_json(reqwest::Method::GET, "/api/v1/marketplace/map", None::<&()>)
             .await

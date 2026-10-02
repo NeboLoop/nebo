@@ -2518,7 +2518,22 @@
 	},
 	"userMenu": {
 		"aboutNebo": "About Nebo",
-		"planSuffix": "{plan} Plan"
+		"planSuffix": "{plan} Plan",
+		"provideFeedback": "Provide feedback"
+	},
+	"feedback": {
+		"title": "Provide feedback",
+		"lede": "Tell the NeboAI team what is working, what is not, or what you would like.",
+		"message": "Message",
+		"screenshots": "Screenshots or photos (optional)",
+		"addScreenshot": "Add a screenshot",
+		"remove": "Remove {name}",
+		"diagnostics": "Include diagnostics",
+		"diagnosticsHelp": "App and bot version, platform, bot id and this screen. Never passwords or sign-in tokens.",
+		"send": "Send",
+		"sending": "Sending",
+		"sent": "Thanks — sent to the NeboAI team.",
+		"failed": "Could not send your feedback. Try again."
 	},
 	"workflowCanvas": {
 		"noWorkflows": "No workflows to visualize",
