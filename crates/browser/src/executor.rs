@@ -19,6 +19,9 @@ use crate::extension_bridge::{BatchAction, BatchOptions, ExtensionBridge};
 pub struct ActionExecutor {
     bridge: Arc<ExtensionBridge>,
     cdp: Option<Arc<CdpBridge>>,
+    /// The built-in browser that opens this computer's own pages
+    /// ([`ActionExecutor::execute_headless`]).
+    own_pages: Option<Arc<CdpBridge>>,
 }
 
 /// True when an extension error is a TRANSPORT failure (disconnect / timeout / not connected)
@@ -35,8 +38,8 @@ fn is_transport_failure(err: &str) -> bool {
 }
 
 impl ActionExecutor {
-    pub fn new(bridge: Arc<ExtensionBridge>, cdp: Option<Arc<CdpBridge>>) -> Self {
-        Self { bridge, cdp }
+    pub fn new(bridge: Arc<ExtensionBridge>, cdp: Option<Arc<CdpBridge>>, own_pages: Option<Arc<CdpBridge>>) -> Self {
+        Self { bridge, cdp, own_pages }
     }
 
     /// Check if any browser backend is available.
@@ -98,10 +101,14 @@ impl ActionExecutor {
         Err(BrowserError::ExtensionNotConnected)
     }
 
-    /// Execute a browser tool in the built-in headless browser alone, never
-    /// the owner's Chrome: work the owner should not see open in his own
-    /// browser (an app's listing screenshots). Errors when there is no
-    /// built-in browser on this machine.
+    /// Execute a browser tool in the built-in headless browser that opens
+    /// this computer's own pages and draws them, never the owner's Chrome
+    /// window: work the owner should not see open in his own browser (an app
+    /// as the bot serves it on 127.0.0.1, for its screenshots). The browsing
+    /// browser, Obscura, refuses those addresses and has no paint engine
+    /// (2026-10-02: every app screenshot failed, first with "Access to
+    /// private/internal IP address 127.0.0.1 is not allowed"). Errors when
+    /// this machine has no Chrome or Chromium.
     pub async fn execute_headless(
         &self,
         tool: &str,
@@ -109,10 +116,16 @@ impl ActionExecutor {
         session_id: &str,
     ) -> Result<serde_json::Value, BrowserError> {
         let cdp = self
-            .cdp
+            .own_pages
             .as_ref()
-            .ok_or_else(|| BrowserError::Other("no built-in browser on this machine".into()))?;
-        info!(tool = tool, backend = "cdp", "executing headless browser action");
+            .ok_or_else(|| {
+                BrowserError::Other(
+                    "this computer has no Chrome or Chromium, which drawing a page takes. Install Google Chrome \
+                     and try again"
+                        .into(),
+                )
+            })?;
+        info!(tool = tool, backend = "cdp", "executing headless browser action on this computer's own pages");
         cdp.execute(tool, args, session_id).await
     }
 
@@ -237,6 +250,11 @@ impl ActionExecutor {
             .await;
         if let Some(ref cdp) = self.cdp {
             cdp.close_session(session_id).await;
+        }
+        // The same browser on a machine with a stock Chromium: closing a
+        // tab already closed does nothing.
+        if let Some(ref own) = self.own_pages {
+            own.close_session(session_id).await;
         }
     }
 

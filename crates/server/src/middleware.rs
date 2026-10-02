@@ -309,9 +309,32 @@ pub fn path_credential(mut request: Request) -> Request {
     parts.path_and_query = path_and_query.parse().ok();
     if let Ok(uri) = axum::http::Uri::from_parts(parts) {
         *request.uri_mut() = uri;
+        // An app's own routes check their caller themselves (`handlers::apps`),
+        // from the headers: a page Nebo's headless browser opened with an
+        // app-view pass (`napp::app_view`) shows it there too.
+        if napp::app_view::app_of_path(request.uri().path()).is_some()
+            && let Ok(value) = axum::http::HeaderValue::from_str(&credential)
+        {
+            request.headers_mut().insert(APP_VIEW_PASS, value);
+        }
         request.extensions_mut().insert(PathCredential(credential));
     }
     request
+}
+
+/// The header an app's route reads a path credential from
+/// ([`app_view_admits`]).
+const APP_VIEW_PASS: &str = "x-nebo-app-view";
+
+/// Whether the request carries a live app-view pass for `app_id`
+/// (`napp::app_view`): the page and routes of the one app Nebo's headless
+/// browser opened. Only a live pass for that app counts, so the header is
+/// worth no more than the pass it carries.
+pub(crate) fn app_view_admits(headers: &axum::http::HeaderMap, app_id: &str) -> bool {
+    headers
+        .get(APP_VIEW_PASS)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|pass| napp::app_view::admits(pass, app_id))
 }
 
 /// Nebo's own UI origins: the app as this server serves it, and the Vite
