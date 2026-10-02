@@ -642,6 +642,42 @@ fn pictures_of(meta: Option<&serde_json::Value>) -> Vec<String> {
     notes
 }
 
+/// The mid-turn note's old wording (until 2026-10-01): stored notes still
+/// carry it, and the model echoed it into the chat as `*tools off*`.
+const OLD_TOOLS_OFF: &str = "; tools are off for that reply.";
+
+/// Old replies as the model reads them again, never re-teaching what the
+/// fence keeps out of new ones (`reminders::NoteFence`): a reply stored
+/// before the fence knew a call's shape kept the call written out as text,
+/// or the echoed `*tools off*`, and every later step read it as how this
+/// conversation calls tools (2026-10-01, the owner's bot: a reply wrote
+/// `<run_command>` as text, and the next step, tools on, wrote it again).
+/// Those replies are read cut where the fence would have cut them; one left
+/// with nothing to say and no calls is left out. The stored rows are never
+/// rewritten. A note's old "tools are off" wording is read without it.
+pub(crate) fn scrub_replies(messages: Vec<ChatMessage>, tools: &[String]) -> Vec<ChatMessage> {
+    messages
+        .into_iter()
+        .filter_map(|mut m| {
+            if m.role == "assistant" && !m.content.is_empty() {
+                let mut fence = super::reminders::NoteFence::new(tools.iter().cloned());
+                let mut shown = fence.push(&m.content);
+                shown.push_str(&fence.finish());
+                if shown != m.content {
+                    m.content = shown.trim().to_string();
+                    let calls = m.tool_calls.as_deref().is_some_and(|tc| !(tc.is_empty() || tc == "[]" || tc == "null"));
+                    if m.content.trim().is_empty() && !calls {
+                        return None;
+                    }
+                }
+            } else if m.role == "user" && m.content.contains(OLD_TOOLS_OFF) {
+                m.content = m.content.replace(OLD_TOOLS_OFF, ".");
+            }
+            Some(m)
+        })
+        .collect()
+}
+
 /// Sanitize message ordering: ensure tool results immediately follow their
 /// corresponding assistant message. Self-heals corrupted session data
 /// (back-to-back assistants, out-of-order tool results) that strict providers
@@ -811,6 +847,34 @@ mod tests {
             tool_results: None,
             token_estimate: None,
             html: None,
+        }
+    }
+
+    /// Replies stored before the fence knew their shape, as the owner's bot
+    /// stored them on 2026-10-01, are read back cut where the fence cuts
+    /// now: the model never relearns a call written as text, or the echoed
+    /// `*tools off*`, from its own history. Clean rows read as stored.
+    #[test]
+    fn old_replies_never_reteach_text_calls_or_tools_off() {
+        let tools = ["read_file".to_string(), "run_command".to_string()];
+        let rows = vec![
+            make_msg("u", "user", "<system-reminder>\nThe owner's latest message reached you while you were working (via web). \
+                Answer it directly in your next reply; tools are off for that reply. After that reply the work goes on.\n</system-reminder>"),
+            make_msg("a1", "assistant", "*tools off*\n\nCreating it now.\n\n*tools off*"),
+            make_msg("a2", "assistant", "First, let me check what we have:\n\n<run_command>\n<parameter command=\"which bun\"\n</parameter>"),
+            make_msg("a3", "assistant", "*tools off*"),
+            make_msg("a4", "assistant", "The file is clean: a < b."),
+        ];
+        let read = scrub_replies(rows, &tools);
+        let by_id = |id: &str| read.iter().find(|m| m.id == id).map(|m| m.content.clone());
+        assert!(!by_id("u").unwrap().contains("tools are off"), "{:?}", by_id("u"));
+        assert!(by_id("u").unwrap().contains("Answer it directly in your next reply. After that reply"));
+        assert_eq!(by_id("a1").unwrap().trim(), "Creating it now.");
+        assert_eq!(by_id("a2").unwrap(), "First, let me check what we have:");
+        assert_eq!(by_id("a3"), None, "a reply that was only the echo is left out");
+        assert_eq!(by_id("a4").unwrap(), "The file is clean: a < b.");
+        for m in &read {
+            assert!(!m.content.to_lowercase().contains("tools off") && !m.content.contains("<run_command>"), "{}", m.content);
         }
     }
 

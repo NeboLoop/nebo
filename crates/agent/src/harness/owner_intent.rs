@@ -6,7 +6,7 @@
 //!
 //! The harness, not the model, acts on the answer:
 //!
-//! - [`OwnerIntent::Stop`]: the step answers with tools off and the turn ends
+//! - [`OwnerIntent::Stop`]: the step answers, nothing runs, and the turn ends
 //!   on that answer. Tools never come back, and an agreed goal pauses
 //!   (`goal::Pause::Stopped`), so nothing starts the work again until the
 //!   owner asks.
