@@ -1531,6 +1531,7 @@ impl PersonaTool {
         if let Err(e) = napp::write_user_agent(&agent_dir, &package) {
             return ToolResult::error(e.to_string());
         }
+        Self::keep_ui_sources(&agent_dir, input);
 
         // Create DB entry so the agent has a proper UUID
         let frontmatter = agent_json_str.as_deref().unwrap_or("{}");
@@ -1926,6 +1927,7 @@ impl PersonaTool {
             if let Err(e) = napp::write_user_agent(&agent_dir, &package) {
                 return ToolResult::error(e.to_string());
             }
+            Self::keep_ui_sources(&agent_dir, input);
             if app_named {
                 changes.push(format!(
                     "app manifest updated. {}",
@@ -3213,8 +3215,12 @@ impl PersonaTool {
         }
     }
 
-    /// The script an app page loads for `NeboAppSDK`.
-    const APP_SDK_SCRIPT: &str = "<script src=\"/sdk/nebo.global.js\"></script>";
+    /// The script an app page loads for `NeboAppSDK`, relative to
+    /// `ui/index.html`: it resolves to the SDK at every address the page is
+    /// served from (`/apps/<id>/ui/`, the phone's `/t/<bot>/apps/<id>/ui/`,
+    /// the desktop's `neboapp://<id>/`). The absolute `/sdk/...` left the
+    /// tunnel's prefix and 404'd on the phone.
+    pub(crate) const APP_SDK_SCRIPT: &str = "<script src=\"../../../sdk/nebo.global.js\"></script>";
 
     /// The files of an app's `ui/` directory from the call: `ui` (relative
     /// path → content) and `ui_jsx` (one component, compiled to
@@ -3237,10 +3243,19 @@ impl PersonaTool {
                         "`ui[\"{path}\"]` must be a string (the file's content). Nothing was written."
                     ));
                 };
-                files.push((
-                    napp::user_agent::ui_relative_path(path).map_err(|e| e.to_string())?,
-                    text.as_bytes().to_vec(),
-                ));
+                let rel = napp::user_agent::ui_relative_path(path).map_err(|e| e.to_string())?;
+                // TypeScript and JSX are compiled here, by the SWC built
+                // into Nebo, to the `.js` module the page loads: no build
+                // tool is needed on the bot. The source is kept in the app's
+                // `src/` (`app_ui_sources`).
+                if Self::compiled_source(&rel) {
+                    let js = render::transpile_module(text, path).map_err(|e| {
+                        format!("{e}. Nothing was written; fix that file and send the call again.")
+                    })?;
+                    files.push((rel.with_extension("js"), js.into_bytes()));
+                } else {
+                    files.push((rel, text.as_bytes().to_vec()));
+                }
             }
         }
         if let Some(src) = input.get("ui_jsx") {
@@ -3256,6 +3271,38 @@ impl PersonaTool {
             ));
         }
         Ok(files)
+    }
+
+    /// A `ui` file Nebo compiles to `.js`: TypeScript, TSX or JSX (never a
+    /// `.d.ts`, which carries no code).
+    fn compiled_source(rel: &std::path::Path) -> bool {
+        let name = rel.to_string_lossy().to_ascii_lowercase();
+        !name.ends_with(".d.ts") && [".ts", ".tsx", ".jsx", ".mts"].iter().any(|e| name.ends_with(e))
+    }
+
+    /// The TypeScript/JSX sources among `ui`'s files, kept as written in the
+    /// app's `src/` beside `ui/`: what the employee edits and sends again.
+    fn app_ui_sources(input: &serde_json::Value) -> Vec<(std::path::PathBuf, String)> {
+        let Some(map) = input.get("ui").and_then(|u| u.as_object()) else { return Vec::new() };
+        map.iter()
+            .filter_map(|(path, content)| {
+                let rel = napp::user_agent::ui_relative_path(path).ok()?;
+                (Self::compiled_source(&rel)).then(|| (rel, content.as_str().unwrap_or_default().to_string()))
+            })
+            .collect()
+    }
+
+    /// Write [`Self::app_ui_sources`] under `<agent_dir>/src/`.
+    fn keep_ui_sources(agent_dir: &std::path::Path, input: &serde_json::Value) {
+        for (rel, text) in Self::app_ui_sources(input) {
+            let target = agent_dir.join("src").join(&rel);
+            if let Some(parent) = target.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            if let Err(e) = std::fs::write(&target, text) {
+                warn!(path = %target.display(), error = %e, "failed to keep an app source file");
+            }
+        }
     }
 
     /// `ui_jsx` through the one JSX converter — the same call
@@ -3884,6 +3931,33 @@ mod tests {
                 ("index.html".to_string(), "<p>hi</p>".to_string()),
             ]
         );
+    }
+
+    /// TypeScript and JSX `ui` files are compiled by Nebo to the `.js`
+    /// module the page loads, their sources kept for `src/`; a file that
+    /// does not compile writes nothing and says file:line:col, so the error
+    /// reaches the employee in the call's own result.
+    #[test]
+    fn ui_typescript_and_jsx_compile_to_js_on_write() {
+        let input = serde_json::json!({"ui": {
+            "index.html": "<script type=\"module\" src=\"./app.js\"></script>",
+            "app.tsx": "import { tune } from './tune';\nconst n: number = tune;\nexport const el = <b>{n}</b>;\n",
+            "tune.ts": "export const tune: number = 3;\n",
+            "types.d.ts": "declare const x: number;\n",
+        }});
+        let files = PersonaTool::app_ui_files(&input, "t").unwrap();
+        let mut names: Vec<String> = files.iter().map(|(p, _)| p.to_string_lossy().to_string()).collect();
+        names.sort();
+        assert_eq!(names, vec!["app.js", "index.html", "tune.js", "types.d.ts"]);
+        let app = files.iter().find(|(p, _)| p.ends_with("app.js")).map(|(_, b)| String::from_utf8(b.clone()).unwrap()).unwrap();
+        assert!(app.contains("\"./tune.js\"") && !app.contains("<b>") && !app.contains(": number"), "{app}");
+        let mut kept: Vec<String> = PersonaTool::app_ui_sources(&input).into_iter().map(|(p, _)| p.to_string_lossy().to_string()).collect();
+        kept.sort();
+        assert_eq!(kept, vec!["app.tsx", "tune.ts"]);
+
+        let broken = serde_json::json!({"ui": {"board.tsx": "const a = 1;\nconst b = (;\n"}});
+        let err = PersonaTool::app_ui_files(&broken, "t").unwrap_err();
+        assert!(err.contains("board.tsx:2:") && err.contains("Nothing was written"), "{err}");
     }
 
     /// `ui_jsx` goes through the one JSX converter and comes out as an

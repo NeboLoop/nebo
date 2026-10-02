@@ -336,7 +336,8 @@ impl Skill {
             walk_resources(base_dir, base_dir, &mut resources);
             Ok(resources)
         } else {
-            Ok(vec![])
+            // A bundled skill: its files are embedded in the binary.
+            Ok(super::bundled::bundled_files(&self.name).map(|(p, _)| p.to_string()).collect())
         }
     }
 
@@ -372,6 +373,10 @@ impl Skill {
                 ));
             }
             std::fs::read(&full).map_err(|e| format!("failed to read resource: {}", e))
+        } else if let Some((_, content)) =
+            super::bundled::bundled_files(&self.name).find(|(p, _)| *p == relative_path)
+        {
+            Ok(content.as_bytes().to_vec())
         } else {
             Err("skill has no resource directory".into())
         }
@@ -864,5 +869,22 @@ body
 "#;
         let skill = parse_skill_md(md.as_bytes()).unwrap();
         assert!(skill.secrets().is_empty());
+    }
+
+    /// A bundled skill's files are read from the binary, the way an
+    /// installed skill's are read from its folder.
+    #[test]
+    fn a_bundled_skill_lists_and_reads_its_own_files() {
+        let (_, content) = crate::skills::bundled::BUNDLED_SKILLS
+            .iter()
+            .find(|(k, _)| *k == "app-studio")
+            .expect("registered");
+        let skill = crate::skills::parse_skill_frontmatter(content.as_bytes()).expect("parses");
+        assert!(skill.base_dir.is_none());
+        let files = skill.list_resources().unwrap();
+        assert!(files.iter().any(|f| f == "references/games.md"), "{files:?}");
+        let gate = String::from_utf8(skill.read_resource("scripts/gate.js").unwrap()).unwrap();
+        assert!(gate.contains("SKILL_ARGS"));
+        assert!(skill.read_resource("references/missing.md").is_err());
     }
 }

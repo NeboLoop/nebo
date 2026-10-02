@@ -121,7 +121,7 @@ pub fn render(app_name: &str, entries: &[Entry], since: Option<u64>) -> String {
         return match since {
             Some(s) => format!("{app_name}: nothing new since #{s}."),
             None => format!(
-                "{app_name}: no console output yet. Entries arrive while the app is open with App Developer mode on."
+                "{app_name}: no console output yet. Entries arrive only while a view of the app is open: app_screenshot opens one and reports its console."
             ),
         };
     }
