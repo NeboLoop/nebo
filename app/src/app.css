@@ -543,8 +543,73 @@
    The same family as the install and question cards in the chat. It
    arrives at the bottom of the conversation and rises in; answered, it
    collapses in place to a one-line receipt. */
+/* ===== Ask cards: something waits on the owner =====
+   Every OPEN ask (an employee's question, a permission ask, an approval)
+   sits on a soft tint of the theme's primary with a firmer edge, so it
+   stands off the chat as "needs you" — never red or amber. Measured
+   (WCAG 2.1) on nebo, clean, light and dark: base-content ≥ 12.9:1 and
+   base-content/70 ≥ 5.9:1 on the tint, so secondary text in an open card
+   is /70, never lighter. Answered, the card collapses IN PLACE to a muted
+   one-line receipt with no tint, border or chrome; tapping the receipt
+   opens the question read-only, tapping again folds it. */
+.ask-card {
+  @apply rounded-xl border px-4 py-3 mb-1 max-w-md;
+  background-color: color-mix(in srgb, var(--color-primary) 7%, var(--color-base-100));
+  border-color: color-mix(in srgb, var(--color-primary) 30%, var(--color-base-100));
+  box-shadow: 0 1px 3px color-mix(in srgb, var(--color-base-content) 8%, transparent);
+}
+[data-theme="dark"] .ask-card,
+[data-theme="sunset"] .ask-card,
+[data-theme="night"] .ask-card,
+[data-theme="coffee"] .ask-card {
+  background-color: color-mix(in srgb, var(--color-primary) 14%, var(--color-base-100));
+  border-color: color-mix(in srgb, var(--color-primary) 40%, var(--color-base-100));
+  box-shadow: none;
+}
+.ask-receipt {
+  @apply mb-1 max-w-md text-xs text-base-content/70;
+}
+.ask-receipt-line {
+  @apply flex items-center gap-1 min-w-0 py-1 cursor-pointer select-none list-none hover:text-base-content [&::-webkit-details-marker]:hidden;
+}
+.ask-receipt-chevron {
+  @apply w-3.5 h-3.5 shrink-0 transition-transform;
+}
+.ask-receipt[open] .ask-receipt-chevron {
+  @apply rotate-90;
+}
+.ask-receipt-lead {
+  @apply shrink-0;
+}
+.ask-receipt-question {
+  @apply truncate min-w-0;
+}
+.ask-receipt-answer {
+  @apply truncate min-w-0 shrink-[0.5] font-medium text-base-content;
+}
+.ask-receipt-failed {
+  @apply text-error;
+}
+.ask-receipt-body {
+  @apply flex flex-col gap-1.5 pl-[1.125rem] pb-1 text-sm text-base-content;
+}
+.ask-receipt-options {
+  @apply flex flex-col gap-0.5 m-0 p-0 list-none;
+}
+.ask-receipt-option {
+  @apply flex items-center gap-1.5 text-base-content/70;
+}
+.ask-receipt-chosen {
+  @apply font-medium text-base-content;
+}
+.ask-receipt-mark {
+  @apply w-3.5 h-3.5 shrink-0 text-primary;
+}
+.ask-receipt-mark-none {
+  @apply w-3.5 h-3.5 shrink-0;
+}
 .permission-ask-card {
-  @apply rounded-xl bg-base-200 px-4 py-3 mb-1 max-w-md flex flex-col gap-1.5;
+  @apply flex flex-col gap-1.5;
 }
 .permission-ask-title {
   @apply m-0 text-sm font-semibold;
@@ -553,7 +618,7 @@
   @apply m-0 text-sm text-base-content;
 }
 .permission-ask-reason {
-  @apply text-base-content/60;
+  @apply text-base-content/70;
 }
 .permission-ask-actions {
   @apply flex flex-wrap gap-2 pt-1;
@@ -571,13 +636,13 @@
   @apply flex items-center justify-between gap-4 px-3 py-1.5;
 }
 .approval-ask-fact-label {
-  @apply text-xs text-base-content/60;
+  @apply text-xs text-base-content/70;
 }
 .approval-ask-fact-value {
   @apply text-sm font-medium text-right break-all;
 }
 .approval-ask-more {
-  @apply text-xs text-base-content/40 cursor-pointer select-none;
+  @apply text-xs text-base-content/70 cursor-pointer select-none;
 }
 .approval-ask-detail {
   @apply m-0 mt-1 rounded-lg bg-base-100 p-2 font-mono text-xs break-all;
