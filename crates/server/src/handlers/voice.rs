@@ -7,7 +7,8 @@ use tracing::{error, info, warn};
 
 use super::to_error_response;
 use crate::chat_dispatch::{
-    TurnEnd, announce_ask, control_stop_of, entity_run_params, finish_turn,
+    TurnEnd, announce_ask, control_stop_of, entity_run_params, finish_turn, keep_turn_artifacts,
+    owner_artifact_url,
 };
 use crate::codes::build_api_client;
 use crate::run_registry::{RegisterParams, RunHandle};
@@ -759,6 +760,8 @@ async fn drain_voice_run(
     // tool_start / tool_result the chat pipeline sends), so the owner sees
     // the work while the call waits for its reply.
     let turn_id = uuid::Uuid::new_v4().to_string();
+    // The run's files, kept on the reply and sent with `chat_complete`.
+    let mut artifacts: Vec<String> = Vec::new();
     loop {
         let event = match agent::guardrails::next_event(&mut rx, last_event, &run_handle.waiting).await {
             agent::guardrails::Next::Event(e) => e,
@@ -834,6 +837,13 @@ async fn drain_voice_run(
                         "payload": event.payload,
                     }),
                 );
+                // A file the run hands the owner (share_file, a capture, a
+                // document it made) reaches every client as a typed chat's does.
+                if let Some(url) = owner_artifact_url(&state.tools, &event).await {
+                    if !artifacts.contains(&url) {
+                        artifacts.push(url);
+                    }
+                }
             }
             _ => {}
         }
@@ -848,12 +858,18 @@ async fn drain_voice_run(
                 .is_some_and(|(reason, _)| reason == agent::harness::session_gate::QUEUED_INTO_RUNNING_TURN);
         let _ = tx.send((!joined).then(|| voice_reply(&out, &last_notice)));
     }
+    let artifacts = keep_turn_artifacts(
+        &state.harness,
+        &session_key,
+        &artifacts,
+        &state.config.neboai.api_url,
+    );
     finish_turn(
         &state,
         &run_handle,
         TurnEnd {
             payload: serde_json::json!({ "session_id": session_key, "agentId": agent_id }),
-            artifacts: &[],
+            artifacts: &artifacts,
             control_stop: control_stop.as_ref(),
         },
     )
@@ -3602,6 +3618,105 @@ mod voice_prompt_tests {
                 break;
             }
         }
+    }
+
+    /// "Send me the logo" on a call: the file `share_file` hands the owner
+    /// reaches every client as a typed chat's does, on `chat_complete` and
+    /// kept on the voice reply, which is what a thread reloaded after the
+    /// call reads (before, a voice turn's files reached no client at all).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn drain_voice_run_delivers_a_shared_file_on_the_reply() {
+        let nebo = crate::staffed_proof::session().await;
+        let state = nebo.state.clone();
+        let key = format!("agent:a:thread:{}", uuid::Uuid::new_v4());
+        let sessions = state.harness.sessions();
+        let session = sessions.get_or_create(&key, "").unwrap();
+        let chat_id = sessions.active_chat_id(&session.id);
+        let files = config::data_dir().unwrap().join("files");
+        std::fs::create_dir_all(&files).unwrap();
+        let name = format!("logo-{}.png", uuid::Uuid::new_v4());
+        let logo = files.join(&name);
+        std::fs::write(&logo, [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]).unwrap();
+        let url = format!("/api/v1/files/{name}");
+        let mut events = state.hub.subscribe();
+        let run_handle = register(&state, &key).await;
+        let (tx, rx) = tokio::sync::mpsc::channel(8);
+        let (spoken_tx, spoken_rx) = tokio::sync::oneshot::channel();
+        let drain = tokio::spawn(super::drain_voice_run(
+            state.clone(),
+            key.clone(),
+            "a".into(),
+            rx,
+            run_handle,
+            tokio_util::sync::CancellationToken::new(),
+            spoken_tx,
+        ));
+        let call = ai::ToolCall {
+            id: "t1".into(),
+            name: "share_file".into(),
+            input: serde_json::json!({ "path": logo.to_string_lossy() }),
+        };
+        tx.send(ai::StreamEvent::tool_call(call.clone()))
+            .await
+            .unwrap();
+        tx.send(ai::StreamEvent {
+            event_type: ai::StreamEventType::ToolResult,
+            tool_call: Some(call),
+            image_url: Some(logo.to_string_lossy().into_owned()),
+            ..ai::StreamEvent::text(format!(
+                "Attached {name} (8 bytes) as a download card on this reply."
+            ))
+        })
+        .await
+        .unwrap();
+        // The harness keeps the reply before the stream closes.
+        sessions
+            .append_message(
+                &session.id,
+                "assistant",
+                "Sent you the logo.",
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        tx.send(ai::StreamEvent::text("Sent you the logo."))
+            .await
+            .unwrap();
+        drop(tx);
+        drain.await.unwrap();
+        assert_eq!(
+            spoken_rx.await.unwrap().as_deref(),
+            Some("Sent you the logo.")
+        );
+        let done = loop {
+            let e = events.recv().await.unwrap();
+            if e.event_type == "chat_complete" && e.payload["session_id"] == key.as_str() {
+                break e;
+            }
+        };
+        assert_eq!(
+            done.payload["artifacts"],
+            serde_json::json!([url]),
+            "{}",
+            done.payload
+        );
+        let reply = state
+            .store
+            .get_chat_messages(&chat_id)
+            .unwrap()
+            .into_iter()
+            .rev()
+            .find(|m| m.role == "assistant")
+            .expect("the voice reply is stored");
+        let meta: serde_json::Value =
+            serde_json::from_str(reply.metadata.as_deref().unwrap_or("{}")).unwrap();
+        assert_eq!(
+            meta["artifacts"],
+            serde_json::json!([url]),
+            "kept on the voice reply: {meta}"
+        );
+        let _ = std::fs::remove_file(&logo);
     }
 
     /// Live 2026-10-02: every word the owner said while a task ran was
