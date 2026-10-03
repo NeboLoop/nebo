@@ -37,6 +37,9 @@ pub const BUNDLED_SKILLS: &[(&str, &str)] = &[
     // How an app goes to the marketplace with the owner, in conversation
     // (App Developer mode): screenshots, the listing, the owner's yes.
     ("publish-an-app", include_str!("publish-an-app.md")),
+    // How a file reaches the owner on any device: share_file, never the
+    // Desktop, AirDrop or a local server a phone away from home can't reach.
+    ("file-delivery", include_str!("file-delivery.md")),
 ];
 
 /// Files a bundled skill carries beside its SKILL.md: `(skill, relative

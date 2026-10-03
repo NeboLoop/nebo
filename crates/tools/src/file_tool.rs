@@ -402,6 +402,9 @@ impl FileTool {
             // there, and glob with the defaulted "*" is the one implementation.
             return self.handle_glob(ctx, input);
         }
+        if let Err(e) = ensure_local(&path) {
+            return ToolResult::error(e);
+        }
 
         // NOTE: A read MUST always return the file's content. We deliberately do NOT
         // suppress repeat reads with a "contents already in your context" placeholder —
@@ -803,6 +806,9 @@ impl FileTool {
         if let Err(e) = validate_file_path(&path, "edit") {
             return ToolResult::error(format!("Error: {}", e));
         }
+        if let Err(e) = ensure_local(&path) {
+            return ToolResult::error(e);
+        }
 
         let content = match std::fs::read_to_string(&path) {
             Ok(c) => c,
@@ -929,11 +935,21 @@ impl FileTool {
             ));
         }
 
+        if let Err(e) = ensure_local(&path) {
+            return ToolResult::error(e);
+        }
+        // Sized after `ensure_local`: an empty card is never attached.
+        let size = std::fs::metadata(&path)
+            .map(|m| m.len())
+            .unwrap_or(meta.len());
+        if size == 0 {
+            return ToolResult::error(EMPTY_FILE);
+        }
+
         let name = std::path::Path::new(&path)
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| path.clone());
-        let size = meta.len();
         let size_str = if size >= 1024 {
             format!("{}KB", size / 1024)
         } else {
@@ -941,11 +957,10 @@ impl FileTool {
         };
 
         // The attachment is a fact of this reply; the model needs nothing more
-        // than what was attached and how big it is.
-        ToolResult::ok(format!(
-            "Attached {name} ({size_str}) as a download card on this reply."
-        ))
-        .with_image_url(path)
+        // than what was attached and how big it is. Nothing about how or where
+        // it shows: that differs by client, and the model repeats it as fact.
+        ToolResult::ok(format!("Shared {name} ({size_str}) to the chat as a file."))
+            .with_image_url(path)
     }
 
     fn handle_glob(&self, ctx: &ToolContext, input: &FileInput) -> ToolResult {
@@ -1540,6 +1555,101 @@ fn decode_utf16_bytes(bytes: &[u8], big_endian: bool) -> String {
         })
         .collect();
     String::from_utf16_lossy(&units)
+}
+
+/// macOS `SF_DATALESS`: the file's bytes live in iCloud ("Optimize Mac
+/// Storage") and the first read fetches them. When iCloud's sync daemon
+/// stalls, that read blocks until something outside gives up — a read_file
+/// and a `cat` each sat for the full two-minute command timeout.
+const SF_DATALESS: u32 = 0x4000_0000;
+/// How long a `brctl download` may take to bring a dataless file down.
+const ICLOUD_DOWNLOAD_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+/// How long a file's first bytes may take to arrive. Well under the command
+/// timeout, so a stalled disk or cloud file is a plain error, not a hang.
+const FILE_READ_WAIT: std::time::Duration = std::time::Duration::from_secs(15);
+const NOT_DOWNLOADED: &str = "This file is in iCloud and hasn't downloaded to this Mac yet. \
+     Open it in Finder to download it, then try again.";
+pub(crate) const EMPTY_FILE: &str = "That file is empty (0 bytes), so there's nothing to share.";
+
+/// The ONE check before a file tool reads, copies or hands over a file's
+/// bytes: an iCloud file that isn't on this Mac is asked for once, and the
+/// first bytes must arrive within `FILE_READ_WAIT`. Open errors are left to
+/// the caller, which reports them in its own words.
+pub(crate) fn ensure_local(path: &str) -> Result<(), String> {
+    ensure_local_with(
+        Path::new(path),
+        file_flags,
+        download_from_icloud,
+        FILE_READ_WAIT,
+    )
+}
+
+/// `ensure_local` with the stat, the download and the wait passed in, so a
+/// test can stand in for a dataless file and a stalled read.
+fn ensure_local_with(
+    path: &Path,
+    flags: impl Fn(&Path) -> u32,
+    download: impl FnOnce(&Path),
+    wait: std::time::Duration,
+) -> Result<(), String> {
+    if flags(path) & SF_DATALESS != 0 {
+        download(path);
+        if flags(path) & SF_DATALESS != 0 {
+            return Err(NOT_DOWNLOADED.to_string());
+        }
+    }
+    // The read runs on its own thread: a read stuck in the kernel can't be
+    // cancelled, so the caller stops waiting for it instead.
+    let owned = path.to_path_buf();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(std::fs::File::open(&owned).and_then(|mut f| f.read(&mut [0u8; 1])));
+    });
+    match rx.recv_timeout(wait) {
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err(format!(
+            "Reading {} took longer than {} seconds, so it was stopped. The disk or cloud \
+             storage holding it isn't answering. Try again in a minute.",
+            path.display(),
+            wait.as_secs()
+        )),
+        _ => Ok(()),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn file_flags(path: &Path) -> u32 {
+    use std::os::macos::fs::MetadataExt;
+    std::fs::metadata(path).map(|m| m.st_flags()).unwrap_or(0)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn file_flags(_path: &Path) -> u32 {
+    0
+}
+
+/// Ask iCloud for the file once and wait up to `ICLOUD_DOWNLOAD_WAIT` for it
+/// to land. `brctl download` only starts the download, so the flag is watched
+/// rather than the exit.
+fn download_from_icloud(path: &Path) {
+    if !cfg!(target_os = "macos") {
+        return;
+    }
+    let Ok(mut child) = command::new::<std::process::Command>("brctl", command::Console::Hidden)
+        .arg("download")
+        .arg(path)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    else {
+        return;
+    };
+    let deadline = std::time::Instant::now() + ICLOUD_DOWNLOAD_WAIT;
+    while std::time::Instant::now() < deadline && file_flags(path) & SF_DATALESS != 0 {
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 /// Validate that a file path is safe to access.
@@ -2662,6 +2772,108 @@ mod tests {
         );
         assert!(r.is_error);
         assert!(r.content.contains("directory"), "{}", r.content);
+    }
+
+    #[test]
+    fn share_refuses_an_empty_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("copy.png");
+        fs::write(&path, b"").unwrap();
+        let r = FileTool::new().execute(
+            &ctx(),
+            json!({"action":"share","path": path.to_str().unwrap()}),
+        );
+        assert!(r.is_error);
+        assert_eq!(r.content, EMPTY_FILE);
+        assert!(r.image_url.is_none(), "an empty file is never attached");
+    }
+
+    #[test]
+    fn share_says_what_was_shared_not_where_it_shows() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("chart.png");
+        fs::write(&path, b"\x89PNG not really").unwrap();
+        let r = FileTool::new().execute(
+            &ctx(),
+            json!({"action":"share","path": path.to_str().unwrap()}),
+        );
+        assert_eq!(
+            r.content,
+            "Shared chart.png (15 bytes) to the chat as a file."
+        );
+    }
+
+    // ── ensure_local ────────────────────────────────────────────────
+    #[test]
+    fn a_dataless_file_that_does_not_download_is_named_without_a_hang() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("report.pdf");
+        fs::write(&path, b"%PDF-").unwrap();
+        let asked = std::cell::Cell::new(0);
+        let started = std::time::Instant::now();
+        let r = ensure_local_with(
+            &path,
+            |_| SF_DATALESS,
+            |_| asked.set(asked.get() + 1),
+            FILE_READ_WAIT,
+        );
+        assert_eq!(r, Err(NOT_DOWNLOADED.to_string()));
+        assert_eq!(asked.get(), 1, "the download is asked for once");
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(1),
+            "no read was attempted"
+        );
+    }
+
+    #[test]
+    fn a_dataless_file_that_downloads_is_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("notes.txt");
+        fs::write(&path, b"hello").unwrap();
+        let here = std::cell::Cell::new(false);
+        let flags = |_: &Path| if here.get() { 0 } else { SF_DATALESS };
+        assert_eq!(
+            ensure_local_with(&path, flags, |_| here.set(true), FILE_READ_WAIT),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn a_local_file_is_never_sent_to_icloud() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("notes.txt");
+        fs::write(&path, b"hello").unwrap();
+        let r = ensure_local_with(
+            &path,
+            |_| 0,
+            |_| panic!("no download for a local file"),
+            FILE_READ_WAIT,
+        );
+        assert_eq!(r, Ok(()));
+    }
+
+    /// A FIFO with no writer blocks `open` forever: the stand-in for a read
+    /// iCloud never answers. The check gives up at its wait.
+    #[cfg(unix)]
+    #[test]
+    fn a_read_that_never_returns_is_stopped_at_its_wait() {
+        let dir = tempfile::tempdir().unwrap();
+        let fifo = dir.path().join("stalled");
+        let made = command::new::<std::process::Command>("mkfifo", command::Console::Hidden)
+            .arg(&fifo)
+            .status()
+            .unwrap();
+        assert!(made.success());
+        let started = std::time::Instant::now();
+        let r = ensure_local_with(&fifo, |_| 0, |_| {}, std::time::Duration::from_millis(300));
+        let e = r.expect_err("a stalled read is an error");
+        assert!(e.contains("took longer than"), "{e}");
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(3),
+            "stopped at the wait"
+        );
+        // Let the stuck reader go.
+        let _ = std::fs::OpenOptions::new().write(true).open(&fifo);
     }
 
     // ── relativize_path ─────────────────────────────────────────────
