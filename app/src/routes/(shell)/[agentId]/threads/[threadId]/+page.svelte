@@ -282,7 +282,7 @@
   folder={chatFolder}
   isApp={ctx.agent?.isApp ?? false}
   ownApp={ctx.agent?.ownApp ?? false}
-  onopenapp={() => launchApp(ctx.agentId, ctx.agent?.name ?? 'App', { fullscreen: ctx.agent?.appWindow?.fullscreen })}
+  onopenapp={() => launchApp(ctx.agentId, ctx.agent?.name ?? 'App', { fullscreen: ctx.agent?.appWindow?.fullscreen, thread: threadId })}
 
   allAgents={chat.allAgents}
   tokenUsage={chat.tokenUsage}
