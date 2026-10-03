@@ -385,6 +385,12 @@ impl Store {
         // own declaration entries and the memory mode are held, everything
         // else is the package's to change. See `crate::declaration`.
         let merged = match existing {
+            // A folder without agent.json declares nothing (an employee the
+            // owner made, its settings stored only here): what is stored, the
+            // memory mode the owner chose included, stays as it is. Merging
+            // "" used to blank it, so every AGENT.md edit or restart reset
+            // a multi-chat employee to one conversation.
+            Some(ours) if frontmatter.trim().is_empty() => ours,
             Some(ours) => crate::declaration::merge_package_declaration(&ours, frontmatter),
             None => frontmatter.to_string(),
         };
@@ -1602,6 +1608,33 @@ mod boot_sync_tests {
         s.conn_exec_for_test("UPDATE agents SET updated_at = 10 WHERE id = 'emp'");
         s.sync_agent_identity("emp", "Clerk", "Keeps the books").unwrap();
         assert!(settings_changed(), "a new manifest description is a change");
+    }
+}
+
+/// An employee the owner made has no agent.json: its folder declares nothing,
+/// so editing its AGENT.md (or a restart) keeps the memory mode the owner set.
+#[cfg(test)]
+mod folder_without_declaration_tests {
+    use crate::Store;
+
+    #[test]
+    fn an_agent_md_edit_keeps_the_owners_memory_mode_when_the_folder_declares_none() {
+        let path = std::env::temp_dir().join(format!("nebo-no-decl-test-{}.db", uuid::Uuid::new_v4()));
+        let s = Store::new(&path.to_string_lossy()).expect("store");
+        s.create_agent("studio", None, "Design Studio", "", "", "", None, None).unwrap();
+        s.sync_agent_content("studio", "# Studio", "").unwrap();
+        s.set_agent_memory_mode("studio", "confidential").unwrap();
+
+        // The owner edits AGENT.md: the watcher syncs the folder, no agent.json in it
+        s.sync_agent_content("studio", "# Studio, edited", "").unwrap();
+        let a = s.get_agent("studio").unwrap().unwrap();
+        assert_eq!(a.agent_md, "# Studio, edited");
+        assert!(a.frontmatter.contains(r#""mode":"confidential""#), "the owner's mode is kept: {:?}", a.frontmatter);
+
+        // A folder that does declare still delivers, and the owner's mode still wins
+        s.sync_agent_content("studio", "# Studio", r#"{"memory":{"mode":"single"},"skills":["x"]}"#).unwrap();
+        let a = s.get_agent("studio").unwrap().unwrap();
+        assert!(a.frontmatter.contains(r#""mode":"confidential""#) && a.frontmatter.contains("skills"), "{}", a.frontmatter);
     }
 }
 
