@@ -1,7 +1,7 @@
-//! Embeds the static ffmpeg + ffprobe built by `scripts/build-ffmpeg.sh`.
+//! Embeds the gzipped ffmpeg + ffprobe fetched by `scripts/fetch-ffmpeg.sh`.
 //!
 //! The plugin must work on a machine that has never heard of ffmpeg, so a
-//! build without the vendored executables is an error, not a fallback.
+//! build without them is an error, not a fallback.
 
 use std::env;
 use std::fs;
@@ -19,23 +19,27 @@ fn main() {
         .map(PathBuf::from)
         .unwrap_or_else(|| manifest.join("vendor").join(&target));
 
-    let font = manifest.join("assets").join("Inter-Regular.ttf");
     let mut hasher = Sha256::new();
     for (key, path) in [
-        ("NEBO_VIDEO_FFMPEG", dir.join(format!("ffmpeg{exe}"))),
-        ("NEBO_VIDEO_FFPROBE", dir.join(format!("ffprobe{exe}"))),
-        ("NEBO_VIDEO_FONT", font),
+        ("NEBO_VIDEO_FFMPEG", dir.join(format!("ffmpeg{exe}.gz"))),
+        ("NEBO_VIDEO_FFPROBE", dir.join(format!("ffprobe{exe}.gz"))),
+        ("NEBO_VIDEO_FONT", manifest.join("assets").join("Inter-Regular.ttf")),
     ] {
         let bytes = fs::read(&path).unwrap_or_else(|_| {
             panic!(
-                "missing {}\nbuild it first: scripts/build-ffmpeg.sh {target}\n\
-                 (or point NEBO_VIDEO_FFMPEG_DIR at a directory holding ffmpeg{exe} and ffprobe{exe})",
+                "missing {}\nfetch it first: scripts/fetch-ffmpeg.sh {target}",
                 path.display()
             )
         });
         hasher.update(&bytes);
         println!("cargo:rerun-if-changed={}", path.display());
         println!("cargo:rustc-env={key}={}", path.display());
+        // gzip's trailer holds the uncompressed size; the runtime uses it to
+        // tell a complete extracted file from a missing one.
+        if path.extension().is_some_and(|e| e == "gz") {
+            let tail: [u8; 4] = bytes[bytes.len() - 4..].try_into().unwrap();
+            println!("cargo:rustc-env={key}_SIZE={}", u32::from_le_bytes(tail));
+        }
     }
 
     // Names the extraction directory, so a plugin upgrade never runs an older

@@ -1,19 +1,22 @@
 nebo-video is licensed under the GNU General Public License v3.0 or later
 (see LICENSE).
 
-Every nebo-video binary embeds the following third-party software. Exact
-versions and source checksums are pinned in scripts/build-ffmpeg.sh, which
-builds them from those sources.
+Every nebo-video binary embeds an unmodified, prebuilt FFmpeg 8.1.2
+(ffmpeg + ffprobe), downloaded by scripts/fetch-ffmpeg.sh and pinned by
+sha256:
 
-  FFmpeg 8.1.3        GPL-2.0-or-later (configured with --enable-gpl)
-                      https://ffmpeg.org
-  x264 (stable)       GPL-2.0-or-later
-                      https://code.videolan.org/videolan/x264
-  FreeType 2.14.3     FreeType License (FTL)
-                      https://freetype.org
-  HarfBuzz 13.0.0     Old MIT License
-                      https://harfbuzz.github.io
-  zlib 1.3.2          zlib License
-                      https://zlib.net
-  Inter 4.1           SIL Open Font License 1.1 (assets/Inter-OFL.txt)
-                      https://rsms.me/inter
+  Linux, macOS  Martin Riedl's static builds   https://ffmpeg.martin-riedl.de
+  Windows       Gyan Doshi's "essentials" build https://www.gyan.dev/ffmpeg/builds
+
+Both are configured with --enable-gpl and include libx264, so they are
+distributed under GPL-2.0-or-later. Corresponding source:
+
+  FFmpeg 8.1.2                https://ffmpeg.org/releases/ffmpeg-8.1.2.tar.xz
+  Build scripts and the source of every bundled library are published by
+  each builder at the addresses above (Linux/macOS: "Build Information" on
+  each release's detail page; Windows: https://www.gyan.dev/ffmpeg/builds/).
+
+Also embedded:
+
+  Inter 4.1   SIL Open Font License 1.1 (assets/Inter-OFL.txt)
+              https://rsms.me/inter

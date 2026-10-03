@@ -16,6 +16,10 @@ path = "src/main.rs"
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+
+[dev-dependencies]
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 
 [build-dependencies]
 sha2 = "0.10"

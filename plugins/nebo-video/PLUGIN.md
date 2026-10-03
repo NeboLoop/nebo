@@ -14,7 +14,9 @@ Three actions in v0.1.0:
 
 ## Self-contained
 
-ffmpeg and ffprobe are built into the plugin. Nothing needs to be installed and a system ffmpeg is never used. On first run the plugin writes its copies under its data directory and reuses them after that. Output is always H.264 video with AAC audio in an MP4.
+ffmpeg 8.1.2 and ffprobe are built into the plugin. Nothing needs to be installed and a system ffmpeg is never used. On first run the plugin unpacks its copies under its data directory and reuses them after that. Output is always H.264 video with AAC audio in an MP4.
+
+Platforms: macOS 12+ (Apple silicon and Intel), Windows 10+ (x64), and Linux (x64 and arm64) with glibc 2.35 or newer, which means Ubuntu 22.04, Debian 12 or later.
 
 ## Project JSON schema (for `video.render`)
 

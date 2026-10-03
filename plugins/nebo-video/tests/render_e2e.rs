@@ -7,10 +7,24 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use flate2::read::GzDecoder;
 use serde_json::{Value, json};
 
-/// The vendored ffmpeg build.rs embedded; used only to make fixtures.
-const FIXTURE_FFMPEG: &str = env!("NEBO_VIDEO_FFMPEG");
+/// Unpacks the same gzipped ffmpeg the plugin embeds, to make fixtures with.
+fn fixture_ffmpeg(dir: &Path) -> PathBuf {
+    let exe = if cfg!(windows) { "fixture-ffmpeg.exe" } else { "fixture-ffmpeg" };
+    let path = dir.join(exe);
+    let gz = fs::File::open(env!("NEBO_VIDEO_FFMPEG")).unwrap();
+    let mut out = fs::File::create(&path).unwrap();
+    std::io::copy(&mut GzDecoder::new(gz), &mut out).unwrap();
+    drop(out);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    path
+}
 
 fn scratch() -> PathBuf {
     let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
@@ -50,8 +64,8 @@ fn plugin(data_dir: &Path, action: &str, input: Value) -> Value {
     v
 }
 
-fn fixture(args: &[&str]) {
-    let status = Command::new(FIXTURE_FFMPEG)
+fn fixture(ffmpeg: &Path, args: &[&str]) {
+    let status = Command::new(ffmpeg)
         .args(["-hide_banner", "-loglevel", "error", "-y"])
         .args(args)
         .status()
@@ -69,14 +83,15 @@ fn probe_trim_render_with_no_system_ffmpeg() {
     let dir = scratch();
     let data = dir.join("data");
     let s = |name: &str| dir.join(name).to_string_lossy().into_owned();
+    let ffmpeg = fixture_ffmpeg(&dir);
 
     // 3 s of colour bars with a tone, and a separate 2 s tone.
-    fixture(&[
+    fixture(&ffmpeg, &[
         "-f", "lavfi", "-i", "testsrc=duration=3:size=640x360:rate=30",
         "-f", "lavfi", "-i", "sine=frequency=440:duration=3",
         "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", &s("a.mp4"),
     ]);
-    fixture(&["-f", "lavfi", "-i", "sine=frequency=660:duration=2", &s("b.wav")]);
+    fixture(&ffmpeg, &["-f", "lavfi", "-i", "sine=frequency=660:duration=2", &s("b.wav")]);
 
     let a = plugin(&data, "probe", json!({ "input": s("a.mp4") }));
     approx(&a["duration"], 3.0, 0.1);
