@@ -6602,7 +6602,9 @@ mod app_window_tests {
         );
         let no_pull = r#"{"title":"Solitaire","pull_to_refresh":false}"#;
         assert_eq!(serde_json::to_value(stored_app_window(Some(no_pull))).unwrap()["pullToRefresh"], false);
-        let today = serde_json::json!({"fullscreen": false, "orientation": "portrait", "motion": false, "pullToRefresh": true});
+        let pull = r#"{"title":"Feed","pull_to_refresh":true}"#;
+        assert_eq!(serde_json::to_value(stored_app_window(Some(pull))).unwrap()["pullToRefresh"], true);
+        let today = serde_json::json!({"fullscreen": false, "orientation": "portrait", "motion": false, "pullToRefresh": false});
         assert_eq!(serde_json::to_value(stored_app_window(None)).unwrap(), today);
         assert_eq!(serde_json::to_value(stored_app_window(Some("not json"))).unwrap(), today);
     }
