@@ -3,7 +3,7 @@
   "slug": "nebo-video",
   "name": "Nebo Video",
   "version": "0.1.0",
-  "description": "Probe, trim, and assemble videos from a declarative project JSON — ffmpeg-backed primitives for agent-driven video creation.",
+  "description": "Probe, trim, and assemble videos from a declarative project JSON. ffmpeg is built in — nothing to install.",
   "author": "NeboAI",
   "category": "Create content",
   "triggers": ["video", "edit", "trim", "assemble", "render", "clip", "cut"],
@@ -43,7 +43,7 @@
       },
       {
         "name": "video.render",
-        "description": "Assemble a full video from a declarative project JSON. The project describes output format and a sequence of video, audio, and text tracks with clip timings. Produces a single MP4.",
+        "description": "Assemble a full video from a declarative project JSON. The project describes the output format and a sequence of video, audio, and text tracks with clip timings. Produces a single H.264/AAC MP4.",
         "command": "render",
         "inputSchema": {
           "type": "object",

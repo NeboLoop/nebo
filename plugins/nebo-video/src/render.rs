@@ -29,7 +29,8 @@ pub fn run(input: &Value) -> Result<Value, String> {
     let project: Project = serde_json::from_str(&raw)
         .map_err(|e| format!("render: invalid project JSON: {e}"))?;
 
-    let plan = plan_render(&project, &args.output)?;
+    let font = ffmpeg::font_path()?;
+    let plan = plan_render(&project, &font.to_string_lossy())?;
     let bin = ffmpeg::ffmpeg_bin()?;
     let mut cmd = Command::new(bin);
     cmd.args(["-y"]);
@@ -61,7 +62,7 @@ struct RenderPlan {
     encode_args: Vec<String>,
 }
 
-fn plan_render(project: &Project, _output: &str) -> Result<RenderPlan, String> {
+fn plan_render(project: &Project, font: &str) -> Result<RenderPlan, String> {
     // Deduplicate inputs so a single source file referenced many times only
     // opens once. The returned index is used in filter_complex labels.
     let mut input_index: BTreeMap<String, usize> = BTreeMap::new();
@@ -117,11 +118,12 @@ fn plan_render(project: &Project, _output: &str) -> Result<RenderPlan, String> {
         for (n, tc) in text_clips.iter().enumerate() {
             let next = format!("vt{n}");
             graph.push_str(&format!(
-                "[{prev}]drawtext=text='{text}':fontsize={size}:fontcolor={color}:\
+                "[{prev}]drawtext=fontfile={font}:text={text}:expansion=none:\
+                 fontsize={size}:fontcolor={color}:\
                  x=(w-text_w)*{x}:y=(h-text_h)*{y}:\
-                 enable='between(t,{start},{end})'[{next}];",
-                prev = prev, text = escape_drawtext(&tc.text),
-                size = tc.size, color = tc.color,
+                 enable=between(t\\,{start}\\,{end})[{next}];",
+                prev = prev, font = filter_value(font), text = filter_value(&tc.text),
+                size = tc.size, color = filter_value(&tc.color),
                 x = tc.x, y = tc.y,
                 start = tc.start, end = tc.start + tc.duration,
                 next = next,
@@ -178,12 +180,15 @@ fn plan_render(project: &Project, _output: &str) -> Result<RenderPlan, String> {
         vec![format!("[{final_video_label}]")]
     };
 
-    let (vcodec, acodec) = match out.codec.as_str() {
-        "h265" | "hevc" => ("libx265", "aac"),
-        "vp9" => ("libvpx-vp9", "libopus"),
-        "av1" => ("libaom-av1", "libopus"),
-        _ => ("libx264", "aac"),
-    };
+    // The embedded ffmpeg carries one video encoder; say so rather than fail
+    // deep inside ffmpeg.
+    if out.codec != "h264" {
+        return Err(format!(
+            "render: output codec '{}' is not supported; this plugin encodes H.264 (codec: \"h264\")",
+            out.codec
+        ));
+    }
+    let (vcodec, acodec) = ("libx264", "aac");
 
     let mut encode_args = vec![
         "-c:v".into(), vcodec.into(),
@@ -210,20 +215,28 @@ fn plan_render(project: &Project, _output: &str) -> Result<RenderPlan, String> {
     })
 }
 
-/// drawtext uses `:` to separate args and `'` to quote values. Escape both.
-/// Also escape `\` and `%` (format specifiers).
-fn escape_drawtext(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
+/// Escape a value for use as a filter option inside `-filter_complex`.
+///
+/// Two levels, innermost first: the option parser treats `\`, `'` and `:`
+/// specially; the graph parser additionally treats `[`, `]`, `,` and `;`.
+/// Each level is escaped with a backslash, so a Windows font path or a title
+/// like "It's 50% off: today, only" reaches drawtext unchanged.
+fn filter_value(s: &str) -> String {
+    let mut option = String::with_capacity(s.len());
     for c in s.chars() {
-        match c {
-            '\\' => out.push_str("\\\\"),
-            '\'' => out.push_str("\\'"),
-            ':' => out.push_str("\\:"),
-            '%' => out.push_str("\\%"),
-            other => out.push(other),
+        if matches!(c, '\\' | '\'' | ':') {
+            option.push('\\');
         }
+        option.push(c);
     }
-    out
+    let mut graph = String::with_capacity(option.len());
+    for c in option.chars() {
+        if matches!(c, '\\' | '\'' | '[' | ']' | ',' | ';') {
+            graph.push('\\');
+        }
+        graph.push(c);
+    }
+    graph
 }
 
 #[cfg(test)]
@@ -250,7 +263,7 @@ mod tests {
                 }],
             }],
         };
-        let plan = plan_render(&p, "/out.mp4").unwrap();
+        let plan = plan_render(&p, "/font.ttf").unwrap();
         assert_eq!(plan.inputs, vec!["/a.mp4".to_string()]);
         assert!(plan.filter_complex.contains("concat=n=1:v=1:a=0[vcat]"));
         assert_eq!(plan.maps, vec!["[vcat]".to_string()]);
@@ -270,7 +283,7 @@ mod tests {
                 ],
             }],
         };
-        let plan = plan_render(&p, "/out.mp4").unwrap();
+        let plan = plan_render(&p, "/font.ttf").unwrap();
         // Same source → one -i input.
         assert_eq!(plan.inputs.len(), 1);
         assert!(plan.filter_complex.contains("concat=n=2:v=1:a=0[vcat]"));
@@ -294,7 +307,7 @@ mod tests {
                 },
             ],
         };
-        let plan = plan_render(&p, "/out.mp4").unwrap();
+        let plan = plan_render(&p, "/font.ttf").unwrap();
         assert_eq!(plan.inputs.len(), 2);
         assert!(plan.filter_complex.contains("amix=inputs=1"));
         assert_eq!(plan.maps, vec!["[vcat]".to_string(), "[acat]".to_string()]);
@@ -319,9 +332,9 @@ mod tests {
                 },
             ],
         };
-        let plan = plan_render(&p, "/out.mp4").unwrap();
-        assert!(plan.filter_complex.contains("drawtext"));
-        assert!(plan.filter_complex.contains("between(t,0.5,2.5)"));
+        let plan = plan_render(&p, "/font.ttf").unwrap();
+        assert!(plan.filter_complex.contains("drawtext=fontfile=/font.ttf:text=Hello:expansion=none"));
+        assert!(plan.filter_complex.contains(r"enable=between(t\,0.5\,2.5)"));
         assert_eq!(plan.maps, vec!["[vt0]".to_string()]);
     }
 
@@ -331,15 +344,33 @@ mod tests {
             output: basic_output(),
             tracks: vec![Track::Audio { clips: vec![] }],
         };
-        let err = plan_render(&p, "/out.mp4").unwrap_err();
+        let err = plan_render(&p, "/font.ttf").unwrap_err();
         assert!(err.contains("no video clips"));
     }
 
     #[test]
-    fn escapes_drawtext_special_chars() {
-        assert_eq!(escape_drawtext("hello"), "hello");
-        assert_eq!(escape_drawtext("a:b"), "a\\:b");
-        assert_eq!(escape_drawtext("it's"), "it\\'s");
-        assert_eq!(escape_drawtext("100%"), "100\\%");
+    fn rejects_codecs_the_embedded_ffmpeg_cannot_encode() {
+        let mut output = basic_output();
+        output.codec = "vp9".into();
+        let p = Project {
+            output,
+            tracks: vec![Track::Video {
+                clips: vec![VideoClip {
+                    source: "/a.mp4".into(), start: 0.0, duration: 1.0, trim_start: 0.0,
+                }],
+            }],
+        };
+        let err = plan_render(&p, "/font.ttf").unwrap_err();
+        assert!(err.contains("'vp9' is not supported"), "{err}");
+    }
+
+    #[test]
+    fn filter_value_escapes_both_parser_levels() {
+        assert_eq!(filter_value("hello"), "hello");
+        assert_eq!(filter_value("50% off"), "50% off");
+        assert_eq!(filter_value("a:b"), r"a\\:b");
+        assert_eq!(filter_value("it's"), r"it\\\'s");
+        assert_eq!(filter_value("x,y;[z]"), r"x\,y\;\[z\]");
+        assert_eq!(filter_value(r"C:\f\a.ttf"), r"C\\:\\\\f\\\\a.ttf");
     }
 }

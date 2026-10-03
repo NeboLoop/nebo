@@ -12,15 +12,9 @@ Three actions in v0.1.0:
 - **`video.trim`** — cut a `[start..end]` window out of a file into a new MP4.
 - **`video.render`** — assemble a full video from a project JSON (shots, audio, overlays) into a single MP4.
 
-## Runtime requirement
+## Self-contained
 
-The plugin shells out to `ffmpeg` and `ffprobe`. They must be on `PATH`:
-
-- macOS: `brew install ffmpeg`
-- Debian/Ubuntu: `apt-get install ffmpeg`
-- Windows: `winget install Gyan.FFmpeg`
-
-If `ffmpeg` is missing the plugin returns a clear error pointing at the install docs — it does not try to download it.
+ffmpeg and ffprobe are built into the plugin. Nothing needs to be installed and a system ffmpeg is never used. On first run the plugin writes its copies under its data directory and reuses them after that. Output is always H.264 video with AAC audio in an MP4.
 
 ## Project JSON schema (for `video.render`)
 
@@ -45,7 +39,7 @@ The minimum project:
 | `width` | int | 1920 | Output width in pixels |
 | `height` | int | 1080 | Output height |
 | `fps` | int | 30 | Frames per second |
-| `codec` | string | `"h264"` | `h264`, `h265`, `vp9`, `av1` |
+| `codec` | string | `"h264"` | Only `h264`; anything else is rejected |
 | `video_bitrate` | string | `"5M"` | ffmpeg syntax (`5M`, `800k`) |
 | `audio_bitrate` | string | `"128k"` | |
 | `pixel_format` | string | `"yuv420p"` | For broadest player compatibility |
@@ -54,7 +48,7 @@ The minimum project:
 
 Each track has `type` and `clips[]`. The clip timeline is composed into a single `-filter_complex` graph; one ffmpeg process produces the final output.
 
-**Video track** (`type: "video"`) — clips are concatenated in order, placed on the output timeline at each clip's `start`.
+**Video track** (`type: "video"`) — clips play back-to-back in list order. Each clip is scaled to fit the output size, with black bars when the aspect ratio differs. Keep each clip's `start` equal to the previous clip's end: gaps are not filled in v0.1.0.
 
 ```json
 { "type": "video", "clips": [
@@ -63,11 +57,11 @@ Each track has `type` and `clips[]`. The clip timeline is composed into a single
 ```
 
 - `source` — absolute path to the source file
-- `start` — time on the output timeline this clip begins (seconds)
+- `start` — where the clip begins on the output timeline (seconds)
 - `duration` — length of this clip on the output timeline
 - `trim_start` — where in the source to start reading (seconds, default 0)
 
-**Audio track** (`type: "audio"`) — mixed down with the video track's native audio.
+**Audio track** (`type: "audio"`) — every audio clip is placed at its `start` and mixed together. A video clip's own sound is not carried over in v0.1.0. To keep it, add an audio clip whose `source` is that video file, with the same `start`, `trim_start` and `duration`.
 
 ```json
 { "type": "audio", "clips": [
@@ -75,10 +69,11 @@ Each track has `type` and `clips[]`. The clip timeline is composed into a single
 ]}
 ```
 
+- `trim_start`, `duration` — the window to read from the source (default: from 0 to the end)
 - `volume` — linear multiplier, default 1.0
 - `filter` — raw ffmpeg audio filter string, applied before mixing
 
-**Text track** (`type: "text"`) — simple drawtext overlay. Rich styling is v0.2.0.
+**Text track** (`type: "text"`) — a text overlay in the built-in Inter font. Any characters are fine (quotes, `%`, `:`, brackets); the text is shown exactly as written. Richer styling arrives in v0.2.0.
 
 ```json
 { "type": "text", "clips": [
@@ -95,15 +90,15 @@ Each track has `type` and `clips[]`. The clip timeline is composed into a single
 ```bash
 # Probe
 echo '{"input":"/tmp/raw.mp4"}' | nebo-video probe
-# → {"duration": 42.0, "width": 1920, "height": 1080, "fps": 30, "video_codec": "h264", "audio_codec": "aac"}
+# → {"input":"/tmp/raw.mp4","duration":42.0,"width":1920,"height":1080,"fps":30.0,"video_codec":"h264","audio_codec":"aac",...}
 
 # Trim
 echo '{"input":"/tmp/raw.mp4","start":5.0,"end":15.0,"output":"/tmp/cut.mp4"}' | nebo-video trim
-# → {"output":"/tmp/cut.mp4","duration":10.0,"size_bytes":1234567}
+# → {"output":"/tmp/cut.mp4","duration":10.0,"size_bytes":1234567,"mode":"stream_copy"}
 
 # Render
 echo '{"project":"/tmp/project.json","output":"/tmp/final.mp4"}' | nebo-video render
-# → {"output":"/tmp/final.mp4","duration":42.0,"size_bytes":9876543}
+# → {"output":"/tmp/final.mp4","size_bytes":9876543,"input_count":3}
 ```
 
 See `examples/simple-project.json` for a working project.
@@ -113,12 +108,15 @@ See `examples/simple-project.json` for a working project.
 Every action returns a JSON object. On failure:
 
 ```json
-{ "error": "ffmpeg not found on PATH. Install: brew install ffmpeg" }
+{ "error": "trim: end (2) must be greater than start (5)" }
 ```
 
-The process exits 0 on success and 1 on error. Nebo's PluginTool surfaces the stderr/stdout to the agent.
+The process exits 0 on success and 1 on error. When ffmpeg itself fails, the error includes its message.
 
 ## Status
 
-v0.1.0 — minimum useful set. Follow-up actions scheduled for v0.2.0:
-`concat`, `thumbnail`, `overlay`, `audio_mix`, `silence` (detect + remove), `reframe` (vertical/square).
+v0.1.0 — the minimum useful set. Planned for v0.2.0: carrying a video clip's own sound, transitions, and the `thumbnail`, `overlay`, `silence` (detect + remove) and `reframe` (vertical/square) actions.
+
+## License
+
+GPL-3.0-or-later, because the built-in ffmpeg includes the x264 encoder. See `LICENSE` and `NOTICE`.

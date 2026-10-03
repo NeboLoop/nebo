@@ -3,7 +3,7 @@ name = "nebo-video"
 version = "0.1.0"
 edition = "2024"
 description = "Nebo plugin: ffmpeg-backed video assembly and editing"
-license = "MIT"
+license = "GPL-3.0-or-later"
 
 # Keep this crate independent of the Nebo workspace so it can be built and
 # published separately from the main repo.
@@ -16,5 +16,6 @@ path = "src/main.rs"
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-anyhow = "1"
-which = "6"
+
+[build-dependencies]
+sha2 = "0.10"

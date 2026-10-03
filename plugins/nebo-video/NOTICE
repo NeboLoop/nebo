@@ -1,0 +1,19 @@
+nebo-video is licensed under the GNU General Public License v3.0 or later
+(see LICENSE).
+
+Every nebo-video binary embeds the following third-party software. Exact
+versions and source checksums are pinned in scripts/build-ffmpeg.sh, which
+builds them from those sources.
+
+  FFmpeg 8.1.3        GPL-2.0-or-later (configured with --enable-gpl)
+                      https://ffmpeg.org
+  x264 (stable)       GPL-2.0-or-later
+                      https://code.videolan.org/videolan/x264
+  FreeType 2.14.3     FreeType License (FTL)
+                      https://freetype.org
+  HarfBuzz 13.0.0     Old MIT License
+                      https://harfbuzz.github.io
+  zlib 1.3.2          zlib License
+                      https://zlib.net
+  Inter 4.1           SIL Open Font License 1.1 (assets/Inter-OFL.txt)
+                      https://rsms.me/inter
