@@ -11,7 +11,7 @@ use crate::registry::{DynTool, ToolResult};
 use comm::CommPlugin;
 
 /// Best-effort MIME type from a file extension (matches the comm/app file conventions).
-fn mime_for_path(p: &std::path::Path) -> &'static str {
+pub(crate) fn mime_for_path(p: &std::path::Path) -> &'static str {
     match p
         .extension()
         .and_then(|e| e.to_str())
