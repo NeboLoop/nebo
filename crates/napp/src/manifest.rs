@@ -157,10 +157,11 @@ pub struct AppWindowConfig {
     /// `portrait` (the default), `landscape` or `any`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub orientation: Option<String>,
-    /// `false` turns off the phone's pull-down-to-reload on this app's page,
-    /// for apps where a downward drag is part of using them (a card game).
+    /// `true` gives this app's page the phone's pull-down-to-reload. Off
+    /// unless asked for: an app is used by touch, and a downward drag that
+    /// reloads it (a design canvas, a card game) makes it unusable.
     /// Fullscreen apps never have it.
-    #[serde(default = "default_true", alias = "pullToRefresh", skip_serializing_if = "Clone::clone")]
+    #[serde(default, alias = "pullToRefresh", skip_serializing_if = "std::ops::Not::not")]
     pub pull_to_refresh: bool,
 }
 
@@ -209,7 +210,7 @@ impl AppWindow {
             fullscreen,
             orientation,
             motion: permissions.iter().any(|p| p == DEVICE_MOTION),
-            pull_to_refresh: !fullscreen && window.map_or(true, |w| w.pull_to_refresh),
+            pull_to_refresh: !fullscreen && window.is_some_and(|w| w.pull_to_refresh),
         }
     }
 }
@@ -233,7 +234,7 @@ impl Default for AppWindowConfig {
             title: None,
             fullscreen: false,
             orientation: None,
-            pull_to_refresh: true,
+            pull_to_refresh: false,
         }
     }
 }
@@ -415,9 +416,12 @@ mod tests {
             serde_json::json!({"fullscreen": true, "orientation": "landscape", "motion": true, "pullToRefresh": false})
         );
 
-        // Missing = today's view: not fullscreen, portrait, no motion.
+        // Missing = today's view: not fullscreen, portrait, no motion, and no
+        // pull-to-refresh unless the app asks for it.
         let today = AppWindow::from_manifest(None, &[]);
-        assert_eq!(today, AppWindow { fullscreen: false, orientation: "portrait", motion: false, pull_to_refresh: true });
+        assert_eq!(today, AppWindow { fullscreen: false, orientation: "portrait", motion: false, pull_to_refresh: false });
+        let asks: AppWindowConfig = serde_json::from_str(r#"{"pull_to_refresh":true}"#).unwrap();
+        assert!(AppWindow::from_manifest(Some(&asks), &[]).pull_to_refresh);
         let plain: AppWindowConfig = serde_json::from_str(r#"{"title":"Deals"}"#).unwrap();
         assert_eq!(AppWindow::from_manifest(Some(&plain), &["storage:readwrite".into()]), today);
 
@@ -426,14 +430,16 @@ mod tests {
         assert_eq!(AppWindow::from_manifest(Some(&odd), &[]).orientation, "portrait");
         assert!(odd.validate().is_err());
 
-        // A plain app can turn pull-to-reload off (snake_case or camelCase key),
-        // and the setting survives being written back.
-        for json in [r#"{"pull_to_refresh":false}"#, r#"{"pullToRefresh":false}"#] {
-            let no_pull: AppWindowConfig = serde_json::from_str(json).unwrap();
-            let w = AppWindow::from_manifest(Some(&no_pull), &[]);
-            assert!(!w.fullscreen && !w.pull_to_refresh);
-            assert_eq!(serde_json::to_value(&no_pull).unwrap()["pull_to_refresh"], false);
+        // Pull-to-reload is off unless an app turns it on (snake_case or
+        // camelCase key); turned on, it survives being written back.
+        for json in [r#"{"pull_to_refresh":true}"#, r#"{"pullToRefresh":true}"#] {
+            let pull: AppWindowConfig = serde_json::from_str(json).unwrap();
+            let w = AppWindow::from_manifest(Some(&pull), &[]);
+            assert!(!w.fullscreen && w.pull_to_refresh);
+            assert_eq!(serde_json::to_value(&pull).unwrap()["pull_to_refresh"], true);
         }
+        let off: AppWindowConfig = serde_json::from_str(r#"{"pull_to_refresh":false}"#).unwrap();
+        assert!(!AppWindow::from_manifest(Some(&off), &[]).pull_to_refresh);
 
         // A window written back keeps its old shape when the new keys are unset.
         assert_eq!(
