@@ -143,6 +143,12 @@ impl LoopCore {
                 path
             ));
         }
+        if let Err(e) = crate::file_tool::ensure_local(path) {
+            return ToolResult::error(e);
+        }
+        if std::fs::metadata(p).map(|m| m.len()).unwrap_or(0) == 0 {
+            return ToolResult::error(crate::file_tool::EMPTY_FILE);
+        }
 
         let filename = p
             .file_name()

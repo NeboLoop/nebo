@@ -192,6 +192,9 @@ async fn convert(path: &str, to: &str) -> ToolResult {
         .and_then(|e| e.to_str())
         .unwrap_or("")
         .to_ascii_lowercase();
+    if let Err(e) = crate::file_tool::ensure_local(&src) {
+        return ToolResult::error(e);
+    }
     let source = match std::fs::read_to_string(src_path) {
         Ok(s) => s,
         Err(e) => return ToolResult::error(format!("Error reading {src}: {e}")),
