@@ -31,10 +31,13 @@ const OPERATION: &str = "mail.message.send";
 
 /// What one message may carry. The hub holds every message to the same
 /// caps; checking here first means nothing is uploaded for a message the
-/// hub would refuse.
+/// hub would refuse. 6 MB is what fits through Outlet (an 8 MB body limit,
+/// and base64 adds a third); raise these with the hub's when Outlet's route
+/// limit and the SES raw send are raised. A file is never larger than the
+/// whole message.
 const MAX_ATTACHMENTS: usize = 10;
-const MAX_ATTACHMENT_BYTES: u64 = 10 << 20;
-const MAX_ATTACHMENTS_BYTES: u64 = 20 << 20;
+const MAX_ATTACHMENT_BYTES: u64 = 6 << 20;
+const MAX_ATTACHMENTS_BYTES: u64 = 6 << 20;
 
 /// A file the call attaches, checked and ready to upload.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -86,11 +89,19 @@ pub fn attachment_files(input: &Value) -> Result<Vec<MailFile>, String> {
             return fail("the file is empty (0 bytes)".into());
         }
         if meta.len() > MAX_ATTACHMENT_BYTES {
-            return fail(format!("the file is {}; one attachment can be at most 10 MB", megabytes(meta.len())));
+            return fail(format!(
+                "the file is {}; one attachment can be at most {}",
+                megabytes(meta.len()),
+                megabytes(MAX_ATTACHMENT_BYTES)
+            ));
         }
         total += meta.len();
         if total > MAX_ATTACHMENTS_BYTES {
-            return fail(format!("with it the attachments come to {}; one email can carry at most 20 MB", megabytes(total)));
+            return fail(format!(
+                "with it the attachments come to {}; one email can carry at most {}",
+                megabytes(total),
+                megabytes(MAX_ATTACHMENTS_BYTES)
+            ));
         }
         let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| raw.clone());
         files.push(MailFile { path, name, size: meta.len() });
@@ -276,7 +287,7 @@ impl OperationProvider for BotMailProvider {
             json!({
                 "type": "array",
                 "items": {"type": "string"},
-                "description": "Files to attach: full paths on this computer (~ works). At most 10 files, 10 MB each, 20 MB together. All go or the message is not sent."
+                "description": "Files to attach: full paths on this computer (~ works). At most 10 files, 6 MB together. All go or the message is not sent."
             }),
         );
         vec![ProvidedOperation {
@@ -431,11 +442,14 @@ mod tests {
 
         let several = attachment_files(&json!({"attachments": [
             png,
-            file(dir.path(), "Q3 report.pdf", 10 << 20),
+            file(dir.path(), "Q3 report.pdf", (6 << 20) - 1200 - 5),
             file(dir.path(), "notes.txt", 5),
         ]}))
         .unwrap();
         assert_eq!(several.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(), ["chart.png", "Q3 report.pdf", "notes.txt"]);
+        assert_eq!(several.iter().map(|f| f.size).sum::<u64>(), 6 << 20, "exactly at the total cap");
+        let whole = attachment_files(&json!({"attachments": [file(dir.path(), "deck.pdf", 6 << 20)]})).unwrap();
+        assert_eq!(whole[0].size, 6 << 20, "one file may fill the whole message");
     }
 
     /// A missing file, an empty one, or a message over a cap is refused
@@ -451,11 +465,11 @@ mod tests {
         assert!(why.contains("gone.png") && why.contains("not found"), "{why}");
         let why = refused(json!({"attachments": [file(dir.path(), "empty.pdf", 0)]}));
         assert!(why.contains("empty.pdf") && why.contains("empty"), "{why}");
-        let why = refused(json!({"attachments": [file(dir.path(), "huge.zip", (10 << 20) + 1)]}));
-        assert!(why.contains("huge.zip") && why.contains("10.1 MB"), "{why}");
-        let big: Vec<String> = (0..3).map(|i| file(dir.path(), &format!("b{i}.pdf"), 8 << 20)).collect();
+        let why = refused(json!({"attachments": [file(dir.path(), "huge.zip", (6 << 20) + 1)]}));
+        assert!(why.contains("huge.zip: the file is 6.1 MB; one attachment can be at most 6 MB."), "{why}");
+        let big = [file(dir.path(), "b0.pdf", 3 << 20), file(dir.path(), "b1.pdf", 3 << 20), file(dir.path(), "b2.pdf", 1)];
         let why = refused(json!({"attachments": big}));
-        assert!(why.contains("b2.pdf") && why.contains("24 MB"), "{why}");
+        assert!(why.contains("b2.pdf: with it the attachments come to 6.1 MB; one email can carry at most 6 MB."), "{why}");
         let many: Vec<String> = (0..11).map(|_| ok.clone()).collect();
         assert!(refused(json!({"attachments": many})).contains("at most 10"));
         assert!(refused(json!({"attachments": [dir.path().to_string_lossy()]})).contains("not a file"));
