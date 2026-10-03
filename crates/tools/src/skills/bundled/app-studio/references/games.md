@@ -219,7 +219,9 @@ document.addEventListener('visibilitychange', () => { if (document.hidden) save(
   orientation: "landscape" }`, plus `device:motion` in permissions when it
   reads tilt.
 - The play area: `touch-action: none` and `user-select: none`; pull to
-  refresh is already off for fullscreen apps.
+  refresh is already off for fullscreen apps. A game that keeps the app bar
+  (a card or board game in portrait) sets `window: { pull_to_refresh: false }`,
+  or a downward drag from the top of the page reloads it on the phone.
 
 ## 7a. 3D scenes (three.js)
 

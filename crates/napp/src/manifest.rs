@@ -157,6 +157,11 @@ pub struct AppWindowConfig {
     /// `portrait` (the default), `landscape` or `any`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub orientation: Option<String>,
+    /// `false` turns off the phone's pull-down-to-reload on this app's page,
+    /// for apps where a downward drag is part of using them (a card game).
+    /// Fullscreen apps never have it.
+    #[serde(default = "default_true", alias = "pullToRefresh", skip_serializing_if = "Clone::clone")]
+    pub pull_to_refresh: bool,
 }
 
 /// The orientations a window may ask for; the first is the default.
@@ -179,13 +184,16 @@ impl AppWindowConfig {
 }
 
 /// How an app asks to be shown, as every client reads it (`appWindow` on an
-/// employee): the manifest's `window.fullscreen` and `window.orientation`,
-/// and whether its permissions include `device:motion`.
+/// employee): the manifest's `window.fullscreen`, `window.orientation` and
+/// `window.pull_to_refresh`, and whether its permissions include `device:motion`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct AppWindow {
     pub fullscreen: bool,
     pub orientation: &'static str,
     pub motion: bool,
+    /// Whether the phone offers pull-down-to-reload on the page.
+    #[serde(rename = "pullToRefresh")]
+    pub pull_to_refresh: bool,
 }
 
 impl AppWindow {
@@ -196,10 +204,12 @@ impl AppWindow {
             .and_then(|w| w.orientation.as_deref())
             .and_then(|o| WINDOW_ORIENTATIONS.iter().find(|k| **k == o).copied())
             .unwrap_or(WINDOW_ORIENTATIONS[0]);
+        let fullscreen = window.is_some_and(|w| w.fullscreen);
         Self {
-            fullscreen: window.is_some_and(|w| w.fullscreen),
+            fullscreen,
             orientation,
             motion: permissions.iter().any(|p| p == DEVICE_MOTION),
+            pull_to_refresh: !fullscreen && window.map_or(true, |w| w.pull_to_refresh),
         }
     }
 }
@@ -223,6 +233,7 @@ impl Default for AppWindowConfig {
             title: None,
             fullscreen: false,
             orientation: None,
+            pull_to_refresh: true,
         }
     }
 }
@@ -398,15 +409,15 @@ mod tests {
         .unwrap();
         m.validate().unwrap();
         let w = AppWindow::from_manifest(m.window.as_ref(), &m.permissions);
-        assert_eq!(w, AppWindow { fullscreen: true, orientation: "landscape", motion: true });
+        assert_eq!(w, AppWindow { fullscreen: true, orientation: "landscape", motion: true, pull_to_refresh: false });
         assert_eq!(
             serde_json::to_value(&w).unwrap(),
-            serde_json::json!({"fullscreen": true, "orientation": "landscape", "motion": true})
+            serde_json::json!({"fullscreen": true, "orientation": "landscape", "motion": true, "pullToRefresh": false})
         );
 
         // Missing = today's view: not fullscreen, portrait, no motion.
         let today = AppWindow::from_manifest(None, &[]);
-        assert_eq!(today, AppWindow { fullscreen: false, orientation: "portrait", motion: false });
+        assert_eq!(today, AppWindow { fullscreen: false, orientation: "portrait", motion: false, pull_to_refresh: true });
         let plain: AppWindowConfig = serde_json::from_str(r#"{"title":"Deals"}"#).unwrap();
         assert_eq!(AppWindow::from_manifest(Some(&plain), &["storage:readwrite".into()]), today);
 
@@ -414,6 +425,15 @@ mod tests {
         let odd: AppWindowConfig = serde_json::from_str(r#"{"orientation":"sideways"}"#).unwrap();
         assert_eq!(AppWindow::from_manifest(Some(&odd), &[]).orientation, "portrait");
         assert!(odd.validate().is_err());
+
+        // A plain app can turn pull-to-reload off (snake_case or camelCase key),
+        // and the setting survives being written back.
+        for json in [r#"{"pull_to_refresh":false}"#, r#"{"pullToRefresh":false}"#] {
+            let no_pull: AppWindowConfig = serde_json::from_str(json).unwrap();
+            let w = AppWindow::from_manifest(Some(&no_pull), &[]);
+            assert!(!w.fullscreen && !w.pull_to_refresh);
+            assert_eq!(serde_json::to_value(&no_pull).unwrap()["pull_to_refresh"], false);
+        }
 
         // A window written back keeps its old shape when the new keys are unset.
         assert_eq!(

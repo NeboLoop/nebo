@@ -124,7 +124,11 @@ create_employee(draft_id: "<the id it returned>")
   the app id: the id is a UUID, minted at create, given in the result and by
   `get_employee(name: "Deal Board")`.
 - `window` takes `title`, `width`, `height`, `resizable`, `fullscreen`,
-  `orientation` (`portrait` default, `landscape`, `any`) and nothing else.
+  `orientation` (`portrait` default, `landscape`, `any`), `pull_to_refresh`
+  and nothing else.
+- `pull_to_refresh: false` turns off the phone's pull-down-to-reload for a page
+  where dragging down is play (dragging cards in a solitaire game) without
+  making it fullscreen. Fullscreen apps never have it.
 - `permissions`: `storage:readwrite`, `subagent:<employee-id>`, `network:<host>`
   or `network:*` (the proxy fetch), `device:motion` (tilt).
 

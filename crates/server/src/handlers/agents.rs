@@ -6598,9 +6598,11 @@ mod app_window_tests {
         let stored = r#"{"width":420,"height":800,"resizable":false,"title":"Kart","fullscreen":true,"orientation":"landscape"}"#;
         assert_eq!(
             serde_json::to_value(stored_app_window(Some(stored))).unwrap(),
-            serde_json::json!({"fullscreen": true, "orientation": "landscape", "motion": false})
+            serde_json::json!({"fullscreen": true, "orientation": "landscape", "motion": false, "pullToRefresh": false})
         );
-        let today = serde_json::json!({"fullscreen": false, "orientation": "portrait", "motion": false});
+        let no_pull = r#"{"title":"Solitaire","pull_to_refresh":false}"#;
+        assert_eq!(serde_json::to_value(stored_app_window(Some(no_pull))).unwrap()["pullToRefresh"], false);
+        let today = serde_json::json!({"fullscreen": false, "orientation": "portrait", "motion": false, "pullToRefresh": true});
         assert_eq!(serde_json::to_value(stored_app_window(None)).unwrap(), today);
         assert_eq!(serde_json::to_value(stored_app_window(Some("not json"))).unwrap(), today);
     }

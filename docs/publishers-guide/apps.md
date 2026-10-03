@@ -120,6 +120,7 @@ Other prefixes (`storage:`, `memory:`, `filesystem:`, `shell:`, `oauth:`, …) a
 | `resizable` | true | Allow user resize |
 | `fullscreen` | false | Open over the whole screen. Desktop: a full-screen window (its size is never saved as the windowed size). Phone: no app bar or safe-area padding, system bars hidden, screen kept awake, no pull-to-refresh, the iOS edge swipe off (Android back walks the page's history, then closes), and a Close pill in the top-left corner that fades after 3 seconds and comes back on a touch near the top. |
 | `orientation` | `"portrait"` | `"portrait"`, `"landscape"` or `"any"` on the phone. Any other value is refused when the manifest is written; the phone returns to its normal orientations on close. |
+| `pull_to_refresh` | true | On the phone, pulling down from the top of the page reloads it. Set `false` when dragging down is part of using the app (a card or board game that keeps the app bar). Fullscreen apps never have it. |
 
 There are no `min_width` / `min_height` fields. Nebo remembers window position and size per app: the user's last arrangement is restored on reopen.
 
