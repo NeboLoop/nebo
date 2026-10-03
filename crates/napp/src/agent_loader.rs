@@ -953,7 +953,7 @@ mod tests {
         let loaded = load_from_dir(dir, AgentSource::Installed).expect("load app");
         assert_eq!(
             loaded.app_window(),
-            Some(crate::manifest::AppWindow { fullscreen: true, orientation: "landscape", motion: true, pull_to_refresh: false })
+            Some(crate::manifest::AppWindow { fullscreen: true, orientation: "landscape", motion: true, pull_to_refresh: false, voice: false })
         );
 
         std::fs::write(dir.join("manifest.json"), r#"{"id":"kart","name":"Kart","version":"1.0.0","type":"app"}"#)
@@ -961,7 +961,7 @@ mod tests {
         let plain = load_from_dir(dir, AgentSource::Installed).expect("load app");
         assert_eq!(
             plain.app_window(),
-            Some(crate::manifest::AppWindow { fullscreen: false, orientation: "portrait", motion: false, pull_to_refresh: false })
+            Some(crate::manifest::AppWindow { fullscreen: false, orientation: "portrait", motion: false, pull_to_refresh: false, voice: false })
         );
 
         std::fs::write(dir.join("manifest.json"), r#"{"id":"kart","name":"Kart","version":"1.0.0"}"#).unwrap();

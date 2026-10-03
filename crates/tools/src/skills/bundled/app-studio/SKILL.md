@@ -124,11 +124,14 @@ create_employee(draft_id: "<the id it returned>")
   the app id: the id is a UUID, minted at create, given in the result and by
   `get_employee(name: "Deal Board")`.
 - `window` takes `title`, `width`, `height`, `resizable`, `fullscreen`,
-  `orientation` (`portrait` default, `landscape`, `any`), `pull_to_refresh`
-  and nothing else.
-- `pull_to_refresh: false` turns off the phone's pull-down-to-reload for a page
-  where dragging down is play (dragging cards in a solitaire game) without
-  making it fullscreen. Fullscreen apps never have it.
+  `orientation` (`portrait` default, `landscape`, `any`), `pull_to_refresh`,
+  `voice` and nothing else.
+- `pull_to_refresh: true` gives the page the phone's pull-down-to-reload. Off
+  by default: a drag down on a canvas or a card game must never reload it.
+  Fullscreen apps never have it.
+- `voice: true` puts the chat's dictate and voice buttons in the app's bar on
+  the phone, for an app the owner directs by talking while looking at it (a
+  design canvas). Off by default. Fullscreen apps never have it.
 - `permissions`: `storage:readwrite`, `subagent:<employee-id>`, `network:<host>`
   or `network:*` (the proxy fetch), `device:motion` (tilt).
 
