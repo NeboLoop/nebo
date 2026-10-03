@@ -202,3 +202,36 @@ fn encode_and_decode_are_the_pages_set_and_get() {
     assert_eq!(decode("plain"), json!("plain"));
     assert_eq!(decode("{\"a\":1}"), json!({"a": 1}));
 }
+
+#[tokio::test]
+async fn a_chat_key_is_each_chats_own_and_the_page_reads_it_by_chat() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = store(dir.path());
+    employee(&store, "studio", "Design Studio", true);
+    let (t, sent) = tool(store.clone());
+    let in_chat = |chat: &str| ToolContext {
+        session_key: format!("agent:studio:thread:{chat}"),
+        ..Default::default()
+    };
+    let set = |design: &str| json!({ "action": "set", "key": "chat:design", "value": design });
+
+    let first = t.execute_dyn(&in_chat("c1"), set("d-1")).await;
+    assert!(!first.is_error, "{}", first.content);
+    assert!(!t.execute_dyn(&in_chat("c2"), set("d-2")).await.is_error);
+
+    // The page opened from each chat reads that chat's own
+    assert_eq!(page_get(&store, "studio", "chat:c1:design"), Some(json!("d-1")));
+    assert_eq!(page_get(&store, "studio", "chat:c2:design"), Some(json!("d-2")));
+    // and hears of it by the key it reads
+    assert!(sent.lock().unwrap().iter().any(|(_, p)| p["keys"][0] == "chat:c1:design"));
+
+    // Each chat reads back its own, by the same key
+    let got = t.execute_dyn(&in_chat("c2"), json!({ "action": "get", "key": "chat:design" })).await;
+    assert!(got.content.contains("d-2") && !got.content.contains("d-1"), "{}", got.content);
+
+    // Outside the owner's chats a chat key has no chat to belong to
+    let web = call(&t, "studio", json!({ "action": "set", "key": "chat:design", "value": "x" })).await;
+    assert!(web.is_error, "{}", web.content);
+    // and app-wide keys are unchanged
+    assert!(!call(&t, "studio", json!({ "action": "set", "key": "designs", "value": [] })).await.is_error);
+}

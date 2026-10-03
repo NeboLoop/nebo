@@ -14,7 +14,12 @@ export interface AppWindowConfig {
 	title?: string;
 	/** The manifest's `window.fullscreen`: the window opens taking the whole screen (a game). */
 	fullscreen?: boolean;
+	/** The chat it is opened from: the page reads it as `?thread=<id>` (an app keeps one record per chat). */
+	thread?: string;
 }
+
+/** The chat each open app window shows, by window label. */
+const shownThread = new Map<string, string | undefined>();
 
 const DEFAULT_CONFIG: AppWindowConfig = {
 	width: 1024,
@@ -42,7 +47,10 @@ export async function launchApp(
 			const { invoke } = await import('@tauri-apps/api/core');
 			const label = `app-${agentId}`;
 			const existing = await mod.WebviewWindow.getByLabel(label);
-			if (existing) {
+			if (existing && cfg.thread && shownThread.get(label) !== cfg.thread) {
+				// Open on another chat: reopen it on this one
+				try { await existing.destroy(); } catch { /* already gone */ }
+			} else if (existing) {
 				try {
 					await existing.setFocus();
 					return;
@@ -58,7 +66,8 @@ export async function launchApp(
 			).catch(() => null);
 
 			// Custom protocol: each app gets its own origin with / as root
-			const appUrl = `neboapp://${agentId}/`;
+			const appUrl = `neboapp://${agentId}/${query(cfg.thread)}`;
+			shownThread.set(label, cfg.thread);
 			const wv = new mod.WebviewWindow(label, {
 				url: appUrl,
 				title: cfg.title,
@@ -87,5 +96,9 @@ export async function launchApp(
 	// doesn't apply, so carry the runtime base (tunnel prefix) explicitly.
 	// Explicit entry file: a bare trailing-slash path never matches the
 	// server router and falls through to the SPA shell.
-	window.open(withBase(`/apps/${agentId}/ui/index.html`), `app-${agentId}`, features);
+	window.open(withBase(`/apps/${agentId}/ui/index.html${query(cfg.thread)}`), `app-${agentId}`, features);
+}
+
+function query(thread?: string): string {
+	return thread ? `?thread=${encodeURIComponent(thread)}` : '';
 }

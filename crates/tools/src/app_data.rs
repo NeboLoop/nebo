@@ -184,6 +184,24 @@ pub fn query(
     (found, total)
 }
 
+/// A `chat:` key belongs to the conversation that writes it: `chat:design`
+/// from the owner's chat `<chat>` is kept as `chat:<chat>:design`, the key the
+/// app's page reads when it was opened from that chat (`?thread=<chat>`). So
+/// an employee keeps one record per chat without knowing the chat's id. Any
+/// other key is the app's, shared by every chat.
+pub fn chat_key(key: &str, chat: Option<&str>) -> Result<String, String> {
+    match key.strip_prefix("chat:") {
+        None => Ok(key.to_string()),
+        Some(rest) => match chat {
+            Some(chat) if !chat.is_empty() => Ok(format!("chat:{chat}:{rest}")),
+            _ => Err(format!(
+                "'{key}' belongs to a chat, and this conversation is not one of the owner's chats. \
+                 Use a key without 'chat:'."
+            )),
+        },
+    }
+}
+
 pub struct AppDataTool {
     store: Arc<db::Store>,
     broadcaster: Option<Broadcaster>,
@@ -211,9 +229,11 @@ impl AppDataTool {
         }
     }
 
-    fn run(&self, app: &db::models::Agent, input: &Value) -> Result<String, String> {
+    fn run(&self, app: &db::models::Agent, chat: Option<&str>, input: &Value) -> Result<String, String> {
         let action = input.get("action").and_then(Value::as_str).unwrap_or("");
-        let key = input.get("key").and_then(Value::as_str).unwrap_or("").trim();
+        let asked = input.get("key").and_then(Value::as_str).unwrap_or("").trim();
+        let key = &chat_key(asked, chat)?;
+        let key = key.as_str();
         let need_key = || {
             if key.is_empty() {
                 Err(format!("'{action}' needs a key."))
@@ -226,7 +246,8 @@ impl AppDataTool {
             .and_then(Value::as_u64)
             .map(|n| (n as usize).clamp(1, MAX_LIMIT))
             .unwrap_or(DEFAULT_LIMIT);
-        let prefix = input.get("prefix").and_then(Value::as_str).unwrap_or("");
+        let prefix = &chat_key(input.get("prefix").and_then(Value::as_str).unwrap_or(""), chat)?;
+        let prefix = prefix.as_str();
         match action {
             "get" => {
                 need_key()?;
@@ -283,7 +304,9 @@ impl DynTool for AppDataTool {
          list (prefix?, limit?), query (prefix?, where: {field: value} — text matches when the field contains it, \
          any case, other values must be equal; dotted paths like \"phone.mobile\" — text?: words anywhere in the \
          record, limit?). A key holding a list is searched item by item. After a set or delete your page's open \
-         views are told to refresh. Only your own app: a coworker who needs your data asks you."
+         views are told to refresh. A key starting with \"chat:\" (chat:design) is this chat's own: each of the \
+         owner's chats keeps its own value under the same key, and the page opened from that chat reads it. \
+         Only your own app: a coworker who needs your data asks you."
             .to_string()
     }
 
@@ -344,7 +367,8 @@ impl DynTool for AppDataTool {
                 Ok(a) => a,
                 Err(e) => return ToolResult::error(e),
             };
-            match self.run(&app, &input) {
+            let chat = types::keyparser::chat_id_from_thread_key(&ctx.session_key);
+            match self.run(&app, chat, &input) {
                 Ok(text) => ToolResult::ok(text),
                 Err(e) => ToolResult::error(e),
             }
