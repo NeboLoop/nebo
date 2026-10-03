@@ -1,0 +1,68 @@
+{
+  "id": "nebo-video",
+  "slug": "nebo-video",
+  "name": "Nebo Video",
+  "version": "0.1.0",
+  "description": "Probe, trim, and assemble videos from a declarative project JSON — ffmpeg-backed primitives for agent-driven video creation.",
+  "author": "NeboAI",
+  "category": "Create content",
+  "triggers": ["video", "edit", "trim", "assemble", "render", "clip", "cut"],
+  "capabilities": {
+    "tools": [
+      {
+        "name": "video.probe",
+        "description": "Return metadata (duration, dimensions, fps, codecs, streams) for a media file. Call this before any editing to know what you're working with.",
+        "command": "probe",
+        "inputSchema": {
+          "type": "object",
+          "required": ["input"],
+          "properties": {
+            "input": { "type": "string", "description": "Absolute path to the media file" }
+          }
+        },
+        "approval": false,
+        "timeoutSeconds": 30
+      },
+      {
+        "name": "video.trim",
+        "description": "Cut [start..end] from a media file into a new output. Fast when the input has keyframes near the cut points (uses stream copy); otherwise re-encodes.",
+        "command": "trim",
+        "inputSchema": {
+          "type": "object",
+          "required": ["input", "start", "end", "output"],
+          "properties": {
+            "input":  { "type": "string", "description": "Absolute path to the source media file" },
+            "start":  { "type": "number", "description": "Start time in seconds" },
+            "end":    { "type": "number", "description": "End time in seconds (exclusive)" },
+            "output": { "type": "string", "description": "Absolute path to write the trimmed MP4" },
+            "reencode": { "type": "boolean", "description": "Force a full re-encode (slower, frame-accurate). Defaults to stream copy when safe.", "default": false }
+          }
+        },
+        "approval": false,
+        "timeoutSeconds": 300
+      },
+      {
+        "name": "video.render",
+        "description": "Assemble a full video from a declarative project JSON. The project describes output format and a sequence of video, audio, and text tracks with clip timings. Produces a single MP4.",
+        "command": "render",
+        "inputSchema": {
+          "type": "object",
+          "required": ["project", "output"],
+          "properties": {
+            "project": {
+              "type": "string",
+              "description": "Absolute path to a project.json file. See the plugin docs for the schema; the minimum is {output:{width,height,fps},tracks:[{type:'video',clips:[{source,start,duration,trim_start?}]}]}."
+            },
+            "output": { "type": "string", "description": "Absolute path to write the rendered MP4" }
+          }
+        },
+        "approval": false,
+        "timeoutSeconds": 1800
+      }
+    ]
+  },
+  "permissions": {
+    "max_timeout_seconds": 1800,
+    "filesystem": "read-write"
+  }
+}

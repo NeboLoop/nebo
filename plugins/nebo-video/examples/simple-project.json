@@ -1,0 +1,39 @@
+{
+  "output": {
+    "width": 1920,
+    "height": 1080,
+    "fps": 30,
+    "codec": "h264",
+    "video_bitrate": "5M",
+    "audio_bitrate": "128k",
+    "pixel_format": "yuv420p"
+  },
+  "tracks": [
+    {
+      "type": "video",
+      "clips": [
+        { "source": "/tmp/intro.mp4",   "start": 0.0, "duration": 4.0, "trim_start": 0.0 },
+        { "source": "/tmp/product.mp4", "start": 4.0, "duration": 8.0, "trim_start": 1.5 },
+        { "source": "/tmp/outro.mp4",   "start": 12.0, "duration": 6.0, "trim_start": 0.0 }
+      ]
+    },
+    {
+      "type": "audio",
+      "clips": [
+        { "source": "/tmp/voiceover.wav", "start": 0.5, "trim_start": 0.0, "duration": 11.0,
+          "volume": 1.0, "filter": "loudnorm=I=-16:TP=-1.5" },
+        { "source": "/tmp/music.wav",     "start": 0.0, "trim_start": 0.0, "duration": 18.0,
+          "volume": 0.35 }
+      ]
+    },
+    {
+      "type": "text",
+      "clips": [
+        { "text": "Introducing", "start": 0.5, "duration": 2.5, "size": 72,
+          "x": 0.5, "y": 0.5, "color": "white" },
+        { "text": "Available now", "start": 13.0, "duration": 4.0, "size": 48,
+          "x": 0.5, "y": 0.85, "color": "white" }
+      ]
+    }
+  ]
+}
