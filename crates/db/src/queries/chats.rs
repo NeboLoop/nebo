@@ -559,6 +559,9 @@ impl Store {
         .map_err(|e| NeboError::Database(e.to_string()))
     }
 
+    /// The title a chat has until it is named.
+    pub const DEFAULT_CHAT_TITLE: &'static str = "New Chat";
+
     /// The chat's latest `limit` turns as the owner reads them: user and
     /// assistant rows, without Nebo's own (`isMeta`: session facts, the
     /// interrupt line, hidden prompts).
