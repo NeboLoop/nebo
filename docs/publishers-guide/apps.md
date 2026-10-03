@@ -120,13 +120,19 @@ Other prefixes (`storage:`, `memory:`, `filesystem:`, `shell:`, `oauth:`, …) a
 | `resizable` | true | Allow user resize |
 | `fullscreen` | false | Open over the whole screen. Desktop: a full-screen window (its size is never saved as the windowed size). Phone: no app bar or safe-area padding, system bars hidden, screen kept awake, no pull-to-refresh, the iOS edge swipe off (Android back walks the page's history, then closes), and a Close pill in the top-left corner that fades after 3 seconds and comes back on a touch near the top. |
 | `orientation` | `"portrait"` | `"portrait"`, `"landscape"` or `"any"` on the phone. Any other value is refused when the manifest is written; the phone returns to its normal orientations on close. |
-| `pull_to_refresh` | true | On the phone, pulling down from the top of the page reloads it. Set `false` when dragging down is part of using the app (a card or board game that keeps the app bar). Fullscreen apps never have it. |
+| `pull_to_refresh` | false | On the phone, pulling down from the top of the page reloads it. Off unless asked for: an app is used by touch, and a drag that reloads it (a design canvas, a card game) makes it unusable. Set `true` only for a page that reads like a feed. Fullscreen apps never have it. |
+| `voice` | false | On the phone, puts the chat's own dictate and voice buttons at the right of the app's bar when the app is opened from its chat, so the owner can direct the employee by talking while looking at the page (a design canvas). Never shown unless asked for; fullscreen apps have no bar and never get them. See **Voice** below. |
 
 There are no `min_width` / `min_height` fields. Nebo remembers window position and size per app: the user's last arrangement is restored on reopen.
 
 A full-screen page should pad itself with `env(safe-area-inset-*)` (and `viewport-fit=cover` in its viewport meta) and keep controls clear of the top-left corner.
 
-**Voice.** Every app opened in the Nebo desktop app or on the phone shows a small voice control in its bottom-right corner, so the owner can talk to the app's employee while it works on the page. The control sits outside your page, so reloading the page never drops the call. On desktop it is a bar about 300 by 48 pixels, 16 pixels in from the window's bottom-right corner. On the phone it is a round 48-point button inside the safe area that the owner can drag to either side; in a full-screen app it folds back to that button a few seconds into a call. Keep important controls clear of the bottom-right corner. During a long task on a call, the employee says short updates such as "Now editing." and never reads out file names or commands.
+**Voice.** Voice lives in the employee's chat, never inside the app: an app runs no call of its own, and nothing is drawn over your page. An app that sets `window.voice: true` gets the chat's two buttons in its phone bar, beside the centred title:
+
+- **Dictate** (microphone) opens the chat's message box in a sheet, already listening; Send posts to the chat the app was opened from.
+- **Voice** (waveform) starts that chat's call. While the call is on, the pair becomes **Mute** and **End**. What is said lands in the chat, and the employee changes the page as it talks.
+
+The buttons drive the chat underneath the app, so a page reload never touches the call. An app opened from home (no chat under it) shows neither. On a call the employee speaks its own short updates in its own voice ("On it, swapping the hero photo now.") and never reads out tools, file names or commands.
 
 ---
 
@@ -305,7 +311,7 @@ nebo.chat.mount(chatContainer, {
 
 When the user switches documents, unmount and remount with the new `contextId`. Each context maintains its own conversation — messages from one document don't leak into another.
 
-**Memory isolation with `contextId`:** By default, all contexts share the agent's memory pool. To isolate memories per context (so Client A's facts never appear in Client B's chat), add `"memory": { "context_isolated": true }` to `agent.json`. See [Agents — Memory](agents.md#memory).
+**Memory isolation with `contextId`:** By default, all contexts share the agent's memory pool. To isolate memories per context (so Client A's facts never appear in Client B's chat), add `"memory": { "mode": "confidential" }` to `agent.json`. See [Agents — Memory](agents.md#memory).
 
 ##### Chat Context
 
@@ -385,6 +391,17 @@ load();
 nebo.storage.onChange((c) => { if (c.keys.includes('contacts')) load(); });
 ```
 
+- **One record per chat:** a key starting with `chat:` belongs to the conversation that writes it. When the employee writes `chat:design` from the owner's chat `<id>`, it is stored as `chat:<id>:design`, and the page opened from that chat gets `?thread=<id>` in its address (desktop and phone) to read it. So an app that keeps one piece of work per conversation (a design, a draft) needs no ids in its instructions: the employee always writes `chat:design`, and the page reads `chat:${thread}:design`. Keys without `chat:` are the app's, shared by every chat. Outside one of the owner's chats (a scheduled run, a caller) a `chat:` key is refused.
+
+```typescript
+const thread = new URLSearchParams(location.search).get('thread');
+const key = thread ? `chat:${thread}:design` : 'design';
+render(await nebo.storage.getItem(key));
+nebo.storage.onChange((c) => { if (c.keys.includes(key)) render(...); });
+```
+
+- **Small edits without rewriting:** the employee's `replace` action changes one exact piece of text inside a stored value (a heading inside a 20 KB page) instead of writing the whole value again; it must match exactly one place, or nothing changes. Tell the employee in AGENT.md to prefer it for small edits.
+- **Values are JSON, never JSON written inside a string.** The employee's `set` stores what it is given: text that is JSON (an object, a list) is stored as the value it spells, and text that only looks like JSON but does not parse is refused with "Nothing was saved", so a broken value never reaches your page.
 - **Pick keys both sides can find:** one key holding a list (`contacts`), or one key per record under a prefix (`contact:42`). Describe the shape in AGENT.md so the employee uses the same keys.
 - A string that is itself valid JSON, such as `"42"` or `"true"`, comes back parsed. Wrap it in an object if the type matters.
 - There is no quota, but each value is sent in one request; keep it well under 2 MB and move large or relational data to a sidecar.

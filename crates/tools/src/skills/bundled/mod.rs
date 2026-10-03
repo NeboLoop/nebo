@@ -54,6 +54,12 @@ pub const BUNDLED_SKILL_FILES: &[(&str, &str, &str)] = &[
     ("app-studio", "references/kit.md", include_str!("app-studio/references/kit.md")),
     ("app-studio", "references/games.md", include_str!("app-studio/references/games.md")),
     ("app-studio", "references/gate.md", include_str!("app-studio/references/gate.md")),
+    ("app-studio", "references/vite-build.md", include_str!("app-studio/references/vite-build.md")),
+    ("app-studio", "references/when-it-breaks.md", include_str!("app-studio/references/when-it-breaks.md")),
+    ("app-studio", "references/design-depth.md", include_str!("app-studio/references/design-depth.md")),
+    ("app-studio", "references/decisions.md", include_str!("app-studio/references/decisions.md")),
+    ("app-studio", "references/lane-a-example.md", include_str!("app-studio/references/lane-a-example.md")),
+    ("app-studio", "references/sdk-more.md", include_str!("app-studio/references/sdk-more.md")),
     ("app-studio", "scripts/gate.js", include_str!("app-studio/scripts/gate.js")),
     ("app-studio", "LICENSE-THIRD-PARTY.txt", include_str!("app-studio/LICENSE-THIRD-PARTY.txt")),
 ];
@@ -230,6 +236,26 @@ mod bundled_skill_tests {
         assert!(content.contains("NeboAppSDK.NeboWebSocket"), "nebo.WebSocket is exported as NeboWebSocket");
     }
 
+    /// After a checkpoint a skill comes back cut to its first 5,000 tokens
+    /// (20,000 bytes of what its load returned,
+    /// `harness::compact::restore::SKILL_TOKENS`). App Studio is the skill of
+    /// the longest sessions, so all of it must come back: the body, plus the
+    /// load's own lead (the App Developer notice), under that line. Detail
+    /// lives in `references/`, read when a pointer says so.
+    #[test]
+    fn app_studio_comes_back_whole_after_a_checkpoint() {
+        let (_, content) = BUNDLED_SKILLS.iter().find(|(k, _)| *k == "app-studio").expect("registered");
+        let body = content.splitn(3, "---").nth(2).expect("frontmatter, then the body");
+        let lead = 300; // "Loaded skill 'app-studio'. Developer mode and App Developer mode are now on…"
+        let restored = 20_000 - 100; // less the cut note
+        assert!(
+            body.len() + lead < restored,
+            "App Studio's body is {} bytes; past {} a checkpoint cuts it. Move detail to references/.",
+            body.len(),
+            restored - lead
+        );
+    }
+
     /// The paths an app page uses resolve at all three addresses Nebo serves
     /// it from (desktop `neboapp://<id>/`, `/apps/<id>/ui/`, and the phone's
     /// `/t/<bot>/apps/<id>/ui/`). A leading `/` works only on the desktop:
@@ -240,8 +266,15 @@ mod bundled_skill_tests {
     fn app_studio_teaches_paths_that_work_on_the_phone() {
         let (_, content) = BUNDLED_SKILLS.iter().find(|(k, _)| *k == "app-studio").expect("registered");
         assert!(content.contains(r#"<script src="../../../sdk/nebo.global.js"></script>"#), "the relative SDK tag");
-        assert!(content.contains("base: './'"), "Vite builds with relative paths");
-        assert!(content.contains("outDir: '../ui'"), "Vite builds into ui/");
+        // The Vite recipe lives in its reference (the skill's top stays inside
+        // what a checkpoint restores); the skill points to it.
+        let (_, _, vite) = BUNDLED_SKILL_FILES
+            .iter()
+            .find(|(k, path, _)| *k == "app-studio" && *path == "references/vite-build.md")
+            .expect("the Vite recipe ships");
+        assert!(content.contains("references/vite-build.md"), "the skill points to the Vite recipe");
+        assert!(vite.contains("base: './'"), "Vite builds with relative paths");
+        assert!(vite.contains("outDir: '../ui'"), "Vite builds into ui/");
         assert!(content.contains("new_name:"), "rename keeps the employee");
         assert!(
             !content.contains(r#"<script src="/sdk/nebo.global.js">"#),
@@ -263,8 +296,15 @@ mod bundled_skill_tests {
     fn app_studio_ships_every_file_it_names() {
         let (_, content) = BUNDLED_SKILLS.iter().find(|(k, _)| *k == "app-studio").expect("registered");
         let files: Vec<&str> = bundled_files("app-studio").map(|(p, _)| p).collect();
-        for named in ["brief.md", "design-recipe.md", "boards-and-assets.md", "wow-catalog.md", "film-scrub.md", "kit.md", "games.md", "gate.md"] {
-            assert!(content.contains(named), "the skill points to {named}");
+        // The skill points to its references; the design method (one of them)
+        // is the map of the studio's own files.
+        let method = bundled_files("app-studio").find(|(p, _)| *p == "references/design-depth.md").expect("the method ships").1;
+        for named in ["design-depth.md", "decisions.md", "games.md", "lane-a-example.md", "sdk-more.md", "vite-build.md", "when-it-breaks.md"] {
+            assert!(content.contains(&format!("references/{named}")), "the skill points to {named}");
+            assert!(files.contains(&format!("references/{named}").as_str()), "references/{named} ships");
+        }
+        for named in ["brief.md", "design-recipe.md", "boards-and-assets.md", "wow-catalog.md", "film-scrub.md", "kit.md", "gate.md"] {
+            assert!(content.contains(named) || method.contains(named), "the skill or its design method points to {named}");
             assert!(files.contains(&format!("references/{named}").as_str()), "references/{named} ships");
         }
         assert!(files.contains(&"scripts/gate.js") && files.contains(&"LICENSE-THIRD-PARTY.txt"));

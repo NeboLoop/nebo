@@ -1,5 +1,23 @@
 # Games
 
+## The window, tilt and tuning
+
+```
+app: { window: { title: "Kart", fullscreen: true, orientation: "landscape" },
+       permissions: ["storage:readwrite", "device:motion"] }
+```
+
+- `fullscreen: true`: no app bar, no safe-area padding, screen stays awake,
+  pull-to-refresh off. Pad with `env(safe-area-inset-*)`; keep controls clear of
+  the close button in the top-left corner.
+- Tilt (`device:motion`): on iPhone call `DeviceMotionEvent.requestPermission()`
+  from the first tap, the same tap that starts sound.
+- Put every tuning number (speed, turn rate, gravity) in one `config.js` object,
+  so a "feels wrong" is one edit, not a rewrite.
+- Saves go in `storage`.
+- Multiplayer: the page opens its own WebSocket to the
+  game server; nothing goes through Nebo.
+
 A game runs the same flow (intake, brief, boards, assets, build, motion,
 gate). Read this whole file before the brief. Planning is done in your head
 except for two written things: the game part of `brief.md` and the asset

@@ -150,7 +150,8 @@ Controls how the agent's memories are scoped. By default, each agent gets its ow
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `context_isolated` | boolean | `false` | When `true`, memories are isolated per context. Each document/project/record gets its own memory pool. The context comes from the SDK embed's `contextId` when set, otherwise from the session's active chat — so each chat thread becomes its own context. |
+| `mode` | string | `"single"` | How the employee's conversations and memory are kept — the same choice as **Memory** in its settings, so an installed employee is configured correctly from the start. `"single"`: one running conversation and one memory. `"separate"`: many conversations listed one by one, sharing the employee's one private memory (a conversation with someone other than the owner — a caller, a visitor, another bot — keeps its own sealed memory). `"confidential"`: many conversations, each a sealed matter; nothing learned in one is visible in another, the owner's own included (local memory is still read by all). Choose `confidential` for work where each chat is its own job, such as one design per chat. |
+| `context_isolated` | boolean | — | Legacy. An agent.json written before `mode` existed: `false` reads as `single`, `true` as `separate`. Only `mode` is written back. |
 | `topics` | array | `[]` | Declared memory topics that replace the generic `project` category in this agent's memory extraction prompt (see [Memory Topics](#memory-topics)). |
 
 **Example:**
@@ -158,22 +159,22 @@ Controls how the agent's memories are scoped. By default, each agent gets its ow
 ```json
 {
   "memory": {
-    "context_isolated": true
+    "mode": "confidential"
   }
 }
 ```
 
-**When to use `context_isolated`:**
+**When to use `confidential`:**
 
-Use this when your agent handles multiple independent contexts — legal clients, project documents, patient records — where facts from one context must never leak into another. The `contextId` comes from the SDK embed:
+Use this when your agent handles multiple independent matters — legal clients, project documents, patient records, one design per chat — where facts from one must never leak into another. Each conversation is its own matter: the SDK embed's `contextId` when the page sets one, otherwise the owner's chat:
 
 ```typescript
 nebo.chat.mount(container, { contextId: document.id });
 ```
 
-Each context maintains its own memory pool. Only the agent-wide `tacit/` namespace is inherited into isolated contexts — working style crosses contexts, case facts do not.
+Each conversation keeps its own memory. Only the owner's `tacit/` identity memories (working style, preferences) are read across them — working style crosses matters, case facts do not.
 
-**Fail-closed writes:** if `context_isolated` is set but no context can be derived for a run (no embed `contextId` and no active chat), memory **writes are refused** for that run rather than silently landing in the shared agent scope — where they would be readable from every other context. Reads fall back to the agent-wide scope.
+**Fail-closed writes:** under `confidential` (and for an outside conversation under `separate`), if no conversation can be derived for a run (no embed `contextId` and no active chat), memory **writes are refused** for that run rather than landing where every other conversation could read them.
 
 ### Memory Topics
 
@@ -212,9 +213,10 @@ Memory scoping follows a layered naming convention:
 | Layer 3 (Context) | `"user123:agent:brief:ctx:doc-123"` | Per-document/project memories |
 
 How scoping resolves:
-- **Default** — reads/writes Layer 2, plus read-only Layer 1 identity prefixes (always on)
-- **`context_isolated: true`** — writes Layer 3; reads Layer 3 + the agent-wide `tacit/` namespace (Layer 2) + Layer 1 identity prefixes
-- **`context_isolated: true` with no derivable context** — fail closed: writes refused, reads fall back to Layer 2
+- **`single` (default)** — reads/writes Layer 2, plus read-only Layer 1 identity prefixes (always on)
+- **`separate`** — the owner's conversations read/write Layer 2; a conversation with anyone else writes Layer 3 for that conversation
+- **`confidential`** — every conversation writes its own Layer 3 (sealed: no other conversation reads it); reads its Layer 3 + Layer 1 identity prefixes
+- **No derivable conversation** where one is required — fail closed: writes refused
 
 ### Workflows Overview
 
@@ -280,6 +282,7 @@ The `soul` field is separate from `AGENT.md`. Where `AGENT.md` defines capabilit
 - Stored in the `agents.soul` DB column (migration 0092)
 - Injected into prompt assembly as `agent_soul` context
 - Editable in **Settings > Soul** section
+- **Empty means Nebo.** An employee with no soul speaks with Nebo's default personality: warm, quick and fun to work with; it says what it's about to do, gives short real updates while it works, and says plainly what it did. A soul you write replaces the default entirely, so the employee's character is always the soul's, never a mix. The platform never adds per-employee personality of its own.
 
 **Example:**
 

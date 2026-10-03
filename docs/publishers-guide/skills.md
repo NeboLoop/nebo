@@ -31,7 +31,17 @@ Skills use a three-level loading system:
 2. **SKILL.md body** — Loaded when the skill triggers (<500 lines ideal). This is the knowledge injected into the agent's context.
 3. **Bundled resources** — Loaded on demand. Scripts execute without being loaded into context. Reference docs are read only when the skill body points to them.
 
-Keep SKILL.md under 500 lines. If approaching this limit, factor detailed content into `references/` files and point to them from the SKILL.md body.
+Keep SKILL.md under 500 lines **and under 20 KB**. A loaded skill stays in the conversation, and when a long conversation is summarized Nebo brings each loaded skill back — newest first, up to 5,000 tokens (about 20 KB) per skill and 25,000 in all. A SKILL.md larger than that comes back cut, so the agent loses whatever is past the line for the rest of the session.
+
+How to split a skill:
+
+- **SKILL.md holds the fundamentals:** every rule that applies at every step, the core workflow, and a map of the references. If skipping it breaks the work, it belongs here.
+- **`references/` holds the detail:** recipes, worked examples, lookup tables, rarely used options. Never put a must-follow rule only in a reference.
+- **Every pointer says when to read it:** "Before the first Vite build, read `references/vite-build.md`", not "see references/ for more". An agent does not reach for a file it does not know it needs.
+- **One level deep:** SKILL.md points to references; a reference does not send the agent on to a third file.
+- **Each fact in one place,** so the two never disagree.
+
+A reference the agent read is not brought back after a summary; it reads it again when the pointer applies.
 
 ---
 

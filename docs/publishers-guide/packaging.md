@@ -462,21 +462,20 @@ Each scope maps to a subset of the agent's capabilities. The embed SDK mounts a 
 
 ### Memory Configuration
 
-Controls how memories are isolated and inherited across the 3-tier hierarchy (user / agent / context).
+Controls how the employee's conversations and memory are kept. The owner's identity memories (`tacit/preferences`, `tacit/personality`) are always readable; there is no flag for it.
 
 ```json
 {
   "memory": {
-    "inherit_user": true,
-    "context_isolated": true
+    "mode": "confidential"
   }
 }
 ```
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `inherit_user` | boolean | `false` | When true, agent can READ the user's main memories (read-only, `tacit/preferences` only) |
-| `context_isolated` | boolean | `false` | When true, memories are isolated per `contextId` from SDK embed sessions |
+| `mode` | string | `"single"` | `"single"` (one conversation, one memory), `"separate"` (many conversations sharing one private memory), or `"confidential"` (each conversation a sealed matter). The same choice as **Memory** in the employee's settings; see [Agents — Memory](agents.md#memory). |
+| `context_isolated` | boolean | — | Legacy, read only from older files: `true` is `separate`. |
 
 ---
 
