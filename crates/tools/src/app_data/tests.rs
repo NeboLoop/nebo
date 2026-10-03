@@ -235,3 +235,31 @@ async fn a_chat_key_is_each_chats_own_and_the_page_reads_it_by_chat() {
     // and app-wide keys are unchanged
     assert!(!call(&t, "studio", json!({ "action": "set", "key": "designs", "value": [] })).await.is_error);
 }
+
+#[tokio::test]
+async fn a_record_sent_as_broken_json_text_is_refused_and_json_text_is_stored_as_its_value() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = store(dir.path());
+    employee(&store, "studio", "Design Studio", true);
+    let (t, _) = tool(store.clone());
+    let set = |value: Value| json!({ "action": "set", "key": "design:d-1", "value": value });
+
+    // A record written inside a string, one quote escaped wrong (seen live)
+    let broken = r#"{"id": "d-1", "html": "<path d=\\"M17 5\"/>"}"#;
+    let got = call(&t, "studio", set(json!(broken))).await;
+    assert!(got.is_error && got.content.contains("Nothing was saved"), "{}", got.content);
+    assert_eq!(page_get(&store, "studio", "design:d-1"), None, "nothing half-written");
+
+    // The same record as good JSON text reads on the page as the record
+    let good = r#"{"id": "d-1", "html": "<path d=\"M17 5\"/>"}"#;
+    assert!(!call(&t, "studio", set(json!(good))).await.is_error);
+    assert_eq!(page_get(&store, "studio", "design:d-1"), Some(json!({ "id": "d-1", "html": "<path d=\"M17 5\"/>" })));
+
+    // A quoted id is stored as the id, not with its quotes
+    assert!(!call(&t, "studio", json!({ "action": "set", "key": "active", "value": "\"d-1\"" })).await.is_error);
+    assert_eq!(page_get(&store, "studio", "active"), Some(json!("d-1")));
+
+    // Plain text stays text
+    assert!(!call(&t, "studio", json!({ "action": "set", "key": "note", "value": "hello {world}" })).await.is_error);
+    assert_eq!(page_get(&store, "studio", "note"), Some(json!("hello {world}")));
+}

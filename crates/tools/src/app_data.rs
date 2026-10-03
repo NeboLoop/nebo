@@ -89,6 +89,28 @@ pub fn decode(raw: &str) -> Value {
     }
 }
 
+/// The value a `set` stores. A model often sends a record as JSON written
+/// inside a string, escaping it by hand; a 20 KB design with one quote
+/// escaped wrong was stored as text the page could not read, and the canvas
+/// showed an empty design. Text that is JSON (an object, a list, a quoted
+/// string) is stored as the value it spells; text that only looks like JSON
+/// is refused with where it breaks, so the model sends it again. Any other
+/// text is stored as the text it is.
+pub fn given_value(value: &Value) -> Result<Value, String> {
+    let Value::String(text) = value else {
+        return Ok(value.clone());
+    };
+    if !text.trim_start().starts_with(['{', '[', '"']) {
+        return Ok(value.clone());
+    }
+    serde_json::from_str::<Value>(text).map_err(|e| {
+        format!(
+            "Nothing was saved: 'value' is text that reads like JSON but does not parse ({e}). \
+             Send the value itself as JSON, an object or a list, not written inside a string."
+        )
+    })
+}
+
 /// The change event's payload.
 pub fn changed(app_id: &str, keys: &[&str], action: &str, source: &str) -> Value {
     json!({ "appId": app_id, "keys": keys, "action": action, "source": source })
@@ -258,8 +280,8 @@ impl AppDataTool {
             }
             "set" => {
                 need_key()?;
-                let value = input.get("value").ok_or("'set' needs a value.")?;
-                write(&self.store, &app.id, key, &encode(value))?;
+                let value = given_value(input.get("value").ok_or("'set' needs a value.")?)?;
+                write(&self.store, &app.id, key, &encode(&value))?;
                 self.notify(&app.id, key, "set");
                 Ok(format!("Saved '{key}'. Open views of {} were told to refresh.", app.name))
             }
