@@ -36,10 +36,6 @@ const MAX_ATTACHMENTS: usize = 10;
 const MAX_ATTACHMENT_BYTES: u64 = 10 << 20;
 const MAX_ATTACHMENTS_BYTES: u64 = 20 << 20;
 
-/// macOS `SF_DATALESS`: the file's bytes live in iCloud, not on this Mac.
-#[cfg(target_os = "macos")]
-const SF_DATALESS: u32 = 0x4000_0000;
-
 /// A file the call attaches, checked and ready to upload.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MailFile {
@@ -49,8 +45,9 @@ pub struct MailFile {
 }
 
 /// The files a call attaches (`attachments`: paths; `~` works), each
-/// checked before anything is uploaded: it exists, it is a file, it is
-/// not empty, it is not an iCloud placeholder, and the count, each size
+/// checked before anything is uploaded: it exists, it is a file, it is on
+/// this Mac (not an iCloud placeholder, `file_tool::ensure_local`), it is
+/// not empty, and the count, each size
 /// and the total are within the caps. The first file that fails names
 /// itself and the reason, and the message is not sent.
 pub fn attachment_files(input: &Value) -> Result<Vec<MailFile>, String> {
@@ -82,8 +79,8 @@ pub fn attachment_files(input: &Value) -> Result<Vec<MailFile>, String> {
         if !meta.is_file() {
             return fail("it is not a file".into());
         }
-        if is_dataless(&meta) {
-            return fail("it is in iCloud and not downloaded to this Mac; open it in Finder to download it".into());
+        if let Err(why) = crate::file_tool::ensure_local(&path.to_string_lossy()) {
+            return fail(why.trim_end_matches('.').to_string());
         }
         if meta.len() == 0 {
             return fail("the file is empty (0 bytes)".into());
@@ -99,17 +96,6 @@ pub fn attachment_files(input: &Value) -> Result<Vec<MailFile>, String> {
         files.push(MailFile { path, name, size: meta.len() });
     }
     Ok(files)
-}
-
-#[cfg(target_os = "macos")]
-fn is_dataless(meta: &std::fs::Metadata) -> bool {
-    use std::os::macos::fs::MetadataExt;
-    meta.st_flags() & SF_DATALESS != 0
-}
-
-#[cfg(not(target_os = "macos"))]
-fn is_dataless(_meta: &std::fs::Metadata) -> bool {
-    false
 }
 
 /// Rounded up, so a size over a cap never reads as the cap.
