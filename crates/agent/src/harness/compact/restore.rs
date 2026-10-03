@@ -25,6 +25,9 @@ pub const SKILL_TOKENS: usize = 5_000;
 pub const SKILLS_TOKENS: usize = 25_000;
 
 const CUT_NOTE: &str = "\n…(cut to fit after the checkpoint; read it again for the rest)";
+/// Closes a skill cut to fit: the top of a skill is what matters most, and
+/// the rest is one load away.
+const SKILL_CUT_NOTE: &str = "\n…(cut to fit after the checkpoint; load the skill again with use_skill for the rest)";
 
 /// Work started before the checkpoint that has not finished: a helper or a
 /// background command. The summary may not mention it, so it is told again
@@ -99,7 +102,7 @@ pub fn restore(before: &[ChatMessage], state: &RestoreState<'_>) -> Vec<TurnEven
             break;
         }
         let Ok(content) = std::fs::read_to_string(&path) else { continue };
-        let content = clip(&content, FILE_TOKENS);
+        let content = clip(&content, FILE_TOKENS, CUT_NOTE);
         let tokens = tokens(&content);
         if files_tokens + tokens > FILES_TOKENS {
             continue;
@@ -112,7 +115,7 @@ pub fn restore(before: &[ChatMessage], state: &RestoreState<'_>) -> Vec<TurnEven
     let mut skills_tokens = 0;
     let mut skills = Vec::new();
     for (name, content) in loaded_skills(before) {
-        let content = clip(&content, SKILL_TOKENS);
+        let content = clip(&content, SKILL_TOKENS, SKILL_CUT_NOTE);
         let tokens = tokens(&content);
         if skills_tokens + tokens > SKILLS_TOKENS {
             continue;
@@ -143,17 +146,17 @@ fn tokens(text: &str) -> usize {
     text.len() / crate::CHARS_PER_TOKEN
 }
 
-/// `text` cut to `max_tokens` at a char boundary, with a note when cut.
-fn clip(text: &str, max_tokens: usize) -> String {
+/// `text` cut to `max_tokens` at a char boundary, with `note` when cut.
+fn clip(text: &str, max_tokens: usize, note: &str) -> String {
     let max = max_tokens * crate::CHARS_PER_TOKEN;
     if text.len() <= max {
         return text.to_string();
     }
-    let mut cut = max.saturating_sub(CUT_NOTE.len());
+    let mut cut = max.saturating_sub(note.len());
     while !text.is_char_boundary(cut) {
         cut -= 1;
     }
-    format!("{}{CUT_NOTE}", &text[..cut])
+    format!("{}{note}", &text[..cut])
 }
 
 /// Every tool call in `messages`, newest first: (call id, tool name, input).
@@ -189,6 +192,13 @@ fn recent_file_reads(messages: &[ChatMessage]) -> Vec<String> {
 
 /// Skills loaded, newest first, each once: (name, the content the load
 /// returned). A load that failed loaded nothing.
+///
+/// A skill survives every checkpoint, not only the first: the skills an
+/// earlier checkpoint restored (or a parent preloaded into a helper) are on
+/// that `invoked_skills` row, and they count as loaded after the skills
+/// loaded since, in the row's own newest-first order. So a skill stays until
+/// newer ones take the budget, as Claude Code keeps its invoked skills across
+/// compactions; the model loads it again when it needs it.
 fn loaded_skills(messages: &[ChatMessage]) -> Vec<(String, String)> {
     let results = results_by_call(messages);
     let mut decided = HashSet::new();
@@ -201,6 +211,18 @@ fn loaded_skills(messages: &[ChatMessage]) -> Vec<(String, String)> {
         if let Some((content, false)) = results.get(id.as_str()) {
             decided.insert(skill.to_string());
             skills.push((skill.to_string(), content.clone()));
+        }
+    }
+    for msg in messages.iter().rev() {
+        let Some(fields) = crate::harness::reminders::attachment_fields(msg) else { continue };
+        if fields.get("kind").and_then(|k| k.as_str()) != Some("invoked_skills") {
+            continue;
+        }
+        for carried in fields.get(crate::harness::events::SKILLS_KEY).and_then(|s| s.as_array()).into_iter().flatten() {
+            let (Some(name), Some(content)) = (carried["name"].as_str(), carried["content"].as_str()) else { continue };
+            if decided.insert(name.to_string()) {
+                skills.push((name.to_string(), content.to_string()));
+            }
         }
     }
     skills
