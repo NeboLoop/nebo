@@ -111,6 +111,35 @@ pub fn given_value(value: &Value) -> Result<Value, String> {
     })
 }
 
+/// Changes the one place in `value`'s text (any string inside it, however
+/// deep) that holds `find`, and says how many places hold it: the value is
+/// changed only when that is exactly one. A model edits one heading of a
+/// 20 KB page this way instead of writing the page out again, which took a
+/// minute a turn and kept the owner waiting.
+pub fn replace_text(value: &mut Value, find: &str, with: &str) -> usize {
+    fn count(v: &Value, find: &str) -> usize {
+        match v {
+            Value::String(s) => s.matches(find).count(),
+            Value::Array(items) => items.iter().map(|i| count(i, find)).sum(),
+            Value::Object(map) => map.values().map(|i| count(i, find)).sum(),
+            _ => 0,
+        }
+    }
+    fn apply(v: &mut Value, find: &str, with: &str) {
+        match v {
+            Value::String(s) if s.contains(find) => *s = s.replacen(find, with, 1),
+            Value::Array(items) => items.iter_mut().for_each(|i| apply(i, find, with)),
+            Value::Object(map) => map.values_mut().for_each(|i| apply(i, find, with)),
+            _ => {}
+        }
+    }
+    let n = count(value, find);
+    if n == 1 {
+        apply(value, find, with);
+    }
+    n
+}
+
 /// The change event's payload.
 pub fn changed(app_id: &str, keys: &[&str], action: &str, source: &str) -> Value {
     json!({ "appId": app_id, "keys": keys, "action": action, "source": source })
@@ -285,6 +314,34 @@ impl AppDataTool {
                 self.notify(&app.id, key, "set");
                 Ok(format!("Saved '{key}'. Open views of {} were told to refresh.", app.name))
             }
+            "replace" => {
+                need_key()?;
+                let find = input
+                    .get("find")
+                    .and_then(Value::as_str)
+                    .filter(|f| !f.is_empty())
+                    .ok_or("'replace' needs find: the exact text to change.")?;
+                let with = input
+                    .get("with")
+                    .and_then(Value::as_str)
+                    .ok_or("'replace' needs with: the text to put in its place.")?;
+                let raw = read(&self.store, &app.id, key)?
+                    .ok_or_else(|| format!("No key '{key}' in {}'s data.", app.name))?;
+                let mut value = decode(&raw);
+                match replace_text(&mut value, find, with) {
+                    1 => {
+                        write(&self.store, &app.id, key, &encode(&value))?;
+                        self.notify(&app.id, key, "set");
+                        Ok(format!("Changed '{key}'. Open views of {} were told to refresh.", app.name))
+                    }
+                    0 => Err(format!(
+                        "Nothing was changed: no text in '{key}' matches find exactly. Read it with get and copy the text as it is."
+                    )),
+                    n => Err(format!(
+                        "Nothing was changed: find matches {n} places in '{key}'. Take in more of the text around it so it matches one."
+                    )),
+                }
+            }
             "delete" => {
                 need_key()?;
                 remove(&self.store, &app.id, key)?;
@@ -308,7 +365,7 @@ impl AppDataTool {
                 let (found, total) = query(&list(&self.store, &app.id)?, prefix, conditions, text, limit);
                 Ok(json!({ "total": total, "items": found }).to_string())
             }
-            other => Err(format!("Unknown action '{other}'. Use get, set, delete, list or query.")),
+            other => Err(format!("Unknown action '{other}'. Use get, set, replace, delete, list or query.")),
         }
     }
 }
@@ -322,7 +379,9 @@ impl DynTool for AppDataTool {
 
     fn description(&self) -> String {
         "Reads and changes your own app's data: the same key-value store your page reads and writes with \
-         nebo.storage (same keys, same values). Actions: get (key), set (key, value: any JSON), delete (key), \
+         nebo.storage (same keys, same values). Actions: get (key), set (key, value: any JSON), replace (key, find, \
+         with: change one exact piece of text inside the value, e.g. a heading in a page, without writing the \
+         whole value again; find must match one place), delete (key), \
          list (prefix?, limit?), query (prefix?, where: {field: value} — text matches when the field contains it, \
          any case, other values must be equal; dotted paths like \"phone.mobile\" — text?: words anywhere in the \
          record, limit?). A key holding a list is searched item by item. After a set or delete your page's open \
@@ -336,7 +395,9 @@ impl DynTool for AppDataTool {
         json!({
             "type": "object",
             "properties": {
-                "action": { "type": "string", "enum": ["get", "set", "delete", "list", "query"] },
+                "action": { "type": "string", "enum": ["get", "set", "replace", "delete", "list", "query"] },
+                "find": { "type": "string", "description": "The exact text to change, inside the key's value (replace). It must match one place." },
+                "with": { "type": "string", "description": "The text to put in its place (replace)." },
                 "key": { "type": "string", "description": "The storage key (get, set, delete)." },
                 "value": { "description": "The value to store (set): any JSON, the way the page stores it." },
                 "prefix": { "type": "string", "description": "Only keys starting with this (list, query)." },
@@ -366,7 +427,7 @@ impl DynTool for AppDataTool {
     fn activity(&self, input: &Value) -> String {
         let key = input.get("key").and_then(Value::as_str).unwrap_or("");
         match input.get("action").and_then(Value::as_str).unwrap_or("") {
-            "set" => format!("saving {key}"),
+            "set" | "replace" => format!("saving {key}"),
             "delete" => format!("deleting {key}"),
             "get" => format!("reading {key}"),
             _ => "looking through the app's data".to_string(),
@@ -376,7 +437,7 @@ impl DynTool for AppDataTool {
     fn outcome(&self, input: &Value) -> String {
         let key = input.get("key").and_then(Value::as_str).unwrap_or("");
         match input.get("action").and_then(Value::as_str).unwrap_or("") {
-            "set" => format!("Saved {key}"),
+            "set" | "replace" => format!("Saved {key}"),
             "delete" => format!("Deleted {key}"),
             "get" => format!("Read {key}"),
             _ => "Looked through the app's data".to_string(),

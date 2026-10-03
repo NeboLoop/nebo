@@ -797,8 +797,13 @@ async fn drain_voice_run(
                 if let Some(tc) = event.tool_call.as_ref() {
                     let activity = state.tools.labels(&tc.name, &tc.input).await.0;
                     run_handle.show_activity(&activity);
-                    // The call waiting on this run hears the step too.
-                    progress_on_call(&state.live_calls, &session_key, &activity);
+                    // The call waiting on this run hears the step too, except
+                    // the app's own data: the owner watches that land on the
+                    // app's page ("Now looking through the app's data" said
+                    // over a design taking shape was noise).
+                    if tc.name != tools::app_data::APP_DATA {
+                        progress_on_call(&state.live_calls, &session_key, &activity);
+                    }
                     state.hub.broadcast(
                         "tool_start",
                         serde_json::json!({
