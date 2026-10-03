@@ -69,12 +69,12 @@ pub(crate) fn spawn_chat_title_generation(
             Ok(n) => n as usize,
             _ => return,
         };
-        // Name a chat after any turn while it still has no name (an attempt
-        // that missed is tried again on the next turn, never left until the
-        // third message, or forever when the owner sent two), and refine it
-        // once at the third.
+        // Name a chat at the first message and refine it once at the third;
+        // and after any turn while it still has no name (an attempt that
+        // missed is tried again on the next turn, never left until the third
+        // message, or forever when the owner sent two).
         let untitled = chat.title.trim().is_empty() || chat.title == Store::DEFAULT_CHAT_TITLE;
-        if !untitled && user_turns != 3 {
+        if !untitled && user_turns != 1 && user_turns != 3 {
             return;
         }
         // Every step of a turn keeps a row, most of them empty: a window of
