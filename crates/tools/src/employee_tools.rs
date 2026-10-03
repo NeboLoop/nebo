@@ -135,7 +135,8 @@ fn job_properties() -> serde_json::Map<String, serde_json::Value> {
                         "resizable": { "type": "boolean", "description": "Default true." },
                         "fullscreen": { "type": "boolean", "description": "The page takes the whole screen (a game). Default false." },
                         "orientation": { "type": "string", "enum": ["portrait", "landscape", "any"], "description": "Default portrait." },
-                        "pull_to_refresh": { "type": "boolean", "description": "false turns off the phone's pull-down-to-reload, for pages where dragging down is play (a card game). Default true; fullscreen apps never have it." }
+                        "pull_to_refresh": { "type": "boolean", "description": "true gives the page the phone's pull-down-to-reload. Default false; fullscreen apps never have it." },
+                        "voice": { "type": "boolean", "description": "true puts the chat's dictate and voice buttons in the app's bar on the phone, for an app the owner directs by talking while they look at it (a design canvas). Default false; fullscreen apps never have it." }
                     }
                 },
                 "permissions": { "type": "array", "items": { "type": "string" }, "description": "prefix:scope entries, default [\"storage:readwrite\"]; device:motion for the gyroscope and accelerometer." }

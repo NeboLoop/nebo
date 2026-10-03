@@ -163,6 +163,11 @@ pub struct AppWindowConfig {
     /// Fullscreen apps never have it.
     #[serde(default, alias = "pullToRefresh", skip_serializing_if = "std::ops::Not::not")]
     pub pull_to_refresh: bool,
+    /// `true` puts the chat's dictate and voice buttons in the app's bar on
+    /// the phone, so the owner talks to the employee without leaving the
+    /// app. Never shown unless asked for. Fullscreen apps have no bar.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub voice: bool,
 }
 
 /// The orientations a window may ask for; the first is the default.
@@ -186,7 +191,7 @@ impl AppWindowConfig {
 
 /// How an app asks to be shown, as every client reads it (`appWindow` on an
 /// employee): the manifest's `window.fullscreen`, `window.orientation` and
-/// `window.pull_to_refresh`, and whether its permissions include `device:motion`.
+/// `window.pull_to_refresh` and `window.voice`, and whether its permissions include `device:motion`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct AppWindow {
     pub fullscreen: bool,
@@ -195,6 +200,8 @@ pub struct AppWindow {
     /// Whether the phone offers pull-down-to-reload on the page.
     #[serde(rename = "pullToRefresh")]
     pub pull_to_refresh: bool,
+    /// Whether the phone's app bar carries the dictate and voice buttons.
+    pub voice: bool,
 }
 
 impl AppWindow {
@@ -211,6 +218,7 @@ impl AppWindow {
             orientation,
             motion: permissions.iter().any(|p| p == DEVICE_MOTION),
             pull_to_refresh: !fullscreen && window.is_some_and(|w| w.pull_to_refresh),
+            voice: !fullscreen && window.is_some_and(|w| w.voice),
         }
     }
 }
@@ -235,6 +243,7 @@ impl Default for AppWindowConfig {
             fullscreen: false,
             orientation: None,
             pull_to_refresh: false,
+            voice: false,
         }
     }
 }
@@ -410,16 +419,16 @@ mod tests {
         .unwrap();
         m.validate().unwrap();
         let w = AppWindow::from_manifest(m.window.as_ref(), &m.permissions);
-        assert_eq!(w, AppWindow { fullscreen: true, orientation: "landscape", motion: true, pull_to_refresh: false });
+        assert_eq!(w, AppWindow { fullscreen: true, orientation: "landscape", motion: true, pull_to_refresh: false, voice: false });
         assert_eq!(
             serde_json::to_value(&w).unwrap(),
-            serde_json::json!({"fullscreen": true, "orientation": "landscape", "motion": true, "pullToRefresh": false})
+            serde_json::json!({"fullscreen": true, "orientation": "landscape", "motion": true, "pullToRefresh": false, "voice": false})
         );
 
         // Missing = today's view: not fullscreen, portrait, no motion, and no
         // pull-to-refresh unless the app asks for it.
         let today = AppWindow::from_manifest(None, &[]);
-        assert_eq!(today, AppWindow { fullscreen: false, orientation: "portrait", motion: false, pull_to_refresh: false });
+        assert_eq!(today, AppWindow { fullscreen: false, orientation: "portrait", motion: false, pull_to_refresh: false, voice: false });
         let asks: AppWindowConfig = serde_json::from_str(r#"{"pull_to_refresh":true}"#).unwrap();
         assert!(AppWindow::from_manifest(Some(&asks), &[]).pull_to_refresh);
         let plain: AppWindowConfig = serde_json::from_str(r#"{"title":"Deals"}"#).unwrap();
@@ -440,6 +449,12 @@ mod tests {
         }
         let off: AppWindowConfig = serde_json::from_str(r#"{"pull_to_refresh":false}"#).unwrap();
         assert!(!AppWindow::from_manifest(Some(&off), &[]).pull_to_refresh);
+        // Voice buttons only when asked for, and never on a fullscreen app.
+        assert!(!AppWindow::from_manifest(Some(&off), &[]).voice);
+        let voice: AppWindowConfig = serde_json::from_str(r#"{"voice":true}"#).unwrap();
+        assert!(AppWindow::from_manifest(Some(&voice), &[]).voice);
+        let game: AppWindowConfig = serde_json::from_str(r#"{"voice":true,"fullscreen":true}"#).unwrap();
+        assert!(!AppWindow::from_manifest(Some(&game), &[]).voice);
 
         // A window written back keeps its old shape when the new keys are unset.
         assert_eq!(
