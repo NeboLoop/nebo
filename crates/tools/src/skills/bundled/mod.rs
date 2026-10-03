@@ -56,6 +56,10 @@ pub const BUNDLED_SKILL_FILES: &[(&str, &str, &str)] = &[
     ("app-studio", "references/gate.md", include_str!("app-studio/references/gate.md")),
     ("app-studio", "references/vite-build.md", include_str!("app-studio/references/vite-build.md")),
     ("app-studio", "references/when-it-breaks.md", include_str!("app-studio/references/when-it-breaks.md")),
+    ("app-studio", "references/design-depth.md", include_str!("app-studio/references/design-depth.md")),
+    ("app-studio", "references/decisions.md", include_str!("app-studio/references/decisions.md")),
+    ("app-studio", "references/lane-a-example.md", include_str!("app-studio/references/lane-a-example.md")),
+    ("app-studio", "references/sdk-more.md", include_str!("app-studio/references/sdk-more.md")),
     ("app-studio", "scripts/gate.js", include_str!("app-studio/scripts/gate.js")),
     ("app-studio", "LICENSE-THIRD-PARTY.txt", include_str!("app-studio/LICENSE-THIRD-PARTY.txt")),
 ];
@@ -233,27 +237,23 @@ mod bundled_skill_tests {
     }
 
     /// After a checkpoint a skill comes back cut to its first 5,000 tokens
-    /// (20,000 bytes, `harness::compact::restore::SKILL_TOKENS`). What App
-    /// Studio needs at every step of a long build must sit inside that, or
-    /// the employee works blind after the first checkpoint; lookups live in
-    /// references.
+    /// (20,000 bytes of what its load returned,
+    /// `harness::compact::restore::SKILL_TOKENS`). App Studio is the skill of
+    /// the longest sessions, so all of it must come back: the body, plus the
+    /// load's own lead (the App Developer notice), under that line. Detail
+    /// lives in `references/`, read when a pointer says so.
     #[test]
-    fn app_studio_keeps_what_a_build_needs_inside_the_restored_top() {
+    fn app_studio_comes_back_whole_after_a_checkpoint() {
         let (_, content) = BUNDLED_SKILLS.iter().find(|(k, _)| *k == "app-studio").expect("registered");
+        let body = content.splitn(3, "---").nth(2).expect("frontmatter, then the body");
+        let lead = 300; // "Loaded skill 'app-studio'. Developer mode and App Developer mode are now on…"
         let restored = 20_000 - 100; // less the cut note
-        for heading in [
-            "## Hard Rules",
-            "## Step 1: Make the app",
-            "## Step 4: Verify",
-            "## When It Breaks",
-            "## Your App's Data",
-            "### One piece of work per chat",
-            "## The SDK Global",
-        ] {
-            let at = content.find(heading).unwrap_or_else(|| panic!("{heading} is in the skill"));
-            assert!(at < restored, "{heading} starts at byte {at}, past what a checkpoint restores");
-        }
-        assert!(content.find("| `nebo.configure").unwrap() < restored, "the whole SDK table is restored");
+        assert!(
+            body.len() + lead < restored,
+            "App Studio's body is {} bytes; past {} a checkpoint cuts it. Move detail to references/.",
+            body.len(),
+            restored - lead
+        );
     }
 
     /// The paths an app page uses resolve at all three addresses Nebo serves
@@ -296,8 +296,15 @@ mod bundled_skill_tests {
     fn app_studio_ships_every_file_it_names() {
         let (_, content) = BUNDLED_SKILLS.iter().find(|(k, _)| *k == "app-studio").expect("registered");
         let files: Vec<&str> = bundled_files("app-studio").map(|(p, _)| p).collect();
-        for named in ["brief.md", "design-recipe.md", "boards-and-assets.md", "wow-catalog.md", "film-scrub.md", "kit.md", "games.md", "gate.md"] {
-            assert!(content.contains(named), "the skill points to {named}");
+        // The skill points to its references; the design method (one of them)
+        // is the map of the studio's own files.
+        let method = bundled_files("app-studio").find(|(p, _)| *p == "references/design-depth.md").expect("the method ships").1;
+        for named in ["design-depth.md", "decisions.md", "games.md", "lane-a-example.md", "sdk-more.md", "vite-build.md", "when-it-breaks.md"] {
+            assert!(content.contains(&format!("references/{named}")), "the skill points to {named}");
+            assert!(files.contains(&format!("references/{named}").as_str()), "references/{named} ships");
+        }
+        for named in ["brief.md", "design-recipe.md", "boards-and-assets.md", "wow-catalog.md", "film-scrub.md", "kit.md", "gate.md"] {
+            assert!(content.contains(named) || method.contains(named), "the skill or its design method points to {named}");
             assert!(files.contains(&format!("references/{named}").as_str()), "references/{named} ships");
         }
         assert!(files.contains(&"scripts/gate.js") && files.contains(&"LICENSE-THIRD-PARTY.txt"));

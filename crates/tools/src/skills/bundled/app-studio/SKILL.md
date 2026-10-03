@@ -40,9 +40,7 @@ everywhere else: it leaves `ui/` and gets Nebo's own page or a 404.
 
 Steps 0 to 4 are the mechanics every app follows, in order. Every step ends
 with a check; never tell the owner it works until the check passes. When
-looks matter (a game, a showcase, anything shown to other people), the
-Design Depth section adds the studio method on top, from this skill's
-`references/`.
+looks matter, Design Depth adds the studio method on top.
 
 ## Hard Rules
 
@@ -126,12 +124,9 @@ create_employee(draft_id: "<the id it returned>")
 - `window` takes `title`, `width`, `height`, `resizable`, `fullscreen`,
   `orientation` (`portrait` default, `landscape`, `any`), `pull_to_refresh`,
   `voice` and nothing else.
-- `pull_to_refresh: true` gives the page the phone's pull-down-to-reload. Off
-  by default: a drag down on a canvas or a card game must never reload it.
-  Fullscreen apps never have it.
-- `voice: true` puts the chat's dictate and voice buttons in the app's bar on
-  the phone, for an app the owner directs by talking while looking at it (a
-  design canvas). Off by default. Fullscreen apps never have it.
+- Off unless set (never on fullscreen): `pull_to_refresh: true` (the phone's
+  pull-down reload, never on a canvas or game); `voice: true` (the chat's
+  dictate and voice buttons in the phone bar, for an app directed by talking).
 - `permissions`: `storage:readwrite`, `subagent:<employee-id>`, `network:<host>`
   or `network:*` (the proxy fetch), `device:motion` (tilt).
 
@@ -166,10 +161,8 @@ and `neboapp://<id>/sdk/nebo.global.js`). Copy it as written. The absolute
 (`<data>/user/agents/<folder>/ui`); the app folder is the one above it. Write
 both down. Then run Verify (Step 4): the screenshot shows "ready: <name>".
 
-Loading this skill turns App Developer mode on (the load says so the first
-time): the developer tools then work on any of the owner's own apps, pages
-are served uncached, and each page carries the floating console. An app
-installed from the marketplace is never built here.
+Loading this skill turns App Developer mode on: the developer tools work on
+the owner's own apps (never one installed from the marketplace).
 
 ## Step 2: Pick the lane, once
 
@@ -199,47 +192,9 @@ the `.js` names.
 - A file that does not compile writes nothing, and the result names it as
   `file:line:column` with the reason. Fix that file and send the call again.
 
-`ui/index.html` (plain HTML, written as is):
-
-```html
-<!doctype html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <title>Orbit</title>
-  <link rel="stylesheet" href="./style.css">
-</head>
-<body>
-  <div id="root"></div>
-  <script src="../../../sdk/nebo.global.js"></script>
-  <script type="module" src="./app.js"></script>
-</body>
-</html>
-```
-
-`ui/app.tsx`:
-
-```tsx
-import { useEffect, useRef, useState } from 'react';
-import { createRoot } from 'react-dom/client';
-import { startScene } from './scene';
-
-const { nebo } = (window as any).NeboAppSDK;
-
-function App() {
-  const canvas = useRef<HTMLCanvasElement>(null);
-  const [best, setBest] = useState<number>(0);
-  useEffect(() => { nebo.storage.getItem('best').then((v: number | null) => setBest(v ?? 0)); }, []);
-  useEffect(() => startScene(canvas.current!), []);
-  return <main><canvas ref={canvas} /><p>Best: {best}</p></main>;
-}
-createRoot(document.getElementById('root')!).render(<App />);
-console.log('ready');
-```
-
-`ui/scene.ts` starts with `import * as THREE from 'three@0.170.0';` and
-exports `startScene(canvas): () => void` (the cleanup).
+A worked example (an `index.html`, an `app.tsx` with React and storage, a
+Three.js `scene.ts`): `references/lane-a-example.md`. Read it before the first
+Lane A app.
 
 Send them all in one call:
 
@@ -266,13 +221,10 @@ into `ui/`, what is served): `read_skill_file(name: "app-studio", path:
 
 The fix loop, in this order, every time:
 
-1. Find the code with `code`, not by reading whole files:
-   `code(action: "outline", path)`, then `definition` / `references` at a
-   line and column to reach what to change.
-2. After each edit: `code(action: "parse_check", path)`, then
-   `code(action: "diagnostics", path)` on every file you touched. Fix
-   what they list before building. (A `.ts`/`.tsx` file with no language
-   server is checked by the project's own `tsc`.)
+1. Find the code with `code(action: "outline" | "definition" | "references")`,
+   not by reading whole files.
+2. After each edit: `code(action: "parse_check")` and `"diagnostics"` on every
+   file you touched; fix what they list before building.
 3. Build (Lane A: `update_employee` compiles; Lane B: the build command).
    A build error is the result: read it, fix it, build again. Never go on
    past a failed build.
@@ -284,17 +236,13 @@ The fix loop, in this order, every time:
    A game is proved in play: screenshot `index.html?play=1` (it skips the
    start screen), never the menu; for 3D, see `references/games.md` 7a.
 6. Report to the owner only when the console has no errors AND the
-   screenshot shows the change. Otherwise fix (the table below) and loop.
+   screenshot shows the change. Otherwise fix and loop: every known failure (blank page, `nebo is not
+   defined`, a build that serves nothing) has its fix in
+   `references/when-it-breaks.md`.
    Never say it changed because the build ran.
 
 Only then tell the owner it is ready, in product words: "Your Orbit app is
 ready. Open it from your workforce."
-
-## When It Breaks
-
-A symptom-to-fix table for every known failure (blank page, `nebo is not
-defined`, a build that serves nothing, a change that made it worse):
-`read_skill_file(name: "app-studio", path: "references/when-it-breaks.md")`.
 
 ## Your App's Data
 
@@ -380,15 +328,14 @@ The full top-level list is `nebo`, `identity`, `storage`, `agents`,
 | `storage.removeItem(key)`, `storage.keys(): Promise<string[]>`, `storage.clear()` | The rest of the store. |
 | `storage.onChange(cb): () => void` | `cb({appId, keys, action, source})` after every write: `source` is `"employee"` (`app_data`) or `"page"` (another open view). Returns an unsubscribe. |
 | `agents.invoke(message, {agent?, data?}): Promise<{text, tools?}>` | Ask an employee, wait for the answer. `agent` names another employee (needs `subagent:<id>`). |
-| `agents.stream(message, {agent?, data?}): AsyncGenerator<{text, done}>` | The same, streamed. |
 | `janus.complete({messages, model?, temperature?, max_tokens?, system?}): Promise<string>` | A raw model call: no persona, memory or tools. |
-| `janus.stream(same): AsyncGenerator<string>` | The same, streamed. |
 | `decide({state, questions}): Promise<{model, answers, usage}>` | Typed decisions in one fast call (see Typed Decisions). Throws with the reason on 400 (malformed), 429 (no work left on the account), 503 (NeboAI not connected). |
 | `nebo.fetch(pathOrUrl, init?)` — top level `NeboAppSDK.neboFetch` | A relative path goes to the app's sidecar API; `http(s)://` goes through Nebo's proxy (needs `network:<host>`). |
 | `new nebo.WebSocket()` — top level `new NeboAppSDK.NeboWebSocket()` | Live socket to the app's employee; reconnects. `send`, `close`, `onopen/onmessage/onerror/onclose`. |
-| `surfaces.connect()`, `surfaces.on(type, handler)`, `surfaces.send(name, payload)`, `surfaces.state` | Cards from the employee's `a2ui` tool. |
-| `chat.mount(el, {placeholder?, theme?, height?, borderless?, contextId?, scope?})` | Nebo's chat with this employee, inside the page. `chat.send`, `chat.setContext`, `chat.onMessage`, `chat.newThread`, `chat.unmount` drive it. |
-| `nebo.configure({appId?, baseUrl?})` | Only for a page served outside Nebo; at the top level `NeboAppSDK.setAppId(id)` / `NeboAppSDK.setBaseUrl(url)`, read back with `getAppId()` / `getBaseUrl()`. |
+
+Streaming (`agents.stream`, `janus.stream`), cards from the employee
+(`surfaces`), Nebo's chat inside the page (`chat.mount`) and pages served
+outside Nebo (`nebo.configure`): `references/sdk-more.md`.
 
 The SDK finds the app and the address prefix by itself; a page never sets them.
 The check that the wiring is right is the starter page: `NeboAppSDK.nebo.identity.get()`
@@ -396,64 +343,15 @@ prints the employee's name.
 
 ## Version History
 
-Nebo saves the app folder (`ui/`, `src/`, build files; never `node_modules/`
-or `dist/`) before and after every turn that changes it. `app_status(history: true)`
-lists the versions: id, time, what changed. `app_reload(restore: "<id>")` puts
-the page and source back and reloads; the employee's settings stay. A restore
-is a new version, so restoring the version before it undoes it. A renamed app
-keeps its history; a deleted one keeps it in the trash.
+Every turn that changes the app is saved. `app_status(history: true)` lists
+the versions; `app_reload(restore: "<id>")` puts the page and source back (a
+restore is itself a version, so it can be undone).
 
 ## Design Depth (the studio method)
 
-For a game, a showcase, a landing app or anything the owner will show other
-people, run these phases on top of Steps 0 to 4. A plain internal tool (a
-tracker, a form) skips this section. Read each reference with
-`read_skill_file(name: "app-studio", path: "references/<file>")` when its
-phase starts, not before. A small edit to an app that already went through
-the method (copy, one component, a color) does not restart it: edit,
-rebuild, Verify, gate.
-
-| # | Phase | Leaves | Reference |
-|---|-------|--------|-----------|
-| 0 | Intake: ONE batched question round (app or game; animated or still, recommend animated; their brand or free rein). No answer: animated, free rein, say so in a line. | the answers | |
-| 1 | Brief: `brief.md` in the app folder, six variety axes in front-matter, concept spine, locked palette (hex) and type pair, screen, asset and CTA plans. Differs from every other app's brief on 4 of 6 axes. | `brief.md` | `brief.md`, `design-recipe.md`, `wow-catalog.md` |
-| 2 | Boards: one generated image per screen into `boards/`, each looked at once, template-looking ones redone (two redos max). | `ui/boards/*.png` | `boards-and-assets.md` |
-| 3 | Assets: every image, film and model submitted at once with the locked hexes; owner's assets win. | `ui/assets/*` | `boards-and-assets.md`, `games.md` for a game |
-| 4 | Build each screen to its board (Step 3A or 3B). The board wins over habit. | the page | `design-recipe.md`, `kit.md` |
-| 5 | Motion: ONE signature effect that answers the person's input, fully wired, with a `prefers-reduced-motion` fallback. | the effect | `wow-catalog.md`, `film-scrub.md` |
-| 6 | Gate: zero failures, then Verify. Delete `ui/boards/` before publish. | a pass | `gate.md` |
-
-**The gate.** On a bot with node, run this skill's checker on the app folder:
-`execute(skill: "app-studio", script: "scripts/gate.js", args: { "app": "<app folder>" })`.
-It fails on the brief, banned palettes and words, em-dashes, placeholders,
-unused or oversize files, missing reduced-motion or touch handling, a
-leading `/` in the page, project files inside `ui/`, an `index.html` in the
-app folder, the package files, and closeness to the bot's other apps.
-Without node, or when it cannot run, check the list in `references/gate.md`
-by hand. A design-depth app with a failing gate is not done.
-
-**Banned defaults** (the model's own habits): near-black plus orange, amber,
-or neon cyan, blue or green; purple glow; beige plus brass, clay or
-oxblood (unless the owner's brand names them); Inter as the display face;
-three equal cards in a row; a fake product UI built from divs; em-dashes in
-visible text; Elevate, Seamless, Unleash, Next-Gen, Revolutionize; invented
-stats; "Jane Doe" testimonials; fade-ins and marquees as the signature
-effect.
-
-**No art tool.** Load `generate_media` with `find_tools` first. Only when
-`find_tools` does not find it, write each board in words inside the brief,
-record `mode: no-generation`, and make the art by hand (SVG, canvas, shaders).
-
-**Turn economy.** Write each file once, complete. Submit independent
-generations together. Look at each generated image once.
-
-**Talking to the owner.** Product words: "Designing the screens", "Making
-the art", "Your app is ready, open it from your workforce". Never narrate
-bundlers, hashes or folders unless asked. At the end, list what the owner
-now owns (logo, icons, art, film) and anything honestly skipped.
-
-The method's design parts are adapted from an MIT-licensed work; the notice
-is in this skill's `LICENSE-THIRD-PARTY.txt`.
+When looks matter (a game, a showcase, anything shown to other people), read
+`references/design-depth.md` before the brief and follow it: brief, boards,
+assets, build, motion, gate.
 
 ## Iterate
 
@@ -477,65 +375,28 @@ and the page reloads on every rebuild.
 
 ## Typed Decisions
 
-For a judgment (is this lead hot, which category, how urgent), ask a typed
-decision instead of a model call. The page uses `decide`; the app's employee
-has the `decide` tool with the same request. Offer it when the app makes
-choices: a game's opponent, a triage, a score.
-
-```js
-const { answers } = await NeboAppSDK.decide({
-  state: lead,
-  questions: {
-    tier: { type: "choice", instructions: "How warm is this lead, by `status` and `last_contact`?",
-            criteria: { hot: "ready to buy now", warm: "interested", cold: "no interest", other: "can't tell" } },
-    fit:  { type: "score", instructions: "How well does `company` fit our customers?", criteria: ["poor", "fair", "good", "great"] },
-    reply:{ type: "noul", instructions: "`message` asks us for a reply." },
-  },
-});
-```
-
-```
-decide(state: <records from app_data>, questions: { "tier": { "type": "choice", "instructions": "...", "criteria": { ... } } })
-```
-
-The whole question lives in `instructions`, naming the state's fields in
-backticks. Include an escape option (`other`). Counting, dates and
-thresholds stay in code.
+When the app makes a judgment (is this lead hot, which category, how urgent, a
+game's opponent), ask a typed decision instead of a model call: the page's
+`decide`, the employee's `decide(state:, questions:)` tool. Read
+`references/decisions.md` before writing the first one.
 
 ## Art and Media
 
-`generate_media(kind: "image", prompt: "...", into: "assets/hero.webp")` writes
-into the app's `ui/` (when you are the app; pass `app` for another). Reference
-it as `./assets/hero.webp`. Video: `kind: "video"`, `<video muted playsinline autoplay loop>`.
-Each file at most 10 MB; the whole package at most 50 MB.
+`generate_media(kind: "image" | "video", prompt, into: "assets/hero.webp")` writes
+into `ui/` (pass `app` for another app's); use `./assets/hero.webp`. Video plays
+as `<video muted playsinline autoplay loop>`. 10 MB a file, 50 MB in all.
 
 ## Games and Full-Screen Pages
 
-```
-app: { window: { title: "Kart", fullscreen: true, orientation: "landscape" },
-       permissions: ["storage:readwrite", "device:motion"] }
-```
-
-- `fullscreen: true`: no app bar, no safe-area padding, screen stays awake,
-  pull-to-refresh off. Pad with `env(safe-area-inset-*)`; keep controls clear of
-  the close button in the top-left corner.
-- Tilt (`device:motion`): on iPhone call `DeviceMotionEvent.requestPermission()`
-  from the first tap, the same tap that starts sound.
-- Put every tuning number (speed, turn rate, gravity) in one `config.js` object,
-  so a "feels wrong" is one edit, not a rewrite.
-- Saves go in `storage`.
-- A game's loop, input, audio, sprites and 3D: `references/games.md` (read it
-  before the brief). Multiplayer: the page opens its own WebSocket to the
-  game server; nothing goes through Nebo.
+A game, or any page that takes the whole screen: read `references/games.md`
+before the brief (the window settings, tilt, tuning, the loop, input, audio,
+sprites and 3D).
 
 ## Publish
 
-Only when the owner asks ("publish yourself", or **Publish** in the app's
-chat, on the phone's app screen, or in the desktop menu). Follow the bundled
-`publish-an-app` skill: `app_listing`, then 3 to 5 `app_screenshot(for_listing: true)`,
-then `app_submit` after the owner's yes. The bundle is AGENT.md, agent.json,
-manifest.json, `ui/` and the app's own `skills/`; never `src/`, `node_modules/`
-or build files.
+Only when the owner asks ("publish yourself", or **Publish**): load the
+`publish-an-app` skill and follow it (`app_listing`, screenshots,
+`app_submit` after the owner's yes).
 
 ## Deleting
 
