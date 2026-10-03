@@ -69,19 +69,37 @@ pub(crate) fn spawn_chat_title_generation(
             Ok(n) => n as usize,
             _ => return,
         };
-        if user_turns != 1 && user_turns != 3 {
-            return; // name once, refine once — at most twice
+        // Name a chat at the first message and refine it once at the third;
+        // and after any turn while it still has no name (an attempt that
+        // missed is tried again on the next turn, never left until the third
+        // message, or forever when the owner sent two).
+        let untitled = chat.title.trim().is_empty() || chat.title == Store::DEFAULT_CHAT_TITLE;
+        if !untitled && user_turns != 1 && user_turns != 3 {
+            return;
         }
-        let messages = match store.get_recent_chat_messages(&chat_id, 8) {
+        // Every step of a turn keeps a row, most of them empty: a window of
+        // the last rows lost the owner's words after 8 steps and the chat was
+        // never named. Read past the empty rows, from the owner's first words.
+        let messages = match store.get_recent_chat_messages(&chat_id, 400) {
             Ok(m) => m,
             _ => return,
         };
-        if !messages.iter().any(|m| m.role == "user") {
+        // Nebo's own rows (`isMeta`: the system reminders every turn writes,
+        // a hidden prompt) are never the conversation: shown to the namer
+        // they named the chat after "You are Design Studio…", or not at all.
+        let meta = |m: &&ChatMessage| {
+            m.metadata
+                .as_deref()
+                .and_then(|j| serde_json::from_str::<serde_json::Value>(j).ok())
+                .is_some_and(|v| v["isMeta"] == true || v["isMeta"] == "true")
+        };
+        let said: Vec<_> = messages.iter().filter(|m| !m.content.trim().is_empty() && !meta(m)).collect();
+        let Some(first) = said.iter().position(|m| m.role == "user") else {
             return; // the owner's words name it, answered or not
-        }
+        };
         // Use more of the conversation on the count-3 refinement.
         let take_n = if user_turns >= 3 { 8 } else { 4 };
-        let transcript: String = messages
+        let transcript: String = said[first..]
             .iter()
             .take(take_n)
             .map(|m| {
@@ -811,5 +829,131 @@ mod tests {
         }
         assert!(tool_summary_due("label-a", t));
         assert!(tool_summary_due("label-b", t));
+    }
+}
+
+/// Chat naming: every chat gets a name after a turn, however many steps the
+/// turn took, and a missed attempt is made again on the next turn.
+#[cfg(test)]
+mod title_tests {
+    use super::*;
+    use crate::session::SessionManager;
+
+    /// A model that names every chat "Pitch deck for NeboAI" and keeps what
+    /// it was shown.
+    #[derive(Default)]
+    struct Namer {
+        seen: std::sync::Mutex<Vec<String>>,
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for Namer {
+        fn id(&self) -> &str {
+            "namer"
+        }
+        async fn stream(&self, req: &ai::ChatRequest) -> Result<ai::EventReceiver, ai::ProviderError> {
+            self.seen.lock().unwrap().push(req.messages.iter().map(|m| m.content.clone()).collect());
+            let (tx, rx) = mpsc::channel(4);
+            let _ = tx.send(StreamEvent::text("Pitch deck for NeboAI".to_string())).await;
+            let _ = tx.send(StreamEvent::done()).await;
+            Ok(rx)
+        }
+    }
+
+    struct Chat {
+        store: Arc<Store>,
+        sessions: SessionManager,
+        session_id: String,
+        chat_id: String,
+        namer: Arc<Namer>,
+    }
+
+    impl Chat {
+        fn new() -> Self {
+            let path = std::env::temp_dir().join(format!("nebo-titles-{}.db", uuid::Uuid::new_v4()));
+            let store = Arc::new(Store::new(path.to_str().unwrap()).expect("test store"));
+            let sessions = SessionManager::new(store.clone());
+            // A new chat as the owner's "New chat" makes it: the row first,
+            // under its default name, then its session.
+            let chat_id = uuid::Uuid::new_v4().to_string();
+            let key = format!("agent:a1:thread:{chat_id}");
+            store.create_chat_for_session(&chat_id, &key, Store::DEFAULT_CHAT_TITLE, None).expect("chat");
+            let session_id = sessions.get_or_create(&key, "").expect("session").id;
+            assert_eq!(sessions.active_chat_id(&session_id), chat_id);
+            Chat { store, sessions, session_id, chat_id, namer: Arc::default() }
+        }
+        fn say(&self, role: &str, text: &str) {
+            self.sessions.append_message(&self.session_id, role, text, None, None, None).expect("append");
+        }
+        /// A system reminder Nebo writes into the turn: a `user` row, hidden.
+        fn remind(&self, text: &str) {
+            let meta = r#"{"attachment":{"kind":"identity"},"isMeta":true}"#;
+            self.sessions.append_message(&self.session_id, "user", text, None, None, Some(meta)).expect("remind");
+        }
+        /// A tool step's row: no words, one call.
+        fn step(&self) {
+            let call = serde_json::json!([{ "id": uuid::Uuid::new_v4().to_string(), "name": "app_data", "input": {} }]).to_string();
+            self.sessions.append_message(&self.session_id, "assistant", "", Some(&call), None, None).expect("step");
+        }
+        fn title(&self) -> String {
+            self.store.get_chat(&self.chat_id).unwrap().unwrap().title
+        }
+        /// Run the naming step after a turn and wait for it.
+        async fn after_turn(&self) -> String {
+            let before = self.namer.seen.lock().unwrap().len();
+            let providers: Arc<RwLock<Vec<Arc<dyn Provider>>>> =
+                Arc::new(RwLock::new(vec![self.namer.clone() as Arc<dyn Provider>]));
+            spawn_chat_title_generation(providers, self.store.clone(), self.chat_id.clone(), self.session_id.clone(), "cheap".into(), None);
+            for _ in 0..100 {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                if self.namer.seen.lock().unwrap().len() > before {
+                    break;
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            self.title()
+        }
+    }
+
+    #[tokio::test]
+    async fn a_turn_of_many_steps_still_names_the_chat_from_the_owners_words() {
+        let c = Chat::new();
+        assert_eq!(c.title(), Store::DEFAULT_CHAT_TITLE);
+        c.say("user", "Make a pre-seed pitch deck for NeboAI");
+        for _ in 0..11 {
+            c.remind("<system-reminder>You are Design Studio, an AI employee</system-reminder>");
+        }
+        for _ in 0..20 {
+            c.step(); // one row per tool step, nothing said
+        }
+        c.say("assistant", "The deck is on the canvas.");
+        assert_eq!(c.after_turn().await, "Pitch deck for NeboAI");
+        let shown = c.namer.seen.lock().unwrap().last().cloned().unwrap();
+        assert!(shown.contains("pre-seed pitch deck"), "the owner's words reach the namer: {shown}");
+        assert!(!shown.contains("You are Design Studio"), "Nebo's own reminders never do: {shown}");
+    }
+
+    #[tokio::test]
+    async fn a_chat_still_unnamed_at_its_second_message_is_named_then() {
+        let c = Chat::new();
+        c.say("user", "Make a pitch deck");
+        c.say("assistant", "On it.");
+        c.say("user", "Make it about NeboAI");
+        assert_eq!(c.after_turn().await, "Pitch deck for NeboAI");
+    }
+
+    #[tokio::test]
+    async fn a_named_chat_is_refined_only_at_the_third_message_and_an_owners_title_never() {
+        let c = Chat::new();
+        c.store.update_chat_title(&c.chat_id, "Deck", false).unwrap();
+        c.say("user", "one");
+        c.say("user", "two");
+        assert_eq!(c.after_turn().await, "Deck", "named, not at its third message: left alone");
+        c.say("user", "three");
+        assert_eq!(c.after_turn().await, "Pitch deck for NeboAI", "refined once at the third");
+        let own = Chat::new();
+        own.store.update_chat_title(&own.chat_id, "My deck", true).unwrap();
+        own.say("user", "Make a deck");
+        assert_eq!(own.after_turn().await, "My deck");
     }
 }
