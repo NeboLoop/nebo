@@ -686,7 +686,6 @@ pub(crate) async fn run_delegated_task(
                 run_handle,
                 cancel_token,
                 spoken_tx,
-                caller.is_some(),
             ));
             spoken_rx.await.unwrap_or_else(|_| Some(VOICE_RUN_VANISHED.to_string()))
         }
@@ -748,7 +747,6 @@ async fn drain_voice_run(
     run_handle: RunHandle,
     cancel_token: tokio_util::sync::CancellationToken,
     spoken: tokio::sync::oneshot::Sender<Option<String>>,
-    steps_aloud: bool,
 ) {
     let mut spoken = Some(spoken);
     let mut out = String::new();
@@ -799,13 +797,11 @@ async fn drain_voice_run(
                 if let Some(tc) = event.tool_call.as_ref() {
                     let activity = state.tools.labels(&tc.name, &tc.input).await.0;
                     run_handle.show_activity(&activity);
-                    // A caller on a phone line hears the step too. The owner's
-                    // own call does not: steps read out every few seconds ("Now
-                    // reading.") turned a conversation into a status ticker, and
-                    // the thread shows them. How an employee talks is its own.
-                    if steps_aloud {
-                        progress_on_call(&state.live_calls, &session_key, &activity);
-                    }
+                    // No call hears the step: read out every few seconds ("Now
+                    // reading.") it turned a conversation into a status ticker,
+                    // on the owner's calls and to callers on a phone number
+                    // alike. The thread shows it; how an employee talks on a
+                    // call is its own.
                     state.hub.broadcast(
                         "tool_start",
                         serde_json::json!({
@@ -1119,6 +1115,9 @@ pub enum CallNews {
 /// its hand-off started a step labelled `activity` (the same label the
 /// thread's step row shows). Only what reads well aloud goes: never a path,
 /// a file name or a command.
+// ponytail: nothing calls this since 2026-10-03 (no call hears steps); the
+// call loop's narration stays dormant until an employee can ask for it.
+#[allow(dead_code)]
 pub(crate) fn progress_on_call(calls: &LiveCalls, session_key: &str, activity: &str) {
     let Some(line) = spoken_step(activity) else { return };
     let call = calls.lock().unwrap_or_else(|e| e.into_inner()).get(session_key).cloned();
@@ -3552,7 +3551,6 @@ mod voice_prompt_tests {
             run_handle,
             tokio_util::sync::CancellationToken::new(),
             spoken_tx,
-            false,
         ));
 
         tx.send(ai::StreamEvent::text("Checking. ")).await.unwrap();
@@ -3614,7 +3612,6 @@ mod voice_prompt_tests {
             run_handle,
             tokio_util::sync::CancellationToken::new(),
             spoken_tx,
-            false,
         ));
         tx.send(ai::StreamEvent::text("Booked ")).await.unwrap();
         tx.send(ai::StreamEvent::text("both.")).await.unwrap();
@@ -3659,7 +3656,6 @@ mod voice_prompt_tests {
             run_handle,
             tokio_util::sync::CancellationToken::new(),
             spoken_tx,
-            false,
         ));
         let call = ai::ToolCall {
             id: "t1".into(),
@@ -3751,7 +3747,6 @@ mod voice_prompt_tests {
             run_handle,
             tokio_util::sync::CancellationToken::new(),
             spoken_tx,
-            false,
         ));
         tx.send(ai::StreamEvent::control_notice("", agent::harness::session_gate::QUEUED_INTO_RUNNING_TURN))
             .await
