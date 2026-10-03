@@ -54,6 +54,8 @@ pub const BUNDLED_SKILL_FILES: &[(&str, &str, &str)] = &[
     ("app-studio", "references/kit.md", include_str!("app-studio/references/kit.md")),
     ("app-studio", "references/games.md", include_str!("app-studio/references/games.md")),
     ("app-studio", "references/gate.md", include_str!("app-studio/references/gate.md")),
+    ("app-studio", "references/vite-build.md", include_str!("app-studio/references/vite-build.md")),
+    ("app-studio", "references/when-it-breaks.md", include_str!("app-studio/references/when-it-breaks.md")),
     ("app-studio", "scripts/gate.js", include_str!("app-studio/scripts/gate.js")),
     ("app-studio", "LICENSE-THIRD-PARTY.txt", include_str!("app-studio/LICENSE-THIRD-PARTY.txt")),
 ];
@@ -230,6 +232,30 @@ mod bundled_skill_tests {
         assert!(content.contains("NeboAppSDK.NeboWebSocket"), "nebo.WebSocket is exported as NeboWebSocket");
     }
 
+    /// After a checkpoint a skill comes back cut to its first 5,000 tokens
+    /// (20,000 bytes, `harness::compact::restore::SKILL_TOKENS`). What App
+    /// Studio needs at every step of a long build must sit inside that, or
+    /// the employee works blind after the first checkpoint; lookups live in
+    /// references.
+    #[test]
+    fn app_studio_keeps_what_a_build_needs_inside_the_restored_top() {
+        let (_, content) = BUNDLED_SKILLS.iter().find(|(k, _)| *k == "app-studio").expect("registered");
+        let restored = 20_000 - 100; // less the cut note
+        for heading in [
+            "## Hard Rules",
+            "## Step 1: Make the app",
+            "## Step 4: Verify",
+            "## When It Breaks",
+            "## Your App's Data",
+            "### One piece of work per chat",
+            "## The SDK Global",
+        ] {
+            let at = content.find(heading).unwrap_or_else(|| panic!("{heading} is in the skill"));
+            assert!(at < restored, "{heading} starts at byte {at}, past what a checkpoint restores");
+        }
+        assert!(content.find("| `nebo.configure").unwrap() < restored, "the whole SDK table is restored");
+    }
+
     /// The paths an app page uses resolve at all three addresses Nebo serves
     /// it from (desktop `neboapp://<id>/`, `/apps/<id>/ui/`, and the phone's
     /// `/t/<bot>/apps/<id>/ui/`). A leading `/` works only on the desktop:
@@ -240,8 +266,15 @@ mod bundled_skill_tests {
     fn app_studio_teaches_paths_that_work_on_the_phone() {
         let (_, content) = BUNDLED_SKILLS.iter().find(|(k, _)| *k == "app-studio").expect("registered");
         assert!(content.contains(r#"<script src="../../../sdk/nebo.global.js"></script>"#), "the relative SDK tag");
-        assert!(content.contains("base: './'"), "Vite builds with relative paths");
-        assert!(content.contains("outDir: '../ui'"), "Vite builds into ui/");
+        // The Vite recipe lives in its reference (the skill's top stays inside
+        // what a checkpoint restores); the skill points to it.
+        let (_, _, vite) = BUNDLED_SKILL_FILES
+            .iter()
+            .find(|(k, path, _)| *k == "app-studio" && *path == "references/vite-build.md")
+            .expect("the Vite recipe ships");
+        assert!(content.contains("references/vite-build.md"), "the skill points to the Vite recipe");
+        assert!(vite.contains("base: './'"), "Vite builds with relative paths");
+        assert!(vite.contains("outDir: '../ui'"), "Vite builds into ui/");
         assert!(content.contains("new_name:"), "rename keeps the employee");
         assert!(
             !content.contains(r#"<script src="/sdk/nebo.global.js">"#),

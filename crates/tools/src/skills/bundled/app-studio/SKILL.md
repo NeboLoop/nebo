@@ -258,93 +258,9 @@ A single small React component can instead go in `ui_jsx` (one file with
 
 ## Step 3B: Vite build
 
-Everything lives in the app folder from Check 1. Run each command with
-`cd "<app folder>" &&` in front. These use npm because it is what the bot has.
-
-```
-<app folder>/
-├── AGENT.md  manifest.json  agent.json   # the package (update_employee writes these)
-├── package.json  vite.config.mjs          # build files, never served
-├── node_modules/                          # never served, never published
-├── src/
-│   ├── index.html                         # the build's entry (not served)
-│   └── main.tsx                           # or main.jsx
-└── ui/                                    # build output + generated media: what Nebo serves
-    ├── index.html                         # written by the build
-    ├── bundle/                            # written by the build, replaced every build
-    └── assets/                            # generate_media output, kept across builds
-```
-
-1. Set up once:
-
-   ```bash
-   npm init -y
-   npm install --save-dev vite @vitejs/plugin-react
-   npm install react react-dom three
-   ```
-
-2. Write `vite.config.mjs` exactly (write_file, in the app folder):
-
-   ```js
-   import { defineConfig } from 'vite';
-   import react from '@vitejs/plugin-react';
-
-   export default defineConfig({
-     root: 'src',
-     base: './',
-     plugins: [react()],
-     publicDir: false,
-     build: { outDir: '../ui', emptyOutDir: false, assetsDir: 'bundle' },
-   });
-   ```
-
-   - `base: './'` makes every built path relative (rule 7).
-   - `outDir: '../ui'` is relative to `root`; it is the app's `ui/`.
-   - `emptyOutDir: false` keeps `ui/assets/` (your generated media) alive;
-     the build command below clears only `ui/bundle/`.
-
-3. Write `src/index.html` with the SDK tag and the entry, both relative:
-
-   ```html
-   <!doctype html>
-   <html>
-   <head>
-     <meta charset="utf-8">
-     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-     <title>Orbit</title>
-   </head>
-   <body>
-     <div id="root"></div>
-     <script src="../../../sdk/nebo.global.js"></script>
-     <script type="module" src="./main.tsx"></script>
-   </body>
-   </html>
-   ```
-
-   Vite compiles TypeScript and JSX itself (no tsconfig needed), leaves
-   the SDK tag alone (it is a classic script) and rewrites the module entry to `./bundle/index-<hash>.js`. Read the SDK at run time,
-   `const { nebo } = window.NeboAppSDK;`; never install a package for it.
-   Media from `generate_media` is referenced as `./assets/hero.webp`.
-
-4. Build, every time:
-
-   ```bash
-   rm -rf ui/bundle && npx vite build
-   ```
-
-   Two warnings are expected and harmless: the SDK tag "can't be bundled
-   without type=module", and chunks "larger than 500 kB".
-
-5. **Check 3B.** `ui/index.html` names `./bundle/index-<hash>.js` and
-   `../../../sdk/nebo.global.js`, and nothing that starts with `/`:
-
-   ```bash
-   grep -o '\(src\|href\)="[^"]*"' ui/index.html
-   ```
-
-Never hand-edit the built `ui/index.html` and never copy build output over
-`src/`: change `src/`, rebuild. `crossorigin` and `type="module"` on the
-built tags are correct; leave them.
+The full Vite lane (project layout, `vite.config` with `base: './'`, building
+into `ui/`, what is served): `read_skill_file(name: "app-studio", path:
+"references/vite-build.md")`. Read it before the first Vite build.
 
 ## Step 4: Verify (after every change)
 
@@ -376,36 +292,107 @@ ready. Open it from your workforce."
 
 ## When It Breaks
 
-One loop for every fix:
+A symptom-to-fix table for every known failure (blank page, `nebo is not
+defined`, a build that serves nothing, a change that made it worse):
+`read_skill_file(name: "app-studio", path: "references/when-it-breaks.md")`.
 
-1. Reproduce: `app_screenshot`.
-2. Read its console and the screenshot (`app_console` for more).
-3. Make the minimal change to the one file at fault.
-4. `app_reload`, then Verify (Step 4).
-5. Still broken, or worse: restore the last good version, then try a
-   different small change.
+## Your App's Data
 
-| Symptom | Cause | Fix |
-|---|---|---|
-| Blank page; console: `Failed to load /assets/index-....js`, or a module "MIME type text/html" error | A path starts with `/`; it left `ui/` and got Nebo's own page | Make it relative. Vite: `base: './'`, rebuild |
-| Works in the desktop window, blank on the phone | Same: the desktop window serves `ui/` at its root, the phone serves it under `/t/<bot>/apps/<id>/ui/` | Same |
-| `NeboAppSDK is not defined`, `Cannot destructure property 'nebo' of null`, `Failed to load /sdk/nebo.global.js` | The SDK tag is absolute, missing, or after your module | `<script src="../../../sdk/nebo.global.js"></script>` before your scripts. Never add a fallback |
-| `nebo is not defined` | There is no bare `nebo` global | `const { nebo } = window.NeboAppSDK;` |
-| `Failed to load /src/main.jsx`, or the page shows the build's source | The source entry is being served: `index.html` in the app folder or in `ui/` points at `src/` | Entry source lives in `src/index.html`; serve only built `ui/index.html`; rebuild |
-| `app_status` lists `node_modules/`, `package.json` or `src/` under `ui/` | The project was set up inside `ui/` | Move the project to the app folder (Step 3B), delete those from `ui/`, rebuild |
-| A change does not show | Wrong folder, the build did not run, or no reload | `app_status` (folder, file times), rebuild, `app_reload` |
-| `command not found: app_status` | Developer tools run as shell commands | They are tools: `find_tools(query: "select:app_status,app_reload,app_console,app_screenshot")` |
-| `There is no tool named generate_media` | Not loaded yet | `find_tools(query: "select:generate_media")`, then call it. Never fall back to no art because of this |
-| `bun: command not found`, `npm: command not found` | No runtime on this bot | Lane A. Never install one |
-| `update_employee` says `app.tsx:12:7 parse error ... Nothing was written` | That file does not compile | Fix that line, send the whole file again |
-| An edit to `src/app.tsx` does not show | `src/` is the kept source; only `update_employee` compiles | Send the changed file through `update_employee(ui: {...})` |
-| `a page module cannot import a stylesheet` | `import './app.css'` in Lane A | `<link rel="stylesheet" href="./app.css">` in `index.html` |
-| A write ends "cut off at the output limit" | One file too big | Split it into modules under 20 KB |
-| `update_employee needs name` | The call had no `name` | Pass your own or the app's name; `ui` is an object of path to text |
-| Two sessions keep overwriting each other | Two writers on one app | One writer: answer pasted errors in the building session |
-| The owner wants a new name | A rename, not a new app | `update_employee(name: "<old>", new_name: "<new>")`. Never delete |
-| `app_console` shows nothing at all | No view has loaded the page since the change | `app_screenshot`, then `app_console` again |
-| A change made it worse, or the owner wants it back ("how it was this morning") | | `app_status(history: true)`, pick the version by time, `app_reload(restore: "<id>")`. Never rewrite from memory |
+The page's `storage` and the app employee's `app_data` tool are one store:
+same keys, same values. What the owner tells the employee shows on the page;
+what they type on the page, the employee can find.
+
+```
+app_data(action: "set",   key: "contacts", value: [{ "name": "John Smith", "phone": "+1 555 0100" }])
+app_data(action: "get",   key: "contacts")
+app_data(action: "replace", key: "page", find: "<h1>Old headline</h1>", with: "<h1>New headline</h1>")
+app_data(action: "query", where: { "name": "john smith" })
+app_data(action: "query", text: "smith", prefix: "contact:", limit: 5)
+app_data(action: "list",  prefix: "contact:")
+app_data(action: "delete", key: "draft")
+```
+
+- Only the app's own employee has the tool, for its own app. A coworker asks it.
+- After a `set` or `delete` every open view hears it: `storage.onChange(() => load())`.
+- One key holding a list (`contacts`), or one key per record under a prefix
+  (`contact:<id>`). Write the keys into the employee's instructions.
+- `value` is JSON itself (an object, a list), never JSON written inside a
+  string. Text that looks like JSON but does not parse is refused: "Nothing
+  was saved".
+- `replace` changes one exact piece of text inside a value (a heading in a
+  20 KB page) without writing it all again. `find` must match exactly one
+  place, or nothing changes. Use it for small edits.
+
+### One piece of work per chat
+
+An app that holds one thing per conversation (a design, a draft, a plan)
+keeps it under a `chat:` key. `chat:design` written from the owner's chat
+`<id>` is stored as `chat:<id>:design`; the page opened from that chat gets
+`?thread=<id>` (desktop and phone) and reads that key. The employee never
+needs the chat id:
+
+```js
+const thread = new URLSearchParams(location.search).get('thread');
+const key = thread ? `chat:${thread}:design` : null;   // null: opened from home, show a gallery
+```
+
+- The employee's instructions say: get `chat:design` first every turn, change
+  it with `set` or `replace`, and never end a turn with the work only in a
+  file.
+- Outside the owner's chats (a schedule, a caller) a `chat:` key is refused.
+- Opened from home there is no thread: list `storage.keys()` matching
+  `/^chat:[^:]+:design$/` for a gallery.
+- Create such an employee with sealed conversations, so one chat's work never
+  leaks into another: `agent_json: { "memory": { "mode": "confidential" } }`
+  on `create_employee`. `"single"` (one conversation) is the default;
+  `"separate"` is many chats sharing one memory.
+- If the owner directs it by talking while looking at the page, add
+  `window: { voice: true }` for the dictate and voice buttons in the phone bar.
+
+### Its personality
+
+An employee with no soul speaks with Nebo's default personality: warm, quick,
+fun; it says what it is about to do, gives short real updates, and says what
+it did. Leave it unless the owner asks for a different character; a soul
+replaces it entirely. Never write "how you talk" rules into AGENT.md that
+fight it ("say nothing while you work"): the owner hears silence.
+
+## The SDK Global
+
+This table is the SDK contract. The page loads the SDK and reads it from
+`NeboAppSDK`. `NeboAppSDK.nebo` is the singleton, an instance of
+`NeboAppSDK.NeboSDK`; every module is also exported at the top level, so
+`NeboAppSDK.identity` and `NeboAppSDK.nebo.identity` are the same object.
+Two are named differently at the top level, because a bare `fetch` or
+`WebSocket` export would shadow the browser's: `nebo.fetch` is
+`NeboAppSDK.neboFetch`, and `nebo.WebSocket` is `NeboAppSDK.NeboWebSocket`.
+The full top-level list is `nebo`, `identity`, `storage`, `agents`,
+`janus`, `decide`, `surfaces`, `chat`, `a2ui`, `neboFetch`, `NeboWebSocket`,
+`NeboSDK`, `NeboSurfaces`, `NeboA2UI`, `getAppId`, `getBaseUrl`, `setAppId`,
+`setBaseUrl`. The canonical address is `/sdk/nebo.global.js`; from
+`ui/index.html` it is loaded as `../../../sdk/nebo.global.js`.
+
+| Call | Does |
+|------|------|
+| `identity.get(): Promise<{id, name, displayName, description, persona, model, skills, inputValues}>` | Who this app's employee is. Cached; `identity.invalidate()` clears it. |
+| `storage.getItem(key): Promise<any \| null>` | Read one key of the app's store. JSON comes back parsed. |
+| `storage.setItem(key, value): Promise<void>` | Write one key. Non-strings are JSON-encoded. |
+| `storage.removeItem(key)`, `storage.keys(): Promise<string[]>`, `storage.clear()` | The rest of the store. |
+| `storage.onChange(cb): () => void` | `cb({appId, keys, action, source})` after every write: `source` is `"employee"` (`app_data`) or `"page"` (another open view). Returns an unsubscribe. |
+| `agents.invoke(message, {agent?, data?}): Promise<{text, tools?}>` | Ask an employee, wait for the answer. `agent` names another employee (needs `subagent:<id>`). |
+| `agents.stream(message, {agent?, data?}): AsyncGenerator<{text, done}>` | The same, streamed. |
+| `janus.complete({messages, model?, temperature?, max_tokens?, system?}): Promise<string>` | A raw model call: no persona, memory or tools. |
+| `janus.stream(same): AsyncGenerator<string>` | The same, streamed. |
+| `decide({state, questions}): Promise<{model, answers, usage}>` | Typed decisions in one fast call (see Typed Decisions). Throws with the reason on 400 (malformed), 429 (no work left on the account), 503 (NeboAI not connected). |
+| `nebo.fetch(pathOrUrl, init?)` — top level `NeboAppSDK.neboFetch` | A relative path goes to the app's sidecar API; `http(s)://` goes through Nebo's proxy (needs `network:<host>`). |
+| `new nebo.WebSocket()` — top level `new NeboAppSDK.NeboWebSocket()` | Live socket to the app's employee; reconnects. `send`, `close`, `onopen/onmessage/onerror/onclose`. |
+| `surfaces.connect()`, `surfaces.on(type, handler)`, `surfaces.send(name, payload)`, `surfaces.state` | Cards from the employee's `a2ui` tool. |
+| `chat.mount(el, {placeholder?, theme?, height?, borderless?, contextId?, scope?})` | Nebo's chat with this employee, inside the page. `chat.send`, `chat.setContext`, `chat.onMessage`, `chat.newThread`, `chat.unmount` drive it. |
+| `nebo.configure({appId?, baseUrl?})` | Only for a page served outside Nebo; at the top level `NeboAppSDK.setAppId(id)` / `NeboAppSDK.setBaseUrl(url)`, read back with `getAppId()` / `getBaseUrl()`. |
+
+The SDK finds the app and the address prefix by itself; a page never sets them.
+The check that the wiring is right is the starter page: `NeboAppSDK.nebo.identity.get()`
+prints the employee's name.
 
 ## Version History
 
@@ -487,104 +474,6 @@ persona change is picked up within seconds. Nothing to restart.
 
 Keep state in `storage`, not in the page: the window is closed and reopened
 and the page reloads on every rebuild.
-
-## The SDK Global
-
-This table is the SDK contract. The page loads the SDK and reads it from
-`NeboAppSDK`. `NeboAppSDK.nebo` is the singleton, an instance of
-`NeboAppSDK.NeboSDK`; every module is also exported at the top level, so
-`NeboAppSDK.identity` and `NeboAppSDK.nebo.identity` are the same object.
-Two are named differently at the top level, because a bare `fetch` or
-`WebSocket` export would shadow the browser's: `nebo.fetch` is
-`NeboAppSDK.neboFetch`, and `nebo.WebSocket` is `NeboAppSDK.NeboWebSocket`.
-The full top-level list is `nebo`, `identity`, `storage`, `agents`,
-`janus`, `decide`, `surfaces`, `chat`, `a2ui`, `neboFetch`, `NeboWebSocket`,
-`NeboSDK`, `NeboSurfaces`, `NeboA2UI`, `getAppId`, `getBaseUrl`, `setAppId`,
-`setBaseUrl`. The canonical address is `/sdk/nebo.global.js`; from
-`ui/index.html` it is loaded as `../../../sdk/nebo.global.js`.
-
-| Call | Does |
-|------|------|
-| `identity.get(): Promise<{id, name, displayName, description, persona, model, skills, inputValues}>` | Who this app's employee is. Cached; `identity.invalidate()` clears it. |
-| `storage.getItem(key): Promise<any \| null>` | Read one key of the app's store. JSON comes back parsed. |
-| `storage.setItem(key, value): Promise<void>` | Write one key. Non-strings are JSON-encoded. |
-| `storage.removeItem(key)`, `storage.keys(): Promise<string[]>`, `storage.clear()` | The rest of the store. |
-| `storage.onChange(cb): () => void` | `cb({appId, keys, action, source})` after every write: `source` is `"employee"` (`app_data`) or `"page"` (another open view). Returns an unsubscribe. |
-| `agents.invoke(message, {agent?, data?}): Promise<{text, tools?}>` | Ask an employee, wait for the answer. `agent` names another employee (needs `subagent:<id>`). |
-| `agents.stream(message, {agent?, data?}): AsyncGenerator<{text, done}>` | The same, streamed. |
-| `janus.complete({messages, model?, temperature?, max_tokens?, system?}): Promise<string>` | A raw model call: no persona, memory or tools. |
-| `janus.stream(same): AsyncGenerator<string>` | The same, streamed. |
-| `decide({state, questions}): Promise<{model, answers, usage}>` | Typed decisions in one fast call (see Typed Decisions). Throws with the reason on 400 (malformed), 429 (no work left on the account), 503 (NeboAI not connected). |
-| `nebo.fetch(pathOrUrl, init?)` — top level `NeboAppSDK.neboFetch` | A relative path goes to the app's sidecar API; `http(s)://` goes through Nebo's proxy (needs `network:<host>`). |
-| `new nebo.WebSocket()` — top level `new NeboAppSDK.NeboWebSocket()` | Live socket to the app's employee; reconnects. `send`, `close`, `onopen/onmessage/onerror/onclose`. |
-| `surfaces.connect()`, `surfaces.on(type, handler)`, `surfaces.send(name, payload)`, `surfaces.state` | Cards from the employee's `a2ui` tool. |
-| `chat.mount(el, {placeholder?, theme?, height?, borderless?, contextId?, scope?})` | Nebo's chat with this employee, inside the page. `chat.send`, `chat.setContext`, `chat.onMessage`, `chat.newThread`, `chat.unmount` drive it. |
-| `nebo.configure({appId?, baseUrl?})` | Only for a page served outside Nebo; at the top level `NeboAppSDK.setAppId(id)` / `NeboAppSDK.setBaseUrl(url)`, read back with `getAppId()` / `getBaseUrl()`. |
-
-The SDK finds the app and the address prefix by itself; a page never sets them.
-The check that the wiring is right is the starter page: `NeboAppSDK.nebo.identity.get()`
-prints the employee's name.
-
-## Your App's Data
-
-The page's `storage` and the app employee's `app_data` tool are one store:
-same keys, same values. What the owner tells the employee shows on the page;
-what they type on the page, the employee can find.
-
-```
-app_data(action: "set",   key: "contacts", value: [{ "name": "John Smith", "phone": "+1 555 0100" }])
-app_data(action: "get",   key: "contacts")
-app_data(action: "replace", key: "page", find: "<h1>Old headline</h1>", with: "<h1>New headline</h1>")
-app_data(action: "query", where: { "name": "john smith" })
-app_data(action: "query", text: "smith", prefix: "contact:", limit: 5)
-app_data(action: "list",  prefix: "contact:")
-app_data(action: "delete", key: "draft")
-```
-
-- Only the app's own employee has the tool, for its own app. A coworker asks it.
-- After a `set` or `delete` every open view hears it: `storage.onChange(() => load())`.
-- One key holding a list (`contacts`), or one key per record under a prefix
-  (`contact:<id>`). Write the keys into the employee's instructions.
-- `value` is JSON itself (an object, a list), never JSON written inside a
-  string. Text that looks like JSON but does not parse is refused: "Nothing
-  was saved".
-- `replace` changes one exact piece of text inside a value (a heading in a
-  20 KB page) without writing it all again. `find` must match exactly one
-  place, or nothing changes. Use it for small edits.
-
-### One piece of work per chat
-
-An app that holds one thing per conversation (a design, a draft, a plan)
-keeps it under a `chat:` key. `chat:design` written from the owner's chat
-`<id>` is stored as `chat:<id>:design`; the page opened from that chat gets
-`?thread=<id>` (desktop and phone) and reads that key. The employee never
-needs the chat id:
-
-```js
-const thread = new URLSearchParams(location.search).get('thread');
-const key = thread ? `chat:${thread}:design` : null;   // null: opened from home, show a gallery
-```
-
-- The employee's instructions say: get `chat:design` first every turn, change
-  it with `set` or `replace`, and never end a turn with the work only in a
-  file.
-- Outside the owner's chats (a schedule, a caller) a `chat:` key is refused.
-- Opened from home there is no thread: list `storage.keys()` matching
-  `/^chat:[^:]+:design$/` for a gallery.
-- Create such an employee with sealed conversations, so one chat's work never
-  leaks into another: `agent_json: { "memory": { "mode": "confidential" } }`
-  on `create_employee`. `"single"` (one conversation) is the default;
-  `"separate"` is many chats sharing one memory.
-- If the owner directs it by talking while looking at the page, add
-  `window: { voice: true }` for the dictate and voice buttons in the phone bar.
-
-### Its personality
-
-An employee with no soul speaks with Nebo's default personality: warm, quick,
-fun; it says what it is about to do, gives short real updates, and says what
-it did. Leave it unless the owner asks for a different character; a soul
-replaces it entirely. Never write "how you talk" rules into AGENT.md that
-fight it ("say nothing while you work"): the owner hears silence.
 
 ## Typed Decisions
 
