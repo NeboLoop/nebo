@@ -686,6 +686,7 @@ pub(crate) async fn run_delegated_task(
                 run_handle,
                 cancel_token,
                 spoken_tx,
+                caller.is_some(),
             ));
             spoken_rx.await.unwrap_or_else(|_| Some(VOICE_RUN_VANISHED.to_string()))
         }
@@ -747,6 +748,7 @@ async fn drain_voice_run(
     run_handle: RunHandle,
     cancel_token: tokio_util::sync::CancellationToken,
     spoken: tokio::sync::oneshot::Sender<Option<String>>,
+    steps_aloud: bool,
 ) {
     let mut spoken = Some(spoken);
     let mut out = String::new();
@@ -797,11 +799,11 @@ async fn drain_voice_run(
                 if let Some(tc) = event.tool_call.as_ref() {
                     let activity = state.tools.labels(&tc.name, &tc.input).await.0;
                     run_handle.show_activity(&activity);
-                    // The call waiting on this run hears the step too, except
-                    // the app's own data: the owner watches that land on the
-                    // app's page ("Now looking through the app's data" said
-                    // over a design taking shape was noise).
-                    if tc.name != tools::app_data::APP_DATA {
+                    // A caller on a phone line hears the step too. The owner's
+                    // own call does not: steps read out every few seconds ("Now
+                    // reading.") turned a conversation into a status ticker, and
+                    // the thread shows them. How an employee talks is its own.
+                    if steps_aloud {
                         progress_on_call(&state.live_calls, &session_key, &activity);
                     }
                     state.hub.broadcast(
@@ -3550,6 +3552,7 @@ mod voice_prompt_tests {
             run_handle,
             tokio_util::sync::CancellationToken::new(),
             spoken_tx,
+            false,
         ));
 
         tx.send(ai::StreamEvent::text("Checking. ")).await.unwrap();
@@ -3611,6 +3614,7 @@ mod voice_prompt_tests {
             run_handle,
             tokio_util::sync::CancellationToken::new(),
             spoken_tx,
+            false,
         ));
         tx.send(ai::StreamEvent::text("Booked ")).await.unwrap();
         tx.send(ai::StreamEvent::text("both.")).await.unwrap();
@@ -3655,6 +3659,7 @@ mod voice_prompt_tests {
             run_handle,
             tokio_util::sync::CancellationToken::new(),
             spoken_tx,
+            false,
         ));
         let call = ai::ToolCall {
             id: "t1".into(),
@@ -3746,6 +3751,7 @@ mod voice_prompt_tests {
             run_handle,
             tokio_util::sync::CancellationToken::new(),
             spoken_tx,
+            false,
         ));
         tx.send(ai::StreamEvent::control_notice("", agent::harness::session_gate::QUEUED_INTO_RUNNING_TURN))
             .await
