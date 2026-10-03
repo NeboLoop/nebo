@@ -84,7 +84,16 @@ pub(crate) fn spawn_chat_title_generation(
             Ok(m) => m,
             _ => return,
         };
-        let said: Vec<_> = messages.iter().filter(|m| !m.content.trim().is_empty()).collect();
+        // Nebo's own rows (`isMeta`: the system reminders every turn writes,
+        // a hidden prompt) are never the conversation: shown to the namer
+        // they named the chat after "You are Design Studio…", or not at all.
+        let meta = |m: &&ChatMessage| {
+            m.metadata
+                .as_deref()
+                .and_then(|j| serde_json::from_str::<serde_json::Value>(j).ok())
+                .is_some_and(|v| v["isMeta"] == true || v["isMeta"] == "true")
+        };
+        let said: Vec<_> = messages.iter().filter(|m| !m.content.trim().is_empty() && !meta(m)).collect();
         let Some(first) = said.iter().position(|m| m.role == "user") else {
             return; // the owner's words name it, answered or not
         };
@@ -876,6 +885,11 @@ mod title_tests {
         fn say(&self, role: &str, text: &str) {
             self.sessions.append_message(&self.session_id, role, text, None, None, None).expect("append");
         }
+        /// A system reminder Nebo writes into the turn: a `user` row, hidden.
+        fn remind(&self, text: &str) {
+            let meta = r#"{"attachment":{"kind":"identity"},"isMeta":true}"#;
+            self.sessions.append_message(&self.session_id, "user", text, None, None, Some(meta)).expect("remind");
+        }
         /// A tool step's row: no words, one call.
         fn step(&self) {
             let call = serde_json::json!([{ "id": uuid::Uuid::new_v4().to_string(), "name": "app_data", "input": {} }]).to_string();
@@ -906,6 +920,9 @@ mod title_tests {
         let c = Chat::new();
         assert_eq!(c.title(), Store::DEFAULT_CHAT_TITLE);
         c.say("user", "Make a pre-seed pitch deck for NeboAI");
+        for _ in 0..11 {
+            c.remind("<system-reminder>You are Design Studio, an AI employee</system-reminder>");
+        }
         for _ in 0..20 {
             c.step(); // one row per tool step, nothing said
         }
@@ -913,6 +930,7 @@ mod title_tests {
         assert_eq!(c.after_turn().await, "Pitch deck for NeboAI");
         let shown = c.namer.seen.lock().unwrap().last().cloned().unwrap();
         assert!(shown.contains("pre-seed pitch deck"), "the owner's words reach the namer: {shown}");
+        assert!(!shown.contains("You are Design Studio"), "Nebo's own reminders never do: {shown}");
     }
 
     #[tokio::test]
