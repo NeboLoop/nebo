@@ -233,6 +233,10 @@ pub const NAMES: &[&str] = &[
 /// Most memories one recall surfaces.
 pub const MAX_RECALLED: usize = 5;
 
+/// The key an `invoked_skills` row carries its skills under, `[{name,
+/// content}]`, so every later checkpoint restores them again.
+pub const SKILLS_KEY: &str = "skills";
+
 const MICROCENTS_PER_DOLLAR: f64 = 100_000_000.0;
 
 /// The attachments an event makes: one, none, or for a snapshot one per
@@ -479,10 +483,19 @@ pub fn attachment_for(e: &TurnEvent) -> Option<Attachment> {
                 return None;
             }
             let sections: Vec<String> = skills.iter().map(|(name, content)| format!("### {name}\n{content}")).collect();
-            (
-                "invoked_skills",
-                format!("Skills loaded for this work. Their instructions apply:\n\n{}", sections.join("\n\n")),
-            )
+            // The skills themselves ride on the row, so the next checkpoint
+            // carries them again (`restore::loaded_skills`).
+            let carried: Vec<serde_json::Value> = skills
+                .iter()
+                .map(|(name, content)| serde_json::json!({ "name": name, "content": content }))
+                .collect();
+            let mut data = serde_json::Map::new();
+            data.insert(SKILLS_KEY.into(), carried.into());
+            return Some(Attachment {
+                kind: "invoked_skills",
+                text: format!("Skills loaded for this work. Their instructions apply:\n\n{}", sections.join("\n\n")),
+                data,
+            });
         }
         TurnEvent::RunningWork(work) => ("running_work", work.text()),
     };

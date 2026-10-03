@@ -889,6 +889,39 @@ mod tests {
     /// Skills come back with the content their newest successful load
     /// returned (a failed one does not), the agreed goal while
     /// it is active, each piece of running work, and plan mode.
+    /// A skill stays loaded across every checkpoint, not only the first (the
+    /// owner's game chat lost App Studio at its second): what one
+    /// checkpoint restored, the next restores again; a skill loaded since
+    /// ranks first; one too big is cut with the way to the rest.
+    #[tokio::test]
+    async fn loaded_skills_survive_every_checkpoint() {
+        let s = Setup::new();
+        let restored = |s: &Setup| {
+            let rows = s.conversation();
+            rows.iter().rev().find(|m| kind(m) == "invoked_skills").map(|m| m.content.clone()).unwrap_or_default()
+        };
+        let provider = Scripted::new((0..6).map(|_| Reply::Say("summary".into())).collect());
+        let big = format!("TOP RULES\n{}", "x".repeat(restore::SKILL_TOKENS * crate::CHARS_PER_TOKEN));
+        s.say("user", "Build the game.");
+        s.call("k1", "use_skill", serde_json::json!({ "name": "app-studio" }), &big, false);
+        s.checkpoint(&provider, CheckpointReason::Threshold, &[], RestoreState::default()).await.unwrap();
+        let first = restored(&s);
+        assert!(first.contains("### app-studio\nTOP RULES"), "the top of the skill comes back");
+        assert!(first.contains("load the skill again with use_skill for the rest"), "cut, with the way to the rest");
+
+        s.say("user", "Keep going.");
+        s.checkpoint(&provider, CheckpointReason::Threshold, &[], RestoreState::default()).await.unwrap();
+        assert!(restored(&s).contains("### app-studio\nTOP RULES"), "still loaded after the second checkpoint");
+
+        s.say("user", "Now the letters.");
+        s.call("k2", "use_skill", serde_json::json!({ "name": "letters" }), "LETTERS", false);
+        s.checkpoint(&provider, CheckpointReason::Threshold, &[], RestoreState::default()).await.unwrap();
+        let third = restored(&s);
+        let (letters, studio) = (third.find("### letters").unwrap(), third.find("### app-studio").unwrap());
+        assert!(letters < studio, "the skill loaded since ranks first");
+        assert_eq!(third.matches("### app-studio").count(), 1, "each skill once");
+    }
+
     #[tokio::test]
     async fn restore_reattaches_skills_goal_helpers() {
         let s = Setup::new();
