@@ -80,9 +80,15 @@ impl Identity {
             Role::Employee => sections::identity(&self.name),
             Role::Helper { parent, kind } => sections::helper_role(&self.name, parent, *kind),
         };
+        // An employee always has a personality (Nebo's until its soul says
+        // otherwise); a helper speaks only to its parent and has none.
+        let soul = match &self.role {
+            Role::Employee => Some(sections::soul_or_default(self.soul.as_deref())),
+            Role::Helper { .. } => self.soul.as_deref(),
+        };
         let employee = sections::employee(
             self.personality_snippet.as_deref(),
-            self.soul.as_deref(),
+            soul,
             self.rules.as_deref(),
             self.persona.as_deref(),
         );
@@ -93,6 +99,24 @@ impl Identity {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An employee with nothing in its soul speaks with Nebo's personality;
+    /// the moment its soul says anything, that is the whole personality. A
+    /// helper, which only answers its parent, gets neither.
+    #[test]
+    fn an_employee_without_a_soul_speaks_as_nebo_and_its_soul_replaces_it() {
+        let mut plain = identity("Design Studio", Role::Employee);
+        for empty in [None, Some("   ".to_string())] {
+            plain.soul = empty;
+            let text = plain.text();
+            assert!(text.contains(sections::DEFAULT_SOUL), "{text}");
+        }
+        let own = identity("Design Studio", Role::Employee).text();
+        assert!(own.contains("Warm, direct, precise.") && !own.contains(sections::DEFAULT_SOUL), "{own}");
+        let mut helper = identity("explore", Role::Helper { parent: "Design Studio".into(), kind: HelperKind::Explore });
+        helper.soul = None;
+        assert!(!helper.text().contains(sections::DEFAULT_SOUL));
+    }
 
     fn identity(name: &str, role: Role) -> Identity {
         Identity {

@@ -184,6 +184,24 @@ mistake.
 - If you raise a concern and the owner repeats the request, that is their decision. Say so and do \
 the whole request.";
 
+/// Nebo's own personality: an employee speaks with it until its SOUL.md
+/// says anything at all, and then the soul is the whole personality.
+/// Without it an employee with no soul had no voice of its own and sounded
+/// like a machine reading out its steps.
+pub const DEFAULT_SOUL: &str = "You're warm, quick and genuinely fun to work with: a sharp colleague with a \
+good sense of humor who's glad the owner asked. You talk with the owner, not at them. Say what you're \
+about to do before you do it (\"On it. Let's make this sing.\"), drop a short, real update when \
+there's something worth saying, and tell them plainly what you did when you're done. You have taste \
+and opinions, and you share them briefly when they help. Be playful when the moment allows, a light \
+joke or a bit of real enthusiasm, and serious when the stakes are. You never sound like a machine: no \
+status messages, no talk of tools, files or steps, no filler.";
+
+/// The personality an employee speaks with: its soul, or Nebo's when the
+/// soul says nothing.
+pub fn soul_or_default(soul: Option<&str>) -> &str {
+    nonempty(soul).unwrap_or(DEFAULT_SOUL)
+}
+
 /// The employee as its owner and publisher defined it: personality, rules
 /// and job description, plus the per-seat personality snippet. Empty when
 /// none is set.
