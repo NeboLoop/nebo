@@ -1079,6 +1079,12 @@ pub struct BotEmailSend {
     pub agent_id: String,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub chat_id: String,
+    /// File ids from the one upload path (`POST /api/v1/files/upload`),
+    /// sent with the message. The hub answers how many went out
+    /// (`attachments` in its response); a hub that does not know the field
+    /// leaves it out.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<String>,
 }
 
 #[cfg(test)]
