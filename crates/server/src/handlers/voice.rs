@@ -797,8 +797,11 @@ async fn drain_voice_run(
                 if let Some(tc) = event.tool_call.as_ref() {
                     let activity = state.tools.labels(&tc.name, &tc.input).await.0;
                     run_handle.show_activity(&activity);
-                    // The call waiting on this run hears the step too.
-                    progress_on_call(&state.live_calls, &session_key, &activity);
+                    // No call hears the step: read out every few seconds ("Now
+                    // reading.") it turned a conversation into a status ticker,
+                    // on the owner's calls and to callers on a phone number
+                    // alike. The thread shows it; how an employee talks on a
+                    // call is its own.
                     state.hub.broadcast(
                         "tool_start",
                         serde_json::json!({
@@ -1112,6 +1115,9 @@ pub enum CallNews {
 /// its hand-off started a step labelled `activity` (the same label the
 /// thread's step row shows). Only what reads well aloud goes: never a path,
 /// a file name or a command.
+// ponytail: nothing calls this since 2026-10-03 (no call hears steps); the
+// call loop's narration stays dormant until an employee can ask for it.
+#[allow(dead_code)]
 pub(crate) fn progress_on_call(calls: &LiveCalls, session_key: &str, activity: &str) {
     let Some(line) = spoken_step(activity) else { return };
     let call = calls.lock().unwrap_or_else(|e| e.into_inner()).get(session_key).cloned();
