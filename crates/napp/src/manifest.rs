@@ -183,6 +183,41 @@ pub struct AppWindowConfig {
     /// in `ui/`. Off unless asked for.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub isolated: bool,
+    /// The header's Share button: the app's own ways to share or export its
+    /// work, each a label and what picking it says in the app's chat. Kept
+    /// as written so a bad entry fails the write ([`Self::validate`]) and is
+    /// skipped on read ([`AppWindow::from_manifest`]), never losing the
+    /// whole window.
+    #[serde(default, alias = "shareMenu", skip_serializing_if = "Vec::is_empty")]
+    pub share_menu: Vec<serde_json::Value>,
+}
+
+/// One entry of `window.share_menu`: the label the menu shows and what
+/// picking it sends into the app's chat, as the owner's words.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ShareMenuItem {
+    pub label: String,
+    pub say: String,
+}
+
+/// At most this many entries in `window.share_menu`.
+pub const SHARE_MENU_MAX: usize = 6;
+
+impl ShareMenuItem {
+    /// One entry as written: `label` 1 to 40 characters, `say` 1 to 500,
+    /// both trimmed.
+    pub fn read(entry: &serde_json::Value) -> Result<Self, String> {
+        let field = |key: &str, max: usize| {
+            let text = entry.get(key).and_then(|v| v.as_str()).map(str::trim).unwrap_or("");
+            let n = text.chars().count();
+            if n == 0 || n > max {
+                Err(format!("each window.share_menu entry needs a `{key}` of 1 to {max} characters"))
+            } else {
+                Ok(text.to_string())
+            }
+        };
+        Ok(Self { label: field("label", 40)?, say: field("say", 500)? })
+    }
 }
 
 /// The orientations a window may ask for; the first is the default.
@@ -192,7 +227,8 @@ pub const WINDOW_ORIENTATIONS: &[&str] = &["portrait", "landscape", "any"];
 pub const DEVICE_MOTION: &str = "device:motion";
 
 impl AppWindowConfig {
-    /// Refuse an orientation no view knows how to show.
+    /// Refuse an orientation no view knows how to show, and a Share menu
+    /// entry no view can show.
     pub fn validate(&self) -> Result<(), NappError> {
         match self.orientation.as_deref() {
             Some(o) if !WINDOW_ORIENTATIONS.contains(&o) => Err(NappError::Manifest(format!(
@@ -200,13 +236,23 @@ impl AppWindowConfig {
                 WINDOW_ORIENTATIONS.join(", ")
             ))),
             _ => Ok(()),
+        }?;
+        if self.share_menu.len() > SHARE_MENU_MAX {
+            return Err(NappError::Manifest(format!(
+                "window.share_menu has at most {SHARE_MENU_MAX} entries, not {}",
+                self.share_menu.len()
+            )));
         }
+        for entry in &self.share_menu {
+            ShareMenuItem::read(entry).map_err(NappError::Manifest)?;
+        }
+        Ok(())
     }
 }
 
 /// How an app asks to be shown, as every client reads it (`appWindow` on an
 /// employee): the manifest's `window.fullscreen`, `window.orientation` and
-/// `window.pull_to_refresh`, `window.voice`, `window.open_on_work` and `window.isolated`, and whether its permissions include `device:motion`.
+/// `window.pull_to_refresh`, `window.voice`, `window.open_on_work`, `window.isolated` and `window.share_menu`, and whether its permissions include `device:motion`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct AppWindow {
     pub fullscreen: bool,
@@ -223,6 +269,9 @@ pub struct AppWindow {
     pub open_on_work: bool,
     /// Whether the app's page is served cross-origin isolated.
     pub isolated: bool,
+    /// The header's Share menu entries (valid ones only, at most six).
+    #[serde(rename = "shareMenu")]
+    pub share_menu: Vec<ShareMenuItem>,
 }
 
 impl AppWindow {
@@ -242,6 +291,9 @@ impl AppWindow {
             voice: !fullscreen && window.is_some_and(|w| w.voice),
             open_on_work: window.is_some_and(|w| w.open_on_work),
             isolated: window.is_some_and(|w| w.isolated),
+            share_menu: window
+                .map(|w| w.share_menu.iter().filter_map(|e| ShareMenuItem::read(e).ok()).take(SHARE_MENU_MAX).collect())
+                .unwrap_or_default(),
         }
     }
 }
@@ -269,6 +321,7 @@ impl Default for AppWindowConfig {
             voice: false,
             open_on_work: false,
             isolated: false,
+            share_menu: Vec::new(),
         }
     }
 }
@@ -444,16 +497,16 @@ mod tests {
         .unwrap();
         m.validate().unwrap();
         let w = AppWindow::from_manifest(m.window.as_ref(), &m.permissions);
-        assert_eq!(w, AppWindow { fullscreen: true, orientation: "landscape", motion: true, pull_to_refresh: false, voice: false, open_on_work: false, isolated: false });
+        assert_eq!(w, AppWindow { fullscreen: true, orientation: "landscape", motion: true, pull_to_refresh: false, voice: false, open_on_work: false, isolated: false, share_menu: vec![] });
         assert_eq!(
             serde_json::to_value(&w).unwrap(),
-            serde_json::json!({"fullscreen": true, "orientation": "landscape", "motion": true, "pullToRefresh": false, "voice": false, "openOnWork": false, "isolated": false})
+            serde_json::json!({"fullscreen": true, "orientation": "landscape", "motion": true, "pullToRefresh": false, "voice": false, "openOnWork": false, "isolated": false, "shareMenu": []})
         );
 
         // Missing = today's view: not fullscreen, portrait, no motion, and no
         // pull-to-refresh unless the app asks for it.
         let today = AppWindow::from_manifest(None, &[]);
-        assert_eq!(today, AppWindow { fullscreen: false, orientation: "portrait", motion: false, pull_to_refresh: false, voice: false, open_on_work: false, isolated: false });
+        assert_eq!(today, AppWindow { fullscreen: false, orientation: "portrait", motion: false, pull_to_refresh: false, voice: false, open_on_work: false, isolated: false, share_menu: vec![] });
         let asks: AppWindowConfig = serde_json::from_str(r#"{"pull_to_refresh":true}"#).unwrap();
         assert!(AppWindow::from_manifest(Some(&asks), &[]).pull_to_refresh);
         let plain: AppWindowConfig = serde_json::from_str(r#"{"title":"Deals"}"#).unwrap();
@@ -494,6 +547,27 @@ mod tests {
         let iso: AppWindowConfig = serde_json::from_str(r#"{"isolated":true,"fullscreen":true}"#).unwrap();
         assert!(AppWindow::from_manifest(Some(&iso), &[]).isolated);
         assert_eq!(serde_json::to_value(&iso).unwrap()["isolated"], true);
+
+        // The Share menu: valid entries, trimmed; a write refuses a bad
+        // one or a seventh, and a read keeps the valid ones and the window.
+        let menu: AppWindowConfig = serde_json::from_str(
+            r#"{"share_menu":[{"label":" Make it an app ","say":"Make this design a Nebo app."},{"label":"","say":"x"},{"label":7}]}"#,
+        )
+        .unwrap();
+        assert!(menu.validate().is_err());
+        assert_eq!(
+            AppWindow::from_manifest(Some(&menu), &[]).share_menu,
+            vec![ShareMenuItem { label: "Make it an app".into(), say: "Make this design a Nebo app.".into() }]
+        );
+        let good: AppWindowConfig = serde_json::from_str(r#"{"shareMenu":[{"label":"Export","say":"Export it as a PDF."}]}"#).unwrap();
+        good.validate().unwrap();
+        assert_eq!(serde_json::to_value(&good).unwrap()["share_menu"][0]["say"], "Export it as a PDF.");
+        let seven = serde_json::json!({ "share_menu": vec![serde_json::json!({"label":"A","say":"B"}); 7] });
+        let seven: AppWindowConfig = serde_json::from_value(seven).unwrap();
+        assert!(seven.validate().is_err());
+        assert_eq!(AppWindow::from_manifest(Some(&seven), &[]).share_menu.len(), SHARE_MENU_MAX);
+        let long = serde_json::json!({ "share_menu": [{"label": "x".repeat(41), "say": "y"}] });
+        assert!(serde_json::from_value::<AppWindowConfig>(long).unwrap().validate().is_err());
 
         // A window written back keeps its old shape when the new keys are unset.
         assert_eq!(

@@ -39,6 +39,8 @@
   import { approvals, chatApprovalsOf } from '$lib/stores/approvals';
   import ApprovalAskCard from '$lib/components/chat/ApprovalAskCard.svelte';
   import { publishRequest } from '$lib/stores/appPublish';
+  import { shareEntries } from '$lib/apps/shareMenu';
+  import type { AppWindow } from '$lib/api/neboComponents';
   import PermissionAskCard from '$lib/components/PermissionAskCard.svelte';
   import type { HelperLine } from '$lib/chat/helpers';
   import { trailingLink } from '$lib/chat/errorLink';
@@ -104,7 +106,7 @@
 
   type AgentInfo = { id: string; name: string; color: string; initial: string; role: string; status: string; isApp?: boolean };
 
-  let { messages = [], agentName = 'Agent', agentId = '', threadId = '', sessionId = '', headerTitle = '', headerRight = '', placeholder = '', emptyIcon = '', emptyTitle = '', emptyDesc = '', allAgents = [], onteachsent, activityStatus = '', helpers = [], tokenUsage = null, goal = null, quotaWarning = '', chatError = '', onsend, onstop, onedit, onredo, onasksubmit, onrestoreversion, ondismisswarning, ondismisserror, onloadmore, isLoading = false, isLoadingMore = false, historyLoading = false, hasMore = false, allowAttachments = true, flowsPane, onopenruns, onsettings, memoryMode = 'single', folder = '', isApp = false, ownApp = false, onopenapp, onback, askQueueLength = 0, composerPrefill = '', onprefilled, readOnly = false }: {
+  let { messages = [], agentName = 'Agent', agentId = '', threadId = '', sessionId = '', headerTitle = '', headerRight = '', placeholder = '', emptyIcon = '', emptyTitle = '', emptyDesc = '', allAgents = [], onteachsent, activityStatus = '', helpers = [], tokenUsage = null, goal = null, quotaWarning = '', chatError = '', onsend, onstop, onedit, onredo, onasksubmit, onrestoreversion, ondismisswarning, ondismisserror, onloadmore, isLoading = false, isLoadingMore = false, historyLoading = false, hasMore = false, allowAttachments = true, flowsPane, onopenruns, onsettings, memoryMode = 'single', folder = '', isApp = false, ownApp = false, appWindow = null, onopenapp, onback, askQueueLength = 0, composerPrefill = '', onprefilled, readOnly = false }: {
     messages?: Message[];
     /** Employee-scoped views for the work pane. Omitted on chats with no
      *  employee behind them (channel setup help, the embed), and the matching
@@ -123,6 +125,8 @@
     /** An app made on this bot, not installed from the marketplace: it builds
      *  and publishes itself, so its chat offers Publish. */
     ownApp?: boolean;
+    /** The app's window flags; its `shareMenu` fills the header's Share button. */
+    appWindow?: AppWindow | null;
     onopenapp?: () => void;
     /** Mobile back-to-list. A real navigation (goto) so the URL changes and
      *  the browser back button stays truthful; rendered only when provided. */
@@ -1095,6 +1099,14 @@
   function publishApp() {
     handleSend($t('agent.publishStarter'), []);
   }
+  // The app's own ways to share or export its work (`window.share_menu`),
+  // any app, installed or the owner's own: an entry says its words in this
+  // chat the way Publish says its starter.
+  const shareMenu = $derived(shareEntries(isApp ? appWindow : null, !readOnly && !!onsend));
+  function shareVia(say: string) {
+    (document.activeElement as HTMLElement)?.blur();
+    handleSend(say, []);
+  }
   $effect(() => {
     if (canPublish && agentId && $publishRequest === agentId) {
       publishRequest.set(null);
@@ -1308,6 +1320,16 @@
             aria-label={label}
           >{@render icon()}</button>
         {/snippet}
+        {#snippet shareIcon()}
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12v7a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-7"/><polyline points="16 6 12 2 8 6"/><line x1="12" y1="2" x2="12" y2="15"/></svg>
+        {/snippet}
+        {#snippet shareList()}
+          <ul class="dropdown-content menu z-[55] mt-1 w-56 rounded-box border border-base-300 bg-base-100 p-1.5 shadow-lg">
+            {#each shareMenu as entry, i (i)}
+              <li><button onclick={() => shareVia(entry.say)}>{entry.label}</button></li>
+            {/each}
+          </ul>
+        {/snippet}
         {#snippet computerIcon()}
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
         {/snippet}
@@ -1411,6 +1433,14 @@
             {$t('agent.openApp')}
           </button>
         {/if}
+        {#if shareMenu.length}
+          <div class="dropdown dropdown-end ml-1 shrink-0">
+            <div tabindex="0" role="button" aria-label={$t('agent.shareApp')} title={$t('agent.shareApp')} class="btn btn-ghost btn-xs max-md:btn-sm btn-square">
+              {@render shareIcon()}
+            </div>
+            {@render shareList()}
+          </div>
+        {/if}
         {#if canPublish}
           <button
             class="btn btn-outline btn-xs max-md:btn-sm gap-1 ml-1 shrink-0"
@@ -1430,6 +1460,14 @@
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
             {$t('agent.openApp')}
           </button>
+        {/if}
+        {#if shareMenu.length}
+          <div class="dropdown dropdown-end">
+            <div tabindex="0" role="button" aria-label={$t('agent.shareApp')} title={$t('agent.shareApp')} class="btn btn-ghost btn-sm btn-square">
+              {@render shareIcon()}
+            </div>
+            {@render shareList()}
+          </div>
         {/if}
         {#if canPublish}
           <button class="btn btn-outline btn-sm gap-1" onclick={publishApp}>

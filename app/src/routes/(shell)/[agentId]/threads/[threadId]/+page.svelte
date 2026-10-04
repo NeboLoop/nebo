@@ -290,6 +290,7 @@
   folder={chatFolder}
   isApp={ctx.agent?.isApp ?? false}
   ownApp={ctx.agent?.ownApp ?? false}
+  appWindow={ctx.agent?.appWindow ?? null}
   onopenapp={openApp}
 
   allAgents={chat.allAgents}

@@ -128,11 +128,13 @@ create_employee(draft_id: "<the id it returned>")
   `get_employee(name: "Deal Board")`.
 - `window` takes `title`, `width`, `height`, `resizable`, `fullscreen`,
   `orientation` (`portrait` default, `landscape`, `any`), `pull_to_refresh`,
-  `voice`, `open_on_work`, `isolated` and nothing else.
+  `voice`, `open_on_work`, `isolated`, `share_menu` and nothing else.
 - Off unless set (never on fullscreen): `pull_to_refresh: true` (the phone's
-  pull-down reload, never on a canvas); `voice: true` (the chat's
-  dictate and voice buttons in the phone bar, for an app run by talking).
+  pull-down reload, never on a canvas); `voice: true` (the chat's dictate
+  and voice buttons in the phone bar, for an app run by talking).
 - `isolated: true` only for a threaded engine export (games.md).
+- `share_menu`: the header's Share button, up to 6 `{label, say}`: the app's
+  own ways to share or export its work, each `say` sent into its chat.
 - `permissions`: `storage:readwrite`, `subagent:<employee-id>`, `network:<host>`
   or `network:*` (the proxy fetch), `device:motion` (tilt).
 
@@ -292,20 +294,18 @@ sealed memory): read `references/app-data.md` before the employee's first
 ### Its personality
 
 An employee with no soul speaks with Nebo's default personality: warm, quick,
-fun; it says what it is about to do, gives short real updates, and says what
-it did. Leave it unless the owner asks for a different character; a soul
+fun; it says what it will do, gives short real updates, and says what it
+did. Leave it unless the owner asks for another character; a soul
 replaces it entirely. Never write "how you talk" rules into AGENT.md that
 fight it ("say nothing while you work"): the owner hears silence.
 
 ## The SDK Global
 
-This table is the SDK contract. The page loads the SDK and reads it from
-`NeboAppSDK`. `NeboAppSDK.nebo` is the singleton, an instance of
-`NeboAppSDK.NeboSDK`; every module is also exported at the top level, so
-`NeboAppSDK.identity` and `NeboAppSDK.nebo.identity` are the same object.
-Two are named differently at the top level, because a bare `fetch` or
-`WebSocket` export would shadow the browser's: `nebo.fetch` is
-`NeboAppSDK.neboFetch`, and `nebo.WebSocket` is `NeboAppSDK.NeboWebSocket`.
+This table is the SDK contract. The page reads the SDK from `NeboAppSDK`.
+`NeboAppSDK.nebo` (a `NeboAppSDK.NeboSDK`) holds every module, each also at
+the top level (`NeboAppSDK.identity` is `NeboAppSDK.nebo.identity`), but two
+are renamed there so they don't shadow the browser's: `nebo.fetch` is
+`NeboAppSDK.neboFetch`, `nebo.WebSocket` is `NeboAppSDK.NeboWebSocket`.
 The full top-level list is `nebo`, `identity`, `storage`, `agents`,
 `janus`, `decide`, `surfaces`, `chat`, `a2ui`, `neboFetch`, `NeboWebSocket`,
 `NeboSDK`, `NeboSurfaces`, `NeboA2UI`, `getAppId`, `getBaseUrl`, `setAppId`,
@@ -329,15 +329,15 @@ Streaming (`agents.stream`, `janus.stream`), cards from the employee
 (`surfaces`), Nebo's chat inside the page (`chat.mount`) and pages served
 outside Nebo (`nebo.configure`): `references/sdk-more.md`.
 
-The SDK finds the app and the address prefix by itself; a page never sets them.
-The check that the wiring is right is the starter page: `NeboAppSDK.nebo.identity.get()`
-prints the employee's name.
+The SDK finds the app and the address prefix itself; a page never sets them.
+The starter page checks the wiring: `NeboAppSDK.nebo.identity.get()` prints
+the employee's name.
 
 ## Version History
 
 Every turn that changes the app is saved. `app_status(history: true)` lists
 the versions; `app_reload(restore: "<id>")` puts the page and source back (a
-restore is itself a version, so it can be undone).
+restore is a version too, so it can be undone).
 
 ## Design Depth (the studio method)
 
