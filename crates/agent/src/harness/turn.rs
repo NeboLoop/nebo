@@ -5262,13 +5262,13 @@ mod tests {
         let declared = |c: &ChatRequest| c.tools.iter().any(|t| t.name == "plugin__clipper");
         assert!(calls.iter().all(declared), "in view from the first step, and it stays loaded");
         assert_eq!(calls[0].tools.last().map(|t| t.name.as_str()), Some("plugin__clipper"), "a load appends");
-        let row = texts(&calls[0]).into_iter().find(|t| t.contains("installed tools")).expect("the triggered row");
+        let row = texts(&calls[0]).into_iter().find(|t| t.contains("work these tools do")).expect("the triggered row");
         assert!(row.contains("- plugin__clipper: Runs Clipper commands. Edit and inspect video files."), "{row}");
         assert!(row.contains("use_skill") && row.contains("rather than"), "{row}");
         let result = calls[1].messages.last().unwrap().tool_results.as_ref().unwrap().to_string();
         assert!(result.contains("clipper ran"), "the call ran without a find_tools step: {result}");
         assert_eq!(
-            texts(&calls[2]).iter().filter(|t| t.contains("installed tools")).count(),
+            texts(&calls[2]).iter().filter(|t| t.contains("work these tools do")).count(),
             1,
             "told once; a loaded tool isn't loaded again"
         );
@@ -5283,9 +5283,54 @@ mod tests {
         run_turn(&h, owner("Send me the information about tomorrow's weather.")).await;
         let first = &model.calls()[0];
         assert!(!first.tools.iter().any(|t| t.name == "plugin__clipper"));
-        assert!(!texts(first).iter().any(|t| t.contains("installed tools")));
+        assert!(!texts(first).iter().any(|t| t.contains("work these tools do")));
         let listing = texts(first).into_iter().find(|t| t.contains("available through find_tools")).expect("the listing");
         assert!(listing.contains("\nplugin__clipper: clipper video trim"), "{listing}");
+    }
+
+    /// Built-in deferred tools have triggers too, on the same path as an
+    /// installed plugin's: a request to record an app's page has
+    /// `app_record` in view on the first step, one for a voiceover has
+    /// `generate_media`, and ordinary coding work has neither. Live
+    /// 2026-10-03: "Record 3 seconds of Kart Racer's page" and "Record a
+    /// one-sentence voiceover" left both deferred; the employee said it had
+    /// no tool and started a local web server.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_request_about_a_built_in_tools_work_has_it_in_view_from_the_first_step() {
+        use tools::app_record::{APP_RECORD, AppRecordTool};
+        use tools::media_tool::{GENERATE_MEDIA, GenerateMediaTool, Media};
+        for (request, want) in [
+            ("Record the page of my app as a video", Some(APP_RECORD)),
+            ("Make a voiceover for the launch clip", Some(GENERATE_MEDIA)),
+            ("Fix the failing parser test and tidy up the error handling in lexer.rs", None),
+        ] {
+            let model = Scripted::new(vec![Step::Say("On it.")]);
+            let store = Arc::new(db::Store::new(":memory:").unwrap());
+            let built_in: Vec<Box<dyn tools::registry::DynTool>> = vec![
+                Box::new(AppRecordTool::new(store.clone(), None)),
+                Box::new(GenerateMediaTool::new(Media::new(String::new(), String::new(), None), store)),
+            ];
+            let h = harness_with(&model, built_in).await;
+            // An app that builds itself has the developer pack's tools.
+            h.store.create_agent("ops", Some("agent"), "Kart Racer", "", "", "{}", None, None).unwrap();
+            h.store.set_agent_app_fields("ops", true, Some("/tmp/kart/ui"), None, None).unwrap();
+            let mut req = owner(request);
+            req.seat.agent_id = "ops".into();
+            run_turn(&h, req).await;
+            let first = &model.calls()[0];
+            let declared: Vec<&str> = first
+                .tools
+                .iter()
+                .map(|t| t.name.as_str())
+                .filter(|n| [APP_RECORD, GENERATE_MEDIA].contains(n))
+                .collect();
+            assert_eq!(declared, want.into_iter().collect::<Vec<_>>(), "{request}");
+            let row = texts(first).into_iter().find(|t| t.contains("work these tools do"));
+            match want {
+                Some(name) => assert!(row.is_some_and(|r| r.contains(&format!("- {name}: "))), "{request}"),
+                None => assert!(row.is_none(), "{request}"),
+            }
+        }
     }
 
     /// An app employee under App Developer mode has the code tool declared

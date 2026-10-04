@@ -79,7 +79,7 @@ pub enum TurnEvent {
     /// The listed deferred tools changed; names only (tools doc §4.1).
     ToolsAvailable(ToolsDelta),
     /// The request said these deferred tools' triggers (an installed
-    /// plugin's): they are loaded at this step, and the row carries them
+    /// plugin's or a built-in tool's): they are loaded at this step, and the row carries them
     /// so they stay loaded (`tool_surface::loaded`).
     ToolsTriggered(Vec<ai::ToolDefinition>),
     /// The skill set changed; a line is the skill's one-line description.
@@ -530,7 +530,8 @@ pub fn attachment_for(e: &TurnEvent) -> Option<Attachment> {
 /// description, which for a plugin is what it is for.
 const TRIGGERED_LINE_CHARS: usize = 200;
 
-/// The `tools_triggered` row: each tool the request's words loaded, with
+/// The `tools_triggered` row: each tool the request's words loaded (an
+/// installed plugin's, or a built-in one such as `app_record`), with
 /// the first line of its description, and the definitions, which load them
 /// (`tool_surface::LOADED_TOOLS_KEY`). Its words say to use the tool for
 /// this work, after the skills that document it: live 2026-10-03, an
@@ -559,9 +560,9 @@ fn tools_triggered_row(defs: &[ai::ToolDefinition]) -> Option<Attachment> {
     Some(Attachment {
         kind: "tools_triggered",
         text: format!(
-            "This request is about work these installed tools do. They are loaded now: use them for it rather than \
-             the shell or another tool. A plugin's skills, named in its description, document its commands: load the \
-             ones this task needs with use_skill before its first command.\n{}",
+            "This request is about work these tools do. They are loaded now: use them for it rather than \
+             the shell or another tool. An installed plugin's skills, named in its description, document its commands: \
+             load the ones this task needs with use_skill before its first command.\n{}",
             lines.join("\n")
         ),
         data,

@@ -617,10 +617,10 @@ impl DynTool for WriteFileTool {
 
 pub struct ShareFileTool(pub Arc<Machine>);
 
-/// The files a `share_file` call names, in order and each once: `path` is
-/// one path or a list of them.
+/// The files a `share_file` call names, in order and each once: `paths`,
+/// the list the tool documents, else the older `path`, one path or a list.
 fn share_paths(input: &Value) -> Vec<&str> {
-    let named: Vec<&str> = match input.get("path") {
+    let named: Vec<&str> = match input.get("paths").or_else(|| input.get("path")) {
         Some(Value::Array(items)) => items.iter().filter_map(Value::as_str).collect(),
         Some(Value::String(one)) => vec![one.as_str()],
         _ => Vec::new(),
@@ -649,8 +649,9 @@ impl DynTool for ShareFileTool {
 
     fn description(&self) -> String {
         "Shows the owner files that already exist, each as its own download card on your reply.\n\
+         - `paths` lists every file to show, in one call: {\"paths\": [\"/a.png\", \"/b.png\"]}. One file is a list of one. \
+           Never one call per file.\n\
          - Use it for a finished deck, PDF, spreadsheet or any file already on disk.\n\
-         - Sharing several files? Put every path in one call's `path` list, never one call per file.\n\
          - Files you write or convert this turn already show as cards; don't share them again or copy a file to make one."
             .to_string()
     }
@@ -659,14 +660,35 @@ impl DynTool for ShareFileTool {
         json!({
             "type": "object",
             "properties": {
-                "path": {
-                    "type": ["string", "array"],
+                "paths": {
+                    "type": "array",
                     "items": { "type": "string" },
-                    "description": "Absolute path of the file to show, or a list of them to show several at once."
+                    "description": "Absolute paths of the files to show, all in this one call."
                 }
             },
-            "required": ["path"]
+            "required": ["paths"]
         })
+    }
+
+    /// `paths` is the one documented way. The older `path` (one path or a
+    /// list, and `file_path`, the name models also use) is taken into it,
+    /// so old prompts and tests still share; a lone string is a list of one.
+    fn normalize_input(&self, mut input: Value) -> Value {
+        let Some(fields) = input.as_object_mut() else {
+            return input;
+        };
+        let mut list: Option<Vec<Value>> = None;
+        for key in ["paths", "path", "file_path"] {
+            match fields.remove(key) {
+                Some(Value::Array(items)) => list.get_or_insert_default().extend(items),
+                Some(one) => list.get_or_insert_default().push(one),
+                None => {}
+            }
+        }
+        if let Some(list) = list {
+            fields.insert("paths".into(), Value::Array(list));
+        }
+        input
     }
 
     fn search_hint(&self) -> &str {
@@ -691,6 +713,13 @@ impl DynTool for ShareFileTool {
 
     fn capability(&self, _input: &Value) -> Option<&'static str> {
         Some("file")
+    }
+
+    fn validate_input(&self, input: &Value) -> Result<(), String> {
+        if share_paths(input).is_empty() {
+            return Err("Name the files to share in `paths`, as in {\"paths\": [\"/a.png\", \"/b.png\"]}.".to_string());
+        }
+        Ok(())
     }
 
     fn activity(&self, input: &Value) -> String {
@@ -1234,8 +1263,10 @@ mod tests {
         assert!(!r.is_error && r.content.contains("gamma"), "{}", r.content);
     }
 
-    /// Several files in one call: each is its own card, in order, and the
-    /// single-path form still works.
+    /// Several files in one call's `paths`: each is its own card, in order.
+    /// The older `path`, one path or a list, still works: it is taken into
+    /// `paths` before the schema sees the call. Live 2026-10-03: told "send
+    /// both in one go", the employee still shared one file per call.
     #[tokio::test]
     async fn a_share_of_two_files_gives_two_cards() {
         let dir = tempfile::tempdir().unwrap();
@@ -1245,17 +1276,26 @@ mod tests {
         std::fs::write(&b, b"thumbnail notes").unwrap();
         let (a, b) = (a.to_string_lossy().into_owned(), b.to_string_lossy().into_owned());
         let share = ShareFileTool(machine());
+        assert_eq!(share.schema()["required"], json!(["paths"]));
+        assert!(share.description().contains(r#"{"paths": ["/a.png", "/b.png"]}"#));
 
-        let r = share.execute_dyn(&ctx(), json!({"path": [a, b]})).await;
+        let r = share.execute_dyn(&ctx(), json!({"paths": [a, b]})).await;
         assert!(!r.is_error, "{}", r.content);
         assert_eq!(r.files().collect::<Vec<_>>(), vec![a.as_str(), b.as_str()]);
         assert!(r.content.contains("cover.png") && r.content.contains("thumb.txt"), "{}", r.content);
-        assert_eq!(share.activity(&json!({"path": [a, b]})), "sharing 2 files");
+        assert_eq!(share.activity(&json!({"paths": [a, b]})), "sharing 2 files");
 
+        // The old shapes: `path` as a list and as one string.
+        assert_eq!(share.normalize_input(json!({"path": [a, b]})), json!({"paths": [a, b]}));
+        assert_eq!(share.normalize_input(json!({"path": a})), json!({"paths": [a]}));
+        assert_eq!(share.normalize_input(json!({"file_path": a})), json!({"paths": [a]}));
+        let old = share.execute_dyn(&ctx(), json!({"path": [a, b]})).await;
+        assert_eq!(old.files().collect::<Vec<_>>(), vec![a.as_str(), b.as_str()]);
         let one = share.execute_dyn(&ctx(), json!({"path": a})).await;
         assert!(!one.is_error, "{}", one.content);
         assert_eq!(one.files().collect::<Vec<_>>(), vec![a.as_str()]);
         assert_eq!(share.outcome(&json!({"path": a})), "Shared cover.png");
+        assert!(share.validate_input(&json!({"paths": []})).unwrap_err().contains("`paths`"));
     }
 
     /// One path that can't be shared is named with its reason, and the

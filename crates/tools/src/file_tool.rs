@@ -905,8 +905,8 @@ impl FileTool {
         if input.path.is_empty() {
             return ToolResult::error(errors::missing_param(
                 "share",
-                "path",
-                "share_file(path: \"/data/files/deck.pptx\")",
+                "paths",
+                "share_file(paths: [\"/data/files/deck.pptx\"])",
             ));
         }
 

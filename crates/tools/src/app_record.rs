@@ -35,6 +35,21 @@ const MAX_SECONDS: f64 = 60.0;
 const MAX_FPS: u64 = 60;
 const MAX_FRAMES: u64 = 1800;
 
+/// What a request says when it wants an app recorded (`DynTool::triggers`):
+/// a request that says one has the tool loaded on its first step. Live
+/// 2026-10-03: "Record 3 seconds of Kart Racer's page and make it an mp4"
+/// left it deferred, and the employee said it had no way to record a page.
+const TRIGGERS: &[&str] = &[
+    "record the app",
+    "record my app",
+    "record the page",
+    "app recording",
+    "motion post",
+    "trailer",
+    "screen record",
+    "screen recording",
+];
+
 /// What `video encode` reads beside the frames (Nebo Media checks it
 /// against the folder).
 #[derive(Debug, serde::Serialize)]
@@ -48,11 +63,12 @@ struct Manifest {
 pub struct AppRecordTool {
     store: Arc<db::Store>,
     browser: Option<Arc<browser::Manager>>,
+    triggers: Vec<String>,
 }
 
 impl AppRecordTool {
     pub fn new(store: Arc<db::Store>, browser: Option<Arc<browser::Manager>>) -> Self {
-        Self { store, browser }
+        Self { store, browser, triggers: TRIGGERS.iter().map(|t| t.to_string()).collect() }
     }
 
     async fn record(&self, ctx: &ToolContext, input: &Value) -> ToolResult {
@@ -236,6 +252,10 @@ impl DynTool for AppRecordTool {
 
     fn search_hint(&self) -> &str {
         "record an app as video frames"
+    }
+
+    fn triggers(&self) -> &[String] {
+        &self.triggers
     }
 
     fn read_only(&self, _input: &Value) -> bool {

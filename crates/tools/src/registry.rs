@@ -225,7 +225,8 @@ pub trait DynTool: Send + Sync {
         ""
     }
     /// Words and phrases of a request this tool is for (an installed
-    /// plugin's own triggers and its skills'). A request that says one has
+    /// plugin's own triggers and its skills', or a built-in deferred tool's
+    /// own list, such as `app_record`'s). A request that says one has
     /// the deferred tool loaded for it (`find_tools::triggered`), so the
     /// tool is in view without a search. Default: none.
     fn triggers(&self) -> &[String] {
@@ -1854,6 +1855,34 @@ pub(crate) mod tests {
         assert_eq!(registry.normalize_input("read_file", settled.clone()).await, settled);
         let target = registry.target("read_file", &settled).await.unwrap();
         assert_eq!((target.key.as_str(), target.capability.as_deref()), ("read_file", Some("file")));
+    }
+
+    /// share_file through the registry's door: `paths` makes one card per
+    /// file, and the older `path`, one string or a list, still passes the
+    /// schema and shares.
+    #[tokio::test]
+    async fn share_file_takes_paths_and_still_takes_path() {
+        let (registry, dir) = os_registry().await;
+        let files: Vec<String> = ["a.txt", "b.txt", "c.txt"]
+            .iter()
+            .map(|name| {
+                let p = dir.path().join(name);
+                std::fs::write(&p, name.as_bytes()).unwrap();
+                p.to_string_lossy().into_owned()
+            })
+            .collect();
+        let ctx = ToolContext::default();
+        for input in [
+            serde_json::json!({ "paths": files }),
+            serde_json::json!({ "path": files }),
+        ] {
+            let out = registry.execute(&ctx, "share_file", input.clone()).await;
+            assert!(!out.is_error, "{input}: {}", out.content);
+            assert_eq!(out.files().collect::<Vec<_>>(), files.iter().map(String::as_str).collect::<Vec<_>>(), "{input}");
+        }
+        let one = registry.execute(&ctx, "share_file", serde_json::json!({ "path": files[0] })).await;
+        assert!(!one.is_error, "{}", one.content);
+        assert_eq!(one.files().collect::<Vec<_>>(), [files[0].as_str()]);
     }
 
     /// An `mcp__<server>__<tool>` name is an MCP proxy or nothing: it never

@@ -15,7 +15,7 @@
 //! its tools in its session context, `prompt::inputs::job_tools`), and
 //! loaded by a result that carries its definition: `find_tools`, or the
 //! error for a call made without it (`ToolResult::loads`); or by a request
-//! that says its triggers (an installed plugin's), whose `tools_triggered`
+//! that says its triggers (an installed plugin's or a built-in tool's), whose `tools_triggered`
 //! row carries it. A tool
 //! arriving or leaving (a plugin connecting, an MCP server going away) and a
 //! loaded tool whose definition changed (an operation tool gaining a second
