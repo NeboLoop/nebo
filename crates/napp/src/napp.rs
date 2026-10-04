@@ -1,7 +1,7 @@
-use std::io::Read;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 
-use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+use ed25519_dalek::{Signature, VerifyingKey};
 use flate2::read::GzDecoder;
 use sha2::{Digest, Sha256};
 use tar::Archive;
@@ -11,36 +11,42 @@ use crate::NappError;
 use crate::manifest::Manifest;
 
 const MAX_BINARY_SIZE: u64 = 500 * 1024 * 1024; // 500MB
-const MAX_UI_FILE_SIZE: u64 = 10 * 1024 * 1024; // 10MB, the hub's per-file cap: what publishes installs
+const MAX_UI_FILE_SIZE: u64 = 100 * 1024 * 1024; // 100MB, the publish per-file cap (app_publish MAX_BUNDLE_FILE): what publishes installs
 const MAX_METADATA_SIZE: u64 = 1024 * 1024; // 1MB
 
 // .napp envelope constants
 const NAPP_MAGIC: &[u8; 4] = b"NAPP";
 const NAPP_VERSION: u8 = 0x01;
-const NAPP_HEADER_SIZE: usize = 4 + 1 + 64 + 32; // 101 bytes
+pub(crate) const NAPP_HEADER_SIZE: usize = 4 + 1 + 64 + 32; // 101 bytes
 
-/// Verify and unwrap a .napp envelope, returning the inner tar.gz payload.
+/// How much of a `.napp` is read at once while it is verified.
+const VERIFY_CHUNK: usize = 256 * 1024;
+
+/// Verify a .napp envelope read from `src`, the whole file from its first
+/// byte, a chunk at a time: a 500 MB app is never held whole.
 ///
-/// Checks magic bytes, SHA256 integrity, and ED25519 signature before
-/// returning the payload. If verification fails, nothing is extracted.
-pub fn unwrap_napp(data: &[u8], public_key: &VerifyingKey) -> Result<Vec<u8>, NappError> {
-    if data.len() < NAPP_HEADER_SIZE {
+/// Checks magic bytes, SHA256 integrity, and ED25519 signature (over the
+/// hash then the payload). If verification fails, nothing is extracted.
+fn verify_envelope(mut src: impl Read, public_key: &VerifyingKey) -> Result<(), NappError> {
+    let mut header = [0u8; NAPP_HEADER_SIZE];
+    let got = read_full(&mut src, &mut header)?;
+    if got < NAPP_HEADER_SIZE {
         return Err(NappError::Extraction(format!(
             "file too small to be a valid .napp ({} bytes)",
-            data.len()
+            got
         )));
     }
 
     // Check magic
-    if &data[0..4] != NAPP_MAGIC {
+    if &header[0..4] != NAPP_MAGIC {
         return Err(NappError::Extraction(format!(
             "invalid .napp magic: {:?}",
-            &data[0..4]
+            &header[0..4]
         )));
     }
 
     // Check version
-    let version = data[4];
+    let version = header[4];
     if version != NAPP_VERSION {
         return Err(NappError::Extraction(format!(
             "unsupported .napp version: {}",
@@ -48,34 +54,84 @@ pub fn unwrap_napp(data: &[u8], public_key: &VerifyingKey) -> Result<Vec<u8>, Na
         )));
     }
 
-    let sig_bytes = &data[5..69];
-    let expected_hash = &data[69..101];
-    let payload = &data[101..];
+    let sig_bytes = &header[5..69];
+    let expected_hash = &header[69..101];
+
+    let signature = Signature::from_slice(sig_bytes)
+        .map_err(|e| NappError::Extraction(format!("invalid signature: {}", e)))?;
+    // The signed message is the hash then the payload; both digests take the
+    // payload as it streams past. A signature that cannot start a check is
+    // reported where a failed one is, after the hash.
+    let mut verifier = public_key.verify_stream(&signature).ok();
+    if let Some(v) = verifier.as_mut() {
+        v.update(expected_hash);
+    }
+    let mut hasher = Sha256::new();
+    let mut buf = vec![0u8; VERIFY_CHUNK];
+    loop {
+        let n = match src.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(NappError::Io(e)),
+        };
+        hasher.update(&buf[..n]);
+        if let Some(v) = verifier.as_mut() {
+            v.update(&buf[..n]);
+        }
+    }
 
     // Verify SHA256 first (cheap)
-    let mut hasher = Sha256::new();
-    hasher.update(payload);
-    let actual_hash = hasher.finalize();
-    if actual_hash.as_slice() != expected_hash {
+    if hasher.finalize().as_slice() != expected_hash {
         return Err(NappError::Extraction(
             "payload hash mismatch: file corrupted or tampered".into(),
         ));
     }
 
     // Verify ED25519 signature (proves origin)
-    let signature = Signature::from_slice(sig_bytes)
-        .map_err(|e| NappError::Extraction(format!("invalid signature: {}", e)))?;
-
-    let mut signed = Vec::with_capacity(32 + payload.len());
-    signed.extend_from_slice(expected_hash);
-    signed.extend_from_slice(payload);
-
-    public_key.verify(&signed, &signature).map_err(|_| {
-        NappError::Extraction("signature verification failed: not signed by NeboAI".into())
-    })?;
+    verifier
+        .ok_or(())
+        .and_then(|v| v.finalize_and_verify().map_err(|_| ()))
+        .map_err(|_| {
+            NappError::Extraction("signature verification failed: not signed by NeboAI".into())
+        })?;
 
     info!("napp envelope verified");
-    Ok(payload.to_vec())
+    Ok(())
+}
+
+/// Fill `buf` from `src` as far as it goes; the count read.
+fn read_full(src: &mut impl Read, buf: &mut [u8]) -> Result<usize, NappError> {
+    let mut got = 0;
+    while got < buf.len() {
+        match src.read(&mut buf[got..]) {
+            Ok(0) => break,
+            Ok(n) => got += n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(NappError::Io(e)),
+        }
+    }
+    Ok(got)
+}
+
+/// Verify and unwrap a .napp envelope, returning the inner tar.gz payload.
+///
+/// Checks magic bytes, SHA256 integrity, and ED25519 signature before
+/// returning the payload. If verification fails, nothing is extracted.
+pub fn unwrap_napp(data: &[u8], public_key: &VerifyingKey) -> Result<Vec<u8>, NappError> {
+    verify_envelope(data, public_key)?;
+    Ok(data[NAPP_HEADER_SIZE..].to_vec())
+}
+
+/// Run `check` with the embedded NeboAI public key (and, in test builds,
+/// first with the throwaway fixture key — see `test_signing`).
+fn with_builtin_key<T>(check: impl Fn(&VerifyingKey) -> Result<T, NappError>) -> Result<T, NappError> {
+    let key = crate::signing::builtin_verifying_key()?;
+    #[cfg(any(test, feature = "test-signing"))]
+    if let Ok(out) = check(&crate::test_signing::verifying_key()) {
+        return Ok(out);
+    }
+    check(&key)
 }
 
 /// Verify and unwrap a .napp envelope using the embedded NeboAI public key.
@@ -83,13 +139,20 @@ pub fn unwrap_napp(data: &[u8], public_key: &VerifyingKey) -> Result<Vec<u8>, Na
 /// Convenience wrapper around `unwrap_napp` + `builtin_verifying_key()` for
 /// verifying first-party bundled `.napp` files without network access.
 pub fn unwrap_napp_builtin(data: &[u8]) -> Result<Vec<u8>, NappError> {
-    let key = crate::signing::builtin_verifying_key()?;
-    // Test builds also accept the throwaway fixture key (see `test_signing`).
-    #[cfg(any(test, feature = "test-signing"))]
-    if let Ok(payload) = unwrap_napp(data, &crate::test_signing::verifying_key()) {
-        return Ok(payload);
-    }
-    unwrap_napp(data, &key)
+    with_builtin_key(|key| unwrap_napp(data, key))
+}
+
+/// Verify the envelope of a `.napp` on disk with the embedded NeboAI public
+/// key, reading it a chunk at a time, and hand back the file positioned at
+/// its payload (the tar.gz, or a sealed payload) for the caller to stream.
+pub fn open_napp_payload(napp_path: &Path) -> Result<std::fs::File, NappError> {
+    let file = std::fs::File::open(napp_path)?;
+    with_builtin_key(|key| {
+        (&file).seek(SeekFrom::Start(0))?;
+        verify_envelope(std::io::BufReader::with_capacity(VERIFY_CHUNK, &file), key)
+    })?;
+    (&file).seek(SeekFrom::Start(NAPP_HEADER_SIZE as u64))?;
+    Ok(file)
 }
 
 /// Verify envelope and unseal: unwrap .napp header → decrypt AES-256-GCM → return plain tar.gz.
@@ -362,6 +425,12 @@ mod tests {
     #[test]
     fn test_reject_too_small() {
         assert!(validate_binary_format(&[0, 1]).is_err());
+    }
+
+    // An app file is installed up to the size a publish lets through (100 MB).
+    #[test]
+    fn an_app_file_may_be_100_mb() {
+        assert_eq!(MAX_UI_FILE_SIZE, 100 << 20);
     }
 }
 

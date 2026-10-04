@@ -18,9 +18,7 @@ use crate::NappError;
 /// Entry names are matched after stripping any leading `./` prefix.
 /// Returns `NappError::NotFound` if the entry doesn't exist in the archive.
 pub fn read_napp_entry(napp_path: &Path, entry_name: &str) -> Result<Vec<u8>, NappError> {
-    let data = std::fs::read(napp_path).map_err(NappError::Io)?;
-    let targz = napp_payload_targz(&data)?;
-    read_entry_from_targz_bytes(&targz, entry_name, napp_path)
+    read_entry_from_targz(napp_payload_targz(napp_path)?, entry_name, napp_path)
 }
 
 /// Read a single entry from a .napp archive and return it as a UTF-8 string.
@@ -32,9 +30,7 @@ pub fn read_napp_entry_string(napp_path: &Path, entry_name: &str) -> Result<Stri
 
 /// List all entry names in a .napp (tar.gz) archive.
 pub fn list_napp_entries(napp_path: &Path) -> Result<Vec<String>, NappError> {
-    let data = std::fs::read(napp_path).map_err(NappError::Io)?;
-    let targz = napp_payload_targz(&data)?;
-    list_entries_from_targz_bytes(&targz)
+    list_entries_from_targz(napp_payload_targz(napp_path)?)
 }
 
 /// Extract a single entry from a .napp archive to a destination path.
@@ -76,9 +72,7 @@ pub fn extract_napp_prefix(
     prefix: &str,
     dest_dir: &Path,
 ) -> Result<Vec<String>, NappError> {
-    let data = std::fs::read(napp_path).map_err(NappError::Io)?;
-    let targz = napp_payload_targz(&data)?;
-    let gz = GzDecoder::new(targz.as_slice());
+    let gz = GzDecoder::new(napp_payload_targz(napp_path)?);
     let mut archive = Archive::new(gz);
 
     let target_prefix = prefix.trim_start_matches("./");
@@ -95,16 +89,11 @@ pub fn extract_napp_prefix(
         let normalized = path.to_string_lossy().trim_start_matches("./").to_string();
 
         if normalized.starts_with(target_prefix) {
-            let mut content = Vec::new();
-            entry
-                .read_to_end(&mut content)
-                .map_err(|e| NappError::Extraction(e.to_string()))?;
-
             let dest_path = dest_dir.join(&normalized);
             if let Some(parent) = dest_path.parent() {
                 std::fs::create_dir_all(parent)?;
             }
-            std::fs::write(&dest_path, &content)?;
+            write_entry(&mut entry, &dest_path)?;
             extracted.push(normalized);
         }
     }
@@ -117,9 +106,7 @@ pub fn extract_napp_prefix(
 /// Preserves internal structure, creates parent dirs, sets +x on binary/app.
 /// Returns a list of extracted entry names.
 pub fn extract_all(napp_path: &Path, dest_dir: &Path) -> Result<Vec<String>, NappError> {
-    let data = std::fs::read(napp_path).map_err(NappError::Io)?;
-    let targz = napp_payload_targz(&data)?;
-    let gz = GzDecoder::new(targz.as_slice());
+    let gz = GzDecoder::new(napp_payload_targz(napp_path)?);
     let mut archive = Archive::new(gz);
 
     let mut extracted = Vec::new();
@@ -157,12 +144,7 @@ pub fn extract_all(napp_path: &Path, dest_dir: &Path) -> Result<Vec<String>, Nap
         #[cfg(unix)]
         let entry_mode = entry.header().mode().unwrap_or(0o644);
 
-        let mut content = Vec::new();
-        entry
-            .read_to_end(&mut content)
-            .map_err(|e| NappError::Extraction(e.to_string()))?;
-
-        std::fs::write(&dest_path, &content)?;
+        write_entry(&mut entry, &dest_path)?;
 
         // Restore the executable bit when the archived entry was executable, or
         // for conventionally-named binary/script entries. `std::fs::write`
@@ -236,7 +218,7 @@ pub fn read_sealed_napp_entry(
     license_key: &[u8; 32],
 ) -> Result<Vec<u8>, NappError> {
     let targz = unseal_napp_to_targz(napp_path, license_key)?;
-    read_entry_from_targz_bytes(&targz, entry_name, napp_path)
+    read_entry_from_targz(targz.as_slice(), entry_name, napp_path)
 }
 
 /// Read a single entry from a sealed .napp file as a UTF-8 string.
@@ -256,7 +238,7 @@ pub fn list_sealed_napp_entries(
     license_key: &[u8; 32],
 ) -> Result<Vec<String>, NappError> {
     let targz = unseal_napp_to_targz(napp_path, license_key)?;
-    list_entries_from_targz_bytes(&targz)
+    list_entries_from_targz(targz.as_slice())
 }
 
 /// Partially extract a sealed .napp — executables + metadata only, IP stays sealed.
@@ -326,24 +308,26 @@ pub fn partial_extract_sealed_napp(
 
 // ── Internal helpers ─────────────────────────────────────────────────────
 
-/// Resolve the inner tar.gz bytes from a `.napp` file's raw bytes.
+/// The inner tar.gz of a `.napp` on disk, as a stream over the file.
 ///
 /// Marketplace `.napp` files downloaded from NeboAI are wrapped in a signed
 /// `NAPP` envelope (101-byte header: magic + version + ED25519 sig + SHA256);
-/// bundled/legacy `.napp` files are raw tar.gz. This unwraps and verifies the
-/// envelope when present, and returns the inner tar.gz either way.
+/// bundled/legacy `.napp` files are raw tar.gz. This verifies the envelope
+/// when present (reading the file a chunk at a time, never whole) and returns
+/// the file positioned at the inner tar.gz either way.
 ///
 /// Sealed (paid) payloads are encrypted and cannot be extracted to disk without
 /// a license key — those are read in memory by the loaders via the sealed
 /// readers below, so this returns an error rather than writing ciphertext.
-fn napp_payload_targz(data: &[u8]) -> Result<Vec<u8>, NappError> {
+fn napp_payload_targz(napp_path: &Path) -> Result<std::fs::File, NappError> {
+    let mut file = std::fs::File::open(napp_path)?;
     // Raw tar.gz (no envelope) — bundled/legacy artifacts.
-    if data.starts_with(&[0x1f, 0x8b]) {
-        return Ok(data.to_vec());
+    if peek_head(&mut file)? == [0x1f, 0x8b] {
+        return Ok(file);
     }
     // Signed NAPP envelope — verify signature + hash, then unwrap.
-    let payload = crate::napp::unwrap_napp_builtin(data)?;
-    if crate::sealed::is_sealed(&payload) {
+    let mut payload = crate::napp::open_napp_payload(napp_path)?;
+    if crate::sealed::is_sealed(&peek_head(&mut payload)?) {
         return Err(NappError::Extraction(
             "sealed .napp requires a license key and cannot be extracted to disk".into(),
         ));
@@ -351,36 +335,55 @@ fn napp_payload_targz(data: &[u8]) -> Result<Vec<u8>, NappError> {
     Ok(payload)
 }
 
+/// The first two bytes `file` reads from here on (fewer at its end); the
+/// file is left where it was.
+fn peek_head(file: &mut std::fs::File) -> Result<Vec<u8>, NappError> {
+    use std::io::{Seek, SeekFrom};
+    let at = file.stream_position()?;
+    let mut head = Vec::with_capacity(2);
+    Read::by_ref(file).take(2).read_to_end(&mut head)?;
+    file.seek(SeekFrom::Start(at))?;
+    Ok(head)
+}
+
+/// Copy one archive entry to `dest` as it decompresses: a 100 MB model is
+/// never held whole.
+fn write_entry(entry: &mut impl Read, dest: &Path) -> Result<(), NappError> {
+    let mut out = std::fs::File::create(dest)?;
+    std::io::copy(entry, &mut out).map_err(|e| NappError::Extraction(e.to_string()))?;
+    Ok(())
+}
+
 /// Returns `true` if a `.napp` file wraps a sealed (encrypted) payload.
 ///
-/// Reads the file, verifies + unwraps the `NAPP` envelope, then checks whether
+/// Verifies the `NAPP` envelope (streaming the file), then checks whether
 /// the inner payload is encrypted (sealed/paid content) rather than a plain
 /// tar.gz. Returns `false` for raw tar.gz files and for any file whose envelope
 /// cannot be read or verified — callers treat those as plain and let extraction
 /// surface the underlying error.
 pub fn is_sealed_napp(napp_path: &Path) -> bool {
-    let Ok(data) = std::fs::read(napp_path) else {
+    let Ok(mut file) = std::fs::File::open(napp_path) else {
         return false;
     };
-    if data.starts_with(&[0x1f, 0x8b]) {
+    if peek_head(&mut file).is_ok_and(|h| h == [0x1f, 0x8b]) {
         return false; // raw tar.gz — not sealed
     }
-    match crate::napp::unwrap_napp_builtin(&data) {
-        Ok(payload) => crate::sealed::is_sealed(&payload),
+    match crate::napp::open_napp_payload(napp_path) {
+        Ok(mut payload) => peek_head(&mut payload).is_ok_and(|h| crate::sealed::is_sealed(&h)),
         Err(_) => false,
     }
 }
 
 /// Unseal a .napp file: verify envelope → decrypt → return plain tar.gz bytes.
 fn unseal_napp_to_targz(napp_path: &Path, license_key: &[u8; 32]) -> Result<Vec<u8>, NappError> {
-    let data = std::fs::read(napp_path)?;
-    let sealed_payload = crate::napp::unwrap_napp_builtin(&data)?;
+    let mut sealed_payload = Vec::new();
+    crate::napp::open_napp_payload(napp_path)?.read_to_end(&mut sealed_payload)?;
     crate::sealed::unseal_payload(&sealed_payload, license_key)
 }
 
-/// Read a single entry from an in-memory tar.gz byte slice.
-fn read_entry_from_targz_bytes(
-    targz: &[u8],
+/// Read a single entry from a tar.gz stream.
+fn read_entry_from_targz(
+    targz: impl Read,
     entry_name: &str,
     source: &Path,
 ) -> Result<Vec<u8>, NappError> {
@@ -414,8 +417,8 @@ fn read_entry_from_targz_bytes(
     )))
 }
 
-/// List all entry names from an in-memory tar.gz byte slice.
-fn list_entries_from_targz_bytes(targz: &[u8]) -> Result<Vec<String>, NappError> {
+/// List all entry names from a tar.gz stream.
+fn list_entries_from_targz(targz: impl Read) -> Result<Vec<String>, NappError> {
     let gz = GzDecoder::new(targz);
     let mut archive = Archive::new(gz);
     let mut entries = Vec::new();
@@ -702,5 +705,97 @@ mod tests {
         assert_eq!(found.len(), 2);
         assert!(found.contains(&skill_a));
         assert!(found.contains(&skill_b));
+    }
+}
+
+#[cfg(test)]
+mod signed_napp_tests {
+    use super::*;
+    use crate::test_signing::{sealed_napp, signed_napp};
+
+    /// Bytes that do not compress away, `len` long.
+    fn noise(len: usize) -> Vec<u8> {
+        let mut x: u32 = 0x9e37_79b9;
+        (0..len)
+            .map(|_| {
+                x ^= x << 13;
+                x ^= x >> 17;
+                x ^= x << 5;
+                x as u8
+            })
+            .collect()
+    }
+
+    // A signed app package many verify chunks long is checked and extracted
+    // from the file on disk, every byte where it belongs.
+    #[test]
+    fn a_large_signed_package_extracts_from_the_file() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let model = noise(3 * 1024 * 1024 + 17);
+        let manifest = br#"{"id":"game","name":"Game","version":"1.0.0"}"#;
+        let napp_path = tmp.path().join("1.0.0.napp");
+        std::fs::write(
+            &napp_path,
+            signed_napp(&[("manifest.json", manifest), ("ui/index.html", b"<html></html>"), ("ui/models/world.glb", &model)]),
+        )
+        .unwrap();
+
+        assert!(!is_sealed_napp(&napp_path));
+        let dest = extract_napp_alongside(&napp_path).unwrap();
+        assert_eq!(std::fs::read(dest.join("ui/models/world.glb")).unwrap(), model);
+        assert_eq!(std::fs::read(dest.join("manifest.json")).unwrap(), manifest);
+        assert_eq!(read_napp_entry(&napp_path, "ui/index.html").unwrap(), b"<html></html>");
+        assert_eq!(list_napp_entries(&napp_path).unwrap().len(), 3);
+    }
+
+    // One flipped byte anywhere in the payload, or a signature from another
+    // key, and nothing is extracted.
+    #[test]
+    fn a_tampered_or_foreign_package_extracts_nothing() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let good = signed_napp(&[("manifest.json", b"{}"), ("ui/a.bin", &noise(600 * 1024))]);
+
+        let mut flipped = good.clone();
+        let at = flipped.len() - 1000;
+        flipped[at] ^= 0x01;
+        let napp_path = tmp.path().join("flipped.napp");
+        std::fs::write(&napp_path, &flipped).unwrap();
+        let err = extract_all(&napp_path, &tmp.path().join("out1")).unwrap_err();
+        assert!(err.to_string().contains("hash mismatch"), "{err}");
+        assert!(!tmp.path().join("out1").exists());
+
+        // Re-hashed but not re-signed: the hash holds, the signature does not.
+        use sha2::Digest;
+        let mut forged = flipped.clone();
+        let hash = sha2::Sha256::digest(&forged[crate::napp::NAPP_HEADER_SIZE..]);
+        forged[69..101].copy_from_slice(&hash);
+        let napp_path = tmp.path().join("forged.napp");
+        std::fs::write(&napp_path, &forged).unwrap();
+        let err = extract_all(&napp_path, &tmp.path().join("out2")).unwrap_err();
+        assert!(err.to_string().contains("signature verification failed"), "{err}");
+
+        let napp_path = tmp.path().join("short.napp");
+        std::fs::write(&napp_path, &good[..50]).unwrap();
+        let err = extract_all(&napp_path, &tmp.path().join("out3")).unwrap_err();
+        assert!(err.to_string().contains("too small"), "{err}");
+
+        // The in-memory unwrap agrees with the file reader.
+        assert!(crate::napp::unwrap_napp_builtin(&good).is_ok());
+        assert!(crate::napp::unwrap_napp_builtin(&flipped).is_err());
+        assert!(crate::napp::unwrap_napp_builtin(&forged).is_err());
+    }
+
+    // A sealed package is still told apart and still refused extraction.
+    #[test]
+    fn a_sealed_package_stays_sealed() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let key = [3u8; 32];
+        let napp_path = tmp.path().join("paid.napp");
+        std::fs::write(&napp_path, sealed_napp(&[("manifest.json", b"{}"), ("SKILL.md", b"secret")], &key)).unwrap();
+
+        assert!(is_sealed_napp(&napp_path));
+        let err = extract_all(&napp_path, &tmp.path().join("out")).unwrap_err();
+        assert!(err.to_string().contains("sealed .napp requires a license key"), "{err}");
+        assert_eq!(read_sealed_napp_entry(&napp_path, "SKILL.md", &key).unwrap(), b"secret");
     }
 }

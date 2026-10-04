@@ -132,7 +132,7 @@ sound behind a tap-to-play toggle.
   looks cheaper than no kit.
 - Rejected candidates go to `refs/`. Everything in `ui/assets/` is
   referenced by the page (the gate checks).
-- Each file at most 10 MB, the whole `ui/` at most 50 MB, or it will not
+- Each file at most 100 MB, the whole `ui/` at most 500 MB, or it will not
   publish. Video: shorten or lower the bitrate before anything else.
 
 ## Building to the Boards (Phase 4)

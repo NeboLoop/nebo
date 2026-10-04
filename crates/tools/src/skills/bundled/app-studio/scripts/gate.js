@@ -27,8 +27,8 @@ const warn = (msg) => warns.push(msg);
 const rel = (p) => path.relative(appDir, p) || '.';
 
 const MB = 1024 * 1024;
-const MAX_FILE = 10 * MB;
-const MAX_TOTAL = 50 * MB;
+const MAX_FILE = 100 * MB;
+const MAX_TOTAL = 500 * MB;
 const AXES = ['palette', 'type', 'hero_layout', 'signature_effect', 'button_style', 'corner_shape'];
 const ALLOWED_EXT = new Set([
   'html', 'css', 'js', 'mjs', 'jsx', 'tsx', 'ts', 'json', 'map', 'txt', 'md', 'csv', 'yaml', 'yml', 'toml',
@@ -171,10 +171,10 @@ let total = 0;
 for (const f of uiFiles) {
   const size = fs.statSync(f).size;
   total += size;
-  if (size > MAX_FILE) fail(`${rel(f)} is ${(size / MB).toFixed(1)} MB; one file may be at most 10 MB.`);
+  if (size > MAX_FILE) fail(`${rel(f)} is ${(size / MB).toFixed(1)} MB; one file may be at most ${MAX_FILE / MB} MB.`);
   if (!ALLOWED_EXT.has(ext(f))) fail(`${rel(f)}: file type "${ext(f) || 'none'}" cannot be published.`);
 }
-if (total > MAX_TOTAL) fail(`ui/ is ${(total / MB).toFixed(1)} MB; an app may carry at most 50 MB.`);
+if (total > MAX_TOTAL) fail(`ui/ is ${(total / MB).toFixed(1)} MB; an app may carry at most ${MAX_TOTAL / MB} MB.`);
 
 // Authored text: everything in src/, plus ui/ files that are not build
 // output (content-hashed), minified vendor code, or the SDK itself.

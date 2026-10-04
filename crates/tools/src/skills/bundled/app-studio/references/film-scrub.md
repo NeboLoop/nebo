@@ -65,9 +65,9 @@ ffmpeg -y -i raw.mp4 -an -vf "scale=-2:'min(720,ih)'" -c:v libx264 -preset slow 
 ffmpeg -y -ss 0 -i ui/assets/film.mp4 -frames:v 1 -q:v 2 ui/assets/film-poster.jpg
 ```
 
-All-keyframe files are larger. Keep each under 10 MB (the publish limit per
-file): shorten the take, lower resolution, or raise CRF before anything
-else. Under about 40 MB total for all films.
+All-keyframe files are larger, and a scrub film loads before it scrubs, so
+keep each small (the publish limit is 100 MB a file): shorten the take,
+lower resolution, or raise CRF before anything else. Under about 40 MB total for all films.
 
 ## The template
 

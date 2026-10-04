@@ -1,10 +1,11 @@
-//! Sealed `.napp` fixtures for tests.
+//! Signed `.napp` fixtures for tests.
 //!
-//! A real sealed archive is signed by NeboAI, so no test can build one. This
-//! signs with a throwaway key that `unwrap_napp_builtin` also accepts — but
-//! only in a build with this module, which exists under `cfg(test)` or the
-//! `test-signing` feature. Crates enable that feature from their
-//! dev-dependencies alone; a shipped build never compiles it.
+//! A real `.napp` is signed by NeboAI, so no test can build one. This
+//! signs with a throwaway key that `unwrap_napp_builtin` (and every reader
+//! of a `.napp` on disk) also accepts — but only in a build with this
+//! module, which exists under `cfg(test)` or the `test-signing` feature.
+//! Crates enable that feature from their dev-dependencies alone; a shipped
+//! build never compiles it.
 
 use ed25519_dalek::{Signer, SigningKey, VerifyingKey};
 use sha2::{Digest, Sha256};
@@ -18,9 +19,8 @@ pub(crate) fn verifying_key() -> VerifyingKey {
     signing_key().verifying_key()
 }
 
-/// Build a sealed `.napp`: `entries` packed as tar.gz, encrypted with
-/// `license_key`, wrapped in a `NAPP` envelope signed by the test key.
-pub fn sealed_napp(entries: &[(&str, &[u8])], license_key: &[u8; 32]) -> Vec<u8> {
+/// `entries` packed as tar.gz.
+fn targz(entries: &[(&str, &[u8])]) -> Vec<u8> {
     let mut targz = Vec::new();
     {
         let gz = flate2::write::GzEncoder::new(&mut targz, flate2::Compression::default());
@@ -40,12 +40,15 @@ pub fn sealed_napp(entries: &[(&str, &[u8])], license_key: &[u8; 32]) -> Vec<u8>
             .finish()
             .expect("finish gzip");
     }
-    let payload = crate::sealed::seal_payload(&targz, license_key).expect("seal payload");
+    targz
+}
 
-    let hash = Sha256::digest(&payload);
+/// `payload` wrapped in a `NAPP` envelope signed by the test key.
+fn envelope(payload: &[u8]) -> Vec<u8> {
+    let hash = Sha256::digest(payload);
     let mut signed = Vec::with_capacity(32 + payload.len());
     signed.extend_from_slice(&hash);
-    signed.extend_from_slice(&payload);
+    signed.extend_from_slice(payload);
     let signature = signing_key().sign(&signed);
 
     let mut out = Vec::with_capacity(101 + payload.len());
@@ -53,6 +56,19 @@ pub fn sealed_napp(entries: &[(&str, &[u8])], license_key: &[u8; 32]) -> Vec<u8>
     out.push(0x01);
     out.extend_from_slice(&signature.to_bytes());
     out.extend_from_slice(&hash);
-    out.extend_from_slice(&payload);
+    out.extend_from_slice(payload);
     out
+}
+
+/// Build a free (unsealed) `.napp`: `entries` packed as tar.gz, wrapped in a
+/// `NAPP` envelope signed by the test key — what the marketplace serves.
+pub fn signed_napp(entries: &[(&str, &[u8])]) -> Vec<u8> {
+    envelope(&targz(entries))
+}
+
+/// Build a sealed `.napp`: `entries` packed as tar.gz, encrypted with
+/// `license_key`, wrapped in a `NAPP` envelope signed by the test key.
+pub fn sealed_napp(entries: &[(&str, &[u8])], license_key: &[u8; 32]) -> Vec<u8> {
+    let payload = crate::sealed::seal_payload(&targz(entries), license_key).expect("seal payload");
+    envelope(&payload)
 }

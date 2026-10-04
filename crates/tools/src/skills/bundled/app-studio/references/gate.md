@@ -32,7 +32,7 @@ an em-dash in either description.
 
 **The page.**
 - `ui/index.html` missing, or no viewport meta tag.
-- A file over 10 MB, `ui/` over 50 MB, or a file type that cannot publish.
+- A file over 100 MB, `ui/` over 500 MB, or a file type that cannot publish.
 - Em-dashes or en-dashes in visible text (comments are ignored).
 - Elevate, Seamless, Unleash, Next-Gen, Revolutionize.
 - Placeholders: lorem ipsum, TODO, FIXME, picsum, placeholder services,

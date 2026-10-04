@@ -167,7 +167,8 @@ per part, `angle(t) = A * sin(2 * PI * t / T + phase)`.
 cross-fade with `next.reset().fadeIn(0.25).play(); prev.fadeOut(0.25)`).
 A material with `alphaMode: BLEND` on an opaque mesh looks like inverted
 normals; set it opaque. Free CC0 sources when nothing is generated: Kenney
-(kenney.nl), Quaternius, KayKit. Keep each file under 10 MB.
+(kenney.nl), Quaternius, KayKit. Each file may be up to 100 MB (500 MB in
+all); a smaller one loads sooner.
 
 ## 6. Audio
 

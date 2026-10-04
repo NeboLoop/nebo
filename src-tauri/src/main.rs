@@ -40,6 +40,9 @@ static LAST_OPENED_URL: Mutex<Option<(String, Instant)>> = Mutex::new(None);
 /// Debounce sleep/wake reconnect — Tauri fires RunEvent::Resumed many times per wake.
 static LAST_RESUME: Mutex<Option<Instant>> = Mutex::new(None);
 
+/// The most of a file one open-ended `neboapp://` Range answer carries.
+const NEBOAPP_RANGE_SLICE: u64 = 8 << 20;
+
 /// The menu id of an app window's "Publish This App…".
 const PUBLISH_APP_MENU_ID: &str = "publish_app";
 const PUBLISH_APP_MENU_TEXT: &str = "Publish This App…";
@@ -504,6 +507,248 @@ fn neboapp_bridge(agent_id: &str) -> String {
 
 // ────────────────────────────────────────────────────────────────────────
 
+/// Answer one `neboapp://` request: an app file from its `ui/` (a Range
+/// reads only its bytes), or the request proxied to the local server.
+/// Runs on its own thread (see the protocol registration): a big asset or
+/// a slow API call never holds the window's main thread.
+fn neboapp_response(request: http::Request<Vec<u8>>) -> http::Response<Vec<u8>> {
+    let uri = request.uri();
+    let agent_id = uri.host().unwrap_or("");
+    let path = uri.path();
+    let method = request.method().as_str();
+
+    tracing::debug!(agent_id, path, method, "neboapp:// protocol handler");
+
+    // CORS preflight — WebKit treats custom-scheme pages as opaque
+    // origins, so every fetch() is cross-origin.
+    if method == "OPTIONS" {
+        return http::Response::builder()
+            .status(204)
+            .header("Access-Control-Allow-Origin", "*")
+            .header("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
+            .header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Nebo-Connection-Id")
+            .header("Access-Control-Max-Age", "86400")
+            .body(Vec::new())
+            .unwrap();
+    }
+
+    // Resolve the agent's UI directory
+    let ui_dir = match resolve_app_ui_dir(agent_id) {
+        Some(dir) => dir,
+        None => {
+            return http::Response::builder()
+                .status(404)
+                .header("Content-Type", "text/plain")
+                .header("Access-Control-Allow-Origin", "*")
+                .body(format!("App not found: {agent_id}").into_bytes())
+                .unwrap();
+        }
+    };
+
+    // Prevent directory traversal
+    let clean_path = path.trim_start_matches('/');
+    if clean_path.contains("..") {
+        return http::Response::builder()
+            .status(400)
+            .header("Content-Type", "text/plain")
+            .header("Access-Control-Allow-Origin", "*")
+            .body(b"Bad Request".to_vec())
+            .unwrap();
+    }
+
+    // Try exact file (empty path → index.html)
+    let file_path = if clean_path.is_empty() {
+        ui_dir.join("index.html")
+    } else {
+        ui_dir.join(clean_path)
+    };
+
+    if file_path.is_file() {
+        let mime = server::handlers::apps::mime_from_path(&file_path);
+        // Assets answer Range requests: WebKit seeks and scrubs video
+        // with them and will not play one served whole with a 200.
+        if !mime.starts_with("text/html") {
+            use server::handlers::apps::{ByteRange, byte_range};
+            let range = request.headers().get("range").and_then(|v| v.to_str().ok());
+            let len = std::fs::metadata(&file_path).map(|m| m.len()).unwrap_or(0);
+            match byte_range(range, len) {
+                ByteRange::Full => {}
+                ByteRange::Unsatisfiable => {
+                    return http::Response::builder()
+                        .status(416)
+                        .header("Content-Range", format!("bytes */{len}"))
+                        .header("Access-Control-Allow-Origin", "*")
+                        .body(Vec::new())
+                        .unwrap();
+                }
+                ByteRange::Partial(start, end) => {
+                    use std::io::{Read, Seek, SeekFrom};
+                    // An open range (`bytes=0-`, what a media element asks
+                    // first) gets one slice; it asks again from where the
+                    // slice ends, so a long film is never read whole.
+                    let open = range.is_some_and(|r| r.trim_end().ends_with('-'));
+                    let end = if open { end.min(start + NEBOAPP_RANGE_SLICE - 1) } else { end };
+                    let mut buf = vec![0u8; (end - start + 1) as usize];
+                    let read = std::fs::File::open(&file_path).and_then(|mut f| {
+                        f.seek(SeekFrom::Start(start))?;
+                        f.read_exact(&mut buf)
+                    });
+                    if read.is_ok() {
+                        return http::Response::builder()
+                            .status(206)
+                            .header("Content-Type", mime)
+                            .header("Content-Range", format!("bytes {start}-{end}/{len}"))
+                            .header("Accept-Ranges", "bytes")
+                            .header("Access-Control-Allow-Origin", "*")
+                            .body(buf)
+                            .unwrap();
+                    }
+                }
+            }
+        }
+        if let Ok(data) = std::fs::read(&file_path) {
+            let is_html = mime.starts_with("text/html");
+            let body = if is_html {
+                let html = String::from_utf8_lossy(&data);
+                let bridge = neboapp_bridge(agent_id);
+                html.replacen("<head>", &format!("<head>{bridge}"), 1)
+                    .into_bytes()
+            } else {
+                data
+            };
+            return http::Response::builder()
+                .status(200)
+                .header("Content-Type", mime)
+                .header("Accept-Ranges", if is_html { "none" } else { "bytes" })
+                .header("Access-Control-Allow-Origin", "*")
+                .body(body)
+                .unwrap();
+        }
+    }
+
+    // Not a static file — proxy to the Nebo server.
+    let query = uri.query().unwrap_or("");
+    let req_body = request.body().clone();
+    let content_type_in = request
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+
+    let urls = if query.is_empty() {
+        vec![
+            format!("http://127.0.0.1:27895{}", path),
+            format!("http://127.0.0.1:27895/apps/{}/api{}", agent_id, path),
+        ]
+    } else {
+        vec![
+            format!("http://127.0.0.1:27895{}?{}", path, query),
+            format!("http://127.0.0.1:27895/apps/{}/api{}?{}", agent_id, path, query),
+        ]
+    };
+
+    let agent = ureq::AgentBuilder::new()
+        .timeout(std::time::Duration::from_secs(120))
+        .build();
+
+    for url in &urls {
+        tracing::debug!(url, method, "neboapp proxy attempt");
+        let req = match method {
+            "POST" => agent.post(url),
+            "PUT" => agent.put(url),
+            "DELETE" => agent.delete(url),
+            "PATCH" => agent.patch(url),
+            _ => agent.get(url),
+        };
+        let req = if let Some(connection) = request.headers().get("x-nebo-connection-id").and_then(|v| v.to_str().ok()) {
+            req.set("X-Nebo-Connection-Id", connection)
+        } else { req };
+        // The desktop shell is the owner's own client: its proxy
+        // proves itself to the local API with the install key.
+        let req = match config::read_install_key() {
+            Some(key) => req.set("Authorization", &format!("Bearer {key}")),
+            None => req,
+        };
+        // And names the page it carries (`neboapp://<id>`): an app
+        // window reaches only its own app's routes.
+        let page_origin = request
+            .headers()
+            .get("origin")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("neboapp://{agent_id}"));
+        let req = req.set("Origin", &page_origin);
+        let result = if matches!(method, "POST" | "PUT" | "PATCH") && !req_body.is_empty() {
+            req.set("Content-Type", &content_type_in)
+                .send_bytes(&req_body)
+        } else {
+            req.call()
+        };
+        match &result {
+            Ok(resp) => tracing::debug!(status = resp.status(), url, "neboapp proxy response"),
+            Err(e) => tracing::debug!(error = %e, url, "neboapp proxy error"),
+        }
+        // An API error is an API response. Preserve its status/body so
+        // embedded apps can recover a connection or show validation errors;
+        // falling through to index.html falsely reports a successful request.
+        let response = match result {
+            Ok(resp) => Some(resp),
+            Err(ureq::Error::Status(_, resp)) if path.starts_with("/api/") => Some(resp),
+            _ => None,
+        };
+        if let Some(resp) = response {
+            let status = resp.status();
+            if status != 404 || path.starts_with("/api/") {
+                let ct = resp
+                    .header("Content-Type")
+                    .unwrap_or("application/octet-stream")
+                    .to_string();
+                let mut body = Vec::new();
+                let _ = resp.into_reader().read_to_end(&mut body);
+                return http::Response::builder()
+                    .status(status)
+                    .header("Content-Type", ct)
+                    .header("Access-Control-Allow-Origin", "*")
+                    .body(body)
+                    .unwrap();
+            }
+        }
+    }
+
+    if path.starts_with("/api/") {
+        return http::Response::builder().status(502)
+            .header("Content-Type", "application/json")
+            .header("Access-Control-Allow-Origin", "*")
+            .body(br#"{"error":"Nebo could not reach the app. Try again."}"#.to_vec()).unwrap();
+    }
+
+    // SPA fallback: if proxy returned 404 or failed, and path has
+    // no file extension, serve index.html for client-side routing.
+    let ext = std::path::Path::new(path).extension();
+    if ext.is_none() || ext.and_then(|e| e.to_str()) == Some("html") {
+        let index = ui_dir.join("index.html");
+        if let Ok(data) = std::fs::read(&index) {
+            let html = String::from_utf8_lossy(&data);
+            let bridge = neboapp_bridge(agent_id);
+            let body = html.replacen("<head>", &format!("<head>{bridge}"), 1);
+            return http::Response::builder()
+                .status(200)
+                .header("Content-Type", "text/html; charset=utf-8")
+                .header("Access-Control-Allow-Origin", "*")
+                .body(body.into_bytes())
+                .unwrap();
+        }
+    }
+
+    http::Response::builder()
+        .status(404)
+        .header("Content-Type", "text/plain")
+        .header("Access-Control-Allow-Origin", "*")
+        .body(b"Not Found".to_vec())
+        .unwrap()
+}
+
 fn main() {
     // Chrome native messaging: if Chrome launched us, run as a relay — no GUI.
     // Chrome passes `chrome-extension://EXTENSION_ID/` as the sole argument.
@@ -604,237 +849,11 @@ fn main() {
                 let _ = window.set_focus();
             }
         }))
-        .register_uri_scheme_protocol("neboapp", |_ctx, request| {
-            let uri = request.uri();
-            let agent_id = uri.host().unwrap_or("");
-            let path = uri.path();
-            let method = request.method().as_str();
-
-            tracing::debug!(agent_id, path, method, "neboapp:// protocol handler");
-
-            // CORS preflight — WebKit treats custom-scheme pages as opaque
-            // origins, so every fetch() is cross-origin.
-            if method == "OPTIONS" {
-                return http::Response::builder()
-                    .status(204)
-                    .header("Access-Control-Allow-Origin", "*")
-                    .header("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
-                    .header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Nebo-Connection-Id")
-                    .header("Access-Control-Max-Age", "86400")
-                    .body(Vec::new())
-                    .unwrap();
-            }
-
-            // Resolve the agent's UI directory
-            let ui_dir = match resolve_app_ui_dir(agent_id) {
-                Some(dir) => dir,
-                None => {
-                    return http::Response::builder()
-                        .status(404)
-                        .header("Content-Type", "text/plain")
-                        .header("Access-Control-Allow-Origin", "*")
-                        .body(format!("App not found: {agent_id}").into_bytes())
-                        .unwrap();
-                }
-            };
-
-            // Prevent directory traversal
-            let clean_path = path.trim_start_matches('/');
-            if clean_path.contains("..") {
-                return http::Response::builder()
-                    .status(400)
-                    .header("Content-Type", "text/plain")
-                    .header("Access-Control-Allow-Origin", "*")
-                    .body(b"Bad Request".to_vec())
-                    .unwrap();
-            }
-
-            // Try exact file (empty path → index.html)
-            let file_path = if clean_path.is_empty() {
-                ui_dir.join("index.html")
-            } else {
-                ui_dir.join(clean_path)
-            };
-
-            if file_path.is_file() {
-                let mime = server::handlers::apps::mime_from_path(&file_path);
-                // Assets answer Range requests: WebKit seeks and scrubs video
-                // with them and will not play one served whole with a 200.
-                if !mime.starts_with("text/html") {
-                    use server::handlers::apps::{ByteRange, byte_range};
-                    let range = request.headers().get("range").and_then(|v| v.to_str().ok());
-                    let len = std::fs::metadata(&file_path).map(|m| m.len()).unwrap_or(0);
-                    match byte_range(range, len) {
-                        ByteRange::Full => {}
-                        ByteRange::Unsatisfiable => {
-                            return http::Response::builder()
-                                .status(416)
-                                .header("Content-Range", format!("bytes */{len}"))
-                                .header("Access-Control-Allow-Origin", "*")
-                                .body(Vec::new())
-                                .unwrap();
-                        }
-                        ByteRange::Partial(start, end) => {
-                            use std::io::{Read, Seek, SeekFrom};
-                            let mut buf = vec![0u8; (end - start + 1) as usize];
-                            let read = std::fs::File::open(&file_path).and_then(|mut f| {
-                                f.seek(SeekFrom::Start(start))?;
-                                f.read_exact(&mut buf)
-                            });
-                            if read.is_ok() {
-                                return http::Response::builder()
-                                    .status(206)
-                                    .header("Content-Type", mime)
-                                    .header("Content-Range", format!("bytes {start}-{end}/{len}"))
-                                    .header("Accept-Ranges", "bytes")
-                                    .header("Access-Control-Allow-Origin", "*")
-                                    .body(buf)
-                                    .unwrap();
-                            }
-                        }
-                    }
-                }
-                if let Ok(data) = std::fs::read(&file_path) {
-                    let is_html = mime.starts_with("text/html");
-                    let body = if is_html {
-                        let html = String::from_utf8_lossy(&data);
-                        let bridge = neboapp_bridge(agent_id);
-                        html.replacen("<head>", &format!("<head>{bridge}"), 1)
-                            .into_bytes()
-                    } else {
-                        data
-                    };
-                    return http::Response::builder()
-                        .status(200)
-                        .header("Content-Type", mime)
-                        .header("Accept-Ranges", if is_html { "none" } else { "bytes" })
-                        .header("Access-Control-Allow-Origin", "*")
-                        .body(body)
-                        .unwrap();
-                }
-            }
-
-            // Not a static file — proxy to the Nebo server.
-            let query = uri.query().unwrap_or("");
-            let req_body = request.body().clone();
-            let content_type_in = request
-                .headers()
-                .get("content-type")
-                .and_then(|v| v.to_str().ok())
-                .unwrap_or("")
-                .to_string();
-
-            let urls = if query.is_empty() {
-                vec![
-                    format!("http://127.0.0.1:27895{}", path),
-                    format!("http://127.0.0.1:27895/apps/{}/api{}", agent_id, path),
-                ]
-            } else {
-                vec![
-                    format!("http://127.0.0.1:27895{}?{}", path, query),
-                    format!("http://127.0.0.1:27895/apps/{}/api{}?{}", agent_id, path, query),
-                ]
-            };
-
-            let agent = ureq::AgentBuilder::new()
-                .timeout(std::time::Duration::from_secs(120))
-                .build();
-
-            for url in &urls {
-                tracing::debug!(url, method, "neboapp proxy attempt");
-                let req = match method {
-                    "POST" => agent.post(url),
-                    "PUT" => agent.put(url),
-                    "DELETE" => agent.delete(url),
-                    "PATCH" => agent.patch(url),
-                    _ => agent.get(url),
-                };
-                let req = if let Some(connection) = request.headers().get("x-nebo-connection-id").and_then(|v| v.to_str().ok()) {
-                    req.set("X-Nebo-Connection-Id", connection)
-                } else { req };
-                // The desktop shell is the owner's own client: its proxy
-                // proves itself to the local API with the install key.
-                let req = match config::read_install_key() {
-                    Some(key) => req.set("Authorization", &format!("Bearer {key}")),
-                    None => req,
-                };
-                // And names the page it carries (`neboapp://<id>`): an app
-                // window reaches only its own app's routes.
-                let page_origin = request
-                    .headers()
-                    .get("origin")
-                    .and_then(|v| v.to_str().ok())
-                    .map(str::to_string)
-                    .unwrap_or_else(|| format!("neboapp://{agent_id}"));
-                let req = req.set("Origin", &page_origin);
-                let result = if matches!(method, "POST" | "PUT" | "PATCH") && !req_body.is_empty() {
-                    req.set("Content-Type", &content_type_in)
-                        .send_bytes(&req_body)
-                } else {
-                    req.call()
-                };
-                match &result {
-                    Ok(resp) => tracing::debug!(status = resp.status(), url, "neboapp proxy response"),
-                    Err(e) => tracing::debug!(error = %e, url, "neboapp proxy error"),
-                }
-                // An API error is an API response. Preserve its status/body so
-                // embedded apps can recover a connection or show validation errors;
-                // falling through to index.html falsely reports a successful request.
-                let response = match result {
-                    Ok(resp) => Some(resp),
-                    Err(ureq::Error::Status(_, resp)) if path.starts_with("/api/") => Some(resp),
-                    _ => None,
-                };
-                if let Some(resp) = response {
-                    let status = resp.status();
-                    if status != 404 || path.starts_with("/api/") {
-                        let ct = resp
-                            .header("Content-Type")
-                            .unwrap_or("application/octet-stream")
-                            .to_string();
-                        let mut body = Vec::new();
-                        let _ = resp.into_reader().read_to_end(&mut body);
-                        return http::Response::builder()
-                            .status(status)
-                            .header("Content-Type", ct)
-                            .header("Access-Control-Allow-Origin", "*")
-                            .body(body)
-                            .unwrap();
-                    }
-                }
-            }
-
-            if path.starts_with("/api/") {
-                return http::Response::builder().status(502)
-                    .header("Content-Type", "application/json")
-                    .header("Access-Control-Allow-Origin", "*")
-                    .body(br#"{"error":"Nebo could not reach the app. Try again."}"#.to_vec()).unwrap();
-            }
-
-            // SPA fallback: if proxy returned 404 or failed, and path has
-            // no file extension, serve index.html for client-side routing.
-            let ext = std::path::Path::new(path).extension();
-            if ext.is_none() || ext.and_then(|e| e.to_str()) == Some("html") {
-                let index = ui_dir.join("index.html");
-                if let Ok(data) = std::fs::read(&index) {
-                    let html = String::from_utf8_lossy(&data);
-                    let bridge = neboapp_bridge(agent_id);
-                    let body = html.replacen("<head>", &format!("<head>{bridge}"), 1);
-                    return http::Response::builder()
-                        .status(200)
-                        .header("Content-Type", "text/html; charset=utf-8")
-                        .header("Access-Control-Allow-Origin", "*")
-                        .body(body.into_bytes())
-                        .unwrap();
-                }
-            }
-
-            http::Response::builder()
-                .status(404)
-                .header("Content-Type", "text/plain")
-                .header("Access-Control-Allow-Origin", "*")
-                .body(b"Not Found".to_vec())
-                .unwrap()
+        // Each request is answered on its own thread: Tauri takes a
+        // protocol response whole (no streamed body), so reading a large
+        // asset, or a proxied call, must not run on the main thread.
+        .register_asynchronous_uri_scheme_protocol("neboapp", |_ctx, request, responder| {
+            std::thread::spawn(move || responder.respond(neboapp_response(request)));
         })
         .setup(move |app| {
             // Use saved logical dimensions or defaults

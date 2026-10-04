@@ -1619,9 +1619,9 @@ async fn handle_plugin_code(
                                         dep_slug, platform
                                     ))
                                 })?;
-                            let data = api_inner.download_napp(&url).await.map_err(|e| {
-                                napp::NappError::PluginDownloadFailed(e.to_string())
-                            })?;
+                            let data = download_plugin_napp(&api_inner, &url)
+                                .await
+                                .map_err(napp::NappError::PluginDownloadFailed)?;
                             Ok((m, data))
                         }
                     })
@@ -1664,6 +1664,15 @@ async fn handle_plugin_code(
     })
 }
 
+/// A plugin `.napp`, downloaded (streamed to a scratch file, see
+/// `download_napp`) and read back: the plugin store installs from bytes.
+async fn download_plugin_napp(api: &NeboAIApi, url: &str) -> Result<Vec<u8>, String> {
+    let scratch = tempfile::tempdir().map_err(|e| format!("scratch dir: {e}"))?;
+    let path = scratch.path().join("plugin.napp");
+    api.download_napp(url, &path).await.map_err(|e| e.to_string())?;
+    tokio::fs::read(&path).await.map_err(|e| format!("read .napp: {e}"))
+}
+
 /// Download a marketplace plugin's per-platform `.napp` by slug, install it,
 /// register it in the DB, and wire up its tool + hooks.
 ///
@@ -1698,8 +1707,7 @@ pub(crate) async fn fetch_and_install_plugin(
     })?;
 
     info!(plugin = %name, url = %platform_binary.download_url, "downloading plugin .napp");
-    let napp_data = api
-        .download_napp(&platform_binary.download_url)
+    let napp_data = download_plugin_napp(api, &platform_binary.download_url)
         .await
         .map_err(|e| NeboError::Internal(format!("download .napp for {name}: {e}")))?;
 
@@ -2188,10 +2196,9 @@ async fn persist_workflow_artifact(
         std::fs::create_dir_all(&napp_dir).map_err(|e| format!("create workflow dir: {e}"))?;
         let napp_path = napp_dir.join(format!("{}.napp", version));
 
-        match api.download_napp(download_url).await {
-            Ok(data) => {
-                std::fs::write(&napp_path, &data).map_err(|e| format!("write .napp: {e}"))?;
-                tracing::info!(workflow = name, path = %napp_path.display(), size = data.len(), "stored sealed .napp");
+        match api.download_napp(download_url, &napp_path).await {
+            Ok(size) => {
+                tracing::info!(workflow = name, path = %napp_path.display(), size, "stored sealed .napp");
 
                 match napp::reader::extract_napp_alongside(&napp_path) {
                     Ok(extract_dir) => {
