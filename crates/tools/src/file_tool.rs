@@ -1848,7 +1848,57 @@ fn syntax_note(path: &str, content: &str, lsp: &dyn crate::lsp::LspProvider) -> 
     if let Ok(report) = lsp.diagnostics(Path::new(path), content) {
         parts.push(crate::lsp::render_diagnostics(&report, 10));
     }
+    if in_employee_package(Path::new(path)) {
+        parts.extend(app_text_note(path, content));
+    }
     if parts.is_empty() { None } else { Some(parts.join("\n")) }
+}
+
+/// What an app's page would show wrong, on the write that put it there
+/// (live 2026-10-04: Salon Manager's empty state read "📋"):
+/// `\u` escapes in page text, which show literally, and emoji used as
+/// icons. Never for its saved packages (`vendor/`).
+fn app_text_note(path: &str, content: &str) -> Option<String> {
+    let ext = Path::new(path).extension()?.to_str()?.to_ascii_lowercase();
+    let page = matches!(ext.as_str(), "jsx" | "tsx" | "html");
+    if !page && !matches!(ext.as_str(), "js" | "ts" | "mjs") || path.contains("/vendor/") {
+        return None;
+    }
+    let lines = |hit: &dyn Fn(&str) -> bool| -> Vec<String> {
+        content.lines().enumerate().filter(|(_, l)| hit(l)).take(5).map(|(i, _)| (i + 1).to_string()).collect()
+    };
+    let mut notes = Vec::new();
+    let escaped = lines(&|l| page && escape_in_text(l));
+    if !escaped.is_empty() {
+        notes.push(format!(
+            "page text: \\u escapes show literally on line {} — write the character itself (é, —, ✓)",
+            escaped.join(", ")
+        ));
+    }
+    let emoji = lines(&|l| l.chars().any(is_emoji) || ["\\ud83c", "\\ud83d", "\\ud83e"].iter().any(|s| l.to_ascii_lowercase().contains(s)));
+    if !emoji.is_empty() {
+        notes.push(format!(
+            "emoji on line {} — no emoji in the interface: use a lucide-react icon (one stroke weight, the app's colors)",
+            emoji.join(", ")
+        ));
+    }
+    (!notes.is_empty()).then(|| notes.join("\n"))
+}
+
+/// A `\uXXXX` escape outside any quotes on the line: JSX or HTML text, where
+/// it is not an escape. ponytail: per-line quote count; an apostrophe in the
+/// text before it hides one (missed, never a false alarm in a string).
+fn escape_in_text(line: &str) -> bool {
+    line.match_indices("\\u").any(|(at, _)| {
+        let next = &line[at + 2..];
+        let hex = next.starts_with('{') || next.chars().take(4).filter(char::is_ascii_hexdigit).count() == 4;
+        hex && line[..at].chars().filter(|c| matches!(c, '"' | '\'' | '`')).count() % 2 == 0
+    })
+}
+
+fn is_emoji(c: char) -> bool {
+    // ponytail: the pictographic planes only; text symbols (✓ ★ →) pass.
+    matches!(c as u32, 0x1F000..=0x1FAFF)
 }
 
 /// Milliseconds since the epoch rendered as an RFC 3339 UTC timestamp (second
@@ -1971,6 +2021,21 @@ pub fn edit_snippet(old: &str, new: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Salon Manager's page, as written live 2026-10-04: escapes in page text
+    /// and emoji icons are named by line; escapes in strings, text symbols
+    /// and saved packages are not.
+    #[test]
+    fn an_app_page_names_literal_escapes_and_emoji_icons() {
+        let page = "const s = { icon: \"\\ud83d\\udc65\" };\n<span className=\"icon\">\\ud83d\\udd0d</span>\n<p>Done \u{2713} \u{2192}</p>\n<i>\u{1F4CB}</i>\n";
+        let note = app_text_note("/a/ui/screens/clients.jsx", page).unwrap();
+        assert!(note.contains("\\u escapes show literally on line 2 "), "{note}");
+        assert!(note.contains("emoji on line 1, 2, 4 "), "{note}");
+        assert!(app_text_note("/a/ui/vendor/x.js", page).is_none());
+        assert!(app_text_note("/a/ui/clients.jsx", "<p>Done \u{2713}</p>\nconst t = \"caf\\u00e9\";\n").is_none());
+        let store = app_text_note("/a/ui/store.js", page).unwrap();
+        assert!(!store.contains("escapes"), "no page text in plain JS: {store}");
+    }
 
     /// The path a hint offers to glob next, if it offers one at all.
     fn widening_offered(hint: &str) -> Option<String> {

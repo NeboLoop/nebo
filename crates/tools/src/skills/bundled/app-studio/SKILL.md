@@ -78,6 +78,9 @@ looks matter, Design Depth adds the studio method on top.
     a bug. Before any large change, say what you'll change and why. The app's
     history is saved automatically: if a change makes things worse, restore the
     last good version instead of rewriting.
+14. **No emoji in the interface.** Icons are `lucide-react` (one stroke weight,
+    the app's colors) or the app's generated set. Write characters as
+    themselves (é, —, ✓), never `\u` escapes: in page text they show as typed.
 
 ## Step 0: Whose app is it?
 
