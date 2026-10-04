@@ -168,6 +168,12 @@ pub struct AppWindowConfig {
     /// app. Never shown unless asked for. Fullscreen apps have no bar.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub voice: bool,
+    /// `true` opens the app over its chat, on the phone and the desktop, as
+    /// soon as the employee writes this chat's record (a `chat:` key in
+    /// `app_data`), so the owner watches the work happen without pressing
+    /// Open App. Off unless asked for. Fullscreen apps may ask for it too.
+    #[serde(default, alias = "openOnWork", skip_serializing_if = "std::ops::Not::not")]
+    pub open_on_work: bool,
 }
 
 /// The orientations a window may ask for; the first is the default.
@@ -191,7 +197,7 @@ impl AppWindowConfig {
 
 /// How an app asks to be shown, as every client reads it (`appWindow` on an
 /// employee): the manifest's `window.fullscreen`, `window.orientation` and
-/// `window.pull_to_refresh` and `window.voice`, and whether its permissions include `device:motion`.
+/// `window.pull_to_refresh`, `window.voice` and `window.open_on_work`, and whether its permissions include `device:motion`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct AppWindow {
     pub fullscreen: bool,
@@ -202,6 +208,10 @@ pub struct AppWindow {
     pub pull_to_refresh: bool,
     /// Whether the phone's app bar carries the dictate and voice buttons.
     pub voice: bool,
+    /// Whether the app opens over its chat when the employee writes that
+    /// chat's record.
+    #[serde(rename = "openOnWork")]
+    pub open_on_work: bool,
 }
 
 impl AppWindow {
@@ -219,6 +229,7 @@ impl AppWindow {
             motion: permissions.iter().any(|p| p == DEVICE_MOTION),
             pull_to_refresh: !fullscreen && window.is_some_and(|w| w.pull_to_refresh),
             voice: !fullscreen && window.is_some_and(|w| w.voice),
+            open_on_work: window.is_some_and(|w| w.open_on_work),
         }
     }
 }
@@ -244,6 +255,7 @@ impl Default for AppWindowConfig {
             orientation: None,
             pull_to_refresh: false,
             voice: false,
+            open_on_work: false,
         }
     }
 }
@@ -419,16 +431,16 @@ mod tests {
         .unwrap();
         m.validate().unwrap();
         let w = AppWindow::from_manifest(m.window.as_ref(), &m.permissions);
-        assert_eq!(w, AppWindow { fullscreen: true, orientation: "landscape", motion: true, pull_to_refresh: false, voice: false });
+        assert_eq!(w, AppWindow { fullscreen: true, orientation: "landscape", motion: true, pull_to_refresh: false, voice: false, open_on_work: false });
         assert_eq!(
             serde_json::to_value(&w).unwrap(),
-            serde_json::json!({"fullscreen": true, "orientation": "landscape", "motion": true, "pullToRefresh": false, "voice": false})
+            serde_json::json!({"fullscreen": true, "orientation": "landscape", "motion": true, "pullToRefresh": false, "voice": false, "openOnWork": false})
         );
 
         // Missing = today's view: not fullscreen, portrait, no motion, and no
         // pull-to-refresh unless the app asks for it.
         let today = AppWindow::from_manifest(None, &[]);
-        assert_eq!(today, AppWindow { fullscreen: false, orientation: "portrait", motion: false, pull_to_refresh: false, voice: false });
+        assert_eq!(today, AppWindow { fullscreen: false, orientation: "portrait", motion: false, pull_to_refresh: false, voice: false, open_on_work: false });
         let asks: AppWindowConfig = serde_json::from_str(r#"{"pull_to_refresh":true}"#).unwrap();
         assert!(AppWindow::from_manifest(Some(&asks), &[]).pull_to_refresh);
         let plain: AppWindowConfig = serde_json::from_str(r#"{"title":"Deals"}"#).unwrap();
@@ -455,6 +467,14 @@ mod tests {
         assert!(AppWindow::from_manifest(Some(&voice), &[]).voice);
         let game: AppWindowConfig = serde_json::from_str(r#"{"voice":true,"fullscreen":true}"#).unwrap();
         assert!(!AppWindow::from_manifest(Some(&game), &[]).voice);
+        // Opening on work only when asked for (either key spelling), and a
+        // fullscreen app may ask for it too; it survives being written back.
+        assert!(!AppWindow::from_manifest(Some(&off), &[]).open_on_work);
+        for json in [r#"{"open_on_work":true}"#, r#"{"openOnWork":true,"fullscreen":true}"#] {
+            let work: AppWindowConfig = serde_json::from_str(json).unwrap();
+            assert!(AppWindow::from_manifest(Some(&work), &[]).open_on_work);
+            assert_eq!(serde_json::to_value(&work).unwrap()["open_on_work"], true);
+        }
 
         // A window written back keeps its old shape when the new keys are unset.
         assert_eq!(

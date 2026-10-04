@@ -90,6 +90,9 @@ pub enum TurnEvent {
     BackgroundUpdate(String),
     /// The last reply hit the output limit.
     CutoffResume,
+    /// The output limit cut the last reply inside its call to this tool:
+    /// the call's arguments are partial, so no call in the reply ran.
+    CutCall(String),
     /// The connection dropped while the last reply streamed.
     StreamCut,
     /// The last reply had no visible output.
@@ -220,6 +223,7 @@ pub const NAMES: &[&str] = &[
     "helper_types",
     "background_update",
     "cutoff_resume",
+    "cut_call",
     "stream_cut",
     "empty_reply",
     "text_call",
@@ -410,6 +414,16 @@ pub fn attachment_for(e: &TurnEvent) -> Option<Attachment> {
         TurnEvent::CutoffResume => (
             "cutoff_resume",
             "Your last reply hit the output limit. Resume directly, with no apology and no recap: pick up mid-thought if that is where it stopped, and break the remaining work into smaller pieces.".to_string(),
+        ),
+        TurnEvent::CutCall(tool) => (
+            "cut_call",
+            format!(
+                "Your last reply was cut off at the output length limit in the middle of your call to {tool}, so \
+                 the call did not run and nothing was saved. Do not send it again whole: it will be cut off at the \
+                 same place. Send the content in smaller pieces, one section or screen per call: write the first \
+                 part, then add each next part with its own call (app_data replace for one piece of a saved \
+                 value, edit_file for the next section of a file)."
+            ),
         ),
         TurnEvent::StreamCut => (
             "stream_cut",
@@ -1233,6 +1247,7 @@ mod tests {
             TurnEvent::HelperTypes(lined),
             TurnEvent::BackgroundUpdate("the export finished".into()),
             TurnEvent::CutoffResume,
+            TurnEvent::CutCall("write_file".into()),
             TurnEvent::WorkflowContract("call publish once".into()),
             TurnEvent::AnswerShape("no JSON object".into()),
             TurnEvent::UnsavedMemory(crate::harness::memory_save::Scope::Private),

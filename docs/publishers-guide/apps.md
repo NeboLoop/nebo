@@ -122,6 +122,7 @@ Other prefixes (`storage:`, `memory:`, `filesystem:`, `shell:`, `oauth:`, …) a
 | `orientation` | `"portrait"` | `"portrait"`, `"landscape"` or `"any"` on the phone. Any other value is refused when the manifest is written; the phone returns to its normal orientations on close. |
 | `pull_to_refresh` | false | On the phone, pulling down from the top of the page reloads it. Off unless asked for: an app is used by touch, and a drag that reloads it (a design canvas, a card game) makes it unusable. Set `true` only for a page that reads like a feed. Fullscreen apps never have it. |
 | `voice` | false | On the phone, puts the chat's own dictate and voice buttons at the right of the app's bar when the app is opened from its chat, so the owner can direct the employee by talking while looking at the page (a design canvas). Never shown unless asked for; fullscreen apps have no bar and never get them. See **Voice** below. |
+| `open_on_work` | false | Opens the app over its chat, on the phone and the desktop, the moment the employee writes that chat's record: any `app_data` write to a `chat:<chatId>:` key while the owner has that chat open. The owner (often on a voice call) watches the page build without pressing Open App. Once per chat screen: an app already open is left alone, and one the owner closed reopens only the next time they come into the chat. Off unless asked for; fullscreen apps may set it too. |
 
 There are no `min_width` / `min_height` fields. Nebo remembers window position and size per app: the user's last arrangement is restored on reopen.
 
