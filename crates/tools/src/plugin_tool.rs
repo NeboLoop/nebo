@@ -17,6 +17,10 @@ const EXEC_TIMEOUT_DEFAULT_SECS: u64 = 120;
 /// would be read as the plugin timing out.
 const RECOVERY_MIN_REMAINING: Duration = Duration::from_secs(10);
 
+/// The longest a call waits for a plugin version being copied in by hand
+/// to land when no whole version of it is on disk.
+const PLUGIN_COPY_WAIT: Duration = Duration::from_secs(15);
+
 /// The install card's answer once the plugin is on disk.
 /// What an install/hire card submits once POST /codes has succeeded. Shared
 /// with the employee hire card so both resume the same way.
@@ -1281,8 +1285,19 @@ impl PluginRunner {
             ));
         }
 
-        // Resolve binary path
-        let binary_path = match self.plugin_store.resolve(&pi.slug, "*") {
+        // Resolve binary path. A version being copied in by hand over the
+        // only one there is has no whole binary for a moment: wait for the
+        // copy to land rather than tell the model the plugin is gone.
+        let mut resolved = self.plugin_store.resolve(&pi.slug, "*");
+        let settle_until = tokio::time::Instant::now() + timeout.min(PLUGIN_COPY_WAIT);
+        while resolved.is_none()
+            && tokio::time::Instant::now() < settle_until
+            && self.plugin_store.has_incomplete_version(&pi.slug)
+        {
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            resolved = self.plugin_store.resolve(&pi.slug, "*");
+        }
+        let binary_path = match resolved {
             Some(p) => p,
             None => {
                 let slugs = self.installed_slugs();

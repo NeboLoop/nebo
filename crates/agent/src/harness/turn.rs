@@ -5347,6 +5347,30 @@ mod tests {
         }
     }
 
+    /// The recap is never a message in the chat: the transcript the owner
+    /// reads holds the turn's own reply and nothing after it. (Live: a recap
+    /// under every turn read as a second reply about "the owner".)
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn recap_never_lands_in_the_transcript() {
+        let model = Scripted::new(vec![Step::Say("Drafted.")]);
+        let h = harness(&model).await;
+        run_turn(&h, owner("Draft the plan")).await;
+        let sid = h.sessions.resolve_session_id_by_key(KEY).unwrap();
+        let chat_id = h.sessions.active_chat_id(&sid);
+        for _ in 0..200 {
+            if h.store.latest_chat_recap(&chat_id).unwrap().is_some() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(h.store.latest_chat_recap(&chat_id).unwrap().is_some(), "the recap was written");
+        let rows = h.store.get_chat_messages(&chat_id).unwrap();
+        assert!(!rows.iter().any(|m| m.content.contains(RECAP)), "the recap landed in the transcript");
+        let replies: Vec<&str> =
+            rows.iter().filter(|m| m.role == "assistant" && !m.content.trim().is_empty()).map(|m| m.content.as_str()).collect();
+        assert_eq!(replies, vec!["Drafted."], "one reply per turn, nothing after it");
+    }
+
     /// A recap is for the owner coming back to the thread: a scheduled
     /// turn and a coworker's request get none; the owner's own chat does.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -200,7 +200,21 @@ pub async fn toggle_plugin(
         .store
         .get_plugin_by_slug(&slug)
         .map_err(to_error_response)?;
-    let was_enabled = current.map(|r| r.is_enabled != 0).unwrap_or(true);
+    // Enabled state lives on the install record. A plugin with none (one
+    // copied into the plugins folder by hand) has nothing to flip: say so,
+    // never answer with a state that was not saved.
+    let Some(current) = current else {
+        let on_disk = state.plugin_store.list_installed().iter().any(|(s, ..)| *s == slug);
+        return Err(to_error_response(if on_disk {
+            NeboError::Validation(format!(
+                "{slug} was added to the plugins folder by hand, so it can't be turned off here. \
+                 Remove its folder to turn it off."
+            ))
+        } else {
+            NeboError::NotFound
+        }));
+    };
+    let was_enabled = current.is_enabled != 0;
     state
         .store
         .set_plugin_enabled(&slug, !was_enabled)

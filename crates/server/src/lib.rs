@@ -2906,35 +2906,14 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
         });
     }
 
-    // Spawn filesystem plugin watcher → log changes, notify via WS
+    // Spawn filesystem plugin watcher: a plugin copied in by hand is made
+    // usable the way a marketplace install makes it usable, then the app hears.
     {
         let (_plugin_watcher_handle, mut plugin_fs_rx) = state.plugin_store.watch();
         let ps_state = state.clone();
         tokio::spawn(async move {
             while let Some(event) = plugin_fs_rx.recv().await {
-                match event {
-                    napp::plugin::PluginFsEvent::Added { slug, binary_path } => {
-                        info!(slug = %slug, path = %binary_path.display(), "plugin hot-loaded (added)");
-                        ps_state.hub.broadcast(
-                            "plugin_changed",
-                            serde_json::json!({"slug": slug, "action": "added"}),
-                        );
-                    }
-                    napp::plugin::PluginFsEvent::Changed { slug, binary_path } => {
-                        info!(slug = %slug, path = %binary_path.display(), "plugin hot-loaded (changed)");
-                        ps_state.hub.broadcast(
-                            "plugin_changed",
-                            serde_json::json!({"slug": slug, "action": "changed"}),
-                        );
-                    }
-                    napp::plugin::PluginFsEvent::Removed { slug } => {
-                        info!(slug = %slug, "plugin removed from filesystem");
-                        ps_state.hub.broadcast(
-                            "plugin_changed",
-                            serde_json::json!({"slug": slug, "action": "removed"}),
-                        );
-                    }
-                }
+                handle_plugin_fs_event(&ps_state, event).await;
             }
         });
     }
@@ -3602,6 +3581,36 @@ fn repair_napp_path(
     }
     info!(agent = %row.id, from = recorded, to = %folder.display(), "employee folder repointed to the one holding its manifest");
     store.set_agent_napp_path(&row.id, &folder.to_string_lossy()).is_ok()
+}
+
+/// One plugin filesystem change (`PluginStore::watch`, debounced, so a
+/// copy in progress is never seen halfway). A plugin copied in by hand (it
+/// lives in the user plugins folder, or no install record exists for it) is
+/// activated through the same path a marketplace install takes, so its tool
+/// is callable at once; a marketplace install already activated its own
+/// files. A plugin gone from disk loses its tool and hooks.
+async fn handle_plugin_fs_event(state: &AppState, event: napp::plugin::PluginFsEvent) {
+    let (slug, action) = match &event {
+        napp::plugin::PluginFsEvent::Added { slug, .. } => (slug, "added"),
+        napp::plugin::PluginFsEvent::Changed { slug, .. } => (slug, "changed"),
+        napp::plugin::PluginFsEvent::Removed { slug } => (slug, "removed"),
+    };
+    match &event {
+        napp::plugin::PluginFsEvent::Added { binary_path, .. } | napp::plugin::PluginFsEvent::Changed { binary_path, .. } => {
+            let by_hand = binary_path.starts_with(state.plugin_store.user_plugins_dir())
+                || matches!(state.store.get_plugin_by_slug(slug), Ok(None));
+            if by_hand {
+                codes::activate_plugin(state, slug).await;
+            }
+            info!(slug = %slug, path = %binary_path.display(), action, by_hand, "plugin hot-loaded");
+        }
+        napp::plugin::PluginFsEvent::Removed { .. } => {
+            state.hooks.unregister_app(slug);
+            state.tools.refresh_plugin_tools().await;
+            info!(slug = %slug, "plugin removed from filesystem");
+        }
+    }
+    state.hub.broadcast("plugin_changed", serde_json::json!({"slug": slug, "action": action}));
 }
 
 /// Process filesystem agent change events: sync DB, update registry, broadcast WS.

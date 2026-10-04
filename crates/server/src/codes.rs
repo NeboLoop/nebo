@@ -1751,6 +1751,16 @@ pub(crate) async fn fetch_and_install_plugin(
     }
     let _ = state.store.upsert_artifact_update_pref(slug, "plugin", &version);
 
+    activate_plugin(state, slug).await;
+    Ok(())
+}
+
+/// Make a plugin that just landed on disk usable: its tool and the
+/// operations it binds, its hooks, the workers running its old binary, and
+/// any chat parked on an install card for it. The ONE path for every way a
+/// plugin arrives: a marketplace install and a copy by hand into the
+/// plugins folder (the filesystem watcher) both end here.
+pub(crate) async fn activate_plugin(state: &AppState, slug: &str) {
     // The new plugin's tool and the operations it binds are usable immediately.
     state.tools.refresh_plugin_tools().await;
     if let Some(manifest) = state.plugin_store.get_manifest(slug) {
@@ -1779,7 +1789,6 @@ pub(crate) async fn fetch_and_install_plugin(
     // The plugin is on disk and registered: a chat parked on an install card
     // for it resumes now, whichever door this install came through.
     crate::chat_dispatch::release_install_cards(state, slug).await;
-    Ok(())
 }
 
 /// True if a watch workflow's trigger config targets this plugin slug.

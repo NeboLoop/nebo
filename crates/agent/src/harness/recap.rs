@@ -5,10 +5,11 @@
 //! The turn's `Finish` spawns `write_recap` for turns the owner is in
 //! (their own chat from the app, the phone or their loop) that weren't
 //! cancelled, so it never delays the turn's own reply; a scheduled or other
-//! unattended turn gets none. The recap shows under the turn and as the
-//! employee's status line (the stored recap and the `turn_recap` event); it
-//! is never an owner notification, so it adds no Inbox row and no unread
-//! badge.
+//! unattended turn gets none. The recap is stored and emitted (the
+//! `turn_recap` event); it is never a message in the chat and never shown in
+//! the transcript (a recap under every turn read as a second, stray reply
+//! talking about the owner), and never an owner notification, so it adds no
+//! Inbox row and no unread badge.
 
 use std::sync::Arc;
 
@@ -18,12 +19,16 @@ use serde_json::json;
 use crate::concurrency::ConcurrencyController;
 
 /// The owner-facing instruction, in our own words (Turn-Controller
-/// Technical Design §2.7). Never mentions internals or markdown. The call
-/// offers the turn's tools only so its prefix stays the turn's; the reply
-/// is its text.
-pub const RECAP_INSTRUCTION: &str = "The owner is coming back to this thread. \
-In one or two plain sentences under 40 words: the overall goal and where it \
-stands, then the single next action. Reply in plain text only; don't call any tool.";
+/// Technical Design §2.7). Never mentions internals or markdown. Written to
+/// the owner, not about them, and naming none of the systems behind the
+/// work: a recap once said "unless the owner wants something else" and
+/// blamed an internal service by name. The call offers the turn's tools
+/// only so its prefix stays the turn's; the reply is its text.
+pub const RECAP_INSTRUCTION: &str = "Write a recap of this thread for your owner, \
+who is coming back to it. Speak to them as \"you\", never about them. In one or \
+two plain sentences under 40 words: the overall goal and where it stands, then \
+the single next action. Don't name any internal system, service or model. Reply \
+in plain text only; don't call any tool.";
 
 /// Hard character cap on the stored/emitted recap (§2.7).
 pub const RECAP_CHAR_CAP: usize = 400;
@@ -341,6 +346,16 @@ mod tests {
         assert!(owner.is_ok(), "the owner's pool is untouched by the waiting recap");
         drop(held);
         assert!(recap.await.unwrap().is_some(), "the recap runs once a background permit is free");
+    }
+
+    /// The recap speaks to the owner, never about them, and is told to name
+    /// none of the systems behind the work.
+    #[test]
+    fn the_instruction_speaks_to_the_owner_and_names_no_internals() {
+        assert!(RECAP_INSTRUCTION.contains("as \"you\", never about them"));
+        assert!(RECAP_INSTRUCTION.contains("Don't name any internal system"));
+        assert!(!RECAP_INSTRUCTION.contains("The owner is"));
+        assert!(!RECAP_INSTRUCTION.to_lowercase().contains("janus"));
     }
 
     #[test]
