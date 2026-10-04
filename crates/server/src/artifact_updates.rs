@@ -379,16 +379,21 @@ async fn check_by_artifact_id(
 pub(crate) fn installed_skill_version(skills_dir: &std::path::Path, artifact_id: &str) -> Option<String> {
     let mut newest: Option<Version> = None;
     for slug in std::fs::read_dir(skills_dir).ok()?.flatten() {
-        for dir in std::fs::read_dir(slug.path()).into_iter().flatten().flatten() {
-            let path = dir.path();
-            let id = std::fs::read_to_string(path.join(".artifact_id")).unwrap_or_default();
-            if id.trim() != artifact_id {
-                continue;
-            }
+        let folders: Vec<_> = std::fs::read_dir(slug.path()).into_iter().flatten().flatten().map(|d| d.path()).collect();
+        // One skill's folder holds its versions side by side. Any of them
+        // carrying the id makes them all this skill's: an update's folder
+        // written without the id is still the newest version installed.
+        let ours = folders.iter().any(|p| {
+            std::fs::read_to_string(p.join(".artifact_id")).is_ok_and(|id| id.trim() == artifact_id)
+        });
+        if !ours {
+            continue;
+        }
+        for path in &folders {
             let Some(version) = path.file_name().and_then(|n| n.to_str()).and_then(|n| Version::parse(n).ok()) else {
                 continue;
             };
-            if newest.as_ref().is_none_or(|n| version > *n) {
+            if path.is_dir() && newest.as_ref().is_none_or(|n| version > *n) {
                 newest = Some(version);
             }
         }
@@ -861,6 +866,11 @@ mod notice_tests {
         put("app-studio", "0.1.3", "studio-id\n");
         put("deep-research", "2.0.0", "other-id");
         assert_eq!(super::installed_skill_version(&root, "studio-id").as_deref(), Some("0.1.3"));
+        // An update's folder written without the id is still the newest
+        // version of that skill (live: the same 0.1.3 -> 0.1.4 applied on
+        // every check).
+        std::fs::create_dir_all(root.join("app-studio").join("0.1.4")).unwrap();
+        assert_eq!(super::installed_skill_version(&root, "studio-id").as_deref(), Some("0.1.4"));
         assert_eq!(super::installed_skill_version(&root, "missing").as_deref(), None);
         assert!(super::has_newer_version("0.1.3", "0.1.4"), "the stub's update now reaches it");
         let _ = std::fs::remove_dir_all(&root);
