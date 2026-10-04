@@ -1,0 +1,9 @@
+id: sc85-an-owner-message-sent-while-busy-is-named-from-shown-to-taken-in
+name: "SC85 — A message sent while the employee works is named from shown to taken in"
+description: |
+  "Send to <employee>" pressed while the employee is mid-turn joins the running turn, and every
+  event about it (shown, held behind the work, taken in) names it by one id, so the open chat
+  moves it into the conversation without the owner leaving and coming back.
+target_component: staffed-company
+proof: staffed_proof::conversation::an_owner_message_sent_while_busy_is_named_from_shown_to_taken_in
+conversation: []

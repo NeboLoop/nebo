@@ -1580,6 +1580,10 @@ pub(crate) async fn dispatch_owner_message(
     });
     let mut payload = ChatPayload::parse(&data);
     payload.reply_to = reply_to;
+    // Named like a composer's message: one sent while the employee is busy
+    // waits behind the work, and the open views move it into the
+    // conversation when the work takes it in by this id.
+    payload.message_id = Some(uuid::Uuid::new_v4().to_string());
     dispatch_payload(state, payload, false).await;
 }
 
