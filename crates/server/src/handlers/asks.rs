@@ -564,6 +564,27 @@ pub(crate) async fn read_reply(
     reading
 }
 
+/// The owner's words turn a card down: "skip" anywhere, or a short reply
+/// that is "no", "not now", "cancel", "never mind". A sentence that only
+/// starts with "no" is about something else. ponytail: English only; read
+/// them with the decide model, as an answerable question is, if calls in
+/// other languages need it.
+fn dismisses(words: &str) -> bool {
+    let said: String = words
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_alphanumeric() || c == '\'' { c } else { ' ' })
+        .collect();
+    let said: Vec<&str> = said.split_whitespace().collect();
+    if said.contains(&"skip") {
+        return true;
+    }
+    const PHRASES: &[&str] = &["no", "nope", "not now", "cancel", "never mind", "nevermind", "forget it", "no thanks"];
+    let short = said.len() <= 4;
+    let text = said.join(" ");
+    short && PHRASES.iter().any(|p| text == *p || text.starts_with(&format!("{p} ")))
+}
+
 /// Why the owner's words answered nothing.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum NotAnswered {
@@ -589,6 +610,18 @@ pub(crate) async fn answer_in_words(
     via: AnsweredVia,
 ) -> Result<String, NotAnswered> {
     if !w.card.answerable {
+        // A card done in the app (install, connect) is still the owner's to
+        // turn down in words: "skip" on his call or in the chat dismisses it
+        // and the work goes on without it. Live 2026-10-04: a Shopify
+        // connect card held a design session on a call until he found the
+        // Skip button on his phone.
+        if matches!(w.answers, Answers::Question) && dismisses(words) {
+            if !crate::chat_dispatch::answer_ask(state, &w.card.id, "skipped".to_string()).await {
+                return Err(NotAnswered::Settled);
+            }
+            info!(ask = %w.card.id, via = via.as_str(), "the owner's words skipped an in-app card");
+            return Ok("Skip".to_string());
+        }
         return Err(NotAnswered::InApp);
     }
     let reading = read_reply(decide, w, words, conversation).await;
@@ -633,7 +666,11 @@ pub(crate) async fn answered_by_message(
     via: AnsweredVia,
 ) -> bool {
     let here = waiting(state, Some(session_key)).await;
-    let Some(w) = here.iter().rev().find(|w| w.card.answerable) else {
+    let Some(w) = here
+        .iter()
+        .rev()
+        .find(|w| w.card.answerable || (matches!(w.answers, Answers::Question) && dismisses(words)))
+    else {
         return false;
     };
     match answer_in_words(state, state.decide.as_deref(), w, words, words, via).await {
