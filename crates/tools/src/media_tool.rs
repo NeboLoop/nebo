@@ -1049,7 +1049,7 @@ impl DynTool for GenerateMediaTool {
     }
 
     fn search_hint(&self) -> &str {
-        "generate create image picture video art speech voice voiceover narration audio"
+        "generate image picture video art speech voiceover audio"
     }
 
     fn capability(&self, _input: &Value) -> Option<&'static str> {
@@ -1113,8 +1113,11 @@ impl DynTool for GenerateMediaTool {
                 _ => Err("`kind` is image, video or speech.".to_string()),
             };
             match made {
-                Ok((text, files)) => ToolResult::ok(text)
-                    .with_files(files.iter().map(|f| f.to_string_lossy().into_owned())),
+                // Every file is its own card: the first on `image_url`,
+                // the rest after it.
+                Ok((text, files)) => files.iter().fold(ToolResult::ok(text), |result, file| {
+                    result.with_image_url(file.to_string_lossy())
+                }),
                 Err(e) => ToolResult::error(e),
             }
         })
@@ -1706,7 +1709,7 @@ mod tests {
             )
             .await;
         assert!(!result.is_error, "{}", result.content);
-        let files: Vec<String> = result.image_url.iter().chain(&result.more_files).cloned().collect();
+        let files: Vec<String> = result.files().map(str::to_string).collect();
         let want: Vec<String> = (1..=3)
             .map(|i| ui.join(format!("assets/kart-{i}.png")).to_string_lossy().into_owned())
             .collect();

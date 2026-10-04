@@ -1879,7 +1879,6 @@ pub async fn run_chat_events(
                         provider_metadata: None,
                         stop_reason: None,
                         image_url: None,
-                        more_files: Vec::new(),
                     })
                     .await;
             }
@@ -2050,17 +2049,17 @@ fn mime_from_extension(path: &std::path::Path) -> String {
     .to_string()
 }
 
-/// The files a tool result hands the owner, as URLs the app renders: the
-/// ONE collection every drained run uses (the chat pipeline here, the voice
-/// bridge in `handlers::voice`). Persisted to <data_dir>/files and referenced
-/// by /api/v1/files/<name> (`to_app_artifact_url`). Only media the owner asked
+/// The files a tool result hands the owner, in order, each as a URL the app
+/// renders as its own card: the ONE collection every drained run uses (the
+/// chat pipeline here, the voice bridge in `handlers::voice`). Persisted to
+/// <data_dir>/files and referenced by /api/v1/files/<name>
+/// (`to_app_artifact_url`). Only media the owner asked
 /// for attaches: a capture the model took, a document a call produced, a file
 /// `share_file` delivers. A file read returns an EXISTING image for the model,
 /// and the browser and the desktop return the page or window after every act
 /// — the tool's eyes (34 frame reads once hung 34 tiles on one message; a
 /// Simulator session hung three frames on each reply, 2026-09-22). The tool's
-/// spec says which it is. A result that hands over several files (`image_url`
-/// then `more_files`) gives a card for each, in order.
+/// spec says which it is.
 pub(crate) async fn owner_artifact_urls(
     tools: &tools::Registry,
     event: &ai::StreamEvent,
@@ -2075,11 +2074,15 @@ pub(crate) async fn owner_artifact_urls(
             }
         }
     }
+    // The first file is the event's `image_url`; the rest ride in its
+    // widgets (`ToolResult::more_files`), as the harness sends them.
+    let more = event.widgets.as_ref().and_then(|w| w.get("more_files")).and_then(|v| v.as_array());
     event
         .image_url
-        .iter()
-        .chain(&event.more_files)
-        .filter_map(|url| to_app_artifact_url(url))
+        .as_deref()
+        .into_iter()
+        .chain(more.into_iter().flatten().filter_map(|v| v.as_str()))
+        .filter_map(to_app_artifact_url)
         .collect()
 }
 
@@ -2999,26 +3002,6 @@ mod session_key_contract_tests {
 mod shared_file_tests {
     use super::keep_shared_file;
 
-    /// A result that hands over several files gives a card for each, in
-    /// order (`generate_media` with n=3, `share_file` with several paths);
-    /// a failed call gives none.
-    #[tokio::test]
-    async fn every_file_a_result_hands_over_is_a_card() {
-        let tmp = tempfile::tempdir().unwrap();
-        let store = std::sync::Arc::new(db::Store::new(&tmp.path().join("t.db").to_string_lossy()).unwrap());
-        let tools = tools::Registry::new(std::sync::Arc::new(agent::Check::new(store)));
-        let urls = ["/api/v1/files/a/1.png", "/api/v1/files/a/2.png", "/api/v1/files/a/3.png"];
-        let result = tools::ToolResult::ok("made").with_files(urls);
-        let mut event = ai::StreamEvent::text("");
-        event.event_type = ai::StreamEventType::ToolResult;
-        event.image_url = result.image_url.clone();
-        event.more_files = result.more_files.clone();
-        assert_eq!(super::owner_artifact_urls(&tools, &event).await, urls);
-
-        event.error = Some("failed".into());
-        assert!(super::owner_artifact_urls(&tools, &event).await.is_empty());
-    }
-
     fn served(files_dir: &std::path::Path, url: &str) -> Vec<u8> {
         let rel = url.strip_prefix("/api/v1/files/").expect("a files URL");
         std::fs::read(files_dir.join(rel)).expect("the URL resolves to a file")
@@ -3082,5 +3065,23 @@ mod shared_file_tests {
             keep_shared_file(&files, &kept).as_deref(),
             Some(first.as_str())
         );
+    }
+
+    /// Three generated images are three cards, in order, through the same
+    /// path the harness sends them on (`ToolResult::more_files`).
+    #[tokio::test]
+    async fn three_generated_images_are_three_cards() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = std::sync::Arc::new(db::Store::new(&tmp.path().join("t.db").to_string_lossy()).unwrap());
+        let tools = tools::Registry::new(std::sync::Arc::new(agent::Check::new(store)));
+        let urls = ["/api/v1/files/a/1.png", "/api/v1/files/a/2.png", "/api/v1/files/a/3.png"];
+        let result = urls
+            .iter()
+            .fold(tools::ToolResult::ok("made"), |r, u| r.with_image_url(*u));
+        let mut event = ai::StreamEvent::text("");
+        event.event_type = ai::StreamEventType::ToolResult;
+        event.image_url = result.image_url.clone();
+        event.widgets = Some(serde_json::json!({"duration_ms": 1, "more_files": result.more_files}));
+        assert_eq!(super::owner_artifact_urls(&tools, &event).await, urls);
     }
 }

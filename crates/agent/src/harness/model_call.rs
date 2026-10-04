@@ -779,7 +779,6 @@ pub(crate) async fn call_model(call: ModelCall<'_>, st: &mut CallState, state: &
                                     provider_metadata: None,
                                     stop_reason: None,
                                     image_url: None,
-                                    more_files: Vec::new(),
                                 })
                                 .await;
                         }
@@ -1059,6 +1058,13 @@ async fn show_text(
     let _ = tx.send(event).await;
 }
 
+/// The provider's stop says the output cap cut the reply off: OpenAI's
+/// `length`, Anthropic's `max_tokens`. A cut can land anywhere, inside a
+/// call's arguments included.
+pub(crate) fn hit_output_limit(stop_reason: Option<&str>) -> bool {
+    matches!(stop_reason, Some("length" | "max_tokens"))
+}
+
 /// The output-cap ladder for a reply the output cap cut off: first a retry
 /// at the escalated cap, then up to `MAX_OUTPUT_RECOVERY_ATTEMPTS`
 /// continuations. A reply that was not cut off resets both.
@@ -1068,10 +1074,15 @@ pub(crate) fn output_cutoff(
     iteration: usize,
     session_id: &str,
 ) -> Option<StepRetry> {
+    if !hit_output_limit(stop_reason) {
+        // Reset recovery counter and escalation flag on successful non-truncated completion
+        st.output_recovery_attempts = 0;
+        st.output_escalated = false;
+        return None;
+    }
     // Output token escalation: on first truncation, retry with a higher cap
     // before falling through to the multi-attempt continuation recovery.
-    if (stop_reason == Some("length") || stop_reason == Some("max_tokens")) && !st.output_escalated
-    {
+    if !st.output_escalated {
         info!(
             iteration,
             session_id,
@@ -1084,9 +1095,7 @@ pub(crate) fn output_cutoff(
     }
 
     // Max output tokens recovery: if response was truncated, force continuation
-    if (stop_reason == Some("length") || stop_reason == Some("max_tokens"))
-        && st.output_recovery_attempts < MAX_OUTPUT_RECOVERY_ATTEMPTS
-    {
+    if st.output_recovery_attempts < MAX_OUTPUT_RECOVERY_ATTEMPTS {
         st.output_recovery_attempts += 1;
         info!(
             iteration,
@@ -1095,11 +1104,6 @@ pub(crate) fn output_cutoff(
             "max output tokens recovery"
         );
         return Some(StepRetry::Resume);
-    }
-    // Reset recovery counter and escalation flag on successful non-truncated completion
-    if stop_reason != Some("length") && stop_reason != Some("max_tokens") {
-        st.output_recovery_attempts = 0;
-        st.output_escalated = false;
     }
     None
 }

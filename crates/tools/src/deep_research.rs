@@ -1048,7 +1048,6 @@ fn emit_panel(tx: &ProgressTx, panel: &PanelState) {
                 provider_metadata: None,
                 stop_reason: None,
                 image_url: None,
-                more_files: Vec::new(),
             });
         }
     }
@@ -1068,7 +1067,6 @@ fn emit_progress(tx: &ProgressTx, text: impl Into<String>) {
             provider_metadata: None,
             stop_reason: None,
             image_url: None,
-            more_files: Vec::new(),
         });
     }
 }

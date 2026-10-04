@@ -1276,8 +1276,7 @@ impl WebCore {
                             cached.content
                         ),
                         is_error: cached.is_error,
-                        image_url: None,
-                        more_files: Vec::new(),
+                        image_url: None, more_files: Vec::new(),
                         http_status: None,
                         terminal: false,
                     };
@@ -1625,8 +1624,7 @@ impl WebCore {
                                 return ToolResult { payload: None, need: None, parked_ask: None, taint: Vec::new(), loads: Vec::new(),
                                     content,
                                     is_error: false,
-                                    image_url: None,
-                                    more_files: Vec::new(),
+                                    image_url: None, more_files: Vec::new(),
                                     http_status: None,
                                     terminal: false,
                                 };
@@ -1752,8 +1750,7 @@ impl WebCore {
                 ToolResult { payload: None, need: None, parked_ask: None, taint: Vec::new(), loads: Vec::new(),
                     content: text_result,
                     is_error: false,
-                    image_url: screenshot_b64,
-                    more_files: Vec::new(),
+                    image_url: screenshot_b64, more_files: Vec::new(),
                     http_status: None,
                     terminal: false,
                 }
@@ -3051,8 +3048,7 @@ fn cached_search_result(cached: &VisitedPage) -> ToolResult {
             cached.content
         ),
         is_error: cached.is_error,
-        image_url: None,
-        more_files: Vec::new(),
+        image_url: None, more_files: Vec::new(),
         http_status: None,
         terminal: false,
         payload: cached.payload.clone(),
