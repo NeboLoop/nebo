@@ -291,3 +291,87 @@ async fn replace_changes_one_place_inside_a_record_and_refuses_none_or_many() {
     }
     assert_eq!(page_get(&store, "studio", "design:d-1").unwrap(), now);
 }
+
+#[tokio::test]
+async fn set_with_a_path_builds_a_design_a_piece_at_a_time() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = store(dir.path());
+    employee(&store, "studio", "Design Studio", true);
+    let (t, sent) = tool(store.clone());
+    let in_chat = ToolContext { session_key: "agent:studio:thread:c1".into(), ..Default::default() };
+    let at = |path: &str, value: Value| json!({ "action": "set", "key": "chat:design", "path": path, "value": value });
+
+    // A skeleton first, then one screen per call (a whole site in one reply was cut off live)
+    let skeleton = json!({ "name": "Bakery", "theme": { "accent": "#c60" }, "screens": [
+        { "id": "home", "html": "<p>Building…</p>" }, { "id": "menu", "html": "<p>Building…</p>" } ] });
+    assert!(!t.execute_dyn(&in_chat, json!({ "action": "set", "key": "chat:design", "value": skeleton })).await.is_error);
+    let got = t.execute_dyn(&in_chat, at("screens.1.html", json!("<h2>Loaves</h2>"))).await;
+    assert!(!got.is_error && got.content.contains("screens.1.html"), "{}", got.content);
+    assert!(!t.execute_dyn(&in_chat, at("theme.accent", json!("#a40"))).await.is_error);
+
+    let now = page_get(&store, "studio", "chat:c1:design").unwrap();
+    assert_eq!(now["screens"][1]["html"], "<h2>Loaves</h2>");
+    assert_eq!(now["screens"][0]["html"], "<p>Building…</p>", "the rest is untouched");
+    assert_eq!(now["theme"], json!({ "accent": "#a40" }));
+    assert_eq!(now["name"], "Bakery");
+    // The page hears each piece by the key it reads
+    assert_eq!(sent.lock().unwrap().iter().filter(|(_, p)| p["keys"][0] == "chat:c1:design").count(), 3);
+
+    // An index equal to the list's length appends; missing keys are created; JSON text is parsed
+    assert!(!t.execute_dyn(&in_chat, at("screens.2", json!(r#"{"id": "contact", "html": "<p>Hi</p>"}"#))).await.is_error);
+    assert!(!t.execute_dyn(&in_chat, at("meta.fonts.body", json!("Inter"))).await.is_error);
+    let now = page_get(&store, "studio", "chat:c1:design").unwrap();
+    assert_eq!(now["screens"][2], json!({ "id": "contact", "html": "<p>Hi</p>" }));
+    assert_eq!(now["meta"], json!({ "fonts": { "body": "Inter" } }));
+
+    // Get with a path returns just that part
+    let got = t.execute_dyn(&in_chat, json!({ "action": "get", "key": "chat:design", "path": "screens.1" })).await;
+    let got: Value = serde_json::from_str(&got.content).unwrap();
+    assert_eq!(got["value"], json!({ "id": "menu", "html": "<h2>Loaves</h2>" }));
+
+    // A path that can't be followed is refused, and nothing changes
+    let before = page_get(&store, "studio", "chat:c1:design").unwrap();
+    for (path, why) in [("screens.9.html", "list of 3"), ("screens.x", "list of 3"), ("name.first", "is text")] {
+        let got = t.execute_dyn(&in_chat, at(path, json!("x"))).await;
+        assert!(got.is_error && got.content.contains("Nothing was saved") && got.content.contains(why), "{}", got.content);
+    }
+    assert_eq!(page_get(&store, "studio", "chat:c1:design").unwrap(), before);
+    let got = t.execute_dyn(&in_chat, json!({ "action": "get", "key": "chat:design", "path": "theme.ink" })).await;
+    assert!(got.is_error && got.content.contains("'theme.ink' can't be followed"), "{}", got.content);
+
+    // A path into a key not yet there starts from an empty record
+    assert!(!call(&t, "studio", json!({ "action": "set", "key": "prefs", "path": "view.zoom", "value": 2 })).await.is_error);
+    assert_eq!(page_get(&store, "studio", "prefs"), Some(json!({ "view": { "zoom": 2 } })));
+}
+
+/// A page grows a section at a time with `append` (setting the same spot
+/// again kept only the last of four sections, live), and a key named as a
+/// path is refused instead of nesting the design inside itself.
+#[tokio::test]
+async fn append_grows_a_page_and_a_key_is_never_a_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = store(dir.path());
+    employee(&store, "studio", "Design Studio", true);
+    let (t, _) = tool(store.clone());
+    let in_chat = ToolContext { session_key: "agent:studio:thread:c1".into(), ..Default::default() };
+    let run = |input: Value| t.execute_dyn(&in_chat, input);
+
+    let skeleton = json!({ "name": "Ride", "screens": [{ "id": "home", "html": "" }] });
+    let nested = run(json!({ "action": "set", "key": "chat:design", "path": "chat:design", "value": skeleton })).await;
+    assert!(nested.is_error && nested.content.contains("leave path out"), "{}", nested.content);
+    assert!(page_get(&store, "studio", "chat:c1:design").is_none(), "nothing was saved");
+
+    assert!(!run(json!({ "action": "set", "key": "chat:design", "value": skeleton })).await.is_error);
+    for section in ["<header>Hero</header>", "<section>Bikes</section>", "<section>Parts</section>"] {
+        let got = run(json!({ "action": "append", "key": "chat:design", "path": "screens.0.html", "value": section })).await;
+        assert!(!got.is_error, "{}", got.content);
+    }
+    let screen = json!({ "id": "shop", "html": "<p>Shop</p>" });
+    assert!(!run(json!({ "action": "append", "key": "chat:design", "path": "screens", "value": screen })).await.is_error);
+
+    let now = page_get(&store, "studio", "chat:c1:design").unwrap();
+    assert_eq!(now["screens"][0]["html"], "<header>Hero</header><section>Bikes</section><section>Parts</section>");
+    assert_eq!(now["screens"][1]["id"], "shop", "an item appends to a list");
+    let wrong = run(json!({ "action": "append", "key": "chat:design", "path": "name", "value": json!({"x": 1}) })).await;
+    assert!(wrong.is_error, "text is appended to with text");
+}
