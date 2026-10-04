@@ -132,7 +132,7 @@ pub async fn vendor(specs: &BTreeSet<String>, agent_dir: Option<&Path>, registry
     let on_disk = |file: &str| ui.as_ref().is_some_and(|u| u.join(file).is_file());
     // A saved module whose file is gone is fetched again.
     out.lock.modules.retain(|_, file| on_disk(file));
-    let client = match reqwest::Client::builder()
+    let client = match tls::http_client()
         .connect_timeout(Duration::from_secs(8))
         .timeout(Duration::from_secs(60))
         .build()
