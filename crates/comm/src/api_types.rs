@@ -954,6 +954,19 @@ pub struct FileShare {
     pub created_at: String,
 }
 
+/// A link opened (`POST /api/v1/shares/open`): `state` is ok, password,
+/// locked, signin, denied, expired, revoked or missing; `file_url` comes
+/// only with ok.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct OpenedFileShare {
+    pub state: String,
+    pub filename: String,
+    pub mime_type: String,
+    pub size: i64,
+    pub file_url: String,
+}
+
 /// Who can open a link and until when. An empty `password` on a password
 /// link keeps the one it has; an empty `expires_at` means never.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
