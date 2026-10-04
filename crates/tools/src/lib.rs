@@ -360,6 +360,14 @@ pub async fn persist_skill_from_api(
                 match napp::reader::extract_napp_alongside(&napp_path) {
                     Ok(extract_dir) => {
                         tracing::info!(skill = name, dir = %extract_dir.display(), "extracted .napp");
+                        // Every version folder carries the marketplace id, an
+                        // update's as much as an install's: the update check
+                        // finds a skill's installed version by it, and a 0.1.4
+                        // folder without it read as 0.1.3, so the same update
+                        // was applied again on every check.
+                        if let Err(e) = std::fs::write(extract_dir.join(".artifact_id"), artifact_id) {
+                            tracing::warn!(skill = name, error = %e, "could not tag the skill folder with its id");
+                        }
                         return Ok(extract_dir);
                     }
                     Err(e) => {
