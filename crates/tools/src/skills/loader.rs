@@ -401,6 +401,18 @@ impl Loader {
             }
         }
 
+        // A version folder an update superseded leaves the set, even when
+        // its files are unchanged.
+        {
+            let mut skills = self.skills.write().await;
+            let before = skills.len();
+            skills.retain(|_, s| !s.base_dir.as_deref().is_some_and(superseded));
+            if skills.len() != before {
+                drop(skills);
+                self.write_manifest(&manifest_path).await;
+            }
+        }
+
         let (stale, new_paths) = manifest::verify_manifest(
             &manifest,
             &self.installed_dir,
@@ -466,6 +478,9 @@ impl Loader {
         // a plain-name insert would publish one seat's procedure to the whole
         // workforce.
         for (md_path, owner) in &new_paths {
+            if md_path.parent().is_some_and(superseded) {
+                continue;
+            }
             if let Ok(data) = std::fs::read(md_path) {
                 if let Ok(mut skill) = parse_skill_frontmatter(&data) {
                     skill.enabled = true;
@@ -2295,6 +2310,35 @@ Triage instructions.
         // The skill listing carries it for its own seat only.
         assert!(loader.listing(Some("copywriter")).await.contains_key("project-conventions"));
         assert!(!loader.listing(None).await.contains_key("project-conventions"));
+    }
+
+    /// An update lands while an older version is in the warm-start index
+    /// (live: App Studio 0.1.0 cached, 0.1.4 retired it): the next warm
+    /// start and its refresh drop the old copy instead of bringing it back.
+    #[tokio::test]
+    async fn an_update_retires_a_cached_older_version() {
+        let installed = TempDir::new().unwrap();
+        let user = TempDir::new().unwrap();
+        let put = |version: &str, name: &str| {
+            let dir = installed.path().join("app-studio").join(version);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("SKILL.md"), format!("---\nname: {name}\ndescription: d\n---\nbody\n")).unwrap();
+        };
+        put("0.1.0", "app-studio");
+        let cold = Loader::new(installed.path().to_path_buf(), user.path().to_path_buf());
+        cold.load_all().await;
+        assert!(cold.get("app-studio", None).await.is_some(), "installed and cached");
+
+        put("0.1.4", "app-studio-retired");
+        let warm = Loader::new(installed.path().to_path_buf(), user.path().to_path_buf());
+        warm.load_all().await;
+        warm.verify_and_refresh_manifest().await;
+        assert!(warm.get("app-studio", None).await.is_none(), "the superseded copy never loads");
+        assert!(warm.get("app-studio-retired", None).await.is_some(), "its update does");
+
+        let again = Loader::new(installed.path().to_path_buf(), user.path().to_path_buf());
+        again.load_all().await;
+        assert!(again.get("app-studio", None).await.is_none(), "and stays out of the index");
     }
 
     #[tokio::test]
