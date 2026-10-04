@@ -375,3 +375,39 @@ async fn append_grows_a_page_and_a_key_is_never_a_path() {
     let wrong = run(json!({ "action": "append", "key": "chat:design", "path": "name", "value": json!({"x": 1}) })).await;
     assert!(wrong.is_error, "text is appended to with text");
 }
+
+/// Live 2026-10-04: Design Studio sent back the full key a save reported
+/// (`chat:<chat>:design`); it was scoped again, and eight appended sections
+/// went to `chat:<chat>:<chat>:design` as an object keyed "0".."8" that no
+/// page reads. The full key is the same record, and a list place inside a
+/// key that isn't there is refused.
+#[tokio::test]
+async fn the_full_chat_key_is_the_same_record_and_a_list_place_in_nothing_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = store(dir.path());
+    employee(&store, "studio", "Design Studio", true);
+    let (t, _) = tool(store.clone());
+    let c1 = ToolContext { session_key: "agent:studio:thread:c1".into(), ..Default::default() };
+    let skeleton = json!({ "action": "set", "key": "chat:design", "value": { "screens": [{ "id": "s-home", "html": "" }] } });
+    assert!(!t.execute_dyn(&c1, skeleton).await.is_error);
+
+    let append = |key: &str| json!({ "action": "append", "key": key, "path": "screens.0.html", "value": "<section>hero</section>" });
+    let got = t.execute_dyn(&c1, append("chat:c1:design")).await;
+    assert!(!got.is_error, "{}", got.content);
+    assert_eq!(page_get(&store, "studio", "chat:c1:design").unwrap()["screens"][0]["html"], "<section>hero</section>");
+    assert_eq!(page_get(&store, "studio", "chat:c1:c1:design"), None, "never scoped twice");
+    let read = t.execute_dyn(&c1, json!({ "action": "get", "key": "chat:c1:design" })).await;
+    assert!(read.content.contains("hero"), "{}", read.content);
+
+    // A list place in a key that does not exist writes nothing
+    for action in ["append", "set"] {
+        let got = t
+            .execute_dyn(&c1, json!({ "action": action, "key": "chat:other", "path": "screens.0.html", "value": "x" }))
+            .await;
+        assert!(got.is_error && got.content.contains("Nothing was saved"), "{action}: {}", got.content);
+        assert_eq!(page_get(&store, "studio", "chat:c1:other"), None, "{action}");
+    }
+    // A named place in a new key still works (`theme` on a fresh record)
+    let theme = json!({ "action": "set", "key": "chat:fresh", "path": "theme", "value": { "radius": "12px" } });
+    assert!(!t.execute_dyn(&c1, theme).await.is_error);
+}
