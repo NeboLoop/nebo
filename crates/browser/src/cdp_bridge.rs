@@ -431,14 +431,41 @@ impl CdpBridge {
                 let plural = if seconds == 1.0 { "" } else { "s" };
                 Ok(json!({ "text": format!("Waited for {seconds} second{plural}") }))
             }
+            // The page's viewport, before it opens: a page laid out at the
+            // size it is drawn at from its first script (an app recorded
+            // frame by frame). Kept across the tab's navigations.
+            "viewport" => {
+                let page = self.page_for(session_id).await?;
+                let Some((width, height, mobile)) = viewport_size(args) else {
+                    return Err(BrowserError::Other("viewport requires 'width' and 'height' (100 to 4000)".into()));
+                };
+                let metrics = SetDeviceMetricsOverrideParams::new(width as i64, height as i64, 1.0, mobile);
+                tokio::time::timeout(EVAL_TIMEOUT, page.execute(metrics))
+                    .await
+                    .map_err(|_| BrowserError::Timeout("cdp viewport timed out".into()))?
+                    .map_err(|e| BrowserError::Other(format!("cdp viewport: {e}")))?;
+                Ok(json!({ "width": width, "height": height }))
+            }
+            // A script every page the tab opens from now runs before its
+            // own (`Page.addScriptToEvaluateOnNewDocument`).
+            "init_script" => {
+                let source = args
+                    .get("source")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| BrowserError::Other("init_script requires 'source'".into()))?;
+                let page = self.page_for(session_id).await?;
+                tokio::time::timeout(EVAL_TIMEOUT, page.evaluate_on_new_document(source))
+                    .await
+                    .map_err(|_| BrowserError::Timeout("cdp init_script timed out".into()))?
+                    .map_err(|e| BrowserError::Other(format!("cdp init_script: {e}")))?;
+                Ok(json!({ "ok": true }))
+            }
             "screenshot" => {
                 let page = self.page_for(session_id).await?;
                 // A viewport asked for (an app's listing shot at phone or
                 // desktop size): the page is laid out at that size first.
                 // Best effort: a browser that can't emulate keeps its own.
-                let size = |k: &str| args.get(k).and_then(|v| v.as_u64()).filter(|n| (100..=4000).contains(n));
-                if let (Some(width), Some(height)) = (size("width"), size("height")) {
-                    let mobile = args.get("mobile").and_then(|v| v.as_bool()).unwrap_or(width < 768);
+                if let Some((width, height, mobile)) = viewport_size(args) {
                     let metrics = SetDeviceMetricsOverrideParams::new(width as i64, height as i64, 1.0, mobile);
                     if let Ok(Ok(_)) = tokio::time::timeout(EVAL_TIMEOUT, page.execute(metrics)).await {
                         tokio::time::sleep(Duration::from_millis(300)).await;
@@ -655,6 +682,15 @@ impl CdpBridge {
             }
         }
     }
+}
+
+/// The viewport a call asks for: `width` and `height` (100 to 4000 CSS
+/// pixels, drawn one to one), and `mobile` (default: narrower than 768).
+fn viewport_size(args: &Value) -> Option<(u64, u64, bool)> {
+    let size = |k: &str| args.get(k).and_then(|v| v.as_u64()).filter(|n| (100..=4000).contains(n));
+    let (width, height) = (size("width")?, size("height")?);
+    let mobile = args.get("mobile").and_then(|v| v.as_bool()).unwrap_or(width < 768);
+    Some((width, height, mobile))
 }
 
 /// A ref as the page map keys it: `ref_N` (a bare `N` is accepted, as the

@@ -433,13 +433,6 @@ export interface ChatMessagesResponse {
 	pendingAsk?: PendingAsk
 }
 
-export interface ChatRecap {
-	chatId: string
-	turnId: string
-	text: string
-	createdAt: number
-}
-
 export interface ChatStreamResponse {
 	type: string
 	content?: string

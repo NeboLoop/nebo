@@ -250,9 +250,14 @@ fn check_file_safeguard(rule_key: &str, input: &serde_json::Value, run: &Run<'_>
     // and auth material, and out-of-band access bypasses every tool gate
     // (2026-08-01: a cloud agent "fixed" its schedules with raw sqlite3
     // INSERTs into its own DB; 2026-09-26: an employee read the settings
-    // file's secret into its context). Every path the call names is checked.
+    // file's secret into its context). Every path the call names is checked,
+    // a `path` that is a list (`share_file`) included.
     let notebook = input.get("notebook_path").and_then(|v| v.as_str());
-    let listed = input.get("paths").and_then(|v| v.as_array()).into_iter().flatten().filter_map(|p| p.as_str());
+    let listed = ["paths", "path"]
+        .into_iter()
+        .filter_map(|key| input.get(key).and_then(|v| v.as_array()))
+        .flatten()
+        .filter_map(|p| p.as_str());
     let access = if READ_KEYS.contains(&rule_key) { Access::Read } else { Access::Write };
     for named in std::iter::once(path).chain(notebook).chain(listed).filter(|p| !p.is_empty()) {
         if let Some(refusal) = run.nebo_file(named, access) {
@@ -811,6 +816,10 @@ mod tests {
         for key in ["read_file", "share_file"] {
             assert!(check_file_safeguard(key, &serde_json::json!({ "path": guide }), &run).is_none(), "{key}");
         }
+        // A share of several files is refused when any one is Nebo's own.
+        let program = root.join("nebo/plugins/ledger/0.1.0/ledger").to_string_lossy().into_owned();
+        let r = check_file_safeguard("share_file", &serde_json::json!({ "path": [guide, program] }), &run);
+        assert!(r.as_deref().is_some_and(|m| m.contains("Nebo's own files")), "a listed path: {r:?}");
         for key in ["write_file", "edit_file", "convert_file"] {
             let r = check_file_safeguard(key, &serde_json::json!({ "path": guide }), &run);
             assert!(r.as_deref().is_some_and(|m| m.contains("installed plugin ships") && m.contains("never changes it")), "{key}: {r:?}");

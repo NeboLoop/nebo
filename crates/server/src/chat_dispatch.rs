@@ -2186,7 +2186,7 @@ fn to_app_artifact_url(image_url: &str) -> Option<String> {
 
 /// Where a file handed to the owner is kept under `<data_dir>/files`: a
 /// folder named by its content, holding the file under its own name.
-const SHARED_DIR: &str = ".shared";
+pub(crate) const SHARED_DIR: &str = ".shared";
 
 /// Keep a file the run hands the owner where no later file can replace it,
 /// and answer its `/api/v1/files/...` URL: `.shared/<content hash>/<name>`.
@@ -2194,7 +2194,8 @@ const SHARED_DIR: &str = ".shared";
 /// the folder makes it unique to these bytes, so a later `clip.gif` (or this
 /// one changed in place) gets a folder of its own and the earlier message
 /// keeps showing what it was sent with. The same bytes shared again land on
-/// the same path, copied once. A file already kept this way, or a versioned
+/// the same path, copied once (and marked as just used, so the sweep in
+/// `shared_files` leaves it). A file already kept this way, or a versioned
 /// work blob, is answered as it is. URLs an older message carries (a flat
 /// `/api/v1/files/<name>`) are untouched and still served.
 fn keep_shared_file(files_dir: &std::path::Path, path: &std::path::Path) -> Option<String> {
@@ -2202,13 +2203,16 @@ fn keep_shared_file(files_dir: &std::path::Path, path: &std::path::Path) -> Opti
     if let Ok(rel) = path.strip_prefix(files_dir) {
         let rel = rel.to_string_lossy().replace('\\', "/");
         if rel.starts_with(&format!("{SHARED_DIR}/")) || rel.starts_with("work/blobs/") {
+            crate::shared_files::touch(path);
             return Some(format!("/api/v1/files/{rel}"));
         }
     }
     let hash = content_hash(path)?;
     let rel = format!("{SHARED_DIR}/{}/{filename}", &hash[..16]);
     let dest = files_dir.join(&rel);
-    if !dest.exists() {
+    if dest.exists() {
+        crate::shared_files::touch(&dest);
+    } else {
         let dir = dest.parent()?;
         std::fs::create_dir_all(dir).ok()?;
         // Copy beside it, then rename: a reader never meets half a file, and
@@ -3000,7 +3004,29 @@ mod session_key_contract_tests {
 
 #[cfg(test)]
 mod shared_file_tests {
-    use super::keep_shared_file;
+    use super::{keep_shared_file, owner_artifact_urls};
+
+    /// A share of two files is two cards: the result's first file and the
+    /// one after it, in order. A failed call hands over nothing.
+    #[tokio::test]
+    async fn a_two_file_share_is_two_cards() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = std::sync::Arc::new(db::Store::new(&tmp.path().join("nebo.db").to_string_lossy()).unwrap());
+        let tools = tools::Registry::new(std::sync::Arc::new(agent::Check::new(store)));
+        let mut event = ai::StreamEvent::text("Shared both.");
+        event.event_type = ai::StreamEventType::ToolResult;
+        event.image_url = Some("/api/v1/files/.shared/0123456789abcdef/cover.png".into());
+        event.widgets = Some(serde_json::json!({"duration_ms": 3, "more_files": ["/api/v1/files/.shared/fedcba9876543210/thumb.png"]}));
+        assert_eq!(
+            owner_artifact_urls(&tools, &event).await,
+            vec![
+                "/api/v1/files/.shared/0123456789abcdef/cover.png".to_string(),
+                "/api/v1/files/.shared/fedcba9876543210/thumb.png".to_string(),
+            ]
+        );
+        event.error = Some("nothing was shared".into());
+        assert!(owner_artifact_urls(&tools, &event).await.is_empty());
+    }
 
     fn served(files_dir: &std::path::Path, url: &str) -> Vec<u8> {
         let rel = url.strip_prefix("/api/v1/files/").expect("a files URL");
