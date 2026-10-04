@@ -228,6 +228,8 @@ export interface RunDisplay {
 	orientation: 'portrait' | 'landscape' | 'any'
 	/** The manifest declares device:motion. */
 	motion: boolean
+	/** window.open_on_work: the app opens over its chat when the employee writes that chat's record. */
+	openOnWork: boolean
 }`,
 
 	"EnrichedChat": `export interface EnrichedChat {

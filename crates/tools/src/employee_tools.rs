@@ -136,7 +136,8 @@ fn job_properties() -> serde_json::Map<String, serde_json::Value> {
                         "fullscreen": { "type": "boolean", "description": "The page takes the whole screen (a game). Default false." },
                         "orientation": { "type": "string", "enum": ["portrait", "landscape", "any"], "description": "Default portrait." },
                         "pull_to_refresh": { "type": "boolean", "description": "true gives the page the phone's pull-down-to-reload. Default false; fullscreen apps never have it." },
-                        "voice": { "type": "boolean", "description": "true puts the chat's dictate and voice buttons in the app's bar on the phone, for an app the owner directs by talking while they look at it (a design canvas). Default false; fullscreen apps never have it." }
+                        "voice": { "type": "boolean", "description": "true puts the chat's dictate and voice buttons in the app's bar on the phone, for an app the owner directs by talking while they look at it (a design canvas). Default false; fullscreen apps never have it." },
+                        "open_on_work": { "type": "boolean", "description": "true opens the app over its chat (phone and desktop) as soon as the employee writes that chat's chat: record, so the owner watches it build without pressing Open App. Default false." }
                     }
                 },
                 "permissions": { "type": "array", "items": { "type": "string" }, "description": "prefix:scope entries, default [\"storage:readwrite\"]; device:motion for the gyroscope and accelerometer." }
