@@ -24,6 +24,26 @@ use crate::session::SessionManager;
 /// How often the tool clock checks whether the call is parked on the owner.
 const PARKED_POLL: Duration = Duration::from_millis(250);
 
+/// How many times one call (same tool, same input) may fail the same way
+/// (same error) in a turn before the turn stops. It is the failure that
+/// repeats, not the call: a poll whose answer moves never trips it, and a
+/// call that keeps getting the same refusal will get it again. Live
+/// 2026-10-03: `write_file` with only a path was answered "`content` is
+/// missing" 22 times in a row while the owner waited in silence; the
+/// identical-call kernel that once bounded a turn (ceiling 16, any result)
+/// went with the old runner in v0.16.0 and nothing took its place.
+pub(crate) const MAX_IDENTICAL_FAILURES: usize = 3;
+
+/// What the model reads on the result that trips [`MAX_IDENTICAL_FAILURES`].
+const STUCK_NOTE: &str = "This exact call has now failed the same way 3 times this turn, so the turn stops here \
+     and it will not run again as it is. Do not send it again: try a different approach (different input, \
+     another tool, or the work in smaller pieces), or tell the owner what is in the way.";
+
+/// What the owner reads when the turn stops on a repeated failure: what is
+/// stuck, in plain words, with no tool or path in it.
+pub(crate) const STUCK_NOTICE: &str = "I stopped here: one step kept failing the same way, three times in a row, \
+     so I'm not repeating it. Tell me how you'd like to go on, or ask me to try it a different way.";
+
 /// What a run's tool calls carry: the one builder of their `ToolContext`,
 /// for the round and for a CLI provider's calls over `/agent/mcp`.
 #[derive(Clone, Copy)]
@@ -199,6 +219,9 @@ pub(crate) struct RoundState<'a> {
     pub plan_touch: &'a mut Option<(usize, String)>,
     pub edits_since_check: &'a mut usize,
     pub last_desktop_act: &'a mut Option<String>,
+    /// How often each failure (tool, input and error) came back this turn
+    /// ([`MAX_IDENTICAL_FAILURES`]).
+    pub failures: &'a mut HashMap<u64, usize>,
 }
 
 /// How a round ended.
@@ -256,6 +279,7 @@ pub(crate) async fn run_tool_round(
         plan_touch,
         edits_since_check,
         last_desktop_act,
+        failures,
     } = st;
 
     // Track tool names for context filtering
@@ -389,7 +413,21 @@ pub(crate) async fn run_tool_round(
     let mut summary_tool_results: Vec<ToolResult> = Vec::new();
     let mut saved_memory = None;
     for (idx, entry) in results.into_iter().enumerate() {
-        let Some((tc, result)) = entry else { continue };
+        let Some((tc, mut result)) = entry else { continue };
+        // The same call failing the same way again: on the third time the
+        // model is told to change course and the turn stops after this
+        // batch, the owner told what is stuck.
+        if result.is_error {
+            let failure = crate::harness::simple_hash(format!("{}\0{}\0{}", tc.name, tc.input, result.content).as_bytes());
+            let seen = failures.entry(failure).or_insert(0);
+            *seen += 1;
+            if *seen >= MAX_IDENTICAL_FAILURES {
+                warn!(session_id, tool = %tc.name, times = *seen, "the same call failed the same way again: the turn stops");
+                result.content.push_str("\n\n");
+                result.content.push_str(STUCK_NOTE);
+                terminal_error.get_or_insert_with(|| (STUCK_NOTICE.to_string(), None));
+            }
+        }
         let target = targets[idx].as_ref();
         if let Some(t) = target
             && matches!(t.key.as_str(), "write_plan" | "check_plan")

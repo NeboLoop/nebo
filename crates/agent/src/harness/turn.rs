@@ -30,7 +30,7 @@
 //! There is no per-call state block and no stream reminder: everything the
 //! model reads is the system prompt or a stored row.
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use ai::{ChatRequest, RequestTrace, StreamEvent};
@@ -238,6 +238,7 @@ struct RoundCarry {
     plan_touch: Option<(usize, String)>,
     edits_since_check: usize,
     last_desktop_act: Option<String>,
+    failures: HashMap<u64, usize>,
 }
 
 /// Why the loop is taking its next step.
@@ -2335,6 +2336,7 @@ async fn tool_round(
             plan_touch: &mut carry.plan_touch,
             edits_since_check: &mut carry.edits_since_check,
             last_desktop_act: &mut carry.last_desktop_act,
+            failures: &mut carry.failures,
         },
         executor,
         tool_calls,
@@ -3034,6 +3036,34 @@ mod tests {
         }
     }
 
+    /// A tool that refuses every call the same way.
+    struct Refusing {
+        name: &'static str,
+        error: &'static str,
+    }
+
+    impl tools::registry::DynTool for Refusing {
+        fn name(&self) -> &str {
+            self.name
+        }
+        fn description(&self) -> String {
+            format!("{} things", self.name)
+        }
+        fn schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object", "properties": {"path": {"type": "string"}}})
+        }
+        fn should_defer(&self) -> bool {
+            false
+        }
+        fn execute_dyn<'a>(
+            &'a self,
+            _ctx: &'a tools::ToolContext,
+            _input: serde_json::Value,
+        ) -> Pin<Box<dyn Future<Output = tools::ToolResult> + Send + 'a>> {
+            Box::pin(async move { tools::ToolResult::error(self.error) })
+        }
+    }
+
     async fn harness(model: &Arc<Scripted>) -> Harness {
         harness_with(model, Vec::new()).await
     }
@@ -3703,6 +3733,35 @@ mod tests {
         assert!(texts(&calls[1]).iter().any(|t| t.contains(&told.text)), "the next step hears the call was cut");
         assert!(told.text.contains("output length limit") && told.text.contains("smaller pieces"), "{}", told.text);
         assert!(!texts(&calls[1]).iter().any(|t| t.contains("Resume directly")), "a cut call is not resumed as text");
+    }
+
+    /// The same call failing the same way stops the turn on its third time
+    /// (live 2026-10-03: a write with a path and no content, answered
+    /// "`content` is missing" 22 times in a row while the owner heard
+    /// nothing). The model reads to change course; the owner reads what is
+    /// stuck, with no tool or path in it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_same_call_failing_the_same_way_stops_the_turn() {
+        let input = serde_json::json!({"path": "/Users/o/Library/Application Support/Nebo/files/i-like-to-ride.html"});
+        let model = Scripted::new((0..6).map(|_| Step::Call("write_file", input.clone())).chain([Step::Say("Done.")]).collect());
+        let refusing = Refusing {
+            name: "write_file",
+            error: "<call_error>Invalid input for write_file:\nThe required parameter `content` is missing</call_error>",
+        };
+        let h = harness_with(&model, vec![Box::new(refusing)]).await;
+        let events = run_turn(&h, owner("Build the website")).await;
+        assert_eq!(exit_of(&events), "terminal_tool_error");
+        let steps = model.calls().iter().filter(|c| c.tools.iter().any(|t| t.name == "write_file")).count();
+        assert_eq!(steps, 3, "no fourth try");
+        let results: Vec<String> =
+            stored(&h).iter().filter(|m| m.role == "tool").map(|m| m.tool_results.clone().unwrap_or_default()).collect();
+        assert_eq!(results.len(), 3, "{results:#?}");
+        assert!(!results[1].contains("different approach"), "two failures are not yet stuck");
+        assert!(results[2].contains("try a different approach"), "the model is told to change course: {}", results[2]);
+        let notice: String =
+            events.iter().filter(|e| e.event_type == ai::StreamEventType::ControlNotice).map(|e| e.text.clone()).collect();
+        assert_eq!(notice, tool_round::STUCK_NOTICE);
+        assert!(!notice.contains("write_file") && !notice.contains('/'), "plain words: {notice}");
     }
 
     /// The owner speaks while a tool round runs: the next step's call
