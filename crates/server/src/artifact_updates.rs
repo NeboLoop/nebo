@@ -99,12 +99,22 @@ pub async fn check_all(state: &AppState) -> Result<(), String> {
             .into_iter()
             .filter(|p| p.artifact_type == "skill" && !p.artifact_id.is_empty())
             .collect();
+        let skills_dir = config::nebo_dir().ok().map(|d| d.join("skills"));
         for pref in &skill_prefs {
             tokio::time::sleep(STAGGER).await;
-            if let Some(update) =
-                check_by_artifact_id(state, &api, "skill", &pref.artifact_id, &pref.local_version)
-                    .await
-            {
+            // The version on disk is the truth: installs recorded 1.0.0 for
+            // every skill whose package has no manifest.json, and a 0.x skill
+            // then looked newer than every update and never got one.
+            let installed = skills_dir.as_deref().and_then(|d| installed_skill_version(d, &pref.artifact_id));
+            let local = match installed {
+                Some(v) if v != pref.local_version => {
+                    let _ = state.store.upsert_artifact_update_pref(&pref.artifact_id, "skill", &v);
+                    v
+                }
+                Some(v) => v,
+                None => pref.local_version.clone(),
+            };
+            if let Some(update) = check_by_artifact_id(state, &api, "skill", &pref.artifact_id, &local).await {
                 updates_found.push(update);
             }
         }
@@ -360,6 +370,30 @@ async fn check_by_artifact_id(
         }
     }
     None
+}
+
+/// The version a marketplace skill is installed at, read from disk. An
+/// install lands in `skills/<slug>/<version>/` with a `.artifact_id` sidecar,
+/// so the folder's name is the marketplace version; the newest folder
+/// carrying `artifact_id` wins. `None` when no folder carries it.
+pub(crate) fn installed_skill_version(skills_dir: &std::path::Path, artifact_id: &str) -> Option<String> {
+    let mut newest: Option<Version> = None;
+    for slug in std::fs::read_dir(skills_dir).ok()?.flatten() {
+        for dir in std::fs::read_dir(slug.path()).into_iter().flatten().flatten() {
+            let path = dir.path();
+            let id = std::fs::read_to_string(path.join(".artifact_id")).unwrap_or_default();
+            if id.trim() != artifact_id {
+                continue;
+            }
+            let Some(version) = path.file_name().and_then(|n| n.to_str()).and_then(|n| Version::parse(n).ok()) else {
+                continue;
+            };
+            if newest.as_ref().is_none_or(|n| version > *n) {
+                newest = Some(version);
+            }
+        }
+    }
+    newest.map(|v| v.to_string())
 }
 
 /// Compare versions using semver. Falls back to string comparison if parsing fails.
@@ -810,6 +844,28 @@ fn current_platform() -> String {
 
 #[cfg(test)]
 mod notice_tests {
+
+    /// A skill's installed version is read from its folder: the newest
+    /// version folder that carries its id, never another skill's, and none
+    /// when no folder carries it (the 1.0.0 every manifest-less skill was
+    /// recorded as hid every 0.x update).
+    #[test]
+    fn a_skills_installed_version_is_its_newest_folder() {
+        let root = std::env::temp_dir().join(format!("nebo-skillver-{}", uuid::Uuid::new_v4()));
+        let put = |slug: &str, version: &str, id: &str| {
+            let dir = root.join(slug).join(version);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join(".artifact_id"), id).unwrap();
+        };
+        put("app-studio", "0.1.0", "studio-id");
+        put("app-studio", "0.1.3", "studio-id\n");
+        put("deep-research", "2.0.0", "other-id");
+        assert_eq!(super::installed_skill_version(&root, "studio-id").as_deref(), Some("0.1.3"));
+        assert_eq!(super::installed_skill_version(&root, "missing").as_deref(), None);
+        assert!(super::has_newer_version("0.1.3", "0.1.4"), "the stub's update now reaches it");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     use super::{notice_step, NoticeStep};
 
     // A hub update notice moves an installed artifact only when it brings

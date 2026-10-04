@@ -250,6 +250,9 @@ pub fn verify_manifest(
             if known_paths.contains(&md_path) {
                 return; // exact path match — already tracked
             }
+            if super::loader::superseded(skill_dir) {
+                return; // an older version beside its update is never loaded
+            }
             // Check by name: directory name is the skill name per spec
             let dir_name = skill_dir
                 .file_name()
