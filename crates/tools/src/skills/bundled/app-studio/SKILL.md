@@ -55,8 +55,7 @@ looks matter, Design Depth adds the studio method on top.
    at the start of every build or fix: `code` is how you read and check code.
    A tool missing from your list is not loaded yet; it is never "not available".
 4. **Never install a runtime.** No `brew install`, no `curl ... | bash`, no bun or
-   node downloads. Lane A needs nothing; Lane B runs only on a bot that already
-   has node (Step 2).
+   node downloads (Step 2 says what each lane needs).
 5. **`ui/` holds what the page serves and nothing else.** No `package.json`,
    `src/`, `node_modules/` or `dist/` inside `ui/`. A build writes only into `ui/`.
 6. **No `index.html` in the app folder itself.** The only entry is `ui/index.html`;
@@ -160,10 +159,9 @@ The starter page, exactly:
 </html>
 ```
 
-`../../../sdk/nebo.global.js` is the SDK's address from `ui/index.html` at all
-three addresses (it resolves to `/sdk/nebo.global.js`, `/t/<bot>/sdk/nebo.global.js`
-and `neboapp://<id>/sdk/nebo.global.js`). Copy it as written. The absolute
-`/sdk/nebo.global.js` loads on the desktop and fails on the phone.
+`../../../sdk/nebo.global.js` reaches the SDK from `ui/index.html` at all three
+addresses: copy it as written. The absolute `/sdk/nebo.global.js` loads on the
+desktop and fails on the phone.
 
 **Check 1.** Run `app_status`. It names the folder the page is served from
 (`<data>/user/agents/<folder>/ui`); the app folder is the one above it. Write
