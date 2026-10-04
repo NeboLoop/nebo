@@ -197,8 +197,7 @@ fn recent_file_reads(messages: &[ChatMessage]) -> Vec<String> {
 /// earlier checkpoint restored (or a parent preloaded into a helper) are on
 /// that `invoked_skills` row, and they count as loaded after the skills
 /// loaded since, in the row's own newest-first order. So a skill stays until
-/// newer ones take the budget, as Claude Code keeps its invoked skills across
-/// compactions; the model loads it again when it needs it.
+/// newer ones take the budget; the model loads it again when it needs it.
 fn loaded_skills(messages: &[ChatMessage]) -> Vec<(String, String)> {
     let results = results_by_call(messages);
     let mut decided = HashSet::new();
