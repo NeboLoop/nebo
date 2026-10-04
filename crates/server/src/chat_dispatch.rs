@@ -3092,4 +3092,22 @@ mod shared_file_tests {
             Some(first.as_str())
         );
     }
+
+    /// Three generated images are three cards, in order, through the same
+    /// path the harness sends them on (`ToolResult::more_files`).
+    #[tokio::test]
+    async fn three_generated_images_are_three_cards() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = std::sync::Arc::new(db::Store::new(&tmp.path().join("t.db").to_string_lossy()).unwrap());
+        let tools = tools::Registry::new(std::sync::Arc::new(agent::Check::new(store)));
+        let urls = ["/api/v1/files/a/1.png", "/api/v1/files/a/2.png", "/api/v1/files/a/3.png"];
+        let result = urls
+            .iter()
+            .fold(tools::ToolResult::ok("made"), |r, u| r.with_image_url(*u));
+        let mut event = ai::StreamEvent::text("");
+        event.event_type = ai::StreamEventType::ToolResult;
+        event.image_url = result.image_url.clone();
+        event.widgets = Some(serde_json::json!({"duration_ms": 1, "more_files": result.more_files}));
+        assert_eq!(super::owner_artifact_urls(&tools, &event).await, urls);
+    }
 }
