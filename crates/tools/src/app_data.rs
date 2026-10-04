@@ -298,11 +298,15 @@ pub fn query(
 /// from the owner's chat `<chat>` is kept as `chat:<chat>:design`, the key the
 /// app's page reads when it was opened from that chat (`?thread=<chat>`). So
 /// an employee keeps one record per chat without knowing the chat's id. Any
-/// other key is the app's, shared by every chat.
+/// other key is the app's, shared by every chat. The full key a save reports
+/// (`chat:<chat>:design`) names the same record: it is never scoped twice
+/// (live 2026-10-04: Design Studio sent it back, and eight sections went to
+/// `chat:<chat>:<chat>:design`, which no page reads).
 pub fn chat_key(key: &str, chat: Option<&str>) -> Result<String, String> {
     match key.strip_prefix("chat:") {
         None => Ok(key.to_string()),
         Some(rest) => match chat {
+            Some(chat) if !chat.is_empty() && rest.starts_with(&format!("{chat}:")) => Ok(key.to_string()),
             Some(chat) if !chat.is_empty() => Ok(format!("chat:{chat}:{rest}")),
             _ => Err(format!(
                 "'{key}' belongs to a chat, and this conversation is not one of the owner's chats. \
@@ -310,6 +314,19 @@ pub fn chat_key(key: &str, chat: Option<&str>) -> Result<String, String> {
             )),
         },
     }
+}
+
+/// A place in a list (`screens.0.html`) inside a key that does not exist:
+/// there is no list to be in, and writing it would make an object with a
+/// `"0"` field that no page reads as a list (live 2026-10-04).
+fn no_list_in_nothing(key: &str, path: &str, app: &str) -> Result<(), String> {
+    if path.split('.').any(|seg| !seg.is_empty() && seg.bytes().all(|b| b.is_ascii_digit())) {
+        return Err(format!(
+            "Nothing was saved: there is no '{key}' in {app}'s data, so '{path}' has no list to be in. \
+             Check the key (get, or list), or set the whole value first with no path."
+        ));
+    }
+    Ok(())
 }
 
 pub struct AppDataTool {
@@ -388,7 +405,10 @@ impl AppDataTool {
                     Some(path) => {
                         let mut whole = match read(&self.store, &app.id, key)? {
                             Some(raw) => decode(&raw),
-                            None => Value::Object(Default::default()),
+                            None => {
+                                no_list_in_nothing(key, path, &app.name)?;
+                                Value::Object(Default::default())
+                            }
                         };
                         set_at_path(&mut whole, path, given).map_err(|e| format!("Nothing was saved. {e}"))?;
                         whole
@@ -408,7 +428,12 @@ impl AppDataTool {
                 let given = given_value(input.get("value").ok_or("'append' needs a value.")?)?;
                 let mut whole = match read(&self.store, &app.id, key)? {
                     Some(raw) => decode(&raw),
-                    None => Value::Null,
+                    None => {
+                        if let Some(p) = path {
+                            no_list_in_nothing(key, p, &app.name)?;
+                        }
+                        Value::Null
+                    }
                 };
                 let current = match path {
                     Some(p) => at_path(&whole, p).ok().cloned(),
