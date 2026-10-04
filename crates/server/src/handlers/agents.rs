@@ -6598,13 +6598,15 @@ mod app_window_tests {
         let stored = r#"{"width":420,"height":800,"resizable":false,"title":"Kart","fullscreen":true,"orientation":"landscape"}"#;
         assert_eq!(
             serde_json::to_value(stored_app_window(Some(stored))).unwrap(),
-            serde_json::json!({"fullscreen": true, "orientation": "landscape", "motion": false, "pullToRefresh": false, "voice": false})
+            serde_json::json!({"fullscreen": true, "orientation": "landscape", "motion": false, "pullToRefresh": false, "voice": false, "openOnWork": false})
         );
         let no_pull = r#"{"title":"Solitaire","pull_to_refresh":false}"#;
         assert_eq!(serde_json::to_value(stored_app_window(Some(no_pull))).unwrap()["pullToRefresh"], false);
         let pull = r#"{"title":"Feed","pull_to_refresh":true}"#;
         assert_eq!(serde_json::to_value(stored_app_window(Some(pull))).unwrap()["pullToRefresh"], true);
-        let today = serde_json::json!({"fullscreen": false, "orientation": "portrait", "motion": false, "pullToRefresh": false, "voice": false});
+        let work = r#"{"title":"Studio","open_on_work":true}"#;
+        assert_eq!(serde_json::to_value(stored_app_window(Some(work))).unwrap()["openOnWork"], true);
+        let today = serde_json::json!({"fullscreen": false, "orientation": "portrait", "motion": false, "pullToRefresh": false, "voice": false, "openOnWork": false});
         assert_eq!(serde_json::to_value(stored_app_window(None)).unwrap(), today);
         assert_eq!(serde_json::to_value(stored_app_window(Some("not json"))).unwrap(), today);
     }

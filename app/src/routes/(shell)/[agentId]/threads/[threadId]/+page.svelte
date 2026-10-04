@@ -1,5 +1,6 @@
 <script lang="ts">
   import { launchApp } from '$lib/apps/launcher';
+  import { worksOnChat, type AppDataChanged } from '$lib/apps/openOnWork';
   import FlowsPane from '$lib/components/flows/FlowsPane.svelte';
   import { goto } from '$lib/nav';
   import { getContext, onMount, onDestroy, untrack } from 'svelte';
@@ -156,10 +157,30 @@
     });
   });
 
+  function openApp() {
+    launchApp(ctx.agentId, ctx.agent?.name ?? 'App', { fullscreen: ctx.agent?.appWindow?.fullscreen, thread: threadId });
+  }
+
+  // `window.open_on_work`: the app opens over this chat the moment its
+  // employee writes this chat's record, once per visit to the chat, so the
+  // owner watches it build without pressing Open App (and a window they
+  // closed is not forced back on every later write).
+  let openedOnWork = '';
+  let workUnsub: (() => void) | null = null;
+  onMount(() => {
+    workUnsub = getWebSocketClient().on<AppDataChanged>('app_data_changed', (d) => {
+      if (!ctx.agent?.appWindow?.openOnWork || !threadId || openedOnWork === threadId) return;
+      if (!worksOnChat(d, ctx.agentId, threadId)) return;
+      openedOnWork = threadId;
+      openApp();
+    });
+  });
+
   onDestroy(() => {
     for (const off of activeRunUnsubs) off();
     activeRunUnsubs = [];
     voiceMsgUnsub?.();
+    workUnsub?.();
     chat.destroy();
   });
 
@@ -171,6 +192,7 @@
       // send happened in.
       if (lastThreadId && threadId !== lastThreadId) {
         pendingSendStarted = false;
+        openedOnWork = '';
       }
       lastThreadId = threadId;
       const sk = threadKey(agentId, threadId);
@@ -268,7 +290,7 @@
   folder={chatFolder}
   isApp={ctx.agent?.isApp ?? false}
   ownApp={ctx.agent?.ownApp ?? false}
-  onopenapp={() => launchApp(ctx.agentId, ctx.agent?.name ?? 'App', { fullscreen: ctx.agent?.appWindow?.fullscreen, thread: threadId })}
+  onopenapp={openApp}
 
   allAgents={chat.allAgents}
   tokenUsage={chat.tokenUsage}
