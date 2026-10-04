@@ -421,6 +421,7 @@ impl Provider for CLIProvider {
                                                 provider_metadata: None,
                                                 stop_reason: None,
                                                 image_url: None,
+                                                more_files: Vec::new(),
                                             })
                                             .await;
                                     }

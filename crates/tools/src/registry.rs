@@ -60,6 +60,12 @@ pub struct ToolResult {
     pub is_error: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image_url: Option<String>,
+    /// The files after the first when a result hands the owner several (a
+    /// call that made three images): each is a card exactly as `image_url`
+    /// is. Set only through `with_files`, which puts the first on
+    /// `image_url`, so a reader of one file still finds it there.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub more_files: Vec<String>,
     /// Upstream HTTP status for tools that make HTTP calls (e.g. web fetch), so a
     /// programmatic caller can branch on 429/403/4xx without string-parsing `content`.
     /// `None` for non-HTTP tools.
@@ -141,6 +147,20 @@ impl ToolResult {
     /// and surfaces it to the app as a "Work" artifact.
     pub fn with_image_url(mut self, url: impl Into<String>) -> Self {
         self.image_url = Some(url.into());
+        self
+    }
+
+    /// Attach several produced files, in order: the first on `image_url`,
+    /// the rest on `more_files`. Each reaches the owner's chat as its own
+    /// card. The one way a result hands over more than one file.
+    pub fn with_files<I, S>(mut self, files: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        let mut files = files.into_iter().map(Into::into);
+        self.image_url = files.next();
+        self.more_files = files.collect();
         self
     }
 

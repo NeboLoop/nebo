@@ -423,6 +423,7 @@ pub(crate) async fn run_tool_round(
             content: truncate_str(&result.content, 300).to_string(),
             is_error: result.is_error,
             image_url: None,
+            more_files: Vec::new(),
             http_status: None,
             terminal: result.terminal,
         });
@@ -908,6 +909,7 @@ async fn run_call(
                 provider_metadata: None,
                 stop_reason: None,
                 image_url: None,
+                more_files: Vec::new(),
             })
             .await;
         return Ran { idx, tc, target, result, duration_ms: None, hook_noted: false };
@@ -1000,6 +1002,7 @@ async fn run_call(
             provider_metadata: None,
             stop_reason: None,
             image_url: result.image_url.clone(),
+            more_files: result.more_files.clone(),
         })
         .await;
     Ran { idx, tc, target, result, duration_ms: Some(duration_ms), hook_noted }

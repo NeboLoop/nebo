@@ -779,6 +779,7 @@ pub(crate) async fn call_model(call: ModelCall<'_>, st: &mut CallState, state: &
                                     provider_metadata: None,
                                     stop_reason: None,
                                     image_url: None,
+                                    more_files: Vec::new(),
                                 })
                                 .await;
                         }

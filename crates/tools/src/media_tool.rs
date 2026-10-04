@@ -1,8 +1,10 @@
-//! `generate_media`: images and video made through Janus and saved as files,
-//! into an app's served folder (`agents.app_ui_path`) or the workspace.
+//! `generate_media`: images, video and speech made through Janus and saved
+//! as files, into an app's served folder (`agents.app_ui_path`) or the
+//! workspace.
 //!
-//! Janus answers images inline (`b64_json`) and video as a job: submit,
-//! poll until it has finished, download the MP4. A film meant for
+//! Janus answers images inline (`b64_json`), speech as the audio file's
+//! bytes, and video as a job: submit, poll until it has finished, download
+//! the MP4. A film meant for
 //! scroll-scrubbing is re-encoded here with every frame a keyframe, because
 //! Janus has no encoder and the bot has the file on disk anyway.
 //!
@@ -25,6 +27,8 @@ pub const GENERATE_MEDIA: &str = "generate_media";
 const MAX_IMAGES: u64 = 4;
 /// The longest video Janus makes, in seconds.
 const MAX_SECONDS: u64 = 30;
+/// The speed speech is made and billed as when no `model` is named.
+const SPEECH_MODEL: &str = "nebo-speech";
 
 /// How a video job is waited on: the first wait, the longest wait between
 /// polls, and how long in all before giving up.
@@ -155,6 +159,31 @@ impl Media {
             return Err("Janus answered with no image.".to_string());
         }
         Ok((out, model))
+    }
+
+    /// The audio file for `body` (a `/v1/audio/speech` request): Janus
+    /// answers the file's bytes, in the format the body asked for.
+    pub async fn speech(&self, body: &Value) -> Result<Vec<u8>, String> {
+        let (req, signed_in) = self.request(reqwest::Method::POST, "/v1/audio/speech");
+        let resp = req
+            .json(body)
+            .timeout(Duration::from_secs(300))
+            .send()
+            .await
+            .map_err(|e| format!("Could not reach Janus to make the speech: {e}"))?;
+        let status = resp.status();
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            return Err(failure("speech", status.as_u16(), &text, signed_in));
+        }
+        let bytes = resp
+            .bytes()
+            .await
+            .map_err(|e| format!("The speech from Janus stopped part way: {e}"))?;
+        if bytes.is_empty() {
+            return Err("Janus answered with no audio.".to_string());
+        }
+        Ok(bytes.to_vec())
     }
 
     /// Submits a video job for `body` (a `/v1/videos` request).
@@ -432,6 +461,116 @@ pub fn image_body(input: &Value) -> Value {
     body
 }
 
+/// The speech file format for a call: `into`'s extension when it names one,
+/// else `output_format`, else MP3. Answers Janus's `response_format`, which
+/// is also the file extension.
+fn speech_format(into: Option<&str>, output_format: Option<&str>) -> &'static str {
+    let from = |s: &str| match s.to_ascii_lowercase().as_str() {
+        "mp3" => Some("mp3"),
+        "wav" => Some("wav"),
+        _ => None,
+    };
+    into.and_then(|p| Path::new(p).extension()?.to_str().and_then(from))
+        .or_else(|| output_format.and_then(from))
+        .unwrap_or("mp3")
+}
+
+/// The `/v1/audio/speech` body for a call: the words, the format, and the
+/// voice only when one was named (Janus has its own default).
+pub fn speech_body(input: &Value) -> Value {
+    let mut body = json!({
+        "model": str_of(input, "model").unwrap_or(SPEECH_MODEL),
+        "input": str_of(input, "text").unwrap_or(""),
+        "response_format": speech_format(str_of(input, "into"), str_of(input, "output_format")),
+    });
+    if let Some(voice) = str_of(input, "voice") {
+        body["voice"] = json!(voice.to_ascii_lowercase());
+    }
+    body
+}
+
+/// How long an MP3 or WAV file plays, read from its own headers: a WAV's
+/// data size over its byte rate, an MP3's frames walked and their samples
+/// counted. `None` when the bytes are not one this can read.
+fn audio_seconds(bytes: &[u8]) -> Option<f64> {
+    if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WAVE") {
+        return wav_seconds(bytes);
+    }
+    mp3_seconds(bytes)
+}
+
+fn wav_seconds(bytes: &[u8]) -> Option<f64> {
+    let u32_at = |i: usize| Some(u32::from_le_bytes(bytes.get(i..i + 4)?.try_into().ok()?));
+    let mut at = 12;
+    let mut byte_rate = None;
+    while at + 8 <= bytes.len() {
+        let id = &bytes[at..at + 4];
+        let size = u32_at(at + 4)? as usize;
+        match id {
+            b"fmt " => byte_rate = u32_at(at + 16),
+            b"data" => {
+                let rate = byte_rate.filter(|r| *r > 0)?;
+                // A streamed WAV can name a size larger than what is there.
+                let size = size.min(bytes.len() - (at + 8));
+                return Some(size as f64 / rate as f64);
+            }
+            _ => {}
+        }
+        at += 8 + size + (size & 1);
+    }
+    None
+}
+
+fn mp3_seconds(bytes: &[u8]) -> Option<f64> {
+    let mut at = 0;
+    // An ID3v2 tag first: ten bytes of header, then a syncsafe size.
+    if bytes.starts_with(b"ID3") && bytes.len() >= 10 {
+        let size = bytes[6..10].iter().fold(0usize, |n, b| (n << 7) | (*b as usize & 0x7f));
+        at = 10 + size;
+    }
+    let (mut seconds, mut frames) = (0f64, 0u32);
+    while at + 4 <= bytes.len() {
+        let h = &bytes[at..at + 4];
+        if h[0] != 0xff || h[1] & 0xe0 != 0xe0 {
+            if frames > 0 {
+                break; // a trailing tag
+            }
+            at += 1;
+            continue;
+        }
+        let version = (h[1] >> 3) & 3; // 3 = MPEG 1, 2 = MPEG 2, 0 = MPEG 2.5
+        let layer = (h[1] >> 1) & 3; // 1 = Layer III
+        let bitrate_index = (h[2] >> 4) as usize;
+        let rate_index = ((h[2] >> 2) & 3) as usize;
+        if version == 1 || layer != 1 || bitrate_index == 0 || bitrate_index == 15 || rate_index == 3 {
+            if frames > 0 {
+                break;
+            }
+            at += 1;
+            continue;
+        }
+        const V1: [u32; 15] = [0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320];
+        const V2: [u32; 15] = [0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160];
+        let mpeg1 = version == 3;
+        let kbps = if mpeg1 { V1 } else { V2 }[bitrate_index];
+        let rate = [44100u32, 48000, 32000][rate_index] >> match version {
+            3 => 0,
+            2 => 1,
+            _ => 2,
+        };
+        let samples = if mpeg1 { 1152 } else { 576 };
+        let padding = ((h[2] >> 1) & 1) as usize;
+        let len = (samples / 8 * kbps * 1000 / rate) as usize + padding;
+        if len < 4 {
+            return None;
+        }
+        seconds += samples as f64 / rate as f64;
+        frames += 1;
+        at += len;
+    }
+    (frames > 0).then_some(seconds)
+}
+
 /// The `/v1/videos` body for a call. `first_frame` is the start image,
 /// already a URL or data URL.
 pub fn video_body(input: &Value, first_frame: Option<String>) -> Value {
@@ -667,9 +806,9 @@ impl GenerateMediaTool {
         })
     }
 
-    /// Makes the images and answers the result text and the first file,
-    /// which the chat shows as a card.
-    async fn image(&self, target: &Target, input: &Value) -> Result<(String, PathBuf), String> {
+    /// Makes the images and answers the result text and every file, each
+    /// of which the chat shows as a card.
+    async fn image(&self, target: &Target, input: &Value) -> Result<(String, Vec<PathBuf>), String> {
         let into = str_of(input, "into");
         let (_, ext) = image_format(into, str_of(input, "output_format"));
         let body = image_body(input);
@@ -741,16 +880,48 @@ impl GenerateMediaTool {
             lines.push(format!("Prompt as Janus used it: {r}"));
         }
         lines.push("To look at an image, use the vision helper on its path.".to_string());
-        let first = written
-            .into_iter()
-            .next()
-            .ok_or("Janus answered with no image.")?;
-        Ok((lines.join("\n"), first))
+        if written.is_empty() {
+            return Err("Janus answered with no image.".to_string());
+        }
+        Ok((lines.join("\n"), written))
+    }
+
+    /// Makes the speech and answers the result text and its file, which the
+    /// chat shows as a card with a player.
+    async fn speech(&self, target: &Target, input: &Value) -> Result<(String, Vec<PathBuf>), String> {
+        let text = str_of(input, "text").ok_or("Give the `text` to speak.")?;
+        let body = speech_body(input);
+        let ext = body["response_format"].as_str().unwrap_or("mp3");
+        let name = file_names(str_of(input, "into"), target.default_folder, text, ext, 1, now()).remove(0);
+        let path = contained(&target.base, &name)?;
+        prepare(&target.base, &path)?;
+        let bytes = self.media.speech(&body).await?;
+        std::fs::write(&path, &bytes)
+            .map_err(|e| format!("Could not write {}: {e}", path.display()))?;
+        let mut about = Vec::new();
+        if let Some(s) = audio_seconds(&bytes) {
+            about.push(format!("{s:.1} seconds"));
+        }
+        about.push(format!("{} bytes", bytes.len()));
+        if let Some(voice) = body.get("voice").and_then(Value::as_str) {
+            about.push(format!("voice {voice}"));
+        }
+        let lines = [
+            format!(
+                "Made speech into {}: {name} ({}) at {}",
+                target.label,
+                about.join(", "),
+                path.display()
+            ),
+            "To put it under a video, use an installed media plugin's audio mix on this file and the video."
+                .to_string(),
+        ];
+        Ok((lines.join("\n"), vec![path]))
     }
 
     /// Makes the video and answers the result text and its file, which the
     /// chat shows as a card.
-    async fn video(&self, target: &Target, input: &Value) -> Result<(String, PathBuf), String> {
+    async fn video(&self, target: &Target, input: &Value) -> Result<(String, Vec<PathBuf>), String> {
         let into = str_of(input, "into");
         let name = file_names(
             into,
@@ -802,7 +973,7 @@ impl GenerateMediaTool {
                 lines.push(format!("Size now {} bytes.", meta.len()));
             }
         }
-        Ok((lines.join("\n"), path))
+        Ok((lines.join("\n"), vec![path]))
     }
 }
 
@@ -833,13 +1004,18 @@ impl DynTool for GenerateMediaTool {
     }
 
     fn description(&self) -> String {
-        "Makes an image or a short video from a prompt through NeboAI and saves it as a file, billed to the owner's plan.\n\
-         - kind \"image\": 1-4 images (PNG unless `into` or `output_format` says webp or jpeg).\n\
-         - kind \"video\": one MP4 of 1-30 seconds; it can take minutes. `image` sets the first frame (a file in the same \
-           folder, an https URL or a data URL). `scrub: true` re-encodes it for scroll-scrubbing.\n\
+        "Makes new media with AI through NeboAI (an image, a short video, or spoken audio) and saves it as a file, billed \
+         to the owner's plan.\n\
+         - kind \"image\": 1-4 images from `prompt` (PNG unless `into` or `output_format` says webp or jpeg).\n\
+         - kind \"video\": one MP4 of 1-30 seconds from `prompt`; it can take minutes. `image` sets the first frame (a \
+           file in the same folder, an https URL or a data URL). `scrub: true` re-encodes it for scroll-scrubbing.\n\
+         - kind \"speech\": `text` read aloud, as a voiceover or narration: an MP3, or WAV when `into` or \
+           `output_format` says so. `voice` picks the voice. To put it under a video, use an installed media plugin's \
+           audio mix on the two files (the Nebo Media plugin has one).\n\
          - Files go into the app's folder when you are an app or name one with `app`, else the workspace. `into` is a \
            path inside that folder, such as `assets/hero.png`.\n\
-         - It only makes new media. To edit, resize, convert or inspect an existing file, use an installed media plugin's tool instead.\n\
+         - It only makes new media. To edit, mix, trim, resize, convert or inspect an existing file, use an installed media \
+           plugin's tool instead.\n\
          - The result gives the files' paths, never the pictures; to look at one, use the vision helper on its path.\n\
          - Leave `model` out unless the owner named one."
             .to_string()
@@ -849,16 +1025,18 @@ impl DynTool for GenerateMediaTool {
         json!({
             "type": "object",
             "properties": {
-                "kind": { "type": "string", "enum": ["image", "video"], "description": "What to make." },
-                "prompt": { "type": "string", "description": "What it shows, in detail: subject, style, light, framing, motion." },
+                "kind": { "type": "string", "enum": ["image", "video", "speech"], "description": "What to make." },
+                "prompt": { "type": "string", "description": "Image or video: what it shows, in detail: subject, style, light, framing, motion." },
+                "text": { "type": "string", "description": "Speech: the exact words to say, up to about 4,000 characters." },
+                "voice": { "type": "string", "description": "Speech: the voice, e.g. alloy, ash, ballad, cedar, coral, echo, fable, marin, nova, onyx, sage, shimmer, verse. Left out: the default voice." },
                 "into": { "type": "string", "description": "The file to write, inside the app's folder or the workspace (e.g. `assets/hero.png`). Left out: a name from the prompt." },
                 "app": { "type": "string", "description": "The app whose folder the file goes in. Leave out when you are the app, or for the workspace." },
-                "model": { "type": "string", "description": "A Janus media model. Leave out for the default." },
+                "model": { "type": "string", "description": "A NeboAI media model. Leave out for the default." },
                 "n": { "type": "integer", "minimum": 1, "maximum": MAX_IMAGES, "description": "Image: how many (1-4)." },
                 "size": { "type": "string", "description": "Image: e.g. 1024x1024, 1536x1024, 1024x1536." },
                 "quality": { "type": "string", "description": "Image: low, medium, high." },
                 "background": { "type": "string", "description": "Image: transparent or opaque." },
-                "output_format": { "type": "string", "enum": ["png", "webp", "jpeg"], "description": "Image: file format." },
+                "output_format": { "type": "string", "enum": ["png", "webp", "jpeg", "mp3", "wav"], "description": "File format. Image: png, webp or jpeg. Speech: mp3 (default) or wav." },
                 "seconds": { "type": "integer", "minimum": 1, "maximum": MAX_SECONDS, "description": "Video: length (default 5)." },
                 "resolution": { "type": "string", "description": "Video: e.g. 720p, 1080p." },
                 "aspect_ratio": { "type": "string", "description": "Video: e.g. 16:9, 9:16, 1:1." },
@@ -871,7 +1049,7 @@ impl DynTool for GenerateMediaTool {
     }
 
     fn search_hint(&self) -> &str {
-        "generate create image picture video art"
+        "generate create image picture video art speech voice voiceover narration audio"
     }
 
     fn capability(&self, _input: &Value) -> Option<&'static str> {
@@ -889,6 +1067,12 @@ impl DynTool for GenerateMediaTool {
     }
 
     fn validate_input(&self, input: &Value) -> Result<(), String> {
+        if str_of(input, "kind") == Some("speech") {
+            if str_of(input, "text").is_none() {
+                return Err("Give the `text` to speak.".to_string());
+            }
+            return Ok(());
+        }
         let video = str_of(input, "kind") == Some("video");
         if str_of(input, "prompt").is_none() && !(video && str_of(input, "job").is_some()) {
             return Err("Give a `prompt`.".to_string());
@@ -899,6 +1083,7 @@ impl DynTool for GenerateMediaTool {
     fn activity(&self, input: &Value) -> String {
         match str_of(input, "kind") {
             Some("video") => "making a video".to_string(),
+            Some("speech") => "making speech".to_string(),
             _ => "making an image".to_string(),
         }
     }
@@ -906,6 +1091,7 @@ impl DynTool for GenerateMediaTool {
     fn outcome(&self, input: &Value) -> String {
         match str_of(input, "kind") {
             Some("video") => "Made a video".to_string(),
+            Some("speech") => "Made speech".to_string(),
             _ => "Made an image".to_string(),
         }
     }
@@ -923,10 +1109,12 @@ impl DynTool for GenerateMediaTool {
             let made = match str_of(&input, "kind") {
                 Some("image") => self.image(&target, &input).await,
                 Some("video") => self.video(&target, &input).await,
-                _ => Err("`kind` is image or video.".to_string()),
+                Some("speech") => self.speech(&target, &input).await,
+                _ => Err("`kind` is image, video or speech.".to_string()),
             };
             match made {
-                Ok((text, file)) => ToolResult::ok(text).with_image_url(file.to_string_lossy()),
+                Ok((text, files)) => ToolResult::ok(text)
+                    .with_files(files.iter().map(|f| f.to_string_lossy().into_owned())),
                 Err(e) => ToolResult::error(e),
             }
         })
@@ -1231,15 +1419,16 @@ mod tests {
             default_folder: "media",
         };
 
-        let (text, file) = tool
+        let (text, files) = tool
             .image(
                 &target,
                 &json!({"prompt": "a red kart", "into": "hero.png"}),
             )
             .await
             .unwrap();
-        assert_eq!(file, base.join("hero.jpg"));
-        assert_eq!(std::fs::read(&file).unwrap(), jpeg);
+        let file = &files[0];
+        assert_eq!(files, [base.join("hero.jpg")]);
+        assert_eq!(std::fs::read(file).unwrap(), jpeg);
         assert!(!base.join("hero.png").exists(), "no .png may hold the JPEG");
         assert!(
             text.contains("hero.jpg") && !text.contains("hero.png"),
@@ -1388,6 +1577,144 @@ mod tests {
         assert!(said.starts_with("Re-encoded for scrubbing"), "{said}");
         assert!(path.is_file());
         assert!(!path.with_extension("scrub.mp4").exists());
+    }
+
+    /// A tool over `janus` whose own app "Racer" serves from `ui`, so a
+    /// call naming it writes there and nowhere else.
+    fn tool_with_app(janus: &MockJanus, tmp: &Path) -> (GenerateMediaTool, PathBuf) {
+        let store = Arc::new(db::Store::new(&tmp.join("t.db").to_string_lossy()).unwrap());
+        let ui = tmp.join("ui");
+        store.create_agent("app-own", Some("agent"), "Racer", "", "", "{}", None, None).unwrap();
+        store
+            .set_agent_app_fields("app-own", true, Some(&ui.to_string_lossy()), None, None)
+            .unwrap();
+        let tool = GenerateMediaTool::new(Media::new(janus.url.clone(), "bot-1".into(), None), store);
+        (tool, ui)
+    }
+
+    /// One MPEG-1 Layer III frame header at 128 kb/s, 44.1 kHz, no padding:
+    /// 417 bytes and 1152 samples a frame.
+    fn mp3_of(frames: usize) -> Vec<u8> {
+        let mut out = b"ID3\x04\0\0\0\0\0\x02xx".to_vec();
+        for _ in 0..frames {
+            let mut frame = vec![0u8; 417];
+            frame[..4].copy_from_slice(&[0xff, 0xfb, 0x90, 0x64]);
+            out.extend(frame);
+        }
+        out
+    }
+
+    /// Speech: the right Janus request (the speech speed, the words, the
+    /// voice, MP3), an MP3 saved in the folder, a result line with its
+    /// length and size, and the file on the result for the chat's card.
+    #[tokio::test]
+    async fn speech_asks_janus_and_saves_an_mp3_with_a_card() {
+        let mp3: &'static [u8] = Box::leak(mp3_of(38).into_boxed_slice());
+        let janus = mock(Box::new(move |path, _| match path {
+            "/v1/audio/speech" => (200, "audio/mpeg", mp3.to_vec()),
+            _ => (404, "text/plain", b"no".to_vec()),
+        }))
+        .await;
+        let tmp = tempfile::tempdir().unwrap();
+        let (tool, ui) = tool_with_app(&janus, tmp.path());
+        let input = json!({
+            "kind": "speech",
+            "app": "Racer",
+            "text": "Three laps, one winner.",
+            "voice": "Coral",
+        });
+        assert!(tool.validate_input(&input).is_ok());
+        assert!(tool.emits_image(&input), "made speech is a card");
+        let result = tool.execute_dyn(&ToolContext::default(), input).await;
+        assert!(!result.is_error, "{}", result.content);
+
+        let file = PathBuf::from(result.image_url.as_deref().expect("the file rides on the result"));
+        assert!(result.more_files.is_empty());
+        assert!(file.starts_with(&ui) && file.extension().is_some_and(|e| e == "mp3"), "{}", file.display());
+        assert_eq!(file.file_name().unwrap().to_string_lossy().split('-').take(3).collect::<Vec<_>>(), ["three", "laps", "one"]);
+        assert_eq!(std::fs::read(&file).unwrap(), mp3);
+        // 38 frames of 1152 samples at 44.1 kHz.
+        assert!(result.content.contains("1.0 seconds"), "{}", result.content);
+        assert!(result.content.contains(&format!("{} bytes", mp3.len())), "{}", result.content);
+        assert!(result.content.contains(&file.display().to_string()), "{}", result.content);
+
+        let seen = janus.seen.lock().unwrap();
+        assert_eq!(seen.len(), 1, "one call to Janus");
+        let (line, body, headers) = &seen[0];
+        assert!(line.starts_with("POST /v1/audio/speech "), "{line}");
+        let body: Value = serde_json::from_str(body).unwrap();
+        assert_eq!(
+            body,
+            json!({"model": "nebo-speech", "input": "Three laps, one winner.", "voice": "coral", "response_format": "mp3"})
+        );
+        let header = |k: &str| headers.iter().find(|(h, _)| h == k).map(|(_, v)| v.clone());
+        assert_eq!(header("x-bot-id").as_deref(), Some("bot-1"));
+        assert_eq!(header("authorization").as_deref(), Some("Bearer bot-1"));
+    }
+
+    #[test]
+    fn speech_format_and_body_follow_what_was_asked() {
+        assert_eq!(speech_format(None, None), "mp3");
+        assert_eq!(speech_format(Some("vo/line.wav"), None), "wav");
+        assert_eq!(speech_format(None, Some("WAV")), "wav");
+        assert_eq!(speech_format(Some("vo/line.mp3"), Some("wav")), "mp3");
+        assert_eq!(speech_format(None, Some("png")), "mp3");
+        let body = speech_body(&json!({"text": "hi", "output_format": "wav", "model": "m"}));
+        assert_eq!(body, json!({"model": "m", "input": "hi", "response_format": "wav"}));
+        let tool = GenerateMediaTool::new(
+            Media::new(String::new(), String::new(), None),
+            Arc::new(db::Store::new(":memory:").unwrap()),
+        );
+        let err = tool.validate_input(&json!({"kind": "speech", "prompt": "hi"})).unwrap_err();
+        assert!(err.contains("`text`"), "{err}");
+    }
+
+    #[test]
+    fn audio_length_is_read_from_the_file() {
+        let secs = audio_seconds(&mp3_of(38)).unwrap();
+        assert!((secs - 38.0 * 1152.0 / 44100.0).abs() < 1e-9, "{secs}");
+        // 16-bit mono at 24 kHz: 48,000 bytes a second, 1.5 seconds of data.
+        let mut wav = b"RIFF\0\0\0\0WAVEfmt ".to_vec();
+        wav.extend(16u32.to_le_bytes());
+        wav.extend([1, 0, 1, 0]);
+        wav.extend(24_000u32.to_le_bytes());
+        wav.extend(48_000u32.to_le_bytes());
+        wav.extend([2, 0, 16, 0]);
+        wav.extend(b"data");
+        wav.extend(72_000u32.to_le_bytes());
+        wav.extend(vec![0u8; 72_000]);
+        assert_eq!(audio_seconds(&wav), Some(1.5));
+        assert_eq!(audio_seconds(b"not audio at all"), None);
+    }
+
+    /// n=3: three images, three files, and all three on the result, so the
+    /// chat shows a card for each, not only the first.
+    #[tokio::test]
+    async fn three_images_give_three_cards() {
+        let png = b"\x89PNG\r\n\x1a\nfake".to_vec();
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&png);
+        let one = format!(r#"{{"b64_json":"{b64}"}}"#);
+        let answer = format!(r#"{{"created":1,"data":[{one},{one},{one}]}}"#);
+        let answer: &'static str = Box::leak(answer.into_boxed_str());
+        let janus = mock(Box::new(move |_, _| (200, "application/json", answer.as_bytes().to_vec()))).await;
+        let tmp = tempfile::tempdir().unwrap();
+        let (tool, ui) = tool_with_app(&janus, tmp.path());
+        let result = tool
+            .execute_dyn(
+                &ToolContext::default(),
+                json!({"kind": "image", "app": "Racer", "prompt": "a red kart", "n": 3, "into": "assets/kart.png"}),
+            )
+            .await;
+        assert!(!result.is_error, "{}", result.content);
+        let files: Vec<String> = result.image_url.iter().chain(&result.more_files).cloned().collect();
+        let want: Vec<String> = (1..=3)
+            .map(|i| ui.join(format!("assets/kart-{i}.png")).to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(files, want);
+        for f in &files {
+            assert_eq!(std::fs::read(f).unwrap(), png);
+        }
+        assert!(result.content.starts_with("Made 3 images"), "{}", result.content);
     }
 
     #[test]

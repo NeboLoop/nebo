@@ -409,6 +409,7 @@ impl ShellTool {
                     content: format!("{}\n{}", exit_header(&output.status), result),
                     is_error: true,
                     image_url: None,
+                    more_files: Vec::new(),
                     http_status: None,
                     terminal: false,
                 };

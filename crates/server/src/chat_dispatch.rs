@@ -1114,7 +1114,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                             // Run-produced media for the LOCAL app (always, rendered
                             // inline) and comm replies (when replying to a channel;
                             // resolve_comm_attachments maps the same /api/v1/files prefix).
-                            if let Some(app_url) = owner_artifact_url(&spec_tools, &event).await {
+                            for app_url in owner_artifact_urls(&spec_tools, &event).await {
                                 if !app_file_artifacts.contains(&app_url) {
                                     app_file_artifacts.push(app_url.clone());
                                 }
@@ -1879,6 +1879,7 @@ pub async fn run_chat_events(
                         provider_metadata: None,
                         stop_reason: None,
                         image_url: None,
+                        more_files: Vec::new(),
                     })
                     .await;
             }
@@ -2049,7 +2050,7 @@ fn mime_from_extension(path: &std::path::Path) -> String {
     .to_string()
 }
 
-/// The file a tool result hands the owner, as a URL the app renders: the
+/// The files a tool result hands the owner, as URLs the app renders: the
 /// ONE collection every drained run uses (the chat pipeline here, the voice
 /// bridge in `handlers::voice`). Persisted to <data_dir>/files and referenced
 /// by /api/v1/files/<name> (`to_app_artifact_url`). Only media the owner asked
@@ -2058,26 +2059,31 @@ fn mime_from_extension(path: &std::path::Path) -> String {
 /// and the browser and the desktop return the page or window after every act
 /// — the tool's eyes (34 frame reads once hung 34 tiles on one message; a
 /// Simulator session hung three frames on each reply, 2026-09-22). The tool's
-/// spec says which it is.
-pub(crate) async fn owner_artifact_url(
+/// spec says which it is. A result that hands over several files (`image_url`
+/// then `more_files`) gives a card for each, in order.
+pub(crate) async fn owner_artifact_urls(
     tools: &tools::Registry,
     event: &ai::StreamEvent,
-) -> Option<String> {
-    if event.error.is_some() {
-        return None;
+) -> Vec<String> {
+    if event.error.is_some() || event.image_url.is_none() {
+        return Vec::new();
     }
-    let url = event.image_url.as_ref()?;
     if let Some(tc) = event.tool_call.as_ref() {
         if let Some(tool) = tools.get(&tc.name).await {
             if !tool.emits_image(&tc.input) {
-                return None;
+                return Vec::new();
             }
         }
     }
-    to_app_artifact_url(url)
+    event
+        .image_url
+        .iter()
+        .chain(&event.more_files)
+        .filter_map(|url| to_app_artifact_url(url))
+        .collect()
 }
 
-/// The run's files (`owner_artifact_url`) as the app shows them, kept on the
+/// The run's files (`owner_artifact_urls`) as the app shows them, kept on the
 /// turn's final assistant message so Work items + their version chain survive
 /// history reload (`chat_complete` is the only other carrier). Each DOCUMENT
 /// (non-media) is versioned into its append-only chain as a structured
@@ -2992,6 +2998,26 @@ mod session_key_contract_tests {
 #[cfg(test)]
 mod shared_file_tests {
     use super::keep_shared_file;
+
+    /// A result that hands over several files gives a card for each, in
+    /// order (`generate_media` with n=3, `share_file` with several paths);
+    /// a failed call gives none.
+    #[tokio::test]
+    async fn every_file_a_result_hands_over_is_a_card() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = std::sync::Arc::new(db::Store::new(&tmp.path().join("t.db").to_string_lossy()).unwrap());
+        let tools = tools::Registry::new(std::sync::Arc::new(agent::Check::new(store)));
+        let urls = ["/api/v1/files/a/1.png", "/api/v1/files/a/2.png", "/api/v1/files/a/3.png"];
+        let result = tools::ToolResult::ok("made").with_files(urls);
+        let mut event = ai::StreamEvent::text("");
+        event.event_type = ai::StreamEventType::ToolResult;
+        event.image_url = result.image_url.clone();
+        event.more_files = result.more_files.clone();
+        assert_eq!(super::owner_artifact_urls(&tools, &event).await, urls);
+
+        event.error = Some("failed".into());
+        assert!(super::owner_artifact_urls(&tools, &event).await.is_empty());
+    }
 
     fn served(files_dir: &std::path::Path, url: &str) -> Vec<u8> {
         let rel = url.strip_prefix("/api/v1/files/").expect("a files URL");

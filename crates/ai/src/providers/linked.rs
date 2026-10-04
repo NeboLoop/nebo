@@ -1029,6 +1029,7 @@ impl Driver<'_> {
                     provider_metadata: None,
                     stop_reason: None,
                     image_url: None,
+                    more_files: Vec::new(),
                 },
             };
             let _ = self.tx.send(event).await;

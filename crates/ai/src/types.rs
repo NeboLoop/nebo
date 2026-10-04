@@ -138,6 +138,9 @@ pub struct StreamEvent {
     /// or a local filesystem path under `<data_dir>/files/`. Used by chat_dispatch
     /// to auto-attach run-produced files to outbound comm replies.
     pub image_url: Option<String>,
+    /// The files after `image_url` when the tool handed over several
+    /// (ToolResult events only; `ToolResult::more_files`).
+    pub more_files: Vec<String>,
     /// Structured rendering payload from ToolResult.payload (ToolResult events
     /// only) — forwarded to the app so known kinds render as rich cards. On a
     /// `terminal_tool_error` ControlNotice: the refusing tool's
@@ -248,6 +251,7 @@ impl StreamEvent {
             provider_metadata: None,
             stop_reason: None,
             image_url: None,
+            more_files: Vec::new(),
         }
     }
 
@@ -264,6 +268,7 @@ impl StreamEvent {
             provider_metadata: None,
             stop_reason: None,
             image_url: None,
+            more_files: Vec::new(),
         }
     }
 
@@ -284,6 +289,7 @@ impl StreamEvent {
             provider_metadata: None,
             stop_reason: Some(stop_reason.into()),
             image_url: None,
+            more_files: Vec::new(),
         }
     }
 
@@ -300,6 +306,7 @@ impl StreamEvent {
             provider_metadata: None,
             stop_reason: None,
             image_url: None,
+            more_files: Vec::new(),
         }
     }
 
@@ -316,6 +323,7 @@ impl StreamEvent {
             provider_metadata: None,
             stop_reason: None,
             image_url: None,
+            more_files: Vec::new(),
         }
     }
 
@@ -332,6 +340,7 @@ impl StreamEvent {
             provider_metadata: None,
             stop_reason: None,
             image_url: None,
+            more_files: Vec::new(),
         }
     }
 
@@ -353,6 +362,7 @@ impl StreamEvent {
             provider_metadata: None,
             stop_reason: None,
             image_url: None,
+            more_files: Vec::new(),
         }
     }
 
@@ -378,6 +388,7 @@ impl StreamEvent {
             provider_metadata: None,
             stop_reason: None,
             image_url: None,
+            more_files: Vec::new(),
         }
     }
 
@@ -394,6 +405,7 @@ impl StreamEvent {
             provider_metadata: None,
             stop_reason: Some(reason.into()),
             image_url: None,
+            more_files: Vec::new(),
         }
     }
 
@@ -410,6 +422,7 @@ impl StreamEvent {
             provider_metadata: None,
             stop_reason: None,
             image_url: None,
+            more_files: Vec::new(),
         }
     }
 
@@ -426,6 +439,7 @@ impl StreamEvent {
             provider_metadata: None,
             stop_reason: None,
             image_url: None,
+            more_files: Vec::new(),
         }
     }
 
@@ -453,6 +467,7 @@ impl StreamEvent {
             provider_metadata: None,
             stop_reason: None,
             image_url: None,
+            more_files: Vec::new(),
         }
     }
 
@@ -469,6 +484,7 @@ impl StreamEvent {
             provider_metadata: None,
             stop_reason: None,
             image_url: None,
+            more_files: Vec::new(),
         }
     }
 
@@ -489,6 +505,7 @@ impl StreamEvent {
             provider_metadata: None,
             stop_reason: None,
             image_url: None,
+            more_files: Vec::new(),
         }
     }
 
