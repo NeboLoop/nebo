@@ -1175,6 +1175,22 @@ impl PluginRunner {
                         )));
                     }
 
+                    // Never set up (its credentials absent) and not one the
+                    // employee's job declares (`requires.plugins`): the owner
+                    // didn't ask for it, so no card holds the conversation. Live
+                    // 2026-10-04: a question about Nebo's marketplace reached
+                    // an unconnected Shopify, and its connect card held a
+                    // design session on a voice call until the owner tapped
+                    // Skip. Asked for by name, `auth login` shows the card.
+                    if !self.plugin_store.is_ready(&pi.slug) && !self.employee_declares(ctx, &pi.slug) {
+                        return first.answer(ToolResult::error(format!(
+                            "{display_name} isn't connected, so this didn't run and nothing was asked of \
+                             the owner. If the owner asked for {display_name}, run `auth login`: it shows \
+                             them the connect card. Otherwise {display_name} is not the tool for this: do \
+                             it another way and don't mention {display_name}."
+                        )));
+                    }
+
                     let agent_id = types::keyparser::extract_agent_id(&ctx.session_key);
                     if agent_id.is_empty() {
                         return first.answer(ToolResult::error(format!(
@@ -1220,6 +1236,19 @@ impl PluginRunner {
         }
 
         first
+    }
+
+    /// Whether the employee running `ctx` declares the plugin `slug` in its
+    /// `requires.plugins`: its job uses it (a store manager and its store).
+    fn employee_declares(&self, ctx: &ToolContext, slug: &str) -> bool {
+        let id = types::keyparser::extract_agent_id(&ctx.session_key);
+        let Ok(Some(agent)) = self.db_store.get_agent(&id) else { return false };
+        napp::agent::parse_agent_config(&agent.frontmatter).is_ok_and(|c| {
+            c.requires
+                .plugins
+                .iter()
+                .any(|r| crate::plugin_tools::plugin_slug_of(&self.db_store, r).as_deref() == Some(slug))
+        })
     }
 
     /// The owner asked for this plugin's account to be connected: the ONE
@@ -3141,8 +3170,20 @@ mod budget_and_install_tests {
     /// run. Returns the result, the card that was shown (if one was), and
     /// whether a login ran on this machine.
     async fn auth_failure_ending(auth: serde_json::Value, answer: Option<&str>) -> (ToolResult, Option<ai::StreamEvent>, bool) {
+        auth_failure_ending_for(&["books"], auth, answer).await
+    }
+
+    /// As [`auth_failure_ending`], run by an employee whose job declares
+    /// `declares` (`requires.plugins`).
+    async fn auth_failure_ending_for(
+        declares: &[&str],
+        auth: serde_json::Value,
+        answer: Option<&str>,
+    ) -> (ToolResult, Option<ai::StreamEvent>, bool) {
         let tmp = tempfile::tempdir().unwrap();
         let (plugin_store, db_store) = stores(tmp.path());
+        let frontmatter = serde_json::json!({ "requires": { "plugins": declares } }).to_string();
+        db_store.create_agent("ic", Some("user"), "Store Manager", "", "", &frontmatter, None, None).unwrap();
         install_auth_plugin(tmp.path(), "books", auth);
         let tool = PluginRunner::new(plugin_store, db_store);
         let (stream_tx, mut stream_rx) = tokio::sync::mpsc::channel(4);
@@ -3249,6 +3290,21 @@ mod budget_and_install_tests {
         assert!(!login_ran);
         assert!(!r.is_error, "{}", r.content);
         assert_eq!(r.content.trim(), "ok", "connected retries the command");
+    }
+
+    /// A plugin nobody set up, called by an employee whose job doesn't use it,
+    /// shows no card: the call says it isn't connected and how the owner
+    /// would connect it, and the conversation goes on. Live 2026-10-04: a
+    /// design session asked about Nebo's marketplace reached an unconnected
+    /// Shopify, and its connect card held the call until the owner tapped Skip.
+    #[tokio::test]
+    async fn a_plugin_nobody_set_up_holds_no_one_whose_job_does_not_use_it() {
+        let auth = serde_json::json!({"type": "env", "label": "Example login", "env": {"BOOKS_API_KEY": ""}});
+        let (r, card, login_ran) = auth_failure_ending_for(&[], auth, Some("connected")).await;
+        assert!(card.is_none(), "no card holds the conversation");
+        assert!(!login_ran);
+        assert!(r.is_error && !r.terminal, "{}", r.content);
+        assert!(r.content.contains("isn't connected") && r.content.contains("auth login"), "{}", r.content);
     }
 
     /// Asked to set an account up, the employee runs `auth login`: the owner
