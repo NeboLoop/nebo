@@ -1009,6 +1009,14 @@ pub(crate) async fn finalize_skill_install(
             .and_then(|p| std::fs::read_to_string(p).ok())
             .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
             .and_then(|v| v["version"].as_str().map(|s| s.to_string()))
+            // A skill package has no manifest.json; it is installed into a
+            // folder named for its marketplace version (`skills/<slug>/0.1.3`).
+            .or_else(|| {
+                dir.file_name()
+                    .and_then(|n| n.to_str())
+                    .filter(|n| semver::Version::parse(n).is_ok())
+                    .map(str::to_string)
+            })
             .unwrap_or_else(|| "1.0.0".to_string());
         let _ = state
             .store

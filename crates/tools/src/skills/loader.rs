@@ -204,8 +204,9 @@ impl Loader {
             return None;
         }
 
-        let count = manifest.skills.len();
         let mut loaded = manifest.into_skill_map();
+        loaded.retain(|_, s| !s.base_dir.as_deref().is_some_and(superseded));
+        let count = loaded.len();
 
         // Re-inject license keys for sealed skills (keys are runtime-only, not in
         // manifest), resolving the artifact id the way the cold scan does.
@@ -400,6 +401,18 @@ impl Loader {
             }
         }
 
+        // A version folder an update superseded leaves the set, even when
+        // its files are unchanged.
+        {
+            let mut skills = self.skills.write().await;
+            let before = skills.len();
+            skills.retain(|_, s| !s.base_dir.as_deref().is_some_and(superseded));
+            if skills.len() != before {
+                drop(skills);
+                self.write_manifest(&manifest_path).await;
+            }
+        }
+
         let (stale, new_paths) = manifest::verify_manifest(
             &manifest,
             &self.installed_dir,
@@ -465,6 +478,9 @@ impl Loader {
         // a plain-name insert would publish one seat's procedure to the whole
         // workforce.
         for (md_path, owner) in &new_paths {
+            if md_path.parent().is_some_and(superseded) {
+                continue;
+            }
             if let Ok(data) = std::fs::read(md_path) {
                 if let Ok(mut skill) = parse_skill_frontmatter(&data) {
                     skill.enabled = true;
@@ -1449,7 +1465,7 @@ fn load_skills_from_nested_dir(dir: &Path, source: SkillSource) -> Vec<Skill> {
     // Phase 1: collect all skill directories (fast single-pass walk)
     let mut skill_dirs = Vec::new();
     napp::reader::walk_for_marker(dir, "SKILL.md", &mut |skill_dir| {
-        if !is_quarantined(skill_dir) {
+        if !is_quarantined(skill_dir) && !superseded(skill_dir) {
             skill_dirs.push(skill_dir.to_path_buf());
         }
     });
@@ -1490,6 +1506,23 @@ fn load_skills_from_nested_dir(dir: &Path, source: SkillSource) -> Vec<Skill> {
             }
         })
         .collect()
+}
+
+/// Whether `dir` is an older version of a skill: an update extracts beside
+/// the version it replaces (`<slug>/0.1.3`, then `<slug>/0.1.4`) and the old
+/// folder stays, so a version folder with a newer version folder beside it
+/// is never loaded, from a scan or from the warm-start index (live: App
+/// Studio 0.1.3 kept loading after 0.1.4 retired it). A folder not named for
+/// a version is never superseded.
+pub fn superseded(dir: &Path) -> bool {
+    let version_of = |p: &Path| p.file_name().and_then(|n| n.to_str()).and_then(|n| semver::Version::parse(n).ok());
+    let (Some(mine), Some(parent)) = (version_of(dir), dir.parent()) else {
+        return false;
+    };
+    std::fs::read_dir(parent).into_iter().flatten().flatten().any(|sibling| {
+        let path = sibling.path();
+        path.join("SKILL.md").exists() && version_of(&path).is_some_and(|v| v > mine)
+    })
 }
 
 /// Load skills from sealed .napp files (paid content, decrypted in memory).
@@ -1771,6 +1804,27 @@ fn verify_dependencies(
 
 #[cfg(test)]
 mod tests {
+
+    /// Only the newest version folder of an installed skill loads: an update
+    /// leaves the old folder beside it, and the old copy must never win.
+    #[test]
+    fn an_updated_skill_loads_only_its_newest_version() {
+        let root = std::env::temp_dir().join(format!("nebo-newest-{}", uuid::Uuid::new_v4()));
+        let put = |path: &str, name: &str| {
+            let dir = root.join(path);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("SKILL.md"), format!("---\nname: {name}\ndescription: d\n---\nbody {path}\n")).unwrap();
+        };
+        put("app-studio/0.1.0", "app-studio");
+        put("app-studio/0.1.3", "app-studio");
+        put("app-studio/0.1.4", "app-studio-retired");
+        put("handmade", "handmade");
+        let mut names: Vec<String> = load_skills_from_nested_dir(&root, SkillSource::Installed).into_iter().map(|s| s.name).collect();
+        names.sort();
+        assert_eq!(names, ["app-studio-retired", "handmade"], "the retired copy's older versions never load");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     use super::*;
     use tempfile::TempDir;
 
@@ -2256,6 +2310,35 @@ Triage instructions.
         // The skill listing carries it for its own seat only.
         assert!(loader.listing(Some("copywriter")).await.contains_key("project-conventions"));
         assert!(!loader.listing(None).await.contains_key("project-conventions"));
+    }
+
+    /// An update lands while an older version is in the warm-start index
+    /// (live: App Studio 0.1.0 cached, 0.1.4 retired it): the next warm
+    /// start and its refresh drop the old copy instead of bringing it back.
+    #[tokio::test]
+    async fn an_update_retires_a_cached_older_version() {
+        let installed = TempDir::new().unwrap();
+        let user = TempDir::new().unwrap();
+        let put = |version: &str, name: &str| {
+            let dir = installed.path().join("app-studio").join(version);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("SKILL.md"), format!("---\nname: {name}\ndescription: d\n---\nbody\n")).unwrap();
+        };
+        put("0.1.0", "app-studio");
+        let cold = Loader::new(installed.path().to_path_buf(), user.path().to_path_buf());
+        cold.load_all().await;
+        assert!(cold.get("app-studio", None).await.is_some(), "installed and cached");
+
+        put("0.1.4", "app-studio-retired");
+        let warm = Loader::new(installed.path().to_path_buf(), user.path().to_path_buf());
+        warm.load_all().await;
+        warm.verify_and_refresh_manifest().await;
+        assert!(warm.get("app-studio", None).await.is_none(), "the superseded copy never loads");
+        assert!(warm.get("app-studio-retired", None).await.is_some(), "its update does");
+
+        let again = Loader::new(installed.path().to_path_buf(), user.path().to_path_buf());
+        again.load_all().await;
+        assert!(again.get("app-studio", None).await.is_none(), "and stays out of the index");
     }
 
     #[tokio::test]
