@@ -426,6 +426,12 @@ mod tests {
     fn test_reject_too_small() {
         assert!(validate_binary_format(&[0, 1]).is_err());
     }
+
+    // An app file is installed up to the size a publish lets through (100 MB).
+    #[test]
+    fn an_app_file_may_be_100_mb() {
+        assert_eq!(MAX_UI_FILE_SIZE, 100 << 20);
+    }
 }
 
 #[cfg(test)]

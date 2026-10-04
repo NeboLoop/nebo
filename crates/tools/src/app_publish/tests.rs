@@ -299,6 +299,27 @@ fn the_bundle_carries_the_package_and_every_page_file() {
     );
 }
 
+/// Room for a 3D game: 100 MB a file, 500 MB in all, and an install takes
+/// every file a publish lets through. A file past the old 10 MB limit goes
+/// into the bundle (written to a scratch file, not held in memory) whole.
+#[test]
+fn a_big_asset_fits_the_bundle() {
+    assert_eq!(MAX_BUNDLE_FILE, 100 << 20);
+    assert_eq!(MAX_BUNDLE_TOTAL, 500 << 20);
+
+    let dir = tempfile::tempdir().unwrap();
+    let ui = dir.path().join("ui");
+    std::fs::create_dir_all(ui.join("music")).unwrap();
+    std::fs::write(ui.join("index.html"), "<html></html>").unwrap();
+    let score_len = 12u64 << 20;
+    std::fs::File::create(ui.join("music/score.ogg")).unwrap().set_len(score_len).unwrap();
+
+    let (zip, pages) = build_bundle("# Game", None, &ui, None).unwrap();
+    assert_eq!(pages, 2);
+    let mut archive = zip::ZipArchive::new(zip.reopen().unwrap()).unwrap();
+    assert_eq!(archive.by_name("ui/music/score.ogg").unwrap().size(), score_len);
+}
+
 /// The bundle carries the employee's own skills under `skills/<name>/`: the
 /// package's skill folders and the plain-named skills its agent.json lists
 /// from the bot's skills folder, by the hub's rules: its SKILL.md and the

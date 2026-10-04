@@ -2406,4 +2406,53 @@ mod tests {
         assert!(!dest.exists());
         assert!(std::fs::read_dir(dir.path()).unwrap().next().is_none(), "no .part left behind");
     }
+
+    // The bundle goes up from its file, whole, with its length declared.
+    #[tokio::test]
+    async fn a_bundle_uploads_from_its_file() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let zip: Vec<u8> = (0..(3u32 << 20) + 5).map(|i| (i % 253) as u8).collect();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bundle.zip");
+        std::fs::write(&path, &zip).unwrap();
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut req = Vec::new();
+            let mut buf = vec![0u8; 64 * 1024];
+            let head_end = loop {
+                let n = sock.read(&mut buf).await.unwrap();
+                req.extend_from_slice(&buf[..n]);
+                if let Some(i) = req.windows(4).position(|w| w == b"\r\n\r\n") {
+                    break i + 4;
+                }
+            };
+            let head = String::from_utf8_lossy(&req[..head_end]).to_lowercase();
+            let len: usize = head
+                .lines()
+                .find_map(|l| l.strip_prefix("content-length:"))
+                .expect("a declared length")
+                .trim()
+                .parse()
+                .unwrap();
+            while req.len() < head_end + len {
+                let n = sock.read(&mut buf).await.unwrap();
+                assert!(n > 0, "the body was cut");
+                req.extend_from_slice(&buf[..n]);
+            }
+            let body = b"{\"uiFilesStored\":1}";
+            let reply = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n", body.len());
+            sock.write_all(reply.as_bytes()).await.unwrap();
+            sock.write_all(body).await.unwrap();
+            req.split_off(head_end)
+        });
+
+        let api = NeboAIApi::new(format!("http://{addr}"), "bot".into(), "token".into());
+        let out = api.upload_bundle("art-1", "upload-token", &path).await.unwrap();
+        assert_eq!(out["uiFilesStored"], 1);
+        let sent = server.await.unwrap();
+        assert!(sent.windows(zip.len()).any(|w| w == zip.as_slice()), "the file went up whole");
+    }
 }
