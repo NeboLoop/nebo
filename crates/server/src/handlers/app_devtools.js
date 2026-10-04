@@ -82,53 +82,56 @@
     } catch (e) {}
   }
 
-  window.addEventListener('pagehide', function () {
+  function onPageHide() {
     if (!queue.length) return;
     var body = JSON.stringify({ entries: queue.splice(0, queue.length) });
     try {
       if (navigator.sendBeacon) navigator.sendBeacon(devlogUrl, new Blob([body], { type: 'application/json' }));
     } catch (e) {}
-  });
+  }
 
-  ['log', 'info', 'warn', 'error', 'debug'].forEach(function (k) {
-    var orig = console[k];
-    if (typeof orig !== 'function') return;
-    console[k] = function () {
-      try {
-        orig.apply(console, arguments);
-      } catch (e) {}
-      push(k, Array.prototype.map.call(arguments, str).join(' '), 'console');
-    };
-  });
+  // Each console method wrapped once; wrapped again only if it is the
+  // browser's own one again, never over a wrapper the app added on top.
+  var natives = {};
+  function wrapConsole() {
+    ['log', 'info', 'warn', 'error', 'debug'].forEach(function (k) {
+      var orig = console[k];
+      if (typeof orig !== 'function') return;
+      if (k in natives && orig !== natives[k]) return;
+      natives[k] = orig;
+      console[k] = function () {
+        try {
+          orig.apply(console, arguments);
+        } catch (e) {}
+        push(k, Array.prototype.map.call(arguments, str).join(' '), 'console');
+      };
+    });
+  }
 
-  window.addEventListener(
-    'error',
-    function (ev) {
-      var t = ev.target;
-      if (t && t !== window && t.nodeType === 1) {
-        push('error', 'Failed to load ' + short(t.src || t.href || t.tagName), 'resource');
-        return;
-      }
-      var where = ev.filename ? ' (' + short(ev.filename) + ':' + ev.lineno + ':' + ev.colno + ')' : '';
-      var stack = ev.error && ev.error.stack ? '\n' + ev.error.stack : '';
-      push('error', (ev.message || 'Error') + where + stack, 'error');
-    },
-    true
-  );
+  function onError(ev) {
+    var t = ev.target;
+    if (t && t !== window && t.nodeType === 1) {
+      push('error', 'Failed to load ' + short(t.src || t.href || t.tagName), 'resource');
+      return;
+    }
+    var where = ev.filename ? ' (' + short(ev.filename) + ':' + ev.lineno + ':' + ev.colno + ')' : '';
+    var stack = ev.error && ev.error.stack ? '\n' + ev.error.stack : '';
+    push('error', (ev.message || 'Error') + where + stack, 'error');
+  }
 
-  window.addEventListener('unhandledrejection', function (ev) {
+  function onRejection(ev) {
     push('error', 'Unhandled promise rejection: ' + str(ev.reason), 'promise');
-  });
+  }
 
   // A script, style or fetch the page's security policy blocked fails with
   // no error event of its own.
-  document.addEventListener('securitypolicyviolation', function (ev) {
+  function onViolation(ev) {
     push(
       'error',
       'Blocked by the page\'s security policy (' + ev.violatedDirective + '): ' + short(ev.blockedURI || 'inline code'),
       'security'
     );
-  });
+  }
 
   // A page can fail with no error at all: the app drew nothing, or a canvas
   // stretched over the page hides the one that draws (live 2026-10-02: a
@@ -226,10 +229,22 @@
   else window.addEventListener('load', function () {
     lookSoon(2500);
   });
-  ['pointerup', 'keyup'].forEach(function (t) {
-    window.addEventListener(t, function () {
-      lookSoon(2000);
-    }, true);
+  function onUse() {
+    lookSoon(2000);
+  }
+
+  // Heard from the start, and again after the page replaces itself
+  // (`document.open()`, as Design Studio's render.html draws a design),
+  // which erases every window and document listener (ON_REOPEN in
+  // tools/src/app_publish.rs, put before this script).
+  window.__neboOnReopen(function () {
+    wrapConsole();
+    window.addEventListener('pagehide', onPageHide);
+    window.addEventListener('error', onError, true);
+    window.addEventListener('unhandledrejection', onRejection);
+    document.addEventListener('securitypolicyviolation', onViolation);
+    window.addEventListener('pointerup', onUse, true);
+    window.addEventListener('keyup', onUse, true);
   });
 
   function netFail(method, url, status, text) {

@@ -7,7 +7,9 @@
 //! as a page, a CSS background, or in a page that rewrote itself after it
 //! loaded (Design Studio's `render.html`, live 2026-10-04: 180 frames of a
 //! broken picture passed). The app server answers an asset it does not
-//! have with 404, never with the entry page.
+//! have with 404, never with the entry page. The developer script's
+//! console capture (`app_console`) still hears such a page: what it logged
+//! and what it threw after it rewrote itself.
 //! Skipped when this machine has no Chrome or Chromium.
 
 mod common;
@@ -94,11 +96,20 @@ document.write('<!doctype html><html><body><h1>x</h1><script>startTheShow()<\/sc
 document.close();
 </script></body></html>"#;
 
+/// The same, logging and throwing in the page it wrote, for `app_console`.
+const WRITTEN_CONSOLE: &str = r#"<!doctype html><html><head></head><body><script type="module">
+await fetch('index.html');
+document.open();
+document.write('<!doctype html><html><body><h1>x</h1><script>console.error("REWRITTEN-LOG x");throw new Error("REWRITTEN-THROW y")<\/script></body></html>');
+document.close();
+</script></body></html>"#;
+
 struct Rig {
     server: TestServer,
     data_dir: PathBuf,
     record: tools::app_record::AppRecordTool,
     shot: tools::app_publish::AppScreenshotTool,
+    console: tools::app_console::AppConsoleTool,
     ctx: tools::ToolContext,
 }
 
@@ -129,6 +140,7 @@ async fn rig() -> Option<Rig> {
     std::fs::write(ui.join("background.html"), BACKGROUND).unwrap();
     std::fs::write(ui.join("written.html"), WRITTEN).unwrap();
     std::fs::write(ui.join("written-throws.html"), WRITTEN_THROWS).unwrap();
+    std::fs::write(ui.join("written-console.html"), WRITTEN_CONSOLE).unwrap();
     let store = Arc::new(server.db_store());
     store
         .create_agent("app-motion", None, "Motion", "Motion posts", "", "", None, None)
@@ -139,7 +151,8 @@ async fn rig() -> Option<Rig> {
     Some(Rig {
         data_dir: server.data_dir.clone(),
         record: tools::app_record::AppRecordTool::new(store.clone(), Some(manager.clone())),
-        shot: tools::app_publish::AppScreenshotTool::new(store, Some(manager)),
+        shot: tools::app_publish::AppScreenshotTool::new(store.clone(), Some(manager)),
+        console: tools::app_console::AppConsoleTool::new(store),
         ctx: tools::ToolContext {
             origin: tools::origin::Origin::User,
             session_key: "agent:app-motion:web".into(),
@@ -236,6 +249,7 @@ async fn a_recording_steps_the_pages_clock_and_a_failed_page_is_an_error() {
     assert!(fast.is_error, "{}", fast.content);
 
     a_picture_that_did_not_load_fails_both_tools_by_name(&rig).await;
+    the_console_hears_a_page_that_rewrote_itself(&rig).await;
 }
 
 /// A picture that did not load fails both tools, by name; the server
@@ -304,6 +318,28 @@ async fn a_picture_that_did_not_load_fails_both_tools_by_name(rig: &Rig) {
         assert!(r.text().await.unwrap().contains("<h1>Motion</h1>"), "route {route:?} is the entry page");
     }
     napp::app_view::revoke(&pass);
+}
+
+/// `app_console` shows what a page logged and threw after it rewrote
+/// itself (`document.open()` erases every window listener): the developer
+/// script the server puts in the owner's own app arms its capture again.
+/// Part of the one test above.
+async fn the_console_hears_a_page_that_rewrote_itself(rig: &Rig) {
+    let shot = rig
+        .shot
+        .execute_dyn(&rig.ctx, json!({ "path": "written-console.html", "width": 320, "height": 240, "wait_ms": 800 }))
+        .await;
+    assert!(shot.is_error && shot.content.contains("REWRITTEN-THROW y"), "{}", shot.content);
+    // The page's batches reach the bot on their own clock.
+    let mut read = String::new();
+    for _ in 0..50 {
+        read = rig.console.execute_dyn(&rig.ctx, json!({})).await.content;
+        if read.contains("REWRITTEN-LOG x") && read.contains("REWRITTEN-THROW y") {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    panic!("app_console has the log and the throw of the rewritten page: {read}");
 }
 
 /// The end-to-end check by hand: a 10-second 1080×1080 post at 30 fps,
