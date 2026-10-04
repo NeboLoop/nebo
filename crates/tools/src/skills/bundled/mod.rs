@@ -56,6 +56,7 @@ pub const BUNDLED_SKILL_FILES: &[(&str, &str, &str)] = &[
     ("app-studio", "references/gate.md", include_str!("app-studio/references/gate.md")),
     ("app-studio", "references/vite-build.md", include_str!("app-studio/references/vite-build.md")),
     ("app-studio", "references/when-it-breaks.md", include_str!("app-studio/references/when-it-breaks.md")),
+    ("app-studio", "references/sidecars.md", include_str!("app-studio/references/sidecars.md")),
     ("app-studio", "references/design-depth.md", include_str!("app-studio/references/design-depth.md")),
     ("app-studio", "references/decisions.md", include_str!("app-studio/references/decisions.md")),
     ("app-studio", "references/lane-a-example.md", include_str!("app-studio/references/lane-a-example.md")),

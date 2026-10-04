@@ -51,7 +51,8 @@ looks matter, Design Depth adds the studio method on top.
    no "tools off". If a tool is not in your list, load it (rule 3).
 3. **`app_status`, `app_reload`, `app_console`, `app_screenshot`, `generate_media`,
    `app_data` and `decide` are tools, never shell commands.** Load them once with
-   `find_tools(query: "select:app_status,app_reload,app_console,app_screenshot,generate_media")`.
+   `find_tools(query: "select:app_status,app_reload,app_console,app_screenshot,generate_media,code")`
+   at the start of every build or fix: `code` is how you read and check code.
    A tool missing from your list is not loaded yet; it is never "not available".
 4. **Never install a runtime.** No `brew install`, no `curl ... | bash`, no bun or
    node downloads. Lane A needs nothing; Lane B runs only on a bot that already
@@ -67,8 +68,9 @@ looks matter, Design Depth adds the studio method on top.
    are fixed in that same session, in the same files. Never start a second copy.
 9. **Never code around a missing SDK** (no `localStorage` fallback, no guard that
    skips the game). `NeboAppSDK` missing means the script tag is wrong: fix the tag.
-10. **Files under 20 KB each.** A bigger single write gets cut off. Split the page
-    into modules (`app.tsx`, `board.tsx`, `scene.ts`).
+10. **Small files in the fixed layout (Step 3A).** Each file under about 12 KB,
+    one concern per file, at most three files per `update_employee` call. Never
+    one big file: it can't be written in one call and every fix rewrites it.
 11. **Never bust the cache by hand** (`?v=2`, renaming files). `app_reload` is the reload.
 12. **Never bring back code the owner rejected.** Restoring a version he asks
     for, or the last good one after a bad change, is fine (rule 13).
@@ -183,12 +185,28 @@ one tool. `update_employee` compiles each `.ts`, `.tsx` and `.jsx` file in
 keeps your source in the app folder's `src/` (`src/app.tsx`). The page loads
 the `.js` names.
 
+Use this layout; don't design your own:
+
+```
+ui/index.html          the SDK tag and ./app.js, nothing else
+ui/app.jsx             the shell: layout, navigation, which screen shows
+ui/store.js            every storage read and write, in one place
+ui/screens/<name>.jsx  one screen each (home.jsx, booking.jsx, ...)
+ui/parts/<name>.jsx    pieces two screens share (card.jsx, nav.jsx)
+ui/style.css           all styles
+```
+
+Build order: `index.html`, `app.jsx` and `store.js` first (the page loads),
+then one screen per call, `app_reload` after each. A game keeps the same idea:
+`app.js` shell, then `scene`, `input`, `audio`, `config` modules.
+
 - Your own modules: `import { startScene } from './scene'` (or `./scene.tsx`);
   it becomes `./scene.js`. Always start with `./`.
 - npm packages: a bare import, pinned with `@version`:
   `import * as THREE from 'three@0.170.0'`. `react` and `react-dom` are pinned
   for you (18.3.1); JSX needs no `import React`.
 - Types are stripped, not checked. CSS is linked from `index.html`, never imported.
+- A local `import('./x')` loads only a file you also sent; never code-split.
 - A file that does not compile writes nothing, and the result names it as
   `file:line:column` with the reason. Fix that file and send the call again.
 
@@ -360,6 +378,11 @@ Motion post or trailer: `references/motion.md`.
 A game, or any page that takes the whole screen: read `references/games.md`
 before the brief (the window settings, tilt, tuning, the loop, input, audio,
 sprites and 3D).
+
+## A Server of Its Own
+
+Almost no app needs a sidecar (a native server beside the page). Before
+suggesting one, read `references/sidecars.md`.
 
 ## Publish
 

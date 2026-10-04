@@ -30,3 +30,19 @@ One loop for every fix:
 | The owner wants a new name | A rename, not a new app | `update_employee(name: "<old>", new_name: "<new>")`. Never delete |
 | `app_console` shows nothing at all | No view has loaded the page since the change | `app_screenshot`, then `app_console` again |
 | A change made it worse, or the owner wants it back ("how it was this morning") | | `app_status(history: true)`, pick the version by time, `app_reload(restore: "<id>")`. Never rewrite from memory |
+
+## An app built with a bundler, now blank
+
+A page built with Vite or Bun can reference a code-split chunk that was never
+written (`main-<hash>.js` imports `./SomeComponent`, which is missing). Don't
+rebuild with the bundler; move it to Lane A:
+
+1. Find the source (`src/`, or the app folder). Read it with `code(action: "outline")`.
+2. Split it into the Step 3A layout: `app.jsx` shell, `store.js`, one file per
+   screen, each under about 12 KB.
+3. Send `index.html` (the relative SDK tag, then `./app.js`), `app.jsx` and
+   `store.js` in one `update_employee` call; `app_reload`; the page loads.
+4. Send the screens, a few per call, reloading after each.
+5. Delete the old bundle files from `ui/` (`main-*.js`, `assets/index-*.js`,
+   `dist/`) once the new page works.
+
