@@ -1985,6 +1985,70 @@ async fn a_message_during_a_running_turn_is_taken_in_with_no_busy_notice() {
     }
 }
 
+/// A message the owner sends from outside a composer (the app console's
+/// "Send to") while the employee is working is named, like a typed one, on
+/// every event about it: shown, held behind the work, taken in. Live
+/// 2026-10-04: Salon Manager was mid-turn when he pressed "Send to"; the
+/// message went unnamed, his phone held it as waiting and never saw it taken
+/// in, and it showed only after he left the chat and came back.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_owner_message_sent_while_busy_is_named_from_shown_to_taken_in() {
+    let nebo = session().await;
+    const KEY: &str = "proof:app:busy-send";
+    let rules: Vec<Rule> = vec![Box::new(|t| {
+        if !t.opener().contains("MARK-BS1") {
+            return None;
+        }
+        if t.says("MARK-BS2") && t.answered("FIRST-BS") && !t.answered("HEARD-BS") {
+            return Some(Step::say("HEARD-BS"));
+        }
+        (!t.answered("FIRST-BS")).then(|| Step::held("gbs", "FIRST-BS"))
+    })];
+    let rig = Rig::new(&nebo, rules).await;
+    let mut hub = nebo.state.hub.subscribe();
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let collect = {
+        let seen = seen.clone();
+        tokio::spawn(async move {
+            loop {
+                match hub.recv().await {
+                    Ok(e) if e.payload["session_id"] == KEY => seen.lock().unwrap().push(e),
+                    Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(_) => break,
+                }
+            }
+        })
+    };
+    rig.owner_writes(KEY, "", None, "MARK-BS1 fix the blank page").await;
+    rig.until(20, "the first call is out", || rig.company.calls_naming("MARK-BS1") > 0).await;
+    crate::handlers::ws::dispatch_owner_message(&nebo.state, KEY, "", "MARK-BS2 these errors came up".into(), None).await;
+    rig.company.open("gbs");
+    rig.until(30, "the running turn hears it", || {
+        rig.thread(KEY).iter().any(|m| m.role == "assistant" && m.content.contains("HEARD-BS"))
+    })
+    .await;
+    rig.until(20, "the turn is over", || !rig.busy(KEY)).await;
+
+    collect.abort();
+    let seen = std::mem::take(&mut *seen.lock().unwrap());
+    let shown = seen
+        .iter()
+        .find(|e| e.event_type == "chat_user_message" && e.payload["content"].as_str().is_some_and(|c| c.contains("MARK-BS2")))
+        .expect("the message is shown in the open chat");
+    let id = shown.payload["message_id"].as_str().filter(|s| !s.is_empty()).expect("named when shown");
+    assert!(
+        seen.iter().any(|e| e.event_type == "chat_complete"
+            && e.payload["stop_reason"] == agent::harness::session_gate::QUEUED_INTO_RUNNING_TURN
+            && e.payload["message_id"] == id),
+        "held behind the work under the same name"
+    );
+    assert!(
+        seen.iter().any(|e| e.event_type == "chat_taken_in"
+            && e.payload["message_ids"].as_array().is_some_and(|ids| ids.iter().any(|v| v == id))),
+        "taken in under the same name"
+    );
+}
+
 /// B14: a turn woken by a helper's result in a Slack conversation posts
 /// its reply into that conversation (its thread), as a loop or phone turn
 /// replies to its own (B13).
