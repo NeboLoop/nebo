@@ -60,6 +60,7 @@ pub const BUNDLED_SKILL_FILES: &[(&str, &str, &str)] = &[
     ("app-studio", "references/decisions.md", include_str!("app-studio/references/decisions.md")),
     ("app-studio", "references/lane-a-example.md", include_str!("app-studio/references/lane-a-example.md")),
     ("app-studio", "references/sdk-more.md", include_str!("app-studio/references/sdk-more.md")),
+    ("app-studio", "references/app-data.md", include_str!("app-studio/references/app-data.md")),
     ("app-studio", "references/motion.md", include_str!("app-studio/references/motion.md")),
     ("app-studio", "scripts/gate.js", include_str!("app-studio/scripts/gate.js")),
     ("app-studio", "LICENSE-THIRD-PARTY.txt", include_str!("app-studio/LICENSE-THIRD-PARTY.txt")),
@@ -300,7 +301,7 @@ mod bundled_skill_tests {
         // The skill points to its references; the design method (one of them)
         // is the map of the studio's own files.
         let method = bundled_files("app-studio").find(|(p, _)| *p == "references/design-depth.md").expect("the method ships").1;
-        for named in ["design-depth.md", "decisions.md", "games.md", "lane-a-example.md", "sdk-more.md", "vite-build.md", "when-it-breaks.md"] {
+        for named in ["design-depth.md", "decisions.md", "games.md", "lane-a-example.md", "sdk-more.md", "app-data.md", "vite-build.md", "when-it-breaks.md"] {
             assert!(content.contains(&format!("references/{named}")), "the skill points to {named}");
             assert!(files.contains(&format!("references/{named}").as_str()), "references/{named} ships");
         }
