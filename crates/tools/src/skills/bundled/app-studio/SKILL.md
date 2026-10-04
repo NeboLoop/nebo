@@ -125,8 +125,8 @@ create_employee(draft_id: "<the id it returned>")
   `orientation` (`portrait` default, `landscape`, `any`), `pull_to_refresh`,
   `voice`, `open_on_work` and nothing else.
 - Off unless set (never on fullscreen): `pull_to_refresh: true` (the phone's
-  pull-down reload, never on a canvas or game); `voice: true` (the chat's
-  dictate and voice buttons in the phone bar, for an app directed by talking).
+  pull-down reload, never on a canvas); `voice: true` (the chat's
+  dictate and voice buttons in the phone bar, for an app run by talking).
 - `permissions`: `storage:readwrite`, `subagent:<employee-id>`, `network:<host>`
   or `network:*` (the proxy fetch), `device:motion` (tilt).
 
