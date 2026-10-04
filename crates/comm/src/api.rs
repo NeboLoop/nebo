@@ -1985,12 +1985,9 @@ impl NeboAIApi {
             .map_err(|e| CommError::Other(format!("fetch failed: {}", e)))?
         {
             Ok(resp) => resp,
-            Err((status, body)) => {
-                return Err(CommError::Other(format!(
-                    "NeboAI returned {}: {}",
-                    status, body
-                )));
-            }
+            // The status stays readable: a removed file (410) is told
+            // apart from any other refusal.
+            Err((status, body)) => return Err(CommError::Http { status: status.as_u16(), body }),
         };
 
         resp.bytes()
@@ -2233,6 +2230,35 @@ mod tests {
         api.lease.granted(1, std::time::Duration::from_secs(60), std::time::Instant::now());
         let inbox = api.push_inbox_item(&serde_json::json!({"id": "x"})).await;
         assert!(!matches!(inbox, Err(CommError::Paused)), "{inbox:?}");
+    }
+
+    /// A file the hub removed after its keeping period answers 410; the
+    /// download keeps that status readable, so the bot can pass it on.
+    #[tokio::test]
+    async fn a_removed_file_keeps_its_status() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let Ok((mut sock, _)) = listener.accept().await else {
+                return;
+            };
+            let mut buf = vec![0u8; 8192];
+            let _ = sock.read(&mut buf).await;
+            let body = r#"{"error":"This file was removed 30 days after it was uploaded."}"#;
+            let resp = format!(
+                "HTTP/1.1 410 Gone\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = sock.write_all(resp.as_bytes()).await;
+        });
+        let api = NeboAIApi::new(format!("http://{addr}"), "bot".into(), "token".into());
+        match api.download_file("f1").await {
+            Err(CommError::Http { status: 410, body }) => {
+                assert!(body.contains("removed 30 days"), "{body}")
+            }
+            other => panic!("want a 410, got {other:?}"),
+        }
     }
 
     /// A hub that honours only `good` and refuses every other bearer as

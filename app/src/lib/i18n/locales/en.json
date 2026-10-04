@@ -302,6 +302,7 @@
 		"messageChannel": "Message #{channel}...",
 		"messagedCoworker": "Messaged",
 		"disclaimer": "Nebo can make mistakes. Verify important information.",
+		"uploadsKept": "Uploads are kept for 30 days.",
 		"goodMorning": "Good morning",
 		"goodAfternoon": "Good afternoon",
 		"goodEvening": "Good evening",

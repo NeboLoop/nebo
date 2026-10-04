@@ -17,7 +17,7 @@
   import { formatTime } from '$lib/time';
   import { getWebSocketClient } from '$lib/websocket/client';
   import type { Agent, ChatMessage as ApiChatMessage } from '$lib/api/neboComponents';
-  import { uploadFiles } from '$lib/api/upload';
+  import { uploadFailureMessage, uploadFiles } from '$lib/api/upload';
   import { getChat } from '$lib/api/nebo';
 
   const PENDING_SEND_PREFIX = 'nebo:pending-send:';
@@ -317,7 +317,7 @@
         // Named so the arrival event says whose it is and where it came from.
         attachments = await uploadFiles(files.map(f => f.file), { agentId, chatId: threadId });
       } catch (e) {
-        chat.setError(`File upload failed — message not sent. ${e instanceof Error ? e.message : ''}`.trim());
+        chat.setError(uploadFailureMessage(e));
         return;
       }
     }

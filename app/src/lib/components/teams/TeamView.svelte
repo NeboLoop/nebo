@@ -23,7 +23,7 @@
   import Pencil from 'lucide-svelte/icons/pencil';
   import NewTeamModal from '$lib/components/teams/NewTeamModal.svelte';
   import { getTeamMessages, sendTeamMessage, stopTeamWork, teamWorking } from '$lib/api/nebo';
-  import { uploadFiles } from '$lib/api/upload';
+  import { isStorageFull, uploadFiles } from '$lib/api/upload';
   import { stripAttachmentNotes, type UploadedAttachment } from '$lib/types/attachment';
   import type { Team, TeamMessage } from '$lib/api/neboComponents';
   import { getWebSocketClient } from '$lib/websocket/client';
@@ -257,9 +257,11 @@
           ? messages.filter((m) => m.id !== tempId)
           : messages.map((m) => (m.id === tempId ? { ...m, id: resp.messageId } : m));
       }
-    } catch {
+    } catch (e) {
       // The post did not land: take the row back so the thread stays honest.
       messages = messages.filter((m) => m.id !== tempId);
+      // A full account is said plainly where the post was made.
+      if (isStorageFull(e)) notice = e.message;
     } finally {
       sending = false;
     }

@@ -17,7 +17,7 @@
   import { createChatController } from '$lib/chat/controller.svelte';
   import { toMentionAgent } from '$lib/chat/roster';
   import { appKey } from '$lib/chat/sessionKey';
-  import { uploadFiles } from '$lib/api/upload';
+  import { uploadFailureMessage, uploadFiles } from '$lib/api/upload';
   import type { UploadedAttachment } from '$lib/types/attachment';
 
   // The embed's agent and session never change without a full reload.
@@ -182,7 +182,7 @@
         try {
           attachments = await uploadFiles(files.map(f => f.file), { agentId });
         } catch (e) {
-          chat.setError(`File upload failed — message not sent. ${e instanceof Error ? e.message : ''}`.trim());
+          chat.setError(uploadFailureMessage(e));
           return;
         }
       }
