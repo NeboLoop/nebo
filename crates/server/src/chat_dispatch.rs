@@ -2163,7 +2163,7 @@ fn to_app_artifact_url(image_url: &str) -> Option<String> {
     };
     let files_dir = config::data_dir().ok()?.join("files");
     let p = std::path::Path::new(&abs_path);
-    if !media_bytes_match(p) {
+    if !tools::file_tool::media_bytes_match(p) {
         tracing::warn!(path = %p.display(), "run-produced media rejected: file bytes don't match its extension (likely a saved error page)");
         return None;
     }
@@ -2223,52 +2223,6 @@ fn content_hash(path: &std::path::Path) -> Option<String> {
     Some(hex::encode(hasher.finalize()))
 }
 
-/// True when a media-extension file's leading bytes actually look like that
-/// media type. Catches the classic failure of a download tool saving an HTML
-/// error page (403/404 body) as `.jpg` — which then renders as a broken tile
-/// and poisons any document that embeds it. Non-media extensions pass through.
-fn media_bytes_match(path: &std::path::Path) -> bool {
-    let ext = path
-        .extension()
-        .map(|e| e.to_string_lossy().to_lowercase())
-        .unwrap_or_default();
-    if !MEDIA_EXTS.contains(&ext.as_str()) {
-        return true;
-    }
-    let mut head = [0u8; 16];
-    let n = match std::fs::File::open(path)
-        .and_then(|mut f| std::io::Read::read(&mut f, &mut head))
-    {
-        Ok(n) => n,
-        Err(_) => return true, // unreadable here ≠ corrupt; let serving decide
-    };
-    let head = &head[..n];
-    // A real picture under another picture's name (a JPEG saved as .png, as
-    // image models answer) is still a picture: every client decodes it by its
-    // bytes. Only bytes that are no picture at all (an error page) are refused.
-    let picture = head.starts_with(&[0xFF, 0xD8, 0xFF])
-        || head.starts_with(&[0x89, b'P', b'N', b'G'])
-        || head.starts_with(b"GIF8")
-        || (head.starts_with(b"RIFF") && n >= 12 && &head[8..12] == b"WEBP");
-    match ext.as_str() {
-        "jpg" | "jpeg" | "png" | "gif" | "webp" => picture,
-        "svg" => {
-            let s = String::from_utf8_lossy(head).to_lowercase();
-            s.starts_with("<svg") || s.starts_with("<?xml")
-        }
-        "mp4" | "mov" => n >= 8 && &head[4..8] == b"ftyp",
-        "webm" => head.starts_with(&[0x1A, 0x45, 0xDF, 0xA3]),
-        _ => true,
-    }
-}
-
-/// Media (image/video/audio) artifacts render inline and are never versioned.
-/// Mirrors the app's `MEDIA_MIME` (`app/src/lib/chat/controller.svelte.ts`).
-const MEDIA_EXTS: &[&str] = &[
-    "png", "jpg", "jpeg", "gif", "webp", "svg", "mp4", "webm", "mov", "mp3", "m4a", "wav", "ogg",
-    "aac", "flac",
-];
-
 fn artifact_ext(url: &str) -> String {
     url.rsplit('/')
         .next()
@@ -2318,7 +2272,7 @@ fn version_app_artifacts(
             let bare = serde_json::Value::String(url.clone());
             let ext = artifact_ext(url);
             // Media renders inline — never versioned.
-            if MEDIA_EXTS.contains(&ext.as_str()) {
+            if tools::file_tool::MEDIA_EXTS.contains(&ext.as_str()) {
                 return bare;
             }
             // Only flat /api/v1/files/<name> artifacts are local + versionable.
@@ -2857,7 +2811,7 @@ mod tests {
 #[cfg(test)]
 mod media_tests {
     use super::{
-        artifact_ext, artifact_kind, media_bytes_match, mime_from_extension,
+        artifact_ext, artifact_kind, mime_from_extension,
         strip_local_image_markdown,
     };
 
@@ -2889,6 +2843,7 @@ mod media_tests {
     /// — the classic saved-error-page-as-.jpg poisoning a document.
     #[test]
     fn media_bytes_gate_catches_html_saved_as_jpg() {
+        use tools::file_tool::media_bytes_match;
         let dir = tempfile::tempdir().unwrap();
         let fake = dir.path().join("photo.jpg");
         std::fs::write(&fake, b"<html>404 Not Found</html>").unwrap();
@@ -2912,6 +2867,7 @@ mod media_tests {
     /// NOT treated as corrupt (serving decides later).
     #[test]
     fn media_bytes_gate_only_judges_media_extensions() {
+        use tools::file_tool::media_bytes_match;
         let dir = tempfile::tempdir().unwrap();
         let txt = dir.path().join("notes.txt");
         std::fs::write(&txt, b"<html>looks like html but is a txt</html>").unwrap();
