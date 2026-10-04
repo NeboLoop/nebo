@@ -140,6 +140,65 @@ pub fn replace_text(value: &mut Value, find: &str, with: &str) -> usize {
     n
 }
 
+/// The part of `value` at a dotted `path` (`screens.2.html`): object keys by
+/// name, list items by index. Refused, with the segment that can't be
+/// followed, when the path leads nowhere.
+pub fn at_path<'a>(value: &'a Value, path: &str) -> Result<&'a Value, String> {
+    let mut here = value;
+    for (n, part) in path.split('.').enumerate() {
+        here = match here {
+            Value::Object(m) => m.get(part),
+            Value::Array(a) => part.parse::<usize>().ok().and_then(|i| a.get(i)),
+            _ => None,
+        }
+        .ok_or_else(|| unfollowable(path, n, part, here))?;
+    }
+    Ok(here)
+}
+
+/// Puts `new` at a dotted `path` inside `value`, changing nothing else. A
+/// missing object key is created (as an object, when the path goes on); a
+/// list index equal to the list's length appends. A model builds a 30 KB
+/// site this way, a screen a call, instead of one reply that has to carry it
+/// all and is cut off.
+pub fn set_at_path(value: &mut Value, path: &str, new: Value) -> Result<(), String> {
+    let parts: Vec<&str> = path.split('.').collect();
+    let mut here = value;
+    for (n, part) in parts.iter().enumerate() {
+        let fill = || {
+            if n + 1 == parts.len() { Value::Null } else { Value::Object(Default::default()) }
+        };
+        here = match here {
+            Value::Object(m) => m.entry(part.to_string()).or_insert_with(fill),
+            Value::Array(a) => match part.parse::<usize>() {
+                Ok(i) if i < a.len() => &mut a[i],
+                Ok(i) if i == a.len() => {
+                    a.push(fill());
+                    a.last_mut().expect("just pushed")
+                }
+                _ => return Err(unfollowable(path, n, part, &Value::Array(std::mem::take(a)))),
+            },
+            other => return Err(unfollowable(path, n, part, other)),
+        };
+    }
+    *here = new;
+    Ok(())
+}
+
+/// Why a path segment can't be followed, in words a model can act on.
+fn unfollowable(path: &str, n: usize, part: &str, at: &Value) -> String {
+    let before = path.split('.').take(n).collect::<Vec<_>>().join(".");
+    let place = if before.is_empty() { "the value".to_string() } else { format!("'{before}'") };
+    let what = match at {
+        Value::Object(_) => "an object without that key".to_string(),
+        Value::Array(a) if a.is_empty() => "an empty list (index 0 appends)".to_string(),
+        Value::Array(a) => format!("a list of {} (indexes 0 to {}; {} appends)", a.len(), a.len() - 1, a.len()),
+        Value::String(_) => "text".to_string(),
+        other => other.to_string(),
+    };
+    format!("Path '{path}' can't be followed at '{part}': {place} is {what}.")
+}
+
 /// The change event's payload.
 pub fn changed(app_id: &str, keys: &[&str], action: &str, source: &str) -> Value {
     json!({ "appId": app_id, "keys": keys, "action": action, "source": source })
@@ -297,22 +356,40 @@ impl AppDataTool {
             .and_then(Value::as_u64)
             .map(|n| (n as usize).clamp(1, MAX_LIMIT))
             .unwrap_or(DEFAULT_LIMIT);
+        let path = input.get("path").and_then(Value::as_str).map(str::trim).filter(|p| !p.is_empty());
         let prefix = &chat_key(input.get("prefix").and_then(Value::as_str).unwrap_or(""), chat)?;
         let prefix = prefix.as_str();
         match action {
             "get" => {
                 need_key()?;
-                Ok(match read(&self.store, &app.id, key)? {
-                    Some(raw) => json!({ "key": key, "value": decode(&raw) }).to_string(),
-                    None => format!("No key '{key}' in {}'s data.", app.name),
-                })
+                let Some(raw) = read(&self.store, &app.id, key)? else {
+                    return Ok(format!("No key '{key}' in {}'s data.", app.name));
+                };
+                let value = decode(&raw);
+                Ok(match path {
+                    Some(path) => json!({ "key": key, "path": path, "value": at_path(&value, path)? }),
+                    None => json!({ "key": key, "value": value }),
+                }
+                .to_string())
             }
             "set" => {
                 need_key()?;
-                let value = given_value(input.get("value").ok_or("'set' needs a value.")?)?;
+                let given = given_value(input.get("value").ok_or("'set' needs a value.")?)?;
+                let value = match path {
+                    None => given,
+                    Some(path) => {
+                        let mut whole = match read(&self.store, &app.id, key)? {
+                            Some(raw) => decode(&raw),
+                            None => Value::Object(Default::default()),
+                        };
+                        set_at_path(&mut whole, path, given).map_err(|e| format!("Nothing was saved. {e}"))?;
+                        whole
+                    }
+                };
                 write(&self.store, &app.id, key, &encode(&value))?;
                 self.notify(&app.id, key, "set");
-                Ok(format!("Saved '{key}'. Open views of {} were told to refresh.", app.name))
+                let at = path.map(|p| format!(" at '{p}'")).unwrap_or_default();
+                Ok(format!("Saved '{key}'{at}. Open views of {} were told to refresh.", app.name))
             }
             "replace" => {
                 need_key()?;
@@ -379,7 +456,10 @@ impl DynTool for AppDataTool {
 
     fn description(&self) -> String {
         "Reads and changes your own app's data: the same key-value store your page reads and writes with \
-         nebo.storage (same keys, same values). Actions: get (key), set (key, value: any JSON), replace (key, find, \
+         nebo.storage (same keys, same values). Actions: get (key, path?), set (key, value: any JSON, path?: a \
+         dotted path into the stored value, list items by index, e.g. \"screens.2.html\"; only that spot \
+         changes, missing keys are created, an index equal to the list's length appends; build a large value \
+         a piece per call this way), replace (key, find, \
          with: change one exact piece of text inside the value, e.g. a heading in a page, without writing the \
          whole value again; find must match one place), delete (key), \
          list (prefix?, limit?), query (prefix?, where: {field: value} — text matches when the field contains it, \
@@ -399,6 +479,7 @@ impl DynTool for AppDataTool {
                 "find": { "type": "string", "description": "The exact text to change, inside the key's value (replace). It must match one place." },
                 "with": { "type": "string", "description": "The text to put in its place (replace)." },
                 "key": { "type": "string", "description": "The storage key (get, set, delete)." },
+                "path": { "type": "string", "description": "A dotted path into the key's value, list items by index: \"screens.2.html\", \"theme.accent\" (get, set). Set changes only that spot." },
                 "value": { "description": "The value to store (set): any JSON, the way the page stores it." },
                 "prefix": { "type": "string", "description": "Only keys starting with this (list, query)." },
                 "where": {
