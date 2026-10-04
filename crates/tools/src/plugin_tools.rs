@@ -72,6 +72,9 @@ pub struct PluginCliTool {
     service: String,
     description: String,
     hint: String,
+    /// The manifest's triggers, then its skills': a request that says one
+    /// loads this tool (`find_tools::triggered`).
+    triggers: Vec<String>,
     runner: Arc<PluginRunner>,
 }
 
@@ -85,12 +88,20 @@ impl PluginCliTool {
             .unwrap_or_else(|| crate::humanize::service_name(slug));
         let description = Self::describe(&runner, slug, &service, manifest.as_ref());
         let hint = search_hint(&service, manifest.as_ref());
+        let mut triggers: Vec<String> = Vec::new();
+        for t in manifest.iter().flat_map(|m| m.triggers.clone()).chain(runner.skill_triggers(slug)) {
+            let t = t.trim().to_lowercase();
+            if !t.is_empty() && !triggers.contains(&t) {
+                triggers.push(t);
+            }
+        }
         Self {
             name: plugin_tool_name(slug),
             slug: slug.to_string(),
             service,
             description,
             hint,
+            triggers,
             runner,
         }
     }
@@ -226,6 +237,10 @@ impl DynTool for PluginCliTool {
 
     fn search_hint(&self) -> &str {
         &self.hint
+    }
+
+    fn triggers(&self) -> &[String] {
+        &self.triggers
     }
 
     fn rule_key(&self, _input: &serde_json::Value) -> String {
@@ -589,6 +604,47 @@ mod tests {
         assert!(
             registry.get("plugin__ledgerly").await.is_none() && registry.get("ledger_invoice_send").await.is_none()
         );
+    }
+
+    /// An installed plugin's triggers, its manifest's and its skills', are
+    /// what a request about its work says: such a request finds its tool
+    /// (`find_tools::triggered`), one about other work doesn't. Live
+    /// 2026-10-03: the media plugin's triggers reached only eight words of
+    /// its search hint, and "What's in the video?" went to the shell.
+    #[tokio::test]
+    async fn a_request_about_a_plugins_work_finds_its_tool_by_its_triggers() {
+        let tmp = tempfile::tempdir().unwrap();
+        install(
+            tmp.path(),
+            "clipper",
+            serde_json::json!({"name": "Clipper", "description": "Edit and inspect video files.", "triggers": ["Video", "how long", "trim"]}),
+            &["clip"],
+        );
+        std::fs::write(
+            tmp.path().join("plugins/clipper/0.1.0/skills/clip/SKILL.md"),
+            "---
+name: clip
+description: Trim a clip.
+triggers:
+  - frame rate
+  - trim
+---
+",
+        )
+        .unwrap();
+        let (registry, _store) = registry(tmp.path()).await;
+        let entries = registry.deferred_entries().await;
+        let entry = entries.iter().find(|e| e.definition.name == "plugin__clipper").expect("the plugin's tool");
+        assert_eq!(entry.triggers, ["video", "how long", "trim", "frame rate"]);
+        let found = |request: &str| -> Vec<String> {
+            crate::find_tools::triggered(&entries, request, crate::find_tools::TRIGGERED_MAX)
+                .into_iter()
+                .map(|e| e.definition.name.clone())
+                .collect()
+        };
+        assert_eq!(found("What's in the downloadgram video in my Downloads?"), ["plugin__clipper"]);
+        assert_eq!(found("What frame rate is it?"), ["plugin__clipper"], "a skill's trigger");
+        assert!(!found("Send the invoice to Kristi").contains(&"plugin__clipper".to_string()));
     }
 
     /// An installed plugin that is not connected still has its tool (it is

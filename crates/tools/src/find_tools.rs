@@ -35,11 +35,16 @@ const FILLER: &[&str] = &[
 
 const DEFAULT_MAX_RESULTS: usize = 5;
 
+/// Most deferred tools one request loads by their triggers.
+pub const TRIGGERED_MAX: usize = 3;
+
 /// A deferred tool as the search sees it.
 #[derive(Debug, Clone)]
 pub struct DeferredEntry {
     pub definition: ai::ToolDefinition,
     pub search_hint: String,
+    /// What a request says when it is about this tool (`DynTool::triggers`).
+    pub triggers: Vec<String>,
 }
 
 pub struct FindToolsTool {
@@ -249,6 +254,44 @@ fn score(e: &DeferredEntry, words: &[String]) -> i32 {
     total
 }
 
+/// The deferred tools `request` is about, by their triggers, best first:
+/// the most trigger words said, then by name; at most `max`. A trigger is
+/// said when its words stand together in the request as whole words, a
+/// plural `s` or `es` allowed ("videos" says "video"; "information" never
+/// says "format"). Live 2026-10-03: an installed media plugin's triggers
+/// ("video", "how long") were matched against nothing, and the employee
+/// did every media request through the shell.
+pub fn triggered<'a>(catalog: &'a [DeferredEntry], request: &str, max: usize) -> Vec<&'a DeferredEntry> {
+    let said = text_words(request);
+    let mut scored: Vec<(usize, &DeferredEntry)> = catalog
+        .iter()
+        .map(|e| {
+            let words: usize = e
+                .triggers
+                .iter()
+                .map(|t| text_words(t))
+                .filter(|t| !t.is_empty() && says(&said, t))
+                .map(|t| t.len())
+                .sum();
+            (words, e)
+        })
+        .filter(|(words, _)| *words > 0)
+        .collect();
+    scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.definition.name.cmp(&b.1.definition.name)));
+    scored.into_iter().take(max).map(|(_, e)| e).collect()
+}
+
+/// Whether the words `phrase` stand together in `said`.
+fn says(said: &[String], phrase: &[String]) -> bool {
+    said.windows(phrase.len())
+        .any(|w| w.iter().zip(phrase).all(|(s, p)| same_word(s, p)))
+}
+
+/// The trigger word `word`, or its plural.
+fn same_word(said: &str, word: &str) -> bool {
+    said == word || said.strip_suffix('s') == Some(word) || said.strip_suffix("es") == Some(word)
+}
+
 /// A text's words, lowercased, without punctuation.
 fn text_words(text: &str) -> Vec<String> {
     text.split(|c: char| !c.is_alphanumeric())
@@ -330,6 +373,7 @@ mod tests {
                 input_schema: json!({"type": "object", "properties": {}}),
             },
             search_hint: hint.to_string(),
+            triggers: Vec::new(),
         }
     }
 
@@ -380,6 +424,7 @@ mod tests {
         let catalog = vec![DeferredEntry {
             definition: ai::ToolDefinition { name: "mail_message_send".into(), description: "Sends an email.".into(), input_schema: schema },
             search_hint: String::new(),
+            triggers: Vec::new(),
         }];
         let out = answer(&catalog, "select:mail_message_send", 5);
         assert_eq!(serde_json::to_string(&out.loads).unwrap(), serde_json::to_string(&[&catalog[0].definition]).unwrap());
@@ -451,6 +496,54 @@ mod tests {
     fn max_results_bounds_a_keyword_search() {
         let out = answer(&catalog(), "create send shopify issue", 2);
         assert_eq!(names(&out).len(), 2);
+    }
+
+    fn with_triggers(name: &str, triggers: &[&str]) -> DeferredEntry {
+        DeferredEntry {
+            triggers: triggers.iter().map(|t| t.to_string()).collect(),
+            ..entry(name, "", "")
+        }
+    }
+
+    fn triggered_names(catalog: &[DeferredEntry], request: &str) -> Vec<String> {
+        triggered(catalog, request, TRIGGERED_MAX).into_iter().map(|e| e.definition.name.clone()).collect()
+    }
+
+    /// The owner's requests of 2026-10-03, which the media plugin's
+    /// triggers say and nothing loaded: each finds the plugin.
+    #[test]
+    fn a_request_finds_the_tool_its_triggers_say() {
+        let catalog = vec![
+            with_triggers("plugin__media", &["video", "image", "how long", "what's in this video", "instagram", "format"]),
+            with_triggers("plugin__ledger", &["invoice", "quickbooks bill"]),
+            entry("weather", "Weather.", "forecast"),
+        ];
+        for request in [
+            "What's in the downloadgram video in my Downloads?",
+            "Make Instagram post, story and square versions of the coffee cup image",
+            "How long are these videos?",
+        ] {
+            assert_eq!(triggered_names(&catalog, request), ["plugin__media"], "{request}");
+        }
+        assert_eq!(triggered_names(&catalog, "Pay the QuickBooks bill"), ["plugin__ledger"]);
+        // Whole words only: "information" doesn't say "format", and half a
+        // phrase doesn't say it.
+        assert!(triggered_names(&catalog, "Send me the information about the bill").is_empty());
+        assert!(triggered_names(&catalog, "how are you").is_empty());
+    }
+
+    /// More trigger words said rank first, and a request loads a bounded
+    /// number of tools.
+    #[test]
+    fn the_tool_a_request_says_most_comes_first_and_few_load() {
+        let catalog: Vec<DeferredEntry> = ["a", "b", "c", "d"]
+            .into_iter()
+            .map(|n| with_triggers(&format!("plugin__{n}"), &["code"]))
+            .chain([with_triggers("plugin__db", &["code", "postgres database"])])
+            .collect();
+        let found = triggered_names(&catalog, "Fix the code that talks to the Postgres database");
+        assert_eq!(found.len(), TRIGGERED_MAX);
+        assert_eq!(found[0], "plugin__db");
     }
 
     #[test]

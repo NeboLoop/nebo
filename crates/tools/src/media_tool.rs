@@ -839,6 +839,7 @@ impl DynTool for GenerateMediaTool {
            folder, an https URL or a data URL). `scrub: true` re-encodes it for scroll-scrubbing.\n\
          - Files go into the app's folder when you are an app or name one with `app`, else the workspace. `into` is a \
            path inside that folder, such as `assets/hero.png`.\n\
+         - It only makes new media. To edit, resize, convert or inspect an existing file, use an installed media plugin's tool instead.\n\
          - The result gives the files' paths, never the pictures; to look at one, use the vision helper on its path.\n\
          - Leave `model` out unless the owner named one."
             .to_string()
