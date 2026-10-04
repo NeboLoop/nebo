@@ -92,6 +92,7 @@ impl DynTool for Act {
             creates: list("creates"),
             widens: false,
             removes_employee: false,
+            reaches_owner: None,
         }
     }
     fn execute_dyn<'a>(

@@ -43,6 +43,10 @@ pub struct PermissionAskCard {
     pub sentence: String,
     /// Why it asked, in plain words.
     pub reason: String,
+    /// The command a shell ask would run, exactly: the card shows it when
+    /// the owner opens it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
     /// Whether "Allow always" is offered (a locked must-ask can't be loosened).
     pub allow_always: bool,
     /// Whether "This once" is offered (an employee's extra needs are granted
@@ -81,6 +85,10 @@ pub(crate) fn card(state: &AppState, ask: &Ask) -> PermissionAskCard {
         session_key: ask.session_key.clone(),
         sentence: ask.sentence.clone(),
         reason: ask.reason().to_string(),
+        command: match &ask.target.field {
+            Some(RuleField::CommandPrefix(c)) => Some(c.clone()),
+            _ => None,
+        },
         allow_always: ask.allow_always_offered(&state.store),
         this_once: ask.this_once_offered(),
         status: status.to_string(),
@@ -1174,6 +1182,10 @@ fn ask_sentence(store: &db::Store, case: &AskCase) -> String {
         AskCase::AskMode => "Ask mode: it asks before changing anything".into(),
         AskCase::Widens => "It would give an employee more room, which only you can do".into(),
         AskCase::RemovesEmployee => "It would delete an employee, which needs your OK every time".into(),
+        AskCase::ReachesOwner { reach } => {
+            let what = reach.sentence();
+            format!("{}{}, which needs your OK", what[..1].to_uppercase(), &what[1..])
+        }
         AskCase::CreatedExtras { capabilities } => {
             let needs: Vec<String> = capabilities.iter().map(|c| lower_first(&capability_phrase(c))).collect();
             format!("An employee it made needs more than it holds: {}", needs.join(", "))

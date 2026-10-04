@@ -4,7 +4,8 @@
   A `send_check` card asks instead whether a send whose outcome never came
   back went out: It went out · It didn't go out.
   The same card sits in the chat whose own flow raised it, the Inbox and the
-  dashboard; the first answer anywhere wins. Open, it is a tinted ask card
+  dashboard; the first answer anywhere wins. A shell command's exact words
+  sit under the sentence on one line, in full when tapped. Open, it is a tinted ask card
   (.ask-card); answered, it collapses in place to a muted one-line receipt:
   Allowed · always, Allowed · this once, Declined, or No longer needed,
   followed by what was asked. Tapping the receipt shows the ask read-only.
@@ -51,6 +52,9 @@
   <div class="ask-card permission-ask-card">
     <p class="permission-ask-title">{title}</p>
     <p class="permission-ask-sentence">{sentence}. <span class="permission-ask-reason">{shown.reason}</span></p>
+    {#if shown.command}
+      <details class="permission-ask-command"><summary class="permission-ask-command-line">{shown.command}</summary></details>
+    {/if}
     {#if sendCheck}
       <div class="permission-ask-actions">
         <button type="button" class="btn btn-primary btn-sm rounded-full" disabled={busy} onclick={() => answer('sent')}>{$t('permissionAsk.sent')}</button>

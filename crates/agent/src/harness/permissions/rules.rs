@@ -148,6 +148,27 @@ impl RuleSet {
         self.allowed_by(t, |r| matches!(r.source, RuleSource::AllowAlways { .. }))
     }
 
+    /// Whether the owner allowed every command of `t` that watches him or
+    /// drives his apps ([`tools::policy::reach_of`]): an allow he wrote for
+    /// that command himself, on the Permissions page or by answering "Allow
+    /// always". An allow of the whole shell, a capability or one a package
+    /// wrote never covers them, and a call whose command can't be read
+    /// isn't covered.
+    pub fn reach_allowed(&self, t: &Target) -> bool {
+        let reaching: Vec<Subcommand> =
+            pieces(t).into_iter().flatten().filter(|s| tools::policy::reach_of(s).is_some()).collect();
+        !reaching.is_empty() && reaching.iter().all(|s| self.reach_piece_allowed(t, s))
+    }
+
+    /// Whether the owner allowed this one command of `t` (see
+    /// [`RuleSet::reach_allowed`]).
+    pub fn reach_piece_allowed(&self, t: &Target, piece: &Subcommand) -> bool {
+        self.piece_allowed_by(t, Some(piece), |r| {
+            matches!(r.field, Some(RuleField::CommandPrefix(_)))
+                && matches!(r.source, RuleSource::Owner | RuleSource::AllowAlways { .. })
+        })
+    }
+
     /// The job's folders (see [`types::permissions::folders_of`]).
     pub fn folders(&self) -> Vec<PathBuf> {
         let rules: Vec<Rule> = self.all().cloned().collect();

@@ -117,19 +117,28 @@ impl DynTool for RunCommandTool {
         Some("shell")
     }
 
-    /// What the command removes, rewrites and creates (`policy::shell_effects`).
+    /// What the command removes, rewrites and creates (`policy::shell_effects`),
+    /// and what it reaches on the owner's computer (`policy::owner_reach`).
     fn effects(&self, input: &Value) -> types::permissions::CallEffects {
-        match str_arg(input, "command") {
+        let mut fx = match str_arg(input, "command") {
             Some(c) if !crate::policy::is_read_only(c) => crate::policy::shell_effects(c, str_arg(input, "cwd")),
             _ => types::permissions::CallEffects::none(),
-        }
+        };
+        fx.reaches_owner = str_arg(input, "command").and_then(crate::policy::owner_reach);
+        fx
     }
 
     fn max_result_chars(&self, _input: &Value) -> Option<usize> {
         Some(crate::MAX_SUBPROCESS_OUTPUT)
     }
 
+    /// The model's description of the command, except for one that watches
+    /// the owner or drives his apps: that says what it does in Nebo's words
+    /// ("capturing your screen"), whatever the description says.
     fn activity(&self, input: &Value) -> String {
+        if let Some(reach) = str_arg(input, "command").and_then(crate::policy::owner_reach) {
+            return reach.sentence();
+        }
         match str_arg(input, "description") {
             Some(d) => d.to_string(),
             None => format!("running `{}`", short(str_arg(input, "command").unwrap_or(""), 72)),

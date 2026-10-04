@@ -19,7 +19,9 @@ use std::sync::{Arc, OnceLock};
 
 use serde::{Deserialize, Serialize};
 use tools::ResolvedCall;
-use types::permissions::{AskCase, Door, Effect, Grant, MoneyLimit, Rule, RuleField, RuleKey, RuleSource, Scope, Target, Writer};
+use types::permissions::{
+    AskCase, Door, Effect, Grant, MoneyLimit, OwnerReach, Rule, RuleField, RuleKey, RuleSource, Scope, Target, Writer,
+};
 
 use super::{CheckCx, RuleSet};
 use crate::harness::delegation::notify::{AskOutcome, render_ask_outcome};
@@ -285,6 +287,12 @@ pub fn reason_of(case: &AskCase) -> &'static str {
         AskCase::AskMode => "This employee asks before it changes anything.",
         AskCase::Widens => "Only you can give an employee more room.",
         AskCase::RemovesEmployee => "Deleting an employee needs your OK every time.",
+        AskCase::ReachesOwner { reach } => match reach {
+            OwnerReach::Screen => "It would see what's on your screen.",
+            OwnerReach::Microphone => "It would hear what your microphone picks up.",
+            OwnerReach::Camera => "It would see what your camera sees.",
+            OwnerReach::App { .. } | OwnerReach::Input => "It would act in your apps as you.",
+        },
         AskCase::CreatedExtras { .. } => "It was made by another employee and needs more than that employee has.",
         AskCase::UnconfirmedSend { .. } => {
             "Nebo couldn't confirm it went out. Check the sent items, then say whether it did."
@@ -854,6 +862,9 @@ const MAX_COMMAND_RULES: usize = 5;
 /// it).
 pub fn allow_always_rules(store: &db::Store, ask: &Ask) -> Option<Vec<Rule>> {
     let t = &ask.target;
+    if let AskCase::ReachesOwner { .. } = ask.case {
+        return reach_rules(ask);
+    }
     let per_command = !matches!(
         ask.case,
         AskCase::OutsideJob { .. }
@@ -896,6 +907,32 @@ fn command_rules(ask: &Ask) -> Option<Vec<Rule>> {
     }
     out.truncate(MAX_COMMAND_RULES);
     Some(out)
+}
+
+/// One allow per command of the call that watches the owner or drives his
+/// apps and isn't allowed yet: the program (`screencapture`, `osascript`,
+/// `open -a`), so the next one is covered whatever its file or script.
+/// `None` when one of them can't be named.
+fn reach_rules(ask: &Ask) -> Option<Vec<Rule>> {
+    let t = &ask.target;
+    let rules = RuleSet::of(&ask.seat.grant);
+    let mut out: Vec<Rule> = Vec::new();
+    let mut reaching = false;
+    for piece in super::rules::pieces(t).into_iter().flatten() {
+        if tools::policy::reach_of(&piece).is_none() {
+            continue;
+        }
+        reaching = true;
+        if rules.reach_piece_allowed(t, &piece) {
+            continue;
+        }
+        let field = Some(RuleField::CommandPrefix(tools::policy::reach_prefix(&piece)?));
+        let key = RuleKey::Tool(t.key.clone());
+        if !out.iter().any(|r| r.key == key && r.field == field) {
+            out.push(standing_allow(ask, key, field, None));
+        }
+    }
+    reaching.then_some(out)
 }
 
 fn standing_allow(ask: &Ask, key: RuleKey, field: Option<RuleField>, money: Option<MoneyLimit>) -> Rule {
@@ -945,6 +982,7 @@ fn allow_always_rule(store: &db::Store, ask: &Ask) -> Rule {
         },
         AskCase::Irreversible { .. }
         | AskCase::AskMode
+        | AskCase::ReachesOwner { .. }
         | AskCase::Widens
         | AskCase::RemovesEmployee
         | AskCase::CreatedExtras { .. }
@@ -1919,5 +1957,172 @@ mod tests {
         assert!(r.seen.reminded.lock().unwrap().is_empty(), "an answered ask is not a reminder");
         assert!(r.asks.resume(&r.reg, &id, chrono::Utc::now().timestamp()).unwrap().is_none());
         assert_eq!(r.ran(1), 1, "once");
+    }
+
+    /// `run_command` as the shell tool resolves it (its rule field, effects
+    /// and activity), counting the commands instead of running them: no
+    /// screen is captured and no app is driven here.
+    struct ShellSpec {
+        spec: tools::command_tools::RunCommandTool,
+        ran: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl DynTool for ShellSpec {
+        fn name(&self) -> &str {
+            "run_command"
+        }
+        fn description(&self) -> String {
+            self.spec.description()
+        }
+        fn schema(&self) -> serde_json::Value {
+            self.spec.schema()
+        }
+        fn read_only(&self, input: &serde_json::Value) -> bool {
+            self.spec.read_only(input)
+        }
+        fn rule_field(&self, input: &serde_json::Value) -> Option<RuleField> {
+            self.spec.rule_field(input)
+        }
+        fn capability(&self, input: &serde_json::Value) -> Option<&'static str> {
+            self.spec.capability(input)
+        }
+        fn effects(&self, input: &serde_json::Value) -> types::permissions::CallEffects {
+            self.spec.effects(input)
+        }
+        fn activity(&self, input: &serde_json::Value) -> String {
+            self.spec.activity(input)
+        }
+        fn execute_dyn<'a>(
+            &'a self,
+            _ctx: &'a ToolContext,
+            input: serde_json::Value,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolResult> + Send + 'a>> {
+            self.ran.lock().unwrap().push(input["command"].as_str().unwrap_or("").to_string());
+            Box::pin(async { ToolResult::ok("RAN") })
+        }
+    }
+
+    impl Rig {
+        /// The shell, as `run_command` resolves its calls; what it ran.
+        async fn shell(&self) -> Arc<Mutex<Vec<String>>> {
+            let ran = Arc::new(Mutex::new(Vec::new()));
+            let machine = Arc::new(tools::file_tools::Machine::new(Arc::new(tools::ProcessRegistry::new()), None));
+            self.reg.register(Box::new(ShellSpec { spec: tools::command_tools::RunCommandTool(machine), ran: ran.clone() })).await;
+            ran
+        }
+
+        fn mode(&self, agent: &str, mode: Mode) {
+            self.store.set_permission_mode(&Scope::Employee(agent.into()), mode).unwrap();
+        }
+    }
+
+    fn command(c: &str) -> serde_json::Value {
+        json!({ "command": c, "description": "Look at the page" })
+    }
+
+    /// 2026-10-04: an employee with no recording tool ran `screencapture -x`
+    /// 90 times on the owner's display, with nothing asking. Capturing his
+    /// screen asks in every mode, Full Access included, in Nebo's own words
+    /// whatever the description says. "Allow always" keeps it for that
+    /// employee, so the next capture runs unasked, a scheduled one too;
+    /// another employee is still asked.
+    #[tokio::test]
+    async fn capturing_the_screen_asks_and_allow_always_keeps_it_for_the_employee() {
+        let r = rig().await;
+        let ran = r.shell().await;
+        for (agent, mode) in [("auto", Mode::Automatic), ("asker", Mode::Ask), ("emp", Mode::FullAccess)] {
+            r.mode(agent, mode);
+            let parked = r.reg.execute(&ctx(&format!("agent:{agent}:web"), Door::Chat), "run_command", command("screencapture -x /tmp/a.png")).await;
+            let id = parked.parked_ask.clone().unwrap_or_else(|| panic!("{mode:?}: {}", parked.content));
+            assert!(parked.content.starts_with("Waiting for the owner to allow: capturing your screen."), "{}", parked.content);
+            let ask = r.asks.get(&id).unwrap().unwrap();
+            assert_eq!(ask.case, AskCase::ReachesOwner { reach: OwnerReach::Screen });
+            assert_eq!((ask.sentence.as_str(), ask.reason()), ("capturing your screen", "It would see what's on your screen."));
+            assert!(ask.allow_always_offered(&r.store) && ask.this_once_offered(), "{mode:?}: all three answers");
+        }
+        assert!(ran.lock().unwrap().is_empty(), "nothing ran before the owner answered");
+
+        let id = r.asks.open(None).unwrap().into_iter().find(|a| a.agent_id == "emp").unwrap().id;
+        r.answer(&id, Answer::AllowAlways, AnsweredVia::Chat).await.unwrap();
+        assert_eq!(*ran.lock().unwrap(), vec!["screencapture -x /tmp/a.png"]);
+        let saved: Vec<Rule> = r.store.permission_rules("emp").unwrap();
+        assert_eq!(saved.len(), 1);
+        assert_eq!(
+            (&saved[0].scope, &saved[0].key, &saved[0].field, saved[0].effect),
+            (
+                &Scope::Employee("emp".into()),
+                &RuleKey::Tool("run_command".into()),
+                &Some(RuleField::CommandPrefix("screencapture".into())),
+                Effect::Allow
+            )
+        );
+        assert_eq!(saved[0].source, RuleSource::AllowAlways { ask_id: id });
+
+        // The next capture, another file, runs unasked; so does a scheduled
+        // one, which can't wait for anyone.
+        let next = r.reg.execute(&ctx("agent:emp:web", Door::Chat), "run_command", command("screencapture -x /tmp/b.png")).await;
+        assert_eq!((next.content.as_str(), next.parked_ask.is_none()), ("RAN", true));
+        let mut scheduled = ctx("agent:emp:cron:shots", Door::Schedule);
+        scheduled.cannot_wait = true;
+        let cron = r.reg.execute(&scheduled, "run_command", command("screencapture -x /tmp/c.png")).await;
+        assert_eq!(cron.content, "RAN");
+        assert_eq!(ran.lock().unwrap().len(), 3);
+        // Another employee is still asked.
+        r.mode("other", Mode::FullAccess);
+        let other = r.reg.execute(&ctx("agent:other:web", Door::Chat), "run_command", command("screencapture -x /tmp/d.png")).await;
+        assert!(other.parked_ask.is_some(), "{}", other.content);
+    }
+
+    /// No: it doesn't run, the employee is told plainly, and the same call
+    /// isn't asked again. A run that can't wait for the owner is refused.
+    #[tokio::test]
+    async fn no_blocks_capturing_the_screen_with_a_plain_message() {
+        let r = rig().await;
+        let ran = r.shell().await;
+        r.mode("emp", Mode::FullAccess);
+        let shot = command("screencapture -x /tmp/a.png");
+        let parked = r.reg.execute(&ctx(KEY, Door::Chat), "run_command", shot.clone()).await;
+        r.answer(&parked.parked_ask.unwrap(), Answer::No, AnsweredVia::Chat).await.unwrap();
+        assert!(ran.lock().unwrap().is_empty());
+        let told = r.seen.notes();
+        assert!(told[0].1.contains("\"capturing your screen\": declined\nIt did not run."), "{}", told[0].1);
+        let again = r.reg.execute(&ctx(KEY, Door::Chat), "run_command", shot.clone()).await;
+        assert!(again.is_error && again.parked_ask.is_none(), "{}", again.content);
+        assert!(again.content.starts_with("The owner already said no to this (capturing your screen)"), "{}", again.content);
+        let mut scheduled = ctx("agent:emp:cron:shots", Door::Schedule);
+        scheduled.cannot_wait = true;
+        let cron = r.reg.execute(&scheduled, "run_command", shot).await;
+        assert_eq!(
+            cron.content,
+            "Didn't run: capturing your screen. It needs the owner's OK, and a scheduled command can't wait for one. \
+             It would see what's on your screen."
+        );
+        assert_eq!((ran.lock().unwrap().len(), r.seen.cards()), (0, 1));
+    }
+
+    /// Driving another app asks, named; a command that only mentions one
+    /// of these programs, or opens a file in its own app, doesn't.
+    #[tokio::test]
+    async fn driving_an_app_asks_and_ordinary_commands_do_not() {
+        let r = rig().await;
+        let ran = r.shell().await;
+        r.mode("emp", Mode::FullAccess);
+        for c in [
+            r#"osascript -e 'tell application "Safari" to do JavaScript "location.href = 1" in document 1'"#,
+            "open -a Safari https://example.com",
+        ] {
+            let parked = r.reg.execute(&ctx(KEY, Door::Chat), "run_command", command(c)).await;
+            let id = parked.parked_ask.clone().unwrap_or_else(|| panic!("{c}: {}", parked.content));
+            let ask = r.asks.get(&id).unwrap().unwrap();
+            assert_eq!((ask.sentence.as_str(), ask.reason()), ("controlling Safari", "It would act in your apps as you."), "{c}");
+        }
+        for c in ["grep screencapture notes.txt", "echo osascript", "open file.pdf"] {
+            let t = r.reg.target("run_command", &command(c)).await.unwrap();
+            assert_eq!(t.effects.reaches_owner, None, "{c}");
+            let r2 = r.reg.execute(&ctx(KEY, Door::Chat), "run_command", command(c)).await;
+            assert_eq!((r2.content.as_str(), r2.parked_ask.is_none()), ("RAN", true), "{c}");
+        }
+        assert_eq!(*ran.lock().unwrap(), vec!["grep screencapture notes.txt", "echo osascript", "open file.pdf"]);
+        assert_eq!(r.seen.cards(), 2);
     }
 }

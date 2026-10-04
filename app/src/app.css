@@ -620,6 +620,15 @@
 .permission-ask-reason {
   @apply text-base-content/70;
 }
+.permission-ask-command-line {
+  @apply cursor-pointer list-none truncate font-mono text-xs text-base-content/70;
+}
+.permission-ask-command-line::-webkit-details-marker {
+  display: none;
+}
+.permission-ask-command[open] .permission-ask-command-line {
+  @apply whitespace-pre-wrap break-all;
+}
 .permission-ask-actions {
   @apply flex flex-wrap gap-2 pt-1;
 }

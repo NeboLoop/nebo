@@ -353,5 +353,5 @@ mod tests {
         assert!(chars < 8_000);
     }
 
-    const SYSTEM_PROMPT_CHARS: usize = 7_481;
+    const SYSTEM_PROMPT_CHARS: usize = 7_684;
 }
