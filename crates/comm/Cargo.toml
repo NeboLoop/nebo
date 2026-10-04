@@ -27,3 +27,6 @@ zstd = "0.13"
 getrandom = "0.2"
 uuid = { workspace = true }
 urlencoding = "2"
+
+[dev-dependencies]
+tempfile = "3"

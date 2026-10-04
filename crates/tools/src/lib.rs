@@ -300,11 +300,11 @@ pub async fn persist_skill_from_api(
         std::fs::create_dir_all(&napp_dir).map_err(|e| format!("create skill dir: {e}"))?;
         let napp_path = napp_dir.join(format!("{}.napp", version));
 
-        let mut downloaded: Option<Vec<u8>> = None;
+        let mut downloaded: Option<u64> = None;
         for candidate in &download_candidates {
-            match api.download_napp(candidate).await {
-                Ok(data) => {
-                    downloaded = Some(data);
+            match api.download_napp(candidate, &napp_path).await {
+                Ok(size) => {
+                    downloaded = Some(size);
                     break;
                 }
                 Err(e) => {
@@ -313,9 +313,8 @@ pub async fn persist_skill_from_api(
             }
         }
         match downloaded.ok_or_else(|| "all napp download candidates failed".to_string()) {
-            Ok(data) => {
-                std::fs::write(&napp_path, &data).map_err(|e| format!("write .napp: {e}"))?;
-                tracing::info!(skill = name, path = %napp_path.display(), size = data.len(), "stored .napp");
+            Ok(size) => {
+                tracing::info!(skill = name, path = %napp_path.display(), size, "stored .napp");
 
                 if napp::reader::is_sealed_napp(&napp_path) {
                     // Sealed (paid) skill — keep it sealed; the loader reads SKILL.md in
@@ -667,12 +666,12 @@ pub async fn persist_agent_from_api(
         }
 
         let napp_path = staged.path().join(format!("{}.napp", version));
-        let mut downloaded: Option<Vec<u8>> = None;
+        let mut downloaded: Option<u64> = None;
         let mut last_err = String::new();
         for candidate in &download_candidates {
-            match api.download_napp(candidate).await {
-                Ok(data) => {
-                    downloaded = Some(data);
+            match api.download_napp(candidate, &napp_path).await {
+                Ok(size) => {
+                    downloaded = Some(size);
                     break;
                 }
                 Err(e) => {
@@ -683,10 +682,9 @@ pub async fn persist_agent_from_api(
         }
         // A failed download of an advertised package is an install FAILURE —
         // propagate the real error so the UI shows it (staging is dropped clean).
-        let data =
+        let size =
             downloaded.ok_or_else(|| format!("download agent package for {name}: {last_err}"))?;
-        std::fs::write(&napp_path, &data).map_err(|e| format!("write .napp: {e}"))?;
-        tracing::info!(agent = name, path = %napp_path.display(), size = data.len(), "stored .napp");
+        tracing::info!(agent = name, path = %napp_path.display(), size, "stored .napp");
 
         sealed = napp::reader::is_sealed_napp(&napp_path);
         if sealed {
@@ -974,6 +972,74 @@ mod staged_install_tests {
             !final_dir.join("0.9.0").exists() && !final_dir.join("0.9.0.napp").exists(),
             "previous install must be replaced wholesale (no stale versions)"
         );
+    }
+
+    /// Serve `body` to every GET, in small writes, as a CDN would.
+    async fn serve(body: Vec<u8>) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((mut sock, _)) = listener.accept().await {
+                let body = body.clone();
+                tokio::spawn(async move {
+                    let mut req = Vec::new();
+                    let mut buf = [0u8; 1024];
+                    while !req.windows(4).any(|w| w == b"\r\n\r\n") {
+                        let n = sock.read(&mut buf).await.unwrap();
+                        if n == 0 {
+                            return;
+                        }
+                        req.extend_from_slice(&buf[..n]);
+                    }
+                    let head = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    sock.write_all(head.as_bytes()).await.unwrap();
+                    for chunk in body.chunks(16 * 1024) {
+                        if sock.write_all(chunk).await.is_err() {
+                            return;
+                        }
+                    }
+                });
+            }
+        });
+        format!("http://{addr}")
+    }
+
+    // An app package comes down to a file (never a whole buffer), verifies
+    // and extracts from that file, every asset intact.
+    #[tokio::test]
+    async fn a_signed_package_downloads_to_a_file_and_extracts() {
+        let mut x: u32 = 0x2545_f491;
+        let film: Vec<u8> = (0..(5 << 20) + 3)
+            .map(|_| {
+                x ^= x << 13;
+                x ^= x >> 17;
+                x ^= x << 5;
+                x as u8
+            })
+            .collect();
+        let package = napp::test_signing::signed_napp(&[
+            ("manifest.json", br#"{"id":"film","name":"Film","version":"1.0.0"}"#),
+            ("ui/index.html", b"<html><head></head></html>"),
+            ("ui/assets/intro.mp4", &film),
+        ]);
+        let base = serve(package.clone()).await;
+        let api = comm::api::NeboAIApi::new(base, "bot".into(), "token".into());
+
+        let root = tempfile::tempdir().unwrap();
+        let napp_path = root.path().join("1.0.0.napp");
+        let size = api.download_napp("/api/v1/apps/film/download/x.napp", &napp_path).await.unwrap();
+        assert_eq!(size, package.len() as u64);
+        assert_eq!(std::fs::read(&napp_path).unwrap(), package);
+        assert!(!root.path().join("1.0.0.napp.part").exists());
+
+        assert!(!napp::reader::is_sealed_napp(&napp_path));
+        let dir = napp::reader::extract_napp_alongside(&napp_path).unwrap();
+        assert_eq!(std::fs::read(dir.join("ui/assets/intro.mp4")).unwrap(), film);
+        assert!(dir.join("ui/index.html").exists() && dir.join("manifest.json").exists());
     }
 }
 

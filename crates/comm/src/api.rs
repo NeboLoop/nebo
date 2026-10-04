@@ -61,15 +61,54 @@ const REST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 /// How long one file may take through the files door, either way.
 const FILE_TRANSFER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 
-/// Why a body read failed, in words that name a timeout as one: reqwest
-/// reports a body cut by the request's total timeout as "error decoding
-/// response body", which reads as a corrupt download.
+/// How long a package download may go with no bytes arriving before it is
+/// abandoned. There is no limit on the whole download: a 500 MB app on a
+/// slow line takes as long as it takes, and only a stalled one stops.
+const DOWNLOAD_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Why a body read failed, in words that name a stall as one: reqwest
+/// reports a body cut by a timeout as "error decoding response body", which
+/// reads as a corrupt download.
 fn body_read_error(e: &reqwest::Error) -> String {
     if e.is_timeout() {
-        format!("timed out after {}s", FILE_TRANSFER_TIMEOUT.as_secs())
+        format!("stalled: nothing arrived for {}s", DOWNLOAD_IDLE_TIMEOUT.as_secs())
     } else {
         e.to_string()
     }
+}
+
+/// The client packages come down through: no total timeout, but every read
+/// (the answer's head, each chunk of its body) must arrive within
+/// `DOWNLOAD_IDLE_TIMEOUT`.
+static DOWNLOAD_CLIENT: std::sync::LazyLock<Client> = std::sync::LazyLock::new(|| {
+    tls::http_client()
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .read_timeout(DOWNLOAD_IDLE_TIMEOUT)
+        .pool_idle_timeout(std::time::Duration::from_secs(90))
+        .build()
+        .expect("reqwest download client builder is infallible with these options")
+});
+
+/// Write a response body to `dest` as it arrives, a chunk at a time, and
+/// return the bytes written. A body shorter than its `Content-Length` (a cut
+/// connection) is an error, never a short file.
+async fn save_body(mut resp: reqwest::Response, dest: &std::path::Path) -> Result<u64, String> {
+    use tokio::io::AsyncWriteExt;
+    let expected = resp.content_length();
+    let mut file = tokio::fs::File::create(dest)
+        .await
+        .map_err(|e| format!("create {}: {}", dest.display(), e))?;
+    let mut written = 0u64;
+    while let Some(chunk) = resp.chunk().await.map_err(|e| body_read_error(&e))? {
+        file.write_all(&chunk).await.map_err(|e| format!("write {}: {}", dest.display(), e))?;
+        written += chunk.len() as u64;
+    }
+    file.flush().await.map_err(|e| format!("write {}: {}", dest.display(), e))?;
+    if let Some(expected) = expected.filter(|n| *n != written) {
+        return Err(format!("got {} of {} bytes", written, expected));
+    }
+    debug!(bytes = written, "download saved");
+    Ok(written)
 }
 
 /// ONE process-wide HTTP client (connection pool). `NeboAIApi` values are
@@ -736,25 +775,37 @@ impl NeboAIApi {
         .await
     }
 
-    /// Download a sealed .napp archive from a URL.
+    /// Download a sealed .napp archive from a URL to `dest`.
     ///
     /// The URL can be absolute (CDN) or relative (API path like `/api/v1/artifacts/{id}/download`).
-    /// Returns the raw bytes of the .napp tar.gz archive.
-    pub async fn download_napp(&self, url: &str) -> Result<Vec<u8>, CommError> {
+    /// The archive streams to `<dest>.part` a chunk at a time (a 500 MB app is
+    /// never held in memory) and is renamed to `dest` only when it arrived
+    /// whole, so a failed or partial download never leaves a `.napp` behind.
+    /// There is no limit on the whole download, only on a stall: a big app on
+    /// a slow line takes as long as it takes. Returns the bytes written.
+    pub async fn download_napp(&self, url: &str, dest: &std::path::Path) -> Result<u64, CommError> {
         let full_url = if url.starts_with("http://") || url.starts_with("https://") {
             url.to_string()
         } else {
             format!("{}{}", self.api_server, url)
         };
         debug!(url = %::types::redact::redact(&full_url), "downloading .napp archive");
+        let mut part = dest.as_os_str().to_owned();
+        part.push(".part");
+        let part = std::path::PathBuf::from(part);
         // The plugin CDN (EdgeLB) intermittently drops connections — a single send
         // failure shouldn't kill an install when a retry succeeds in ~1s. Retry with a
         // short backoff, but ONLY for transient failures (send errors, 5xx). A 4xx like
         // 404 "binary not found" is permanent — retrying it just wastes time.
         let mut last_err: Option<CommError> = None;
         for attempt in 1..=3u32 {
-            match self.resolve_and_fetch_napp(&full_url).await {
-                Ok(bytes) => return Ok(bytes),
+            match self.resolve_and_fetch_napp(&full_url, &part).await {
+                Ok(len) => {
+                    tokio::fs::rename(&part, dest)
+                        .await
+                        .map_err(|e| CommError::Other(format!("store .napp: {}", e)))?;
+                    return Ok(len);
+                }
                 Err(e) => {
                     let permanent = e.to_string().contains("returned 4");
                     tracing::warn!(url = %full_url, attempt, permanent, error = %e, "napp download attempt failed");
@@ -767,10 +818,11 @@ impl NeboAIApi {
                 }
             }
         }
+        let _ = tokio::fs::remove_file(&part).await;
         Err(last_err.unwrap_or_else(|| CommError::Other("download failed".into())))
     }
 
-    /// Resolve one download attempt to `.napp` bytes.
+    /// Resolve one download attempt to `.napp` bytes written to `part`.
     ///
     /// The API download endpoint now returns `{ "downloadUrl": ... }` JSON (a CDN
     /// link) instead of streaming the package; older servers and direct CDN links
@@ -780,14 +832,15 @@ impl NeboAIApi {
     /// blob is fetched WITHOUT it — the token must never cross to another host.
     /// (That is also why the server returns a 200 JSON URL rather than a 302
     /// redirect, which reqwest would follow with the Authorization header attached.)
-    async fn resolve_and_fetch_napp(&self, full_url: &str) -> Result<Vec<u8>, CommError> {
+    async fn resolve_and_fetch_napp(&self, full_url: &str, part: &std::path::Path) -> Result<u64, CommError> {
         let same_origin = full_url.starts_with(self.api_server.as_str());
         // A `.napp` is a file, not a REST answer: the shared client's 15 s
         // REST timeout covers the whole body, and a 1.7 MB plugin on a busy
         // machine hit it mid-body — surfacing as "error decoding response
         // body", reqwest's wording for a body cut by its total timeout
-        // (2026-09-26, two of three attempts). A file gets the file window.
-        let mut req = self.client.get(full_url).timeout(FILE_TRANSFER_TIMEOUT);
+        // (2026-09-26, two of three attempts). A file goes through the
+        // download client, which only gives up on a stall.
+        let mut req = DOWNLOAD_CLIENT.get(full_url);
         if same_origin {
             req = req.bearer_auth(self.token());
         }
@@ -822,21 +875,16 @@ impl NeboAIApi {
                 .json()
                 .await
                 .map_err(|e| CommError::Other(format!("parse download url: {}", e)))?;
-            return self.fetch_no_auth(&parsed.download_url).await;
+            return self.fetch_no_auth(&parsed.download_url, part).await;
         }
 
-        resp.bytes()
-            .await
-            .map(|b| b.to_vec())
-            .map_err(|e| CommError::Other(format!("read body: {}", body_read_error(&e))))
+        save_body(resp, part).await.map_err(|e| CommError::Other(format!("read body: {}", e)))
     }
 
-    /// GET raw bytes with no Authorization header — for cross-host CDN blob URLs.
-    async fn fetch_no_auth(&self, url: &str) -> Result<Vec<u8>, CommError> {
-        let resp = self
-            .client
+    /// GET a file with no Authorization header into `part` — for cross-host CDN blob URLs.
+    async fn fetch_no_auth(&self, url: &str, part: &std::path::Path) -> Result<u64, CommError> {
+        let resp = DOWNLOAD_CLIENT
             .get(url)
-            .timeout(FILE_TRANSFER_TIMEOUT)
             .send()
             .await
             .map_err(|e| CommError::Other(format!("cdn fetch failed: {}", e)))?;
@@ -850,10 +898,7 @@ impl NeboAIApi {
             )));
         }
 
-        resp.bytes()
-            .await
-            .map(|b| b.to_vec())
-            .map_err(|e| CommError::Other(format!("read cdn body: {}", body_read_error(&e))))
+        save_body(resp, part).await.map_err(|e| CommError::Other(format!("read cdn body: {}", e)))
     }
 
     /// Uninstall a skill for this bot.
@@ -2313,5 +2358,34 @@ mod tests {
         let updated: serde_json::Value = serde_json::from_str(seen[2].split_once("HTTP/1.1 ").unwrap().1).unwrap();
         assert_eq!(updated, serde_json::json!({"access": "password"}));
         assert!(seen[3].starts_with("DELETE /api/v1/shares/s1 "), "{}", seen[3]);
+    }
+
+    // A connection cut before the body's declared length is a failed
+    // download (retried, then refused), never a short `.napp` on disk.
+    #[tokio::test]
+    async fn a_cut_download_leaves_no_package() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let attempts = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = attempts.clone();
+        tokio::spawn(async move {
+            while let Ok((mut sock, _)) = listener.accept().await {
+                seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let mut buf = [0u8; 4096];
+                let _ = sock.read(&mut buf).await;
+                let _ = sock
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: 100000\r\nConnection: close\r\n\r\nNAPP-only-a-little")
+                    .await;
+            }
+        });
+        let api = NeboAIApi::new(format!("http://{addr}"), "bot".into(), "token".into());
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("1.0.0.napp");
+        let err = api.download_napp("/x.napp", &dest).await.unwrap_err();
+        assert!(err.to_string().contains("read body"), "{err}");
+        assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 3);
+        assert!(!dest.exists());
+        assert!(std::fs::read_dir(dir.path()).unwrap().next().is_none(), "no .part left behind");
     }
 }
