@@ -144,5 +144,8 @@ board may go under.
 - Icons: the generated set first, one stroke style, in the palette. A
   permissive icon library (Phosphor, Tabler, Lucide) only for dense
   functional UI. Never mix both in one zone.
+- Never emoji as icons or decoration: they draw differently on every
+  device, ignore the palette and are read aloud by screen readers. Emoji
+  the owner or his customers type are data, and stay.
 - Logos of real companies: real SVG marks only. An invented brand gets a
   generated or drawn monogram, not a styled `<span>`.
