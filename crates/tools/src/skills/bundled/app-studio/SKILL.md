@@ -44,7 +44,7 @@ looks matter, Design Depth adds the studio method on top.
 
 ## Hard Rules
 
-1. **Rename, never delete and recreate.** `update_employee(name: "Tweet", new_name: "Flip-Flap")`
+1. **Rename, never delete and recreate.** `update_employee(name: "Tracker", new_name: "Deal Board")`
    keeps the id, folder, files, chat and data. Deleting an employee destroys its
    source files for good.
 2. **Call tools; never write a tool call as text.** No XML, no JSON in the reply,

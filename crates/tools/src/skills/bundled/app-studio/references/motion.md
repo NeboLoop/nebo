@@ -14,6 +14,10 @@ When the owner wants a video of the app (a motion post, a trailer):
    into one folder. Square post 1080x1080, portrait 1080x1350, story or reel
    1080x1920, trailer 1920x1080. A page error fails the recording and keeps
    nothing: fix it and record again.
-3. Load the `video` skill (Nebo Media) and run `video encode` with `frames` set
-   to that folder: the mp4 lands beside it.
+3. Encoding needs the Nebo Media plugin. Load its `video` skill
+   (`use_skill("video")`) and run `video encode` with `frames` set to that
+   folder: the mp4 lands beside it. If there is no `video` skill, Nebo Media
+   is not installed: tell the owner a video needs it and ask whether to
+   install it from the marketplace; until then, share the folder of frames.
+   Never try ffmpeg or another encoder from the shell: it is not installed.
 4. `share_file` the mp4 to the owner.
