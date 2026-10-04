@@ -3638,7 +3638,12 @@ mod voice_prompt_tests {
         let name = format!("logo-{}.png", uuid::Uuid::new_v4());
         let logo = files.join(&name);
         std::fs::write(&logo, [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]).unwrap();
-        let url = format!("/api/v1/files/{name}");
+        // Kept by content, under its own name (`chat_dispatch::keep_shared_file`).
+        let hash = {
+            use sha2::{Digest, Sha256};
+            hex::encode(Sha256::digest(std::fs::read(&logo).unwrap()))
+        };
+        let url = format!("/api/v1/files/.shared/{}/{name}", &hash[..16]);
         let mut events = state.hub.subscribe();
         let run_handle = register(&state, &key).await;
         let (tx, rx) = tokio::sync::mpsc::channel(8);
@@ -3718,6 +3723,7 @@ mod voice_prompt_tests {
             "kept on the voice reply: {meta}"
         );
         let _ = std::fs::remove_file(&logo);
+        let _ = std::fs::remove_dir_all(files.join(".shared").join(&hash[..16]));
     }
 
     /// Live 2026-10-02: every word the owner said while a task ran was

@@ -1036,6 +1036,27 @@ mod release_announcement_tests {
     }
 }
 
+/// The HTTP routes' compression. Video and audio are already compressed and
+/// are served by byte range (`handlers::files::stream_file`): gzipping a
+/// whole-file answer would drop its `Accept-Ranges` and `Content-Length`,
+/// and a player that sees neither cannot seek.
+pub(crate) fn compression() -> CompressionLayer<
+    tower_http::compression::predicate::And<
+        tower_http::compression::predicate::And<
+            tower_http::compression::predicate::DefaultPredicate,
+            tower_http::compression::predicate::NotForContentType,
+        >,
+        tower_http::compression::predicate::NotForContentType,
+    >,
+> {
+    use tower_http::compression::predicate::{DefaultPredicate, NotForContentType, Predicate};
+    CompressionLayer::new().compress_when(
+        DefaultPredicate::new()
+            .and(NotForContentType::const_new("video/"))
+            .and(NotForContentType::const_new("audio/")),
+    )
+}
+
 pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
     let host = cfg.host.clone();
     // The port is taken first and held until the server serves on it, so
@@ -3337,7 +3358,7 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
                 .layer(axum::middleware::from_fn(middleware::api_security_headers)),
         )
         .fallback(spa::spa_handler)
-        .layer(CompressionLayer::new());
+        .layer(compression());
 
     let app = Router::new()
         .route("/ws", axum::routing::get(handlers::ws::client_ws_handler))

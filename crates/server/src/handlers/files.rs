@@ -353,10 +353,15 @@ pub async fn list_work_documents(
 /// `?preview=pdf` on an office document serves an on-demand PDF rendering
 /// (generated via the nebo-office plugin, cached next to the source) so the
 /// Work panel can show decks and Word files through its existing PDF viewer.
+///
+/// The file streams from disk and answers a byte range (`stream_file`): a
+/// video or a song plays and seeks in WebKit and the phone's player, which
+/// ask for ranges and give up on a server that ignores them.
 pub async fn serve_file(
     State(state): State<AppState>,
     Path(file_path): Path<String>,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+    request: axum::extract::Request,
 ) -> Result<axum::response::Response, (axum::http::StatusCode, Json<types::api::ErrorResponse>)> {
     let data_dir = config::data_dir().map_err(to_error_response)?;
     let files_root = data_dir.join("files");
@@ -386,18 +391,24 @@ pub async fn serve_file(
             .and_then(|e| e.to_str())
             .is_some_and(pdf_previewable)
     {
-        return serve_pdf_preview(&state, &canonical, &canonical_root).await;
+        return serve_pdf_preview(&state, &canonical, &canonical_root, request).await;
     }
 
-    let bytes = tokio::fs::read(&canonical)
-        .await
-        .map_err(|e| to_error_response(types::NeboError::Io(e)))?;
+    Ok(stream_file(&canonical, content_type_for(&canonical), request).await)
+}
 
+/// The Content-Type a served file goes out with, by extension.
+pub(crate) fn content_type_for(path: &std::path::Path) -> &'static str {
     // Guess content type from extension. Text types carry charset=utf-8:
     // agent-written files are UTF-8, and without an explicit charset the
     // browser falls back to Windows-1252 — em-dashes and emoji render as
     // mojibake (â€", ðŸ"š) in the Work panel iframe.
-    let content_type = match canonical.extension().and_then(|e| e.to_str()) {
+    match path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
         Some("png") => "image/png",
         Some("jpg") | Some("jpeg") => "image/jpeg",
         Some("gif") => "image/gif",
@@ -406,6 +417,13 @@ pub async fn serve_file(
         Some("mp4") => "video/mp4",
         Some("webm") => "video/webm",
         Some("mov") => "video/quicktime",
+        Some("m4v") => "video/mp4",
+        Some("mp3") => "audio/mpeg",
+        Some("m4a") => "audio/mp4",
+        Some("wav") => "audio/wav",
+        Some("ogg") => "audio/ogg",
+        Some("aac") => "audio/aac",
+        Some("flac") => "audio/flac",
         Some("pdf") => "application/pdf",
         Some("json") => "application/json; charset=utf-8",
         Some("txt") | Some("log") | Some("md") | Some("markdown") | Some("csv") | Some("typ") => {
@@ -415,12 +433,36 @@ pub async fn serve_file(
         Some("css") => "text/css; charset=utf-8",
         Some("js") => "application/javascript; charset=utf-8",
         _ => "application/octet-stream",
-    };
+    }
+}
 
-    axum::response::Response::builder()
-        .header("content-type", content_type)
-        .body(axum::body::Body::from(bytes))
-        .map_err(|e| to_error_response(types::NeboError::Internal(e.to_string())))
+/// Serve one file from disk: streamed in chunks, never read whole into
+/// memory, with `Accept-Ranges: bytes` and a single `Range: bytes=a-b`
+/// answered `206` with its `Content-Range` (more than one range is `416`).
+/// `content_type` replaces the guessed type on a success, so the one
+/// extension table above decides it.
+pub(crate) async fn stream_file(
+    path: &std::path::Path,
+    content_type: &'static str,
+    request: axum::extract::Request,
+) -> axum::response::Response {
+    use tower::Service;
+    // ServeFile is always ready, and its error is `Infallible`: a failed
+    // read is already a 404 or 500 response.
+    let mut response = match tower_http::services::ServeFile::new(path)
+        .call(request)
+        .await
+    {
+        Ok(response) => response.map(axum::body::Body::new),
+        Err(never) => match never {},
+    };
+    if response.status().is_success() {
+        response.headers_mut().insert(
+            axum::http::header::CONTENT_TYPE,
+            axum::http::HeaderValue::from_static(content_type),
+        );
+    }
+    response
 }
 
 /// The office formats that get a PDF preview: decks, which no browser can
@@ -433,9 +475,11 @@ pub(crate) fn pdf_previewable(ext: &str) -> bool {
 }
 
 /// Render an office document to a cached PDF via the nebo-office plugin and
-/// return the cache path. Results cache under `files/.previews/<name>.pdf`
-/// and regenerate when the source is newer. The ONE conversion implementation
-/// — used by the preview endpoint and by outbound comm artifact uploads.
+/// return the cache path. Results cache under `files/.previews/<path>.pdf`,
+/// `<path>` the source's place under `files/` (two shared decks of one name
+/// sit in different folders, so each keeps its own preview), and regenerate
+/// when the source is newer. The ONE conversion implementation — used by the
+/// preview endpoint and by outbound comm artifact uploads.
 pub(crate) async fn ensure_pdf_preview(
     plugin_store: &napp::plugin::PluginStore,
     source: &std::path::Path,
@@ -445,8 +489,12 @@ pub(crate) async fn ensure_pdf_preview(
         .file_name()
         .and_then(|n| n.to_str())
         .ok_or_else(|| "invalid source file name".to_string())?;
-    let previews_dir = files_root.join(".previews");
-    let cache = previews_dir.join(format!("{name}.pdf"));
+    let rel = source
+        .strip_prefix(files_root)
+        .map(|r| r.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| name.to_string());
+    let cache = files_root.join(".previews").join(format!("{rel}.pdf"));
+    let previews_dir = cache.parent().unwrap_or(files_root).to_path_buf();
 
     let src_mtime = tokio::fs::metadata(source)
         .await
@@ -489,6 +537,7 @@ async fn serve_pdf_preview(
     state: &AppState,
     source: &std::path::Path,
     files_root: &std::path::Path,
+    request: axum::extract::Request,
 ) -> Result<axum::response::Response, (axum::http::StatusCode, Json<types::api::ErrorResponse>)> {
     let cache = ensure_pdf_preview(&state.plugin_store, source, files_root)
         .await
@@ -501,13 +550,7 @@ async fn serve_pdf_preview(
             )
         })?;
 
-    let bytes = tokio::fs::read(&cache)
-        .await
-        .map_err(|e| to_error_response(types::NeboError::Io(e)))?;
-    axum::response::Response::builder()
-        .header("content-type", "application/pdf")
-        .body(axum::body::Body::from(bytes))
-        .map_err(|e| to_error_response(types::NeboError::Internal(e.to_string())))
+    Ok(stream_file(&cache, "application/pdf", request).await)
 }
 
 #[cfg(test)]
@@ -524,6 +567,120 @@ mod preview_gate_tests {
         }
         for ext in ["pdf", "xlsx", "md", "html", "png", ""] {
             assert!(!pdf_previewable(ext), "{ext} should not be previewable");
+        }
+    }
+}
+
+#[cfg(test)]
+mod stream_file_tests {
+    use super::{content_type_for, stream_file};
+    use axum::http::{Request, StatusCode, header};
+    use tower::ServiceExt;
+
+    /// 1 KiB of distinct bytes, so a wrong offset reads as a wrong answer.
+    fn clip() -> (tempfile::TempDir, std::path::PathBuf, Vec<u8>) {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("clip.mp4");
+        let bytes: Vec<u8> = (0..1024u32).map(|i| (i % 251) as u8).collect();
+        std::fs::write(&path, &bytes).unwrap();
+        (tmp, path, bytes)
+    }
+
+    /// The file served the way the app serves it: `stream_file` behind the
+    /// server's own compression layer.
+    async fn get(
+        path: &std::path::Path,
+        headers: &[(&str, &str)],
+    ) -> (StatusCode, axum::http::HeaderMap, Vec<u8>) {
+        let path = path.to_path_buf();
+        let app = axum::Router::new()
+            .route(
+                "/f",
+                axum::routing::get(move |req: axum::extract::Request| async move {
+                    stream_file(&path, content_type_for(&path), req).await
+                }),
+            )
+            .layer(crate::compression());
+        let mut req = Request::builder().uri("/f");
+        for (k, v) in headers {
+            req = req.header(*k, *v);
+        }
+        let res = app
+            .oneshot(req.body(axum::body::Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let status = res.status();
+        let headers = res.headers().clone();
+        let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (status, headers, body.to_vec())
+    }
+
+    fn header<'a>(h: &'a axum::http::HeaderMap, name: header::HeaderName) -> &'a str {
+        h.get(name).and_then(|v| v.to_str().ok()).unwrap_or("")
+    }
+
+    /// The request WebKit and the phone's player make: one byte range,
+    /// answered 206 with exactly those bytes and where they sit.
+    #[tokio::test]
+    async fn a_range_request_gets_206_with_exactly_those_bytes() {
+        let (_tmp, path, bytes) = clip();
+        let (status, h, body) = get(
+            &path,
+            &[("range", "bytes=100-199"), ("accept-encoding", "gzip")],
+        )
+        .await;
+        assert_eq!(status, StatusCode::PARTIAL_CONTENT);
+        assert_eq!(body, bytes[100..200]);
+        assert_eq!(header(&h, header::CONTENT_RANGE), "bytes 100-199/1024");
+        assert_eq!(header(&h, header::CONTENT_LENGTH), "100");
+        assert_eq!(header(&h, header::ACCEPT_RANGES), "bytes");
+        assert_eq!(header(&h, header::CONTENT_TYPE), "video/mp4");
+        assert_eq!(header(&h, header::CONTENT_ENCODING), "");
+
+        let (status, h, body) = get(&path, &[("range", "bytes=0-1")]).await;
+        assert_eq!(status, StatusCode::PARTIAL_CONTENT);
+        assert_eq!(body, bytes[0..2]);
+        assert_eq!(header(&h, header::CONTENT_RANGE), "bytes 0-1/1024");
+
+        let (status, _, body) = get(&path, &[("range", "bytes=1000-")]).await;
+        assert_eq!(status, StatusCode::PARTIAL_CONTENT);
+        assert_eq!(body, bytes[1000..]);
+
+        let (status, _, _) = get(&path, &[("range", "bytes=5000-6000")]).await;
+        assert_eq!(status, StatusCode::RANGE_NOT_SATISFIABLE);
+    }
+
+    /// A plain GET is the whole file, saying ranges are welcome; a video is
+    /// never gzipped, which would hide its length and its ranges.
+    #[tokio::test]
+    async fn a_whole_video_says_it_takes_ranges_and_is_not_gzipped() {
+        let (_tmp, path, bytes) = clip();
+        let (status, h, body) = get(&path, &[("accept-encoding", "gzip")]).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body, bytes);
+        assert_eq!(header(&h, header::ACCEPT_RANGES), "bytes");
+        assert_eq!(header(&h, header::CONTENT_LENGTH), "1024");
+        assert_eq!(header(&h, header::CONTENT_ENCODING), "");
+        assert_eq!(header(&h, header::CONTENT_TYPE), "video/mp4");
+    }
+
+    #[test]
+    fn audio_and_video_get_their_types() {
+        for (name, ty) in [
+            ("a.mp4", "video/mp4"),
+            ("a.MOV", "video/quicktime"),
+            ("a.mp3", "audio/mpeg"),
+            ("a.m4a", "audio/mp4"),
+            ("a.wav", "audio/wav"),
+            ("a.ogg", "audio/ogg"),
+            ("a.aac", "audio/aac"),
+            ("a.flac", "audio/flac"),
+            ("a.md", "text/plain; charset=utf-8"),
+            ("a.bin", "application/octet-stream"),
+        ] {
+            assert_eq!(content_type_for(std::path::Path::new(name)), ty, "{name}");
         }
     }
 }

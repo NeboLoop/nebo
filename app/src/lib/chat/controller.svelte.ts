@@ -136,26 +136,41 @@ export interface SendOptions {
   silent?: boolean;
 }
 
-const IMAGE_VIDEO_EXTS = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'mp4', 'webm', 'mov'];
+/** Extensions that render inline in the chat (image, video, audio). Mirrors the
+ *  backend's MEDIA_EXTS (crates/server/src/chat_dispatch.rs). */
+const MEDIA_MIME: Record<string, string> = {
+  png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif',
+  webp: 'image/webp', svg: 'image/svg+xml', mp4: 'video/mp4', webm: 'video/webm',
+  mov: 'video/quicktime', mp3: 'audio/mpeg', m4a: 'audio/mp4', wav: 'audio/wav',
+  ogg: 'audio/ogg', aac: 'audio/aac', flac: 'audio/flac',
+};
 const urlExt = (url: string) => (url.split('/').pop() || '').split('.').pop()?.toLowerCase() || '';
-const isMedia = (url: string) => IMAGE_VIDEO_EXTS.includes(urlExt(url));
+const isMedia = (url: string) => Object.prototype.hasOwnProperty.call(MEDIA_MIME, urlExt(url));
 
-/** Map run-produced media URLs (/api/v1/files/...) to inline attachments (images/video).
- *  Documents go to the Work panel instead — see artifactsToWorkItems. Used for both
- *  live chat_complete events and persisted message metadata on history load. */
+/** An artifact's URL and name: a bare URL string, or a versioned object
+ *  `{ url, filename }` (an audio file kept before audio rendered inline). */
+function artifactRef(a: unknown): { url: string; filename: string } | null {
+  if (typeof a === 'string') return a.length > 0 ? { url: a, filename: a.split('/').pop() || 'file' } : null;
+  if (a && typeof a === 'object' && 'url' in (a as Record<string, unknown>)) {
+    const o = a as Record<string, unknown>;
+    const url = String(o.url ?? '');
+    if (!url) return null;
+    return { url, filename: String(o.filename ?? url.split('/').pop() ?? 'file') };
+  }
+  return null;
+}
+
+/** Map run-produced media URLs (/api/v1/files/...) to inline attachments (images,
+ *  video, audio). Documents go to the Work panel instead — see artifactsToWorkItems.
+ *  Used for both live chat_complete events and persisted message metadata on history
+ *  load. */
 export function artifactsToAttachments(artifacts: unknown): UploadedAttachment[] {
   if (!Array.isArray(artifacts)) return [];
   return artifacts
-    .filter((u): u is string => typeof u === 'string' && u.length > 0 && isMedia(u))
-    .map((url) => {
-      const filename = url.split('/').pop() || 'file';
-      const ext = urlExt(url);
-      const mimeType =
-        ({
-          png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif',
-          webp: 'image/webp', svg: 'image/svg+xml', mp4: 'video/mp4', webm: 'video/webm',
-          mov: 'video/quicktime',
-        } as Record<string, string>)[ext] || 'application/octet-stream';
+    .map(artifactRef)
+    .filter((r): r is { url: string; filename: string } => r !== null && isMedia(r.url))
+    .map(({ url, filename }) => {
+      const mimeType = MEDIA_MIME[urlExt(url)] || 'application/octet-stream';
       // fileId stays empty: these are LOCAL run outputs served straight from
       // /api/v1/files — a non-empty fileId routes through the comm-files
       // proxy (for loop uploads) and double-prefixes the URL into a 404.
@@ -183,7 +198,7 @@ export function artifactsToWorkItems(artifacts: unknown): WorkItem[] {
       if (a && typeof a === 'object' && 'documentId' in (a as Record<string, unknown>)) {
         const o = a as Record<string, unknown>;
         const url = String(o.url ?? '');
-        if (!url) return null;
+        if (!url || isMedia(url)) return null;
         const filename = String(o.filename ?? url.split('/').pop() ?? 'file');
         return {
           id: String(o.documentId),

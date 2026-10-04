@@ -667,7 +667,9 @@ impl GenerateMediaTool {
         })
     }
 
-    async fn image(&self, target: &Target, input: &Value) -> Result<String, String> {
+    /// Makes the images and answers the result text and the first file,
+    /// which the chat shows as a card.
+    async fn image(&self, target: &Target, input: &Value) -> Result<(String, PathBuf), String> {
         let into = str_of(input, "into");
         let (_, ext) = image_format(into, str_of(input, "output_format"));
         let body = image_body(input);
@@ -700,24 +702,55 @@ impl GenerateMediaTool {
             }
         )];
         let mut revised = None;
+        let mut written = Vec::new();
         for (image, (name, path)) in images.iter().zip(names.iter().zip(&paths)) {
-            std::fs::write(path, &image.bytes)
+            // The bytes decide the extension: a model can answer JPEG for a
+            // PNG request, and a `.png` holding a JPEG is a broken file.
+            let asked = path.extension().and_then(|e| e.to_str()).unwrap_or(ext);
+            let real = real_image_ext(&image.bytes, asked);
+            let (name, path) = if real == asked {
+                (name.clone(), path.clone())
+            } else {
+                (
+                    Path::new(name)
+                        .with_extension(real)
+                        .to_string_lossy()
+                        .into_owned(),
+                    path.with_extension(real),
+                )
+            };
+            std::fs::write(&path, &image.bytes)
                 .map_err(|e| format!("Could not write {}: {e}", path.display()))?;
-            lines.push(format!(
+            let mut line = format!(
                 "- {name} ({} bytes) at {}",
                 image.bytes.len(),
                 path.display()
-            ));
+            );
+            if real != asked {
+                line.push_str(&format!(
+                    " (the image came back as {}, not {}, so it is saved as .{real})",
+                    real.to_ascii_uppercase(),
+                    asked.to_ascii_uppercase()
+                ));
+            }
+            lines.push(line);
+            written.push(path);
             revised = revised.or(image.revised_prompt.clone());
         }
         if let Some(r) = revised {
             lines.push(format!("Prompt as Janus used it: {r}"));
         }
         lines.push("To look at an image, use the vision helper on its path.".to_string());
-        Ok(lines.join("\n"))
+        let first = written
+            .into_iter()
+            .next()
+            .ok_or("Janus answered with no image.")?;
+        Ok((lines.join("\n"), first))
     }
 
-    async fn video(&self, target: &Target, input: &Value) -> Result<String, String> {
+    /// Makes the video and answers the result text and its file, which the
+    /// chat shows as a card.
+    async fn video(&self, target: &Target, input: &Value) -> Result<(String, PathBuf), String> {
         let into = str_of(input, "into");
         let name = file_names(
             into,
@@ -769,8 +802,24 @@ impl GenerateMediaTool {
                 lines.push(format!("Size now {} bytes.", meta.len()));
             }
         }
-        Ok(lines.join("\n"))
+        Ok((lines.join("\n"), path))
     }
+}
+
+/// The extension `bytes` really are: `asked` when they are what was asked
+/// for (`jpg` and `jpeg` alike) or are not an image this can tell, else the
+/// image type their magic bytes say.
+fn real_image_ext<'a>(bytes: &[u8], asked: &'a str) -> &'a str {
+    let real = match ai::sniff_image_mime(bytes) {
+        Some("image/png") => "png",
+        Some("image/jpeg") => "jpg",
+        Some("image/webp") => "webp",
+        Some("image/gif") => "gif",
+        _ => return asked,
+    };
+    let same =
+        asked.eq_ignore_ascii_case(real) || (real == "jpg" && asked.eq_ignore_ascii_case("jpeg"));
+    if same { asked } else { real }
 }
 
 /// Seconds since the epoch, for default file names.
@@ -832,6 +881,12 @@ impl DynTool for GenerateMediaTool {
         false
     }
 
+    /// What it makes is what the owner asked for: it shows in the chat as a
+    /// card, the way `share_file` shows a file.
+    fn emits_image(&self, _input: &Value) -> bool {
+        true
+    }
+
     fn validate_input(&self, input: &Value) -> Result<(), String> {
         let video = str_of(input, "kind") == Some("video");
         if str_of(input, "prompt").is_none() && !(video && str_of(input, "job").is_some()) {
@@ -870,7 +925,7 @@ impl DynTool for GenerateMediaTool {
                 _ => Err("`kind` is image or video.".to_string()),
             };
             match made {
-                Ok(text) => ToolResult::ok(text),
+                Ok((text, file)) => ToolResult::ok(text).with_image_url(file.to_string_lossy()),
                 Err(e) => ToolResult::error(e),
             }
         })
@@ -1147,6 +1202,58 @@ mod tests {
         let header = |k: &str| headers.iter().find(|(h, _)| h == k).map(|(_, v)| v.clone());
         assert_eq!(header("x-bot-id").as_deref(), Some("bot-1"));
         assert_eq!(header("authorization").as_deref(), Some("Bearer bot-1"));
+    }
+
+    /// Janus answered JPEG bytes for a PNG request (xai does): the file is
+    /// saved as `.jpg`, never a `.png` holding a JPEG, the result names the
+    /// real file, and that file rides on the result for the chat's card.
+    #[tokio::test]
+    async fn a_jpeg_returned_for_a_png_request_is_saved_as_jpg() {
+        let jpeg = b"\xff\xd8\xff\xe0fake jpeg".to_vec();
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&jpeg);
+        let answer = format!(r#"{{"created":1,"data":[{{"b64_json":"{b64}"}}]}}"#);
+        let answer: &'static str = Box::leak(answer.into_boxed_str());
+        let janus = mock(Box::new(move |_, _| {
+            (200, "application/json", answer.as_bytes().to_vec())
+        }))
+        .await;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Arc::new(db::Store::new(&tmp.path().join("t.db").to_string_lossy()).unwrap());
+        let tool =
+            GenerateMediaTool::new(Media::new(janus.url.clone(), "bot-1".into(), None), store);
+        let base = tmp.path().join("files");
+        std::fs::create_dir_all(&base).unwrap();
+        let target = Target {
+            base: base.clone(),
+            label: "the workspace".into(),
+            default_folder: "media",
+        };
+
+        let (text, file) = tool
+            .image(
+                &target,
+                &json!({"prompt": "a red kart", "into": "hero.png"}),
+            )
+            .await
+            .unwrap();
+        assert_eq!(file, base.join("hero.jpg"));
+        assert_eq!(std::fs::read(&file).unwrap(), jpeg);
+        assert!(!base.join("hero.png").exists(), "no .png may hold the JPEG");
+        assert!(
+            text.contains("hero.jpg") && !text.contains("hero.png"),
+            "{text}"
+        );
+
+        // What was asked for comes back under the name asked for.
+        assert_eq!(real_image_ext(b"\x89PNG\r\n\x1a\nrest", "png"), "png");
+        assert_eq!(real_image_ext(&jpeg, "jpeg"), "jpeg");
+        assert_eq!(real_image_ext(b"RIFF\0\0\0\0WEBPVP8 ", "png"), "webp");
+        assert_eq!(real_image_ext(b"not an image", "png"), "png");
+        assert!(
+            tool.emits_image(&json!({"kind": "image"})),
+            "a made image is a card"
+        );
     }
 
     #[tokio::test]
