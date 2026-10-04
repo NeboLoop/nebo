@@ -6598,7 +6598,7 @@ mod app_window_tests {
         let stored = r#"{"width":420,"height":800,"resizable":false,"title":"Kart","fullscreen":true,"orientation":"landscape"}"#;
         assert_eq!(
             serde_json::to_value(stored_app_window(Some(stored))).unwrap(),
-            serde_json::json!({"fullscreen": true, "orientation": "landscape", "motion": false, "pullToRefresh": false, "voice": false, "openOnWork": false, "isolated": false})
+            serde_json::json!({"fullscreen": true, "orientation": "landscape", "motion": false, "pullToRefresh": false, "voice": false, "openOnWork": false, "isolated": false, "shareMenu": []})
         );
         let no_pull = r#"{"title":"Solitaire","pull_to_refresh":false}"#;
         assert_eq!(serde_json::to_value(stored_app_window(Some(no_pull))).unwrap()["pullToRefresh"], false);
@@ -6608,7 +6608,12 @@ mod app_window_tests {
         assert_eq!(serde_json::to_value(stored_app_window(Some(work))).unwrap()["openOnWork"], true);
         let engine = r#"{"title":"Godot","fullscreen":true,"isolated":true}"#;
         assert_eq!(serde_json::to_value(stored_app_window(Some(engine))).unwrap()["isolated"], true);
-        let today = serde_json::json!({"fullscreen": false, "orientation": "portrait", "motion": false, "pullToRefresh": false, "voice": false, "openOnWork": false, "isolated": false});
+        let menu = r#"{"title":"Studio","share_menu":[{"label":"Make it an app","say":"Make this design a Nebo app."},{"label":"","say":"dropped"}]}"#;
+        assert_eq!(
+            serde_json::to_value(stored_app_window(Some(menu))).unwrap()["shareMenu"],
+            serde_json::json!([{"label": "Make it an app", "say": "Make this design a Nebo app."}])
+        );
+        let today = serde_json::json!({"fullscreen": false, "orientation": "portrait", "motion": false, "pullToRefresh": false, "voice": false, "openOnWork": false, "isolated": false, "shareMenu": []});
         assert_eq!(serde_json::to_value(stored_app_window(None)).unwrap(), today);
         assert_eq!(serde_json::to_value(stored_app_window(Some("not json"))).unwrap(), today);
     }

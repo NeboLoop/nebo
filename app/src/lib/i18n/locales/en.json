@@ -1848,6 +1848,7 @@
 		"skillCount": "{count} skills",
 		"openApp": "Open App",
 		"publishApp": "Publish",
+		"shareApp": "Share",
 		"publishStarter": "Let's publish this app to the marketplace. Draft the listing, take the screenshots, and show me.",
 		"listingDraft": "Draft",
 		"listingInReview": "In review",

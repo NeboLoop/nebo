@@ -232,6 +232,8 @@ export interface RunDisplay {
 	openOnWork: boolean
 	/** window.isolated: the page is served cross-origin isolated (SharedArrayBuffer for threaded engine exports). */
 	isolated: boolean
+	/** window.share_menu: the header's Share button entries, each say sent into the app's chat. */
+	shareMenu: { label: string; say: string }[]
 }`,
 
 	"EnrichedChat": `export interface EnrichedChat {

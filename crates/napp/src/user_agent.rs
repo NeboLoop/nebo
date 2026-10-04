@@ -44,7 +44,7 @@ impl AppFields {
             None => None,
             Some(window) if !window.is_object() => {
                 return Err(NappError::Other(
-                    "`app.window` must be an object: {\"title\", \"width\", \"height\", \"resizable\", \"fullscreen\", \"orientation\"}. Nothing was written."
+                    "`app.window` must be an object: {\"title\", \"width\", \"height\", \"resizable\", \"fullscreen\", \"orientation\", \"share_menu\", ...}. Nothing was written."
                         .into(),
                 ));
             }
@@ -387,6 +387,10 @@ mod tests {
 
         let err = AppFields::from_json(&json!({"window": {"orientation": "sideways"}})).unwrap_err();
         assert!(err.to_string().contains("orientation"), "{err}");
+        // A Share menu entry no header can show is refused unwritten too.
+        let err = AppFields::from_json(&json!({"window": {"share_menu": [{"label": "Export"}]}})).unwrap_err();
+        assert!(err.to_string().contains("share_menu") && err.to_string().contains("`say`"), "{err}");
+        assert!(AppFields::from_json(&json!({"window": {"share_menu": [{"label": "Export", "say": "Export it as a PDF."}]}})).is_ok());
     }
 
     /// A page without an `app` block still makes an app.
