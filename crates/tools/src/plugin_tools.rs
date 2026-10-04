@@ -95,6 +95,16 @@ impl PluginCliTool {
                 triggers.push(t);
             }
         }
+        // A plugin that can't run yet (no credentials) can only ask for them:
+        // it is loaded by a request that names it, never by an everyday word
+        // of its work. Live 2026-10-04: "product" in a Product Hunt landing
+        // page loaded Shopify into a design session, and a question about
+        // Nebo's own marketplace became a Shopify credentials card. Connecting
+        // it re-derives the tool (`refresh_plugin_tools`) with every trigger.
+        if !runner.plugin_store().is_ready(slug) {
+            let names = [slug.to_lowercase(), service.to_lowercase()];
+            triggers.retain(|t| names.iter().any(|n| t.split_whitespace().any(|w| w == n) || t == n));
+        }
         Self {
             name: plugin_tool_name(slug),
             slug: slug.to_string(),
@@ -645,6 +655,41 @@ triggers:
         assert_eq!(found("What's in the downloadgram video in my Downloads?"), ["plugin__clipper"]);
         assert_eq!(found("What frame rate is it?"), ["plugin__clipper"], "a skill's trigger");
         assert!(!found("Send the invoice to Kristi").contains(&"plugin__clipper".to_string()));
+    }
+
+    /// A plugin that can't run yet (its credentials missing) is loaded only by
+    /// a request that names it. Live 2026-10-04: "product" in a design
+    /// session about a Product Hunt page loaded an unconnected Shopify, and
+    /// "how many employees are in our marketplace" became a Shopify
+    /// credentials card. A ready plugin keeps every trigger.
+    #[tokio::test]
+    async fn an_unconnected_plugin_is_loaded_by_its_name_not_by_everyday_words() {
+        let tmp = tempfile::tempdir().unwrap();
+        install(
+            tmp.path(),
+            "shopify",
+            serde_json::json!({
+                "name": "Shopify",
+                "auth": {"type": "env", "label": "Admin token", "env": {"SHOPIFY_ADMIN_TOKEN": ""}},
+                "triggers": ["shopify", "store", "product", "catalog", "shopify orders"]
+            }),
+            &[],
+        );
+        install(tmp.path(), "clipper", serde_json::json!({"name": "Clipper", "triggers": ["video", "product"]}), &[]);
+        let (registry, _store) = registry(tmp.path()).await;
+        let entries = registry.deferred_entries().await;
+        let shop = entries.iter().find(|e| e.definition.name == "plugin__shopify").expect("installed means nameable");
+        assert_eq!(shop.triggers, ["shopify", "shopify orders"]);
+        let found = |request: &str| -> Vec<String> {
+            crate::find_tools::triggered(&entries, request, crate::find_tools::TRIGGERED_MAX)
+                .into_iter()
+                .map(|e| e.definition.name.clone())
+                .collect()
+        };
+        let design = "Quick look in the marketplace for the Product Hunt landing page: how many employees in our catalog?";
+        assert!(!found(design).contains(&"plugin__shopify".to_string()), "{:?}", found(design));
+        assert_eq!(found("How are my Shopify orders today?"), ["plugin__shopify"]);
+        assert!(found(design).contains(&"plugin__clipper".to_string()), "a ready plugin keeps its everyday words");
     }
 
     /// An installed plugin that is not connected still has its tool (it is

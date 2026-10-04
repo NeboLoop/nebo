@@ -2111,8 +2111,9 @@ pub(crate) mod tests {
         tools.insert("a2ui".to_string());
 
         // Notations that read like calls and are not: a workflow trigger,
-        // `call(line: …)`.
-        const NOT_CALLS: &[&str] = &["call"];
+        // `call(line: …)`, and the JavaScript a page probe runs in the
+        // browser (`app_publish.rs`: `function(){…}`, `async(…)`, `f(…)`).
+        const NOT_CALLS: &[&str] = &["call", "function", "async", "f"];
         const FOREIGN: &[&str] = &["grep", "glob"];
         for name in FOREIGN {
             assert!(!tools.contains(*name), "{name} is a tool now: take it off the foreign list");

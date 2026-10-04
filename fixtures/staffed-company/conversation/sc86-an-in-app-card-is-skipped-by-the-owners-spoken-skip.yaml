@@ -1,0 +1,8 @@
+id: sc86-an-in-app-card-is-skipped-by-the-owners-spoken-skip
+name: "SC86 — A card done in the app is skipped by the owner's spoken skip"
+description: |
+  A connect or install card waiting on the owner is his to turn down in words: "skip it" on his
+  call answers it as Skip and the work goes on without it; words that aren't a skip leave it open.
+target_component: staffed-company
+proof: staffed_proof::conversation::an_in_app_card_is_skipped_by_the_owners_spoken_skip
+conversation: []

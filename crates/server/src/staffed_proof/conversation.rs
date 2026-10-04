@@ -2049,6 +2049,51 @@ async fn an_owner_message_sent_while_busy_is_named_from_shown_to_taken_in() {
     );
 }
 
+/// A card done in the app (connect, install) is the owner's to turn down in
+/// words: "skip it" on his call answers it as Skip and the work goes on;
+/// words that aren't a skip leave it open. Live 2026-10-04: a Shopify
+/// connect card held a design session on a call until the owner found the
+/// Skip button on his phone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_in_app_card_is_skipped_by_the_owners_spoken_skip() {
+    let nebo = session().await;
+    const KEY: &str = "proof:app:skip-card";
+    let _run = nebo
+        .state
+        .run_registry
+        .register(crate::run_registry::RegisterParams {
+            session_key: KEY.into(),
+            entity_id: "e".into(),
+            entity_name: "E".into(),
+            origin: "user".into(),
+            channel: "web".into(),
+            cancel_token: tokio_util::sync::CancellationToken::new(),
+            parent_run_id: None,
+        })
+        .await;
+    let (tx, rx) = tokio::sync::oneshot::channel::<String>();
+    nebo.state.ask_channels.lock().await.insert("req-skip".into(), tx);
+    let parked = crate::handlers::chat::PendingAsk {
+        request_id: "req-skip".into(),
+        prompt: "I need your Shopify login connected to continue.".into(),
+        widgets: Some(json!([{ "type": "connect_account", "plugin": "shopify", "label": "Shopify login" }])),
+        created_at: 100,
+    };
+    assert!(nebo.state.run_registry.park_ask(KEY, parked).await);
+    let say = |words: &'static str| {
+        let state = nebo.state.clone();
+        async move {
+            crate::handlers::voice::answer_ask_on_call(&state, None, KEY, &json!({ "ask_id": "req-skip", "answer": words }), words, 200)
+                .await
+        }
+    };
+    let (ok, said) = say("no, remove the fades in the hero first").await;
+    assert!(!ok && said.contains("done in the app"), "{said}");
+    let (ok, said) = say("skip it").await;
+    assert!(ok && said.contains("Skip"), "{said}");
+    assert_eq!(rx.await.unwrap(), "skipped", "the parked call reads it as skipped");
+}
+
 /// B14: a turn woken by a helper's result in a Slack conversation posts
 /// its reply into that conversation (its thread), as a loop or phone turn
 /// replies to its own (B13).
