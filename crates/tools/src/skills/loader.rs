@@ -1453,6 +1453,7 @@ fn load_skills_from_nested_dir(dir: &Path, source: SkillSource) -> Vec<Skill> {
             skill_dirs.push(skill_dir.to_path_buf());
         }
     });
+    let skill_dirs = newest_versions(skill_dirs);
 
     // Phase 2: parse SKILL.md files in parallel
     skill_dirs
@@ -1490,6 +1491,30 @@ fn load_skills_from_nested_dir(dir: &Path, source: SkillSource) -> Vec<Skill> {
             }
         })
         .collect()
+}
+
+/// An update extracts beside the version it replaces (`<slug>/0.1.3`, then
+/// `<slug>/0.1.4`), and the old folder stays. Only the newest version of each
+/// skill is loaded, so an older copy never overrides its update (live: App
+/// Studio 0.1.0 kept loading after 0.1.4 retired it). A folder not named for
+/// a version is kept as it is.
+fn newest_versions(dirs: Vec<PathBuf>) -> Vec<PathBuf> {
+    let mut newest: HashMap<PathBuf, (semver::Version, PathBuf)> = HashMap::new();
+    let mut out = Vec::new();
+    for dir in dirs {
+        let version = dir.file_name().and_then(|n| n.to_str()).and_then(|n| semver::Version::parse(n).ok());
+        match (version, dir.parent()) {
+            (Some(v), Some(parent)) => match newest.get(parent) {
+                Some((seen, _)) if *seen >= v => {}
+                _ => {
+                    newest.insert(parent.to_path_buf(), (v, dir));
+                }
+            },
+            _ => out.push(dir),
+        }
+    }
+    out.extend(newest.into_values().map(|(_, dir)| dir));
+    out
 }
 
 /// Load skills from sealed .napp files (paid content, decrypted in memory).
@@ -1771,6 +1796,27 @@ fn verify_dependencies(
 
 #[cfg(test)]
 mod tests {
+
+    /// Only the newest version folder of an installed skill loads: an update
+    /// leaves the old folder beside it, and the old copy must never win.
+    #[test]
+    fn an_updated_skill_loads_only_its_newest_version() {
+        let root = std::env::temp_dir().join(format!("nebo-newest-{}", uuid::Uuid::new_v4()));
+        let put = |path: &str, name: &str| {
+            let dir = root.join(path);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("SKILL.md"), format!("---\nname: {name}\ndescription: d\n---\nbody {path}\n")).unwrap();
+        };
+        put("app-studio/0.1.0", "app-studio");
+        put("app-studio/0.1.3", "app-studio");
+        put("app-studio/0.1.4", "app-studio-retired");
+        put("handmade", "handmade");
+        let mut names: Vec<String> = load_skills_from_nested_dir(&root, SkillSource::Installed).into_iter().map(|s| s.name).collect();
+        names.sort();
+        assert_eq!(names, ["app-studio-retired", "handmade"], "the retired copy's older versions never load");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     use super::*;
     use tempfile::TempDir;
 
