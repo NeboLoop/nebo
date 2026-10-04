@@ -8,7 +8,7 @@ use tracing::{error, info, warn};
 use super::to_error_response;
 use crate::chat_dispatch::{
     TurnEnd, announce_ask, control_stop_of, entity_run_params, finish_turn, keep_turn_artifacts,
-    owner_artifact_url,
+    owner_artifact_urls,
 };
 use crate::codes::build_api_client;
 use crate::run_registry::{RegisterParams, RunHandle};
@@ -852,7 +852,7 @@ async fn drain_voice_run(
                 );
                 // A file the run hands the owner (share_file, a capture, a
                 // document it made) reaches every client as a typed chat's does.
-                if let Some(url) = owner_artifact_url(&state.tools, &event).await {
+                for url in owner_artifact_urls(&state.tools, &event).await {
                     if !artifacts.contains(&url) {
                         artifacts.push(url);
                     }

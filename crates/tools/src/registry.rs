@@ -60,6 +60,11 @@ pub struct ToolResult {
     pub is_error: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image_url: Option<String>,
+    /// The files the call hands over after `image_url`, in order, each its
+    /// own card (`share_file` with several paths). Set by calling
+    /// `with_image_url` again; read all of them with [`ToolResult::files`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub more_files: Vec<String>,
     /// Upstream HTTP status for tools that make HTTP calls (e.g. web fetch), so a
     /// programmatic caller can branch on 429/403/4xx without string-parsing `content`.
     /// `None` for non-HTTP tools.
@@ -138,10 +143,21 @@ impl ToolResult {
 
     /// Attach a produced file/artifact (absolute path, `/api/v1/files/<name>` URL, or
     /// `data:` URI). chat_dispatch normalizes + materializes it under `<data_dir>/files/`
-    /// and surfaces it to the app as a "Work" artifact.
+    /// and surfaces it to the app as a "Work" artifact. Called again, it attaches
+    /// another: every file gets its own card, in the order attached.
     pub fn with_image_url(mut self, url: impl Into<String>) -> Self {
-        self.image_url = Some(url.into());
+        let url = url.into();
+        match &self.image_url {
+            None => self.image_url = Some(url),
+            Some(first) if *first != url && !self.more_files.contains(&url) => self.more_files.push(url),
+            Some(_) => {}
+        }
         self
+    }
+
+    /// Every file the call hands over, in order: `image_url`, then the rest.
+    pub fn files(&self) -> impl Iterator<Item = &str> {
+        self.image_url.as_deref().into_iter().chain(self.more_files.iter().map(String::as_str))
     }
 
     /// Name what only the owner can supply (builder; chains off `terminal`).
