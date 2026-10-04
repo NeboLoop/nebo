@@ -40,8 +40,23 @@ pub fn check_safeguard(rule_key: &str, input: &serde_json::Value, ctx: &crate::o
             .and_then(|v| v.as_str())
             .and_then(|text| scan_command_text(text.trim(), &run)),
         key if FILE_KEYS.contains(&key) || key == "edit_notebook" => check_file_safeguard(key, input, &run),
+        MEDIA_KEY => media_write(input).and_then(|write| check_file_safeguard("write_file", &write, &run)),
         _ => None,
     }
+}
+
+/// The tool that makes media files (`media_tool::GenerateMediaTool`).
+const MEDIA_KEY: &str = "generate_media";
+
+/// A `generate_media` call whose `into` is an absolute or `~/` path, as the
+/// `write_file` call it is: the file is written where it says, so it meets
+/// the limits and folders a write there meets. A relative `into` stays
+/// inside the app's folder, the run's working folder or the workspace
+/// (`media_tool::destination`); `None` for it.
+fn media_write(input: &serde_json::Value) -> Option<serde_json::Value> {
+    let into = input.get("into")?.as_str()?.trim();
+    let path = crate::file_tool::expand_path(into);
+    Path::new(&path).is_absolute().then(|| serde_json::json!({ "path": path }))
 }
 
 /// What the safeguard reads about the run a call belongs to.
@@ -114,6 +129,7 @@ pub fn check_path_scope(
             outside_allowed("edit", &[crate::file_tool::expand_path(path)], allowed_paths)
         }
         key if FILE_KEYS.contains(&key) => check_file_path_scope(key, input, allowed_paths),
+        MEDIA_KEY => media_write(input).and_then(|write| check_file_path_scope("write_file", &write, allowed_paths)),
         _ => None,
     }
 }
@@ -251,12 +267,15 @@ fn check_file_safeguard(rule_key: &str, input: &serde_json::Value, run: &Run<'_>
     // (2026-08-01: a cloud agent "fixed" its schedules with raw sqlite3
     // INSERTs into its own DB; 2026-09-26: an employee read the settings
     // file's secret into its context). Every path the call names is checked,
-    // a `path` that is a list (`share_file`) included.
+    // `paths` and a `path` that is a list (`share_file`) included.
     let notebook = input.get("notebook_path").and_then(|v| v.as_str());
     let listed = ["paths", "path"]
         .into_iter()
-        .filter_map(|key| input.get(key).and_then(|v| v.as_array()))
-        .flatten()
+        .filter_map(|key| input.get(key))
+        .flat_map(|v| match v.as_array() {
+            Some(items) => items.iter().collect::<Vec<_>>(),
+            None => vec![v],
+        })
         .filter_map(|p| p.as_str());
     let access = if READ_KEYS.contains(&rule_key) { Access::Read } else { Access::Write };
     for named in std::iter::once(path).chain(notebook).chain(listed).filter(|p| !p.is_empty()) {
@@ -795,6 +814,37 @@ mod tests {
         }
         let r = check_shell_safeguard(&serde_json::json!({ "command": format!("cat {}", at("files/draft.md")) }), &run);
         assert!(r.is_none(), "{r:?}");
+    }
+
+    /// generate_media writing an absolute or `~/` `into` meets the limits a
+    /// write_file there meets: Nebo's own files, protected system folders
+    /// and the job's folders. A relative `into` stays inside the app's
+    /// folder or the workspace, which the tool itself keeps it in.
+    #[test]
+    fn media_written_where_into_says_meets_write_files_limits() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("nebo-home");
+        std::fs::create_dir_all(root.join("files")).unwrap();
+        let fence = NeboFiles::at(&root, &[], &root.join("sessions/s1"), false);
+        let run = Run { fence: Some(&fence), cwd: None, cloud: false };
+        let check = |into: &str| {
+            media_write(&serde_json::json!({ "kind": "speech", "into": into }))
+                .and_then(|write| check_file_safeguard("write_file", &write, &run))
+        };
+        let own = root.join("data/vo.mp3").to_string_lossy().into_owned();
+        assert!(check(&own).is_some_and(|m| m.contains("Nebo's own files")), "Nebo's own files");
+        assert!(check(&root.join("files/vo.mp3").to_string_lossy()).is_none(), "the workspace");
+        assert!(check("assets/vo.mp3").is_none(), "a relative into is the tool's to keep in its folder");
+        let ctx = crate::origin::ToolContext::default();
+        let r = check_safeguard("generate_media", &serde_json::json!({ "kind": "image", "into": "/etc/x.png" }), &ctx);
+        assert!(r.is_some_and(|m| m.contains("BLOCKED")), "a protected folder");
+        assert_eq!(media_write(&serde_json::json!({ "into": "~/NeboAI/vo.mp3" })).unwrap()["path"], crate::file_tool::expand_path("~/NeboAI/vo.mp3"));
+
+        let allowed = vec![dir.path().join("work").to_string_lossy().into_owned()];
+        let scope = |into: &str| check_path_scope("generate_media", &serde_json::json!({ "into": into }), &allowed);
+        assert!(scope(&dir.path().join("work/vo.mp3").to_string_lossy()).is_none());
+        assert!(scope(&dir.path().join("elsewhere/vo.mp3").to_string_lossy()).is_some_and(|m| m.contains("restricted to")));
+        assert!(scope("assets/vo.mp3").is_none());
     }
 
     /// A plugin's skill folder, the one `use_skill` names: the file tools

@@ -406,7 +406,7 @@ pub fn contained(base: &Path, into: &str) -> Result<PathBuf, String> {
 
 fn outside(into: &str, base: &Path) -> String {
     format!(
-        "`{into}` is outside {}. Give a path inside that folder, such as `assets/hero.png`.",
+        "`{into}` is outside {}. Give a path inside that folder, such as `assets/hero.png`, or an absolute or `~/` path.",
         base.display()
     )
 }
@@ -427,6 +427,37 @@ fn prepare(base: &Path, path: &Path) -> Result<(), String> {
         return Err(outside(&path.display().to_string(), base));
     }
     Ok(())
+}
+
+/// The file a call writes for `name` (its `into`, or the default name), with
+/// its folder made: an absolute or `~/` path is written where it says, as
+/// `write_file` writes it (the safeguard and the job's folders check it
+/// before the call runs, `safeguard::media_write`); a relative one is inside
+/// `base`, and links may not lead out of it. Live 2026-10-03: `into:
+/// "NeboAI/Media/outputs/vo.mp3"` meant the owner's ~/NeboAI and landed in
+/// the workspace, so the next command could not find it; the result now
+/// names the absolute path, and `~/NeboAI/...` goes there.
+fn destination(base: &Path, name: &str) -> Result<PathBuf, String> {
+    let path = written_at(base, name)?;
+    if path.starts_with(base) {
+        prepare(base, &path)?;
+    } else if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("Could not make {}: {e}", parent.display()))?;
+    }
+    // The result names the file by this path, so the next command finds it.
+    Ok(std::path::absolute(&path).unwrap_or(path))
+}
+
+/// Where `name` resolves (`destination`), nothing made.
+fn written_at(base: &Path, name: &str) -> Result<PathBuf, String> {
+    let named = types::pathres::expand(name.trim());
+    if !named.is_absolute() {
+        return contained(base, name);
+    }
+    if named.file_name().is_none() || named.is_dir() {
+        return Err(format!("`{name}` is a folder; `into` must name a file."));
+    }
+    Ok(named)
 }
 
 /// The image file format for a call: `into`'s extension when it names one,
@@ -744,19 +775,54 @@ struct Target {
     default_folder: &'static str,
 }
 
+impl Target {
+    /// The folder the result says `path` went into: this target's label
+    /// when it is inside it, else the folder `into` named.
+    fn place(&self, path: &Path) -> String {
+        if path.starts_with(&self.base) {
+            return self.label.clone();
+        }
+        path.parent().map(|p| p.display().to_string()).unwrap_or_default()
+    }
+}
+
+/// What a request says when it wants new media made (`DynTool::triggers`):
+/// a request that says one has the tool loaded on its first step. Live
+/// 2026-10-03: "Record a one-sentence voiceover" left it deferred.
+const TRIGGERS: &[&str] = &[
+    "voiceover",
+    "voice over",
+    "narration",
+    "text to speech",
+    "read this aloud",
+    "read it aloud",
+    "generate an image",
+    "generate a picture",
+    "generate a video",
+    "make an image",
+    "make a picture",
+    "create an image",
+    "create a picture",
+    "ai image",
+    "ai video",
+];
+
 /// `generate_media`: the tool.
 pub struct GenerateMediaTool {
     media: Media,
     store: Arc<db::Store>,
+    triggers: Vec<String>,
 }
 
 impl GenerateMediaTool {
     pub fn new(media: Media, store: Arc<db::Store>) -> Self {
-        Self { media, store }
+        Self { media, store, triggers: TRIGGERS.iter().map(|t| t.to_string()).collect() }
     }
 
     /// The app named, else the employee running the call when it is an app,
-    /// else the workspace. Only ever one of the owner's own apps: one
+    /// else the run's working folder when it has one (an isolated helper's
+    /// copy, where the file tools take relative paths from), else the
+    /// workspace. Only ever one of the owner's own apps: one
     /// installed from the marketplace is its maker's, and nothing is written
     /// into its folder (the developer pack's rule, `app_dev::is_own_app`).
     fn target(&self, ctx: &ToolContext, input: &Value) -> Result<Target, String> {
@@ -797,6 +863,13 @@ impl GenerateMediaTool {
                 default_folder: "assets",
             });
         }
+        if let Some(cwd) = ctx.cwd.as_deref().filter(|c| Path::new(c).is_absolute()) {
+            return Ok(Target {
+                base: PathBuf::from(cwd),
+                label: "the working folder".to_string(),
+                default_folder: "media",
+            });
+        }
         let root =
             config::data_dir().map_err(|e| format!("The workspace could not be found: {e}"))?;
         Ok(Target {
@@ -823,17 +896,14 @@ impl GenerateMediaTool {
         );
         let paths = names
             .iter()
-            .map(|n| contained(&target.base, n))
+            .map(|n| destination(&target.base, n))
             .collect::<Result<Vec<_>, _>>()?;
-        for p in &paths {
-            prepare(&target.base, p)?;
-        }
         let (images, model) = self.media.images(&body).await?;
         let mut lines = vec![format!(
             "Made {} image{} into {}{}:",
             images.len(),
             if images.len() == 1 { "" } else { "s" },
-            target.label,
+            paths.first().map(|p| target.place(p)).unwrap_or_default(),
             if model.is_empty() {
                 String::new()
             } else {
@@ -893,8 +963,7 @@ impl GenerateMediaTool {
         let body = speech_body(input);
         let ext = body["response_format"].as_str().unwrap_or("mp3");
         let name = file_names(str_of(input, "into"), target.default_folder, text, ext, 1, now()).remove(0);
-        let path = contained(&target.base, &name)?;
-        prepare(&target.base, &path)?;
+        let path = destination(&target.base, &name)?;
         let bytes = self.media.speech(&body).await?;
         std::fs::write(&path, &bytes)
             .map_err(|e| format!("Could not write {}: {e}", path.display()))?;
@@ -909,7 +978,7 @@ impl GenerateMediaTool {
         let lines = [
             format!(
                 "Made speech into {}: {name} ({}) at {}",
-                target.label,
+                target.place(&path),
                 about.join(", "),
                 path.display()
             ),
@@ -932,8 +1001,7 @@ impl GenerateMediaTool {
             now(),
         )
         .remove(0);
-        let path = contained(&target.base, &name)?;
-        prepare(&target.base, &path)?;
+        let path = destination(&target.base, &name)?;
         let job = match str_of(input, "job") {
             Some(id) => Video {
                 id: id.to_string(),
@@ -955,7 +1023,7 @@ impl GenerateMediaTool {
         let size = self.media.download_video(&job.id, &path).await?;
         let mut lines = vec![format!(
             "Made a video into {}: {name} ({size} bytes) at {}",
-            target.label,
+            target.place(&path),
             path.display()
         )];
         let mut about = Vec::new();
@@ -1012,8 +1080,10 @@ impl DynTool for GenerateMediaTool {
          - kind \"speech\": `text` read aloud, as a voiceover or narration: an MP3, or WAV when `into` or \
            `output_format` says so. `voice` picks the voice. To put it under a video, use an installed media plugin's \
            audio mix on the two files (the Nebo Media plugin has one).\n\
-         - Files go into the app's folder when you are an app or name one with `app`, else the workspace. `into` is a \
-           path inside that folder, such as `assets/hero.png`.\n\
+         - `into` is the file to write. An absolute or `~/` path is saved exactly there (e.g. `~/NeboAI/Media/voiceover.mp3` \
+           for the owner's ~/NeboAI folder); a relative one, such as `assets/hero.png`, is inside the app's folder when you \
+           are an app or name one with `app`, else the workspace. The result gives each file's absolute path: use that \
+           path from then on.\n\
          - It only makes new media. To edit, mix, trim, resize, convert or inspect an existing file, use an installed media \
            plugin's tool instead.\n\
          - The result gives the files' paths, never the pictures; to look at one, use the vision helper on its path.\n\
@@ -1029,7 +1099,7 @@ impl DynTool for GenerateMediaTool {
                 "prompt": { "type": "string", "description": "Image or video: what it shows, in detail: subject, style, light, framing, motion." },
                 "text": { "type": "string", "description": "Speech: the exact words to say, up to about 4,000 characters." },
                 "voice": { "type": "string", "description": "Speech: the voice, e.g. alloy, ash, ballad, cedar, coral, echo, fable, marin, nova, onyx, sage, shimmer, verse. Left out: the default voice." },
-                "into": { "type": "string", "description": "The file to write, inside the app's folder or the workspace (e.g. `assets/hero.png`). Left out: a name from the prompt." },
+                "into": { "type": "string", "description": "The file to write: an absolute or `~/` path is saved there; a relative one (e.g. `assets/hero.png`) is inside the app's folder or the workspace. Left out: a name from the prompt." },
                 "app": { "type": "string", "description": "The app whose folder the file goes in. Leave out when you are the app, or for the workspace." },
                 "model": { "type": "string", "description": "A NeboAI media model. Leave out for the default." },
                 "n": { "type": "integer", "minimum": 1, "maximum": MAX_IMAGES, "description": "Image: how many (1-4)." },
@@ -1052,8 +1122,19 @@ impl DynTool for GenerateMediaTool {
         "generate image picture video art speech voiceover audio"
     }
 
+    fn triggers(&self) -> &[String] {
+        &self.triggers
+    }
+
     fn capability(&self, _input: &Value) -> Option<&'static str> {
         Some("file")
+    }
+
+    /// An absolute or `~/` `into` is a write there: a folder rule judges it
+    /// as it judges `write_file`'s path.
+    fn rule_field(&self, input: &Value) -> Option<types::permissions::RuleField> {
+        let path = types::pathres::expand(str_of(input, "into")?);
+        path.is_absolute().then_some(types::permissions::RuleField::Folder(path))
     }
 
     fn concurrency_safe(&self, _input: &Value) -> bool {
@@ -1653,6 +1734,54 @@ mod tests {
         let header = |k: &str| headers.iter().find(|(h, _)| h == k).map(|(_, v)| v.clone());
         assert_eq!(header("x-bot-id").as_deref(), Some("bot-1"));
         assert_eq!(header("authorization").as_deref(), Some("Bearer bot-1"));
+    }
+
+    /// `into` resolves the way the file tools take a path: `~/` is the
+    /// owner's home and an absolute path is itself, wherever they are; a
+    /// relative one is inside the folder. Live 2026-10-03: `into:
+    /// "NeboAI/Media/outputs/nebo-voiceover.mp3"` meant ~/NeboAI and landed
+    /// in Nebo's files folder, where the next command didn't look.
+    #[test]
+    fn into_resolves_home_absolute_and_relative_paths() {
+        let base = Path::new("/apps/kart/ui");
+        let home = types::pathres::expand("~");
+        assert_eq!(written_at(base, "~/X/y.mp3").unwrap(), home.join("X/y.mp3"));
+        assert_eq!(written_at(base, "/elsewhere/vo.mp3").unwrap(), PathBuf::from("/elsewhere/vo.mp3"));
+        assert_eq!(written_at(base, "assets/vo.mp3").unwrap(), base.join("assets/vo.mp3"));
+        assert!(written_at(base, "../vo.mp3").is_err(), "a relative path never leaves the folder");
+        assert!(written_at(base, "/").is_err(), "a folder is not a file");
+    }
+
+    /// Speech into an absolute path outside the app's folder is saved
+    /// there, and the result names that absolute path and its folder.
+    #[tokio::test]
+    async fn speech_into_an_absolute_path_is_saved_there_and_named() {
+        let mp3: &'static [u8] = Box::leak(mp3_of(4).into_boxed_slice());
+        let janus = mock(Box::new(move |path, _| match path {
+            "/v1/audio/speech" => (200, "audio/mpeg", mp3.to_vec()),
+            _ => (404, "text/plain", b"no".to_vec()),
+        }))
+        .await;
+        let tmp = tempfile::tempdir().unwrap();
+        let (tool, ui) = tool_with_app(&janus, tmp.path());
+        let want = tmp.path().join("NeboAI/Media/outputs/nebo-voiceover.mp3");
+        let input = json!({"kind": "speech", "app": "Racer", "text": "One lap.", "into": want.to_string_lossy()});
+        assert_eq!(tool.rule_field(&input), Some(types::permissions::RuleField::Folder(want.clone())));
+        let result = tool.execute_dyn(&ToolContext::default(), input).await;
+        assert!(!result.is_error, "{}", result.content);
+        assert_eq!(result.image_url.as_deref(), Some(want.to_string_lossy().as_ref()));
+        assert_eq!(std::fs::read(&want).unwrap(), mp3);
+        assert!(!ui.exists(), "nothing went into the app's folder");
+        assert!(result.content.contains(&format!("at {}", want.display())), "{}", result.content);
+        assert!(result.content.contains(&format!("into {}:", want.parent().unwrap().display())), "{}", result.content);
+
+        // A relative `into` is still inside the app's folder, named by it.
+        let result = tool
+            .execute_dyn(&ToolContext::default(), json!({"kind": "speech", "app": "Racer", "text": "Two laps.", "into": "vo/two.mp3"}))
+            .await;
+        assert!(!result.is_error, "{}", result.content);
+        assert_eq!(result.image_url.as_deref(), Some(ui.join("vo/two.mp3").to_string_lossy().as_ref()));
+        assert!(result.content.contains("into Racer's folder") && result.content.contains(&ui.join("vo/two.mp3").display().to_string()), "{}", result.content);
     }
 
     #[test]
