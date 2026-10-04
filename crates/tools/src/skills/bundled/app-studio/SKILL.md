@@ -246,13 +246,13 @@ ready. Open it from your workforce."
 
 ## Your App's Data
 
-The page's `storage` and the app employee's `app_data` tool are one store:
-same keys, same values. What the owner tells the employee shows on the page;
-what they type on the page, the employee can find.
+The page's `storage` and the employee's `app_data` tool are one store: same
+keys, same values. What the owner tells one, the other sees.
 
 ```
 app_data(action: "set",   key: "contacts", value: [{ "name": "John Smith", "phone": "+1 555 0100" }])
 app_data(action: "get",   key: "contacts")
+app_data(action: "set",   key: "site", path: "screens.2.html", value: "<main>...</main>")
 app_data(action: "replace", key: "page", find: "<h1>Old headline</h1>", with: "<h1>New headline</h1>")
 app_data(action: "query", where: { "name": "john smith" })
 app_data(action: "query", text: "smith", prefix: "contact:", limit: 5)
@@ -262,14 +262,14 @@ app_data(action: "delete", key: "draft")
 
 - Only the app's own employee has the tool, for its own app. A coworker asks it.
 - After a `set` or `delete` every open view hears it: `storage.onChange(() => load())`.
-- One key holding a list (`contacts`), or one key per record under a prefix
-  (`contact:<id>`). Write the keys into the employee's instructions.
-- `value` is JSON itself (an object, a list), never JSON written inside a
-  string. Text that looks like JSON but does not parse is refused: "Nothing
-  was saved".
-- `replace` changes one exact piece of text inside a value (a heading in a
-  20 KB page) without writing it all again. `find` must match exactly one
-  place, or nothing changes. Use it for small edits.
+- One key holding a list (`contacts`), or one key per record (`contact:<id>`).
+  Write the keys into the employee's instructions.
+- `value` is JSON itself (an object, a list), never JSON inside a string.
+  JSON-looking text that does not parse is refused: "Nothing was saved".
+- `path` (dotted, list items by index) sets or gets one spot. Replies cap
+  near 8k tokens: save a small skeleton, then fill one piece per call.
+- `replace` changes one exact piece of text (a heading in a page).
+  `find` must match one place, or nothing changes.
 
 ### One piece of work per chat
 
