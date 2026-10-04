@@ -87,3 +87,4 @@ fixtures:
   - ../fixtures/staffed-company/conversation/sc82-an-apps-console-send-shows-live-in-the-open-chat.yaml
   - ../fixtures/staffed-company/conversation/sc83-a-message-during-a-running-turn-is-taken-in-with-no-busy-notice.yaml
   - ../fixtures/staffed-company/conversation/sc84-a-pick-for-the-owner-is-the-ask-card-and-only-a-tapped-option-is-a-pick.yaml
+  - ../fixtures/staffed-company/conversation/sc85-an-owner-message-sent-while-busy-is-named-from-shown-to-taken-in.yaml
