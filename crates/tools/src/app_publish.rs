@@ -41,9 +41,12 @@ const NOT_YET_ANSWER: &str = "Not yet";
 
 /// The most screenshots a listing holds (the hub's cap).
 const MAX_SCREENSHOTS: usize = 10;
-/// The hub's limits on one bundle file and on the whole bundle.
-const MAX_BUNDLE_FILE: u64 = 10 << 20;
-const MAX_BUNDLE_TOTAL: u64 = 50 << 20;
+/// The limits on one bundle file and on the whole bundle: room for a 3D
+/// game's models, textures and music. The hub must accept as much
+/// (neboloop `skill_bundle.go`, `skill_files.go`), and an install takes a
+/// file this size (`napp::napp::MAX_UI_FILE_SIZE`).
+const MAX_BUNDLE_FILE: u64 = 100 << 20;
+const MAX_BUNDLE_TOTAL: u64 = 500 << 20;
 
 fn is_app(agent: &db::models::Agent) -> bool {
     agent.is_app.unwrap_or(0) != 0
@@ -597,7 +600,8 @@ pub fn with_app_frontmatter(agent_md: &str) -> String {
 /// The app's bundle for the hub: AGENT.md (typed as an app), agent.json,
 /// manifest.json, the employee's own skills under `skills/` ([`own_skills`]),
 /// and every file of the page under `ui/`, as a .zip.
-/// Returns the bytes and how many page files it carries. Dot files and
+/// Returns the .zip, written to a scratch file a file at a time (a 500 MB
+/// game is never held in memory), and how many page files it carries. Dot files and
 /// folders never ship; a file or a bundle past the hub's limits is refused
 /// here, in words, rather than cut there.
 ///
@@ -609,49 +613,55 @@ pub fn build_bundle(
     package: Option<&Path>,
     ui: &Path,
     user_skills: Option<&Path>,
-) -> Result<(Vec<u8>, usize), String> {
-    use std::io::Write;
-    let mut buf = std::io::Cursor::new(Vec::new());
-    let mut zip = zip::ZipWriter::new(&mut buf);
+) -> Result<(tempfile::NamedTempFile, usize), String> {
+    type Zip<'a> = zip::ZipWriter<std::io::BufWriter<&'a mut std::fs::File>>;
+    let mut out = tempfile::NamedTempFile::new().map_err(|e| format!("scratch file for the bundle: {e}"))?;
+    let mut zip: Zip = zip::ZipWriter::new(std::io::BufWriter::new(out.as_file_mut()));
     let opts = zip::write::SimpleFileOptions::default()
         .compression_method(zip::CompressionMethod::Deflated);
     let mut total: u64 = 0;
-    let mut add = |zip: &mut zip::ZipWriter<&mut std::io::Cursor<Vec<u8>>>,
-                   name: &str,
-                   data: &[u8]|
-     -> Result<(), String> {
-        let len = data.len() as u64;
+    // One file into the bundle, `len` bytes read from `data` as they go in.
+    let mut add = |zip: &mut Zip, name: &str, len: u64, data: &mut dyn std::io::Read| -> Result<(), String> {
         if len > MAX_BUNDLE_FILE {
             return Err(format!(
-                "{name} is {} MB; one file may be at most 10 MB.",
-                len >> 20
+                "{name} is {} MB; one file may be at most {} MB.",
+                len >> 20,
+                MAX_BUNDLE_FILE >> 20
             ));
         }
         total += len;
         if total > MAX_BUNDLE_TOTAL {
-            return Err(
-                "The app's files come to more than 50 MB, the most one listing may carry."
-                    .to_string(),
-            );
+            return Err(format!(
+                "The app's files come to more than {} MB, the most one listing may carry.",
+                MAX_BUNDLE_TOTAL >> 20
+            ));
         }
         zip.start_file(name, opts).map_err(|e| e.to_string())?;
-        zip.write_all(data).map_err(|e| e.to_string())
+        std::io::copy(data, zip).map_err(|e| format!("adding {name}: {e}"))?;
+        Ok(())
     };
-    add(
-        &mut zip,
-        "AGENT.md",
-        with_app_frontmatter(agent_md).as_bytes(),
-    )?;
+    // A file on disk, measured before it is read.
+    let add_file = |add: &mut dyn FnMut(&mut Zip, &str, u64, &mut dyn std::io::Read) -> Result<(), String>,
+                    zip: &mut Zip,
+                    name: &str,
+                    path: &Path|
+     -> Result<(), String> {
+        let mut file = std::fs::File::open(path).map_err(|e| format!("reading {}: {e}", path.display()))?;
+        let len = file.metadata().map_err(|e| format!("reading {}: {e}", path.display()))?.len();
+        add(zip, name, len, &mut file)
+    };
+    let persona = with_app_frontmatter(agent_md);
+    add(&mut zip, "AGENT.md", persona.len() as u64, &mut persona.as_bytes())?;
     if let Some(pkg) = package {
         for name in ["agent.json", "manifest.json"] {
-            if let Ok(data) = std::fs::read(pkg.join(name)) {
-                add(&mut zip, name, &data)?;
+            let path = pkg.join(name);
+            if path.is_file() {
+                add_file(&mut add, &mut zip, name, &path)?;
             }
         }
     }
     for (name, path) in own_skills(package, user_skills) {
-        let data = std::fs::read(&path).map_err(|e| format!("reading {}: {e}", path.display()))?;
-        add(&mut zip, &name, &data)?;
+        add_file(&mut add, &mut zip, &name, &path)?;
     }
     let mut pages = 0usize;
     let mut pending = vec![ui.to_path_buf()];
@@ -681,15 +691,14 @@ pub fn build_bundle(
     for path in files {
         let rel = path.strip_prefix(ui).map_err(|e| e.to_string())?;
         let name = format!("ui/{}", rel.to_string_lossy().replace('\\', "/"));
-        let data = std::fs::read(&path).map_err(|e| format!("reading {}: {e}", path.display()))?;
-        add(&mut zip, &name, &data)?;
+        add_file(&mut add, &mut zip, &name, &path)?;
         pages += 1;
     }
-    zip.finish().map_err(|e| e.to_string())?;
     if pages == 0 {
         return Err("The app's page folder is empty: there is nothing to publish yet.".to_string());
     }
-    Ok((buf.into_inner(), pages))
+    std::io::Write::flush(&mut zip.finish().map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+    Ok((out, pages))
 }
 
 /// Folders the hub drops from a bundle wherever they appear (neboloop
@@ -833,12 +842,12 @@ pub trait PublishHub: Send + Sync {
     async fn categories(&self) -> Vec<String>;
     /// agent(action: create | update | bundle-token | submit | get).
     async fn agent(&self, args: Value) -> Result<Value, String>;
-    /// Upload the bundle with a bundle-token's token.
+    /// Upload the bundle (the .zip at `zip`) with a bundle-token's token.
     async fn upload_bundle(
         &self,
         artifact_id: &str,
         token: &str,
-        zip: Vec<u8>,
+        zip: &Path,
     ) -> Result<Value, String>;
     /// Store a file through the one upload path; its file id.
     async fn upload_file(
@@ -888,7 +897,7 @@ impl PublishHub for HubClient {
         &self,
         artifact_id: &str,
         token: &str,
-        zip: Vec<u8>,
+        zip: &Path,
     ) -> Result<Value, String> {
         self.0
             .upload_bundle(artifact_id, token, zip)
@@ -982,7 +991,7 @@ pub async fn publish_to_hub(
     existing_artifact: &str,
     draft: &ListingDraft,
     agent_md: &str,
-    bundle: Vec<u8>,
+    bundle: &Path,
 ) -> Result<Submitted, String> {
     let manifest = with_app_frontmatter(agent_md);
     let mut base = json!({
@@ -1713,7 +1722,7 @@ impl Publisher {
             &row.artifact_id,
             &draft,
             &disk.agent_md,
-            bundle,
+            bundle.path(),
         )
         .await
         {

@@ -20,7 +20,7 @@ thiserror = { workspace = true }
 async-trait = "0.1"
 reqwest = { workspace = true }
 futures = { workspace = true }
-tokio-util = { workspace = true, features = ["compat"] }
+tokio-util = { workspace = true, features = ["compat", "io"] }
 tokio-tungstenite = { workspace = true }
 yamux = { workspace = true }
 zstd = "0.13"

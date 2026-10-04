@@ -259,7 +259,7 @@ fn the_bundle_carries_the_package_and_every_page_file() {
     let pkg = seed_app(&store, dir.path(), "app-1", "Kart Racer");
     let (zip, pages) = build_bundle("# Kart", Some(&pkg), &pkg.join("ui"), None).unwrap();
     assert_eq!(pages, 2);
-    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(zip)).unwrap();
+    let mut archive = zip::ZipArchive::new(zip.reopen().unwrap()).unwrap();
     let mut names: Vec<String> = (0..archive.len())
         .map(|i| archive.by_index(i).unwrap().name().to_string())
         .collect();
@@ -287,15 +287,15 @@ fn the_bundle_carries_the_package_and_every_page_file() {
     );
     let big = dir.path().join("big-ui");
     std::fs::create_dir_all(&big).unwrap();
-    std::fs::write(
-        big.join("video.mp4"),
-        vec![0u8; (MAX_BUNDLE_FILE + 1) as usize],
-    )
-    .unwrap();
+    // Sparse: past the limit without writing it.
+    std::fs::File::create(big.join("video.mp4"))
+        .unwrap()
+        .set_len(MAX_BUNDLE_FILE + 1)
+        .unwrap();
     assert!(
         build_bundle("# x", None, &big, None)
             .unwrap_err()
-            .contains("at most 10 MB")
+            .contains("at most 100 MB")
     );
 }
 
@@ -337,7 +337,7 @@ fn the_bundle_carries_the_employees_own_skills() {
     .unwrap();
 
     let (zip, _) = build_bundle("# Kart", Some(&pkg), &pkg.join("ui"), Some(&user_skills)).unwrap();
-    let archive = zip::ZipArchive::new(std::io::Cursor::new(zip)).unwrap();
+    let archive = zip::ZipArchive::new(zip.reopen().unwrap()).unwrap();
     let mut skills: Vec<String> = archive
         .file_names()
         .filter(|n| n.starts_with("skills/"))
@@ -358,9 +358,12 @@ fn the_bundle_carries_the_employees_own_skills() {
     assert!(archive.file_names().any(|n| n == "ui/index.html"), "the page still ships");
 
     // A skill file past the hub's limit is refused in words, like any file.
-    put(tune.join("references/huge.md"), &vec![b'x'; (MAX_BUNDLE_FILE + 1) as usize]);
+    std::fs::File::create(tune.join("references/huge.md"))
+        .unwrap()
+        .set_len(MAX_BUNDLE_FILE + 1)
+        .unwrap();
     let err = build_bundle("# Kart", Some(&pkg), &pkg.join("ui"), Some(&user_skills)).unwrap_err();
-    assert!(err.contains("skills/tune-karts/references/huge.md") && err.contains("at most 10 MB"), "{err}");
+    assert!(err.contains("skills/tune-karts/references/huge.md") && err.contains("at most 100 MB"), "{err}");
 }
 
 // ── Who gets the pack ───────────────────────────────────────────────
@@ -475,9 +478,9 @@ impl PublishHub for FakeHub {
             _ => json!({}),
         })
     }
-    async fn upload_bundle(&self, id: &str, token: &str, zip: Vec<u8>) -> Result<Value, String> {
+    async fn upload_bundle(&self, id: &str, token: &str, zip: &Path) -> Result<Value, String> {
         assert_eq!((id, token), ("art-1", "upload-token"));
-        assert!(!zip.is_empty());
+        assert!(zip::ZipArchive::new(std::fs::File::open(zip).unwrap()).unwrap().len() > 0);
         self.calls.lock().unwrap().push("upload_bundle".into());
         Ok(json!({"uiFilesStored": 2}))
     }

@@ -77,6 +77,12 @@ fn body_read_error(e: &reqwest::Error) -> String {
     }
 }
 
+/// How long an upload of `len` bytes may take: the files door's window, and
+/// on top of it the time a slow line (256 KB/s) needs to carry them.
+fn upload_window(len: u64) -> std::time::Duration {
+    FILE_TRANSFER_TIMEOUT + std::time::Duration::from_secs(len / (256 * 1024))
+}
+
 /// The client packages come down through: no total timeout, but every read
 /// (the answer's head, each chunk of its body) must arrive within
 /// `DOWNLOAD_IDLE_TIMEOUT`.
@@ -1791,14 +1797,26 @@ impl NeboAIApi {
     /// Upload an artifact's bundle (a .zip) with the upload token the hub's
     /// MCP `bundle-token` minted (`POST /api/v1/skills/{id}/bundle`). Returns
     /// the hub's account of what it stored.
+    ///
+    /// The .zip at `zip` streams from disk (a 500 MB game is never held in
+    /// memory), with as long as a slow line needs (`upload_window`).
     pub async fn upload_bundle(
         &self,
         artifact_id: &str,
         upload_token: &str,
-        zip: Vec<u8>,
+        zip: &std::path::Path,
     ) -> Result<serde_json::Value, CommError> {
         self.gate(&reqwest::Method::POST)?;
-        let part = reqwest::multipart::Part::bytes(zip)
+        let file = tokio::fs::File::open(zip)
+            .await
+            .map_err(|e| CommError::Other(format!("open bundle: {}", e)))?;
+        let len = file
+            .metadata()
+            .await
+            .map_err(|e| CommError::Other(format!("open bundle: {}", e)))?
+            .len();
+        let body = reqwest::Body::wrap_stream(tokio_util::io::ReaderStream::with_capacity(file, 256 * 1024));
+        let part = reqwest::multipart::Part::stream_with_length(body, len)
             .file_name("bundle.zip")
             .mime_str("application/zip")
             .map_err(|e| CommError::Other(format!("invalid mime type: {}", e)))?;
@@ -1808,7 +1826,7 @@ impl NeboAIApi {
         let client = tls::http_client()
             .http1_only()
             .connect_timeout(std::time::Duration::from_secs(10))
-            .timeout(FILE_TRANSFER_TIMEOUT)
+            .timeout(upload_window(len))
             .build()
             .map_err(|e| CommError::Other(format!("upload client: {}", e)))?;
         let resp = client
