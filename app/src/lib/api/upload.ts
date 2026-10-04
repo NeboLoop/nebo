@@ -41,6 +41,45 @@ async function convertHeicToJpeg(file: File): Promise<File> {
 	}
 }
 
+/** An upload the server refused. `code` is `storage_full` when the account's
+ *  storage is full: the message is the server's own sentence, and the same
+ *  upload is not worth offering again until space frees. */
+export class UploadError extends Error {
+	constructor(
+		message: string,
+		readonly status: number,
+		readonly code?: string
+	) {
+		super(message);
+		this.name = 'UploadError';
+	}
+}
+
+export const STORAGE_FULL = 'storage_full';
+
+export function isStorageFull(e: unknown): e is UploadError {
+	return e instanceof UploadError && e.code === STORAGE_FULL;
+}
+
+/** The refusal a non-2xx upload answer carries: the server's `error` and
+ *  `code` when it sent JSON, else the bare status. */
+export function uploadRefusal(status: number, responseText: string): UploadError {
+	try {
+		const body = JSON.parse(responseText) as { error?: string; code?: string };
+		if (body?.error) return new UploadError(body.error, status, body.code);
+	} catch {
+		// not JSON: fall through to the status
+	}
+	return new UploadError(`Upload failed: ${status}`, status);
+}
+
+/** What a failed upload says where it failed: a full account in the
+ *  server's own words, anything else after "File upload failed". */
+export function uploadFailureMessage(e: unknown): string {
+	if (isStorageFull(e)) return e.message;
+	return `File upload failed — message not sent. ${e instanceof Error ? e.message : ''}`.trim();
+}
+
 /** Where a file is landing: the employee it is for, and the conversation it
  *  came from. The backend announces every arrival as an event a flow can wait
  *  on (`attachment.audio` / `attachment.file`), and these are how that event
@@ -84,7 +123,7 @@ export async function uploadFile(
 					reject(new Error('Invalid upload response'));
 				}
 			} else {
-				reject(new Error(`Upload failed: ${xhr.status}`));
+				reject(uploadRefusal(xhr.status, xhr.responseText));
 			}
 		});
 

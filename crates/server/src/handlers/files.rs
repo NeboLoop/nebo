@@ -1,5 +1,5 @@
 use axum::extract::{Multipart, Path, State};
-use axum::response::Json;
+use axum::response::{IntoResponse, Json};
 
 use super::{HandlerResult, to_error_response};
 use crate::state::AppState;
@@ -141,10 +141,45 @@ pub(crate) fn too_big_or_bad(
     to_error_response(types::NeboError::Validation(e.to_string()))
 }
 
+/// A hub refusal an app must hear as the hub said it, or `None` for one the
+/// bot rides out on its own. Only a full account is passed on (413, code
+/// `storage_full`): its body is the hub's own answer, so the apps show its
+/// sentence and know not to offer the same upload again.
+pub(crate) fn hub_upload_refusal(e: &comm::CommError) -> Option<axum::response::Response> {
+    let comm::CommError::Http { status: 413, body } = e else {
+        return None;
+    };
+    let parsed: serde_json::Value = serde_json::from_str(body).ok()?;
+    if parsed.get("code").and_then(|c| c.as_str()) != Some("storage_full") {
+        return None;
+    }
+    Some((axum::http::StatusCode::PAYLOAD_TOO_LARGE, Json(parsed)).into_response())
+}
+
+/// What a hub refusal of a file read becomes here. A file the hub removed
+/// after its keeping period (410) is passed on with the hub's sentence, so
+/// the apps can say so instead of offering a retry; anything else stays an
+/// internal error.
+pub(crate) fn hub_file_error(
+    e: comm::CommError,
+) -> (axum::http::StatusCode, Json<types::api::ErrorResponse>) {
+    if let comm::CommError::Http { status: 410, body } = &e {
+        let error = serde_json::from_str::<serde_json::Value>(body)
+            .ok()
+            .and_then(|v| v.get("error").and_then(|m| m.as_str()).map(str::to_string))
+            .unwrap_or_else(|| "This file was removed.".to_string());
+        return (
+            axum::http::StatusCode::GONE,
+            Json(types::api::ErrorResponse { error }),
+        );
+    }
+    to_error_response(types::NeboError::Internal(e.to_string()))
+}
+
 pub async fn upload_file(
     State(state): State<AppState>,
     mut multipart: Multipart,
-) -> HandlerResult<serde_json::Value> {
+) -> Result<axum::response::Response, (axum::http::StatusCode, Json<types::api::ErrorResponse>)> {
     let mut filename = String::new();
     let mut mime_type = String::new();
     let mut data: Vec<u8> = Vec::new();
@@ -242,6 +277,12 @@ pub async fn upload_file(
                 landed = attachment;
             }
             Err(e) => {
+                // A full account is the one refusal the upload itself fails
+                // on: the file goes no further, here or there.
+                if let Some(refusal) = hub_upload_refusal(&e) {
+                    let _ = std::fs::remove_file(&path);
+                    return Ok(refusal);
+                }
                 tracing::warn!(error = %e, "loop upload failed; attachment is local-only")
             }
         },
@@ -259,7 +300,7 @@ pub async fn upload_file(
         Some(chat_id.as_str()).filter(|s| !s.is_empty()),
     );
 
-    Ok(Json(serde_json::to_value(&landed).unwrap_or_default()))
+    Ok(Json(serde_json::to_value(&landed).unwrap_or_default()).into_response())
 }
 
 /// GET /api/v1/comm-files/{id} — stream a loop attachment through the bot's
@@ -292,9 +333,7 @@ pub async fn serve_comm_file(
             .map_err(|e| to_error_response(types::NeboError::Internal(e.to_string())))?,
         None => {
             let api = crate::codes::build_api_client(&state).map_err(to_error_response)?;
-            api.download_file(&file_id)
-                .await
-                .map_err(|e| to_error_response(types::NeboError::Internal(e.to_string())))?
+            api.download_file(&file_id).await.map_err(hub_file_error)?
         }
     };
 
@@ -709,5 +748,62 @@ mod stream_file_tests {
         ] {
             assert_eq!(content_type_for(std::path::Path::new(name)), ty, "{name}");
         }
+    }
+}
+
+#[cfg(test)]
+mod hub_refusal_tests {
+    use super::{hub_file_error, hub_upload_refusal};
+    use comm::CommError;
+
+    fn http(status: u16, body: &str) -> CommError {
+        CommError::Http {
+            status,
+            body: body.to_string(),
+        }
+    }
+
+    /// A file the hub removed after its keeping period reaches the apps as
+    /// 410 with the hub's own sentence; any other refusal stays a 500.
+    #[test]
+    fn a_removed_file_is_gone_in_the_hubs_words() {
+        let (status, body) = hub_file_error(http(
+            410,
+            r#"{"error":"This file was removed 30 days after it was uploaded."}"#,
+        ));
+        assert_eq!(status, axum::http::StatusCode::GONE);
+        assert_eq!(
+            body.0.error,
+            "This file was removed 30 days after it was uploaded."
+        );
+
+        let (status, body) = hub_file_error(http(410, "gone"));
+        assert_eq!(status, axum::http::StatusCode::GONE);
+        assert_eq!(body.0.error, "This file was removed.");
+
+        let (status, _) = hub_file_error(http(404, r#"{"error":"file not found"}"#));
+        assert_eq!(status, axum::http::StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    /// A full account is passed on as the hub said it, code and all; a file
+    /// over the size limit (a 413 with no code) and other failures are not.
+    #[tokio::test]
+    async fn only_a_full_account_fails_the_upload() {
+        let full = r#"{"error":"Your storage is full (2 GB). Uploads clear 30 days after they're added.","code":"storage_full"}"#;
+        let resp = hub_upload_refusal(&http(413, full)).expect("passed on");
+        assert_eq!(resp.status(), axum::http::StatusCode::PAYLOAD_TOO_LARGE);
+        let bytes = axum::body::to_bytes(resp.into_body(), 1 << 16)
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(v["code"], "storage_full");
+        assert_eq!(
+            v["error"],
+            "Your storage is full (2 GB). Uploads clear 30 days after they're added."
+        );
+
+        assert!(hub_upload_refusal(&http(413, r#"{"error":"file too large"}"#)).is_none());
+        assert!(hub_upload_refusal(&http(500, full)).is_none());
+        assert!(hub_upload_refusal(&CommError::Other("offline".into())).is_none());
     }
 }

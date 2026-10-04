@@ -756,6 +756,7 @@
           {/if}
         {/each}
       </div>
+      <p class="text-xs text-base-content/50 mb-2">{$t('chat.uploadsKept')}</p>
     {/if}
 
     <!-- Recording a clip: time, level, stop (attach) and cancel (discard) -->
