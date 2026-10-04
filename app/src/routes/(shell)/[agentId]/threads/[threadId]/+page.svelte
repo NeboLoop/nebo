@@ -158,7 +158,7 @@
   });
 
   function openApp() {
-    launchApp(ctx.agentId, ctx.agent?.name ?? 'App', { fullscreen: ctx.agent?.appWindow?.fullscreen, thread: threadId });
+    launchApp(ctx.agentId, ctx.agent?.name ?? 'App', { fullscreen: ctx.agent?.appWindow?.fullscreen, isolated: ctx.agent?.appWindow?.isolated, thread: threadId });
   }
 
   // `window.open_on_work`: the app opens over this chat the moment its

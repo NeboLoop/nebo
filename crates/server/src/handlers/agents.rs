@@ -889,7 +889,7 @@ pub async fn create_agent(
 /// GET /agents/{id}
 /// `appWindow` for an app row whose files the loader does not hold: the
 /// window stored with the row, and no permissions known (so no motion).
-fn stored_app_window(window_json: Option<&str>) -> napp::manifest::AppWindow {
+pub(crate) fn stored_app_window(window_json: Option<&str>) -> napp::manifest::AppWindow {
     let window = window_json.and_then(|s| serde_json::from_str::<napp::manifest::AppWindowConfig>(s).ok());
     napp::manifest::AppWindow::from_manifest(window.as_ref(), &[])
 }
@@ -6598,7 +6598,7 @@ mod app_window_tests {
         let stored = r#"{"width":420,"height":800,"resizable":false,"title":"Kart","fullscreen":true,"orientation":"landscape"}"#;
         assert_eq!(
             serde_json::to_value(stored_app_window(Some(stored))).unwrap(),
-            serde_json::json!({"fullscreen": true, "orientation": "landscape", "motion": false, "pullToRefresh": false, "voice": false, "openOnWork": false})
+            serde_json::json!({"fullscreen": true, "orientation": "landscape", "motion": false, "pullToRefresh": false, "voice": false, "openOnWork": false, "isolated": false})
         );
         let no_pull = r#"{"title":"Solitaire","pull_to_refresh":false}"#;
         assert_eq!(serde_json::to_value(stored_app_window(Some(no_pull))).unwrap()["pullToRefresh"], false);
@@ -6606,7 +6606,9 @@ mod app_window_tests {
         assert_eq!(serde_json::to_value(stored_app_window(Some(pull))).unwrap()["pullToRefresh"], true);
         let work = r#"{"title":"Studio","open_on_work":true}"#;
         assert_eq!(serde_json::to_value(stored_app_window(Some(work))).unwrap()["openOnWork"], true);
-        let today = serde_json::json!({"fullscreen": false, "orientation": "portrait", "motion": false, "pullToRefresh": false, "voice": false, "openOnWork": false});
+        let engine = r#"{"title":"Godot","fullscreen":true,"isolated":true}"#;
+        assert_eq!(serde_json::to_value(stored_app_window(Some(engine))).unwrap()["isolated"], true);
+        let today = serde_json::json!({"fullscreen": false, "orientation": "portrait", "motion": false, "pullToRefresh": false, "voice": false, "openOnWork": false, "isolated": false});
         assert_eq!(serde_json::to_value(stored_app_window(None)).unwrap(), today);
         assert_eq!(serde_json::to_value(stored_app_window(Some("not json"))).unwrap(), today);
     }

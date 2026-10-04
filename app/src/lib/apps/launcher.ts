@@ -16,6 +16,12 @@ export interface AppWindowConfig {
 	fullscreen?: boolean;
 	/** The chat it is opened from: the page reads it as `?thread=<id>` (an app keeps one record per chat). */
 	thread?: string;
+	/**
+	 * The manifest's `window.isolated`: the page is served cross-origin isolated.
+	 * WebKit never isolates a custom-scheme page, so on the desktop it opens
+	 * over the server's HTTP origin instead of `neboapp://`.
+	 */
+	isolated?: boolean;
 }
 
 /** The chat each open app window shows, by window label. */
@@ -65,8 +71,12 @@ export async function launchApp(
 				'get_window_state', { label }
 			).catch(() => null);
 
-			// Custom protocol: each app gets its own origin with / as root
-			const appUrl = `neboapp://${agentId}/${query(cfg.thread)}`;
+			// Custom protocol: each app gets its own origin with / as root.
+			// An isolated app needs an HTTP origin (WebKit ignores COOP/COEP
+			// on a custom scheme), the same page a browser opens.
+			const appUrl = cfg.isolated
+				? new URL(httpAppPath(agentId, cfg.thread), location.href).href
+				: `neboapp://${agentId}/${query(cfg.thread)}`;
 			shownThread.set(label, cfg.thread);
 			const wv = new mod.WebviewWindow(label, {
 				url: appUrl,
@@ -96,7 +106,12 @@ export async function launchApp(
 	// doesn't apply, so carry the runtime base (tunnel prefix) explicitly.
 	// Explicit entry file: a bare trailing-slash path never matches the
 	// server router and falls through to the SPA shell.
-	window.open(withBase(`/apps/${agentId}/ui/index.html${query(cfg.thread)}`), `app-${agentId}`, features);
+	window.open(httpAppPath(agentId, cfg.thread), `app-${agentId}`, features);
+}
+
+/** The app's page on this server, under the runtime base (tunnel prefix). */
+function httpAppPath(agentId: string, thread?: string): string {
+	return withBase(`/apps/${agentId}/ui/index.html${query(thread)}`);
 }
 
 function query(thread?: string): string {

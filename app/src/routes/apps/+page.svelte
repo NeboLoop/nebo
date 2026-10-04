@@ -39,6 +39,7 @@
     color: string;
     description: string;
     fullscreen: boolean;
+    isolated: boolean;
   };
 
   // Open the app, or its employee settings. Every settings section (persona,
@@ -63,7 +64,7 @@
     e.stopPropagation();
     openMenuId = null;
     if (itemId === 'open') {
-      launchApp(app.id, app.name, { fullscreen: app.fullscreen });
+      launchApp(app.id, app.name, { fullscreen: app.fullscreen, isolated: app.isolated });
     } else {
       goto(`/${app.id}/settings/general`);
     }
@@ -92,6 +93,7 @@
           color: COLOR_CYCLE[entries.length % COLOR_CYCLE.length],
           description: a.description || '',
           fullscreen: a.appWindow?.fullscreen ?? false,
+          isolated: a.appWindow?.isolated ?? false,
         });
       }
       entries.sort((a, b) => a.name.localeCompare(b.name));
@@ -122,8 +124,8 @@
           {@const c = AGENT_COLORS_MAP[app.color as keyof typeof AGENT_COLORS_MAP]}
           <div
             class="p-5 rounded-lg border border-base-300 bg-base-200/50 cursor-pointer hover:border-primary/50 hover:shadow-sm transition-all text-left group relative"
-            onclick={() => launchApp(app.id, app.name, { fullscreen: app.fullscreen })}
-            onkeydown={(e) => { if (e.key === 'Enter') launchApp(app.id, app.name, { fullscreen: app.fullscreen }); }}
+            onclick={() => launchApp(app.id, app.name, { fullscreen: app.fullscreen, isolated: app.isolated })}
+            onkeydown={(e) => { if (e.key === 'Enter') launchApp(app.id, app.name, { fullscreen: app.fullscreen, isolated: app.isolated }); }}
             role="button"
             tabindex="0"
           >

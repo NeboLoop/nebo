@@ -2631,6 +2631,8 @@ export interface AppWindow {
 	motion: boolean
 	/** window.open_on_work: the app opens over its chat when the employee writes that chat's record. */
 	openOnWork: boolean
+	/** window.isolated: the page is served cross-origin isolated (SharedArrayBuffer for threaded engine exports). */
+	isolated: boolean
 }
 
 export interface AppWindowConfig {

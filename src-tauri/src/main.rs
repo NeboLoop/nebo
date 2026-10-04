@@ -853,7 +853,23 @@ fn main() {
         // protocol response whole (no streamed body), so reading a large
         // asset, or a proxied call, must not run on the main thread.
         .register_asynchronous_uri_scheme_protocol("neboapp", |_ctx, request, responder| {
-            std::thread::spawn(move || responder.respond(neboapp_response(request)));
+            std::thread::spawn(move || {
+                let ui_dir = resolve_app_ui_dir(request.uri().host().unwrap_or(""));
+                let isolated = ui_dir.as_deref().is_some_and(server::handlers::apps::ui_is_isolated);
+                let mut response = neboapp_response(request);
+                // `window.isolated`: every reply for the app, preflights and
+                // ranges included, carries the same headers as the HTTP path.
+                // WebKit ignores them on a custom scheme (the page is never
+                // `crossOriginIsolated` there), so the launcher opens an isolated
+                // app over the server's HTTP origin instead; they are sent for
+                // the webviews that honor them.
+                if isolated {
+                    for (name, value) in server::handlers::apps::CROSS_ORIGIN_ISOLATION {
+                        response.headers_mut().insert(name, http::HeaderValue::from_static(value));
+                    }
+                }
+                responder.respond(response)
+            });
         })
         .setup(move |app| {
             // Use saved logical dimensions or defaults

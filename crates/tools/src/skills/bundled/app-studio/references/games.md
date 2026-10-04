@@ -17,6 +17,11 @@ app: { window: { title: "Kart", fullscreen: true, orientation: "landscape" },
 - Saves go in `storage`.
 - Multiplayer: the page opens its own WebSocket to the
   game server; nothing goes through Nebo.
+- A threaded engine export (Godot 4, Unity, Bevy web builds with threads)
+  needs `SharedArrayBuffer`: set `window.isolated: true`. Then the page loads
+  nothing from another site: no esm.sh, no CDN script, font or image. Every
+  file it uses ships in `ui/`. Check `crossOriginIsolated` is `true` in the
+  page. A single-threaded export needs none of this.
 
 A game runs the same flow (intake, brief, boards, assets, build, motion,
 gate). Read this whole file before the brief. Planning is done in your head
