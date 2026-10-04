@@ -78,6 +78,10 @@ pub enum TurnEvent {
     Usage(Threshold),
     /// The listed deferred tools changed; names only (tools doc §4.1).
     ToolsAvailable(ToolsDelta),
+    /// The request said these deferred tools' triggers (an installed
+    /// plugin's): they are loaded at this step, and the row carries them
+    /// so they stay loaded (`tool_surface::loaded`).
+    ToolsTriggered(Vec<ai::ToolDefinition>),
     /// The skill set changed; a line is the skill's one-line description.
     SkillListing(LinedDelta),
     /// The helper types changed; a line is the type's use and tool set.
@@ -211,6 +215,7 @@ pub const NAMES: &[&str] = &[
     "goal_paused",
     "usage",
     "tools_available",
+    "tools_triggered",
     "skill_listing",
     "helper_types",
     "background_update",
@@ -398,6 +403,7 @@ pub fn attachment_for(e: &TurnEvent) -> Option<Attachment> {
             row.data.extend(d.replaced_data());
             return Some(row);
         }
+        TurnEvent::ToolsTriggered(defs) => return tools_triggered_row(defs),
         TurnEvent::SkillListing(d) => return d.attachment("skill_listing", &SKILL_WORDS),
         TurnEvent::HelperTypes(d) => return d.attachment("helper_types", &HELPER_WORDS),
         TurnEvent::BackgroundUpdate(text) => ("background_update", non_empty(text)?),
@@ -503,6 +509,48 @@ pub fn attachment_for(e: &TurnEvent) -> Option<Attachment> {
         kind,
         text,
         data: serde_json::Map::new(),
+    })
+}
+
+/// Most characters of a triggered tool's line: the first line of its
+/// description, which for a plugin is what it is for.
+const TRIGGERED_LINE_CHARS: usize = 200;
+
+/// The `tools_triggered` row: each tool the request's words loaded, with
+/// the first line of its description, and the definitions, which load them
+/// (`tool_surface::LOADED_TOOLS_KEY`). Its words say to use the tool for
+/// this work, after the skills that document it: live 2026-10-03, an
+/// installed media plugin went unused while the shell did the work.
+fn tools_triggered_row(defs: &[ai::ToolDefinition]) -> Option<Attachment> {
+    if defs.is_empty() {
+        return None;
+    }
+    let lines: Vec<String> = defs
+        .iter()
+        .map(|d| {
+            let first = d.description.lines().next().unwrap_or_default().trim();
+            let line = if first.chars().count() > TRIGGERED_LINE_CHARS {
+                format!("{}…", first.chars().take(TRIGGERED_LINE_CHARS - 1).collect::<String>())
+            } else {
+                first.to_string()
+            };
+            if line.is_empty() { format!("- {}", d.name) } else { format!("- {}: {line}", d.name) }
+        })
+        .collect();
+    let mut data = serde_json::Map::new();
+    data.insert(
+        super::tool_surface::LOADED_TOOLS_KEY.into(),
+        defs.iter().map(tools::find_tools::function_entry).collect::<Vec<_>>().into(),
+    );
+    Some(Attachment {
+        kind: "tools_triggered",
+        text: format!(
+            "This request is about work these installed tools do. They are loaded now: use them for it rather than \
+             the shell or another tool. A plugin's skills, named in its description, document its commands: load the \
+             ones this task needs with use_skill before its first command.\n{}",
+            lines.join("\n")
+        ),
+        data,
     })
 }
 
@@ -1176,6 +1224,11 @@ mod tests {
             },
             TurnEvent::Usage(Threshold::Context { percent_full: 82 }),
             TurnEvent::ToolsAvailable(ToolsDelta::all([("vm".to_string(), String::new())].into())),
+            TurnEvent::ToolsTriggered(vec![ai::ToolDefinition {
+                name: "plugin__clipper".into(),
+                description: "Runs Clipper commands. Edit video files.".into(),
+                input_schema: serde_json::json!({"type": "object"}),
+            }]),
             TurnEvent::SkillListing(lined.clone()),
             TurnEvent::HelperTypes(lined),
             TurnEvent::BackgroundUpdate("the export finished".into()),

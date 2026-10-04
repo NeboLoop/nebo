@@ -767,36 +767,39 @@ impl PluginRunner {
 
     /// The plugin's skills (name, description), from its `skills/` directory.
     pub(crate) fn list_services(&self, slug: &str) -> Vec<(String, String)> {
-        let skills_dir = match self.skills_dir(slug) {
-            Some(d) => d,
-            None => return Vec::new(),
-        };
+        self.skill_files(slug)
+            .into_iter()
+            .map(|(name, skill_md)| (name, Self::read_skill_description(&skill_md)))
+            .collect()
+    }
 
-        let mut services = Vec::new();
-        let entries = match std::fs::read_dir(&skills_dir) {
-            Ok(e) => e,
-            Err(_) => return Vec::new(),
-        };
+    /// The triggers the plugin's skills declare in their frontmatter.
+    pub(crate) fn skill_triggers(&self, slug: &str) -> Vec<String> {
+        self.skill_files(slug)
+            .into_iter()
+            .filter_map(|(_, skill_md)| std::fs::read(skill_md).ok())
+            .filter_map(|data| crate::skills::parse_skill_frontmatter(&data).ok())
+            .flat_map(|skill| skill.triggers)
+            .collect()
+    }
 
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if !path.is_dir() {
-                continue;
-            }
-            let skill_md = path.join("SKILL.md");
-            if !skill_md.exists() {
-                continue;
-            }
-            let name = match path.file_name().and_then(|n| n.to_str()) {
-                Some(n) => n.to_string(),
-                None => continue,
-            };
-            // Read first few lines to get the description from frontmatter
-            let description = Self::read_skill_description(&skill_md);
-            services.push((name, description));
-        }
-        services.sort_by(|a, b| a.0.cmp(&b.0));
-        services
+    /// Each skill's name and `SKILL.md` in the plugin's `skills/` directory,
+    /// in name order.
+    fn skill_files(&self, slug: &str) -> Vec<(String, PathBuf)> {
+        let Some(entries) = self.skills_dir(slug).and_then(|d| std::fs::read_dir(d).ok()) else {
+            return Vec::new();
+        };
+        let mut files: Vec<(String, PathBuf)> = entries
+            .flatten()
+            .filter_map(|entry| {
+                let path = entry.path();
+                let skill_md = path.join("SKILL.md");
+                let name = path.file_name()?.to_str()?.to_string();
+                (path.is_dir() && skill_md.exists()).then_some((name, skill_md))
+            })
+            .collect();
+        files.sort();
+        files
     }
 
     /// Read skill SKILL.md and extract the description from YAML frontmatter.

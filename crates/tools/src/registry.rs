@@ -208,6 +208,13 @@ pub trait DynTool: Send + Sync {
     fn search_hint(&self) -> &str {
         ""
     }
+    /// Words and phrases of a request this tool is for (an installed
+    /// plugin's own triggers and its skills'). A request that says one has
+    /// the deferred tool loaded for it (`find_tools::triggered`), so the
+    /// tool is in view without a search. Default: none.
+    fn triggers(&self) -> &[String] {
+        &[]
+    }
     /// Deferred tools are listed by name until `find_tools` loads them; the
     /// core set is always loaded. Default: deferred.
     fn should_defer(&self) -> bool {
@@ -683,9 +690,11 @@ impl Registry {
         let mut entries: Vec<crate::find_tools::DeferredEntry> = deferred
             .iter()
             .filter_map(|name| {
+                let tool = tools.get(name)?;
                 Some(crate::find_tools::DeferredEntry {
                     definition: cache.get(name)?.clone(),
-                    search_hint: tools.get(name)?.search_hint().to_string(),
+                    search_hint: tool.search_hint().to_string(),
+                    triggers: tool.triggers().to_vec(),
                 })
             })
             .collect();

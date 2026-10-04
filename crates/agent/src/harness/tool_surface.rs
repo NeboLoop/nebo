@@ -14,7 +14,9 @@
 //! search hint), narrowed to what the run may use (an employee's job names
 //! its tools in its session context, `prompt::inputs::job_tools`), and
 //! loaded by a result that carries its definition: `find_tools`, or the
-//! error for a call made without it (`ToolResult::loads`). A tool
+//! error for a call made without it (`ToolResult::loads`); or by a request
+//! that says its triggers (an installed plugin's), whose `tools_triggered`
+//! row carries it. A tool
 //! arriving or leaving (a plugin connecting, an MCP server going away) and a
 //! loaded tool whose definition changed (an operation tool gaining a second
 //! provider) are told in the listing delta, never by changing the declared
@@ -55,7 +57,8 @@ pub struct LoadedTool {
 /// The deferred tools this conversation loaded, in the order they were
 /// first loaded, re-derived from its stored rows on every step: the
 /// definitions a result row carries (`find_tools`, and the error for a call
-/// made without the tool's definition). `messages` is the conversation as
+/// made without the tool's definition) and a `tools_triggered` row carries
+/// (a request that said a tool's triggers). `messages` is the conversation as
 /// stored, not the compacted window, so a tool stays loaded after the result
 /// that loaded it is trimmed or evicted; a compaction boundary carries the
 /// tools loaded before it.
@@ -78,13 +81,23 @@ pub fn loaded(messages: &[ChatMessage]) -> Vec<LoadedTool> {
                 show(&mut out, def);
             }
         }
-        if let Some(fields) = super::reminders::attachment_fields(msg)
-            && fields.get("kind").and_then(|k| k.as_str()) == Some("tools_available")
-            && let Some(replaced) = fields.get(REPLACED_KEY).and_then(|r| r.as_object())
-        {
-            for (name, entry) in replaced {
-                if let Some(t) = out.iter_mut().find(|t| &t.declared.name == name) {
-                    t.told = entry.clone();
+        if let Some(fields) = super::reminders::attachment_fields(msg) {
+            for def in fields
+                .get(LOADED_TOOLS_KEY)
+                .and_then(|l| l.as_array())
+                .into_iter()
+                .flatten()
+                .filter_map(definition_of)
+            {
+                show(&mut out, def);
+            }
+            if fields.get("kind").and_then(|k| k.as_str()) == Some("tools_available")
+                && let Some(replaced) = fields.get(REPLACED_KEY).and_then(|r| r.as_object())
+            {
+                for (name, entry) in replaced {
+                    if let Some(t) = out.iter_mut().find(|t| &t.declared.name == name) {
+                        t.told = entry.clone();
+                    }
                 }
             }
         }
@@ -279,6 +292,11 @@ pub struct SurfaceInputs<'a> {
     /// Whether this computer has a desktop now (`tools::desktop_available`):
     /// the desktop tool is listed only then.
     pub desktop: bool,
+    /// The request this step hears first (the turn's input, on its first
+    /// step): the deferred tools whose triggers it says are loaded at this
+    /// step (`tools::find_tools::triggered`), so an installed plugin is in
+    /// view when the request is about its work. `None` loads nothing.
+    pub request: Option<&'a str>,
 }
 
 impl SurfaceInputs<'_> {
@@ -324,6 +342,10 @@ pub struct Surface {
     /// The change in the deferred listing since the conversation was last
     /// told; `None` when it is current.
     pub listing: Option<ListingDelta>,
+    /// The deferred tools the request's words loaded at this step, declared
+    /// last; the step's `tools_triggered` row carries them, so they stay
+    /// loaded from then on.
+    pub triggered: Vec<ToolDefinition>,
 }
 
 /// The surface of the next call and the listing delta the step writes
@@ -342,17 +364,35 @@ pub async fn surface(
         .collect();
     let all = tools.list().await;
     let loaded = loaded(conversation);
-    let declared = declared(&all, &deferred, &loaded);
-    let listed: Listing = tools
+    let offered: Vec<tools::find_tools::DeferredEntry> = tools
         .deferred_entries()
         .await
         .into_iter()
         .filter(|e| deferred.contains(&e.definition.name) && seat.offers(&e.definition.name))
+        .collect();
+    let unloaded: Vec<tools::find_tools::DeferredEntry> = offered
+        .iter()
+        .filter(|e| !loaded.iter().any(|t| t.declared.name == e.definition.name))
+        .cloned()
+        .collect();
+    let triggered: Vec<ToolDefinition> = seat
+        .request
+        .map(|request| {
+            tools::find_tools::triggered(&unloaded, request, tools::find_tools::TRIGGERED_MAX)
+                .into_iter()
+                .map(|e| e.definition.clone())
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut declared = declared(&all, &deferred, &loaded);
+    declared.extend(triggered.iter().cloned());
+    let listed: Listing = offered
+        .into_iter()
         .map(|e| (e.definition.name, e.search_hint.trim().to_string()))
         .collect();
     let announced = crate::harness::events::announced("tools_available", conversation);
     let listing = ListingDelta::between(&announced, &listed, replaced(&all, &loaded));
-    Surface { declared, listing }
+    Surface { declared, listing, triggered }
 }
 
 /// Whether a restricted run's allowlist names this tool: by name, as the
@@ -436,6 +476,7 @@ mod tests {
             withheld: &none,
             preloaded: &none,
             desktop,
+            request: None,
         };
         assert!(seat(true).offers(tools::DESKTOP_TOOL));
         assert!(!seat(false).offers(tools::DESKTOP_TOOL));

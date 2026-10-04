@@ -627,7 +627,8 @@ async fn run(
 }
 
 /// What a turn was asked, in words: an app's history names its versions
-/// with it (`tools::app_history`).
+/// with it (`tools::app_history`), and the first step loads the deferred
+/// tools whose triggers it says (`tool_surface::SurfaceInputs::request`).
 fn asked(input: &TurnInput) -> String {
     match input {
         TurnInput::Owner { text, .. } | TurnInput::Platform { text } | TurnInput::Coworker { text, .. } => text.clone(),
@@ -1315,6 +1316,10 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
             .as_ref()
             .filter(|w| !reply_in_words && st.owner_heard.as_deref() != Some(w.latest.as_str()))
             .map(|w| w.latest.clone());
+        // The request the first step hears: what it asks for may say an
+        // installed plugin's triggers. A linked turn writes no rows, so
+        // nothing it loaded would stay.
+        let request = (st.step == 1 && !cx.linked).then(|| asked(&cx.request.input));
         let surface_seat = SurfaceInputs {
             agent_id: cx.agent_id(),
             allowlist: cx.request.seat.tool_allowlist.as_ref(),
@@ -1323,6 +1328,7 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
             withheld: &cx.withheld_tools,
             preloaded: &cx.preloaded_tools,
             desktop: tools::desktop_available(),
+            request: request.as_deref(),
         };
         let surface = tool_surface::surface(&h.tools, &conversation, &surface_seat).await;
         // Attachments are Nebo's context for Nebo's model. A linked
@@ -1330,6 +1336,9 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
         // none: no identity, roster, environment, time or listing row ever
         // reaches another runtime.
         if !cx.linked {
+            if !surface.triggered.is_empty() {
+                st.reminders.add(&TurnEvent::ToolsTriggered(surface.triggered.clone()));
+            }
             step_events(cx, st, &conversation, surface.listing.clone(), &surface.declared).await;
             if st.reminders.has_queued() {
                 if let Err(e) = st.reminders.write(sessions, sid) {
@@ -5127,6 +5136,95 @@ mod tests {
         let listing = texts(&model.calls()[0]).into_iter().find(|t| t.contains("available through find_tools")).expect("the listing");
         assert!(listing.contains("\nremind: set a reminder for later"), "{listing}");
         assert!(listing.contains("\nweather\n") || listing.ends_with("\nweather"), "a tool with no hint is its name: {listing}");
+    }
+
+    /// An installed plugin's tool as the registry holds it: deferred, with
+    /// the triggers of its manifest and skills (`PluginCliTool`).
+    struct Clipper {
+        triggers: Vec<String>,
+    }
+
+    impl Clipper {
+        fn boxed() -> Box<dyn tools::registry::DynTool> {
+            let triggers = ["video", "trim", "how long", "frame rate"].map(str::to_string).to_vec();
+            Box::new(Clipper { triggers })
+        }
+    }
+
+    impl tools::registry::DynTool for Clipper {
+        fn name(&self) -> &str {
+            "plugin__clipper"
+        }
+        fn description(&self) -> String {
+            "Runs Clipper commands. Edit and inspect video files.\n- `command` is the subcommand and flags, as its skills document them. Its skills: clip.".into()
+        }
+        fn schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]})
+        }
+        fn search_hint(&self) -> &str {
+            "clipper video trim"
+        }
+        fn triggers(&self) -> &[String] {
+            &self.triggers
+        }
+        fn read_only(&self, _input: &serde_json::Value) -> bool {
+            true
+        }
+        fn execute_dyn<'a>(
+            &'a self,
+            _ctx: &'a tools::ToolContext,
+            _input: serde_json::Value,
+        ) -> Pin<Box<dyn Future<Output = tools::ToolResult> + Send + 'a>> {
+            Box::pin(async move { tools::ToolResult::ok("clipper ran: 26.7 seconds") })
+        }
+    }
+
+    /// A request about an installed plugin's work has the plugin's tool in
+    /// view from its first step, with a row that says to use it after its
+    /// skills; it stays loaded for the next turn. Live 2026-10-03: the media
+    /// plugin stayed deferred behind find_tools, its triggers ("video",
+    /// "how long") matched against nothing, and the employee did every
+    /// media request through the shell.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_request_about_a_plugins_work_has_its_tool_in_view_from_the_first_step() {
+        let model = Scripted::new(vec![
+            Step::Call("plugin__clipper", serde_json::json!({"command": "info clip.mp4"})),
+            Step::Say("It runs 26.7 seconds."),
+            Step::Say("Anytime."),
+        ]);
+        let h = harness_with(&model, vec![Clipper::boxed()]).await;
+        let events = run_turn(&h, owner("What's in the downloadgram video in my Downloads? How long is it?")).await;
+        assert_eq!(exit_of(&events), "text_response");
+        run_turn(&h, owner("Thanks!")).await;
+        let calls = model.calls();
+        assert_eq!(calls.len(), 3);
+        let declared = |c: &ChatRequest| c.tools.iter().any(|t| t.name == "plugin__clipper");
+        assert!(calls.iter().all(declared), "in view from the first step, and it stays loaded");
+        assert_eq!(calls[0].tools.last().map(|t| t.name.as_str()), Some("plugin__clipper"), "a load appends");
+        let row = texts(&calls[0]).into_iter().find(|t| t.contains("installed tools")).expect("the triggered row");
+        assert!(row.contains("- plugin__clipper: Runs Clipper commands. Edit and inspect video files."), "{row}");
+        assert!(row.contains("use_skill") && row.contains("rather than"), "{row}");
+        let result = calls[1].messages.last().unwrap().tool_results.as_ref().unwrap().to_string();
+        assert!(result.contains("clipper ran"), "the call ran without a find_tools step: {result}");
+        assert_eq!(
+            texts(&calls[2]).iter().filter(|t| t.contains("installed tools")).count(),
+            1,
+            "told once; a loaded tool isn't loaded again"
+        );
+    }
+
+    /// A request about other work leaves the plugin's tool deferred, listed
+    /// by name and purpose as before.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_request_about_other_work_leaves_a_plugins_tool_deferred() {
+        let model = Scripted::new(vec![Step::Say("Sunny.")]);
+        let h = harness_with(&model, vec![Clipper::boxed()]).await;
+        run_turn(&h, owner("Send me the information about tomorrow's weather.")).await;
+        let first = &model.calls()[0];
+        assert!(!first.tools.iter().any(|t| t.name == "plugin__clipper"));
+        assert!(!texts(first).iter().any(|t| t.contains("installed tools")));
+        let listing = texts(first).into_iter().find(|t| t.contains("available through find_tools")).expect("the listing");
+        assert!(listing.contains("\nplugin__clipper: clipper video trim"), "{listing}");
     }
 
     /// An app employee under App Developer mode has the code tool declared
