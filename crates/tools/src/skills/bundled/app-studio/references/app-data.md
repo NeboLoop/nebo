@@ -22,8 +22,10 @@ app_data(action: "delete", key: "draft")
   Write the keys into the employee's instructions.
 - `value` is JSON itself (an object, a list), never JSON inside a string.
   JSON-looking text that does not parse is refused: "Nothing was saved".
-- `path` (dotted, list items by index) sets or gets one spot. Replies cap
-  near 8k tokens: save a small skeleton, then fill one piece per call.
+- `path` (dotted, list items by index) sets or gets one spot; `append`
+  adds text to the text there (the next section of a page) or an item to a
+  list (a new screen). Never send a whole site in one call: a call that big
+  breaks. Save a small skeleton, then fill one piece per call.
 - `replace` changes one exact piece of text (a heading in a page).
   `find` must match one place, or nothing changes.
 
