@@ -156,23 +156,10 @@
     });
   });
 
-  // The owner recap (WP2.5): written after a chat turn finishes, for coming
-  // back to this thread. Live only — never fetched, never re-entered into a
-  // model request; cleared on thread switch and on the next send so it never
-  // outlives the turn it describes.
-  let recapText = $state('');
-  let recapUnsub: (() => void) | null = null;
-  onMount(() => {
-    recapUnsub = getWebSocketClient().on<{ chatId?: string; turnId?: string; text?: string }>('turn_recap', (d) => {
-      if (d?.chatId === threadId && d.text) recapText = d.text;
-    });
-  });
-
   onDestroy(() => {
     for (const off of activeRunUnsubs) off();
     activeRunUnsubs = [];
     voiceMsgUnsub?.();
-    recapUnsub?.();
     chat.destroy();
   });
 
@@ -184,7 +171,6 @@
       // send happened in.
       if (lastThreadId && threadId !== lastThreadId) {
         pendingSendStarted = false;
-        recapText = ''; // a different thread's last turn, not this one's
       }
       lastThreadId = threadId;
       const sk = threadKey(agentId, threadId);
@@ -289,7 +275,6 @@
   goal={chat.goal}
   quotaWarning={chat.quotaWarning}
   chatError={chat.chatError}
-  {recapText}
   activityStatus={chat.activityStatus}
   helpers={chat.helpers}
   askQueueLength={chat.askQueueLength}
@@ -297,9 +282,6 @@
   isLoadingMore={chat.isLoadingMore}
   onloadmore={() => chat.loadHistory(threadId ?? '', { older: true })}
   onsend={async (text, files) => {
-    // A new turn is starting — the last one's recap no longer describes
-    // "where things stand".
-    recapText = '';
     if (threadId) {
       sessionStorage.removeItem(pendingSendKey(threadId));
       sessionStorage.removeItem(pendingErrorKey(threadId));

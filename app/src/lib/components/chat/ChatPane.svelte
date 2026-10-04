@@ -104,7 +104,7 @@
 
   type AgentInfo = { id: string; name: string; color: string; initial: string; role: string; status: string; isApp?: boolean };
 
-  let { messages = [], agentName = 'Agent', agentId = '', threadId = '', sessionId = '', headerTitle = '', headerRight = '', placeholder = '', emptyIcon = '', emptyTitle = '', emptyDesc = '', allAgents = [], onteachsent, activityStatus = '', helpers = [], tokenUsage = null, goal = null, quotaWarning = '', chatError = '', recapText = '', onsend, onstop, onedit, onredo, onasksubmit, onrestoreversion, ondismisswarning, ondismisserror, onloadmore, isLoading = false, isLoadingMore = false, historyLoading = false, hasMore = false, allowAttachments = true, flowsPane, onopenruns, onsettings, memoryMode = 'single', folder = '', isApp = false, ownApp = false, onopenapp, onback, askQueueLength = 0, composerPrefill = '', onprefilled, readOnly = false }: {
+  let { messages = [], agentName = 'Agent', agentId = '', threadId = '', sessionId = '', headerTitle = '', headerRight = '', placeholder = '', emptyIcon = '', emptyTitle = '', emptyDesc = '', allAgents = [], onteachsent, activityStatus = '', helpers = [], tokenUsage = null, goal = null, quotaWarning = '', chatError = '', onsend, onstop, onedit, onredo, onasksubmit, onrestoreversion, ondismisswarning, ondismisserror, onloadmore, isLoading = false, isLoadingMore = false, historyLoading = false, hasMore = false, allowAttachments = true, flowsPane, onopenruns, onsettings, memoryMode = 'single', folder = '', isApp = false, ownApp = false, onopenapp, onback, askQueueLength = 0, composerPrefill = '', onprefilled, readOnly = false }: {
     messages?: Message[];
     /** Employee-scoped views for the work pane. Omitted on chats with no
      *  employee behind them (channel setup help, the embed), and the matching
@@ -151,11 +151,6 @@
     goal?: SessionGoalStatus | null;
     quotaWarning?: string;
     chatError?: string;
-    /** The owner recap for the last finished turn (`turn_recap`, WP2.5):
-     *  one or two plain sentences for coming back to the thread. Cleared by
-     *  the page on thread switch and on send — a stale recap from an
-     *  earlier turn never lingers under a newer one. */
-    recapText?: string;
     onsend?: (text: string, files: { file: File; id: string; previewUrl: string | null; isImage: boolean }[]) => void;
     onteachsent?: (message: string, sessionKey: string) => void;
     onstop?: () => void;
@@ -2032,13 +2027,6 @@
         <span>{helpers.length === 1
           ? $t('chat.helperWorking', { values: { what: helpers[0].activity || helpers[0].description } })
           : $t('chat.helpersWorking', { values: { n: helpers.length } })}</span>
-      </div>
-    {/if}
-    <!-- The owner recap (WP2.5): one or two plain sentences under the
-         finished turn, for coming back to this thread. -->
-    {#if !isLoading && recapText}
-      <div class="max-w-[640px] mt-2 text-xs text-base-content/60 italic">
-        {recapText}
       </div>
     {/if}
   </div>

@@ -2493,6 +2493,20 @@ impl PluginStore {
                     if let Some(pb) = manifest.platforms.get(&platform) {
                         let binary_path = version_dir.join(&pb.binary_name);
                         if binary_path.is_file() {
+                            // A binary shorter or longer than the size its
+                            // manifest declares is still being copied in by
+                            // hand: the version isn't there yet, and the last
+                            // whole version keeps serving until it is.
+                            let len = binary_path.metadata().map(|m| m.len()).unwrap_or(0);
+                            if pb.size > 0 && len != pb.size {
+                                debug!(
+                                    dir = %version_dir.display(),
+                                    expected = pb.size,
+                                    actual = len,
+                                    "plugin binary incomplete; version skipped"
+                                );
+                                return None;
+                            }
                             return Some(binary_path);
                         }
                     }
@@ -2552,10 +2566,75 @@ impl PluginStore {
         largest.map(|(_, p)| p)
     }
 
+    /// Whether a plugin has a version directory that is not whole yet: one
+    /// being copied in by hand, whose binary is missing or not yet the size
+    /// its manifest declares. A rescan that finds no whole version of such a
+    /// plugin keeps the last one it had rather than calling it removed.
+    pub fn has_incomplete_version(&self, slug: &str) -> bool {
+        [&self.user_dir, &self.installed_dir].into_iter().any(|root| {
+            let Ok(entries) = std::fs::read_dir(root.join(slug)) else {
+                return false;
+            };
+            entries.flatten().any(|e| {
+                let path = e.path();
+                path.is_dir()
+                    && e.file_name().to_str().is_some_and(|n| semver::Version::parse(n).is_ok())
+                    && !path.join(".quarantined").exists()
+                    && self.find_binary_in_version_dir(&path).is_none()
+            })
+        })
+    }
+
+    /// What a rescan sees: each plugin's binary, and enough of its files'
+    /// state that a version copied over itself in place reads as a change.
+    fn scan_snapshot(&self) -> HashMap<String, PluginSnapshot> {
+        let mut snapshot = HashMap::new();
+        // Highest version first per slug (`list_installed`'s order).
+        for (slug, _ver, path, _src) in self.list_installed() {
+            snapshot.entry(slug).or_insert_with(|| PluginSnapshot::of(path));
+        }
+        snapshot
+    }
+
+    /// Diff a rescan against the last one. A plugin missing from the rescan
+    /// while one of its versions is still being copied in keeps its last
+    /// whole version: no `Removed`, and the next rescan (after the copy
+    /// lands) reports the new version as `Changed`.
+    fn diff_snapshots(
+        &self,
+        old: &HashMap<String, PluginSnapshot>,
+        mut current: HashMap<String, PluginSnapshot>,
+    ) -> (Vec<PluginFsEvent>, HashMap<String, PluginSnapshot>) {
+        let mut events = Vec::new();
+        for (slug, snap) in &current {
+            match old.get(slug) {
+                None => events.push(PluginFsEvent::Added { slug: slug.clone(), binary_path: snap.binary.clone() }),
+                Some(prev) if prev != snap => {
+                    events.push(PluginFsEvent::Changed { slug: slug.clone(), binary_path: snap.binary.clone() })
+                }
+                Some(_) => {}
+            }
+        }
+        for (slug, prev) in old {
+            if current.contains_key(slug) {
+                continue;
+            }
+            if self.has_incomplete_version(slug) {
+                info!(slug = %slug, "plugin is still being copied in; keeping its last whole version");
+                current.insert(slug.clone(), prev.clone());
+            } else {
+                events.push(PluginFsEvent::Removed { slug: slug.clone() });
+            }
+        }
+        (events, current)
+    }
+
     /// Start watching for filesystem changes in plugin directories.
     ///
-    /// Re-scans on file changes and emits diff events for added/removed plugins.
-    /// Mirrors `AgentLoader::watch()`.
+    /// Re-scans once the plugin trees have been quiet for a moment (a
+    /// trailing debounce: a copy in progress is one burst, scanned when it
+    /// ends, never halfway through) and emits diff events for added,
+    /// changed and removed plugins. Mirrors `AgentLoader::watch()`.
     pub fn watch(
         &self,
     ) -> (
@@ -2566,16 +2645,9 @@ impl PluginStore {
         let user_dir = self.user_dir.clone();
         let (event_tx, event_rx) = tokio::sync::mpsc::channel::<PluginFsEvent>(32);
 
-        // Snapshot current state for diffing
-        let initial: HashMap<String, PathBuf> = self
-            .list_installed()
-            .into_iter()
-            .map(|(slug, _ver, path, _src)| (slug, path))
-            .collect();
-        let prev = Arc::new(tokio::sync::RwLock::new(initial));
-
-        let store_installed_dir = self.installed_dir.clone();
-        let store_user_dir = self.user_dir.clone();
+        // Rescans use a store over the same two roots.
+        let scanner = PluginStore::new(self.installed_dir.clone(), self.user_dir.clone(), None);
+        let mut prev = scanner.scan_snapshot();
 
         let handle = tokio::spawn(async move {
             use notify::{Event, EventKind, RecursiveMode, Watcher};
@@ -2609,104 +2681,94 @@ impl PluginStore {
                 }
             }
 
-            let mut last_reload = std::time::Instant::now();
-            let debounce = std::time::Duration::from_secs(2);
+            // Watchers report real paths (macOS: /private/var for /var).
+            let roots: Vec<PathBuf> = [&user_dir, &installed_dir]
+                .into_iter()
+                .flat_map(|r| [r.clone(), r.canonicalize().unwrap_or_else(|_| r.clone())])
+                .collect();
+            let relevant = |event: &Event| {
+                matches!(event.kind, EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_))
+                    && event.paths.iter().any(|p| {
+                        let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                        name == "plugin.json"
+                            || name == "PLUGIN.md"
+                            || name.ends_with(".napp")
+                            // A slug dir, a version dir, or a file directly in
+                            // one (the binary): what a copy by hand writes.
+                            || roots.iter().any(|root| {
+                                p.strip_prefix(root).is_ok_and(|rel| rel.components().count() <= 3)
+                            })
+                            // Binary rebuilt in target/release or target/debug
+                            || p.ancestors().any(|a| {
+                                a.file_name()
+                                    .and_then(|n| n.to_str())
+                                    .map(|n| n == "release" || n == "debug")
+                                    .unwrap_or(false)
+                            })
+                    })
+            };
 
             while let Some(result) = rx.recv().await {
                 match result {
-                    Ok(event) => {
-                        let dominated = matches!(
-                            event.kind,
-                            EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_)
-                        );
-                        if !dominated {
-                            continue;
-                        }
-
-                        let relevant = event.paths.iter().any(|p| {
-                            let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                            name == "plugin.json"
-                                || name == "PLUGIN.md"
-                                || name.ends_with(".napp")
-                                // New symlink/directory added directly under watched dir
-                                || (matches!(event.kind, EventKind::Create(_))
-                                    && (p.parent() == Some(user_dir.as_path())
-                                        || p.parent() == Some(installed_dir.as_path()))
-                                    && p.is_dir())
-                                // Binary rebuilt in target/release or target/debug
-                                || p.ancestors().any(|a| {
-                                    a.file_name()
-                                        .and_then(|n| n.to_str())
-                                        .map(|n| n == "release" || n == "debug")
-                                        .unwrap_or(false)
-                                })
-                        });
-                        if !relevant {
-                            continue;
-                        }
-
-                        if last_reload.elapsed() < debounce {
-                            continue;
-                        }
-                        last_reload = std::time::Instant::now();
-
-                        debug!("plugins directory changed, re-scanning");
-
-                        // Re-scan both directories using the same logic as list_installed
-                        let tmp_store = PluginStore::new(
-                            store_installed_dir.clone(),
-                            store_user_dir.clone(),
-                            None,
-                        );
-                        let current: HashMap<String, PathBuf> = tmp_store
-                            .list_installed()
-                            .into_iter()
-                            .map(|(slug, _ver, path, _src)| (slug, path))
-                            .collect();
-
-                        // Diff against previous snapshot
-                        {
-                            let old = prev.read().await;
-                            for (slug, path) in &current {
-                                if !old.contains_key(slug) {
-                                    let _ = event_tx
-                                        .send(PluginFsEvent::Added {
-                                            slug: slug.clone(),
-                                            binary_path: path.clone(),
-                                        })
-                                        .await;
-                                } else if old.get(slug) != Some(path) {
-                                    let _ = event_tx
-                                        .send(PluginFsEvent::Changed {
-                                            slug: slug.clone(),
-                                            binary_path: path.clone(),
-                                        })
-                                        .await;
-                                }
-                            }
-                            for slug in old.keys() {
-                                if !current.contains_key(slug) {
-                                    let _ = event_tx
-                                        .send(PluginFsEvent::Removed {
-                                            slug: slug.clone(),
-                                        })
-                                        .await;
-                                }
-                            }
-                        }
-
-                        let count = current.len();
-                        *prev.write().await = current;
-                        info!(count, "re-scanned plugins after filesystem change");
-                    }
+                    Ok(event) if relevant(&event) => {}
+                    Ok(_) => continue,
                     Err(e) => {
                         warn!(error = %e, "filesystem watch error (plugins)");
+                        continue;
                     }
                 }
+
+                // Wait out the burst: rescan once the trees are quiet, or
+                // at the latest after `PLUGIN_SETTLE_MAX` of steady writes.
+                let started = tokio::time::Instant::now();
+                loop {
+                    let left = PLUGIN_SETTLE_MAX.saturating_sub(started.elapsed());
+                    if left.is_zero() {
+                        break;
+                    }
+                    match tokio::time::timeout(PLUGIN_SETTLE_QUIET.min(left), rx.recv()).await {
+                        Ok(Some(_)) => continue,
+                        Ok(None) => return,
+                        Err(_) => break,
+                    }
+                }
+
+                debug!("plugins directory changed, re-scanning");
+                let (events, next) = scanner.diff_snapshots(&prev, scanner.scan_snapshot());
+                for event in events {
+                    let _ = event_tx.send(event).await;
+                }
+                info!(count = next.len(), "re-scanned plugins after filesystem change");
+                prev = next;
             }
         });
 
         (handle, event_rx)
+    }
+}
+
+/// How long the plugin trees must be quiet before a rescan.
+const PLUGIN_SETTLE_QUIET: std::time::Duration = std::time::Duration::from_secs(2);
+/// The longest a steady stream of writes can hold a rescan off.
+const PLUGIN_SETTLE_MAX: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// One plugin as a rescan saw it: its binary, plus the size and times of
+/// its binary and manifest, so a version copied over itself is a change.
+#[derive(Debug, Clone, PartialEq)]
+struct PluginSnapshot {
+    binary: PathBuf,
+    stamp: Option<(u64, std::time::SystemTime)>,
+    manifest_modified: Option<std::time::SystemTime>,
+}
+
+impl PluginSnapshot {
+    fn of(binary: PathBuf) -> Self {
+        let stamp = binary.metadata().ok().and_then(|m| Some((m.len(), m.modified().ok()?)));
+        let manifest_modified = binary
+            .parent()
+            .and_then(|d| d.join("plugin.json").metadata().ok())
+            .and_then(|m| m.modified().ok());
+        Self { binary, stamp, manifest_modified }
     }
 }
 
@@ -3988,5 +4050,111 @@ mod tests {
         // extracts: these are no archive, so it fails.
         let changed = b"other bytes".to_vec();
         assert!(store.install_from_napp("xero", "0.1.0", &changed).await.is_err());
+    }
+
+    /// A plugin version as a copy by hand leaves it partway: plugin.json
+    /// declaring the binary's size, and `written` bytes of the binary.
+    fn copy_in(root: &Path, slug: &str, version: &str, size: usize, written: usize) {
+        let dir = root.join(slug).join(version);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut platforms = serde_json::Map::new();
+        platforms.insert(
+            current_platform_key(),
+            serde_json::json!({"binaryName": slug, "sha256": "", "signature": "", "size": size, "downloadUrl": ""}),
+        );
+        let manifest = serde_json::json!({
+            "id": slug, "slug": slug, "name": slug, "version": version, "platforms": platforms,
+        });
+        std::fs::write(dir.join("plugin.json"), manifest.to_string()).unwrap();
+        let binary = dir.join(slug);
+        std::fs::write(&binary, vec![b'x'; written]).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+    }
+
+    fn user_store(tmp: &tempfile::TempDir) -> (PluginStore, PathBuf) {
+        let installed = tmp.path().join("installed");
+        let user = tmp.path().join("user");
+        std::fs::create_dir_all(&installed).unwrap();
+        std::fs::create_dir_all(&user).unwrap();
+        (PluginStore::new(installed, user.clone(), None), user)
+    }
+
+    /// A new version half-copied in beside a whole one is not there yet: the
+    /// whole one keeps serving until the copy completes.
+    #[test]
+    fn a_half_copied_version_keeps_the_last_whole_one() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (store, user) = user_store(&tmp);
+        copy_in(&user, "media", "0.1.0", 64, 64);
+        copy_in(&user, "media", "0.2.0", 64, 10);
+        let resolved = store.resolve("media", "*").expect("the whole version serves");
+        assert!(resolved.to_string_lossy().contains("0.1.0"), "{}", resolved.display());
+        assert!(store.has_incomplete_version("media"));
+
+        copy_in(&user, "media", "0.2.0", 64, 64);
+        let resolved = store.resolve("media", "*").unwrap();
+        assert!(resolved.to_string_lossy().contains("0.2.0"), "{}", resolved.display());
+        assert!(!store.has_incomplete_version("media"));
+    }
+
+    /// A rescan while a version is copied over itself (no whole version on
+    /// disk for a moment) never drops the plugin; once the copy lands it is
+    /// a change, and only a plugin truly gone is removed.
+    #[test]
+    fn a_rescan_mid_copy_never_drops_the_plugin() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (store, user) = user_store(&tmp);
+        copy_in(&user, "media", "0.1.0", 64, 64);
+        let (events, prev) = store.diff_snapshots(&HashMap::new(), store.scan_snapshot());
+        assert!(matches!(events.as_slice(), [PluginFsEvent::Added { slug, .. }] if slug == "media"), "{events:?}");
+
+        // The same version copied over itself, partway.
+        copy_in(&user, "media", "0.1.0", 128, 20);
+        let (events, prev) = store.diff_snapshots(&prev, store.scan_snapshot());
+        assert!(events.is_empty(), "mid-copy is no event: {events:?}");
+        assert!(prev.contains_key("media"), "the last whole version is kept");
+
+        copy_in(&user, "media", "0.1.0", 128, 128);
+        let (events, prev) = store.diff_snapshots(&prev, store.scan_snapshot());
+        assert!(matches!(events.as_slice(), [PluginFsEvent::Changed { slug, .. }] if slug == "media"), "{events:?}");
+
+        std::fs::remove_dir_all(user.join("media").join("0.1.0")).unwrap();
+        let (events, prev) = store.diff_snapshots(&prev, store.scan_snapshot());
+        assert!(matches!(events.as_slice(), [PluginFsEvent::Removed { slug }] if slug == "media"), "{events:?}");
+        assert!(prev.is_empty());
+    }
+
+    /// The watcher reports a plugin copied in by hand once, after the copy
+    /// lands whole: never halfway, never as removed.
+    #[tokio::test]
+    async fn the_watcher_reports_a_hand_copy_once_it_lands() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (store, user) = user_store(&tmp);
+        let (_handle, mut rx) = store.watch();
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+        copy_in(&user, "media", "0.1.0", 4096, 100);
+        tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+        copy_in(&user, "media", "0.1.0", 4096, 2000);
+        tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+        copy_in(&user, "media", "0.1.0", 4096, 4096);
+
+        let event = tokio::time::timeout(std::time::Duration::from_secs(20), rx.recv())
+            .await
+            .expect("an event once the copy lands")
+            .unwrap();
+        match event {
+            PluginFsEvent::Added { slug, binary_path } => {
+                assert_eq!(slug, "media");
+                assert_eq!(binary_path.metadata().unwrap().len(), 4096, "the whole binary");
+            }
+            other => panic!("expected Added, got {other:?}"),
+        }
+        let more = tokio::time::timeout(std::time::Duration::from_secs(4), rx.recv()).await;
+        assert!(more.is_err(), "one event for one copy: {more:?}");
     }
 }
