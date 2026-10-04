@@ -21,7 +21,9 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 
-use crate::app_publish::{AppPage, failed_load, headless, load_console, page_path, permitted_app, safe_name, viewport};
+use crate::app_publish::{
+    AppPage, failed_load, headless, load_console, page_path, permitted_app, safe_name, viewport, warning_lines,
+};
 use crate::origin::ToolContext;
 use crate::registry::{DynTool, ToolResult};
 
@@ -134,13 +136,14 @@ impl AppRecordTool {
         };
         let console = load_console(&crate::app_console::recent(&app.id, console_mark, 200));
         match recorded {
-            Ok((width, height)) => ToolResult::ok(format!(
+            Ok((width, height, warnings)) => ToolResult::ok(format!(
                 "Recorded {count} frames of {} ({page}) at {width}x{height}, {fps} fps, {seconds} s, into {}. \
                  manifest.json beside them gives the size, frame rate and frame count. Make the video with Nebo \
                  Media's `video encode` (frames: that folder; the `video` skill), then give it to the owner with \
-                 share_file.{console}",
+                 share_file.{}{console}",
                 app.name,
-                folder.display()
+                folder.display(),
+                warning_lines(&warnings)
             )),
             Err(e) => {
                 // Nothing half-made is left behind.
@@ -153,8 +156,10 @@ impl AppRecordTool {
 
 /// Let the page load, then draw `count` frames, each at its own moment of
 /// the page's clock, into `folder` as `frame_00001.png`…, and write the
-/// manifest. The size the frames were drawn at comes back. A page that
-/// fails, on load or while it plays, is an error.
+/// manifest. The size the frames were drawn at comes back, with the
+/// page's warnings (a font that failed). A page that fails, on load or
+/// while it plays, is an error; so is a picture that did not load, checked
+/// after the load and again at the end.
 async fn play(
     view: &AppPage<'_>,
     app: &db::models::Agent,
@@ -163,17 +168,24 @@ async fn play(
     fps: u64,
     count: u64,
     folder: &Path,
-) -> Result<(u32, u32), String> {
+) -> Result<(u32, u32, Vec<String>), String> {
     tokio::time::sleep(wait).await;
     // Its fonts in, so the first frame is drawn with them.
     view.eval("document.fonts ? document.fonts.ready.then(() => 'ok') : 'ok'").await?;
-    let check = || async {
-        match view.failures().await? {
-            failed if failed.is_empty() => Ok(()),
-            failed => Err(failed_load(app, page, &failed)),
+    let mut warnings: Vec<String> = Vec::new();
+    let mut check = async |images: bool| {
+        let checked = view.check(images).await?;
+        if !checked.failed.is_empty() {
+            return Err(failed_load(app, page, &checked.failed));
         }
+        for w in checked.warnings {
+            if !warnings.contains(&w) {
+                warnings.push(w);
+            }
+        }
+        Ok(())
     };
-    check().await?;
+    check(true).await?;
     let mut size = None;
     for i in 0..count {
         let at = i as f64 * 1000.0 / fps as f64;
@@ -189,10 +201,10 @@ async fn play(
         std::fs::write(frame_path(folder, i + 1), &bytes).map_err(|e| format!("could not save frame {}: {e}", i + 1))?;
         // A page that breaks while it plays stops the recording within a second.
         if (i + 1) % fps == 0 {
-            check().await?;
+            check(false).await?;
         }
     }
-    check().await?;
+    check(true).await?;
     let (width, height) = size.ok_or("The browser returned no picture.")?;
     let manifest = Manifest { width, height, fps, frames: count };
     std::fs::write(
@@ -200,7 +212,7 @@ async fn play(
         serde_json::to_vec_pretty(&manifest).unwrap_or_default(),
     )
     .map_err(|e| format!("could not save manifest.json: {e}"))?;
-    Ok((width, height))
+    Ok((width, height, warnings))
 }
 
 /// Frame `n` (from 1), as `video encode` finds a sequence.
@@ -229,7 +241,7 @@ impl DynTool for AppRecordTool {
              - The page's clock is stepped one frame at a time (timers, animation frames, CSS and Web animations, videos), so every frame is drawn whole and evenly spaced. 10 seconds at 30 fps is exactly 300 frames.\n\
              - `app`: the app's name; leave it out when you are the app. `path`: the page inside the app (default index.html, e.g. \"render.html?key=launch\").\n\
              - `width`/`height`: the frame size (default 1080x1080). `seconds` (at most {MAX_SECONDS}) and `fps` (default 30, at most {MAX_FPS}); at most {MAX_FRAMES} frames.\n\
-             - A page that fails to load or throws while it plays is an error; nothing is kept.\n\
+             - A page that fails to load or throws while it plays, or shows a picture that did not load, is an error; nothing is kept.\n\
              - The frames and a manifest.json go in a folder in the workspace under app-recordings/; Nebo Media's `video encode` makes the video from that folder."
         )
     }

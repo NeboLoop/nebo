@@ -726,3 +726,17 @@ fn a_screenshot_reports_the_console_errors_of_its_own_load() {
     assert!(!text.contains("an older run"), "{text}");
     assert!(super::load_console(&[]).contains("no errors"));
 }
+
+#[test]
+fn a_broken_picture_is_named_with_what_to_do() {
+    let srcs = vec!["~/NeboAI/Media/inputs/coffee-cup.png".to_string()];
+    assert_eq!(
+        broken_images(&srcs),
+        "These images didn't load: ~/NeboAI/Media/inputs/coffee-cup.png. Put the image inside the app (or its data) and point the design at that."
+    );
+    let failed = failed_load(&db::models::Agent { name: "Design Studio".into(), ..Default::default() }, "render.html", &[broken_images(&srcs)]);
+    assert!(failed.contains("render.html failed in the browser") && failed.contains("\n- These images didn't load: ~/NeboAI"), "{failed}");
+    // A font is a warning line, never a failure.
+    assert_eq!(warning_lines(&[failed_fonts(&["Gone".to_string()])]), "\nWarning: these fonts didn't load, so the page draws with a fallback font: Gone.");
+    assert_eq!(warning_lines(&[]), "");
+}

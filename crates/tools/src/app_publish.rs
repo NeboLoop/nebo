@@ -1195,11 +1195,12 @@ impl AppScreenshotTool {
         let shot = match &opened {
             Ok(view) => {
                 tokio::time::sleep(wait).await;
-                match view.failures().await {
-                    Ok(failed) if failed.is_empty() => view
+                match view.check(true).await {
+                    Ok(checked) if checked.failed.is_empty() => view
                         .call("screenshot", &json!({ "format": "png" }))
-                        .await,
-                    Ok(failed) => Err(failed_load(&app, &page, &failed)),
+                        .await
+                        .map(|shot| (shot, checked.warnings)),
+                    Ok(checked) => Err(failed_load(&app, &page, &checked.failed)),
                     Err(e) => Err(e),
                 }
             }
@@ -1208,7 +1209,7 @@ impl AppScreenshotTool {
         if let Ok(view) = opened {
             view.close().await;
         }
-        let shot = match shot {
+        let (shot, warnings) = match shot {
             Ok(v) => v,
             Err(e) => {
                 return ToolResult::error(format!(
@@ -1298,6 +1299,7 @@ impl AppScreenshotTool {
                 ));
             }
         }
+        text.push_str(&warning_lines(&warnings));
         text.push_str(&load_console(&crate::app_console::recent(&app.id, console_mark, 200)));
         ToolResult::ok(text).with_image_url(local.to_string_lossy().to_string())
     }
@@ -1366,9 +1368,29 @@ pub(crate) fn page_path(app: &db::models::Agent, input: &Value) -> Result<String
 }
 
 /// Watches the page from before its first script: an uncaught error, a
-/// rejected promise nobody handled, and a script, style or picture that
-/// failed to load. Read back by [`AppPage::failures`].
-const PAGE_PROBE: &str = r#"(()=>{if(window.__neboPageErrors)return;const E=window.__neboPageErrors=[];const add=m=>{if(E.length<20)E.push(String(m).slice(0,500));};const short=u=>{u=String(u||'');if(u.indexOf(location.origin)===0)u=u.slice(location.origin.length);return u.replace(/^\/k\/[^\/]+/,'');};window.addEventListener('error',ev=>{const t=ev.target;if(t&&t!==window&&t.nodeType===1){add('Failed to load '+short(t.src||t.href||t.tagName));return;}add((ev.message||'Error')+(ev.filename?' ('+short(ev.filename)+':'+ev.lineno+')':''));},true);window.addEventListener('unhandledrejection',ev=>{const r=ev.reason;add('Unhandled promise rejection: '+(r&&r.message?r.message:String(r)));});})();"#;
+/// rejected promise nobody handled, and a script or style that failed to
+/// load. A picture whose `error` event fired is kept apart, for
+/// [`PAGE_IMAGES`] to judge with the rest of the pictures. Read back by
+/// [`AppPage::check`].
+///
+/// A page that replaces itself after it loaded (`document.open()` then
+/// `document.write()`, as Design Studio's `render.html` draws a design)
+/// has every window listener erased by the browser. Live 2026-10-04: the
+/// probe went deaf there, its list stayed empty, and a recording of 180
+/// frames of a broken picture passed. The listeners are added again after
+/// every `document.open()` (the same functions, so never twice).
+const PAGE_PROBE: &str = r#"(()=>{if(window.__neboPageErrors)return;const E=window.__neboPageErrors=[];const add=m=>{if(E.length<20)E.push(String(m).slice(0,500));};const short=u=>{u=String(u||'');if(u.indexOf(location.origin)===0)u=u.slice(location.origin.length);return u.replace(/^\/k\/[^\/]+/,'');};const broken=new WeakSet();Object.defineProperty(window,'__neboImageErrors',{value:broken});Object.defineProperty(window,'__neboTimeout',{value:window.setTimeout.bind(window)});const onError=ev=>{const t=ev.target;if(t&&t!==window&&t.nodeType===1){if(t.tagName==='IMG'){broken.add(t);return;}add('Failed to load '+short(t.src||t.href||t.tagName));return;}add((ev.message||'Error')+(ev.filename?' ('+short(ev.filename)+':'+ev.lineno+')':''));};const onLoad=ev=>{const t=ev.target;if(t&&t.tagName==='IMG')broken.delete(t);};const onRejection=ev=>{const r=ev.reason;add('Unhandled promise rejection: '+(r&&r.message?r.message:String(r)));};const listen=()=>{window.addEventListener('error',onError,true);window.addEventListener('load',onLoad,true);window.addEventListener('unhandledrejection',onRejection);};listen();const open=Document.prototype.open;Document.prototype.open=function(){const r=open.apply(this,arguments);if(this===document)listen();return r;};})();"#;
+
+/// Every picture the page shows, checked where it stands rather than by
+/// what was heard: each `<img>` in the document, its open shadow roots and
+/// its same-origin frames that finished but has no picture (its `error`
+/// event fired, or it is complete with no width and will not decode), and
+/// each CSS background image of a shown element, loaded again to see that
+/// it decodes (5 s each; one still loading is not counted). A picture the
+/// server answered with a page (`200`, HTML) is broken the same way.
+/// Fonts that failed come back too, for a warning line only: the page
+/// still draws, with a fallback.
+const PAGE_IMAGES: &str = r#"(async()=>{const T=window.__neboTimeout||setTimeout;const errored=window.__neboImageErrors;const short=u=>{u=String(u||'');if(u.indexOf(location.origin)===0)u=u.slice(location.origin.length);return u.replace(/^\/k\/[^\/]+/,'').replace(/^\/apps\/[^\/]+\/ui\//,'');};const roots=[];const walk=r=>{roots.push(r);r.querySelectorAll('*').forEach(el=>{if(el.shadowRoot)walk(el.shadowRoot);if(el.tagName==='IFRAME'){let d=null;try{d=el.contentDocument;}catch(e){}if(d)walk(d);}});};walk(document);const decodes=(p,ms)=>Promise.race([p.then(()=>true,()=>false),new Promise(r=>T(()=>r(true),ms))]);const images=[];const note=s=>{s=String(s).slice(0,300);if(s&&images.indexOf(s)<0&&images.length<20)images.push(s);};const imgs=[];roots.forEach(r=>r.querySelectorAll('img').forEach(i=>imgs.push(i)));const bad=await Promise.all(imgs.map(async i=>{const src=i.getAttribute('src')||short(i.currentSrc);if(!src||i.naturalWidth>0)return null;if(errored&&errored.has(i))return src;if(!i.complete)return null;return (await decodes(i.decode(),5000))?null:src;}));bad.forEach(s=>{if(s)note(s);});const urls=[];roots.forEach(r=>r.querySelectorAll('*').forEach(el=>{if(urls.length>=50||!el.getClientRects().length)return;const v=(el.ownerDocument.defaultView||window).getComputedStyle(el).backgroundImage;if(!v||v.indexOf('url(')<0)return;for(const m of v.matchAll(/url\(\s*(['"]?)(.*?)\1\s*\)/g))if(urls.indexOf(m[2])<0)urls.push(m[2]);}));const loads=await Promise.all(urls.map(u=>{const im=new Image();im.src=u;return decodes(im.decode(),5000);}));urls.forEach((u,k)=>{if(!loads[k])note(short(u));});const fonts=[];if(document.fonts)document.fonts.forEach(f=>{const n=String(f.family).replace(/^["']|["']$/g,'');if(f.status==='error'&&fonts.indexOf(n)<0&&fonts.length<10)fonts.push(n);});return JSON.stringify({images,fonts});})()"#;
 
 /// What the probe saw, and the answer the page itself came with.
 const PAGE_FAILURES: &str = r#"(()=>{const n=performance.getEntriesByType('navigation')[0];const s=n&&n.responseStatus||0;if(!window.__neboPageErrors)return JSON.stringify(['The page did not load'+(s?' (it answered '+s+')':'')+'.']);const e=window.__neboPageErrors.slice();if(s>=400)e.unshift('The page answered '+s+'.');return JSON.stringify(e);})()"#;
@@ -1439,10 +1461,26 @@ impl<'a> AppPage<'a> {
 
     /// What has gone wrong with the page since it opened: the answer it
     /// came with, when that was an error, and what [`PAGE_PROBE`] saw.
-    /// Empty when nothing did.
-    pub(crate) async fn failures(&self) -> Result<Vec<String>, String> {
+    /// `images`: also every picture the page shows ([`PAGE_IMAGES`]), after
+    /// the load and at the end of a recording; a broken one is a failure
+    /// naming it, a font that failed is a warning.
+    pub(crate) async fn check(&self, images: bool) -> Result<PageCheck, String> {
         let text = self.eval(PAGE_FAILURES).await?;
-        serde_json::from_str(&text).map_err(|_| format!("could not read the page's errors: {text}"))
+        let failed: Vec<String> =
+            serde_json::from_str(&text).map_err(|_| format!("could not read the page's errors: {text}"))?;
+        let mut checked = PageCheck { failed, warnings: Vec::new() };
+        if images {
+            let text = self.eval(PAGE_IMAGES).await?;
+            let seen: PageImages =
+                serde_json::from_str(&text).map_err(|_| format!("could not read the page's pictures: {text}"))?;
+            if !seen.images.is_empty() {
+                checked.failed.push(broken_images(&seen.images));
+            }
+            if !seen.fonts.is_empty() {
+                checked.warnings.push(failed_fonts(&seen.fonts));
+            }
+        }
+        Ok(checked)
     }
 
     /// Close the tab and drop the pass.
@@ -1450,6 +1488,46 @@ impl<'a> AppPage<'a> {
         self.executor.close_session(&self.session).await;
         napp::app_view::revoke(&self.pass);
     }
+}
+
+/// What [`AppPage::check`] found: what failed (the call is an error) and
+/// what only warns (a line in a call that worked).
+#[derive(Debug, Default)]
+pub(crate) struct PageCheck {
+    pub failed: Vec<String>,
+    pub warnings: Vec<String>,
+}
+
+/// What [`PAGE_IMAGES`] reads back.
+#[derive(Debug, Default, Deserialize)]
+struct PageImages {
+    #[serde(default)]
+    images: Vec<String>,
+    #[serde(default)]
+    fonts: Vec<String>,
+}
+
+/// The pictures that did not load, named as the page names them, and what
+/// to do about it. Live 2026-10-04: a design pointed at
+/// `~/NeboAI/Media/inputs/coffee-cup.png`, a path no served page reaches.
+pub(crate) fn broken_images(srcs: &[String]) -> String {
+    format!(
+        "These images didn't load: {}. Put the image inside the app (or its data) and point the design at that.",
+        srcs.join(", ")
+    )
+}
+
+/// The fonts that did not load: a warning, the page draws with a fallback.
+pub(crate) fn failed_fonts(families: &[String]) -> String {
+    format!(
+        "Warning: these fonts didn't load, so the page draws with a fallback font: {}.",
+        families.join(", ")
+    )
+}
+
+/// The warning lines for a call's result (empty when there are none).
+pub(crate) fn warning_lines(warnings: &[String]) -> String {
+    warnings.iter().map(|w| format!("\n{w}")).collect()
 }
 
 /// A page that failed, said as the error the call returns.
