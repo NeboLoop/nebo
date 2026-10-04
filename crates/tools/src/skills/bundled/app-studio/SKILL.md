@@ -370,7 +370,7 @@ game's opponent), ask a typed decision instead of a model call: the page's
 
 `generate_media(kind: "image" | "video", prompt, into: "assets/hero.webp")` writes
 into `ui/` (pass `app` for another app's); use `./assets/hero.webp`. Video plays
-as `<video muted playsinline autoplay loop>`. 10 MB a file, 50 MB in all.
+as `<video muted playsinline autoplay loop>`. 100 MB a file, 500 MB in all.
 Motion post or trailer: `references/motion.md`.
 
 ## Games and Full-Screen Pages

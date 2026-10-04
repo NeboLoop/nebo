@@ -206,6 +206,15 @@ Verification order:
 
 The NeboAI public key is embedded at compile time (`neboai_public_key.bin`) so verification works offline (first launch, air-gapped installs). A `SigningKeyProvider` also fetches the key from `GET /api/v1/apps/signing-key` with a 24-hour cache for key rotation.
 
+### Package Size
+
+An app may carry files of up to 100 MB each and 500 MB in all (models, textures, music, film). Nothing along the way holds a package whole in memory:
+
+- **Publish.** The bundle `.zip` is written to a scratch file a file at a time and uploaded as a stream. A file over 100 MB, or more than 500 MB in all, is refused before anything is sent.
+- **Download.** The `.napp` streams to `<version>.napp.part` and is renamed into place only when it arrived whole. There is no limit on the whole download, only on a stall (30 seconds with nothing arriving), so a large app on a slow line completes.
+- **Verify and extract.** The envelope above is checked a chunk at a time from the file, then each entry is written to disk as it decompresses. A sealed (paid) payload is still decrypted in memory with its license key.
+- **Serve.** App files stream from disk, ranges included.
+
 ### Sealed Archives
 
 For workflows and agents, the `.napp` is **never extracted**. Nebo reads files directly from the archive at runtime. The signed archive is the running artifact — if someone tampers with the file, the next read fails signature verification. This provides continuous integrity, not just point-in-time verification at install.

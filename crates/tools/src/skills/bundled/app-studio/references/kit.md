@@ -114,8 +114,8 @@ On touch screens, replace pointer effects with scroll or tilt equivalents.
 ## 3D
 
 - Load models with `GLTFLoader` from `ui/assets/*.glb` (Nebo serves them as
-  `model/gltf-binary`). Compress large ones (Draco or meshopt) before they
-  pass 10 MB.
+  `model/gltf-binary`). Compress large ones (Draco or meshopt): smaller
+  loads sooner, and one file may be at most 100 MB.
 - One draw call per swarm of the same thing (instancing). Shadows and
   post-processing off unless the brief needs them.
 - Cap `devicePixelRatio` at 2. Pause the render loop when the page is
