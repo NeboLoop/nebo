@@ -328,9 +328,9 @@ async fn serve_app_ui_inner(state: &AppState, agent_id: &str, path: &str, header
         console: state.store.app_developer_mode(),
         desktop: None,
     });
-    // The entry page is rebased for the address the browser asked for; a
+    // A page is rebased for the address the browser asked for; a
     // stylesheet for its own place in `ui/`.
-    let at = if is_entry_html(&target) {
+    let at = if is_html(&target) {
         path.to_string()
     } else {
         target.strip_prefix(&ui_path).map(|p| p.to_string_lossy().replace('\\', "/")).unwrap_or_default()
@@ -423,9 +423,16 @@ fn own_app(store: &db::Store, agent_id: &str) -> Option<db::models::Agent> {
         .filter(tools::app_dev::is_own_app)
 }
 
-/// Whether the file is an app's entry HTML (the SPA fallback included).
-fn is_entry_html(target: &StdPath) -> bool {
-    matches!(target.file_name().and_then(|n| n.to_str()), Some("index.html" | "200.html"))
+/// Whether the file is one of the app's HTML pages: the entry page (the
+/// SPA fallback included) or any other (`render.html`, `help/faq.html`).
+/// Every page carries the bridge and the SDK's tags (`inject_app_bridge`):
+/// a page without them can't reach the app's data (2026-10-03: only
+/// `index.html` and `200.html` had them, so a `render.html` drew nothing).
+fn is_html(target: &StdPath) -> bool {
+    target
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("html") || e.eq_ignore_ascii_case("htm"))
 }
 
 /// Serve one resolved app file, cached by the one rule for app files:
@@ -455,11 +462,11 @@ async fn serve_ui_file(
     motion: bool,
     rebase: Option<&Rebase<'_>>,
 ) -> Response {
-    let is_entry = is_entry_html(target);
+    let is_page = is_html(target);
     let is_css = mime_from_path(target).starts_with("text/css");
-    // The owner's own app (`devtools`) is being built: its entry page is
-    // never kept, so the next open or reload always names the newest build.
-    let no_store = Devtools::no_store(devtools) || (is_entry && devtools.is_some());
+    // The owner's own app (`devtools`) is being built: its pages are never
+    // kept, so the next open or reload always names the newest build.
+    let no_store = Devtools::no_store(devtools) || (is_page && devtools.is_some());
     let meta = match fs::metadata(target).await {
         Ok(m) => m,
         Err(e) => {
@@ -468,8 +475,8 @@ async fn serve_ui_file(
         }
     };
 
-    let mut response = if is_entry {
-        // Entry HTML gets the SDK's documented meta-tag escape hatches
+    let mut response = if is_page {
+        // Every HTML page gets the SDK's documented meta-tag escape hatches
         // (nebo-app-id / nebo-base-url), mirroring Tauri's neboapp_bridge
         // for the HTTP path. The prefix (e.g. /t/<botID> through the
         // tunnel) is only knowable in the browser, so a head-first inline
@@ -571,7 +578,7 @@ fn own_origin(headers: &HeaderMap) -> Option<HeaderValue> {
 fn app_file_cache_control(target: &StdPath, developer: bool) -> &'static str {
     if developer {
         "no-store"
-    } else if !is_entry_html(target) && is_content_hashed(target) {
+    } else if !is_html(target) && is_content_hashed(target) {
         "public, max-age=31536000, immutable"
     } else {
         "no-cache"
@@ -2417,6 +2424,30 @@ mod app_file_caching_tests {
         std::fs::write(&index, "<html><head></head><body>v2</body></html>").unwrap();
         let changed = serve_ui_file(&index, &req(&[(header::IF_NONE_MATCH, &etag)]), None, false, None).await;
         assert_eq!(changed.status(), StatusCode::OK);
+    }
+
+    // Every page carries the SDK's tags, and the developer script for the
+    // owner's own app, not only index.html: a render.html reaches the app's
+    // data the way the entry page does. A script is never touched.
+    #[tokio::test]
+    async fn every_html_page_gets_the_sdk_tags() {
+        let (_d, ui) = ui();
+        std::fs::write(ui.join("render.html"), "<html><head></head><body>frame</body></html>").unwrap();
+        std::fs::create_dir_all(ui.join("help")).unwrap();
+        std::fs::write(ui.join("help/faq.htm"), "<p>faq</p>").unwrap();
+        let own = Some(Devtools { employee: "Kart", console: false, desktop: None });
+        for name in ["render.html", "help/faq.htm"] {
+            let r = serve_ui_file(&ui.join(name), &HeaderMap::new(), own, false, None).await;
+            assert_eq!(get(&r, header::CACHE_CONTROL), Some("no-store"), "{name}");
+            let html = String::from_utf8(body(r).await).unwrap();
+            assert!(html.contains("data-nebo-bridge") && html.contains("nebo-app-id"), "{name}: {html}");
+            assert!(html.contains("data-nebo-devtools"), "{name}");
+            let bought = serve_ui_file(&ui.join(name), &HeaderMap::new(), None, false, None).await;
+            let html = String::from_utf8(body(bought).await).unwrap();
+            assert!(html.contains("data-nebo-bridge") && !html.contains("data-nebo-devtools"), "{name}");
+        }
+        let js = serve_ui_file(&ui.join("main-0a8ksftt.js"), &HeaderMap::new(), own, false, None).await;
+        assert_eq!(body(js).await, b"console.log(1)");
     }
 
     // App Developer mode: nothing is stored, nothing is tagged, nothing is a 304.

@@ -60,6 +60,7 @@ pub const BUNDLED_SKILL_FILES: &[(&str, &str, &str)] = &[
     ("app-studio", "references/decisions.md", include_str!("app-studio/references/decisions.md")),
     ("app-studio", "references/lane-a-example.md", include_str!("app-studio/references/lane-a-example.md")),
     ("app-studio", "references/sdk-more.md", include_str!("app-studio/references/sdk-more.md")),
+    ("app-studio", "references/motion.md", include_str!("app-studio/references/motion.md")),
     ("app-studio", "scripts/gate.js", include_str!("app-studio/scripts/gate.js")),
     ("app-studio", "LICENSE-THIRD-PARTY.txt", include_str!("app-studio/LICENSE-THIRD-PARTY.txt")),
 ];

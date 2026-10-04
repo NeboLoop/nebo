@@ -34,7 +34,7 @@ pub const APP_STATUS: &str = "app_status";
 pub const APP_CONSOLE: &str = "app_console";
 /// The developer pack: offered to the owner's own app for itself, and under
 /// App Developer mode to app employees and their teammates.
-pub const TOOLS: [&str; 6] = [
+pub const TOOLS: [&str; 7] = [
     APP_RELOAD,
     APP_STATUS,
     APP_CONSOLE,
@@ -42,6 +42,8 @@ pub const TOOLS: [&str; 6] = [
     crate::app_publish::APP_SCREENSHOT,
     crate::app_publish::APP_LISTING,
     crate::app_publish::APP_SUBMIT,
+    // A motion post or trailer recorded from the app's page (`app_record`).
+    crate::app_record::APP_RECORD,
 ];
 
 /// The WS event every open view of an app reloads on; its payload is

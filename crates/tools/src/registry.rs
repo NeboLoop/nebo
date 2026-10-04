@@ -1282,9 +1282,11 @@ impl Registry {
         }
 
         // The developer pack's app tools: a screenshot of an app as served,
-        // and publishing it with the owner. Every run that does not build
+        // a recording of it as video frames, and publishing it with the owner. Every run that does not build
         // one of the owner's apps has them withheld (`app_dev::withheld`).
         let shot_browser = self.browser_manager.read().unwrap().clone();
+        self.register(Box::new(crate::app_record::AppRecordTool::new(store.clone(), shot_browser.clone())))
+            .await;
         self.register(Box::new(crate::app_publish::AppScreenshotTool::new(store.clone(), shot_browser)))
             .await;
         let publisher = Arc::new(crate::app_publish::Publisher::new(store.clone()));
