@@ -2025,6 +2025,15 @@ fn mime_from_extension(path: &std::path::Path) -> String {
         "gif" => "image/gif",
         "webp" => "image/webp",
         "svg" => "image/svg+xml",
+        "mp4" | "m4v" => "video/mp4",
+        "webm" => "video/webm",
+        "mov" => "video/quicktime",
+        "mp3" => "audio/mpeg",
+        "m4a" => "audio/mp4",
+        "wav" => "audio/wav",
+        "ogg" => "audio/ogg",
+        "aac" => "audio/aac",
+        "flac" => "audio/flac",
         "pdf" => "application/pdf",
         "txt" | "log" => "text/plain",
         "md" => "text/markdown",
@@ -2135,10 +2144,10 @@ pub(crate) fn keep_turn_artifacts(
 }
 
 /// Map a run-produced `image_url` to a URL the LOCAL app can render and comm replies
-/// can attach: `data:` URIs are persisted to `<data_dir>/files/`, local files are
-/// located (or copied) under that dir, and both are referenced as `/api/v1/files/<name>`
-/// (served by `handlers::files::serve_file`). `http(s)` URLs pass through; unservable
-/// refs return None.
+/// can attach: `data:` URIs are persisted to `<data_dir>/files/` under a fresh name,
+/// local files are kept under that dir by content (`keep_shared_file`), and both are
+/// referenced as `/api/v1/files/<path>` (served by `handlers::files::serve_file`).
+/// `http(s)` URLs pass through; unservable refs return None.
 fn to_app_artifact_url(image_url: &str) -> Option<String> {
     if image_url.starts_with("http://") || image_url.starts_with("https://") {
         return Some(image_url.to_string());
@@ -2146,7 +2155,8 @@ fn to_app_artifact_url(image_url: &str) -> Option<String> {
     if image_url.starts_with("/api/v1/files/") {
         return Some(image_url.to_string());
     }
-    let abs_path = if image_url.starts_with("data:") {
+    let from_data_uri = image_url.starts_with("data:");
+    let abs_path = if from_data_uri {
         save_data_uri_to_file(image_url)?
     } else {
         image_url.to_string()
@@ -2157,15 +2167,60 @@ fn to_app_artifact_url(image_url: &str) -> Option<String> {
         tracing::warn!(path = %p.display(), "run-produced media rejected: file bytes don't match its extension (likely a saved error page)");
         return None;
     }
-    if let Ok(rel) = p.strip_prefix(&files_dir) {
+    if from_data_uri {
+        // Saved under a fresh `screenshot-<uuid>` name: already its own file.
+        let rel = p.strip_prefix(&files_dir).ok()?;
         return Some(format!("/api/v1/files/{}", rel.to_string_lossy()));
     }
-    // Local file outside <data_dir>/files — copy it in so serve_file can reach it.
-    let _ = std::fs::create_dir_all(&files_dir);
-    let filename = p.file_name()?.to_string_lossy().to_string();
-    let dest = files_dir.join(&filename);
-    std::fs::copy(p, &dest).ok()?;
-    Some(format!("/api/v1/files/{}", filename))
+    keep_shared_file(&files_dir, p)
+}
+
+/// Where a file handed to the owner is kept under `<data_dir>/files`: a
+/// folder named by its content, holding the file under its own name.
+const SHARED_DIR: &str = ".shared";
+
+/// Keep a file the run hands the owner where no later file can replace it,
+/// and answer its `/api/v1/files/...` URL: `.shared/<content hash>/<name>`.
+/// The name stays the file's own, so a card shows and downloads `clip.gif`;
+/// the folder makes it unique to these bytes, so a later `clip.gif` (or this
+/// one changed in place) gets a folder of its own and the earlier message
+/// keeps showing what it was sent with. The same bytes shared again land on
+/// the same path, copied once. A file already kept this way, or a versioned
+/// work blob, is answered as it is. URLs an older message carries (a flat
+/// `/api/v1/files/<name>`) are untouched and still served.
+fn keep_shared_file(files_dir: &std::path::Path, path: &std::path::Path) -> Option<String> {
+    let filename = path.file_name()?.to_string_lossy().to_string();
+    if let Ok(rel) = path.strip_prefix(files_dir) {
+        let rel = rel.to_string_lossy().replace('\\', "/");
+        if rel.starts_with(&format!("{SHARED_DIR}/")) || rel.starts_with("work/blobs/") {
+            return Some(format!("/api/v1/files/{rel}"));
+        }
+    }
+    let hash = content_hash(path)?;
+    let rel = format!("{SHARED_DIR}/{}/{filename}", &hash[..16]);
+    let dest = files_dir.join(&rel);
+    if !dest.exists() {
+        let dir = dest.parent()?;
+        std::fs::create_dir_all(dir).ok()?;
+        // Copy beside it, then rename: a reader never meets half a file, and
+        // a copy cut short is never taken for the kept one.
+        let part = dir.join(format!(".{filename}.part"));
+        if let Err(e) = std::fs::copy(path, &part).and_then(|_| std::fs::rename(&part, &dest)) {
+            let _ = std::fs::remove_file(&part);
+            warn!(error = %e, path = %path.display(), "could not keep a shared file");
+            return None;
+        }
+    }
+    Some(format!("/api/v1/files/{rel}"))
+}
+
+/// A file's SHA-256, hex, read in chunks.
+fn content_hash(path: &std::path::Path) -> Option<String> {
+    use sha2::{Digest, Sha256};
+    let mut file = std::fs::File::open(path).ok()?;
+    let mut hasher = Sha256::new();
+    std::io::copy(&mut file, &mut hasher).ok()?;
+    Some(hex::encode(hasher.finalize()))
 }
 
 /// True when a media-extension file's leading bytes actually look like that
@@ -2203,9 +2258,11 @@ fn media_bytes_match(path: &std::path::Path) -> bool {
     }
 }
 
-/// Media (image/video) artifacts render inline and are never versioned.
+/// Media (image/video/audio) artifacts render inline and are never versioned.
+/// Mirrors the app's `MEDIA_MIME` (`app/src/lib/chat/controller.svelte.ts`).
 const MEDIA_EXTS: &[&str] = &[
-    "png", "jpg", "jpeg", "gif", "webp", "svg", "mp4", "webm", "mov",
+    "png", "jpg", "jpeg", "gif", "webp", "svg", "mp4", "webm", "mov", "mp3", "m4a", "wav", "ogg",
+    "aac", "flac",
 ];
 
 fn artifact_ext(url: &str) -> String {
@@ -2963,3 +3020,72 @@ mod session_key_contract_tests {
     }
 }
 
+#[cfg(test)]
+mod shared_file_tests {
+    use super::keep_shared_file;
+
+    fn served(files_dir: &std::path::Path, url: &str) -> Vec<u8> {
+        let rel = url.strip_prefix("/api/v1/files/").expect("a files URL");
+        std::fs::read(files_dir.join(rel)).expect("the URL resolves to a file")
+    }
+
+    /// Two shares named `clip.gif` keep their own bytes and their own URLs:
+    /// the second never replaces the first, so the earlier card still shows
+    /// what it was sent with, and both still show the name `clip.gif`.
+    #[test]
+    fn two_shares_of_one_name_keep_separate_content_and_urls() {
+        let tmp = tempfile::tempdir().unwrap();
+        let files = tmp.path().join("files");
+        std::fs::create_dir_all(&files).unwrap();
+        let work = tmp.path().join("work");
+        std::fs::create_dir_all(&work).unwrap();
+        let clip = work.join("clip.gif");
+
+        std::fs::write(&clip, b"GIF89a first").unwrap();
+        let first = keep_shared_file(&files, &clip).expect("first share kept");
+        std::fs::write(&clip, b"GIF89a second").unwrap();
+        let second = keep_shared_file(&files, &clip).expect("second share kept");
+
+        assert_ne!(first, second, "a later share must get its own URL");
+        assert!(
+            first.ends_with("/clip.gif") && second.ends_with("/clip.gif"),
+            "{first} {second}"
+        );
+        assert_eq!(served(&files, &first), b"GIF89a first");
+        assert_eq!(served(&files, &second), b"GIF89a second");
+
+        // The same bytes again: the same URL, copied once.
+        assert_eq!(
+            keep_shared_file(&files, &clip).as_deref(),
+            Some(second.as_str())
+        );
+    }
+
+    /// A file already in the workspace (`files/`) is kept the same way, so
+    /// changing it in place later never changes an old card. A kept file is
+    /// answered as it is, and a message's old flat URL still resolves.
+    #[test]
+    fn a_workspace_file_changed_in_place_keeps_the_old_card() {
+        let tmp = tempfile::tempdir().unwrap();
+        let files = tmp.path().to_path_buf();
+        let post = files.join("post.jpg");
+        std::fs::write(&post, b"\xff\xd8\xff one").unwrap();
+        let old_flat_url = "/api/v1/files/post.jpg";
+
+        let first = keep_shared_file(&files, &post).unwrap();
+        assert!(first.starts_with("/api/v1/files/.shared/"), "{first}");
+        std::fs::write(&post, b"\xff\xd8\xff two").unwrap();
+        let second = keep_shared_file(&files, &post).unwrap();
+
+        assert_ne!(first, second);
+        assert_eq!(served(&files, &first), b"\xff\xd8\xff one");
+        assert_eq!(served(&files, &second), b"\xff\xd8\xff two");
+        assert_eq!(served(&files, old_flat_url), b"\xff\xd8\xff two");
+
+        let kept = files.join(first.strip_prefix("/api/v1/files/").unwrap());
+        assert_eq!(
+            keep_shared_file(&files, &kept).as_deref(),
+            Some(first.as_str())
+        );
+    }
+}
