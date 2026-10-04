@@ -800,7 +800,9 @@ fn inject_app_bridge(contents: Vec<u8>, devtools: Option<Devtools<'_>>, rebase: 
 
 /// The developer script (`app_devtools.js`) as an inline `<script>`, told
 /// the app employee's name for its "Send to <employee>" button and whether
-/// the floating console shows (App Developer mode).
+/// the floating console shows (App Developer mode). It follows
+/// `tools::app_publish::ON_REOPEN`, which arms its console capture again
+/// after the page replaces itself (`document.open()`).
 fn developer_script(d: Devtools<'_>) -> String {
     const SCRIPT: &str = include_str!("app_devtools.js");
     let mut config = serde_json::json!({ "employee": d.employee, "console": d.console });
@@ -815,7 +817,8 @@ fn developer_script(d: Devtools<'_>) -> String {
     // `<` escaped: a name can never close the script element.
     let config = config.to_string().replace('<', "\\u003c");
     format!(
-        "<script data-nebo-devtools>{}</script>",
+        "<script data-nebo-devtools>{}{}</script>",
+        tools::app_publish::ON_REOPEN,
         SCRIPT.replace("__NEBO_DEVTOOLS_CONFIG__", &config)
     )
 }
@@ -2070,6 +2073,8 @@ mod developer_mode_tests {
         assert!(bridge < dev && dev < app, "after the bridge, before the app's own scripts");
         assert!(on.contains(r#""console":true"#) && on.contains(r#""employee":"Kart Racer""#), "told the employee's name and to show the console");
         assert!(!on.contains("__NEBO_DEVTOOLS_CONFIG__"));
+        let hook = on.find(tools::app_publish::ON_REOPEN).expect("the re-arm hook");
+        assert!(dev < hook && hook < on.find("__neboDevtools").unwrap(), "the hook opens the developer script");
         assert_eq!(on.matches("</script>").count(), 3, "bridge, developer script, the app's own");
     }
 

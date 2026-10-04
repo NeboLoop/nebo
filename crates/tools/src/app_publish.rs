@@ -1367,6 +1367,17 @@ pub(crate) fn page_path(app: &db::models::Agent, input: &Value) -> Result<String
     Ok(page.to_string())
 }
 
+/// The one way a script Nebo puts in an app's page keeps hearing it after
+/// the page replaces itself (`document.open()` then `document.write()`, as
+/// Design Studio's `render.html` draws a design): the browser erases every
+/// window and document listener then. `window.__neboOnReopen(arm)` runs
+/// `arm` now and again after every `document.open()`; `arm` adds the same
+/// functions each time, so a listener is never added twice. Runs before
+/// [`PAGE_PROBE`] here, and before the developer script the server puts in
+/// the owner's own app pages (`handlers/apps.rs`); whichever comes first
+/// defines it.
+pub const ON_REOPEN: &str = r#"(()=>{if(window.__neboOnReopen)return;const A=[];const open=Document.prototype.open;Document.prototype.open=function(){const r=open.apply(this,arguments);if(this===document)A.forEach(f=>{try{f();}catch(e){}});return r;};Object.defineProperty(window,'__neboOnReopen',{value:f=>{A.push(f);f();}});})();"#;
+
 /// Watches the page from before its first script: an uncaught error, a
 /// rejected promise nobody handled, and a script or style that failed to
 /// load. A picture whose `error` event fired is kept apart, for
@@ -1377,9 +1388,9 @@ pub(crate) fn page_path(app: &db::models::Agent, input: &Value) -> Result<String
 /// `document.write()`, as Design Studio's `render.html` draws a design)
 /// has every window listener erased by the browser. Live 2026-10-04: the
 /// probe went deaf there, its list stayed empty, and a recording of 180
-/// frames of a broken picture passed. The listeners are added again after
-/// every `document.open()` (the same functions, so never twice).
-const PAGE_PROBE: &str = r#"(()=>{if(window.__neboPageErrors)return;const E=window.__neboPageErrors=[];const add=m=>{if(E.length<20)E.push(String(m).slice(0,500));};const short=u=>{u=String(u||'');if(u.indexOf(location.origin)===0)u=u.slice(location.origin.length);return u.replace(/^\/k\/[^\/]+/,'');};const broken=new WeakSet();Object.defineProperty(window,'__neboImageErrors',{value:broken});Object.defineProperty(window,'__neboTimeout',{value:window.setTimeout.bind(window)});const onError=ev=>{const t=ev.target;if(t&&t!==window&&t.nodeType===1){if(t.tagName==='IMG'){broken.add(t);return;}add('Failed to load '+short(t.src||t.href||t.tagName));return;}add((ev.message||'Error')+(ev.filename?' ('+short(ev.filename)+':'+ev.lineno+')':''));};const onLoad=ev=>{const t=ev.target;if(t&&t.tagName==='IMG')broken.delete(t);};const onRejection=ev=>{const r=ev.reason;add('Unhandled promise rejection: '+(r&&r.message?r.message:String(r)));};const listen=()=>{window.addEventListener('error',onError,true);window.addEventListener('load',onLoad,true);window.addEventListener('unhandledrejection',onRejection);};listen();const open=Document.prototype.open;Document.prototype.open=function(){const r=open.apply(this,arguments);if(this===document)listen();return r;};})();"#;
+/// frames of a broken picture passed. Its listeners are added again after
+/// every `document.open()` ([`ON_REOPEN`]).
+const PAGE_PROBE: &str = r#"(()=>{if(window.__neboPageErrors)return;const E=window.__neboPageErrors=[];const add=m=>{if(E.length<20)E.push(String(m).slice(0,500));};const short=u=>{u=String(u||'');if(u.indexOf(location.origin)===0)u=u.slice(location.origin.length);return u.replace(/^\/k\/[^\/]+/,'');};const broken=new WeakSet();Object.defineProperty(window,'__neboImageErrors',{value:broken});Object.defineProperty(window,'__neboTimeout',{value:window.setTimeout.bind(window)});const onError=ev=>{const t=ev.target;if(t&&t!==window&&t.nodeType===1){if(t.tagName==='IMG'){broken.add(t);return;}add('Failed to load '+short(t.src||t.href||t.tagName));return;}add((ev.message||'Error')+(ev.filename?' ('+short(ev.filename)+':'+ev.lineno+')':''));};const onLoad=ev=>{const t=ev.target;if(t&&t.tagName==='IMG')broken.delete(t);};const onRejection=ev=>{const r=ev.reason;add('Unhandled promise rejection: '+(r&&r.message?r.message:String(r)));};window.__neboOnReopen(()=>{window.addEventListener('error',onError,true);window.addEventListener('load',onLoad,true);window.addEventListener('unhandledrejection',onRejection);});})();"#;
 
 /// Every picture the page shows, checked where it stands rather than by
 /// what was heard: each `<img>` in the document, its open shadow roots and
@@ -1399,7 +1410,7 @@ const PAGE_FAILURES: &str = r#"(()=>{const n=performance.getEntriesByType('navig
 /// (`app_screenshot`, `app_record`): one tab of its own, behind a pass that
 /// opens this app alone, laid out at the size it is drawn at before its
 /// first script runs, and watched for errors from the start
-/// ([`PAGE_PROBE`]). Closed with [`AppPage::close`].
+/// ([`ON_REOPEN`], [`PAGE_PROBE`]). Closed with [`AppPage::close`].
 pub(crate) struct AppPage<'a> {
     executor: &'a browser::ActionExecutor,
     session: String,
@@ -1430,7 +1441,7 @@ impl<'a> AppPage<'a> {
         );
         let opened = async {
             view.call("viewport", &json!({ "width": width, "height": height })).await?;
-            for source in std::iter::once(PAGE_PROBE).chain(scripts.iter().copied()) {
+            for source in [ON_REOPEN, PAGE_PROBE].into_iter().chain(scripts.iter().copied()) {
                 view.call("init_script", &json!({ "source": source })).await?;
             }
             view.call("navigate", &json!({ "url": url })).await
