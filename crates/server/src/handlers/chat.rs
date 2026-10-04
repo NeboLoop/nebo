@@ -427,13 +427,15 @@ pub fn build_message_metadata(messages: &mut Vec<db::models::ChatMessage>) {
             default_content_blocks(&msg.content, raw_calls.len())
         };
 
-        msg.metadata = Some(
-            serde_json::json!({
-                "toolCalls": ui_calls,
-                "contentBlocks": blocks,
-            })
-            .to_string(),
-        );
+        // The steps are built here; everything else the row keeps (the files
+        // the turn shared, `artifacts`) stays. Rebuilding the object whole
+        // dropped them, and a shared picture vanished on reload.
+        let mut meta = existing_meta
+            .filter(|m| m.is_object())
+            .unwrap_or_else(|| serde_json::json!({}));
+        meta["toolCalls"] = serde_json::json!(ui_calls);
+        meta["contentBlocks"] = serde_json::json!(blocks);
+        msg.metadata = Some(meta.to_string());
     }
 }
 
@@ -1057,6 +1059,25 @@ mod transcript_metadata_tests {
     /// An assistant message with a tool_calls column gets UI metadata built:
     /// per-call status comes from the tool-role results (is_error → "error"),
     /// and with no persisted block order, blocks default to text→tools.
+    /// A step row that shared a file keeps its `artifacts` when history
+    /// builds its steps (live: the sharpened picture vanished on reload).
+    #[test]
+    fn a_step_rows_shared_files_survive_history() {
+        let mut assistant = msg("assistant", "Sharpened.");
+        assistant.tool_calls = Some(r#"[{"id":"t1","name":"run_command","input":{}}]"#.to_string());
+        assistant.metadata = Some(
+            r#"{"contentBlocks":[{"type":"text"},{"toolCallIndex":0,"type":"tool"}],"artifacts":["/api/v1/files/.shared/c083/basejump-pov-sharp.png"]}"#
+                .to_string(),
+        );
+        let mut tool = msg("tool", "");
+        tool.tool_results = Some(r#"[{"tool_call_id":"t1","is_error":false}]"#.to_string());
+        let mut messages = vec![assistant, tool];
+        build_message_metadata(&mut messages);
+        let meta: serde_json::Value = serde_json::from_str(messages[0].metadata.as_deref().unwrap()).unwrap();
+        assert_eq!(meta["artifacts"][0], "/api/v1/files/.shared/c083/basejump-pov-sharp.png");
+        assert_eq!(meta["toolCalls"][0]["id"], "t1");
+    }
+
     #[test]
     fn tool_calls_column_builds_ui_metadata_with_result_statuses() {
         let mut assistant = msg("assistant", "Done.");

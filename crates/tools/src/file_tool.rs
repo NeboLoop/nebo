@@ -945,6 +945,14 @@ impl FileTool {
         if size == 0 {
             return ToolResult::error(EMPTY_FILE);
         }
+        // The card is made from these bytes after the call; a picture's name
+        // on bytes that are no picture (a saved error page) would be dropped
+        // there, and the owner told "Shared" with nothing to see. Say it here.
+        if !media_bytes_match(Path::new(&path)) {
+            return ToolResult::error(format!(
+                "Error: {path} is named as media but its bytes are not that kind of file (often a web page saved under a picture's name). Nothing was shared; make or download the file again."
+            ));
+        }
 
         let name = std::path::Path::new(&path)
             .file_name()
@@ -1750,6 +1758,52 @@ fn preserve_quote_style(old_string: &str, actual_old: &str, new_string: &str) ->
 pub(crate) fn is_ingested_file(path: &str) -> bool {
     std::path::Path::new(path).starts_with(crate::checkpoint::data_dir().join("files"))
 }
+
+/// True when a media-extension file's leading bytes actually look like that
+/// media type. Catches the classic failure of a download tool saving an HTML
+/// error page (403/404 body) as `.jpg` — which then renders as a broken tile
+/// and poisons any document that embeds it. Non-media extensions pass through.
+pub fn media_bytes_match(path: &std::path::Path) -> bool {
+    let ext = path
+        .extension()
+        .map(|e| e.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    if !MEDIA_EXTS.contains(&ext.as_str()) {
+        return true;
+    }
+    let mut head = [0u8; 16];
+    let n = match std::fs::File::open(path)
+        .and_then(|mut f| std::io::Read::read(&mut f, &mut head))
+    {
+        Ok(n) => n,
+        Err(_) => return true, // unreadable here ≠ corrupt; let serving decide
+    };
+    let head = &head[..n];
+    // A real picture under another picture's name (a JPEG saved as .png, as
+    // image models answer) is still a picture: every client decodes it by its
+    // bytes. Only bytes that are no picture at all (an error page) are refused.
+    let picture = head.starts_with(&[0xFF, 0xD8, 0xFF])
+        || head.starts_with(&[0x89, b'P', b'N', b'G'])
+        || head.starts_with(b"GIF8")
+        || (head.starts_with(b"RIFF") && n >= 12 && &head[8..12] == b"WEBP");
+    match ext.as_str() {
+        "jpg" | "jpeg" | "png" | "gif" | "webp" => picture,
+        "svg" => {
+            let s = String::from_utf8_lossy(head).to_lowercase();
+            s.starts_with("<svg") || s.starts_with("<?xml")
+        }
+        "mp4" | "mov" => n >= 8 && &head[4..8] == b"ftyp",
+        "webm" => head.starts_with(&[0x1A, 0x45, 0xDF, 0xA3]),
+        _ => true,
+    }
+}
+
+/// Media (image/video/audio) artifacts render inline and are never versioned.
+/// Mirrors the app's `MEDIA_MIME` (`app/src/lib/chat/controller.svelte.ts`).
+pub const MEDIA_EXTS: &[&str] = &[
+    "png", "jpg", "jpeg", "gif", "webp", "svg", "mp4", "webm", "mov", "mp3", "m4a", "wav", "ogg",
+    "aac", "flac",
+];
 
 pub fn expand_path(path: &str) -> String {
     types::pathres::expand(path).to_string_lossy().into_owned()
