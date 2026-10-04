@@ -53,6 +53,40 @@ pub struct CallEffects {
     /// time, in every mode: never "Allow always".
     #[serde(default)]
     pub removes_employee: bool,
+    /// The call watches the owner (his screen, microphone or camera) or
+    /// drives his other apps: a command such as `screencapture`, `osascript`
+    /// telling an app what to do, or `open -a Safari`. It asks in every
+    /// mode, Full Access included, until the owner allows it always.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reaches_owner: Option<OwnerReach>,
+}
+
+/// What a command reaches on the owner's own computer, beyond its files:
+/// what he sees and says, and the apps he works in.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum OwnerReach {
+    Screen,
+    Microphone,
+    Camera,
+    /// Another app, named when the command names it.
+    App { app: Option<String> },
+    /// The mouse and keyboard.
+    Input,
+}
+
+impl OwnerReach {
+    /// What the call does, as its activity line: "capturing your screen".
+    pub fn sentence(&self) -> String {
+        match self {
+            OwnerReach::Screen => "capturing your screen".into(),
+            OwnerReach::Microphone => "recording from your microphone".into(),
+            OwnerReach::Camera => "taking a picture with your camera".into(),
+            OwnerReach::App { app: Some(app) } => format!("controlling {app}"),
+            OwnerReach::App { app: None } => "controlling your apps".into(),
+            OwnerReach::Input => "controlling your mouse and keyboard".into(),
+        }
+    }
 }
 
 impl CallEffects {
@@ -546,6 +580,8 @@ pub enum AskCase {
     /// The call deletes an employee: the owner answers every one, once or
     /// no.
     RemovesEmployee,
+    /// The call watches the owner or drives his apps (`CallEffects::reaches_owner`).
+    ReachesOwner { reach: OwnerReach },
     /// An employee made by an employee needs more than its creator holds:
     /// the one card at creation, listing the extras.
     CreatedExtras { capabilities: Vec<String> },

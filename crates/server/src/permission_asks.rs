@@ -295,6 +295,7 @@ mod tests {
             session_key: "agent:ava:neboai".into(),
             sentence: "sending an email to pat@example.com".into(),
             reason: "It's the first time it would contact them.".into(),
+            command: None,
             allow_always,
             this_once,
             status: "open".into(),

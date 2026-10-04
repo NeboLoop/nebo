@@ -513,6 +513,167 @@ pub fn is_privilege_escalation(cmd: &str) -> bool {
         .any(|tok| matches!(tok, "sudo" | "doas" | "su"))
 }
 
+/// What a shell call reaches on the owner's own computer beyond its files:
+/// his screen, microphone or camera, or his other apps
+/// ([`types::permissions::OwnerReach`]), from the first command that does.
+/// Each command is judged by the program it runs, so `grep screencapture`,
+/// `echo osascript` and `open file.pdf` reach nothing. A call that can't be
+/// read is judged by the PowerShell calls in its text.
+///
+/// 2026-10-04: an employee with no recording tool opened Safari with
+/// `open -a`, drove it with `osascript`, and ran `screencapture -x` 90 times
+/// on the owner's display to make a video, and nothing asked him.
+pub fn owner_reach(cmd: &str) -> Option<types::permissions::OwnerReach> {
+    let subs = subcommands(cmd);
+    if let Some(reach) = subs.iter().find_map(reach_of) {
+        return Some(reach);
+    }
+    if subs.iter().any(|s| !s.readable()) {
+        return powershell_reach(cmd);
+    }
+    None
+}
+
+/// What one command reaches on the owner's computer (see [`owner_reach`]).
+pub fn reach_of(sub: &Subcommand) -> Option<types::permissions::OwnerReach> {
+    use types::permissions::OwnerReach;
+
+    let first = sub.words.first()?.as_deref()?;
+    let args = &sub.words[1..];
+    let has = |w: &str| args.iter().any(|a| a.as_deref() == Some(w));
+    let after = |flags: &[&str]| {
+        args.iter()
+            .position(|a| a.as_deref().is_some_and(|a| flags.contains(&a)))
+            .map(|i| args.get(i + 1).cloned().flatten())
+    };
+    match program_name(first).as_str() {
+        "screencapture" | "gnome-screenshot" | "scrot" | "grim" | "spectacle" | "maim" | "flameshot" | "import" => {
+            Some(OwnerReach::Screen)
+        }
+        "imagesnap" => Some(OwnerReach::Camera),
+        "rec" | "arecord" | "parecord" | "pw-record" => Some(OwnerReach::Microphone),
+        // `sox -d out.wav` records from the default device; `sox in.wav -d`
+        // plays to it.
+        "sox" => {
+            let input = args.iter().flatten().find(|a| *a == "-d" || *a == "-n" || !a.starts_with('-'));
+            (input.map(String::as_str) == Some("-d")).then_some(OwnerReach::Microphone)
+        }
+        "ffmpeg" => ffmpeg_reach(args),
+        "osascript" => osascript_reach(args),
+        "open" => after(&["-a", "-b"]).map(|app| OwnerReach::App { app }),
+        "cliclick" | "xdotool" | "ydotool" | "wtype" | "autohotkey" | "autohotkey64" | "autohotkeyu64" | "autohotkey32"
+        | "autohotkeyu32" => Some(OwnerReach::Input),
+        "powershell" | "pwsh" if !has("-File") => {
+            let words: Vec<&str> = args.iter().flatten().map(String::as_str).collect();
+            powershell_reach(&words.join(" "))
+        }
+        // A PowerShell statement read as one word.
+        _ => powershell_reach(first),
+    }
+}
+
+/// The prefix "Allow always" saves for a command [`reach_of`] names: the
+/// program, so the next capture or the next script for an app is covered
+/// whatever its file or words; `open -a` / `open -b` with its flag. `None`
+/// when no allow could cover the command (a variable before it).
+pub fn reach_prefix(sub: &Subcommand) -> Option<String> {
+    if sub.assigns {
+        return None;
+    }
+    let first = sub.words.first()?.as_deref()?;
+    match program_name(first).as_str() {
+        "open" => match sub.words.get(1) {
+            Some(Some(flag)) if flag == "-a" || flag == "-b" => Some(format!("{first} {flag}")),
+            _ => sub.rule_prefix(),
+        },
+        "powershell" | "pwsh" => sub.rule_prefix(),
+        _ if powershell_reach(first).is_some() => sub.rule_prefix(),
+        _ => Some(first.to_string()),
+    }
+}
+
+/// A program's name as typed or by path: `/usr/sbin/screencapture` and
+/// `AutoHotkey64.exe` are `screencapture` and `autohotkey64`.
+fn program_name(word: &str) -> String {
+    let base = word.rsplit(['/', '\\']).next().unwrap_or(word).to_ascii_lowercase();
+    base.strip_suffix(".exe").map(str::to_string).unwrap_or(base)
+}
+
+/// `ffmpeg` reading from a capture device: an input format (`-f` before an
+/// `-i`) that is a screen, a camera or a microphone.
+fn ffmpeg_reach(args: &[Option<String>]) -> Option<types::permissions::OwnerReach> {
+    use types::permissions::OwnerReach;
+    let mut format: Option<&str> = None;
+    for (i, a) in args.iter().enumerate() {
+        match a.as_deref() {
+            Some("-f") => format = args.get(i + 1).and_then(|f| f.as_deref()),
+            Some("-i") => match format.take() {
+                Some("avfoundation" | "x11grab" | "gdigrab" | "kmsgrab" | "ddagrab" | "fbdev") => return Some(OwnerReach::Screen),
+                Some("dshow" | "v4l2" | "video4linux2") => return Some(OwnerReach::Camera),
+                Some("pulse" | "alsa" | "openal" | "jack" | "oss" | "sndio") => return Some(OwnerReach::Microphone),
+                _ => {}
+            },
+            _ => {}
+        }
+    }
+    None
+}
+
+/// `osascript` telling an app what to do (AppleScript `tell application`,
+/// JXA `Application("…")`), System Events included. A script it runs from
+/// a file or its input can't be read: it is taken as one.
+fn osascript_reach(args: &[Option<String>]) -> Option<types::permissions::OwnerReach> {
+    use types::permissions::OwnerReach;
+    let mut scripts = Vec::new();
+    let mut inline = false;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_deref() {
+            Some("-e") => {
+                inline = true;
+                match args.get(i + 1) {
+                    Some(Some(script)) => scripts.push(script.as_str()),
+                    _ => return Some(OwnerReach::App { app: None }),
+                }
+                i += 2;
+            }
+            Some("-l" | "-s") => i += 2,
+            Some(a) if a.starts_with('-') => i += 1,
+            _ => break,
+        }
+    }
+    if !inline {
+        return Some(OwnerReach::App { app: None });
+    }
+    let text = scripts.join("\n");
+    static TOLD: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r#"(?i)\btell\s+app(?:lication)?\s+(?:id\s+)?"([^"]+)"|\bApplication\(\s*["']([^"']+)["']\s*\)"#)
+            .expect("a valid pattern")
+    });
+    let mut apps = TOLD.captures_iter(&text).filter_map(|c| c.get(1).or_else(|| c.get(2))).map(|m| m.as_str().to_string());
+    let first = apps.next()?;
+    let other = std::iter::once(first).chain(apps).find(|a| !a.eq_ignore_ascii_case("System Events"));
+    Some(match other {
+        Some(app) => OwnerReach::App { app: Some(app) },
+        None => OwnerReach::Input,
+    })
+}
+
+/// PowerShell's own screen capture and keystrokes, which no program name
+/// shows: `[…SendKeys]::SendWait(…)`, `WScript.Shell`'s `.SendKeys(…)`,
+/// `Graphics.CopyFromScreen(…)`. Matched as calls, not as words in text.
+fn powershell_reach(text: &str) -> Option<types::permissions::OwnerReach> {
+    use types::permissions::OwnerReach;
+    let lower = text.to_ascii_lowercase();
+    if lower.contains(".copyfromscreen(") {
+        return Some(OwnerReach::Screen);
+    }
+    if lower.contains("sendkeys]::send") || lower.contains(".sendkeys(") {
+        return Some(OwnerReach::Input);
+    }
+    None
+}
+
 /// The company's own figures for unattended work, as the company layer
 /// states them. Every field is optional; an absent field is no bound.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -852,5 +1013,86 @@ mod tests {
         assert!(!is_privilege_escalation("visudo --check /etc/sudoers"));
         assert!(!is_privilege_escalation("git commit -m 'use sudo'"));
         assert!(!is_privilege_escalation("grep sudoers /etc/group"));
+    }
+
+    /// Watching the owner or driving his apps is matched on the program a
+    /// command runs, wherever it stands in the call, and never on a word in
+    /// another program's arguments.
+    #[test]
+    fn owner_reach_is_the_program_a_command_runs() {
+        use types::permissions::OwnerReach::{self, App, Camera, Input, Microphone, Screen};
+        let app = |a: &str| App { app: Some(a.to_string()) };
+        let cases: &[(&str, Option<OwnerReach>)] = &[
+            ("screencapture -x /tmp/a.png", Some(Screen)),
+            ("/usr/sbin/screencapture -x a.png", Some(Screen)),
+            ("for i in $(seq 90); do screencapture -x f$i.png; done", Some(Screen)),
+            ("mkdir -p shots && cd shots && nohup screencapture -x a.png", Some(Screen)),
+            ("bash -c 'screencapture -x a.png'", Some(Screen)),
+            ("ffmpeg -f avfoundation -i 1:0 out.mp4", Some(Screen)),
+            ("ffmpeg -f x11grab -i :0.0 out.mp4", Some(Screen)),
+            ("ffmpeg -f gdigrab -i desktop out.mp4", Some(Screen)),
+            ("ffmpeg -f alsa -i default out.wav", Some(Microphone)),
+            ("ffmpeg -f v4l2 -i /dev/video0 out.mp4", Some(Camera)),
+            ("gnome-screenshot -f a.png", Some(Screen)),
+            ("scrot a.png", Some(Screen)),
+            ("import -window root a.png", Some(Screen)),
+            ("imagesnap a.jpg", Some(Camera)),
+            ("rec out.wav", Some(Microphone)),
+            ("sox -d out.wav trim 0 5", Some(Microphone)),
+            ("arecord -d 5 out.wav", Some(Microphone)),
+            (r#"osascript -e 'tell application "Safari" to do JavaScript "location.href = 1" in document 1'"#, Some(app("Safari"))),
+            (r#"osascript -e 'tell app "Mail" to activate'"#, Some(app("Mail"))),
+            (r#"osascript -l JavaScript -e 'Application("Safari").activate()'"#, Some(app("Safari"))),
+            (r#"osascript -e 'tell application "System Events" to keystroke "v" using command down'"#, Some(Input)),
+            ("osascript ~/drive.scpt", Some(App { app: None })),
+            ("open -a Safari https://example.com", Some(app("Safari"))),
+            ("open -b com.apple.Safari", Some(app("com.apple.Safari"))),
+            ("cliclick c:100,200", Some(Input)),
+            ("xdotool type hello", Some(Input)),
+            ("AutoHotkey64.exe drive.ahk", Some(Input)),
+            (r#"powershell -Command "[System.Windows.Forms.SendKeys]::SendWait('hi')""#, Some(Input)),
+            (r#"powershell -Command "$g.CopyFromScreen(0, 0, 0, 0, $b.Size)""#, Some(Screen)),
+            ("Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait('hi')", Some(Input)),
+            // Not watching or driving: the word is only text, the file
+            // opens in its own app, or nothing is told to an app.
+            ("grep screencapture notes.txt", None),
+            ("rg -n 'osascript' src", None),
+            ("echo osascript", None),
+            ("echo 'tell application \"Safari\"' > notes.txt", None),
+            ("open file.pdf", None),
+            ("open https://example.com", None),
+            (r#"osascript -e 'display notification "done"'"#, None),
+            ("ffmpeg -i in.mov -f mp4 out.mp4", None),
+            ("ffmpeg -i in.wav -f alsa default", None),
+            ("sox in.wav -d", None),
+            ("man screencapture", None),
+            ("ls -la", None),
+        ];
+        for (cmd, want) in cases {
+            assert_eq!(owner_reach(cmd).as_ref(), want.as_ref(), "{cmd}");
+        }
+    }
+
+    /// "Allow always" saves the program, so the next capture or script is
+    /// covered whatever its file or words, and the saved prefix covers the
+    /// command it was saved for.
+    #[test]
+    fn a_reach_prefix_names_the_program_and_covers_its_command() {
+        for (cmd, prefix) in [
+            ("screencapture -x /tmp/a.png", Some("screencapture")),
+            (r#"osascript -e 'tell application "Safari" to activate'"#, Some("osascript")),
+            ("open -a Safari https://example.com", Some("open -a")),
+            ("open -g -a Safari", Some("open -g -a Safari")),
+            ("ffmpeg -f avfoundation -i 1 out.mp4", Some("ffmpeg")),
+            ("X=1 screencapture a.png", None),
+        ] {
+            let sub = subcommands(cmd).into_iter().find(|s| reach_of(s).is_some()).expect(cmd);
+            assert_eq!(reach_prefix(&sub).as_deref(), prefix, "{cmd}");
+            if let Some(p) = prefix {
+                assert_eq!(sub.covered_by(p, true), Cover::Yes, "{cmd}");
+            }
+        }
+        let next = subcommands("screencapture -x /tmp/b.png").remove(0);
+        assert_eq!(next.covered_by("screencapture", true), Cover::Yes, "the next capture is covered");
     }
 }

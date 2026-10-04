@@ -976,6 +976,7 @@ export interface PermissionAskCard {
 	sessionKey: string
 	sentence: string
 	reason: string
+	command?: string
 	allowAlways: boolean
 	thisOnce: boolean
 	status: string
