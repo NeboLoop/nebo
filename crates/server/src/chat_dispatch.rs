@@ -2243,11 +2243,15 @@ fn media_bytes_match(path: &std::path::Path) -> bool {
         Err(_) => return true, // unreadable here ≠ corrupt; let serving decide
     };
     let head = &head[..n];
+    // A real picture under another picture's name (a JPEG saved as .png, as
+    // image models answer) is still a picture: every client decodes it by its
+    // bytes. Only bytes that are no picture at all (an error page) are refused.
+    let picture = head.starts_with(&[0xFF, 0xD8, 0xFF])
+        || head.starts_with(&[0x89, b'P', b'N', b'G'])
+        || head.starts_with(b"GIF8")
+        || (head.starts_with(b"RIFF") && n >= 12 && &head[8..12] == b"WEBP");
     match ext.as_str() {
-        "jpg" | "jpeg" => head.starts_with(&[0xFF, 0xD8, 0xFF]),
-        "png" => head.starts_with(&[0x89, b'P', b'N', b'G']),
-        "gif" => head.starts_with(b"GIF8"),
-        "webp" => head.starts_with(b"RIFF") && n >= 12 && &head[8..12] == b"WEBP",
+        "jpg" | "jpeg" | "png" | "gif" | "webp" => picture,
         "svg" => {
             let s = String::from_utf8_lossy(head).to_lowercase();
             s.starts_with("<svg") || s.starts_with("<?xml")
@@ -2893,6 +2897,15 @@ mod media_tests {
         let real = dir.path().join("pixel.png");
         std::fs::write(&real, [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]).unwrap();
         assert!(media_bytes_match(&real));
+
+        // A JPEG an image model saved as .png is still shared (live: Chief's
+        // "Shared basejump-pov.png" showed nothing on the phone).
+        let mislabeled = dir.path().join("basejump-pov.png");
+        std::fs::write(&mislabeled, [0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, b'J', b'F', b'I', b'F']).unwrap();
+        assert!(media_bytes_match(&mislabeled));
+        let page = dir.path().join("photo.png");
+        std::fs::write(&page, b"<!doctype html><title>403</title>").unwrap();
+        assert!(!media_bytes_match(&page), "an error page under a picture's name is still refused");
     }
 
     /// Non-media extensions pass through the gate, and an unreadable path is
