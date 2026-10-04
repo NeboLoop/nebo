@@ -1670,6 +1670,25 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
             tool_calls.clear();
             block_order.retain(|b| !matches!(b, Block::Tool(_)));
         }
+        // The output cap cut the reply inside its last call: that call's
+        // arguments are whatever arrived before the cut, so no call in the
+        // reply is run or stored, and the next step is told it was cut and
+        // to send the content in smaller pieces. Run as it came, a cut call
+        // fails on a field the model never left out (live 2026-10-03: a
+        // 34 KB website cut at the gateway's 8,192 output tokens; the model
+        // read "`content` is missing" and sent the same call again). The
+        // cap ladder below still escalates, but a cap the gateway holds
+        // lower never lets the escalation through, so the words carry it.
+        let cut_call = tool_calls
+            .last()
+            .filter(|_| model_call::hit_output_limit(stop.as_deref()) && !provider.handles_tools())
+            .map(|tc| tc.name.clone());
+        if let Some(tool) = &cut_call {
+            warn!(session_id = sid, tool = %tool, "the output cap cut the reply inside a call: no call in it runs");
+            tool_calls.clear();
+            block_order.retain(|b| !matches!(b, Block::Tool(_)));
+            st.reminders.add(&TurnEvent::CutCall(tool.clone()));
+        }
         // A call the reply wrote out as text was cut there and never ran:
         // the next step is told so, and makes it as a call.
         let text_call = text_call.filter(|_| tool_calls.is_empty());
@@ -1704,7 +1723,7 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
             }
         }
 
-        // No tool calls. The output cap cut the reply off: retry at the
+        // No tool calls ran. The output cap cut the reply off: retry at the
         // escalated cap, then continue in place.
         match model_call::output_cutoff(&mut st.call, stop.as_deref(), st.step as usize, sid) {
             Some(model_call::StepRetry::Same) => {
@@ -1712,11 +1731,23 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
                 continue;
             }
             Some(model_call::StepRetry::Resume) => {
-                st.reminders.add(&TurnEvent::CutoffResume);
+                // A cut call was told as one: there is no thought to pick
+                // up mid-way.
+                if cut_call.is_none() {
+                    st.reminders.add(&TurnEvent::CutoffResume);
+                }
                 st.transition = Transition::CutoffResume {
                     attempt: st.call.output_recovery_attempts as u8,
                 };
                 continue;
+            }
+            // Every rung spent and the reply still cut inside a call: the
+            // owner hears why the work stopped, not "an empty reply".
+            None if cut_call.is_some() => {
+                let notice = "This stopped because each try was longer than the model can write in one reply. \
+                              Ask for it in smaller parts.";
+                let _ = cx.tx.send(StreamEvent::error(notice)).await;
+                return TurnExit::ProviderFailed("the reply kept passing the output limit".into());
             }
             None => {}
         }
@@ -2697,6 +2728,9 @@ mod tests {
         NarratedCall(&'static str, &'static str, serde_json::Value),
         /// Text the output cap cut off.
         Cut(&'static str),
+        /// A call to this tool the output cap cut off inside its arguments,
+        /// with what of its input arrived.
+        CutCall(&'static str, serde_json::Value),
         /// A dropped connection.
         Transient,
         /// The provider says the request is over the window.
@@ -2919,6 +2953,10 @@ mod tests {
                 None,
             ),
             Step::Cut(text) => (vec![StreamEvent::text(text)], Some("max_tokens")),
+            Step::CutCall(name, input) => (
+                vec![StreamEvent::tool_call(ai::ToolCall { id: format!("call-{}", uuid::Uuid::new_v4()), name: name.into(), input })],
+                Some("length"),
+            ),
             Step::Text(text, call) => {
                 let chars: Vec<char> = text.chars().collect();
                 let mut list: Vec<StreamEvent> = chars.chunks(4).map(|c| StreamEvent::text(c.iter().collect::<String>())).collect();
@@ -3641,6 +3679,30 @@ mod tests {
         let resumes = |c: &ChatRequest| c.messages.iter().filter(|m| m.content.contains(&resume.text)).count();
         assert_eq!((resumes(&calls[1]), resumes(&calls[2])), (0, 1), "one resume row, after the second cut");
         assert_eq!(kinds(&stored(&h)).iter().filter(|k| *k == "cutoff_resume").count(), 1);
+    }
+
+    /// The output cap cuts the reply inside a call (live 2026-10-03: a
+    /// 34 KB website cut at 8,192 output tokens arrived as a write with a
+    /// path and no content). The call does not run, the next step is told
+    /// it was cut and to send the content in smaller pieces, and the cap
+    /// still escalates.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_call_cut_by_the_output_cap_is_told_as_cut_not_run() {
+        let model = Scripted::new(vec![
+            Step::CutCall("writer", serde_json::json!({"path": "/tmp/site.html"})),
+            Step::Say("Writing it in sections."),
+        ]);
+        let h = harness(&model).await;
+        let events = run_turn(&h, owner("Build the website")).await;
+        assert_eq!(exit_of(&events), "text_response");
+        assert!(stored(&h).iter().all(|m| m.role != "tool"), "the cut call never ran");
+        let calls = model.calls();
+        assert_eq!(calls.len(), 2);
+        assert!(calls[1].max_tokens > calls[0].max_tokens, "the cut escalates the cap");
+        let told = events::attachment_for(&TurnEvent::CutCall("writer".into())).unwrap();
+        assert!(texts(&calls[1]).iter().any(|t| t.contains(&told.text)), "the next step hears the call was cut");
+        assert!(told.text.contains("output length limit") && told.text.contains("smaller pieces"), "{}", told.text);
+        assert!(!texts(&calls[1]).iter().any(|t| t.contains("Resume directly")), "a cut call is not resumed as text");
     }
 
     /// The owner speaks while a tool round runs: the next step's call
