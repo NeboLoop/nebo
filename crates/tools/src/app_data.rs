@@ -357,6 +357,14 @@ impl AppDataTool {
             .map(|n| (n as usize).clamp(1, MAX_LIMIT))
             .unwrap_or(DEFAULT_LIMIT);
         let path = input.get("path").and_then(Value::as_str).map(str::trim).filter(|p| !p.is_empty());
+        // A key named as a path (`path: "chat:design"`) nested the whole
+        // design inside itself (live: Design Studio's first skeleton). A
+        // path is a place inside the value; keys carry the colons.
+        if let Some(p) = path.filter(|p| p.contains(':')) {
+            return Err(format!(
+                "Nothing was saved: '{p}' is a key, not a place inside the value. To save the whole value, leave path out; a path is like \"screens.0.html\"."
+            ));
+        }
         let prefix = &chat_key(input.get("prefix").and_then(Value::as_str).unwrap_or(""), chat)?;
         let prefix = prefix.as_str();
         match action {
@@ -390,6 +398,53 @@ impl AppDataTool {
                 self.notify(&app.id, key, "set");
                 let at = path.map(|p| format!(" at '{p}'")).unwrap_or_default();
                 Ok(format!("Saved '{key}'{at}. Open views of {} were told to refresh.", app.name))
+            }
+            "append" => {
+                // A page grows a section at a time: text appends to text, an
+                // item to a list (a new screen). Setting the same spot again
+                // replaced each section with the next (live: only the last
+                // of four sections survived).
+                need_key()?;
+                let given = given_value(input.get("value").ok_or("'append' needs a value.")?)?;
+                let mut whole = match read(&self.store, &app.id, key)? {
+                    Some(raw) => decode(&raw),
+                    None => Value::Null,
+                };
+                let current = match path {
+                    Some(p) => at_path(&whole, p).ok().cloned(),
+                    None => Some(whole.clone()).filter(|v| !v.is_null()),
+                };
+                let grown = match (current, given) {
+                    (None, given) => given,
+                    (Some(Value::String(mut text)), Value::String(more)) => {
+                        text.push_str(&more);
+                        Value::String(text)
+                    }
+                    (Some(Value::Array(mut items)), item) => {
+                        items.push(item);
+                        Value::Array(items)
+                    }
+                    (Some(Value::String(_)), _) => return Err("Nothing was saved: text is appended to with text.".into()),
+                    (Some(_), _) => {
+                        return Err(format!(
+                            "Nothing was saved: '{}' holds neither text nor a list, so nothing can be appended to it. Use set.",
+                            path.unwrap_or(key)
+                        ))
+                    }
+                };
+                match path {
+                    Some(p) => {
+                        if whole.is_null() {
+                            whole = Value::Object(Default::default());
+                        }
+                        set_at_path(&mut whole, p, grown).map_err(|e| format!("Nothing was saved. {e}"))?;
+                    }
+                    None => whole = grown,
+                }
+                write(&self.store, &app.id, key, &encode(&whole))?;
+                self.notify(&app.id, key, "set");
+                let at = path.map(|p| format!(" at '{p}'")).unwrap_or_default();
+                Ok(format!("Appended to '{key}'{at}. Open views of {} were told to refresh.", app.name))
             }
             "replace" => {
                 need_key()?;
@@ -442,7 +497,7 @@ impl AppDataTool {
                 let (found, total) = query(&list(&self.store, &app.id)?, prefix, conditions, text, limit);
                 Ok(json!({ "total": total, "items": found }).to_string())
             }
-            other => Err(format!("Unknown action '{other}'. Use get, set, replace, delete, list or query.")),
+            other => Err(format!("Unknown action '{other}'. Use get, set, append, replace, delete, list or query.")),
         }
     }
 }
@@ -459,7 +514,8 @@ impl DynTool for AppDataTool {
          nebo.storage (same keys, same values). Actions: get (key, path?), set (key, value: any JSON, path?: a \
          dotted path into the stored value, list items by index, e.g. \"screens.2.html\"; only that spot \
          changes, missing keys are created, an index equal to the list's length appends; build a large value \
-         a piece per call this way), replace (key, find, \
+         a piece per call this way), append (key, value, path?: adds text to the text there, e.g. the next \
+         section of a page's html, or an item to the list there, e.g. a new screen), replace (key, find, \
          with: change one exact piece of text inside the value, e.g. a heading in a page, without writing the \
          whole value again; find must match one place), delete (key), \
          list (prefix?, limit?), query (prefix?, where: {field: value} — text matches when the field contains it, \
@@ -475,11 +531,11 @@ impl DynTool for AppDataTool {
         json!({
             "type": "object",
             "properties": {
-                "action": { "type": "string", "enum": ["get", "set", "replace", "delete", "list", "query"] },
+                "action": { "type": "string", "enum": ["get", "set", "append", "replace", "delete", "list", "query"] },
                 "find": { "type": "string", "description": "The exact text to change, inside the key's value (replace). It must match one place." },
                 "with": { "type": "string", "description": "The text to put in its place (replace)." },
                 "key": { "type": "string", "description": "The storage key (get, set, delete)." },
-                "path": { "type": "string", "description": "A dotted path into the key's value, list items by index: \"screens.2.html\", \"theme.accent\" (get, set). Set changes only that spot." },
+                "path": { "type": "string", "description": "A dotted path into the key's value, list items by index: \"screens.2.html\", \"theme.accent\" (get, set, append). Set changes only that spot; append adds text to text or an item to a list there. Never a key." },
                 "value": { "description": "The value to store (set): any JSON, the way the page stores it." },
                 "prefix": { "type": "string", "description": "Only keys starting with this (list, query)." },
                 "where": {
@@ -508,7 +564,7 @@ impl DynTool for AppDataTool {
     fn activity(&self, input: &Value) -> String {
         let key = input.get("key").and_then(Value::as_str).unwrap_or("");
         match input.get("action").and_then(Value::as_str).unwrap_or("") {
-            "set" | "replace" => format!("saving {key}"),
+            "set" | "append" | "replace" => format!("saving {key}"),
             "delete" => format!("deleting {key}"),
             "get" => format!("reading {key}"),
             _ => "looking through the app's data".to_string(),
@@ -518,7 +574,7 @@ impl DynTool for AppDataTool {
     fn outcome(&self, input: &Value) -> String {
         let key = input.get("key").and_then(Value::as_str).unwrap_or("");
         match input.get("action").and_then(Value::as_str).unwrap_or("") {
-            "set" | "replace" => format!("Saved {key}"),
+            "set" | "append" | "replace" => format!("Saved {key}"),
             "delete" => format!("Deleted {key}"),
             "get" => format!("Read {key}"),
             _ => "Looked through the app's data".to_string(),
