@@ -55,8 +55,7 @@ looks matter, Design Depth adds the studio method on top.
    at the start of every build or fix: `code` is how you read and check code.
    A tool missing from your list is not loaded yet; it is never "not available".
 4. **Never install a runtime.** No `brew install`, no `curl ... | bash`, no bun or
-   node downloads. Lane A needs nothing; Lane B runs only on a bot that already
-   has node (Step 2).
+   node downloads (Step 2 says what each lane needs).
 5. **`ui/` holds what the page serves and nothing else.** No `package.json`,
    `src/`, `node_modules/` or `dist/` inside `ui/`. A build writes only into `ui/`.
 6. **No `index.html` in the app folder itself.** The only entry is `ui/index.html`;
@@ -95,6 +94,9 @@ An app can be built two ways. Pick by what the owner says:
 - **Not clear which?** Ask once, in your first reply: "Should I become this
   app, or build it as a new one?" When the owner says "you", act at once:
   never ask again and never create another employee.
+- **From a design** ("make this design an app"): always a new app
+  employee, built by you in this chat; never ask, never become it. Follow
+  `references/from-a-design.md`.
 
 ## Step 1: Make the app with a starter page
 
@@ -158,17 +160,16 @@ The starter page, exactly:
 </html>
 ```
 
-`../../../sdk/nebo.global.js` is the SDK's address from `ui/index.html` at all
-three addresses (it resolves to `/sdk/nebo.global.js`, `/t/<bot>/sdk/nebo.global.js`
-and `neboapp://<id>/sdk/nebo.global.js`). Copy it as written. The absolute
-`/sdk/nebo.global.js` loads on the desktop and fails on the phone.
+`../../../sdk/nebo.global.js` reaches the SDK from `ui/index.html` at all three
+addresses: copy it as written. The absolute `/sdk/nebo.global.js` loads on the
+desktop and fails on the phone.
 
 **Check 1.** Run `app_status`. It names the folder the page is served from
 (`<data>/user/agents/<folder>/ui`); the app folder is the one above it. Write
 both down. Then run Verify (Step 4): the screenshot shows "ready: <name>".
 
-Loading this skill turns App Developer mode on: the developer tools work on
-the owner's own apps (never one installed from the marketplace).
+Loading this skill turns App Developer mode on: developer tools for the
+owner's own apps, never marketplace ones.
 
 ## Step 2: Pick the lane, once
 
@@ -192,7 +193,8 @@ the `.js` names.
 Use this layout; don't design your own:
 
 ```
-ui/index.html          the SDK tag and ./app.js, nothing else
+ui/index.html          the SDK tag and ./app.js, nothing else (Tailwind
+                       pages add its tag and config; saved offline on write)
 ui/app.jsx             the shell: layout, navigation, which screen shows
 ui/store.js            every storage read and write, in one place
 ui/screens/<name>.jsx  one screen each (home.jsx, booking.jsx, ...)
