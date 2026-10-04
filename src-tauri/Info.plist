@@ -27,6 +27,6 @@
 	<key>NSCameraUsageDescription</key>
 	<string>Nebo uses the camera when you ask it to capture or analyze video.</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Nebo uses the microphone for voice input.</string>
+	<string>Nebo uses the microphone when you talk to it or record a clip.</string>
 </dict>
 </plist>

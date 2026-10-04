@@ -6,13 +6,24 @@
 	  Nebo ships as a NON-sandboxed, Developer-ID-signed, notarized app with the
 	  Hardened Runtime (NOT the Mac App Store sandbox — its core capabilities, arbitrary
 	  shell/file/app access, are incompatible with the sandbox). Under the Hardened
-	  Runtime the only entitlements that matter are the `cs.*` code-signing exceptions
-	  and `automation.apple-events`; access to Desktop/Documents/Downloads/Camera/Mic/
+	  Runtime the entitlements that matter are the `cs.*` code-signing exceptions,
+	  `automation.apple-events`, and the Hardened Runtime resource-access pair
+	  `device.audio-input` / `device.camera`; access to Desktop/Documents/Downloads/
 	  Contacts/Calendars/Reminders/Screen-Recording is governed by TCC at runtime
 	  (prompts backed by the Info.plist usage strings), not by these entitlements. The
-	  previous sandbox entitlements (files.*, network.*, device.*, personal-information.*)
-	  were inert without `com.apple.security.app-sandbox` and have been removed.
+	  previous sandbox entitlements (files.*, network.*, personal-information.*) were
+	  inert without `com.apple.security.app-sandbox` and have been removed.
 	-->
+
+	<!-- Microphone and camera. Unlike the folders above, these two ARE Hardened Runtime
+	     entitlements: without them macOS refuses the device before TCC is ever asked,
+	     so no prompt appears and Nebo never lists under Privacy → Microphone. Voice
+	     mode and recording a clip in the chat need the microphone; the usage strings
+	     are NSMicrophoneUsageDescription / NSCameraUsageDescription in Info.plist. -->
+	<key>com.apple.security.device.audio-input</key>
+	<true/>
+	<key>com.apple.security.device.camera</key>
+	<true/>
 
 	<!-- Spawn bundled helper binaries (Obscura tier-2 browser, plugins) and load their
 	     dynamic libraries even when signed by a different identity than the host app. -->

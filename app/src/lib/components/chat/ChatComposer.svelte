@@ -35,6 +35,8 @@
   import { getWebSocketClient } from '$lib/websocket/client';
   import Bot from 'lucide-svelte/icons/bot';
   import AudioLines from 'lucide-svelte/icons/audio-lines';
+  import CircleDot from 'lucide-svelte/icons/circle-dot';
+  import { createClipRecorder, clipClock, CLIP_CAP_MS, type ClipNotice } from '$lib/chat/clipRecorder';
   import { loadModelOptions, modelLabel, type ModelOption } from '$lib/models/speeds';
   import * as api from '$lib/api/nebo';
 
@@ -100,6 +102,24 @@
 
   // Voice conversation overlay state
   let showVoiceOverlay = $state(false);
+
+  // Record a clip: the owner's own voice as an audio file on this draft.
+  // Started only by his click on the record button; stop attaches, cancel
+  // throws it away.
+  const clip = createClipRecorder({ onClip: (file) => addFiles([file]) });
+  const clipNoticeKey: Record<Exclude<ClipNotice, ''>, string> = {
+    micBlocked: 'chatInput.clipMicBlocked',
+    noMic: 'chatInput.clipNoMic',
+    unsupported: 'chatInput.clipUnsupported',
+    failed: 'chatInput.clipFailed',
+    capReached: 'chatInput.clipCapReached',
+  };
+  const isMac = typeof navigator !== 'undefined' && /Mac/.test(navigator.platform || navigator.userAgent);
+  const clipNoticeText = $derived(
+    $clip.notice === 'micBlocked' && isMac
+      ? $t('chatInput.clipMicBlockedMac')
+      : $clip.notice ? $t(clipNoticeKey[$clip.notice]) : ''
+  );
 
   // IME composition state (Phase 10 — prevents Enter-to-send during CJK input)
   let isComposing = $state(false);
@@ -437,6 +457,7 @@
   });
 
   onDestroy(() => {
+    clip.cancel(); // leaving the chat never leaves the microphone open
     saveDraft(); // Flush any pending draft before teardown
     if (draftSaveTimer) clearTimeout(draftSaveTimer);
     editor?.destroy();
@@ -571,7 +592,8 @@
     if (!allowAttachments) return; // covers drop, paste, and browse pathways
     for (const file of files) {
       const isImage = file.type.startsWith('image/');
-      const previewUrl = isImage ? URL.createObjectURL(file) : null;
+      // Audio gets a URL too: the chip plays it back before it is sent.
+      const previewUrl = isImage || file.type.startsWith('audio/') ? URL.createObjectURL(file) : null;
       attachments.push({ file, id: crypto.randomUUID(), previewUrl, isImage });
     }
     editor?.commands.focus();
@@ -707,6 +729,17 @@
                 {att.file.name}
               </div>
             </div>
+          {:else if att.previewUrl && att.file.type.startsWith('audio/')}
+            <div class="flex items-center gap-1.5 py-1 pl-1 pr-1 rounded-md border border-base-300 bg-base-200/50">
+              <audio src={att.previewUrl} controls preload="metadata" class="h-8 w-56 max-w-full"></audio>
+              <span class="text-xs font-medium truncate max-w-[120px]" title={att.file.name}>{att.file.name}</span>
+              <span class="text-xs text-base-content/50 font-mono shrink-0">{formatSize(att.file.size)}</span>
+              <button
+                class="w-5 h-5 rounded-full hover:bg-error/20 hover:text-error flex items-center justify-center text-xs cursor-pointer border-none bg-transparent text-base-content/50 shrink-0 transition-colors"
+                onclick={() => removeAttachment(att.id)}
+                title={$t('common.remove')}
+              >&times;</button>
+            </div>
           {:else}
             <div class="flex items-center gap-1.5 py-1 pl-2 pr-1 rounded-md border border-base-300 bg-base-200/50 group">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="shrink-0 text-base-content/60">
@@ -722,6 +755,42 @@
             </div>
           {/if}
         {/each}
+      </div>
+    {/if}
+
+    <!-- Recording a clip: time, level, stop (attach) and cancel (discard) -->
+    {#if $clip.stage !== 'idle'}
+      <div class="flex flex-wrap items-center gap-x-3 gap-y-1 mb-2 py-1.5 pl-2 pr-1.5 rounded-md border border-base-300 bg-base-200/50" role="status">
+        <span class="inline-flex items-center gap-1.5 text-sm font-medium">
+          <CircleDot class="w-4 h-4 text-error {$clip.stage === 'recording' ? 'animate-pulse' : ''}" />
+          {$clip.stage === 'recording' ? $t('chatInput.recording') : $t('chatInput.clipStarting')}
+        </span>
+        {#if $clip.stage === 'recording'}
+          <span class="text-xs text-base-content/50 font-mono">{clipClock($clip.elapsedMs)} / {clipClock(CLIP_CAP_MS)}</span>
+          <progress
+            class="progress progress-primary w-20"
+            value={Math.round($clip.level * 100)}
+            max="100"
+            aria-label={$t('chatInput.clipLevel')}
+          ></progress>
+        {/if}
+        <div class="ml-auto flex items-center gap-1">
+          <button class="btn btn-ghost btn-xs" onclick={() => clip.cancel()}>{$t('common.cancel')}</button>
+          {#if $clip.stage === 'recording'}
+            <button class="btn btn-primary btn-xs" onclick={() => clip.stop()}>{$t('chatInput.clipStop')}</button>
+          {/if}
+        </div>
+      </div>
+    {/if}
+    {#if clipNoticeText}
+      <div class="flex items-start gap-2 mb-2 text-xs {$clip.notice === 'capReached' ? 'text-base-content/70' : 'text-error'}" role="alert">
+        <span class="flex-1">{clipNoticeText}</span>
+        <button
+          class="w-5 h-5 rounded-full hover:bg-base-200 flex items-center justify-center cursor-pointer border-none bg-transparent text-base-content/50 shrink-0"
+          onclick={() => clip.dismiss()}
+          title={$t('common.dismiss')}
+          aria-label={$t('common.dismiss')}
+        >&times;</button>
       </div>
     {/if}
 
@@ -777,6 +846,22 @@
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
             </svg>
+          </button>
+        {/if}
+
+        {#if allowAttachments}
+          <!-- Record a clip: the owner's own voice as an audio attachment.
+               The record dot, not a microphone: voice mode is the waveform
+               on the right, and this one keeps a file. -->
+          <button
+            class="w-8 h-8 rounded-lg grid place-items-center text-base-content/60 hover:text-base-content hover:bg-base-200 cursor-pointer transition-colors border-none bg-transparent disabled:opacity-50 disabled:cursor-default"
+            onclick={() => { clip.dismiss(); clip.start(); }}
+            disabled={$clip.stage !== 'idle'}
+            title={$t('chatInput.recordClip')}
+            aria-label={$t('chatInput.recordClip')}
+            tabindex={-1}
+          >
+            <CircleDot class="w-[1.125rem] h-[1.125rem]" />
           </button>
         {/if}
 
