@@ -525,8 +525,12 @@ async fn serve_ui_file(
             let range = if if_range_holds(headers, &etag) { range_header(headers) } else { None };
             let mut r = match serve_app_ui_range(target, range).await {
                 Some(r) => r,
-                None => match fs::read(target).await {
-                    Ok(contents) => Response::new(Body::from(contents)),
+                None => match file_body(target, 0, meta.len()).await {
+                    Ok(body) => {
+                        let mut r = Response::new(body);
+                        set_content_length(&mut r, meta.len());
+                        r
+                    }
                     Err(e) => {
                         warn!(path = %target.display(), error = %e, "failed to read app UI file");
                         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
@@ -666,11 +670,11 @@ fn set_etag(r: &mut Response, no_store: bool, etag: &str) {
 
 /// Answer a `Range` request for an app asset: 206 with just those bytes, or
 /// 416 past the end. None means no range applies; the caller sends the file.
+/// The bytes stream from disk: a range of a 400 MB film is never held whole.
 async fn serve_app_ui_range(target: &std::path::Path, range: Option<&str>) -> Option<Response> {
-    use tokio::io::{AsyncReadExt, AsyncSeekExt};
     let len = fs::metadata(target).await.ok()?.len();
-    let reply = |status: StatusCode, body: Vec<u8>, content_range: String| {
-        let mut r = Response::new(Body::from(body));
+    let reply = |status: StatusCode, body: Body, content_range: String| {
+        let mut r = Response::new(body);
         *r.status_mut() = status;
         let h = r.headers_mut();
         h.insert(header::CONTENT_TYPE, HeaderValue::from_static(mime_from_path(target)));
@@ -682,15 +686,33 @@ async fn serve_app_ui_range(target: &std::path::Path, range: Option<&str>) -> Op
     };
     match byte_range(range, len) {
         ByteRange::Full => None,
-        ByteRange::Unsatisfiable => Some(reply(StatusCode::RANGE_NOT_SATISFIABLE, Vec::new(), format!("bytes */{len}"))),
+        ByteRange::Unsatisfiable => Some(reply(StatusCode::RANGE_NOT_SATISFIABLE, Body::empty(), format!("bytes */{len}"))),
         ByteRange::Partial(start, end) => {
-            let mut file = fs::File::open(target).await.ok()?;
-            file.seek(std::io::SeekFrom::Start(start)).await.ok()?;
-            let mut buf = vec![0u8; (end - start + 1) as usize];
-            file.read_exact(&mut buf).await.ok()?;
-            Some(reply(StatusCode::PARTIAL_CONTENT, buf, format!("bytes {start}-{end}/{len}")))
+            let body = file_body(target, start, end - start + 1).await.ok()?;
+            let mut r = reply(StatusCode::PARTIAL_CONTENT, body, format!("bytes {start}-{end}/{len}"));
+            set_content_length(&mut r, end - start + 1);
+            Some(r)
         }
     }
+}
+
+/// `count` bytes of the file from `start`, streamed from disk a chunk at a
+/// time: an app's models, textures and films are never read whole.
+async fn file_body(target: &std::path::Path, start: u64, count: u64) -> std::io::Result<Body> {
+    use tokio::io::{AsyncReadExt, AsyncSeekExt};
+    let mut file = fs::File::open(target).await?;
+    if start > 0 {
+        file.seek(std::io::SeekFrom::Start(start)).await?;
+    }
+    Ok(Body::from_stream(tokio_util::io::ReaderStream::with_capacity(file.take(count), FILE_CHUNK)))
+}
+
+/// How much of a file is in memory at once while it streams out.
+const FILE_CHUNK: usize = 64 * 1024;
+
+/// A streamed body has no length of its own; the file's is known.
+fn set_content_length(r: &mut Response, len: u64) {
+    r.headers_mut().insert(header::CONTENT_LENGTH, HeaderValue::from(len));
 }
 
 /// Prepend the app-bridge script to served entry HTML (after `<head>` when
@@ -2311,6 +2333,46 @@ mod media_serving_tests {
         assert_eq!(past.headers()[header::CONTENT_RANGE], "bytes */256");
 
         assert!(serve_app_ui_range(&film, None).await.is_none());
+    }
+
+    // A file many chunks long goes out as a stream of chunks, never one
+    // buffer, with its length declared; a range deep inside it is exact.
+    #[tokio::test]
+    async fn a_large_file_streams_in_chunks() {
+        use futures::StreamExt;
+        let dir = tempfile::tempdir().unwrap();
+        let model = dir.path().join("world.glb");
+        let len = FILE_CHUNK * 40 + 123;
+        let bytes: Vec<u8> = (0..len).map(|i| (i % 251) as u8).collect();
+        std::fs::write(&model, &bytes).unwrap();
+
+        let resp = serve_ui_file(&model, &HeaderMap::new(), None, false, None).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(resp.headers()[header::CONTENT_LENGTH], len.to_string().as_str());
+        let mut stream = resp.into_body().into_data_stream();
+        let (mut got, mut chunks, mut largest) = (Vec::new(), 0, 0);
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.unwrap();
+            largest = largest.max(chunk.len());
+            chunks += 1;
+            got.extend_from_slice(&chunk);
+        }
+        assert!(chunks > 40, "{chunks} chunks");
+        assert!(largest <= FILE_CHUNK, "a chunk of {largest} bytes");
+        assert_eq!(got, bytes);
+
+        let (start, end) = (FILE_CHUNK * 30 + 7, FILE_CHUNK * 33 + 9);
+        let part = serve_ui_file(&model, &{
+            let mut h = HeaderMap::new();
+            h.insert(header::RANGE, HeaderValue::from_str(&format!("bytes={start}-{end}")).unwrap());
+            h
+        }, None, false, None)
+        .await;
+        assert_eq!(part.status(), StatusCode::PARTIAL_CONTENT);
+        assert_eq!(part.headers()[header::CONTENT_LENGTH], (end - start + 1).to_string().as_str());
+        assert_eq!(part.headers()[header::CONTENT_RANGE], format!("bytes {start}-{end}/{len}").as_str());
+        let body = axum::body::to_bytes(part.into_body(), len).await.unwrap();
+        assert_eq!(body.as_ref(), &bytes[start..=end]);
     }
 }
 
