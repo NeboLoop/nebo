@@ -30,7 +30,7 @@
 //! There is no per-call state block and no stream reminder: everything the
 //! model reads is the system prompt or a stored row.
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use ai::{ChatRequest, RequestTrace, StreamEvent};
@@ -228,6 +228,7 @@ struct RoundCarry {
     plan_touch: Option<(usize, String)>,
     edits_since_check: usize,
     last_desktop_act: Option<String>,
+    failures: HashMap<u64, usize>,
 }
 
 /// Why the loop is taking its next step.
@@ -1656,6 +1657,25 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
             tool_calls.clear();
             block_order.retain(|b| !matches!(b, Block::Tool(_)));
         }
+        // The output cap cut the reply inside its last call: that call's
+        // arguments are whatever arrived before the cut, so no call in the
+        // reply is run or stored, and the next step is told it was cut and
+        // to send the content in smaller pieces. Run as it came, a cut call
+        // fails on a field the model never left out (live 2026-10-03: a
+        // 34 KB website cut at the gateway's 8,192 output tokens; the model
+        // read "`content` is missing" and sent the same call again). The
+        // cap ladder below still escalates, but a cap the gateway holds
+        // lower never lets the escalation through, so the words carry it.
+        let cut_call = tool_calls
+            .last()
+            .filter(|_| model_call::hit_output_limit(stop.as_deref()) && !provider.handles_tools())
+            .map(|tc| tc.name.clone());
+        if let Some(tool) = &cut_call {
+            warn!(session_id = sid, tool = %tool, "the output cap cut the reply inside a call: no call in it runs");
+            tool_calls.clear();
+            block_order.retain(|b| !matches!(b, Block::Tool(_)));
+            st.reminders.add(&TurnEvent::CutCall(tool.clone()));
+        }
         // A call the reply wrote out as text was cut there and never ran:
         // the next step is told so, and makes it as a call.
         let text_call = text_call.filter(|_| tool_calls.is_empty());
@@ -1690,7 +1710,7 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
             }
         }
 
-        // No tool calls. The output cap cut the reply off: retry at the
+        // No tool calls ran. The output cap cut the reply off: retry at the
         // escalated cap, then continue in place.
         match model_call::output_cutoff(&mut st.call, stop.as_deref(), st.step as usize, sid) {
             Some(model_call::StepRetry::Same) => {
@@ -1698,11 +1718,23 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
                 continue;
             }
             Some(model_call::StepRetry::Resume) => {
-                st.reminders.add(&TurnEvent::CutoffResume);
+                // A cut call was told as one: there is no thought to pick
+                // up mid-way.
+                if cut_call.is_none() {
+                    st.reminders.add(&TurnEvent::CutoffResume);
+                }
                 st.transition = Transition::CutoffResume {
                     attempt: st.call.output_recovery_attempts as u8,
                 };
                 continue;
+            }
+            // Every rung spent and the reply still cut inside a call: the
+            // owner hears why the work stopped, not "an empty reply".
+            None if cut_call.is_some() => {
+                let notice = "This stopped because each try was longer than the model can write in one reply. \
+                              Ask for it in smaller parts.";
+                let _ = cx.tx.send(StreamEvent::error(notice)).await;
+                return TurnExit::ProviderFailed("the reply kept passing the output limit".into());
             }
             None => {}
         }
@@ -2290,6 +2322,7 @@ async fn tool_round(
             plan_touch: &mut carry.plan_touch,
             edits_since_check: &mut carry.edits_since_check,
             last_desktop_act: &mut carry.last_desktop_act,
+            failures: &mut carry.failures,
         },
         executor,
         tool_calls,
@@ -2641,6 +2674,9 @@ mod tests {
         NarratedCall(&'static str, &'static str, serde_json::Value),
         /// Text the output cap cut off.
         Cut(&'static str),
+        /// A call to this tool the output cap cut off inside its arguments,
+        /// with what of its input arrived.
+        CutCall(&'static str, serde_json::Value),
         /// A dropped connection.
         Transient,
         /// The provider says the request is over the window.
@@ -2860,6 +2896,10 @@ mod tests {
                 None,
             ),
             Step::Cut(text) => (vec![StreamEvent::text(text)], Some("max_tokens")),
+            Step::CutCall(name, input) => (
+                vec![StreamEvent::tool_call(ai::ToolCall { id: format!("call-{}", uuid::Uuid::new_v4()), name: name.into(), input })],
+                Some("length"),
+            ),
             Step::Text(text, call) => {
                 let chars: Vec<char> = text.chars().collect();
                 let mut list: Vec<StreamEvent> = chars.chunks(4).map(|c| StreamEvent::text(c.iter().collect::<String>())).collect();
@@ -2934,6 +2974,34 @@ mod tests {
             _input: serde_json::Value,
         ) -> Pin<Box<dyn Future<Output = tools::ToolResult> + Send + 'a>> {
             Box::pin(async move { tools::ToolResult::ok(format!("{} ran", self.name)) })
+        }
+    }
+
+    /// A tool that refuses every call the same way.
+    struct Refusing {
+        name: &'static str,
+        error: &'static str,
+    }
+
+    impl tools::registry::DynTool for Refusing {
+        fn name(&self) -> &str {
+            self.name
+        }
+        fn description(&self) -> String {
+            format!("{} things", self.name)
+        }
+        fn schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object", "properties": {"path": {"type": "string"}}})
+        }
+        fn should_defer(&self) -> bool {
+            false
+        }
+        fn execute_dyn<'a>(
+            &'a self,
+            _ctx: &'a tools::ToolContext,
+            _input: serde_json::Value,
+        ) -> Pin<Box<dyn Future<Output = tools::ToolResult> + Send + 'a>> {
+            Box::pin(async move { tools::ToolResult::error(self.error) })
         }
     }
 
@@ -3581,6 +3649,59 @@ mod tests {
         let resumes = |c: &ChatRequest| c.messages.iter().filter(|m| m.content.contains(&resume.text)).count();
         assert_eq!((resumes(&calls[1]), resumes(&calls[2])), (0, 1), "one resume row, after the second cut");
         assert_eq!(kinds(&stored(&h)).iter().filter(|k| *k == "cutoff_resume").count(), 1);
+    }
+
+    /// The output cap cuts the reply inside a call (live 2026-10-03: a
+    /// 34 KB website cut at 8,192 output tokens arrived as a write with a
+    /// path and no content). The call does not run, the next step is told
+    /// it was cut and to send the content in smaller pieces, and the cap
+    /// still escalates.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_call_cut_by_the_output_cap_is_told_as_cut_not_run() {
+        let model = Scripted::new(vec![
+            Step::CutCall("writer", serde_json::json!({"path": "/tmp/site.html"})),
+            Step::Say("Writing it in sections."),
+        ]);
+        let h = harness(&model).await;
+        let events = run_turn(&h, owner("Build the website")).await;
+        assert_eq!(exit_of(&events), "text_response");
+        assert!(stored(&h).iter().all(|m| m.role != "tool"), "the cut call never ran");
+        let calls = model.calls();
+        assert_eq!(calls.len(), 2);
+        assert!(calls[1].max_tokens > calls[0].max_tokens, "the cut escalates the cap");
+        let told = events::attachment_for(&TurnEvent::CutCall("writer".into())).unwrap();
+        assert!(texts(&calls[1]).iter().any(|t| t.contains(&told.text)), "the next step hears the call was cut");
+        assert!(told.text.contains("output length limit") && told.text.contains("smaller pieces"), "{}", told.text);
+        assert!(!texts(&calls[1]).iter().any(|t| t.contains("Resume directly")), "a cut call is not resumed as text");
+    }
+
+    /// The same call failing the same way stops the turn on its third time
+    /// (live 2026-10-03: a write with a path and no content, answered
+    /// "`content` is missing" 22 times in a row while the owner heard
+    /// nothing). The model reads to change course; the owner reads what is
+    /// stuck, with no tool or path in it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_same_call_failing_the_same_way_stops_the_turn() {
+        let input = serde_json::json!({"path": "/Users/o/Library/Application Support/Nebo/files/i-like-to-ride.html"});
+        let model = Scripted::new((0..6).map(|_| Step::Call("write_file", input.clone())).chain([Step::Say("Done.")]).collect());
+        let refusing = Refusing {
+            name: "write_file",
+            error: "<call_error>Invalid input for write_file:\nThe required parameter `content` is missing</call_error>",
+        };
+        let h = harness_with(&model, vec![Box::new(refusing)]).await;
+        let events = run_turn(&h, owner("Build the website")).await;
+        assert_eq!(exit_of(&events), "terminal_tool_error");
+        let steps = model.calls().iter().filter(|c| c.tools.iter().any(|t| t.name == "write_file")).count();
+        assert_eq!(steps, 3, "no fourth try");
+        let results: Vec<String> =
+            stored(&h).iter().filter(|m| m.role == "tool").map(|m| m.tool_results.clone().unwrap_or_default()).collect();
+        assert_eq!(results.len(), 3, "{results:#?}");
+        assert!(!results[1].contains("different approach"), "two failures are not yet stuck");
+        assert!(results[2].contains("try a different approach"), "the model is told to change course: {}", results[2]);
+        let notice: String =
+            events.iter().filter(|e| e.event_type == ai::StreamEventType::ControlNotice).map(|e| e.text.clone()).collect();
+        assert_eq!(notice, tool_round::STUCK_NOTICE);
+        assert!(!notice.contains("write_file") && !notice.contains('/'), "plain words: {notice}");
     }
 
     /// The owner speaks while a tool round runs: the next step's call
