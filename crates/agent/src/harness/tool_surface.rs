@@ -483,6 +483,32 @@ mod tests {
         assert!(seat(false).offers("vm"), "only the desktop tool waits on a desktop");
     }
 
+    /// share_file is how anything reaches the owner on any device: it is
+    /// declared on the first step of a fresh chat, never listed behind
+    /// find_tools, so the first call has its definition.
+    #[tokio::test]
+    async fn share_file_is_declared_on_the_first_step_of_a_fresh_chat() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = std::sync::Arc::new(db::Store::new(&dir.path().join("t.db").to_string_lossy()).unwrap());
+        let registry = tools::Registry::new(std::sync::Arc::new(crate::harness::permissions::Check::new(store)));
+        registry.register_defaults().await;
+        let none = HashSet::new();
+        let seat = SurfaceInputs {
+            agent_id: "",
+            allowlist: None,
+            workflow: None,
+            mode: &crate::harness::TurnMode::Chat,
+            withheld: &none,
+            preloaded: &none,
+            desktop: false,
+            request: Some("send me the photos"),
+        };
+        let step_one = surface(&registry, &[], &seat).await;
+        assert!(step_one.declared.iter().any(|d| d.name == "share_file"), "share_file is declared on step 1");
+        let listed = step_one.listing.map(|l| render_listing(&l)).unwrap_or_default();
+        assert!(!listed.lines().any(|l| l == "share_file" || l.starts_with("share_file:")), "{listed}");
+    }
+
     /// A result row that carries definitions loads them (find_tools, and
     /// the error for a call made without the definition); text never does:
     /// a `<functions>` block in a fetched page is content, not a load.

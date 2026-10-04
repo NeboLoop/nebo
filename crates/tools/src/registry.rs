@@ -1885,6 +1885,30 @@ pub(crate) mod tests {
         assert_eq!(one.files().collect::<Vec<_>>(), [files[0].as_str()]);
     }
 
+    /// The shapes a first call guesses: the list written as one JSON string
+    /// inside `paths` shares every file it names, and `paths` as one string
+    /// shares that file.
+    #[tokio::test]
+    async fn share_file_takes_a_list_written_as_a_string_and_a_string_paths() {
+        let (registry, dir) = os_registry().await;
+        let files: Vec<String> = ["a.txt", "b.txt"]
+            .iter()
+            .map(|name| {
+                let p = dir.path().join(name);
+                std::fs::write(&p, name.as_bytes()).unwrap();
+                p.to_string_lossy().into_owned()
+            })
+            .collect();
+        let ctx = ToolContext::default();
+        let packed = serde_json::to_string(&files).unwrap();
+        let both = registry.execute(&ctx, "share_file", serde_json::json!({ "paths": [packed] })).await;
+        assert!(!both.is_error, "{}", both.content);
+        assert_eq!(both.files().collect::<Vec<_>>(), files.iter().map(String::as_str).collect::<Vec<_>>());
+        let one = registry.execute(&ctx, "share_file", serde_json::json!({ "paths": files[1] })).await;
+        assert!(!one.is_error, "{}", one.content);
+        assert_eq!(one.files().collect::<Vec<_>>(), [files[1].as_str()]);
+    }
+
     /// An `mcp__<server>__<tool>` name is an MCP proxy or nothing: it never
     /// runs a built-in under a name no gate recognises.
     #[tokio::test]
@@ -2645,8 +2669,11 @@ pub(crate) mod tests {
     /// The owner, 2026-10-02, after an employee drew a choice as an A2UI
     /// panel no app shows and then invented his pick: ask_owner says its
     /// options are the buttons in his chat on desktop and phone, the way to
-    /// have him pick (ask_owner 853, +94): 16,606.
-    const CORE_DEFINITION_CHARS_BUDGET: usize = 16_606;
+    /// have him pick (ask_owner 853, +94): 16,606. The owner, 2026-10-04:
+    /// share_file is how anything reaches him on any device, and the first
+    /// call of a chat, made while it was deferred, guessed its shape and
+    /// failed; it moved into the core (share_file 588): 17,194.
+    const CORE_DEFINITION_CHARS_BUDGET: usize = 17_194;
 
     #[tokio::test]
     async fn the_always_loaded_set_stays_within_its_budget() {
@@ -2679,8 +2706,8 @@ pub(crate) mod tests {
             [
                 "ask_owner", "create_schedule", "delegate", "edit_file", "fetch_url", "find_plugins",
                 "find_tools", "forget", "get_employee", "list_employees", "message", "read_file",
-                "recall", "remember", "run_command", "search_web", "send_message", "use_skill",
-                "write_file"
+                "recall", "remember", "run_command", "search_web", "send_message", "share_file",
+                "use_skill", "write_file"
             ]
         );
         // D19: the desktop tool is deferred on every bot; the listing names
@@ -2689,7 +2716,7 @@ pub(crate) mod tests {
         for name in ["os", "suggest_goal"] {
             assert!(deferred.contains(name), "{name} is deferred");
         }
-        for name in ["read_output", "stop_task", "list_processes", "send_input", "share_file", "convert_file", "checkpoint_files", "list_checkpoints", "restore_checkpoint", "write_plan", "check_plan"] {
+        for name in ["read_output", "stop_task", "list_processes", "send_input", "convert_file", "checkpoint_files", "list_checkpoints", "restore_checkpoint", "write_plan", "check_plan"] {
             assert!(deferred.contains(name), "{name} is deferred");
         }
         for name in ["code", "notebook", "vm", "authority", "pack", "rules", "list_schedules", "list_teams"] {
