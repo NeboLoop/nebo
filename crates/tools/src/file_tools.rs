@@ -1,5 +1,5 @@
-//! The file tools: `read_file`, `edit_file`, `write_file` (always loaded)
-//! and the deferred `share_file`, `convert_file`, `checkpoint_files`,
+//! The file tools: `read_file`, `edit_file`, `write_file`, `share_file`
+//! (always loaded) and the deferred `convert_file`, `checkpoint_files`,
 //! `list_checkpoints`, `restore_checkpoint`, `write_plan` and `check_plan`.
 //! Each is one job with a flat schema over the file handlers in
 //! `file_tool.rs`; the command tools (`command_tools.rs`) share the same
@@ -634,6 +634,19 @@ fn share_paths(input: &Value) -> Vec<&str> {
     paths
 }
 
+/// One named path, or the paths a string holding a JSON list of strings
+/// names (`"[\"/a.jpg\",\"/b.jpg\"]"`).
+fn unpack_path_list(item: Value) -> Vec<Value> {
+    if let Some(text) = item.as_str().map(str::trim).filter(|t| t.starts_with('['))
+        && let Ok(Value::Array(inner)) = serde_json::from_str::<Value>(text)
+        && !inner.is_empty()
+        && inner.iter().all(Value::is_string)
+    {
+        return inner;
+    }
+    vec![item]
+}
+
 /// What a share names, for its activity line: the file, or how many.
 fn shared_names(input: &Value) -> String {
     match share_paths(input).as_slice() {
@@ -673,6 +686,8 @@ impl DynTool for ShareFileTool {
     /// `paths` is the one documented way. The older `path` (one path or a
     /// list, and `file_path`, the name models also use) is taken into it,
     /// so old prompts and tests still share; a lone string is a list of one.
+    /// A list written as one JSON string inside the list
+    /// (`["[\"/a\",\"/b\"]"]`, a guess at the shape) is its paths.
     fn normalize_input(&self, mut input: Value) -> Value {
         let Some(fields) = input.as_object_mut() else {
             return input;
@@ -680,8 +695,8 @@ impl DynTool for ShareFileTool {
         let mut list: Option<Vec<Value>> = None;
         for key in ["paths", "path", "file_path"] {
             match fields.remove(key) {
-                Some(Value::Array(items)) => list.get_or_insert_default().extend(items),
-                Some(one) => list.get_or_insert_default().push(one),
+                Some(Value::Array(items)) => list.get_or_insert_default().extend(items.into_iter().flat_map(unpack_path_list)),
+                Some(one) => list.get_or_insert_default().extend(unpack_path_list(one)),
                 None => {}
             }
         }
@@ -693,6 +708,12 @@ impl DynTool for ShareFileTool {
 
     fn search_hint(&self) -> &str {
         "send the owner a file download card"
+    }
+
+    /// Core: it is how anything reaches the owner on any device, and a
+    /// first call made before its definition was sent guessed the shape.
+    fn should_defer(&self) -> bool {
+        false
     }
 
     /// The folder every named file is in: the file itself for one, and the
@@ -1289,6 +1310,10 @@ mod tests {
         assert_eq!(share.normalize_input(json!({"path": [a, b]})), json!({"paths": [a, b]}));
         assert_eq!(share.normalize_input(json!({"path": a})), json!({"paths": [a]}));
         assert_eq!(share.normalize_input(json!({"file_path": a})), json!({"paths": [a]}));
+        // A first call's guess: the list as one JSON string in the list.
+        let packed = serde_json::to_string(&[&a, &b]).unwrap();
+        assert_eq!(share.normalize_input(json!({"paths": [packed]})), json!({"paths": [a, b]}));
+        assert_eq!(share.normalize_input(json!({"paths": a})), json!({"paths": [a]}));
         let old = share.execute_dyn(&ctx(), json!({"path": [a, b]})).await;
         assert_eq!(old.files().collect::<Vec<_>>(), vec![a.as_str(), b.as_str()]);
         let one = share.execute_dyn(&ctx(), json!({"path": a})).await;
