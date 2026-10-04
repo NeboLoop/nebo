@@ -204,8 +204,9 @@ impl Loader {
             return None;
         }
 
-        let count = manifest.skills.len();
         let mut loaded = manifest.into_skill_map();
+        loaded.retain(|_, s| !s.base_dir.as_deref().is_some_and(superseded));
+        let count = loaded.len();
 
         // Re-inject license keys for sealed skills (keys are runtime-only, not in
         // manifest), resolving the artifact id the way the cold scan does.
@@ -1449,11 +1450,10 @@ fn load_skills_from_nested_dir(dir: &Path, source: SkillSource) -> Vec<Skill> {
     // Phase 1: collect all skill directories (fast single-pass walk)
     let mut skill_dirs = Vec::new();
     napp::reader::walk_for_marker(dir, "SKILL.md", &mut |skill_dir| {
-        if !is_quarantined(skill_dir) {
+        if !is_quarantined(skill_dir) && !superseded(skill_dir) {
             skill_dirs.push(skill_dir.to_path_buf());
         }
     });
-    let skill_dirs = newest_versions(skill_dirs);
 
     // Phase 2: parse SKILL.md files in parallel
     skill_dirs
@@ -1493,28 +1493,21 @@ fn load_skills_from_nested_dir(dir: &Path, source: SkillSource) -> Vec<Skill> {
         .collect()
 }
 
-/// An update extracts beside the version it replaces (`<slug>/0.1.3`, then
-/// `<slug>/0.1.4`), and the old folder stays. Only the newest version of each
-/// skill is loaded, so an older copy never overrides its update (live: App
-/// Studio 0.1.0 kept loading after 0.1.4 retired it). A folder not named for
-/// a version is kept as it is.
-fn newest_versions(dirs: Vec<PathBuf>) -> Vec<PathBuf> {
-    let mut newest: HashMap<PathBuf, (semver::Version, PathBuf)> = HashMap::new();
-    let mut out = Vec::new();
-    for dir in dirs {
-        let version = dir.file_name().and_then(|n| n.to_str()).and_then(|n| semver::Version::parse(n).ok());
-        match (version, dir.parent()) {
-            (Some(v), Some(parent)) => match newest.get(parent) {
-                Some((seen, _)) if *seen >= v => {}
-                _ => {
-                    newest.insert(parent.to_path_buf(), (v, dir));
-                }
-            },
-            _ => out.push(dir),
-        }
-    }
-    out.extend(newest.into_values().map(|(_, dir)| dir));
-    out
+/// Whether `dir` is an older version of a skill: an update extracts beside
+/// the version it replaces (`<slug>/0.1.3`, then `<slug>/0.1.4`) and the old
+/// folder stays, so a version folder with a newer version folder beside it
+/// is never loaded, from a scan or from the warm-start index (live: App
+/// Studio 0.1.3 kept loading after 0.1.4 retired it). A folder not named for
+/// a version is never superseded.
+pub fn superseded(dir: &Path) -> bool {
+    let version_of = |p: &Path| p.file_name().and_then(|n| n.to_str()).and_then(|n| semver::Version::parse(n).ok());
+    let (Some(mine), Some(parent)) = (version_of(dir), dir.parent()) else {
+        return false;
+    };
+    std::fs::read_dir(parent).into_iter().flatten().flatten().any(|sibling| {
+        let path = sibling.path();
+        path.join("SKILL.md").exists() && version_of(&path).is_some_and(|v| v > mine)
+    })
 }
 
 /// Load skills from sealed .napp files (paid content, decrypted in memory).
