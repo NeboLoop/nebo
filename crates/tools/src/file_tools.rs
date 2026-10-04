@@ -617,14 +617,40 @@ impl DynTool for WriteFileTool {
 
 pub struct ShareFileTool(pub Arc<Machine>);
 
+/// The files a `share_file` call names, in order and each once: `path` is
+/// one path or a list of them.
+fn share_paths(input: &Value) -> Vec<&str> {
+    let named: Vec<&str> = match input.get("path") {
+        Some(Value::Array(items)) => items.iter().filter_map(Value::as_str).collect(),
+        Some(Value::String(one)) => vec![one.as_str()],
+        _ => Vec::new(),
+    };
+    let mut paths: Vec<&str> = Vec::new();
+    for p in named.into_iter().map(str::trim).filter(|p| !p.is_empty()) {
+        if !paths.contains(&p) {
+            paths.push(p);
+        }
+    }
+    paths
+}
+
+/// What a share names, for its activity line: the file, or how many.
+fn shared_names(input: &Value) -> String {
+    match share_paths(input).as_slice() {
+        [one] => one.rsplit('/').next().unwrap_or(one).to_string(),
+        many => format!("{} files", many.len()),
+    }
+}
+
 impl DynTool for ShareFileTool {
     fn name(&self) -> &str {
         "share_file"
     }
 
     fn description(&self) -> String {
-        "Shows the owner a file that already exists, as a download card on your reply.\n\
+        "Shows the owner files that already exist, each as its own download card on your reply.\n\
          - Use it for a finished deck, PDF, spreadsheet or any file already on disk.\n\
+         - Sharing several files? Put every path in one call's `path` list, never one call per file.\n\
          - Files you write or convert this turn already show as cards; don't share them again or copy a file to make one."
             .to_string()
     }
@@ -633,7 +659,11 @@ impl DynTool for ShareFileTool {
         json!({
             "type": "object",
             "properties": {
-                "path": { "type": "string", "description": "Absolute path of the file to show." }
+                "path": {
+                    "type": ["string", "array"],
+                    "items": { "type": "string" },
+                    "description": "Absolute path of the file to show, or a list of them to show several at once."
+                }
             },
             "required": ["path"]
         })
@@ -643,8 +673,20 @@ impl DynTool for ShareFileTool {
         "send the owner a file download card"
     }
 
+    /// The folder every named file is in: the file itself for one, and the
+    /// deepest folder holding them all for several, so a folder rule covers
+    /// the call only when it covers every file.
     fn rule_field(&self, input: &Value) -> Option<RuleField> {
-        path_field(input)
+        let mut paths = share_paths(input).into_iter().map(|p| std::path::PathBuf::from(crate::file_tool::expand_path(p)));
+        let mut common = paths.next()?;
+        for p in paths {
+            while !p.starts_with(&common) {
+                if !common.pop() {
+                    break;
+                }
+            }
+        }
+        Some(RuleField::Folder(common))
     }
 
     fn capability(&self, _input: &Value) -> Option<&'static str> {
@@ -652,21 +694,47 @@ impl DynTool for ShareFileTool {
     }
 
     fn activity(&self, input: &Value) -> String {
-        format!("sharing {}", file_name(input))
+        format!("sharing {}", shared_names(input))
     }
 
     fn outcome(&self, input: &Value) -> String {
-        format!("Shared {}", file_name(input))
+        format!("Shared {}", shared_names(input))
     }
 
     fn emits_image(&self, _input: &Value) -> bool {
         true
     }
 
+    /// Each file is shared on its own: one that can't be shared is named
+    /// with its reason, and the others still go out, each its own card.
     fn execute_dyn<'a>(&'a self, ctx: &'a ToolContext, input: Value) -> Fut<'a> {
         Box::pin(async move {
-            let call = json!({"action": "share", "path": input.get("path").cloned().unwrap_or_default()});
-            self.0.file.execute(ctx, call)
+            let paths = share_paths(&input);
+            if paths.len() <= 1 {
+                let path = paths.first().copied().unwrap_or_default();
+                return self.0.file.execute(ctx, json!({"action": "share", "path": path}));
+            }
+            let mut shared = ToolResult::ok("");
+            let mut lines = Vec::new();
+            let mut failed = 0;
+            for path in &paths {
+                let one = self.0.file.execute(ctx, json!({"action": "share", "path": path}));
+                match one.image_url {
+                    Some(file) if !one.is_error => {
+                        lines.push(one.content);
+                        shared = shared.with_image_url(file);
+                    }
+                    _ => {
+                        failed += 1;
+                        let name = path.rsplit('/').next().unwrap_or(path);
+                        lines.push(format!("{name} was not shared: {}", one.content.trim_start_matches("Error: ")));
+                    }
+                }
+            }
+            shared.content = lines.join("\n");
+            // Nothing went out: the call failed, and says why for each file.
+            shared.is_error = failed == paths.len();
+            shared
         })
     }
 }
@@ -1164,6 +1232,68 @@ mod tests {
         assert!(!e.is_error && !e.content.contains("WARNING"), "{}", e.content);
         let r = ReadFileTool(m).execute_dyn(&c, json!({"path": path})).await;
         assert!(!r.is_error && r.content.contains("gamma"), "{}", r.content);
+    }
+
+    /// Several files in one call: each is its own card, in order, and the
+    /// single-path form still works.
+    #[tokio::test]
+    async fn a_share_of_two_files_gives_two_cards() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("cover.png");
+        let b = dir.path().join("thumb.txt");
+        std::fs::write(&a, b"\x89PNG\r\n\x1a\n0000").unwrap();
+        std::fs::write(&b, b"thumbnail notes").unwrap();
+        let (a, b) = (a.to_string_lossy().into_owned(), b.to_string_lossy().into_owned());
+        let share = ShareFileTool(machine());
+
+        let r = share.execute_dyn(&ctx(), json!({"path": [a, b]})).await;
+        assert!(!r.is_error, "{}", r.content);
+        assert_eq!(r.files().collect::<Vec<_>>(), vec![a.as_str(), b.as_str()]);
+        assert!(r.content.contains("cover.png") && r.content.contains("thumb.txt"), "{}", r.content);
+        assert_eq!(share.activity(&json!({"path": [a, b]})), "sharing 2 files");
+
+        let one = share.execute_dyn(&ctx(), json!({"path": a})).await;
+        assert!(!one.is_error, "{}", one.content);
+        assert_eq!(one.files().collect::<Vec<_>>(), vec![a.as_str()]);
+        assert_eq!(share.outcome(&json!({"path": a})), "Shared cover.png");
+    }
+
+    /// One path that can't be shared is named with its reason, and the
+    /// others still go out; when none can, the call fails.
+    #[tokio::test]
+    async fn one_bad_path_still_shares_the_other() {
+        let dir = tempfile::tempdir().unwrap();
+        let good = dir.path().join("report.txt");
+        std::fs::write(&good, b"the report").unwrap();
+        let good = good.to_string_lossy().into_owned();
+        let missing = dir.path().join("missing.png").to_string_lossy().into_owned();
+        let share = ShareFileTool(machine());
+
+        let r = share.execute_dyn(&ctx(), json!({"path": [missing, good]})).await;
+        assert!(!r.is_error, "the good file went out: {}", r.content);
+        assert_eq!(r.files().collect::<Vec<_>>(), vec![good.as_str()]);
+        assert!(r.content.contains("missing.png was not shared") && r.content.contains("not found"), "{}", r.content);
+        assert!(r.content.contains("Shared report.txt"), "{}", r.content);
+
+        let none = share.execute_dyn(&ctx(), json!({"path": [missing, dir.path().join("gone.pdf")]})).await;
+        assert!(none.is_error && none.files().next().is_none(), "{}", none.content);
+        assert!(none.content.contains("missing.png") && none.content.contains("gone.pdf"), "{}", none.content);
+    }
+
+    /// A folder rule covers a share of several files only where it covers
+    /// every one: the call's folder is the one holding them all.
+    #[test]
+    fn a_share_of_several_files_is_matched_on_the_folder_holding_them_all() {
+        let share = ShareFileTool(machine());
+        assert_eq!(share.rule_field(&json!({"path": "/w/a/x.png"})), Some(RuleField::Folder("/w/a/x.png".into())));
+        assert_eq!(
+            share.rule_field(&json!({"path": ["/w/a/x.png", "/w/a/y.png"]})),
+            Some(RuleField::Folder("/w/a".into()))
+        );
+        assert_eq!(
+            share.rule_field(&json!({"path": ["/w/a/x.png", "/w/b/c/y.png"]})),
+            Some(RuleField::Folder("/w".into()))
+        );
     }
 
     /// The checks each tool makes before it runs: a directory is not a file,

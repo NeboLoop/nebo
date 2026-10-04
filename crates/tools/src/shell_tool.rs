@@ -408,7 +408,7 @@ impl ShellTool {
                 return ToolResult { payload: None, need: None, parked_ask: None, taint: Vec::new(), loads: Vec::new(),
                     content: format!("{}\n{}", exit_header(&output.status), result),
                     is_error: true,
-                    image_url: None,
+                    image_url: None, more_files: Vec::new(),
                     http_status: None,
                     terminal: false,
                 };

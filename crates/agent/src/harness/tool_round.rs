@@ -422,7 +422,7 @@ pub(crate) async fn run_tool_round(
         summary_tool_results.push(ToolResult { payload: None, need: None, parked_ask: None, taint: Vec::new(), loads: Vec::new(),
             content: truncate_str(&result.content, 300).to_string(),
             is_error: result.is_error,
-            image_url: None,
+            image_url: None, more_files: Vec::new(),
             http_status: None,
             terminal: result.terminal,
         });
@@ -992,10 +992,17 @@ async fn run_call(
             // The call's wall-clock time rides in the widgets slot so the
             // live timeline and the reloaded one show the same duration; a
             // call parked on the owner names its ask, so the conversation
-            // the run came from can carry the card.
-            widgets: Some(match &result.parked_ask {
-                Some(ask) => serde_json::json!({ "duration_ms": duration_ms, "parked_ask": ask }),
-                None => serde_json::json!({ "duration_ms": duration_ms }),
+            // the run came from can carry the card. The files the call hands
+            // over after `image_url` ride here too, each its own card.
+            widgets: Some({
+                let mut widgets = match &result.parked_ask {
+                    Some(ask) => serde_json::json!({ "duration_ms": duration_ms, "parked_ask": ask }),
+                    None => serde_json::json!({ "duration_ms": duration_ms }),
+                };
+                if !result.more_files.is_empty() {
+                    widgets["more_files"] = serde_json::json!(result.more_files);
+                }
+                widgets
             }),
             provider_metadata: None,
             stop_reason: None,

@@ -1084,6 +1084,44 @@ impl Store {
         Ok(())
     }
 
+    /// The `.shared/<folder>/` folders (`/api/v1/files/.shared/<folder>/<name>`,
+    /// where a file handed to the owner is kept) that anything stored still
+    /// names: a message (its text, cards, calls or results), an outbound
+    /// message waiting to go, or a work version. A folder named nowhere here
+    /// is shown by nothing.
+    pub fn referenced_shared_folders(&self) -> Result<std::collections::HashSet<String>, NeboError> {
+        const MARK: &str = ".shared/";
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT COALESCE(content, '') || ' ' || COALESCE(metadata, '') || ' ' ||
+                        COALESCE(tool_calls, '') || ' ' || COALESCE(tool_results, '')
+                 FROM chat_messages
+                 WHERE instr(content, '.shared') > 0 OR instr(metadata, '.shared') > 0
+                    OR instr(tool_calls, '.shared') > 0 OR instr(tool_results, '.shared') > 0
+                 UNION ALL
+                 SELECT message FROM comm_outbox WHERE instr(message, '.shared') > 0
+                 UNION ALL
+                 SELECT url FROM work_document_versions WHERE instr(url, '.shared') > 0",
+            )
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        let texts = stmt
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        let mut folders = std::collections::HashSet::new();
+        for text in texts {
+            // JSON may spell a slash `\/`.
+            let text = text.map_err(|e| NeboError::Database(e.to_string()))?.replace("\\/", "/");
+            for (at, _) in text.match_indices(MARK) {
+                let folder: String = text[at + MARK.len()..].chars().take_while(|c| *c != '/' && *c != '"' && !c.is_whitespace()).collect();
+                if !folder.is_empty() {
+                    folders.insert(folder);
+                }
+            }
+        }
+        Ok(folders)
+    }
+
     /// The owner's most recently active conversation with the agent — the
     /// secondary-agent counterpart of `get_companion_chat_by_user`, used to
     /// unify inbound loop DMs with the agent's current local conversation.
@@ -1560,6 +1598,34 @@ mod tests {
         store.set_chat_model("c1", Some("janus/nebo-1-pro")).unwrap();
         store.create_chat("c2", "Second").unwrap();
         assert!(store.get_chat("c2").unwrap().unwrap().model.is_none());
+    }
+
+    /// A kept file's folder is referenced while a message shows it, and no
+    /// longer once that message is deleted.
+    #[test]
+    fn a_shared_folder_is_referenced_until_its_message_is_deleted() {
+        let (_dir, store) = store();
+        store.create_chat("c1", "Pictures").unwrap();
+        store.create_chat_message("m1", "c1", "assistant", "Here they are.", None).unwrap();
+        store
+            .attach_artifacts_to_latest_assistant_message(
+                "c1",
+                &[
+                    serde_json::json!("/api/v1/files/.shared/0123456789abcdef/a.png"),
+                    serde_json::json!("/api/v1/files/.shared/fedcba9876543210/b.png"),
+                ],
+            )
+            .unwrap();
+        store.create_chat_message("m2", "c1", "user", "the link was /api/v1/files/.shared/aaaaaaaaaaaaaaaa/c.pdf", None).unwrap();
+
+        let refs = store.referenced_shared_folders().unwrap();
+        for folder in ["0123456789abcdef", "fedcba9876543210", "aaaaaaaaaaaaaaaa"] {
+            assert!(refs.contains(folder), "{folder} in {refs:?}");
+        }
+        store.delete_chat_message("m1").unwrap();
+        let refs = store.referenced_shared_folders().unwrap();
+        assert!(!refs.contains("0123456789abcdef") && !refs.contains("fedcba9876543210"), "{refs:?}");
+        assert!(refs.contains("aaaaaaaaaaaaaaaa"));
     }
 
     fn store() -> (tempfile::TempDir, Store) {

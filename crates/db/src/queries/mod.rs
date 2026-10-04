@@ -10,7 +10,6 @@ mod api_keys;
 mod channel_bindings;
 mod artifact_updates;
 mod auth_profiles;
-mod chat_recaps;
 mod chats;
 mod comm_outbox;
 mod comm_seen;

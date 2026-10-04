@@ -18,7 +18,6 @@ pub mod owner_command;
 pub mod owner_intent;
 pub mod permissions;
 pub mod prompt;
-pub mod recap;
 pub mod reminders;
 pub mod seat;
 pub mod session_gate;
@@ -51,8 +50,6 @@ pub use workflow_turn::{WorkflowMode, WorkflowPark};
 pub struct Outlets {
     /// Chat titles, broadcast and pushed to the loop.
     pub title_sink: Option<Arc<dyn after_turn::ChatTitleSink>>,
-    /// Owner-facing events outside a turn's stream (`turn_recap`).
-    pub broadcast: Option<crate::agent_worker::NotifyFn>,
     /// Where the agreed goal's status, kickoffs and running work are told;
     /// without it no goal is checked.
     pub goal_observer: Option<Arc<dyn goal::GoalObserver>>,
@@ -166,10 +163,6 @@ impl Harness {
 
     pub(crate) fn title_sink(&self) -> Option<Arc<dyn after_turn::ChatTitleSink>> {
         self.outlets.get().and_then(|o| o.title_sink.clone())
-    }
-
-    pub(crate) fn broadcast(&self) -> Option<crate::agent_worker::NotifyFn> {
-        self.outlets.get().and_then(|o| o.broadcast.clone())
     }
 
     pub(crate) fn goal_observer(&self) -> Option<Arc<dyn goal::GoalObserver>> {

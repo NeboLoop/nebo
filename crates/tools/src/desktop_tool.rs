@@ -2649,7 +2649,7 @@ async fn observe(
     ));
 
     Ok(Observed {
-        result: ToolResult { payload: None, need: None, parked_ask: None, taint: Vec::new(), loads: Vec::new(), content: text, is_error: false, image_url: shot.image_url, http_status: None, terminal: false },
+        result: ToolResult { payload: None, need: None, parked_ask: None, taint: Vec::new(), loads: Vec::new(), content: text, is_error: false, image_url: shot.image_url, more_files: Vec::new(), http_status: None, terminal: false },
         snapshot,
     })
 }
@@ -3179,7 +3179,7 @@ fn finalize_capture(bytes: &[u8], mime: &str, dims: Option<(u32, u32)>, summary:
         payload: dims.map(|(w, h)| serde_json::json!({ "kind": "capture", "width": w, "height": h, "path": saved })),
         content,
         is_error: false,
-        image_url: Some(data_uri),
+        image_url: Some(data_uri), more_files: Vec::new(),
         http_status: None,
         terminal: false,
         need: None, parked_ask: None, taint: Vec::new(), loads: Vec::new(),

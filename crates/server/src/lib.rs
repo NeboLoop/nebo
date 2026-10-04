@@ -35,6 +35,7 @@ pub mod routes;
 pub mod run_display;
 pub mod run_registry;
 mod scheduler;
+mod shared_files;
 pub mod wake;
 mod reply_route;
 pub mod layers_update;
@@ -2657,13 +2658,11 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
 
     // Bind the harness's outlets: the chat-title sink (the harness generates
     // and stores titles; this broadcasts them and pushes them to the loop),
-    // owner-facing events outside a turn, and the agreed goal's status,
-    // kickoffs and running work. Set once (CODE_AUDITOR Rule 8).
+    // and the agreed goal's status, kickoffs and running work. Set once
+    // (CODE_AUDITOR Rule 8).
     {
-        let hub = state.hub.clone();
         state.harness.bind(agent::Outlets {
             title_sink: Some(Arc::new(chat_dispatch::TitleBroadcaster::new(state.clone()))),
-            broadcast: Some(Arc::new(move |event: &str, payload: serde_json::Value| hub.broadcast(event, payload))),
             goal_observer: Some(Arc::new(handlers::goal::GoalOutlet::new(state.clone()))),
             answer_thread: Some({
                 let state = state.clone();
@@ -3271,6 +3270,10 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
 
     // Spawn marketplace artifact update checker (6h default, staggered API calls)
     artifact_updates::spawn(state.clone());
+
+    // Files handed to the owner that no message shows any more go
+    // (`shared_files`).
+    shared_files::spawn_sweep(state.store.clone());
 
     // Once per start: turn off what NeboAI withdrew while this bot could
     // not hear it (`revocation::spawn_sweep`).
