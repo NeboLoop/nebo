@@ -3,7 +3,7 @@
 A sidecar is a native program shipped with the app (one binary per platform)
 that the page reaches with `nebo.fetch('/path')`. It is a developer job, not
 something built in a chat: it needs a compiler, a build per platform and a
-publisher account. Most apps never need one.
+publisher account. Many needs are covered without one; check first.
 
 ## What covers it without a sidecar
 

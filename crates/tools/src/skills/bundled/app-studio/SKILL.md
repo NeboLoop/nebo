@@ -67,7 +67,7 @@ looks matter, Design Depth adds the studio method on top.
    are fixed in that same session, in the same files. Never start a second copy.
 9. **Never code around a missing SDK** (no `localStorage` fallback, no guard that
    skips the game). `NeboAppSDK` missing means the script tag is wrong: fix the tag.
-10. **Small files in the fixed layout (Step 3A).** Each file under about 12 KB,
+10. **Small files, starting from the layout in Step 3A.** Each file under about 12 KB,
     one concern per file, at most three files per `update_employee` call. Never
     one big file: it can't be written in one call and every fix rewrites it.
 11. **Never bust the cache by hand** (`?v=2`, renaming files). `app_reload` is the reload.
@@ -192,7 +192,7 @@ one tool. `update_employee` compiles each `.ts`, `.tsx` and `.jsx` file in
 keeps your source in the app folder's `src/` (`src/app.tsx`). The page loads
 the `.js` names.
 
-Use this layout; don't design your own:
+Start from this layout; change it when the app needs to (a game, a 3D scene):
 
 ```
 ui/index.html          the SDK tag and ./app.js, nothing else (Tailwind
@@ -389,8 +389,8 @@ sprites and 3D).
 
 ## A Server of Its Own
 
-Almost no app needs a sidecar (a native server beside the page). Before
-suggesting one, read `references/sidecars.md`.
+Before suggesting a sidecar (a native server beside the page), check the
+table in `references/sidecars.md`: most needs are covered without one.
 
 ## Publish
 
