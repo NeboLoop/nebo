@@ -1290,13 +1290,16 @@ jobs:
           git commit -m "Update nebo to ${{ github.ref_name }}" || echo "No changes"
           git push
 
-  # ─── Update APT repository (cross-repo) ──────────────────────────────
+  # ─── Update APT repository (on the CDN) ─────────────────────────────
+  # Served from Spaces beside the release assets (cdn.neboai.com/apt):
+  # a .deb is ~120 MB and GitHub refuses any file over 100 MB, which is why
+  # the old neboloop/apt repo stopped updating after v0.16.9.
   update-apt:
-    if: ${{ vars.HAS_TAP_TOKEN == 'true' }}
     needs: build-linux
     runs-on: ubuntu-latest
     env:
       HAS_GPG_KEY: ${{ secrets.APT_GPG_PRIVATE_KEY != '' && 'true' || 'false' }}
+      DO_SPACES_KEY_SET: ${{ secrets.DO_SPACES_ACCESS_KEY != '' && 'true' || 'false' }}
     steps:
       - name: Restore Linux artifacts (amd64)
         uses: actions/cache/restore@v4
@@ -1313,13 +1316,6 @@ jobs:
           path: release-artifacts/
           fail-on-cache-miss: true
       - run: cp release-artifacts/*.deb debs/ 2>/dev/null || true; rm -rf release-artifacts
-
-      - name: Checkout apt repo
-        uses: actions/checkout@v4
-        with:
-          repository: neboloop/apt
-          token: ${{ secrets.TAP_GITHUB_TOKEN }}
-          path: apt-repo
 
       - name: Install APT repo tools
         run: sudo apt-get install -y dpkg-dev
@@ -1366,11 +1362,22 @@ jobs:
           gpg --default-key nebo -abs -o apt-repo/dists/stable/Release.gpg apt-repo/dists/stable/Release
           gpg --default-key nebo --clearsign -o apt-repo/dists/stable/InRelease apt-repo/dists/stable/Release
 
-      - name: Push APT repo update
+      - name: Publish APT repository to the CDN
+        if: ${{ env.DO_SPACES_KEY_SET == 'true' }}
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.DO_SPACES_ACCESS_KEY }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.DO_SPACES_SECRET_KEY }}
+          S3_ENDPOINT: https://nyc3.digitaloceanspaces.com
         working-directory: apt-repo
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add -A
-          git commit -m "Update nebo to ${{ github.ref_name }}" || echo "No changes"
-          git push
+          # The packages first, then the indexes that name them, so a client
+          # never reads an index pointing at a .deb not there yet. Indexes
+          # and the key are short-lived on the CDN edge; packages never change.
+          for f in pool/main/*.deb; do
+            aws s3 cp "$f" "s3://neboloop/apt/$f" --endpoint-url "$S3_ENDPOINT" --acl public-read
+          done
+          for f in $(find dists -type f) $(ls key.gpg 2>/dev/null); do
+            aws s3 cp "$f" "s3://neboloop/apt/$f" --endpoint-url "$S3_ENDPOINT" --acl public-read \
+              --cache-control "public, max-age=60"
+          done
+          echo "APT repository published: https://cdn.neboai.com/apt"
