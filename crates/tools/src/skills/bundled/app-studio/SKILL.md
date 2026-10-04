@@ -246,8 +246,7 @@ ready. Open it from your workforce."
 
 ## Your App's Data
 
-The page's `storage` and the employee's `app_data` tool are one store: same
-keys, same values. What the owner tells one, the other sees.
+The page's `storage` and the employee's `app_data` are one store.
 
 ```
 app_data(action: "set",   key: "contacts", value: [{ "name": "John Smith", "phone": "+1 555 0100" }])
@@ -262,12 +261,13 @@ app_data(action: "delete", key: "draft")
 
 - Only the app's own employee has the tool, for its own app. A coworker asks it.
 - After a `set` or `delete` every open view hears it: `storage.onChange(() => load())`.
-- One key holding a list (`contacts`), or one key per record (`contact:<id>`).
-  Write the keys into the employee's instructions.
+- One key holding a list, or one key per record (`contact:<id>`); name the
+  keys in the employee's instructions.
 - `value` is JSON itself (an object, a list), never JSON inside a string.
   JSON-looking text that does not parse is refused: "Nothing was saved".
-- `path` (dotted, list items by index) sets or gets one spot. Replies cap
-  near 8k tokens: save a small skeleton, then fill one piece per call.
+- `path` (dotted, list items by index) sets or gets one spot; `append`
+  adds a section to text or an item to a list. Big work: a skeleton first,
+  then one piece per call.
 - `replace` changes one exact piece of text (a heading in a page).
   `find` must match one place, or nothing changes.
 
