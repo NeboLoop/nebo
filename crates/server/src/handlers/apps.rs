@@ -592,14 +592,21 @@ fn app_file_cache_control(target: &StdPath, developer: bool) -> &'static str {
 /// hand-made name ("hero-section2", "map-1stfloor", "shot-20260930") does
 /// not. A hashed file caught by mistake would be kept for a year, so the
 /// rule leans the other way: a real hash it misses is only asked about on
-/// each open, like any other file.
+/// each open, like any other file. A name with dots before the hash (a
+/// package saved into the app, `vendor/react@18.3.1-k4p2x7m0q3.js`) is read
+/// up to its last dot when the first dot gives no hash.
 fn is_content_hashed(target: &StdPath) -> bool {
     let Some(name) = target.file_name().and_then(|n| n.to_str()) else {
         return false;
     };
-    let Some((stem, ext)) = name.split_once('.') else {
-        return false;
-    };
+    [name.split_once('.'), name.rsplit_once('.')]
+        .into_iter()
+        .flatten()
+        .any(|(stem, ext)| stem_is_hashed(stem, ext))
+}
+
+/// `<base>-<hash>` before the extension `ext`, by [`is_content_hashed`]'s rule.
+fn stem_is_hashed(stem: &str, ext: &str) -> bool {
     let Some((base, hash)) = stem.rsplit_once('-') else {
         return false;
     };
@@ -2348,13 +2355,13 @@ mod app_file_caching_tests {
     #[test]
     fn content_hashed_names_are_told_from_hand_made_ones() {
         let hashed = |n: &str| is_content_hashed(StdPath::new(n));
-        for name in ["main-0a8ksftt.js", "index-zh3p2264.js", "chunk-5JFTZ4CW.js", "app-a1b2c3d4.css", "assets/tex-9f8e7d6c5b4a.ktx2", "main-0a8ksftt.min.js"] {
+        for name in ["main-0a8ksftt.js", "index-zh3p2264.js", "chunk-5JFTZ4CW.js", "app-a1b2c3d4.css", "assets/tex-9f8e7d6c5b4a.ktx2", "main-0a8ksftt.min.js", "vendor/react@18.3.1-k4p2x7m0q3.js"] {
             assert!(hashed(name), "{name} is hashed");
         }
         for name in [
             "index.html", "main.js", "assets/hero.mp4", "hero-section2.png", "map-1stfloor.png",
             "shot-20260930.png", "sprite-walking01.png", "bg-heroImage.png", "a1b2c3d4.js", "-0a8ksftt.js", "main-0a8ksftt",
-            "main-0a8k.js",
+            "main-0a8k.js", "jquery-3.7.1.min.js", "react@18.3.1.js",
         ] {
             assert!(!hashed(name), "{name} is not hashed");
         }
