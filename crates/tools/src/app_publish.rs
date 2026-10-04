@@ -52,7 +52,7 @@ fn is_app(agent: &db::models::Agent) -> bool {
 /// The app a pack tool works on ([`resolve_app`]), when the caller may
 /// work on it (`app_dev::may_work_on`: itself, when it is one of the
 /// owner's own apps, or any app under App Developer mode).
-fn permitted_app(
+pub(crate) fn permitted_app(
     store: &db::Store,
     ctx: &ToolContext,
     named: Option<&str>,
@@ -1168,75 +1168,44 @@ impl AppScreenshotTool {
             Ok(a) => a,
             Err(e) => return ToolResult::error(e),
         };
-        if ui_dir(&app).is_none() {
-            return ToolResult::error(format!(
-                "{} has no page to show yet: its ui folder is empty or missing.",
-                app.name
-            ));
-        }
-        let Some(executor) = self.browser.as_ref().and_then(|m| m.executor()) else {
-            return ToolResult::error(
-                "This bot has no built-in browser, so it can't take a screenshot of the app.",
-            );
+        let page = match page_path(&app, input) {
+            Ok(p) => p,
+            Err(e) => return ToolResult::error(e),
         };
-        if !executor.cdp_available() {
-            return ToolResult::error(
-                "This bot has no built-in browser, so it can't take a screenshot of the app.",
-            );
-        }
-        let window = app
-            .app_window_config
-            .as_deref()
-            .and_then(|w| serde_json::from_str::<Value>(w).ok());
-        let dim = |k: &str, fallback: u64| {
-            input[k]
-                .as_u64()
-                .or_else(|| window.as_ref().and_then(|w| w[k].as_u64()))
-                .unwrap_or(fallback)
-                .clamp(240, 3000)
+        let executor = match headless(self.browser.as_ref(), "take a screenshot of the app") {
+            Ok(e) => e,
+            Err(e) => return ToolResult::error(e),
         };
-        let (width, height) = (dim("width", 390), dim("height", 844));
-        let page = input["path"]
-            .as_str()
-            .map(|p| p.trim_start_matches('/'))
-            .filter(|p| !p.is_empty())
-            .unwrap_or("index.html");
-        if page.contains("..") {
-            return ToolResult::error("path stays inside the app (no ..).");
-        }
+        let (width, height) = viewport(&app, input, (390, 844));
         let wait = Duration::from_millis(input["wait_ms"].as_u64().unwrap_or(1500).min(10_000));
 
         // What the page logs while it loads lands in the app's console ring
         // (its developer script posts it); the shot reports this load's lines.
         let console_mark = crate::app_console::recent(&app.id, None, 1).last().map(|e| e.seq);
-        // A pass that opens this app alone, for as long as the shot takes.
-        let pass = napp::app_view::grant(&app.id, Duration::from_secs(120));
-        let url = format!(
-            "http://127.0.0.1:{}/k/{pass}/apps/{}/ui/{page}",
-            local_port(),
-            app.id
-        );
-        let session = format!("app-shot-{}", uuid::Uuid::new_v4().simple());
-        let shot = async {
-            executor
-                .execute_headless("navigate", &json!({ "url": url }), &session)
-                .await?;
-            tokio::time::sleep(wait).await;
-            executor
-                .execute_headless(
-                    "screenshot",
-                    &json!({ "width": width, "height": height, "format": "png" }),
-                    &session,
-                )
-                .await
+        let opened = AppPage::open(&executor, &app, &page, (width, height), &[], Duration::from_secs(120)).await;
+        let shot = match &opened {
+            Ok(view) => {
+                tokio::time::sleep(wait).await;
+                match view.failures().await {
+                    Ok(failed) if failed.is_empty() => view
+                        .call("screenshot", &json!({ "format": "png" }))
+                        .await,
+                    Ok(failed) => Err(failed_load(&app, &page, &failed)),
+                    Err(e) => Err(e),
+                }
+            }
+            Err(e) => Err(e.clone()),
+        };
+        if let Ok(view) = opened {
+            view.close().await;
         }
-        .await;
-        executor.close_session(&session).await;
-        napp::app_view::revoke(&pass);
         let shot = match shot {
             Ok(v) => v,
             Err(e) => {
-                return ToolResult::error(format!("The browser could not open {}: {e}", app.name));
+                return ToolResult::error(format!(
+                    "{e}{}",
+                    load_console(&crate::app_console::recent(&app.id, console_mark, 200))
+                ));
             }
         };
         let Some(bytes) = shot["data"].as_str().and_then(|d| {
@@ -1276,7 +1245,7 @@ impl AppScreenshotTool {
             .as_str()
             .map(str::trim)
             .filter(|l| !l.is_empty())
-            .unwrap_or(page)
+            .unwrap_or(&page)
             .to_string();
         let mut text = format!(
             "Screenshot of {} at {}x{} ({}), saved as {}.",
@@ -1325,6 +1294,168 @@ impl AppScreenshotTool {
     }
 }
 
+// ── An app's page in the headless browser ───────────────────────────
+
+/// The bot's own headless browser, which draws Nebo's own pages
+/// (`ActionExecutor::execute_headless`); `to` says what it is needed for.
+pub(crate) fn headless(
+    browser: Option<&Arc<browser::Manager>>,
+    to: &str,
+) -> Result<browser::ActionExecutor, String> {
+    browser
+        .and_then(|m| m.executor())
+        .filter(|e| e.cdp_available())
+        .ok_or_else(|| format!("This bot has no built-in browser, so it can't {to}."))
+}
+
+/// The viewport a pack tool draws the app at: `width`/`height` from the
+/// call, else the app's window, else `fallback`.
+pub(crate) fn viewport(app: &db::models::Agent, input: &Value, fallback: (u64, u64)) -> (u64, u64) {
+    let window = app
+        .app_window_config
+        .as_deref()
+        .and_then(|w| serde_json::from_str::<Value>(w).ok());
+    let dim = |k: &str, fallback: u64| {
+        input[k]
+            .as_u64()
+            .or_else(|| window.as_ref().and_then(|w| w[k].as_u64()))
+            .unwrap_or(fallback)
+            .clamp(240, 3000)
+    };
+    (dim("width", fallback.0), dim("height", fallback.1))
+}
+
+/// The page a pack tool opens: the call's `path` inside the app's `ui/`
+/// (default `index.html`; a query or route after it is kept). A page file
+/// the app does not have is refused here: the server would answer with the
+/// entry page instead, and the tool would show the wrong page as if it
+/// were the one asked for.
+pub(crate) fn page_path(app: &db::models::Agent, input: &Value) -> Result<String, String> {
+    let Some(ui) = ui_dir(app) else {
+        return Err(format!(
+            "{} has no page to show yet: its ui folder is empty or missing.",
+            app.name
+        ));
+    };
+    let page = input["path"]
+        .as_str()
+        .map(|p| p.trim().trim_start_matches('/'))
+        .filter(|p| !p.is_empty())
+        .unwrap_or("index.html");
+    if page.contains("..") {
+        return Err("path stays inside the app (no ..).".into());
+    }
+    let file = page.split(['?', '#']).next().unwrap_or("");
+    let is_page = Path::new(file)
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("html") || e.eq_ignore_ascii_case("htm"));
+    if is_page && !ui.join(file).is_file() {
+        return Err(format!("{} has no page {file} (its ui folder has no such file).", app.name));
+    }
+    Ok(page.to_string())
+}
+
+/// Watches the page from before its first script: an uncaught error, a
+/// rejected promise nobody handled, and a script, style or picture that
+/// failed to load. Read back by [`AppPage::failures`].
+const PAGE_PROBE: &str = r#"(()=>{if(window.__neboPageErrors)return;const E=window.__neboPageErrors=[];const add=m=>{if(E.length<20)E.push(String(m).slice(0,500));};const short=u=>{u=String(u||'');if(u.indexOf(location.origin)===0)u=u.slice(location.origin.length);return u.replace(/^\/k\/[^\/]+/,'');};window.addEventListener('error',ev=>{const t=ev.target;if(t&&t!==window&&t.nodeType===1){add('Failed to load '+short(t.src||t.href||t.tagName));return;}add((ev.message||'Error')+(ev.filename?' ('+short(ev.filename)+':'+ev.lineno+')':''));},true);window.addEventListener('unhandledrejection',ev=>{const r=ev.reason;add('Unhandled promise rejection: '+(r&&r.message?r.message:String(r)));});})();"#;
+
+/// What the probe saw, and the answer the page itself came with.
+const PAGE_FAILURES: &str = r#"(()=>{const n=performance.getEntriesByType('navigation')[0];const s=n&&n.responseStatus||0;if(!window.__neboPageErrors)return JSON.stringify(['The page did not load'+(s?' (it answered '+s+')':'')+'.']);const e=window.__neboPageErrors.slice();if(s>=400)e.unshift('The page answered '+s+'.');return JSON.stringify(e);})()"#;
+
+/// An app's page open in the bot's own headless browser, for a pack tool
+/// (`app_screenshot`, `app_record`): one tab of its own, behind a pass that
+/// opens this app alone, laid out at the size it is drawn at before its
+/// first script runs, and watched for errors from the start
+/// ([`PAGE_PROBE`]). Closed with [`AppPage::close`].
+pub(crate) struct AppPage<'a> {
+    executor: &'a browser::ActionExecutor,
+    session: String,
+    pass: String,
+}
+
+impl<'a> AppPage<'a> {
+    /// Open `page` (from [`page_path`]) at `size`. `scripts` run before the
+    /// page's own, after the probe; the pass lasts `ttl`.
+    pub(crate) async fn open(
+        executor: &'a browser::ActionExecutor,
+        app: &db::models::Agent,
+        page: &str,
+        (width, height): (u64, u64),
+        scripts: &[&str],
+        ttl: Duration,
+    ) -> Result<AppPage<'a>, String> {
+        let view = AppPage {
+            executor,
+            session: format!("app-page-{}", uuid::Uuid::new_v4().simple()),
+            pass: napp::app_view::grant(&app.id, ttl),
+        };
+        let url = format!(
+            "http://127.0.0.1:{}/k/{}/apps/{}/ui/{page}",
+            local_port(),
+            view.pass,
+            app.id
+        );
+        let opened = async {
+            view.call("viewport", &json!({ "width": width, "height": height })).await?;
+            for source in std::iter::once(PAGE_PROBE).chain(scripts.iter().copied()) {
+                view.call("init_script", &json!({ "source": source })).await?;
+            }
+            view.call("navigate", &json!({ "url": url })).await
+        }
+        .await;
+        match opened {
+            Ok(_) => Ok(view),
+            Err(e) => {
+                view.close().await;
+                Err(format!("The browser could not open {}: {e}", app.name))
+            }
+        }
+    }
+
+    /// One browser action in this page's tab.
+    pub(crate) async fn call(&self, tool: &str, args: &Value) -> Result<Value, String> {
+        self.executor
+            .execute_headless(tool, args, &self.session)
+            .await
+            .map_err(|e| e.to_string())
+    }
+
+    /// The value of `expression` in the page, as text.
+    pub(crate) async fn eval(&self, expression: &str) -> Result<String, String> {
+        let v = self.call("evaluate", &json!({ "expression": expression })).await?;
+        Ok(v["text"].as_str().unwrap_or_default().to_string())
+    }
+
+    /// What has gone wrong with the page since it opened: the answer it
+    /// came with, when that was an error, and what [`PAGE_PROBE`] saw.
+    /// Empty when nothing did.
+    pub(crate) async fn failures(&self) -> Result<Vec<String>, String> {
+        let text = self.eval(PAGE_FAILURES).await?;
+        serde_json::from_str(&text).map_err(|_| format!("could not read the page's errors: {text}"))
+    }
+
+    /// Close the tab and drop the pass.
+    pub(crate) async fn close(self) {
+        self.executor.close_session(&self.session).await;
+        napp::app_view::revoke(&self.pass);
+    }
+}
+
+/// A page that failed, said as the error the call returns.
+pub(crate) fn failed_load(app: &db::models::Agent, page: &str, failed: &[String]) -> String {
+    let mut out = format!(
+        "{}'s page {page} failed in the browser. Fix it before saying the app works:",
+        app.name
+    );
+    for f in failed {
+        out.push_str("\n- ");
+        out.push_str(f);
+    }
+    out
+}
+
 /// What a screenshot's own load put in the app's console: its errors and
 /// warnings word for word, so a broken page reaches the employee in the
 /// call that looked at it, not only when someone opens the console.
@@ -1351,7 +1482,7 @@ pub(crate) fn load_console(entries: &[crate::app_console::Entry]) -> String {
 }
 
 /// A folder name from an app's name.
-fn safe_name(name: &str) -> String {
+pub(crate) fn safe_name(name: &str) -> String {
     let s: String = name
         .chars()
         .map(|c| {

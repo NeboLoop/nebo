@@ -14,6 +14,7 @@ pub mod app_tool;
 pub mod app_dev;
 pub mod app_history;
 pub mod app_publish;
+pub mod app_record;
 pub mod assignments;
 pub mod bot_mail;
 pub mod bot_tool;
