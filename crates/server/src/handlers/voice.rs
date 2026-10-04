@@ -827,6 +827,7 @@ async fn drain_voice_run(
                 }
             }
             ai::StreamEventType::ToolResult => {
+                step_done_on_call(&state.live_calls, &session_key);
                 let (tool_id, tool_name) = event
                     .tool_call
                     .as_ref()
@@ -1120,6 +1121,9 @@ pub enum CallNews {
     /// up."): said while the owner waits on a long run, at most one every
     /// [`NARRATE_EVERY`], and dropped once the run is done.
     Progress(String),
+    /// The step that update preceded came back: an update not said yet is
+    /// stale ("I'll left-align it" after it is left-aligned) and is dropped.
+    StepDone,
 }
 
 /// Tell the call in conversation `session_key`, if one is live, what the
@@ -1131,6 +1135,36 @@ pub(crate) fn progress_on_call(calls: &LiveCalls, session_key: &str, line: &str)
     if let Some(call) = call {
         // A full queue only means this update is not said; the next one is.
         let _ = call.try_send(CallNews::Progress(line.to_string()));
+    }
+}
+
+/// Tell the call in conversation `session_key`, if one is live, that the
+/// employee's step came back: its update, if not said yet, is no longer news.
+pub(crate) fn step_done_on_call(calls: &LiveCalls, session_key: &str) {
+    let call = calls.lock().unwrap_or_else(|e| e.into_inner()).get(session_key).cloned();
+    if let Some(call) = call {
+        let _ = call.try_send(CallNews::StepDone);
+    }
+}
+
+/// What a call does with its hand-off's step news: the newest update waits
+/// to be said while a tool is out (and is not the one just said); a step
+/// coming back drops the update not said yet. Live 2026-10-04: "I need to
+/// change it to left-align" was said ten seconds after the owner saw it
+/// left-aligned ("You already did, it's done.").
+fn take_step_news(step: &mut Option<String>, step_said: &str, pending_tools: usize, news: CallNews) -> Option<CallNews> {
+    match news {
+        CallNews::Progress(line) => {
+            if pending_tools > 0 && line != step_said {
+                *step = Some(line);
+            }
+            None
+        }
+        CallNews::StepDone => {
+            *step = None;
+            None
+        }
+        other => Some(other),
     }
 }
 
@@ -1289,7 +1323,7 @@ fn news_to_say(news: Vec<CallNews>, waiting: &std::collections::HashSet<String>,
             CallNews::Reply(r) => replies.push(r),
             CallNews::Shared(files) => shared.extend(files),
             // Steps are said while a run is out, never retold after it.
-            CallNews::Progress(_) => {}
+            CallNews::Progress(_) | CallNews::StepDone => {}
             CallNews::Ask(a) => {
                 if waiting.contains(&a.id) && told.insert(a.id.clone()) {
                     asks.push(super::asks::on_call(&a));
@@ -2036,8 +2070,10 @@ async fn handle_conversation_ws(mut socket: WebSocket, state: AppState, mut q: C
              a message to one, use `nebo`: you can see and reach every employee. When the user asks \
              you to stop or cancel the work, call `cancel` and read back what it says; if \
              it is not clear they mean the running work, ask in one short sentence first. \
-             While a task runs, \
-             say you are on it once. When you are told an employee \
+             When you call `nebo`, say what you are about to do in a few words in that same \
+             response, before the call (\"Taking the fades out now.\"), never after it. When \
+             its result comes back the work is done: say what was done, never that you are \
+             about to do it. When you are told an employee \
              is waiting on the user's answer, put the question to them right away in one \
              short question, in the language they are speaking, saying who asks. When they \
              answer, call `answer_ask` with the ask id you were told and their words exactly \
@@ -2921,14 +2957,11 @@ async fn handle_conversation_session(
 
             // A turn ran in this conversation outside the call, or the call's
             // own hand-off started a step.
-            Some(news) = heard_rx.recv() => match news {
-                CallNews::Progress(line) => {
-                    if pending_tools > 0 && line != step_said {
-                        step = Some(line);
-                    }
+            Some(news) = heard_rx.recv() => {
+                if let Some(other) = take_step_news(&mut step, &step_said, pending_tools, news) {
+                    to_say.push(other);
                 }
-                other => to_say.push(other),
-            },
+            }
 
             // The cost backstop for a call nobody is on. The realtime line
             // pings its far end, so the voice service no longer counts a
@@ -3619,6 +3652,67 @@ mod voice_prompt_tests {
         }
         assert!(call.try_recv().is_err(), "one update: a step with nothing said before it says nothing");
         assert_eq!(spoken_rx.await.unwrap().as_deref(), Some("The deck is up: eleven slides."));
+    }
+
+    /// Live 2026-10-04: "I need to change it to left-align" was said on the
+    /// call ten seconds after the owner saw it left-aligned. An update waits
+    /// only while its step is out; the step coming back drops it unsaid.
+    #[test]
+    fn a_step_that_came_back_drops_its_unsaid_update() {
+        let mut step = None;
+        assert!(take_step_news(&mut step, "", 1, CallNews::Progress("Left-aligning it now.".into())).is_none());
+        assert_eq!(step.as_deref(), Some("Left-aligning it now."));
+        assert!(take_step_news(&mut step, "", 1, CallNews::StepDone).is_none());
+        assert_eq!(step, None, "the step came back: its update is stale");
+        // The next step's update waits again, and one already said is not repeated
+        take_step_news(&mut step, "", 1, CallNews::Progress("The badges are next.".into()));
+        assert_eq!(step.as_deref(), Some("The badges are next."));
+        let mut said = None;
+        take_step_news(&mut said, "The badges are next.", 1, CallNews::Progress("The badges are next.".into()));
+        assert_eq!(said, None);
+        // No tool out: nothing waits to be said
+        let mut idle = None;
+        take_step_news(&mut idle, "", 0, CallNews::Progress("late".into()));
+        assert_eq!(idle, None);
+        // Every other news is the call's to say
+        assert!(matches!(take_step_news(&mut idle, "", 1, CallNews::Reply("hi".into())), Some(CallNews::Reply(_))));
+    }
+
+    /// The run tells the call when a step comes back, right after the update
+    /// that preceded it, so a fast change is never announced after it shows.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn drain_voice_run_tells_the_call_when_a_step_comes_back() {
+        let nebo = crate::staffed_proof::session().await;
+        let state = nebo.state.clone();
+        let key = format!("agent:a:thread:{}", uuid::Uuid::new_v4());
+        let (call_tx, mut call) = mpsc::channel(8);
+        let _on = OnCall::join(&state.live_calls, &key, call_tx);
+        let run_handle = register(&state, &key).await;
+        let (tx, rx) = tokio::sync::mpsc::channel(8);
+        let (spoken_tx, spoken_rx) = tokio::sync::oneshot::channel();
+        let drain = tokio::spawn(super::drain_voice_run(
+            state.clone(),
+            key.clone(),
+            "a".into(),
+            rx,
+            run_handle,
+            tokio_util::sync::CancellationToken::new(),
+            spoken_tx,
+        ));
+        let tc = ai::ToolCall { id: "t1".into(), name: "app_data".into(), input: serde_json::json!({"action": "replace", "key": "chat:design"}) };
+        tx.send(ai::StreamEvent::text("I need to change it to left-align.")).await.unwrap();
+        tx.send(ai::StreamEvent::tool_call(tc.clone())).await.unwrap();
+        let mut done = ai::StreamEvent::tool_call(tc);
+        done.event_type = ai::StreamEventType::ToolResult;
+        done.text = "Changed.".into();
+        tx.send(done).await.unwrap();
+        tx.send(ai::StreamEvent::text("Done: the badges are left-aligned.")).await.unwrap();
+        drop(tx);
+        drain.await.unwrap();
+        assert!(matches!(call.try_recv(), Ok(CallNews::Progress(l)) if l == "I need to change it to left-align."));
+        assert!(matches!(call.try_recv(), Ok(CallNews::StepDone)), "the step came back");
+        assert!(call.try_recv().is_err());
+        assert_eq!(spoken_rx.await.unwrap().as_deref(), Some("Done: the badges are left-aligned."));
     }
 
     /// "Send me the logo" on a call: the file `share_file` hands the owner
