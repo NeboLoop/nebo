@@ -1941,6 +1941,14 @@ impl NeboAIApi {
         self.do_json(reqwest::Method::PUT, &path, Some(settings)).await
     }
 
+    /// Open a link the way its page does (`POST /api/v1/shares/open`): on
+    /// `state` ok, `file_url` is GET /api/v1/files/{id} with a grant that
+    /// lasts an hour, relative to the hub.
+    pub async fn open_file_share(&self, token: &str) -> Result<crate::api_types::OpenedFileShare, CommError> {
+        let body = serde_json::json!({ "token": token });
+        self.do_json(reqwest::Method::POST, "/api/v1/shares/open", Some(&body)).await
+    }
+
     /// Turn a link off for good.
     pub async fn revoke_file_share(&self, id: &str) -> Result<(), CommError> {
         let path = format!("/api/v1/shares/{}", urlencoding::encode(id));

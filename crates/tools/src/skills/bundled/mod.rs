@@ -40,6 +40,9 @@ pub const BUNDLED_SKILLS: &[(&str, &str)] = &[
     // How a file reaches the owner on any device: share_file, never the
     // Desktop, AirDrop or a local server a phone away from home can't reach.
     ("file-delivery", include_str!("file-delivery.md")),
+    // How a person in a clip is swapped for a cast member, and how the cast
+    // and the owner's one-time confirmation work (`generate_media` replace).
+    ("character-swap", include_str!("character-swap.md")),
 ];
 
 /// Files a bundled skill carries beside its SKILL.md: `(skill, relative

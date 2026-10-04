@@ -10,6 +10,15 @@
 //!
 //! The model only ever gets paths back, never pixels: images reach a model
 //! through the vision helper alone.
+//!
+//! A character swap (`mode: "replace"`) puts a cast member (`cast`) in place
+//! of the person in a clip. Its files are too large for a request body and
+//! the providers fetch them by URL, so each local file goes up through the
+//! one upload path (`POST /api/v1/files/upload`), gets a link that lasts an
+//! hour (`/api/v1/shares`), and Janus is sent the URL that link opens to
+//! (`/api/v1/shares/open`). The links are turned off when the job ends.
+
+mod cast;
 
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
@@ -29,6 +38,20 @@ const MAX_IMAGES: u64 = 4;
 const MAX_SECONDS: u64 = 30;
 /// The speed speech is made and billed as when no `model` is named.
 const SPEECH_MODEL: &str = "nebo-speech";
+/// The model a character swap is made with when no `model` is named.
+const SWAP_MODEL: &str = "nebo-video-swap";
+/// The resolution a character swap is made at when none is named.
+const SWAP_RESOLUTION: &str = "720p";
+/// A swap is waited on this many times as long as other video (30 minutes
+/// by default): moving a person through every frame takes longer.
+const SWAP_WAIT_FACTOR: u32 = 3;
+/// The largest file the upload path takes (the edge's limit).
+const MAX_UPLOAD_BYTES: u64 = 100 * 1024 * 1024;
+/// How long a file lent to Janus stays reachable by its link.
+const LEND_FOR: chrono::TimeDelta = chrono::TimeDelta::hours(1);
+/// How a wait that ran out begins (`Media::wait_video`): the job may still
+/// finish, so what it was sent stays reachable.
+const UNFINISHED: &str = "The video was not finished after";
 
 /// How a video job is waited on: the first wait, the longest wait between
 /// polls, and how long in all before giving up.
@@ -226,17 +249,17 @@ impl Media {
     }
 
     /// Waits for video job `id` to finish: polls with a growing wait until
-    /// it has succeeded, failed, or the limit has passed. A poll that does
+    /// it has succeeded, failed, or `limit` has passed. A poll that does
     /// not get an answer is retried; a refusal ends the wait.
-    pub async fn wait_video(&self, id: &str) -> Result<(), String> {
+    pub async fn wait_video(&self, id: &str, limit: Duration) -> Result<(), String> {
         let started = tokio::time::Instant::now();
         let mut wait = self.polling.first;
         loop {
-            if started.elapsed() + wait > self.polling.limit {
+            if started.elapsed() + wait > limit {
                 return Err(format!(
-                    "The video was not finished after {} minutes. Its job id is {id}: call generate_media again with \
+                    "{UNFINISHED} {} minutes. Its job id is {id}: call generate_media again with \
                      kind \"video\" and job \"{id}\" to pick it up instead of making a new one.",
-                    self.polling.limit.as_secs().div_ceil(60)
+                    limit.as_secs().div_ceil(60)
                 ));
             }
             tokio::time::sleep(wait).await;
@@ -621,6 +644,24 @@ pub fn video_body(input: &Value, first_frame: Option<String>) -> Value {
     body
 }
 
+/// The `/v1/videos` body for a character swap: the clip and the cast
+/// member's images as URLs Janus can fetch, the owner's attestation, and
+/// the prompt only when one was given.
+pub fn swap_body(input: &Value, video: &str, references: &[String], attestation: &str) -> Value {
+    let mut body = json!({
+        "model": str_of(input, "model").unwrap_or(SWAP_MODEL),
+        "mode": "replace",
+        "video": video,
+        "references": references,
+        "resolution": str_of(input, "resolution").unwrap_or(SWAP_RESOLUTION),
+        "attestation": attestation,
+    });
+    if let Some(prompt) = str_of(input, "prompt") {
+        body["prompt"] = json!(prompt);
+    }
+    body
+}
+
 fn str_of<'a>(input: &'a Value, key: &str) -> Option<&'a str> {
     input
         .get(key)
@@ -657,6 +698,142 @@ fn first_frame(base: &Path, image: &str) -> Result<String, String> {
         "data:{mime};base64,{}",
         base64::engine::general_purpose::STANDARD.encode(bytes)
     ))
+}
+
+/// A file this call reads, named by `given`: an absolute or `~/` path as it
+/// is, a relative one inside `base`. It meets the limits and folders a
+/// `read_file` of it meets, so nothing the run may not read is sent out.
+fn readable(ctx: &ToolContext, base: &Path, given: &str) -> Result<PathBuf, String> {
+    let named = types::pathres::expand(given.trim());
+    let path = if named.is_absolute() { named } else { contained(base, given)? };
+    let shown = path.to_string_lossy().into_owned();
+    let refused = crate::safeguard::check_safeguard("read_file", &json!({ "path": shown }), ctx)
+        .or_else(|| ctx.outside_folders("read", std::slice::from_ref(&shown)));
+    if let Some(refused) = refused {
+        return Err(refused);
+    }
+    if !path.is_file() {
+        return Err(format!("There is no file at {shown}."));
+    }
+    Ok(path)
+}
+
+/// The clip a swap is sent: an https URL as given, else a local video file
+/// the upload path takes. Checked before anything is uploaded.
+enum Clip {
+    Url(String),
+    File { path: PathBuf, mime: &'static str },
+}
+
+fn clip(ctx: &ToolContext, base: &Path, given: &str) -> Result<Clip, String> {
+    if given.starts_with("https://") {
+        return Ok(Clip::Url(given.to_string()));
+    }
+    let path = readable(ctx, base, given)?;
+    let mime = match path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).as_deref() {
+        Some("mp4" | "m4v") => "video/mp4",
+        Some("mov") => "video/quicktime",
+        Some("webm") => "video/webm",
+        _ => return Err(format!("`video` must be an MP4, MOV or WebM file or an https URL; got `{given}`.")),
+    };
+    let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+    if size > MAX_UPLOAD_BYTES {
+        return Err(format!(
+            "{} is {} MB; a swap takes up to {} MB. Trim it to 30 seconds or less and conform it to 24 fps and 720p \
+             with the Nebo Media plugin first.",
+            path.display(),
+            size.div_ceil(1024 * 1024),
+            MAX_UPLOAD_BYTES / (1024 * 1024)
+        ));
+    }
+    Ok(Clip::File { path, mime })
+}
+
+/// The MIME type of a cast image, by its extension.
+fn image_mime(path: &Path) -> &'static str {
+    match path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).as_deref() {
+        Some("jpg" | "jpeg") => "image/jpeg",
+        Some("webp") => "image/webp",
+        _ => "image/png",
+    }
+}
+
+/// Files lent to Janus for one job: each stored through the one upload
+/// path and opened by a link that lasts [`LEND_FOR`]. Every link made is
+/// remembered so it can be turned off when the job ends.
+struct Lent {
+    hub: Arc<comm::api::NeboAIApi>,
+    shares: Vec<String>,
+}
+
+/// Why a link could not be made.
+enum LinkError {
+    /// The hub no longer has the file (a stored copy that is gone).
+    Gone,
+    Other(String),
+}
+
+impl Lent {
+    /// Stores `path` through the one upload path; the hub's file id.
+    async fn upload(&self, path: &Path, name: &str, mime: &str) -> Result<String, String> {
+        let data = tokio::fs::read(path)
+            .await
+            .map_err(|e| format!("Could not read {}: {e}", path.display()))?;
+        self.hub
+            .upload_file(name, mime, data, &[])
+            .await
+            .map(|a| a.file_id)
+            .map_err(|e| format!("Could not upload {} to NeboAI: {e}", path.display()))
+    }
+
+    /// A URL Janus can fetch file `file_id` from for the next hour: a link
+    /// share, opened the way its page opens it.
+    async fn link(&mut self, file_id: &str) -> Result<String, LinkError> {
+        let settings = comm::api_types::FileShareSettings {
+            access: "link".to_string(),
+            expires_at: (chrono::Utc::now() + LEND_FOR).to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            ..Default::default()
+        };
+        let share = match self.hub.create_file_share(file_id, "", &settings).await {
+            Ok(s) => s,
+            Err(comm::CommError::Http { status: 404, .. }) => return Err(LinkError::Gone),
+            Err(e) => return Err(LinkError::Other(format!("Could not make a link for Janus: {e}"))),
+        };
+        self.shares.push(share.id.clone());
+        let token = share.url.rsplit('/').next().unwrap_or_default();
+        let opened = self
+            .hub
+            .open_file_share(token)
+            .await
+            .map_err(|e| LinkError::Other(format!("Could not open the link for Janus: {e}")))?;
+        if opened.state != "ok" || opened.file_url.is_empty() {
+            return Err(LinkError::Other(format!("The link for Janus did not open ({}).", opened.state)));
+        }
+        Ok(if opened.file_url.starts_with("https://") || opened.file_url.starts_with("http://") {
+            opened.file_url
+        } else {
+            format!("{}{}", self.hub.api_server().trim_end_matches('/'), opened.file_url)
+        })
+    }
+
+    /// Uploads `path` and links it.
+    async fn send(&mut self, path: &Path, name: &str, mime: &str) -> Result<(String, String), String> {
+        let id = self.upload(path, name, mime).await?;
+        match self.link(&id).await {
+            Ok(url) => Ok((id, url)),
+            Err(LinkError::Gone) => Err("NeboAI lost the file just uploaded. Try again.".to_string()),
+            Err(LinkError::Other(e)) => Err(e),
+        }
+    }
+
+    /// Turns off every link this job made.
+    async fn revoke(&self) {
+        for id in &self.shares {
+            if let Err(e) = self.hub.revoke_file_share(id).await {
+                tracing::warn!(share = %id, error = %e, "could not turn off a link lent to Janus; it ends on its own within the hour");
+            }
+        }
+    }
 }
 
 /// Short, file-safe words from the prompt, for a default file name.
@@ -805,6 +982,10 @@ const TRIGGERS: &[&str] = &[
     "create a picture",
     "ai image",
     "ai video",
+    "character swap",
+    "swap the person",
+    "replace the actor",
+    "cast member",
 ];
 
 /// `generate_media`: the tool.
@@ -812,11 +993,48 @@ pub struct GenerateMediaTool {
     media: Media,
     store: Arc<db::Store>,
     triggers: Vec<String>,
+    /// Tests only: the cast folder and the hub, in place of
+    /// `<data_dir>/files/cast` and this bot's NeboAI connection.
+    cast_root: Option<PathBuf>,
+    hub: Option<Arc<comm::api::NeboAIApi>>,
 }
 
 impl GenerateMediaTool {
     pub fn new(media: Media, store: Arc<db::Store>) -> Self {
-        Self { media, store, triggers: TRIGGERS.iter().map(|t| t.to_string()).collect() }
+        Self {
+            media,
+            store,
+            triggers: TRIGGERS.iter().map(|t| t.to_string()).collect(),
+            cast_root: None,
+            hub: None,
+        }
+    }
+
+    #[cfg(test)]
+    fn with_cast_and_hub(mut self, cast_root: PathBuf, hub: Arc<comm::api::NeboAIApi>) -> Self {
+        self.cast_root = Some(cast_root);
+        self.hub = Some(hub);
+        self
+    }
+
+    /// The cast every employee on this bot shares: `<data_dir>/files/cast`.
+    fn cast(&self) -> Result<cast::Cast, String> {
+        let root = match &self.cast_root {
+            Some(r) => r.clone(),
+            None => config::data_dir()
+                .map_err(|e| format!("The workspace could not be found: {e}"))?
+                .join("files")
+                .join("cast"),
+        };
+        Ok(cast::Cast { root })
+    }
+
+    /// This bot's NeboAI connection, for lending files to Janus.
+    fn hub(&self) -> Result<Arc<comm::api::NeboAIApi>, String> {
+        match &self.hub {
+            Some(h) => Ok(h.clone()),
+            None => crate::build_neboai_api(&self.store).map(Arc::new),
+        }
     }
 
     /// The app named, else the employee running the call when it is an app,
@@ -990,25 +1208,51 @@ impl GenerateMediaTool {
 
     /// Makes the video and answers the result text and its file, which the
     /// chat shows as a card.
-    async fn video(&self, target: &Target, input: &Value) -> Result<(String, Vec<PathBuf>), String> {
+    async fn video(&self, ctx: &ToolContext, target: &Target, input: &Value) -> Result<(String, Vec<PathBuf>), String> {
+        let replace = str_of(input, "mode") == Some("replace");
+        // A swap with no prompt is named for its cast member.
+        let named_for = match (str_of(input, "prompt"), str_of(input, "cast")) {
+            (Some(p), _) => p.to_string(),
+            (None, Some(c)) if replace => format!("{c} swap"),
+            _ => String::new(),
+        };
         let into = str_of(input, "into");
-        let name = file_names(
-            into,
-            target.default_folder,
-            str_of(input, "prompt").unwrap_or(""),
-            "mp4",
-            1,
-            now(),
-        )
-        .remove(0);
+        let name = file_names(into, target.default_folder, &named_for, "mp4", 1, now()).remove(0);
+        // Everything a swap needs is checked before anything is uploaded.
+        let swap = match (replace, str_of(input, "job")) {
+            (true, None) => Some(self.swap_ready(ctx, target, input)?),
+            _ => None,
+        };
         let path = destination(&target.base, &name)?;
-        let job = match str_of(input, "job") {
-            Some(id) => Video {
+        let mut lent = None;
+        let job = match (str_of(input, "job"), swap) {
+            (Some(id), _) => Video {
                 id: id.to_string(),
                 model: String::new(),
                 seconds: None,
             },
-            None => {
+            (None, Some((member_dir, member, clip))) => {
+                let mut files = Lent { hub: self.hub()?, shares: Vec::new() };
+                let submitted = match self.swap_send(&mut files, &member_dir, member, clip).await {
+                    Ok((video, references, attestation)) => {
+                        self.media
+                            .submit_video(&swap_body(input, &video, &references, &attestation))
+                            .await
+                    }
+                    Err(e) => Err(e),
+                };
+                match submitted {
+                    Ok(job) => {
+                        lent = Some(files);
+                        job
+                    }
+                    Err(e) => {
+                        files.revoke().await;
+                        return Err(e);
+                    }
+                }
+            }
+            (None, None) => {
                 if str_of(input, "prompt").is_none() {
                     return Err("Give a `prompt` for the video.".to_string());
                 }
@@ -1019,7 +1263,22 @@ impl GenerateMediaTool {
                 self.media.submit_video(&video_body(input, frame)).await?
             }
         };
-        self.media.wait_video(&job.id).await?;
+        let waited = if replace {
+            // A swap can outlast the run's idle bound with no event at all:
+            // it is waiting on Janus, bounded by its own limit, not stalled.
+            let _waiting = ctx.waiting.enter();
+            self.media.wait_video(&job.id, self.media.polling.limit * SWAP_WAIT_FACTOR).await
+        } else {
+            self.media.wait_video(&job.id, self.media.polling.limit).await
+        };
+        // The job has ended, made or not: its links go. A wait that ran out
+        // leaves them for the job still running; they end within the hour.
+        if let Some(files) = &lent
+            && !matches!(&waited, Err(e) if e.starts_with(UNFINISHED))
+        {
+            files.revoke().await;
+        }
+        waited?;
         let size = self.media.download_video(&job.id, &path).await?;
         let mut lines = vec![format!(
             "Made a video into {}: {name} ({size} bytes) at {}",
@@ -1033,8 +1292,19 @@ impl GenerateMediaTool {
         if let Some(s) = job.seconds {
             about.push(format!("{s} seconds"));
         }
+        if replace && let Some(c) = str_of(input, "cast") {
+            about.push(format!("cast {c}"));
+        }
         about.push(format!("job {}", job.id));
         lines.push(format!("({})", about.join(", ")));
+        if replace {
+            lines.push(
+                "Before it goes anywhere: put the original clip's sound back and tag it AI-generated with the Nebo Media \
+                 plugin's `audio mix` (`audio-from` the clip you sent, `ai-generated` \"true\"), then give the owner \
+                 that result with share_file."
+                    .to_string(),
+            );
+        }
         if input.get("scrub").and_then(Value::as_bool).unwrap_or(false) {
             lines.push(scrub(&path).await);
             if let Ok(meta) = std::fs::metadata(&path) {
@@ -1043,6 +1313,172 @@ impl GenerateMediaTool {
         }
         Ok((lines.join("\n"), vec![path]))
     }
+}
+
+impl GenerateMediaTool {
+    /// What a swap needs, checked before anything leaves this machine: a
+    /// cast member the owner attested to, with a hero image, and a clip
+    /// that can be sent. A replace takes its person only from the cast.
+    fn swap_ready(
+        &self,
+        ctx: &ToolContext,
+        target: &Target,
+        input: &Value,
+    ) -> Result<(PathBuf, cast::Member, Clip), String> {
+        if str_of(input, "image").is_some() {
+            return Err(
+                "A replace takes the person only from the cast: leave `image` out and name the cast member in `cast`."
+                    .to_string(),
+            );
+        }
+        let name = str_of(input, "cast").ok_or_else(no_cast)?;
+        let cast = self.cast()?;
+        let (dir, member) = cast.load(name)?;
+        cast::ready(&member, &cast.images(&dir))?;
+        let video = str_of(input, "video").ok_or("Give `video`: the clip whose person is replaced.")?;
+        Ok((dir, member, clip(ctx, &target.base, video)?))
+    }
+
+    /// Lends the clip and the member's images to Janus: the clip's URL, the
+    /// images' URLs (the hero first) and the attestation id. An image goes
+    /// up once; its stored id is kept in `cast.json`, and a stored copy the
+    /// hub no longer has goes up again.
+    async fn swap_send(
+        &self,
+        files: &mut Lent,
+        dir: &Path,
+        mut member: cast::Member,
+        clip: Clip,
+    ) -> Result<(String, Vec<String>, String), String> {
+        let attestation = member.attestation.as_ref().map(|a| a.id.clone()).unwrap_or_default();
+        let video = match clip {
+            Clip::Url(url) => url,
+            Clip::File { path, mime } => {
+                let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "clip.mp4".into());
+                files.send(&path, &name, mime).await?.1
+            }
+        };
+        let cast = self.cast()?;
+        let mut references = Vec::new();
+        for image in cast.images(dir) {
+            let file = image.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            let upload_name = format!("{}-{file}", member.name);
+            let cached = member.hub_file_ids.get(&file).cloned();
+            let url = match cached {
+                Some(id) => match files.link(&id).await {
+                    Ok(url) => url,
+                    Err(LinkError::Gone) => {
+                        let (id, url) = files.send(&image, &upload_name, image_mime(&image)).await?;
+                        member.hub_file_ids.insert(file.clone(), id);
+                        cast.save(dir, &member)?;
+                        url
+                    }
+                    Err(LinkError::Other(e)) => return Err(e),
+                },
+                None => {
+                    let (id, url) = files.send(&image, &upload_name, image_mime(&image)).await?;
+                    member.hub_file_ids.insert(file.clone(), id);
+                    cast.save(dir, &member)?;
+                    url
+                }
+            };
+            references.push(url);
+        }
+        Ok((video, references, attestation))
+    }
+
+    /// kind "cast": with no `cast`, the cast listed; with `cast` and
+    /// `image`, the image added (a new member gets it as their hero, then
+    /// the owner's card); with `cast` alone, that member, and the owner's
+    /// card when he has not confirmed them yet.
+    async fn cast_change(&self, ctx: &ToolContext, target: &Target, input: &Value) -> Result<String, String> {
+        let cast = self.cast()?;
+        let Some(name) = str_of(input, "cast") else {
+            let members = cast.list();
+            if members.is_empty() {
+                return Ok("The cast is empty. Add someone with `cast` (their name) and `image` (their hero photo).".to_string());
+            }
+            let mut lines = vec![format!("The cast ({}):", cast.root.display())];
+            for (dir, m) in members {
+                lines.push(describe(&cast, &dir, &m));
+            }
+            return Ok(lines.join("\n"));
+        };
+        let name = cast::valid_name(name)?;
+        let image = match str_of(input, "image") {
+            Some(given) => Some(readable(ctx, &target.base, given)?),
+            None => None,
+        };
+        let hero = input.get("hero").and_then(Value::as_bool).unwrap_or(false);
+        let (dir, mut member, said) = match (cast.load(name), image) {
+            (Ok((dir, member)), Some(image)) => {
+                if member.attestation.is_none() {
+                    let file = cast.add(name, &image, hero)?;
+                    return Ok(format!("Added {file} to {}'s images.", member.name));
+                }
+                // A new image could be someone else: the owner confirms
+                // again before it joins a member a swap may use.
+                let Ok((kind, attestation)) = cast::attest(ctx, &member.name).await else {
+                    return Err(format!(
+                        "The image was not added: {0} is already confirmed, and a new image of {0} joins only when \
+                         the owner confirms {0} again on the card in a chat with you.",
+                        member.name
+                    ));
+                };
+                let file = cast.add(name, &image, hero)?;
+                let (_, mut member) = cast.load(name)?;
+                member.kind = Some(kind);
+                member.attestation = Some(attestation);
+                cast.save(&dir, &member)?;
+                return Ok(format!("Added {file} to {}'s images; the owner confirmed them again.", member.name));
+            }
+            (Ok((dir, member)), None) => {
+                let said = describe(&cast, &dir, &member);
+                (dir, member, said)
+            }
+            (Err(_), Some(image)) => {
+                let (dir, member) = cast.create(name, &image)?;
+                let said = format!("Added {name} to the cast with their hero image ({}).", dir.display());
+                (dir, member, said)
+            }
+            (Err(e), None) => return Err(e),
+        };
+        if member.attestation.is_some() {
+            return Ok(said);
+        }
+        match cast::attest(ctx, &member.name).await {
+            Ok((kind, attestation)) => {
+                member.kind = Some(kind);
+                member.attestation = Some(attestation);
+                cast.save(&dir, &member)?;
+                Ok(format!(
+                    "{said} The owner confirmed {}; they can now replace a person in a video.",
+                    member.name
+                ))
+            }
+            Err(e) => Ok(format!("{said} {e}")),
+        }
+    }
+}
+
+/// One line about a cast member: whether the owner confirmed them, and
+/// their images.
+fn describe(cast: &cast::Cast, dir: &Path, m: &cast::Member) -> String {
+    let images: Vec<String> =
+        cast.images(dir).iter().filter_map(|p| p.file_name().map(|f| f.to_string_lossy().into_owned())).collect();
+    let status = match (&m.attestation, m.kind.as_deref()) {
+        (Some(_), Some(kind)) => format!("confirmed by the owner ({kind})"),
+        (Some(_), None) => "confirmed by the owner".to_string(),
+        (None, _) => "not confirmed by the owner yet, so not usable for a swap".to_string(),
+    };
+    format!("- {}: {status}; images {}", m.name, images.join(", "))
+}
+
+/// What a swap without `cast` is told.
+fn no_cast() -> String {
+    "Give `cast`: the cast member's name. A replace takes the person only from the cast (generate_media kind \"cast\" \
+     lists it)."
+        .to_string()
 }
 
 /// The extension `bytes` really are: `asked` when they are what was asked
@@ -1077,6 +1513,8 @@ impl DynTool for GenerateMediaTool {
          - kind \"image\": 1-4 images from `prompt` (PNG unless `into` or `output_format` says webp or jpeg).\n\
          - kind \"video\": one MP4 of 1-30 seconds from `prompt`; it can take minutes. `image` sets the first frame (a \
            file in the same folder, an https URL or a data URL). `scrub: true` re-encodes it for scroll-scrubbing.\n\
+         - Character swap: kind \"video\", `mode` \"replace\", `video` and `cast`. kind \"cast\" lists and adds the \
+           people a swap may use; the owner confirms each once. Recipe: the character-swap skill.\n\
          - kind \"speech\": `text` read aloud, as a voiceover or narration: an MP3, or WAV when `into` or \
            `output_format` says so. `voice` picks the voice. To put it under a video, use an installed media plugin's \
            audio mix on the two files (the Nebo Media plugin has one).\n\
@@ -1095,7 +1533,7 @@ impl DynTool for GenerateMediaTool {
         json!({
             "type": "object",
             "properties": {
-                "kind": { "type": "string", "enum": ["image", "video", "speech"], "description": "What to make." },
+                "kind": { "type": "string", "enum": ["image", "video", "speech", "cast"], "description": "What to make, or `cast` to manage the people a swap may use." },
                 "prompt": { "type": "string", "description": "Image or video: what it shows, in detail: subject, style, light, framing, motion." },
                 "text": { "type": "string", "description": "Speech: the exact words to say, up to about 4,000 characters." },
                 "voice": { "type": "string", "description": "Speech: the voice, e.g. alloy, ash, ballad, cedar, coral, echo, fable, marin, nova, onyx, sage, shimmer, verse. Left out: the default voice." },
@@ -1110,16 +1548,20 @@ impl DynTool for GenerateMediaTool {
                 "seconds": { "type": "integer", "minimum": 1, "maximum": MAX_SECONDS, "description": "Video: length (default 5)." },
                 "resolution": { "type": "string", "description": "Video: e.g. 720p, 1080p." },
                 "aspect_ratio": { "type": "string", "description": "Video: e.g. 16:9, 9:16, 1:1." },
-                "image": { "type": "string", "description": "Video: the first frame. A file in the same folder, an https URL or a data URL." },
+                "image": { "type": "string", "description": "Video: the first frame. A file in the same folder, an https URL or a data URL. Kind cast: a photo of `cast` to add." },
                 "scrub": { "type": "boolean", "description": "Video: re-encode with every frame a keyframe for scroll-scrubbing (needs ffmpeg)." },
-                "job": { "type": "string", "description": "Video: a job id from an earlier call that did not finish; picks it up instead of making a new one." }
+                "job": { "type": "string", "description": "Video: a job id from an earlier call that did not finish; picks it up instead of making a new one." },
+                "mode": { "type": "string", "enum": ["replace"], "description": "Video: `replace` puts cast member `cast` in place of the person in `video` (720p unless `resolution` says otherwise; `prompt` optional; up to 30 minutes). Prepare the clip with the Nebo Media plugin first; afterwards its `audio mix` with `audio-from` the clip and `ai-generated` puts the sound back and tags the file, before share_file." },
+                "video": { "type": "string", "description": "Video replace: the clip (30 s or less, 24 fps, up to 100 MB), a file or an https URL." },
+                "cast": { "type": "string", "description": "Video replace: the cast member who plays the person; the person comes only from the cast, never from an image. Kind cast: the member to add `image` to (a new one gets it as their hero: front-facing, full body, good light; then the owner confirms them once on a card; a new image of a confirmed one shows him the card again) or to show (one not confirmed yet gets the card again). Left out: the cast is listed." },
+                "hero": { "type": "boolean", "description": "Kind cast: `image` replaces their hero image instead of adding an angle." }
             },
             "required": ["kind"]
         })
     }
 
     fn search_hint(&self) -> &str {
-        "generate image picture video art speech voiceover audio"
+        "generate image picture video speech voiceover swap cast"
     }
 
     fn triggers(&self) -> &[String] {
@@ -1143,18 +1585,46 @@ impl DynTool for GenerateMediaTool {
 
     /// What it makes is what the owner asked for: it shows in the chat as a
     /// card, the way `share_file` shows a file.
-    fn emits_image(&self, _input: &Value) -> bool {
-        true
+    fn emits_image(&self, input: &Value) -> bool {
+        str_of(input, "kind") != Some("cast")
     }
 
     fn validate_input(&self, input: &Value) -> Result<(), String> {
-        if str_of(input, "kind") == Some("speech") {
-            if str_of(input, "text").is_none() {
-                return Err("Give the `text` to speak.".to_string());
+        match str_of(input, "kind") {
+            Some("speech") => {
+                if str_of(input, "text").is_none() {
+                    return Err("Give the `text` to speak.".to_string());
+                }
+                return Ok(());
             }
-            return Ok(());
+            Some("cast") => {
+                if str_of(input, "image").is_some() && str_of(input, "cast").is_none() {
+                    return Err("Give `cast`: the name of the cast member the image is of.".to_string());
+                }
+                if input.get("hero").and_then(Value::as_bool) == Some(true) && str_of(input, "image").is_none() {
+                    return Err("Give `image`: the new hero photo.".to_string());
+                }
+                return Ok(());
+            }
+            _ => {}
         }
         let video = str_of(input, "kind") == Some("video");
+        match str_of(input, "mode") {
+            Some("replace") if video => {
+                if str_of(input, "job").is_some() {
+                    return Ok(());
+                }
+                if str_of(input, "cast").is_none() {
+                    return Err(no_cast());
+                }
+                if str_of(input, "video").is_none() {
+                    return Err("Give `video`: the clip whose person is replaced.".to_string());
+                }
+                return Ok(());
+            }
+            Some(other) => return Err(format!("`mode` is `replace` (kind video only) or left out; got `{other}`.")),
+            None => {}
+        }
         if str_of(input, "prompt").is_none() && !(video && str_of(input, "job").is_some()) {
             return Err("Give a `prompt`.".to_string());
         }
@@ -1163,7 +1633,9 @@ impl DynTool for GenerateMediaTool {
 
     fn activity(&self, input: &Value) -> String {
         match str_of(input, "kind") {
+            Some("video") if str_of(input, "mode") == Some("replace") => "swapping the person in a video".to_string(),
             Some("video") => "making a video".to_string(),
+            Some("cast") => "working on the cast".to_string(),
             Some("speech") => "making speech".to_string(),
             _ => "making an image".to_string(),
         }
@@ -1171,7 +1643,9 @@ impl DynTool for GenerateMediaTool {
 
     fn outcome(&self, input: &Value) -> String {
         match str_of(input, "kind") {
+            Some("video") if str_of(input, "mode") == Some("replace") => "Swapped the person in a video".to_string(),
             Some("video") => "Made a video".to_string(),
+            Some("cast") => "Worked on the cast".to_string(),
             Some("speech") => "Made speech".to_string(),
             _ => "Made an image".to_string(),
         }
@@ -1189,9 +1663,15 @@ impl DynTool for GenerateMediaTool {
             };
             let made = match str_of(&input, "kind") {
                 Some("image") => self.image(&target, &input).await,
-                Some("video") => self.video(&target, &input).await,
+                Some("video") => self.video(ctx, &target, &input).await,
                 Some("speech") => self.speech(&target, &input).await,
-                _ => Err("`kind` is image, video or speech.".to_string()),
+                Some("cast") => {
+                    return match self.cast_change(ctx, &target, &input).await {
+                        Ok(text) => ToolResult::ok(text),
+                        Err(e) => ToolResult::error(e),
+                    };
+                }
+                _ => Err("`kind` is image, video, speech or cast.".to_string()),
             };
             match made {
                 // Every file is its own card: the first on `image_url`,
@@ -1564,7 +2044,7 @@ mod tests {
             (job.id.as_str(), job.model.as_str(), job.seconds),
             ("vid_1", "nebo-video", Some(5))
         );
-        media.wait_video(&job.id).await.unwrap();
+        media.wait_video(&job.id, fast().limit).await.unwrap();
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("intro.mp4");
         assert_eq!(media.download_video(&job.id, &path).await.unwrap(), 7);
@@ -1591,7 +2071,7 @@ mod tests {
         }))
         .await;
         let media = Media::new(janus.url.clone(), "bot-1".into(), None).with_polling(fast());
-        let err = media.wait_video("v").await.unwrap_err();
+        let err = media.wait_video("v", fast().limit).await.unwrap_err();
         assert_eq!(err, "The video could not be made: prompt refused");
     }
 
@@ -1610,7 +2090,7 @@ mod tests {
             max: Duration::from_millis(10),
             limit: Duration::from_millis(60),
         });
-        let err = media.wait_video("v").await.unwrap_err();
+        let err = media.wait_video("v", Duration::from_millis(60)).await.unwrap_err();
         assert!(err.contains("job \"v\""), "{err}");
     }
 
@@ -1629,7 +2109,7 @@ mod tests {
         }))
         .await;
         let media = Media::new(janus.url.clone(), "bot-1".into(), None).with_polling(fast());
-        media.wait_video("v").await.unwrap();
+        media.wait_video("v", fast().limit).await.unwrap();
     }
 
     #[tokio::test]
@@ -1864,5 +2344,375 @@ mod tests {
         );
         assert!(first_frame(dir.path(), "../start.png").is_err());
         assert!(first_frame(dir.path(), "assets/start.gif").is_err());
+    }
+
+    // ── Character swap ──────────────────────────────────────────────
+
+    /// One local server for Janus and the hub alike: upload n answers
+    /// `file-n`, link n is `share-n` with token `tok-n`, opening link n
+    /// answers grant n, and the swap job has finished on its first poll.
+    async fn swap_server() -> MockJanus {
+        mock(Box::new(|path, count| {
+            let json = |s: String| (200, "application/json", s.into_bytes());
+            match path {
+                "/api/v1/files/upload" => json(format!(
+                    r#"{{"fileId":"file-{count}","filename":"f","mimeType":"video/mp4","size":4,"url":""}}"#
+                )),
+                "/api/v1/shares" => json(format!(
+                    r#"{{"id":"share-{count}","url":"https://neboai.test/s/tok-{count}","filename":"f","access":"link","hasPassword":false,"expiresAt":"","createdAt":""}}"#
+                )),
+                "/api/v1/shares/open" => json(format!(
+                    r#"{{"state":"ok","fileUrl":"/api/v1/files/grant-{count}?share=tok-{count}&exp=1&sig=s"}}"#
+                )),
+                p if p.starts_with("/api/v1/shares/share-") => json(r#"{"status":"revoked"}"#.to_string()),
+                "/v1/videos" => json(r#"{"id":"vid_s","object":"video","status":"running","model":"nebo-video-swap"}"#.to_string()),
+                "/v1/videos/vid_s" => json(r#"{"id":"vid_s","status":"succeeded"}"#.to_string()),
+                "/v1/videos/vid_s/content" => (200, "video/mp4", b"SWAPPED".to_vec()),
+                _ => (404, "text/plain", b"no".to_vec()),
+            }
+        }))
+        .await
+    }
+
+    /// A tool over `server` (Janus and the hub) with its cast in
+    /// `tmp/cast`, and the run's folder `tmp/work` holding `clip.mp4` and
+    /// `maya.png`.
+    fn swap_tool(server: &MockJanus, tmp: &Path) -> (Arc<GenerateMediaTool>, PathBuf) {
+        let store = Arc::new(db::Store::new(&tmp.join("t.db").to_string_lossy()).unwrap());
+        let hub = Arc::new(comm::api::NeboAIApi::new(server.url.clone(), "bot-1".into(), "token".into()));
+        let media = Media::new(server.url.clone(), "bot-1".into(), None).with_polling(fast());
+        let tool = GenerateMediaTool::new(media, store).with_cast_and_hub(tmp.join("cast"), hub);
+        let work = tmp.join("work");
+        std::fs::create_dir_all(&work).unwrap();
+        std::fs::write(work.join("clip.mp4"), b"CLIP").unwrap();
+        std::fs::write(work.join("maya.png"), b"\x89PNG\r\n\x1a\nmaya").unwrap();
+        (Arc::new(tool), work)
+    }
+
+    /// Cast member `name` with a hero image, confirmed by the owner when
+    /// `attested`.
+    fn cast_member(tmp: &Path, name: &str, attested: bool) {
+        let dir = tmp.join("cast").join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("hero.png"), b"\x89PNG\r\n\x1a\nhero").unwrap();
+        let member = cast::Member {
+            name: name.to_string(),
+            kind: attested.then(|| "release".to_string()),
+            attestation: attested.then(|| cast::Attestation {
+                id: "att-1".into(),
+                by: "owner".into(),
+                at: "2026-10-04T00:00:00Z".into(),
+                statements: cast::statements(name),
+            }),
+            ..Default::default()
+        };
+        std::fs::write(dir.join(cast::CAST_JSON), serde_json::to_string(&member).unwrap()).unwrap();
+    }
+
+    fn in_folder(work: &Path) -> ToolContext {
+        ToolContext { cwd: Some(work.to_string_lossy().into_owned()), ..Default::default() }
+    }
+
+    fn swap_input() -> Value {
+        json!({"kind": "video", "mode": "replace", "video": "clip.mp4", "cast": "Maya", "into": "out/swapped.mp4"})
+    }
+
+    /// The request lines `server` saw, in order.
+    fn lines(server: &MockJanus) -> Vec<String> {
+        server.seen.lock().unwrap().iter().map(|(l, _, _)| l.clone()).collect()
+    }
+
+    /// The body Janus is sent is the contract, exactly: the swap model,
+    /// replace, the clip's URL, the cast's images' URLs (hero first), 720p
+    /// and the attestation id, and no prompt or length nobody gave. The
+    /// result is a video card with the next steps named.
+    #[tokio::test]
+    async fn a_swap_sends_janus_exactly_the_contract() {
+        let server = swap_server().await;
+        let tmp = tempfile::tempdir().unwrap();
+        let (tool, work) = swap_tool(&server, tmp.path());
+        cast_member(tmp.path(), "Maya", true);
+        let input = swap_input();
+        assert!(tool.validate_input(&input).is_ok());
+        assert!(tool.emits_image(&input), "a swapped video is a card");
+
+        let result = tool.execute_dyn(&in_folder(&work), input).await;
+        assert!(!result.is_error, "{}", result.content);
+        let file = work.join("out/swapped.mp4");
+        assert_eq!(result.image_url.as_deref(), Some(file.to_string_lossy().as_ref()));
+        assert_eq!(std::fs::read(&file).unwrap(), b"SWAPPED");
+        assert!(result.content.contains("audio-from") && result.content.contains("ai-generated"), "{}", result.content);
+        assert!(result.content.contains("cast Maya"), "{}", result.content);
+
+        let seen = server.seen.lock().unwrap();
+        let (_, body, _) = seen.iter().find(|(l, _, _)| l.starts_with("POST /v1/videos ")).expect("submitted");
+        let body: Value = serde_json::from_str(body).unwrap();
+        let url = &server.url;
+        assert_eq!(
+            body,
+            json!({
+                "model": "nebo-video-swap",
+                "mode": "replace",
+                "video": format!("{url}/api/v1/files/grant-1?share=tok-1&exp=1&sig=s"),
+                "references": [format!("{url}/api/v1/files/grant-2?share=tok-2&exp=1&sig=s")],
+                "resolution": "720p",
+                "attestation": "att-1",
+            })
+        );
+        drop(seen);
+
+        // A prompt is sent only when given; a named resolution wins.
+        let body = swap_body(&json!({"prompt": "she smiles", "resolution": "1080p"}), "v", &["r".into()], "a");
+        assert_eq!(body["prompt"], "she smiles");
+        assert_eq!(body["resolution"], "1080p");
+    }
+
+    /// The local clip and the hero go up through the one upload path, each
+    /// gets a link that lasts about an hour, Janus is sent what the links
+    /// open to, and both links are turned off once the job has ended. A
+    /// swap Janus refuses turns its links off too.
+    #[tokio::test]
+    async fn local_files_are_lent_by_link_and_the_links_turned_off() {
+        let server = swap_server().await;
+        let tmp = tempfile::tempdir().unwrap();
+        let (tool, work) = swap_tool(&server, tmp.path());
+        cast_member(tmp.path(), "Maya", true);
+        let result = tool.execute_dyn(&in_folder(&work), swap_input()).await;
+        assert!(!result.is_error, "{}", result.content);
+
+        let seen = lines(&server);
+        let at = |prefix: &str| seen.iter().position(|l| l.starts_with(prefix)).unwrap_or_else(|| panic!("{prefix}: {seen:#?}"));
+        assert_eq!(seen.iter().filter(|l| l.starts_with("POST /api/v1/files/upload ")).count(), 2, "{seen:#?}");
+        assert_eq!(seen.iter().filter(|l| l.starts_with("POST /api/v1/shares ")).count(), 2, "{seen:#?}");
+        assert_eq!(seen.iter().filter(|l| l.starts_with("POST /api/v1/shares/open ")).count(), 2, "{seen:#?}");
+        let submitted = at("POST /v1/videos ");
+        let finished = at("GET /v1/videos/vid_s ");
+        assert!(at("DELETE /api/v1/shares/share-1 ") > finished && at("DELETE /api/v1/shares/share-2 ") > finished, "{seen:#?}");
+        assert!(at("POST /api/v1/shares/open ") < submitted);
+
+        let bodies = server.seen.lock().unwrap();
+        let shares: Vec<Value> = bodies
+            .iter()
+            .filter(|(l, _, _)| l.starts_with("POST /api/v1/shares "))
+            .map(|(_, b, _)| serde_json::from_str(b).unwrap())
+            .collect();
+        assert_eq!(shares[0]["fileId"], "file-1");
+        assert_eq!(shares[1]["fileId"], "file-2");
+        for share in &shares {
+            assert_eq!(share["access"], "link");
+            let until = chrono::DateTime::parse_from_rfc3339(share["expiresAt"].as_str().unwrap()).unwrap();
+            let left = until.signed_duration_since(chrono::Utc::now());
+            assert!(left > chrono::TimeDelta::minutes(55) && left <= chrono::TimeDelta::minutes(61), "{left}");
+        }
+        let opened: Value = serde_json::from_str(
+            &bodies.iter().find(|(l, _, _)| l.starts_with("POST /api/v1/shares/open ")).unwrap().1,
+        )
+        .unwrap();
+        assert_eq!(opened, json!({"token": "tok-1"}));
+        let upload = &bodies.iter().find(|(l, _, _)| l.starts_with("POST /api/v1/files/upload ")).unwrap().1;
+        assert!(upload.contains("filename=\"clip.mp4\"") && upload.contains("video/mp4") && upload.contains("CLIP"), "{upload}");
+        drop(bodies);
+
+        // Janus refuses the swap: nothing is made, and the links still go.
+        let refusing = mock(Box::new(|path, count| match path {
+            "/api/v1/files/upload" => (200, "application/json", format!(r#"{{"fileId":"file-{count}","filename":"f","mimeType":"video/mp4","size":4,"url":""}}"#).into_bytes()),
+            "/api/v1/shares" => (200, "application/json", format!(r#"{{"id":"share-{count}","url":"https://neboai.test/s/tok-{count}"}}"#).into_bytes()),
+            "/api/v1/shares/open" => (200, "application/json", br#"{"state":"ok","fileUrl":"/api/v1/files/g"}"#.to_vec()),
+            "/v1/videos" => (400, "application/json", br#"{"error":{"message":"no person found in the clip"}}"#.to_vec()),
+            _ => (200, "application/json", b"{}".to_vec()),
+        }))
+        .await;
+        let tmp = tempfile::tempdir().unwrap();
+        let (tool, work) = swap_tool(&refusing, tmp.path());
+        cast_member(tmp.path(), "Maya", true);
+        let result = tool.execute_dyn(&in_folder(&work), swap_input()).await;
+        assert!(result.is_error && result.content.ends_with("no person found in the clip"), "{}", result.content);
+        let seen = lines(&refusing);
+        assert!(seen.iter().any(|l| l.starts_with("DELETE /api/v1/shares/share-1 ")), "{seen:#?}");
+        assert!(seen.iter().any(|l| l.starts_with("DELETE /api/v1/shares/share-2 ")), "{seen:#?}");
+        assert!(!work.join("out/swapped.mp4").exists());
+    }
+
+    /// A replace with no cast member, one nobody by that name, one the
+    /// owner has not confirmed, or a face image passed in is refused with
+    /// a plain reason before anything is uploaded or sent.
+    #[tokio::test]
+    async fn a_swap_without_a_confirmed_cast_is_refused_before_any_upload() {
+        let server = swap_server().await;
+        let tmp = tempfile::tempdir().unwrap();
+        let (tool, work) = swap_tool(&server, tmp.path());
+        cast_member(tmp.path(), "Sam", false);
+        cast_member(tmp.path(), "Maya", true);
+        let ctx = in_folder(&work);
+
+        let no_cast = json!({"kind": "video", "mode": "replace", "video": "clip.mp4"});
+        let err = tool.validate_input(&no_cast).unwrap_err();
+        assert!(err.contains("Give `cast`"), "{err}");
+        let result = tool.execute_dyn(&ctx, no_cast).await;
+        assert!(result.is_error && result.content.contains("Give `cast`"), "{}", result.content);
+
+        let nobody = json!({"kind": "video", "mode": "replace", "video": "clip.mp4", "cast": "Nobody"});
+        let result = tool.execute_dyn(&ctx, nobody).await;
+        assert!(result.is_error && result.content.contains("no cast member named Nobody"), "{}", result.content);
+
+        let unconfirmed = json!({"kind": "video", "mode": "replace", "video": "clip.mp4", "cast": "Sam"});
+        let result = tool.execute_dyn(&ctx, unconfirmed).await;
+        assert!(result.is_error, "{}", result.content);
+        assert!(
+            result.content.starts_with("Sam can't be used to replace a person in a video yet: the owner hasn't confirmed"),
+            "{}",
+            result.content
+        );
+
+        let a_face = json!({"kind": "video", "mode": "replace", "video": "clip.mp4", "cast": "Maya", "image": "maya.png"});
+        let result = tool.execute_dyn(&ctx, a_face).await;
+        assert!(result.is_error && result.content.contains("only from the cast"), "{}", result.content);
+
+        assert!(lines(&server).is_empty(), "nothing reached the hub or Janus: {:#?}", lines(&server));
+        assert!(!work.join("out").exists(), "no file was started");
+    }
+
+    /// Creating a cast member shows the owner the one-time card in the
+    /// chat that asked; his answer is kept in cast.json with the
+    /// statements he confirmed and an id. "No", or nobody here to answer,
+    /// leaves the member unconfirmed.
+    #[tokio::test]
+    async fn the_attestation_card_stores_cast_json() {
+        let server = swap_server().await;
+        let tmp = tempfile::tempdir().unwrap();
+        let (tool, work) = swap_tool(&server, tmp.path());
+
+        // The owner, in his chat, picks "An AI persona".
+        let ask = |answer: &'static str, input: Value| {
+            let tool = tool.clone();
+            let work = work.clone();
+            async move {
+                let (stream_tx, mut stream_rx) = tokio::sync::mpsc::channel(4);
+                let channels: crate::origin::AskChannels = Default::default();
+                let mut ctx = in_folder(&work);
+                ctx.origin = crate::origin::Origin::User;
+                ctx.stream_tx = Some(stream_tx);
+                ctx.ask_channels = Some(channels.clone());
+                assert!(!tool.emits_image(&input), "a cast change is no card of its own");
+                let running = tokio::spawn(async move { tool.execute_dyn(&ctx, input).await });
+                let card = stream_rx.recv().await.expect("the attestation card");
+                assert_eq!(card.event_type, ai::StreamEventType::AskRequest);
+                let id = card.error.clone().unwrap();
+                channels.lock().await.remove(&id).unwrap().send(answer.to_string()).unwrap();
+                (card, running.await.unwrap())
+            }
+        };
+
+        let (card, result) = ask("An AI persona", json!({"kind": "cast", "cast": "Maya", "image": "maya.png"})).await;
+        assert!(!result.is_error, "{}", result.content);
+        assert!(result.content.contains("The owner confirmed Maya"), "{}", result.content);
+        assert_eq!(card.text, cast::question("Maya"));
+        for statement in cast::statements("Maya") {
+            assert!(card.text.contains(&statement), "{}", card.text);
+        }
+        assert!(card.text.contains("not a public figure or a celebrity lookalike"));
+        assert!(card.text.contains("testimonial"));
+        assert!(card.text.contains("labelled as AI-generated where the law requires"));
+        assert_eq!(
+            card.widgets.unwrap()[0]["options"],
+            json!(["Someone who gave consent or a release", "An AI persona", "Me", "No, don't use them"])
+        );
+        let dir = tmp.path().join("cast/Maya");
+        assert_eq!(std::fs::read(dir.join("hero.png")).unwrap(), b"\x89PNG\r\n\x1a\nmaya");
+        let kept: cast::Member = serde_json::from_str(&std::fs::read_to_string(dir.join("cast.json")).unwrap()).unwrap();
+        assert_eq!(kept.name, "Maya");
+        assert_eq!(kept.kind.as_deref(), Some("ai_persona"));
+        let attestation = kept.attestation.expect("attested");
+        assert!(uuid::Uuid::parse_str(&attestation.id).is_ok(), "{}", attestation.id);
+        assert_eq!(attestation.by, "owner");
+        assert!(chrono::DateTime::parse_from_rfc3339(&attestation.at).is_ok());
+        assert_eq!(attestation.statements, cast::statements("Maya"));
+        let raw: Value = serde_json::from_str(&std::fs::read_to_string(dir.join("cast.json")).unwrap()).unwrap();
+        assert_eq!(raw["type"], "ai_persona", "{raw}");
+        assert!(raw["hub_file_ids"].is_object(), "{raw}");
+
+        // "No": kept in the cast, never usable for a swap.
+        let (_, result) = ask("No, don't use them", json!({"kind": "cast", "cast": "Sam", "image": "maya.png"})).await;
+        assert!(result.content.contains("did not confirm Sam"), "{}", result.content);
+        let sam: cast::Member =
+            serde_json::from_str(&std::fs::read_to_string(tmp.path().join("cast/Sam/cast.json")).unwrap()).unwrap();
+        assert!(sam.attestation.is_none() && sam.kind.is_none());
+
+        // Naming Sam again, the owner in his chat: the card again, and now "Me".
+        let (_, result) = ask("Me", json!({"kind": "cast", "cast": "Sam"})).await;
+        assert!(result.content.contains("The owner confirmed Sam"), "{}", result.content);
+        let sam: cast::Member =
+            serde_json::from_str(&std::fs::read_to_string(tmp.path().join("cast/Sam/cast.json")).unwrap()).unwrap();
+        assert_eq!(sam.kind.as_deref(), Some("owner"));
+        assert!(sam.attestation.is_some());
+
+        // Nobody here to answer: made, unconfirmed, and told how to confirm.
+        let result = tool
+            .execute_dyn(&in_folder(&work), json!({"kind": "cast", "cast": "Lee", "image": "maya.png"}))
+            .await;
+        assert!(!result.is_error, "{}", result.content);
+        assert!(result.content.contains("kind \"cast\" with cast \"Lee\""), "{}", result.content);
+
+        let list = tool.execute_dyn(&in_folder(&work), json!({"kind": "cast"})).await;
+        assert!(list.content.contains("- Maya: confirmed by the owner (ai_persona); images hero.png"), "{}", list.content);
+        assert!(list.content.contains("- Lee: not confirmed by the owner yet"), "{}", list.content);
+
+        // A new image of a confirmed member joins only with the owner's
+        // yes again: nobody here refuses it, his card adds it and renews
+        // the attestation. The hero stays first.
+        let refused = tool
+            .execute_dyn(&in_folder(&work), json!({"kind": "cast", "cast": "Maya", "image": "maya.png"}))
+            .await;
+        assert!(refused.is_error && refused.content.starts_with("The image was not added"), "{}", refused.content);
+        assert!(!dir.join("angle-1.png").exists());
+        let before = attestation.id.clone();
+        let (_, add) = ask("An AI persona", json!({"kind": "cast", "cast": "Maya", "image": "maya.png"})).await;
+        assert!(add.content.contains("angle-1.png"), "{}", add.content);
+        let kept: cast::Member = serde_json::from_str(&std::fs::read_to_string(dir.join("cast.json")).unwrap()).unwrap();
+        assert_ne!(kept.attestation.unwrap().id, before, "a renewed attestation");
+        let c = tool.cast().unwrap();
+        let names: Vec<String> =
+            c.images(&dir).iter().map(|p| p.file_name().unwrap().to_string_lossy().into_owned()).collect();
+        assert_eq!(names, ["hero.png", "angle-1.png"]);
+        assert!(lines(&server).is_empty(), "the cast is local until a swap: {:#?}", lines(&server));
+    }
+
+    /// A cast image goes up once: its file id is kept in cast.json and the
+    /// next swap links that copy; only the new clip is uploaded again.
+    #[tokio::test]
+    async fn a_cast_image_is_uploaded_once_and_reused() {
+        let server = swap_server().await;
+        let tmp = tempfile::tempdir().unwrap();
+        let (tool, work) = swap_tool(&server, tmp.path());
+        cast_member(tmp.path(), "Maya", true);
+        let uploads = || lines(&server).iter().filter(|l| l.starts_with("POST /api/v1/files/upload ")).count();
+
+        let result = tool.execute_dyn(&in_folder(&work), swap_input()).await;
+        assert!(!result.is_error, "{}", result.content);
+        assert_eq!(uploads(), 2, "the clip and the hero");
+        let kept: cast::Member =
+            serde_json::from_str(&std::fs::read_to_string(tmp.path().join("cast/Maya/cast.json")).unwrap()).unwrap();
+        assert_eq!(kept.hub_file_ids.get("hero.png").map(String::as_str), Some("file-2"));
+        assert_eq!(kept.attestation.as_ref().unwrap().id, "att-1", "the attestation is untouched");
+
+        let again = json!({"kind": "video", "mode": "replace", "video": "clip.mp4", "cast": "maya", "into": "out/second.mp4"});
+        let result = tool.execute_dyn(&in_folder(&work), again).await;
+        assert!(!result.is_error, "{}", result.content);
+        assert_eq!(uploads(), 3, "only the clip went up again");
+        let seen = server.seen.lock().unwrap();
+        let linked: Vec<Value> = seen
+            .iter()
+            .filter(|(l, _, _)| l.starts_with("POST /api/v1/shares "))
+            .map(|(_, b, _)| serde_json::from_str::<Value>(b).unwrap())
+            .collect();
+        assert_eq!(linked.len(), 4);
+        assert_eq!(linked[3]["fileId"], "file-2", "the stored hero is linked again");
+        assert_eq!(seen.iter().filter(|(l, _, _)| l.starts_with("DELETE /api/v1/shares/")).count(), 4);
+    }
+
+    /// A replace is waited on three times as long as other video.
+    #[test]
+    fn a_swap_waits_longer_than_other_video() {
+        assert_eq!(Polling::default().limit * SWAP_WAIT_FACTOR, Duration::from_secs(30 * 60));
     }
 }
