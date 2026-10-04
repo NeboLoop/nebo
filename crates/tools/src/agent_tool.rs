@@ -3398,6 +3398,9 @@ impl PersonaTool {
                         .map_err(|e| format!("{e}. Nothing was written; fix that file and send the call again."))?;
                     packages.extend(module.packages);
                     files.push((rel.with_extension("js"), module.code.into_bytes()));
+                } else if let Some(page) = Self::tailwind_page(&rel, text, vendored) {
+                    packages.insert(render::TAILWIND_CDN.to_string());
+                    files.push((rel, page.into_bytes()));
                 } else {
                     files.push((rel, text.as_bytes().to_vec()));
                 }
@@ -3415,6 +3418,29 @@ impl PersonaTool {
             files.push((std::path::PathBuf::from("index.html"), page.code.into_bytes()));
         }
         Ok((files, packages))
+    }
+
+    /// An `.html` page in `ui` that loads Tailwind (`<script
+    /// src="https://cdn.tailwindcss.com">`, the way an app made from a
+    /// design is styled): its tag points at the saved script once it is in
+    /// `vendored`, relative to the page (`./vendor/...`, a `../` per folder
+    /// deeper), and stays on the CDN until then. `None` for any other file.
+    fn tailwind_page(
+        rel: &std::path::Path,
+        text: &str,
+        vendored: &std::collections::BTreeMap<String, String>,
+    ) -> Option<String> {
+        let tag = format!("src=\"{}\"", render::TAILWIND_CDN);
+        let html = rel.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("html"));
+        if !html || !text.contains(&tag) {
+            return None;
+        }
+        let Some(saved) = vendored.get(render::TAILWIND_CDN) else {
+            return Some(text.to_string());
+        };
+        let up = rel.components().count().saturating_sub(1);
+        let at = if up == 0 { format!("./{saved}") } else { format!("{}{saved}", "../".repeat(up)) };
+        Some(text.replace(&tag, &format!("src=\"{at}\"")))
     }
 
     /// A `ui` file Nebo compiles to `.js`: TypeScript, TSX or JSX (never a
@@ -4143,6 +4169,35 @@ export default function App({ label }: Props = { label: "hi" }) { return <div>{l
         assert!(err.starts_with("`ui_jsx` did not compile and nothing was written"), "{err}");
         let err = PersonaTool::app_ui_files(&serde_json::json!({"ui_jsx": 5}), "t", &Default::default()).unwrap_err();
         assert!(err.starts_with("`ui_jsx` must be a string"), "{err}");
+    }
+
+    /// A page that loads Tailwind (an app made from a design) has it saved
+    /// into the app like a package, its tag pointed at the saved script from
+    /// wherever the page sits; offline, the tag stays on the CDN.
+    #[tokio::test]
+    async fn a_pages_tailwind_tag_is_saved_into_the_app() {
+        use crate::app_vendor::tests::mock;
+        let m = mock(vec![("/tw/3.4.17".into(), None, "(()=>{tw})();".into())]).await;
+        let pinned = crate::app_vendor::Registry { esm: m.origin.clone(), tailwind: format!("{}/tw/3.4.17", m.origin) };
+        let tag = "<script src=\"https://cdn.tailwindcss.com\"></script>";
+        let input = serde_json::json!({"ui": {
+            "index.html": format!("<head>{tag}<script>tailwind.config = {{}}</script></head>"),
+            "pages/print.html": format!("<head>{tag}</head>"),
+            "notes.html": "<p>no styles</p>",
+        }});
+        let (files, vendored) = PersonaTool::app_page(&input, "t", None, &pinned).await.unwrap();
+        let saved = vendored.map[render::TAILWIND_CDN].clone();
+        assert!(saved.starts_with("vendor/tailwindcss@3.4.17-"), "{saved}");
+        let page = |name: &str| String::from_utf8(files.iter().find(|(p, _)| p == std::path::Path::new(name)).unwrap().1.clone()).unwrap();
+        assert!(page("index.html").contains(&format!("<script src=\"./{saved}\"></script>")), "{}", page("index.html"));
+        assert!(page("pages/print.html").contains(&format!("src=\"../{saved}\"")), "{}", page("pages/print.html"));
+        assert_eq!(page("notes.html"), "<p>no styles</p>");
+        assert!(vendored.files.iter().any(|(p, _)| p == std::path::Path::new(&saved)), "the script rides along");
+
+        let offline = crate::app_vendor::Registry { esm: "http://127.0.0.1:9".into(), tailwind: "http://127.0.0.1:9/tw".into() };
+        let (files, _) = PersonaTool::app_page(&input, "t", None, &offline).await.unwrap();
+        let index = files.iter().find(|(p, _)| p == std::path::Path::new("index.html")).unwrap();
+        assert!(String::from_utf8_lossy(&index.1).contains(tag), "offline: stays on the CDN");
     }
 
     /// A write saves the page's npm packages into the app: every module,
