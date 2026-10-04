@@ -1489,10 +1489,11 @@ impl PersonaTool {
         // An app: `app` marks the manifest; `ui`/`ui_jsx` are its page. A
         // page without `app` still means an app — nobody writes ui/ for an
         // employee that is never served.
-        let ui_files = match Self::app_ui_files(input, &display) {
-            Ok(files) => files,
-            Err(e) => return ToolResult::error(e),
-        };
+        let (ui_files, vendored) =
+            match Self::app_page(input, &display, None, &crate::app_vendor::Registry::default()).await {
+                Ok(page) => page,
+                Err(e) => return ToolResult::error(e),
+            };
         let app_fields = match input.get("app") {
             Some(app) => match napp::AppFields::from_json(app) {
                 Ok(fields) => Some(fields),
@@ -1531,12 +1532,15 @@ impl PersonaTool {
             agent_md: &agent_md,
             agent_json: agent_json_str.as_deref(),
             app: app_fields.clone(),
-            ui: ui_files.clone(),
+            ui: ui_files.iter().chain(&vendored.files).cloned().collect(),
         };
         if let Err(e) = napp::write_user_agent(&agent_dir, &package) {
             return ToolResult::error(e.to_string());
         }
         Self::keep_ui_sources(&agent_dir, input);
+        if let Err(e) = vendored.save_lock(&agent_dir) {
+            warn!(error = %e, "failed to write an app's vendor lockfile");
+        }
 
         // Create DB entry so the agent has a proper UUID
         let frontmatter = agent_json_str.as_deref().unwrap_or("{}");
@@ -1571,6 +1575,7 @@ impl PersonaTool {
         let mut result = format!("Created employee '{}' (id: {})", name, id);
         if app_fields.is_some() {
             result.push_str(&Self::app_created_note(&id, &ui_files));
+            result.push_str(&vendored.note());
         }
         let mut has_heartbeat_or_event = false;
 
@@ -1904,8 +1909,15 @@ impl PersonaTool {
                     current_name
                 ));
             }
-            let ui_files = match Self::app_ui_files(input, &current_name) {
-                Ok(files) => files,
+            let (ui_files, vendored) = match Self::app_page(
+                input,
+                &current_name,
+                Some(&agent_dir),
+                &crate::app_vendor::Registry::default(),
+            )
+            .await
+            {
+                Ok(page) => page,
                 Err(e) => return ToolResult::error(e),
             };
             let app_fields = match input.get("app") {
@@ -1927,21 +1939,27 @@ impl PersonaTool {
                 // an app edit never rewrites it.
                 agent_json: None,
                 app: app_fields,
-                ui: ui_files.clone(),
+                ui: ui_files.iter().chain(&vendored.files).cloned().collect(),
             };
             if let Err(e) = napp::write_user_agent(&agent_dir, &package) {
                 return ToolResult::error(e.to_string());
             }
             Self::keep_ui_sources(&agent_dir, input);
+            if let Err(e) = vendored.save_lock(&agent_dir) {
+                warn!(error = %e, "failed to write an app's vendor lockfile");
+            }
             if app_named {
                 changes.push(format!(
-                    "app manifest updated. {}",
-                    Self::app_created_note(agent_id, &ui_files).trim_start()
+                    "app manifest updated. {}{}",
+                    Self::app_created_note(agent_id, &ui_files).trim_start(),
+                    vendored.note()
                 ));
             } else if !ui_files.is_empty() {
-                changes.push(
-                    Self::app_created_note(agent_id, &ui_files).trim_start().to_string(),
-                );
+                changes.push(format!(
+                    "{}{}",
+                    Self::app_created_note(agent_id, &ui_files).trim_start(),
+                    vendored.note()
+                ));
             }
         }
 
@@ -3323,14 +3341,40 @@ impl PersonaTool {
     /// tunnel's prefix and 404'd on the phone.
     pub(crate) const APP_SDK_SCRIPT: &str = "<script src=\"../../../sdk/nebo.global.js\"></script>";
 
+    /// The app's page from the call, its npm packages saved into the app:
+    /// compile once to learn the packages, save them under `ui/vendor/`
+    /// ([`crate::app_vendor`]; `agent_dir`'s lockfile is reused), compile
+    /// again with their files. Returns the page's files and what was saved,
+    /// whose files go to `ui/` with the page's and whose lockfile goes to
+    /// the app folder after the write. Offline, the packages stay on esm.sh.
+    async fn app_page(
+        input: &serde_json::Value,
+        title: &str,
+        agent_dir: Option<&std::path::Path>,
+        registry: &crate::app_vendor::Registry,
+    ) -> Result<(Vec<(std::path::PathBuf, Vec<u8>)>, crate::app_vendor::Vendored), String> {
+        let none = std::collections::BTreeMap::new();
+        let (files, packages) = Self::app_ui_files(input, title, &none)?;
+        let vendored = crate::app_vendor::vendor(&packages, agent_dir, registry).await;
+        if vendored.map.is_empty() {
+            return Ok((files, vendored));
+        }
+        let (files, _) = Self::app_ui_files(input, title, &vendored.map)?;
+        Ok((files, vendored))
+    }
+
     /// The files of an app's `ui/` directory from the call: `ui` (relative
     /// path → content) and `ui_jsx` (one component, compiled to
-    /// `index.html`). Every path is checked before a byte is written.
+    /// `index.html`), with the npm specifiers they import. `vendored` maps a
+    /// specifier to its saved file under `ui/`; one not in it loads from
+    /// esm.sh. Every path is checked before a byte is written.
     fn app_ui_files(
         input: &serde_json::Value,
         title: &str,
-    ) -> Result<Vec<(std::path::PathBuf, Vec<u8>)>, String> {
+        vendored: &std::collections::BTreeMap<String, String>,
+    ) -> Result<(Vec<(std::path::PathBuf, Vec<u8>)>, std::collections::BTreeSet<String>), String> {
         let mut files = Vec::new();
+        let mut packages = std::collections::BTreeSet::new();
         if let Some(ui) = input.get("ui") {
             let Some(map) = ui.as_object() else {
                 return Err(
@@ -3350,10 +3394,10 @@ impl PersonaTool {
                 // tool is needed on the bot. The source is kept in the app's
                 // `src/` (`app_ui_sources`).
                 if Self::compiled_source(&rel) {
-                    let js = render::transpile_module(text, path).map_err(|e| {
-                        format!("{e}. Nothing was written; fix that file and send the call again.")
-                    })?;
-                    files.push((rel.with_extension("js"), js.into_bytes()));
+                    let module = render::transpile_module(text, &rel.to_string_lossy().replace('\\', "/"), vendored)
+                        .map_err(|e| format!("{e}. Nothing was written; fix that file and send the call again."))?;
+                    packages.extend(module.packages);
+                    files.push((rel.with_extension("js"), module.code.into_bytes()));
                 } else {
                     files.push((rel, text.as_bytes().to_vec()));
                 }
@@ -3366,12 +3410,11 @@ impl PersonaTool {
                         .into(),
                 );
             };
-            files.push((
-                std::path::PathBuf::from("index.html"),
-                Self::app_ui_from_jsx(src, title)?.into_bytes(),
-            ));
+            let page = Self::app_ui_from_jsx(src, title, vendored)?;
+            packages.extend(page.packages);
+            files.push((std::path::PathBuf::from("index.html"), page.code.into_bytes()));
         }
-        Ok(files)
+        Ok((files, packages))
     }
 
     /// A `ui` file Nebo compiles to `.js`: TypeScript, TSX or JSX (never a
@@ -3411,13 +3454,18 @@ impl PersonaTool {
     /// converter's shell is an artifact page, and an app page also needs
     /// `NeboAppSDK`. One string carries no extension to pick the language
     /// by, so plain JSX is tried first and TSX when only types make it parse.
-    fn app_ui_from_jsx(src: &str, title: &str) -> Result<String, String> {
-        let html = match render::jsx_to_html(src, title, render::JsxLang::Jsx) {
-            Ok(html) => html,
-            Err(jsx_err) => render::jsx_to_html(src, title, render::JsxLang::Tsx)
+    fn app_ui_from_jsx(
+        src: &str,
+        title: &str,
+        vendored: &std::collections::BTreeMap<String, String>,
+    ) -> Result<render::Compiled, String> {
+        let mut page = match render::jsx_to_html(src, title, render::JsxLang::Jsx, vendored) {
+            Ok(page) => page,
+            Err(jsx_err) => render::jsx_to_html(src, title, render::JsxLang::Tsx, vendored)
                 .map_err(|_| format!("`ui_jsx` did not compile and nothing was written: {jsx_err}"))?,
         };
-        Ok(html.replacen("</head>", &format!("{}\n</head>", Self::APP_SDK_SCRIPT), 1))
+        page.code = page.code.replacen("</head>", &format!("{}\n</head>", Self::APP_SDK_SCRIPT), 1);
+        Ok(page)
     }
 
     /// What a create or update says once an app's manifest and page are on
@@ -4006,19 +4054,20 @@ mod tests {
     /// ui/. The rule itself is tested where the writer lives.
     #[test]
     fn the_ui_map_is_checked_before_anything_is_written() {
-        let err = PersonaTool::app_ui_files(&serde_json::json!({"ui": {"../x": "boo"}}), "t").unwrap_err();
+        let err = PersonaTool::app_ui_files(&serde_json::json!({"ui": {"../x": "boo"}}), "t", &Default::default()).unwrap_err();
         assert!(err.contains("`..`"), "{err}");
         assert!(err.contains("nothing was written"), "{err}");
-        let err = PersonaTool::app_ui_files(&serde_json::json!({"ui": {"/etc/x": "boo"}}), "t").unwrap_err();
+        let err = PersonaTool::app_ui_files(&serde_json::json!({"ui": {"/etc/x": "boo"}}), "t", &Default::default()).unwrap_err();
         assert!(err.contains("absolute"), "{err}");
-        let err = PersonaTool::app_ui_files(&serde_json::json!({"ui": {"a.js": 1}}), "t").unwrap_err();
+        let err = PersonaTool::app_ui_files(&serde_json::json!({"ui": {"a.js": 1}}), "t", &Default::default()).unwrap_err();
         assert!(err.contains("must be a string"), "{err}");
-        let err = PersonaTool::app_ui_files(&serde_json::json!({"ui": "index.html"}), "t").unwrap_err();
+        let err = PersonaTool::app_ui_files(&serde_json::json!({"ui": "index.html"}), "t", &Default::default()).unwrap_err();
         assert!(err.starts_with("`ui` must be a map"), "{err}");
 
-        let files = PersonaTool::app_ui_files(
+        let (files, _) = PersonaTool::app_ui_files(
             &serde_json::json!({"ui": {"index.html": "<p>hi</p>", "assets/app.js": "1"}}),
             "t",
+            &Default::default(),
         )
         .unwrap();
         let mut named: Vec<(String, String)> = files
@@ -4047,7 +4096,7 @@ mod tests {
             "tune.ts": "export const tune: number = 3;\n",
             "types.d.ts": "declare const x: number;\n",
         }});
-        let files = PersonaTool::app_ui_files(&input, "t").unwrap();
+        let (files, _) = PersonaTool::app_ui_files(&input, "t", &Default::default()).unwrap();
         let mut names: Vec<String> = files.iter().map(|(p, _)| p.to_string_lossy().to_string()).collect();
         names.sort();
         assert_eq!(names, vec!["app.js", "index.html", "tune.js", "types.d.ts"]);
@@ -4058,7 +4107,7 @@ mod tests {
         assert_eq!(kept, vec!["app.tsx", "tune.ts"]);
 
         let broken = serde_json::json!({"ui": {"board.tsx": "const a = 1;\nconst b = (;\n"}});
-        let err = PersonaTool::app_ui_files(&broken, "t").unwrap_err();
+        let err = PersonaTool::app_ui_files(&broken, "t", &Default::default()).unwrap_err();
         assert!(err.contains("board.tsx:2:") && err.contains("Nothing was written"), "{err}");
     }
 
@@ -4074,7 +4123,7 @@ export default function App() {
   return <button className="p-4" onClick={() => setN(n + 1)}>Count: {n}</button>;
 }
 "#;
-        let files = PersonaTool::app_ui_files(&serde_json::json!({"ui_jsx": jsx}), "Counter").unwrap();
+        let (files, _) = PersonaTool::app_ui_files(&serde_json::json!({"ui_jsx": jsx}), "Counter", &Default::default()).unwrap();
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].0, std::path::PathBuf::from("index.html"));
         let html = &String::from_utf8(files[0].1.clone()).unwrap();
@@ -4087,13 +4136,63 @@ export default function App() {
 type Props = { label: string };
 export default function App({ label }: Props = { label: "hi" }) { return <div>{label}</div>; }
 "#;
-        let html = PersonaTool::app_ui_from_jsx(tsx, "t").unwrap();
+        let html = PersonaTool::app_ui_from_jsx(tsx, "t", &Default::default()).unwrap().code;
         assert!(!html.contains("type Props"), "types stripped");
 
-        let err = PersonaTool::app_ui_from_jsx("export function App() { return <div/>; }", "t").unwrap_err();
+        let err = PersonaTool::app_ui_from_jsx("export function App() { return <div/>; }", "t", &Default::default()).unwrap_err();
         assert!(err.starts_with("`ui_jsx` did not compile and nothing was written"), "{err}");
-        let err = PersonaTool::app_ui_files(&serde_json::json!({"ui_jsx": 5}), "t").unwrap_err();
+        let err = PersonaTool::app_ui_files(&serde_json::json!({"ui_jsx": 5}), "t", &Default::default()).unwrap_err();
         assert!(err.starts_with("`ui_jsx` must be a string"), "{err}");
+    }
+
+    /// A write saves the page's npm packages into the app: every module,
+    /// in ui/ or a subfolder, imports the saved file by a relative path,
+    /// and the files and lockfile ride along. Offline, the same write
+    /// still succeeds on esm.sh addresses and says so.
+    #[tokio::test]
+    async fn app_packages_are_saved_into_the_app_on_write() {
+        use crate::app_vendor::tests::{mock, registry};
+        let m = mock(vec![
+            (
+                "/react@18.3.1/jsx-runtime?target=es2022".into(),
+                Some("/react@18.3.1/es2022/jsx-runtime.mjs"),
+                "export * from \"/react@18.3.1/es2022/jsx-runtime.mjs\";\n".into(),
+            ),
+            ("/react@18.3.1/es2022/jsx-runtime.mjs".into(), None, "export const jsx=1;\n".into()),
+            (
+                "/chartlib?deps=react@18.3.1,react-dom@18.3.1&target=es2022".into(),
+                Some("/chartlib@2.1.0/es2022/chartlib.mjs"),
+                "export const Chart=1;\n".into(),
+            ),
+        ])
+        .await;
+        let input = serde_json::json!({"ui": {
+            "index.html": "<script type=\"module\" src=\"./app.js\"></script>",
+            "app.jsx": "import { Chart } from 'chartlib';\nexport const A = () => <Chart />;\n",
+            "screens/home.jsx": "import { Chart } from 'chartlib';\nexport const H = () => <Chart />;\n",
+        }});
+        let (files, vendored) = PersonaTool::app_page(&input, "t", None, &registry(&m.origin)).await.unwrap();
+        let text = |name: &str| {
+            files.iter().find(|(p, _)| p.to_string_lossy() == name).map(|(_, b)| String::from_utf8(b.clone()).unwrap()).unwrap()
+        };
+        assert!(text("app.js").contains("\"./vendor/chartlib@2.1.0-"), "{}", text("app.js"));
+        assert!(text("app.js").contains("\"./vendor/react@18.3.1-jsx-runtime-"), "{}", text("app.js"));
+        assert!(text("screens/home.js").contains("\"../vendor/chartlib@2.1.0-"), "{}", text("screens/home.js"));
+        assert!(!text("app.js").contains("esm.sh"));
+        assert_eq!(vendored.files.len(), 3, "{:?}", vendored.files.iter().map(|f| &f.0).collect::<Vec<_>>());
+        assert!(vendored.note().contains("chartlib@2.1.0"), "{}", vendored.note());
+        let dir = tempfile::tempdir().unwrap();
+        vendored.save_lock(dir.path()).unwrap();
+        assert!(dir.path().join(crate::app_vendor::LOCK_FILE).is_file());
+
+        let closed = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let offline = format!("http://{}", closed.local_addr().unwrap());
+        drop(closed);
+        let (files, vendored) = PersonaTool::app_page(&input, "t", None, &registry(&offline)).await.unwrap();
+        let app = files.iter().find(|(p, _)| p.to_string_lossy() == "app.js").map(|(_, b)| String::from_utf8(b.clone()).unwrap()).unwrap();
+        assert!(app.contains("https://esm.sh/chartlib?deps="), "{app}");
+        assert!(vendored.files.is_empty());
+        assert!(vendored.note().contains("Could not save"), "{}", vendored.note());
     }
 
     /// The two automation shapes the loader rejects on every later scan are

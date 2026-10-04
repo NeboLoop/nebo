@@ -170,7 +170,7 @@ the owner's own apps (never one installed from the marketplace).
 
 | Lane | When | Needs |
 |---|---|---|
-| **A. Nebo compiles** (default) | Every app: TypeScript, TSX, JSX or plain JS, React and Three.js included | Nothing. Nebo's built-in compiler turns each `.ts`, `.tsx` and `.jsx` file into the `.js` the page loads; npm packages load from esm.sh at run time. |
+| **A. Nebo compiles** (default) | Every app: TypeScript, TSX, JSX or plain JS, React and Three.js included | Nothing. Nebo's built-in compiler turns each `.ts`, `.tsx` and `.jsx` file into the `.js` the page loads; npm packages are saved into the app on write and work offline. |
 | **B. Vite build** | The owner asks for a Vite project, or the app needs a package that does not load from esm.sh | `node --version` succeeds on this bot (cloud bots have node and npm; a desktop may not). |
 
 Check with `run_command("node --version")` only when Lane B is asked for.
@@ -204,7 +204,9 @@ then one screen per call, `app_reload` after each. A game keeps the same idea:
   it becomes `./scene.js`. Always start with `./`.
 - npm packages: a bare import, pinned with `@version`:
   `import * as THREE from 'three@0.170.0'`. `react` and `react-dom` are pinned
-  for you (18.3.1); JSX needs no `import React`.
+  for you (18.3.1); JSX needs no `import React`. The write saves each package
+  into `ui/vendor/` (it then loads offline) and pins its version in
+  `src/vendor.lock.json`; offline, the result says it stays on esm.sh.
 - Types are stripped, not checked. CSS is linked from `index.html`, never imported.
 - A local `import('./x')` loads only a file you also sent; never code-split.
 - A file that does not compile writes nothing, and the result names it as

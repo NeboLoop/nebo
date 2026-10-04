@@ -215,11 +215,11 @@ async fn convert(path: &str, to: &str) -> ToolResult {
                 render::markdown_to_docx(&source).map_err(|e| e.to_string())
             }
             ("xlsx", "csv") => render::csv_to_xlsx(&source).map_err(|e| e.to_string()),
-            ("html", "jsx") => render::jsx_to_html(&source, &file_name, render::JsxLang::Jsx)
-                .map(String::into_bytes)
+            ("html", "jsx") => render::jsx_to_html(&source, &file_name, render::JsxLang::Jsx, &Default::default())
+                .map(|page| page.code.into_bytes())
                 .map_err(|e| e.to_string()),
-            ("html", "tsx") => render::jsx_to_html(&source, &file_name, render::JsxLang::Tsx)
-                .map(String::into_bytes)
+            ("html", "tsx") => render::jsx_to_html(&source, &file_name, render::JsxLang::Tsx, &Default::default())
+                .map(|page| page.code.into_bytes())
                 .map_err(|e| e.to_string()),
             ("pdf", other) => Err(format!(
                 "pdf converts from .md or .typ (got .{other}). Write the document as Markdown first."

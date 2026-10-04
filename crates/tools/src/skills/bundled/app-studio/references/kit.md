@@ -1,8 +1,9 @@
 # The Kit (Phases 4 and 5)
 
 Free, permissively licensed libraries only. Never add a paid or proprietary
-source. Lane A (no build, SKILL.md Step 3A) loads them through the import
-map from esm.sh; Lane B (Vite, Step 3B) installs and bundles them.
+source. Lane A (no build, SKILL.md Step 3A) fetches them from esm.sh once,
+when the app is written, and saves them into the app's `ui/vendor/`; Lane B
+(Vite, Step 3B) installs and bundles them.
 
 | Library | License | Use it for |
 |---------|---------|-----------|
@@ -40,7 +41,8 @@ gsap.registerPlugin(ScrollTrigger);
 
 ## Lane A (Nebo compiles)
 
-Import packages bare and pinned; Nebo sends them to esm.sh:
+Import packages bare and pinned; Nebo saves them into the app on write
+(versions in `src/vendor.lock.json`), so they load offline:
 
 ```ts
 import gsap from 'gsap@3.12.5';
