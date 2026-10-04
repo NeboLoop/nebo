@@ -484,7 +484,17 @@
 		"tapToInterrupt": "Tap to interrupt",
 		"mute": "Mute",
 		"unmute": "Unmute",
-		"endConversation": "End conversation"
+		"endConversation": "End conversation",
+		"recordClip": "Record a clip",
+		"clipStarting": "Waiting for the microphone",
+		"clipStop": "Stop and attach",
+		"clipLevel": "Microphone level",
+		"clipMicBlockedMac": "Nebo can't use your microphone. Allow it in System Settings → Privacy → Microphone.",
+		"clipMicBlocked": "Nebo can't use your microphone. Allow it in your system's privacy settings.",
+		"clipNoMic": "No microphone found. Connect one and try again.",
+		"clipUnsupported": "Recording isn't available here.",
+		"clipFailed": "The recording didn't work. Try again.",
+		"clipCapReached": "Recordings stop at 10 minutes. This one is attached."
 	},
 	"voiceDownload": {
 		"title": "Download Voice Models",

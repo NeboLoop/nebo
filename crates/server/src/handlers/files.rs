@@ -231,7 +231,8 @@ pub async fn upload_file(
     // attachment itself, so it is logged rather than returned as an error.
     match crate::codes::build_api_client(&state) {
         Ok(api) => match api.upload_file(&filename, &mime_type, data, &[]).await {
-            Ok(attachment) => {
+            Ok(mut attachment) => {
+                attachment.mime_type = landed_mime(&mime_type, attachment.mime_type);
                 // Re-key the local copy to the loop's id so lookups by that id
                 // find it here instead of downloading what we already hold.
                 let renamed = dir.join(agent::uploads::file_name(&attachment.file_id, &filename));
@@ -551,6 +552,32 @@ async fn serve_pdf_preview(
         })?;
 
     Ok(stream_file(&cache, "application/pdf", request).await)
+}
+
+/// The type an uploaded file keeps once the loop has its copy. The loop types
+/// a file by its extension alone, and to it a `.webm` is video. A recording
+/// the client declared as audio stays audio, so the employee hears it and the
+/// bubble plays it, rather than both treating it as a silent video.
+fn landed_mime(declared: &str, from_loop: String) -> String {
+    if declared.starts_with("audio/") && !from_loop.starts_with("audio/") {
+        declared.to_string()
+    } else {
+        from_loop
+    }
+}
+
+#[cfg(test)]
+mod landed_mime_tests {
+    use super::landed_mime;
+
+    #[test]
+    fn a_recording_declared_as_audio_stays_audio() {
+        assert_eq!(landed_mime("audio/webm", "video/webm".into()), "audio/webm");
+        assert_eq!(landed_mime("audio/mp4", "audio/mp4".into()), "audio/mp4");
+        assert_eq!(landed_mime("audio/x-m4a", "audio/mp4".into()), "audio/mp4");
+        assert_eq!(landed_mime("video/webm", "video/webm".into()), "video/webm");
+        assert_eq!(landed_mime("image/png", "image/png".into()), "image/png");
+    }
 }
 
 #[cfg(test)]

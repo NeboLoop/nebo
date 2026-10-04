@@ -11,6 +11,12 @@ import { logger } from '$lib/monitoring';
 const log = logger.child({ component: 'VoiceDeviceManager' });
 const STORAGE_KEY = 'voice:selected-mic-device-id';
 
+/** What the microphone is for. `voice` is a live conversation: 16 kHz with
+ *  echo cancellation, since the employee's voice plays back while the owner
+ *  speaks. `clip` is a recording the owner keeps (a voiceover, a memo): the
+ *  device's own rate and no echo cancellation, which would thin the voice. */
+export type MicPurpose = 'voice' | 'clip';
+
 export interface DeviceManagerState {
 	inputs: MediaDeviceInfo[];
 	outputs: MediaDeviceInfo[];
@@ -64,20 +70,28 @@ function createDeviceManager() {
 		},
 
 		/** Get mic constraints with the selected device (or default). */
-		getMicConstraints(): MediaStreamConstraints {
+		getMicConstraints(purpose: MicPurpose = 'voice'): MediaStreamConstraints {
 			let selectedMicId: string | null = null;
 			const unsub = subscribe((s) => {
 				selectedMicId = s.selectedMicId;
 			});
 			unsub();
 
-			const audio: MediaTrackConstraints = {
-				sampleRate: { ideal: 16000 },
-				channelCount: 1,
-				echoCancellation: true,
-				noiseSuppression: true,
-				autoGainControl: true
-			};
+			const audio: MediaTrackConstraints =
+				purpose === 'clip'
+					? {
+							channelCount: 1,
+							echoCancellation: false,
+							noiseSuppression: true,
+							autoGainControl: true
+						}
+					: {
+							sampleRate: { ideal: 16000 },
+							channelCount: 1,
+							echoCancellation: true,
+							noiseSuppression: true,
+							autoGainControl: true
+						};
 			if (selectedMicId) {
 				audio.deviceId = { exact: selectedMicId };
 			}
@@ -85,9 +99,9 @@ function createDeviceManager() {
 		},
 
 		/** Acquire a mic stream, falling back to default if selected device is gone. */
-		async acquireMicStream(): Promise<MediaStream> {
+		async acquireMicStream(purpose: MicPurpose = 'voice'): Promise<MediaStream> {
 			try {
-				const stream = await navigator.mediaDevices.getUserMedia(this.getMicConstraints());
+				const stream = await navigator.mediaDevices.getUserMedia(this.getMicConstraints(purpose));
 				// Refresh device list (now we have permission, labels are populated)
 				await refresh();
 				return stream;
@@ -96,7 +110,7 @@ function createDeviceManager() {
 					log.warn('Selected mic unavailable, falling back to default');
 					this.selectMic(null);
 					const stream = await navigator.mediaDevices.getUserMedia(
-						this.getMicConstraints()
+						this.getMicConstraints(purpose)
 					);
 					await refresh();
 					return stream;
