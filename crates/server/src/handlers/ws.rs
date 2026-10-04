@@ -1257,11 +1257,9 @@ async fn handle_builtin_slash(
             let agent_count = registry.len();
             drop(registry);
 
-            let session_key = if !agent_id.is_empty() {
-                types::keyparser::build_agent_session_key(agent_id, channel)
-            } else {
-                session_id.to_string()
-            };
+            // The conversation the owner is in: the chat's own key when he is
+            // in one, never the employee's main conversation.
+            let session_key = turn_session_key(session_id, agent_id, channel);
             let msg_count = state
                 .harness
                 .sessions()
@@ -1300,11 +1298,10 @@ async fn handle_builtin_slash(
             if !agent_id.is_empty() && crate::company::linked_target(state, agent_id).is_some() {
                 return None;
             }
-            let session_key = if !agent_id.is_empty() {
-                types::keyparser::build_agent_session_key(agent_id, channel)
-            } else {
-                session_id.to_string()
-            };
+            // The conversation the owner typed it in (the chat's own key),
+            // never the employee's main conversation: from a chat, a rebuilt
+            // `agent:<id>:web` key compacted a different chat.
+            let session_key = turn_session_key(session_id, agent_id, channel);
             tokio::spawn(compact_session(state.clone(), session_key, agent_id.to_string(), args.to_string()));
             Some("Compacting conversation...".to_string())
         }
