@@ -103,7 +103,7 @@
   memoryMode={ctx.agent?.memoryMode ?? 'single'}
   isApp={ctx.agent?.isApp ?? false}
   ownApp={ctx.agent?.ownApp ?? false}
-  onopenapp={() => launchApp(ctx.agentId, ctx.agent?.name ?? 'App', { fullscreen: ctx.agent?.appWindow?.fullscreen })}
+  onopenapp={() => launchApp(ctx.agentId, ctx.agent?.name ?? 'App', { fullscreen: ctx.agent?.appWindow?.fullscreen, isolated: ctx.agent?.appWindow?.isolated })}
 
   placeholder={$t('chat.startNewThreadWith', { values: { name: agent?.name ?? '' } })}
   emptyTitle={greeting}

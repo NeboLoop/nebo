@@ -1051,7 +1051,7 @@
       goto(`/${id}/settings/general`);
     } else if (action === 'open-app') {
       const a = allAgents.find(ag => ag.id === id);
-      launchApp(id, a?.name || 'App', { fullscreen: a?.appWindow?.fullscreen });
+      launchApp(id, a?.name || 'App', { fullscreen: a?.appWindow?.fullscreen, isolated: a?.appWindow?.isolated });
     } else if (action === 'delete') {
       const a = allAgents.find(ag => ag.id === id);
       deleteTyped = '';

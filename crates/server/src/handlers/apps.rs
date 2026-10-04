@@ -162,23 +162,25 @@ pub struct JanusRequest {
     system: Option<String>,
 }
 
-/// Resolve the UI directory for an app agent, and whether its manifest
-/// declares `device:motion` (the page may then read the gyroscope and
-/// accelerometer).
-async fn resolve_app_ui(state: &AppState, agent_id: &str) -> Option<(PathBuf, bool)> {
+/// Resolve the UI directory for an app agent, and how its manifest asks the
+/// page to be shown (`device:motion`, `window.isolated`); a row the loader
+/// does not hold is read from the window stored with it.
+async fn resolve_app_ui(state: &AppState, agent_id: &str) -> Option<(PathBuf, napp::manifest::AppWindow)> {
     let agents = state.agent_loader.list().await;
     let fs_match = agents.iter().find(|a| {
         a.id.as_deref() == Some(agent_id)
             || a.agent_def.name.eq_ignore_ascii_case(agent_id)
     });
-    let motion = fs_match.and_then(|a| a.app_window()).is_some_and(|w| w.motion);
+    let window = fs_match.and_then(|a| a.app_window());
     if let Some(p) = fs_match.and_then(|a| a.app_ui_path.clone()) {
-        return served_ui_dir(p).map(|p| (p, motion));
+        let window = window.unwrap_or_else(|| super::agents::stored_app_window(None));
+        return served_ui_dir(p).map(|p| (p, window));
     }
     // Fall back to DB
     if let Ok(Some(a)) = state.store.get_agent(agent_id) {
         if let Some(p) = a.app_ui_path {
-            return served_ui_dir(PathBuf::from(p)).map(|p| (p, motion));
+            let window = window.unwrap_or_else(|| super::agents::stored_app_window(a.app_window_config.as_deref()));
+            return served_ui_dir(PathBuf::from(p)).map(|p| (p, window));
         }
     }
     None
@@ -307,7 +309,7 @@ fn range_header(headers: &HeaderMap) -> Option<&str> {
 }
 
 async fn serve_app_ui_inner(state: &AppState, agent_id: &str, path: &str, headers: &HeaderMap) -> Response {
-    let (ui_path, motion) = match resolve_app_ui(state, agent_id).await {
+    let (ui_path, window) = match resolve_app_ui(state, agent_id).await {
         Some(p) => p,
         None => return StatusCode::NOT_FOUND.into_response(),
     };
@@ -336,7 +338,7 @@ async fn serve_app_ui_inner(state: &AppState, agent_id: &str, path: &str, header
         target.strip_prefix(&ui_path).map(|p| p.to_string_lossy().replace('\\', "/")).unwrap_or_default()
     };
     let rebase = Rebase::new(&ui_path, &at);
-    serve_ui_file(&target, headers, devtools, motion, Some(&rebase)).await
+    serve_ui_file(&target, headers, devtools, Some(&window), Some(&rebase)).await
 }
 
 /// The developer script an app page carries: whose page it is (for "Send
@@ -448,8 +450,10 @@ fn is_html(target: &StdPath) -> bool {
 ///    building. The owner's own app (`devtools`, mode on or off) has its
 ///    entry page `no-store` always: a rebuild shows on the next load.
 ///
-/// `motion`: the manifest declares `device:motion`, so the page's
-/// Permissions-Policy lets it read the gyroscope and accelerometer.
+/// `window`: how the app's manifest asks its page to be shown. With
+/// `device:motion` the page's Permissions-Policy lets it read the gyroscope
+/// and accelerometer; with `window.isolated` every response carries
+/// [`CROSS_ORIGIN_ISOLATION`].
 ///
 /// `rebase`: the entry page and a stylesheet have their root-absolute
 /// references to the app's own files made relative ([`Rebase`]); the
@@ -459,7 +463,7 @@ async fn serve_ui_file(
     target: &StdPath,
     headers: &HeaderMap,
     devtools: Option<Devtools<'_>>,
-    motion: bool,
+    window: Option<&napp::manifest::AppWindow>,
     rebase: Option<&Rebase<'_>>,
 ) -> Response {
     let is_page = is_html(target);
@@ -558,13 +562,43 @@ async fn serve_ui_file(
         h.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, origin);
         h.append(header::VARY, HeaderValue::from_static("Origin"));
     }
-    if motion {
+    if window.is_some_and(|w| w.motion) {
         h.insert(
             "permissions-policy",
             HeaderValue::from_static(crate::middleware::PERMISSIONS_POLICY_WITH_MOTION),
         );
     }
+    if window.is_some_and(|w| w.isolated) {
+        for (name, value) in CROSS_ORIGIN_ISOLATION {
+            h.insert(name, HeaderValue::from_static(value));
+        }
+    }
     response
+}
+
+/// The headers that make an app's page cross-origin isolated (the
+/// manifest's `window.isolated`), on the page and on every file it loads:
+/// the page gets `SharedArrayBuffer`, which a threaded WebAssembly engine
+/// export needs. `Cross-Origin-Resource-Policy: same-origin` marks the
+/// app's own files as loadable under `require-corp`, and a worker's script
+/// must carry the embedder policy too. A file from another site without
+/// its own CORP header is then refused, so these go only on an app that
+/// asked. The desktop's `neboapp://` scheme sends the same set.
+pub const CROSS_ORIGIN_ISOLATION: [(&str, &str); 3] = [
+    ("cross-origin-opener-policy", "same-origin"),
+    ("cross-origin-embedder-policy", "require-corp"),
+    ("cross-origin-resource-policy", "same-origin"),
+];
+
+/// Whether the app whose `ui/` is `ui` asks for cross-origin isolation:
+/// `window.isolated` in the `manifest.json` beside it. For the desktop's
+/// `neboapp://` scheme, which reads the app's folder, not the loader.
+pub fn ui_is_isolated(ui: &StdPath) -> bool {
+    ui.parent()
+        .and_then(|dir| std::fs::read_to_string(dir.join("manifest.json")).ok())
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+        .and_then(|m| serde_json::from_value::<napp::manifest::AppWindowConfig>(m.get("window")?.clone()).ok())
+        .is_some_and(|w| w.isolated)
 }
 
 /// The request's `Origin` when it is the page's own: the same host the
@@ -2353,7 +2387,7 @@ mod media_serving_tests {
         let bytes: Vec<u8> = (0..len).map(|i| (i % 251) as u8).collect();
         std::fs::write(&model, &bytes).unwrap();
 
-        let resp = serve_ui_file(&model, &HeaderMap::new(), None, false, None).await;
+        let resp = serve_ui_file(&model, &HeaderMap::new(), None, None, None).await;
         assert_eq!(resp.status(), StatusCode::OK);
         assert_eq!(resp.headers()[header::CONTENT_LENGTH], len.to_string().as_str());
         let mut stream = resp.into_body().into_data_stream();
@@ -2373,7 +2407,7 @@ mod media_serving_tests {
             let mut h = HeaderMap::new();
             h.insert(header::RANGE, HeaderValue::from_str(&format!("bytes={start}-{end}")).unwrap());
             h
-        }, None, false, None)
+        }, None, None, None)
         .await;
         assert_eq!(part.status(), StatusCode::PARTIAL_CONTENT);
         assert_eq!(part.headers()[header::CONTENT_LENGTH], (end - start + 1).to_string().as_str());
@@ -2433,7 +2467,7 @@ mod app_file_caching_tests {
     #[tokio::test]
     async fn a_hashed_file_is_immutable_for_a_year() {
         let (_d, ui) = ui();
-        let r = serve_ui_file(&ui.join("main-0a8ksftt.js"), &HeaderMap::new(), None, false, None).await;
+        let r = serve_ui_file(&ui.join("main-0a8ksftt.js"), &HeaderMap::new(), None, None, None).await;
         assert_eq!(r.status(), StatusCode::OK);
         assert_eq!(get(&r, header::CACHE_CONTROL), Some("public, max-age=31536000, immutable"));
         assert!(get(&r, header::ETAG).is_some_and(|t| t.starts_with('"')));
@@ -2445,7 +2479,7 @@ mod app_file_caching_tests {
     async fn a_plain_asset_revalidates_and_answers_304_when_unchanged() {
         let (_d, ui) = ui();
         let film = ui.join("assets/hero.mp4");
-        let first = serve_ui_file(&film, &HeaderMap::new(), None, false, None).await;
+        let first = serve_ui_file(&film, &HeaderMap::new(), None, None, None).await;
         assert_eq!(first.status(), StatusCode::OK);
         assert_eq!(get(&first, header::CACHE_CONTROL), Some("no-cache"));
         assert_eq!(get(&first, header::ACCEPT_RANGES), Some("bytes"));
@@ -2453,7 +2487,7 @@ mod app_file_caching_tests {
         assert!(!etag.starts_with("W/"), "a strong tag");
         assert_eq!(body(first).await.len(), 256);
 
-        let again = serve_ui_file(&film, &req(&[(header::IF_NONE_MATCH, &etag)]), None, false, None).await;
+        let again = serve_ui_file(&film, &req(&[(header::IF_NONE_MATCH, &etag)]), None, None, None).await;
         assert_eq!(again.status(), StatusCode::NOT_MODIFIED);
         assert_eq!(get(&again, header::ETAG), Some(etag.as_str()));
         assert_eq!(get(&again, header::CACHE_CONTROL), Some("no-cache"));
@@ -2462,14 +2496,14 @@ mod app_file_caching_tests {
 
         // Weak and listed forms of the same tag match too; another does not.
         let listed = format!("\"other\", W/{etag}");
-        let r = serve_ui_file(&film, &req(&[(header::IF_NONE_MATCH, &listed)]), None, false, None).await;
+        let r = serve_ui_file(&film, &req(&[(header::IF_NONE_MATCH, &listed)]), None, None, None).await;
         assert_eq!(r.status(), StatusCode::NOT_MODIFIED);
-        let r = serve_ui_file(&film, &req(&[(header::IF_NONE_MATCH, "\"other\"")]), None, false, None).await;
+        let r = serve_ui_file(&film, &req(&[(header::IF_NONE_MATCH, "\"other\"")]), None, None, None).await;
         assert_eq!(r.status(), StatusCode::OK);
 
         // A changed file is a new tag: the old one gets the new bytes.
         std::fs::write(&film, b"new film").unwrap();
-        let changed = serve_ui_file(&film, &req(&[(header::IF_NONE_MATCH, &etag)]), None, false, None).await;
+        let changed = serve_ui_file(&film, &req(&[(header::IF_NONE_MATCH, &etag)]), None, None, None).await;
         assert_eq!(changed.status(), StatusCode::OK);
         assert_ne!(get(&changed, header::ETAG), Some(etag.as_str()));
         assert_eq!(body(changed).await, b"new film");
@@ -2480,18 +2514,18 @@ mod app_file_caching_tests {
     async fn the_entry_page_revalidates_and_answers_304() {
         let (_d, ui) = ui();
         let index = ui.join("index.html");
-        let first = serve_ui_file(&index, &HeaderMap::new(), None, false, None).await;
+        let first = serve_ui_file(&index, &HeaderMap::new(), None, None, None).await;
         assert_eq!(get(&first, header::CACHE_CONTROL), Some("no-cache"));
         assert_eq!(get(&first, header::CONTENT_TYPE), Some("text/html; charset=utf-8"));
         let etag = get(&first, header::ETAG).unwrap().to_string();
         assert!(String::from_utf8(body(first).await).unwrap().contains("data-nebo-bridge"));
 
-        let again = serve_ui_file(&index, &req(&[(header::IF_NONE_MATCH, &etag)]), None, false, None).await;
+        let again = serve_ui_file(&index, &req(&[(header::IF_NONE_MATCH, &etag)]), None, None, None).await;
         assert_eq!(again.status(), StatusCode::NOT_MODIFIED);
         assert!(body(again).await.is_empty());
 
         std::fs::write(&index, "<html><head></head><body>v2</body></html>").unwrap();
-        let changed = serve_ui_file(&index, &req(&[(header::IF_NONE_MATCH, &etag)]), None, false, None).await;
+        let changed = serve_ui_file(&index, &req(&[(header::IF_NONE_MATCH, &etag)]), None, None, None).await;
         assert_eq!(changed.status(), StatusCode::OK);
     }
 
@@ -2506,16 +2540,16 @@ mod app_file_caching_tests {
         std::fs::write(ui.join("help/faq.htm"), "<p>faq</p>").unwrap();
         let own = Some(Devtools { employee: "Kart", console: false, desktop: None });
         for name in ["render.html", "help/faq.htm"] {
-            let r = serve_ui_file(&ui.join(name), &HeaderMap::new(), own, false, None).await;
+            let r = serve_ui_file(&ui.join(name), &HeaderMap::new(), own, None, None).await;
             assert_eq!(get(&r, header::CACHE_CONTROL), Some("no-store"), "{name}");
             let html = String::from_utf8(body(r).await).unwrap();
             assert!(html.contains("data-nebo-bridge") && html.contains("nebo-app-id"), "{name}: {html}");
             assert!(html.contains("data-nebo-devtools"), "{name}");
-            let bought = serve_ui_file(&ui.join(name), &HeaderMap::new(), None, false, None).await;
+            let bought = serve_ui_file(&ui.join(name), &HeaderMap::new(), None, None, None).await;
             let html = String::from_utf8(body(bought).await).unwrap();
             assert!(html.contains("data-nebo-bridge") && !html.contains("data-nebo-devtools"), "{name}");
         }
-        let js = serve_ui_file(&ui.join("main-0a8ksftt.js"), &HeaderMap::new(), own, false, None).await;
+        let js = serve_ui_file(&ui.join("main-0a8ksftt.js"), &HeaderMap::new(), own, None, None).await;
         assert_eq!(body(js).await, b"console.log(1)");
     }
 
@@ -2525,14 +2559,14 @@ mod app_file_caching_tests {
         let (_d, ui) = ui();
         for name in ["index.html", "main-0a8ksftt.js", "assets/hero.mp4"] {
             let file = ui.join(name);
-            let tagged = serve_ui_file(&file, &HeaderMap::new(), None, false, None).await;
+            let tagged = serve_ui_file(&file, &HeaderMap::new(), None, None, None).await;
             let etag = get(&tagged, header::ETAG).unwrap().to_string();
-            let r = serve_ui_file(&file, &req(&[(header::IF_NONE_MATCH, &etag)]), Some(Devtools { employee: "Kart", console: true, desktop: None }), false, None).await;
+            let r = serve_ui_file(&file, &req(&[(header::IF_NONE_MATCH, &etag)]), Some(Devtools { employee: "Kart", console: true, desktop: None }), None, None).await;
             assert_eq!(r.status(), StatusCode::OK, "{name}");
             assert_eq!(get(&r, header::CACHE_CONTROL), Some("no-store"), "{name}");
             assert!(get(&r, header::ETAG).is_none(), "{name}");
         }
-        let page = serve_ui_file(&ui.join("index.html"), &HeaderMap::new(), Some(Devtools { employee: "Kart", console: true, desktop: None }), false, None).await;
+        let page = serve_ui_file(&ui.join("index.html"), &HeaderMap::new(), Some(Devtools { employee: "Kart", console: true, desktop: None }), None, None).await;
         assert!(String::from_utf8(body(page).await).unwrap().contains("data-nebo-devtools"));
     }
 
@@ -2542,12 +2576,12 @@ mod app_file_caching_tests {
     async fn an_own_apps_entry_page_is_never_kept() {
         let (_d, ui) = ui();
         let own = Some(Devtools { employee: "Kart", console: false, desktop: None });
-        let page = serve_ui_file(&ui.join("index.html"), &HeaderMap::new(), own, false, None).await;
+        let page = serve_ui_file(&ui.join("index.html"), &HeaderMap::new(), own, None, None).await;
         assert_eq!(get(&page, header::CACHE_CONTROL), Some("no-store"));
         assert!(get(&page, header::ETAG).is_none());
-        let hashed = serve_ui_file(&ui.join("main-0a8ksftt.js"), &HeaderMap::new(), own, false, None).await;
+        let hashed = serve_ui_file(&ui.join("main-0a8ksftt.js"), &HeaderMap::new(), own, None, None).await;
         assert_eq!(get(&hashed, header::CACHE_CONTROL), Some("public, max-age=31536000, immutable"));
-        let film = serve_ui_file(&ui.join("assets/hero.mp4"), &HeaderMap::new(), own, false, None).await;
+        let film = serve_ui_file(&ui.join("assets/hero.mp4"), &HeaderMap::new(), own, None, None).await;
         assert_eq!(get(&film, header::CACHE_CONTROL), Some("no-cache"));
     }
 
@@ -2556,16 +2590,16 @@ mod app_file_caching_tests {
     async fn ranges_follow_the_tag() {
         let (_d, ui) = ui();
         let film = ui.join("assets/hero.mp4");
-        let etag = get(&serve_ui_file(&film, &HeaderMap::new(), None, false, None).await, header::ETAG).unwrap().to_string();
+        let etag = get(&serve_ui_file(&film, &HeaderMap::new(), None, None, None).await, header::ETAG).unwrap().to_string();
 
-        let part = serve_ui_file(&film, &req(&[(header::RANGE, "bytes=10-19"), (header::IF_RANGE, &etag)]), None, false, None).await;
+        let part = serve_ui_file(&film, &req(&[(header::RANGE, "bytes=10-19"), (header::IF_RANGE, &etag)]), None, None, None).await;
         assert_eq!(part.status(), StatusCode::PARTIAL_CONTENT);
         assert_eq!(get(&part, header::CONTENT_RANGE), Some("bytes 10-19/256"));
         assert_eq!(get(&part, header::ETAG), Some(etag.as_str()));
         assert_eq!(get(&part, header::CACHE_CONTROL), Some("no-cache"));
         assert_eq!(body(part).await, (10..=19u8).collect::<Vec<_>>());
 
-        let stale = serve_ui_file(&film, &req(&[(header::RANGE, "bytes=10-19"), (header::IF_RANGE, "\"old\"")]), None, false, None).await;
+        let stale = serve_ui_file(&film, &req(&[(header::RANGE, "bytes=10-19"), (header::IF_RANGE, "\"old\"")]), None, None, None).await;
         assert_eq!(stale.status(), StatusCode::OK);
         assert_eq!(body(stale).await.len(), 256);
     }
@@ -2574,11 +2608,71 @@ mod app_file_caching_tests {
     #[tokio::test]
     async fn device_motion_opens_the_sensors_for_the_page() {
         let (_d, ui) = ui();
-        let r = serve_ui_file(&ui.join("index.html"), &HeaderMap::new(), None, true, None).await;
+        let motion = napp::manifest::AppWindow::from_manifest(None, &[napp::manifest::DEVICE_MOTION.into()]);
+        let r = serve_ui_file(&ui.join("index.html"), &HeaderMap::new(), None, Some(&motion), None).await;
         let policy = get(&r, header::HeaderName::from_static("permissions-policy")).unwrap();
         assert!(policy.contains("accelerometer=(self)") && policy.contains("gyroscope=(self)"), "{policy}");
-        let r = serve_ui_file(&ui.join("index.html"), &HeaderMap::new(), None, false, None).await;
+        let r = serve_ui_file(&ui.join("index.html"), &HeaderMap::new(), None, None, None).await;
         assert!(r.headers().get("permissions-policy").is_none(), "the default comes from the middleware");
+    }
+
+    // `window.isolated` serves the page and every file it loads cross-origin
+    // isolated (a threaded engine's .wasm, a 206 range, a 304); an app that
+    // did not ask gets none of it, so its CDN imports keep loading.
+    #[tokio::test]
+    async fn window_isolated_isolates_the_page_and_every_file() {
+        let (_d, ui) = ui();
+        std::fs::write(ui.join("game.wasm"), b"\0asm\x01\0\0\0").unwrap();
+        let cfg: napp::manifest::AppWindowConfig = serde_json::from_str(r#"{"fullscreen":true,"isolated":true}"#).unwrap();
+        let isolated = napp::manifest::AppWindow::from_manifest(Some(&cfg), &[]);
+        let plain = napp::manifest::AppWindow::from_manifest(None, &[]);
+        let isolation = |r: &Response| {
+            CROSS_ORIGIN_ISOLATION.iter().map(|(n, _)| r.headers().get(*n).and_then(|v| v.to_str().ok()).map(str::to_string)).collect::<Vec<_>>()
+        };
+        let on = vec![Some("same-origin".to_string()), Some("require-corp".to_string()), Some("same-origin".to_string())];
+        let off = vec![None, None, None];
+
+        let film = ui.join("assets/hero.mp4");
+        let etag = get(&serve_ui_file(&film, &HeaderMap::new(), None, None, None).await, header::ETAG).unwrap().to_string();
+        let cases: Vec<(&str, PathBuf, HeaderMap, StatusCode)> = vec![
+            ("page", ui.join("index.html"), HeaderMap::new(), StatusCode::OK),
+            ("wasm", ui.join("game.wasm"), HeaderMap::new(), StatusCode::OK),
+            ("script", ui.join("main-0a8ksftt.js"), HeaderMap::new(), StatusCode::OK),
+            ("range", film.clone(), req(&[(header::RANGE, "bytes=0-9")]), StatusCode::PARTIAL_CONTENT),
+            ("past the end", film.clone(), req(&[(header::RANGE, "bytes=900-")]), StatusCode::RANGE_NOT_SATISFIABLE),
+            ("unchanged", film.clone(), req(&[(header::IF_NONE_MATCH, &etag)]), StatusCode::NOT_MODIFIED),
+        ];
+        for (what, file, h, status) in cases {
+            let r = serve_ui_file(&file, &h, None, Some(&isolated), Some(&Rebase::new(&ui, ""))).await;
+            assert_eq!(r.status(), status, "{what}");
+            assert_eq!(isolation(&r), on, "{what}");
+            let r = serve_ui_file(&file, &h, None, Some(&plain), Some(&Rebase::new(&ui, ""))).await;
+            assert_eq!(r.status(), status, "{what}");
+            assert_eq!(isolation(&r), off, "{what}: an app that did not ask");
+            let r = serve_ui_file(&file, &h, None, None, None).await;
+            assert_eq!(isolation(&r), off, "{what}: no window");
+        }
+        let wasm = serve_ui_file(&ui.join("game.wasm"), &HeaderMap::new(), None, Some(&isolated), None).await;
+        assert_eq!(get(&wasm, header::CONTENT_TYPE), Some("application/wasm"));
+    }
+
+    // The desktop scheme reads `window.isolated` from the manifest beside `ui/`.
+    #[test]
+    fn the_desktop_scheme_reads_window_isolated_beside_ui() {
+        let dir = tempfile::tempdir().unwrap();
+        let ui = dir.path().join("ui");
+        std::fs::create_dir_all(&ui).unwrap();
+        assert!(!ui_is_isolated(&ui), "no manifest");
+        for (manifest, isolated) in [
+            (r#"{"id":"g","window":{"fullscreen":true,"isolated":true}}"#, true),
+            (r#"{"id":"g","window":{"isolated":false}}"#, false),
+            (r#"{"id":"g","window":{"title":"Deals"}}"#, false),
+            (r#"{"id":"g","permissions":["device:motion"]}"#, false),
+            ("not json", false),
+        ] {
+            std::fs::write(dir.path().join("manifest.json"), manifest).unwrap();
+            assert_eq!(ui_is_isolated(&ui), isolated, "{manifest}");
+        }
     }
 
     /// A Vite build without `base: './'`: root paths to its own files.
@@ -2631,12 +2725,12 @@ mod app_file_caching_tests {
         ] {
             let target = resolve_ui_file(&ui, rel).unwrap();
             let rebase = Rebase::new(&ui, rel);
-            let html = String::from_utf8(body(serve_ui_file(&target, &HeaderMap::new(), None, false, Some(&rebase)).await).await).unwrap();
+            let html = String::from_utf8(body(serve_ui_file(&target, &HeaderMap::new(), None, None, Some(&rebase)).await).await).unwrap();
             let src = module_src(&html);
             let asked = browser_resolves(page, &src);
             let inside = asked.split("/apps/app-1/ui/").nth(1).unwrap_or_else(|| panic!("{page}: {src} leaves the app: {asked}"));
             let js = resolve_ui_file(&ui, inside).unwrap();
-            let r = serve_ui_file(&js, &HeaderMap::new(), None, false, Some(&Rebase::new(&ui, inside))).await;
+            let r = serve_ui_file(&js, &HeaderMap::new(), None, None, Some(&Rebase::new(&ui, inside))).await;
             assert_eq!(r.status(), StatusCode::OK, "{page}");
             assert_eq!(get(&r, header::CONTENT_TYPE), Some("application/javascript; charset=utf-8"), "{page}");
             assert_eq!(body(r).await, b"console.log('flap')", "{page}");
@@ -2650,7 +2744,7 @@ mod app_file_caching_tests {
 
         // A stylesheet's root paths resolve from its own place; a file the app lacks is left as written.
         let css = ui.join("assets/index-Bx1y2z3q.css");
-        let r = serve_ui_file(&css, &HeaderMap::new(), None, false, Some(&Rebase::new(&ui, "assets/index-Bx1y2z3q.css"))).await;
+        let r = serve_ui_file(&css, &HeaderMap::new(), None, None, Some(&Rebase::new(&ui, "assets/index-Bx1y2z3q.css"))).await;
         assert_eq!(get(&r, header::CONTENT_TYPE), Some("text/css; charset=utf-8"));
         assert!(get(&r, header::ETAG).is_some());
         let text = String::from_utf8(body(r).await).unwrap();
@@ -2665,14 +2759,14 @@ mod app_file_caching_tests {
         let js = ui.join("assets/index-C_-Z6QB_.js");
         for (origin, host) in [("https://neboai.com", "neboai.com"), ("http://localhost:27895", "localhost:27895")] {
             let h = req(&[(header::ORIGIN, origin), (header::HOST, host), (header::HeaderName::from_static("sec-fetch-mode"), "cors")]);
-            let r = serve_ui_file(&js, &h, None, false, Some(&Rebase::new(&ui, "assets/index-C_-Z6QB_.js"))).await;
+            let r = serve_ui_file(&js, &h, None, None, Some(&Rebase::new(&ui, "assets/index-C_-Z6QB_.js"))).await;
             assert_eq!(r.status(), StatusCode::OK, "{origin}");
             assert_eq!(get(&r, header::CONTENT_TYPE), Some("application/javascript; charset=utf-8"), "{origin}");
             assert_eq!(get(&r, header::ACCESS_CONTROL_ALLOW_ORIGIN), Some(origin), "{origin}");
             assert!(r.headers().get_all(header::VARY).iter().any(|v| v == "Origin"), "{origin}");
         }
         let foreign = req(&[(header::ORIGIN, "https://evil.example"), (header::HOST, "neboai.com")]);
-        let r = serve_ui_file(&js, &foreign, None, false, None).await;
+        let r = serve_ui_file(&js, &foreign, None, None, None).await;
         assert!(r.headers().get(header::ACCESS_CONTROL_ALLOW_ORIGIN).is_none());
         // A missing script is a 404, never the entry page in its place.
         assert_eq!(resolve_ui_file(&ui, "assets/index-old.js"), Err(StatusCode::NOT_FOUND));
@@ -2698,7 +2792,7 @@ mod app_file_caching_tests {
             match resolve_ui_file(&ui, rel) {
                 Ok(f) => {
                     assert_eq!(f, ui.join("index.html"), "{rel}");
-                    let html = String::from_utf8(body(serve_ui_file(&f, &HeaderMap::new(), None, false, Some(&Rebase::new(&ui, rel))).await).await).unwrap();
+                    let html = String::from_utf8(body(serve_ui_file(&f, &HeaderMap::new(), None, None, Some(&Rebase::new(&ui, rel))).await).await).unwrap();
                     assert!(!html.contains("main.tsx") && html.contains("index-C_-Z6QB_.js"), "{rel}: {html}");
                 }
                 Err(s) => assert!(s == StatusCode::NOT_FOUND || s == StatusCode::BAD_REQUEST, "{rel}: {s}"),

@@ -174,6 +174,15 @@ pub struct AppWindowConfig {
     /// Open App. Off unless asked for. Fullscreen apps may ask for it too.
     #[serde(default, alias = "openOnWork", skip_serializing_if = "std::ops::Not::not")]
     pub open_on_work: bool,
+    /// `true` serves the app's page and every file it loads cross-origin
+    /// isolated (`Cross-Origin-Opener-Policy: same-origin`,
+    /// `Cross-Origin-Embedder-Policy: require-corp`), which gives it
+    /// `SharedArrayBuffer`: a threaded WebAssembly engine export (Godot 4,
+    /// Unity, Bevy) needs it. The page can then load nothing from another
+    /// site (a CDN script, esm.sh, a remote image): everything it uses ships
+    /// in `ui/`. Off unless asked for.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub isolated: bool,
 }
 
 /// The orientations a window may ask for; the first is the default.
@@ -197,7 +206,7 @@ impl AppWindowConfig {
 
 /// How an app asks to be shown, as every client reads it (`appWindow` on an
 /// employee): the manifest's `window.fullscreen`, `window.orientation` and
-/// `window.pull_to_refresh`, `window.voice` and `window.open_on_work`, and whether its permissions include `device:motion`.
+/// `window.pull_to_refresh`, `window.voice`, `window.open_on_work` and `window.isolated`, and whether its permissions include `device:motion`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct AppWindow {
     pub fullscreen: bool,
@@ -212,6 +221,8 @@ pub struct AppWindow {
     /// chat's record.
     #[serde(rename = "openOnWork")]
     pub open_on_work: bool,
+    /// Whether the app's page is served cross-origin isolated.
+    pub isolated: bool,
 }
 
 impl AppWindow {
@@ -230,6 +241,7 @@ impl AppWindow {
             pull_to_refresh: !fullscreen && window.is_some_and(|w| w.pull_to_refresh),
             voice: !fullscreen && window.is_some_and(|w| w.voice),
             open_on_work: window.is_some_and(|w| w.open_on_work),
+            isolated: window.is_some_and(|w| w.isolated),
         }
     }
 }
@@ -256,6 +268,7 @@ impl Default for AppWindowConfig {
             pull_to_refresh: false,
             voice: false,
             open_on_work: false,
+            isolated: false,
         }
     }
 }
@@ -431,16 +444,16 @@ mod tests {
         .unwrap();
         m.validate().unwrap();
         let w = AppWindow::from_manifest(m.window.as_ref(), &m.permissions);
-        assert_eq!(w, AppWindow { fullscreen: true, orientation: "landscape", motion: true, pull_to_refresh: false, voice: false, open_on_work: false });
+        assert_eq!(w, AppWindow { fullscreen: true, orientation: "landscape", motion: true, pull_to_refresh: false, voice: false, open_on_work: false, isolated: false });
         assert_eq!(
             serde_json::to_value(&w).unwrap(),
-            serde_json::json!({"fullscreen": true, "orientation": "landscape", "motion": true, "pullToRefresh": false, "voice": false, "openOnWork": false})
+            serde_json::json!({"fullscreen": true, "orientation": "landscape", "motion": true, "pullToRefresh": false, "voice": false, "openOnWork": false, "isolated": false})
         );
 
         // Missing = today's view: not fullscreen, portrait, no motion, and no
         // pull-to-refresh unless the app asks for it.
         let today = AppWindow::from_manifest(None, &[]);
-        assert_eq!(today, AppWindow { fullscreen: false, orientation: "portrait", motion: false, pull_to_refresh: false, voice: false, open_on_work: false });
+        assert_eq!(today, AppWindow { fullscreen: false, orientation: "portrait", motion: false, pull_to_refresh: false, voice: false, open_on_work: false, isolated: false });
         let asks: AppWindowConfig = serde_json::from_str(r#"{"pull_to_refresh":true}"#).unwrap();
         assert!(AppWindow::from_manifest(Some(&asks), &[]).pull_to_refresh);
         let plain: AppWindowConfig = serde_json::from_str(r#"{"title":"Deals"}"#).unwrap();
@@ -475,6 +488,12 @@ mod tests {
             assert!(AppWindow::from_manifest(Some(&work), &[]).open_on_work);
             assert_eq!(serde_json::to_value(&work).unwrap()["open_on_work"], true);
         }
+        // Cross-origin isolation only when asked for (a threaded engine
+        // export); it survives being written back.
+        assert!(!AppWindow::from_manifest(Some(&off), &[]).isolated);
+        let iso: AppWindowConfig = serde_json::from_str(r#"{"isolated":true,"fullscreen":true}"#).unwrap();
+        assert!(AppWindow::from_manifest(Some(&iso), &[]).isolated);
+        assert_eq!(serde_json::to_value(&iso).unwrap()["isolated"], true);
 
         // A window written back keeps its old shape when the new keys are unset.
         assert_eq!(
