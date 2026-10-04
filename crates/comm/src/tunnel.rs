@@ -11,7 +11,7 @@
 //! rather than trusting the hub blindly (Phase 3, `nebo-cloud-architecture.md`):
 //! it dials only a TLS-authenticated (`wss://`) hub, presents its bot token,
 //! and refuses to proxy local-trust surfaces that have no auth of their own
-//! (`/ws/extension`, `/api/v1/update/`) — see `is_blocked_path`. Everything
+//! (`/ws/extension`, `/api/v1/update/` but its read-only `check`) — see `is_blocked_path`. Everything
 //! else (the management REST API + `/ws` chat stream) passes through unchanged.
 
 use std::future::Future;
@@ -273,13 +273,16 @@ fn verify_hub_url(hub_url: &str) -> Result<(), TunnelError> {
 ///   `evaluate`, local-file read via `file_upload`) — inherently local, never
 ///   legitimate from a remote UI.
 /// - `/api/v1/update/` manages and swaps the local binary — a local-only op.
+///   Except `/api/v1/update/check`: it only reports the running and newest
+///   versions, is authenticated like the rest of the API, and changes
+///   nothing, so the owner's phone can ask it. Applying stays local.
 /// - `/api/v1/import/` reads arbitrary local install directories and copies
 ///   their credentials — an owner-machine operation, never legitimate remotely.
 fn is_blocked_path(path: &str) -> bool {
     let p = path.split('?').next().unwrap_or(path);
     p == "/ws/extension"
         || p.starts_with("/ws/extension/")
-        || p.starts_with("/api/v1/update/")
+        || (p.starts_with("/api/v1/update/") && p != "/api/v1/update/check")
         || p.starts_with("/api/v1/import/")
 }
 
@@ -431,7 +434,11 @@ mod tests {
         assert!(is_blocked_path("/ws/extension"));
         assert!(is_blocked_path("/ws/extension?x=1"));
         assert!(is_blocked_path("/api/v1/update/apply"));
-        assert!(is_blocked_path("/api/v1/update/check"));
+        assert!(is_blocked_path("/api/v1/update/apply?x=1"));
+        assert!(is_blocked_path("/api/v1/update/check/../apply"));
+        // Reading the versions is not a local-trust surface: it passes.
+        assert!(!is_blocked_path("/api/v1/update/check"));
+        assert!(!is_blocked_path("/api/v1/update/check?x=1"));
         assert!(is_blocked_path("/api/v1/import/scan"));
         assert!(is_blocked_path("/api/v1/import/apply?x=1"));
         // Management UI + chat stream must still pass.
