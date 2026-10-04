@@ -176,7 +176,7 @@ impl Kind {
         match self {
             Kind::ListEmployees => "list employees and what each is doing",
             Kind::GetEmployee => "show an employee's instructions, workflows and current work",
-            Kind::FindEmployees => "search the marketplace for employees to hire",
+            Kind::FindEmployees => "search Nebo's marketplace for employees",
             Kind::HireEmployee => "install an employee by marketplace code",
             Kind::CreateEmployee => "make a new employee with duties",
             Kind::UpdateEmployee => "rename or change an employee or app",
@@ -196,7 +196,7 @@ impl Kind {
             Kind::GetEmployee => "Shows one employee: description, instructions, workflows and their triggers, skills, files, and its current work (the request, recent calls, latest words)."
                 .to_string(),
             Kind::FindEmployees => format!(
-                "Searches the marketplace for employees to hire, and the tools they use.\n\
+                "Searches Nebo's own marketplace (NeboAI's: \"our marketplace\") for employees to hire, and the tools they use; leave `query` out to see what's in it and how many there are. Never another product's store.\n\
                 - Pass every role the owner named as a list in one call (`query: [\"bookkeeper\", \"social media manager\"]`); never search roles one at a time. Leave `query` out to browse the catalog.\n\
                 - Results mark who is already hired and put NeboAI's own employees first ([NeboAI]); prefer them.\n\
                 - One hire card offers the best match for every query; the owner hires with one tap. Never paste install codes into chat.\n\
@@ -447,6 +447,18 @@ impl DynTool for EmployeeTool {
         self.kind.name()
     }
 
+    /// "Marketplace" in a request means Nebo's: it loads find_employees, so
+    /// the answer comes from Nebo's catalog, not whichever installed plugin
+    /// sells things (live 2026-10-04: Shopify was asked for credentials).
+    fn triggers(&self) -> &[String] {
+        static MARKETPLACE: std::sync::LazyLock<Vec<String>> =
+            std::sync::LazyLock::new(|| vec!["marketplace".to_string()]);
+        match self.kind {
+            Kind::FindEmployees => &MARKETPLACE,
+            _ => &[],
+        }
+    }
+
     fn description(&self) -> String {
         self.kind.description()
     }
@@ -576,6 +588,33 @@ mod tests {
         for t in &family {
             assert_eq!(t.should_defer(), !matches!(t.name(), "list_employees" | "get_employee"), "{}", t.name());
         }
+    }
+
+    /// "Marketplace" in a request loads Nebo's marketplace search, the one
+    /// tool that answers it (live 2026-10-04: an unconnected Shopify was
+    /// asked instead). No other employee tool is loaded by it.
+    #[test]
+    fn marketplace_in_a_request_loads_nebos_marketplace_search() {
+        let (family, _dir) = family();
+        let entries: Vec<crate::find_tools::DeferredEntry> = family
+            .iter()
+            .filter(|t| t.should_defer())
+            .map(|t| crate::find_tools::DeferredEntry {
+                definition: ai::ToolDefinition {
+                    name: t.name().to_string(),
+                    description: t.description(),
+                    input_schema: t.schema(),
+                },
+                search_hint: t.search_hint().to_string(),
+                triggers: t.triggers().to_vec(),
+            })
+            .collect();
+        let found: Vec<&str> = crate::find_tools::triggered(&entries, "How many employees are in our marketplace?", 3)
+            .into_iter()
+            .map(|e| e.definition.name.as_str())
+            .collect();
+        assert_eq!(found, ["find_employees"]);
+        assert!(tool(&family, "find_employees").description().contains("Nebo's own marketplace"));
     }
 
     /// The model reads these, and the owner hears it back: employees, never
