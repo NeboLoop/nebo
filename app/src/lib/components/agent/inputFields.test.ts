@@ -5,6 +5,7 @@ import {
 	shortLabel,
 	hintFor,
 	unitFor,
+	isMoney,
 	boundsFor,
 	humanizeKey,
 	withDefaults,
@@ -87,7 +88,7 @@ describe('setup questions', () => {
 		['buffer_minutes', true, 'Buffer'],
 		['deposit_percent', true, 'Deposit'],
 		['dunning_max_attempts', true, 'Dunning maximum attempts'],
-		['exception_max_months', true, 'Exception maximum months'],
+		['exception_max_months', true, 'Exception maximum'],
 		['abuse_count_threshold', true, 'Abuse count threshold'],
 		['adhoc_promote_count', true, 'Adhoc promote'],
 		['close_day', true, 'Close day'],
@@ -103,8 +104,19 @@ describe('setup questions', () => {
 		['pto_accrual_days', true, 'PTO accrual'],
 		['mrr_alert_pct', true, 'MRR alert'],
 		['sku_reorder_qty', true, 'SKU reorder quantity'],
-		['minimum_cash_cents', true, 'Minimum cash cents'],
-		['forecast_horizon_weeks', true, 'Forecast horizon weeks'],
+		['minimum_cash_cents', true, 'Minimum cash'],
+		['review_threshold_cents', true, 'Review threshold'],
+		['no_show_policy', false, 'No show policy'],
+		['no_show_wait_minutes', true, 'No show wait'],
+		['invoice_no', false, 'Invoice number'],
+		['po_no', true, 'Po number'],
+		['pct_complete_alert', true, 'Percent complete alert'],
+		['discount_pct_cap', true, 'Discount percent cap'],
+		['benchmark_refresh_years', true, 'Benchmark refresh'],
+		['reassess_months_high', true, 'Reassess months high'],
+		['count_capacity_per_week', true, 'Count capacity per week'],
+		['retention_year', true, 'Retention'],
+		['forecast_horizon_weeks', true, 'Forecast horizon'],
 		['business_hours', false, 'Business hours'],
 		['counsel_email', false, 'Counsel email'],
 		['finance.ap.invoice_mailbox', false, 'Invoice mailbox'],
@@ -150,5 +162,20 @@ describe('setup questions', () => {
 		expect(boundsFor(f({ type: 'number', key: 'day_of_week' }))).toEqual({ min: undefined, max: undefined });
 		expect(stepNumber(f({ type: 'number', key: 'close_day' }), 31, 1)).toBe(31);
 		expect(stepNumber(f({ type: 'number', key: 'close_day' }), '', 1)).toBe(2);
+	});
+
+	it('shows weeks, months and years as the unit, never a rate', () => {
+		expect(unitFor(f({ type: 'number', key: 'forecast_horizon_weeks' }))).toEqual({ key: 'units.weeks' });
+		expect(unitFor(f({ type: 'number', key: 'exception_max_months' }))).toEqual({ key: 'units.months' });
+		expect(unitFor(f({ type: 'number', key: 'benchmark_refresh_years' }))).toEqual({ key: 'units.years' });
+		expect(unitFor(f({ type: 'number', key: 'count_capacity_per_week' }))).toBeNull();
+	});
+
+	it('treats a cents key as money: no unit, no default', () => {
+		const cents = f({ type: 'number', key: 'review_threshold_cents', default: 50000 });
+		expect(isMoney(cents)).toBe(true);
+		expect(unitFor(cents)).toBeNull();
+		expect(withDefaults([cents], {})).toEqual({});
+		expect(isMoney(f({ type: 'number', key: 'cents_per_mile' }))).toBe(false);
 	});
 });
