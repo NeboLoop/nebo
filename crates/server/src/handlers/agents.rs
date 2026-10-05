@@ -678,6 +678,7 @@ fn spawn_agent_intro(state: &AppState, agent_id: &str, name: &str, brand_new: bo
         cwd: None,
         model_override: None,
         client_id: None,
+        platform: None,
         message_id: None,
     };
     let st = state.clone();
@@ -3908,6 +3909,7 @@ pub async fn chat_with_agent(
         cwd: None,
         model_override: None,
         client_id: None,
+        platform: None,
         message_id: None,
     };
 

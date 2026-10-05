@@ -1453,6 +1453,7 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
             untrusted_input: cx.workflow().is_some_and(|m| m.tainted),
             run_cwd: cx.request.seat.cwd.as_deref(),
             channel_ctx: cx.request.delivery.channel_ctx.as_ref(),
+            platform: cx.request.delivery.platform.as_deref(),
             model_override: &cx.model,
             memory_user_id: &memory_user_id,
             memory_topics: &cx.seat.memory_topics,
@@ -3076,6 +3077,7 @@ mod tests {
             delivery: Delivery {
                 channel: "web".into(),
                 channel_ctx: None,
+                platform: None,
                 mention_briefing: None,
             },
             cancel: tokio_util::sync::CancellationToken::new(),

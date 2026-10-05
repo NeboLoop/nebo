@@ -445,6 +445,10 @@ pub enum ForkKind {
 pub struct Delivery {
     pub channel: String,
     pub channel_ctx: Option<tools::ChannelContext>,
+    /// The phone app's platform (`ios`, `android`) when the owner's message
+    /// came from it; every tool call of the turn carries it
+    /// (`ToolContext::platform`). `None` for every other client and run.
+    pub platform: Option<String>,
     /// Team roster, @mention and room briefing; rides as a `RunBriefing` fact.
     pub mention_briefing: Option<String>,
 }

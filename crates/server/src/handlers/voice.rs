@@ -662,7 +662,7 @@ pub(crate) async fn run_delegated_task(
             tool_scope: None,
         },
         mode: agent::harness::TurnMode::Chat,
-        delivery: agent::harness::Delivery { channel: "voice".into(), channel_ctx: None, mention_briefing: briefing },
+        delivery: agent::harness::Delivery { channel: "voice".into(), channel_ctx: None, platform: None, mention_briefing: briefing },
         cancel: cancel_token.clone(),
         progress: Some(agent::RunProgress {
             run_id: run_handle.run_id.clone(),

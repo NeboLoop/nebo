@@ -97,7 +97,7 @@ pub fn child_request(
         session_key,
         input,
         seat,
-        delivery: Delivery { channel: "subagent".to_string(), channel_ctx: None, mention_briefing: None },
+        delivery: Delivery { channel: "subagent".to_string(), channel_ctx: None, platform: None, mention_briefing: None },
         cancel: parent.cancel.clone(),
         progress: None,
     }

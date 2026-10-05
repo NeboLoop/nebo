@@ -429,6 +429,7 @@ async fn handle_app_ws_message(state: &AppState, agent_id: &str, text: &str) {
                     cwd: None,
                     model_override: None,
                     client_id: None,
+                    platform: None,
                     message_id: None,
                 };
 
@@ -926,6 +927,7 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState, ua: String, pl
                                     debug!(surface_id = %surface_id, action = %action_name, component = %component_id, "a2ui_action received");
 
                                     let state_clone = state.clone();
+                                    let platform = platform.clone();
                                     tokio::spawn(async move {
                                         // Try deterministic dispatch first
                                         let handled = crate::a2ui_actions::dispatch(
@@ -1001,6 +1003,7 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState, ua: String, pl
                                             cwd: None,
                                             model_override: None,
                                             client_id: None,
+                                            platform,
                                             message_id: None,
                                         };
 
@@ -1963,6 +1966,7 @@ async fn dispatch_payload(state: &AppState, payload: ChatPayload, hidden: bool) 
             cwd: (!cwd.is_empty()).then(|| std::path::PathBuf::from(cwd)),
             model_override: (!model_override.is_empty()).then_some(model_override),
             client_id: client_id.clone(),
+            platform: platform.clone(),
             message_id: message_id.clone(),
         };
         run_chat(state, config).await;
@@ -1985,6 +1989,7 @@ async fn dispatch_payload(state: &AppState, payload: ChatPayload, hidden: bool) 
                     &agent_id,
                     origin_matter.as_deref(),
                     client_id.clone(),
+                    platform.clone(),
                 )
                 .await;
             }
@@ -2014,6 +2019,7 @@ async fn fork_mention_chat(
     origin_agent_id: &str,
     origin_matter: Option<&str>,
     client_id: Option<String>,
+    platform: Option<String>,
 ) {
     use crate::chat_dispatch::{ChatConfig, run_chat};
 
@@ -2064,6 +2070,7 @@ async fn fork_mention_chat(
         cwd: None,
         model_override: None,
         client_id,
+        platform,
         message_id: None,
     };
 

@@ -193,6 +193,7 @@ fn scheduled_turn(
         delivery: Delivery {
             channel: channel.to_string(),
             channel_ctx,
+            platform: None,
             mention_briefing: None,
         },
         cancel,

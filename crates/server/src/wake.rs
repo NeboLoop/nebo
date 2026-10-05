@@ -265,6 +265,7 @@ pub(crate) async fn answer_thread(
         cwd: None,
         model_override: None,
         client_id: None,
+        platform: None,
         message_id: None,
     };
     // A chat channel's conversation hears the reply where it was asked.

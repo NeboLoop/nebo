@@ -684,6 +684,23 @@ pub fn hub_lists(id: &str, listed: Option<(&str, &str, &str, bool)>) {
     }
 }
 
+fn hub_sold() -> &'static Mutex<std::collections::HashMap<String, (String, String)>> {
+    static SOLD: OnceLock<Mutex<std::collections::HashMap<String, (String, String)>>> = OnceLock::new();
+    SOLD.get_or_init(Default::default)
+}
+
+/// Something the hub stand-in sells under `code` (`kind`: "agent",
+/// "skill", ...): its redeem answers `payment_required` with the checkout
+/// [`hub_checkout_url`] and a price, as the hub's does for a paid listing.
+pub fn hub_sells(code: &str, name: &str, kind: &str) {
+    hub_sold().lock().unwrap_or_else(|e| e.into_inner()).insert(code.to_string(), (name.to_string(), kind.to_string()));
+}
+
+/// The checkout the stand-in hands out for a code it sells.
+pub fn hub_checkout_url(code: &str) -> String {
+    format!("https://pay.neboai.test/checkout/{code}")
+}
+
 fn hub_hidden_connectors() -> &'static Mutex<std::collections::HashMap<String, String>> {
     static HIDDEN: OnceLock<Mutex<std::collections::HashMap<String, String>>> = OnceLock::new();
     HIDDEN.get_or_init(Default::default)
@@ -797,6 +814,14 @@ fn hub_stand_in() -> String {
                 "artifact": { "id": id, "name": name, "slug": slug, "type": kind, "code": code },
             }))
         };
+        if let Some((name, kind)) = hub_sold().lock().unwrap_or_else(|e| e.into_inner()).get(&code).cloned() {
+            return Ok(axum::Json(json!({
+                "status": "payment_required",
+                "artifact": { "id": format!("sold-{code}"), "name": name, "slug": name.to_lowercase().replace(' ', "-"), "type": kind, "code": code },
+                "checkoutUrl": hub_checkout_url(&code),
+                "tier": { "name": "Monthly", "recurringPriceCents": 900 },
+            })));
+        }
         if let Some(p) = hub_plugins().lock().unwrap_or_else(|e| e.into_inner()).get(&code).cloned() {
             return Ok(artifact(hub_plugin_id(&p.slug), p.name, p.slug, "plugin"));
         }

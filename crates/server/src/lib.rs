@@ -5046,6 +5046,7 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
             cwd: None,
             model_override: None,
             client_id: None,
+            platform: None,
             message_id: None,
         };
 
@@ -5231,6 +5232,7 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
             cwd: None,
             model_override: None,
             client_id: None,
+            platform: None,
             message_id: None,
         };
 
@@ -5515,6 +5517,7 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
                 cwd: None,
                 model_override: None,
                 client_id: None,
+                platform: None,
                 message_id: None,
             };
 
@@ -5629,6 +5632,7 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
             cwd: None,
             model_override: None,
             client_id: None,
+            platform: None,
             message_id: None,
         };
 
@@ -6429,6 +6433,7 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
                 cwd: None,
                 model_override: None,
                 client_id: None,
+                platform: None,
                 message_id: None,
             };
 
