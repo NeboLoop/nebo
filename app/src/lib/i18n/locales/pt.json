@@ -1593,6 +1593,7 @@
 		"resetsInDays": "Reinicia em {days}d",
 		"resetsInTime": "Reinicia em {hours}h {minutes}m",
 		"percentUsed": "{percent}% utilizado",
+		"thisMonth": "Este mês",
 		"weekly": "Semanal",
 		"noUsageData": "Ainda sem dados de utilização disponíveis. O rastreio de utilização começa quando utiliza o Nebo AI.",
 		"budgetBalance": "Saldo do orçamento",

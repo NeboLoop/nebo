@@ -1593,6 +1593,7 @@
 		"resetsInDays": "Set semula dalam {days}h",
 		"resetsInTime": "Set semula dalam {hours}j {minutes}m",
 		"percentUsed": "{percent}% digunakan",
+		"thisMonth": "Bulan ini",
 		"weekly": "Mingguan",
 		"noUsageData": "Belum ada data penggunaan. Penjejakan penggunaan bermula apabila anda menggunakan Nebo AI.",
 		"budgetBalance": "Baki bajet",

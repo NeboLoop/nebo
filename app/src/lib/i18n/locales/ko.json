@@ -1593,6 +1593,7 @@
 		"resetsInDays": "{days}일 후 초기화",
 		"resetsInTime": "{hours}시간 {minutes}분 후 초기화",
 		"percentUsed": "{percent}% 사용됨",
+		"thisMonth": "이번 달",
 		"weekly": "주간",
 		"noUsageData": "아직 사용량 데이터가 없습니다. Nebo AI를 사용하면 사용량 추적이 시작됩니다.",
 		"budgetBalance": "예산 잔액",

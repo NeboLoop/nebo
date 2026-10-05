@@ -51,6 +51,12 @@ pub struct JanusUsage {
     pub weekly_limit_credits: u64,
     pub weekly_remaining_credits: u64,
     pub weekly_reset_at: String,
+    /// The plan's month: whether the plan includes AI work, the percentage
+    /// of it used, and when it resets. Janus never sends the plan as an
+    /// amount, and neither does Nebo.
+    pub plan_included: bool,
+    pub plan_used_percent: u64,
+    pub plan_reset_at: String,
     // Budget pools
     pub budget_free_available: u64,
     pub budget_gift_available: u64,
