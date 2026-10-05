@@ -222,10 +222,13 @@ async fn send_from_phone_line(store: &Store, agent_id: Option<&str>, input: &ser
     let api = crate::build_neboai_api(store).ok()?;
     let lines = api.list_phone_lines().await.ok()?;
     let wanted = input["from"].as_str().filter(|s| !s.is_empty());
+    // A line names its employee by this Nebo's id or by the one NeboAI knows.
+    let loop_id = store.get_agent(agent_id).ok().flatten().and_then(|a| a.loop_agent_id).filter(|id| !id.is_empty());
+    let is_mine = |id: Option<&str>| id.is_some() && (id == Some(agent_id) || id == loop_id.as_deref());
     let mine: Vec<&serde_json::Value> = lines["numbers"]
         .as_array()?
         .iter()
-        .filter(|l| l["agentId"].as_str() == Some(agent_id) && l["smsEnabled"].as_bool() == Some(true))
+        .filter(|l| is_mine(l["agentId"].as_str()) && l["smsEnabled"].as_bool() == Some(true))
         .collect();
     let line = match wanted {
         Some(w) => mine.iter().copied().find(|l| l["number"].as_str() == Some(w)),
