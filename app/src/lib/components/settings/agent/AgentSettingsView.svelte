@@ -10,6 +10,7 @@
   import { getActivityType } from '$lib/utils/workflowTypes';
   import type { AgentPageContext, WorkflowConfig, WorkflowActivity } from '$lib/types/agentPage';
   import { getWebSocketClient } from '$lib/websocket/client';
+  import { isSignInFor } from '$lib/utils/pluginSignIn';
   import { createChatController } from '$lib/chat/controller.svelte';
   import ChatPane from '$lib/components/chat/ChatPane.svelte';
   import SetupWizard from '$lib/components/SetupWizard.svelte';
@@ -1095,7 +1096,9 @@
       // plugin_auth_url is opened once, globally, in listeners.ts — not here.
       ws.on('plugin_auth_complete', (data: Record<string, unknown>) => {
         const slug = data.plugin as string;
-        if (slug && slug === addAccountConnectingSlug) {
+        // The form closes on THIS employee's sign-in only: another employee's
+        // account for the same plugin finishing is not this one landing.
+        if (isSignInFor(data, addAccountConnectingSlug, agentId)) {
           addAccountConnectingSlug = null;
           addAccountPlugin = null;
           addAccountLabel = '';
@@ -1104,8 +1107,7 @@
         if (slug) refreshPluginAccounts(slug);
       }),
       ws.on('plugin_auth_error', (data: Record<string, unknown>) => {
-        const slug = data.plugin as string;
-        if (slug === addAccountConnectingSlug) {
+        if (isSignInFor(data, addAccountConnectingSlug, agentId)) {
           addAccountConnectingSlug = null;
           addAccountError = (data.error as string) || $t('agentSettings.signInFailedRetry');
         }
