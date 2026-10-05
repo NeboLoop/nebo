@@ -12,7 +12,7 @@ One loop for every fix:
 | Symptom | Cause | Fix |
 |---|---|---|
 | Blank page; console: `Failed to load /assets/index-....js`, or a module "MIME type text/html" error | A path starts with `/`; it left `ui/` and got Nebo's own page | Make it relative. Vite: `base: './'`, rebuild |
-| Works in the desktop window, blank on the phone | Same: the desktop window serves `ui/` at its root, the phone serves it under `/t/<bot>/apps/<id>/ui/` | Same |
+| Works in the desktop window, blank in the mobile app | Same: the desktop window serves `ui/` at its root, the mobile app serves it under `/t/<bot>/apps/<id>/ui/` | Same |
 | `NeboAppSDK is not defined`, `Cannot destructure property 'nebo' of null`, `Failed to load /sdk/nebo.global.js` | The SDK tag is absolute, missing, or after your module | `<script src="../../../sdk/nebo.global.js"></script>` before your scripts. Never add a fallback |
 | `nebo is not defined` | There is no bare `nebo` global | `const { nebo } = window.NeboAppSDK;` |
 | `Failed to load /src/main.jsx`, or the page shows the build's source | The source entry is being served: `index.html` in the app folder or in `ui/` points at `src/` | Entry source lives in `src/index.html`; serve only built `ui/index.html`; rebuild |

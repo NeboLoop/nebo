@@ -56,7 +56,7 @@ impl std::fmt::Display for DecideError {
             Self::Invalid(e) => f.write_str(e),
             Self::Unavailable => f.write_str("Decisions need NeboAI connected. Sign in to NeboAI and try again."),
             Self::Unfunded => f.write_str(
-                "You've used all the work included in your account. Choose a plan or add credits to continue.",
+                "Your plan is used up this month. Upgrade your plan to continue.",
             ),
             Self::Busy => f.write_str("Too many decisions at once. Try again in a moment."),
             Self::Failed(e) => write!(f, "The decision could not be made: {e}"),

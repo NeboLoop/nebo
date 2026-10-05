@@ -390,7 +390,7 @@
 		"failed": "gagal",
 		"tokensInOut": "{input} masuk · {output} keluar",
 		"tokenTooltip": "{total} jumlah prompt · {overhead} sistem+alat · {cacheRead} baca cache",
-		"outOfBalance": "Anda telah menggunakan semua kerja yang termasuk dalam akaun anda. Pilih pelan atau tambah kredit untuk teruskan.",
+		"outOfBalance": "Pelan anda telah habis digunakan untuk bulan ini. Naik taraf pelan anda untuk teruskan.",
 		"viewPlans": "Lihat pelan",
 		"choosePlan": "Pilih pelan",
 		"documents": "Dokumen",
@@ -887,7 +887,7 @@
 		"dangerZone": "Zon Bahaya",
 		"deleteAccountDesc": "Padamkan akaun anda dan semua data secara kekal. Ini tidak boleh dibuat asal.",
 		"botName": "Nama",
-		"botNameDesc": "Nama bot dalam setiap senarai, di web dan pada telefon. Anda menamakannya semula di NeboAI.",
+		"botNameDesc": "Nama bot dalam setiap senarai, di web dan dalam aplikasi mudah alih. Anda menamakannya semula di NeboAI.",
 		"botNameNotConnected": "Sambungkan bot ini kepada NeboAI untuk menamakannya.",
 		"renameBot": "Namakan semula di NeboAI",
 		"alsoRenamePrimary": "Namakan semula pembantu peribadi anda kepada “{name}” juga?",
@@ -897,7 +897,7 @@
 		"botLocation": "Lokasi",
 		"botLocationDesc": "Tempat pejabat bot ini terletak. Pekerja anda menggunakannya untuk memberitahu sejauh mana anda dari pejabat.",
 		"botLocationPlaceholder": "Alamat jalan, bandar",
-		"botLocationPending": "Telefon anda akan meletakkan alamat ini pada peta apabila Nebo dibuka di sana seterusnya.",
+		"botLocationPending": "Aplikasi mudah alih akan meletakkan alamat ini pada peta apabila anda membukanya seterusnya.",
 		"botLocationSaveFailed": "Tidak dapat menyimpan lokasi. Cuba lagi."
 	},
 	"settingsAbout": {
@@ -1622,7 +1622,7 @@
 		"giftPoolLabel": "Kumpulan hadiah",
 		"charges": {
 			"title": "Dicaj kepada pelan anda",
-			"intro": "Nombor telefon, panggilan, SMS, komputer awan dan memori diberi harga dalam dolar dan diambil daripada pelan anda, kemudian daripada kredit yang anda beli. Setiap satu menaikkan % pelan anda yang digunakan.",
+			"intro": "Nombor telefon, panggilan, SMS, komputer awan dan memori diberi harga dalam dolar dan diambil daripada pelan anda. Setiap satu menaikkan % pelan anda yang digunakan.",
 			"total": "{amount} bulan ini",
 			"empty": "Tiada apa-apa dicaj kepada pelan anda bulan ini.",
 			"loadFailed": "Tidak dapat memuatkan caj. Cuba lagi.",

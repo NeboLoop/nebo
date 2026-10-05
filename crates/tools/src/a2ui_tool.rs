@@ -107,7 +107,7 @@ fn sight(ctx: &ToolContext, agent_id: &str) -> Result<(), &'static str> {
         return Err("the owner is writing from a messaging channel, which shows only text");
     }
     if !crate::app_dev::has_open_view(agent_id) {
-        return Err("no page of your app is open, and the chat on desktop and phone can't draw A2UI surfaces");
+        return Err("no page of your app is open, and the chat on desktop and in the mobile app can't draw A2UI surfaces");
     }
     Ok(())
 }
@@ -169,7 +169,7 @@ impl A2UIDomainTool {
         DomainSchemaConfig {
             domain: "a2ui".to_string(),
             description:
-                "Draws A2UI surfaces (text, buttons, inputs) on your app's own page. The chat on desktop and phone can't show them, and the result says whether anything was shown. To ask the owner a question or have him pick, use ask_owner."
+                "Draws A2UI surfaces (text, buttons, inputs) on your app's own page. The chat on desktop and in the mobile app can't show them, and the result says whether anything was shown. To ask the owner a question or have him pick, use ask_owner."
                     .to_string(),
             resources,
             fields: vec![
@@ -655,7 +655,7 @@ mod tests {
         assert_eq!(withheld(&store, ""), vec!["a2ui".to_string()]);
         assert!(withheld(&store, "crm").is_empty());
         let d = A2UIDomainTool::new(Arc::new(Host::default())).description();
-        assert!(d.contains("The chat on desktop and phone can't show them") && d.contains("use ask_owner"), "{d}");
+        assert!(d.contains("The chat on desktop and in the mobile app can't show them") && d.contains("use ask_owner"), "{d}");
     }
 
     /// Where nothing can draw the surface — no page of the app open, a voice

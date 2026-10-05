@@ -57,7 +57,7 @@ import { GLTFLoader } from 'three@0.170.0/examples/jsm/loaders/GLTFLoader.js';
 In Lane B the same imports drop the `@version` (npm pinned them). GSAP from
 cdnjs as a classic script in `index.html`
 (`https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js`) is also
-proven inside the Nebo app view on desktop and phone.
+proven inside the Nebo app view on desktop and in the mobile app.
 
 ## Lenis bridged to GSAP (without the bridge, scrubs stutter)
 
@@ -124,7 +124,8 @@ On touch screens, replace pointer effects with scroll or tilt equivalents.
   hidden (`visibilitychange`).
 - Environment lighting from a self-hosted HDRI in `ui/assets/`, never a
   preset that fetches from a CDN at runtime.
-- Test WebGL2 on the phone view (`app_console` shows context errors).
+- Test WebGL2 the way the mobile app loads it (`app_screenshot` at 390x844;
+  `app_console` shows context errors).
 
 ## Tailwind v4
 

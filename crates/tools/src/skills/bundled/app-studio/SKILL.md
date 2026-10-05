@@ -1,6 +1,6 @@
 ---
 name: app-studio
-description: "App Studio: build any Nebo app or game, from a simple tracker to a rich designed game. An app is an employee with a page in its own window, on desktop and phone. Use when the owner asks for an app, a game, a dashboard, a tracker, a form, a viewer, a showcase, or any screen they want to open, and when they ask to change, fix, rename or publish an app."
+description: "App Studio: build any Nebo app or game, from a simple tracker to a rich designed game. An app is an employee with a page in its own window, on desktop and in the mobile app. Use when the owner asks for an app, a game, a dashboard, a tracker, a form, a viewer, a showcase, or any screen they want to open, and when they ask to change, fix, rename or publish an app."
 triggers:
   - make an app
   - build an app
@@ -32,7 +32,7 @@ and **only** that folder: Nebo serves it at three addresses at once.
 |---|---|
 | Desktop app window | `neboapp://<id>/index.html` |
 | Browser, and `app_screenshot` | `http://127.0.0.1:27895/apps/<id>/ui/index.html` (with `/k/<pass>` in front for a screenshot) |
-| Phone and web, through the tunnel | `https://neboai.com/t/<bot>/apps/<id>/ui/index.html` |
+| Mobile app and web, through the tunnel | `https://neboai.com/t/<bot>/apps/<id>/ui/index.html` |
 
 So **every path the page uses is relative** (`./app.js`, `./assets/hero.webp`).
 A path that starts with `/` works in the desktop window and breaks
@@ -131,9 +131,9 @@ create_employee(draft_id: "<the id it returned>")
 - `window` takes `title`, `width`, `height`, `resizable`, `fullscreen`,
   `orientation` (`portrait` default, `landscape`, `any`), `pull_to_refresh`,
   `voice`, `open_on_work`, `isolated`, `share_menu` and nothing else.
-- Off unless set (never on fullscreen): `pull_to_refresh: true` (the phone's
+- Off unless set (never on fullscreen): `pull_to_refresh: true` (the mobile app's
   pull-down reload, never on a canvas); `voice: true` (the chat's dictate
-  and voice buttons in the phone bar, for an app run by talking).
+  and voice buttons in the mobile app's bar, for an app run by talking).
 - `isolated: true` only for a threaded engine export (games.md).
 - `share_menu`: the header's Share button, up to 6 `{label, say}`: the app's
   own ways to share or export its work, each `say` sent into its chat.
@@ -164,7 +164,7 @@ The starter page, exactly:
 
 `../../../sdk/nebo.global.js` reaches the SDK from `ui/index.html` at all three
 addresses: copy it as written. The absolute `/sdk/nebo.global.js` loads on the
-desktop and fails on the phone.
+desktop and fails in the mobile app.
 
 **Check 1.** Run `app_status`. It names the folder the page is served from
 (`<data>/user/agents/<folder>/ui`); the app folder is the one above it. Write
@@ -259,7 +259,7 @@ The fix loop, in this order, every time:
 4. `app_reload`. It says whether a view was open to reload.
 5. `app_console`, and `app_screenshot(width: 390, height: 844)` (add
    1280x800 for a desktop app). The screenshot loads the page the way the
-   phone does, says what it shows, and ends with that load's console, word
+   mobile app does, says what it shows, and ends with that load's console, word
    for word. `app_status` when a file is MISSING or "(outside the app)".
    A game is proved in play: screenshot `index.html?play=1` (it skips the
    start screen), never the menu; for 3D, see `references/games.md` 7a.

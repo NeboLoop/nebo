@@ -10,7 +10,7 @@ the look, not the mechanics.
 
 1. **Encode the film all-keyframe** (`-g 1`, `+faststart`). A normal MP4
    seeks backward in jumps and a scrubbed film stutters.
-2. **Mark it `muted playsinline`.** Without them the phone opens its own
+2. **Mark it `muted playsinline`.** Without them the iPhone app opens its own
    full-screen player.
 3. **`load()`, then prime with one muted `play()` and `pause()` before the
    first seek.** WebKit will not seek a video that has never played, and

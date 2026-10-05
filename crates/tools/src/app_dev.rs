@@ -394,7 +394,7 @@ impl DynTool for AppReloadTool {
     }
 
     fn description(&self) -> String {
-        "Reloads every open view of an app (the owner's phone, a desktop window, a browser tab) so it runs the files as they are now. \
+        "Reloads every open view of an app (the mobile app, a desktop window, a browser tab) so it runs the files as they are now. \
          Use it after changing an app's files; never rename files to get past a stale copy.\n\
          restore: \"<version id>\" first puts the app's page and source back to a saved version (app_status(history: true) lists \
          them), as a new version, so a restore can itself be undone. Use it when the owner asks to go back (\"put it back to how it \

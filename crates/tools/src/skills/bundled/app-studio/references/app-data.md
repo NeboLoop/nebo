@@ -34,7 +34,7 @@ app_data(action: "delete", key: "draft")
 An app that holds one thing per conversation (a design, a draft, a plan)
 keeps it under a `chat:` key. `chat:design` written from the owner's chat
 `<id>` is stored as `chat:<id>:design`; the page opened from that chat gets
-`?thread=<id>` (desktop and phone) and reads that key. The employee never
+`?thread=<id>` (desktop and mobile app) and reads that key. The employee never
 needs the chat id:
 
 ```js
@@ -53,4 +53,4 @@ const key = thread ? `chat:${thread}:design` : null;   // null: opened from home
   on `create_employee`. `"single"` (one conversation) is the default;
   `"separate"` is many chats sharing one memory.
 - If the owner directs it by talking while looking at the page, add
-  `window: { voice: true }` for the dictate and voice buttons in the phone bar.
+  `window: { voice: true }` for the dictate and voice buttons in the mobile app's bar.

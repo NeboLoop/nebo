@@ -390,7 +390,7 @@
 		"failed": "Başarısız",
 		"tokensInOut": "{input} giriş · {output} çıkış",
 		"tokenTooltip": "{total} toplam istem · {overhead} sistem+araçlar · {cacheRead} önbellek okuma",
-		"outOfBalance": "Hesabınıza dahil olan tüm işi kullandınız. Devam etmek için bir plan seçin veya kredi ekleyin.",
+		"outOfBalance": "Planınız bu ay için doldu. Devam etmek için planınızı yükseltin.",
 		"viewPlans": "Planları görüntüle",
 		"choosePlan": "Plan seç",
 		"documents": "Belgeler",
@@ -887,7 +887,7 @@
 		"dangerZone": "Tehlikeli Bölge",
 		"deleteAccountDesc": "Hesabınızı ve tüm verileri kalıcı olarak silin. Bu geri alınamaz.",
 		"botName": "Ad",
-		"botNameDesc": "Botun her listede, web'de ve telefonda görünen adı. Adını NeboAI'de değiştirirsiniz.",
+		"botNameDesc": "Botun her listede, web'de ve mobil uygulamada görünen adı. Adını NeboAI'de değiştirirsiniz.",
 		"botNameNotConnected": "Bu bota ad vermek için onu NeboAI'ye bağlayın.",
 		"renameBot": "NeboAI'de yeniden adlandır",
 		"alsoRenamePrimary": "Kişisel asistanınızın adı da “{name}” olarak değiştirilsin mi?",
@@ -897,7 +897,7 @@
 		"botLocation": "Konum",
 		"botLocationDesc": "Bu botun ofisinin bulunduğu yer. Çalışanlarınız, ofise ne kadar uzakta olduğunuzu söylemek için bunu kullanır.",
 		"botLocationPlaceholder": "Sokak adresi, şehir",
-		"botLocationPending": "Telefonunuz, Nebo orada bir sonraki açılışında bu adresi haritaya yerleştirir.",
+		"botLocationPending": "Mobil uygulama, onu bir sonraki açışınızda bu adresi haritaya yerleştirir.",
 		"botLocationSaveFailed": "Konum kaydedilemedi. Tekrar deneyin."
 	},
 	"settingsAbout": {
@@ -1622,7 +1622,7 @@
 		"giftPoolLabel": "Hediye havuzu",
 		"charges": {
 			"title": "Planınızdan düşülenler",
-			"intro": "Telefon numaraları, aramalar, SMS'ler, bulut bilgisayarlar ve bellek dolar cinsinden fiyatlandırılır ve önce planınızdan, sonra satın aldığınız krediden düşülür. Her biri planınızın kullanılan yüzdesini artırır.",
+			"intro": "Telefon numaraları, aramalar, SMS'ler, bulut bilgisayarlar ve bellek dolar cinsinden fiyatlandırılır ve planınızdan düşülür. Her biri planınızın kullanılan yüzdesini artırır.",
 			"total": "Bu ay {amount}",
 			"empty": "Bu ay planınızdan hiçbir şey düşülmedi.",
 			"loadFailed": "Ücretler yüklenemedi. Tekrar deneyin.",

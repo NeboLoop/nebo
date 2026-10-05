@@ -2674,8 +2674,11 @@ pub(crate) mod tests {
     /// have him pick (ask_owner 853, +94): 16,606. The owner, 2026-10-04:
     /// share_file is how anything reaches him on any device, and the first
     /// call of a chat, made while it was deferred, guessed its shape and
-    /// failed; it moved into the core (share_file 588): 17,194.
-    const CORE_DEFINITION_CHARS_BUDGET: usize = 17_194;
+    /// failed; it moved into the core (share_file 588): 17,194. The owner,
+    /// 2026-10-05: our app is "the mobile app", never "phone", so
+    /// ask_owner's buttons are in his chat on desktop and in the mobile app
+    /// (ask_owner 865, +12): 17,206.
+    const CORE_DEFINITION_CHARS_BUDGET: usize = 17_206;
 
     #[tokio::test]
     async fn the_always_loaded_set_stays_within_its_budget() {

@@ -390,7 +390,7 @@
 		"failed": "failed",
 		"tokensInOut": "{input} in · {output} out",
 		"tokenTooltip": "{total} total prompt · {overhead} system+tools · {cacheRead} cache read",
-		"outOfBalance": "You've used all the work your account includes. Choose a plan or add credit to keep going.",
+		"outOfBalance": "Your plan is used up this month. Upgrade your plan to continue.",
 		"viewPlans": "View plans",
 		"choosePlan": "Choose a plan",
 		"documents": "Documents",
@@ -887,7 +887,7 @@
 		"dangerZone": "Danger Zone",
 		"deleteAccountDesc": "Permanently delete your account and all data. This cannot be undone.",
 		"botName": "Name",
-		"botNameDesc": "The bot's name in every list, on the web and on the phone. You rename it on NeboAI.",
+		"botNameDesc": "The bot's name in every list, on the web and in the mobile app. You rename it on NeboAI.",
 		"botNameNotConnected": "Connect this bot to NeboAI to name it.",
 		"renameBot": "Rename on NeboAI",
 		"alsoRenamePrimary": "Also rename your personal assistant to “{name}”?",
@@ -897,7 +897,7 @@
 		"botLocation": "Location",
 		"botLocationDesc": "Where this bot's office is. Your employees use it to tell you how far you are from the office.",
 		"botLocationPlaceholder": "Street address, city",
-		"botLocationPending": "Your phone places this address on the map the next time Nebo opens there.",
+		"botLocationPending": "The mobile app places this address on the map the next time you open it.",
 		"botLocationSaveFailed": "Could not save the location. Try again."
 	},
 	"settingsAbout": {
@@ -1622,7 +1622,7 @@
 		"giftPoolLabel": "Gift pool",
 		"charges": {
 			"title": "Charged to your plan",
-			"intro": "Phone numbers, calls, texts, cloud computers and memory are priced in dollars and come out of your plan, then out of credit you bought. Each one raises your plan's % used.",
+			"intro": "Phone numbers, calls, texts, cloud computers and memory are priced in dollars and come out of your plan. Each one raises your plan's % used.",
 			"total": "{amount} this month",
 			"empty": "Nothing has been charged to your plan this month.",
 			"loadFailed": "Could not load charges. Try again.",

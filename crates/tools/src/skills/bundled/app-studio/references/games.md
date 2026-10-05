@@ -238,18 +238,18 @@ document.addEventListener('visibilitychange', () => { if (document.hidden) save(
   inside the frame loop.
 - A debug overlay (fps, frame time, entity count) behind `?debug=1`.
 - Save on every meaningful change and when the page hides; reopening on
-  desktop or phone restores it.
+  desktop or in the mobile app restores it.
 - Manifest for a fullscreen landscape game: `window: { fullscreen: true,
   orientation: "landscape" }`, plus `device:motion` in permissions when it
   reads tilt.
 - The play area: `touch-action: none` and `user-select: none`; pull to
   refresh is already off for fullscreen apps. A game that keeps the app bar
   (a card or board game in portrait) sets `window: { pull_to_refresh: false }`,
-  or a downward drag from the top of the page reloads it on the phone.
+  or a downward drag from the top of the page reloads it in the mobile app.
 
 ## 7a. 3D scenes (three.js)
 
-Each rule here is a real bug that left a game black or broken on the phone.
+Each rule here is a real bug that left a game black or broken in the mobile app.
 
 - **Size follows the container.** The app view can start at 0×0 and a
   fullscreen game rotates after load. Watch the container with a

@@ -45,7 +45,7 @@ an em-dash in either description.
 - A bare `nebo` global, or the SDK used without loading
   `../../../sdk/nebo.global.js`.
 - A script, style or image in `ui/index.html` whose path starts with `/`
-  (it breaks on the phone).
+  (it breaks in the mobile app).
 - `package.json`, `node_modules/` or `src/` inside `ui/`; an `index.html`
   in the app folder itself (only `ui/index.html` and a build's
   `src/index.html` may exist).

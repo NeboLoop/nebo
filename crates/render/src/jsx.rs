@@ -306,7 +306,7 @@ impl RewriteImports<'_> {
         }
         if !single_file && src.starts_with('/') {
             self.error = Some(format!(
-                "import \"{src}\" starts with \"/\": the page is served under a prefix on the phone, so it would not load. Use a relative path (\"./...\")."
+                "import \"{src}\" starts with \"/\": the page is served under a prefix in the mobile app, so it would not load. Use a relative path (\"./...\")."
             ));
             return None;
         }

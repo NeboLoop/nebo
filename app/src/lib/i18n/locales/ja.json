@@ -390,7 +390,7 @@
 		"failed": "失敗",
 		"tokensInOut": "入力{input} · 出力{output}",
 		"tokenTooltip": "プロンプト合計{total} · システム+ツール{overhead} · キャッシュ読み取り{cacheRead}",
-		"outOfBalance": "アカウントに含まれる作業をすべて使い切りました。続けるにはプランを選ぶか、クレジットを追加してください。",
+		"outOfBalance": "今月のプランを使い切りました。続けるにはプランをアップグレードしてください。",
 		"viewPlans": "プランを見る",
 		"choosePlan": "プランを選ぶ",
 		"documents": "ドキュメント",
@@ -887,7 +887,7 @@
 		"dangerZone": "危険な操作",
 		"deleteAccountDesc": "アカウントとすべてのデータを完全に削除します。この操作は元に戻せません。",
 		"botName": "名前",
-		"botNameDesc": "すべてのリスト、ウェブ、電話で表示されるボットの名前です。名前はNeboAIで変更します。",
+		"botNameDesc": "すべてのリスト、ウェブ、モバイルアプリで表示されるボットの名前です。名前はNeboAIで変更します。",
 		"botNameNotConnected": "名前を付けるには、このボットをNeboAIに接続してください。",
 		"renameBot": "NeboAIで名前を変更",
 		"alsoRenamePrimary": "個人秘書の名前も「{name}」に変更しますか？",
@@ -897,7 +897,7 @@
 		"botLocation": "所在地",
 		"botLocationDesc": "このボットのオフィスの場所です。従業員はこれを使って、オフィスまでの距離をお伝えします。",
 		"botLocationPlaceholder": "住所、市区町村",
-		"botLocationPending": "次にスマートフォンで Nebo を開いたときに、この住所が地図上に配置されます。",
+		"botLocationPending": "次にモバイルアプリを開いたときに、この住所が地図上に配置されます。",
 		"botLocationSaveFailed": "所在地を保存できませんでした。もう一度お試しください。"
 	},
 	"settingsAbout": {
@@ -1622,7 +1622,7 @@
 		"giftPoolLabel": "ギフトプール",
 		"charges": {
 			"title": "プランからの請求",
-			"intro": "電話番号、通話、SMS、クラウドコンピューター、メモリーはドル建てで、まずプランから、次に購入したクレジットから差し引かれます。いずれもプランの使用率(%)を上げます。",
+			"intro": "電話番号、通話、SMS、クラウドコンピューター、メモリーはドル建てで、プランから差し引かれます。いずれもプランの使用率(%)を上げます。",
 			"total": "今月 {amount}",
 			"empty": "今月はプランからの請求はありません。",
 			"loadFailed": "請求を読み込めませんでした。もう一度お試しください。",
