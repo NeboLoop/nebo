@@ -1286,7 +1286,17 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                             if let Some(ref rl) = event.rate_limit {
                                 if rl.session_limit_credits.is_some()
                                     || rl.weekly_limit_credits.is_some()
+                                    || rl.plan_used_percent.is_some()
                                 {
+                                    // The header carries no "included" flag
+                                    // (a plan with no work reads 0%): keep what
+                                    // /v1/usage said, or infer it from use.
+                                    let plan_included = janus_usage
+                                        .read()
+                                        .await
+                                        .as_ref()
+                                        .is_some_and(|u| u.plan_included)
+                                        || rl.plan_used_percent.unwrap_or(0) > 0;
                                     let usage = crate::state::JanusUsage {
                                         session_limit_credits: rl
                                             .session_limit_credits
@@ -1304,6 +1314,15 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                             .unwrap_or(0),
                                         weekly_reset_at: rl
                                             .weekly_reset_at
+                                            .clone()
+                                            .unwrap_or_default(),
+                                        plan_included,
+                                        plan_used_percent: rl
+                                            .plan_used_percent
+                                            .unwrap_or(0)
+                                            .min(100),
+                                        plan_reset_at: rl
+                                            .plan_reset_at
                                             .clone()
                                             .unwrap_or_default(),
                                         budget_free_available: rl

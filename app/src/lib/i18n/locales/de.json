@@ -1593,6 +1593,7 @@
 		"resetsInDays": "Setzt zurück in {days} Tagen",
 		"resetsInTime": "Setzt zurück in {hours}h {minutes}m",
 		"percentUsed": "{percent}% genutzt",
+		"thisMonth": "Dieser Monat",
 		"weekly": "Wöchentlich",
 		"noUsageData": "Noch keine Nutzungsdaten verfügbar. Die Nutzungserfassung beginnt, wenn du Nebo AI verwendest.",
 		"budgetBalance": "Budget-Guthaben",

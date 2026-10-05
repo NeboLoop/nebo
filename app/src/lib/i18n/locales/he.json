@@ -1593,6 +1593,7 @@
 		"resetsInDays": "מתאפס בעוד {days} ימים",
 		"resetsInTime": "מתאפס בעוד {hours} שע' {minutes} דק'",
 		"percentUsed": "{percent}% בשימוש",
+		"thisMonth": "החודש",
 		"weekly": "שבועי",
 		"noUsageData": "אין נתוני שימוש זמינים עדיין. מעקב שימוש מתחיל כשאתה משתמש ב-Nebo AI.",
 		"budgetBalance": "יתרת תקציב",

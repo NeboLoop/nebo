@@ -45,6 +45,10 @@ pub struct RateLimitMeta {
     pub weekly_limit_credits: Option<u64>,
     pub weekly_remaining_credits: Option<u64>,
     pub weekly_reset_at: Option<String>,
+    // Janus plan window: only the percentage of the plan used and when it
+    // resets ever leave Janus, never an amount.
+    pub plan_used_percent: Option<u64>,
+    pub plan_reset_at: Option<String>,
     // Janus budget pool headers
     pub budget_free_available: Option<u64>,
     pub budget_gift_available: Option<u64>,

@@ -1593,6 +1593,7 @@
 		"resetsInDays": "{days} 天後重設",
 		"resetsInTime": "{hours} 小時 {minutes} 分鐘後重設",
 		"percentUsed": "已使用 {percent}%",
+		"thisMonth": "本月",
 		"weekly": "每週",
 		"noUsageData": "暫無用量資料。使用 Nebo AI 後將開始追蹤用量。",
 		"budgetBalance": "預算餘額",

@@ -1593,6 +1593,7 @@
 		"resetsInDays": "يُعاد التعيين خلال {days} يوم",
 		"resetsInTime": "يُعاد التعيين خلال {hours} س {minutes} د",
 		"percentUsed": "{percent}% مستخدم",
+		"thisMonth": "هذا الشهر",
 		"weekly": "أسبوعياً",
 		"noUsageData": "لا توجد بيانات استخدام بعد. يبدأ تتبع الاستخدام عند استخدامك لـ Nebo AI.",
 		"budgetBalance": "رصيد الميزانية",

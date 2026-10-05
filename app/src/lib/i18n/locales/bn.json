@@ -1593,6 +1593,7 @@
 		"resetsInDays": "{days} দিনে রিসেট",
 		"resetsInTime": "{hours} ঘণ্টা {minutes} মিনিটে রিসেট",
 		"percentUsed": "{percent}% ব্যবহৃত",
+		"thisMonth": "এই মাস",
 		"weekly": "সাপ্তাহিক",
 		"noUsageData": "এখনো কোনো ব্যবহার তথ্য নেই। Nebo AI ব্যবহার শুরু করলে ব্যবহার ট্র্যাকিং শুরু হবে।",
 		"budgetBalance": "বাজেট ব্যালেন্স",

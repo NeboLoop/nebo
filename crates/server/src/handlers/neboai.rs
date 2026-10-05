@@ -596,7 +596,8 @@ async fn fetch_janus_usage(state: &AppState) -> Result<crate::state::JanusUsage,
     let now = chrono::Utc::now().to_rfc3339();
 
     // Janus /v1/usage response body structure:
-    // all_models.{session_used, session_limit, session_reset_seconds, weekly_*}
+    // all_models.{included, used_percent, reset_seconds} (the plan's month;
+    //   older Janus sent session_*/weekly_* amounts, still read below)
     // grants.{free_available, gift_available}
     // credits.{balance_cents}
     // plan: string
@@ -607,6 +608,12 @@ async fn fetch_janus_usage(state: &AppState) -> Result<crate::state::JanusUsage,
     let weekly_limit = am["weekly_limit"].as_u64().unwrap_or(0);
     let weekly_used = am["weekly_used"].as_u64().unwrap_or(0);
     let weekly_reset_secs = am["weekly_reset_seconds"].as_i64().unwrap_or(0);
+    let plan_reset_secs = am["reset_seconds"].as_i64().unwrap_or(0);
+    let plan_reset_at = if plan_reset_secs > 0 {
+        (chrono::Utc::now() + chrono::Duration::seconds(plan_reset_secs)).to_rfc3339()
+    } else {
+        String::new()
+    };
 
     let session_reset_at = if session_reset_secs > 0 {
         (chrono::Utc::now() + chrono::Duration::seconds(session_reset_secs)).to_rfc3339()
@@ -626,6 +633,9 @@ async fn fetch_janus_usage(state: &AppState) -> Result<crate::state::JanusUsage,
         weekly_limit_credits: weekly_limit,
         weekly_remaining_credits: weekly_limit.saturating_sub(weekly_used),
         weekly_reset_at,
+        plan_included: am["included"].as_bool().unwrap_or(false),
+        plan_used_percent: am["used_percent"].as_u64().unwrap_or(0).min(100),
+        plan_reset_at,
         budget_free_available: body["grants"]["free_available"].as_u64().unwrap_or(0),
         budget_gift_available: body["grants"]["gift_available"].as_u64().unwrap_or(0),
         budget_credits_cents: body["credits"]["balance_cents"].as_u64().unwrap_or(0),
@@ -689,6 +699,12 @@ pub(crate) fn janus_usage_response(u: &crate::state::JanusUsage) -> serde_json::
             "percentUsed": weekly_pct,
             "resetAt": if u.weekly_reset_at.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(u.weekly_reset_at.clone()) },
         },
+        // The plan as the customer sees it: a percentage, never an amount.
+        "plan": {
+            "included": u.plan_included,
+            "percentUsed": u.plan_used_percent,
+            "resetAt": if u.plan_reset_at.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(u.plan_reset_at.clone()) },
+        },
         "budget": {
             "freeAvailable": u.budget_free_available,
             "giftAvailable": u.budget_gift_available,
@@ -717,6 +733,7 @@ pub async fn janus_usage(State(state): State<AppState>) -> HandlerResult<serde_j
             Ok(Json(serde_json::json!({
                 "session": { "limitCredits": 0, "remainingCredits": 0, "usedCredits": 0, "percentUsed": 0 },
                 "weekly": { "limitCredits": 0, "remainingCredits": 0, "usedCredits": 0, "percentUsed": 0 },
+                "plan": { "included": false, "percentUsed": 0 },
                 "budget": { "freeAvailable": 0, "giftAvailable": 0, "creditsCents": 0 },
             })))
         }
@@ -1740,5 +1757,26 @@ mod share_link_tests {
         let (status, Json(body)) = share_error(comm::CommError::Http { status: 502, body: "bad gateway".into() });
         assert_eq!(status, axum::http::StatusCode::INTERNAL_SERVER_ERROR);
         assert_eq!(body.error, "Could not share this file. Try again.");
+    }
+}
+
+#[cfg(test)]
+mod usage_tests {
+    use super::*;
+
+    /// The plan leaves as a percentage and a reset, never an amount; the
+    /// purchased balance stays in cents (the customer's own money).
+    #[test]
+    fn plan_usage_is_a_percentage() {
+        let u = crate::state::JanusUsage {
+            plan_included: true,
+            plan_used_percent: 42,
+            plan_reset_at: "2026-11-01T00:00:00Z".into(),
+            budget_credits_cents: 2500,
+            ..Default::default()
+        };
+        let v = janus_usage_response(&u);
+        assert_eq!(v["plan"], serde_json::json!({"included": true, "percentUsed": 42, "resetAt": "2026-11-01T00:00:00Z"}));
+        assert_eq!(v["budget"]["creditsCents"], 2500);
     }
 }
