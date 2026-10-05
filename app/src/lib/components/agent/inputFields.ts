@@ -27,11 +27,41 @@ function isQuestion(label: string): boolean {
 	return label.length > SHORT_LABEL_MAX || label.trim().endsWith('?');
 }
 
-/** `overdue_days` / `finance.ap.invoice_mailbox` → "Overdue days" / "Invoice mailbox". */
-function humanize(key: string): string {
+/** Trailing words a number field's unit suffix already shows. */
+const UNIT_WORDS = new Set(['days', 'day', 'hours', 'hrs', 'minutes', 'mins', 'pct', 'percent', '%', 'usd', 'dollars', 'count']);
+
+/** Abbreviations a key uses, as the words a person reads. */
+const ABBREVIATIONS: Record<string, string> = {
+	qty: 'quantity',
+	num: 'number',
+	no: 'number',
+	amt: 'amount',
+	acct: 'account',
+	txn: 'transaction',
+	max: 'maximum',
+	min: 'minimum'
+};
+
+/** A key's words: its last path segment, split on _ - and camelCase. */
+function keyWords(key: string): string[] {
 	const last = key.split('.').pop() || key;
-	const words = last.replace(/([a-z])([A-Z])/g, '$1 $2').replace(/[_-]+/g, ' ').trim().toLowerCase();
-	return words.charAt(0).toUpperCase() + words.slice(1);
+	return last
+		.replace(/([a-z])([A-Z])/g, '$1 $2')
+		.split(/[\s_-]+/)
+		.map((w) => w.toLowerCase())
+		.filter(Boolean);
+}
+
+/** A key as plain words, sentence case. For a number field the trailing unit
+ *  words go (the suffix shows them):
+ *  `feed_stall_days` → "Feed stall", `max_txn_amt` → "Maximum transaction amount". */
+export function humanizeKey(key: string, isNumber: boolean): string {
+	const words = keyWords(key);
+	if (isNumber) {
+		while (words.length > 1 && UNIT_WORDS.has(words[words.length - 1])) words.pop();
+	}
+	const text = words.map((w) => ABBREVIATIONS[w] ?? w).join(' ');
+	return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
 /** The short name shown as the field's label. A label written as a long
@@ -39,7 +69,7 @@ function humanize(key: string): string {
 export function shortLabel(field: AgentInputField): string {
 	const label = (field.label || '').trim();
 	if (label && !isQuestion(label)) return label;
-	const fromKey = humanize(field.key || field.id || '');
+	const fromKey = humanizeKey(field.key || field.id || '', controlFor(field) === 'number');
 	return fromKey || label;
 }
 
@@ -60,15 +90,17 @@ export function fullHelp(field: AgentInputField): string {
 
 /** Units inferred from a question when the schema names none. The value is
  *  an i18n key under agentInputForm.units, or a literal symbol. */
+// Matched against the key (its _ and - read as spaces) and the question.
+// "per week" is a rate, not a unit of the value.
 const INFERRED_UNITS: [RegExp, string][] = [
-	[/(%|\bpercent(age)?\b|\bpct\b)/, '%'],
-	[/\bseconds?\b|_secs?\b|_seconds\b/, 'units.seconds'],
-	[/\bminutes?\b|_mins?\b|_minutes\b/, 'units.minutes'],
-	[/\bhours?\b|_hrs?\b|_hours\b/, 'units.hours'],
-	[/\bdays?\b|_days\b/, 'units.days'],
-	[/\bweeks?\b|_weeks\b/, 'units.weeks'],
-	[/\bmonths?\b|_months\b/, 'units.months'],
-	[/\byears?\b|_years\b/, 'units.years']
+	[/%|\bpercent(age)?\b|\bpct\b/, '%'],
+	[/(?<!\bper )\b(seconds?|secs)\b/, 'units.seconds'],
+	[/(?<!\bper )\b(minutes?|mins)\b/, 'units.minutes'],
+	[/(?<!\bper )\b(hours?|hrs)\b/, 'units.hours'],
+	[/(?<!\bper )\bdays?\b/, 'units.days'],
+	[/(?<!\bper )\bweeks?\b/, 'units.weeks'],
+	[/(?<!\bper )\bmonths?\b/, 'units.months'],
+	[/(?<!\bper )\byears?\b/, 'units.years']
 ];
 
 export type FieldUnit = { text: string } | { key: string } | null;
@@ -80,7 +112,7 @@ export function unitFor(field: AgentInputField): FieldUnit {
 	if (field.unit && field.unit.trim()) return { text: field.unit.trim() };
 	// A money amount is in a currency, never a time unit its question mentions.
 	if (field.money) return null;
-	const haystack = `${field.key || ''} ${field.label || ''} ${field.description || ''}`.toLowerCase();
+	const haystack = `${keyWords(field.key || '').join(' ')} ${field.label || ''} ${field.description || ''}`.toLowerCase();
 	for (const [re, unit] of INFERRED_UNITS) {
 		if (re.test(haystack)) return unit.startsWith('units.') ? { key: unit } : { text: unit };
 	}
@@ -101,6 +133,25 @@ export function withDefaults(
 		out[f.key] = f.default;
 	}
 	return out;
+}
+
+/** Units whose values are never negative; % also tops out at 100. */
+const NON_NEGATIVE_UNITS = new Set(['units.days', 'units.hours', 'units.minutes', '%']);
+const NON_NEGATIVE_TEXT = new Set(['day', 'days', 'hour', 'hours', 'hr', 'hrs', 'minute', 'minutes', 'min', 'mins', 'count', '%', 'percent', 'pct']);
+
+/** A number field's bounds: what the schema declares, else sensible ones —
+ *  a count of days, hours, minutes or things starts at 0, and a % runs 0–100. */
+export function boundsFor(field: AgentInputField): { min?: number; max?: number } {
+	if (controlFor(field) !== 'number') return {};
+	const unit = unitFor(field);
+	const name = unit === null ? '' : 'key' in unit ? unit.key : unit.text.toLowerCase();
+	const isPercent = name === '%' || name === 'percent' || name === 'pct';
+	const isCount = keyWords(field.key || '').includes('count');
+	const nonNegative = isCount || NON_NEGATIVE_UNITS.has(name) || NON_NEGATIVE_TEXT.has(name);
+	return {
+		min: typeof field.min === 'number' ? field.min : nonNegative ? 0 : undefined,
+		max: typeof field.max === 'number' ? field.max : isPercent ? 100 : undefined
+	};
 }
 
 export type FieldError = { key: string; values?: Record<string, number> };
@@ -126,12 +177,13 @@ export function validateInputs(
 		}
 		if (control === 'number') {
 			const n = typeof v === 'number' ? v : Number(String(v).trim());
+			const { min, max } = boundsFor(f);
 			if (!Number.isFinite(n)) {
 				errors[f.key] = { key: 'agentInputForm.numberError' };
-			} else if (typeof f.min === 'number' && n < f.min) {
-				errors[f.key] = { key: 'agentInputForm.minError', values: { min: f.min } };
-			} else if (typeof f.max === 'number' && n > f.max) {
-				errors[f.key] = { key: 'agentInputForm.maxError', values: { max: f.max } };
+			} else if (typeof min === 'number' && n < min) {
+				errors[f.key] = { key: 'agentInputForm.minError', values: { min } };
+			} else if (typeof max === 'number' && n > max) {
+				errors[f.key] = { key: 'agentInputForm.maxError', values: { max } };
 			}
 		}
 	}
@@ -142,9 +194,10 @@ export function validateInputs(
 export function stepNumber(field: AgentInputField, current: unknown, direction: 1 | -1): number {
 	const step = typeof field.step === 'number' && field.step > 0 ? field.step : 1;
 	const base = typeof current === 'number' ? current : current == null || String(current).trim() === '' ? NaN : Number(current);
-	let next = (Number.isFinite(base) ? base : (typeof field.min === 'number' ? field.min : 0)) + step * direction;
-	if (typeof field.min === 'number') next = Math.max(field.min, next);
-	if (typeof field.max === 'number') next = Math.min(field.max, next);
+	const { min, max } = boundsFor(field);
+	let next = (Number.isFinite(base) ? base : (typeof min === 'number' ? min : 0)) + step * direction;
+	if (typeof min === 'number') next = Math.max(min, next);
+	if (typeof max === 'number') next = Math.min(max, next);
 	// Keep decimal steps clean (0.1 + 0.2).
 	return Math.round(next * 1e6) / 1e6;
 }

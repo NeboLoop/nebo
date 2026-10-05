@@ -5,6 +5,8 @@ import {
 	shortLabel,
 	hintFor,
 	unitFor,
+	boundsFor,
+	humanizeKey,
 	withDefaults,
 	validateInputs,
 	stepNumber
@@ -72,5 +74,56 @@ describe('setup questions', () => {
 		expect(stepNumber(days, 1, -1)).toBe(1);
 		expect(stepNumber(days, '', 1)).toBe(2);
 		expect(stepNumber(f({ type: 'number', step: 0.1 }), 0.2, 1)).toBe(0.3);
+	});
+
+	// Real keys from the bundled employees' manifests (nebo-employees).
+	it.each([
+		['feed_stall_days', true, 'Feed stall'],
+		['variance_threshold_pct', true, 'Variance threshold'],
+		['training_expiry_warning_days', true, 'Training expiry warning'],
+		['escalation_after_hours', true, 'Escalation after'],
+		['material_change_pct', true, 'Material change'],
+		['contact_sla_minutes', true, 'Contact sla'],
+		['buffer_minutes', true, 'Buffer'],
+		['deposit_percent', true, 'Deposit'],
+		['dunning_max_attempts', true, 'Dunning maximum attempts'],
+		['exception_max_months', true, 'Exception maximum months'],
+		['abuse_count_threshold', true, 'Abuse count threshold'],
+		['adhoc_promote_count', true, 'Adhoc promote'],
+		['close_day', true, 'Close'],
+		['minimum_cash_cents', true, 'Minimum cash cents'],
+		['forecast_horizon_weeks', true, 'Forecast horizon weeks'],
+		['business_hours', false, 'Business hours'],
+		['counsel_email', false, 'Counsel email'],
+		['finance.ap.invoice_mailbox', false, 'Invoice mailbox'],
+		['min_order_qty', true, 'Minimum order quantity'],
+		['max_txn_amt_usd', true, 'Maximum transaction amount'],
+		['acct_num', false, 'Account number'],
+		['days', true, 'Days']
+	])('names %s as plain words', (key, isNumber, want) => {
+		expect(humanizeKey(key, isNumber)).toBe(want);
+	});
+
+	it('gives time, count and % numbers sensible bounds when none are declared', () => {
+		expect(boundsFor(f({ type: 'number', key: 'feed_stall_days' }))).toEqual({ min: 0, max: undefined });
+		expect(boundsFor(f({ type: 'number', key: 'escalation_after_hours' }))).toEqual({ min: 0, max: undefined });
+		expect(boundsFor(f({ type: 'number', key: 'buffer_minutes' }))).toEqual({ min: 0, max: undefined });
+		expect(boundsFor(f({ type: 'number', key: 'abuse_count_threshold' }))).toEqual({ min: 0, max: undefined });
+		expect(boundsFor(f({ type: 'number', key: 'variance_threshold_pct' }))).toEqual({ min: 0, max: 100 });
+		expect(boundsFor(f({ type: 'number', key: 'fee', unit: '%' }))).toEqual({ min: 0, max: 100 });
+		expect(boundsFor(f({ type: 'number', key: 'temperature_offset' }))).toEqual({ min: undefined, max: undefined });
+		expect(boundsFor(f({ type: 'number', key: 'lead_days', min: 2, max: 9 }))).toEqual({ min: 2, max: 9 });
+	});
+
+	it('never steps a time, count or % below 0, nor a % above 100', () => {
+		expect(stepNumber(f({ type: 'number', key: 'feed_stall_days' }), 0, -1)).toBe(0);
+		expect(stepNumber(f({ type: 'number', key: 'retry_count' }), 0, -1)).toBe(0);
+		expect(stepNumber(f({ type: 'number', key: 'variance_threshold_pct' }), 100, 1)).toBe(100);
+		expect(validateInputs([f({ type: 'number', key: 'feed_stall_days' })], { feed_stall_days: -3 })).toEqual({
+			feed_stall_days: { key: 'agentInputForm.minError', values: { min: 0 } }
+		});
+		expect(validateInputs([f({ type: 'number', key: 'variance_threshold_pct' })], { variance_threshold_pct: 140 })).toEqual({
+			variance_threshold_pct: { key: 'agentInputForm.maxError', values: { max: 100 } }
+		});
 	});
 });
