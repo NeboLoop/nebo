@@ -80,7 +80,7 @@
 </script>
 
 {#if visible}
-	<div class="{alertClass} {canDismiss ? 'pr-12' : ''} {extraClass}">
+	<div class="{alertClass} {canDismiss ? 'pe-12' : ''} {extraClass}">
 		<Icon class="h-6 w-6 shrink-0 {iconColorClass}" />
 		<div class="flex flex-col gap-1">
 			{#if title}
@@ -94,7 +94,7 @@
 			<button
 				type="button"
 				onclick={handleDismiss}
-				class="btn btn-ghost btn-sm btn-circle absolute right-2 top-2"
+				class="btn btn-ghost btn-sm btn-circle absolute end-2 top-2"
 			>
 				<XCircle class="h-4 w-4" />
 			</button>

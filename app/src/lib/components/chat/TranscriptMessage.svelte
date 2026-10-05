@@ -37,9 +37,9 @@
     <span class="text-xs font-medium text-base-content/70">{name}</span>
     {#if time}<span class="text-xs text-base-content/40">{time}</span>{/if}
   </div>
-  <div class="max-w-[85%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed prose prose-sm {mine
-    ? 'bg-primary/10 rounded-tr-sm'
-    : 'bg-base-200 rounded-tl-sm'}">
+  <div dir="auto" class="max-w-[85%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed prose prose-sm {mine
+    ? 'bg-primary/10 rounded-se-sm'
+    : 'bg-base-200 rounded-ss-sm'}">
     {@html html}
       {#if attachments.length}
         <div class="flex flex-wrap gap-2 mt-2">

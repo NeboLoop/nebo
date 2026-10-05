@@ -18,7 +18,8 @@
  * One store owns the session and every transition above.
  */
 
-import { writable, derived } from 'svelte/store';
+import { writable, derived, get } from 'svelte/store';
+import { t } from 'svelte-i18n';
 import { finishUserTranscript } from './voiceTranscript';
 import { loadVoiceChimes, type VoiceChimes } from './voiceChimes';
 import { backendWsBase } from '$lib/api/base';
@@ -127,10 +128,10 @@ const RECONNECT_QUIET_MS = 4_000;
  * it, never how long the rejoin window was — none of that is his to act on,
  * and all of it describes machinery he did not ask about.
  */
-const CALL_LOST_MESSAGE = 'The call dropped and could not be rejoined. Start it again.';
+const callLostMessage = () => get(t)('voice.callLost');
 
 /** A failure that arrived with nothing to say: the one thing still true. */
-const CALL_ENDED_MESSAGE = 'The call ended. Start it again.';
+const callEndedMessage = () => get(t)('voice.callEndedStartAgain');
 
 /**
  * The longest a call's audio is kept open, once the call is over, for its
@@ -538,7 +539,7 @@ function createVoiceSessionStore() {
 		// Never a second socket: one retry armed, one dial in flight.
 		if (reconnectTimer || socketPending) return;
 		if (Date.now() >= resumeDeadline) {
-			transitionToError(CALL_LOST_MESSAGE);
+			transitionToError(callLostMessage());
 			return;
 		}
 		reconnectAttempt++;
@@ -721,9 +722,9 @@ function createVoiceSessionStore() {
 					// goes to the log.
 					if (redialing) {
 						if (msg.message) log.warn('Voice session resume refused: ' + msg.message);
-						transitionToError(CALL_LOST_MESSAGE);
+						transitionToError(callLostMessage());
 					} else {
-						transitionToError(msg.message || CALL_ENDED_MESSAGE);
+						transitionToError(msg.message || callEndedMessage());
 					}
 					break;
 
@@ -762,9 +763,7 @@ function createVoiceSessionStore() {
 			// Cloud-mic consent gate: conversation audio leaves the machine
 			// (xAI, directly or via Janus). No consent, no socket.
 			if (!hasVoiceCloudConsent()) {
-				transitionToError(
-					'Voice conversation sends your microphone audio to a cloud voice service for processing. Enable it in the voice panel to consent.'
-				);
+				transitionToError(get(t)('voice.needsConsent'));
 				return;
 			}
 
@@ -851,7 +850,7 @@ function createVoiceSessionStore() {
 
 				log.info('Voice session mic capture started, waiting for session_initialized');
 			} catch (err) {
-				const msg = err instanceof Error ? err.message : 'Failed to start voice session';
+				const msg = err instanceof Error ? err.message : get(t)('voice.startFailed');
 				transitionToError(msg);
 			}
 		},

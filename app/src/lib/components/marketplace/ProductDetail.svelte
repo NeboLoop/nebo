@@ -482,12 +482,12 @@
 								<div class="flex flex-col gap-1.5">
 									{#each ratingDistribution as bar}
 										<div class="flex items-center gap-2 text-xs">
-											<span class="w-6 text-base-content/50 tabular-nums text-right">{bar.stars}</span>
+											<span class="w-6 text-base-content/50 tabular-nums text-end">{bar.stars}</span>
 											<Star class="w-3 h-3 text-warning fill-warning shrink-0" />
 											<div class="flex-1 h-2 rounded-full bg-base-300 overflow-hidden">
 												<div class="h-full bg-warning rounded-full" style="width: {bar.pct}%"></div>
 											</div>
-											<span class="w-8 text-base-content/50 tabular-nums text-right">{bar.count}</span>
+											<span class="w-8 text-base-content/50 tabular-nums text-end">{bar.count}</span>
 										</div>
 									{/each}
 								</div>
@@ -539,7 +539,7 @@
 							{#each information as row}
 								<div class="flex items-center justify-between gap-3 py-2 border-b border-base-content/10 last:border-b-0 text-sm">
 									<dt class="text-base-content/50">{row.label}</dt>
-									<dd class="font-medium text-right">{row.value}</dd>
+									<dd class="font-medium text-end">{row.value}</dd>
 								</div>
 							{/each}
 						</dl>

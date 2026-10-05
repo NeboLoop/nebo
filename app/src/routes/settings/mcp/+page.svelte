@@ -583,7 +583,7 @@
           <div class="flex flex-col gap-2">
             {#each authOptions as opt}
               <button
-                class="w-full flex items-center gap-3 p-3.5 rounded-lg border cursor-pointer transition-colors text-left {newAuthType === opt.value ? 'border-primary bg-primary/10 ring-1 ring-primary/20' : 'border-base-300 bg-base-100 hover:border-base-content/30'}"
+                class="w-full flex items-center gap-3 p-3.5 rounded-lg border cursor-pointer transition-colors text-start {newAuthType === opt.value ? 'border-primary bg-primary/10 ring-1 ring-primary/20' : 'border-base-300 bg-base-100 hover:border-base-content/30'}"
                 onclick={() => newAuthType = opt.value}
               >
                 <div class="w-4 h-4 rounded-full border-2 shrink-0 flex items-center justify-center {newAuthType === opt.value ? 'border-primary' : 'border-base-content/30'}">

@@ -11,7 +11,11 @@
  * sec min hour dom mon dow year).
  */
 
-const DOW_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+import { get } from 'svelte/store';
+import { t } from 'svelte-i18n';
+
+/** Cron day-of-week order (0 = Sunday), as the `weekdays` message keys. */
+const DOW_KEYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
 const DOW_ALIAS: Record<string, string> = {
 	SUN: '0', MON: '1', TUE: '2', WED: '3', THU: '4', FRI: '5', SAT: '6'
 };
@@ -26,12 +30,24 @@ function timeOf(minF: string, hourF: string): string | null {
 	if (!/^\d{1,2}$/.test(minF) || !/^\d{1,2}$/.test(hourF)) return null;
 	const m = +minF, h = +hourF;
 	if (m > 59 || h > 23) return null;
-	const ampm = h >= 12 ? 'PM' : 'AM';
-	const h12 = h % 12 === 0 ? 12 : h % 12;
-	return `${h12}:${String(m).padStart(2, '0')} ${ampm}`;
+	return clockTime(h, m);
+}
+
+/** "8:00 AM" — the locale's wording of a wall-clock time. Exported for the
+ *  other time-of-day labels so there is one way to say a time. */
+export function clockTime(h: number, m: number): string {
+	const tr = get(t);
+	return tr('schedule.clockTime', {
+		values: {
+			hour: h % 12 === 0 ? 12 : h % 12,
+			minute: String(m).padStart(2, '0'),
+			period: tr(h >= 12 ? 'schedule.pm' : 'schedule.am')
+		}
+	});
 }
 
 export function describeCron(cron: string): string | null {
+	const tr = get(t);
 	const fields = cron.trim().split(/\s+/);
 	if (fields.length < 5 || fields.length > 7) return null;
 
@@ -51,31 +67,33 @@ export function describeCron(cron: string): string | null {
 	// Interval forms: every N minutes / hours.
 	if (/^\*\/(\d+)$/.test(min) && hour === '*' && dom === '*' && dow === '*') {
 		const n = +min.match(/^\*\/(\d+)$/)![1];
-		return n === 1 ? 'Every minute' : `Every ${n} minutes`;
+		return tr('schedule.cronEveryMinutes', { values: { n } });
 	}
 	if (/^\*\/(\d+)$/.test(hour) && /^\d{1,2}$/.test(min) && dom === '*' && dow === '*') {
 		const n = +hour.match(/^\*\/(\d+)$/)![1];
-		const at = +min === 0 ? '' : ` at :${String(+min).padStart(2, '0')}`;
-		return n === 1 ? `Every hour${at}` : `Every ${n} hours${at}`;
+		if (+min === 0) return tr('schedule.cronEveryHours', { values: { n } });
+		return tr('schedule.cronEveryHoursAt', { values: { n, minute: String(+min).padStart(2, '0') } });
 	}
 
 	// Fixed time-of-day forms.
 	const time = timeOf(min, hour);
 	if (!time) return null;
 
-	if (dom === '*' && dow === '*') return `Every day at ${time}`;
-	if (dom === '*' && dow === '1-5') return `Weekdays at ${time}`;
-	if (dom === '*' && (dow === '0,6' || dow === '6,0')) return `Weekends at ${time}`;
-	if (dom === '*' && /^\d$/.test(dow)) return `${DOW_NAMES[+dow]}s at ${time}`;
+	if (dom === '*' && dow === '*') return tr('schedule.cronDailyAt', { values: { time } });
+	if (dom === '*' && dow === '1-5') return tr('automations.weekdaysAt', { values: { time } });
+	if (dom === '*' && (dow === '0,6' || dow === '6,0')) return tr('automations.weekendsAt', { values: { time } });
+	if (dom === '*' && /^\d$/.test(dow) && DOW_KEYS[+dow]) {
+		const days = tr('schedule.weekdayPlural', { values: { day: DOW_KEYS[+dow] } });
+		return tr('schedule.cronDaysAt', { values: { days, time } });
+	}
 	if (dom === '*' && /^\d(,\d)+$/.test(dow)) {
-		const days = dow.split(',').map((d) => DOW_NAMES[+d]?.slice(0, 3)).filter(Boolean);
-		if (days.length !== dow.split(',').length) return null;
-		return `${days.join(', ')} at ${time}`;
+		const keys = dow.split(',').map((d) => DOW_KEYS[+d]).filter(Boolean);
+		if (keys.length !== dow.split(',').length) return null;
+		const days = keys.map((k) => tr(`weekdays.${k}`)).join(tr('schedule.listSeparator'));
+		return tr('schedule.cronDaysAt', { values: { days, time } });
 	}
 	if (dow === '*' && /^\d{1,2}$/.test(dom) && +dom >= 1 && +dom <= 31) {
-		const d = +dom;
-		const suffix = d % 10 === 1 && d !== 11 ? 'st' : d % 10 === 2 && d !== 12 ? 'nd' : d % 10 === 3 && d !== 13 ? 'rd' : 'th';
-		return `Monthly on the ${d}${suffix} at ${time}`;
+		return tr('schedule.cronMonthlyAt', { values: { day: +dom, time } });
 	}
 	return null;
 }

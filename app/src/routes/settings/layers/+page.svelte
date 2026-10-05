@@ -297,7 +297,7 @@
     <div class="flex flex-col gap-1.5">
       {#each stacked as pack, i (pack.slug)}
         <button
-          class="w-full text-left p-3.5 rounded-lg border transition-colors cursor-pointer {pack.slug === selected
+          class="w-full text-start p-3.5 rounded-lg border transition-colors cursor-pointer {pack.slug === selected
             ? 'border-primary bg-primary/5'
             : 'border-base-300 bg-base-100 hover:bg-base-200'}"
           onclick={() => (selected = pack.slug)}
@@ -311,7 +311,7 @@
                 {$t('settingsLayers.topLayer')}
               </span>
             {/if}
-            <span class="ml-auto text-xs text-base-content/50">
+            <span class="ms-auto text-xs text-base-content/50">
               {pack.updatedAt
                 ? $t('settingsLayers.changedAt', { values: { when: formatRelative(pack.updatedAt) } })
                 : $t('settingsLayers.neverChanged')}
@@ -388,7 +388,7 @@
                 </span>
               {/if}
               {#if change.detectedAt}
-                <span class="ml-auto text-xs text-base-content/40">{formatRelative(change.detectedAt)}</span>
+                <span class="ms-auto text-xs text-base-content/40">{formatRelative(change.detectedAt)}</span>
               {/if}
             </div>
             <div class="text-xs font-mono text-base-content/50 mb-2 truncate">

@@ -45,7 +45,7 @@
 </script>
 
 <svelte:head>
-  <title>{doc?.filename ?? 'Document'} | Nebo</title>
+  <title>{doc?.filename ?? $t('common.document')} | Nebo</title>
 </svelte:head>
 
 <div class="h-dvh flex flex-col bg-base-100">
@@ -53,7 +53,7 @@
     <span class="text-sm font-semibold truncate flex-1" title={doc?.chatTitle ?? undefined}>
       {doc?.filename ?? '…'}
       {#if doc && doc.latestVersion > 1}
-        <span class="ml-1.5 text-xs font-normal text-base-content/50">{$t('chat.versionN', { values: { version: doc.latestVersion } })}</span>
+        <span class="ms-1.5 text-xs font-normal text-base-content/50">{$t('chat.versionN', { values: { version: doc.latestVersion } })}</span>
       {/if}
     </span>
     {#if canToggleSource}

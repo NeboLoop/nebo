@@ -39,7 +39,7 @@
 						{/if}
 						<div class="absolute inset-0 flex items-center justify-center bg-black/20 group-hover:bg-black/30 transition-colors">
 							<div class="w-12 h-12 rounded-full bg-base-100/90 flex items-center justify-center">
-								<Play class="w-5 h-5 text-base-content ml-0.5" />
+								<Play class="w-5 h-5 text-base-content ms-0.5" />
 							</div>
 						</div>
 					</button>

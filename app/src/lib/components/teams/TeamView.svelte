@@ -23,7 +23,7 @@
   import Pencil from 'lucide-svelte/icons/pencil';
   import NewTeamModal from '$lib/components/teams/NewTeamModal.svelte';
   import { getTeamMessages, sendTeamMessage, stopTeamWork, teamWorking } from '$lib/api/nebo';
-  import { isStorageFull, uploadFiles } from '$lib/api/upload';
+  import { isStorageFull, storageFullMessage, uploadFiles } from '$lib/api/upload';
   import { stripAttachmentNotes, type UploadedAttachment } from '$lib/types/attachment';
   import type { Team, TeamMessage } from '$lib/api/neboComponents';
   import { getWebSocketClient } from '$lib/websocket/client';
@@ -261,7 +261,7 @@
       // The post did not land: take the row back so the thread stays honest.
       messages = messages.filter((m) => m.id !== tempId);
       // A full account is said plainly where the post was made.
-      if (isStorageFull(e)) notice = e.message;
+      if (isStorageFull(e)) notice = storageFullMessage(e.message);
     } finally {
       sending = false;
     }
@@ -302,7 +302,7 @@
   <div class="md:hidden shrink-0 border-b border-base-300">
     <button
       type="button"
-      class="w-full flex items-center gap-2.5 px-4 py-2 bg-transparent border-none cursor-pointer text-left min-w-0"
+      class="w-full flex items-center gap-2.5 px-4 py-2 bg-transparent border-none cursor-pointer text-start min-w-0"
       onclick={() => (membersOpen = !membersOpen)}
     >
       <span class="flex -space-x-1.5 shrink-0">
@@ -367,7 +367,7 @@
         <div class="mb-1.5">
           <button
             type="button"
-            class="w-full flex items-center gap-2 px-1 py-1 bg-transparent border-none cursor-pointer text-left text-xs text-base-content/60 hover:text-base-content"
+            class="w-full flex items-center gap-2 px-1 py-1 bg-transparent border-none cursor-pointer text-start text-xs text-base-content/60 hover:text-base-content"
             aria-expanded={workOpen}
             onclick={() => (workOpen = !workOpen)}
           >
@@ -380,7 +380,7 @@
               {#each work as w (workKey(w))}
                 <button
                   type="button"
-                  class="w-full flex items-center gap-2 px-1 py-1 rounded-md bg-transparent border-none cursor-pointer text-left min-w-0 hover:bg-base-200"
+                  class="w-full flex items-center gap-2 px-1 py-1 rounded-md bg-transparent border-none cursor-pointer text-start min-w-0 hover:bg-base-200"
                   onclick={() => (sheetEntry = w)}
                 >
                   <span class="w-1.5 h-1.5 rounded-full bg-success agent-working-dot shrink-0"></span>
@@ -412,7 +412,7 @@
 </div>
 
 <!-- Desktop: who's on the team, vertically — a door list, not a banner. -->
-<aside class="hidden md:flex w-56 shrink-0 border-l border-base-300 min-h-0 flex-col overflow-y-auto py-3">
+<aside class="hidden md:flex w-56 shrink-0 border-s border-base-300 min-h-0 flex-col overflow-y-auto py-3">
   <!-- Fixed three-line well: a long mission scrolls inside it instead of
        shoving the member list down; a short one keeps the same height so the
        rail never jumps between teams. -->

@@ -187,14 +187,14 @@
   }
 </script>
 
-<svelte:head><title>Marketplace - Nebo</title></svelte:head>
+<svelte:head><title>{$t('marketplace.pageTitle')}</title></svelte:head>
 
 <!-- Shared search result rows — rendered in the desktop dropdown and the mobile overlay -->
 {#snippet searchRows()}
   {#if searchResults.length > 0}
     {#each searchResults as item}
       <button
-        class="w-full flex items-center gap-3 px-3.5 py-2.5 text-left cursor-pointer hover:bg-base-200 transition-colors bg-transparent border-none border-b border-b-base-300 last:border-b-0"
+        class="w-full flex items-center gap-3 px-3.5 py-2.5 text-start cursor-pointer hover:bg-base-200 transition-colors bg-transparent border-none border-b border-b-base-300 last:border-b-0"
         onmousedown={() => selectResult(item.path)}
       >
         <div class="flex-1 min-w-0">
@@ -214,7 +214,7 @@
       </button>
     {/each}
     <button
-      class="w-full px-3.5 py-2.5 text-left text-sm font-medium text-primary cursor-pointer hover:bg-base-200 transition-colors bg-transparent border-none border-t border-t-base-300"
+      class="w-full px-3.5 py-2.5 text-start text-sm font-medium text-primary cursor-pointer hover:bg-base-200 transition-colors bg-transparent border-none border-t border-t-base-300"
       onmousedown={submitSearch}
     >{$t('marketplace.seeAllResults', { values: { query: debouncedQuery } })}</button>
   {:else if searchLoading}
@@ -228,7 +228,7 @@
 {#if mobileFiltersOpen}
   <div class="fixed inset-0 z-30 bg-black/40 md:hidden" onclick={() => (mobileFiltersOpen = false)} role="presentation"></div>
 {/if}
-<div class="{$sidebarCollapsed ? 'md:w-12 md:min-w-12' : 'md:w-[220px] md:min-w-[220px]'} max-md:fixed max-md:inset-y-0 max-md:left-0 max-md:z-40 max-md:w-[280px] max-md:transition-[transform,visibility] {mobileFiltersOpen ? 'max-md:translate-x-0 max-md:shadow-2xl' : 'max-md:-translate-x-full max-md:invisible'} border-r border-base-300 flex flex-col bg-base-200 shrink-0 transition-all duration-150">
+<div class="{$sidebarCollapsed ? 'md:w-12 md:min-w-12' : 'md:w-[220px] md:min-w-[220px]'} max-md:fixed max-md:inset-y-0 max-md:start-0 max-md:z-40 max-md:w-[280px] max-md:transition-[transform,visibility] {mobileFiltersOpen ? 'max-md:translate-x-0 max-md:shadow-2xl' : 'max-md:-translate-x-full max-md:rtl:translate-x-full max-md:invisible'} border-e border-base-300 flex flex-col bg-base-200 shrink-0 transition-all duration-150">
   <div class="h-11 border-b border-base-300 flex items-center shrink-0 {$sidebarCollapsed && !mobileFiltersOpen ? 'md:justify-center px-3.5 max-md:justify-between' : 'px-3.5 justify-between'}">
     {#if !$sidebarCollapsed || mobileFiltersOpen}
       <span class="text-sm font-semibold flex-1">{$t('marketplace.title')}</span>
@@ -323,7 +323,7 @@
         {#each priceOptions as opt}
           <button
             type="button"
-            class="w-full flex items-center gap-1.5 py-1 px-2.5 rounded-md text-sm text-left transition-colors border-none bg-transparent cursor-pointer {activePrice === opt.value
+            class="w-full flex items-center gap-1.5 py-1 px-2.5 rounded-md text-sm text-start transition-colors border-none bg-transparent cursor-pointer {activePrice === opt.value
               ? 'bg-base-100 shadow-[0_0_0_1px_var(--color-base-300)] font-medium'
               : 'hover:bg-base-200'}"
             onclick={() => setPrice(opt.value)}
@@ -365,13 +365,13 @@
     {/if}
     <!-- Mobile: search is a full-screen overlay, so the header only carries the trigger -->
     <button
-      class="md:hidden ml-auto w-8 h-8 rounded-md flex items-center justify-center hover:bg-base-200 cursor-pointer bg-transparent border border-base-300 shrink-0"
+      class="md:hidden ms-auto w-8 h-8 rounded-md flex items-center justify-center hover:bg-base-200 cursor-pointer bg-transparent border border-base-300 shrink-0"
       onclick={() => (mobileSearchOpen = true)}
       title={$t('marketplace.searchPlaceholder')}
     >
       <Search class="w-4 h-4" />
     </button>
-    <div class="max-md:hidden relative ml-auto shrink-0">
+    <div class="max-md:hidden relative ms-auto shrink-0">
       <form class="flex items-center h-[26px] w-[220px] rounded-[5px] px-[9px] gap-1.5 text-sm border border-base-300 bg-base-100" onsubmit={(e) => { e.preventDefault(); submitSearch(); }}>
         <Search class="w-3 h-3 text-base-content/50 shrink-0" />
         <input
@@ -389,7 +389,7 @@
         {/if}
       </form>
       {#if showResults}
-        <div class="absolute top-full right-0 mt-1 w-[340px] bg-base-100 border border-base-300 rounded-lg shadow-xl z-50 overflow-hidden">
+        <div class="absolute top-full end-0 mt-1 w-[340px] bg-base-100 border border-base-300 rounded-lg shadow-xl z-50 overflow-hidden">
           {@render searchRows()}
         </div>
       {/if}

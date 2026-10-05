@@ -1,7 +1,8 @@
 <script lang="ts">
   import SettingsHeader from '$lib/components/settings/SettingsHeader.svelte';
   import { onMount } from 'svelte';
-  import { t } from 'svelte-i18n';
+  import { t, locale } from 'svelte-i18n';
+  import { LANGUAGES, setLanguage } from '$lib/i18n';
   import { themeMode, uiScale, type UiScale } from '$lib/stores/theme.js';
   import Check from 'lucide-svelte/icons/check';
   import RotateCcw from 'lucide-svelte/icons/rotate-ccw';
@@ -155,6 +156,20 @@
     {/each}
   </div>
 </div>
+
+<!-- Language -->
+<label class="block mb-6 max-w-md">
+  <span class="block text-sm font-semibold mb-2">{$t('settingsProfile.language')}</span>
+  <select
+    class="select select-sm w-full"
+    value={$locale ?? 'en'}
+    onchange={(e) => setLanguage(e.currentTarget.value)}
+  >
+    {#each LANGUAGES as lang (lang.code)}
+      <option value={lang.code} lang={lang.code}>{lang.label}</option>
+    {/each}
+  </select>
+</label>
 
 <!-- Display name -->
 <label class="block mb-4">

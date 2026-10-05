@@ -2,6 +2,7 @@
 	import type { AgentInputField } from '$lib/types/agentPage';
 	import { pickFolder, pickFiles } from '$lib/api/nebo';
 	import { FolderOpen, FileText } from 'lucide-svelte';
+	import { t } from 'svelte-i18n';
 
 	let {
 		fields,
@@ -79,7 +80,7 @@
 						type="button"
 						class="btn btn-sm btn-ghost btn-square text-primary"
 						onclick={() => browseFolder(field.key)}
-						title="Browse folders"
+						title={$t('agent.browseFolders')}
 					>
 						<FolderOpen class="w-4 h-4" />
 					</button>
@@ -99,7 +100,7 @@
 						type="button"
 						class="btn btn-sm btn-ghost btn-square text-primary"
 						onclick={() => browseFile(field.key)}
-						title="Browse files"
+						title={$t('agent.browseFiles')}
 					>
 						<FileText class="w-4 h-4" />
 					</button>
@@ -132,7 +133,7 @@
 					value={getStringValue(field.key, field.default != null ? String(field.default) : '')}
 					onchange={(e) => handleChange(field.key, (e.target as HTMLSelectElement).value)}
 				>
-					<option value="" disabled>Select...</option>
+					<option value="" disabled>{$t('common.select')}</option>
 					{#each field.options || [] as opt}
 						<option value={opt.value}>{opt.label}</option>
 					{/each}

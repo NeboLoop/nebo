@@ -11,7 +11,7 @@
  */
 
 import dagre from '@dagrejs/dagre';
-import { isBranchingType, getActivityType } from '$lib/utils/workflowTypes';
+import { isBranchingType, getActivityType, translateOr } from '$lib/utils/workflowTypes';
 
 // ── Layout constants ──────────────────────────────────────────────────
 export const NODE_W = 240;
@@ -87,15 +87,15 @@ export function layoutWorkflow(
   const nodeMap = new Map<string, LayoutWorkflowNode>();
 
   // Trigger node — build descriptive sublabel
-  let triggerLabel = 'Manual';
+  let triggerLabel = translateOr('workflow.triggerTypes.manual', 'Manual');
   if (trigger.type === 'schedule') {
-    triggerLabel = trigger.schedule || 'Schedule';
+    triggerLabel = trigger.schedule || translateOr('workflow.triggerTypes.schedule', 'Schedule');
   } else if (trigger.type === 'event') {
-    triggerLabel = trigger.event || 'Event';
+    triggerLabel = trigger.event || translateOr('workflow.triggerTypes.event', 'Event');
   } else if (trigger.type === 'heartbeat') {
     const interval = (trigger as any).interval || '30m';
     const window = (trigger as any).window;
-    triggerLabel = `Every ${interval}`;
+    triggerLabel = translateOr('automations.everyInterval', `Every ${interval}`, { interval });
     if (window?.start && window?.end) {
       triggerLabel += `, ${window.start}–${window.end}`;
     }
@@ -104,7 +104,10 @@ export function layoutWorkflow(
   const triggerNode: LayoutWorkflowNode = {
     id: '__trigger__',
     type: 'trigger',
-    label: trigger.type.charAt(0).toUpperCase() + trigger.type.slice(1),
+    label: translateOr(
+    		`workflow.triggerTypes.${trigger.type}`,
+    		trigger.type.charAt(0).toUpperCase() + trigger.type.slice(1),
+    ),
     sublabel: triggerLabel,
     x: 0, y: 0,
     w: TRIGGER_W,
@@ -135,7 +138,7 @@ export function layoutWorkflow(
     const emitNode: LayoutWorkflowNode = {
       id: '__emit__',
       type: 'emit',
-      label: 'Emit',
+      label: translateOr('workflowCanvas.emit', 'Emit'),
       sublabel: emit,
       x: 0, y: 0,
       w: TRIGGER_W,

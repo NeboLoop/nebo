@@ -2,35 +2,29 @@
 // (ApprovalGate). The Permissions pages get their sentences from the server.
 // Non-technical rule: an owner should never have to read "ledger.billpayment.create".
 
-const OP_VERBS: Record<string, string> = {
-	create: 'Create',
-	send: 'Send',
-	update: 'Update',
-	status: 'Change status of',
-	apply: 'Apply',
-	record: 'Record',
-	schedule: 'Schedule',
-	publish: 'Publish',
-	respond: 'Respond to',
-	reply: 'Reply to',
-	upsert: 'Save',
-	attach: 'Attach',
-	write: 'Write',
-	remove: 'Remove',
-};
+import { get } from 'svelte/store';
+import { t } from 'svelte-i18n';
 
+// The verbs and nouns live in the locale files, the whole phrase as ONE
+// message (components.approvalGate.operation) so a language can order verb
+// and object its own way: the action selects the wording, `noun` fills it.
+// An action outside the list reads as its own words ("other" branch).
+//   create send update status apply record schedule publish respond reply
+//   upsert attach write remove
+
+/** Resources with a better name than their segment (components.approvalGate.resource.*). */
 const RESOURCE_LABELS: Record<string, string> = {
-	billpayment: 'bill payment',
-	creditmemo: 'credit memo',
-	journalentry: 'journal entry',
-	purchaseorder: 'purchase order',
-	po: 'purchase order',
-	opportunity: 'deal',
+	billpayment: 'billpayment',
+	creditmemo: 'creditmemo',
+	journalentry: 'journalentry',
+	purchaseorder: 'purchaseorder',
+	po: 'purchaseorder',
+	opportunity: 'opportunity',
 	// The company's own files. Granting one of these is granting the employee the
 	// right to change how the whole business works, so the row says which file.
-	company: 'the Company file — how this business runs',
-	industry: 'the Industry file — how this trade works',
-	franchise: 'the Franchise file — a brand\'s requirements',
+	company: 'company',
+	industry: 'industry',
+	franchise: 'franchise',
 };
 
 /** "quality_checklist" / "purchase-order" → "quality checklist". */
@@ -65,7 +59,10 @@ export function operationLabel(operation: string): string {
 		parts.length === 2
 			? [parts[1], parts[0]]
 			: [parts[parts.length - 2], parts[parts.length - 1]];
-	const verb = OP_VERBS[action] ?? humanize(action);
-	const noun = RESOURCE_LABELS[resource] ?? words(resource);
-	return `${verb} ${noun}`.trim();
+	const tr = get(t);
+	const known = RESOURCE_LABELS[resource];
+	const noun = known ? tr(`components.approvalGate.resource.${known}`) : words(resource);
+	return tr('components.approvalGate.operation', {
+		values: { action, verb: humanize(action), noun }
+	}).trim();
 }

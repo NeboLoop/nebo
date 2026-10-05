@@ -79,7 +79,8 @@
   // overlap policy): skip it, run it once when the last ends, or run anyway.
   let draftOverlap = $state('skip');
 
-  const DOW_LABELS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+  // Cron day-of-week order (0 = Sunday); the label is the plural day name.
+  const DOW_KEYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
 
   function startEditSchedule(t: CronJob) {
     const p = parseSimple(t.schedule);
@@ -152,12 +153,15 @@
   function triggerSummary(wf: WorkflowConfig): string {
     if (wf.trigger?.type === 'schedule') {
       const raw = wf.schedule || wf.trigger.cron || '';
-      return raw ? describeSchedule(raw).text : 'Scheduled';
+      return raw ? describeSchedule(raw).text : $t('automations.scheduled');
     }
-    if (wf.trigger?.type === 'event') return `On ${wf.trigger.event || 'event'}`;
-    if (wf.trigger?.type === 'watch') return `Watch: ${wf.trigger.event || wf.trigger.plugin || 'plugin'}`;
-    if (wf.trigger?.type === 'heartbeat') return `Every ${wf.trigger.interval || '?'}`;
-    return 'Manual trigger';
+    if (wf.trigger?.type === 'event') return wf.trigger.event ? $t('flows.triggerOnEvent', { values: { event: wf.trigger.event } }) : $t('automations.onEvent');
+    if (wf.trigger?.type === 'watch') {
+      const target = wf.trigger.event || wf.trigger.plugin;
+      return target ? $t('flows.triggerWatch', { values: { target } }) : $t('flows.triggerWatchPlugin');
+    }
+    if (wf.trigger?.type === 'heartbeat') return $t('automations.everyInterval', { values: { interval: wf.trigger.interval || '?' } });
+    return $t('flows.triggerManual');
   }
 
   function formatLastFired(iso: string): string {
@@ -251,7 +255,7 @@
                  row opens it; otherwise the row is a summary, and the switch
                  beside it stays the everyday control. -->
             {#if $devMode}
-              <button class="flex-1 min-w-0 text-left cursor-pointer bg-transparent border-none p-0" onclick={() => ctx.openWorkflow(name, wf)}>
+              <button class="flex-1 min-w-0 text-start cursor-pointer bg-transparent border-none p-0" onclick={() => ctx.openWorkflow(name, wf)}>
                 {@render flowSummary(name, wf, purchased)}
               </button>
             {:else}
@@ -285,7 +289,7 @@
                 <!-- The card is a summary; editing lives in ONE place — the modal. -->
                 <button
                   type="button"
-                  class="w-full text-left bg-transparent border-none p-0 cursor-pointer"
+                  class="w-full text-start bg-transparent border-none p-0 cursor-pointer"
                   onclick={() => openEditor(r)}
                 >
                   <div class="flex items-center gap-1.5 flex-wrap">
@@ -298,7 +302,7 @@
                     <div class="text-xs text-base-content/70 mt-0.5 line-clamp-2">{r.instructions || r.message || r.command}</div>
                   {/if}
                   <div class="flex items-center gap-1.5 mt-1.5 flex-wrap">
-                    <span class="text-xs text-base-content/50 {sched.isCron ? 'font-mono' : ''}" title={parseSimple(r.schedule) ? undefined : 'This schedule is more specific than the simple editor can hold'}>{sched.text}</span>
+                    <span class="text-xs text-base-content/50 {sched.isCron ? 'font-mono' : ''}" title={parseSimple(r.schedule) ? undefined : $t('flows.scheduleTooSpecific')}>{sched.text}</span>
                     {#if r.lastRun}
                       <span class="text-xs text-base-content/30">&middot;</span>
                       <span class="text-xs text-base-content/50 font-mono">{r.lastRun}</span>
@@ -310,7 +314,7 @@
                 </button>
                 <div class="flex items-center gap-2 mt-2">
                   <button class="btn btn-ghost btn-xs" disabled={reminderBusy === r.name} onclick={() => runReminder(r)}>{$t('flows.runNow')}</button>
-                  <button class="btn btn-ghost btn-xs text-error ml-auto" disabled={reminderBusy === r.name} onclick={() => (deleteReminder = r)}>{$t('common.delete')}</button>
+                  <button class="btn btn-ghost btn-xs text-error ms-auto" disabled={reminderBusy === r.name} onclick={() => (deleteReminder = r)}>{$t('common.delete')}</button>
                 </div>
               </div>
               <input
@@ -330,7 +334,7 @@
 
     <button
       class="mt-1 w-full py-2.5 rounded-lg border border-dashed border-base-300 text-sm text-primary font-medium cursor-pointer bg-transparent hover:bg-base-200 transition-colors"
-      onclick={() => onask(`Set up a new flow for me: `)}
+      onclick={() => onask($t('flows.askSetupPrompt'))}
     >{$t('flows.askSetup', { values: { name: ctx.agent?.name ?? $t('chat.yourEmployee') } })}</button>
   </div>
 </div>
@@ -356,14 +360,14 @@
         {#if scheduleEditable}
           <div class="flex items-center gap-1.5 flex-wrap">
             <select class="select select-sm bg-base-100 border-base-300" bind:value={draftFreq}>
-              <option value="daily">Every day</option>
-              <option value="weekdays">Weekdays</option>
-              <option value="weekends">Weekends</option>
-              {#each DOW_LABELS as d, i (i)}
-                <option value={`dow${i}`}>{d}s</option>
+              <option value="daily">{$t('schedule.everyDay')}</option>
+              <option value="weekdays">{$t('schedule.weekdays')}</option>
+              <option value="weekends">{$t('schedule.weekends')}</option>
+              {#each DOW_KEYS as d, i (i)}
+                <option value={`dow${i}`}>{$t('schedule.weekdayPlural', { values: { day: d } })}</option>
               {/each}
-              <option value="hours">Every N hours</option>
-              <option value="minutes">Every N minutes</option>
+              <option value="hours">{$t('flows.everyNHours')}</option>
+              <option value="minutes">{$t('flows.everyNMinutes')}</option>
             </select>
             {#if draftFreq === 'hours' || draftFreq === 'minutes'}
               <input type="number" min="1" max={draftFreq === 'hours' ? 23 : 59} class="input input-sm w-16 bg-base-100 border-base-300" bind:value={draftN} />
@@ -379,7 +383,7 @@
               <select class="select select-sm bg-base-100 border-base-300"
                 value={draftHour >= 12 ? 'PM' : 'AM'}
                 onchange={(e) => { draftHour = (draftHour % 12) + (e.currentTarget.value === 'PM' ? 12 : 0); }}>
-                <option>AM</option><option>PM</option>
+                <option value="AM">{$t('schedule.am')}</option><option value="PM">{$t('schedule.pm')}</option>
               </select>
             {/if}
           </div>

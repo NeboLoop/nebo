@@ -176,11 +176,11 @@
       <h2 class="text-xl font-bold mb-1">{$t('onboardingTour.hiTitle')}</h2>
       <p class="text-sm text-base-content/70 mb-6">{$t('onboardingTour.accountQuestion')}</p>
       <div class="grid grid-cols-2 gap-3">
-        <button onclick={() => pickAccount('personal')} class="rounded-xl border border-base-300 bg-base-100 hover:border-primary hover:bg-primary/5 transition-colors p-4 cursor-pointer text-left">
+        <button onclick={() => pickAccount('personal')} class="rounded-xl border border-base-300 bg-base-100 hover:border-primary hover:bg-primary/5 transition-colors p-4 cursor-pointer text-start">
           <div class="text-sm font-semibold mb-0.5">{$t('onboardingTour.personal')}</div>
           <div class="text-xs text-base-content/60">{$t('onboardingTour.personalDesc')}</div>
         </button>
-        <button onclick={() => pickAccount('business')} class="rounded-xl border border-base-300 bg-base-100 hover:border-primary hover:bg-primary/5 transition-colors p-4 cursor-pointer text-left">
+        <button onclick={() => pickAccount('business')} class="rounded-xl border border-base-300 bg-base-100 hover:border-primary hover:bg-primary/5 transition-colors p-4 cursor-pointer text-start">
           <div class="text-sm font-semibold mb-0.5">{$t('onboardingTour.business')}</div>
           <div class="text-xs text-base-content/60">{$t('onboardingTour.businessDesc')}</div>
         </button>

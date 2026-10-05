@@ -80,7 +80,7 @@
   <button
     type="button"
     onclick={() => pickSection(id)}
-    class="text-left py-1.5 max-md:py-3 px-2.5 max-md:px-3.5 rounded-md text-sm cursor-pointer transition-colors border flex items-center {resolved.tab === id
+    class="text-start py-1.5 max-md:py-3 px-2.5 max-md:px-3.5 rounded-md text-sm cursor-pointer transition-colors border flex items-center {resolved.tab === id
       ? 'bg-base-100 border-base-300 shadow-sm font-medium max-md:bg-transparent max-md:border-transparent max-md:shadow-none max-md:font-normal'
       : 'bg-transparent border-transparent hover:bg-base-200'}"
   >
@@ -100,10 +100,10 @@
     <a href="/settings/account" class="shrink-0 flex items-center gap-2 px-4 py-2 border-b border-base-300 text-xs text-base-content/70 hover:bg-base-200 no-underline">
       <Building2 class="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
       <span class="truncate">{$botName ? $t('agentSettings.worksAt', { values: { bot: $botName } }) : $t('agentSettings.worksAtThisBot')}</span>
-      <span class="ml-auto shrink-0 font-medium text-primary">{$t('nav.botSettings')} →</span>
+      <span class="ms-auto shrink-0 font-medium text-primary">{$t('nav.botSettings')} →</span>
     </a>
     <div class="flex-1 min-h-0 flex">
-      <nav class="w-52 shrink-0 border-r border-base-300 bg-base-200/40 overflow-y-auto p-1.5 flex flex-col gap-0.5 max-md:w-full max-md:border-r-0 max-md:bg-transparent max-md:p-2.5 {mobileDetail ? 'max-md:hidden' : ''}">
+      <nav class="w-52 shrink-0 border-e border-base-300 bg-base-200/40 overflow-y-auto p-1.5 flex flex-col gap-0.5 max-md:w-full max-md:border-e-0 max-md:bg-transparent max-md:p-2.5 {mobileDetail ? 'max-md:hidden' : ''}">
         {#each everyday as sec (sec.id)}
           {@render tabButton(sec.id, sec.label)}
         {/each}
@@ -113,7 +113,7 @@
             {#if sec.href}
               <a
                 href={sec.href(agentId)}
-                class="text-left py-1.5 max-md:py-3 px-2.5 max-md:px-3.5 rounded-md text-sm cursor-pointer transition-colors border border-transparent flex items-center no-underline text-base-content hover:bg-base-200"
+                class="text-start py-1.5 max-md:py-3 px-2.5 max-md:px-3.5 rounded-md text-sm cursor-pointer transition-colors border border-transparent flex items-center no-underline text-base-content hover:bg-base-200"
               >
                 <span class="flex-1">{$t(sec.label)}</span>
                 <span class="text-base-content/40" aria-hidden="true">→</span>
@@ -127,7 +127,7 @@
       <div class="flex-1 min-w-0 min-h-0 flex flex-col {mobileDetail ? '' : 'max-md:hidden'}">
         <button
           type="button"
-          class="md:hidden shrink-0 flex items-center gap-1.5 px-2.5 h-10 text-sm font-medium bg-transparent border-0 border-b border-base-300 cursor-pointer text-left"
+          class="md:hidden shrink-0 flex items-center gap-1.5 px-2.5 h-10 text-sm font-medium bg-transparent border-0 border-b border-base-300 cursor-pointer text-start"
           onclick={() => (mobileDetail = false)}
         >
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>

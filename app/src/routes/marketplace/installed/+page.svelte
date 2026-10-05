@@ -131,7 +131,7 @@
 											<p class="text-sm text-base-content/60 truncate">{item.description}</p>
 										</div>
 									</a>
-									<div class="flex items-center gap-3 shrink-0 ml-3">
+									<div class="flex items-center gap-3 shrink-0 ms-3">
 										<a
 											href={itemHref(item)}
 											class="text-base text-base-content/80 hover:text-primary transition-colors"
@@ -177,7 +177,7 @@
 											<p class="text-sm text-base-content/60 truncate">{item.description}</p>
 										</div>
 									</a>
-									<div class="flex items-center gap-3 shrink-0 ml-3">
+									<div class="flex items-center gap-3 shrink-0 ms-3">
 										<a
 											href={itemHref(item)}
 											class="text-base text-base-content/80 hover:text-primary transition-colors"

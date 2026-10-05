@@ -10,7 +10,15 @@
  * - Integrations: connector (MCP), http
  * - Decisions: decide (typed questions, engine-executed)
  * - Composition: agent (delegation), transform
+ *
+ * The English text in ACTIVITY_TYPES is the source and the fallback;
+ * getActivityType() returns it translated (workflow.types.* in the locale
+ * files) at call time. Stored values — types, param keys, option values and
+ * branch labels — are never translated.
  */
+
+import { get } from 'svelte/store';
+import { json, t } from 'svelte-i18n';
 
 // ── Node type identifiers ────────────────────────────────────────────
 export type ActivityType =
@@ -607,6 +615,67 @@ export const ACTIVITY_TYPES: Record<ActivityType, ActivityTypeDefinition> = {
 	},
 };
 
+// ── Display text ─────────────────────────────────────────────────────
+
+/** An id as an i18n key segment: 'take_message' → 'takeMessage', 'activity-custom' → 'activityCustom'. */
+export function i18nKeySegment(id: string): string {
+	return id.replace(/[-_]+(\w)/g, (_, c: string) => c.toUpperCase());
+}
+
+/**
+ * Translates `key` (with ICU `values`) at call time. Falls back to the English
+ * `fallback` when no locale is loaded (unit tests, early boot) or the key has
+ * no message — codes, ids, URLs and proper names deliberately have none.
+ */
+export function translateOr(
+	key: string,
+	fallback: string,
+	values?: Record<string, string | number>,
+): string {
+	try {
+		if (typeof get(json)(key) !== 'string') return fallback;
+		// Always format as ICU (svelte-i18n returns the raw string when no
+		// values are given), so escaped braces in messages render as text.
+		return get(t)(key, { values: values ?? {} });
+	} catch {
+		return fallback;
+	}
+}
+
+/** The type definition with its display text in the current locale. */
+function localizeActivityType(def: ActivityTypeDefinition): ActivityTypeDefinition {
+	const base = `workflow.types.${i18nKeySegment(def.type)}`;
+	return {
+		...def,
+		label: translateOr(`${base}.label`, def.label),
+		description: translateOr(`${base}.description`, def.description),
+		parameters: def.parameters.map((p) => {
+			const pk = `${base}.params.${p.key}`;
+			const out: ActivityParameter = { ...p, label: translateOr(`${pk}.label`, p.label) };
+			if (p.placeholder !== undefined) out.placeholder = translateOr(`${pk}.placeholder`, p.placeholder);
+			if (p.description !== undefined) out.description = translateOr(`${pk}.description`, p.description);
+			if (p.options) {
+				out.options = p.options.map((o) => ({ ...o, label: translateOr(`${pk}.options.${o.value}`, o.label) }));
+			}
+			return out;
+		}),
+	};
+}
+
+const BRANCH_LABEL_KEYS: Record<string, string> = {
+	True: 'workflow.branch.true',
+	False: 'workflow.branch.false',
+	'Each item': 'workflow.branch.eachItem',
+	Done: 'workflow.branch.done',
+};
+
+/** A branch (edge) label for display. The stored label is what the engine
+ *  routes on, so only the shown text is translated. */
+export function branchLabelText(label: string): string {
+	const key = BRANCH_LABEL_KEYS[label];
+	return key ? translateOr(key, label) : label;
+}
+
 // ── Helpers ──────────────────────────────────────────────────────────
 
 /** Map catalog item type to activity type */
@@ -624,14 +693,14 @@ export function catalogTypeToActivityType(catalogType: string): ActivityType {
 	return 'custom';
 }
 
-/** Get the type definition, falling back to custom */
+/** Get the type definition (display text in the current locale), falling back to custom */
 export function getActivityType(type: ActivityType | string | undefined): ActivityTypeDefinition {
-	return ACTIVITY_TYPES[type as ActivityType] || ACTIVITY_TYPES.custom;
+	return localizeActivityType(ACTIVITY_TYPES[type as ActivityType] || ACTIVITY_TYPES.custom);
 }
 
 /** Check if a type creates branching outputs */
 export function isBranchingType(type: ActivityType | string | undefined): boolean {
-	const def = getActivityType(type);
+	const def = ACTIVITY_TYPES[type as ActivityType] || ACTIVITY_TYPES.custom;
 	return def.branches === true;
 }
 

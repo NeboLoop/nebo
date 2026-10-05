@@ -88,7 +88,7 @@
             ></div>
           {/snippet}
           <div class="flex items-center gap-2 mb-0.5">
-            <button class="text-sm font-semibold text-primary hover:underline cursor-pointer bg-transparent border-none p-0 text-left" onclick={() => { selected = skill; confirming = false; }}>{skill.name}</button>
+            <button class="text-sm font-semibold text-primary hover:underline cursor-pointer bg-transparent border-none p-0 text-start" onclick={() => { selected = skill; confirming = false; }}>{skill.name}</button>
             <span class="px-1.5 py-0.5 rounded text-xs font-mono bg-base-200 text-base-content/70">{skill.source}</span>
           </div>
           {#if skill.description}

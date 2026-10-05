@@ -15,7 +15,7 @@
 
 <div class="flex flex-col h-screen">
   <header class="h-14 border-b border-base-300 bg-base-100 flex items-center px-4 shrink-0">
-    <div class="flex items-center gap-1.5 font-semibold text-sm tracking-tight mr-4">
+    <div class="flex items-center gap-1.5 font-semibold text-sm tracking-tight me-4">
       <BrandMark class="w-5 h-5" />
       Nebo
     </div>

@@ -1,3 +1,5 @@
+import { get } from 'svelte/store';
+import { t } from 'svelte-i18n';
 import { backendBase } from '$lib/api/base';
 import { storage } from '$lib/storage';
 import type { SendFeedbackResponse } from '$lib/api/neboComponents';
@@ -29,10 +31,11 @@ export interface FeedbackInput {
 /** Why the form will not send yet, or null. */
 export function feedbackProblem(input: Pick<FeedbackInput, 'message' | 'files'>): string | null {
 	const message = input.message.trim();
-	if (!message) return 'Write a message first.';
-	if (message.length > FEEDBACK_MESSAGE_MAX) return `Keep the message under ${FEEDBACK_MESSAGE_MAX} characters.`;
-	if (input.files.length > FEEDBACK_MAX_ATTACHMENTS) return `Attach at most ${FEEDBACK_MAX_ATTACHMENTS} screenshots.`;
-	if (input.files.some((f) => !f.type.startsWith('image/'))) return 'Only images can be attached.';
+	const tr = get(t);
+	if (!message) return tr('feedback.needMessage');
+	if (message.length > FEEDBACK_MESSAGE_MAX) return tr('feedback.messageTooLong', { values: { max: FEEDBACK_MESSAGE_MAX } });
+	if (input.files.length > FEEDBACK_MAX_ATTACHMENTS) return tr('feedback.tooManyScreenshots', { values: { max: FEEDBACK_MAX_ATTACHMENTS } });
+	if (input.files.some((f) => !f.type.startsWith('image/'))) return tr('feedback.imagesOnly');
 	return null;
 }
 

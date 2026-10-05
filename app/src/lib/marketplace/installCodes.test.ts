@@ -4,7 +4,9 @@
  * "CONN-V1PR-K421)" and it went to the model as chat (2026-09-30), and a
  * list of codes installs one by one.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest';
+import { addMessages, init } from 'svelte-i18n';
+import en from '$lib/i18n/locales/en.json';
 
 const openCode = vi.fn();
 const send = vi.fn();
@@ -14,6 +16,12 @@ vi.mock('$lib/websocket/client', () => ({
 }));
 
 import { matchInstallCodes, sendInstallCode } from './installCodes';
+
+// Opening the modal words its status line through svelte-i18n.
+beforeAll(() => {
+  addMessages('en', en);
+  init({ fallbackLocale: 'en', initialLocale: 'en' });
+});
 
 beforeEach(() => {
   openCode.mockClear();

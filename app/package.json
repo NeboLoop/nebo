@@ -16,6 +16,7 @@
     "prepare": "svelte-kit sync || echo ''"
   },
   "devDependencies": {
+    "@formatjs/icu-messageformat-parser": "2.11.4",
     "@sveltejs/adapter-auto": "^7.0.1",
     "@sveltejs/adapter-static": "^3.0.10",
     "@sveltejs/kit": "^2.70.3",

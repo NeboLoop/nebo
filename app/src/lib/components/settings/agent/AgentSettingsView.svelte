@@ -60,7 +60,7 @@
 
   function createNewWorkflow(callTree = false) {
     const existing = workflowEntries.map(([name]: [string, WorkflowConfig]) => name);
-    const base = callTree ? 'New Call Tree' : 'New Workflow';
+    const base = callTree ? $t('agentSettings.newCallTreeName') : $t('agentSettings.newWorkflowName');
     let idx = 1;
     let name = base;
     while (existing.includes(name)) {
@@ -79,7 +79,7 @@
             {
               id: 'greeting',
               type: 'greeting',
-              label: 'Greeting',
+              label: $t('agentSettings.greetingNodeLabel'),
               params: { text: '' },
             },
           ],
@@ -216,11 +216,14 @@
   }
 
   function triggerSummary(wf: WorkflowConfig): string {
-    if (wf.trigger?.type === 'schedule') return wf.schedule || 'Scheduled';
-    if (wf.trigger?.type === 'event') return `On ${wf.trigger.event || 'event'}`;
-    if (wf.trigger?.type === 'watch') return `Watch: ${wf.trigger.event || wf.trigger.plugin || 'plugin'}`;
-    if (wf.trigger?.type === 'heartbeat') return `Every ${wf.trigger.interval || '?'}`;
-    return 'Manual trigger';
+    if (wf.trigger?.type === 'schedule') return wf.schedule || $t('automations.scheduled');
+    if (wf.trigger?.type === 'event') return wf.trigger.event ? $t('flows.triggerOnEvent', { values: { event: wf.trigger.event } }) : $t('automations.onEvent');
+    if (wf.trigger?.type === 'watch') {
+      const target = wf.trigger.event || wf.trigger.plugin;
+      return target ? $t('flows.triggerWatch', { values: { target } }) : $t('flows.triggerWatchPlugin');
+    }
+    if (wf.trigger?.type === 'heartbeat') return $t('automations.everyInterval', { values: { interval: wf.trigger.interval || '?' } });
+    return $t('flows.triggerManual');
   }
 
   function formatLastFired(iso: string): string {
@@ -1296,7 +1299,7 @@
         <span class="text-xs text-base-content/50">{$t(statusLabel(ctx.agentStatus(agentId)))}</span>
         {#if agentId !== 'assistant'}
           <button
-            class="ml-1 py-0.5 px-2 rounded text-xs font-medium cursor-pointer border border-base-300 bg-base-100 hover:bg-base-200 transition-colors"
+            class="ms-1 py-0.5 px-2 rounded text-xs font-medium cursor-pointer border border-base-300 bg-base-100 hover:bg-base-200 transition-colors"
             onclick={() => ctx.toggleAgentStatus(agentId)}
           >{ctx.agentStatus(agentId) === 'paused' ? $t('agent.resume') : $t('sidebar.pause')}</button>
         {/if}
@@ -1414,7 +1417,7 @@
     <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('settings.navItems.identity')}</div>
     <div class="text-xs text-base-content/70 mt-1">{$t('agentSettings.identityBlurb')}</div>
     {#if identitySaved}
-      <span class="absolute right-0 top-0 text-xs text-success flex items-center gap-1"><Check class="w-3 h-3" /> {$t('common.saved')}</span>
+      <span class="absolute end-0 top-0 text-xs text-success flex items-center gap-1"><Check class="w-3 h-3" /> {$t('common.saved')}</span>
     {/if}
   </div>
   {#if identityError}
@@ -1451,11 +1454,11 @@
           class="flex items-center rounded-md border transition-colors {(editVoice || 'eve') === v.id ? 'border-base-content bg-base-200' : 'border-base-300 bg-base-100 hover:bg-base-200/50'}"
         >
           <button
-            class="pl-3 pr-1.5 py-1.5 text-sm font-medium bg-transparent border-none cursor-pointer"
+            class="ps-3 pe-1.5 py-1.5 text-sm font-medium bg-transparent border-none cursor-pointer"
             onclick={() => selectVoice(v.id)}
           >{v.label}</button>
           <button
-            class="pr-2.5 pl-1 py-1.5 grid place-items-center bg-transparent border-none cursor-pointer text-base-content/50 hover:text-base-content transition-colors"
+            class="pe-2.5 ps-1 py-1.5 grid place-items-center bg-transparent border-none cursor-pointer text-base-content/50 hover:text-base-content transition-colors"
             title={$t('agentSettings.voiceSample')}
             onclick={(e) => playVoiceSample(v.id, e)}
           >
@@ -1492,11 +1495,11 @@
       {/each}
       {#if editColor}
         <button
-          class="text-xs text-base-content/50 hover:text-base-content cursor-pointer bg-transparent border-none ml-1"
+          class="text-xs text-base-content/50 hover:text-base-content cursor-pointer bg-transparent border-none ms-1"
           onclick={() => selectColor(editColor)}
         >{$t('agentSettings.colorReset')}</button>
       {:else}
-        <span class="text-xs text-base-content/40 ml-1">{$t('agentSettings.colorDefault')}</span>
+        <span class="text-xs text-base-content/40 ms-1">{$t('agentSettings.colorDefault')}</span>
       {/if}
     </div>
   </div>
@@ -1641,7 +1644,7 @@
       <div class="mt-2 text-xs text-base-content/60">
         {$t('agentSettings.contextAgainst', { values: { against: stamp.against } })}
         {#if stamp.status && stamp.status !== 'written'}
-          <span class="ml-2 badge badge-warning badge-xs">{$t('agentSettings.contextStale')}</span>
+          <span class="ms-2 badge badge-warning badge-xs">{$t('agentSettings.contextStale')}</span>
         {/if}
       </div>
     {/if}
@@ -1880,7 +1883,7 @@
               {#if wf.trigger?.type === 'schedule'}&#8635;{:else if wf.trigger?.type === 'event'}&#9889;{:else if wf.trigger?.type === 'watch'}&#128065;{:else if wf.trigger?.type === 'heartbeat'}&#10084;{:else}&#9654;{/if}
             </div>
 
-            <button class="flex-1 min-w-0 text-left cursor-pointer bg-transparent border-none p-0" onclick={() => ctx.openWorkflow(name, wf)}>
+            <button class="flex-1 min-w-0 text-start cursor-pointer bg-transparent border-none p-0" onclick={() => ctx.openWorkflow(name, wf)}>
               <div class="flex items-center gap-1.5">
                 <span class="text-sm font-medium">{name}</span>
                 {#if purchased}
@@ -2363,7 +2366,7 @@
   <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/40" tabindex="-1" onkeydown={(e) => { if (e.key === 'Escape' && !helpChatOpen) closeAuthModal(); }} role="dialog" aria-modal="true">
     <div class="bg-base-100 rounded-xl border border-base-300 shadow-xl flex overflow-hidden transition-all duration-300 ease-out {helpChatOpen ? 'w-[80vw] max-md:w-[92vw] h-[80vh]' : 'w-[min(92vw,28rem)]'}">
       <!-- Left: Setup form -->
-      <div class="flex flex-col min-h-0 overflow-hidden {helpChatOpen ? 'w-1/2 border-r border-base-content/10' : 'w-full'}">
+      <div class="flex flex-col min-h-0 overflow-hidden {helpChatOpen ? 'w-1/2 border-e border-base-content/10' : 'w-full'}">
         <div class="flex items-center justify-between p-5 border-b border-base-content/10">
           <div class="min-w-0">
             <div class="text-base font-semibold">{$t('agentSettings.connectChannel', { values: { name: ch.name } })}</div>
@@ -2497,37 +2500,37 @@
       <div class="p-5 space-y-4">
         {#if plugin.slug === 'phonecall'}
           {#if claimableLoading}
-            <div class="flex items-center gap-2 text-xs text-base-content/60"><span class="loading loading-spinner loading-xs"></span> Loading your numbers…</div>
+            <div class="flex items-center gap-2 text-xs text-base-content/60"><span class="loading loading-spinner loading-xs"></span> {$t('agentSettings.phoneLoadingNumbers')}</div>
           {:else if claimableError}
             <div class="rounded-lg bg-error/5 border border-error/30 p-3 space-y-2">
               <div class="text-xs text-error">{claimableError}</div>
               <button type="button" class="btn btn-xs btn-outline" disabled={connecting} onclick={() => openAddAccount(plugin)}>{$t('agentSettings.tryAgain')}</button>
             </div>
           {:else if claimableNumbers.length === 0}
+            {@const noFree = $t('agentSettings.phoneNoFreeNumbers', { values: { link: '@@link@@' } }).split('@@link@@')}
             <div class="rounded-lg bg-base-200 p-3 text-xs text-base-content/70">
-              No numbers are free to attach. Buy a number (or park one from another employee) at
-              <a href="https://neboai.com/manage/phone" target="_blank" rel="noopener" class="font-mono text-primary">neboai.com/manage/phone</a>, then come back here.
+              {noFree[0]}<a href="https://neboai.com/manage/phone" target="_blank" rel="noopener" class="font-mono text-primary">neboai.com/manage/phone</a>{noFree[1] ?? ''}
             </div>
           {:else}
             <div class="flex flex-col gap-1.5">
-              <span class="text-xs font-semibold uppercase tracking-wider text-base-content/50">Which number should this employee answer?</span>
+              <span class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('agentSettings.phoneWhichNumber')}</span>
               <div class="flex flex-col gap-1">
                 {#each claimableNumbers as n (n.number)}
                   <label class="flex items-center gap-2.5 rounded-lg border {addAccountNumber === n.number ? 'border-primary bg-primary/5' : 'border-base-300'} px-3 py-2 cursor-pointer">
                     <input type="radio" class="radio radio-xs radio-primary" name="phone-number-pick" value={n.number} bind:group={addAccountNumber} disabled={connecting} />
                     <span class="text-sm font-mono">{n.number}</span>
                     {#if n.label}<span class="text-xs text-base-content/60 truncate">{n.label}</span>{/if}
-                    <span class="ml-auto text-[10px] uppercase tracking-wide text-base-content/40">{n.status === 'parked' ? 'parked' : 'unassigned'}</span>
+                    <span class="ms-auto text-[10px] uppercase tracking-wide text-base-content/40">{n.status === 'parked' ? $t('agentSettings.phoneNumberParked') : $t('agentSettings.phoneNumberUnassigned')}</span>
                   </label>
                 {/each}
               </div>
             </div>
             <label class="flex flex-col gap-1.5">
-              <span class="text-xs font-semibold uppercase tracking-wider text-base-content/50">Line name (optional)</span>
+              <span class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('agentSettings.phoneLineName')}</span>
               <input
                 type="text"
                 class="input input-sm input-bordered w-full text-sm font-body"
-                placeholder="Front Desk, Support, Spanish line…"
+                placeholder={$t('agentSettings.phoneLineNamePlaceholder')}
                 bind:value={addAccountLabel}
                 disabled={connecting}
                 onkeydown={(e) => { if (e.key === 'Enter') submitAddAccount(); }}
@@ -2551,7 +2554,7 @@
         {/if}
 
         {#if connecting}
-          <div class="rounded-lg bg-primary/5 border border-primary/30 p-3 text-xs text-base-content/70">{plugin.slug === 'phonecall' ? 'Attaching the number to this employee…' : plugin.authFields.length ? $t('agentSettings.checkingCredentials') : $t('agentSettings.signInWindowOpened')}</div>
+          <div class="rounded-lg bg-primary/5 border border-primary/30 p-3 text-xs text-base-content/70">{plugin.slug === 'phonecall' ? $t('agentSettings.phoneAttaching') : plugin.authFields.length ? $t('agentSettings.checkingCredentials') : $t('agentSettings.signInWindowOpened')}</div>
         {/if}
 
         {#if addAccountError}
@@ -2574,7 +2577,7 @@
         >{connecting
             ? (plugin.authFields.length ? $t('agentSettings.connectingAccount') : $t('agentSettings.signingIn'))
             : plugin.slug === 'phonecall'
-              ? 'Attach number'
+              ? $t('agentSettings.phoneAttachNumber')
               : plugin.authFields.length
                 ? $t('agentSettings.connectAccount')
                 : $t('agentSettings.signIn')}</button>

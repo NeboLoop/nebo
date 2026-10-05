@@ -84,7 +84,16 @@
 		"closeModal": "إغلاق النافذة",
 		"all": "الكل",
 		"more": "المزيد",
-		"stopped": "متوقف"
+		"stopped": "متوقف",
+		"errorOccurred": "حدث خطأ ما.",
+		"systemError": "خطأ في النظام",
+		"stillReconnecting": "ما زلنا نحاول الوصول إلى Nebo الخاص بك…",
+		"updatesAvailable": "{count, plural, zero {لا توجد تحديثات} one {تحديث واحد متاح} two {تحديثان متاحان} few {# تحديثات متاحة} many {# تحديثًا متاحًا} other {# تحديث متاح}}",
+		"artifactUpdated": "تم تحديث {type}: {version}",
+		"artifactUpdateFailed": "فشل التحديث: {error}",
+		"employee": "الموظف",
+		"untitled": "بلا عنوان",
+		"document": "مستند"
 	},
 	"time": {
 		"justNow": "الآن",
@@ -253,9 +262,11 @@
 		"working": "يعمل",
 		"chatActions": "إجراءات المحادثة",
 		"deleteChatTitle": "حذف \"{name}\"؟",
-		"deleteChatBody": "ستُحذف هذه المحادثة وجميع رسائلها. لا يمكن التراجع عن ذلك."
+		"deleteChatBody": "ستُحذف هذه المحادثة وجميع رسائلها. لا يمكن التراجع عن ذلك.",
+		"offline": "غير متصل"
 	},
 	"chat": {
+		"worksIn": "يعمل في {folder}",
 		"compactBoundary": "تم تلخيص المحادثة السابقة",
 		"clearedBoundary": "تم المسح هنا. الرسائل السابقة محفوظة لكنها لا تُستخدم.",
 		"goalLine": "الهدف: {condition} ({turns} جولات)",
@@ -264,10 +275,15 @@
 		"goalStopped": "تم إيقاف الهدف مؤقتًا. أخبرني عندما تريد استئنافه.",
 		"resumedActivity": "ما زال يعمل: {tool}",
 		"waitingForYou": "بانتظارك",
+		"waitingOnYou": "{name} بانتظارك",
+		"seeConversation": "عرض المحادثة",
 		"waitingOnYourAnswer": "{name} ينتظر إجابتك:",
 		"waitingOpen": "فتح",
 		"waitingAsksLabel": "بانتظار إجابتك",
 		"subagentStep": "{op} · خطوة {n}",
+		"helperWorking": "مساعد يعمل الآن: {what}",
+		"helpersWorking": "{n, plural, zero {لا مساعدين يعملون} one {مساعد واحد يعمل} two {مساعدان يعملان} few {# مساعدين يعملون} many {# مساعدًا يعملون} other {# مساعد يعملون}}",
+		"moreQuestionsWaiting": "{count, plural, zero {لا أسئلة أخرى بالانتظار} one {سؤال آخر بالانتظار} two {سؤالان آخران بالانتظار} few {# أسئلة أخرى بالانتظار} many {# سؤالًا آخر بالانتظار} other {# سؤال آخر بالانتظار}}",
 		"pending": "معلّق",
 		"yourAICompanion": "فريق عملك من الذكاء الاصطناعي",
 		"tellMeWhatYouNeed": "أخبرني بما تحتاجه، أو فعّل أحد موظفيك أدناه.",
@@ -295,6 +311,7 @@
 		"messageChannel": "اكتب في #{channel}...",
 		"messagedCoworker": "أرسل رسالة",
 		"disclaimer": "قد يخطئ Nebo. تحقق من المعلومات المهمة.",
+		"uploadsKept": "{days, plural, zero {لا يُحتفظ بالملفات المرفوعة.} one {يُحتفظ بالملفات المرفوعة لمدة يوم واحد.} two {يُحتفظ بالملفات المرفوعة لمدة يومين.} few {يُحتفظ بالملفات المرفوعة لمدة # أيام.} many {يُحتفظ بالملفات المرفوعة لمدة # يومًا.} other {يُحتفظ بالملفات المرفوعة لمدة # يوم.}}",
 		"goodMorning": "صباح الخير",
 		"goodAfternoon": "طاب يومك",
 		"goodEvening": "مساء الخير",
@@ -315,6 +332,8 @@
 		"installFailed": "فشل التثبيت — حاول مرة أخرى.",
 		"hire": "توظيف",
 		"hiring": "جارٍ التوظيف…",
+		"hireCount": "توظيف الجميع ({count})",
+		"hiringCount": "جارٍ توظيف {done} من {count}…",
 		"botComputer": "الحاسوب",
 		"closeComputer": "إغلاق الحاسوب",
 		"fullView": "عرض كامل",
@@ -330,13 +349,18 @@
 		"computerUnavailableHint": "يعمل حاسوب الموظف على تثبيتات Linux والموظفين السحابيين.",
 		"watchingAndLearning": "{name} يشاهد ويتعلّم",
 		"stopRecording": "إيقاف التسجيل",
-		"teachLocalHint": "Do the task on this screen as you normally would, then stop.",
+		"teachLocalHint": "نفّذ المهمة على هذه الشاشة كما تفعل عادةً، ثم توقّف.",
+		"teachStarting": "جارٍ الاستعداد لمشاهدة شاشتك…",
+		"teachNeedsScreenPermission": "يحتاج Nebo إلى إذن تسجيل الشاشة ليشاهدك وأنت تنفّذ المهمة. فعّل Nebo في إعدادات النظام › الخصوصية والأمن › تسجيل الشاشة، ثم حاول مرة أخرى.",
+		"openScreenRecordingSettings": "فتح إعدادات تسجيل الشاشة",
+		"openVirtualComputer": "فتح الكمبيوتر الافتراضي",
 		"recordTask": "تسجيل مهمة",
 		"recording": "جارٍ التسجيل",
 		"connectFailed": "لم يكتمل تسجيل الدخول. حاول مرة أخرى.",
 		"connectAccountHint": "سجّل الدخول وسأكمل من حيث توقفت.",
 		"submit": "إرسال",
 		"other": "أخرى...",
+		"askedReceipt": "تم السؤال",
 		"copyCode": "نسخ الكود",
 		"copied": "تم النسخ!",
 		"dropFilesHere": "أفلت الملفات هنا",
@@ -405,6 +429,8 @@
 		"shareNotConnected": "اتصل بـ NeboAI للمشاركة.",
 		"filesInThread": "الملفات في هذه المحادثة",
 		"nothingHereYet": "لا شيء هنا بعد",
+		"noEmployeesOneTool": "لا يوجد موظفون مطابقون، لكن توجد أداة واحدة مطابقة — راجع الأدوات.",
+		"noEmployeesButTools": "{count, plural, zero {لا يوجد موظفون مطابقون — راجع الأدوات.} one {لا يوجد موظفون مطابقون، لكن توجد أداة واحدة مطابقة — راجع الأدوات.} two {لا يوجد موظفون مطابقون، لكن توجد أداتان مطابقتان — راجع الأدوات.} few {لا يوجد موظفون مطابقون، لكن توجد # أدوات مطابقة — راجع الأدوات.} many {لا يوجد موظفون مطابقون، لكن توجد # أداة مطابقة — راجع الأدوات.} other {لا يوجد موظفون مطابقون، لكن توجد # أداة مطابقة — راجع الأدوات.}}",
 		"workEmptyDesc": "عندما ينشئ Nebo تقريراً أو جدولاً أو تصميماً، سيظهر هنا.",
 		"closeImage": "إغلاق الصورة",
 		"fullSize": "الحجم الكامل",
@@ -429,7 +455,12 @@
 		"historyLoadFailed": "تعذّر تحميل هذه المحادثة. تحقق من اتصالك وحاول مرة أخرى.",
 		"consentCreates": "قل نعم وسيُنشأ بهذا العمل تمامًا.",
 		"consentAdds": "قل نعم وستُضاف هذه إلى عمله.",
-		"fromColleague": "من {name}"
+		"fromColleague": "من {name}",
+		"storageFull": "{cap, select, none {مساحة التخزين ممتلئة.} other {مساحة التخزين ممتلئة ({cap}).}} تُحذف الملفات المرفوعة بعد {days, plural, zero {أقل من يوم} one {يوم واحد} two {يومين} few {# أيام} many {# يومًا} other {# يوم}} من إضافتها.",
+		"storageNextFree": "تتوفر المساحة التالية في {date}.",
+		"uploadFailed": "فشل رفع الملف — لم تُرسل الرسالة. {reason}",
+		"fileRemoved": "حُذف هذا الملف بعد {days, plural, zero {أقل من يوم} one {يوم واحد} two {يومين} few {# أيام} many {# يومًا} other {# يوم}} من رفعه.",
+		"notDelivered": "لم تُسلَّم الرسالة. انقطع الاتصال، فأرسلها مرة أخرى."
 	},
 	"chatInput": {
 		"placeholder": "اكتب ردك...",
@@ -456,7 +487,7 @@
 		"recording": "جارٍ التسجيل",
 		"holdToRecord": "اضغط مطولاً للتسجيل",
 		"startVoiceInput": "بدء الإدخال الصوتي",
-		"ptt": "PTT",
+		"ptt": "اضغط وتحدّث",
 		"voiceSettings": "إعدادات الصوت",
 		"microphone": "الميكروفون",
 		"noMicrophones": "لم يتم العثور على ميكروفونات",
@@ -468,7 +499,17 @@
 		"tapToInterrupt": "انقر للمقاطعة",
 		"mute": "كتم",
 		"unmute": "إلغاء الكتم",
-		"endConversation": "إنهاء المحادثة"
+		"endConversation": "إنهاء المحادثة",
+		"recordClip": "تسجيل مقطع",
+		"clipStarting": "بانتظار الميكروفون",
+		"clipStop": "إيقاف وإرفاق",
+		"clipLevel": "مستوى الميكروفون",
+		"clipMicBlockedMac": "لا يستطيع Nebo استخدام الميكروفون. اسمح بذلك في إعدادات النظام ← الخصوصية والأمن ← الميكروفون.",
+		"clipMicBlocked": "لا يستطيع Nebo استخدام الميكروفون. اسمح بذلك في إعدادات الخصوصية في نظامك.",
+		"clipNoMic": "لم يُعثر على ميكروفون. وصّل واحدًا وحاول مرة أخرى.",
+		"clipUnsupported": "التسجيل غير متاح هنا.",
+		"clipFailed": "لم ينجح التسجيل. حاول مرة أخرى.",
+		"clipCapReached": "يتوقف التسجيل عند 10 دقائق. تم إرفاق هذا التسجيل."
 	},
 	"voiceDownload": {
 		"title": "تنزيل نماذج الصوت",
@@ -566,7 +607,21 @@
 		"agent": "موظف",
 		"command": "أمر",
 		"notConnected": "غير متصل",
-		"keyboardHint": "↑↓ تنقل · Enter اختيار · Esc إلغاء"
+		"keyboardHint": "↑↓ تنقل · Enter اختيار · Esc إلغاء",
+		"category": {
+			"session": "الجلسة",
+			"model": "النموذج",
+			"info": "معلومات"
+		},
+		"desc": {
+			"new": "بدء محادثة جديدة",
+			"clear": "البدء من جديد (تُحفظ كل الرسائل)",
+			"compact": "تلخيص الرسائل القديمة ومسحها",
+			"goal": "مواصلة العمل حتى يؤكد فحصٌ الحالة النهائية",
+			"model": "عرض النموذج أو تبديله",
+			"help": "عرض كل الأوامر",
+			"status": "عرض حالة الموظف والنظام"
+		}
 	},
 	"dataTable": {
 		"loading": "جارٍ التحميل...",
@@ -1777,7 +1832,17 @@
 		"toolCategories": "فئات الأدوات",
 		"allToolCategories": "كل فئات الأدوات",
 		"moreEmployees": "المزيد من الموظفين",
-		"moreTools": "المزيد من الأدوات"
+		"moreTools": "المزيد من الأدوات",
+		"pageTitle": "المتجر - Nebo",
+		"sharedPageTitle": "المشترَك - المتجر - Nebo",
+		"searchPageTitle": "البحث — المتجر",
+		"resume": {
+			"byAuthor": "بواسطة {author}",
+			"perSeat": "لكل مقعد",
+			"responsibilities": "المسؤوليات",
+			"newHire": "موظف جديد · كن أول من يوظّفه",
+			"meet": "تعرّف على"
+		}
 	},
 	"commander": {
 		"autoLayout": "تخطيط تلقائي",
@@ -1854,7 +1919,9 @@
 		"noChatsYet": "لا توجد محادثات بعد. ابدأ واحدة جديدة.",
 		"noRunsYet": "لا تشغيلات بعد",
 		"appBadge": "تطبيق",
-		"primaryUndeletable": "يتلقى مساعدك الشخصي كل ما لا يكون موجّهًا إلى موظف بعينه، لذا لا يمكن حذفه. أعد تسميته من إعدادات الموظف."
+		"primaryUndeletable": "يتلقى مساعدك الشخصي كل ما لا يكون موجّهًا إلى موظف بعينه، لذا لا يمكن حذفه. أعد تسميته من إعدادات الموظف.",
+		"browseFolders": "تصفّح المجلدات",
+		"browseFiles": "تصفّح الملفات"
 	},
 	"agentLearning": {
 		"title": "التطوير الذاتي",
@@ -1871,6 +1938,7 @@
 		"viewOnly": "هذه المحادثة للعرض فقط — يتحدث الموظفون هنا، وأنت توجّههم في محادثاتهم الخاصة"
 	},
 	"teams": {
+		"everyoneHint": "الفريق كله",
 		"section": "الفِرق",
 		"emptyRoster": "ضع موظفَين أو أكثر في فريق ليتشاركوا محادثة واحدة. اضغط + للبدء، أو اطلب من أي موظف.",
 		"inTeam": "في هذا الفريق",
@@ -1945,6 +2013,9 @@
 	},
 	"agentSettings": {
 		"general": "عام",
+		"tabWho": "من هم",
+		"tabWork": "ما يفعلونه",
+		"developerGroup": "المطوّر",
 		"generalBlurb": "نظرة عامة على هذا الموظف — الحالة والمهارات وسير العمل والتنظيم.",
 		"identityBlurb": "الاسم والصوت واللون والحالة — كيف يظهر هذا الموظف في التطبيق.",
 		"nameLabel": "الاسم",
@@ -2129,6 +2200,14 @@
 		"saveCredentialsFailed": "فشل حفظ بيانات الاعتماد.",
 		"signInFailedRetry": "فشل تسجيل الدخول. يرجى المحاولة مرة أخرى.",
 		"startSignInFailed": "تعذّر بدء تسجيل الدخول لهذا الحساب.",
+		"signInPopupBlocked": "تم حظر نافذة تسجيل الدخول. اسمح بالنوافذ المنبثقة لـ Nebo، ثم حاول مرة أخرى.",
+		"channelToggleFailed": "تعذّر تحديث هذه القناة. حاول مرة أخرى.",
+		"helpChatFailed": "تعذّر فتح محادثة المساعدة. حاول مرة أخرى.",
+		"accountsLoadFailed": "تعذّر تحميل الحسابات. حاول مرة أخرى.",
+		"accountListRefreshFailed": "تم ربط الحساب، لكن القائمة لم تتحدّث. أعد فتح الإعدادات لرؤيته.",
+		"disconnectFailed": "تعذّر فصل هذا الحساب. حاول مرة أخرى.",
+		"claimableLoadFailed": "تعذّر تحميل أرقام هاتفك.",
+		"tryAgain": "حاول مرة أخرى",
 		"contextTitle": "ما يعرفه هذا الموظف",
 		"contextDesc": "يكتبه الموظف نفسه من طبقتَي الصناعة والشركة، في كل مرة تتغيران. يعمل وفقه دون البحث عن أي شيء.",
 		"contextAgainst": "مكتوب مقابل {against}",
@@ -2157,7 +2236,19 @@
 		"changeInBotSettings": "التغيير من إعدادات البوت",
 		"reachManage": "إدارة",
 		"reachNoPhone": "لا يوجد خط هاتف بعد.",
-		"reachNoChannels": "لا توجد قنوات مفعّلة."
+		"reachNoChannels": "لا توجد قنوات مفعّلة.",
+		"newCallTreeName": "شجرة اتصال جديدة",
+		"newWorkflowName": "سير عمل جديد",
+		"greetingNodeLabel": "التحية",
+		"phoneLoadingNumbers": "جارٍ تحميل أرقامك…",
+		"phoneNoFreeNumbers": "لا توجد أرقام متاحة للربط. اشترِ رقمًا (أو أوقف رقمًا من موظف آخر) من {link}، ثم عُد إلى هنا.",
+		"phoneWhichNumber": "أي رقم يجب أن يرد عليه هذا الموظف؟",
+		"phoneNumberParked": "موقوف",
+		"phoneNumberUnassigned": "غير مخصّص",
+		"phoneLineName": "اسم الخط (اختياري)",
+		"phoneLineNamePlaceholder": "الاستقبال، الدعم، الخط الإسباني…",
+		"phoneAttaching": "جارٍ ربط الرقم بهذا الموظف…",
+		"phoneAttachNumber": "ربط الرقم"
 	},
 	"agentConfigure": {
 		"inputs": "المدخلات",
@@ -2234,7 +2325,10 @@
 		"factDate": "التاريخ",
 		"factAttachment": "مرفق",
 		"factVia": "عبر",
-		"interrupted": "مقاطَع"
+		"interrupted": "مقاطَع",
+		"tokensShort": "{count} رمز",
+		"underOneSecond": "أقل من 1 ث",
+		"triggerKind": "{kind, select, schedule {جدولة} event {حدث} heartbeat {نبضات القلب} manual {يدوي} watch {مراقبة} webhook {Webhook} call {مكالمة} retry {إعادة محاولة} other {{kind}}}"
 	},
 	"automations": {
 		"title": "الأتمتة",
@@ -2272,7 +2366,12 @@
 		"every8h": "كل 8 ساعات",
 		"every24h": "كل 24 ساعة",
 		"everyInterval": "كل {interval}",
-		"whenFires": "عندما يُطلق {event}"
+		"whenFires": "عندما يُطلق {event}",
+		"anEvent": "حدث",
+		"watching": "مراقبة: {source}",
+		"aPlugin": "إضافة",
+		"manualTrigger": "تشغيل يدوي",
+		"onEventNamed": "عند {event}"
 	},
 	"newBot": {
 		"browseMarketplace": "تصفح المتجر",
@@ -2329,7 +2428,18 @@
 		"approvalGate": {
 			"batchHeadline": "{n} إجراء في خطوة واحدة تحتاج موافقتك",
 			"goalHeadline": "هل نتفق على هذا الهدف؟ يستمر العمل حتى يؤكد التحقق تحقيقه.",
-			"yourAgent": "موظفك"
+			"yourAgent": "موظفك",
+			"operation": "{action, select, create {إنشاء {noun}} send {إرسال {noun}} update {تحديث {noun}} status {تغيير حالة {noun}} apply {تطبيق {noun}} record {تسجيل {noun}} schedule {جدولة {noun}} publish {نشر {noun}} respond {الرد على {noun}} reply {الرد على {noun}} upsert {حفظ {noun}} attach {إرفاق {noun}} write {كتابة {noun}} remove {إزالة {noun}} other {{verb} {noun}}}",
+			"resource": {
+				"billpayment": "دفعة فاتورة",
+				"creditmemo": "إشعار دائن",
+				"journalentry": "قيد يومية",
+				"purchaseorder": "أمر شراء",
+				"opportunity": "صفقة",
+				"company": "ملف الشركة — كيف يعمل هذا النشاط التجاري",
+				"industry": "ملف القطاع — كيف تعمل هذه المهنة",
+				"franchise": "ملف الامتياز — متطلبات العلامة التجارية"
+			}
 		},
 		"approvalModal": {
 			"runShellCommand": "تشغيل أمر Shell",
@@ -2446,7 +2556,20 @@
 		"narrowSat": "س",
 		"pageTitle": "الجدولة - Nebo",
 		"perWeek": "{count}/أسبوع",
-		"workflowBuilderTitle": "{name} — منشئ سير العمل"
+		"workflowBuilderTitle": "{name} — منشئ سير العمل",
+		"everyDay": "كل يوم",
+		"weekends": "عطلات نهاية الأسبوع",
+		"weekdayPlural": "{day, select, sun {أيام الأحد} mon {أيام الاثنين} tue {أيام الثلاثاء} wed {أيام الأربعاء} thu {أيام الخميس} fri {أيام الجمعة} sat {أيام السبت} other {{day}}}",
+		"clockTime": "{hour}:{minute} {period}",
+		"hourOnly": "{hour} {period}",
+		"midnight": "منتصف الليل",
+		"cronEveryMinutes": "{n, plural, zero {كل دقيقة} one {كل دقيقة} two {كل دقيقتين} few {كل # دقائق} many {كل # دقيقة} other {كل # دقيقة}}",
+		"cronEveryHours": "{n, plural, zero {كل ساعة} one {كل ساعة} two {كل ساعتين} few {كل # ساعات} many {كل # ساعة} other {كل # ساعة}}",
+		"cronEveryHoursAt": "{n, plural, zero {كل ساعة عند الدقيقة {minute}} one {كل ساعة عند الدقيقة {minute}} two {كل ساعتين عند الدقيقة {minute}} few {كل # ساعات عند الدقيقة {minute}} many {كل # ساعة عند الدقيقة {minute}} other {كل # ساعة عند الدقيقة {minute}}}",
+		"cronDailyAt": "كل يوم الساعة {time}",
+		"cronDaysAt": "{days} الساعة {time}",
+		"cronMonthlyAt": "شهريًا في اليوم {day, selectordinal, other {#}} الساعة {time}",
+		"listSeparator": "، "
 	},
 	"neboShell": {
 		"tabs": {
@@ -2491,7 +2614,26 @@
 	},
 	"userMenu": {
 		"aboutNebo": "حول Nebo",
-		"planSuffix": "خطة {plan}"
+		"planSuffix": "خطة {plan}",
+		"provideFeedback": "إرسال ملاحظات"
+	},
+	"feedback": {
+		"title": "إرسال ملاحظات",
+		"lede": "أخبر فريق NeboAI بما ينجح وما لا ينجح أو بما تودّ رؤيته.",
+		"message": "الرسالة",
+		"screenshots": "لقطات شاشة أو صور (اختياري)",
+		"addScreenshot": "إضافة لقطة شاشة",
+		"remove": "إزالة {name}",
+		"diagnostics": "تضمين بيانات التشخيص",
+		"diagnosticsHelp": "إصدار التطبيق والبوت، والنظام، ومعرّف البوت، وهذه الشاشة. لا كلمات مرور ولا رموز تسجيل دخول أبدًا.",
+		"send": "إرسال",
+		"sending": "جارٍ الإرسال",
+		"sent": "شكرًا — تم الإرسال إلى فريق NeboAI.",
+		"failed": "تعذّر إرسال ملاحظاتك. حاول مرة أخرى.",
+		"needMessage": "اكتب رسالة أولًا.",
+		"messageTooLong": "اجعل الرسالة أقل من {max} حرف.",
+		"tooManyScreenshots": "أرفق {max, plural, zero {لا لقطات شاشة} one {لقطة شاشة واحدة} two {لقطتي شاشة} few {# لقطات شاشة} many {# لقطة شاشة} other {# لقطة شاشة}} كحد أقصى.",
+		"imagesOnly": "يمكن إرفاق الصور فقط."
 	},
 	"workflowCanvas": {
 		"noWorkflows": "لا يوجد سير عمل لعرضه",
@@ -2632,7 +2774,18 @@
 		"gettingReady": "جارٍ تجهيز {name}…",
 		"skillsAndTools": "المهارات والأدوات",
 		"hireFailedTitle": "تعذّر إتمام التوظيف",
-		"hireFailed": "لم يتم توظيف {name}. حاول مرة أخرى."
+		"hireFailed": "لم يتم توظيف {name}. حاول مرة أخرى.",
+		"codeStatus": {
+			"nebo": "جارٍ الاتصال بـ NeboAI…",
+			"skill": "جارٍ تثبيت المهارة…",
+			"workflow": "جارٍ تثبيت سير العمل…",
+			"agent": "جارٍ تثبيت الموظف…",
+			"loop": "جارٍ الانضمام إلى الحلقة…",
+			"plugin": "جارٍ تثبيت الإضافة…",
+			"app": "جارٍ تثبيت التطبيق…",
+			"collection": "جارٍ تثبيت المجموعة…",
+			"connection": "جارٍ إضافة اتصال MCP…"
+		}
 	},
 	"activity": {
 		"pageTitle": "النشاط - Nebo",
@@ -2651,7 +2804,8 @@
 		"openAppHint": "فتح التطبيق",
 		"openApp": "فتح التطبيق",
 		"runs": "التشغيلات",
-		"memory": "الذاكرة"
+		"memory": "الذاكرة",
+		"appError": "خطأ في التطبيق ({status})"
 	},
 	"pricing": {
 		"pageTitle": "اختر خطتك - Nebo",
@@ -2811,7 +2965,10 @@
 		"checkEvery": "التحقق كل",
 		"hours6": "6 ساعات",
 		"history": "السجل",
-		"title": "تحديثات الأدوات"
+		"title": "تحديثات الأدوات",
+		"onLatest": "لديك أحدث إصدار",
+		"checkFailed": "تعذّر التحقق من التحديثات",
+		"updateFailed": "فشل التحديث"
 	},
 	"inbox": {
 		"title": "البريد الوارد",
@@ -2842,15 +2999,27 @@
 		"failedAt": "فشل أثناء «{activity}»",
 		"steps": "ما كان يفعله",
 		"output": "المخرجات",
-		"recordGone": "سجل التشغيل غير موجود. أُزيل مع الموظف الذي يملكه، فلم يبق إلا هذا الإشعار."
+		"recordGone": "سجل التشغيل غير موجود. أُزيل مع الموظف الذي يملكه، فلم يبق إلا هذا الإشعار.",
+		"revert": "تراجع",
+		"reverted": "تم التراجع"
 	},
 	"voice": {
 		"startConversation": "محادثة صوتية",
+		"reconnecting": "جارٍ العودة إلى المكالمة…",
 		"consentTitle": "الصوت يستخدم خدمة سحابية",
 		"consentBody": "تبث المحادثة الصوتية صوت الميكروفون إلى خدمة صوت سحابية للمعالجة أثناء المكالمة. يغادر الصوت هذا الجهاز. تبقى الكتابة في الدردشة محلية كالمعتاد.",
 		"consentAccept": "تفعيل الصوت",
 		"consentDecline": "ليس الآن",
-		"cloudIndicator": "يتم بث الصوت إلى السحابة"
+		"cloudIndicator": "يتم بث الصوت إلى السحابة",
+		"talkTo": "تحدّث إلى {name}",
+		"isSpeaking": "{name} يتحدث",
+		"callEnded": "انتهت المكالمة.",
+		"tryAgain": "حاول مرة أخرى",
+		"onAnotherCall": "في مكالمة مع موظف آخر",
+		"callLost": "انقطعت المكالمة وتعذّرت العودة إليها. ابدأها مرة أخرى.",
+		"callEndedStartAgain": "انتهت المكالمة. ابدأها مرة أخرى.",
+		"needsConsent": "ترسل المحادثة الصوتية صوت الميكروفون إلى خدمة صوت سحابية لمعالجته. فعّلها من لوحة الصوت للموافقة.",
+		"startFailed": "تعذّر بدء المكالمة. حاول مرة أخرى."
 	},
 	"flows": {
 		"none": "لا مسارات بعد",
@@ -2865,7 +3034,15 @@
 		"overlapBufferOne": "شغّل مرة واحدة عند انتهائه",
 		"overlapAllowAll": "شغّل على أي حال",
 		"deleteReminderTitle": "حذف «{name}»؟",
-		"deleteReminderBody": "تتوقف هذه المهمة المجدولة وتُزال. تبقى التشغيلات السابقة في سجل التشغيل."
+		"deleteReminderBody": "تتوقف هذه المهمة المجدولة وتُزال. تبقى التشغيلات السابقة في سجل التشغيل.",
+		"triggerOnEvent": "عند {event}",
+		"triggerWatch": "مراقبة: {target}",
+		"triggerWatchPlugin": "مراقبة: إضافة",
+		"triggerManual": "تشغيل يدوي",
+		"scheduleTooSpecific": "هذه الجدولة أدق مما يستطيع المحرر البسيط استيعابه",
+		"askSetupPrompt": "أنشئ لي مسارًا جديدًا: ",
+		"everyNHours": "كل N ساعة",
+		"everyNMinutes": "كل N دقيقة"
 	},
 	"christen": {
 		"title": "سمِّ موظفك الأول",
@@ -2887,7 +3064,27 @@
 		"working": "نحدد ما سيحتاج إليه…",
 		"willDo": "سيقوم {name} بما يلي:",
 		"thisEmployee": "هذا الموظف",
-		"removeItem": "إزالة {item}"
+		"removeItem": "إزالة {item}",
+		"hireFromApps": "التوظيف من تطبيق آخر",
+		"linkedLede": "يواصلون العمل على الكمبيوتر الذي يعملون عليه.",
+		"thisComputer": "هذا الكمبيوتر",
+		"offline": "غير متصل",
+		"linkedFailed": "تعذّر التوظيف من {bot}. حاول مرة أخرى.",
+		"onYourTeam": "في فريقك",
+		"linkedLooking": "جارٍ البحث عن التطبيقات…",
+		"linkedHireNew": "توظيف واحد جديد",
+		"linkedConnect": "اربط وكيلك",
+		"linkedRunning": "{count, plural, zero {لا شيء قيد التشغيل} one {واحد قيد التشغيل} two {اثنان قيد التشغيل} few {# قيد التشغيل} many {# قيد التشغيل} other {# قيد التشغيل}}",
+		"nameYour": "سمِّ {app} الخاص بك",
+		"youAlreadyHave": "لديك بالفعل:",
+		"nameTaken": "لديك بالفعل موظف باسم {name}.",
+		"linkedWhere": "على أي كمبيوتر يجب أن يعمل؟",
+		"linkedPickAgent": "أي وكيل {app}؟",
+		"linkedModeTitle": "ما الذي يمكنه فعله دون أن يسأل؟",
+		"linkedModeAutomaticDesc": "يعدّل الملفات في مجلده بنفسه. ويسأل قبل أي شيء آخر.",
+		"linkedModeAskDesc": "يسألك قبل أن يغيّر أي شيء.",
+		"linkedModePlanDesc": "يقرأ ويخطّط. لا يغيّر شيئًا.",
+		"linkedModeFullAccessDesc": "يشغّل أي شيء على هذا الكمبيوتر دون أن يسأل."
 	},
 	"runLimit": {
 		"title": "حد الإنفاق لكل تشغيل",
@@ -3101,5 +3298,526 @@
 		"unreviewed": "لم تتم المراجعة",
 		"loadMore": "عرض المزيد",
 		"addJobEdit": "أضِف إلى الوظيفة"
+	},
+	"workflow": {
+		"addNode": "إضافة عقدة",
+		"deleteNode": "حذف العقدة",
+		"deleteWorkflow": "حذف سير العمل",
+		"removeItem": "إزالة {name}",
+		"activityCount": "{count, plural, zero {لا أنشطة} one {نشاط واحد} two {نشاطان} few {# أنشطة} many {# نشاطًا} other {# نشاط}}",
+		"stepCount": "{count, plural, zero {لا خطوات} one {خطوة واحدة} two {خطوتان} few {# خطوات} many {# خطوة} other {# خطوة}}",
+		"triggerTypes": {
+			"schedule": "جدولة",
+			"heartbeat": "نبضات القلب",
+			"event": "حدث",
+			"watch": "مراقبة",
+			"manual": "يدوي"
+		},
+		"branch": {
+			"true": "صحيح",
+			"false": "خطأ",
+			"eachItem": "كل عنصر",
+			"done": "تم"
+		},
+		"types": {
+			"greeting": {
+				"label": "التحية",
+				"description": "ما يقوله هذا الخط عند الرد",
+				"params": {
+					"text": {
+						"label": "التحية",
+						"description": "تُقال حرفيًا عند اتصال المكالمة.",
+						"placeholder": "شكرًا لاتصالك بعيادة ميلر لطب الأسنان! كيف يمكنني مساعدتك؟"
+					}
+				}
+			},
+			"intent": {
+				"label": "القصد",
+				"description": "مهمة واحدة يتولاها هذا الخط، مع أدواتها المسموح بها",
+				"params": {
+					"name": {
+						"label": "اسم القصد",
+						"description": "معرّف قصير يستخدمه الموجّه (فريد في كل شجرة)."
+					},
+					"description": {
+						"label": "متى يقصد المتصلون هذا",
+						"placeholder": "يريد المتصل حجز موعد أو تغييره أو إلغاءه"
+					},
+					"tools": {
+						"label": "الأدوات المسموح بها",
+						"description": "صلاحيات tool:resource مفصولة بفواصل لهذا القصد فقط."
+					},
+					"workflows": {
+						"label": "سير العمل المسموح به",
+						"description": "أسماء سير عمل هذا الموظف التي يمكن للقصد تشغيلها، مفصولة بفواصل."
+					},
+					"plugins": {
+						"label": "الإضافات المسموح بها",
+						"description": "معرّفات الإضافات (slugs) مفصولة بفواصل."
+					},
+					"mcp": {
+						"label": "خوادم MCP المسموح بها",
+						"description": "أسماء خوادم MCP المتصلة، مفصولة بفواصل."
+					}
+				}
+			},
+			"transfer": {
+				"label": "تحويل إلى شخص",
+				"description": "تحويل مباشر إلى رقم التحويل الخاص بالخط",
+				"params": {
+					"when": {
+						"label": "متى يتم التحويل",
+						"placeholder": "يطلب المتصل التحدث إلى شخص، أو منزعج، أو لديه حالة طارئة"
+					},
+					"to": {
+						"label": "يحوّل إلى",
+						"description": "من يُقال للمتصل إنه يُحوَّل إليه. الرقم نفسه يبقى في إعدادات الخط.",
+						"placeholder": "مدير مكتبنا"
+					}
+				}
+			},
+			"takeMessage": {
+				"label": "تسجيل رسالة",
+				"description": "تسجيل رسالة للمالك (الخيار الاحتياطي)",
+				"params": {
+					"fields": {
+						"label": "ما الذي يُسجَّل",
+						"placeholder": "الاسم، الرقم، سبب الاتصال، أفضل وقت لمعاودة الاتصال"
+					}
+				}
+			},
+			"disclosures": {
+				"label": "يمكن مشاركته",
+				"description": "حقائق يذكرها هذا الخط مباشرةً، دون بحث",
+				"params": {
+					"text": {
+						"label": "المعلومات المعتمدة",
+						"description": "الحقائق العامة التي اعتمدها المالك لهذا الخط — ساعات العمل، العنوان، منطقة الخدمة، الأسعار الأساسية. لا تُدرج هنا أبدًا تفاصيل العملاء أو الحسابات؛ فتلك تمر عبر البحث.",
+						"placeholder": "نعمل من الاثنين إلى الجمعة 8–5. العنوان: 123 Main St. يبدأ تنظيف الأسنان من 120 دولارًا."
+					}
+				}
+			},
+			"custom": {
+				"label": "مخصّص",
+				"description": "تحديد الخطوات والمهارات يدويًا"
+			},
+			"research": {
+				"label": "بحث",
+				"description": "بحث على الويب وتحليل وتجميع",
+				"params": {
+					"depth": {
+						"label": "عمق البحث",
+						"options": {
+							"quick": "سريع (2-5 دقائق)",
+							"standard": "عادي (5-10 دقائق)",
+							"deep": "معمّق (10-20 دقيقة)"
+						}
+					},
+					"sources": {
+						"label": "أنواع المصادر",
+						"description": "أنواع المصادر المراد البحث فيها، مفصولة بفواصل",
+						"placeholder": "ويب، أكاديمي، أخبار"
+					}
+				}
+			},
+			"email": {
+				"label": "إرسال بريد إلكتروني",
+				"description": "كتابة بريد إلكتروني وإرساله",
+				"params": {
+					"to": {
+						"label": "إلى",
+						"description": "عنوان بريد المستلم (أو استخدم بيانات الخطوة السابقة)"
+					},
+					"subject": {
+						"label": "قالب الموضوع"
+					}
+				}
+			},
+			"notify": {
+				"label": "إشعار",
+				"description": "إرسال إشعار إلى قناة",
+				"params": {
+					"channel": {
+						"label": "القناة",
+						"options": {
+							"email": "البريد الإلكتروني",
+							"webhook": "Webhook"
+						}
+					},
+					"target": {
+						"label": "الوجهة",
+						"description": "اسم القناة أو البريد الإلكتروني أو URL الخاص بـ webhook",
+						"placeholder": "#general أو user@example.com"
+					}
+				}
+			},
+			"code": {
+				"label": "تشغيل كود",
+				"description": "تنفيذ مقتطف كود",
+				"params": {
+					"language": {
+						"label": "اللغة"
+					},
+					"code": {
+						"label": "الكود",
+						"description": "الكود المراد تنفيذه"
+					}
+				}
+			},
+			"condition": {
+				"label": "شرط",
+				"description": "تفرّع إذا/وإلا",
+				"params": {
+					"expression": {
+						"label": "تعبير الشرط",
+						"description": "تعبير JavaScript — القيمة الصحيحة تتجه إلى فرع صحيح، والخاطئة إلى فرع خطأ"
+					},
+					"mode": {
+						"label": "طريقة التقييم",
+						"options": {
+							"expression": "تعبير",
+							"contains": "البيانات تحتوي على",
+							"exists": "الحقل موجود",
+							"regex": "مطابقة Regex"
+						}
+					}
+				}
+			},
+			"loop": {
+				"label": "تكرار",
+				"description": "المرور على قائمة عناصر",
+				"params": {
+					"source": {
+						"label": "مصدر العناصر",
+						"description": "مسار المصفوفة المراد المرور عليها",
+						"placeholder": "data.items أو data.emails"
+					},
+					"maxIterations": {
+						"label": "أقصى عدد من التكرارات",
+						"description": "حد أمان لمنع التكرار اللانهائي"
+					}
+				}
+			},
+			"wait": {
+				"label": "انتظار",
+				"description": "إيقاف التنفيذ مؤقتًا",
+				"params": {
+					"duration": {
+						"label": "مدة الانتظار",
+						"options": {
+							"5s": "5 ثوانٍ",
+							"30s": "30 ثانية",
+							"1m": "دقيقة واحدة",
+							"5m": "5 دقائق",
+							"15m": "15 دقيقة",
+							"1h": "ساعة واحدة",
+							"custom": "مخصّص"
+						}
+					},
+					"waitUntil": {
+						"label": "أو انتظر حتى",
+						"description": "الاستئناف عند وقوع هذا الحدث (اتركه فارغًا للانتظار بالمدة)",
+						"placeholder": "مثال: event:approval.received"
+					}
+				}
+			},
+			"agent": {
+				"label": "موظف",
+				"description": "التفويض إلى موظف آخر",
+				"params": {
+					"agentId": {
+						"label": "الموظف",
+						"description": "الموظف الذي تُفوَّض إليه هذه المهمة"
+					},
+					"instructions": {
+						"label": "التعليمات",
+						"description": "تجاوز الشخصية الافتراضية للموظف أو أضف إليها",
+						"placeholder": "تعليمات محددة للموظف المفوَّض..."
+					}
+				}
+			},
+			"connector": {
+				"label": "موصل",
+				"description": "استخدام تكامل MCP",
+				"params": {
+					"serverId": {
+						"label": "خادم MCP",
+						"description": "خادم MCP المتصل المراد استخدامه"
+					},
+					"tool": {
+						"label": "الأداة",
+						"description": "الأداة المراد استدعاؤها على خادم MCP",
+						"placeholder": "مثال: read_file، send_message"
+					},
+					"input": {
+						"label": "المُدخل",
+						"description": "مُدخل JSON للأداة (يدعم قوالب '{{'data.field'}}')"
+					}
+				}
+			},
+			"http": {
+				"label": "طلب HTTP",
+				"description": "إجراء استدعاء HTTP API",
+				"params": {
+					"method": {
+						"label": "الطريقة"
+					},
+					"url": {
+						"label": "URL"
+					},
+					"body": {
+						"label": "نص الطلب",
+						"description": "نص JSON لطلبات POST/PUT/PATCH"
+					},
+					"headers": {
+						"label": "الترويسات",
+						"description": "ترويسة واحدة في كل سطر (key: value)"
+					}
+				}
+			},
+			"decide": {
+				"label": "قرار",
+				"description": "تصنيف البيانات أو تقييمها بأسئلة محددة النوع",
+				"params": {
+					"state": {
+						"label": "الحالة",
+						"description": "مسار البيانات المراد تقييمها (inputs.*، item، nodes.'<'id>.*)"
+					},
+					"questions": {
+						"label": "الأسئلة",
+						"description": "كائن JSON من الأسئلة محددة النوع (choice، score، noul). تتفرّع عقدة الشرط وفق nodes.'<'id>.'<'question>.choice و.confidence"
+					},
+					"default": {
+						"label": "الإجابات الافتراضية",
+						"description": "الإجابات المستخدمة عندما يتعذّر اتخاذ قرار: خيار لـ choice، أو مستوى لـ score، أو true أو false لـ noul. عندها تضبط العقدة nodes.'<'id>.defaulted"
+					}
+				}
+			},
+			"transform": {
+				"label": "تحويل",
+				"description": "إعادة تشكيل البيانات أو تصفيتها",
+				"params": {
+					"operation": {
+						"label": "العملية",
+						"options": {
+							"map": "Map — تحويل كل عنصر",
+							"filter": "Filter — الإبقاء على العناصر المطابقة",
+							"reduce": "Reduce — التجميع في قيمة واحدة",
+							"pick": "Pick — استخراج حقول محددة",
+							"template": "Template — التنسيق كنص"
+						}
+					},
+					"expression": {
+						"label": "التعبير",
+						"description": "تعبير التحويل"
+					}
+				}
+			}
+		},
+		"catalog": {
+			"searchPlaceholder": "البحث في العقد...",
+			"noMatch": "لا توجد عقد تطابق “{query}”",
+			"toolsAvailable": "{count, plural, zero {لا أدوات متاحة} one {أداة واحدة متاحة} two {أداتان متاحتان} few {# أدوات متاحة} many {# أداة متاحة} other {# أداة متاحة}}",
+			"categories": {
+				"triggers": "المشغّلات",
+				"activities": "الأنشطة",
+				"callTree": "شجرة الاتصال",
+				"flowControl": "التحكم في التدفق",
+				"connectors": "الموصلات (MCP)",
+				"agents": "الموظفون",
+				"output": "المُخرجات"
+			},
+			"items": {
+				"triggerSchedule": {
+					"label": "جدولة",
+					"desc": "التشغيل في أوقات محددة"
+				},
+				"triggerEvent": {
+					"label": "حدث",
+					"desc": "الاستجابة للأحداث"
+				},
+				"triggerHeartbeat": {
+					"label": "نبضات القلب",
+					"desc": "التشغيل على فترات"
+				},
+				"triggerManual": {
+					"label": "يدوي",
+					"desc": "التشغيل عند الطلب"
+				},
+				"activityCustom": {
+					"label": "نشاط مخصّص",
+					"desc": "تحديد الخطوات والمهارات"
+				},
+				"activityResearch": {
+					"label": "بحث",
+					"desc": "بحث على الويب وتحليل"
+				},
+				"activityEmail": {
+					"label": "إرسال بريد إلكتروني",
+					"desc": "كتابة بريد إلكتروني وإرساله"
+				},
+				"activityNotify": {
+					"label": "إشعار",
+					"desc": "إرسال إشعار"
+				},
+				"activityCode": {
+					"label": "تشغيل كود",
+					"desc": "تنفيذ مقتطف كود"
+				},
+				"activityHttp": {
+					"label": "طلب HTTP",
+					"desc": "إجراء استدعاء API"
+				},
+				"activityDecide": {
+					"label": "قرار",
+					"desc": "تصنيف البيانات أو تقييمها"
+				},
+				"activityTransform": {
+					"label": "تحويل",
+					"desc": "إعادة تشكيل البيانات أو تصفيتها"
+				},
+				"activityGreeting": {
+					"label": "التحية",
+					"desc": "ما يقوله الخط عند الرد"
+				},
+				"activityIntent": {
+					"label": "القصد",
+					"desc": "مهمة واحدة + أدواتها المسموح بها"
+				},
+				"activityTransfer": {
+					"label": "تحويل إلى شخص",
+					"desc": "تحويل مباشر — حدّد إلى من يُحوَّل"
+				},
+				"activityTakeMessage": {
+					"label": "تسجيل رسالة",
+					"desc": "تسجيل رسالة (الخيار الاحتياطي)"
+				},
+				"activityDisclosures": {
+					"label": "يمكن مشاركته",
+					"desc": "حقائق يذكرها هذا الخط مباشرةً (الساعات، العنوان، الأسعار)"
+				},
+				"flowCondition": {
+					"label": "شرط",
+					"desc": "تفرّع إذا/وإلا"
+				},
+				"flowLoop": {
+					"label": "تكرار",
+					"desc": "المرور على العناصر"
+				},
+				"flowWait": {
+					"label": "انتظار",
+					"desc": "إيقاف مؤقت أو انتظار حدث"
+				},
+				"emit": {
+					"label": "إصدار حدث",
+					"desc": "إعلان حدث الاكتمال"
+				}
+			}
+		},
+		"eventSources": {
+			"label": "مصادر الأحداث",
+			"searchPlaceholder": "اكتب للبحث في المصادر...",
+			"hint": "اكتب للبحث في المصادر المعروفة، ثم Enter للإضافة. الأسماء المخصّصة وأحرف البدل (email.*) تعمل أيضًا."
+		},
+		"flow": {
+			"triggerManual": "يعمل عندما تبدؤه",
+			"triggerSchedule": "وفق جدول",
+			"triggerEventAny": "عند وقوع حدث",
+			"triggerWatch": "مراقبة {name}",
+			"triggerWatchAny": "مراقبة إضافة",
+			"applying": "جارٍ التطبيق…",
+			"go": "تنفيذ",
+			"tellAi": "أخبر الذكاء الاصطناعي بما يجب تغييره",
+			"tellAiEllipsis": "أخبر الذكاء الاصطناعي بما يجب تغييره…",
+			"badgeExact": "حرفي",
+			"badgeAgent": "موظف",
+			"emptyCode": "(فارغ)",
+			"stepPlaceholder": "ماذا يجب أن تفعل هذه الخطوة؟",
+			"changeStep": "تغيير “{name}”…",
+			"forEach": "لكل {item}",
+			"loopItemDefault": "عنصر",
+			"loopEmpty": "لا شيء في هذا التكرار بعد.",
+			"pathDefault": "مسار",
+			"pathEmpty": "مسار فارغ",
+			"addStepHere": "إضافة خطوة هنا",
+			"connected": "{name} متصل",
+			"notConnected": "{name} غير متصل — سيفشل هذا المسار",
+			"connect": "اتصال",
+			"describeFlowChange": "صِف تغييرًا على هذا المسار كله…",
+			"edit": "تعديل",
+			"emits": "يُصدر",
+			"noSteps": "لا توجد خطوات في هذا المسار بعد."
+		},
+		"panel": {
+			"backToOverview": "العودة إلى نظرة عامة على سير العمل",
+			"intent": "القصد",
+			"addSkill": "إضافة مهارة...",
+			"parameters": "المعاملات",
+			"addStep": "إضافة خطوة...",
+			"manualHint": "يعمل فقط عند تشغيله يدويًا.",
+			"notConfigured": "غير مُعدّ",
+			"noEventConfigured": "لم يُحدَّد حدث",
+			"noDescription": "لا يوجد وصف",
+			"emitPlaceholder": "مثال: {name}",
+			"emitOptional": "اختياري — يمكن لسير عمل آخر أن يبدأ عند هذا الحدث حين يكتمل التشغيل.",
+			"useEmit": "استخدام {name}",
+			"emitRenameWarning": "إعادة التسمية تعطّل سير العمل المشترك في هذا الحدث.",
+			"none": "لا شيء",
+			"apiEndpoint": "نقطة نهاية API",
+			"apiEndpointHint": "أنشئ مفتاحًا لسير العمل هذا من إعدادات الموظف ← Webhooks."
+		},
+		"schedule": {
+			"weekends": "عطلات نهاية الأسبوع",
+			"custom": "مخصّص",
+			"daysOfWeek": "أيام الأسبوع",
+			"monthly": "شهريًا",
+			"biannual": "كل 6 أشهر",
+			"yearly": "سنويًا",
+			"onDay": "في اليوم",
+			"biannualNote": "يعمل في {day} {firstMonth} و{day} {secondMonth}.",
+			"shortMonthsSkipped": "تُتخطّى الأشهر التي لا تحتوي على اليوم {day}.",
+			"limitToHours": "التقييد بساعات معينة",
+			"rangeTo": "إلى"
+		},
+		"watch": {
+			"plugin": "الإضافة",
+			"choosePlugin": "اختر إضافة…",
+			"whenItReports": "عندما تُبلغ عن",
+			"chooseEvent": "اختر حدثًا…",
+			"hint": "يعمل كلما أبلغت {plugin} عن {event}؛ ويمكن لمسارات أخرى الاستماع إلى {plugin}.{event} أيضًا."
+		},
+		"validation": {
+			"emptyId": "نشاط في “{workflow}” معرّفه فارغ",
+			"duplicateId": "معرّف نشاط مكرر “{id}” في “{workflow}”",
+			"conditionExpression": "الشرط “{id}” يحتاج إلى تعبير — التوجيه حتمي ولا يقرره الذكاء الاصطناعي أبدًا",
+			"loopSource": "التكرار “{id}” يحتاج إلى مصدر بيانات (مثال: inputs.items)",
+			"httpUrl": "عقدة HTTP “{id}” تحتاج إلى URL",
+			"decideQuestions": "عقدة القرار “{id}” تحتاج إلى أسئلة (كائن JSON من الأسئلة محددة النوع)",
+			"waitDuration": "عقدة الانتظار “{id}” تحتاج إلى مدة",
+			"needsIntent": "النشاط “{id}” في “{workflow}” يحتاج إلى قصد أو خطوات",
+			"targetsTrigger": "اتصال يستهدف المشغّل",
+			"leavesEmit": "اتصال يخرج من عقدة الإصدار",
+			"unknownFrom": "اتصال من عقدة غير معروفة “{id}”",
+			"unknownTo": "اتصال إلى عقدة غير معروفة “{id}”",
+			"duplicateConnection": "اتصال مكرر {from} → {to}",
+			"labeledNonBranching": "الحافة الموسومة “{label}” تخرج من عقدة غير متفرّعة “{id}”",
+			"unlabeledBranch": "الحواف الخارجة من “{id}” يجب أن تحمل وسم فرع",
+			"cycle": "يحتوي المخطط على حلقة (فقط جسم “كل عنصر” في التكرار يمكنه العودة إلى تكراره)"
+		},
+		"builder": {
+			"unsavedConfirm": "لديك تغييرات غير محفوظة. هل تريد تجاهلها والإغلاق؟",
+			"workflowLabel": "{name} ({count, plural, zero {لا أنشطة} one {نشاط واحد} two {نشاطان} few {# أنشطة} many {# نشاطًا} other {# نشاط}})",
+			"undo": "تراجع (Cmd+Z)",
+			"redo": "إعادة (Cmd+Shift+Z)",
+			"issueCount": "{count, plural, zero {لا مشكلات} one {مشكلة واحدة} two {مشكلتان} few {# مشكلات} many {# مشكلة} other {# مشكلة}}",
+			"discard": "تجاهل",
+			"hideDetails": "إخفاء لوحة التفاصيل",
+			"showDetails": "إظهار لوحة التفاصيل",
+			"newWorkflowTitle": "سير عمل جديد",
+			"empty": "لا يوجد سير عمل — أنشئ واحدًا للبدء",
+			"newWorkflow": "سير عمل جديد",
+			"confirmDeleteWorkflow": "هل تريد بالتأكيد حذف سير العمل هذا؟ سيؤدي ذلك إلى إزالة كل أنشطته واتصالاته.",
+			"confirmDeleteNode": "هل تريد بالتأكيد حذف هذه العقدة؟ ستُعاد وصل اتصالاتها تلقائيًا."
+		}
 	}
 }

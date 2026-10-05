@@ -11,6 +11,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { get } from 'svelte/store';
+import en from '$lib/i18n/locales/en.json';
 
 vi.mock('$lib/api/base', () => ({ backendWsBase: () => 'ws://bot.test' }));
 vi.mock('$lib/storage', () => ({ storage: { get: () => 'granted', set: () => {} } }));
@@ -85,6 +86,11 @@ let sources: Array<{
 let contexts: Array<{ closed: boolean }> = [];
 
 async function startCall(chatId?: string) {
+	// The store reads its sentences through the i18n layer: the module
+	// registry is fresh each test, so the locale is set on that fresh copy.
+	const i18n = await import('svelte-i18n');
+	i18n.addMessages('en', en);
+	await i18n.init({ fallbackLocale: 'en', initialLocale: 'en' });
 	const { voiceSession } = await import('./voiceSession');
 	const started = voiceSession.start('employee-1', chatId);
 	const first = FakeSocket.instances[0];

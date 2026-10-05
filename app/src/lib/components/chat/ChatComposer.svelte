@@ -39,6 +39,7 @@
   import { createClipRecorder, clipClock, CLIP_CAP_MS, type ClipNotice } from '$lib/chat/clipRecorder';
   import { loadModelOptions, modelLabel, type ModelOption } from '$lib/models/speeds';
   import * as api from '$lib/api/nebo';
+  import { UPLOAD_KEEP_DAYS } from '$lib/api/upload';
 
   interface AttachedFile {
     file: File;
@@ -286,8 +287,8 @@
           // Tailwind's preflight strips list-style + padding from ol/ul, so an
           // auto-formatted list renders with no marker/indent (looks like the
           // "1." vanished). Re-apply list styling via utility classes.
-          orderedList: { HTMLAttributes: { class: 'list-decimal pl-6' } },
-          bulletList: { HTMLAttributes: { class: 'list-disc pl-6' } },
+          orderedList: { HTMLAttributes: { class: 'list-decimal ps-6' } },
+          bulletList: { HTMLAttributes: { class: 'list-disc ps-6' } },
         }),
         // Bi-directional markdown: parses pasted markdown into rich content and
         // serializes the doc back to markdown via editor.storage.markdown.getMarkdown().
@@ -364,6 +365,7 @@
       ],
       editorProps: {
         attributes: {
+          dir: 'auto',
           class: 'w-full text-base outline-none bg-transparent leading-snug min-h-[1.5em] max-h-[200px] overflow-y-auto whitespace-pre-wrap break-words',
         },
         handleKeyDown(_view, event) {
@@ -684,13 +686,13 @@
     {/if}
 
     {#if mentionMenuVisible && mentionAgents.length > 0}
-      <div class="absolute bottom-full left-0 right-0 mb-2 z-20 bg-base-100 border border-base-300 rounded-xl shadow-lg max-h-[240px] overflow-y-auto">
+      <div class="absolute bottom-full start-0 end-0 mb-2 z-20 bg-base-100 border border-base-300 rounded-xl shadow-lg max-h-[240px] overflow-y-auto">
         <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 px-4 pt-3 pb-1">{$t('sidebar.agents')}</div>
         {#each mentionAgents as agent, idx}
           {@const c = AGENT_COLORS_MAP[agent.color]}
           <button
             data-mention-idx={idx}
-            class="flex items-center gap-2.5 px-4 py-2 w-full text-left cursor-pointer transition-colors border-none {idx === mentionActiveIdx ? 'bg-base-200' : 'bg-transparent hover:bg-base-200'}"
+            class="flex items-center gap-2.5 px-4 py-2 w-full text-start cursor-pointer transition-colors border-none {idx === mentionActiveIdx ? 'bg-base-200' : 'bg-transparent hover:bg-base-200'}"
             onmouseenter={() => mentionActiveIdx = idx}
             onmousedown={(e) => { e.preventDefault(); selectMention(agent); }}
           >
@@ -721,16 +723,16 @@
                 class="h-16 w-16 rounded-md object-cover border border-base-300"
               />
               <button
-                class="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-base-300 hover:bg-error hover:text-error-content flex items-center justify-center text-xs cursor-pointer border-none opacity-0 group-hover:opacity-100 transition-opacity"
+                class="absolute -top-1.5 -end-1.5 w-5 h-5 rounded-full bg-base-300 hover:bg-error hover:text-error-content flex items-center justify-center text-xs cursor-pointer border-none opacity-0 group-hover:opacity-100 transition-opacity"
                 onclick={() => removeAttachment(att.id)}
                 title={$t('common.remove')}
               >&times;</button>
-              <div class="absolute bottom-0 left-0 right-0 bg-base-content/60 text-base-100 text-xs px-1 py-0.5 rounded-b-md truncate">
+              <div class="absolute bottom-0 start-0 end-0 bg-base-content/60 text-base-100 text-xs px-1 py-0.5 rounded-b-md truncate">
                 {att.file.name}
               </div>
             </div>
           {:else if att.previewUrl && att.file.type.startsWith('audio/')}
-            <div class="flex items-center gap-1.5 py-1 pl-1 pr-1 rounded-md border border-base-300 bg-base-200/50">
+            <div class="flex items-center gap-1.5 py-1 ps-1 pe-1 rounded-md border border-base-300 bg-base-200/50">
               <audio src={att.previewUrl} controls preload="metadata" class="h-8 w-56 max-w-full"></audio>
               <span class="text-xs font-medium truncate max-w-[120px]" title={att.file.name}>{att.file.name}</span>
               <span class="text-xs text-base-content/50 font-mono shrink-0">{formatSize(att.file.size)}</span>
@@ -741,7 +743,7 @@
               >&times;</button>
             </div>
           {:else}
-            <div class="flex items-center gap-1.5 py-1 pl-2 pr-1 rounded-md border border-base-300 bg-base-200/50 group">
+            <div class="flex items-center gap-1.5 py-1 ps-2 pe-1 rounded-md border border-base-300 bg-base-200/50 group">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="shrink-0 text-base-content/60">
                 <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/>
               </svg>
@@ -756,12 +758,12 @@
           {/if}
         {/each}
       </div>
-      <p class="text-xs text-base-content/50 mb-2">{$t('chat.uploadsKept')}</p>
+      <p class="text-xs text-base-content/50 mb-2">{$t('chat.uploadsKept', { values: { days: UPLOAD_KEEP_DAYS } })}</p>
     {/if}
 
     <!-- Recording a clip: time, level, stop (attach) and cancel (discard) -->
     {#if $clip.stage !== 'idle'}
-      <div class="flex flex-wrap items-center gap-x-3 gap-y-1 mb-2 py-1.5 pl-2 pr-1.5 rounded-md border border-base-300 bg-base-200/50" role="status">
+      <div class="flex flex-wrap items-center gap-x-3 gap-y-1 mb-2 py-1.5 ps-2 pe-1.5 rounded-md border border-base-300 bg-base-200/50" role="status">
         <span class="inline-flex items-center gap-1.5 text-sm font-medium">
           <CircleDot class="w-4 h-4 text-error {$clip.stage === 'recording' ? 'animate-pulse' : ''}" />
           {$clip.stage === 'recording' ? $t('chatInput.recording') : $t('chatInput.clipStarting')}
@@ -775,7 +777,7 @@
             aria-label={$t('chatInput.clipLevel')}
           ></progress>
         {/if}
-        <div class="ml-auto flex items-center gap-1">
+        <div class="ms-auto flex items-center gap-1">
           <button class="btn btn-ghost btn-xs" onclick={() => clip.cancel()}>{$t('common.cancel')}</button>
           {#if $clip.stage === 'recording'}
             <button class="btn btn-primary btn-xs" onclick={() => clip.stop()}>{$t('chatInput.clipStop')}</button>
@@ -882,7 +884,7 @@
                        columns; `flex` takes it back so the name sits above
                        its description and the check keeps to the right. -->
                   <button
-                    class="flex flex-col items-start gap-0.5 text-left text-sm"
+                    class="flex flex-col items-start gap-0.5 text-start text-sm"
                     onclick={() => { pickModel(opt.value); (document.activeElement as HTMLElement | null)?.blur(); }}
                   >
                     <span class="flex w-full items-center justify-between gap-1.5">

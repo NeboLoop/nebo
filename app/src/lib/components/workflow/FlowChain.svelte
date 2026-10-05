@@ -20,7 +20,8 @@
   in order, so the chain shows it in order.
 -->
 <script lang="ts">
-  import { getActivityType } from '$lib/utils/workflowTypes';
+  import { t } from 'svelte-i18n';
+  import { getActivityType, branchLabelText } from '$lib/utils/workflowTypes';
   import { describeSchedule } from '$lib/utils/schedule';
   import type { WorkflowConfig, WorkflowActivity } from '$lib/types/agentPage';
 
@@ -151,14 +152,20 @@
 
   function triggerLine(): string {
     const tr = workflow.trigger;
-    if (!tr || tr.type === 'manual') return 'Runs when you start it';
+    if (!tr || tr.type === 'manual') return $t('workflow.flow.triggerManual');
     if (tr.type === 'schedule') {
       const raw = workflow.schedule || tr.cron || '';
-      return raw ? describeSchedule(raw).text : 'On a schedule';
+      return raw ? describeSchedule(raw).text : $t('workflow.flow.triggerSchedule');
     }
-    if (tr.type === 'event') return `When ${tr.sources?.join(', ') || tr.event || 'an event'} fires`;
-    if (tr.type === 'watch') return `Watching ${tr.event || tr.plugin || 'a plugin'}`;
-    if (tr.type === 'heartbeat') return `Every ${tr.interval || '?'}`;
+    if (tr.type === 'event') {
+      const event = tr.sources?.join(', ') || tr.event;
+      return event ? $t('automations.whenFires', { values: { event } }) : $t('workflow.flow.triggerEventAny');
+    }
+    if (tr.type === 'watch') {
+      const name = tr.event || tr.plugin;
+      return name ? $t('workflow.flow.triggerWatch', { values: { name } }) : $t('workflow.flow.triggerWatchAny');
+    }
+    if (tr.type === 'heartbeat') return $t('automations.everyInterval', { values: { interval: tr.interval || '?' } });
     return tr.type;
   }
   const triggerIcon = $derived(
@@ -192,7 +199,7 @@
 {#snippet aiInput(target: string | null, placeholder: string)}
   {#if aiBusy === (target ?? '__workflow__')}
     <div class="flex items-center gap-2 mt-1.5 text-xs text-base-content/60">
-      <span class="loading loading-spinner loading-xs"></span> Applying…
+      <span class="loading loading-spinner loading-xs"></span> {$t('workflow.flow.applying')}
     </div>
   {:else if aiOpenFor === (target ?? '__top__')}
     <form
@@ -208,7 +215,7 @@
         class="flex-1 min-w-0 h-8 px-2.5 rounded-field border border-primary/40 bg-base-100 text-sm outline-none focus:border-primary placeholder:text-base-content/40"
         onkeydown={(e) => { if (e.key === 'Escape') { aiOpenFor = null; aiText = ''; } }}
       />
-      <button type="submit" class="btn btn-sm btn-primary" disabled={!aiText.trim()}>Go</button>
+      <button type="submit" class="btn btn-sm btn-primary" disabled={!aiText.trim()}>{$t('workflow.flow.go')}</button>
     </form>
   {/if}
 {/snippet}
@@ -218,7 +225,8 @@
     <button
       type="button"
       class="w-6 h-6 max-md:w-10 max-md:h-10 rounded flex items-center justify-center shrink-0 bg-transparent border-none cursor-pointer text-base-content/40 hover:text-primary hover:bg-primary/10 transition-colors"
-      title="Tell the AI what to change"
+      title={$t('workflow.flow.tellAi')}
+      aria-label={$t('workflow.flow.tellAi')}
       onclick={(e) => {
         e.stopPropagation();
         const key = target ?? '__top__';
@@ -242,7 +250,7 @@
   >
     <button
       type="button"
-      class="w-full flex items-center gap-2 px-3.5 pt-2.5 text-left bg-transparent border-none cursor-pointer"
+      class="w-full flex items-center gap-2 px-3.5 pt-2.5 text-start bg-transparent border-none cursor-pointer"
       onclick={() => onselect?.(a.id)}
     >
       <span class="text-sm shrink-0" title={def.label}>{def.icon}</span>
@@ -250,7 +258,7 @@
       <span class="text-[10px] uppercase tracking-wide px-1.5 py-px rounded shrink-0 {DETERMINISTIC.has(a.type)
         ? 'bg-base-200 text-base-content/60'
         : 'bg-primary/10 text-primary'}">
-        {DETERMINISTIC.has(a.type) ? 'exact' : 'agent'}
+        {DETERMINISTIC.has(a.type) ? $t('workflow.flow.badgeExact') : $t('workflow.flow.badgeAgent')}
       </span>
       {@render aiButton(a.id)}
     </button>
@@ -270,14 +278,14 @@
         {:else}
           <div class="mt-1.5 rounded-lg bg-base-200 overflow-hidden">
             <div class="px-2 py-0.5 text-[10px] font-mono text-base-content/50 border-b border-base-content/8">{code.lang}</div>
-            <pre class="px-2 py-1.5 text-xs font-mono overflow-x-auto max-h-32">{code.src || '(empty)'}</pre>
+            <pre class="px-2 py-1.5 text-xs font-mono overflow-x-auto max-h-32">{code.src || $t('workflow.flow.emptyCode')}</pre>
           </div>
         {/if}
       {:else if editable && selected}
         <!-- The card IS the form: the step's instruction edits in place. -->
         <textarea
           class="w-full mt-1.5 px-2.5 py-2 text-xs rounded-lg border border-base-300 bg-base-100 outline-none focus:border-primary resize-y min-h-[64px]"
-          placeholder="What should this step do?"
+          placeholder={$t('workflow.flow.stepPlaceholder')}
           value={a.intent || a.description || ''}
           onchange={(e) => onupdate?.(a.id, 'intent', e.currentTarget.value)}
         ></textarea>
@@ -289,12 +297,12 @@
         <div class="flex items-center gap-2 mt-1.5">
           {#if a.tool}<span class="text-[11px] font-mono text-base-content/50">{a.tool}</span>{/if}
           {#if a.steps?.length}
-            <span class="text-[11px] font-mono text-base-content/40">{a.steps.length} steps</span>
+            <span class="text-[11px] font-mono text-base-content/40">{$t('workflow.stepCount', { values: { count: a.steps.length } })}</span>
           {/if}
         </div>
       {/if}
 
-      {@render aiInput(a.id, `Change "${a.label || a.id}"…`)}
+      {@render aiInput(a.id, $t('workflow.flow.changeStep', { values: { name: a.label || a.id } }))}
     </div>
   </div>
 {/snippet}
@@ -307,7 +315,7 @@
       <!-- The body sits INSIDE the loop's container — the box is the loop. -->
       <div class="rounded-xl border-2 border-warning/40 bg-warning/5 overflow-hidden">
         <div class="px-3.5 py-2 border-b border-warning/30 flex items-center gap-2">
-          <span class="text-sm font-medium">↻ For each {(node.a.params?.items as string) || 'item'}</span>
+          <span class="text-sm font-medium">↻ {$t('workflow.flow.forEach', { values: { item: (node.a.params?.items as string) || $t('workflow.flow.loopItemDefault') } })}</span>
           {#if node.a.label && node.a.label !== node.a.id}
             <span class="text-xs text-base-content/60">{node.a.label}</span>
           {/if}
@@ -316,7 +324,7 @@
         </div>
         <div class="p-3 flex flex-col items-stretch">
           {#if node.body.length === 0}
-            <p class="text-xs text-base-content/50 text-center py-3">Nothing in this loop yet.</p>
+            <p class="text-xs text-base-content/50 text-center py-3">{$t('workflow.flow.loopEmpty')}</p>
           {:else}
             {@render chainList(node.body)}
           {/if}
@@ -325,7 +333,7 @@
     {:else if node.kind === 'branch'}
       <button
         type="button"
-        class="text-left rounded-xl border-2 px-3.5 py-2.5 cursor-pointer transition-colors {selectedId === node.a.id
+        class="text-start rounded-xl border-2 px-3.5 py-2.5 cursor-pointer transition-colors {selectedId === node.a.id
           ? 'border-info bg-info/10'
           : 'border-info/40 bg-info/5 hover:bg-info/10'}"
         onclick={() => onselect?.(node.a.id)}
@@ -333,11 +341,11 @@
         <span class="text-sm font-medium">◇ {node.a.label || node.a.id}</span>
       </button>
       {#each node.paths as path (path.label)}
-        <div class="mt-2 ml-5 rounded-xl border border-info/30 overflow-hidden">
-          <div class="px-3 py-1.5 bg-info/5 border-b border-info/20 text-xs font-medium text-info">{path.label || 'path'}</div>
+        <div class="mt-2 ms-5 rounded-xl border border-info/30 overflow-hidden">
+          <div class="px-3 py-1.5 bg-info/5 border-b border-info/20 text-xs font-medium text-info">{path.label ? branchLabelText(path.label) : $t('workflow.flow.pathDefault')}</div>
           <div class="p-3 flex flex-col items-stretch">
             {#if path.nodes.length === 0}
-              <p class="text-xs text-base-content/50 text-center py-2">Empty path</p>
+              <p class="text-xs text-base-content/50 text-center py-2">{$t('workflow.flow.pathEmpty')}</p>
             {:else}
               {@render chainList(path.nodes)}
             {/if}
@@ -356,13 +364,14 @@
       <div class="w-px h-3 bg-base-content/20"></div>
       <button
         type="button"
-        class="ml-[-6px] w-4 h-4 max-md:w-7 max-md:h-7 max-md:ml-[-12px] max-md:text-sm rounded-full border border-base-300 bg-base-100 text-base-content/40 hover:text-primary hover:border-primary flex items-center justify-center cursor-pointer text-[10px] leading-none transition-colors"
-        title="Add a step here"
+        class="ms-[-6px] w-4 h-4 max-md:w-7 max-md:h-7 max-md:ms-[-12px] max-md:text-sm rounded-full border border-base-300 bg-base-100 text-base-content/40 hover:text-primary hover:border-primary flex items-center justify-center cursor-pointer text-[10px] leading-none transition-colors"
+        title={$t('workflow.flow.addStepHere')}
+        aria-label={$t('workflow.flow.addStepHere')}
         onclick={() => onaddstep?.(afterId)}
       >+</button>
     </div>
   {:else}
-    <div class="w-px h-3 bg-base-content/20 self-start ml-[18px]"></div>
+    <div class="w-px h-3 bg-base-content/20 self-start ms-[18px]"></div>
   {/if}
 {/snippet}
 
@@ -376,12 +385,12 @@
           class="inline-flex items-center gap-1.5 px-2 py-1 rounded-full border text-xs cursor-pointer transition-colors {c.connected
             ? 'border-success/40 bg-success/5 text-base-content/70'
             : 'border-error/50 bg-error/5 text-error hover:bg-error/10'}"
-          title={c.connected ? `${c.name} is connected` : `${c.name} is not connected — this flow will fail`}
+          title={c.connected ? $t('workflow.flow.connected', { values: { name: c.name } }) : $t('workflow.flow.notConnected', { values: { name: c.name } })}
           onclick={() => onconnect?.(c.section)}
         >
           <span class="w-1.5 h-1.5 rounded-full {c.connected ? 'bg-success' : 'bg-error'}"></span>
           {c.name}
-          {#if !c.connected}<span class="font-medium">· Connect</span>{/if}
+          {#if !c.connected}<span class="font-medium">· {$t('workflow.flow.connect')}</span>{/if}
         </button>
       {/each}
     </div>
@@ -391,7 +400,7 @@
   {#if editable && onaiedit}
     <div class="mb-3">
       {#if aiOpenFor === '__top__' || aiBusy === '__workflow__'}
-        {@render aiInput(null, 'Describe a change to this whole flow…')}
+        {@render aiInput(null, $t('workflow.flow.describeFlowChange'))}
       {:else}
         <button
           type="button"
@@ -399,7 +408,7 @@
           onclick={() => { aiOpenFor = '__top__'; aiText = ''; }}
         >
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1"/><circle cx="12" cy="12" r="3.5"/></svg>
-          Tell the AI what to change…
+          {$t('workflow.flow.tellAiEllipsis')}
         </button>
       {/if}
       {#if aiNote}
@@ -411,7 +420,7 @@
   <!-- Trigger -->
   <button
     type="button"
-    class="flex items-center gap-2.5 rounded-xl border px-3.5 py-2.5 text-left cursor-pointer transition-colors {selectedId === TRIGGER_NODE
+    class="flex items-center gap-2.5 rounded-xl border px-3.5 py-2.5 text-start cursor-pointer transition-colors {selectedId === TRIGGER_NODE
       ? 'border-primary bg-primary/10'
       : 'border-primary/40 bg-primary/5 hover:bg-primary/10'}"
     onclick={() => onselect?.(TRIGGER_NODE)}
@@ -419,7 +428,7 @@
     <span class="text-base leading-none">{triggerIcon}</span>
     <span class="text-sm font-medium flex-1">{triggerLine()}</span>
     {#if editable}
-      <span class="text-xs text-base-content/40">edit</span>
+      <span class="text-xs text-base-content/40">{$t('workflow.flow.edit')}</span>
     {/if}
   </button>
 
@@ -430,11 +439,11 @@
   {#if workflow.emit}
     <div class="flex items-center gap-2.5 rounded-xl border border-accent/40 bg-accent/5 px-3.5 py-2.5">
       <span class="text-base leading-none">⚡</span>
-      <span class="text-sm">emits <code class="font-mono text-accent">{workflow.emit}</code></span>
+      <span class="text-sm">{$t('workflow.flow.emits')} <code class="font-mono text-accent">{workflow.emit}</code></span>
     </div>
   {/if}
 
   {#if tree.length === 0}
-    <p class="text-center py-10 text-sm text-base-content/50">This flow has no steps yet.</p>
+    <p class="text-center py-10 text-sm text-base-content/50">{$t('workflow.flow.noSteps')}</p>
   {/if}
 </div>

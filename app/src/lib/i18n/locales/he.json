@@ -84,7 +84,16 @@
 		"closeModal": "סגור חלון",
 		"all": "הכול",
 		"more": "עוד",
-		"stopped": "הופסק"
+		"stopped": "הופסק",
+		"errorOccurred": "משהו השתבש.",
+		"systemError": "שגיאת מערכת",
+		"stillReconnecting": "עדיין מנסה להגיע ל-Nebo שלך…",
+		"updatesAvailable": "{count, plural, one {עדכון אחד זמין} two {שני עדכונים זמינים} other {# עדכונים זמינים}}",
+		"artifactUpdated": "{type} עודכן: {version}",
+		"artifactUpdateFailed": "העדכון נכשל: {error}",
+		"employee": "עובד",
+		"untitled": "ללא שם",
+		"document": "מסמך"
 	},
 	"time": {
 		"justNow": "הרגע",
@@ -253,9 +262,11 @@
 		"working": "עובד",
 		"chatActions": "פעולות צ'אט",
 		"deleteChatTitle": "למחוק את \"{name}\"?",
-		"deleteChatBody": "הצ'אט הזה וכל ההודעות שבו יימחקו. אי אפשר לבטל פעולה זו."
+		"deleteChatBody": "הצ'אט הזה וכל ההודעות שבו יימחקו. אי אפשר לבטל פעולה זו.",
+		"offline": "לא מחובר"
 	},
 	"chat": {
+		"worksIn": "עובד ב-{folder}",
 		"compactBoundary": "השיחה הקודמת סוכמה",
 		"clearedBoundary": "נוקה כאן. ההודעות הקודמות נשמרות, אבל לא נעשה בהן שימוש.",
 		"goalLine": "יעד: {condition} ({turns} סבבים)",
@@ -264,10 +275,15 @@
 		"goalStopped": "היעד הושהה. תגיד לי כשתרצה להמשיך.",
 		"resumedActivity": "עדיין עובד: {tool}",
 		"waitingForYou": "ממתין לך",
+		"waitingOnYou": "{name} ממתין לך",
+		"seeConversation": "הצג את השיחה",
 		"waitingOnYourAnswer": "{name} מחכה לתשובה שלך:",
 		"waitingOpen": "פתיחה",
 		"waitingAsksLabel": "ממתין לתשובה שלך",
 		"subagentStep": "{op} · שלב {n}",
+		"helperWorking": "מסייע עובד: {what}",
+		"helpersWorking": "{n, plural, one {מסייע אחד עובד} two {שני מסייעים עובדים} other {# מסייעים עובדים}}",
+		"moreQuestionsWaiting": "{count, plural, one {עוד שאלה אחת ממתינה} two {עוד שתי שאלות ממתינות} other {עוד # שאלות ממתינות}}",
 		"pending": "ממתין",
 		"yourAICompanion": "צוות ה-AI שלך",
 		"tellMeWhatYouNeed": "ספר לי מה אתה צריך, או הפעל אחד מהעובדים שלך למטה.",
@@ -295,6 +311,7 @@
 		"messageChannel": "הודעה ל-#{channel}...",
 		"messagedCoworker": "שלח הודעה",
 		"disclaimer": "Nebo עלול לטעות. ודא מידע חשוב.",
+		"uploadsKept": "{days, plural, one {העלאות נשמרות למשך יום אחד.} two {העלאות נשמרות למשך יומיים.} other {העלאות נשמרות למשך # ימים.}}",
 		"goodMorning": "בוקר טוב",
 		"goodAfternoon": "צהריים טובים",
 		"goodEvening": "ערב טוב",
@@ -315,6 +332,8 @@
 		"installFailed": "ההתקנה נכשלה — נסה שוב.",
 		"hire": "שכור",
 		"hiring": "שוכר…",
+		"hireCount": "שכור את כל {count}",
+		"hiringCount": "שוכר {done} מתוך {count}…",
 		"botComputer": "מחשב",
 		"closeComputer": "סגור את המחשב",
 		"fullView": "תצוגה מלאה",
@@ -330,13 +349,18 @@
 		"computerUnavailableHint": "המחשב של העובד פועל בהתקנות Linux ובעובדי ענן.",
 		"watchingAndLearning": "{name} צופה ולומד",
 		"stopRecording": "עצור הקלטה",
-		"teachLocalHint": "Do the task on this screen as you normally would, then stop.",
+		"teachLocalHint": "בצע את המשימה במסך הזה כמו שאתה רגיל, ואז עצור.",
+		"teachStarting": "מתכונן לצפות במסך שלך…",
+		"teachNeedsScreenPermission": "Nebo צריך הרשאת הקלטת מסך כדי לצפות בך מבצע את המשימה. הפעל את Nebo בהגדרות המערכת › פרטיות ואבטחה › הקלטת מסך, ואז נסה שוב.",
+		"openScreenRecordingSettings": "פתח את הגדרות הקלטת המסך",
+		"openVirtualComputer": "פתח את המחשב הווירטואלי",
 		"recordTask": "הקלט משימה",
 		"recording": "מקליט",
 		"connectFailed": "ההתחברות לא הושלמה. נסה שוב.",
 		"connectAccountHint": "התחבר ואמשיך מהנקודה שבה עצרתי.",
 		"submit": "שלח",
 		"other": "אחר…",
+		"askedReceipt": "נשאל",
 		"copyCode": "העתק קוד",
 		"copied": "הועתק!",
 		"dropFilesHere": "שחרר קבצים כאן",
@@ -405,6 +429,8 @@
 		"shareNotConnected": "התחבר ל-NeboAI כדי לשתף.",
 		"filesInThread": "קבצים בצ'אט זה",
 		"nothingHereYet": "אין כאן כלום עדיין",
+		"noEmployeesOneTool": "אין עובדים מתאימים, אבל כלי אחד מתאים — ראה כלים.",
+		"noEmployeesButTools": "{count, plural, one {אין עובדים מתאימים, אבל כלי אחד מתאים — ראה כלים.} two {אין עובדים מתאימים, אבל שני כלים מתאימים — ראה כלים.} other {אין עובדים מתאימים, אבל # כלים מתאימים — ראה כלים.}}",
 		"workEmptyDesc": "כש-Nebo יוצר דוח, גיליון או עיצוב, הוא יופיע כאן.",
 		"closeImage": "סגור תמונה",
 		"fullSize": "גודל מלא",
@@ -429,7 +455,12 @@
 		"historyLoadFailed": "לא ניתן לטעון את השיחה הזו. בדוק את החיבור ונסה שוב.",
 		"consentCreates": "אמרו כן והוא ייווצר בדיוק עם התפקיד הזה.",
 		"consentAdds": "אמרו כן וזה יתווסף לתפקיד שלו.",
-		"fromColleague": "מאת {name}"
+		"fromColleague": "מאת {name}",
+		"storageFull": "{cap, select, none {האחסון שלך מלא.} other {האחסון שלך מלא ({cap}).}} העלאות נמחקות {days, plural, one {יום אחד} two {יומיים} other {# ימים}} אחרי שהן נוספו.",
+		"storageNextFree": "המקום הבא יתפנה ב-{date}.",
+		"uploadFailed": "העלאת הקובץ נכשלה — ההודעה לא נשלחה. {reason}",
+		"fileRemoved": "הקובץ הזה הוסר {days, plural, one {יום אחד} two {יומיים} other {# ימים}} אחרי שהועלה.",
+		"notDelivered": "ההודעה לא נמסרה. החיבור נותק, אז שלח אותה שוב."
 	},
 	"chatInput": {
 		"placeholder": "השב...",
@@ -456,7 +487,7 @@
 		"recording": "מקליט",
 		"holdToRecord": "החזק כדי להקליט",
 		"startVoiceInput": "התחל קלט קולי",
-		"ptt": "PTT",
+		"ptt": "לחץ ודבר",
 		"voiceSettings": "הגדרות קול",
 		"microphone": "מיקרופון",
 		"noMicrophones": "לא נמצאו מיקרופונים",
@@ -468,7 +499,17 @@
 		"tapToInterrupt": "הקש כדי לקטוע",
 		"mute": "השתק",
 		"unmute": "בטל השתקה",
-		"endConversation": "סיים שיחה"
+		"endConversation": "סיים שיחה",
+		"recordClip": "הקלט קטע",
+		"clipStarting": "ממתין למיקרופון",
+		"clipStop": "עצור וצרף",
+		"clipLevel": "עוצמת המיקרופון",
+		"clipMicBlockedMac": "Nebo לא יכול להשתמש במיקרופון שלך. אפשר זאת בהגדרות המערכת › פרטיות ואבטחה › מיקרופון.",
+		"clipMicBlocked": "Nebo לא יכול להשתמש במיקרופון שלך. אפשר זאת בהגדרות הפרטיות של המערכת.",
+		"clipNoMic": "לא נמצא מיקרופון. חבר מיקרופון ונסה שוב.",
+		"clipUnsupported": "הקלטה אינה זמינה כאן.",
+		"clipFailed": "ההקלטה לא הצליחה. נסה שוב.",
+		"clipCapReached": "הקלטות נעצרות אחרי 10 דקות. ההקלטה הזו צורפה."
 	},
 	"voiceDownload": {
 		"title": "הורד מודלים קוליים",
@@ -566,7 +607,21 @@
 		"agent": "עובד",
 		"command": "פקודה",
 		"notConnected": "לא מחובר",
-		"keyboardHint": "↑↓ ניווט · Enter בחר · Esc ביטול"
+		"keyboardHint": "↑↓ ניווט · Enter בחר · Esc ביטול",
+		"category": {
+			"session": "שיחה",
+			"model": "מודל",
+			"info": "מידע"
+		},
+		"desc": {
+			"new": "התחל שיחה חדשה",
+			"clear": "התחל מחדש (כל ההודעות נשמרות)",
+			"compact": "סכם ונקה הודעות ישנות",
+			"goal": "המשך לעבוד עד שבדיקה מאשרת את מצב הסיום",
+			"model": "הצג או החלף מודל",
+			"help": "הצג את כל הפקודות",
+			"status": "הצג את סטטוס העובד והמערכת"
+		}
 	},
 	"dataTable": {
 		"loading": "טוען...",
@@ -1777,7 +1832,17 @@
 		"toolCategories": "קטגוריות כלים",
 		"allToolCategories": "כל קטגוריות הכלים",
 		"moreEmployees": "עוד עובדים",
-		"moreTools": "עוד כלים"
+		"moreTools": "עוד כלים",
+		"pageTitle": "חנות - Nebo",
+		"sharedPageTitle": "משותפים - חנות - Nebo",
+		"searchPageTitle": "חיפוש — חנות",
+		"resume": {
+			"byAuthor": "מאת {author}",
+			"perSeat": "לכל משתמש",
+			"responsibilities": "תחומי אחריות",
+			"newHire": "גיוס חדש · היה הראשון לשכור",
+			"meet": "הכר"
+		}
 	},
 	"commander": {
 		"autoLayout": "סידור אוטומטי",
@@ -1854,7 +1919,9 @@
 		"noChatsYet": "אין צ'אטים עדיין. התחל אחד חדש.",
 		"noRunsYet": "אין הרצות עדיין",
 		"appBadge": "אפליקציה",
-		"primaryUndeletable": "העוזר האישי שלך מקבל כל דבר שלא מופנה לעובד מסוים, ולכן אי אפשר למחוק אותו. שנה את שמו בהגדרות עובד."
+		"primaryUndeletable": "העוזר האישי שלך מקבל כל דבר שלא מופנה לעובד מסוים, ולכן אי אפשר למחוק אותו. שנה את שמו בהגדרות עובד.",
+		"browseFolders": "עיין בתיקיות",
+		"browseFiles": "עיין בקבצים"
 	},
 	"agentLearning": {
 		"title": "שיפור עצמי",
@@ -1871,6 +1938,7 @@
 		"viewOnly": "השיחה הזו לצפייה בלבד — העובדים מדברים כאן, ואתה מכוון אותם בצ'אטים שלהם"
 	},
 	"teams": {
+		"everyoneHint": "כל הצוות",
 		"section": "צוותים",
 		"emptyRoster": "שים שני עובדים או יותר בצוות והם יחלקו שיחה אחת. לחץ + כדי להתחיל, או בקש מכל עובד.",
 		"inTeam": "בצוות הזה",
@@ -1945,6 +2013,9 @@
 	},
 	"agentSettings": {
 		"general": "כללי",
+		"tabWho": "מי הם",
+		"tabWork": "מה הם עושים",
+		"developerGroup": "מפתחים",
 		"generalBlurb": "סקירה של העובד הזה — סטטוס, כישורים, תהליכי עבודה ותחזוקה.",
 		"identityBlurb": "שם, קול, צבע וסטטוס — איך העובד הזה מופיע באפליקציה.",
 		"nameLabel": "שם",
@@ -2129,6 +2200,14 @@
 		"saveCredentialsFailed": "שמירת פרטי ההתחברות נכשלה.",
 		"signInFailedRetry": "ההתחברות נכשלה. אנא נסה שוב.",
 		"startSignInFailed": "לא ניתן היה להתחיל התחברות לחשבון זה.",
+		"signInPopupBlocked": "חלון ההתחברות נחסם. אפשר חלונות קופצים עבור Nebo, ואז נסה שוב.",
+		"channelToggleFailed": "לא ניתן היה לעדכן את הערוץ. נסה שוב.",
+		"helpChatFailed": "לא ניתן היה לפתוח את צ'אט העזרה. נסה שוב.",
+		"accountsLoadFailed": "לא ניתן היה לטעון חשבונות. נסה שוב.",
+		"accountListRefreshFailed": "החשבון צורף, אבל הרשימה לא רועננה. פתח שוב את ההגדרות כדי לראות אותו.",
+		"disconnectFailed": "לא ניתן היה לנתק את החשבון. נסה שוב.",
+		"claimableLoadFailed": "לא ניתן היה לטעון את מספרי הטלפון שלך.",
+		"tryAgain": "נסה שוב",
 		"contextTitle": "מה העובד הזה יודע",
 		"contextDesc": "נכתב בידי העובד עצמו מתוך שכבות הענף והחברה, בכל פעם שהן משתנות. הוא עובד לפי זה בלי לחפש שום דבר.",
 		"contextAgainst": "נכתב מול {against}",
@@ -2157,7 +2236,19 @@
 		"changeInBotSettings": "שנה בהגדרות בוט",
 		"reachManage": "נהל",
 		"reachNoPhone": "אין עדיין קו טלפון.",
-		"reachNoChannels": "אין ערוצים מופעלים."
+		"reachNoChannels": "אין ערוצים מופעלים.",
+		"newCallTreeName": "עץ שיחה חדש",
+		"newWorkflowName": "תהליך עבודה חדש",
+		"greetingNodeLabel": "ברכה",
+		"phoneLoadingNumbers": "טוען את המספרים שלך…",
+		"phoneNoFreeNumbers": "אין מספרים פנויים לצירוף. קנה מספר (או שחרר מספר מעובד אחר) ב-{link}, ואז חזור לכאן.",
+		"phoneWhichNumber": "לאיזה מספר העובד הזה צריך לענות?",
+		"phoneNumberParked": "בהמתנה",
+		"phoneNumberUnassigned": "לא משויך",
+		"phoneLineName": "שם הקו (אופציונלי)",
+		"phoneLineNamePlaceholder": "קבלה, תמיכה, קו בספרדית…",
+		"phoneAttaching": "מצרף את המספר לעובד הזה…",
+		"phoneAttachNumber": "צרף מספר"
 	},
 	"agentConfigure": {
 		"inputs": "קלטים",
@@ -2234,7 +2325,10 @@
 		"factDate": "תאריך",
 		"factAttachment": "קובץ מצורף",
 		"factVia": "דרך",
-		"interrupted": "הופסק"
+		"interrupted": "הופסק",
+		"tokensShort": "{count} אסימונים",
+		"underOneSecond": "<1 שנ׳",
+		"triggerKind": "{kind, select, schedule {לוח זמנים} event {אירוע} heartbeat {פעימה} manual {ידני} watch {מעקב} webhook {Webhook} call {שיחה} retry {ניסיון חוזר} other {{kind}}}"
 	},
 	"automations": {
 		"title": "אוטומציות",
@@ -2272,7 +2366,12 @@
 		"every8h": "כל 8 שעות",
 		"every24h": "כל 24 שעות",
 		"everyInterval": "כל {interval}",
-		"whenFires": "כש-{event} מופעל"
+		"whenFires": "כש-{event} מופעל",
+		"anEvent": "אירוע",
+		"watching": "מעקב: {source}",
+		"aPlugin": "תוסף",
+		"manualTrigger": "הפעלה ידנית",
+		"onEventNamed": "באירוע {event}"
 	},
 	"newBot": {
 		"browseMarketplace": "עיין בחנות",
@@ -2329,7 +2428,18 @@
 		"approvalGate": {
 			"batchHeadline": "{n} פעולות בשלב אחד דורשות את אישורך",
 			"goalHeadline": "להסכים על היעד הזה? העבודה נמשכת עד שבדיקה מאשרת שהוא הושג.",
-			"yourAgent": "העובד שלך"
+			"yourAgent": "העובד שלך",
+			"operation": "{action, select, create {צור {noun}} send {שלח {noun}} update {עדכן {noun}} status {שנה סטטוס של {noun}} apply {החל {noun}} record {רשום {noun}} schedule {תזמן {noun}} publish {פרסם {noun}} respond {הגב על {noun}} reply {השב על {noun}} upsert {שמור {noun}} attach {צרף {noun}} write {כתוב {noun}} remove {הסר {noun}} other {{verb} {noun}}}",
+			"resource": {
+				"billpayment": "תשלום חשבון",
+				"creditmemo": "הודעת זיכוי",
+				"journalentry": "פקודת יומן",
+				"purchaseorder": "הזמנת רכש",
+				"opportunity": "עסקה",
+				"company": "קובץ החברה — איך העסק הזה פועל",
+				"industry": "קובץ התעשייה — איך התחום הזה עובד",
+				"franchise": "קובץ הזיכיון — הדרישות של מותג"
+			}
 		},
 		"approvalModal": {
 			"runShellCommand": "הרצת פקודת מעטפת",
@@ -2446,7 +2556,20 @@
 		"narrowSat": "ש",
 		"pageTitle": "לוח זמנים - Nebo",
 		"perWeek": "{count}/שבוע",
-		"workflowBuilderTitle": "{name} — בונה תהליכי עבודה"
+		"workflowBuilderTitle": "{name} — בונה תהליכי עבודה",
+		"everyDay": "כל יום",
+		"weekends": "סופי שבוע",
+		"weekdayPlural": "{day, select, sun {ימי ראשון} mon {ימי שני} tue {ימי שלישי} wed {ימי רביעי} thu {ימי חמישי} fri {ימי שישי} sat {שבתות} other {{day}}}",
+		"clockTime": "{hour}:{minute} {period}",
+		"hourOnly": "{hour} {period}",
+		"midnight": "חצות",
+		"cronEveryMinutes": "{n, plural, one {כל דקה} two {כל שתי דקות} other {כל # דקות}}",
+		"cronEveryHours": "{n, plural, one {כל שעה} two {כל שעתיים} other {כל # שעות}}",
+		"cronEveryHoursAt": "{n, plural, one {כל שעה ב-:{minute}} two {כל שעתיים ב-:{minute}} other {כל # שעות ב-:{minute}}}",
+		"cronDailyAt": "כל יום בשעה {time}",
+		"cronDaysAt": "{days} בשעה {time}",
+		"cronMonthlyAt": "מדי חודש, ב-{day} לחודש, בשעה {time}",
+		"listSeparator": ", "
 	},
 	"neboShell": {
 		"tabs": {
@@ -2491,7 +2614,26 @@
 	},
 	"userMenu": {
 		"aboutNebo": "אודות Nebo",
-		"planSuffix": "תוכנית {plan}"
+		"planSuffix": "תוכנית {plan}",
+		"provideFeedback": "שלח משוב"
+	},
+	"feedback": {
+		"title": "שלח משוב",
+		"lede": "ספר לצוות NeboAI מה עובד, מה לא, או מה היית רוצה.",
+		"message": "הודעה",
+		"screenshots": "צילומי מסך או תמונות (אופציונלי)",
+		"addScreenshot": "הוסף צילום מסך",
+		"remove": "הסר את {name}",
+		"diagnostics": "כלול נתוני אבחון",
+		"diagnosticsHelp": "גרסת האפליקציה והבוט, פלטפורמה, מזהה הבוט והמסך הזה. אף פעם לא סיסמאות או אסימוני התחברות.",
+		"send": "שלח",
+		"sending": "שולח",
+		"sent": "תודה — נשלח לצוות NeboAI.",
+		"failed": "לא ניתן היה לשלוח את המשוב שלך. נסה שוב.",
+		"needMessage": "כתוב הודעה קודם.",
+		"messageTooLong": "ההודעה צריכה להיות קצרה מ-{max} תווים.",
+		"tooManyScreenshots": "{max, plural, one {ניתן לצרף צילום מסך אחד לכל היותר.} two {ניתן לצרף עד שני צילומי מסך.} other {ניתן לצרף עד # צילומי מסך.}}",
+		"imagesOnly": "ניתן לצרף רק תמונות."
 	},
 	"workflowCanvas": {
 		"noWorkflows": "אין תהליכי עבודה להצגה",
@@ -2632,7 +2774,18 @@
 		"gettingReady": "מכינים את {name}…",
 		"skillsAndTools": "כישורים וכלים",
 		"hireFailedTitle": "לא ניתן היה להשלים את הגיוס",
-		"hireFailed": "{name} לא נשכר. נסה שוב."
+		"hireFailed": "{name} לא נשכר. נסה שוב.",
+		"codeStatus": {
+			"nebo": "מתחבר ל-NeboAI…",
+			"skill": "מתקין כישור…",
+			"workflow": "מתקין תהליך עבודה…",
+			"agent": "מתקין עובד…",
+			"loop": "מצטרף ל-Loop…",
+			"plugin": "מתקין תוסף…",
+			"app": "מתקין אפליקציה…",
+			"collection": "מתקין אוסף…",
+			"connection": "מוסיף חיבור MCP…"
+		}
 	},
 	"activity": {
 		"pageTitle": "פעילות - Nebo",
@@ -2651,7 +2804,8 @@
 		"openAppHint": "פתח אפליקציה",
 		"openApp": "פתח אפליקציה",
 		"runs": "ריצות",
-		"memory": "זיכרון"
+		"memory": "זיכרון",
+		"appError": "שגיאת אפליקציה ({status})"
 	},
 	"pricing": {
 		"pageTitle": "בחר את התוכנית שלך - Nebo",
@@ -2811,7 +2965,10 @@
 		"checkEvery": "בדוק כל",
 		"hours6": "6 שעות",
 		"history": "היסטוריה",
-		"title": "עדכוני כלים"
+		"title": "עדכוני כלים",
+		"onLatest": "אתה בגרסה העדכנית ביותר",
+		"checkFailed": "לא ניתן היה לבדוק עדכונים",
+		"updateFailed": "העדכון נכשל"
 	},
 	"inbox": {
 		"title": "תיבת דואר נכנס",
@@ -2842,15 +2999,27 @@
 		"failedAt": "נכשל במהלך \"{activity}\"",
 		"steps": "מה הוא עשה",
 		"output": "פלט",
-		"recordGone": "רישום ההרצה נעלם. הוא הוסר יחד עם העובד שהיה בעליו, ולכן נותרה רק ההודעה הזו."
+		"recordGone": "רישום ההרצה נעלם. הוא הוסר יחד עם העובד שהיה בעליו, ולכן נותרה רק ההודעה הזו.",
+		"revert": "שחזר",
+		"reverted": "שוחזר"
 	},
 	"voice": {
 		"startConversation": "שיחה קולית",
+		"reconnecting": "מצטרף שוב לשיחה…",
 		"consentTitle": "הקול משתמש בשירות ענן",
 		"consentBody": "שיחה קולית מזרימה את שמע המיקרופון שלך אל שירות קול בענן לעיבוד בזמן שיחה פעילה. השמע עוזב את המחשב הזה. הקלדה בצ'אט נשארת מקומית כתמיד.",
 		"consentAccept": "הפעל קול",
 		"consentDecline": "לא עכשיו",
-		"cloudIndicator": "השמע מוזרם לענן"
+		"cloudIndicator": "השמע מוזרם לענן",
+		"talkTo": "דבר עם {name}",
+		"isSpeaking": "{name} מדבר",
+		"callEnded": "השיחה הסתיימה.",
+		"tryAgain": "נסה שוב",
+		"onAnotherCall": "בשיחה עם עובד אחר",
+		"callLost": "השיחה נותקה ולא ניתן היה להצטרף אליה שוב. התחל אותה מחדש.",
+		"callEndedStartAgain": "השיחה הסתיימה. התחל אותה מחדש.",
+		"needsConsent": "שיחה קולית שולחת את שמע המיקרופון שלך לשירות קול בענן לעיבוד. הפעל אותה בחלונית הקול כדי לתת הסכמה.",
+		"startFailed": "לא ניתן היה להתחיל את השיחה. נסה שוב."
 	},
 	"flows": {
 		"none": "אין עדיין זרימות",
@@ -2865,7 +3034,15 @@
 		"overlapBufferOne": "הרץ פעם אחת כשתסתיים",
 		"overlapAllowAll": "הרץ בכל זאת",
 		"deleteReminderTitle": "למחוק את \"{name}\"?",
-		"deleteReminderBody": "המשימה המתוזמנת הזו מפסיקה לרוץ ומוסרת. הרצות קודמות נשארות בהיסטוריית ההרצות."
+		"deleteReminderBody": "המשימה המתוזמנת הזו מפסיקה לרוץ ומוסרת. הרצות קודמות נשארות בהיסטוריית ההרצות.",
+		"triggerOnEvent": "באירוע {event}",
+		"triggerWatch": "מעקב: {target}",
+		"triggerWatchPlugin": "מעקב: תוסף",
+		"triggerManual": "הפעלה ידנית",
+		"scheduleTooSpecific": "לוח הזמנים הזה מפורט יותר ממה שהעורך הפשוט יכול להציג",
+		"askSetupPrompt": "הגדר לי זרימה חדשה: ",
+		"everyNHours": "כל N שעות",
+		"everyNMinutes": "כל N דקות"
 	},
 	"christen": {
 		"title": "תן שם לעובד הראשון שלך",
@@ -2887,7 +3064,27 @@
 		"working": "בודקים מה הוא יצטרך…",
 		"willDo": "{name} יוכל:",
 		"thisEmployee": "העובד הזה",
-		"removeItem": "הסרת {item}"
+		"removeItem": "הסרת {item}",
+		"hireFromApps": "שכור מאפליקציה אחרת",
+		"linkedLede": "הם ממשיכים לעבוד על המחשב שבו הם רצים.",
+		"thisComputer": "המחשב הזה",
+		"offline": "לא מחובר",
+		"linkedFailed": "לא ניתן היה לשכור מ-{bot}. נסה שוב.",
+		"onYourTeam": "בצוות שלך",
+		"linkedLooking": "מחפש אפליקציות…",
+		"linkedHireNew": "שכור חדש",
+		"linkedConnect": "חבר את הסוכן שלך",
+		"linkedRunning": "{count, plural, one {אחד פועל} two {שניים פועלים} other {# פועלים}}",
+		"nameYour": "תן שם ל-{app} שלך",
+		"youAlreadyHave": "כבר יש לך:",
+		"nameTaken": "כבר יש לך עובד בשם {name}.",
+		"linkedWhere": "על איזה מחשב הוא צריך לעבוד?",
+		"linkedPickAgent": "איזה סוכן {app}?",
+		"linkedModeTitle": "מה מותר לו לעשות בלי לשאול?",
+		"linkedModeAutomaticDesc": "עורך קבצים בתיקייה שלו בעצמו. שואל לפני כל דבר אחר.",
+		"linkedModeAskDesc": "שואל אותך לפני שהוא משנה משהו.",
+		"linkedModePlanDesc": "קורא ומתכנן. לא משנה דבר.",
+		"linkedModeFullAccessDesc": "מריץ כל דבר על המחשב הזה בלי לשאול."
 	},
 	"runLimit": {
 		"title": "מגבלת הוצאה להרצה",
@@ -3101,5 +3298,526 @@
 		"unreviewed": "לא נבדק",
 		"loadMore": "הצג עוד",
 		"addJobEdit": "הוספה לתפקיד"
+	},
+	"workflow": {
+		"addNode": "הוסף צומת",
+		"deleteNode": "מחק צומת",
+		"deleteWorkflow": "מחק תהליך עבודה",
+		"removeItem": "הסר את {name}",
+		"activityCount": "{count, plural, one {פעילות אחת} two {שתי פעילויות} other {# פעילויות}}",
+		"stepCount": "{count, plural, one {שלב אחד} two {שני שלבים} other {# שלבים}}",
+		"triggerTypes": {
+			"schedule": "לוח זמנים",
+			"heartbeat": "פעימה",
+			"event": "אירוע",
+			"watch": "מעקב",
+			"manual": "ידני"
+		},
+		"branch": {
+			"true": "אמת",
+			"false": "שקר",
+			"eachItem": "כל פריט",
+			"done": "סיום"
+		},
+		"types": {
+			"greeting": {
+				"label": "ברכה",
+				"description": "מה הקו הזה אומר כשהוא עונה",
+				"params": {
+					"text": {
+						"label": "ברכה",
+						"description": "נאמר מילה במילה כשהשיחה מתחברת.",
+						"placeholder": "תודה שהתקשרתם למרפאת השיניים מילר! איך אפשר לעזור?"
+					}
+				}
+			},
+			"intent": {
+				"label": "כוונה",
+				"description": "משימה אחת שהקו הזה מטפל בה, עם הכלים המותרים לה",
+				"params": {
+					"name": {
+						"label": "שם הכוונה",
+						"description": "מזהה קצר שהנתב משתמש בו (ייחודי בכל עץ)."
+					},
+					"description": {
+						"label": "מתי המתקשרים מתכוונים לזה",
+						"placeholder": "המתקשר רוצה לקבוע, לשנות או לבטל תור"
+					},
+					"tools": {
+						"label": "כלים מותרים",
+						"description": "הרשאות tool:resource מופרדות בפסיקים, לכוונה הזו בלבד."
+					},
+					"workflows": {
+						"label": "תהליכי עבודה מותרים",
+						"description": "שמות תהליכי העבודה של העובד הזה שהכוונה רשאית להריץ, מופרדים בפסיקים."
+					},
+					"plugins": {
+						"label": "תוספים מותרים",
+						"description": "מזהי slug של תוספים, מופרדים בפסיקים."
+					},
+					"mcp": {
+						"label": "שרתי MCP מותרים",
+						"description": "שמות שרתי MCP מחוברים, מופרדים בפסיקים."
+					}
+				}
+			},
+			"transfer": {
+				"label": "העברה לנציג אנושי",
+				"description": "העברה חיה למספר ההעברה של הקו",
+				"params": {
+					"when": {
+						"label": "מתי להעביר",
+						"placeholder": "המתקשר מבקש לדבר עם אדם, נסער, או במצב חירום"
+					},
+					"to": {
+						"label": "מחבר אל",
+						"description": "למי נאמר למתקשר שהוא מועבר. המספר עצמו נשאר בהגדרות הקו.",
+						"placeholder": "מנהלת המשרד שלנו"
+					}
+				}
+			},
+			"takeMessage": {
+				"label": "השארת הודעה",
+				"description": "רישום הודעה עבור הבעלים (ברירת המחדל)",
+				"params": {
+					"fields": {
+						"label": "מה לרשום",
+						"placeholder": "שם, מספר, סיבת הפנייה, הזמן הנוח לחזור"
+					}
+				}
+			},
+			"disclosures": {
+				"label": "מותר לשתף",
+				"description": "עובדות שהקו הזה מוסר ישירות, בלי חיפוש",
+				"params": {
+					"text": {
+						"label": "מידע מאושר",
+						"description": "העובדות הציבוריות שהבעלים אישר לקו הזה — שעות, כתובת, אזור שירות, מחירי בסיס. פרטי לקוח או חשבון אף פעם לא מופיעים כאן; הם עוברים דרך חיפוש.",
+						"placeholder": "פתוח א׳–ה׳ 8–17. רחוב הראשי 123. ניקוי שיניים החל מ-$120."
+					}
+				}
+			},
+			"custom": {
+				"label": "מותאם אישית",
+				"description": "הגדר שלבים וכישורים ידנית"
+			},
+			"research": {
+				"label": "מחקר",
+				"description": "חיפוש באינטרנט, ניתוח וסינתזה",
+				"params": {
+					"depth": {
+						"label": "עומק המחקר",
+						"options": {
+							"quick": "מהיר (2-5 דק׳)",
+							"standard": "רגיל (5-10 דק׳)",
+							"deep": "מעמיק (10-20 דק׳)"
+						}
+					},
+					"sources": {
+						"label": "סוגי מקורות",
+						"description": "סוגי מקורות לחיפוש, מופרדים בפסיקים",
+						"placeholder": "אינטרנט, אקדמי, חדשות"
+					}
+				}
+			},
+			"email": {
+				"label": "שלח אימייל",
+				"description": "כתוב ושלח אימייל",
+				"params": {
+					"to": {
+						"label": "אל",
+						"description": "כתובת האימייל של הנמען (או השתמש בנתונים משלב קודם)"
+					},
+					"subject": {
+						"label": "תבנית נושא"
+					}
+				}
+			},
+			"notify": {
+				"label": "התראה",
+				"description": "שלח התראה לערוץ",
+				"params": {
+					"channel": {
+						"label": "ערוץ",
+						"options": {
+							"email": "אימייל",
+							"webhook": "Webhook"
+						}
+					},
+					"target": {
+						"label": "יעד",
+						"description": "שם ערוץ, אימייל או כתובת URL של webhook",
+						"placeholder": "#general או user@example.com"
+					}
+				}
+			},
+			"code": {
+				"label": "הרץ קוד",
+				"description": "הרץ קטע קוד",
+				"params": {
+					"language": {
+						"label": "שפה"
+					},
+					"code": {
+						"label": "קוד",
+						"description": "קוד להרצה"
+					}
+				}
+			},
+			"condition": {
+				"label": "תנאי",
+				"description": "הסתעפות אם/אחרת",
+				"params": {
+					"expression": {
+						"label": "ביטוי תנאי",
+						"description": "ביטוי JavaScript — ערך אמת מנתב לענף אמת, ערך שקר לענף שקר"
+					},
+					"mode": {
+						"label": "מצב הערכה",
+						"options": {
+							"expression": "ביטוי",
+							"contains": "הנתונים מכילים",
+							"exists": "השדה קיים",
+							"regex": "התאמת Regex"
+						}
+					}
+				}
+			},
+			"loop": {
+				"label": "לולאה",
+				"description": "מעבר על רשימת פריטים",
+				"params": {
+					"source": {
+						"label": "מקור הפריטים",
+						"description": "נתיב למערך שעליו עוברים",
+						"placeholder": "data.items או data.emails"
+					},
+					"maxIterations": {
+						"label": "מקסימום איטרציות",
+						"description": "מגבלת בטיחות למניעת לולאות אינסופיות"
+					}
+				}
+			},
+			"wait": {
+				"label": "המתנה",
+				"description": "השהה את ההרצה",
+				"params": {
+					"duration": {
+						"label": "משך ההמתנה",
+						"options": {
+							"5s": "5 שניות",
+							"30s": "30 שניות",
+							"1m": "דקה אחת",
+							"5m": "5 דקות",
+							"15m": "15 דקות",
+							"1h": "שעה אחת",
+							"custom": "מותאם אישית"
+						}
+					},
+					"waitUntil": {
+						"label": "או המתן עד",
+						"description": "המשך כשהאירוע הזה מופעל (השאר ריק להמתנה לפי משך)",
+						"placeholder": "למשל event:approval.received"
+					}
+				}
+			},
+			"agent": {
+				"label": "עובד",
+				"description": "האצל לעובד אחר",
+				"params": {
+					"agentId": {
+						"label": "עובד",
+						"description": "העובד שאליו תואצל המשימה"
+					},
+					"instructions": {
+						"label": "הוראות",
+						"description": "החלף או השלם את הפרסונה הרגילה של העובד",
+						"placeholder": "הוראות ספציפיות לעובד שמקבל את המשימה..."
+					}
+				}
+			},
+			"connector": {
+				"label": "מחבר",
+				"description": "השתמש באינטגרציית MCP",
+				"params": {
+					"serverId": {
+						"label": "שרת MCP",
+						"description": "שרת MCP מחובר לשימוש"
+					},
+					"tool": {
+						"label": "כלי",
+						"description": "איזה כלי להפעיל בשרת ה-MCP",
+						"placeholder": "למשל read_file, send_message"
+					},
+					"input": {
+						"label": "קלט",
+						"description": "קלט JSON לכלי (תומך בתבניות '{{'data.field'}}')"
+					}
+				}
+			},
+			"http": {
+				"label": "בקשת HTTP",
+				"description": "בצע קריאת API ב-HTTP",
+				"params": {
+					"method": {
+						"label": "שיטה"
+					},
+					"url": {
+						"label": "URL"
+					},
+					"body": {
+						"label": "גוף הבקשה",
+						"description": "גוף JSON לבקשות POST/PUT/PATCH"
+					},
+					"headers": {
+						"label": "כותרות",
+						"description": "כותרת אחת בכל שורה (key: value)"
+					}
+				}
+			},
+			"decide": {
+				"label": "החלטה",
+				"description": "סווג או שפוט נתונים בעזרת שאלות מוגדרות",
+				"params": {
+					"state": {
+						"label": "מצב",
+						"description": "נתיב הנתונים לשיפוט (inputs.*, item, nodes.'<'id>.*)"
+					},
+					"questions": {
+						"label": "שאלות",
+						"description": "אובייקט JSON של שאלות מוגדרות (choice, score, noul). צומת תנאי מנתב לפי nodes.'<'id>.'<'question>.choice ו-.confidence"
+					},
+					"default": {
+						"label": "תשובות ברירת מחדל",
+						"description": "תשובות לשימוש כשאי אפשר להחליט: אפשרות עבור choice, רמה עבור score, true או false עבור noul. הצומת מגדיר אז את nodes.'<'id>.defaulted"
+					}
+				}
+			},
+			"transform": {
+				"label": "המרה",
+				"description": "שנה מבנה של נתונים או סנן אותם",
+				"params": {
+					"operation": {
+						"label": "פעולה",
+						"options": {
+							"map": "Map — המר כל פריט",
+							"filter": "Filter — השאר פריטים תואמים",
+							"reduce": "Reduce — צבור לערך אחד",
+							"pick": "Pick — חלץ שדות מסוימים",
+							"template": "Template — עצב כטקסט"
+						}
+					},
+					"expression": {
+						"label": "ביטוי",
+						"description": "ביטוי ההמרה"
+					}
+				}
+			}
+		},
+		"catalog": {
+			"searchPlaceholder": "חפש צמתים...",
+			"noMatch": "אין צמתים שתואמים ל-\"{query}\"",
+			"toolsAvailable": "{count, plural, one {כלי אחד זמין} two {שני כלים זמינים} other {# כלים זמינים}}",
+			"categories": {
+				"triggers": "טריגרים",
+				"activities": "פעילויות",
+				"callTree": "עץ שיחה",
+				"flowControl": "בקרת זרימה",
+				"connectors": "מחברים (MCP)",
+				"agents": "עובדים",
+				"output": "פלט"
+			},
+			"items": {
+				"triggerSchedule": {
+					"label": "לוח זמנים",
+					"desc": "הרץ בזמנים קבועים"
+				},
+				"triggerEvent": {
+					"label": "אירוע",
+					"desc": "הגב לאירועים"
+				},
+				"triggerHeartbeat": {
+					"label": "פעימה",
+					"desc": "הרץ במרווחי זמן"
+				},
+				"triggerManual": {
+					"label": "ידני",
+					"desc": "הרץ לפי דרישה"
+				},
+				"activityCustom": {
+					"label": "פעילות מותאמת אישית",
+					"desc": "הגדר שלבים וכישורים"
+				},
+				"activityResearch": {
+					"label": "מחקר",
+					"desc": "חיפוש באינטרנט וניתוח"
+				},
+				"activityEmail": {
+					"label": "שלח אימייל",
+					"desc": "כתוב ושלח אימייל"
+				},
+				"activityNotify": {
+					"label": "התראה",
+					"desc": "שלח התראה"
+				},
+				"activityCode": {
+					"label": "הרץ קוד",
+					"desc": "הרץ קטע קוד"
+				},
+				"activityHttp": {
+					"label": "בקשת HTTP",
+					"desc": "בצע קריאת API"
+				},
+				"activityDecide": {
+					"label": "החלטה",
+					"desc": "סווג או שפוט נתונים"
+				},
+				"activityTransform": {
+					"label": "המרה",
+					"desc": "שנה מבנה של נתונים או סנן אותם"
+				},
+				"activityGreeting": {
+					"label": "ברכה",
+					"desc": "מה הקו אומר כשהוא עונה"
+				},
+				"activityIntent": {
+					"label": "כוונה",
+					"desc": "משימה אחת + הכלים המותרים לה"
+				},
+				"activityTransfer": {
+					"label": "העברה לנציג אנושי",
+					"desc": "העברה חיה — ציין למי היא מחברת"
+				},
+				"activityTakeMessage": {
+					"label": "השארת הודעה",
+					"desc": "רישום הודעה (ברירת המחדל)"
+				},
+				"activityDisclosures": {
+					"label": "מותר לשתף",
+					"desc": "עובדות שהקו מוסר ישירות (שעות, כתובת, מחירים)"
+				},
+				"flowCondition": {
+					"label": "תנאי",
+					"desc": "הסתעפות אם/אחרת"
+				},
+				"flowLoop": {
+					"label": "לולאה",
+					"desc": "מעבר על פריטים"
+				},
+				"flowWait": {
+					"label": "המתנה",
+					"desc": "השהה או המתן לאירוע"
+				},
+				"emit": {
+					"label": "פליטת אירוע",
+					"desc": "הכרז על אירוע סיום"
+				}
+			}
+		},
+		"eventSources": {
+			"label": "מקורות אירועים",
+			"searchPlaceholder": "הקלד כדי לחפש מקורות...",
+			"hint": "הקלד כדי לחפש מקורות מוכרים, Enter כדי להוסיף. גם שמות מותאמים ותווים כלליים (email.*) עובדים."
+		},
+		"flow": {
+			"triggerManual": "רץ כשאתה מפעיל אותו",
+			"triggerSchedule": "לפי לוח זמנים",
+			"triggerEventAny": "כשאירוע מופעל",
+			"triggerWatch": "עוקב אחרי {name}",
+			"triggerWatchAny": "עוקב אחרי תוסף",
+			"applying": "מחיל…",
+			"go": "בצע",
+			"tellAi": "ספר ל-AI מה לשנות",
+			"tellAiEllipsis": "ספר ל-AI מה לשנות…",
+			"badgeExact": "מדויק",
+			"badgeAgent": "עובד",
+			"emptyCode": "(ריק)",
+			"stepPlaceholder": "מה השלב הזה צריך לעשות?",
+			"changeStep": "שנה את \"{name}\"…",
+			"forEach": "עבור כל {item}",
+			"loopItemDefault": "פריט",
+			"loopEmpty": "אין עדיין כלום בלולאה הזו.",
+			"pathDefault": "נתיב",
+			"pathEmpty": "נתיב ריק",
+			"addStepHere": "הוסף שלב כאן",
+			"connected": "{name} מחובר",
+			"notConnected": "{name} לא מחובר — הזרימה הזו תיכשל",
+			"connect": "חבר",
+			"describeFlowChange": "תאר שינוי לכל הזרימה הזו…",
+			"edit": "עריכה",
+			"emits": "פולט",
+			"noSteps": "לזרימה הזו אין עדיין שלבים."
+		},
+		"panel": {
+			"backToOverview": "חזרה לסקירת תהליך העבודה",
+			"intent": "כוונה",
+			"addSkill": "הוסף כישור...",
+			"parameters": "פרמטרים",
+			"addStep": "הוסף שלב...",
+			"manualHint": "רץ רק כשמפעילים אותו ידנית.",
+			"notConfigured": "לא מוגדר",
+			"noEventConfigured": "לא הוגדר אירוע",
+			"noDescription": "אין תיאור",
+			"emitPlaceholder": "למשל {name}",
+			"emitOptional": "אופציונלי — תהליכי עבודה אחרים יכולים להיות מופעלים מזה כשההרצה מסתיימת.",
+			"useEmit": "השתמש ב-{name}",
+			"emitRenameWarning": "שינוי השם ישבור תהליכי עבודה שמנויים לאירוע הזה.",
+			"none": "ללא",
+			"apiEndpoint": "נקודת קצה של API",
+			"apiEndpointHint": "צור מפתח לתהליך העבודה הזה בהגדרות העובד › Webhooks."
+		},
+		"schedule": {
+			"weekends": "סופי שבוע",
+			"custom": "מותאם אישית",
+			"daysOfWeek": "ימים בשבוע",
+			"monthly": "חודשי",
+			"biannual": "כל 6 חודשים",
+			"yearly": "שנתי",
+			"onDay": "ביום",
+			"biannualNote": "רץ ב-{day} ב{firstMonth} וב-{day} ב{secondMonth}.",
+			"shortMonthsSkipped": "חודשים שאין בהם יום {day} מדולגים.",
+			"limitToHours": "הגבל לשעות",
+			"rangeTo": "עד"
+		},
+		"watch": {
+			"plugin": "תוסף",
+			"choosePlugin": "בחר תוסף…",
+			"whenItReports": "כשהוא מדווח",
+			"chooseEvent": "בחר אירוע…",
+			"hint": "רץ בכל פעם ש-{plugin} מדווח על {event}; גם זרימות אחרות יכולות להאזין ל-{plugin}.{event}."
+		},
+		"validation": {
+			"emptyId": "לפעילות ב-\"{workflow}\" יש מזהה ריק",
+			"duplicateId": "מזהה פעילות כפול \"{id}\" ב-\"{workflow}\"",
+			"conditionExpression": "התנאי \"{id}\" צריך ביטוי — הניתוב דטרמיניסטי, ולעולם לא מוחלט על ידי AI",
+			"loopSource": "הלולאה \"{id}\" צריכה מקור נתונים (למשל inputs.items)",
+			"httpUrl": "צומת ה-HTTP \"{id}\" צריך URL",
+			"decideQuestions": "צומת ההחלטה \"{id}\" צריך שאלות (אובייקט JSON של שאלות מוגדרות)",
+			"waitDuration": "צומת ההמתנה \"{id}\" צריך משך",
+			"needsIntent": "הפעילות \"{id}\" ב-\"{workflow}\" צריכה כוונה או שלבים",
+			"targetsTrigger": "חיבור מכוון אל הטריגר",
+			"leavesEmit": "חיבור יוצא מצומת הפליטה",
+			"unknownFrom": "חיבור מצומת לא ידוע \"{id}\"",
+			"unknownTo": "חיבור לצומת לא ידוע \"{id}\"",
+			"duplicateConnection": "חיבור כפול {from} → {to}",
+			"labeledNonBranching": "קשת עם התווית \"{label}\" יוצאת מצומת לא מסתעף \"{id}\"",
+			"unlabeledBranch": "קשתות שיוצאות מ-\"{id}\" חייבות לשאת תווית ענף",
+			"cycle": "הגרף מכיל מעגל (רק גוף ה\"כל פריט\" של לולאה רשאי לחזור ללולאה שלו)"
+		},
+		"builder": {
+			"unsavedConfirm": "יש לך שינויים שלא נשמרו. לבטל אותם ולסגור?",
+			"workflowLabel": "{name} ({count, plural, one {פעילות אחת} two {שתי פעילויות} other {# פעילויות}})",
+			"undo": "בטל (Cmd+Z)",
+			"redo": "בצע שוב (Cmd+Shift+Z)",
+			"issueCount": "{count, plural, one {בעיה אחת} two {שתי בעיות} other {# בעיות}}",
+			"discard": "בטל שינויים",
+			"hideDetails": "הסתר את חלונית הפרטים",
+			"showDetails": "הצג את חלונית הפרטים",
+			"newWorkflowTitle": "תהליך עבודה חדש",
+			"empty": "אין תהליכי עבודה — צור אחד כדי להתחיל",
+			"newWorkflow": "תהליך עבודה חדש",
+			"confirmDeleteWorkflow": "האם אתה בטוח שברצונך למחוק את תהליך העבודה הזה? פעולה זו תסיר את כל הפעילויות והחיבורים שלו.",
+			"confirmDeleteNode": "האם אתה בטוח שברצונך למחוק את הצומת הזה? החיבורים שלו יחוברו מחדש אוטומטית."
+		}
 	}
 }

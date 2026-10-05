@@ -1,4 +1,5 @@
-import { writable, derived } from 'svelte/store';
+import { writable, derived, get } from 'svelte/store';
+import { t } from 'svelte-i18n';
 
 type ItemType = 'skill' | 'agent' | 'plugin' | 'connector';
 interface InstalledItem { id: string; name: string; type: ItemType; installed: string }
@@ -50,7 +51,7 @@ export function installItem(item: { id: string; name: string; type: ItemType }) 
     const toAdd: InstalledItem[] = [];
 
     if (!existing.has(item.id)) {
-      toAdd.push({ ...item, installed: 'Just now' });
+      toAdd.push({ ...item, installed: get(t)('time.justNow') });
       existing.add(item.id);
     }
 

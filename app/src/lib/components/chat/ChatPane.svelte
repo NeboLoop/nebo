@@ -277,7 +277,7 @@
     const withCopy = html
       .replace(
         /<pre>/g,
-        `<div class="relative group/code"><button type="button" data-code-copy title="${$t('chat.copyCode')}" class="absolute top-2 right-2 z-10 px-2 py-0.5 rounded text-xs font-medium bg-base-100/80 border border-base-content/10 text-base-content/60 opacity-0 group-hover/code:opacity-100 hover:text-base-content hover:bg-base-200 cursor-pointer transition-opacity">${$t('common.copy')}</button><pre>`
+        `<div class="relative group/code"><button type="button" data-code-copy title="${$t('chat.copyCode')}" class="absolute top-2 end-2 z-10 px-2 py-0.5 rounded text-xs font-medium bg-base-100/80 border border-base-content/10 text-base-content/60 opacity-0 group-hover/code:opacity-100 hover:text-base-content hover:bg-base-200 cursor-pointer transition-opacity">${$t('common.copy')}</button><pre>`
       )
       .replace(/<\/pre>/g, '</pre></div>');
     return renderMentionChips(withCopy, allAgents);
@@ -1355,11 +1355,11 @@
            back chevron, not a hamburger. -->
       {#if onback}
       <button
-        class="md:hidden w-10 h-10 -ml-2.5 rounded-md flex items-center justify-center border-none bg-transparent cursor-pointer text-base-content/70 shrink-0"
-        aria-label="Employees"
+        class="md:hidden w-10 h-10 -ms-2.5 rounded-md flex items-center justify-center border-none bg-transparent cursor-pointer text-base-content/70 shrink-0"
+        aria-label={$t('nav.agents')}
         onclick={onback}
       >
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+        <svg class="rtl:-scale-x-100" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
       </button>
       {/if}
       <span class="flex items-baseline gap-2 min-w-0">
@@ -1386,7 +1386,7 @@
           <span class="text-xs text-base-content/50 truncate" title={folder}>{$t('chat.worksIn', { values: { folder } })}</span>
         {/if}
       </span>
-      <div class="ml-auto max-lg:hidden flex items-center gap-0.5 shrink-0">
+      <div class="ms-auto max-lg:hidden flex items-center gap-0.5 shrink-0">
 
 
 
@@ -1426,7 +1426,7 @@
         {/if}
         {#if isApp && onopenapp}
           <button
-            class="btn btn-primary btn-xs max-md:btn-sm gap-1 ml-1 shrink-0"
+            class="btn btn-primary btn-xs max-md:btn-sm gap-1 ms-1 shrink-0"
             onclick={onopenapp}
           >
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
@@ -1434,7 +1434,7 @@
           </button>
         {/if}
         {#if shareMenu.length}
-          <div class="dropdown dropdown-end ml-1 shrink-0">
+          <div class="dropdown dropdown-end ms-1 shrink-0">
             <div tabindex="0" role="button" aria-label={$t('agent.shareApp')} title={$t('agent.shareApp')} class="btn btn-ghost btn-xs max-md:btn-sm btn-square">
               {@render shareIcon()}
             </div>
@@ -1443,7 +1443,7 @@
         {/if}
         {#if canPublish}
           <button
-            class="btn btn-outline btn-xs max-md:btn-sm gap-1 ml-1 shrink-0"
+            class="btn btn-outline btn-xs max-md:btn-sm gap-1 ms-1 shrink-0"
             onclick={publishApp}
           >
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><polyline points="7 8 12 3 17 8"/><path d="M5 15v4a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-4"/></svg>
@@ -1454,7 +1454,7 @@
 
       <!-- Narrow widths: the icon row collapses into one labeled menu — five
            icons ate the title's room anywhere under lg, not just on phones. -->
-      <div class="lg:hidden ml-auto shrink-0 flex items-center gap-1">
+      <div class="lg:hidden ms-auto shrink-0 flex items-center gap-1">
         {#if isApp && onopenapp}
           <button class="btn btn-primary btn-sm gap-1" onclick={onopenapp}>
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
@@ -1571,7 +1571,7 @@
                 <div class="px-3 py-2 text-xs">
                   <button
                     type="button"
-                    class="flex w-full items-center gap-1.5 text-left bg-transparent border-none p-0 text-base-content/70 {expandable ? 'cursor-pointer hover:text-base-content/90' : 'cursor-default'}"
+                    class="flex w-full items-center gap-1.5 text-start bg-transparent border-none p-0 text-base-content/70 {expandable ? 'cursor-pointer hover:text-base-content/90' : 'cursor-default'}"
                     disabled={!expandable}
                     aria-expanded={expandable ? isExpanded : undefined}
                     onclick={() => toggleResult(step.key)}
@@ -1598,12 +1598,12 @@
                     {/if}
                     <button
                       type="button"
-                      class="flex min-w-0 items-center gap-2 text-left bg-transparent border-none p-0 {expandable ? 'cursor-pointer' : 'cursor-default'} {meta?.href ? 'shrink-0' : 'flex-1'}"
+                      class="flex min-w-0 items-center gap-2 text-start bg-transparent border-none p-0 {expandable ? 'cursor-pointer' : 'cursor-default'} {meta?.href ? 'shrink-0' : 'flex-1'}"
                       disabled={!expandable}
                       aria-expanded={expandable ? isExpanded : undefined}
                       onclick={() => toggleResult(step.key, tool)}
                     >
-                      <span class="shrink-0 text-base-content/70">{tool.status === 'running' ? (tool.label ?? tool.name) : stepOutcome(tool)}{#if tool.status === 'running' && tool.statusText}<span class="text-base-content/70 ml-1">{tool.statusText}</span>{/if}</span>
+                      <span class="shrink-0 text-base-content/70">{tool.status === 'running' ? (tool.label ?? tool.name) : stepOutcome(tool)}{#if tool.status === 'running' && tool.statusText}<span class="text-base-content/70 ms-1">{tool.statusText}</span>{/if}</span>
                       {#if tool.status === 'error'}<span class="shrink-0 text-error">{$t('chat.failed')}</span>{/if}
                       {#if meta && !meta.href}<span class="truncate text-base-content/80" title={meta.text}>{meta.text}</span>{/if}
                       {#if $devMode}<span class="font-mono text-base-content/70 shrink-0">{tool.name}</span>{/if}
@@ -1698,7 +1698,7 @@
                       <div class="mt-2 max-w-[560px]">
                         <div class="flex items-baseline gap-2 text-xs">
                           <span class="text-base-content/70 truncate">{g.query}</span>
-                          <span class="ml-auto text-base-content/50 font-mono shrink-0">{g.results.length} {g.results.length === 1 ? 'result' : 'results'}</span>
+                          <span class="ms-auto text-base-content/50 font-mono shrink-0">{g.results.length} {g.results.length === 1 ? 'result' : 'results'}</span>
                         </div>
                         {#if g.results.length}
                           <div class="mt-1.5 rounded-xl border border-base-300 bg-base-100 divide-y divide-base-content/5 overflow-hidden">
@@ -1794,11 +1794,11 @@
           {@const fromOwner = !colleague && (!tp || (tp.fromOwner ?? tp.from === 'Owner'))}
           <div class="max-w-[640px] mt-3 {fromOwner ? 'self-end' : ''}" data-user-msg>
             {#if tp}
-              <div class="text-xs font-medium text-base-content/60 mb-1 {fromOwner ? 'text-right' : ''}">{fromOwner ? $t('common.you') : tp.from} · {tp.teamName}</div>
+              <div class="text-xs font-medium text-base-content/60 mb-1 {fromOwner ? 'text-end' : ''}">{fromOwner ? $t('common.you') : tp.from} · {tp.teamName}</div>
             {:else if colleague}
               <div class="text-xs font-medium text-base-content/60 mb-1">{$t('chat.fromColleague', { values: { name: colleague } })}</div>
             {/if}
-            <div class="py-2.5 px-3.5 rounded-xl text-sm leading-relaxed bg-base-200 {fromOwner ? 'rounded-br-sm' : 'rounded-bl-sm'} prose prose-sm max-w-none {msg.pending ? 'italic text-base-content/60' : ''} [&_p]:my-0 [&_ul]:my-1 [&_ol]:my-1 [&>:first-child]:mt-0 [&>:last-child]:mb-0">
+            <div dir="auto" class="py-2.5 px-3.5 rounded-xl text-sm leading-relaxed bg-base-200 {fromOwner ? 'rounded-ee-sm' : 'rounded-es-sm'} prose prose-sm max-w-none {msg.pending ? 'italic text-base-content/60' : ''} [&_p]:my-0 [&_ul]:my-1 [&_ol]:my-1 [&>:first-child]:mt-0 [&>:last-child]:mb-0">
               {#if tp}
                 {@html renderMarkdown(tp.text)}
               {:else}
@@ -1845,9 +1845,9 @@
             </div>
             <div class="flex items-center gap-1 mt-1.5 {fromOwner ? 'justify-end' : ''}">
               {#if msg.pending}
-                <span class="text-xs text-base-content/50 italic mr-1">{$t('chat.pending')}</span>
+                <span class="text-xs text-base-content/50 italic me-1">{$t('chat.pending')}</span>
               {:else if msg.time}
-                <span class="text-xs text-base-content/50 font-mono mr-1">{msg.time}</span>
+                <span class="text-xs text-base-content/50 font-mono me-1">{msg.time}</span>
               {/if}
               {#if !tp}
                 <button
@@ -1878,7 +1878,7 @@
           <summary class="text-xs text-base-content/50 cursor-pointer hover:text-base-content/70 transition-colors">
             {$t('chat.workedFor', { values: { duration: msg.duration } })}
           </summary>
-          <div class="mt-1.5 py-2 px-3 rounded-box bg-base-200 border-l-2 border-base-content/20 text-xs leading-relaxed font-mono whitespace-pre-wrap">{msg.content}</div>
+          <div class="mt-1.5 py-2 px-3 rounded-box bg-base-200 border-s-2 border-base-content/20 text-xs leading-relaxed font-mono whitespace-pre-wrap">{msg.content}</div>
         </details>
 
       {:else if msg.type === 'ask'}
@@ -1931,7 +1931,7 @@
                 {@render activityPanel(block.steps, block.tools, block.key, !isTurnEnd && bi === blocks.length - 1)}
               {:else}
                 <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
-                <div class="text-sm leading-relaxed prose prose-sm max-w-none" onclick={handleWorkMentionClick}>
+                <div dir="auto" class="text-sm leading-relaxed prose prose-sm max-w-none" onclick={handleWorkMentionClick}>
                   {@html linkWorkMentions(renderMarkdown(block.text), (last as any).workItems)}
                 </div>
               {/if}
@@ -1995,7 +1995,7 @@
           {#each artifacts.filter(a => segs.some((sg) => sg.id === a.messageId)) as artifact}
             {@const ArtIcon = artifactIcons[artifact.kind]}
             <button
-              class="flex items-center gap-3 mt-3 w-full max-w-xs p-3 rounded-xl border cursor-pointer transition-colors text-left {activeArtifactId === artifact.id && creationsOpen ? 'border-primary/40 bg-primary/5' : 'border-base-content/10 bg-base-200/30 hover:border-base-content/20 hover:bg-base-200/50'}"
+              class="flex items-center gap-3 mt-3 w-full max-w-xs p-3 rounded-xl border cursor-pointer transition-colors text-start {activeArtifactId === artifact.id && creationsOpen ? 'border-primary/40 bg-primary/5' : 'border-base-content/10 bg-base-200/30 hover:border-base-content/20 hover:bg-base-200/50'}"
               onclick={() => openArtifact(artifact.id)}
             >
               {#if ArtIcon}<ArtIcon class="w-4 h-4 text-base-content/50 shrink-0" />{/if}
@@ -2009,7 +2009,7 @@
           {#if isTurnEnd}
             <div class="flex items-center gap-1 mt-2">
               {#if last.time}
-                <span class="text-xs text-base-content/50 font-mono mr-1">{last.time}</span>
+                <span class="text-xs text-base-content/50 font-mono me-1">{last.time}</span>
               {/if}
               <button
                 class="w-7 h-7 rounded-md grid place-items-center {copiedIdx === lastOrigIdx ? 'text-success' : 'text-base-content/50 hover:text-base-content hover:bg-base-200'} cursor-pointer bg-transparent border-none transition-colors"
@@ -2145,16 +2145,16 @@
           {#if teachLocal}
             <span class="text-xs text-base-content/60 truncate max-md:hidden">{$t('chat.teachLocalHint')}</span>
           {/if}
-          <button type="button" class="btn btn-error btn-xs ml-auto normal-case" onclick={stopTeach}>
+          <button type="button" class="btn btn-error btn-xs ms-auto normal-case" onclick={stopTeach}>
             {$t('chat.stopRecording')}
           </button>
         {:else}
           <span class="text-sm">{teachError}</span>
           {#if teachNeedsPermission}
             <!-- The one fix there is: switch Nebo on in Screen Recording. -->
-            <a href={SCREEN_RECORDING_SETTINGS} target="_blank" rel="noopener" class="btn btn-xs btn-outline btn-error normal-case shrink-0 ml-auto no-underline">{$t('chat.openScreenRecordingSettings')}</a>
+            <a href={SCREEN_RECORDING_SETTINGS} target="_blank" rel="noopener" class="btn btn-xs btn-outline btn-error normal-case shrink-0 ms-auto no-underline">{$t('chat.openScreenRecordingSettings')}</a>
           {/if}
-          <button type="button" class="btn btn-ghost btn-xs {teachNeedsPermission ? '' : 'ml-auto'}" onclick={() => { teachError = ''; teachNeedsPermission = false; }}>✕</button>
+          <button type="button" class="btn btn-ghost btn-xs {teachNeedsPermission ? '' : 'ms-auto'}" onclick={() => { teachError = ''; teachNeedsPermission = false; }}>✕</button>
         {/if}
       </div>
     </div>
@@ -2206,7 +2206,7 @@
     tabindex="0"
   >
     <!-- Wider invisible hit area so the drag is easy to grab -->
-    <div class="absolute inset-y-0 -left-2 -right-2"></div>
+    <div class="absolute inset-y-0 -start-2 -end-2"></div>
     <!-- Grip handle — always faintly visible, solid on hover/drag -->
     <div class="absolute top-1/2 -translate-y-1/2 left-1/2 -translate-x-1/2 w-3 h-10 rounded-full bg-base-300 border border-base-content/10 flex items-center justify-center opacity-60 group-hover:opacity-100 transition-opacity {resizing ? '!opacity-100' : ''}">
       <div class="flex flex-col gap-0.5">
@@ -2218,7 +2218,7 @@
   </div>
   <!-- Creations panel. pointer-events-none while dragging the divider: the
        viewer iframe otherwise swallows mousemove and the resize stalls. -->
-  <div class="flex flex-col bg-base-100 min-h-0 min-w-0 overflow-hidden shrink-0 border-l border-base-300 max-md:fixed max-md:inset-0 max-md:z-[60] max-md:!w-full max-md:border-l-0 {workFull ? 'fixed inset-0 z-[65] !w-full border-l-0' : ''} {resizing ? 'pointer-events-none' : ''}" style="width: {creationsWidth}px">
+  <div class="flex flex-col bg-base-100 min-h-0 min-w-0 overflow-hidden shrink-0 border-s border-base-300 max-md:fixed max-md:inset-0 max-md:z-[60] max-md:!w-full max-md:border-s-0 {workFull ? 'fixed inset-0 z-[65] !w-full border-s-0' : ''} {resizing ? 'pointer-events-none' : ''}" style="width: {creationsWidth}px">
     <!-- Creations header -->
     <div class="h-11 px-4 border-b border-base-content/10 flex items-center gap-2 shrink-0">
       {#if activeArtifact}
@@ -2371,7 +2371,7 @@
           {#each documents as a}
             {@const ListIcon = artifactIcons[a.kind]}
             <button
-              class="flex items-center gap-3 w-full p-3 rounded-xl border border-base-content/10 bg-base-200/30 hover:border-base-content/20 hover:bg-base-200/50 cursor-pointer transition-colors text-left"
+              class="flex items-center gap-3 w-full p-3 rounded-xl border border-base-content/10 bg-base-200/30 hover:border-base-content/20 hover:bg-base-200/50 cursor-pointer transition-colors text-start"
               onclick={() => openArtifact(a.id)}
             >
               {#if ListIcon}<ListIcon class="w-4 h-4 text-base-content/50 shrink-0" />{/if}

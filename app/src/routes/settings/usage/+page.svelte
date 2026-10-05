@@ -184,7 +184,7 @@
               <div>
                 <span class="text-sm font-medium text-base-content">{$t('settingsUsage.session')}</span>
                 {#if usage.session.resetAt}
-                  <span class="text-xs text-base-content/50 ml-2">{timeUntilReset(usage.session.resetAt)}</span>
+                  <span class="text-xs text-base-content/50 ms-2">{timeUntilReset(usage.session.resetAt)}</span>
                 {/if}
               </div>
               <span class="text-xs text-base-content/50 font-mono tabular-nums">{$t('settingsUsage.percentUsed', { values: { percent: usage.session.percentUsed ?? 0 } })}</span>
@@ -204,7 +204,7 @@
               <div>
                 <span class="text-sm font-medium text-base-content">{$t('settingsUsage.weekly')}</span>
                 {#if usage.weekly.resetAt}
-                  <span class="text-xs text-base-content/50 ml-2">{timeUntilReset(usage.weekly.resetAt)}</span>
+                  <span class="text-xs text-base-content/50 ms-2">{timeUntilReset(usage.weekly.resetAt)}</span>
                 {/if}
               </div>
               <span class="text-xs text-base-content/50 font-mono tabular-nums">{$t('settingsUsage.percentUsed', { values: { percent: usage.weekly.percentUsed ?? 0 } })}</span>

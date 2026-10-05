@@ -58,7 +58,7 @@
 		"comingSoon": "Binnenkort beschikbaar",
 		"or": "of",
 		"dev": "dev",
-		"beta": "beta",
+		"beta": "bèta",
 		"free": "Gratis",
 		"na": "N.v.t.",
 		"you": "Jij",
@@ -84,7 +84,16 @@
 		"closeModal": "Venster sluiten",
 		"all": "Alles",
 		"more": "Meer",
-		"stopped": "Gestopt"
+		"stopped": "Gestopt",
+		"errorOccurred": "Er is iets misgegaan.",
+		"systemError": "Systeemfout",
+		"stillReconnecting": "Nog steeds bezig om je Nebo te bereiken…",
+		"updatesAvailable": "{count, plural, one {# update beschikbaar} other {# updates beschikbaar}}",
+		"artifactUpdated": "{type} bijgewerkt: {version}",
+		"artifactUpdateFailed": "Bijwerken mislukt: {error}",
+		"employee": "Medewerker",
+		"untitled": "Naamloos",
+		"document": "Document"
 	},
 	"time": {
 		"justNow": "zojuist",
@@ -253,9 +262,11 @@
 		"working": "Werkt",
 		"chatActions": "Chatacties",
 		"deleteChatTitle": "\"{name}\" verwijderen?",
-		"deleteChatBody": "Deze chat en al zijn berichten worden verwijderd. Dit kan niet ongedaan worden gemaakt."
+		"deleteChatBody": "Deze chat en al zijn berichten worden verwijderd. Dit kan niet ongedaan worden gemaakt.",
+		"offline": "Offline"
 	},
 	"chat": {
+		"worksIn": "Werkt in {folder}",
 		"compactBoundary": "Eerder gesprek samengevat",
 		"clearedBoundary": "Hier gewist. Eerdere berichten blijven bewaard, maar worden niet gebruikt.",
 		"goalLine": "Doel: {condition} ({turns} beurten)",
@@ -264,10 +275,15 @@
 		"goalStopped": "Doel gepauzeerd. Zeg het als je verder wilt.",
 		"resumedActivity": "Nog bezig: {tool}",
 		"waitingForYou": "Wacht op jou",
+		"waitingOnYou": "{name} wacht op je",
+		"seeConversation": "Gesprek bekijken",
 		"waitingOnYourAnswer": "{name} wacht op je antwoord:",
 		"waitingOpen": "Openen",
 		"waitingAsksLabel": "Wacht op je antwoord",
 		"subagentStep": "{op} · stap {n}",
+		"helperWorking": "Een helper is bezig: {what}",
+		"helpersWorking": "{n, plural, one {# helper is bezig} other {# helpers zijn bezig}}",
+		"moreQuestionsWaiting": "{count, plural, one {Nog 1 vraag wacht} other {Nog # vragen wachten}}",
 		"pending": "In afwachting",
 		"yourAICompanion": "Jouw AI-personeel",
 		"tellMeWhatYouNeed": "Vertel me wat je nodig hebt, of activeer een van je medewerkers hieronder.",
@@ -295,6 +311,7 @@
 		"messageChannel": "Bericht #{channel}...",
 		"messagedCoworker": "Bericht gestuurd",
 		"disclaimer": "Nebo kan fouten maken. Controleer belangrijke informatie.",
+		"uploadsKept": "Uploads worden {days} dagen bewaard.",
 		"goodMorning": "Goedemorgen",
 		"goodAfternoon": "Goedemiddag",
 		"goodEvening": "Goedenavond",
@@ -315,6 +332,8 @@
 		"installFailed": "Installatie mislukt — probeer het opnieuw.",
 		"hire": "Aannemen",
 		"hiring": "Bezig met aannemen…",
+		"hireCount": "Alle {count} aannemen",
+		"hiringCount": "Bezig met aannemen: {done} van {count}…",
 		"botComputer": "Computer",
 		"closeComputer": "Computer sluiten",
 		"fullView": "Volledig scherm",
@@ -330,13 +349,18 @@
 		"computerUnavailableHint": "De computer van de medewerker draait op Linux-installaties en bij cloudmedewerkers.",
 		"watchingAndLearning": "{name} kijkt mee en leert",
 		"stopRecording": "Opname stoppen",
-		"teachLocalHint": "Do the task on this screen as you normally would, then stop.",
+		"teachLocalHint": "Doe de taak op dit scherm zoals je dat normaal doet, en stop dan.",
+		"teachStarting": "Klaarmaken om je scherm te bekijken…",
+		"teachNeedsScreenPermission": "Nebo heeft toestemming voor schermopname nodig om te zien hoe je de taak doet. Zet Nebo aan in Systeeminstellingen › Privacy en beveiliging › Schermopname en probeer het opnieuw.",
+		"openScreenRecordingSettings": "Instellingen voor schermopname openen",
+		"openVirtualComputer": "De virtuele computer openen",
 		"recordTask": "Taak opnemen",
 		"recording": "Neemt op",
 		"connectFailed": "Inloggen is niet afgerond. Probeer het opnieuw.",
 		"connectAccountHint": "Log in, dan pak ik het weer op waar ik gebleven was.",
 		"submit": "Verzenden",
 		"other": "Anders…",
+		"askedReceipt": "Gevraagd",
 		"copyCode": "Code kopiëren",
 		"copied": "Gekopieerd!",
 		"dropFilesHere": "Sleep bestanden hierheen",
@@ -405,6 +429,8 @@
 		"shareNotConnected": "Maak verbinding met NeboAI om te delen.",
 		"filesInThread": "Bestanden in deze chat",
 		"nothingHereYet": "Nog niets hier",
+		"noEmployeesOneTool": "Geen medewerkers gevonden, maar wel 1 tool — zie Tools.",
+		"noEmployeesButTools": "Geen medewerkers gevonden, maar wel {count} tools — zie Tools.",
 		"workEmptyDesc": "Als Nebo een rapport, sheet of ontwerp maakt, verschijnt het hier.",
 		"closeImage": "Afbeelding sluiten",
 		"fullSize": "Volledige grootte",
@@ -429,7 +455,12 @@
 		"historyLoadFailed": "Dit gesprek kon niet worden geladen. Controleer je verbinding en probeer het opnieuw.",
 		"consentCreates": "Zeg ja en de medewerker wordt aangemaakt met precies deze taak.",
 		"consentAdds": "Zeg ja en dit komt bij de taak.",
-		"fromColleague": "Van {name}"
+		"fromColleague": "Van {name}",
+		"storageFull": "{cap, select, none {Je opslag is vol.} other {Je opslag is vol ({cap}).}} Uploads worden {days, plural, one {# dag} other {# dagen}} na het toevoegen gewist.",
+		"storageNextFree": "Op {date} komt er weer ruimte vrij.",
+		"uploadFailed": "Bestand uploaden mislukt — bericht niet verzonden. {reason}",
+		"fileRemoved": "Dit bestand is {days, plural, one {# dag} other {# dagen}} na het uploaden verwijderd.",
+		"notDelivered": "Bericht niet afgeleverd. De verbinding viel weg, dus verstuur het opnieuw."
 	},
 	"chatInput": {
 		"placeholder": "Antwoord...",
@@ -468,7 +499,17 @@
 		"tapToInterrupt": "Tik om te onderbreken",
 		"mute": "Dempen",
 		"unmute": "Dempen opheffen",
-		"endConversation": "Gesprek beëindigen"
+		"endConversation": "Gesprek beëindigen",
+		"recordClip": "Een clip opnemen",
+		"clipStarting": "Wachten op de microfoon",
+		"clipStop": "Stoppen en bijvoegen",
+		"clipLevel": "Microfoonniveau",
+		"clipMicBlockedMac": "Nebo kan je microfoon niet gebruiken. Sta dit toe in Systeeminstellingen → Privacy en beveiliging → Microfoon.",
+		"clipMicBlocked": "Nebo kan je microfoon niet gebruiken. Sta dit toe in de privacyinstellingen van je systeem.",
+		"clipNoMic": "Geen microfoon gevonden. Sluit er een aan en probeer het opnieuw.",
+		"clipUnsupported": "Opnemen is hier niet beschikbaar.",
+		"clipFailed": "De opname is mislukt. Probeer het opnieuw.",
+		"clipCapReached": "Opnames stoppen na 10 minuten. Deze is bijgevoegd."
 	},
 	"voiceDownload": {
 		"title": "Spraakmodellen downloaden",
@@ -566,7 +607,21 @@
 		"agent": "Medewerker",
 		"command": "Commando",
 		"notConnected": "niet verbonden",
-		"keyboardHint": "↑↓ navigeren · Enter selecteren · Esc annuleren"
+		"keyboardHint": "↑↓ navigeren · Enter selecteren · Esc annuleren",
+		"category": {
+			"session": "Sessie",
+			"model": "Model",
+			"info": "Info"
+		},
+		"desc": {
+			"new": "Een nieuw gesprek starten",
+			"clear": "Opnieuw beginnen (elk bericht blijft bewaard)",
+			"compact": "Oude berichten samenvatten en wissen",
+			"goal": "Blijven werken tot een controle de eindtoestand bevestigt",
+			"model": "Model tonen of wisselen",
+			"help": "Alle commando's tonen",
+			"status": "Status van medewerker en systeem tonen"
+		}
 	},
 	"dataTable": {
 		"loading": "Laden...",
@@ -994,7 +1049,7 @@
 		"noOAuthConnections": "Geen OAuth-verbindingen geconfigureerd voor deze app.",
 		"information": "Informatie",
 		"provider": "Provider",
-		"platforms": "Platforms",
+		"platforms": "Platformen",
 		"ageRating": "Leeftijdsbeoordeling",
 		"website": "Website",
 		"privacyPolicy": "Privacybeleid",
@@ -1508,12 +1563,12 @@
 		"pageDescription": "Systeemgezondheid en servicestatus.",
 		"agentRuntime": "Medewerker-runtime",
 		"toolsCount": "{count} tools",
-		"laneName": "Lane: {name}",
+		"laneName": "Baan: {name}",
 		"allOperational": "Alle systemen operationeel",
 		"servicesMonitored": "{count} services gemonitord",
 		"partialDegradation": "Gedeeltelijke verstoring",
 		"servicesOperational": "{operational} van {total} services operationeel",
-		"services": "Services",
+		"services": "Diensten",
 		"operational": "Operationeel",
 		"down": "Offline",
 		"degraded": "Verstoord",
@@ -1777,7 +1832,17 @@
 		"toolCategories": "Toolcategorieën",
 		"allToolCategories": "Alle toolcategorieën",
 		"moreEmployees": "Meer medewerkers",
-		"moreTools": "Meer tools"
+		"moreTools": "Meer tools",
+		"pageTitle": "Marktplaats - Nebo",
+		"sharedPageTitle": "Gedeeld - Marktplaats - Nebo",
+		"searchPageTitle": "Zoeken — Marktplaats",
+		"resume": {
+			"byAuthor": "door {author}",
+			"perSeat": "per gebruiker",
+			"responsibilities": "Verantwoordelijkheden",
+			"newHire": "Nieuw · neem als eerste aan",
+			"meet": "Maak kennis met"
+		}
 	},
 	"commander": {
 		"autoLayout": "Automatische lay-out",
@@ -1854,7 +1919,9 @@
 		"noChatsYet": "Nog geen chats. Start een nieuwe.",
 		"noRunsYet": "Nog geen runs",
 		"appBadge": "App",
-		"primaryUndeletable": "Je persoonlijk assistent ontvangt alles wat niet aan een specifieke medewerker is gericht en kan daarom niet worden verwijderd. Wijzig de naam in Medewerkerinstellingen."
+		"primaryUndeletable": "Je persoonlijk assistent ontvangt alles wat niet aan een specifieke medewerker is gericht en kan daarom niet worden verwijderd. Wijzig de naam in Medewerkerinstellingen.",
+		"browseFolders": "Mappen doorbladeren",
+		"browseFiles": "Bestanden doorbladeren"
 	},
 	"agentLearning": {
 		"title": "Zelfverbetering",
@@ -1871,6 +1938,7 @@
 		"viewOnly": "Dit gesprek is alleen om te lezen — hier praten medewerkers met elkaar, jij stuurt ze aan in hun eigen chats"
 	},
 	"teams": {
+		"everyoneHint": "Het hele team",
 		"section": "Teams",
 		"emptyRoster": "Zet twee of meer medewerkers in een team en ze delen één gesprek. Druk op + om er een te starten, of vraag het een medewerker.",
 		"inTeam": "In dit team",
@@ -1945,6 +2013,9 @@
 	},
 	"agentSettings": {
 		"general": "Algemeen",
+		"tabWho": "Wie ze zijn",
+		"tabWork": "Wat ze doen",
+		"developerGroup": "Ontwikkelaar",
 		"generalBlurb": "Een overzicht van deze medewerker — status, skills, workflows en beheer.",
 		"identityBlurb": "Naam, stem, kleur en status — hoe deze medewerker in de app verschijnt.",
 		"nameLabel": "Naam",
@@ -2111,7 +2182,7 @@
 		"pasteTokenPlaceholder": "Plak token hier...",
 		"needHelp": "Hulp nodig?",
 		"saveCredentials": "Inloggegevens opslaan",
-		"channelHelp": "{name} Help",
+		"channelHelp": "Hulp bij {name}",
 		"closeHelp": "Help sluiten",
 		"askAboutSetup": "Vraag over de installatie van {name}...",
 		"addPluginAccount": "{name}-account toevoegen",
@@ -2129,6 +2200,14 @@
 		"saveCredentialsFailed": "Inloggegevens opslaan mislukt.",
 		"signInFailedRetry": "Inloggen mislukt. Probeer het opnieuw.",
 		"startSignInFailed": "Kon het inloggen voor dit account niet starten.",
+		"signInPopupBlocked": "Het inlogvenster is geblokkeerd. Sta pop-ups toe voor Nebo en probeer het opnieuw.",
+		"channelToggleFailed": "Dit kanaal kon niet worden bijgewerkt. Probeer het opnieuw.",
+		"helpChatFailed": "De hulpchat kon niet worden geopend. Probeer het opnieuw.",
+		"accountsLoadFailed": "Accounts konden niet worden geladen. Probeer het opnieuw.",
+		"accountListRefreshFailed": "Account gekoppeld, maar de lijst is niet vernieuwd. Open de instellingen opnieuw om het te zien.",
+		"disconnectFailed": "Dit account kon niet worden losgekoppeld. Probeer het opnieuw.",
+		"claimableLoadFailed": "Je telefoonnummers konden niet worden geladen.",
+		"tryAgain": "Opnieuw proberen",
 		"contextTitle": "Wat deze medewerker weet",
 		"contextDesc": "Door de medewerker zelf geschreven op basis van de branche- en bedrijfslaag, elke keer dat die veranderen. Daarmee werkt die zonder iets op te hoeven zoeken.",
 		"contextAgainst": "Geschreven tegen {against}",
@@ -2157,7 +2236,19 @@
 		"changeInBotSettings": "Wijzigen in Botinstellingen",
 		"reachManage": "Beheren",
 		"reachNoPhone": "Nog geen telefoonlijn.",
-		"reachNoChannels": "Geen kanalen ingeschakeld."
+		"reachNoChannels": "Geen kanalen ingeschakeld.",
+		"newCallTreeName": "Nieuw keuzemenu",
+		"newWorkflowName": "Nieuwe workflow",
+		"greetingNodeLabel": "Begroeting",
+		"phoneLoadingNumbers": "Je nummers worden geladen…",
+		"phoneNoFreeNumbers": "Er zijn geen vrije nummers om te koppelen. Koop een nummer (of parkeer er een van een andere medewerker) via {link} en kom dan hier terug.",
+		"phoneWhichNumber": "Welk nummer moet deze medewerker beantwoorden?",
+		"phoneNumberParked": "geparkeerd",
+		"phoneNumberUnassigned": "niet toegewezen",
+		"phoneLineName": "Naam van de lijn (optioneel)",
+		"phoneLineNamePlaceholder": "Receptie, Support, Spaanse lijn…",
+		"phoneAttaching": "Het nummer wordt aan deze medewerker gekoppeld…",
+		"phoneAttachNumber": "Nummer koppelen"
 	},
 	"agentConfigure": {
 		"inputs": "Invoer",
@@ -2234,7 +2325,10 @@
 		"factDate": "Datum",
 		"factAttachment": "Bijlage",
 		"factVia": "Via",
-		"interrupted": "Onderbroken"
+		"interrupted": "Onderbroken",
+		"tokensShort": "{count} tok",
+		"underOneSecond": "<1s",
+		"triggerKind": "{kind, select, schedule {Schema} event {Gebeurtenis} heartbeat {Heartbeat} manual {Handmatig} watch {Bewaken} webhook {Webhook} call {Oproep} retry {Nieuwe poging} other {{kind}}}"
 	},
 	"automations": {
 		"title": "Automatiseringen",
@@ -2272,7 +2366,12 @@
 		"every8h": "Elke 8 uur",
 		"every24h": "Elke 24 uur",
 		"everyInterval": "Elke {interval}",
-		"whenFires": "Wanneer {event} afgaat"
+		"whenFires": "Wanneer {event} afgaat",
+		"anEvent": "gebeurtenis",
+		"watching": "Bewaakt: {source}",
+		"aPlugin": "plugin",
+		"manualTrigger": "Handmatige trigger",
+		"onEventNamed": "Bij {event}"
 	},
 	"newBot": {
 		"browseMarketplace": "Marktplaats bekijken",
@@ -2329,7 +2428,18 @@
 		"approvalGate": {
 			"batchHeadline": "{n} acties in één stap hebben je OK nodig",
 			"goalHeadline": "Akkoord met dit doel? Het werk gaat door tot een controle bevestigt dat het bereikt is.",
-			"yourAgent": "Je medewerker"
+			"yourAgent": "Je medewerker",
+			"operation": "{action, select, create {Maak {noun} aan} send {Verstuur {noun}} update {Werk {noun} bij} status {Wijzig de status van {noun}} apply {Pas {noun} toe} record {Registreer {noun}} schedule {Plan {noun} in} publish {Publiceer {noun}} respond {Reageer op {noun}} reply {Beantwoord {noun}} upsert {Sla {noun} op} attach {Voeg {noun} toe} write {Schrijf {noun}} remove {Verwijder {noun}} other {{verb} {noun}}}",
+			"resource": {
+				"billpayment": "factuurbetaling",
+				"creditmemo": "creditnota",
+				"journalentry": "journaalpost",
+				"purchaseorder": "inkooporder",
+				"opportunity": "deal",
+				"company": "het bedrijfsbestand — hoe dit bedrijf werkt",
+				"industry": "het branchebestand — hoe dit vak werkt",
+				"franchise": "het franchisebestand — de eisen van een merk"
+			}
 		},
 		"approvalModal": {
 			"runShellCommand": "Shell-commando uitvoeren",
@@ -2446,7 +2556,20 @@
 		"narrowSat": "Z",
 		"pageTitle": "Planning - Nebo",
 		"perWeek": "{count}/wk",
-		"workflowBuilderTitle": "{name} — Workflow-bouwer"
+		"workflowBuilderTitle": "{name} — Workflow-bouwer",
+		"everyDay": "Elke dag",
+		"weekends": "Weekenden",
+		"weekdayPlural": "{day, select, sun {Zondagen} mon {Maandagen} tue {Dinsdagen} wed {Woensdagen} thu {Donderdagen} fri {Vrijdagen} sat {Zaterdagen} other {{day}}}",
+		"clockTime": "{hour}:{minute} {period}",
+		"hourOnly": "{hour} {period}",
+		"midnight": "Middernacht",
+		"cronEveryMinutes": "{n, plural, one {Elke minuut} other {Elke # minuten}}",
+		"cronEveryHours": "{n, plural, one {Elk uur} other {Elke # uur}}",
+		"cronEveryHoursAt": "{n, plural, one {Elk uur om :{minute}} other {Elke # uur om :{minute}}}",
+		"cronDailyAt": "Elke dag om {time}",
+		"cronDaysAt": "{days} om {time}",
+		"cronMonthlyAt": "Maandelijks op de {day, selectordinal, other {#e}} om {time}",
+		"listSeparator": ", "
 	},
 	"neboShell": {
 		"tabs": {
@@ -2491,7 +2614,26 @@
 	},
 	"userMenu": {
 		"aboutNebo": "Over Nebo",
-		"planSuffix": "{plan}-abonnement"
+		"planSuffix": "{plan}-abonnement",
+		"provideFeedback": "Feedback geven"
+	},
+	"feedback": {
+		"title": "Feedback geven",
+		"lede": "Vertel het NeboAI-team wat werkt, wat niet werkt of wat je graag zou willen.",
+		"message": "Bericht",
+		"screenshots": "Schermafbeeldingen of foto’s (optioneel)",
+		"addScreenshot": "Een schermafbeelding toevoegen",
+		"remove": "{name} verwijderen",
+		"diagnostics": "Diagnostische gegevens meesturen",
+		"diagnosticsHelp": "App- en botversie, platform, bot-id en dit scherm. Nooit wachtwoorden of inlogtokens.",
+		"send": "Verzenden",
+		"sending": "Wordt verzonden",
+		"sent": "Bedankt — verzonden naar het NeboAI-team.",
+		"failed": "Je feedback kon niet worden verzonden. Probeer het opnieuw.",
+		"needMessage": "Schrijf eerst een bericht.",
+		"messageTooLong": "Houd het bericht onder de {max} tekens.",
+		"tooManyScreenshots": "Voeg maximaal {max, plural, one {# schermafbeelding} other {# schermafbeeldingen}} toe.",
+		"imagesOnly": "Je kunt alleen afbeeldingen bijvoegen."
 	},
 	"workflowCanvas": {
 		"noWorkflows": "Geen workflows om te visualiseren",
@@ -2632,7 +2774,18 @@
 		"gettingReady": "{name} wordt klaargezet…",
 		"skillsAndTools": "Vaardigheden en tools",
 		"hireFailedTitle": "De aanstelling is niet gelukt",
-		"hireFailed": "{name} is niet aangenomen. Probeer het opnieuw."
+		"hireFailed": "{name} is niet aangenomen. Probeer het opnieuw.",
+		"codeStatus": {
+			"nebo": "Verbinden met NeboAI…",
+			"skill": "Skill installeren…",
+			"workflow": "Workflow installeren…",
+			"agent": "Medewerker installeren…",
+			"loop": "Deelnemen aan loop…",
+			"plugin": "Plugin installeren…",
+			"app": "App installeren…",
+			"collection": "Collectie installeren…",
+			"connection": "MCP-verbinding toevoegen…"
+		}
 	},
 	"activity": {
 		"pageTitle": "Activiteit - Nebo",
@@ -2651,7 +2804,8 @@
 		"openAppHint": "App openen",
 		"openApp": "App openen",
 		"runs": "Runs",
-		"memory": "Geheugen"
+		"memory": "Geheugen",
+		"appError": "App-fout ({status})"
 	},
 	"pricing": {
 		"pageTitle": "Kies je abonnement - Nebo",
@@ -2664,7 +2818,7 @@
 		"current": "Huidig",
 		"perMonth": "/mnd",
 		"billedAnnually": "{amount} jaarlijks gefactureerd",
-		"doubleUp": "Double Up",
+		"doubleUp": "Dubbel op",
 		"doubleUpDesc": "Zelfde AI-personeel. Twee keer zoveel ervan.",
 		"boostPerMonth": "+{amount}/mnd",
 		"currentPlan": "Huidig abonnement",
@@ -2777,7 +2931,7 @@
 		"preRegisteredTitle": "Vooraf geregistreerde client (optioneel)",
 		"preRegisteredHint": "Voor servers die automatische registratie niet ondersteunen (bijv. Google-API's) — plak de OAuth-client die je bij de provider hebt aangemaakt.",
 		"oauthClientId": "Client-ID",
-		"oauthClientSecret": "Client Secret",
+		"oauthClientSecret": "Clientgeheim",
 		"oauthScopes": "Scopes",
 		"oauthScopesPlaceholder": "scope-een scope-twee (gescheiden door spaties)",
 		"oauthAuthEndpoint": "Authorization-endpoint",
@@ -2811,7 +2965,10 @@
 		"checkEvery": "Controleren elke",
 		"hours6": "6 uur",
 		"history": "Geschiedenis",
-		"title": "Tool-updates"
+		"title": "Tool-updates",
+		"onLatest": "Je hebt de nieuwste versie",
+		"checkFailed": "Kon niet controleren op updates",
+		"updateFailed": "Bijwerken mislukt"
 	},
 	"inbox": {
 		"title": "Postvak IN",
@@ -2842,15 +2999,27 @@
 		"failedAt": "Mislukt tijdens \"{activity}\"",
 		"steps": "Waar het mee bezig was",
 		"output": "Uitvoer",
-		"recordGone": "Het runverslag is weg. Het is verwijderd samen met de medewerker die het had, dus alleen deze melding blijft over."
+		"recordGone": "Het runverslag is weg. Het is verwijderd samen met de medewerker die het had, dus alleen deze melding blijft over.",
+		"revert": "Terugdraaien",
+		"reverted": "Teruggedraaid"
 	},
 	"voice": {
 		"startConversation": "Spraakgesprek",
+		"reconnecting": "Opnieuw verbinden met het gesprek…",
 		"consentTitle": "Spraak gebruikt een clouddienst",
 		"consentBody": "Spraakgesprekken streamen je microfoonaudio naar een cloudspraakdienst voor verwerking zolang een gesprek actief is. Audio verlaat deze computer. Typen in de chat blijft zoals altijd lokaal.",
 		"consentAccept": "Spraak inschakelen",
 		"consentDecline": "Niet nu",
-		"cloudIndicator": "Audio wordt naar de cloud gestreamd"
+		"cloudIndicator": "Audio wordt naar de cloud gestreamd",
+		"talkTo": "Praat met {name}",
+		"isSpeaking": "{name} praat",
+		"callEnded": "Het gesprek is beëindigd.",
+		"tryAgain": "Opnieuw proberen",
+		"onAnotherCall": "In gesprek met een andere medewerker",
+		"callLost": "Het gesprek viel weg en kon niet worden hervat. Start het opnieuw.",
+		"callEndedStartAgain": "Het gesprek is beëindigd. Start het opnieuw.",
+		"needsConsent": "Een spraakgesprek stuurt je microfoonaudio naar een cloudspraakdienst voor verwerking. Zet het aan in het spraakpaneel om toestemming te geven.",
+		"startFailed": "Het gesprek kon niet worden gestart. Probeer het opnieuw."
 	},
 	"flows": {
 		"none": "Nog geen flows",
@@ -2865,7 +3034,15 @@
 		"overlapBufferOne": "Eén keer uitvoeren als die klaar is",
 		"overlapAllowAll": "Toch uitvoeren",
 		"deleteReminderTitle": "\"{name}\" verwijderen?",
-		"deleteReminderBody": "Deze geplande taak stopt met draaien en wordt verwijderd. Eerdere runs blijven in de rungeschiedenis staan."
+		"deleteReminderBody": "Deze geplande taak stopt met draaien en wordt verwijderd. Eerdere runs blijven in de rungeschiedenis staan.",
+		"triggerOnEvent": "Bij {event}",
+		"triggerWatch": "Bewaakt: {target}",
+		"triggerWatchPlugin": "Bewaakt: plugin",
+		"triggerManual": "Handmatige trigger",
+		"scheduleTooSpecific": "Dit schema is specifieker dan de eenvoudige editor aankan",
+		"askSetupPrompt": "Zet een nieuwe flow voor me op: ",
+		"everyNHours": "Elke N uur",
+		"everyNMinutes": "Elke N minuten"
 	},
 	"christen": {
 		"title": "Geef je eerste medewerker een naam",
@@ -2887,7 +3064,27 @@
 		"working": "We zoeken uit wat ze nodig hebben…",
 		"willDo": "{name} gaat:",
 		"thisEmployee": "Deze medewerker",
-		"removeItem": "{item} verwijderen"
+		"removeItem": "{item} verwijderen",
+		"hireFromApps": "Aannemen uit een andere app",
+		"linkedLede": "Ze blijven werken op de computer waarop ze draaien.",
+		"thisComputer": "Deze computer",
+		"offline": "Offline",
+		"linkedFailed": "Aannemen uit {bot} is mislukt. Probeer het opnieuw.",
+		"onYourTeam": "In je team",
+		"linkedLooking": "Apps zoeken…",
+		"linkedHireNew": "Een nieuwe aannemen",
+		"linkedConnect": "Verbind je agent",
+		"linkedRunning": "{count} actief",
+		"nameYour": "Geef je {app} een naam",
+		"youAlreadyHave": "Je hebt al:",
+		"nameTaken": "Je hebt al een medewerker met de naam {name}.",
+		"linkedWhere": "Op welke computer moet deze werken?",
+		"linkedPickAgent": "Welke {app}-agent?",
+		"linkedModeTitle": "Wat mag deze doen zonder te vragen?",
+		"linkedModeAutomaticDesc": "Bewerkt zelf bestanden in zijn map. Vraagt het eerst bij al het andere.",
+		"linkedModeAskDesc": "Vraagt het je voordat er iets verandert.",
+		"linkedModePlanDesc": "Leest en plant. Wijzigt niets.",
+		"linkedModeFullAccessDesc": "Voert alles uit op deze computer zonder te vragen."
 	},
 	"runLimit": {
 		"title": "Uitgavenlimiet per run",
@@ -3101,5 +3298,526 @@
 		"unreviewed": "Niet beoordeeld",
 		"loadMore": "Meer weergeven",
 		"addJobEdit": "Toevoegen aan de taak"
+	},
+	"workflow": {
+		"addNode": "Node toevoegen",
+		"deleteNode": "Node verwijderen",
+		"deleteWorkflow": "Workflow verwijderen",
+		"removeItem": "{name} verwijderen",
+		"activityCount": "{count, plural, one {# activiteit} other {# activiteiten}}",
+		"stepCount": "{count, plural, one {# stap} other {# stappen}}",
+		"triggerTypes": {
+			"schedule": "Schema",
+			"heartbeat": "Heartbeat",
+			"event": "Gebeurtenis",
+			"watch": "Bewaken",
+			"manual": "Handmatig"
+		},
+		"branch": {
+			"true": "Waar",
+			"false": "Onwaar",
+			"eachItem": "Elk item",
+			"done": "Klaar"
+		},
+		"types": {
+			"greeting": {
+				"label": "Begroeting",
+				"description": "Wat deze lijn zegt wanneer er wordt opgenomen",
+				"params": {
+					"text": {
+						"label": "Begroeting",
+						"description": "Woord voor woord uitgesproken zodra het gesprek verbonden is.",
+						"placeholder": "Bedankt voor het bellen naar Tandartspraktijk Miller! Waarmee kan ik helpen?"
+					}
+				}
+			},
+			"intent": {
+				"label": "Intentie",
+				"description": "Eén taak die deze lijn afhandelt, met de toegestane tools",
+				"params": {
+					"name": {
+						"label": "Naam van de intentie",
+						"description": "Korte id die de router gebruikt (uniek per keuzemenu)."
+					},
+					"description": {
+						"label": "Wanneer bellers dit bedoelen",
+						"placeholder": "Beller wil een afspraak maken, verzetten of annuleren"
+					},
+					"tools": {
+						"label": "Toegestane tools",
+						"description": "Kommagescheiden tool:resource-rechten, alleen voor deze intentie."
+					},
+					"workflows": {
+						"label": "Toegestane workflows",
+						"description": "Kommagescheiden namen van workflows van deze medewerker die de intentie mag uitvoeren."
+					},
+					"plugins": {
+						"label": "Toegestane plugins",
+						"description": "Kommagescheiden plugin-slugs."
+					},
+					"mcp": {
+						"label": "Toegestane MCP-servers",
+						"description": "Kommagescheiden namen van verbonden MCP-servers."
+					}
+				}
+			},
+			"transfer": {
+				"label": "Doorverbinden met een mens",
+				"description": "Live doorverbinden naar het doorverbindnummer van de lijn",
+				"params": {
+					"when": {
+						"label": "Wanneer doorverbinden",
+						"placeholder": "Beller vraagt naar een persoon, is boos of heeft een noodgeval"
+					},
+					"to": {
+						"label": "Verbindt door met",
+						"description": "Met wie de beller te horen krijgt dat hij wordt doorverbonden. Het nummer zelf blijft in de lijninstellingen staan.",
+						"placeholder": "onze kantoormanager"
+					}
+				}
+			},
+			"takeMessage": {
+				"label": "Bericht aannemen",
+				"description": "Een bericht voor de eigenaar noteren (de terugvaloptie)",
+				"params": {
+					"fields": {
+						"label": "Wat noteren",
+						"placeholder": "naam, nummer, reden van bellen, beste tijd om terug te bellen"
+					}
+				}
+			},
+			"disclosures": {
+				"label": "Mag delen",
+				"description": "Feiten die deze lijn direct noemt, zonder iets op te zoeken",
+				"params": {
+					"text": {
+						"label": "Goedgekeurde informatie",
+						"description": "De door de eigenaar goedgekeurde openbare feiten voor deze lijn — openingstijden, adres, werkgebied, basisprijzen. Klant- of accountgegevens staan hier nooit; die gaan via een opzoekactie.",
+						"placeholder": "Open ma–vr 8–17. Gevestigd aan Hoofdstraat 123. Gebitsreiniging vanaf € 120."
+					}
+				}
+			},
+			"custom": {
+				"label": "Aangepast",
+				"description": "Stappen en skills handmatig bepalen"
+			},
+			"research": {
+				"label": "Onderzoek",
+				"description": "Zoeken op het web, analyse en synthese",
+				"params": {
+					"depth": {
+						"label": "Onderzoeksdiepte",
+						"options": {
+							"quick": "Snel (2-5 min)",
+							"standard": "Standaard (5-10 min)",
+							"deep": "Diepgaand (10-20 min)"
+						}
+					},
+					"sources": {
+						"label": "Soorten bronnen",
+						"description": "Kommagescheiden soorten bronnen om te doorzoeken",
+						"placeholder": "web, wetenschappelijk, nieuws"
+					}
+				}
+			},
+			"email": {
+				"label": "E-mail versturen",
+				"description": "E-mail opstellen en versturen",
+				"params": {
+					"to": {
+						"label": "Aan",
+						"description": "E-mailadres van de ontvanger (of gebruik gegevens van eerdere stappen)"
+					},
+					"subject": {
+						"label": "Onderwerpsjabloon"
+					}
+				}
+			},
+			"notify": {
+				"label": "Melden",
+				"description": "Een melding naar een kanaal sturen",
+				"params": {
+					"channel": {
+						"label": "Kanaal",
+						"options": {
+							"email": "E-mail",
+							"webhook": "Webhook"
+						}
+					},
+					"target": {
+						"label": "Doel",
+						"description": "Kanaalnaam, e-mailadres of webhook-URL",
+						"placeholder": "#general of user@example.com"
+					}
+				}
+			},
+			"code": {
+				"label": "Code uitvoeren",
+				"description": "Een codefragment uitvoeren",
+				"params": {
+					"language": {
+						"label": "Taal"
+					},
+					"code": {
+						"label": "Code",
+						"description": "Code om uit te voeren"
+					}
+				}
+			},
+			"condition": {
+				"label": "Voorwaarde",
+				"description": "Als/anders-vertakking",
+				"params": {
+					"expression": {
+						"label": "Voorwaarde-expressie",
+						"description": "JavaScript-expressie — truthy gaat naar de tak Waar, falsy naar Onwaar"
+					},
+					"mode": {
+						"label": "Evaluatiemodus",
+						"options": {
+							"expression": "Expressie",
+							"contains": "Gegevens bevatten",
+							"exists": "Veld bestaat",
+							"regex": "Regex-overeenkomst"
+						}
+					}
+				}
+			},
+			"loop": {
+				"label": "Lus",
+				"description": "Een lijst met items doorlopen",
+				"params": {
+					"source": {
+						"label": "Bron van items",
+						"description": "Pad naar de array die wordt doorlopen",
+						"placeholder": "data.items of data.emails"
+					},
+					"maxIterations": {
+						"label": "Max. herhalingen",
+						"description": "Veiligheidslimiet tegen oneindige lussen"
+					}
+				}
+			},
+			"wait": {
+				"label": "Wachten",
+				"description": "Uitvoering pauzeren",
+				"params": {
+					"duration": {
+						"label": "Wachttijd",
+						"options": {
+							"5s": "5 seconden",
+							"30s": "30 seconden",
+							"1m": "1 minuut",
+							"5m": "5 minuten",
+							"15m": "15 minuten",
+							"1h": "1 uur",
+							"custom": "Aangepast"
+						}
+					},
+					"waitUntil": {
+						"label": "Of wachten tot",
+						"description": "Hervatten wanneer deze gebeurtenis afgaat (leeg laten om op tijd te wachten)",
+						"placeholder": "bijv. event:approval.received"
+					}
+				}
+			},
+			"agent": {
+				"label": "Medewerker",
+				"description": "Overdragen aan een andere medewerker",
+				"params": {
+					"agentId": {
+						"label": "Medewerker",
+						"description": "Medewerker aan wie deze taak wordt overgedragen"
+					},
+					"instructions": {
+						"label": "Instructies",
+						"description": "De standaardpersona van de medewerker vervangen of aanvullen",
+						"placeholder": "Specifieke instructies voor de medewerker die het overneemt..."
+					}
+				}
+			},
+			"connector": {
+				"label": "Connector",
+				"description": "Een MCP-integratie gebruiken",
+				"params": {
+					"serverId": {
+						"label": "MCP-server",
+						"description": "Verbonden MCP-server om te gebruiken"
+					},
+					"tool": {
+						"label": "Tool",
+						"description": "Welke tool op de MCP-server moet worden aangeroepen",
+						"placeholder": "bijv. read_file, send_message"
+					},
+					"input": {
+						"label": "Invoer",
+						"description": "JSON-invoer voor de tool (ondersteunt sjablonen als '{{'data.field'}}')"
+					}
+				}
+			},
+			"http": {
+				"label": "HTTP-verzoek",
+				"description": "Een HTTP-API-aanroep doen",
+				"params": {
+					"method": {
+						"label": "Methode"
+					},
+					"url": {
+						"label": "URL"
+					},
+					"body": {
+						"label": "Body van het verzoek",
+						"description": "JSON-body voor POST/PUT/PATCH-verzoeken"
+					},
+					"headers": {
+						"label": "Headers",
+						"description": "Eén header per regel (key: value)"
+					}
+				}
+			},
+			"decide": {
+				"label": "Beslissen",
+				"description": "Gegevens classificeren of beoordelen met getypeerde vragen",
+				"params": {
+					"state": {
+						"label": "Toestand",
+						"description": "Gegevenspad om te beoordelen (inputs.*, item, nodes.'<'id>.*)"
+					},
+					"questions": {
+						"label": "Vragen",
+						"description": "JSON-object met getypeerde vragen (choice, score, noul). Een voorwaarde-node routeert op nodes.'<'id>.'<'question>.choice en .confidence"
+					},
+					"default": {
+						"label": "Standaardantwoorden",
+						"description": "Antwoorden voor als er geen beslissing kan worden genomen: een optie voor een choice, een niveau voor een score, true of false voor een noul. De node zet dan nodes.'<'id>.defaulted"
+					}
+				}
+			},
+			"transform": {
+				"label": "Omzetten",
+				"description": "Gegevens omvormen of filteren",
+				"params": {
+					"operation": {
+						"label": "Bewerking",
+						"options": {
+							"map": "Map — elk item omzetten",
+							"filter": "Filter — overeenkomende items behouden",
+							"reduce": "Reduce — samenvoegen tot één waarde",
+							"pick": "Pick — specifieke velden ophalen",
+							"template": "Template — opmaken als tekst"
+						}
+					},
+					"expression": {
+						"label": "Expressie",
+						"description": "Omzettingsexpressie"
+					}
+				}
+			}
+		},
+		"catalog": {
+			"searchPlaceholder": "Nodes zoeken...",
+			"noMatch": "Geen nodes gevonden voor \"{query}\"",
+			"toolsAvailable": "{count, plural, one {# tool beschikbaar} other {# tools beschikbaar}}",
+			"categories": {
+				"triggers": "Triggers",
+				"activities": "Activiteiten",
+				"callTree": "Keuzemenu",
+				"flowControl": "Flowbesturing",
+				"connectors": "Connectoren (MCP)",
+				"agents": "Medewerkers",
+				"output": "Uitvoer"
+			},
+			"items": {
+				"triggerSchedule": {
+					"label": "Schema",
+					"desc": "Op vaste tijden uitvoeren"
+				},
+				"triggerEvent": {
+					"label": "Gebeurtenis",
+					"desc": "Reageren op gebeurtenissen"
+				},
+				"triggerHeartbeat": {
+					"label": "Heartbeat",
+					"desc": "Op een interval uitvoeren"
+				},
+				"triggerManual": {
+					"label": "Handmatig",
+					"desc": "Op verzoek uitvoeren"
+				},
+				"activityCustom": {
+					"label": "Aangepaste activiteit",
+					"desc": "Stappen en skills bepalen"
+				},
+				"activityResearch": {
+					"label": "Onderzoek",
+					"desc": "Zoeken op het web en analyse"
+				},
+				"activityEmail": {
+					"label": "E-mail versturen",
+					"desc": "E-mail opstellen en versturen"
+				},
+				"activityNotify": {
+					"label": "Melden",
+					"desc": "Melding versturen"
+				},
+				"activityCode": {
+					"label": "Code uitvoeren",
+					"desc": "Een codefragment uitvoeren"
+				},
+				"activityHttp": {
+					"label": "HTTP-verzoek",
+					"desc": "Een API-aanroep doen"
+				},
+				"activityDecide": {
+					"label": "Beslissen",
+					"desc": "Gegevens classificeren of beoordelen"
+				},
+				"activityTransform": {
+					"label": "Omzetten",
+					"desc": "Gegevens omvormen of filteren"
+				},
+				"activityGreeting": {
+					"label": "Begroeting",
+					"desc": "Wat de lijn zegt wanneer er wordt opgenomen"
+				},
+				"activityIntent": {
+					"label": "Intentie",
+					"desc": "Eén taak + de toegestane tools"
+				},
+				"activityTransfer": {
+					"label": "Doorverbinden met een mens",
+					"desc": "Live doorverbinden — noem met wie"
+				},
+				"activityTakeMessage": {
+					"label": "Bericht aannemen",
+					"desc": "Een bericht noteren (de terugvaloptie)"
+				},
+				"activityDisclosures": {
+					"label": "Mag delen",
+					"desc": "Feiten die deze lijn direct noemt (openingstijden, adres, prijzen)"
+				},
+				"flowCondition": {
+					"label": "Voorwaarde",
+					"desc": "Als/anders-vertakking"
+				},
+				"flowLoop": {
+					"label": "Lus",
+					"desc": "Items doorlopen"
+				},
+				"flowWait": {
+					"label": "Wachten",
+					"desc": "Pauzeren of op een gebeurtenis wachten"
+				},
+				"emit": {
+					"label": "Gebeurtenis uitzenden",
+					"desc": "Voltooiing aankondigen"
+				}
+			}
+		},
+		"eventSources": {
+			"label": "Gebeurtenisbronnen",
+			"searchPlaceholder": "Typ om bronnen te zoeken...",
+			"hint": "Typ om bekende bronnen te zoeken, Enter om toe te voegen. Eigen namen en jokertekens (email.*) werken ook."
+		},
+		"flow": {
+			"triggerManual": "Draait wanneer jij het start",
+			"triggerSchedule": "Volgens schema",
+			"triggerEventAny": "Wanneer een gebeurtenis afgaat",
+			"triggerWatch": "Bewaakt {name}",
+			"triggerWatchAny": "Bewaakt een plugin",
+			"applying": "Toepassen…",
+			"go": "Ga",
+			"tellAi": "Vertel de AI wat er moet veranderen",
+			"tellAiEllipsis": "Vertel de AI wat er moet veranderen…",
+			"badgeExact": "exact",
+			"badgeAgent": "medewerker",
+			"emptyCode": "(leeg)",
+			"stepPlaceholder": "Wat moet deze stap doen?",
+			"changeStep": "\"{name}\" wijzigen…",
+			"forEach": "Voor elk {item}",
+			"loopItemDefault": "item",
+			"loopEmpty": "Nog niets in deze lus.",
+			"pathDefault": "pad",
+			"pathEmpty": "Leeg pad",
+			"addStepHere": "Hier een stap toevoegen",
+			"connected": "{name} is verbonden",
+			"notConnected": "{name} is niet verbonden — deze flow zal mislukken",
+			"connect": "Verbinden",
+			"describeFlowChange": "Beschrijf een wijziging aan deze hele flow…",
+			"edit": "bewerken",
+			"emits": "zendt uit",
+			"noSteps": "Deze flow heeft nog geen stappen."
+		},
+		"panel": {
+			"backToOverview": "Terug naar het workflowoverzicht",
+			"intent": "Intentie",
+			"addSkill": "Skill toevoegen...",
+			"parameters": "Parameters",
+			"addStep": "Stap toevoegen...",
+			"manualHint": "Draait alleen wanneer handmatig gestart.",
+			"notConfigured": "Niet ingesteld",
+			"noEventConfigured": "Geen gebeurtenis ingesteld",
+			"noDescription": "Geen beschrijving",
+			"emitPlaceholder": "bijv. {name}",
+			"emitOptional": "Optioneel — andere workflows kunnen hierop starten wanneer de run klaar is.",
+			"useEmit": "{name} gebruiken",
+			"emitRenameWarning": "Hernoemen breekt workflows die op deze gebeurtenis zijn geabonneerd.",
+			"none": "Geen",
+			"apiEndpoint": "API-endpoint",
+			"apiEndpointHint": "Maak een sleutel voor deze workflow aan via Instellingen → Webhooks van de medewerker."
+		},
+		"schedule": {
+			"weekends": "Weekenden",
+			"custom": "Aangepast",
+			"daysOfWeek": "Dagen van de week",
+			"monthly": "Maandelijks",
+			"biannual": "Elke 6 maanden",
+			"yearly": "Jaarlijks",
+			"onDay": "op dag",
+			"biannualNote": "Draait op {day} {firstMonth} en {day} {secondMonth}.",
+			"shortMonthsSkipped": "Maanden zonder dag {day} worden overgeslagen.",
+			"limitToHours": "Beperken tot uren",
+			"rangeTo": "tot"
+		},
+		"watch": {
+			"plugin": "Plugin",
+			"choosePlugin": "Kies een plugin…",
+			"whenItReports": "Wanneer die meldt",
+			"chooseEvent": "Kies een gebeurtenis…",
+			"hint": "Draait telkens wanneer {plugin} {event} meldt; andere flows kunnen ook luisteren naar {plugin}.{event}."
+		},
+		"validation": {
+			"emptyId": "Activiteit in \"{workflow}\" heeft een lege ID",
+			"duplicateId": "Dubbele activiteit-ID \"{id}\" in \"{workflow}\"",
+			"conditionExpression": "Voorwaarde \"{id}\" heeft een expressie nodig — routering is deterministisch, nooit door AI bepaald",
+			"loopSource": "Lus \"{id}\" heeft een gegevensbron nodig (bijv. inputs.items)",
+			"httpUrl": "HTTP-node \"{id}\" heeft een URL nodig",
+			"decideQuestions": "Beslissingsnode \"{id}\" heeft vragen nodig (een JSON-object met getypeerde vragen)",
+			"waitDuration": "Wachtnode \"{id}\" heeft een duur nodig",
+			"needsIntent": "Activiteit \"{id}\" in \"{workflow}\" heeft een intentie of stappen nodig",
+			"targetsTrigger": "Een verbinding wijst naar de trigger",
+			"leavesEmit": "Een verbinding vertrekt vanuit de uitzend-node",
+			"unknownFrom": "Verbinding vanuit onbekende node \"{id}\"",
+			"unknownTo": "Verbinding naar onbekende node \"{id}\"",
+			"duplicateConnection": "Dubbele verbinding {from} → {to}",
+			"labeledNonBranching": "Gelabelde verbinding \"{label}\" vertrekt vanuit niet-vertakkende node \"{id}\"",
+			"unlabeledBranch": "Verbindingen vanuit \"{id}\" moeten een taklabel hebben",
+			"cycle": "De graaf bevat een cyclus (alleen de Elk item-tak van een lus mag terugkeren naar die lus)"
+		},
+		"builder": {
+			"unsavedConfirm": "Je hebt niet-opgeslagen wijzigingen. Verwerpen en sluiten?",
+			"workflowLabel": "{name} ({count, plural, one {# activiteit} other {# activiteiten}})",
+			"undo": "Ongedaan maken (Cmd+Z)",
+			"redo": "Opnieuw (Cmd+Shift+Z)",
+			"issueCount": "{count, plural, one {# probleem} other {# problemen}}",
+			"discard": "Verwerpen",
+			"hideDetails": "Detailpaneel verbergen",
+			"showDetails": "Detailpaneel tonen",
+			"newWorkflowTitle": "Nieuwe workflow",
+			"empty": "Geen workflows — maak er een aan om te beginnen",
+			"newWorkflow": "Nieuwe workflow",
+			"confirmDeleteWorkflow": "Weet je zeker dat je deze workflow wilt verwijderen? Al zijn activiteiten en verbindingen worden verwijderd.",
+			"confirmDeleteNode": "Weet je zeker dat je deze node wilt verwijderen? Zijn verbindingen worden automatisch opnieuw gekoppeld."
+		}
 	}
 }

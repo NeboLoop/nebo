@@ -1,4 +1,6 @@
-import { describe, it, expect } from 'vitest';
+import { beforeAll, describe, it, expect } from 'vitest';
+import { addMessages, init } from 'svelte-i18n';
+import en from '$lib/i18n/locales/en.json';
 import { feedbackForm, feedbackProblem, screenOf, sendFeedback, type FeedbackInput } from './feedback';
 
 const png = (name = 'shot.png') => new File([new Uint8Array([137, 80, 78, 71])], name, { type: 'image/png' });
@@ -9,6 +11,11 @@ const input = (over: Partial<FeedbackInput> = {}): FeedbackInput => ({
 	screen: '/chat/assistant',
 	files: [],
 	...over
+});
+
+beforeAll(() => {
+	addMessages('en', en);
+	init({ fallbackLocale: 'en', initialLocale: 'en' });
 });
 
 describe('provide feedback', () => {

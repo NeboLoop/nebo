@@ -26,7 +26,7 @@
 	});
 </script>
 
-<svelte:head><title>Shared - Marketplace - Nebo</title></svelte:head>
+<svelte:head><title>{$t('marketplace.sharedPageTitle')}</title></svelte:head>
 
 <div class="max-w-6xl mx-auto px-6 py-6">
 	<div class="mb-5">

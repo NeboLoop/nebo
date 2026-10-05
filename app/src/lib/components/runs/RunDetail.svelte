@@ -181,18 +181,18 @@
   const duration = $derived.by(() => {
     if (runDetail?.startedAt && runDetail?.completedAt) {
       const secs = runDetail.completedAt - runDetail.startedAt;
-      if (secs >= 60) return `${Math.floor(secs / 60)}m ${Math.round(secs % 60)}s`;
-      return `${Math.round(secs)}s`;
+      if (secs >= 60) return $t('time.minutesSeconds', { values: { mins: Math.floor(secs / 60), secs: Math.round(secs % 60) } });
+      return $t('time.seconds', { values: { n: Math.round(secs) } });
     }
     return selectedRun?.duration ?? '—';
   });
 
   function formatActivityDuration(act: WorkflowActivityResult): string {
-    if (!act.startedAt || !act.completedAt) return act.completedAt ? '—' : 'running...';
+    if (!act.startedAt || !act.completedAt) return act.completedAt ? '—' : $t('common.running');
     const secs = act.completedAt - act.startedAt;
-    if (secs >= 60) return `${Math.floor(secs / 60)}m ${Math.round(secs % 60)}s`;
-    if (secs > 0) return `${Math.round(secs)}s`;
-    return '<1s';
+    if (secs >= 60) return $t('time.minutesSeconds', { values: { mins: Math.floor(secs / 60), secs: Math.round(secs % 60) } });
+    if (secs > 0) return $t('time.seconds', { values: { n: Math.round(secs) } });
+    return $t('agentActivity.underOneSecond');
   }
 
   function statusNorm(status: string): string {
@@ -283,7 +283,7 @@
       </span>
       {#if selectedRun.status === 'running'}
         <button
-          class="ml-auto py-0.5 px-2 rounded border border-error/30 bg-error/10 text-xs font-medium text-error cursor-pointer hover:bg-error/20 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          class="ms-auto py-0.5 px-2 rounded border border-error/30 bg-error/10 text-xs font-medium text-error cursor-pointer hover:bg-error/20 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           disabled={cancelLoading}
           onclick={cancelWorkflow}
         >
@@ -299,7 +299,7 @@
     <div class="flex-1 overflow-y-auto p-5 select-text touch-pan-y">
       <!-- Run metadata -->
       <div class="flex items-center gap-3 mb-4 text-xs text-base-content/50">
-        <span>{triggerIcon(selectedRun.trigger ?? '')} <span class="capitalize">{selectedRun.trigger}</span></span>
+        <span>{triggerIcon(selectedRun.trigger ?? '')} <span class="capitalize">{selectedRun.trigger ? $t('agentActivity.triggerKind', { values: { kind: selectedRun.trigger } }) : ''}</span></span>
         <span class="font-mono">{duration}</span>
         <span class="font-mono">{selectedRun.date}</span>
       </div>
@@ -383,7 +383,7 @@
               <div class="flex-1 min-w-0 pb-4">
                 <!-- Activity header — click to toggle (stays open independently) -->
                 <button
-                  class="w-full text-left flex items-center gap-2 cursor-pointer bg-transparent border-none p-0"
+                  class="w-full text-start flex items-center gap-2 cursor-pointer bg-transparent border-none p-0"
                   onclick={() => toggleActivity(activity.activityId)}
                 >
                   <span class="text-sm font-medium min-w-0 truncate">{summary?.line || activity.activityId}</span>
@@ -391,7 +391,7 @@
                     <span class="py-0 px-1.5 rounded text-xs font-medium shrink-0 bg-info/10 text-info">{$t('agentActivity.gateStopped')}</span>
                   {/if}
                   <span class="text-xs text-base-content/50 font-mono shrink-0">{formatActivityDuration(activity)}</span>
-                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="text-base-content/30 ml-auto shrink-0 transition-transform {isExpanded ? 'rotate-90' : ''}"><polyline points="9 6 15 12 9 18"/></svg>
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="text-base-content/30 ms-auto shrink-0 transition-transform {isExpanded ? 'rotate-90' : ''}"><polyline points="9 6 15 12 9 18"/></svg>
                 </button>
                 {#if isExpanded && summary?.line && summary.line !== activity.activityId}
                   <div class="text-xs text-base-content/50 font-mono mt-0.5">{activity.activityId}</div>
@@ -450,14 +450,14 @@
                                 <span class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('agentActivity.stepN', { values: { n: sIdx + 1 } })}</span>
                                 {#if task && (task.tokensInput ?? 0) + (task.tokensOutput ?? 0) > 0}
                                   {@const totalTok = (task.tokensInput ?? 0) + (task.tokensOutput ?? 0)}
-                                  <span class="text-xs text-base-content/40 font-mono ml-auto">{totalTok >= 1000 ? (totalTok / 1000).toFixed(1) + 'k' : totalTok} tok</span>
+                                  <span class="text-xs text-base-content/40 font-mono ms-auto">{$t('agentActivity.tokensShort', { values: { count: totalTok >= 1000 ? (totalTok / 1000).toFixed(1) + 'k' : totalTok } })}</span>
                                 {/if}
                                 {#if task?.startedAt && task?.completedAt}
                                   {@const stepSecs = task.completedAt - task.startedAt}
-                                  <span class="text-xs text-base-content/40 font-mono">{stepSecs >= 60 ? Math.floor(stepSecs / 60) + 'm ' + Math.round(stepSecs % 60) + 's' : stepSecs > 0 ? Math.round(stepSecs) + 's' : '<1s'}</span>
+                                  <span class="text-xs text-base-content/40 font-mono">{stepSecs >= 60 ? $t('time.minutesSeconds', { values: { mins: Math.floor(stepSecs / 60), secs: Math.round(stepSecs % 60) } }) : stepSecs > 0 ? $t('time.seconds', { values: { n: Math.round(stepSecs) } }) : $t('agentActivity.underOneSecond')}</span>
                                 {/if}
                               </div>
-                              <div class="ml-7">
+                              <div class="ms-7">
                                 <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-0.5">{$t('agentActivity.input')}</div>
                                 <div class="text-sm text-base-content/70 mb-2">{step}</div>
                                 <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-0.5">{$t('agentActivity.output')}</div>

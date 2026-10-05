@@ -59,7 +59,7 @@
       <Gift class="w-5 h-5 text-primary" />
       <p class="text-sm font-medium text-base-content">{$t('components.giveNebo.giveBonus')}</p>
     </div>
-    <p class="text-xs text-base-content/50 mb-4 ml-8">{$t('components.giveNebo.bonusDesc')}</p>
+    <p class="text-xs text-base-content/50 mb-4 ms-8">{$t('components.giveNebo.bonusDesc')}</p>
     {#if referralLink}
       <div class="flex flex-col gap-2">
         <div class="flex items-center gap-2">
@@ -101,9 +101,9 @@
         </div>
       </div>
     {:else if loaded}
-      <p class="text-xs text-base-content/50 ml-8">{$t('components.giveNebo.connectPrompt')}</p>
+      <p class="text-xs text-base-content/50 ms-8">{$t('components.giveNebo.connectPrompt')}</p>
     {:else}
-      <div class="flex items-center gap-2 ml-8">
+      <div class="flex items-center gap-2 ms-8">
         <Spinner size={14} />
         <span class="text-xs text-base-content/50">{$t('components.giveNebo.loadingLink')}</span>
       </div>

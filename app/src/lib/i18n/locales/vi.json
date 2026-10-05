@@ -84,7 +84,16 @@
 		"closeModal": "Đóng hộp thoại",
 		"all": "Tất cả",
 		"more": "Thêm",
-		"stopped": "Đã dừng"
+		"stopped": "Đã dừng",
+		"errorOccurred": "Đã xảy ra lỗi.",
+		"systemError": "Lỗi hệ thống",
+		"stillReconnecting": "Vẫn đang thử kết nối tới Nebo của bạn…",
+		"updatesAvailable": "{count, plural, one {Có # bản cập nhật} other {Có # bản cập nhật}}",
+		"artifactUpdated": "Đã cập nhật {type}: {version}",
+		"artifactUpdateFailed": "Cập nhật thất bại: {error}",
+		"employee": "Nhân viên",
+		"untitled": "Chưa đặt tên",
+		"document": "Tài liệu"
 	},
 	"time": {
 		"justNow": "vừa xong",
@@ -253,9 +262,11 @@
 		"working": "Đang làm việc",
 		"chatActions": "Thao tác trò chuyện",
 		"deleteChatTitle": "Xóa \"{name}\"?",
-		"deleteChatBody": "Cuộc trò chuyện này và tất cả tin nhắn của nó sẽ bị xóa. Không thể hoàn tác."
+		"deleteChatBody": "Cuộc trò chuyện này và tất cả tin nhắn của nó sẽ bị xóa. Không thể hoàn tác.",
+		"offline": "Ngoại tuyến"
 	},
 	"chat": {
+		"worksIn": "Làm việc trong {folder}",
 		"compactBoundary": "Đã tóm tắt cuộc trò chuyện trước đó",
 		"clearedBoundary": "Đã xóa tại đây. Các tin nhắn trước vẫn được giữ nhưng không được dùng.",
 		"goalLine": "Mục tiêu: {condition} ({turns} lượt)",
@@ -264,10 +275,15 @@
 		"goalStopped": "Đã tạm dừng mục tiêu. Hãy nói khi bạn muốn tiếp tục.",
 		"resumedActivity": "Vẫn đang làm: {tool}",
 		"waitingForYou": "Đang chờ bạn",
+		"waitingOnYou": "{name} đang chờ bạn",
+		"seeConversation": "Xem cuộc trò chuyện",
 		"waitingOnYourAnswer": "{name} đang chờ câu trả lời của bạn:",
 		"waitingOpen": "Mở",
 		"waitingAsksLabel": "Đang chờ câu trả lời của bạn",
 		"subagentStep": "{op} · bước {n}",
+		"helperWorking": "Một người trợ giúp đang làm: {what}",
+		"helpersWorking": "{n} người trợ giúp đang làm việc",
+		"moreQuestionsWaiting": "{count, plural, one {Còn 1 câu hỏi đang chờ} other {Còn # câu hỏi đang chờ}}",
 		"pending": "Đang chờ",
 		"yourAICompanion": "Đội ngũ AI của bạn",
 		"tellMeWhatYouNeed": "Hãy cho tôi biết bạn cần gì, hoặc kích hoạt một trong các nhân viên bên dưới.",
@@ -295,12 +311,13 @@
 		"messageChannel": "Tin nhắn #{channel}...",
 		"messagedCoworker": "Đã nhắn tin",
 		"disclaimer": "Nebo có thể mắc sai sót. Hãy kiểm tra lại thông tin quan trọng.",
+		"uploadsKept": "Tệp tải lên được giữ trong {days} ngày.",
 		"goodMorning": "Chào buổi sáng",
 		"goodAfternoon": "Chào buổi chiều",
 		"goodEvening": "Chào buổi tối",
 		"greetingWithName": "{greeting}, {name}",
 		"newThread": "Cuộc trò chuyện mới",
-		"work": "Work",
+		"work": "Công việc",
 		"startNewThreadWith": "Bắt đầu trò chuyện mới với {name}...",
 		"newThreadEmptyDesc": "Cuộc trò chuyện mới với {name} · ngữ cảnh sạch, khởi đầu mới.",
 		"yourEmployee": "nhân viên của bạn",
@@ -315,6 +332,8 @@
 		"installFailed": "Cài đặt thất bại — hãy thử lại.",
 		"hire": "Tuyển",
 		"hiring": "Đang tuyển…",
+		"hireCount": "Tuyển cả {count}",
+		"hiringCount": "Đang tuyển {done}/{count}…",
 		"botComputer": "Máy tính",
 		"closeComputer": "Đóng máy tính",
 		"fullView": "Xem toàn màn hình",
@@ -330,13 +349,18 @@
 		"computerUnavailableHint": "Máy tính của nhân viên chạy trên bản cài Linux và nhân viên trên đám mây.",
 		"watchingAndLearning": "{name} đang xem và học",
 		"stopRecording": "Dừng ghi",
-		"teachLocalHint": "Do the task on this screen as you normally would, then stop.",
+		"teachLocalHint": "Làm việc đó trên màn hình này như bạn vẫn làm, rồi dừng lại.",
+		"teachStarting": "Đang chuẩn bị xem màn hình của bạn…",
+		"teachNeedsScreenPermission": "Nebo cần quyền Ghi màn hình để xem bạn làm việc đó. Bật Nebo trong Cài đặt hệ thống › Quyền riêng tư & Bảo mật › Ghi màn hình, rồi thử lại.",
+		"openScreenRecordingSettings": "Mở cài đặt Ghi màn hình",
+		"openVirtualComputer": "Mở máy tính ảo",
 		"recordTask": "Ghi lại tác vụ",
 		"recording": "Đang ghi",
 		"connectFailed": "Đăng nhập chưa hoàn tất. Hãy thử lại.",
 		"connectAccountHint": "Đăng nhập đi rồi tôi làm tiếp từ chỗ đang dở.",
 		"submit": "Gửi",
 		"other": "Khác…",
+		"askedReceipt": "Đã hỏi",
 		"copyCode": "Sao chép mã",
 		"copied": "Đã sao chép!",
 		"dropFilesHere": "Thả tệp vào đây",
@@ -405,6 +429,8 @@
 		"shareNotConnected": "Kết nối với NeboAI để chia sẻ.",
 		"filesInThread": "Tệp trong trò chuyện này",
 		"nothingHereYet": "Chưa có gì ở đây",
+		"noEmployeesOneTool": "Không có nhân viên nào khớp, nhưng có 1 công cụ — xem Công cụ.",
+		"noEmployeesButTools": "Không có nhân viên nào khớp, nhưng có {count} công cụ — xem Công cụ.",
 		"workEmptyDesc": "Khi Nebo tạo báo cáo, bảng tính hoặc thiết kế, chúng sẽ xuất hiện ở đây.",
 		"closeImage": "Đóng hình ảnh",
 		"fullSize": "Kích thước đầy đủ",
@@ -429,7 +455,12 @@
 		"historyLoadFailed": "Không tải được cuộc trò chuyện này. Hãy kiểm tra kết nối và thử lại.",
 		"consentCreates": "Nói đồng ý và nhân viên sẽ được tạo với đúng công việc này.",
 		"consentAdds": "Nói đồng ý và điều này được thêm vào công việc.",
-		"fromColleague": "Từ {name}"
+		"fromColleague": "Từ {name}",
+		"storageFull": "{cap, select, none {Dung lượng lưu trữ của bạn đã đầy.} other {Dung lượng lưu trữ của bạn đã đầy ({cap}).}} Tệp tải lên sẽ bị xóa sau {days, plural, one {# ngày} other {# ngày}} kể từ khi được thêm.",
+		"storageNextFree": "Dung lượng tiếp theo sẽ được giải phóng vào {date}.",
+		"uploadFailed": "Tải tệp lên thất bại — tin nhắn chưa được gửi. {reason}",
+		"fileRemoved": "Tệp này đã bị xóa sau {days, plural, one {# ngày} other {# ngày}} kể từ khi được tải lên.",
+		"notDelivered": "Tin nhắn chưa được gửi đến. Kết nối bị ngắt, hãy gửi lại."
 	},
 	"chatInput": {
 		"placeholder": "Trả lời...",
@@ -468,7 +499,17 @@
 		"tapToInterrupt": "Chạm để ngắt",
 		"mute": "Tắt tiếng",
 		"unmute": "Bật tiếng",
-		"endConversation": "Kết thúc cuộc trò chuyện"
+		"endConversation": "Kết thúc cuộc trò chuyện",
+		"recordClip": "Ghi một đoạn",
+		"clipStarting": "Đang chờ micro",
+		"clipStop": "Dừng và đính kèm",
+		"clipLevel": "Mức âm micro",
+		"clipMicBlockedMac": "Nebo không dùng được micro của bạn. Cho phép trong Cài đặt hệ thống → Quyền riêng tư & Bảo mật → Micrô.",
+		"clipMicBlocked": "Nebo không dùng được micro của bạn. Cho phép trong cài đặt quyền riêng tư của hệ thống.",
+		"clipNoMic": "Không tìm thấy micro. Hãy kết nối một micro rồi thử lại.",
+		"clipUnsupported": "Không ghi âm được ở đây.",
+		"clipFailed": "Ghi âm không thành công. Hãy thử lại.",
+		"clipCapReached": "Bản ghi dừng ở 10 phút. Bản này đã được đính kèm."
 	},
 	"voiceDownload": {
 		"title": "Tải mô hình giọng nói",
@@ -566,7 +607,21 @@
 		"agent": "Nhân viên",
 		"command": "Lệnh",
 		"notConnected": "chưa kết nối",
-		"keyboardHint": "↑↓ điều hướng · Enter chọn · Esc hủy"
+		"keyboardHint": "↑↓ điều hướng · Enter chọn · Esc hủy",
+		"category": {
+			"session": "Phiên",
+			"model": "Mô hình",
+			"info": "Thông tin"
+		},
+		"desc": {
+			"new": "Bắt đầu cuộc trò chuyện mới",
+			"clear": "Bắt đầu lại (mọi tin nhắn vẫn được giữ)",
+			"compact": "Tóm tắt & dọn tin nhắn cũ",
+			"goal": "Tiếp tục làm cho đến khi kiểm tra xác nhận đạt trạng thái cuối",
+			"model": "Xem hoặc đổi mô hình",
+			"help": "Xem tất cả lệnh",
+			"status": "Xem trạng thái nhân viên & hệ thống"
+		}
 	},
 	"dataTable": {
 		"loading": "Đang tải...",
@@ -726,7 +781,7 @@
 			"chatDesc": "Cuộc trò chuyện, lưu trữ bộ nhớ, tác vụ theo lịch",
 			"filesystem": "Hệ thống tệp",
 			"filesystemDesc": "Đọc, ghi và chỉnh sửa tệp trên máy tính",
-			"shell": "Shell & Terminal",
+			"shell": "Shell & dòng lệnh",
 			"shellDesc": "Chạy lệnh và quản lý tiến trình",
 			"web": "Duyệt web",
 			"webDesc": "Tải trang web, tìm kiếm trên internet, tự động hóa trình duyệt",
@@ -1237,7 +1292,7 @@
 		"sessionUsage": "{percent}% đã dùng · đặt lại sau {hours}g {minutes}p",
 		"weekly": "Hàng tuần",
 		"weeklyUsage": "{percent}% đã dùng · đặt lại {date}",
-		"contextWindow": "{count} ctx",
+		"contextWindow": "{count} ngữ cảnh",
 		"notConnected": "Chưa kết nối",
 		"connectDescription": "Kết nối tài khoản NeboAI để sử dụng mô hình AI",
 		"cliProviders": "Nhà cung cấp CLI",
@@ -1777,7 +1832,17 @@
 		"toolCategories": "Nhóm công cụ",
 		"allToolCategories": "Mọi nhóm công cụ",
 		"moreEmployees": "Thêm nhân viên",
-		"moreTools": "Thêm công cụ"
+		"moreTools": "Thêm công cụ",
+		"pageTitle": "Cửa hàng - Nebo",
+		"sharedPageTitle": "Được chia sẻ - Cửa hàng - Nebo",
+		"searchPageTitle": "Tìm kiếm — Cửa hàng",
+		"resume": {
+			"byAuthor": "bởi {author}",
+			"perSeat": "mỗi người dùng",
+			"responsibilities": "Trách nhiệm",
+			"newHire": "Mới tuyển · hãy là người đầu tiên",
+			"meet": "Gặp"
+		}
 	},
 	"commander": {
 		"autoLayout": "Bố cục tự động",
@@ -1854,7 +1919,9 @@
 		"noChatsYet": "Chưa có cuộc trò chuyện nào. Hãy bắt đầu một cuộc mới.",
 		"noRunsYet": "Chưa có lượt chạy nào",
 		"appBadge": "Ứng dụng",
-		"primaryUndeletable": "Trợ lý cá nhân của bạn nhận mọi thứ không gửi cho một nhân viên cụ thể, nên không thể xóa. Hãy đổi tên trong Cài đặt nhân viên."
+		"primaryUndeletable": "Trợ lý cá nhân của bạn nhận mọi thứ không gửi cho một nhân viên cụ thể, nên không thể xóa. Hãy đổi tên trong Cài đặt nhân viên.",
+		"browseFolders": "Duyệt thư mục",
+		"browseFiles": "Duyệt tệp"
 	},
 	"agentLearning": {
 		"title": "Tự phát triển",
@@ -1871,6 +1938,7 @@
 		"viewOnly": "Cuộc trò chuyện này chỉ để xem — nhân viên nói chuyện ở đây, còn bạn chỉ đạo họ trong cuộc trò chuyện riêng của từng người"
 	},
 	"teams": {
+		"everyoneHint": "Cả nhóm",
 		"section": "Nhóm",
 		"emptyRoster": "Xếp từ hai nhân viên trở lên vào một nhóm là họ dùng chung một cuộc trò chuyện. Nhấn + để bắt đầu, hoặc nhờ bất kỳ nhân viên nào.",
 		"inTeam": "Trong nhóm này",
@@ -1945,6 +2013,9 @@
 	},
 	"agentSettings": {
 		"general": "Chung",
+		"tabWho": "Họ là ai",
+		"tabWork": "Họ làm gì",
+		"developerGroup": "Nhà phát triển",
 		"generalBlurb": "Tổng quan về nhân viên này — trạng thái, kỹ năng, quy trình và bảo trì.",
 		"identityBlurb": "Tên, giọng nói, màu sắc và trạng thái — cách nhân viên này hiển thị trong ứng dụng.",
 		"nameLabel": "Tên",
@@ -2129,6 +2200,14 @@
 		"saveCredentialsFailed": "Không thể lưu thông tin đăng nhập.",
 		"signInFailedRetry": "Đăng nhập thất bại. Vui lòng thử lại.",
 		"startSignInFailed": "Không thể bắt đầu đăng nhập cho tài khoản này.",
+		"signInPopupBlocked": "Cửa sổ đăng nhập đã bị chặn. Cho phép cửa sổ bật lên cho Nebo, rồi thử lại.",
+		"channelToggleFailed": "Không cập nhật được kênh đó. Hãy thử lại.",
+		"helpChatFailed": "Không mở được cuộc trò chuyện trợ giúp. Hãy thử lại.",
+		"accountsLoadFailed": "Không tải được tài khoản. Hãy thử lại.",
+		"accountListRefreshFailed": "Đã gắn tài khoản, nhưng danh sách chưa làm mới. Mở lại cài đặt để xem.",
+		"disconnectFailed": "Không ngắt kết nối được tài khoản đó. Hãy thử lại.",
+		"claimableLoadFailed": "Không tải được số điện thoại của bạn.",
+		"tryAgain": "Thử lại",
 		"contextTitle": "Những gì nhân viên này biết",
 		"contextDesc": "Do chính nhân viên viết ra từ lớp ngành và lớp công ty, mỗi lần một trong hai thay đổi. Họ làm việc dựa trên đây mà không phải tra cứu gì.",
 		"contextAgainst": "Viết theo {against}",
@@ -2157,7 +2236,19 @@
 		"changeInBotSettings": "Thay đổi trong Cài đặt bot",
 		"reachManage": "Quản lý",
 		"reachNoPhone": "Chưa có đường dây điện thoại.",
-		"reachNoChannels": "Chưa bật kênh nào."
+		"reachNoChannels": "Chưa bật kênh nào.",
+		"newCallTreeName": "Cây cuộc gọi mới",
+		"newWorkflowName": "Quy trình mới",
+		"greetingNodeLabel": "Lời chào",
+		"phoneLoadingNumbers": "Đang tải số của bạn…",
+		"phoneNoFreeNumbers": "Không có số nào trống để gắn. Mua một số (hoặc để sẵn một số từ nhân viên khác) tại {link}, rồi quay lại đây.",
+		"phoneWhichNumber": "Nhân viên này nên trả lời số nào?",
+		"phoneNumberParked": "đang để sẵn",
+		"phoneNumberUnassigned": "chưa gán",
+		"phoneLineName": "Tên đường dây (không bắt buộc)",
+		"phoneLineNamePlaceholder": "Lễ tân, Hỗ trợ, Đường dây tiếng Tây Ban Nha…",
+		"phoneAttaching": "Đang gắn số cho nhân viên này…",
+		"phoneAttachNumber": "Gắn số"
 	},
 	"agentConfigure": {
 		"inputs": "Đầu vào",
@@ -2234,7 +2325,10 @@
 		"factDate": "Ngày",
 		"factAttachment": "Tệp đính kèm",
 		"factVia": "Qua",
-		"interrupted": "Bị ngắt"
+		"interrupted": "Bị ngắt",
+		"tokensShort": "{count} token",
+		"underOneSecond": "<1 giây",
+		"triggerKind": "{kind, select, schedule {Lịch trình} event {Sự kiện} heartbeat {Heartbeat} manual {Thủ công} watch {Theo dõi} webhook {Webhook} call {Cuộc gọi} retry {Thử lại} other {{kind}}}"
 	},
 	"automations": {
 		"title": "Tự động hóa",
@@ -2272,7 +2366,12 @@
 		"every8h": "Mỗi 8 giờ",
 		"every24h": "Mỗi 24 giờ",
 		"everyInterval": "Mỗi {interval}",
-		"whenFires": "Khi {event} kích hoạt"
+		"whenFires": "Khi {event} kích hoạt",
+		"anEvent": "sự kiện",
+		"watching": "Theo dõi: {source}",
+		"aPlugin": "plugin",
+		"manualTrigger": "Kích hoạt thủ công",
+		"onEventNamed": "Khi có {event}"
 	},
 	"newBot": {
 		"browseMarketplace": "Duyệt cửa hàng",
@@ -2329,7 +2428,18 @@
 		"approvalGate": {
 			"batchHeadline": "{n} hành động trong một bước cần bạn phê duyệt",
 			"goalHeadline": "Thống nhất mục tiêu này? Công việc tiếp tục cho đến khi kiểm tra xác nhận đã đạt.",
-			"yourAgent": "Nhân viên của bạn"
+			"yourAgent": "Nhân viên của bạn",
+			"operation": "{action, select, create {Tạo {noun}} send {Gửi {noun}} update {Cập nhật {noun}} status {Đổi trạng thái của {noun}} apply {Áp dụng {noun}} record {Ghi nhận {noun}} schedule {Lên lịch {noun}} publish {Đăng {noun}} respond {Phản hồi {noun}} reply {Trả lời {noun}} upsert {Lưu {noun}} attach {Đính kèm {noun}} write {Ghi {noun}} remove {Xóa {noun}} other {{verb} {noun}}}",
+			"resource": {
+				"billpayment": "thanh toán hóa đơn",
+				"creditmemo": "giấy báo có",
+				"journalentry": "bút toán",
+				"purchaseorder": "đơn đặt hàng",
+				"opportunity": "thương vụ",
+				"company": "hồ sơ Công ty — cách doanh nghiệp này vận hành",
+				"industry": "hồ sơ Ngành — cách ngành nghề này hoạt động",
+				"franchise": "hồ sơ Nhượng quyền — yêu cầu của một thương hiệu"
+			}
 		},
 		"approvalModal": {
 			"runShellCommand": "Chạy lệnh shell",
@@ -2446,7 +2556,20 @@
 		"narrowSat": "B",
 		"pageTitle": "Lịch trình - Nebo",
 		"perWeek": "{count}/tuần",
-		"workflowBuilderTitle": "{name} — Trình dựng quy trình"
+		"workflowBuilderTitle": "{name} — Trình dựng quy trình",
+		"everyDay": "Mỗi ngày",
+		"weekends": "Cuối tuần",
+		"weekdayPlural": "{day, select, sun {Chủ nhật} mon {Thứ Hai} tue {Thứ Ba} wed {Thứ Tư} thu {Thứ Năm} fri {Thứ Sáu} sat {Thứ Bảy} other {{day}}}",
+		"clockTime": "{hour}:{minute} {period}",
+		"hourOnly": "{hour} {period}",
+		"midnight": "Nửa đêm",
+		"cronEveryMinutes": "{n, plural, one {Mỗi phút} other {Mỗi # phút}}",
+		"cronEveryHours": "{n, plural, one {Mỗi giờ} other {Mỗi # giờ}}",
+		"cronEveryHoursAt": "{n, plural, one {Mỗi giờ vào phút :{minute}} other {Mỗi # giờ vào phút :{minute}}}",
+		"cronDailyAt": "Mỗi ngày lúc {time}",
+		"cronDaysAt": "{days} lúc {time}",
+		"cronMonthlyAt": "Hằng tháng vào ngày {day, selectordinal, other {#}} lúc {time}",
+		"listSeparator": ", "
 	},
 	"neboShell": {
 		"tabs": {
@@ -2491,7 +2614,26 @@
 	},
 	"userMenu": {
 		"aboutNebo": "Giới thiệu Nebo",
-		"planSuffix": "Gói {plan}"
+		"planSuffix": "Gói {plan}",
+		"provideFeedback": "Gửi góp ý"
+	},
+	"feedback": {
+		"title": "Gửi góp ý",
+		"lede": "Cho đội NeboAI biết điều gì đang ổn, điều gì chưa, hoặc bạn muốn có gì.",
+		"message": "Nội dung",
+		"screenshots": "Ảnh chụp màn hình hoặc ảnh (không bắt buộc)",
+		"addScreenshot": "Thêm ảnh chụp màn hình",
+		"remove": "Xóa {name}",
+		"diagnostics": "Kèm thông tin chẩn đoán",
+		"diagnosticsHelp": "Phiên bản ứng dụng và bot, nền tảng, ID bot và màn hình này. Không bao giờ có mật khẩu hay token đăng nhập.",
+		"send": "Gửi",
+		"sending": "Đang gửi",
+		"sent": "Cảm ơn — đã gửi tới đội NeboAI.",
+		"failed": "Không gửi được góp ý của bạn. Hãy thử lại.",
+		"needMessage": "Hãy viết nội dung trước.",
+		"messageTooLong": "Giữ nội dung dưới {max} ký tự.",
+		"tooManyScreenshots": "Đính kèm tối đa {max, plural, one {# ảnh chụp màn hình} other {# ảnh chụp màn hình}}.",
+		"imagesOnly": "Chỉ có thể đính kèm hình ảnh."
 	},
 	"workflowCanvas": {
 		"noWorkflows": "Không có quy trình nào để hiển thị",
@@ -2632,7 +2774,18 @@
 		"gettingReady": "Đang chuẩn bị {name}…",
 		"skillsAndTools": "Kỹ năng và công cụ",
 		"hireFailedTitle": "Không thể hoàn tất việc tuyển",
-		"hireFailed": "Chưa tuyển được {name}. Hãy thử lại."
+		"hireFailed": "Chưa tuyển được {name}. Hãy thử lại.",
+		"codeStatus": {
+			"nebo": "Đang kết nối với NeboAI…",
+			"skill": "Đang cài kỹ năng…",
+			"workflow": "Đang cài quy trình…",
+			"agent": "Đang cài nhân viên…",
+			"loop": "Đang tham gia loop…",
+			"plugin": "Đang cài plugin…",
+			"app": "Đang cài ứng dụng…",
+			"collection": "Đang cài bộ sưu tập…",
+			"connection": "Đang thêm kết nối MCP…"
+		}
 	},
 	"activity": {
 		"pageTitle": "Hoạt động - Nebo",
@@ -2651,7 +2804,8 @@
 		"openAppHint": "Mở ứng dụng",
 		"openApp": "Mở ứng dụng",
 		"runs": "Lượt chạy",
-		"memory": "Ký ức"
+		"memory": "Ký ức",
+		"appError": "Lỗi ứng dụng ({status})"
 	},
 	"pricing": {
 		"pageTitle": "Chọn gói của bạn - Nebo",
@@ -2776,8 +2930,8 @@
 		"oauthNote": "Máy chủ này dùng OAuth. Bạn sẽ được chuyển hướng để ủy quyền sau khi thêm.",
 		"preRegisteredTitle": "Ứng dụng khách đã đăng ký trước (tùy chọn)",
 		"preRegisteredHint": "Dành cho máy chủ không hỗ trợ đăng ký tự động (ví dụ API của Google) — hãy dán ứng dụng khách OAuth bạn tạo ở nhà cung cấp đó.",
-		"oauthClientId": "Client ID",
-		"oauthClientSecret": "Client Secret",
+		"oauthClientId": "ID ứng dụng khách",
+		"oauthClientSecret": "Khóa bí mật ứng dụng khách",
 		"oauthScopes": "Phạm vi",
 		"oauthScopesPlaceholder": "phạm-vi-một phạm-vi-hai (cách nhau bằng dấu cách)",
 		"oauthAuthEndpoint": "Điểm cuối cấp quyền",
@@ -2811,7 +2965,10 @@
 		"checkEvery": "Kiểm tra mỗi",
 		"hours6": "6 giờ",
 		"history": "Lịch sử",
-		"title": "Cập nhật công cụ"
+		"title": "Cập nhật công cụ",
+		"onLatest": "Bạn đang dùng phiên bản mới nhất",
+		"checkFailed": "Không thể kiểm tra cập nhật",
+		"updateFailed": "Cập nhật thất bại"
 	},
 	"inbox": {
 		"title": "Hộp thư đến",
@@ -2842,15 +2999,27 @@
 		"failedAt": "Thất bại ở \"{activity}\"",
 		"steps": "Đang làm gì",
 		"output": "Kết quả",
-		"recordGone": "Bản ghi lượt chạy đó không còn nữa. Nó bị xóa cùng nhân viên sở hữu nó, nên chỉ còn lại thông báo này."
+		"recordGone": "Bản ghi lượt chạy đó không còn nữa. Nó bị xóa cùng nhân viên sở hữu nó, nên chỉ còn lại thông báo này.",
+		"revert": "Hoàn tác",
+		"reverted": "Đã hoàn tác"
 	},
 	"voice": {
 		"startConversation": "Trò chuyện bằng giọng nói",
+		"reconnecting": "Đang vào lại cuộc gọi…",
 		"consentTitle": "Giọng nói sử dụng dịch vụ đám mây",
 		"consentBody": "Trò chuyện bằng giọng nói truyền âm thanh micrô của bạn đến một dịch vụ giọng nói trên đám mây để xử lý khi cuộc gọi đang diễn ra. Âm thanh rời khỏi máy tính này. Nhập văn bản trong trò chuyện vẫn cục bộ như trước.",
 		"consentAccept": "Bật giọng nói",
 		"consentDecline": "Để sau",
-		"cloudIndicator": "Âm thanh đang được truyền lên đám mây"
+		"cloudIndicator": "Âm thanh đang được truyền lên đám mây",
+		"talkTo": "Nói chuyện với {name}",
+		"isSpeaking": "{name} đang nói",
+		"callEnded": "Cuộc gọi đã kết thúc.",
+		"tryAgain": "Thử lại",
+		"onAnotherCall": "Đang gọi với một nhân viên khác",
+		"callLost": "Cuộc gọi bị ngắt và không thể vào lại. Hãy bắt đầu lại.",
+		"callEndedStartAgain": "Cuộc gọi đã kết thúc. Hãy bắt đầu lại.",
+		"needsConsent": "Trò chuyện bằng giọng nói gửi âm thanh từ micro của bạn tới một dịch vụ giọng nói trên đám mây để xử lý. Bật trong bảng giọng nói để đồng ý.",
+		"startFailed": "Không thể bắt đầu cuộc gọi. Hãy thử lại."
 	},
 	"flows": {
 		"none": "Chưa có luồng nào",
@@ -2865,7 +3034,15 @@
 		"overlapBufferOne": "Chạy một lần khi nó xong",
 		"overlapAllowAll": "Vẫn chạy",
 		"deleteReminderTitle": "Xóa \"{name}\"?",
-		"deleteReminderBody": "Tác vụ theo lịch này sẽ ngừng chạy và bị xóa. Các lượt chạy trước vẫn nằm trong lịch sử."
+		"deleteReminderBody": "Tác vụ theo lịch này sẽ ngừng chạy và bị xóa. Các lượt chạy trước vẫn nằm trong lịch sử.",
+		"triggerOnEvent": "Khi có {event}",
+		"triggerWatch": "Theo dõi: {target}",
+		"triggerWatchPlugin": "Theo dõi: plugin",
+		"triggerManual": "Kích hoạt thủ công",
+		"scheduleTooSpecific": "Lịch trình này chi tiết hơn mức trình soạn thảo đơn giản có thể hiển thị",
+		"askSetupPrompt": "Thiết lập một luồng mới cho tôi: ",
+		"everyNHours": "Mỗi N giờ",
+		"everyNMinutes": "Mỗi N phút"
 	},
 	"christen": {
 		"title": "Đặt tên cho nhân viên đầu tiên của bạn",
@@ -2887,7 +3064,27 @@
 		"working": "Đang xác định họ sẽ cần gì…",
 		"willDo": "{name} sẽ:",
 		"thisEmployee": "Nhân viên này",
-		"removeItem": "Bỏ {item}"
+		"removeItem": "Bỏ {item}",
+		"hireFromApps": "Tuyển từ ứng dụng khác",
+		"linkedLede": "Họ tiếp tục làm việc trên máy tính mà họ đang chạy.",
+		"thisComputer": "Máy tính này",
+		"offline": "Ngoại tuyến",
+		"linkedFailed": "Không tuyển được từ {bot}. Hãy thử lại.",
+		"onYourTeam": "Trong nhóm của bạn",
+		"linkedLooking": "Đang tìm ứng dụng…",
+		"linkedHireNew": "Tuyển người mới",
+		"linkedConnect": "Kết nối agent của bạn",
+		"linkedRunning": "{count} đang chạy",
+		"nameYour": "Đặt tên cho {app} của bạn",
+		"youAlreadyHave": "Bạn đã có:",
+		"nameTaken": "Bạn đã có một nhân viên tên {name}.",
+		"linkedWhere": "Nó nên làm việc trên máy tính nào?",
+		"linkedPickAgent": "Agent {app} nào?",
+		"linkedModeTitle": "Nó được làm gì mà không cần hỏi?",
+		"linkedModeAutomaticDesc": "Tự sửa tệp trong thư mục của nó. Hỏi trước mọi việc khác.",
+		"linkedModeAskDesc": "Hỏi bạn trước khi thay đổi bất cứ thứ gì.",
+		"linkedModePlanDesc": "Đọc và lên kế hoạch. Không thay đổi gì.",
+		"linkedModeFullAccessDesc": "Chạy mọi thứ trên máy tính này mà không cần hỏi."
 	},
 	"runLimit": {
 		"title": "Hạn mức chi mỗi lượt chạy",
@@ -3101,5 +3298,526 @@
 		"unreviewed": "Chưa xem xét",
 		"loadMore": "Xem thêm",
 		"addJobEdit": "Thêm vào công việc"
+	},
+	"workflow": {
+		"addNode": "Thêm nút",
+		"deleteNode": "Xóa nút",
+		"deleteWorkflow": "Xóa quy trình",
+		"removeItem": "Xóa {name}",
+		"activityCount": "{count, plural, one {# hoạt động} other {# hoạt động}}",
+		"stepCount": "{count, plural, one {# bước} other {# bước}}",
+		"triggerTypes": {
+			"schedule": "Lịch trình",
+			"heartbeat": "Heartbeat",
+			"event": "Sự kiện",
+			"watch": "Theo dõi",
+			"manual": "Thủ công"
+		},
+		"branch": {
+			"true": "Đúng",
+			"false": "Sai",
+			"eachItem": "Từng mục",
+			"done": "Xong"
+		},
+		"types": {
+			"greeting": {
+				"label": "Lời chào",
+				"description": "Điều đường dây này nói khi trả lời",
+				"params": {
+					"text": {
+						"label": "Lời chào",
+						"description": "Được đọc nguyên văn khi cuộc gọi kết nối.",
+						"placeholder": "Cảm ơn bạn đã gọi Nha khoa Miller! Tôi có thể giúp gì?"
+					}
+				}
+			},
+			"intent": {
+				"label": "Ý định",
+				"description": "Một việc mà đường dây này xử lý, cùng các công cụ được phép",
+				"params": {
+					"name": {
+						"label": "Tên ý định",
+						"description": "ID ngắn mà bộ định tuyến dùng (duy nhất trong mỗi cây)."
+					},
+					"description": {
+						"label": "Khi người gọi muốn điều này",
+						"placeholder": "Người gọi muốn đặt, đổi hoặc hủy lịch hẹn"
+					},
+					"tools": {
+						"label": "Công cụ được phép",
+						"description": "Các quyền tool:resource, phân tách bằng dấu phẩy, chỉ cho ý định này."
+					},
+					"workflows": {
+						"label": "Quy trình được phép",
+						"description": "Tên các quy trình của nhân viên này mà ý định được phép chạy, phân tách bằng dấu phẩy."
+					},
+					"plugins": {
+						"label": "Plugin được phép",
+						"description": "Slug plugin, phân tách bằng dấu phẩy."
+					},
+					"mcp": {
+						"label": "Máy chủ MCP được phép",
+						"description": "Tên các máy chủ MCP đã kết nối, phân tách bằng dấu phẩy."
+					}
+				}
+			},
+			"transfer": {
+				"label": "Chuyển cho người thật",
+				"description": "Chuyển trực tiếp tới số chuyển tiếp của đường dây",
+				"params": {
+					"when": {
+						"label": "Khi nào chuyển",
+						"placeholder": "Người gọi muốn gặp người thật, đang bực bội hoặc gặp tình huống khẩn cấp"
+					},
+					"to": {
+						"label": "Kết nối tới",
+						"description": "Người gọi được báo là đang được kết nối tới ai. Bản thân số điện thoại vẫn nằm trong cài đặt đường dây.",
+						"placeholder": "quản lý văn phòng của chúng tôi"
+					}
+				}
+			},
+			"takeMessage": {
+				"label": "Nhận lời nhắn",
+				"description": "Ghi lại lời nhắn cho chủ (phương án dự phòng)",
+				"params": {
+					"fields": {
+						"label": "Cần ghi lại gì",
+						"placeholder": "tên, số điện thoại, lý do gọi, thời điểm tiện gọi lại"
+					}
+				}
+			},
+			"disclosures": {
+				"label": "Được chia sẻ",
+				"description": "Thông tin đường dây này nói thẳng, không cần tra cứu",
+				"params": {
+					"text": {
+						"label": "Thông tin đã duyệt",
+						"description": "Các thông tin công khai được chủ duyệt cho đường dây này — giờ mở cửa, địa chỉ, khu vực phục vụ, giá cơ bản. Không bao giờ liệt kê thông tin riêng của khách hàng hay tài khoản ở đây; những thông tin đó phải qua tra cứu.",
+						"placeholder": "Mở cửa T2–T6, 8–17 giờ. Địa chỉ 123 Main St. Cạo vôi răng từ $120."
+					}
+				}
+			},
+			"custom": {
+				"label": "Tùy chỉnh",
+				"description": "Tự định nghĩa các bước và kỹ năng"
+			},
+			"research": {
+				"label": "Nghiên cứu",
+				"description": "Tìm kiếm web, phân tích và tổng hợp",
+				"params": {
+					"depth": {
+						"label": "Độ sâu nghiên cứu",
+						"options": {
+							"quick": "Nhanh (2-5 phút)",
+							"standard": "Tiêu chuẩn (5-10 phút)",
+							"deep": "Chuyên sâu (10-20 phút)"
+						}
+					},
+					"sources": {
+						"label": "Loại nguồn",
+						"description": "Các loại nguồn cần tìm, phân tách bằng dấu phẩy",
+						"placeholder": "web, học thuật, tin tức"
+					}
+				}
+			},
+			"email": {
+				"label": "Gửi email",
+				"description": "Soạn và gửi email",
+				"params": {
+					"to": {
+						"label": "Đến",
+						"description": "Địa chỉ email người nhận (hoặc dùng dữ liệu từ bước trước)"
+					},
+					"subject": {
+						"label": "Mẫu tiêu đề"
+					}
+				}
+			},
+			"notify": {
+				"label": "Thông báo",
+				"description": "Gửi thông báo tới một kênh",
+				"params": {
+					"channel": {
+						"label": "Kênh",
+						"options": {
+							"email": "Email",
+							"webhook": "Webhook"
+						}
+					},
+					"target": {
+						"label": "Đích",
+						"description": "Tên kênh, email hoặc URL webhook",
+						"placeholder": "#general hoặc user@example.com"
+					}
+				}
+			},
+			"code": {
+				"label": "Chạy mã",
+				"description": "Thực thi một đoạn mã",
+				"params": {
+					"language": {
+						"label": "Ngôn ngữ"
+					},
+					"code": {
+						"label": "Mã",
+						"description": "Mã cần thực thi"
+					}
+				}
+			},
+			"condition": {
+				"label": "Điều kiện",
+				"description": "Rẽ nhánh nếu/không thì",
+				"params": {
+					"expression": {
+						"label": "Biểu thức điều kiện",
+						"description": "Biểu thức JavaScript — giá trị truthy đi nhánh Đúng, falsy đi nhánh Sai"
+					},
+					"mode": {
+						"label": "Chế độ đánh giá",
+						"options": {
+							"expression": "Biểu thức",
+							"contains": "Dữ liệu chứa",
+							"exists": "Trường tồn tại",
+							"regex": "Khớp regex"
+						}
+					}
+				}
+			},
+			"loop": {
+				"label": "Vòng lặp",
+				"description": "Lặp qua một danh sách mục",
+				"params": {
+					"source": {
+						"label": "Nguồn mục",
+						"description": "Đường dẫn tới mảng cần lặp",
+						"placeholder": "data.items hoặc data.emails"
+					},
+					"maxIterations": {
+						"label": "Số lần lặp tối đa",
+						"description": "Giới hạn an toàn để tránh lặp vô hạn"
+					}
+				}
+			},
+			"wait": {
+				"label": "Chờ",
+				"description": "Tạm dừng thực thi",
+				"params": {
+					"duration": {
+						"label": "Thời gian chờ",
+						"options": {
+							"5s": "5 giây",
+							"30s": "30 giây",
+							"1m": "1 phút",
+							"5m": "5 phút",
+							"15m": "15 phút",
+							"1h": "1 giờ",
+							"custom": "Tùy chỉnh"
+						}
+					},
+					"waitUntil": {
+						"label": "Hoặc chờ đến khi",
+						"description": "Tiếp tục khi sự kiện này xảy ra (để trống nếu chờ theo thời gian)",
+						"placeholder": "vd. event:approval.received"
+					}
+				}
+			},
+			"agent": {
+				"label": "Nhân viên",
+				"description": "Giao cho một nhân viên khác",
+				"params": {
+					"agentId": {
+						"label": "Nhân viên",
+						"description": "Nhân viên nhận việc này"
+					},
+					"instructions": {
+						"label": "Hướng dẫn",
+						"description": "Thay thế hoặc bổ sung vai trò mặc định của nhân viên",
+						"placeholder": "Hướng dẫn cụ thể cho nhân viên được giao..."
+					}
+				}
+			},
+			"connector": {
+				"label": "Trình kết nối",
+				"description": "Dùng một tích hợp MCP",
+				"params": {
+					"serverId": {
+						"label": "Máy chủ MCP",
+						"description": "Máy chủ MCP đã kết nối cần dùng"
+					},
+					"tool": {
+						"label": "Công cụ",
+						"description": "Công cụ cần gọi trên máy chủ MCP",
+						"placeholder": "vd. read_file, send_message"
+					},
+					"input": {
+						"label": "Đầu vào",
+						"description": "Đầu vào JSON cho công cụ (hỗ trợ mẫu '{{'data.field'}}')"
+					}
+				}
+			},
+			"http": {
+				"label": "Yêu cầu HTTP",
+				"description": "Gọi một API HTTP",
+				"params": {
+					"method": {
+						"label": "Phương thức"
+					},
+					"url": {
+						"label": "URL"
+					},
+					"body": {
+						"label": "Nội dung yêu cầu",
+						"description": "Nội dung JSON cho yêu cầu POST/PUT/PATCH"
+					},
+					"headers": {
+						"label": "Header",
+						"description": "Mỗi dòng một header (key: value)"
+					}
+				}
+			},
+			"decide": {
+				"label": "Quyết định",
+				"description": "Phân loại hoặc đánh giá dữ liệu bằng các câu hỏi có kiểu",
+				"params": {
+					"state": {
+						"label": "Trạng thái",
+						"description": "Đường dẫn dữ liệu cần đánh giá (inputs.*, item, nodes.'<'id>.*)"
+					},
+					"questions": {
+						"label": "Câu hỏi",
+						"description": "Đối tượng JSON gồm các câu hỏi có kiểu (choice, score, noul). Nút điều kiện định tuyến theo nodes.'<'id>.'<'question>.choice và .confidence"
+					},
+					"default": {
+						"label": "Câu trả lời mặc định",
+						"description": "Câu trả lời dùng khi không thể quyết định: một lựa chọn cho choice, một mức cho score, true hoặc false cho noul. Khi đó nút sẽ đặt nodes.'<'id>.defaulted"
+					}
+				}
+			},
+			"transform": {
+				"label": "Biến đổi",
+				"description": "Định dạng lại hoặc lọc dữ liệu",
+				"params": {
+					"operation": {
+						"label": "Thao tác",
+						"options": {
+							"map": "Map — biến đổi từng mục",
+							"filter": "Filter — giữ các mục khớp",
+							"reduce": "Reduce — gộp thành một giá trị",
+							"pick": "Pick — trích các trường cụ thể",
+							"template": "Template — định dạng thành văn bản"
+						}
+					},
+					"expression": {
+						"label": "Biểu thức",
+						"description": "Biểu thức biến đổi"
+					}
+				}
+			}
+		},
+		"catalog": {
+			"searchPlaceholder": "Tìm nút...",
+			"noMatch": "Không có nút nào khớp “{query}”",
+			"toolsAvailable": "{count, plural, one {Có # công cụ} other {Có # công cụ}}",
+			"categories": {
+				"triggers": "Kích hoạt",
+				"activities": "Hoạt động",
+				"callTree": "Cây cuộc gọi",
+				"flowControl": "Điều khiển luồng",
+				"connectors": "Trình kết nối (MCP)",
+				"agents": "Nhân viên",
+				"output": "Đầu ra"
+			},
+			"items": {
+				"triggerSchedule": {
+					"label": "Lịch trình",
+					"desc": "Chạy vào thời điểm định sẵn"
+				},
+				"triggerEvent": {
+					"label": "Sự kiện",
+					"desc": "Phản ứng với sự kiện"
+				},
+				"triggerHeartbeat": {
+					"label": "Heartbeat",
+					"desc": "Chạy theo chu kỳ"
+				},
+				"triggerManual": {
+					"label": "Thủ công",
+					"desc": "Chạy khi cần"
+				},
+				"activityCustom": {
+					"label": "Hoạt động tùy chỉnh",
+					"desc": "Định nghĩa các bước và kỹ năng"
+				},
+				"activityResearch": {
+					"label": "Nghiên cứu",
+					"desc": "Tìm kiếm web và phân tích"
+				},
+				"activityEmail": {
+					"label": "Gửi email",
+					"desc": "Soạn và gửi email"
+				},
+				"activityNotify": {
+					"label": "Thông báo",
+					"desc": "Gửi thông báo"
+				},
+				"activityCode": {
+					"label": "Chạy mã",
+					"desc": "Thực thi một đoạn mã"
+				},
+				"activityHttp": {
+					"label": "Yêu cầu HTTP",
+					"desc": "Gọi một API"
+				},
+				"activityDecide": {
+					"label": "Quyết định",
+					"desc": "Phân loại hoặc đánh giá dữ liệu"
+				},
+				"activityTransform": {
+					"label": "Biến đổi",
+					"desc": "Định dạng lại hoặc lọc dữ liệu"
+				},
+				"activityGreeting": {
+					"label": "Lời chào",
+					"desc": "Điều đường dây nói khi trả lời"
+				},
+				"activityIntent": {
+					"label": "Ý định",
+					"desc": "Một việc + các công cụ được phép"
+				},
+				"activityTransfer": {
+					"label": "Chuyển cho người thật",
+					"desc": "Chuyển trực tiếp — ghi rõ kết nối tới ai"
+				},
+				"activityTakeMessage": {
+					"label": "Nhận lời nhắn",
+					"desc": "Ghi lại lời nhắn (phương án dự phòng)"
+				},
+				"activityDisclosures": {
+					"label": "Được chia sẻ",
+					"desc": "Thông tin đường dây này nói thẳng (giờ mở cửa, địa chỉ, giá)"
+				},
+				"flowCondition": {
+					"label": "Điều kiện",
+					"desc": "Rẽ nhánh nếu/không thì"
+				},
+				"flowLoop": {
+					"label": "Vòng lặp",
+					"desc": "Lặp qua các mục"
+				},
+				"flowWait": {
+					"label": "Chờ",
+					"desc": "Tạm dừng hoặc chờ sự kiện"
+				},
+				"emit": {
+					"label": "Phát sự kiện",
+					"desc": "Thông báo sự kiện hoàn tất"
+				}
+			}
+		},
+		"eventSources": {
+			"label": "Nguồn sự kiện",
+			"searchPlaceholder": "Nhập để tìm nguồn...",
+			"hint": "Nhập để tìm các nguồn đã biết, Enter để thêm. Tên tùy chỉnh và ký tự đại diện (email.*) cũng dùng được."
+		},
+		"flow": {
+			"triggerManual": "Chạy khi bạn bắt đầu",
+			"triggerSchedule": "Theo lịch trình",
+			"triggerEventAny": "Khi có sự kiện xảy ra",
+			"triggerWatch": "Đang theo dõi {name}",
+			"triggerWatchAny": "Đang theo dõi một plugin",
+			"applying": "Đang áp dụng…",
+			"go": "Chạy",
+			"tellAi": "Cho AI biết cần thay đổi gì",
+			"tellAiEllipsis": "Cho AI biết cần thay đổi gì…",
+			"badgeExact": "chính xác",
+			"badgeAgent": "nhân viên",
+			"emptyCode": "(trống)",
+			"stepPlaceholder": "Bước này nên làm gì?",
+			"changeStep": "Thay đổi “{name}”…",
+			"forEach": "Với mỗi {item}",
+			"loopItemDefault": "mục",
+			"loopEmpty": "Vòng lặp này chưa có gì.",
+			"pathDefault": "nhánh",
+			"pathEmpty": "Nhánh trống",
+			"addStepHere": "Thêm bước ở đây",
+			"connected": "{name} đã kết nối",
+			"notConnected": "{name} chưa kết nối — luồng này sẽ thất bại",
+			"connect": "Kết nối",
+			"describeFlowChange": "Mô tả thay đổi cho toàn bộ luồng này…",
+			"edit": "sửa",
+			"emits": "phát ra",
+			"noSteps": "Luồng này chưa có bước nào."
+		},
+		"panel": {
+			"backToOverview": "Quay lại tổng quan quy trình",
+			"intent": "Ý định",
+			"addSkill": "Thêm kỹ năng...",
+			"parameters": "Tham số",
+			"addStep": "Thêm bước...",
+			"manualHint": "Chỉ chạy khi được kích hoạt thủ công.",
+			"notConfigured": "Chưa cấu hình",
+			"noEventConfigured": "Chưa cấu hình sự kiện",
+			"noDescription": "Chưa có mô tả",
+			"emitPlaceholder": "vd. {name}",
+			"emitOptional": "Không bắt buộc — các quy trình khác có thể kích hoạt theo sự kiện này khi lượt chạy hoàn tất.",
+			"useEmit": "Dùng {name}",
+			"emitRenameWarning": "Đổi tên sẽ làm hỏng các quy trình đang đăng ký sự kiện này.",
+			"none": "Không có",
+			"apiEndpoint": "Endpoint API",
+			"apiEndpointHint": "Tạo khóa cho quy trình này trong Cài đặt → Webhook của nhân viên."
+		},
+		"schedule": {
+			"weekends": "Cuối tuần",
+			"custom": "Tùy chỉnh",
+			"daysOfWeek": "Các ngày trong tuần",
+			"monthly": "Hằng tháng",
+			"biannual": "Mỗi 6 tháng",
+			"yearly": "Hằng năm",
+			"onDay": "vào ngày",
+			"biannualNote": "Chạy vào ngày {day} {firstMonth} và ngày {day} {secondMonth}.",
+			"shortMonthsSkipped": "Các tháng không có ngày {day} sẽ bị bỏ qua.",
+			"limitToHours": "Giới hạn theo giờ",
+			"rangeTo": "đến"
+		},
+		"watch": {
+			"plugin": "Plugin",
+			"choosePlugin": "Chọn một plugin…",
+			"whenItReports": "Khi nó báo",
+			"chooseEvent": "Chọn một sự kiện…",
+			"hint": "Chạy mỗi khi {plugin} báo {event}; các luồng khác cũng có thể lắng nghe {plugin}.{event}."
+		},
+		"validation": {
+			"emptyId": "Hoạt động trong “{workflow}” có ID trống",
+			"duplicateId": "ID hoạt động “{id}” bị trùng trong “{workflow}”",
+			"conditionExpression": "Điều kiện “{id}” cần một biểu thức — định tuyến là xác định, không bao giờ do AI quyết định",
+			"loopSource": "Vòng lặp “{id}” cần một nguồn dữ liệu (vd. inputs.items)",
+			"httpUrl": "Nút HTTP “{id}” cần một URL",
+			"decideQuestions": "Nút Quyết định “{id}” cần câu hỏi (một đối tượng JSON gồm các câu hỏi có kiểu)",
+			"waitDuration": "Nút Chờ “{id}” cần thời gian chờ",
+			"needsIntent": "Hoạt động “{id}” trong “{workflow}” cần một ý định hoặc các bước",
+			"targetsTrigger": "Một kết nối trỏ tới nút kích hoạt",
+			"leavesEmit": "Một kết nối đi ra từ nút phát sự kiện",
+			"unknownFrom": "Kết nối từ nút không xác định “{id}”",
+			"unknownTo": "Kết nối tới nút không xác định “{id}”",
+			"duplicateConnection": "Kết nối {from} → {to} bị trùng",
+			"labeledNonBranching": "Cạnh có nhãn “{label}” đi ra từ nút không rẽ nhánh “{id}”",
+			"unlabeledBranch": "Các cạnh đi ra từ “{id}” phải có nhãn nhánh",
+			"cycle": "Đồ thị có chu trình (chỉ thân Từng mục của một vòng lặp mới được quay về vòng lặp đó)"
+		},
+		"builder": {
+			"unsavedConfirm": "Bạn có thay đổi chưa lưu. Bỏ và đóng?",
+			"workflowLabel": "{name} ({count, plural, one {# hoạt động} other {# hoạt động}})",
+			"undo": "Hoàn tác (Cmd+Z)",
+			"redo": "Làm lại (Cmd+Shift+Z)",
+			"issueCount": "{count, plural, one {# vấn đề} other {# vấn đề}}",
+			"discard": "Bỏ",
+			"hideDetails": "Ẩn bảng chi tiết",
+			"showDetails": "Hiện bảng chi tiết",
+			"newWorkflowTitle": "Quy trình mới",
+			"empty": "Chưa có quy trình — tạo một quy trình để bắt đầu",
+			"newWorkflow": "Quy trình mới",
+			"confirmDeleteWorkflow": "Bạn có chắc muốn xóa quy trình này? Mọi hoạt động và kết nối của nó sẽ bị xóa.",
+			"confirmDeleteNode": "Bạn có chắc muốn xóa nút này? Các kết nối của nó sẽ được tự động nối lại."
+		}
 	}
 }

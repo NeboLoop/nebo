@@ -97,7 +97,7 @@
               {#each detailRows as row (row.label)}
                 <div class="flex items-center justify-between gap-4 px-3 py-2">
                   <span class="text-xs text-base-content/60">{row.label}</span>
-                  <span class="text-sm font-medium text-base-content text-right break-all">{row.value}</span>
+                  <span class="text-sm font-medium text-base-content text-end break-all">{row.value}</span>
                 </div>
               {/each}
             </div>

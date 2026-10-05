@@ -2,7 +2,9 @@
   import { goto } from '$lib/nav';
   import { storage } from '$lib/storage';
   import { onMount } from 'svelte';
-  import { t } from 'svelte-i18n';
+  import { t, locale } from 'svelte-i18n';
+  import { get } from 'svelte/store';
+  import { LANGUAGES, setLanguage } from '$lib/i18n';
   import BrandMark from '$lib/components/BrandMark.svelte';
   import { completeOnboarding } from '$lib/stores/onboarding';
   import { logger } from '$lib/monitoring';
@@ -29,7 +31,7 @@
   let termsAccepted = $state(false);
   let confirmText = $state('');
   const canConfirm = $derived(termsAccepted && confirmText === 'ENABLE');
-  let selectedLocale = $state('en');
+  let selectedLocale = $state(get(locale) ?? 'en');
 
   /** Full Access: modal only when enabling. Turning off is immediate.
    *  Implemented as a button (not checkbox) so DaisyUI/browser checkbox
@@ -190,21 +192,16 @@
     if (SHOW_LANGUAGE_STEP) {
       step = 1;
     } else {
-      // Skip language step; persist default locale
-      storage.set('nebo_locale', 'en');
-      try { await api.userUpdatePreferences({ language: 'en' }); } catch {}
+      // Skip language step; keep the language the app opened in (the
+      // owner's system language when Nebo speaks it, else English).
+      await setLanguage(get(locale) ?? 'en');
       step = 2;
     }
   }
 
-  // Save language preference via backend
+  // Keep the chosen language (this install and the server)
   async function saveLocale() {
-    storage.set('nebo_locale', selectedLocale);
-    try {
-      await api.userUpdatePreferences({ language: selectedLocale });
-    } catch {
-      logger.warn('Failed to save language preference to backend');
-    }
+    await setLanguage(selectedLocale);
     step = 2;
   }
 
@@ -301,33 +298,7 @@
     ? ['Welcome', 'Language', 'Connect', 'Permissions', 'Done']
     : ['Welcome', 'Connect', 'Permissions', 'Done'];
 
-  const languages = [
-    { code: 'en', label: 'English' },
-    { code: 'de', label: 'Deutsch' },
-    { code: 'es', label: 'Español' },
-    { code: 'fr', label: 'Français' },
-    { code: 'it', label: 'Italiano' },
-    { code: 'pt', label: 'Português' },
-    { code: 'pt-BR', label: 'Português (Brasil)' },
-    { code: 'nl', label: 'Nederlands' },
-    { code: 'sv', label: 'Svenska' },
-    { code: 'pl', label: 'Polski' },
-    { code: 'tr', label: 'Türkçe' },
-    { code: 'ru', label: 'Русский' },
-    { code: 'uk', label: 'Українська' },
-    { code: 'ar', label: 'العربية' },
-    { code: 'he', label: 'עברית' },
-    { code: 'hi', label: 'हिन्दी' },
-    { code: 'bn', label: 'বাংলা' },
-    { code: 'th', label: 'ไทย' },
-    { code: 'vi', label: 'Tiếng Việt' },
-    { code: 'id', label: 'Bahasa Indonesia' },
-    { code: 'ms', label: 'Bahasa Melayu' },
-    { code: 'ja', label: '日本語' },
-    { code: 'ko', label: '한국어' },
-    { code: 'zh-CN', label: '简体中文' },
-    { code: 'zh-TW', label: '繁體中文' },
-  ];
+  const languages = LANGUAGES;
 </script>
 
 <svelte:head><title>{$t('onboarding.welcome.title')}</title></svelte:head>
@@ -357,7 +328,7 @@
     <h2 class="text-2xl font-bold mb-2">{$t('onboarding.welcome.title')}</h2>
     <p class="text-xs text-base-content/50 mb-6 max-w-sm mx-auto">{$t('onboardingPage.welcomeDescription')}</p>
 
-    <div class="max-w-sm mx-auto rounded-xl border border-base-300 bg-base-200/30 p-4 mb-8 text-left">
+    <div class="max-w-sm mx-auto rounded-xl border border-base-300 bg-base-200/30 p-4 mb-8 text-start">
       <div class="flex items-start gap-3">
         <Shield class="w-5 h-5 text-warning shrink-0 mt-0.5" />
         <div class="flex-1 min-w-0">
@@ -399,6 +370,7 @@
           class="py-2 px-1 rounded-lg text-xs font-medium cursor-pointer border transition-colors truncate {selectedLocale === lang.code
             ? 'bg-primary text-primary-content border-primary'
             : 'bg-base-100 border-base-300 hover:border-base-content/30 hover:bg-base-200/50'}"
+          lang={lang.code}
           onclick={() => selectedLocale = lang.code}
         >{lang.label}</button>
       {/each}
@@ -501,7 +473,7 @@
     <p class="text-xs text-base-content/50 mb-6">{$t('onboardingPage.permissionsDesc')}</p>
 
     <!-- Full Access -->
-    <div class="flex items-center justify-between p-4 rounded-xl border border-base-300 mb-5 max-w-md mx-auto text-left">
+    <div class="flex items-center justify-between p-4 rounded-xl border border-base-300 mb-5 max-w-md mx-auto text-start">
       <div>
         <div class="text-sm font-semibold flex items-center gap-2">
           {#if fullAccess}<AlertTriangle class="w-4 h-4 text-warning" />{/if}
@@ -518,13 +490,13 @@
         onclick={handleFullAccessToggle}
       >
         <span
-          class="pointer-events-none inline-block size-3.5 rounded-full bg-base-100 shadow transition-transform {fullAccess ? 'translate-x-[14px]' : 'translate-x-0.5'}"
+          class="pointer-events-none inline-block size-3.5 rounded-full bg-base-100 shadow transition-transform {fullAccess ? 'translate-x-[14px] rtl:-translate-x-[14px]' : 'translate-x-0.5 rtl:-translate-x-0.5'}"
         ></span>
       </button>
     </div>
 
     {#if !fullAccess}
-      <div class="divide-y divide-base-content/10 mb-5 max-w-md mx-auto text-left max-h-[40vh] overflow-y-auto pr-1">
+      <div class="divide-y divide-base-content/10 mb-5 max-w-md mx-auto text-start max-h-[40vh] overflow-y-auto pe-1">
         {#each permissions as perm, i}
           <div class="flex items-center justify-between py-3">
             <div>
@@ -532,15 +504,15 @@
               <div class="text-xs text-base-content/70">{perm.desc}</div>
             </div>
             {#if perm.locked}
-              <span class="text-xs text-base-content/50 font-mono shrink-0 ml-4">{$t('onboarding.capabilities.alwaysOn')}</span>
+              <span class="text-xs text-base-content/50 font-mono shrink-0 ms-4">{$t('onboarding.capabilities.alwaysOn')}</span>
             {:else}
-              <input type="checkbox" class="toggle toggle-sm toggle-primary shrink-0 ml-4" bind:checked={capStates[i]} />
+              <input type="checkbox" class="toggle toggle-sm toggle-primary shrink-0 ms-4" bind:checked={capStates[i]} />
             {/if}
           </div>
         {/each}
       </div>
     {:else}
-      <div class="rounded-xl bg-warning/10 border border-warning/20 px-4 py-3 mb-5 max-w-md mx-auto text-left">
+      <div class="rounded-xl bg-warning/10 border border-warning/20 px-4 py-3 mb-5 max-w-md mx-auto text-start">
         <p class="text-xs text-warning font-medium">{$t('onboardingPage.fullAccessActive')}</p>
         <p class="text-xs text-base-content/70 mt-0.5">{$t('settingsPermissions.autonomousActiveDesc')}</p>
       </div>
@@ -566,7 +538,7 @@
     {#if showEnableModal}
       <div class="fixed inset-0 z-[80] flex items-center justify-center p-4" role="dialog" aria-modal="true">
         <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" role="button" tabindex="-1" aria-label={$t('common.close')} onclick={cancelFullAccessEnable} onkeydown={(e) => { if (e.key === 'Escape') cancelFullAccessEnable(); }}></div>
-        <div class="relative w-full max-w-lg rounded-2xl bg-base-100 border border-base-content/10 shadow-2xl overflow-hidden text-left">
+        <div class="relative w-full max-w-lg rounded-2xl bg-base-100 border border-base-content/10 shadow-2xl overflow-hidden text-start">
           <!-- Header -->
           <div class="flex items-center justify-between px-5 py-4 border-b border-base-content/10">
             <h3 class="text-sm font-bold">{$t('onboardingPage.enableFullAccess')}</h3>
@@ -662,7 +634,7 @@
     <p class="text-xs text-base-content/50 mb-6">{$t('onboardingPage.doneDesc')}</p>
 
     {#if detectedImport && !importDismissed}
-      <div class="max-w-md mx-auto mb-6 p-4 rounded-xl border border-base-300 bg-base-200/50 text-left">
+      <div class="max-w-md mx-auto mb-6 p-4 rounded-xl border border-base-300 bg-base-200/50 text-start">
         <div class="flex items-center gap-2.5 mb-1">
           <FolderOpen class="w-4 h-4 text-base-content/70" />
           <span class="text-sm font-medium">

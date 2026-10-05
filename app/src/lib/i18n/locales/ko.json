@@ -57,8 +57,8 @@
 		"noDataAvailable": "데이터가 없습니다",
 		"comingSoon": "곧 출시",
 		"or": "또는",
-		"dev": "dev",
-		"beta": "beta",
+		"dev": "개발",
+		"beta": "베타",
 		"free": "무료",
 		"na": "N/A",
 		"you": "나",
@@ -84,7 +84,16 @@
 		"closeModal": "모달 닫기",
 		"all": "전체",
 		"more": "더 보기",
-		"stopped": "중지됨"
+		"stopped": "중지됨",
+		"errorOccurred": "문제가 발생했습니다.",
+		"systemError": "시스템 오류",
+		"stillReconnecting": "아직 Nebo에 연결하는 중…",
+		"updatesAvailable": "{count, plural, other {업데이트 #개 사용 가능}}",
+		"artifactUpdated": "{type} 업데이트됨: {version}",
+		"artifactUpdateFailed": "업데이트 실패: {error}",
+		"employee": "직원",
+		"untitled": "제목 없음",
+		"document": "문서"
 	},
 	"time": {
 		"justNow": "방금",
@@ -253,9 +262,11 @@
 		"working": "일하는 중",
 		"chatActions": "채팅 작업",
 		"deleteChatTitle": "\"{name}\"을(를) 삭제할까요?",
-		"deleteChatBody": "이 채팅과 모든 메시지가 삭제됩니다. 되돌릴 수 없습니다."
+		"deleteChatBody": "이 채팅과 모든 메시지가 삭제됩니다. 되돌릴 수 없습니다.",
+		"offline": "오프라인"
 	},
 	"chat": {
+		"worksIn": "{folder}에서 일합니다",
 		"compactBoundary": "이전 대화가 요약되었습니다",
 		"clearedBoundary": "여기서 지웠습니다. 이전 메시지는 보관되지만 사용되지 않습니다.",
 		"goalLine": "목표: {condition} ({turns}턴)",
@@ -264,10 +275,15 @@
 		"goalStopped": "목표를 일시 중지했습니다. 다시 시작하려면 말씀해 주세요.",
 		"resumedActivity": "아직 작업 중: {tool}",
 		"waitingForYou": "당신을 기다리는 중",
+		"waitingOnYou": "{name}이(가) 당신을 기다리고 있습니다",
+		"seeConversation": "대화 보기",
 		"waitingOnYourAnswer": "{name}이(가) 답변을 기다리고 있습니다:",
 		"waitingOpen": "열기",
 		"waitingAsksLabel": "답변 대기 중",
 		"subagentStep": "{op} · {n}단계",
+		"helperWorking": "도우미가 일하는 중: {what}",
+		"helpersWorking": "도우미 {n}명이 일하는 중",
+		"moreQuestionsWaiting": "{count, plural, other {질문 #개가 더 기다리고 있습니다}}",
 		"pending": "대기 중",
 		"yourAICompanion": "당신의 AI 팀",
 		"tellMeWhatYouNeed": "필요한 것을 말씀해 주세요, 또는 아래 직원을 활성화하세요.",
@@ -295,6 +311,7 @@
 		"messageChannel": "#{channel} 메시지...",
 		"messagedCoworker": "메시지 보냄",
 		"disclaimer": "Nebo는 실수할 수 있습니다. 중요한 정보를 확인하세요.",
+		"uploadsKept": "업로드한 파일은 {days}일 동안 보관됩니다.",
 		"goodMorning": "좋은 아침이에요",
 		"goodAfternoon": "좋은 오후예요",
 		"goodEvening": "좋은 저녁이에요",
@@ -315,6 +332,8 @@
 		"installFailed": "설치에 실패했습니다 — 다시 시도하세요.",
 		"hire": "채용",
 		"hiring": "채용 중…",
+		"hireCount": "{count}명 모두 채용",
+		"hiringCount": "{count}명 중 {done}명 채용 중…",
 		"botComputer": "컴퓨터",
 		"closeComputer": "컴퓨터 닫기",
 		"fullView": "전체 화면",
@@ -330,13 +349,18 @@
 		"computerUnavailableHint": "직원의 컴퓨터는 Linux 설치본과 클라우드 직원에서 동작합니다.",
 		"watchingAndLearning": "{name}이(가) 지켜보며 배우고 있습니다",
 		"stopRecording": "기록 중지",
-		"teachLocalHint": "Do the task on this screen as you normally would, then stop.",
+		"teachLocalHint": "이 화면에서 평소처럼 작업을 한 다음 멈추세요.",
+		"teachStarting": "화면을 볼 준비를 하는 중…",
+		"teachNeedsScreenPermission": "작업하는 모습을 보려면 Nebo에 화면 기록 권한이 필요합니다. 시스템 설정 › 개인정보 보호 및 보안 › 화면 및 시스템 오디오 녹음에서 Nebo를 켠 다음 다시 시도하세요.",
+		"openScreenRecordingSettings": "화면 기록 설정 열기",
+		"openVirtualComputer": "가상 컴퓨터 열기",
 		"recordTask": "작업 기록",
 		"recording": "기록 중",
 		"connectFailed": "로그인이 완료되지 않았습니다. 다시 시도하세요.",
 		"connectAccountHint": "로그인하시면 멈춘 곳부터 이어서 진행하겠습니다.",
 		"submit": "제출",
 		"other": "기타…",
+		"askedReceipt": "물어봄",
 		"copyCode": "코드 복사",
 		"copied": "복사됨!",
 		"dropFilesHere": "여기에 파일을 놓으세요",
@@ -405,6 +429,8 @@
 		"shareNotConnected": "공유하려면 NeboAI에 연결하세요.",
 		"filesInThread": "이 채팅의 파일",
 		"nothingHereYet": "아직 아무것도 없습니다",
+		"noEmployeesOneTool": "일치하는 직원은 없지만 도구 1개가 일치합니다 — 도구를 확인하세요.",
+		"noEmployeesButTools": "일치하는 직원은 없지만 도구 {count}개가 일치합니다 — 도구를 확인하세요.",
 		"workEmptyDesc": "Nebo가 보고서, 시트, 디자인을 만들면 여기에 표시됩니다.",
 		"closeImage": "이미지 닫기",
 		"fullSize": "원본 크기",
@@ -429,7 +455,12 @@
 		"historyLoadFailed": "이 대화를 불러오지 못했습니다. 연결을 확인하고 다시 시도하세요.",
 		"consentCreates": "예라고 답하면 정확히 이 업무로 만들어집니다.",
 		"consentAdds": "예라고 답하면 이 업무가 추가됩니다.",
-		"fromColleague": "{name} 님이 보냄"
+		"fromColleague": "{name} 님이 보냄",
+		"storageFull": "{cap, select, none {저장 공간이 가득 찼습니다.} other {저장 공간이 가득 찼습니다({cap}).}} 업로드한 파일은 추가된 지 {days, plural, other {#일}} 후에 삭제됩니다.",
+		"storageNextFree": "다음 공간은 {date}에 비워집니다.",
+		"uploadFailed": "파일 업로드에 실패하여 메시지를 보내지 못했습니다. {reason}",
+		"fileRemoved": "이 파일은 업로드된 지 {days, plural, other {#일}} 후에 삭제되었습니다.",
+		"notDelivered": "메시지가 전달되지 않았습니다. 연결이 끊겼으니 다시 보내세요."
 	},
 	"chatInput": {
 		"placeholder": "답장...",
@@ -468,7 +499,17 @@
 		"tapToInterrupt": "탭하여 중단",
 		"mute": "음소거",
 		"unmute": "음소거 해제",
-		"endConversation": "대화 종료"
+		"endConversation": "대화 종료",
+		"recordClip": "클립 녹음",
+		"clipStarting": "마이크를 기다리는 중",
+		"clipStop": "중지하고 첨부",
+		"clipLevel": "마이크 음량",
+		"clipMicBlockedMac": "Nebo가 마이크를 사용할 수 없습니다. 시스템 설정 → 개인정보 보호 및 보안 → 마이크에서 허용하세요.",
+		"clipMicBlocked": "Nebo가 마이크를 사용할 수 없습니다. 시스템의 개인정보 보호 설정에서 허용하세요.",
+		"clipNoMic": "마이크를 찾을 수 없습니다. 마이크를 연결하고 다시 시도하세요.",
+		"clipUnsupported": "여기서는 녹음할 수 없습니다.",
+		"clipFailed": "녹음이 되지 않았습니다. 다시 시도하세요.",
+		"clipCapReached": "녹음은 10분에서 멈춥니다. 이 녹음은 첨부되었습니다."
 	},
 	"voiceDownload": {
 		"title": "음성 모델 다운로드",
@@ -566,7 +607,21 @@
 		"agent": "직원",
 		"command": "명령어",
 		"notConnected": "연결 안 됨",
-		"keyboardHint": "↑↓ 이동 · Enter 선택 · Esc 취소"
+		"keyboardHint": "↑↓ 이동 · Enter 선택 · Esc 취소",
+		"category": {
+			"session": "세션",
+			"model": "모델",
+			"info": "정보"
+		},
+		"desc": {
+			"new": "새 대화 시작",
+			"clear": "새로 시작(모든 메시지는 보관됩니다)",
+			"compact": "이전 메시지를 요약하고 정리",
+			"goal": "확인 결과 최종 상태가 될 때까지 계속 작업",
+			"model": "모델 보기 또는 전환",
+			"help": "모든 명령어 보기",
+			"status": "직원 및 시스템 상태 보기"
+		}
 	},
 	"dataTable": {
 		"loading": "로딩 중...",
@@ -1237,7 +1292,7 @@
 		"sessionUsage": "{percent}% 사용됨 · {hours}시간 {minutes}분 후 초기화",
 		"weekly": "주간",
 		"weeklyUsage": "{percent}% 사용됨 · {date}에 초기화",
-		"contextWindow": "{count} ctx",
+		"contextWindow": "컨텍스트 {count}",
 		"notConnected": "연결 안 됨",
 		"connectDescription": "NeboAI 계정에 연결하여 AI 모델 사용",
 		"cliProviders": "CLI 제공업체",
@@ -1259,7 +1314,7 @@
 			"ollama": "Ollama (로컬)"
 		},
 		"nameLabel": "이름",
-		"namePlaceholder": "My Anthropic Key",
+		"namePlaceholder": "내 Anthropic 키",
 		"apiKeyLabel": "API 키",
 		"apiKeyPlaceholder": "sk-...",
 		"baseUrlLabel": "기본 URL",
@@ -1777,7 +1832,17 @@
 		"toolCategories": "도구 분류",
 		"allToolCategories": "모든 도구 분류",
 		"moreEmployees": "직원 더 보기",
-		"moreTools": "도구 더 보기"
+		"moreTools": "도구 더 보기",
+		"pageTitle": "마켓플레이스 - Nebo",
+		"sharedPageTitle": "공유됨 - 마켓플레이스 - Nebo",
+		"searchPageTitle": "검색 — 마켓플레이스",
+		"resume": {
+			"byAuthor": "{author} 제작",
+			"perSeat": "좌석당",
+			"responsibilities": "담당 업무",
+			"newHire": "신규 채용 · 첫 번째 고용주가 되어 보세요",
+			"meet": "만나보기"
+		}
 	},
 	"commander": {
 		"autoLayout": "자동 레이아웃",
@@ -1854,7 +1919,9 @@
 		"noChatsYet": "아직 채팅이 없습니다. 새로 시작해 보세요.",
 		"noRunsYet": "아직 실행이 없습니다",
 		"appBadge": "앱",
-		"primaryUndeletable": "개인 비서는 특정 직원 앞으로 오지 않은 모든 것을 받기 때문에 삭제할 수 없습니다. 이름은 직원 설정에서 바꿀 수 있습니다."
+		"primaryUndeletable": "개인 비서는 특정 직원 앞으로 오지 않은 모든 것을 받기 때문에 삭제할 수 없습니다. 이름은 직원 설정에서 바꿀 수 있습니다.",
+		"browseFolders": "폴더 찾아보기",
+		"browseFiles": "파일 찾아보기"
 	},
 	"agentLearning": {
 		"title": "자기 개선",
@@ -1871,6 +1938,7 @@
 		"viewOnly": "이 대화는 보기 전용입니다 — 직원들은 여기서 이야기하고, 당신은 각자의 채팅에서 지시합니다"
 	},
 	"teams": {
+		"everyoneHint": "팀 전체",
 		"section": "팀",
 		"emptyRoster": "직원 두 명 이상을 한 팀에 두면 하나의 대화를 공유합니다. +를 눌러 만들거나, 아무 직원에게나 부탁하세요.",
 		"inTeam": "이 팀 소속",
@@ -1945,6 +2013,9 @@
 	},
 	"agentSettings": {
 		"general": "일반",
+		"tabWho": "어떤 사람인지",
+		"tabWork": "하는 일",
+		"developerGroup": "개발자",
 		"generalBlurb": "이 직원의 개요 — 상태, 스킬, 워크플로우, 관리.",
 		"identityBlurb": "이름, 음성, 색상, 상태 — 이 직원이 앱 전체에서 표시되는 방식입니다.",
 		"nameLabel": "이름",
@@ -2129,6 +2200,14 @@
 		"saveCredentialsFailed": "자격 증명 저장에 실패했습니다.",
 		"signInFailedRetry": "로그인에 실패했습니다. 다시 시도해 주세요.",
 		"startSignInFailed": "이 계정의 로그인을 시작할 수 없습니다.",
+		"signInPopupBlocked": "로그인 창이 차단되었습니다. Nebo의 팝업을 허용한 다음 다시 시도하세요.",
+		"channelToggleFailed": "해당 채널을 업데이트하지 못했습니다. 다시 시도하세요.",
+		"helpChatFailed": "도움말 채팅을 열지 못했습니다. 다시 시도하세요.",
+		"accountsLoadFailed": "계정을 불러오지 못했습니다. 다시 시도하세요.",
+		"accountListRefreshFailed": "계정이 연결되었지만 목록이 새로 고쳐지지 않았습니다. 설정을 다시 열어 확인하세요.",
+		"disconnectFailed": "해당 계정의 연결을 해제하지 못했습니다. 다시 시도하세요.",
+		"claimableLoadFailed": "전화번호를 불러오지 못했습니다.",
+		"tryAgain": "다시 시도",
 		"contextTitle": "이 직원이 아는 것",
 		"contextDesc": "회사의 업종 레이어와 회사 레이어가 바뀔 때마다 직원이 직접 쓴 내용입니다. 따로 찾아보지 않고 이것에 따라 일합니다.",
 		"contextAgainst": "{against} 기준으로 작성됨",
@@ -2157,7 +2236,19 @@
 		"changeInBotSettings": "봇 설정에서 변경",
 		"reachManage": "관리",
 		"reachNoPhone": "아직 전화 회선이 없습니다.",
-		"reachNoChannels": "켜진 채널이 없습니다."
+		"reachNoChannels": "켜진 채널이 없습니다.",
+		"newCallTreeName": "새 통화 트리",
+		"newWorkflowName": "새 워크플로우",
+		"greetingNodeLabel": "인사말",
+		"phoneLoadingNumbers": "번호를 불러오는 중…",
+		"phoneNoFreeNumbers": "연결할 수 있는 번호가 없습니다. {link}에서 번호를 구입하거나 다른 직원의 번호를 보류한 다음 여기로 돌아오세요.",
+		"phoneWhichNumber": "이 직원이 어떤 번호로 전화를 받을까요?",
+		"phoneNumberParked": "보류됨",
+		"phoneNumberUnassigned": "미할당",
+		"phoneLineName": "회선 이름(선택)",
+		"phoneLineNamePlaceholder": "안내 데스크, 고객 지원, 스페인어 회선…",
+		"phoneAttaching": "이 직원에게 번호를 연결하는 중…",
+		"phoneAttachNumber": "번호 연결"
 	},
 	"agentConfigure": {
 		"inputs": "입력",
@@ -2234,7 +2325,10 @@
 		"factDate": "날짜",
 		"factAttachment": "첨부",
 		"factVia": "경유",
-		"interrupted": "중단됨"
+		"interrupted": "중단됨",
+		"tokensShort": "{count} 토큰",
+		"underOneSecond": "<1초",
+		"triggerKind": "{kind, select, schedule {일정} event {이벤트} heartbeat {하트비트} manual {수동} watch {감시} webhook {웹훅} call {통화} retry {재시도} other {{kind}}}"
 	},
 	"automations": {
 		"title": "자동화",
@@ -2272,7 +2366,12 @@
 		"every8h": "8시간마다",
 		"every24h": "24시간마다",
 		"everyInterval": "{interval}마다",
-		"whenFires": "{event} 발생 시"
+		"whenFires": "{event} 발생 시",
+		"anEvent": "이벤트",
+		"watching": "감시: {source}",
+		"aPlugin": "플러그인",
+		"manualTrigger": "수동 트리거",
+		"onEventNamed": "{event} 발생 시"
 	},
 	"newBot": {
 		"browseMarketplace": "마켓플레이스 둘러보기",
@@ -2329,7 +2428,18 @@
 		"approvalGate": {
 			"batchHeadline": "한 단계에 든 동작 {n}건에 승인이 필요합니다",
 			"goalHeadline": "이 목표에 동의하시겠어요? 달성이 확인될 때까지 작업이 계속됩니다.",
-			"yourAgent": "당신의 직원"
+			"yourAgent": "당신의 직원",
+			"operation": "{action, select, create {{noun} 만들기} send {{noun} 보내기} update {{noun} 업데이트} status {{noun} 상태 변경} apply {{noun} 적용} record {{noun} 기록} schedule {{noun} 예약} publish {{noun} 게시} respond {{noun}에 응답} reply {{noun}에 답장} upsert {{noun} 저장} attach {{noun} 첨부} write {{noun} 작성} remove {{noun} 삭제} other {{noun} {verb}}}",
+			"resource": {
+				"billpayment": "대금 지급",
+				"creditmemo": "대변 메모",
+				"journalentry": "분개",
+				"purchaseorder": "구매 주문서",
+				"opportunity": "거래",
+				"company": "회사 파일 — 이 사업이 운영되는 방식",
+				"industry": "업종 파일 — 이 업종이 일하는 방식",
+				"franchise": "프랜차이즈 파일 — 브랜드의 요구 사항"
+			}
 		},
 		"approvalModal": {
 			"runShellCommand": "셸 명령 실행",
@@ -2446,7 +2556,20 @@
 		"narrowSat": "토",
 		"pageTitle": "일정 - Nebo",
 		"perWeek": "주 {count}회",
-		"workflowBuilderTitle": "{name} — 워크플로우 빌더"
+		"workflowBuilderTitle": "{name} — 워크플로우 빌더",
+		"everyDay": "매일",
+		"weekends": "주말",
+		"weekdayPlural": "{day, select, sun {매주 일요일} mon {매주 월요일} tue {매주 화요일} wed {매주 수요일} thu {매주 목요일} fri {매주 금요일} sat {매주 토요일} other {{day}}}",
+		"clockTime": "{period} {hour}:{minute}",
+		"hourOnly": "{period} {hour}시",
+		"midnight": "자정",
+		"cronEveryMinutes": "{n, plural, =1 {매분} other {#분마다}}",
+		"cronEveryHours": "{n, plural, =1 {매시간} other {#시간마다}}",
+		"cronEveryHoursAt": "{n, plural, =1 {매시 {minute}분} other {#시간마다 {minute}분}}",
+		"cronDailyAt": "매일 {time}",
+		"cronDaysAt": "{days} {time}",
+		"cronMonthlyAt": "매월 {day, selectordinal, other {#일}} {time}",
+		"listSeparator": ", "
 	},
 	"neboShell": {
 		"tabs": {
@@ -2491,7 +2614,26 @@
 	},
 	"userMenu": {
 		"aboutNebo": "Nebo 정보",
-		"planSuffix": "{plan} 플랜"
+		"planSuffix": "{plan} 플랜",
+		"provideFeedback": "의견 보내기"
+	},
+	"feedback": {
+		"title": "의견 보내기",
+		"lede": "잘 되는 점, 안 되는 점, 원하는 점을 NeboAI 팀에 알려주세요.",
+		"message": "메시지",
+		"screenshots": "스크린샷 또는 사진(선택)",
+		"addScreenshot": "스크린샷 추가",
+		"remove": "{name} 삭제",
+		"diagnostics": "진단 정보 포함",
+		"diagnosticsHelp": "앱 및 봇 버전, 플랫폼, 봇 ID, 현재 화면. 비밀번호나 로그인 토큰은 절대 포함되지 않습니다.",
+		"send": "보내기",
+		"sending": "보내는 중",
+		"sent": "감사합니다 — NeboAI 팀에 전달되었습니다.",
+		"failed": "의견을 보내지 못했습니다. 다시 시도하세요.",
+		"needMessage": "먼저 메시지를 작성하세요.",
+		"messageTooLong": "메시지는 {max}자 이내로 작성하세요.",
+		"tooManyScreenshots": "스크린샷은 최대 {max, plural, other {#장}}까지 첨부할 수 있습니다.",
+		"imagesOnly": "이미지만 첨부할 수 있습니다."
 	},
 	"workflowCanvas": {
 		"noWorkflows": "시각화할 워크플로우가 없습니다",
@@ -2632,7 +2774,18 @@
 		"gettingReady": "{name} 준비 중…",
 		"skillsAndTools": "스킬 및 도구",
 		"hireFailedTitle": "채용을 완료하지 못했습니다",
-		"hireFailed": "{name}을(를) 채용하지 못했습니다. 다시 시도하세요."
+		"hireFailed": "{name}을(를) 채용하지 못했습니다. 다시 시도하세요.",
+		"codeStatus": {
+			"nebo": "NeboAI에 연결하는 중…",
+			"skill": "스킬 설치 중…",
+			"workflow": "워크플로우 설치 중…",
+			"agent": "직원 설치 중…",
+			"loop": "루프에 참여하는 중…",
+			"plugin": "플러그인 설치 중…",
+			"app": "앱 설치 중…",
+			"collection": "컬렉션 설치 중…",
+			"connection": "MCP 연결 추가 중…"
+		}
 	},
 	"activity": {
 		"pageTitle": "활동 - Nebo",
@@ -2651,7 +2804,8 @@
 		"openAppHint": "앱 열기",
 		"openApp": "앱 열기",
 		"runs": "실행",
-		"memory": "메모리"
+		"memory": "메모리",
+		"appError": "앱 오류({status})"
 	},
 	"pricing": {
 		"pageTitle": "플랜 선택 - Nebo",
@@ -2811,7 +2965,10 @@
 		"checkEvery": "확인 주기",
 		"hours6": "6시간",
 		"history": "기록",
-		"title": "도구 업데이트"
+		"title": "도구 업데이트",
+		"onLatest": "최신 버전을 사용 중입니다",
+		"checkFailed": "업데이트를 확인할 수 없습니다",
+		"updateFailed": "업데이트 실패"
 	},
 	"inbox": {
 		"title": "받은편지함",
@@ -2842,15 +2999,27 @@
 		"failedAt": "\"{activity}\" 중에 실패했습니다",
 		"steps": "하고 있던 일",
 		"output": "출력",
-		"recordGone": "실행 기록이 없습니다. 이를 가지고 있던 직원과 함께 삭제되어 이 알림만 남았습니다."
+		"recordGone": "실행 기록이 없습니다. 이를 가지고 있던 직원과 함께 삭제되어 이 알림만 남았습니다.",
+		"revert": "되돌리기",
+		"reverted": "되돌림"
 	},
 	"voice": {
 		"startConversation": "음성 대화",
+		"reconnecting": "통화에 다시 참여하는 중…",
 		"consentTitle": "음성은 클라우드 서비스를 사용합니다",
 		"consentBody": "음성 대화 중에는 마이크 오디오가 처리를 위해 클라우드 음성 서비스로 전송됩니다. 오디오가 이 컴퓨터를 벗어납니다. 채팅 입력은 언제나처럼 로컬에 유지됩니다.",
 		"consentAccept": "음성 사용",
 		"consentDecline": "나중에",
-		"cloudIndicator": "오디오를 클라우드로 전송 중"
+		"cloudIndicator": "오디오를 클라우드로 전송 중",
+		"talkTo": "{name}와(과) 대화",
+		"isSpeaking": "{name}이(가) 말하는 중",
+		"callEnded": "통화가 종료되었습니다.",
+		"tryAgain": "다시 시도",
+		"onAnotherCall": "다른 직원과 통화 중",
+		"callLost": "통화가 끊겼고 다시 참여할 수 없었습니다. 다시 시작하세요.",
+		"callEndedStartAgain": "통화가 종료되었습니다. 다시 시작하세요.",
+		"needsConsent": "음성 대화는 처리를 위해 마이크 오디오를 클라우드 음성 서비스로 보냅니다. 동의하려면 음성 패널에서 켜세요.",
+		"startFailed": "통화를 시작할 수 없습니다. 다시 시도하세요."
 	},
 	"flows": {
 		"none": "아직 플로우가 없습니다",
@@ -2865,7 +3034,15 @@
 		"overlapBufferOne": "끝나면 한 번 실행",
 		"overlapAllowAll": "그래도 실행",
 		"deleteReminderTitle": "\"{name}\"을(를) 삭제할까요?",
-		"deleteReminderBody": "이 예약 작업은 실행을 멈추고 삭제됩니다. 지난 실행은 실행 기록에 남습니다."
+		"deleteReminderBody": "이 예약 작업은 실행을 멈추고 삭제됩니다. 지난 실행은 실행 기록에 남습니다.",
+		"triggerOnEvent": "{event} 발생 시",
+		"triggerWatch": "감시: {target}",
+		"triggerWatchPlugin": "감시: 플러그인",
+		"triggerManual": "수동 트리거",
+		"scheduleTooSpecific": "이 일정은 간단한 편집기로 표현하기에는 너무 세부적입니다",
+		"askSetupPrompt": "새 플로우를 설정해 주세요: ",
+		"everyNHours": "N시간마다",
+		"everyNMinutes": "N분마다"
 	},
 	"christen": {
 		"title": "첫 직원의 이름을 지어주세요",
@@ -2887,7 +3064,27 @@
 		"working": "필요한 것을 확인하는 중…",
 		"willDo": "{name}이(가) 할 일:",
 		"thisEmployee": "이 직원",
-		"removeItem": "{item} 빼기"
+		"removeItem": "{item} 빼기",
+		"hireFromApps": "다른 앱에서 채용",
+		"linkedLede": "실행 중인 컴퓨터에서 계속 일합니다.",
+		"thisComputer": "이 컴퓨터",
+		"offline": "오프라인",
+		"linkedFailed": "{bot}에서 채용하지 못했습니다. 다시 시도하세요.",
+		"onYourTeam": "팀에 있음",
+		"linkedLooking": "앱을 찾는 중…",
+		"linkedHireNew": "새로 채용",
+		"linkedConnect": "에이전트 연결",
+		"linkedRunning": "{count}개 실행 중",
+		"nameYour": "{app} 이름 짓기",
+		"youAlreadyHave": "이미 있는 항목:",
+		"nameTaken": "{name}(이)라는 직원이 이미 있습니다.",
+		"linkedWhere": "어느 컴퓨터에서 일하게 할까요?",
+		"linkedPickAgent": "어떤 {app} 에이전트인가요?",
+		"linkedModeTitle": "묻지 않고 무엇을 해도 될까요?",
+		"linkedModeAutomaticDesc": "자기 폴더의 파일은 알아서 편집합니다. 그 밖의 일은 먼저 묻습니다.",
+		"linkedModeAskDesc": "무엇이든 바꾸기 전에 먼저 묻습니다.",
+		"linkedModePlanDesc": "읽고 계획만 합니다. 아무것도 바꾸지 않습니다.",
+		"linkedModeFullAccessDesc": "이 컴퓨터에서 무엇이든 묻지 않고 실행합니다."
 	},
 	"runLimit": {
 		"title": "실행당 지출 한도",
@@ -3101,5 +3298,526 @@
 		"unreviewed": "검토 안 됨",
 		"loadMore": "더 보기",
 		"addJobEdit": "업무에 추가"
+	},
+	"workflow": {
+		"addNode": "노드 추가",
+		"deleteNode": "노드 삭제",
+		"deleteWorkflow": "워크플로우 삭제",
+		"removeItem": "{name} 삭제",
+		"activityCount": "{count, plural, other {활동 #개}}",
+		"stepCount": "{count, plural, other {#단계}}",
+		"triggerTypes": {
+			"schedule": "일정",
+			"heartbeat": "하트비트",
+			"event": "이벤트",
+			"watch": "감시",
+			"manual": "수동"
+		},
+		"branch": {
+			"true": "참",
+			"false": "거짓",
+			"eachItem": "각 항목",
+			"done": "완료"
+		},
+		"types": {
+			"greeting": {
+				"label": "인사말",
+				"description": "이 회선이 전화를 받을 때 하는 말",
+				"params": {
+					"text": {
+						"label": "인사말",
+						"description": "통화가 연결되면 그대로 읽어 줍니다.",
+						"placeholder": "Miller 치과에 전화해 주셔서 감사합니다! 무엇을 도와드릴까요?"
+					}
+				}
+			},
+			"intent": {
+				"label": "의도",
+				"description": "이 회선이 처리하는 업무 하나와 허용된 도구",
+				"params": {
+					"name": {
+						"label": "의도 이름",
+						"description": "라우터가 사용하는 짧은 ID(트리마다 고유)."
+					},
+					"description": {
+						"label": "발신자가 이런 뜻일 때",
+						"placeholder": "발신자가 예약을 잡거나 변경하거나 취소하려고 합니다"
+					},
+					"tools": {
+						"label": "허용된 도구",
+						"description": "이 의도에만 적용되는 tool:resource 권한, 쉼표로 구분."
+					},
+					"workflows": {
+						"label": "허용된 워크플로우",
+						"description": "이 의도가 실행할 수 있는 이 직원의 워크플로우 이름, 쉼표로 구분."
+					},
+					"plugins": {
+						"label": "허용된 플러그인",
+						"description": "플러그인 슬러그, 쉼표로 구분."
+					},
+					"mcp": {
+						"label": "허용된 MCP 서버",
+						"description": "연결된 MCP 서버 이름, 쉼표로 구분."
+					}
+				}
+			},
+			"transfer": {
+				"label": "사람에게 연결",
+				"description": "회선의 연결 번호로 실시간 인계",
+				"params": {
+					"when": {
+						"label": "연결할 때",
+						"placeholder": "발신자가 사람을 찾거나, 화가 났거나, 긴급 상황일 때"
+					},
+					"to": {
+						"label": "연결 대상",
+						"description": "발신자에게 누구에게 연결된다고 안내할지입니다. 번호 자체는 회선 설정에 그대로 있습니다.",
+						"placeholder": "사무장"
+					}
+				}
+			},
+			"takeMessage": {
+				"label": "메시지 받기",
+				"description": "소유자에게 전할 메시지를 받아 둡니다(대체 동작)",
+				"params": {
+					"fields": {
+						"label": "받아 둘 내용",
+						"placeholder": "이름, 번호, 전화한 이유, 회신하기 좋은 시간"
+					}
+				}
+			},
+			"disclosures": {
+				"label": "공유 가능",
+				"description": "조회 없이 이 회선이 바로 말하는 사실",
+				"params": {
+					"text": {
+						"label": "승인된 정보",
+						"description": "이 회선에 대해 소유자가 승인한 공개 정보 — 영업시간, 주소, 서비스 지역, 기본 가격. 고객이나 계정의 세부 정보는 여기에 적지 않으며, 그런 정보는 조회를 거칩니다.",
+						"placeholder": "월–금 8–5시 영업. 123 Main St에 있습니다. 스케일링은 $120부터."
+					}
+				}
+			},
+			"custom": {
+				"label": "사용자 지정",
+				"description": "단계와 스킬을 직접 정의"
+			},
+			"research": {
+				"label": "조사",
+				"description": "웹 검색, 분석, 종합",
+				"params": {
+					"depth": {
+						"label": "조사 깊이",
+						"options": {
+							"quick": "빠르게(2-5분)",
+							"standard": "표준(5-10분)",
+							"deep": "깊게(10-20분)"
+						}
+					},
+					"sources": {
+						"label": "출처 유형",
+						"description": "검색할 출처 유형, 쉼표로 구분",
+						"placeholder": "web, academic, news"
+					}
+				}
+			},
+			"email": {
+				"label": "이메일 보내기",
+				"description": "이메일 작성 및 보내기",
+				"params": {
+					"to": {
+						"label": "받는 사람",
+						"description": "받는 사람 이메일 주소(또는 앞 단계의 데이터 사용)"
+					},
+					"subject": {
+						"label": "제목 템플릿"
+					}
+				}
+			},
+			"notify": {
+				"label": "알림",
+				"description": "채널로 알림 보내기",
+				"params": {
+					"channel": {
+						"label": "채널",
+						"options": {
+							"email": "이메일",
+							"webhook": "웹훅"
+						}
+					},
+					"target": {
+						"label": "대상",
+						"description": "채널 이름, 이메일 또는 웹훅 URL",
+						"placeholder": "#general 또는 user@example.com"
+					}
+				}
+			},
+			"code": {
+				"label": "코드 실행",
+				"description": "코드 조각 실행",
+				"params": {
+					"language": {
+						"label": "언어"
+					},
+					"code": {
+						"label": "코드",
+						"description": "실행할 코드"
+					}
+				}
+			},
+			"condition": {
+				"label": "조건",
+				"description": "If/else 분기",
+				"params": {
+					"expression": {
+						"label": "조건식",
+						"description": "JavaScript 표현식 — 참이면 참 분기로, 거짓이면 거짓 분기로 갑니다"
+					},
+					"mode": {
+						"label": "평가 방식",
+						"options": {
+							"expression": "표현식",
+							"contains": "데이터 포함",
+							"exists": "필드 존재",
+							"regex": "정규식 일치"
+						}
+					}
+				}
+			},
+			"loop": {
+				"label": "반복",
+				"description": "항목 목록을 하나씩 반복",
+				"params": {
+					"source": {
+						"label": "항목 출처",
+						"description": "반복할 배열의 경로",
+						"placeholder": "data.items 또는 data.emails"
+					},
+					"maxIterations": {
+						"label": "최대 반복 횟수",
+						"description": "무한 반복을 막기 위한 안전 한도"
+					}
+				}
+			},
+			"wait": {
+				"label": "대기",
+				"description": "실행 일시정지",
+				"params": {
+					"duration": {
+						"label": "대기 시간",
+						"options": {
+							"5s": "5초",
+							"30s": "30초",
+							"1m": "1분",
+							"5m": "5분",
+							"15m": "15분",
+							"1h": "1시간",
+							"custom": "사용자 지정"
+						}
+					},
+					"waitUntil": {
+						"label": "또는 다음까지 대기",
+						"description": "이 이벤트가 발생하면 다시 시작합니다(시간 기준으로 하려면 비워 두세요)",
+						"placeholder": "예: event:approval.received"
+					}
+				}
+			},
+			"agent": {
+				"label": "직원",
+				"description": "다른 직원에게 맡기기",
+				"params": {
+					"agentId": {
+						"label": "직원",
+						"description": "이 작업을 맡길 직원"
+					},
+					"instructions": {
+						"label": "지침",
+						"description": "직원의 기본 페르소나를 덮어쓰거나 보완합니다",
+						"placeholder": "작업을 맡을 직원에게 줄 구체적인 지침..."
+					}
+				}
+			},
+			"connector": {
+				"label": "커넥터",
+				"description": "MCP 연동 사용",
+				"params": {
+					"serverId": {
+						"label": "MCP 서버",
+						"description": "사용할 연결된 MCP 서버"
+					},
+					"tool": {
+						"label": "도구",
+						"description": "MCP 서버에서 호출할 도구",
+						"placeholder": "예: read_file, send_message"
+					},
+					"input": {
+						"label": "입력",
+						"description": "도구에 전달할 JSON 입력('{{'data.field'}}' 템플릿 지원)"
+					}
+				}
+			},
+			"http": {
+				"label": "HTTP 요청",
+				"description": "HTTP API 호출",
+				"params": {
+					"method": {
+						"label": "메서드"
+					},
+					"url": {
+						"label": "URL"
+					},
+					"body": {
+						"label": "요청 본문",
+						"description": "POST/PUT/PATCH 요청용 JSON 본문"
+					},
+					"headers": {
+						"label": "헤더",
+						"description": "한 줄에 헤더 하나(key: value)"
+					}
+				}
+			},
+			"decide": {
+				"label": "판단",
+				"description": "유형이 지정된 질문으로 데이터를 분류하거나 판단",
+				"params": {
+					"state": {
+						"label": "상태",
+						"description": "판단할 데이터 경로(inputs.*, item, nodes.'<'id>.*)"
+					},
+					"questions": {
+						"label": "질문",
+						"description": "유형이 지정된 질문의 JSON 객체(choice, score, noul). 조건 노드는 nodes.'<'id>.'<'question>.choice와 .confidence로 분기합니다"
+					},
+					"default": {
+						"label": "기본 답변",
+						"description": "판단할 수 없을 때 쓸 답변: choice에는 옵션, score에는 수준, noul에는 true 또는 false. 이때 노드는 nodes.'<'id>.defaulted를 설정합니다"
+					}
+				}
+			},
+			"transform": {
+				"label": "변환",
+				"description": "데이터 형태 변경 또는 필터링",
+				"params": {
+					"operation": {
+						"label": "작업",
+						"options": {
+							"map": "Map — 각 항목 변환",
+							"filter": "Filter — 일치하는 항목만 유지",
+							"reduce": "Reduce — 하나의 값으로 집계",
+							"pick": "Pick — 특정 필드 추출",
+							"template": "Template — 텍스트로 서식 지정"
+						}
+					},
+					"expression": {
+						"label": "표현식",
+						"description": "변환 표현식"
+					}
+				}
+			}
+		},
+		"catalog": {
+			"searchPlaceholder": "노드 검색...",
+			"noMatch": "\"{query}\"과(와) 일치하는 노드가 없습니다",
+			"toolsAvailable": "{count, plural, other {사용 가능한 도구 #개}}",
+			"categories": {
+				"triggers": "트리거",
+				"activities": "활동",
+				"callTree": "통화 트리",
+				"flowControl": "흐름 제어",
+				"connectors": "커넥터(MCP)",
+				"agents": "직원",
+				"output": "출력"
+			},
+			"items": {
+				"triggerSchedule": {
+					"label": "일정",
+					"desc": "정해진 시각에 실행"
+				},
+				"triggerEvent": {
+					"label": "이벤트",
+					"desc": "이벤트에 반응"
+				},
+				"triggerHeartbeat": {
+					"label": "하트비트",
+					"desc": "일정 간격으로 실행"
+				},
+				"triggerManual": {
+					"label": "수동",
+					"desc": "필요할 때 실행"
+				},
+				"activityCustom": {
+					"label": "사용자 지정 활동",
+					"desc": "단계와 스킬 정의"
+				},
+				"activityResearch": {
+					"label": "조사",
+					"desc": "웹 검색 및 분석"
+				},
+				"activityEmail": {
+					"label": "이메일 보내기",
+					"desc": "이메일 작성 및 보내기"
+				},
+				"activityNotify": {
+					"label": "알림",
+					"desc": "알림 보내기"
+				},
+				"activityCode": {
+					"label": "코드 실행",
+					"desc": "코드 조각 실행"
+				},
+				"activityHttp": {
+					"label": "HTTP 요청",
+					"desc": "API 호출"
+				},
+				"activityDecide": {
+					"label": "판단",
+					"desc": "데이터 분류 또는 판단"
+				},
+				"activityTransform": {
+					"label": "변환",
+					"desc": "데이터 형태 변경 또는 필터링"
+				},
+				"activityGreeting": {
+					"label": "인사말",
+					"desc": "회선이 전화를 받을 때 하는 말"
+				},
+				"activityIntent": {
+					"label": "의도",
+					"desc": "업무 하나 + 허용된 도구"
+				},
+				"activityTransfer": {
+					"label": "사람에게 연결",
+					"desc": "실시간 인계 — 누구에게 연결할지 지정"
+				},
+				"activityTakeMessage": {
+					"label": "메시지 받기",
+					"desc": "메시지 받아 두기(대체 동작)"
+				},
+				"activityDisclosures": {
+					"label": "공유 가능",
+					"desc": "이 회선이 바로 말하는 사실(영업시간, 주소, 가격)"
+				},
+				"flowCondition": {
+					"label": "조건",
+					"desc": "If/else 분기"
+				},
+				"flowLoop": {
+					"label": "반복",
+					"desc": "항목을 하나씩 반복"
+				},
+				"flowWait": {
+					"label": "대기",
+					"desc": "일시정지 또는 이벤트 대기"
+				},
+				"emit": {
+					"label": "이벤트 발생",
+					"desc": "완료 이벤트 알리기"
+				}
+			}
+		},
+		"eventSources": {
+			"label": "이벤트 출처",
+			"searchPlaceholder": "입력하여 출처 검색...",
+			"hint": "알려진 출처를 입력해 검색하고 Enter로 추가하세요. 사용자 지정 이름과 와일드카드(email.*)도 사용할 수 있습니다."
+		},
+		"flow": {
+			"triggerManual": "직접 시작하면 실행",
+			"triggerSchedule": "일정에 따라",
+			"triggerEventAny": "이벤트가 발생하면",
+			"triggerWatch": "{name} 감시 중",
+			"triggerWatchAny": "플러그인 감시 중",
+			"applying": "적용 중…",
+			"go": "실행",
+			"tellAi": "무엇을 바꿀지 AI에게 알려 주세요",
+			"tellAiEllipsis": "무엇을 바꿀지 AI에게 알려 주세요…",
+			"badgeExact": "정확",
+			"badgeAgent": "직원",
+			"emptyCode": "(비어 있음)",
+			"stepPlaceholder": "이 단계에서 무엇을 할까요?",
+			"changeStep": "\"{name}\" 변경…",
+			"forEach": "각 {item}에 대해",
+			"loopItemDefault": "항목",
+			"loopEmpty": "이 반복에는 아직 아무것도 없습니다.",
+			"pathDefault": "경로",
+			"pathEmpty": "빈 경로",
+			"addStepHere": "여기에 단계 추가",
+			"connected": "{name}이(가) 연결되어 있습니다",
+			"notConnected": "{name}이(가) 연결되어 있지 않습니다 — 이 플로우는 실패합니다",
+			"connect": "연결",
+			"describeFlowChange": "이 플로우 전체에 대한 변경 사항을 설명하세요…",
+			"edit": "편집",
+			"emits": "발생",
+			"noSteps": "이 플로우에는 아직 단계가 없습니다."
+		},
+		"panel": {
+			"backToOverview": "워크플로우 개요로 돌아가기",
+			"intent": "의도",
+			"addSkill": "스킬 추가...",
+			"parameters": "매개변수",
+			"addStep": "단계 추가...",
+			"manualHint": "수동으로 트리거할 때만 실행됩니다.",
+			"notConfigured": "구성되지 않음",
+			"noEventConfigured": "구성된 이벤트 없음",
+			"noDescription": "설명 없음",
+			"emitPlaceholder": "예: {name}",
+			"emitOptional": "선택 사항 — 실행이 완료되면 다른 워크플로우가 이를 트리거로 사용할 수 있습니다.",
+			"useEmit": "{name} 사용",
+			"emitRenameWarning": "이름을 바꾸면 이 이벤트를 구독하는 워크플로우가 작동하지 않습니다.",
+			"none": "없음",
+			"apiEndpoint": "API 엔드포인트",
+			"apiEndpointHint": "직원의 설정 → 웹훅에서 이 워크플로우용 키를 발급하세요."
+		},
+		"schedule": {
+			"weekends": "주말",
+			"custom": "사용자 지정",
+			"daysOfWeek": "요일",
+			"monthly": "매월",
+			"biannual": "6개월마다",
+			"yearly": "매년",
+			"onDay": "날짜",
+			"biannualNote": "{firstMonth} {day}일과 {secondMonth} {day}일에 실행됩니다.",
+			"shortMonthsSkipped": "{day}일이 없는 달은 건너뜁니다.",
+			"limitToHours": "시간대 제한",
+			"rangeTo": "~"
+		},
+		"watch": {
+			"plugin": "플러그인",
+			"choosePlugin": "플러그인 선택…",
+			"whenItReports": "보고할 때",
+			"chooseEvent": "이벤트 선택…",
+			"hint": "{plugin}이(가) {event}을(를) 보고할 때마다 실행됩니다. 다른 플로우도 {plugin}.{event}을(를) 수신할 수 있습니다."
+		},
+		"validation": {
+			"emptyId": "\"{workflow}\"의 활동 ID가 비어 있습니다",
+			"duplicateId": "\"{workflow}\"에 중복된 활동 ID \"{id}\"이(가) 있습니다",
+			"conditionExpression": "조건 \"{id}\"에 표현식이 필요합니다 — 분기는 결정적이며 AI가 정하지 않습니다",
+			"loopSource": "반복 \"{id}\"에 데이터 출처가 필요합니다(예: inputs.items)",
+			"httpUrl": "HTTP 노드 \"{id}\"에 URL이 필요합니다",
+			"decideQuestions": "판단 노드 \"{id}\"에 질문이 필요합니다(유형이 지정된 질문의 JSON 객체)",
+			"waitDuration": "대기 노드 \"{id}\"에 대기 시간이 필요합니다",
+			"needsIntent": "\"{workflow}\"의 활동 \"{id}\"에 의도나 단계가 필요합니다",
+			"targetsTrigger": "트리거로 들어오는 연결이 있습니다",
+			"leavesEmit": "이벤트 발생 노드에서 나가는 연결이 있습니다",
+			"unknownFrom": "알 수 없는 노드 \"{id}\"에서 시작하는 연결",
+			"unknownTo": "알 수 없는 노드 \"{id}\"(으)로 가는 연결",
+			"duplicateConnection": "중복된 연결 {from} → {to}",
+			"labeledNonBranching": "레이블이 있는 연결 \"{label}\"이(가) 분기하지 않는 노드 \"{id}\"에서 나갑니다",
+			"unlabeledBranch": "\"{id}\"에서 나가는 연결에는 분기 레이블이 있어야 합니다",
+			"cycle": "그래프에 순환이 있습니다(반복의 각 항목 본문만 해당 반복으로 돌아갈 수 있습니다)"
+		},
+		"builder": {
+			"unsavedConfirm": "저장하지 않은 변경 사항이 있습니다. 버리고 닫을까요?",
+			"workflowLabel": "{name}({count, plural, other {활동 #개}})",
+			"undo": "실행 취소(Cmd+Z)",
+			"redo": "다시 실행(Cmd+Shift+Z)",
+			"issueCount": "{count, plural, other {문제 #개}}",
+			"discard": "버리기",
+			"hideDetails": "세부 정보 패널 숨기기",
+			"showDetails": "세부 정보 패널 보기",
+			"newWorkflowTitle": "새 워크플로우",
+			"empty": "워크플로우가 없습니다 — 하나 만들어 시작하세요",
+			"newWorkflow": "새 워크플로우",
+			"confirmDeleteWorkflow": "이 워크플로우를 삭제할까요? 모든 활동과 연결이 삭제됩니다.",
+			"confirmDeleteNode": "이 노드를 삭제할까요? 연결은 자동으로 다시 이어집니다."
+		}
 	}
 }

@@ -302,7 +302,7 @@
                     <Terminal class="w-3.5 h-3.5 text-base-content/50" />
                     <span class="text-sm font-medium">{cli.displayName}</span>
                   </div>
-                  <span class="text-xs text-base-content/50 ml-5.5 font-mono">{cli.command}</span>
+                  <span class="text-xs text-base-content/50 ms-5.5 font-mono">{cli.command}</span>
                 </div>
                 <input type="checkbox" class="toggle toggle-sm toggle-primary" checked={cli.active} onchange={() => toggleCLI(cli)} />
               </div>
@@ -338,9 +338,9 @@
               <span class="text-sm font-medium">{prov.label}</span>
             </div>
             {#if prov.configured}
-              <p class="text-xs text-base-content/50 ml-4 mb-3">{prov.models.length === 1 ? $t('settingsProviders.modelDetectedCount', { values: { count: prov.models.length } }) : $t('settingsProviders.modelsDetectedCount', { values: { count: prov.models.length } })}</p>
+              <p class="text-xs text-base-content/50 ms-4 mb-3">{prov.models.length === 1 ? $t('settingsProviders.modelDetectedCount', { values: { count: prov.models.length } }) : $t('settingsProviders.modelsDetectedCount', { values: { count: prov.models.length } })}</p>
             {:else}
-              <p class="text-xs text-base-content/50 ml-4 mb-3">{$t('settingsProviders.ollamaNotRunning')}</p>
+              <p class="text-xs text-base-content/50 ms-4 mb-3">{$t('settingsProviders.ollamaNotRunning')}</p>
             {/if}
             {#if prov.configured && prov.models.length > 0}
               <div class="flex flex-col gap-1.5">
@@ -382,7 +382,7 @@
                 <div>
                   <span class="text-sm font-medium">{prov.profile?.name || prov.label}</span>
                   {#if prov.profile?.name && prov.profile.name !== prov.label}
-                    <span class="text-xs text-base-content/50 ml-1">{prov.label}</span>
+                    <span class="text-xs text-base-content/50 ms-1">{prov.label}</span>
                   {/if}
                 </div>
               </div>

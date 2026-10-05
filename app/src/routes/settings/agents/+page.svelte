@@ -83,7 +83,7 @@
             ></div>
           {/snippet}
           <div class="flex items-center gap-2 min-w-0">
-            <button class="text-sm font-semibold text-primary hover:underline cursor-pointer bg-transparent border-none p-0 text-left truncate" onclick={() => { selected = agent; confirming = false; }}>{agent.name}</button>
+            <button class="text-sm font-semibold text-primary hover:underline cursor-pointer bg-transparent border-none p-0 text-start truncate" onclick={() => { selected = agent; confirming = false; }}>{agent.name}</button>
             {#if agent.id === 'assistant'}
               <span class="shrink-0 px-1.5 py-0.5 rounded bg-primary/10 text-primary text-xs font-medium">{$t('agentSettings.personalAssistant')}</span>
             {/if}

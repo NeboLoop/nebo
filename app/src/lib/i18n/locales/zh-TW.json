@@ -57,8 +57,8 @@
 		"noDataAvailable": "沒有可用資料",
 		"comingSoon": "即將推出",
 		"or": "或",
-		"dev": "dev",
-		"beta": "beta",
+		"dev": "開發版",
+		"beta": "測試版",
 		"free": "免費",
 		"na": "N/A",
 		"you": "你",
@@ -84,7 +84,16 @@
 		"closeModal": "關閉視窗",
 		"all": "全部",
 		"more": "更多",
-		"stopped": "已停止"
+		"stopped": "已停止",
+		"errorOccurred": "發生錯誤。",
+		"systemError": "系統錯誤",
+		"stillReconnecting": "仍在嘗試連上你的 Nebo…",
+		"updatesAvailable": "{count, plural, other {有 # 個可用更新}}",
+		"artifactUpdated": "已更新{type}：{version}",
+		"artifactUpdateFailed": "更新失敗：{error}",
+		"employee": "員工",
+		"untitled": "未命名",
+		"document": "文件"
 	},
 	"time": {
 		"justNow": "剛剛",
@@ -253,9 +262,11 @@
 		"working": "工作中",
 		"chatActions": "聊天操作",
 		"deleteChatTitle": "刪除「{name}」？",
-		"deleteChatBody": "此聊天及其所有訊息將被刪除，且無法復原。"
+		"deleteChatBody": "此聊天及其所有訊息將被刪除，且無法復原。",
+		"offline": "離線"
 	},
 	"chat": {
+		"worksIn": "在 {folder} 中工作",
 		"compactBoundary": "已摘要先前的對話",
 		"clearedBoundary": "已在此處清除。先前的訊息仍保留，但不再使用。",
 		"goalLine": "目標：{condition}（{turns} 輪）",
@@ -264,7 +275,15 @@
 		"goalStopped": "目標已暫停。需要繼續時告訴我。",
 		"resumedActivity": "仍在處理：{tool}",
 		"waitingForYou": "等你處理",
+		"waitingOnYou": "{name} 正在等你",
+		"seeConversation": "查看對話",
+		"waitingOnYourAnswer": "{name} 正在等你回答：",
+		"waitingOpen": "開啟",
+		"waitingAsksLabel": "等你回答",
 		"subagentStep": "{op} · 第 {n} 步",
+		"helperWorking": "有一位助手正在處理：{what}",
+		"helpersWorking": "{n} 位助手正在處理",
+		"moreQuestionsWaiting": "{count, plural, other {還有 # 個問題等你回答}}",
 		"pending": "待處理",
 		"yourAICompanion": "你的 AI 團隊",
 		"tellMeWhatYouNeed": "告訴我你需要什麼，或啟動下方的員工。",
@@ -292,6 +311,7 @@
 		"messageChannel": "訊息 #{channel}...",
 		"messagedCoworker": "已傳訊息",
 		"disclaimer": "Nebo 可能會犯錯。請驗證重要資訊。",
+		"uploadsKept": "上傳的檔案會保留 {days} 天。",
 		"goodMorning": "早安",
 		"goodAfternoon": "午安",
 		"goodEvening": "晚安",
@@ -312,6 +332,8 @@
 		"installFailed": "安裝失敗 — 請再試一次。",
 		"hire": "僱用",
 		"hiring": "正在僱用…",
+		"hireCount": "全部聘用（{count} 位）",
+		"hiringCount": "正在聘用第 {done} 位，共 {count} 位…",
 		"botComputer": "電腦",
 		"closeComputer": "關閉電腦",
 		"fullView": "全螢幕檢視",
@@ -327,13 +349,18 @@
 		"computerUnavailableHint": "員工的電腦可在 Linux 安裝版和雲端員工上執行。",
 		"watchingAndLearning": "{name} 正在旁觀學習",
 		"stopRecording": "停止錄製",
-		"teachLocalHint": "Do the task on this screen as you normally would, then stop.",
+		"teachLocalHint": "在這個螢幕上照平常的方式做一次這項工作，然後停止。",
+		"teachStarting": "正在準備觀看你的螢幕…",
+		"teachNeedsScreenPermission": "Nebo 需要螢幕錄製權限才能看你做這項工作。請到「系統設定 › 隱私權與安全性 › 螢幕錄製」開啟 Nebo，然後再試一次。",
+		"openScreenRecordingSettings": "開啟螢幕錄製設定",
+		"openVirtualComputer": "開啟虛擬電腦",
 		"recordTask": "錄製工作",
 		"recording": "正在錄製",
 		"connectFailed": "登入未完成。請再試一次。",
 		"connectAccountHint": "登入後，我會從中斷的地方繼續。",
 		"submit": "提交",
 		"other": "其他…",
+		"askedReceipt": "已詢問",
 		"copyCode": "複製程式碼",
 		"copied": "已複製！",
 		"dropFilesHere": "將檔案拖放到這裡",
@@ -402,6 +429,8 @@
 		"shareNotConnected": "請先連線到 NeboAI 再分享。",
 		"filesInThread": "此對話中的檔案",
 		"nothingHereYet": "這裡還沒有東西",
+		"noEmployeesOneTool": "沒有符合的員工，但有 1 個工具符合——請看「工具」。",
+		"noEmployeesButTools": "沒有符合的員工，但有 {count} 個工具符合——請看「工具」。",
 		"workEmptyDesc": "當 Nebo 製作報告、試算表或設計時，會顯示在這裡。",
 		"closeImage": "關閉圖片",
 		"fullSize": "原始大小",
@@ -426,7 +455,12 @@
 		"historyLoadFailed": "無法載入這段對話。請檢查網路連線後再試一次。",
 		"consentCreates": "回答「是」，就會按這份工作內容建立。",
 		"consentAdds": "回答「是」，就會把這項加入工作內容。",
-		"fromColleague": "來自 {name}"
+		"fromColleague": "來自 {name}",
+		"storageFull": "{cap, select, none {你的儲存空間已滿。} other {你的儲存空間已滿（{cap}）。}}上傳的檔案會在新增 {days, plural, other {# 天}}後清除。",
+		"storageNextFree": "下一份空間會在 {date} 釋出。",
+		"uploadFailed": "檔案上傳失敗——訊息未送出。{reason}",
+		"fileRemoved": "這個檔案已在上傳 {days, plural, other {# 天}}後移除。",
+		"notDelivered": "訊息未送達。連線中斷了，請再傳送一次。"
 	},
 	"chatInput": {
 		"placeholder": "回覆...",
@@ -453,7 +487,7 @@
 		"recording": "正在錄製",
 		"holdToRecord": "按住以錄音",
 		"startVoiceInput": "開始語音輸入",
-		"ptt": "PTT",
+		"ptt": "按住說話",
 		"voiceSettings": "語音設定",
 		"microphone": "麥克風",
 		"noMicrophones": "找不到麥克風",
@@ -465,7 +499,17 @@
 		"tapToInterrupt": "點按以打斷",
 		"mute": "靜音",
 		"unmute": "取消靜音",
-		"endConversation": "結束對話"
+		"endConversation": "結束對話",
+		"recordClip": "錄製一段音訊",
+		"clipStarting": "正在等待麥克風",
+		"clipStop": "停止並附加",
+		"clipLevel": "麥克風音量",
+		"clipMicBlockedMac": "Nebo 無法使用你的麥克風。請到「系統設定 › 隱私權與安全性 › 麥克風」允許。",
+		"clipMicBlocked": "Nebo 無法使用你的麥克風。請在系統的隱私權設定中允許。",
+		"clipNoMic": "找不到麥克風。請連接一個後再試一次。",
+		"clipUnsupported": "這裡無法錄音。",
+		"clipFailed": "錄音沒有成功。請再試一次。",
+		"clipCapReached": "錄音最長 10 分鐘。這段已附加。"
 	},
 	"voiceDownload": {
 		"title": "下載語音模型",
@@ -563,7 +607,21 @@
 		"agent": "員工",
 		"command": "指令",
 		"notConnected": "未連線",
-		"keyboardHint": "↑↓ 導覽 · Enter 選擇 · Esc 取消"
+		"keyboardHint": "↑↓ 導覽 · Enter 選擇 · Esc 取消",
+		"category": {
+			"session": "工作階段",
+			"model": "模型",
+			"info": "資訊"
+		},
+		"desc": {
+			"new": "開始新的對話",
+			"clear": "重新開始（所有訊息都會保留）",
+			"compact": "摘要並清除舊訊息",
+			"goal": "持續工作，直到檢查確認達成最終狀態",
+			"model": "顯示或切換模型",
+			"help": "顯示所有指令",
+			"status": "顯示員工與系統狀態"
+		}
 	},
 	"dataTable": {
 		"loading": "載入中...",
@@ -1234,7 +1292,7 @@
 		"sessionUsage": "已使用 {percent}% · {hours} 小時 {minutes} 分鐘後重設",
 		"weekly": "每週",
 		"weeklyUsage": "已使用 {percent}% · {date} 重設",
-		"contextWindow": "{count} ctx",
+		"contextWindow": "{count} 上下文",
 		"notConnected": "未連線",
 		"connectDescription": "連接 NeboAI 帳戶以使用 AI 模型",
 		"cliProviders": "CLI 供應商",
@@ -1256,7 +1314,7 @@
 			"ollama": "Ollama（本機）"
 		},
 		"nameLabel": "名稱",
-		"namePlaceholder": "My Anthropic Key",
+		"namePlaceholder": "我的 Anthropic 金鑰",
 		"apiKeyLabel": "API 金鑰",
 		"apiKeyPlaceholder": "sk-...",
 		"baseUrlLabel": "基礎 URL",
@@ -1774,7 +1832,17 @@
 		"toolCategories": "工具分類",
 		"allToolCategories": "所有工具分類",
 		"moreEmployees": "更多員工",
-		"moreTools": "更多工具"
+		"moreTools": "更多工具",
+		"pageTitle": "市集 - Nebo",
+		"sharedPageTitle": "共享 - 市集 - Nebo",
+		"searchPageTitle": "搜尋 — 市集",
+		"resume": {
+			"byAuthor": "作者：{author}",
+			"perSeat": "每席",
+			"responsibilities": "職責",
+			"newHire": "新進員工 · 成為第一位聘用者",
+			"meet": "認識"
+		}
 	},
 	"commander": {
 		"autoLayout": "自動版面配置",
@@ -1851,7 +1919,9 @@
 		"noChatsYet": "尚無聊天。開始新的一個吧。",
 		"noRunsYet": "還沒有執行紀錄",
 		"appBadge": "應用程式",
-		"primaryUndeletable": "你的私人助理會接收所有未指定給某位員工的內容，因此無法刪除。可在「員工設定」中重新命名。"
+		"primaryUndeletable": "你的私人助理會接收所有未指定給某位員工的內容，因此無法刪除。可在「員工設定」中重新命名。",
+		"browseFolders": "瀏覽資料夾",
+		"browseFiles": "瀏覽檔案"
 	},
 	"agentLearning": {
 		"title": "自我精進",
@@ -1868,6 +1938,7 @@
 		"viewOnly": "這段對話僅供檢視 — 員工在這裡交談，你在各自的對話裡指揮他們"
 	},
 	"teams": {
+		"everyoneHint": "整個團隊",
 		"section": "團隊",
 		"emptyRoster": "把兩位以上的員工放進一個團隊，他們就共用一段對話。按 + 新增，或請任何一位員工幫你建。",
 		"inTeam": "在這個團隊中",
@@ -1942,6 +2013,9 @@
 	},
 	"agentSettings": {
 		"general": "一般",
+		"tabWho": "他們是誰",
+		"tabWork": "他們做什麼",
+		"developerGroup": "開發人員",
 		"generalBlurb": "這位員工的概覽 — 狀態、技能、工作流程與日常管理。",
 		"identityBlurb": "名稱、語音、顏色和狀態 — 此員工在應用程式中的顯示方式。",
 		"nameLabel": "名稱",
@@ -2126,6 +2200,14 @@
 		"saveCredentialsFailed": "儲存憑證失敗。",
 		"signInFailedRetry": "登入失敗。請再試一次。",
 		"startSignInFailed": "無法為此帳戶啟動登入。",
+		"signInPopupBlocked": "登入視窗被封鎖了。請允許 Nebo 開啟彈出式視窗，然後再試一次。",
+		"channelToggleFailed": "無法更新這個頻道。請再試一次。",
+		"helpChatFailed": "無法開啟說明聊天。請再試一次。",
+		"accountsLoadFailed": "無法載入帳號。請再試一次。",
+		"accountListRefreshFailed": "帳號已連結，但清單沒有更新。請重新開啟設定查看。",
+		"disconnectFailed": "無法中斷這個帳號的連線。請再試一次。",
+		"claimableLoadFailed": "無法載入你的電話號碼。",
+		"tryAgain": "再試一次",
 		"contextTitle": "這位員工知道什麼",
 		"contextDesc": "由員工自己撰寫，取材自公司的產業層和公司層，每次它們變動時重寫一遍。它據此做事，不必再去查。",
 		"contextAgainst": "依據 {against} 撰寫",
@@ -2154,7 +2236,19 @@
 		"changeInBotSettings": "在機器人設定中變更",
 		"reachManage": "管理",
 		"reachNoPhone": "還沒有電話線路。",
-		"reachNoChannels": "沒有開啟的頻道。"
+		"reachNoChannels": "沒有開啟的頻道。",
+		"newCallTreeName": "新來電選單",
+		"newWorkflowName": "新工作流程",
+		"greetingNodeLabel": "問候語",
+		"phoneLoadingNumbers": "正在載入你的號碼…",
+		"phoneNoFreeNumbers": "沒有可連結的空閒號碼。請到 {link} 購買號碼（或從另一位員工那裡暫存一個），然後再回到這裡。",
+		"phoneWhichNumber": "這位員工要接聽哪個號碼？",
+		"phoneNumberParked": "已暫存",
+		"phoneNumberUnassigned": "未指派",
+		"phoneLineName": "線路名稱（選填）",
+		"phoneLineNamePlaceholder": "櫃檯、客服、西班牙語專線…",
+		"phoneAttaching": "正在將號碼連結到這位員工…",
+		"phoneAttachNumber": "連結號碼"
 	},
 	"agentConfigure": {
 		"inputs": "輸入",
@@ -2231,7 +2325,10 @@
 		"factDate": "日期",
 		"factAttachment": "附件",
 		"factVia": "透過",
-		"interrupted": "已中斷"
+		"interrupted": "已中斷",
+		"tokensShort": "{count} 權杖",
+		"underOneSecond": "<1 秒",
+		"triggerKind": "{kind, select, schedule {排程} event {事件} heartbeat {心跳} manual {手動} watch {監看} webhook {Webhook} call {通話} retry {重試} other {{kind}}}"
 	},
 	"automations": {
 		"title": "自動化",
@@ -2269,7 +2366,12 @@
 		"every8h": "每 8 小時",
 		"every24h": "每 24 小時",
 		"everyInterval": "每 {interval}",
-		"whenFires": "當 {event} 觸發時"
+		"whenFires": "當 {event} 觸發時",
+		"anEvent": "事件",
+		"watching": "監看：{source}",
+		"aPlugin": "外掛",
+		"manualTrigger": "手動觸發",
+		"onEventNamed": "當 {event} 時"
 	},
 	"newBot": {
 		"browseMarketplace": "瀏覽市集",
@@ -2326,7 +2428,18 @@
 		"approvalGate": {
 			"batchHeadline": "同一個步驟中有 {n} 個動作需要你的核准",
 			"goalHeadline": "確認這個目標嗎？工作會持續進行，直到檢查確認目標已達成。",
-			"yourAgent": "你的員工"
+			"yourAgent": "你的員工",
+			"operation": "{action, select, create {建立 {noun}} send {傳送 {noun}} update {更新 {noun}} status {變更 {noun} 的狀態} apply {套用 {noun}} record {記錄 {noun}} schedule {排程 {noun}} publish {發佈 {noun}} respond {回應 {noun}} reply {回覆 {noun}} upsert {儲存 {noun}} attach {附加 {noun}} write {寫入 {noun}} remove {移除 {noun}} other {{verb} {noun}}}",
+			"resource": {
+				"billpayment": "帳單付款",
+				"creditmemo": "貸項通知單",
+				"journalentry": "日記帳分錄",
+				"purchaseorder": "採購單",
+				"opportunity": "商機",
+				"company": "公司檔案——這家企業的運作方式",
+				"industry": "產業檔案——這一行的運作方式",
+				"franchise": "加盟檔案——品牌的要求"
+			}
 		},
 		"approvalModal": {
 			"runShellCommand": "執行 Shell 指令",
@@ -2443,7 +2556,20 @@
 		"narrowSat": "六",
 		"pageTitle": "排程 - Nebo",
 		"perWeek": "每週 {count} 次",
-		"workflowBuilderTitle": "{name} — 工作流程建立器"
+		"workflowBuilderTitle": "{name} — 工作流程建立器",
+		"everyDay": "每天",
+		"weekends": "週末",
+		"weekdayPlural": "{day, select, sun {每週日} mon {每週一} tue {每週二} wed {每週三} thu {每週四} fri {每週五} sat {每週六} other {{day}}}",
+		"clockTime": "{period} {hour}:{minute}",
+		"hourOnly": "{period} {hour} 點",
+		"midnight": "午夜",
+		"cronEveryMinutes": "{n, plural, =1 {每分鐘} other {每 # 分鐘}}",
+		"cronEveryHours": "{n, plural, =1 {每小時} other {每 # 小時}}",
+		"cronEveryHoursAt": "{n, plural, =1 {每小時的 :{minute}} other {每 # 小時的 :{minute}}}",
+		"cronDailyAt": "每天 {time}",
+		"cronDaysAt": "{days} {time}",
+		"cronMonthlyAt": "每月 {day, selectordinal, other {#}} 日 {time}",
+		"listSeparator": "、"
 	},
 	"neboShell": {
 		"tabs": {
@@ -2488,7 +2614,26 @@
 	},
 	"userMenu": {
 		"aboutNebo": "關於 Nebo",
-		"planSuffix": "{plan} 方案"
+		"planSuffix": "{plan} 方案",
+		"provideFeedback": "提供意見回饋"
+	},
+	"feedback": {
+		"title": "提供意見回饋",
+		"lede": "告訴 NeboAI 團隊哪些好用、哪些不好用，或你希望有什麼。",
+		"message": "訊息",
+		"screenshots": "螢幕截圖或照片（選填）",
+		"addScreenshot": "新增螢幕截圖",
+		"remove": "移除 {name}",
+		"diagnostics": "附上診斷資訊",
+		"diagnosticsHelp": "應用程式與機器人版本、平台、機器人 ID 和這個畫面。絕不包含密碼或登入權杖。",
+		"send": "傳送",
+		"sending": "傳送中",
+		"sent": "謝謝——已傳送給 NeboAI 團隊。",
+		"failed": "無法傳送你的意見回饋。請再試一次。",
+		"needMessage": "請先寫一則訊息。",
+		"messageTooLong": "訊息請保持在 {max} 個字元以內。",
+		"tooManyScreenshots": "最多只能附加 {max, plural, other {# 張螢幕截圖}}。",
+		"imagesOnly": "只能附加圖片。"
 	},
 	"workflowCanvas": {
 		"noWorkflows": "沒有可視覺化的工作流程",
@@ -2629,7 +2774,18 @@
 		"gettingReady": "正在為{name}做準備…",
 		"skillsAndTools": "技能與工具",
 		"hireFailedTitle": "無法完成僱用",
-		"hireFailed": "未能僱用{name}，請再試一次。"
+		"hireFailed": "未能僱用{name}，請再試一次。",
+		"codeStatus": {
+			"nebo": "正在連線到 NeboAI…",
+			"skill": "正在安裝技能…",
+			"workflow": "正在安裝工作流程…",
+			"agent": "正在安裝員工…",
+			"loop": "正在加入 Loop…",
+			"plugin": "正在安裝外掛…",
+			"app": "正在安裝應用程式…",
+			"collection": "正在安裝合輯…",
+			"connection": "正在新增 MCP 連線…"
+		}
 	},
 	"activity": {
 		"pageTitle": "活動 - Nebo",
@@ -2648,7 +2804,8 @@
 		"openAppHint": "開啟應用程式",
 		"openApp": "開啟應用程式",
 		"runs": "執行紀錄",
-		"memory": "記憶"
+		"memory": "記憶",
+		"appError": "應用程式錯誤（{status}）"
 	},
 	"pricing": {
 		"pageTitle": "選擇你的方案 - Nebo",
@@ -2808,7 +2965,10 @@
 		"checkEvery": "檢查頻率",
 		"hours6": "6 小時",
 		"history": "歷史紀錄",
-		"title": "工具更新"
+		"title": "工具更新",
+		"onLatest": "你使用的是最新版本",
+		"checkFailed": "無法檢查更新",
+		"updateFailed": "更新失敗"
 	},
 	"inbox": {
 		"title": "收件匣",
@@ -2839,15 +2999,27 @@
 		"failedAt": "在「{activity}」過程中失敗",
 		"steps": "當時在做什麼",
 		"output": "輸出",
-		"recordGone": "這次執行的紀錄已經沒有了。它隨著擁有它的員工一起被刪除，只剩下這則通知。"
+		"recordGone": "這次執行的紀錄已經沒有了。它隨著擁有它的員工一起被刪除，只剩下這則通知。",
+		"revert": "復原",
+		"reverted": "已復原"
 	},
 	"voice": {
 		"startConversation": "語音對話",
+		"reconnecting": "正在重新加入通話…",
 		"consentTitle": "語音使用雲端服務",
 		"consentBody": "語音對話進行時，您的麥克風音訊會傳輸至雲端語音服務進行處理。音訊會離開這台電腦。聊天輸入一如既往保留在本機。",
 		"consentAccept": "啟用語音",
 		"consentDecline": "暫不",
-		"cloudIndicator": "音訊正在傳輸至雲端"
+		"cloudIndicator": "音訊正在傳輸至雲端",
+		"talkTo": "與 {name} 通話",
+		"isSpeaking": "{name} 正在說話",
+		"callEnded": "通話已結束。",
+		"tryAgain": "再試一次",
+		"onAnotherCall": "正在與另一位員工通話",
+		"callLost": "通話中斷且無法重新加入。請重新開始通話。",
+		"callEndedStartAgain": "通話已結束。請重新開始。",
+		"needsConsent": "語音對話會將你的麥克風音訊傳送到雲端語音服務處理。請在語音面板中啟用以表示同意。",
+		"startFailed": "無法開始通話。請再試一次。"
 	},
 	"flows": {
 		"none": "還沒有流程",
@@ -2862,7 +3034,15 @@
 		"overlapBufferOne": "結束後執行一次",
 		"overlapAllowAll": "仍然執行",
 		"deleteReminderTitle": "刪除「{name}」？",
-		"deleteReminderBody": "這個排程工作會停止執行並被刪除。過去的執行仍留在執行紀錄中。"
+		"deleteReminderBody": "這個排程工作會停止執行並被刪除。過去的執行仍留在執行紀錄中。",
+		"triggerOnEvent": "當 {event} 時",
+		"triggerWatch": "監看：{target}",
+		"triggerWatchPlugin": "監看：外掛",
+		"triggerManual": "手動觸發",
+		"scheduleTooSpecific": "這個排程比簡易編輯器能表示的更細",
+		"askSetupPrompt": "幫我設定一個新流程：",
+		"everyNHours": "每 N 小時",
+		"everyNMinutes": "每 N 分鐘"
 	},
 	"christen": {
 		"title": "為你的第一位員工取個名字",
@@ -2884,7 +3064,27 @@
 		"working": "正在確認需要哪些權限…",
 		"willDo": "{name}將會：",
 		"thisEmployee": "這位員工",
-		"removeItem": "移除{item}"
+		"removeItem": "移除{item}",
+		"hireFromApps": "從其他應用程式聘用",
+		"linkedLede": "他們會繼續在原本執行的電腦上工作。",
+		"thisComputer": "這台電腦",
+		"offline": "離線",
+		"linkedFailed": "無法從 {bot} 聘用。請再試一次。",
+		"onYourTeam": "已在你的團隊中",
+		"linkedLooking": "正在尋找應用程式…",
+		"linkedHireNew": "聘用一位新的",
+		"linkedConnect": "連接你的代理程式",
+		"linkedRunning": "{count} 個執行中",
+		"nameYour": "為你的 {app} 命名",
+		"youAlreadyHave": "你已經有：",
+		"nameTaken": "你已經有一位名叫 {name} 的員工。",
+		"linkedWhere": "它應該在哪台電腦上工作？",
+		"linkedPickAgent": "哪一個 {app} 代理程式？",
+		"linkedModeTitle": "它可以不經詢問就做哪些事？",
+		"linkedModeAutomaticDesc": "自行編輯其資料夾內的檔案。其他事情會先詢問。",
+		"linkedModeAskDesc": "變更任何東西之前都會先問你。",
+		"linkedModePlanDesc": "只讀取和規劃，不做任何變更。",
+		"linkedModeFullAccessDesc": "不經詢問就能在這台電腦上執行任何東西。"
 	},
 	"runLimit": {
 		"title": "每次執行的花費上限",
@@ -3098,5 +3298,526 @@
 		"unreviewed": "尚未檢視",
 		"loadMore": "顯示更多",
 		"addJobEdit": "加入工作"
+	},
+	"workflow": {
+		"addNode": "新增節點",
+		"deleteNode": "刪除節點",
+		"deleteWorkflow": "刪除工作流程",
+		"removeItem": "移除 {name}",
+		"activityCount": "{count, plural, other {# 個活動}}",
+		"stepCount": "{count, plural, other {# 個步驟}}",
+		"triggerTypes": {
+			"schedule": "排程",
+			"heartbeat": "心跳",
+			"event": "事件",
+			"watch": "監看",
+			"manual": "手動"
+		},
+		"branch": {
+			"true": "是",
+			"false": "否",
+			"eachItem": "每一項",
+			"done": "完成"
+		},
+		"types": {
+			"greeting": {
+				"label": "問候語",
+				"description": "這條線路接聽時說的話",
+				"params": {
+					"text": {
+						"label": "問候語",
+						"description": "通話接通時逐字說出。",
+						"placeholder": "感謝來電米勒牙醫！有什麼可以幫你的嗎？"
+					}
+				}
+			},
+			"intent": {
+				"label": "意圖",
+				"description": "這條線路處理的一項工作，以及它可以使用的工具",
+				"params": {
+					"name": {
+						"label": "意圖名稱",
+						"description": "路由器使用的簡短 ID（每個選單中不可重複）。"
+					},
+					"description": {
+						"label": "來電者想要的是",
+						"placeholder": "來電者想預約、改約或取消預約"
+					},
+					"tools": {
+						"label": "允許的工具",
+						"description": "僅限此意圖的 tool:resource 授權，以逗號分隔。"
+					},
+					"workflows": {
+						"label": "允許的工作流程",
+						"description": "此意圖可以執行的這位員工工作流程名稱，以逗號分隔。"
+					},
+					"plugins": {
+						"label": "允許的外掛",
+						"description": "外掛 slug，以逗號分隔。"
+					},
+					"mcp": {
+						"label": "允許的 MCP 伺服器",
+						"description": "已連線的 MCP 伺服器名稱，以逗號分隔。"
+					}
+				}
+			},
+			"transfer": {
+				"label": "轉接真人",
+				"description": "即時轉接到線路的轉接號碼",
+				"params": {
+					"when": {
+						"label": "何時轉接",
+						"placeholder": "來電者要求找人、情緒不佳，或有緊急狀況"
+					},
+					"to": {
+						"label": "轉接給",
+						"description": "告訴來電者要為他轉接給誰。號碼本身保留在線路設定中。",
+						"placeholder": "我們的辦公室經理"
+					}
+				}
+			},
+			"takeMessage": {
+				"label": "留言",
+				"description": "為負責人記下留言（備援做法）",
+				"params": {
+					"fields": {
+						"label": "要記下什麼",
+						"placeholder": "姓名、電話、來電原因、方便回電的時間"
+					}
+				}
+			},
+			"disclosures": {
+				"label": "可以告知",
+				"description": "這條線路不用查詢就能直接說明的資訊",
+				"params": {
+					"text": {
+						"label": "核准的資訊",
+						"description": "負責人核准、可對外說明的這條線路資訊——營業時間、地址、服務範圍、基本價格。客戶或帳戶的具體資料絕不列在這裡；那些要透過查詢取得。",
+						"placeholder": "週一至週五 8–5 營業。地址：中山路 123 號。洗牙 $120 起。"
+					}
+				}
+			},
+			"custom": {
+				"label": "自訂",
+				"description": "手動定義步驟和技能"
+			},
+			"research": {
+				"label": "研究",
+				"description": "網路搜尋、分析與彙整",
+				"params": {
+					"depth": {
+						"label": "研究深度",
+						"options": {
+							"quick": "快速（2-5 分鐘）",
+							"standard": "標準（5-10 分鐘）",
+							"deep": "深入（10-20 分鐘）"
+						}
+					},
+					"sources": {
+						"label": "來源類型",
+						"description": "要搜尋的來源類型，以逗號分隔",
+						"placeholder": "網路、學術、新聞"
+					}
+				}
+			},
+			"email": {
+				"label": "傳送電子郵件",
+				"description": "撰寫並傳送電子郵件",
+				"params": {
+					"to": {
+						"label": "收件者",
+						"description": "收件者電子郵件地址（或使用上游資料）"
+					},
+					"subject": {
+						"label": "主旨範本"
+					}
+				}
+			},
+			"notify": {
+				"label": "通知",
+				"description": "傳送通知到頻道",
+				"params": {
+					"channel": {
+						"label": "頻道",
+						"options": {
+							"email": "電子郵件",
+							"webhook": "Webhook"
+						}
+					},
+					"target": {
+						"label": "目標",
+						"description": "頻道名稱、電子郵件或 Webhook URL",
+						"placeholder": "#general 或 user@example.com"
+					}
+				}
+			},
+			"code": {
+				"label": "執行程式碼",
+				"description": "執行一段程式碼",
+				"params": {
+					"language": {
+						"label": "語言"
+					},
+					"code": {
+						"label": "程式碼",
+						"description": "要執行的程式碼"
+					}
+				}
+			},
+			"condition": {
+				"label": "條件",
+				"description": "If/else 分支",
+				"params": {
+					"expression": {
+						"label": "條件運算式",
+						"description": "JavaScript 運算式——結果為真走「是」分支，為假走「否」分支"
+					},
+					"mode": {
+						"label": "判斷方式",
+						"options": {
+							"expression": "運算式",
+							"contains": "資料包含",
+							"exists": "欄位存在",
+							"regex": "正規表示式比對"
+						}
+					}
+				}
+			},
+			"loop": {
+				"label": "迴圈",
+				"description": "逐一處理清單中的項目",
+				"params": {
+					"source": {
+						"label": "項目來源",
+						"description": "要逐一處理的陣列路徑",
+						"placeholder": "data.items 或 data.emails"
+					},
+					"maxIterations": {
+						"label": "最多次數",
+						"description": "防止無限迴圈的安全上限"
+					}
+				}
+			},
+			"wait": {
+				"label": "等待",
+				"description": "暫停執行",
+				"params": {
+					"duration": {
+						"label": "等待時間",
+						"options": {
+							"5s": "5 秒",
+							"30s": "30 秒",
+							"1m": "1 分鐘",
+							"5m": "5 分鐘",
+							"15m": "15 分鐘",
+							"1h": "1 小時",
+							"custom": "自訂"
+						}
+					},
+					"waitUntil": {
+						"label": "或等到",
+						"description": "這個事件觸發時繼續（留空則依等待時間）",
+						"placeholder": "例如 event:approval.received"
+					}
+				}
+			},
+			"agent": {
+				"label": "員工",
+				"description": "交給另一位員工處理",
+				"params": {
+					"agentId": {
+						"label": "員工",
+						"description": "要把這項任務交給哪位員工"
+					},
+					"instructions": {
+						"label": "指示",
+						"description": "覆寫或補充這位員工的預設人設",
+						"placeholder": "給受託員工的具體指示…"
+					}
+				}
+			},
+			"connector": {
+				"label": "連接器",
+				"description": "使用 MCP 整合",
+				"params": {
+					"serverId": {
+						"label": "MCP 伺服器",
+						"description": "要使用的已連線 MCP 伺服器"
+					},
+					"tool": {
+						"label": "工具",
+						"description": "要在 MCP 伺服器上呼叫哪個工具",
+						"placeholder": "例如 read_file、send_message"
+					},
+					"input": {
+						"label": "輸入",
+						"description": "工具的 JSON 輸入（支援 '{{'data.field'}}' 範本）"
+					}
+				}
+			},
+			"http": {
+				"label": "HTTP 請求",
+				"description": "發出 HTTP API 呼叫",
+				"params": {
+					"method": {
+						"label": "方法"
+					},
+					"url": {
+						"label": "URL"
+					},
+					"body": {
+						"label": "請求內容",
+						"description": "POST/PUT/PATCH 請求的 JSON 內容"
+					},
+					"headers": {
+						"label": "標頭",
+						"description": "每行一個標頭（key: value）"
+					}
+				}
+			},
+			"decide": {
+				"label": "判斷",
+				"description": "用具型別的問題分類或評判資料",
+				"params": {
+					"state": {
+						"label": "狀態",
+						"description": "要評判的資料路徑（inputs.*、item、nodes.'<'id>.*）"
+					},
+					"questions": {
+						"label": "問題",
+						"description": "具型別問題的 JSON 物件（choice、score、noul）。條件節點依 nodes.'<'id>.'<'question>.choice 和 .confidence 分流"
+					},
+					"default": {
+						"label": "預設答案",
+						"description": "無法做出判斷時使用的答案：choice 用一個選項、score 用一個等級、noul 用 true 或 false。節點接著會設定 nodes.'<'id>.defaulted"
+					}
+				}
+			},
+			"transform": {
+				"label": "轉換",
+				"description": "重整或篩選資料",
+				"params": {
+					"operation": {
+						"label": "操作",
+						"options": {
+							"map": "Map——轉換每個項目",
+							"filter": "Filter——保留符合的項目",
+							"reduce": "Reduce——彙總成一個值",
+							"pick": "Pick——擷取特定欄位",
+							"template": "Template——格式化為文字"
+						}
+					},
+					"expression": {
+						"label": "運算式",
+						"description": "轉換運算式"
+					}
+				}
+			}
+		},
+		"catalog": {
+			"searchPlaceholder": "搜尋節點…",
+			"noMatch": "沒有符合「{query}」的節點",
+			"toolsAvailable": "{count, plural, other {有 # 個可用工具}}",
+			"categories": {
+				"triggers": "觸發器",
+				"activities": "活動",
+				"callTree": "來電選單",
+				"flowControl": "流程控制",
+				"connectors": "連接器（MCP）",
+				"agents": "員工",
+				"output": "輸出"
+			},
+			"items": {
+				"triggerSchedule": {
+					"label": "排程",
+					"desc": "在設定的時間執行"
+				},
+				"triggerEvent": {
+					"label": "事件",
+					"desc": "回應事件"
+				},
+				"triggerHeartbeat": {
+					"label": "心跳",
+					"desc": "依間隔執行"
+				},
+				"triggerManual": {
+					"label": "手動",
+					"desc": "需要時執行"
+				},
+				"activityCustom": {
+					"label": "自訂活動",
+					"desc": "定義步驟和技能"
+				},
+				"activityResearch": {
+					"label": "研究",
+					"desc": "網路搜尋與分析"
+				},
+				"activityEmail": {
+					"label": "傳送電子郵件",
+					"desc": "撰寫並傳送電子郵件"
+				},
+				"activityNotify": {
+					"label": "通知",
+					"desc": "傳送通知"
+				},
+				"activityCode": {
+					"label": "執行程式碼",
+					"desc": "執行一段程式碼"
+				},
+				"activityHttp": {
+					"label": "HTTP 請求",
+					"desc": "發出 API 呼叫"
+				},
+				"activityDecide": {
+					"label": "判斷",
+					"desc": "分類或評判資料"
+				},
+				"activityTransform": {
+					"label": "轉換",
+					"desc": "重整或篩選資料"
+				},
+				"activityGreeting": {
+					"label": "問候語",
+					"desc": "線路接聽時說的話"
+				},
+				"activityIntent": {
+					"label": "意圖",
+					"desc": "一項工作＋它可以使用的工具"
+				},
+				"activityTransfer": {
+					"label": "轉接真人",
+					"desc": "即時轉接——寫明要轉接給誰"
+				},
+				"activityTakeMessage": {
+					"label": "留言",
+					"desc": "記下留言（備援做法）"
+				},
+				"activityDisclosures": {
+					"label": "可以告知",
+					"desc": "這條線路直接說明的資訊（營業時間、地址、價格）"
+				},
+				"flowCondition": {
+					"label": "條件",
+					"desc": "If/else 分支"
+				},
+				"flowLoop": {
+					"label": "迴圈",
+					"desc": "逐一處理項目"
+				},
+				"flowWait": {
+					"label": "等待",
+					"desc": "暫停或等待事件"
+				},
+				"emit": {
+					"label": "發出事件",
+					"desc": "宣告完成事件"
+				}
+			}
+		},
+		"eventSources": {
+			"label": "事件來源",
+			"searchPlaceholder": "輸入以搜尋來源…",
+			"hint": "輸入以搜尋已知來源，按 Enter 新增。也可以用自訂名稱和萬用字元（email.*）。"
+		},
+		"flow": {
+			"triggerManual": "在你啟動時執行",
+			"triggerSchedule": "依排程",
+			"triggerEventAny": "當事件觸發時",
+			"triggerWatch": "監看 {name}",
+			"triggerWatchAny": "監看一個外掛",
+			"applying": "套用中…",
+			"go": "執行",
+			"tellAi": "告訴 AI 要改什麼",
+			"tellAiEllipsis": "告訴 AI 要改什麼…",
+			"badgeExact": "精確",
+			"badgeAgent": "員工",
+			"emptyCode": "（空白）",
+			"stepPlaceholder": "這個步驟要做什麼？",
+			"changeStep": "修改「{name}」…",
+			"forEach": "對每個 {item}",
+			"loopItemDefault": "項目",
+			"loopEmpty": "這個迴圈裡還沒有內容。",
+			"pathDefault": "路徑",
+			"pathEmpty": "空的路徑",
+			"addStepHere": "在這裡新增步驟",
+			"connected": "{name} 已連線",
+			"notConnected": "{name} 未連線——這個流程會失敗",
+			"connect": "連線",
+			"describeFlowChange": "描述你想對整個流程做的變更…",
+			"edit": "編輯",
+			"emits": "發出",
+			"noSteps": "這個流程還沒有步驟。"
+		},
+		"panel": {
+			"backToOverview": "返回工作流程總覽",
+			"intent": "意圖",
+			"addSkill": "新增技能…",
+			"parameters": "參數",
+			"addStep": "新增步驟…",
+			"manualHint": "只在手動觸發時執行。",
+			"notConfigured": "未設定",
+			"noEventConfigured": "未設定事件",
+			"noDescription": "沒有描述",
+			"emitPlaceholder": "例如 {name}",
+			"emitOptional": "選填——執行完成時，其他工作流程可以依此觸發。",
+			"useEmit": "使用 {name}",
+			"emitRenameWarning": "重新命名會讓訂閱這個事件的工作流程失效。",
+			"none": "無",
+			"apiEndpoint": "API 端點",
+			"apiEndpointHint": "到員工的「設定 → Webhook」為這個工作流程建立金鑰。"
+		},
+		"schedule": {
+			"weekends": "週末",
+			"custom": "自訂",
+			"daysOfWeek": "星期幾",
+			"monthly": "每月",
+			"biannual": "每 6 個月",
+			"yearly": "每年",
+			"onDay": "日期",
+			"biannualNote": "於 {firstMonth} {day} 日和 {secondMonth} {day} 日執行。",
+			"shortMonthsSkipped": "沒有 {day} 日的月份會略過。",
+			"limitToHours": "限定時段",
+			"rangeTo": "到"
+		},
+		"watch": {
+			"plugin": "外掛",
+			"choosePlugin": "選擇外掛…",
+			"whenItReports": "當它回報",
+			"chooseEvent": "選擇事件…",
+			"hint": "每當 {plugin} 回報 {event} 時執行；其他流程也可以監聽 {plugin}.{event}。"
+		},
+		"validation": {
+			"emptyId": "「{workflow}」中有活動的 ID 是空的",
+			"duplicateId": "「{workflow}」中的活動 ID「{id}」重複",
+			"conditionExpression": "條件「{id}」需要運算式——分流是固定規則，絕不由 AI 決定",
+			"loopSource": "迴圈「{id}」需要資料來源（例如 inputs.items）",
+			"httpUrl": "HTTP 節點「{id}」需要 URL",
+			"decideQuestions": "判斷節點「{id}」需要問題（具型別問題的 JSON 物件）",
+			"waitDuration": "等待節點「{id}」需要等待時間",
+			"needsIntent": "「{workflow}」中的活動「{id}」需要意圖或步驟",
+			"targetsTrigger": "有連線指向觸發器",
+			"leavesEmit": "有連線從發出節點出去",
+			"unknownFrom": "連線來自不明節點「{id}」",
+			"unknownTo": "連線指向不明節點「{id}」",
+			"duplicateConnection": "重複的連線 {from} → {to}",
+			"labeledNonBranching": "有標籤的連線「{label}」從非分支節點「{id}」出去",
+			"unlabeledBranch": "從「{id}」出去的連線必須帶有分支標籤",
+			"cycle": "圖中有循環（只有迴圈的「每一項」分支可以回到它的迴圈）"
+		},
+		"builder": {
+			"unsavedConfirm": "你有未儲存的變更。要捨棄並關閉嗎？",
+			"workflowLabel": "{name}（{count, plural, other {# 個活動}}）",
+			"undo": "復原（Cmd+Z）",
+			"redo": "重做（Cmd+Shift+Z）",
+			"issueCount": "{count, plural, other {# 個問題}}",
+			"discard": "捨棄",
+			"hideDetails": "隱藏詳細資料面板",
+			"showDetails": "顯示詳細資料面板",
+			"newWorkflowTitle": "新工作流程",
+			"empty": "沒有工作流程——建立一個開始吧",
+			"newWorkflow": "新工作流程",
+			"confirmDeleteWorkflow": "確定要刪除這個工作流程嗎？它的所有活動和連線都會被移除。",
+			"confirmDeleteNode": "確定要刪除這個節點嗎？它的連線會自動重新接上。"
+		}
 	}
 }

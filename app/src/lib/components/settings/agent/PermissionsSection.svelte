@@ -197,9 +197,9 @@
   {@const note = inheritedNote(sw)}
   <li class="flex items-center gap-3 py-2 flex-wrap">
     <span class="flex-1 min-w-0 text-sm">
-      {#if sw.locked}<Lock class="w-3.5 h-3.5 inline mr-1 align-[-2px] text-base-content/50" />{/if}
+      {#if sw.locked}<Lock class="w-3.5 h-3.5 inline me-1 align-[-2px] text-base-content/50" />{/if}
       {title || sw.sentence}
-      {#if note}<span class="text-xs text-base-content/50 ml-1.5">{$t(note)}</span>{/if}
+      {#if note}<span class="text-xs text-base-content/50 ms-1.5">{$t(note)}</span>{/if}
     </span>
     {@render toggle(sw)}
   </li>
@@ -211,7 +211,7 @@
     <span class="flex-1 min-w-0 text-sm">
       {item.sentence}
       {#if item.fromCompany}
-        <span class="badge badge-ghost badge-xs ml-1.5 align-middle">{$t('permissions.fromCompany')}</span>
+        <span class="badge badge-ghost badge-xs ms-1.5 align-middle">{$t('permissions.fromCompany')}</span>
       {/if}
     </span>
     {#if item.removable}
@@ -318,7 +318,7 @@
             <div class="flex items-start gap-3">
               <span class="flex-1 min-w-0 text-sm">
                 {item.sentence}
-                {#if item.fromCompany}<span class="badge badge-ghost badge-xs ml-1.5 align-middle">{$t('permissions.fromCompany')}</span>{/if}
+                {#if item.fromCompany}<span class="badge badge-ghost badge-xs ms-1.5 align-middle">{$t('permissions.fromCompany')}</span>{/if}
               </span>
               {#if item.removable}
                 <button type="button" class="btn btn-ghost btn-xs btn-square shrink-0" aria-label={$t('permissions.remove')} title={$t('permissions.remove')} onclick={() => removeItem(item)}>

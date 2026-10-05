@@ -85,7 +85,7 @@
       {#each shown as r (r.id)}
         <button
           type="button"
-          class="w-full text-left flex items-center gap-2.5 py-2.5 px-4 border-b border-base-content/8 bg-transparent cursor-pointer hover:bg-base-200/60 transition-colors"
+          class="w-full text-start flex items-center gap-2.5 py-2.5 px-4 border-b border-base-content/8 bg-transparent cursor-pointer hover:bg-base-200/60 transition-colors"
           onclick={() => onopen(r.id)}
         >
           <span class="w-2 h-2 rounded-full shrink-0 {dotClass(r.status)}"></span>

@@ -8,6 +8,8 @@
  * modal never opened.
  */
 
+import { get } from 'svelte/store';
+import { t } from 'svelte-i18n';
 import { installFlow } from '$lib/stores/installFlow';
 import { getWebSocketClient } from '$lib/websocket/client';
 
@@ -27,17 +29,18 @@ const TYPE_BY_PREFIX: Record<string, string> = {
   CONN: 'connection',
 };
 
-const STATUS_BY_TYPE: Record<string, string> = {
-  nebo: 'Connecting to NeboAI...',
-  skill: 'Installing skill...',
-  workflow: 'Installing workflow...',
-  agent: 'Installing agent...',
-  loop: 'Joining loop...',
-  plugin: 'Installing plugin...',
-  app: 'Installing app...',
-  collection: 'Installing collection...',
-  connection: 'Adding MCP connection...',
-};
+/** The install modal's first status line per code type (installFlow.codeStatus.*). */
+const STATUS_BY_TYPE = new Set([
+  'nebo',
+  'skill',
+  'workflow',
+  'agent',
+  'loop',
+  'plugin',
+  'app',
+  'collection',
+  'connection',
+]);
 
 /** One code, normalized, and its resolved type. */
 export interface InstallCode {
@@ -94,7 +97,9 @@ function openInstallModal(match: InstallCode) {
   installFlow.openCode({
     code: match.code,
     codeType: match.codeType,
-    statusMessage: STATUS_BY_TYPE[match.codeType] || 'Processing...',
+    statusMessage: get(t)(
+      STATUS_BY_TYPE.has(match.codeType) ? `installFlow.codeStatus.${match.codeType}` : 'installFlow.processing'
+    ),
   });
 }
 

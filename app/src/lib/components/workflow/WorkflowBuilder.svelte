@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { t } from 'svelte-i18n';
 	import FlowChain from './FlowChain.svelte';
 	import { extractOpsBlock } from '$lib/utils/workflowOps';
 	import { createChatController } from '$lib/chat/controller.svelte';
@@ -120,27 +121,27 @@
 
 			for (const act of acts) {
 				if (!act.id || !act.id.trim()) {
-					err(`Activity in "${wfName}" has an empty ID`, act.id);
+					err($t('workflow.validation.emptyId', { values: { workflow: wfName } }), act.id);
 				} else if (seen.has(act.id)) {
-					err(`Duplicate activity ID "${act.id}" in "${wfName}"`, act.id);
+					err($t('workflow.validation.duplicateId', { values: { id: act.id, workflow: wfName } }), act.id);
 				}
 				seen.add(act.id);
 
-				const t = act.type || 'custom';
+				const actType = act.type || 'custom';
 				const params = (act.params ?? {}) as Record<string, unknown>;
 				const pstr = (k: string) => String(params[k] ?? '').trim();
-				if (t === 'condition') {
-					if (!pstr('expression')) err(`Condition "${act.id}" needs an expression — routing is deterministic, never AI-decided`, act.id);
-				} else if (t === 'loop') {
-					if (!pstr('source')) err(`Loop "${act.id}" needs a data source (e.g. inputs.items)`, act.id);
-				} else if (t === 'http') {
-					if (!pstr('url')) err(`HTTP node "${act.id}" needs a URL`, act.id);
-				} else if (t === 'decide') {
-					if (!pstr('questions')) err(`Decide node "${act.id}" needs questions (a JSON object of typed questions)`, act.id);
-				} else if (t === 'wait') {
-					if (!pstr('duration')) err(`Wait node "${act.id}" needs a duration`, act.id);
+				if (actType === 'condition') {
+					if (!pstr('expression')) err($t('workflow.validation.conditionExpression', { values: { id: act.id } }), act.id);
+				} else if (actType === 'loop') {
+					if (!pstr('source')) err($t('workflow.validation.loopSource', { values: { id: act.id } }), act.id);
+				} else if (actType === 'http') {
+					if (!pstr('url')) err($t('workflow.validation.httpUrl', { values: { id: act.id } }), act.id);
+				} else if (actType === 'decide') {
+					if (!pstr('questions')) err($t('workflow.validation.decideQuestions', { values: { id: act.id } }), act.id);
+				} else if (actType === 'wait') {
+					if (!pstr('duration')) err($t('workflow.validation.waitDuration', { values: { id: act.id } }), act.id);
 				} else if ((!act.intent || !act.intent.trim()) && !(act.steps && act.steps.length > 0)) {
-					err(`Activity "${act.id}" in "${wfName}" needs an intent or steps`, act.id);
+					err($t('workflow.validation.needsIntent', { values: { id: act.id, workflow: wfName } }), act.id);
 				}
 			}
 
@@ -150,18 +151,18 @@
 				const loops = acts.filter(a => (a.type || 'custom') === 'loop').map(a => a.id);
 				const seenEdges = new Set<string>();
 				for (const c of conns) {
-					if (c.to === '__trigger__') err('A connection targets the trigger');
-					if (c.from === '__emit__') err('A connection leaves the emit node');
-					if (c.from !== '__trigger__' && !ids.has(c.from)) err(`Connection from unknown node "${c.from}"`);
-					if (c.to !== '__emit__' && !ids.has(c.to)) err(`Connection to unknown node "${c.to}"`);
+					if (c.to === '__trigger__') err($t('workflow.validation.targetsTrigger'));
+					if (c.from === '__emit__') err($t('workflow.validation.leavesEmit'));
+					if (c.from !== '__trigger__' && !ids.has(c.from)) err($t('workflow.validation.unknownFrom', { values: { id: c.from } }));
+					if (c.to !== '__emit__' && !ids.has(c.to)) err($t('workflow.validation.unknownTo', { values: { id: c.to } }));
 					const key = `${c.from}→${c.to}→${c.label ?? ''}`;
-					if (seenEdges.has(key)) err(`Duplicate connection ${c.from} → ${c.to}`);
+					if (seenEdges.has(key)) err($t('workflow.validation.duplicateConnection', { values: { from: c.from, to: c.to } }));
 					seenEdges.add(key);
 					if (c.label && ids.has(c.from) && !branching.has(c.from)) {
-						err(`Labeled edge "${c.label}" leaves non-branching node "${c.from}"`, c.from);
+						err($t('workflow.validation.labeledNonBranching', { values: { label: c.label, id: c.from } }), c.from);
 					}
 					if (!c.label && branching.has(c.from)) {
-						err(`Edges leaving "${c.from}" must carry a branch label`, c.from);
+						err($t('workflow.validation.unlabeledBranch', { values: { id: c.from } }), c.from);
 					}
 				}
 
@@ -195,7 +196,7 @@
 					return false;
 				};
 				if ([...ids].some(id => cyclic(id))) {
-					err('The graph contains a cycle (only a loop’s Each-item body may return to its loop)');
+					err($t('workflow.validation.cycle'));
 				}
 			}
 		}
@@ -218,7 +219,7 @@
 
 	function handleClose() {
 		if (isDirty) {
-			if (!confirm('You have unsaved changes. Discard and close?')) return;
+			if (!confirm($t('workflow.builder.unsavedConfirm'))) return;
 		}
 		onclose?.();
 	}
@@ -508,13 +509,13 @@
 
 	function handleConfirmRemoveNode(nodeId: string) {
 		if (nodeId === '__trigger__') return;
-		const label = nodeId === '__emit__' ? 'Emit' : nodeId;
+		const label = nodeId === '__emit__' ? $t('workflowCanvas.emit') : nodeId;
 		confirmModal = { type: 'node', nodeId, label };
 	}
 
 	function handleConfirmRemoveWorkflow() {
 		const actCount = activeWorkflow?.activities?.length ?? 0;
-		const label = `${activeWorkflowName} (${actCount} ${actCount === 1 ? 'activity' : 'activities'})`;
+		const label = $t('workflow.builder.workflowLabel', { values: { name: activeWorkflowName, count: actCount } });
 		confirmModal = { type: 'workflow', label };
 	}
 
@@ -655,11 +656,11 @@
 		<div class="flex items-center gap-2 px-3 py-2 border-b border-base-content/10 shrink-0 bg-base-100 max-md:flex-wrap">
 			{#if mode === 'edit'}
 				<!-- Undo -->
-				<button class="btn btn-sm btn-ghost btn-square" title="Undo (Cmd+Z)" disabled={!canUndo} onclick={undo}>
+				<button class="btn btn-sm btn-ghost btn-square" title={$t('workflow.builder.undo')} aria-label={$t('workflow.builder.undo')} disabled={!canUndo} onclick={undo}>
 					<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>
 				</button>
 				<!-- Redo -->
-				<button class="btn btn-sm btn-ghost btn-square" title="Redo (Cmd+Shift+Z)" disabled={!canRedo} onclick={redo}>
+				<button class="btn btn-sm btn-ghost btn-square" title={$t('workflow.builder.redo')} aria-label={$t('workflow.builder.redo')} disabled={!canRedo} onclick={redo}>
 					<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.13-9.36L23 10"/></svg>
 				</button>
 
@@ -669,7 +670,7 @@
 					onclick={() => handleOpenCatalog(null)}
 				>
 					<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-					<span class="text-xs">Add Node</span>
+					<span class="text-xs">{$t('workflow.addNode')}</span>
 				</button>
 
 				<!-- Tidy Up lives in the canvas control cluster (next to zoom /
@@ -684,21 +685,21 @@
 			{#if hasErrors && mode === 'edit'}
 				<div class="flex items-center gap-1.5 text-xs text-warning" title={validationErrors.map(e => e.message).join('\n')}>
 					<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
-					<span>{validationErrors.length} {validationErrors.length === 1 ? 'issue' : 'issues'}</span>
+					<span>{$t('workflow.builder.issueCount', { values: { count: validationErrors.length } })}</span>
 				</div>
 			{/if}
 
 			<!-- Save / Discard -->
 			{#if isDirty && mode === 'edit'}
-				<button class="btn btn-sm btn-ghost text-xs" onclick={handleDiscard}>Discard</button>
-				<button class="btn btn-sm btn-primary text-xs" disabled={hasErrors} onclick={handleSave}>Save</button>
+				<button class="btn btn-sm btn-ghost text-xs" onclick={handleDiscard}>{$t('workflow.builder.discard')}</button>
+				<button class="btn btn-sm btn-primary text-xs" disabled={hasErrors} onclick={handleSave}>{$t('common.save')}</button>
 			{/if}
 
 			<!-- Config panel toggle — mirrors the Architect toggle on the left -->
 			<button
 				class="btn btn-sm btn-ghost btn-square {configOpen ? 'btn-active' : ''}"
-				title="{configOpen ? 'Hide' : 'Show'} details panel"
-				aria-label="{configOpen ? 'Hide' : 'Show'} details panel"
+				title={configOpen ? $t('workflow.builder.hideDetails') : $t('workflow.builder.showDetails')}
+				aria-label={configOpen ? $t('workflow.builder.hideDetails') : $t('workflow.builder.showDetails')}
 				onclick={() => configOpen = !configOpen}
 			>
 				<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="15" y1="3" x2="15" y2="21"/></svg>
@@ -718,7 +719,8 @@
 				<button
 					class="px-2 py-1 max-md:px-3 max-md:py-2.5 max-md:text-base text-xs text-base-content/40 hover:text-base-content/70 cursor-pointer border-none bg-transparent rounded-md hover:bg-base-100/50 transition-colors shrink-0"
 					onclick={handleNewWorkflow}
-					title="New workflow"
+					title={$t('workflow.builder.newWorkflowTitle')}
+					aria-label={$t('workflow.builder.newWorkflowTitle')}
 				>+</button>
 			</div>
 		{/if}
@@ -744,8 +746,8 @@
 			{:else}
 				<div class="flex h-full items-center justify-center flex-col gap-3">
 					<div class="text-3xl text-base-content/20">+</div>
-					<span class="text-xs text-base-content/50">No workflows — create one to get started</span>
-					<button class="btn btn-sm btn-primary" onclick={handleNewWorkflow}>New Workflow</button>
+					<span class="text-xs text-base-content/50">{$t('workflow.builder.empty')}</span>
+					<button class="btn btn-sm btn-primary" onclick={handleNewWorkflow}>{$t('workflow.builder.newWorkflow')}</button>
 				</div>
 			{/if}
 
@@ -753,7 +755,7 @@
 			{#if catalogOpen}
 				<!-- svelte-ignore a11y_no_static_element_interactions -->
 				<div
-					class="absolute right-0 top-0 bottom-0 z-[70] w-[300px] border-l border-base-content/10 bg-base-100 shadow-xl flex flex-col"
+					class="absolute end-0 top-0 bottom-0 z-[70] w-[300px] border-s border-base-content/10 bg-base-100 shadow-xl flex flex-col"
 					ondragover={(e) => e.preventDefault()}
 					ondrop={(e) => { e.preventDefault(); e.stopPropagation(); }}
 				>
@@ -803,13 +805,13 @@
 			onclick={(e) => e.stopPropagation()}
 		>
 			<div class="text-base font-semibold mb-2">
-				{confirmModal.type === 'workflow' ? 'Delete Workflow' : 'Delete Node'}
+				{confirmModal.type === 'workflow' ? $t('workflow.deleteWorkflow') : $t('workflow.deleteNode')}
 			</div>
 			<div class="text-sm text-base-content/70 mb-1">
 				{#if confirmModal.type === 'workflow'}
-					Are you sure you want to delete this workflow? This will remove all its activities and connections.
+					{$t('workflow.builder.confirmDeleteWorkflow')}
 				{:else}
-					Are you sure you want to delete this node? Its connections will be reconnected automatically.
+					{$t('workflow.builder.confirmDeleteNode')}
 				{/if}
 			</div>
 			<div class="text-xs font-mono text-base-content/50 bg-base-200 rounded px-2.5 py-1.5 mb-5 truncate">
@@ -819,11 +821,11 @@
 				<button
 					class="btn btn-sm btn-ghost"
 					onclick={() => confirmModal = null}
-				>Cancel</button>
+				>{$t('common.cancel')}</button>
 				<button
 					class="btn btn-sm btn-error"
 					onclick={executeConfirm}
-				>Delete</button>
+				>{$t('common.delete')}</button>
 			</div>
 		</div>
 	</div>

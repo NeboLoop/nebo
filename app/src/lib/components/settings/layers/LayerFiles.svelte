@@ -139,7 +139,7 @@
       {$t('settingsLayers.allFiles')}
     </button>
     <span class="text-xs font-mono font-semibold truncate min-w-0">{openPath}</span>
-    <span class="ml-auto flex items-center gap-2 shrink-0">
+    <span class="ms-auto flex items-center gap-2 shrink-0">
       {#if saved}
         <span class="text-xs text-success flex items-center gap-1"><Check class="w-3 h-3" /> {$t('common.saved')}</span>
       {/if}
@@ -194,7 +194,7 @@
         <div class="flex flex-col gap-0.5">
           {#each group.files as file (file.path)}
             <button
-              class="flex items-center gap-2 py-1.5 px-2.5 rounded-lg text-left hover:bg-base-200 transition-colors cursor-pointer bg-transparent border-none w-full"
+              class="flex items-center gap-2 py-1.5 px-2.5 rounded-lg text-start hover:bg-base-200 transition-colors cursor-pointer bg-transparent border-none w-full"
               onclick={() => open(file.path)}
             >
               <FileText class="w-3.5 h-3.5 text-base-content/40 shrink-0" />
