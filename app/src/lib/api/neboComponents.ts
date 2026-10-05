@@ -781,6 +781,12 @@ export interface ListTasksResponse {
 	total: number
 }
 
+export interface LocatedFile {
+	url: string
+	filename: string
+	directory: boolean
+}
+
 export interface LoginResponse {
 	token: string
 	refreshToken: string

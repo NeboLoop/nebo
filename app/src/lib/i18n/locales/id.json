@@ -462,6 +462,7 @@
 		"storageNextFree": "Ruang berikutnya kosong pada {date}.",
 		"uploadFailed": "Unggahan file gagal — pesan tidak terkirim. {reason}",
 		"fileRemoved": "File ini dihapus {days, plural, one {# hari} other {# hari}} setelah diunggah.",
+		"fileGone": "File ini sudah tidak tersedia.",
 		"notDelivered": "Pesan tidak terkirim. Koneksi terputus, jadi kirim lagi."
 	},
 	"chatInput": {

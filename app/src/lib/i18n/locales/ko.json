@@ -462,6 +462,7 @@
 		"storageNextFree": "다음 공간은 {date}에 비워집니다.",
 		"uploadFailed": "파일 업로드에 실패하여 메시지를 보내지 못했습니다. {reason}",
 		"fileRemoved": "이 파일은 업로드된 지 {days, plural, other {#일}} 후에 삭제되었습니다.",
+		"fileGone": "이 파일은 더 이상 사용할 수 없습니다.",
 		"notDelivered": "메시지가 전달되지 않았습니다. 연결이 끊겼으니 다시 보내세요."
 	},
 	"chatInput": {

@@ -462,6 +462,7 @@
 		"storageNextFree": "Op {date} komt er weer ruimte vrij.",
 		"uploadFailed": "Bestand uploaden mislukt — bericht niet verzonden. {reason}",
 		"fileRemoved": "Dit bestand is {days, plural, one {# dag} other {# dagen}} na het uploaden verwijderd.",
+		"fileGone": "Dit bestand is niet meer beschikbaar.",
 		"notDelivered": "Bericht niet afgeleverd. De verbinding viel weg, dus verstuur het opnieuw."
 	},
 	"chatInput": {

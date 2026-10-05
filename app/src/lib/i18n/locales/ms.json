@@ -462,6 +462,7 @@
 		"storageNextFree": "Ruang seterusnya akan kosong pada {date}.",
 		"uploadFailed": "Muat naik fail gagal — mesej tidak dihantar. {reason}",
 		"fileRemoved": "Fail ini telah dialih keluar {days, plural, other {# hari}} selepas dimuat naik.",
+		"fileGone": "Fail ini tidak lagi tersedia.",
 		"notDelivered": "Mesej tidak dihantar. Sambungan terputus, jadi hantar semula."
 	},
 	"chatInput": {

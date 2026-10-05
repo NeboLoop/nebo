@@ -405,25 +405,9 @@ pub async fn serve_file(
 ) -> Result<axum::response::Response, (axum::http::StatusCode, Json<types::api::ErrorResponse>)> {
     let data_dir = config::data_dir().map_err(to_error_response)?;
     let files_root = data_dir.join("files");
-    let full_path = files_root.join(&file_path);
-
-    if !full_path.exists() {
-        return Err(to_error_response(types::NeboError::NotFound));
-    }
-
-    // Path-traversal guard: resolve `..` and symlinks, then confirm the target is still
-    // inside the files/ sandbox. Without this, `GET /api/v1/files/../../<anything>` (or a
-    // symlink) escapes the root and serves arbitrary files. 404 (not 403) to avoid leaking
-    // which paths exist.
-    let canonical = tokio::fs::canonicalize(&full_path)
+    let (canonical, canonical_root) = within_files_root(&files_root, &files_root.join(&file_path))
         .await
-        .map_err(|_| to_error_response(types::NeboError::NotFound))?;
-    let canonical_root = tokio::fs::canonicalize(&files_root)
-        .await
-        .map_err(|_| to_error_response(types::NeboError::NotFound))?;
-    if !canonical.starts_with(&canonical_root) {
-        return Err(to_error_response(types::NeboError::NotFound));
-    }
+        .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
 
     if params.get("preview").map(String::as_str) == Some("pdf")
         && canonical
@@ -435,6 +419,94 @@ pub async fn serve_file(
     }
 
     Ok(stream_file(&canonical, content_type_for(&canonical), request).await)
+}
+
+/// The ONE containment check for anything read out of `<data_dir>/files`:
+/// resolve `..` and symlinks, then confirm the target is still inside the
+/// root. Without it, `GET /api/v1/files/../../<anything>` (or a symlink, or a
+/// path a reply mentions) escapes the root and serves arbitrary files.
+/// Answers the canonical target and the canonical root; None when either does
+/// not exist or the target lies outside — the callers answer 404 (not 403) so
+/// nothing learns which paths exist.
+pub(crate) async fn within_files_root(
+    files_root: &std::path::Path,
+    path: &std::path::Path,
+) -> Option<(std::path::PathBuf, std::path::PathBuf)> {
+    let canonical = tokio::fs::canonicalize(path).await.ok()?;
+    let canonical_root = tokio::fs::canonicalize(files_root).await.ok()?;
+    canonical
+        .starts_with(&canonical_root)
+        .then_some((canonical, canonical_root))
+}
+
+/// A file a reply names by its path, found in the bot's files.
+#[derive(Debug, PartialEq, serde::Serialize)]
+pub struct LocatedFile {
+    /// Where the one file route serves it: `/api/v1/files/<path in files>`.
+    pub url: String,
+    pub filename: String,
+    /// A folder: there is nothing to open.
+    pub directory: bool,
+}
+
+/// Find the file a path in a reply names — absolute, or `~/` under `home` —
+/// inside `files_root`, through [`within_files_root`]. None when it is
+/// missing, is the root itself, or lies anywhere outside the root.
+pub(crate) async fn locate_mention(
+    files_root: &std::path::Path,
+    home: Option<&std::path::Path>,
+    mention: &str,
+) -> Option<LocatedFile> {
+    let path = match mention.strip_prefix("~/") {
+        Some(rest) => home?.join(rest),
+        None => std::path::PathBuf::from(mention),
+    };
+    if !path.is_absolute() {
+        return None;
+    }
+    let (target, root) = within_files_root(files_root, &path).await?;
+    let rel = target.strip_prefix(&root).ok()?;
+    if rel.as_os_str().is_empty() {
+        return None;
+    }
+    let filename = target.file_name()?.to_string_lossy().into_owned();
+    if tokio::fs::metadata(&target).await.ok()?.is_dir() {
+        return Some(LocatedFile {
+            url: String::new(),
+            filename,
+            directory: true,
+        });
+    }
+    let encoded: Vec<String> = rel
+        .components()
+        .map(|c| urlencoding::encode(&c.as_os_str().to_string_lossy()).into_owned())
+        .collect();
+    Some(LocatedFile {
+        url: format!("/api/v1/files/{}", encoded.join("/")),
+        filename,
+        directory: false,
+    })
+}
+
+#[derive(serde::Deserialize)]
+pub struct LocateQuery {
+    /// The path as the reply wrote it: absolute, or `~/…`.
+    pub path: String,
+}
+
+/// GET /api/v1/work/locate?path= — the file a reply mentions by its path
+/// (`/data/files/BUG/report.md`), as the `/api/v1/files/` URL the Work viewer
+/// opens. Only a file inside this bot's files root is found; anything else —
+/// missing, outside the root, or escaping it through `..` or a symlink — is
+/// 404, the same answer, so the lookup cannot probe the disk.
+pub async fn locate_work_file(
+    axum::extract::Query(q): axum::extract::Query<LocateQuery>,
+) -> HandlerResult<LocatedFile> {
+    let files_root = config::data_dir().map_err(to_error_response)?.join("files");
+    let found = locate_mention(&files_root, dirs::home_dir().as_deref(), &q.path)
+        .await
+        .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
+    Ok(Json(found))
 }
 
 /// The Content-Type a served file goes out with, by extension.
@@ -805,5 +877,141 @@ mod hub_refusal_tests {
         assert!(hub_upload_refusal(&http(413, r#"{"error":"file too large"}"#)).is_none());
         assert!(hub_upload_refusal(&http(500, full)).is_none());
         assert!(hub_upload_refusal(&CommError::Other("offline".into())).is_none());
+    }
+}
+
+#[cfg(test)]
+mod locate_tests {
+    use super::{LocatedFile, locate_mention};
+
+    /// A bot's data folder: `files/` with a report in a subfolder, a folder
+    /// named like a file, and a secret beside `files/` that must stay unseen.
+    fn bot() -> (tempfile::TempDir, std::path::PathBuf) {
+        let tmp = tempfile::tempdir().unwrap();
+        let files = tmp.path().join("files");
+        std::fs::create_dir_all(files.join("BUG")).unwrap();
+        std::fs::create_dir_all(files.join("site.d")).unwrap();
+        std::fs::write(files.join("BUG/bug report #1.md"), "# Bug").unwrap();
+        std::fs::write(tmp.path().join("settings.json"), "{\"secret\":1}").unwrap();
+        (tmp, files)
+    }
+
+    fn abs(p: &std::path::Path) -> String {
+        p.to_string_lossy().into_owned()
+    }
+
+    #[tokio::test]
+    async fn a_file_in_the_files_root_opens_through_the_files_route() {
+        let (_tmp, files) = bot();
+        let found = locate_mention(&files, None, &abs(&files.join("BUG/bug report #1.md"))).await;
+        assert_eq!(
+            found,
+            Some(LocatedFile {
+                url: "/api/v1/files/BUG/bug%20report%20%231.md".into(),
+                filename: "bug report #1.md".into(),
+                directory: false,
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn a_home_relative_path_resolves_under_home() {
+        let (tmp, files) = bot();
+        let found = locate_mention(&files, Some(tmp.path()), "~/files/BUG/bug report #1.md").await;
+        assert_eq!(
+            found.map(|f| f.filename),
+            Some("bug report #1.md".to_string())
+        );
+        // No home known: a `~/` path names nothing.
+        assert_eq!(
+            locate_mention(&files, None, "~/files/BUG/bug report #1.md").await,
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn a_folder_is_found_but_opens_nothing() {
+        let (_tmp, files) = bot();
+        let found = locate_mention(&files, None, &abs(&files.join("site.d")))
+            .await
+            .unwrap();
+        assert!(found.directory);
+        assert!(found.url.is_empty());
+    }
+
+    #[tokio::test]
+    async fn nothing_outside_the_files_root_is_found() {
+        let (tmp, files) = bot();
+        let secret = abs(&tmp.path().join("settings.json"));
+        let climbing = abs(&files.join("BUG/../../settings.json"));
+        for refused in [
+            secret.as_str(),
+            climbing.as_str(),
+            "/etc/hosts",
+            "/etc/../etc/passwd",
+            // Relative paths name nothing: only absolute and `~/` mentions.
+            "BUG/bug report #1.md",
+            "../settings.json",
+        ] {
+            assert_eq!(
+                locate_mention(&files, None, refused).await,
+                None,
+                "{refused}"
+            );
+        }
+        // The root itself is not a file to open.
+        assert_eq!(locate_mention(&files, None, &abs(&files)).await, None);
+        // Missing.
+        assert_eq!(
+            locate_mention(&files, None, &abs(&files.join("BUG/gone.md"))).await,
+            None
+        );
+    }
+
+    /// Through the handler, as a request: a system file, a climb out of the
+    /// files root and a relative path all get the same 404 a missing file
+    /// gets, so the lookup tells a caller nothing about the disk.
+    #[tokio::test]
+    async fn the_route_answers_404_for_anything_outside_the_files_root() {
+        use tower::ServiceExt;
+        let app = axum::Router::new().route("/locate", axum::routing::get(super::locate_work_file));
+        for path in [
+            "%2Fetc%2Fhosts",
+            "%2Fdata%2Ffiles%2F..%2F..%2Fetc%2Fpasswd",
+            "..%2Fsettings.json",
+            "~%2F.ssh%2Fid_ed25519",
+        ] {
+            let res = app
+                .clone()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .uri(format!("/locate?path={path}"))
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(res.status(), axum::http::StatusCode::NOT_FOUND, "{path}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_symlink_out_of_the_files_root_is_refused() {
+        let (tmp, files) = bot();
+        std::os::unix::fs::symlink(
+            tmp.path().join("settings.json"),
+            files.join("BUG/link.json"),
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(tmp.path(), files.join("up")).unwrap();
+        assert_eq!(
+            locate_mention(&files, None, &abs(&files.join("BUG/link.json"))).await,
+            None
+        );
+        assert_eq!(
+            locate_mention(&files, None, &abs(&files.join("up/settings.json"))).await,
+            None
+        );
     }
 }

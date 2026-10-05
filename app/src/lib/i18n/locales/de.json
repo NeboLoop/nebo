@@ -462,6 +462,7 @@
 		"storageNextFree": "Am {date} wird wieder Platz frei.",
 		"uploadFailed": "Hochladen fehlgeschlagen — Nachricht nicht gesendet. {reason}",
 		"fileRemoved": "Diese Datei wurde {days, plural, one {# Tag} other {# Tage}} nach dem Hochladen entfernt.",
+		"fileGone": "Diese Datei ist nicht mehr verfügbar.",
 		"notDelivered": "Nachricht nicht zugestellt. Die Verbindung wurde unterbrochen, sende sie noch einmal."
 	},
 	"chatInput": {

@@ -462,6 +462,7 @@
 		"storageNextFree": "Nästa utrymme frigörs {date}.",
 		"uploadFailed": "Filuppladdningen misslyckades — meddelandet skickades inte. {reason}",
 		"fileRemoved": "Den här filen togs bort {days, plural, one {# dag} other {# dagar}} efter att den laddades upp.",
+		"fileGone": "Den här filen är inte längre tillgänglig.",
 		"notDelivered": "Meddelandet levererades inte. Anslutningen bröts, så skicka det igen."
 	},
 	"chatInput": {

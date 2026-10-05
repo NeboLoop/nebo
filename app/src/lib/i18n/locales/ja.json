@@ -462,6 +462,7 @@
 		"storageNextFree": "次に空きができるのは{date}です。",
 		"uploadFailed": "ファイルのアップロードに失敗しました — メッセージは送信されていません。{reason}",
 		"fileRemoved": "このファイルはアップロードから{days, plural, other {#日}}後に削除されました。",
+		"fileGone": "このファイルはもう利用できません。",
 		"notDelivered": "メッセージを配信できませんでした。接続が切れたため、もう一度送信してください。"
 	},
 	"chatInput": {

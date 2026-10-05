@@ -462,6 +462,7 @@
 		"storageNextFree": "Dung lượng tiếp theo sẽ được giải phóng vào {date}.",
 		"uploadFailed": "Tải tệp lên thất bại — tin nhắn chưa được gửi. {reason}",
 		"fileRemoved": "Tệp này đã bị xóa sau {days, plural, one {# ngày} other {# ngày}} kể từ khi được tải lên.",
+		"fileGone": "Tệp này không còn khả dụng nữa.",
 		"notDelivered": "Tin nhắn chưa được gửi đến. Kết nối bị ngắt, hãy gửi lại."
 	},
 	"chatInput": {

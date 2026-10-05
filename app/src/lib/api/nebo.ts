@@ -2323,6 +2323,13 @@ export function listWorkDocuments() {
 }
 
 /**
+ * @description "Locate work file"
+ */
+export function locateWorkFile(path: string) {
+	return webapi.get<components.LocatedFile>(`/api/v1/work/locate`, { path })
+}
+
+/**
  * @description "List workflows"
  */
 export function listWorkflows(limit?: number, offset?: number) {

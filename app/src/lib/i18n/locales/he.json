@@ -462,6 +462,7 @@
 		"storageNextFree": "המקום הבא יתפנה ב-{date}.",
 		"uploadFailed": "העלאת הקובץ נכשלה — ההודעה לא נשלחה. {reason}",
 		"fileRemoved": "הקובץ הזה הוסר {days, plural, one {יום אחד} two {יומיים} other {# ימים}} אחרי שהועלה.",
+		"fileGone": "הקובץ הזה כבר לא זמין.",
 		"notDelivered": "ההודעה לא נמסרה. החיבור נותק, אז שלח אותה שוב."
 	},
 	"chatInput": {

@@ -462,6 +462,7 @@
 		"storageNextFree": "The next space frees on {date}.",
 		"uploadFailed": "File upload failed — message not sent. {reason}",
 		"fileRemoved": "This file was removed {days, plural, one {# day} other {# days}} after it was uploaded.",
+		"fileGone": "This file isn't available anymore.",
 		"notDelivered": "Message not delivered. The connection dropped, so send it again."
 	},
 	"chatInput": {
