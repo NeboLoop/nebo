@@ -992,7 +992,11 @@
 		"upgradeTo": "อัปเกรดเป็น {version}",
 		"cannotUninstall": "ถอนการติดตั้งไม่ได้ — {count} รายการต้องใช้ปลั๊กอินนี้",
 		"cannotUninstallSingular": "ถอนการติดตั้งไม่ได้ — {count} รายการต้องใช้ปลั๊กอินนี้",
-		"uninstallMessage": "การดำเนินการนี้จะลบปลั๊กอินและไบนารีออกจาก Nebo เครื่องนี้ คุณติดตั้งใหม่จากตลาดได้ภายหลัง"
+		"uninstallMessage": "การดำเนินการนี้จะลบปลั๊กอินและไบนารีออกจาก Nebo เครื่องนี้ คุณติดตั้งใหม่จากตลาดได้ภายหลัง",
+		"ready": "พร้อม",
+		"notConnected": "ไม่ได้เชื่อมต่อ",
+		"disconnectTitle": "ยกเลิกการเชื่อมต่อ {name} ไหม",
+		"disconnectMessage": "สกิลที่ใช้ {name} จะหยุดทำงานจนกว่าคุณจะเชื่อมต่ออีกครั้ง"
 	},
 	"settingsAgents": {
 		"title": "พนักงาน",
@@ -2264,6 +2268,27 @@
 		"pathPlaceholder": "/path/to/directory",
 		"inputsCustomize": "อินพุตเหล่านี้ปรับแต่งวิธีการทำงานของ {name}",
 		"noInputs": "ไม่มีอินพุตที่ตั้งค่าได้สำหรับพนักงานคนนี้"
+	},
+	"agentInputForm": {
+		"optional": "ไม่บังคับ",
+		"skipForNow": "ข้ามไปก่อน",
+		"increase": "เพิ่ม",
+		"decrease": "ลด",
+		"requiredError": "ต้องกรอกช่องนี้",
+		"numberError": "ป้อนตัวเลข",
+		"minError": "ต้องไม่น้อยกว่า {min}",
+		"maxError": "ต้องไม่เกิน {max}",
+		"on": "เปิด",
+		"off": "ปิด",
+		"units": {
+			"seconds": "วินาที",
+			"minutes": "นาที",
+			"hours": "ชั่วโมง",
+			"days": "วัน",
+			"weeks": "สัปดาห์",
+			"months": "เดือน",
+			"years": "ปี"
+		}
 	},
 	"agentPersona": {
 		"title": "บุคลิก",

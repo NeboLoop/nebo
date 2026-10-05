@@ -985,6 +985,15 @@ pub async fn get_agent(
                 }
                 field["money"] =
                     serde_json::json!(f.get("money").and_then(|v| v.as_bool()).unwrap_or(false));
+                // How a number question is shown: its unit and its bounds.
+                if let Some(unit) = f.get("unit").and_then(|v| v.as_str()) {
+                    field["unit"] = serde_json::json!(unit);
+                }
+                for bound in ["min", "max", "step"] {
+                    if let Some(n) = f.get(bound).and_then(|v| v.as_f64()) {
+                        field[bound] = serde_json::json!(n);
+                    }
+                }
                 field
             })
             .collect()

@@ -992,7 +992,11 @@
 		"upgradeTo": "Tingkatkan ke {version}",
 		"cannotUninstall": "Tidak dapat dicopot — {count} item bergantung pada plugin ini",
 		"cannotUninstallSingular": "Tidak dapat dicopot — {count} item bergantung pada plugin ini",
-		"uninstallMessage": "Ini menghapus plugin beserta binernya dari Nebo ini. Anda dapat memasangnya lagi dari marketplace nanti."
+		"uninstallMessage": "Ini menghapus plugin beserta binernya dari Nebo ini. Anda dapat memasangnya lagi dari marketplace nanti.",
+		"ready": "Siap",
+		"notConnected": "Tidak terhubung",
+		"disconnectTitle": "Putuskan {name}?",
+		"disconnectMessage": "Skill yang memakai {name} berhenti bekerja sampai Anda menghubungkannya lagi."
 	},
 	"settingsAgents": {
 		"title": "Karyawan",
@@ -2264,6 +2268,27 @@
 		"pathPlaceholder": "/path/ke/direktori",
 		"inputsCustomize": "Masukan ini menyesuaikan cara {name} beroperasi.",
 		"noInputs": "Tidak ada input yang dapat dikonfigurasi untuk karyawan ini."
+	},
+	"agentInputForm": {
+		"optional": "Opsional",
+		"skipForNow": "Lewati dulu",
+		"increase": "Tambah",
+		"decrease": "Kurangi",
+		"requiredError": "Wajib diisi",
+		"numberError": "Masukkan angka",
+		"minError": "Minimal {min}",
+		"maxError": "Maksimal {max}",
+		"on": "Aktif",
+		"off": "Nonaktif",
+		"units": {
+			"seconds": "detik",
+			"minutes": "menit",
+			"hours": "jam",
+			"days": "hari",
+			"weeks": "minggu",
+			"months": "bulan",
+			"years": "tahun"
+		}
 	},
 	"agentPersona": {
 		"title": "Persona",

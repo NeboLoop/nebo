@@ -992,7 +992,11 @@
 		"upgradeTo": "Upgraden naar {version}",
 		"cannotUninstall": "Kan niet verwijderen — {count} items zijn afhankelijk van deze plugin",
 		"cannotUninstallSingular": "Kan niet verwijderen — {count} item is afhankelijk van deze plugin",
-		"uninstallMessage": "Dit verwijdert de plugin en zijn binary van deze Nebo. Je kunt hem later opnieuw installeren vanuit de marktplaats."
+		"uninstallMessage": "Dit verwijdert de plugin en zijn binary van deze Nebo. Je kunt hem later opnieuw installeren vanuit de marktplaats.",
+		"ready": "Klaar",
+		"notConnected": "Niet verbonden",
+		"disconnectTitle": "{name} loskoppelen?",
+		"disconnectMessage": "Skills die {name} gebruiken werken pas weer als je het opnieuw verbindt."
 	},
 	"settingsAgents": {
 		"title": "Medewerkers",
@@ -2264,6 +2268,27 @@
 		"pathPlaceholder": "/pad/naar/map",
 		"inputsCustomize": "Deze invoervelden bepalen hoe {name} werkt.",
 		"noInputs": "Geen configureerbare invoervelden voor deze medewerker."
+	},
+	"agentInputForm": {
+		"optional": "Optioneel",
+		"skipForNow": "Nu overslaan",
+		"increase": "Verhogen",
+		"decrease": "Verlagen",
+		"requiredError": "Dit is verplicht",
+		"numberError": "Voer een getal in",
+		"minError": "Moet minstens {min} zijn",
+		"maxError": "Mag hoogstens {max} zijn",
+		"on": "Aan",
+		"off": "Uit",
+		"units": {
+			"seconds": "seconden",
+			"minutes": "minuten",
+			"hours": "uur",
+			"days": "dagen",
+			"weeks": "weken",
+			"months": "maanden",
+			"years": "jaar"
+		}
 	},
 	"agentPersona": {
 		"title": "Persona",

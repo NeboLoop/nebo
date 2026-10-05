@@ -23,6 +23,7 @@
   import RunLimitControls from '$lib/components/settings/RunLimitControls.svelte';
   import ModelControls from '$lib/components/settings/ModelControls.svelte';
   import type { AgentInputField } from '$lib/types/agentPage';
+  import { shortLabel, hintFor, fullHelp, unitFor, controlFor } from '$lib/components/agent/inputFields';
   import { installFlow } from '$lib/stores/installFlow';
   import { addToast } from '$lib/stores/toast';
   import { accountsSectionFor, visibleParts, type AgentSettingsPart } from './sections';
@@ -1665,15 +1666,25 @@
   {#if configFields.length === 0}
     <div class="text-center py-6 text-sm">{$t('agentConfigure.noInputs')}</div>
   {:else}
-    <dl class="flex flex-col gap-3 mt-3">
+    <dl class="mt-3 rounded-xl border border-base-300 bg-base-100 divide-y divide-base-content/10">
       {#each configFields as field (field.key)}
         {@const saved = configValues[field.key]}
         {@const val = saved === undefined || saved === null || saved === '' ? field.default : saved}
         {@const isEmpty = val === undefined || val === null || val === ''}
-        <div class="border-b border-base-content/10 pb-3 last:border-0">
-          <dt class="text-sm font-medium">{field.label || field.key}</dt>
-          {#if field.description}<dd class="text-xs text-base-content/50 mt-0.5">{field.description}</dd>{/if}
-          <dd class="text-sm mt-1 whitespace-pre-wrap {isEmpty ? 'text-base-content/40 italic' : ''}">{isEmpty ? $t('common.notSet') : String(val)}</dd>
+        {@const hint = hintFor(field)}
+        {@const unit = unitFor(field)}
+        {@const option = (field.options ?? []).find((o) => o.value === String(val))}
+        <div class="flex items-start justify-between gap-4 px-4 py-3">
+          <div class="min-w-0">
+            <dt class="text-sm font-medium">{shortLabel(field)}</dt>
+            {#if hint}<dd class="text-xs text-base-content/70 mt-0.5 truncate" title={fullHelp(field)}>{hint}</dd>{/if}
+          </div>
+          <dd class="text-sm text-end shrink-0 max-w-[50%] whitespace-pre-wrap break-words {isEmpty ? 'text-base-content/50 italic' : ''}">
+            {#if isEmpty}{$t('common.notSet')}
+            {:else if controlFor(field) === 'toggle'}{val === true || val === 'true' ? $t('agentInputForm.on') : $t('agentInputForm.off')}
+            {:else}{option ? option.label : String(val)}{#if unit}&nbsp;{'key' in unit ? $t(`agentInputForm.${unit.key}`) : unit.text}{/if}
+            {/if}
+          </dd>
         </div>
       {/each}
     </dl>

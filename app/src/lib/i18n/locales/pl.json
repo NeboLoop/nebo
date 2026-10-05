@@ -992,7 +992,11 @@
 		"upgradeTo": "Ulepsz do {version}",
 		"cannotUninstall": "Nie można odinstalować — {count} elementów zależy od tej wtyczki",
 		"cannotUninstallSingular": "Nie można odinstalować — {count} element zależy od tej wtyczki",
-		"uninstallMessage": "Spowoduje to usunięcie wtyczki i jej pliku binarnego z tego Nebo. Możesz ją później ponownie zainstalować z marketplace."
+		"uninstallMessage": "Spowoduje to usunięcie wtyczki i jej pliku binarnego z tego Nebo. Możesz ją później ponownie zainstalować z marketplace.",
+		"ready": "Gotowe",
+		"notConnected": "Niepołączono",
+		"disconnectTitle": "Odłączyć {name}?",
+		"disconnectMessage": "Umiejętności korzystające z {name} przestaną działać, dopóki nie połączysz go ponownie."
 	},
 	"settingsAgents": {
 		"title": "Pracownicy",
@@ -2264,6 +2268,27 @@
 		"pathPlaceholder": "/ścieżka/do/katalogu",
 		"inputsCustomize": "Te ustawienia dostosowują sposób działania {name}.",
 		"noInputs": "Brak konfigurowalnych danych wejściowych dla tego pracownika."
+	},
+	"agentInputForm": {
+		"optional": "Opcjonalne",
+		"skipForNow": "Na razie pomiń",
+		"increase": "Zwiększ",
+		"decrease": "Zmniejsz",
+		"requiredError": "To pole jest wymagane",
+		"numberError": "Wpisz liczbę",
+		"minError": "Musi wynosić co najmniej {min}",
+		"maxError": "Może wynosić najwyżej {max}",
+		"on": "Wł.",
+		"off": "Wył.",
+		"units": {
+			"seconds": "sekund",
+			"minutes": "minut",
+			"hours": "godzin",
+			"days": "dni",
+			"weeks": "tygodni",
+			"months": "miesięcy",
+			"years": "lat"
+		}
 	},
 	"agentPersona": {
 		"title": "Persona",

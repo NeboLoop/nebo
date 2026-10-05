@@ -992,7 +992,11 @@
 		"upgradeTo": "الترقية إلى {version}",
 		"cannotUninstall": "تتعذّر الإزالة — {count} عناصر تعتمد على هذا المكوّن الإضافي",
 		"cannotUninstallSingular": "تتعذّر الإزالة — {count} عنصر يعتمد على هذا المكوّن الإضافي",
-		"uninstallMessage": "يؤدي هذا إلى إزالة المكوّن الإضافي وملفه الثنائي من Nebo هذا. يمكنك إعادة تثبيته من المتجر لاحقاً."
+		"uninstallMessage": "يؤدي هذا إلى إزالة المكوّن الإضافي وملفه الثنائي من Nebo هذا. يمكنك إعادة تثبيته من المتجر لاحقاً.",
+		"ready": "جاهز",
+		"notConnected": "غير متصل",
+		"disconnectTitle": "هل تريد قطع الاتصال بـ {name}؟",
+		"disconnectMessage": "ستتوقف المهارات التي تستخدم {name} عن العمل حتى تعيد الاتصال به."
 	},
 	"settingsAgents": {
 		"title": "الموظفون",
@@ -2264,6 +2268,27 @@
 		"pathPlaceholder": "/path/to/directory",
 		"inputsCustomize": "تخصص هذه المدخلات طريقة عمل {name}.",
 		"noInputs": "لا توجد مدخلات قابلة للإعداد لهذا الموظف."
+	},
+	"agentInputForm": {
+		"optional": "اختياري",
+		"skipForNow": "تخطَّ الآن",
+		"increase": "زيادة",
+		"decrease": "إنقاص",
+		"requiredError": "هذا الحقل مطلوب",
+		"numberError": "أدخل رقمًا",
+		"minError": "يجب ألا يقل عن {min}",
+		"maxError": "يجب ألا يزيد عن {max}",
+		"on": "تشغيل",
+		"off": "إيقاف",
+		"units": {
+			"seconds": "ثوانٍ",
+			"minutes": "دقائق",
+			"hours": "ساعات",
+			"days": "أيام",
+			"weeks": "أسابيع",
+			"months": "أشهر",
+			"years": "سنوات"
+		}
 	},
 	"agentPersona": {
 		"title": "الشخصية",

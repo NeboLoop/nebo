@@ -992,7 +992,11 @@
 		"upgradeTo": "{version}-এ আপগ্রেড করুন",
 		"cannotUninstall": "আনইনস্টল করা যাবে না — {count}টি আইটেম এই প্লাগইনের উপর নির্ভরশীল",
 		"cannotUninstallSingular": "আনইনস্টল করা যাবে না — {count}টি আইটেম এই প্লাগইনের উপর নির্ভরশীল",
-		"uninstallMessage": "এটি এই Nebo থেকে প্লাগইন ও এর বাইনারি সরিয়ে দেয়। আপনি পরে মার্কেটপ্লেস থেকে এটি পুনরায় ইনস্টল করতে পারবেন।"
+		"uninstallMessage": "এটি এই Nebo থেকে প্লাগইন ও এর বাইনারি সরিয়ে দেয়। আপনি পরে মার্কেটপ্লেস থেকে এটি পুনরায় ইনস্টল করতে পারবেন।",
+		"ready": "প্রস্তুত",
+		"notConnected": "সংযুক্ত নয়",
+		"disconnectTitle": "{name} সংযোগ বিচ্ছিন্ন করবেন?",
+		"disconnectMessage": "{name} ব্যবহারকারী স্কিলগুলো আবার সংযোগ না করা পর্যন্ত কাজ করবে না।"
 	},
 	"settingsAgents": {
 		"title": "কর্মী",
@@ -2264,6 +2268,27 @@
 		"pathPlaceholder": "/path/to/directory",
 		"inputsCustomize": "এই ইনপুটগুলি {name} কীভাবে কাজ করে তা কাস্টমাইজ করে।",
 		"noInputs": "এই কর্মীর জন্য কনফিগার করার মতো কোনো ইনপুট নেই।"
+	},
+	"agentInputForm": {
+		"optional": "ঐচ্ছিক",
+		"skipForNow": "এখন এড়িয়ে যান",
+		"increase": "বাড়ান",
+		"decrease": "কমান",
+		"requiredError": "এটি আবশ্যক",
+		"numberError": "একটি সংখ্যা লিখুন",
+		"minError": "কমপক্ষে {min} হতে হবে",
+		"maxError": "সর্বোচ্চ {max} হতে পারে",
+		"on": "চালু",
+		"off": "বন্ধ",
+		"units": {
+			"seconds": "সেকেন্ড",
+			"minutes": "মিনিট",
+			"hours": "ঘণ্টা",
+			"days": "দিন",
+			"weeks": "সপ্তাহ",
+			"months": "মাস",
+			"years": "বছর"
+		}
 	},
 	"agentPersona": {
 		"title": "ব্যক্তিত্ব",

@@ -6,7 +6,6 @@
   import SetupWizard from '$lib/components/SetupWizard.svelte';
   import SettingsHeader from '$lib/components/settings/SettingsHeader.svelte';
   import StatCard from '$lib/components/settings/StatCard.svelte';
-  import SettingsRow from '$lib/components/settings/SettingsRow.svelte';
   import BrowseCard from '$lib/components/settings/BrowseCard.svelte';
   import ConfirmModal from '$lib/components/settings/ConfirmModal.svelte';
 
@@ -50,6 +49,7 @@
   let apiKeySaveResult = $state<'saved' | 'error' | null>(null);
   let wizardOpen = $state(false);
   let authChecking = $state(false);
+  let confirmingDisconnect = $state(false);
 
   let unsubscribers: Array<() => void> = [];
 
@@ -148,7 +148,19 @@
   let searchQuery = $state('');
 
   const connectedCount = $derived(plugins.filter((p) => authStatuses[p.id] === 'connected').length);
-  const totalEvents = $derived(plugins.reduce((n, p) => n + p.eventCount, 0));
+
+  /** A row's status: Connected, Ready (nothing to sign in to), Connecting,
+   *  Not connected, or — for a plugin whose accounts live on each employee —
+   *  that. Connect and Disconnect live in the plugin's detail. */
+  type RowStatus = 'connected' | 'ready' | 'connecting' | 'notConnected' | 'perEmployee';
+  function rowStatus(plugin: Plugin): RowStatus {
+    if (!plugin.hasAuth) return 'ready';
+    if (plugin.multiAccount) return 'perEmployee';
+    const status = authStatuses[plugin.id];
+    if (status === 'connected') return 'connected';
+    if (status === 'connecting') return 'connecting';
+    return 'notConnected';
+  }
 
   const filteredPlugins = $derived.by(() => {
     const sorted = [...plugins].sort((a, b) => a.name.localeCompare(b.name));
@@ -231,6 +243,7 @@
     modalLoading = true;
     removing = false;
     confirmingUninstall = false;
+    confirmingDisconnect = false;
     apiKeyInputs = {};
     apiKeySaving = false;
     apiKeySaveResult = null;
@@ -291,7 +304,6 @@
 <div class="flex gap-3 mb-6">
   <StatCard label={$t('common.installed')} value={plugins.length} />
   <StatCard label={$t('common.connected')} value={connectedCount} accent="success" />
-  <StatCard label={$t('commandPalette.events')} value={totalEvents} />
 </div>
 
 <div class="mb-6">
@@ -313,65 +325,46 @@
     </div>
   {:else}
     <div class="flex flex-col gap-1.5">
-      {#each filteredPlugins as plugin}
-        {@const connected = authStatuses[plugin.id] === 'connected' || !plugin.hasAuth}
-        <SettingsRow>
-          {#snippet leading()}
-            <div class="w-2 h-2 rounded-full shrink-0 {connected ? 'bg-success' : 'bg-base-content/20'}" title={connected ? $t('onboarding.provider.ready') : $t('settingsProviders.notConnected')}></div>
-          {/snippet}
-          <div class="flex items-center gap-2">
-            <button class="text-sm font-semibold text-primary hover:underline cursor-pointer bg-transparent border-none p-0 text-start" onclick={() => openPluginDetail(plugin)}>{plugin.name}</button>
-            {#if plugin.version}
-              <span class="text-xs text-base-content/50 font-mono">{plugin.version}</span>
-            {/if}
-            {#if plugin.updateAvailable}
-              <button type="button" class="py-0.5 px-2 rounded bg-primary/15 text-primary text-xs font-medium border-none cursor-pointer hover:bg-primary/25 transition-colors disabled:opacity-60 disabled:cursor-default" disabled={updating[plugin.id]} onclick={() => updatePlugin(plugin)}>{updating[plugin.id] ? $t('agentSettings.updating') : $t('agentSettings.updateTo', { values: { version: plugin.updateAvailable } })}</button>
-            {/if}
-          </div>
-          {#if plugin.desc}
-            <div class="text-xs text-base-content/70 mt-0.5 line-clamp-1">{plugin.desc}</div>
-          {/if}
-          {#if plugin.author || plugin.hasEvents}
-            <div class="flex items-center gap-2 mt-1">
-              {#if plugin.author}
-                <span class="text-xs text-base-content/50">{$t('settingsApps.byAuthor', { values: { name: plugin.author } })}</span>
+      {#each filteredPlugins as plugin (plugin.id)}
+        {@const status = rowStatus(plugin)}
+        <!-- The whole row opens the plugin's detail; Connect and Disconnect live there. -->
+        <div
+          role="button"
+          tabindex="0"
+          class="flex items-center gap-3 p-3.5 rounded-lg border border-base-300 bg-base-100 hover:border-base-content/20 hover:bg-base-200/40 transition-colors cursor-pointer"
+          onclick={() => openPluginDetail(plugin)}
+          onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openPluginDetail(plugin); } }}
+        >
+          <div class="flex-1 min-w-0">
+            <div class="flex items-center gap-2 min-w-0">
+              <span class="text-sm font-medium truncate">{plugin.name}</span>
+              {#if plugin.version}
+                <span class="text-xs text-base-content/50 font-mono shrink-0">{plugin.version}</span>
               {/if}
-              {#if plugin.author && plugin.hasEvents}
-                <span class="text-xs text-base-content/30">&middot;</span>
-              {/if}
-              {#if plugin.hasEvents}
-                <span class="text-xs text-base-content/50">{plugin.eventCount === 1 ? $t('settingsPlugins.eventCountSingular', { values: { count: plugin.eventCount } }) : $t('settingsPlugins.eventCount', { values: { count: plugin.eventCount } })}</span>
+              {#if plugin.updateAvailable}
+                <button type="button" class="py-0.5 px-2 rounded bg-primary/15 text-primary text-xs font-medium border-none cursor-pointer hover:bg-primary/25 transition-colors disabled:opacity-60 disabled:cursor-default shrink-0" disabled={updating[plugin.id]} onclick={(e) => { e.stopPropagation(); updatePlugin(plugin); }} onkeydown={(e) => e.stopPropagation()}>{updating[plugin.id] ? $t('agentSettings.updating') : $t('agentSettings.updateTo', { values: { version: plugin.updateAvailable } })}</button>
               {/if}
             </div>
-          {/if}
-          {#snippet actions()}
-            {#if plugin.hasAuth && plugin.authEnvVars.length > 0 && !plugin.authKeysSet && !plugin.multiAccount}
-              <button class="px-3 py-1 rounded-md border border-primary/30 text-xs text-primary font-medium cursor-pointer bg-transparent hover:bg-primary/5 transition-colors" onclick={() => openPluginDetail(plugin)}>{$t('settingsPlugins.setApiKeys')}</button>
-            {:else if plugin.hasAuth && plugin.authType !== 'env'}
-              {@const status = authStatuses[plugin.id] ?? 'disconnected'}
-              {#if status === 'connected'}
-                <span class="px-2 py-0.5 rounded text-xs font-medium bg-success/10 text-success">{$t('settingsPlugins.connected')}</span>
-                <button class="px-3 py-1 rounded-md border border-base-content/10 text-xs cursor-pointer bg-transparent hover:bg-base-200 transition-colors" onclick={() => disconnectPlugin(plugin.id)}>{$t('settingsPlugins.disconnect')}</button>
-              {:else if status === 'connecting'}
-                <span class="px-2 py-0.5 rounded text-xs font-medium bg-info/10 text-info">{$t('settingsPlugins.connecting')}</span>
-              {:else}
-                <button class="px-3 py-1 rounded-md border border-primary/30 text-xs text-primary font-medium cursor-pointer bg-transparent hover:bg-primary/5 transition-colors" onclick={() => connectPlugin(plugin.id)}>{$t('settingsPlugins.connect')}</button>
-              {/if}
-            {:else if plugin.hasAuth && plugin.authType === 'env' && !plugin.multiAccount}
-              {#if plugin.authKeysSet}
-                <span class="px-2 py-0.5 rounded text-xs font-medium bg-success/10 text-success">{$t('settingsPlugins.keySet')}</span>
-              {/if}
-              <button class="px-3 py-1 rounded-md border border-primary/30 text-xs text-primary font-medium cursor-pointer bg-transparent hover:bg-primary/5 transition-colors" onclick={() => openPluginDetail(plugin)}>{plugin.authKeysSet ? $t('settingsPlugins.updateKeys') : $t('settingsPlugins.setApiKeys')}</button>
-            {:else if plugin.hasAuth && plugin.multiAccount}
-              <!-- A multi-account plugin holds one account per employee, so there is
-                   no workspace-wide key to set here. Saying "no auth needed" was
-                   read as "this works already" (live 2026-09-15, Shopify 0.3.0). -->
-              <span class="text-xs text-base-content/40">{$t('settingsPlugins.perEmployeeAccounts')}</span>
-            {:else}
-              <span class="text-xs text-base-content/40">{$t('settingsPlugins.noAuthNeeded')}</span>
+            {#if plugin.desc}
+              <div class="text-xs text-base-content/70 mt-0.5 line-clamp-2">{plugin.desc}</div>
             {/if}
-          {/snippet}
-        </SettingsRow>
+            {#if plugin.author}
+              <div class="text-xs text-base-content/50 mt-1">{$t('settingsApps.byAuthor', { values: { name: plugin.author } })}</div>
+            {/if}
+          </div>
+          <span class="flex items-center gap-1.5 shrink-0 text-xs {status === 'connected' || status === 'ready' ? 'text-base-content/70' : 'text-base-content/50'}">
+            {#if status === 'connecting'}
+              <span class="loading loading-spinner loading-xs text-info"></span>
+            {:else}
+              <span class="w-2 h-2 rounded-full {status === 'connected' || status === 'ready' ? 'bg-success' : 'bg-base-content/20'}"></span>
+            {/if}
+            {#if status === 'connected'}{$t('settingsPlugins.connected')}
+            {:else if status === 'ready'}{$t('settingsPlugins.ready')}
+            {:else if status === 'connecting'}{$t('settingsPlugins.connecting')}
+            {:else if status === 'perEmployee'}{$t('settingsPlugins.perEmployeeAccounts')}
+            {:else}{$t('settingsPlugins.notConnected')}{/if}
+          </span>
+        </div>
       {/each}
     </div>
   {/if}
@@ -525,7 +518,7 @@
         <div class="flex items-center gap-2">
           {#if selectedPlugin.hasAuth && selectedPlugin.authType !== 'env'}
             {#if status === 'connected'}
-              <button class="px-3 py-1.5 rounded-md border border-base-content/10 text-xs cursor-pointer bg-transparent hover:bg-base-200 transition-colors" onclick={() => disconnectPlugin(selectedPlugin!.id)}>{$t('settingsPlugins.disconnect')}</button>
+              <button type="button" class="btn btn-ghost btn-sm text-error hover:bg-error/10" onclick={() => (confirmingDisconnect = true)}>{$t('settingsPlugins.disconnect')}</button>
             {:else if status !== 'connecting'}
               <button class="px-3 py-1.5 rounded-md border border-primary/30 text-xs text-primary font-medium cursor-pointer bg-transparent hover:bg-primary/5 transition-colors" onclick={() => connectPlugin(selectedPlugin!.id)}>{$t('settingsPlugins.connect')}</button>
             {/if}
@@ -550,6 +543,16 @@
       </div>
     </div>
   </div>
+
+  {#if confirmingDisconnect && selectedPlugin}
+    <ConfirmModal
+      title={$t('settingsPlugins.disconnectTitle', { values: { name: selectedPlugin.name } })}
+      message={$t('settingsPlugins.disconnectMessage', { values: { name: selectedPlugin.name } })}
+      confirmLabel={$t('settingsPlugins.disconnect')}
+      onCancel={() => (confirmingDisconnect = false)}
+      onConfirm={() => { confirmingDisconnect = false; if (selectedPlugin) void disconnectPlugin(selectedPlugin.id); }}
+    />
+  {/if}
 
   {#if confirmingUninstall && selectedPlugin}
     <ConfirmModal

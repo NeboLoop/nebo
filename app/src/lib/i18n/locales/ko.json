@@ -992,7 +992,11 @@
 		"upgradeTo": "{version}(으)로 업그레이드",
 		"cannotUninstall": "제거할 수 없습니다 — {count}개 항목이 이 플러그인에 의존합니다",
 		"cannotUninstallSingular": "제거할 수 없습니다 — {count}개 항목이 이 플러그인에 의존합니다",
-		"uninstallMessage": "이 Nebo에서 플러그인과 그 바이너리를 삭제합니다. 나중에 마켓플레이스에서 다시 설치할 수 있습니다."
+		"uninstallMessage": "이 Nebo에서 플러그인과 그 바이너리를 삭제합니다. 나중에 마켓플레이스에서 다시 설치할 수 있습니다.",
+		"ready": "준비됨",
+		"notConnected": "연결 안 됨",
+		"disconnectTitle": "{name} 연결을 해제할까요?",
+		"disconnectMessage": "{name}을(를) 사용하는 스킬은 다시 연결할 때까지 작동하지 않습니다."
 	},
 	"settingsAgents": {
 		"title": "직원",
@@ -2264,6 +2268,27 @@
 		"pathPlaceholder": "/path/to/directory",
 		"inputsCustomize": "이 입력들은 {name}의 작동 방식을 맞춤 설정합니다.",
 		"noInputs": "이 직원에게는 설정 가능한 입력이 없습니다."
+	},
+	"agentInputForm": {
+		"optional": "선택 사항",
+		"skipForNow": "지금은 건너뛰기",
+		"increase": "늘리기",
+		"decrease": "줄이기",
+		"requiredError": "필수 항목입니다",
+		"numberError": "숫자를 입력하세요",
+		"minError": "{min} 이상이어야 합니다",
+		"maxError": "{max} 이하여야 합니다",
+		"on": "켜짐",
+		"off": "꺼짐",
+		"units": {
+			"seconds": "초",
+			"minutes": "분",
+			"hours": "시간",
+			"days": "일",
+			"weeks": "주",
+			"months": "개월",
+			"years": "년"
+		}
 	},
 	"agentPersona": {
 		"title": "페르소나",

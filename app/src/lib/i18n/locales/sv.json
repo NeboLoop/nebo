@@ -992,7 +992,11 @@
 		"upgradeTo": "Uppgradera till {version}",
 		"cannotUninstall": "Kan inte avinstallera — {count} objekt är beroende av detta plugin",
 		"cannotUninstallSingular": "Kan inte avinstallera — {count} objekt är beroende av detta plugin",
-		"uninstallMessage": "Detta tar bort pluginet och dess binär från denna Nebo. Du kan installera om det från marknadsplatsen senare."
+		"uninstallMessage": "Detta tar bort pluginet och dess binär från denna Nebo. Du kan installera om det från marknadsplatsen senare.",
+		"ready": "Redo",
+		"notConnected": "Inte ansluten",
+		"disconnectTitle": "Koppla från {name}?",
+		"disconnectMessage": "Färdigheter som använder {name} slutar fungera tills du ansluter det igen."
 	},
 	"settingsAgents": {
 		"title": "Medarbetare",
@@ -2264,6 +2268,27 @@
 		"pathPlaceholder": "/sökväg/till/katalog",
 		"inputsCustomize": "Dessa indata anpassar hur {name} arbetar.",
 		"noInputs": "Inga konfigurerbara indata för denna medarbetare."
+	},
+	"agentInputForm": {
+		"optional": "Valfritt",
+		"skipForNow": "Hoppa över nu",
+		"increase": "Öka",
+		"decrease": "Minska",
+		"requiredError": "Detta är obligatoriskt",
+		"numberError": "Ange ett tal",
+		"minError": "Måste vara minst {min}",
+		"maxError": "Får vara högst {max}",
+		"on": "På",
+		"off": "Av",
+		"units": {
+			"seconds": "sekunder",
+			"minutes": "minuter",
+			"hours": "timmar",
+			"days": "dagar",
+			"weeks": "veckor",
+			"months": "månader",
+			"years": "år"
+		}
 	},
 	"agentPersona": {
 		"title": "Persona",

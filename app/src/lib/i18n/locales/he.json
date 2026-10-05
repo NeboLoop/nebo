@@ -992,7 +992,11 @@
 		"upgradeTo": "שדרג ל-{version}",
 		"cannotUninstall": "לא ניתן להסיר — {count} פריטים תלויים בתוסף זה",
 		"cannotUninstallSingular": "לא ניתן להסיר — פריט {count} תלוי בתוסף זה",
-		"uninstallMessage": "פעולה זו מסירה את התוסף ואת הקובץ הבינארי שלו מ-Nebo זה. תוכל להתקין אותו מחדש מהחנות מאוחר יותר."
+		"uninstallMessage": "פעולה זו מסירה את התוסף ואת הקובץ הבינארי שלו מ-Nebo זה. תוכל להתקין אותו מחדש מהחנות מאוחר יותר.",
+		"ready": "מוכן",
+		"notConnected": "לא מחובר",
+		"disconnectTitle": "לנתק את {name}?",
+		"disconnectMessage": "מיומנויות שמשתמשות ב-{name} יפסיקו לעבוד עד שתחבר אותו שוב."
 	},
 	"settingsAgents": {
 		"title": "עובדים",
@@ -2264,6 +2268,27 @@
 		"pathPlaceholder": "/נתיב/לתיקייה",
 		"inputsCustomize": "קלטים אלה מתאימים אישית את אופן הפעולה של {name}.",
 		"noInputs": "אין קלטים הניתנים להגדרה עבור עובד זה."
+	},
+	"agentInputForm": {
+		"optional": "אופציונלי",
+		"skipForNow": "דלג לעת עתה",
+		"increase": "הגדל",
+		"decrease": "הקטן",
+		"requiredError": "שדה חובה",
+		"numberError": "הזן מספר",
+		"minError": "חייב להיות לפחות {min}",
+		"maxError": "חייב להיות לכל היותר {max}",
+		"on": "פועל",
+		"off": "כבוי",
+		"units": {
+			"seconds": "שניות",
+			"minutes": "דקות",
+			"hours": "שעות",
+			"days": "ימים",
+			"weeks": "שבועות",
+			"months": "חודשים",
+			"years": "שנים"
+		}
 	},
 	"agentPersona": {
 		"title": "פרסונה",
