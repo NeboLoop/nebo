@@ -8,6 +8,12 @@ triggers:
   - replace the actor
   - cast member
   - add to the cast
+  - same face
+  - consistent character
+  - ai character
+  - ai influencer
+  - ai creator
+  - reference photo
 ---
 
 # Character Swap

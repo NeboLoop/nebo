@@ -343,6 +343,16 @@ mod tests {
         assert!(text.contains(line), "{line:?} missing from:\n{text}");
     }
 
+    /// "Can we do this?" is answered from the tools and skills, naming the
+    /// ones it would use, never from memory.
+    #[test]
+    fn a_capability_question_is_answered_from_the_tools() {
+        let line = "- When the owner asks whether you can do something, check your tools and skills (find_tools, the \
+                    skills list) before answering, and name the tools you'd use. Don't answer capability questions \
+                    from memory.";
+        assert!(system_prompt().contains(line), "{line:?} missing");
+    }
+
     /// The size snapshot. Update the number when the text changes on
     /// purpose; the prompt must stay a small fraction of the 39k-char prompt
     /// it replaced.
@@ -353,5 +363,5 @@ mod tests {
         assert!(chars < 8_000);
     }
 
-    const SYSTEM_PROMPT_CHARS: usize = 7_684;
+    const SYSTEM_PROMPT_CHARS: usize = 7_889;
 }

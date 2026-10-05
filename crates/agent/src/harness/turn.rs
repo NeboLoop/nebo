@@ -5333,6 +5333,47 @@ mod tests {
         }
     }
 
+    /// A question about AI characters has `generate_media` in view on the
+    /// first step, and what it loads names the cast, the swap, the
+    /// character-swap skill and image to video; ordinary chat, even one that
+    /// says "reference" or "face", has nothing loaded. Live 2026-10-04: asked
+    /// "are we able to do what this article describes?" about AI creators,
+    /// the employee said yes from memory with no tool call, never named the
+    /// swap, and credited Nebo Media with making video.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_question_about_ai_characters_has_generate_media_in_view_from_the_first_step() {
+        use tools::media_tool::{GENERATE_MEDIA, GenerateMediaTool, Media};
+        for (request, want) in [
+            (
+                "Are we able to do what this article describes? Five AI creators, the same face across hundreds \
+                 of clips, built from reference photos, image-to-video and voice.",
+                true,
+            ),
+            ("Can we keep a consistent character across our ad clips?", true),
+            ("Put together a summary of this week's sales calls for the team.", false),
+            ("Find the reference books for the tax filing; we face a deadline on Friday.", false),
+        ] {
+            let model = Scripted::new(vec![Step::Say("On it.")]);
+            let store = Arc::new(db::Store::new(":memory:").unwrap());
+            let built_in: Vec<Box<dyn tools::registry::DynTool>> =
+                vec![Box::new(GenerateMediaTool::new(Media::new(String::new(), String::new(), None), store))];
+            let h = harness_with(&model, built_in).await;
+            run_turn(&h, owner(request)).await;
+            let first = &model.calls()[0];
+            let loaded = first.tools.iter().find(|t| t.name == GENERATE_MEDIA);
+            let row = texts(first).into_iter().find(|t| t.contains("work these tools do"));
+            if !want {
+                assert!(loaded.is_none() && row.is_none(), "{request}");
+                continue;
+            }
+            let def = loaded.unwrap_or_else(|| panic!("generate_media in view on the first step: {request}"));
+            assert!(row.is_some_and(|r| r.contains(&format!("- {GENERATE_MEDIA}: "))), "{request}");
+            for says in ["`mode` \"replace\"", "kind \"cast\"", "the character-swap skill", "image to video", "Nebo Media only edits"] {
+                assert!(def.description.contains(says), "{says:?} missing from:\n{}", def.description);
+            }
+        }
+    }
+
     /// An app employee under App Developer mode has the code tool declared
     /// from its first step, not listed behind tool search; with the mode
     /// off it stays deferred, as for everyone.
