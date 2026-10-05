@@ -27,8 +27,9 @@ function isQuestion(label: string): boolean {
 	return label.length > SHORT_LABEL_MAX || label.trim().endsWith('?');
 }
 
-/** Trailing words a number field's unit suffix already shows. */
-const UNIT_WORDS = new Set(['days', 'day', 'hours', 'hrs', 'minutes', 'mins', 'pct', 'percent', '%', 'usd', 'dollars', 'count']);
+/** Trailing words a number field's unit suffix already shows. A singular
+ *  `day` is a day of the month or week, not a duration, so it stays. */
+const UNIT_WORDS = new Set(['days', 'hours', 'hrs', 'minutes', 'mins', 'pct', 'percent', '%', 'usd', 'dollars', 'count']);
 
 /** Abbreviations a key uses, as the words a person reads. */
 const ABBREVIATIONS: Record<string, string> = {
@@ -41,6 +42,12 @@ const ABBREVIATIONS: Record<string, string> = {
 	max: 'maximum',
 	min: 'minimum'
 };
+
+/** Kept uppercase inside a sentence-case name. */
+const ACRONYMS = new Set([
+	'sla', 'api', 'url', 'id', 'sms', 'crm', 'kpi', 'vat', 'ein', 'ach', 'ar', 'ap', 'qbo',
+	'csv', 'pdf', 'mrr', 'arr', 'roi', 'cpc', 'cpa', 'sku', 'pos', 'hr', 'pto', 'eta'
+]);
 
 /** A key's words: its last path segment, split on _ - and camelCase. */
 function keyWords(key: string): string[] {
@@ -60,7 +67,10 @@ export function humanizeKey(key: string, isNumber: boolean): string {
 	if (isNumber) {
 		while (words.length > 1 && UNIT_WORDS.has(words[words.length - 1])) words.pop();
 	}
-	const text = words.map((w) => ABBREVIATIONS[w] ?? w).join(' ');
+	const text = words
+		.map((w) => ABBREVIATIONS[w] ?? w)
+		.map((w) => (ACRONYMS.has(w) ? w.toUpperCase() : w))
+		.join(' ');
 	return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
@@ -91,16 +101,20 @@ export function fullHelp(field: AgentInputField): string {
 /** Units inferred from a question when the schema names none. The value is
  *  an i18n key under agentInputForm.units, or a literal symbol. */
 // Matched against the key (its _ and - read as spaces) and the question.
-// "per week" is a rate, not a unit of the value.
+// "per week", "each month", "day of the month" name a rate or a reference,
+// not the unit of the value, so a time word after per/each/every/a/of/the is skipped.
+const NOT_A_UNIT = '(?<!\\b(?:per|each|every|a|of|the) )';
+const timeUnit = (words: string) => new RegExp(`${NOT_A_UNIT}\\b(?:${words})\\b`);
 const INFERRED_UNITS: [RegExp, string][] = [
 	[/%|\bpercent(age)?\b|\bpct\b/, '%'],
-	[/(?<!\bper )\b(seconds?|secs)\b/, 'units.seconds'],
-	[/(?<!\bper )\b(minutes?|mins)\b/, 'units.minutes'],
-	[/(?<!\bper )\b(hours?|hrs)\b/, 'units.hours'],
-	[/(?<!\bper )\bdays?\b/, 'units.days'],
-	[/(?<!\bper )\bweeks?\b/, 'units.weeks'],
-	[/(?<!\bper )\bmonths?\b/, 'units.months'],
-	[/(?<!\bper )\byears?\b/, 'units.years']
+	[timeUnit('seconds?|secs'), 'units.seconds'],
+	[timeUnit('minutes?|mins'), 'units.minutes'],
+	[timeUnit('hours?|hrs'), 'units.hours'],
+	// Only the plural is a duration: "close day" is a day of the month.
+	[timeUnit('days'), 'units.days'],
+	[timeUnit('weeks?'), 'units.weeks'],
+	[timeUnit('months?'), 'units.months'],
+	[timeUnit('years?'), 'units.years']
 ];
 
 export type FieldUnit = { text: string } | { key: string } | null;
@@ -139,6 +153,12 @@ export function withDefaults(
 const NON_NEGATIVE_UNITS = new Set(['units.days', 'units.hours', 'units.minutes', '%']);
 const NON_NEGATIVE_TEXT = new Set(['day', 'days', 'hour', 'hours', 'hr', 'hrs', 'minute', 'minutes', 'min', 'mins', 'count', '%', 'percent', 'pct']);
 
+/** `close_day`, `due_day`, `day_of_month`: a day of the month (not of the week). */
+function isDayOfMonth(words: string[]): boolean {
+	if (words.includes('week') || words.includes('weekday')) return false;
+	return words[words.length - 1] === 'day' || (words.includes('day') && words.includes('month'));
+}
+
 /** A number field's bounds: what the schema declares, else sensible ones —
  *  a count of days, hours, minutes or things starts at 0, and a % runs 0–100. */
 export function boundsFor(field: AgentInputField): { min?: number; max?: number } {
@@ -146,7 +166,14 @@ export function boundsFor(field: AgentInputField): { min?: number; max?: number 
 	const unit = unitFor(field);
 	const name = unit === null ? '' : 'key' in unit ? unit.key : unit.text.toLowerCase();
 	const isPercent = name === '%' || name === 'percent' || name === 'pct';
-	const isCount = keyWords(field.key || '').includes('count');
+	const words = keyWords(field.key || '');
+	const isCount = words.includes('count');
+	if (unit === null && isDayOfMonth(words)) {
+		return {
+			min: typeof field.min === 'number' ? field.min : 1,
+			max: typeof field.max === 'number' ? field.max : 31
+		};
+	}
 	const nonNegative = isCount || NON_NEGATIVE_UNITS.has(name) || NON_NEGATIVE_TEXT.has(name);
 	return {
 		min: typeof field.min === 'number' ? field.min : nonNegative ? 0 : undefined,
