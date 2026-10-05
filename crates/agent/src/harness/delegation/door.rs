@@ -146,7 +146,7 @@ fn parent_turn(req: &SpawnRequest) -> TurnRequest {
         delivery: Delivery {
             channel: String::new(),
             channel_ctx: None,
-            platform: None,
+            platform: req.seat.platform.clone(),
             mention_briefing: None,
         },
         cancel: CancellationToken::new(),
@@ -328,6 +328,8 @@ mod tests {
             whitelist_denial_hint: Some("not in this run".into()),
             cwd: Some("/work/a".into()),
             run_taint: vec![ProvenanceClass::Web, ProvenanceClass::ExternalEmail],
+            // A turn from the phone app: its helpers answer the same phone.
+            platform: Some("ios".into()),
             ..Default::default()
         }
     }
@@ -341,6 +343,7 @@ mod tests {
             grant: req.seat.grant.as_deref(),
             run_taint: &req.seat.taint,
             cancel: CancellationToken::new(),
+            platform: turn.delivery.platform.as_deref(),
         };
         let spec = HelperSpec {
             description: req.description.clone(),
@@ -363,6 +366,7 @@ mod tests {
         assert_eq!(child.seat.tool_denial_hint, parent.whitelist_denial_hint, "{path}: denial hint lost");
         assert_eq!(child.seat.cwd, parent.cwd, "{path}: working directory lost");
         assert_eq!(child.seat.seed_taint, parent.run_taint, "{path}: taint laundered");
+        assert_eq!(child.delivery.platform, parent.platform, "{path}: the phone app's platform lost");
         assert_eq!(child.seat.user_id, parent.user_id, "{path}: memory scope lost");
         assert_eq!(child.seat.door, Door::Helper, "{path}: a child is a helper");
         assert_eq!(child.seat.origin, tools::Origin::System, "{path}: a child never asks the owner");

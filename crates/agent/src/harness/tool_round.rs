@@ -1021,6 +1021,13 @@ async fn run_call(
         result.content.push_str(&note);
     }
     let hook_noted = apply_post_tool_hooks(hooks, &tc, &mut result, session_id, run_cwd).await;
+    // A turn from the phone app is never handed a NeboAI checkout, billing
+    // or pricing link, whichever tool found it (`tools::store_app`).
+    if ctx.in_store_app()
+        && let std::borrow::Cow::Owned(kept) = tools::store_app::withhold_links(&result.content)
+    {
+        result.content = kept;
+    }
     let _ = tx
         .send(StreamEvent {
             payload: result.payload.clone(),

@@ -165,7 +165,16 @@ impl Profile {
         ))
     }
 
-    async fn open_billing(&self) -> ToolResult {
+    /// The billing portal, opened in the owner's browser. Asked from the
+    /// phone app, no portal is fetched and no link is given: billing is in
+    /// the app (`crate::store_app`).
+    async fn open_billing(&self, ctx: &ToolContext) -> ToolResult {
+        if ctx.in_store_app() {
+            return ToolResult::ok(format!(
+                "Billing is in the app on the owner's phone. Tell them: {}",
+                crate::store_app::PLAN_IN_APP
+            ));
+        }
         let api = match self.api() {
             Ok(a) => a,
             Err(e) => return ToolResult::error(e),
@@ -334,7 +343,7 @@ impl DynTool for ProfileTool {
             match self.op {
                 ProfileOp::Get => self.profile.get(ctx).await,
                 ProfileOp::Update => self.profile.update(&input, ctx).await,
-                ProfileOp::OpenBilling => self.profile.open_billing().await,
+                ProfileOp::OpenBilling => self.profile.open_billing(ctx).await,
             }
         })
     }
@@ -350,6 +359,27 @@ mod tests {
 
     fn live() -> crate::agent_tool::AgentRegistry {
         Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new()))
+    }
+
+    /// From the phone app, billing is an instruction, never a link: no
+    /// portal is fetched (the store has no NeboAI credentials, so a fetch
+    /// would fail) and nothing is opened.
+    #[tokio::test]
+    async fn billing_from_the_phone_app_is_an_instruction_with_no_link() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::new(&dir.path().join("p.db").to_string_lossy()).unwrap());
+        let profile = Profile::new(store, Arc::new(std::sync::RwLock::new(None)), loader(&dir), live());
+        for phone in ["ios", "android"] {
+            let ctx = ToolContext { platform: Some(phone.into()), ..ToolContext::new(crate::Origin::User) };
+            let r = profile.open_billing(&ctx).await;
+            assert!(!r.is_error, "{phone}: {}", r.content);
+            assert!(r.content.contains("Open Settings → Account → Plan in the app."), "{phone}: {}", r.content);
+            assert!(!r.content.contains("http"), "{phone}: {}", r.content);
+        }
+        // Not from the phone: the portal is fetched as before (and fails
+        // here, with no NeboAI account).
+        let r = profile.open_billing(&ToolContext::new(crate::Origin::User)).await;
+        assert!(r.is_error, "{}", r.content);
     }
 
     #[test]

@@ -113,7 +113,7 @@ impl EventOrigin {
     /// (iOS, Android). Both stores forbid pointing a buyer at a checkout
     /// outside the store, so nothing sold is offered there by a link.
     pub fn in_store_app(&self) -> bool {
-        matches!(self.platform.as_deref(), Some("ios" | "android"))
+        tools::store_app::is_store_app(self.platform.as_deref())
     }
 
     /// `payload` with this origin on it: `client_id` (null when unclaimed)

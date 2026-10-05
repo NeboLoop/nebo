@@ -994,6 +994,12 @@ pub(crate) async fn prepare(
     if let Some(briefing) = req.delivery.mention_briefing.as_deref() {
         st.reminders.add(&TurnEvent::RunBriefing(briefing.to_string()));
     }
+    // A turn from the phone app never quotes NeboAI's web prices or hands
+    // out a checkout link (`tools::store_app`); its tool results are
+    // stripped of such links too (`tool_round::run_call`).
+    if tools::store_app::is_store_app(req.delivery.platform.as_deref()) {
+        st.reminders.add(&TurnEvent::RunBriefing(tools::store_app::GUIDANCE.to_string()));
+    }
     if let Some(notice) = seat::restricted_run_notice(
         req.seat.tool_allowlist.as_ref().is_some_and(|wl| wl.is_empty()),
         req.seat.tool_allowlist.as_ref(),
@@ -3588,6 +3594,69 @@ mod tests {
         assert_eq!(last.role, "tool");
         assert!(last.tool_results.as_ref().unwrap().to_string().contains("echo ran"), "the result reaches the next call");
         assert!(stored(&h).iter().any(|m| m.role == "assistant" && m.content == "It echoed."));
+    }
+
+    /// A tool whose result names NeboAI's pricing and checkout pages, and a
+    /// page that is neither.
+    struct SalePages;
+
+    impl tools::registry::DynTool for SalePages {
+        fn name(&self) -> &str {
+            "sale_pages"
+        }
+        fn description(&self) -> String {
+            "sale pages".into()
+        }
+        fn schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object", "properties": {}})
+        }
+        fn read_only(&self, _input: &serde_json::Value) -> bool {
+            true
+        }
+        fn execute_dyn<'a>(
+            &'a self,
+            _ctx: &'a tools::ToolContext,
+            _input: serde_json::Value,
+        ) -> Pin<Box<dyn Future<Output = tools::ToolResult> + Send + 'a>> {
+            Box::pin(async move {
+                tools::ToolResult::ok(
+                    "Plans: https://neboai.com/pricing . Buy: https://neboai.com/checkout?plan=solo . Help: https://neboai.com/docs",
+                )
+            })
+        }
+    }
+
+    /// A turn from the phone app (an app store build) is told never to quote
+    /// NeboAI's web prices or give a checkout link, and no tool result hands
+    /// it one: the link reads as where the plan is in the app. A desktop turn
+    /// is told nothing and reads the result as the tool gave it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_phone_turn_never_reads_a_neboai_checkout_link() {
+        for platform in [Some("ios"), Some("android"), None] {
+            let model = Scripted::new(vec![Step::Call("sale_pages", serde_json::json!({})), Step::Say("Done.")]);
+            let h = harness_with(&model, vec![Box::new(SalePages)]).await;
+            let mut req = owner("What does a plan cost?");
+            req.delivery.platform = platform.map(str::to_string);
+            let events = run_turn(&h, req).await;
+            assert_eq!(exit_of(&events), "text_response");
+            let calls = model.calls();
+            let told = texts(&calls[0]).iter().any(|t| t.contains(tools::store_app::GUIDANCE));
+            let result = calls[1].messages.last().unwrap().tool_results.as_ref().unwrap().to_string();
+            let streamed: Vec<&StreamEvent> =
+                events.iter().filter(|e| e.event_type == ai::StreamEventType::ToolResult).collect();
+            if platform.is_some() {
+                assert!(told, "{platform:?}: the phone guidance is a row");
+                for text in [result.as_str(), streamed[0].text.as_str()] {
+                    assert!(!text.contains("neboai.com/pricing"), "{platform:?}: {text}");
+                    assert!(!text.contains("neboai.com/checkout"), "{platform:?}: {text}");
+                    assert!(text.contains(tools::store_app::PLAN_IN_APP), "{platform:?}: {text}");
+                    assert!(text.contains("https://neboai.com/docs"), "{platform:?}: other pages stay: {text}");
+                }
+            } else {
+                assert!(!told, "a desktop turn is told nothing");
+                assert!(result.contains("https://neboai.com/checkout?plan=solo"), "{result}");
+            }
+        }
     }
 
     /// A dropped call is taken again with the same rows: the step's
@@ -6949,6 +7018,7 @@ mod tests {
                 grant: None,
                 run_taint: &[],
                 cancel: tokio_util::sync::CancellationToken::new(),
+                platform: None,
             },
             "h-1",
             &spec,

@@ -563,7 +563,7 @@ async fn a_linked_agents_ask_is_answered_once_in_its_own_turn() {
 
     // On his call: the run parks on the agent's ask and the voice model
     // hears it with its id and every option.
-    let spoken = crate::handlers::voice::run_delegated_task(state, &key, "check the repo", "Check the repo.", None).await;
+    let spoken = crate::handlers::voice::run_delegated_task(state, &key, "check the repo", "Check the repo.", None, None).await;
     assert_eq!(spoken.told, ["call_1"], "the call is told it, once");
     let spoken = spoken.text;
     assert!(spoken.contains("The answers it takes: Allow once, Always allow, or Deny."), "{spoken}");
@@ -608,7 +608,7 @@ async fn a_linked_agents_ask_is_answered_once_in_its_own_turn() {
 
     // Asked again next message, the card is answered from another device
     // (the phone's tap is its label): the agent gets that option, once.
-    let spoken = crate::handlers::voice::run_delegated_task(state, &key, "and the other repo", "And the other repo.", None).await.text;
+    let spoken = crate::handlers::voice::run_delegated_task(state, &key, "and the other repo", "And the other repo.", None, None).await.text;
     assert!(spoken.contains("ask_id \"call_2\""), "{spoken}");
     assert!(crate::chat_dispatch::answer_ask(state, "call_2", "Deny".into()).await);
     assert!(!crate::chat_dispatch::answer_ask(state, "call_2", "Allow once".into()).await, "the first answer wins");
@@ -618,7 +618,7 @@ async fn a_linked_agents_ask_is_answered_once_in_its_own_turn() {
 
     // Full Access: the agent's own no-prompt mode, and no ask reaches him.
     nebo.store().set_permission_mode(&employee, types::permissions::Mode::FullAccess).unwrap();
-    let spoken = crate::handlers::voice::run_delegated_task(state, &key, "once more", "Once more.", None).await.text;
+    let spoken = crate::handlers::voice::run_delegated_task(state, &key, "once more", "Once more.", None, None).await.text;
     assert!(spoken.contains("Ran it."), "{spoken}");
     assert!(state.run_registry.pending_ask_for_session(&key).await.is_none());
 
