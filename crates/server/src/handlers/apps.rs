@@ -397,6 +397,17 @@ pub fn desktop_offers_publish(agent_id: &str) -> bool {
     })
 }
 
+/// For the desktop's `neboapp://` window: the app's served `ui/` as the
+/// database records it, the server's own fallback (`resolve_app_ui`). An
+/// app the owner made lives in a folder named for the employee ("Design
+/// Studio"), not its id, so the window's folder scan alone never finds it
+/// (live 2026-10-05: "App not found" for Design Studio on the desktop).
+pub fn desktop_app_ui_dir(agent_id: &str) -> Option<PathBuf> {
+    let (store, _) = DESKTOP.get()?;
+    let recorded = store.get_agent(agent_id).ok()??.app_ui_path?;
+    served_ui_dir(PathBuf::from(recorded))
+}
+
 fn desktop_script(store: &db::Store, port: u16, agent_id: &str) -> String {
     let Some(app) = own_app(store, agent_id) else { return String::new() };
     let pass = napp::app_view::grant(&app.id, DESKTOP_PASS_TTL);

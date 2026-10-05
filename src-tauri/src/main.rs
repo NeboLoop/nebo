@@ -468,7 +468,9 @@ fn resolve_app_ui_dir(agent_id: &str) -> Option<PathBuf> {
             }
         }
     }
-    best.map(|(_, ui)| ui)
+    // An app the owner made is in a folder named for the employee, with no
+    // id in it: the database records where (the server's own fallback).
+    best.map(|(_, ui)| ui).or_else(|| server::handlers::apps::desktop_app_ui_dir(agent_id))
 }
 
 /// Generate the bridge script + meta tags injected into every HTML page served
