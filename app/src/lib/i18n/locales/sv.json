@@ -1618,7 +1618,27 @@
 		"noUsageDataShort": "Ingen användningsdata tillgänglig ännu.",
 		"balance": "Saldo",
 		"freePoolLabel": "Gratispool",
-		"giftPoolLabel": "Gåvopool"
+		"giftPoolLabel": "Gåvopool",
+		"charges": {
+			"title": "Debiterat från din plan",
+			"intro": "Telefonnummer, samtal, sms, molndatorer och minne har ett pris i dollar och dras från din plan, sedan från kredit du har köpt. Varje post ökar planens använda %.",
+			"total": "{amount} den här månaden",
+			"empty": "Inget har debiterats från din plan den här månaden.",
+			"loadFailed": "Det gick inte att läsa in kostnaderna. Försök igen.",
+			"fromPlan": "Från din plan",
+			"fromCredit": "Från kredit",
+			"loadMore": "Läs in fler",
+			"phoneNumber": "Telefonnummer {number}",
+			"phoneNumberPlain": "Telefonnummer",
+			"calls": "Samtal · {minutes} min",
+			"texts": "Sms · {count}",
+			"textingRegistration": "Sms-registrering",
+			"textingMonthly": "Sms · månadsvis",
+			"cloudComputer": "Molndator",
+			"cloudComputerNamed": "Molndator · {name}",
+			"memory": "Minne",
+			"media": "Media"
+		}
 	},
 	"settingsFamily": {
 		"title": "Familj",

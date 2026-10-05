@@ -1618,7 +1618,27 @@
 		"noUsageDataShort": "暂无用量数据。",
 		"balance": "余额",
 		"freePoolLabel": "免费池",
-		"giftPoolLabel": "赠送池"
+		"giftPoolLabel": "赠送池",
+		"charges": {
+			"title": "从你的套餐扣除",
+			"intro": "电话号码、通话、短信、云电脑和记忆以美元计价，先从你的套餐扣除，再从你购买的额度扣除。每一项都会提高套餐的已用百分比。",
+			"total": "本月 {amount}",
+			"empty": "本月没有从你的套餐扣除任何费用。",
+			"loadFailed": "无法加载费用。请重试。",
+			"fromPlan": "来自你的套餐",
+			"fromCredit": "来自额度",
+			"loadMore": "加载更多",
+			"phoneNumber": "电话号码 {number}",
+			"phoneNumberPlain": "电话号码",
+			"calls": "通话 · {minutes} 分钟",
+			"texts": "短信 · {count} 条",
+			"textingRegistration": "短信注册",
+			"textingMonthly": "短信 · 每月",
+			"cloudComputer": "云电脑",
+			"cloudComputerNamed": "云电脑 · {name}",
+			"memory": "记忆",
+			"media": "媒体"
+		}
 	},
 	"settingsFamily": {
 		"title": "家庭",

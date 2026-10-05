@@ -1618,7 +1618,27 @@
 		"noUsageDataShort": "Brak danych o użyciu.",
 		"balance": "Saldo",
 		"freePoolLabel": "Pula darmowa",
-		"giftPoolLabel": "Pula podarunkowa"
+		"giftPoolLabel": "Pula podarunkowa",
+		"charges": {
+			"title": "Obciążono Twój plan",
+			"intro": "Numery telefonów, połączenia, SMS-y, komputery w chmurze i pamięć mają cenę w dolarach i są pobierane z Twojego planu, a potem z kupionego kredytu. Każda pozycja zwiększa wykorzystany % planu.",
+			"total": "{amount} w tym miesiącu",
+			"empty": "W tym miesiącu nic nie obciążyło Twojego planu.",
+			"loadFailed": "Nie udało się wczytać opłat. Spróbuj ponownie.",
+			"fromPlan": "Z Twojego planu",
+			"fromCredit": "Z kredytu",
+			"loadMore": "Wczytaj więcej",
+			"phoneNumber": "Numer telefonu {number}",
+			"phoneNumberPlain": "Numer telefonu",
+			"calls": "Połączenia · {minutes} min",
+			"texts": "SMS-y · {count}",
+			"textingRegistration": "Rejestracja SMS",
+			"textingMonthly": "SMS · miesięcznie",
+			"cloudComputer": "Komputer w chmurze",
+			"cloudComputerNamed": "Komputer w chmurze · {name}",
+			"memory": "Pamięć",
+			"media": "Multimedia"
+		}
 	},
 	"settingsFamily": {
 		"title": "Rodzina",

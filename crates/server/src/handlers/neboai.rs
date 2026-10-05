@@ -1054,6 +1054,76 @@ pub async fn billing_invoices(State(state): State<AppState>) -> HandlerResult<se
     })))
 }
 
+/// One thing the plan's pool (or purchased credit) paid for this month, in
+/// dollars: everything but AI work, which is the plan's percentage. Calls and
+/// texts arrive from the hub as one line each for the month.
+#[derive(serde::Serialize, serde::Deserialize, Default, Debug, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct PlanChargeLine {
+    pub id: String,
+    /// phone_number, calls, texts, texting_registration, texting_monthly,
+    /// cloud_computer, memory, media
+    pub kind: String,
+    /// The number (E.164) or the computer's name; empty when none.
+    pub detail: String,
+    /// Minutes for calls, texts for texts; 1 otherwise.
+    pub quantity: i64,
+    pub amount_cents: i64,
+    /// plan | credit
+    pub source: String,
+    pub ref_id: String,
+    /// The line in English, for a kind the page has no words for.
+    pub label: String,
+    pub at: String,
+}
+
+#[derive(serde::Serialize, Default, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PlanChargesResponse {
+    pub charges: Vec<PlanChargeLine>,
+    /// Lines this month, every page.
+    pub charges_count: i64,
+    pub charges_total_cents: i64,
+    /// RFC3339: when the plan's month began.
+    pub charges_since: String,
+}
+
+#[derive(serde::Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct PlanChargesQuery {
+    pub limit: u32,
+    pub offset: u32,
+}
+
+/// The hub's plan usage, cut down to its "Charged to your plan" lines. The
+/// percentage reaches the page from Janus (janus_usage); nothing else does.
+pub(crate) fn plan_charges_response(v: &serde_json::Value) -> PlanChargesResponse {
+    PlanChargesResponse {
+        charges: v
+            .get("charges")
+            .cloned()
+            .and_then(|c| serde_json::from_value(c).ok())
+            .unwrap_or_default(),
+        charges_count: v["chargesCount"].as_i64().unwrap_or(0),
+        charges_total_cents: v["chargesTotalCents"].as_i64().unwrap_or(0),
+        charges_since: v["chargesSince"].as_str().unwrap_or("").to_string(),
+    }
+}
+
+/// GET /api/v1/neboai/billing/plan-charges — this month's "Charged to your
+/// plan" lines, a page at a time (limit 1-100, default 50).
+pub async fn billing_plan_charges(
+    State(state): State<AppState>,
+    Query(q): Query<PlanChargesQuery>,
+) -> HandlerResult<PlanChargesResponse> {
+    let api = build_api_client(&state).map_err(to_error_response)?;
+    let limit = if q.limit == 0 { 50 } else { q.limit.min(100) };
+    let resp = api.billing_plan_usage(limit, q.offset).await.map_err(|e| {
+        to_error_response(NeboError::Internal(format!("billing_plan_charges: {e}")))
+    })?;
+    Ok(Json(plan_charges_response(&resp)))
+}
+
 /// GET /api/v1/neboai/billing/payment-methods — list payment methods.
 pub async fn billing_payment_methods(
     State(state): State<AppState>,
@@ -1778,5 +1848,39 @@ mod usage_tests {
         let v = janus_usage_response(&u);
         assert_eq!(v["plan"], serde_json::json!({"included": true, "percentUsed": 42, "resetAt": "2026-11-01T00:00:00Z"}));
         assert_eq!(v["budget"]["creditsCents"], 2500);
+    }
+
+    /// The charged lines pass through in dollars with their kind and source;
+    /// the plan's internal metering (usedPercent's basis, gift and free µ$)
+    /// never rides along.
+    #[test]
+    fn plan_charges_are_the_dollar_lines_only() {
+        let hub = serde_json::json!({
+            "plan": "business", "included": true, "usedPercent": 37, "resetSeconds": 86400,
+            "giftMicro": 5_000_000, "freeMicro": 0,
+            "charges": [
+                {"id": "calls:plan", "kind": "calls", "detail": "", "quantity": 42, "amountCents": 84,
+                 "source": "plan", "refId": "", "label": "Calls · 42 min", "at": "2026-10-05T10:00:00Z"},
+                {"id": "a1", "kind": "phone_number", "detail": "+15551234567", "quantity": 1, "amountCents": 300,
+                 "source": "credit", "refId": "b2", "label": "Phone number", "at": "2026-10-01T00:00:00Z"}
+            ],
+            "chargesCount": 7, "chargesTotalCents": 1234, "chargesSince": "2026-09-05T10:00:00Z"
+        });
+        let r = plan_charges_response(&hub);
+        assert_eq!(r.charges.len(), 2);
+        assert_eq!(r.charges[0].kind, "calls");
+        assert_eq!(r.charges[0].quantity, 42);
+        assert_eq!(r.charges[1].detail, "+15551234567");
+        assert_eq!(r.charges[1].source, "credit");
+        assert_eq!((r.charges_count, r.charges_total_cents), (7, 1234));
+        let out = serde_json::to_value(&r).unwrap();
+        for leaked in ["usedPercent", "giftMicro", "freeMicro", "resetSeconds"] {
+            assert!(out.get(leaked).is_none(), "{leaked} left the hub's answer");
+        }
+        // A hub without the lines yet: an empty list, never an error.
+        assert_eq!(
+            plan_charges_response(&serde_json::json!({"usedPercent": 3})),
+            PlanChargesResponse::default()
+        );
     }
 }

@@ -1618,7 +1618,27 @@
 		"noUsageDataShort": "No usage data available yet.",
 		"balance": "Balance",
 		"freePoolLabel": "Free pool",
-		"giftPoolLabel": "Gift pool"
+		"giftPoolLabel": "Gift pool",
+		"charges": {
+			"title": "Charged to your plan",
+			"intro": "Phone numbers, calls, texts, cloud computers and memory are priced in dollars and come out of your plan, then out of credit you bought. Each one raises your plan's % used.",
+			"total": "{amount} this month",
+			"empty": "Nothing has been charged to your plan this month.",
+			"loadFailed": "Could not load charges. Try again.",
+			"fromPlan": "From your plan",
+			"fromCredit": "From credit",
+			"loadMore": "Load more",
+			"phoneNumber": "Phone number {number}",
+			"phoneNumberPlain": "Phone number",
+			"calls": "Calls · {minutes} min",
+			"texts": "Texts · {count}",
+			"textingRegistration": "Texting registration",
+			"textingMonthly": "Texting · monthly",
+			"cloudComputer": "Cloud computer",
+			"cloudComputerNamed": "Cloud computer · {name}",
+			"memory": "Memory",
+			"media": "Media"
+		}
 	},
 	"settingsFamily": {
 		"title": "Family",

@@ -1029,6 +1029,25 @@ export interface PermissionsPage {
 	fixed: PermissionItem[]
 }
 
+export interface PlanChargeLine {
+	id: string
+	kind: string
+	detail: string
+	quantity: number
+	amountCents: number
+	source: string
+	refId: string
+	label: string
+	at: string
+}
+
+export interface PlanChargesResponse {
+	charges: PlanChargeLine[]
+	chargesCount: number
+	chargesTotalCents: number
+	chargesSince: string
+}
+
 export interface PluginRegistry {
 	id: string
 	name: string

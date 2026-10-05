@@ -1618,7 +1618,27 @@
 		"noUsageDataShort": "Ainda sem dados de utilização disponíveis.",
 		"balance": "Saldo",
 		"freePoolLabel": "Saldo gratuito",
-		"giftPoolLabel": "Saldo de ofertas"
+		"giftPoolLabel": "Saldo de ofertas",
+		"charges": {
+			"title": "Cobrado do seu plano",
+			"intro": "Números de telefone, chamadas, SMS, computadores na nuvem e memória têm preço em dólares e saem do seu plano e, depois, do crédito que comprou. Cada um aumenta a % utilizada do seu plano.",
+			"total": "{amount} este mês",
+			"empty": "Nada foi cobrado do seu plano este mês.",
+			"loadFailed": "Não foi possível carregar as cobranças. Tente novamente.",
+			"fromPlan": "Do seu plano",
+			"fromCredit": "Do crédito",
+			"loadMore": "Carregar mais",
+			"phoneNumber": "Número de telefone {number}",
+			"phoneNumberPlain": "Número de telefone",
+			"calls": "Chamadas · {minutes} min",
+			"texts": "SMS · {count}",
+			"textingRegistration": "Registo de SMS",
+			"textingMonthly": "SMS · mensal",
+			"cloudComputer": "Computador na nuvem",
+			"cloudComputerNamed": "Computador na nuvem · {name}",
+			"memory": "Memória",
+			"media": "Multimédia"
+		}
 	},
 	"settingsFamily": {
 		"title": "Família",

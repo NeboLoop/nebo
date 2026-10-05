@@ -1618,7 +1618,27 @@
 		"noUsageDataShort": "Belum ada data penggunaan.",
 		"balance": "Baki",
 		"freePoolLabel": "Kumpulan percuma",
-		"giftPoolLabel": "Kumpulan hadiah"
+		"giftPoolLabel": "Kumpulan hadiah",
+		"charges": {
+			"title": "Dicaj kepada pelan anda",
+			"intro": "Nombor telefon, panggilan, SMS, komputer awan dan memori diberi harga dalam dolar dan diambil daripada pelan anda, kemudian daripada kredit yang anda beli. Setiap satu menaikkan % pelan anda yang digunakan.",
+			"total": "{amount} bulan ini",
+			"empty": "Tiada apa-apa dicaj kepada pelan anda bulan ini.",
+			"loadFailed": "Tidak dapat memuatkan caj. Cuba lagi.",
+			"fromPlan": "Daripada pelan anda",
+			"fromCredit": "Daripada kredit",
+			"loadMore": "Muatkan lagi",
+			"phoneNumber": "Nombor telefon {number}",
+			"phoneNumberPlain": "Nombor telefon",
+			"calls": "Panggilan · {minutes} min",
+			"texts": "SMS · {count}",
+			"textingRegistration": "Pendaftaran SMS",
+			"textingMonthly": "SMS · bulanan",
+			"cloudComputer": "Komputer awan",
+			"cloudComputerNamed": "Komputer awan · {name}",
+			"memory": "Memori",
+			"media": "Media"
+		}
 	},
 	"settingsFamily": {
 		"title": "Keluarga",

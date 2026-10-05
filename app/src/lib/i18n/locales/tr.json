@@ -1618,7 +1618,27 @@
 		"noUsageDataShort": "Henüz kullanım verisi yok.",
 		"balance": "Bakiye",
 		"freePoolLabel": "Ücretsiz havuz",
-		"giftPoolLabel": "Hediye havuzu"
+		"giftPoolLabel": "Hediye havuzu",
+		"charges": {
+			"title": "Planınızdan düşülenler",
+			"intro": "Telefon numaraları, aramalar, SMS'ler, bulut bilgisayarlar ve bellek dolar cinsinden fiyatlandırılır ve önce planınızdan, sonra satın aldığınız krediden düşülür. Her biri planınızın kullanılan yüzdesini artırır.",
+			"total": "Bu ay {amount}",
+			"empty": "Bu ay planınızdan hiçbir şey düşülmedi.",
+			"loadFailed": "Ücretler yüklenemedi. Tekrar deneyin.",
+			"fromPlan": "Planınızdan",
+			"fromCredit": "Krediden",
+			"loadMore": "Daha fazla yükle",
+			"phoneNumber": "Telefon numarası {number}",
+			"phoneNumberPlain": "Telefon numarası",
+			"calls": "Aramalar · {minutes} dk",
+			"texts": "SMS · {count}",
+			"textingRegistration": "SMS kaydı",
+			"textingMonthly": "SMS · aylık",
+			"cloudComputer": "Bulut bilgisayar",
+			"cloudComputerNamed": "Bulut bilgisayar · {name}",
+			"memory": "Bellek",
+			"media": "Medya"
+		}
 	},
 	"settingsFamily": {
 		"title": "Aile",

@@ -1618,7 +1618,27 @@
 		"noUsageDataShort": "אין נתוני שימוש זמינים עדיין.",
 		"balance": "יתרה",
 		"freePoolLabel": "מאגר חינם",
-		"giftPoolLabel": "מאגר מתנות"
+		"giftPoolLabel": "מאגר מתנות",
+		"charges": {
+			"title": "חויב מהתוכנית שלך",
+			"intro": "מספרי טלפון, שיחות, הודעות SMS, מחשבי ענן וזיכרון מתומחרים בדולרים ויורדים מהתוכנית שלך, ולאחר מכן מהקרדיט שרכשת. כל אחד מהם מעלה את אחוז השימוש בתוכנית.",
+			"total": "{amount} החודש",
+			"empty": "לא חויב דבר מהתוכנית שלך החודש.",
+			"loadFailed": "לא ניתן לטעון את החיובים. נסה שוב.",
+			"fromPlan": "מהתוכנית שלך",
+			"fromCredit": "מהקרדיט",
+			"loadMore": "טען עוד",
+			"phoneNumber": "מספר טלפון {number}",
+			"phoneNumberPlain": "מספר טלפון",
+			"calls": "שיחות · {minutes} דק׳",
+			"texts": "הודעות SMS · {count}",
+			"textingRegistration": "רישום הודעות SMS",
+			"textingMonthly": "הודעות SMS · חודשי",
+			"cloudComputer": "מחשב ענן",
+			"cloudComputerNamed": "מחשב ענן · {name}",
+			"memory": "זיכרון",
+			"media": "מדיה"
+		}
 	},
 	"settingsFamily": {
 		"title": "משפחה",

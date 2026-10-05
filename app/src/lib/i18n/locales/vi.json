@@ -1618,7 +1618,27 @@
 		"noUsageDataShort": "Chưa có dữ liệu sử dụng.",
 		"balance": "Số dư",
 		"freePoolLabel": "Quỹ miễn phí",
-		"giftPoolLabel": "Quỹ quà tặng"
+		"giftPoolLabel": "Quỹ quà tặng",
+		"charges": {
+			"title": "Đã tính vào gói của bạn",
+			"intro": "Số điện thoại, cuộc gọi, tin nhắn, máy tính đám mây và bộ nhớ được định giá bằng đô la và trừ vào gói của bạn, sau đó vào tín dụng bạn đã mua. Mỗi khoản làm tăng % đã dùng của gói.",
+			"total": "{amount} tháng này",
+			"empty": "Tháng này chưa có gì được tính vào gói của bạn.",
+			"loadFailed": "Không thể tải các khoản phí. Hãy thử lại.",
+			"fromPlan": "Từ gói của bạn",
+			"fromCredit": "Từ tín dụng",
+			"loadMore": "Tải thêm",
+			"phoneNumber": "Số điện thoại {number}",
+			"phoneNumberPlain": "Số điện thoại",
+			"calls": "Cuộc gọi · {minutes} phút",
+			"texts": "Tin nhắn · {count}",
+			"textingRegistration": "Đăng ký nhắn tin",
+			"textingMonthly": "Nhắn tin · hằng tháng",
+			"cloudComputer": "Máy tính đám mây",
+			"cloudComputerNamed": "Máy tính đám mây · {name}",
+			"memory": "Bộ nhớ",
+			"media": "Phương tiện"
+		}
 	},
 	"settingsFamily": {
 		"title": "Gia đình",

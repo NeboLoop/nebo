@@ -83,6 +83,10 @@ pub fn routes() -> Router<AppState> {
             axum::routing::get(handlers::neboai::billing_invoices),
         )
         .route(
+            "/neboai/billing/plan-charges",
+            axum::routing::get(handlers::neboai::billing_plan_charges),
+        )
+        .route(
             "/neboai/billing/payment-methods",
             axum::routing::get(handlers::neboai::billing_payment_methods),
         )

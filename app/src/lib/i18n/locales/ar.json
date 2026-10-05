@@ -1618,7 +1618,27 @@
 		"noUsageDataShort": "لا توجد بيانات استخدام متاحة بعد.",
 		"balance": "الرصيد",
 		"freePoolLabel": "الرصيد المجاني",
-		"giftPoolLabel": "رصيد الهدايا"
+		"giftPoolLabel": "رصيد الهدايا",
+		"charges": {
+			"title": "المحسوب على خطتك",
+			"intro": "أرقام الهواتف والمكالمات والرسائل النصية وأجهزة الكمبيوتر السحابية والذاكرة لها سعر بالدولار وتُخصم من خطتك، ثم من الرصيد الذي اشتريته. كل بند يرفع النسبة المستخدمة من خطتك.",
+			"total": "{amount} هذا الشهر",
+			"empty": "لم يُحتسب أي شيء على خطتك هذا الشهر.",
+			"loadFailed": "تعذّر تحميل الرسوم. حاول مرة أخرى.",
+			"fromPlan": "من خطتك",
+			"fromCredit": "من الرصيد",
+			"loadMore": "تحميل المزيد",
+			"phoneNumber": "رقم الهاتف {number}",
+			"phoneNumberPlain": "رقم الهاتف",
+			"calls": "المكالمات · {minutes} دقيقة",
+			"texts": "الرسائل النصية · {count}",
+			"textingRegistration": "تسجيل الرسائل النصية",
+			"textingMonthly": "الرسائل النصية · شهريًا",
+			"cloudComputer": "كمبيوتر سحابي",
+			"cloudComputerNamed": "كمبيوتر سحابي · {name}",
+			"memory": "الذاكرة",
+			"media": "الوسائط"
+		}
 	},
 	"settingsFamily": {
 		"title": "العائلة",
