@@ -617,6 +617,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
     let approvals_origin = crate::handlers::ws::EventOrigin {
         client_id: config.client_id.clone(),
         session_id: config.session_key.clone(),
+        platform: None,
     };
     // The loop plugin serves loop conversations only: a reply routed to
     // another channel (email) never reaches it, not even as a typing signal.

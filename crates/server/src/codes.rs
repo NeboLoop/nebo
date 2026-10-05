@@ -176,20 +176,23 @@ fn code_type_name(code_type: CodeType) -> &'static str {
 /// that asked (the desktop's modal, the phone's card) reads the same keys
 /// either way and can go straight to configuring what was installed
 /// (`artifact_id` is an employee's own id; `needsAuth` says a plugin it
-/// needs is not connected yet, so it waits to start until it is).
-fn install_result(code: &str, code_type: &str, r: &CodeHandlerResult) -> serde_json::Value {
+/// needs is not connected yet, so it waits to start until it is). Asked from
+/// the phone app ([`EventOrigin::in_store_app`]), something to buy carries
+/// no checkout link and no price ([`not_sold_in_app`]).
+fn install_result(code: &str, code_type: &str, r: &CodeHandlerResult, origin: &EventOrigin) -> serde_json::Value {
+    let withheld = origin.in_store_app() && r.checkout_url.is_some();
     serde_json::json!({
         "code": code,
         "code_type": code_type,
         "success": true,
-        "message": r.message,
+        "message": if withheld { not_sold_in_app(r) } else { r.message.clone() },
         "artifact_name": r.artifact_name,
         "artifact_id": r.artifact_id,
         "artifact_type": r.artifact_type.as_deref().unwrap_or(code_type),
         "payment_required": r.checkout_url.is_some(),
-        "checkout_url": r.checkout_url,
+        "checkout_url": if withheld { None } else { r.checkout_url.as_deref() },
         "needsAuth": r.needs_auth,
-        "tier": r.tier,
+        "tier": if withheld { None } else { r.tier.as_ref() },
     })
 }
 
@@ -345,11 +348,11 @@ pub async fn handle_code(state: &AppState, code_type: CodeType, code: &str, orig
     );
 
     let result = install(state, code_type, &claim, InstalledBy::Owner, origin).await;
-    let line = outcome_line(code, &result);
+    let line = outcome_line(code, &result, origin);
 
     match result {
         Ok(r) => {
-            state.hub.broadcast("code_result", origin.stamp(install_result(code, code_type_str, &r)));
+            state.hub.broadcast("code_result", origin.stamp(install_result(code, code_type_str, &r, origin)));
         }
         Err(e) => {
             warn!(code = code, error = %e, "code handling failed");
@@ -408,7 +411,8 @@ pub async fn handle_code_message(
         }
         _ => {
             say(&format!("Installing {} codes, one at a time:\n\n", codes.len()));
-            let quiet = EventOrigin::unclaimed(origin.session_id.clone());
+            // Still the phone app asking, so nothing sold is offered by a link.
+            let quiet = EventOrigin { platform: origin.platform.clone(), ..EventOrigin::unclaimed(origin.session_id.clone()) };
             for (code_type, code) in codes {
                 let line = handle_code(state, *code_type, code, &quiet).await;
                 say(&format!("- {line}\n"));
@@ -466,7 +470,7 @@ pub async fn handle_code_text(
     );
 
     let result = install(state, code_type, &claim, by, &origin).await;
-    let line = outcome_line(code, &result);
+    let line = outcome_line(code, &result, &origin);
 
     match result {
         Ok(r) => {
@@ -517,9 +521,11 @@ const NOT_SIGNED_IN: &str = "this Nebo isn't signed in to NeboAI. Sign in, then 
 /// costs), or why it did not, plain and about that code. What went wrong in
 /// detail is in the log, never here: "fetch connector 84fe…: NeboAI returned
 /// 404: {"error":"skill not found"}" was what an owner read (2026-09-30).
-fn outcome_line(code: &str, result: &Result<CodeHandlerResult, NeboError>) -> String {
+/// `origin` is who asked: the phone app gets no checkout link.
+fn outcome_line(code: &str, result: &Result<CodeHandlerResult, NeboError>, origin: &EventOrigin) -> String {
     match result {
         Ok(r) => match &r.checkout_url {
+            Some(_) if origin.in_store_app() => not_sold_in_app(r),
             Some(url) => format!("{}. Payment required: {url}", r.message),
             None => r.message.clone(),
         },
@@ -529,6 +535,13 @@ fn outcome_line(code: &str, result: &Result<CodeHandlerResult, NeboError>) -> St
         }
         Err(_) => format!("{INSTALL_FAILED} {code}. Try again."),
     }
+}
+
+/// What the phone app reads about something that has to be bought. App
+/// stores forbid pointing a buyer at a checkout outside the store, so it
+/// names no link, no price and no place to buy.
+fn not_sold_in_app(r: &CodeHandlerResult) -> String {
+    format!("{} isn't available to buy in the app.", r.artifact_name.as_deref().unwrap_or("This"))
 }
 
 /// What an install asked NeboAI for. The same 404 means two things: to a
@@ -1955,7 +1968,7 @@ pub async fn submit_code(
 
     match result {
         Ok(r) => {
-            let mut result = install_result(validated_code, code_type_name(code_type), &r);
+            let mut result = install_result(validated_code, code_type_name(code_type), &r, &origin);
             result["codeType"] = serde_json::json!(format!("{:?}", code_type));
             Ok(axum::response::Json(result))
         }
@@ -3110,7 +3123,7 @@ mod tests {
             needs_auth: true,
             ..Default::default()
         };
-        let r = install_result("AGNT-AAAA-BBBB", code_type_name(CodeType::Agent), &hired);
+        let r = install_result("AGNT-AAAA-BBBB", code_type_name(CodeType::Agent), &hired, &EventOrigin::default());
         assert_eq!(r["success"], true);
         assert_eq!(r["artifact_id"], "agent-123");
         assert_eq!(r["artifact_type"], "agent");
@@ -3118,7 +3131,7 @@ mod tests {
         assert_eq!(r["payment_required"], false);
         // A handler that names its own type keeps it.
         let plugin = CodeHandlerResult { artifact_type: Some("plugin".into()), ..Default::default() };
-        assert_eq!(install_result("PLUG-AAAA-BBBB", "plugin", &plugin)["artifact_type"], "plugin");
+        assert_eq!(install_result("PLUG-AAAA-BBBB", "plugin", &plugin, &EventOrigin::default())["artifact_type"], "plugin");
     }
 
     /// A code in hand or a cascade in progress both count as "installing";
@@ -3432,7 +3445,9 @@ mod tests {
     #[test]
     fn a_hub_refusal_reads_as_a_plain_reason() {
         let http = |status: u16| comm::CommError::Http { status, body: r#"{"error":"skill not found"}"#.into() };
-        let line = |step: HubStep, e: comm::CommError| outcome_line("CONN-V1PR-K421", &Err(hub_refusal(step, "fetch connector 84fe5be6", e)));
+        let line = |step: HubStep, e: comm::CommError| {
+            outcome_line("CONN-V1PR-K421", &Err(hub_refusal(step, "fetch connector 84fe5be6", e)), &EventOrigin::default())
+        };
         let not_available = "Couldn't install CONN-V1PR-K421: it isn't available to your account. Ask its publisher to share it.";
         assert_eq!(line(HubStep::Fetch, http(404)), not_available);
         assert_eq!(line(HubStep::Fetch, http(403)), not_available);
@@ -3446,7 +3461,8 @@ mod tests {
             assert_eq!(line(HubStep::Fetch, other), "Couldn't install CONN-V1PR-K421. Try again.");
         }
         // Nothing of what NeboAI said, and no Rust error taxonomy.
-        let internal = outcome_line("CONN-V1PR-K421", &Err(NeboError::Internal("create MCP integration(s): boom".into())));
+        let internal =
+            outcome_line("CONN-V1PR-K421", &Err(NeboError::Internal("create MCP integration(s): boom".into())), &EventOrigin::default());
         assert_eq!(internal, "Couldn't install CONN-V1PR-K421. Try again.");
         // A success says what installed; a paid one where to pay.
         let paid = CodeHandlerResult {
@@ -3454,9 +3470,59 @@ mod tests {
             checkout_url: Some("https://pay.example.com/x".into()),
             ..Default::default()
         };
-        assert_eq!(outcome_line("SKIL-AAAA-BBBB", &Ok(paid)), "Skill requires payment: Writer. Payment required: https://pay.example.com/x");
+        assert_eq!(
+            outcome_line("SKIL-AAAA-BBBB", &Ok(paid), &EventOrigin::default()),
+            "Skill requires payment: Writer. Payment required: https://pay.example.com/x"
+        );
         let installed = CodeHandlerResult { message: "Installed skill: Writer".into(), ..Default::default() };
-        assert_eq!(outcome_line("SKIL-AAAA-BBBB", &Ok(installed)), "Installed skill: Writer");
+        assert_eq!(outcome_line("SKIL-AAAA-BBBB", &Ok(installed), &EventOrigin::default()), "Installed skill: Writer");
+    }
+
+    /// App stores forbid pointing a buyer at a checkout outside the store:
+    /// asked from the phone app (iOS or Android), something to buy is named
+    /// plainly, with no link, no price and no place to buy, in the chat line
+    /// and in the result. Every other client still gets where to pay.
+    #[test]
+    fn the_phone_app_is_never_sent_a_checkout_link() {
+        let paid = || {
+            Ok(CodeHandlerResult {
+                message: "Skill requires payment: Writer".into(),
+                artifact_name: Some("Writer".into()),
+                checkout_url: Some("https://pay.example.com/x".into()),
+                tier: Some(serde_json::json!({ "recurringPriceCents": 900 })),
+                ..Default::default()
+            })
+        };
+        let from = |platform: Option<&str>| EventOrigin {
+            client_id: Some("socket-1".into()),
+            session_id: "s".into(),
+            platform: platform.map(str::to_string),
+        };
+        for phone in ["ios", "android"] {
+            let origin = from(Some(phone));
+            assert_eq!(outcome_line("SKIL-AAAA-BBBB", &paid(), &origin), "Writer isn't available to buy in the app.");
+            let Ok(r) = paid() else { unreachable!() };
+            let result = install_result("SKIL-AAAA-BBBB", "skill", &r, &origin);
+            assert_eq!(result["message"], "Writer isn't available to buy in the app.");
+            assert!(result["checkout_url"].is_null(), "{phone}: {result}");
+            assert!(result["tier"].is_null(), "{phone}: {result}");
+            assert_eq!(result["payment_required"], true);
+        }
+        for other in [None, Some("macos"), Some("web")] {
+            let origin = from(other);
+            assert_eq!(
+                outcome_line("SKIL-AAAA-BBBB", &paid(), &origin),
+                "Skill requires payment: Writer. Payment required: https://pay.example.com/x"
+            );
+            let Ok(r) = paid() else { unreachable!() };
+            let result = install_result("SKIL-AAAA-BBBB", "skill", &r, &origin);
+            assert_eq!(result["message"], "Skill requires payment: Writer");
+            assert_eq!(result["checkout_url"], "https://pay.example.com/x");
+            assert_eq!(result["tier"]["recurringPriceCents"], 900);
+        }
+        // Something free installs the same way from the phone.
+        let installed = CodeHandlerResult { message: "Installed skill: Writer".into(), ..Default::default() };
+        assert_eq!(outcome_line("SKIL-AAAA-BBBB", &Ok(installed), &from(Some("ios"))), "Installed skill: Writer");
     }
 
     #[test]

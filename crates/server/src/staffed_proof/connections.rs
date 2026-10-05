@@ -276,7 +276,7 @@ async fn an_install_carries_the_client_that_asked() {
     };
 
     let mut desktop = nebo.state.hub.subscribe();
-    let phone = EventOrigin { client_id: Some("phone-page".to_string()), session_id: "agent:main:web".to_string() };
+    let phone = EventOrigin { client_id: Some("phone-page".to_string()), session_id: "agent:main:web".to_string(), platform: None };
     crate::codes::handle_code(&nebo.state, crate::codes::CodeType::Plugin, CODE, &phone).await;
     let events = heard(&mut desktop);
     let kinds: Vec<&str> = events.iter().map(|(k, _)| k.as_str()).collect();
@@ -404,7 +404,7 @@ async fn an_open_approval_outlives_its_turn_and_reaches_a_client_that_connects_l
     assert!(!r.is_error, "{}", r.content);
     let event = stream_rx.recv().await.expect("the card was asked");
     let tc = event.tool_call.expect("the card's call");
-    let asked = EventOrigin { client_id: Some("socket-phone".to_string()), session_id: SESSION.to_string() }
+    let asked = EventOrigin { client_id: Some("socket-phone".to_string()), session_id: SESSION.to_string(), platform: None }
         .stamp(json!({ "request_id": tc.id, "tool": tc.name, "input": tc.input, "batch": null }));
     crate::chat_dispatch::record_approval_card(
         &nebo.state.approval_channels,
@@ -720,7 +720,7 @@ async fn a_list_of_codes_installs_one_by_one_and_a_failure_is_its_own_line() {
         out
     };
     let mut desktop = nebo.state.hub.subscribe();
-    let asking = EventOrigin { client_id: Some("desk-page".to_string()), session_id: SESSION.to_string() };
+    let asking = EventOrigin { client_id: Some("desk-page".to_string()), session_id: SESSION.to_string(), platform: None };
     let lines = crate::codes::handle_code_message(&nebo.state, &codes, &asking, "main").await;
     assert_eq!(
         lines,
