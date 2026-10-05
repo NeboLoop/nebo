@@ -11,6 +11,15 @@ export interface AgentInputField {
 	default?: unknown
 	placeholder?: string
 	options?: { value: string; label: string }[]
+	/** A number field's unit ("days", "%"), shown after the value. */
+	unit?: string
+	min?: number
+	max?: number
+	step?: number
+	/** A money question: never defaulted. */
+	money?: boolean
+	/** Durable semantic id (`finance.ap.invoice_mailbox`). */
+	id?: string
 }
 
 /** Enriched chat object returned by list_agent_chats (not the raw Chat struct). */

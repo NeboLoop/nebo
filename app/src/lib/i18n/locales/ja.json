@@ -992,7 +992,11 @@
 		"upgradeTo": "{version}にアップグレード",
 		"cannotUninstall": "アンインストールできません — {count}件のアイテムがこのプラグインに依存しています",
 		"cannotUninstallSingular": "アンインストールできません — {count}件のアイテムがこのプラグインに依存しています",
-		"uninstallMessage": "このNeboからプラグインとそのバイナリを削除します。あとでマーケットプレイスから再インストールできます。"
+		"uninstallMessage": "このNeboからプラグインとそのバイナリを削除します。あとでマーケットプレイスから再インストールできます。",
+		"ready": "準備完了",
+		"notConnected": "未接続",
+		"disconnectTitle": "{name} の接続を解除しますか？",
+		"disconnectMessage": "{name} を使うスキルは、再接続するまで動作しません。"
 	},
 	"settingsAgents": {
 		"title": "社員",
@@ -2264,6 +2268,27 @@
 		"pathPlaceholder": "/path/to/directory",
 		"inputsCustomize": "これらの入力で{name}の動作をカスタマイズできます。",
 		"noInputs": "この社員に設定可能な入力はありません。"
+	},
+	"agentInputForm": {
+		"optional": "任意",
+		"skipForNow": "今はスキップ",
+		"increase": "増やす",
+		"decrease": "減らす",
+		"requiredError": "入力は必須です",
+		"numberError": "数値を入力してください",
+		"minError": "{min} 以上にしてください",
+		"maxError": "{max} 以下にしてください",
+		"on": "オン",
+		"off": "オフ",
+		"units": {
+			"seconds": "秒",
+			"minutes": "分",
+			"hours": "時間",
+			"days": "日",
+			"weeks": "週",
+			"months": "か月",
+			"years": "年"
+		}
 	},
 	"agentPersona": {
 		"title": "ペルソナ",

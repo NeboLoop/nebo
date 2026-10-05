@@ -992,7 +992,11 @@
 		"upgradeTo": "Atualizar para {version}",
 		"cannotUninstall": "Não é possível desinstalar — {count} itens dependem deste plugin",
 		"cannotUninstallSingular": "Não é possível desinstalar — {count} item depende deste plugin",
-		"uninstallMessage": "Isso remove o plugin e seu binário deste Nebo. Você pode reinstalá-lo da loja depois."
+		"uninstallMessage": "Isso remove o plugin e seu binário deste Nebo. Você pode reinstalá-lo da loja depois.",
+		"ready": "Pronto",
+		"notConnected": "Não conectado",
+		"disconnectTitle": "Desconectar {name}?",
+		"disconnectMessage": "As habilidades que usam {name} param de funcionar até você conectá-lo de novo."
 	},
 	"settingsAgents": {
 		"title": "Funcionários",
@@ -2264,6 +2268,27 @@
 		"pathPlaceholder": "/caminho/para/diretorio",
 		"inputsCustomize": "Estas entradas personalizam como {name} opera.",
 		"noInputs": "Nenhuma entrada configurável para este funcionário."
+	},
+	"agentInputForm": {
+		"optional": "Opcional",
+		"skipForNow": "Pular por enquanto",
+		"increase": "Aumentar",
+		"decrease": "Diminuir",
+		"requiredError": "Campo obrigatório",
+		"numberError": "Digite um número",
+		"minError": "Deve ser no mínimo {min}",
+		"maxError": "Deve ser no máximo {max}",
+		"on": "Ligado",
+		"off": "Desligado",
+		"units": {
+			"seconds": "segundos",
+			"minutes": "minutos",
+			"hours": "horas",
+			"days": "dias",
+			"weeks": "semanas",
+			"months": "meses",
+			"years": "anos"
+		}
 	},
 	"agentPersona": {
 		"title": "Persona",

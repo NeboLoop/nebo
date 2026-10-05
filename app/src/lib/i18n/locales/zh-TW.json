@@ -992,7 +992,11 @@
 		"upgradeTo": "升級至 {version}",
 		"cannotUninstall": "無法解除安裝——有 {count} 個項目依賴此外掛",
 		"cannotUninstallSingular": "無法解除安裝——有 {count} 個項目依賴此外掛",
-		"uninstallMessage": "這將從此 Nebo 移除該外掛及其執行檔。之後可以從市集重新安裝。"
+		"uninstallMessage": "這將從此 Nebo 移除該外掛及其執行檔。之後可以從市集重新安裝。",
+		"ready": "就緒",
+		"notConnected": "未連線",
+		"disconnectTitle": "要中斷 {name} 的連線嗎？",
+		"disconnectMessage": "使用 {name} 的技能將停止運作，直到你重新連線。"
 	},
 	"settingsAgents": {
 		"title": "員工",
@@ -2264,6 +2268,27 @@
 		"pathPlaceholder": "/path/to/directory",
 		"inputsCustomize": "這些輸入用於自訂 {name} 的運作方式。",
 		"noInputs": "此員工沒有可設定的輸入。"
+	},
+	"agentInputForm": {
+		"optional": "選填",
+		"skipForNow": "暫時略過",
+		"increase": "增加",
+		"decrease": "減少",
+		"requiredError": "此欄位為必填",
+		"numberError": "請輸入數字",
+		"minError": "不得小於 {min}",
+		"maxError": "不得大於 {max}",
+		"on": "開",
+		"off": "關",
+		"units": {
+			"seconds": "秒",
+			"minutes": "分鐘",
+			"hours": "小時",
+			"days": "天",
+			"weeks": "週",
+			"months": "個月",
+			"years": "年"
+		}
 	},
 	"agentPersona": {
 		"title": "人設",

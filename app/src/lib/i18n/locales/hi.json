@@ -992,7 +992,11 @@
 		"upgradeTo": "{version} पर अपग्रेड करें",
 		"cannotUninstall": "अनइंस्टॉल नहीं कर सकते — {count} आइटम इस प्लगइन पर निर्भर हैं",
 		"cannotUninstallSingular": "अनइंस्टॉल नहीं कर सकते — {count} आइटम इस प्लगइन पर निर्भर है",
-		"uninstallMessage": "इससे प्लगइन और उसकी बाइनरी इस Nebo से हट जाएगी। आप इसे बाद में मार्केटप्लेस से पुनः इंस्टॉल कर सकते हैं।"
+		"uninstallMessage": "इससे प्लगइन और उसकी बाइनरी इस Nebo से हट जाएगी। आप इसे बाद में मार्केटप्लेस से पुनः इंस्टॉल कर सकते हैं।",
+		"ready": "तैयार",
+		"notConnected": "कनेक्ट नहीं है",
+		"disconnectTitle": "{name} डिस्कनेक्ट करें?",
+		"disconnectMessage": "{name} का उपयोग करने वाले स्किल तब तक काम नहीं करेंगे जब तक आप इसे फिर से कनेक्ट नहीं करते।"
 	},
 	"settingsAgents": {
 		"title": "कर्मचारी",
@@ -2264,6 +2268,27 @@
 		"pathPlaceholder": "/path/to/directory",
 		"inputsCustomize": "ये इनपुट तय करते हैं कि {name} कैसे काम करता है।",
 		"noInputs": "इस कर्मचारी के लिए कोई कॉन्फ़िगर योग्य इनपुट नहीं।"
+	},
+	"agentInputForm": {
+		"optional": "वैकल्पिक",
+		"skipForNow": "अभी छोड़ें",
+		"increase": "बढ़ाएँ",
+		"decrease": "घटाएँ",
+		"requiredError": "यह आवश्यक है",
+		"numberError": "एक संख्या दर्ज करें",
+		"minError": "कम से कम {min} होना चाहिए",
+		"maxError": "अधिकतम {max} हो सकता है",
+		"on": "चालू",
+		"off": "बंद",
+		"units": {
+			"seconds": "सेकंड",
+			"minutes": "मिनट",
+			"hours": "घंटे",
+			"days": "दिन",
+			"weeks": "सप्ताह",
+			"months": "महीने",
+			"years": "वर्ष"
+		}
 	},
 	"agentPersona": {
 		"title": "व्यक्तित्व",

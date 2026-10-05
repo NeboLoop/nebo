@@ -24,7 +24,7 @@
 
 <script lang="ts">
   import { t } from 'svelte-i18n';
-  import { onMount, onDestroy } from 'svelte';
+  import { onMount, onDestroy, tick } from 'svelte';
   import { goto } from '$lib/nav';
   import {
     approveDeps,
@@ -41,6 +41,7 @@
   import type { PaymentMethodInfo, AgentWorkflow } from '$lib/api/neboComponents';
   import type { AgentInputField } from '$lib/types/agentPage';
   import AgentInputForm from '$lib/components/agent/AgentInputForm.svelte';
+  import { withDefaults, validateInputs, type FieldError } from '$lib/components/agent/inputFields';
   import { installFlow } from '$lib/stores/installFlow';
   import { getWebSocketClient } from '$lib/websocket/client';
   import { opensHere, type EventOrigin } from '$lib/websocket/origin';
@@ -116,6 +117,9 @@
   let inputFields = $state<AgentInputField[]>([]);
   let inputValues = $state<Record<string, unknown>>({});
   let inputsCollected = $state(false);
+  // Errors show after the first Save, then follow every edit.
+  let inputErrors = $state<Record<string, FieldError>>({});
+  let inputsAttempted = $state(false);
   let workflows = $state<AgentWorkflow[]>([]);
   let scheduleOverrides = $state<Record<string, string>>({});
   let needsSetupFlag = $state(false);
@@ -267,6 +271,8 @@
     inputFields = [];
     inputValues = {};
     inputsCollected = false;
+    inputErrors = {};
+    inputsAttempted = false;
     workflows = [];
     scheduleOverrides = {};
     needsSetupFlag = false;
@@ -394,6 +400,8 @@
       if (saved && typeof saved === 'object') {
         inputValues = { ...inputValues, ...(saved as Record<string, unknown>) };
       }
+      // Defaults pre-filled, so what the form shows is what Save stores.
+      inputValues = withDefaults(inputFields, inputValues);
       needsSetupFlag = !!(a as any)?.needsSetup;
       // Auth is recomputed AFTER the cascade installs the plugins (see
       // refreshAuthNeeded / handleDepCascadeComplete) — checking here is too early,
@@ -440,6 +448,16 @@
   }
 
   async function submitInputs() {
+    inputsAttempted = true;
+    inputErrors = validateInputs(inputFields, inputValues);
+    const firstInvalid = inputFields.find((f) => inputErrors[f.key]);
+    if (firstInvalid) {
+      await tick();
+      const el = document.getElementById(`input-${firstInvalid.key}`);
+      el?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      el?.focus({ preventScroll: true });
+      return;
+    }
     inputsCollected = true;
     if (agentId && Object.keys(inputValues).length > 0) {
       await updateAgentInputs(agentId, inputValues).catch(() => {});
@@ -835,7 +853,8 @@
     if (copyTimeout) clearTimeout(copyTimeout);
   });
 
-  const showSkip = $derived(!configuring && (phase === 'inputs' || phase === 'schedule'));
+  // The inputs step carries its own "Skip for now" under Save.
+  const showSkip = $derived(!configuring && phase === 'schedule');
 </script>
 
 {#if show}
@@ -848,7 +867,7 @@
     ></div>
 
     <div
-      class="relative w-full max-w-sm h-[min(36rem,85vh)] flex flex-col rounded-2xl bg-base-100 border border-base-content/10 shadow-2xl overflow-hidden"
+      class="relative w-full {phase === 'inputs' ? 'max-w-md' : 'max-w-sm'} h-[min(36rem,85vh)] flex flex-col rounded-2xl bg-base-100 border border-base-content/10 shadow-2xl overflow-hidden"
       role="presentation"
       onkeydown={handleKeydown}
     >
@@ -889,13 +908,18 @@
           <div class="flex flex-col gap-4">
             {#if agentDescription}<p class="text-sm text-base-content/70">{agentDescription}</p>{/if}
             {#if inputFields.length > 0}
-              <AgentInputForm fields={inputFields} bind:values={inputValues} onchange={(v) => (inputValues = v)} />
+              <AgentInputForm
+                fields={inputFields}
+                bind:values={inputValues}
+                errors={inputErrors}
+                onchange={(v) => {
+                  inputValues = v;
+                  if (inputsAttempted) inputErrors = validateInputs(inputFields, v);
+                }}
+              />
             {:else}
               <p class="text-sm text-base-content/70 text-center">{$t('installFlow.noConfigNeeded')}</p>
             {/if}
-            <button type="button" class="btn btn-primary btn-sm w-full" onclick={submitInputs}>
-              {configuring ? $t('installFlow.saveChanges') : $t('common.continue')}
-            </button>
             {#if configuring && onUninstall}
               <button type="button" class="btn btn-ghost btn-sm text-error/80 hover:text-error" onclick={onUninstall}>
                 {$t('installFlow.removeName', { values: { name: agentName } })}
@@ -1063,6 +1087,14 @@
       {:else if phase === 'done'}
         <div class="shrink-0 flex justify-end px-5 py-3 border-t border-base-content/10">
           <button type="button" class="btn btn-sm btn-primary" disabled={cascadePending} onclick={() => { const id = agentId; close(); oncomplete?.(id || undefined); }}>{$t('common.done')}</button>
+        </div>
+      {:else if phase === 'inputs'}
+        <!-- Pinned, so Save is always in reach however long the questions run. -->
+        <div class="shrink-0 flex flex-col items-center gap-1 px-5 pt-3 pb-2 border-t border-base-content/10">
+          <button type="button" class="btn btn-primary w-full" onclick={submitInputs}>{$t('common.save')}</button>
+          <button type="button" class="btn btn-link btn-sm text-base-content/70 no-underline hover:text-base-content" onclick={configuring ? close : skipSetup}>
+            {$t('agentInputForm.skipForNow')}
+          </button>
         </div>
       {:else if showSkip}
         <div class="shrink-0 flex justify-between px-5 py-3 border-t border-base-content/10">

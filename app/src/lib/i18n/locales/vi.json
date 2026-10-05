@@ -992,7 +992,11 @@
 		"upgradeTo": "Nâng cấp lên {version}",
 		"cannotUninstall": "Không thể gỡ — {count} mục phụ thuộc vào plugin này",
 		"cannotUninstallSingular": "Không thể gỡ — {count} mục phụ thuộc vào plugin này",
-		"uninstallMessage": "Thao tác này xóa plugin và tệp nhị phân của nó khỏi Nebo này. Bạn có thể cài lại từ cửa hàng sau."
+		"uninstallMessage": "Thao tác này xóa plugin và tệp nhị phân của nó khỏi Nebo này. Bạn có thể cài lại từ cửa hàng sau.",
+		"ready": "Sẵn sàng",
+		"notConnected": "Chưa kết nối",
+		"disconnectTitle": "Ngắt kết nối {name}?",
+		"disconnectMessage": "Các kỹ năng dùng {name} sẽ ngừng hoạt động cho đến khi bạn kết nối lại."
 	},
 	"settingsAgents": {
 		"title": "Nhân viên",
@@ -2264,6 +2268,27 @@
 		"pathPlaceholder": "/đường/dẫn/thư/mục",
 		"inputsCustomize": "Các đầu vào này tùy chỉnh cách {name} hoạt động.",
 		"noInputs": "Nhân viên này không có đầu vào nào để cấu hình."
+	},
+	"agentInputForm": {
+		"optional": "Không bắt buộc",
+		"skipForNow": "Bỏ qua lúc này",
+		"increase": "Tăng",
+		"decrease": "Giảm",
+		"requiredError": "Trường này là bắt buộc",
+		"numberError": "Nhập một số",
+		"minError": "Phải tối thiểu {min}",
+		"maxError": "Phải tối đa {max}",
+		"on": "Bật",
+		"off": "Tắt",
+		"units": {
+			"seconds": "giây",
+			"minutes": "phút",
+			"hours": "giờ",
+			"days": "ngày",
+			"weeks": "tuần",
+			"months": "tháng",
+			"years": "năm"
+		}
 	},
 	"agentPersona": {
 		"title": "Hình mẫu",

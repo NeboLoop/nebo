@@ -1,16 +1,31 @@
 <script lang="ts">
 	import type { AgentInputField } from '$lib/types/agentPage';
 	import { pickFolder, pickFiles } from '$lib/api/nebo';
-	import { FolderOpen, FileText } from 'lucide-svelte';
+	import { FolderOpen, FileText, Minus, Plus } from 'lucide-svelte';
 	import { t } from 'svelte-i18n';
+	import {
+		controlFor,
+		shortLabel,
+		hintFor,
+		fullHelp,
+		unitFor,
+		stepNumber,
+		type FieldError
+	} from './inputFields';
 
+	// The setup questions, in one card: a short label, the full question as a
+	// muted hint, and the control that fits the field's type. Rules for labels,
+	// units, defaults and validation live in ./inputFields.
 	let {
 		fields,
 		values = $bindable({}),
-		onchange,
+		errors = {},
+		onchange
 	}: {
 		fields: AgentInputField[];
 		values: Record<string, unknown>;
+		/** Per-field errors to show under the control (from validateInputs). */
+		errors?: Record<string, FieldError>;
 		onchange?: (values: Record<string, unknown>) => void;
 	} = $props();
 
@@ -19,19 +34,32 @@
 		onchange?.(values);
 	}
 
-	function getStringValue(key: string, fallback: string = ''): string {
+	function getStringValue(key: string): string {
 		const v = values[key];
-		return v != null ? String(v) : fallback;
+		return v != null ? String(v) : '';
 	}
 
-	function getNumberValue(key: string, fallback: number = 0): number {
-		const v = values[key];
-		return typeof v === 'number' ? v : (v != null ? Number(v) || fallback : fallback);
+	function getBoolValue(field: AgentInputField): boolean {
+		const v = values[field.key];
+		if (typeof v === 'boolean') return v;
+		if (v === 'true') return true;
+		if (v === 'false') return false;
+		return field.default === true;
 	}
 
-	function getBoolValue(key: string, fallback: boolean = false): boolean {
-		const v = values[key];
-		return typeof v === 'boolean' ? v : fallback;
+	/** A typed number stays a number; anything else stays as typed so the
+	 *  field can say it is not one. */
+	function handleNumberInput(key: string, raw: string) {
+		const trimmed = raw.trim();
+		if (trimmed === '') return handleChange(key, '');
+		const n = Number(trimmed);
+		handleChange(key, Number.isFinite(n) ? n : raw);
+	}
+
+	function placeholderFor(field: AgentInputField): string {
+		if (field.placeholder) return field.placeholder;
+		if (field.default != null && field.default !== '' && typeof field.default !== 'object') return String(field.default);
+		return '';
 	}
 
 	async function browseFolder(key: string) {
@@ -53,130 +81,132 @@
 	}
 </script>
 
-<div class="flex flex-col gap-4">
-	{#each fields as field}
-		<div>
-			<label class="block text-sm font-medium mb-1" for="input-{field.key}">
-				{field.label}
-				{#if field.required}
-					<span class="text-error">*</span>
-				{/if}
-			</label>
-			{#if field.description}
-				<p class="text-xs text-base-content/70 mb-1.5">{field.description}</p>
-			{/if}
-
-			{#if field.type === 'path'}
-				<div class="flex items-center gap-2">
+<div class="rounded-xl border border-base-300 bg-base-100 divide-y divide-base-content/10">
+	{#each fields as field (field.key)}
+		{@const control = controlFor(field)}
+		{@const label = shortLabel(field)}
+		{@const hint = hintFor(field)}
+		{@const unit = unitFor(field)}
+		{@const error = errors[field.key]}
+		{@const inputId = `input-${field.key}`}
+		<div class="px-4 py-3.5">
+			{#if control === 'toggle'}
+				<div class="flex items-center justify-between gap-4">
+					<div class="min-w-0">
+						<div class="flex items-center gap-2">
+							<label class="text-sm font-medium cursor-pointer" for={inputId}>{label}</label>
+							{#if !field.required}<span class="badge badge-ghost badge-sm text-base-content/70">{$t('agentInputForm.optional')}</span>{/if}
+						</div>
+						{#if hint}<p class="text-xs text-base-content/70 mt-0.5 truncate" title={fullHelp(field)}>{hint}</p>{/if}
+					</div>
 					<input
-						id="input-{field.key}"
-						type="text"
-						class="input input-bordered flex-1 text-sm font-mono"
-						placeholder={field.placeholder || '/path/to/directory'}
-						value={getStringValue(field.key, field.default != null ? String(field.default) : '')}
-						oninput={(e) => handleChange(field.key, (e.target as HTMLInputElement).value)}
-					/>
-					<button
-						type="button"
-						class="btn btn-sm btn-ghost btn-square text-primary"
-						onclick={() => browseFolder(field.key)}
-						title={$t('agent.browseFolders')}
-					>
-						<FolderOpen class="w-4 h-4" />
-					</button>
-				</div>
-
-			{:else if field.type === 'file'}
-				<div class="flex items-center gap-2">
-					<input
-						id="input-{field.key}"
-						type="text"
-						class="input input-bordered flex-1 text-sm font-mono"
-						placeholder={field.placeholder || '/path/to/file'}
-						value={getStringValue(field.key, field.default != null ? String(field.default) : '')}
-						oninput={(e) => handleChange(field.key, (e.target as HTMLInputElement).value)}
-					/>
-					<button
-						type="button"
-						class="btn btn-sm btn-ghost btn-square text-primary"
-						onclick={() => browseFile(field.key)}
-						title={$t('agent.browseFiles')}
-					>
-						<FileText class="w-4 h-4" />
-					</button>
-				</div>
-
-			{:else if field.type === 'textarea'}
-				<textarea
-					id="input-{field.key}"
-					class="textarea textarea-bordered w-full text-sm"
-					rows="3"
-					placeholder={field.placeholder || ''}
-					value={getStringValue(field.key, field.default != null ? String(field.default) : '')}
-					oninput={(e) => handleChange(field.key, (e.target as HTMLTextAreaElement).value)}
-				></textarea>
-
-			{:else if field.type === 'number'}
-				<input
-					id="input-{field.key}"
-					type="number"
-					class="input input-bordered w-full max-w-xs text-sm"
-					placeholder={field.placeholder || ''}
-					value={getNumberValue(field.key, typeof field.default === 'number' ? field.default : 0)}
-					oninput={(e) => handleChange(field.key, Number((e.target as HTMLInputElement).value))}
-				/>
-
-			{:else if field.type === 'select'}
-				<select
-					id="input-{field.key}"
-					class="select select-bordered w-full max-w-xs text-sm"
-					value={getStringValue(field.key, field.default != null ? String(field.default) : '')}
-					onchange={(e) => handleChange(field.key, (e.target as HTMLSelectElement).value)}
-				>
-					<option value="" disabled>{$t('common.select')}</option>
-					{#each field.options || [] as opt}
-						<option value={opt.value}>{opt.label}</option>
-					{/each}
-				</select>
-
-			{:else if field.type === 'checkbox'}
-				<label class="flex items-center gap-2 cursor-pointer">
-					<input
-						id="input-{field.key}"
+						id={inputId}
 						type="checkbox"
-						class="checkbox checkbox-sm checkbox-primary"
-						checked={getBoolValue(field.key, field.default === true)}
+						class="toggle toggle-sm toggle-primary shrink-0"
+						checked={getBoolValue(field)}
 						onchange={(e) => handleChange(field.key, (e.target as HTMLInputElement).checked)}
 					/>
-					<span class="text-sm text-base-content/70">{field.label}</span>
-				</label>
-
-			{:else if field.type === 'radio'}
-				<div class="flex flex-col gap-1.5">
-					{#each field.options || [] as opt}
-						<label class="flex items-center gap-2 cursor-pointer">
-							<input
-								type="radio"
-								name="input-{field.key}"
-								class="radio radio-sm radio-primary"
-								value={opt.value}
-								checked={getStringValue(field.key, field.default != null ? String(field.default) : '') === opt.value}
-								onchange={() => handleChange(field.key, opt.value)}
-							/>
-							<span class="text-sm text-base-content/70">{opt.label}</span>
-						</label>
-					{/each}
 				</div>
-
 			{:else}
-				<input
-					id="input-{field.key}"
-					type="text"
-					class="input input-bordered w-full max-w-md text-sm"
-					placeholder={field.placeholder || ''}
-					value={getStringValue(field.key, field.default != null ? String(field.default) : '')}
-					oninput={(e) => handleChange(field.key, (e.target as HTMLInputElement).value)}
-				/>
+				<div class="flex items-center gap-2">
+					<label class="text-sm font-medium" for={inputId}>{label}</label>
+					{#if !field.required}<span class="badge badge-ghost badge-sm text-base-content/70">{$t('agentInputForm.optional')}</span>{/if}
+				</div>
+				{#if hint}<p class="text-xs text-base-content/70 mt-0.5 truncate" title={fullHelp(field)}>{hint}</p>{/if}
+
+				<div class="mt-2">
+					{#if control === 'number'}
+						<div class="flex items-center gap-2">
+							<div class="join">
+								<button
+									type="button"
+									class="btn btn-sm btn-square join-item bg-base-200 {error ? 'border-error' : 'border-base-content/20'}"
+									aria-label={$t('agentInputForm.decrease')}
+									onclick={() => handleChange(field.key, stepNumber(field, values[field.key], -1))}
+								>
+									<Minus class="w-3.5 h-3.5" />
+								</button>
+								<input
+									id={inputId}
+									type="text"
+									inputmode="decimal"
+									class="input input-sm input-bordered join-item w-20 text-center focus:outline-none {error ? 'input-error' : 'border-base-content/20'}"
+									placeholder={placeholderFor(field)}
+									value={getStringValue(field.key)}
+									aria-invalid={error ? 'true' : undefined}
+									oninput={(e) => handleNumberInput(field.key, (e.target as HTMLInputElement).value)}
+								/>
+								<button
+									type="button"
+									class="btn btn-sm btn-square join-item bg-base-200 {error ? 'border-error' : 'border-base-content/20'}"
+									aria-label={$t('agentInputForm.increase')}
+									onclick={() => handleChange(field.key, stepNumber(field, values[field.key], 1))}
+								>
+									<Plus class="w-3.5 h-3.5" />
+								</button>
+							</div>
+							{#if unit}
+								<span class="text-sm text-base-content/70">{'key' in unit ? $t(`agentInputForm.${unit.key}`) : unit.text}</span>
+							{/if}
+						</div>
+
+					{:else if control === 'select'}
+						<select
+							id={inputId}
+							class="select select-sm select-bordered w-full text-sm {error ? 'select-error' : ''}"
+							value={getStringValue(field.key)}
+							onchange={(e) => handleChange(field.key, (e.target as HTMLSelectElement).value)}
+						>
+							<option value="" disabled>{$t('common.select')}</option>
+							{#each field.options || [] as opt}
+								<option value={opt.value}>{opt.label}</option>
+							{/each}
+						</select>
+
+					{:else if control === 'textarea'}
+						<textarea
+							id={inputId}
+							class="textarea textarea-bordered w-full text-sm {error ? 'textarea-error' : ''}"
+							rows="3"
+							placeholder={placeholderFor(field)}
+							value={getStringValue(field.key)}
+							oninput={(e) => handleChange(field.key, (e.target as HTMLTextAreaElement).value)}
+						></textarea>
+
+					{:else if control === 'path' || control === 'file'}
+						<div class="flex items-center gap-2">
+							<input
+								id={inputId}
+								type="text"
+								class="input input-sm input-bordered flex-1 text-sm font-mono {error ? 'input-error' : ''}"
+								placeholder={field.placeholder || (control === 'path' ? '/path/to/directory' : '/path/to/file')}
+								value={getStringValue(field.key)}
+								oninput={(e) => handleChange(field.key, (e.target as HTMLInputElement).value)}
+							/>
+							<button
+								type="button"
+								class="btn btn-sm btn-ghost btn-square text-primary"
+								onclick={() => (control === 'path' ? browseFolder(field.key) : browseFile(field.key))}
+								title={control === 'path' ? $t('agent.browseFolders') : $t('agent.browseFiles')}
+							>
+								{#if control === 'path'}<FolderOpen class="w-4 h-4" />{:else}<FileText class="w-4 h-4" />{/if}
+							</button>
+						</div>
+
+					{:else}
+						<input
+							id={inputId}
+							type="text"
+							class="input input-sm input-bordered w-full text-sm {error ? 'input-error' : ''}"
+							placeholder={placeholderFor(field)}
+							value={getStringValue(field.key)}
+							oninput={(e) => handleChange(field.key, (e.target as HTMLInputElement).value)}
+						/>
+					{/if}
+				</div>
+			{/if}
+			{#if error}
+				<p class="text-xs text-error mt-1.5" role="alert">{$t(error.key, { values: error.values })}</p>
 			{/if}
 		</div>
 	{/each}

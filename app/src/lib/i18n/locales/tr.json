@@ -992,7 +992,11 @@
 		"upgradeTo": "{version} sürümüne yükselt",
 		"cannotUninstall": "Kaldırılamıyor — {count} öğe bu eklentiye bağımlı",
 		"cannotUninstallSingular": "Kaldırılamıyor — {count} öğe bu eklentiye bağımlı",
-		"uninstallMessage": "Bu işlem eklentiyi ve ikili dosyasını bu Nebo'dan kaldırır. Daha sonra mağazadan yeniden yükleyebilirsiniz."
+		"uninstallMessage": "Bu işlem eklentiyi ve ikili dosyasını bu Nebo'dan kaldırır. Daha sonra mağazadan yeniden yükleyebilirsiniz.",
+		"ready": "Hazır",
+		"notConnected": "Bağlı değil",
+		"disconnectTitle": "{name} bağlantısı kesilsin mi?",
+		"disconnectMessage": "{name} kullanan beceriler, yeniden bağlayana kadar çalışmaz."
 	},
 	"settingsAgents": {
 		"title": "Çalışanlar",
@@ -2264,6 +2268,27 @@
 		"pathPlaceholder": "/dizin/yolu",
 		"inputsCustomize": "Bu girdiler {name} adlı çalışanın nasıl çalışacağını özelleştirir.",
 		"noInputs": "Bu çalışan için yapılandırılabilir girdi yok."
+	},
+	"agentInputForm": {
+		"optional": "İsteğe bağlı",
+		"skipForNow": "Şimdilik atla",
+		"increase": "Artır",
+		"decrease": "Azalt",
+		"requiredError": "Bu alan zorunlu",
+		"numberError": "Bir sayı girin",
+		"minError": "En az {min} olmalı",
+		"maxError": "En fazla {max} olabilir",
+		"on": "Açık",
+		"off": "Kapalı",
+		"units": {
+			"seconds": "saniye",
+			"minutes": "dakika",
+			"hours": "saat",
+			"days": "gün",
+			"weeks": "hafta",
+			"months": "ay",
+			"years": "yıl"
+		}
 	},
 	"agentPersona": {
 		"title": "Kişilik",

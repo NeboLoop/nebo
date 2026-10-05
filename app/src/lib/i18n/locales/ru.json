@@ -992,7 +992,11 @@
 		"upgradeTo": "Обновить до {version}",
 		"cannotUninstall": "Нельзя удалить — от этого плагина зависят {count} элементов",
 		"cannotUninstallSingular": "Нельзя удалить — от этого плагина зависит {count} элемент",
-		"uninstallMessage": "Это удалит плагин и его бинарный файл из этого Nebo. Вы сможете переустановить его из маркетплейса позже."
+		"uninstallMessage": "Это удалит плагин и его бинарный файл из этого Nebo. Вы сможете переустановить его из маркетплейса позже.",
+		"ready": "Готово",
+		"notConnected": "Не подключено",
+		"disconnectTitle": "Отключить {name}?",
+		"disconnectMessage": "Навыки, которые используют {name}, перестанут работать, пока вы не подключите его снова."
 	},
 	"settingsAgents": {
 		"title": "Сотрудники",
@@ -2264,6 +2268,27 @@
 		"pathPlaceholder": "/путь/к/каталогу",
 		"inputsCustomize": "Эти параметры настраивают работу {name}.",
 		"noInputs": "У этого сотрудника нет настраиваемых параметров."
+	},
+	"agentInputForm": {
+		"optional": "Необязательно",
+		"skipForNow": "Пропустить пока",
+		"increase": "Увеличить",
+		"decrease": "Уменьшить",
+		"requiredError": "Обязательное поле",
+		"numberError": "Введите число",
+		"minError": "Не меньше {min}",
+		"maxError": "Не больше {max}",
+		"on": "Вкл.",
+		"off": "Выкл.",
+		"units": {
+			"seconds": "сек.",
+			"minutes": "мин.",
+			"hours": "ч",
+			"days": "дн.",
+			"weeks": "нед.",
+			"months": "мес.",
+			"years": "г."
+		}
 	},
 	"agentPersona": {
 		"title": "Персона",

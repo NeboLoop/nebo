@@ -992,7 +992,11 @@
 		"upgradeTo": "升级到 {version}",
 		"cannotUninstall": "无法卸载——有 {count} 个项目依赖此插件",
 		"cannotUninstallSingular": "无法卸载——有 {count} 个项目依赖此插件",
-		"uninstallMessage": "这将从此 Nebo 中移除该插件及其二进制文件。之后可以从市场重新安装。"
+		"uninstallMessage": "这将从此 Nebo 中移除该插件及其二进制文件。之后可以从市场重新安装。",
+		"ready": "就绪",
+		"notConnected": "未连接",
+		"disconnectTitle": "断开 {name}？",
+		"disconnectMessage": "使用 {name} 的技能将停止工作，直到你重新连接。"
 	},
 	"settingsAgents": {
 		"title": "员工",
@@ -2264,6 +2268,27 @@
 		"pathPlaceholder": "/path/to/directory",
 		"inputsCustomize": "这些输入项用于自定义 {name} 的运作方式。",
 		"noInputs": "该员工没有可配置的输入项。"
+	},
+	"agentInputForm": {
+		"optional": "可选",
+		"skipForNow": "暂时跳过",
+		"increase": "增加",
+		"decrease": "减少",
+		"requiredError": "此项为必填",
+		"numberError": "请输入数字",
+		"minError": "不能小于 {min}",
+		"maxError": "不能大于 {max}",
+		"on": "开",
+		"off": "关",
+		"units": {
+			"seconds": "秒",
+			"minutes": "分钟",
+			"hours": "小时",
+			"days": "天",
+			"weeks": "周",
+			"months": "个月",
+			"years": "年"
+		}
 	},
 	"agentPersona": {
 		"title": "人设",

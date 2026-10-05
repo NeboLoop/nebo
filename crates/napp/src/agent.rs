@@ -329,6 +329,18 @@ pub struct AgentInputField {
     /// A money question is never defaulted: a value must be set explicitly.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub money: bool,
+    /// Unit a number field is measured in ("days", "%"), shown after the value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unit: Option<String>,
+    /// Lowest value a number field accepts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min: Option<f64>,
+    /// Highest value a number field accepts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max: Option<f64>,
+    /// Increment the +/- controls of a number field move by.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step: Option<f64>,
 }
 
 fn default_input_scope() -> String {
