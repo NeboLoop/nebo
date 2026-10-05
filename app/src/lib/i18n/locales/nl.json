@@ -3820,5 +3820,10 @@
 			"confirmDeleteWorkflow": "Weet je zeker dat je deze workflow wilt verwijderen? Al zijn activiteiten en verbindingen worden verwijderd.",
 			"confirmDeleteNode": "Weet je zeker dat je deze node wilt verwijderen? Zijn verbindingen worden automatisch opnieuw gekoppeld."
 		}
+	},
+	"timezoneTravel": {
+		"question": "Nebo overzetten naar de tijd van {city}?",
+		"switch": "Overzetten",
+		"keep": "Tijd van {city} houden"
 	}
 }

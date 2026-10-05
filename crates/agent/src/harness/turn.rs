@@ -990,7 +990,7 @@ pub(crate) async fn prepare(
     st.persisted_renderings = st.frozen_renderings.keys().cloned().collect();
 
     // The first step's events: when the turn starts, then its briefing.
-    st.reminders.add(&TurnEvent::TurnTime(sections::owner_now(memory_timezone.as_deref())));
+    st.reminders.add(&TurnEvent::TurnTime(sections::owner_now(chrono::Utc::now(), memory_timezone.as_deref())));
     if let Some(briefing) = req.delivery.mention_briefing.as_deref() {
         st.reminders.add(&TurnEvent::RunBriefing(briefing.to_string()));
     }

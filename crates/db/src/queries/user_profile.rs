@@ -83,9 +83,10 @@ impl Store {
         let conn = self.conn()?;
         let user_id = self.ensure_local_user_id()?;
 
-        // Ensure profile exists
+        // Ensure profile exists (created_at/updated_at are NOT NULL: without
+        // them the IGNORE swallows the insert and no field below is kept).
         conn.execute(
-            "INSERT OR IGNORE INTO user_profiles (user_id) VALUES (?1)",
+            "INSERT OR IGNORE INTO user_profiles (user_id, created_at, updated_at) VALUES (?1, unixepoch(), unixepoch())",
             params![user_id],
         )
         .map_err(|e| NeboError::Database(e.to_string()))?;

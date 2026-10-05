@@ -3820,5 +3820,10 @@
 			"confirmDeleteWorkflow": "Bu iş akışını silmek istediğinizden emin misiniz? Tüm aktiviteleri ve bağlantıları kaldırılacak.",
 			"confirmDeleteNode": "Bu düğümü silmek istediğinizden emin misiniz? Bağlantıları otomatik olarak yeniden kurulacak."
 		}
+	},
+	"timezoneTravel": {
+		"question": "Nebo, {city} saat dilimine geçsin mi?",
+		"switch": "Geç",
+		"keep": "{city} saat dilimini koru"
 	}
 }

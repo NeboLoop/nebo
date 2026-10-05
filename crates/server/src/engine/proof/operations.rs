@@ -199,7 +199,7 @@ fn uc29_heartbeats_keep_the_window_and_never_stack() {
     let wanted = [Wanted {
         target: target.clone(),
         schedule: "1800".into(),
-        due: Box::new(move |consumed| Some(crate::heartbeat::next_in_window((consumed.unwrap_or(armed_at) + 1800).max(armed_at), Some(&window)))),
+        due: Box::new(move |consumed| Some(crate::heartbeat::next_in_window((consumed.unwrap_or(armed_at) + 1800).max(armed_at), Some(&window), tools::owner_clock::OwnerZone::Machine))),
     }];
     assert_eq!(reconcile_timers(&s, armed_at, "entity", "heartbeat:", &wanted), 1);
     let pending = s.engine_pending_timers("entity").unwrap();

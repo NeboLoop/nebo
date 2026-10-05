@@ -241,7 +241,7 @@ impl Harness {
         let fields = self.environment_fields(agent_id, None, "voice", prompt::sections::Watching::Call);
         let mut out = vec![
             events::environment_text(prompt::sections::owner_today(timezone.as_deref()), timezone.as_deref(), &fields),
-            prompt::sections::owner_now(timezone.as_deref()),
+            prompt::sections::owner_now(chrono::Utc::now(), timezone.as_deref()),
         ];
         if let Some(position) = self.shared_phone_position(agent_id, origin) {
             out.push(position.text);

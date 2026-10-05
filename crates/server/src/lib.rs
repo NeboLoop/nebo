@@ -26,6 +26,7 @@ pub mod middleware;
 mod mail_intake;
 mod migration;
 mod outside;
+mod owner_locale;
 mod plugin_commands;
 pub(crate) mod plugin_oauth;
 mod plugin_provider;
@@ -4736,9 +4737,13 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
         return;
     }
 
-    // Route account stream messages (plan changes, token refresh)
+    // Route account stream messages (plan changes, token refresh, the
+    // account's time zone and language)
     if msg.topic == "account" {
         if let Ok(event) = serde_json::from_str::<serde_json::Value>(&msg.content) {
+            if owner_locale::handle_event(&state.store, &event) {
+                return;
+            }
             if event.get("type").and_then(|t| t.as_str()) == Some("tokenRefresh") {
                 if let Some(token) = event.get("token").and_then(|t| t.as_str()) {
                     let plan = event.get("plan").and_then(|p| p.as_str()).unwrap_or("free");

@@ -3820,5 +3820,10 @@
 			"confirmDeleteWorkflow": "Bạn có chắc muốn xóa quy trình này? Mọi hoạt động và kết nối của nó sẽ bị xóa.",
 			"confirmDeleteNode": "Bạn có chắc muốn xóa nút này? Các kết nối của nó sẽ được tự động nối lại."
 		}
+	},
+	"timezoneTravel": {
+		"question": "Chuyển Nebo sang giờ {city}?",
+		"switch": "Chuyển",
+		"keep": "Giữ giờ {city}"
 	}
 }

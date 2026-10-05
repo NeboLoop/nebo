@@ -3820,5 +3820,10 @@
 			"confirmDeleteWorkflow": "このワークフローを削除してもよろしいですか？すべてのアクティビティと接続が削除されます。",
 			"confirmDeleteNode": "このノードを削除してもよろしいですか？接続は自動的につなぎ直されます。"
 		}
+	},
+	"timezoneTravel": {
+		"question": "Nebo を{city}の時刻に切り替えますか？",
+		"switch": "切り替える",
+		"keep": "{city}の時刻のままにする"
 	}
 }

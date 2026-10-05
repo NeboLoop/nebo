@@ -2589,11 +2589,11 @@ pub async fn list_event_sources(State(state): State<AppState>) -> HandlerResult<
 /// GET /agents/active — returns currently active agents from the AgentRegistry.
 pub async fn list_active_agents(State(state): State<AppState>) -> HandlerResult<serde_json::Value> {
     let registry = state.agent_registry.read().await;
-    // `nextFireAt` is computed by evaluating each binding's cron in the
-    // machine's local timezone — same as `scheduler::tick`. If we used UTC
-    // here, the frontend's "Next: 7:00 AM" would diverge from when the
-    // scheduler actually fires the job.
-    let now = chrono::Local::now();
+    // `nextFireAt` is computed by evaluating each binding's cron on the
+    // owner's clock — the same clock the engine fires schedules on. Any
+    // other zone here and the frontend's "Next: 7:00 AM" would diverge from
+    // when the job actually fires.
+    let now = tools::owner_clock::OwnerZone::of(&state.store).now();
 
     let agents: Vec<serde_json::Value> = registry
         .values()
@@ -2633,7 +2633,7 @@ pub async fn list_active_agents(State(state): State<AppState>) -> HandlerResult<
 pub(crate) fn compute_next_fire(
     store: &db::Store,
     agent_id: &str,
-    now: &chrono::DateTime<chrono::Local>,
+    now: &chrono::DateTime<tools::owner_clock::OwnerZone>,
 ) -> Option<i64> {
     let bindings = store.list_agent_workflows(agent_id).ok()?;
     let mut earliest: Option<i64> = None;
@@ -4687,6 +4687,7 @@ pub async fn list_agent_chats(
 
     // Format response
     let now = chrono::Utc::now().timestamp();
+    let zone = tools::owner_clock::OwnerZone::of(&state.store);
     let employee = state.store.get_agent(&id).ok().flatten().map(|a| a.name).unwrap_or_default();
     let mut chats = Vec::new();
     let mut teammates = Vec::new();
@@ -4700,7 +4701,7 @@ pub async fn list_agent_chats(
         // whose newest rows could not be read.
         let status = thread_status(&state.store, &chat.id);
         let preview = status.preview.unwrap_or_else(|| chat_preview(last_content));
-        let updated_at_relative = format_relative_time(chat.updated_at, now);
+        let updated_at_relative = format_relative_time(chat.updated_at, now, zone);
         let with = match conversation {
             types::keyparser::Conversation::Owner => None,
             _ => Some(teammate_name(&state, &conversation, chat)),
@@ -4792,8 +4793,9 @@ fn strip_to_plain(input: &str) -> String {
     WS.replace_all(&s, " ").trim().to_string() // collapse whitespace/newlines
 }
 
-/// Format an epoch timestamp as a relative time string.
-fn format_relative_time(epoch: i64, now: i64) -> String {
+/// Format an epoch timestamp as a relative time string; past a week, the
+/// date on the owner's clock.
+fn format_relative_time(epoch: i64, now: i64, zone: tools::owner_clock::OwnerZone) -> String {
     let diff = now - epoch;
     if diff < 60 {
         "just now".to_string()
@@ -4808,7 +4810,7 @@ fn format_relative_time(epoch: i64, now: i64) -> String {
         format!("{}d ago", days)
     } else {
         chrono::DateTime::from_timestamp(epoch, 0)
-            .map(|dt| dt.format("%b %d").to_string())
+            .map(|dt| dt.with_timezone(&zone).format("%b %d").to_string())
             .unwrap_or_default()
     }
 }

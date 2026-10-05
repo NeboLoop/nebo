@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use crate::origin::ToolContext;
 use crate::registry::{DynTool, ToolResult};
-use chrono::Local;
+use crate::owner_clock::OwnerZone;
 use db::Store;
 
 /// One tool of the schedule family.
@@ -202,7 +202,7 @@ impl DynTool for ScheduleTool {
         if !cron.is_empty() {
             crate::PersonaTool::parse_cron_input(cron)?;
         }
-        if !at.is_empty() && parse_relative_time(at).is_none() {
+        if !at.is_empty() && parse_relative_time(at, OwnerZone::Machine).is_none() {
             return Err(format!(
                 "Could not read at: \"{at}\". Use a time from now like \"in 5 minutes\" or \"in 2 hours\"; for a clock time use `cron`."
             ));
@@ -277,7 +277,7 @@ impl ScheduleTool {
         let schedule = if !cron_val.is_empty() {
             cron_val.to_string()
         } else {
-            match parse_relative_time(str_field(input, "at")) {
+            match parse_relative_time(str_field(input, "at"), OwnerZone::of(&self.store)) {
                 Some((s, target)) => {
                     fires_at = Some(target.format("%Y-%m-%d %H:%M:%S %Z").to_string());
                     s
@@ -447,16 +447,15 @@ fn list_header(shown: usize, total: usize) -> String {
 }
 
 /// Parse relative time strings like "in 5 minutes" into a one-shot cron
-/// expression plus the local time it resolves to, so the result can say when
-/// the schedule fires.
+/// expression plus the moment it resolves to on the owner's clock, so the
+/// result can say when the schedule fires.
 ///
-/// Cron expressions are emitted in **local time**: the machine's local
-/// timezone IS the owner's wall clock, and employees author schedules in
-/// those terms (e.g. "morning briefing at 7 AM" means 7 AM local). The
-/// scheduler (`crates/server/src/scheduler.rs::tick`) reads `Local::now()`
-/// and evaluates `schedule.after()` with a local-time `last_run`, so this
-/// side must match.
-fn parse_relative_time(input: &str) -> Option<(String, chrono::DateTime<Local>)> {
+/// Cron expressions are written on **the owner's wall clock** (`zone`):
+/// employees author schedules in those terms ("morning briefing at 7 AM"
+/// means 7 AM where the owner lives), and the engine evaluates every
+/// schedule on the same clock (`engine::next_occurrence`), so this side
+/// must match.
+fn parse_relative_time(input: &str, zone: OwnerZone) -> Option<(String, chrono::DateTime<OwnerZone>)> {
     let s = input.trim().to_lowercase();
     let s = s.strip_prefix("in ").unwrap_or(&s);
 
@@ -474,7 +473,7 @@ fn parse_relative_time(input: &str) -> Option<(String, chrono::DateTime<Local>)>
         return None;
     };
 
-    let target = Local::now() + duration;
+    let target = zone.now() + duration;
     // Cron format: second minute hour day-of-month month day-of-week year (7 fields)
     let cron = format!(
         "{} {} {} {} {} * {}",
@@ -511,13 +510,27 @@ mod tests {
 
     #[test]
     fn relative_time_yields_cron_and_the_moment_it_fires() {
-        let before = Local::now();
-        let (cron, target) = parse_relative_time("in 5 minutes").expect("parses");
+        let before = OwnerZone::Machine.now();
+        let (cron, target) = parse_relative_time("in 5 minutes", OwnerZone::Machine).expect("parses");
         assert_eq!(cron.split_whitespace().count(), 7, "{cron}");
         let delta = target - before;
         assert!(delta >= chrono::Duration::minutes(5) - chrono::Duration::seconds(1));
         assert!(delta <= chrono::Duration::minutes(5) + chrono::Duration::seconds(5));
-        assert!(parse_relative_time("next tuesday").is_none());
+        assert!(parse_relative_time("next tuesday", OwnerZone::Machine).is_none());
+    }
+
+    /// The one-shot's fields are the owner's wall clock, the clock the
+    /// engine reads it on: on a UTC server, "in 2 hours" for an owner in
+    /// Denver is written in Denver time.
+    #[test]
+    fn relative_time_is_written_on_the_owners_clock() {
+        let denver = OwnerZone::parse(Some("America/Denver"));
+        let (cron, target) = parse_relative_time("in 2 hours", denver).expect("parses");
+        let in_denver = target.with_timezone(&chrono::Utc).with_timezone(&chrono_tz::America::Denver);
+        assert_eq!(target.naive_local(), in_denver.naive_local());
+        let fields: Vec<&str> = cron.split_whitespace().collect();
+        assert_eq!(fields[2], in_denver.format("%-H").to_string(), "{cron}");
+        assert_eq!(fields[3], in_denver.format("%-d").to_string(), "{cron}");
     }
 
     /// A create needs exactly one time and exactly one kind of work, and a

@@ -23,9 +23,11 @@ const ABANDONED_RUN_SECS: i64 = 6 * 60 * 60;
 /// the pending approvals (what waits on the owner), the workflow run table
 /// and the chat history (what happened), and the schedules (what is next).
 pub async fn dashboard(State(state): State<AppState>) -> HandlerResult<DashboardResponse> {
-    let now = chrono::Local::now();
+    // "Today" and "next run" are on the owner's clock.
+    let zone = tools::owner_clock::OwnerZone::of(&state.store);
+    let now = zone.now();
     let now_ts = now.timestamp();
-    let today_start = now.date_naive().and_hms_opt(0, 0, 0).map(|d| d.and_local_timezone(chrono::Local).single()).flatten().map(|d| d.timestamp()).unwrap_or(now_ts - 86_400);
+    let today_start = now.date_naive().and_hms_opt(0, 0, 0).map(|d| d.and_local_timezone(zone).single()).flatten().map(|d| d.timestamp()).unwrap_or(now_ts - 86_400);
     let history_start = today_start - (HISTORY_DAYS - 1) * 86_400;
 
     let agents = state.store.list_agents(1000, 0).map_err(to_error_response)?;

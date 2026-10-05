@@ -3820,5 +3820,10 @@
 			"confirmDeleteWorkflow": "Är du säker på att du vill radera det här arbetsflödet? Alla dess aktiviteter och kopplingar tas bort.",
 			"confirmDeleteNode": "Är du säker på att du vill radera den här noden? Dess kopplingar återansluts automatiskt."
 		}
+	},
+	"timezoneTravel": {
+		"question": "Ställa om Nebo till tiden i {city}?",
+		"switch": "Ställ om",
+		"keep": "Behåll tiden i {city}"
 	}
 }

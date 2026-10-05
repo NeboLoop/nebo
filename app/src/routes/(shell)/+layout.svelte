@@ -24,6 +24,7 @@
   import NewTeamModal from '$lib/components/teams/NewTeamModal.svelte';
   import AgentSettingsModal from '$lib/components/settings/agent/AgentSettingsModal.svelte';
   import ConfirmModal from '$lib/components/settings/ConfirmModal.svelte';
+  import TimezoneTravelPrompt from '$lib/components/TimezoneTravelPrompt.svelte';
   import { menuAnchor, deleteChatRow } from '$lib/chat/chatMenu';
   import { conversationLists, teammateLabel, teammateName } from '$lib/chat/teammates';
   import { conversationTitle } from '$lib/chat/sessionKey';
@@ -1978,3 +1979,5 @@
     onnavigate={(link) => { closeInbox(); goto(link); }}
   />
 </ShelfModal>
+
+<TimezoneTravelPrompt />

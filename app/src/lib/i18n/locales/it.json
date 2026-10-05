@@ -3820,5 +3820,10 @@
 			"confirmDeleteWorkflow": "Vuoi davvero eliminare questo workflow? Verranno rimossi tutte le sue attività e i suoi collegamenti.",
 			"confirmDeleteNode": "Vuoi davvero eliminare questo nodo? I suoi collegamenti verranno ricollegati automaticamente."
 		}
+	},
+	"timezoneTravel": {
+		"question": "Passare Nebo all'ora di {city}?",
+		"switch": "Cambia",
+		"keep": "Mantieni l'ora di {city}"
 	}
 }
