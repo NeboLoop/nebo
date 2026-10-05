@@ -260,6 +260,7 @@
 		"withTeammate": "{name} ile",
 		"teamThread": "{name} ekibi",
 		"working": "Çalışıyor",
+		"newReply": "Yeni yanıt",
 		"chatActions": "Sohbet işlemleri",
 		"deleteChatTitle": "\"{name}\" silinsin mi?",
 		"deleteChatBody": "Bu sohbet ve tüm mesajları kaldırılacak. Bu işlem geri alınamaz.",

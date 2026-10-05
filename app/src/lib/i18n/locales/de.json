@@ -260,6 +260,7 @@
 		"withTeammate": "Mit {name}",
 		"teamThread": "Team {name}",
 		"working": "Arbeitet",
+		"newReply": "Neue Antwort",
 		"chatActions": "Chat-Aktionen",
 		"deleteChatTitle": "„{name}“ löschen?",
 		"deleteChatBody": "Dieser Chat und alle seine Nachrichten werden entfernt. Das lässt sich nicht rückgängig machen.",

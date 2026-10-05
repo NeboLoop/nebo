@@ -3,7 +3,7 @@
   import { goto, withBase, appPath } from '$lib/nav';
   import { storage } from '$lib/storage';
   import { t } from 'svelte-i18n';
-  import { setContext, onMount } from 'svelte';
+  import { setContext, onMount, untrack } from 'svelte';
   import { getWebSocketClient } from '$lib/websocket/client';
   import { AGENT_COLORS_MAP, assignAgentColors, initialsOf } from '$lib/tokens.js';
   import AgentAvatar from '$lib/components/AgentAvatar.svelte';
@@ -27,8 +27,13 @@
   import TimezoneTravelPrompt from '$lib/components/TimezoneTravelPrompt.svelte';
   import { menuAnchor, deleteChatRow } from '$lib/chat/chatMenu';
   import { conversationLists, teammateLabel, teammateName } from '$lib/chat/teammates';
-  import { conversationTitle } from '$lib/chat/sessionKey';
+  import { conversationTitle, teamKey, threadKey } from '$lib/chat/sessionKey';
   import { endsRun } from '$lib/chat/runEnd';
+  import {
+    agentUnread, conversationRead, endWork, openNeedsRead, replyArrived, rowMark, seedAgentUnread,
+    seedTeamUnread, snapshotWork, startWork, teamWorking, type Open, type Working,
+  } from '$lib/chat/rowState';
+  import RowMark from '$lib/components/ui/RowMark.svelte';
   import NewEmployeeModal from '$lib/components/NewEmployeeModal.svelte';
   import { unreadCount } from '$lib/stores/notifications';
   import { slide } from 'svelte/transition';
@@ -206,6 +211,7 @@
       const api = await import('$lib/api/nebo');
       const resp = await api.listTeams();
       teams = resp?.teams ?? [];
+      unread = seedTeamUnread(unread, resp?.unreadTeams ?? []);
     } catch {
       /* section simply stays absent */
     }
@@ -249,20 +255,60 @@
   // tool_start, chat_complete/error/cancelled); the 5-second agent_progress
   // snapshot reconciles anything a dropped socket missed. The main employee
   // runs with an empty agentId on the wire; the roster knows it as 'assistant'.
-  let working = $state<Record<string, Record<string, string>>>({});
-  const workerId = (id: unknown) => (typeof id === 'string' && id ? id : 'assistant');
+  let working = $state<Working>({});
   function markWorking(agentId: unknown, sessionId: unknown, label = '') {
-    const id = workerId(agentId);
-    const sid = typeof sessionId === 'string' && sessionId ? sessionId : '_';
-    working[id] = { ...(working[id] ?? {}), [sid]: label || working[id]?.[sid] || '' };
+    working = startWork(working, agentId, sessionId, label);
   }
   function clearWorking(agentId: unknown, sessionId: unknown) {
-    const id = workerId(agentId);
-    const sid = typeof sessionId === 'string' && sessionId ? sessionId : '_';
-    const rest = { ...(working[id] ?? {}) };
-    delete rest[sid];
-    if (Object.keys(rest).length === 0) delete working[id];
-    else working[id] = rest;
+    working = endWork(working, agentId, sessionId);
+  }
+  /** Seed who is working from the bot's live runs (`GET /runs/active`), at
+   *  start and after a reconnect, rather than wait for the next snapshot. */
+  async function loadWorking() {
+    try {
+      const api = await import('$lib/api/nebo');
+      const resp = (await api.activeRunsHandler()) as { runs?: { entityId?: string; sessionKey?: string; activity?: string }[] } | null;
+      working = snapshotWork({}, resp?.runs ?? []);
+    } catch {
+      /* the next agent_progress snapshot fills it in */
+    }
+  }
+
+  // ── Which conversations hold a reply the owner has not read (session
+  // keys; `rowState`). The bot keeps the read state, so the roster and the
+  // team list seed it, turn ends and `chat_read` keep it live, and the
+  // conversation he is looking at is marked read on the bot.
+  let unread = $state<Set<string>>(new Set());
+  let pageVisible = $state(typeof document === 'undefined' || document.visibilityState === 'visible');
+  /** The conversation open in the main pane, and whether he can see it. */
+  const openConversation = $derived<Open>({
+    key: $page.params.agentId && $page.params.threadId
+      ? threadKey($page.params.agentId, $page.params.threadId)
+      : teamParam ? teamKey(teamParam) : '',
+    visible: pageVisible,
+  });
+  /** Mark the open conversation read, here and on the bot (which tells the
+   *  other surfaces). */
+  async function readOpenConversation() {
+    const key = openConversation.key;
+    if (!key) return;
+    unread = conversationRead(unread, key);
+    try {
+      const api = await import('$lib/api/nebo');
+      if (teamParam && key === teamKey(teamParam)) await api.markTeamRead(teamParam);
+      else if ($page.params.threadId) await api.markChatRead($page.params.threadId);
+    } catch {
+      /* the dot returns with the next roster load; opening it again reads it */
+    }
+  }
+  $effect(() => {
+    if (openNeedsRead(unread, openConversation)) untrack(() => readOpenConversation());
+  });
+  /** A turn ended or a team post landed in `key`; `isUnread` is the bot's word. */
+  function onReply(key: string, isUnread: boolean) {
+    const r = replyArrived(unread, key, isUnread, openConversation);
+    unread = r.unread;
+    if (r.markRead) readOpenConversation();
   }
   /** A thread with a teammate the owner must be able to reach even with the
    *  section folded: the employee is working in it, it waits on his answer,
@@ -280,7 +326,9 @@
   const waitingForYou = $derived(new Set($waitingAsks.filter((w) => w.blocking).map((w) => w.agentId)));
   /** The newest live verb for an employee, capitalized, or '' when idle. */
   function workingLabel(id: string): string {
-    const labels = Object.values(working[id] ?? {});
+    // The newest run that says what it is doing: a team seat thinking
+    // without a verb must not hide a chat run's "Searching venues".
+    const labels = Object.values(working[id] ?? {}).filter(Boolean);
     const last = labels[labels.length - 1] ?? '';
     return last ? last.charAt(0).toUpperCase() + last.slice(1) : '';
   }
@@ -389,6 +437,7 @@
       // is named, the workspace waits behind the christening ceremony. Cloud
       // installs hit this on first workspace mount — the wizard never runs there.
       primaryChristened = (agentsResp as any)?.primaryChristened !== false;
+      unread = seedAgentUnread(unread, agentsResp?.unreadSessions ?? []);
       if (agentsResp?.agents?.length) {
         const agents = agentsResp.agents;
         const colors = assignAgentColors(agents);
@@ -567,6 +616,11 @@
     // Initial roster load
     loadAgentRoster();
     loadTeams();
+    loadWorking();
+    // A reply read only counts once the window is on screen.
+    const onVisibility = () => { pageVisible = document.visibilityState === 'visible'; };
+    document.addEventListener('visibilitychange', onVisibility);
+    wsUnsubs.push(() => document.removeEventListener('visibilitychange', onVisibility));
 
     // Phones start on the team list. Landing cold on a specific conversation
     // (a shared link, a notification) keeps that conversation — the list is
@@ -597,21 +651,31 @@
     onWsEvent('nebo:agent_installed', () => loadAgentRoster());
 
     // Live "working" state per employee (see `working` above). A reconnect
-    // means a server that may have restarted: forget what the old one said;
-    // the next snapshot repopulates.
-    onWsEvent('nebo:connected', () => { working = {}; });
+    // means a server that may have restarted: forget what the old one said
+    // and take its live runs; after a reconnect, reread what is unread too.
+    let connectedBefore = false;
+    onWsEvent('nebo:connected', () => {
+      loadWorking();
+      if (connectedBefore) { loadAgentRoster(); loadTeams(); }
+      connectedBefore = true;
+    });
     onWsEvent('nebo:chat_created', (data) => markWorking(data?.agentId, data?.session_id));
     onWsEvent('nebo:thinking', (data) => markWorking(data?.agentId, data?.session_id));
     onWsEvent('nebo:tool_start', (data) => markWorking(data?.agentId, data?.session_id, data?.label ?? ''));
     // A queued message's own chat_complete: the run it joined is still going.
-    onWsEvent('nebo:chat_complete', (data) => { if (endsRun(data)) clearWorking(data?.agentId, data?.session_id); });
+    onWsEvent('nebo:chat_complete', (data) => {
+      if (!endsRun(data)) return;
+      clearWorking(data?.agentId, data?.session_id);
+      onReply(typeof data?.session_id === 'string' ? data.session_id : '', data?.unread === true);
+    });
+    // Read on another surface (or here): the dot goes everywhere.
+    onWsEvent('nebo:chat_read', (data) => {
+      if (typeof data?.sessionKey === 'string') unread = conversationRead(unread, data.sessionKey);
+    });
     onWsEvent('nebo:chat_error', (data) => clearWorking(data?.agentId, data?.session_id));
     onWsEvent('nebo:chat_cancelled', (data) => clearWorking(data?.agentId, data?.session_id));
     onWsEvent('nebo:agent_progress', (data) => {
-      const runs: { entityId?: string; sessionKey?: string; activity?: string }[] = data?.runs ?? [];
-      const live = new Set(runs.map((r) => workerId(r.entityId)));
-      for (const id of Object.keys(working)) if (!live.has(id)) delete working[id];
-      for (const r of runs) markWorking(r.entityId, r.sessionKey, r.activity ?? '');
+      working = snapshotWork(working, data?.runs ?? []);
     });
     onWsEvent('nebo:agent_uninstalled', () => loadAgentRoster());
     onWsEvent('nebo:agent_updated', (data) => {
@@ -679,7 +743,9 @@
     // Team traffic → bump that team's recency in the sidebar section.
     // The open team view holds its own subscription for the transcript.
     onWsEvent('nebo:team_message', (data) => {
-      if (data?.teamId) teamActivity[data.teamId] = Date.now();
+      if (!data?.teamId) return;
+      teamActivity[data.teamId] = Date.now();
+      onReply(teamKey(data.teamId), data?.unread === true);
     });
 
     // Run/workflow updates → refresh runs + stats
@@ -1462,6 +1528,7 @@
         {:else if sortedTeams.length > 0}
           {#each sortedTeams as room (room.id)}
             {@const faces = teamFaces(room)}
+            {@const roomUnread = unread.has(teamKey(room.id))}
             <!-- Margin lives on the wrapper, width on the button — w-full plus
                  mx on the same box overflows the column and summons a
                  scrollbar on hover (the row "jump"). -->
@@ -1495,8 +1562,9 @@
                   <span class="text-sm font-medium truncate min-w-0">{room.name}</span>
                   <span class="flex-1"></span>
                   <span class="text-xs text-base-content/45 shrink-0">{dayLabel(teamActivity[room.id] ? teamActivity[room.id] / 1000 : room.createdAt)}</span>
+                  <RowMark mark={rowMark(teamWorking(working, room.id), roomUnread)} />
                 </div>
-                <div class="text-xs text-base-content/60 truncate">{room.mission || $t('teams.membersCount', { values: { count: room.members.length } })}</div>
+                <div class="text-xs truncate {roomUnread ? 'font-medium text-base-content' : 'text-base-content/60'}">{room.mission || $t('teams.membersCount', { values: { count: room.members.length } })}</div>
               </div>
             </button>
             </div>
@@ -1587,6 +1655,7 @@
         {@const chats = apiThreads[a.id] ?? []}
         {@const latest = chats[0]}
         {@const isPinned = drilledAgent?.id === a.id}
+        {@const isUnread = agentUnread(unread, a.id)}
         <div
           transition:slide={{ duration: motionMs(200) }}
           class="group/agent flex items-center gap-2.5 pe-2.5 mx-1.5 cursor-pointer text-start {!isPinned && agentId === a.id
@@ -1636,6 +1705,9 @@
                 <!-- No per-row time here: employees without chats have none,
                      and a column where only some rows carry a time reads as
                      noise. Times live on the conversations themselves. -->
+                <!-- Working already shows on the avatar and the live verb;
+                     the end of the row carries the unread dot. -->
+                {#if !busy && isUnread}<RowMark mark="unread" />{/if}
               </div>
               <!-- A restart is a state, not something the employee said: the
                    label carries it and the line keeps the last real status. -->
@@ -1648,7 +1720,7 @@
                      state, said plainly, in place of the last line. -->
                 <div class="text-xs text-base-content/60 truncate">{$t('sidebar.offline')}</div>
               {:else}
-                <div class="text-xs text-base-content/60 truncate">{#if latest ? latest.restarted : a.restarted}<span class="badge badge-ghost badge-xs me-1 align-middle">{$t('sidebar.restarted')}</span>{/if}{latest?.preview || a.lastPreview || a.role}</div>
+                <div class="text-xs truncate {isUnread ? 'font-medium text-base-content' : 'text-base-content/60'}">{#if latest ? latest.restarted : a.restarted}<span class="badge badge-ghost badge-xs me-1 align-middle">{$t('sidebar.restarted')}</span>{/if}{latest?.preview || a.lastPreview || a.role}</div>
               {/if}
             </div>
             {#if !isPinned && a.isolated}
@@ -1706,8 +1778,9 @@
                 <div class="flex items-baseline gap-2">
                   <span class="text-sm truncate flex-1 min-w-0">{chatName(c, drilledAgent.id)}</span>
                   <span class="text-xs text-base-content/45 shrink-0">{dayLabel(c.updatedAtEpoch)}</span>
+                  <RowMark mark={rowMark(c.sessionName in (working[drilledAgent.id] ?? {}), unread.has(c.sessionName))} />
                 </div>
-                <div class="text-xs text-base-content/55 truncate">{#if c.restarted}<span class="badge badge-ghost badge-xs me-1 align-middle">{$t('sidebar.restarted')}</span>{/if}{c.preview}</div>
+                <div class="text-xs truncate {unread.has(c.sessionName) ? 'font-medium text-base-content' : 'text-base-content/55'}">{#if c.restarted}<span class="badge badge-ghost badge-xs me-1 align-middle">{$t('sidebar.restarted')}</span>{/if}{c.preview}</div>
               </a>
             {/if}
           {/each}
@@ -1770,6 +1843,11 @@
             title="{a.name} — {busy ? (workingLabel(a.id) || $t('sidebar.working')) : $t(statusLabel(st))}"
           >{initialsOf(a.name)}</button>
           <div class="absolute -bottom-0.5 -end-0.5 w-2.5 h-2.5 rounded-full border-2 border-base-200 {busy ? 'bg-success agent-working-dot' : st === 'running' ? 'bg-warning animate-pulse' : st === 'paused' ? 'bg-base-content/30' : 'bg-success'}"></div>
+          {#if !busy && agentUnread(unread, a.id)}
+            <!-- Top-start: the bottom-end corner is the status dot, and the top-end
+                 one would touch the status dot of the avatar above. -->
+            <span class="absolute -top-0.5 -start-0.5 flex rounded-full ring-2 ring-base-200"><RowMark mark="unread" /></span>
+          {/if}
         </div>
       {/each}
     </div>

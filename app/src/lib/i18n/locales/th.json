@@ -260,6 +260,7 @@
 		"withTeammate": "กับ {name}",
 		"teamThread": "ทีม {name}",
 		"working": "กำลังทำงาน",
+		"newReply": "คำตอบใหม่",
 		"chatActions": "การดำเนินการแชท",
 		"deleteChatTitle": "ลบ \"{name}\" ใช่ไหม",
 		"deleteChatBody": "แชทนี้และข้อความทั้งหมดจะถูกลบ ไม่สามารถเลิกทำได้",

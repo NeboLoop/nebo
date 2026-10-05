@@ -1941,6 +1941,7 @@ export interface ListAgentsResponse {
 	agents: AgentListEntry[]
 	total: number
 	primaryChristened: boolean
+	unreadSessions: string[]
 }
 
 export interface ListAllPluginEventsResponse {
@@ -2051,6 +2052,7 @@ export interface ListTaskHistoryResponse {
 export interface ListTeamsResponse {
 	teams: Team[]
 	total: number
+	unreadTeams: string[]
 }
 
 export interface ListToolsResponse {
@@ -2083,7 +2085,15 @@ export interface MarkAllReadResponse {
 	success: boolean
 }
 
+export interface MarkChatReadResponse {
+	success: boolean
+}
+
 export interface MarkReadResponse {
+	success: boolean
+}
+
+export interface MarkTeamReadResponse {
 	success: boolean
 }
 

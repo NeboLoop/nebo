@@ -260,6 +260,7 @@
 		"withTeammate": "Med {name}",
 		"teamThread": "Team {name}",
 		"working": "Arbetar",
+		"newReply": "Nytt svar",
 		"chatActions": "Chattåtgärder",
 		"deleteChatTitle": "Radera \"{name}\"?",
 		"deleteChatBody": "Den här chatten och alla dess meddelanden tas bort. Det går inte att ångra.",

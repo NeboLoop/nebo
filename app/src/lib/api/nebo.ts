@@ -846,6 +846,13 @@ export function getChatMessages(id: string, max_chars?: number, before?: string)
 }
 
 /**
+ * @description "Mark chat read"
+ */
+export function markChatRead(id: string, req: Record<string, unknown> = {}) {
+	return webapi.put<components.MarkChatReadResponse>(`/api/v1/chats/${id}/read`, req)
+}
+
+/**
  * @description "Client event"
  */
 export function clientEvent(req: Record<string, unknown> = {}) {
@@ -2194,6 +2201,13 @@ export function getTeamMessages(teamId: string) {
  */
 export function sendTeamMessage(teamId: string, req: Record<string, unknown> = {}) {
 	return webapi.post<components.SendTeamMessageResponse>(`/api/v1/teams/${teamId}/messages`, req)
+}
+
+/**
+ * @description "Mark team read"
+ */
+export function markTeamRead(teamId: string, req: Record<string, unknown> = {}) {
+	return webapi.put<components.MarkTeamReadResponse>(`/api/v1/teams/${teamId}/read`, req)
 }
 
 /**

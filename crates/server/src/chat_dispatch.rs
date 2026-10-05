@@ -210,6 +210,13 @@ pub(crate) async fn finish_turn(state: &AppState, run: &RunHandle, end: TurnEnd<
         payload["stop_reason"] = serde_json::json!(reason);
         payload["stop_notice"] = serde_json::json!(notice);
     }
+    // Whether the conversation now holds a reply the owner has not read: the
+    // sidebar's "New reply" dot. An app with the conversation open marks it
+    // read (`PUT /chats/{id}/read`); every other one lights the dot.
+    let unread = payload["session_id"]
+        .as_str()
+        .is_some_and(|key| state.store.conversation_unread(key).unwrap_or(false));
+    payload["unread"] = serde_json::json!(unread);
     state.hub.broadcast("chat_complete", payload);
 }
 
