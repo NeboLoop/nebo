@@ -1597,6 +1597,7 @@ async fn start_app_agent_run(
             cwd: None,
             model_override: None,
             client_id: None,
+            platform: None,
             message_id: None,
         },
     )

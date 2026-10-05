@@ -781,3 +781,60 @@ async fn a_list_of_codes_installs_one_by_one_and_a_failure_is_its_own_line() {
     nebo.state.tools.refresh_plugin_tools().await;
     nebo.store().delete_auth_profile(&profile).unwrap();
 }
+
+/// A turn the owner started from the phone app hands its tools the app's
+/// platform, and an install that needs payment reads there the way the app
+/// is answered: "<name> isn't available to buy in the app.", with no
+/// checkout link and no price, so the model has nothing to repeat. App
+/// stores forbid pointing a buyer at a checkout outside the store. The same
+/// call in a desktop turn still says where to pay.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_phone_turn_is_never_handed_a_checkout_link() {
+    use crate::handlers::ws::HubEvent;
+    const HIRE: &str = "AGNT-PAYD-0001";
+    const SKILL: &str = "SKIL-PAYD-0001";
+    let nebo = session().await;
+    hub_sells(HIRE, "Paid Closer", "agent");
+    hub_sells(SKILL, "Paid Writer", "skill");
+    let profile = uuid::Uuid::new_v4().to_string();
+    nebo.store()
+        .create_auth_profile(&profile, "NeboAI", "neboai", "proof-token", None, None, 0, 1, Some("token"), None)
+        .unwrap();
+    let results = |rx: &mut tokio::sync::broadcast::Receiver<HubEvent>, code: &str| {
+        let mut out = Vec::new();
+        while let Ok(e) = rx.try_recv() {
+            if e.event_type == "code_result" && e.payload["code"] == code {
+                out.push(e.payload);
+            }
+        }
+        out
+    };
+    let turn = |platform: Option<&str>| {
+        let mut ctx = Nebo::ctx("", Origin::User);
+        ctx.platform = platform.map(str::to_string);
+        ctx
+    };
+
+    for (tool, code, name) in [("hire_employee", HIRE, "Paid Closer"), ("install_skill", SKILL, "Paid Writer")] {
+        for phone in ["ios", "android"] {
+            let mut desktop = nebo.state.hub.subscribe();
+            let r = nebo.tool(&turn(Some(phone)), tool, json!({ "code": code })).await;
+            assert!(!r.is_error, "{tool} from {phone}: {}", r.content);
+            assert_eq!(r.content, format!("{name} isn't available to buy in the app."), "{tool} from {phone}");
+            assert!(!r.content.contains("http"), "{tool} from {phone}: {}", r.content);
+            let heard = results(&mut desktop, code);
+            assert_eq!(heard.len(), 1, "{tool} from {phone}: {heard:?}");
+            assert_eq!(heard[0]["message"], format!("{name} isn't available to buy in the app."));
+            assert!(!heard[0].to_string().contains(&hub_checkout_url(code)), "{heard:?}");
+        }
+
+        // A desktop turn still gets where to pay.
+        let r = nebo.tool(&turn(None), tool, json!({ "code": code })).await;
+        assert!(!r.is_error, "{tool} on the desktop: {}", r.content);
+        assert!(r.content.contains(&format!("Payment required: {}", hub_checkout_url(code))), "{tool} on the desktop: {}", r.content);
+    }
+
+    // Nothing was bought, so nothing was installed.
+    assert!(nebo.store().get_agent("sold-AGNT-PAYD-0001").unwrap().is_none());
+    nebo.store().delete_auth_profile(&profile).unwrap();
+}

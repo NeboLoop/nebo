@@ -434,12 +434,17 @@ pub async fn handle_code_message(
 /// Same logic as `handle_code` but returns the result as a string instead
 /// of broadcasting WebSocket events. Used by Slack, Telegram, etc. (`by` is
 /// [`InstalledBy::Other`]: a channel is not the owner's own app) and by the
-/// `hire_employee` and `install_skill` tools, which say whose run called them.
+/// `hire_employee` and `install_skill` tools, which say whose run called them
+/// and, as `platform`, whether the owner's message that started it came from
+/// the phone app: then something to buy reads with no checkout link and no
+/// price ([`not_sold_in_app`]), in the line the model reads and in the
+/// broadcast.
 pub async fn handle_code_text(
     state: &AppState,
     code_type: CodeType,
     code: &str,
     by: InstalledBy,
+    platform: Option<&str>,
 ) -> String {
     let Some(claim) = state.codes_in_flight.begin(code) else {
         return format!("{code} is already being installed.");
@@ -459,7 +464,7 @@ pub async fn handle_code_text(
     // Also broadcast for the frontend UI. No client on this server asked
     // (a channel, an employee's own call): every client sees the result, and
     // none opens an install surface for it.
-    let origin = EventOrigin::default();
+    let origin = EventOrigin { platform: platform.map(str::to_string), ..EventOrigin::default() };
     state.hub.broadcast(
         "code_processing",
         origin.stamp(serde_json::json!({
@@ -481,7 +486,7 @@ pub async fn handle_code_text(
                     "code": code,
                     "code_type": code_type_str,
                     "success": true,
-                    "message": r.message,
+                    "message": if origin.in_store_app() && r.checkout_url.is_some() { not_sold_in_app(&r) } else { r.message.clone() },
                     "artifact_name": r.artifact_name,
                     "artifact_id": r.artifact_id,
                 })),

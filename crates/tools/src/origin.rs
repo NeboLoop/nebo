@@ -354,6 +354,11 @@ pub struct ToolContext {
     /// Channel context (Slack/Discord/etc.) when this run was triggered by an
     /// inbound channel message. `None` for web UI, scheduled, or system runs.
     pub channel: Option<ChannelContext>,
+    /// The phone app's platform (`ios`, `android`) when the owner's message
+    /// that started this turn came from it (its socket's `X-Nebo-Platform`).
+    /// An install the turn makes answers it the way the app is answered: no
+    /// checkout link, no price. `None` for every other client and run.
+    pub platform: Option<String>,
     /// Resolved model of the run that invoked this tool ("provider/model").
     /// Sub-agent spawning inherits it when the caller gives no explicit
     /// model_override — without it sub-agents fall to the global default,

@@ -482,6 +482,7 @@ pub(crate) fn start_review(h: &super::Harness, req: &super::TurnRequest, session
         delivery: super::Delivery {
             channel: req.delivery.channel.clone(),
             channel_ctx: req.delivery.channel_ctx.clone(),
+            platform: None,
             mention_briefing: None,
         },
         cancel: tokio_util::sync::CancellationToken::new(),

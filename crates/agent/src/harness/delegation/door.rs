@@ -146,6 +146,7 @@ fn parent_turn(req: &SpawnRequest) -> TurnRequest {
         delivery: Delivery {
             channel: String::new(),
             channel_ctx: None,
+            platform: None,
             mention_briefing: None,
         },
         cancel: CancellationToken::new(),

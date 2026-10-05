@@ -577,6 +577,7 @@ pub(crate) async fn run_in_thread(
         cwd: None,
         model_override: None,
         client_id: None,
+        platform: None,
         message_id: None,
     };
 

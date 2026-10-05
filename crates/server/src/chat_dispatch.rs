@@ -329,6 +329,11 @@ pub struct ChatConfig {
     /// client started the run (a schedule, a channel, a coworker), and its
     /// approvals open wherever the owner is.
     pub client_id: Option<String>,
+    /// The phone app's platform (`ios`, `android`) when the owner's message
+    /// came from it (`EventOrigin::platform`): the turn's tools answer it the
+    /// way the app is answered, with no checkout link and no price. None for
+    /// every other client and run.
+    pub platform: Option<String>,
     /// The id the client sent the owner's message under (the chat frame's
     /// `message_id`). A message queued into running work keeps it, and the
     /// events about it (queued, heard) name it. None when no client sent it.
@@ -521,6 +526,7 @@ fn turn_request(state: &AppState, config: &ChatConfig, run: &RunHandle) -> agent
         delivery: Delivery {
             channel: config.channel.clone(),
             channel_ctx: config.channel_ctx.clone(),
+            platform: config.platform.clone(),
             mention_briefing: config.mention_context.clone(),
         },
         cancel: config.cancel_token.clone(),
@@ -617,7 +623,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
     let approvals_origin = crate::handlers::ws::EventOrigin {
         client_id: config.client_id.clone(),
         session_id: config.session_key.clone(),
-        platform: None,
+        platform: config.platform.clone(),
     };
     // The loop plugin serves loop conversations only: a reply routed to
     // another channel (email) never reaches it, not even as a typing signal.
@@ -1795,6 +1801,7 @@ pub async fn compact(state: &AppState, session_key: &str, agent_id: &str, instru
         cwd: None,
         model_override: None,
         client_id: None,
+        platform: None,
         message_id: None,
     };
     let (_, run_handle) = register_run(state, &config).await;

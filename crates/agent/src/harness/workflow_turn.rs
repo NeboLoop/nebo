@@ -385,6 +385,7 @@ impl ActivityLoop for WorkflowTurns {
             delivery: Delivery {
                 channel: "workflow".into(),
                 channel_ctx: None,
+                platform: None,
                 mention_briefing: None,
             },
             cancel: cancel.clone(),

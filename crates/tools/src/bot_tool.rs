@@ -21,10 +21,14 @@ pub trait AdvisorDeliberator: Send + Sync {
 /// instead of the per-type API shortcuts that bypass the cascade.
 pub trait CodeInstaller: Send + Sync {
     /// Install any `PREFIX-XXXX-XXXX` code; returns a human-readable result string.
+    /// `platform` is the turn's phone-app platform (`ToolContext::platform`):
+    /// asked from the phone app, something to buy reads with no checkout
+    /// link and no price.
     fn install<'a>(
         &'a self,
         code: &'a str,
         by: InstalledBy,
+        platform: Option<&'a str>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = String> + Send + 'a>>;
 }
 

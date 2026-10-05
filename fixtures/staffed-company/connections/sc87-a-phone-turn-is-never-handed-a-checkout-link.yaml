@@ -1,0 +1,13 @@
+id: sc87-a-phone-turn-is-never-handed-a-checkout-link
+name: "SC87 — A phone turn is never handed a checkout link"
+description: |
+  A turn the owner started from the phone app (its socket's X-Nebo-Platform:
+  ios or android) carries that platform into every tool call. When the
+  model calls hire_employee or install_skill on something that needs
+  payment, the tool result and the code_result broadcast read "<name> isn't
+  available to buy in the app." with no checkout link and no price, so the
+  model has nothing to repeat. The same call in a desktop turn still reads
+  "Payment required: <checkout URL>".
+target_component: staffed-company
+proof: staffed_proof::connections::a_phone_turn_is_never_handed_a_checkout_link
+conversation: []

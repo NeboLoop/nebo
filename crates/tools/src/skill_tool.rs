@@ -739,7 +739,7 @@ impl SkillCore {
         let installer = self.code_installer.read().unwrap().clone();
         match installer {
             Some(installer) => {
-                let msg = installer.install(code, crate::InstalledBy::of(ctx)).await;
+                let msg = installer.install(code, crate::InstalledBy::of(ctx), ctx.platform.as_deref()).await;
                 // The installer trait returns one string for both outcomes; a
                 // failure must not arrive as success.
                 if install_failed(&msg) { ToolResult::error(msg) } else { ToolResult::ok(msg) }

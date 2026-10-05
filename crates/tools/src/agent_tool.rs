@@ -2408,7 +2408,7 @@ impl PersonaTool {
         let installer = self.code_installer.read().unwrap().clone();
         match installer {
             Some(installer) => {
-                let text = installer.install(code, crate::InstalledBy::of(ctx)).await;
+                let text = installer.install(code, crate::InstalledBy::of(ctx), ctx.platform.as_deref()).await;
                 // The installer trait returns one String for both outcomes; a
                 // failure must reach the model as an error, never as success text.
                 if install_text_is_failure(&text) {

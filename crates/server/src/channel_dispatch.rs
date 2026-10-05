@@ -50,11 +50,12 @@ impl tools::CodeInstaller for CodeInstallerImpl {
         &'a self,
         code: &'a str,
         by: tools::InstalledBy,
+        platform: Option<&'a str>,
     ) -> Pin<Box<dyn Future<Output = String> + Send + 'a>> {
         Box::pin(async move {
             match crate::codes::detect_code(code) {
                 Some((code_type, validated)) => {
-                    crate::codes::handle_code_text(&self.state, code_type, validated, by).await
+                    crate::codes::handle_code_text(&self.state, code_type, validated, by, platform).await
                 }
                 None => format!(
                     "'{code}' is not a valid install code — expected PREFIX-XXXX-XXXX \
@@ -82,6 +83,7 @@ impl agent::ChannelDispatcher for ChannelDispatchImpl {
                     code_type,
                     code,
                     tools::InstalledBy::Other,
+                    None,
                 )
                 .await;
                 return Ok(Some(response));
@@ -131,6 +133,7 @@ impl agent::ChannelDispatcher for ChannelDispatchImpl {
                 cwd: None,
                 model_override: None,
                 client_id: None,
+                platform: None,
                 message_id: None,
             };
             let channel = channel_kind.as_str();
