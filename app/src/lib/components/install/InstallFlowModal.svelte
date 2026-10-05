@@ -26,9 +26,9 @@
   import { t } from 'svelte-i18n';
   import { onMount, onDestroy, tick } from 'svelte';
   import { goto } from '$lib/nav';
+  import { isSignInFor, startPluginSignIn } from '$lib/utils/pluginSignIn';
   import {
     approveDeps,
-    authLogin,
     neboAIBillingPaymentMethods,
     installStoreProduct,
     activateAgent,
@@ -73,7 +73,7 @@
   // agentId: the agent that declared this plugin (set by the backend's
   // sweep_plugin_auth). Channel plugins bind per-agent, so we route their setup
   // to this agent rather than defaulting to the primary.
-  type AuthEntry = { slug: string; label: string; description: string; authType?: string; agentId?: string };
+  type AuthEntry = { slug: string; label: string; description: string; authType?: string; agentId?: string; multiAccount?: boolean };
 
   // ── Single global instance: no props ────────────────────────────────────────
   // Product/configure opens arrive through the installFlow store; code-paste
@@ -511,7 +511,9 @@
     connectingSlug = slug;
     authState = { ...authState, [slug]: 'connecting' };
     try {
-      await authLogin(slug);
+      // A plugin with an account per employee connects THIS employee's own
+      // account; its shared login would leave the employee with none.
+      await startPluginSignIn(slug, { multiAccount: authNeeded[slug]?.multiAccount, agentId });
     } catch {
       authState = { ...authState, [slug]: 'failed' };
       connectingSlug = null;
@@ -786,13 +788,17 @@
   // ── Plugin auth WS handlers ─────────────────────────────────────────────────
   // The auth URL is opened ONCE, globally, in listeners.ts. The modal only tracks
   // per-row connect state (connectPlugin) and completion/failure below.
-  function handlePluginAuthComplete() {
-    if (!show || !connectingSlug) return;
+  /** Whether a sign-in event answers the one in flight (never another employee's). */
+  function answersConnecting(e: Event): boolean {
+    return isSignInFor((e as CustomEvent).detail as Record<string, unknown> | undefined, connectingSlug, agentId);
+  }
+  function handlePluginAuthComplete(e: Event) {
+    if (!show || !connectingSlug || !answersConnecting(e)) return;
     authState = { ...authState, [connectingSlug]: 'connected' };
     connectingSlug = null;
   }
-  function handlePluginAuthError() {
-    if (!show || !connectingSlug) return;
+  function handlePluginAuthError(e: Event) {
+    if (!show || !connectingSlug || !answersConnecting(e)) return;
     // A failed connect marks just that row failed (retryable) — it never blocks
     // the install or errors the whole modal.
     authState = { ...authState, [connectingSlug]: 'failed' };

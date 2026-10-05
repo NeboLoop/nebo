@@ -1049,7 +1049,7 @@ pub async fn get_agent(
 
     // Return cached plugin auth status only — never block getAgent on shell commands.
     // The cache is populated lazily in the background on first plugin access.
-    let plugins_needing_auth = get_cached_plugins_auth_status(&state).await;
+    let plugins_needing_auth = get_cached_plugins_auth_status(&state, &agent).await;
 
     // Compute a human-readable display name (window title > first heading > name)
     let display_name = agent
@@ -4620,21 +4620,71 @@ pub async fn get_agent_theme(
         .unwrap()
 }
 
-/// Return cached plugin auth status — never spawns subprocesses.
-/// Returns whatever is in the auth cache right now (may be empty on cold start).
-/// The cache gets populated lazily when plugins are actually used.
-async fn get_cached_plugins_auth_status(state: &AppState) -> Vec<serde_json::Value> {
-    let needing_auth = state.plugin_store.plugins_needing_auth().await;
-    needing_auth
+/// What `agent` still waits on to be connected: each plugin with one shared
+/// sign-in that is not signed in (its cached status — the cache is populated
+/// lazily when plugins are actually used), then [`per_employee_needs`].
+async fn get_cached_plugins_auth_status(
+    state: &AppState,
+    agent: &db::models::Agent,
+) -> Vec<serde_json::Value> {
+    let mut out: Vec<serde_json::Value> = state
+        .plugin_store
+        .plugins_needing_auth()
+        .await
         .into_iter()
-        .map(|(slug, auth)| {
-            serde_json::json!({
-                "slug": slug,
-                "label": auth.label,
-                "description": auth.description,
-            })
-        })
-        .collect()
+        .filter(|(_, auth)| auth.profile_dir_env.is_none())
+        .map(|(slug, auth)| needs_entry(&slug, &auth, false))
+        .collect();
+    out.extend(per_employee_needs(&state.plugin_store, &state.store, agent));
+    out
+}
+
+fn needs_entry(
+    slug: &str,
+    auth: &napp::plugin::PluginAuth,
+    multi_account: bool,
+) -> serde_json::Value {
+    serde_json::json!({
+        "slug": slug,
+        "label": auth.label,
+        "description": auth.description,
+        "multiAccount": multi_account,
+    })
+}
+
+/// The plugins with an account per employee (`auth.profileDirEnv`) that
+/// `agent` waits on: each its job uses (`requires.plugins`) with no account
+/// of its own yet. The shared sign-in status never speaks for these — it
+/// read "not connected" on every employee, a connected Bookkeeper included,
+/// and on employees that never use the plugin.
+fn per_employee_needs(
+    plugin_store: &napp::plugin::PluginStore,
+    store: &db::Store,
+    agent: &db::models::Agent,
+) -> Vec<serde_json::Value> {
+    let requires = napp::agent::parse_agent_config(&agent.frontmatter)
+        .map(|c| c.requires.plugins)
+        .unwrap_or_default();
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for reference in requires {
+        let Some(slug) = tools::plugin_tools::plugin_slug_of(store, &reference) else {
+            continue;
+        };
+        if !seen.insert(slug.clone()) {
+            continue;
+        }
+        let Some(auth) = plugin_store.get_manifest(&slug).and_then(|m| m.auth) else {
+            continue;
+        };
+        let has_account = store
+            .list_plugin_account_profiles(&agent.id, &slug)
+            .is_ok_and(|a| !a.is_empty());
+        if auth.profile_dir_env.is_some() && !has_account {
+            out.push(needs_entry(&slug, &auth, true));
+        }
+    }
+    out
 }
 
 // ── Agent Multi-Chat ─────────────────────────────────────────────────────────
@@ -6629,5 +6679,83 @@ mod app_window_tests {
         let today = serde_json::json!({"fullscreen": false, "orientation": "portrait", "motion": false, "pullToRefresh": false, "voice": false, "openOnWork": false, "isolated": false, "shareMenu": []});
         assert_eq!(serde_json::to_value(stored_app_window(None)).unwrap(), today);
         assert_eq!(serde_json::to_value(stored_app_window(Some("not json"))).unwrap(), today);
+    }
+}
+
+#[cfg(test)]
+mod needs_connecting_tests {
+    use super::*;
+
+    /// A plugin with an account per employee waits on the employee whose job
+    /// uses it until THAT employee has an account — a connected Bookkeeper no
+    /// longer shows it, one without an account does, and an employee whose
+    /// job does not use it never shows it.
+    #[test]
+    fn a_per_employee_plugin_waits_on_each_employee_from_their_own_accounts() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("plugins").join("books").join("0.1.0");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("plugin.json"),
+            serde_json::json!({
+                "id": "books", "slug": "books", "name": "Books", "version": "0.1.0", "platforms": {},
+                "auth": {"type": "oauth_cli", "label": "Books account", "profileDirEnv": "BOOKS_CONFIG_DIR"},
+            })
+            .to_string(),
+        )
+        .unwrap();
+        std::fs::write(dir.join("books"), b"#!/bin/sh\n").unwrap();
+        std::fs::create_dir_all(tmp.path().join("user_plugins")).unwrap();
+        let plugin_store = napp::plugin::PluginStore::new(
+            tmp.path().join("plugins"),
+            tmp.path().join("user_plugins"),
+            None,
+        );
+        let store = db::Store::new(tmp.path().join("t.db").to_str().unwrap()).unwrap();
+        let uses = serde_json::json!({ "requires": { "plugins": ["books"] } }).to_string();
+        store
+            .create_agent("bk", Some("user"), "Bookkeeper", "", "", &uses, None, None)
+            .unwrap();
+        store
+            .create_agent("chief", Some("user"), "Chief", "", "", "{}", None, None)
+            .unwrap();
+        let needs = |id: &str| {
+            per_employee_needs(
+                &plugin_store,
+                &store,
+                &store.get_agent(id).unwrap().unwrap(),
+            )
+        };
+
+        assert_eq!(
+            needs("bk"),
+            vec![
+                serde_json::json!({"slug": "books", "label": "Books account", "description": "", "multiAccount": true})
+            ]
+        );
+        assert!(
+            needs("chief").is_empty(),
+            "an employee whose job does not use it never waits on it"
+        );
+
+        // Chief's account is Chief's: it does not connect the Bookkeeper.
+        store
+            .upsert_plugin_account_profile(
+                "chief:books:Primary",
+                "chief",
+                "books",
+                "Primary",
+                "/tmp/c",
+            )
+            .unwrap();
+        assert_eq!(needs("bk").len(), 1);
+
+        store
+            .upsert_plugin_account_profile("bk:books:Primary", "bk", "books", "Primary", "/tmp/b")
+            .unwrap();
+        assert!(
+            needs("bk").is_empty(),
+            "a connected Bookkeeper no longer waits on it"
+        );
     }
 }

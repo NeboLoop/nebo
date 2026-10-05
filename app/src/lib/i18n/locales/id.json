@@ -359,6 +359,7 @@
 		"recording": "Merekam",
 		"connectFailed": "Proses masuk tidak selesai. Coba lagi.",
 		"connectAccountHint": "Masuk dan saya akan melanjutkan dari tempat saya berhenti.",
+		"connectAccountFor": "{label} untuk {employee}",
 		"submit": "Kirim",
 		"other": "Lainnya…",
 		"askedReceipt": "Ditanyakan",

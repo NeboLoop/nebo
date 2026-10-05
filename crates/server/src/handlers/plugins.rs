@@ -526,6 +526,10 @@ fn spawn_plugin_login(
     let tools_for_refresh = state.tools.clone();
     let profile_store = state.store.clone();
     let event_bus = state.event_bus.clone();
+    // Whose account this sign-in is, for a plugin with one per employee:
+    // its completion and failure say so, so a card for one employee is never
+    // answered by another's sign-in. None for a shared sign-in.
+    let account_agent = profile.as_ref().map(|p| p.agent_id.clone());
 
     info!(plugin = %slug, account = ?profile.as_ref().map(|p| &p.account_label), "starting plugin auth login");
 
@@ -652,6 +656,7 @@ fn spawn_plugin_login(
                     "plugin_auth_error",
                     serde_json::json!({
                         "plugin": &slug_owned,
+                        "agentId": &account_agent,
                         "error": e.to_string(),
                     }),
                 );
@@ -842,6 +847,7 @@ fn spawn_plugin_login(
                     "plugin_auth_complete",
                     serde_json::json!({
                         "plugin": &slug_owned,
+                        "agentId": &account_agent,
                         "account": profile.as_ref().map(|p| p.account_label.clone()),
                     }),
                 );
@@ -887,6 +893,7 @@ fn spawn_plugin_login(
                     "plugin_auth_error",
                     serde_json::json!({
                         "plugin": &slug_owned,
+                        "agentId": &account_agent,
                         "error": error,
                     }),
                 );
@@ -897,6 +904,7 @@ fn spawn_plugin_login(
                     "plugin_auth_error",
                     serde_json::json!({
                         "plugin": &slug_owned,
+                        "agentId": &account_agent,
                         "error": e.to_string(),
                     }),
                 );

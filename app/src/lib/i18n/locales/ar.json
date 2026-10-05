@@ -359,6 +359,7 @@
 		"recording": "جارٍ التسجيل",
 		"connectFailed": "لم يكتمل تسجيل الدخول. حاول مرة أخرى.",
 		"connectAccountHint": "سجّل الدخول وسأكمل من حيث توقفت.",
+		"connectAccountFor": "{label} لـ {employee}",
 		"submit": "إرسال",
 		"other": "أخرى...",
 		"askedReceipt": "تم السؤال",

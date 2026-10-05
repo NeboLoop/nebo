@@ -359,6 +359,7 @@
 		"recording": "מקליט",
 		"connectFailed": "ההתחברות לא הושלמה. נסה שוב.",
 		"connectAccountHint": "התחבר ואמשיך מהנקודה שבה עצרתי.",
+		"connectAccountFor": "{label} עבור {employee}",
 		"submit": "שלח",
 		"other": "אחר…",
 		"askedReceipt": "נשאל",

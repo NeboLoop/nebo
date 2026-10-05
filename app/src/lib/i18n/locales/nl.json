@@ -359,6 +359,7 @@
 		"recording": "Neemt op",
 		"connectFailed": "Inloggen is niet afgerond. Probeer het opnieuw.",
 		"connectAccountHint": "Log in, dan pak ik het weer op waar ik gebleven was.",
+		"connectAccountFor": "{label} voor {employee}",
 		"submit": "Verzenden",
 		"other": "Anders…",
 		"askedReceipt": "Gevraagd",

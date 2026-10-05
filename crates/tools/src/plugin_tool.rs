@@ -21,6 +21,11 @@ const RECOVERY_MIN_REMAINING: Duration = Duration::from_secs(10);
 /// to land when no whole version of it is on disk.
 const PLUGIN_COPY_WAIT: Duration = Duration::from_secs(15);
 
+/// How long a hire waits, in all, for the plugins its new employee's job
+/// needs to finish installing (the hire installs them in the background)
+/// before their connect cards are raised.
+const HIRE_PLUGIN_WAIT: Duration = Duration::from_secs(90);
+
 /// The install card's answer once the plugin is on disk.
 /// What an install/hire card submits once POST /codes has succeeded. Shared
 /// with the employee hire card so both resume the same way.
@@ -234,6 +239,10 @@ pub(crate) struct PluginCall {
     /// Timeout in seconds (default: 120).
     #[serde(default)]
     pub(crate) timeout: i64,
+    /// `auth login`: the employee whose account to connect, for a plugin
+    /// with an account per employee. Empty: see `connect_target`.
+    #[serde(default)]
+    pub(crate) employee: String,
 }
 
 /// A plugin call's result, and whether the call reached the plugin. A send
@@ -457,13 +466,114 @@ impl PluginRunner {
     /// The ONE connect-account card payload — used by the install→connect
     /// chain in discover and by first-use auth in exec. Two producers of this
     /// widget shape would drift (CODE_AUDITOR 8.1).
-    fn connect_account_widget(plugin: &str, agent_id: &str, label: &str) -> serde_json::Value {
-        serde_json::json!([{
+    ///
+    /// `employee` names whose account it is when the plugin keeps one per
+    /// employee, so the card says who it connects; a shared sign-in has none.
+    fn connect_account_widget(
+        plugin: &str,
+        agent_id: &str,
+        label: &str,
+        employee: Option<&str>,
+    ) -> serde_json::Value {
+        let mut card = serde_json::json!({
             "type": "connect_account",
             "plugin": plugin,
             "agentId": agent_id,
             "label": label,
-        }])
+        });
+        if let Some(name) = employee {
+            card["employee"] = serde_json::Value::String(name.to_string());
+        }
+        serde_json::json!([card])
+    }
+
+    /// What a call that cannot run without an account says over its card,
+    /// naming whose account it is when the plugin keeps one per employee.
+    fn needed_prompt(label: &str, owner: Option<&str>) -> String {
+        match owner {
+            Some(name) => format!(
+                "I need {name}'s {label} connected to continue. Connect it on the card and I'll \
+                 pick up right where I left off."
+            ),
+            None => format!(
+                "I need your {label} connected to continue. Connect it on the card and I'll pick \
+                 up right where I left off."
+            ),
+        }
+    }
+
+    /// Whether `slug` keeps a separate account per employee (its manifest
+    /// declares `auth.profileDirEnv`).
+    fn per_employee(&self, slug: &str) -> bool {
+        self.plugin_store
+            .get_manifest(slug)
+            .and_then(|m| m.auth)
+            .is_some_and(|a| a.profile_dir_env.is_some())
+    }
+
+    /// Whom a connect card for `slug` connects: (agent id, the name the
+    /// owner reads — only for a plugin with an account per employee). None
+    /// when the session belongs to no employee; an error names an employee
+    /// the call asked for that is not on the roster.
+    ///
+    /// The employee the call names, when it names one. Otherwise the chat's
+    /// employee — except that a per-employee plugin the chat's employee does
+    /// not use, and exactly one other employee does (one just hired), is
+    /// connected for that employee. Live (2026-10-05): Chief hired the
+    /// Bookkeeper and connected QuickBooks on the card in Chief's chat; the
+    /// account landed on Chief and the Bookkeeper still had none.
+    fn connect_target(
+        &self,
+        ctx: &ToolContext,
+        slug: &str,
+        named: Option<&str>,
+    ) -> Result<Option<(String, Option<String>)>, String> {
+        let per_employee = self.per_employee(slug);
+        let agent = match named.map(str::trim).filter(|n| !n.is_empty()) {
+            Some(name) => Some(
+                crate::team::resolve_agent(&self.db_store, name)
+                    .ok_or_else(|| format!("No employee named \"{name}\" is on the roster."))?,
+            ),
+            None => {
+                let chat = types::keyparser::extract_agent_id(&ctx.session_key);
+                if chat.is_empty() {
+                    return Ok(None);
+                }
+                let mut others: Vec<db::models::Agent> =
+                    if per_employee && !self.agent_declares(&chat, slug) {
+                        self.db_store
+                            .list_agents(1000, 0)
+                            .unwrap_or_default()
+                            .into_iter()
+                            .filter(|a| a.id != chat && self.agent_declares(&a.id, slug))
+                            .collect()
+                    } else {
+                        Vec::new()
+                    };
+                if others.len() == 1 {
+                    others.pop()
+                } else {
+                    match self.db_store.get_agent(&chat).ok().flatten() {
+                        Some(a) => Some(a),
+                        None => return Ok(Some((chat, None))),
+                    }
+                }
+            }
+        };
+        Ok(agent.map(|a| (a.id, per_employee.then_some(a.name))))
+    }
+
+    /// The name a connect card for `slug` shows for `agent_id`'s account:
+    /// the employee's, for a plugin with an account per employee.
+    fn account_owner_name(&self, slug: &str, agent_id: &str) -> Option<String> {
+        if !self.per_employee(slug) {
+            return None;
+        }
+        self.db_store
+            .get_agent(agent_id)
+            .ok()
+            .flatten()
+            .map(|a| a.name)
     }
 
     /// What the owner sees a plugin and its account called: the manifest's
@@ -637,52 +747,63 @@ impl PluginRunner {
                                     .filter(|l| !l.is_empty());
                                 if let Some(label) = auth_label
                                     && interactive
+                                    && let Ok(Some((agent_id, owner))) =
+                                        self.connect_target(ctx, top_slug, None)
                                 {
-                                    let agent_id =
-                                        types::keyparser::extract_agent_id(&ctx.session_key);
-                                    if !agent_id.is_empty() {
-                                        let connected = ctx
-                                            .ask_user(
-                                                &format!(
-                                                    "**{top_name}** {state}. Connect your \
-                                                     {label} on the card and I'll get straight \
-                                                     to work."
-                                                ),
-                                                Self::connect_account_widget(
-                                                    top_slug, &agent_id, &label,
-                                                ),
-                                            )
-                                            .await;
-                                        return ToolResult::ok(match CardAnswer::read(
-                                            connected.as_deref(),
-                                            "connected",
-                                        ) {
-                                            CardAnswer::Done => format!(
-                                                "{top_name} {state} and its account is \
-                                                 connected. Continue the task NOW with \
-                                                 {tool} (load it with find_tools) — no setup \
-                                                 narration.",
-                                                tool = crate::plugin_tools::plugin_tool_name(top_slug)
+                                    let prompt = match &owner {
+                                        Some(name) => format!(
+                                            "**{top_name}** {state}. Connect it for **{name}** \
+                                             on the card and I'll get straight to work."
+                                        ),
+                                        None => format!(
+                                            "**{top_name}** {state}. Connect your {label} on \
+                                             the card and I'll get straight to work."
+                                        ),
+                                    };
+                                    let connected = ctx
+                                        .ask_user(
+                                            &prompt,
+                                            Self::connect_account_widget(
+                                                top_slug,
+                                                &agent_id,
+                                                &label,
+                                                owner.as_deref(),
                                             ),
-                                            CardAnswer::Failed(reason) => format!(
-                                                "{top_name} {state}, but connecting the \
-                                                 {label} FAILED: {reason}. Tell the owner that \
-                                                 error in plain words and stop. Do NOT offer \
-                                                 the card again and do NOT suggest commands."
-                                            ),
-                                            CardAnswer::Skipped => format!(
-                                                "{top_name} {state}; the owner skipped \
-                                                 connecting the {label}. The connect card \
-                                                 re-appears on first use — continue, or ask \
-                                                 what they'd like to do."
-                                            ),
-                                            CardAnswer::NoAnswer => format!(
-                                                "{top_name} {state}; the {label} was not \
-                                                 connected — no answer (the owner stopped the \
-                                                 run). Do NOT offer the card again."
-                                            ),
-                                        });
-                                    }
+                                        )
+                                        .await;
+                                    let whose = owner
+                                        .as_deref()
+                                        .map(|n| format!(" for {n}"))
+                                        .unwrap_or_default();
+                                    return ToolResult::ok(match CardAnswer::read(
+                                        connected.as_deref(),
+                                        "connected",
+                                    ) {
+                                        CardAnswer::Done => format!(
+                                            "{top_name} {state} and its account is \
+                                             connected{whose}. Continue the task NOW with \
+                                             {tool} (load it with find_tools) — no setup \
+                                             narration.",
+                                            tool = crate::plugin_tools::plugin_tool_name(top_slug)
+                                        ),
+                                        CardAnswer::Failed(reason) => format!(
+                                            "{top_name} {state}, but connecting the \
+                                             {label}{whose} FAILED: {reason}. Tell the owner \
+                                             that error in plain words and stop. Do NOT offer \
+                                             the card again and do NOT suggest commands."
+                                        ),
+                                        CardAnswer::Skipped => format!(
+                                            "{top_name} {state}; the owner skipped \
+                                             connecting the {label}{whose}. The connect card \
+                                             re-appears on first use — continue, or ask \
+                                             what they'd like to do."
+                                        ),
+                                        CardAnswer::NoAnswer => format!(
+                                            "{top_name} {state}; the {label}{whose} was not \
+                                             connected — no answer (the owner stopped the \
+                                             run). Do NOT offer the card again."
+                                        ),
+                                    });
                                 }
                                 return ToolResult::ok(format!(
                                     "{top_name} {state}. Use it through {tool} (load it with \
@@ -863,7 +984,7 @@ impl PluginRunner {
                 args.insert(k.clone(), value);
             }
         }
-        let call = PluginCall { slug: slug.to_string(), command, args, timeout: 0 };
+        let call = PluginCall { slug: slug.to_string(), command, args, ..Default::default() };
         self.run_bound(ctx, &call, operation, &input, client_key.as_deref()).await
     }
 
@@ -1199,13 +1320,16 @@ impl PluginRunner {
                              words and stop."
                         )));
                     }
+                    let owner = self.account_owner_name(&pi.slug, &agent_id);
                     let answer = ctx
                         .ask_user(
-                            &format!(
-                                "I need your {display_label} connected to continue. Connect it on \
-                                 the card and I'll pick up right where I left off."
+                            &Self::needed_prompt(&display_label, owner.as_deref()),
+                            Self::connect_account_widget(
+                                &pi.slug,
+                                &agent_id,
+                                &display_label,
+                                owner.as_deref(),
                             ),
-                            Self::connect_account_widget(&pi.slug, &agent_id, &display_label),
                         )
                         .await;
                     return match CardAnswer::read(answer.as_deref(), "connected") {
@@ -1241,8 +1365,13 @@ impl PluginRunner {
     /// Whether the employee running `ctx` declares the plugin `slug` in its
     /// `requires.plugins`: its job uses it (a store manager and its store).
     fn employee_declares(&self, ctx: &ToolContext, slug: &str) -> bool {
-        let id = types::keyparser::extract_agent_id(&ctx.session_key);
-        let Ok(Some(agent)) = self.db_store.get_agent(&id) else { return false };
+        self.agent_declares(&types::keyparser::extract_agent_id(&ctx.session_key), slug)
+    }
+
+    /// Whether the employee `agent_id` declares the plugin `slug` in its
+    /// `requires.plugins`.
+    fn agent_declares(&self, agent_id: &str, slug: &str) -> bool {
+        let Ok(Some(agent)) = self.db_store.get_agent(agent_id) else { return false };
         napp::agent::parse_agent_config(&agent.frontmatter).is_ok_and(|c| {
             c.requires
                 .plugins
@@ -1255,39 +1384,151 @@ impl PluginRunner {
     /// connect card, where the owner signs in (a browser sign-in, or the
     /// values a plugin takes typed in). With nobody here to see a card (an
     /// unattended run), it says who connects it and when.
-    async fn connect_on_request(&self, slug: &str, ctx: &ToolContext) -> ToolResult {
+    ///
+    /// `employee` is the employee the call names, whose account it connects
+    /// (see [`Self::connect_target`] for whom it is otherwise).
+    async fn connect_on_request(
+        &self,
+        slug: &str,
+        ctx: &ToolContext,
+        employee: Option<&str>,
+    ) -> ToolResult {
         let (display_name, display_label) = self.display_names(slug);
-        let agent_id = types::keyparser::extract_agent_id(&ctx.session_key);
-        let interactive = crate::origin::ExecutionMode::from(ctx.origin) == crate::origin::ExecutionMode::Interactive
+        let interactive = crate::origin::ExecutionMode::from(ctx.origin)
+            == crate::origin::ExecutionMode::Interactive
             && ctx.ask_channels.is_some();
-        if agent_id.is_empty() || !interactive {
+        let target = match self.connect_target(ctx, slug, employee) {
+            Ok(t) => t,
+            Err(e) => {
+                return ToolResult::error(format!(
+                    "{e} Name an employee on the roster (list_employees), or leave employee out."
+                ));
+            }
+        };
+        let Some((agent_id, owner)) = target.filter(|_| interactive) else {
             return ToolResult::terminal(format!(
                 "I can't sign in to {display_name} on my own, and nobody is here to connect it now. The \
                  owner connects the {display_label} on the card when they ask for it in a chat with me."
             ));
-        }
+        };
+        let prompt = match &owner {
+            Some(name) => format!(
+                "Connect {display_name} for **{name}** on the card and I'll carry on from there."
+            ),
+            None => {
+                format!("Connect your {display_label} on the card and I'll carry on from there.")
+            }
+        };
         let answer = ctx
             .ask_user(
-                &format!("Connect your {display_label} on the card and I'll carry on from there."),
-                Self::connect_account_widget(slug, &agent_id, &display_label),
+                &prompt,
+                Self::connect_account_widget(slug, &agent_id, &display_label, owner.as_deref()),
             )
             .await;
+        let whose = owner
+            .as_deref()
+            .map(|n| format!(" for {n}"))
+            .unwrap_or_default();
         match CardAnswer::read(answer.as_deref(), "connected") {
             CardAnswer::Done => ToolResult::ok(format!(
-                "The {display_label} is connected. Carry on with what the owner asked."
+                "The {display_label} is connected{whose}. Carry on with what the owner asked."
             )),
             CardAnswer::Failed(reason) => ToolResult::error(format!(
-                "Connecting the {display_label} failed: {reason}. Tell the owner that error in plain \
+                "Connecting the {display_label}{whose} failed: {reason}. Tell the owner that error in plain \
                  words and stop."
             )),
             CardAnswer::Skipped => ToolResult::error(format!(
-                "The owner skipped connecting the {display_label}. Say so in plain words; show the card \
+                "The owner skipped connecting the {display_label}{whose}. Say so in plain words; show the card \
                  again only when they ask."
             )),
             CardAnswer::NoAnswer => ToolResult::error(format!(
-                "The {display_label} was not connected: no answer (the owner stopped the run)."
+                "The {display_label}{whose} was not connected: no answer (the owner stopped the run)."
             )),
         }
+    }
+
+    /// Just hired: the connect card for each plugin with an account per
+    /// employee that a new hire's job (`requires.plugins`) uses and that has
+    /// none yet, each connected for THAT employee and named on the card.
+    /// `hired` is (agent id, name). The hire installs the plugins in the
+    /// background, so each is waited for, up to [`HIRE_PLUGIN_WAIT`] in all.
+    /// Returns one plain line per card, for the hire's reply.
+    pub(crate) async fn connect_hired(
+        &self,
+        ctx: &ToolContext,
+        hired: &[(String, String)],
+    ) -> Vec<String> {
+        let interactive = crate::origin::ExecutionMode::from(ctx.origin)
+            == crate::origin::ExecutionMode::Interactive
+            && ctx.ask_channels.is_some();
+        if !interactive {
+            return Vec::new();
+        }
+        let deadline = tokio::time::Instant::now() + HIRE_PLUGIN_WAIT;
+        let mut lines = Vec::new();
+        for (agent_id, name) in hired {
+            let requires = self
+                .db_store
+                .get_agent(agent_id)
+                .ok()
+                .flatten()
+                .and_then(|a| napp::agent::parse_agent_config(&a.frontmatter).ok())
+                .map(|c| c.requires.plugins)
+                .unwrap_or_default();
+            for reference in requires {
+                let slug = loop {
+                    let slug = crate::plugin_tools::plugin_slug_of(&self.db_store, &reference)
+                        .filter(|s| self.plugin_store.get_manifest(s).is_some());
+                    if slug.is_some() || tokio::time::Instant::now() >= deadline {
+                        break slug;
+                    }
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                };
+                let Some(slug) = slug else {
+                    lines.push(format!(
+                        "{reference} for {name} is still installing, so it is NOT connected yet; {name} \
+                         gets the connect card on first use."
+                    ));
+                    continue;
+                };
+                let has_account = self
+                    .db_store
+                    .list_plugin_account_profiles(agent_id, &slug)
+                    .is_ok_and(|a| !a.is_empty());
+                if !self.per_employee(&slug) || has_account {
+                    continue;
+                }
+                let (display_name, display_label) = self.display_names(&slug);
+                let answer = ctx
+                    .ask_user(
+                        &format!(
+                            "**{name}** works in {display_name}. Connect it for **{name}** on the card \
+                             and they can get to work."
+                        ),
+                        Self::connect_account_widget(&slug, agent_id, &display_label, Some(name)),
+                    )
+                    .await;
+                match CardAnswer::read(answer.as_deref(), "connected") {
+                    CardAnswer::Done => lines.push(format!("{display_name} is connected for {name}.")),
+                    CardAnswer::Failed(reason) => lines.push(format!(
+                        "Connecting {display_name} for {name} FAILED: {reason}. Tell the owner that \
+                         error in plain words; do not offer the card again."
+                    )),
+                    CardAnswer::Skipped => lines.push(format!(
+                        "The owner skipped connecting {display_name} for {name}: it is NOT connected; \
+                         {name} gets the connect card on first use."
+                    )),
+                    CardAnswer::NoAnswer => {
+                        lines.push(format!(
+                            "{display_name} is NOT connected for {name}: no answer (the owner stopped \
+                             the run)."
+                        ));
+                        return lines;
+                    }
+                }
+            }
+        }
+        lines
     }
 
     /// The exec budget a call asked for, or the default.
@@ -1421,7 +1662,10 @@ impl PluginRunner {
         if args.first().map(|a| a.eq_ignore_ascii_case("auth")) == Some(true) {
             if let Some(sub) = args.get(1).map(|s| s.to_ascii_lowercase()) {
                 if sub == "login" || sub == "setup" {
-                    return Exec::NotReached(self.connect_on_request(&pi.slug, ctx).await);
+                    return Exec::NotReached(
+                        self.connect_on_request(&pi.slug, ctx, Some(pi.employee.as_str()))
+                            .await,
+                    );
                 }
                 if sub == "logout" {
                     let (display_name, _) = self.display_names(&pi.slug);
@@ -1588,17 +1832,15 @@ impl PluginRunner {
                             return Exec::NotReached(ToolResult::error(msg));
                         }
                         let (_, display_label) = self.display_names(&pi.slug);
+                        let owner = self.account_owner_name(&pi.slug, agent_id);
                         let answer = ctx
                             .ask_user(
-                                &format!(
-                                    "I need your {display_label} connected to continue. \
-                                     Connect it on the card and I'll pick up right where I \
-                                     left off."
-                                ),
+                                &Self::needed_prompt(&display_label, owner.as_deref()),
                                 Self::connect_account_widget(
                                     &pi.slug,
                                     agent_id,
                                     &display_label,
+                                    owner.as_deref(),
                                 ),
                             )
                             .await;
@@ -3343,6 +3585,209 @@ mod budget_and_install_tests {
         let r = tool.handle_exec(&pi, &unattended).await.into_result();
         assert!(r.terminal && r.content.starts_with("I can't sign out of Example Books"), "{}", r.content);
         assert!(!tmp.path().join("login-ran").exists());
+    }
+
+    fn per_employee_auth() -> serde_json::Value {
+        serde_json::json!({
+            "type": "oauth_cli", "label": "Example account", "commands": {"login": "auth login"},
+            "profileDirEnv": "BOOKS_CONFIG_DIR",
+        })
+    }
+
+    /// Chief (whose job does not use books) and a just-hired Bookkeeper
+    /// (whose job does), with books keeping an account per employee.
+    fn chief_and_bookkeeper(tmp: &std::path::Path) -> Arc<PluginRunner> {
+        let (plugin_store, db_store) = stores(tmp);
+        install_auth_plugin(tmp, "books", per_employee_auth());
+        db_store
+            .create_agent("chief", Some("user"), "Chief", "", "", "{}", None, None)
+            .unwrap();
+        let bookkeeper = serde_json::json!({ "requires": { "plugins": ["books"] } }).to_string();
+        db_store
+            .create_agent(
+                "bk",
+                Some("user"),
+                "Bookkeeper",
+                "",
+                "",
+                &bookkeeper,
+                None,
+                None,
+            )
+            .unwrap();
+        Arc::new(PluginRunner::new(plugin_store, db_store))
+    }
+
+    /// An interactive context in `session_key`'s chat, and its ask channels.
+    fn chat_ctx(
+        session_key: &str,
+    ) -> (
+        ToolContext,
+        crate::origin::AskChannels,
+        tokio::sync::mpsc::Receiver<ai::StreamEvent>,
+    ) {
+        let (stream_tx, stream_rx) = tokio::sync::mpsc::channel(4);
+        let channels: crate::origin::AskChannels = Default::default();
+        let mut ctx = ToolContext::new(crate::origin::Origin::User);
+        ctx.session_key = session_key.into();
+        ctx.stream_tx = Some(stream_tx);
+        ctx.ask_channels = Some(channels.clone());
+        (ctx, channels, stream_rx)
+    }
+
+    /// `auth login` in Chief's chat, naming `employee`; the card it shows
+    /// is answered "connected". Returns the card and the result.
+    async fn auth_login_in_chiefs_chat(
+        tool: Arc<PluginRunner>,
+        employee: &str,
+    ) -> (ai::StreamEvent, ToolResult) {
+        let (ctx, channels, mut stream_rx) = chat_ctx("agent:chief:main");
+        let pi = PluginCall {
+            slug: "books".into(),
+            command: "auth login".into(),
+            employee: employee.into(),
+            ..Default::default()
+        };
+        let running = tokio::spawn(async move { tool.handle_exec(&pi, &ctx).await.into_result() });
+        let card = tokio::time::timeout(Duration::from_secs(5), stream_rx.recv())
+            .await
+            .unwrap()
+            .expect("a card");
+        channels
+            .lock()
+            .await
+            .remove(&card.error.clone().unwrap())
+            .unwrap()
+            .send("connected".into())
+            .unwrap();
+        (card, running.await.unwrap())
+    }
+
+    /// Live (2026-10-05): Chief hired the Bookkeeper and the QuickBooks card
+    /// in Chief's chat connected QuickBooks for CHIEF; the reply said "its
+    /// account is connected" and the model told the owner the Bookkeeper was
+    /// set up. A per-employee plugin the chat's employee does not use, and
+    /// exactly one other employee does, is connected for that employee — and
+    /// the card and the reply both name them.
+    #[tokio::test]
+    async fn auth_login_connects_the_one_employee_whose_job_uses_it_and_names_them() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (card, r) = auth_login_in_chiefs_chat(chief_and_bookkeeper(tmp.path()), "").await;
+        let widget = &card.widgets.clone().unwrap()[0];
+        assert_eq!(widget["agentId"], "bk");
+        assert_eq!(widget["employee"], "Bookkeeper");
+        assert!(card.text.contains("for **Bookkeeper**"), "{}", card.text);
+        assert!(
+            !r.is_error && r.content.contains("is connected for Bookkeeper"),
+            "{}",
+            r.content
+        );
+    }
+
+    /// The employee the call names is whose account is connected, whoever's
+    /// chat it is; a name not on the roster is refused, with no card.
+    #[tokio::test]
+    async fn auth_login_connects_the_employee_the_call_names() {
+        let tmp = tempfile::tempdir().unwrap();
+        let tool = chief_and_bookkeeper(tmp.path());
+        let (card, r) = auth_login_in_chiefs_chat(tool.clone(), "Chief").await;
+        let widget = &card.widgets.clone().unwrap()[0];
+        assert_eq!(
+            (widget["agentId"].as_str(), widget["employee"].as_str()),
+            (Some("chief"), Some("Chief"))
+        );
+        assert!(
+            r.content.contains("is connected for Chief"),
+            "{}",
+            r.content
+        );
+
+        let (ctx, _channels, mut stream_rx) = chat_ctx("agent:chief:main");
+        let pi = PluginCall {
+            slug: "books".into(),
+            command: "auth login".into(),
+            employee: "Nobody".into(),
+            ..Default::default()
+        };
+        let r = tool.handle_exec(&pi, &ctx).await.into_result();
+        assert!(
+            r.is_error && r.content.contains("No employee named \"Nobody\""),
+            "{}",
+            r.content
+        );
+        assert!(
+            stream_rx.try_recv().is_err(),
+            "no card for an employee who is not on the roster"
+        );
+    }
+
+    /// Two other employees use it: no guessing between them — the chat's
+    /// own employee is the one connected, never a silent pick.
+    #[tokio::test]
+    async fn auth_login_never_guesses_between_two_employees() {
+        let tmp = tempfile::tempdir().unwrap();
+        let tool = chief_and_bookkeeper(tmp.path());
+        let second = serde_json::json!({ "requires": { "plugins": ["books"] } }).to_string();
+        tool.db_store
+            .create_agent("ap", Some("user"), "AP Clerk", "", "", &second, None, None)
+            .unwrap();
+        let (card, _) = auth_login_in_chiefs_chat(tool, "").await;
+        assert_eq!(card.widgets.unwrap()[0]["agentId"], "chief");
+    }
+
+    /// Just hired: the hire raises the connect card for each per-employee
+    /// plugin the new employee's job uses, for THAT employee, named on the
+    /// card and in the line the hire's reply carries. One already connected
+    /// gets no card.
+    #[tokio::test]
+    async fn a_hire_connects_its_plugins_for_the_new_hire() {
+        let tmp = tempfile::tempdir().unwrap();
+        let tool = chief_and_bookkeeper(tmp.path());
+        let (ctx, channels, mut stream_rx) = chat_ctx("agent:chief:main");
+        let t = tool.clone();
+        let running = tokio::spawn(async move {
+            t.connect_hired(&ctx, &[("bk".to_string(), "Bookkeeper".to_string())])
+                .await
+        });
+        let card = tokio::time::timeout(Duration::from_secs(5), stream_rx.recv())
+            .await
+            .unwrap()
+            .expect("a card");
+        let widget = &card.widgets.clone().unwrap()[0];
+        assert_eq!(
+            (
+                widget["plugin"].as_str(),
+                widget["agentId"].as_str(),
+                widget["employee"].as_str()
+            ),
+            (Some("books"), Some("bk"), Some("Bookkeeper"))
+        );
+        assert!(card.text.contains("for **Bookkeeper**"), "{}", card.text);
+        channels
+            .lock()
+            .await
+            .remove(&card.error.clone().unwrap())
+            .unwrap()
+            .send("connected".into())
+            .unwrap();
+        assert_eq!(
+            running.await.unwrap(),
+            vec!["Example Books is connected for Bookkeeper.".to_string()]
+        );
+
+        tool.db_store
+            .upsert_plugin_account_profile("bk:books:Primary", "bk", "books", "Primary", "/tmp/x")
+            .unwrap();
+        let (ctx, _channels, mut stream_rx) = chat_ctx("agent:chief:main");
+        assert!(
+            tool.connect_hired(&ctx, &[("bk".to_string(), "Bookkeeper".to_string())])
+                .await
+                .is_empty()
+        );
+        assert!(
+            stream_rx.try_recv().is_err(),
+            "an employee already connected gets no card"
+        );
     }
 
     /// Unattended (nobody to ask): the result stays terminal, no login runs,
