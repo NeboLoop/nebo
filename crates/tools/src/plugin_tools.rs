@@ -228,8 +228,8 @@ impl DynTool for PluginCliTool {
                 },
                 "args": {
                     "type": "object",
-                    "description": "Flags passed as separate arguments, each key as --key. Use it for values with quotes or special characters.",
-                    "additionalProperties": { "type": "string" }
+                    "description": "Flags passed as separate arguments, each key as --key. A value may be text, a number, true/false, or a JSON object or list (a record such as an invoice): give objects as objects, never as quoted JSON text.",
+                    "additionalProperties": { "type": ["string", "number", "boolean", "object", "array"] }
                 },
                 "timeout": {
                     "type": "integer",

@@ -223,6 +223,23 @@ pub struct PluginRunner {
     broadcaster: Option<crate::web_tool::Broadcaster>,
 }
 
+/// `args` as the binary receives them: text as given, any other value
+/// (number, true/false, object, list) as its JSON, null left out.
+fn args_as_text<'de, D>(d: D) -> Result<std::collections::HashMap<String, String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw: std::collections::HashMap<String, serde_json::Value> = serde::Deserialize::deserialize(d)?;
+    Ok(raw
+        .into_iter()
+        .filter(|(_, v)| !v.is_null())
+        .map(|(k, v)| match v {
+            serde_json::Value::String(s) => (k, s),
+            other => (k, other.to_string()),
+        })
+        .collect())
+}
+
 /// One command run against an installed plugin.
 #[derive(Debug, Default, Deserialize)]
 pub(crate) struct PluginCall {
@@ -234,7 +251,10 @@ pub(crate) struct PluginCall {
     pub(crate) command: String,
     /// Named flags passed directly to the binary without shell parsing.
     /// Each key becomes --key and the value is passed as a separate OS arg.
-    #[serde(default)]
+    /// A value may be text, a number, true/false, or a JSON object or list
+    /// (one record, e.g. an invoice): a non-text value reaches the plugin as
+    /// its JSON, so the model never quotes JSON inside a string.
+    #[serde(default, deserialize_with = "args_as_text")]
     pub(crate) args: std::collections::HashMap<String, String>,
     /// Timeout in seconds (default: 120).
     #[serde(default)]
@@ -2536,6 +2556,33 @@ mod tests {
     // install card there offers whatever the hub returned first — live on
     // 2026-09-15 that was the owner's own retired Google Workspace plugin,
     // visible because a publisher sees their own private listings, and
+
+    /// A record goes to a plugin as an object, never as quoted JSON text:
+    /// each non-text value reaches the binary as its JSON, text as given.
+    #[test]
+    fn args_take_objects_lists_numbers_and_booleans() {
+        let call: PluginCall = serde_json::from_value(serde_json::json!({
+            "slug": "quickbooks",
+            "command": "invoice create",
+            "args": {
+                "invoice": { "customer": "Evident", "docNumber": "1087", "lines": [{ "amount": 3000 }] },
+                "ids": ["1", "2"],
+                "limit": 5,
+                "dry-run": true,
+                "realm-id": "123",
+                "gone": null
+            }
+        }))
+        .unwrap();
+        let invoice: serde_json::Value = serde_json::from_str(&call.args["invoice"]).unwrap();
+        assert_eq!(invoice["docNumber"], "1087");
+        assert_eq!(invoice["lines"][0]["amount"], 3000);
+        assert_eq!(call.args["ids"], r#"["1","2"]"#);
+        assert_eq!(call.args["limit"], "5");
+        assert_eq!(call.args["dry-run"], "true");
+        assert_eq!(call.args["realm-id"], "123");
+        assert!(!call.args.contains_key("gone"));
+    }
     // described "[DEPRECATED — do not install]". Browsing lists; naming a
     // tool cards it.
     #[test]
