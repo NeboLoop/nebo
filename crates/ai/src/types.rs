@@ -31,6 +31,16 @@ impl From<String> for ApiKey {
     }
 }
 
+/// How much of the plan's month (`RateLimitMeta::plan_used_percent`) is used
+/// when the owner is told, once per billing month, in the bot chat. The hub
+/// tells them again at 90%, in the Inbox and on the phone.
+pub const PLAN_WARN_PERCENT: u64 = 80;
+
+/// The text of the rate-limit event the harness forwards once per run when
+/// the plan is at [`PLAN_WARN_PERCENT`]: a marker for the dispatcher, never
+/// shown (the app words the warning in the owner's language).
+pub const PLAN_WARNING: &str = "plan_usage_warning";
+
 /// Rate limit metadata extracted from provider response headers.
 #[derive(Debug, Clone, Default)]
 pub struct RateLimitMeta {

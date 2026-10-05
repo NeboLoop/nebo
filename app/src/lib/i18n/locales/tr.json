@@ -300,6 +300,7 @@
 		"generationCancelled": "*[Üretim iptal edildi]*",
 		"retryWarning": "AI hizmeti geçici olarak meşgul. Yeniden deneniyor...",
 		"quotaWarning": "Kullanım limitinize yaklaşıyorsunuz.",
+		"planUsageWarning": "Bu ay planınızın %{percent} kadarını kullandınız.",
 		"resubmit": "Yeniden gönder",
 		"sharedContent": "Paylaşılan içerik",
 		"suggestion1": "Bana ne konuda yardımcı olabilirsin?",

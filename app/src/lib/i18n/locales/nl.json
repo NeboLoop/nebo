@@ -300,6 +300,7 @@
 		"generationCancelled": "*[Generatie geannuleerd]*",
 		"retryWarning": "De AI-service is tijdelijk bezet. Opnieuw proberen...",
 		"quotaWarning": "Je nadert je gebruikslimiet.",
+		"planUsageWarning": "Je hebt deze maand {percent}% van je abonnement gebruikt.",
 		"resubmit": "Opnieuw indienen",
 		"sharedContent": "Gedeelde inhoud",
 		"suggestion1": "Waar kun je me mee helpen?",

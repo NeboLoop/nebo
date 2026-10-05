@@ -300,6 +300,7 @@
 		"generationCancelled": "*[Generowanie anulowane]*",
 		"retryWarning": "Usługa AI jest tymczasowo zajęta. Ponawianie...",
 		"quotaWarning": "Zbliżasz się do limitu użycia.",
+		"planUsageWarning": "W tym miesiącu wykorzystano {percent}% Twojego planu.",
 		"resubmit": "Wyślij ponownie",
 		"sharedContent": "Udostępniona treść",
 		"suggestion1": "W czym możesz mi pomóc?",

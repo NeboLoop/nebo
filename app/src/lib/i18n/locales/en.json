@@ -300,6 +300,7 @@
 		"generationCancelled": "*[Generation cancelled]*",
 		"retryWarning": "The AI service is temporarily busy. Retrying...",
 		"quotaWarning": "You are approaching your usage limit.",
+		"planUsageWarning": "You've used {percent}% of your plan this month.",
 		"resubmit": "Resubmit",
 		"sharedContent": "Shared content",
 		"suggestion1": "What can you help me with?",

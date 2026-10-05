@@ -300,6 +300,7 @@
 		"generationCancelled": "*[Generierung abgebrochen]*",
 		"retryWarning": "Der KI-Dienst ist vorübergehend ausgelastet. Erneuter Versuch...",
 		"quotaWarning": "Du näherst dich deinem Nutzungslimit.",
+		"planUsageWarning": "Du hast diesen Monat {percent} % deines Plans genutzt.",
 		"resubmit": "Erneut senden",
 		"sharedContent": "Geteilter Inhalt",
 		"suggestion1": "Wobei kannst du mir helfen?",

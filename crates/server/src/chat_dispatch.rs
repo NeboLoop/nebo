@@ -223,6 +223,27 @@ pub(crate) const RUN_ERROR_KEY: &str = "runError";
 /// opened, and a reload loses the event too. The row is what the chat reads
 /// when the thread opens, and it shows it on the same error banner. The model
 /// never reads it (`get_chat_messages_since_checkpoint` leaves it out).
+/// Whether the owner is told now that the plan is at `ai::PLAN_WARN_PERCENT`:
+/// once per billing month, the month named by the date it resets on (Janus's
+/// `X-RateLimit-Plan-Reset`, RFC 3339), kept as a durable engine mark so a
+/// second run, chat or restart that month says nothing. Returns the
+/// percentage used and the reset time to show; never money.
+pub(crate) fn plan_usage_warning(store: &db::Store, rl: &ai::RateLimitMeta) -> Option<(u64, String)> {
+    let percent = rl.plan_used_percent?.min(100);
+    if percent < ai::PLAN_WARN_PERCENT {
+        return None;
+    }
+    let reset_at = rl.plan_reset_at.clone().unwrap_or_default();
+    let month = match reset_at.get(..10) {
+        Some(day) => day.to_string(),
+        None => chrono::Utc::now().format("%Y-%m").to_string(),
+    };
+    let first = store
+        .engine_mark_seen("plan_usage", &format!("plan_usage_{}:{month}", ai::PLAN_WARN_PERCENT), true)
+        .unwrap_or(false);
+    first.then_some((percent, reset_at))
+}
+
 fn record_run_error(harness: &agent::Harness, session_key: &str, error: &str) {
     if error.is_empty() {
         return;
@@ -1341,13 +1362,18 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                     *janus_usage.write().await = Some(usage);
                                 }
                             }
-                            // If the runner forwarded a quota warning (text is non-empty),
-                            // broadcast to the frontend so it can show a warning banner.
-                            if !event.text.is_empty() {
+                            // The plan at ai::PLAN_WARN_PERCENT, forwarded once per
+                            // run: the chat shows it once per billing month, worded
+                            // by the app in the owner's language.
+                            if event.text == ai::PLAN_WARNING
+                                && let Some(rl) = event.rate_limit.as_ref()
+                                && let Some((percent, reset_at)) = plan_usage_warning(&workroom_store, rl)
+                            {
                                 hub.broadcast(
                                     "quota_warning",
                                     ws_payload!(
-                                        "message": event.text,
+                                        "percent": percent,
+                                        "resetAt": reset_at,
                                     ),
                                 );
                             }
@@ -3136,5 +3162,28 @@ mod shared_file_tests {
         event.image_url = result.image_url.clone();
         event.widgets = Some(serde_json::json!({"duration_ms": 1, "more_files": result.more_files}));
         assert_eq!(super::owner_artifact_urls(&tools, &event).await, urls);
+    }
+
+    /// The plan at 80% is told once per billing month: not below 80%, once
+    /// that month however often a run sees it, again the next month, and
+    /// the month's mark outlives the engine's week-long sweep.
+    #[test]
+    fn plan_usage_warning_once_per_billing_month() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = db::Store::new(&tmp.path().join("t.db").to_string_lossy()).unwrap();
+        let rl = |pct: u64, reset: &str| ai::RateLimitMeta {
+            plan_used_percent: Some(pct),
+            plan_reset_at: Some(reset.to_string()),
+            ..Default::default()
+        };
+        assert_eq!(super::plan_usage_warning(&store, &rl(79, "2026-11-04T10:00:00Z")), None);
+        assert_eq!(
+            super::plan_usage_warning(&store, &rl(80, "2026-11-04T10:00:00Z")),
+            Some((80, "2026-11-04T10:00:00Z".to_string()))
+        );
+        assert_eq!(super::plan_usage_warning(&store, &rl(95, "2026-11-04T10:00:01Z")), None);
+        assert_eq!(super::plan_usage_warning(&store, &rl(81, "2026-12-04T10:00:00Z")).map(|w| w.0), Some(81));
+        store.engine_expire_transient_events(i64::MAX).unwrap();
+        assert_eq!(super::plan_usage_warning(&store, &rl(99, "2026-12-04T10:00:00Z")), None);
     }
 }

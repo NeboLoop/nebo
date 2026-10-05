@@ -1353,7 +1353,7 @@ async fn watch_loop(
                                     });
                                 let replay = match &source_id {
                                     Some(id) => !store
-                                        .engine_mark_seen("event", &format!("event:{}:{}", event_source, id))
+                                        .engine_mark_seen("event", &format!("event:{}:{}", event_source, id), false)
                                         .unwrap_or(true),
                                     None => false,
                                 };

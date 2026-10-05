@@ -554,15 +554,16 @@ impl Store {
     /// A "seen" mark: the record that something external (a hub wire
     /// message) was processed. Written already delivered, so it is never
     /// claimed; its whole job is the unique idempotency key. Returns true
-    /// the first time, false on a replay.
-    pub fn engine_mark_seen(&self, target_id: &str, idem_key: &str) -> Result<bool, NeboError> {
+    /// the first time, false on a replay. A transient mark ages out on the
+    /// engine TTL (a week); a durable one is kept (a once-a-month notice).
+    pub fn engine_mark_seen(&self, target_id: &str, idem_key: &str, durable: bool) -> Result<bool, NeboError> {
         let conn = self.conn()?;
         let inserted = conn
             .execute(
-                "INSERT INTO engine_events (kind, target_type, target_id, idem_key, delivered_at, attempts)
-                 VALUES ('seen', 'entity', ?1, ?2, unixepoch(), 1)
+                "INSERT INTO engine_events (kind, target_type, target_id, idem_key, retention, delivered_at, attempts)
+                 VALUES ('seen', 'entity', ?1, ?2, ?3, unixepoch(), 1)
                  ON CONFLICT(idem_key) DO NOTHING",
-                params![target_id, idem_key],
+                params![target_id, idem_key, if durable { "durable" } else { "transient" }],
             )
             .db_err("engine_mark_seen")?;
         Ok(inserted == 1)

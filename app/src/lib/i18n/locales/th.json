@@ -300,6 +300,7 @@
 		"generationCancelled": "*[ยกเลิกการสร้างแล้ว]*",
 		"retryWarning": "บริการ AI ไม่ว่างชั่วคราว กำลังลองอีกครั้ง...",
 		"quotaWarning": "คุณใกล้ถึงขีดจำกัดการใช้งานแล้ว",
+		"planUsageWarning": "เดือนนี้คุณใช้แพ็กเกจไปแล้ว {percent}%",
 		"resubmit": "ส่งใหม่",
 		"sharedContent": "เนื้อหาที่แชร์",
 		"suggestion1": "คุณช่วยอะไรฉันได้บ้าง?",

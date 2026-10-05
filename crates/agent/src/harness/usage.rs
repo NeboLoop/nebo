@@ -25,7 +25,7 @@ pub(crate) struct RunState {
     /// Provider-reported cost this run, microdollars (Janus prices the model it
     /// routed to). 0 when no provider said; then the price table estimates.
     pub(crate) cost_microdollars: i64,
-    /// Janus quota warning, set when session or weekly usage passes 80%.
+    /// Set when the plan's month reaches `ai::PLAN_WARN_PERCENT` used.
     pub(crate) quota_warning: Option<String>,
     /// Whether the quota warning was already sent this run (once).
     pub(crate) quota_warning_sent: bool,

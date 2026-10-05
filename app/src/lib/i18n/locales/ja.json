@@ -300,6 +300,7 @@
 		"generationCancelled": "*[生成がキャンセルされました]*",
 		"retryWarning": "AIサービスが一時的にビジー状態です。再試行中...",
 		"quotaWarning": "使用量の上限に近づいています。",
+		"planUsageWarning": "今月はプランの{percent}%を使用しました。",
 		"resubmit": "再送信",
 		"sharedContent": "共有コンテンツ",
 		"suggestion1": "何をお手伝いできますか？",
