@@ -2014,7 +2014,7 @@
 		"confirmOffTitle": "ひとつの会話に切り替えますか?",
 		"confirmOffBody": "別々の会話は保存されたままですが、一覧には表示されなくなり、この社員はひと続きの会話に戻ります。封印された会話で知ったことは封印されたままで、今後のチャットでは使われません。何も削除されず、もう一度「別々の会話」を選ぶと一覧が戻ります。",
 		"confirmOffAction": "ひとつの会話に切り替える",
-		"lockedByPhone": "電話回線が接続されている間は会話が別々のままになり、発信者ごとにメモリが封印されます。ひとつの会話を選ぶには、neboai.com/manage/phone で回線を外してください。"
+		"lockedByPhone": "電話回線が接続されている間は会話が別々のままになり、発信者ごとにメモリが封印されます。ひとつの会話を選ぶには、neboai.com/app/manage/phone で回線を外してください。"
 	},
 	"cases": {
 		"title": "案件",
@@ -2073,7 +2073,7 @@
 		"channels": "チャンネル",
 		"connectedAccounts": "接続済みアカウント",
 		"phone": "電話",
-		"phoneDesc": "{name}が応答し、発信する電話回線です。お持ちの番号を接続するか、neboai.com/manage/phoneで取得してください。",
+		"phoneDesc": "{name}が応答し、発信する電話回線です。お持ちの番号を接続するか、neboai.com/app/manage/phoneで取得してください。",
 		"noPhonePlugin": "{name}に回線を持たせるには、電話プラグインをインストールしてください。",
 		"phoneNeedsPlugin": "このコンピュータで{name}がこの回線に応答できるよう、電話プラグインをインストールしてください。",
 		"managePhone": "管理",
@@ -2268,8 +2268,10 @@
 		"newCallTreeName": "新しいコールツリー",
 		"newWorkflowName": "新しいワークフロー",
 		"greetingNodeLabel": "あいさつ",
+		"phoneAttachTitle": "電話番号を接続",
+		"phoneAttachDesc": "{name}が応答と発信に使う番号を選んでください。",
 		"phoneLoadingNumbers": "番号を読み込んでいます…",
-		"phoneNoFreeNumbers": "追加できる空き番号がありません。{link} で番号を購入する（または別の社員の番号を保留にする）と、ここに戻って追加できます。",
+		"phoneNoFreeNumbers": "空いている番号がありません。{link} で番号を取得するか、別の社員から番号を移してください。",
 		"phoneWhichNumber": "この社員が応答する番号はどれですか？",
 		"phoneNumberParked": "保留中",
 		"phoneNumberUnassigned": "未割り当て",

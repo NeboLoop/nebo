@@ -2014,7 +2014,7 @@
 		"confirmOffTitle": "לעבור לשיחה אחת?",
 		"confirmOffBody": "השיחות הנפרדות שלכם נשמרות, אבל הן לא יופיעו עוד כרשימה, והעובד הזה חוזר לשיחה אחת מתמשכת. מה שנלמד בשיחה חתומה נשאר חתום: שיחות עתידיות לא ישתמשו בו. שום דבר לא נמחק, ובחירה מחדש בשיחות נפרדות מחזירה את הרשימה.",
 		"confirmOffAction": "לעבור לשיחה אחת",
-		"lockedByPhone": "השיחות נשארות נפרדות כל עוד מחובר קו טלפון, כך שלכל מתקשר יש זיכרון חתום. הסירו את הקו ב־neboai.com/manage/phone כדי לבחור שיחה אחת."
+		"lockedByPhone": "השיחות נשארות נפרדות כל עוד מחובר קו טלפון, כך שלכל מתקשר יש זיכרון חתום. הסירו את הקו ב־neboai.com/app/manage/phone כדי לבחור שיחה אחת."
 	},
 	"cases": {
 		"title": "תיקים",
@@ -2073,7 +2073,7 @@
 		"channels": "ערוצים",
 		"connectedAccounts": "חשבונות מחוברים",
 		"phone": "טלפון",
-		"phoneDesc": "קווי הטלפון ש-{name} עונה בהם ומתקשר מהם. חבר מספר שבבעלותך, או קבל אחד ב-neboai.com/manage/phone.",
+		"phoneDesc": "קווי הטלפון ש-{name} עונה בהם ומתקשר מהם. חבר מספר שבבעלותך, או קבל אחד ב-neboai.com/app/manage/phone.",
 		"noPhonePlugin": "התקן את תוסף הטלפון כדי לתת ל-{name} קו.",
 		"phoneNeedsPlugin": "התקן את תוסף הטלפון כדי ש-{name} יוכל לענות לקו הזה במחשב הזה.",
 		"managePhone": "נהל",
@@ -2268,8 +2268,10 @@
 		"newCallTreeName": "עץ שיחה חדש",
 		"newWorkflowName": "תהליך עבודה חדש",
 		"greetingNodeLabel": "ברכה",
+		"phoneAttachTitle": "צרף מספר טלפון",
+		"phoneAttachDesc": "בחר מספר ש-{name} יענה בו ויתקשר ממנו.",
 		"phoneLoadingNumbers": "טוען את המספרים שלך…",
-		"phoneNoFreeNumbers": "אין מספרים פנויים לצירוף. קנה מספר (או שחרר מספר מעובד אחר) ב-{link}, ואז חזור לכאן.",
+		"phoneNoFreeNumbers": "אין לך מספרים פנויים. קבל מספר, או העבר מספר מעובד אחר, ב-{link}.",
 		"phoneWhichNumber": "לאיזה מספר העובד הזה צריך לענות?",
 		"phoneNumberParked": "בהמתנה",
 		"phoneNumberUnassigned": "לא משויך",

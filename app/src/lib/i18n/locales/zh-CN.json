@@ -2014,7 +2014,7 @@
 		"confirmOffTitle": "切换为单一对话？",
 		"confirmOffBody": "你的分开对话会继续保存，但不再以列表显示，这位员工将回到一个持续的对话。在封存对话中了解到的内容仍保持封存：之后的聊天不会使用。不会删除任何内容，再次选择分开的对话即可恢复列表。",
 		"confirmOffAction": "切换为单一对话",
-		"lockedByPhone": "连接电话线路期间，对话会保持分开，让每位来电者都有封存的记忆。要选择单一对话，请在 neboai.com/manage/phone 移除线路。"
+		"lockedByPhone": "连接电话线路期间，对话会保持分开，让每位来电者都有封存的记忆。要选择单一对话，请在 neboai.com/app/manage/phone 移除线路。"
 	},
 	"cases": {
 		"title": "事项",
@@ -2073,7 +2073,7 @@
 		"channels": "频道",
 		"connectedAccounts": "已连接账户",
 		"phone": "电话",
-		"phoneDesc": "{name} 接听和拨出所用的电话线路。可以接入你自己的号码，也可以在 neboai.com/manage/phone 申请一个。",
+		"phoneDesc": "{name} 接听和拨出所用的电话线路。可以接入你自己的号码，也可以在 neboai.com/app/manage/phone 申请一个。",
 		"noPhonePlugin": "要给 {name} 一条线路，请先安装电话插件。",
 		"phoneNeedsPlugin": "请安装电话插件，这样 {name} 才能在这台电脑上接听这条线路。",
 		"managePhone": "管理",
@@ -2268,8 +2268,10 @@
 		"newCallTreeName": "新通话树",
 		"newWorkflowName": "新工作流",
 		"greetingNodeLabel": "问候语",
+		"phoneAttachTitle": "接入电话号码",
+		"phoneAttachDesc": "选择 {name} 用来接听和拨出电话的号码。",
 		"phoneLoadingNumbers": "正在加载你的号码…",
-		"phoneNoFreeNumbers": "没有可添加的空闲号码。请在 {link} 购买一个号码（或从其他员工那里暂存一个），然后回到这里。",
+		"phoneNoFreeNumbers": "你没有空闲号码。请在 {link} 申请一个，或从其他员工那里移过来一个。",
 		"phoneWhichNumber": "这名员工应接听哪个号码？",
 		"phoneNumberParked": "已暂存",
 		"phoneNumberUnassigned": "未分配",

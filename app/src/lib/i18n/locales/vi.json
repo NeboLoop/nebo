@@ -2014,7 +2014,7 @@
 		"confirmOffTitle": "Chuyển sang một cuộc trò chuyện?",
 		"confirmOffBody": "Các cuộc trò chuyện riêng của bạn vẫn được lưu, nhưng sẽ không còn hiện thành danh sách, và nhân viên này quay lại một cuộc trò chuyện liên tục. Những gì học được trong cuộc trò chuyện niêm phong vẫn được niêm phong: các cuộc trò chuyện sau sẽ không dùng đến. Không có gì bị xóa, và chọn lại các cuộc trò chuyện riêng sẽ khôi phục danh sách.",
 		"confirmOffAction": "Chuyển sang một cuộc trò chuyện",
-		"lockedByPhone": "Các cuộc trò chuyện vẫn tách riêng khi còn gắn đường dây điện thoại, để mỗi người gọi có bộ nhớ niêm phong. Gỡ đường dây tại neboai.com/manage/phone để chọn một cuộc trò chuyện."
+		"lockedByPhone": "Các cuộc trò chuyện vẫn tách riêng khi còn gắn đường dây điện thoại, để mỗi người gọi có bộ nhớ niêm phong. Gỡ đường dây tại neboai.com/app/manage/phone để chọn một cuộc trò chuyện."
 	},
 	"cases": {
 		"title": "Hồ sơ",
@@ -2073,7 +2073,7 @@
 		"channels": "Kênh",
 		"connectedAccounts": "Tài khoản đã kết nối",
 		"phone": "Điện thoại",
-		"phoneDesc": "Đường dây điện thoại mà {name} trả lời và dùng để gọi đi. Gắn số của bạn, hoặc lấy một số tại neboai.com/manage/phone.",
+		"phoneDesc": "Đường dây điện thoại mà {name} trả lời và dùng để gọi đi. Gắn số của bạn, hoặc lấy một số tại neboai.com/app/manage/phone.",
 		"noPhonePlugin": "Cài plugin Điện thoại để {name} có một đường dây.",
 		"phoneNeedsPlugin": "Cài plugin Điện thoại để {name} có thể trả lời đường dây này trên máy này.",
 		"managePhone": "Quản lý",
@@ -2268,8 +2268,10 @@
 		"newCallTreeName": "Cây cuộc gọi mới",
 		"newWorkflowName": "Quy trình mới",
 		"greetingNodeLabel": "Lời chào",
+		"phoneAttachTitle": "Gắn số điện thoại",
+		"phoneAttachDesc": "Chọn số để {name} trả lời và gọi đi.",
 		"phoneLoadingNumbers": "Đang tải số của bạn…",
-		"phoneNoFreeNumbers": "Không có số nào trống để gắn. Mua một số (hoặc để sẵn một số từ nhân viên khác) tại {link}, rồi quay lại đây.",
+		"phoneNoFreeNumbers": "Bạn không có số nào trống. Lấy một số, hoặc chuyển một số từ nhân viên khác, tại {link}.",
 		"phoneWhichNumber": "Nhân viên này nên trả lời số nào?",
 		"phoneNumberParked": "đang để sẵn",
 		"phoneNumberUnassigned": "chưa gán",

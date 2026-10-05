@@ -2014,7 +2014,7 @@
 		"confirmOffTitle": "Byta till ett samtal?",
 		"confirmOffBody": "Dina separata samtal sparas, men visas inte längre som en lista, och den här medarbetaren går tillbaka till ett sammanhängande samtal. Det som lärts i ett förseglat samtal förblir förseglat: framtida chattar använder det inte. Inget raderas, och om du väljer separata samtal igen kommer listan tillbaka.",
 		"confirmOffAction": "Byt till ett samtal",
-		"lockedByPhone": "Samtalen förblir separata så länge en telefonlinje är kopplad, så att varje uppringare får ett förseglat minne. Ta bort linjen på neboai.com/manage/phone för att välja ett samtal."
+		"lockedByPhone": "Samtalen förblir separata så länge en telefonlinje är kopplad, så att varje uppringare får ett förseglat minne. Ta bort linjen på neboai.com/app/manage/phone för att välja ett samtal."
 	},
 	"cases": {
 		"title": "Ärenden",
@@ -2073,7 +2073,7 @@
 		"channels": "Kanaler",
 		"connectedAccounts": "Anslutna konton",
 		"phone": "Telefon",
-		"phoneDesc": "Telefonlinjerna som {name} svarar i och ringer från. Koppla ett nummer du äger, eller skaffa ett på neboai.com/manage/phone.",
+		"phoneDesc": "Telefonlinjerna som {name} svarar i och ringer från. Koppla ett nummer du äger, eller skaffa ett på neboai.com/app/manage/phone.",
 		"noPhonePlugin": "Installera Telefon-pluginet för att ge {name} en linje.",
 		"phoneNeedsPlugin": "Installera Telefon-pluginet så att {name} kan svara i den här linjen på den här datorn.",
 		"managePhone": "Hantera",
@@ -2268,8 +2268,10 @@
 		"newCallTreeName": "Nytt samtalsträd",
 		"newWorkflowName": "Nytt arbetsflöde",
 		"greetingNodeLabel": "Hälsning",
+		"phoneAttachTitle": "Koppla ett telefonnummer",
+		"phoneAttachDesc": "Välj numret som {name} svarar i och ringer från.",
 		"phoneLoadingNumbers": "Laddar dina nummer…",
-		"phoneNoFreeNumbers": "Det finns inga lediga nummer att koppla. Köp ett nummer (eller parkera ett från en annan medarbetare) på {link} och kom sedan tillbaka hit.",
+		"phoneNoFreeNumbers": "Du har inga lediga nummer. Skaffa ett, eller flytta ett från en annan medarbetare, på {link}.",
 		"phoneWhichNumber": "Vilket nummer ska den här medarbetaren svara på?",
 		"phoneNumberParked": "parkerat",
 		"phoneNumberUnassigned": "ej tilldelat",

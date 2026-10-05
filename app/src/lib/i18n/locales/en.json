@@ -2014,7 +2014,7 @@
 		"confirmOffTitle": "Switch to one conversation?",
 		"confirmOffBody": "Your separate conversations stay saved, but they'll no longer appear as a list, and this employee returns to one continuous conversation. What was learned in a sealed conversation stays sealed: future chats won't draw on it. Nothing is deleted, and choosing separate conversations again restores the list.",
 		"confirmOffAction": "Switch to one conversation",
-		"lockedByPhone": "Conversations stay separate while a phone line is attached, so every caller gets sealed memory. Remove the line at neboai.com/manage/phone to choose one conversation."
+		"lockedByPhone": "Conversations stay separate while a phone line is attached, so every caller gets sealed memory. Remove the line at neboai.com/app/manage/phone to choose one conversation."
 	},
 	"cases": {
 		"title": "Cases",
@@ -2073,7 +2073,7 @@
 		"channels": "Channels",
 		"connectedAccounts": "Accounts",
 		"phone": "Phone",
-		"phoneDesc": "The phone lines {name} answers and calls from. Attach a number you own, or get one at neboai.com/manage/phone.",
+		"phoneDesc": "The phone lines {name} answers and calls from. Attach a number you own, or get one at neboai.com/app/manage/phone.",
 		"noPhonePlugin": "Install the Phone plugin to give {name} a line.",
 		"phoneNeedsPlugin": "Install the Phone plugin so {name} can answer this line on this computer.",
 		"managePhone": "Manage",
@@ -2268,8 +2268,10 @@
 		"newCallTreeName": "New Call Tree",
 		"newWorkflowName": "New Workflow",
 		"greetingNodeLabel": "Greeting",
+		"phoneAttachTitle": "Attach a phone number",
+		"phoneAttachDesc": "Choose a number for {name} to answer and call from.",
 		"phoneLoadingNumbers": "Loading your numbers…",
-		"phoneNoFreeNumbers": "No numbers are free to attach. Buy a number (or park one from another employee) at {link}, then come back here.",
+		"phoneNoFreeNumbers": "You have no free numbers. Get one, or move one from another employee, at {link}.",
 		"phoneWhichNumber": "Which number should this employee answer?",
 		"phoneNumberParked": "parked",
 		"phoneNumberUnassigned": "unassigned",

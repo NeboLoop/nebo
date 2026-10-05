@@ -23,7 +23,7 @@ const ALLOWED = new Set([
 	'America/Denver', // an IANA time zone, as typed
 	'NEBO-XXXX-XXXX', // the shape of an install code
 	'support@neboai.com',
-	'neboai.com/manage/phone',
+	'neboai.com/app/manage/phone',
 	'AM',
 	'PM',
 	'(Esc)' // a key name beside a translated label

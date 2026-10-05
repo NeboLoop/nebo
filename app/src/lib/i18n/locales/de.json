@@ -2014,7 +2014,7 @@
 		"confirmOffTitle": "Zu einem Gespräch wechseln?",
 		"confirmOffBody": "Deine getrennten Gespräche bleiben gespeichert, erscheinen aber nicht mehr als Liste, und dieser Mitarbeiter kehrt zu einem fortlaufenden Gespräch zurück. Was in einem versiegelten Gespräch gelernt wurde, bleibt versiegelt: Künftige Chats greifen nicht darauf zurück. Nichts wird gelöscht, und wenn du wieder getrennte Gespräche wählst, ist die Liste zurück.",
 		"confirmOffAction": "Zu einem Gespräch wechseln",
-		"lockedByPhone": "Die Gespräche bleiben getrennt, solange eine Telefonleitung verbunden ist, damit jeder Anrufer ein versiegeltes Gedächtnis bekommt. Entferne die Leitung unter neboai.com/manage/phone, um ein Gespräch zu wählen."
+		"lockedByPhone": "Die Gespräche bleiben getrennt, solange eine Telefonleitung verbunden ist, damit jeder Anrufer ein versiegeltes Gedächtnis bekommt. Entferne die Leitung unter neboai.com/app/manage/phone, um ein Gespräch zu wählen."
 	},
 	"cases": {
 		"title": "Fälle",
@@ -2073,7 +2073,7 @@
 		"channels": "Kanäle",
 		"connectedAccounts": "Verbundene Konten",
 		"phone": "Telefon",
-		"phoneDesc": "Die Telefonleitungen, die {name} annimmt und von denen aus angerufen wird. Häng eine eigene Nummer an oder hol dir eine auf neboai.com/manage/phone.",
+		"phoneDesc": "Die Telefonleitungen, die {name} annimmt und von denen aus angerufen wird. Häng eine eigene Nummer an oder hol dir eine auf neboai.com/app/manage/phone.",
 		"noPhonePlugin": "Installier das Telefon-Plugin, um {name} eine Leitung zu geben.",
 		"phoneNeedsPlugin": "Installier das Telefon-Plugin, damit {name} diese Leitung auf diesem Computer annehmen kann.",
 		"managePhone": "Verwalten",
@@ -2268,8 +2268,10 @@
 		"newCallTreeName": "Neuer Anrufbaum",
 		"newWorkflowName": "Neuer Workflow",
 		"greetingNodeLabel": "Begrüßung",
+		"phoneAttachTitle": "Telefonnummer anhängen",
+		"phoneAttachDesc": "Wähl die Nummer, über die {name} Anrufe annimmt und tätigt.",
 		"phoneLoadingNumbers": "Deine Nummern werden geladen…",
-		"phoneNoFreeNumbers": "Keine Nummer ist frei. Kauf eine Nummer (oder parke eine von einem anderen Mitarbeiter) unter {link} und komm dann hierher zurück.",
+		"phoneNoFreeNumbers": "Du hast keine freie Nummer. Hol dir unter {link} eine oder verschieb eine von einem anderen Mitarbeiter.",
 		"phoneWhichNumber": "Welche Nummer soll dieser Mitarbeiter annehmen?",
 		"phoneNumberParked": "geparkt",
 		"phoneNumberUnassigned": "nicht zugewiesen",

@@ -2014,7 +2014,7 @@
 		"confirmOffTitle": "Passer à une seule conversation ?",
 		"confirmOffBody": "Vos conversations séparées restent enregistrées, mais elles n'apparaîtront plus sous forme de liste, et cet employé revient à une conversation continue. Ce qui a été appris dans une conversation scellée reste scellé : les prochains échanges ne s'en serviront pas. Rien n'est supprimé, et revenir aux conversations séparées rétablit la liste.",
 		"confirmOffAction": "Passer à une seule conversation",
-		"lockedByPhone": "Les conversations restent séparées tant qu'une ligne téléphonique est rattachée, pour que chaque appelant ait une mémoire scellée. Retirez la ligne sur neboai.com/manage/phone pour choisir une seule conversation."
+		"lockedByPhone": "Les conversations restent séparées tant qu'une ligne téléphonique est rattachée, pour que chaque appelant ait une mémoire scellée. Retirez la ligne sur neboai.com/app/manage/phone pour choisir une seule conversation."
 	},
 	"cases": {
 		"title": "Dossiers",
@@ -2073,7 +2073,7 @@
 		"channels": "Canaux",
 		"connectedAccounts": "Comptes connectés",
 		"phone": "Téléphone",
-		"phoneDesc": "Les lignes téléphoniques auxquelles {name} répond et depuis lesquelles il appelle. Rattachez un numéro qui vous appartient, ou obtenez-en un sur neboai.com/manage/phone.",
+		"phoneDesc": "Les lignes téléphoniques auxquelles {name} répond et depuis lesquelles il appelle. Rattachez un numéro qui vous appartient, ou obtenez-en un sur neboai.com/app/manage/phone.",
 		"noPhonePlugin": "Installez le plugin Phone pour donner une ligne à {name}.",
 		"phoneNeedsPlugin": "Installez le plugin Phone pour que {name} puisse répondre sur cette ligne depuis cet ordinateur.",
 		"managePhone": "Gérer",
@@ -2268,8 +2268,10 @@
 		"newCallTreeName": "Nouvel arbre d’appel",
 		"newWorkflowName": "Nouveau workflow",
 		"greetingNodeLabel": "Accueil",
+		"phoneAttachTitle": "Rattacher un numéro de téléphone",
+		"phoneAttachDesc": "Choisissez le numéro sur lequel {name} répond et depuis lequel il appelle.",
 		"phoneLoadingNumbers": "Chargement de vos numéros…",
-		"phoneNoFreeNumbers": "Aucun numéro libre à associer. Achetez un numéro (ou libérez-en un d’un autre employé) sur {link}, puis revenez ici.",
+		"phoneNoFreeNumbers": "Vous n’avez aucun numéro libre. Obtenez-en un, ou déplacez celui d’un autre employé, sur {link}.",
 		"phoneWhichNumber": "À quel numéro cet employé doit-il répondre ?",
 		"phoneNumberParked": "en attente",
 		"phoneNumberUnassigned": "non attribué",

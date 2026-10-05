@@ -2014,7 +2014,7 @@
 		"confirmOffTitle": "Tukar kepada satu perbualan?",
 		"confirmOffBody": "Perbualan berasingan anda kekal tersimpan, tetapi tidak lagi dipaparkan sebagai senarai, dan pekerja ini kembali kepada satu perbualan berterusan. Apa yang dipelajari dalam perbualan termeterai kekal termeterai: sembang akan datang tidak menggunakannya. Tiada apa dipadamkan, dan memilih perbualan berasingan semula akan memulihkan senarai.",
 		"confirmOffAction": "Tukar kepada satu perbualan",
-		"lockedByPhone": "Perbualan kekal berasingan selagi talian telefon disambungkan, supaya setiap pemanggil mendapat memori termeterai. Buang talian di neboai.com/manage/phone untuk memilih satu perbualan."
+		"lockedByPhone": "Perbualan kekal berasingan selagi talian telefon disambungkan, supaya setiap pemanggil mendapat memori termeterai. Buang talian di neboai.com/app/manage/phone untuk memilih satu perbualan."
 	},
 	"cases": {
 		"title": "Kes",
@@ -2073,7 +2073,7 @@
 		"channels": "Saluran",
 		"connectedAccounts": "Akaun Disambungkan",
 		"phone": "Telefon",
-		"phoneDesc": "Talian telefon yang dijawab dan digunakan oleh {name} untuk menelefon. Pasang nombor milik anda, atau dapatkan satu di neboai.com/manage/phone.",
+		"phoneDesc": "Talian telefon yang dijawab dan digunakan oleh {name} untuk menelefon. Pasang nombor milik anda, atau dapatkan satu di neboai.com/app/manage/phone.",
 		"noPhonePlugin": "Pasang plugin Telefon untuk memberi {name} sebuah talian.",
 		"phoneNeedsPlugin": "Pasang plugin Telefon supaya {name} boleh menjawab talian ini pada komputer ini.",
 		"managePhone": "Urus",
@@ -2268,8 +2268,10 @@
 		"newCallTreeName": "Pokok Panggilan Baharu",
 		"newWorkflowName": "Aliran Kerja Baharu",
 		"greetingNodeLabel": "Ucapan alu-aluan",
+		"phoneAttachTitle": "Pasang nombor telefon",
+		"phoneAttachDesc": "Pilih nombor untuk {name} menjawab dan membuat panggilan.",
 		"phoneLoadingNumbers": "Memuatkan nombor anda…",
-		"phoneNoFreeNumbers": "Tiada nombor yang bebas untuk dilampirkan. Beli nombor (atau letak tepi satu daripada pekerja lain) di {link}, kemudian kembali ke sini.",
+		"phoneNoFreeNumbers": "Anda tiada nombor yang bebas. Dapatkan satu, atau pindahkan satu daripada pekerja lain, di {link}.",
 		"phoneWhichNumber": "Nombor mana yang patut dijawab oleh pekerja ini?",
 		"phoneNumberParked": "diletak tepi",
 		"phoneNumberUnassigned": "belum diperuntukkan",

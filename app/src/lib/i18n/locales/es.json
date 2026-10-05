@@ -2014,7 +2014,7 @@
 		"confirmOffTitle": "¿Cambiar a una conversación?",
 		"confirmOffBody": "Tus conversaciones separadas siguen guardadas, pero ya no aparecerán como lista, y este empleado vuelve a una conversación continua. Lo aprendido en una conversación sellada sigue sellado: los chats futuros no lo usarán. No se borra nada, y elegir de nuevo conversaciones separadas restaura la lista.",
 		"confirmOffAction": "Cambiar a una conversación",
-		"lockedByPhone": "Las conversaciones siguen separadas mientras haya una línea telefónica conectada, así cada persona que llama tiene memoria sellada. Quita la línea en neboai.com/manage/phone para elegir una conversación."
+		"lockedByPhone": "Las conversaciones siguen separadas mientras haya una línea telefónica conectada, así cada persona que llama tiene memoria sellada. Quita la línea en neboai.com/app/manage/phone para elegir una conversación."
 	},
 	"cases": {
 		"title": "Casos",
@@ -2073,7 +2073,7 @@
 		"channels": "Canales",
 		"connectedAccounts": "Cuentas conectadas",
 		"phone": "Teléfono",
-		"phoneDesc": "Las líneas de teléfono que {name} atiende y desde las que llama. Conecta un número tuyo, o consigue uno en neboai.com/manage/phone.",
+		"phoneDesc": "Las líneas de teléfono que {name} atiende y desde las que llama. Conecta un número tuyo, o consigue uno en neboai.com/app/manage/phone.",
 		"noPhonePlugin": "Instala el plugin Phone para darle una línea a {name}.",
 		"phoneNeedsPlugin": "Instala el plugin Phone para que {name} pueda atender esta línea en este ordenador.",
 		"managePhone": "Gestionar",
@@ -2268,8 +2268,10 @@
 		"newCallTreeName": "Nuevo árbol de llamadas",
 		"newWorkflowName": "Nuevo flujo de trabajo",
 		"greetingNodeLabel": "Saludo",
+		"phoneAttachTitle": "Conectar un número de teléfono",
+		"phoneAttachDesc": "Elige un número para que {name} atienda y llame desde él.",
 		"phoneLoadingNumbers": "Cargando tus números…",
-		"phoneNoFreeNumbers": "No hay números libres para vincular. Compra un número (o aparca uno de otro empleado) en {link} y vuelve aquí.",
+		"phoneNoFreeNumbers": "No tienes números libres. Consigue uno, o mueve uno de otro empleado, en {link}.",
 		"phoneWhichNumber": "¿Qué número debe atender este empleado?",
 		"phoneNumberParked": "aparcado",
 		"phoneNumberUnassigned": "sin asignar",

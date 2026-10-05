@@ -2014,7 +2014,7 @@
 		"confirmOffTitle": "Passare a una sola conversazione?",
 		"confirmOffBody": "Le conversazioni separate restano salvate, ma non appariranno più come elenco, e questo dipendente torna a un'unica conversazione continua. Ciò che è stato appreso in una conversazione sigillata resta sigillato: le chat future non lo useranno. Non viene eliminato nulla, e scegliendo di nuovo conversazioni separate l'elenco torna.",
 		"confirmOffAction": "Passa a una sola conversazione",
-		"lockedByPhone": "Le conversazioni restano separate finché è collegata una linea telefonica, così ogni chiamante ha una memoria sigillata. Rimuovi la linea su neboai.com/manage/phone per scegliere una sola conversazione."
+		"lockedByPhone": "Le conversazioni restano separate finché è collegata una linea telefonica, così ogni chiamante ha una memoria sigillata. Rimuovi la linea su neboai.com/app/manage/phone per scegliere una sola conversazione."
 	},
 	"cases": {
 		"title": "Pratiche",
@@ -2073,7 +2073,7 @@
 		"channels": "Canali",
 		"connectedAccounts": "Account connessi",
 		"phone": "Telefono",
-		"phoneDesc": "Le linee telefoniche a cui {name} risponde e da cui chiama. Collega un numero che possiedi, oppure prendine uno su neboai.com/manage/phone.",
+		"phoneDesc": "Le linee telefoniche a cui {name} risponde e da cui chiama. Collega un numero che possiedi, oppure prendine uno su neboai.com/app/manage/phone.",
 		"noPhonePlugin": "Installa il plugin Phone per dare una linea a {name}.",
 		"phoneNeedsPlugin": "Installa il plugin Phone perché {name} possa rispondere su questa linea da questo computer.",
 		"managePhone": "Gestisci",
@@ -2268,8 +2268,10 @@
 		"newCallTreeName": "Nuovo albero di chiamata",
 		"newWorkflowName": "Nuovo workflow",
 		"greetingNodeLabel": "Saluto",
+		"phoneAttachTitle": "Collega un numero di telefono",
+		"phoneAttachDesc": "Scegli il numero a cui {name} risponde e da cui chiama.",
 		"phoneLoadingNumbers": "Caricamento dei tuoi numeri…",
-		"phoneNoFreeNumbers": "Nessun numero libero da collegare. Acquista un numero (o liberane uno da un altro dipendente) su {link}, poi torna qui.",
+		"phoneNoFreeNumbers": "Non hai numeri liberi. Prendine uno, o spostane uno da un altro dipendente, su {link}.",
 		"phoneWhichNumber": "A quale numero deve rispondere questo dipendente?",
 		"phoneNumberParked": "in attesa",
 		"phoneNumberUnassigned": "non assegnato",
