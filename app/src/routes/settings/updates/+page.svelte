@@ -221,7 +221,7 @@
             <div class="text-xs text-error/80 truncate">{h.detail}</div>
           {/if}
         </div>
-        <span class="text-xs font-mono text-base-content/60 shrink-0">{h.fromVersion || '—'} → {h.toVersion}</span>
+        <span class="text-xs font-mono text-base-content/60 shrink-0">{h.fromVersion === h.toVersion ? h.toVersion : `${h.fromVersion || '—'} → ${h.toVersion}`}</span>
         <span class="text-xs text-base-content/50 shrink-0 w-16 text-end">{rel(h.appliedAt)}</span>
       </div>
     {/each}
