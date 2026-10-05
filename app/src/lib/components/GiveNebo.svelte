@@ -175,7 +175,7 @@
 
         <p class="text-xs text-base-content/50">
           {$t('components.giveNebo.expiry')}
-          <a href="https://getnebo.com/legal/gifting-terms" target="_blank" rel="noopener noreferrer" class="text-primary hover:brightness-110 transition-all">{$t('components.giveNebo.giftingTerms')}</a>
+          <a href="https://neboai.com/terms" target="_blank" rel="noopener noreferrer" class="text-primary hover:brightness-110 transition-all">{$t('components.giveNebo.giftingTerms')}</a>
         </p>
       </div>
     </div>
