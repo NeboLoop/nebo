@@ -1665,9 +1665,20 @@ pub async fn phone_bind(
 ) -> HandlerResult<serde_json::Value> {
     let api = build_api_client(&state).map_err(to_error_response)?;
     let number = Some(req.number.as_str()).filter(|n| !n.is_empty());
+    // NeboAI holds the line under the employee's NeboAI id: voicemail and
+    // texts reach the employee's conversation by it (a local id lands where
+    // nobody listens). Every reader here maps it back to the local one.
+    let hub_agent = state
+        .store
+        .get_agent(&req.agent_id)
+        .ok()
+        .flatten()
+        .and_then(|a| a.loop_agent_id)
+        .filter(|id| !id.is_empty())
+        .unwrap_or_else(|| req.agent_id.clone());
     let acting_for = number.and_then(|n| phone_attaching(n, None));
     let resp = api
-        .bind_bot_phone(&req.agent_id, &req.label, req.business_name.as_deref(), number, acting_for.as_deref())
+        .bind_bot_phone(&hub_agent, &req.label, req.business_name.as_deref(), number, acting_for.as_deref())
         .await
         .map_err(|e| to_error_response(NeboError::Internal(format!("phone bind: {e}"))))?;
     info!(agent = %req.agent_id, number = %req.number, "phone number bound via NeboAI");
@@ -1763,12 +1774,23 @@ pub async fn phone_presence(
 
 /// GET /api/v1/phone/lines — the lines this bot answers, greeting included.
 /// Read live so /manage/phone edits land on the very next call.
+/// Each line's `agentId` names the employee by this Nebo's own id. NeboAI
+/// holds the id it knows (/app/manage/phone assigns by it, and voicemail and
+/// texts reach the employee by it); an employee's Phone receipts compare the
+/// local one, and a line assigned on the web never showed (found live 10-05).
 pub async fn phone_lines(State(state): State<AppState>) -> HandlerResult<serde_json::Value> {
     let api = build_api_client(&state).map_err(to_error_response)?;
-    let resp = api
+    let mut resp = api
         .list_phone_lines()
         .await
         .map_err(|e| to_error_response(NeboError::Internal(format!("phone lines: {e}"))))?;
+    if let Some(lines) = resp.get_mut("numbers").and_then(|n| n.as_array_mut()) {
+        for line in lines {
+            if let Some(id) = line.get("agentId").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
+                line["agentId"] = serde_json::json!(super::voice::resolve_local_agent_id(&state, id));
+            }
+        }
+    }
     Ok(Json(resp))
 }
 
@@ -1842,7 +1864,10 @@ pub(crate) async fn agent_has_phone_line(state: &AppState, agent_id: &str) -> bo
         .as_array()
         .map(|ns| {
             ns.iter().any(|l| {
-                l["agentId"].as_str() == Some(agent_id) && l["status"].as_str() == Some("active")
+                l["agentId"]
+                    .as_str()
+                    .is_some_and(|id| super::voice::resolve_local_agent_id(state, id) == agent_id)
+                    && l["status"].as_str() == Some("active")
             })
         })
         .unwrap_or(false)
