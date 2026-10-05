@@ -349,6 +349,9 @@ struct Helper {
     parent_seat: SeatRequest,
     /// The parent's grant, the helper's ceiling.
     parent_grant: Option<types::permissions::Grant>,
+    /// The phone app's platform the parent turn came from
+    /// (`Delivery::platform`), kept for its notification turns.
+    parent_platform: Option<String>,
     running: bool,
     cancel: CancellationToken,
     /// A foreground launch waiting on this helper's first completion.
@@ -635,7 +638,14 @@ impl Helpers {
             let mut state = self.state();
             let cancel = state.session_token(parent_key).child_token();
             state.stops.insert(session_key.clone(), cancel.clone());
-            let parent = Parent { session_key: parent_key, seat: parent_seat, grant, run_taint, cancel: cancel.clone() };
+            let parent = Parent {
+                session_key: parent_key,
+                seat: parent_seat,
+                grant,
+                run_taint,
+                cancel: cancel.clone(),
+                platform: turn.delivery.platform.as_deref(),
+            };
             let req = child::child_request(&parent, &task_id, &spec, copy.as_deref(), TurnInput::Platform { text: brief });
             state.helpers.insert(
                 task_id.clone(),
@@ -647,6 +657,7 @@ impl Helpers {
                     speed: spec.speed.clone(),
                     parent_seat: parent_seat.clone(),
                     parent_grant: grant.cloned(),
+                    parent_platform: turn.delivery.platform.clone(),
                     running: true,
                     cancel,
                     waiter: (!spec.background).then_some(tx),
@@ -702,6 +713,7 @@ impl Helpers {
                     speed: None,
                     parent_seat: turn.seat.clone(),
                     parent_grant: None,
+                    parent_platform: turn.delivery.platform.clone(),
                     running: true,
                     cancel: cancel.clone(),
                     waiter: None,
@@ -740,14 +752,14 @@ impl Helpers {
         tools: Vec<String>,
         activity: Option<Arc<std::sync::atomic::AtomicU64>>,
     ) -> Result<serde_json::Value, String> {
-        let (seat, grant, cancel) = {
+        let (seat, grant, platform, cancel) = {
             let state = self.state();
             let work = state
                 .helpers
                 .values()
                 .find(|h| h.session_key == work_key)
                 .ok_or_else(|| format!("{work_key} is not running work"))?;
-            (work.parent_seat.clone(), work.parent_grant.clone(), work.cancel.child_token())
+            (work.parent_seat.clone(), work.parent_grant.clone(), work.parent_platform.clone(), work.cancel.child_token())
         };
         let spec = HelperSpec {
             description: node.to_string(),
@@ -758,7 +770,14 @@ impl Helpers {
             skills: Vec::new(),
             speed: None,
         };
-        let parent = Parent { session_key: work_key, seat: &seat, grant: grant.as_ref(), run_taint: &[], cancel: cancel.clone() };
+        let parent = Parent {
+            session_key: work_key,
+            seat: &seat,
+            grant: grant.as_ref(),
+            run_taint: &[],
+            cancel: cancel.clone(),
+            platform: platform.as_deref(),
+        };
         let mut req = child::child_request(&parent, &format!("sa-{node}"), &spec, None, TurnInput::Platform { text: prompt });
         let allowed: std::collections::HashSet<String> = tools.into_iter().collect();
         req.seat.tool_allowlist = Some(match req.seat.tool_allowlist.take() {
@@ -917,7 +936,14 @@ impl Helpers {
             let spec = spec_of_row(&self.store, &row);
             let cancel = state.session_token(caller).child_token();
             state.stops.insert(row.session_key.clone(), cancel.clone());
-            let parent = Parent { session_key: caller, seat: &turn.seat, grant, run_taint, cancel: cancel.clone() };
+            let parent = Parent {
+                session_key: caller,
+                seat: &turn.seat,
+                grant,
+                run_taint,
+                cancel: cancel.clone(),
+                platform: turn.delivery.platform.as_deref(),
+            };
             let req = child::child_request(&parent, task_id, &spec, None, TurnInput::None);
             let helper = state.helpers.entry(task_id.to_string()).or_insert_with(|| Helper {
                 parent_key: caller.to_string(),
@@ -927,6 +953,7 @@ impl Helpers {
                 speed: spec.speed.clone(),
                 parent_seat: turn.seat.clone(),
                 parent_grant: grant.cloned(),
+                parent_platform: turn.delivery.platform.clone(),
                 running: false,
                 cancel: cancel.clone(),
                 waiter: None,
@@ -938,6 +965,7 @@ impl Helpers {
             helper.cancel = cancel;
             helper.parent_seat = turn.seat.clone();
             helper.parent_grant = grant.cloned();
+            helper.parent_platform = turn.delivery.platform.clone();
             helper.held = None;
             req
         };
@@ -1208,6 +1236,7 @@ impl Helpers {
                     grant: h.parent_grant.as_ref(),
                     run_taint: &[],
                     cancel: h.cancel.clone(),
+                    platform: h.parent_platform.as_deref(),
                 };
                 return Some(child::child_request(&parent, task_id, &spec, None, TurnInput::None));
             }
@@ -1369,6 +1398,7 @@ impl State {
             grant: p.parent_grant.as_ref(),
             run_taint: &[],
             cancel: cancel.clone(),
+            platform: p.parent_platform.as_deref(),
         };
         let req = child::child_request(&parent, pid, &spec, None, input);
         p.running = true;

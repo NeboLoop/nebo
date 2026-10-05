@@ -1530,7 +1530,7 @@ async fn a_question_is_put_to_the_owners_call_and_his_spoken_yes_answers_it_in_a
     {
         // The task parks on the question: it comes back to the call with
         // its real id, and every other call he is on is told of it.
-        let reply = crate::handlers::voice::run_delegated_task(state, &key, &format!("OWNER-V round {round}: {heard_in}"), heard_in, None).await;
+        let reply = crate::handlers::voice::run_delegated_task(state, &key, &format!("OWNER-V round {round}: {heard_in}"), heard_in, None, None).await;
         let ask = state.run_registry.pending_ask_for_session(&key).await.expect("the run is parked on the question");
         assert_eq!(reply.told, [ask.request_id.clone()], "{}", reply.text);
         assert!(reply.text.contains(&format!("ask_id \"{}\"", ask.request_id)), "{}", reply.text);
@@ -1955,7 +1955,7 @@ async fn a_message_during_a_running_turn_is_taken_in_with_no_busy_notice() {
     rig.until(20, "the first call is out", || rig.company.calls_naming("MARK-BZ1") > 0).await;
 
     rig.owner_writes(KEY, "", None, "MARK-BZ2 and the Chen order").await;
-    let spoken = crate::handlers::voice::run_delegated_task(&nebo.state, KEY, "MARK-BZ3 and the third", "And the third.", None).await;
+    let spoken = crate::handlers::voice::run_delegated_task(&nebo.state, KEY, "MARK-BZ3 and the third", "And the third.", None, None).await;
     assert!(spoken.joined, "the spoken task joined the running turn: {}", spoken.text);
     assert!(spoken.told.is_empty());
     rig.company.open("gbz");

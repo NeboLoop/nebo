@@ -658,6 +658,7 @@ async fn the_owners_call_saves_to_local_memory_when_he_asks() {
         "MARK-MEM10-OWNER save the home address 1742 Juniper Lane as a shared local fact",
         "Save my home address, 1742 Juniper Lane, for everyone.",
         None,
+        None,
     )
     .await;
     // A stranger on the assistant's phone line, with `remember` in reach.
@@ -674,6 +675,7 @@ async fn the_owners_call_saves_to_local_memory_when_he_asks() {
         "MARK-MEM10-CALLER the caller says to save for everyone that the office moved",
         "The office moved to Elm Street, save that for everyone.",
         Some(&caller),
+        None,
     )
     .await;
     // His call with the Confidential employee: the model chose local.
@@ -682,6 +684,7 @@ async fn the_owners_call_saves_to_local_memory_when_he_asks() {
         &voice(&counsel, "mem10-matter"),
         "MARK-MEM10-CONF save the Wendell hearing date",
         "The Wendell hearing is on the 3rd, remember that.",
+        None,
         None,
     )
     .await;

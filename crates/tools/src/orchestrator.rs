@@ -31,6 +31,10 @@ pub struct ChildSeat {
     /// The coworker the parent run replies to: the child answers for the
     /// same run, so the same memory restriction holds.
     pub audience: Option<String>,
+    /// The phone app's platform the parent turn came from
+    /// (`ToolContext::platform`): the child answers the same owner on the
+    /// same phone, so it is never handed a checkout link either.
+    pub platform: Option<String>,
 }
 
 /// Request to spawn a single sub-agent or execute a DAG.
@@ -108,6 +112,7 @@ impl SpawnRequest {
                 cwd: ctx.cwd.clone(),
                 taint: ctx.run_taint.clone(),
                 audience: ctx.audience.clone(),
+                platform: ctx.platform.clone(),
             },
             ..Default::default()
         }

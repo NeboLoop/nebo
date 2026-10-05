@@ -26,6 +26,10 @@ pub struct Parent<'a> {
     /// The helper's cancel token, derived from the parent session's stop
     /// token.
     pub cancel: CancellationToken,
+    /// The phone app's platform the parent turn came from
+    /// (`Delivery::platform`): a helper of a phone turn answers the same
+    /// phone, so it is never handed a checkout link either.
+    pub platform: Option<&'a str>,
 }
 
 /// The request for helper `task_id` of `parent`. The helper runs in the
@@ -97,7 +101,12 @@ pub fn child_request(
         session_key,
         input,
         seat,
-        delivery: Delivery { channel: "subagent".to_string(), channel_ctx: None, platform: None, mention_briefing: None },
+        delivery: Delivery {
+            channel: "subagent".to_string(),
+            channel_ctx: None,
+            platform: parent.platform.map(str::to_string),
+            mention_briefing: None,
+        },
         cancel: parent.cancel.clone(),
         progress: None,
     }
@@ -170,6 +179,7 @@ pub(crate) mod tests {
             grant: Some(&grant),
             run_taint: &[ProvenanceClass::Phone],
             cancel: CancellationToken::new(),
+            platform: None,
         };
         let req = child_request(&parent, "h-1", &spec(HelperKind::General), None, TurnInput::None);
         assert_eq!(req.session_key, "subagent:agent:bookkeeper:web:h-1");
@@ -207,6 +217,7 @@ pub(crate) mod tests {
                 grant: Some(&grant),
                 run_taint: &[],
                 cancel: CancellationToken::new(),
+                platform: None,
             };
             let req = child_request(&parent, "h-1", &spec(HelperKind::General), None, TurnInput::None);
             assert_eq!(req.seat.mode, Some(mode));
@@ -220,6 +231,7 @@ pub(crate) mod tests {
             grant: None,
             run_taint: &[],
             cancel: CancellationToken::new(),
+            platform: None,
         };
         let req = child_request(&parent, "h-1", &spec(HelperKind::General), None, TurnInput::None);
         assert_eq!(req.seat.mode, Some(Mode::Plan));
@@ -236,11 +248,31 @@ pub(crate) mod tests {
             grant: None,
             run_taint: &[],
             cancel: CancellationToken::new(),
+            platform: None,
         };
         let inherits = child_request(&parent, "h-1", &spec(HelperKind::Explore), None, TurnInput::None);
         assert_eq!(inherits.seat.model_override, "janus/nebo-1", "the parent's speed");
         let fast = HelperSpec { speed: Some("janus/nebo-1-fast".into()), ..spec(HelperKind::Explore) };
         let own = child_request(&parent, "h-2", &fast, None, TurnInput::None);
         assert_eq!(own.seat.model_override, "janus/nebo-1-fast", "its own speed");
+    }
+
+    /// A helper of a turn from the phone app answers the same phone: its
+    /// tools carry the platform, so it is never handed a checkout link.
+    #[test]
+    fn a_helper_of_a_phone_turn_carries_the_phone() {
+        let seat = parent_seat();
+        for phone in [Some("ios"), Some("android"), None] {
+            let parent = Parent {
+                session_key: "agent:bookkeeper:web",
+                seat: &seat,
+                grant: None,
+                run_taint: &[],
+                cancel: CancellationToken::new(),
+                platform: phone,
+            };
+            let req = child_request(&parent, "h-1", &spec(HelperKind::General), None, TurnInput::None);
+            assert_eq!(req.delivery.platform.as_deref(), phone);
+        }
     }
 }

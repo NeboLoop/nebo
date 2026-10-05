@@ -453,6 +453,12 @@ pub fn workflow_session_key(agent_id: &str, run_id: &str) -> String {
 }
 
 impl ToolContext {
+    /// Whether this turn came from the phone app as an app store ships it
+    /// (`crate::store_app`): it is never handed a checkout link or a price.
+    pub fn in_store_app(&self) -> bool {
+        crate::store_app::is_store_app(self.platform.as_deref())
+    }
+
     /// This context for one call the permission check let run, reaching
     /// what the check said (`GateVerdict::Run`). A context already offline
     /// stays offline.

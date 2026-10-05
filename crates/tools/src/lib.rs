@@ -107,6 +107,7 @@ pub mod sidecar_tool;
 pub mod skill_tool;
 pub mod skills;
 pub mod spotlight_tool;
+pub mod store_app;
 pub mod vm_tool;
 pub mod walk_bounds;
 pub mod web_tool;

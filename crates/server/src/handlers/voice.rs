@@ -75,14 +75,23 @@ pub struct ConversationQuery {
     /// take a message instead of promising a transfer it can't do.
     #[serde(default)]
     pub transfer: Option<String>,
+    /// The phone app's platform (`ios`, `android`) when the owner's call
+    /// was opened from it: its upgrade's `X-Nebo-Platform`, never the query.
+    /// The call's runs answer it the way the app is answered, with no
+    /// checkout link and no price. None for every other client and for a
+    /// phone line's caller.
+    #[serde(skip)]
+    pub platform: Option<String>,
 }
 
 pub async fn conversation_ws_handler(
     State(state): State<AppState>,
-    Query(q): Query<ConversationQuery>,
+    Query(mut q): Query<ConversationQuery>,
+    headers: axum::http::HeaderMap,
     ws: WebSocketUpgrade,
 ) -> Response {
-    info!(agent = ?q.agent_id, chat = ?q.chat_id, "conversation WebSocket upgrade requested");
+    q.platform = super::ws::EventOrigin::platform_of(&headers);
+    info!(agent = ?q.agent_id, chat = ?q.chat_id, platform = ?q.platform, "conversation WebSocket upgrade requested");
     ws.on_upgrade(move |socket| handle_conversation_ws(socket, state, q))
 }
 
@@ -564,6 +573,18 @@ pub(crate) struct CallerContext {
     pub(crate) allowlist: std::collections::HashSet<String>,
 }
 
+/// Where a delegated voice run's answer goes: the call. The owner's own call
+/// from the phone app carries its platform (no checkout link, no price); a
+/// phone line's caller never does, whatever the bridge sent.
+fn voice_delivery(caller: Option<&CallerContext>, platform: Option<&str>, briefing: Option<String>) -> agent::harness::Delivery {
+    agent::harness::Delivery {
+        channel: "voice".into(),
+        channel_ctx: None,
+        platform: platform.filter(|_| caller.is_none()).map(str::to_string),
+        mention_briefing: briefing,
+    }
+}
+
 /// Execute a delegated voice task as a turn and collect what the call says
 /// back. This is the SAME loop text chat runs, so voice inherits its
 /// reliability. On the owner's own call, what the run left waiting on his
@@ -582,12 +603,17 @@ pub(crate) struct CallerContext {
 /// said since the call's last reply, from the call's transcript — is what
 /// its owner-intent decisions read. A caller's words are never his: their
 /// run is a platform prompt, and `said` is not used.
+///
+/// `platform` is the phone app's (`ios`, `android`) when the owner's call
+/// was opened from it: the run answers it the way the app is answered, with
+/// no checkout link and no price (`tools::store_app`). Ignored for a caller.
 pub(crate) async fn run_delegated_task(
     state: &AppState,
     session_key: &str,
     task: &str,
     said: &str,
     caller: Option<&CallerContext>,
+    platform: Option<&str>,
 ) -> DelegatedReply {
     let owner_agent = types::keyparser::extract_agent_id(session_key);
     // Memory is scoped by the seat's agent — the session key alone
@@ -662,7 +688,7 @@ pub(crate) async fn run_delegated_task(
             tool_scope: None,
         },
         mode: agent::harness::TurnMode::Chat,
-        delivery: agent::harness::Delivery { channel: "voice".into(), channel_ctx: None, platform: None, mention_briefing: briefing },
+        delivery: voice_delivery(caller, platform, briefing),
         cancel: cancel_token.clone(),
         progress: Some(agent::RunProgress {
             run_id: run_handle.run_id.clone(),
@@ -2470,6 +2496,9 @@ async fn handle_conversation_session(
     });
     ctx.tool_whitelist = caller_ctx.as_ref().map(|c| c.allowlist.clone());
     ctx.door = types::permissions::Door::Voice;
+    // The owner's own call from the phone app: its tools and delegated runs
+    // carry the platform (never a caller's: a phone line is not the app).
+    ctx.platform = q.platform.clone().filter(|_| caller_ctx.is_none());
     let voice_agent_id = q.agent_id.clone().unwrap_or_default();
     let team_seat = team
         .as_ref()
@@ -2606,7 +2635,7 @@ async fn handle_conversation_session(
                     {
                         warn!(error = %e, "voice: could not open the lead's team seat");
                     }
-                    let reply = run_delegated_task(&state, &ctx.session_key, task, &said, caller.as_ref()).await;
+                    let reply = run_delegated_task(&state, &ctx.session_key, task, &said, caller.as_ref(), ctx.platform.as_deref()).await;
                     told = reply.told;
                     speak = !reply.joined;
                     reply.text
@@ -3128,6 +3157,26 @@ fn clip_at_char_boundary(s: &str, cap: usize) -> &str {
 #[cfg(test)]
 mod voice_prompt_tests {
     use super::*;
+
+    /// The owner's call opened from the phone app carries the app's
+    /// platform into its delegated runs (no checkout link, no price); a
+    /// phone line's caller never does, and a desktop call has none.
+    #[test]
+    fn a_call_from_the_phone_app_carries_the_platform_and_a_caller_never_does() {
+        for phone in ["ios", "android"] {
+            assert_eq!(voice_delivery(None, Some(phone), None).platform.as_deref(), Some(phone));
+        }
+        assert_eq!(voice_delivery(None, None, None).platform, None);
+        let caller = CallerContext {
+            agent_id: "front-desk".into(),
+            caller_id: "+15550100".into(),
+            business: "Proof Office".into(),
+            line: "front desk".into(),
+            allowlist: Default::default(),
+        };
+        assert_eq!(voice_delivery(Some(&caller), Some("ios"), None).platform, None);
+        assert_eq!(voice_delivery(None, Some("ios"), None).channel, "voice");
+    }
 
     fn chat(id: &str, key: &str) -> db::models::Chat {
         db::models::Chat {
