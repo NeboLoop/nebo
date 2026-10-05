@@ -80,6 +80,14 @@ describe.each(files)('locale %s', (code) => {
 		expect({ missing, extra }).toEqual({ missing: [], extra: [] });
 	});
 
+	it('sends people to the phone page at its current address', () => {
+		for (const key of ['agentSettings.phoneAttachTitle', 'agentSettings.phoneAttachDesc', 'agentSettings.phoneNoFreeNumbers']) {
+			expect(messages[key], key).toBeTruthy();
+		}
+		const stale = Object.entries(messages).filter(([, v]) => v.includes('neboai.com/manage/phone'));
+		expect(stale.map(([k]) => k)).toEqual([]);
+	});
+
 	it('has valid messages with the English placeholders', () => {
 		const problems: string[] = [];
 		for (const [key, source] of Object.entries(en)) {

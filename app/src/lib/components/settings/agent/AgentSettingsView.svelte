@@ -912,7 +912,7 @@
 
   $effect(() => { if (has('accounts') || has('phone')) untrack(() => loadAccounts()); });
 
-  // Lines the hub has assigned to this employee at neboai.com/manage/phone.
+  // Lines the hub has assigned to this employee at neboai.com/app/manage/phone.
   // Assignment lives hub-side (a number is an account asset), so this is a
   // receipt — the local phonecall plugin is only the bridge that answers.
   type PhoneLine = { number: string; status: string; agentId?: string; businessName?: string };
@@ -2054,7 +2054,7 @@
           {/if}
           <span class="text-sm font-medium">{fmtPhone(line.number)}</span>
           <span class="text-xs text-base-content/50 truncate flex-1">{pluginsFor(kind).length > 0 ? line.status : $t('agentSettings.phoneNotAnsweringHere')}{line.businessName ? ` · ${line.businessName}` : ''}</span>
-          <a href="https://neboai.com/manage/phone" target="_blank" rel="noopener" class="text-xs text-primary font-medium shrink-0">{$t('agentSettings.managePhone')}</a>
+          <a href="https://neboai.com/app/manage/phone" target="_blank" rel="noopener" class="text-xs text-primary font-medium shrink-0">{$t('agentSettings.managePhone')}</a>
         </div>
       {/each}
     </div>
@@ -2502,8 +2502,13 @@
     <div class="bg-base-100 rounded-xl border border-base-300 shadow-xl w-[min(92vw,28rem)] flex flex-col overflow-hidden">
       <div class="flex items-center justify-between p-5 border-b border-base-content/10">
         <div class="min-w-0">
-          <div class="text-base font-semibold">{$t('agentSettings.addPluginAccount', { values: { name: plugin.name } })}</div>
-          <div class="text-xs text-base-content/50 mt-0.5">{plugin.authFields.length ? $t('agentSettings.addAccountCredentialsDesc') : $t('agentSettings.addAccountDesc')}</div>
+          {#if plugin.slug === 'phonecall'}
+            <div class="text-base font-semibold">{$t('agentSettings.phoneAttachTitle')}</div>
+            <div class="text-xs text-base-content/50 mt-0.5">{$t('agentSettings.phoneAttachDesc', { values: { name: agent?.name ?? '' } })}</div>
+          {:else}
+            <div class="text-base font-semibold">{$t('agentSettings.addPluginAccount', { values: { name: plugin.name } })}</div>
+            <div class="text-xs text-base-content/50 mt-0.5">{plugin.authFields.length ? $t('agentSettings.addAccountCredentialsDesc') : $t('agentSettings.addAccountDesc')}</div>
+          {/if}
         </div>
         <button class="btn btn-ghost btn-sm btn-square" onclick={closeAddAccount} aria-label={$t('common.close')}>
           <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" /></svg>
@@ -2522,7 +2527,7 @@
           {:else if claimableNumbers.length === 0}
             {@const noFree = $t('agentSettings.phoneNoFreeNumbers', { values: { link: '@@link@@' } }).split('@@link@@')}
             <div class="rounded-lg bg-base-200 p-3 text-xs text-base-content/70">
-              {noFree[0]}<a href="https://neboai.com/manage/phone" target="_blank" rel="noopener" class="font-mono text-primary">neboai.com/manage/phone</a>{noFree[1] ?? ''}
+              {noFree[0]}<a href="https://neboai.com/app/manage/phone" target="_blank" rel="noopener" class="font-mono text-primary">neboai.com/app/manage/phone</a>{noFree[1] ?? ''}
             </div>
           {:else}
             <div class="flex flex-col gap-1.5">

@@ -2014,7 +2014,7 @@
 		"confirmOffTitle": "Przełączyć na jedną rozmowę?",
 		"confirmOffBody": "Twoje osobne rozmowy pozostają zapisane, ale nie będą już widoczne jako lista, a ten pracownik wraca do jednej ciągłej rozmowy. To, czego nauczono się w zapieczętowanej rozmowie, pozostaje zapieczętowane: przyszłe czaty nie będą z tego korzystać. Nic nie zostaje usunięte, a ponowny wybór osobnych rozmów przywraca listę.",
 		"confirmOffAction": "Przełącz na jedną rozmowę",
-		"lockedByPhone": "Rozmowy pozostają osobne, dopóki podłączona jest linia telefoniczna, aby każdy dzwoniący miał zapieczętowaną pamięć. Usuń linię na neboai.com/manage/phone, aby wybrać jedną rozmowę."
+		"lockedByPhone": "Rozmowy pozostają osobne, dopóki podłączona jest linia telefoniczna, aby każdy dzwoniący miał zapieczętowaną pamięć. Usuń linię na neboai.com/app/manage/phone, aby wybrać jedną rozmowę."
 	},
 	"cases": {
 		"title": "Sprawy",
@@ -2073,7 +2073,7 @@
 		"channels": "Kanały",
 		"connectedAccounts": "Połączone konta",
 		"phone": "Telefon",
-		"phoneDesc": "Linie telefoniczne, na które {name} odbiera i z których dzwoni. Podepnij własny numer albo weź jeden na neboai.com/manage/phone.",
+		"phoneDesc": "Linie telefoniczne, na które {name} odbiera i z których dzwoni. Podepnij własny numer albo weź jeden na neboai.com/app/manage/phone.",
 		"noPhonePlugin": "Zainstaluj wtyczkę Telefon, aby dać {name} linię.",
 		"phoneNeedsPlugin": "Zainstaluj wtyczkę Telefon, aby {name} mógł odbierać tę linię na tym komputerze.",
 		"managePhone": "Zarządzaj",
@@ -2268,8 +2268,10 @@
 		"newCallTreeName": "Nowe drzewo połączeń",
 		"newWorkflowName": "Nowy przepływ pracy",
 		"greetingNodeLabel": "Powitanie",
+		"phoneAttachTitle": "Podepnij numer telefonu",
+		"phoneAttachDesc": "Wybierz numer, na który {name} będzie odbierać i z którego będzie dzwonić.",
 		"phoneLoadingNumbers": "Wczytywanie Twoich numerów…",
-		"phoneNoFreeNumbers": "Nie ma wolnych numerów do podpięcia. Kup numer (albo odepnij go od innego pracownika) na {link}, a potem wróć tutaj.",
+		"phoneNoFreeNumbers": "Nie masz wolnych numerów. Weź nowy albo przenieś numer od innego pracownika na {link}.",
 		"phoneWhichNumber": "Na który numer ma odbierać ten pracownik?",
 		"phoneNumberParked": "odpięty",
 		"phoneNumberUnassigned": "nieprzypisany",

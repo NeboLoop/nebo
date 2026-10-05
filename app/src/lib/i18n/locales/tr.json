@@ -2014,7 +2014,7 @@
 		"confirmOffTitle": "Tek konuşmaya geçilsin mi?",
 		"confirmOffBody": "Ayrı konuşmalarınız kayıtlı kalır ama artık liste olarak görünmez, bu çalışan tek ve kesintisiz bir konuşmaya döner. Mühürlü bir konuşmada öğrenilenler mühürlü kalır: sonraki sohbetler bunları kullanmaz. Hiçbir şey silinmez; ayrı konuşmaları yeniden seçtiğinizde liste geri gelir.",
 		"confirmOffAction": "Tek konuşmaya geç",
-		"lockedByPhone": "Bir telefon hattı bağlıyken konuşmalar ayrı kalır, böylece her arayanın hafızası mühürlü olur. Tek konuşmayı seçmek için hattı neboai.com/manage/phone adresinden kaldırın."
+		"lockedByPhone": "Bir telefon hattı bağlıyken konuşmalar ayrı kalır, böylece her arayanın hafızası mühürlü olur. Tek konuşmayı seçmek için hattı neboai.com/app/manage/phone adresinden kaldırın."
 	},
 	"cases": {
 		"title": "Dosyalar",
@@ -2073,7 +2073,7 @@
 		"channels": "Kanallar",
 		"connectedAccounts": "Bağlı Hesaplar",
 		"phone": "Telefon",
-		"phoneDesc": "{name} adlı çalışanın yanıtladığı ve aradığı telefon hatları. Sahip olduğunuz bir numarayı bağlayın ya da neboai.com/manage/phone adresinden edinin.",
+		"phoneDesc": "{name} adlı çalışanın yanıtladığı ve aradığı telefon hatları. Sahip olduğunuz bir numarayı bağlayın ya da neboai.com/app/manage/phone adresinden edinin.",
 		"noPhonePlugin": "{name} adlı çalışana hat vermek için Telefon eklentisini kurun.",
 		"phoneNeedsPlugin": "{name} bu bilgisayarda bu hattı yanıtlayabilsin diye Telefon eklentisini kurun.",
 		"managePhone": "Yönet",
@@ -2268,8 +2268,10 @@
 		"newCallTreeName": "Yeni Çağrı Ağacı",
 		"newWorkflowName": "Yeni İş Akışı",
 		"greetingNodeLabel": "Karşılama",
+		"phoneAttachTitle": "Telefon numarası bağla",
+		"phoneAttachDesc": "{name} adlı çalışanın yanıtlayacağı ve arama yapacağı numarayı seçin.",
 		"phoneLoadingNumbers": "Numaralarınız yükleniyor…",
-		"phoneNoFreeNumbers": "Bağlanabilecek boşta numara yok. {link} adresinden bir numara satın alın (ya da başka bir çalışandan birini park edin), sonra buraya dönün.",
+		"phoneNoFreeNumbers": "Boşta numaranız yok. {link} adresinden bir numara edinin ya da başka bir çalışandan birini taşıyın.",
 		"phoneWhichNumber": "Bu çalışan hangi numarayı yanıtlasın?",
 		"phoneNumberParked": "park edildi",
 		"phoneNumberUnassigned": "atanmamış",

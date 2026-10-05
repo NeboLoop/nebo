@@ -2014,7 +2014,7 @@
 		"confirmOffTitle": "하나의 대화로 전환할까요?",
 		"confirmOffBody": "별도의 대화는 그대로 저장되지만 더 이상 목록으로 표시되지 않고, 이 직원은 하나로 이어지는 대화로 돌아갑니다. 봉인된 대화에서 알게 된 내용은 계속 봉인되어 이후 채팅에서 사용되지 않습니다. 아무것도 삭제되지 않으며, 다시 별도의 대화를 선택하면 목록이 돌아옵니다.",
 		"confirmOffAction": "하나의 대화로 전환",
-		"lockedByPhone": "전화 회선이 연결되어 있는 동안에는 대화가 분리되어 전화 건 사람마다 봉인된 메모리를 갖습니다. 하나의 대화를 선택하려면 neboai.com/manage/phone에서 회선을 제거하세요."
+		"lockedByPhone": "전화 회선이 연결되어 있는 동안에는 대화가 분리되어 전화 건 사람마다 봉인된 메모리를 갖습니다. 하나의 대화를 선택하려면 neboai.com/app/manage/phone에서 회선을 제거하세요."
 	},
 	"cases": {
 		"title": "건",
@@ -2073,7 +2073,7 @@
 		"channels": "채널",
 		"connectedAccounts": "연결된 계정",
 		"phone": "전화",
-		"phoneDesc": "{name}이(가) 받고 거는 전화선입니다. 가지고 있는 번호를 연결하거나 neboai.com/manage/phone에서 받으세요.",
+		"phoneDesc": "{name}이(가) 받고 거는 전화선입니다. 가지고 있는 번호를 연결하거나 neboai.com/app/manage/phone에서 받으세요.",
 		"noPhonePlugin": "{name}에게 회선을 주려면 전화 플러그인을 설치하세요.",
 		"phoneNeedsPlugin": "이 컴퓨터에서 {name}이(가) 이 회선을 받을 수 있도록 전화 플러그인을 설치하세요.",
 		"managePhone": "관리",
@@ -2268,8 +2268,10 @@
 		"newCallTreeName": "새 통화 트리",
 		"newWorkflowName": "새 워크플로우",
 		"greetingNodeLabel": "인사말",
+		"phoneAttachTitle": "전화번호 연결",
+		"phoneAttachDesc": "{name}이(가) 전화를 받고 걸 번호를 선택하세요.",
 		"phoneLoadingNumbers": "번호를 불러오는 중…",
-		"phoneNoFreeNumbers": "연결할 수 있는 번호가 없습니다. {link}에서 번호를 구입하거나 다른 직원의 번호를 보류한 다음 여기로 돌아오세요.",
+		"phoneNoFreeNumbers": "남는 번호가 없습니다. {link}에서 번호를 받거나 다른 직원의 번호를 옮겨 오세요.",
 		"phoneWhichNumber": "이 직원이 어떤 번호로 전화를 받을까요?",
 		"phoneNumberParked": "보류됨",
 		"phoneNumberUnassigned": "미할당",

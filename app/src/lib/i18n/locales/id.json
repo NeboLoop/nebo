@@ -2014,7 +2014,7 @@
 		"confirmOffTitle": "Beralih ke satu percakapan?",
 		"confirmOffBody": "Percakapan terpisah Anda tetap tersimpan, tetapi tidak lagi tampil sebagai daftar, dan karyawan ini kembali ke satu percakapan berkelanjutan. Apa yang dipelajari dalam percakapan tersegel tetap tersegel: chat berikutnya tidak akan memakainya. Tidak ada yang dihapus, dan memilih percakapan terpisah lagi akan memulihkan daftarnya.",
 		"confirmOffAction": "Beralih ke satu percakapan",
-		"lockedByPhone": "Percakapan tetap terpisah selama saluran telepon terhubung, sehingga setiap penelepon mendapat memori tersegel. Hapus saluran di neboai.com/manage/phone untuk memilih satu percakapan."
+		"lockedByPhone": "Percakapan tetap terpisah selama saluran telepon terhubung, sehingga setiap penelepon mendapat memori tersegel. Hapus saluran di neboai.com/app/manage/phone untuk memilih satu percakapan."
 	},
 	"cases": {
 		"title": "Kasus",
@@ -2073,7 +2073,7 @@
 		"channels": "Kanal",
 		"connectedAccounts": "Akun Terhubung",
 		"phone": "Telepon",
-		"phoneDesc": "Saluran telepon yang dijawab dan dipakai menelepon oleh {name}. Pasang nomor milik Anda, atau dapatkan satu di neboai.com/manage/phone.",
+		"phoneDesc": "Saluran telepon yang dijawab dan dipakai menelepon oleh {name}. Pasang nomor milik Anda, atau dapatkan satu di neboai.com/app/manage/phone.",
 		"noPhonePlugin": "Pasang plugin Telepon untuk memberi {name} sebuah saluran.",
 		"phoneNeedsPlugin": "Pasang plugin Telepon agar {name} bisa menjawab saluran ini di komputer ini.",
 		"managePhone": "Kelola",
@@ -2268,8 +2268,10 @@
 		"newCallTreeName": "Pohon Panggilan Baru",
 		"newWorkflowName": "Alur Kerja Baru",
 		"greetingNodeLabel": "Sapaan",
+		"phoneAttachTitle": "Pasang nomor telepon",
+		"phoneAttachDesc": "Pilih nomor yang dijawab dan dipakai menelepon oleh {name}.",
 		"phoneLoadingNumbers": "Memuat nomor Anda…",
-		"phoneNoFreeNumbers": "Tidak ada nomor yang bebas untuk dipasang. Beli nomor (atau parkir satu dari karyawan lain) di {link}, lalu kembali ke sini.",
+		"phoneNoFreeNumbers": "Anda tidak punya nomor yang bebas. Dapatkan satu, atau pindahkan satu dari karyawan lain, di {link}.",
 		"phoneWhichNumber": "Nomor mana yang harus dijawab karyawan ini?",
 		"phoneNumberParked": "diparkir",
 		"phoneNumberUnassigned": "belum ditetapkan",
