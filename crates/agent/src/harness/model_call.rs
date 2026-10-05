@@ -11,7 +11,7 @@ use tokio::sync::{RwLock, mpsc};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
-use ai::{ChatRequest, Provider, ProviderError, StreamEvent, StreamEventType};
+use ai::{ChatRequest, PLAN_WARN_PERCENT, PLAN_WARNING, Provider, ProviderError, StreamEvent, StreamEventType};
 
 use crate::concurrency::ConcurrencyController;
 use crate::dedupe::{self, DedupeCache};
@@ -727,38 +727,14 @@ pub(crate) async fn call_model(call: ModelCall<'_>, st: &mut CallState, state: &
                 if let Some(ref meta) = event.rate_limit {
                     last_retry_after = meta.retry_after_secs;
 
-                    // Check Janus session/weekly usage and generate quota warning at >80%
-                    let mut warnings = Vec::new();
-                    if let (Some(limit), Some(remaining)) =
-                        (meta.session_limit_credits, meta.session_remaining_credits)
-                        && limit > 0
+                    // The plan's month at PLAN_WARN_PERCENT or more: forwarded
+                    // once per run with the percentage; chat_dispatch shows it
+                    // to the owner at most once per billing month. Always a
+                    // percentage of the plan, never money.
+                    if let Some(pct) = meta.plan_used_percent
+                        && pct >= PLAN_WARN_PERCENT
                     {
-                        let used_pct =
-                            ((limit.saturating_sub(remaining)) as f64 / limit as f64) * 100.0;
-                        if used_pct >= 80.0 {
-                            warnings.push(format!(
-                                "Session usage at {:.0}% (resets at {})",
-                                used_pct,
-                                meta.session_reset_at.as_deref().unwrap_or("unknown"),
-                            ));
-                        }
-                    }
-                    if let (Some(limit), Some(remaining)) =
-                        (meta.weekly_limit_credits, meta.weekly_remaining_credits)
-                        && limit > 0
-                    {
-                        let used_pct =
-                            ((limit.saturating_sub(remaining)) as f64 / limit as f64) * 100.0;
-                        if used_pct >= 80.0 {
-                            warnings.push(format!(
-                                "Weekly usage at {:.0}% (resets at {})",
-                                used_pct,
-                                meta.weekly_reset_at.as_deref().unwrap_or("unknown"),
-                            ));
-                        }
-                    }
-                    if !warnings.is_empty() {
-                        let warning_text = warnings.join(". ");
+                        let warning_text = PLAN_WARNING.to_string();
                         state.quota_warning = Some(warning_text.clone());
 
                         // Forward the rate limit event with warning text once per run

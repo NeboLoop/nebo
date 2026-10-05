@@ -300,6 +300,7 @@
 		"generationCancelled": "*[Pembuatan dibatalkan]*",
 		"retryWarning": "Layanan AI sedang sibuk sementara. Mencoba ulang...",
 		"quotaWarning": "Anda mendekati batas penggunaan.",
+		"planUsageWarning": "Anda telah menggunakan {percent}% paket Anda bulan ini.",
 		"resubmit": "Kirim ulang",
 		"sharedContent": "Konten yang dibagikan",
 		"suggestion1": "Apa yang bisa Anda bantu?",

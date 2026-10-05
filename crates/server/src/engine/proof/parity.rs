@@ -178,13 +178,13 @@ fn parity_parked_approvals_are_the_runs_live_wait() {
 #[test]
 fn parity_inbound_dedupe_is_the_idempotency_key() {
     let w = World::new();
-    assert!(w.s.engine_mark_seen("comm", "comm:sms:abc").unwrap());
-    assert!(!w.s.engine_mark_seen("comm", "comm:sms:abc").unwrap(), "a replay is seen");
-    assert!(w.s.engine_mark_seen("event", "event:src:1").unwrap());
+    assert!(w.s.engine_mark_seen("comm", "comm:sms:abc", false).unwrap());
+    assert!(!w.s.engine_mark_seen("comm", "comm:sms:abc", false).unwrap(), "a replay is seen");
+    assert!(w.s.engine_mark_seen("event", "event:src:1", false).unwrap());
     // One namespace with every other event: a signal recorded under a key
     // makes a later "seen" under that key a replay, and vice versa.
     assert!(matches!(w.s.engine_enqueue_event(&NewEvent { kind: "signal", target_type: "run", target_id: "k", idem_key: "shared:1", durable: true, ..Default::default() }).unwrap(), Enqueued::Inserted(_)));
-    assert!(!w.s.engine_mark_seen("comm", "shared:1").unwrap());
+    assert!(!w.s.engine_mark_seen("comm", "shared:1", false).unwrap());
     assert_eq!(w.s.engine_enqueue_event(&NewEvent { kind: "signal", target_type: "run", target_id: "k", idem_key: "comm:sms:abc", durable: true, ..Default::default() }).unwrap(), Enqueued::Duplicate);
 }
 

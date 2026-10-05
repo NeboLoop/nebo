@@ -300,6 +300,7 @@
 		"generationCancelled": "*[已取消生成]*",
 		"retryWarning": "AI 服務暫時忙碌，正在重試...",
 		"quotaWarning": "你即將達到使用上限。",
+		"planUsageWarning": "本月你已使用方案的 {percent}%。",
 		"resubmit": "重新提交",
 		"sharedContent": "共享內容",
 		"suggestion1": "你能幫我做什麼？",

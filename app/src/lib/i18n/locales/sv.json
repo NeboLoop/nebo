@@ -300,6 +300,7 @@
 		"generationCancelled": "*[Generering avbruten]*",
 		"retryWarning": "AI-tjänsten är tillfälligt upptagen. Försöker igen...",
 		"quotaWarning": "Du närmar dig din användningsgräns.",
+		"planUsageWarning": "Du har använt {percent} % av din plan den här månaden.",
 		"resubmit": "Skicka igen",
 		"sharedContent": "Delat innehåll",
 		"suggestion1": "Vad kan du hjälpa mig med?",

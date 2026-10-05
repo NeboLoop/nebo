@@ -300,6 +300,7 @@
 		"generationCancelled": "*[Đã hủy tạo nội dung]*",
 		"retryWarning": "Dịch vụ AI tạm thời bận. Đang thử lại...",
 		"quotaWarning": "Bạn đang gần đạt giới hạn sử dụng.",
+		"planUsageWarning": "Bạn đã dùng {percent}% gói của mình trong tháng này.",
 		"resubmit": "Gửi lại",
 		"sharedContent": "Nội dung được chia sẻ",
 		"suggestion1": "Bạn có thể giúp tôi điều gì?",

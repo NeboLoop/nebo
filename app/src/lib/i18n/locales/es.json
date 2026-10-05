@@ -300,6 +300,7 @@
 		"generationCancelled": "*[Generación cancelada]*",
 		"retryWarning": "El servicio de IA está temporalmente ocupado. Reintentando...",
 		"quotaWarning": "Te estás acercando a tu límite de uso.",
+		"planUsageWarning": "Este mes has usado el {percent} % de tu plan.",
 		"resubmit": "Reenviar",
 		"sharedContent": "Contenido compartido",
 		"suggestion1": "¿En qué puedes ayudarme?",

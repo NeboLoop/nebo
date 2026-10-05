@@ -300,6 +300,7 @@
 		"generationCancelled": "*[생성이 취소되었습니다]*",
 		"retryWarning": "AI 서비스가 일시적으로 바쁩니다. 재시도 중...",
 		"quotaWarning": "사용량 한도에 가까워지고 있습니다.",
+		"planUsageWarning": "이번 달 플랜의 {percent}%를 사용했습니다.",
 		"resubmit": "다시 제출",
 		"sharedContent": "공유된 콘텐츠",
 		"suggestion1": "무엇을 도와드릴까요?",

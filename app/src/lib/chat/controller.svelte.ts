@@ -642,9 +642,13 @@ export function createChatController(config: ChatControllerConfig) {
     if (usageClearTimer) clearTimeout(usageClearTimer);
   }
 
+  // The plan at 80% (once per billing month, decided by the server):
+  // always a percentage of the plan, worded here in the owner's language.
   function handleQuotaWarning(data: any) {
     if (!isMyEvent(data)) return;
-    quotaWarning = data.message || data.text || '';
+    const percent = Number(data.percent);
+    if (!Number.isFinite(percent)) return;
+    quotaWarning = get(t)('chat.planUsageWarning', { values: { percent: Math.round(percent) } });
   }
 
   // Sent while the employee was still working: the server appended it to the

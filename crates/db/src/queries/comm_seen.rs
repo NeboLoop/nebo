@@ -8,7 +8,7 @@ impl Store {
     /// under idempotency key `comm:<id>`, already delivered, so the engine
     /// never claims it and a replay is a duplicate by construction (I-2).
     pub fn mark_comm_message_seen(&self, msg_id: &str) -> Result<bool, NeboError> {
-        self.engine_mark_seen("comm", &format!("comm:{msg_id}"))
+        self.engine_mark_seen("comm", &format!("comm:{msg_id}"), false)
     }
 }
 
