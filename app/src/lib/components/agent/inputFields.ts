@@ -29,19 +29,34 @@ function isQuestion(label: string): boolean {
 
 /** Trailing words a number field's unit suffix already shows. A singular
  *  `day` is a day of the month or week, not a duration, so it stays. */
-const UNIT_WORDS = new Set(['days', 'hours', 'hrs', 'minutes', 'mins', 'pct', 'percent', '%', 'usd', 'dollars', 'count']);
+const UNIT_WORDS = new Set([
+	'days', 'hours', 'hrs', 'minutes', 'mins', 'weeks', 'week', 'months', 'month', 'years', 'year',
+	'pct', 'percent', '%', 'usd', 'dollars', 'cents', 'count'
+]);
+
+/** Words before which a time word names a rate or a reference ("per week",
+ *  "day of the month"), never the value's unit. */
+const NOT_A_UNIT_BEFORE = new Set(['per', 'each', 'every', 'a', 'of', 'the']);
 
 /** Abbreviations a key uses, as the words a person reads. */
 const ABBREVIATIONS: Record<string, string> = {
 	qty: 'quantity',
 	num: 'number',
-	no: 'number',
 	amt: 'amount',
+	pct: 'percent',
 	acct: 'account',
 	txn: 'transaction',
 	max: 'maximum',
 	min: 'minimum'
 };
+
+/** A money question: declared, or a key counted in cents. Never defaulted,
+ *  never given a time unit. */
+export function isMoney(field: AgentInputField): boolean {
+	if (field.money) return true;
+	const words = keyWords(field.key || '');
+	return words[words.length - 1] === 'cents';
+}
 
 /** Kept uppercase inside a sentence-case name. */
 const ACRONYMS = new Set([
@@ -65,10 +80,17 @@ function keyWords(key: string): string[] {
 export function humanizeKey(key: string, isNumber: boolean): string {
 	const words = keyWords(key);
 	if (isNumber) {
-		while (words.length > 1 && UNIT_WORDS.has(words[words.length - 1])) words.pop();
+		while (
+			words.length > 1 &&
+			UNIT_WORDS.has(words[words.length - 1]) &&
+			!NOT_A_UNIT_BEFORE.has(words[words.length - 2])
+		) {
+			words.pop();
+		}
 	}
 	const text = words
-		.map((w) => ABBREVIATIONS[w] ?? w)
+		// "no" is "number" only at the end (`invoice_no`), never in `no_show_policy`.
+		.map((w, i) => (w === 'no' && i === words.length - 1 && i > 0 ? 'number' : (ABBREVIATIONS[w] ?? w)))
 		.map((w) => (ACRONYMS.has(w) ? w.toUpperCase() : w))
 		.join(' ');
 	return text.charAt(0).toUpperCase() + text.slice(1);
@@ -125,7 +147,7 @@ export function unitFor(field: AgentInputField): FieldUnit {
 	if (controlFor(field) !== 'number') return null;
 	if (field.unit && field.unit.trim()) return { text: field.unit.trim() };
 	// A money amount is in a currency, never a time unit its question mentions.
-	if (field.money) return null;
+	if (isMoney(field)) return null;
 	const haystack = `${keyWords(field.key || '').join(' ')} ${field.label || ''} ${field.description || ''}`.toLowerCase();
 	for (const [re, unit] of INFERRED_UNITS) {
 		if (re.test(haystack)) return unit.startsWith('units.') ? { key: unit } : { text: unit };
@@ -143,7 +165,7 @@ export function withDefaults(
 	for (const f of fields) {
 		const v = out[f.key];
 		if (v !== undefined && v !== null && v !== '') continue;
-		if (f.money || f.default === undefined || f.default === null || f.default === '') continue;
+		if (isMoney(f) || f.default === undefined || f.default === null || f.default === '') continue;
 		out[f.key] = f.default;
 	}
 	return out;
