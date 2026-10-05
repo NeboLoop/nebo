@@ -61,7 +61,7 @@ export function isMoney(field: AgentInputField): boolean {
 /** Kept uppercase inside a sentence-case name. */
 const ACRONYMS = new Set([
 	'sla', 'api', 'url', 'id', 'sms', 'crm', 'kpi', 'vat', 'ein', 'ach', 'ar', 'ap', 'qbo',
-	'csv', 'pdf', 'mrr', 'arr', 'roi', 'cpc', 'cpa', 'sku', 'pos', 'hr', 'pto', 'eta'
+	'csv', 'pdf', 'mrr', 'arr', 'roi', 'cpc', 'cpa', 'sku', 'pos', 'hr', 'pto', 'eta', 'po'
 ]);
 
 /** A key's words: its last path segment, split on _ - and camelCase. */
