@@ -3819,5 +3819,10 @@
 			"confirmDeleteWorkflow": "Are you sure you want to delete this workflow? This will remove all its activities and connections.",
 			"confirmDeleteNode": "Are you sure you want to delete this node? Its connections will be reconnected automatically."
 		}
+	},
+	"timezoneTravel": {
+		"question": "Switch Nebo to {city} time?",
+		"switch": "Switch",
+		"keep": "Keep {city} time"
 	}
 }

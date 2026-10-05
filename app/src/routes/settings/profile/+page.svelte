@@ -17,6 +17,9 @@
   let newInterest = $state('');
   // Native IANA zone list for the timezone picker (datalist autocomplete).
   const timezones: string[] = Intl.supportedValuesOf?.('timeZone') ?? [];
+  // The zone is the account's and the server refuses one the zone database
+  // does not know: a half-typed name is not sent until it is a real zone.
+  const sendableZone = (zone: string) => zone === '' || zone === 'UTC' || timezones.length === 0 || timezones.includes(zone);
 
   // Snapshot for revert
   let snapshot = $state({ displayName: '', occupation: '', location: '', timezone: '', interests: [] as string[], goals: '', commStyle: 'adaptive' });
@@ -54,7 +57,7 @@
         displayName: user.displayName,
         occupation: user.occupation,
         location: user.location,
-        timezone: user.timezone,
+        timezone: sendableZone(user.timezone) ? user.timezone : undefined,
         interests: user.interests,
         goals: user.goals,
         communicationStyle: user.commStyle,

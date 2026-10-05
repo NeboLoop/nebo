@@ -3819,5 +3819,10 @@
 			"confirmDeleteWorkflow": "Yakin ingin menghapus alur kerja ini? Semua aktivitas dan koneksinya akan dihapus.",
 			"confirmDeleteNode": "Yakin ingin menghapus node ini? Koneksinya akan disambungkan ulang secara otomatis."
 		}
+	},
+	"timezoneTravel": {
+		"question": "Ganti Nebo ke waktu {city}?",
+		"switch": "Ganti",
+		"keep": "Tetap pakai waktu {city}"
 	}
 }

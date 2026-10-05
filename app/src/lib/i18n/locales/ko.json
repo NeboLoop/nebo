@@ -3819,5 +3819,10 @@
 			"confirmDeleteWorkflow": "이 워크플로우를 삭제할까요? 모든 활동과 연결이 삭제됩니다.",
 			"confirmDeleteNode": "이 노드를 삭제할까요? 연결은 자동으로 다시 이어집니다."
 		}
+	},
+	"timezoneTravel": {
+		"question": "Nebo를 {city} 시간으로 바꿀까요?",
+		"switch": "바꾸기",
+		"keep": "{city} 시간 유지"
 	}
 }

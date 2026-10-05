@@ -396,10 +396,12 @@ pub fn environment_fields(
     fields
 }
 
-/// The time it is for the owner: the clock, their zone and its UTC offset,
-/// and the date. Told at the start of every turn, so "in two hours" and
-/// "this afternoon" are read against when the message came.
-pub fn owner_now(timezone: Option<&str>) -> String {
+/// The time it is for the owner at `now`: the clock, their zone and its UTC
+/// offset at that instant (daylight saving included), and the date. Told at
+/// the start of every turn, so "in two hours" and "this afternoon" are read
+/// against when the message came. With no zone known (a bot with no
+/// account), this computer's clock.
+pub fn owner_now(now: chrono::DateTime<chrono::Utc>, timezone: Option<&str>) -> String {
     fn told<Tz: chrono::TimeZone>(now: chrono::DateTime<Tz>, zone: &str) -> String
     where
         Tz::Offset: std::fmt::Display,
@@ -412,8 +414,48 @@ pub fn owner_now(timezone: Option<&str>) -> String {
         )
     }
     match timezone.and_then(|tz| tz.parse::<chrono_tz::Tz>().ok()) {
-        Some(tz) => told(chrono::Utc::now().with_timezone(&tz), tz.name()),
-        None => told(chrono::Local::now(), "this computer's time zone"),
+        Some(tz) => told(now.with_timezone(&tz), tz.name()),
+        None => told(now.with_timezone(&chrono::Local), "this computer's time zone"),
+    }
+}
+
+#[cfg(test)]
+mod owner_now_tests {
+    use super::*;
+
+    fn utc(s: &str) -> chrono::DateTime<chrono::Utc> {
+        chrono::DateTime::parse_from_rfc3339(s).unwrap().with_timezone(&chrono::Utc)
+    }
+
+    /// The owner in Denver is told Denver's time and its offset at that
+    /// instant, whatever zone this computer (a UTC cloud server) is in.
+    #[test]
+    fn the_owners_zone_gives_their_time_and_the_offset_daylight_saving_puts_it_at() {
+        assert_eq!(
+            owner_now(utc("2026-01-15T16:00:00Z"), Some("America/Denver")),
+            "It is 9:00 AM (America/Denver, UTC-07:00) on Thursday, January 15, 2026."
+        );
+        assert_eq!(
+            owner_now(utc("2026-07-15T15:00:00Z"), Some("America/Denver")),
+            "It is 9:00 AM (America/Denver, UTC-06:00) on Wednesday, July 15, 2026."
+        );
+        assert_eq!(owner_today(Some("America/Denver")), chrono::Utc::now().with_timezone(&chrono_tz::America::Denver).date_naive());
+    }
+
+    /// No zone known (or one the zone database does not know): this
+    /// computer's clock, word for word as before.
+    #[test]
+    fn without_an_owner_zone_the_line_is_this_computers_as_before() {
+        let at = utc("2026-01-15T16:00:00Z");
+        let local = at.with_timezone(&chrono::Local);
+        let before = format!(
+            "It is {} (this computer's time zone, UTC{}) on {}.",
+            local.format("%-I:%M %p"),
+            local.format("%:z"),
+            local.format("%A, %B %-d, %Y")
+        );
+        assert_eq!(owner_now(at, None), before);
+        assert_eq!(owner_now(at, Some("Mars/Olympus_Mons")), before);
     }
 }
 

@@ -3819,5 +3819,10 @@
 			"confirmDeleteWorkflow": "Adakah anda pasti mahu memadam aliran kerja ini? Semua aktiviti dan sambungannya akan dialih keluar.",
 			"confirmDeleteNode": "Adakah anda pasti mahu memadam nod ini? Sambungannya akan disambung semula secara automatik."
 		}
+	},
+	"timezoneTravel": {
+		"question": "Tukar Nebo kepada waktu {city}?",
+		"switch": "Tukar",
+		"keep": "Kekalkan waktu {city}"
 	}
 }

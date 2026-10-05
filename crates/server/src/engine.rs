@@ -44,7 +44,8 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
-use chrono::{Local, TimeZone};
+use chrono::TimeZone;
+use tools::owner_clock::OwnerZone;
 use tracing::{debug, info, warn};
 
 use crate::state::AppState;
@@ -524,7 +525,7 @@ pub(crate) fn retire_reason(store: &Store, job: &CronJob, after: i64) -> Option<
         }
         _ => {}
     }
-    matches!(next_occurrence(&job.schedule, after), Ok(None)).then(|| "its last scheduled time has passed".to_string())
+    matches!(next_occurrence(&job.schedule, after, OwnerZone::of(store)), Ok(None)).then(|| "its last scheduled time has passed".to_string())
 }
 
 /// An employee that starts a workflow run has no way to be told when it
@@ -601,16 +602,13 @@ pub fn retire_finished_schedules(store: &Store, t: i64) -> usize {
 }
 
 /// The next occurrence of a cron expression after `floor`, evaluated on the
-/// machine's wall clock — the owner's clock. None: a one-shot whose moment
-/// has passed. Err: the expression does not parse.
-pub fn next_occurrence(schedule: &str, floor: i64) -> Result<Option<i64>, String> {
+/// owner's wall clock (`zone`): "every day at 9am" is 9am where the owner
+/// lives, on a cloud server in UTC as on their own computer. None: a
+/// one-shot whose moment has passed. Err: the expression does not parse.
+pub fn next_occurrence(schedule: &str, floor: i64, zone: OwnerZone) -> Result<Option<i64>, String> {
     let normalized = tools::PersonaTool::normalize_cron(schedule);
     let parsed: cron::Schedule = normalized.parse().map_err(|e: cron::error::Error| e.to_string())?;
-    let floor = chrono::Utc
-        .timestamp_opt(floor, 0)
-        .single()
-        .map(|d| d.with_timezone(&Local))
-        .ok_or_else(|| "floor out of range".to_string())?;
+    let floor = zone.timestamp_opt(floor, 0).single().ok_or_else(|| "floor out of range".to_string())?;
     Ok(parsed.after(&floor).next().map(|d| d.timestamp()))
 }
 
@@ -700,10 +698,11 @@ pub fn arm_schedules(store: &Store, t: i64) -> usize {
             return 0;
         }
     };
+    let zone = OwnerZone::of(store);
     let wanted: Vec<Wanted<'_>> = jobs
         .iter()
         .filter(|job| {
-            let ok = next_occurrence(&job.schedule, t).is_ok();
+            let ok = next_occurrence(&job.schedule, t, zone).is_ok();
             if !ok {
                 // Once per job per process, not once per tick.
                 static WARNED: std::sync::Mutex<Vec<i64>> = std::sync::Mutex::new(Vec::new());
@@ -717,8 +716,8 @@ pub fn arm_schedules(store: &Store, t: i64) -> usize {
         })
         .map(|job| Wanted {
             target: cron_target(job),
-            schedule: job.schedule.clone(),
-            due: Box::new(move |consumed| next_occurrence(&job.schedule, schedule_floor(job, consumed, t)).ok().flatten()),
+            schedule: zone.stamp(&job.schedule),
+            due: Box::new(move |consumed| next_occurrence(&job.schedule, schedule_floor(job, consumed, t), zone).ok().flatten()),
         })
         .collect();
     reconcile_timers(store, t, "binding", "cron:", &wanted)
@@ -862,7 +861,7 @@ fn fire_schedule(store: &Store, event: &EngineEvent, t: i64, report: &mut TickRe
 /// A one-shot whose only fire has just started is done: not armed again.
 /// A buffered fire starts when it is released, so it retires then.
 fn retire_spent_one_shot(store: &Store, job: &CronJob, due: i64) {
-    if matches!(next_occurrence(&job.schedule, due), Ok(None)) {
+    if matches!(next_occurrence(&job.schedule, due, OwnerZone::of(store)), Ok(None)) {
         match store.set_cron_job_enabled(job.id, false) {
             Ok(()) => info!(job_id = job.id, job = job.name.as_str(), "one-shot schedule fired; retired"),
             Err(e) => warn!(job_id = job.id, job = job.name.as_str(), error = %e, "engine: could not retire one-shot schedule"),
@@ -1011,14 +1010,18 @@ async fn arm_heartbeats(state: &AppState, t: i64) -> usize {
 /// Entity heartbeats, pure over the store: one timer per enabled entity,
 /// its next fire placed inside the entity's window.
 pub(crate) fn arm_entity_heartbeats(store: &Store, t: i64, enabled: &[crate::heartbeat::Enabled]) -> usize {
+    let zone = OwnerZone::of(store);
     let wanted: Vec<Wanted<'_>> = enabled
         .iter()
         .map(|e| Wanted {
             target: e.target(),
-            schedule: e.interval_secs.to_string(),
+            schedule: match e.window {
+                Some(_) => zone.stamp(&e.interval_secs.to_string()),
+                None => e.interval_secs.to_string(),
+            },
             due: Box::new(move |consumed| {
                 let due = consumed.or(e.last_fired_at).map(|f| f + e.interval_secs).unwrap_or(t).max(t);
-                Some(crate::heartbeat::next_in_window(due, e.window.as_ref()))
+                Some(crate::heartbeat::next_in_window(due, e.window.as_ref(), zone))
             }),
         })
         .collect();
@@ -1033,6 +1036,7 @@ pub(crate) fn arm_entity_heartbeats(store: &Store, t: i64, enabled: &[crate::hea
 /// caller says which agents are live.
 pub(crate) fn arm_binding_heartbeats(store: &Store, t: i64, bindings: Vec<db::models::AgentWorkflow>, live_agents: &std::collections::HashSet<String>) -> usize {
     let live: Vec<_> = bindings.into_iter().filter(|b| live_agents.contains(&b.agent_id)).collect();
+    let zone = OwnerZone::of(store);
     let wanted: Vec<Wanted<'_>> = live
         .iter()
         .filter_map(|b| {
@@ -1045,10 +1049,13 @@ pub(crate) fn arm_binding_heartbeats(store: &Store, t: i64, bindings: Vec<db::mo
             let window = window.map(|(s, e)| (s.format("%H:%M").to_string(), e.format("%H:%M").to_string()));
             Some(Wanted {
                 target: format!("hb:{}:{}", b.agent_id, b.binding_name),
-                schedule: b.trigger_config.clone(),
+                schedule: match window {
+                    Some(_) => zone.stamp(&b.trigger_config),
+                    None => b.trigger_config.clone(),
+                },
                 due: Box::new(move |consumed| {
                     let due = (consumed.unwrap_or(t) + interval).max(t);
-                    Some(crate::heartbeat::next_in_window(due, window.as_ref()))
+                    Some(crate::heartbeat::next_in_window(due, window.as_ref(), zone))
                 }),
             })
         })
@@ -1567,7 +1574,7 @@ pub(crate) fn triage_binding(store: &Store, run: &EngineRun, entity: Option<(Str
         (content, u64::try_from(interval).ok().map(Duration::from_secs), None)
     } else if let Some(id) = inputs["job_id"].as_i64() {
         let job = store.get_cron_job(id).ok().flatten()?;
-        let cadence = cron_cadence(&job.schedule, t);
+        let cadence = cron_cadence(&job.schedule, t, OwnerZone::of(store));
         match job.task_type.as_str() {
             "agent" => (job.message.clone().unwrap_or_else(|| job.command.clone()), cadence, None),
             "agent_workflow" | "role_workflow" => {
@@ -1680,9 +1687,9 @@ fn declared_needs(store: &Store, agent_id: &str, binding_name: &str) -> Vec<agen
 }
 
 /// Seconds between a schedule's next two occurrences; None for a one-shot.
-fn cron_cadence(schedule: &str, t: i64) -> Option<Duration> {
-    let a = next_occurrence(schedule, t).ok()??;
-    let b = next_occurrence(schedule, a).ok()??;
+fn cron_cadence(schedule: &str, t: i64, zone: OwnerZone) -> Option<Duration> {
+    let a = next_occurrence(schedule, t, zone).ok()??;
+    let b = next_occurrence(schedule, a, zone).ok()??;
     u64::try_from(b - a).ok().map(Duration::from_secs)
 }
 
@@ -1956,6 +1963,7 @@ mod proof;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Local;
     use db::{NewEvent, NewRun, NewWait};
     use workflow::cases::{normalize_phone, open_case_for, parse_turn, relative_secs, resolve_aliases, route_signal, signal_or_open, CaseBinding, Routed};
 
@@ -2393,15 +2401,65 @@ mod tests {
     #[test]
     fn next_occurrence_reads_recurring_one_shot_five_field_and_weekday_schedules() {
         // Every 30 minutes after 9:00 → 9:30.
-        assert_eq!(next_occurrence("0 0,30 * * * *", local(2026, 8, 23, 9, 0, 0)).unwrap(), Some(local(2026, 8, 23, 9, 30, 0)));
+        assert_eq!(next_occurrence("0 0,30 * * * *", local(2026, 8, 23, 9, 0, 0), OwnerZone::Machine).unwrap(), Some(local(2026, 8, 23, 9, 30, 0)));
         // A year-pinned one-shot is found from before its moment, and gone after it.
-        assert_eq!(next_occurrence("0 5 10 23 8 * 2026", local(2026, 8, 23, 10, 0, 0)).unwrap(), Some(local(2026, 8, 23, 10, 5, 0)));
-        assert_eq!(next_occurrence("0 5 10 23 8 * 2026", local(2026, 8, 23, 10, 8, 0)).unwrap(), None);
+        assert_eq!(next_occurrence("0 5 10 23 8 * 2026", local(2026, 8, 23, 10, 0, 0), OwnerZone::Machine).unwrap(), Some(local(2026, 8, 23, 10, 5, 0)));
+        assert_eq!(next_occurrence("0 5 10 23 8 * 2026", local(2026, 8, 23, 10, 8, 0), OwnerZone::Machine).unwrap(), None);
         // Stale five-field crons normalize instead of erroring.
-        assert_eq!(next_occurrence("0 7 * * *", local(2026, 8, 23, 6, 0, 0)).unwrap(), Some(local(2026, 8, 23, 7, 0, 0)));
+        assert_eq!(next_occurrence("0 7 * * *", local(2026, 8, 23, 6, 0, 0), OwnerZone::Machine).unwrap(), Some(local(2026, 8, 23, 7, 0, 0)));
         // Weekdays-at-7 skips the weekend: Friday's run → Monday.
-        assert_eq!(next_occurrence("0 0 7 * * Mon-Fri", local(2026, 8, 21, 7, 0, 30)).unwrap(), Some(local(2026, 8, 24, 7, 0, 0)));
-        assert!(next_occurrence("not a cron", 0).is_err());
+        assert_eq!(next_occurrence("0 0 7 * * Mon-Fri", local(2026, 8, 21, 7, 0, 30), OwnerZone::Machine).unwrap(), Some(local(2026, 8, 24, 7, 0, 0)));
+        assert!(next_occurrence("not a cron", 0, OwnerZone::Machine).is_err());
+    }
+
+    /// The owner's zone is the clock a schedule runs on: "09:00 daily" for
+    /// an owner in Denver is 16:00 UTC in winter (UTC−7) and 15:00 UTC in
+    /// summer (UTC−6), whatever zone this computer is in.
+    #[test]
+    fn a_daily_schedule_fires_at_nine_on_the_owners_clock_across_daylight_saving() {
+        let denver = OwnerZone::parse(Some("America/Denver"));
+        let utc = |s: &str| chrono::DateTime::parse_from_rfc3339(s).unwrap().timestamp();
+        let daily = tools::PersonaTool::normalize_cron("daily at 9:00am");
+        assert_eq!(next_occurrence(&daily, utc("2026-01-15T00:00:00Z"), denver).unwrap(), Some(utc("2026-01-15T16:00:00Z")));
+        assert_eq!(next_occurrence(&daily, utc("2026-07-15T00:00:00Z"), denver).unwrap(), Some(utc("2026-07-15T15:00:00Z")));
+        // The day DST starts (March 8, 2026): the next nine is an hour earlier in UTC.
+        assert_eq!(next_occurrence(&daily, utc("2026-03-07T16:00:00Z"), denver).unwrap(), Some(utc("2026-03-08T15:00:00Z")));
+        assert_eq!(cron_cadence(&daily, utc("2026-07-15T00:00:00Z"), denver), Some(Duration::from_secs(86_400)));
+    }
+
+    /// No owner zone: the schedule runs on this computer's clock, exactly as
+    /// before, and the timer carries the bare expression as it always did.
+    #[test]
+    fn without_an_owner_zone_a_schedule_runs_on_this_computers_clock_as_before() {
+        let s = store();
+        assert_eq!(OwnerZone::of(&s), OwnerZone::Machine);
+        let at = local(2026, 1, 15, 6, 0, 0);
+        assert_eq!(next_occurrence("0 0 9 * * * *", at, OwnerZone::of(&s)).unwrap(), Some(local(2026, 1, 15, 9, 0, 0)));
+        job(&s, "nine", "0 0 9 * * * *", at);
+        arm_schedules(&s, at);
+        let timer = s.engine_pending_timers("binding").unwrap().into_iter().find(|e| e.target_id.starts_with("cron:")).unwrap();
+        assert_eq!(timer.schedule.as_deref(), Some("0 0 9 * * * *"));
+        assert_eq!(timer.due_at, Some(local(2026, 1, 15, 9, 0, 0)));
+    }
+
+    /// When the owner's zone becomes known, a timer armed on this computer's
+    /// clock is replaced by one on the owner's.
+    #[test]
+    fn a_new_owner_zone_rearms_a_schedule_on_the_owners_clock() {
+        let s = store();
+        let utc = |x: &str| chrono::DateTime::parse_from_rfc3339(x).unwrap().timestamp();
+        let at = utc("2026-01-15T00:00:00Z");
+        job(&s, "nine", "0 0 9 * * * *", at);
+        arm_schedules(&s, at);
+        s.update_user_profile(None, None, None, Some("America/Denver"), None, None, None, None, None, None).unwrap();
+        // The tick that sees the change drops the old timer; arming is
+        // keyed by tick, so the next one arms on the owner's clock.
+        arm_schedules(&s, at + 1);
+        arm_schedules(&s, at + 2);
+        let pending: Vec<_> = s.engine_pending_timers("binding").unwrap().into_iter().filter(|e| e.target_id.starts_with("cron:")).collect();
+        assert_eq!(pending.len(), 1, "one timer, re-armed");
+        assert_eq!(pending[0].schedule.as_deref(), Some("0 0 9 * * * * @ America/Denver"));
+        assert_eq!(pending[0].due_at, Some(utc("2026-01-15T16:00:00Z")));
     }
 
     /// The old scheduler's whole contract, on the engine: due fires once

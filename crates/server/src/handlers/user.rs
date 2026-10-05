@@ -4,6 +4,7 @@ use axum::response::Json;
 use super::{HandlerResult, to_error_response};
 use crate::middleware::AuthClaims;
 use crate::state::AppState;
+use tools::owner_clock::OwnerZone;
 
 /// GET /api/v1/user/me
 pub async fn get_current_user(
@@ -92,10 +93,28 @@ pub async fn get_profile(State(state): State<AppState>) -> HandlerResult<serde_j
 }
 
 /// PUT /api/v1/user/me/profile
+///
+/// `timezone` is the owner's home time zone (an IANA name); it is the
+/// account's, so it goes to the account too and from there to every bot.
+/// `deviceTimezone`/`deviceLanguage` are what a client detected: the
+/// account keeps them only while it has none (with no account, the
+/// profile does). The profile in the answer holds the zone now in force,
+/// so a client can offer to switch when its device is elsewhere.
 pub async fn update_profile(
     State(state): State<AppState>,
     Json(body): Json<serde_json::Value>,
 ) -> HandlerResult<serde_json::Value> {
+    let zone_of = |key: &str| body[key].as_str().map(str::trim).filter(|z| !z.is_empty());
+    for key in ["timezone", "deviceTimezone"] {
+        if let Some(zone) = zone_of(key)
+            && OwnerZone::parse(Some(zone)) == OwnerZone::Machine
+        {
+            return Err(to_error_response(types::NeboError::Validation(
+                "invalid timezone: use an IANA name like America/Denver".into(),
+            )));
+        }
+    }
+
     // Handle onboardingCompleted separately
     if let Some(completed) = body["onboardingCompleted"].as_bool() {
         state
@@ -126,6 +145,36 @@ pub async fn update_profile(
             body["accountType"].as_str(),
         )
         .map_err(to_error_response)?;
+
+    if let Some(zone) = zone_of("timezone") {
+        let st = state.clone();
+        let body = serde_json::Map::from_iter([("timezone".to_string(), zone.into())]).into();
+        tokio::spawn(async move {
+            crate::owner_locale::tell_account(&st, body).await;
+        });
+    }
+    let device_zone = zone_of("deviceTimezone");
+    let device_language = body["deviceLanguage"].as_str().map(str::trim).filter(|l| !l.is_empty());
+    if device_zone.is_some() || device_language.is_some() {
+        let mut report = serde_json::Map::new();
+        if let Some(zone) = device_zone {
+            report.insert("deviceTimezone".into(), zone.into());
+        }
+        if let Some(language) = device_language {
+            report.insert("deviceLanguage".into(), language.into());
+        }
+        let told = crate::owner_locale::tell_account(&state, report.into()).await;
+        if !told
+            && let Some(zone) = device_zone
+            && OwnerZone::of(&state.store) == OwnerZone::Machine
+        {
+            state
+                .store
+                .update_user_profile(None, None, None, Some(zone), None, None, None, None, None, None)
+                .map_err(to_error_response)?;
+        }
+    }
+
     let profile = state.store.get_user_profile().map_err(to_error_response)?;
     Ok(Json(
         serde_json::json!({ "profile": profile_to_json(profile) }),
@@ -186,6 +235,15 @@ pub async fn update_preferences(
             body["startPage"].as_str().filter(|v| *v == "chat" || *v == "dashboard"),
         )
         .map_err(to_error_response)?;
+    // The owner's language is the account's: it goes there too, and from
+    // there to every bot.
+    if let Some(language) = body["language"].as_str().filter(|l| !l.is_empty()) {
+        let st = state.clone();
+        let body = serde_json::Map::from_iter([("language".to_string(), language.into())]).into();
+        tokio::spawn(async move {
+            crate::owner_locale::tell_account(&st, body).await;
+        });
+    }
     let prefs = state
         .store
         .get_user_preferences()

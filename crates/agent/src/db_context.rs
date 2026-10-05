@@ -543,25 +543,7 @@ fn group_memories_by_section(memories: &[String]) -> String {
 
 /// Map language code to display name for the system prompt.
 fn language_display_name(code: &str) -> &'static str {
-    match code {
-        "de" => "German (Deutsch)",
-        "es" => "Spanish (Español)",
-        "fr" => "French (Français)",
-        "it" => "Italian (Italiano)",
-        "pt-BR" => "Brazilian Portuguese (Português do Brasil)",
-        "nl" => "Dutch (Nederlands)",
-        "pl" => "Polish (Polski)",
-        "tr" => "Turkish (Türkçe)",
-        "uk" => "Ukrainian (Українська)",
-        "vi" => "Vietnamese (Tiếng Việt)",
-        "ar" => "Arabic (العربية)",
-        "hi" => "Hindi (हिन्दी)",
-        "ja" => "Japanese (日本語)",
-        "ko" => "Korean (한국어)",
-        "zh-CN" => "Simplified Chinese (简体中文)",
-        "zh-TW" => "Traditional Chinese (繁體中文)",
-        _ => "English",
-    }
+    types::language::display_name(code)
 }
 
 /// Produce a staleness caveat for memories older than 1 day.

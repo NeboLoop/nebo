@@ -1364,6 +1364,16 @@ impl NeboAIApi {
             .await
     }
 
+    /// Update the connected account — PUT /api/v1/owners/me. The bot sends
+    /// the account's time zone and language here: `timezone`/`language` when
+    /// the owner chose them, `deviceTimezone`/`deviceLanguage` when a client
+    /// detected them (kept only while the account has none). Answers the
+    /// `timezone` and `language` the account now holds.
+    pub async fn update_owner(&self, body: &serde_json::Value) -> Result<serde_json::Value, CommError> {
+        self.do_json(reqwest::Method::PUT, "/api/v1/owners/me", Some(body))
+            .await
+    }
+
     // ── Billing ────────────────────────────────────────────────────
 
     /// List billing prices/plans.

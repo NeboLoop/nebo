@@ -3819,5 +3819,10 @@
 			"confirmDeleteWorkflow": "确定要删除这个工作流吗？它的所有活动和连线都会被移除。",
 			"confirmDeleteNode": "确定要删除这个节点吗？它的连线会自动重新连接。"
 		}
+	},
+	"timezoneTravel": {
+		"question": "要将 Nebo 切换到{city}时间吗？",
+		"switch": "切换",
+		"keep": "保留{city}时间"
 	}
 }

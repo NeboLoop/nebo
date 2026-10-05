@@ -3819,5 +3819,10 @@
 			"confirmDeleteWorkflow": "Möchtest du diesen Workflow wirklich löschen? Dabei werden alle seine Aktivitäten und Verbindungen entfernt.",
 			"confirmDeleteNode": "Möchtest du diesen Knoten wirklich löschen? Seine Verbindungen werden automatisch neu verknüpft."
 		}
+	},
+	"timezoneTravel": {
+		"question": "Nebo auf die Uhrzeit von {city} umstellen?",
+		"switch": "Umstellen",
+		"keep": "Uhrzeit von {city} behalten"
 	}
 }

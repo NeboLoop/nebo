@@ -2494,6 +2494,9 @@ pub async fn activate_neboai(state: &AppState) -> Result<(), NeboError> {
     {
         let st = state.clone();
         tokio::spawn(async move {
+            // The account's time zone and language: the clock and language
+            // every turn, schedule and reminder of this bot follows.
+            crate::owner_locale::sync(&st).await;
             // The bot's own hosted address, as a sender of mail_message_send.
             crate::mail_intake::refresh_bot_address(&st).await;
             // Refresh content protection license keys for sealed .napp files

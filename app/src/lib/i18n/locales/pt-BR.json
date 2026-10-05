@@ -3819,5 +3819,10 @@
 			"confirmDeleteWorkflow": "Tem certeza de que deseja excluir este fluxo de trabalho? Isso remove todas as atividades e conexões dele.",
 			"confirmDeleteNode": "Tem certeza de que deseja excluir este nó? As conexões dele serão refeitas automaticamente."
 		}
+	},
+	"timezoneTravel": {
+		"question": "Mudar o Nebo para o horário de {city}?",
+		"switch": "Mudar",
+		"keep": "Manter o horário de {city}"
 	}
 }

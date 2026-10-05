@@ -8,7 +8,8 @@
 //! workflows, this runs prompt-based chat dispatches.
 
 
-use chrono::{Datelike, Local, NaiveTime, TimeZone};
+use chrono::{Datelike, NaiveTime, TimeZone};
+use tools::owner_clock::OwnerZone;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
@@ -228,14 +229,14 @@ fn context(state: &AppState) -> Result<(db::models::Setting, String), String> {
 }
 
 /// The first moment at or after `due` that falls inside the HH:MM window
-/// on the local clock. A window that wraps midnight (22:00–06:00) is
-/// honored. An unparseable window is no window.
-pub(crate) fn next_in_window(due: i64, window: Option<&(String, String)>) -> i64 {
+/// on the owner's clock (`zone`). A window that wraps midnight
+/// (22:00–06:00) is honored. An unparseable window is no window.
+pub(crate) fn next_in_window(due: i64, window: Option<&(String, String)>, zone: OwnerZone) -> i64 {
     let Some((start, end)) = window else { return due };
     let (Ok(start), Ok(end)) = (NaiveTime::parse_from_str(start, "%H:%M"), NaiveTime::parse_from_str(end, "%H:%M")) else {
         return due;
     };
-    let Some(at) = Local.timestamp_opt(due, 0).single() else { return due };
+    let Some(at) = zone.timestamp_opt(due, 0).single() else { return due };
     let t = at.time();
     let inside = if start <= end { t >= start && t <= end } else { t >= start || t <= end };
     if inside {
@@ -245,7 +246,7 @@ pub(crate) fn next_in_window(due: i64, window: Option<&(String, String)>) -> i64
     let today = at.date_naive();
     let candidate = if t < start { today } else { today + chrono::Days::new(1) };
     let _ = candidate.day(); // a date, not a duration: DST-safe
-    Local
+    zone
         .from_local_datetime(&candidate.and_time(start))
         .single()
         .map(|d| d.timestamp())
@@ -255,6 +256,7 @@ pub(crate) fn next_in_window(due: i64, window: Option<&(String, String)>) -> i64
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Local;
 
     fn local(h: u32, m: u32) -> i64 {
         Local.with_ymd_and_hms(2026, 8, 23, h, m, 0).single().unwrap().timestamp()
@@ -263,15 +265,24 @@ mod tests {
     #[test]
     fn a_due_moment_outside_the_window_moves_to_the_next_opening() {
         let w = Some(("09:00".to_string(), "17:00".to_string()));
-        assert_eq!(next_in_window(local(10, 30), w.as_ref()), local(10, 30), "inside stays");
-        assert_eq!(next_in_window(local(6, 0), w.as_ref()), local(9, 0), "before opening → today's opening");
+        assert_eq!(next_in_window(local(10, 30), w.as_ref(), OwnerZone::Machine), local(10, 30), "inside stays");
+        assert_eq!(next_in_window(local(6, 0), w.as_ref(), OwnerZone::Machine), local(9, 0), "before opening → today's opening");
         let tomorrow = Local.with_ymd_and_hms(2026, 8, 24, 9, 0, 0).single().unwrap().timestamp();
-        assert_eq!(next_in_window(local(18, 0), w.as_ref()), tomorrow, "after closing → tomorrow's opening");
+        assert_eq!(next_in_window(local(18, 0), w.as_ref(), OwnerZone::Machine), tomorrow, "after closing → tomorrow's opening");
         // Wrapping window 22:00–06:00: 23:00 is inside, 12:00 waits for 22:00.
         let night = Some(("22:00".to_string(), "06:00".to_string()));
-        assert_eq!(next_in_window(local(23, 0), night.as_ref()), local(23, 0));
-        assert_eq!(next_in_window(local(12, 0), night.as_ref()), local(22, 0));
-        assert_eq!(next_in_window(local(12, 0), None), local(12, 0));
-        assert_eq!(next_in_window(local(12, 0), Some(&("x".to_string(), "y".to_string()))), local(12, 0));
+        assert_eq!(next_in_window(local(23, 0), night.as_ref(), OwnerZone::Machine), local(23, 0));
+        assert_eq!(next_in_window(local(12, 0), night.as_ref(), OwnerZone::Machine), local(22, 0));
+        assert_eq!(next_in_window(local(12, 0), None, OwnerZone::Machine), local(12, 0));
+        assert_eq!(next_in_window(local(12, 0), Some(&("x".to_string(), "y".to_string())), OwnerZone::Machine), local(12, 0));
+    }
+
+    #[test]
+    fn the_window_is_read_on_the_owners_clock() {
+        let denver = OwnerZone::parse(Some("America/Denver"));
+        let utc = |s: &str| chrono::DateTime::parse_from_rfc3339(s).unwrap().timestamp();
+        let w = Some(("09:00".to_string(), "17:00".to_string()));
+        // 06:00 in Denver (13:00 UTC, winter) waits for 09:00 Denver = 16:00 UTC.
+        assert_eq!(next_in_window(utc("2026-01-15T13:00:00Z"), w.as_ref(), denver), utc("2026-01-15T16:00:00Z"));
     }
 }
