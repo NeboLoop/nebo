@@ -1323,7 +1323,7 @@ pub async fn update_agent(
         // only key.
         if !mode.separates_conversations() && super::neboai::agent_has_phone_line(&state, &id).await {
             return Err(to_error_response(types::NeboError::Validation(
-                "Conversations stay separate while a phone line is attached to this employee. Remove the line at neboai.com/manage/phone first.".into(),
+                "Conversations stay separate while a phone line is attached to this employee. Remove the line at neboai.com/app/manage/phone first.".into(),
             )));
         }
         if !memory_cfg.is_object() {
