@@ -55,6 +55,12 @@ pub fn current_platform_key() -> String {
 /// Default production API server.
 pub const DEFAULT_API_SERVER: &str = "https://api.neboai.com";
 
+/// Names the person at this bot's UI to NeboAI: their NeboAI session token or
+/// tunnel cookie, forwarded exactly as the tunnel handed it over. NeboAI
+/// checks it names the bot's owner or a member; phone numbers are listed and
+/// attached as that person, since a number belongs to whoever bought it.
+pub const ACTING_FOR_HEADER: &str = "X-Nebo-Acting-For";
+
 /// How long a REST call may take before it is abandoned.
 const REST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
@@ -231,6 +237,18 @@ impl NeboAIApi {
         path: &str,
         body: Option<&impl Serialize>,
     ) -> Result<T, CommError> {
+        self.do_json_acting(method, path, body, None).await
+    }
+
+    /// `do_json`, carrying the credential of the person at this bot's UI
+    /// (`acting_for`, see [`ACTING_FOR_HEADER`]) when there is one.
+    async fn do_json_acting<T: DeserializeOwned>(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        body: Option<&impl Serialize>,
+        acting_for: Option<&str>,
+    ) -> Result<T, CommError> {
         self.gate(&method)?;
         let url = format!("{}{}", self.api_server, path);
         debug!(method = %method, url = %::types::redact::redact(&url), "neboai api");
@@ -238,7 +256,10 @@ impl NeboAIApi {
         let read = method == reqwest::Method::GET;
         let resp = match self
             .send(read, |token| {
-                let req = self.client.request(method.clone(), &url).bearer_auth(token);
+                let mut req = self.client.request(method.clone(), &url).bearer_auth(token);
+                if let Some(who) = acting_for {
+                    req = req.header(ACTING_FOR_HEADER, who);
+                }
                 match body {
                     Some(b) => req.json(b),
                     None => req,
@@ -1606,12 +1627,17 @@ impl NeboAIApi {
     /// NeboAI picks and purchases the number, mints the signed endpoint
     /// token, and wires the carrier webhook at the nebo-phone gateway — the
     /// response is everything the phonecall plugin's account profile needs.
+    ///
+    /// `acting_for`: the credential of the person attaching it (see
+    /// [`ACTING_FOR_HEADER`]) — a number is attached as its owner, and on a
+    /// shared bot that may be a member. None = the bot's owner.
     pub async fn bind_bot_phone(
         &self,
         agent_id: &str,
         label: &str,
         business_name: Option<&str>,
         number: Option<&str>,
+        acting_for: Option<&str>,
     ) -> Result<serde_json::Value, CommError> {
         let body = serde_json::json!({
             "agentId": agent_id,
@@ -1619,21 +1645,24 @@ impl NeboAIApi {
             "businessName": business_name.unwrap_or(""),
             "number": number.unwrap_or(""),
         });
-        self.do_json(
+        self.do_json_acting(
             reqwest::Method::POST,
             &format!("/api/v1/bots/{}/phone", self.bot_id),
             Some(&body),
+            acting_for,
         )
         .await
     }
 
-    /// The owner's attachable phone lines — the connect modal's number
+    /// The attachable phone lines of the person at this bot's UI
+    /// (`acting_for`; None = the bot's owner) — the connect modal's number
     /// picker renders from this so line→agent assignment is explicit.
-    pub async fn claimable_bot_phone(&self) -> Result<serde_json::Value, CommError> {
-        self.do_json(
+    pub async fn claimable_bot_phone(&self, acting_for: Option<&str>) -> Result<serde_json::Value, CommError> {
+        self.do_json_acting(
             reqwest::Method::GET,
             &format!("/api/v1/bots/{}/phone/claimable", self.bot_id),
             None::<&()>,
+            acting_for,
         )
         .await
     }

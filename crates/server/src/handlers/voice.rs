@@ -1733,7 +1733,7 @@ fn team_voice_context(state: &AppState, team: &db::Team) -> String {
 /// Loop-originated calls only know the loop-side identity: the loop agent
 /// UUID or the bot-scoped handle (`bot_<id8>` primary / `bot_<id8>_<slug>`
 /// secondary) — never the local row id.
-fn resolve_local_agent_id(state: &AppState, given: &str) -> String {
+pub(crate) fn resolve_local_agent_id(state: &AppState, given: &str) -> String {
     if given == "assistant" || matches!(state.store.get_agent(given), Ok(Some(_))) {
         return given.to_string();
     }

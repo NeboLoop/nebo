@@ -398,6 +398,12 @@ pub async fn auth_login_account(
     // environment — nothing else typed into a request becomes a variable.
     let mut req = req;
     req.credentials.retain(|k, v| auth.env.contains_key(k) && !v.is_empty());
+    // Attaching a phone line: the plugin's sign-in binds it from its own
+    // process, so remember who chose the number (a member's own number on a
+    // shared bot) for /phone/bind to attach it as them.
+    if slug == "phonecall" && !req.account_number.is_empty() {
+        super::neboai::phone_attaching(&req.account_number, super::neboai::phone_acting_for(&headers));
+    }
     let profile = login_profile(auth.profile_dir_env.clone(), &slug, req);
     if let Some(p) = &profile {
         // Allocate an isolated, sanitized config dir for this (agent, account).

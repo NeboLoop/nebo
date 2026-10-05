@@ -1605,6 +1605,59 @@ pub struct PhoneBindRequest {
     pub number: String,
 }
 
+/// The credential of the person at this bot's UI when they came through
+/// NeboAI's tunnel — a member of a shared bot, or the owner from another
+/// device: their NeboAI session token (Bearer) or tunnel cookie, as the
+/// tunnel handed it over. NeboAI checks it and lists and attaches phone
+/// numbers as that person (a number belongs to whoever bought it). None for a
+/// request made on this computer: the bot's owner, as always.
+pub(crate) fn phone_acting_for(headers: &axum::http::HeaderMap) -> Option<String> {
+    if !crate::middleware::came_through_tunnel(headers) {
+        return None;
+    }
+    let bearer = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .map(str::trim)
+        .filter(|t| !t.is_empty());
+    let cookie = || {
+        headers
+            .get_all(axum::http::header::COOKIE)
+            .iter()
+            .filter_map(|v| v.to_str().ok())
+            .flat_map(|v| v.split(';'))
+            .find_map(|c| c.trim().strip_prefix("neboloop_tunnel="))
+            .filter(|t| !t.is_empty())
+    };
+    bearer.or_else(cookie).map(str::to_string)
+}
+
+/// How long a phone attach started from the UI may take to reach
+/// /phone/bind through the Phone plugin's sign-in.
+const PHONE_ATTACH_WINDOW: Duration = Duration::from_secs(600);
+
+/// Who is attaching which number: the Phone plugin's sign-in calls
+/// /phone/bind from its own process, so the person who chose the number in
+/// the UI is remembered here by number until the bind claims it.
+static PHONE_ATTACHING: LazyLock<std::sync::Mutex<HashMap<String, (String, Instant)>>> =
+    LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
+
+/// Remembers that the person at the UI (`acting_for`) is attaching `number`
+/// (the plugin's sign-in for it has started), or takes that back out at bind
+/// time (`acting_for` None) — fresh for PHONE_ATTACH_WINDOW, once.
+pub(crate) fn phone_attaching(number: &str, acting_for: Option<String>) -> Option<String> {
+    let mut map = PHONE_ATTACHING.lock().unwrap_or_else(|e| e.into_inner());
+    map.retain(|_, (_, at)| at.elapsed() < PHONE_ATTACH_WINDOW);
+    match acting_for {
+        Some(who) => {
+            map.insert(number.to_string(), (who, Instant::now()));
+            None
+        }
+        None => map.remove(number).map(|(who, _)| who),
+    }
+}
+
 /// POST /api/v1/phone/bind — provision + bind a number for an employee.
 pub async fn phone_bind(
     State(state): State<AppState>,
@@ -1612,8 +1665,9 @@ pub async fn phone_bind(
 ) -> HandlerResult<serde_json::Value> {
     let api = build_api_client(&state).map_err(to_error_response)?;
     let number = Some(req.number.as_str()).filter(|n| !n.is_empty());
+    let acting_for = number.and_then(|n| phone_attaching(n, None));
     let resp = api
-        .bind_bot_phone(&req.agent_id, &req.label, req.business_name.as_deref(), number)
+        .bind_bot_phone(&req.agent_id, &req.label, req.business_name.as_deref(), number, acting_for.as_deref())
         .await
         .map_err(|e| to_error_response(NeboError::Internal(format!("phone bind: {e}"))))?;
     info!(agent = %req.agent_id, number = %req.number, "phone number bound via NeboAI");
@@ -1623,14 +1677,16 @@ pub async fn phone_bind(
     Ok(Json(resp))
 }
 
-/// GET /api/v1/phone/claimable — the owner's attachable lines, for the
+/// GET /api/v1/phone/claimable — the attachable lines of the person at the
+/// UI (a member's own on a shared bot; the owner's on this computer), for the
 /// connect modal's number picker.
 pub async fn phone_claimable(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
 ) -> HandlerResult<serde_json::Value> {
     let api = build_api_client(&state).map_err(to_error_response)?;
     let resp = api
-        .claimable_bot_phone()
+        .claimable_bot_phone(phone_acting_for(&headers).as_deref())
         .await
         .map_err(|e| to_error_response(NeboError::Internal(format!("phone claimable: {e}"))))?;
     Ok(Json(resp))
@@ -1733,6 +1789,11 @@ pub async fn phone_answer(
     Json(req): Json<PhoneAnswerRequest>,
 ) -> HandlerResult<serde_json::Value> {
     const SLUG: &str = "phonecall";
+    // The hub's /manage/phone names the employee by its NeboAI id; this
+    // Nebo knows it by its own. Answering 404 to the NeboAI id left assigned
+    // lines without a bridge — every call to voicemail (found live 10-05).
+    let mut req = req;
+    req.agent_id = super::voice::resolve_local_agent_id(&state, &req.agent_id);
     if state
         .store
         .get_agent(&req.agent_id)
@@ -1882,5 +1943,49 @@ mod usage_tests {
             plan_charges_response(&serde_json::json!({"usedPercent": 3})),
             PlanChargesResponse::default()
         );
+    }
+}
+
+#[cfg(test)]
+mod phone_member_tests {
+    use super::*;
+    use axum::http::{HeaderMap, HeaderValue, header};
+
+    fn through_tunnel() -> HeaderMap {
+        let mut h = HeaderMap::new();
+        h.insert("x-nebo-tunnel-auth", HeaderValue::from_static(comm::tunnel::tunnel_auth_secret()));
+        h
+    }
+
+    /// The person at the UI is named to NeboAI only when they came through
+    /// the tunnel — by their Bearer token, else their tunnel cookie. A
+    /// request on this computer acts as the bot's owner (None), and a
+    /// forged tunnel stamp names nobody.
+    #[test]
+    fn the_person_at_the_ui_is_named_only_through_the_tunnel() {
+        let mut h = through_tunnel();
+        h.insert(header::COOKIE, HeaderValue::from_static("a=1; neboloop_tunnel=tun.tok; b=2"));
+        assert_eq!(phone_acting_for(&h).as_deref(), Some("tun.tok"));
+        h.insert(header::AUTHORIZATION, HeaderValue::from_static("Bearer own.jwt"));
+        assert_eq!(phone_acting_for(&h).as_deref(), Some("own.jwt"));
+
+        let mut local = HeaderMap::new();
+        local.insert(header::AUTHORIZATION, HeaderValue::from_static("Bearer own.jwt"));
+        local.insert(header::COOKIE, HeaderValue::from_static("neboloop_tunnel=tun.tok"));
+        assert_eq!(phone_acting_for(&local), None);
+        local.insert("x-nebo-tunnel-auth", HeaderValue::from_static("guess"));
+        assert_eq!(phone_acting_for(&local), None);
+
+        assert_eq!(phone_acting_for(&through_tunnel()), None);
+    }
+
+    /// The Phone plugin's sign-in binds from its own process: who chose the
+    /// number is handed to that bind once, by number, and only that number.
+    #[test]
+    fn the_attaching_person_reaches_the_bind_once() {
+        phone_attaching("+15550000202", Some("member.tok".into()));
+        assert_eq!(phone_attaching("+15550000999", None), None);
+        assert_eq!(phone_attaching("+15550000202", None).as_deref(), Some("member.tok"));
+        assert_eq!(phone_attaching("+15550000202", None), None);
     }
 }
