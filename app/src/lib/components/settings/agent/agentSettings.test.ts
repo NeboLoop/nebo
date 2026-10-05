@@ -30,6 +30,7 @@ import AgentSettingsModal from './AgentSettingsModal.svelte';
 import viewSource from './AgentSettingsView.svelte?raw';
 import { agentSettingsTabs, resolveSection, visibleParts, visibleTabs } from './sections';
 import { devMode } from '$lib/stores/devmode';
+import { isSignInFor } from '$lib/utils/pluginSignIn';
 
 beforeAll(() => {
 	addMessages('en', en);
@@ -244,5 +245,22 @@ describe('merged pages keep every field', () => {
 		expect(view('api', false)).not.toContain(`id="agent-settings-api"`);
 		expect(view('memory', false)).not.toContain(`id="agent-settings-memory"`);
 		expect(view('memory', true)).toContain(`id="agent-settings-memory"`);
+	});
+});
+
+describe("an employee's Accounts form", () => {
+	// The form answers a finished sign-in only when it is this plugin's AND
+	// this employee's: Chief's QuickBooks sign-in landing must not close the
+	// Bookkeeper's form as if the Bookkeeper's account had connected
+	// (2026-10-05). The socket handlers can't run in a server render, so the
+	// source must route both through the one matcher with this employee's id.
+	it('closes on its own employee\'s sign-in, never another employee\'s', () => {
+		const handlers = viewSource.slice(viewSource.indexOf('const accountAuthUnsubs'), viewSource.indexOf('async function loadAccounts'));
+		expect(handlers.match(/isSignInFor\(data, addAccountConnectingSlug, agentId\)/g)?.length).toBe(2);
+		expect(handlers).not.toContain('slug === addAccountConnectingSlug');
+
+		expect(isSignInFor({ plugin: 'quickbooks', agentId: 'chief' }, 'quickbooks', 'bk')).toBe(false);
+		expect(isSignInFor({ plugin: 'quickbooks', agentId: 'bk' }, 'quickbooks', 'bk')).toBe(true);
+		expect(isSignInFor({ plugin: 'quickbooks', agentId: 'bk' }, null, 'bk')).toBe(false);
 	});
 });
