@@ -80,8 +80,11 @@ pub const BLOCKED_REQUESTS_URL: &str = "https://neboai.com/help/blocked-requests
 /// What the owner reads when the provider's answer is final: a request
 /// every route's content filter refused says what to do about it, with the
 /// page that explains it as a plain URL (a phone shows the text as is);
-/// anything else reads as the gateway wrote it.
-fn final_words(code: &str, message: &str) -> String {
+/// anything else reads as the gateway wrote it, on a phone-app turn
+/// (`store_app`) without its checkout, billing or pricing links
+/// ([`tools::store_app::withhold_from_notice`]): an over-limit refusal there
+/// says where the plan is in the app instead.
+fn final_words(code: &str, message: &str, store_app: bool) -> String {
     if code == ai::CONTENT_FILTERED {
         return format!(
             "This request couldn't be completed. Something earlier in this \
@@ -89,7 +92,17 @@ fn final_words(code: &str, message: &str) -> String {
              Learn more: {BLOCKED_REQUESTS_URL}"
         );
     }
-    message.to_string()
+    owner_words(message, store_app)
+}
+
+/// `message` as the owner reads it on this turn: on a phone-app turn
+/// (`store_app`), never with a NeboAI checkout, billing or pricing link.
+fn owner_words(message: &str, store_app: bool) -> String {
+    if store_app {
+        tools::store_app::withhold_from_notice(message).into_owned()
+    } else {
+        message.to_string()
+    }
 }
 
 /// Retry backoff: exponential 500ms × 2^(n−1) capped at 32s, plus 0–25% jitter.
@@ -238,6 +251,10 @@ pub(crate) struct ModelCall<'a> {
     /// to one written out as text is cut from the reply
     /// (`reminders::NoteFence`).
     pub tool_names: Vec<String>,
+    /// The turn came from the phone app as an app store ships it
+    /// (`tools::store_app`): an error the gateway wrote is shown without a
+    /// checkout, billing or pricing link.
+    pub store_app: bool,
 }
 
 /// One content block of a reply, in stream order.
@@ -339,6 +356,7 @@ pub(crate) async fn call_model(call: ModelCall<'_>, st: &mut CallState, state: &
         folds,
         heard_through,
         tool_names,
+        store_app,
     } = call;
 
     // Acquire LLM permit before provider call (blocks if at capacity)
@@ -523,8 +541,8 @@ pub(crate) async fn call_model(call: ModelCall<'_>, st: &mut CallState, state: &
             // Final: in the gateway's words, written for the owner; the
             // details are already in the log above.
             return CallOutcome::Failed(match &e {
-                ProviderError::Api { code, message, .. } => final_words(code, message),
-                _ => e.to_string(),
+                ProviderError::Api { code, message, .. } => final_words(code, message, store_app),
+                _ => owner_words(&e.to_string(), store_app),
             });
         }
     };
@@ -945,11 +963,11 @@ pub(crate) async fn call_model(call: ModelCall<'_>, st: &mut CallState, state: &
         }
         let _ = tx
             .send(StreamEvent::error(if stream_error_final {
-                final_words(&stream_error_code, err_msg)
+                final_words(&stream_error_code, err_msg, store_app)
             } else if deterministic {
                 model_refusal_notice(model_override, err_msg)
             } else {
-                err_msg.clone()
+                owner_words(err_msg, store_app)
             }))
             .await;
     }
@@ -1435,6 +1453,7 @@ mod tests {
                     folds: &mut folds,
                     heard_through: None,
                     tool_names: vec![],
+                    store_app: false,
                 },
                 &mut st,
                 &mut state,
@@ -1485,9 +1504,9 @@ mod tests {
         }
     }
 
-    /// One call to `provider` from state `st`: what it returned, and the
-    /// error text the owner was shown.
-    async fn call_once(provider: Answers, st: &mut CallState) -> (CallOutcome, Vec<String>) {
+    /// One call to `provider` from state `st`, on a phone-app turn when
+    /// `store_app`: what it returned, and the error text the owner was shown.
+    async fn call_once(provider: Answers, st: &mut CallState, store_app: bool) -> (CallOutcome, Vec<String>) {
         let rig = Rig::new();
         let sessions = SessionManager::new(rig.store.clone());
         let providers: RwLock<Vec<Arc<dyn Provider>>> = RwLock::new(vec![Arc::new(provider)]);
@@ -1523,6 +1542,7 @@ mod tests {
                 folds: &mut folds,
                 heard_through: None,
                 tool_names: vec![],
+                store_app,
             },
             st,
             &mut state,
@@ -1554,7 +1574,7 @@ mod tests {
     async fn a_content_filtered_stream_is_shown_once_and_never_retried() {
         let mut st = CallState::default();
         let refused = StreamEvent::error(FILTERED).non_retryable(ai::CONTENT_FILTERED);
-        let (outcome, shown) = call_once(Answers::Streams(refused), &mut st).await;
+        let (outcome, shown) = call_once(Answers::Streams(refused), &mut st, false).await;
         match outcome {
             CallOutcome::Reply(reply) => assert_eq!(reply.stream_error.as_deref(), Some(FILTERED)),
             _ => panic!("a final error ends the call with the reply, not a retry"),
@@ -1568,10 +1588,34 @@ mod tests {
     async fn a_final_stream_error_reads_as_the_gateway_wrote_it() {
         let mut st = CallState::default();
         let refused = StreamEvent::error("That model isn't available.").non_retryable("MODEL_NOT_SUPPORTED");
-        let (outcome, shown) = call_once(Answers::Streams(refused), &mut st).await;
+        let (outcome, shown) = call_once(Answers::Streams(refused), &mut st, false).await;
         assert!(matches!(outcome, CallOutcome::Reply(_)));
         assert_eq!(st.retryable_retries, 0);
         assert_eq!(shown, vec!["That model isn't available.".to_string()]);
+    }
+
+    /// On a phone-app turn, the gateway's over-limit answer never hands the
+    /// owner a checkout or upgrade link: the sentence that carries one is
+    /// dropped and the in-app place is named instead, whether the answer
+    /// arrives in the stream or before it opens. Off the phone it reads as
+    /// the gateway wrote it.
+    #[tokio::test]
+    async fn an_over_limit_answer_on_the_phone_says_where_the_plan_is() {
+        const OVER: &str = "You've used this month's plan. Upgrade at https://neboai.com/upgrade to keep going.";
+        let in_app = format!("You've used this month's plan. {}", tools::store_app::PLAN_IN_APP);
+
+        let mut st = CallState::default();
+        let refused = StreamEvent::error(OVER).non_retryable("OVER_LIMIT");
+        let (_, shown) = call_once(Answers::Streams(refused.clone()), &mut st, true).await;
+        assert_eq!(shown, vec![in_app.clone()]);
+        let (_, shown) = call_once(Answers::Streams(refused), &mut st, false).await;
+        assert_eq!(shown, vec![OVER.to_string()]);
+
+        let refused = ProviderError::Api { code: "OVER_LIMIT".into(), message: OVER.into(), retryable: false };
+        match call_once(Answers::Refuses(refused), &mut st, true).await.0 {
+            CallOutcome::Failed(text) => assert_eq!(text, in_app),
+            _ => panic!("a final refusal fails the call"),
+        }
     }
 
     /// The same final answers before the stream opens (a plain HTTP error):
@@ -1584,7 +1628,7 @@ mod tests {
             message: FILTERED.into(),
             retryable: false,
         };
-        let (outcome, _) = call_once(Answers::Refuses(refused), &mut st).await;
+        let (outcome, _) = call_once(Answers::Refuses(refused), &mut st, false).await;
         match outcome {
             CallOutcome::Failed(text) => assert_eq!(text, BLOCKED),
             _ => panic!("a final refusal fails the call"),
@@ -1596,7 +1640,7 @@ mod tests {
             message: "That model isn't available.".into(),
             retryable: false,
         };
-        let (outcome, _) = call_once(Answers::Refuses(refused), &mut st).await;
+        let (outcome, _) = call_once(Answers::Refuses(refused), &mut st, false).await;
         match outcome {
             CallOutcome::Failed(text) => assert_eq!(text, "That model isn't available."),
             _ => panic!("a final refusal fails the call"),
@@ -1612,7 +1656,7 @@ mod tests {
 
         let mut st = CallState { retryable_retries: MAX_RETRYABLE_RETRIES, ..CallState::default() };
         let busy = StreamEvent::error("vendor-x said: upstream busy");
-        let (outcome, shown) = call_once(Answers::Streams(busy), &mut st).await;
+        let (outcome, shown) = call_once(Answers::Streams(busy), &mut st, false).await;
         assert!(matches!(outcome, CallOutcome::Exhausted));
         assert_eq!(shown, vec![could_not.to_string()]);
 
@@ -1622,7 +1666,7 @@ mod tests {
             message: "vendor-x said: upstream busy".into(),
             retryable: true,
         };
-        let (outcome, _) = call_once(Answers::Refuses(busy), &mut st).await;
+        let (outcome, _) = call_once(Answers::Refuses(busy), &mut st, false).await;
         match outcome {
             CallOutcome::Failed(text) => assert_eq!(text, could_not),
             _ => panic!("retries that ran out fail the call"),

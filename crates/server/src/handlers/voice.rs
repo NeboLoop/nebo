@@ -2109,6 +2109,12 @@ async fn handle_conversation_ws(mut socket: WebSocket, state: AppState, mut q: C
              one short sentence and nothing more: it is answered on its card, never by you.",
         );
     }
+    // The owner's call from the phone app: the same rule a typed turn there
+    // is given (`tools::store_app::GUIDANCE`).
+    if let Some(rule) = store_app_rule(telephony, q.platform.as_deref()) {
+        instructions.push_str("\n\n");
+        instructions.push_str(rule);
+    }
     // Where the call runs, from the builder a text turn's rows come from:
     // the date and time, the environment with the employee's email address,
     // and the owner's phone position — only on the owner's own call, never
@@ -2647,7 +2653,7 @@ async fn handle_conversation_session(
                 // errors included, so it can say what blocked.
                 serde_json::json!({
                     "ok": !result.is_error,
-                    "content": result.content,
+                    "content": voice_tool_content(&result.content, ctx.in_store_app()),
                 })
             };
             let _ = done.send((call_id, output.to_string(), told, speak)).await;
@@ -3143,6 +3149,25 @@ const VOICE_CLIENT_GONE_AFTER: std::time::Duration = std::time::Duration::from_s
 const VOICE_PERSONA_CHAR_CAP: usize = 8_000;
 
 /// Clip at a char boundary at or below `cap` bytes (never splits a code point).
+/// The rule the realtime model is given on the owner's call from the phone
+/// app (`platform` ios or android), word for word what a typed turn there is
+/// told: no NeboAI checkout, billing or pricing link and no web price. None
+/// on a phone line (`telephony`): a caller is not in the app.
+fn store_app_rule(telephony: bool, platform: Option<&str>) -> Option<&'static str> {
+    (!telephony && tools::store_app::is_store_app(platform)).then_some(tools::store_app::GUIDANCE)
+}
+
+/// What a tool the voice model called directly hands back to it: on the
+/// phone app (`store_app`), stripped of NeboAI checkout, billing and pricing
+/// links as a typed turn's tool results are (`tools::store_app`).
+fn voice_tool_content(content: &str, store_app: bool) -> String {
+    if store_app {
+        tools::store_app::withhold_links(content).into_owned()
+    } else {
+        content.to_string()
+    }
+}
+
 fn clip_at_char_boundary(s: &str, cap: usize) -> &str {
     if s.len() <= cap {
         return s;
@@ -3157,6 +3182,30 @@ fn clip_at_char_boundary(s: &str, cap: usize) -> &str {
 #[cfg(test)]
 mod voice_prompt_tests {
     use super::*;
+
+    /// The owner's call from the phone app tells the realtime model the
+    /// same store rule a typed turn there is told; a phone line never does.
+    #[test]
+    fn the_phone_apps_voice_model_is_given_the_store_rule_and_a_phone_line_is_not() {
+        for phone in ["ios", "android"] {
+            assert_eq!(store_app_rule(false, Some(phone)), Some(tools::store_app::GUIDANCE));
+            assert_eq!(store_app_rule(true, Some(phone)), None);
+        }
+        assert_eq!(store_app_rule(false, Some("macos")), None);
+        assert_eq!(store_app_rule(false, None), None);
+    }
+
+    /// A tool the voice model calls itself (not `nebo`) hands back what a
+    /// typed turn's tool would: on the phone app, no checkout link.
+    #[test]
+    fn a_direct_voice_tool_result_on_the_phone_has_no_checkout_link() {
+        let found = "Plans are at https://neboai.com/pricing and docs at https://neboai.com/docs.";
+        assert_eq!(
+            voice_tool_content(found, true),
+            format!("Plans are at {} and docs at https://neboai.com/docs.", tools::store_app::PLAN_IN_APP)
+        );
+        assert_eq!(voice_tool_content(found, false), found);
+    }
 
     /// The owner's call opened from the phone app carries the app's
     /// platform into its delegated runs (no checkout link, no price); a

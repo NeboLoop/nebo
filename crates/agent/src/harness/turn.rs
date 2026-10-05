@@ -1573,6 +1573,7 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
                 folds: reply_folds,
                 heard_through: reply_heard_through.as_deref(),
                 tool_names: h.tools.get_tool_names().await,
+                store_app: tools::store_app::is_store_app(cx.request.delivery.platform.as_deref()),
             },
             &mut st.call,
             &mut st.usage,
