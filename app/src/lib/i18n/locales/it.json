@@ -462,6 +462,7 @@
 		"storageNextFree": "Il prossimo spazio si libera il {date}.",
 		"uploadFailed": "Caricamento del file non riuscito: messaggio non inviato. {reason}",
 		"fileRemoved": "Questo file è stato rimosso {days, plural, one {# giorno} other {# giorni}} dopo il caricamento.",
+		"fileGone": "Questo file non è più disponibile.",
 		"notDelivered": "Messaggio non consegnato. La connessione si è interrotta, invialo di nuovo."
 	},
 	"chatInput": {

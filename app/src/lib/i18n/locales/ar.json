@@ -462,6 +462,7 @@
 		"storageNextFree": "تتوفر المساحة التالية في {date}.",
 		"uploadFailed": "فشل رفع الملف — لم تُرسل الرسالة. {reason}",
 		"fileRemoved": "حُذف هذا الملف بعد {days, plural, zero {أقل من يوم} one {يوم واحد} two {يومين} few {# أيام} many {# يومًا} other {# يوم}} من رفعه.",
+		"fileGone": "هذا الملف لم يعد متاحًا.",
 		"notDelivered": "لم تُسلَّم الرسالة. انقطع الاتصال، فأرسلها مرة أخرى."
 	},
 	"chatInput": {

@@ -462,6 +462,7 @@
 		"storageNextFree": "De l’espace se libère le {date}.",
 		"uploadFailed": "L’import du fichier a échoué — message non envoyé. {reason}",
 		"fileRemoved": "Ce fichier a été supprimé {days, plural, one {# jour} other {# jours}} après son import.",
+		"fileGone": "Ce fichier n’est plus disponible.",
 		"notDelivered": "Message non distribué. La connexion a été coupée, renvoyez-le."
 	},
 	"chatInput": {

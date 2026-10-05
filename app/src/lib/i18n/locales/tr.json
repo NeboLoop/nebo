@@ -462,6 +462,7 @@
 		"storageNextFree": "Bir sonraki alan {date} tarihinde boşalır.",
 		"uploadFailed": "Dosya yüklenemedi — mesaj gönderilmedi. {reason}",
 		"fileRemoved": "Bu dosya, yüklendikten {days, plural, one {# gün} other {# gün}} sonra kaldırıldı.",
+		"fileGone": "Bu dosya artık kullanılamıyor.",
 		"notDelivered": "Mesaj iletilmedi. Bağlantı koptu, tekrar gönderin."
 	},
 	"chatInput": {

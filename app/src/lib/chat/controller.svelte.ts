@@ -179,7 +179,7 @@ export function artifactsToAttachments(artifacts: unknown): UploadedAttachment[]
 }
 
 /** Kind by extension. Mirrors the backend's artifact_kind(). */
-function kindForExt(ext: string): WorkItem['kind'] {
+export function kindForExt(ext: string): WorkItem['kind'] {
   if (ext === 'csv' || ext === 'xlsx' || ext === 'xls') return 'table';
   if (ext === 'pptx' || ext === 'ppt') return 'slides';
   if (['js', 'ts', 'jsx', 'tsx', 'py', 'rs', 'go', 'json', 'sh', 'css'].includes(ext)) return 'code';

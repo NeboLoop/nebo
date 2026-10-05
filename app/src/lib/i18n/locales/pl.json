@@ -462,6 +462,7 @@
 		"storageNextFree": "Najbliższe miejsce zwolni się {date}.",
 		"uploadFailed": "Przesyłanie pliku nie powiodło się — wiadomość nie została wysłana. {reason}",
 		"fileRemoved": "Ten plik został usunięty {days, plural, one {# dzień} few {# dni} many {# dni} other {# dnia}} po przesłaniu.",
+		"fileGone": "Ten plik nie jest już dostępny.",
 		"notDelivered": "Wiadomość nie została dostarczona. Połączenie zostało przerwane, wyślij ją ponownie."
 	},
 	"chatInput": {

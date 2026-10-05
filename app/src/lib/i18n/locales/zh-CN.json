@@ -462,6 +462,7 @@
 		"storageNextFree": "下一份空间将在 {date} 释放。",
 		"uploadFailed": "文件上传失败 — 消息未发送。{reason}",
 		"fileRemoved": "此文件已在上传 {days, plural, other {# 天}}后被移除。",
+		"fileGone": "此文件已不可用。",
 		"notDelivered": "消息未送达。连接中断了，请重新发送。"
 	},
 	"chatInput": {

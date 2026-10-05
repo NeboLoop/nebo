@@ -6,9 +6,10 @@
 // set by whichever component happened to load first (ChatPane called
 // setOptions), which meant the inbox and marketplace inherited chat's options by
 // accident. Owning it in one module makes that explicit.
-import { marked, Renderer } from 'marked';
-import type { TokenizerAndRendererExtension, Tokens } from 'marked';
+import { marked, Marked, Renderer } from 'marked';
+import type { MarkedExtension, TokenizerAndRendererExtension, Tokens } from 'marked';
 import katex from 'katex';
+import { bareFileMention, bareFileMentionStart, fileMention } from '$lib/chat/fileMentions';
 
 /**
  * marked does NO url sanitization — it dropped `sanitize` years ago and renders
@@ -125,35 +126,76 @@ const mathInline: TokenizerAndRendererExtension = {
 	},
 };
 
-marked.use({ extensions: [mathBlock, mathInline] });
+const shared: MarkedExtension[] = [
+	{ extensions: [mathBlock, mathInline] },
+	{
+		gfm: true,
+		// Chat text is written with single newlines and means them.
+		breaks: true,
+		renderer: {
+			link(token) {
+				if (!isSafeHref(token.href)) {
+					// Keep the words, drop the link.
+					return this.parser.parseInline(token.tokens);
+				}
+				// Delegate the anchor itself to marked so escaping stays its job —
+				// this only adds the target.
+				const html = Renderer.prototype.link.call(this, token);
+				if (typeof html !== 'string') return html;
+				// A link in a reply points somewhere else. Same-tab navigation throws
+				// the session away — worst on a tunneled bot, where the app IS the
+				// tab — and under Tauri target=_blank is what hands the URL to the
+				// system browser instead of replacing the app window.
+				// noopener/noreferrer: the opened page must not reach back via
+				// window.opener.
+				return html.replace('<a ', '<a target="_blank" rel="noopener noreferrer" ');
+			},
+		},
+	},
+];
 
-marked.use({
-	gfm: true,
-	// Chat text is written with single newlines and means them.
-	breaks: true,
+marked.use(...shared);
+
+/*
+ * File paths in an employee's reply (`$lib/chat/fileMentions`): an inline
+ * code span or a bare path naming a file in the bot's files renders as a
+ * link carrying `data-file-path`, which the chat opens in the Work panel.
+ * Fenced code is untouched — marked hands a fence to `code`, never to these.
+ * Only the chat asks for this; a listing or a document renders paths as
+ * written.
+ */
+function fileLink(path: string, inner: string): string {
+	const p = escapeHtml(path);
+	return `<a href="${p}" data-file-path="${p}" class="link link-primary">${inner}</a>`;
+}
+
+const filePathInline: TokenizerAndRendererExtension = {
+	name: 'filePath',
+	level: 'inline',
+	start: bareFileMentionStart,
+	tokenizer(src: string) {
+		const found = bareFileMention(src);
+		if (!found) return undefined;
+		return { type: 'filePath', raw: found.lead + found.text, ...found };
+	},
+	renderer(token: Tokens.Generic) {
+		return escapeHtml(String(token.lead)) + fileLink(String(token.path), escapeHtml(String(token.text)));
+	},
+};
+
+const withFilePaths = new Marked(...shared, {
+	extensions: [filePathInline],
 	renderer: {
-		link(token) {
-			if (!isSafeHref(token.href)) {
-				// Keep the words, drop the link.
-				return this.parser.parseInline(token.tokens);
-			}
-			// Delegate the anchor itself to marked so escaping stays its job —
-			// this only adds the target.
-			const html = Renderer.prototype.link.call(this, token);
-			if (typeof html !== 'string') return html;
-			// A link in a reply points somewhere else. Same-tab navigation throws
-			// the session away — worst on a tunneled bot, where the app IS the
-			// tab — and under Tauri target=_blank is what hands the URL to the
-			// system browser instead of replacing the app window.
-			// noopener/noreferrer: the opened page must not reach back via
-			// window.opener.
-			return html.replace('<a ', '<a target="_blank" rel="noopener noreferrer" ');
+		codespan(token) {
+			const path = fileMention(token.text);
+			return path ? fileLink(path, `<code>${escapeHtml(token.text)}</code>`) : false;
 		},
 	},
 });
 
-/** Render markdown to HTML with the app's shared configuration. */
-export function parseMarkdown(src: string): string {
+/** Render markdown to HTML with the app's shared configuration.
+ *  `filePaths` links the file paths an employee's reply names (the chat). */
+export function parseMarkdown(src: string, { filePaths = false }: { filePaths?: boolean } = {}): string {
 	if (!src) return '';
-	return marked.parse(src, { async: false }) as string;
+	return (filePaths ? withFilePaths : marked).parse(src, { async: false }) as string;
 }

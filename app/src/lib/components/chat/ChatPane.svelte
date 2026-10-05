@@ -6,7 +6,9 @@
   import AgentAvatar from '$lib/components/AgentAvatar.svelte';
   import WorkViewer from './WorkViewer.svelte';
   import DesktopView from './DesktopView.svelte';
-  import { teachStart, teachStop, getToolOutput } from '$lib/api/nebo';
+  import { teachStart, teachStop, getToolOutput, locateWorkFile } from '$lib/api/nebo';
+  import { kindForExt } from '$lib/chat/controller.svelte';
+  import { locateFileMention } from '$lib/chat/fileMentions';
   import { watchesComputer, offersVirtualComputer, teachFailure, SCREEN_RECORDING_SETTINGS } from '$lib/chat/teach';
   import { ownScreen } from '$lib/stores/ownScreen';
   import ShareArtifactModal from './ShareArtifactModal.svelte';
@@ -271,9 +273,9 @@
   // Code blocks get a copy affordance: each <pre> is wrapped with a positioned
   // button handled by delegated click (copyCodeBlock) — the button copies the
   // wrapped <code>'s text, so no payload attributes are needed.
-  function renderMarkdown(content: string): string {
+  function renderMarkdown(content: string, { filePaths = false }: { filePaths?: boolean } = {}): string {
     if (!content) return '';
-    const html = parseMarkdown(content);
+    const html = parseMarkdown(content, { filePaths });
     const withCopy = html
       .replace(
         /<pre>/g,
@@ -296,6 +298,11 @@
     return true;
   }
 
+  // Files a reply named by their path and the owner opened (openFilePath):
+  // they sit in this thread's Work panel beside the documents it produced.
+  let pathFiles = $state<{ chat: string; items: Artifact[] }>({ chat: '', items: [] });
+  const openedPathFiles = $derived(pathFiles.chat === (threadId || sessionId) ? pathFiles.items : []);
+
   // "Work" artifacts produced by the agent — flattened from each assistant message's
   // workItems (set by the controller from run-produced document URLs), tagged with messageId.
   const artifacts = $derived<Artifact[]>(
@@ -304,7 +311,7 @@
         id: w.documentId ?? w.id, documentId: w.documentId ?? w.id, version: w.version ?? 1,
         messageId: m.id, time: m.time, title: w.title, kind: w.kind, url: w.url, codeUrl: w.codeUrl,
       }))
-    )
+    ).concat(openedPathFiles)
   );
 
   // Group versions per document container (oldest → newest), deduped by version.
@@ -363,6 +370,13 @@
       return;
     }
     const t = e.target as HTMLElement;
+    // A file the reply names by its path → the Work panel, like its card.
+    const fileLink = t?.closest?.('[data-file-path]');
+    if (fileLink) {
+      e.preventDefault();
+      openFilePath(fileLink.getAttribute('data-file-path') || '');
+      return;
+    }
     // Markdown screenshots/images → open in the in-app lightbox, never external.
     if (t?.tagName === 'IMG' && (t as HTMLImageElement).src) {
       e.preventDefault();
@@ -425,6 +439,24 @@
     } catch {
       addToast($t('chat.copyFailed'), 'error');
     }
+  }
+
+  /** Open a file a reply names by its path. The bot finds it inside its
+   *  files root (refusing anything outside), and it opens in the Work panel
+   *  through the same file route and viewer as a document card. A folder
+   *  opens nothing; a file that's gone says so. */
+  async function openFilePath(path: string) {
+    const target = await locateFileMention(path, locateWorkFile);
+    if (target.kind === 'gone') addToast($t('chat.fileGone'), 'error');
+    if (target.kind === 'failed') addToast($t('chat.failedToLoadStatus', { values: { status: target.status } }), 'error');
+    if (target.kind !== 'file') return;
+    const id = `path:${target.url}`;
+    if (!openedPathFiles.some((a) => a.id === id)) {
+      const ext = (target.filename.split('.').pop() || '').toLowerCase();
+      const item: Artifact = { id, documentId: id, version: 1, title: target.filename, kind: kindForExt(ext), url: target.url };
+      pathFiles = { chat: threadId || sessionId, items: [...openedPathFiles, item] };
+    }
+    openArtifact(id);
   }
 
   function openArtifact(id: string) {
@@ -1932,7 +1964,7 @@
               {:else}
                 <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
                 <div dir="auto" class="text-sm leading-relaxed prose prose-sm max-w-none" onclick={handleWorkMentionClick}>
-                  {@html linkWorkMentions(renderMarkdown(block.text), (last as any).workItems)}
+                  {@html linkWorkMentions(renderMarkdown(block.text, { filePaths: true }), (last as any).workItems)}
                 </div>
               {/if}
             {/each}

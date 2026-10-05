@@ -42,6 +42,10 @@ pub fn routes(max_upload_bytes: usize) -> Router<AppState> {
             axum::routing::get(handlers::files::list_work_documents),
         )
         .route(
+            "/work/locate",
+            axum::routing::get(handlers::files::locate_work_file),
+        )
+        .route(
             "/comm-files/{id}",
             axum::routing::get(handlers::files::serve_comm_file),
         )
