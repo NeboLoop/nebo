@@ -280,7 +280,12 @@ impl Store {
         .map_err(|e| NeboError::Database(e.to_string()))
     }
 
-    /// Most-recent-first upgrade history (capped).
+    /// Most-recent-first upgrade history (capped), one row per distinct
+    /// update: the same artifact taken from the same version to the same
+    /// version with the same outcome is listed once, at its latest time (a
+    /// listing rebuilt per platform upload was applied 5 times in 31 s and
+    /// listed 5 times, live 2026-10-05). The rows stay as recorded:
+    /// `artifact_update_applied_at` reads them.
     pub fn list_artifact_update_history(
         &self,
         limit: i64,
@@ -291,6 +296,10 @@ impl Store {
                 "SELECT id, artifact_id, artifact_type, name, from_version, to_version,
                         status, detail, applied_at
                  FROM artifact_update_history
+                 WHERE id IN (
+                     SELECT MAX(id) FROM artifact_update_history
+                     GROUP BY artifact_id, artifact_type, from_version, to_version, status
+                 )
                  ORDER BY applied_at DESC, id DESC LIMIT ?1",
             )
             .map_err(|e| NeboError::Database(e.to_string()))?;
@@ -314,5 +323,32 @@ impl Store {
             out.push(r.map_err(|e| NeboError::Database(e.to_string()))?);
         }
         Ok(out)
+    }
+}
+
+#[cfg(test)]
+mod history_tests {
+    /// Live 2026-10-05: a listing rebuilt once per platform upload was
+    /// applied 5 times in 31 s and listed 5 times as "0.1.10 → 0.1.10". The
+    /// history lists one row per distinct update; the rows stay recorded.
+    #[test]
+    fn one_history_row_per_distinct_update() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::Store::new(&dir.path().join("t.db").to_string_lossy()).unwrap();
+        for _ in 0..5 {
+            store.record_artifact_update_history("qb", "plugin", "QuickBooks", "0.1.10", "0.1.10", "applied", "").unwrap();
+        }
+        store.record_artifact_update_history("qb", "plugin", "QuickBooks", "0.1.10", "0.1.11", "applied", "").unwrap();
+        store.record_artifact_update_history("qb", "plugin", "QuickBooks", "0.1.10", "0.1.11", "failed", "no network").unwrap();
+        store.record_artifact_update_history("app-studio", "skill", "App Studio", "0.1.3", "0.1.4", "applied", "").unwrap();
+        store.record_artifact_update_history("app-studio", "skill", "App Studio", "0.1.3", "0.1.4", "applied", "").unwrap();
+
+        let rows = store.list_artifact_update_history(50).unwrap();
+        let shown: Vec<(String, String, String, String)> = rows
+            .iter()
+            .map(|r| (r.artifact_id.clone(), r.from_version.clone(), r.to_version.clone(), r.status.clone()))
+            .collect();
+        assert_eq!(shown.len(), 4, "{shown:?}");
+        assert!(store.artifact_update_applied_at("qb", "plugin", "0.1.10").unwrap().is_some());
     }
 }
