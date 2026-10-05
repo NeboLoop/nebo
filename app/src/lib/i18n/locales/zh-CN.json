@@ -390,7 +390,7 @@
 		"failed": "失败",
 		"tokensInOut": "输入 {input} · 输出 {output}",
 		"tokenTooltip": "提示词共 {total} · 系统+工具 {overhead} · 缓存读取 {cacheRead}",
-		"outOfBalance": "你的账户所含的工作量已用完。选择一个套餐或充值即可继续。",
+		"outOfBalance": "你本月的套餐已用完。请升级套餐以继续。",
 		"viewPlans": "查看套餐",
 		"choosePlan": "选择套餐",
 		"documents": "文档",
@@ -887,7 +887,7 @@
 		"dangerZone": "危险区域",
 		"deleteAccountDesc": "永久删除你的账户和所有数据。此操作不可撤销。",
 		"botName": "名称",
-		"botNameDesc": "机器人在每个列表、网页和手机上显示的名称。可在 NeboAI 上重命名。",
+		"botNameDesc": "机器人在每个列表、网页和移动 App 中显示的名称。可在 NeboAI 上重命名。",
 		"botNameNotConnected": "将这个机器人连接到 NeboAI 后即可命名。",
 		"renameBot": "在 NeboAI 上重命名",
 		"alsoRenamePrimary": "也将你的私人助理重命名为「{name}」吗？",
@@ -897,7 +897,7 @@
 		"botLocation": "位置",
 		"botLocationDesc": "此机器人的办公室所在地。你的员工会用它告诉你离办公室有多远。",
 		"botLocationPlaceholder": "街道地址，城市",
-		"botLocationPending": "下次在手机上打开 Nebo 时，手机会在地图上定位此地址。",
+		"botLocationPending": "下次打开移动 App 时，它会在地图上定位此地址。",
 		"botLocationSaveFailed": "无法保存位置，请重试。"
 	},
 	"settingsAbout": {
@@ -1622,7 +1622,7 @@
 		"giftPoolLabel": "赠送池",
 		"charges": {
 			"title": "从你的套餐扣除",
-			"intro": "电话号码、通话、短信、云电脑和记忆以美元计价，先从你的套餐扣除，再从你购买的额度扣除。每一项都会提高套餐的已用百分比。",
+			"intro": "电话号码、通话、短信、云电脑和记忆以美元计价，从你的套餐扣除。每一项都会提高套餐的已用百分比。",
 			"total": "本月 {amount}",
 			"empty": "本月没有从你的套餐扣除任何费用。",
 			"loadFailed": "无法加载费用。请重试。",

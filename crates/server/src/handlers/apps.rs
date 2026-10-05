@@ -2232,7 +2232,7 @@ mod developer_mode_tests {
         .await;
         let (status, error) = answer(decide_for_app(Some(&client), "crm", &ask).await).await;
         assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
-        assert!(error.contains("used all the work included in your account"), "{error}");
+        assert!(error.contains("Your plan is used up this month. Upgrade your plan to continue."), "{error}");
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1, "a funding 429 is never retried");
 
         let (client, _) = janus_answering("400 Bad Request", r#"{"error":{"message":"criteria must be an object"}}"#).await;

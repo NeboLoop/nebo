@@ -171,7 +171,7 @@ impl Profile {
     async fn open_billing(&self, ctx: &ToolContext) -> ToolResult {
         if ctx.in_store_app() {
             return ToolResult::ok(format!(
-                "Billing is in the app on the owner's phone. Tell them: {}",
+                "Billing is in the mobile app. Tell them: {}",
                 crate::store_app::PLAN_IN_APP
             ));
         }

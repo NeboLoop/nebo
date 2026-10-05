@@ -390,7 +390,7 @@
 		"failed": "a échoué",
 		"tokensInOut": "{input} en entrée · {output} en sortie",
 		"tokenTooltip": "{total} prompt total · {overhead} système+outils · {cacheRead} lecture cache",
-		"outOfBalance": "Vous avez utilisé tout le travail inclus dans votre compte. Choisissez un forfait ou ajoutez du crédit pour continuer.",
+		"outOfBalance": "Votre forfait est épuisé pour ce mois-ci. Passez à un forfait supérieur pour continuer.",
 		"viewPlans": "Voir les forfaits",
 		"choosePlan": "Choisir un forfait",
 		"documents": "Documents",
@@ -887,7 +887,7 @@
 		"dangerZone": "Zone de danger",
 		"deleteAccountDesc": "Supprimez définitivement votre compte et toutes vos données. Cette action est irréversible.",
 		"botName": "Nom",
-		"botNameDesc": "Le nom du bot dans chaque liste, sur le web et sur le téléphone. Vous le renommez sur NeboAI.",
+		"botNameDesc": "Le nom du bot dans chaque liste, sur le web et dans l'app mobile. Vous le renommez sur NeboAI.",
 		"botNameNotConnected": "Connectez ce bot à NeboAI pour lui donner un nom.",
 		"renameBot": "Renommer sur NeboAI",
 		"alsoRenamePrimary": "Renommer aussi votre assistant personnel en « {name} » ?",
@@ -897,7 +897,7 @@
 		"botLocation": "Emplacement",
 		"botLocationDesc": "L'endroit où se trouve le bureau de ce bot. Vos employés s'en servent pour vous dire à quelle distance vous êtes du bureau.",
 		"botLocationPlaceholder": "Adresse, ville",
-		"botLocationPending": "Votre téléphone placera cette adresse sur la carte la prochaine fois que Nebo y sera ouvert.",
+		"botLocationPending": "L'app mobile placera cette adresse sur la carte la prochaine fois que vous l'ouvrirez.",
 		"botLocationSaveFailed": "Impossible d'enregistrer l'emplacement. Réessayez."
 	},
 	"settingsAbout": {
@@ -1622,7 +1622,7 @@
 		"giftPoolLabel": "Réserve cadeau",
 		"charges": {
 			"title": "Facturé sur votre forfait",
-			"intro": "Les numéros de téléphone, appels, SMS, ordinateurs cloud et la mémoire ont un prix en dollars et sont déduits de votre forfait, puis du crédit que vous avez acheté. Chacun augmente le % utilisé de votre forfait.",
+			"intro": "Les numéros de téléphone, appels, SMS, ordinateurs cloud et la mémoire ont un prix en dollars et sont déduits de votre forfait. Chacun augmente le % utilisé de votre forfait.",
 			"total": "{amount} ce mois-ci",
 			"empty": "Rien n'a été facturé sur votre forfait ce mois-ci.",
 			"loadFailed": "Impossible de charger les frais. Réessayez.",

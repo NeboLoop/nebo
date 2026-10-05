@@ -16,7 +16,7 @@ use std::sync::LazyLock;
 pub const PLAN_IN_APP: &str = "Open Settings → Account → Plan in the app.";
 
 /// What the model is told on a turn from the phone app.
-pub const GUIDANCE: &str = "The owner is using the NeboAI phone app. Never quote NeboAI's prices \
+pub const GUIDANCE: &str = "The owner is using the NeboAI mobile app. Never quote NeboAI's prices \
 from the web and never give a checkout, pricing, billing or payment link for NeboAI. For anything \
 about the plan, credit or billing, tell them: Open Settings → Account → Plan in the app.";
 

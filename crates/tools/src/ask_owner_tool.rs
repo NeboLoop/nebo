@@ -146,7 +146,7 @@ impl DynTool for AskOwnerTool {
         "Asks the owner one question; the work waits for the answer.\n\
          - Only for real ambiguity you can't resolve: readings that lead to different work, or a choice only the owner can make.\n\
          - A clear instruction your permission mode allows is carried out, never asked back to confirm it or how you'll do it.\n\
-         - To have the owner pick, give `options`: buttons in his chat on desktop and phone. Never list them in text or draw a panel. Leave them out for a free answer."
+         - To have the owner pick, give `options`: buttons in his chat on desktop and in the mobile app. Never list them in text or draw a panel. Leave them out for a free answer."
             .to_string()
     }
 
@@ -306,7 +306,7 @@ mod tests {
             crate::coworker::new_rail_cell(),
         );
         let d = tool.description();
-        assert!(d.contains("To have the owner pick, give `options`: buttons in his chat on desktop and phone"), "{d}");
+        assert!(d.contains("To have the owner pick, give `options`: buttons in his chat on desktop and in the mobile app"), "{d}");
         assert!(d.contains("Never list them in text or draw a panel"), "{d}");
     }
 }

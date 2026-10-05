@@ -390,7 +390,7 @@
 		"failed": "misslyckades",
 		"tokensInOut": "{input} in · {output} ut",
 		"tokenTooltip": "{total} total prompt · {overhead} system+verktyg · {cacheRead} cacheläsning",
-		"outOfBalance": "Du har använt allt arbete som ingår i ditt konto. Välj en plan eller fyll på för att fortsätta.",
+		"outOfBalance": "Din plan är förbrukad för den här månaden. Uppgradera din plan för att fortsätta.",
 		"viewPlans": "Visa planer",
 		"choosePlan": "Välj en plan",
 		"documents": "Dokument",
@@ -887,7 +887,7 @@
 		"dangerZone": "Farozon",
 		"deleteAccountDesc": "Radera ditt konto och all data permanent. Detta kan inte ångras.",
 		"botName": "Namn",
-		"botNameDesc": "Botens namn i alla listor, på webben och i telefonen. Du byter namn på den på NeboAI.",
+		"botNameDesc": "Botens namn i alla listor, på webben och i mobilappen. Du byter namn på den på NeboAI.",
 		"botNameNotConnected": "Anslut den här boten till NeboAI för att namnge den.",
 		"renameBot": "Byt namn på NeboAI",
 		"alsoRenamePrimary": "Byta namn på din personliga assistent till ”{name}” också?",
@@ -897,7 +897,7 @@
 		"botLocation": "Plats",
 		"botLocationDesc": "Var den här botens kontor ligger. Dina anställda använder den för att berätta hur långt du är från kontoret.",
 		"botLocationPlaceholder": "Gatuadress, ort",
-		"botLocationPending": "Din telefon placerar adressen på kartan nästa gång Nebo öppnas där.",
+		"botLocationPending": "Mobilappen placerar adressen på kartan nästa gång du öppnar den.",
 		"botLocationSaveFailed": "Det gick inte att spara platsen. Försök igen."
 	},
 	"settingsAbout": {
@@ -1622,7 +1622,7 @@
 		"giftPoolLabel": "Gåvopool",
 		"charges": {
 			"title": "Debiterat från din plan",
-			"intro": "Telefonnummer, samtal, sms, molndatorer och minne har ett pris i dollar och dras från din plan, sedan från kredit du har köpt. Varje post ökar planens använda %.",
+			"intro": "Telefonnummer, samtal, sms, molndatorer och minne har ett pris i dollar och dras från din plan. Varje post ökar planens använda %.",
 			"total": "{amount} den här månaden",
 			"empty": "Inget har debiterats från din plan den här månaden.",
 			"loadFailed": "Det gick inte att läsa in kostnaderna. Försök igen.",

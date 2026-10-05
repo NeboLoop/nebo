@@ -354,8 +354,8 @@ fn part_path(path: &Path) -> PathBuf {
 fn failure(kind: &str, status: u16, body: &str, signed_in: bool) -> String {
     match status {
         429 | 402 => format!(
-            "The owner's NeboAI plan or balance does not cover this {kind}. Tell the owner plainly; they can add funds or \
-             change plans under Settings > Account, then ask again."
+            "The owner's NeboAI plan is used up this month and does not cover this {kind}. Tell the owner plainly; they \
+             can upgrade their plan under Settings > Account, then ask again."
         ),
         401 | 403 if !signed_in => crate::janus::NOT_SIGNED_IN.to_string(),
         _ => {
@@ -1915,7 +1915,7 @@ mod tests {
             true,
         );
         assert!(
-            said.contains("plan or balance does not cover this image"),
+            said.contains("plan is used up this month and does not cover this image"),
             "{said}"
         );
         let said = failure(

@@ -390,7 +390,7 @@
 		"failed": "falló",
 		"tokensInOut": "{input} entrada · {output} salida",
 		"tokenTooltip": "{total} prompt total · {overhead} sistema+herramientas · {cacheRead} lectura de caché",
-		"outOfBalance": "Ya usaste todo el trabajo que incluye tu cuenta. Elige un plan o añade crédito para continuar.",
+		"outOfBalance": "Tu plan se ha agotado este mes. Mejora tu plan para continuar.",
 		"viewPlans": "Ver planes",
 		"choosePlan": "Elegir un plan",
 		"documents": "Documentos",
@@ -887,7 +887,7 @@
 		"dangerZone": "Zona de peligro",
 		"deleteAccountDesc": "Elimina permanentemente tu cuenta y todos tus datos. Esto no se puede deshacer.",
 		"botName": "Nombre",
-		"botNameDesc": "El nombre del bot en todas las listas, en la web y en el teléfono. El nombre se cambia en NeboAI.",
+		"botNameDesc": "El nombre del bot en todas las listas, en la web y en la app móvil. El nombre se cambia en NeboAI.",
 		"botNameNotConnected": "Conecta este bot a NeboAI para ponerle nombre.",
 		"renameBot": "Cambiar nombre en NeboAI",
 		"alsoRenamePrimary": "¿Cambiar también el nombre de tu asistente personal a «{name}»?",
@@ -897,7 +897,7 @@
 		"botLocation": "Ubicación",
 		"botLocationDesc": "Dónde está la oficina de este bot. Tus empleados la usan para decirte a qué distancia estás de la oficina.",
 		"botLocationPlaceholder": "Dirección, ciudad",
-		"botLocationPending": "Tu teléfono ubicará esta dirección en el mapa la próxima vez que abras Nebo en él.",
+		"botLocationPending": "La app móvil ubicará esta dirección en el mapa la próxima vez que la abras.",
 		"botLocationSaveFailed": "No se pudo guardar la ubicación. Inténtalo de nuevo."
 	},
 	"settingsAbout": {
@@ -1622,7 +1622,7 @@
 		"giftPoolLabel": "Fondo de regalo",
 		"charges": {
 			"title": "Cargado a tu plan",
-			"intro": "Los números de teléfono, llamadas, mensajes de texto, computadoras en la nube y la memoria tienen precio en dólares y se descuentan de tu plan y, después, del crédito que compraste. Cada uno aumenta el % usado de tu plan.",
+			"intro": "Los números de teléfono, llamadas, mensajes de texto, computadoras en la nube y la memoria tienen precio en dólares y se descuentan de tu plan. Cada uno aumenta el % usado de tu plan.",
 			"total": "{amount} este mes",
 			"empty": "No se ha cargado nada a tu plan este mes.",
 			"loadFailed": "No se pudieron cargar los cargos. Inténtalo de nuevo.",

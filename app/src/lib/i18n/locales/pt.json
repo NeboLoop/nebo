@@ -390,7 +390,7 @@
 		"failed": "falhou",
 		"tokensInOut": "{input} de entrada · {output} de saída",
 		"tokenTooltip": "{total} total do prompt · {overhead} sistema+ferramentas · {cacheRead} leitura de cache",
-		"outOfBalance": "Usou todo o trabalho incluído na sua conta. Escolha um plano ou adicione crédito para continuar.",
+		"outOfBalance": "O seu plano esgotou-se este mês. Melhore o plano para continuar.",
 		"viewPlans": "Ver planos",
 		"choosePlan": "Escolher um plano",
 		"documents": "Documentos",
@@ -887,7 +887,7 @@
 		"dangerZone": "Zona de perigo",
 		"deleteAccountDesc": "Elimine permanentemente a sua conta e todos os dados. Esta ação não pode ser anulada.",
 		"botName": "Nome",
-		"botNameDesc": "O nome do bot em todas as listas, na web e no telemóvel. O nome muda-se no NeboAI.",
+		"botNameDesc": "O nome do bot em todas as listas, na web e na aplicação móvel. O nome muda-se no NeboAI.",
 		"botNameNotConnected": "Ligue este bot ao NeboAI para lhe dar um nome.",
 		"renameBot": "Mudar o nome no NeboAI",
 		"alsoRenamePrimary": "Mudar também o nome do seu assistente pessoal para “{name}”?",
@@ -897,7 +897,7 @@
 		"botLocation": "Localização",
 		"botLocationDesc": "Onde fica o escritório deste bot. Os seus funcionários usam-na para lhe dizer a que distância está do escritório.",
 		"botLocationPlaceholder": "Morada, cidade",
-		"botLocationPending": "O seu telemóvel coloca esta morada no mapa da próxima vez que o Nebo for aberto nele.",
+		"botLocationPending": "A aplicação móvel coloca esta morada no mapa da próxima vez que a abrir.",
 		"botLocationSaveFailed": "Não foi possível guardar a localização. Tente novamente."
 	},
 	"settingsAbout": {
@@ -1622,7 +1622,7 @@
 		"giftPoolLabel": "Saldo de ofertas",
 		"charges": {
 			"title": "Cobrado do seu plano",
-			"intro": "Números de telefone, chamadas, SMS, computadores na nuvem e memória têm preço em dólares e saem do seu plano e, depois, do crédito que comprou. Cada um aumenta a % utilizada do seu plano.",
+			"intro": "Números de telefone, chamadas, SMS, computadores na nuvem e memória têm preço em dólares e saem do seu plano. Cada um aumenta a % utilizada do seu plano.",
 			"total": "{amount} este mês",
 			"empty": "Nada foi cobrado do seu plano este mês.",
 			"loadFailed": "Não foi possível carregar as cobranças. Tente novamente.",

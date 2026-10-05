@@ -953,7 +953,7 @@ pub(crate) async fn answer_ask_on_call(
             false,
             format!(
                 "That is {employee}'s, from another conversation: it is answered on its card (the notification, the \
-                 phone or the Inbox), never on this call. Nothing was answered. Tell the owner that in a few words.",
+                 mobile app or the Inbox), never on this call. Nothing was answered. Tell the owner that in a few words.",
                 employee = w.card.employee
             ),
         );

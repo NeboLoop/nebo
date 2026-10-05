@@ -15,7 +15,7 @@ triggers:
 
 # File Delivery
 
-The owner can be on the desktop app, the phone, the web or a voice call.
+The owner can be on the desktop app, the mobile app, the web or a voice call.
 One way works on all of them.
 
 - Use share_file to give the owner a file. It works on any device, voice included.

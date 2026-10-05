@@ -390,7 +390,7 @@
 		"failed": "thất bại",
 		"tokensInOut": "{input} vào · {output} ra",
 		"tokenTooltip": "{total} tổng prompt · {overhead} hệ thống+công cụ · {cacheRead} đọc cache",
-		"outOfBalance": "Bạn đã dùng hết khối lượng công việc có trong tài khoản. Hãy chọn một gói hoặc nạp thêm tín dụng để tiếp tục.",
+		"outOfBalance": "Bạn đã dùng hết gói của tháng này. Hãy nâng cấp gói để tiếp tục.",
 		"viewPlans": "Xem các gói",
 		"choosePlan": "Chọn gói",
 		"documents": "Tài liệu",
@@ -887,7 +887,7 @@
 		"dangerZone": "Vùng nguy hiểm",
 		"deleteAccountDesc": "Xóa vĩnh viễn tài khoản và toàn bộ dữ liệu. Không thể hoàn tác.",
 		"botName": "Tên",
-		"botNameDesc": "Tên của bot trong mọi danh sách, trên web và trên điện thoại. Bạn đổi tên bot trên NeboAI.",
+		"botNameDesc": "Tên của bot trong mọi danh sách, trên web và trong ứng dụng di động. Bạn đổi tên bot trên NeboAI.",
 		"botNameNotConnected": "Kết nối bot này với NeboAI để đặt tên.",
 		"renameBot": "Đổi tên trên NeboAI",
 		"alsoRenamePrimary": "Cũng đổi tên trợ lý cá nhân của bạn thành “{name}”?",
@@ -897,7 +897,7 @@
 		"botLocation": "Vị trí",
 		"botLocationDesc": "Nơi đặt văn phòng của bot này. Nhân viên của bạn dùng nó để cho bạn biết bạn cách văn phòng bao xa.",
 		"botLocationPlaceholder": "Địa chỉ, thành phố",
-		"botLocationPending": "Điện thoại của bạn sẽ đặt địa chỉ này lên bản đồ vào lần tới Nebo được mở trên đó.",
+		"botLocationPending": "Ứng dụng di động sẽ đặt địa chỉ này lên bản đồ vào lần tới bạn mở ứng dụng.",
 		"botLocationSaveFailed": "Không thể lưu vị trí. Hãy thử lại."
 	},
 	"settingsAbout": {
@@ -1622,7 +1622,7 @@
 		"giftPoolLabel": "Quỹ quà tặng",
 		"charges": {
 			"title": "Đã tính vào gói của bạn",
-			"intro": "Số điện thoại, cuộc gọi, tin nhắn, máy tính đám mây và bộ nhớ được định giá bằng đô la và trừ vào gói của bạn, sau đó vào tín dụng bạn đã mua. Mỗi khoản làm tăng % đã dùng của gói.",
+			"intro": "Số điện thoại, cuộc gọi, tin nhắn, máy tính đám mây và bộ nhớ được định giá bằng đô la và trừ vào gói của bạn. Mỗi khoản làm tăng % đã dùng của gói.",
 			"total": "{amount} tháng này",
 			"empty": "Tháng này chưa có gì được tính vào gói của bạn.",
 			"loadFailed": "Không thể tải các khoản phí. Hãy thử lại.",

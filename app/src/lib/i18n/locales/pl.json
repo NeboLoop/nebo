@@ -390,7 +390,7 @@
 		"failed": "nie powiodło się",
 		"tokensInOut": "{input} wej. · {output} wyj.",
 		"tokenTooltip": "{total} łącznie prompt · {overhead} system+narzędzia · {cacheRead} odczyt z cache",
-		"outOfBalance": "Wykorzystano całą pracę zawartą w Twoim koncie. Wybierz plan lub dodaj środki, aby kontynuować.",
+		"outOfBalance": "Twój plan na ten miesiąc został wykorzystany. Zmień plan na wyższy, aby kontynuować.",
 		"viewPlans": "Zobacz plany",
 		"choosePlan": "Wybierz plan",
 		"documents": "Dokumenty",
@@ -887,7 +887,7 @@
 		"dangerZone": "Strefa zagrożenia",
 		"deleteAccountDesc": "Trwale usuń swoje konto i wszystkie dane. Tej operacji nie można cofnąć.",
 		"botName": "Nazwa",
-		"botNameDesc": "Nazwa bota na każdej liście, w sieci i w telefonie. Nazwę zmienia się w NeboAI.",
+		"botNameDesc": "Nazwa bota na każdej liście, w sieci i w aplikacji mobilnej. Nazwę zmienia się w NeboAI.",
 		"botNameNotConnected": "Połącz tego bota z NeboAI, aby nadać mu nazwę.",
 		"renameBot": "Zmień nazwę w NeboAI",
 		"alsoRenamePrimary": "Zmienić też nazwę Twojego osobistego asystenta na „{name}”?",
@@ -897,7 +897,7 @@
 		"botLocation": "Lokalizacja",
 		"botLocationDesc": "Gdzie znajduje się biuro tego bota. Twoi pracownicy używają jej, aby powiedzieć Ci, jak daleko jesteś od biura.",
 		"botLocationPlaceholder": "Ulica i numer, miasto",
-		"botLocationPending": "Twój telefon umieści ten adres na mapie przy następnym otwarciu w nim Nebo.",
+		"botLocationPending": "Aplikacja mobilna umieści ten adres na mapie przy następnym jej otwarciu.",
 		"botLocationSaveFailed": "Nie udało się zapisać lokalizacji. Spróbuj ponownie."
 	},
 	"settingsAbout": {
@@ -1622,7 +1622,7 @@
 		"giftPoolLabel": "Pula podarunkowa",
 		"charges": {
 			"title": "Obciążono Twój plan",
-			"intro": "Numery telefonów, połączenia, SMS-y, komputery w chmurze i pamięć mają cenę w dolarach i są pobierane z Twojego planu, a potem z kupionego kredytu. Każda pozycja zwiększa wykorzystany % planu.",
+			"intro": "Numery telefonów, połączenia, SMS-y, komputery w chmurze i pamięć mają cenę w dolarach i są pobierane z Twojego planu. Każda pozycja zwiększa wykorzystany % planu.",
 			"total": "{amount} w tym miesiącu",
 			"empty": "W tym miesiącu nic nie obciążyło Twojego planu.",
 			"loadFailed": "Nie udało się wczytać opłat. Spróbuj ponownie.",

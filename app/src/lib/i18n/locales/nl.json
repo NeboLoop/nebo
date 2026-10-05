@@ -390,7 +390,7 @@
 		"failed": "mislukt",
 		"tokensInOut": "{input} in · {output} uit",
 		"tokenTooltip": "{total} totale prompt · {overhead} systeem+tools · {cacheRead} cache gelezen",
-		"outOfBalance": "Je hebt al het werk gebruikt dat bij je account hoort. Kies een abonnement of voeg tegoed toe om door te gaan.",
+		"outOfBalance": "Je abonnement is deze maand op. Upgrade je abonnement om door te gaan.",
 		"viewPlans": "Abonnementen bekijken",
 		"choosePlan": "Kies een abonnement",
 		"documents": "Documenten",
@@ -887,7 +887,7 @@
 		"dangerZone": "Gevarenzone",
 		"deleteAccountDesc": "Verwijder je account en alle gegevens permanent. Dit kan niet ongedaan worden gemaakt.",
 		"botName": "Naam",
-		"botNameDesc": "De naam van de bot in elke lijst, op het web en op de telefoon. Je wijzigt de naam op NeboAI.",
+		"botNameDesc": "De naam van de bot in elke lijst, op het web en in de mobiele app. Je wijzigt de naam op NeboAI.",
 		"botNameNotConnected": "Verbind deze bot met NeboAI om hem een naam te geven.",
 		"renameBot": "Hernoemen op NeboAI",
 		"alsoRenamePrimary": "Ook je persoonlijk assistent hernoemen naar “{name}”?",
@@ -897,7 +897,7 @@
 		"botLocation": "Locatie",
 		"botLocationDesc": "Waar het kantoor van deze bot is. Je medewerkers gebruiken dit om je te vertellen hoe ver je van kantoor bent.",
 		"botLocationPlaceholder": "Straat en huisnummer, plaats",
-		"botLocationPending": "Je telefoon zet dit adres op de kaart zodra Nebo daar de volgende keer opent.",
+		"botLocationPending": "De mobiele app zet dit adres op de kaart zodra je hem de volgende keer opent.",
 		"botLocationSaveFailed": "De locatie kon niet worden opgeslagen. Probeer het opnieuw."
 	},
 	"settingsAbout": {
@@ -1622,7 +1622,7 @@
 		"giftPoolLabel": "Cadeaupool",
 		"charges": {
 			"title": "In rekening gebracht op je abonnement",
-			"intro": "Telefoonnummers, gesprekken, sms'jes, cloudcomputers en geheugen hebben een prijs in dollars en gaan van je abonnement af, daarna van tegoed dat je hebt gekocht. Elk ervan verhoogt het gebruikte % van je abonnement.",
+			"intro": "Telefoonnummers, gesprekken, sms'jes, cloudcomputers en geheugen hebben een prijs in dollars en gaan van je abonnement af. Elk ervan verhoogt het gebruikte % van je abonnement.",
 			"total": "{amount} deze maand",
 			"empty": "Er is deze maand niets op je abonnement in rekening gebracht.",
 			"loadFailed": "Kosten konden niet worden geladen. Probeer het opnieuw.",

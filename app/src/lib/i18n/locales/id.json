@@ -390,7 +390,7 @@
 		"failed": "gagal",
 		"tokensInOut": "{input} masuk · {output} keluar",
 		"tokenTooltip": "{total} total prompt · {overhead} sistem+alat · {cacheRead} baca cache",
-		"outOfBalance": "Anda sudah memakai semua pekerjaan yang termasuk dalam akun Anda. Pilih paket atau tambah kredit untuk melanjutkan.",
+		"outOfBalance": "Paket Anda sudah habis untuk bulan ini. Tingkatkan paket Anda untuk melanjutkan.",
 		"viewPlans": "Lihat paket",
 		"choosePlan": "Pilih paket",
 		"documents": "Dokumen",
@@ -887,7 +887,7 @@
 		"dangerZone": "Zona Berbahaya",
 		"deleteAccountDesc": "Hapus akun Anda dan semua data secara permanen. Tindakan ini tidak dapat dibatalkan.",
 		"botName": "Nama",
-		"botNameDesc": "Nama bot di setiap daftar, di web, dan di ponsel. Namanya diubah di NeboAI.",
+		"botNameDesc": "Nama bot di setiap daftar, di web, dan di aplikasi seluler. Namanya diubah di NeboAI.",
 		"botNameNotConnected": "Hubungkan bot ini ke NeboAI untuk memberinya nama.",
 		"renameBot": "Ubah nama di NeboAI",
 		"alsoRenamePrimary": "Ubah juga nama asisten pribadi Anda menjadi “{name}”?",
@@ -897,7 +897,7 @@
 		"botLocation": "Lokasi",
 		"botLocationDesc": "Tempat kantor bot ini berada. Karyawan Anda menggunakannya untuk memberi tahu seberapa jauh Anda dari kantor.",
 		"botLocationPlaceholder": "Alamat jalan, kota",
-		"botLocationPending": "Ponsel Anda akan menempatkan alamat ini di peta saat Nebo dibuka di sana berikutnya.",
+		"botLocationPending": "Aplikasi seluler akan menempatkan alamat ini di peta saat Anda membukanya berikutnya.",
 		"botLocationSaveFailed": "Tidak dapat menyimpan lokasi. Coba lagi."
 	},
 	"settingsAbout": {
@@ -1622,7 +1622,7 @@
 		"giftPoolLabel": "Kuota hadiah",
 		"charges": {
 			"title": "Ditagihkan ke paket Anda",
-			"intro": "Nomor telepon, panggilan, SMS, komputer cloud, dan memori dihargai dalam dolar dan diambil dari paket Anda, lalu dari kredit yang Anda beli. Masing-masing menaikkan % terpakai paket Anda.",
+			"intro": "Nomor telepon, panggilan, SMS, komputer cloud, dan memori dihargai dalam dolar dan diambil dari paket Anda. Masing-masing menaikkan % terpakai paket Anda.",
 			"total": "{amount} bulan ini",
 			"empty": "Tidak ada yang ditagihkan ke paket Anda bulan ini.",
 			"loadFailed": "Tidak dapat memuat tagihan. Coba lagi.",

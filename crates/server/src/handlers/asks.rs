@@ -337,7 +337,7 @@ pub(crate) fn notice_on_call(w: &WaitingAsk) -> String {
         "(A notice, not a request, and not this conversation's: {employee} is waiting on the owner elsewhere. Tell \
          the owner once, in one short sentence, in the language they are speaking on this call: \"{headline}: \
          {question}\". Nothing more: don't ask them for the answer and never answer it yourself. It is answered on \
-         its card (the notification, the phone or the Inbox), never on this call.)",
+         its card (the notification, the mobile app or the Inbox), never on this call.)",
         employee = w.employee,
         headline = waiting_on_you(&w.employee),
         question = notice_question(w),
