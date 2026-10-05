@@ -260,6 +260,7 @@
 		"withTeammate": "Với {name}",
 		"teamThread": "Nhóm {name}",
 		"working": "Đang làm việc",
+		"newReply": "Phản hồi mới",
 		"chatActions": "Thao tác trò chuyện",
 		"deleteChatTitle": "Xóa \"{name}\"?",
 		"deleteChatBody": "Cuộc trò chuyện này và tất cả tin nhắn của nó sẽ bị xóa. Không thể hoàn tác.",

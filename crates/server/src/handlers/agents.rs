@@ -580,10 +580,24 @@ pub async fn list_agents(
             .flatten()
             .map(|a| a.name != "Nebo")
             .unwrap_or(true);
+    // The owner's conversations with a reply he has not read, by session key
+    // (`agent:<id>:…`): the roster's "New reply" dots, an employee's row lit
+    // when any of its conversations is. Cleared by `PUT /chats/{id}/read`.
+    let unread_sessions: Vec<String> = state
+        .store
+        .unread_conversations()
+        .unwrap_or_else(|e| {
+            warn!(error = %e, "roster: could not read the unread conversations");
+            Vec::new()
+        })
+        .into_iter()
+        .filter(|key| !key.starts_with(db::TEAM_THREAD_PREFIX))
+        .collect();
     Ok(Json(serde_json::json!({
         "agents": agents,
         "total": total,
         "primaryChristened": primary_christened,
+        "unreadSessions": unread_sessions,
     })))
 }
 

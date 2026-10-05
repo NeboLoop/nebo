@@ -260,6 +260,7 @@
 		"withTeammate": "與 {name}",
 		"teamThread": "{name} 團隊",
 		"working": "工作中",
+		"newReply": "新回覆",
 		"chatActions": "聊天操作",
 		"deleteChatTitle": "刪除「{name}」？",
 		"deleteChatBody": "此聊天及其所有訊息將被刪除，且無法復原。",

@@ -20,6 +20,17 @@ export function appKey(agentId: string, ctx?: string): string {
 	return `agent:${agentId}:app${ctx ? ':' + ctx : ''}`;
 }
 
+/** Session key of a team's own thread: `team:<teamId>`. */
+export function teamKey(teamId: string): string {
+	return `team:${teamId}`;
+}
+
+/** Whether `key` is a member's seat in the team `teamId`
+ *  (`agent:<member>:coworker:team:<teamId>`): where the member works for it. */
+export function isTeamSeat(key: string, teamId: string): boolean {
+	return key.startsWith('agent:') && key.endsWith(`:coworker:${teamKey(teamId)}`);
+}
+
 /** The thread id embedded in a thread session key, or '' when `key` isn't one. */
 export function threadIdFromKey(key: string): string {
 	return key.split(':thread:')[1] ?? '';

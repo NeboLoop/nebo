@@ -95,6 +95,42 @@ fn last_visible_message_sql(chat_id: &str) -> String {
     )
 }
 
+/// The id of a chat's newest REPLY: an employee's visible message (the
+/// preview's rules, assistant rows only) that is not an automation's notice
+/// — a five-minute schedule would otherwise light the dot all day. Newest
+/// by time, then by insertion. `chat_id` is the SQL expression to match on.
+fn latest_reply_sql(chat_id: &str) -> String {
+    format!(
+        "(SELECT r.id FROM chat_messages r
+          WHERE r.chat_id = {chat_id}
+            AND r.role = 'assistant'
+            AND r.content != ''
+            AND (r.metadata IS NULL OR (
+                  r.metadata NOT LIKE '%\"hidden\":true%'
+              AND r.metadata NOT LIKE '%\"isMeta\":true%'
+              AND r.metadata NOT LIKE '%\"runError\":true%'
+              AND r.metadata NOT LIKE '%\"{AUTOMATION_KEY}\":true%'))
+          ORDER BY r.created_at DESC, r.rowid DESC LIMIT 1)"
+    )
+}
+
+/// Whether the chat row `chats` has a reply newer than the one the owner
+/// last read (`chats.read_message_id`). No reply at all is never unread.
+fn unread_sql() -> String {
+    format!("IFNULL({}, chats.read_message_id) IS NOT chats.read_message_id", latest_reply_sql("chats.id"))
+}
+
+/// The conversations that carry read state: the owner's own with an
+/// employee, and a team's thread. An employee's threads with colleagues are
+/// its work, not replies to the owner.
+fn read_tracked_sql() -> String {
+    format!(
+        "({} OR chats.session_name LIKE '{}%')",
+        Conversations::Owners.sql("chats.session_name"),
+        super::teams::TEAM_THREAD_PREFIX
+    )
+}
+
 impl Store {
     pub fn create_chat(&self, id: &str, title: &str) -> Result<Chat, NeboError> {
         let conn = self.conn()?;
@@ -1142,6 +1178,55 @@ impl Store {
         Ok(content.filter(|c| !c.is_empty()))
     }
 
+    /// The owner opened the conversation `session_key`: its newest reply is
+    /// read. Every chat stored under the key is marked, so a conversation
+    /// never keeps a dot from an older chat of the same key.
+    pub fn mark_conversation_read(&self, session_key: &str) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        conn.execute(
+            &format!("UPDATE chats SET read_message_id = {} WHERE session_name = ?1", latest_reply_sql("chats.id")),
+            params![session_key],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    /// The session keys of the conversations with a reply the owner has not
+    /// read: the owner's conversations with employees and the teams' threads
+    /// (`read_tracked_sql`). The sidebar's "New reply" dots.
+    pub fn unread_conversations(&self) -> Result<Vec<String>, NeboError> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(&format!(
+                "SELECT DISTINCT chats.session_name FROM chats WHERE {} AND {}",
+                read_tracked_sql(),
+                unread_sql()
+            ))
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        let rows = stmt
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| NeboError::Database(e.to_string()))
+    }
+
+    /// Whether the conversation `session_key` has a reply the owner has not
+    /// read: what a finished turn reports, so the app lights the dot only
+    /// when there is something new to look at.
+    pub fn conversation_unread(&self, session_key: &str) -> Result<bool, NeboError> {
+        let conn = self.conn()?;
+        conn.query_row(
+            &format!(
+                "SELECT EXISTS(SELECT 1 FROM chats WHERE chats.session_name = ?1 AND {} AND {})",
+                read_tracked_sql(),
+                unread_sql()
+            ),
+            params![session_key],
+            |row| row.get(0),
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))
+    }
+
     /// How many conversations the owner has with this employee (an isolated
     /// employee's matters).
     pub fn count_agent_chats(&self, agent_id: &str) -> Result<i64, NeboError> {
@@ -1626,6 +1711,64 @@ mod tests {
         let refs = store.referenced_shared_folders().unwrap();
         assert!(!refs.contains("0123456789abcdef") && !refs.contains("fedcba9876543210"), "{refs:?}");
         assert!(refs.contains("aaaaaaaaaaaaaaaa"));
+    }
+
+    /// A reply the owner has not seen is unread until he opens the
+    /// conversation; his own messages, Nebo's rows, a failed run's error and
+    /// an automation's notice never are; a newer reply is unread again.
+    #[test]
+    fn a_reply_is_unread_until_the_owner_opens_the_conversation() {
+        let (_dir, store) = store();
+        let key = "agent:ap:thread:c1";
+        store.create_chat_for_session("c1", key, "Invoices", None).unwrap();
+        store.create_chat_message("u1", "c1", "user", "pay the March bills", None).unwrap();
+        assert!(!store.conversation_unread(key).unwrap(), "no reply yet");
+
+        store.create_chat_message("a1", "c1", "assistant", "All done.", None).unwrap();
+        assert!(store.conversation_unread(key).unwrap());
+        assert_eq!(store.unread_conversations().unwrap(), vec![key.to_string()]);
+
+        store.mark_conversation_read(key).unwrap();
+        assert!(!store.conversation_unread(key).unwrap(), "opened = read");
+        assert!(store.unread_conversations().unwrap().is_empty());
+
+        store.create_chat_message("u2", "c1", "user", "thanks", None).unwrap();
+        for (id, meta) in [
+            ("h", r#"{"hidden":true}"#),
+            ("n", r#"{"isMeta":true}"#),
+            ("e", r#"{"runError":true}"#),
+            ("s", r#"{"automation":true}"#),
+        ] {
+            store.create_chat_message(id, "c1", "assistant", "status", Some(meta)).unwrap();
+        }
+        assert!(!store.conversation_unread(key).unwrap(), "none of these is a reply");
+
+        // Same second as the read reply, written after it: still new.
+        store.create_chat_message("a2", "c1", "assistant", "One more thing.", None).unwrap();
+        assert!(store.conversation_unread(key).unwrap());
+    }
+
+    /// The owner's conversations and the teams' threads carry read state; an
+    /// employee's threads with colleagues and team seats never show as
+    /// unread.
+    #[test]
+    fn only_the_owners_conversations_and_team_threads_are_unread() {
+        let (_dir, store) = store();
+        for (chat, key) in [
+            ("own", "agent:ap:web"),
+            ("team", "team:t1"),
+            ("seat", "agent:ap:coworker:team:t1"),
+            ("peer", "agent:ap:coworker:cfo"),
+        ] {
+            store.create_chat_for_session(chat, key, chat, None).unwrap();
+            store.create_chat_message(&format!("{chat}-r"), chat, "assistant", "reply", None).unwrap();
+        }
+        let mut unread = store.unread_conversations().unwrap();
+        unread.sort();
+        assert_eq!(unread, vec!["agent:ap:web".to_string(), "team:t1".to_string()]);
+        assert!(!store.conversation_unread("agent:ap:coworker:cfo").unwrap());
+        store.mark_conversation_read("team:t1").unwrap();
+        assert_eq!(store.unread_conversations().unwrap(), vec!["agent:ap:web".to_string()]);
     }
 
     fn store() -> (tempfile::TempDir, Store) {

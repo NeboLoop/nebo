@@ -260,6 +260,7 @@
 		"withTeammate": "مع {name}",
 		"teamThread": "فريق {name}",
 		"working": "يعمل",
+		"newReply": "رد جديد",
 		"chatActions": "إجراءات المحادثة",
 		"deleteChatTitle": "حذف \"{name}\"؟",
 		"deleteChatBody": "ستُحذف هذه المحادثة وجميع رسائلها. لا يمكن التراجع عن ذلك.",

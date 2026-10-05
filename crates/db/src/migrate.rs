@@ -1018,6 +1018,33 @@ Two leads.', NULL, 3),
         assert_eq!(kept, 1, "a row's own metadata stays");
     }
 
+    /// Every conversation stored before 0200 starts read at its newest
+    /// reply (an automation's notice is not one), and a chat with no reply
+    /// has nothing read.
+    #[test]
+    fn existing_conversations_start_read_at_their_newest_reply() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let conn = Connection::open(dir.path().join("chat-read.db")).unwrap();
+        run_migrations_to(&conn, 199).unwrap();
+        conn.execute_batch(
+            r#"INSERT INTO chats (id, title, session_name, created_at, updated_at) VALUES
+                ('c', 'c', 'agent:ap:web', 0, 0), ('q', 'q', 'agent:ap:thread:q', 0, 0);
+               INSERT INTO chat_messages (id, chat_id, role, content, metadata, created_at) VALUES
+                ('a1', 'c', 'assistant', 'first', NULL, 1),
+                ('a2', 'c', 'assistant', 'second', NULL, 2),
+                ('s', 'c', 'assistant', '**Automation started** — x', '{"automation":true}', 3),
+                ('u', 'c', 'user', 'thanks', NULL, 4),
+                ('qu', 'q', 'user', 'hello?', NULL, 1);"#,
+        )
+        .unwrap();
+        run_migrations(&conn).unwrap();
+        let read = |id: &str| -> Option<String> {
+            conn.query_row("SELECT read_message_id FROM chats WHERE id = ?1", [id], |r| r.get(0)).unwrap()
+        };
+        assert_eq!(read("c").as_deref(), Some("a2"));
+        assert_eq!(read("q"), None);
+    }
+
     /// The isolation flag becomes the memory mode it behaved as: off is one
     /// conversation, on is separate conversations (so the primary employee,
     /// sealed today, stays exactly as it is). A mode already named is kept,

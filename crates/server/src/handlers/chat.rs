@@ -157,6 +157,36 @@ pub async fn update_chat(
     Ok(Json(serde_json::json!({"success": true})))
 }
 
+/// PUT /api/v1/chats/:id/read — the owner has this conversation open: its
+/// newest reply is read, on every surface (`chat_read`).
+pub async fn mark_chat_read(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> HandlerResult<serde_json::Value> {
+    // Like `GET /chats/{id}/messages`, the id may be the conversation's
+    // session key (a legacy conversation's id is: `agent:<id>:web`).
+    let key = match state.store.get_chat(&id).map_err(to_error_response)? {
+        Some(chat) => chat.session_name,
+        None => Some(id),
+    };
+    // A chat outside any session is no one's conversation: nothing to read.
+    if let Some(key) = key.filter(|k| !k.is_empty()) {
+        conversation_read(&state, &key).map_err(to_error_response)?;
+    }
+    Ok(Json(serde_json::json!({"success": true})))
+}
+
+/// The ONE way a conversation becomes read: record it, and tell every open
+/// app (`chat_read`), so a dot cleared on the desktop clears on the web
+/// console and the phone too.
+pub(crate) fn conversation_read(state: &AppState, session_key: &str) -> Result<(), types::NeboError> {
+    state.store.mark_conversation_read(session_key)?;
+    state
+        .hub
+        .broadcast("chat_read", serde_json::json!({ "sessionKey": session_key }));
+    Ok(())
+}
+
 /// DELETE /api/v1/chats/:id
 pub async fn delete_chat(
     State(state): State<AppState>,

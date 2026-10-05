@@ -266,6 +266,9 @@ pub(crate) fn record(
             "role": role,
             "text": text,
             "attachments": attachments,
+            // A member's post the owner has not read yet: the sidebar's dot
+            // (an app with the team open marks it read).
+            "unread": state.store.conversation_unread(&db::team_thread_key(&team.id)).unwrap_or(false),
         }),
     );
     Ok((message, sender_name))

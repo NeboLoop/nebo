@@ -35,6 +35,10 @@ pub fn routes() -> Router<AppState> {
             "/teams/{teamId}/working",
             axum::routing::get(handlers::teams::team_working),
         )
+        .route(
+            "/teams/{teamId}/read",
+            axum::routing::put(handlers::teams::mark_team_read),
+        )
         // ── Aliases: the old workroom routes ──
         .route(
             "/workrooms",

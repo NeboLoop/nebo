@@ -260,6 +260,7 @@
 		"withTeammate": "Met {name}",
 		"teamThread": "Team {name}",
 		"working": "Werkt",
+		"newReply": "Nieuw antwoord",
 		"chatActions": "Chatacties",
 		"deleteChatTitle": "\"{name}\" verwijderen?",
 		"deleteChatBody": "Deze chat en al zijn berichten worden verwijderd. Dit kan niet ongedaan worden gemaakt.",

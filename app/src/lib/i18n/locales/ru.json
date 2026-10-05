@@ -260,6 +260,7 @@
 		"withTeammate": "С {name}",
 		"teamThread": "Команда {name}",
 		"working": "Работает",
+		"newReply": "Новый ответ",
 		"chatActions": "Действия с чатом",
 		"deleteChatTitle": "Удалить «{name}»?",
 		"deleteChatBody": "Этот чат и все его сообщения будут удалены. Это действие нельзя отменить.",

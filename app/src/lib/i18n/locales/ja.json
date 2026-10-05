@@ -260,6 +260,7 @@
 		"withTeammate": "{name}と",
 		"teamThread": "{name}チーム",
 		"working": "作業中",
+		"newReply": "新しい返信",
 		"chatActions": "チャットの操作",
 		"deleteChatTitle": "「{name}」を削除しますか？",
 		"deleteChatBody": "このチャットとすべてのメッセージが削除されます。元に戻すことはできません。",

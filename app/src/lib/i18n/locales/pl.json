@@ -260,6 +260,7 @@
 		"withTeammate": "Z: {name}",
 		"teamThread": "Zespół {name}",
 		"working": "Pracuje",
+		"newReply": "Nowa odpowiedź",
 		"chatActions": "Działania czatu",
 		"deleteChatTitle": "Usunąć „{name}”?",
 		"deleteChatBody": "Ten czat i wszystkie jego wiadomości zostaną usunięte. Tej operacji nie można cofnąć.",

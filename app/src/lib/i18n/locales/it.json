@@ -260,6 +260,7 @@
 		"withTeammate": "Con {name}",
 		"teamThread": "Team {name}",
 		"working": "Al lavoro",
+		"newReply": "Nuova risposta",
 		"chatActions": "Azioni chat",
 		"deleteChatTitle": "Eliminare \"{name}\"?",
 		"deleteChatBody": "Questa chat e tutti i suoi messaggi verranno rimossi. L'operazione non può essere annullata.",

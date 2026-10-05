@@ -190,10 +190,30 @@ pub async fn open_team(
 pub async fn list_teams(State(state): State<AppState>) -> HandlerResult<serde_json::Value> {
     let teams = state.store.list_teams().map_err(to_error_response)?;
     let total = teams.len();
+    // The teams with a member's post the owner has not read: the sidebar's
+    // "New reply" dot. Cleared by `PUT /teams/{teamId}/read`.
+    let unread_teams: Vec<String> = state
+        .store
+        .unread_conversations()
+        .map_err(to_error_response)?
+        .iter()
+        .filter_map(|key| key.strip_prefix(db::TEAM_THREAD_PREFIX).map(str::to_string))
+        .collect();
     Ok(Json(serde_json::json!({
         "teams": teams,
         "total": total,
+        "unreadTeams": unread_teams,
     })))
+}
+
+/// PUT /teams/{teamId}/read — the owner has the team's conversation open:
+/// its newest post from a member is read, on every surface (`chat_read`).
+pub async fn mark_team_read(
+    State(state): State<AppState>,
+    Path(team_id): Path<String>,
+) -> HandlerResult<serde_json::Value> {
+    crate::handlers::chat::conversation_read(&state, &db::team_thread_key(&team_id)).map_err(to_error_response)?;
+    Ok(Json(serde_json::json!({"success": true})))
 }
 
 #[derive(Debug, Deserialize)]

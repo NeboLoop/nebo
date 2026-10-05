@@ -42,6 +42,10 @@ pub fn routes() -> Router<AppState> {
             axum::routing::delete(handlers::chat::delete_chat),
         )
         .route(
+            "/chats/{id}/read",
+            axum::routing::put(handlers::chat::mark_chat_read),
+        )
+        .route(
             "/chats/{id}/messages",
             axum::routing::get(handlers::chat::get_chat_messages),
         )

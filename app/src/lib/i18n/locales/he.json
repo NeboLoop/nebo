@@ -260,6 +260,7 @@
 		"withTeammate": "עם {name}",
 		"teamThread": "צוות {name}",
 		"working": "עובד",
+		"newReply": "תשובה חדשה",
 		"chatActions": "פעולות צ'אט",
 		"deleteChatTitle": "למחוק את \"{name}\"?",
 		"deleteChatBody": "הצ'אט הזה וכל ההודעות שבו יימחקו. אי אפשר לבטל פעולה זו.",
