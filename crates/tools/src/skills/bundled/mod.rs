@@ -169,6 +169,33 @@ mod bundled_skill_tests {
         );
     }
 
+    /// The character-swap skill fires on the words an owner uses for AI
+    /// characters, not only on "character swap"; ordinary chat doesn't
+    /// fire it. Live 2026-10-04: asked about an article on AI creators with
+    /// the same face across clips, the employee never named the swap.
+    #[test]
+    fn the_character_swap_skill_fires_on_ai_character_talk_only() {
+        let (_, content) = BUNDLED_SKILLS
+            .iter()
+            .find(|(k, _)| *k == "character-swap")
+            .expect("character-swap is registered");
+        let skill = super::super::parse_skill_frontmatter(content.as_bytes()).expect("parses");
+        for request in [
+            "Are we able to do this? Five AI creators, the same face across hundreds of clips, built from \
+             reference photos, image-to-video and voice.",
+            "Can we make a consistent character for our ads?",
+            "I want an AI influencer for the brand.",
+        ] {
+            assert!(skill.matches_trigger(request), "{request}");
+        }
+        for request in [
+            "Put together a summary of this week's sales calls for the team.",
+            "Find the reference books for the tax filing and face the deadline head on.",
+        ] {
+            assert!(!skill.matches_trigger(request), "{request}");
+        }
+    }
+
     /// ONE door to change an app, and it is the tool. The skill used to send
     /// the employee to the file tool to rewrite ui/ by hand while the tool
     /// description said never to hand-write the files (2026-09-19); an

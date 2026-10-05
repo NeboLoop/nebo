@@ -965,7 +965,11 @@ impl Target {
 
 /// What a request says when it wants new media made (`DynTool::triggers`):
 /// a request that says one has the tool loaded on its first step. Live
-/// 2026-10-03: "Record a one-sentence voiceover" left it deferred.
+/// 2026-10-03: "Record a one-sentence voiceover" left it deferred. Live
+/// 2026-10-04: asked whether we could make "AI creators" with the same face
+/// across clips from reference photos, the employee answered from memory
+/// with no tool in view and never named the cast or the swap. The matcher
+/// allows a plural, so "ai creator" also says "AI creators".
 const TRIGGERS: &[&str] = &[
     "voiceover",
     "voice over",
@@ -985,7 +989,16 @@ const TRIGGERS: &[&str] = &[
     "character swap",
     "swap the person",
     "replace the actor",
+    "replace the person",
     "cast member",
+    "same face",
+    "consistent character",
+    "ai character",
+    "ai influencer",
+    "ai creator",
+    "ai persona",
+    "reference photo",
+    "image to video",
 ];
 
 /// `generate_media`: the tool.
@@ -1511,8 +1524,8 @@ impl DynTool for GenerateMediaTool {
         "Makes new media with AI through NeboAI (an image, a short video, or spoken audio) and saves it as a file, billed \
          to the owner's plan.\n\
          - kind \"image\": 1-4 images from `prompt` (PNG unless `into` or `output_format` says webp or jpeg).\n\
-         - kind \"video\": one MP4 of 1-30 seconds from `prompt`; it can take minutes. `image` sets the first frame (a \
-           file in the same folder, an https URL or a data URL). `scrub: true` re-encodes it for scroll-scrubbing.\n\
+         - kind \"video\": one MP4 of 1-30 seconds from `prompt`; it can take minutes. `image` sets the first frame \
+           (image to video): a file in the same folder, an https URL or a data URL. `scrub: true` re-encodes it for scroll-scrubbing.\n\
          - Character swap: kind \"video\", `mode` \"replace\", `video` and `cast`. kind \"cast\" lists and adds the \
            people a swap may use; the owner confirms each once. Recipe: the character-swap skill.\n\
          - kind \"speech\": `text` read aloud, as a voiceover or narration: an MP3, or WAV when `into` or \
@@ -1522,8 +1535,8 @@ impl DynTool for GenerateMediaTool {
            for the owner's ~/NeboAI folder); a relative one, such as `assets/hero.png`, is inside the app's folder when you \
            are an app or name one with `app`, else the workspace. The result gives each file's absolute path: use that \
            path from then on.\n\
-         - It only makes new media. To edit, mix, trim, resize, convert or inspect an existing file, use an installed media \
-           plugin's tool instead.\n\
+         - It only makes new media; a media plugin such as Nebo Media only edits. To edit, mix, trim, resize, convert or \
+           inspect an existing file, use that plugin's tool.\n\
          - The result gives the files' paths, never the pictures; to look at one, use the vision helper on its path.\n\
          - Leave `model` out unless the owner named one."
             .to_string()
