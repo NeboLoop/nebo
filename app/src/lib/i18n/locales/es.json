@@ -1618,7 +1618,27 @@
 		"noUsageDataShort": "Aún no hay datos de uso disponibles.",
 		"balance": "Saldo",
 		"freePoolLabel": "Fondo gratuito",
-		"giftPoolLabel": "Fondo de regalo"
+		"giftPoolLabel": "Fondo de regalo",
+		"charges": {
+			"title": "Cargado a tu plan",
+			"intro": "Los números de teléfono, llamadas, mensajes de texto, computadoras en la nube y la memoria tienen precio en dólares y se descuentan de tu plan y, después, del crédito que compraste. Cada uno aumenta el % usado de tu plan.",
+			"total": "{amount} este mes",
+			"empty": "No se ha cargado nada a tu plan este mes.",
+			"loadFailed": "No se pudieron cargar los cargos. Inténtalo de nuevo.",
+			"fromPlan": "De tu plan",
+			"fromCredit": "Del crédito",
+			"loadMore": "Cargar más",
+			"phoneNumber": "Número de teléfono {number}",
+			"phoneNumberPlain": "Número de teléfono",
+			"calls": "Llamadas · {minutes} min",
+			"texts": "Mensajes de texto · {count}",
+			"textingRegistration": "Registro de mensajes de texto",
+			"textingMonthly": "Mensajes de texto · mensual",
+			"cloudComputer": "Computadora en la nube",
+			"cloudComputerNamed": "Computadora en la nube · {name}",
+			"memory": "Memoria",
+			"media": "Multimedia"
+		}
 	},
 	"settingsFamily": {
 		"title": "Familia",

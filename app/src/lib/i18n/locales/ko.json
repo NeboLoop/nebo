@@ -1618,7 +1618,27 @@
 		"noUsageDataShort": "아직 사용량 데이터가 없습니다.",
 		"balance": "잔액",
 		"freePoolLabel": "무료 풀",
-		"giftPoolLabel": "선물 풀"
+		"giftPoolLabel": "선물 풀",
+		"charges": {
+			"title": "플랜에서 청구됨",
+			"intro": "전화번호, 통화, 문자, 클라우드 컴퓨터, 메모리는 달러로 가격이 매겨지며 플랜에서 먼저, 그다음 구매한 크레딧에서 차감됩니다. 각 항목은 플랜 사용률(%)을 높입니다.",
+			"total": "이번 달 {amount}",
+			"empty": "이번 달에는 플랜에서 청구된 내역이 없습니다.",
+			"loadFailed": "청구 내역을 불러올 수 없습니다. 다시 시도하세요.",
+			"fromPlan": "플랜에서",
+			"fromCredit": "크레딧에서",
+			"loadMore": "더 불러오기",
+			"phoneNumber": "전화번호 {number}",
+			"phoneNumberPlain": "전화번호",
+			"calls": "통화 · {minutes}분",
+			"texts": "문자 · {count}건",
+			"textingRegistration": "문자 등록",
+			"textingMonthly": "문자 · 월간",
+			"cloudComputer": "클라우드 컴퓨터",
+			"cloudComputerNamed": "클라우드 컴퓨터 · {name}",
+			"memory": "메모리",
+			"media": "미디어"
+		}
 	},
 	"settingsFamily": {
 		"title": "가족",

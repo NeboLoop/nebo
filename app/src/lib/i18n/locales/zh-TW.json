@@ -1618,7 +1618,27 @@
 		"noUsageDataShort": "尚無用量資料。",
 		"balance": "餘額",
 		"freePoolLabel": "免費池",
-		"giftPoolLabel": "贈禮池"
+		"giftPoolLabel": "贈禮池",
+		"charges": {
+			"title": "從你的方案扣除",
+			"intro": "電話號碼、通話、簡訊、雲端電腦和記憶以美元計價，先從你的方案扣除，再從你購買的額度扣除。每一項都會提高方案的已用百分比。",
+			"total": "本月 {amount}",
+			"empty": "本月沒有從你的方案扣除任何費用。",
+			"loadFailed": "無法載入費用。請再試一次。",
+			"fromPlan": "來自你的方案",
+			"fromCredit": "來自額度",
+			"loadMore": "載入更多",
+			"phoneNumber": "電話號碼 {number}",
+			"phoneNumberPlain": "電話號碼",
+			"calls": "通話 · {minutes} 分鐘",
+			"texts": "簡訊 · {count} 則",
+			"textingRegistration": "簡訊註冊",
+			"textingMonthly": "簡訊 · 每月",
+			"cloudComputer": "雲端電腦",
+			"cloudComputerNamed": "雲端電腦 · {name}",
+			"memory": "記憶",
+			"media": "媒體"
+		}
 	},
 	"settingsFamily": {
 		"title": "家庭",

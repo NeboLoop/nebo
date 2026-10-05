@@ -1618,7 +1618,27 @@
 		"noUsageDataShort": "まだ使用状況データがありません。",
 		"balance": "残高",
 		"freePoolLabel": "無料プール",
-		"giftPoolLabel": "ギフトプール"
+		"giftPoolLabel": "ギフトプール",
+		"charges": {
+			"title": "プランからの請求",
+			"intro": "電話番号、通話、SMS、クラウドコンピューター、メモリーはドル建てで、まずプランから、次に購入したクレジットから差し引かれます。いずれもプランの使用率(%)を上げます。",
+			"total": "今月 {amount}",
+			"empty": "今月はプランからの請求はありません。",
+			"loadFailed": "請求を読み込めませんでした。もう一度お試しください。",
+			"fromPlan": "プランから",
+			"fromCredit": "クレジットから",
+			"loadMore": "さらに読み込む",
+			"phoneNumber": "電話番号 {number}",
+			"phoneNumberPlain": "電話番号",
+			"calls": "通話 · {minutes} 分",
+			"texts": "SMS · {count} 件",
+			"textingRegistration": "SMS 登録",
+			"textingMonthly": "SMS · 月額",
+			"cloudComputer": "クラウドコンピューター",
+			"cloudComputerNamed": "クラウドコンピューター · {name}",
+			"memory": "メモリー",
+			"media": "メディア"
+		}
 	},
 	"settingsFamily": {
 		"title": "ファミリー",

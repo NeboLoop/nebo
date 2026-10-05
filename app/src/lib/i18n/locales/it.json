@@ -1618,7 +1618,27 @@
 		"noUsageDataShort": "Ancora nessun dato di utilizzo disponibile.",
 		"balance": "Saldo",
 		"freePoolLabel": "Pool gratuito",
-		"giftPoolLabel": "Pool regalo"
+		"giftPoolLabel": "Pool regalo",
+		"charges": {
+			"title": "Addebitato al tuo piano",
+			"intro": "Numeri di telefono, chiamate, SMS, computer cloud e memoria hanno un prezzo in dollari e vengono scalati dal tuo piano, poi dal credito che hai acquistato. Ognuno aumenta la % usata del tuo piano.",
+			"total": "{amount} questo mese",
+			"empty": "Questo mese non è stato addebitato nulla al tuo piano.",
+			"loadFailed": "Impossibile caricare gli addebiti. Riprova.",
+			"fromPlan": "Dal tuo piano",
+			"fromCredit": "Dal credito",
+			"loadMore": "Carica altro",
+			"phoneNumber": "Numero di telefono {number}",
+			"phoneNumberPlain": "Numero di telefono",
+			"calls": "Chiamate · {minutes} min",
+			"texts": "SMS · {count}",
+			"textingRegistration": "Registrazione SMS",
+			"textingMonthly": "SMS · mensile",
+			"cloudComputer": "Computer cloud",
+			"cloudComputerNamed": "Computer cloud · {name}",
+			"memory": "Memoria",
+			"media": "Media"
+		}
 	},
 	"settingsFamily": {
 		"title": "Famiglia",

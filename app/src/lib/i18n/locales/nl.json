@@ -1618,7 +1618,27 @@
 		"noUsageDataShort": "Nog geen verbruiksgegevens beschikbaar.",
 		"balance": "Saldo",
 		"freePoolLabel": "Gratis pool",
-		"giftPoolLabel": "Cadeaupool"
+		"giftPoolLabel": "Cadeaupool",
+		"charges": {
+			"title": "In rekening gebracht op je abonnement",
+			"intro": "Telefoonnummers, gesprekken, sms'jes, cloudcomputers en geheugen hebben een prijs in dollars en gaan van je abonnement af, daarna van tegoed dat je hebt gekocht. Elk ervan verhoogt het gebruikte % van je abonnement.",
+			"total": "{amount} deze maand",
+			"empty": "Er is deze maand niets op je abonnement in rekening gebracht.",
+			"loadFailed": "Kosten konden niet worden geladen. Probeer het opnieuw.",
+			"fromPlan": "Van je abonnement",
+			"fromCredit": "Van tegoed",
+			"loadMore": "Meer laden",
+			"phoneNumber": "Telefoonnummer {number}",
+			"phoneNumberPlain": "Telefoonnummer",
+			"calls": "Gesprekken · {minutes} min",
+			"texts": "Sms'jes · {count}",
+			"textingRegistration": "Sms-registratie",
+			"textingMonthly": "Sms · maandelijks",
+			"cloudComputer": "Cloudcomputer",
+			"cloudComputerNamed": "Cloudcomputer · {name}",
+			"memory": "Geheugen",
+			"media": "Media"
+		}
 	},
 	"settingsFamily": {
 		"title": "Familie",

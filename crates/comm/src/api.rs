@@ -1463,6 +1463,21 @@ impl NeboAIApi {
         .await
     }
 
+    /// This month's plan use: the percentage, and one page of the "Charged to
+    /// your plan" lines (phone, texts, cloud computers, memory) in dollars.
+    pub async fn billing_plan_usage(
+        &self,
+        limit: u32,
+        offset: u32,
+    ) -> Result<serde_json::Value, CommError> {
+        self.do_json(
+            reqwest::Method::GET,
+            &format!("/api/v1/billing/usage/plan?limit={limit}&offset={offset}"),
+            None::<&()>,
+        )
+        .await
+    }
+
     /// List invoices (owner-scoped).
     pub async fn billing_invoices(&self) -> Result<serde_json::Value, CommError> {
         self.do_json(

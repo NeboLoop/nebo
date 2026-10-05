@@ -1618,7 +1618,27 @@
 		"noUsageDataShort": "Noch keine Nutzungsdaten verfügbar.",
 		"balance": "Guthaben",
 		"freePoolLabel": "Gratis-Pool",
-		"giftPoolLabel": "Geschenk-Pool"
+		"giftPoolLabel": "Geschenk-Pool",
+		"charges": {
+			"title": "Deinem Plan berechnet",
+			"intro": "Telefonnummern, Anrufe, SMS, Cloud-Computer und Speicher haben einen Dollarpreis und werden von deinem Plan abgezogen, danach von gekauftem Guthaben. Jeder Posten erhöht den genutzten Anteil deines Plans in %.",
+			"total": "{amount} diesen Monat",
+			"empty": "Diesen Monat wurde deinem Plan nichts berechnet.",
+			"loadFailed": "Kosten konnten nicht geladen werden. Versuche es erneut.",
+			"fromPlan": "Aus deinem Plan",
+			"fromCredit": "Aus Guthaben",
+			"loadMore": "Mehr laden",
+			"phoneNumber": "Telefonnummer {number}",
+			"phoneNumberPlain": "Telefonnummer",
+			"calls": "Anrufe · {minutes} Min.",
+			"texts": "SMS · {count}",
+			"textingRegistration": "SMS-Registrierung",
+			"textingMonthly": "SMS · monatlich",
+			"cloudComputer": "Cloud-Computer",
+			"cloudComputerNamed": "Cloud-Computer · {name}",
+			"memory": "Speicher",
+			"media": "Medien"
+		}
 	},
 	"settingsFamily": {
 		"title": "Familie",

@@ -1308,6 +1308,13 @@ export function neboAIBillingPaymentMethods() {
 }
 
 /**
+ * @description "Nebo a i billing plan charges"
+ */
+export function neboAIBillingPlanCharges(limit: number, offset: number) {
+	return webapi.get<components.PlanChargesResponse>(`/api/v1/neboai/billing/plan-charges`, { limit, offset })
+}
+
+/**
  * @description "Nebo a i billing portal"
  */
 export function neboAIBillingPortal(req: Record<string, unknown> = {}) {

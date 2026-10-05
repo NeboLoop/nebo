@@ -1618,7 +1618,27 @@
 		"noUsageDataShort": "Aucune donnée d'utilisation disponible pour l'instant.",
 		"balance": "Solde",
 		"freePoolLabel": "Réserve gratuite",
-		"giftPoolLabel": "Réserve cadeau"
+		"giftPoolLabel": "Réserve cadeau",
+		"charges": {
+			"title": "Facturé sur votre forfait",
+			"intro": "Les numéros de téléphone, appels, SMS, ordinateurs cloud et la mémoire ont un prix en dollars et sont déduits de votre forfait, puis du crédit que vous avez acheté. Chacun augmente le % utilisé de votre forfait.",
+			"total": "{amount} ce mois-ci",
+			"empty": "Rien n'a été facturé sur votre forfait ce mois-ci.",
+			"loadFailed": "Impossible de charger les frais. Réessayez.",
+			"fromPlan": "De votre forfait",
+			"fromCredit": "Du crédit",
+			"loadMore": "Charger plus",
+			"phoneNumber": "Numéro de téléphone {number}",
+			"phoneNumberPlain": "Numéro de téléphone",
+			"calls": "Appels · {minutes} min",
+			"texts": "SMS · {count}",
+			"textingRegistration": "Enregistrement SMS",
+			"textingMonthly": "SMS · mensuel",
+			"cloudComputer": "Ordinateur cloud",
+			"cloudComputerNamed": "Ordinateur cloud · {name}",
+			"memory": "Mémoire",
+			"media": "Médias"
+		}
 	},
 	"settingsFamily": {
 		"title": "Famille",

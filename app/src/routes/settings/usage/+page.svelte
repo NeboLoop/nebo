@@ -2,10 +2,11 @@
   import { openWebBilling } from '$lib/billing';
   import SettingsHeader from '$lib/components/settings/SettingsHeader.svelte';
   import { onMount } from 'svelte';
-  import { t } from 'svelte-i18n';
+  import { t, locale } from 'svelte-i18n';
   import RefreshCw from 'lucide-svelte/icons/refresh-cw';
   import * as api from '$lib/api/nebo';
-  import type { AccountStatusResponse, NeboAIBillingSubscriptionResponse } from '$lib/api/neboComponents';
+  import type { AccountStatusResponse, NeboAIBillingSubscriptionResponse, PlanChargeLine } from '$lib/api/neboComponents';
+  import { chargeText, sourceKey, formatCents, formatChargeDate, hasMore } from '$lib/planCharges';
   import Spinner from '$lib/components/ui/Spinner.svelte';
   import { onWsEvent } from '$lib/websocket/subscribe';
 
@@ -51,6 +52,37 @@
   let subscription = $state<(Omit<NeboAIBillingSubscriptionResponse, 'subscriptions'> & { subscriptions: BillingSub[] }) | null>(null);
   let connected = $state(false);
 
+  // Charged to your plan: this month's dollar lines (phone, texts, cloud
+  // computers, memory), a page at a time. AI work is the percentage above.
+  const CHARGES_PAGE = 50;
+  let charges = $state<PlanChargeLine[]>([]);
+  let chargesCount = $state(0);
+  let chargesTotalCents = $state(0);
+  let chargesLoaded = $state(false);
+  let chargesFailed = $state(false);
+  let chargesLoading = $state(false);
+
+  async function loadCharges(more = false) {
+    if (chargesLoading) return;
+    chargesLoading = true;
+    try {
+      const page = await api.neboAIBillingPlanCharges(CHARGES_PAGE, more ? charges.length : 0);
+      charges = more ? [...charges, ...(page.charges ?? [])] : (page.charges ?? []);
+      chargesCount = page.chargesCount ?? 0;
+      chargesTotalCents = page.chargesTotalCents ?? 0;
+      chargesFailed = false;
+    } catch {
+      chargesFailed = true;
+    }
+    chargesLoaded = true;
+    chargesLoading = false;
+  }
+
+  function chargeTitle(line: PlanChargeLine): string {
+    const text = chargeText(line);
+    return text.raw ?? $t(text.key, { values: text.values });
+  }
+
   const currentPlan = $derived((subscription?.plan || accountStatus?.plan || 'free').toLowerCase());
   const planName = $derived(currentPlan.charAt(0).toUpperCase() + currentPlan.slice(1));
 
@@ -81,6 +113,7 @@
           };
         }
         if (subResp.status === 'fulfilled') subscription = subResp.value as typeof subscription;
+        void loadCharges();
       }
     } catch { /* ignore */ }
     isLoading = false;
@@ -240,6 +273,47 @@
 
         {#if !showPlan && !hasWindow(usage?.session) && !hasWindow(usage?.weekly)}
           <p class="text-xs text-base-content/50">{$t('settingsUsage.noUsageDataShort')}</p>
+        {/if}
+      </div>
+    </section>
+
+    <!-- Charged to your plan: dollar lines drawn from the plan, then credit -->
+    <section>
+      <div class="flex items-center justify-between mb-3">
+        <h3 class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('settingsUsage.charges.title')}</h3>
+        {#if chargesLoaded && !chargesFailed && chargesCount > 0}
+          <span class="text-xs text-base-content/50 font-mono tabular-nums">{$t('settingsUsage.charges.total', { values: { amount: formatCents(chargesTotalCents, $locale) } })}</span>
+        {/if}
+      </div>
+      <div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-5">
+        <p class="text-xs text-base-content/70 mb-4">{$t('settingsUsage.charges.intro')}</p>
+        {#if !chargesLoaded}
+          <div class="flex justify-center py-4"><Spinner size={16} /></div>
+        {:else if chargesFailed && charges.length === 0}
+          <p class="text-xs text-base-content/70">{$t('settingsUsage.charges.loadFailed')}</p>
+        {:else if charges.length === 0}
+          <p class="text-xs text-base-content/50">{$t('settingsUsage.charges.empty')}</p>
+        {:else}
+          <ul class="divide-y divide-base-content/10">
+            {#each charges as line (line.id)}
+              <li class="flex items-center justify-between gap-4 py-2.5">
+                <div class="min-w-0">
+                  <p class="text-sm text-base-content truncate">{chargeTitle(line)}</p>
+                  <p class="text-xs text-base-content/50">{formatChargeDate(line.at, $locale)} · {$t(sourceKey(line))}</p>
+                </div>
+                <span class="text-sm font-medium text-base-content font-mono tabular-nums shrink-0">{formatCents(line.amountCents, $locale)}</span>
+              </li>
+            {/each}
+          </ul>
+          {#if hasMore(charges.length, chargesCount)}
+            <button type="button" class="btn btn-ghost btn-sm mt-3" disabled={chargesLoading} onclick={() => loadCharges(true)}>
+              {#if chargesLoading}<Spinner size={14} />{/if}
+              {$t('settingsUsage.charges.loadMore')}
+            </button>
+          {/if}
+          {#if chargesFailed}
+            <p class="text-xs text-base-content/70 mt-2">{$t('settingsUsage.charges.loadFailed')}</p>
+          {/if}
         {/if}
       </div>
     </section>

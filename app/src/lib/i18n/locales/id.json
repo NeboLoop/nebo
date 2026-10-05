@@ -1618,7 +1618,27 @@
 		"noUsageDataShort": "Belum ada data penggunaan.",
 		"balance": "Saldo",
 		"freePoolLabel": "Kuota gratis",
-		"giftPoolLabel": "Kuota hadiah"
+		"giftPoolLabel": "Kuota hadiah",
+		"charges": {
+			"title": "Ditagihkan ke paket Anda",
+			"intro": "Nomor telepon, panggilan, SMS, komputer cloud, dan memori dihargai dalam dolar dan diambil dari paket Anda, lalu dari kredit yang Anda beli. Masing-masing menaikkan % terpakai paket Anda.",
+			"total": "{amount} bulan ini",
+			"empty": "Tidak ada yang ditagihkan ke paket Anda bulan ini.",
+			"loadFailed": "Tidak dapat memuat tagihan. Coba lagi.",
+			"fromPlan": "Dari paket Anda",
+			"fromCredit": "Dari kredit",
+			"loadMore": "Muat lainnya",
+			"phoneNumber": "Nomor telepon {number}",
+			"phoneNumberPlain": "Nomor telepon",
+			"calls": "Panggilan · {minutes} mnt",
+			"texts": "SMS · {count}",
+			"textingRegistration": "Registrasi SMS",
+			"textingMonthly": "SMS · bulanan",
+			"cloudComputer": "Komputer cloud",
+			"cloudComputerNamed": "Komputer cloud · {name}",
+			"memory": "Memori",
+			"media": "Media"
+		}
 	},
 	"settingsFamily": {
 		"title": "Keluarga",

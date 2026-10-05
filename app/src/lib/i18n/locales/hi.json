@@ -1618,7 +1618,27 @@
 		"noUsageDataShort": "अभी कोई उपयोग डेटा उपलब्ध नहीं।",
 		"balance": "बैलेंस",
 		"freePoolLabel": "मुफ़्त पूल",
-		"giftPoolLabel": "गिफ़्ट पूल"
+		"giftPoolLabel": "गिफ़्ट पूल",
+		"charges": {
+			"title": "आपके प्लान से लिया गया",
+			"intro": "फ़ोन नंबर, कॉल, टेक्स्ट, क्लाउड कंप्यूटर और मेमोरी की कीमत डॉलर में है और यह पहले आपके प्लान से, फिर आपके खरीदे गए क्रेडिट से कटती है। हर एक से आपके प्लान का उपयोग किया गया % बढ़ता है।",
+			"total": "इस महीने {amount}",
+			"empty": "इस महीने आपके प्लान से कुछ नहीं लिया गया।",
+			"loadFailed": "शुल्क लोड नहीं हो सके। फिर से कोशिश करें।",
+			"fromPlan": "आपके प्लान से",
+			"fromCredit": "क्रेडिट से",
+			"loadMore": "और लोड करें",
+			"phoneNumber": "फ़ोन नंबर {number}",
+			"phoneNumberPlain": "फ़ोन नंबर",
+			"calls": "कॉल · {minutes} मिनट",
+			"texts": "टेक्स्ट · {count}",
+			"textingRegistration": "टेक्स्टिंग पंजीकरण",
+			"textingMonthly": "टेक्स्टिंग · मासिक",
+			"cloudComputer": "क्लाउड कंप्यूटर",
+			"cloudComputerNamed": "क्लाउड कंप्यूटर · {name}",
+			"memory": "मेमोरी",
+			"media": "मीडिया"
+		}
 	},
 	"settingsFamily": {
 		"title": "परिवार",
