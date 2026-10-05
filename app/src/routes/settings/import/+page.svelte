@@ -98,7 +98,7 @@
           <FolderOpen class="w-4 h-4 text-base-content/70" />
           <div class="flex-1 min-w-0">
             <span class="text-sm font-medium capitalize">{install.source}</span>
-            <span class="text-xs text-base-content/70 ml-2 truncate">{install.path}</span>
+            <span class="text-xs text-base-content/70 ms-2 truncate">{install.path}</span>
           </div>
           {#if install.importable}
             <button
@@ -149,7 +149,7 @@
         <div>
           <h4 class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1.5">
             {$t(`settingsImport.kinds.${group.kind}`)}
-            <span class="ml-1">({group.items.length})</span>
+            <span class="ms-1">({group.items.length})</span>
           </h4>
           <div class="flex flex-col gap-1">
             {#each group.items as item}

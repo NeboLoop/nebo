@@ -15,6 +15,7 @@
   import { onMount } from 'svelte';
   import { t } from 'svelte-i18n';
   import { backendUrl } from '$lib/api/base';
+  import { UPLOAD_KEEP_DAYS } from '$lib/api/upload';
   import { downloadArtifact } from '$lib/chat/download';
 
   let {
@@ -99,15 +100,23 @@
 
   const SHEET_ROW_CAP = 500;
 
+  /** Why a file didn't load: one the hub cleared after its keeping period
+   *  (410) says so; anything else gives the status. */
+  function loadFailed(status: number): string {
+    return status === 410
+      ? $t('chat.fileRemoved', { values: { days: UPLOAD_KEEP_DAYS } })
+      : $t('chat.failedToLoadStatus', { values: { status } });
+  }
+
   async function fetchText(): Promise<string> {
     const res = await fetch(src);
-    if (!res.ok) throw new Error($t('chat.failedToLoadStatus', { values: { status: res.status } }));
+    if (!res.ok) throw new Error(loadFailed(res.status));
     return res.text();
   }
 
   async function fetchBinary(): Promise<ArrayBuffer> {
     const res = await fetch(src);
-    if (!res.ok) throw new Error($t('chat.failedToLoadStatus', { values: { status: res.status } }));
+    if (!res.ok) throw new Error(loadFailed(res.status));
     return res.arrayBuffer();
   }
 
@@ -164,7 +173,7 @@
         const srcUrl = codeSrc || src;
         const srcExt = (srcUrl.split('/').pop() || '').split('.').pop()?.toLowerCase() || '';
         const res = await fetch(srcUrl);
-        if (!res.ok) throw new Error($t('chat.failedToLoadStatus', { values: { status: res.status } }));
+        if (!res.ok) throw new Error(loadFailed(res.status));
         const text = await res.text();
         const { codeToHtml } = await import('shiki');
         renderedHtml = await codeToHtml(text, {

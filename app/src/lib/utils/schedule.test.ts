@@ -1,5 +1,13 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
+import { addMessages, init } from 'svelte-i18n';
+import en from '$lib/i18n/locales/en.json';
 import { describeCron, describeSchedule, parseSimple, buildSimple, type SimpleSchedule } from './schedule';
+
+// describeCron words its English through svelte-i18n.
+beforeAll(() => {
+	addMessages('en', en);
+	init({ fallbackLocale: 'en', initialLocale: 'en' });
+});
 
 // The losslessness contract: everything the simple editor can EMIT must parse
 // back to the same shape, and everything it can't hold must return null —

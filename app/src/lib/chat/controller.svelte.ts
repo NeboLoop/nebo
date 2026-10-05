@@ -670,7 +670,7 @@ export function createChatController(config: ChatControllerConfig) {
     resetStreaming();
     phaseStartTime = 0;
     activityStatus = '';
-    chatError = data.error || 'Something went wrong.';
+    chatError = data.error || get(t)('common.errorOccurred');
   }
 
   function handleAskRequest(data: any) {
@@ -941,7 +941,7 @@ export function createChatController(config: ChatControllerConfig) {
       if (!isLoading) return;
       const broke = (ws.getDisruptionCount?.() ?? 0) !== sentAtDisruptions;
       if (broke) {
-        setError('Message not delivered. The connection dropped, so send it again.');
+        setError(get(t)('chat.notDelivered'));
       } else {
         armDeliveryTimer();
       }
@@ -1218,7 +1218,7 @@ export function createChatController(config: ChatControllerConfig) {
     resetStreaming();
     phaseStartTime = 0;
     activityStatus = '';
-    chatError = message || 'Something went wrong.';
+    chatError = message || get(t)('common.errorOccurred');
   }
 
   function destroy() {

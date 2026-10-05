@@ -489,6 +489,21 @@
 	max-width: 100%;
 }
 
+/* Right to left (Arabic, Hebrew): the page reads from the right, code never
+   does. Code blocks, inline code, keys and math keep their own left-to-right
+   order, isolated so they don't reorder the sentence around them. */
+:where(pre, code, kbd, samp, .katex) {
+	direction: ltr;
+	unicode-bidi: isolate;
+}
+:where(pre) {
+	text-align: left;
+}
+/* Arrows and chevrons point the way the page reads. */
+[dir='rtl'] :where(.lucide-arrow-left, .lucide-arrow-right, .lucide-chevron-left, .lucide-chevron-right, .lucide-chevrons-left, .lucide-chevrons-right, .lucide-undo-2, .lucide-redo-2) {
+	transform: scaleX(-1);
+}
+
 /* An open tool timeline keeps its header pinned while its steps scroll past,
    so closing it never means scrolling to the bottom first. */
 .tool-timeline-head {
@@ -591,7 +606,7 @@
   @apply text-error;
 }
 .ask-receipt-body {
-  @apply flex flex-col gap-1.5 pl-[1.125rem] pb-1 text-sm text-base-content;
+  @apply flex flex-col gap-1.5 ps-[1.125rem] pb-1 text-sm text-base-content;
 }
 .ask-receipt-options {
   @apply flex flex-col gap-0.5 m-0 p-0 list-none;
@@ -648,7 +663,7 @@
   @apply text-xs text-base-content/70;
 }
 .approval-ask-fact-value {
-  @apply text-sm font-medium text-right break-all;
+  @apply text-sm font-medium text-end break-all;
 }
 .approval-ask-more {
   @apply text-xs text-base-content/70 cursor-pointer select-none;

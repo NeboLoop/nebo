@@ -1,3 +1,5 @@
+import { get } from 'svelte/store';
+import { t } from 'svelte-i18n';
 export interface AppItem {
 	id: string;
 	slug: string;
@@ -61,7 +63,7 @@ export function toAppItem(raw: any, i: number): AppItem {
 		id: raw.id || String(i),
 		slug: raw.slug || raw.id || String(i),
 		code: raw.code || '',
-		name: raw.name || 'Untitled',
+		name: raw.name || get(t)('common.untitled'),
 		author: raw.authorName || (typeof raw.author === 'string' ? raw.author : raw.author?.name || raw.author?.email || ''),
 		authorVerified: raw.authorVerified || false,
 		description: raw.description || raw.shortDescription || '',

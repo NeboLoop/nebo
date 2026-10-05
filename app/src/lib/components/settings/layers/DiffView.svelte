@@ -55,7 +55,7 @@
             <span class="font-semibold">{section.title || $t('settingsLayers.diffUnnamed')}</span>
           </span>
           {#if section.kind}
-            <span class="ml-auto shrink-0 px-1.5 py-0.5 rounded text-xs font-medium {KIND_BADGE[section.kind]}">
+            <span class="ms-auto shrink-0 px-1.5 py-0.5 rounded text-xs font-medium {KIND_BADGE[section.kind]}">
               {$t('settingsLayers.changeKind.' + section.kind)}
             </span>
           {/if}
@@ -64,7 +64,7 @@
           {#each section.lines as line, li (li)}
             <div class="flex items-start font-mono text-xs leading-relaxed whitespace-pre min-w-max {LINE_BG[line.kind]}">
               <span class="w-4 shrink-0 select-none text-center opacity-60">{GUTTER[line.kind]}</span>
-              <span class="pr-3">{line.text || ' '}</span>
+              <span class="pe-3">{line.text || ' '}</span>
             </div>
           {/each}
         </div>

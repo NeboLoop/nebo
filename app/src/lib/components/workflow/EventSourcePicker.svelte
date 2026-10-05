@@ -1,10 +1,11 @@
 <script lang="ts">
+	import { t } from 'svelte-i18n';
 	import type { EventSourceOption } from '$lib/api/neboComponents';
 
 	let {
 		value = '',
 		suggestions = [],
-		placeholder = 'Type to search sources...',
+		placeholder,
 		onchange,
 	}: {
 		/** Comma-separated source list (the trigger's wire format). */
@@ -13,6 +14,8 @@
 		placeholder?: string;
 		onchange?: (value: string) => void;
 	} = $props();
+
+	const shownPlaceholder = $derived(placeholder ?? $t('workflow.eventSources.searchPlaceholder'));
 
 	let query = $state('');
 	let open = $state(false);
@@ -45,7 +48,7 @@
 	}
 
 	function removeToken(token: string) {
-		emit(tokens.filter((t) => t !== token));
+		emit(tokens.filter((tok) => tok !== token));
 		inputEl?.focus();
 	}
 
@@ -73,14 +76,14 @@
 	<!-- A label wrapper gives click-anywhere-to-focus natively. -->
 	<label
 		class="input input-sm input-bordered w-full h-auto min-h-9 py-1 px-2 flex flex-wrap items-center gap-1 cursor-text"
-		aria-label="Event sources"
+		aria-label={$t('workflow.eventSources.label')}
 	>
 		{#each tokens as token (token)}
 			<span class="badge badge-sm gap-1 font-mono text-xs bg-primary/10 text-primary border-none">
 				{token}
 				<button
 					class="cursor-pointer bg-transparent border-none p-0 leading-none text-primary/60 hover:text-error"
-					aria-label="Remove {token}"
+					aria-label={$t('workflow.removeItem', { values: { name: token } })}
 					onclick={(e) => { e.stopPropagation(); removeToken(token); }}
 				>&times;</button>
 			</span>
@@ -89,7 +92,7 @@
 			bind:this={inputEl}
 			bind:value={query}
 			class="flex-1 min-w-28 bg-transparent outline-none border-none text-xs font-mono py-0.5"
-			placeholder={tokens.length === 0 ? placeholder : ''}
+			placeholder={tokens.length === 0 ? shownPlaceholder : ''}
 			role="combobox"
 			aria-expanded={open}
 			aria-controls="event-source-options"
@@ -104,13 +107,13 @@
 		<div
 			id="event-source-options"
 			role="listbox"
-			class="absolute left-0 right-0 top-full mt-1 z-30 rounded-lg border border-base-300 bg-base-100 shadow-lg max-h-52 overflow-y-auto"
+			class="absolute start-0 end-0 top-full mt-1 z-30 rounded-lg border border-base-300 bg-base-100 shadow-lg max-h-52 overflow-y-auto"
 		>
 			{#each filtered as src, i (src.value)}
 				<button
 					role="option"
 					aria-selected={i === highlighted}
-					class="w-full text-left px-2.5 py-1.5 cursor-pointer border-none flex flex-col gap-0.5 {i === highlighted ? 'bg-primary/10' : 'bg-transparent hover:bg-base-200'}"
+					class="w-full text-start px-2.5 py-1.5 cursor-pointer border-none flex flex-col gap-0.5 {i === highlighted ? 'bg-primary/10' : 'bg-transparent hover:bg-base-200'}"
 					onmousedown={(e) => { e.preventDefault(); addToken(src.value); }}
 					onmouseenter={() => { highlighted = i; }}
 				>

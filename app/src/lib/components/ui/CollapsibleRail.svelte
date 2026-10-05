@@ -77,10 +77,10 @@
   class="{$isCollapsed
     ? 'md:w-rail-collapsed md:min-w-rail-collapsed'
     : 'md:w-rail md:min-w-rail'} {hasDrawer
-    ? `max-md:fixed max-md:inset-y-0 max-md:left-0 max-md:z-40 max-md:w-full max-md:transition-[transform,visibility] ${
-        drawerOpen ? 'max-md:translate-x-0 max-md:shadow-2xl' : 'max-md:-translate-x-full max-md:invisible'
+    ? `max-md:fixed max-md:inset-y-0 max-md:start-0 max-md:z-40 max-md:w-full max-md:transition-[transform,visibility] ${
+        drawerOpen ? 'max-md:translate-x-0 max-md:shadow-2xl' : 'max-md:-translate-x-full max-md:rtl:translate-x-full max-md:invisible'
       }`
-    : ''} border-r border-base-300 shadow-[2px_0_8px_-2px_rgba(0,0,0,0.08)] flex flex-col bg-base-200 shrink-0 transition-all duration-150"
+    : ''} border-e border-base-300 shadow-[2px_0_8px_-2px_rgba(0,0,0,0.08)] flex flex-col bg-base-200 shrink-0 transition-all duration-150"
 >
   <div
     class="h-11 border-b border-base-300 flex items-center gap-2 shrink-0 {showRail

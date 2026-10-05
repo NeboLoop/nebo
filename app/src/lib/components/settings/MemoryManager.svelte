@@ -206,7 +206,7 @@
         <button
           type="button"
           onclick={() => openMemory(mem)}
-          class="flex items-center gap-3 py-2.5 px-3.5 rounded-lg border border-base-content/5 bg-base-100 hover:bg-base-200/50 transition-colors cursor-pointer text-left w-full"
+          class="flex items-center gap-3 py-2.5 px-3.5 rounded-lg border border-base-content/5 bg-base-100 hover:bg-base-200/50 transition-colors cursor-pointer text-start w-full"
         >
           <span class="px-1.5 py-0.5 rounded text-[0.625rem] font-semibold uppercase tracking-wide shrink-0 {layerColors[mem.layer] ?? 'bg-base-200 text-base-content/70'}">{mem.layer}</span>
           <div class="flex-1 min-w-0">

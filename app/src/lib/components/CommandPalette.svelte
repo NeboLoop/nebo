@@ -206,7 +206,7 @@
               </svg>
               <span class="truncate">{item.label}</span>
               {#if item.description}
-                <span class="text-xs text-base-content/50 truncate ml-auto">{item.description}</span>
+                <span class="text-xs text-base-content/50 truncate ms-auto">{item.description}</span>
               {/if}
             </button>
           {/each}

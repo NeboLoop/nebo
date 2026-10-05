@@ -320,7 +320,7 @@
             <div class="w-2 h-2 rounded-full shrink-0 {connected ? 'bg-success' : 'bg-base-content/20'}" title={connected ? $t('onboarding.provider.ready') : $t('settingsProviders.notConnected')}></div>
           {/snippet}
           <div class="flex items-center gap-2">
-            <button class="text-sm font-semibold text-primary hover:underline cursor-pointer bg-transparent border-none p-0 text-left" onclick={() => openPluginDetail(plugin)}>{plugin.name}</button>
+            <button class="text-sm font-semibold text-primary hover:underline cursor-pointer bg-transparent border-none p-0 text-start" onclick={() => openPluginDetail(plugin)}>{plugin.name}</button>
             {#if plugin.version}
               <span class="text-xs text-base-content/50 font-mono">{plugin.version}</span>
             {/if}

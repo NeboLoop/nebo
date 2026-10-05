@@ -84,7 +84,16 @@
 		"closeModal": "Close modal",
 		"all": "All",
 		"more": "More",
-		"stopped": "Stopped"
+		"stopped": "Stopped",
+		"errorOccurred": "Something went wrong.",
+		"systemError": "System error",
+		"stillReconnecting": "Still trying to reach your Nebo…",
+		"updatesAvailable": "{count, plural, one {# update available} other {# updates available}}",
+		"artifactUpdated": "Updated {type}: {version}",
+		"artifactUpdateFailed": "Update failed: {error}",
+		"employee": "Employee",
+		"untitled": "Untitled",
+		"document": "Document"
 	},
 	"time": {
 		"justNow": "just now",
@@ -302,7 +311,7 @@
 		"messageChannel": "Message #{channel}...",
 		"messagedCoworker": "Messaged",
 		"disclaimer": "Nebo can make mistakes. Verify important information.",
-		"uploadsKept": "Uploads are kept for 30 days.",
+		"uploadsKept": "Uploads are kept for {days} days.",
 		"goodMorning": "Good morning",
 		"goodAfternoon": "Good afternoon",
 		"goodEvening": "Good evening",
@@ -446,7 +455,12 @@
 		"historyLoadFailed": "Couldn't load this conversation. Check your connection and try again.",
 		"consentCreates": "Say yes and they're created with exactly this job.",
 		"consentAdds": "Say yes and this is added to their job.",
-		"fromColleague": "From {name}"
+		"fromColleague": "From {name}",
+		"storageFull": "{cap, select, none {Your storage is full.} other {Your storage is full ({cap}).}} Uploads clear {days, plural, one {# day} other {# days}} after they're added.",
+		"storageNextFree": "The next space frees on {date}.",
+		"uploadFailed": "File upload failed — message not sent. {reason}",
+		"fileRemoved": "This file was removed {days, plural, one {# day} other {# days}} after it was uploaded.",
+		"notDelivered": "Message not delivered. The connection dropped, so send it again."
 	},
 	"chatInput": {
 		"placeholder": "Reply...",
@@ -593,7 +607,21 @@
 		"agent": "Employee",
 		"command": "Command",
 		"notConnected": "not connected",
-		"keyboardHint": "↑↓ navigate · Enter select · Esc cancel"
+		"keyboardHint": "↑↓ navigate · Enter select · Esc cancel",
+		"category": {
+			"session": "Session",
+			"model": "Model",
+			"info": "Info"
+		},
+		"desc": {
+			"new": "Start a new conversation",
+			"clear": "Start fresh (every message is kept)",
+			"compact": "Summarize & clear old messages",
+			"goal": "Keep working until a check confirms the end state",
+			"model": "Show or switch model",
+			"help": "Show all commands",
+			"status": "Show employee & system status"
+		}
 	},
 	"dataTable": {
 		"loading": "Loading...",
@@ -1804,7 +1832,17 @@
 		"toolCategories": "Tool categories",
 		"allToolCategories": "All tool categories",
 		"moreEmployees": "More employees",
-		"moreTools": "More tools"
+		"moreTools": "More tools",
+		"pageTitle": "Marketplace - Nebo",
+		"sharedPageTitle": "Shared - Marketplace - Nebo",
+		"searchPageTitle": "Search — Marketplace",
+		"resume": {
+			"byAuthor": "by {author}",
+			"perSeat": "per seat",
+			"responsibilities": "Responsibilities",
+			"newHire": "New hire · be their first",
+			"meet": "Meet"
+		}
 	},
 	"commander": {
 		"autoLayout": "Auto Layout",
@@ -1881,7 +1919,9 @@
 		"noChatsYet": "No chats yet. Start a new one.",
 		"noRunsYet": "No runs yet",
 		"appBadge": "App",
-		"primaryUndeletable": "Your personal assistant receives anything not addressed to a specific employee, so it can't be deleted. Rename it in Employee settings."
+		"primaryUndeletable": "Your personal assistant receives anything not addressed to a specific employee, so it can't be deleted. Rename it in Employee settings.",
+		"browseFolders": "Browse folders",
+		"browseFiles": "Browse files"
 	},
 	"agentLearning": {
 		"title": "Self-improvement",
@@ -2196,7 +2236,19 @@
 		"changeInBotSettings": "Change in Bot settings",
 		"reachManage": "Manage",
 		"reachNoPhone": "No phone line yet.",
-		"reachNoChannels": "No channels turned on."
+		"reachNoChannels": "No channels turned on.",
+		"newCallTreeName": "New Call Tree",
+		"newWorkflowName": "New Workflow",
+		"greetingNodeLabel": "Greeting",
+		"phoneLoadingNumbers": "Loading your numbers…",
+		"phoneNoFreeNumbers": "No numbers are free to attach. Buy a number (or park one from another employee) at {link}, then come back here.",
+		"phoneWhichNumber": "Which number should this employee answer?",
+		"phoneNumberParked": "parked",
+		"phoneNumberUnassigned": "unassigned",
+		"phoneLineName": "Line name (optional)",
+		"phoneLineNamePlaceholder": "Front Desk, Support, Spanish line…",
+		"phoneAttaching": "Attaching the number to this employee…",
+		"phoneAttachNumber": "Attach number"
 	},
 	"agentConfigure": {
 		"inputs": "Inputs",
@@ -2273,7 +2325,10 @@
 		"factDate": "Date",
 		"factAttachment": "Attachment",
 		"factVia": "Via",
-		"interrupted": "Interrupted"
+		"interrupted": "Interrupted",
+		"tokensShort": "{count} tok",
+		"underOneSecond": "<1s",
+		"triggerKind": "{kind, select, schedule {Schedule} event {Event} heartbeat {Heartbeat} manual {Manual} watch {Watch} webhook {Webhook} call {Call} retry {Retry} other {{kind}}}"
 	},
 	"automations": {
 		"title": "Automations",
@@ -2311,7 +2366,12 @@
 		"every8h": "Every 8 hours",
 		"every24h": "Every 24 hours",
 		"everyInterval": "Every {interval}",
-		"whenFires": "When {event} fires"
+		"whenFires": "When {event} fires",
+		"anEvent": "event",
+		"watching": "Watch: {source}",
+		"aPlugin": "plugin",
+		"manualTrigger": "Manual trigger",
+		"onEventNamed": "On {event}"
 	},
 	"newBot": {
 		"browseMarketplace": "Browse Marketplace",
@@ -2368,7 +2428,18 @@
 		"approvalGate": {
 			"batchHeadline": "{n} actions in one step need your OK",
 			"goalHeadline": "Agree on this goal? Work continues until a check confirms it's met.",
-			"yourAgent": "Your employee"
+			"yourAgent": "Your employee",
+			"operation": "{action, select, create {Create {noun}} send {Send {noun}} update {Update {noun}} status {Change status of {noun}} apply {Apply {noun}} record {Record {noun}} schedule {Schedule {noun}} publish {Publish {noun}} respond {Respond to {noun}} reply {Reply to {noun}} upsert {Save {noun}} attach {Attach {noun}} write {Write {noun}} remove {Remove {noun}} other {{verb} {noun}}}",
+			"resource": {
+				"billpayment": "bill payment",
+				"creditmemo": "credit memo",
+				"journalentry": "journal entry",
+				"purchaseorder": "purchase order",
+				"opportunity": "deal",
+				"company": "the Company file — how this business runs",
+				"industry": "the Industry file — how this trade works",
+				"franchise": "the Franchise file — a brand's requirements"
+			}
 		},
 		"approvalModal": {
 			"runShellCommand": "Run Shell Command",
@@ -2485,7 +2556,20 @@
 		"narrowSat": "S",
 		"pageTitle": "Schedule - Nebo",
 		"perWeek": "{count}/wk",
-		"workflowBuilderTitle": "{name} — Workflow Builder"
+		"workflowBuilderTitle": "{name} — Workflow Builder",
+		"everyDay": "Every day",
+		"weekends": "Weekends",
+		"weekdayPlural": "{day, select, sun {Sundays} mon {Mondays} tue {Tuesdays} wed {Wednesdays} thu {Thursdays} fri {Fridays} sat {Saturdays} other {{day}}}",
+		"clockTime": "{hour}:{minute} {period}",
+		"hourOnly": "{hour} {period}",
+		"midnight": "Midnight",
+		"cronEveryMinutes": "{n, plural, one {Every minute} other {Every # minutes}}",
+		"cronEveryHours": "{n, plural, one {Every hour} other {Every # hours}}",
+		"cronEveryHoursAt": "{n, plural, one {Every hour at :{minute}} other {Every # hours at :{minute}}}",
+		"cronDailyAt": "Every day at {time}",
+		"cronDaysAt": "{days} at {time}",
+		"cronMonthlyAt": "Monthly on the {day, selectordinal, one {#st} two {#nd} few {#rd} other {#th}} at {time}",
+		"listSeparator": ", "
 	},
 	"neboShell": {
 		"tabs": {
@@ -2545,7 +2629,11 @@
 		"send": "Send",
 		"sending": "Sending",
 		"sent": "Thanks — sent to the NeboAI team.",
-		"failed": "Could not send your feedback. Try again."
+		"failed": "Could not send your feedback. Try again.",
+		"needMessage": "Write a message first.",
+		"messageTooLong": "Keep the message under {max} characters.",
+		"tooManyScreenshots": "Attach at most {max, plural, one {# screenshot} other {# screenshots}}.",
+		"imagesOnly": "Only images can be attached."
 	},
 	"workflowCanvas": {
 		"noWorkflows": "No workflows to visualize",
@@ -2686,7 +2774,18 @@
 		"gettingReady": "Getting {name} ready…",
 		"skillsAndTools": "Skills and tools",
 		"hireFailedTitle": "Couldn't complete the hire",
-		"hireFailed": "{name} wasn't hired. Try again."
+		"hireFailed": "{name} wasn't hired. Try again.",
+		"codeStatus": {
+			"nebo": "Connecting to NeboAI…",
+			"skill": "Installing skill…",
+			"workflow": "Installing workflow…",
+			"agent": "Installing employee…",
+			"loop": "Joining loop…",
+			"plugin": "Installing plugin…",
+			"app": "Installing app…",
+			"collection": "Installing collection…",
+			"connection": "Adding MCP connection…"
+		}
 	},
 	"activity": {
 		"pageTitle": "Activity - Nebo",
@@ -2705,7 +2804,8 @@
 		"openAppHint": "Open app",
 		"openApp": "Open App",
 		"runs": "Runs",
-		"memory": "Memory"
+		"memory": "Memory",
+		"appError": "App error ({status})"
 	},
 	"pricing": {
 		"pageTitle": "Choose your plan - Nebo",
@@ -2865,7 +2965,10 @@
 		"checkEvery": "Check every",
 		"hours6": "6 hours",
 		"history": "History",
-		"title": "Tool updates"
+		"title": "Tool updates",
+		"onLatest": "You’re on the latest version",
+		"checkFailed": "Could not check for updates",
+		"updateFailed": "Update failed"
 	},
 	"inbox": {
 		"title": "Inbox",
@@ -2912,7 +3015,11 @@
 		"isSpeaking": "{name} is speaking",
 		"callEnded": "The call ended.",
 		"tryAgain": "Try again",
-		"onAnotherCall": "On a call with another employee"
+		"onAnotherCall": "On a call with another employee",
+		"callLost": "The call dropped and could not be rejoined. Start it again.",
+		"callEndedStartAgain": "The call ended. Start it again.",
+		"needsConsent": "Voice conversation sends your microphone audio to a cloud voice service for processing. Enable it in the voice panel to consent.",
+		"startFailed": "Could not start the call. Try again."
 	},
 	"flows": {
 		"none": "No flows yet",
@@ -2927,7 +3034,15 @@
 		"overlapBufferOne": "Run once when it ends",
 		"overlapAllowAll": "Run anyway",
 		"deleteReminderTitle": "Delete \"{name}\"?",
-		"deleteReminderBody": "This scheduled task stops running and is removed. Past runs stay in the run history."
+		"deleteReminderBody": "This scheduled task stops running and is removed. Past runs stay in the run history.",
+		"triggerOnEvent": "On {event}",
+		"triggerWatch": "Watch: {target}",
+		"triggerWatchPlugin": "Watch: plugin",
+		"triggerManual": "Manual trigger",
+		"scheduleTooSpecific": "This schedule is more specific than the simple editor can hold",
+		"askSetupPrompt": "Set up a new flow for me: ",
+		"everyNHours": "Every N hours",
+		"everyNMinutes": "Every N minutes"
 	},
 	"christen": {
 		"title": "Name your first employee",
@@ -3183,5 +3298,526 @@
 		"unreviewed": "Not reviewed",
 		"loadMore": "Show more",
 		"addJobEdit": "Add to the job"
+	},
+	"workflow": {
+		"addNode": "Add Node",
+		"deleteNode": "Delete Node",
+		"deleteWorkflow": "Delete Workflow",
+		"removeItem": "Remove {name}",
+		"activityCount": "{count, plural, one {# activity} other {# activities}}",
+		"stepCount": "{count, plural, one {# step} other {# steps}}",
+		"triggerTypes": {
+			"schedule": "Schedule",
+			"heartbeat": "Heartbeat",
+			"event": "Event",
+			"watch": "Watch",
+			"manual": "Manual"
+		},
+		"branch": {
+			"true": "True",
+			"false": "False",
+			"eachItem": "Each item",
+			"done": "Done"
+		},
+		"types": {
+			"greeting": {
+				"label": "Greeting",
+				"description": "What this line says when it answers",
+				"params": {
+					"text": {
+						"label": "Greeting",
+						"description": "Spoken word-for-word when the call connects.",
+						"placeholder": "Thanks for calling Miller Dental! How can I help?"
+					}
+				}
+			},
+			"intent": {
+				"label": "Intent",
+				"description": "One job this line handles, with its allowed tools",
+				"params": {
+					"name": {
+						"label": "Intent name",
+						"description": "Short id the router uses (unique per tree)."
+					},
+					"description": {
+						"label": "When callers mean this",
+						"placeholder": "Caller wants to schedule, reschedule, or cancel an appointment"
+					},
+					"tools": {
+						"label": "Allowed tools",
+						"description": "Comma-separated tool:resource grants for this intent only."
+					},
+					"workflows": {
+						"label": "Allowed workflows",
+						"description": "Comma-separated names of this agent's workflows the intent may run."
+					},
+					"plugins": {
+						"label": "Allowed plugins",
+						"description": "Comma-separated plugin slugs."
+					},
+					"mcp": {
+						"label": "Allowed MCP servers",
+						"description": "Comma-separated connected MCP server names."
+					}
+				}
+			},
+			"transfer": {
+				"label": "Transfer to human",
+				"description": "Live handoff to the line's transfer number",
+				"params": {
+					"when": {
+						"label": "When to transfer",
+						"placeholder": "Caller asks for a person, is upset, or has an emergency"
+					},
+					"to": {
+						"label": "Connects to",
+						"description": "Who the caller is told they are being connected to. The number itself stays in the line settings.",
+						"placeholder": "our office manager"
+					}
+				}
+			},
+			"takeMessage": {
+				"label": "Take a message",
+				"description": "Capture a message for the owner (the fallback)",
+				"params": {
+					"fields": {
+						"label": "What to capture",
+						"placeholder": "name, number, reason for calling, best time to call back"
+					}
+				}
+			},
+			"disclosures": {
+				"label": "May share",
+				"description": "Facts this line states directly, without a lookup",
+				"params": {
+					"text": {
+						"label": "Approved information",
+						"description": "The owner-approved public facts for this line — hours, address, service area, base pricing. Customer or account specifics are never listed here; those go through a lookup.",
+						"placeholder": "Open Mon–Fri 8–5. Located at 123 Main St. Cleanings start at $120."
+					}
+				}
+			},
+			"custom": {
+				"label": "Custom",
+				"description": "Define steps and skills manually"
+			},
+			"research": {
+				"label": "Research",
+				"description": "Web search, analysis, and synthesis",
+				"params": {
+					"depth": {
+						"label": "Research depth",
+						"options": {
+							"quick": "Quick (2-5 min)",
+							"standard": "Standard (5-10 min)",
+							"deep": "Deep (10-20 min)"
+						}
+					},
+					"sources": {
+						"label": "Source types",
+						"description": "Comma-separated source types to search",
+						"placeholder": "web, academic, news"
+					}
+				}
+			},
+			"email": {
+				"label": "Send Email",
+				"description": "Compose and send email",
+				"params": {
+					"to": {
+						"label": "To",
+						"description": "Recipient email address (or use upstream data)"
+					},
+					"subject": {
+						"label": "Subject template"
+					}
+				}
+			},
+			"notify": {
+				"label": "Notify",
+				"description": "Send notification to a channel",
+				"params": {
+					"channel": {
+						"label": "Channel",
+						"options": {
+							"email": "Email",
+							"webhook": "Webhook"
+						}
+					},
+					"target": {
+						"label": "Target",
+						"description": "Channel name, email, or webhook URL",
+						"placeholder": "#general or user@example.com"
+					}
+				}
+			},
+			"code": {
+				"label": "Run Code",
+				"description": "Execute a code snippet",
+				"params": {
+					"language": {
+						"label": "Language"
+					},
+					"code": {
+						"label": "Code",
+						"description": "Code to execute"
+					}
+				}
+			},
+			"condition": {
+				"label": "Condition",
+				"description": "If/else branching",
+				"params": {
+					"expression": {
+						"label": "Condition expression",
+						"description": "JavaScript expression — truthy routes to True branch, falsy to False"
+					},
+					"mode": {
+						"label": "Evaluation mode",
+						"options": {
+							"expression": "Expression",
+							"contains": "Data contains",
+							"exists": "Field exists",
+							"regex": "Regex match"
+						}
+					}
+				}
+			},
+			"loop": {
+				"label": "Loop",
+				"description": "Iterate over a list of items",
+				"params": {
+					"source": {
+						"label": "Items source",
+						"description": "Path to the array to iterate over",
+						"placeholder": "data.items or data.emails"
+					},
+					"maxIterations": {
+						"label": "Max iterations",
+						"description": "Safety limit to prevent infinite loops"
+					}
+				}
+			},
+			"wait": {
+				"label": "Wait",
+				"description": "Pause execution",
+				"params": {
+					"duration": {
+						"label": "Wait duration",
+						"options": {
+							"5s": "5 seconds",
+							"30s": "30 seconds",
+							"1m": "1 minute",
+							"5m": "5 minutes",
+							"15m": "15 minutes",
+							"1h": "1 hour",
+							"custom": "Custom"
+						}
+					},
+					"waitUntil": {
+						"label": "Or wait until",
+						"description": "Resume when this event fires (leave empty for duration-based)",
+						"placeholder": "e.g. event:approval.received"
+					}
+				}
+			},
+			"agent": {
+				"label": "Agent",
+				"description": "Delegate to another agent",
+				"params": {
+					"agentId": {
+						"label": "Agent",
+						"description": "Agent to delegate this task to"
+					},
+					"instructions": {
+						"label": "Instructions",
+						"description": "Override or supplement the agent's default persona",
+						"placeholder": "Specific instructions for the delegated agent..."
+					}
+				}
+			},
+			"connector": {
+				"label": "Connector",
+				"description": "Use an MCP integration",
+				"params": {
+					"serverId": {
+						"label": "MCP Server",
+						"description": "Connected MCP server to use"
+					},
+					"tool": {
+						"label": "Tool",
+						"description": "Which tool to invoke on the MCP server",
+						"placeholder": "e.g. read_file, send_message"
+					},
+					"input": {
+						"label": "Input",
+						"description": "JSON input for the tool (supports '{{'data.field'}}' templates)"
+					}
+				}
+			},
+			"http": {
+				"label": "HTTP Request",
+				"description": "Make an HTTP API call",
+				"params": {
+					"method": {
+						"label": "Method"
+					},
+					"url": {
+						"label": "URL"
+					},
+					"body": {
+						"label": "Request body",
+						"description": "JSON body for POST/PUT/PATCH requests"
+					},
+					"headers": {
+						"label": "Headers",
+						"description": "One header per line (key: value)"
+					}
+				}
+			},
+			"decide": {
+				"label": "Decide",
+				"description": "Classify or judge data with typed questions",
+				"params": {
+					"state": {
+						"label": "State",
+						"description": "Data path to judge (inputs.*, item, nodes.'<'id>.*)"
+					},
+					"questions": {
+						"label": "Questions",
+						"description": "JSON object of typed questions (choice, score, noul). A condition node routes on nodes.'<'id>.'<'question>.choice and .confidence"
+					},
+					"default": {
+						"label": "Default answers",
+						"description": "Answers to use when no decision can be made: an option for a choice, a level for a score, true or false for a noul. The node then sets nodes.'<'id>.defaulted"
+					}
+				}
+			},
+			"transform": {
+				"label": "Transform",
+				"description": "Reshape or filter data",
+				"params": {
+					"operation": {
+						"label": "Operation",
+						"options": {
+							"map": "Map — transform each item",
+							"filter": "Filter — keep matching items",
+							"reduce": "Reduce — aggregate into one value",
+							"pick": "Pick — extract specific fields",
+							"template": "Template — format as text"
+						}
+					},
+					"expression": {
+						"label": "Expression",
+						"description": "Transformation expression"
+					}
+				}
+			}
+		},
+		"catalog": {
+			"searchPlaceholder": "Search nodes...",
+			"noMatch": "No nodes match \"{query}\"",
+			"toolsAvailable": "{count, plural, one {# tool available} other {# tools available}}",
+			"categories": {
+				"triggers": "Triggers",
+				"activities": "Activities",
+				"callTree": "Call Tree",
+				"flowControl": "Flow Control",
+				"connectors": "Connectors (MCP)",
+				"agents": "Agents",
+				"output": "Output"
+			},
+			"items": {
+				"triggerSchedule": {
+					"label": "Schedule",
+					"desc": "Run at set times"
+				},
+				"triggerEvent": {
+					"label": "Event",
+					"desc": "React to events"
+				},
+				"triggerHeartbeat": {
+					"label": "Heartbeat",
+					"desc": "Run on interval"
+				},
+				"triggerManual": {
+					"label": "Manual",
+					"desc": "Run on demand"
+				},
+				"activityCustom": {
+					"label": "Custom Activity",
+					"desc": "Define steps and skills"
+				},
+				"activityResearch": {
+					"label": "Research",
+					"desc": "Web search and analysis"
+				},
+				"activityEmail": {
+					"label": "Send Email",
+					"desc": "Compose and send email"
+				},
+				"activityNotify": {
+					"label": "Notify",
+					"desc": "Send notification"
+				},
+				"activityCode": {
+					"label": "Run Code",
+					"desc": "Execute a code snippet"
+				},
+				"activityHttp": {
+					"label": "HTTP Request",
+					"desc": "Make an API call"
+				},
+				"activityDecide": {
+					"label": "Decide",
+					"desc": "Classify or judge data"
+				},
+				"activityTransform": {
+					"label": "Transform",
+					"desc": "Reshape or filter data"
+				},
+				"activityGreeting": {
+					"label": "Greeting",
+					"desc": "What the line says when it answers"
+				},
+				"activityIntent": {
+					"label": "Intent",
+					"desc": "One job + its allowed tools"
+				},
+				"activityTransfer": {
+					"label": "Transfer to human",
+					"desc": "Live handoff — name who it connects to"
+				},
+				"activityTakeMessage": {
+					"label": "Take a message",
+					"desc": "Capture a message (the fallback)"
+				},
+				"activityDisclosures": {
+					"label": "May share",
+					"desc": "Facts this line states directly (hours, address, pricing)"
+				},
+				"flowCondition": {
+					"label": "Condition",
+					"desc": "If/else branching"
+				},
+				"flowLoop": {
+					"label": "Loop",
+					"desc": "Iterate over items"
+				},
+				"flowWait": {
+					"label": "Wait",
+					"desc": "Pause or wait for event"
+				},
+				"emit": {
+					"label": "Emit Event",
+					"desc": "Announce completion event"
+				}
+			}
+		},
+		"eventSources": {
+			"label": "Event sources",
+			"searchPlaceholder": "Type to search sources...",
+			"hint": "Type to search known sources, Enter to add. Custom names and wildcards (email.*) work too."
+		},
+		"flow": {
+			"triggerManual": "Runs when you start it",
+			"triggerSchedule": "On a schedule",
+			"triggerEventAny": "When an event fires",
+			"triggerWatch": "Watching {name}",
+			"triggerWatchAny": "Watching a plugin",
+			"applying": "Applying…",
+			"go": "Go",
+			"tellAi": "Tell the AI what to change",
+			"tellAiEllipsis": "Tell the AI what to change…",
+			"badgeExact": "exact",
+			"badgeAgent": "agent",
+			"emptyCode": "(empty)",
+			"stepPlaceholder": "What should this step do?",
+			"changeStep": "Change \"{name}\"…",
+			"forEach": "For each {item}",
+			"loopItemDefault": "item",
+			"loopEmpty": "Nothing in this loop yet.",
+			"pathDefault": "path",
+			"pathEmpty": "Empty path",
+			"addStepHere": "Add a step here",
+			"connected": "{name} is connected",
+			"notConnected": "{name} is not connected — this flow will fail",
+			"connect": "Connect",
+			"describeFlowChange": "Describe a change to this whole flow…",
+			"edit": "edit",
+			"emits": "emits",
+			"noSteps": "This flow has no steps yet."
+		},
+		"panel": {
+			"backToOverview": "Back to workflow overview",
+			"intent": "Intent",
+			"addSkill": "Add skill...",
+			"parameters": "Parameters",
+			"addStep": "Add step...",
+			"manualHint": "Runs only when manually triggered.",
+			"notConfigured": "Not configured",
+			"noEventConfigured": "No event configured",
+			"noDescription": "No description",
+			"emitPlaceholder": "e.g. {name}",
+			"emitOptional": "Optional — other workflows can trigger on this when the run completes.",
+			"useEmit": "Use {name}",
+			"emitRenameWarning": "Renaming breaks workflows subscribed to this event.",
+			"none": "None",
+			"apiEndpoint": "API Endpoint",
+			"apiEndpointHint": "Mint a key for this workflow under the employee's Settings → Webhooks."
+		},
+		"schedule": {
+			"weekends": "Weekends",
+			"custom": "Custom",
+			"daysOfWeek": "Days of week",
+			"monthly": "Monthly",
+			"biannual": "Every 6 months",
+			"yearly": "Yearly",
+			"onDay": "on day",
+			"biannualNote": "Runs {firstMonth} {day} and {secondMonth} {day}.",
+			"shortMonthsSkipped": "Months without day {day} are skipped.",
+			"limitToHours": "Limit to hours",
+			"rangeTo": "to"
+		},
+		"watch": {
+			"plugin": "Plugin",
+			"choosePlugin": "Choose a plugin…",
+			"whenItReports": "When it reports",
+			"chooseEvent": "Choose an event…",
+			"hint": "Runs whenever {plugin} reports {event}; other flows can listen for {plugin}.{event} too."
+		},
+		"validation": {
+			"emptyId": "Activity in \"{workflow}\" has an empty ID",
+			"duplicateId": "Duplicate activity ID \"{id}\" in \"{workflow}\"",
+			"conditionExpression": "Condition \"{id}\" needs an expression — routing is deterministic, never AI-decided",
+			"loopSource": "Loop \"{id}\" needs a data source (e.g. inputs.items)",
+			"httpUrl": "HTTP node \"{id}\" needs a URL",
+			"decideQuestions": "Decide node \"{id}\" needs questions (a JSON object of typed questions)",
+			"waitDuration": "Wait node \"{id}\" needs a duration",
+			"needsIntent": "Activity \"{id}\" in \"{workflow}\" needs an intent or steps",
+			"targetsTrigger": "A connection targets the trigger",
+			"leavesEmit": "A connection leaves the emit node",
+			"unknownFrom": "Connection from unknown node \"{id}\"",
+			"unknownTo": "Connection to unknown node \"{id}\"",
+			"duplicateConnection": "Duplicate connection {from} → {to}",
+			"labeledNonBranching": "Labeled edge \"{label}\" leaves non-branching node \"{id}\"",
+			"unlabeledBranch": "Edges leaving \"{id}\" must carry a branch label",
+			"cycle": "The graph contains a cycle (only a loop’s Each-item body may return to its loop)"
+		},
+		"builder": {
+			"unsavedConfirm": "You have unsaved changes. Discard and close?",
+			"workflowLabel": "{name} ({count, plural, one {# activity} other {# activities}})",
+			"undo": "Undo (Cmd+Z)",
+			"redo": "Redo (Cmd+Shift+Z)",
+			"issueCount": "{count, plural, one {# issue} other {# issues}}",
+			"discard": "Discard",
+			"hideDetails": "Hide details panel",
+			"showDetails": "Show details panel",
+			"newWorkflowTitle": "New workflow",
+			"empty": "No workflows — create one to get started",
+			"newWorkflow": "New Workflow",
+			"confirmDeleteWorkflow": "Are you sure you want to delete this workflow? This will remove all its activities and connections.",
+			"confirmDeleteNode": "Are you sure you want to delete this node? Its connections will be reconnected automatically."
+		}
 	}
 }

@@ -104,7 +104,7 @@
   ];
 </script>
 
-<aside class="flex flex-col border-r border-base-content/10 bg-base-100 shrink-0 overflow-hidden {collapsed ? 'w-14' : 'w-[260px]'}">
+<aside class="flex flex-col border-e border-base-content/10 bg-base-100 shrink-0 overflow-hidden {collapsed ? 'w-14' : 'w-[260px]'}">
   <!-- Top: brand + collapse toggle -->
   <div class="h-12 px-3.5 border-b border-base-content/10 flex items-center gap-2.5">
     <a href="/" class="shrink-0"><BrandMark class="w-[22px] h-[22px]" /></a>
@@ -259,7 +259,7 @@
       <a href="/settings/account" class="flex items-center gap-2 py-1 px-2 rounded-md text-sm transition-colors {activePage === 'settings' ? 'bg-base-content/5 text-base-content font-medium' : 'text-base-content hover:bg-base-content/5 hover:text-base-content'}">
         <span class="w-4 text-center text-sm">🏢</span> {$t('nav.botSettings')}
       </a>
-      <button type="button" onclick={openWebBilling} class="w-full flex items-center gap-2 py-1 px-2 rounded-md text-sm transition-colors text-base-content hover:bg-base-content/5 hover:text-base-content cursor-pointer bg-transparent border-none text-left">
+      <button type="button" onclick={openWebBilling} class="w-full flex items-center gap-2 py-1 px-2 rounded-md text-sm transition-colors text-base-content hover:bg-base-content/5 hover:text-base-content cursor-pointer bg-transparent border-none text-start">
         <span class="w-4 text-center text-sm">↑</span> {$t('sidebar.upgrade')}
       </button>
     {:else}

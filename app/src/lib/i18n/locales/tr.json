@@ -84,7 +84,16 @@
 		"closeModal": "Pencereyi kapat",
 		"all": "Tümü",
 		"more": "Daha fazla",
-		"stopped": "Durduruldu"
+		"stopped": "Durduruldu",
+		"errorOccurred": "Bir şeyler ters gitti.",
+		"systemError": "Sistem hatası",
+		"stillReconnecting": "Nebo’nuza hâlâ ulaşılmaya çalışılıyor…",
+		"updatesAvailable": "{count, plural, one {# güncelleme mevcut} other {# güncelleme mevcut}}",
+		"artifactUpdated": "{type} güncellendi: {version}",
+		"artifactUpdateFailed": "Güncelleme başarısız: {error}",
+		"employee": "Çalışan",
+		"untitled": "Adsız",
+		"document": "Belge"
 	},
 	"time": {
 		"justNow": "az önce",
@@ -253,9 +262,11 @@
 		"working": "Çalışıyor",
 		"chatActions": "Sohbet işlemleri",
 		"deleteChatTitle": "\"{name}\" silinsin mi?",
-		"deleteChatBody": "Bu sohbet ve tüm mesajları kaldırılacak. Bu işlem geri alınamaz."
+		"deleteChatBody": "Bu sohbet ve tüm mesajları kaldırılacak. Bu işlem geri alınamaz.",
+		"offline": "Çevrimdışı"
 	},
 	"chat": {
+		"worksIn": "Çalıştığı klasör: {folder}",
 		"compactBoundary": "Önceki konuşma özetlendi",
 		"clearedBoundary": "Burada temizlendi. Önceki mesajlar saklanıyor ama kullanılmıyor.",
 		"goalLine": "Hedef: {condition} ({turns} tur)",
@@ -264,10 +275,15 @@
 		"goalStopped": "Hedef duraklatıldı. Devam etmek istediğinde söylemen yeterli.",
 		"resumedActivity": "Hâlâ çalışıyor: {tool}",
 		"waitingForYou": "Sizi bekliyor",
+		"waitingOnYou": "{name} sizi bekliyor",
+		"seeConversation": "Konuşmayı gör",
 		"waitingOnYourAnswer": "{name} yanıtınızı bekliyor:",
 		"waitingOpen": "Aç",
 		"waitingAsksLabel": "Yanıtınız bekleniyor",
 		"subagentStep": "{op} · adım {n}",
+		"helperWorking": "Bir yardımcı çalışıyor: {what}",
+		"helpersWorking": "{n} yardımcı çalışıyor",
+		"moreQuestionsWaiting": "{count, plural, one {1 soru daha bekliyor} other {# soru daha bekliyor}}",
 		"pending": "Beklemede",
 		"yourAICompanion": "Yapay Zeka Ekibiniz",
 		"tellMeWhatYouNeed": "Ne istediğinizi söyleyin veya aşağıdaki çalışanlarınızdan birini etkinleştirin.",
@@ -295,6 +311,7 @@
 		"messageChannel": "#{channel} kanalına mesaj...",
 		"messagedCoworker": "Mesaj gönderdi",
 		"disclaimer": "Nebo hata yapabilir. Önemli bilgileri doğrulayın.",
+		"uploadsKept": "Yüklemeler {days} gün saklanır.",
 		"goodMorning": "Günaydın",
 		"goodAfternoon": "Tünaydın",
 		"goodEvening": "İyi akşamlar",
@@ -315,6 +332,8 @@
 		"installFailed": "Kurulum başarısız oldu — tekrar deneyin.",
 		"hire": "İşe al",
 		"hiring": "İşe alınıyor…",
+		"hireCount": "{count} çalışanın hepsini işe al",
+		"hiringCount": "İşe alınıyor: {done}/{count}…",
 		"botComputer": "Bilgisayar",
 		"closeComputer": "Bilgisayarı kapat",
 		"fullView": "Tam görünüm",
@@ -330,13 +349,18 @@
 		"computerUnavailableHint": "Çalışan bilgisayarı Linux kurulumlarında ve bulut çalışanlarında çalışır.",
 		"watchingAndLearning": "{name} izliyor ve öğreniyor",
 		"stopRecording": "Kaydı durdur",
-		"teachLocalHint": "Do the task on this screen as you normally would, then stop.",
+		"teachLocalHint": "Görevi bu ekranda her zamanki gibi yapın, sonra durun.",
+		"teachStarting": "Ekranınızı izlemeye hazırlanıyor…",
+		"teachNeedsScreenPermission": "Nebo’nun görevi yapışınızı izleyebilmesi için Ekran Kaydı izni gerekiyor. Sistem Ayarları › Gizlilik ve Güvenlik › Ekran Kaydı bölümünde Nebo’yu açın, sonra tekrar deneyin.",
+		"openScreenRecordingSettings": "Ekran Kaydı ayarlarını aç",
+		"openVirtualComputer": "Sanal bilgisayarı aç",
 		"recordTask": "Görevi kaydet",
 		"recording": "Kaydediyor",
 		"connectFailed": "Bağlantı tamamlanmadı. Tekrar deneyin.",
 		"connectAccountHint": "Bağlanın, kaldığım yerden devam edeyim.",
 		"submit": "Gönder",
 		"other": "Diğer…",
+		"askedReceipt": "Soruldu",
 		"copyCode": "Kodu kopyala",
 		"copied": "Kopyalandı!",
 		"dropFilesHere": "Dosyaları buraya bırakın",
@@ -405,6 +429,8 @@
 		"shareNotConnected": "Paylaşmak için NeboAI'ye bağlanın.",
 		"filesInThread": "Bu konuşmadaki dosyalar",
 		"nothingHereYet": "Henüz burada bir şey yok",
+		"noEmployeesOneTool": "Eşleşen çalışan yok, ama 1 araç eşleşiyor — Araçlar’a bakın.",
+		"noEmployeesButTools": "Eşleşen çalışan yok, ama {count} araç eşleşiyor — Araçlar’a bakın.",
 		"workEmptyDesc": "Nebo bir rapor, tablo veya tasarım oluşturduğunda burada görünecek.",
 		"closeImage": "Görseli kapat",
 		"fullSize": "Tam boyut",
@@ -429,7 +455,12 @@
 		"historyLoadFailed": "Bu sohbet yüklenemedi. Bağlantınızı kontrol edip tekrar deneyin.",
 		"consentCreates": "Evet deyin, tam olarak bu görevle oluşturulsun.",
 		"consentAdds": "Evet deyin, bu görevine eklensin.",
-		"fromColleague": "{name} gönderdi"
+		"fromColleague": "{name} gönderdi",
+		"storageFull": "{cap, select, none {Depolama alanınız dolu.} other {Depolama alanınız dolu ({cap}).}} Yüklemeler, eklendikten {days, plural, one {# gün} other {# gün}} sonra silinir.",
+		"storageNextFree": "Bir sonraki alan {date} tarihinde boşalır.",
+		"uploadFailed": "Dosya yüklenemedi — mesaj gönderilmedi. {reason}",
+		"fileRemoved": "Bu dosya, yüklendikten {days, plural, one {# gün} other {# gün}} sonra kaldırıldı.",
+		"notDelivered": "Mesaj iletilmedi. Bağlantı koptu, tekrar gönderin."
 	},
 	"chatInput": {
 		"placeholder": "Yanıtla...",
@@ -456,7 +487,7 @@
 		"recording": "Kaydediyor",
 		"holdToRecord": "Kaydetmek için basılı tutun",
 		"startVoiceInput": "Sesli girişi başlat",
-		"ptt": "PTT",
+		"ptt": "Bas-Konuş",
 		"voiceSettings": "Ses ayarları",
 		"microphone": "Mikrofon",
 		"noMicrophones": "Mikrofon bulunamadı",
@@ -468,7 +499,17 @@
 		"tapToInterrupt": "Kesmek için dokunun",
 		"mute": "Sessize al",
 		"unmute": "Sesi aç",
-		"endConversation": "Konuşmayı bitir"
+		"endConversation": "Konuşmayı bitir",
+		"recordClip": "Klip kaydet",
+		"clipStarting": "Mikrofon bekleniyor",
+		"clipStop": "Durdur ve ekle",
+		"clipLevel": "Mikrofon seviyesi",
+		"clipMicBlockedMac": "Nebo mikrofonunuzu kullanamıyor. Sistem Ayarları → Gizlilik ve Güvenlik → Mikrofon bölümünden izin verin.",
+		"clipMicBlocked": "Nebo mikrofonunuzu kullanamıyor. Sisteminizin gizlilik ayarlarından izin verin.",
+		"clipNoMic": "Mikrofon bulunamadı. Bir mikrofon bağlayıp tekrar deneyin.",
+		"clipUnsupported": "Kayıt burada kullanılamıyor.",
+		"clipFailed": "Kayıt yapılamadı. Tekrar deneyin.",
+		"clipCapReached": "Kayıtlar 10 dakikada durur. Bu kayıt eklendi."
 	},
 	"voiceDownload": {
 		"title": "Ses Modellerini İndir",
@@ -566,7 +607,21 @@
 		"agent": "Çalışan",
 		"command": "Komut",
 		"notConnected": "bağlı değil",
-		"keyboardHint": "↑↓ gezin · Enter seç · Esc iptal"
+		"keyboardHint": "↑↓ gezin · Enter seç · Esc iptal",
+		"category": {
+			"session": "Oturum",
+			"model": "Model",
+			"info": "Bilgi"
+		},
+		"desc": {
+			"new": "Yeni bir konuşma başlat",
+			"clear": "Baştan başla (her mesaj saklanır)",
+			"compact": "Eski mesajları özetle ve temizle",
+			"goal": "Bir denetim son durumu doğrulayana kadar çalışmaya devam et",
+			"model": "Modeli göster veya değiştir",
+			"help": "Tüm komutları göster",
+			"status": "Çalışan ve sistem durumunu göster"
+		}
 	},
 	"dataTable": {
 		"loading": "Yükleniyor...",
@@ -1237,7 +1292,7 @@
 		"sessionUsage": "%{percent} kullanıldı · {hours}sa {minutes}dk sonra sıfırlanır",
 		"weekly": "Haftalık",
 		"weeklyUsage": "%{percent} kullanıldı · {date} tarihinde sıfırlanır",
-		"contextWindow": "{count} ctx",
+		"contextWindow": "{count} bağlam",
 		"notConnected": "Bağlı değil",
 		"connectDescription": "AI modellerini kullanmak için NeboAI hesabınızı bağlayın",
 		"cliProviders": "CLI Sağlayıcıları",
@@ -1247,7 +1302,7 @@
 		"ollamaNotDetected": "Algılanmadı. Başlamak için Ollama yükleyin ve bir model çekin.",
 		"apiKeys": "API Anahtarları",
 		"addProvider": "Sağlayıcı ekle",
-		"test": "Test",
+		"test": "Test et",
 		"addKey": "Anahtar ekle",
 		"addProviderModal": "Sağlayıcı Ekle",
 		"providerType": "Sağlayıcı türü",
@@ -1777,7 +1832,17 @@
 		"toolCategories": "Araç kategorileri",
 		"allToolCategories": "Tüm araç kategorileri",
 		"moreEmployees": "Daha fazla çalışan",
-		"moreTools": "Daha fazla araç"
+		"moreTools": "Daha fazla araç",
+		"pageTitle": "Mağaza - Nebo",
+		"sharedPageTitle": "Paylaşılanlar - Mağaza - Nebo",
+		"searchPageTitle": "Ara — Mağaza",
+		"resume": {
+			"byAuthor": "Hazırlayan: {author}",
+			"perSeat": "kişi başına",
+			"responsibilities": "Sorumluluklar",
+			"newHire": "Yeni işe alım · ilk siz olun",
+			"meet": "Tanışın"
+		}
 	},
 	"commander": {
 		"autoLayout": "Otomatik Düzen",
@@ -1854,7 +1919,9 @@
 		"noChatsYet": "Henüz sohbet yok. Yeni bir tane başlatın.",
 		"noRunsYet": "Henüz çalıştırma yok",
 		"appBadge": "Uygulama",
-		"primaryUndeletable": "Kişisel asistanınız belirli bir çalışana yönlendirilmemiş her şeyi alır, bu yüzden silinemez. Adını Çalışan ayarları bölümünden değiştirebilirsiniz."
+		"primaryUndeletable": "Kişisel asistanınız belirli bir çalışana yönlendirilmemiş her şeyi alır, bu yüzden silinemez. Adını Çalışan ayarları bölümünden değiştirebilirsiniz.",
+		"browseFolders": "Klasörlere göz at",
+		"browseFiles": "Dosyalara göz at"
 	},
 	"agentLearning": {
 		"title": "Kendini geliştirme",
@@ -1871,6 +1938,7 @@
 		"viewOnly": "Bu konuşma yalnızca görüntülenir — çalışanlar burada konuşur, siz onları kendi sohbetlerinde yönlendirirsiniz"
 	},
 	"teams": {
+		"everyoneHint": "Tüm ekip",
 		"section": "Ekipler",
 		"emptyRoster": "İki ya da daha fazla çalışanı bir ekibe koyun, tek bir konuşmayı paylaşsınlar. Başlatmak için + düğmesine basın ya da herhangi bir çalışandan isteyin.",
 		"inTeam": "Bu ekipte",
@@ -1945,6 +2013,9 @@
 	},
 	"agentSettings": {
 		"general": "Genel",
+		"tabWho": "Kim olduğu",
+		"tabWork": "Ne yaptığı",
+		"developerGroup": "Geliştirici",
 		"generalBlurb": "Bu çalışana genel bir bakış — durum, beceriler, iş akışları ve bakım.",
 		"identityBlurb": "Ad, ses, renk ve durum — bu çalışanın uygulamada nasıl göründüğü.",
 		"nameLabel": "Ad",
@@ -2129,6 +2200,14 @@
 		"saveCredentialsFailed": "Kimlik bilgileri kaydedilemedi.",
 		"signInFailedRetry": "Oturum açma başarısız oldu. Lütfen tekrar deneyin.",
 		"startSignInFailed": "Bu hesap için oturum açma başlatılamadı.",
+		"signInPopupBlocked": "Oturum açma penceresi engellendi. Nebo için açılır pencerelere izin verin, sonra tekrar deneyin.",
+		"channelToggleFailed": "Bu kanal güncellenemedi. Tekrar deneyin.",
+		"helpChatFailed": "Yardım sohbeti açılamadı. Tekrar deneyin.",
+		"accountsLoadFailed": "Hesaplar yüklenemedi. Tekrar deneyin.",
+		"accountListRefreshFailed": "Hesap eklendi, ama liste yenilenmedi. Görmek için ayarları yeniden açın.",
+		"disconnectFailed": "Bu hesabın bağlantısı kesilemedi. Tekrar deneyin.",
+		"claimableLoadFailed": "Telefon numaralarınız yüklenemedi.",
+		"tryAgain": "Tekrar dene",
 		"contextTitle": "Bu çalışanın bildikleri",
 		"contextDesc": "Şirketin sektör ve şirket katmanlarından yola çıkarak, bunlar her değiştiğinde çalışanın kendisi tarafından yazılır. Hiçbir şeye bakmadan buna göre çalışır.",
 		"contextAgainst": "{against} temel alınarak yazıldı",
@@ -2157,7 +2236,19 @@
 		"changeInBotSettings": "Bot ayarlarından değiştir",
 		"reachManage": "Yönet",
 		"reachNoPhone": "Henüz telefon hattı yok.",
-		"reachNoChannels": "Açık kanal yok."
+		"reachNoChannels": "Açık kanal yok.",
+		"newCallTreeName": "Yeni Çağrı Ağacı",
+		"newWorkflowName": "Yeni İş Akışı",
+		"greetingNodeLabel": "Karşılama",
+		"phoneLoadingNumbers": "Numaralarınız yükleniyor…",
+		"phoneNoFreeNumbers": "Bağlanabilecek boşta numara yok. {link} adresinden bir numara satın alın (ya da başka bir çalışandan birini park edin), sonra buraya dönün.",
+		"phoneWhichNumber": "Bu çalışan hangi numarayı yanıtlasın?",
+		"phoneNumberParked": "park edildi",
+		"phoneNumberUnassigned": "atanmamış",
+		"phoneLineName": "Hat adı (isteğe bağlı)",
+		"phoneLineNamePlaceholder": "Ön Büro, Destek, İspanyolca hat…",
+		"phoneAttaching": "Numara bu çalışana bağlanıyor…",
+		"phoneAttachNumber": "Numarayı bağla"
 	},
 	"agentConfigure": {
 		"inputs": "Girdiler",
@@ -2234,7 +2325,10 @@
 		"factDate": "Tarih",
 		"factAttachment": "Ek",
 		"factVia": "Üzerinden",
-		"interrupted": "Kesildi"
+		"interrupted": "Kesildi",
+		"tokensShort": "{count} token",
+		"underOneSecond": "<1 sn",
+		"triggerKind": "{kind, select, schedule {Zamanlama} event {Olay} heartbeat {Heartbeat} manual {Elle} watch {İzleme} webhook {Web kancası} call {Arama} retry {Yeniden deneme} other {{kind}}}"
 	},
 	"automations": {
 		"title": "Otomasyonlar",
@@ -2272,7 +2366,12 @@
 		"every8h": "Her 8 saat",
 		"every24h": "Her 24 saat",
 		"everyInterval": "Her {interval}",
-		"whenFires": "{event} tetiklendiğinde"
+		"whenFires": "{event} tetiklendiğinde",
+		"anEvent": "olay",
+		"watching": "İzleniyor: {source}",
+		"aPlugin": "eklenti",
+		"manualTrigger": "Elle tetikleme",
+		"onEventNamed": "{event} olduğunda"
 	},
 	"newBot": {
 		"browseMarketplace": "Mağazaya Göz At",
@@ -2329,7 +2428,18 @@
 		"approvalGate": {
 			"batchHeadline": "Tek adımdaki {n} işlem onayınızı bekliyor",
 			"goalHeadline": "Bu hedefte anlaşalım mı? Bir kontrol ulaşıldığını doğrulayana kadar çalışma sürer.",
-			"yourAgent": "Çalışanınız"
+			"yourAgent": "Çalışanınız",
+			"operation": "{action, select, create {{noun} oluştur} send {{noun} gönder} update {{noun} güncelle} status {{noun} için durumu değiştir} apply {{noun} uygula} record {{noun} kaydet} schedule {{noun} zamanla} publish {{noun} yayımla} respond {{noun} için yanıt ver} reply {{noun} için yanıt yaz} upsert {{noun} kaydet} attach {{noun} ekle} write {{noun} yaz} remove {{noun} kaldır} other {{verb} {noun}}}",
+			"resource": {
+				"billpayment": "fatura ödemesi",
+				"creditmemo": "alacak dekontu",
+				"journalentry": "yevmiye kaydı",
+				"purchaseorder": "satın alma siparişi",
+				"opportunity": "fırsat",
+				"company": "Şirket dosyası — bu işletmenin nasıl yürüdüğü",
+				"industry": "Sektör dosyası — bu işin nasıl yapıldığı",
+				"franchise": "Franchise dosyası — bir markanın gereksinimleri"
+			}
 		},
 		"approvalModal": {
 			"runShellCommand": "Kabuk Komutu Çalıştır",
@@ -2446,7 +2556,20 @@
 		"narrowSat": "C",
 		"pageTitle": "Zamanlama - Nebo",
 		"perWeek": "{count}/hf",
-		"workflowBuilderTitle": "{name} — İş Akışı Oluşturucu"
+		"workflowBuilderTitle": "{name} — İş Akışı Oluşturucu",
+		"everyDay": "Her gün",
+		"weekends": "Hafta sonları",
+		"weekdayPlural": "{day, select, sun {Pazarları} mon {Pazartesileri} tue {Salıları} wed {Çarşambaları} thu {Perşembeleri} fri {Cumaları} sat {Cumartesileri} other {{day}}}",
+		"clockTime": "{period} {hour}:{minute}",
+		"hourOnly": "{period} {hour}",
+		"midnight": "Gece yarısı",
+		"cronEveryMinutes": "{n, plural, one {Her dakika} other {Her # dakikada bir}}",
+		"cronEveryHours": "{n, plural, one {Her saat} other {Her # saatte bir}}",
+		"cronEveryHoursAt": "{n, plural, one {Her saat, :{minute} dakikasında} other {Her # saatte bir, :{minute} dakikasında}}",
+		"cronDailyAt": "Her gün saat {time}",
+		"cronDaysAt": "{days} saat {time}",
+		"cronMonthlyAt": "Her ayın {day, selectordinal, other {#.}} günü saat {time}",
+		"listSeparator": ", "
 	},
 	"neboShell": {
 		"tabs": {
@@ -2491,7 +2614,26 @@
 	},
 	"userMenu": {
 		"aboutNebo": "Nebo Hakkında",
-		"planSuffix": "{plan} Planı"
+		"planSuffix": "{plan} Planı",
+		"provideFeedback": "Geri bildirim gönder"
+	},
+	"feedback": {
+		"title": "Geri bildirim gönder",
+		"lede": "NeboAI ekibine neyin işe yaradığını, neyin yaramadığını ya da ne istediğinizi anlatın.",
+		"message": "Mesaj",
+		"screenshots": "Ekran görüntüleri veya fotoğraflar (isteğe bağlı)",
+		"addScreenshot": "Ekran görüntüsü ekle",
+		"remove": "Kaldır: {name}",
+		"diagnostics": "Tanılama bilgilerini ekle",
+		"diagnosticsHelp": "Uygulama ve bot sürümü, platform, bot kimliği ve bu ekran. Asla parolalar veya oturum açma belirteçleri değil.",
+		"send": "Gönder",
+		"sending": "Gönderiliyor",
+		"sent": "Teşekkürler — NeboAI ekibine gönderildi.",
+		"failed": "Geri bildiriminiz gönderilemedi. Tekrar deneyin.",
+		"needMessage": "Önce bir mesaj yazın.",
+		"messageTooLong": "Mesajı {max} karakterin altında tutun.",
+		"tooManyScreenshots": "En fazla {max, plural, one {# ekran görüntüsü} other {# ekran görüntüsü}} ekleyin.",
+		"imagesOnly": "Yalnızca görseller eklenebilir."
 	},
 	"workflowCanvas": {
 		"noWorkflows": "Görselleştirilecek iş akışı yok",
@@ -2632,7 +2774,18 @@
 		"gettingReady": "{name} hazırlanıyor…",
 		"skillsAndTools": "Beceriler ve araçlar",
 		"hireFailedTitle": "İşe alım tamamlanamadı",
-		"hireFailed": "{name} işe alınamadı. Tekrar deneyin."
+		"hireFailed": "{name} işe alınamadı. Tekrar deneyin.",
+		"codeStatus": {
+			"nebo": "NeboAI’ya bağlanılıyor…",
+			"skill": "Beceri yükleniyor…",
+			"workflow": "İş akışı yükleniyor…",
+			"agent": "Çalışan yükleniyor…",
+			"loop": "Loop’a katılınıyor…",
+			"plugin": "Eklenti yükleniyor…",
+			"app": "Uygulama yükleniyor…",
+			"collection": "Koleksiyon yükleniyor…",
+			"connection": "MCP bağlantısı ekleniyor…"
+		}
 	},
 	"activity": {
 		"pageTitle": "Etkinlik - Nebo",
@@ -2651,7 +2804,8 @@
 		"openAppHint": "Uygulamayı aç",
 		"openApp": "Uygulamayı Aç",
 		"runs": "Çalıştırmalar",
-		"memory": "Hafıza"
+		"memory": "Hafıza",
+		"appError": "Uygulama hatası ({status})"
 	},
 	"pricing": {
 		"pageTitle": "Planınızı seçin - Nebo",
@@ -2811,7 +2965,10 @@
 		"checkEvery": "Denetim aralığı",
 		"hours6": "6 saat",
 		"history": "Geçmiş",
-		"title": "Araç güncellemeleri"
+		"title": "Araç güncellemeleri",
+		"onLatest": "En son sürümü kullanıyorsunuz",
+		"checkFailed": "Güncellemeler denetlenemedi",
+		"updateFailed": "Güncelleme başarısız"
 	},
 	"inbox": {
 		"title": "Gelen Kutusu",
@@ -2842,15 +2999,27 @@
 		"failedAt": "\"{activity}\" sırasında başarısız oldu",
 		"steps": "Ne yapıyordu",
 		"output": "Çıktı",
-		"recordGone": "Çalıştırma kaydı yok. Sahibi olan çalışanla birlikte kaldırıldı, bu yüzden geriye yalnızca bu bildirim kaldı."
+		"recordGone": "Çalıştırma kaydı yok. Sahibi olan çalışanla birlikte kaldırıldı, bu yüzden geriye yalnızca bu bildirim kaldı.",
+		"revert": "Geri al",
+		"reverted": "Geri alındı"
 	},
 	"voice": {
 		"startConversation": "Sesli görüşme",
+		"reconnecting": "Aramaya yeniden katılıyor…",
 		"consentTitle": "Ses bir bulut hizmeti kullanır",
 		"consentBody": "Sesli görüşme, arama etkinken mikrofon sesinizi işlenmek üzere bir bulut ses hizmetine aktarır. Ses bu bilgisayardan çıkar. Sohbette yazmak her zamanki gibi yerel kalır.",
 		"consentAccept": "Sesi etkinleştir",
 		"consentDecline": "Şimdi değil",
-		"cloudIndicator": "Ses buluta aktarılıyor"
+		"cloudIndicator": "Ses buluta aktarılıyor",
+		"talkTo": "{name} ile konuş",
+		"isSpeaking": "{name} konuşuyor",
+		"callEnded": "Arama sona erdi.",
+		"tryAgain": "Tekrar dene",
+		"onAnotherCall": "Başka bir çalışanla aramada",
+		"callLost": "Arama koptu ve yeniden katılınamadı. Aramayı yeniden başlatın.",
+		"callEndedStartAgain": "Arama sona erdi. Yeniden başlatın.",
+		"needsConsent": "Sesli görüşme, mikrofon sesinizi işlenmek üzere bir bulut ses hizmetine gönderir. Onay vermek için ses panelinden etkinleştirin.",
+		"startFailed": "Arama başlatılamadı. Tekrar deneyin."
 	},
 	"flows": {
 		"none": "Henüz akış yok",
@@ -2865,7 +3034,15 @@
 		"overlapBufferOne": "Bitince bir kez çalıştır",
 		"overlapAllowAll": "Yine de çalıştır",
 		"deleteReminderTitle": "\"{name}\" silinsin mi?",
-		"deleteReminderBody": "Bu zamanlanmış görev çalışmayı bırakır ve kaldırılır. Geçmiş çalıştırmalar çalıştırma geçmişinde kalır."
+		"deleteReminderBody": "Bu zamanlanmış görev çalışmayı bırakır ve kaldırılır. Geçmiş çalıştırmalar çalıştırma geçmişinde kalır.",
+		"triggerOnEvent": "{event} olduğunda",
+		"triggerWatch": "İzleniyor: {target}",
+		"triggerWatchPlugin": "İzleniyor: eklenti",
+		"triggerManual": "Elle tetikleme",
+		"scheduleTooSpecific": "Bu zamanlama, basit düzenleyicinin gösterebileceğinden daha ayrıntılı",
+		"askSetupPrompt": "Benim için yeni bir akış kur: ",
+		"everyNHours": "Her N saatte bir",
+		"everyNMinutes": "Her N dakikada bir"
 	},
 	"christen": {
 		"title": "İlk çalışanınıza bir ad verin",
@@ -2887,7 +3064,27 @@
 		"working": "Nelere ihtiyaç duyacağı belirleniyor…",
 		"willDo": "{name} şunları yapacak:",
 		"thisEmployee": "Bu çalışan",
-		"removeItem": "{item} kaldır"
+		"removeItem": "{item} kaldır",
+		"hireFromApps": "Başka bir uygulamadan işe al",
+		"linkedLede": "Çalıştıkları bilgisayarda çalışmaya devam ederler.",
+		"thisComputer": "Bu bilgisayar",
+		"offline": "Çevrimdışı",
+		"linkedFailed": "{bot} üzerinden işe alınamadı. Tekrar deneyin.",
+		"onYourTeam": "Ekibinizde",
+		"linkedLooking": "Uygulamalar aranıyor…",
+		"linkedHireNew": "Yeni birini işe al",
+		"linkedConnect": "Ajanınızı bağlayın",
+		"linkedRunning": "{count} çalışıyor",
+		"nameYour": "{app} çalışanınıza bir ad verin",
+		"youAlreadyHave": "Zaten sahip olduklarınız:",
+		"nameTaken": "{name} adında bir çalışanınız zaten var.",
+		"linkedWhere": "Hangi bilgisayarda çalışsın?",
+		"linkedPickAgent": "Hangi {app} ajanı?",
+		"linkedModeTitle": "Sormadan neler yapabilsin?",
+		"linkedModeAutomaticDesc": "Kendi klasöründeki dosyaları kendi başına düzenler. Başka her şeyden önce sorar.",
+		"linkedModeAskDesc": "Herhangi bir şeyi değiştirmeden önce size sorar.",
+		"linkedModePlanDesc": "Okur ve plan yapar. Hiçbir şeyi değiştirmez.",
+		"linkedModeFullAccessDesc": "Bu bilgisayarda her şeyi sormadan çalıştırır."
 	},
 	"runLimit": {
 		"title": "Çalıştırma başına harcama sınırı",
@@ -3101,5 +3298,526 @@
 		"unreviewed": "İncelenmedi",
 		"loadMore": "Daha fazla göster",
 		"addJobEdit": "İşe ekle"
+	},
+	"workflow": {
+		"addNode": "Düğüm Ekle",
+		"deleteNode": "Düğümü Sil",
+		"deleteWorkflow": "İş Akışını Sil",
+		"removeItem": "Kaldır: {name}",
+		"activityCount": "{count, plural, one {# aktivite} other {# aktivite}}",
+		"stepCount": "{count, plural, one {# adım} other {# adım}}",
+		"triggerTypes": {
+			"schedule": "Zamanlama",
+			"heartbeat": "Heartbeat",
+			"event": "Olay",
+			"watch": "İzleme",
+			"manual": "Elle"
+		},
+		"branch": {
+			"true": "Doğru",
+			"false": "Yanlış",
+			"eachItem": "Her öğe",
+			"done": "Bitti"
+		},
+		"types": {
+			"greeting": {
+				"label": "Karşılama",
+				"description": "Bu hattın yanıtladığında söylediği",
+				"params": {
+					"text": {
+						"label": "Karşılama",
+						"description": "Arama bağlandığında kelimesi kelimesine söylenir.",
+						"placeholder": "Miller Diş Kliniği’ni aradığınız için teşekkürler! Nasıl yardımcı olabilirim?"
+					}
+				}
+			},
+			"intent": {
+				"label": "Amaç",
+				"description": "Bu hattın üstlendiği tek bir iş ve izin verilen araçları",
+				"params": {
+					"name": {
+						"label": "Amaç adı",
+						"description": "Yönlendiricinin kullandığı kısa kimlik (her ağaçta benzersiz)."
+					},
+					"description": {
+						"label": "Arayanlar bunu kastettiğinde",
+						"placeholder": "Arayan bir randevu almak, değiştirmek veya iptal etmek istiyor"
+					},
+					"tools": {
+						"label": "İzin verilen araçlar",
+						"description": "Yalnızca bu amaç için virgülle ayrılmış araç:kaynak izinleri."
+					},
+					"workflows": {
+						"label": "İzin verilen iş akışları",
+						"description": "Bu amacın çalıştırabileceği, bu çalışana ait iş akışlarının virgülle ayrılmış adları."
+					},
+					"plugins": {
+						"label": "İzin verilen eklentiler",
+						"description": "Virgülle ayrılmış eklenti kısa adları."
+					},
+					"mcp": {
+						"label": "İzin verilen MCP sunucuları",
+						"description": "Virgülle ayrılmış bağlı MCP sunucusu adları."
+					}
+				}
+			},
+			"transfer": {
+				"label": "Bir insana aktar",
+				"description": "Hattın aktarma numarasına canlı devir",
+				"params": {
+					"when": {
+						"label": "Ne zaman aktarılsın",
+						"placeholder": "Arayan bir kişiyle görüşmek istiyor, üzgün ya da acil bir durumu var"
+					},
+					"to": {
+						"label": "Bağlanacağı kişi",
+						"description": "Arayana kime bağlandığı söylenir. Numaranın kendisi hat ayarlarında kalır.",
+						"placeholder": "ofis müdürümüz"
+					}
+				}
+			},
+			"takeMessage": {
+				"label": "Mesaj al",
+				"description": "Sahibi için bir mesaj al (yedek seçenek)",
+				"params": {
+					"fields": {
+						"label": "Alınacak bilgiler",
+						"placeholder": "ad, numara, arama nedeni, geri aranmak için en uygun zaman"
+					}
+				}
+			},
+			"disclosures": {
+				"label": "Paylaşabilir",
+				"description": "Bu hattın sorgulama yapmadan doğrudan söylediği bilgiler",
+				"params": {
+					"text": {
+						"label": "Onaylı bilgiler",
+						"description": "Bu hat için sahibin onayladığı genel bilgiler — çalışma saatleri, adres, hizmet bölgesi, temel fiyatlar. Müşteri veya hesap ayrıntıları burada asla listelenmez; bunlar bir sorgulamadan geçer.",
+						"placeholder": "Pzt–Cum 8–17 arası açık. Adres: 123 Main St. Temizlik 120 $’dan başlar."
+					}
+				}
+			},
+			"custom": {
+				"label": "Özel",
+				"description": "Adımları ve becerileri elle tanımla"
+			},
+			"research": {
+				"label": "Araştırma",
+				"description": "Web araması, analiz ve sentez",
+				"params": {
+					"depth": {
+						"label": "Araştırma derinliği",
+						"options": {
+							"quick": "Hızlı (2-5 dk)",
+							"standard": "Standart (5-10 dk)",
+							"deep": "Derin (10-20 dk)"
+						}
+					},
+					"sources": {
+						"label": "Kaynak türleri",
+						"description": "Aranacak, virgülle ayrılmış kaynak türleri",
+						"placeholder": "web, akademik, haberler"
+					}
+				}
+			},
+			"email": {
+				"label": "E-posta Gönder",
+				"description": "E-posta yaz ve gönder",
+				"params": {
+					"to": {
+						"label": "Alıcı",
+						"description": "Alıcının e-posta adresi (veya önceki adımın verisini kullanın)"
+					},
+					"subject": {
+						"label": "Konu şablonu"
+					}
+				}
+			},
+			"notify": {
+				"label": "Bildir",
+				"description": "Bir kanala bildirim gönder",
+				"params": {
+					"channel": {
+						"label": "Kanal",
+						"options": {
+							"email": "E-posta",
+							"webhook": "Web kancası"
+						}
+					},
+					"target": {
+						"label": "Hedef",
+						"description": "Kanal adı, e-posta veya web kancası URL’si",
+						"placeholder": "#general veya user@example.com"
+					}
+				}
+			},
+			"code": {
+				"label": "Kod Çalıştır",
+				"description": "Bir kod parçası çalıştır",
+				"params": {
+					"language": {
+						"label": "Dil"
+					},
+					"code": {
+						"label": "Kod",
+						"description": "Çalıştırılacak kod"
+					}
+				}
+			},
+			"condition": {
+				"label": "Koşul",
+				"description": "If/else dallanması",
+				"params": {
+					"expression": {
+						"label": "Koşul ifadesi",
+						"description": "JavaScript ifadesi — doğru (truthy) sonuç Doğru dalına, yanlış (falsy) sonuç Yanlış dalına gider"
+					},
+					"mode": {
+						"label": "Değerlendirme modu",
+						"options": {
+							"expression": "İfade",
+							"contains": "Veri şunu içerir",
+							"exists": "Alan mevcut",
+							"regex": "Regex eşleşmesi"
+						}
+					}
+				}
+			},
+			"loop": {
+				"label": "Döngü",
+				"description": "Bir öğe listesi üzerinde yinele",
+				"params": {
+					"source": {
+						"label": "Öğe kaynağı",
+						"description": "Üzerinde yinelenecek dizinin yolu",
+						"placeholder": "data.items veya data.emails"
+					},
+					"maxIterations": {
+						"label": "En fazla yineleme",
+						"description": "Sonsuz döngüleri önlemek için güvenlik sınırı"
+					}
+				}
+			},
+			"wait": {
+				"label": "Bekle",
+				"description": "Yürütmeyi duraklat",
+				"params": {
+					"duration": {
+						"label": "Bekleme süresi",
+						"options": {
+							"5s": "5 saniye",
+							"30s": "30 saniye",
+							"1m": "1 dakika",
+							"5m": "5 dakika",
+							"15m": "15 dakika",
+							"1h": "1 saat",
+							"custom": "Özel"
+						}
+					},
+					"waitUntil": {
+						"label": "Ya da şuna kadar bekle",
+						"description": "Bu olay tetiklendiğinde devam et (süreye göre beklemek için boş bırakın)",
+						"placeholder": "örn. event:approval.received"
+					}
+				}
+			},
+			"agent": {
+				"label": "Çalışan",
+				"description": "Başka bir çalışana devret",
+				"params": {
+					"agentId": {
+						"label": "Çalışan",
+						"description": "Bu görevin devredileceği çalışan"
+					},
+					"instructions": {
+						"label": "Talimatlar",
+						"description": "Çalışanın varsayılan kişiliğini geçersiz kıl veya tamamla",
+						"placeholder": "Görevi devralan çalışan için özel talimatlar..."
+					}
+				}
+			},
+			"connector": {
+				"label": "Bağlayıcı",
+				"description": "Bir MCP entegrasyonu kullan",
+				"params": {
+					"serverId": {
+						"label": "MCP Sunucusu",
+						"description": "Kullanılacak bağlı MCP sunucusu"
+					},
+					"tool": {
+						"label": "Araç",
+						"description": "MCP sunucusunda çağrılacak araç",
+						"placeholder": "örn. read_file, send_message"
+					},
+					"input": {
+						"label": "Girdi",
+						"description": "Araç için JSON girdisi ('{{'data.field'}}' şablonlarını destekler)"
+					}
+				}
+			},
+			"http": {
+				"label": "HTTP İsteği",
+				"description": "Bir HTTP API çağrısı yap",
+				"params": {
+					"method": {
+						"label": "Yöntem"
+					},
+					"url": {
+						"label": "URL"
+					},
+					"body": {
+						"label": "İstek gövdesi",
+						"description": "POST/PUT/PATCH istekleri için JSON gövdesi"
+					},
+					"headers": {
+						"label": "Üst bilgiler",
+						"description": "Her satıra bir üst bilgi (anahtar: değer)"
+					}
+				}
+			},
+			"decide": {
+				"label": "Karar ver",
+				"description": "Verileri türlendirilmiş sorularla sınıflandır veya değerlendir",
+				"params": {
+					"state": {
+						"label": "Durum",
+						"description": "Değerlendirilecek veri yolu (inputs.*, item, nodes.'<'id>.*)"
+					},
+					"questions": {
+						"label": "Sorular",
+						"description": "Türlendirilmiş soruların JSON nesnesi (choice, score, noul). Bir koşul düğümü nodes.'<'id>.'<'question>.choice ve .confidence üzerinden yönlendirir"
+					},
+					"default": {
+						"label": "Varsayılan yanıtlar",
+						"description": "Karar verilemediğinde kullanılacak yanıtlar: choice için bir seçenek, score için bir düzey, noul için true veya false. Düğüm bu durumda nodes.'<'id>.defaulted değerini ayarlar"
+					}
+				}
+			},
+			"transform": {
+				"label": "Dönüştür",
+				"description": "Verileri yeniden biçimlendir veya filtrele",
+				"params": {
+					"operation": {
+						"label": "İşlem",
+						"options": {
+							"map": "Map — her öğeyi dönüştür",
+							"filter": "Filter — eşleşen öğeleri tut",
+							"reduce": "Reduce — tek bir değerde topla",
+							"pick": "Pick — belirli alanları çıkar",
+							"template": "Template — metin olarak biçimlendir"
+						}
+					},
+					"expression": {
+						"label": "İfade",
+						"description": "Dönüşüm ifadesi"
+					}
+				}
+			}
+		},
+		"catalog": {
+			"searchPlaceholder": "Düğüm ara...",
+			"noMatch": "\"{query}\" ile eşleşen düğüm yok",
+			"toolsAvailable": "{count, plural, one {# araç mevcut} other {# araç mevcut}}",
+			"categories": {
+				"triggers": "Tetikleyiciler",
+				"activities": "Aktiviteler",
+				"callTree": "Çağrı Ağacı",
+				"flowControl": "Akış Denetimi",
+				"connectors": "Bağlayıcılar (MCP)",
+				"agents": "Çalışanlar",
+				"output": "Çıktı"
+			},
+			"items": {
+				"triggerSchedule": {
+					"label": "Zamanlama",
+					"desc": "Belirli zamanlarda çalıştır"
+				},
+				"triggerEvent": {
+					"label": "Olay",
+					"desc": "Olaylara tepki ver"
+				},
+				"triggerHeartbeat": {
+					"label": "Heartbeat",
+					"desc": "Belirli aralıklarla çalıştır"
+				},
+				"triggerManual": {
+					"label": "Elle",
+					"desc": "İstendiğinde çalıştır"
+				},
+				"activityCustom": {
+					"label": "Özel Aktivite",
+					"desc": "Adımları ve becerileri tanımla"
+				},
+				"activityResearch": {
+					"label": "Araştırma",
+					"desc": "Web araması ve analiz"
+				},
+				"activityEmail": {
+					"label": "E-posta Gönder",
+					"desc": "E-posta yaz ve gönder"
+				},
+				"activityNotify": {
+					"label": "Bildir",
+					"desc": "Bildirim gönder"
+				},
+				"activityCode": {
+					"label": "Kod Çalıştır",
+					"desc": "Bir kod parçası çalıştır"
+				},
+				"activityHttp": {
+					"label": "HTTP İsteği",
+					"desc": "Bir API çağrısı yap"
+				},
+				"activityDecide": {
+					"label": "Karar ver",
+					"desc": "Verileri sınıflandır veya değerlendir"
+				},
+				"activityTransform": {
+					"label": "Dönüştür",
+					"desc": "Verileri yeniden biçimlendir veya filtrele"
+				},
+				"activityGreeting": {
+					"label": "Karşılama",
+					"desc": "Hattın yanıtladığında söylediği"
+				},
+				"activityIntent": {
+					"label": "Amaç",
+					"desc": "Tek bir iş + izin verilen araçları"
+				},
+				"activityTransfer": {
+					"label": "Bir insana aktar",
+					"desc": "Canlı devir — kime bağlanacağını yazın"
+				},
+				"activityTakeMessage": {
+					"label": "Mesaj al",
+					"desc": "Bir mesaj al (yedek seçenek)"
+				},
+				"activityDisclosures": {
+					"label": "Paylaşabilir",
+					"desc": "Bu hattın doğrudan söylediği bilgiler (saatler, adres, fiyatlar)"
+				},
+				"flowCondition": {
+					"label": "Koşul",
+					"desc": "If/else dallanması"
+				},
+				"flowLoop": {
+					"label": "Döngü",
+					"desc": "Öğeler üzerinde yinele"
+				},
+				"flowWait": {
+					"label": "Bekle",
+					"desc": "Duraklat veya bir olayı bekle"
+				},
+				"emit": {
+					"label": "Olay Yay",
+					"desc": "Tamamlanma olayını duyur"
+				}
+			}
+		},
+		"eventSources": {
+			"label": "Olay kaynakları",
+			"searchPlaceholder": "Kaynak aramak için yazın...",
+			"hint": "Bilinen kaynakları aramak için yazın, eklemek için Enter’a basın. Özel adlar ve joker karakterler (email.*) de çalışır."
+		},
+		"flow": {
+			"triggerManual": "Siz başlattığınızda çalışır",
+			"triggerSchedule": "Bir zamanlamaya göre",
+			"triggerEventAny": "Bir olay tetiklendiğinde",
+			"triggerWatch": "İzleniyor: {name}",
+			"triggerWatchAny": "Bir eklenti izleniyor",
+			"applying": "Uygulanıyor…",
+			"go": "Uygula",
+			"tellAi": "AI’a neyi değiştireceğini söyleyin",
+			"tellAiEllipsis": "AI’a neyi değiştireceğini söyleyin…",
+			"badgeExact": "kesin",
+			"badgeAgent": "AI",
+			"emptyCode": "(boş)",
+			"stepPlaceholder": "Bu adım ne yapmalı?",
+			"changeStep": "\"{name}\" adımını değiştir…",
+			"forEach": "Her {item} için",
+			"loopItemDefault": "öğe",
+			"loopEmpty": "Bu döngüde henüz bir şey yok.",
+			"pathDefault": "yol",
+			"pathEmpty": "Boş yol",
+			"addStepHere": "Buraya bir adım ekle",
+			"connected": "{name} bağlı",
+			"notConnected": "{name} bağlı değil — bu akış başarısız olacak",
+			"connect": "Bağlan",
+			"describeFlowChange": "Bu akışın tamamında yapılacak bir değişikliği anlatın…",
+			"edit": "düzenle",
+			"emits": "yayar",
+			"noSteps": "Bu akışta henüz adım yok."
+		},
+		"panel": {
+			"backToOverview": "İş akışı genel görünümüne dön",
+			"intent": "Amaç",
+			"addSkill": "Beceri ekle...",
+			"parameters": "Parametreler",
+			"addStep": "Adım ekle...",
+			"manualHint": "Yalnızca elle tetiklendiğinde çalışır.",
+			"notConfigured": "Yapılandırılmadı",
+			"noEventConfigured": "Yapılandırılmış olay yok",
+			"noDescription": "Açıklama yok",
+			"emitPlaceholder": "örn. {name}",
+			"emitOptional": "İsteğe bağlı — çalıştırma tamamlandığında diğer iş akışları bununla tetiklenebilir.",
+			"useEmit": "Kullan: {name}",
+			"emitRenameWarning": "Yeniden adlandırmak, bu olaya abone olan iş akışlarını bozar.",
+			"none": "Yok",
+			"apiEndpoint": "API Uç Noktası",
+			"apiEndpointHint": "Bu iş akışı için çalışanın Ayarlar → Web kancaları bölümünden bir anahtar oluşturun."
+		},
+		"schedule": {
+			"weekends": "Hafta sonları",
+			"custom": "Özel",
+			"daysOfWeek": "Haftanın günleri",
+			"monthly": "Aylık",
+			"biannual": "6 ayda bir",
+			"yearly": "Yıllık",
+			"onDay": "günü",
+			"biannualNote": "{day} {firstMonth} ve {day} {secondMonth} tarihlerinde çalışır.",
+			"shortMonthsSkipped": "{day}. günü olmayan aylar atlanır.",
+			"limitToHours": "Saatlerle sınırla",
+			"rangeTo": "ile"
+		},
+		"watch": {
+			"plugin": "Eklenti",
+			"choosePlugin": "Bir eklenti seçin…",
+			"whenItReports": "Bildirdiğinde",
+			"chooseEvent": "Bir olay seçin…",
+			"hint": "{plugin} her {event} bildirdiğinde çalışır; diğer akışlar da {plugin}.{event} olayını dinleyebilir."
+		},
+		"validation": {
+			"emptyId": "\"{workflow}\" içindeki bir aktivitenin kimliği boş",
+			"duplicateId": "\"{workflow}\" içinde yinelenen aktivite kimliği \"{id}\"",
+			"conditionExpression": "\"{id}\" koşulu bir ifadeye ihtiyaç duyuyor — yönlendirme belirlenimcidir, asla AI tarafından karar verilmez",
+			"loopSource": "\"{id}\" döngüsü bir veri kaynağına ihtiyaç duyuyor (örn. inputs.items)",
+			"httpUrl": "\"{id}\" HTTP düğümü bir URL’ye ihtiyaç duyuyor",
+			"decideQuestions": "\"{id}\" karar düğümü sorulara ihtiyaç duyuyor (türlendirilmiş soruların JSON nesnesi)",
+			"waitDuration": "\"{id}\" bekleme düğümü bir süreye ihtiyaç duyuyor",
+			"needsIntent": "\"{workflow}\" içindeki \"{id}\" aktivitesi bir amaca veya adımlara ihtiyaç duyuyor",
+			"targetsTrigger": "Bir bağlantı tetikleyiciyi hedefliyor",
+			"leavesEmit": "Bir bağlantı yayma düğümünden çıkıyor",
+			"unknownFrom": "Bilinmeyen \"{id}\" düğümünden bağlantı",
+			"unknownTo": "Bilinmeyen \"{id}\" düğümüne bağlantı",
+			"duplicateConnection": "Yinelenen bağlantı {from} → {to}",
+			"labeledNonBranching": "\"{label}\" etiketli kenar, dallanmayan \"{id}\" düğümünden çıkıyor",
+			"unlabeledBranch": "\"{id}\" düğümünden çıkan kenarlar bir dal etiketi taşımalı",
+			"cycle": "Grafik bir döngü içeriyor (yalnızca bir döngünün Her öğe gövdesi kendi döngüsüne dönebilir)"
+		},
+		"builder": {
+			"unsavedConfirm": "Kaydedilmemiş değişiklikleriniz var. Vazgeçip kapatılsın mı?",
+			"workflowLabel": "{name} ({count, plural, one {# aktivite} other {# aktivite}})",
+			"undo": "Geri al (Cmd+Z)",
+			"redo": "Yinele (Cmd+Shift+Z)",
+			"issueCount": "{count, plural, one {# sorun} other {# sorun}}",
+			"discard": "Vazgeç",
+			"hideDetails": "Ayrıntılar panelini gizle",
+			"showDetails": "Ayrıntılar panelini göster",
+			"newWorkflowTitle": "Yeni iş akışı",
+			"empty": "İş akışı yok — başlamak için bir tane oluşturun",
+			"newWorkflow": "Yeni İş Akışı",
+			"confirmDeleteWorkflow": "Bu iş akışını silmek istediğinizden emin misiniz? Tüm aktiviteleri ve bağlantıları kaldırılacak.",
+			"confirmDeleteNode": "Bu düğümü silmek istediğinizden emin misiniz? Bağlantıları otomatik olarak yeniden kurulacak."
+		}
 	}
 }

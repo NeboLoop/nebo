@@ -84,7 +84,16 @@
 		"closeModal": "Tutup modal",
 		"all": "Semua",
 		"more": "Lainnya",
-		"stopped": "Dihentikan"
+		"stopped": "Dihentikan",
+		"errorOccurred": "Terjadi kesalahan.",
+		"systemError": "Kesalahan sistem",
+		"stillReconnecting": "Masih mencoba menjangkau Nebo Anda…",
+		"updatesAvailable": "{count, plural, one {# pembaruan tersedia} other {# pembaruan tersedia}}",
+		"artifactUpdated": "{type} diperbarui: {version}",
+		"artifactUpdateFailed": "Pembaruan gagal: {error}",
+		"employee": "Karyawan",
+		"untitled": "Tanpa judul",
+		"document": "Dokumen"
 	},
 	"time": {
 		"justNow": "baru saja",
@@ -253,9 +262,11 @@
 		"working": "Bekerja",
 		"chatActions": "Tindakan obrolan",
 		"deleteChatTitle": "Hapus \"{name}\"?",
-		"deleteChatBody": "Obrolan ini dan semua pesannya akan dihapus. Tindakan ini tidak dapat dibatalkan."
+		"deleteChatBody": "Obrolan ini dan semua pesannya akan dihapus. Tindakan ini tidak dapat dibatalkan.",
+		"offline": "Luring"
 	},
 	"chat": {
+		"worksIn": "Bekerja di {folder}",
 		"compactBoundary": "Percakapan sebelumnya diringkas",
 		"clearedBoundary": "Dibersihkan di sini. Pesan sebelumnya tetap disimpan, tetapi tidak digunakan.",
 		"goalLine": "Tujuan: {condition} ({turns} giliran)",
@@ -264,10 +275,15 @@
 		"goalStopped": "Tujuan dijeda. Bilang saja jika ingin melanjutkannya.",
 		"resumedActivity": "Masih bekerja: {tool}",
 		"waitingForYou": "Menunggu Anda",
+		"waitingOnYou": "{name} menunggu Anda",
+		"seeConversation": "Lihat percakapan",
 		"waitingOnYourAnswer": "{name} menunggu jawaban Anda:",
 		"waitingOpen": "Buka",
 		"waitingAsksLabel": "Menunggu jawaban Anda",
 		"subagentStep": "{op} · langkah {n}",
+		"helperWorking": "Seorang pembantu sedang bekerja: {what}",
+		"helpersWorking": "{n} pembantu sedang bekerja",
+		"moreQuestionsWaiting": "{count, plural, one {1 pertanyaan lagi menunggu} other {# pertanyaan lagi menunggu}}",
 		"pending": "Tertunda",
 		"yourAICompanion": "Tenaga Kerja AI Anda",
 		"tellMeWhatYouNeed": "Beritahu saya apa yang Anda butuhkan, atau aktifkan salah satu karyawan Anda di bawah.",
@@ -295,6 +311,7 @@
 		"messageChannel": "Pesan #{channel}...",
 		"messagedCoworker": "Dikirimi pesan",
 		"disclaimer": "Nebo bisa melakukan kesalahan. Verifikasi informasi penting.",
+		"uploadsKept": "Unggahan disimpan selama {days} hari.",
 		"goodMorning": "Selamat pagi",
 		"goodAfternoon": "Selamat siang",
 		"goodEvening": "Selamat malam",
@@ -315,6 +332,8 @@
 		"installFailed": "Pemasangan gagal — coba lagi.",
 		"hire": "Rekrut",
 		"hiring": "Merekrut…",
+		"hireCount": "Rekrut semua {count}",
+		"hiringCount": "Merekrut {done} dari {count}…",
 		"botComputer": "Komputer",
 		"closeComputer": "Tutup komputer",
 		"fullView": "Tampilan penuh",
@@ -330,13 +349,18 @@
 		"computerUnavailableHint": "Komputer karyawan berjalan di instalasi Linux dan karyawan cloud.",
 		"watchingAndLearning": "{name} sedang menonton dan belajar",
 		"stopRecording": "Hentikan perekaman",
-		"teachLocalHint": "Do the task on this screen as you normally would, then stop.",
+		"teachLocalHint": "Kerjakan tugas di layar ini seperti biasa, lalu berhenti.",
+		"teachStarting": "Bersiap mengamati layar Anda…",
+		"teachNeedsScreenPermission": "Nebo memerlukan izin Perekaman Layar untuk melihat Anda mengerjakan tugas. Aktifkan Nebo di Pengaturan Sistem › Privasi & Keamanan › Perekaman Layar, lalu coba lagi.",
+		"openScreenRecordingSettings": "Buka pengaturan Perekaman Layar",
+		"openVirtualComputer": "Buka komputer virtual",
 		"recordTask": "Rekam tugas",
 		"recording": "Merekam",
 		"connectFailed": "Proses masuk tidak selesai. Coba lagi.",
 		"connectAccountHint": "Masuk dan saya akan melanjutkan dari tempat saya berhenti.",
 		"submit": "Kirim",
 		"other": "Lainnya…",
+		"askedReceipt": "Ditanyakan",
 		"copyCode": "Salin kode",
 		"copied": "Tersalin!",
 		"dropFilesHere": "Letakkan berkas di sini",
@@ -405,6 +429,8 @@
 		"shareNotConnected": "Sambungkan ke NeboAI untuk membagikan.",
 		"filesInThread": "Berkas dalam obrolan ini",
 		"nothingHereYet": "Belum ada apa pun di sini",
+		"noEmployeesOneTool": "Tidak ada karyawan yang cocok, tetapi ada 1 alat — lihat Alat.",
+		"noEmployeesButTools": "Tidak ada karyawan yang cocok, tetapi ada {count} alat — lihat Alat.",
 		"workEmptyDesc": "Saat Nebo membuat laporan, lembar kerja, atau desain, hasilnya akan muncul di sini.",
 		"closeImage": "Tutup gambar",
 		"fullSize": "Ukuran penuh",
@@ -429,7 +455,12 @@
 		"historyLoadFailed": "Tidak bisa memuat percakapan ini. Periksa koneksi Anda dan coba lagi.",
 		"consentCreates": "Katakan ya dan karyawan ini dibuat dengan pekerjaan persis ini.",
 		"consentAdds": "Katakan ya dan ini ditambahkan ke pekerjaannya.",
-		"fromColleague": "Dari {name}"
+		"fromColleague": "Dari {name}",
+		"storageFull": "{cap, select, none {Penyimpanan Anda penuh.} other {Penyimpanan Anda penuh ({cap}).}} Unggahan dihapus {days, plural, one {# hari} other {# hari}} setelah ditambahkan.",
+		"storageNextFree": "Ruang berikutnya kosong pada {date}.",
+		"uploadFailed": "Unggahan file gagal — pesan tidak terkirim. {reason}",
+		"fileRemoved": "File ini dihapus {days, plural, one {# hari} other {# hari}} setelah diunggah.",
+		"notDelivered": "Pesan tidak terkirim. Koneksi terputus, jadi kirim lagi."
 	},
 	"chatInput": {
 		"placeholder": "Balas...",
@@ -468,7 +499,17 @@
 		"tapToInterrupt": "Ketuk untuk menyela",
 		"mute": "Bisukan",
 		"unmute": "Bunyikan",
-		"endConversation": "Akhiri percakapan"
+		"endConversation": "Akhiri percakapan",
+		"recordClip": "Rekam klip",
+		"clipStarting": "Menunggu mikrofon",
+		"clipStop": "Berhenti dan lampirkan",
+		"clipLevel": "Level mikrofon",
+		"clipMicBlockedMac": "Nebo tidak dapat menggunakan mikrofon Anda. Izinkan di Pengaturan Sistem → Privasi & Keamanan → Mikrofon.",
+		"clipMicBlocked": "Nebo tidak dapat menggunakan mikrofon Anda. Izinkan di pengaturan privasi sistem Anda.",
+		"clipNoMic": "Mikrofon tidak ditemukan. Hubungkan satu lalu coba lagi.",
+		"clipUnsupported": "Perekaman tidak tersedia di sini.",
+		"clipFailed": "Perekaman gagal. Coba lagi.",
+		"clipCapReached": "Rekaman berhenti di 10 menit. Rekaman ini sudah dilampirkan."
 	},
 	"voiceDownload": {
 		"title": "Unduh Model Suara",
@@ -566,7 +607,21 @@
 		"agent": "Karyawan",
 		"command": "Perintah",
 		"notConnected": "tidak terhubung",
-		"keyboardHint": "↑↓ navigasi · Enter pilih · Esc batal"
+		"keyboardHint": "↑↓ navigasi · Enter pilih · Esc batal",
+		"category": {
+			"session": "Sesi",
+			"model": "Model",
+			"info": "Info"
+		},
+		"desc": {
+			"new": "Mulai percakapan baru",
+			"clear": "Mulai dari awal (setiap pesan tetap disimpan)",
+			"compact": "Ringkas & bersihkan pesan lama",
+			"goal": "Terus bekerja sampai pemeriksaan memastikan kondisi akhir",
+			"model": "Tampilkan atau ganti model",
+			"help": "Tampilkan semua perintah",
+			"status": "Tampilkan status karyawan & sistem"
+		}
 	},
 	"dataTable": {
 		"loading": "Memuat...",
@@ -1072,7 +1127,7 @@
 		"howStep2": "Nebo membuat symlink dan meluncurkan aplikasi segera",
 		"howStep3": "Build ulang biner Anda dan pengawas akan me-restart aplikasi secara otomatis",
 		"howStep4": "Pembongkaran menghapus symlink tetapi menyimpan berkas proyek Anda tetap utuh",
-		"path": "Path",
+		"path": "Jalur",
 		"logs": "Log",
 		"unloadFailed": "Gagal membongkar aplikasi",
 		"relaunchFailed": "Gagal meluncurkan ulang aplikasi",
@@ -1207,7 +1262,7 @@
 			"mountain": "Waktu Pegunungan (AS)",
 			"pacific": "Waktu Pasifik (AS)",
 			"arizona": "Arizona (AS)",
-			"london": "London (UK)",
+			"london": "London (Inggris)",
 			"paris": "Paris (CET)",
 			"berlin": "Berlin (CET)",
 			"tokyo": "Tokyo (Jepang)",
@@ -1468,7 +1523,7 @@
 		"title": "Status Karyawan",
 		"description": "Pantau karyawan yang terhubung dan kesehatan sistem",
 		"mcpServer": "Server MCP",
-		"database": "Database",
+		"database": "Basis data",
 		"webSocket": "WebSocket",
 		"uptime": "Waktu Aktif",
 		"updates": "Pembaruan",
@@ -1777,7 +1832,17 @@
 		"toolCategories": "Kategori alat",
 		"allToolCategories": "Semua kategori alat",
 		"moreEmployees": "Karyawan lainnya",
-		"moreTools": "Alat lainnya"
+		"moreTools": "Alat lainnya",
+		"pageTitle": "Marketplace - Nebo",
+		"sharedPageTitle": "Dibagikan - Marketplace - Nebo",
+		"searchPageTitle": "Cari — Marketplace",
+		"resume": {
+			"byAuthor": "oleh {author}",
+			"perSeat": "per pengguna",
+			"responsibilities": "Tanggung jawab",
+			"newHire": "Karyawan baru · jadilah yang pertama",
+			"meet": "Kenali"
+		}
 	},
 	"commander": {
 		"autoLayout": "Tata Letak Otomatis",
@@ -1854,7 +1919,9 @@
 		"noChatsYet": "Belum ada obrolan. Mulai yang baru.",
 		"noRunsYet": "Belum ada eksekusi",
 		"appBadge": "Aplikasi",
-		"primaryUndeletable": "Asisten pribadi Anda menerima semua hal yang tidak ditujukan ke karyawan tertentu, jadi tidak dapat dihapus. Ubah namanya di Pengaturan karyawan."
+		"primaryUndeletable": "Asisten pribadi Anda menerima semua hal yang tidak ditujukan ke karyawan tertentu, jadi tidak dapat dihapus. Ubah namanya di Pengaturan karyawan.",
+		"browseFolders": "Telusuri folder",
+		"browseFiles": "Telusuri file"
 	},
 	"agentLearning": {
 		"title": "Pengembangan diri",
@@ -1871,6 +1938,7 @@
 		"viewOnly": "Percakapan ini hanya bisa dilihat — karyawan berbicara di sini, Anda mengarahkan mereka di obrolan masing-masing"
 	},
 	"teams": {
+		"everyoneHint": "Seluruh tim",
 		"section": "Tim",
 		"emptyRoster": "Tempatkan dua karyawan atau lebih dalam satu tim dan mereka berbagi satu percakapan. Tekan + untuk memulai, atau minta karyawan mana pun.",
 		"inTeam": "Di tim ini",
@@ -1945,6 +2013,9 @@
 	},
 	"agentSettings": {
 		"general": "Umum",
+		"tabWho": "Siapa mereka",
+		"tabWork": "Apa yang mereka kerjakan",
+		"developerGroup": "Pengembang",
 		"generalBlurb": "Ringkasan karyawan ini — status, skill, alur kerja, dan perawatan.",
 		"identityBlurb": "Nama, suara, warna, dan status — bagaimana karyawan ini tampil di seluruh aplikasi.",
 		"nameLabel": "Nama",
@@ -2129,6 +2200,14 @@
 		"saveCredentialsFailed": "Gagal menyimpan kredensial.",
 		"signInFailedRetry": "Gagal masuk. Silakan coba lagi.",
 		"startSignInFailed": "Tidak dapat memulai proses masuk untuk akun ini.",
+		"signInPopupBlocked": "Jendela masuk diblokir. Izinkan pop-up untuk Nebo, lalu coba lagi.",
+		"channelToggleFailed": "Tidak dapat memperbarui saluran itu. Coba lagi.",
+		"helpChatFailed": "Tidak dapat membuka chat bantuan. Coba lagi.",
+		"accountsLoadFailed": "Tidak dapat memuat akun. Coba lagi.",
+		"accountListRefreshFailed": "Akun terhubung, tetapi daftarnya tidak diperbarui. Buka kembali pengaturan untuk melihatnya.",
+		"disconnectFailed": "Tidak dapat memutuskan akun itu. Coba lagi.",
+		"claimableLoadFailed": "Tidak dapat memuat nomor telepon Anda.",
+		"tryAgain": "Coba lagi",
 		"contextTitle": "Apa yang diketahui karyawan ini",
 		"contextDesc": "Ditulis oleh karyawan itu sendiri dari lapisan industri dan perusahaan, setiap kali keduanya berubah. Ia bekerja berdasarkan ini tanpa perlu mencari apa pun.",
 		"contextAgainst": "Ditulis terhadap {against}",
@@ -2157,7 +2236,19 @@
 		"changeInBotSettings": "Ubah di Pengaturan bot",
 		"reachManage": "Kelola",
 		"reachNoPhone": "Belum ada saluran telepon.",
-		"reachNoChannels": "Tidak ada kanal yang aktif."
+		"reachNoChannels": "Tidak ada kanal yang aktif.",
+		"newCallTreeName": "Pohon Panggilan Baru",
+		"newWorkflowName": "Alur Kerja Baru",
+		"greetingNodeLabel": "Sapaan",
+		"phoneLoadingNumbers": "Memuat nomor Anda…",
+		"phoneNoFreeNumbers": "Tidak ada nomor yang bebas untuk dipasang. Beli nomor (atau parkir satu dari karyawan lain) di {link}, lalu kembali ke sini.",
+		"phoneWhichNumber": "Nomor mana yang harus dijawab karyawan ini?",
+		"phoneNumberParked": "diparkir",
+		"phoneNumberUnassigned": "belum ditetapkan",
+		"phoneLineName": "Nama saluran (opsional)",
+		"phoneLineNamePlaceholder": "Resepsionis, Dukungan, Saluran bahasa Spanyol…",
+		"phoneAttaching": "Memasang nomor ke karyawan ini…",
+		"phoneAttachNumber": "Pasang nomor"
 	},
 	"agentConfigure": {
 		"inputs": "Input",
@@ -2234,7 +2325,10 @@
 		"factDate": "Tanggal",
 		"factAttachment": "Lampiran",
 		"factVia": "Melalui",
-		"interrupted": "Disela"
+		"interrupted": "Disela",
+		"tokensShort": "{count} tok",
+		"underOneSecond": "<1s",
+		"triggerKind": "{kind, select, schedule {Jadwal} event {Peristiwa} heartbeat {Heartbeat} manual {Manual} watch {Pantau} webhook {Webhook} call {Panggilan} retry {Coba ulang} other {{kind}}}"
 	},
 	"automations": {
 		"title": "Otomasi",
@@ -2272,7 +2366,12 @@
 		"every8h": "Setiap 8 jam",
 		"every24h": "Setiap 24 jam",
 		"everyInterval": "Setiap {interval}",
-		"whenFires": "Saat {event} terjadi"
+		"whenFires": "Saat {event} terjadi",
+		"anEvent": "peristiwa",
+		"watching": "Pantau: {source}",
+		"aPlugin": "plugin",
+		"manualTrigger": "Pemicu manual",
+		"onEventNamed": "Saat {event}"
 	},
 	"newBot": {
 		"browseMarketplace": "Jelajahi Marketplace",
@@ -2329,7 +2428,18 @@
 		"approvalGate": {
 			"batchHeadline": "{n} tindakan dalam satu langkah perlu persetujuan Anda",
 			"goalHeadline": "Sepakati tujuan ini? Pekerjaan berlanjut sampai pemeriksaan memastikan tujuan tercapai.",
-			"yourAgent": "Karyawan Anda"
+			"yourAgent": "Karyawan Anda",
+			"operation": "{action, select, create {Buat {noun}} send {Kirim {noun}} update {Perbarui {noun}} status {Ubah status {noun}} apply {Terapkan {noun}} record {Catat {noun}} schedule {Jadwalkan {noun}} publish {Terbitkan {noun}} respond {Tanggapi {noun}} reply {Balas {noun}} upsert {Simpan {noun}} attach {Lampirkan {noun}} write {Tulis {noun}} remove {Hapus {noun}} other {{verb} {noun}}}",
+			"resource": {
+				"billpayment": "pembayaran tagihan",
+				"creditmemo": "nota kredit",
+				"journalentry": "entri jurnal",
+				"purchaseorder": "pesanan pembelian",
+				"opportunity": "kesepakatan",
+				"company": "file Perusahaan — cara bisnis ini berjalan",
+				"industry": "file Industri — cara bidang usaha ini bekerja",
+				"franchise": "file Waralaba — persyaratan sebuah merek"
+			}
 		},
 		"approvalModal": {
 			"runShellCommand": "Jalankan Perintah Shell",
@@ -2446,7 +2556,20 @@
 		"narrowSat": "S",
 		"pageTitle": "Jadwal - Nebo",
 		"perWeek": "{count}/mgg",
-		"workflowBuilderTitle": "{name} — Perancang Alur Kerja"
+		"workflowBuilderTitle": "{name} — Perancang Alur Kerja",
+		"everyDay": "Setiap hari",
+		"weekends": "Akhir pekan",
+		"weekdayPlural": "{day, select, sun {Minggu} mon {Senin} tue {Selasa} wed {Rabu} thu {Kamis} fri {Jumat} sat {Sabtu} other {{day}}}",
+		"clockTime": "{hour}:{minute} {period}",
+		"hourOnly": "{hour} {period}",
+		"midnight": "Tengah malam",
+		"cronEveryMinutes": "{n, plural, one {Setiap menit} other {Setiap # menit}}",
+		"cronEveryHours": "{n, plural, one {Setiap jam} other {Setiap # jam}}",
+		"cronEveryHoursAt": "{n, plural, one {Setiap jam pada menit :{minute}} other {Setiap # jam pada menit :{minute}}}",
+		"cronDailyAt": "Setiap hari pukul {time}",
+		"cronDaysAt": "Setiap {days} pukul {time}",
+		"cronMonthlyAt": "Setiap bulan pada tanggal {day} pukul {time}",
+		"listSeparator": ", "
 	},
 	"neboShell": {
 		"tabs": {
@@ -2491,7 +2614,26 @@
 	},
 	"userMenu": {
 		"aboutNebo": "Tentang Nebo",
-		"planSuffix": "Paket {plan}"
+		"planSuffix": "Paket {plan}",
+		"provideFeedback": "Beri masukan"
+	},
+	"feedback": {
+		"title": "Beri masukan",
+		"lede": "Beri tahu tim NeboAI apa yang berjalan baik, apa yang tidak, atau apa yang Anda inginkan.",
+		"message": "Pesan",
+		"screenshots": "Tangkapan layar atau foto (opsional)",
+		"addScreenshot": "Tambahkan tangkapan layar",
+		"remove": "Hapus {name}",
+		"diagnostics": "Sertakan diagnostik",
+		"diagnosticsHelp": "Versi aplikasi dan bot, platform, id bot, dan layar ini. Tidak pernah kata sandi atau token masuk.",
+		"send": "Kirim",
+		"sending": "Mengirim",
+		"sent": "Terima kasih — sudah dikirim ke tim NeboAI.",
+		"failed": "Tidak dapat mengirim masukan Anda. Coba lagi.",
+		"needMessage": "Tulis pesan terlebih dahulu.",
+		"messageTooLong": "Buat pesan kurang dari {max} karakter.",
+		"tooManyScreenshots": "Lampirkan paling banyak {max, plural, one {# tangkapan layar} other {# tangkapan layar}}.",
+		"imagesOnly": "Hanya gambar yang dapat dilampirkan."
 	},
 	"workflowCanvas": {
 		"noWorkflows": "Tidak ada alur kerja untuk divisualisasikan",
@@ -2632,7 +2774,18 @@
 		"gettingReady": "Menyiapkan {name}…",
 		"skillsAndTools": "Keahlian dan alat",
 		"hireFailedTitle": "Perekrutan tidak dapat diselesaikan",
-		"hireFailed": "{name} tidak berhasil direkrut. Coba lagi."
+		"hireFailed": "{name} tidak berhasil direkrut. Coba lagi.",
+		"codeStatus": {
+			"nebo": "Menghubungkan ke NeboAI…",
+			"skill": "Memasang skill…",
+			"workflow": "Memasang alur kerja…",
+			"agent": "Memasang karyawan…",
+			"loop": "Bergabung ke loop…",
+			"plugin": "Memasang plugin…",
+			"app": "Memasang aplikasi…",
+			"collection": "Memasang koleksi…",
+			"connection": "Menambahkan koneksi MCP…"
+		}
 	},
 	"activity": {
 		"pageTitle": "Aktivitas - Nebo",
@@ -2651,7 +2804,8 @@
 		"openAppHint": "Buka aplikasi",
 		"openApp": "Buka Aplikasi",
 		"runs": "Eksekusi",
-		"memory": "Memori"
+		"memory": "Memori",
+		"appError": "Kesalahan aplikasi ({status})"
 	},
 	"pricing": {
 		"pageTitle": "Pilih paket Anda - Nebo",
@@ -2811,7 +2965,10 @@
 		"checkEvery": "Periksa setiap",
 		"hours6": "6 jam",
 		"history": "Riwayat",
-		"title": "Pembaruan alat"
+		"title": "Pembaruan alat",
+		"onLatest": "Anda sudah menggunakan versi terbaru",
+		"checkFailed": "Tidak dapat memeriksa pembaruan",
+		"updateFailed": "Pembaruan gagal"
 	},
 	"inbox": {
 		"title": "Kotak Masuk",
@@ -2842,15 +2999,27 @@
 		"failedAt": "Gagal saat \"{activity}\"",
 		"steps": "Apa yang sedang dikerjakan",
 		"output": "Keluaran",
-		"recordGone": "Catatan eksekusi sudah tidak ada. Catatan itu terhapus bersama karyawan pemiliknya, jadi hanya pemberitahuan ini yang tersisa."
+		"recordGone": "Catatan eksekusi sudah tidak ada. Catatan itu terhapus bersama karyawan pemiliknya, jadi hanya pemberitahuan ini yang tersisa.",
+		"revert": "Kembalikan",
+		"reverted": "Dikembalikan"
 	},
 	"voice": {
 		"startConversation": "Percakapan suara",
+		"reconnecting": "Bergabung kembali ke panggilan…",
 		"consentTitle": "Suara menggunakan layanan cloud",
 		"consentBody": "Percakapan suara mengalirkan audio mikrofon Anda ke layanan suara cloud untuk diproses selama panggilan aktif. Audio meninggalkan komputer ini. Mengetik di chat tetap lokal seperti biasa.",
 		"consentAccept": "Aktifkan suara",
 		"consentDecline": "Nanti saja",
-		"cloudIndicator": "Audio sedang dialirkan ke cloud"
+		"cloudIndicator": "Audio sedang dialirkan ke cloud",
+		"talkTo": "Bicara dengan {name}",
+		"isSpeaking": "{name} sedang berbicara",
+		"callEnded": "Panggilan berakhir.",
+		"tryAgain": "Coba lagi",
+		"onAnotherCall": "Sedang dalam panggilan dengan karyawan lain",
+		"callLost": "Panggilan terputus dan tidak dapat disambung kembali. Mulai lagi.",
+		"callEndedStartAgain": "Panggilan berakhir. Mulai lagi.",
+		"needsConsent": "Percakapan suara mengirim audio mikrofon Anda ke layanan suara cloud untuk diproses. Aktifkan di panel suara untuk memberi persetujuan.",
+		"startFailed": "Tidak dapat memulai panggilan. Coba lagi."
 	},
 	"flows": {
 		"none": "Belum ada alur",
@@ -2865,7 +3034,15 @@
 		"overlapBufferOne": "Jalankan sekali setelah selesai",
 		"overlapAllowAll": "Tetap jalankan",
 		"deleteReminderTitle": "Hapus \"{name}\"?",
-		"deleteReminderBody": "Tugas terjadwal ini berhenti berjalan dan dihapus. Eksekusi sebelumnya tetap ada di riwayat."
+		"deleteReminderBody": "Tugas terjadwal ini berhenti berjalan dan dihapus. Eksekusi sebelumnya tetap ada di riwayat.",
+		"triggerOnEvent": "Saat {event}",
+		"triggerWatch": "Pantau: {target}",
+		"triggerWatchPlugin": "Pantau: plugin",
+		"triggerManual": "Pemicu manual",
+		"scheduleTooSpecific": "Jadwal ini lebih spesifik daripada yang bisa ditampung editor sederhana",
+		"askSetupPrompt": "Siapkan alur baru untuk saya: ",
+		"everyNHours": "Setiap N jam",
+		"everyNMinutes": "Setiap N menit"
 	},
 	"christen": {
 		"title": "Beri nama karyawan pertama Anda",
@@ -2887,7 +3064,27 @@
 		"working": "Mencari tahu apa yang dibutuhkan…",
 		"willDo": "{name} akan:",
 		"thisEmployee": "Karyawan ini",
-		"removeItem": "Hapus {item}"
+		"removeItem": "Hapus {item}",
+		"hireFromApps": "Rekrut dari aplikasi lain",
+		"linkedLede": "Mereka tetap bekerja di komputer tempat mereka berjalan.",
+		"thisComputer": "Komputer ini",
+		"offline": "Luring",
+		"linkedFailed": "Tidak dapat merekrut dari {bot}. Coba lagi.",
+		"onYourTeam": "Di tim Anda",
+		"linkedLooking": "Mencari aplikasi…",
+		"linkedHireNew": "Rekrut yang baru",
+		"linkedConnect": "Hubungkan agen Anda",
+		"linkedRunning": "{count} berjalan",
+		"nameYour": "Beri nama {app} Anda",
+		"youAlreadyHave": "Anda sudah memiliki:",
+		"nameTaken": "Anda sudah memiliki karyawan bernama {name}.",
+		"linkedWhere": "Di komputer mana ia harus bekerja?",
+		"linkedPickAgent": "Agen {app} yang mana?",
+		"linkedModeTitle": "Apa yang boleh ia lakukan tanpa bertanya?",
+		"linkedModeAutomaticDesc": "Mengedit file di foldernya sendiri. Bertanya sebelum hal lainnya.",
+		"linkedModeAskDesc": "Bertanya kepada Anda sebelum mengubah apa pun.",
+		"linkedModePlanDesc": "Membaca dan merencanakan. Tidak mengubah apa pun.",
+		"linkedModeFullAccessDesc": "Menjalankan apa pun di komputer ini tanpa bertanya."
 	},
 	"runLimit": {
 		"title": "Batas pengeluaran per eksekusi",
@@ -3101,5 +3298,526 @@
 		"unreviewed": "Belum ditinjau",
 		"loadMore": "Tampilkan lebih banyak",
 		"addJobEdit": "Tambahkan ke pekerjaan"
+	},
+	"workflow": {
+		"addNode": "Tambah Node",
+		"deleteNode": "Hapus Node",
+		"deleteWorkflow": "Hapus Alur Kerja",
+		"removeItem": "Hapus {name}",
+		"activityCount": "{count, plural, one {# aktivitas} other {# aktivitas}}",
+		"stepCount": "{count, plural, one {# langkah} other {# langkah}}",
+		"triggerTypes": {
+			"schedule": "Jadwal",
+			"heartbeat": "Heartbeat",
+			"event": "Peristiwa",
+			"watch": "Pantau",
+			"manual": "Manual"
+		},
+		"branch": {
+			"true": "Benar",
+			"false": "Salah",
+			"eachItem": "Setiap item",
+			"done": "Selesai"
+		},
+		"types": {
+			"greeting": {
+				"label": "Sapaan",
+				"description": "Apa yang diucapkan saluran ini saat menjawab",
+				"params": {
+					"text": {
+						"label": "Sapaan",
+						"description": "Diucapkan kata per kata saat panggilan tersambung.",
+						"placeholder": "Terima kasih telah menghubungi Miller Dental! Ada yang bisa saya bantu?"
+					}
+				}
+			},
+			"intent": {
+				"label": "Maksud",
+				"description": "Satu tugas yang ditangani saluran ini, dengan alat yang diizinkan",
+				"params": {
+					"name": {
+						"label": "Nama maksud",
+						"description": "Id singkat yang dipakai router (unik per pohon)."
+					},
+					"description": {
+						"label": "Saat penelepon bermaksud ini",
+						"placeholder": "Penelepon ingin membuat, menjadwal ulang, atau membatalkan janji temu"
+					},
+					"tools": {
+						"label": "Alat yang diizinkan",
+						"description": "Izin tool:resource dipisahkan koma, hanya untuk maksud ini."
+					},
+					"workflows": {
+						"label": "Alur kerja yang diizinkan",
+						"description": "Nama alur kerja karyawan ini yang boleh dijalankan maksud ini, dipisahkan koma."
+					},
+					"plugins": {
+						"label": "Plugin yang diizinkan",
+						"description": "Slug plugin, dipisahkan koma."
+					},
+					"mcp": {
+						"label": "Server MCP yang diizinkan",
+						"description": "Nama server MCP yang terhubung, dipisahkan koma."
+					}
+				}
+			},
+			"transfer": {
+				"label": "Alihkan ke manusia",
+				"description": "Pengalihan langsung ke nomor transfer saluran ini",
+				"params": {
+					"when": {
+						"label": "Kapan dialihkan",
+						"placeholder": "Penelepon meminta bicara dengan orang, sedang kesal, atau dalam keadaan darurat"
+					},
+					"to": {
+						"label": "Tersambung ke",
+						"description": "Kepada siapa penelepon diberi tahu bahwa ia sedang disambungkan. Nomornya sendiri tetap di pengaturan saluran.",
+						"placeholder": "manajer kantor kami"
+					}
+				}
+			},
+			"takeMessage": {
+				"label": "Catat pesan",
+				"description": "Catat pesan untuk pemilik (cadangan)",
+				"params": {
+					"fields": {
+						"label": "Apa yang dicatat",
+						"placeholder": "nama, nomor, alasan menelepon, waktu terbaik untuk menelepon kembali"
+					}
+				}
+			},
+			"disclosures": {
+				"label": "Boleh dibagikan",
+				"description": "Fakta yang disampaikan saluran ini secara langsung, tanpa pencarian",
+				"params": {
+					"text": {
+						"label": "Informasi yang disetujui",
+						"description": "Fakta publik yang disetujui pemilik untuk saluran ini — jam buka, alamat, area layanan, harga dasar. Detail pelanggan atau akun tidak pernah dicantumkan di sini; itu melalui pencarian.",
+						"placeholder": "Buka Sen–Jum 8–5. Berlokasi di 123 Main St. Pembersihan mulai dari $120."
+					}
+				}
+			},
+			"custom": {
+				"label": "Kustom",
+				"description": "Tentukan langkah dan skill secara manual"
+			},
+			"research": {
+				"label": "Riset",
+				"description": "Pencarian web, analisis, dan sintesis",
+				"params": {
+					"depth": {
+						"label": "Kedalaman riset",
+						"options": {
+							"quick": "Cepat (2-5 menit)",
+							"standard": "Standar (5-10 menit)",
+							"deep": "Mendalam (10-20 menit)"
+						}
+					},
+					"sources": {
+						"label": "Jenis sumber",
+						"description": "Jenis sumber yang dicari, dipisahkan koma",
+						"placeholder": "web, akademik, berita"
+					}
+				}
+			},
+			"email": {
+				"label": "Kirim Email",
+				"description": "Tulis dan kirim email",
+				"params": {
+					"to": {
+						"label": "Kepada",
+						"description": "Alamat email penerima (atau gunakan data dari langkah sebelumnya)"
+					},
+					"subject": {
+						"label": "Templat subjek"
+					}
+				}
+			},
+			"notify": {
+				"label": "Beri tahu",
+				"description": "Kirim notifikasi ke saluran",
+				"params": {
+					"channel": {
+						"label": "Saluran",
+						"options": {
+							"email": "Email",
+							"webhook": "Webhook"
+						}
+					},
+					"target": {
+						"label": "Tujuan",
+						"description": "Nama saluran, email, atau URL webhook",
+						"placeholder": "#general atau user@example.com"
+					}
+				}
+			},
+			"code": {
+				"label": "Jalankan Kode",
+				"description": "Jalankan potongan kode",
+				"params": {
+					"language": {
+						"label": "Bahasa"
+					},
+					"code": {
+						"label": "Kode",
+						"description": "Kode yang dijalankan"
+					}
+				}
+			},
+			"condition": {
+				"label": "Kondisi",
+				"description": "Percabangan if/else",
+				"params": {
+					"expression": {
+						"label": "Ekspresi kondisi",
+						"description": "Ekspresi JavaScript — nilai truthy ke cabang Benar, falsy ke Salah"
+					},
+					"mode": {
+						"label": "Mode evaluasi",
+						"options": {
+							"expression": "Ekspresi",
+							"contains": "Data berisi",
+							"exists": "Field ada",
+							"regex": "Cocok regex"
+						}
+					}
+				}
+			},
+			"loop": {
+				"label": "Perulangan",
+				"description": "Ulangi untuk setiap item dalam daftar",
+				"params": {
+					"source": {
+						"label": "Sumber item",
+						"description": "Path ke array yang akan diulang",
+						"placeholder": "data.items atau data.emails"
+					},
+					"maxIterations": {
+						"label": "Iterasi maksimum",
+						"description": "Batas keamanan untuk mencegah perulangan tanpa akhir"
+					}
+				}
+			},
+			"wait": {
+				"label": "Tunggu",
+				"description": "Jeda eksekusi",
+				"params": {
+					"duration": {
+						"label": "Durasi tunggu",
+						"options": {
+							"5s": "5 detik",
+							"30s": "30 detik",
+							"1m": "1 menit",
+							"5m": "5 menit",
+							"15m": "15 menit",
+							"1h": "1 jam",
+							"custom": "Kustom"
+						}
+					},
+					"waitUntil": {
+						"label": "Atau tunggu sampai",
+						"description": "Lanjutkan saat peristiwa ini terjadi (kosongkan untuk berdasarkan durasi)",
+						"placeholder": "mis. event:approval.received"
+					}
+				}
+			},
+			"agent": {
+				"label": "Karyawan",
+				"description": "Delegasikan ke karyawan lain",
+				"params": {
+					"agentId": {
+						"label": "Karyawan",
+						"description": "Karyawan yang menerima tugas ini"
+					},
+					"instructions": {
+						"label": "Instruksi",
+						"description": "Ganti atau lengkapi persona bawaan karyawan",
+						"placeholder": "Instruksi khusus untuk karyawan yang ditugaskan..."
+					}
+				}
+			},
+			"connector": {
+				"label": "Konektor",
+				"description": "Gunakan integrasi MCP",
+				"params": {
+					"serverId": {
+						"label": "Server MCP",
+						"description": "Server MCP terhubung yang digunakan"
+					},
+					"tool": {
+						"label": "Alat",
+						"description": "Alat mana yang dipanggil di server MCP",
+						"placeholder": "mis. read_file, send_message"
+					},
+					"input": {
+						"label": "Masukan",
+						"description": "Masukan JSON untuk alat (mendukung templat '{{'data.field'}}')"
+					}
+				}
+			},
+			"http": {
+				"label": "Permintaan HTTP",
+				"description": "Lakukan panggilan API HTTP",
+				"params": {
+					"method": {
+						"label": "Metode"
+					},
+					"url": {
+						"label": "URL"
+					},
+					"body": {
+						"label": "Isi permintaan",
+						"description": "Isi JSON untuk permintaan POST/PUT/PATCH"
+					},
+					"headers": {
+						"label": "Header",
+						"description": "Satu header per baris (key: value)"
+					}
+				}
+			},
+			"decide": {
+				"label": "Putuskan",
+				"description": "Klasifikasikan atau nilai data dengan pertanyaan bertipe",
+				"params": {
+					"state": {
+						"label": "Data",
+						"description": "Path data yang dinilai (inputs.*, item, nodes.'<'id>.*)"
+					},
+					"questions": {
+						"label": "Pertanyaan",
+						"description": "Objek JSON berisi pertanyaan bertipe (choice, score, noul). Node kondisi merutekan berdasarkan nodes.'<'id>.'<'question>.choice dan .confidence"
+					},
+					"default": {
+						"label": "Jawaban bawaan",
+						"description": "Jawaban yang dipakai saat tidak ada keputusan yang bisa dibuat: satu opsi untuk choice, satu level untuk score, true atau false untuk noul. Node lalu menetapkan nodes.'<'id>.defaulted"
+					}
+				}
+			},
+			"transform": {
+				"label": "Ubah bentuk",
+				"description": "Bentuk ulang atau saring data",
+				"params": {
+					"operation": {
+						"label": "Operasi",
+						"options": {
+							"map": "Map — ubah setiap item",
+							"filter": "Filter — simpan item yang cocok",
+							"reduce": "Reduce — gabungkan menjadi satu nilai",
+							"pick": "Pick — ambil field tertentu",
+							"template": "Template — format sebagai teks"
+						}
+					},
+					"expression": {
+						"label": "Ekspresi",
+						"description": "Ekspresi transformasi"
+					}
+				}
+			}
+		},
+		"catalog": {
+			"searchPlaceholder": "Cari node...",
+			"noMatch": "Tidak ada node yang cocok dengan “{query}”",
+			"toolsAvailable": "{count, plural, one {# alat tersedia} other {# alat tersedia}}",
+			"categories": {
+				"triggers": "Pemicu",
+				"activities": "Aktivitas",
+				"callTree": "Pohon Panggilan",
+				"flowControl": "Kontrol Alur",
+				"connectors": "Konektor (MCP)",
+				"agents": "Karyawan",
+				"output": "Keluaran"
+			},
+			"items": {
+				"triggerSchedule": {
+					"label": "Jadwal",
+					"desc": "Jalankan pada waktu tertentu"
+				},
+				"triggerEvent": {
+					"label": "Peristiwa",
+					"desc": "Tanggapi peristiwa"
+				},
+				"triggerHeartbeat": {
+					"label": "Heartbeat",
+					"desc": "Jalankan secara berkala"
+				},
+				"triggerManual": {
+					"label": "Manual",
+					"desc": "Jalankan sesuai permintaan"
+				},
+				"activityCustom": {
+					"label": "Aktivitas Kustom",
+					"desc": "Tentukan langkah dan skill"
+				},
+				"activityResearch": {
+					"label": "Riset",
+					"desc": "Pencarian web dan analisis"
+				},
+				"activityEmail": {
+					"label": "Kirim Email",
+					"desc": "Tulis dan kirim email"
+				},
+				"activityNotify": {
+					"label": "Beri tahu",
+					"desc": "Kirim notifikasi"
+				},
+				"activityCode": {
+					"label": "Jalankan Kode",
+					"desc": "Jalankan potongan kode"
+				},
+				"activityHttp": {
+					"label": "Permintaan HTTP",
+					"desc": "Lakukan panggilan API"
+				},
+				"activityDecide": {
+					"label": "Putuskan",
+					"desc": "Klasifikasikan atau nilai data"
+				},
+				"activityTransform": {
+					"label": "Ubah bentuk",
+					"desc": "Bentuk ulang atau saring data"
+				},
+				"activityGreeting": {
+					"label": "Sapaan",
+					"desc": "Apa yang diucapkan saluran saat menjawab"
+				},
+				"activityIntent": {
+					"label": "Maksud",
+					"desc": "Satu tugas + alat yang diizinkan"
+				},
+				"activityTransfer": {
+					"label": "Alihkan ke manusia",
+					"desc": "Pengalihan langsung — sebutkan ke siapa disambungkan"
+				},
+				"activityTakeMessage": {
+					"label": "Catat pesan",
+					"desc": "Catat pesan (cadangan)"
+				},
+				"activityDisclosures": {
+					"label": "Boleh dibagikan",
+					"desc": "Fakta yang disampaikan saluran ini langsung (jam buka, alamat, harga)"
+				},
+				"flowCondition": {
+					"label": "Kondisi",
+					"desc": "Percabangan if/else"
+				},
+				"flowLoop": {
+					"label": "Perulangan",
+					"desc": "Ulangi untuk setiap item"
+				},
+				"flowWait": {
+					"label": "Tunggu",
+					"desc": "Jeda atau tunggu peristiwa"
+				},
+				"emit": {
+					"label": "Kirim Peristiwa",
+					"desc": "Umumkan peristiwa selesai"
+				}
+			}
+		},
+		"eventSources": {
+			"label": "Sumber peristiwa",
+			"searchPlaceholder": "Ketik untuk mencari sumber...",
+			"hint": "Ketik untuk mencari sumber yang dikenal, Enter untuk menambahkan. Nama kustom dan wildcard (email.*) juga bisa."
+		},
+		"flow": {
+			"triggerManual": "Berjalan saat Anda memulainya",
+			"triggerSchedule": "Sesuai jadwal",
+			"triggerEventAny": "Saat sebuah peristiwa terjadi",
+			"triggerWatch": "Memantau {name}",
+			"triggerWatchAny": "Memantau sebuah plugin",
+			"applying": "Menerapkan…",
+			"go": "Jalankan",
+			"tellAi": "Beri tahu AI apa yang perlu diubah",
+			"tellAiEllipsis": "Beri tahu AI apa yang perlu diubah…",
+			"badgeExact": "persis",
+			"badgeAgent": "karyawan",
+			"emptyCode": "(kosong)",
+			"stepPlaceholder": "Apa yang harus dilakukan langkah ini?",
+			"changeStep": "Ubah “{name}”…",
+			"forEach": "Untuk setiap {item}",
+			"loopItemDefault": "item",
+			"loopEmpty": "Belum ada apa pun dalam perulangan ini.",
+			"pathDefault": "jalur",
+			"pathEmpty": "Jalur kosong",
+			"addStepHere": "Tambahkan langkah di sini",
+			"connected": "{name} terhubung",
+			"notConnected": "{name} tidak terhubung — alur ini akan gagal",
+			"connect": "Hubungkan",
+			"describeFlowChange": "Jelaskan perubahan untuk seluruh alur ini…",
+			"edit": "edit",
+			"emits": "mengirim",
+			"noSteps": "Alur ini belum memiliki langkah."
+		},
+		"panel": {
+			"backToOverview": "Kembali ke ringkasan alur kerja",
+			"intent": "Maksud",
+			"addSkill": "Tambah skill...",
+			"parameters": "Parameter",
+			"addStep": "Tambah langkah...",
+			"manualHint": "Hanya berjalan saat dipicu secara manual.",
+			"notConfigured": "Belum dikonfigurasi",
+			"noEventConfigured": "Belum ada peristiwa yang dikonfigurasi",
+			"noDescription": "Tanpa deskripsi",
+			"emitPlaceholder": "mis. {name}",
+			"emitOptional": "Opsional — alur kerja lain bisa dipicu oleh ini saat eksekusi selesai.",
+			"useEmit": "Gunakan {name}",
+			"emitRenameWarning": "Mengganti nama akan merusak alur kerja yang berlangganan peristiwa ini.",
+			"none": "Tidak ada",
+			"apiEndpoint": "Endpoint API",
+			"apiEndpointHint": "Buat kunci untuk alur kerja ini di Pengaturan → Webhook karyawan."
+		},
+		"schedule": {
+			"weekends": "Akhir pekan",
+			"custom": "Kustom",
+			"daysOfWeek": "Hari dalam seminggu",
+			"monthly": "Bulanan",
+			"biannual": "Setiap 6 bulan",
+			"yearly": "Tahunan",
+			"onDay": "pada tanggal",
+			"biannualNote": "Berjalan pada {day} {firstMonth} dan {day} {secondMonth}.",
+			"shortMonthsSkipped": "Bulan tanpa tanggal {day} dilewati.",
+			"limitToHours": "Batasi ke jam tertentu",
+			"rangeTo": "sampai"
+		},
+		"watch": {
+			"plugin": "Plugin",
+			"choosePlugin": "Pilih plugin…",
+			"whenItReports": "Saat melaporkan",
+			"chooseEvent": "Pilih peristiwa…",
+			"hint": "Berjalan setiap kali {plugin} melaporkan {event}; alur lain juga bisa mendengarkan {plugin}.{event}."
+		},
+		"validation": {
+			"emptyId": "Aktivitas di “{workflow}” memiliki ID kosong",
+			"duplicateId": "ID aktivitas “{id}” duplikat di “{workflow}”",
+			"conditionExpression": "Kondisi “{id}” memerlukan ekspresi — perutean bersifat deterministik, tidak pernah diputuskan AI",
+			"loopSource": "Perulangan “{id}” memerlukan sumber data (mis. inputs.items)",
+			"httpUrl": "Node HTTP “{id}” memerlukan URL",
+			"decideQuestions": "Node Putuskan “{id}” memerlukan pertanyaan (objek JSON berisi pertanyaan bertipe)",
+			"waitDuration": "Node Tunggu “{id}” memerlukan durasi",
+			"needsIntent": "Aktivitas “{id}” di “{workflow}” memerlukan maksud atau langkah",
+			"targetsTrigger": "Sebuah koneksi mengarah ke pemicu",
+			"leavesEmit": "Sebuah koneksi keluar dari node kirim peristiwa",
+			"unknownFrom": "Koneksi dari node tak dikenal “{id}”",
+			"unknownTo": "Koneksi ke node tak dikenal “{id}”",
+			"duplicateConnection": "Koneksi duplikat {from} → {to}",
+			"labeledNonBranching": "Sisi berlabel “{label}” keluar dari node tanpa percabangan “{id}”",
+			"unlabeledBranch": "Sisi yang keluar dari “{id}” harus memiliki label cabang",
+			"cycle": "Graf mengandung siklus (hanya isi Setiap item dari perulangan yang boleh kembali ke perulangannya)"
+		},
+		"builder": {
+			"unsavedConfirm": "Ada perubahan yang belum disimpan. Buang dan tutup?",
+			"workflowLabel": "{name} ({count, plural, one {# aktivitas} other {# aktivitas}})",
+			"undo": "Urungkan (Cmd+Z)",
+			"redo": "Ulangi (Cmd+Shift+Z)",
+			"issueCount": "{count, plural, one {# masalah} other {# masalah}}",
+			"discard": "Buang",
+			"hideDetails": "Sembunyikan panel detail",
+			"showDetails": "Tampilkan panel detail",
+			"newWorkflowTitle": "Alur kerja baru",
+			"empty": "Belum ada alur kerja — buat satu untuk memulai",
+			"newWorkflow": "Alur Kerja Baru",
+			"confirmDeleteWorkflow": "Yakin ingin menghapus alur kerja ini? Semua aktivitas dan koneksinya akan dihapus.",
+			"confirmDeleteNode": "Yakin ingin menghapus node ini? Koneksinya akan disambungkan ulang secara otomatis."
+		}
 	}
 }

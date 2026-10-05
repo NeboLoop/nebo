@@ -3,7 +3,7 @@ import { offersVirtualComputer, teachFailure, watchesComputer, SCREEN_RECORDING_
 import chatPane from '$lib/components/chat/ChatPane.svelte?raw';
 
 // The header's teach icons, as rendered: every element marked data-teach-icon.
-const header = chatPane.slice(chatPane.indexOf('<div class="ml-auto max-lg:hidden'), chatPane.indexOf('<!-- Narrow widths'));
+const header = chatPane.slice(chatPane.indexOf('<div class="ms-auto max-lg:hidden'), chatPane.indexOf('<!-- Narrow widths'));
 
 describe('teach a task: one icon, one action', () => {
 	it('renders exactly one monitor icon in the header, labelled Teach a task', () => {

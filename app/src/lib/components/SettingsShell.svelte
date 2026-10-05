@@ -126,7 +126,7 @@
     <!-- Body: sidebar + content -->
     <div class="flex max-md:flex-col flex-1 min-h-0 overflow-hidden">
       <!-- Nav sidebar -->
-      <nav class="w-48 max-md:w-full shrink-0 border-r max-md:border-r-0 max-md:border-b border-base-content/10 overflow-y-auto max-md:overflow-x-auto py-3 max-md:py-2 px-2" aria-label={$t('settings.settingsNav')}>
+      <nav class="w-48 max-md:w-full shrink-0 border-e max-md:border-e-0 max-md:border-b border-base-content/10 overflow-y-auto max-md:overflow-x-auto py-3 max-md:py-2 px-2" aria-label={$t('settings.settingsNav')}>
         <ul class="flex flex-col max-md:flex-row max-md:gap-1 gap-0.5 max-md:w-max">
           {#each items as item}
             {#if item === null}
@@ -135,7 +135,7 @@
               <li>
                 <a
                   href={item.path}
-                  class="w-full flex items-center gap-2.5 px-3 py-1.5 rounded-lg text-sm text-left transition-colors whitespace-nowrap {activeTab === item.id
+                  class="w-full flex items-center gap-2.5 px-3 py-1.5 rounded-lg text-sm text-start transition-colors whitespace-nowrap {activeTab === item.id
                     ? 'bg-primary/10 text-primary ring-1 ring-primary/20'
                     : 'text-base-content/90 hover:bg-base-200 hover:text-base-content'}"
                   aria-current={activeTab === item.id ? 'page' : undefined}

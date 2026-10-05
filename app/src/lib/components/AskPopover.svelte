@@ -39,7 +39,7 @@
 
 {#if ask}
   <div
-    class="fixed bottom-4 right-4 z-[101] w-80 max-w-[calc(100vw-2rem)] rounded-xl border border-base-300 bg-base-100 shadow-xl p-4 flex flex-col gap-3"
+    class="fixed bottom-4 end-4 z-[101] w-80 max-w-[calc(100vw-2rem)] rounded-xl border border-base-300 bg-base-100 shadow-xl p-4 flex flex-col gap-3"
     role="dialog"
     aria-modal="false"
     aria-label={$t('chat.waitingOnYou', { values: { name: ask.employee } })}

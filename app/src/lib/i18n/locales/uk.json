@@ -84,7 +84,16 @@
 		"closeModal": "Закрити модальне вікно",
 		"all": "Усі",
 		"more": "Ще",
-		"stopped": "Зупинено"
+		"stopped": "Зупинено",
+		"errorOccurred": "Щось пішло не так.",
+		"systemError": "Системна помилка",
+		"stillReconnecting": "Досі намагаємося зв’язатися з вашим Nebo…",
+		"updatesAvailable": "{count, plural, one {Доступне # оновлення} few {Доступні # оновлення} many {Доступно # оновлень} other {Доступно # оновлення}}",
+		"artifactUpdated": "Оновлено {type}: {version}",
+		"artifactUpdateFailed": "Не вдалося оновити: {error}",
+		"employee": "Співробітник",
+		"untitled": "Без назви",
+		"document": "Документ"
 	},
 	"time": {
 		"justNow": "щойно",
@@ -253,9 +262,11 @@
 		"working": "Працює",
 		"chatActions": "Дії з чатом",
 		"deleteChatTitle": "Видалити «{name}»?",
-		"deleteChatBody": "Цей чат і всі його повідомлення буде видалено. Цю дію не можна скасувати."
+		"deleteChatBody": "Цей чат і всі його повідомлення буде видалено. Цю дію не можна скасувати.",
+		"offline": "Офлайн"
 	},
 	"chat": {
+		"worksIn": "Працює в {folder}",
 		"compactBoundary": "Попередню розмову підсумовано",
 		"clearedBoundary": "Очищено тут. Попередні повідомлення збережено, але вони не використовуються.",
 		"goalLine": "Мета: {condition} ({turns} ходів)",
@@ -264,10 +275,15 @@
 		"goalStopped": "Ціль призупинено. Скажіть, коли продовжити.",
 		"resumedActivity": "Досі працює: {tool}",
 		"waitingForYou": "Чекає на вас",
+		"waitingOnYou": "{name} чекає на вас",
+		"seeConversation": "Переглянути розмову",
 		"waitingOnYourAnswer": "{name} чекає на вашу відповідь:",
 		"waitingOpen": "Відкрити",
 		"waitingAsksLabel": "Чекає на вашу відповідь",
 		"subagentStep": "{op} · крок {n}",
+		"helperWorking": "Працює помічник: {what}",
+		"helpersWorking": "{n, plural, one {Працює # помічник} few {Працюють # помічники} many {Працюють # помічників} other {Працюють # помічника}}",
+		"moreQuestionsWaiting": "{count, plural, one {Ще # питання чекає} few {Ще # питання чекають} many {Ще # питань чекають} other {Ще # питання чекають}}",
 		"pending": "В очікуванні",
 		"yourAICompanion": "Ваша ШІ-команда",
 		"tellMeWhatYouNeed": "Скажіть, що вам потрібно, або активуйте одного зі своїх співробітників нижче.",
@@ -295,6 +311,7 @@
 		"messageChannel": "Повідомлення #{channel}...",
 		"messagedCoworker": "Написав",
 		"disclaimer": "Nebo може помилятися. Перевіряйте важливу інформацію.",
+		"uploadsKept": "{days, plural, one {Завантаження зберігаються # день.} few {Завантаження зберігаються # дні.} many {Завантаження зберігаються # днів.} other {Завантаження зберігаються # дня.}}",
 		"goodMorning": "Доброго ранку",
 		"goodAfternoon": "Доброго дня",
 		"goodEvening": "Доброго вечора",
@@ -315,6 +332,8 @@
 		"installFailed": "Встановлення не вдалося — спробуйте ще раз.",
 		"hire": "Найняти",
 		"hiring": "Наймаємо…",
+		"hireCount": "Найняти всіх ({count})",
+		"hiringCount": "Наймаємо {done} з {count}…",
 		"botComputer": "Комп'ютер",
 		"closeComputer": "Закрити комп'ютер",
 		"fullView": "На весь екран",
@@ -330,13 +349,18 @@
 		"computerUnavailableHint": "Комп'ютер співробітника працює на встановленнях Linux і в хмарних співробітників.",
 		"watchingAndLearning": "{name} дивиться і вчиться",
 		"stopRecording": "Зупинити запис",
-		"teachLocalHint": "Do the task on this screen as you normally would, then stop.",
+		"teachLocalHint": "Виконайте завдання на цьому екрані, як зазвичай, а потім зупиніться.",
+		"teachStarting": "Готуємося дивитися на ваш екран…",
+		"teachNeedsScreenPermission": "Щоб дивитися, як ви виконуєте завдання, Nebo потрібен дозвіл на записування екрана. Увімкніть Nebo в розділі Системні параметри › Приватність і безпека › Записування екрана, а потім спробуйте ще раз.",
+		"openScreenRecordingSettings": "Відкрити налаштування записування екрана",
+		"openVirtualComputer": "Відкрити віртуальний комп’ютер",
 		"recordTask": "Записати завдання",
 		"recording": "Триває запис",
 		"connectFailed": "Вхід не завершено. Спробуйте ще раз.",
 		"connectAccountHint": "Увійдіть, і я продовжу з того місця, де зупинився.",
 		"submit": "Надіслати",
 		"other": "Інше…",
+		"askedReceipt": "Запитано",
 		"copyCode": "Копіювати код",
 		"copied": "Скопійовано!",
 		"dropFilesHere": "Перетягніть файли сюди",
@@ -405,6 +429,8 @@
 		"shareNotConnected": "Підключіться до NeboAI, щоб ділитися.",
 		"filesInThread": "Файли в цій гілці",
 		"nothingHereYet": "Тут поки порожньо",
+		"noEmployeesOneTool": "Жоден співробітник не підходить, але підходить 1 інструмент — див. «Інструменти».",
+		"noEmployeesButTools": "{count, plural, one {Жоден співробітник не підходить, але підходить # інструмент — див. «Інструменти».} few {Жоден співробітник не підходить, але підходять # інструменти — див. «Інструменти».} many {Жоден співробітник не підходить, але підходять # інструментів — див. «Інструменти».} other {Жоден співробітник не підходить, але підходять # інструмента — див. «Інструменти».}}",
 		"workEmptyDesc": "Коли Nebo створить звіт, таблицю чи дизайн, вони з'являться тут.",
 		"closeImage": "Закрити зображення",
 		"fullSize": "Повний розмір",
@@ -429,7 +455,12 @@
 		"historyLoadFailed": "Не вдалося завантажити цю розмову. Перевірте з'єднання і спробуйте ще раз.",
 		"consentCreates": "Скажіть «так», і працівника буде створено саме з цією роботою.",
 		"consentAdds": "Скажіть «так», і це додасться до його роботи.",
-		"fromColleague": "Від {name}"
+		"fromColleague": "Від {name}",
+		"storageFull": "{cap, select, none {Ваше сховище заповнене.} other {Ваше сховище заповнене ({cap}).}} Завантаження видаляються через {days, plural, one {# день} few {# дні} many {# днів} other {# дня}} після додавання.",
+		"storageNextFree": "Наступне місце звільниться {date}.",
+		"uploadFailed": "Не вдалося завантажити файл — повідомлення не надіслано. {reason}",
+		"fileRemoved": "Цей файл видалено через {days, plural, one {# день} few {# дні} many {# днів} other {# дня}} після завантаження.",
+		"notDelivered": "Повідомлення не доставлено. З’єднання обірвалося, тож надішліть його ще раз."
 	},
 	"chatInput": {
 		"placeholder": "Відповісти...",
@@ -468,7 +499,17 @@
 		"tapToInterrupt": "Торкніться, щоб перервати",
 		"mute": "Вимкнути звук",
 		"unmute": "Увімкнути звук",
-		"endConversation": "Завершити розмову"
+		"endConversation": "Завершити розмову",
+		"recordClip": "Записати кліп",
+		"clipStarting": "Очікуємо на мікрофон",
+		"clipStop": "Зупинити й прикріпити",
+		"clipLevel": "Рівень мікрофона",
+		"clipMicBlockedMac": "Nebo не може використовувати ваш мікрофон. Дозвольте це в розділі Системні параметри → Приватність і безпека → Мікрофон.",
+		"clipMicBlocked": "Nebo не може використовувати ваш мікрофон. Дозвольте це в налаштуваннях конфіденційності вашої системи.",
+		"clipNoMic": "Мікрофон не знайдено. Підключіть його і спробуйте ще раз.",
+		"clipUnsupported": "Запис тут недоступний.",
+		"clipFailed": "Запис не вдався. Спробуйте ще раз.",
+		"clipCapReached": "Запис зупиняється через 10 хвилин. Цей запис прикріплено."
 	},
 	"voiceDownload": {
 		"title": "Завантажити голосові моделі",
@@ -566,7 +607,21 @@
 		"agent": "Співробітник",
 		"command": "Команда",
 		"notConnected": "не підключено",
-		"keyboardHint": "↑↓ навігація · Enter вибрати · Esc скасувати"
+		"keyboardHint": "↑↓ навігація · Enter вибрати · Esc скасувати",
+		"category": {
+			"session": "Сесія",
+			"model": "Модель",
+			"info": "Інформація"
+		},
+		"desc": {
+			"new": "Почати нову розмову",
+			"clear": "Почати з чистого аркуша (усі повідомлення зберігаються)",
+			"compact": "Підсумувати й очистити старі повідомлення",
+			"goal": "Працювати, доки перевірка не підтвердить кінцевий стан",
+			"model": "Показати або змінити модель",
+			"help": "Показати всі команди",
+			"status": "Показати стан співробітника й системи"
+		}
 	},
 	"dataTable": {
 		"loading": "Завантаження...",
@@ -1232,12 +1287,12 @@
 		"title": "Провайдери",
 		"description": "Провайдери AI-моделей та API-ключі",
 		"loadingProviders": "Завантаження провайдерів...",
-		"neboaiAI": "NeboAI AI",
+		"neboaiAI": "ШІ NeboAI",
 		"session": "Сесія",
 		"sessionUsage": "{percent}% використано · скидається через {hours}год {minutes}хв",
 		"weekly": "Тижневе",
 		"weeklyUsage": "{percent}% використано · скидається {date}",
-		"contextWindow": "{count} ctx",
+		"contextWindow": "{count} конт.",
 		"notConnected": "Не підключено",
 		"connectDescription": "Підключіть акаунт NeboAI для використання AI-моделей",
 		"cliProviders": "CLI-провайдери",
@@ -1370,7 +1425,7 @@
 		"detectedTitle": "Виявлені встановлення",
 		"comingSoon": "Незабаром",
 		"pathTitle": "Розташування встановлення",
-		"pathPlaceholder": "/path/to/.hermes",
+		"pathPlaceholder": "/шлях/до/.hermes",
 		"scan": "Сканувати",
 		"scanning": "Сканування…",
 		"manifestTitle": "Знайдено у вашому встановленні {source}",
@@ -1777,7 +1832,17 @@
 		"toolCategories": "Категорії інструментів",
 		"allToolCategories": "Усі категорії інструментів",
 		"moreEmployees": "Ще співробітники",
-		"moreTools": "Ще інструменти"
+		"moreTools": "Ще інструменти",
+		"pageTitle": "Маркетплейс - Nebo",
+		"sharedPageTitle": "Спільне - Маркетплейс - Nebo",
+		"searchPageTitle": "Пошук — Маркетплейс",
+		"resume": {
+			"byAuthor": "від {author}",
+			"perSeat": "за місце",
+			"responsibilities": "Обов’язки",
+			"newHire": "Новачок · будьте першими",
+			"meet": "Познайомитися"
+		}
 	},
 	"commander": {
 		"autoLayout": "Автоматична розкладка",
@@ -1854,7 +1919,9 @@
 		"noChatsYet": "Поки немає чатів. Почніть новий.",
 		"noRunsYet": "Запусків поки немає",
 		"appBadge": "Застосунок",
-		"primaryUndeletable": "Ваш особистий асистент отримує все, що не адресовано конкретному співробітнику, тому його не можна видалити. Перейменувати його можна в розділі «Налаштування співробітника»."
+		"primaryUndeletable": "Ваш особистий асистент отримує все, що не адресовано конкретному співробітнику, тому його не можна видалити. Перейменувати його можна в розділі «Налаштування співробітника».",
+		"browseFolders": "Вибрати теки",
+		"browseFiles": "Вибрати файли"
 	},
 	"agentLearning": {
 		"title": "Самонавчання",
@@ -1871,6 +1938,7 @@
 		"viewOnly": "Ця розмова лише для читання — співробітники говорять тут, а ви скеровуєте їх у їхніх власних чатах"
 	},
 	"teams": {
+		"everyoneHint": "Уся команда",
 		"section": "Команди",
 		"emptyRoster": "Поставте двох або більше співробітників у команду, і в них буде одна спільна розмова. Натисніть +, щоб створити команду, або попросіть будь-якого співробітника.",
 		"inTeam": "У цій команді",
@@ -1945,6 +2013,9 @@
 	},
 	"agentSettings": {
 		"general": "Загальне",
+		"tabWho": "Хто вони",
+		"tabWork": "Що вони роблять",
+		"developerGroup": "Розробник",
 		"generalBlurb": "Огляд цього співробітника — стан, навички, робочі процеси та обслуговування.",
 		"identityBlurb": "Ім'я, голос, колір і статус — як цей співробітник відображається в застосунку.",
 		"nameLabel": "Назва",
@@ -2129,6 +2200,14 @@
 		"saveCredentialsFailed": "Не вдалося зберегти облікові дані.",
 		"signInFailedRetry": "Не вдалося увійти. Спробуйте ще раз.",
 		"startSignInFailed": "Не вдалося розпочати вхід для цього акаунту.",
+		"signInPopupBlocked": "Вікно входу заблоковано. Дозвольте спливні вікна для Nebo і спробуйте ще раз.",
+		"channelToggleFailed": "Не вдалося оновити цей канал. Спробуйте ще раз.",
+		"helpChatFailed": "Не вдалося відкрити чат допомоги. Спробуйте ще раз.",
+		"accountsLoadFailed": "Не вдалося завантажити облікові записи. Спробуйте ще раз.",
+		"accountListRefreshFailed": "Обліковий запис підключено, але список не оновився. Відкрийте налаштування знову, щоб його побачити.",
+		"disconnectFailed": "Не вдалося відключити цей обліковий запис. Спробуйте ще раз.",
+		"claimableLoadFailed": "Не вдалося завантажити ваші номери телефону.",
+		"tryAgain": "Спробувати ще раз",
 		"contextTitle": "Що знає цей співробітник",
 		"contextDesc": "Написано самим співробітником за галузевим і корпоративним шарами компанії, щоразу коли вони змінюються. Він працює за цим, нічого не розшукуючи.",
 		"contextAgainst": "Написано за станом {against}",
@@ -2157,7 +2236,19 @@
 		"changeInBotSettings": "Змінити в налаштуваннях бота",
 		"reachManage": "Керувати",
 		"reachNoPhone": "Телефонної лінії поки немає.",
-		"reachNoChannels": "Немає увімкнених каналів."
+		"reachNoChannels": "Немає увімкнених каналів.",
+		"newCallTreeName": "Нове дерево дзвінка",
+		"newWorkflowName": "Новий робочий процес",
+		"greetingNodeLabel": "Привітання",
+		"phoneLoadingNumbers": "Завантаження ваших номерів…",
+		"phoneNoFreeNumbers": "Немає вільних номерів для підключення. Купіть номер (або звільніть номер іншого співробітника) на {link}, а потім поверніться сюди.",
+		"phoneWhichNumber": "На який номер має відповідати цей співробітник?",
+		"phoneNumberParked": "у резерві",
+		"phoneNumberUnassigned": "не призначено",
+		"phoneLineName": "Назва лінії (необов’язково)",
+		"phoneLineNamePlaceholder": "Рецепція, Підтримка, іспанська лінія…",
+		"phoneAttaching": "Підключаємо номер до цього співробітника…",
+		"phoneAttachNumber": "Підключити номер"
 	},
 	"agentConfigure": {
 		"inputs": "Вхідні дані",
@@ -2234,7 +2325,10 @@
 		"factDate": "Дата",
 		"factAttachment": "Вкладення",
 		"factVia": "Через",
-		"interrupted": "Перервано"
+		"interrupted": "Перервано",
+		"tokensShort": "{count} ток.",
+		"underOneSecond": "<1 с",
+		"triggerKind": "{kind, select, schedule {Розклад} event {Подія} heartbeat {Heartbeat} manual {Вручну} watch {Спостереження} webhook {Вебхук} call {Дзвінок} retry {Повтор} other {{kind}}}"
 	},
 	"automations": {
 		"title": "Автоматизації",
@@ -2272,7 +2366,12 @@
 		"every8h": "Кожні 8 годин",
 		"every24h": "Кожні 24 години",
 		"everyInterval": "Кожні {interval}",
-		"whenFires": "Коли спрацює {event}"
+		"whenFires": "Коли спрацює {event}",
+		"anEvent": "подія",
+		"watching": "Спостереження: {source}",
+		"aPlugin": "плагін",
+		"manualTrigger": "Ручний запуск",
+		"onEventNamed": "За подією {event}"
 	},
 	"newBot": {
 		"browseMarketplace": "Переглянути маркетплейс",
@@ -2329,7 +2428,18 @@
 		"approvalGate": {
 			"batchHeadline": "Дій на одному кроці, що потребують вашої згоди: {n}",
 			"goalHeadline": "Погодити цю мету? Робота триває, доки перевірка не підтвердить, що її досягнуто.",
-			"yourAgent": "Ваш співробітник"
+			"yourAgent": "Ваш співробітник",
+			"operation": "{action, select, create {Створити: {noun}} send {Надіслати: {noun}} update {Оновити: {noun}} status {Змінити статус: {noun}} apply {Застосувати: {noun}} record {Записати: {noun}} schedule {Запланувати: {noun}} publish {Опублікувати: {noun}} respond {Відповісти: {noun}} reply {Відповісти: {noun}} upsert {Зберегти: {noun}} attach {Прикріпити: {noun}} write {Записати: {noun}} remove {Видалити: {noun}} other {{verb} {noun}}}",
+			"resource": {
+				"billpayment": "оплата рахунку",
+				"creditmemo": "кредит-нота",
+				"journalentry": "бухгалтерська проводка",
+				"purchaseorder": "замовлення на закупівлю",
+				"opportunity": "угода",
+				"company": "файл «Компанія» — як працює цей бізнес",
+				"industry": "файл «Галузь» — як працює ця сфера",
+				"franchise": "файл «Франшиза» — вимоги бренду"
+			}
 		},
 		"approvalModal": {
 			"runShellCommand": "Виконати команду оболонки",
@@ -2402,8 +2512,8 @@
 		"showIntervalEvents": "Показати інтервальні події",
 		"today": "Сьогодні",
 		"noon": "Полудень",
-		"am": "AM",
-		"pm": "PM",
+		"am": "дп",
+		"pm": "пп",
 		"everyInterval": "кожні {interval}",
 		"moreCount": "ще +{count}",
 		"recurrenceDaily": "щодня",
@@ -2446,7 +2556,20 @@
 		"narrowSat": "С",
 		"pageTitle": "Розклад - Nebo",
 		"perWeek": "{count}/тижд",
-		"workflowBuilderTitle": "{name} — Конструктор робочих процесів"
+		"workflowBuilderTitle": "{name} — Конструктор робочих процесів",
+		"everyDay": "Щодня",
+		"weekends": "У вихідні",
+		"weekdayPlural": "{day, select, sun {У неділі} mon {У понеділки} tue {У вівторки} wed {У середи} thu {У четверги} fri {У п’ятниці} sat {У суботи} other {{day}}}",
+		"clockTime": "{hour}:{minute} {period}",
+		"hourOnly": "{hour} {period}",
+		"midnight": "Північ",
+		"cronEveryMinutes": "{n, plural, one {Кожну # хвилину} few {Кожні # хвилини} many {Кожні # хвилин} other {Кожні # хвилини}}",
+		"cronEveryHours": "{n, plural, one {Кожну # годину} few {Кожні # години} many {Кожні # годин} other {Кожні # години}}",
+		"cronEveryHoursAt": "{n, plural, one {Кожну # годину о :{minute}} few {Кожні # години о :{minute}} many {Кожні # годин о :{minute}} other {Кожні # години о :{minute}}}",
+		"cronDailyAt": "Щодня о {time}",
+		"cronDaysAt": "{days} о {time}",
+		"cronMonthlyAt": "Щомісяця {day}-го числа о {time}",
+		"listSeparator": ", "
 	},
 	"neboShell": {
 		"tabs": {
@@ -2491,7 +2614,26 @@
 	},
 	"userMenu": {
 		"aboutNebo": "Про Nebo",
-		"planSuffix": "План {plan}"
+		"planSuffix": "План {plan}",
+		"provideFeedback": "Надіслати відгук"
+	},
+	"feedback": {
+		"title": "Надіслати відгук",
+		"lede": "Розкажіть команді NeboAI, що працює, що ні і чого б ви хотіли.",
+		"message": "Повідомлення",
+		"screenshots": "Знімки екрана або фото (необов’язково)",
+		"addScreenshot": "Додати знімок екрана",
+		"remove": "Прибрати {name}",
+		"diagnostics": "Додати діагностику",
+		"diagnosticsHelp": "Версія застосунку й бота, платформа, ID бота і цей екран. Ніколи не паролі та не токени входу.",
+		"send": "Надіслати",
+		"sending": "Надсилання",
+		"sent": "Дякуємо — надіслано команді NeboAI.",
+		"failed": "Не вдалося надіслати ваш відгук. Спробуйте ще раз.",
+		"needMessage": "Спершу напишіть повідомлення.",
+		"messageTooLong": "Повідомлення має бути коротшим за {max} символів.",
+		"tooManyScreenshots": "{max, plural, one {Прикріпіть не більше # знімка екрана.} other {Прикріпіть не більше # знімків екрана.}}",
+		"imagesOnly": "Можна прикріплювати лише зображення."
 	},
 	"workflowCanvas": {
 		"noWorkflows": "Немає робочих процесів для візуалізації",
@@ -2632,7 +2774,18 @@
 		"gettingReady": "Готуємо: {name}…",
 		"skillsAndTools": "Навички та інструменти",
 		"hireFailedTitle": "Не вдалося завершити наєм",
-		"hireFailed": "Не вдалося найняти: {name}. Спробуйте ще раз."
+		"hireFailed": "Не вдалося найняти: {name}. Спробуйте ще раз.",
+		"codeStatus": {
+			"nebo": "Підключення до NeboAI…",
+			"skill": "Встановлення навички…",
+			"workflow": "Встановлення робочого процесу…",
+			"agent": "Встановлення співробітника…",
+			"loop": "Приєднання до loop…",
+			"plugin": "Встановлення плагіна…",
+			"app": "Встановлення застосунку…",
+			"collection": "Встановлення колекції…",
+			"connection": "Додавання MCP-підключення…"
+		}
 	},
 	"activity": {
 		"pageTitle": "Активність - Nebo",
@@ -2651,7 +2804,8 @@
 		"openAppHint": "Відкрити застосунок",
 		"openApp": "Відкрити застосунок",
 		"runs": "Запуски",
-		"memory": "Пам'ять"
+		"memory": "Пам'ять",
+		"appError": "Помилка застосунку ({status})"
 	},
 	"pricing": {
 		"pageTitle": "Оберіть свій план - Nebo",
@@ -2776,8 +2930,8 @@
 		"oauthNote": "Цей сервер використовує OAuth. Після додавання вас буде перенаправлено для авторизації.",
 		"preRegisteredTitle": "Попередньо зареєстрований клієнт (необов'язково)",
 		"preRegisteredHint": "Для серверів, що не підтримують автоматичну реєстрацію (наприклад, API Google) — вставте клієнт OAuth, створений у провайдера.",
-		"oauthClientId": "Client ID",
-		"oauthClientSecret": "Client Secret",
+		"oauthClientId": "ID клієнта",
+		"oauthClientSecret": "Секрет клієнта",
 		"oauthScopes": "Області доступу",
 		"oauthScopesPlaceholder": "scope-one scope-two (через пробіл)",
 		"oauthAuthEndpoint": "Ендпоінт авторизації",
@@ -2811,7 +2965,10 @@
 		"checkEvery": "Перевіряти кожні",
 		"hours6": "6 годин",
 		"history": "Історія",
-		"title": "Оновлення інструментів"
+		"title": "Оновлення інструментів",
+		"onLatest": "У вас остання версія",
+		"checkFailed": "Не вдалося перевірити оновлення",
+		"updateFailed": "Не вдалося оновити"
 	},
 	"inbox": {
 		"title": "Вхідні",
@@ -2842,15 +2999,27 @@
 		"failedAt": "Збій на кроці «{activity}»",
 		"steps": "Чим він займався",
 		"output": "Результат",
-		"recordGone": "Запису про запуск більше немає. Його видалено разом зі співробітником, якому він належав, тож залишилося лише це сповіщення."
+		"recordGone": "Запису про запуск більше немає. Його видалено разом зі співробітником, якому він належав, тож залишилося лише це сповіщення.",
+		"revert": "Скасувати зміни",
+		"reverted": "Зміни скасовано"
 	},
 	"voice": {
 		"startConversation": "Голосова розмова",
+		"reconnecting": "Повертаємося до дзвінка…",
 		"consentTitle": "Голос використовує хмарний сервіс",
 		"consentBody": "Під час дзвінка голосова розмова передає звук вашого мікрофона до хмарного голосового сервісу для обробки. Аудіо залишає цей комп'ютер. Введення тексту в чаті залишається локальним, як і завжди.",
 		"consentAccept": "Увімкнути голос",
 		"consentDecline": "Не зараз",
-		"cloudIndicator": "Аудіо передається в хмару"
+		"cloudIndicator": "Аудіо передається в хмару",
+		"talkTo": "Поговорити з {name}",
+		"isSpeaking": "{name} говорить",
+		"callEnded": "Дзвінок завершено.",
+		"tryAgain": "Спробувати ще раз",
+		"onAnotherCall": "На дзвінку з іншим співробітником",
+		"callLost": "Дзвінок обірвався, і повернутися до нього не вдалося. Почніть його знову.",
+		"callEndedStartAgain": "Дзвінок завершено. Почніть його знову.",
+		"needsConsent": "Голосова розмова передає звук вашого мікрофона до хмарного голосового сервісу для обробки. Увімкніть її в голосовій панелі, щоб дати згоду.",
+		"startFailed": "Не вдалося почати дзвінок. Спробуйте ще раз."
 	},
 	"flows": {
 		"none": "Сценаріїв поки немає",
@@ -2865,7 +3034,15 @@
 		"overlapBufferOne": "Запустити один раз після завершення",
 		"overlapAllowAll": "Усе одно запустити",
 		"deleteReminderTitle": "Видалити «{name}»?",
-		"deleteReminderBody": "Це завдання за розкладом перестане запускатися і буде видалене. Минулі запуски залишаться в історії."
+		"deleteReminderBody": "Це завдання за розкладом перестане запускатися і буде видалене. Минулі запуски залишаться в історії.",
+		"triggerOnEvent": "За подією {event}",
+		"triggerWatch": "Спостереження: {target}",
+		"triggerWatchPlugin": "Спостереження: плагін",
+		"triggerManual": "Ручний запуск",
+		"scheduleTooSpecific": "Цей розклад надто складний для простого редактора",
+		"askSetupPrompt": "Налаштуй для мене новий сценарій: ",
+		"everyNHours": "Кожні N годин",
+		"everyNMinutes": "Кожні N хвилин"
 	},
 	"christen": {
 		"title": "Дайте ім'я першому співробітнику",
@@ -2887,7 +3064,27 @@
 		"working": "З’ясовуємо, що знадобиться…",
 		"willDo": "{name} зможе:",
 		"thisEmployee": "Цей працівник",
-		"removeItem": "Прибрати: {item}"
+		"removeItem": "Прибрати: {item}",
+		"hireFromApps": "Найняти з іншого застосунку",
+		"linkedLede": "Вони продовжують працювати на комп’ютері, на якому запущені.",
+		"thisComputer": "Цей комп’ютер",
+		"offline": "Офлайн",
+		"linkedFailed": "Не вдалося найняти з {bot}. Спробуйте ще раз.",
+		"onYourTeam": "У вашій команді",
+		"linkedLooking": "Шукаємо застосунки…",
+		"linkedHireNew": "Найняти нового",
+		"linkedConnect": "Підключіть свого агента",
+		"linkedRunning": "{count, plural, one {# працює} other {# працюють}}",
+		"nameYour": "Назвіть свій {app}",
+		"youAlreadyHave": "У вас уже є:",
+		"nameTaken": "У вас уже є співробітник на ім’я {name}.",
+		"linkedWhere": "На якому комп’ютері він має працювати?",
+		"linkedPickAgent": "Який агент {app}?",
+		"linkedModeTitle": "Що він може робити, не питаючи?",
+		"linkedModeAutomaticDesc": "Сам редагує файли у своїй теці. Перед усім іншим питає.",
+		"linkedModeAskDesc": "Питає вас, перш ніж щось змінити.",
+		"linkedModePlanDesc": "Читає й планує. Нічого не змінює.",
+		"linkedModeFullAccessDesc": "Запускає будь-що на цьому комп’ютері, не питаючи."
 	},
 	"runLimit": {
 		"title": "Ліміт витрат на запуск",
@@ -3101,5 +3298,526 @@
 		"unreviewed": "Не переглянуто",
 		"loadMore": "Показати більше",
 		"addJobEdit": "Додати до роботи"
+	},
+	"workflow": {
+		"addNode": "Додати вузол",
+		"deleteNode": "Видалити вузол",
+		"deleteWorkflow": "Видалити робочий процес",
+		"removeItem": "Прибрати {name}",
+		"activityCount": "{count, plural, one {# дія} few {# дії} many {# дій} other {# дії}}",
+		"stepCount": "{count, plural, one {# крок} few {# кроки} many {# кроків} other {# кроку}}",
+		"triggerTypes": {
+			"schedule": "Розклад",
+			"heartbeat": "Heartbeat",
+			"event": "Подія",
+			"watch": "Спостереження",
+			"manual": "Вручну"
+		},
+		"branch": {
+			"true": "Так",
+			"false": "Ні",
+			"eachItem": "Кожен елемент",
+			"done": "Готово"
+		},
+		"types": {
+			"greeting": {
+				"label": "Привітання",
+				"description": "Що каже ця лінія, коли відповідає",
+				"params": {
+					"text": {
+						"label": "Привітання",
+						"description": "Промовляється дослівно, коли дзвінок з’єднано.",
+						"placeholder": "Дякуємо, що зателефонували до «Міллер Дентал»! Чим можу допомогти?"
+					}
+				}
+			},
+			"intent": {
+				"label": "Намір",
+				"description": "Одне завдання, яке обробляє ця лінія, з дозволеними інструментами",
+				"params": {
+					"name": {
+						"label": "Назва наміру",
+						"description": "Короткий id для маршрутизатора (унікальний у межах дерева)."
+					},
+					"description": {
+						"label": "Коли абоненти мають на увазі це",
+						"placeholder": "Абонент хоче записатися, перенести або скасувати візит"
+					},
+					"tools": {
+						"label": "Дозволені інструменти",
+						"description": "Дозволи tool:resource через кому, лише для цього наміру."
+					},
+					"workflows": {
+						"label": "Дозволені робочі процеси",
+						"description": "Назви робочих процесів цього співробітника через кому, які може запускати намір."
+					},
+					"plugins": {
+						"label": "Дозволені плагіни",
+						"description": "Slug-и плагінів через кому."
+					},
+					"mcp": {
+						"label": "Дозволені MCP-сервери",
+						"description": "Назви підключених MCP-серверів через кому."
+					}
+				}
+			},
+			"transfer": {
+				"label": "Переключити на людину",
+				"description": "Живе переключення на номер переадресації лінії",
+				"params": {
+					"when": {
+						"label": "Коли переключати",
+						"placeholder": "Абонент просить людину, засмучений або має екстрену ситуацію"
+					},
+					"to": {
+						"label": "З’єднує з",
+						"description": "З ким, як скажуть абоненту, його з’єднують. Сам номер залишається в налаштуваннях лінії.",
+						"placeholder": "наш офіс-менеджер"
+					}
+				}
+			},
+			"takeMessage": {
+				"label": "Прийняти повідомлення",
+				"description": "Записати повідомлення для власника (запасний варіант)",
+				"params": {
+					"fields": {
+						"label": "Що записати",
+						"placeholder": "ім’я, номер, причина дзвінка, зручний час для зворотного дзвінка"
+					}
+				}
+			},
+			"disclosures": {
+				"label": "Може повідомляти",
+				"description": "Факти, які ця лінія повідомляє одразу, без пошуку",
+				"params": {
+					"text": {
+						"label": "Схвалена інформація",
+						"description": "Схвалені власником публічні факти для цієї лінії — години роботи, адреса, зона обслуговування, базові ціни. Дані клієнтів чи облікових записів тут ніколи не вказуються; вони проходять через пошук.",
+						"placeholder": "Працюємо пн–пт 8–17. Адреса: вул. Головна, 123. Чистка від $120."
+					}
+				}
+			},
+			"custom": {
+				"label": "Власна",
+				"description": "Задати кроки й навички вручну"
+			},
+			"research": {
+				"label": "Дослідження",
+				"description": "Пошук в інтернеті, аналіз і узагальнення",
+				"params": {
+					"depth": {
+						"label": "Глибина дослідження",
+						"options": {
+							"quick": "Швидко (2–5 хв)",
+							"standard": "Стандартно (5–10 хв)",
+							"deep": "Глибоко (10–20 хв)"
+						}
+					},
+					"sources": {
+						"label": "Типи джерел",
+						"description": "Типи джерел для пошуку через кому",
+						"placeholder": "web, academic, news"
+					}
+				}
+			},
+			"email": {
+				"label": "Надіслати email",
+				"description": "Скласти й надіслати email",
+				"params": {
+					"to": {
+						"label": "Кому",
+						"description": "Email-адреса отримувача (або дані з попередніх кроків)"
+					},
+					"subject": {
+						"label": "Шаблон теми"
+					}
+				}
+			},
+			"notify": {
+				"label": "Сповістити",
+				"description": "Надіслати сповіщення в канал",
+				"params": {
+					"channel": {
+						"label": "Канал",
+						"options": {
+							"email": "Ел. пошта",
+							"webhook": "Вебхук"
+						}
+					},
+					"target": {
+						"label": "Адресат",
+						"description": "Назва каналу, email або URL вебхука",
+						"placeholder": "#general або user@example.com"
+					}
+				}
+			},
+			"code": {
+				"label": "Виконати код",
+				"description": "Виконати фрагмент коду",
+				"params": {
+					"language": {
+						"label": "Мова"
+					},
+					"code": {
+						"label": "Код",
+						"description": "Код для виконання"
+					}
+				}
+			},
+			"condition": {
+				"label": "Умова",
+				"description": "Розгалуження якщо/інакше",
+				"params": {
+					"expression": {
+						"label": "Вираз умови",
+						"description": "Вираз JavaScript — істинне значення веде на гілку «Так», хибне — на «Ні»"
+					},
+					"mode": {
+						"label": "Режим обчислення",
+						"options": {
+							"expression": "Вираз",
+							"contains": "Дані містять",
+							"exists": "Поле існує",
+							"regex": "Збіг із regex"
+						}
+					}
+				}
+			},
+			"loop": {
+				"label": "Цикл",
+				"description": "Пройти по списку елементів",
+				"params": {
+					"source": {
+						"label": "Джерело елементів",
+						"description": "Шлях до масиву для перебору",
+						"placeholder": "data.items або data.emails"
+					},
+					"maxIterations": {
+						"label": "Макс. ітерацій",
+						"description": "Запобіжне обмеження від нескінченних циклів"
+					}
+				}
+			},
+			"wait": {
+				"label": "Очікування",
+				"description": "Призупинити виконання",
+				"params": {
+					"duration": {
+						"label": "Тривалість очікування",
+						"options": {
+							"5s": "5 секунд",
+							"30s": "30 секунд",
+							"1m": "1 хвилина",
+							"5m": "5 хвилин",
+							"15m": "15 хвилин",
+							"1h": "1 година",
+							"custom": "Власна"
+						}
+					},
+					"waitUntil": {
+						"label": "Або чекати, доки",
+						"description": "Продовжити, коли спрацює ця подія (залиште порожнім, щоб чекати за тривалістю)",
+						"placeholder": "напр. event:approval.received"
+					}
+				}
+			},
+			"agent": {
+				"label": "Співробітник",
+				"description": "Передати іншому співробітнику",
+				"params": {
+					"agentId": {
+						"label": "Співробітник",
+						"description": "Співробітник, якому передати це завдання"
+					},
+					"instructions": {
+						"label": "Інструкції",
+						"description": "Замінити або доповнити стандартну роль співробітника",
+						"placeholder": "Конкретні інструкції для співробітника, якому передано завдання..."
+					}
+				}
+			},
+			"connector": {
+				"label": "Конектор",
+				"description": "Використати MCP-інтеграцію",
+				"params": {
+					"serverId": {
+						"label": "MCP-сервер",
+						"description": "Підключений MCP-сервер для використання"
+					},
+					"tool": {
+						"label": "Інструмент",
+						"description": "Який інструмент викликати на MCP-сервері",
+						"placeholder": "напр. read_file, send_message"
+					},
+					"input": {
+						"label": "Вхідні дані",
+						"description": "Вхідні дані JSON для інструмента (підтримуються шаблони '{{'data.field'}}')"
+					}
+				}
+			},
+			"http": {
+				"label": "HTTP-запит",
+				"description": "Зробити виклик HTTP API",
+				"params": {
+					"method": {
+						"label": "Метод"
+					},
+					"url": {
+						"label": "URL"
+					},
+					"body": {
+						"label": "Тіло запиту",
+						"description": "Тіло JSON для запитів POST/PUT/PATCH"
+					},
+					"headers": {
+						"label": "Заголовки",
+						"description": "Один заголовок на рядок (key: value)"
+					}
+				}
+			},
+			"decide": {
+				"label": "Рішення",
+				"description": "Класифікувати або оцінити дані за типізованими питаннями",
+				"params": {
+					"state": {
+						"label": "Стан",
+						"description": "Шлях до даних для оцінки (inputs.*, item, nodes.'<'id>.*)"
+					},
+					"questions": {
+						"label": "Питання",
+						"description": "Об’єкт JSON із типізованими питаннями (choice, score, noul). Вузол умови маршрутизує за nodes.'<'id>.'<'question>.choice і .confidence"
+					},
+					"default": {
+						"label": "Відповіді за замовчуванням",
+						"description": "Відповіді, коли рішення ухвалити неможливо: варіант для choice, рівень для score, true або false для noul. Тоді вузол встановлює nodes.'<'id>.defaulted"
+					}
+				}
+			},
+			"transform": {
+				"label": "Перетворення",
+				"description": "Змінити форму або відфільтрувати дані",
+				"params": {
+					"operation": {
+						"label": "Операція",
+						"options": {
+							"map": "Map — перетворити кожен елемент",
+							"filter": "Filter — залишити відповідні елементи",
+							"reduce": "Reduce — звести в одне значення",
+							"pick": "Pick — витягти окремі поля",
+							"template": "Template — оформити як текст"
+						}
+					},
+					"expression": {
+						"label": "Вираз",
+						"description": "Вираз перетворення"
+					}
+				}
+			}
+		},
+		"catalog": {
+			"searchPlaceholder": "Пошук вузлів...",
+			"noMatch": "Немає вузлів за запитом «{query}»",
+			"toolsAvailable": "{count, plural, one {Доступний # інструмент} few {Доступні # інструменти} many {Доступно # інструментів} other {Доступно # інструмента}}",
+			"categories": {
+				"triggers": "Тригери",
+				"activities": "Дії",
+				"callTree": "Дерево дзвінка",
+				"flowControl": "Керування потоком",
+				"connectors": "Конектори (MCP)",
+				"agents": "Співробітники",
+				"output": "Результат"
+			},
+			"items": {
+				"triggerSchedule": {
+					"label": "Розклад",
+					"desc": "Запуск у заданий час"
+				},
+				"triggerEvent": {
+					"label": "Подія",
+					"desc": "Реагувати на події"
+				},
+				"triggerHeartbeat": {
+					"label": "Heartbeat",
+					"desc": "Запуск з інтервалом"
+				},
+				"triggerManual": {
+					"label": "Вручну",
+					"desc": "Запуск на вимогу"
+				},
+				"activityCustom": {
+					"label": "Власна дія",
+					"desc": "Задати кроки й навички"
+				},
+				"activityResearch": {
+					"label": "Дослідження",
+					"desc": "Пошук в інтернеті та аналіз"
+				},
+				"activityEmail": {
+					"label": "Надіслати email",
+					"desc": "Скласти й надіслати email"
+				},
+				"activityNotify": {
+					"label": "Сповістити",
+					"desc": "Надіслати сповіщення"
+				},
+				"activityCode": {
+					"label": "Виконати код",
+					"desc": "Виконати фрагмент коду"
+				},
+				"activityHttp": {
+					"label": "HTTP-запит",
+					"desc": "Зробити виклик API"
+				},
+				"activityDecide": {
+					"label": "Рішення",
+					"desc": "Класифікувати або оцінити дані"
+				},
+				"activityTransform": {
+					"label": "Перетворення",
+					"desc": "Змінити форму або відфільтрувати дані"
+				},
+				"activityGreeting": {
+					"label": "Привітання",
+					"desc": "Що каже лінія, коли відповідає"
+				},
+				"activityIntent": {
+					"label": "Намір",
+					"desc": "Одне завдання + дозволені інструменти"
+				},
+				"activityTransfer": {
+					"label": "Переключити на людину",
+					"desc": "Живе переключення — вкажіть, з ким з’єднує"
+				},
+				"activityTakeMessage": {
+					"label": "Прийняти повідомлення",
+					"desc": "Записати повідомлення (запасний варіант)"
+				},
+				"activityDisclosures": {
+					"label": "Може повідомляти",
+					"desc": "Факти, які лінія повідомляє одразу (години, адреса, ціни)"
+				},
+				"flowCondition": {
+					"label": "Умова",
+					"desc": "Розгалуження якщо/інакше"
+				},
+				"flowLoop": {
+					"label": "Цикл",
+					"desc": "Пройти по елементах"
+				},
+				"flowWait": {
+					"label": "Очікування",
+					"desc": "Пауза або очікування події"
+				},
+				"emit": {
+					"label": "Згенерувати подію",
+					"desc": "Оголосити подію завершення"
+				}
+			}
+		},
+		"eventSources": {
+			"label": "Джерела подій",
+			"searchPlaceholder": "Введіть, щоб шукати джерела...",
+			"hint": "Введіть, щоб шукати відомі джерела, Enter — щоб додати. Власні назви й шаблони (email.*) теж працюють."
+		},
+		"flow": {
+			"triggerManual": "Запускається, коли ви його стартуєте",
+			"triggerSchedule": "За розкладом",
+			"triggerEventAny": "Коли спрацьовує подія",
+			"triggerWatch": "Спостерігає за {name}",
+			"triggerWatchAny": "Спостерігає за плагіном",
+			"applying": "Застосування…",
+			"go": "Виконати",
+			"tellAi": "Скажіть ШІ, що змінити",
+			"tellAiEllipsis": "Скажіть ШІ, що змінити…",
+			"badgeExact": "точно",
+			"badgeAgent": "співробітник",
+			"emptyCode": "(порожньо)",
+			"stepPlaceholder": "Що має робити цей крок?",
+			"changeStep": "Змінити «{name}»…",
+			"forEach": "Для кожного: {item}",
+			"loopItemDefault": "елемент",
+			"loopEmpty": "У цьому циклі поки нічого немає.",
+			"pathDefault": "гілка",
+			"pathEmpty": "Порожня гілка",
+			"addStepHere": "Додати крок сюди",
+			"connected": "{name} підключено",
+			"notConnected": "{name} не підключено — цей сценарій не спрацює",
+			"connect": "Підключити",
+			"describeFlowChange": "Опишіть зміну для всього сценарію…",
+			"edit": "змінити",
+			"emits": "генерує",
+			"noSteps": "У цьому сценарії поки немає кроків."
+		},
+		"panel": {
+			"backToOverview": "Назад до огляду робочого процесу",
+			"intent": "Намір",
+			"addSkill": "Додати навичку...",
+			"parameters": "Параметри",
+			"addStep": "Додати крок...",
+			"manualHint": "Запускається лише вручну.",
+			"notConfigured": "Не налаштовано",
+			"noEventConfigured": "Подію не налаштовано",
+			"noDescription": "Без опису",
+			"emitPlaceholder": "напр. {name}",
+			"emitOptional": "Необов’язково — інші робочі процеси можуть запускатися за цією подією, коли запуск завершиться.",
+			"useEmit": "Використати {name}",
+			"emitRenameWarning": "Перейменування зламає робочі процеси, підписані на цю подію.",
+			"none": "Немає",
+			"apiEndpoint": "API-ендпоінт",
+			"apiEndpointHint": "Створіть ключ для цього робочого процесу в Налаштуваннях співробітника → Вебхуки."
+		},
+		"schedule": {
+			"weekends": "У вихідні",
+			"custom": "Власний",
+			"daysOfWeek": "Дні тижня",
+			"monthly": "Щомісяця",
+			"biannual": "Кожні 6 місяців",
+			"yearly": "Щороку",
+			"onDay": "у день",
+			"biannualNote": "Запускається {firstMonth} {day} і {secondMonth} {day}.",
+			"shortMonthsSkipped": "Місяці без {day}-го числа пропускаються.",
+			"limitToHours": "Обмежити годинами",
+			"rangeTo": "до"
+		},
+		"watch": {
+			"plugin": "Плагін",
+			"choosePlugin": "Виберіть плагін…",
+			"whenItReports": "Коли він повідомляє",
+			"chooseEvent": "Виберіть подію…",
+			"hint": "Запускається щоразу, коли {plugin} повідомляє {event}; інші сценарії теж можуть слухати {plugin}.{event}."
+		},
+		"validation": {
+			"emptyId": "Дія в «{workflow}» має порожній ID",
+			"duplicateId": "Повторюваний ID дії «{id}» у «{workflow}»",
+			"conditionExpression": "Умові «{id}» потрібен вираз — маршрутизація детермінована, її ніколи не вирішує ШІ",
+			"loopSource": "Циклу «{id}» потрібне джерело даних (напр. inputs.items)",
+			"httpUrl": "HTTP-вузлу «{id}» потрібен URL",
+			"decideQuestions": "Вузлу рішення «{id}» потрібні питання (об’єкт JSON із типізованими питаннями)",
+			"waitDuration": "Вузлу очікування «{id}» потрібна тривалість",
+			"needsIntent": "Дії «{id}» у «{workflow}» потрібен намір або кроки",
+			"targetsTrigger": "З’єднання веде до тригера",
+			"leavesEmit": "З’єднання виходить із вузла генерації події",
+			"unknownFrom": "З’єднання від невідомого вузла «{id}»",
+			"unknownTo": "З’єднання до невідомого вузла «{id}»",
+			"duplicateConnection": "Повторюване з’єднання {from} → {to}",
+			"labeledNonBranching": "Позначене ребро «{label}» виходить із вузла без розгалуження «{id}»",
+			"unlabeledBranch": "Ребра, що виходять із «{id}», мають мати мітку гілки",
+			"cycle": "Граф містить цикл (лише тіло «Кожен елемент» циклу може повертатися до свого циклу)"
+		},
+		"builder": {
+			"unsavedConfirm": "У вас є незбережені зміни. Відкинути їх і закрити?",
+			"workflowLabel": "{name} ({count, plural, one {# дія} few {# дії} many {# дій} other {# дії}})",
+			"undo": "Скасувати (Cmd+Z)",
+			"redo": "Повторити (Cmd+Shift+Z)",
+			"issueCount": "{count, plural, one {# проблема} few {# проблеми} many {# проблем} other {# проблеми}}",
+			"discard": "Відкинути",
+			"hideDetails": "Сховати панель деталей",
+			"showDetails": "Показати панель деталей",
+			"newWorkflowTitle": "Новий робочий процес",
+			"empty": "Немає робочих процесів — створіть перший, щоб почати",
+			"newWorkflow": "Новий робочий процес",
+			"confirmDeleteWorkflow": "Видалити цей робочий процес? Усі його дії та з’єднання буде видалено.",
+			"confirmDeleteNode": "Видалити цей вузол? Його з’єднання буде автоматично перепідключено."
+		}
 	}
 }

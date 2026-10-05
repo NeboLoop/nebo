@@ -9,6 +9,7 @@
    * kept.
    */
   import { onMount, onDestroy } from 'svelte';
+  import { t } from 'svelte-i18n';
   import { storage } from '$lib/storage';
   import { page } from '$app/stores';
   import { goto } from '$lib/nav';
@@ -109,7 +110,7 @@
       const detail = await api.getAgent(agentId);
       agentName = detail.displayName || detail.agent?.name || agentId;
       if (!placeholder) {
-        placeholder = `Message ${agentName}...`;
+        placeholder = $t('chatInput.messageAgent', { values: { name: agentName } });
       }
     } catch { /* ignore */ }
 

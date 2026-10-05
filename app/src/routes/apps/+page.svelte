@@ -123,7 +123,7 @@
         {#each apps as app}
           {@const c = AGENT_COLORS_MAP[app.color as keyof typeof AGENT_COLORS_MAP]}
           <div
-            class="p-5 rounded-lg border border-base-300 bg-base-200/50 cursor-pointer hover:border-primary/50 hover:shadow-sm transition-all text-left group relative"
+            class="p-5 rounded-lg border border-base-300 bg-base-200/50 cursor-pointer hover:border-primary/50 hover:shadow-sm transition-all text-start group relative"
             onclick={() => launchApp(app.id, app.name, { fullscreen: app.fullscreen, isolated: app.isolated })}
             onkeydown={(e) => { if (e.key === 'Enter') launchApp(app.id, app.name, { fullscreen: app.fullscreen, isolated: app.isolated }); }}
             role="button"
@@ -143,13 +143,13 @@
             <div class="mt-3 text-xs text-primary font-medium opacity-0 group-hover:opacity-100 transition-opacity">{$t('apps.openAppHint')}</div>
 
             {#if openMenuId === app.id}
-              <div class="absolute top-12 right-3 z-50 w-44 py-1 rounded-lg border border-base-300 bg-base-100 shadow-lg">
+              <div class="absolute top-12 end-3 z-50 w-44 py-1 rounded-lg border border-base-300 bg-base-100 shadow-lg">
                 {#each menuItems as item}
                   {#if item.id === 'settings'}
                     <div class="h-px bg-base-content/10 my-1"></div>
                   {/if}
                   <button
-                    class="w-full text-left px-3 py-1.5 text-sm hover:bg-base-200/50 transition-colors cursor-pointer {item.id === 'open' ? 'font-medium' : ''}"
+                    class="w-full text-start px-3 py-1.5 text-sm hover:bg-base-200/50 transition-colors cursor-pointer {item.id === 'open' ? 'font-medium' : ''}"
                     onclick={(e) => handleMenuItem(e, app, item.id)}
                   >{$t(item.label)}</button>
                 {/each}

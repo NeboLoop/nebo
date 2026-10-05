@@ -59,7 +59,7 @@
   <div class="flex items-center gap-2 min-w-0">
     <span class="font-semibold text-sm truncate">{listing.name}</span>
     {#if version}<span class="text-xs text-base-content/60 shrink-0">v{version}</span>{/if}
-    <span class="badge badge-sm {badge} ml-auto shrink-0">{$t(statusKey)}</span>
+    <span class="badge badge-sm {badge} ms-auto shrink-0">{$t(statusKey)}</span>
   </div>
   {#if listing.shortDescription}
     <p class="text-sm text-base-content/80 mt-1">{listing.shortDescription}</p>

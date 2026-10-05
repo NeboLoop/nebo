@@ -3,6 +3,7 @@
 	import ArrowRight from 'lucide-svelte/icons/arrow-right';
 	import Check from 'lucide-svelte/icons/check';
 	import { type AppItem, itemHref } from '$lib/types/marketplace';
+	import { t } from 'svelte-i18n';
 
 	let {
 		item,
@@ -44,7 +45,7 @@
 		<div class="min-w-0">
 			<h3 class="text-lg font-bold tracking-tight leading-tight">{jobTitle}</h3>
 			<div class="text-sm text-base-content/60 mt-0.5">
-				{department || item.category}{item.author ? ` · by ${item.author}` : ''}
+				{department || item.category}{#if item.author}{' · '}{$t('marketplace.resume.byAuthor', { values: { author: item.author } })}{/if}
 			</div>
 		</div>
 	</div>
@@ -52,10 +53,10 @@
 	<!-- compensation on its own line, under the header -->
 	<div class="mt-3">
 		{#if item.free}
-			<span class="text-base font-bold text-success tracking-tight">Free</span>
+			<span class="text-base font-bold text-success tracking-tight">{$t('common.free')}</span>
 		{:else}
 			<span class="text-base font-bold tracking-tight tabular-nums">{item.price}</span>
-			<span class="text-xs text-base-content/60"> per seat</span>
+			<span class="text-xs text-base-content/60">{' '}{$t('marketplace.resume.perSeat')}</span>
 		{/if}
 	</div>
 
@@ -66,7 +67,7 @@
 
 	<!-- responsibilities (folded workflows) -->
 	{#if responsibilities.length}
-		<div class="text-[13px] font-semibold mt-5 mb-2.5">Responsibilities</div>
+		<div class="text-[13px] font-semibold mt-5 mb-2.5">{$t('marketplace.resume.responsibilities')}</div>
 		<ul class="flex flex-col gap-2">
 			{#each responsibilities.slice(0, 4) as duty}
 				<li class="flex items-start gap-2.5 text-sm text-base-content/70 leading-snug">
@@ -75,7 +76,7 @@
 				</li>
 			{/each}
 			{#if responsibilities.length > 4}
-				<li class="text-[13px] text-base-content/50 pl-[28px]">+{responsibilities.length - 4} more</li>
+				<li class="text-[13px] text-base-content/50 ps-[28px]">{$t('schedule.moreCount', { values: { count: responsibilities.length - 4 } })}</li>
 			{/if}
 		</ul>
 	{/if}
@@ -92,7 +93,7 @@
 							{/each}
 						</span>
 						<b class="font-semibold tabular-nums">{item.rating.toFixed(1)}</b>
-						<span class="text-base-content/50">· {item.ratingCount} reviews</span>
+						<span class="text-base-content/50">· {$t('marketplace.detail.reviewCount', { values: { count: item.ratingCount } })}</span>
 					</span>
 				{/if}
 				<!-- Install counts are hidden marketplace-wide (brand rule) — never
@@ -101,7 +102,7 @@
 		{:else}
 			<span
 				class="inline-flex items-center text-xs font-semibold text-primary bg-primary/10 rounded-full px-3.5 py-1.5"
-				>New hire · be their first</span
+				>{$t('marketplace.resume.newHire')}</span
 			>
 		{/if}
 		<div class="flex gap-2.5 shrink-0">
@@ -110,7 +111,7 @@
 			<a
 				{href}
 				class="btn btn-primary btn-sm rounded-full gap-1.5 px-4"
-				>Meet<ArrowRight class="w-4 h-4" /></a
+				>{$t('marketplace.resume.meet')}<ArrowRight class="w-4 h-4" /></a
 			>
 		</div>
 	</div>

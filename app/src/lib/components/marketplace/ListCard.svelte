@@ -12,7 +12,7 @@
 	class="flex items-center gap-3 py-3 px-3 border-b border-base-content/5 hover:bg-base-content/[0.03] transition-colors"
 >
 	{#if rank !== undefined}
-		<span class="w-5 text-right text-base text-base-content/80 font-medium shrink-0 tabular-nums">{rank}</span>
+		<span class="w-5 text-end text-base text-base-content/80 font-medium shrink-0 tabular-nums">{rank}</span>
 	{/if}
 	<ArtifactIcon emoji={item.iconEmoji} bg={item.iconBg} size="lg" />
 	<div class="flex-1 min-w-0">

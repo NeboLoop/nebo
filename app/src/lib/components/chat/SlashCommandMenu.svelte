@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { t } from 'svelte-i18n';
   import { filterCommands, type SlashCommand } from './slashCommands.js';
 
   let { query = '', onselect, onclose }: {
@@ -54,22 +55,22 @@
 </script>
 
 {#if flat.length > 0}
-  <div class="absolute bottom-full left-0 right-0 mb-2 z-20 bg-base-100 border border-base-300 rounded-xl shadow-lg max-h-[320px] overflow-y-auto">
+  <div class="absolute bottom-full start-0 end-0 mb-2 z-20 bg-base-100 border border-base-300 rounded-xl shadow-lg max-h-[320px] overflow-y-auto">
     {#each groups as group}
-      <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 px-4 pt-3 pb-1">{group.category}</div>
+      <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 px-4 pt-3 pb-1">{$t(`slashPicker.category.${group.category.toLowerCase()}`)}</div>
       {#each group.items as cmd}
         {@const idx = flat.indexOf(cmd)}
         <button
           data-slash-idx={idx}
-          class="flex items-start gap-3 px-4 py-2.5 w-full text-left cursor-pointer transition-colors border-none {idx === activeIdx ? 'bg-base-200' : 'bg-transparent hover:bg-base-200'}"
+          class="flex items-start gap-3 px-4 py-2.5 w-full text-start cursor-pointer transition-colors border-none {idx === activeIdx ? 'bg-base-200' : 'bg-transparent hover:bg-base-200'}"
           onmouseenter={() => activeIdx = idx}
           onclick={() => onselect?.(cmd)}
         >
           <span class="text-xs font-semibold text-primary whitespace-nowrap">{cmd.name}</span>
           <span class="text-xs text-base-content/70">
-            {cmd.desc}
+            {$t(`slashPicker.desc.${cmd.name.slice(1)}`)}
             {#if cmd.args}
-              <span class="font-mono text-base-content/50 ml-1">{cmd.args}</span>
+              <span class="font-mono text-base-content/50 ms-1">{cmd.args}</span>
             {/if}
           </span>
         </button>

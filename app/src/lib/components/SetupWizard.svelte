@@ -297,7 +297,7 @@
 					{/if}
 				{:else}
 					<div class="relative">
-						<div class="absolute top-2 right-2 z-10">
+						<div class="absolute top-2 end-2 z-10">
 							<button class="btn btn-xs btn-ghost" onclick={copyGenerated}>
 								{copyState === 'copied' ? $t('setupWizard.copied') : $t('common.copy')}
 							</button>

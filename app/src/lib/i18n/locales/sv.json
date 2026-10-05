@@ -84,7 +84,16 @@
 		"closeModal": "Stäng fönstret",
 		"all": "Alla",
 		"more": "Mer",
-		"stopped": "Stoppad"
+		"stopped": "Stoppad",
+		"errorOccurred": "Något gick fel.",
+		"systemError": "Systemfel",
+		"stillReconnecting": "Försöker fortfarande nå din Nebo…",
+		"updatesAvailable": "{count, plural, one {# uppdatering tillgänglig} other {# uppdateringar tillgängliga}}",
+		"artifactUpdated": "Uppdaterade {type}: {version}",
+		"artifactUpdateFailed": "Uppdateringen misslyckades: {error}",
+		"employee": "Medarbetare",
+		"untitled": "Namnlös",
+		"document": "Dokument"
 	},
 	"time": {
 		"justNow": "just nu",
@@ -253,9 +262,11 @@
 		"working": "Arbetar",
 		"chatActions": "Chattåtgärder",
 		"deleteChatTitle": "Radera \"{name}\"?",
-		"deleteChatBody": "Den här chatten och alla dess meddelanden tas bort. Det går inte att ångra."
+		"deleteChatBody": "Den här chatten och alla dess meddelanden tas bort. Det går inte att ångra.",
+		"offline": "Offline"
 	},
 	"chat": {
+		"worksIn": "Arbetar i {folder}",
 		"compactBoundary": "Tidigare konversation sammanfattad",
 		"clearedBoundary": "Rensat här. Tidigare meddelanden finns kvar men används inte.",
 		"goalLine": "Mål: {condition} ({turns} omgångar)",
@@ -264,10 +275,15 @@
 		"goalStopped": "Målet är pausat. Säg till när du vill fortsätta.",
 		"resumedActivity": "Arbetar fortfarande: {tool}",
 		"waitingForYou": "Väntar på dig",
+		"waitingOnYou": "{name} väntar på dig",
+		"seeConversation": "Visa samtalet",
 		"waitingOnYourAnswer": "{name} väntar på ditt svar:",
 		"waitingOpen": "Öppna",
 		"waitingAsksLabel": "Väntar på ditt svar",
 		"subagentStep": "{op} · steg {n}",
+		"helperWorking": "En hjälpare arbetar: {what}",
+		"helpersWorking": "{n, plural, one {1 hjälpare arbetar} other {# hjälpare arbetar}}",
+		"moreQuestionsWaiting": "{count, plural, one {1 fråga till väntar} other {# frågor till väntar}}",
 		"pending": "Väntande",
 		"yourAICompanion": "Din AI-personalstyrka",
 		"tellMeWhatYouNeed": "Berätta vad du behöver, eller aktivera en av dina medarbetare nedan.",
@@ -295,6 +311,7 @@
 		"messageChannel": "Skriv i #{channel}...",
 		"messagedCoworker": "Skickade meddelande",
 		"disclaimer": "Nebo kan göra fel. Verifiera viktig information.",
+		"uploadsKept": "{days, plural, one {Uppladdningar sparas i 1 dag.} other {Uppladdningar sparas i # dagar.}}",
 		"goodMorning": "God morgon",
 		"goodAfternoon": "God eftermiddag",
 		"goodEvening": "God kväll",
@@ -315,6 +332,8 @@
 		"installFailed": "Installationen misslyckades — försök igen.",
 		"hire": "Anställ",
 		"hiring": "Anställer…",
+		"hireCount": "Anställ alla {count}",
+		"hiringCount": "Anställer {done} av {count}…",
 		"botComputer": "Dator",
 		"closeComputer": "Stäng datorn",
 		"fullView": "Helskärm",
@@ -330,13 +349,18 @@
 		"computerUnavailableHint": "Medarbetarens dator körs på Linux-installationer och hos molnmedarbetare.",
 		"watchingAndLearning": "{name} tittar på och lär sig",
 		"stopRecording": "Stoppa inspelning",
-		"teachLocalHint": "Do the task on this screen as you normally would, then stop.",
+		"teachLocalHint": "Gör uppgiften på den här skärmen som du brukar och sluta sedan.",
+		"teachStarting": "Gör mig redo att titta på din skärm…",
+		"teachNeedsScreenPermission": "Nebo behöver behörighet för skärminspelning för att se dig göra uppgiften. Slå på Nebo i Systeminställningar › Integritet och säkerhet › Skärminspelning och försök sedan igen.",
+		"openScreenRecordingSettings": "Öppna inställningar för skärminspelning",
+		"openVirtualComputer": "Öppna den virtuella datorn",
 		"recordTask": "Spela in uppgift",
 		"recording": "Spelar in",
 		"connectFailed": "Inloggningen slutfördes inte. Försök igen.",
 		"connectAccountHint": "Logga in så fortsätter jag där jag slutade.",
 		"submit": "Skicka",
 		"other": "Annat…",
+		"askedReceipt": "Frågade",
 		"copyCode": "Kopiera kod",
 		"copied": "Kopierat!",
 		"dropFilesHere": "Släpp filer här",
@@ -405,6 +429,8 @@
 		"shareNotConnected": "Anslut till NeboAI för att dela.",
 		"filesInThread": "Filer i denna chatt",
 		"nothingHereYet": "Inget här ännu",
+		"noEmployeesOneTool": "Inga medarbetare matchar, men 1 verktyg gör det — se Verktyg.",
+		"noEmployeesButTools": "Inga medarbetare matchar, men {count} verktyg gör det — se Verktyg.",
 		"workEmptyDesc": "När Nebo skapar en rapport, ett kalkylblad eller en design visas den här.",
 		"closeImage": "Stäng bild",
 		"fullSize": "Full storlek",
@@ -429,7 +455,12 @@
 		"historyLoadFailed": "Det här samtalet kunde inte laddas. Kontrollera din anslutning och försök igen.",
 		"consentCreates": "Säg ja så skapas medarbetaren med exakt det här jobbet.",
 		"consentAdds": "Säg ja så läggs det här till i jobbet.",
-		"fromColleague": "Från {name}"
+		"fromColleague": "Från {name}",
+		"storageFull": "{cap, select, none {Ditt lagringsutrymme är fullt.} other {Ditt lagringsutrymme är fullt ({cap}).}} Uppladdningar rensas {days, plural, one {# dag} other {# dagar}} efter att de lades till.",
+		"storageNextFree": "Nästa utrymme frigörs {date}.",
+		"uploadFailed": "Filuppladdningen misslyckades — meddelandet skickades inte. {reason}",
+		"fileRemoved": "Den här filen togs bort {days, plural, one {# dag} other {# dagar}} efter att den laddades upp.",
+		"notDelivered": "Meddelandet levererades inte. Anslutningen bröts, så skicka det igen."
 	},
 	"chatInput": {
 		"placeholder": "Svara...",
@@ -468,7 +499,17 @@
 		"tapToInterrupt": "Tryck för att avbryta",
 		"mute": "Stäng av ljudet",
 		"unmute": "Slå på ljudet",
-		"endConversation": "Avsluta konversationen"
+		"endConversation": "Avsluta konversationen",
+		"recordClip": "Spela in ett klipp",
+		"clipStarting": "Väntar på mikrofonen",
+		"clipStop": "Stoppa och bifoga",
+		"clipLevel": "Mikrofonnivå",
+		"clipMicBlockedMac": "Nebo kan inte använda din mikrofon. Tillåt det i Systeminställningar → Integritet och säkerhet → Mikrofon.",
+		"clipMicBlocked": "Nebo kan inte använda din mikrofon. Tillåt det i systemets integritetsinställningar.",
+		"clipNoMic": "Ingen mikrofon hittades. Anslut en och försök igen.",
+		"clipUnsupported": "Inspelning är inte tillgänglig här.",
+		"clipFailed": "Inspelningen fungerade inte. Försök igen.",
+		"clipCapReached": "Inspelningar stoppas efter 10 minuter. Den här är bifogad."
 	},
 	"voiceDownload": {
 		"title": "Ladda ner röstmodeller",
@@ -566,7 +607,21 @@
 		"agent": "Medarbetare",
 		"command": "Kommando",
 		"notConnected": "ej ansluten",
-		"keyboardHint": "↑↓ navigera · Enter välj · Esc avbryt"
+		"keyboardHint": "↑↓ navigera · Enter välj · Esc avbryt",
+		"category": {
+			"session": "Session",
+			"model": "Modell",
+			"info": "Info"
+		},
+		"desc": {
+			"new": "Starta ett nytt samtal",
+			"clear": "Börja om (alla meddelanden sparas)",
+			"compact": "Sammanfatta och rensa gamla meddelanden",
+			"goal": "Fortsätt arbeta tills en kontroll bekräftar slutläget",
+			"model": "Visa eller byt modell",
+			"help": "Visa alla kommandon",
+			"status": "Visa medarbetar- och systemstatus"
+		}
 	},
 	"dataTable": {
 		"loading": "Laddar...",
@@ -772,7 +827,7 @@
 			"developer": "Utvecklare",
 			"about": "Om",
 			"mcp": "MCP",
-			"import": "Import",
+			"import": "Importera",
 			"browser": "Webbläsare",
 			"updates": "Verktygsuppdateringar",
 			"systemEvents": "Systemhändelser",
@@ -1207,7 +1262,7 @@
 			"mountain": "Mountain Time (USA)",
 			"pacific": "Pacific Time (USA)",
 			"arizona": "Arizona (USA)",
-			"london": "London (UK)",
+			"london": "London (Storbritannien)",
 			"paris": "Paris (CET)",
 			"berlin": "Berlin (CET)",
 			"tokyo": "Tokyo (Japan)",
@@ -1304,13 +1359,13 @@
 			"reasoningDesc": "Analys, problemlösning",
 			"advanced": "Avancerade uppgifter",
 			"advancedDesc": "Kod, PDF:er, dokument",
-			"vision": "Vision",
+			"vision": "Bildanalys",
 			"visionDesc": "Bilder, skärmdumpar",
 			"audioDesc": "Röst, transkription"
 		},
 		"mainModel": "Huvudmodell",
 		"auto": "Auto",
-		"backup": "Backup",
+		"backup": "Reserv",
 		"none": "Ingen",
 		"customAliases": "Anpassade alias",
 		"aliasPlaceholder": "t.ex. snabb",
@@ -1365,7 +1420,7 @@
 		"runLocally": "körs lokalt"
 	},
 	"settingsImport": {
-		"title": "Import",
+		"title": "Importera",
 		"description": "Ta med din installation från ett annat AI-verktyg — färdigheter, MCP-servrar och din medarbetares persona",
 		"detectedTitle": "Upptäckta installationer",
 		"comingSoon": "Kommer snart",
@@ -1508,7 +1563,7 @@
 		"pageDescription": "Systemhälsa och tjänstestatus.",
 		"agentRuntime": "Medarbetarruntime",
 		"toolsCount": "{count} verktyg",
-		"laneName": "Lane: {name}",
+		"laneName": "Körfält: {name}",
 		"allOperational": "Alla system fungerar",
 		"servicesMonitored": "{count} tjänster övervakas",
 		"partialDegradation": "Delvis nedsatt funktion",
@@ -1777,7 +1832,17 @@
 		"toolCategories": "Verktygskategorier",
 		"allToolCategories": "Alla verktygskategorier",
 		"moreEmployees": "Fler medarbetare",
-		"moreTools": "Fler verktyg"
+		"moreTools": "Fler verktyg",
+		"pageTitle": "Marknadsplats - Nebo",
+		"sharedPageTitle": "Delat - Marknadsplats - Nebo",
+		"searchPageTitle": "Sök — Marknadsplats",
+		"resume": {
+			"byAuthor": "av {author}",
+			"perSeat": "per plats",
+			"responsibilities": "Ansvarsområden",
+			"newHire": "Nyanställd · bli den första",
+			"meet": "Möt"
+		}
 	},
 	"commander": {
 		"autoLayout": "Autolayout",
@@ -1854,7 +1919,9 @@
 		"noChatsYet": "Inga chattar ännu. Starta en ny.",
 		"noRunsYet": "Inga körningar än",
 		"appBadge": "App",
-		"primaryUndeletable": "Din personliga assistent tar emot allt som inte är riktat till en viss medarbetare, så den kan inte tas bort. Byt namn på den i Medarbetarinställningar."
+		"primaryUndeletable": "Din personliga assistent tar emot allt som inte är riktat till en viss medarbetare, så den kan inte tas bort. Byt namn på den i Medarbetarinställningar.",
+		"browseFolders": "Bläddra bland mappar",
+		"browseFiles": "Bläddra bland filer"
 	},
 	"agentLearning": {
 		"title": "Självförbättring",
@@ -1871,6 +1938,7 @@
 		"viewOnly": "Det här samtalet går bara att läsa — medarbetarna pratar här, du styr dem i deras egna chattar"
 	},
 	"teams": {
+		"everyoneHint": "Hela teamet",
 		"section": "Team",
 		"emptyRoster": "Sätt två eller fler medarbetare i ett team så delar de ett samtal. Tryck på + för att starta ett, eller fråga vilken medarbetare som helst.",
 		"inTeam": "I det här teamet",
@@ -1945,6 +2013,9 @@
 	},
 	"agentSettings": {
 		"general": "Allmänt",
+		"tabWho": "Vem de är",
+		"tabWork": "Vad de gör",
+		"developerGroup": "Utvecklare",
 		"generalBlurb": "En översikt över den här medarbetaren — status, färdigheter, arbetsflöden och underhåll.",
 		"identityBlurb": "Namn, röst, färg och status — hur den här medarbetaren visas i appen.",
 		"nameLabel": "Namn",
@@ -2129,6 +2200,14 @@
 		"saveCredentialsFailed": "Kunde inte spara autentiseringsuppgifterna.",
 		"signInFailedRetry": "Inloggningen misslyckades. Försök igen.",
 		"startSignInFailed": "Kunde inte starta inloggning för detta konto.",
+		"signInPopupBlocked": "Inloggningsfönstret blockerades. Tillåt popup-fönster för Nebo och försök sedan igen.",
+		"channelToggleFailed": "Kunde inte uppdatera den kanalen. Försök igen.",
+		"helpChatFailed": "Kunde inte öppna hjälpchatten. Försök igen.",
+		"accountsLoadFailed": "Kunde inte ladda konton. Försök igen.",
+		"accountListRefreshFailed": "Kontot är kopplat, men listan uppdaterades inte. Öppna inställningarna igen för att se det.",
+		"disconnectFailed": "Kunde inte koppla från det kontot. Försök igen.",
+		"claimableLoadFailed": "Kunde inte ladda dina telefonnummer.",
+		"tryAgain": "Försök igen",
 		"contextTitle": "Vad den här medarbetaren vet",
 		"contextDesc": "Skrivet av medarbetaren själv utifrån företagets bransch- och företagslager, varje gång de ändras. Den arbetar utifrån det här utan att slå upp något.",
 		"contextAgainst": "Skrivet mot {against}",
@@ -2157,7 +2236,19 @@
 		"changeInBotSettings": "Ändra i Botinställningar",
 		"reachManage": "Hantera",
 		"reachNoPhone": "Ingen telefonlinje än.",
-		"reachNoChannels": "Inga kanaler är på."
+		"reachNoChannels": "Inga kanaler är på.",
+		"newCallTreeName": "Nytt samtalsträd",
+		"newWorkflowName": "Nytt arbetsflöde",
+		"greetingNodeLabel": "Hälsning",
+		"phoneLoadingNumbers": "Laddar dina nummer…",
+		"phoneNoFreeNumbers": "Det finns inga lediga nummer att koppla. Köp ett nummer (eller parkera ett från en annan medarbetare) på {link} och kom sedan tillbaka hit.",
+		"phoneWhichNumber": "Vilket nummer ska den här medarbetaren svara på?",
+		"phoneNumberParked": "parkerat",
+		"phoneNumberUnassigned": "ej tilldelat",
+		"phoneLineName": "Linjenamn (valfritt)",
+		"phoneLineNamePlaceholder": "Reception, Support, Spansk linje…",
+		"phoneAttaching": "Kopplar numret till den här medarbetaren…",
+		"phoneAttachNumber": "Koppla nummer"
 	},
 	"agentConfigure": {
 		"inputs": "Indata",
@@ -2234,7 +2325,10 @@
 		"factDate": "Datum",
 		"factAttachment": "Bilaga",
 		"factVia": "Via",
-		"interrupted": "Avbruten"
+		"interrupted": "Avbruten",
+		"tokensShort": "{count} tok",
+		"underOneSecond": "<1 s",
+		"triggerKind": "{kind, select, schedule {Schema} event {Händelse} heartbeat {Heartbeat} manual {Manuell} watch {Bevakning} webhook {Webhook} call {Samtal} retry {Nytt försök} other {{kind}}}"
 	},
 	"automations": {
 		"title": "Automationer",
@@ -2272,7 +2366,12 @@
 		"every8h": "Var 8:e timme",
 		"every24h": "Var 24:e timme",
 		"everyInterval": "Var {interval}",
-		"whenFires": "När {event} utlöses"
+		"whenFires": "När {event} utlöses",
+		"anEvent": "händelse",
+		"watching": "Bevakar: {source}",
+		"aPlugin": "plugin",
+		"manualTrigger": "Manuell utlösare",
+		"onEventNamed": "Vid {event}"
 	},
 	"newBot": {
 		"browseMarketplace": "Bläddra på marknadsplatsen",
@@ -2298,7 +2397,7 @@
 	},
 	"components": {
 		"agentSetup": {
-			"repository": "Repository",
+			"repository": "Repo",
 			"defaultBranch": "Standardgren",
 			"notificationChannel": "Notifikationskanal",
 			"title": "Konfigurera {name}",
@@ -2329,7 +2428,18 @@
 		"approvalGate": {
 			"batchHeadline": "{n} åtgärder i ett steg behöver ditt godkännande",
 			"goalHeadline": "Enas om det här målet? Arbetet fortsätter tills en kontroll bekräftar att det är uppnått.",
-			"yourAgent": "Din medarbetare"
+			"yourAgent": "Din medarbetare",
+			"operation": "{action, select, create {Skapa {noun}} send {Skicka {noun}} update {Uppdatera {noun}} status {Ändra status för {noun}} apply {Tillämpa {noun}} record {Registrera {noun}} schedule {Schemalägg {noun}} publish {Publicera {noun}} respond {Svara på {noun}} reply {Svara på {noun}} upsert {Spara {noun}} attach {Bifoga {noun}} write {Skriv {noun}} remove {Ta bort {noun}} other {{verb} {noun}}}",
+			"resource": {
+				"billpayment": "fakturabetalning",
+				"creditmemo": "kreditnota",
+				"journalentry": "verifikation",
+				"purchaseorder": "inköpsorder",
+				"opportunity": "affär",
+				"company": "Företagsfilen — hur det här företaget drivs",
+				"industry": "Branschfilen — hur den här branschen fungerar",
+				"franchise": "Franchisefilen — ett varumärkes krav"
+			}
 		},
 		"approvalModal": {
 			"runShellCommand": "Kör skalkommando",
@@ -2446,7 +2556,20 @@
 		"narrowSat": "L",
 		"pageTitle": "Schema - Nebo",
 		"perWeek": "{count}/v",
-		"workflowBuilderTitle": "{name} — Arbetsflödesbyggare"
+		"workflowBuilderTitle": "{name} — Arbetsflödesbyggare",
+		"everyDay": "Varje dag",
+		"weekends": "Helger",
+		"weekdayPlural": "{day, select, sun {Söndagar} mon {Måndagar} tue {Tisdagar} wed {Onsdagar} thu {Torsdagar} fri {Fredagar} sat {Lördagar} other {{day}}}",
+		"clockTime": "{hour}:{minute} {period}",
+		"hourOnly": "{hour} {period}",
+		"midnight": "Midnatt",
+		"cronEveryMinutes": "{n, plural, one {Varje minut} other {Var #:e minut}}",
+		"cronEveryHours": "{n, plural, one {Varje timme} other {Var #:e timme}}",
+		"cronEveryHoursAt": "{n, plural, one {Varje timme vid :{minute}} other {Var #:e timme vid :{minute}}}",
+		"cronDailyAt": "Varje dag kl. {time}",
+		"cronDaysAt": "{days} kl. {time}",
+		"cronMonthlyAt": "Varje månad den {day, selectordinal, one {#:a} other {#:e}} kl. {time}",
+		"listSeparator": ", "
 	},
 	"neboShell": {
 		"tabs": {
@@ -2491,7 +2614,26 @@
 	},
 	"userMenu": {
 		"aboutNebo": "Om Nebo",
-		"planSuffix": "{plan}-plan"
+		"planSuffix": "{plan}-plan",
+		"provideFeedback": "Lämna feedback"
+	},
+	"feedback": {
+		"title": "Lämna feedback",
+		"lede": "Berätta för NeboAI-teamet vad som fungerar, vad som inte gör det eller vad du önskar.",
+		"message": "Meddelande",
+		"screenshots": "Skärmdumpar eller foton (valfritt)",
+		"addScreenshot": "Lägg till en skärmdump",
+		"remove": "Ta bort {name}",
+		"diagnostics": "Inkludera diagnostik",
+		"diagnosticsHelp": "App- och botversion, plattform, bot-id och den här skärmen. Aldrig lösenord eller inloggningstokens.",
+		"send": "Skicka",
+		"sending": "Skickar",
+		"sent": "Tack — skickat till NeboAI-teamet.",
+		"failed": "Kunde inte skicka din feedback. Försök igen.",
+		"needMessage": "Skriv ett meddelande först.",
+		"messageTooLong": "Håll meddelandet under {max} tecken.",
+		"tooManyScreenshots": "Bifoga högst {max, plural, one {# skärmdump} other {# skärmdumpar}}.",
+		"imagesOnly": "Bara bilder kan bifogas."
 	},
 	"workflowCanvas": {
 		"noWorkflows": "Inga arbetsflöden att visualisera",
@@ -2632,7 +2774,18 @@
 		"gettingReady": "Gör {name} redo…",
 		"skillsAndTools": "Färdigheter och verktyg",
 		"hireFailedTitle": "Anställningen kunde inte slutföras",
-		"hireFailed": "{name} anställdes inte. Försök igen."
+		"hireFailed": "{name} anställdes inte. Försök igen.",
+		"codeStatus": {
+			"nebo": "Ansluter till NeboAI…",
+			"skill": "Installerar färdighet…",
+			"workflow": "Installerar arbetsflöde…",
+			"agent": "Installerar medarbetare…",
+			"loop": "Går med i loop…",
+			"plugin": "Installerar plugin…",
+			"app": "Installerar app…",
+			"collection": "Installerar samling…",
+			"connection": "Lägger till MCP-anslutning…"
+		}
 	},
 	"activity": {
 		"pageTitle": "Aktivitet - Nebo",
@@ -2651,7 +2804,8 @@
 		"openAppHint": "Öppna app",
 		"openApp": "Öppna app",
 		"runs": "Körningar",
-		"memory": "Minne"
+		"memory": "Minne",
+		"appError": "Appfel ({status})"
 	},
 	"pricing": {
 		"pageTitle": "Välj din plan - Nebo",
@@ -2708,7 +2862,7 @@
 		"fullAccessDesc": "Medarbetaren kör alla verktyg utan att fråga om lov.",
 		"fullAccessActive": "Full åtkomst är aktiv",
 		"previewApproval": "Förhandsgranska vad medarbetare ser när de ber om lov",
-		"previewAgentName": "Researcher",
+		"previewAgentName": "Forskare",
 		"enableFullAccess": "Aktivera full åtkomst",
 		"enableFullAccessDesc": "Detta låter dina medarbetare köra alla verktyg — inklusive skalkommandon, filändringar och nätverksförfrågningar — utan att be om lov.",
 		"fullAccessDisclaimer": "Genom att aktivera Full åtkomst bekräftar du att Nebo Labs, Inc. inte ansvarar för skador, förluster eller konsekvenser som uppstår genom dina medarbetares oövervakade körning av verktyg. Du tar fullt ansvar för alla åtgärder som dina medarbetare vidtar medan Full åtkomst är aktiverad.",
@@ -2811,7 +2965,10 @@
 		"checkEvery": "Kontrollera varje",
 		"hours6": "6 timmar",
 		"history": "Historik",
-		"title": "Verktygsuppdateringar"
+		"title": "Verktygsuppdateringar",
+		"onLatest": "Du har den senaste versionen",
+		"checkFailed": "Kunde inte söka efter uppdateringar",
+		"updateFailed": "Uppdateringen misslyckades"
 	},
 	"inbox": {
 		"title": "Inkorg",
@@ -2842,15 +2999,27 @@
 		"failedAt": "Misslyckades under ”{activity}”",
 		"steps": "Vad den höll på med",
 		"output": "Utdata",
-		"recordGone": "Körningsposten finns inte kvar. Den togs bort tillsammans med medarbetaren som ägde den, så bara den här notisen återstår."
+		"recordGone": "Körningsposten finns inte kvar. Den togs bort tillsammans med medarbetaren som ägde den, så bara den här notisen återstår.",
+		"revert": "Återställ",
+		"reverted": "Återställd"
 	},
 	"voice": {
 		"startConversation": "Röstsamtal",
+		"reconnecting": "Ansluter till samtalet igen…",
 		"consentTitle": "Röst använder en molntjänst",
 		"consentBody": "Röstsamtal strömmar din mikrofonljud till en molnbaserad rösttjänst för bearbetning medan ett samtal pågår. Ljudet lämnar den här datorn. Att skriva i chatten förblir lokalt som alltid.",
 		"consentAccept": "Aktivera röst",
 		"consentDecline": "Inte nu",
-		"cloudIndicator": "Ljud strömmas till molnet"
+		"cloudIndicator": "Ljud strömmas till molnet",
+		"talkTo": "Prata med {name}",
+		"isSpeaking": "{name} pratar",
+		"callEnded": "Samtalet avslutades.",
+		"tryAgain": "Försök igen",
+		"onAnotherCall": "I ett samtal med en annan medarbetare",
+		"callLost": "Samtalet bröts och kunde inte återupptas. Starta det igen.",
+		"callEndedStartAgain": "Samtalet avslutades. Starta det igen.",
+		"needsConsent": "Röstsamtal skickar ditt mikrofonljud till en molnbaserad rösttjänst för bearbetning. Aktivera det i röstpanelen för att ge ditt samtycke.",
+		"startFailed": "Kunde inte starta samtalet. Försök igen."
 	},
 	"flows": {
 		"none": "Inga flöden än",
@@ -2865,7 +3034,15 @@
 		"overlapBufferOne": "Kör en gång när den är klar",
 		"overlapAllowAll": "Kör ändå",
 		"deleteReminderTitle": "Ta bort ”{name}”?",
-		"deleteReminderBody": "Den här schemalagda uppgiften slutar köras och tas bort. Tidigare körningar finns kvar i körningshistoriken."
+		"deleteReminderBody": "Den här schemalagda uppgiften slutar köras och tas bort. Tidigare körningar finns kvar i körningshistoriken.",
+		"triggerOnEvent": "Vid {event}",
+		"triggerWatch": "Bevakar: {target}",
+		"triggerWatchPlugin": "Bevakar: plugin",
+		"triggerManual": "Manuell utlösare",
+		"scheduleTooSpecific": "Det här schemat är mer detaljerat än den enkla redigeraren kan hantera",
+		"askSetupPrompt": "Ställ in ett nytt flöde åt mig: ",
+		"everyNHours": "Var N:e timme",
+		"everyNMinutes": "Var N:e minut"
 	},
 	"christen": {
 		"title": "Ge din första medarbetare ett namn",
@@ -2887,7 +3064,27 @@
 		"working": "Tar reda på vad de behöver…",
 		"willDo": "{name} kommer att:",
 		"thisEmployee": "Den här medarbetaren",
-		"removeItem": "Ta bort {item}"
+		"removeItem": "Ta bort {item}",
+		"hireFromApps": "Anställ från en annan app",
+		"linkedLede": "De fortsätter arbeta på datorn de körs på.",
+		"thisComputer": "Den här datorn",
+		"offline": "Offline",
+		"linkedFailed": "Kunde inte anställa från {bot}. Försök igen.",
+		"onYourTeam": "I ditt team",
+		"linkedLooking": "Letar efter appar…",
+		"linkedHireNew": "Anställ en ny",
+		"linkedConnect": "Anslut din agent",
+		"linkedRunning": "{count} körs",
+		"nameYour": "Namnge din {app}",
+		"youAlreadyHave": "Du har redan:",
+		"nameTaken": "Du har redan en medarbetare som heter {name}.",
+		"linkedWhere": "Vilken dator ska den arbeta på?",
+		"linkedPickAgent": "Vilken {app}-agent?",
+		"linkedModeTitle": "Vad får den göra utan att fråga?",
+		"linkedModeAutomaticDesc": "Redigerar filer i sin mapp på egen hand. Frågar innan allt annat.",
+		"linkedModeAskDesc": "Frågar dig innan den ändrar något.",
+		"linkedModePlanDesc": "Läser och planerar. Ändrar ingenting.",
+		"linkedModeFullAccessDesc": "Kör vad som helst på den här datorn utan att fråga."
 	},
 	"runLimit": {
 		"title": "Utgiftstak per körning",
@@ -3101,5 +3298,526 @@
 		"unreviewed": "Inte granskad",
 		"loadMore": "Visa mer",
 		"addJobEdit": "Lägg till i jobbet"
+	},
+	"workflow": {
+		"addNode": "Lägg till nod",
+		"deleteNode": "Radera nod",
+		"deleteWorkflow": "Radera arbetsflöde",
+		"removeItem": "Ta bort {name}",
+		"activityCount": "{count, plural, one {# aktivitet} other {# aktiviteter}}",
+		"stepCount": "{count, plural, one {# steg} other {# steg}}",
+		"triggerTypes": {
+			"schedule": "Schema",
+			"heartbeat": "Heartbeat",
+			"event": "Händelse",
+			"watch": "Bevakning",
+			"manual": "Manuell"
+		},
+		"branch": {
+			"true": "Sant",
+			"false": "Falskt",
+			"eachItem": "Varje objekt",
+			"done": "Klar"
+		},
+		"types": {
+			"greeting": {
+				"label": "Hälsning",
+				"description": "Vad linjen säger när den svarar",
+				"params": {
+					"text": {
+						"label": "Hälsning",
+						"description": "Läses upp ordagrant när samtalet kopplas.",
+						"placeholder": "Tack för att du ringer Miller Dental! Hur kan jag hjälpa dig?"
+					}
+				}
+			},
+			"intent": {
+				"label": "Avsikt",
+				"description": "Ett jobb som linjen hanterar, med sina tillåtna verktyg",
+				"params": {
+					"name": {
+						"label": "Avsiktens namn",
+						"description": "Kort id som routern använder (unikt per träd)."
+					},
+					"description": {
+						"label": "När uppringare menar detta",
+						"placeholder": "Uppringaren vill boka, boka om eller avboka en tid"
+					},
+					"tools": {
+						"label": "Tillåtna verktyg",
+						"description": "Kommaseparerade tool:resource-behörigheter, bara för den här avsikten."
+					},
+					"workflows": {
+						"label": "Tillåtna arbetsflöden",
+						"description": "Kommaseparerade namn på den här medarbetarens arbetsflöden som avsikten får köra."
+					},
+					"plugins": {
+						"label": "Tillåtna plugins",
+						"description": "Kommaseparerade plugin-slugs."
+					},
+					"mcp": {
+						"label": "Tillåtna MCP-servrar",
+						"description": "Kommaseparerade namn på anslutna MCP-servrar."
+					}
+				}
+			},
+			"transfer": {
+				"label": "Koppla till en människa",
+				"description": "Direkt överlämning till linjens kopplingsnummer",
+				"params": {
+					"when": {
+						"label": "När samtalet ska kopplas",
+						"placeholder": "Uppringaren ber om en person, är upprörd eller har ett nödläge"
+					},
+					"to": {
+						"label": "Kopplar till",
+						"description": "Vem uppringaren får höra att de kopplas till. Själva numret ligger kvar i linjens inställningar.",
+						"placeholder": "vår kontorschef"
+					}
+				}
+			},
+			"takeMessage": {
+				"label": "Ta ett meddelande",
+				"description": "Ta emot ett meddelande till ägaren (reservalternativet)",
+				"params": {
+					"fields": {
+						"label": "Vad som ska antecknas",
+						"placeholder": "namn, nummer, anledning till samtalet, bästa tid att ringa tillbaka"
+					}
+				}
+			},
+			"disclosures": {
+				"label": "Får dela",
+				"description": "Fakta som linjen uppger direkt, utan uppslag",
+				"params": {
+					"text": {
+						"label": "Godkänd information",
+						"description": "De offentliga fakta som ägaren har godkänt för den här linjen — öppettider, adress, serviceområde, grundpriser. Kund- eller kontouppgifter listas aldrig här; de går via ett uppslag.",
+						"placeholder": "Öppet mån–fre 8–17. Adress: Storgatan 123. Tandrengöring från 1 200 kr."
+					}
+				}
+			},
+			"custom": {
+				"label": "Anpassad",
+				"description": "Definiera steg och färdigheter manuellt"
+			},
+			"research": {
+				"label": "Efterforskning",
+				"description": "Webbsökning, analys och sammanställning",
+				"params": {
+					"depth": {
+						"label": "Sökdjup",
+						"options": {
+							"quick": "Snabb (2–5 min)",
+							"standard": "Standard (5–10 min)",
+							"deep": "Djup (10–20 min)"
+						}
+					},
+					"sources": {
+						"label": "Källtyper",
+						"description": "Kommaseparerade källtyper att söka i",
+						"placeholder": "webb, akademiskt, nyheter"
+					}
+				}
+			},
+			"email": {
+				"label": "Skicka e-post",
+				"description": "Skriv och skicka e-post",
+				"params": {
+					"to": {
+						"label": "Till",
+						"description": "Mottagarens e-postadress (eller använd data från tidigare steg)"
+					},
+					"subject": {
+						"label": "Ämnesmall"
+					}
+				}
+			},
+			"notify": {
+				"label": "Avisera",
+				"description": "Skicka en avisering till en kanal",
+				"params": {
+					"channel": {
+						"label": "Kanal",
+						"options": {
+							"email": "E-post",
+							"webhook": "Webhook"
+						}
+					},
+					"target": {
+						"label": "Mål",
+						"description": "Kanalnamn, e-post eller webhook-URL",
+						"placeholder": "#general eller user@example.com"
+					}
+				}
+			},
+			"code": {
+				"label": "Kör kod",
+				"description": "Kör ett kodavsnitt",
+				"params": {
+					"language": {
+						"label": "Språk"
+					},
+					"code": {
+						"label": "Kod",
+						"description": "Kod att köra"
+					}
+				}
+			},
+			"condition": {
+				"label": "Villkor",
+				"description": "Om/annars-förgrening",
+				"params": {
+					"expression": {
+						"label": "Villkorsuttryck",
+						"description": "JavaScript-uttryck — sanna värden går till grenen Sant, falska till Falskt"
+					},
+					"mode": {
+						"label": "Utvärderingsläge",
+						"options": {
+							"expression": "Uttryck",
+							"contains": "Data innehåller",
+							"exists": "Fältet finns",
+							"regex": "Regex-matchning"
+						}
+					}
+				}
+			},
+			"loop": {
+				"label": "Loop",
+				"description": "Gå igenom en lista med objekt",
+				"params": {
+					"source": {
+						"label": "Källa för objekt",
+						"description": "Sökväg till listan som ska gås igenom",
+						"placeholder": "data.items eller data.emails"
+					},
+					"maxIterations": {
+						"label": "Max antal varv",
+						"description": "Säkerhetsgräns som förhindrar oändliga loopar"
+					}
+				}
+			},
+			"wait": {
+				"label": "Vänta",
+				"description": "Pausa körningen",
+				"params": {
+					"duration": {
+						"label": "Väntetid",
+						"options": {
+							"5s": "5 sekunder",
+							"30s": "30 sekunder",
+							"1m": "1 minut",
+							"5m": "5 minuter",
+							"15m": "15 minuter",
+							"1h": "1 timme",
+							"custom": "Anpassad"
+						}
+					},
+					"waitUntil": {
+						"label": "Eller vänta tills",
+						"description": "Fortsätt när den här händelsen utlöses (lämna tomt för att vänta en viss tid)",
+						"placeholder": "t.ex. event:approval.received"
+					}
+				}
+			},
+			"agent": {
+				"label": "Medarbetare",
+				"description": "Delegera till en annan medarbetare",
+				"params": {
+					"agentId": {
+						"label": "Medarbetare",
+						"description": "Medarbetaren som uppgiften delegeras till"
+					},
+					"instructions": {
+						"label": "Instruktioner",
+						"description": "Ersätt eller komplettera medarbetarens standardpersona",
+						"placeholder": "Specifika instruktioner för den delegerade medarbetaren..."
+					}
+				}
+			},
+			"connector": {
+				"label": "Anslutning",
+				"description": "Använd en MCP-integration",
+				"params": {
+					"serverId": {
+						"label": "MCP-server",
+						"description": "Ansluten MCP-server att använda"
+					},
+					"tool": {
+						"label": "Verktyg",
+						"description": "Vilket verktyg som ska anropas på MCP-servern",
+						"placeholder": "t.ex. read_file, send_message"
+					},
+					"input": {
+						"label": "Indata",
+						"description": "JSON-indata för verktyget (stöder '{{'data.field'}}'-mallar)"
+					}
+				}
+			},
+			"http": {
+				"label": "HTTP-anrop",
+				"description": "Gör ett HTTP API-anrop",
+				"params": {
+					"method": {
+						"label": "Metod"
+					},
+					"url": {
+						"label": "URL"
+					},
+					"body": {
+						"label": "Anropets innehåll",
+						"description": "JSON-innehåll för POST/PUT/PATCH-anrop"
+					},
+					"headers": {
+						"label": "Headers",
+						"description": "En header per rad (key: value)"
+					}
+				}
+			},
+			"decide": {
+				"label": "Avgör",
+				"description": "Klassificera eller bedöm data med typade frågor",
+				"params": {
+					"state": {
+						"label": "Tillstånd",
+						"description": "Datasökväg att bedöma (inputs.*, item, nodes.'<'id>.*)"
+					},
+					"questions": {
+						"label": "Frågor",
+						"description": "JSON-objekt med typade frågor (choice, score, noul). En villkorsnod routar på nodes.'<'id>.'<'question>.choice och .confidence"
+					},
+					"default": {
+						"label": "Standardsvar",
+						"description": "Svar som används när inget beslut kan fattas: ett alternativ för en choice, en nivå för en score, true eller false för en noul. Noden sätter då nodes.'<'id>.defaulted"
+					}
+				}
+			},
+			"transform": {
+				"label": "Omvandla",
+				"description": "Omforma eller filtrera data",
+				"params": {
+					"operation": {
+						"label": "Åtgärd",
+						"options": {
+							"map": "Mappa — omvandla varje objekt",
+							"filter": "Filtrera — behåll matchande objekt",
+							"reduce": "Reducera — slå ihop till ett värde",
+							"pick": "Plocka — hämta ut specifika fält",
+							"template": "Mall — formatera som text"
+						}
+					},
+					"expression": {
+						"label": "Uttryck",
+						"description": "Omvandlingsuttryck"
+					}
+				}
+			}
+		},
+		"catalog": {
+			"searchPlaceholder": "Sök noder...",
+			"noMatch": "Inga noder matchar ”{query}”",
+			"toolsAvailable": "{count, plural, one {# verktyg tillgängligt} other {# verktyg tillgängliga}}",
+			"categories": {
+				"triggers": "Utlösare",
+				"activities": "Aktiviteter",
+				"callTree": "Samtalsträd",
+				"flowControl": "Flödeskontroll",
+				"connectors": "Anslutningar (MCP)",
+				"agents": "Medarbetare",
+				"output": "Utdata"
+			},
+			"items": {
+				"triggerSchedule": {
+					"label": "Schema",
+					"desc": "Kör vid bestämda tider"
+				},
+				"triggerEvent": {
+					"label": "Händelse",
+					"desc": "Reagera på händelser"
+				},
+				"triggerHeartbeat": {
+					"label": "Heartbeat",
+					"desc": "Kör med intervall"
+				},
+				"triggerManual": {
+					"label": "Manuell",
+					"desc": "Kör vid behov"
+				},
+				"activityCustom": {
+					"label": "Anpassad aktivitet",
+					"desc": "Definiera steg och färdigheter"
+				},
+				"activityResearch": {
+					"label": "Efterforskning",
+					"desc": "Webbsökning och analys"
+				},
+				"activityEmail": {
+					"label": "Skicka e-post",
+					"desc": "Skriv och skicka e-post"
+				},
+				"activityNotify": {
+					"label": "Avisera",
+					"desc": "Skicka avisering"
+				},
+				"activityCode": {
+					"label": "Kör kod",
+					"desc": "Kör ett kodavsnitt"
+				},
+				"activityHttp": {
+					"label": "HTTP-anrop",
+					"desc": "Gör ett API-anrop"
+				},
+				"activityDecide": {
+					"label": "Avgör",
+					"desc": "Klassificera eller bedöm data"
+				},
+				"activityTransform": {
+					"label": "Omvandla",
+					"desc": "Omforma eller filtrera data"
+				},
+				"activityGreeting": {
+					"label": "Hälsning",
+					"desc": "Vad linjen säger när den svarar"
+				},
+				"activityIntent": {
+					"label": "Avsikt",
+					"desc": "Ett jobb + dess tillåtna verktyg"
+				},
+				"activityTransfer": {
+					"label": "Koppla till en människa",
+					"desc": "Direkt överlämning — ange vem den kopplar till"
+				},
+				"activityTakeMessage": {
+					"label": "Ta ett meddelande",
+					"desc": "Ta emot ett meddelande (reservalternativet)"
+				},
+				"activityDisclosures": {
+					"label": "Får dela",
+					"desc": "Fakta som linjen uppger direkt (öppettider, adress, priser)"
+				},
+				"flowCondition": {
+					"label": "Villkor",
+					"desc": "Om/annars-förgrening"
+				},
+				"flowLoop": {
+					"label": "Loop",
+					"desc": "Gå igenom objekt"
+				},
+				"flowWait": {
+					"label": "Vänta",
+					"desc": "Pausa eller vänta på en händelse"
+				},
+				"emit": {
+					"label": "Sänd händelse",
+					"desc": "Meddela att körningen är klar"
+				}
+			}
+		},
+		"eventSources": {
+			"label": "Händelsekällor",
+			"searchPlaceholder": "Skriv för att söka källor...",
+			"hint": "Skriv för att söka bland kända källor, Enter för att lägga till. Egna namn och jokertecken (email.*) fungerar också."
+		},
+		"flow": {
+			"triggerManual": "Körs när du startar det",
+			"triggerSchedule": "Enligt schema",
+			"triggerEventAny": "När en händelse utlöses",
+			"triggerWatch": "Bevakar {name}",
+			"triggerWatchAny": "Bevakar ett plugin",
+			"applying": "Tillämpar…",
+			"go": "Kör",
+			"tellAi": "Berätta för AI:n vad som ska ändras",
+			"tellAiEllipsis": "Berätta för AI:n vad som ska ändras…",
+			"badgeExact": "exakt",
+			"badgeAgent": "AI",
+			"emptyCode": "(tom)",
+			"stepPlaceholder": "Vad ska det här steget göra?",
+			"changeStep": "Ändra ”{name}”…",
+			"forEach": "För varje {item}",
+			"loopItemDefault": "objekt",
+			"loopEmpty": "Inget i den här loopen än.",
+			"pathDefault": "gren",
+			"pathEmpty": "Tom gren",
+			"addStepHere": "Lägg till ett steg här",
+			"connected": "{name} är ansluten",
+			"notConnected": "{name} är inte ansluten — det här flödet kommer att misslyckas",
+			"connect": "Anslut",
+			"describeFlowChange": "Beskriv en ändring av hela flödet…",
+			"edit": "redigera",
+			"emits": "sänder",
+			"noSteps": "Det här flödet har inga steg än."
+		},
+		"panel": {
+			"backToOverview": "Tillbaka till arbetsflödesöversikten",
+			"intent": "Avsikt",
+			"addSkill": "Lägg till färdighet...",
+			"parameters": "Parametrar",
+			"addStep": "Lägg till steg...",
+			"manualHint": "Körs bara när det startas manuellt.",
+			"notConfigured": "Inte konfigurerad",
+			"noEventConfigured": "Ingen händelse konfigurerad",
+			"noDescription": "Ingen beskrivning",
+			"emitPlaceholder": "t.ex. {name}",
+			"emitOptional": "Valfritt — andra arbetsflöden kan utlösas av detta när körningen är klar.",
+			"useEmit": "Använd {name}",
+			"emitRenameWarning": "Om du byter namn slutar arbetsflöden som prenumererar på den här händelsen att fungera.",
+			"none": "Ingen",
+			"apiEndpoint": "API-slutpunkt",
+			"apiEndpointHint": "Skapa en nyckel för det här arbetsflödet under medarbetarens Inställningar → Webhooks."
+		},
+		"schedule": {
+			"weekends": "Helger",
+			"custom": "Anpassat",
+			"daysOfWeek": "Veckodagar",
+			"monthly": "Månadsvis",
+			"biannual": "Var 6:e månad",
+			"yearly": "Årligen",
+			"onDay": "på dag",
+			"biannualNote": "Körs {day} {firstMonth} och {day} {secondMonth}.",
+			"shortMonthsSkipped": "Månader utan dag {day} hoppas över.",
+			"limitToHours": "Begränsa till timmar",
+			"rangeTo": "till"
+		},
+		"watch": {
+			"plugin": "Plugin",
+			"choosePlugin": "Välj ett plugin…",
+			"whenItReports": "När det rapporterar",
+			"chooseEvent": "Välj en händelse…",
+			"hint": "Körs varje gång {plugin} rapporterar {event}; andra flöden kan också lyssna efter {plugin}.{event}."
+		},
+		"validation": {
+			"emptyId": "En aktivitet i ”{workflow}” har ett tomt ID",
+			"duplicateId": "Dubblett av aktivitets-ID ”{id}” i ”{workflow}”",
+			"conditionExpression": "Villkoret ”{id}” behöver ett uttryck — routingen är deterministisk och avgörs aldrig av AI",
+			"loopSource": "Loopen ”{id}” behöver en datakälla (t.ex. inputs.items)",
+			"httpUrl": "HTTP-noden ”{id}” behöver en URL",
+			"decideQuestions": "Avgör-noden ”{id}” behöver frågor (ett JSON-objekt med typade frågor)",
+			"waitDuration": "Vänta-noden ”{id}” behöver en väntetid",
+			"needsIntent": "Aktiviteten ”{id}” i ”{workflow}” behöver en avsikt eller steg",
+			"targetsTrigger": "En koppling leder till utlösaren",
+			"leavesEmit": "En koppling utgår från sändnoden",
+			"unknownFrom": "Koppling från okänd nod ”{id}”",
+			"unknownTo": "Koppling till okänd nod ”{id}”",
+			"duplicateConnection": "Dubblett av koppling {from} → {to}",
+			"labeledNonBranching": "Den märkta kanten ”{label}” utgår från noden ”{id}”, som inte förgrenar sig",
+			"unlabeledBranch": "Kanter som utgår från ”{id}” måste ha en grenetikett",
+			"cycle": "Grafen innehåller en cykel (bara en loops Varje objekt-gren får gå tillbaka till sin loop)"
+		},
+		"builder": {
+			"unsavedConfirm": "Du har osparade ändringar. Vill du kasta dem och stänga?",
+			"workflowLabel": "{name} ({count, plural, one {# aktivitet} other {# aktiviteter}})",
+			"undo": "Ångra (Cmd+Z)",
+			"redo": "Gör om (Cmd+Shift+Z)",
+			"issueCount": "{count, plural, one {# problem} other {# problem}}",
+			"discard": "Kasta",
+			"hideDetails": "Dölj detaljpanelen",
+			"showDetails": "Visa detaljpanelen",
+			"newWorkflowTitle": "Nytt arbetsflöde",
+			"empty": "Inga arbetsflöden — skapa ett för att komma igång",
+			"newWorkflow": "Nytt arbetsflöde",
+			"confirmDeleteWorkflow": "Är du säker på att du vill radera det här arbetsflödet? Alla dess aktiviteter och kopplingar tas bort.",
+			"confirmDeleteNode": "Är du säker på att du vill radera den här noden? Dess kopplingar återansluts automatiskt."
+		}
 	}
 }

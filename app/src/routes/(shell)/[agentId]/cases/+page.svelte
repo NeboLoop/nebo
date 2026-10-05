@@ -60,7 +60,7 @@
   <div class="flex items-center gap-3">
     <h1 class="text-lg font-semibold">{$t('cases.title')}</h1>
     <span class="text-sm text-base-content/60">{agentId}</span>
-    <button class="btn btn-sm btn-ghost ml-auto" onclick={() => void load()} disabled={loading}>
+    <button class="btn btn-sm btn-ghost ms-auto" onclick={() => void load()} disabled={loading}>
       {$t('cases.refresh')}
     </button>
   </div>
@@ -95,7 +95,7 @@
               <td>{c.aliases.join(', ') || c.subject_id.slice(0, 8)}</td>
               <td>
                 <span class="badge badge-sm {stateClass(c.state)}">{c.state}</span>
-                {#if c.result}<span class="ml-1 text-base-content/70">{c.result}</span>{/if}
+                {#if c.result}<span class="ms-1 text-base-content/70">{c.result}</span>{/if}
               </td>
               <td>{c.waiting_for ? `${c.waiting_for.on} — ${short(c.waiting_for.reason, 60)}` : '—'}</td>
               <td>{when(c.waiting_for?.since)}</td>
@@ -164,7 +164,7 @@
                   <span class="text-base-content/60">{$t('cases.noReceipts')}</span>
                 {:else}
                   {#each turn.receipts as r (r.id)}
-                    <span class="badge badge-sm {receiptClass(r.state)} mr-1" title={r.result}>
+                    <span class="badge badge-sm {receiptClass(r.state)} me-1" title={r.result}>
                       {r.provider} #{r.id} {r.state}{r.to ? ` → ${r.to}` : ''}{r.reference ? ` (${r.reference})` : ''}
                     </span>
                   {/each}

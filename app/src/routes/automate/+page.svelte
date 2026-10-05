@@ -39,7 +39,7 @@
   <div class="flex-1 flex flex-col min-w-0 min-h-0">
     <div class="h-12 px-5 border-b border-base-content/10 flex items-center gap-3.5 shrink-0">
       <span class="text-sm font-semibold">{$t('automations.title')}</span>
-      <div class="ml-auto h-7 w-[200px] rounded-md border border-base-content/10 bg-base-100 flex items-center px-2.5 gap-2 text-sm">
+      <div class="ms-auto h-7 w-[200px] rounded-md border border-base-content/10 bg-base-100 flex items-center px-2.5 gap-2 text-sm">
         <span class="font-mono">⌘K</span><span>{$t('nav.searchOrRun')}</span>
       </div>
     </div>

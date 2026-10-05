@@ -243,8 +243,8 @@
   <div class="absolute inset-0 bg-black/50 backdrop-blur-sm" role="presentation" onclick={() => !busy && onclose()}></div>
   <div class="relative w-full max-w-sm rounded-2xl bg-base-100 border border-base-300 shadow-2xl p-6 flex flex-col items-center text-center">
     {#if picked}
-      <div class="w-full text-left">
-        <button type="button" class="btn btn-ghost btn-xs rounded-field -ml-2" onclick={back} disabled={busy}>
+      <div class="w-full text-start">
+        <button type="button" class="btn btn-ghost btn-xs rounded-field -ms-2" onclick={back} disabled={busy}>
           <ChevronLeft class="w-3.5 h-3.5" />
           {$t('common.back')}
         </button>
@@ -299,7 +299,7 @@
               <li>
                 <button
                   type="button"
-                  class="btn btn-ghost btn-sm rounded-field w-full h-auto min-h-0 py-2 justify-start gap-3 font-normal text-left"
+                  class="btn btn-ghost btn-sm rounded-field w-full h-auto min-h-0 py-2 justify-start gap-3 font-normal text-start"
                   disabled={busy}
                   onclick={() => pickAgent(c)}
                 >
@@ -369,7 +369,7 @@
         {#if working}
           <p class="consent-chip-hint">{$t('newEmployee.working')}</p>
         {:else if kept.length}
-          <div class="w-full flex flex-col gap-1.5 text-left">
+          <div class="w-full flex flex-col gap-1.5 text-start">
             <p class="consent-line">{$t('newEmployee.willDo', { values: { name: name.trim() || $t('newEmployee.thisEmployee') } })}</p>
             <div class="consent-items">
               {#each kept as item (item)}
@@ -402,7 +402,7 @@
       </div>
 
       {#if !listed || apps.length > 0}
-        <div class="w-full mt-5 pt-4 border-t border-base-300 text-left">
+        <div class="w-full mt-5 pt-4 border-t border-base-300 text-start">
           <h2 class="text-sm font-semibold">{$t('newEmployee.hireFromApps')}</h2>
           <p class="text-xs text-base-content/60 mt-1 leading-relaxed">{$t('newEmployee.linkedLede')}</p>
           {#if !listed}
@@ -414,7 +414,7 @@
                 <li>
                   <button
                     type="button"
-                    class="btn btn-ghost btn-sm rounded-field w-full h-auto min-h-0 py-2 justify-start gap-3 font-normal text-left"
+                    class="btn btn-ghost btn-sm rounded-field w-full h-auto min-h-0 py-2 justify-start gap-3 font-normal text-start"
                     disabled={busy}
                     onclick={() => pick(app)}
                   >

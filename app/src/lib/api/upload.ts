@@ -1,3 +1,5 @@
+import { get } from 'svelte/store';
+import { locale, t } from 'svelte-i18n';
 import { backendBase } from './base';
 import { storage } from '$lib/storage';
 import type { UploadedAttachment } from '$lib/types/attachment';
@@ -41,9 +43,13 @@ async function convertHeicToJpeg(file: File): Promise<File> {
 	}
 }
 
+/** How long NeboAI keeps a raw upload before it clears. The hub says the
+ *  number in its own refusals; this is what the app says when it has none. */
+export const UPLOAD_KEEP_DAYS = 15;
+
 /** An upload the server refused. `code` is `storage_full` when the account's
- *  storage is full: the message is the server's own sentence, and the same
- *  upload is not worth offering again until space frees. */
+ *  storage is full, and the same upload is not worth offering again until
+ *  space frees. */
 export class UploadError extends Error {
 	constructor(
 		message: string,
@@ -73,11 +79,27 @@ export function uploadRefusal(status: number, responseText: string): UploadError
 	return new UploadError(`Upload failed: ${status}`, status);
 }
 
-/** What a failed upload says where it failed: a full account in the
- *  server's own words, anything else after "File upload failed". */
+/** A full account in the owner's language. The hub's English sentence
+ *  carries the cap ("(2 GB)"), the keeping period ("clear 15 days") and when
+ *  the next space frees ("frees on November 4, 2026"); each is read from it
+ *  when there, and the sentence is said again through the locale. */
+export function storageFullMessage(hubSentence: string): string {
+	const tr = get(t);
+	const cap = /\(([\d.]+\s*[KMGT]B)\)/.exec(hubSentence)?.[1] ?? 'none';
+	const days = Number(/clear (\d+) days/.exec(hubSentence)?.[1] ?? UPLOAD_KEEP_DAYS);
+	const full = tr('chat.storageFull', { values: { cap, days } });
+	const when = /frees on ([A-Z][a-z]+ \d{1,2}, \d{4})/.exec(hubSentence)?.[1];
+	const date = when ? new Date(`${when} 12:00 UTC`) : null;
+	if (!date || Number.isNaN(date.getTime())) return full;
+	const said = new Intl.DateTimeFormat(get(locale) ?? 'en', { dateStyle: 'long', timeZone: 'UTC' }).format(date);
+	return `${full} ${tr('chat.storageNextFree', { values: { date: said } })}`;
+}
+
+/** What a failed upload says where it failed: a full account plainly,
+ *  anything else after "File upload failed". */
 export function uploadFailureMessage(e: unknown): string {
-	if (isStorageFull(e)) return e.message;
-	return `File upload failed — message not sent. ${e instanceof Error ? e.message : ''}`.trim();
+	if (isStorageFull(e)) return storageFullMessage(e.message);
+	return get(t)('chat.uploadFailed', { values: { reason: e instanceof Error ? e.message : '' } }).trim();
 }
 
 /** Where a file is landing: the employee it is for, and the conversation it

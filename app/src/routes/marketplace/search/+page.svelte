@@ -38,7 +38,7 @@
 	});
 </script>
 
-<svelte:head><title>Search — Marketplace</title></svelte:head>
+<svelte:head><title>{$t('marketplace.searchPageTitle')}</title></svelte:head>
 
 <div class="max-w-6xl mx-auto px-6 py-6">
 	{#if !query}

@@ -204,7 +204,7 @@ export function attachWebSocketListeners(): void {
   unsubs.push(
     ws.on('agent_status', (data: any) => {
       if (data.status === 'error') {
-        addToast(`${data.agentName || 'Agent'}: ${data.message || 'Error occurred'}`, 'error');
+        addToast(`${data.agentName || get(t)('common.employee')}: ${data.message || get(t)('common.errorOccurred')}`, 'error');
       }
     })
   );
@@ -251,7 +251,7 @@ export function attachWebSocketListeners(): void {
   // --- System events ---
   unsubs.push(
     ws.on('system_event', (data: any) => {
-      if (data.level === 'error') addToast(data.message || 'System error', 'error');
+      if (data.level === 'error') addToast(data.message || get(t)('common.systemError'), 'error');
     })
   );
 
@@ -278,11 +278,11 @@ export function attachWebSocketListeners(): void {
         reconnectSoon = setTimeout(() => {
           reconnectSoon = null;
           if (ws.getStatus() === 'connected') return;
-          reconnectToast = addToast('Reconnecting…', 'info', 0);
+          reconnectToast = addToast(get(t)('common.reconnecting'), 'info', 0);
           reconnectLong = setTimeout(() => {
             if (ws.getStatus() === 'connected') return;
             if (reconnectToast !== null) removeToast(reconnectToast);
-            reconnectToast = addToast('Still trying to reach your Nebo…', 'warning', 0);
+            reconnectToast = addToast(get(t)('common.stillReconnecting'), 'warning', 0);
           }, 30_000);
         }, 4_000);
       }
@@ -294,7 +294,7 @@ export function attachWebSocketListeners(): void {
   unsubs.push(
     ws.on('artifact_updates_available', (data: any) => {
       if (data.count > 0) {
-        addToast(`${data.count} update${data.count > 1 ? 's' : ''} available`, 'info');
+        addToast(get(t)('common.updatesAvailable', { values: { count: data.count } }), 'info');
       }
       for (const u of (data.updates ?? []) as Array<{ type: string; id: string; remoteVersion: string }>) {
         settleUpdateNotices(u.type, u.id, u.remoteVersion);
@@ -303,13 +303,13 @@ export function attachWebSocketListeners(): void {
   );
   unsubs.push(
     ws.on('artifact_update_applied', (data: any) => {
-      addToast(`Updated ${data.type}: ${data.version}`, 'success');
+      addToast(get(t)('common.artifactUpdated', { values: { type: data.type, version: data.version } }), 'success');
       settleUpdateNotices(data.type, data.id);
     })
   );
   unsubs.push(
     ws.on('artifact_update_failed', (data: any) => {
-      addToast(`Update failed: ${data.error}`, 'error');
+      addToast(get(t)('common.artifactUpdateFailed', { values: { error: data.error } }), 'error');
     })
   );
 

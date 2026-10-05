@@ -57,8 +57,8 @@
 		"noDataAvailable": "ไม่มีข้อมูล",
 		"comingSoon": "เร็วๆ นี้",
 		"or": "หรือ",
-		"dev": "dev",
-		"beta": "beta",
+		"dev": "รุ่นพัฒนา",
+		"beta": "เบต้า",
 		"free": "ฟรี",
 		"na": "N/A",
 		"you": "คุณ",
@@ -84,7 +84,16 @@
 		"closeModal": "ปิดหน้าต่าง",
 		"all": "ทั้งหมด",
 		"more": "เพิ่มเติม",
-		"stopped": "หยุดแล้ว"
+		"stopped": "หยุดแล้ว",
+		"errorOccurred": "เกิดข้อผิดพลาด",
+		"systemError": "ข้อผิดพลาดของระบบ",
+		"stillReconnecting": "ยังพยายามเชื่อมต่อกับ Nebo ของคุณอยู่…",
+		"updatesAvailable": "{count, plural, other {มีอัปเดต # รายการ}}",
+		"artifactUpdated": "อัปเดต{type}แล้ว: {version}",
+		"artifactUpdateFailed": "อัปเดตล้มเหลว: {error}",
+		"employee": "พนักงาน",
+		"untitled": "ไม่มีชื่อ",
+		"document": "เอกสาร"
 	},
 	"time": {
 		"justNow": "เมื่อสักครู่",
@@ -253,9 +262,11 @@
 		"working": "กำลังทำงาน",
 		"chatActions": "การดำเนินการแชท",
 		"deleteChatTitle": "ลบ \"{name}\" ใช่ไหม",
-		"deleteChatBody": "แชทนี้และข้อความทั้งหมดจะถูกลบ ไม่สามารถเลิกทำได้"
+		"deleteChatBody": "แชทนี้และข้อความทั้งหมดจะถูกลบ ไม่สามารถเลิกทำได้",
+		"offline": "ออฟไลน์"
 	},
 	"chat": {
+		"worksIn": "ทำงานใน {folder}",
 		"compactBoundary": "สรุปบทสนทนาก่อนหน้าแล้ว",
 		"clearedBoundary": "ล้างที่นี่แล้ว ข้อความก่อนหน้ายังเก็บไว้ แต่ไม่ได้ใช้",
 		"goalLine": "เป้าหมาย: {condition} ({turns} รอบ)",
@@ -264,10 +275,15 @@
 		"goalStopped": "หยุดเป้าหมายไว้ชั่วคราว บอกได้เลยเมื่ออยากทำต่อ",
 		"resumedActivity": "ยังทำอยู่: {tool}",
 		"waitingForYou": "รอคุณอยู่",
+		"waitingOnYou": "{name} กำลังรอคุณอยู่",
+		"seeConversation": "ดูการสนทนา",
 		"waitingOnYourAnswer": "{name} กำลังรอคำตอบของคุณ:",
 		"waitingOpen": "เปิด",
 		"waitingAsksLabel": "รอคำตอบของคุณ",
 		"subagentStep": "{op} · ขั้นที่ {n}",
+		"helperWorking": "ผู้ช่วยกำลังทำงาน: {what}",
+		"helpersWorking": "ผู้ช่วย {n} คนกำลังทำงาน",
+		"moreQuestionsWaiting": "{count, plural, other {มีอีก # คำถามรออยู่}}",
 		"pending": "รอดำเนินการ",
 		"yourAICompanion": "ทีม AI ของคุณ",
 		"tellMeWhatYouNeed": "บอกสิ่งที่คุณต้องการ หรือเปิดใช้งานพนักงานของคุณด้านล่าง",
@@ -295,6 +311,7 @@
 		"messageChannel": "ข้อความ #{channel}...",
 		"messagedCoworker": "ส่งข้อความแล้ว",
 		"disclaimer": "Nebo อาจทำผิดพลาดได้ กรุณาตรวจสอบข้อมูลสำคัญ",
+		"uploadsKept": "ไฟล์ที่อัปโหลดจะถูกเก็บไว้ {days} วัน",
 		"goodMorning": "สวัสดีตอนเช้า",
 		"goodAfternoon": "สวัสดีตอนบ่าย",
 		"goodEvening": "สวัสดีตอนเย็น",
@@ -315,6 +332,8 @@
 		"installFailed": "ติดตั้งไม่สำเร็จ — ลองอีกครั้ง",
 		"hire": "จ้าง",
 		"hiring": "กำลังจ้าง…",
+		"hireCount": "จ้างทั้ง {count} คน",
+		"hiringCount": "กำลังจ้าง {done} จาก {count}…",
 		"botComputer": "คอมพิวเตอร์",
 		"closeComputer": "ปิดคอมพิวเตอร์",
 		"fullView": "มุมมองเต็ม",
@@ -330,13 +349,18 @@
 		"computerUnavailableHint": "คอมพิวเตอร์ของพนักงานทำงานบนการติดตั้งแบบ Linux และพนักงานบนคลาวด์",
 		"watchingAndLearning": "{name} กำลังดูและเรียนรู้",
 		"stopRecording": "หยุดบันทึก",
-		"teachLocalHint": "Do the task on this screen as you normally would, then stop.",
+		"teachLocalHint": "ทำงานบนหน้าจอนี้ตามปกติ แล้วกดหยุด",
+		"teachStarting": "กำลังเตรียมดูหน้าจอของคุณ…",
+		"teachNeedsScreenPermission": "Nebo ต้องได้รับสิทธิ์การบันทึกหน้าจอเพื่อดูคุณทำงาน เปิด Nebo ใน การตั้งค่าระบบ › ความเป็นส่วนตัวและความปลอดภัย › การบันทึกหน้าจอ แล้วลองอีกครั้ง",
+		"openScreenRecordingSettings": "เปิดการตั้งค่าการบันทึกหน้าจอ",
+		"openVirtualComputer": "เปิดคอมพิวเตอร์เสมือน",
 		"recordTask": "บันทึกงาน",
 		"recording": "กำลังบันทึก",
 		"connectFailed": "การเข้าสู่ระบบยังไม่เสร็จ ลองอีกครั้ง",
 		"connectAccountHint": "เข้าสู่ระบบแล้วฉันจะทำต่อจากจุดที่ค้างไว้",
 		"submit": "ส่ง",
 		"other": "อื่นๆ…",
+		"askedReceipt": "ถามแล้ว",
 		"copyCode": "คัดลอกโค้ด",
 		"copied": "คัดลอกแล้ว!",
 		"dropFilesHere": "วางไฟล์ที่นี่",
@@ -405,6 +429,8 @@
 		"shareNotConnected": "เชื่อมต่อกับ NeboAI เพื่อแชร์",
 		"filesInThread": "ไฟล์ในแชทนี้",
 		"nothingHereYet": "ยังไม่มีอะไรที่นี่",
+		"noEmployeesOneTool": "ไม่มีพนักงานที่ตรงกัน แต่มี 1 เครื่องมือที่ตรงกัน — ดูที่เครื่องมือ",
+		"noEmployeesButTools": "ไม่มีพนักงานที่ตรงกัน แต่มี {count} เครื่องมือที่ตรงกัน — ดูที่เครื่องมือ",
 		"workEmptyDesc": "เมื่อ Nebo สร้างรายงาน สเปรดชีต หรืองานออกแบบ จะปรากฏที่นี่",
 		"closeImage": "ปิดรูปภาพ",
 		"fullSize": "ขนาดเต็ม",
@@ -429,7 +455,12 @@
 		"historyLoadFailed": "โหลดการสนทนานี้ไม่ได้ ตรวจสอบการเชื่อมต่อแล้วลองอีกครั้ง",
 		"consentCreates": "ตอบตกลงแล้วพนักงานจะถูกสร้างด้วยงานนี้ตามนี้ทุกประการ",
 		"consentAdds": "ตอบตกลงแล้วสิ่งนี้จะถูกเพิ่มเข้าไปในงาน",
-		"fromColleague": "จาก {name}"
+		"fromColleague": "จาก {name}",
+		"storageFull": "{cap, select, none {พื้นที่จัดเก็บของคุณเต็มแล้ว} other {พื้นที่จัดเก็บของคุณเต็มแล้ว ({cap})}} ไฟล์ที่อัปโหลดจะถูกลบ {days, plural, other {# วัน}}หลังจากเพิ่ม",
+		"storageNextFree": "พื้นที่ถัดไปจะว่างในวันที่ {date}",
+		"uploadFailed": "อัปโหลดไฟล์ไม่สำเร็จ — ไม่ได้ส่งข้อความ {reason}",
+		"fileRemoved": "ไฟล์นี้ถูกลบ {days, plural, other {# วัน}}หลังจากอัปโหลด",
+		"notDelivered": "ส่งข้อความไม่ถึง การเชื่อมต่อขาดหาย โปรดส่งอีกครั้ง"
 	},
 	"chatInput": {
 		"placeholder": "ตอบกลับ...",
@@ -456,7 +487,7 @@
 		"recording": "กำลังบันทึก",
 		"holdToRecord": "กดค้างเพื่อบันทึกเสียง",
 		"startVoiceInput": "เริ่มป้อนข้อมูลด้วยเสียง",
-		"ptt": "PTT",
+		"ptt": "กดพูด",
 		"voiceSettings": "การตั้งค่าเสียง",
 		"microphone": "ไมโครโฟน",
 		"noMicrophones": "ไม่พบไมโครโฟน",
@@ -468,7 +499,17 @@
 		"tapToInterrupt": "แตะเพื่อขัดจังหวะ",
 		"mute": "ปิดเสียง",
 		"unmute": "เปิดเสียง",
-		"endConversation": "จบการสนทนา"
+		"endConversation": "จบการสนทนา",
+		"recordClip": "บันทึกคลิป",
+		"clipStarting": "กำลังรอไมโครโฟน",
+		"clipStop": "หยุดและแนบ",
+		"clipLevel": "ระดับเสียงไมโครโฟน",
+		"clipMicBlockedMac": "Nebo ใช้ไมโครโฟนของคุณไม่ได้ อนุญาตได้ใน การตั้งค่าระบบ → ความเป็นส่วนตัวและความปลอดภัย → ไมโครโฟน",
+		"clipMicBlocked": "Nebo ใช้ไมโครโฟนของคุณไม่ได้ อนุญาตได้ในการตั้งค่าความเป็นส่วนตัวของระบบ",
+		"clipNoMic": "ไม่พบไมโครโฟน เชื่อมต่อไมโครโฟนแล้วลองอีกครั้ง",
+		"clipUnsupported": "ไม่สามารถบันทึกเสียงที่นี่ได้",
+		"clipFailed": "บันทึกเสียงไม่สำเร็จ ลองอีกครั้ง",
+		"clipCapReached": "การบันทึกจะหยุดที่ 10 นาที แนบคลิปนี้แล้ว"
 	},
 	"voiceDownload": {
 		"title": "ดาวน์โหลดโมเดลเสียง",
@@ -566,7 +607,21 @@
 		"agent": "พนักงาน",
 		"command": "คำสั่ง",
 		"notConnected": "ไม่ได้เชื่อมต่อ",
-		"keyboardHint": "↑↓ นำทาง · Enter เลือก · Esc ยกเลิก"
+		"keyboardHint": "↑↓ นำทาง · Enter เลือก · Esc ยกเลิก",
+		"category": {
+			"session": "เซสชัน",
+			"model": "โมเดล",
+			"info": "ข้อมูล"
+		},
+		"desc": {
+			"new": "เริ่มการสนทนาใหม่",
+			"clear": "เริ่มใหม่ (ข้อความทั้งหมดยังเก็บไว้)",
+			"compact": "สรุปและล้างข้อความเก่า",
+			"goal": "ทำงานต่อจนกว่าการตรวจจะยืนยันผลลัพธ์สุดท้าย",
+			"model": "แสดงหรือเปลี่ยนโมเดล",
+			"help": "แสดงคำสั่งทั้งหมด",
+			"status": "แสดงสถานะพนักงานและระบบ"
+		}
 	},
 	"dataTable": {
 		"loading": "กำลังโหลด...",
@@ -649,7 +704,7 @@
 			"dataLocalDesc": "บทสนทนา ความทรงจำ และการตั้งค่าทั้งหมดถูกเก็บไว้ในเครื่องของคุณในฐานข้อมูล SQLite ไม่มีข้อมูลถูกส่งไปยังเซิร์ฟเวอร์ของ Nebo",
 			"aiProvider": "การสื่อสารกับผู้ให้บริการ AI",
 			"aiProviderDesc": "เมื่อคุณแชท ข้อความของคุณจะถูกส่งไปยังผู้ให้บริการ AI ที่คุณเลือก (Anthropic, OpenAI หรือ Google) เพื่อประมวลผล นโยบายความเป็นส่วนตัวของพวกเขาจะใช้กับข้อมูลนั้น",
-			"apiKeys": "API Keys",
+			"apiKeys": "คีย์ API",
 			"apiKeysDesc": "API keys ของคุณถูกเก็บไว้ในฐานข้อมูลของเครื่องคุณ ใช้เพื่อยืนยันตัวตนกับผู้ให้บริการ AI เท่านั้น",
 			"systemAccess": "การเข้าถึงระบบ",
 			"systemAccessDesc": "Nebo สามารถเข้าถึงฟีเจอร์ของระบบ (ไฟล์, เชลล์, รายชื่อ ฯลฯ) แต่เฉพาะความสามารถที่คุณเปิดใช้งานอย่างชัดเจนเท่านั้น คุณควบคุมว่าพนักงานทำอะไรได้",
@@ -683,7 +738,7 @@
 			"anthropic": "Anthropic (Claude) - แนะนำ",
 			"openai": "OpenAI (GPT)",
 			"google": "Google (Gemini)",
-			"apiKeyLabel": "API Key",
+			"apiKeyLabel": "คีย์ API",
 			"getKey": "รับ API key",
 			"verifying": "กำลังยืนยัน...",
 			"backToProvider": "← กลับไปเลือกผู้ให้บริการ",
@@ -1237,7 +1292,7 @@
 		"sessionUsage": "ใช้แล้ว {percent}% · รีเซ็ตใน {hours} ชม. {minutes} นาที",
 		"weekly": "รายสัปดาห์",
 		"weeklyUsage": "ใช้แล้ว {percent}% · รีเซ็ต {date}",
-		"contextWindow": "{count} ctx",
+		"contextWindow": "{count} บริบท",
 		"notConnected": "ไม่ได้เชื่อมต่อ",
 		"connectDescription": "เชื่อมต่อบัญชี NeboAI เพื่อใช้โมเดล AI",
 		"cliProviders": "ผู้ให้บริการ CLI",
@@ -1245,7 +1300,7 @@
 		"discover": "ค้นหา",
 		"modelsDetected": "ตรวจพบ {count} โมเดล — ไม่ต้องใช้ API key",
 		"ollamaNotDetected": "ไม่พบ ติดตั้ง Ollama แล้วดึงโมเดลเพื่อเริ่มต้น",
-		"apiKeys": "API Keys",
+		"apiKeys": "คีย์ API",
 		"addProvider": "เพิ่มผู้ให้บริการ",
 		"test": "ทดสอบ",
 		"addKey": "เพิ่ม key",
@@ -1259,10 +1314,10 @@
 			"ollama": "Ollama (ท้องถิ่น)"
 		},
 		"nameLabel": "ชื่อ",
-		"namePlaceholder": "My Anthropic Key",
-		"apiKeyLabel": "API key",
+		"namePlaceholder": "คีย์ Anthropic ของฉัน",
+		"apiKeyLabel": "คีย์ API",
 		"apiKeyPlaceholder": "sk-...",
-		"baseUrlLabel": "Base URL",
+		"baseUrlLabel": "URL หลัก",
 		"baseUrlPlaceholder": "http://localhost:11434",
 		"ollamaHint": "เว้นว่างสำหรับที่อยู่ Ollama เริ่มต้น ไม่ต้องใช้ API key",
 		"adding": "กำลังเพิ่ม...",
@@ -1467,7 +1522,7 @@
 	"settingsStatus": {
 		"title": "สถานะพนักงาน",
 		"description": "ตรวจสอบพนักงานที่เชื่อมต่อและสุขภาพระบบ",
-		"mcpServer": "MCP Server",
+		"mcpServer": "เซิร์ฟเวอร์ MCP",
 		"database": "ฐานข้อมูล",
 		"webSocket": "WebSocket",
 		"uptime": "เวลาทำงาน",
@@ -1777,7 +1832,17 @@
 		"toolCategories": "หมวดเครื่องมือ",
 		"allToolCategories": "ทุกหมวดเครื่องมือ",
 		"moreEmployees": "พนักงานเพิ่มเติม",
-		"moreTools": "เครื่องมือเพิ่มเติม"
+		"moreTools": "เครื่องมือเพิ่มเติม",
+		"pageTitle": "ตลาด - Nebo",
+		"sharedPageTitle": "แชร์แล้ว - ตลาด - Nebo",
+		"searchPageTitle": "ค้นหา — ตลาด",
+		"resume": {
+			"byAuthor": "โดย {author}",
+			"perSeat": "ต่อที่นั่ง",
+			"responsibilities": "หน้าที่รับผิดชอบ",
+			"newHire": "พนักงานใหม่ · จ้างเป็นคนแรก",
+			"meet": "ทำความรู้จัก"
+		}
 	},
 	"commander": {
 		"autoLayout": "จัดเลย์เอาท์อัตโนมัติ",
@@ -1854,7 +1919,9 @@
 		"noChatsYet": "ยังไม่มีแชท เริ่มแชทใหม่ได้เลย",
 		"noRunsYet": "ยังไม่มีการทำงาน",
 		"appBadge": "แอป",
-		"primaryUndeletable": "ผู้ช่วยส่วนตัวของคุณจะได้รับทุกอย่างที่ไม่ได้ส่งถึงพนักงานคนใดโดยเฉพาะ จึงลบไม่ได้ เปลี่ยนชื่อได้ในการตั้งค่าพนักงาน"
+		"primaryUndeletable": "ผู้ช่วยส่วนตัวของคุณจะได้รับทุกอย่างที่ไม่ได้ส่งถึงพนักงานคนใดโดยเฉพาะ จึงลบไม่ได้ เปลี่ยนชื่อได้ในการตั้งค่าพนักงาน",
+		"browseFolders": "เรียกดูโฟลเดอร์",
+		"browseFiles": "เรียกดูไฟล์"
 	},
 	"agentLearning": {
 		"title": "การพัฒนาตนเอง",
@@ -1871,6 +1938,7 @@
 		"viewOnly": "การสนทนานี้ดูได้อย่างเดียว — พนักงานคุยกันที่นี่ ส่วนคุณสั่งงานพวกเขาในแชทของแต่ละคน"
 	},
 	"teams": {
+		"everyoneHint": "ทั้งทีม",
 		"section": "ทีม",
 		"emptyRoster": "ใส่พนักงานตั้งแต่สองคนขึ้นไปไว้ในทีมเดียวกัน แล้วพวกเขาจะใช้การสนทนาเดียวร่วมกัน กด + เพื่อเริ่ม หรือจะบอกพนักงานคนไหนก็ได้",
 		"inTeam": "อยู่ในทีมนี้",
@@ -1945,6 +2013,9 @@
 	},
 	"agentSettings": {
 		"general": "ทั่วไป",
+		"tabWho": "เขาเป็นใคร",
+		"tabWork": "เขาทำอะไร",
+		"developerGroup": "นักพัฒนา",
 		"generalBlurb": "ภาพรวมของพนักงานคนนี้ — สถานะ ทักษะ เวิร์กโฟลว์ และการดูแลรักษา",
 		"identityBlurb": "ชื่อ เสียง สี และสถานะ — วิธีที่พนักงานคนนี้ปรากฏในแอป",
 		"nameLabel": "ชื่อ",
@@ -2129,6 +2200,14 @@
 		"saveCredentialsFailed": "ไม่สามารถบันทึกข้อมูลรับรอง",
 		"signInFailedRetry": "การลงชื่อเข้าใช้ล้มเหลว โปรดลองอีกครั้ง",
 		"startSignInFailed": "ไม่สามารถเริ่มการลงชื่อเข้าใช้สำหรับบัญชีนี้",
+		"signInPopupBlocked": "หน้าต่างเข้าสู่ระบบถูกบล็อก อนุญาตป๊อปอัปสำหรับ Nebo แล้วลองอีกครั้ง",
+		"channelToggleFailed": "อัปเดตช่องทางนี้ไม่ได้ ลองอีกครั้ง",
+		"helpChatFailed": "เปิดแชทช่วยเหลือไม่ได้ ลองอีกครั้ง",
+		"accountsLoadFailed": "โหลดบัญชีไม่ได้ ลองอีกครั้ง",
+		"accountListRefreshFailed": "แนบบัญชีแล้ว แต่รายการไม่รีเฟรช เปิดการตั้งค่าอีกครั้งเพื่อดู",
+		"disconnectFailed": "ยกเลิกการเชื่อมต่อบัญชีนี้ไม่ได้ ลองอีกครั้ง",
+		"claimableLoadFailed": "โหลดหมายเลขโทรศัพท์ของคุณไม่ได้",
+		"tryAgain": "ลองอีกครั้ง",
 		"contextTitle": "สิ่งที่พนักงานคนนี้รู้",
 		"contextDesc": "พนักงานเขียนขึ้นเองจากเลเยอร์อุตสาหกรรมและเลเยอร์บริษัท ทุกครั้งที่สองอย่างนี้เปลี่ยน เขาทำงานจากสิ่งนี้โดยไม่ต้องไปค้นอะไรเพิ่ม",
 		"contextAgainst": "เขียนอ้างอิงกับ {against}",
@@ -2157,7 +2236,19 @@
 		"changeInBotSettings": "เปลี่ยนในการตั้งค่าบอท",
 		"reachManage": "จัดการ",
 		"reachNoPhone": "ยังไม่มีสายโทรศัพท์",
-		"reachNoChannels": "ไม่มีช่องทางที่เปิดอยู่"
+		"reachNoChannels": "ไม่มีช่องทางที่เปิดอยู่",
+		"newCallTreeName": "ผังสายใหม่",
+		"newWorkflowName": "เวิร์กโฟลว์ใหม่",
+		"greetingNodeLabel": "คำทักทาย",
+		"phoneLoadingNumbers": "กำลังโหลดหมายเลขของคุณ…",
+		"phoneNoFreeNumbers": "ไม่มีหมายเลขว่างให้แนบ ซื้อหมายเลข (หรือพักหมายเลขจากพนักงานคนอื่น) ที่ {link} แล้วกลับมาที่นี่",
+		"phoneWhichNumber": "พนักงานคนนี้ควรรับสายจากหมายเลขไหน?",
+		"phoneNumberParked": "พักไว้",
+		"phoneNumberUnassigned": "ยังไม่ได้กำหนด",
+		"phoneLineName": "ชื่อสาย (ไม่บังคับ)",
+		"phoneLineNamePlaceholder": "แผนกต้อนรับ, ฝ่ายบริการ, สายภาษาสเปน…",
+		"phoneAttaching": "กำลังแนบหมายเลขกับพนักงานคนนี้…",
+		"phoneAttachNumber": "แนบหมายเลข"
 	},
 	"agentConfigure": {
 		"inputs": "ค่าอินพุต",
@@ -2234,7 +2325,10 @@
 		"factDate": "วันที่",
 		"factAttachment": "ไฟล์แนบ",
 		"factVia": "ผ่าน",
-		"interrupted": "ถูกขัดจังหวะ"
+		"interrupted": "ถูกขัดจังหวะ",
+		"tokensShort": "{count} โทเค็น",
+		"underOneSecond": "<1 วิ",
+		"triggerKind": "{kind, select, schedule {ตามตารางเวลา} event {เหตุการณ์} heartbeat {ฮาร์ทบีท} manual {ด้วยตนเอง} watch {เฝ้าดู} webhook {เว็บฮุก} call {สายโทร} retry {ลองใหม่} other {{kind}}}"
 	},
 	"automations": {
 		"title": "ระบบอัตโนมัติ",
@@ -2272,7 +2366,12 @@
 		"every8h": "ทุก 8 ชั่วโมง",
 		"every24h": "ทุก 24 ชั่วโมง",
 		"everyInterval": "ทุก {interval}",
-		"whenFires": "เมื่อ {event} เกิดขึ้น"
+		"whenFires": "เมื่อ {event} เกิดขึ้น",
+		"anEvent": "เหตุการณ์",
+		"watching": "เฝ้าดู: {source}",
+		"aPlugin": "ปลั๊กอิน",
+		"manualTrigger": "ทริกเกอร์ด้วยตนเอง",
+		"onEventNamed": "เมื่อ {event}"
 	},
 	"newBot": {
 		"browseMarketplace": "เรียกดูตลาด",
@@ -2329,7 +2428,18 @@
 		"approvalGate": {
 			"batchHeadline": "{n} การกระทำในขั้นตอนเดียวต้องให้คุณอนุมัติ",
 			"goalHeadline": "ตกลงเป้าหมายนี้ไหม? งานจะดำเนินต่อจนกว่าการตรวจจะยืนยันว่าสำเร็จ",
-			"yourAgent": "พนักงานของคุณ"
+			"yourAgent": "พนักงานของคุณ",
+			"operation": "{action, select, create {สร้าง{noun}} send {ส่ง{noun}} update {อัปเดต{noun}} status {เปลี่ยนสถานะของ{noun}} apply {ใช้{noun}} record {บันทึก{noun}} schedule {กำหนดเวลา{noun}} publish {เผยแพร่{noun}} respond {ตอบกลับ{noun}} reply {ตอบ{noun}} upsert {บันทึก{noun}} attach {แนบ{noun}} write {เขียน{noun}} remove {ลบ{noun}} other {{verb} {noun}}}",
+			"resource": {
+				"billpayment": "การชำระบิล",
+				"creditmemo": "ใบลดหนี้",
+				"journalentry": "รายการบันทึกบัญชี",
+				"purchaseorder": "ใบสั่งซื้อ",
+				"opportunity": "ดีล",
+				"company": "ไฟล์บริษัท — วิธีดำเนินงานของธุรกิจนี้",
+				"industry": "ไฟล์อุตสาหกรรม — วิธีการทำงานของสายงานนี้",
+				"franchise": "ไฟล์แฟรนไชส์ — ข้อกำหนดของแบรนด์"
+			}
 		},
 		"approvalModal": {
 			"runShellCommand": "รันคำสั่งเชลล์",
@@ -2402,8 +2512,8 @@
 		"showIntervalEvents": "แสดงเหตุการณ์ตามช่วงเวลา",
 		"today": "วันนี้",
 		"noon": "เที่ยง",
-		"am": "AM",
-		"pm": "PM",
+		"am": "ก่อนเที่ยง",
+		"pm": "หลังเที่ยง",
 		"everyInterval": "ทุก {interval}",
 		"moreCount": "+{count} เพิ่มเติม",
 		"recurrenceDaily": "ทุกวัน",
@@ -2446,7 +2556,20 @@
 		"narrowSat": "ส",
 		"pageTitle": "ตารางเวลา - Nebo",
 		"perWeek": "{count}/สัปดาห์",
-		"workflowBuilderTitle": "{name} — เครื่องมือสร้างเวิร์กโฟลว์"
+		"workflowBuilderTitle": "{name} — เครื่องมือสร้างเวิร์กโฟลว์",
+		"everyDay": "ทุกวัน",
+		"weekends": "วันเสาร์-อาทิตย์",
+		"weekdayPlural": "{day, select, sun {ทุกวันอาทิตย์} mon {ทุกวันจันทร์} tue {ทุกวันอังคาร} wed {ทุกวันพุธ} thu {ทุกวันพฤหัสบดี} fri {ทุกวันศุกร์} sat {ทุกวันเสาร์} other {{day}}}",
+		"clockTime": "{hour}:{minute} {period}",
+		"hourOnly": "{hour} {period}",
+		"midnight": "เที่ยงคืน",
+		"cronEveryMinutes": "{n, plural, one {ทุกนาที} other {ทุก # นาที}}",
+		"cronEveryHours": "{n, plural, one {ทุกชั่วโมง} other {ทุก # ชั่วโมง}}",
+		"cronEveryHoursAt": "{n, plural, one {ทุกชั่วโมงที่นาที :{minute}} other {ทุก # ชั่วโมงที่นาที :{minute}}}",
+		"cronDailyAt": "ทุกวันเวลา {time}",
+		"cronDaysAt": "{days} เวลา {time}",
+		"cronMonthlyAt": "ทุกเดือนวันที่ {day, selectordinal, other {#}} เวลา {time}",
+		"listSeparator": ", "
 	},
 	"neboShell": {
 		"tabs": {
@@ -2491,7 +2614,26 @@
 	},
 	"userMenu": {
 		"aboutNebo": "เกี่ยวกับ Nebo",
-		"planSuffix": "แผน {plan}"
+		"planSuffix": "แผน {plan}",
+		"provideFeedback": "ส่งข้อเสนอแนะ"
+	},
+	"feedback": {
+		"title": "ส่งข้อเสนอแนะ",
+		"lede": "บอกทีม NeboAI ว่าอะไรใช้ได้ดี อะไรยังไม่ดี หรือคุณอยากได้อะไร",
+		"message": "ข้อความ",
+		"screenshots": "ภาพหน้าจอหรือรูปภาพ (ไม่บังคับ)",
+		"addScreenshot": "เพิ่มภาพหน้าจอ",
+		"remove": "ลบ {name}",
+		"diagnostics": "แนบข้อมูลการวินิจฉัย",
+		"diagnosticsHelp": "เวอร์ชันแอปและบอท แพลตฟอร์ม รหัสบอท และหน้าจอนี้ ไม่รวมรหัสผ่านหรือโทเค็นการเข้าสู่ระบบ",
+		"send": "ส่ง",
+		"sending": "กำลังส่ง",
+		"sent": "ขอบคุณ — ส่งถึงทีม NeboAI แล้ว",
+		"failed": "ส่งข้อเสนอแนะไม่สำเร็จ ลองอีกครั้ง",
+		"needMessage": "เขียนข้อความก่อน",
+		"messageTooLong": "ข้อความต้องไม่เกิน {max} ตัวอักษร",
+		"tooManyScreenshots": "แนบได้ไม่เกิน {max, plural, other {# ภาพหน้าจอ}}",
+		"imagesOnly": "แนบได้เฉพาะรูปภาพเท่านั้น"
 	},
 	"workflowCanvas": {
 		"noWorkflows": "ไม่มีเวิร์กโฟลว์ให้แสดง",
@@ -2632,7 +2774,18 @@
 		"gettingReady": "กำลังเตรียม {name}…",
 		"skillsAndTools": "ทักษะและเครื่องมือ",
 		"hireFailedTitle": "ไม่สามารถจ้างให้เสร็จสิ้นได้",
-		"hireFailed": "จ้าง {name} ไม่สำเร็จ ลองอีกครั้ง"
+		"hireFailed": "จ้าง {name} ไม่สำเร็จ ลองอีกครั้ง",
+		"codeStatus": {
+			"nebo": "กำลังเชื่อมต่อกับ NeboAI…",
+			"skill": "กำลังติดตั้งทักษะ…",
+			"workflow": "กำลังติดตั้งเวิร์กโฟลว์…",
+			"agent": "กำลังติดตั้งพนักงาน…",
+			"loop": "กำลังเข้าร่วมลูป…",
+			"plugin": "กำลังติดตั้งปลั๊กอิน…",
+			"app": "กำลังติดตั้งแอป…",
+			"collection": "กำลังติดตั้งคอลเลกชัน…",
+			"connection": "กำลังเพิ่มการเชื่อมต่อ MCP…"
+		}
 	},
 	"activity": {
 		"pageTitle": "กิจกรรม - Nebo",
@@ -2651,7 +2804,8 @@
 		"openAppHint": "เปิดแอป",
 		"openApp": "เปิดแอป",
 		"runs": "การทำงาน",
-		"memory": "ความทรงจำ"
+		"memory": "ความทรงจำ",
+		"appError": "แอปเกิดข้อผิดพลาด ({status})"
 	},
 	"pricing": {
 		"pageTitle": "เลือกแผนของคุณ - Nebo",
@@ -2664,7 +2818,7 @@
 		"current": "ปัจจุบัน",
 		"perMonth": "/เดือน",
 		"billedAnnually": "{amount} เรียกเก็บรายปี",
-		"doubleUp": "Double Up",
+		"doubleUp": "ดับเบิลอัป",
 		"doubleUpDesc": "ทีม AI เดิม แต่ได้มากขึ้นเป็นสองเท่า",
 		"boostPerMonth": "+{amount}/เดือน",
 		"currentPlan": "แผนปัจจุบัน",
@@ -2776,8 +2930,8 @@
 		"oauthNote": "เซิร์ฟเวอร์นี้ใช้ OAuth คุณจะถูกนำไปยังหน้าอนุญาตหลังจากเพิ่ม",
 		"preRegisteredTitle": "ไคลเอนต์ที่ลงทะเบียนไว้ล่วงหน้า (ไม่บังคับ)",
 		"preRegisteredHint": "สำหรับเซิร์ฟเวอร์ที่ไม่รองรับการลงทะเบียนอัตโนมัติ (เช่น API ของ Google) — วางไคลเอนต์ OAuth ที่คุณสร้างไว้กับผู้ให้บริการนั้น",
-		"oauthClientId": "Client ID",
-		"oauthClientSecret": "Client Secret",
+		"oauthClientId": "รหัสไคลเอนต์",
+		"oauthClientSecret": "ข้อมูลลับของไคลเอนต์",
 		"oauthScopes": "ขอบเขตสิทธิ์",
 		"oauthScopesPlaceholder": "ขอบเขตหนึ่ง ขอบเขตสอง (คั่นด้วยช่องว่าง)",
 		"oauthAuthEndpoint": "ปลายทางการให้สิทธิ์",
@@ -2811,7 +2965,10 @@
 		"checkEvery": "ตรวจทุก",
 		"hours6": "6 ชั่วโมง",
 		"history": "ประวัติ",
-		"title": "อัปเดตเครื่องมือ"
+		"title": "อัปเดตเครื่องมือ",
+		"onLatest": "คุณใช้เวอร์ชันล่าสุดอยู่แล้ว",
+		"checkFailed": "ตรวจหาอัปเดตไม่ได้",
+		"updateFailed": "อัปเดตล้มเหลว"
 	},
 	"inbox": {
 		"title": "กล่องข้อความ",
@@ -2842,15 +2999,27 @@
 		"failedAt": "ล้มเหลวตอน \"{activity}\"",
 		"steps": "กำลังทำอะไรอยู่",
 		"output": "ผลลัพธ์",
-		"recordGone": "บันทึกการทำงานนั้นไม่มีอยู่แล้ว มันถูกลบไปพร้อมพนักงานเจ้าของ จึงเหลือเพียงการแจ้งเตือนนี้"
+		"recordGone": "บันทึกการทำงานนั้นไม่มีอยู่แล้ว มันถูกลบไปพร้อมพนักงานเจ้าของ จึงเหลือเพียงการแจ้งเตือนนี้",
+		"revert": "ย้อนกลับ",
+		"reverted": "ย้อนกลับแล้ว"
 	},
 	"voice": {
 		"startConversation": "การสนทนาด้วยเสียง",
+		"reconnecting": "กำลังกลับเข้าสาย…",
 		"consentTitle": "เสียงใช้บริการคลาวด์",
 		"consentBody": "การสนทนาด้วยเสียงจะสตรีมเสียงจากไมโครโฟนของคุณไปยังบริการเสียงบนคลาวด์ เพื่อประมวลผลระหว่างการโทร เสียงจะออกจากคอมพิวเตอร์เครื่องนี้ การพิมพ์ในแชทยังคงอยู่ในเครื่องเช่นเดิม",
 		"consentAccept": "เปิดใช้เสียง",
 		"consentDecline": "ยังไม่ใช่ตอนนี้",
-		"cloudIndicator": "กำลังสตรีมเสียงไปยังคลาวด์"
+		"cloudIndicator": "กำลังสตรีมเสียงไปยังคลาวด์",
+		"talkTo": "คุยกับ {name}",
+		"isSpeaking": "{name} กำลังพูด",
+		"callEnded": "การโทรสิ้นสุดแล้ว",
+		"tryAgain": "ลองอีกครั้ง",
+		"onAnotherCall": "กำลังคุยสายกับพนักงานคนอื่น",
+		"callLost": "สายหลุดและกลับเข้าสายไม่ได้ เริ่มโทรใหม่อีกครั้ง",
+		"callEndedStartAgain": "การโทรสิ้นสุดแล้ว เริ่มโทรใหม่อีกครั้ง",
+		"needsConsent": "การสนทนาด้วยเสียงจะส่งเสียงจากไมโครโฟนของคุณไปยังบริการเสียงบนคลาวด์เพื่อประมวลผล เปิดใช้งานในแผงเสียงเพื่อให้ความยินยอม",
+		"startFailed": "เริ่มการโทรไม่ได้ ลองอีกครั้ง"
 	},
 	"flows": {
 		"none": "ยังไม่มีโฟลว์",
@@ -2865,7 +3034,15 @@
 		"overlapBufferOne": "ทำงานหนึ่งครั้งเมื่อเสร็จ",
 		"overlapAllowAll": "ทำงานต่อไป",
 		"deleteReminderTitle": "ลบ \"{name}\" ไหม",
-		"deleteReminderBody": "งานตามตารางนี้จะหยุดรันและถูกลบ การทำงานก่อนหน้ายังอยู่ในประวัติ"
+		"deleteReminderBody": "งานตามตารางนี้จะหยุดรันและถูกลบ การทำงานก่อนหน้ายังอยู่ในประวัติ",
+		"triggerOnEvent": "เมื่อ {event}",
+		"triggerWatch": "เฝ้าดู: {target}",
+		"triggerWatchPlugin": "เฝ้าดู: ปลั๊กอิน",
+		"triggerManual": "ทริกเกอร์ด้วยตนเอง",
+		"scheduleTooSpecific": "ตารางเวลานี้ละเอียดเกินกว่าที่ตัวแก้ไขแบบง่ายจะรองรับได้",
+		"askSetupPrompt": "ตั้งค่าโฟลว์ใหม่ให้ฉัน: ",
+		"everyNHours": "ทุก N ชั่วโมง",
+		"everyNMinutes": "ทุก N นาที"
 	},
 	"christen": {
 		"title": "ตั้งชื่อพนักงานคนแรกของคุณ",
@@ -2887,7 +3064,27 @@
 		"working": "กำลังดูว่าต้องใช้อะไรบ้าง…",
 		"willDo": "{name} จะ:",
 		"thisEmployee": "พนักงานคนนี้",
-		"removeItem": "นำ {item} ออก"
+		"removeItem": "นำ {item} ออก",
+		"hireFromApps": "จ้างจากแอปอื่น",
+		"linkedLede": "เขาจะทำงานต่อบนคอมพิวเตอร์ที่เขาทำงานอยู่",
+		"thisComputer": "คอมพิวเตอร์เครื่องนี้",
+		"offline": "ออฟไลน์",
+		"linkedFailed": "จ้างจาก {bot} ไม่สำเร็จ ลองอีกครั้ง",
+		"onYourTeam": "อยู่ในทีมของคุณ",
+		"linkedLooking": "กำลังค้นหาแอป…",
+		"linkedHireNew": "จ้างคนใหม่",
+		"linkedConnect": "เชื่อมต่อเอเจนต์ของคุณ",
+		"linkedRunning": "ทำงานอยู่ {count}",
+		"nameYour": "ตั้งชื่อ {app} ของคุณ",
+		"youAlreadyHave": "คุณมีอยู่แล้ว:",
+		"nameTaken": "คุณมีพนักงานชื่อ {name} อยู่แล้ว",
+		"linkedWhere": "ควรให้ทำงานบนคอมพิวเตอร์เครื่องไหน?",
+		"linkedPickAgent": "เอเจนต์ {app} ตัวไหน?",
+		"linkedModeTitle": "ทำอะไรได้บ้างโดยไม่ต้องถาม?",
+		"linkedModeAutomaticDesc": "แก้ไขไฟล์ในโฟลเดอร์ของตัวเองได้เอง ถามก่อนทำอย่างอื่น",
+		"linkedModeAskDesc": "ถามคุณก่อนเปลี่ยนแปลงสิ่งใด",
+		"linkedModePlanDesc": "อ่านและวางแผน ไม่เปลี่ยนแปลงอะไร",
+		"linkedModeFullAccessDesc": "ทำทุกอย่างบนคอมพิวเตอร์เครื่องนี้โดยไม่ต้องถาม"
 	},
 	"runLimit": {
 		"title": "ขีดจำกัดค่าใช้จ่ายต่อการทำงานหนึ่งครั้ง",
@@ -3101,5 +3298,526 @@
 		"unreviewed": "ยังไม่ได้ตรวจสอบ",
 		"loadMore": "แสดงเพิ่มเติม",
 		"addJobEdit": "เพิ่มในงาน"
+	},
+	"workflow": {
+		"addNode": "เพิ่มโหนด",
+		"deleteNode": "ลบโหนด",
+		"deleteWorkflow": "ลบเวิร์กโฟลว์",
+		"removeItem": "ลบ {name} ออก",
+		"activityCount": "{count, plural, other {# กิจกรรม}}",
+		"stepCount": "{count, plural, other {# ขั้นตอน}}",
+		"triggerTypes": {
+			"schedule": "ตารางเวลา",
+			"heartbeat": "ฮาร์ทบีท",
+			"event": "เหตุการณ์",
+			"watch": "เฝ้าดู",
+			"manual": "ด้วยตนเอง"
+		},
+		"branch": {
+			"true": "จริง",
+			"false": "เท็จ",
+			"eachItem": "แต่ละรายการ",
+			"done": "เสร็จสิ้น"
+		},
+		"types": {
+			"greeting": {
+				"label": "คำทักทาย",
+				"description": "สิ่งที่สายนี้พูดเมื่อรับสาย",
+				"params": {
+					"text": {
+						"label": "คำทักทาย",
+						"description": "พูดตามนี้ทุกคำเมื่อสายเชื่อมต่อ",
+						"placeholder": "ขอบคุณที่โทรหา Miller Dental! มีอะไรให้ช่วยไหมคะ?"
+					}
+				}
+			},
+			"intent": {
+				"label": "เจตนา",
+				"description": "งานหนึ่งอย่างที่สายนี้รับผิดชอบ พร้อมเครื่องมือที่อนุญาต",
+				"params": {
+					"name": {
+						"label": "ชื่อเจตนา",
+						"description": "รหัสสั้นที่ตัวกำหนดเส้นทางใช้ (ไม่ซ้ำกันในแต่ละผัง)"
+					},
+					"description": {
+						"label": "เมื่อผู้โทรหมายถึงสิ่งนี้",
+						"placeholder": "ผู้โทรต้องการนัดหมาย เลื่อนนัด หรือยกเลิกนัด"
+					},
+					"tools": {
+						"label": "เครื่องมือที่อนุญาต",
+						"description": "สิทธิ์ tool:resource คั่นด้วยจุลภาค สำหรับเจตนานี้เท่านั้น"
+					},
+					"workflows": {
+						"label": "เวิร์กโฟลว์ที่อนุญาต",
+						"description": "ชื่อเวิร์กโฟลว์ของพนักงานนี้ที่เจตนานี้เรียกใช้ได้ คั่นด้วยจุลภาค"
+					},
+					"plugins": {
+						"label": "ปลั๊กอินที่อนุญาต",
+						"description": "slug ของปลั๊กอิน คั่นด้วยจุลภาค"
+					},
+					"mcp": {
+						"label": "เซิร์ฟเวอร์ MCP ที่อนุญาต",
+						"description": "ชื่อเซิร์ฟเวอร์ MCP ที่เชื่อมต่อแล้ว คั่นด้วยจุลภาค"
+					}
+				}
+			},
+			"transfer": {
+				"label": "โอนสายให้คน",
+				"description": "ส่งต่อสายสดไปยังหมายเลขโอนสายของสายนี้",
+				"params": {
+					"when": {
+						"label": "โอนสายเมื่อไร",
+						"placeholder": "ผู้โทรขอคุยกับคน ไม่พอใจ หรือมีเหตุฉุกเฉิน"
+					},
+					"to": {
+						"label": "เชื่อมต่อไปยัง",
+						"description": "ผู้โทรจะได้ยินว่ากำลังโอนสายไปหาใคร ตัวหมายเลขยังอยู่ในการตั้งค่าสาย",
+						"placeholder": "ผู้จัดการสำนักงานของเรา"
+					}
+				}
+			},
+			"takeMessage": {
+				"label": "รับฝากข้อความ",
+				"description": "บันทึกข้อความถึงเจ้าของ (ทางสำรอง)",
+				"params": {
+					"fields": {
+						"label": "สิ่งที่ต้องบันทึก",
+						"placeholder": "ชื่อ หมายเลข เหตุผลที่โทร เวลาที่สะดวกให้โทรกลับ"
+					}
+				}
+			},
+			"disclosures": {
+				"label": "แจ้งได้",
+				"description": "ข้อมูลที่สายนี้แจ้งได้ทันทีโดยไม่ต้องค้นหา",
+				"params": {
+					"text": {
+						"label": "ข้อมูลที่อนุมัติแล้ว",
+						"description": "ข้อมูลสาธารณะที่เจ้าของอนุมัติสำหรับสายนี้ — เวลาทำการ ที่อยู่ พื้นที่ให้บริการ ราคาเริ่มต้น ห้ามใส่ข้อมูลเฉพาะของลูกค้าหรือบัญชีที่นี่ ข้อมูลเหล่านั้นต้องค้นหาผ่านการตรวจสอบ",
+						"placeholder": "เปิดจันทร์–ศุกร์ 8–17 น. ตั้งอยู่ที่ 123 Main St. ทำความสะอาดฟันเริ่มต้น $120"
+					}
+				}
+			},
+			"custom": {
+				"label": "กำหนดเอง",
+				"description": "กำหนดขั้นตอนและทักษะด้วยตนเอง"
+			},
+			"research": {
+				"label": "ค้นคว้า",
+				"description": "ค้นหาบนเว็บ วิเคราะห์ และสังเคราะห์",
+				"params": {
+					"depth": {
+						"label": "ความลึกของการค้นคว้า",
+						"options": {
+							"quick": "เร็ว (2-5 นาที)",
+							"standard": "มาตรฐาน (5-10 นาที)",
+							"deep": "เชิงลึก (10-20 นาที)"
+						}
+					},
+					"sources": {
+						"label": "ประเภทแหล่งข้อมูล",
+						"description": "ประเภทแหล่งข้อมูลที่จะค้นหา คั่นด้วยจุลภาค",
+						"placeholder": "web, academic, news"
+					}
+				}
+			},
+			"email": {
+				"label": "ส่งอีเมล",
+				"description": "เขียนและส่งอีเมล",
+				"params": {
+					"to": {
+						"label": "ถึง",
+						"description": "อีเมลผู้รับ (หรือใช้ข้อมูลจากขั้นก่อนหน้า)"
+					},
+					"subject": {
+						"label": "เทมเพลตหัวเรื่อง"
+					}
+				}
+			},
+			"notify": {
+				"label": "แจ้งเตือน",
+				"description": "ส่งการแจ้งเตือนไปยังช่องทาง",
+				"params": {
+					"channel": {
+						"label": "ช่องทาง",
+						"options": {
+							"email": "อีเมล",
+							"webhook": "เว็บฮุก"
+						}
+					},
+					"target": {
+						"label": "ปลายทาง",
+						"description": "ชื่อช่อง อีเมล หรือ URL ของเว็บฮุก",
+						"placeholder": "#general หรือ user@example.com"
+					}
+				}
+			},
+			"code": {
+				"label": "รันโค้ด",
+				"description": "เรียกใช้โค้ดสั้นๆ",
+				"params": {
+					"language": {
+						"label": "ภาษา"
+					},
+					"code": {
+						"label": "โค้ด",
+						"description": "โค้ดที่จะเรียกใช้"
+					}
+				}
+			},
+			"condition": {
+				"label": "เงื่อนไข",
+				"description": "แยกเส้นทางแบบ ถ้า/มิฉะนั้น",
+				"params": {
+					"expression": {
+						"label": "นิพจน์เงื่อนไข",
+						"description": "นิพจน์ JavaScript — ค่าจริงไปทางแยก จริง ค่าเท็จไปทางแยก เท็จ"
+					},
+					"mode": {
+						"label": "โหมดการประเมิน",
+						"options": {
+							"expression": "นิพจน์",
+							"contains": "ข้อมูลมีค่า",
+							"exists": "มีฟิลด์อยู่",
+							"regex": "ตรงกับ Regex"
+						}
+					}
+				}
+			},
+			"loop": {
+				"label": "ลูป",
+				"description": "วนซ้ำตามรายการ",
+				"params": {
+					"source": {
+						"label": "แหล่งรายการ",
+						"description": "พาธไปยังอาร์เรย์ที่จะวนซ้ำ",
+						"placeholder": "data.items หรือ data.emails"
+					},
+					"maxIterations": {
+						"label": "จำนวนรอบสูงสุด",
+						"description": "ขีดจำกัดความปลอดภัยเพื่อป้องกันการวนซ้ำไม่สิ้นสุด"
+					}
+				}
+			},
+			"wait": {
+				"label": "รอ",
+				"description": "หยุดการทำงานชั่วคราว",
+				"params": {
+					"duration": {
+						"label": "ระยะเวลารอ",
+						"options": {
+							"5s": "5 วินาที",
+							"30s": "30 วินาที",
+							"1m": "1 นาที",
+							"5m": "5 นาที",
+							"15m": "15 นาที",
+							"1h": "1 ชั่วโมง",
+							"custom": "กำหนดเอง"
+						}
+					},
+					"waitUntil": {
+						"label": "หรือรอจนกว่า",
+						"description": "ทำงานต่อเมื่อเหตุการณ์นี้เกิดขึ้น (เว้นว่างไว้เพื่อรอตามระยะเวลา)",
+						"placeholder": "เช่น event:approval.received"
+					}
+				}
+			},
+			"agent": {
+				"label": "พนักงาน",
+				"description": "มอบหมายให้พนักงานคนอื่น",
+				"params": {
+					"agentId": {
+						"label": "พนักงาน",
+						"description": "พนักงานที่จะมอบหมายงานนี้ให้"
+					},
+					"instructions": {
+						"label": "คำสั่ง",
+						"description": "แทนที่หรือเสริมบุคลิกเริ่มต้นของพนักงาน",
+						"placeholder": "คำสั่งเฉพาะสำหรับพนักงานที่ได้รับมอบหมาย..."
+					}
+				}
+			},
+			"connector": {
+				"label": "ตัวเชื่อมต่อ",
+				"description": "ใช้การเชื่อมต่อ MCP",
+				"params": {
+					"serverId": {
+						"label": "เซิร์ฟเวอร์ MCP",
+						"description": "เซิร์ฟเวอร์ MCP ที่เชื่อมต่อแล้วที่จะใช้"
+					},
+					"tool": {
+						"label": "เครื่องมือ",
+						"description": "เครื่องมือที่จะเรียกใช้บนเซิร์ฟเวอร์ MCP",
+						"placeholder": "เช่น read_file, send_message"
+					},
+					"input": {
+						"label": "อินพุต",
+						"description": "อินพุต JSON สำหรับเครื่องมือ (รองรับเทมเพลต '{{'data.field'}}')"
+					}
+				}
+			},
+			"http": {
+				"label": "คำขอ HTTP",
+				"description": "เรียก API ผ่าน HTTP",
+				"params": {
+					"method": {
+						"label": "เมธอด"
+					},
+					"url": {
+						"label": "URL"
+					},
+					"body": {
+						"label": "เนื้อหาคำขอ",
+						"description": "เนื้อหา JSON สำหรับคำขอ POST/PUT/PATCH"
+					},
+					"headers": {
+						"label": "ส่วนหัว",
+						"description": "หนึ่งส่วนหัวต่อบรรทัด (key: value)"
+					}
+				}
+			},
+			"decide": {
+				"label": "ตัดสินใจ",
+				"description": "จัดประเภทหรือประเมินข้อมูลด้วยคำถามแบบมีชนิด",
+				"params": {
+					"state": {
+						"label": "สถานะ",
+						"description": "พาธข้อมูลที่จะประเมิน (inputs.*, item, nodes.'<'id>.*)"
+					},
+					"questions": {
+						"label": "คำถาม",
+						"description": "ออบเจ็กต์ JSON ของคำถามแบบมีชนิด (choice, score, noul) โหนดเงื่อนไขจะกำหนดเส้นทางตาม nodes.'<'id>.'<'question>.choice และ .confidence"
+					},
+					"default": {
+						"label": "คำตอบเริ่มต้น",
+						"description": "คำตอบที่ใช้เมื่อตัดสินใจไม่ได้: ตัวเลือกสำหรับ choice ระดับสำหรับ score และ true หรือ false สำหรับ noul จากนั้นโหนดจะตั้งค่า nodes.'<'id>.defaulted"
+					}
+				}
+			},
+			"transform": {
+				"label": "แปลงข้อมูล",
+				"description": "ปรับรูปแบบหรือกรองข้อมูล",
+				"params": {
+					"operation": {
+						"label": "การดำเนินการ",
+						"options": {
+							"map": "Map — แปลงแต่ละรายการ",
+							"filter": "Filter — เก็บรายการที่ตรงกัน",
+							"reduce": "Reduce — รวมเป็นค่าเดียว",
+							"pick": "Pick — ดึงเฉพาะฟิลด์ที่ต้องการ",
+							"template": "Template — จัดรูปแบบเป็นข้อความ"
+						}
+					},
+					"expression": {
+						"label": "นิพจน์",
+						"description": "นิพจน์การแปลงข้อมูล"
+					}
+				}
+			}
+		},
+		"catalog": {
+			"searchPlaceholder": "ค้นหาโหนด...",
+			"noMatch": "ไม่มีโหนดที่ตรงกับ \"{query}\"",
+			"toolsAvailable": "{count, plural, other {มีเครื่องมือ # รายการ}}",
+			"categories": {
+				"triggers": "ทริกเกอร์",
+				"activities": "กิจกรรม",
+				"callTree": "ผังสาย",
+				"flowControl": "ควบคุมโฟลว์",
+				"connectors": "ตัวเชื่อมต่อ (MCP)",
+				"agents": "พนักงาน",
+				"output": "เอาต์พุต"
+			},
+			"items": {
+				"triggerSchedule": {
+					"label": "ตารางเวลา",
+					"desc": "ทำงานตามเวลาที่กำหนด"
+				},
+				"triggerEvent": {
+					"label": "เหตุการณ์",
+					"desc": "ตอบสนองต่อเหตุการณ์"
+				},
+				"triggerHeartbeat": {
+					"label": "ฮาร์ทบีท",
+					"desc": "ทำงานตามช่วงเวลา"
+				},
+				"triggerManual": {
+					"label": "ด้วยตนเอง",
+					"desc": "ทำงานเมื่อสั่ง"
+				},
+				"activityCustom": {
+					"label": "กิจกรรมกำหนดเอง",
+					"desc": "กำหนดขั้นตอนและทักษะ"
+				},
+				"activityResearch": {
+					"label": "ค้นคว้า",
+					"desc": "ค้นหาบนเว็บและวิเคราะห์"
+				},
+				"activityEmail": {
+					"label": "ส่งอีเมล",
+					"desc": "เขียนและส่งอีเมล"
+				},
+				"activityNotify": {
+					"label": "แจ้งเตือน",
+					"desc": "ส่งการแจ้งเตือน"
+				},
+				"activityCode": {
+					"label": "รันโค้ด",
+					"desc": "เรียกใช้โค้ดสั้นๆ"
+				},
+				"activityHttp": {
+					"label": "คำขอ HTTP",
+					"desc": "เรียก API"
+				},
+				"activityDecide": {
+					"label": "ตัดสินใจ",
+					"desc": "จัดประเภทหรือประเมินข้อมูล"
+				},
+				"activityTransform": {
+					"label": "แปลงข้อมูล",
+					"desc": "ปรับรูปแบบหรือกรองข้อมูล"
+				},
+				"activityGreeting": {
+					"label": "คำทักทาย",
+					"desc": "สิ่งที่สายนี้พูดเมื่อรับสาย"
+				},
+				"activityIntent": {
+					"label": "เจตนา",
+					"desc": "งานหนึ่งอย่าง + เครื่องมือที่อนุญาต"
+				},
+				"activityTransfer": {
+					"label": "โอนสายให้คน",
+					"desc": "ส่งต่อสายสด — ระบุว่าโอนไปหาใคร"
+				},
+				"activityTakeMessage": {
+					"label": "รับฝากข้อความ",
+					"desc": "บันทึกข้อความ (ทางสำรอง)"
+				},
+				"activityDisclosures": {
+					"label": "แจ้งได้",
+					"desc": "ข้อมูลที่สายนี้แจ้งได้ทันที (เวลาทำการ ที่อยู่ ราคา)"
+				},
+				"flowCondition": {
+					"label": "เงื่อนไข",
+					"desc": "แยกเส้นทางแบบ ถ้า/มิฉะนั้น"
+				},
+				"flowLoop": {
+					"label": "ลูป",
+					"desc": "วนซ้ำตามรายการ"
+				},
+				"flowWait": {
+					"label": "รอ",
+					"desc": "หยุดชั่วคราวหรือรอเหตุการณ์"
+				},
+				"emit": {
+					"label": "ส่งเหตุการณ์",
+					"desc": "ประกาศเหตุการณ์เมื่อเสร็จสิ้น"
+				}
+			}
+		},
+		"eventSources": {
+			"label": "แหล่งเหตุการณ์",
+			"searchPlaceholder": "พิมพ์เพื่อค้นหาแหล่ง...",
+			"hint": "พิมพ์เพื่อค้นหาแหล่งที่รู้จัก กด Enter เพื่อเพิ่ม ใช้ชื่อกำหนดเองและไวลด์การ์ด (email.*) ได้เช่นกัน"
+		},
+		"flow": {
+			"triggerManual": "ทำงานเมื่อคุณเริ่ม",
+			"triggerSchedule": "ตามตารางเวลา",
+			"triggerEventAny": "เมื่อมีเหตุการณ์เกิดขึ้น",
+			"triggerWatch": "เฝ้าดู {name}",
+			"triggerWatchAny": "เฝ้าดูปลั๊กอิน",
+			"applying": "กำลังปรับใช้…",
+			"go": "ไป",
+			"tellAi": "บอก AI ว่าต้องเปลี่ยนอะไร",
+			"tellAiEllipsis": "บอก AI ว่าต้องเปลี่ยนอะไร…",
+			"badgeExact": "ตายตัว",
+			"badgeAgent": "พนักงาน",
+			"emptyCode": "(ว่าง)",
+			"stepPlaceholder": "ขั้นตอนนี้ควรทำอะไร?",
+			"changeStep": "เปลี่ยน \"{name}\"…",
+			"forEach": "สำหรับแต่ละ{item}",
+			"loopItemDefault": "รายการ",
+			"loopEmpty": "ยังไม่มีอะไรในลูปนี้",
+			"pathDefault": "เส้นทาง",
+			"pathEmpty": "เส้นทางว่าง",
+			"addStepHere": "เพิ่มขั้นตอนที่นี่",
+			"connected": "{name} เชื่อมต่อแล้ว",
+			"notConnected": "{name} ยังไม่ได้เชื่อมต่อ — โฟลว์นี้จะล้มเหลว",
+			"connect": "เชื่อมต่อ",
+			"describeFlowChange": "อธิบายการเปลี่ยนแปลงของทั้งโฟลว์นี้…",
+			"edit": "แก้ไข",
+			"emits": "ส่งเหตุการณ์",
+			"noSteps": "โฟลว์นี้ยังไม่มีขั้นตอน"
+		},
+		"panel": {
+			"backToOverview": "กลับไปที่ภาพรวมเวิร์กโฟลว์",
+			"intent": "เจตนา",
+			"addSkill": "เพิ่มทักษะ...",
+			"parameters": "พารามิเตอร์",
+			"addStep": "เพิ่มขั้นตอน...",
+			"manualHint": "ทำงานเฉพาะเมื่อสั่งด้วยตนเองเท่านั้น",
+			"notConfigured": "ยังไม่ได้ตั้งค่า",
+			"noEventConfigured": "ยังไม่ได้ตั้งค่าเหตุการณ์",
+			"noDescription": "ไม่มีคำอธิบาย",
+			"emitPlaceholder": "เช่น {name}",
+			"emitOptional": "ไม่บังคับ — เวิร์กโฟลว์อื่นสามารถทริกเกอร์จากเหตุการณ์นี้เมื่อการทำงานเสร็จสิ้น",
+			"useEmit": "ใช้ {name}",
+			"emitRenameWarning": "การเปลี่ยนชื่อจะทำให้เวิร์กโฟลว์ที่รับเหตุการณ์นี้ใช้งานไม่ได้",
+			"none": "ไม่มี",
+			"apiEndpoint": "ปลายทาง API",
+			"apiEndpointHint": "สร้างคีย์สำหรับเวิร์กโฟลว์นี้ได้ที่ การตั้งค่า → เว็บฮุก ของพนักงาน"
+		},
+		"schedule": {
+			"weekends": "วันเสาร์-อาทิตย์",
+			"custom": "กำหนดเอง",
+			"daysOfWeek": "วันในสัปดาห์",
+			"monthly": "ทุกเดือน",
+			"biannual": "ทุก 6 เดือน",
+			"yearly": "ทุกปี",
+			"onDay": "วันที่",
+			"biannualNote": "ทำงานวันที่ {day} {firstMonth} และวันที่ {day} {secondMonth}",
+			"shortMonthsSkipped": "เดือนที่ไม่มีวันที่ {day} จะถูกข้าม",
+			"limitToHours": "จำกัดช่วงชั่วโมง",
+			"rangeTo": "ถึง"
+		},
+		"watch": {
+			"plugin": "ปลั๊กอิน",
+			"choosePlugin": "เลือกปลั๊กอิน…",
+			"whenItReports": "เมื่อรายงาน",
+			"chooseEvent": "เลือกเหตุการณ์…",
+			"hint": "ทำงานทุกครั้งที่ {plugin} รายงาน {event} โฟลว์อื่นก็ฟัง {plugin}.{event} ได้เช่นกัน"
+		},
+		"validation": {
+			"emptyId": "กิจกรรมใน \"{workflow}\" มี ID ว่าง",
+			"duplicateId": "ID กิจกรรม \"{id}\" ซ้ำใน \"{workflow}\"",
+			"conditionExpression": "เงื่อนไข \"{id}\" ต้องมีนิพจน์ — การกำหนดเส้นทางต้องแน่นอน ไม่ให้ AI ตัดสิน",
+			"loopSource": "ลูป \"{id}\" ต้องมีแหล่งข้อมูล (เช่น inputs.items)",
+			"httpUrl": "โหนด HTTP \"{id}\" ต้องมี URL",
+			"decideQuestions": "โหนดตัดสินใจ \"{id}\" ต้องมีคำถาม (ออบเจ็กต์ JSON ของคำถามแบบมีชนิด)",
+			"waitDuration": "โหนดรอ \"{id}\" ต้องมีระยะเวลา",
+			"needsIntent": "กิจกรรม \"{id}\" ใน \"{workflow}\" ต้องมีเจตนาหรือขั้นตอน",
+			"targetsTrigger": "มีการเชื่อมต่อที่ชี้ไปยังทริกเกอร์",
+			"leavesEmit": "มีการเชื่อมต่อออกจากโหนดส่งเหตุการณ์",
+			"unknownFrom": "การเชื่อมต่อจากโหนดที่ไม่รู้จัก \"{id}\"",
+			"unknownTo": "การเชื่อมต่อไปยังโหนดที่ไม่รู้จัก \"{id}\"",
+			"duplicateConnection": "การเชื่อมต่อซ้ำ {from} → {to}",
+			"labeledNonBranching": "เส้นเชื่อมที่มีป้าย \"{label}\" ออกจากโหนดที่ไม่แยกเส้นทาง \"{id}\"",
+			"unlabeledBranch": "เส้นเชื่อมที่ออกจาก \"{id}\" ต้องมีป้ายทางแยก",
+			"cycle": "กราฟมีวงวน (มีเพียงส่วน แต่ละรายการ ของลูปเท่านั้นที่กลับไปยังลูปได้)"
+		},
+		"builder": {
+			"unsavedConfirm": "คุณมีการเปลี่ยนแปลงที่ยังไม่บันทึก ละทิ้งและปิดไหม?",
+			"workflowLabel": "{name} ({count, plural, other {# กิจกรรม}})",
+			"undo": "เลิกทำ (Cmd+Z)",
+			"redo": "ทำซ้ำ (Cmd+Shift+Z)",
+			"issueCount": "{count, plural, other {# ปัญหา}}",
+			"discard": "ละทิ้ง",
+			"hideDetails": "ซ่อนแผงรายละเอียด",
+			"showDetails": "แสดงแผงรายละเอียด",
+			"newWorkflowTitle": "เวิร์กโฟลว์ใหม่",
+			"empty": "ไม่มีเวิร์กโฟลว์ — สร้างใหม่เพื่อเริ่มต้น",
+			"newWorkflow": "เวิร์กโฟลว์ใหม่",
+			"confirmDeleteWorkflow": "แน่ใจไหมว่าต้องการลบเวิร์กโฟลว์นี้? กิจกรรมและการเชื่อมต่อทั้งหมดจะถูกลบ",
+			"confirmDeleteNode": "แน่ใจไหมว่าต้องการลบโหนดนี้? การเชื่อมต่อจะถูกเชื่อมใหม่โดยอัตโนมัติ"
+		}
 	}
 }

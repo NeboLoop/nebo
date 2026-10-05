@@ -454,10 +454,10 @@
       const endSecs = typeof r.completedAt === 'number' ? r.completedAt : 0;
       const durSecs = endSecs > 0 && startSecs > 0 ? endSecs - startSecs : 0;
       const durStr = durSecs > 0
-        ? (durSecs >= 60 ? `${Math.floor(durSecs / 60)}m ${Math.round(durSecs % 60)}s` : `${Math.round(durSecs)}s`)
-        : (r.status === 'running' ? 'running...' : '—');
+        ? (durSecs >= 60 ? $t('time.minutesSeconds', { values: { mins: Math.floor(durSecs / 60), secs: Math.round(durSecs % 60) } }) : $t('time.seconds', { values: { n: Math.round(durSecs) } }))
+        : (r.status === 'running' ? $t('agent.running') : '—');
       const dt = startSecs > 0 ? new Date(startSecs * 1000) : null;
-      const rawName = String(r.triggerDetail || r.currentActivity || r.triggerType || 'Workflow run');
+      const rawName = String(r.triggerDetail || r.currentActivity || r.triggerType || $t('chat.runReceiptTitle'));
       // Extract workflow binding name: "auto-reply:gws.email.new" → "auto-reply"
       const wfName = rawName.includes(':') ? rawName.split(':')[0] : rawName;
       return {
@@ -484,8 +484,8 @@
       const endSecs = typeof r.completedAt === 'number' ? r.completedAt : 0;
       const durSecs = endSecs > 0 && startSecs > 0 ? endSecs - startSecs : 0;
       const durStr = durSecs > 0
-        ? (durSecs >= 60 ? `${Math.floor(durSecs / 60)}m ${Math.round(durSecs % 60)}s` : `${Math.round(durSecs)}s`)
-        : (r.status === 'running' ? 'running...' : '—');
+        ? (durSecs >= 60 ? $t('time.minutesSeconds', { values: { mins: Math.floor(durSecs / 60), secs: Math.round(durSecs % 60) } }) : $t('time.seconds', { values: { n: Math.round(durSecs) } }))
+        : (r.status === 'running' ? $t('agent.running') : '—');
       return {
         id: String(r.id || ''),
         triggerType: String(r.triggerType || 'manual'),
@@ -895,11 +895,11 @@
   let canvasFocusWorkflow = $state<string | null>(null);
 
   function triggerSummary(wf: WorkflowConfig): string {
-    if (wf.trigger?.type === 'schedule') return wf.schedule || 'Scheduled';
-    if (wf.trigger?.type === 'event') return `On ${wf.trigger.event || 'event'}`;
-    if (wf.trigger?.type === 'watch') return `Watch: ${wf.trigger.event || wf.trigger.plugin || 'plugin'}`;
-    if (wf.trigger?.type === 'heartbeat') return `Every ${wf.trigger.interval || '?'}`;
-    return 'Manual trigger';
+    if (wf.trigger?.type === 'schedule') return wf.schedule || $t('automations.scheduled');
+    if (wf.trigger?.type === 'event') return $t('automations.onEventNamed', { values: { event: wf.trigger.event || $t('automations.anEvent') } });
+    if (wf.trigger?.type === 'watch') return $t('automations.watching', { values: { source: wf.trigger.event || wf.trigger.plugin || $t('automations.aPlugin') } });
+    if (wf.trigger?.type === 'heartbeat') return $t('automations.everyInterval', { values: { interval: wf.trigger.interval || '?' } });
+    return $t('automations.manualTrigger');
   }
 
   // Persist the full workflow map through the binding CRUD API, then sync
@@ -1237,14 +1237,14 @@
     style="left: {ctxMenu.x}px; top: {ctxMenu.y}px;"
   >
     {#if ctxAgent?.isApp}
-      <button class="flex items-center gap-2.5 w-full px-3 py-1.5 text-sm text-left cursor-pointer bg-transparent border-none hover:bg-base-200 font-medium" onclick={() => ctxAction('open-app')}>
+      <button class="flex items-center gap-2.5 w-full px-3 py-1.5 text-sm text-start cursor-pointer bg-transparent border-none hover:bg-base-200 font-medium" onclick={() => ctxAction('open-app')}>
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-base-content/50"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
         {$t('agent.openApp')}
       </button>
       <div class="h-px bg-base-300 my-1"></div>
     {:else}
       {#if ctxMenu.agentId !== 'assistant'}
-        <button class="flex items-center gap-2.5 w-full px-3 py-1.5 text-sm text-left cursor-pointer bg-transparent border-none hover:bg-base-200 transition-colors" onclick={() => ctxAction('toggle-status')}>
+        <button class="flex items-center gap-2.5 w-full px-3 py-1.5 text-sm text-start cursor-pointer bg-transparent border-none hover:bg-base-200 transition-colors" onclick={() => ctxAction('toggle-status')}>
           {#if ctxSt === 'paused'}
             <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" class="text-success"><polygon points="6,4 20,12 6,20"/></svg>
             {$t('agent.resume')}
@@ -1255,19 +1255,19 @@
         </button>
         <div class="h-px bg-base-300 my-1"></div>
       {/if}
-      <button class="flex items-center gap-2.5 w-full px-3 py-1.5 text-sm text-left cursor-pointer bg-transparent border-none hover:bg-base-200 transition-colors" onclick={() => ctxAction('new-thread')}>
+      <button class="flex items-center gap-2.5 w-full px-3 py-1.5 text-sm text-start cursor-pointer bg-transparent border-none hover:bg-base-200 transition-colors" onclick={() => ctxAction('new-thread')}>
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-base-content/50"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
         {$t('agent.newChat')}
       </button>
     {/if}
     <!-- The raw id is for people wiring things up: Developer mode only. -->
     {#if $devMode}
-      <button class="flex items-center gap-2.5 w-full px-3 py-1.5 text-sm text-left cursor-pointer bg-transparent border-none hover:bg-base-200 transition-colors" onclick={() => ctxAction('copy-id')}>
+      <button class="flex items-center gap-2.5 w-full px-3 py-1.5 text-sm text-start cursor-pointer bg-transparent border-none hover:bg-base-200 transition-colors" onclick={() => ctxAction('copy-id')}>
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="text-base-content/50"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
         {$t('agent.copyAgentId')}
       </button>
     {/if}
-    <button class="flex items-center gap-2.5 w-full px-3 py-1.5 text-sm text-left cursor-pointer bg-transparent border-none hover:bg-base-200 transition-colors" onclick={() => ctxAction('settings')}>
+    <button class="flex items-center gap-2.5 w-full px-3 py-1.5 text-sm text-start cursor-pointer bg-transparent border-none hover:bg-base-200 transition-colors" onclick={() => ctxAction('settings')}>
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-base-content/50"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
       {$t('nav.employeeSettings')}
     </button>
@@ -1277,7 +1277,7 @@
         <!-- The primary is the owner's personal assistant; it cannot be deleted. -->
         <p class="px-3 py-2 text-xs text-base-content/60 leading-snug">{$t('agent.primaryUndeletable')}</p>
       {:else}
-        <button class="flex items-center gap-2.5 w-full px-3 py-1.5 text-sm text-left cursor-pointer bg-transparent border-none hover:bg-error/10 text-error transition-colors" onclick={() => ctxAction('delete')}>
+        <button class="flex items-center gap-2.5 w-full px-3 py-1.5 text-sm text-start cursor-pointer bg-transparent border-none hover:bg-error/10 text-error transition-colors" onclick={() => ctxAction('delete')}>
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
           {$t('common.delete')}
         </button>
@@ -1294,7 +1294,7 @@
     style="left: {teamCtxMenu.x}px; top: {teamCtxMenu.y}px;"
   >
     <button
-      class="flex items-center gap-2.5 w-full px-3 py-1.5 text-sm text-left cursor-pointer bg-transparent border-none hover:bg-error/10 text-error transition-colors"
+      class="flex items-center gap-2.5 w-full px-3 py-1.5 text-sm text-start cursor-pointer bg-transparent border-none hover:bg-error/10 text-error transition-colors"
       onclick={() => { removeTeamObj = teams.find((w) => w.id === teamCtxMenu?.id) ?? null; teamCtxMenu = null; }}
     >
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
@@ -1315,12 +1315,12 @@
     aria-label={$t('sidebar.chatActions')}
     onkeydown={handleChatMenuKeydown}
   >
-    <button role="menuitem" class="flex items-center gap-2.5 w-full px-3 py-1.5 text-sm text-left cursor-pointer bg-transparent border-none hover:bg-base-200 focus:bg-base-200 focus:outline-none transition-colors" onclick={startChatRename}>
+    <button role="menuitem" class="flex items-center gap-2.5 w-full px-3 py-1.5 text-sm text-start cursor-pointer bg-transparent border-none hover:bg-base-200 focus:bg-base-200 focus:outline-none transition-colors" onclick={startChatRename}>
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-base-content/50" aria-hidden="true"><path d="M17 3a2.85 2.85 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>
       {$t('sidebar.rename')}
     </button>
     <div class="h-px bg-base-300 my-1"></div>
-    <button role="menuitem" class="flex items-center gap-2.5 w-full px-3 py-1.5 text-sm text-left cursor-pointer bg-transparent border-none hover:bg-error/10 focus:bg-error/10 focus:outline-none text-error transition-colors" onclick={askDeleteChat}>
+    <button role="menuitem" class="flex items-center gap-2.5 w-full px-3 py-1.5 text-sm text-start cursor-pointer bg-transparent border-none hover:bg-error/10 focus:bg-error/10 focus:outline-none text-error transition-colors" onclick={askDeleteChat}>
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
       {$t('common.delete')}
     </button>
@@ -1371,7 +1371,7 @@
             <span class="block text-xs font-semibold uppercase tracking-wider mb-1.5">{$t('agent.typeNameToConfirmPrefix')} {$t('agent.typeNameToConfirmSuffix')}</span>
             <div class="flex items-stretch rounded-md border border-base-300 bg-base-200 mb-2 overflow-hidden">
               <code class="flex-1 min-w-0 px-2.5 py-[7px] font-mono text-[13px] text-base-content truncate select-all">{deleteTarget.name}</code>
-              <button type="button" class="px-2.5 border-l border-base-300 bg-base-100 hover:bg-base-200 text-base-content/70 cursor-pointer flex items-center gap-1 text-xs" onclick={copyDeleteName} title={$t('agent.copyName')} aria-label={$t('agent.copyName')}>
+              <button type="button" class="px-2.5 border-s border-base-300 bg-base-100 hover:bg-base-200 text-base-content/70 cursor-pointer flex items-center gap-1 text-xs" onclick={copyDeleteName} title={$t('agent.copyName')} aria-label={$t('agent.copyName')}>
                 {#if deleteNameCopied}
                   <span class="text-success">{$t('chat.copied')}</span>
                 {:else}
@@ -1436,9 +1436,9 @@
         <!-- TEAMS — local groups of employees, under the employees (list =
              conversations; the shelf is for utilities). The + starts one from
              a picker; employees and the model create them too. -->
-        <div class="flex items-center gap-2 mt-4 mb-1 pl-4 pr-2.5">
+        <div class="flex items-center gap-2 mt-4 mb-1 ps-4 pe-2.5">
           <button
-            class="flex items-center gap-2 flex-1 min-w-0 bg-transparent border-none cursor-pointer text-left p-0"
+            class="flex items-center gap-2 flex-1 min-w-0 bg-transparent border-none cursor-pointer text-start p-0"
             onclick={() => toggleSection('teams')}
             aria-expanded={teamsOpen}
           >
@@ -1466,7 +1466,7 @@
                  scrollbar on hover (the row "jump"). -->
             <div class="mx-1.5">
             <button
-              class="group/room w-full flex items-center gap-2.5 py-2 px-2.5 cursor-pointer text-left bg-transparent {teamParam === room.id
+              class="group/room w-full flex items-center gap-2.5 py-2 px-2.5 cursor-pointer text-start bg-transparent {teamParam === room.id
                 ? 'rounded-box border border-primary/30 bg-primary/10 shadow-sm'
                 : 'rounded-box border border-transparent hover:bg-base-100/70'}"
               onclick={() => openTeam(room.id)}
@@ -1477,11 +1477,11 @@
               <div class="relative w-8 h-8 shrink-0">
                 {#if faces.length >= 2}
                   {@const extra = room.members.length - 2}
-                  <div class="absolute top-0 left-0 w-6 h-6 rounded-field flex items-center justify-center font-mono text-[10px] font-semibold {faces[0].cls}">{faces[0].initial}</div>
-                  <div class="absolute bottom-0 right-0 w-6 h-6 rounded-field border border-base-100 flex items-center justify-center font-mono text-[10px] font-semibold {faces[1].cls}">{faces[1].initial}</div>
+                  <div class="absolute top-0 start-0 w-6 h-6 rounded-field flex items-center justify-center font-mono text-[10px] font-semibold {faces[0].cls}">{faces[0].initial}</div>
+                  <div class="absolute bottom-0 end-0 w-6 h-6 rounded-field border border-base-100 flex items-center justify-center font-mono text-[10px] font-semibold {faces[1].cls}">{faces[1].initial}</div>
                   {#if extra > 0}
                     <!-- The row says "several"; the full roster is the team's member rail. -->
-                    <div class="absolute -top-1 -right-1 min-w-4 h-4 px-0.5 rounded-full bg-neutral text-neutral-content border border-base-100 flex items-center justify-center font-mono text-[9px] font-semibold">+{extra}</div>
+                    <div class="absolute -top-1 -end-1 min-w-4 h-4 px-0.5 rounded-full bg-neutral text-neutral-content border border-base-100 flex items-center justify-center font-mono text-[9px] font-semibold">+{extra}</div>
                   {/if}
                 {:else}
                   <div class="w-8 h-8 rounded-field bg-base-200 flex items-center justify-center text-base-content/70">
@@ -1547,11 +1547,11 @@
       {#if !drilledAgent}
         <!-- The Dashboard: the whole workforce on one page. Sits above the
              employees as a row of the same shape, highlighted like one. -->
-        <div class="flex items-center gap-2.5 pr-2.5 mx-1.5 mb-1 cursor-pointer text-left {onDashboard
+        <div class="flex items-center gap-2.5 pe-2.5 mx-1.5 mb-1 cursor-pointer text-start {onDashboard
             ? 'rounded-box border border-primary/30 bg-primary/10 shadow-sm'
             : 'rounded-box border border-transparent hover:bg-base-100/70'}">
           <button
-            class="flex items-center gap-2.5 flex-1 min-w-0 bg-transparent border-none cursor-pointer py-2 pl-2.5 text-left"
+            class="flex items-center gap-2.5 flex-1 min-w-0 bg-transparent border-none cursor-pointer py-2 ps-2.5 text-start"
             onclick={() => goto('/dashboard')}
           >
             <div class="w-8 h-8 rounded-field flex items-center justify-center shrink-0 bg-base-100 border border-base-300 text-primary">
@@ -1569,7 +1569,7 @@
           {@render teamsSection()}
         {/if}
         <button
-          class="w-full flex items-center gap-2 mt-3 mb-1 px-4 bg-transparent border-none cursor-pointer text-left"
+          class="w-full flex items-center gap-2 mt-3 mb-1 px-4 bg-transparent border-none cursor-pointer text-start"
           onclick={() => toggleSection('employees')}
           aria-expanded={employeesOpen}
         >
@@ -1588,7 +1588,7 @@
         {@const isPinned = drilledAgent?.id === a.id}
         <div
           transition:slide={{ duration: motionMs(200) }}
-          class="group/agent flex items-center gap-2.5 pr-2.5 mx-1.5 cursor-pointer text-left {!isPinned && agentId === a.id
+          class="group/agent flex items-center gap-2.5 pe-2.5 mx-1.5 cursor-pointer text-start {!isPinned && agentId === a.id
             ? 'rounded-box border border-primary/30 bg-primary/10 shadow-sm'
             : 'rounded-box border border-transparent hover:bg-base-100/70'}"
         >
@@ -1601,7 +1601,7 @@
                keeps its button behaviour. -->
           <a
             href={withBase(rowHref(a))}
-            class="flex items-center gap-2.5 flex-1 min-w-0 bg-transparent border-none cursor-pointer py-2 pl-2.5 text-left no-underline text-inherit"
+            class="flex items-center gap-2.5 flex-1 min-w-0 bg-transparent border-none cursor-pointer py-2 ps-2.5 text-start no-underline text-inherit"
             onclick={(e) => { if (isPinned) { e.preventDefault(); showList('1'); } }}
             oncontextmenu={(e) => handleAgentContext(e, a.id)}
             data-context-menu
@@ -1620,7 +1620,7 @@
               {:else}
                 <AgentAvatar name={a.name} color={a.color} />
               {/if}
-              <div class="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-base-200 {busy ? 'bg-success agent-working-dot' : st === 'running' ? 'bg-warning animate-pulse' : st === 'paused' ? 'bg-base-content/30' : 'bg-success'}"></div>
+              <div class="absolute -bottom-0.5 -end-0.5 w-2.5 h-2.5 rounded-full border-2 border-base-200 {busy ? 'bg-success agent-working-dot' : st === 'running' ? 'bg-warning animate-pulse' : st === 'paused' ? 'bg-base-content/30' : 'bg-success'}"></div>
             </div>
             <div class="flex-1 min-w-0">
               <div class="flex items-baseline gap-2">
@@ -1647,7 +1647,7 @@
                      state, said plainly, in place of the last line. -->
                 <div class="text-xs text-base-content/60 truncate">{$t('sidebar.offline')}</div>
               {:else}
-                <div class="text-xs text-base-content/60 truncate">{#if latest ? latest.restarted : a.restarted}<span class="badge badge-ghost badge-xs mr-1 align-middle">{$t('sidebar.restarted')}</span>{/if}{latest?.preview || a.lastPreview || a.role}</div>
+                <div class="text-xs text-base-content/60 truncate">{#if latest ? latest.restarted : a.restarted}<span class="badge badge-ghost badge-xs me-1 align-middle">{$t('sidebar.restarted')}</span>{/if}{latest?.preview || a.lastPreview || a.role}</div>
               {/if}
             </div>
             {#if !isPinned && a.isolated}
@@ -1706,7 +1706,7 @@
                   <span class="text-sm truncate flex-1 min-w-0">{chatName(c, drilledAgent.id)}</span>
                   <span class="text-xs text-base-content/45 shrink-0">{dayLabel(c.updatedAtEpoch)}</span>
                 </div>
-                <div class="text-xs text-base-content/55 truncate">{#if c.restarted}<span class="badge badge-ghost badge-xs mr-1 align-middle">{$t('sidebar.restarted')}</span>{/if}{c.preview}</div>
+                <div class="text-xs text-base-content/55 truncate">{#if c.restarted}<span class="badge badge-ghost badge-xs me-1 align-middle">{$t('sidebar.restarted')}</span>{/if}{c.preview}</div>
               </a>
             {/if}
           {/each}
@@ -1715,7 +1715,7 @@
                  owner can read, kept apart from his own conversations and
                  listed below them, open until he folds them. A row opens the transcript. -->
             <button
-              class="w-full flex items-center gap-2 mt-3 mb-1 px-4 bg-transparent border-none cursor-pointer text-left"
+              class="w-full flex items-center gap-2 mt-3 mb-1 px-4 bg-transparent border-none cursor-pointer text-start"
               onclick={() => (teammatesOpen = !teammatesOpen)}
               aria-expanded={teammatesOpen}
             >
@@ -1768,7 +1768,7 @@
             data-context-menu
             title="{a.name} — {busy ? (workingLabel(a.id) || $t('sidebar.working')) : $t(statusLabel(st))}"
           >{initialsOf(a.name)}</button>
-          <div class="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-base-200 {busy ? 'bg-success agent-working-dot' : st === 'running' ? 'bg-warning animate-pulse' : st === 'paused' ? 'bg-base-content/30' : 'bg-success'}"></div>
+          <div class="absolute -bottom-0.5 -end-0.5 w-2.5 h-2.5 rounded-full border-2 border-base-200 {busy ? 'bg-success agent-working-dot' : st === 'running' ? 'bg-warning animate-pulse' : st === 'paused' ? 'bg-base-content/30' : 'bg-success'}"></div>
         </div>
       {/each}
     </div>
@@ -1779,14 +1779,14 @@
       <button
         type="button"
         onclick={openInbox}
-        class="relative w-full flex items-center gap-2.5 py-2 {isRail ? 'justify-center px-0' : 'px-3.5'} hover:bg-base-100/70 transition-colors bg-transparent border-none cursor-pointer text-left {inboxOpen ? 'text-base-content' : ''}"
+        class="relative w-full flex items-center gap-2.5 py-2 {isRail ? 'justify-center px-0' : 'px-3.5'} hover:bg-base-100/70 transition-colors bg-transparent border-none cursor-pointer text-start {inboxOpen ? 'text-base-content' : ''}"
         title={$t('nav.inbox')}
       >
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" class="shrink-0"><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></svg>
         {#if !isRail}<span class="text-sm flex-1">{$t('nav.inbox')}</span>{/if}
         {#if $unreadCount > 0}
           {#if isRail}
-            <span class="absolute top-1.5 right-3 w-2 h-2 rounded-full bg-error"></span>
+            <span class="absolute top-1.5 end-3 w-2 h-2 rounded-full bg-error"></span>
           {:else}
             <span class="badge badge-error badge-xs text-error-content font-semibold shrink-0">{$unreadCount > 9 ? '9+' : $unreadCount}</span>
           {/if}
@@ -1795,7 +1795,7 @@
       <button
         type="button"
         onclick={openMarket}
-        class="w-full flex items-center gap-2.5 py-2 {isRail ? 'justify-center px-0' : 'px-3.5'} hover:bg-base-100/70 transition-colors bg-transparent border-none cursor-pointer text-left"
+        class="w-full flex items-center gap-2.5 py-2 {isRail ? 'justify-center px-0' : 'px-3.5'} hover:bg-base-100/70 transition-colors bg-transparent border-none cursor-pointer text-start"
         title={$t('nav.marketplace')}
       >
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" class="shrink-0"><path d="M3 9h18v11a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1z"/><path d="M3 9 5 3h14l2 6"/><path d="M9 13h6"/></svg>
@@ -1873,7 +1873,7 @@
       {/each}
       <!-- ONE search box for the whole storefront, like the website's: it
            searches whichever section is open (employees, tools, collections). -->
-      <label class="ml-auto w-72 max-w-[50%] flex items-center gap-2 rounded-full border border-base-300 bg-base-100 px-3 py-1.5 focus-within:border-primary">
+      <label class="ms-auto w-72 max-w-[50%] flex items-center gap-2 rounded-full border border-base-300 bg-base-100 px-3 py-1.5 focus-within:border-primary">
         <Search class="w-4 h-4 text-base-content/50 shrink-0" />
         <input class="w-full bg-transparent outline-none text-sm" type="search" placeholder={$t('marketplace.searchAllPlaceholder')} bind:value={market.q} />
       </label>
@@ -1883,7 +1883,7 @@
       <!-- Same category rail as the /marketplace page — its plain /marketplace
            hrefs are rerouted into modal state by the capture handler above. -->
       {#if !marketDetail && market.kind !== 'collections' && hasCategoryRail(market.kind)}
-        <div class="hidden md:block w-52 shrink-0 border-r border-base-300 bg-base-200 overflow-y-auto">
+        <div class="hidden md:block w-52 shrink-0 border-e border-base-300 bg-base-200 overflow-y-auto">
           <CategoryRail kind={market.kind} activeFilter={market.filter} />
         </div>
       {/if}

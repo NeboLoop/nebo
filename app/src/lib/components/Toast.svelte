@@ -16,7 +16,7 @@
 </script>
 
 {#if $toasts.length > 0}
-  <div class="fixed bottom-4 right-4 z-[100] flex flex-col gap-2 pointer-events-none">
+  <div class="fixed bottom-4 end-4 z-[100] flex flex-col gap-2 pointer-events-none">
     {#each $toasts as toast (toast.id)}
       {@const Icon = iconMap[toast.type]}
       <div class="pointer-events-auto flex items-center gap-2.5 px-4 py-3 rounded-xl border shadow-lg backdrop-blur-sm {colorMap[toast.type]}">
@@ -26,7 +26,7 @@
           <button
             type="button"
             onclick={() => { removeToast(toast.id); run(); }}
-            class="text-sm font-medium text-base-content flex-1 text-left cursor-pointer bg-transparent border-none p-0"
+            class="text-sm font-medium text-base-content flex-1 text-start cursor-pointer bg-transparent border-none p-0"
           >{toast.message}</button>
           <button
             type="button"

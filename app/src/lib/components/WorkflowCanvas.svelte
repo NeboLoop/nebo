@@ -8,7 +8,7 @@
 		edgePath,
 		type LayoutWorkflowNode,
 	} from '$lib/utils/workflowLayout';
-	import { getActivityType, isBranchingType } from '$lib/utils/workflowTypes';
+	import { getActivityType, isBranchingType, branchLabelText } from '$lib/utils/workflowTypes';
 	import type { WorkflowConfig, WorkflowActivity } from '$lib/types/agentPage';
 
 	let {
@@ -175,6 +175,13 @@
 		return 'bg-base-100';
 	}
 
+	const TRIGGER_TYPES = ['schedule', 'heartbeat', 'event', 'watch', 'manual'];
+	
+	/** Display name for a trigger type; unknown types show as stored. */
+	function triggerTypeLabel(type: string): string {
+		return TRIGGER_TYPES.includes(type) ? $t(`workflow.triggerTypes.${type}`) : type;
+	}
+	
 	function isSelected(nodeId: string, workflowName: string): boolean {
 		return selectedWorkflowName === workflowName && (selectedNodeId === nodeId || (selectedNodeId === null && (nodeId === '__trigger__' || nodeId === '__emit__')));
 	}
@@ -215,7 +222,7 @@
 			</svg>
 
 			<!-- Zoom controls -->
-			<div class="absolute right-3 top-3 z-10 flex flex-col gap-1.5">
+			<div class="absolute end-3 top-3 z-10 flex flex-col gap-1.5">
 				<button
 					class="btn btn-square btn-sm btn-ghost border border-base-300 bg-base-100"
 					title={$t('commander.zoomIn')}
@@ -270,12 +277,13 @@
 							fill="currentColor"
 						/>
 						{#if edge.label}
-							{@const lx = edge.from.x + edge.from.w + 12}
+						{@const shownLabel = branchLabelText(edge.label)}
+						{@const lx = edge.from.x + edge.from.w + 12}
 							{@const ly = edge.from.y + edge.from.h / 2 + (edge.to.y > edge.from.y + 10 ? 6 : edge.to.y < edge.from.y - 10 ? -12 : -3)}
 							<rect
 								x={lx - 4}
 								y={ly - 9}
-								width={edge.label.length * 6.5 + 10}
+								width={shownLabel.length * 6.5 + 10}
 								height="16"
 								rx="4"
 								class="fill-base-100"
@@ -286,7 +294,7 @@
 								font-size="10"
 								font-weight="500"
 								class="{edge.label === 'True' || edge.label === 'Each item' ? 'fill-success' : edge.label === 'False' || edge.label === 'Done' ? 'fill-error/70' : 'fill-base-content/60'}"
-							>{edge.label}</text>
+							>{shownLabel}</text>
 						{/if}
 					{/each}
 				</g>
@@ -322,12 +330,12 @@
 							{:else}
 								{@const typeDef = getActivityType(node.activityType)}
 								{@const isBranch = isBranchingType(node.activityType)}
-								<div class="flex flex-col justify-between h-full px-3 py-2.5 {isBranch ? 'pr-5' : ''}">
+								<div class="flex flex-col justify-between h-full px-3 py-2.5 {isBranch ? 'pe-5' : ''}">
 									<div class="flex items-center gap-2 min-w-0">
 										<span class="text-sm shrink-0">{typeDef.icon}</span>
 										<span class="text-sm font-medium truncate">{node.label}</span>
 										{#if node.status && node.status !== 'idle'}
-											<span class="ml-auto w-2 h-2 rounded-full shrink-0 {node.status === 'success' ? 'bg-success' : node.status === 'failed' ? 'bg-error' : 'bg-warning animate-pulse'}"></span>
+											<span class="ms-auto w-2 h-2 rounded-full shrink-0 {node.status === 'success' ? 'bg-success' : node.status === 'failed' ? 'bg-error' : 'bg-warning animate-pulse'}"></span>
 										{/if}
 									</div>
 									<div class="text-xs text-base-content/60 truncate">{node.sublabel}</div>
@@ -337,16 +345,16 @@
 											<span class="text-base-content/20">&middot;</span>
 										{/if}
 										{#if isBranch && typeDef.branchLabels}
-											<span class="text-xs text-base-content/40 font-mono">{typeDef.branchLabels.join(' / ')}</span>
+											<span class="text-xs text-base-content/40 font-mono">{typeDef.branchLabels.map(branchLabelText).join(' / ')}</span>
 										{:else}
 											<span class="text-xs text-base-content/40 font-mono">{$t('automations.stepCount', { values: { count: node.stepCount ?? 0 } })}</span>
 										{/if}
 									</div>
 								</div>
 								{#if isBranch && typeDef.branchLabels}
-									<div class="absolute right-0 top-0 bottom-0 flex flex-col justify-center gap-3 pr-1">
+									<div class="absolute end-0 top-0 bottom-0 flex flex-col justify-center gap-3 pe-1">
 										{#each typeDef.branchLabels as bl, bi}
-											<div class="w-2.5 h-2.5 rounded-full border-2 {bi === 0 ? 'border-success bg-success/20' : 'border-error/60 bg-error/10'}" title={bl}></div>
+											<div class="w-2.5 h-2.5 rounded-full border-2 {bi === 0 ? 'border-success bg-success/20' : 'border-error/60 bg-error/10'}" title={branchLabelText(bl)}></div>
 										{/each}
 									</div>
 								{/if}
@@ -359,7 +367,7 @@
 
 		<!-- Detail panel (slides in from right) -->
 		{#if selectedWorkflowName && selectedWf}
-			<div data-wf-panel class="w-[320px] shrink-0 border-l border-base-content/10 bg-base-100 flex flex-col overflow-hidden">
+			<div data-wf-panel class="w-[320px] shrink-0 border-s border-base-content/10 bg-base-100 flex flex-col overflow-hidden">
 				<!-- Panel header -->
 				<div class="flex items-center justify-between px-4 py-3 border-b border-base-content/10 shrink-0">
 					<div class="flex-1 min-w-0">
@@ -368,7 +376,7 @@
 					</div>
 					<div class="flex items-center gap-1.5 shrink-0">
 						<input type="checkbox" class="toggle toggle-sm toggle-primary" checked={selectedWf.isActive !== false} role="switch" title={$t('workflowCanvas.enableDisable')} />
-						<button class="w-6 h-6 rounded-md flex items-center justify-center hover:bg-base-200 cursor-pointer bg-transparent border-none text-base" onclick={() => { selectedNodeId = null; selectedWorkflowName = null; }}>&times;</button>
+						<button class="w-6 h-6 rounded-md flex items-center justify-center hover:bg-base-200 cursor-pointer bg-transparent border-none text-base" aria-label={$t('common.close')} onclick={() => { selectedNodeId = null; selectedWorkflowName = null; }}>&times;</button>
 					</div>
 				</div>
 
@@ -399,7 +407,7 @@
 								<div class="flex flex-col gap-1">
 									{#each act.steps as step, i}
 										<div class="flex items-start gap-2 py-1.5 px-2 rounded-md border border-base-300 bg-base-100">
-											<span class="font-mono text-xs text-base-content/40 shrink-0 mt-px w-3 text-right">{i + 1}</span>
+											<span class="font-mono text-xs text-base-content/40 shrink-0 mt-px w-3 text-end">{i + 1}</span>
 											<span class="text-xs flex-1">{step}</span>
 										</div>
 									{/each}
@@ -411,7 +419,7 @@
 						<div class="mb-4">
 							<div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1">{$t('automations.trigger')}</div>
 							<div class="flex items-center gap-1.5">
-								<span class="text-sm capitalize">{selectedWf.trigger?.type ?? 'manual'}</span>
+								<span class="text-sm capitalize">{triggerTypeLabel(selectedWf.trigger?.type ?? 'manual')}</span>
 								{#if selectedWf.trigger?.schedule}
 									<span class="text-xs text-base-content/50 font-mono">&middot; {selectedWf.trigger.schedule}</span>
 								{/if}
@@ -446,7 +454,7 @@
 							<div class="flex flex-col gap-1.5">
 								{#each selectedWf.activities ?? [] as act, idx}
 									<button
-										class="w-full flex items-start gap-2.5 p-2.5 rounded-lg border text-left cursor-pointer transition-colors bg-transparent
+										class="w-full flex items-start gap-2.5 p-2.5 rounded-lg border text-start cursor-pointer transition-colors bg-transparent
 											{selectedNodeId === act.id ? 'border-primary bg-primary/5' : 'border-base-300 hover:border-base-content/20'}"
 										onclick={() => { selectedNodeId = act.id; }}
 									>

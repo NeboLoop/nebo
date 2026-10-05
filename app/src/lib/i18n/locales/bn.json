@@ -57,8 +57,8 @@
 		"noDataAvailable": "কোনো তথ্য নেই",
 		"comingSoon": "শীঘ্রই আসছে",
 		"or": "অথবা",
-		"dev": "dev",
-		"beta": "beta",
+		"dev": "ডেভ",
+		"beta": "বেটা",
 		"free": "বিনামূল্যে",
 		"na": "N/A",
 		"you": "আপনি",
@@ -84,7 +84,16 @@
 		"closeModal": "মোডাল বন্ধ করুন",
 		"all": "সব",
 		"more": "আরও",
-		"stopped": "থামানো হয়েছে"
+		"stopped": "থামানো হয়েছে",
+		"errorOccurred": "কিছু একটা ভুল হয়েছে।",
+		"systemError": "সিস্টেম ত্রুটি",
+		"stillReconnecting": "এখনো আপনার Nebo-র সাথে যোগাযোগের চেষ্টা চলছে…",
+		"updatesAvailable": "{count, plural, one {#টি আপডেট পাওয়া যাচ্ছে} other {#টি আপডেট পাওয়া যাচ্ছে}}",
+		"artifactUpdated": "{type} আপডেট হয়েছে: {version}",
+		"artifactUpdateFailed": "আপডেট ব্যর্থ হয়েছে: {error}",
+		"employee": "কর্মী",
+		"untitled": "শিরোনামহীন",
+		"document": "নথি"
 	},
 	"time": {
 		"justNow": "এইমাত্র",
@@ -253,9 +262,11 @@
 		"working": "কাজ করছেন",
 		"chatActions": "চ্যাট অ্যাকশন",
 		"deleteChatTitle": "\"{name}\" মুছবেন?",
-		"deleteChatBody": "এই চ্যাট এবং এর সব বার্তা মুছে ফেলা হবে। এটি আর ফেরানো যাবে না।"
+		"deleteChatBody": "এই চ্যাট এবং এর সব বার্তা মুছে ফেলা হবে। এটি আর ফেরানো যাবে না।",
+		"offline": "অফলাইন"
 	},
 	"chat": {
+		"worksIn": "{folder}-এ কাজ করে",
 		"compactBoundary": "আগের কথোপকথন সংক্ষিপ্ত করা হয়েছে",
 		"clearedBoundary": "এখানে মুছে ফেলা হয়েছে। আগের বার্তাগুলো রাখা আছে, কিন্তু ব্যবহার করা হয় না।",
 		"goalLine": "লক্ষ্য: {condition} ({turns} দফা)",
@@ -264,10 +275,15 @@
 		"goalStopped": "লক্ষ্যটি থামানো হয়েছে। আবার শুরু করতে চাইলে বলুন।",
 		"resumedActivity": "এখনও কাজ করছেন: {tool}",
 		"waitingForYou": "আপনার অপেক্ষায়",
+		"waitingOnYou": "{name} আপনার জন্য অপেক্ষা করছে",
+		"seeConversation": "কথোপকথন দেখুন",
 		"waitingOnYourAnswer": "{name} আপনার উত্তরের অপেক্ষায়:",
 		"waitingOpen": "খুলুন",
 		"waitingAsksLabel": "আপনার উত্তরের অপেক্ষায়",
 		"subagentStep": "{op} · ধাপ {n}",
+		"helperWorking": "একজন সাহায্যকারী কাজ করছে: {what}",
+		"helpersWorking": "{n} জন সাহায্যকারী কাজ করছে",
+		"moreQuestionsWaiting": "{count, plural, one {আরও ১টি প্রশ্ন অপেক্ষায়} other {আরও #টি প্রশ্ন অপেক্ষায়}}",
 		"pending": "অপেক্ষমাণ",
 		"yourAICompanion": "আপনার AI কর্মীবাহিনী",
 		"tellMeWhatYouNeed": "আপনার কী প্রয়োজন বলুন, অথবা নিচের একজন কর্মীকে সক্রিয় করুন।",
@@ -295,6 +311,7 @@
 		"messageChannel": "#{channel} এ বার্তা...",
 		"messagedCoworker": "বার্তা পাঠিয়েছেন",
 		"disclaimer": "Nebo ভুল করতে পারে। গুরুত্বপূর্ণ তথ্য যাচাই করুন।",
+		"uploadsKept": "আপলোড {days} দিন রাখা হয়।",
 		"goodMorning": "শুভ সকাল",
 		"goodAfternoon": "শুভ অপরাহ্ণ",
 		"goodEvening": "শুভ সন্ধ্যা",
@@ -315,6 +332,8 @@
 		"installFailed": "ইনস্টল করা যায়নি — আবার চেষ্টা করুন।",
 		"hire": "নিয়োগ দিন",
 		"hiring": "নিয়োগ হচ্ছে…",
+		"hireCount": "{count} জনকেই নিয়োগ দিন",
+		"hiringCount": "{count} জনের মধ্যে {done} জনকে নিয়োগ দেওয়া হচ্ছে…",
 		"botComputer": "কম্পিউটার",
 		"closeComputer": "কম্পিউটার বন্ধ করুন",
 		"fullView": "পূর্ণ দৃশ্য",
@@ -330,13 +349,18 @@
 		"computerUnavailableHint": "কর্মীর কম্পিউটার Linux ইনস্টলেশন ও ক্লাউড কর্মীদের ক্ষেত্রে চলে।",
 		"watchingAndLearning": "{name} দেখছেন এবং শিখছেন",
 		"stopRecording": "রেকর্ডিং থামান",
-		"teachLocalHint": "Do the task on this screen as you normally would, then stop.",
+		"teachLocalHint": "এই স্ক্রিনে কাজটি যেমন সাধারণত করেন তেমনই করুন, তারপর থামুন।",
+		"teachStarting": "আপনার স্ক্রিন দেখার প্রস্তুতি চলছে…",
+		"teachNeedsScreenPermission": "আপনাকে কাজটি করতে দেখতে Nebo-র স্ক্রিন রেকর্ডিং অনুমতি দরকার। সিস্টেম সেটিংস › গোপনীয়তা ও নিরাপত্তা › স্ক্রিন রেকর্ডিং-এ Nebo চালু করুন, তারপর আবার চেষ্টা করুন।",
+		"openScreenRecordingSettings": "স্ক্রিন রেকর্ডিং সেটিংস খুলুন",
+		"openVirtualComputer": "ভার্চুয়াল কম্পিউটার খুলুন",
 		"recordTask": "কাজ রেকর্ড করুন",
 		"recording": "রেকর্ড হচ্ছে",
 		"connectFailed": "সংযোগ সম্পূর্ণ হয়নি। আবার চেষ্টা করুন।",
 		"connectAccountHint": "সংযোগ করুন, আমি যেখানে থেমেছিলাম সেখান থেকে চালিয়ে যাব।",
 		"submit": "জমা দিন",
 		"other": "অন্যান্য…",
+		"askedReceipt": "জিজ্ঞাসা করা হয়েছে",
 		"copyCode": "কোড কপি করুন",
 		"copied": "কপি হয়েছে!",
 		"dropFilesHere": "এখানে ফাইল ছাড়ুন",
@@ -405,6 +429,8 @@
 		"shareNotConnected": "শেয়ার করতে NeboAI-এ সংযোগ করুন।",
 		"filesInThread": "এই চ্যাটের ফাইল",
 		"nothingHereYet": "এখানে এখনও কিছু নেই",
+		"noEmployeesOneTool": "কোনো কর্মী মেলেনি, তবে ১টি টুল মিলেছে — টুল দেখুন।",
+		"noEmployeesButTools": "কোনো কর্মী মেলেনি, তবে {count}টি টুল মিলেছে — টুল দেখুন।",
 		"workEmptyDesc": "Nebo যখন কোনো রিপোর্ট, শিট বা ডিজাইন তৈরি করবে, তা এখানে দেখা যাবে।",
 		"closeImage": "ছবি বন্ধ করুন",
 		"fullSize": "পূর্ণ আকার",
@@ -429,7 +455,12 @@
 		"historyLoadFailed": "এই চ্যাটটি লোড করা যায়নি। আপনার সংযোগ দেখে আবার চেষ্টা করুন।",
 		"consentCreates": "হ্যাঁ বলুন, ঠিক এই কাজ নিয়েই তৈরি হবে।",
 		"consentAdds": "হ্যাঁ বলুন, এটি তাদের কাজে যোগ হবে।",
-		"fromColleague": "{name} থেকে"
+		"fromColleague": "{name} থেকে",
+		"storageFull": "{cap, select, none {আপনার স্টোরেজ পূর্ণ।} other {আপনার স্টোরেজ পূর্ণ ({cap})।}} আপলোড যোগ করার {days, plural, one {# দিন} other {# দিন}} পরে মুছে যায়।",
+		"storageNextFree": "পরবর্তী জায়গা খালি হবে {date}-এ।",
+		"uploadFailed": "ফাইল আপলোড ব্যর্থ হয়েছে — বার্তা পাঠানো হয়নি। {reason}",
+		"fileRemoved": "আপলোড করার {days, plural, one {# দিন} other {# দিন}} পরে এই ফাইলটি সরানো হয়েছে।",
+		"notDelivered": "বার্তা পৌঁছায়নি। সংযোগ বিচ্ছিন্ন হয়েছিল, তাই আবার পাঠান।"
 	},
 	"chatInput": {
 		"placeholder": "উত্তর দিন...",
@@ -444,7 +475,7 @@
 		"sendMessage": "বার্তা পাঠান",
 		"cancelQueued": "সারিবদ্ধ বার্তা বাতিল করুন",
 		"messageAgent": "{name}-কে বার্তা পাঠান...",
-		"botBadge": "bot",
+		"botBadge": "বট",
 		"attachFiles": "ফাইল সংযুক্ত করুন",
 		"more": "আরও",
 		"teachTask": "কাজ শেখান",
@@ -468,7 +499,17 @@
 		"tapToInterrupt": "বাধা দিতে ট্যাপ করুন",
 		"mute": "মিউট",
 		"unmute": "আনমিউট",
-		"endConversation": "কথোপকথন শেষ করুন"
+		"endConversation": "কথোপকথন শেষ করুন",
+		"recordClip": "একটি ক্লিপ রেকর্ড করুন",
+		"clipStarting": "মাইক্রোফোনের জন্য অপেক্ষা করা হচ্ছে",
+		"clipStop": "থামান ও সংযুক্ত করুন",
+		"clipLevel": "মাইক্রোফোনের মাত্রা",
+		"clipMicBlockedMac": "Nebo আপনার মাইক্রোফোন ব্যবহার করতে পারছে না। সিস্টেম সেটিংস → গোপনীয়তা ও নিরাপত্তা → মাইক্রোফোন-এ অনুমতি দিন।",
+		"clipMicBlocked": "Nebo আপনার মাইক্রোফোন ব্যবহার করতে পারছে না। আপনার সিস্টেমের গোপনীয়তা সেটিংসে অনুমতি দিন।",
+		"clipNoMic": "কোনো মাইক্রোফোন পাওয়া যায়নি। একটি সংযুক্ত করে আবার চেষ্টা করুন।",
+		"clipUnsupported": "এখানে রেকর্ডিং করা যায় না।",
+		"clipFailed": "রেকর্ডিং কাজ করেনি। আবার চেষ্টা করুন।",
+		"clipCapReached": "রেকর্ডিং ১০ মিনিটে থেমে যায়। এটি সংযুক্ত করা হয়েছে।"
 	},
 	"voiceDownload": {
 		"title": "ভয়েস মডেল ডাউনলোড করুন",
@@ -566,7 +607,21 @@
 		"agent": "কর্মী",
 		"command": "কমান্ড",
 		"notConnected": "সংযুক্ত নয়",
-		"keyboardHint": "↑↓ নেভিগেট · Enter নির্বাচন · Esc বাতিল"
+		"keyboardHint": "↑↓ নেভিগেট · Enter নির্বাচন · Esc বাতিল",
+		"category": {
+			"session": "সেশন",
+			"model": "মডেল",
+			"info": "তথ্য"
+		},
+		"desc": {
+			"new": "নতুন কথোপকথন শুরু করুন",
+			"clear": "নতুন করে শুরু করুন (সব বার্তা রাখা থাকে)",
+			"compact": "পুরোনো বার্তা সংক্ষেপ করে মুছুন",
+			"goal": "একটি যাচাই শেষ অবস্থা নিশ্চিত না করা পর্যন্ত কাজ চালিয়ে যান",
+			"model": "মডেল দেখুন বা বদলান",
+			"help": "সব কমান্ড দেখুন",
+			"status": "কর্মী ও সিস্টেমের অবস্থা দেখুন"
+		}
 	},
 	"dataTable": {
 		"loading": "লোড হচ্ছে...",
@@ -649,7 +704,7 @@
 			"dataLocalDesc": "সকল কথোপকথন, স্মৃতি এবং সেটিংস আপনার ডিভাইসে SQLite ডেটাবেসে স্থানীয়ভাবে সংরক্ষিত। Nebo-এর সার্ভারে কিছুই পাঠানো হয় না।",
 			"aiProvider": "AI প্রদানকারী যোগাযোগ",
 			"aiProviderDesc": "আপনি চ্যাট করলে, আপনার বার্তাগুলি প্রক্রিয়াকরণের জন্য আপনার নির্বাচিত AI প্রদানকারীর (Anthropic, OpenAI বা Google) কাছে পাঠানো হয়। তাদের গোপনীয়তা নীতি সেই তথ্যের ক্ষেত্রে প্রযোজ্য।",
-			"apiKeys": "API Keys",
+			"apiKeys": "API কী",
 			"apiKeysDesc": "আপনার API keys আপনার ডিভাইসের ডেটাবেসে স্থানীয়ভাবে সংরক্ষিত। এগুলি শুধুমাত্র আপনার AI প্রদানকারীর সাথে প্রমাণীকরণের জন্য ব্যবহৃত হয়।",
 			"systemAccess": "সিস্টেম অ্যাক্সেস",
 			"systemAccessDesc": "Nebo সিস্টেম বৈশিষ্ট্যগুলি (ফাইল, শেল, পরিচিতি ইত্যাদি) অ্যাক্সেস করতে পারে কিন্তু শুধুমাত্র আপনি স্পষ্টভাবে সক্রিয় করা ক্ষমতাগুলি। আপনি নিয়ন্ত্রণ করেন কর্মী কী করতে পারে।",
@@ -683,7 +738,7 @@
 			"anthropic": "Anthropic (Claude) - প্রস্তাবিত",
 			"openai": "OpenAI (GPT)",
 			"google": "Google (Gemini)",
-			"apiKeyLabel": "API Key",
+			"apiKeyLabel": "API কী",
 			"getKey": "একটি API key পান",
 			"verifying": "যাচাই হচ্ছে...",
 			"backToProvider": "← প্রদানকারী নির্বাচনে ফিরে যান",
@@ -1237,7 +1292,7 @@
 		"sessionUsage": "{percent}% ব্যবহৃত · {hours} ঘণ্টা {minutes} মিনিটে রিসেট",
 		"weekly": "সাপ্তাহিক",
 		"weeklyUsage": "{percent}% ব্যবহৃত · {date}-এ রিসেট",
-		"contextWindow": "{count} ctx",
+		"contextWindow": "{count} কনটেক্সট",
 		"notConnected": "সংযুক্ত নয়",
 		"connectDescription": "AI মডেল ব্যবহার করতে আপনার NeboAI অ্যাকাউন্ট সংযুক্ত করুন",
 		"cliProviders": "CLI প্রদানকারী",
@@ -1245,7 +1300,7 @@
 		"discover": "আবিষ্কার",
 		"modelsDetected": "{count}টি মডেল সনাক্ত হয়েছে — কোনো API key প্রয়োজন নেই",
 		"ollamaNotDetected": "সনাক্ত হয়নি। Ollama ইনস্টল করুন এবং শুরু করতে একটি মডেল পুল করুন।",
-		"apiKeys": "API Keys",
+		"apiKeys": "API কী",
 		"addProvider": "প্রদানকারী যোগ করুন",
 		"test": "পরীক্ষা",
 		"addKey": "Key যোগ করুন",
@@ -1259,10 +1314,10 @@
 			"ollama": "Ollama (স্থানীয়)"
 		},
 		"nameLabel": "নাম",
-		"namePlaceholder": "My Anthropic Key",
-		"apiKeyLabel": "API key",
+		"namePlaceholder": "আমার Anthropic কী",
+		"apiKeyLabel": "API কী",
 		"apiKeyPlaceholder": "sk-...",
-		"baseUrlLabel": "Base URL",
+		"baseUrlLabel": "বেস URL",
 		"baseUrlPlaceholder": "http://localhost:11434",
 		"ollamaHint": "ডিফল্ট Ollama ঠিকানার জন্য ফাঁকা রাখুন। কোনো API key প্রয়োজন নেই।",
 		"adding": "যোগ হচ্ছে...",
@@ -1467,7 +1522,7 @@
 	"settingsStatus": {
 		"title": "কর্মী স্ট্যাটাস",
 		"description": "সংযুক্ত কর্মী এবং সিস্টেম স্বাস্থ্য পর্যবেক্ষণ করুন",
-		"mcpServer": "MCP Server",
+		"mcpServer": "MCP সার্ভার",
 		"database": "ডেটাবেস",
 		"webSocket": "WebSocket",
 		"uptime": "আপটাইম",
@@ -1777,7 +1832,17 @@
 		"toolCategories": "টুলের শ্রেণি",
 		"allToolCategories": "সব টুল শ্রেণি",
 		"moreEmployees": "আরও কর্মী",
-		"moreTools": "আরও টুল"
+		"moreTools": "আরও টুল",
+		"pageTitle": "মার্কেটপ্লেস - Nebo",
+		"sharedPageTitle": "শেয়ার করা - মার্কেটপ্লেস - Nebo",
+		"searchPageTitle": "খুঁজুন — মার্কেটপ্লেস",
+		"resume": {
+			"byAuthor": "{author}-এর তৈরি",
+			"perSeat": "প্রতি সিট",
+			"responsibilities": "দায়িত্ব",
+			"newHire": "নতুন নিয়োগ · প্রথম নিয়োগকর্তা হোন",
+			"meet": "পরিচিত হোন"
+		}
 	},
 	"commander": {
 		"autoLayout": "স্বয়ংক্রিয় লেআউট",
@@ -1854,7 +1919,9 @@
 		"noChatsYet": "এখনও কোনো চ্যাট নেই। নতুন একটি শুরু করুন।",
 		"noRunsYet": "এখনও কোনো রান নেই",
 		"appBadge": "অ্যাপ",
-		"primaryUndeletable": "আপনার ব্যক্তিগত সহকারী নির্দিষ্ট কোনো কর্মীকে উদ্দেশ করে পাঠানো নয় এমন সবকিছু গ্রহণ করেন, তাই এটি মুছে ফেলা যায় না। কর্মী সেটিংসে এর নাম পরিবর্তন করুন।"
+		"primaryUndeletable": "আপনার ব্যক্তিগত সহকারী নির্দিষ্ট কোনো কর্মীকে উদ্দেশ করে পাঠানো নয় এমন সবকিছু গ্রহণ করেন, তাই এটি মুছে ফেলা যায় না। কর্মী সেটিংসে এর নাম পরিবর্তন করুন।",
+		"browseFolders": "ফোল্ডার ব্রাউজ করুন",
+		"browseFiles": "ফাইল ব্রাউজ করুন"
 	},
 	"agentLearning": {
 		"title": "নিজেকে উন্নত করা",
@@ -1871,6 +1938,7 @@
 		"viewOnly": "এই কথোপকথন শুধু দেখার জন্য — কর্মীরা এখানে কথা বলেন, আপনি তাঁদের নিজেদের চ্যাটে পথ দেখান"
 	},
 	"teams": {
+		"everyoneHint": "পুরো দল",
 		"section": "দল",
 		"emptyRoster": "দুই বা তার বেশি কর্মীকে একটি দলে রাখুন, তাঁরা একটিই কথোপকথন ভাগ করে নেবেন। শুরু করতে + চাপুন, অথবা যেকোনো কর্মীকে বলুন।",
 		"inTeam": "এই দলে",
@@ -1945,6 +2013,9 @@
 	},
 	"agentSettings": {
 		"general": "সাধারণ",
+		"tabWho": "তারা কে",
+		"tabWork": "তারা কী করে",
+		"developerGroup": "ডেভেলপার",
 		"generalBlurb": "এই কর্মীর একটি সারসংক্ষেপ — অবস্থা, দক্ষতা, ওয়ার্কফ্লো ও রক্ষণাবেক্ষণ।",
 		"identityBlurb": "নাম, কণ্ঠস্বর, রং এবং স্ট্যাটাস — এই কর্মী অ্যাপ জুড়ে কীভাবে প্রদর্শিত হয়।",
 		"nameLabel": "নাম",
@@ -2129,6 +2200,14 @@
 		"saveCredentialsFailed": "ক্রেডেনশিয়াল সংরক্ষণ করতে ব্যর্থ।",
 		"signInFailedRetry": "সাইন-ইন ব্যর্থ। অনুগ্রহ করে আবার চেষ্টা করুন।",
 		"startSignInFailed": "এই অ্যাকাউন্টের জন্য সাইন-ইন শুরু করা যায়নি।",
+		"signInPopupBlocked": "সাইন-ইন উইন্ডো আটকে দেওয়া হয়েছে। Nebo-র জন্য পপ-আপ অনুমতি দিন, তারপর আবার চেষ্টা করুন।",
+		"channelToggleFailed": "চ্যানেলটি আপডেট করা যায়নি। আবার চেষ্টা করুন।",
+		"helpChatFailed": "সাহায্য চ্যাট খোলা যায়নি। আবার চেষ্টা করুন।",
+		"accountsLoadFailed": "অ্যাকাউন্ট লোড করা যায়নি। আবার চেষ্টা করুন।",
+		"accountListRefreshFailed": "অ্যাকাউন্ট যুক্ত হয়েছে, কিন্তু তালিকা রিফ্রেশ হয়নি। দেখতে সেটিংস আবার খুলুন।",
+		"disconnectFailed": "অ্যাকাউন্টটি সংযোগ বিচ্ছিন্ন করা যায়নি। আবার চেষ্টা করুন।",
+		"claimableLoadFailed": "আপনার ফোন নম্বর লোড করা যায়নি।",
+		"tryAgain": "আবার চেষ্টা করুন",
 		"contextTitle": "এই কর্মী যা জানেন",
 		"contextDesc": "কোম্পানির শিল্প ও কোম্পানি স্তর থেকে, যতবার সেগুলো বদলায়, কর্মী নিজেই এটি লেখেন। তিনি কিছু না খুঁজেই এই অনুযায়ী কাজ করেন।",
 		"contextAgainst": "{against}-এর ভিত্তিতে লেখা",
@@ -2157,7 +2236,19 @@
 		"changeInBotSettings": "বট সেটিংসে পরিবর্তন করুন",
 		"reachManage": "পরিচালনা করুন",
 		"reachNoPhone": "এখনও কোনো ফোন লাইন নেই।",
-		"reachNoChannels": "কোনো চ্যানেল চালু নেই।"
+		"reachNoChannels": "কোনো চ্যানেল চালু নেই।",
+		"newCallTreeName": "নতুন কল ট্রি",
+		"newWorkflowName": "নতুন ওয়ার্কফ্লো",
+		"greetingNodeLabel": "অভিবাদন",
+		"phoneLoadingNumbers": "আপনার নম্বর লোড হচ্ছে…",
+		"phoneNoFreeNumbers": "যুক্ত করার মতো কোনো খালি নম্বর নেই। {link}-এ একটি নম্বর কিনুন (বা অন্য কর্মীর কাছ থেকে একটি পার্ক করুন), তারপর এখানে ফিরে আসুন।",
+		"phoneWhichNumber": "এই কর্মী কোন নম্বরের কল ধরবে?",
+		"phoneNumberParked": "পার্ক করা",
+		"phoneNumberUnassigned": "বরাদ্দ নেই",
+		"phoneLineName": "লাইনের নাম (ঐচ্ছিক)",
+		"phoneLineNamePlaceholder": "ফ্রন্ট ডেস্ক, সাপোর্ট, স্প্যানিশ লাইন…",
+		"phoneAttaching": "নম্বরটি এই কর্মীর সাথে যুক্ত করা হচ্ছে…",
+		"phoneAttachNumber": "নম্বর যুক্ত করুন"
 	},
 	"agentConfigure": {
 		"inputs": "ইনপুট",
@@ -2234,7 +2325,10 @@
 		"factDate": "তারিখ",
 		"factAttachment": "সংযুক্তি",
 		"factVia": "মাধ্যম",
-		"interrupted": "বাধাপ্রাপ্ত"
+		"interrupted": "বাধাপ্রাপ্ত",
+		"tokensShort": "{count} টোকেন",
+		"underOneSecond": "<১ সে.",
+		"triggerKind": "{kind, select, schedule {সময়সূচি} event {ইভেন্ট} heartbeat {হার্টবিট} manual {ম্যানুয়াল} watch {নজরদারি} webhook {ওয়েবহুক} call {কল} retry {পুনরায় চেষ্টা} other {{kind}}}"
 	},
 	"automations": {
 		"title": "অটোমেশন",
@@ -2272,7 +2366,12 @@
 		"every8h": "প্রতি ৮ ঘণ্টায়",
 		"every24h": "প্রতি ২৪ ঘণ্টায়",
 		"everyInterval": "প্রতি {interval}",
-		"whenFires": "যখন {event} ঘটে"
+		"whenFires": "যখন {event} ঘটে",
+		"anEvent": "ইভেন্ট",
+		"watching": "নজরদারি: {source}",
+		"aPlugin": "প্লাগইন",
+		"manualTrigger": "ম্যানুয়াল ট্রিগার",
+		"onEventNamed": "{event} হলে"
 	},
 	"newBot": {
 		"browseMarketplace": "মার্কেটপ্লেস ব্রাউজ করুন",
@@ -2329,7 +2428,18 @@
 		"approvalGate": {
 			"batchHeadline": "একটি ধাপের {n}টি কাজের জন্য আপনার অনুমোদন দরকার",
 			"goalHeadline": "এই লক্ষ্যে একমত? যাচাই নিশ্চিত না করা পর্যন্ত কাজ চলবে।",
-			"yourAgent": "আপনার কর্মী"
+			"yourAgent": "আপনার কর্মী",
+			"operation": "{action, select, create {{noun} তৈরি করুন} send {{noun} পাঠান} update {{noun} আপডেট করুন} status {{noun}-এর অবস্থা বদলান} apply {{noun} প্রয়োগ করুন} record {{noun} রেকর্ড করুন} schedule {{noun} নির্ধারণ করুন} publish {{noun} প্রকাশ করুন} respond {{noun}-এর জবাব দিন} reply {{noun}-এর উত্তর দিন} upsert {{noun} সংরক্ষণ করুন} attach {{noun} সংযুক্ত করুন} write {{noun} লিখুন} remove {{noun} সরান} other {{verb} {noun}}}",
+			"resource": {
+				"billpayment": "বিল পরিশোধ",
+				"creditmemo": "ক্রেডিট মেমো",
+				"journalentry": "জার্নাল এন্ট্রি",
+				"purchaseorder": "ক্রয় আদেশ",
+				"opportunity": "ডিল",
+				"company": "কোম্পানি ফাইল — এই ব্যবসা কীভাবে চলে",
+				"industry": "ইন্ডাস্ট্রি ফাইল — এই পেশা কীভাবে কাজ করে",
+				"franchise": "ফ্র্যাঞ্চাইজ ফাইল — একটি ব্র্যান্ডের শর্তাবলি"
+			}
 		},
 		"approvalModal": {
 			"runShellCommand": "শেল কমান্ড চালান",
@@ -2446,7 +2556,20 @@
 		"narrowSat": "শ",
 		"pageTitle": "সময়সূচি - Nebo",
 		"perWeek": "{count}/সপ্তাহ",
-		"workflowBuilderTitle": "{name} — ওয়ার্কফ্লো বিল্ডার"
+		"workflowBuilderTitle": "{name} — ওয়ার্কফ্লো বিল্ডার",
+		"everyDay": "প্রতিদিন",
+		"weekends": "সপ্তাহান্তে",
+		"weekdayPlural": "{day, select, sun {প্রতি রবিবার} mon {প্রতি সোমবার} tue {প্রতি মঙ্গলবার} wed {প্রতি বুধবার} thu {প্রতি বৃহস্পতিবার} fri {প্রতি শুক্রবার} sat {প্রতি শনিবার} other {{day}}}",
+		"clockTime": "{hour}:{minute} {period}",
+		"hourOnly": "{hour} {period}",
+		"midnight": "মধ্যরাত",
+		"cronEveryMinutes": "{n, plural, one {প্রতি মিনিটে} other {প্রতি # মিনিটে}}",
+		"cronEveryHours": "{n, plural, one {প্রতি ঘণ্টায়} other {প্রতি # ঘণ্টায়}}",
+		"cronEveryHoursAt": "{n, plural, one {প্রতি ঘণ্টায় :{minute}-এ} other {প্রতি # ঘণ্টায় :{minute}-এ}}",
+		"cronDailyAt": "প্রতিদিন {time}-এ",
+		"cronDaysAt": "{days} {time}-এ",
+		"cronMonthlyAt": "প্রতি মাসের {day} তারিখে {time}-এ",
+		"listSeparator": ", "
 	},
 	"neboShell": {
 		"tabs": {
@@ -2491,7 +2614,26 @@
 	},
 	"userMenu": {
 		"aboutNebo": "Nebo সম্পর্কে",
-		"planSuffix": "{plan} প্ল্যান"
+		"planSuffix": "{plan} প্ল্যান",
+		"provideFeedback": "মতামত দিন"
+	},
+	"feedback": {
+		"title": "মতামত দিন",
+		"lede": "NeboAI দলকে জানান কী কাজ করছে, কী করছে না, বা আপনি কী চান।",
+		"message": "বার্তা",
+		"screenshots": "স্ক্রিনশট বা ছবি (ঐচ্ছিক)",
+		"addScreenshot": "একটি স্ক্রিনশট যোগ করুন",
+		"remove": "{name} সরান",
+		"diagnostics": "ডায়াগনস্টিকস অন্তর্ভুক্ত করুন",
+		"diagnosticsHelp": "অ্যাপ ও বটের সংস্করণ, প্ল্যাটফর্ম, বট id এবং এই স্ক্রিন। কখনো পাসওয়ার্ড বা সাইন-ইন টোকেন নয়।",
+		"send": "পাঠান",
+		"sending": "পাঠানো হচ্ছে",
+		"sent": "ধন্যবাদ — NeboAI দলের কাছে পাঠানো হয়েছে।",
+		"failed": "আপনার মতামত পাঠানো যায়নি। আবার চেষ্টা করুন।",
+		"needMessage": "আগে একটি বার্তা লিখুন।",
+		"messageTooLong": "বার্তা {max} অক্ষরের মধ্যে রাখুন।",
+		"tooManyScreenshots": "{max, plural, one {সর্বোচ্চ #টি স্ক্রিনশট সংযুক্ত করুন।} other {সর্বোচ্চ #টি স্ক্রিনশট সংযুক্ত করুন।}}",
+		"imagesOnly": "শুধু ছবি সংযুক্ত করা যায়।"
 	},
 	"workflowCanvas": {
 		"noWorkflows": "ভিজ্যুয়ালাইজ করার মতো কোনো ওয়ার্কফ্লো নেই",
@@ -2632,7 +2774,18 @@
 		"gettingReady": "{name}-কে প্রস্তুত করা হচ্ছে…",
 		"skillsAndTools": "দক্ষতা ও টুল",
 		"hireFailedTitle": "নিয়োগ সম্পূর্ণ করা যায়নি",
-		"hireFailed": "{name}-কে নিয়োগ দেওয়া যায়নি। আবার চেষ্টা করুন।"
+		"hireFailed": "{name}-কে নিয়োগ দেওয়া যায়নি। আবার চেষ্টা করুন।",
+		"codeStatus": {
+			"nebo": "NeboAI-এ সংযোগ করা হচ্ছে…",
+			"skill": "দক্ষতা ইনস্টল হচ্ছে…",
+			"workflow": "ওয়ার্কফ্লো ইনস্টল হচ্ছে…",
+			"agent": "কর্মী ইনস্টল হচ্ছে…",
+			"loop": "লুপে যোগ দেওয়া হচ্ছে…",
+			"plugin": "প্লাগইন ইনস্টল হচ্ছে…",
+			"app": "অ্যাপ ইনস্টল হচ্ছে…",
+			"collection": "সংগ্রহ ইনস্টল হচ্ছে…",
+			"connection": "MCP সংযোগ যোগ করা হচ্ছে…"
+		}
 	},
 	"activity": {
 		"pageTitle": "কার্যকলাপ - Nebo",
@@ -2651,7 +2804,8 @@
 		"openAppHint": "অ্যাপ খুলুন",
 		"openApp": "অ্যাপ খুলুন",
 		"runs": "রান",
-		"memory": "মেমোরি"
+		"memory": "মেমোরি",
+		"appError": "অ্যাপ ত্রুটি ({status})"
 	},
 	"pricing": {
 		"pageTitle": "আপনার প্ল্যান বেছে নিন - Nebo",
@@ -2769,7 +2923,7 @@
 		"chooseAuthMethod": "প্রমাণীকরণ পদ্ধতি বেছে নিন",
 		"authQuestion": "এই সার্ভার কীভাবে অনুরোধ প্রমাণীকরণ করে?",
 		"serverName": "সার্ভারের নাম",
-		"serverNamePlaceholder": "My MCP Server",
+		"serverNamePlaceholder": "আমার MCP সার্ভার",
 		"serverUrl": "সার্ভার URL",
 		"serverUrlPlaceholder": "https://mcp.example.com/server",
 		"serverUrlHint": "MCP সার্ভারের এন্ডপয়েন্ট URL (Streamable HTTP)",
@@ -2811,7 +2965,10 @@
 		"checkEvery": "পরীক্ষার ব্যবধান",
 		"hours6": "৬ ঘণ্টা",
 		"history": "ইতিহাস",
-		"title": "টুল আপডেট"
+		"title": "টুল আপডেট",
+		"onLatest": "আপনি সর্বশেষ সংস্করণ ব্যবহার করছেন",
+		"checkFailed": "আপডেট খোঁজা যায়নি",
+		"updateFailed": "আপডেট ব্যর্থ হয়েছে"
 	},
 	"inbox": {
 		"title": "ইনবক্স",
@@ -2842,15 +2999,27 @@
 		"failedAt": "\"{activity}\" চলাকালে ব্যর্থ হয়েছে",
 		"steps": "সে কী করছিল",
 		"output": "আউটপুট",
-		"recordGone": "রানের নথিটি আর নেই। যে কর্মীর অধীনে এটি ছিল তাঁর সঙ্গেই এটি সরে গেছে, তাই কেবল এই বিজ্ঞপ্তিটুকু রয়ে গেছে।"
+		"recordGone": "রানের নথিটি আর নেই। যে কর্মীর অধীনে এটি ছিল তাঁর সঙ্গেই এটি সরে গেছে, তাই কেবল এই বিজ্ঞপ্তিটুকু রয়ে গেছে।",
+		"revert": "ফিরিয়ে নিন",
+		"reverted": "ফিরিয়ে নেওয়া হয়েছে"
 	},
 	"voice": {
 		"startConversation": "ভয়েস কথোপকথন",
+		"reconnecting": "কলে আবার যোগ দেওয়া হচ্ছে…",
 		"consentTitle": "ভয়েস একটি ক্লাউড সেবা ব্যবহার করে",
 		"consentBody": "কল চলাকালীন ভয়েস কথোপকথন আপনার মাইক্রোফোনের অডিও প্রক্রিয়াকরণের জন্য একটি ক্লাউড ভয়েস সেবায় পাঠায়। অডিও এই কম্পিউটার ছেড়ে যায়। চ্যাটে টাইপ করা আগের মতোই লোকাল থাকে।",
 		"consentAccept": "ভয়েস চালু করুন",
 		"consentDecline": "এখন নয়",
-		"cloudIndicator": "অডিও ক্লাউডে স্ট্রিম হচ্ছে"
+		"cloudIndicator": "অডিও ক্লাউডে স্ট্রিম হচ্ছে",
+		"talkTo": "{name}-এর সাথে কথা বলুন",
+		"isSpeaking": "{name} কথা বলছে",
+		"callEnded": "কলটি শেষ হয়েছে।",
+		"tryAgain": "আবার চেষ্টা করুন",
+		"onAnotherCall": "অন্য একজন কর্মীর সাথে কলে আছে",
+		"callLost": "কলটি কেটে গেছে এবং আবার যোগ দেওয়া যায়নি। আবার শুরু করুন।",
+		"callEndedStartAgain": "কলটি শেষ হয়েছে। আবার শুরু করুন।",
+		"needsConsent": "ভয়েস কথোপকথনে আপনার মাইক্রোফোনের অডিও প্রক্রিয়াকরণের জন্য একটি ক্লাউড ভয়েস সেবায় পাঠানো হয়। সম্মতি দিতে ভয়েস প্যানেলে এটি চালু করুন।",
+		"startFailed": "কল শুরু করা যায়নি। আবার চেষ্টা করুন।"
 	},
 	"flows": {
 		"none": "এখনও কোনো ফ্লো নেই",
@@ -2865,7 +3034,15 @@
 		"overlapBufferOne": "শেষ হলে একবার চালান",
 		"overlapAllowAll": "তবুও চালান",
 		"deleteReminderTitle": "\"{name}\" মুছবেন?",
-		"deleteReminderBody": "এই নির্ধারিত কাজটি চলা বন্ধ হয়ে যায় এবং সরে যায়। আগের রানগুলো রানের ইতিহাসে থাকে।"
+		"deleteReminderBody": "এই নির্ধারিত কাজটি চলা বন্ধ হয়ে যায় এবং সরে যায়। আগের রানগুলো রানের ইতিহাসে থাকে।",
+		"triggerOnEvent": "{event} হলে",
+		"triggerWatch": "নজরদারি: {target}",
+		"triggerWatchPlugin": "নজরদারি: প্লাগইন",
+		"triggerManual": "ম্যানুয়াল ট্রিগার",
+		"scheduleTooSpecific": "এই সময়সূচি সাধারণ এডিটরে ধরার চেয়ে বেশি নির্দিষ্ট",
+		"askSetupPrompt": "আমার জন্য একটি নতুন ফ্লো সেট আপ করুন: ",
+		"everyNHours": "প্রতি N ঘণ্টায়",
+		"everyNMinutes": "প্রতি N মিনিটে"
 	},
 	"christen": {
 		"title": "আপনার প্রথম কর্মীর নাম দিন",
@@ -2887,7 +3064,27 @@
 		"working": "কী লাগবে তা বের করা হচ্ছে…",
 		"willDo": "{name} যা করবে:",
 		"thisEmployee": "এই কর্মী",
-		"removeItem": "{item} সরান"
+		"removeItem": "{item} সরান",
+		"hireFromApps": "অন্য অ্যাপ থেকে নিয়োগ দিন",
+		"linkedLede": "তারা যে কম্পিউটারে চলে সেখানেই কাজ চালিয়ে যায়।",
+		"thisComputer": "এই কম্পিউটার",
+		"offline": "অফলাইন",
+		"linkedFailed": "{bot} থেকে নিয়োগ দেওয়া যায়নি। আবার চেষ্টা করুন।",
+		"onYourTeam": "আপনার দলে",
+		"linkedLooking": "অ্যাপ খোঁজা হচ্ছে…",
+		"linkedHireNew": "নতুন একজন নিয়োগ দিন",
+		"linkedConnect": "আপনার এজেন্ট সংযুক্ত করুন",
+		"linkedRunning": "{count}টি চলছে",
+		"nameYour": "আপনার {app}-এর নাম দিন",
+		"youAlreadyHave": "আপনার ইতিমধ্যে আছে:",
+		"nameTaken": "{name} নামে আপনার ইতিমধ্যে একজন কর্মী আছে।",
+		"linkedWhere": "কোন কম্পিউটারে এটি কাজ করবে?",
+		"linkedPickAgent": "কোন {app} এজেন্ট?",
+		"linkedModeTitle": "জিজ্ঞাসা না করে এটি কী করতে পারবে?",
+		"linkedModeAutomaticDesc": "নিজের ফোল্ডারের ফাইল নিজেই সম্পাদনা করে। অন্য কিছুর আগে জিজ্ঞাসা করে।",
+		"linkedModeAskDesc": "কিছু পরিবর্তন করার আগে আপনাকে জিজ্ঞাসা করে।",
+		"linkedModePlanDesc": "পড়ে ও পরিকল্পনা করে। কিছুই পরিবর্তন করে না।",
+		"linkedModeFullAccessDesc": "এই কম্পিউটারে জিজ্ঞাসা না করেই যেকোনো কিছু চালায়।"
 	},
 	"runLimit": {
 		"title": "প্রতি রানে খরচের সীমা",
@@ -3101,5 +3298,526 @@
 		"unreviewed": "পর্যালোচনা করা হয়নি",
 		"loadMore": "আরও দেখান",
 		"addJobEdit": "কাজে যোগ করুন"
+	},
+	"workflow": {
+		"addNode": "নোড যোগ করুন",
+		"deleteNode": "নোড মুছুন",
+		"deleteWorkflow": "ওয়ার্কফ্লো মুছুন",
+		"removeItem": "{name} সরান",
+		"activityCount": "{count, plural, one {#টি কার্যকলাপ} other {#টি কার্যকলাপ}}",
+		"stepCount": "{count, plural, one {#টি ধাপ} other {#টি ধাপ}}",
+		"triggerTypes": {
+			"schedule": "সময়সূচি",
+			"heartbeat": "হার্টবিট",
+			"event": "ইভেন্ট",
+			"watch": "নজরদারি",
+			"manual": "ম্যানুয়াল"
+		},
+		"branch": {
+			"true": "সত্য",
+			"false": "মিথ্যা",
+			"eachItem": "প্রতিটি আইটেম",
+			"done": "সম্পন্ন"
+		},
+		"types": {
+			"greeting": {
+				"label": "অভিবাদন",
+				"description": "কল ধরার সময় এই লাইন কী বলে",
+				"params": {
+					"text": {
+						"label": "অভিবাদন",
+						"description": "কল সংযুক্ত হলে হুবহু বলা হয়।",
+						"placeholder": "Miller Dental-এ কল করার জন্য ধন্যবাদ! কীভাবে সাহায্য করতে পারি?"
+					}
+				}
+			},
+			"intent": {
+				"label": "অভিপ্রায়",
+				"description": "এই লাইন সামলায় এমন একটি কাজ, তার অনুমোদিত টুলসহ",
+				"params": {
+					"name": {
+						"label": "অভিপ্রায়ের নাম",
+						"description": "রাউটার যে ছোট id ব্যবহার করে (প্রতিটি ট্রিতে অনন্য)।"
+					},
+					"description": {
+						"label": "কলাররা কখন এটি বোঝায়",
+						"placeholder": "কলার অ্যাপয়েন্টমেন্ট নির্ধারণ, পরিবর্তন বা বাতিল করতে চান"
+					},
+					"tools": {
+						"label": "অনুমোদিত টুল",
+						"description": "শুধু এই অভিপ্রায়ের জন্য কমা দিয়ে আলাদা করা tool:resource অনুমতি।"
+					},
+					"workflows": {
+						"label": "অনুমোদিত ওয়ার্কফ্লো",
+						"description": "এই কর্মীর যেসব ওয়ার্কফ্লো এই অভিপ্রায় চালাতে পারে, সেগুলোর নাম কমা দিয়ে আলাদা করে।"
+					},
+					"plugins": {
+						"label": "অনুমোদিত প্লাগইন",
+						"description": "কমা দিয়ে আলাদা করা প্লাগইন slug।"
+					},
+					"mcp": {
+						"label": "অনুমোদিত MCP সার্ভার",
+						"description": "কমা দিয়ে আলাদা করা সংযুক্ত MCP সার্ভারের নাম।"
+					}
+				}
+			},
+			"transfer": {
+				"label": "মানুষের কাছে হস্তান্তর",
+				"description": "লাইনের ট্রান্সফার নম্বরে সরাসরি হস্তান্তর",
+				"params": {
+					"when": {
+						"label": "কখন হস্তান্তর করবেন",
+						"placeholder": "কলার কোনো মানুষের সাথে কথা বলতে চান, বিরক্ত, বা জরুরি অবস্থায় আছেন"
+					},
+					"to": {
+						"label": "যার সাথে সংযুক্ত করে",
+						"description": "কলারকে জানানো হয় কার সাথে তাকে সংযুক্ত করা হচ্ছে। নম্বরটি লাইন সেটিংসেই থাকে।",
+						"placeholder": "আমাদের অফিস ম্যানেজার"
+					}
+				}
+			},
+			"takeMessage": {
+				"label": "বার্তা নিন",
+				"description": "মালিকের জন্য একটি বার্তা নিন (বিকল্প পথ)",
+				"params": {
+					"fields": {
+						"label": "কী কী নেবেন",
+						"placeholder": "নাম, নম্বর, কলের কারণ, ফিরতি কলের সুবিধাজনক সময়"
+					}
+				}
+			},
+			"disclosures": {
+				"label": "জানাতে পারে",
+				"description": "যেসব তথ্য এই লাইন খোঁজ ছাড়াই সরাসরি বলে",
+				"params": {
+					"text": {
+						"label": "অনুমোদিত তথ্য",
+						"description": "এই লাইনের জন্য মালিকের অনুমোদিত সর্বজনীন তথ্য — সময়, ঠিকানা, সেবা এলাকা, মূল দাম। গ্রাহক বা অ্যাকাউন্টের নির্দিষ্ট তথ্য এখানে কখনো থাকে না; সেগুলো খোঁজের মাধ্যমে আসে।",
+						"placeholder": "সোম–শুক্র ৮–৫টা খোলা। ঠিকানা 123 Main St। ক্লিনিং $120 থেকে শুরু।"
+					}
+				}
+			},
+			"custom": {
+				"label": "কাস্টম",
+				"description": "ধাপ ও দক্ষতা নিজে নির্ধারণ করুন"
+			},
+			"research": {
+				"label": "গবেষণা",
+				"description": "ওয়েব সার্চ, বিশ্লেষণ ও সংশ্লেষণ",
+				"params": {
+					"depth": {
+						"label": "গবেষণার গভীরতা",
+						"options": {
+							"quick": "দ্রুত (২-৫ মিনিট)",
+							"standard": "সাধারণ (৫-১০ মিনিট)",
+							"deep": "গভীর (১০-২০ মিনিট)"
+						}
+					},
+					"sources": {
+						"label": "উৎসের ধরন",
+						"description": "যেসব উৎসে খুঁজবে, কমা দিয়ে আলাদা করে",
+						"placeholder": "ওয়েব, একাডেমিক, সংবাদ"
+					}
+				}
+			},
+			"email": {
+				"label": "ইমেল পাঠান",
+				"description": "ইমেল লিখে পাঠান",
+				"params": {
+					"to": {
+						"label": "প্রাপক",
+						"description": "প্রাপকের ইমেল ঠিকানা (বা আগের ধাপের ডেটা ব্যবহার করুন)"
+					},
+					"subject": {
+						"label": "বিষয়ের টেমপ্লেট"
+					}
+				}
+			},
+			"notify": {
+				"label": "জানান",
+				"description": "একটি চ্যানেলে বিজ্ঞপ্তি পাঠান",
+				"params": {
+					"channel": {
+						"label": "চ্যানেল",
+						"options": {
+							"email": "ইমেল",
+							"webhook": "ওয়েবহুক"
+						}
+					},
+					"target": {
+						"label": "লক্ষ্য",
+						"description": "চ্যানেলের নাম, ইমেল বা ওয়েবহুক URL",
+						"placeholder": "#general বা user@example.com"
+					}
+				}
+			},
+			"code": {
+				"label": "কোড চালান",
+				"description": "একটি কোড স্নিপেট চালান",
+				"params": {
+					"language": {
+						"label": "ভাষা"
+					},
+					"code": {
+						"label": "কোড",
+						"description": "যে কোড চালানো হবে"
+					}
+				}
+			},
+			"condition": {
+				"label": "শর্ত",
+				"description": "If/else শাখা",
+				"params": {
+					"expression": {
+						"label": "শর্তের এক্সপ্রেশন",
+						"description": "JavaScript এক্সপ্রেশন — truthy হলে সত্য শাখায়, falsy হলে মিথ্যা শাখায় যায়"
+					},
+					"mode": {
+						"label": "মূল্যায়নের ধরন",
+						"options": {
+							"expression": "এক্সপ্রেশন",
+							"contains": "ডেটাতে আছে",
+							"exists": "ফিল্ড আছে",
+							"regex": "Regex মিল"
+						}
+					}
+				}
+			},
+			"loop": {
+				"label": "লুপ",
+				"description": "আইটেমের তালিকার প্রতিটির উপর চালান",
+				"params": {
+					"source": {
+						"label": "আইটেমের উৎস",
+						"description": "যে অ্যারের উপর চালানো হবে তার পাথ",
+						"placeholder": "data.items বা data.emails"
+					},
+					"maxIterations": {
+						"label": "সর্বোচ্চ পুনরাবৃত্তি",
+						"description": "অসীম লুপ ঠেকাতে নিরাপত্তা সীমা"
+					}
+				}
+			},
+			"wait": {
+				"label": "অপেক্ষা",
+				"description": "চলা থামিয়ে রাখুন",
+				"params": {
+					"duration": {
+						"label": "অপেক্ষার সময়",
+						"options": {
+							"5s": "৫ সেকেন্ড",
+							"30s": "৩০ সেকেন্ড",
+							"1m": "১ মিনিট",
+							"5m": "৫ মিনিট",
+							"15m": "১৫ মিনিট",
+							"1h": "১ ঘণ্টা",
+							"custom": "কাস্টম"
+						}
+					},
+					"waitUntil": {
+						"label": "অথবা অপেক্ষা করুন যতক্ষণ না",
+						"description": "এই ইভেন্ট ঘটলে আবার চলবে (সময়ভিত্তিক হলে খালি রাখুন)",
+						"placeholder": "যেমন event:approval.received"
+					}
+				}
+			},
+			"agent": {
+				"label": "কর্মী",
+				"description": "অন্য একজন কর্মীকে দায়িত্ব দিন",
+				"params": {
+					"agentId": {
+						"label": "কর্মী",
+						"description": "যে কর্মীকে এই কাজের দায়িত্ব দেওয়া হবে"
+					},
+					"instructions": {
+						"label": "নির্দেশনা",
+						"description": "কর্মীর ডিফল্ট পরিচয় বদলান বা তাতে যোগ করুন",
+						"placeholder": "দায়িত্বপ্রাপ্ত কর্মীর জন্য নির্দিষ্ট নির্দেশনা..."
+					}
+				}
+			},
+			"connector": {
+				"label": "কানেক্টর",
+				"description": "একটি MCP ইন্টিগ্রেশন ব্যবহার করুন",
+				"params": {
+					"serverId": {
+						"label": "MCP সার্ভার",
+						"description": "যে সংযুক্ত MCP সার্ভার ব্যবহার করা হবে"
+					},
+					"tool": {
+						"label": "টুল",
+						"description": "MCP সার্ভারের কোন টুল চালানো হবে",
+						"placeholder": "যেমন read_file, send_message"
+					},
+					"input": {
+						"label": "ইনপুট",
+						"description": "টুলের জন্য JSON ইনপুট ('{{'data.field'}}' টেমপ্লেট সমর্থিত)"
+					}
+				}
+			},
+			"http": {
+				"label": "HTTP অনুরোধ",
+				"description": "একটি HTTP API কল করুন",
+				"params": {
+					"method": {
+						"label": "মেথড"
+					},
+					"url": {
+						"label": "URL"
+					},
+					"body": {
+						"label": "অনুরোধের বডি",
+						"description": "POST/PUT/PATCH অনুরোধের জন্য JSON বডি"
+					},
+					"headers": {
+						"label": "হেডার",
+						"description": "প্রতি লাইনে একটি হেডার (key: value)"
+					}
+				}
+			},
+			"decide": {
+				"label": "সিদ্ধান্ত",
+				"description": "টাইপ করা প্রশ্ন দিয়ে ডেটা শ্রেণিবদ্ধ বা বিচার করুন",
+				"params": {
+					"state": {
+						"label": "অবস্থা",
+						"description": "যে ডেটা পাথ বিচার করা হবে (inputs.*, item, nodes.'<'id>.*)"
+					},
+					"questions": {
+						"label": "প্রশ্ন",
+						"description": "টাইপ করা প্রশ্নের JSON অবজেক্ট (choice, score, noul)। একটি শর্ত নোড nodes.'<'id>.'<'question>.choice এবং .confidence অনুযায়ী পথ বাছে"
+					},
+					"default": {
+						"label": "ডিফল্ট উত্তর",
+						"description": "কোনো সিদ্ধান্ত নেওয়া না গেলে যে উত্তর ব্যবহার হবে: choice-এর জন্য একটি বিকল্প, score-এর জন্য একটি স্তর, noul-এর জন্য true বা false। তখন নোডটি nodes.'<'id>.defaulted সেট করে"
+					}
+				}
+			},
+			"transform": {
+				"label": "রূপান্তর",
+				"description": "ডেটার আকার বদলান বা ফিল্টার করুন",
+				"params": {
+					"operation": {
+						"label": "অপারেশন",
+						"options": {
+							"map": "Map — প্রতিটি আইটেম রূপান্তর করুন",
+							"filter": "Filter — মিলে যাওয়া আইটেম রাখুন",
+							"reduce": "Reduce — একটি মানে একত্র করুন",
+							"pick": "Pick — নির্দিষ্ট ফিল্ড বের করুন",
+							"template": "Template — টেক্সট হিসেবে সাজান"
+						}
+					},
+					"expression": {
+						"label": "এক্সপ্রেশন",
+						"description": "রূপান্তরের এক্সপ্রেশন"
+					}
+				}
+			}
+		},
+		"catalog": {
+			"searchPlaceholder": "নোড খুঁজুন...",
+			"noMatch": "“{query}”-এর সাথে কোনো নোড মেলেনি",
+			"toolsAvailable": "{count, plural, one {#টি টুল উপলব্ধ} other {#টি টুল উপলব্ধ}}",
+			"categories": {
+				"triggers": "ট্রিগার",
+				"activities": "কার্যকলাপ",
+				"callTree": "কল ট্রি",
+				"flowControl": "ফ্লো নিয়ন্ত্রণ",
+				"connectors": "কানেক্টর (MCP)",
+				"agents": "কর্মী",
+				"output": "আউটপুট"
+			},
+			"items": {
+				"triggerSchedule": {
+					"label": "সময়সূচি",
+					"desc": "নির্দিষ্ট সময়ে চালান"
+				},
+				"triggerEvent": {
+					"label": "ইভেন্ট",
+					"desc": "ইভেন্টে সাড়া দিন"
+				},
+				"triggerHeartbeat": {
+					"label": "হার্টবিট",
+					"desc": "নির্দিষ্ট বিরতিতে চালান"
+				},
+				"triggerManual": {
+					"label": "ম্যানুয়াল",
+					"desc": "চাইলেই চালান"
+				},
+				"activityCustom": {
+					"label": "কাস্টম কার্যকলাপ",
+					"desc": "ধাপ ও দক্ষতা নির্ধারণ করুন"
+				},
+				"activityResearch": {
+					"label": "গবেষণা",
+					"desc": "ওয়েব সার্চ ও বিশ্লেষণ"
+				},
+				"activityEmail": {
+					"label": "ইমেল পাঠান",
+					"desc": "ইমেল লিখে পাঠান"
+				},
+				"activityNotify": {
+					"label": "জানান",
+					"desc": "বিজ্ঞপ্তি পাঠান"
+				},
+				"activityCode": {
+					"label": "কোড চালান",
+					"desc": "একটি কোড স্নিপেট চালান"
+				},
+				"activityHttp": {
+					"label": "HTTP অনুরোধ",
+					"desc": "একটি API কল করুন"
+				},
+				"activityDecide": {
+					"label": "সিদ্ধান্ত",
+					"desc": "ডেটা শ্রেণিবদ্ধ বা বিচার করুন"
+				},
+				"activityTransform": {
+					"label": "রূপান্তর",
+					"desc": "ডেটার আকার বদলান বা ফিল্টার করুন"
+				},
+				"activityGreeting": {
+					"label": "অভিবাদন",
+					"desc": "কল ধরার সময় লাইন কী বলে"
+				},
+				"activityIntent": {
+					"label": "অভিপ্রায়",
+					"desc": "একটি কাজ + তার অনুমোদিত টুল"
+				},
+				"activityTransfer": {
+					"label": "মানুষের কাছে হস্তান্তর",
+					"desc": "সরাসরি হস্তান্তর — কার সাথে সংযুক্ত করে তা লিখুন"
+				},
+				"activityTakeMessage": {
+					"label": "বার্তা নিন",
+					"desc": "একটি বার্তা নিন (বিকল্প পথ)"
+				},
+				"activityDisclosures": {
+					"label": "জানাতে পারে",
+					"desc": "যেসব তথ্য এই লাইন সরাসরি বলে (সময়, ঠিকানা, দাম)"
+				},
+				"flowCondition": {
+					"label": "শর্ত",
+					"desc": "If/else শাখা"
+				},
+				"flowLoop": {
+					"label": "লুপ",
+					"desc": "আইটেমগুলোর উপর পুনরাবৃত্তি"
+				},
+				"flowWait": {
+					"label": "অপেক্ষা",
+					"desc": "থামুন বা ইভেন্টের জন্য অপেক্ষা করুন"
+				},
+				"emit": {
+					"label": "ইভেন্ট নির্গত করুন",
+					"desc": "সম্পন্ন হওয়ার ইভেন্ট ঘোষণা করুন"
+				}
+			}
+		},
+		"eventSources": {
+			"label": "ইভেন্টের উৎস",
+			"searchPlaceholder": "উৎস খুঁজতে টাইপ করুন...",
+			"hint": "পরিচিত উৎস খুঁজতে টাইপ করুন, যোগ করতে Enter চাপুন। কাস্টম নাম ও ওয়াইল্ডকার্ড (email.*) ও চলে।"
+		},
+		"flow": {
+			"triggerManual": "আপনি শুরু করলে চলে",
+			"triggerSchedule": "সময়সূচি অনুযায়ী",
+			"triggerEventAny": "কোনো ইভেন্ট ঘটলে",
+			"triggerWatch": "{name}-এর উপর নজর রাখছে",
+			"triggerWatchAny": "একটি প্লাগইনের উপর নজর রাখছে",
+			"applying": "প্রয়োগ করা হচ্ছে…",
+			"go": "চালান",
+			"tellAi": "AI-কে বলুন কী বদলাতে হবে",
+			"tellAiEllipsis": "AI-কে বলুন কী বদলাতে হবে…",
+			"badgeExact": "হুবহু",
+			"badgeAgent": "কর্মী",
+			"emptyCode": "(খালি)",
+			"stepPlaceholder": "এই ধাপে কী করা উচিত?",
+			"changeStep": "“{name}” বদলান…",
+			"forEach": "প্রতিটি {item}-এর জন্য",
+			"loopItemDefault": "আইটেম",
+			"loopEmpty": "এই লুপে এখনো কিছু নেই।",
+			"pathDefault": "পথ",
+			"pathEmpty": "খালি পথ",
+			"addStepHere": "এখানে একটি ধাপ যোগ করুন",
+			"connected": "{name} সংযুক্ত",
+			"notConnected": "{name} সংযুক্ত নয় — এই ফ্লো ব্যর্থ হবে",
+			"connect": "সংযুক্ত করুন",
+			"describeFlowChange": "পুরো ফ্লোতে কী বদলাবেন তা লিখুন…",
+			"edit": "সম্পাদনা",
+			"emits": "নির্গত করে",
+			"noSteps": "এই ফ্লোতে এখনো কোনো ধাপ নেই।"
+		},
+		"panel": {
+			"backToOverview": "ওয়ার্কফ্লো সারসংক্ষেপে ফিরে যান",
+			"intent": "অভিপ্রায়",
+			"addSkill": "দক্ষতা যোগ করুন...",
+			"parameters": "প্যারামিটার",
+			"addStep": "ধাপ যোগ করুন...",
+			"manualHint": "শুধু ম্যানুয়ালি চালু করলে চলে।",
+			"notConfigured": "কনফিগার করা হয়নি",
+			"noEventConfigured": "কোনো ইভেন্ট কনফিগার করা হয়নি",
+			"noDescription": "কোনো বিবরণ নেই",
+			"emitPlaceholder": "যেমন {name}",
+			"emitOptional": "ঐচ্ছিক — রান শেষ হলে অন্য ওয়ার্কফ্লো এতে ট্রিগার হতে পারে।",
+			"useEmit": "{name} ব্যবহার করুন",
+			"emitRenameWarning": "নাম বদলালে এই ইভেন্টে সাবস্ক্রাইব করা ওয়ার্কফ্লো ভেঙে যাবে।",
+			"none": "কিছু না",
+			"apiEndpoint": "API এন্ডপয়েন্ট",
+			"apiEndpointHint": "কর্মীর সেটিংস → ওয়েবহুক-এ এই ওয়ার্কফ্লোর জন্য একটি কী তৈরি করুন।"
+		},
+		"schedule": {
+			"weekends": "সপ্তাহান্তে",
+			"custom": "কাস্টম",
+			"daysOfWeek": "সপ্তাহের দিন",
+			"monthly": "মাসিক",
+			"biannual": "প্রতি ৬ মাসে",
+			"yearly": "বার্ষিক",
+			"onDay": "যে দিনে",
+			"biannualNote": "{firstMonth} {day} এবং {secondMonth} {day} তারিখে চলে।",
+			"shortMonthsSkipped": "যেসব মাসে {day} তারিখ নেই সেগুলো বাদ যায়।",
+			"limitToHours": "নির্দিষ্ট ঘণ্টায় সীমিত করুন",
+			"rangeTo": "থেকে"
+		},
+		"watch": {
+			"plugin": "প্লাগইন",
+			"choosePlugin": "একটি প্লাগইন বাছুন…",
+			"whenItReports": "যখন এটি জানায়",
+			"chooseEvent": "একটি ইভেন্ট বাছুন…",
+			"hint": "যখনই {plugin} {event} জানায় তখন চলে; অন্য ফ্লো-ও {plugin}.{event} শুনতে পারে।"
+		},
+		"validation": {
+			"emptyId": "“{workflow}”-এর একটি কার্যকলাপের ID খালি",
+			"duplicateId": "“{workflow}”-এ কার্যকলাপের ID “{id}” একাধিকবার আছে",
+			"conditionExpression": "শর্ত “{id}”-এর একটি এক্সপ্রেশন দরকার — পথ বাছাই নির্ধারিত, কখনো AI ঠিক করে না",
+			"loopSource": "লুপ “{id}”-এর একটি ডেটা উৎস দরকার (যেমন inputs.items)",
+			"httpUrl": "HTTP নোড “{id}”-এর একটি URL দরকার",
+			"decideQuestions": "সিদ্ধান্ত নোড “{id}”-এর প্রশ্ন দরকার (টাইপ করা প্রশ্নের একটি JSON অবজেক্ট)",
+			"waitDuration": "অপেক্ষা নোড “{id}”-এর একটি সময়কাল দরকার",
+			"needsIntent": "“{workflow}”-এর কার্যকলাপ “{id}”-এর একটি অভিপ্রায় বা ধাপ দরকার",
+			"targetsTrigger": "একটি সংযোগ ট্রিগারের দিকে গেছে",
+			"leavesEmit": "একটি সংযোগ নির্গত নোড থেকে বেরিয়েছে",
+			"unknownFrom": "অজানা নোড “{id}” থেকে সংযোগ",
+			"unknownTo": "অজানা নোড “{id}”-এ সংযোগ",
+			"duplicateConnection": "একই সংযোগ দুবার {from} → {to}",
+			"labeledNonBranching": "লেবেলযুক্ত সংযোগ “{label}” শাখাহীন নোড “{id}” থেকে বেরিয়েছে",
+			"unlabeledBranch": "“{id}” থেকে বেরোনো সংযোগে শাখার লেবেল থাকতে হবে",
+			"cycle": "গ্রাফে একটি চক্র আছে (শুধু লুপের প্রতিটি-আইটেম অংশ তার লুপে ফিরতে পারে)"
+		},
+		"builder": {
+			"unsavedConfirm": "আপনার অসংরক্ষিত পরিবর্তন আছে। বাদ দিয়ে বন্ধ করবেন?",
+			"workflowLabel": "{name} ({count, plural, one {#টি কার্যকলাপ} other {#টি কার্যকলাপ}})",
+			"undo": "পূর্বাবস্থা (Cmd+Z)",
+			"redo": "পুনরায় করুন (Cmd+Shift+Z)",
+			"issueCount": "{count, plural, one {#টি সমস্যা} other {#টি সমস্যা}}",
+			"discard": "বাদ দিন",
+			"hideDetails": "বিস্তারিত প্যানেল লুকান",
+			"showDetails": "বিস্তারিত প্যানেল দেখান",
+			"newWorkflowTitle": "নতুন ওয়ার্কফ্লো",
+			"empty": "কোনো ওয়ার্কফ্লো নেই — শুরু করতে একটি তৈরি করুন",
+			"newWorkflow": "নতুন ওয়ার্কফ্লো",
+			"confirmDeleteWorkflow": "আপনি কি নিশ্চিত যে এই ওয়ার্কফ্লো মুছতে চান? এর সব কার্যকলাপ ও সংযোগ মুছে যাবে।",
+			"confirmDeleteNode": "আপনি কি নিশ্চিত যে এই নোড মুছতে চান? এর সংযোগগুলো স্বয়ংক্রিয়ভাবে আবার জোড়া লাগবে।"
+		}
 	}
 }

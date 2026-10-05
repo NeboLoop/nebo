@@ -323,16 +323,16 @@
 
 <div class="flex-1 flex flex-col min-w-0 min-h-0 w-full max-w-full overflow-x-hidden bg-base-100">
   <div class="flex items-center gap-2.5 h-12 px-3 md:px-5 border-b border-base-300 shrink-0 min-w-0">
-    <button class="md:hidden shrink-0 -ml-1 p-1 text-base-content/70" onclick={() => shell?.openList?.()} aria-label={$t('nav.agents')}>
+    <button class="md:hidden shrink-0 -ms-1 p-1 text-base-content/70" onclick={() => shell?.openList?.()} aria-label={$t('nav.agents')}>
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 6l-6 6 6 6"/></svg>
     </button>
     <span class="font-semibold text-[15px] shrink-0">{$t('dashboard.title')}</span>
     <span class="text-[13px] text-base-content/55 truncate hidden sm:inline">{today}</span>
-    <div class="ml-auto flex items-center gap-1.5 shrink-0">
+    <div class="ms-auto flex items-center gap-1.5 shrink-0">
       <button class="w-8 h-8 rounded-full flex items-center justify-center text-base-content/60 hover:bg-base-200" onclick={() => shell?.openInbox?.()} aria-label={$t('nav.inbox')} title={$t('nav.inbox')}>
         <Bell class="w-[17px] h-[17px]" />
       </button>
-      <label class="h-8 pl-2.5 pr-3 rounded-full border border-base-300 flex items-center gap-2 text-xs cursor-pointer select-none">
+      <label class="h-8 ps-2.5 pe-3 rounded-full border border-base-300 flex items-center gap-2 text-xs cursor-pointer select-none">
         <input type="checkbox" class="checkbox checkbox-xs checkbox-primary rounded-full" checked={startHere} onchange={(ev) => setStartPage((ev.currentTarget as HTMLInputElement).checked)} />
         {$t('dashboard.openHere')}
       </label>
@@ -399,7 +399,7 @@
               <AgentAvatar name={a.agentName} color={colors[a.agentId]} size="sm" />
               <p class="m-0 text-[13px]"><b>{$t('dashboard.needsOkay', { values: { name: a.agentName } })}</b> {a.summary} <span class="text-base-content/50">· {formatRelative(a.since * 1000, 'short')}</span></p>
             </div>
-            <div class="flex gap-1.5 ml-auto shrink-0">
+            <div class="flex gap-1.5 ms-auto shrink-0">
               <button class="btn btn-primary btn-sm rounded-full" onclick={() => answer(a, true)}>{$t('dashboard.approve')}</button>
               <button class="btn btn-sm rounded-full" onclick={() => answer(a, false)}>{$t('dashboard.decline')}</button>
               {#if a.chatId}<button class="btn btn-ghost btn-sm rounded-full" onclick={() => goto(`/${a.agentId}/threads/${a.chatId}`)}>{$t('dashboard.openChat')}</button>{/if}
@@ -436,7 +436,7 @@
         <section class="min-w-0">
           <div class="flex items-center gap-3 mb-3">
             <h2 class="text-[15px] font-semibold">{$t('dashboard.employees')}</h2>
-            <div class="ml-auto flex items-center gap-2">
+            <div class="ms-auto flex items-center gap-2">
               <div class="h-8 rounded-full border border-base-300 p-0.5 flex" role="group" aria-label={$t('dashboard.employees')}>
                 <button class="w-8 h-full rounded-full flex items-center justify-center {view === 'grid' ? 'bg-primary/10 text-primary' : 'text-base-content/50'}" aria-pressed={view === 'grid'} aria-label={$t('dashboard.viewGrid')} title={$t('dashboard.viewGrid')} onclick={() => (view = 'grid')}><LayoutGrid class="w-4 h-4" /></button>
                 <button class="w-8 h-full rounded-full flex items-center justify-center {view === 'list' ? 'bg-primary/10 text-primary' : 'text-base-content/50'}" aria-pressed={view === 'list'} aria-label={$t('dashboard.viewList')} title={$t('dashboard.viewList')} onclick={() => (view = 'list')}><List class="w-4 h-4" /></button>
@@ -479,11 +479,11 @@
                       <!-- One rail per level: the indent IS the reporting line,
                            drawn with borders rather than a picture of a tree. -->
                       {#each Array(r.depth) as _, i (i)}
-                        <i class="w-[1.15rem] shrink-0 border-l border-base-300" aria-hidden="true"></i>
+                        <i class="w-[1.15rem] shrink-0 border-s border-base-300" aria-hidden="true"></i>
                       {/each}
                       <div class="flex items-center gap-2.5 min-w-0 flex-1">
                         <AgentAvatar name={r.name} color={r.color} size="sm" />
-                        <button class="text-sm font-semibold truncate link link-hover no-underline text-left" onclick={() => goto(`/${r.id}/threads`)}>{r.name}</button>
+                        <button class="text-sm font-semibold truncate link link-hover no-underline text-start" onclick={() => goto(`/${r.id}/threads`)}>{r.name}</button>
                         {#if r.department}
                           <span class="text-[10px] font-semibold uppercase tracking-wider px-2 py-px rounded-full bg-base-content/5 text-base-content/60 shrink-0">{r.department}</span>
                         {:else}
@@ -531,7 +531,7 @@
                     <a href={withBase(`/${e.id}`)} class="font-semibold text-[15px] truncate cursor-pointer no-underline text-inherit hover:underline" data-employee-link>{e.name}</a>
                     <!-- No pill means idle: the pill is reserved for a state worth noticing. -->
                     {#if e.status !== 'idle'}
-                      <span class="ml-auto text-[10px] font-semibold uppercase tracking-wider px-2 py-px rounded-full shrink-0 flex items-center gap-1 {working ? 'bg-success text-success-content' : e.status === 'waiting' ? 'bg-warning text-warning-content' : 'bg-base-content/5 text-base-content/55'}">
+                      <span class="ms-auto text-[10px] font-semibold uppercase tracking-wider px-2 py-px rounded-full shrink-0 flex items-center gap-1 {working ? 'bg-success text-success-content' : e.status === 'waiting' ? 'bg-warning text-warning-content' : 'bg-base-content/5 text-base-content/55'}">
                         {#if working}<i class="w-1.5 h-1.5 rounded-full bg-success-content animate-pulse" aria-hidden="true"></i>{/if}{$t(`dashboard.status.${e.status}`)}
                       </span>
                     {/if}
@@ -565,7 +565,7 @@
                       <button class="link link-primary no-underline" onclick={() => openChat(e)}>{e.isolated ? $t('dashboard.openMatters') : $t('dashboard.openChat')}</button>
                     {/if}
                     <button class="link link-primary no-underline" onclick={() => openRuns(e.id)}>{$t('dashboard.runs')}</button>
-                    {#if e.lastActivityAt}<span class="ml-auto text-base-content/50 font-mono tabular-nums">{formatTime(e.lastActivityAt * 1000)}</span>{/if}
+                    {#if e.lastActivityAt}<span class="ms-auto text-base-content/50 font-mono tabular-nums">{formatTime(e.lastActivityAt * 1000)}</span>{/if}
                   </div>
                 </div>
               {:else}
@@ -607,12 +607,12 @@
               <span class="text-xs text-base-content/50">{$t('dashboard.last14Days')}</span>
             </div>
             <div class="grid grid-cols-[28px_minmax(0,1fr)] gap-2">
-              <div class="flex flex-col justify-between text-[10px] text-base-content/45 text-right tabular-nums leading-none" style:height="{BAR_PX}px">
+              <div class="flex flex-col justify-between text-[10px] text-base-content/45 text-end tabular-nums leading-none" style:height="{BAR_PX}px">
                 {#each ticks as tick}<span>{tick}</span>{/each}
               </div>
               <div class="relative" style:height="{BAR_PX}px">
                 {#each [1, 0.75, 0.5, 0.25, 0] as f}
-                  <i class="absolute left-0 right-0 border-t border-base-300/70" style:bottom="{f * 100}%" aria-hidden="true"></i>
+                  <i class="absolute start-0 end-0 border-t border-base-300/70" style:bottom="{f * 100}%" aria-hidden="true"></i>
                 {/each}
                 <div class="absolute inset-0 grid grid-cols-14 gap-1.5 items-end px-1">
                   {#each data.runsByDay as d (d.day)}
@@ -632,10 +632,10 @@
               <div class="flex justify-between text-[10px] text-base-content/45 tabular-nums px-1"><span>{dayLabel(data.runsByDay[0]?.day ?? '')}</span><span>{dayLabel(data.runsByDay[Math.floor(data.runsByDay.length / 2)]?.day ?? '')}</span><span>{dayLabel(data.runsByDay[data.runsByDay.length - 1]?.day ?? '')}</span></div>
             </div>
             <div class="flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-base-content/60 mt-3">
-              <span><i class="inline-block w-2 h-2 rounded-full bg-success mr-1"></i>{$t('dashboard.done')}</span>
-              <span><i class="inline-block w-2 h-2 rounded-full bg-base-300 mr-1"></i>{$t('dashboard.nothingToDo')}</span>
-              <span><i class="inline-block w-2 h-2 rounded-full bg-warning mr-1"></i>{$t('dashboard.neededOkay')}</span>
-              <span><i class="inline-block w-2 h-2 rounded-full bg-error mr-1"></i>{$t('dashboard.stopped')}</span>
+              <span><i class="inline-block w-2 h-2 rounded-full bg-success me-1"></i>{$t('dashboard.done')}</span>
+              <span><i class="inline-block w-2 h-2 rounded-full bg-base-300 me-1"></i>{$t('dashboard.nothingToDo')}</span>
+              <span><i class="inline-block w-2 h-2 rounded-full bg-warning me-1"></i>{$t('dashboard.neededOkay')}</span>
+              <span><i class="inline-block w-2 h-2 rounded-full bg-error me-1"></i>{$t('dashboard.stopped')}</span>
             </div>
           </div>
           <div class="rounded-2xl border border-base-content/15 bg-base-100 shadow-sm p-4 min-w-0">
@@ -667,7 +667,7 @@
           <div class="flex items-baseline gap-3 mb-3">
             <h2 class="text-[15px] font-semibold">{$t('dashboard.recentRuns')}</h2>
             {#if data.recentRuns.length > RECENT_SHOWN}
-              <button class="ml-auto link link-primary no-underline text-xs" onclick={() => (showAllRuns = !showAllRuns)}>{showAllRuns ? $t('dashboard.showFewer') : $t('dashboard.showAll', { values: { n: data.recentRuns.length } })}</button>
+              <button class="ms-auto link link-primary no-underline text-xs" onclick={() => (showAllRuns = !showAllRuns)}>{showAllRuns ? $t('dashboard.showFewer') : $t('dashboard.showAll', { values: { n: data.recentRuns.length } })}</button>
             {/if}
           </div>
           <!-- Phone: one stacked row per run, nothing scrolls sideways. -->
@@ -677,7 +677,7 @@
                 <div class="flex items-center gap-2 min-w-0">
                   <AgentAvatar name={r.agentName} color={colors[r.agentId]} size="xs" />
                   <span class="text-[13px] font-medium truncate">{r.agentName}</span>
-                  <span class="ml-auto text-[11px] text-base-content/50 whitespace-nowrap tabular-nums">{formatTime(r.startedAt * 1000)}</span>
+                  <span class="ms-auto text-[11px] text-base-content/50 whitespace-nowrap tabular-nums">{formatTime(r.startedAt * 1000)}</span>
                 </div>
                 <div class="text-[13px] truncate text-base-content/80">{r.title}</div>
                 <div class="flex items-start gap-3 min-w-0">
@@ -692,23 +692,23 @@
           <div class="hidden md:block rounded-2xl border border-base-content/15 bg-base-100 shadow-sm overflow-x-auto min-w-0">
             <table class="w-full min-w-[640px] border-collapse text-[13px]">
               <thead>
-                <tr class="text-left text-[11px] font-semibold uppercase tracking-wider text-base-content/50">
-                  <th class="py-2.5 pl-4 pr-2 border-b border-base-300">{$t('dashboard.colTime')}</th>
-                  <th class="py-2.5 pr-2 border-b border-base-300">{$t('dashboard.colEmployee')}</th>
-                  <th class="py-2.5 pr-2 border-b border-base-300">{$t('dashboard.colWhat')}</th>
-                  <th class="py-2.5 pr-2 border-b border-base-300">{$t('dashboard.colEnded')}</th>
-                  <th class="py-2.5 pr-4 border-b border-base-300"></th>
+                <tr class="text-start text-[11px] font-semibold uppercase tracking-wider text-base-content/50">
+                  <th class="py-2.5 ps-4 pe-2 border-b border-base-300">{$t('dashboard.colTime')}</th>
+                  <th class="py-2.5 pe-2 border-b border-base-300">{$t('dashboard.colEmployee')}</th>
+                  <th class="py-2.5 pe-2 border-b border-base-300">{$t('dashboard.colWhat')}</th>
+                  <th class="py-2.5 pe-2 border-b border-base-300">{$t('dashboard.colEnded')}</th>
+                  <th class="py-2.5 pe-4 border-b border-base-300"></th>
                 </tr>
               </thead>
               <tbody>
                 {#each visibleRuns as r, i (r.id)}
                   {@const last = i === visibleRuns.length - 1}
                   <tr>
-                    <td class="py-2.5 pl-4 pr-2 text-xs text-base-content/60 whitespace-nowrap tabular-nums {last ? '' : 'border-b border-base-300'}">{formatTime(r.startedAt * 1000)}</td>
-                    <td class="py-2.5 pr-2 {last ? '' : 'border-b border-base-300'}"><div class="flex items-center gap-2"><AgentAvatar name={r.agentName} color={colors[r.agentId]} size="xs" /><span class="truncate">{r.agentName}</span></div></td>
-                    <td class="py-2.5 pr-2 truncate max-w-[280px] {last ? '' : 'border-b border-base-300'}">{r.title}</td>
-                    <td class="py-2.5 pr-2 text-xs font-medium {outcomeClass(r.outcome)} {last ? '' : 'border-b border-base-300'}">{r.detail}</td>
-                    <td class="py-2.5 pr-4 text-right {last ? '' : 'border-b border-base-300'}"><button class="link link-primary no-underline text-xs" onclick={() => openRuns(r.agentId)}>{$t('dashboard.runs')}</button></td>
+                    <td class="py-2.5 ps-4 pe-2 text-xs text-base-content/60 whitespace-nowrap tabular-nums {last ? '' : 'border-b border-base-300'}">{formatTime(r.startedAt * 1000)}</td>
+                    <td class="py-2.5 pe-2 {last ? '' : 'border-b border-base-300'}"><div class="flex items-center gap-2"><AgentAvatar name={r.agentName} color={colors[r.agentId]} size="xs" /><span class="truncate">{r.agentName}</span></div></td>
+                    <td class="py-2.5 pe-2 truncate max-w-[280px] {last ? '' : 'border-b border-base-300'}">{r.title}</td>
+                    <td class="py-2.5 pe-2 text-xs font-medium {outcomeClass(r.outcome)} {last ? '' : 'border-b border-base-300'}">{r.detail}</td>
+                    <td class="py-2.5 pe-4 text-end {last ? '' : 'border-b border-base-300'}"><button class="link link-primary no-underline text-xs" onclick={() => openRuns(r.agentId)}>{$t('dashboard.runs')}</button></td>
                   </tr>
                 {:else}
                   <tr><td colspan="5" class="py-3 px-4 text-xs text-base-content/50">{$t('dashboard.noRunsYet')}</td></tr>

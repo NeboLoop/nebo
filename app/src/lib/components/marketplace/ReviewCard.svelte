@@ -39,7 +39,7 @@
 <div class="shrink-0 w-72 rounded-2xl bg-base-content/[0.04] p-4 flex flex-col">
 	<div class="flex items-center justify-between mb-2">
 		<span class="text-base font-semibold truncate">{reviewerName}</span>
-		<span class="text-sm text-base-content/40 shrink-0 ml-2">{formatRelative(createdAt)}</span>
+		<span class="text-sm text-base-content/40 shrink-0 ms-2">{formatRelative(createdAt)}</span>
 	</div>
 	<div class="flex items-center gap-0.5 mb-2">
 		{#each Array.from({ length: 5 }, (_, i) => i < review.rating) as filled}

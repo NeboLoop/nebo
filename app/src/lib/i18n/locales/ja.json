@@ -57,8 +57,8 @@
 		"noDataAvailable": "データがありません",
 		"comingSoon": "近日公開",
 		"or": "または",
-		"dev": "dev",
-		"beta": "beta",
+		"dev": "開発版",
+		"beta": "ベータ",
 		"free": "無料",
 		"na": "N/A",
 		"you": "あなた",
@@ -84,7 +84,16 @@
 		"closeModal": "モーダルを閉じる",
 		"all": "すべて",
 		"more": "その他",
-		"stopped": "停止"
+		"stopped": "停止",
+		"errorOccurred": "問題が発生しました。",
+		"systemError": "システムエラー",
+		"stillReconnecting": "Neboへの接続を試みています…",
+		"updatesAvailable": "{count, plural, other {#件のアップデートがあります}}",
+		"artifactUpdated": "{type}を更新しました: {version}",
+		"artifactUpdateFailed": "更新に失敗しました: {error}",
+		"employee": "社員",
+		"untitled": "無題",
+		"document": "ドキュメント"
 	},
 	"time": {
 		"justNow": "たった今",
@@ -253,9 +262,11 @@
 		"working": "作業中",
 		"chatActions": "チャットの操作",
 		"deleteChatTitle": "「{name}」を削除しますか？",
-		"deleteChatBody": "このチャットとすべてのメッセージが削除されます。元に戻すことはできません。"
+		"deleteChatBody": "このチャットとすべてのメッセージが削除されます。元に戻すことはできません。",
+		"offline": "オフライン"
 	},
 	"chat": {
+		"worksIn": "{folder}で作業",
 		"compactBoundary": "以前の会話を要約しました",
 		"clearedBoundary": "ここでクリアしました。以前のメッセージは残っていますが、使われません。",
 		"goalLine": "目標: {condition}（{turns} ターン）",
@@ -264,10 +275,15 @@
 		"goalStopped": "ゴールを一時停止しました。再開するときはお知らせください。",
 		"resumedActivity": "作業中：{tool}",
 		"waitingForYou": "あなた待ち",
+		"waitingOnYou": "{name}があなたを待っています",
+		"seeConversation": "会話を見る",
 		"waitingOnYourAnswer": "{name}があなたの回答を待っています:",
 		"waitingOpen": "開く",
 		"waitingAsksLabel": "あなたの回答待ち",
 		"subagentStep": "{op} · ステップ{n}",
+		"helperWorking": "ヘルパーが作業中: {what}",
+		"helpersWorking": "{n}人のヘルパーが作業中",
+		"moreQuestionsWaiting": "{count, plural, other {ほかに#件の質問が待っています}}",
 		"pending": "保留中",
 		"yourAICompanion": "あなたのAIチーム",
 		"tellMeWhatYouNeed": "必要なことを教えてください。または下の社員を起動してください。",
@@ -295,6 +311,7 @@
 		"messageChannel": "#{channel} にメッセージ...",
 		"messagedCoworker": "メッセージ送信済み",
 		"disclaimer": "Neboは間違えることがあります。重要な情報はご確認ください。",
+		"uploadsKept": "アップロードは{days}日間保存されます。",
 		"goodMorning": "おはようございます",
 		"goodAfternoon": "こんにちは",
 		"goodEvening": "こんばんは",
@@ -315,6 +332,8 @@
 		"installFailed": "インストールに失敗しました — もう一度お試しください。",
 		"hire": "採用する",
 		"hiring": "採用しています…",
+		"hireCount": "{count}人全員を採用",
+		"hiringCount": "{count}人中{done}人を採用中…",
 		"botComputer": "コンピュータ",
 		"closeComputer": "コンピュータを閉じる",
 		"fullView": "全画面表示",
@@ -330,13 +349,18 @@
 		"computerUnavailableHint": "社員のコンピュータはLinuxインストールとクラウド社員で動作します。",
 		"watchingAndLearning": "{name}が見て学んでいます",
 		"stopRecording": "記録を停止",
-		"teachLocalHint": "Do the task on this screen as you normally would, then stop.",
+		"teachLocalHint": "この画面でいつも通りに作業し、終わったら停止してください。",
+		"teachStarting": "画面を見る準備をしています…",
+		"teachNeedsScreenPermission": "作業の様子を見るには、Neboに画面収録の許可が必要です。システム設定 › プライバシーとセキュリティ › 画面収録 でNeboをオンにしてから、もう一度お試しください。",
+		"openScreenRecordingSettings": "画面収録の設定を開く",
+		"openVirtualComputer": "仮想コンピュータを開く",
 		"recordTask": "タスクを記録",
 		"recording": "記録中",
 		"connectFailed": "サインインが完了しませんでした。もう一度お試しください。",
 		"connectAccountHint": "サインインしてください。中断したところから続けます。",
 		"submit": "送信",
 		"other": "その他…",
+		"askedReceipt": "質問済み",
 		"copyCode": "コードをコピー",
 		"copied": "コピーしました!",
 		"dropFilesHere": "ここにファイルをドロップ",
@@ -405,6 +429,8 @@
 		"shareNotConnected": "共有するにはNeboAIに接続してください。",
 		"filesInThread": "このチャットのファイル",
 		"nothingHereYet": "まだ何もありません",
+		"noEmployeesOneTool": "一致する社員はいませんが、ツールが1件あります — ツールをご覧ください。",
+		"noEmployeesButTools": "一致する社員はいませんが、ツールが{count}件あります — ツールをご覧ください。",
 		"workEmptyDesc": "Neboがレポート、シート、デザインを作成すると、ここに表示されます。",
 		"closeImage": "画像を閉じる",
 		"fullSize": "原寸大",
@@ -429,7 +455,12 @@
 		"historyLoadFailed": "この会話を読み込めませんでした。接続を確認してもう一度お試しください。",
 		"consentCreates": "「はい」と答えると、この仕事内容のまま作成されます。",
 		"consentAdds": "「はい」と答えると、これが仕事内容に加わります。",
-		"fromColleague": "{name} から"
+		"fromColleague": "{name} から",
+		"storageFull": "{cap, select, none {ストレージがいっぱいです。} other {ストレージがいっぱいです（{cap}）。}}アップロードは追加から{days, plural, other {#日}}後に削除されます。",
+		"storageNextFree": "次に空きができるのは{date}です。",
+		"uploadFailed": "ファイルのアップロードに失敗しました — メッセージは送信されていません。{reason}",
+		"fileRemoved": "このファイルはアップロードから{days, plural, other {#日}}後に削除されました。",
+		"notDelivered": "メッセージを配信できませんでした。接続が切れたため、もう一度送信してください。"
 	},
 	"chatInput": {
 		"placeholder": "返信...",
@@ -444,7 +475,7 @@
 		"sendMessage": "メッセージを送信",
 		"cancelQueued": "キュー中のメッセージをキャンセル",
 		"messageAgent": "{name}にメッセージ...",
-		"botBadge": "bot",
+		"botBadge": "ボット",
 		"attachFiles": "ファイルを添付",
 		"more": "その他",
 		"teachTask": "タスクを教える",
@@ -468,7 +499,17 @@
 		"tapToInterrupt": "タップで中断",
 		"mute": "ミュート",
 		"unmute": "ミュート解除",
-		"endConversation": "会話を終了"
+		"endConversation": "会話を終了",
+		"recordClip": "クリップを録音",
+		"clipStarting": "マイクを待っています",
+		"clipStop": "停止して添付",
+		"clipLevel": "マイクの音量",
+		"clipMicBlockedMac": "Neboがマイクを使用できません。システム設定 → プライバシーとセキュリティ → マイク で許可してください。",
+		"clipMicBlocked": "Neboがマイクを使用できません。システムのプライバシー設定で許可してください。",
+		"clipNoMic": "マイクが見つかりません。マイクを接続して、もう一度お試しください。",
+		"clipUnsupported": "ここでは録音できません。",
+		"clipFailed": "録音できませんでした。もう一度お試しください。",
+		"clipCapReached": "録音は10分で停止します。この録音は添付済みです。"
 	},
 	"voiceDownload": {
 		"title": "音声モデルをダウンロード",
@@ -566,7 +607,21 @@
 		"agent": "社員",
 		"command": "コマンド",
 		"notConnected": "未接続",
-		"keyboardHint": "↑↓ 移動 · Enter 選択 · Esc キャンセル"
+		"keyboardHint": "↑↓ 移動 · Enter 選択 · Esc キャンセル",
+		"category": {
+			"session": "セッション",
+			"model": "モデル",
+			"info": "情報"
+		},
+		"desc": {
+			"new": "新しい会話を始める",
+			"clear": "新しく始める（メッセージはすべて保持されます）",
+			"compact": "古いメッセージを要約してクリア",
+			"goal": "完了状態が確認されるまで作業を続ける",
+			"model": "モデルを表示または切り替え",
+			"help": "すべてのコマンドを表示",
+			"status": "社員とシステムの状態を表示"
+		}
 	},
 	"dataTable": {
 		"loading": "読み込み中...",
@@ -1237,7 +1292,7 @@
 		"sessionUsage": "{percent}%使用済み · {hours}時間{minutes}分後にリセット",
 		"weekly": "週間",
 		"weeklyUsage": "{percent}%使用済み · {date}にリセット",
-		"contextWindow": "{count} ctx",
+		"contextWindow": "{count} コンテキスト",
 		"notConnected": "未接続",
 		"connectDescription": "NeboAIアカウントに接続してAIモデルを使用",
 		"cliProviders": "CLIプロバイダー",
@@ -1259,7 +1314,7 @@
 			"ollama": "Ollama (ローカル)"
 		},
 		"nameLabel": "名前",
-		"namePlaceholder": "My Anthropic Key",
+		"namePlaceholder": "マイAnthropicキー",
 		"apiKeyLabel": "APIキー",
 		"apiKeyPlaceholder": "sk-...",
 		"baseUrlLabel": "ベースURL",
@@ -1282,7 +1337,7 @@
 		"cliUpdateFailedShort": "CLIの更新に失敗しました",
 		"deleteFailedShort": "削除に失敗しました",
 		"removeConfirm": "本当にこのプロバイダーを削除しますか?",
-		"defaultName": "My {label}",
+		"defaultName": "マイ{label}",
 		"viewUsageLabel": "使用状況を見る",
 		"connectManaged": "マネージドAIモデルを利用するにはNeboAIに接続してください。",
 		"modelsDetectedCount": "{count}個のモデルを検出",
@@ -1777,7 +1832,17 @@
 		"toolCategories": "ツールのカテゴリ",
 		"allToolCategories": "すべてのツールカテゴリ",
 		"moreEmployees": "その他の社員",
-		"moreTools": "その他のツール"
+		"moreTools": "その他のツール",
+		"pageTitle": "マーケットプレイス - Nebo",
+		"sharedPageTitle": "共有 - マーケットプレイス - Nebo",
+		"searchPageTitle": "検索 — マーケットプレイス",
+		"resume": {
+			"byAuthor": "作成者: {author}",
+			"perSeat": "1席あたり",
+			"responsibilities": "担当業務",
+			"newHire": "新人 · 最初の採用者になりましょう",
+			"meet": "会ってみる"
+		}
 	},
 	"commander": {
 		"autoLayout": "自動レイアウト",
@@ -1854,7 +1919,9 @@
 		"noChatsYet": "まだチャットがありません。新しく始めましょう。",
 		"noRunsYet": "まだ実行がありません",
 		"appBadge": "アプリ",
-		"primaryUndeletable": "個人秘書は特定の社員宛てではないものをすべて受け取るため、削除できません。名前は社員設定で変更できます。"
+		"primaryUndeletable": "個人秘書は特定の社員宛てではないものをすべて受け取るため、削除できません。名前は社員設定で変更できます。",
+		"browseFolders": "フォルダを参照",
+		"browseFiles": "ファイルを参照"
 	},
 	"agentLearning": {
 		"title": "自己改善",
@@ -1871,6 +1938,7 @@
 		"viewOnly": "この会話は閲覧専用です — 社員同士がここで話し、あなたは各社員のチャットで指示します"
 	},
 	"teams": {
+		"everyoneHint": "チーム全員",
 		"section": "チーム",
 		"emptyRoster": "2人以上の社員をチームにすると、1つの会話を共有します。＋を押して作成するか、どの社員にでも頼んでください。",
 		"inTeam": "このチームに所属",
@@ -1945,6 +2013,9 @@
 	},
 	"agentSettings": {
 		"general": "一般",
+		"tabWho": "人物像",
+		"tabWork": "仕事内容",
+		"developerGroup": "開発者",
 		"generalBlurb": "この社員の概要 — 状態、スキル、ワークフロー、管理。",
 		"identityBlurb": "名前、音声、カラー、ステータス — アプリ全体でのこの従業員の表示方法です。",
 		"nameLabel": "名前",
@@ -2129,6 +2200,14 @@
 		"saveCredentialsFailed": "認証情報の保存に失敗しました。",
 		"signInFailedRetry": "サインインに失敗しました。もう一度お試しください。",
 		"startSignInFailed": "このアカウントのサインインを開始できませんでした。",
+		"signInPopupBlocked": "サインインウィンドウがブロックされました。Neboのポップアップを許可してから、もう一度お試しください。",
+		"channelToggleFailed": "そのチャンネルを更新できませんでした。もう一度お試しください。",
+		"helpChatFailed": "ヘルプチャットを開けませんでした。もう一度お試しください。",
+		"accountsLoadFailed": "アカウントを読み込めませんでした。もう一度お試しください。",
+		"accountListRefreshFailed": "アカウントは追加されましたが、一覧を更新できませんでした。設定を開き直すと表示されます。",
+		"disconnectFailed": "そのアカウントの接続を解除できませんでした。もう一度お試しください。",
+		"claimableLoadFailed": "電話番号を読み込めませんでした。",
+		"tryAgain": "もう一度試す",
 		"contextTitle": "この社員が知っていること",
 		"contextDesc": "会社の業界レイヤーと会社レイヤーが変わるたびに、社員自身が書いたものです。社員は何も調べずにこれに沿って動きます。",
 		"contextAgainst": "{against}に基づいて記述",
@@ -2157,7 +2236,19 @@
 		"changeInBotSettings": "ボット設定で変更",
 		"reachManage": "管理",
 		"reachNoPhone": "電話回線はまだありません。",
-		"reachNoChannels": "有効なチャンネルはありません。"
+		"reachNoChannels": "有効なチャンネルはありません。",
+		"newCallTreeName": "新しいコールツリー",
+		"newWorkflowName": "新しいワークフロー",
+		"greetingNodeLabel": "あいさつ",
+		"phoneLoadingNumbers": "番号を読み込んでいます…",
+		"phoneNoFreeNumbers": "追加できる空き番号がありません。{link} で番号を購入する（または別の社員の番号を保留にする）と、ここに戻って追加できます。",
+		"phoneWhichNumber": "この社員が応答する番号はどれですか？",
+		"phoneNumberParked": "保留中",
+		"phoneNumberUnassigned": "未割り当て",
+		"phoneLineName": "回線名（任意）",
+		"phoneLineNamePlaceholder": "受付、サポート、スペイン語回線…",
+		"phoneAttaching": "番号をこの社員に追加しています…",
+		"phoneAttachNumber": "番号を追加"
 	},
 	"agentConfigure": {
 		"inputs": "入力",
@@ -2234,7 +2325,10 @@
 		"factDate": "日付",
 		"factAttachment": "添付ファイル",
 		"factVia": "経由",
-		"interrupted": "中断"
+		"interrupted": "中断",
+		"tokensShort": "{count}トークン",
+		"underOneSecond": "1秒未満",
+		"triggerKind": "{kind, select, schedule {スケジュール} event {イベント} heartbeat {ハートビート} manual {手動} watch {監視} webhook {Webhook} call {通話} retry {再試行} other {{kind}}}"
 	},
 	"automations": {
 		"title": "自動化",
@@ -2272,7 +2366,12 @@
 		"every8h": "8時間ごと",
 		"every24h": "24時間ごと",
 		"everyInterval": "{interval}ごと",
-		"whenFires": "{event}発生時"
+		"whenFires": "{event}発生時",
+		"anEvent": "イベント",
+		"watching": "監視: {source}",
+		"aPlugin": "プラグイン",
+		"manualTrigger": "手動トリガー",
+		"onEventNamed": "{event}のとき"
 	},
 	"newBot": {
 		"browseMarketplace": "マーケットプレイスを閲覧",
@@ -2329,7 +2428,18 @@
 		"approvalGate": {
 			"batchHeadline": "1つのステップに含まれる{n}件の操作に承認が必要です",
 			"goalHeadline": "この目標で合意しますか？達成が確認されるまで作業を続けます。",
-			"yourAgent": "あなたの社員"
+			"yourAgent": "あなたの社員",
+			"operation": "{action, select, create {{noun}を作成} send {{noun}を送信} update {{noun}を更新} status {{noun}のステータスを変更} apply {{noun}を適用} record {{noun}を記録} schedule {{noun}を予定} publish {{noun}を公開} respond {{noun}に応答} reply {{noun}に返信} upsert {{noun}を保存} attach {{noun}を添付} write {{noun}を書き込み} remove {{noun}を削除} other {{verb} {noun}}}",
+			"resource": {
+				"billpayment": "請求書の支払い",
+				"creditmemo": "クレジットメモ",
+				"journalentry": "仕訳",
+				"purchaseorder": "発注書",
+				"opportunity": "商談",
+				"company": "会社ファイル — この事業の運営方法",
+				"industry": "業界ファイル — この業種の仕組み",
+				"franchise": "フランチャイズファイル — ブランドの要件"
+			}
 		},
 		"approvalModal": {
 			"runShellCommand": "シェルコマンドの実行",
@@ -2446,7 +2556,20 @@
 		"narrowSat": "土",
 		"pageTitle": "スケジュール - Nebo",
 		"perWeek": "週{count}回",
-		"workflowBuilderTitle": "{name} — ワークフロービルダー"
+		"workflowBuilderTitle": "{name} — ワークフロービルダー",
+		"everyDay": "毎日",
+		"weekends": "週末",
+		"weekdayPlural": "{day, select, sun {毎週日曜日} mon {毎週月曜日} tue {毎週火曜日} wed {毎週水曜日} thu {毎週木曜日} fri {毎週金曜日} sat {毎週土曜日} other {{day}}}",
+		"clockTime": "{period}{hour}:{minute}",
+		"hourOnly": "{period}{hour}時",
+		"midnight": "午前0時",
+		"cronEveryMinutes": "{n, plural, other {#分ごと}}",
+		"cronEveryHours": "{n, plural, other {#時間ごと}}",
+		"cronEveryHoursAt": "{n, plural, other {#時間ごと（:{minute}）}}",
+		"cronDailyAt": "毎日{time}",
+		"cronDaysAt": "{days} {time}",
+		"cronMonthlyAt": "毎月{day}日 {time}",
+		"listSeparator": "、"
 	},
 	"neboShell": {
 		"tabs": {
@@ -2491,7 +2614,26 @@
 	},
 	"userMenu": {
 		"aboutNebo": "Neboについて",
-		"planSuffix": "{plan}プラン"
+		"planSuffix": "{plan}プラン",
+		"provideFeedback": "フィードバックを送る"
+	},
+	"feedback": {
+		"title": "フィードバックを送る",
+		"lede": "うまくいっていること、いないこと、ほしい機能をNeboAIチームにお知らせください。",
+		"message": "メッセージ",
+		"screenshots": "スクリーンショットまたは写真（任意）",
+		"addScreenshot": "スクリーンショットを追加",
+		"remove": "{name}を削除",
+		"diagnostics": "診断情報を含める",
+		"diagnosticsHelp": "アプリとボットのバージョン、プラットフォーム、ボットID、この画面。パスワードやサインイントークンは含まれません。",
+		"send": "送信",
+		"sending": "送信中",
+		"sent": "ありがとうございます。NeboAIチームに送信しました。",
+		"failed": "フィードバックを送信できませんでした。もう一度お試しください。",
+		"needMessage": "先にメッセージを入力してください。",
+		"messageTooLong": "メッセージは{max}文字以内にしてください。",
+		"tooManyScreenshots": "添付できるスクリーンショットは{max, plural, other {#枚}}までです。",
+		"imagesOnly": "添付できるのは画像のみです。"
 	},
 	"workflowCanvas": {
 		"noWorkflows": "可視化できるワークフローがありません",
@@ -2632,7 +2774,18 @@
 		"gettingReady": "{name}の準備をしています…",
 		"skillsAndTools": "スキルとツール",
 		"hireFailedTitle": "採用を完了できませんでした",
-		"hireFailed": "{name}を採用できませんでした。もう一度お試しください。"
+		"hireFailed": "{name}を採用できませんでした。もう一度お試しください。",
+		"codeStatus": {
+			"nebo": "NeboAIに接続しています…",
+			"skill": "スキルをインストールしています…",
+			"workflow": "ワークフローをインストールしています…",
+			"agent": "社員をインストールしています…",
+			"loop": "ループに参加しています…",
+			"plugin": "プラグインをインストールしています…",
+			"app": "アプリをインストールしています…",
+			"collection": "コレクションをインストールしています…",
+			"connection": "MCP接続を追加しています…"
+		}
 	},
 	"activity": {
 		"pageTitle": "アクティビティ - Nebo",
@@ -2651,7 +2804,8 @@
 		"openAppHint": "アプリを開く",
 		"openApp": "アプリを開く",
 		"runs": "実行",
-		"memory": "メモリ"
+		"memory": "メモリ",
+		"appError": "アプリのエラー（{status}）"
 	},
 	"pricing": {
 		"pageTitle": "プランを選択 - Nebo",
@@ -2769,7 +2923,7 @@
 		"chooseAuthMethod": "認証方式を選択",
 		"authQuestion": "このサーバーはどのようにリクエストを認証しますか?",
 		"serverName": "サーバー名",
-		"serverNamePlaceholder": "My MCP Server",
+		"serverNamePlaceholder": "マイMCPサーバー",
 		"serverUrl": "サーバーURL",
 		"serverUrlPlaceholder": "https://mcp.example.com/server",
 		"serverUrlHint": "MCPサーバーのエンドポイントURL(Streamable HTTP)",
@@ -2811,7 +2965,10 @@
 		"checkEvery": "確認間隔",
 		"hours6": "6時間",
 		"history": "履歴",
-		"title": "ツールのアップデート"
+		"title": "ツールのアップデート",
+		"onLatest": "最新バージョンです",
+		"checkFailed": "アップデートを確認できませんでした",
+		"updateFailed": "アップデートに失敗しました"
 	},
 	"inbox": {
 		"title": "受信トレイ",
@@ -2842,15 +2999,27 @@
 		"failedAt": "「{activity}」の途中で失敗しました",
 		"steps": "行っていたこと",
 		"output": "出力",
-		"recordGone": "実行の記録はありません。所有していた社員とともに削除されたため、この通知だけが残っています。"
+		"recordGone": "実行の記録はありません。所有していた社員とともに削除されたため、この通知だけが残っています。",
+		"revert": "元に戻す",
+		"reverted": "元に戻しました"
 	},
 	"voice": {
 		"startConversation": "音声会話",
+		"reconnecting": "通話に再参加しています…",
 		"consentTitle": "音声はクラウドサービスを使用します",
 		"consentBody": "音声会話では、通話中にマイクの音声が処理のためクラウド音声サービスへ送信されます。音声はこのコンピュータの外に出ます。チャットの入力はこれまで通りローカルのままです。",
 		"consentAccept": "音声を有効にする",
 		"consentDecline": "今はしない",
-		"cloudIndicator": "音声をクラウドへ送信中"
+		"cloudIndicator": "音声をクラウドへ送信中",
+		"talkTo": "{name}と話す",
+		"isSpeaking": "{name}が話しています",
+		"callEnded": "通話が終了しました。",
+		"tryAgain": "もう一度試す",
+		"onAnotherCall": "別の社員と通話中",
+		"callLost": "通話が切れ、再参加できませんでした。もう一度開始してください。",
+		"callEndedStartAgain": "通話が終了しました。もう一度開始してください。",
+		"needsConsent": "音声会話では、マイクの音声が処理のためクラウド音声サービスへ送信されます。同意するには音声パネルで有効にしてください。",
+		"startFailed": "通話を開始できませんでした。もう一度お試しください。"
 	},
 	"flows": {
 		"none": "フローはまだありません",
@@ -2865,7 +3034,15 @@
 		"overlapBufferOne": "終了後に1回実行",
 		"overlapAllowAll": "それでも実行",
 		"deleteReminderTitle": "「{name}」を削除しますか？",
-		"deleteReminderBody": "この定期タスクは実行を停止し、削除されます。過去の実行は実行履歴に残ります。"
+		"deleteReminderBody": "この定期タスクは実行を停止し、削除されます。過去の実行は実行履歴に残ります。",
+		"triggerOnEvent": "{event}のとき",
+		"triggerWatch": "監視: {target}",
+		"triggerWatchPlugin": "監視: プラグイン",
+		"triggerManual": "手動トリガー",
+		"scheduleTooSpecific": "このスケジュールはシンプルエディターでは表せないほど細かく設定されています",
+		"askSetupPrompt": "新しいフローを設定してください: ",
+		"everyNHours": "N時間ごと",
+		"everyNMinutes": "N分ごと"
 	},
 	"christen": {
 		"title": "最初の社員に名前をつけましょう",
@@ -2887,7 +3064,27 @@
 		"working": "必要なものを確認しています…",
 		"willDo": "{name}ができること：",
 		"thisEmployee": "この従業員",
-		"removeItem": "{item}を外す"
+		"removeItem": "{item}を外す",
+		"hireFromApps": "別のアプリから採用",
+		"linkedLede": "動作しているコンピューター上でそのまま作業を続けます。",
+		"thisComputer": "このコンピューター",
+		"offline": "オフライン",
+		"linkedFailed": "{bot}から採用できませんでした。もう一度お試しください。",
+		"onYourTeam": "チームに在籍中",
+		"linkedLooking": "アプリを探しています…",
+		"linkedHireNew": "新しく採用する",
+		"linkedConnect": "エージェントを接続",
+		"linkedRunning": "{count}件実行中",
+		"nameYour": "{app}に名前をつける",
+		"youAlreadyHave": "すでにいる社員:",
+		"nameTaken": "{name}という名前の社員はすでにいます。",
+		"linkedWhere": "どのコンピューターで作業しますか？",
+		"linkedPickAgent": "どの{app}エージェントですか？",
+		"linkedModeTitle": "確認なしで何をしてよいですか？",
+		"linkedModeAutomaticDesc": "自分のフォルダ内のファイルは自分で編集します。それ以外は事前に確認します。",
+		"linkedModeAskDesc": "何かを変更する前に確認します。",
+		"linkedModePlanDesc": "読み取りと計画のみ。何も変更しません。",
+		"linkedModeFullAccessDesc": "このコンピューター上で何でも確認なしで実行します。"
 	},
 	"runLimit": {
 		"title": "1実行あたりの上限金額",
@@ -3101,5 +3298,526 @@
 		"unreviewed": "未確認",
 		"loadMore": "もっと見る",
 		"addJobEdit": "仕事に追加"
+	},
+	"workflow": {
+		"addNode": "ノードを追加",
+		"deleteNode": "ノードを削除",
+		"deleteWorkflow": "ワークフローを削除",
+		"removeItem": "{name}を削除",
+		"activityCount": "{count, plural, other {#件のアクティビティ}}",
+		"stepCount": "{count, plural, other {#ステップ}}",
+		"triggerTypes": {
+			"schedule": "スケジュール",
+			"heartbeat": "ハートビート",
+			"event": "イベント",
+			"watch": "監視",
+			"manual": "手動"
+		},
+		"branch": {
+			"true": "真",
+			"false": "偽",
+			"eachItem": "各項目",
+			"done": "完了"
+		},
+		"types": {
+			"greeting": {
+				"label": "あいさつ",
+				"description": "この回線が応答したときに話す内容",
+				"params": {
+					"text": {
+						"label": "あいさつ",
+						"description": "通話がつながったときに、そのまま読み上げます。",
+						"placeholder": "ミラー歯科にお電話ありがとうございます。ご用件をお伺いします。"
+					}
+				}
+			},
+			"intent": {
+				"label": "インテント",
+				"description": "この回線が扱う1つの用件と、使えるツール",
+				"params": {
+					"name": {
+						"label": "インテント名",
+						"description": "ルーターが使う短いID（ツリー内で一意）。"
+					},
+					"description": {
+						"label": "発信者がこう言いたいとき",
+						"placeholder": "発信者が予約の作成、変更、キャンセルをしたい"
+					},
+					"tools": {
+						"label": "使えるツール",
+						"description": "このインテントだけに許可する tool:resource をカンマ区切りで指定。"
+					},
+					"workflows": {
+						"label": "使えるワークフロー",
+						"description": "このインテントが実行できる、この社員のワークフロー名をカンマ区切りで指定。"
+					},
+					"plugins": {
+						"label": "使えるプラグイン",
+						"description": "プラグインのスラッグをカンマ区切りで指定。"
+					},
+					"mcp": {
+						"label": "使えるMCPサーバー",
+						"description": "接続済みMCPサーバーの名前をカンマ区切りで指定。"
+					}
+				}
+			},
+			"transfer": {
+				"label": "人に転送",
+				"description": "回線の転送先番号へその場で引き継ぎます",
+				"params": {
+					"when": {
+						"label": "転送するタイミング",
+						"placeholder": "発信者が担当者を求めたとき、怒っているとき、緊急のとき"
+					},
+					"to": {
+						"label": "転送先",
+						"description": "発信者に伝える転送先の名前。番号そのものは回線の設定に保存されます。",
+						"placeholder": "事務長"
+					}
+				}
+			},
+			"takeMessage": {
+				"label": "伝言を受ける",
+				"description": "オーナーへの伝言を記録します（最後の受け皿）",
+				"params": {
+					"fields": {
+						"label": "記録する内容",
+						"placeholder": "名前、電話番号、用件、折り返しに都合のよい時間"
+					}
+				}
+			},
+			"disclosures": {
+				"label": "伝えてよい情報",
+				"description": "調べずにこの回線がそのまま伝える事実",
+				"params": {
+					"text": {
+						"label": "承認済みの情報",
+						"description": "この回線用にオーナーが承認した公開情報 — 営業時間、住所、対応エリア、基本料金など。顧客やアカウント固有の情報はここに書かず、必ず照会を通します。",
+						"placeholder": "営業時間は月〜金 8〜17時。所在地はメインストリート123。クリーニングは$120から。"
+					}
+				}
+			},
+			"custom": {
+				"label": "カスタム",
+				"description": "ステップとスキルを手動で定義"
+			},
+			"research": {
+				"label": "リサーチ",
+				"description": "Web検索、分析、まとめ",
+				"params": {
+					"depth": {
+						"label": "リサーチの深さ",
+						"options": {
+							"quick": "クイック（2〜5分）",
+							"standard": "標準（5〜10分）",
+							"deep": "詳細（10〜20分）"
+						}
+					},
+					"sources": {
+						"label": "ソースの種類",
+						"description": "検索するソースの種類をカンマ区切りで指定",
+						"placeholder": "web, academic, news"
+					}
+				}
+			},
+			"email": {
+				"label": "メールを送信",
+				"description": "メールを作成して送信",
+				"params": {
+					"to": {
+						"label": "宛先",
+						"description": "受信者のメールアドレス（または前のステップのデータを使用）"
+					},
+					"subject": {
+						"label": "件名テンプレート"
+					}
+				}
+			},
+			"notify": {
+				"label": "通知",
+				"description": "チャンネルに通知を送信",
+				"params": {
+					"channel": {
+						"label": "チャンネル",
+						"options": {
+							"email": "メール",
+							"webhook": "Webhook"
+						}
+					},
+					"target": {
+						"label": "送信先",
+						"description": "チャンネル名、メールアドレス、またはWebhook URL",
+						"placeholder": "#general または user@example.com"
+					}
+				}
+			},
+			"code": {
+				"label": "コードを実行",
+				"description": "コードスニペットを実行",
+				"params": {
+					"language": {
+						"label": "言語"
+					},
+					"code": {
+						"label": "コード",
+						"description": "実行するコード"
+					}
+				}
+			},
+			"condition": {
+				"label": "条件",
+				"description": "if/else の分岐",
+				"params": {
+					"expression": {
+						"label": "条件式",
+						"description": "JavaScript の式 — 真なら「真」の分岐へ、偽なら「偽」の分岐へ進みます"
+					},
+					"mode": {
+						"label": "評価モード",
+						"options": {
+							"expression": "式",
+							"contains": "データに含まれる",
+							"exists": "フィールドが存在する",
+							"regex": "正規表現に一致"
+						}
+					}
+				}
+			},
+			"loop": {
+				"label": "ループ",
+				"description": "項目のリストを繰り返し処理",
+				"params": {
+					"source": {
+						"label": "項目のソース",
+						"description": "繰り返し処理する配列へのパス",
+						"placeholder": "data.items または data.emails"
+					},
+					"maxIterations": {
+						"label": "最大繰り返し回数",
+						"description": "無限ループを防ぐための安全上の上限"
+					}
+				}
+			},
+			"wait": {
+				"label": "待機",
+				"description": "実行を一時停止",
+				"params": {
+					"duration": {
+						"label": "待機時間",
+						"options": {
+							"5s": "5秒",
+							"30s": "30秒",
+							"1m": "1分",
+							"5m": "5分",
+							"15m": "15分",
+							"1h": "1時間",
+							"custom": "カスタム"
+						}
+					},
+					"waitUntil": {
+						"label": "または次まで待機",
+						"description": "このイベントが発生したら再開します（時間で待つ場合は空のまま）",
+						"placeholder": "例: event:approval.received"
+					}
+				}
+			},
+			"agent": {
+				"label": "社員",
+				"description": "別の社員に任せる",
+				"params": {
+					"agentId": {
+						"label": "社員",
+						"description": "このタスクを任せる社員"
+					},
+					"instructions": {
+						"label": "指示",
+						"description": "社員の標準の人物像を上書きまたは補足します",
+						"placeholder": "任せる社員への具体的な指示..."
+					}
+				}
+			},
+			"connector": {
+				"label": "コネクター",
+				"description": "MCP連携を使う",
+				"params": {
+					"serverId": {
+						"label": "MCPサーバー",
+						"description": "使用する接続済みMCPサーバー"
+					},
+					"tool": {
+						"label": "ツール",
+						"description": "MCPサーバーで呼び出すツール",
+						"placeholder": "例: read_file, send_message"
+					},
+					"input": {
+						"label": "入力",
+						"description": "ツールへのJSON入力（'{{'data.field'}}' テンプレートに対応）"
+					}
+				}
+			},
+			"http": {
+				"label": "HTTPリクエスト",
+				"description": "HTTP APIを呼び出す",
+				"params": {
+					"method": {
+						"label": "メソッド"
+					},
+					"url": {
+						"label": "URL"
+					},
+					"body": {
+						"label": "リクエスト本文",
+						"description": "POST/PUT/PATCH リクエストのJSON本文"
+					},
+					"headers": {
+						"label": "ヘッダー",
+						"description": "1行に1つのヘッダー（key: value）"
+					}
+				}
+			},
+			"decide": {
+				"label": "判断",
+				"description": "型付きの質問でデータを分類・判断",
+				"params": {
+					"state": {
+						"label": "状態",
+						"description": "判断するデータのパス（inputs.*、item、nodes.'<'id>.*）"
+					},
+					"questions": {
+						"label": "質問",
+						"description": "型付きの質問（choice、score、noul）のJSONオブジェクト。条件ノードは nodes.'<'id>.'<'question>.choice と .confidence で分岐します"
+					},
+					"default": {
+						"label": "既定の回答",
+						"description": "判断できないときに使う回答: choice には選択肢、score にはレベル、noul には true または false。その場合ノードは nodes.'<'id>.defaulted を設定します"
+					}
+				}
+			},
+			"transform": {
+				"label": "変換",
+				"description": "データを整形またはフィルター",
+				"params": {
+					"operation": {
+						"label": "操作",
+						"options": {
+							"map": "Map — 各項目を変換",
+							"filter": "Filter — 一致する項目を残す",
+							"reduce": "Reduce — 1つの値に集約",
+							"pick": "Pick — 特定のフィールドを抽出",
+							"template": "Template — テキストに整形"
+						}
+					},
+					"expression": {
+						"label": "式",
+						"description": "変換の式"
+					}
+				}
+			}
+		},
+		"catalog": {
+			"searchPlaceholder": "ノードを検索...",
+			"noMatch": "「{query}」に一致するノードはありません",
+			"toolsAvailable": "{count, plural, other {#個のツールが利用可能}}",
+			"categories": {
+				"triggers": "トリガー",
+				"activities": "アクティビティ",
+				"callTree": "コールツリー",
+				"flowControl": "フロー制御",
+				"connectors": "コネクター（MCP）",
+				"agents": "社員",
+				"output": "出力"
+			},
+			"items": {
+				"triggerSchedule": {
+					"label": "スケジュール",
+					"desc": "決まった時刻に実行"
+				},
+				"triggerEvent": {
+					"label": "イベント",
+					"desc": "イベントに反応"
+				},
+				"triggerHeartbeat": {
+					"label": "ハートビート",
+					"desc": "一定間隔で実行"
+				},
+				"triggerManual": {
+					"label": "手動",
+					"desc": "必要なときに実行"
+				},
+				"activityCustom": {
+					"label": "カスタムアクティビティ",
+					"desc": "ステップとスキルを定義"
+				},
+				"activityResearch": {
+					"label": "リサーチ",
+					"desc": "Web検索と分析"
+				},
+				"activityEmail": {
+					"label": "メールを送信",
+					"desc": "メールを作成して送信"
+				},
+				"activityNotify": {
+					"label": "通知",
+					"desc": "通知を送信"
+				},
+				"activityCode": {
+					"label": "コードを実行",
+					"desc": "コードスニペットを実行"
+				},
+				"activityHttp": {
+					"label": "HTTPリクエスト",
+					"desc": "APIを呼び出す"
+				},
+				"activityDecide": {
+					"label": "判断",
+					"desc": "データを分類・判断"
+				},
+				"activityTransform": {
+					"label": "変換",
+					"desc": "データを整形またはフィルター"
+				},
+				"activityGreeting": {
+					"label": "あいさつ",
+					"desc": "回線が応答したときに話す内容"
+				},
+				"activityIntent": {
+					"label": "インテント",
+					"desc": "1つの用件 + 使えるツール"
+				},
+				"activityTransfer": {
+					"label": "人に転送",
+					"desc": "その場で引き継ぎ — 転送先の名前を指定"
+				},
+				"activityTakeMessage": {
+					"label": "伝言を受ける",
+					"desc": "伝言を記録（最後の受け皿）"
+				},
+				"activityDisclosures": {
+					"label": "伝えてよい情報",
+					"desc": "この回線がそのまま伝える事実（営業時間、住所、料金）"
+				},
+				"flowCondition": {
+					"label": "条件",
+					"desc": "if/else の分岐"
+				},
+				"flowLoop": {
+					"label": "ループ",
+					"desc": "項目を繰り返し処理"
+				},
+				"flowWait": {
+					"label": "待機",
+					"desc": "一時停止またはイベントを待機"
+				},
+				"emit": {
+					"label": "イベントを発行",
+					"desc": "完了イベントを通知"
+				}
+			}
+		},
+		"eventSources": {
+			"label": "イベントソース",
+			"searchPlaceholder": "入力してソースを検索...",
+			"hint": "入力して既知のソースを検索し、Enterで追加します。独自の名前やワイルドカード（email.*）も使えます。"
+		},
+		"flow": {
+			"triggerManual": "開始したときに実行",
+			"triggerSchedule": "スケジュールで実行",
+			"triggerEventAny": "イベントが発生したとき",
+			"triggerWatch": "{name}を監視中",
+			"triggerWatchAny": "プラグインを監視中",
+			"applying": "適用しています…",
+			"go": "実行",
+			"tellAi": "変更内容をAIに伝える",
+			"tellAiEllipsis": "変更内容をAIに伝える…",
+			"badgeExact": "固定",
+			"badgeAgent": "社員",
+			"emptyCode": "（空）",
+			"stepPlaceholder": "このステップで何をしますか？",
+			"changeStep": "「{name}」を変更…",
+			"forEach": "各{item}について",
+			"loopItemDefault": "項目",
+			"loopEmpty": "このループにはまだ何もありません。",
+			"pathDefault": "パス",
+			"pathEmpty": "空のパス",
+			"addStepHere": "ここにステップを追加",
+			"connected": "{name}は接続済みです",
+			"notConnected": "{name}が接続されていません — このフローは失敗します",
+			"connect": "接続",
+			"describeFlowChange": "このフロー全体への変更を説明してください…",
+			"edit": "編集",
+			"emits": "発行",
+			"noSteps": "このフローにはまだステップがありません。"
+		},
+		"panel": {
+			"backToOverview": "ワークフローの概要に戻る",
+			"intent": "インテント",
+			"addSkill": "スキルを追加...",
+			"parameters": "パラメーター",
+			"addStep": "ステップを追加...",
+			"manualHint": "手動で開始したときにのみ実行されます。",
+			"notConfigured": "未設定",
+			"noEventConfigured": "イベントが設定されていません",
+			"noDescription": "説明なし",
+			"emitPlaceholder": "例: {name}",
+			"emitOptional": "任意 — 実行が完了したとき、ほかのワークフローがこれをトリガーにできます。",
+			"useEmit": "{name}を使用",
+			"emitRenameWarning": "名前を変更すると、このイベントを購読しているワークフローが動かなくなります。",
+			"none": "なし",
+			"apiEndpoint": "APIエンドポイント",
+			"apiEndpointHint": "このワークフローのキーは、社員の設定 → Webhook で発行してください。"
+		},
+		"schedule": {
+			"weekends": "週末",
+			"custom": "カスタム",
+			"daysOfWeek": "曜日",
+			"monthly": "毎月",
+			"biannual": "6か月ごと",
+			"yearly": "毎年",
+			"onDay": "日付",
+			"biannualNote": "{firstMonth}{day}日と{secondMonth}{day}日に実行します。",
+			"shortMonthsSkipped": "{day}日がない月はスキップされます。",
+			"limitToHours": "時間帯を限定",
+			"rangeTo": "〜"
+		},
+		"watch": {
+			"plugin": "プラグイン",
+			"choosePlugin": "プラグインを選択…",
+			"whenItReports": "報告されたとき",
+			"chooseEvent": "イベントを選択…",
+			"hint": "{plugin}が{event}を報告するたびに実行します。ほかのフローも{plugin}.{event}を待ち受けられます。"
+		},
+		"validation": {
+			"emptyId": "「{workflow}」のアクティビティのIDが空です",
+			"duplicateId": "「{workflow}」でアクティビティID「{id}」が重複しています",
+			"conditionExpression": "条件「{id}」には式が必要です — 分岐は常に決定的で、AIが決めることはありません",
+			"loopSource": "ループ「{id}」にはデータソースが必要です（例: inputs.items）",
+			"httpUrl": "HTTPノード「{id}」にはURLが必要です",
+			"decideQuestions": "判断ノード「{id}」には質問が必要です（型付きの質問のJSONオブジェクト）",
+			"waitDuration": "待機ノード「{id}」には待機時間が必要です",
+			"needsIntent": "「{workflow}」のアクティビティ「{id}」にはインテントまたはステップが必要です",
+			"targetsTrigger": "トリガーに向かう接続があります",
+			"leavesEmit": "発行ノードから出る接続があります",
+			"unknownFrom": "不明なノード「{id}」からの接続",
+			"unknownTo": "不明なノード「{id}」への接続",
+			"duplicateConnection": "接続 {from} → {to} が重複しています",
+			"labeledNonBranching": "ラベル付きの接続「{label}」が分岐しないノード「{id}」から出ています",
+			"unlabeledBranch": "「{id}」から出る接続には分岐ラベルが必要です",
+			"cycle": "グラフに循環があります（ループに戻れるのは、そのループの「各項目」の本体だけです）"
+		},
+		"builder": {
+			"unsavedConfirm": "保存されていない変更があります。破棄して閉じますか？",
+			"workflowLabel": "{name}（{count, plural, other {#件のアクティビティ}}）",
+			"undo": "元に戻す（Cmd+Z）",
+			"redo": "やり直す（Cmd+Shift+Z）",
+			"issueCount": "{count, plural, other {#件の問題}}",
+			"discard": "破棄",
+			"hideDetails": "詳細パネルを隠す",
+			"showDetails": "詳細パネルを表示",
+			"newWorkflowTitle": "新しいワークフロー",
+			"empty": "ワークフローはありません — 作成して始めましょう",
+			"newWorkflow": "新しいワークフロー",
+			"confirmDeleteWorkflow": "このワークフローを削除してもよろしいですか？すべてのアクティビティと接続が削除されます。",
+			"confirmDeleteNode": "このノードを削除してもよろしいですか？接続は自動的につなぎ直されます。"
+		}
 	}
 }

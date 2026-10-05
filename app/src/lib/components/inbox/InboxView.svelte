@@ -296,10 +296,10 @@
   {@const isUpdate = approvalRef(n)?.kind === 'update'}
   {@const strong = pending || !n.read}
   {@const tone = selectedId === n.id
-    ? `bg-base-100 ${pending ? 'border-l-warning' : 'border-l-primary'}`
-    : `border-l-transparent ${pending ? 'hover:bg-warning/10' : 'hover:bg-base-200'}`}
+    ? `bg-base-100 ${pending ? 'border-s-warning' : 'border-s-primary'}`
+    : `border-s-transparent ${pending ? 'hover:bg-warning/10' : 'hover:bg-base-200'}`}
   <div
-    class="group relative flex items-start gap-2.5 pr-4 pl-[14px] border-l-2 cursor-pointer transition-colors {pending ? 'py-2.5' : 'py-3 border-b border-base-content/10'} {tone}"
+    class="group relative flex items-start gap-2.5 pe-4 ps-[14px] border-s-2 cursor-pointer transition-colors {pending ? 'py-2.5' : 'py-3 border-b border-base-content/10'} {tone}"
     onclick={() => open(n)}
     onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(n); } }}
     role="button"
@@ -322,7 +322,7 @@
             onclick={(e) => { e.stopPropagation(); revert(n); }}
           >{$t('inbox.revert')}</button>
         {/if}
-        <span class="text-xs text-base-content/50 font-mono shrink-0 ml-auto">{n.time}</span>
+        <span class="text-xs text-base-content/50 font-mono shrink-0 ms-auto">{n.time}</span>
       </div>
       <p class="text-xs mt-0.5 {pending ? 'text-base-content/70' : 'text-base-content/60 truncate'}">{n.message}</p>
       {#if pending}
@@ -343,7 +343,7 @@
     {#if !pending}
       <button
         onclick={(e) => { e.stopPropagation(); remove(n.id); }}
-        class="absolute right-2 bottom-2 p-1 rounded hover:bg-base-content/10 transition-opacity cursor-pointer bg-base-200 border-none opacity-0 group-hover:opacity-100"
+        class="absolute end-2 bottom-2 p-1 rounded hover:bg-base-content/10 transition-opacity cursor-pointer bg-base-200 border-none opacity-0 group-hover:opacity-100"
         aria-label={$t('notifications.closeNotification')}
       >
         <Trash2 class="w-3 h-3 text-base-content/40" />
@@ -354,7 +354,7 @@
 
 <div class="flex-1 flex min-h-0 min-w-0 bg-base-100">
   <!-- Message list (email-style rows). On mobile the list and reading pane swap full-screen. -->
-  <div class="w-full min-w-0 md:w-80 lg:w-96 md:shrink-0 border-r border-base-300 bg-base-200/50 flex-col min-h-0 {selected ? 'hidden md:flex' : 'flex'}">
+  <div class="w-full min-w-0 md:w-80 lg:w-96 md:shrink-0 border-e border-base-300 bg-base-200/50 flex-col min-h-0 {selected ? 'hidden md:flex' : 'flex'}">
     <div class="flex items-center justify-between h-12 px-4 border-b border-base-content/10 shrink-0">
       {#if !embedded}<h1 class="text-base font-semibold">{$t('inbox.title')}</h1>{/if}
       {#if $unreadCount > 0}
@@ -459,7 +459,7 @@
           <span class="badge badge-ghost badge-sm shrink-0">{roster[selected.agentId].name}{roster[selected.agentId].department ? ` · ${deptLabel(roster[selected.agentId].department!)}` : ''}</span>
         {/if}
         <span class="text-xs text-base-content/50 font-mono shrink-0">{selected.time}</span>
-        <div class="ml-auto flex items-center gap-1 shrink-0">
+        <div class="ms-auto flex items-center gap-1 shrink-0">
           <!-- Open goes somewhere else — a run, a thread. A link back to the
                inbox itself is not a destination, so it gets no button. -->
           {#if elsewhere(selected.link)}

@@ -37,7 +37,7 @@
         {#if isNested(v)}
           <div class="min-w-0">
             <div class="text-xs font-mono font-medium text-base-content/50">{key}</div>
-            <div class="mt-1 pl-3 border-l border-base-content/10 min-w-0"><Self value={v} /></div>
+            <div class="mt-1 ps-3 border-s border-base-content/10 min-w-0"><Self value={v} /></div>
           </div>
         {:else}
           <div class="text-xs min-w-0 break-words">

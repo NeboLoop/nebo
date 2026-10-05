@@ -81,7 +81,7 @@
           <div class="w-20 h-20 rounded-field bg-primary/10 text-primary flex items-center justify-center font-mono text-3xl font-semibold motion-safe:animate-[christen-pulse_1.2s_ease-in-out_infinite]">
             {initial}
           </div>
-          <div class="absolute -bottom-1 -right-1 w-4 h-4 rounded-full border-2 border-base-100 bg-success motion-safe:animate-[christen-pulse_1.2s_ease-in-out_infinite]"></div>
+          <div class="absolute -bottom-1 -end-1 w-4 h-4 rounded-full border-2 border-base-100 bg-success motion-safe:animate-[christen-pulse_1.2s_ease-in-out_infinite]"></div>
         </div>
         <div class="text-lg font-semibold">{name.trim()}</div>
         <div class="flex items-center gap-2 text-sm text-base-content/60">

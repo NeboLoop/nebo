@@ -19,7 +19,7 @@
 {#if $showUpdateBanner}
   <div class="border-t border-base-300 shrink-0">
     <button
-      class="w-full flex items-center gap-2.5 cursor-pointer hover:bg-base-200 transition-colors bg-transparent border-none {collapsed ? 'justify-center py-2.5 px-0' : 'py-2.5 px-3.5 text-left'}"
+      class="w-full flex items-center gap-2.5 cursor-pointer hover:bg-base-200 transition-colors bg-transparent border-none {collapsed ? 'justify-center py-2.5 px-0' : 'py-2.5 px-3.5 text-start'}"
       onclick={applyUpdate}
     >
       <div class="w-7 h-7 rounded-full bg-primary/10 text-primary flex items-center justify-center shrink-0">

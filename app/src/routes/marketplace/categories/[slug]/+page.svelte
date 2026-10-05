@@ -67,7 +67,7 @@
 <!-- Sticky Header -->
 <div class="sticky top-0 z-20 bg-base-100/80 backdrop-blur-xl border-b border-base-content/10">
 	<div class="flex items-center px-6 h-14">
-		<button type="button" class="flex items-center gap-1 text-primary text-base font-medium mr-4" onclick={() => goto('/marketplace/categories')}>
+		<button type="button" class="flex items-center gap-1 text-primary text-base font-medium me-4" onclick={() => goto('/marketplace/categories')}>
 			<ChevronLeft class="w-4 h-4" />
 			{$t('marketplace.categories')}
 		</button>
@@ -109,8 +109,8 @@
 			<h2 class="font-display text-lg font-bold mb-4">{$t('marketplace.skills')}</h2>
 			<div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-px">
 				{#each skills as item, i}
-					<a href={itemHref(item)} class="flex items-center gap-3 py-3 pr-3 hover:bg-base-content/[0.03] transition-colors rounded-lg">
-						<span class="w-5 text-right text-base text-base-content/80 font-medium shrink-0">{i + 1}</span>
+					<a href={itemHref(item)} class="flex items-center gap-3 py-3 pe-3 hover:bg-base-content/[0.03] transition-colors rounded-lg">
+						<span class="w-5 text-end text-base text-base-content/80 font-medium shrink-0">{i + 1}</span>
 						<div class="w-14 h-14 rounded-2xl {item.iconBg} flex items-center justify-center text-2xl shrink-0">{item.iconEmoji}</div>
 						<div class="flex-1 min-w-0">
 							<p class="text-base font-semibold truncate">{item.name}</p>
@@ -133,8 +133,8 @@
 			<h2 class="font-display text-lg font-bold mb-4">{$t('marketplace.workflows')}</h2>
 			<div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-px">
 				{#each workflows as item, i}
-					<a href={itemHref(item)} class="flex items-center gap-3 py-3 pr-3 hover:bg-base-content/[0.03] transition-colors rounded-lg">
-						<span class="w-5 text-right text-base text-base-content/80 font-medium shrink-0">{i + 1}</span>
+					<a href={itemHref(item)} class="flex items-center gap-3 py-3 pe-3 hover:bg-base-content/[0.03] transition-colors rounded-lg">
+						<span class="w-5 text-end text-base text-base-content/80 font-medium shrink-0">{i + 1}</span>
 						<div class="w-14 h-14 rounded-2xl {item.iconBg} flex items-center justify-center text-2xl shrink-0">{item.iconEmoji}</div>
 						<div class="flex-1 min-w-0">
 							<p class="text-base font-semibold truncate">{item.name}</p>
@@ -157,8 +157,8 @@
 			<h2 class="font-display text-lg font-bold mb-4">{$t('marketplace.agents')}</h2>
 			<div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-px">
 				{#each agents as item, i}
-					<a href={itemHref(item)} class="flex items-center gap-3 py-3 pr-3 hover:bg-base-content/[0.03] transition-colors rounded-lg">
-						<span class="w-5 text-right text-base text-base-content/80 font-medium shrink-0">{i + 1}</span>
+					<a href={itemHref(item)} class="flex items-center gap-3 py-3 pe-3 hover:bg-base-content/[0.03] transition-colors rounded-lg">
+						<span class="w-5 text-end text-base text-base-content/80 font-medium shrink-0">{i + 1}</span>
 						<div class="w-14 h-14 rounded-2xl {item.iconBg} flex items-center justify-center text-2xl shrink-0">{item.iconEmoji}</div>
 						<div class="flex-1 min-w-0">
 							<p class="text-base font-semibold truncate">{item.name}</p>

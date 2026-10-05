@@ -295,7 +295,7 @@
 			</button>
 		</div>
 		<div class="mt-2 flex">
-			<button type="button" class="text-xs text-base-content/70 hover:text-base-content cursor-pointer bg-transparent border-none px-0 ml-auto" onclick={() => submit(SKIP_VALUE)}>{$t('common.skip')}</button>
+			<button type="button" class="text-xs text-base-content/70 hover:text-base-content cursor-pointer bg-transparent border-none px-0 ms-auto" onclick={() => submit(SKIP_VALUE)}>{$t('common.skip')}</button>
 		</div>
 	{:else if widget?.type === 'connect_account'}
 		<div class="flex items-center gap-3 rounded-lg border border-base-300 bg-base-100 px-3 py-2.5">
@@ -326,7 +326,7 @@
 			</div>
 		{/if}
 		<div class="mt-2 flex">
-			<button type="button" class="text-xs text-base-content/70 hover:text-base-content cursor-pointer bg-transparent border-none px-0 ml-auto" onclick={() => submit(SKIP_VALUE)}>{$t('common.skip')}</button>
+			<button type="button" class="text-xs text-base-content/70 hover:text-base-content cursor-pointer bg-transparent border-none px-0 ms-auto" onclick={() => submit(SKIP_VALUE)}>{$t('common.skip')}</button>
 		</div>
 	{:else}
 		{#if widget?.label}
@@ -346,7 +346,7 @@
 						<span class="flex flex-col">
 							<span class="text-sm">
 								{option.label}
-								{#if option.recommended}<span class="badge badge-primary badge-xs ml-1">{$t('chat.recommended')}</span>{/if}
+								{#if option.recommended}<span class="badge badge-primary badge-xs ms-1">{$t('chat.recommended')}</span>{/if}
 							</span>
 							{#if option.description}<span class="text-xs text-base-content/70">{option.description}</span>{/if}
 						</span>
@@ -361,10 +361,10 @@
 						class="btn btn-sm btn-outline justify-start h-auto py-1.5 normal-case"
 						onclick={() => submit(option.label)}
 					>
-						<span class="flex flex-col items-start text-left">
+						<span class="flex flex-col items-start text-start">
 							<span class="font-medium">
 								{option.label}
-								{#if option.recommended}<span class="badge badge-primary badge-xs ml-1">{$t('chat.recommended')}</span>{/if}
+								{#if option.recommended}<span class="badge badge-primary badge-xs ms-1">{$t('chat.recommended')}</span>{/if}
 							</span>
 							{#if option.description}<span class="text-xs text-base-content/70 font-normal">{option.description}</span>{/if}
 						</span>
@@ -402,7 +402,7 @@
 				{#if !showOther}
 					<button type="button" class="text-xs text-base-content/80 hover:text-base-content cursor-pointer bg-transparent border-none px-0" onclick={() => (showOther = true)}>{$t('chat.other')}</button>
 				{/if}
-				<button type="button" class="text-xs text-base-content/70 hover:text-base-content cursor-pointer bg-transparent border-none px-0 ml-auto" onclick={() => submit(SKIP_VALUE)}>{$t('common.skip')}</button>
+				<button type="button" class="text-xs text-base-content/70 hover:text-base-content cursor-pointer bg-transparent border-none px-0 ms-auto" onclick={() => submit(SKIP_VALUE)}>{$t('common.skip')}</button>
 			</div>
 		</div>
 	{/if}

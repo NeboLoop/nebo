@@ -24,7 +24,7 @@
   let q = $state($page.url.searchParams.get('q') || '');
 </script>
 
-<svelte:head><title>Marketplace - Nebo</title></svelte:head>
+<svelte:head><title>{$t('marketplace.pageTitle')}</title></svelte:head>
 
 <div class="max-w-6xl mx-auto px-6 pt-6">
   <label class="w-80 max-w-full flex items-center gap-2 rounded-full border border-base-300 bg-base-100 px-3 py-1.5 focus-within:border-primary">

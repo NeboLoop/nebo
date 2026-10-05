@@ -1,4 +1,7 @@
+import { get } from 'svelte/store';
+import { t } from 'svelte-i18n';
 import { N } from './tokens.js';
+import { clockTime } from './utils/schedule';
 
 export function triggerGlyph(kind: string): string {
   if (kind === 'event') return '⚡';
@@ -9,17 +12,20 @@ export function triggerGlyph(kind: string): string {
 export function fmtTime(h: number): string {
   const whole = Math.floor(h);
   const mins = Math.round((h - whole) * 60);
-  if (whole === 12 && mins === 0) return 'Noon';
-  if (whole === 0  && mins === 0) return 'Midnight';
-  const ampm   = whole < 12 ? 'AM' : 'PM';
-  const display = whole % 12 === 0 ? 12 : whole % 12;
-  return mins ? `${display}:${String(mins).padStart(2, '0')} ${ampm}` : `${display} ${ampm}`;
+  if (mins) return clockTime(whole, mins);
+  return fmtHour(whole);
 }
 
 export function fmtHour(h: number): string {
-  if (h === 12) return 'Noon';
-  if (h === 0)  return 'Midnight';
-  return `${h % 12 === 0 ? 12 : h % 12} ${h < 12 ? 'AM' : 'PM'}`;
+  const tr = get(t);
+  if (h === 12) return tr('schedule.noon');
+  if (h === 0)  return tr('schedule.midnight');
+  return tr('schedule.hourOnly', {
+    values: {
+      hour: h % 12 === 0 ? 12 : h % 12,
+      period: tr(h < 12 ? 'schedule.am' : 'schedule.pm'),
+    },
+  });
 }
 
 export function eventBlockColor(kind: string): { bg: string; fg: string; border: string } {

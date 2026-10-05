@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { t, locale } from 'svelte-i18n';
 	import EventSourcePicker from './EventSourcePicker.svelte';
 	import { getActivityType, ACTIVITY_TYPES, type ActivityType } from '$lib/utils/workflowTypes';
 	import type { WorkflowConfig, WorkflowActivity, WorkflowTrigger } from '$lib/types/agentPage';
@@ -50,16 +51,39 @@
 	const MINUTES = [0, 15, 30, 45];
 	const DAY_LABELS = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
 	const INTERVAL_OPTIONS = [
-		{ value: '5m', label: 'Every 5 minutes' },
-		{ value: '10m', label: 'Every 10 minutes' },
-		{ value: '15m', label: 'Every 15 minutes' },
-		{ value: '30m', label: 'Every 30 minutes' },
-		{ value: '1h', label: 'Every hour' },
-		{ value: '2h', label: 'Every 2 hours' },
-		{ value: '4h', label: 'Every 4 hours' },
-		{ value: '8h', label: 'Every 8 hours' },
-		{ value: '24h', label: 'Every 24 hours' },
+		{ value: '5m', labelKey: 'automations.every5min' },
+		{ value: '10m', labelKey: 'automations.every10min' },
+		{ value: '15m', labelKey: 'automations.every15min' },
+		{ value: '30m', labelKey: 'automations.every30min' },
+		{ value: '1h', labelKey: 'automations.everyHour' },
+		{ value: '2h', labelKey: 'automations.every2h' },
+		{ value: '4h', labelKey: 'automations.every4h' },
+		{ value: '8h', labelKey: 'automations.every8h' },
+		{ value: '24h', labelKey: 'automations.every24h' },
 	];
+	const DAY_PRESETS = [
+		['daily', 'schedule.daily'],
+		['weekdays', 'schedule.weekdays'],
+		['weekends', 'workflow.schedule.weekends'],
+		['custom', 'workflow.schedule.custom'],
+	] as const;
+	const CADENCES = [
+		['weekly', 'workflow.schedule.daysOfWeek'],
+		['monthly', 'workflow.schedule.monthly'],
+		['biannual', 'workflow.schedule.biannual'],
+		['annual', 'workflow.schedule.yearly'],
+	] as const;
+	
+	// Display names come from Intl in the current locale; DAY_LABELS and
+	// MONTH_LABELS stay the English tokens the schedule string is written in.
+	/** Short month name for display (1-12). */
+	function monthName(m: number): string {
+		return new Intl.DateTimeFormat($locale ?? undefined, { month: 'short' }).format(new Date(2000, m - 1, 1));
+	}
+	/** One-letter weekday for display (0 = Sunday). 2 Jan 2000 was a Sunday. */
+	function dayLetter(d: number): string {
+		return new Intl.DateTimeFormat($locale ?? undefined, { weekday: 'narrow' }).format(new Date(2000, 0, 2 + d));
+	}
 
 	/** Parse "8:00 AM daily" or "3:00 PM weekdays" into structured parts */
 	const MONTH_LABELS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -267,6 +291,17 @@
 		return workflow?.trigger ?? { type: 'manual' };
 	}
 
+	/** Display name for a trigger type; unknown types show as stored. */
+	function triggerTypeLabel(type: string): string {
+		return (triggerTypes as readonly string[]).includes(type) ? $t(`workflow.triggerTypes.${type}`) : type;
+	}
+	
+	/** Display text for a heartbeat interval value. */
+	function intervalLabel(interval: string): string {
+		const opt = INTERVAL_OPTIONS.find((o) => o.value === interval);
+		return opt ? $t(opt.labelKey) : $t('automations.everyInterval', { values: { interval } });
+	}
+	
 	function formatLastFired(iso: string): string {
 		const d = new Date(iso);
 		return isNaN(d.getTime()) ? iso : d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
@@ -281,7 +316,7 @@
 <!-- On small screens the config panel is a bottom sheet over the canvas
      (70% height) rather than a fixed stacked band — the canvas keeps its
      full area when the sheet is closed. -->
-<div class="w-[340px] shrink-0 border-l border-base-content/10 bg-base-100 flex flex-col overflow-hidden max-md:absolute max-md:inset-x-0 max-md:bottom-0 max-md:z-20 max-md:w-full max-md:h-[70%] max-md:border-l-0 max-md:border-t max-md:rounded-t-xl max-md:shadow-2xl">
+<div class="w-[340px] shrink-0 border-s border-base-content/10 bg-base-100 flex flex-col overflow-hidden max-md:absolute max-md:inset-x-0 max-md:bottom-0 max-md:z-20 max-md:w-full max-md:h-[70%] max-md:border-s-0 max-md:border-t max-md:rounded-t-xl max-md:shadow-2xl">
 	<!-- Panel header -->
 	<div class="flex items-center justify-between px-4 py-3 border-b border-base-content/10 shrink-0">
 		<!-- On a phone this panel is a sheet OVER the chain. Without its own
@@ -289,16 +324,16 @@
 		{#if ondismiss}
 			<button
 				type="button"
-				class="md:hidden mr-2 h-9 px-3 rounded-md flex items-center gap-1 text-sm font-medium text-primary bg-transparent border-none cursor-pointer shrink-0"
+				class="md:hidden me-2 h-9 px-3 rounded-md flex items-center gap-1 text-sm font-medium text-primary bg-transparent border-none cursor-pointer shrink-0"
 				onclick={ondismiss}
 			>
 				<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
-				Done
+				{$t('common.done')}
 			</button>
 		{/if}
 		<div class="flex-1 min-w-0">
 			<div class="text-sm font-semibold truncate">{workflowName}</div>
-			<div class="text-xs text-base-content/50">{workflow?.activities?.length ?? 0} {(workflow?.activities?.length ?? 0) === 1 ? 'activity' : 'activities'}</div>
+			<div class="text-xs text-base-content/50">{$t('workflow.activityCount', { values: { count: workflow?.activities?.length ?? 0 } })}</div>
 		</div>
 		<div class="flex items-center gap-1.5 shrink-0">
 			{#if isEditable}
@@ -308,7 +343,7 @@
 					checked={workflow?.isActive !== false}
 					role="switch"
 					aria-checked={workflow?.isActive !== false}
-					title="Enable/disable"
+					title={$t('workflowCanvas.enableDisable')}
 					onchange={(e) => onupdateActive?.((e.target as HTMLInputElement).checked)}
 				/>
 			{/if}
@@ -318,8 +353,8 @@
 				     a dead × in overview mode was a lying control. -->
 				<button
 					class="w-6 h-6 rounded-md flex items-center justify-center hover:bg-base-200 cursor-pointer bg-transparent border-none text-base"
-					title="Back to workflow overview"
-					aria-label="Back to workflow overview"
+					title={$t('workflow.panel.backToOverview')}
+					aria-label={$t('workflow.panel.backToOverview')}
 					onclick={onclose}
 				>&times;</button>
 			{/if}
@@ -337,12 +372,12 @@
 					<span class="text-sm font-medium text-base-content/70">{activityTypeDef.label}</span>
 					{#if isEditable}
 						<select
-							class="select select-sm select-bordered ml-auto"
+							class="select select-sm select-bordered ms-auto"
 							value={activity.type || 'custom'}
 							onchange={(e) => onupdateActivity?.('type', (e.target as HTMLSelectElement).value)}
 						>
-							{#each Object.values(ACTIVITY_TYPES) as t}
-								<option value={t.type}>{t.label}</option>
+							{#each Object.keys(ACTIVITY_TYPES) as typeId}
+								<option value={typeId}>{getActivityType(typeId).label}</option>
 							{/each}
 						</select>
 					{/if}
@@ -350,7 +385,7 @@
 			{/if}
 
 			<div class="mb-4">
-				<div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1">Activity</div>
+				<div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1">{$t('workflowCanvas.activity')}</div>
 				{#if isEditable}
 					<input
 						type="text"
@@ -364,7 +399,7 @@
 			</div>
 
 			<div class="mb-4">
-				<div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1">Intent</div>
+				<div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1">{$t('workflow.panel.intent')}</div>
 				{#if isEditable}
 					<textarea
 						class="textarea textarea-sm textarea-bordered w-full resize-none"
@@ -379,7 +414,7 @@
 
 			<!-- Skills -->
 			<div class="mb-4">
-				<div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1.5">Skills</div>
+				<div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1.5">{$t('marketplace.skills')}</div>
 				<div class="flex flex-wrap gap-1">
 					{#each activity.skills ?? [] as skill, i}
 						<div class="flex items-center gap-1 py-0.5 px-2 rounded bg-base-200 font-mono text-xs">
@@ -387,6 +422,7 @@
 							{#if isEditable}
 								<button
 									class="text-base-content/40 hover:text-error cursor-pointer bg-transparent border-none text-xs leading-none p-0"
+									aria-label={$t('workflow.removeItem', { values: { name: skill } })}
 									onclick={() => {
 										const skills = [...(activity.skills || [])];
 										skills.splice(i, 1);
@@ -402,7 +438,7 @@
 						<input
 							type="text"
 							class="input input-sm input-bordered flex-1"
-							placeholder="Add skill..."
+							placeholder={$t('workflow.panel.addSkill')}
 							bind:value={newSkillText}
 							onkeydown={(e) => {
 								if (e.key === 'Enter' && newSkillText.trim()) {
@@ -430,7 +466,7 @@
 			<!-- Type-specific parameters -->
 			{#if activityTypeDef && activityTypeDef.parameters.length > 0}
 				<div class="mb-4">
-					<div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1.5">Parameters</div>
+					<div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1.5">{$t('workflow.panel.parameters')}</div>
 					<div class="flex flex-col gap-2">
 						{#each activityTypeDef.parameters as param}
 							<div>
@@ -502,11 +538,11 @@
 
 			<!-- Steps -->
 			<div class="mb-4">
-				<div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1.5">Steps</div>
+				<div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1.5">{$t('automations.steps')}</div>
 				<div class="flex flex-col gap-1">
 					{#each activity.steps ?? [] as step, i}
 						<div class="flex items-start gap-2 py-1.5 px-2 rounded-md border border-base-300 bg-base-100 group">
-							<span class="font-mono text-xs text-base-content/40 shrink-0 mt-px w-3 text-right">{i + 1}</span>
+							<span class="font-mono text-xs text-base-content/40 shrink-0 mt-px w-3 text-end">{i + 1}</span>
 							{#if isEditable && editingStepIdx === i}
 								<input
 									type="text"
@@ -544,6 +580,7 @@
 							{#if isEditable}
 								<button
 									class="text-base-content/30 hover:text-error cursor-pointer bg-transparent border-none text-xs leading-none p-0 opacity-0 group-hover:opacity-100 transition-opacity"
+									aria-label={$t('common.remove')}
 									onclick={() => {
 										const steps = [...(activity.steps || [])];
 										steps.splice(i, 1);
@@ -559,7 +596,7 @@
 						<input
 							type="text"
 							class="input input-sm input-bordered flex-1"
-							placeholder="Add step..."
+							placeholder={$t('workflow.panel.addStep')}
 							bind:value={newStepText}
 							onkeydown={(e) => {
 								if (e.key === 'Enter' && newStepText.trim()) {
@@ -589,7 +626,7 @@
 				<button
 					class="btn btn-sm btn-error btn-outline w-full mt-2"
 					onclick={() => { if (selectedNodeId) onremove?.(selectedNodeId); }}
-				>Delete Node</button>
+				>{$t('workflow.deleteNode')}</button>
 			{/if}
 
 		{:else if selectedNodeId === null || selectedNodeId === '__trigger__' || selectedNodeId === '__emit__'}
@@ -597,7 +634,7 @@
 
 			<!-- Trigger config -->
 			<div class="mb-4">
-				<div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1.5">Trigger</div>
+				<div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1.5">{$t('automations.trigger')}</div>
 				{#if isEditable}
 					<!-- Trigger type selector (4 buttons like v1) -->
 					<div class="grid grid-cols-4 gap-1 mb-3">
@@ -610,7 +647,7 @@
 								onclick={() => switchTriggerType(tt)}
 							>
 								<span class="text-sm">{triggerIcons[tt]}</span>
-								<span class="text-xs font-medium">{tt.charAt(0).toUpperCase() + tt.slice(1)}</span>
+								<span class="text-xs font-medium">{$t(`workflow.triggerTypes.${tt}`)}</span>
 							</button>
 						{/each}
 					</div>
@@ -644,44 +681,44 @@
 										class="px-2 py-1 text-xs font-medium cursor-pointer border-none transition-colors
 											{schedAmpm === 'AM' ? 'bg-primary/10 text-primary' : 'bg-transparent text-base-content/50 hover:text-base-content/70'}"
 										onclick={() => { schedAmpm = 'AM'; emitSchedule(); }}
-									>AM</button>
+									>{$t('schedule.am')}</button>
 									<button
 										class="px-2 py-1 text-xs font-medium cursor-pointer border-none transition-colors
 											{schedAmpm === 'PM' ? 'bg-primary/10 text-primary' : 'bg-transparent text-base-content/50 hover:text-base-content/70'}"
 										onclick={() => { schedAmpm = 'PM'; emitSchedule(); }}
-									>PM</button>
+									>{$t('schedule.pm')}</button>
 								</div>
 							</div>
 
 							<!-- Day presets -->
 							<div class="flex gap-1">
-								{#each [['daily', 'Daily'], ['weekdays', 'Weekdays'], ['weekends', 'Weekends'], ['custom', 'Custom']] as [val, label]}
+								{#each DAY_PRESETS as [val, labelKey]}
 									<button
 										class="flex-1 py-1 text-xs font-medium rounded-md border cursor-pointer transition-colors
 											{schedDays === val
 												? 'border-primary bg-primary/10 text-primary'
 												: 'border-base-300 bg-transparent text-base-content/60 hover:border-base-content/20'}"
 										onclick={() => { schedDays = val; emitSchedule(); }}
-									>{label}</button>
+									>{$t(labelKey)}</button>
 								{/each}
 							</div>
 
 							<!-- Custom: pick a cadence, then its anchor -->
 							{#if schedDays === 'custom'}
 								<div class="flex gap-1">
-									{#each [['weekly', 'Days of week'], ['monthly', 'Monthly'], ['biannual', 'Every 6 months'], ['annual', 'Yearly']] as [val, label]}
+									{#each CADENCES as [val, labelKey]}
 										<button
 											class="flex-1 py-1 text-xs font-medium rounded-md border cursor-pointer transition-colors
 												{schedCadence === val
 													? 'border-primary bg-primary/10 text-primary'
 													: 'border-base-300 bg-transparent text-base-content/60 hover:border-base-content/20'}"
 											onclick={() => { schedCadence = val; emitSchedule(); }}
-										>{label}</button>
+										>{$t(labelKey)}</button>
 									{/each}
 								</div>
 								{#if schedCadence === 'weekly'}
 									<div class="flex gap-1">
-										{#each DAY_LABELS as d, i}
+										{#each DAY_LABELS as _d, i}
 											<button
 												class="w-8 h-8 max-md:w-10 max-md:h-10 rounded-full text-xs font-medium border cursor-pointer transition-colors
 													{schedCustomDays.includes(i)
@@ -693,7 +730,7 @@
 														: [...schedCustomDays, i].sort();
 													emitSchedule();
 												}}
-											>{d}</button>
+											>{dayLetter(i)}</button>
 										{/each}
 									</div>
 								{:else}
@@ -704,12 +741,12 @@
 												value={schedMonth}
 												onchange={(e) => { schedMonth = parseInt((e.target as HTMLSelectElement).value); emitSchedule(); }}
 											>
-												{#each MONTH_LABELS as m, i}
-													<option value={i + 1}>{m}</option>
+												{#each MONTH_LABELS as _m, i}
+													<option value={i + 1}>{monthName(i + 1)}</option>
 												{/each}
 											</select>
 										{/if}
-										<span class="text-xs text-base-content/60">on day</span>
+										<span class="text-xs text-base-content/60">{$t('workflow.schedule.onDay')}</span>
 										<select
 											class="select select-sm select-bordered w-16"
 											value={schedDom}
@@ -722,11 +759,11 @@
 									</div>
 									{#if schedCadence === 'biannual'}
 										<div class="text-xs text-base-content/40">
-											Runs {MONTH_LABELS[schedMonth - 1]} {schedDom} and {MONTH_LABELS[((schedMonth + 5) % 12)]} {schedDom}.
+											{$t('workflow.schedule.biannualNote', { values: { firstMonth: monthName(schedMonth), secondMonth: monthName(((schedMonth + 5) % 12) + 1), day: schedDom } })}
 										</div>
 									{/if}
 									{#if schedDom > 28}
-										<div class="text-xs text-base-content/40">Months without day {schedDom} are skipped.</div>
+										<div class="text-xs text-base-content/40">{$t('workflow.schedule.shortMonthsSkipped', { values: { day: schedDom } })}</div>
 									{/if}
 								{/if}
 							{/if}
@@ -738,7 +775,7 @@
 						<div class="flex flex-col gap-2">
 							<!-- Interval dropdown -->
 							<div>
-								<label class="text-xs text-base-content/60 mb-0.5 block" for="hb-interval">Every</label>
+								<label class="text-xs text-base-content/60 mb-0.5 block" for="hb-interval">{$t('schedule.every')}</label>
 								<select
 									id="hb-interval"
 									class="select select-sm select-bordered w-full"
@@ -746,7 +783,7 @@
 									onchange={(e) => onupdateTrigger?.({ ...currentTrigger(), interval: (e.target as HTMLSelectElement).value })}
 								>
 									{#each INTERVAL_OPTIONS as opt}
-										<option value={opt.value}>{opt.label}</option>
+										<option value={opt.value}>{$t(opt.labelKey)}</option>
 									{/each}
 								</select>
 							</div>
@@ -767,7 +804,7 @@
 											}
 										}}
 									/>
-									<span class="text-xs text-base-content/60">Limit to hours</span>
+									<span class="text-xs text-base-content/60">{$t('workflow.schedule.limitToHours')}</span>
 								</label>
 							</div>
 							{#if hbWindowEnabled}
@@ -778,7 +815,7 @@
 										value={workflow?.trigger?.window?.start || '09:00'}
 										onchange={(e) => onupdateTrigger?.({ ...currentTrigger(), window: { ...workflow?.trigger?.window, start: (e.target as HTMLInputElement).value } })}
 									/>
-									<span class="text-xs text-base-content/40">to</span>
+									<span class="text-xs text-base-content/40">{$t('workflow.schedule.rangeTo')}</span>
 									<input
 										type="time"
 										class="input input-sm input-bordered flex-1"
@@ -793,13 +830,13 @@
 					<!-- Event config -->
 					{#if workflow?.trigger?.type === 'event'}
 						<div>
-							<div class="text-xs text-base-content/60 mb-0.5">Event sources</div>
+							<div class="text-xs text-base-content/60 mb-0.5">{$t('workflow.eventSources.label')}</div>
 							<EventSourcePicker
 								value={workflow?.trigger?.event || ''}
 								suggestions={availableEventSources}
 								onchange={(value) => onupdateTrigger?.({ ...currentTrigger(), event: value })}
 							/>
-							<div class="text-xs text-base-content/40 mt-1">Type to search known sources, Enter to add. Custom names and wildcards (email.*) work too.</div>
+							<div class="text-xs text-base-content/40 mt-1">{$t('workflow.eventSources.hint')}</div>
 						</div>
 					{/if}
 
@@ -809,7 +846,7 @@
 					{#if workflow?.trigger?.type === 'watch'}
 						<div class="flex flex-col gap-2">
 							<div>
-								<div class="text-xs text-base-content/60 mb-0.5">Plugin</div>
+								<div class="text-xs text-base-content/60 mb-0.5">{$t('workflow.watch.plugin')}</div>
 								<select
 									class="select select-sm w-full bg-base-100 border-base-300"
 									value={workflow?.trigger?.plugin ?? ''}
@@ -819,7 +856,7 @@
 										onupdateTrigger?.({ type: 'watch', plugin, event: '' });
 									}}
 								>
-									<option value="" disabled>Choose a plugin…</option>
+									<option value="" disabled>{$t('workflow.watch.choosePlugin')}</option>
 									{#each watchPlugins as pl (pl.slug)}
 										<option value={pl.slug}>{pl.name}</option>
 									{/each}
@@ -827,20 +864,20 @@
 							</div>
 							{#if workflow?.trigger?.plugin}
 								<div>
-									<div class="text-xs text-base-content/60 mb-0.5">When it reports</div>
+									<div class="text-xs text-base-content/60 mb-0.5">{$t('workflow.watch.whenItReports')}</div>
 									<select
 										class="select select-sm w-full bg-base-100 border-base-300"
 										value={workflow?.trigger?.event ?? ''}
 										onchange={(e) => onupdateTrigger?.({ type: 'watch', plugin: workflow?.trigger?.plugin ?? '', event: e.currentTarget.value })}
 									>
-										<option value="" disabled>Choose an event…</option>
+										<option value="" disabled>{$t('workflow.watch.chooseEvent')}</option>
 										{#each watchEvents as ev (ev)}
 											<option value={ev}>{ev}</option>
 										{/each}
 									</select>
 								</div>
 								{#if workflow?.trigger?.event}
-									<div class="text-xs text-base-content/40">Runs whenever {workflow.trigger.plugin} reports {workflow.trigger.event}; other flows can listen for {workflow.trigger.plugin}.{workflow.trigger.event} too.</div>
+									<div class="text-xs text-base-content/40">{$t('workflow.watch.hint', { values: { plugin: workflow.trigger.plugin, event: workflow.trigger.event } })}</div>
 								{/if}
 							{/if}
 						</div>
@@ -848,29 +885,29 @@
 
 					<!-- Manual: no config -->
 					{#if workflow?.trigger?.type === 'manual'}
-						<div class="text-xs text-base-content/40">Runs only when manually triggered.</div>
+						<div class="text-xs text-base-content/40">{$t('workflow.panel.manualHint')}</div>
 					{/if}
 				{:else}
 					<!-- View mode -->
 					<div class="flex items-center gap-2">
 						<span class="text-sm">{triggerIcons[workflow?.trigger?.type ?? 'manual']}</span>
-						<span class="text-sm font-medium capitalize">{workflow?.trigger?.type ?? 'manual'}</span>
+						<span class="text-sm font-medium capitalize">{triggerTypeLabel(workflow?.trigger?.type ?? 'manual')}</span>
 					</div>
 					{#if workflow?.trigger?.type === 'schedule'}
-						<div class="text-xs text-base-content/50 font-mono mt-1">{workflow?.trigger?.schedule || workflow?.schedule || 'Not configured'}</div>
+						<div class="text-xs text-base-content/50 font-mono mt-1">{workflow?.trigger?.schedule || workflow?.schedule || $t('workflow.panel.notConfigured')}</div>
 					{:else if workflow?.trigger?.type === 'heartbeat'}
 						<div class="text-xs text-base-content/50 font-mono mt-1">
-							{INTERVAL_OPTIONS.find(o => o.value === workflow?.trigger?.interval)?.label || `Every ${workflow?.trigger?.interval || '30m'}`}{#if workflow?.trigger?.window}, {workflow.trigger.window.start}–{workflow.trigger.window.end}{/if}
+							{intervalLabel(workflow?.trigger?.interval || '30m')}{#if workflow?.trigger?.window}, {workflow.trigger.window.start}–{workflow.trigger.window.end}{/if}
 						</div>
 					{:else if workflow?.trigger?.type === 'event'}
-						<div class="text-xs text-base-content/50 font-mono mt-1">{workflow?.trigger?.event || 'No event configured'}</div>
+						<div class="text-xs text-base-content/50 font-mono mt-1">{workflow?.trigger?.event || $t('workflow.panel.noEventConfigured')}</div>
 					{/if}
 				{/if}
 			</div>
 
 			<!-- Description -->
 			<div class="mb-4">
-				<div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1">Description</div>
+				<div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1">{$t('common.description')}</div>
 				{#if isEditable}
 					<textarea
 						class="textarea textarea-sm textarea-bordered w-full resize-none"
@@ -879,55 +916,55 @@
 						onchange={(e) => onupdateDescription?.((e.target as HTMLTextAreaElement).value)}
 					></textarea>
 				{:else}
-					<div class="text-sm text-base-content/70 leading-relaxed">{workflow?.description || 'No description'}</div>
+					<div class="text-sm text-base-content/70 leading-relaxed">{workflow?.description || $t('workflow.panel.noDescription')}</div>
 				{/if}
 			</div>
 
 			<!-- Emit config -->
 			<div class="mb-4">
-				<div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1">Emits</div>
+				<div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1">{$t('workflowCanvas.emits')}</div>
 				{#if isEditable}
 					{@const suggestedEmit = `${workflowName.toLowerCase().replace(/\s+/g, '-')}.complete`}
 					<input
 						type="text"
 						class="input input-sm input-bordered w-full font-mono"
-						placeholder="e.g. {suggestedEmit}"
+						placeholder={$t('workflow.panel.emitPlaceholder', { values: { name: suggestedEmit } })}
 						value={workflow?.emit || ''}
 						onchange={(e) => onupdateEmit?.((e.target as HTMLInputElement).value)}
 					/>
 					{#if !workflow?.emit}
 						<div class="text-xs text-base-content/40 mt-1">
-							Optional — other workflows can trigger on this when the run completes.
+							{$t('workflow.panel.emitOptional')}
 							<button
 								class="text-primary font-mono cursor-pointer bg-transparent border-none p-0 hover:underline"
 								onclick={() => onupdateEmit?.(suggestedEmit)}
-							>Use {suggestedEmit}</button>
+							>{$t('workflow.panel.useEmit', { values: { name: suggestedEmit } })}</button>
 						</div>
 					{:else}
-						<div class="text-xs text-base-content/40 mt-1">Renaming breaks workflows subscribed to this event.</div>
+						<div class="text-xs text-base-content/40 mt-1">{$t('workflow.panel.emitRenameWarning')}</div>
 					{/if}
 				{:else if workflow?.emit}
 					<div class="py-1 px-2 rounded bg-accent/10 text-xs text-accent font-mono inline-block">{workflow.emit}</div>
 				{:else}
-					<div class="text-xs text-base-content/40">None</div>
+					<div class="text-xs text-base-content/40">{$t('workflow.panel.none')}</div>
 				{/if}
 			</div>
 
 			{#if workflow?.lastFired}
 				<div class="mb-4">
-					<div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1">Last Fired</div>
+					<div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1">{$t('workflowCanvas.lastFired')}</div>
 					<div class="text-xs text-base-content/70 font-mono">{formatLastFired(workflow.lastFired)}</div>
 				</div>
 			{/if}
 
 			<!-- Activity list -->
 			<div>
-				<div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-2">Activities</div>
+				<div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-2">{$t('workflowCanvas.activities')}</div>
 				<div class="flex flex-col gap-1.5">
 					{#each workflow?.activities ?? [] as act, idx}
 						{@const td = getActivityType(act.type)}
 						<button
-							class="w-full flex items-start gap-2.5 p-2.5 rounded-lg border text-left cursor-pointer transition-colors bg-transparent
+							class="w-full flex items-start gap-2.5 p-2.5 rounded-lg border text-start cursor-pointer transition-colors bg-transparent
 								{selectedNodeId === act.id ? 'border-primary bg-primary/5' : 'border-base-300 hover:border-base-content/20'}"
 							onclick={() => onselectActivity?.(act.id)}
 						>
@@ -939,7 +976,7 @@
 									{#if act.type && act.type !== 'custom'}
 										<span class="text-xs text-base-content/50 font-mono">{td.label}</span>
 									{/if}
-									<span class="text-xs text-base-content/40 font-mono">{act.steps?.length ?? 0} steps</span>
+									<span class="text-xs text-base-content/40 font-mono">{$t('workflow.stepCount', { values: { count: act.steps?.length ?? 0 } })}</span>
 								</div>
 							</div>
 						</button>
@@ -950,8 +987,8 @@
 			<!-- Endpoints are minted in the employee's Settings → Webhooks, the one
 			     place every way of reaching this employee is listed and revoked. -->
 			<div class="mt-4 pt-4 border-t border-base-content/10">
-				<div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1">API Endpoint</div>
-				<div class="text-xs text-base-content/60">Mint a key for this workflow under the employee's Settings → Webhooks.</div>
+				<div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1">{$t('workflow.panel.apiEndpoint')}</div>
+				<div class="text-xs text-base-content/60">{$t('workflow.panel.apiEndpointHint')}</div>
 			</div>
 
 			<!-- Delete workflow (edit mode) -->
@@ -959,7 +996,7 @@
 				<button
 					class="btn btn-sm btn-error btn-outline w-full mt-4"
 					onclick={() => onremoveWorkflow?.()}
-				>Delete Workflow</button>
+				>{$t('workflow.deleteWorkflow')}</button>
 			{/if}
 		{/if}
 	</div>
@@ -970,7 +1007,7 @@
 			<button
 				class="text-xs text-primary cursor-pointer bg-transparent border-none hover:underline p-0"
 				onclick={() => onselectActivity?.('')}
-			>Back to workflow overview</button>
+			>{$t('workflow.panel.backToOverview')}</button>
 		</div>
 	{/if}
 </div>

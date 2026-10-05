@@ -84,7 +84,16 @@
 		"closeModal": "Fermer la fenêtre",
 		"all": "Tous",
 		"more": "Plus",
-		"stopped": "Arrêté"
+		"stopped": "Arrêté",
+		"errorOccurred": "Une erreur s’est produite.",
+		"systemError": "Erreur système",
+		"stillReconnecting": "Toujours en train de joindre votre Nebo…",
+		"updatesAvailable": "{count, plural, one {# mise à jour disponible} other {# mises à jour disponibles}}",
+		"artifactUpdated": "Mis à jour {type} : {version}",
+		"artifactUpdateFailed": "Échec de la mise à jour : {error}",
+		"employee": "Employé",
+		"untitled": "Sans titre",
+		"document": "Document"
 	},
 	"time": {
 		"justNow": "à l'instant",
@@ -253,9 +262,11 @@
 		"working": "Au travail",
 		"chatActions": "Actions du chat",
 		"deleteChatTitle": "Supprimer « {name} » ?",
-		"deleteChatBody": "Ce chat et tous ses messages seront supprimés. Cette action est irréversible."
+		"deleteChatBody": "Ce chat et tous ses messages seront supprimés. Cette action est irréversible.",
+		"offline": "Hors ligne"
 	},
 	"chat": {
+		"worksIn": "Travaille dans {folder}",
 		"compactBoundary": "Conversation précédente résumée",
 		"clearedBoundary": "Effacé ici. Les messages précédents sont conservés, mais pas utilisés.",
 		"goalLine": "Objectif : {condition} ({turns} tours)",
@@ -264,10 +275,15 @@
 		"goalStopped": "Objectif en pause. Dites-le quand vous voulez le reprendre.",
 		"resumedActivity": "Toujours au travail : {tool}",
 		"waitingForYou": "Vous attend",
+		"waitingOnYou": "{name} vous attend",
+		"seeConversation": "Voir la conversation",
 		"waitingOnYourAnswer": "{name} attend votre réponse :",
 		"waitingOpen": "Ouvrir",
 		"waitingAsksLabel": "En attente de votre réponse",
 		"subagentStep": "{op} · étape {n}",
+		"helperWorking": "Un renfort travaille : {what}",
+		"helpersWorking": "{n, plural, one {# renfort travaille} other {# renforts travaillent}}",
+		"moreQuestionsWaiting": "{count, plural, one {1 autre question en attente} other {# autres questions en attente}}",
 		"pending": "En attente",
 		"yourAICompanion": "Votre équipe IA",
 		"tellMeWhatYouNeed": "Dites-moi ce dont vous avez besoin, ou activez l'un de vos employés ci-dessous.",
@@ -295,6 +311,7 @@
 		"messageChannel": "Message à #{channel}...",
 		"messagedCoworker": "Message envoyé",
 		"disclaimer": "Nebo peut faire des erreurs. Vérifiez les informations importantes.",
+		"uploadsKept": "{days, plural, one {Les fichiers importés sont conservés # jour.} other {Les fichiers importés sont conservés # jours.}}",
 		"goodMorning": "Bonjour",
 		"goodAfternoon": "Bon après-midi",
 		"goodEvening": "Bonsoir",
@@ -315,6 +332,8 @@
 		"installFailed": "L'installation a échoué — réessayez.",
 		"hire": "Embaucher",
 		"hiring": "Embauche…",
+		"hireCount": "Embaucher les {count}",
+		"hiringCount": "Embauche {done} sur {count}…",
 		"botComputer": "Ordinateur",
 		"closeComputer": "Fermer l'ordinateur",
 		"fullView": "Vue complète",
@@ -330,13 +349,18 @@
 		"computerUnavailableHint": "L'ordinateur de l'employé fonctionne sur les installations Linux et les employés dans le cloud.",
 		"watchingAndLearning": "{name} observe et apprend",
 		"stopRecording": "Arrêter l'enregistrement",
-		"teachLocalHint": "Do the task on this screen as you normally would, then stop.",
+		"teachLocalHint": "Faites la tâche sur cet écran comme d’habitude, puis arrêtez.",
+		"teachStarting": "Préparation pour observer votre écran…",
+		"teachNeedsScreenPermission": "Nebo a besoin de l’autorisation d’enregistrement de l’écran pour vous regarder faire la tâche. Activez Nebo dans Réglages Système › Confidentialité et sécurité › Enregistrement de l’écran et de l’audio système, puis réessayez.",
+		"openScreenRecordingSettings": "Ouvrir les réglages d’enregistrement de l’écran",
+		"openVirtualComputer": "Ouvrir l’ordinateur virtuel",
 		"recordTask": "Enregistrer une tâche",
 		"recording": "Enregistrement",
 		"connectFailed": "La connexion ne s'est pas terminée. Réessayez.",
 		"connectAccountHint": "Connectez-vous et je reprendrai où je m'étais arrêté.",
 		"submit": "Envoyer",
 		"other": "Autre…",
+		"askedReceipt": "Demandé",
 		"copyCode": "Copier le code",
 		"copied": "Copié !",
 		"dropFilesHere": "Déposez les fichiers ici",
@@ -405,6 +429,8 @@
 		"shareNotConnected": "Connectez-vous à NeboAI pour partager.",
 		"filesInThread": "Fichiers de ce chat",
 		"nothingHereYet": "Rien ici pour l'instant",
+		"noEmployeesOneTool": "Aucun employé ne correspond, mais 1 outil oui — voir Outils.",
+		"noEmployeesButTools": "{count, plural, one {Aucun employé ne correspond, mais # outil oui — voir Outils.} other {Aucun employé ne correspond, mais # outils oui — voir Outils.}}",
 		"workEmptyDesc": "Quand Nebo crée un rapport, une feuille ou un design, il apparaîtra ici.",
 		"closeImage": "Fermer l'image",
 		"fullSize": "Taille réelle",
@@ -429,7 +455,12 @@
 		"historyLoadFailed": "Impossible de charger cette conversation. Vérifiez votre connexion et réessayez.",
 		"consentCreates": "Dites oui et il sera créé avec exactement ce travail.",
 		"consentAdds": "Dites oui et ceci s'ajoute à son travail.",
-		"fromColleague": "De {name}"
+		"fromColleague": "De {name}",
+		"storageFull": "{cap, select, none {Votre stockage est plein.} other {Votre stockage est plein ({cap}).}} Les fichiers importés sont effacés {days, plural, one {# jour} other {# jours}} après leur ajout.",
+		"storageNextFree": "De l’espace se libère le {date}.",
+		"uploadFailed": "L’import du fichier a échoué — message non envoyé. {reason}",
+		"fileRemoved": "Ce fichier a été supprimé {days, plural, one {# jour} other {# jours}} après son import.",
+		"notDelivered": "Message non distribué. La connexion a été coupée, renvoyez-le."
 	},
 	"chatInput": {
 		"placeholder": "Répondre...",
@@ -468,7 +499,17 @@
 		"tapToInterrupt": "Touchez pour interrompre",
 		"mute": "Couper le micro",
 		"unmute": "Réactiver le micro",
-		"endConversation": "Terminer la conversation"
+		"endConversation": "Terminer la conversation",
+		"recordClip": "Enregistrer un extrait",
+		"clipStarting": "En attente du microphone",
+		"clipStop": "Arrêter et joindre",
+		"clipLevel": "Niveau du microphone",
+		"clipMicBlockedMac": "Nebo ne peut pas utiliser votre microphone. Autorisez-le dans Réglages Système → Confidentialité et sécurité → Microphone.",
+		"clipMicBlocked": "Nebo ne peut pas utiliser votre microphone. Autorisez-le dans les réglages de confidentialité de votre système.",
+		"clipNoMic": "Aucun microphone trouvé. Branchez-en un et réessayez.",
+		"clipUnsupported": "L’enregistrement n’est pas disponible ici.",
+		"clipFailed": "L’enregistrement n’a pas fonctionné. Réessayez.",
+		"clipCapReached": "Les enregistrements s’arrêtent à 10 minutes. Celui-ci est joint."
 	},
 	"voiceDownload": {
 		"title": "Télécharger les modèles vocaux",
@@ -566,7 +607,21 @@
 		"agent": "Employé",
 		"command": "Commande",
 		"notConnected": "non connecté",
-		"keyboardHint": "↑↓ naviguer · Enter sélectionner · Esc annuler"
+		"keyboardHint": "↑↓ naviguer · Enter sélectionner · Esc annuler",
+		"category": {
+			"session": "Session",
+			"model": "Modèle",
+			"info": "Infos"
+		},
+		"desc": {
+			"new": "Démarrer une nouvelle conversation",
+			"clear": "Repartir de zéro (tous les messages sont conservés)",
+			"compact": "Résumer et effacer les anciens messages",
+			"goal": "Continuer jusqu’à ce qu’une vérification confirme le résultat",
+			"model": "Afficher ou changer de modèle",
+			"help": "Afficher toutes les commandes",
+			"status": "Afficher l’état de l’employé et du système"
+		}
 	},
 	"dataTable": {
 		"loading": "Chargement...",
@@ -998,8 +1053,8 @@
 		"ageRating": "Classification par âge",
 		"website": "Site web",
 		"privacyPolicy": "Politique de confidentialité",
-		"support": "Support",
-		"infoTab": "Info",
+		"support": "Assistance",
+		"infoTab": "Infos",
 		"connectionsTab": "Connexions",
 		"descriptionTab": "Description",
 		"capabilities": "Capacités",
@@ -1073,7 +1128,7 @@
 		"howStep3": "Recompilez votre binaire et le surveillant redémarrera l'app automatiquement",
 		"howStep4": "Le déchargement supprime le lien symbolique mais conserve vos fichiers de projet",
 		"path": "Chemin",
-		"logs": "Logs",
+		"logs": "Journaux",
 		"unloadFailed": "Impossible de décharger l'app",
 		"relaunchFailed": "Impossible de relancer l'app",
 		"stopped": "arrêté",
@@ -1206,7 +1261,7 @@
 			"central": "Heure centrale (US)",
 			"mountain": "Heure des Rocheuses (US)",
 			"pacific": "Heure du Pacifique (US)",
-			"arizona": "Arizona (US)",
+			"arizona": "Arizona (États-Unis)",
 			"london": "Londres (UK)",
 			"paris": "Paris (CET)",
 			"berlin": "Berlin (CET)",
@@ -1232,7 +1287,7 @@
 		"title": "Fournisseurs",
 		"description": "Fournisseurs de modèles IA et clés API",
 		"loadingProviders": "Chargement des fournisseurs...",
-		"neboaiAI": "NeboAI AI",
+		"neboaiAI": "IA NeboAI",
 		"session": "Session",
 		"sessionUsage": "{percent}% utilisé · réinitialisation dans {hours}h {minutes}m",
 		"weekly": "Hebdomadaire",
@@ -1256,7 +1311,7 @@
 			"openai": "OpenAI (GPT)",
 			"google": "Google (Gemini)",
 			"deepseek": "DeepSeek",
-			"ollama": "Ollama (Local)"
+			"ollama": "Ollama (local)"
 		},
 		"nameLabel": "Nom",
 		"namePlaceholder": "Ma clé Anthropic",
@@ -1303,7 +1358,7 @@
 			"allPurposeDesc": "Chat, questions-réponses, tâches quotidiennes",
 			"reasoningDesc": "Analyse, résolution de problèmes",
 			"advanced": "Tâches avancées",
-			"advancedDesc": "Code, PDFs, documents",
+			"advancedDesc": "Code, PDF, documents",
 			"vision": "Vision",
 			"visionDesc": "Images, captures d'écran",
 			"audioDesc": "Voix, transcription"
@@ -1407,7 +1462,7 @@
 	},
 	"settingsSessions": {
 		"title": "Sessions",
-		"stats": "{sessions} sessions · {messages} messages",
+		"stats": "{sessions, plural, one {# session} other {# sessions}} · {messages, plural, one {# message} other {# messages}}",
 		"cleanup": "Nettoyage",
 		"olderThan30": "Plus de 30 jours",
 		"olderThan90": "Plus de 90 jours",
@@ -1415,7 +1470,7 @@
 		"loadingSessions": "Chargement des sessions...",
 		"deleteDay": "Supprimer le jour",
 		"noSessions": "Aucune session ce jour",
-		"messageCount": "{count} messages",
+		"messageCount": "{count, plural, one {# message} other {# messages}}",
 		"selectDay": "Sélectionnez un jour pour voir les sessions",
 		"deleteTitle": "Supprimer les sessions",
 		"deleteDescription": "Vous êtes sur le point de supprimer définitivement {label}.",
@@ -1467,7 +1522,7 @@
 	"settingsStatus": {
 		"title": "Statut des employés",
 		"description": "Surveillez les employés connectés et l'état du système",
-		"mcpServer": "MCP Server",
+		"mcpServer": "Serveur MCP",
 		"database": "Base de données",
 		"webSocket": "WebSocket",
 		"uptime": "Temps de fonctionnement",
@@ -1777,17 +1832,27 @@
 		"toolCategories": "Catégories d'outils",
 		"allToolCategories": "Toutes les catégories d'outils",
 		"moreEmployees": "Plus d'employés",
-		"moreTools": "Plus d'outils"
+		"moreTools": "Plus d'outils",
+		"pageTitle": "Marketplace - Nebo",
+		"sharedPageTitle": "Partagé - Marketplace - Nebo",
+		"searchPageTitle": "Recherche — Marketplace",
+		"resume": {
+			"byAuthor": "par {author}",
+			"perSeat": "par utilisateur",
+			"responsibilities": "Responsabilités",
+			"newHire": "Nouvelle recrue · soyez le premier",
+			"meet": "Rencontrer"
+		}
 	},
 	"commander": {
-		"autoLayout": "Auto Layout",
+		"autoLayout": "Disposition auto",
 		"zoomIn": "Zoomer",
 		"zoomOut": "Dézoomer",
 		"fitView": "Ajuster la vue",
 		"deleteConnection": "Supprimer la connexion sélectionnée (Backspace)",
 		"selectConnection": "Sélectionnez une connexion à supprimer",
 		"primaryCoordinator": "Coordinateur principal",
-		"workflowCount": "{count} workflows",
+		"workflowCount": "{count, plural, one {# workflow} other {# workflows}}",
 		"settings": "Paramètres"
 	},
 	"agent": {
@@ -1809,7 +1874,7 @@
 		"noMessages": "Aucun message dans cette session.",
 		"loadOlderMessages": "Charger les messages plus anciens",
 		"chatSession": "Session de chat",
-		"messageCount": "{count} messages",
+		"messageCount": "{count, plural, one {# message} other {# messages}}",
 		"yourPersonalAI": "Votre employé IA",
 		"addAgent": "Embaucher un employé",
 		"recentActivity": "Activité récente",
@@ -1819,7 +1884,7 @@
 		"noActivityHintAgent": "Discutez avec l'employé ou configurez des automatisations pour commencer.",
 		"automationsAvailable": "Les automatisations de workflow sont disponibles sur les employés installés.",
 		"browseMarketplace": "Parcourir la boutique",
-		"skillCount": "{count} skills",
+		"skillCount": "{count, plural, one {# skill} other {# skills}}",
 		"openApp": "Ouvrir l'app",
 		"publishApp": "Publier",
 		"shareApp": "Partager",
@@ -1854,7 +1919,9 @@
 		"noChatsYet": "Aucune conversation pour l'instant. Commencez-en une nouvelle.",
 		"noRunsYet": "Aucune exécution pour l'instant",
 		"appBadge": "App",
-		"primaryUndeletable": "Votre assistant personnel reçoit tout ce qui n'est pas adressé à un employé précis ; il ne peut donc pas être supprimé. Renommez-le dans Paramètres de l'employé."
+		"primaryUndeletable": "Votre assistant personnel reçoit tout ce qui n'est pas adressé à un employé précis ; il ne peut donc pas être supprimé. Renommez-le dans Paramètres de l'employé.",
+		"browseFolders": "Parcourir les dossiers",
+		"browseFiles": "Parcourir les fichiers"
 	},
 	"agentLearning": {
 		"title": "Amélioration personnelle",
@@ -1871,6 +1938,7 @@
 		"viewOnly": "Cette conversation est en lecture seule — les employés parlent ici, vous les guidez dans leurs propres discussions"
 	},
 	"teams": {
+		"everyoneHint": "Toute l’équipe",
 		"section": "Équipes",
 		"emptyRoster": "Mettez deux employés ou plus dans une équipe et ils partagent une conversation. Appuyez sur + pour en créer une, ou demandez-le à n'importe quel employé.",
 		"inTeam": "Dans cette équipe",
@@ -1945,6 +2013,9 @@
 	},
 	"agentSettings": {
 		"general": "Général",
+		"tabWho": "Qui ils sont",
+		"tabWork": "Ce qu’ils font",
+		"developerGroup": "Développeur",
 		"generalBlurb": "Un aperçu de cet employé — état, skills, workflows et entretien.",
 		"identityBlurb": "Nom, voix, couleur et statut — la façon dont cet employé apparaît dans l'application.",
 		"nameLabel": "Nom",
@@ -2129,6 +2200,14 @@
 		"saveCredentialsFailed": "Échec de l'enregistrement des identifiants.",
 		"signInFailedRetry": "Échec de la connexion. Veuillez réessayer.",
 		"startSignInFailed": "Impossible de démarrer la connexion pour ce compte.",
+		"signInPopupBlocked": "La fenêtre de connexion a été bloquée. Autorisez les fenêtres pop-up pour Nebo, puis réessayez.",
+		"channelToggleFailed": "Impossible de mettre à jour ce canal. Réessayez.",
+		"helpChatFailed": "Impossible d’ouvrir le chat d’aide. Réessayez.",
+		"accountsLoadFailed": "Impossible de charger les comptes. Réessayez.",
+		"accountListRefreshFailed": "Compte associé, mais la liste ne s’est pas actualisée. Rouvrez les paramètres pour le voir.",
+		"disconnectFailed": "Impossible de déconnecter ce compte. Réessayez.",
+		"claimableLoadFailed": "Impossible de charger vos numéros de téléphone.",
+		"tryAgain": "Réessayer",
 		"contextTitle": "Ce que cet employé sait",
 		"contextDesc": "Écrit par l'employé lui-même à partir des couches secteur et entreprise, à chaque fois qu'elles changent. Il travaille avec ça sans rien avoir à consulter.",
 		"contextAgainst": "Écrit face à {against}",
@@ -2157,7 +2236,19 @@
 		"changeInBotSettings": "Modifier dans Paramètres du bot",
 		"reachManage": "Gérer",
 		"reachNoPhone": "Pas encore de ligne téléphonique.",
-		"reachNoChannels": "Aucun canal activé."
+		"reachNoChannels": "Aucun canal activé.",
+		"newCallTreeName": "Nouvel arbre d’appel",
+		"newWorkflowName": "Nouveau workflow",
+		"greetingNodeLabel": "Accueil",
+		"phoneLoadingNumbers": "Chargement de vos numéros…",
+		"phoneNoFreeNumbers": "Aucun numéro libre à associer. Achetez un numéro (ou libérez-en un d’un autre employé) sur {link}, puis revenez ici.",
+		"phoneWhichNumber": "À quel numéro cet employé doit-il répondre ?",
+		"phoneNumberParked": "en attente",
+		"phoneNumberUnassigned": "non attribué",
+		"phoneLineName": "Nom de la ligne (facultatif)",
+		"phoneLineNamePlaceholder": "Accueil, Support, ligne espagnole…",
+		"phoneAttaching": "Association du numéro à cet employé…",
+		"phoneAttachNumber": "Associer le numéro"
 	},
 	"agentConfigure": {
 		"inputs": "Entrées",
@@ -2234,7 +2325,10 @@
 		"factDate": "Date",
 		"factAttachment": "Pièce jointe",
 		"factVia": "Via",
-		"interrupted": "Interrompu"
+		"interrupted": "Interrompu",
+		"tokensShort": "{count} tok",
+		"underOneSecond": "<1 s",
+		"triggerKind": "{kind, select, schedule {Planification} event {Événement} heartbeat {Heartbeat} manual {Manuel} watch {Surveillance} webhook {Webhook} call {Appel} retry {Nouvel essai} other {{kind}}}"
 	},
 	"automations": {
 		"title": "Automatisations",
@@ -2272,7 +2366,12 @@
 		"every8h": "Toutes les 8 heures",
 		"every24h": "Toutes les 24 heures",
 		"everyInterval": "Toutes les {interval}",
-		"whenFires": "Quand {event} se déclenche"
+		"whenFires": "Quand {event} se déclenche",
+		"anEvent": "événement",
+		"watching": "Surveillance : {source}",
+		"aPlugin": "plugin",
+		"manualTrigger": "Déclenchement manuel",
+		"onEventNamed": "Sur {event}"
 	},
 	"newBot": {
 		"browseMarketplace": "Parcourir la boutique",
@@ -2329,7 +2428,18 @@
 		"approvalGate": {
 			"batchHeadline": "{n} actions en une seule étape demandent votre accord",
 			"goalHeadline": "Valider cet objectif ? Le travail continue jusqu'à ce qu'une vérification confirme qu'il est atteint.",
-			"yourAgent": "Votre employé"
+			"yourAgent": "Votre employé",
+			"operation": "{action, select, create {Créer {noun}} send {Envoyer {noun}} update {Mettre à jour {noun}} status {Changer le statut de {noun}} apply {Appliquer {noun}} record {Enregistrer {noun}} schedule {Planifier {noun}} publish {Publier {noun}} respond {Répondre à {noun}} reply {Répondre à {noun}} upsert {Enregistrer {noun}} attach {Joindre {noun}} write {Écrire {noun}} remove {Supprimer {noun}} other {{verb} {noun}}}",
+			"resource": {
+				"billpayment": "paiement de facture",
+				"creditmemo": "avoir",
+				"journalentry": "écriture comptable",
+				"purchaseorder": "bon de commande",
+				"opportunity": "affaire",
+				"company": "le fichier Entreprise — comment fonctionne cette entreprise",
+				"industry": "le fichier Secteur — comment fonctionne ce métier",
+				"franchise": "le fichier Franchise — les exigences d’une marque"
+			}
 		},
 		"approvalModal": {
 			"runShellCommand": "Exécuter une commande shell",
@@ -2446,7 +2556,20 @@
 		"narrowSat": "S",
 		"pageTitle": "Planning - Nebo",
 		"perWeek": "{count}/sem",
-		"workflowBuilderTitle": "{name} — Éditeur de workflows"
+		"workflowBuilderTitle": "{name} — Éditeur de workflows",
+		"everyDay": "Tous les jours",
+		"weekends": "Week-ends",
+		"weekdayPlural": "{day, select, sun {Le dimanche} mon {Le lundi} tue {Le mardi} wed {Le mercredi} thu {Le jeudi} fri {Le vendredi} sat {Le samedi} other {{day}}}",
+		"clockTime": "{hour}:{minute} {period}",
+		"hourOnly": "{hour} {period}",
+		"midnight": "Minuit",
+		"cronEveryMinutes": "{n, plural, one {Toutes les minutes} other {Toutes les # minutes}}",
+		"cronEveryHours": "{n, plural, one {Toutes les heures} other {Toutes les # heures}}",
+		"cronEveryHoursAt": "{n, plural, one {Toutes les heures à :{minute}} other {Toutes les # heures à :{minute}}}",
+		"cronDailyAt": "Tous les jours à {time}",
+		"cronDaysAt": "{days} à {time}",
+		"cronMonthlyAt": "Tous les mois le {day, selectordinal, one {#er} other {#}} à {time}",
+		"listSeparator": ", "
 	},
 	"neboShell": {
 		"tabs": {
@@ -2491,7 +2614,26 @@
 	},
 	"userMenu": {
 		"aboutNebo": "À propos de Nebo",
-		"planSuffix": "Forfait {plan}"
+		"planSuffix": "Forfait {plan}",
+		"provideFeedback": "Donner votre avis"
+	},
+	"feedback": {
+		"title": "Donner votre avis",
+		"lede": "Dites à l’équipe NeboAI ce qui fonctionne, ce qui ne fonctionne pas ou ce que vous aimeriez.",
+		"message": "Message",
+		"screenshots": "Captures d’écran ou photos (facultatif)",
+		"addScreenshot": "Ajouter une capture d’écran",
+		"remove": "Retirer {name}",
+		"diagnostics": "Inclure les diagnostics",
+		"diagnosticsHelp": "Version de l’app et du bot, plateforme, identifiant du bot et cet écran. Jamais de mots de passe ni de jetons de connexion.",
+		"send": "Envoyer",
+		"sending": "Envoi",
+		"sent": "Merci — envoyé à l’équipe NeboAI.",
+		"failed": "Impossible d’envoyer votre avis. Réessayez.",
+		"needMessage": "Écrivez d’abord un message.",
+		"messageTooLong": "Le message doit faire moins de {max} caractères.",
+		"tooManyScreenshots": "Joignez au maximum {max, plural, one {# capture d’écran} other {# captures d’écran}}.",
+		"imagesOnly": "Seules les images peuvent être jointes."
 	},
 	"workflowCanvas": {
 		"noWorkflows": "Aucun workflow à visualiser",
@@ -2632,7 +2774,18 @@
 		"gettingReady": "Préparation de {name}…",
 		"skillsAndTools": "Compétences et outils",
 		"hireFailedTitle": "L'embauche n'a pas pu aboutir",
-		"hireFailed": "{name} n'a pas été embauché. Réessayez."
+		"hireFailed": "{name} n'a pas été embauché. Réessayez.",
+		"codeStatus": {
+			"nebo": "Connexion à NeboAI…",
+			"skill": "Installation du skill…",
+			"workflow": "Installation du workflow…",
+			"agent": "Installation de l’employé…",
+			"loop": "Connexion à la loop…",
+			"plugin": "Installation du plugin…",
+			"app": "Installation de l’app…",
+			"collection": "Installation de la collection…",
+			"connection": "Ajout de la connexion MCP…"
+		}
 	},
 	"activity": {
 		"pageTitle": "Activité - Nebo",
@@ -2651,7 +2804,8 @@
 		"openAppHint": "Ouvrir l'app",
 		"openApp": "Ouvrir l'app",
 		"runs": "Exécutions",
-		"memory": "Mémoire"
+		"memory": "Mémoire",
+		"appError": "Erreur de l’app ({status})"
 	},
 	"pricing": {
 		"pageTitle": "Choisissez votre forfait - Nebo",
@@ -2811,7 +2965,10 @@
 		"checkEvery": "Vérifier toutes les",
 		"hours6": "6 heures",
 		"history": "Historique",
-		"title": "Mises à jour des outils"
+		"title": "Mises à jour des outils",
+		"onLatest": "Vous avez la dernière version",
+		"checkFailed": "Impossible de vérifier les mises à jour",
+		"updateFailed": "Échec de la mise à jour"
 	},
 	"inbox": {
 		"title": "Boîte de réception",
@@ -2842,15 +2999,27 @@
 		"failedAt": "A échoué pendant « {activity} »",
 		"steps": "Ce qu'il faisait",
 		"output": "Résultat",
-		"recordGone": "L'enregistrement de l'exécution n'existe plus. Il a été supprimé avec l'employé auquel il appartenait, il ne reste donc que cet avis."
+		"recordGone": "L'enregistrement de l'exécution n'existe plus. Il a été supprimé avec l'employé auquel il appartenait, il ne reste donc que cet avis.",
+		"revert": "Annuler",
+		"reverted": "Annulé"
 	},
 	"voice": {
 		"startConversation": "Conversation vocale",
+		"reconnecting": "Retour dans l’appel…",
 		"consentTitle": "La voix utilise un service cloud",
 		"consentBody": "La conversation vocale transmet l'audio de votre micro à un service vocal cloud pour traitement pendant l'appel. L'audio quitte cet ordinateur. Écrire dans le chat reste local comme toujours.",
 		"consentAccept": "Activer la voix",
 		"consentDecline": "Pas maintenant",
-		"cloudIndicator": "L'audio est transmis vers le cloud"
+		"cloudIndicator": "L'audio est transmis vers le cloud",
+		"talkTo": "Parler à {name}",
+		"isSpeaking": "{name} parle",
+		"callEnded": "L’appel est terminé.",
+		"tryAgain": "Réessayer",
+		"onAnotherCall": "En appel avec un autre employé",
+		"callLost": "L’appel a été coupé et n’a pas pu reprendre. Relancez-le.",
+		"callEndedStartAgain": "L’appel est terminé. Relancez-le.",
+		"needsConsent": "La conversation vocale envoie l’audio de votre microphone à un service vocal dans le cloud pour traitement. Activez-la dans le panneau vocal pour donner votre accord.",
+		"startFailed": "Impossible de lancer l’appel. Réessayez."
 	},
 	"flows": {
 		"none": "Aucun flux pour l'instant",
@@ -2865,7 +3034,15 @@
 		"overlapBufferOne": "Exécuter une fois à la fin",
 		"overlapAllowAll": "Exécuter quand même",
 		"deleteReminderTitle": "Supprimer « {name} » ?",
-		"deleteReminderBody": "Cette tâche planifiée cesse de s'exécuter et est supprimée. Les exécutions passées restent dans l'historique."
+		"deleteReminderBody": "Cette tâche planifiée cesse de s'exécuter et est supprimée. Les exécutions passées restent dans l'historique.",
+		"triggerOnEvent": "Sur {event}",
+		"triggerWatch": "Surveillance : {target}",
+		"triggerWatchPlugin": "Surveillance : plugin",
+		"triggerManual": "Déclenchement manuel",
+		"scheduleTooSpecific": "Cette planification est trop précise pour l’éditeur simple",
+		"askSetupPrompt": "Crée-moi un nouveau flux : ",
+		"everyNHours": "Toutes les N heures",
+		"everyNMinutes": "Toutes les N minutes"
 	},
 	"christen": {
 		"title": "Donnez un nom à votre premier employé",
@@ -2887,7 +3064,27 @@
 		"working": "Nous déterminons ce dont il aura besoin…",
 		"willDo": "{name} pourra :",
 		"thisEmployee": "Cet employé",
-		"removeItem": "Retirer {item}"
+		"removeItem": "Retirer {item}",
+		"hireFromApps": "Embaucher depuis une autre app",
+		"linkedLede": "Ils continuent à travailler sur l’ordinateur où ils tournent.",
+		"thisComputer": "Cet ordinateur",
+		"offline": "Hors ligne",
+		"linkedFailed": "Impossible d’embaucher depuis {bot}. Réessayez.",
+		"onYourTeam": "Dans votre équipe",
+		"linkedLooking": "Recherche d’apps…",
+		"linkedHireNew": "En embaucher un nouveau",
+		"linkedConnect": "Connectez votre agent",
+		"linkedRunning": "{count, plural, one {# en cours} other {# en cours}}",
+		"nameYour": "Nommez votre {app}",
+		"youAlreadyHave": "Vous avez déjà :",
+		"nameTaken": "Vous avez déjà un employé nommé {name}.",
+		"linkedWhere": "Sur quel ordinateur doit-il travailler ?",
+		"linkedPickAgent": "Quel agent {app} ?",
+		"linkedModeTitle": "Que peut-il faire sans demander ?",
+		"linkedModeAutomaticDesc": "Modifie seul les fichiers de son dossier. Demande avant tout le reste.",
+		"linkedModeAskDesc": "Vous demande avant de modifier quoi que ce soit.",
+		"linkedModePlanDesc": "Lit et planifie. Ne modifie rien.",
+		"linkedModeFullAccessDesc": "Exécute n’importe quoi sur cet ordinateur sans demander."
 	},
 	"runLimit": {
 		"title": "Limite de dépense par exécution",
@@ -3101,5 +3298,526 @@
 		"unreviewed": "Non examiné",
 		"loadMore": "Afficher plus",
 		"addJobEdit": "Ajouter au poste"
+	},
+	"workflow": {
+		"addNode": "Ajouter un nœud",
+		"deleteNode": "Supprimer le nœud",
+		"deleteWorkflow": "Supprimer le workflow",
+		"removeItem": "Retirer {name}",
+		"activityCount": "{count, plural, one {# activité} other {# activités}}",
+		"stepCount": "{count, plural, one {# étape} other {# étapes}}",
+		"triggerTypes": {
+			"schedule": "Planification",
+			"heartbeat": "Heartbeat",
+			"event": "Événement",
+			"watch": "Surveillance",
+			"manual": "Manuel"
+		},
+		"branch": {
+			"true": "Vrai",
+			"false": "Faux",
+			"eachItem": "Chaque élément",
+			"done": "Terminé"
+		},
+		"types": {
+			"greeting": {
+				"label": "Accueil",
+				"description": "Ce que dit cette ligne quand elle décroche",
+				"params": {
+					"text": {
+						"label": "Accueil",
+						"description": "Prononcé mot pour mot quand l’appel est connecté.",
+						"placeholder": "Merci d’avoir appelé le cabinet dentaire Miller ! Que puis-je faire pour vous ?"
+					}
+				}
+			},
+			"intent": {
+				"label": "Intention",
+				"description": "Une tâche gérée par cette ligne, avec ses outils autorisés",
+				"params": {
+					"name": {
+						"label": "Nom de l’intention",
+						"description": "Identifiant court utilisé par le routeur (unique par arbre)."
+					},
+					"description": {
+						"label": "Quand l’appelant veut dire ceci",
+						"placeholder": "L’appelant veut prendre, déplacer ou annuler un rendez-vous"
+					},
+					"tools": {
+						"label": "Outils autorisés",
+						"description": "Autorisations outil:ressource séparées par des virgules, pour cette intention uniquement."
+					},
+					"workflows": {
+						"label": "Workflows autorisés",
+						"description": "Noms, séparés par des virgules, des workflows de cet employé que l’intention peut exécuter."
+					},
+					"plugins": {
+						"label": "Plugins autorisés",
+						"description": "Slugs de plugins séparés par des virgules."
+					},
+					"mcp": {
+						"label": "Serveurs MCP autorisés",
+						"description": "Noms des serveurs MCP connectés, séparés par des virgules."
+					}
+				}
+			},
+			"transfer": {
+				"label": "Transférer à une personne",
+				"description": "Transfert en direct vers le numéro de transfert de la ligne",
+				"params": {
+					"when": {
+						"label": "Quand transférer",
+						"placeholder": "L’appelant demande une personne, est contrarié ou a une urgence"
+					},
+					"to": {
+						"label": "Met en relation avec",
+						"description": "À qui l’appelant est annoncé comme étant mis en relation. Le numéro lui-même reste dans les paramètres de la ligne.",
+						"placeholder": "notre responsable de bureau"
+					}
+				}
+			},
+			"takeMessage": {
+				"label": "Prendre un message",
+				"description": "Noter un message pour le propriétaire (solution de repli)",
+				"params": {
+					"fields": {
+						"label": "Quoi noter",
+						"placeholder": "nom, numéro, motif de l’appel, meilleur moment pour rappeler"
+					}
+				}
+			},
+			"disclosures": {
+				"label": "Peut partager",
+				"description": "Faits que cette ligne donne directement, sans recherche",
+				"params": {
+					"text": {
+						"label": "Informations approuvées",
+						"description": "Les informations publiques approuvées par le propriétaire pour cette ligne — horaires, adresse, zone desservie, tarifs de base. Les détails propres à un client ou à un compte n’apparaissent jamais ici ; ils passent par une recherche.",
+						"placeholder": "Ouvert du lundi au vendredi, 8 h–17 h. Situé au 123 rue Principale. Détartrages à partir de 120 $."
+					}
+				}
+			},
+			"custom": {
+				"label": "Personnalisé",
+				"description": "Définir les étapes et les skills manuellement"
+			},
+			"research": {
+				"label": "Recherche",
+				"description": "Recherche web, analyse et synthèse",
+				"params": {
+					"depth": {
+						"label": "Profondeur de recherche",
+						"options": {
+							"quick": "Rapide (2-5 min)",
+							"standard": "Standard (5-10 min)",
+							"deep": "Approfondie (10-20 min)"
+						}
+					},
+					"sources": {
+						"label": "Types de sources",
+						"description": "Types de sources à rechercher, séparés par des virgules",
+						"placeholder": "web, académique, actualités"
+					}
+				}
+			},
+			"email": {
+				"label": "Envoyer un e-mail",
+				"description": "Rédiger et envoyer un e-mail",
+				"params": {
+					"to": {
+						"label": "À",
+						"description": "Adresse e-mail du destinataire (ou données en amont)"
+					},
+					"subject": {
+						"label": "Modèle d’objet"
+					}
+				}
+			},
+			"notify": {
+				"label": "Notifier",
+				"description": "Envoyer une notification sur un canal",
+				"params": {
+					"channel": {
+						"label": "Canal",
+						"options": {
+							"email": "E-mail",
+							"webhook": "Webhook"
+						}
+					},
+					"target": {
+						"label": "Cible",
+						"description": "Nom du canal, e-mail ou URL de webhook",
+						"placeholder": "#general ou user@example.com"
+					}
+				}
+			},
+			"code": {
+				"label": "Exécuter du code",
+				"description": "Exécuter un extrait de code",
+				"params": {
+					"language": {
+						"label": "Langage"
+					},
+					"code": {
+						"label": "Code",
+						"description": "Code à exécuter"
+					}
+				}
+			},
+			"condition": {
+				"label": "Condition",
+				"description": "Branchement si/sinon",
+				"params": {
+					"expression": {
+						"label": "Expression de condition",
+						"description": "Expression JavaScript — vraie vers la branche Vrai, fausse vers la branche Faux"
+					},
+					"mode": {
+						"label": "Mode d’évaluation",
+						"options": {
+							"expression": "Expression",
+							"contains": "Les données contiennent",
+							"exists": "Le champ existe",
+							"regex": "Correspondance regex"
+						}
+					}
+				}
+			},
+			"loop": {
+				"label": "Boucle",
+				"description": "Parcourir une liste d’éléments",
+				"params": {
+					"source": {
+						"label": "Source des éléments",
+						"description": "Chemin vers le tableau à parcourir",
+						"placeholder": "data.items ou data.emails"
+					},
+					"maxIterations": {
+						"label": "Itérations max",
+						"description": "Limite de sécurité contre les boucles infinies"
+					}
+				}
+			},
+			"wait": {
+				"label": "Attendre",
+				"description": "Mettre l’exécution en pause",
+				"params": {
+					"duration": {
+						"label": "Durée d’attente",
+						"options": {
+							"5s": "5 secondes",
+							"30s": "30 secondes",
+							"1m": "1 minute",
+							"5m": "5 minutes",
+							"15m": "15 minutes",
+							"1h": "1 heure",
+							"custom": "Personnalisé"
+						}
+					},
+					"waitUntil": {
+						"label": "Ou attendre jusqu’à",
+						"description": "Reprendre quand cet événement se déclenche (laisser vide pour une durée)",
+						"placeholder": "ex. event:approval.received"
+					}
+				}
+			},
+			"agent": {
+				"label": "Employé",
+				"description": "Déléguer à un autre employé",
+				"params": {
+					"agentId": {
+						"label": "Employé",
+						"description": "Employé à qui déléguer cette tâche"
+					},
+					"instructions": {
+						"label": "Instructions",
+						"description": "Remplacer ou compléter la persona par défaut de l’employé",
+						"placeholder": "Instructions précises pour l’employé délégué…"
+					}
+				}
+			},
+			"connector": {
+				"label": "Connecteur",
+				"description": "Utiliser une intégration MCP",
+				"params": {
+					"serverId": {
+						"label": "Serveur MCP",
+						"description": "Serveur MCP connecté à utiliser"
+					},
+					"tool": {
+						"label": "Outil",
+						"description": "Outil à appeler sur le serveur MCP",
+						"placeholder": "ex. read_file, send_message"
+					},
+					"input": {
+						"label": "Entrée",
+						"description": "Entrée JSON de l’outil (accepte les modèles '{{'data.field'}}')"
+					}
+				}
+			},
+			"http": {
+				"label": "Requête HTTP",
+				"description": "Faire un appel d’API HTTP",
+				"params": {
+					"method": {
+						"label": "Méthode"
+					},
+					"url": {
+						"label": "URL"
+					},
+					"body": {
+						"label": "Corps de la requête",
+						"description": "Corps JSON des requêtes POST/PUT/PATCH"
+					},
+					"headers": {
+						"label": "En-têtes",
+						"description": "Un en-tête par ligne (clé: valeur)"
+					}
+				}
+			},
+			"decide": {
+				"label": "Décider",
+				"description": "Classer ou juger des données avec des questions typées",
+				"params": {
+					"state": {
+						"label": "État",
+						"description": "Chemin des données à juger (inputs.*, item, nodes.'<'id>.*)"
+					},
+					"questions": {
+						"label": "Questions",
+						"description": "Objet JSON de questions typées (choice, score, noul). Un nœud condition route sur nodes.'<'id>.'<'question>.choice et .confidence"
+					},
+					"default": {
+						"label": "Réponses par défaut",
+						"description": "Réponses utilisées quand aucune décision n’est possible : une option pour un choice, un niveau pour un score, true ou false pour un noul. Le nœud définit alors nodes.'<'id>.defaulted"
+					}
+				}
+			},
+			"transform": {
+				"label": "Transformer",
+				"description": "Remodeler ou filtrer des données",
+				"params": {
+					"operation": {
+						"label": "Opération",
+						"options": {
+							"map": "Map — transformer chaque élément",
+							"filter": "Filter — garder les éléments correspondants",
+							"reduce": "Reduce — agréger en une seule valeur",
+							"pick": "Pick — extraire des champs précis",
+							"template": "Template — mettre en forme comme texte"
+						}
+					},
+					"expression": {
+						"label": "Expression",
+						"description": "Expression de transformation"
+					}
+				}
+			}
+		},
+		"catalog": {
+			"searchPlaceholder": "Rechercher des nœuds…",
+			"noMatch": "Aucun nœud ne correspond à « {query} »",
+			"toolsAvailable": "{count, plural, one {# outil disponible} other {# outils disponibles}}",
+			"categories": {
+				"triggers": "Déclencheurs",
+				"activities": "Activités",
+				"callTree": "Arbre d’appel",
+				"flowControl": "Contrôle du flux",
+				"connectors": "Connecteurs (MCP)",
+				"agents": "Employés",
+				"output": "Sortie"
+			},
+			"items": {
+				"triggerSchedule": {
+					"label": "Planification",
+					"desc": "Exécuter à heures fixes"
+				},
+				"triggerEvent": {
+					"label": "Événement",
+					"desc": "Réagir à des événements"
+				},
+				"triggerHeartbeat": {
+					"label": "Heartbeat",
+					"desc": "Exécuter à intervalle"
+				},
+				"triggerManual": {
+					"label": "Manuel",
+					"desc": "Exécuter à la demande"
+				},
+				"activityCustom": {
+					"label": "Activité personnalisée",
+					"desc": "Définir les étapes et les skills"
+				},
+				"activityResearch": {
+					"label": "Recherche",
+					"desc": "Recherche web et analyse"
+				},
+				"activityEmail": {
+					"label": "Envoyer un e-mail",
+					"desc": "Rédiger et envoyer un e-mail"
+				},
+				"activityNotify": {
+					"label": "Notifier",
+					"desc": "Envoyer une notification"
+				},
+				"activityCode": {
+					"label": "Exécuter du code",
+					"desc": "Exécuter un extrait de code"
+				},
+				"activityHttp": {
+					"label": "Requête HTTP",
+					"desc": "Faire un appel d’API"
+				},
+				"activityDecide": {
+					"label": "Décider",
+					"desc": "Classer ou juger des données"
+				},
+				"activityTransform": {
+					"label": "Transformer",
+					"desc": "Remodeler ou filtrer des données"
+				},
+				"activityGreeting": {
+					"label": "Accueil",
+					"desc": "Ce que dit la ligne quand elle décroche"
+				},
+				"activityIntent": {
+					"label": "Intention",
+					"desc": "Une tâche + ses outils autorisés"
+				},
+				"activityTransfer": {
+					"label": "Transférer à une personne",
+					"desc": "Transfert en direct — indiquez vers qui"
+				},
+				"activityTakeMessage": {
+					"label": "Prendre un message",
+					"desc": "Noter un message (solution de repli)"
+				},
+				"activityDisclosures": {
+					"label": "Peut partager",
+					"desc": "Faits que cette ligne donne directement (horaires, adresse, tarifs)"
+				},
+				"flowCondition": {
+					"label": "Condition",
+					"desc": "Branchement si/sinon"
+				},
+				"flowLoop": {
+					"label": "Boucle",
+					"desc": "Parcourir des éléments"
+				},
+				"flowWait": {
+					"label": "Attendre",
+					"desc": "Pause ou attente d’un événement"
+				},
+				"emit": {
+					"label": "Émettre un événement",
+					"desc": "Annoncer un événement de fin"
+				}
+			}
+		},
+		"eventSources": {
+			"label": "Sources d’événements",
+			"searchPlaceholder": "Tapez pour rechercher des sources…",
+			"hint": "Tapez pour rechercher des sources connues, Entrée pour ajouter. Les noms personnalisés et les jokers (email.*) fonctionnent aussi."
+		},
+		"flow": {
+			"triggerManual": "S’exécute quand vous le lancez",
+			"triggerSchedule": "Selon une planification",
+			"triggerEventAny": "Quand un événement se déclenche",
+			"triggerWatch": "Surveille {name}",
+			"triggerWatchAny": "Surveille un plugin",
+			"applying": "Application…",
+			"go": "Valider",
+			"tellAi": "Dites à l’IA quoi changer",
+			"tellAiEllipsis": "Dites à l’IA quoi changer…",
+			"badgeExact": "exact",
+			"badgeAgent": "IA",
+			"emptyCode": "(vide)",
+			"stepPlaceholder": "Que doit faire cette étape ?",
+			"changeStep": "Modifier « {name} »…",
+			"forEach": "Pour chaque {item}",
+			"loopItemDefault": "élément",
+			"loopEmpty": "Rien dans cette boucle pour l’instant.",
+			"pathDefault": "chemin",
+			"pathEmpty": "Chemin vide",
+			"addStepHere": "Ajouter une étape ici",
+			"connected": "{name} est connecté",
+			"notConnected": "{name} n’est pas connecté — ce flux échouera",
+			"connect": "Connecter",
+			"describeFlowChange": "Décrivez une modification de tout ce flux…",
+			"edit": "modifier",
+			"emits": "émet",
+			"noSteps": "Ce flux n’a pas encore d’étapes."
+		},
+		"panel": {
+			"backToOverview": "Retour à la vue d’ensemble du workflow",
+			"intent": "Intention",
+			"addSkill": "Ajouter un skill…",
+			"parameters": "Paramètres",
+			"addStep": "Ajouter une étape…",
+			"manualHint": "S’exécute uniquement quand il est lancé manuellement.",
+			"notConfigured": "Non configuré",
+			"noEventConfigured": "Aucun événement configuré",
+			"noDescription": "Aucune description",
+			"emitPlaceholder": "ex. {name}",
+			"emitOptional": "Facultatif — d’autres workflows peuvent se déclencher sur cet événement à la fin de l’exécution.",
+			"useEmit": "Utiliser {name}",
+			"emitRenameWarning": "Renommer casse les workflows abonnés à cet événement.",
+			"none": "Aucun",
+			"apiEndpoint": "Point de terminaison API",
+			"apiEndpointHint": "Créez une clé pour ce workflow dans Paramètres de l’employé → Webhooks."
+		},
+		"schedule": {
+			"weekends": "Week-ends",
+			"custom": "Personnalisé",
+			"daysOfWeek": "Jours de la semaine",
+			"monthly": "Tous les mois",
+			"biannual": "Tous les 6 mois",
+			"yearly": "Tous les ans",
+			"onDay": "le jour",
+			"biannualNote": "S’exécute le {day} {firstMonth} et le {day} {secondMonth}.",
+			"shortMonthsSkipped": "Les mois sans jour {day} sont ignorés.",
+			"limitToHours": "Limiter aux heures",
+			"rangeTo": "à"
+		},
+		"watch": {
+			"plugin": "Plugin",
+			"choosePlugin": "Choisir un plugin…",
+			"whenItReports": "Quand il signale",
+			"chooseEvent": "Choisir un événement…",
+			"hint": "S’exécute chaque fois que {plugin} signale {event} ; d’autres flux peuvent aussi écouter {plugin}.{event}."
+		},
+		"validation": {
+			"emptyId": "Une activité de « {workflow} » a un ID vide",
+			"duplicateId": "ID d’activité « {id} » en double dans « {workflow} »",
+			"conditionExpression": "La condition « {id} » a besoin d’une expression — le routage est déterministe, jamais décidé par l’IA",
+			"loopSource": "La boucle « {id} » a besoin d’une source de données (ex. inputs.items)",
+			"httpUrl": "Le nœud HTTP « {id} » a besoin d’une URL",
+			"decideQuestions": "Le nœud Décider « {id} » a besoin de questions (un objet JSON de questions typées)",
+			"waitDuration": "Le nœud Attendre « {id} » a besoin d’une durée",
+			"needsIntent": "L’activité « {id} » de « {workflow} » a besoin d’une intention ou d’étapes",
+			"targetsTrigger": "Une connexion pointe vers le déclencheur",
+			"leavesEmit": "Une connexion part du nœud d’émission",
+			"unknownFrom": "Connexion depuis un nœud inconnu « {id} »",
+			"unknownTo": "Connexion vers un nœud inconnu « {id} »",
+			"duplicateConnection": "Connexion en double {from} → {to}",
+			"labeledNonBranching": "Le lien étiqueté « {label} » part du nœud sans branchement « {id} »",
+			"unlabeledBranch": "Les liens partant de « {id} » doivent porter une étiquette de branche",
+			"cycle": "Le graphe contient un cycle (seul le corps Chaque élément d’une boucle peut revenir à sa boucle)"
+		},
+		"builder": {
+			"unsavedConfirm": "Vous avez des modifications non enregistrées. Les abandonner et fermer ?",
+			"workflowLabel": "{name} ({count, plural, one {# activité} other {# activités}})",
+			"undo": "Annuler (Cmd+Z)",
+			"redo": "Rétablir (Cmd+Shift+Z)",
+			"issueCount": "{count, plural, one {# problème} other {# problèmes}}",
+			"discard": "Abandonner",
+			"hideDetails": "Masquer le panneau de détails",
+			"showDetails": "Afficher le panneau de détails",
+			"newWorkflowTitle": "Nouveau workflow",
+			"empty": "Aucun workflow — créez-en un pour commencer",
+			"newWorkflow": "Nouveau workflow",
+			"confirmDeleteWorkflow": "Voulez-vous vraiment supprimer ce workflow ? Toutes ses activités et connexions seront supprimées.",
+			"confirmDeleteNode": "Voulez-vous vraiment supprimer ce nœud ? Ses connexions seront reliées automatiquement."
+		}
 	}
 }

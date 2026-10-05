@@ -5,7 +5,8 @@
  * and whether the update is ready to apply.
  */
 
-import { writable, derived } from 'svelte/store';
+import { get, writable, derived } from 'svelte/store';
+import { t } from 'svelte-i18n';
 
 export interface UpdateState {
   available: boolean;
@@ -50,10 +51,10 @@ export async function checkForUpdates(): Promise<'latest' | 'available' | 'error
       onUpdateAvailable(result);
       return 'available';
     }
-    addToast("You're on the latest version", 'info');
+    addToast(get(t)('settingsUpdates.onLatest'), 'info');
     return 'latest';
   } catch {
-    addToast('Failed to check for updates', 'error');
+    addToast(get(t)('settingsUpdates.checkFailed'), 'error');
     return 'error';
   }
 }
@@ -88,7 +89,7 @@ export function onUpdateReady(_data: Record<string, unknown>) {
 export function onUpdateError(data: Record<string, unknown>) {
   updateState.update((s) => ({
     ...s,
-    error: String(data.error || data.message || 'Update failed'),
+    error: String(data.error || data.message || get(t)('settingsUpdates.updateFailed')),
   }));
 }
 

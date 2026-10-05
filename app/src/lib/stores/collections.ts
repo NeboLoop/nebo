@@ -1,4 +1,5 @@
-import { writable, derived } from 'svelte/store';
+import { writable, derived, get } from 'svelte/store';
+import { t } from 'svelte-i18n';
 
 export interface PrivateCollection {
   id: string;
@@ -20,7 +21,7 @@ export function createCollection(col: Omit<PrivateCollection, 'id' | 'updated'>)
   const id = `col-${nextId++}`;
   collections.update(list => [
     ...list,
-    { ...col, id, updated: 'Just now' },
+    { ...col, id, updated: get(t)('time.justNow') },
   ]);
   return id;
 }
@@ -34,7 +35,7 @@ export function addItemToCollection(collectionId: string, itemId: string) {
     if (c.id !== collectionId) return c;
     if (c.items.includes(itemId)) return c;
     const items = [...c.items, itemId];
-    return { ...c, items, itemCount: items.length, updated: 'Just now' };
+    return { ...c, items, itemCount: items.length, updated: get(t)('time.justNow') };
   }));
 }
 
@@ -42,7 +43,7 @@ export function removeItemFromCollection(collectionId: string, itemId: string) {
   collections.update(list => list.map(c => {
     if (c.id !== collectionId) return c;
     const items = c.items.filter(id => id !== itemId);
-    return { ...c, items, itemCount: items.length, updated: 'Just now' };
+    return { ...c, items, itemCount: items.length, updated: get(t)('time.justNow') };
   }));
 }
 
