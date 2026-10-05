@@ -359,6 +359,7 @@
 		"recording": "A gravar",
 		"connectFailed": "A ligação não se concluiu. Tente de novo.",
 		"connectAccountHint": "Ligue a conta e eu retomo onde parei.",
+		"connectAccountFor": "{label} para {employee}",
 		"submit": "Submeter",
 		"other": "Outro…",
 		"askedReceipt": "Respondida",

@@ -359,6 +359,7 @@
 		"recording": "रिकॉर्ड हो रहा है",
 		"connectFailed": "कनेक्शन पूरा नहीं हुआ। फिर से कोशिश करें।",
 		"connectAccountHint": "कनेक्ट करें और मैं वहीं से आगे बढ़ूँगा जहाँ रुका था।",
+		"connectAccountFor": "{employee} के लिए {label}",
 		"submit": "सबमिट करें",
 		"other": "अन्य…",
 		"askedReceipt": "पूछा गया",

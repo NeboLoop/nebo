@@ -359,6 +359,7 @@
 		"recording": "Enregistrement",
 		"connectFailed": "La connexion ne s'est pas terminée. Réessayez.",
 		"connectAccountHint": "Connectez-vous et je reprendrai où je m'étais arrêté.",
+		"connectAccountFor": "{label} pour {employee}",
 		"submit": "Envoyer",
 		"other": "Autre…",
 		"askedReceipt": "Demandé",

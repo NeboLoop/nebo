@@ -359,6 +359,7 @@
 		"recording": "Registrazione",
 		"connectFailed": "Il collegamento non è andato a buon fine. Riprova.",
 		"connectAccountHint": "Collega l'account e riprendo da dove mi sono fermato.",
+		"connectAccountFor": "{label} per {employee}",
 		"submit": "Invia",
 		"other": "Altro…",
 		"askedReceipt": "Chiesto",

@@ -20,6 +20,9 @@
 		 *  install_plugin: same `plugin` slug, plus the marketplace install code. */
 		plugin?: string;
 		agentId?: string;
+		/** connect_account: the employee whose own account this is, for a plugin that
+		 *  keeps one per employee; absent for a shared sign-in. */
+		employee?: string;
 		/** install_plugin / hire_employee: the marketplace code (PLUG-… or AGNT-…) redeemed via
 		 *  the canonical POST /codes path — the same button, the same resume, a different verb. */
 		code?: string;
@@ -68,6 +71,7 @@
 	import { getWebSocketClient } from '$lib/websocket/client';
 	import AskReceipt from './AskReceipt.svelte';
 	import { authLoginAccount, listPlugins, submitCode } from '$lib/api/nebo';
+	import { isSignInFor } from '$lib/utils/pluginSignIn';
 	import CredentialFields, { credentialsComplete, type AuthField } from '$lib/components/CredentialFields.svelte';
 
 	// connect_account: run the same OAuth pathway as Settings → Connected
@@ -153,16 +157,20 @@
 		const w = widgets?.[0];
 		if (w?.type !== 'connect_account' || answered || disabled) return;
 		const ws = getWebSocketClient();
+		// A sign-in answers this card only when it is this plugin's and, for an
+		// account per employee, this employee's: Chief's sign-in never ticks the
+		// Bookkeeper's card.
+		const mine = (data: Record<string, unknown>) => isSignInFor(data, w.plugin, w.agentId);
 		const unsubs = [
 			ws.on('plugin_auth_complete', (data: Record<string, unknown>) => {
-				if ((data.plugin as string) === w.plugin) {
+				if (mine(data)) {
 					connecting = false;
 					connectDone = true;
 					submit('connected');
 				}
 			}),
 			ws.on('plugin_auth_error', (data: Record<string, unknown>) => {
-				if ((data.plugin as string) === w.plugin) {
+				if (mine(data)) {
 					connecting = false;
 					connectError = (data.error as string) || $t('chat.connectFailed');
 				}
@@ -303,7 +311,7 @@
 				{#if connectDone}<Check class="w-5 h-5 text-success" />{:else}<Plug class="w-5 h-5" />{/if}
 			</div>
 			<div class="flex-1 min-w-0">
-				<div class="text-sm font-medium truncate">{widget.label ?? widget.plugin}</div>
+				<div class="text-sm font-medium truncate">{widget.employee ? $t('chat.connectAccountFor', { values: { label: widget.label ?? widget.plugin, employee: widget.employee } }) : (widget.label ?? widget.plugin)}</div>
 				{#if connectError}
 					<div class="text-xs text-error">{connectError}</div>
 				{:else}

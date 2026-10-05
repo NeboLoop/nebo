@@ -359,6 +359,7 @@
 		"recording": "กำลังบันทึก",
 		"connectFailed": "การเข้าสู่ระบบยังไม่เสร็จ ลองอีกครั้ง",
 		"connectAccountHint": "เข้าสู่ระบบแล้วฉันจะทำต่อจากจุดที่ค้างไว้",
+		"connectAccountFor": "{label} สำหรับ {employee}",
 		"submit": "ส่ง",
 		"other": "อื่นๆ…",
 		"askedReceipt": "ถามแล้ว",

@@ -359,6 +359,7 @@
 		"recording": "Recording",
 		"connectFailed": "Sign-in didn't complete. Try again.",
 		"connectAccountHint": "Sign in and I'll pick up where I left off.",
+		"connectAccountFor": "{label} for {employee}",
 		"submit": "Submit",
 		"other": "Other…",
 		"askedReceipt": "Asked",

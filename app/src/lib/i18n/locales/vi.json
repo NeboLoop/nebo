@@ -359,6 +359,7 @@
 		"recording": "Đang ghi",
 		"connectFailed": "Đăng nhập chưa hoàn tất. Hãy thử lại.",
 		"connectAccountHint": "Đăng nhập đi rồi tôi làm tiếp từ chỗ đang dở.",
+		"connectAccountFor": "{label} cho {employee}",
 		"submit": "Gửi",
 		"other": "Khác…",
 		"askedReceipt": "Đã hỏi",

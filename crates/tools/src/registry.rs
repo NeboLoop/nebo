@@ -405,7 +405,7 @@ pub struct Registry {
     store: std::sync::RwLock<Option<Arc<db::Store>>>,
     /// The plugin runner behind the plugin and operation tools, once a
     /// plugin store is wired.
-    plugin_runner: std::sync::RwLock<Option<Arc<crate::plugin_tool::PluginRunner>>>,
+    plugin_runner: Arc<std::sync::RwLock<Option<Arc<crate::plugin_tool::PluginRunner>>>>,
     /// The `plugin__<slug>` and operation tools the last refresh registered;
     /// held across a refresh so two never interleave.
     plugin_tools: tokio::sync::Mutex<HashSet<String>>,
@@ -457,7 +457,7 @@ impl Registry {
             agent_loader: std::sync::RwLock::new(None),
             read_state: std::sync::RwLock::new(None),
             store: std::sync::RwLock::new(None),
-            plugin_runner: std::sync::RwLock::new(None),
+            plugin_runner: Arc::new(std::sync::RwLock::new(None)),
             plugin_tools: tokio::sync::Mutex::new(HashSet::new()),
             runtime_providers: Default::default(),
             browser_manager: std::sync::RwLock::new(None),
@@ -1386,7 +1386,8 @@ impl Registry {
                     .with_code_installer(self.code_installer.clone())
                     .with_job_consent(self.job_consent.clone())
                     .with_coworker_rail(self.coworker_rail.clone())
-                    .with_notify_fn(self.notify_fn.clone());
+                    .with_notify_fn(self.notify_fn.clone())
+                    .with_plugin_runner(self.plugin_runner.clone());
             for tool in crate::employee_tools::tools(persona) {
                 self.register(Box::new(tool)).await;
             }

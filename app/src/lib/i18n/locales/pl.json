@@ -359,6 +359,7 @@
 		"recording": "Nagrywanie",
 		"connectFailed": "Logowanie nie doszło do skutku. Spróbuj ponownie.",
 		"connectAccountHint": "Zaloguj się, a podejmę pracę tam, gdzie skończyłem.",
+		"connectAccountFor": "{label} dla: {employee}",
 		"submit": "Wyślij",
 		"other": "Inne…",
 		"askedReceipt": "Zapytano",

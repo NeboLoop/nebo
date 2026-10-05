@@ -359,6 +359,7 @@
 		"recording": "기록 중",
 		"connectFailed": "로그인이 완료되지 않았습니다. 다시 시도하세요.",
 		"connectAccountHint": "로그인하시면 멈춘 곳부터 이어서 진행하겠습니다.",
+		"connectAccountFor": "{employee}의 {label}",
 		"submit": "제출",
 		"other": "기타…",
 		"askedReceipt": "물어봄",

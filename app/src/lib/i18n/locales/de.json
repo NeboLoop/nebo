@@ -359,6 +359,7 @@
 		"recording": "Nimmt auf",
 		"connectFailed": "Anmeldung nicht abgeschlossen. Versuch es nochmal.",
 		"connectAccountHint": "Melde dich an, dann mache ich da weiter, wo ich aufgehört habe.",
+		"connectAccountFor": "{label} für {employee}",
 		"submit": "Absenden",
 		"other": "Sonstiges…",
 		"askedReceipt": "Gefragt",

@@ -359,6 +359,7 @@
 		"recording": "Триває запис",
 		"connectFailed": "Вхід не завершено. Спробуйте ще раз.",
 		"connectAccountHint": "Увійдіть, і я продовжу з того місця, де зупинився.",
+		"connectAccountFor": "{label} для: {employee}",
 		"submit": "Надіслати",
 		"other": "Інше…",
 		"askedReceipt": "Запитано",

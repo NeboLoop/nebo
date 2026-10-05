@@ -359,6 +359,7 @@
 		"recording": "正在录制",
 		"connectFailed": "登录未完成。请重试。",
 		"connectAccountHint": "登录后，我会从中断的地方继续。",
+		"connectAccountFor": "{employee} 的{label}",
 		"submit": "提交",
 		"other": "其他…",
 		"askedReceipt": "已提问",

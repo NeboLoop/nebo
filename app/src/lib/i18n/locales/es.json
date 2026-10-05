@@ -359,6 +359,7 @@
 		"recording": "Grabando",
 		"connectFailed": "El inicio de sesión no se completó. Inténtalo de nuevo.",
 		"connectAccountHint": "Inicia sesión y seguiré donde lo dejé.",
+		"connectAccountFor": "{label} para {employee}",
 		"submit": "Enviar",
 		"other": "Otro…",
 		"askedReceipt": "Preguntado",

@@ -243,6 +243,10 @@ pub struct PersonaTool {
     /// The registry's broadcast cell: a rename emits `agent_updated`, which
     /// the owner's pages patch in place and the loop's roster follows.
     notify_fn: Arc<std::sync::RwLock<Option<crate::message_tool::NotifyFn>>>,
+    /// The registry's plugin runner (filled once a plugin store is wired):
+    /// a hire raises the connect card for each account the new employee's
+    /// job needs, through the runner's ONE connect card.
+    plugin_runner: Arc<std::sync::RwLock<Option<Arc<crate::plugin_tool::PluginRunner>>>>,
 }
 
 /// A listing NeboAI published: its qualified name lives under the @neboai
@@ -274,7 +278,18 @@ impl PersonaTool {
             job_consent: Arc::new(std::sync::RwLock::new(None)),
             rail: crate::coworker::new_rail_cell(),
             notify_fn: Arc::new(std::sync::RwLock::new(None)),
+            plugin_runner: Arc::new(std::sync::RwLock::new(None)),
         }
+    }
+
+    /// Inject the registry's plugin-runner cell (filled late, once a plugin
+    /// store is wired).
+    pub fn with_plugin_runner(
+        mut self,
+        runner: Arc<std::sync::RwLock<Option<Arc<crate::plugin_tool::PluginRunner>>>>,
+    ) -> Self {
+        self.plugin_runner = runner;
+        self
     }
 
     /// Inject the registry's broadcast cell (filled late by the server).
@@ -946,6 +961,7 @@ impl PersonaTool {
                         } else if !top_code.is_empty() && !hires.iter().any(|h| str_of(h, "code") == top_code) {
                             hires.push(serde_json::json!({
                                 "query": q,
+                                "id": str_of(top, "id"),
                                 "code": str_of(top, "code"),
                                 "name": str_of(top, "name"),
                                 "plugin": str_of(top, "slug"),
@@ -1036,9 +1052,35 @@ impl PersonaTool {
             } else {
                 format!(" Already on the roster before this: {}.", already.join(", "))
             };
+            // Each new hire's own accounts: the connect card for every
+            // per-employee plugin its job needs, connected for THAT employee
+            // — never for the one whose chat this is.
+            let runner = self.plugin_runner.read().ok().and_then(|r| r.clone());
+            let connected = match runner {
+                Some(runner) => {
+                    let hired: Vec<(String, String)> = hires
+                        .iter()
+                        .filter_map(|h| {
+                            self.store
+                                .get_agent(&str_of(h, "id"))
+                                .ok()
+                                .flatten()
+                                .or_else(|| self.find_agent_row(&str_of(h, "name")))
+                                .map(|a| (a.id, a.name))
+                        })
+                        .collect();
+                    runner.connect_hired(ctx, &hired).await
+                }
+                None => Vec::new(),
+            };
+            let accounts = if connected.is_empty() {
+                String::new()
+            } else {
+                format!(" Accounts: {}", connected.join(" "))
+            };
             return ToolResult::ok(format!(
-                "Hired and on the roster: {}.{was_already} Reach them as employees (they appear in \
-                 list_employees); no setup narration and no further search needed.",
+                "Hired and on the roster: {}.{was_already}{accounts} Reach them as employees (they \
+                 appear in list_employees); no setup narration and no further search needed.",
                 names.join(", ")
             ));
         }

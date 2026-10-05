@@ -359,6 +359,7 @@
 		"recording": "Spelar in",
 		"connectFailed": "Inloggningen slutfördes inte. Försök igen.",
 		"connectAccountHint": "Logga in så fortsätter jag där jag slutade.",
+		"connectAccountFor": "{label} för {employee}",
 		"submit": "Skicka",
 		"other": "Annat…",
 		"askedReceipt": "Frågade",

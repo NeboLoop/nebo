@@ -359,6 +359,7 @@
 		"recording": "রেকর্ড হচ্ছে",
 		"connectFailed": "সংযোগ সম্পূর্ণ হয়নি। আবার চেষ্টা করুন।",
 		"connectAccountHint": "সংযোগ করুন, আমি যেখানে থেমেছিলাম সেখান থেকে চালিয়ে যাব।",
+		"connectAccountFor": "{employee}-এর জন্য {label}",
 		"submit": "জমা দিন",
 		"other": "অন্যান্য…",
 		"askedReceipt": "জিজ্ঞাসা করা হয়েছে",

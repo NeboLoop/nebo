@@ -359,6 +359,7 @@
 		"recording": "記録中",
 		"connectFailed": "サインインが完了しませんでした。もう一度お試しください。",
 		"connectAccountHint": "サインインしてください。中断したところから続けます。",
+		"connectAccountFor": "{employee} の{label}",
 		"submit": "送信",
 		"other": "その他…",
 		"askedReceipt": "質問済み",

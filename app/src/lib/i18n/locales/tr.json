@@ -359,6 +359,7 @@
 		"recording": "Kaydediyor",
 		"connectFailed": "Bağlantı tamamlanmadı. Tekrar deneyin.",
 		"connectAccountHint": "Bağlanın, kaldığım yerden devam edeyim.",
+		"connectAccountFor": "{employee} için {label}",
 		"submit": "Gönder",
 		"other": "Diğer…",
 		"askedReceipt": "Soruldu",

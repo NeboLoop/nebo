@@ -172,7 +172,7 @@ impl PluginCliTool {
             };
             if auth.profile_dir_env.is_some() {
                 out.push_str(&format!(
-                    "- Each employee uses its own {label} account. With none connected, a connect card appears on first use; when the owner asks to connect one, run `auth login` to show it.\n"
+                    "- Each employee uses its own {label} account. With none connected, a connect card appears on first use; when the owner asks to connect one, run `auth login` to show it, with `employee` set to the employee whose account it is when that is not you.\n"
                 ));
             } else if !runner.plugin_store().is_ready(slug) {
                 out.push_str(&format!(
@@ -238,6 +238,10 @@ impl DynTool for PluginCliTool {
                 "display": {
                     "type": "string",
                     "description": "One plain sentence the owner reads if this command needs their approval, with real names and amounts."
+                },
+                "employee": {
+                    "type": "string",
+                    "description": "With `auth login` only: the employee (name) whose own account to connect, when the plugin keeps one per employee and it is not for you."
                 }
             },
             "required": ["command"],

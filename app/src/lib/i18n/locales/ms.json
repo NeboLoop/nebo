@@ -359,6 +359,7 @@
 		"recording": "Merakam",
 		"connectFailed": "Log masuk tidak selesai. Cuba lagi.",
 		"connectAccountHint": "Log masuk dan saya akan sambung dari tempat saya berhenti.",
+		"connectAccountFor": "{label} untuk {employee}",
 		"submit": "Hantar",
 		"other": "Lain-lain…",
 		"askedReceipt": "Ditanya",
