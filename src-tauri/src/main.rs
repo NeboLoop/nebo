@@ -473,6 +473,22 @@ fn resolve_app_ui_dir(agent_id: &str) -> Option<PathBuf> {
     best.map(|(_, ui)| ui).or_else(|| server::handlers::apps::desktop_app_ui_dir(agent_id))
 }
 
+/// A video's full-screen button, in the chat, the Work panel, the
+/// marketplace and every app window. WebKit on macOS ships with element
+/// full screen off, so `<video controls>` offered picture in picture and
+/// never full screen (owner, 2026-10-05). Set on every page load: cheap,
+/// and it covers each window and webview as it loads.
+#[cfg(target_os = "macos")]
+fn allow_element_fullscreen<R: tauri::Runtime>(webview: &tauri::Webview<R>) {
+    let _ = webview.with_webview(|platform| unsafe {
+        let wk: &objc2_web_kit::WKWebView = &*platform.inner().cast();
+        wk.configuration().preferences().setElementFullscreenEnabled(true);
+    });
+}
+
+#[cfg(not(target_os = "macos"))]
+fn allow_element_fullscreen<R: tauri::Runtime>(_webview: &tauri::Webview<R>) {}
+
 /// Generate the bridge script + meta tags injected into every HTML page served
 /// via the neboapp:// protocol, followed by what the HTTP path adds by the
 /// same rule (`desktop_developer_script`): the owner's own app gets the
@@ -840,6 +856,7 @@ fn main() {
     let saved = load_state("main");
 
     tauri::Builder::default()
+        .on_page_load(|webview, _| allow_element_fullscreen(webview))
         .invoke_handler(tauri::generate_handler![get_window_state, save_artifact, show_owner_notification])
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_notification::init())

@@ -44,3 +44,8 @@ tracing-subscriber = { workspace = true }
 tokio-tungstenite = { workspace = true }
 futures = { workspace = true }
 anyhow = { workspace = true }
+
+# Element full screen for videos in every web view (`allow_element_fullscreen`):
+# WebKit on macOS ships with it off.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-web-kit = { version = "0.3", features = ["WKWebView", "WKWebViewConfiguration", "WKPreferences", "objc2-app-kit"] }
