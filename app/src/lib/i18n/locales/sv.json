@@ -1593,6 +1593,7 @@
 		"resetsInDays": "Återställs om {days}d",
 		"resetsInTime": "Återställs om {hours}t {minutes}m",
 		"percentUsed": "{percent}% använt",
+		"thisMonth": "Den här månaden",
 		"weekly": "Veckovis",
 		"noUsageData": "Ingen användningsdata tillgänglig ännu. Användningsspårning börjar när du använder Nebo AI.",
 		"budgetBalance": "Budgetsaldo",

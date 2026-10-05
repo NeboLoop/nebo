@@ -1593,6 +1593,7 @@
 		"resetsInDays": "Reset over {days}d",
 		"resetsInTime": "Reset over {hours}u {minutes}m",
 		"percentUsed": "{percent}% gebruikt",
+		"thisMonth": "Deze maand",
 		"weekly": "Wekelijks",
 		"noUsageData": "Nog geen gebruiksgegevens beschikbaar. Gebruiksregistratie begint wanneer je Nebo AI gebruikt.",
 		"budgetBalance": "Budgetsaldo",

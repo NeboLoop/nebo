@@ -1593,6 +1593,7 @@
 		"resetsInDays": "{days}日後にリセット",
 		"resetsInTime": "{hours}時間{minutes}分後にリセット",
 		"percentUsed": "{percent}%使用済み",
+		"thisMonth": "今月",
 		"weekly": "週間",
 		"noUsageData": "まだ使用量データがありません。Nebo AIを使用すると使用量の追跡が開始されます。",
 		"budgetBalance": "予算残高",

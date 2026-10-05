@@ -863,6 +863,16 @@ impl Provider for OpenAIProvider {
             .and_then(|v| v.to_str().ok())
             .map(|v| v.to_string());
 
+        // Janus plan window: a percentage of the plan used, and its reset.
+        let plan_used_percent = resp_headers
+            .get("x-ratelimit-plan-used-percent")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.parse::<u64>().ok());
+        let plan_reset = resp_headers
+            .get("x-ratelimit-plan-reset")
+            .and_then(|v| v.to_str().ok())
+            .map(|v| v.to_string());
+
         // Janus budget pool headers
         let budget_free = resp_headers
             .get("x-budget-free-available")
@@ -889,6 +899,7 @@ impl Provider for OpenAIProvider {
             || weekly_remaining.is_some()
             || session_limit.is_some()
             || weekly_limit.is_some()
+            || plan_used_percent.is_some()
             || budget_free.is_some()
             || budget_gift.is_some()
             || budget_active_pool.is_some();
@@ -906,6 +917,8 @@ impl Provider for OpenAIProvider {
                     weekly_limit_credits: weekly_limit,
                     weekly_remaining_credits: weekly_remaining,
                     weekly_reset_at: weekly_reset,
+                    plan_used_percent,
+                    plan_reset_at: plan_reset,
                     budget_free_available: budget_free,
                     budget_gift_available: budget_gift,
                     budget_credits_cents,

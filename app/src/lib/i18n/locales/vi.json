@@ -1593,6 +1593,7 @@
 		"resetsInDays": "Đặt lại sau {days} ngày",
 		"resetsInTime": "Đặt lại sau {hours}g {minutes}p",
 		"percentUsed": "{percent}% đã dùng",
+		"thisMonth": "Tháng này",
 		"weekly": "Hàng tuần",
 		"noUsageData": "Chưa có dữ liệu sử dụng. Theo dõi sử dụng bắt đầu khi bạn sử dụng Nebo AI.",
 		"budgetBalance": "Số dư ngân sách",

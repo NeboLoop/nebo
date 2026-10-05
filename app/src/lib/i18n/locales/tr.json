@@ -1593,6 +1593,7 @@
 		"resetsInDays": "{days}g sonra sıfırlanır",
 		"resetsInTime": "{hours}sa {minutes}dk sonra sıfırlanır",
 		"percentUsed": "%{percent} kullanıldı",
+		"thisMonth": "Bu ay",
 		"weekly": "Haftalık",
 		"noUsageData": "Henüz kullanım verisi yok. Kullanım takibi, Nebo AI kullandığınızda başlar.",
 		"budgetBalance": "Bütçe bakiyesi",

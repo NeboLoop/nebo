@@ -10,6 +10,7 @@
   import { onWsEvent } from '$lib/websocket/subscribe';
 
   interface UsagePool {
+    included?: boolean;
     resetAt?: string;
     percentUsed?: number;
     limitCredits?: number;
@@ -21,9 +22,14 @@
     updatedAt?: string;
   }
 
+  // The plan is a percentage and a reset only: its amounts never leave
+  // Janus. Purchased credit (creditsCents) is the customer's own money and
+  // shows in dollars; the signup grant and gifts are drawn like the plan and
+  // are not shown as amounts.
   interface TypedJanusUsage {
     session: UsagePool | null;
     weekly: UsagePool | null;
+    plan?: UsagePool | null;
     budget: UsagePool | null;
     updatedAt?: string;
   }
@@ -48,9 +54,12 @@
   const currentPlan = $derived((subscription?.plan || accountStatus?.plan || 'free').toLowerCase());
   const planName = $derived(currentPlan.charAt(0).toUpperCase() + currentPlan.slice(1));
 
-  const hasBudget = $derived(
-    usage?.budget && ((usage.budget.giftAvailable ?? 0) > 0 || (usage.budget.creditsCents ?? 0) > 0 || (usage.budget.freeAvailable ?? 0) > 0 || !!usage.budget.activePool)
-  );
+  const hasBudget = $derived(usage?.budget && ((usage.budget.creditsCents ?? 0) > 0 || !!usage.budget.activePool));
+
+  // Older Janus metered session and weekly windows; a window with no limit
+  // is not one this plan has.
+  const hasWindow = (p?: UsagePool | null) => !!p && (p.limitCredits ?? 0) > 0;
+  const showPlan = $derived(!!usage?.plan?.included);
 
   onMount(async () => {
     try {
@@ -66,6 +75,7 @@
           usage = {
             session: raw.session as UsagePool | null,
             weekly: raw.weekly as UsagePool | null,
+            plan: (raw as TypedJanusUsage).plan,
             budget: raw.budget as UsagePool | null,
             updatedAt: (raw as TypedJanusUsage).updatedAt,
           };
@@ -91,14 +101,8 @@
   // balance under `balance` (same shape as the GET endpoint), so the panel reflects
   // new session/weekly numbers without a manual refresh — one usage channel.
   onWsEvent<{ balance?: TypedJanusUsage | null }>('usage', (d) => {
-    if (d?.balance) usage = { session: d.balance.session, weekly: d.balance.weekly, budget: d.balance.budget, updatedAt: d.balance.updatedAt };
+    if (d?.balance) usage = { session: d.balance.session, weekly: d.balance.weekly, plan: d.balance.plan, budget: d.balance.budget, updatedAt: d.balance.updatedAt };
   });
-
-  function formatDollars(microdollars: number): string {
-    // Full dollars, always — never abbreviate money ("$1.8K" hides real balance).
-    const dollars = microdollars / 1_000_000;
-    return `$${dollars.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-  }
 
   function timeUntilReset(resetAt?: string): string {
     if (!resetAt) return '';
@@ -178,7 +182,23 @@
         </div>
       </div>
       <div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-5 space-y-5">
-        {#if usage?.session}
+        {#if showPlan && usage?.plan}
+          {@const pct = Math.min(usage.plan.percentUsed ?? 0, 100)}
+          <div>
+            <div class="flex items-center justify-between mb-2">
+              <div>
+                <span class="text-sm font-medium text-base-content">{$t('settingsUsage.thisMonth')}</span>
+                {#if usage.plan.resetAt}
+                  <span class="text-xs text-base-content/50 ms-2">{timeUntilReset(usage.plan.resetAt)}</span>
+                {/if}
+              </div>
+              <span class="text-xs text-base-content/50 font-mono tabular-nums">{$t('settingsUsage.percentUsed', { values: { percent: pct } })}</span>
+            </div>
+            <progress class="progress w-full h-2 {pct > 80 ? 'progress-warning' : 'progress-primary'}" value={pct} max="100"></progress>
+          </div>
+        {/if}
+
+        {#if hasWindow(usage?.session) && usage?.session}
           <div>
             <div class="flex items-center justify-between mb-2">
               <div>
@@ -198,7 +218,7 @@
           </div>
         {/if}
 
-        {#if usage?.weekly}
+        {#if hasWindow(usage?.weekly) && usage?.weekly}
           <div>
             <div class="flex items-center justify-between mb-2">
               <div>
@@ -218,7 +238,7 @@
           </div>
         {/if}
 
-        {#if !usage?.session && !usage?.weekly}
+        {#if !showPlan && !hasWindow(usage?.session) && !hasWindow(usage?.weekly)}
           <p class="text-xs text-base-content/50">{$t('settingsUsage.noUsageDataShort')}</p>
         {/if}
       </div>
@@ -236,17 +256,7 @@
             </div>
           {/if}
           <div class="grid sm:grid-cols-3 gap-4">
-            {#if usage?.budget && (usage.budget.freeAvailable ?? 0) > 0}
-              <div>
-                <p class="text-xs text-base-content/50">{$t('settingsUsage.freePoolLabel')}</p>
-                <p class="text-lg font-bold text-base-content font-mono tabular-nums">{formatDollars(usage.budget.freeAvailable ?? 0)}</p>
-              </div>
-            {/if}
             {#if usage?.budget}
-              <div>
-                <p class="text-xs text-base-content/50">{$t('settingsUsage.giftPoolLabel')}</p>
-                <p class="text-lg font-bold text-base-content font-mono tabular-nums">{formatDollars(usage.budget.giftAvailable ?? 0)}</p>
-              </div>
               <div>
                 <p class="text-xs text-base-content/50">{$t('settingsUsage.creditsPool')}</p>
                 <p class="text-lg font-bold text-base-content font-mono tabular-nums">${((usage.budget.creditsCents ?? 0) / 100).toFixed(2)}</p>
