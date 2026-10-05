@@ -76,29 +76,44 @@ pub struct EventOrigin {
     pub client_id: Option<String>,
     /// The conversation it was asked in, when there is one.
     pub session_id: String,
+    /// The phone app's platform (`ios`, `android`), from its
+    /// `X-Nebo-Platform` header on a request or on its socket's upgrade.
+    /// None for every other client.
+    pub platform: Option<String>,
 }
 
 impl EventOrigin {
     /// The request header a page names itself with.
     pub const CLIENT_HEADER: &'static str = "x-nebo-client";
 
+    /// The header the phone app names its platform with.
+    pub const PLATFORM_HEADER: &'static str = "x-nebo-platform";
+
     /// The origin of a request: the client its header names, asking in
     /// `session_id`.
     pub fn of_request(headers: &axum::http::HeaderMap, session_id: impl Into<String>) -> Self {
         Self {
-            client_id: headers
-                .get(Self::CLIENT_HEADER)
-                .and_then(|v| v.to_str().ok())
-                .map(str::trim)
-                .filter(|v| !v.is_empty())
-                .map(str::to_string),
+            client_id: header_value(headers, Self::CLIENT_HEADER),
             session_id: session_id.into(),
+            platform: Self::platform_of(headers),
         }
+    }
+
+    /// The platform a request's `X-Nebo-Platform` header names, lowercase.
+    pub fn platform_of(headers: &axum::http::HeaderMap) -> Option<String> {
+        header_value(headers, Self::PLATFORM_HEADER).map(|v| v.to_ascii_lowercase())
     }
 
     /// Work no client on this server asked for, in `session_id`.
     pub fn unclaimed(session_id: impl Into<String>) -> Self {
-        Self { client_id: None, session_id: session_id.into() }
+        Self { client_id: None, session_id: session_id.into(), platform: None }
+    }
+
+    /// Whether the asking client is the phone app as an app store ships it
+    /// (iOS, Android). Both stores forbid pointing a buyer at a checkout
+    /// outside the store, so nothing sold is offered there by a link.
+    pub fn in_store_app(&self) -> bool {
+        matches!(self.platform.as_deref(), Some("ios" | "android"))
     }
 
     /// `payload` with this origin on it: `client_id` (null when unclaimed)
@@ -110,6 +125,16 @@ impl EventOrigin {
         }
         payload
     }
+}
+
+/// A header's value, trimmed; None when it is absent or blank.
+fn header_value(headers: &axum::http::HeaderMap, name: &str) -> Option<String> {
+    headers
+        .get(name)
+        .and_then(|v| v.to_str().ok())
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(str::to_string)
 }
 
 /// True when a WS handshake may reach a localhost-trust endpoint: either no
@@ -169,7 +194,8 @@ pub async fn client_ws_handler(
         .and_then(|v| v.to_str().ok())
         .unwrap_or_default()
         .to_string();
-    ws.on_upgrade(move |socket| handle_client_ws(socket, state, ua))
+    let platform = EventOrigin::platform_of(&headers);
+    ws.on_upgrade(move |socket| handle_client_ws(socket, state, ua, platform))
 }
 
 /// GET /ws/app/{agent_id} — App frontend WebSocket endpoint.
@@ -431,8 +457,8 @@ async fn handle_app_ws_message(state: &AppState, agent_id: &str, text: &str) {
     }
 }
 
-async fn handle_client_ws(mut socket: WebSocket, state: AppState, ua: String) {
-    info!(ua = %ua, "ws client connected");
+async fn handle_client_ws(mut socket: WebSocket, state: AppState, ua: String, platform: Option<String>) {
+    info!(ua = %ua, platform = platform.as_deref().unwrap_or(""), "ws client connected");
     // One line per socket at the end says how long it lived and how much it
     // was sent, so a phone that keeps dropping can be told from a quiet one.
     let connected_at = std::time::Instant::now();
@@ -584,7 +610,7 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState, ua: String) {
                                         state.hub.broadcast("chat_ack", chat_ack(&parsed["data"]["session_id"], Some(msg_id), "duplicate"));
                                         continue;
                                     }
-                                    dispatch_chat(&state, &parsed, &client_id).await;
+                                    dispatch_chat(&state, &parsed, &client_id, platform.as_deref()).await;
                                 }
                                 "cancel" => {
                                     let (_, session_id) =
@@ -1453,6 +1479,9 @@ struct ChatPayload {
     /// The client whose socket sent it (`EventOrigin::client_id`); never
     /// read from the message itself. None for a platform-written prompt.
     client_id: Option<String>,
+    /// The phone app's platform its socket named on upgrade
+    /// (`EventOrigin::platform`); never read from the message itself.
+    platform: Option<String>,
     /// The frame's own `message_id`, echoed on its `chat_ack` so the client
     /// that sent it knows this message, and not another, arrived. None for a
     /// platform-written prompt.
@@ -1491,6 +1520,7 @@ impl ChatPayload {
                 .and_then(|v| serde_json::from_value(v.clone()).ok())
                 .unwrap_or_default(),
             client_id: None,
+            platform: None,
             message_id: None,
             reply_to: None,
         }
@@ -1542,9 +1572,10 @@ fn chat_ack(session_id: &serde_json::Value, message_id: Option<&str>, status: &s
 /// cloud bot's report run was killed twice by mobile disconnects. Runs finish
 /// server-side and persist; explicit cancellation goes through the RunRegistry
 /// (the "cancel" WS message), never through connection lifetime.
-async fn dispatch_chat(state: &AppState, msg: &serde_json::Value, client_id: &str) {
+async fn dispatch_chat(state: &AppState, msg: &serde_json::Value, client_id: &str, platform: Option<&str>) {
     let mut payload = ChatPayload::parse(&msg["data"]);
     payload.client_id = Some(client_id.to_string());
+    payload.platform = platform.map(str::to_string);
     payload.message_id = msg["message_id"].as_str().map(str::to_string);
     dispatch_payload(state, payload, false).await;
 }
@@ -1602,6 +1633,7 @@ async fn dispatch_payload(state: &AppState, payload: ChatPayload, hidden: bool) 
         model_override,
         app_context,
         client_id,
+        platform,
         message_id,
         reply_to,
     } = payload;
@@ -1624,7 +1656,7 @@ async fn dispatch_payload(state: &AppState, payload: ChatPayload, hidden: bool) 
     // nothing but codes installs them, one after another, and the reply is a
     // line per code.
     if let Some(codes) = crate::codes::detect_codes(&prompt) {
-        let origin = EventOrigin { client_id: client_id.clone(), session_id: session_id.clone() };
+        let origin = EventOrigin { client_id: client_id.clone(), session_id: session_id.clone(), platform };
         crate::codes::handle_code_message(state, &codes, &origin, &agent_id).await;
         return;
     }
@@ -2454,6 +2486,24 @@ mod event_origin_tests {
         assert_eq!(EventOrigin::of_request(&headers, "s"), EventOrigin::unclaimed("s"));
         let payload = EventOrigin::of_request(&HeaderMap::new(), "s").stamp(serde_json::json!({}));
         assert!(payload.get("client_id").is_some_and(|v| v.is_null()));
+    }
+
+    /// The phone app names its platform on every request; any other client
+    /// (no header) is not the store app.
+    #[test]
+    fn a_request_names_the_phone_apps_platform() {
+        let mut headers = HeaderMap::new();
+        headers.insert(EventOrigin::PLATFORM_HEADER, " iOS ".parse().unwrap());
+        let origin = EventOrigin::of_request(&headers, "s");
+        assert_eq!(origin.platform.as_deref(), Some("ios"));
+        assert!(origin.in_store_app());
+        headers.insert(EventOrigin::PLATFORM_HEADER, "android".parse().unwrap());
+        assert!(EventOrigin::of_request(&headers, "s").in_store_app());
+        headers.insert(EventOrigin::PLATFORM_HEADER, "macos".parse().unwrap());
+        assert!(!EventOrigin::of_request(&headers, "s").in_store_app());
+        assert!(!EventOrigin::of_request(&HeaderMap::new(), "s").in_store_app());
+        // The broadcast shape is unchanged: the platform is not stamped.
+        assert!(origin.stamp(serde_json::json!({})).get("platform").is_none());
     }
 }
 
