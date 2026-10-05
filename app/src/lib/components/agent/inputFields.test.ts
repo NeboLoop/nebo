@@ -83,14 +83,26 @@ describe('setup questions', () => {
 		['training_expiry_warning_days', true, 'Training expiry warning'],
 		['escalation_after_hours', true, 'Escalation after'],
 		['material_change_pct', true, 'Material change'],
-		['contact_sla_minutes', true, 'Contact sla'],
+		['contact_sla_minutes', true, 'Contact SLA'],
 		['buffer_minutes', true, 'Buffer'],
 		['deposit_percent', true, 'Deposit'],
 		['dunning_max_attempts', true, 'Dunning maximum attempts'],
 		['exception_max_months', true, 'Exception maximum months'],
 		['abuse_count_threshold', true, 'Abuse count threshold'],
 		['adhoc_promote_count', true, 'Adhoc promote'],
-		['close_day', true, 'Close'],
+		['close_day', true, 'Close day'],
+		['due_day', true, 'Due day'],
+		['run_day', false, 'Run day'],
+		['application_cutoff_day', true, 'Application cutoff day'],
+		['day_of_month', true, 'Day of month'],
+		['weekday', false, 'Weekday'],
+		['first_response_sla_hours', true, 'First response SLA'],
+		['api_base_url', false, 'API base URL'],
+		['ap_mailbox', false, 'AP mailbox'],
+		['qbo_company_id', false, 'QBO company ID'],
+		['pto_accrual_days', true, 'PTO accrual'],
+		['mrr_alert_pct', true, 'MRR alert'],
+		['sku_reorder_qty', true, 'SKU reorder quantity'],
 		['minimum_cash_cents', true, 'Minimum cash cents'],
 		['forecast_horizon_weeks', true, 'Forecast horizon weeks'],
 		['business_hours', false, 'Business hours'],
@@ -125,5 +137,18 @@ describe('setup questions', () => {
 		expect(validateInputs([f({ type: 'number', key: 'variance_threshold_pct' })], { variance_threshold_pct: 140 })).toEqual({
 			variance_threshold_pct: { key: 'agentInputForm.maxError', values: { max: 100 } }
 		});
+	});
+
+	it('treats a singular day as a day of the month, not a duration', () => {
+		expect(unitFor(f({ type: 'number', key: 'close_day' }))).toBeNull();
+		expect(unitFor(f({ type: 'number', key: 'due_day', label: 'Which day of the month are bills due?' }))).toBeNull();
+		expect(unitFor(f({ type: 'number', key: 'feed_stall_days' }))).toEqual({ key: 'units.days' });
+		expect(unitFor(f({ type: 'number', key: 'close_day', unit: 'days' }))).toEqual({ text: 'days' });
+		expect(boundsFor(f({ type: 'number', key: 'close_day' }))).toEqual({ min: 1, max: 31 });
+		expect(boundsFor(f({ type: 'number', key: 'day_of_month' }))).toEqual({ min: 1, max: 31 });
+		expect(boundsFor(f({ type: 'number', key: 'run_day', max: 28 }))).toEqual({ min: 1, max: 28 });
+		expect(boundsFor(f({ type: 'number', key: 'day_of_week' }))).toEqual({ min: undefined, max: undefined });
+		expect(stepNumber(f({ type: 'number', key: 'close_day' }), 31, 1)).toBe(31);
+		expect(stepNumber(f({ type: 'number', key: 'close_day' }), '', 1)).toBe(2);
 	});
 });
