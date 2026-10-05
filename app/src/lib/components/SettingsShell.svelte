@@ -49,7 +49,7 @@
     { id: 'usage', path: '/settings/usage', label: 'settings.navItems.usage', icon: BarChart3 },
     null,
     { id: 'agents', path: '/settings/agents', label: 'settings.navItems.agents', icon: Bot },
-    { id: 'layers', path: '/settings/layers', label: 'settings.navItems.layers', icon: Layers },
+    { id: 'layers', path: '/settings/layers', label: 'settings.navItems.layers', icon: Layers, devOnly: true },
     { id: 'skills', path: '/settings/skills', label: 'settings.navItems.skills', icon: Zap },
     { id: 'plugins', path: '/settings/plugins', label: 'settings.navItems.plugins', icon: Puzzle },
     { id: 'mcp', path: '/settings/mcp', label: 'settings.navItems.mcp', icon: Cable },
