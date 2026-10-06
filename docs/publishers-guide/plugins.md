@@ -253,6 +253,8 @@ When a script runs, plugin binaries are injected as environment variables using 
 
 Additionally, `NEBO_DATA_DIR` is set to `<NEBO_HOME>/appdata/plugins/<slug>/` — the persistent data directory for this plugin, and the process's working directory. Use it for caches, databases, and any state that should survive plugin upgrades. (It is the one canonical name across plugins, apps, and skills.)
 
+`NEBO_CHROMIUM` is the full path of the Chromium-family browser Nebo draws with (Chrome, Chromium, Edge or Brave), for a plugin that renders web pages (Nebo Media's HTML motion templates). It is absent when the machine has none. A plugin uses it and never searches for a browser itself; start it headless with a throwaway profile.
+
 ### Python Example
 
 ```python
@@ -948,6 +950,7 @@ The runtime starts from the user's environment, strips dangerous loader/shell va
 | `NEBO_DATA_DIR` | `<NEBO_HOME>/appdata/plugins/gws` | Persistent data directory — separate from code, survives upgrades. Also the process working dir. One canonical name across plugins/apps/skills. |
 | `{DEP_SLUG}_BIN` | `FFMPEG_BIN=<NEBO_HOME>/nebo/plugins/ffmpeg/2.0.0/ffmpeg` | Binary path for each declared dependency plugin |
 | `PATH` | augmented path | System `PATH` with installed plugin directories prepended |
+| `NEBO_CHROMIUM` | `/Applications/Google Chrome.app/Contents/MacOS/Google Chrome` | The Chromium-family browser Nebo draws with, for plugins that render web pages; absent when there is none. A `NEBO_CHROMIUM` in Nebo's own environment wins |
 | auth env | `GOOGLE_CLIENT_ID=…` | Resolved auth env vars from the manifest's `auth.env` |
 | `HOME` | user home | Preserved for credential lookups (when enabled) |
 
