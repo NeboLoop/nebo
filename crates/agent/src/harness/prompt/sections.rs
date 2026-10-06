@@ -296,9 +296,13 @@ fn shell() -> String {
 /// not this server, runs asked for "a screenshot from my Desktop" answered
 /// without looking (gate 36378229215, 3 of 3) or looked without a pattern
 /// (36381638696); where to search is the tools' and USING_TOOLS' to say.
+/// "No screen" itself still read as "no Desktop folder": a 2026-10-06 gate
+/// run answered "there's no Desktop folder" without a call, so it says
+/// files are still searched.
 pub const SERVER_DESKTOP: &str = "none: this Nebo runs on a server in the cloud, with no screen and none of a \
 computer's own apps (Mail, Contacts, Calendar, Reminders, Shortcuts, speech). Files, commands, the web, schedules \
-(a reminder for the owner is one) and connected services all work normally. The os tool is offered only while a \
+(a reminder for the owner is one) and connected services all work normally. No screen is not no files: \
+folders like ~/Desktop may hold files, so search before saying something isn't here. The os tool is offered only while a \
 desktop session is up, and then drives just that session's windows, input, clipboard, capture, ui, menu, dialog and \
 space.";
 
