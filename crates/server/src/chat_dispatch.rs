@@ -2180,7 +2180,12 @@ pub(crate) fn keep_turn_artifacts(
         .latest_assistant_message_id(&chat_id)
         .ok()
         .flatten();
-    let artifacts = version_app_artifacts(harness.store(), &chat_id, message_id.as_deref(), urls);
+    let artifacts = one_card_per_document(version_app_artifacts(
+        harness.store(),
+        &chat_id,
+        message_id.as_deref(),
+        urls,
+    ));
     if let Err(e) = harness
         .store()
         .attach_artifacts_to_latest_assistant_message(&chat_id, &artifacts)
@@ -2210,6 +2215,43 @@ pub(crate) fn keep_turn_artifacts(
         }
     }
     artifacts
+}
+
+/// A reply's cards: ONE per document, at the newest version the turn wrote,
+/// in the order the documents first appeared. A turn that writes the same
+/// file three times versions it three times (each write is its own `.shared`
+/// URL, so the run's URL list keeps all three), but the reply shows the
+/// document once, as it ended up — three identical "nebo-x-article.md" cards
+/// hung on one reply (2026-10-06). A versioned object is keyed by its
+/// `documentId`; a bare document URL (versioning failed) by its file name,
+/// the key its chain would have had; media by its URL.
+fn one_card_per_document(artifacts: Vec<serde_json::Value>) -> Vec<serde_json::Value> {
+    let key = |a: &serde_json::Value| -> String {
+        if let Some(id) = a.get("documentId").and_then(|v| v.as_str()) {
+            return format!("doc:{id}");
+        }
+        let url = a.as_str().unwrap_or_default();
+        if tools::file_tool::MEDIA_EXTS.contains(&artifact_ext(url).as_str()) {
+            format!("url:{url}")
+        } else {
+            format!("name:{}", url.rsplit('/').next().unwrap_or(url))
+        }
+    };
+    let version = |a: &serde_json::Value| a.get("version").and_then(|v| v.as_i64()).unwrap_or(0);
+    let mut out: Vec<(String, serde_json::Value)> = Vec::new();
+    for a in artifacts {
+        let k = key(&a);
+        match out.iter_mut().find(|(seen, _)| *seen == k) {
+            // Later writes win unless they name an older version.
+            Some((_, kept)) => {
+                if version(&a) >= version(kept) {
+                    *kept = a;
+                }
+            }
+            None => out.push((k, a)),
+        }
+    }
+    out.into_iter().map(|(_, a)| a).collect()
 }
 
 /// Map a run-produced `image_url` to a URL the LOCAL app can render and comm replies
@@ -2884,9 +2926,49 @@ mod tests {
 #[cfg(test)]
 mod media_tests {
     use super::{
-        artifact_ext, artifact_kind, mime_from_extension,
+        artifact_ext, artifact_kind, mime_from_extension, one_card_per_document,
         strip_local_image_markdown,
     };
+
+    /// One reply that wrote one file three times shows ONE card, at the
+    /// newest version, where the file first appeared; two files show two.
+    #[test]
+    fn a_reply_shows_one_card_per_document_at_its_latest_version() {
+        use serde_json::json;
+        let doc = |id: &str, name: &str, v: i64| {
+            json!({ "documentId": id, "filename": name, "kind": "document", "version": v,
+                    "url": format!("/api/v1/files/work/blobs/{id}{v}.md") })
+        };
+        // The live reply: edit_file then write_file twice → v2, v3, v4.
+        let kept = one_card_per_document(vec![
+            doc("f16e", "nebo-x-article.md", 2),
+            doc("f16e", "nebo-x-article.md", 3),
+            doc("f16e", "nebo-x-article.md", 4),
+        ]);
+        assert_eq!(kept, vec![doc("f16e", "nebo-x-article.md", 4)]);
+
+        // Two files, interleaved: two cards, first-seen order, each latest.
+        let kept = one_card_per_document(vec![
+            doc("a", "a.md", 1),
+            doc("b", "b.csv", 1),
+            doc("a", "a.md", 2),
+        ]);
+        assert_eq!(kept, vec![doc("a", "a.md", 2), doc("b", "b.csv", 1)]);
+
+        // Unversioned (bare) document URLs collapse by file name to the last
+        // write; distinct media stays distinct.
+        let kept = one_card_per_document(vec![
+            json!("/api/v1/files/.shared/1111/notes.md"),
+            json!("/api/v1/files/.shared/aaaa/shot.png"),
+            json!("/api/v1/files/.shared/2222/notes.md"),
+            json!("/api/v1/files/.shared/bbbb/shot.png"),
+        ]);
+        assert_eq!(kept, vec![
+            json!("/api/v1/files/.shared/2222/notes.md"),
+            json!("/api/v1/files/.shared/aaaa/shot.png"),
+            json!("/api/v1/files/.shared/bbbb/shot.png"),
+        ]);
+    }
 
     /// Extension→MIME is case-insensitive and unknown extensions fall back to
     /// octet-stream (never a wrong specific type).
