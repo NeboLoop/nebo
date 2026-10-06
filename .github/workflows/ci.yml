@@ -61,6 +61,22 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # A PR run checks out the merge commit; its first parent is the base,
+          # which the crate selection below diffs against.
+          fetch-depth: ${{ github.event_name == 'pull_request' && 2 || 1 }}
+
+      # Pull requests test only what they change: the crates their diff
+      # touches, every crate that depends on those, and the crates whose tests
+      # scan the tree. Workspace-wide inputs (Cargo.toml, Cargo.lock, the
+      # toolchain, .cargo/, this workflow) and any unmapped path run the full
+      # suite; a PR with no Rust input skips every step below. Pushes skip this
+      # step, so main always runs the full workspace. Mapping:
+      # scripts/ci-test-crates.py.
+      - name: Select crates
+        id: select
+        if: github.event_name == 'pull_request'
+        run: python3 scripts/ci-test-crates.py HEAD^1
 
       # The workspace debug-build plus the restored cache can crowd the
       # runner's ~14GB free disk, and a full disk kills test binaries with
@@ -69,17 +85,20 @@ jobs:
       # These preinstalled toolchains are dead weight for this job; dropping
       # them frees ~25-30GB.
       - name: Reclaim runner disk
+        if: steps.select.outputs.mode != 'none'
         run: |
           df -h / | tail -1
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc             /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
           df -h / | tail -1
 
       - name: Install Rust
+        if: steps.select.outputs.mode != 'none'
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{ env.RUST_VERSION }}
 
       - name: Cache Rust build
+        if: steps.select.outputs.mode != 'none'
         uses: Swatinem/rust-cache@v2
         with:
           key: ci-test
@@ -88,6 +107,7 @@ jobs:
       # Same dependency set as release.yml's Linux leg — that recipe is already
       # hardened for this runner image; do not let the two drift.
       - name: Install system dependencies
+        if: steps.select.outputs.mode != 'none'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -101,6 +121,7 @@ jobs:
             libopenblas-dev
 
       - name: Configure OpenBLAS paths
+        if: steps.select.outputs.mode != 'none'
         run: |
           MULTIARCH=$(dpkg-architecture -qDEB_HOST_MULTIARCH)
           echo "PKG_CONFIG_PATH=/usr/lib/${MULTIARCH}/pkgconfig" >> $GITHUB_ENV
@@ -114,15 +135,18 @@ jobs:
       # one-line shell stands in. Building the real frontend here would be
       # minutes per run that the tests never observe.
       - name: Satisfy the frontend embed folder
+        if: steps.select.outputs.mode != 'none'
         run: |
           mkdir -p app/build
           printf '<!doctype html><html><head><title>Nebo</title></head><body></body></html>\n' > app/build/index.html
 
       # --exclude nebo: the desktop crate has no tests and its build script
       # wants ../app/build (frontendDist) — excluding it keeps this job free of
-      # a frontend build. Everything else in the workspace runs.
+      # a frontend build. Everything else in the workspace runs. A PR passes
+      # the selected `-p` set instead (empty on push = the full workspace).
       - name: Run tests
-        run: cargo test --workspace --exclude nebo --no-fail-fast
+        if: steps.select.outputs.mode != 'none'
+        run: cargo test ${{ steps.select.outputs.args || '--workspace --exclude nebo' }} --no-fail-fast
 
       # A test binary dying of SIGBUS or an OOM-kill leaves its cause in the
       # kernel log and the disk numbers, not in cargo's output. Capture both
