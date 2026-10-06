@@ -1752,7 +1752,7 @@ impl DynTool for GenerateMediaTool {
     fn description(&self) -> String {
         "Makes new media with AI through NeboAI and saves it as a file, billed to the owner's plan; also transcribes.\n\
          - kind \"image\": 1-4 images from `prompt`.\n\
-         - kind \"video\": one MP4 of 1-30 seconds from `prompt`; it can take minutes. `image` sets the first frame; \
+         - kind \"video\": one MP4 of 1-30 seconds from `prompt`; it can take minutes. `image` sets the first frame (image to video); \
            `scrub: true` re-encodes it for scroll-scrubbing.\n\
          - Character swap: kind \"video\", `mode` \"replace\", `video` and `cast`. kind \"cast\" lists and adds the \
            people a swap may use; the owner confirms each once. Recipe: the character-swap skill.\n\
@@ -1766,8 +1766,8 @@ impl DynTool for GenerateMediaTool {
          - `into` is the file to write. An absolute or `~/` path is saved exactly there (e.g. `~/NeboAI/Media/voiceover.mp3`); \
            a relative one (`assets/hero.png`) is inside the app's folder when you are an app or name one with `app`, else \
            the workspace. Use the absolute path the result gives from then on.\n\
-         - It only makes new media. To edit, mix, trim, resize, convert or inspect a file, use a media plugin such as \
-           Nebo Media (its audio mix puts speech or music under a video).\n\
+         - It only makes new media; a media plugin such as Nebo Media only edits. To edit, mix, trim, resize, convert or \
+           inspect a file, use that plugin (Nebo Media's audio mix puts speech or music under a video).\n\
          - The result gives paths, never pictures; to look at one, use the vision helper on its path.\n\
          - Leave `model` out unless the owner named one."
             .to_string()
