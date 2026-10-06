@@ -217,7 +217,11 @@ jobs:
       - name: Run tests
         env:
           RUST_TEST_THREADS: "4"
-        run: cargo test --workspace --exclude nebo --no-fail-fast
+        # The droplet's runner starts with the 1024 open-file soft limit; the
+        # agent tests open more than that.
+        run: |
+          ulimit -n 65536 || true
+          cargo test --workspace --exclude nebo --no-fail-fast
 
       # A test binary dying of SIGBUS or an OOM-kill leaves its cause in the
       # kernel log and the disk numbers, not in cargo's output. Capture both
