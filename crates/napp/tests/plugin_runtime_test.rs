@@ -302,6 +302,33 @@ async fn plugin_binary_env_var_injected() {
     assert!(!env.contains_key("MYPLUGIN_DATA"), "{{SLUG}}_DATA must be removed");
 }
 
+#[test]
+fn nebo_chromium_is_nebos_own_or_the_browser_found() {
+    use nebo_napp::plugin_runtime::pick_chromium;
+    let found = || Some(std::path::PathBuf::from("/Applications/Chrome.app/Chrome"));
+    assert_eq!(pick_chromium(None, found).as_deref(), Some("/Applications/Chrome.app/Chrome"));
+    assert_eq!(pick_chromium(Some("/opt/my-chromium".into()), found).as_deref(), Some("/opt/my-chromium"), "Nebo's own setting wins");
+    assert_eq!(pick_chromium(Some(" ".into()), found).as_deref(), Some("/Applications/Chrome.app/Chrome"));
+    assert_eq!(pick_chromium(None, || None), None, "no browser: no variable");
+}
+
+#[tokio::test]
+async fn nebo_chromium_reaches_the_plugin() {
+    fn fake_browser() -> Option<std::path::PathBuf> {
+        Some(std::path::PathBuf::from("/fake/browser/chromium"))
+    }
+    let binary = fake_plugin_binary();
+    let (_tmp, store) = setup_plugin_store("webplugin", &binary);
+    let resolved = store.resolve("webplugin", "*").unwrap();
+    nebo_napp::plugin_runtime::set_chromium_resolver(fake_browser);
+    let runtime = PluginRuntime::new("webplugin", resolved, store);
+    let output = runtime.command("echo-env").output().await.unwrap();
+    assert!(output.status.success());
+    let env: HashMap<String, String> = serde_json::from_slice(&output.stdout).unwrap();
+    let want = std::env::var("NEBO_CHROMIUM").ok().filter(|v| !v.trim().is_empty()).unwrap_or_else(|| "/fake/browser/chromium".into());
+    assert_eq!(env.get("NEBO_CHROMIUM"), Some(&want));
+}
+
 #[tokio::test]
 async fn auth_env_injection() {
     let binary = fake_plugin_binary();
