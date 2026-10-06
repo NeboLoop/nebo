@@ -1441,6 +1441,8 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // `<root>/bin/obscura` (cdp_bridge `find_obscura`). Passing `data_dir/browser` here would
     // double-nest profiles AND hide the Obscura binary, disabling the tier-2 CDP fallback.
     let browser_config = browser::BrowserConfig::default();
+    // Plugins that render web pages get this browser as NEBO_CHROMIUM.
+    napp::plugin_runtime::set_chromium_resolver(browser::chrome::find_chrome);
     let browser_data_dir = data_dir.to_string_lossy().to_string();
     let browser_manager = Arc::new(browser::Manager::new(browser_config, browser_data_dir));
     let shutdown_browser = browser_manager.clone();
