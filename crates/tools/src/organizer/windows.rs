@@ -31,8 +31,7 @@ fn outlook_status() -> Result<(), String> {
             let (tx, rx) = std::sync::mpsc::channel();
             let script = script.to_string();
             std::thread::spawn(move || {
-                let result = command::new::<std::process::Command>("powershell", command::Console::Hidden)
-                    .args(["-NoProfile", "-Command", &script])
+                let result = command::powershell::<std::process::Command>(&script)
                     .output();
                 let _ = tx.send(result);
             });

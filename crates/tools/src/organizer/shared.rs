@@ -324,8 +324,7 @@ pub async fn run_powershell(script: &str) -> ToolResult {
 /// `run_powershell`, typed for the send ledger.
 #[cfg(target_os = "windows")]
 pub async fn run_powershell_typed(script: &str) -> Ran {
-    let mut cmd = command::new::<tokio::process::Command>("powershell", command::Console::Hidden);
-    cmd.args(["-NoProfile", "-Command", script]);
+    let mut cmd = command::powershell::<tokio::process::Command>(&script);
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
     cmd.kill_on_drop(true);

@@ -151,15 +151,22 @@ pub async fn agent_mcp_handler(
                     .get(agent::tool_credentials::HEADER)
                     .and_then(|v| v.to_str().ok());
                 let grant = credential.map(|t| state.tool_credentials.grant(t));
+                let tool_use_id = tool_use_id(&req.params);
                 info!(tool = %name, run = credential.is_some(), "MCP tool call");
                 let result = match grant {
                     Some(None) => tools::ToolResult::error(
                         "This run has ended, so its tool access has too. Nothing was run.",
                     ),
                     Some(Some(grant)) => {
-                        call_tool(&state.tools, Some(&grant), name, arguments).await
+                        let result = call_tool(&state.tools, Some(&grant), tool_use_id, name, arguments.clone()).await;
+                        if let (Some(token), Some(id)) = (credential, tool_use_id)
+                            && let Some(handed) = owner_handed(&state.tools, name, &arguments, &result).await
+                        {
+                            state.tool_credentials.hand(token, id, handed);
+                        }
+                        result
                     }
-                    None => call_tool(&state.tools, None, name, arguments).await,
+                    None => call_tool(&state.tools, None, None, name, arguments).await,
                 };
 
                 let content = serde_json::json!([{
@@ -196,14 +203,52 @@ pub async fn agent_mcp_handler(
 async fn call_tool(
     tools: &tools::Registry,
     run: Option<&agent::RunGrant>,
+    tool_use_id: Option<&str>,
     name: &str,
     arguments: serde_json::Value,
 ) -> tools::ToolResult {
-    let ctx = match run {
+    let mut ctx = match run {
         Some(run) => run.ctx.clone(),
         None => outside_client(),
     };
+    if let Some(id) = tool_use_id {
+        ctx.tool_call_id = id.to_string();
+    }
     tools.execute(&ctx, name, arguments).await
+}
+
+/// The CLI's own id for a `tools/call`, which it streams that call's result
+/// under: `params._meta["claudecode/toolUseId"]`.
+fn tool_use_id(params: &serde_json::Value) -> Option<&str> {
+    params
+        .get("_meta")
+        .and_then(|m| m.get("claudecode/toolUseId"))
+        .and_then(|v| v.as_str())
+        .filter(|id| !id.is_empty())
+}
+
+/// What a run's call hands the owner, kept for the run beside the text the
+/// CLI passes on. Files only when the tool's spec says they are the owner's
+/// (`DynTool::emits_image`), the rule a runner-executed call's are kept by.
+async fn owner_handed(
+    tools: &tools::Registry,
+    name: &str,
+    arguments: &serde_json::Value,
+    result: &tools::ToolResult,
+) -> Option<agent::tool_credentials::Handed> {
+    if result.is_error {
+        return None;
+    }
+    let mut handed = agent::tool_credentials::Handed::of(result)?;
+    let owners = match tools.get(name).await {
+        Some(tool) => tool.emits_image(arguments),
+        None => false,
+    };
+    if !owners {
+        handed.image_url = None;
+        handed.more_files.clear();
+    }
+    (handed != Default::default()).then_some(handed)
 }
 
 /// An outside MCP client's standing: the main assistant's grant, which the
@@ -548,7 +593,7 @@ mod tests {
     #[tokio::test]
     async fn a_capability_the_employee_lacks_is_refused() {
         let (_d, _store, registry) = setup(Probe::web(), vec![company(RuleKey::Capability("web".into()), Effect::Deny)]).await;
-        let r = call_tool(&registry, None, "web", serde_json::json!({})).await;
+        let r = call_tool(&registry, None, None, "web", serde_json::json!({})).await;
         assert!(r.is_error, "ran without the web capability: {}", r.content);
         assert!(r.content.contains("permission is off"), "{}", r.content);
     }
@@ -556,7 +601,7 @@ mod tests {
     #[tokio::test]
     async fn a_capability_the_employee_has_runs() {
         let (_d, _store, registry) = setup(Probe::web(), vec![company(RuleKey::Capability("web".into()), Effect::Allow)]).await;
-        let r = call_tool(&registry, None, "web", serde_json::json!({})).await;
+        let r = call_tool(&registry, None, None, "web", serde_json::json!({})).await;
         assert!(!r.is_error, "{}", r.content);
         assert_eq!(r.content, "RAN");
     }
@@ -568,7 +613,7 @@ mod tests {
             vec![company(RuleKey::Operation("payments.charge".into()), Effect::Deny)],
         )
         .await;
-        let r = call_tool(&registry, None, "payments_charge", serde_json::json!({})).await;
+        let r = call_tool(&registry, None, None, "payments_charge", serde_json::json!({})).await;
         assert!(r.is_error, "a denied operation ran: {}", r.content);
         assert!(r.content.contains("turned off"), "{}", r.content);
     }
@@ -577,7 +622,7 @@ mod tests {
     #[tokio::test]
     async fn an_outside_client_is_an_mcp_client() {
         let (_d, _store, registry) = setup(Probe::shell(), vec![company(RuleKey::Capability("shell".into()), Effect::Allow)]).await;
-        let r = call_tool(&registry, None, "run_command", shell_call()).await;
+        let r = call_tool(&registry, None, None, "run_command", shell_call()).await;
         assert!(r.is_error, "shell ran for an MCP client: {}", r.content);
         assert!(r.content.contains("not permitted"), "{}", r.content);
     }
@@ -614,7 +659,7 @@ mod tests {
     async fn a_cli_provider_run_calls_as_its_run() {
         let (_d, store, registry) = setup(Probe::shell(), vec![]).await;
         let run = cli_run(&store, Effect::Allow);
-        let r = call_tool(&registry, Some(&run), "run_command", shell_call()).await;
+        let r = call_tool(&registry, Some(&run), None, "run_command", shell_call()).await;
         assert!(!r.is_error, "the run's own shell call was refused: {}", r.content);
         assert_eq!(r.content, "RAN");
     }
@@ -624,7 +669,7 @@ mod tests {
     async fn a_cli_provider_run_keeps_its_employees_rules() {
         let (_d, store, registry) = setup(Probe::shell(), vec![]).await;
         let run = cli_run(&store, Effect::Deny);
-        let r = call_tool(&registry, Some(&run), "run_command", shell_call()).await;
+        let r = call_tool(&registry, Some(&run), None, "run_command", shell_call()).await;
         assert!(r.is_error, "{}", r.content);
         assert!(r.content.contains("permission is off"), "{}", r.content);
     }
@@ -635,7 +680,7 @@ mod tests {
     async fn a_cli_provider_runs_ask_parks_for_the_owner() {
         let (_d, store, registry) = setup(Probe::shell(), vec![]).await;
         let run = cli_run(&store, Effect::Ask);
-        let r = call_tool(&registry, Some(&run), "run_command", shell_call()).await;
+        let r = call_tool(&registry, Some(&run), None, "run_command", shell_call()).await;
         assert_ne!(r.content, "RAN", "an asked call ran");
         let ask = r.parked_ask.as_deref().expect("the call parked");
         assert_eq!(store.get_permission_ask(ask).unwrap().map(|a| a.status).as_deref(), Some("open"));

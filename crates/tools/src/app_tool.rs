@@ -66,7 +66,7 @@ impl DynTool for AppTool {
             let app = input["app"].as_str().unwrap_or("");
 
             match action {
-                "list" => handle_list().await,
+                "list" => crate::result_shape::keep_lines(handle_list().await, input["filter"].as_str().unwrap_or(""), input["limit"].as_u64().map(|n| n as usize)),
                 "launch" => {
                     if app.is_empty() {
                         return ToolResult::error(crate::errors::missing_param(
@@ -154,7 +154,7 @@ async fn handle_launch(app: &str) -> ToolResult {
          on error\n\
          \tdo shell script \"open -a '{app}'\"\n\
          end try\n\
-         return \"Launch request sent to {app}; confirm with os(resource: \"app\", action: \\\"list\\\")\"",
+         return \"Launch request sent to {app}; confirm with os(resource: \\\"app\\\", action: \\\"list\\\")\"",
         app = escape_applescript(app),
     );
     run_osascript(&script).await
@@ -163,7 +163,10 @@ async fn handle_launch(app: &str) -> ToolResult {
 /// Processes a quit would take the session, the desktop or this agent down
 /// with. Matched on the whole name or any dotted part of a bundle id, any case.
 const PROTECTED_PROCESSES: &[&str] =
-    &["loginwindow", "windowserver", "dock", "launchd", "finder", "systemuiserver", "controlcenter", "nebo"];
+    &["loginwindow", "windowserver", "dock", "launchd", "finder", "systemuiserver", "controlcenter", "nebo",
+      "explorer", "dwm", "winlogon", "csrss", "wininit", "lsass", "services", "smss", "svchost",
+      "applicationframehost", "shellexperiencehost", "startmenuexperiencehost", "searchhost", "textinputhost",
+      "sihost", "ctfmon", "runtimebroker", "lockapp"];
 
 pub(crate) fn is_protected_process(app: &str) -> bool {
     let a = app.trim().trim_end_matches(".app").to_lowercase();
@@ -173,7 +176,7 @@ pub(crate) fn is_protected_process(app: &str) -> bool {
 #[cfg(target_os = "macos")]
 async fn handle_quit(app: &str) -> ToolResult {
     let script = format!(
-        "tell application \"{app}\" to quit\nreturn \"Quit request sent to {app}; confirm with os(resource: \"app\", action: \\\"list\\\")\"",
+        "tell application \"{app}\" to quit\nreturn \"Quit request sent to {app}; confirm with os(resource: \\\"app\\\", action: \\\"list\\\")\"",
         app = escape_applescript(app)
     );
     run_osascript(&script).await
@@ -200,7 +203,7 @@ return "All visible applications have been asked to quit"
 #[cfg(target_os = "macos")]
 async fn handle_activate(app: &str) -> ToolResult {
     let script = format!(
-        "tell application \"{app}\" to activate\nreturn \"Activate request sent to {app}; confirm with os(resource: \"app\", action: \\\"frontmost\\\")\"",
+        "tell application \"{app}\" to activate\nreturn \"Activate request sent to {app}; confirm with os(resource: \\\"app\\\", action: \\\"frontmost\\\")\"",
         app = escape_applescript(app)
     );
     run_osascript(&script).await
@@ -625,28 +628,97 @@ async fn handle_list() -> ToolResult {
     run_powershell(script).await
 }
 
+/// How every Windows app action finds the app the owner named, the way
+/// macOS finds it by its name:
+/// - `Find-NeboStartApp $q`: the Start menu app named `$q` (exactly, else
+///   containing it), with its AppID.
+/// - `Find-NeboAppProcess $q`: the app's processes, by process name; else
+///   the Start menu app's, which run from its package folder ("Xbox" is
+///   `XboxPcApp` and its helper); else the apps with a window whose name,
+///   title or description contains `$q`. A shell host is never the app:
+///   ApplicationFrameHost hosts the windows of many apps (Settings among
+///   them), and ending it would close every one.
+#[cfg(target_os = "windows")]
+const APP_RESOLVER: &str = r#"
+$NeboHosts = @('ApplicationFrameHost', 'explorer', 'ShellExperienceHost', 'StartMenuExperienceHost', 'SearchHost', 'TextInputHost', 'dwm', 'sihost', 'ctfmon', 'RuntimeBroker', 'LockApp', 'SystemSettingsBroker')
+function Test-NeboContains([string]$s, [string]$q) { $s -and $s.IndexOf($q, [StringComparison]::OrdinalIgnoreCase) -ge 0 }
+function Find-NeboStartApp([string]$q) {
+  $apps = @(Get-StartApps)
+  $hit = $apps | Where-Object { $_.Name -ieq $q } | Select-Object -First 1
+  if (-not $hit) { $hit = $apps | Where-Object { Test-NeboContains $_.Name $q } | Select-Object -First 1 }
+  $hit
+}
+function Find-NeboAppProcess([string]$q) {
+  $procs = @(Get-Process -Name $q -ErrorAction SilentlyContinue)
+  if ($procs) { return $procs }
+  $app = @(Get-StartApps) | Where-Object { $_.Name -ieq $q } | Select-Object -First 1
+  if ($app -and $app.AppID -match '^([^_!\\]+)_[a-z0-9]+!') {
+    $fam = $Matches[1]
+    $procs = @(Get-Process | Where-Object { $_.Path -like "*\WindowsApps\$($fam)_*" -and $NeboHosts -notcontains $_.Name })
+    if ($procs) { return $procs }
+  }
+  $win = @(Get-Process | Where-Object { $_.MainWindowTitle -ne '' -and $NeboHosts -notcontains $_.Name -and ((Test-NeboContains $_.Name $q) -or (Test-NeboContains $_.MainWindowTitle $q) -or (Test-NeboContains $_.Description $q)) })
+  if ($win) { return @(Get-Process -Name ($win | Select-Object -ExpandProperty Name -Unique) -ErrorAction SilentlyContinue) }
+  @()
+}
+"#;
+
+/// `script` with the app resolver before it and `{app}` bound, quoted.
+#[cfg(target_os = "windows")]
+fn app_script(script: &str, app: &str) -> String {
+    format!("{APP_RESOLVER}{}", script.replace("{app}", &escape_powershell(app)))
+}
+
+/// Launch on Windows: a file or folder path opens; else the Start menu app
+/// with that name; else a program on PATH. A bare name handed to
+/// `Start-Process` as it is opens the "Pick an app" picker and starts
+/// nothing, so nothing is launched that did not resolve.
+#[cfg(target_os = "windows")]
+const LAUNCH_SCRIPT: &str = r#"
+$q = '{app}'
+if (Test-Path -LiteralPath $q) { Start-Process -FilePath $q -ErrorAction Stop; "Opened $q"; return }
+$app = @(Get-StartApps) | Where-Object { $_.Name -ieq $q } | Select-Object -First 1
+if (-not $app) {
+  $cmd = Get-Command -Name $q, "$q.exe" -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+  if ($cmd) { Start-Process -FilePath $cmd.Source -ErrorAction Stop; "Launched $($cmd.Name) ($($cmd.Source)); confirm with os(resource: 'app', action: 'list')"; return }
+  $app = Find-NeboStartApp $q
+}
+if ($app) { Start-Process "shell:AppsFolder\$($app.AppID)" -ErrorAction Stop; "Launched $($app.Name); confirm with os(resource: 'app', action: 'list')"; return }
+"Nothing launched: no Start menu app, program on PATH or file is named '$q'"; exit 1
+"#;
+
 #[cfg(target_os = "windows")]
 async fn handle_launch(app: &str) -> ToolResult {
-    let script = format!(
-        "Start-Process '{app}' -ErrorAction Stop; 'Launch request sent to {app}; confirm with os(resource: \"app\", action: \"list\")'",
-        app = escape_powershell(app)
-    );
-    run_powershell(&script).await
+    run_powershell(&app_script(LAUNCH_SCRIPT, app)).await
 }
+
+/// Quit an app on Windows the way `quit` does on macOS: the app ends, not
+/// just its window. The app is the resolver's (`Find-NeboAppProcess`). Each
+/// process is asked to close; one that only hides to the tray while no
+/// window of it is left is stopped, while one still showing a window (a
+/// save prompt) is left for the owner and named. The reply says which ended.
+#[cfg(target_os = "windows")]
+const QUIT_SCRIPT: &str = r#"
+$q = '{app}'
+$procs = @(Find-NeboAppProcess $q)
+if (-not $procs) { "Nothing done: no running app matches '$q' by process name, Start menu name, window title or description; os(resource: 'app', action: 'list') shows what is running"; exit 1 }
+$names = (($procs | Select-Object -ExpandProperty Name -Unique) -join ', ')
+$ids = @($procs | Select-Object -ExpandProperty Id)
+$procs | ForEach-Object { [void]$_.CloseMainWindow() }
+$deadline = (Get-Date).AddSeconds(5)
+do { Start-Sleep -Milliseconds 250; $left = @(Get-Process -Id $ids -ErrorAction SilentlyContinue) } while ($left -and (Get-Date) -lt $deadline)
+$prompting = @($left | Where-Object { $_.MainWindowHandle -ne 0 -and $_.MainWindowTitle -ne '' })
+$tray = @($left | Where-Object { $_.MainWindowHandle -eq 0 -or $_.MainWindowTitle -eq '' })
+if ($tray -and -not $prompting) { $tray | Stop-Process -Force -ErrorAction SilentlyContinue; Start-Sleep -Milliseconds 500 }
+$still = @(Get-Process -Id $ids -ErrorAction SilentlyContinue)
+if (-not $still) { "Quit ${names}: it is no longer running" }
+elseif ($prompting) { "$names did not quit: its window '$(($prompting | Select-Object -First 1).MainWindowTitle)' is still open (it may be asking to save, or still starting up); nothing was forced"; exit 1 }
+else { "$names is still running ($($still.Count) process(es)) after it was asked to close and then stopped; Windows refused to end it"; exit 1 }
+"#;
 
 #[cfg(target_os = "windows")]
 async fn handle_quit(app: &str) -> ToolResult {
-    // Try graceful close first, then force stop
-    let script = format!(
-        "$procs = Get-Process -Name '{}' -ErrorAction SilentlyContinue; \
-         if ($procs) {{ $n = 0; $refused = 0; $procs | ForEach-Object {{ if ($_.CloseMainWindow()) {{ $n++ }} else {{ $refused++ }} }}; \
-         \"Close request sent to $n window(s) of {}; $refused had no main window to close; confirm with os(resource: \"app\", action: 'list')\" }} \
-         else {{ 'Nothing done: no running process named {} (Get-Process -Name matched nothing)'; exit 1 }}",
-        escape_powershell(app),
-        escape_powershell(app),
-        escape_powershell(app)
-    );
-    run_powershell(&script).await
+    run_powershell(&app_script(QUIT_SCRIPT, app)).await
 }
 
 #[cfg(target_os = "windows")]
@@ -657,59 +729,62 @@ async fn handle_quit_all() -> ToolResult {
     run_powershell(script).await
 }
 
+/// Activate on Windows: the app's window to the front — its open dialog
+/// when it has one (a window with a modal dialog takes no input itself).
+#[cfg(target_os = "windows")]
+const ACTIVATE_SCRIPT: &str = r#"
+Add-Type @"
+using System; using System.Runtime.InteropServices;
+public class NeboActivate {
+    [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+    [DllImport("user32.dll")] public static extern IntPtr GetLastActivePopup(IntPtr hWnd);
+    [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr hWnd);
+    [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+}
+"@
+$q = '{app}'
+$proc = @(Find-NeboAppProcess $q) | Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1
+if (-not $proc) { "Nothing done: no running app named '$q' has a window; os(resource: 'app', action: 'list') shows what is running"; exit 1 }
+$h = $proc.MainWindowHandle
+if ([NeboActivate]::IsIconic($h)) { [void][NeboActivate]::ShowWindow($h, 9) }
+$front = [NeboActivate]::GetLastActivePopup($h)
+if ([NeboActivate]::SetForegroundWindow($front)) { "Activated $($proc.Name)" + $(if ($front -ne $h) { ' (its open dialog is in front)' } else { '' }) }
+else { "Windows refused to bring $($proc.Name) to the foreground; the window is unchanged"; exit 1 }
+"#;
+
 #[cfg(target_os = "windows")]
 async fn handle_activate(app: &str) -> ToolResult {
-    let script = format!(
-        "Add-Type @\"\n\
-         using System;\n\
-         using System.Runtime.InteropServices;\n\
-         public class WinAPI {{\n\
-             [DllImport(\"user32.dll\")] public static extern bool SetForegroundWindow(IntPtr hWnd);\n\
-         }}\n\
-         \"@\n\
-         $proc = Get-Process -Name '{}' -ErrorAction SilentlyContinue | Select-Object -First 1;\n\
-         if ($proc) {{ if ([WinAPI]::SetForegroundWindow($proc.MainWindowHandle)) {{ 'Activated {}: SetForegroundWindow returned true' }} else {{ 'SetForegroundWindow returned false for {}: Windows refused to bring it to the foreground; the window is unchanged'; exit 1 }} }}\n\
-         else {{ 'Nothing done: no running process named {} (Get-Process -Name matched nothing)'; exit 1 }}",
-        escape_powershell(app),
-        escape_powershell(app),
-        escape_powershell(app),
-        escape_powershell(app)
-    );
-    run_powershell(&script).await
+    run_powershell(&app_script(ACTIVATE_SCRIPT, app)).await
 }
+
+#[cfg(target_os = "windows")]
+const HIDE_SCRIPT: &str = r#"
+Add-Type @"
+using System; using System.Runtime.InteropServices;
+public class NeboHide { [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow); }
+"@
+$q = '{app}'
+$proc = @(Find-NeboAppProcess $q) | Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1
+if (-not $proc) { "Nothing done: no running app named '$q' has a window; os(resource: 'app', action: 'list') shows what is running"; exit 1 }
+if ([NeboHide]::ShowWindow($proc.MainWindowHandle, 0)) { "Hidden $($proc.Name) (its window was visible)" } else { "$($proc.Name)'s window was already hidden" }
+"#;
 
 #[cfg(target_os = "windows")]
 async fn handle_hide(app: &str) -> ToolResult {
-    let script = format!(
-        "Add-Type @\"\n\
-         using System;\n\
-         using System.Runtime.InteropServices;\n\
-         public class WinAPI {{\n\
-             [DllImport(\"user32.dll\")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);\n\
-         }}\n\
-         \"@\n\
-         $proc = Get-Process -Name '{}' -ErrorAction SilentlyContinue | Select-Object -First 1;\n\
-         if ($proc) {{ if ([WinAPI]::ShowWindow($proc.MainWindowHandle, 0)) {{ 'Hidden {} (its window was visible)' }} else {{ 'Hide sent to {}: ShowWindow reported the window was already hidden' }} }}\n\
-         else {{ 'Nothing done: no running process named {} (Get-Process -Name matched nothing)'; exit 1 }}",
-        escape_powershell(app),
-        escape_powershell(app),
-        escape_powershell(app),
-        escape_powershell(app)
-    );
-    run_powershell(&script).await
+    run_powershell(&app_script(HIDE_SCRIPT, app)).await
 }
 
 #[cfg(target_os = "windows")]
+const INFO_SCRIPT: &str = r#"
+$q = '{app}'
+$proc = @(Find-NeboAppProcess $q) | Select-Object -First 1
+if ($proc) { $proc | Select-Object Name, Id, CPU, WorkingSet64, MainWindowTitle, Path, StartTime | Format-List }
+else { "No running app matches '$q'; confirm the name with os(resource: 'app', action: 'list')"; exit 1 }
+"#;
+
+#[cfg(target_os = "windows")]
 async fn handle_info(app: &str) -> ToolResult {
-    let script = format!(
-        "$proc = Get-Process -Name '{}' -ErrorAction SilentlyContinue | Select-Object -First 1;\n\
-         if ($proc) {{ $proc | Select-Object Name, Id, CPU, WorkingSet64, \
-         MainWindowTitle, Path, StartTime | Format-List }}\n\
-         else {{ 'No running process named {} (Get-Process -Name matched nothing); confirm the name with os(resource: \"app\", action: \"list\")'; exit 1 }}",
-        escape_powershell(app),
-        escape_powershell(app)
-    );
-    run_powershell(&script).await
+    run_powershell(&app_script(INFO_SCRIPT, app)).await
 }
 
 #[cfg(target_os = "windows")]
@@ -812,8 +887,7 @@ async fn run_command(cmd: &str, args: &[&str]) -> ToolResult {
 /// script's own output rather than echoing the whole script text back.
 #[cfg(target_os = "windows")]
 async fn run_powershell(script: &str) -> ToolResult {
-    match command::new::<tokio::process::Command>("powershell", command::Console::Hidden)
-        .args(["-NoProfile", "-Command", script])
+    match command::powershell::<tokio::process::Command>(&script)
         .output()
         .await
     {
@@ -965,11 +1039,54 @@ mod tests {
     }
 }
 
+#[cfg(all(test, target_os = "windows"))]
+mod windows_quit_tests {
+    /// Every Windows app script parses, with the resolver before it.
+    #[tokio::test]
+    async fn every_app_script_parses() {
+        for (name, script) in [
+            ("launch", super::LAUNCH_SCRIPT),
+            ("quit", super::QUIT_SCRIPT),
+            ("activate", super::ACTIVATE_SCRIPT),
+            ("hide", super::HIDE_SCRIPT),
+            ("info", super::INFO_SCRIPT),
+        ] {
+            let full = super::app_script(script, "It's");
+            let check = format!(
+                "$e = $null; [void][System.Management.Automation.Language.Parser]::ParseInput('{}', [ref]$null, [ref]$e); \
+                 if ($e) {{ $e[0].Message + ' at line ' + $e[0].Extent.StartLineNumber; exit 1 }}; 'parsed'",
+                full.replace('\'', "''")
+            );
+            let r = super::run_powershell(&check).await;
+            assert!(!r.is_error && r.content == "parsed", "the {name} script does not parse: {}", r.content);
+        }
+    }
+
+    /// `quit` ends the app and says so, found by the name the owner uses.
+    #[tokio::test]
+    #[ignore = "launches and quits Character Map on the signed-in desktop"]
+    async fn quit_ends_a_running_app() {
+        let launched = super::handle_launch("charmap").await;
+        assert!(!launched.is_error, "{}", launched.content);
+        assert!(launched.content.starts_with("Launched charmap.exe"), "{}", launched.content);
+        let nothing = super::handle_launch("no-such-app-xyz").await;
+        assert!(nothing.is_error && nothing.content.contains("Nothing launched"), "{}", nothing.content);
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        // By a word of its window title, as the owner names it.
+        let quit = super::handle_quit("Character Map").await;
+        assert!(!quit.is_error, "{}", quit.content);
+        assert!(quit.content.starts_with("Quit charmap"), "{}", quit.content);
+        assert!(super::is_protected_process("ApplicationFrameHost"), "the host of many apps' windows is never quit");
+        let missing = super::handle_quit("no-such-app-xyz").await;
+        assert!(missing.is_error && missing.content.contains("Nothing done: no running app matches"), "{}", missing.content);
+    }
+}
+
 #[cfg(test)]
 mod protected_tests {
     #[test]
     fn protected_processes_are_matched_by_name_or_bundle_part() {
-        for p in ["Finder", "finder", "com.apple.finder", "Dock", "loginwindow", "Nebo", "Nebo.app", "WindowServer"] {
+        for p in ["Finder", "finder", "com.apple.finder", "Dock", "loginwindow", "Nebo", "Nebo.app", "WindowServer", "explorer", "dwm"] {
             assert!(super::is_protected_process(p), "{p}");
         }
         for p in ["Safari", "Calculator", "com.apple.Safari", "Finder Helper"] {

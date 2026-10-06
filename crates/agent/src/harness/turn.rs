@@ -1479,8 +1479,13 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
         let issue_credential = h.tool_credentials.as_ref().map(|credentials| {
             let tool_scope = &tool_scope;
             move || {
+                // The CLI was sent every tool's definition (`tools/list` on
+                // /agent/mcp), deferred ones too: none of its calls is to a
+                // tool it was never sent, so no error carries a definition.
+                let mut ctx = tool_scope.tool_context();
+                ctx.declared_tools = None;
                 credentials.issue(crate::tool_credentials::RunGrant {
-                    ctx: tool_scope.tool_context(),
+                    ctx,
                     agent_id: cx.agent_id().to_string(),
                 })
             }

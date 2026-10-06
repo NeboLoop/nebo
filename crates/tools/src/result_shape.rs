@@ -166,9 +166,61 @@ pub fn input_validation(tool: &str, issues: &[String]) -> String {
     ))
 }
 
+/// A listing (`ui tree`, `app list`, `window list`) cut to the lines that
+/// contain `filter`, any case, and then to the first `limit` of them. A
+/// filter nothing matches says so, and a cut says how many lines it left
+/// out.
+pub fn keep_lines(mut result: ToolResult, filter: &str, limit: Option<usize>) -> ToolResult {
+    let filter = filter.trim();
+    if result.is_error || (filter.is_empty() && limit.is_none()) {
+        return result;
+    }
+    let want = filter.to_lowercase();
+    let lines: Vec<&str> = result.content.lines().filter(|l| !l.trim().is_empty()).collect();
+    let matched: Vec<&str> = lines.iter().copied().filter(|l| want.is_empty() || l.to_lowercase().contains(&want)).collect();
+    if matched.is_empty() {
+        result.content = format!("No line of the {} listed matches \"{filter}\".", lines.len());
+        return result;
+    }
+    let shown = limit.unwrap_or(usize::MAX).max(1).min(matched.len());
+    let mut notes = Vec::new();
+    if !filter.is_empty() {
+        notes.push(format!("{} of {} lines match \"{filter}\"", matched.len(), lines.len()));
+    }
+    if shown < matched.len() {
+        notes.push(format!("the first {shown} shown; raise the limit for the rest"));
+    }
+    result.content = if notes.is_empty() {
+        matched.join("\n")
+    } else {
+        format!("{}\n({}.)", matched[..shown].join("\n"), notes.join("; "))
+    };
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_listing_keeps_the_lines_its_filter_names_up_to_its_limit() {
+        let listing = ToolResult::ok("Button | OK | 1\nMenuItem | File | 2\nmenuitem | Edit | 3\n");
+        let kept = keep_lines(listing.clone(), "MenuItem", None);
+        assert_eq!(kept.content, "MenuItem | File | 2\nmenuitem | Edit | 3\n(2 of 3 lines match \"MenuItem\".)");
+        assert_eq!(keep_lines(listing.clone(), "", None).content, listing.content);
+        assert_eq!(keep_lines(listing.clone(), "Slider", None).content, "No line of the 3 listed matches \"Slider\".");
+        assert_eq!(
+            keep_lines(listing.clone(), "", Some(1)).content,
+            "Button | OK | 1\n(the first 1 shown; raise the limit for the rest.)"
+        );
+        assert_eq!(
+            keep_lines(listing.clone(), "menuitem", Some(1)).content,
+            "MenuItem | File | 2\n(2 of 3 lines match \"menuitem\"; the first 1 shown; raise the limit for the rest.)"
+        );
+        assert_eq!(keep_lines(listing, "", Some(10)).content, "Button | OK | 1\nMenuItem | File | 2\nmenuitem | Edit | 3");
+        let failed = ToolResult::error("no window");
+        assert_eq!(keep_lines(failed, "x", Some(1)).content, "no window");
+    }
 
     #[test]
     fn a_large_result_is_saved_once_and_previewed() {

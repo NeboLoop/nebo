@@ -1,6 +1,7 @@
 //! Every child process Nebo starts is made here: [`new`] is the one
 //! constructor, for `std::process::Command` and `tokio::process::Command`
-//! alike. There is no other way.
+//! alike, and [`powershell`] is it for a PowerShell script. There is no
+//! other way.
 //!
 //! Why this exists: on Windows, a console program started by a process that
 //! has no console of its own (the desktop app) gets a NEW console window —
@@ -72,6 +73,23 @@ impl Console {
 pub fn new<C: From<std::process::Command>>(program: impl AsRef<OsStr>, console: Console) -> C {
     let mut cmd = std::process::Command::new(program);
     set_creation_flags(&mut cmd, console.creation_flags());
+    C::from(cmd)
+}
+
+/// The line every PowerShell script Nebo runs starts with: its output in
+/// UTF-8. Without it a hidden PowerShell writes the console's OEM code page
+/// and Nebo reads `Microsoft® Edge` back as `Microsoftr Edge`. A script
+/// starts with it through [`powershell`], or by prepending it where the
+/// script reaches PowerShell another way (stdin, `-EncodedCommand`).
+pub const POWERSHELL_UTF8: &str =
+    "try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false } catch { }\n";
+
+/// A hidden `powershell -NoProfile -NonInteractive -Command <script>`, its
+/// output UTF-8 ([`POWERSHELL_UTF8`]).
+pub fn powershell<C: From<std::process::Command>>(script: &str) -> C {
+    let mut cmd = std::process::Command::new("powershell");
+    set_creation_flags(&mut cmd, Console::Hidden.creation_flags());
+    cmd.args(["-NoProfile", "-NonInteractive", "-Command", &format!("{POWERSHELL_UTF8}{script}")]);
     C::from(cmd)
 }
 
