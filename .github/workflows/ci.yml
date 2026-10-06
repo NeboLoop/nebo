@@ -114,8 +114,13 @@ jobs:
           # password for every droplet. Nobody logs in.
           # nyc3 capacity comes and goes per size (a 422 "not available");
           # any other error is fatal.
+          # Dedicated-CPU shapes first: on a shared 8-vCPU droplet the suite ran
+          # 3x slower than on a hosted runner and its timing-sensitive tests
+          # (permit ordering, a 30 s server start) failed. The shared shapes
+          # are the fallback. Every shape has >= 320 GB disk (the snapshot's
+          # minimum). The box lives for one test run.
           id=""
-          for size in s-8vcpu-16gb s-8vcpu-16gb-amd s-8vcpu-16gb-intel s-4vcpu-16gb-320gb-intel; do
+          for size in c2-16vcpu-32gb c2-16vcpu-32gb-intel s-8vcpu-16gb s-8vcpu-16gb-amd s-8vcpu-16gb-intel s-4vcpu-16gb-320gb-intel; do
             if id=$(doctl compute droplet create "$NAME" \
                 --region nyc3 --size "$size" --image "$image" \
                 --tag-names "nebo-ci-runner,$RUN_TAG" \
