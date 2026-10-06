@@ -16,18 +16,116 @@ on:
 permissions:
   contents: read
 
+# Our machines only (the org's GitHub Actions budget is capped): x64 builds
+# natively on a DigitalOcean droplet booted for this run (Docker installed at
+# boot), arm64 natively on the house Mac mini's Lima VM (label neboloop).
 jobs:
+  # ─── x86 runner: a DigitalOcean droplet that exists only for this run ───
+  # GitHub-hosted runners are never used (the org's Actions budget is spent).
+  # This job only calls doctl and gh, on the stadium orchestration runners;
+  # the droplet boots from the nebo-runner-amd64-base snapshot with a
+  # just-in-time registration good for ONE job, and the -down job deletes it.
+  rootfs-runner:
+    runs-on: [self-hosted, Linux, ARM64, neboloop-orch] # orchestration only
+    steps:
+      # Install only. Up to four jobs share this VM's HOME, and `doctl auth
+      # init` in each rewrote one shared config file under the others. Every
+      # doctl call takes the token from the environment and a config dir of
+      # its own job.
+      - uses: digitalocean/action-doctl@v2
+        with:
+          no_auth: "true"
+      # A just-in-time runner carries ONLY the labels named here, so the
+      # build's runs-on list must spell them out in full.
+      - name: Mint a one-job runner registration
+        id: jit
+        env:
+          GH_TOKEN: ${{ secrets.RUNNER_ADMIN_TOKEN }}
+          NAME: nebo-rootfs-amd64-${{ github.run_id }}
+          LABEL: nebo-rootfs-${{ github.run_id }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          cfg=$(gh api -X POST "orgs/$OWNER/actions/runners/generate-jitconfig" \
+            -f name="$NAME" -F runner_group_id=1 -f work_folder=_work \
+            -f "labels[]=self-hosted" -f "labels[]=Linux" -f "labels[]=X64" \
+            -f "labels[]=$LABEL" -q .encoded_jit_config)
+          echo "::add-mask::$cfg"
+          echo "config=$cfg" >> "$GITHUB_OUTPUT"
+      - name: Boot the droplet from the golden snapshot
+        env:
+          JIT: ${{ steps.jit.outputs.config }}
+          NAME: nebo-rootfs-amd64-${{ github.run_id }}
+          RUN_TAG: run-${{ github.run_id }}
+          DIGITALOCEAN_ACCESS_TOKEN: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+          XDG_CONFIG_HOME: ${{ runner.temp }}/doctl-config
+        run: |
+          image=$(doctl compute image list-user --format ID,Name --no-header | awk '$2=="nebo-runner-amd64-base"{print $1}' | tail -n1)
+          test -n "$image" || { echo "snapshot nebo-runner-amd64-base not found"; exit 1; }
+          ud="$RUNNER_TEMP/user-data-$NAME.sh"
+          cat > "$ud" <<'EOS'
+          #!/bin/bash
+          # A droplet booted from a snapshot comes up with root's password
+          # expired, which blocks even key-based SSH; clear that so the box
+          # can be inspected while it lives.
+          chage -d "$(date +%F)" -M -1 root
+          # Ubuntu's automatic upgrades hold the dpkg lock for minutes after
+          # boot on a one-job box; stop them before installing Docker.
+          systemctl disable --now unattended-upgrades.service apt-daily.timer apt-daily-upgrade.timer || true
+          systemctl kill --kill-whom=all apt-daily.service apt-daily-upgrade.service || true
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get -o DPkg::Lock::Timeout=600 update -qq
+          apt-get -o DPkg::Lock::Timeout=600 install -y -qq docker.io docker-buildx zstd unzip
+          # AWS CLI v2 for the CDN publish (a GitHub-hosted image had it).
+          curl -fsSLo /tmp/awscli.zip https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip && unzip -q /tmp/awscli.zip -d /tmp && /tmp/aws/install
+          usermod -aG docker runner
+          systemctl enable --now docker
+          cd /home/runner/actions-runner
+          nohup sudo -u runner ./run.sh --jitconfig '__JIT__' > /home/runner/runner.log 2>&1 &
+          EOS
+          sed -i "s|__JIT__|$JIT|" "$ud"
+          # --ssh-keys: with no key DigitalOcean emails the owner a root
+          # password for every droplet. Nobody logs in.
+          # nyc3 capacity comes and goes per size (a 422 "not available");
+          # any other error is fatal.
+          id=""
+          for size in s-8vcpu-16gb s-8vcpu-16gb-amd s-8vcpu-16gb-intel s-4vcpu-16gb-320gb-intel; do
+            if id=$(doctl compute droplet create "$NAME" \
+                --region nyc3 --size "$size" --image "$image" \
+                --tag-names "nebo-ci-runner,$RUN_TAG" \
+                --ssh-keys 15:57:9d:98:dc:e4:b9:b5:69:e2:42:d8:08:86:08:86 \
+                --user-data-file "$ud" --wait --format ID --no-header 2>"$ud.err"); then
+              echo "droplet size: $size"; break
+            fi
+            grep -q "not available in this region" "$ud.err" || { cat "$ud.err"; rm -f "$ud" "$ud.err"; exit 1; }
+            echo "$size is not available in nyc3 right now, trying the next size"
+          done
+          rm -f "$ud" "$ud.err"
+          [ -n "$id" ] || { echo "::error::no droplet size available in nyc3"; exit 1; }
+      - name: Wait for the runner to come online
+        env:
+          GH_TOKEN: ${{ secrets.RUNNER_ADMIN_TOKEN }}
+          NAME: nebo-rootfs-amd64-${{ github.run_id }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          for i in $(seq 1 40); do
+            status=$(gh api "orgs/$OWNER/actions/runners?name=$NAME" -q '.runners[0].status // "absent"')
+            [ "$status" = online ] && { echo "runner online after $((i*10))s"; exit 0; }
+            sleep 10
+          done
+          echo "runner never came online"; exit 1
+
   build-rootfs:
+    needs: [rootfs-runner]
     strategy:
       # One arch failing must not cancel the other — otherwise the surviving
       # leg reports "cancelled" and hides whether it was close to failing too.
       fail-fast: false
       matrix:
         include:
-          - runner: ubuntu-latest
+          - runner: [self-hosted, Linux, X64, "nebo-rootfs-${{ github.run_id }}"]
             arch: x64
             docker_platform: linux/amd64
-          - runner: ubuntu-24.04-arm
+          - runner: [self-hosted, Linux, ARM64, neboloop]
             arch: arm64
             docker_platform: linux/arm64
     runs-on: ${{ matrix.runner }}
@@ -40,16 +138,16 @@ jobs:
         run: |
           docker build \
             --platform ${{ matrix.docker_platform }} \
-            -t nebo-rootfs \
+            -t nebo-rootfs:${{ github.run_id }}-${{ matrix.arch }} \
             -f vm/Dockerfile.rootfs .
 
       - name: Export rootfs to raw ext4 image
         run: |
           mkdir -p vm/build
           # Export container filesystem
-          docker create --name rootfs-tmp nebo-rootfs
-          docker export rootfs-tmp > vm/build/rootfs.tar
-          docker rm rootfs-tmp
+          docker create --name rootfs-${{ github.run_id }}-${{ matrix.arch }} nebo-rootfs:${{ github.run_id }}-${{ matrix.arch }}
+          docker export rootfs-${{ github.run_id }}-${{ matrix.arch }} > vm/build/rootfs.tar
+          docker rm rootfs-${{ github.run_id }}-${{ matrix.arch }}
 
           # Size the image from the actual content. A hardcoded size silently
           # runs out mid-extraction the moment the rootfs outgrows it — which
@@ -63,11 +161,12 @@ jobs:
           echo "rootfs content ${CONTENT_MB}M -> ext4 image ${IMG_MB}M"
           truncate -s "${IMG_MB}M" vm/build/rootfs.img
           mkfs.ext4 -F vm/build/rootfs.img
-          mkdir -p /tmp/nebo-rootfs-mnt
-          sudo mount -o loop vm/build/rootfs.img /tmp/nebo-rootfs-mnt
-          sudo tar xf vm/build/rootfs.tar -C /tmp/nebo-rootfs-mnt
-          sudo umount /tmp/nebo-rootfs-mnt
-          rm -rf /tmp/nebo-rootfs-mnt vm/build/rootfs.tar
+          MNT="$RUNNER_TEMP/nebo-rootfs-mnt"
+          mkdir -p "$MNT"
+          sudo mount -o loop vm/build/rootfs.img "$MNT"
+          sudo tar xf vm/build/rootfs.tar -C "$MNT"
+          sudo umount "$MNT"
+          rm -rf "$MNT" vm/build/rootfs.tar
 
       - name: Compute SHA-256
         id: sha
@@ -90,6 +189,18 @@ jobs:
             vm/build/rootfs.img.zst
           retention-days: 30
 
+      # The droplet installs the AWS CLI at boot; the stadium VM installs it
+      # once here and reuses it.
+      - name: AWS CLI
+        if: ${{ inputs.publish && env.HAS_CDN_CREDS == 'true' }}
+        run: |
+          if ! command -v aws >/dev/null; then
+            curl -fsSLo "$RUNNER_TEMP/awscli.zip" "https://awscli.amazonaws.com/awscli-exe-linux-$(uname -m).zip"
+            unzip -q -o "$RUNNER_TEMP/awscli.zip" -d "$RUNNER_TEMP"
+            sudo "$RUNNER_TEMP/aws/install" --update
+          fi
+          aws --version
+
       - name: Publish to CDN
         if: ${{ inputs.publish && env.HAS_CDN_CREDS == 'true' }}
         env:
@@ -108,3 +219,44 @@ jobs:
           echo ""
           echo "Update ROOTFS_SHA in crates/tools/src/vm_tool.rs to:"
           echo "  const ROOTFS_SHA: &str = \"${SHA}\";"
+
+      # The stadium VM keeps its Docker images between runs; drop this one.
+      - name: Remove the build image
+        if: ${{ always() }}
+        run: |
+          docker rm -f rootfs-${{ github.run_id }}-${{ matrix.arch }} 2>/dev/null || true
+          docker rmi nebo-rootfs:${{ github.run_id }}-${{ matrix.arch }} 2>/dev/null || true
+
+  # The droplet is deleted whether the job passed, failed, was cancelled or
+  # never ran. NOTE: when two droplets exist in one run, each -down job
+  # deletes by name, so it never kills the other job's droplet.
+  rootfs-runner-down:
+    needs: [rootfs-runner, build-rootfs]
+    if: ${{ always() }}
+    runs-on: [self-hosted, Linux, ARM64, neboloop-orch] # orchestration only
+    steps:
+      - uses: digitalocean/action-doctl@v2
+        with:
+          no_auth: "true"
+      - name: Delete this run's droplet, and any runner droplet older than three hours
+        env:
+          NAME: nebo-rootfs-amd64-${{ github.run_id }}
+          DIGITALOCEAN_ACCESS_TOKEN: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+          XDG_CONFIG_HOME: ${{ runner.temp }}/doctl-config
+        run: |
+          doctl compute droplet list --tag-name nebo-ci-runner --format ID,Name --no-header \
+            | awk -v n="$NAME" '$2==n{print $1}' | xargs -r doctl compute droplet delete --force || true
+          cutoff=$(date -u -d '3 hours ago' +%s)
+          doctl compute droplet list --tag-name nebo-ci-runner --format ID,Created --no-header | while read -r id created; do
+            [ "$(date -u -d "$created" +%s)" -lt "$cutoff" ] && doctl compute droplet delete --force "$id" || true
+          done
+      # A one-job runner removes itself after its job; if the job never ran,
+      # its registration would linger as offline. Remove it either way.
+      - name: Remove the runner registration
+        env:
+          GH_TOKEN: ${{ secrets.RUNNER_ADMIN_TOKEN }}
+          NAME: nebo-rootfs-amd64-${{ github.run_id }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          id=$(gh api "orgs/$OWNER/actions/runners?name=$NAME" -q '.runners[0].id // empty')
+          [ -n "$id" ] && gh api -X DELETE "orgs/$OWNER/actions/runners/$id" || true

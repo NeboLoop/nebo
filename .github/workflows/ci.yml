@@ -31,9 +31,10 @@ env:
 jobs:
   frontend:
     name: Frontend check & test
-    # GH-hosted is correct here: the repo is public, so standard runners are
-    # free and unmetered — the 2000 min/mo quota only meters private repos.
-    runs-on: ubuntu-latest
+    # Our runners only: the org's GitHub Actions budget is capped. Fork PRs
+    # never run on our machines (they get no secrets either).
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, Linux, ARM64, neboloop] # the Mac mini's Lima VM
     defaults:
       run:
         working-directory: app
@@ -56,23 +57,100 @@ jobs:
       - name: Unit tests
         run: pnpm test
 
+  # ─── x86 runner: a DigitalOcean droplet that exists only for this run ───
+  # GitHub-hosted runners are never used (the org's Actions budget is spent).
+  # This job only calls doctl and gh, on the stadium orchestration runners;
+  # the droplet boots from the nebo-runner-amd64-base snapshot with a
+  # just-in-time registration good for ONE job, and the -down job deletes it.
+  cargo-runner:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, Linux, ARM64, neboloop-orch] # orchestration only
+    steps:
+      # Install only. Up to four jobs share this VM's HOME, and `doctl auth
+      # init` in each rewrote one shared config file under the others. Every
+      # doctl call takes the token from the environment and a config dir of
+      # its own job.
+      - uses: digitalocean/action-doctl@v2
+        with:
+          no_auth: "true"
+      # A just-in-time runner carries ONLY the labels named here, so the
+      # build's runs-on list must spell them out in full.
+      - name: Mint a one-job runner registration
+        id: jit
+        env:
+          GH_TOKEN: ${{ secrets.RUNNER_ADMIN_TOKEN }}
+          NAME: nebo-ci-cargo-${{ github.run_id }}
+          LABEL: nebo-cargo-${{ github.run_id }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          cfg=$(gh api -X POST "orgs/$OWNER/actions/runners/generate-jitconfig" \
+            -f name="$NAME" -F runner_group_id=1 -f work_folder=_work \
+            -f "labels[]=self-hosted" -f "labels[]=Linux" -f "labels[]=X64" \
+            -f "labels[]=$LABEL" -q .encoded_jit_config)
+          echo "::add-mask::$cfg"
+          echo "config=$cfg" >> "$GITHUB_OUTPUT"
+      - name: Boot the droplet from the golden snapshot
+        env:
+          JIT: ${{ steps.jit.outputs.config }}
+          NAME: nebo-ci-cargo-${{ github.run_id }}
+          RUN_TAG: run-${{ github.run_id }}
+          DIGITALOCEAN_ACCESS_TOKEN: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+          XDG_CONFIG_HOME: ${{ runner.temp }}/doctl-config
+        run: |
+          image=$(doctl compute image list-user --format ID,Name --no-header | awk '$2=="nebo-runner-amd64-base"{print $1}' | tail -n1)
+          test -n "$image" || { echo "snapshot nebo-runner-amd64-base not found"; exit 1; }
+          ud="$RUNNER_TEMP/user-data-$NAME.sh"
+          cat > "$ud" <<'EOS'
+          #!/bin/bash
+          # A droplet booted from a snapshot comes up with root's password
+          # expired, which blocks even key-based SSH; clear that so the box
+          # can be inspected while it lives.
+          chage -d "$(date +%F)" -M -1 root
+          cd /home/runner/actions-runner
+          nohup sudo -u runner ./run.sh --jitconfig '__JIT__' > /home/runner/runner.log 2>&1 &
+          EOS
+          sed -i "s|__JIT__|$JIT|" "$ud"
+          # --ssh-keys: with no key DigitalOcean emails the owner a root
+          # password for every droplet. Nobody logs in.
+          # nyc3 capacity comes and goes per size (a 422 "not available");
+          # any other error is fatal.
+          id=""
+          for size in s-8vcpu-16gb s-8vcpu-16gb-amd s-8vcpu-16gb-intel s-4vcpu-16gb-320gb-intel; do
+            if id=$(doctl compute droplet create "$NAME" \
+                --region nyc3 --size "$size" --image "$image" \
+                --tag-names "nebo-ci-runner,$RUN_TAG" \
+                --ssh-keys 15:57:9d:98:dc:e4:b9:b5:69:e2:42:d8:08:86:08:86 \
+                --user-data-file "$ud" --wait --format ID --no-header 2>"$ud.err"); then
+              echo "droplet size: $size"; break
+            fi
+            grep -q "not available in this region" "$ud.err" || { cat "$ud.err"; rm -f "$ud" "$ud.err"; exit 1; }
+            echo "$size is not available in nyc3 right now, trying the next size"
+          done
+          rm -f "$ud" "$ud.err"
+          [ -n "$id" ] || { echo "::error::no droplet size available in nyc3"; exit 1; }
+      - name: Wait for the runner to come online
+        env:
+          GH_TOKEN: ${{ secrets.RUNNER_ADMIN_TOKEN }}
+          NAME: nebo-ci-cargo-${{ github.run_id }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          for i in $(seq 1 40); do
+            status=$(gh api "orgs/$OWNER/actions/runners?name=$NAME" -q '.runners[0].status // "absent"')
+            [ "$status" = online ] && { echo "runner online after $((i*10))s"; exit 0; }
+            sleep 10
+          done
+          echo "runner never came online"; exit 1
+
   rust:
     name: Cargo workspace tests
-    runs-on: ubuntu-latest
+    needs: [cargo-runner]
+    # The full workspace build is too heavy for the stadium VM's shared 7 GiB
+    # slice, so it runs on the x86 droplet booted above (320 GB disk; the
+    # golden snapshot carries rustup and the Tauri/OpenBLAS/protobuf build
+    # deps that release.yml's amd64 leg uses).
+    runs-on: [self-hosted, Linux, X64, "nebo-cargo-${{ github.run_id }}"]
     steps:
       - uses: actions/checkout@v4
-
-      # The workspace debug-build plus the restored cache can crowd the
-      # runner's ~14GB free disk, and a full disk kills test binaries with
-      # SIGBUS (their pages are mmap'd from files that can no longer be
-      # read back) — a crash that looks like memory corruption and isn't.
-      # These preinstalled toolchains are dead weight for this job; dropping
-      # them frees ~25-30GB.
-      - name: Reclaim runner disk
-        run: |
-          df -h / | tail -1
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc             /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
-          df -h / | tail -1
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -85,10 +163,15 @@ jobs:
           key: ci-test
           cache-on-failure: true
 
-      # Same dependency set as release.yml's Linux leg — that recipe is already
-      # hardened for this runner image; do not let the two drift.
+      # Same dependency set as release.yml's Linux leg. The droplet's golden
+      # snapshot carries them already (Ubuntu 24.04 names two of them
+      # differently, so apt-get would fail on the list below): install only
+      # when a header is missing. Do not let the two lists drift.
       - name: Install system dependencies
         run: |
+          if pkg-config --exists webkit2gtk-4.1 gtk+-3.0 openblas && command -v protoc >/dev/null; then
+            echo "build deps present on the snapshot"; exit 0
+          fi
           sudo apt-get update
           sudo apt-get install -y \
             libwebkit2gtk-4.1-dev \
@@ -138,7 +221,42 @@ jobs:
   # moves them back to GitHub-hosted runners — it has happened before, and it
   # turned a 10-minute release into a 70-minute one. Rule: CLAUDE.md "Release builds".
   release-runners:
-    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, Linux, ARM64, neboloop-orch] # seconds of python3 + yaml
     steps:
       - uses: actions/checkout@v4
       - run: python3 scripts/check-release-runners.py
+
+  # The droplet is deleted whether the job passed, failed, was cancelled or
+  # never ran. NOTE: when two droplets exist in one run, each -down job
+  # deletes by name, so it never kills the other job's droplet.
+  cargo-runner-down:
+    needs: [cargo-runner, rust]
+    if: ${{ always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+    runs-on: [self-hosted, Linux, ARM64, neboloop-orch] # orchestration only
+    steps:
+      - uses: digitalocean/action-doctl@v2
+        with:
+          no_auth: "true"
+      - name: Delete this run's droplet, and any runner droplet older than three hours
+        env:
+          NAME: nebo-ci-cargo-${{ github.run_id }}
+          DIGITALOCEAN_ACCESS_TOKEN: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+          XDG_CONFIG_HOME: ${{ runner.temp }}/doctl-config
+        run: |
+          doctl compute droplet list --tag-name nebo-ci-runner --format ID,Name --no-header \
+            | awk -v n="$NAME" '$2==n{print $1}' | xargs -r doctl compute droplet delete --force || true
+          cutoff=$(date -u -d '3 hours ago' +%s)
+          doctl compute droplet list --tag-name nebo-ci-runner --format ID,Created --no-header | while read -r id created; do
+            [ "$(date -u -d "$created" +%s)" -lt "$cutoff" ] && doctl compute droplet delete --force "$id" || true
+          done
+      # A one-job runner removes itself after its job; if the job never ran,
+      # its registration would linger as offline. Remove it either way.
+      - name: Remove the runner registration
+        env:
+          GH_TOKEN: ${{ secrets.RUNNER_ADMIN_TOKEN }}
+          NAME: nebo-ci-cargo-${{ github.run_id }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          id=$(gh api "orgs/$OWNER/actions/runners?name=$NAME" -q '.runners[0].id // empty')
+          [ -n "$id" ] && gh api -X DELETE "orgs/$OWNER/actions/runners/$id" || true

@@ -25,8 +25,12 @@ env:
 
 jobs:
   # ─── Build frontend (shared by all platform builds) ───────────────────
+  # Every job runs on our own machines (CLAUDE.md "Release builds"; the
+  # org's GitHub Actions budget is capped): builds and packaging on the house
+  # Mac mini, its Lima VM (label neboloop) or a per-run droplet, the house
+  # Windows box, and seconds-long orchestration on the VM's neboloop-orch lane.
   frontend:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, ARM64, neboloop] # the Mac mini's Lima VM
     steps:
       - uses: actions/checkout@v4
 
@@ -448,13 +452,17 @@ jobs:
   # hands it a just-in-time runner registration good for ONE job, and the
   # teardown job below deletes it whether the build passed or not.
   linux-amd64-runner:
-    runs-on: ubuntu-latest # orchestration only — no build happens here
+    runs-on: [self-hosted, Linux, ARM64, neboloop-orch] # orchestration only — no build happens here
     outputs:
       droplet_id: ${{ steps.droplet.outputs.id }}
     steps:
+      # Install only. Up to four jobs share the VM's HOME, and `doctl auth
+      # init` in each rewrote one shared config file under the others. Every
+      # doctl call takes the token from the environment and a config dir of
+      # its own job.
       - uses: digitalocean/action-doctl@v2
         with:
-          token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+          no_auth: "true"
       # A just-in-time runner carries ONLY the labels named here — none of
       # the self-hosted/Linux/X64 defaults a config.sh runner gets — so the
       # build's runs-on list must be spelled out in full (v0.14.3 queued
@@ -472,7 +480,11 @@ jobs:
           echo "config=$cfg" >> "$GITHUB_OUTPUT"
       - name: Boot the droplet from the golden snapshot
         id: droplet
+        env:
+          DIGITALOCEAN_ACCESS_TOKEN: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+          XDG_CONFIG_HOME: ${{ runner.temp }}/doctl-config
         run: |
+          cd "$RUNNER_TEMP"
           image=$(doctl compute image list-user --format ID,Name --no-header | awk '$2=="nebo-runner-amd64-base"{print $1}' | tail -n1)
           test -n "$image" || { echo "snapshot nebo-runner-amd64-base not found"; exit 1; }
           cat > user-data.sh <<'EOS'
@@ -696,12 +708,15 @@ jobs:
   linux-amd64-runner-down:
     needs: [linux-amd64-runner, build-linux]
     if: ${{ always() }}
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, ARM64, neboloop-orch] # orchestration only
     steps:
       - uses: digitalocean/action-doctl@v2
         with:
-          token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+          no_auth: "true"
       - name: Delete this run's droplet, and any runner droplet older than three hours
+        env:
+          DIGITALOCEAN_ACCESS_TOKEN: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+          XDG_CONFIG_HOME: ${{ runner.temp }}/doctl-config
         run: |
           doctl compute droplet delete --force --tag-name "run-${{ github.run_id }}" || true
           cutoff=$(date -u -d '3 hours ago' +%s)
@@ -995,11 +1010,21 @@ jobs:
     # When Windows is disabled, sign-windows is skipped; the explicit
     # build-linux==success check (not success()) lets release run anyway.
     if: ${{ !cancelled() && needs.build-linux.result == 'success' }}
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, ARM64, neboloop] # the Mac mini's Lima VM
     env:
       DO_SPACES_KEY_SET: ${{ secrets.DO_SPACES_ACCESS_KEY != '' && 'true' || 'false' }}
     steps:
       - uses: actions/checkout@v4
+      # The stadium VM has no AWS CLI preinstalled (a GitHub-hosted image
+      # did). Installed once system-wide and reused by later runs.
+      - name: AWS CLI
+        run: |
+          if ! command -v aws >/dev/null; then
+            curl -fsSLo "$RUNNER_TEMP/awscli.zip" "https://awscli.amazonaws.com/awscli-exe-linux-$(uname -m).zip"
+            unzip -q -o "$RUNNER_TEMP/awscli.zip" -d "$RUNNER_TEMP"
+            sudo "$RUNNER_TEMP/aws/install" --update
+          fi
+          aws --version
 
       - name: Restore macOS artifacts
         run: mkdir -p artifacts
@@ -1070,8 +1095,8 @@ jobs:
           # `make publish-macos`). Without this, a CI re-run after the mac
           # publish clobbers the mac entries and the fail-closed desktop
           # updater rejects every mac update for the release (v0.12.4 bug).
-          if gh release download "$TAG" --repo "$GITHUB_REPOSITORY" -p checksums.txt -O /tmp/existing-checksums.txt 2>/dev/null; then
-            awk 'NR==FNR{seen[$2]=1;next} $2 && !seen[$2]' checksums.txt /tmp/existing-checksums.txt >> checksums.txt
+          if gh release download "$TAG" --repo "$GITHUB_REPOSITORY" -p checksums.txt -O "$RUNNER_TEMP/existing-checksums.txt" 2>/dev/null; then
+            awk 'NR==FNR{seen[$2]=1;next} $2 && !seen[$2]' checksums.txt "$RUNNER_TEMP/existing-checksums.txt" >> checksums.txt
             sort -u checksums.txt -o checksums.txt
           fi
           echo "Generated checksums:"
@@ -1182,7 +1207,7 @@ jobs:
   announce:
     needs: [release, publish-macos]
     if: ${{ !cancelled() && needs.release.result == 'success' && needs.publish-macos.result != 'failure' }}
-    runs-on: ubuntu-latest # orchestration only
+    runs-on: [self-hosted, Linux, ARM64, neboloop-orch] # orchestration only
     env:
       TAG: ${{ github.ref_name }}
     steps:
@@ -1241,8 +1266,13 @@ jobs:
     # the cache-restore missed and the cask never updated. When mac is built
     # locally (BUILD_MACOS_IN_CI unset) notarize-macos is skipped and so is this.
     needs: [release, notarize-macos]
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, ARM64, neboloop] # the Mac mini's Lima VM
     steps:
+      # No checkout here, and the workspace persists between runs on the
+      # stadium VM: start empty so no earlier release's files are picked up.
+      - name: Start from an empty workspace
+        run: find . -mindepth 1 -delete
+
       - name: Restore macOS DMGs
         run: mkdir -p artifacts
 
@@ -1296,11 +1326,15 @@ jobs:
   # the old neboloop/apt repo stopped updating after v0.16.9.
   update-apt:
     needs: build-linux
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, ARM64, neboloop] # the Mac mini's Lima VM
     env:
       HAS_GPG_KEY: ${{ secrets.APT_GPG_PRIVATE_KEY != '' && 'true' || 'false' }}
       DO_SPACES_KEY_SET: ${{ secrets.DO_SPACES_ACCESS_KEY != '' && 'true' || 'false' }}
     steps:
+      # No checkout here, and the workspace persists between runs on the
+      # stadium VM: start empty so no earlier release's files are picked up.
+      - name: Start from an empty workspace
+        run: find . -mindepth 1 -delete
       - name: Restore Linux artifacts (amd64)
         uses: actions/cache/restore@v4
         with:
@@ -1317,8 +1351,12 @@ jobs:
           fail-on-cache-miss: true
       - run: cp release-artifacts/*.deb debs/ 2>/dev/null || true; rm -rf release-artifacts
 
+      # dpkg-scanpackages (dpkg-dev) and apt-ftparchive (apt-utils).
       - name: Install APT repo tools
-        run: sudo apt-get install -y dpkg-dev
+        run: |
+          command -v dpkg-scanpackages >/dev/null && command -v apt-ftparchive >/dev/null && exit 0
+          sudo apt-get update -q
+          sudo apt-get install -y dpkg-dev apt-utils
 
       - name: Update APT repository
         run: |
@@ -1356,11 +1394,28 @@ jobs:
         if: ${{ env.HAS_GPG_KEY == 'true' }}
         env:
           GPG_KEY: ${{ secrets.APT_GPG_PRIVATE_KEY }}
+          # The signing key goes into a keyring of this job's own, never the
+          # shared runner user's ~/.gnupg on the VM.
+          GNUPGHOME: ${{ runner.temp }}/gnupg
         run: |
-          echo "$GPG_KEY" | gpg --import
+          install -d -m 700 "$GNUPGHOME"
+          echo "$GPG_KEY" | gpg --batch --import
           gpg --armor --export > apt-repo/key.gpg
           gpg --default-key nebo -abs -o apt-repo/dists/stable/Release.gpg apt-repo/dists/stable/Release
           gpg --default-key nebo --clearsign -o apt-repo/dists/stable/InRelease apt-repo/dists/stable/Release
+          gpgconf --kill gpg-agent || true
+
+      # The stadium VM has no AWS CLI preinstalled (a GitHub-hosted image
+      # did). Installed once system-wide and reused by later runs.
+      - name: AWS CLI
+        if: ${{ env.DO_SPACES_KEY_SET == 'true' }}
+        run: |
+          if ! command -v aws >/dev/null; then
+            curl -fsSLo "$RUNNER_TEMP/awscli.zip" "https://awscli.amazonaws.com/awscli-exe-linux-$(uname -m).zip"
+            unzip -q -o "$RUNNER_TEMP/awscli.zip" -d "$RUNNER_TEMP"
+            sudo "$RUNNER_TEMP/aws/install" --update
+          fi
+          aws --version
 
       - name: Publish APT repository to the CDN
         if: ${{ env.DO_SPACES_KEY_SET == 'true' }}

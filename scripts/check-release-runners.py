@@ -4,12 +4,20 @@ hosted runners; Linux amd64 on a DigitalOcean droplet created for the run and
 deleted after it. This check exists because it has been undone before (Aug 15-16
 2026: CI and the Mac release builds were moved to macos-latest/ubuntu-latest
 and releases took 70+ minutes on 4-core rented machines). Windows builds on the
-house Windows box (label stadium-win) since 2026-09-17.
+house Windows box (label stadium-win) since 2026-09-17. Since 2026-10-05 no
+job in any workflow uses a GitHub-hosted runner (the org's Actions budget is
+capped): orchestration runs on the VM's neboloop-orch lane.
 
 Run locally: python3 scripts/check-release-runners.py
 """
+import glob
+import re
 import sys
 import yaml
+
+# GitHub-hosted labels: ubuntu-latest, ubuntu-24.04-arm, ubuntu-slim, macos-15,
+# windows-11-arm, ... (the same pattern as .github/workflows/no-hosted-runners.yml).
+HOSTED = re.compile(r"\b(ubuntu|macos|windows)-(latest|slim|[0-9])")
 
 WF = ".github/workflows/release.yml"
 MAC_JOBS = ("build-macos", "notarize-macos", "publish-macos")
@@ -48,10 +56,17 @@ def main():
         runs_on = labels(jobs[name].get("runs-on"))
         if "stadium-win" not in runs_on:
             errors.append(f"{name}: runs-on {runs_on} — must be the house Windows box ([self-hosted, Windows, X64, stadium-win])")
-    for name, job in jobs.items():
-        runs_on = " ".join(labels(job.get("runs-on")))
-        if "macos-" in runs_on or "windows-" in runs_on:
-            errors.append(f"{name}: uses a GitHub-hosted runner ({runs_on})")
+    # Every job in every workflow, matrix runner values included.
+    for wf in sorted(glob.glob(".github/workflows/*.y*ml")):
+        with open(wf) as f:
+            wf_jobs = (yaml.safe_load(f) or {}).get("jobs") or {}
+        for name, job in wf_jobs.items():
+            runs_on = labels(job.get("runs-on"))
+            for leg in ((job.get("strategy") or {}).get("matrix") or {}).get("include") or []:
+                runs_on += labels(leg.get("runner", []))
+            hosted = [l for l in runs_on if HOSTED.search(l)]
+            if hosted:
+                errors.append(f"{wf} {name}: uses a GitHub-hosted runner ({' '.join(hosted)})")
     if errors:
         print("Release builds must run on the house Mac mini (see CLAUDE.md, 'Release builds'):")
         for e in errors:
