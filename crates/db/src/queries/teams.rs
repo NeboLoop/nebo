@@ -322,6 +322,7 @@ impl Store {
             None,
             Some(&meta),
             Some(&team_thread_key(&team.id)),
+            None,
         )?;
         Ok(message_from_row(msg))
     }

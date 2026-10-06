@@ -91,8 +91,16 @@ pub async fn conversation_ws_handler(
     ws: WebSocketUpgrade,
 ) -> Response {
     q.platform = super::ws::EventOrigin::platform_of(&headers);
-    info!(agent = ?q.agent_id, chat = ?q.chat_id, platform = ?q.platform, "conversation WebSocket upgrade requested");
-    ws.on_upgrade(move |socket| handle_conversation_ws(socket, state, q))
+    // Every line a call logs carries its own id: with two sockets open
+    // across a reconnect, a reset could not be told apart (2026-10-06).
+    let call = uuid::Uuid::new_v4().simple().to_string()[..8].to_string();
+    let span = tracing::info_span!("voice_call", call = %call);
+    span.in_scope(|| {
+        info!(agent = ?q.agent_id, chat = ?q.chat_id, platform = ?q.platform, "conversation WebSocket upgrade requested")
+    });
+    ws.on_upgrade(move |socket| {
+        tracing::Instrument::instrument(handle_conversation_ws(socket, state, q), span)
+    })
 }
 
 /// Resolve the realtime upstream leg — the same direct-vs-Janus split as text
@@ -1461,11 +1469,17 @@ struct TurnLedger {
 struct TurnSpeech {
     text: String,
     delegated: bool,
+    /// When the model started saying it (unix seconds; 0 before it has).
+    /// Its row is written when the turn closes, at the owner's next
+    /// utterance, so it carries this time: stamped then, a question showed
+    /// the time of the answer to it (2026-10-06).
+    at: i64,
 }
 
 enum Row {
     User(String),
-    Assistant(String),
+    /// The reply, and when it was said.
+    Assistant(String, i64),
 }
 
 impl TurnLedger {
@@ -1493,6 +1507,9 @@ impl TurnLedger {
     /// The model's spoken words, joined into the turn they answer.
     fn speech(&mut self, delta: &str) {
         let turn = if self.answering { &mut self.early } else { &mut self.turn };
+        if turn.at == 0 {
+            turn.at = chrono::Utc::now().timestamp();
+        }
         join_transcript(&mut turn.text, delta);
     }
 
@@ -1553,6 +1570,12 @@ impl TurnLedger {
         self.said.push_str(&words);
         let mut rows = self.close_assistant();
         rows.push(Row::User(words));
+        // A reply begun before the utterance ended answers it: it comes
+        // after the user row, so never earlier than it.
+        let mut early = early;
+        if early.at != 0 {
+            early.at = early.at.max(self.spoke_at);
+        }
         self.turn = early;
         rows
     }
@@ -1562,7 +1585,7 @@ impl TurnLedger {
     /// says next retells a row the thread already has, so it writes none.
     fn relayed(&mut self) -> Vec<Row> {
         let rows = self.close_assistant();
-        self.turn = TurnSpeech { text: String::new(), delegated: true };
+        self.turn = TurnSpeech { delegated: true, ..TurnSpeech::default() };
         rows
     }
 
@@ -1571,7 +1594,7 @@ impl TurnLedger {
         if turn.delegated || turn.text.trim().is_empty() {
             return Vec::new();
         }
-        vec![Row::Assistant(turn.text.trim().to_string())]
+        vec![Row::Assistant(turn.text.trim().to_string(), turn.at)]
     }
 
     /// Session over: whatever is still open, in order.
@@ -1601,9 +1624,9 @@ struct TurnSink {
 impl TurnSink {
     async fn write(&mut self, state: &AppState, socket: &mut WebSocket, rows: Vec<Row>) {
         for row in rows {
-            let (role, text) = match &row {
-                Row::User(t) => ("user", t.as_str()),
-                Row::Assistant(t) => ("assistant", t.as_str()),
+            let (role, text, at) = match &row {
+                Row::User(t) => ("user", t.as_str(), None),
+                Row::Assistant(t, at) => ("assistant", t.as_str(), (*at != 0).then_some(*at)),
             };
             if let Some((team, lead)) = self.team.as_ref() {
                 let from = if role == "user" { "" } else { lead.as_str() };
@@ -1628,7 +1651,7 @@ impl TurnSink {
                         warn!(chat = %cid, "chat_bound frame not delivered");
                     }
                 }
-                persist_voice_turn(state, cid, role, text);
+                persist_voice_turn(state, cid, role, text, at);
                 if role == "assistant" {
                     // Voice turns are stored outside a harness turn, so trigger the
                     // ONE title generator here; its own 1st/3rd-turn gates apply.
@@ -2361,7 +2384,7 @@ pub(crate) fn ensure_chat_row(
 /// views about it. Same table, same shape as text turns — the transcript IS
 /// chat history, so closing the call leaves the whole exchange in the thread
 /// and the next text turn has full context.
-fn persist_voice_turn(state: &AppState, chat_id: &str, role: &str, content: &str) {
+fn persist_voice_turn(state: &AppState, chat_id: &str, role: &str, content: &str, at: Option<i64>) {
     let content = content.trim();
     if content.is_empty() {
         return;
@@ -2377,6 +2400,7 @@ fn persist_voice_turn(state: &AppState, chat_id: &str, role: &str, content: &str
         None,
         Some(r#"{"voice":true}"#),
         None,
+        at,
     ) {
         Ok(_) => {
             state.hub.broadcast(
@@ -3374,7 +3398,7 @@ mod voice_prompt_tests {
         rows.iter()
             .map(|r| match r {
                 Row::User(t) => format!("user:{t}"),
-                Row::Assistant(t) => format!("assistant:{t}"),
+                Row::Assistant(t, _) => format!("assistant:{t}"),
             })
             .collect()
     }
@@ -3411,6 +3435,33 @@ mod voice_prompt_tests {
         l.speech("Here they are.");
         assert!(!l.call(true));
         assert!(l.flush().is_empty());
+    }
+
+    /// A reply's row is written at the owner's next utterance but carries
+    /// when it was said, never later than now and never before the user
+    /// row a reply begun mid-utterance answers.
+    #[test]
+    fn ledger_stamps_a_reply_with_when_it_was_said() {
+        let mut l = TurnLedger::default();
+        l.utterance_started();
+        l.words("first");
+        l.user_final();
+        l.reply_started();
+        l.speech("A question?");
+        let said = chrono::Utc::now().timestamp();
+        l.utterance_started();
+        l.words("an answer");
+        let rows = l.user_final();
+        let Row::Assistant(_, at) = &rows[0] else { panic!("the reply's row first") };
+        assert!(*at != 0 && *at <= said, "stamped when said, not when written");
+        // Begun before the utterance ended: no earlier than its user row.
+        l.utterance_started();
+        l.words("next");
+        l.reply_started();
+        l.speech("Early.");
+        l.early.at = 1;
+        l.user_final();
+        assert_eq!(l.turn.at, l.spoke_at);
     }
 
     /// A reply that came into the conversation outside the call is said

@@ -91,7 +91,7 @@ fn last_visible_message_sql(chat_id: &str) -> String {
             AND (m2.metadata IS NULL OR m2.metadata NOT LIKE '%\"hidden\":true%')
             AND (m2.metadata IS NULL OR m2.metadata NOT LIKE '%\"isMeta\":true%')
             AND (m2.metadata IS NULL OR m2.metadata NOT LIKE '%\"runError\":true%')
-          ORDER BY m2.created_at DESC, m2.id DESC LIMIT 1)"
+          ORDER BY m2.created_at DESC, m2.rowid DESC LIMIT 1)"
     )
 }
 
@@ -334,6 +334,9 @@ impl Store {
         token_estimate: Option<i64>,
         metadata: Option<&str>,
         session_name: Option<&str>,
+        // When it was said (unix seconds), for a row written after the fact
+        // (a voice reply, stored once its turn closes). None: now.
+        created_at: Option<i64>,
     ) -> Result<ChatMessage, NeboError> {
         let conn = self.conn()?;
         // Ensure parent chat row exists (role/channel sessions don't pre-create one).
@@ -349,8 +352,8 @@ impl Store {
         .map_err(|e| NeboError::Database(e.to_string()))?;
         conn.query_row(
             "INSERT INTO chat_messages (id, chat_id, role, content, metadata, tool_calls, tool_results, token_estimate, day_marker, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, date('now', 'localtime'), unixepoch()) RETURNING *",
-            params![id, chat_id, role, content, metadata, tool_calls, tool_results, token_estimate],
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, date(COALESCE(?9, unixepoch()), 'unixepoch', 'localtime'), COALESCE(?9, unixepoch())) RETURNING *",
+            params![id, chat_id, role, content, metadata, tool_calls, tool_results, token_estimate, created_at],
             row_to_chat_message,
         )
         .map_err(|e| NeboError::Database(e.to_string()))
@@ -471,7 +474,7 @@ impl Store {
                 .prepare(
                     "SELECT * FROM chat_messages WHERE chat_id = ?1 AND created_at < ?2
                      AND rowid > COALESCE((SELECT compacted_below_rowid FROM chats WHERE id = ?1), 0)
-                 ORDER BY created_at DESC, id DESC LIMIT ?3",
+                 ORDER BY created_at DESC, rowid DESC LIMIT ?3",
                 )
                 .map_err(|e| NeboError::Database(e.to_string()))?;
             let rows = stmt
@@ -486,10 +489,10 @@ impl Store {
             // Get the last N messages (most recent)
             let mut stmt = conn
                 .prepare(
-                    "SELECT * FROM (
-                    SELECT * FROM chat_messages WHERE chat_id = ?1 AND rowid > COALESCE((SELECT compacted_below_rowid FROM chats WHERE id = ?1), 0)
-                    ORDER BY created_at DESC, id DESC LIMIT ?2
-                ) ORDER BY created_at ASC, id ASC",
+                    "SELECT * FROM chat_messages WHERE rowid IN (
+                    SELECT rowid FROM chat_messages WHERE chat_id = ?1 AND rowid > COALESCE((SELECT compacted_below_rowid FROM chats WHERE id = ?1), 0)
+                    ORDER BY created_at DESC, rowid DESC LIMIT ?2
+                ) ORDER BY created_at ASC, rowid ASC",
                 )
                 .map_err(|e| NeboError::Database(e.to_string()))?;
             let rows = stmt
@@ -524,15 +527,18 @@ impl Store {
         let batch_limit: i64 = 250;
         let mut msgs: Vec<ChatMessage> = if let Some(before_id) = before {
             let cursor_ts: i64 = message_created_at(&conn, before_id)?;
-            // Use composite cursor (created_at, id) to avoid skipping messages
-            // created in the same second as the cursor message.
+            // Use composite cursor (created_at, rowid) to avoid skipping
+            // messages created in the same second as the cursor message.
+            // Same-second rows keep the order they were written in: ids are
+            // random, so ordering by id flipped a voice reply under the
+            // answer written with it (2026-10-06).
             let mut stmt = conn
                 .prepare(
                     "SELECT * FROM chat_messages WHERE chat_id = ?1
-                     AND (created_at < ?2 OR (created_at = ?2 AND id < ?3))
+                     AND (created_at < ?2 OR (created_at = ?2 AND rowid < (SELECT rowid FROM chat_messages WHERE id = ?3)))
                      AND rowid > COALESCE((SELECT compacted_below_rowid FROM chats WHERE id = ?1), 0)
                      AND COALESCE(json_extract(metadata, '$.isMeta'), 0) NOT IN (1, 'true')
-                 ORDER BY created_at DESC, id DESC LIMIT ?4",
+                 ORDER BY created_at DESC, rowid DESC LIMIT ?4",
                 )
                 .map_err(|e| NeboError::Database(e.to_string()))?;
             let rows = stmt
@@ -548,7 +554,7 @@ impl Store {
                 .prepare(
                     "SELECT * FROM chat_messages WHERE chat_id = ?1 AND rowid > COALESCE((SELECT compacted_below_rowid FROM chats WHERE id = ?1), 0)
                      AND COALESCE(json_extract(metadata, '$.isMeta'), 0) NOT IN (1, 'true')
-                 ORDER BY created_at DESC, id DESC LIMIT ?2",
+                 ORDER BY created_at DESC, rowid DESC LIMIT ?2",
                 )
                 .map_err(|e| NeboError::Database(e.to_string()))?;
             let rows = stmt
@@ -597,7 +603,7 @@ impl Store {
             "SELECT EXISTS(
                 SELECT 1 FROM chat_messages
                  WHERE chat_id = ?1
-                   AND (created_at < ?2 OR (created_at = ?2 AND id < ?3))
+                   AND (created_at < ?2 OR (created_at = ?2 AND rowid < (SELECT rowid FROM chat_messages WHERE id = ?3)))
                    AND rowid > COALESCE((SELECT compacted_below_rowid FROM chats WHERE id = ?1), 0)
                    AND COALESCE(json_extract(metadata, '$.isMeta'), 0) NOT IN (1, 'true'))",
             params![chat_id, cursor_ts, message_id],
@@ -1029,10 +1035,10 @@ impl Store {
                  FROM chats c
                  WHERE (SELECT m.role FROM chat_messages m
                         WHERE m.chat_id = c.id
-                        ORDER BY m.created_at DESC, m.id DESC LIMIT 1) IN ('user', 'tool')
+                        ORDER BY m.created_at DESC, m.rowid DESC LIMIT 1) IN ('user', 'tool')
                    AND (SELECT m2.created_at FROM chat_messages m2
                         WHERE m2.chat_id = c.id
-                        ORDER BY m2.created_at DESC, m2.id DESC LIMIT 1) >= ?1
+                        ORDER BY m2.created_at DESC, m2.rowid DESC LIMIT 1) >= ?1
                  ORDER BY c.updated_at DESC
                  LIMIT 20",
             )
@@ -1999,6 +2005,40 @@ mod tests {
         assert_eq!(ids, vec!["a", "b", "c"]);
     }
 
+    /// The pages the chat view loads keep same-second rows in written order
+    /// too. Ordered by their random ids, a voice reply and the answer saved
+    /// with it flipped about half the time (2026-10-06).
+    #[test]
+    fn pages_keep_same_second_rows_in_written_order() {
+        let (_dir, store) = store();
+        store.create_chat("c1", "Chat").unwrap();
+        for id in ["z-question", "a-answer", "m-next"] {
+            store.create_chat_message(id, "c1", "user", id, None).unwrap();
+            set_created_at(&store, id, 1000);
+        }
+        let ids = |msgs: Vec<crate::models::ChatMessage>| msgs.into_iter().map(|m| m.id).collect::<Vec<_>>();
+        let all = ["z-question", "a-answer", "m-next"];
+        assert_eq!(ids(store.get_chat_messages_budgeted("c1", 100_000, None).unwrap()), all);
+        assert_eq!(ids(store.get_chat_messages_paginated("c1", 10, None).unwrap()), all);
+        assert_eq!(ids(store.get_chat_messages_budgeted("c1", 100_000, Some("m-next")).unwrap()), ["z-question", "a-answer"]);
+        assert!(store.has_chat_messages_before("c1", "a-answer").unwrap());
+        assert!(!store.has_chat_messages_before("c1", "z-question").unwrap());
+    }
+
+    /// A row written after the fact keeps the time it was said.
+    #[test]
+    fn a_runner_row_can_carry_when_it_was_said() {
+        let (_dir, store) = store();
+        let m = store
+            .create_chat_message_for_runner("r1", "c1", "assistant", "said earlier", None, None, None, None, None, Some(1_700_000_000))
+            .unwrap();
+        assert_eq!(m.created_at, 1_700_000_000);
+        let now = store
+            .create_chat_message_for_runner("r2", "c1", "user", "now", None, None, None, None, None, None)
+            .unwrap();
+        assert!(now.created_at > 1_700_000_000);
+    }
+
     /// tool_calls / tool_results JSON survives the write/read round trip
     /// byte-comparable as JSON, and the runner write auto-creates the parent
     /// chat row carrying session_name (role/channel sessions never pre-create
@@ -2019,6 +2059,7 @@ mod tests {
                 Some(42),
                 Some(r#"{"k":"v"}"#),
                 Some("agent:emp:web"),
+                None,
             )
             .unwrap();
         assert_eq!(msg.token_estimate, Some(42));

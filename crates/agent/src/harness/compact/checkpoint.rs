@@ -314,6 +314,7 @@ pub fn clear(store: &db::Store, chat_id: &str) -> Result<ChatMessage, types::Neb
             None,
             Some(&metadata.to_string()),
             None,
+            None,
         )
     };
     let marker = row("system", CLEARED_MARKER, serde_json::json!({ MARKER_KEY: true, "reason": CLEARED }))?;
@@ -351,6 +352,7 @@ pub fn fresh_run(store: &db::Store, chat_id: &str, last_run: Option<&str>) -> Re
         None,
         None,
         Some(&serde_json::json!({ "checkpoint": true, "isMeta": true, "reason": SCHEDULED_RUN }).to_string()),
+        None,
         None,
     )?;
     store.set_chat_linked_session(chat_id, "", "")
