@@ -1,9 +1,10 @@
 name: nebo-server-image
 
 # Builds the headless Nebo server image (amd64) for the SaaS/cluster deploy and
-# pushes it to GHCR. The frontend is built on a hosted runner (pinned pnpm 10,
+# pushes it to GHCR. The frontend is built on the stadium VM (pinned pnpm 10,
 # matching release.yml) while the build droplet boots, and embedded via
-# rust-embed; the Rust binary compiles in Docker.
+# rust-embed; the Rust binary compiles in Docker. Every job runs on our own
+# machines: the org's GitHub Actions budget is capped.
 # Build an image when we actually want to ship one — NOT on every backend
 # commit. The old `push: branches:[main] paths:[crates/**, ...]` trigger fired a
 # cold ~32min build on every commit and burned the org's Actions minutes.
@@ -22,13 +23,17 @@ jobs:
   # Docker is installed at boot (Ubuntu's docker.io + docker-buildx, ~18 s), as
   # neboloop's deploy does; the layer cache stays in GHCR.
   amd64-runner:
-    runs-on: ubuntu-latest # orchestration only — no build happens here
+    runs-on: [self-hosted, Linux, ARM64, neboloop-orch] # orchestration only — no build happens here
     outputs:
       droplet_id: ${{ steps.droplet.outputs.id }}
     steps:
+      # Install only. Up to four jobs share the VM's HOME, and `doctl auth
+      # init` in each rewrote one shared config file under the others. Every
+      # doctl call takes the token from the environment and a config dir of
+      # its own job.
       - uses: digitalocean/action-doctl@v2
         with:
-          token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+          no_auth: "true"
       # A just-in-time runner carries ONLY the labels named here, so the build
       # job's runs-on list spells them out in full.
       - name: Mint a one-job runner registration
@@ -44,7 +49,11 @@ jobs:
           echo "config=$cfg" >> "$GITHUB_OUTPUT"
       - name: Boot the droplet from the golden snapshot
         id: droplet
+        env:
+          DIGITALOCEAN_ACCESS_TOKEN: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+          XDG_CONFIG_HOME: ${{ runner.temp }}/doctl-config
         run: |
+          cd "$RUNNER_TEMP"
           image=$(doctl compute image list-user --format ID,Name --no-header | awk '$2=="nebo-runner-amd64-base"{print $1}' | tail -n1)
           test -n "$image" || { echo "snapshot nebo-runner-amd64-base not found"; exit 1; }
           cat > user-data.sh <<'EOS'
@@ -97,7 +106,7 @@ jobs:
 
   # Runs alongside the droplet boot, so the build job starts with it in hand.
   frontend:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, ARM64, neboloop] # the Mac mini's Lima VM
     steps:
       - uses: actions/checkout@v4
 
@@ -202,7 +211,7 @@ jobs:
   fleet-default:
     needs: [build]
     if: ${{ github.ref_type == 'tag' && needs.build.result == 'success' }}
-    runs-on: ubuntu-latest # orchestration only
+    runs-on: [self-hosted, Linux, ARM64, neboloop-orch] # orchestration only
     steps:
       - name: Pin the fleet default to this release's image
         env:
@@ -220,6 +229,8 @@ jobs:
           install -m 600 /dev/null "$RUNNER_TEMP/k8s_key"
           printf '%s\n' "$DEPLOY_KEY" > "$RUNNER_TEMP/k8s_key"
           export GIT_SSH_COMMAND="ssh -i $RUNNER_TEMP/k8s_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
+          # The workspace persists between runs on the stadium VM.
+          rm -rf k8s
           git clone --quiet --depth 1 git@github.com:NeboLoop/k8s.git k8s
           cd k8s
           FILE=neboloop/config/neboloop.yaml
@@ -243,12 +254,19 @@ jobs:
   amd64-runner-down:
     needs: [amd64-runner, build]
     if: ${{ always() }}
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, ARM64, neboloop-orch] # orchestration only
     steps:
+      # Install only. Up to four jobs share the VM's HOME, and `doctl auth
+      # init` in each rewrote one shared config file under the others. Every
+      # doctl call takes the token from the environment and a config dir of
+      # its own job.
       - uses: digitalocean/action-doctl@v2
         with:
-          token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+          no_auth: "true"
       - name: Delete this run's droplet, and any runner droplet older than three hours
+        env:
+          DIGITALOCEAN_ACCESS_TOKEN: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+          XDG_CONFIG_HOME: ${{ runner.temp }}/doctl-config
         run: |
           doctl compute droplet delete --force --tag-name "run-${{ github.run_id }}" || true
           cutoff=$(date -u -d '3 hours ago' +%s)

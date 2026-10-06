@@ -15,10 +15,10 @@ name: Cancel a closed PR's runs
 # taken from the event is the head branch name, and it reaches the shell
 # through the environment, never interpolated into the script.
 #
-# This one job runs on a GitHub-hosted runner deliberately: it is a few
-# seconds of `gh`, and it must not queue behind the hour-long jobs it exists
-# to cancel. The house-runner rule covers the gate and the release builds
-# (CLAUDE.md, "Release builds") and is untouched.
+# This one job runs on the stadium orchestration runners (label
+# neboloop-orch): four runners in the same VM kept for seconds-long jobs, so
+# it never queues behind the hour-long jobs it exists to cancel. No
+# GitHub-hosted runners: the org's Actions budget is capped.
 
 on:
   pull_request:
@@ -41,7 +41,10 @@ env:
 jobs:
   cancel:
     name: Let go of the runners
-    runs-on: ubuntu-latest
+    # A fork's PR never runs on our machines (and its token could not cancel
+    # anything here anyway).
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, Linux, ARM64, neboloop-orch] # orchestration only
     steps:
       - name: Cancel every run still moving for this PR's head branch
         env:
@@ -66,7 +69,7 @@ jobs:
           # holding a runner or waiting to hold one.
           gh run list --branch "$HEAD_REF" --limit 100 \
             --json databaseId,status,workflowName \
-            --jq '.[] | select(.status != "completed") | "\(.databaseId)\t\(.workflowName)"' > runs.tsv
+            --jq '.[] | select(.status != "completed") | "\(.databaseId)\t\(.workflowName)"' > "$RUNNER_TEMP/runs.tsv"
 
           cancelled=0
           while IFS=$'\t' read -r id workflow; do
@@ -79,7 +82,7 @@ jobs:
             else
               echo "could not cancel $id ($workflow); it most likely finished on its own"
             fi
-          done < runs.tsv
+          done < "$RUNNER_TEMP/runs.tsv"
 
           echo "PR #$PR_NUMBER closed: cancelled $cancelled run(s) on $HEAD_REF." \
             | tee -a "$GITHUB_STEP_SUMMARY"
