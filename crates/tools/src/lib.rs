@@ -1057,3 +1057,9 @@ fn generate_minimal_agent_md(name: &str, description: &str) -> String {
 /// in five.
 #[cfg(test)]
 pub(crate) static TEST_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Held by every test that drives the real desktop (`--include-ignored`):
+/// there is one foreground window, one keyboard and one clipboard, and two
+/// such tests at once take them from each other.
+#[cfg(test)]
+pub(crate) static TEST_DESKTOP_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
