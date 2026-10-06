@@ -432,7 +432,7 @@ mod tests {
         let store = Arc::new(Store::new(&dir.path().join("h.db").to_string_lossy()).unwrap());
         let say = |id: &str, role: &str, text: &str| {
             store
-                .create_chat_message_for_runner(id, "c1", role, text, None, None, None, None, None)
+                .create_chat_message_for_runner(id, "c1", role, text, None, None, None, None, None, None)
                 .unwrap();
         };
         let long = "q".repeat(PAGE_CHARS + 5_000);
