@@ -421,7 +421,7 @@ pub(crate) async fn call_model(call: ModelCall<'_>, st: &mut CallState, state: &
 
     // A CLI provider's tool calls come back over /agent/mcp carrying this
     // credential, and execute as this run until the call returns.
-    let _tool_credential = match tool_credential {
+    let run_credential = match tool_credential {
         Some(issue) if provider.handles_tools() => {
             let guard = issue();
             chat_req.tool_credential = Some(guard.token().to_string());
@@ -794,6 +794,19 @@ pub(crate) async fn call_model(call: ModelCall<'_>, st: &mut CallState, state: &
                 // MCP and stream the results back; relay so chat_dispatch can
                 // broadcast tool_result. API providers never emit this event —
                 // the runner synthesizes it after executing tools itself.
+                // What the call handed the owner came back beside the CLI's
+                // text (`tool_credentials`): it rides the event as a
+                // runner-executed call's does.
+                let mut event = event;
+                if let (Some(guard), Some(tc)) = (run_credential.as_ref(), event.tool_call.as_ref())
+                    && let Some(handed) = guard.take_handed(&tc.id)
+                {
+                    event.image_url = handed.image_url;
+                    event.payload = handed.payload;
+                    if !handed.more_files.is_empty() {
+                        event.widgets = Some(serde_json::json!({ "more_files": handed.more_files }));
+                    }
+                }
                 let _ = tx.send(event).await;
             }
             StreamEventType::AskRequest => {

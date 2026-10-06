@@ -198,7 +198,7 @@ impl DynTool for DesktopTool {
 
 async fn handle_window(action: &str, input: &serde_json::Value) -> ToolResult {
     match action {
-        "list" => handle_window_list().await,
+        "list" => crate::result_shape::keep_lines(handle_window_list().await, input["filter"].as_str().unwrap_or(""), input["limit"].as_u64().map(|n| n as usize)),
         "focus" => {
             let app = input["app"].as_str().unwrap_or("");
             if app.is_empty() {
@@ -332,14 +332,8 @@ async fn handle_window_focus(app: &str) -> ToolResult {
     #[cfg(target_os = "windows")]
     {
         let script = format!(
-            r#"Add-Type @"
-using System; using System.Runtime.InteropServices;
-public class Win {{ [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd); }}
-"@
-$p = Get-Process | Where-Object {{ $_.MainWindowTitle -match '{}' }} | Select-Object -First 1
-if ($p) {{ [Win]::SetForegroundWindow($p.MainWindowHandle) }} else {{ Write-Error "Window '{}' not found" }}"#,
-            escape_powershell(app),
-            escape_powershell(app)
+            "{}\n$front = Show-NeboWindow $h\n\"Focused '$($win.Current.Name)'\" + $(if ($front -ne $h) {{ ' (its open dialog is in front)' }} else {{ '' }})",
+            window_handle_script(app)
         );
         return run_powershell(&script).await;
     }
@@ -376,14 +370,9 @@ async fn handle_window_minimize(app: &str) -> ToolResult {
     #[cfg(target_os = "windows")]
     {
         let script = format!(
-            r#"Add-Type @"
-using System; using System.Runtime.InteropServices;
-public class Win {{ [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow); }}
-"@
-$p = Get-Process | Where-Object {{ $_.MainWindowTitle -match '{}' }} | Select-Object -First 1
-if ($p) {{ [Win]::ShowWindow($p.MainWindowHandle, 6) }} else {{ Write-Error "Window '{}' not found" }}"#,
-            escape_powershell(app),
-            escape_powershell(app)
+            "{}\n[void][NeboWin32]::ShowWindow($h, 6); Start-Sleep -Milliseconds 200\n\
+             if ([NeboWin32]::IsIconic($h)) {{ \"Minimized '$($win.Current.Name)'\" }} else {{ throw \"'$($win.Current.Name)' did not minimize\" }}",
+            window_handle_script(app)
         );
         return run_powershell(&script).await;
     }
@@ -431,14 +420,9 @@ async fn handle_window_maximize(app: &str) -> ToolResult {
     #[cfg(target_os = "windows")]
     {
         let script = format!(
-            r#"Add-Type @"
-using System; using System.Runtime.InteropServices;
-public class Win {{ [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow); }}
-"@
-$p = Get-Process | Where-Object {{ $_.MainWindowTitle -match '{}' }} | Select-Object -First 1
-if ($p) {{ [Win]::ShowWindow($p.MainWindowHandle, 3) }} else {{ Write-Error "Window '{}' not found" }}"#,
-            escape_powershell(app),
-            escape_powershell(app)
+            "{}\n[void][NeboWin32]::ShowWindow($h, 3); Start-Sleep -Milliseconds 200\n\
+             if ([NeboWin32]::IsZoomed($h)) {{ \"Maximized '$($win.Current.Name)'\" }} else {{ throw \"'$($win.Current.Name)' did not maximize\" }}",
+            window_handle_script(app)
         );
         return run_powershell(&script).await;
     }
@@ -478,17 +462,12 @@ async fn handle_window_resize(app: &str, w: i64, h: i64) -> ToolResult {
     }
     #[cfg(target_os = "windows")]
     {
+        // Resized in place: the window keeps its position, as on macOS.
         let script = format!(
-            r#"Add-Type @"
-using System; using System.Runtime.InteropServices;
-public class Win {{ [DllImport("user32.dll")] public static extern bool MoveWindow(IntPtr hWnd, int X, int Y, int nWidth, int nHeight, bool bRepaint); }}
-"@
-$p = Get-Process | Where-Object {{ $_.MainWindowTitle -match '{}' }} | Select-Object -First 1
-if ($p) {{ [Win]::MoveWindow($p.MainWindowHandle, 0, 0, {}, {}, $true) }} else {{ Write-Error "Window '{}' not found" }}"#,
-            escape_powershell(app),
-            w,
-            h,
-            escape_powershell(app)
+            "{}\n$r = New-Object NeboWin32+RECT; [void][NeboWin32]::GetWindowRect($h, [ref]$r)\n\
+             if (-not [NeboWin32]::MoveWindow($h, $r.Left, $r.Top, {w}, {h}, $true)) {{ throw \"Windows refused to resize '$($win.Current.Name)'\" }}\n\
+             [void][NeboWin32]::GetWindowRect($h, [ref]$r); \"Resized '$($win.Current.Name)' to $($r.Right - $r.Left)x$($r.Bottom - $r.Top)\"",
+            window_handle_script(app)
         );
         return run_powershell(&script).await;
     }
@@ -576,19 +555,10 @@ async fn handle_window_move(app: &str, x: i64, y: i64) -> ToolResult {
     #[cfg(target_os = "windows")]
     {
         let script = format!(
-            r#"Add-Type @"
-using System; using System.Runtime.InteropServices;
-public class Win {{ [DllImport("user32.dll")] public static extern bool MoveWindow(IntPtr hWnd, int X, int Y, int nWidth, int nHeight, bool bRepaint);
-[DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
-[StructLayout(LayoutKind.Sequential)] public struct RECT {{ public int Left, Top, Right, Bottom; }} }}
-"@
-$p = Get-Process | Where-Object {{ $_.MainWindowTitle -match '{}' }} | Select-Object -First 1
-if ($p) {{ $r = New-Object Win+RECT; [Win]::GetWindowRect($p.MainWindowHandle, [ref]$r);
-[Win]::MoveWindow($p.MainWindowHandle, {}, {}, ($r.Right - $r.Left), ($r.Bottom - $r.Top), $true) }} else {{ Write-Error "Window '{}' not found" }}"#,
-            escape_powershell(app),
-            x,
-            y,
-            escape_powershell(app)
+            "{}\n$r = New-Object NeboWin32+RECT; [void][NeboWin32]::GetWindowRect($h, [ref]$r)\n\
+             if (-not [NeboWin32]::MoveWindow($h, {x}, {y}, ($r.Right - $r.Left), ($r.Bottom - $r.Top), $true)) {{ throw \"Windows refused to move '$($win.Current.Name)'\" }}\n\
+             \"Moved '$($win.Current.Name)' to ({x},{y})\"",
+            window_handle_script(app)
         );
         return run_powershell(&script).await;
     }
@@ -853,6 +823,16 @@ async fn handle_input(
         snap.as_ref().and_then(|s| s.app.clone()).unwrap_or_default()
     };
 
+    // Keys with no app go to the window in front: the result names it, and
+    // when only the desktop or the taskbar is in front they are not sent.
+    #[cfg(target_os = "windows")]
+    if app.is_empty() && matches!(action, "type" | "press" | "hotkey") && element_ref.is_empty() && coordinate.is_none() {
+        match foreground_window().await {
+            Ok(front) => pick_note.push_str(&format!(" (to {front}, the window in front)")),
+            Err(e) => return ToolResult::error(format!("Not delivered: {e}. Pass app: \"<name>\" to send the keys to that app.")),
+        }
+    }
+
     let element: Option<UIElement> = if element_ref.is_empty() {
         None
     } else {
@@ -900,7 +880,9 @@ async fn handle_input(
             }
             Err(_) => match window_frame(&app, true).await {
                 Ok(r) => Some(r),
-                Err(e) if cfg!(target_os = "macos") => {
+                // The window could not be found or brought to the front:
+                // keys and clicks would land on whatever is in front instead.
+                Err(e) if cfg!(any(target_os = "macos", target_os = "windows")) => {
                     return ToolResult::error(format!("{action}: {e}"));
                 }
                 Err(_) => snap.as_ref().and_then(|s| s.frame.clone()),
@@ -1312,7 +1294,11 @@ async fn handle_input(
     match observe(&app, &after_input, snapshot_store, ax_cache).await {
         Ok(after) => {
             remember_act(act_key.clone(), screen_fingerprint(&after.snapshot));
-            let mut delta = match snap.as_ref().filter(|s| s.app.as_deref().map_or(app.is_empty(), |a| a.eq_ignore_ascii_case(&app))) {
+            // Keys sent to no app went to the window in front: there is no
+            // before of that window to compare, so nothing is claimed about
+            // what changed.
+            let keys_to_front = app.is_empty() && matches!(action, "type" | "press" | "hotkey");
+            let mut delta = match snap.as_ref().filter(|s| !keys_to_front && s.app.as_deref().map_or(app.is_empty(), |a| a.eq_ignore_ascii_case(&app))) {
                 Some(before) => delta_line(before, &after.snapshot),
                 None => String::new(),
             };
@@ -1610,11 +1596,39 @@ async fn window_frame(app: &str, raise: bool) -> Result<Rect, String> {
         .ok_or_else(|| format!("could not read the window frame of {app} (got '{}')", out.trim()))
 }
 
-// ponytail: window frames are read on macOS only; elsewhere every capture is
-// the whole screen and coordinates are screen pixels. Add xdotool
-// getwindowgeometry / UIAutomation BoundingRectangle when a cloud task
-// needs window-relative acting.
-#[cfg(not(target_os = "macos"))]
+/// `app`'s window frame on Windows (`Find-NeboAppWindow`), in the same
+/// screen points the input and capture scripts use. `raise` brings it to
+/// the front, its open dialog first (`Show-NeboWindow`), and fails when
+/// Windows refuses.
+#[cfg(target_os = "windows")]
+async fn window_frame(app: &str, raise: bool) -> Result<Rect, String> {
+    let script = format!(
+        "$w = Find-NeboAppWindow '{app_q}'\n\
+         if (-not $w) {{ throw '{app_q} has no open window' }}\n\
+         $h = [IntPtr]$w.Current.NativeWindowHandle\n\
+         {raise}\
+         $r = New-Object NeboWin32+RECT; [void][NeboWin32]::GetWindowRect($h, [ref]$r)\n\
+         \"$($r.Left),$($r.Top),$($r.Right - $r.Left),$($r.Bottom - $r.Top)\"",
+        app_q = escape_powershell(app),
+        raise = if raise {
+            "[void](Show-NeboWindow $h)\n"
+        } else {
+            ""
+        }
+    );
+    let out = run_powershell(&script).await;
+    if out.is_error {
+        return Err(out.content);
+    }
+    parse_frame(&out.content)
+        .map(|(x, y, w, h)| Rect { x, y, width: w, height: h })
+        .ok_or_else(|| format!("could not read the window frame of {app} (got '{}')", out.content.trim()))
+}
+
+// ponytail: window frames are read on macOS and Windows; on Linux every
+// capture is the whole screen and coordinates are screen pixels. Add xdotool
+// getwindowgeometry when a cloud task needs window-relative acting.
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 async fn window_frame(app: &str, _raise: bool) -> Result<Rect, String> {
     Err(format!("window frames are not read on this platform ({app}); captures are the whole screen"))
 }
@@ -1640,13 +1654,15 @@ async fn screen_rect() -> Option<Rect> {
     }
     #[cfg(target_os = "windows")]
     {
-        let out = ps_daemon()
+        let crate::desktop_daemon::Ran::Ok(out) = ps_daemon()
             .execute(
                 "Add-Type -AssemblyName System.Windows.Forms; $b=[System.Windows.Forms.Screen]::PrimaryScreen.Bounds; \"$($b.Width) $($b.Height)\"",
                 Duration::from_secs(5),
             )
             .await
-            .ok()?;
+        else {
+            return None;
+        };
         let mut it = out.split_whitespace().filter_map(|t| t.parse::<i64>().ok());
         return Some(Rect { x: 0, y: 0, width: it.next()?, height: it.next()? });
     }
@@ -1676,16 +1692,9 @@ async fn input_click(x: i64, y: i64) -> ToolResult {
     #[cfg(target_os = "windows")]
     {
         let script = format!(
-            r#"Add-Type @"
-using System; using System.Runtime.InteropServices;
-public class Mouse {{
-    [DllImport("user32.dll")] public static extern bool SetCursorPos(int X, int Y);
-    [DllImport("user32.dll")] public static extern void mouse_event(uint dwFlags, uint dx, uint dy, uint dwData, int dwExtraInfo);
-}}
-"@
-[Mouse]::SetCursorPos({}, {})
-[Mouse]::mouse_event(0x0002, 0, 0, 0, 0)
-[Mouse]::mouse_event(0x0004, 0, 0, 0, 0)"#,
+            r#"[NeboWin32]::SetCursorPos({}, {})
+[NeboWin32]::mouse_event(0x0002, 0, 0, 0, 0)
+[NeboWin32]::mouse_event(0x0004, 0, 0, 0, 0)"#,
             x, y
         );
         return run_powershell(&script).await;
@@ -1719,17 +1728,10 @@ async fn input_double_click(x: i64, y: i64) -> ToolResult {
     #[cfg(target_os = "windows")]
     {
         let script = format!(
-            r#"Add-Type @"
-using System; using System.Runtime.InteropServices;
-public class Mouse {{
-    [DllImport("user32.dll")] public static extern bool SetCursorPos(int X, int Y);
-    [DllImport("user32.dll")] public static extern void mouse_event(uint dwFlags, uint dx, uint dy, uint dwData, int dwExtraInfo);
-}}
-"@
-[Mouse]::SetCursorPos({}, {})
-[Mouse]::mouse_event(0x0002, 0, 0, 0, 0); [Mouse]::mouse_event(0x0004, 0, 0, 0, 0)
+            r#"[NeboWin32]::SetCursorPos({}, {})
+[NeboWin32]::mouse_event(0x0002, 0, 0, 0, 0); [NeboWin32]::mouse_event(0x0004, 0, 0, 0, 0)
 Start-Sleep -Milliseconds 50
-[Mouse]::mouse_event(0x0002, 0, 0, 0, 0); [Mouse]::mouse_event(0x0004, 0, 0, 0, 0)"#,
+[NeboWin32]::mouse_event(0x0002, 0, 0, 0, 0); [NeboWin32]::mouse_event(0x0004, 0, 0, 0, 0)"#,
             x, y
         );
         return run_powershell(&script).await;
@@ -1763,16 +1765,9 @@ async fn input_right_click(x: i64, y: i64) -> ToolResult {
     #[cfg(target_os = "windows")]
     {
         let script = format!(
-            r#"Add-Type @"
-using System; using System.Runtime.InteropServices;
-public class Mouse {{
-    [DllImport("user32.dll")] public static extern bool SetCursorPos(int X, int Y);
-    [DllImport("user32.dll")] public static extern void mouse_event(uint dwFlags, uint dx, uint dy, uint dwData, int dwExtraInfo);
-}}
-"@
-[Mouse]::SetCursorPos({}, {})
-[Mouse]::mouse_event(0x0008, 0, 0, 0, 0)
-[Mouse]::mouse_event(0x0010, 0, 0, 0, 0)"#,
+            r#"[NeboWin32]::SetCursorPos({}, {})
+[NeboWin32]::mouse_event(0x0008, 0, 0, 0, 0)
+[NeboWin32]::mouse_event(0x0010, 0, 0, 0, 0)"#,
             x, y
         );
         return run_powershell(&script).await;
@@ -1878,11 +1873,7 @@ async fn input_move(x: i64, y: i64) -> ToolResult {
     #[cfg(target_os = "windows")]
     {
         let script = format!(
-            r#"Add-Type @"
-using System; using System.Runtime.InteropServices;
-public class Mouse {{ [DllImport("user32.dll")] public static extern bool SetCursorPos(int X, int Y); }}
-"@
-[Mouse]::SetCursorPos({}, {})"#,
+            r#"[NeboWin32]::SetCursorPos({}, {})"#,
             x, y
         );
         return run_powershell(&script).await;
@@ -1946,11 +1937,7 @@ async fn input_scroll(dx: i64, dy: i64) -> ToolResult {
     #[cfg(target_os = "windows")]
     {
         let script = format!(
-            r#"Add-Type @"
-using System; using System.Runtime.InteropServices;
-public class Mouse {{ [DllImport("user32.dll")] public static extern void mouse_event(uint dwFlags, uint dx, uint dy, uint dwData, int dwExtraInfo); }}
-"@
-[Mouse]::mouse_event(0x0800, 0, 0, {}, 0)"#,
+            r#"[NeboWin32]::mouse_event(0x0800, 0, 0, {}, 0)"#,
             dy * 120 // WHEEL_DELTA = 120
         );
         return run_powershell(&script).await;
@@ -1990,19 +1977,12 @@ async fn input_drag(x: i64, y: i64, x2: i64, y2: i64) -> ToolResult {
     #[cfg(target_os = "windows")]
     {
         let script = format!(
-            r#"Add-Type @"
-using System; using System.Runtime.InteropServices;
-public class Mouse {{
-    [DllImport("user32.dll")] public static extern bool SetCursorPos(int X, int Y);
-    [DllImport("user32.dll")] public static extern void mouse_event(uint dwFlags, uint dx, uint dy, uint dwData, int dwExtraInfo);
-}}
-"@
-[Mouse]::SetCursorPos({}, {})
-[Mouse]::mouse_event(0x0002, 0, 0, 0, 0)
+            r#"[NeboWin32]::SetCursorPos({}, {})
+[NeboWin32]::mouse_event(0x0002, 0, 0, 0, 0)
 Start-Sleep -Milliseconds 50
-[Mouse]::SetCursorPos({}, {})
+[NeboWin32]::SetCursorPos({}, {})
 Start-Sleep -Milliseconds 50
-[Mouse]::mouse_event(0x0004, 0, 0, 0, 0)"#,
+[NeboWin32]::mouse_event(0x0004, 0, 0, 0, 0)"#,
             x, y, x2, y2
         );
         return run_powershell(&script).await;
@@ -2839,9 +2819,9 @@ fn split_ax_app_header(output: &str) -> (AxHeader, &str) {
 async fn capture_screenshot(input: &serde_json::Value) -> ToolResult {
     #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
     let quality = input["quality"].as_str().unwrap_or("medium");
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
     let app = input["app"].as_str().unwrap_or("");
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
     let region = input["region"].as_str();
 
     // Use JPEG capture on macOS for low/medium to skip PNG decode overhead
@@ -2990,9 +2970,23 @@ async fn capture_screenshot(input: &serde_json::Value) -> ToolResult {
 
     #[cfg(target_os = "windows")]
     let result = {
-        let ps_script = windows_screen_script(&tmp_path);
-        command::new::<tokio::process::Command>("powershell", command::Console::Hidden)
-            .args(["-NoProfile", "-Command", &ps_script])
+        // A window is captured by its frame, as on macOS.
+        let region = if !app.is_empty() {
+            match window_frame(app, false).await {
+                Ok(f) => Some((f.x, f.y, f.width, f.height)),
+                Err(e) => {
+                    return ToolResult::error(format!("Screenshot of {app} not taken: {e}. Capture without `app` for the whole screen."));
+                }
+            }
+        } else {
+            match region.map(parse_frame) {
+                Some(Some(r)) => Some(r),
+                Some(None) => return ToolResult::error(format!("region must be x,y,width,height in screen points, got '{}'", region.unwrap_or(""))),
+                None => None,
+            }
+        };
+        let ps_script = windows_screen_script(&tmp_path, region);
+        command::powershell::<tokio::process::Command>(&ps_script)
             .output()
             .await
     };
@@ -3037,11 +3031,17 @@ async fn capture_screenshot(input: &serde_json::Value) -> ToolResult {
 
 /// The PowerShell that saves the primary screen to `path` (PNG).
 #[cfg(target_os = "windows")]
-fn windows_screen_script(path: &str) -> String {
+/// The capture script: the primary screen, or `region` (`x,y,w,h` in screen
+/// points) when given — a window's frame, as macOS's `screencapture -R`.
+fn windows_screen_script(path: &str, region: Option<(i64, i64, i64, i64)>) -> String {
+    let bounds = match region {
+        Some((x, y, w, h)) => format!("$screen = New-Object System.Drawing.Rectangle({x}, {y}, {w}, {h})"),
+        None => "$screen = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds".to_string(),
+    };
     format!(
         r#"Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
-$screen = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+{bounds}
 $bmp = New-Object System.Drawing.Bitmap($screen.Width, $screen.Height)
 $g = [System.Drawing.Graphics]::FromImage($bmp)
 $g.CopyFromScreen($screen.Location, [System.Drawing.Point]::Empty, $screen.Size)
@@ -3101,8 +3101,7 @@ pub(crate) async fn capture_full_screen(path: &str) -> Result<(), String> {
         return Err("recording this screen needs gnome-screenshot, scrot or grim".into());
     };
     #[cfg(target_os = "windows")]
-    let out = command::new::<tokio::process::Command>("powershell", command::Console::Hidden)
-        .args(["-NoProfile", "-Command", &windows_screen_script(path)])
+    let out = command::powershell::<tokio::process::Command>(&windows_screen_script(path, None))
         .output()
         .await;
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
@@ -3246,6 +3245,10 @@ fn compress_and_encode(img_bytes: &[u8], quality: &str) -> ToolResult {
         img
     };
 
+    // JPEG has no alpha: a capture with an alpha channel (every Windows
+    // capture, 32-bit ARGB) is refused by the encoder unless it is dropped.
+    let img = image::DynamicImage::ImageRgb8(img.to_rgb8());
+
     // Encode to JPEG
     let mut jpeg_buf = Cursor::new(Vec::new());
     let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg_buf, jpeg_quality);
@@ -3304,7 +3307,7 @@ async fn handle_ui(
             if app.is_empty() {
                 return ToolResult::error(errors::missing_param("tree", "app", "os(resource: \"ui\", action: \"tree\", app: \"Safari\")"));
             }
-            ui_tree(app, role).await
+            crate::result_shape::keep_lines(ui_tree(app, role).await, input["filter"].as_str().unwrap_or(""), input["max_elements"].as_u64().map(|n| n as usize))
         }
         // find is an observe with a filter: same walk, same refs, same image,
         // so a ref it returns is one the next act can use.
@@ -3390,19 +3393,16 @@ except Exception as e:
     #[cfg(target_os = "windows")]
     {
         let script = format!(
-            r#"Add-Type -AssemblyName UIAutomationClient
-Add-Type -AssemblyName UIAutomationTypes
-$root = [System.Windows.Automation.AutomationElement]::RootElement
-$cond = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, '{}')
-$app = $root.FindFirst([System.Windows.Automation.TreeScope]::Children, $cond)
-if ($app) {{
-    $all = $app.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
-    foreach ($e in $all) {{
-        "$($e.Current.ControlType.ProgrammaticName) | $($e.Current.Name) | $($e.Current.AutomationId)"
-    }}
-}} else {{ "Application '{}' not found" }}"#,
-            escape_powershell(app),
-            escape_powershell(app)
+            r#"{window}
+$role = '{role}'
+$all = $win.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
+foreach ($e in $all) {{
+    $type = $e.Current.ControlType.ProgrammaticName.Replace('ControlType.', '')
+    if ($role -eq '' -or $type -ieq $role) {{ "$type | $($e.Current.Name) | $($e.Current.AutomationId)" }}
+}}"#,
+            window = find_window_script(app),
+            // A macOS role names the same control: AXButton is Button.
+            role = escape_powershell(role.strip_prefix("AX").unwrap_or(role))
         );
         return run_powershell(&script).await;
     }
@@ -3436,19 +3436,10 @@ end tell"#,
     #[cfg(target_os = "windows")]
     {
         let script = format!(
-            r#"Add-Type -AssemblyName UIAutomationClient
-Add-Type -AssemblyName UIAutomationTypes
-$root = [System.Windows.Automation.AutomationElement]::RootElement
-$cond = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, '{}')
-$el = $root.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $cond)
-if ($el) {{
-    $pattern = $el.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
-    $pattern.Invoke()
-    "Clicked: {}"
-}} else {{ "Element '{}' not found" }}"#,
-            escape_powershell(label),
-            escape_powershell(label),
-            escape_powershell(label)
+            r#"{find}
+$how = Invoke-NeboClick $el
+"Clicked '$($el.Current.Name)' ($how)""#,
+            find = find_element_script(app, label)
         );
         return run_powershell(&script).await;
     }
@@ -3485,17 +3476,10 @@ end tell"#,
     #[cfg(target_os = "windows")]
     {
         let script = format!(
-            r#"Add-Type -AssemblyName UIAutomationClient
-Add-Type -AssemblyName UIAutomationTypes
-$root = [System.Windows.Automation.AutomationElement]::RootElement
-$cond = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, '{}')
-$el = $root.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $cond)
-if ($el) {{
-    try {{ $p = $el.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern); $p.Current.Value }}
-    catch {{ $el.Current.Name }}
-}} else {{ "Element '{}' not found" }}"#,
-            escape_powershell(label),
-            escape_powershell(label)
+            r#"{find}
+try {{ $p = $el.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern); $p.Current.Value }}
+catch {{ $el.Current.Name }}"#,
+            find = find_element_script(app, label)
         );
         return run_powershell(&script).await;
     }
@@ -3533,19 +3517,12 @@ end tell"#,
     #[cfg(target_os = "windows")]
     {
         let script = format!(
-            r#"Add-Type -AssemblyName UIAutomationClient
-Add-Type -AssemblyName UIAutomationTypes
-$root = [System.Windows.Automation.AutomationElement]::RootElement
-$cond = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, '{}')
-$el = $root.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $cond)
-if ($el) {{
-    $p = $el.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
-    $p.SetValue('{}')
-    "Value set"
-}} else {{ "Element '{}' not found" }}"#,
-            escape_powershell(label),
-            escape_powershell(value),
-            escape_powershell(label)
+            r#"{find}
+$p = $el.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
+$p.SetValue('{value}')
+"Value set""#,
+            find = find_element_script(app, label),
+            value = escape_powershell(value)
         );
         return run_powershell(&script).await;
     }
@@ -3596,7 +3573,7 @@ async fn handle_menu(action: &str, input: &serde_json::Value) -> ToolResult {
             }
             match menu_via_helper(app, name, false).await {
                 Some(r) => r,
-                None => menu_list(app).await,
+                None => menu_list(app, name).await,
             }
         }
         "menus" => {
@@ -3695,7 +3672,10 @@ async fn menu_via_helper(app: &str, path: &str, all: bool) -> Option<ToolResult>
     Some(ToolResult::ok(text))
 }
 
-async fn menu_list(app: &str) -> ToolResult {
+/// The app's menus, or the items of the menu `path` names ("File", or
+/// "View > Zoom"). macOS's reading lists the menus only.
+#[allow(unused_variables)]
+async fn menu_list(app: &str, path: &str) -> ToolResult {
     #[cfg(target_os = "macos")]
     {
         let script = format!(
@@ -3716,11 +3696,25 @@ end tell"#,
     }
     #[cfg(target_os = "windows")]
     {
-        // The old PowerShell script only proved the process existed and then
-        // answered "Menu bar found" with no menus in it.
-        return ToolResult::error(
-            "Menu enumeration is not implemented on Windows; use os(resource: \"ui\", action: \"tree\") to read the window's controls.",
-        );
+        let script = if path.trim().is_empty() {
+            format!(
+                "{}\n$bar = Get-NeboMenuBar $win\n\
+                 \"Menus of '$($win.Current.Name)':\"\n\
+                 foreach ($m in $bar.FindAll([System.Windows.Automation.TreeScope]::Children, [System.Windows.Automation.Condition]::TrueCondition)) {{ \"  $($m.Current.Name)\" }}\n\
+                 'List one with os(resource: \"menu\", action: \"list\", app, name: \"<menu>\"), or choose an item with action: \"click\", name: \"Menu > Item\".'",
+                window_handle_script(app)
+            )
+        } else {
+            format!(
+                "{}\n[void](Show-NeboWindow $h)\n$bar = Get-NeboMenuBar $win\n{}\n\
+                 \"Items of $label in '$($win.Current.Name)':\"\n\
+                 foreach ($i in Get-NeboOpenMenuItems $win $bar) {{ \"  $($i.Current.Name)\" + $(if (-not $i.Current.IsEnabled) {{ '  (disabled)' }} else {{ '' }}) }}\n\
+                 Close-NeboMenus $bar",
+                window_handle_script(app),
+                open_menu_path_script(path, false)
+            )
+        };
+        return run_powershell(&script).await;
     }
     #[cfg(target_os = "linux")]
     {
@@ -3758,9 +3752,17 @@ end tell"#,
     }
     #[cfg(target_os = "windows")]
     {
-        return ToolResult::error(
-            "Menu enumeration on Windows requires UI Automation (use ui tree instead)",
+        let script = format!(
+            "{}\n[void](Show-NeboWindow $h)\n$bar = Get-NeboMenuBar $win\n\
+             foreach ($m in @($bar.FindAll([System.Windows.Automation.TreeScope]::Children, [System.Windows.Automation.Condition]::TrueCondition))) {{\n\
+               \"$($m.Current.Name):\"\n\
+               Open-NeboMenuItem $m\n\
+               foreach ($i in Get-NeboOpenMenuItems $win $bar) {{ \"  $($i.Current.Name)\" + $(if (-not $i.Current.IsEnabled) {{ '  (disabled)' }} else {{ '' }}) }}\n\
+               Close-NeboMenus $bar; Start-Sleep -Milliseconds 200\n\
+             }}",
+            window_handle_script(app)
         );
+        return run_powershell(&script).await;
     }
     #[cfg(target_os = "linux")]
     {
@@ -3811,9 +3813,14 @@ end tell"#,
     }
     #[cfg(target_os = "windows")]
     {
-        return ToolResult::error(
-            "Menu click on Windows requires UI Automation (use ui click instead)",
+        let script = format!(
+            "{}\n[void](Show-NeboWindow $h)\n$bar = Get-NeboMenuBar $win\n{}\n\
+             $how = Invoke-NeboClick $el\n\
+             \"Chose $label in '$($win.Current.Name)' ($how)\"",
+            window_handle_script(app),
+            open_menu_path_script(name, true)
         );
+        return run_powershell(&script).await;
     }
     #[cfg(target_os = "linux")]
     {
@@ -3880,7 +3887,12 @@ end tell"#,
 #[allow(unused_variables)]
 async fn handle_dialog(action: &str, input: &serde_json::Value) -> ToolResult {
     let app = input["app"].as_str().unwrap_or("");
-    let name = input["name"].as_str().unwrap_or("");
+    // A field or button is named by `name`; `label`, what `ui` calls it, too.
+    let name = input["name"]
+        .as_str()
+        .filter(|n| !n.trim().is_empty())
+        .or_else(|| input["label"].as_str())
+        .unwrap_or("");
     let value = input["value"].as_str().unwrap_or("");
 
     match action {
@@ -3933,15 +3945,13 @@ end tell"#,
     }
     #[cfg(target_os = "windows")]
     {
-        let script = r#"Add-Type -AssemblyName UIAutomationClient
-Add-Type -AssemblyName UIAutomationTypes
-$root = [System.Windows.Automation.AutomationElement]::RootElement
-$cond = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::Window)
-$windows = $root.FindAll([System.Windows.Automation.TreeScope]::Children, $cond)
-$dialogs = @()
-foreach ($w in $windows) { if ($w.Current.ClassName -match 'Dialog|#32770') { $dialogs += $w.Current.Name } }
-if ($dialogs.Count -gt 0) { "Dialogs: $($dialogs -join ', ')" } else { "No dialog detected" }"#;
-        return run_powershell(script).await;
+        let script = format!(
+            "Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes\n\
+             $dlg = Find-NeboDialog '{}'\n\
+             if ($dlg) {{ $owner = [string](Get-Process -Id $dlg.Current.ProcessId -ErrorAction SilentlyContinue).ProcessName; \"Dialog '$($dlg.Current.Name)' is open in $owner\" }} else {{ 'No dialog is open' }}",
+            escape_powershell(app)
+        );
+        return run_powershell(&script).await;
     }
     #[cfg(target_os = "linux")]
     {
@@ -3982,18 +3992,17 @@ end tell"#,
     }
     #[cfg(target_os = "windows")]
     {
-        let script = r#"Add-Type -AssemblyName UIAutomationClient
-Add-Type -AssemblyName UIAutomationTypes
-$root = [System.Windows.Automation.AutomationElement]::RootElement
-$cond = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::Window)
-$windows = $root.FindAll([System.Windows.Automation.TreeScope]::Children, $cond)
-foreach ($w in $windows) {
-    if ($w.Current.ClassName -match 'Dialog|#32770') {
-        $children = $w.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
-        foreach ($c in $children) { "$($c.Current.ControlType.ProgrammaticName) | $($c.Current.Name)" }
-    }
-}"#;
-        return run_powershell(script).await;
+        let script = format!(
+            "Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes\n\
+             $dlg = Find-NeboDialog '{}'\n\
+             if (-not $dlg) {{ throw 'No dialog is open' }}\n\
+             \"Dialog '$($dlg.Current.Name)':\"\n\
+             foreach ($c in $dlg.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)) {{\n\
+               if ($c.Current.Name) {{ \"$($c.Current.ControlType.ProgrammaticName.Replace('ControlType.', '')) | $($c.Current.Name)\" }}\n\
+             }}",
+            escape_powershell(app)
+        );
+        return run_powershell(&script).await;
     }
     #[cfg(target_os = "linux")]
     {
@@ -4031,16 +4040,10 @@ end tell"#,
     #[cfg(target_os = "windows")]
     {
         let script = format!(
-            r#"Add-Type -AssemblyName UIAutomationClient
-Add-Type -AssemblyName UIAutomationTypes
-$root = [System.Windows.Automation.AutomationElement]::RootElement
-$cond = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, '{}')
-$el = $root.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $cond)
-if ($el) {{ $el.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke(); "Clicked: {}" }}
-else {{ "Button '{}' not found" }}"#,
-            escape_powershell(name),
-            escape_powershell(name),
-            escape_powershell(name)
+            r#"{find}
+$how = Invoke-NeboClick $el
+"Clicked '$($el.Current.Name)' in '$($win.Current.Name)' ($how)""#,
+            find = find_dialog_element_script(app, name)
         );
         return run_powershell(&script).await;
     }
@@ -4087,14 +4090,29 @@ end tell"#,
     #[cfg(target_os = "windows")]
     {
         let script = format!(
-            r#"Add-Type -AssemblyName UIAutomationClient
-Add-Type -AssemblyName UIAutomationTypes
-$root = [System.Windows.Automation.AutomationElement]::RootElement
-$cond = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::Edit)
-$el = $root.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $cond)
-if ($el) {{ $p = $el.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern); $p.SetValue('{}'); "Field filled" }}
-else {{ "Text field not found" }}"#,
-            escape_powershell(value)
+            // Every element the label names is tried in turn (a label's own
+            // text comes before its box): the first that takes text is set,
+            // through accessibility or as the Win32 edit control it is, and
+            // read back.
+            r#"{dialog}
+$label = '{label}'; $value = '{value}'
+$all = @($win.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition))
+$cands = if ($label) {{ @(Select-NeboNamedAll $all $label) }} else {{
+  # No name: the field that has focus, else the dialog's edit boxes. Never
+  # a cell of a list (a file name in a folder view is one: setting it renames).
+  $box = @($all | Where-Object {{ $_.Current.ClassName -ne 'UIProperty' -and ($_.Current.ClassName -match '^(Edit|RichEdit|AppControlHost)' -or $_.Current.ControlType -eq [System.Windows.Automation.ControlType]::Edit) }})
+  @($box | Where-Object {{ $_.Current.HasKeyboardFocus }}) + @($box | Where-Object {{ -not $_.Current.HasKeyboardFocus }})
+}}
+$cands = @($cands | Where-Object {{ $_.Current.ClassName -ne 'UIProperty' }})
+$now = $null; $field = $null
+foreach ($c in $cands) {{ $now = Set-NeboFieldText $c $value; if ($null -ne $now) {{ $field = $c; break }} }}
+$what = if ($label) {{ "'$label'" }} else {{ 'a text field' }}
+if (-not $field) {{ throw "No field named $what in '$($win.Current.Name)' takes text; os(resource: 'dialog', action: 'list') lists its elements" }}
+if ($now -ne $value) {{ throw "$what in '$($win.Current.Name)' still reads '$now' after it was set" }}
+"Filled $what in '$($win.Current.Name)' (read back)""#,
+            dialog = find_dialog_script(app),
+            label = escape_powershell(name),
+            value = escape_powershell(value)
         );
         return run_powershell(&script).await;
     }
@@ -4127,8 +4145,23 @@ end tell"#,
     }
     #[cfg(target_os = "windows")]
     {
-        let script = "$wsh = New-Object -ComObject WScript.Shell; $wsh.SendKeys('{ESC}')";
-        return run_powershell(script).await;
+        // Its Cancel (or Close, or No) button when it has one, else Escape
+        // with the dialog in front; then the dialog must be gone.
+        let script = format!(
+            "Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes\n\
+             $dlg = Find-NeboDialog '{}'\n\
+             if (-not $dlg) {{ throw 'No dialog is open' }}\n\
+             $name = $dlg.Current.Name; $h = [IntPtr]$dlg.Current.NativeWindowHandle\n\
+             $inDlg = @($dlg.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition))\n\
+             $button = $null; foreach ($b in 'Cancel', 'Close', 'No') {{ $button = @(Select-NeboNamedAll $inDlg $b | Where-Object {{ $_.Current.ControlType -ne [System.Windows.Automation.ControlType]::Text }}) | Select-Object -First 1; if ($button) {{ break }} }}\n\
+             if ($button) {{ [void](Invoke-NeboClick $button); $how = \"its $($button.Current.Name) button\" }}\n\
+             else {{ [void](Show-NeboWindow $h); (New-Object -ComObject WScript.Shell).SendKeys('{{ESC}}'); $how = 'Escape' }}\n\
+             Start-Sleep -Milliseconds 400\n\
+             if ([NeboWin32]::IsWindow($h)) {{ throw \"'$name' is still open after $how\" }}\n\
+             \"Dismissed '$name' ($how)\"",
+            escape_powershell(app)
+        );
+        return run_powershell(&script).await;
     }
     #[cfg(target_os = "linux")]
     {
@@ -4770,27 +4803,318 @@ async fn run_command_raw(cmd: &str, args: &[&str]) -> Result<String, String> {
     }
 }
 
+/// What every desktop script can use, defined once per session:
+/// - `NeboWin32`, the Win32 calls the scripts make, as one type (a second
+///   `Add-Type` of a different `Win` fails in a session that keeps the first).
+/// - `Find-NeboAppWindow $app`, an app's top-level window found the way the
+///   owner names the app: its process name, else its window title, exactly,
+///   else either containing the name ("Notepad" is `Untitled - Notepad`);
+///   the foreground window when no app is named. macOS finds it by process.
+#[cfg(target_os = "windows")]
+const WIN32_PRELUDE: &str = r#"function Find-NeboAppWindow([string]$app) {
+  Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
+  if ([string]::IsNullOrEmpty($app)) { return [System.Windows.Automation.AutomationElement]::FromHandle([NeboWin32]::GetForegroundWindow()) }
+  $tops = [System.Windows.Automation.AutomationElement]::RootElement.FindAll([System.Windows.Automation.TreeScope]::Children, [System.Windows.Automation.Condition]::TrueCondition)
+  $names = @{}; $exact = $null; $partial = $null
+  foreach ($w in $tops) {
+    $p = $w.Current.ProcessId
+    if (-not $names.ContainsKey($p)) { $names[$p] = [string](Get-Process -Id $p -ErrorAction SilentlyContinue).ProcessName }
+    $t = $w.Current.Name
+    if ($names[$p] -ieq $app -or $t -ieq $app) { if ($null -eq $exact) { $exact = $w } }
+    elseif ($names[$p].IndexOf($app, [StringComparison]::OrdinalIgnoreCase) -ge 0 -or $t.IndexOf($app, [StringComparison]::OrdinalIgnoreCase) -ge 0) { if ($null -eq $partial) { $partial = $w } }
+  }
+  if ($null -ne $exact) { $exact } else { $partial }
+}
+function Show-NeboWindow([IntPtr]$h) {
+  if ([NeboWin32]::IsIconic($h)) { [void][NeboWin32]::ShowWindow($h, 9); Start-Sleep -Milliseconds 300 }
+  $front = [NeboWin32]::GetLastActivePopup($h)
+  $fg = [NeboWin32]::GetForegroundWindow()
+  [uint32]$pid0 = 0; $fgThread = [NeboWin32]::GetWindowThreadProcessId($fg, [ref]$pid0)
+  $me = [NeboWin32]::GetCurrentThreadId()
+  $attached = $fgThread -ne 0 -and $fgThread -ne $me -and [NeboWin32]::AttachThreadInput($me, $fgThread, $true)
+  [void][NeboWin32]::BringWindowToTop($front); [void][NeboWin32]::SetForegroundWindow($front)
+  if ($attached) { [void][NeboWin32]::AttachThreadInput($me, $fgThread, $false) }
+  Start-Sleep -Milliseconds 100
+  if ([NeboWin32]::GetForegroundWindow() -ne $front) { throw "Windows did not bring the window to the front; nothing was sent to it" }
+  $front
+}
+function Find-NeboDialog([string]$app) {
+  $tops = if ([string]::IsNullOrEmpty($app)) { [System.Windows.Automation.AutomationElement]::RootElement.FindAll([System.Windows.Automation.TreeScope]::Children, [System.Windows.Automation.Condition]::TrueCondition) } else { @(Find-NeboAppWindow $app) }
+  $isWindow = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::Window)
+  foreach ($w in $tops) {
+    if ($null -eq $w) { continue }
+    $dlg = $w.FindFirst([System.Windows.Automation.TreeScope]::Children, $isWindow)
+    if ($null -eq $dlg -and $w.Current.ClassName -match 'Dialog|#32770') { $dlg = $w }
+    if ($null -eq $dlg) { continue }
+    # The innermost: a dialog a dialog opened ("Confirm Save As" over "Save as") is the one in front.
+    while ($true) { $inner = $dlg.FindFirst([System.Windows.Automation.TreeScope]::Children, $isWindow); if ($null -eq $inner) { break }; $dlg = $inner }
+    return $dlg
+  }
+  $null
+}
+function Find-NeboElement($root, [string]$label) {
+  Select-NeboNamed @($root.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)) $label
+}
+function Select-NeboNamed($all, [string]$label) { @(Select-NeboNamedAll $all $label) | Select-Object -First 1 }
+function Select-NeboNamedAll($all, [string]$label) {
+  $want = $label.Replace('&', '').Trim().TrimEnd(':').Trim()
+  $exact = @(); $loose = @(); $part = @()
+  foreach ($e in $all) {
+    $n = [string]$e.Current.Name
+    $bare = $n.Replace('&', '').Trim().TrimEnd(':').Trim()
+    if ($n -ceq $label) { $exact += $e }
+    elseif ($bare -ieq $want) { $loose += $e }
+    elseif ($want -and $bare.IndexOf($want, [StringComparison]::OrdinalIgnoreCase) -ge 0) { $part += $e }
+  }
+  $exact + $loose + $part
+}
+function Get-NeboEditHandle($el) {
+  $walker = [System.Windows.Automation.TreeWalker]::RawViewWalker
+  $level = @($el)
+  for ($d = 0; $d -lt 3 -and $level; $d++) {
+    $next = @()
+    foreach ($e in $level) {
+      if ($e.Current.ClassName -match '^(Edit|RichEdit)' -and $e.Current.NativeWindowHandle -ne 0) { return [IntPtr]$e.Current.NativeWindowHandle }
+      $c = $walker.GetFirstChild($e); while ($c) { $next += $c; $c = $walker.GetNextSibling($c) }
+    }
+    $level = $next
+  }
+  $null
+}
+function Read-NeboFieldText($el) {
+  $vp = $null
+  if ($el.TryGetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern, [ref]$vp)) { return [string]$vp.Current.Value }
+  $h = Get-NeboEditHandle $el
+  if ($h) { $sb = New-Object System.Text.StringBuilder 32768; [void][NeboWin32]::SendMessage($h, 0x000D, [IntPtr]32768, $sb); return $sb.ToString() }
+  $null
+}
+function Set-NeboFieldText($el, [string]$text) {
+  $vp = $null
+  if ($el.TryGetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern, [ref]$vp) -and -not $vp.Current.IsReadOnly) { $vp.SetValue($text); return [string]$vp.Current.Value }
+  # A field that takes no value through accessibility is typed into the way
+  # a person does: focused, its text selected, the new text pasted. Setting
+  # its Win32 edit directly is not enough: the Windows 11 file dialog's name
+  # box only mirrors its text into that edit, so a set there reads back but
+  # is never used.
+  # The control a person would click into: the element, or the nearest
+  # focusable one holding it (a mirror edit sits inside the box it mirrors).
+  $walker = [System.Windows.Automation.TreeWalker]::ControlViewWalker
+  for ($i = 0; $i -lt 3 -and $el -and -not $el.Current.IsKeyboardFocusable; $i++) { $el = $walker.GetParent($el) }
+  if (-not $el -or -not $el.Current.IsKeyboardFocusable) { return $null }
+  $top = $el
+  while ($true) { $p = $walker.GetParent($top); if ($null -eq $p -or $p -eq [System.Windows.Automation.AutomationElement]::RootElement) { break }; $top = $p }
+  if ($top.Current.NativeWindowHandle -ne 0) { [void](Show-NeboWindow ([IntPtr]$top.Current.NativeWindowHandle)) }
+  $el.SetFocus(); Start-Sleep -Milliseconds 150
+  Add-Type -AssemblyName System.Windows.Forms
+  $saved = $null; try { $saved = [System.Windows.Forms.Clipboard]::GetDataObject() } catch { }
+  [System.Windows.Forms.Clipboard]::SetText($text)
+  $keys = New-Object -ComObject WScript.Shell
+  $keys.SendKeys('^a'); Start-Sleep -Milliseconds 80; $keys.SendKeys('^v'); Start-Sleep -Milliseconds 250
+  if ($saved) { try { [System.Windows.Forms.Clipboard]::SetDataObject($saved, $true) } catch { } }
+  Read-NeboFieldText $el
+}
+function Get-NeboMenuBar($win) {
+  $isBar = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::MenuBar)
+  $bars = @($win.FindAll([System.Windows.Automation.TreeScope]::Descendants, $isBar) | Where-Object { $_.Current.Name -notmatch '^System' })
+  if (-not $bars) { throw "'$($win.Current.Name)' has no menu bar" }
+  $bars[0]
+}
+function Get-NeboOpenMenuItems($win, $bar) {
+  $isItem = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::MenuItem)
+  $top = @($bar.FindAll([System.Windows.Automation.TreeScope]::Children, $isItem) | ForEach-Object { $_.Current.Name })
+  $byPid = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ProcessIdProperty, $win.Current.ProcessId)
+  foreach ($w in [System.Windows.Automation.AutomationElement]::RootElement.FindAll([System.Windows.Automation.TreeScope]::Children, $byPid)) {
+    foreach ($i in $w.FindAll([System.Windows.Automation.TreeScope]::Descendants, $isItem)) { if ($top -notcontains $i.Current.Name) { $i } }
+  }
+}
+function Open-NeboMenuItem($el) {
+  $ec = $null
+  if ($el.TryGetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern, [ref]$ec)) { if ($ec.Current.ExpandCollapseState -ne 'Expanded') { $ec.Expand() } }
+  else { [void](Invoke-NeboClick $el) }
+  Start-Sleep -Milliseconds 400
+}
+function Close-NeboMenus($bar) {
+  foreach ($m in $bar.FindAll([System.Windows.Automation.TreeScope]::Children, [System.Windows.Automation.Condition]::TrueCondition)) {
+    $ec = $null; if ($m.TryGetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern, [ref]$ec) -and $ec.Current.ExpandCollapseState -eq 'Expanded') { $ec.Collapse() }
+  }
+}
+function Invoke-NeboClick($el) {
+  $pats = @($el.GetSupportedPatterns() | ForEach-Object { $_.ProgrammaticName })
+  if ($pats -contains 'InvokePatternIdentifiers.Pattern') { $el.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke(); return 'pressed' }
+  if ($pats -contains 'TogglePatternIdentifiers.Pattern') { $el.GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern).Toggle(); return 'toggled' }
+  if ($pats -contains 'SelectionItemPatternIdentifiers.Pattern') { $el.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern).Select(); return 'selected' }
+  $r = $el.Current.BoundingRectangle
+  if ($r.IsEmpty -or $r.Width -le 0) { throw "'$($el.Current.Name)' has no press action and no place on screen to click" }
+  $top = $el; $walker = [System.Windows.Automation.TreeWalker]::ControlViewWalker
+  while ($true) { $p = $walker.GetParent($top); if ($null -eq $p -or $p -eq [System.Windows.Automation.AutomationElement]::RootElement) { break }; $top = $p }
+  if ($top.Current.NativeWindowHandle -ne 0) { [void](Show-NeboWindow ([IntPtr]$top.Current.NativeWindowHandle)) }
+  [void][NeboWin32]::SetCursorPos([int]($r.X + $r.Width / 2), [int]($r.Y + $r.Height / 2))
+  [NeboWin32]::mouse_event(0x0002, 0, 0, 0, 0); [NeboWin32]::mouse_event(0x0004, 0, 0, 0, 0)
+  'clicked at its centre'
+}
+if (-not ('NeboWin32' -as [type])) { Add-Type -TypeDefinition @"
+using System; using System.Runtime.InteropServices;
+public class NeboWin32 {
+    [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")] public static extern IntPtr GetLastActivePopup(IntPtr hWnd);
+    [DllImport("user32.dll")] public static extern bool BringWindowToTop(IntPtr hWnd);
+    [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
+    [DllImport("user32.dll")] public static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool fAttach);
+    [DllImport("kernel32.dll")] public static extern uint GetCurrentThreadId();
+    [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr hWnd);
+    [DllImport("user32.dll")] public static extern bool IsZoomed(IntPtr hWnd);
+    [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr hWnd);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern IntPtr SendMessage(IntPtr hWnd, uint Msg, IntPtr wParam, string lParam);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern IntPtr SendMessage(IntPtr hWnd, uint Msg, IntPtr wParam, System.Text.StringBuilder lParam);
+    [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+    [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+    [DllImport("user32.dll")] public static extern bool MoveWindow(IntPtr hWnd, int X, int Y, int nWidth, int nHeight, bool bRepaint);
+    [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
+    [DllImport("user32.dll")] public static extern bool SetCursorPos(int X, int Y);
+    [DllImport("user32.dll")] public static extern void mouse_event(uint dwFlags, uint dx, uint dy, uint dwData, int dwExtraInfo);
+    [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left, Top, Right, Bottom; }
+}
+"@ }
+"#;
+
+/// Script lines that set `$win` to `app`'s window (`Find-NeboAppWindow`),
+/// or stop with an error naming the app.
+#[cfg(target_os = "windows")]
+fn find_window_script(app: &str) -> String {
+    let missing = if app.is_empty() {
+        "No window is in the foreground".to_string()
+    } else {
+        format!(
+            "No window belongs to an application named ''{}''; os(resource: ''app'', action: ''list'') shows what is running",
+            escape_powershell(app)
+        )
+    };
+    format!(
+        "$win = Find-NeboAppWindow '{}'\nif (-not $win) {{ throw '{missing}' }}",
+        escape_powershell(app)
+    )
+}
+
+/// Script lines that walk the menu path `path` ("File > Save as") from
+/// `$bar`: each menu on it is opened in turn. For a click the last item is
+/// left as `$el`, unopened; a path of one item names the item in whichever
+/// menu has it. `$label` is the path as given.
+#[cfg(target_os = "windows")]
+fn open_menu_path_script(path: &str, for_click: bool) -> String {
+    let parts: Vec<String> = path
+        .split('>')
+        .map(|p| p.trim())
+        .filter(|p| !p.is_empty())
+        .map(|p| format!("'{}'", escape_powershell(p)))
+        .collect();
+    format!(
+        "$label = '{label}'; $parts = @({parts}); $forClick = ${for_click}\n\
+         $tops = @($bar.FindAll([System.Windows.Automation.TreeScope]::Children, [System.Windows.Automation.Condition]::TrueCondition))\n\
+         $cur = Select-NeboNamed $tops $parts[0]\n\
+         if (-not $cur -and $forClick -and $parts.Count -eq 1) {{\n\
+           foreach ($m in $tops) {{ Open-NeboMenuItem $m; $el = Select-NeboNamed @(Get-NeboOpenMenuItems $win $bar) $parts[0]; if ($el) {{ break }}; Close-NeboMenus $bar }}\n\
+           if (-not $el) {{ throw \"No menu of '$($win.Current.Name)' has an item named $label; os(resource: 'menu', action: 'menus') lists them\" }}\n\
+         }} else {{\n\
+           if (-not $cur) {{ throw \"'$($win.Current.Name)' has no menu named '$($parts[0])'; its menus: $(($tops | ForEach-Object {{ $_.Current.Name }}) -join ', ')\" }}\n\
+           $last = if ($forClick) {{ $parts.Count - 1 }} else {{ $parts.Count }}\n\
+           for ($i = 1; $i -le $last; $i++) {{\n\
+             Open-NeboMenuItem $cur\n\
+             if ($i -eq $parts.Count) {{ break }}\n\
+             $next = Select-NeboNamed @(Get-NeboOpenMenuItems $win $bar) $parts[$i]\n\
+             if (-not $next) {{ Close-NeboMenus $bar; throw \"The menu '$($cur.Current.Name)' has no item named '$($parts[$i])'\" }}\n\
+             $cur = $next\n\
+           }}\n\
+           $el = $cur\n\
+         }}",
+        label = escape_powershell(path.trim()),
+        parts = parts.join(", "),
+        for_click = for_click
+    )
+}
+
+/// The window in front, as `process 'title'`, its open dialog's title when
+/// one is in front. `Err` when it is the desktop or the taskbar: keys sent
+/// there reach no app.
+#[cfg(target_os = "windows")]
+async fn foreground_window() -> Result<String, String> {
+    let out = run_powershell(
+        "Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes\n\
+         $h = [NeboWin32]::GetForegroundWindow()\n\
+         if ($h -eq [IntPtr]::Zero) { throw 'no window is in front' }\n\
+         $el = [System.Windows.Automation.AutomationElement]::FromHandle($h)\n\
+         if ($el.Current.ClassName -in 'Progman', 'WorkerW', 'Shell_TrayWnd', 'Shell_SecondaryTrayWnd') { throw 'no app window is in front (the desktop or the taskbar has focus), so the keys would reach no app' }\n\
+         $proc = [string](Get-Process -Id $el.Current.ProcessId -ErrorAction SilentlyContinue).ProcessName\n\
+         \"$proc '$($el.Current.Name)'\"",
+    )
+    .await;
+    if out.is_error { Err(out.content) } else { Ok(out.content) }
+}
+
+/// Script lines that set `$win` to `app`'s window and `$h` to its handle.
+#[cfg(target_os = "windows")]
+fn window_handle_script(app: &str) -> String {
+    format!("{}\n$h = [IntPtr]$win.Current.NativeWindowHandle", find_window_script(app))
+}
+
+/// Script lines that set `$el` to the element named `label` in `app`'s
+/// window, or stop with an error naming what is missing.
+#[cfg(target_os = "windows")]
+fn find_element_script(app: &str, label: &str) -> String {
+    format!("{}\n{}", find_window_script(app), element_in_win_script(label))
+}
+
+/// Script lines that set `$el` to the element labelled `label` in `$win`
+/// (`Find-NeboElement`: exactly, else ignoring `&` and a trailing colon,
+/// else containing it), or stop with an error naming what is missing.
+#[cfg(target_os = "windows")]
+fn element_in_win_script(label: &str) -> String {
+    format!(
+        "$label = '{}'\n\
+         $el = Find-NeboElement $win $label\n\
+         if (-not $el) {{ throw \"No element named '$label' in the window '$($win.Current.Name)'; os(resource: 'ui', action: 'tree') lists its elements\" }}",
+        escape_powershell(label)
+    )
+}
+
+/// Script lines that set `$win` to `app`'s open dialog (`Find-NeboDialog`),
+/// else its window, or stop with an error naming the app.
+#[cfg(target_os = "windows")]
+fn find_dialog_script(app: &str) -> String {
+    format!(
+        "Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes\n\
+         $win = Find-NeboDialog '{}'\n\
+         if (-not $win) {{ {} }}",
+        escape_powershell(app),
+        find_window_script(app)
+    )
+}
+
+/// `find_dialog_script`, then `$el` the element labelled `label` in it.
+#[cfg(target_os = "windows")]
+fn find_dialog_element_script(app: &str, label: &str) -> String {
+    format!("{}\n{}", find_dialog_script(app), element_in_win_script(label))
+}
+
+
 #[cfg(target_os = "windows")]
 async fn run_powershell(script: &str) -> ToolResult {
-    #[cfg(target_os = "windows")]
-    {
-        let daemon = ps_daemon();
-        match daemon.execute(script, Duration::from_secs(30)).await {
-            Ok(out) => {
-                return ToolResult::ok(if out.is_empty() {
-                    "(exit 0, no output)".to_string()
-                } else {
-                    out
-                });
-            }
-            Err(e) => {
-                tracing::debug!(error = %e, "persistent PowerShell failed, falling back to subprocess");
-            }
+    use crate::desktop_daemon::Ran;
+    let script = format!("{WIN32_PRELUDE}{script}");
+    match ps_daemon().execute(&script, Duration::from_secs(30)).await {
+        Ran::Ok(out) => {
+            return ToolResult::ok(if out.is_empty() { "(exit 0, no output)".to_string() } else { out });
+        }
+        // It ran: running it again would do it twice.
+        Ran::Failed(out) => {
+            return ToolResult::error(if out.is_empty() { "PowerShell reported an error and printed nothing".to_string() } else { out });
+        }
+        Ran::NotRun(e) => {
+            tracing::debug!(error = %e, "persistent PowerShell unavailable, falling back to subprocess");
         }
     }
     // Fallback: a fresh powershell subprocess. Anything the caller had set in
     // the persistent session is gone, and the result says so.
-    let mut result = run_command("powershell", &["-NoProfile", "-Command", script]).await;
+    let mut result = run_command("powershell", &["-NoProfile", "-Command", &format!("{}{script}", command::POWERSHELL_UTF8)]).await;
     result.content = format!(
         "(PowerShell session restarted; prior $variables are gone) {}",
         result.content
@@ -4877,6 +5201,149 @@ mod tests {
         assert!(super::image_matches_frame(None, Some((10, 10))), "the whole screen has no frame to disagree with");
         assert!(super::is_no_window("Calculator has no open window"));
         assert!(!super::is_no_window("ax helper produced no output"));
+    }
+
+    /// Menus and a dialog, driven the way the owner's employee drives them:
+    /// File > Save as opens the dialog from the menu, the dialog is found,
+    /// its field filled and read back, focus goes to it, and Cancel closes
+    /// it. Nothing is saved.
+    #[cfg(target_os = "windows")]
+    #[tokio::test]
+    #[ignore = "drives Notepad's menus and Save As dialog on the signed-in desktop"]
+    async fn notepad_menus_and_save_as_dialog() {
+        let tool = DesktopTool::new();
+        let ctx = crate::origin::ToolContext::default();
+        let run = |input: serde_json::Value| {
+            let tool = &tool;
+            let ctx = &ctx;
+            async move {
+                let r = tool.execute_dyn(ctx, input.clone()).await;
+                assert!(!r.is_error, "{input}: {}", r.content);
+                r.content
+            }
+        };
+        // The test's own Notepad window, closed at the end however the test
+        // ends: only the window it opened, never the owner's.
+        struct OwnWindow(String);
+        impl Drop for OwnWindow {
+            fn drop(&mut self) {
+                let _ = command::powershell::<std::process::Command>(&format!(
+                    "Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public class NeboTestClose {{ [DllImport(\"user32.dll\")] public static extern bool PostMessage(IntPtr h, uint m, IntPtr w, IntPtr l); }}'; \
+                     foreach ($h in @({})) {{ [void][NeboTestClose]::PostMessage([IntPtr]$h, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero) }}",
+                    self.0
+                ))
+                .status();
+            }
+        }
+        let handles = "Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes; $ids = @(Get-Process notepad -ErrorAction SilentlyContinue | ForEach-Object { $_.Id }); \
+                       @([System.Windows.Automation.AutomationElement]::RootElement.FindAll([System.Windows.Automation.TreeScope]::Children, [System.Windows.Automation.Condition]::TrueCondition) | Where-Object { $ids -contains $_.Current.ProcessId } | ForEach-Object { $_.Current.NativeWindowHandle }) -join ','";
+        let list = |out: std::process::Output| String::from_utf8_lossy(&out.stdout).trim().split(',').filter(|s| !s.is_empty()).map(str::to_string).collect::<Vec<_>>();
+        let before = list(command::powershell::<tokio::process::Command>(handles).output().await.unwrap());
+        let _ = command::powershell::<tokio::process::Command>("Start-Process notepad.exe").output().await;
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        let after = list(command::powershell::<tokio::process::Command>(handles).output().await.unwrap());
+        let _own = OwnWindow(after.into_iter().filter(|h| !before.contains(h)).collect::<Vec<_>>().join(","));
+
+        let items = run(serde_json::json!({"resource": "ui", "action": "tree", "app": "Notepad", "filter": "MenuItem"})).await;
+        assert!(items.contains("MenuItem | File") && items.contains("lines match \"MenuItem\""), "{items}");
+        assert!(!items.lines().any(|l| l.starts_with("Button")), "the filter keeps only menu items: {items}");
+        let menus = run(serde_json::json!({"resource": "menu", "action": "list", "app": "Notepad"})).await;
+        assert!(menus.contains("File") && menus.contains("Edit"), "{menus}");
+        let file = run(serde_json::json!({"resource": "menu", "action": "list", "app": "Notepad", "name": "File"})).await;
+        assert!(file.contains("Save as"), "{file}");
+        let chose = run(serde_json::json!({"resource": "menu", "action": "click", "app": "Notepad", "name": "File > Save as"})).await;
+        assert!(chose.starts_with("Chose File > Save as"), "{chose}");
+        tokio::time::sleep(Duration::from_secs(2)).await;
+
+        let open = run(serde_json::json!({"resource": "dialog", "action": "detect", "app": "Notepad"})).await;
+        assert!(open.contains("is open in"), "{open}");
+        let filled = run(serde_json::json!({"resource": "dialog", "action": "fill", "app": "Notepad", "name": "File name", "value": "nebo-dialog-test"})).await;
+        assert!(filled.contains("(read back)"), "{filled}");
+        // As Daniel asked for it: the field by `label`, with its colon.
+        let by_label = run(serde_json::json!({"resource": "dialog", "action": "fill", "app": "Notepad", "label": "File name:", "value": "by-label"})).await;
+        assert!(by_label.contains("'File name:'") && by_label.contains("(read back)"), "{by_label}");
+        // No name: the File name box (it has focus), never a cell of the folder list.
+        let unnamed = run(serde_json::json!({"resource": "dialog", "action": "fill", "app": "Notepad", "value": "no-name"})).await;
+        assert!(unnamed.contains("(read back)"), "{unnamed}");
+        let focused = run(serde_json::json!({"resource": "window", "action": "focus", "app": "Notepad"})).await;
+        assert!(focused.contains("its open dialog is in front"), "{focused}");
+        // Keys with no app go to the window in front, and the result says which.
+        let typed = run(serde_json::json!({"resource": "input", "action": "press", "key": "end"})).await;
+        assert!(typed.contains("the window in front") && typed.contains("Save as"), "{typed}");
+        // Keys sent to the app reach its dialog, not the window behind it.
+        run(serde_json::json!({"resource": "input", "action": "hotkey", "app": "Notepad", "keys": "ctrl+a"})).await;
+        run(serde_json::json!({"resource": "input", "action": "type", "app": "Notepad", "text": "typed-into-dialog"})).await;
+        let read = super::run_powershell(
+            "$dlg = Find-NeboDialog 'Notepad'; $pane = Select-NeboNamed @($dlg.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition) | Where-Object { $_.Current.ClassName -eq 'AppControlHost' }) 'File name'\n\
+             $sb = New-Object System.Text.StringBuilder 4096; [void][NeboWin32]::SendMessage((Get-NeboEditHandle $pane), 0x000D, [IntPtr]4096, $sb); $sb.ToString()",
+        )
+        .await;
+        assert_eq!(read.content, "typed-into-dialog", "the typed text reached the dialog's field");
+        let dismissed = run(serde_json::json!({"resource": "dialog", "action": "dismiss", "app": "Notepad"})).await;
+        assert!(dismissed.starts_with("Dismissed"), "{dismissed}");
+        let closed = run(serde_json::json!({"resource": "dialog", "action": "detect", "app": "Notepad"})).await;
+        assert_eq!(closed, "No dialog is open");
+
+        // What fill sets is what the dialog uses: a path filled in, then
+        // Enter, saves to that path. (Reading the field back once passed
+        // while the dialog still used its own default name.)
+        let target = std::env::temp_dir().join(format!("nebo-fill-test-{}.txt", std::process::id()));
+        let _ = std::fs::remove_file(&target);
+        run(serde_json::json!({"resource": "menu", "action": "click", "app": "Notepad", "name": "File > Save as"})).await;
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        run(serde_json::json!({"resource": "dialog", "action": "fill", "app": "Notepad", "label": "File name:", "value": target.to_string_lossy()})).await;
+        run(serde_json::json!({"resource": "input", "action": "press", "app": "Notepad", "key": "enter"})).await;
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        let saved = target.exists();
+        let _ = std::fs::remove_file(&target);
+        assert!(saved, "Save As wrote the file at the path fill put in the field: {}", target.display());
+
+        // The window's own elements, walked through UI Automation (the walk
+        // never parsed before), and a wait on them.
+        let seen = run(serde_json::json!({"resource": "capture", "action": "see", "app": "Notepad"})).await;
+        assert!(!seen.contains("native walk unavailable") && !seen.contains("ax helper exited"), "{seen}");
+        let waited = run(serde_json::json!({"resource": "capture", "action": "wait", "app": "Notepad", "label": "File", "timeout_ms": 3000})).await;
+        assert!(waited.starts_with("Waited"), "{waited}");
+    }
+
+    /// The prelude every desktop script starts with, and the pieces the
+    /// scripts are built from, parse.
+    #[cfg(target_os = "windows")]
+    #[tokio::test]
+    async fn the_windows_script_pieces_parse() {
+        for (name, piece) in [
+            ("window", super::window_handle_script("It's")),
+            ("element", super::find_element_script("It's", "File name:")),
+            ("dialog element", super::find_dialog_element_script("It's", "Cancel")),
+            ("menu list", super::open_menu_path_script("View > Zoom", false)),
+            ("menu click", super::open_menu_path_script("Save as", true)),
+        ] {
+            let check = format!(
+                "$e = $null; [void][System.Management.Automation.Language.Parser]::ParseInput('{}', [ref]$null, [ref]$e); \
+                 if ($e) {{ $e[0].Message + ' at line ' + $e[0].Extent.StartLineNumber; exit 1 }}; 'parsed'",
+                format!("{}{piece}", super::WIN32_PRELUDE).replace('\'', "''")
+            );
+            let r = command::powershell::<tokio::process::Command>(&check).output().await.unwrap();
+            let out = String::from_utf8_lossy(&r.stdout).trim().to_string();
+            assert_eq!(out, "parsed", "the {name} piece does not parse");
+        }
+    }
+
+    /// A capture with an alpha channel (how Windows saves one) is still
+    /// compressed to JPEG, not handed back at full size.
+    #[test]
+    fn a_capture_with_alpha_is_compressed() {
+        let _g = crate::TEST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let home = tempfile::tempdir().unwrap();
+        // SAFETY: serialized by the crate-wide lock; the capture is kept under NEBO_HOME.
+        unsafe { std::env::set_var("NEBO_HOME", home.path()) };
+        let rgba = image::RgbaImage::from_pixel(1600, 900, image::Rgba([10, 20, 30, 255]));
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgba8(rgba).write_to(&mut png, image::ImageFormat::Png).unwrap();
+        let r = super::compress_and_encode(png.get_ref(), "medium");
+        unsafe { std::env::remove_var("NEBO_HOME") };
+        assert!(!r.is_error, "{}", r.content);
+        assert!(r.content.contains("JPEG q65") && r.content.contains("1280x720"), "{}", r.content);
     }
 
     #[test]

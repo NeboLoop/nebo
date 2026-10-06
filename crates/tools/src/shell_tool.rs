@@ -1069,6 +1069,14 @@ fn missing_command_name(output: &str) -> Option<String> {
                 return Some(name.to_string());
             }
         }
+        // PowerShell: "foo : The term 'foo' is not recognized as the name of a cmdlet, …"
+        if let Some(rest) = l.split("The term '").nth(1)
+            && let Some((name, _)) = rest.split_once("' is not recognized as")
+            && !name.is_empty()
+        {
+            return Some(name.to_string());
+        }
+        // cmd.exe: "'foo' is not recognized as an internal or external command, …"
         if let Some(idx) = l.find(" is not recognized as") {
             let name = l[..idx].trim().trim_matches(|c| c == '\'' || c == '"');
             if !name.is_empty() {
@@ -1429,6 +1437,10 @@ mod tests {
         assert_eq!(missing_command_name("zsh: command not found: foo").as_deref(), Some("foo"));
         assert_eq!(missing_command_name("/bin/sh: 1: foo: not found").as_deref(), Some("foo"));
         assert_eq!(missing_command_name("'foo' is not recognized as an internal or external command").as_deref(), Some("foo"));
+        assert_eq!(
+            missing_command_name("foo-x : The term 'foo-x' is not recognized as the name of a cmdlet,\nfunction, script file, or operable program.").as_deref(),
+            Some("foo-x")
+        );
         assert_eq!(missing_command_name("grep: x: No such file"), None);
     }
 

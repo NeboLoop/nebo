@@ -264,14 +264,16 @@ OBSCURA_REPO ?= $(shell cd .. && pwd)/obscura
 # Target triple Tauri expects in the externalBin filename (host triple by default;
 # release-* targets that cross-build pass an explicit OBSCURA_TRIPLE).
 OBSCURA_TRIPLE ?= $(shell rustc -vV | sed -n 's/^host: //p')
+# A sidecar is an .exe on Windows, built and staged under that name (as release CI does).
+SIDECAR_EXT = $(if $(findstring windows,$(OBSCURA_TRIPLE)),.exe,)
 
 stage-obscura:
 	@echo "Staging Obscura sidecars for $(OBSCURA_TRIPLE)..."
 	@mkdir -p src-tauri/binaries
 	@for bin in obscura obscura-worker; do \
-		dst="src-tauri/binaries/$$bin-$(OBSCURA_TRIPLE)"; \
-		cross="$(OBSCURA_REPO)/target/$(OBSCURA_TRIPLE)/release/$$bin"; \
-		host="$(OBSCURA_REPO)/target/release/$$bin"; \
+		dst="src-tauri/binaries/$$bin-$(OBSCURA_TRIPLE)$(SIDECAR_EXT)"; \
+		cross="$(OBSCURA_REPO)/target/$(OBSCURA_TRIPLE)/release/$$bin$(SIDECAR_EXT)"; \
+		host="$(OBSCURA_REPO)/target/release/$$bin$(SIDECAR_EXT)"; \
 		if [ -f "$$cross" ]; then \
 			if cmp -s "$$cross" "$$dst"; then \
 				echo "  $$bin already staged (unchanged)"; \
@@ -510,7 +512,7 @@ RIPGREP_VERSION ?= 14.1.1
 # BurntSushi ships musl for linux-amd64 (static, runs everywhere); tauri still
 # expects the -gnu host triple in the filename, so asset triple != file triple.
 RG_ASSET_TRIPLE = $(if $(filter x86_64-unknown-linux-gnu,$(OBSCURA_TRIPLE)),x86_64-unknown-linux-musl,$(OBSCURA_TRIPLE))
-RG_EXT = $(if $(findstring windows,$(OBSCURA_TRIPLE)),.exe,)
+RG_EXT = $(SIDECAR_EXT)
 
 stage-ripgrep:
 	@mkdir -p src-tauri/binaries

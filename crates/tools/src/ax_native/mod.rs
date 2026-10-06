@@ -305,6 +305,12 @@ pub async fn window(app: &str, index: usize) -> Result<WindowInfo, String> {
 pub async fn run(args: &[String], deadline: Duration) -> Result<String, String> {
     #[cfg(target_os = "macos")]
     return macos::run(args, deadline).await;
+    // Windows answers `wait` through UI Automation; the other commands are
+    // the macOS helper's, and their callers use Windows's own tools instead.
+    #[cfg(target_os = "windows")]
+    if args.first().map(String::as_str) == Some("wait") {
+        return windows::wait_raw(args, deadline).await;
+    }
     #[allow(unreachable_code)]
     {
         let _ = (args, deadline);

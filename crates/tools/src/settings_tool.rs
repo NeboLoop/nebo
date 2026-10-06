@@ -700,8 +700,7 @@ async fn handle_wifi(action: &str) -> ToolResult {
             let find_script = "Get-NetAdapter -Physical | Where-Object { \
                 $_.InterfaceDescription -match 'Wireless|Wi-Fi|WiFi' } | \
                 Select-Object -First 1 -ExpandProperty Name";
-            let output = command::new::<tokio::process::Command>("powershell", command::Console::Hidden)
-                .args(["-NoProfile", "-Command", find_script])
+            let output = command::powershell::<tokio::process::Command>(&find_script)
                 .output()
                 .await;
             match output {
@@ -712,8 +711,7 @@ async fn handle_wifi(action: &str) -> ToolResult {
                     }
                     // Check current state
                     let status_script = format!("(Get-NetAdapter -Name '{}').Status", adapter);
-                    let status_out = command::new::<tokio::process::Command>("powershell", command::Console::Hidden)
-                        .args(["-NoProfile", "-Command", &status_script])
+                    let status_out = command::powershell::<tokio::process::Command>(&status_script)
                         .output()
                         .await;
                     let currently_up = status_out
@@ -757,8 +755,7 @@ async fn handle_darkmode(action: &str) -> ToolResult {
                  Select-Object -ExpandProperty AppsUseLightTheme",
                 reg_path
             );
-            let output = command::new::<tokio::process::Command>("powershell", command::Console::Hidden)
-                .args(["-NoProfile", "-Command", &script])
+            let output = command::powershell::<tokio::process::Command>(&script)
                 .output()
                 .await;
             match output {
@@ -780,8 +777,7 @@ async fn handle_darkmode(action: &str) -> ToolResult {
                  Select-Object -ExpandProperty AppsUseLightTheme",
                 reg_path
             );
-            let output = command::new::<tokio::process::Command>("powershell", command::Console::Hidden)
-                .args(["-NoProfile", "-Command", &check])
+            let output = command::powershell::<tokio::process::Command>(&check)
                 .output()
                 .await;
             let new_value = match output {
@@ -1075,7 +1071,7 @@ async fn run_command(cmd: &str, args: &[&str]) -> ToolResult {
 
 #[cfg(target_os = "windows")]
 async fn run_powershell(script: &str) -> ToolResult {
-    run_command("powershell", &["-NoProfile", "-Command", script]).await
+    run_command("powershell", &["-NoProfile", "-Command", &format!("{}{script}", command::POWERSHELL_UTF8)]).await
 }
 
 #[cfg(target_os = "linux")]

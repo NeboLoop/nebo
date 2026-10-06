@@ -567,7 +567,7 @@ fn spawn_failed(cmd: &str, err: &std::io::Error) -> String {
 async fn run_powershell(script: &str) -> ToolResult {
     run_command(
         "powershell",
-        &["-NoProfile", "-Command", script],
+        &["-NoProfile", "-Command", &format!("{}{script}", command::POWERSHELL_UTF8)],
         "(powershell exited 0 and printed nothing)",
     )
     .await

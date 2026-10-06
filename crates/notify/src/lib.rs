@@ -46,8 +46,7 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($template)
 "#,
         title, body
     );
-    command::new::<Command>("powershell", command::Console::Hidden)
-        .args(["-NoProfile", "-NonInteractive", "-Command", &ps])
+    command::powershell::<Command>(&ps)
         .output()
         .map_err(|e| e.to_string())?;
     Ok(())

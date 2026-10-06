@@ -446,8 +446,7 @@ mod focus_tests {
 
 #[cfg(target_os = "windows")]
 async fn run_powershell(script: &str) -> ToolResult {
-    let output = command::new::<tokio::process::Command>("powershell", command::Console::Hidden)
-        .args(["-NoProfile", "-Command", script])
+    let output = command::powershell::<tokio::process::Command>(&script)
         .output()
         .await;
 
