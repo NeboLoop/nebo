@@ -209,13 +209,14 @@ jobs:
       # --exclude nebo: the desktop crate has no tests and its build script
       # wants ../app/build (frontendDist) — excluding it keeps this job free of
       # a frontend build. Everything else in the workspace runs.
-      # One OpenBLAS thread per test: OpenBLAS starts a thread per core and
-      # spins them, so the default on the 16-core droplet (16 parallel tests
-      # x 16 BLAS threads) stalled tests for minutes and broke the
-      # timing-sensitive ones. A hosted 4-core runner hid it.
+      # Four tests at a time, the shape of the 4-core hosted runner this suite
+      # was green on. With one per core on the 16-core droplet the agent
+      # tests contend on futexes (kernel time 10x user time), run for
+      # minutes each, and the timing-sensitive ones fail. The droplet's
+      # extra cores still speed up the build.
       - name: Run tests
         env:
-          OPENBLAS_NUM_THREADS: "1"
+          RUST_TEST_THREADS: "4"
         run: cargo test --workspace --exclude nebo --no-fail-fast
 
       # A test binary dying of SIGBUS or an OOM-kill leaves its cause in the
