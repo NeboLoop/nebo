@@ -370,6 +370,28 @@ impl Store {
             .map_err(|e| NeboError::Database(e.to_string()))
     }
 
+    /// The whole conversation in order, from message `from` (included) or its
+    /// start, for reading back what was said: rows below a compaction summary
+    /// are kept (the summary hides them from the runner, not from history);
+    /// Nebo's own rows (`isMeta`) are left out.
+    pub fn get_chat_messages_from(&self, chat_id: &str, from: Option<&str>) -> Result<Vec<ChatMessage>, NeboError> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT * FROM chat_messages m WHERE chat_id = ?1
+                   AND COALESCE(json_extract(metadata, '$.isMeta'), 0) NOT IN (1, 'true')
+                   AND (?2 IS NULL OR (m.created_at, m.rowid) >=
+                        (SELECT created_at, rowid FROM chat_messages WHERE id = ?2))
+                 ORDER BY created_at ASC, rowid ASC",
+            )
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        let rows = stmt
+            .query_map(params![chat_id, from], row_to_chat_message)
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| NeboError::Database(e.to_string()))
+    }
+
     /// The chat's rows stored after the row whose rowid is `after_rowid`,
     /// each with its rowid, in the order they were written.
     pub fn get_chat_messages_after_rowid(
