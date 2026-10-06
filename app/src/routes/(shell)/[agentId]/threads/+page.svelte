@@ -13,6 +13,7 @@
   import { createChatController } from '$lib/chat/controller.svelte';
   import { toMentionAgent } from '$lib/chat/roster';
   import { threadIdFromKey, threadKey } from '$lib/chat/sessionKey';
+  import { uploadFailureMessage, uploadFiles } from '$lib/api/upload';
 
   const ctx = getContext<AgentPageContext>('agentPage');
   const agentId = $derived(ctx.agentId);
@@ -50,7 +51,7 @@
     } catch { /* keep empty */ }
   });
 
-  async function handleSend(text: string) {
+  async function handleSend(text: string, files: { file: File }[] = []) {
     // Detect marketplace code — the install modal owns all feedback, so open it
     // immediately and skip the chat "working" spinner (no agent reply is coming).
     if (sendInstallCode(text, agentId)) return;
@@ -65,12 +66,27 @@
         return;
       }
 
+      // Files can't ride sessionStorage, so they upload here and the stash
+      // carries what the upload returned. Dropping them sent the first message
+      // of every new chat without its attachments (owner, 2026-10-05: 9
+      // screenshots, the employee saw only the text).
+      let attachments;
+      if (files.length) {
+        try {
+          attachments = await uploadFiles(files.map((f) => f.file), { agentId, chatId: newChatId });
+        } catch (e) {
+          chat.setError(uploadFailureMessage(e));
+          chat.isLoading = false;
+          return;
+        }
+      }
+
       // Create the thread, then navigate — the thread page sends the prompt after
       // its chat controller is subscribed. Sending here raced navigation and the
       // optimistic bubble (and often the whole turn) disappeared on the new page.
       sessionStorage.setItem(
         `nebo:pending-send:${newChatId}`,
-        JSON.stringify({ text, ts: Date.now() }),
+        JSON.stringify({ text, attachments, ts: Date.now() }),
       );
       goto(`/${agentId}/threads/${newChatId}?active=1`);
     } catch (e) {

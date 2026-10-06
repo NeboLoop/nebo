@@ -18,12 +18,13 @@
   import { getWebSocketClient } from '$lib/websocket/client';
   import type { Agent, ChatMessage as ApiChatMessage } from '$lib/api/neboComponents';
   import { uploadFailureMessage, uploadFiles } from '$lib/api/upload';
+  import type { UploadedAttachment } from '$lib/types/attachment';
   import { getChat } from '$lib/api/nebo';
 
   const PENDING_SEND_PREFIX = 'nebo:pending-send:';
   const PENDING_ERROR_PREFIX = 'nebo:pending-error:';
 
-  type PendingSend = { text: string; sent?: boolean; ts?: number };
+  type PendingSend = { text: string; attachments?: UploadedAttachment[]; sent?: boolean; ts?: number };
 
   const ctx = getContext<AgentPageContext>('agentPage');
   const agentId = $derived(ctx.agentId);
@@ -217,11 +218,11 @@
         if (raw) {
           try {
             const parsed = JSON.parse(raw) as PendingSend;
-            if (parsed.text?.trim()) {
+            if (parsed.text?.trim() || parsed.attachments?.length) {
               pendingSendStarted = true;
               if (!parsed.sent) {
                 sessionStorage.setItem(key, JSON.stringify({ ...parsed, sent: true }));
-                chat.send(parsed.text);
+                chat.send(parsed.text, { attachments: parsed.attachments });
                 return;
               }
               // Remount after send already went out — restore bubble, then ask
@@ -234,6 +235,7 @@
                   id: 'msg-pending',
                   type: 'user',
                   content: parsed.text,
+                  attachments: parsed.attachments,
                   time: formatTime(Date.now()),
                 }]);
               }
