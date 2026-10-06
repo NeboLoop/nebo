@@ -1,9 +1,11 @@
-//! `generate_media`: images, video and speech made through Janus and saved
-//! as files, into an app's served folder (`agents.app_ui_path`) or the
-//! workspace.
+//! `generate_media`: images, video, speech, music and sound effects made
+//! through Janus and saved as files, into an app's served folder
+//! (`agents.app_ui_path`) or the workspace; and transcripts of audio or
+//! video, with word timings and speakers, saved as JSON (`audio::Transcript`).
 //!
-//! Janus answers images inline (`b64_json`), speech as the audio file's
-//! bytes, and video as a job: submit, poll until it has finished, download
+//! Janus answers images inline (`b64_json`), speech, music and sound as the
+//! audio file's bytes (each tagged AI-generated here, `audio::tag_ai_generated`),
+//! and video as a job: submit, poll until it has finished, download
 //! the MP4. A film meant for
 //! scroll-scrubbing is re-encoded here with every frame a keyframe, because
 //! Janus has no encoder and the bot has the file on disk anyway.
@@ -18,6 +20,7 @@
 //! hour (`/api/v1/shares`), and Janus is sent the URL that link opens to
 //! (`/api/v1/shares/open`). The links are turned off when the job ends.
 
+mod audio;
 mod cast;
 
 use std::path::{Component, Path, PathBuf};
@@ -38,6 +41,8 @@ const MAX_IMAGES: u64 = 4;
 const MAX_SECONDS: u64 = 30;
 /// The speed speech is made and billed as when no `model` is named.
 const SPEECH_MODEL: &str = "nebo-speech";
+/// The speed transcripts are made and billed as.
+const TRANSCRIBE_MODEL: &str = "nebo-transcribe";
 /// The model a character swap is made with when no `model` is named.
 const SWAP_MODEL: &str = "nebo-video-swap";
 /// The resolution a character swap is made at when none is named.
@@ -184,29 +189,86 @@ impl Media {
         Ok((out, model))
     }
 
-    /// The audio file for `body` (a `/v1/audio/speech` request): Janus
-    /// answers the file's bytes, in the format the body asked for.
-    pub async fn speech(&self, body: &Value) -> Result<Vec<u8>, String> {
-        let (req, signed_in) = self.request(reqwest::Method::POST, "/v1/audio/speech");
+    /// The audio file for `body`, posted to `path` (`/v1/audio/speech`, or
+    /// `/v1/audio/generations` for music and sound): Janus answers the
+    /// file's bytes and their content type. `what` names it in errors.
+    pub async fn audio(&self, path: &str, what: &str, body: &Value) -> Result<(Vec<u8>, String), String> {
+        let (req, signed_in) = self.request(reqwest::Method::POST, path);
         let resp = req
             .json(body)
-            .timeout(Duration::from_secs(300))
+            .timeout(Duration::from_secs(600))
             .send()
             .await
-            .map_err(|e| format!("Could not reach Janus to make the speech: {e}"))?;
+            .map_err(|e| format!("Could not reach Janus to make the {what}: {e}"))?;
         let status = resp.status();
         if !status.is_success() {
             let text = resp.text().await.unwrap_or_default();
-            return Err(failure("speech", status.as_u16(), &text, signed_in));
+            return Err(failure(what, status.as_u16(), &text, signed_in));
         }
+        let content_type = resp
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string();
         let bytes = resp
             .bytes()
             .await
-            .map_err(|e| format!("The speech from Janus stopped part way: {e}"))?;
+            .map_err(|e| format!("The {what} from Janus stopped part way: {e}"))?;
         if bytes.is_empty() {
             return Err("Janus answered with no audio.".to_string());
         }
-        Ok(bytes.to_vec())
+        Ok((bytes.to_vec(), content_type))
+    }
+
+    /// The voices speech can use (`/v1/audio/voices`): each by the id
+    /// `voice` takes, with its name and description.
+    pub async fn voices(&self) -> Result<Vec<Value>, String> {
+        let (req, signed_in) = self.request(reqwest::Method::GET, "/v1/audio/voices");
+        let resp = req
+            .timeout(Duration::from_secs(30))
+            .send()
+            .await
+            .map_err(|e| format!("Could not reach Janus for the voices: {e}"))?;
+        let status = resp.status();
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            return Err(failure("voice list", status.as_u16(), &text, signed_in));
+        }
+        let parsed: Value = resp
+            .json()
+            .await
+            .map_err(|e| format!("Janus's voice list could not be read: {e}"))?;
+        Ok(parsed.get("data").and_then(Value::as_array).cloned().unwrap_or_default())
+    }
+
+    /// Transcribes an audio or video file (`/v1/audio/transcriptions`, the
+    /// transcription speed, `verbose_json` with word timings): Janus's
+    /// answer, words and speakers included when the audio has them.
+    pub async fn transcribe(&self, filename: &str, bytes: Vec<u8>, language: Option<&str>) -> Result<Value, String> {
+        let (req, signed_in) = self.request(reqwest::Method::POST, "/v1/audio/transcriptions");
+        let mut form = reqwest::multipart::Form::new()
+            .text("model", TRANSCRIBE_MODEL)
+            .text("response_format", "verbose_json")
+            .text("timestamp_granularities[]", "word");
+        if let Some(lang) = language {
+            form = form.text("language", lang.to_string());
+        }
+        let form = form.part("file", reqwest::multipart::Part::bytes(bytes).file_name(filename.to_string()));
+        let resp = req
+            .multipart(form)
+            .timeout(Duration::from_secs(600))
+            .send()
+            .await
+            .map_err(|e| format!("Could not reach Janus to transcribe {filename}: {e}"))?;
+        let status = resp.status();
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            return Err(failure("transcript", status.as_u16(), &text, signed_in));
+        }
+        resp.json()
+            .await
+            .map_err(|e| format!("Janus's transcript could not be read: {e}"))
     }
 
     /// Submits a video job for `body` (a `/v1/videos` request).
@@ -358,6 +420,11 @@ fn failure(kind: &str, status: u16, body: &str, signed_in: bool) -> String {
              can upgrade their plan under Settings > Account, then ask again."
         ),
         401 | 403 if !signed_in => crate::janus::NOT_SIGNED_IN.to_string(),
+        // No model serves this kind yet (Janus's `kind_unavailable`): a
+        // retry cannot help.
+        503 if janus_code(body) == "kind_unavailable" => format!(
+            "This kind of media ({kind}) is not available on NeboAI yet. Tell the owner plainly, and do not try again in this task."
+        ),
         _ => {
             let said = janus_message(body);
             if said.is_empty() {
@@ -367,6 +434,14 @@ fn failure(kind: &str, status: u16, body: &str, signed_in: bool) -> String {
             }
         }
     }
+}
+
+/// The code in a Janus error body (`{"error": {"code"}}`), or "".
+fn janus_code(body: &str) -> String {
+    serde_json::from_str::<Value>(body)
+        .ok()
+        .and_then(|v| v.pointer("/error/code").and_then(Value::as_str).map(str::to_string))
+        .unwrap_or_default()
 }
 
 /// The message in a Janus error body (`{"error": {"message"}}`,
@@ -973,6 +1048,15 @@ impl Target {
 const TRIGGERS: &[&str] = &[
     "voiceover",
     "voice over",
+    "background music",
+    "soundtrack",
+    "jingle",
+    "make music",
+    "generate music",
+    "sound effect",
+    "transcribe",
+    "transcript",
+    "word timings",
     "narration",
     "text to speech",
     "read this aloud",
@@ -1187,15 +1271,34 @@ impl GenerateMediaTool {
         Ok((lines.join("\n"), written))
     }
 
-    /// Makes the speech and answers the result text and its file, which the
-    /// chat shows as a card with a player.
-    async fn speech(&self, target: &Target, input: &Value) -> Result<(String, Vec<PathBuf>), String> {
-        let text = str_of(input, "text").ok_or("Give the `text` to speak.")?;
-        let body = speech_body(input);
-        let ext = body["response_format"].as_str().unwrap_or("mp3");
-        let name = file_names(str_of(input, "into"), target.default_folder, text, ext, 1, now()).remove(0);
+    /// Makes speech, music or a sound effect (`kind`) and answers the
+    /// result text and its file, which the chat shows as a card with a
+    /// player. The file is tagged AI-generated in its own metadata.
+    async fn audio_file(&self, target: &Target, input: &Value, kind: &str) -> Result<(String, Vec<PathBuf>), String> {
+        let asked = speech_format(str_of(input, "into"), str_of(input, "output_format"));
+        let (path_on_janus, what, body, named_for) = match kind {
+            "speech" => {
+                let text = str_of(input, "text").ok_or("Give the `text` to speak.")?;
+                ("/v1/audio/speech", "speech", speech_body(input), text)
+            }
+            _ => {
+                let prompt = str_of(input, "prompt").ok_or("Give a `prompt`.")?;
+                let what = if kind == "music" { "music" } else { "sound effect" };
+                ("/v1/audio/generations", what, audio::generation_body(kind, input, asked), prompt)
+            }
+        };
+        let name = file_names(str_of(input, "into"), target.default_folder, named_for, asked, 1, now()).remove(0);
         let path = destination(&target.base, &name)?;
-        let bytes = self.media.speech(&body).await?;
+        let (bytes, content_type) = self.media.audio(path_on_janus, what, &body).await?;
+        // The bytes decide the extension: a model can answer WAV for an MP3
+        // request, and an `.mp3` holding a WAV is a broken file.
+        let real = audio::audio_ext(&bytes, &content_type, asked);
+        let (name, path) = if real == asked {
+            (name, path)
+        } else {
+            (Path::new(&name).with_extension(real).to_string_lossy().into_owned(), path.with_extension(real))
+        };
+        let (bytes, tagged) = audio::tag_ai_generated(bytes);
         std::fs::write(&path, &bytes)
             .map_err(|e| format!("Could not write {}: {e}", path.display()))?;
         let mut about = Vec::new();
@@ -1206,16 +1309,142 @@ impl GenerateMediaTool {
         if let Some(voice) = body.get("voice").and_then(Value::as_str) {
             about.push(format!("voice {voice}"));
         }
-        let lines = [
-            format!(
-                "Made speech into {}: {name} ({}) at {}",
-                target.place(&path),
-                about.join(", "),
-                path.display()
-            ),
-            "To put it under a video, use an installed media plugin's audio mix on this file and the video."
+        if body.get("instrumental").and_then(Value::as_bool) == Some(true) {
+            about.push("instrumental".to_string());
+        }
+        if tagged {
+            about.push("tagged AI-generated".to_string());
+        }
+        let mut lines = vec![format!(
+            "Made {what} into {}: {name} ({}) at {}",
+            target.place(&path),
+            about.join(", "),
+            path.display()
+        )];
+        if real != asked {
+            lines.push(format!("(It came back as {}, so it is saved as .{real}.)", real.to_ascii_uppercase()));
+        }
+        lines.push(match kind {
+            "speech" => "To put it under a video, use an installed media plugin's audio mix on this file and the video. \
+                         Keep the same `voice` for the same character every time."
                 .to_string(),
-        ];
+            _ => "To trim it, fade it or mix it under a video or voice-over, use an installed media plugin's audio \
+                  commands (the Nebo Media plugin has them)."
+                .to_string(),
+        });
+        Ok((lines.join("\n"), vec![path]))
+    }
+
+    /// kind "voices": the voices speech can use, one line each.
+    async fn voice_list(&self) -> Result<String, String> {
+        let voices = self.media.voices().await?;
+        if voices.is_empty() {
+            return Ok("No voices are listed right now; leave `voice` out for the default.".to_string());
+        }
+        let mut lines = vec![format!(
+            "{} voices. Give one's id as `voice` with kind \"speech\"; ids never change, so keep one per character:",
+            voices.len()
+        )];
+        for v in &voices {
+            let field = |k: &str| v.get(k).and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty());
+            let Some(id) = field("id") else { continue };
+            let mut line = format!("- {id}");
+            if let Some(name) = field("name").filter(|n| *n != id) {
+                line.push_str(&format!(": {name}"));
+            }
+            if let Some(d) = field("description") {
+                line.push_str(&format!(" - {d}"));
+            }
+            let traits: Vec<&str> = [field("gender"), field("language")].into_iter().flatten().collect();
+            if !traits.is_empty() {
+                line.push_str(&format!(" ({})", traits.join(", ")));
+            }
+            lines.push(line);
+        }
+        Ok(lines.join("\n"))
+    }
+
+    /// kind "transcript": the audio or video file `file`, transcribed with
+    /// word timings and speakers, saved as transcript JSON (`into`, else
+    /// `<file>.transcript.json` beside it when that may be written, else
+    /// in the default folder).
+    async fn transcript(&self, ctx: &ToolContext, target: &Target, input: &Value) -> Result<(String, Vec<PathBuf>), String> {
+        let given = str_of(input, "file").ok_or("Give `file`: the audio or video file to transcribe.")?;
+        let source = readable(ctx, &target.base, given)?;
+        let filename = source.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let ext = source.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).unwrap_or_default();
+        if !ai::transcribe::SUPPORTED_AUDIO_EXTENSIONS.contains(&ext.as_str()) {
+            return Err(format!(
+                "{filename} cannot be transcribed as it is: send {}. Extract its audio to MP3 or M4A with the Nebo Media \
+                 plugin first, then transcribe that file.",
+                ai::transcribe::SUPPORTED_AUDIO_EXTENSIONS.join(", ")
+            ));
+        }
+        let size = std::fs::metadata(&source).map(|m| m.len()).unwrap_or(0);
+        if size as usize > ai::transcribe::MAX_AUDIO_BYTES {
+            return Err(format!(
+                "{filename} is {} MB; a transcript takes up to {} MB. Extract its audio as a compressed MP3 or M4A with the \
+                 Nebo Media plugin (or split it), then transcribe that.",
+                size.div_ceil(1024 * 1024),
+                ai::transcribe::MAX_AUDIO_BYTES / (1024 * 1024)
+            ));
+        }
+        let path = match str_of(input, "into") {
+            Some(into) => destination(&target.base, into)?,
+            None => {
+                let stem = source.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "audio".into());
+                let beside = source.with_file_name(format!("{stem}.transcript.json"));
+                let shown = beside.to_string_lossy().into_owned();
+                let refused = crate::safeguard::check_safeguard("write_file", &json!({ "path": shown }), ctx)
+                    .or_else(|| ctx.outside_folders("write", std::slice::from_ref(&shown)));
+                if refused.is_none() {
+                    beside
+                } else {
+                    destination(&target.base, &format!("{}/{stem}.transcript.json", target.default_folder))?
+                }
+            }
+        };
+        let bytes = std::fs::read(&source).map_err(|e| format!("Could not read {}: {e}", source.display()))?;
+        let raw = self.media.transcribe(&filename, bytes, str_of(input, "language")).await?;
+        let t = audio::transcript(&raw);
+        let json = serde_json::to_string_pretty(&t).map_err(|e| format!("The transcript could not be written: {e}"))?;
+        std::fs::write(&path, json).map_err(|e| format!("Could not write {}: {e}", path.display()))?;
+        let speakers: std::collections::BTreeSet<&str> =
+            t.words.iter().chain(&t.segments).filter_map(|p| p.speaker.as_deref()).collect();
+        let mut about = vec![format!("{} words", t.words.len()), format!("{} segments", t.segments.len())];
+        if !speakers.is_empty() {
+            about.push(format!("{} speakers", speakers.len()));
+        }
+        if t.duration > 0.0 {
+            about.push(format!("{:.1} seconds", t.duration));
+        }
+        if !t.language.is_empty() {
+            about.push(format!("language {}", t.language));
+        }
+        let mut lines = vec![format!(
+            "Transcribed {} into {} ({}).",
+            source.display(),
+            path.display(),
+            about.join(", ")
+        )];
+        if t.words.is_empty() && !t.segments.is_empty() {
+            lines.push("No word timings came back for this file; the segments carry the timing.".to_string());
+        }
+        let text: String = t.segments.iter().map(|s| match &s.speaker {
+            Some(sp) => format!("[{sp}] {}", s.text),
+            None => s.text.clone(),
+        }).collect::<Vec<_>>().join(" ");
+        if text.is_empty() {
+            lines.push("No speech was heard in it.".to_string());
+        } else {
+            let preview: String = text.chars().take(600).collect();
+            lines.push(format!("It begins: {preview}{}", if text.chars().count() > 600 { " …" } else { "" }));
+        }
+        lines.push(
+            "The JSON holds `language`, `duration`, `words` and `segments` (each with `text`, `start`, `end` in seconds, \
+             and `speaker` when there is more than one); the Nebo Media plugin reads it for captions and edit by transcript."
+                .to_string(),
+        );
         Ok((lines.join("\n"), vec![path]))
     }
 
@@ -1521,23 +1750,25 @@ impl DynTool for GenerateMediaTool {
     }
 
     fn description(&self) -> String {
-        "Makes new media with AI through NeboAI (an image, a short video, or spoken audio) and saves it as a file, billed \
-         to the owner's plan.\n\
-         - kind \"image\": 1-4 images from `prompt` (PNG unless `into` or `output_format` says webp or jpeg).\n\
-         - kind \"video\": one MP4 of 1-30 seconds from `prompt`; it can take minutes. `image` sets the first frame \
-           (image to video): a file in the same folder, an https URL or a data URL. `scrub: true` re-encodes it for scroll-scrubbing.\n\
+        "Makes new media with AI through NeboAI and saves it as a file, billed to the owner's plan; also transcribes.\n\
+         - kind \"image\": 1-4 images from `prompt`.\n\
+         - kind \"video\": one MP4 of 1-30 seconds from `prompt`; it can take minutes. `image` sets the first frame; \
+           `scrub: true` re-encodes it for scroll-scrubbing.\n\
          - Character swap: kind \"video\", `mode` \"replace\", `video` and `cast`. kind \"cast\" lists and adds the \
            people a swap may use; the owner confirms each once. Recipe: the character-swap skill.\n\
-         - kind \"speech\": `text` read aloud, as a voiceover or narration: an MP3, or WAV when `into` or \
-           `output_format` says so. `voice` picks the voice. To put it under a video, use an installed media plugin's \
-           audio mix on the two files (the Nebo Media plugin has one).\n\
-         - `into` is the file to write. An absolute or `~/` path is saved exactly there (e.g. `~/NeboAI/Media/voiceover.mp3` \
-           for the owner's ~/NeboAI folder); a relative one, such as `assets/hero.png`, is inside the app's folder when you \
-           are an app or name one with `app`, else the workspace. The result gives each file's absolute path: use that \
-           path from then on.\n\
-         - It only makes new media; a media plugin such as Nebo Media only edits. To edit, mix, trim, resize, convert or \
-           inspect an existing file, use that plugin's tool.\n\
-         - The result gives the files' paths, never the pictures; to look at one, use the vision helper on its path.\n\
+         - kind \"speech\": `text` read aloud (voiceover, narration). `voice` is an id from kind \"voices\"; keep one per \
+           character. Stock voices only, never a real person's.\n\
+         - kind \"music\": a track from `prompt`, with `seconds` and `lyrics` (else instrumental). kind \"sound\": a sound \
+           effect from `prompt`.\n\
+         - kind \"transcript\": `file` (audio or video) to JSON with word timings and speakers, for captions and edit by \
+           transcript.\n\
+         - Made audio is tagged AI-generated.\n\
+         - `into` is the file to write. An absolute or `~/` path is saved exactly there (e.g. `~/NeboAI/Media/voiceover.mp3`); \
+           a relative one (`assets/hero.png`) is inside the app's folder when you are an app or name one with `app`, else \
+           the workspace. Use the absolute path the result gives from then on.\n\
+         - It only makes new media. To edit, mix, trim, resize, convert or inspect a file, use a media plugin such as \
+           Nebo Media (its audio mix puts speech or music under a video).\n\
+         - The result gives paths, never pictures; to look at one, use the vision helper on its path.\n\
          - Leave `model` out unless the owner named one."
             .to_string()
     }
@@ -1546,10 +1777,14 @@ impl DynTool for GenerateMediaTool {
         json!({
             "type": "object",
             "properties": {
-                "kind": { "type": "string", "enum": ["image", "video", "speech", "cast"], "description": "What to make, or `cast` to manage the people a swap may use." },
-                "prompt": { "type": "string", "description": "Image or video: what it shows, in detail: subject, style, light, framing, motion." },
+                "kind": { "type": "string", "enum": ["image", "video", "speech", "music", "sound", "transcript", "voices", "cast"], "description": "What to make; `transcript` to transcribe `file`; `voices` to list the speech voices; `cast` to manage the people a swap may use." },
+                "prompt": { "type": "string", "description": "Image or video: what it shows, in detail: subject, style, light, framing, motion. Music: genre, mood, instruments, tempo, what it is for. Sound: the sound, its source, place and movement." },
                 "text": { "type": "string", "description": "Speech: the exact words to say, up to about 4,000 characters." },
-                "voice": { "type": "string", "description": "Speech: the voice, e.g. alloy, ash, ballad, cedar, coral, echo, fable, marin, nova, onyx, sage, shimmer, verse. Left out: the default voice." },
+                "voice": { "type": "string", "description": "Speech: the voice id from kind `voices` (e.g. alloy, coral, nova). Use the same id for the same character every time. Left out: the default voice." },
+                "lyrics": { "type": "string", "description": "Music: the words to sing, lines separated by newlines; [Verse], [Chorus], [Bridge] tags allowed. Left out: instrumental." },
+                "instrumental": { "type": "boolean", "description": "Music: no vocals (the default without `lyrics`). false without `lyrics`: words are written for it." },
+                "file": { "type": "string", "description": "Transcript: the audio or video file to transcribe (an absolute, `~/` or relative path)." },
+                "language": { "type": "string", "description": "Transcript: the spoken language code (e.g. en, es) when known. Left out: detected." },
                 "into": { "type": "string", "description": "The file to write: an absolute or `~/` path is saved there; a relative one (e.g. `assets/hero.png`) is inside the app's folder or the workspace. Left out: a name from the prompt." },
                 "app": { "type": "string", "description": "The app whose folder the file goes in. Leave out when you are the app, or for the workspace." },
                 "model": { "type": "string", "description": "A NeboAI media model. Leave out for the default." },
@@ -1557,8 +1792,8 @@ impl DynTool for GenerateMediaTool {
                 "size": { "type": "string", "description": "Image: e.g. 1024x1024, 1536x1024, 1024x1536." },
                 "quality": { "type": "string", "description": "Image: low, medium, high." },
                 "background": { "type": "string", "description": "Image: transparent or opaque." },
-                "output_format": { "type": "string", "enum": ["png", "webp", "jpeg", "mp3", "wav"], "description": "File format. Image: png, webp or jpeg. Speech: mp3 (default) or wav." },
-                "seconds": { "type": "integer", "minimum": 1, "maximum": MAX_SECONDS, "description": "Video: length (default 5)." },
+                "output_format": { "type": "string", "enum": ["png", "webp", "jpeg", "mp3", "wav"], "description": "File format. Image: png, webp or jpeg. Speech, music, sound: mp3 (default) or wav." },
+                "seconds": { "type": "integer", "minimum": 1, "maximum": audio::MAX_MUSIC_SECONDS, "description": "Video: length, 1-30 (default 5). Music: length wanted, up to 300. Sound: up to 30." },
                 "resolution": { "type": "string", "description": "Video: e.g. 720p, 1080p." },
                 "aspect_ratio": { "type": "string", "description": "Video: e.g. 16:9, 9:16, 1:1." },
                 "image": { "type": "string", "description": "Video: the first frame. A file in the same folder, an https URL or a data URL. Kind cast: a photo of `cast` to add." },
@@ -1574,7 +1809,7 @@ impl DynTool for GenerateMediaTool {
     }
 
     fn search_hint(&self) -> &str {
-        "generate image picture video speech voiceover swap cast"
+        "generate image video voiceover music sound transcribe swap"
     }
 
     fn triggers(&self) -> &[String] {
@@ -1599,7 +1834,7 @@ impl DynTool for GenerateMediaTool {
     /// What it makes is what the owner asked for: it shows in the chat as a
     /// card, the way `share_file` shows a file.
     fn emits_image(&self, input: &Value) -> bool {
-        str_of(input, "kind") != Some("cast")
+        !matches!(str_of(input, "kind"), Some("cast" | "voices"))
     }
 
     fn validate_input(&self, input: &Value) -> Result<(), String> {
@@ -1607,6 +1842,19 @@ impl DynTool for GenerateMediaTool {
             Some("speech") => {
                 if str_of(input, "text").is_none() {
                     return Err("Give the `text` to speak.".to_string());
+                }
+                return Ok(());
+            }
+            Some("voices") => return Ok(()),
+            Some("transcript") => {
+                if str_of(input, "file").is_none() {
+                    return Err("Give `file`: the audio or video file to transcribe.".to_string());
+                }
+                return Ok(());
+            }
+            Some("music" | "sound") => {
+                if str_of(input, "prompt").is_none() {
+                    return Err("Give a `prompt`.".to_string());
                 }
                 return Ok(());
             }
@@ -1650,6 +1898,10 @@ impl DynTool for GenerateMediaTool {
             Some("video") => "making a video".to_string(),
             Some("cast") => "working on the cast".to_string(),
             Some("speech") => "making speech".to_string(),
+            Some("music") => "making music".to_string(),
+            Some("sound") => "making a sound effect".to_string(),
+            Some("transcript") => "transcribing".to_string(),
+            Some("voices") => "listing voices".to_string(),
             _ => "making an image".to_string(),
         }
     }
@@ -1660,6 +1912,10 @@ impl DynTool for GenerateMediaTool {
             Some("video") => "Made a video".to_string(),
             Some("cast") => "Worked on the cast".to_string(),
             Some("speech") => "Made speech".to_string(),
+            Some("music") => "Made music".to_string(),
+            Some("sound") => "Made a sound effect".to_string(),
+            Some("transcript") => "Transcribed".to_string(),
+            Some("voices") => "Listed voices".to_string(),
             _ => "Made an image".to_string(),
         }
     }
@@ -1677,14 +1933,21 @@ impl DynTool for GenerateMediaTool {
             let made = match str_of(&input, "kind") {
                 Some("image") => self.image(&target, &input).await,
                 Some("video") => self.video(ctx, &target, &input).await,
-                Some("speech") => self.speech(&target, &input).await,
+                Some(kind @ ("speech" | "music" | "sound")) => self.audio_file(&target, &input, kind).await,
+                Some("transcript") => self.transcript(ctx, &target, &input).await,
+                Some("voices") => {
+                    return match self.voice_list().await {
+                        Ok(text) => ToolResult::ok(text),
+                        Err(e) => ToolResult::error(e),
+                    };
+                }
                 Some("cast") => {
                     return match self.cast_change(ctx, &target, &input).await {
                         Ok(text) => ToolResult::ok(text),
                         Err(e) => ToolResult::error(e),
                     };
                 }
-                _ => Err("`kind` is image, video, speech or cast.".to_string()),
+                _ => Err("`kind` is image, video, speech, music, sound, transcript, voices or cast.".to_string()),
             };
             match made {
                 // Every file is its own card: the first on `image_url`,
@@ -2209,10 +2472,13 @@ mod tests {
         assert!(result.more_files.is_empty());
         assert!(file.starts_with(&ui) && file.extension().is_some_and(|e| e == "mp3"), "{}", file.display());
         assert_eq!(file.file_name().unwrap().to_string_lossy().split('-').take(3).collect::<Vec<_>>(), ["three", "laps", "one"]);
-        assert_eq!(std::fs::read(&file).unwrap(), mp3);
+        // Saved tagged AI-generated, the audio itself untouched.
+        let tagged = audio::tag_ai_generated(mp3.to_vec()).0;
+        assert_eq!(std::fs::read(&file).unwrap(), tagged);
         // 38 frames of 1152 samples at 44.1 kHz.
         assert!(result.content.contains("1.0 seconds"), "{}", result.content);
-        assert!(result.content.contains(&format!("{} bytes", mp3.len())), "{}", result.content);
+        assert!(result.content.contains(&format!("{} bytes", tagged.len())), "{}", result.content);
+        assert!(result.content.contains("tagged AI-generated"), "{}", result.content);
         assert!(result.content.contains(&file.display().to_string()), "{}", result.content);
 
         let seen = janus.seen.lock().unwrap();
@@ -2263,7 +2529,7 @@ mod tests {
         let result = tool.execute_dyn(&ToolContext::default(), input).await;
         assert!(!result.is_error, "{}", result.content);
         assert_eq!(result.image_url.as_deref(), Some(want.to_string_lossy().as_ref()));
-        assert_eq!(std::fs::read(&want).unwrap(), mp3);
+        assert_eq!(std::fs::read(&want).unwrap(), audio::tag_ai_generated(mp3.to_vec()).0);
         assert!(!ui.exists(), "nothing went into the app's folder");
         assert!(result.content.contains(&format!("at {}", want.display())), "{}", result.content);
         assert!(result.content.contains(&format!("into {}:", want.parent().unwrap().display())), "{}", result.content);
@@ -2292,6 +2558,137 @@ mod tests {
         );
         let err = tool.validate_input(&json!({"kind": "speech", "prompt": "hi"})).unwrap_err();
         assert!(err.contains("`text`"), "{err}");
+    }
+
+    /// Music: the generation request (kind, prompt, length, instrumental,
+    /// format), the file saved under the real format's extension, tagged,
+    /// and on the result for the chat's card.
+    #[tokio::test]
+    async fn music_asks_janus_and_saves_a_tagged_track() {
+        let mp3: &'static [u8] = Box::leak(mp3_of(77).into_boxed_slice());
+        let janus = mock(Box::new(move |path, _| match path {
+            "/v1/audio/generations" => (200, "audio/mpeg", mp3.to_vec()),
+            _ => (404, "text/plain", b"no".to_vec()),
+        }))
+        .await;
+        let tmp = tempfile::tempdir().unwrap();
+        let (tool, ui) = tool_with_app(&janus, tmp.path());
+        let input = json!({"kind": "music", "app": "Racer", "prompt": "upbeat synthwave for a race intro", "seconds": 45, "into": "audio/intro.wav"});
+        assert!(tool.validate_input(&input).is_ok());
+        assert!(tool.emits_image(&input));
+        let result = tool.execute_dyn(&ToolContext::default(), input).await;
+        assert!(!result.is_error, "{}", result.content);
+        // WAV asked for, MP3 answered: saved as what it is.
+        let file = PathBuf::from(result.image_url.as_deref().unwrap());
+        assert_eq!(file, ui.join("audio/intro.mp3"));
+        assert_eq!(std::fs::read(&file).unwrap(), audio::tag_ai_generated(mp3.to_vec()).0);
+        assert!(result.content.starts_with("Made music into Racer's folder: audio/intro.mp3 (2.0 seconds"), "{}", result.content);
+        assert!(result.content.contains("instrumental") && result.content.contains("saved as .mp3"), "{}", result.content);
+
+        let seen = janus.seen.lock().unwrap();
+        let body: Value = serde_json::from_str(&seen[0].1).unwrap();
+        assert_eq!(
+            body,
+            json!({"kind": "music", "prompt": "upbeat synthwave for a race intro", "response_format": "wav", "seconds": 45, "instrumental": true})
+        );
+    }
+
+    /// A sound effect goes to the same door as kind "sound"; a refusal
+    /// for the plan reads as the owner's plan.
+    #[tokio::test]
+    async fn sound_effects_and_their_refusals() {
+        let janus = mock(Box::new(move |_, n| match n {
+            1 => (200, "audio/mpeg", mp3_of(2)),
+            _ => (429, "application/json", br#"{"error":{"message":"Usage limit exceeded"}}"#.to_vec()),
+        }))
+        .await;
+        let tmp = tempfile::tempdir().unwrap();
+        let (tool, _) = tool_with_app(&janus, tmp.path());
+        let input = json!({"kind": "sound", "app": "Racer", "prompt": "tires screech on wet asphalt", "seconds": 3});
+        let result = tool.execute_dyn(&ToolContext::default(), input.clone()).await;
+        assert!(!result.is_error, "{}", result.content);
+        assert!(result.content.starts_with("Made sound effect into Racer's folder: assets/tires-screech-on-wet-asphalt-"), "{}", result.content);
+        let body: Value = serde_json::from_str(&janus.seen.lock().unwrap()[0].1).unwrap();
+        assert_eq!(body, json!({"kind": "sound", "prompt": "tires screech on wet asphalt", "response_format": "mp3", "seconds": 3}));
+        let result = tool.execute_dyn(&ToolContext::default(), input).await;
+        assert!(result.is_error && result.content.contains("plan is used up"), "{}", result.content);
+        // No sound model yet: said plainly, never a "try again".
+        let said = failure(
+            "sound effect",
+            503,
+            r#"{"error":{"code":"kind_unavailable","message":"This request couldn't be completed. Try again.","type":"server_error"}}"#,
+            true,
+        );
+        assert!(said.contains("not available on NeboAI yet") && said.contains("do not try again"), "{said}");
+        assert!(tool.validate_input(&json!({"kind": "sound"})).unwrap_err().contains("`prompt`"));
+    }
+
+    /// kind "voices": the list as lines, ids first; nothing is made.
+    #[tokio::test]
+    async fn voices_are_listed_by_id() {
+        let janus = mock(Box::new(move |path, _| match path {
+            "/v1/audio/voices" => (
+                200,
+                "application/json",
+                br#"{"object":"list","data":[{"id":"narrator-warm","name":"Warm narrator","description":"Calm storyteller","gender":"male","language":"en"},{"id":"nova","name":"nova"}]}"#.to_vec(),
+            ),
+            _ => (404, "text/plain", b"no".to_vec()),
+        }))
+        .await;
+        let tmp = tempfile::tempdir().unwrap();
+        let (tool, _) = tool_with_app(&janus, tmp.path());
+        let input = json!({"kind": "voices"});
+        assert!(tool.validate_input(&input).is_ok() && !tool.emits_image(&input));
+        let result = tool.execute_dyn(&ToolContext::default(), input).await;
+        assert!(!result.is_error && result.image_url.is_none(), "{}", result.content);
+        assert!(result.content.contains("- narrator-warm: Warm narrator - Calm storyteller (male, en)"), "{}", result.content);
+        assert!(result.content.contains("\n- nova"), "{}", result.content);
+    }
+
+    /// A transcript: the file sent as the transcription speed with word
+    /// timings asked for, the answer saved beside it as transcript JSON.
+    #[tokio::test]
+    async fn transcript_saves_word_timed_json_beside_the_file() {
+        let answer = br#"{"text":"Speaker 1: Hi. Speaker 2: Yes.","language":"en","duration":2.0,
+            "words":[{"text":"Hi.","start":0.1,"end":0.4,"speaker":0},{"text":"Yes.","start":1.0,"end":1.3,"speaker":1}]}"#;
+        let janus = mock(Box::new(move |path, _| match path {
+            "/v1/audio/transcriptions" => (200, "application/json", answer.to_vec()),
+            _ => (404, "text/plain", b"no".to_vec()),
+        }))
+        .await;
+        let tmp = tempfile::tempdir().unwrap();
+        let (tool, _) = tool_with_app(&janus, tmp.path());
+        let clip = tmp.path().join("in/interview.m4a");
+        std::fs::create_dir_all(clip.parent().unwrap()).unwrap();
+        std::fs::write(&clip, b"fake audio").unwrap();
+        let input = json!({"kind": "transcript", "file": clip.to_string_lossy()});
+        assert!(tool.validate_input(&input).is_ok());
+        let result = tool.execute_dyn(&ToolContext::default(), input).await;
+        assert!(!result.is_error, "{}", result.content);
+        let out = tmp.path().join("in/interview.transcript.json");
+        assert_eq!(result.image_url.as_deref(), Some(out.to_string_lossy().as_ref()));
+        let t: Value = serde_json::from_slice(&std::fs::read(&out).unwrap()).unwrap();
+        assert_eq!(t["language"], "en");
+        assert_eq!(t["words"][1], json!({"text": "Yes.", "start": 1.0, "end": 1.3, "speaker": "S2"}));
+        assert_eq!(t["segments"].as_array().unwrap().len(), 2);
+        assert!(result.content.contains("2 words, 2 segments, 2 speakers"), "{}", result.content);
+        assert!(result.content.contains("It begins: [S1] Hi. [S2] Yes."), "{}", result.content);
+
+        let seen = janus.seen.lock().unwrap();
+        let (line, body, _) = &seen[0];
+        assert!(line.starts_with("POST /v1/audio/transcriptions "), "{line}");
+        for part in ["nebo-transcribe", "verbose_json", "timestamp_granularities[]", "word", "interview.m4a", "fake audio"] {
+            assert!(body.contains(part), "{part} missing from the form");
+        }
+
+        // A file the endpoint does not take is refused before it is sent.
+        let mov = tmp.path().join("in/clip.mov");
+        std::fs::write(&mov, b"x").unwrap();
+        drop(seen);
+        let result = tool.execute_dyn(&ToolContext::default(), json!({"kind": "transcript", "file": mov.to_string_lossy()})).await;
+        assert!(result.is_error && result.content.contains("Extract its audio"), "{}", result.content);
+        assert_eq!(janus.seen.lock().unwrap().len(), 1);
+        assert!(tool.validate_input(&json!({"kind": "transcript"})).unwrap_err().contains("`file`"));
     }
 
     #[test]
