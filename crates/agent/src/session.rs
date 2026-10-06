@@ -235,6 +235,7 @@ impl SessionManager {
             Some(token_estimate),
             metadata,
             session_name.as_deref(),
+            None,
         )?;
 
         let _ = self.store.increment_session_message_count(session_id);

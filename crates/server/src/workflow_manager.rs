@@ -3245,6 +3245,7 @@ fn post_automation_message(store: &db::Store, hub: &ClientHub, session_key: &str
         None,
         Some(&metadata),
         None,
+        None,
     ) {
         Ok(_msg) => {
             // Broadcast as chat_complete so the chat UI picks it up in real time
