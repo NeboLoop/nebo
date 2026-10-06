@@ -1658,36 +1658,86 @@ fn brand_voice_hints() -> (serde_json::Map<String, serde_json::Value>, Vec<Strin
     (replace, keyterms)
 }
 
-/// Compact tail of the chat history, injected into the voice session's
-/// instructions so the agent picks the conversation up mid-thread.
+/// Characters of recent conversation a voice call starts with, newest first,
+/// and of any one message in it.
+// ponytail: fixed budgets; tune if a call's instructions crowd the voice model.
+const CALL_HISTORY_CHARS: usize = 8_000;
+const CALL_MESSAGE_CHARS: usize = 1_500;
+/// The newest text files shared in the chat a call carries, and how much of each.
+const CALL_FILES: usize = 2;
+const CALL_FILE_CHARS: usize = 10_000;
+
+/// The chat so far, injected into the voice session's instructions so the
+/// agent picks the conversation up mid-thread: its recent messages and the
+/// text files the owner shared in it. A brief shared as a file is what the
+/// call is about; twelve 300-character lines left it out, and an interview
+/// run over voice never saw its own instructions (2026-10-06).
 fn chat_history_context(state: &AppState, chat_id: &str) -> String {
     let Ok(messages) = state.store.get_chat_messages(chat_id) else {
         return String::new();
     };
-    if messages.is_empty() {
-        return String::new();
-    }
-    let tail: Vec<String> = messages
+    let said: Vec<&db::models::ChatMessage> = messages
         .iter()
-        .rev()
-        .take(12)
-        .rev()
-        .filter(|m| !m.content.is_empty())
-        .map(|m| {
-            let who = if m.role == "user" { "User" } else { "You" };
-            let text: String = m.content.chars().take(300).collect();
-            format!("{who}: {text}")
-        })
+        .filter(|m| (m.role == "user" || m.role == "assistant") && !m.content.trim().is_empty())
+        .filter(|m| !m.metadata.as_deref().is_some_and(|md| md.contains("\"isMeta\":true")))
         .collect();
-    if tail.is_empty() {
-        String::new()
-    } else {
-        format!(
+    let mut tail = Vec::new();
+    let mut used = 0;
+    for m in said.iter().rev() {
+        let who = if m.role == "user" { "User" } else { "You" };
+        let text: String = m.content.chars().take(CALL_MESSAGE_CHARS).collect();
+        used += text.len();
+        if used > CALL_HISTORY_CHARS && !tail.is_empty() {
+            break;
+        }
+        tail.push(format!("{who}: {text}"));
+    }
+    tail.reverse();
+    let uploads = config::data_dir().map(|d| d.join("files").join("uploads")).unwrap_or_default();
+    let files = shared_files(said.iter().map(|m| m.content.as_str()), &uploads);
+    let mut out = String::new();
+    if !files.is_empty() {
+        out.push_str("\n\nFiles the owner shared in this chat, newest first. When one is a brief or instructions, follow it:");
+        for (name, text) in files {
+            out.push_str(&format!("\n\n--- {name} ---\n{text}"));
+        }
+    }
+    if !tail.is_empty() {
+        out.push_str(&format!(
             "\n\nThis voice call continues an ongoing chat. Recent messages:\n{}\n\
              Continue naturally — do not greet from scratch.",
             tail.join("\n")
-        )
+        ));
     }
+    out
+}
+
+/// The newest text files attached in these messages, newest first, read
+/// from where their "[Attached: … saved at …]" notes say: name and text.
+/// Only files in the upload store (`uploads`) are read: a note is text in a
+/// message, and a message never names what else on disk a call may read.
+fn shared_files<'a>(messages: impl DoubleEndedIterator<Item = &'a str>, uploads: &std::path::Path) -> Vec<(String, String)> {
+    static SAVED: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"\[Attached: [^\]]*? — saved at (/[^\]]+?\.(?:md|markdown|txt|csv|json))(?:\. |\])").unwrap()
+    });
+    let mut seen = std::collections::HashSet::new();
+    let mut files = Vec::new();
+    for text in messages.rev() {
+        let paths: Vec<&str> = SAVED.captures_iter(text).filter_map(|c| c.get(1)).map(|m| m.as_str()).collect();
+        for path in paths.into_iter().rev() {
+            let inside = std::path::Path::new(path)
+                .canonicalize()
+                .is_ok_and(|p| uploads.canonicalize().is_ok_and(|u| p.starts_with(u)));
+            if files.len() == CALL_FILES || !inside || !seen.insert(path.to_string()) {
+                continue;
+            }
+            if let Ok(body) = std::fs::read_to_string(path) {
+                let name = std::path::Path::new(path).file_name().map_or(path.into(), |n| n.to_string_lossy().into_owned());
+                files.push((name, body.chars().take(CALL_FILE_CHARS).collect()));
+            }
+        }
+    }
+    files
 }
 
 /// What the lead needs to know when the owner opens a team's voice mode:
@@ -3181,6 +3231,29 @@ fn clip_at_char_boundary(s: &str, cap: usize) -> &str {
 
 #[cfg(test)]
 mod voice_prompt_tests {
+    /// A brief shared as a file reaches the call: the newest text files in
+    /// the upload store, newest first, each once; nothing outside the store.
+    #[test]
+    fn a_call_reads_the_newest_text_files_shared_in_its_chat() {
+        let dir = tempfile::tempdir().unwrap();
+        let uploads = dir.path().join("uploads");
+        std::fs::create_dir_all(&uploads).unwrap();
+        let file = |name: &str, text: &str| {
+            let p = uploads.join(name);
+            std::fs::write(&p, text).unwrap();
+            p.display().to_string()
+        };
+        let (old, brief, deck) = (file("a old.md", "old"), file("b brief.md", "interview me"), file("c.md", "deck notes"));
+        let outside = dir.path().join("secret.md");
+        std::fs::write(&outside, "secret").unwrap();
+        let note = |p: &str| format!("[Attached: x.md (3 KB) — saved at {p}. Its contents are not included above.]");
+        let msgs = [note(&old), format!("here: {}", note(&brief)), note(&outside.display().to_string()), note(&deck), note(&brief)];
+        let files = super::shared_files(msgs.iter().map(String::as_str), &uploads);
+        let names: Vec<&str> = files.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, ["b brief.md", "c.md"]);
+        assert_eq!(files[0].1, "interview me");
+    }
+
     use super::*;
 
     /// The owner's call from the phone app tells the realtime model the
