@@ -1767,7 +1767,7 @@ impl DynTool for GenerateMediaTool {
            a relative one (`assets/hero.png`) is inside the app's folder when you are an app or name one with `app`, else \
            the workspace. Use the absolute path the result gives from then on.\n\
          - It only makes new media; a media plugin such as Nebo Media only edits. To edit, mix, trim, resize, convert or \
-           inspect a file, use that plugin (Nebo Media's audio mix puts speech or music under a video).\n\
+           inspect a file, use that plugin (its audio mix puts speech or music under a video).\n\
          - The result gives paths, never pictures; to look at one, use the vision helper on its path.\n\
          - Leave `model` out unless the owner named one."
             .to_string()
