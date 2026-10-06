@@ -193,7 +193,7 @@ export function kindForExt(ext: string): WorkItem['kind'] {
 export function artifactsToWorkItems(artifacts: unknown): WorkItem[] {
   if (!Array.isArray(artifacts)) return [];
   // Normalize objects + legacy strings into a single shape.
-  const docs = artifacts
+  const written = artifacts
     .map((a): WorkItem | null => {
       if (a && typeof a === 'object' && 'documentId' in (a as Record<string, unknown>)) {
         const o = a as Record<string, unknown>;
@@ -216,6 +216,18 @@ export function artifactsToWorkItems(artifacts: unknown): WorkItem[] {
       return null;
     })
     .filter((w): w is WorkItem => w !== null);
+
+  // ONE card per document, at the newest version, where it first appeared:
+  // a reply that wrote a file three times (an older message kept all three
+  // writes) shows it once. Versioned items key by documentId, bare URLs by
+  // their file name. Mirrors the backend's one_card_per_document().
+  const byDoc = new Map<string, WorkItem>();
+  for (const w of written) {
+    const key = w.documentId === w.url ? `name:${w.title}` : `doc:${w.documentId}`;
+    const kept = byDoc.get(key);
+    if (!kept || w.version >= kept.version) byDoc.set(key, w);
+  }
+  const docs = [...byDoc.values()];
 
   // Pair a compiled .html with its .jsx/.tsx source (same stem): ONE item with a
   // Preview/Code toggle, not two cards for the same deliverable.
