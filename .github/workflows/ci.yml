@@ -209,6 +209,16 @@ jobs:
       # --exclude nebo: the desktop crate has no tests and its build script
       # wants ../app/build (frontendDist) — excluding it keeps this job free of
       # a frontend build. Everything else in the workspace runs.
+      # Every test opens its own SQLite store under the temp dir. On the
+      # droplet's disk those fsyncs made the suite 3x slower than on a hosted
+      # runner and timing-sensitive tests failed; RAM-backed temp files keep
+      # it at hosted speed.
+      - name: Temp dir in RAM
+        run: |
+          mkdir -p /dev/shm/nebo-test-tmp
+          echo "TMPDIR=/dev/shm/nebo-test-tmp" >> "$GITHUB_ENV"
+          df -h /dev/shm
+
       - name: Run tests
         run: cargo test --workspace --exclude nebo --no-fail-fast
 
