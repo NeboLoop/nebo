@@ -960,13 +960,13 @@ async fn handle_input(
                 if r.is_error {
                     return ToolResult::error(format!("Clicked {label} but pasting failed: {}", r.content));
                 }
-                ToolResult::ok(format!("Clicked {label} and pasted {} chars", text.chars().count()))
+                ToolResult::ok(format!("Clicked {label} and pasted {} chars{}", text.chars().count(), r.content))
             } else {
                 let r = paste_text(text).await;
                 if r.is_error {
                     return r;
                 }
-                ToolResult::ok(format!("Pasted {} chars into the focused field", text.chars().count()))
+                ToolResult::ok(format!("Pasted {} chars into the focused field{}", text.chars().count(), r.content))
             }
         }
         "press" | "hotkey" => {
@@ -1377,7 +1377,9 @@ fn wait_for_label(input: &serde_json::Value) -> String {
 
 /// Put `text` into the focused field through the clipboard, and put the
 /// clipboard back afterwards. On Linux xdotool types directly, which does
-/// not drop characters the way macOS keystrokes do.
+/// not drop characters the way macOS keystrokes do. A delivered result's
+/// content is a note for the reply: " (read back)" when the field was read
+/// and holds the text, else empty.
 async fn paste_text(text: &str) -> ToolResult {
     #[cfg(target_os = "macos")]
     {
@@ -1390,10 +1392,56 @@ async fn paste_text(text: &str) -> ToolResult {
         if let Some(b) = before {
             let _ = pbcopy(&b).await;
         }
+        return if r.is_error { r } else { ToolResult::ok("") };
+    }
+    #[cfg(target_os = "windows")]
+    {
+        return paste_text_windows(text).await;
+    }
+    #[cfg(not(target_os = "windows"))]
+    #[allow(unreachable_code)]
+    {
+        let r = input_type(text).await;
+        if r.is_error { r } else { ToolResult::ok("") }
+    }
+}
+
+/// Windows: the text on the clipboard, Ctrl+V, then the focused field read
+/// until it holds the text (or 1.5 s pass), and only then the clipboard put
+/// back: put back sooner, the paste can land the old clipboard instead. A
+/// field that reads otherwise is an error that says what it holds.
+#[cfg(target_os = "windows")]
+async fn paste_text_windows(text: &str) -> ToolResult {
+    use base64::Engine;
+    let encoded = base64::engine::general_purpose::STANDARD.encode(text.as_bytes());
+    let script = format!(
+        "Add-Type -AssemblyName System.Windows.Forms, UIAutomationClient, UIAutomationTypes\n\
+         $text = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{encoded}'))\n\
+         function Read-Focused {{\n\
+           $f = [System.Windows.Automation.AutomationElement]::FocusedElement; if (-not $f) {{ return $null }}\n\
+           $p = $null\n\
+           if ($f.TryGetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern, [ref]$p)) {{ return [string]$p.Current.Value }}\n\
+           if ($f.TryGetCurrentPattern([System.Windows.Automation.TextPattern]::Pattern, [ref]$p)) {{ return [string]$p.DocumentRange.GetText(-1) }}\n\
+           $null\n\
+         }}\n\
+         function Flat([string]$s) {{ $s.Replace(\"`r`n\", \"`n\").Replace(\"`r\", \"`n\") }}\n\
+         $saved = $null; try {{ $saved = [System.Windows.Forms.Clipboard]::GetDataObject() }} catch {{ }}\n\
+         [System.Windows.Forms.Clipboard]::SetText($text)\n\
+         (New-Object -ComObject WScript.Shell).SendKeys('^v')\n\
+         $want = Flat $text; $read = $null; $deadline = (Get-Date).AddMilliseconds(1500)\n\
+         do {{ Start-Sleep -Milliseconds 100; $read = Read-Focused }} while ($null -ne $read -and -not (Flat $read).Contains($want) -and (Get-Date) -lt $deadline)\n\
+         if ($null -eq $read) {{ Start-Sleep -Milliseconds 300 }}\n\
+         if ($saved) {{ try {{ [System.Windows.Forms.Clipboard]::SetDataObject($saved, $true) }} catch {{ }} }}\n\
+         if ($null -eq $read) {{ $f = [System.Windows.Automation.AutomationElement]::FocusedElement; \"(into $($f.Current.ControlType.ProgrammaticName.Replace('ControlType.', '')) '$($f.Current.Name)', which does not expose its text: not read back)\" }}\n\
+         elseif ((Flat $read).Contains($want)) {{ '(read back)' }}\n\
+         else {{ $tail = (Flat $read); if ($tail.Length -gt 120) {{ $tail = '...' + $tail.Substring($tail.Length - 120) }}; throw \"Pasted, but the focused field does not hold the text that was sent: it reads '$tail'\" }}"
+    );
+    let r = run_powershell(&script).await;
+    if r.is_error {
         return r;
     }
-    #[allow(unreachable_code)]
-    input_type(text).await
+    // The script's note: read back, or which element took the text unread.
+    ToolResult::ok(format!(" {}", r.content.trim()))
 }
 
 #[cfg(target_os = "macos")]
@@ -1469,6 +1517,9 @@ fn split_combo(keys: &str) -> Result<(String, String), String> {
     Ok((key.to_string(), out.join(",")))
 }
 
+/// Keystrokes for `text`. Windows never types this way: SendKeys reads
+/// `+ ^ % ~ ( ) { }` as keys and altered the text (`paste_text` pastes).
+#[cfg(not(target_os = "windows"))]
 async fn input_type(text: &str) -> ToolResult {
     #[cfg(target_os = "macos")]
     {
@@ -1488,15 +1539,7 @@ async fn input_type(text: &str) -> ToolResult {
         }
         return ToolResult::error("Input type requires xdotool");
     }
-    #[cfg(target_os = "windows")]
-    {
-        let script = format!(
-            "$wsh = New-Object -ComObject WScript.Shell; $wsh.SendKeys('{}')",
-            escape_powershell(text)
-        );
-        return run_powershell(&script).await;
-    }
-    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
         let _ = text;
         ToolResult::error("Input type is not supported on this platform")
@@ -5211,6 +5254,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "drives Notepad's menus and Save As dialog on the signed-in desktop"]
     async fn notepad_menus_and_save_as_dialog() {
+        let _desktop = crate::TEST_DESKTOP_LOCK.lock().await;
         let tool = DesktopTool::new();
         let ctx = crate::origin::ToolContext::default();
         let run = |input: serde_json::Value| {
@@ -5244,6 +5288,32 @@ mod tests {
         let after = list(command::powershell::<tokio::process::Command>(handles).output().await.unwrap());
         let _own = OwnWindow(after.into_iter().filter(|h| !before.contains(h)).collect::<Vec<_>>().join(","));
 
+        // Typed text arrives exactly as sent (SendKeys turned "charlie" into
+        // "Charlie" and read `+ ^ % ~ ( ) { }` as keys), in a tab of its own.
+        run(serde_json::json!({"resource": "input", "action": "hotkey", "app": "Notepad", "keys": "ctrl+n"})).await;
+        // As a person would: type once the new tab's document has focus.
+        let ready = super::run_powershell(
+            "Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes; $deadline = (Get-Date).AddSeconds(5)\n\
+             do { Start-Sleep -Milliseconds 100; $f = [System.Windows.Automation.AutomationElement]::FocusedElement; $p = $null } \
+             until (($f -and $f.TryGetCurrentPattern([System.Windows.Automation.TextPattern]::Pattern, [ref]$p)) -or (Get-Date) -gt $deadline)\n\
+             if ($p) { 'ready' } else { $w = [System.Windows.Automation.AutomationElement]::FromHandle([NeboWin32]::GetForegroundWindow()); throw \"the new tab never took focus: focus is on $($f.Current.ControlType.ProgrammaticName) '$($f.Current.Name)' in '$($w.Current.Name)' ($((Get-Process -Id $w.Current.ProcessId).ProcessName))\" }",
+        )
+        .await;
+        assert_eq!(ready.content, "ready", "{}", ready.content);
+        let sent = "alpha bravo charlie delta (1+1=2) ^caret %pct ~tilde {braces} [x] café — ok";
+        let typed = run(serde_json::json!({"resource": "input", "action": "type", "app": "Notepad", "text": sent})).await;
+        assert!(typed.contains("(read back)"), "{typed}");
+        let doc = super::run_powershell(
+            "Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes; $f = [System.Windows.Automation.AutomationElement]::FocusedElement; \
+             $p = $null; if ($f.TryGetCurrentPattern([System.Windows.Automation.TextPattern]::Pattern, [ref]$p)) { $p.DocumentRange.GetText(-1) } else { $f.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).Current.Value }",
+        )
+        .await;
+        assert_eq!(doc.content.trim(), sent, "the document holds exactly what was typed");
+        run(serde_json::json!({"resource": "input", "action": "hotkey", "app": "Notepad", "keys": "ctrl+a"})).await;
+        run(serde_json::json!({"resource": "input", "action": "press", "app": "Notepad", "key": "delete"})).await;
+        run(serde_json::json!({"resource": "input", "action": "hotkey", "app": "Notepad", "keys": "ctrl+w"})).await;
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
         let items = run(serde_json::json!({"resource": "ui", "action": "tree", "app": "Notepad", "filter": "MenuItem"})).await;
         assert!(items.contains("MenuItem | File") && items.contains("lines match \"MenuItem\""), "{items}");
         assert!(!items.lines().any(|l| l.starts_with("Button")), "the filter keeps only menu items: {items}");
@@ -5267,9 +5337,10 @@ mod tests {
         assert!(unnamed.contains("(read back)"), "{unnamed}");
         let focused = run(serde_json::json!({"resource": "window", "action": "focus", "app": "Notepad"})).await;
         assert!(focused.contains("its open dialog is in front"), "{focused}");
-        // Keys with no app go to the window in front, and the result says which.
+        // Keys with no app go to the app of the last capture, else to the
+        // window in front: either way the dialog in front gets them.
         let typed = run(serde_json::json!({"resource": "input", "action": "press", "key": "end"})).await;
-        assert!(typed.contains("the window in front") && typed.contains("Save as"), "{typed}");
+        assert!(typed.contains("Save as") && !typed.contains("Not delivered"), "{typed}");
         // Keys sent to the app reach its dialog, not the window behind it.
         run(serde_json::json!({"resource": "input", "action": "hotkey", "app": "Notepad", "keys": "ctrl+a"})).await;
         run(serde_json::json!({"resource": "input", "action": "type", "app": "Notepad", "text": "typed-into-dialog"})).await;
@@ -5287,14 +5358,22 @@ mod tests {
         // What fill sets is what the dialog uses: a path filled in, then
         // Enter, saves to that path. (Reading the field back once passed
         // while the dialog still used its own default name.)
+        // In a tab of the test's own: a Save As saves whichever tab is in
+        // front, and a restored one is the owner's. The tab is closed before
+        // its file is deleted, or Notepad restores it next launch behind a
+        // "Cannot find the file" popup.
         let target = std::env::temp_dir().join(format!("nebo-fill-test-{}.txt", std::process::id()));
         let _ = std::fs::remove_file(&target);
+        run(serde_json::json!({"resource": "input", "action": "hotkey", "app": "Notepad", "keys": "ctrl+n"})).await;
+        tokio::time::sleep(Duration::from_millis(800)).await;
         run(serde_json::json!({"resource": "menu", "action": "click", "app": "Notepad", "name": "File > Save as"})).await;
         tokio::time::sleep(Duration::from_secs(2)).await;
         run(serde_json::json!({"resource": "dialog", "action": "fill", "app": "Notepad", "label": "File name:", "value": target.to_string_lossy()})).await;
         run(serde_json::json!({"resource": "input", "action": "press", "app": "Notepad", "key": "enter"})).await;
         tokio::time::sleep(Duration::from_secs(2)).await;
         let saved = target.exists();
+        run(serde_json::json!({"resource": "input", "action": "hotkey", "app": "Notepad", "keys": "ctrl+w"})).await;
+        tokio::time::sleep(Duration::from_millis(500)).await;
         let _ = std::fs::remove_file(&target);
         assert!(saved, "Save As wrote the file at the path fill put in the field: {}", target.display());
 

@@ -1066,6 +1066,7 @@ mod windows_quit_tests {
     #[tokio::test]
     #[ignore = "launches and quits Character Map on the signed-in desktop"]
     async fn quit_ends_a_running_app() {
+        let _desktop = crate::TEST_DESKTOP_LOCK.lock().await;
         let launched = super::handle_launch("charmap").await;
         assert!(!launched.is_error, "{}", launched.content);
         assert!(launched.content.starts_with("Launched charmap.exe"), "{}", launched.content);
