@@ -410,6 +410,56 @@ pub(crate) fn owner_waiting(messages: &[ChatMessage]) -> Option<OwnerWaiting> {
     })
 }
 
+/// Fewest words an owner message has before it can read as cut off: a
+/// dictated instruction runs long; a short typed line often skips the stop.
+const CUT_OFF_MIN_WORDS: usize = 20;
+/// Words of a cut-off message's end quoted back.
+const CUT_OFF_TAIL_WORDS: usize = 8;
+
+/// The last words of an owner message that stops mid-sentence, the way
+/// dictation does when it cuts out: one paragraph of at least
+/// [`CUT_OFF_MIN_WORDS`] words whose earlier sentences end in punctuation and
+/// whose last one ends on a bare word. `None` for anything else: a short
+/// typed line, a paste or list over several lines, a message that ends its
+/// sentence (or on a link, an address or a symbol). Live 2026-10-07: "…Video
+/// can actually And if we Still images" started the work; the owner stopped
+/// it and said "My instructions got cut off".
+pub(crate) fn cut_off_tail(text: &str) -> Option<String> {
+    let text = text.trim();
+    if text.contains('\n') {
+        return None;
+    }
+    let words: Vec<&str> = text.split_whitespace().collect();
+    if words.len() < CUT_OFF_MIN_WORDS {
+        return None;
+    }
+    let ends_sentence = |c: char| matches!(c, '.' | '!' | '?' | '…' | ':' | ';' | '。' | '！' | '？' | '؟' | '।');
+    let last = words[words.len() - 1];
+    let bare = last.chars().all(|c| c.is_alphanumeric() || c == '\'' || c == '’');
+    let punctuated = words[..words.len() - 1].iter().any(|w| w.trim_end_matches(['"', '\'', '”', '’', ')']).ends_with(ends_sentence));
+    (bare && punctuated).then(|| words[words.len().saturating_sub(CUT_OFF_TAIL_WORDS)..].join(" "))
+}
+
+/// How far apart two owner messages can be and still be pieces of one
+/// dictated instruction.
+const PIECES_WITHIN_SECS: i64 = 600;
+
+/// Dictation in pieces, from the owner's messages in `messages`: the
+/// latest one's last words when it stops mid-sentence ([`cut_off_tail`]),
+/// and the one before it's when that one stopped mid-sentence no more than
+/// [`PIECES_WITHIN_SECS`] earlier (the latest carries it on).
+pub(crate) fn unfinished_pieces(messages: &[ChatMessage]) -> (Option<String>, Option<String>) {
+    let mut owners = messages.iter().rev().filter(|m| {
+        m.role == "user" && !is_meta(m) && !matches!(arrived_mid_turn(m), Some(MidTurnFrom::Parent { .. } | MidTurnFrom::Coworker { .. }))
+    });
+    let Some(latest) = owners.next() else { return (None, None) };
+    let earlier = owners
+        .next()
+        .filter(|m| latest.created_at - m.created_at <= PIECES_WITHIN_SECS)
+        .and_then(|m| cut_off_tail(&m.content));
+    (cut_off_tail(&latest.content), earlier)
+}
+
 /// A row the platform wrote for the model: a note, a notification, a hidden
 /// prompt, the interrupt line.
 fn is_meta(m: &ChatMessage) -> bool {
@@ -1310,6 +1360,70 @@ mod tests {
         assert_eq!(result.len(), 2);
         assert_eq!(result[0].role, "user");
         assert_eq!(result[1].role, "assistant");
+    }
+}
+
+#[cfg(test)]
+mod cut_off_tests {
+    use super::cut_off_tail;
+
+    /// The owner's dictation from 2026-10-07: the pieces that stopped
+    /// mid-sentence read as cut off, with their last words; finished ones,
+    /// short typed lines and pastes don't.
+    #[test]
+    fn a_dictated_message_that_stops_mid_sentence_reads_as_cut_off() {
+        let first = "I need to create a demo video. Can you show me a quick five second video? Actually let's do 10 second \
+                     video with voice and background music. All mix The And then That needs to be done Video can actually \
+                     And if we Still images";
+        assert_eq!(cut_off_tail(first).as_deref(), Some("Video can actually And if we Still images"));
+        let second = "My instructions got cut off. So what I want is I want something absolutely epic. I don't want still \
+                      images, I don't want any of that, but here's what I do want. But what I want is maybe a";
+        assert_eq!(cut_off_tail(second).as_deref(), Some("want. But what I want is maybe a"));
+        for whole in [
+            "Like, like mountain biking or base jumping, maybe it's like a base jumper, or one of those flight suits \
+             where they base jump. We create three or four scenes, and it's 15 seconds long. Make sense?",
+            "No, I don't like that. I want anything that anybody can relate to.",
+            "you have some clips repeating in a row too. Its weird",
+            "keep going",
+            "can you look at the logs from last night and tell me why the import failed and then fix it and push the fix \
+             to main and tell me when it is done",
+            "Here is the page I meant, the one we talked about yesterday with the pricing table. It is at \
+             https://neboai.com/pricing",
+            "Put these in the deck. First the intro slide with the logo and the title we picked yesterday\nthen the \
+             pricing slide and then the team slide",
+        ] {
+            assert_eq!(cut_off_tail(whole), None, "{whole}");
+        }
+    }
+
+    /// The turn's opening hears both: the latest message cut off, and the
+    /// one before it cut off a moment earlier. A cut-off message from long
+    /// ago, the work's own rows and a coworker's words are not pieces.
+    #[test]
+    fn the_pieces_of_one_dictated_instruction() {
+        let cut = "My instructions got cut off. So what I want is I want something absolutely epic. I don't want still \
+                   images, I don't want any of that. But what I want is maybe a";
+        let rest = "scene where it's multiple things happening, a wingsuit flight cut to the music.";
+        let row = |id: &str, content: &str, at: i64, meta: Option<&str>| super::ChatMessage {
+            id: id.into(),
+            chat_id: "c".into(),
+            role: "user".into(),
+            content: content.into(),
+            metadata: meta.map(str::to_string),
+            created_at: at,
+            day_marker: None,
+            tool_calls: None,
+            tool_results: None,
+            token_estimate: None,
+            html: None,
+        };
+        let note = Some(r#"{"isMeta":true}"#);
+        let coworker = Some(r#"{"arrivedMidTurn":true,"from":"coworker","coworker":"Sam"}"#);
+        let pieces = [row("1", cut, 100, None), row("2", "<system-reminder>", 150, note), row("3", "done", 160, coworker), row("4", rest, 170, None)];
+        assert_eq!(super::unfinished_pieces(&pieces), (None, Some("that. But what I want is maybe a".into())));
+        assert_eq!(super::unfinished_pieces(&pieces[..1]), (Some("that. But what I want is maybe a".into()), None));
+        let later = [row("1", cut, 100, None), row("4", rest, 100 + 3_600, None)];
+        assert_eq!(super::unfinished_pieces(&later), (None, None), "an hour later is a new message");
     }
 }
 

@@ -2164,6 +2164,9 @@ async fn handle_conversation_ws(mut socket: WebSocket, state: AppState, mut q: C
              `nebo` tool with the task and relay its result aloud; never guess and never \
              claim you can't act. Only a request addressed to you is a task: the user \
              thinking aloud, describing what they see, or asking how it is going is not. \
+             When their words stop mid-sentence, they are still talking: say a word or two \
+             (\"Go on.\") and wait for the rest; never call `nebo` on an instruction they \
+             haven't finished, and never say you're on it. \
              For how your own task here is going, call `status` and read it back. For \
              what anyone else is doing (another employee, the whole company), or to pass \
              a message to one, use `nebo`: you can see and reach every employee. When the user asks \

@@ -121,6 +121,11 @@ pub enum TurnEvent {
     /// The owner gave a command to run and no run_command call was made this
     /// turn (`owner_command`).
     UnrunCommand,
+    /// The owner's message stops mid-sentence (`conversation::cut_off_tail`,
+    /// its last words in `tail`): more is likely coming, so nothing is spent
+    /// before it. `continues`: an earlier one did, and the latest carries it
+    /// on, so the two are one instruction for the plan already made.
+    UnfinishedMessage { tail: String, continues: bool },
     /// The `steering.generate` app hook's text.
     AppHook {
         label: String,
@@ -233,6 +238,7 @@ pub const NAMES: &[&str] = &[
     "answer_shape",
     "unsaved_memory",
     "unrun_command",
+    "unfinished_message",
     "app_hook",
     "restored_file",
     "invoked_skills",
@@ -492,6 +498,23 @@ pub fn attachment_for(e: &TurnEvent) -> Option<Attachment> {
             "The owner gave you a command to run, and none has run in this turn: what it prints is known only by \
              running it. Run it now with run_command, exactly as they gave it, then report what it returned."
                 .to_string(),
+        ),
+        TurnEvent::UnfinishedMessage { tail, continues: false } => (
+            "unfinished_message",
+            format!(
+                "The owner's message stops mid-sentence (it ends \"…{tail}\"), the way dictation does when it cuts \
+                 out, so more is likely coming. Unless what they want is already clear, don't start the work or spend \
+                 on anything (generating media, paid calls) yet: say in one short sentence that it looks cut off, and \
+                 wait for the rest."
+            ),
+        ),
+        TurnEvent::UnfinishedMessage { tail, continues: true } => (
+            "unfinished_message",
+            format!(
+                "The owner's earlier message stopped mid-sentence (\"…{tail}\") and this one carries it on: read the \
+                 two as one instruction and fold it into the plan you have. Don't start the work over or start a \
+                 second piece of it."
+            ),
         ),
         TurnEvent::AppHook { text, .. } => ("app_hook", non_empty(text)?),
         TurnEvent::RestoredFile { path, content } => (
@@ -1253,6 +1276,7 @@ mod tests {
             TurnEvent::AnswerShape("no JSON object".into()),
             TurnEvent::UnsavedMemory(crate::harness::memory_save::Scope::Private),
             TurnEvent::UnrunCommand,
+            TurnEvent::UnfinishedMessage { tail: "if we Still images".into(), continues: false },
             TurnEvent::AppHook {
                 label: "app".into(),
                 text: "the invoice is due".into(),

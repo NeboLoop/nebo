@@ -1322,11 +1322,34 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
                     };
                     st.saves.heard(st.step, heard.save);
                     st.reminders.add(&TurnEvent::MidTurnMessage { via: w.via.clone(), intent: heard.intent });
+                    // Dictation in pieces: a message that carries on one
+                    // that stopped mid-sentence joins the plan made for it;
+                    // one that stops mid-sentence itself waits for the rest.
+                    if let Some(tail) = conversation::cut_off_tail(&w.task) {
+                        st.reminders.add(&TurnEvent::UnfinishedMessage { tail, continues: true });
+                    }
+                    if let Some(tail) = w.words.rsplit("\n\n").next().and_then(conversation::cut_off_tail) {
+                        st.reminders.add(&TurnEvent::UnfinishedMessage { tail, continues: false });
+                    }
                     heard.intent
                 }
             };
             info!(session_id = sid, intent = intent.as_str(), "the owner's message is answered at this step");
             st.owner_intent = Some((w.latest.clone(), intent));
+        }
+        // Dictation in pieces, heard by the turn's first step: the owner's
+        // message carries on one that stopped mid-sentence a moment ago, or
+        // stops mid-sentence itself (more is likely coming, so nothing is
+        // spent before it). A task from his call is the voice model's
+        // restatement, never cut off.
+        if st.step == 1 && owner_speaks(&cx.request) {
+            let (latest, earlier) = conversation::unfinished_pieces(&conversation);
+            if let Some(tail) = earlier {
+                st.reminders.add(&TurnEvent::UnfinishedMessage { tail, continues: true });
+            }
+            if let (Some(tail), TurnInput::Owner { .. }) = (latest, &cx.request.input) {
+                st.reminders.add(&TurnEvent::UnfinishedMessage { tail, continues: false });
+            }
         }
         let intent_now = waiting
             .as_ref()
@@ -3221,6 +3244,34 @@ mod tests {
             }
         }
         assert_eq!(stored_folds(&h), vec!["shown", "folded", "shown"]);
+    }
+
+    /// Dictation that cut out (live 2026-10-07, the work started on "…And if
+    /// we Still images"): the turn's first step hears that more is likely
+    /// coming before it spends; the piece that follows a moment later is
+    /// heard as carrying it on, one instruction for the plan. A finished
+    /// message hears neither.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn dictation_that_cut_out_waits_for_the_rest_and_the_rest_joins_it() {
+        const CUT: &str = "I need to create a demo video. Can you show me a quick five second video? Actually let's do \
+            10 second video with voice and background music. All mix The And then That needs to be done Video can \
+            actually And if we Still images";
+        let model = Scripted::new(vec![Step::Say("It looks cut off: go on."), Step::Say("Got it.")]);
+        let h = harness(&model).await;
+        let notes = |req: &ChatRequest| -> Vec<String> {
+            req.messages.iter().map(|m| m.content.clone()).filter(|c| c.contains("mid-sentence")).collect()
+        };
+        run_turn(&h, owner(CUT)).await;
+        let first = notes(&model.calls()[0]);
+        assert_eq!(first.len(), 1, "{first:?}");
+        assert!(first[0].contains("stops mid-sentence (it ends \"…Video can actually And if we Still images\")"), "{first:?}");
+        assert!(first[0].contains("don't start the work or spend"), "{first:?}");
+
+        run_turn(&h, owner("No still images: four wingsuit scenes from one reference image, cut to the music.")).await;
+        let calls = model.calls();
+        let second: Vec<String> = notes(&calls[1]).into_iter().filter(|n| !first.contains(n)).collect();
+        assert_eq!(second.len(), 1, "{second:?}");
+        assert!(second[0].contains("earlier message stopped mid-sentence") && second[0].contains("read the two as one instruction"), "{second:?}");
     }
 
     /// A turn that folded every paragraph and ended with no answer shows the
