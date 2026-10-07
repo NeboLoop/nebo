@@ -2098,11 +2098,27 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // Nothing in the owner's workspace is lost without history: every turn
     // looks at it (`tools::workspace_history`). The first look after a start
     // runs now, in the background, so no turn waits on hashing it whole.
-    if let Ok(dir) = config::data_dir() {
-        let files = dir.join("files");
-        harness = harness.with_workspace_history(files.clone());
+    // Before it, once per install and before any turn can run: the owner's
+    // work moves out of the file store into his workspace (`~/NeboAI`),
+    // adopting whatever is already there (`move_workspace`; a clone on APFS,
+    // a one-time copy elsewhere). A turn's look before it would record every
+    // old file as deleted.
+    if let (Ok(dir), Ok(workspace), Ok(files)) = (config::data_dir(), config::workspace_dir(), config::files_dir()) {
+        harness = harness.with_workspace_history(workspace.clone(), files.clone());
+        let moved_mark = dir.join(".workspace-moved");
+        if workspace != files && !moved_mark.exists() {
+            let (store, files, workspace) = (store.clone(), files.clone(), workspace.clone());
+            match tokio::task::spawn_blocking(move || tools::workspace_history::move_workspace(&store, &files, &workspace).map(|m| (m, workspace))).await {
+                Ok(Ok((m, workspace))) => {
+                    info!(copied = m.copied, adopted = m.adopted, to = %workspace.display(), "workspace moved to the owner's folder");
+                    let _ = std::fs::write(&moved_mark, workspace.to_string_lossy().as_bytes());
+                }
+                Ok(Err(e)) => warn!(error = %e, "workspace move failed; it is tried again at the next start"),
+                Err(e) => warn!(error = %e, "workspace move task failed; it is tried again at the next start"),
+            }
+        }
         let store = store.clone();
-        tokio::task::spawn_blocking(move || match tools::workspace_history::look(&store, &files, None) {
+        tokio::task::spawn_blocking(move || match tools::workspace_history::look(&store, &workspace, &files, None) {
             Ok(look) => info!(files = look.files, hashed = look.hashed, kept = look.kept, "workspace history: looked at start"),
             Err(e) => warn!(error = %e, "workspace history: the look at start failed"),
         });

@@ -90,10 +90,10 @@ pub struct Harness {
     /// decide (PRD-Permissions §4.7); `None` goes straight to the aux
     /// classifier.
     pub(crate) decide: Option<Arc<ai::DecideClient>>,
-    /// The owner's workspace (`<data_dir>/files`) whose files keep their
-    /// history around every turn (`tools::workspace_history`); `None` keeps
-    /// none.
-    pub(crate) workspace: Option<std::path::PathBuf>,
+    /// The owner's workspace (`config::workspace_dir`) whose files keep their
+    /// history around every turn (`tools::workspace_history`), and the file
+    /// store its blobs go in; `None` keeps none.
+    pub(crate) workspace: Option<(std::path::PathBuf, std::path::PathBuf)>,
 }
 
 impl Harness {
@@ -147,9 +147,10 @@ impl Harness {
         self
     }
 
-    /// The owner's workspace: every turn keeps the history of its files.
-    pub fn with_workspace_history(mut self, files_dir: std::path::PathBuf) -> Self {
-        self.workspace = Some(files_dir);
+    /// The owner's workspace: every turn keeps the history of its files,
+    /// their blobs in the file store `files_dir`.
+    pub fn with_workspace_history(mut self, workspace: std::path::PathBuf, files_dir: std::path::PathBuf) -> Self {
+        self.workspace = Some((workspace, files_dir));
         self
     }
 

@@ -106,8 +106,8 @@ impl AppRecordTool {
         let size = viewport(&app, input, (1080, 1080));
         let wait = Duration::from_millis(input["wait_ms"].as_u64().unwrap_or(1000).min(10_000));
 
-        let files = match config::data_dir() {
-            Ok(d) => d.join("files"),
+        let files = match config::workspace_dir() {
+            Ok(d) => d,
             Err(e) => return ToolResult::error(format!("cannot find the workspace: {e}")),
         };
         let folder = files

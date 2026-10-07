@@ -47,7 +47,7 @@ impl Machine {
         let Some(store) = self.store.as_ref() else {
             return ToolResult::error("File history isn't available here.");
         };
-        let files = crate::checkpoint::data_dir().join("files");
+        let files = config::workspace_dir().unwrap_or_else(|_| crate::checkpoint::data_dir().join("files"));
         let path = match ctx.cwd.as_deref() {
             Some(cwd) if std::path::Path::new(path).is_relative() => std::path::Path::new(cwd).join(path),
             _ => types::pathres::expand(path),
@@ -71,9 +71,10 @@ impl Machine {
         let Some(store) = self.store.as_ref() else {
             return ToolResult::error("File history isn't available here.");
         };
-        let files = crate::checkpoint::data_dir().join("files");
+        let workspace = config::workspace_dir().unwrap_or_else(|_| crate::checkpoint::data_dir().join("files"));
+        let files = config::files_dir().unwrap_or_else(|_| crate::checkpoint::data_dir().join("files"));
         let target = match store.get_file_history(id) {
-            Ok(Some(e)) => files.join(&e.path),
+            Ok(Some(e)) => workspace.join(&e.path),
             Ok(None) => return ToolResult::error(format!("No earlier version {}{id} is kept.", crate::workspace_history::ID_PREFIX)),
             Err(e) => return ToolResult::error(e.to_string()),
         };
@@ -81,7 +82,7 @@ impl Machine {
         if let Some(blocked) = ctx.outside_folders("restore", std::slice::from_ref(&target)) {
             return ToolResult::error(blocked);
         }
-        match crate::workspace_history::restore(store, &files, id, None) {
+        match crate::workspace_history::restore(store, &workspace, &files, id, None) {
             Ok(restored) => {
                 self.file.note_shell_write(ctx.session_key.as_str(), &target);
                 ToolResult::ok(crate::workspace_history::describe_restore(&restored))

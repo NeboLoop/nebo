@@ -230,8 +230,9 @@ fn get_window_state(label: String) -> Option<WindowState> {
 /// "work/blobs/<hash>.md"); `save_name` is the friendly name to save it under.
 #[tauri::command]
 fn save_artifact(rel_path: String, save_name: String) -> Result<String, String> {
-    let files_dir = config::data_dir().map_err(|e| e.to_string())?.join("files");
-    // Resolve under the files dir and reject any escape (e.g. `..`).
+    // Where the file route serves it from (the owner's workspace or the file store).
+    let files_dir = server::handlers::files::served_root(&rel_path).map_err(|e| e.to_string())?;
+    // Resolve under that root and reject any escape (e.g. `..`).
     let src = files_dir
         .join(&rel_path)
         .canonicalize()

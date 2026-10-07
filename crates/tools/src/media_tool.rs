@@ -1193,11 +1193,12 @@ impl GenerateMediaTool {
             });
         }
         let root =
-            config::data_dir().map_err(|e| format!("The workspace could not be found: {e}"))?;
+            config::workspace_dir().map_err(|e| format!("The workspace could not be found: {e}"))?;
         Ok(Target {
-            base: root.join("files"),
+            base: root,
             label: "the workspace".to_string(),
-            default_folder: "media",
+            // `Media`, as Nebo Media writes it: one folder on a case-sensitive disk too.
+            default_folder: "Media",
         })
     }
 

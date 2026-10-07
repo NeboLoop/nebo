@@ -694,8 +694,8 @@ impl FileTool {
                 // run picks a path outside the app's working dir). Hard-fail, but
                 // tell the model exactly where it CAN write so it can retry itself.
                 if e.kind() == std::io::ErrorKind::PermissionDenied {
-                    let suggested = config::data_dir()
-                        .map(|d| d.join("files").to_string_lossy().into_owned())
+                    let suggested = config::workspace_dir()
+                        .map(|d| d.to_string_lossy().into_owned())
                         .unwrap_or_else(|_| "the app data directory".to_string());
                     return ToolResult::error(format!(
                         "Permission denied creating directory {} (os error 13). Nebo can't write \

@@ -1,13 +1,15 @@
 //! Nothing in the owner's workspace is lost without history.
 //!
-//! The workspace is `<data_dir>/files`. A turn changes its files by every
+//! The workspace is the owner's (`config::workspace_dir`: `~/NeboAI`, or
+//! `<data_dir>/files` for a relocated root). A turn changes its files by every
 //! means there is (the file tools, plugins, a shell's `>`, a script, an
 //! app), and Nebo sees only some of them, so it looks at the workspace
 //! instead of at the writes: the turn looks when it starts, before each of
 //! its tool rounds and when it ends, however it ends (`agent` harness,
 //! `turn::keep_workspace`). A look ([`look`]):
 //! - keeps every file's current bytes in the content-addressed blob store
-//!   (`files/work/blobs/<sha256>.<ext>`, the store work versions use), so the
+//!   (`<data_dir>/files/work/blobs/<sha256>.<ext>`, Nebo's own file store,
+//!   the one work versions use), so the
 //!   bytes are already safe before anything overwrites them;
 //! - finds every file changed or gone since the last look (the index in the
 //!   database says what each file was: size, mtime, hash) and keeps what it
@@ -32,11 +34,16 @@ use std::time::UNIX_EPOCH;
 
 use db::{FileHistoryEntry, NewFileHistory, WorkspaceIndexRow};
 
-/// Where the blobs live, under the workspace. Never in the history itself.
+/// Where the blobs live, under Nebo's file store. Never in the history itself.
 pub const BLOBS_DIR: &str = "work/blobs";
-/// The workspace's own folder of Nebo's (work versions and their blobs),
-/// at its top: never in the history.
+/// The file store's own folder of Nebo's (work versions and their blobs):
+/// never in the history, when the store is the workspace.
 const WORK_DIR: &str = "work";
+/// The coding agents' own folders at the workspace's top (`~/NeboAI/claude-code`,
+/// `codex-2`, `gemini-cli`: nebo-runtimes `AcpAgent::KNOWN` keys, plus a suffix
+/// for a second one): their projects keep their own history (git), never ours.
+/// ponytail: matched by name; an owner folder named `codex-notes` is left out too.
+const AGENT_FOLDERS: &[&str] = &["claude-code", "codex", "gemini", "opencode"];
 /// Folders never in the history, at any depth: installed packages, build
 /// output and caches, rebuilt from their sources. Hidden entries (`.git`,
 /// `.shared`, `.previews`, a write's `.part`) are left out too.
@@ -144,8 +151,9 @@ fn mtime_ns(meta: &std::fs::Metadata) -> i64 {
         .unwrap_or(0)
 }
 
-/// Whether a walk leaves this entry (and everything under it) out.
-fn left_out(entry: &walkdir::DirEntry) -> bool {
+/// Whether a walk leaves this entry (and everything under it) out. `work` is
+/// the file store's own folder of Nebo's.
+fn left_out(entry: &walkdir::DirEntry, work: &Path) -> bool {
     if entry.depth() == 0 {
         return false;
     }
@@ -154,7 +162,12 @@ fn left_out(entry: &walkdir::DirEntry) -> bool {
         return true;
     }
     entry.file_type().is_dir()
-        && (SKIPPED_DIRS.contains(&name.as_ref()) || (entry.depth() == 1 && name == WORK_DIR))
+        && (SKIPPED_DIRS.contains(&name.as_ref()) || entry.path() == work || (entry.depth() == 1 && agent_folder(&name)))
+}
+
+/// A coding agent's own folder at the workspace's top (`AGENT_FOLDERS`).
+pub fn agent_folder(name: &str) -> bool {
+    AGENT_FOLDERS.iter().any(|a| name == *a || name.starts_with(&format!("{a}-")))
 }
 
 /// A file's place in the workspace, '/'-separated; None for a name that
@@ -165,12 +178,12 @@ fn rel_of(files_dir: &Path, path: &Path) -> Option<String> {
     Some(parts?.join("/"))
 }
 
-/// Look at the workspace (see the module doc). `chat_id` is the
-/// conversation whose turn is looking: what it finds changed is recorded
-/// under it.
-pub fn look(store: &db::Store, files_dir: &Path, chat_id: Option<&str>) -> Result<Look, String> {
+/// Look at the workspace (see the module doc), keeping blobs in the file
+/// store `files_dir`. `chat_id` is the conversation whose turn is looking:
+/// what it finds changed is recorded under it.
+pub fn look(store: &db::Store, workspace: &Path, files_dir: &Path, chat_id: Option<&str>) -> Result<Look, String> {
     let _one = one_at_a_time();
-    if !files_dir.is_dir() {
+    if !workspace.is_dir() {
         return Ok(Look::default());
     }
     let index: HashMap<String, WorkspaceIndexRow> = store
@@ -186,7 +199,8 @@ pub fn look(store: &db::Store, files_dir: &Path, chat_id: Option<&str>) -> Resul
     let mut walk_failed = false;
     let mut look = Look::default();
 
-    let walk = walkdir::WalkDir::new(files_dir).follow_links(false).into_iter().filter_entry(|e| !left_out(e));
+    let work = files_dir.join(WORK_DIR);
+    let walk = walkdir::WalkDir::new(workspace).follow_links(false).into_iter().filter_entry(|e| !left_out(e, &work));
     for entry in walk {
         let entry = match entry {
             Ok(e) => e,
@@ -201,7 +215,7 @@ pub fn look(store: &db::Store, files_dir: &Path, chat_id: Option<&str>) -> Resul
         if !entry.file_type().is_file() {
             continue;
         }
-        let Some(rel) = rel_of(files_dir, entry.path()) else { continue };
+        let Some(rel) = rel_of(workspace, entry.path()) else { continue };
         let Ok(meta) = entry.metadata() else {
             walk_failed = true;
             continue;
@@ -260,19 +274,100 @@ fn earlier(row: &WorkspaceIndexRow, reason: &'static str) -> NewFileHistory {
     }
 }
 
+// ── Moving the workspace ───────────────────────────────────────────
+
+/// What moving the workspace did.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct Moved {
+    /// Files copied into the new workspace.
+    pub copied: usize,
+    /// Files left alone because the new workspace already had that path:
+    /// adopted as they are, never overwritten.
+    pub adopted: usize,
+}
+
+/// A name at the file store's top that is Nebo's own, never the owner's
+/// work: hidden folders (`.shared`, `.previews`), work versions and their
+/// blobs, uploads, the media cast, and the tools' screen captures.
+pub fn store_own(name: &str) -> bool {
+    name.starts_with('.')
+        || matches!(name, "work" | "uploads" | "cast")
+        || name.starts_with("screenshot-")
+        || name.starts_with("capture-")
+}
+
+/// Copy the owner's work from the old workspace (`from`, the file store) into
+/// the new one (`to`), once, when the workspace moves out of the store.
+/// Everything in `to` is the owner's and stays as it is: a path it already
+/// has is adopted, never overwritten, and only what it lacks is copied (a
+/// clone where the disk makes one: APFS, btrfs). The originals stay, so every
+/// link to them keeps working. What an employee created moves with the copy
+/// (`employee_created`), and the history index starts over at the new root
+/// so the move records nothing as changed or deleted.
+pub fn move_workspace(store: &db::Store, from: &Path, to: &Path) -> Result<Moved, String> {
+    let _one = one_at_a_time();
+    let mut moved = Moved::default();
+    if from == to || !from.is_dir() {
+        return Ok(moved);
+    }
+    std::fs::create_dir_all(to).map_err(|e| format!("could not make {}: {e}", to.display()))?;
+    let mut made: HashSet<String> = HashSet::new();
+    let walk = walkdir::WalkDir::new(from).follow_links(false).into_iter().filter_entry(|e| {
+        e.depth() != 1 || !store_own(&e.file_name().to_string_lossy())
+    });
+    for entry in walk {
+        let Ok(entry) = entry else { continue };
+        if entry.depth() == 0 {
+            continue;
+        }
+        let Some(rel) = rel_of(from, entry.path()) else { continue };
+        let dest = to.join(&rel);
+        let kind = entry.file_type();
+        if kind.is_dir() {
+            match std::fs::symlink_metadata(&dest) {
+                Ok(_) => {} // the owner's folder: adopted, its new files merged in
+                Err(_) => {
+                    if std::fs::create_dir(&dest).is_ok() {
+                        made.insert(rel);
+                    }
+                }
+            }
+        } else if kind.is_file() {
+            if std::fs::symlink_metadata(&dest).is_ok() {
+                moved.adopted += 1;
+            } else if std::fs::copy(entry.path(), &dest).is_ok() {
+                moved.copied += 1;
+                made.insert(rel);
+            }
+        }
+    }
+    // What an employee created at the old place it created at the new one,
+    // for exactly what was copied: an adopted file stays the owner's.
+    let old = format!("file:{}{}", from.to_string_lossy(), std::path::MAIN_SEPARATOR);
+    for (agent, target) in store.employee_created_under(&old).map_err(|e| e.to_string())? {
+        let rel = target[old.len()..].trim_end_matches(['/', '\\']).replace('\\', "/");
+        if made.contains(&rel) {
+            let _ = store.add_employee_created(&agent, &format!("file:{}", to.join(rel).to_string_lossy()));
+        }
+    }
+    let stale: Vec<String> = store.workspace_index().map_err(|e| e.to_string())?.into_iter().map(|r| r.path).collect();
+    store.record_workspace_look(&[], &stale, &[], None).map_err(|e| e.to_string())?;
+    Ok(moved)
+}
+
 // ── History and restore ────────────────────────────────────────────
 
-/// A path's place in the workspace: a path inside `files_dir`, or one
+/// A path's place in the workspace: a path inside `workspace`, or one
 /// relative to it. None for anything outside it, or that climbs out of it.
-pub fn workspace_path(files_dir: &Path, path: &str) -> Option<String> {
+pub fn workspace_path(workspace: &Path, path: &str) -> Option<String> {
     let path = path.trim();
     let given = Path::new(path);
     let rel: PathBuf = if given.is_absolute() {
-        match given.strip_prefix(files_dir) {
+        match given.strip_prefix(workspace) {
             Ok(rel) => rel.to_path_buf(),
             // `/tmp` for `/private/tmp`: compare the real folders.
             Err(_) => {
-                let root = files_dir.canonicalize().ok()?;
+                let root = workspace.canonicalize().ok()?;
                 let parent = given.parent()?.canonicalize().ok()?;
                 parent.strip_prefix(&root).ok()?.join(given.file_name()?)
             }
@@ -310,16 +405,16 @@ pub struct Restored {
     pub work: Option<(db::WorkDocument, db::WorkDocumentVersion)>,
 }
 
-/// Put entry `id`'s content back at its path, keeping the file's current
-/// content as history first.
-pub fn restore(store: &db::Store, files_dir: &Path, id: i64, chat_id: Option<&str>) -> Result<Restored, String> {
+/// Put entry `id`'s content back at its path in `workspace`, keeping the
+/// file's current content as history first (blobs in the file store `files_dir`).
+pub fn restore(store: &db::Store, workspace: &Path, files_dir: &Path, id: i64, chat_id: Option<&str>) -> Result<Restored, String> {
     let _one = one_at_a_time();
     let to = store
         .get_file_history(id)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("No earlier version {id} is kept."))?;
-    let rel = workspace_path(files_dir, &to.path).ok_or_else(|| format!("{} is not in the workspace.", to.path))?;
-    let target = files_dir.join(&rel);
+    let rel = workspace_path(workspace, &to.path).ok_or_else(|| format!("{} is not in the workspace.", to.path))?;
+    let target = workspace.join(&rel);
     let blob = files_dir.join(blob_rel(&to.hash, &to.ext));
     if !blob.is_file() {
         return Err(format!("The kept content of {rel} is missing."));
