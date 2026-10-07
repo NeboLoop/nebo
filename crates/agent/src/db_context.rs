@@ -29,7 +29,20 @@ pub struct DBContext {
     /// Which memory the run's own scope is: where a `remember` without
     /// `scope: "local"` goes.
     pub scope: tools::memory_tools::MemoryScopeKind,
+    /// Nebo Recall (the `ballast` plugin) is installed and in this run's
+    /// reach. Only then does the prompt name it: Nebo never claims a Recall
+    /// it doesn't have.
+    pub recall: bool,
 }
+
+/// What the prompt says about Nebo Recall when it is installed. The slug
+/// (`ballast`) is its identity; "Nebo Recall" is the name people see.
+const RECALL: &str = "# Nebo Recall\n\
+Nebo Recall is installed: it holds the owner's documents and the answers their team has written down. \
+Your memory remembers the owner; Recall knows their business. When the owner asks what you remember or \
+what you know, name both. A question about their documents, files, notes, policies or how they do \
+something is a Recall search: run `search` with the plugin__ballast tool, answer from what it returns, \
+and say which document each answer came from. The recall tool is your memory, not Nebo Recall.";
 
 /// Load all database context needed for prompt assembly.
 /// `inherit_scopes` provides additional read-only scopes for memory inheritance.
@@ -94,11 +107,12 @@ pub fn load_db_context(
         tacit_memories,
         plugin_accounts,
         scope: tools::memory_tools::MemoryScopeKind::of(user_id),
+        recall: false,
     }
 }
 
 /// Format the DB context into a rich system prompt section.
-/// Produces up to 6 sections joined with separators. Who the employee is
+/// Produces up to 7 sections joined with separators. Who the employee is
 /// (personality, soul, rules) is its identity attachment, never read here.
 pub fn format_for_system_prompt(ctx: &DBContext, agent_name: &str) -> String {
     let mut sections: Vec<String> = Vec::new();
@@ -244,9 +258,19 @@ pub fn format_for_system_prompt(ctx: &DBContext, agent_name: &str) -> String {
          Use recall(query: \"...\") to search memories, or recall with a saved key for one fact.\n\
          Use remember(key, value) to save one. It goes to {} unless you pass scope \"local\": \
          local memory is shared by every employee on this Nebo, and it is what the owner means by \
-         company memory, shared or for everyone. Tell the owner where a fact went in the result's words.",
+         company memory, shared or for everyone. Tell the owner where a fact went in the result's words.\n\
+         When the owner asks what you remember or what you know, your memory is what you've learned in \
+         conversations and the owner's preferences, kept the way this employee's memory mode says. \
+         Search it with recall before you answer.",
         ctx.scope.default_save()
     ));
+
+    // 7. Nebo Recall, when it is installed. Live 2026-10-07: asked about its
+    // memory, Nebo described only the memory and never the owner's
+    // documents. Memory remembers the owner; Recall knows their business.
+    if ctx.recall {
+        sections.push(RECALL.to_string());
+    }
 
     let mut result = sections.join("\n\n---\n\n");
     result = result.replace("{agent_name}", agent_name);
@@ -766,6 +790,33 @@ mod tests {
         assert_ne!(ids[0], 99);
     }
 
+    /// "What do you know?" covers both halves: the memory always, and Nebo
+    /// Recall only when it is installed.
+    #[test]
+    fn what_you_know_names_recall_only_when_it_is_installed() {
+        let mut ctx = DBContext {
+            user: None,
+            preferences: None,
+            personality_directive: None,
+            tacit_memories: vec![],
+            plugin_accounts: vec![],
+            scope: tools::memory_tools::MemoryScopeKind::Private,
+            recall: false,
+        };
+        let without = format_for_system_prompt(&ctx, "Nebo");
+        assert!(without.contains("When the owner asks what you remember or what you know"), "{without}");
+        assert!(without.contains("conversations and the owner's preferences"), "{without}");
+        assert!(without.contains("memory mode"), "{without}");
+        assert!(!without.contains("Recall is installed") && !without.contains("plugin__ballast"), "{without}");
+
+        ctx.recall = true;
+        let with = format_for_system_prompt(&ctx, "Nebo");
+        assert!(with.contains("conversations and the owner's preferences"), "{with}");
+        assert!(with.contains("# Nebo Recall\nNebo Recall is installed"), "{with}");
+        assert!(with.contains("documents and the answers their team has written down"), "{with}");
+        assert!(with.contains("plugin__ballast"), "{with}");
+    }
+
     #[test]
     fn test_format_empty_context() {
         let ctx = DBContext {
@@ -775,6 +826,7 @@ mod tests {
             tacit_memories: vec![],
             plugin_accounts: vec![],
             scope: tools::memory_tools::MemoryScopeKind::Private,
+            recall: false,
         };
         let result = format_for_system_prompt(&ctx, "Nebo");
         assert!(result.contains("Memory Quick Reference"));
@@ -850,6 +902,7 @@ mod tests {
             tacit_memories: vec![],
             plugin_accounts: vec![],
             scope: tools::memory_tools::MemoryScopeKind::Private,
+            recall: false,
         };
 
         let result = format_for_system_prompt(&ctx, "Nebo");
@@ -868,6 +921,7 @@ mod tests {
             tacit_memories: vec![],
             plugin_accounts: vec![],
             scope: tools::memory_tools::MemoryScopeKind::Private,
+            recall: false,
         };
 
         let result = format_for_system_prompt(&ctx, "Nebo");
@@ -901,6 +955,7 @@ mod tests {
             }],
             plugin_accounts: vec![],
             scope: tools::memory_tools::MemoryScopeKind::Private,
+            recall: false,
         };
 
         let result = format_for_system_prompt(&ctx, "Nebo");
