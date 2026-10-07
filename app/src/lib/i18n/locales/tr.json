@@ -3876,5 +3876,29 @@
 		"question": "Nebo, {city} saat dilimine geçsin mi?",
 		"switch": "Geç",
 		"keep": "{city} saat dilimini koru"
+	},
+	"sheet": {
+		"sheets": "Sayfalar",
+		"cellName": "Hücre veya ad",
+		"formula": "Formül",
+		"locked": "Kilitli. Yalnızca giriş hücreleri değiştirilebilir.",
+		"viewOnly": "Yalnızca görüntüleme",
+		"unsaved": "Kaydedilmemiş değişiklikler",
+		"undo": "Geri al",
+		"redo": "Yinele",
+		"zoomIn": "Yakınlaştır",
+		"zoomOut": "Uzaklaştır",
+		"zoomReset": "Yakınlaştırmayı sıfırla",
+		"find": "Çalışma kitabında bul",
+		"findCount": "{current} / {total}",
+		"noMatches": "Eşleşme yok",
+		"sum": "Toplam",
+		"average": "Ortalama",
+		"count": "Sayı",
+		"calculating": "Hesaplanıyor…",
+		"editFailed": "{cell} değiştirilemedi: {message}",
+		"saveFailed": "Kaydedilemedi: {message}",
+		"changedSheet": "Değişti",
+		"inputCell": "Giriş hücresi"
 	}
 }

@@ -3876,5 +3876,29 @@
 		"question": "Перемкнути Nebo на місцевий час: {city}?",
 		"switch": "Перемкнути",
 		"keep": "Залишити час: {city}"
+	},
+	"sheet": {
+		"sheets": "Аркуші",
+		"cellName": "Клітинка або ім'я",
+		"formula": "Формула",
+		"locked": "Заблоковано. Змінювати можна лише клітинки введення.",
+		"viewOnly": "Лише перегляд",
+		"unsaved": "Незбережені зміни",
+		"undo": "Скасувати",
+		"redo": "Повторити",
+		"zoomIn": "Збільшити",
+		"zoomOut": "Зменшити",
+		"zoomReset": "Скинути масштаб",
+		"find": "Знайти в книзі",
+		"findCount": "{current} з {total}",
+		"noMatches": "Збігів немає",
+		"sum": "Сума",
+		"average": "Середнє",
+		"count": "Кількість",
+		"calculating": "Обчислення…",
+		"editFailed": "Не вдалося змінити {cell}: {message}",
+		"saveFailed": "Не вдалося зберегти: {message}",
+		"changedSheet": "Змінено",
+		"inputCell": "Клітинка введення"
 	}
 }

@@ -3876,5 +3876,29 @@
 		"question": "要將 Nebo 切換到{city}時間嗎？",
 		"switch": "切換",
 		"keep": "保留{city}時間"
+	},
+	"sheet": {
+		"sheets": "工作表",
+		"cellName": "儲存格或名稱",
+		"formula": "公式",
+		"locked": "已鎖定。只能變更輸入儲存格。",
+		"viewOnly": "僅檢視",
+		"unsaved": "未儲存的變更",
+		"undo": "復原",
+		"redo": "重做",
+		"zoomIn": "放大",
+		"zoomOut": "縮小",
+		"zoomReset": "重設縮放",
+		"find": "在活頁簿中尋找",
+		"findCount": "第 {current} 個，共 {total} 個",
+		"noMatches": "沒有符合項目",
+		"sum": "加總",
+		"average": "平均值",
+		"count": "計數",
+		"calculating": "正在計算…",
+		"editFailed": "無法變更 {cell}：{message}",
+		"saveFailed": "無法儲存：{message}",
+		"changedSheet": "已變更",
+		"inputCell": "輸入儲存格"
 	}
 }

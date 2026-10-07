@@ -3876,5 +3876,29 @@
 		"question": "Nebo auf die Uhrzeit von {city} umstellen?",
 		"switch": "Umstellen",
 		"keep": "Uhrzeit von {city} behalten"
+	},
+	"sheet": {
+		"sheets": "Tabellenblätter",
+		"cellName": "Zelle oder Name",
+		"formula": "Formel",
+		"locked": "Gesperrt. Nur Eingabezellen können geändert werden.",
+		"viewOnly": "Nur ansehen",
+		"unsaved": "Ungespeicherte Änderungen",
+		"undo": "Rückgängig",
+		"redo": "Wiederholen",
+		"zoomIn": "Vergrößern",
+		"zoomOut": "Verkleinern",
+		"zoomReset": "Zoom zurücksetzen",
+		"find": "In Arbeitsmappe suchen",
+		"findCount": "{current} von {total}",
+		"noMatches": "Keine Treffer",
+		"sum": "Summe",
+		"average": "Mittelwert",
+		"count": "Anzahl",
+		"calculating": "Wird berechnet…",
+		"editFailed": "{cell} konnte nicht geändert werden: {message}",
+		"saveFailed": "Speichern fehlgeschlagen: {message}",
+		"changedSheet": "Geändert",
+		"inputCell": "Eingabezelle"
 	}
 }

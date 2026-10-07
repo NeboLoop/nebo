@@ -3876,5 +3876,29 @@
 		"question": "Nebo를 {city} 시간으로 바꿀까요?",
 		"switch": "바꾸기",
 		"keep": "{city} 시간 유지"
+	},
+	"sheet": {
+		"sheets": "시트",
+		"cellName": "셀 또는 이름",
+		"formula": "수식",
+		"locked": "잠겨 있습니다. 입력 셀만 변경할 수 있습니다.",
+		"viewOnly": "보기 전용",
+		"unsaved": "저장되지 않은 변경 사항",
+		"undo": "실행 취소",
+		"redo": "다시 실행",
+		"zoomIn": "확대",
+		"zoomOut": "축소",
+		"zoomReset": "확대/축소 초기화",
+		"find": "통합 문서에서 찾기",
+		"findCount": "{current}/{total}",
+		"noMatches": "일치 항목 없음",
+		"sum": "합계",
+		"average": "평균",
+		"count": "개수",
+		"calculating": "계산 중…",
+		"editFailed": "{cell}을(를) 변경할 수 없습니다: {message}",
+		"saveFailed": "저장할 수 없습니다: {message}",
+		"changedSheet": "변경됨",
+		"inputCell": "입력 셀"
 	}
 }

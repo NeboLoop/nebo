@@ -3876,5 +3876,29 @@
 		"question": "Passer Nebo à l'heure de {city} ?",
 		"switch": "Changer",
 		"keep": "Garder l'heure de {city}"
+	},
+	"sheet": {
+		"sheets": "Feuilles",
+		"cellName": "Cellule ou nom",
+		"formula": "Formule",
+		"locked": "Verrouillée. Seules les cellules de saisie peuvent être modifiées.",
+		"viewOnly": "Lecture seule",
+		"unsaved": "Modifications non enregistrées",
+		"undo": "Annuler",
+		"redo": "Rétablir",
+		"zoomIn": "Zoom avant",
+		"zoomOut": "Zoom arrière",
+		"zoomReset": "Réinitialiser le zoom",
+		"find": "Rechercher dans le classeur",
+		"findCount": "{current} sur {total}",
+		"noMatches": "Aucun résultat",
+		"sum": "Somme",
+		"average": "Moyenne",
+		"count": "Nombre",
+		"calculating": "Calcul en cours…",
+		"editFailed": "Impossible de modifier {cell} : {message}",
+		"saveFailed": "Échec de l'enregistrement : {message}",
+		"changedSheet": "Modifiée",
+		"inputCell": "Cellule de saisie"
 	}
 }

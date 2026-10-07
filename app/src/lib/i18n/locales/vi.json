@@ -3876,5 +3876,29 @@
 		"question": "Chuyển Nebo sang giờ {city}?",
 		"switch": "Chuyển",
 		"keep": "Giữ giờ {city}"
+	},
+	"sheet": {
+		"sheets": "Trang tính",
+		"cellName": "Ô hoặc tên",
+		"formula": "Công thức",
+		"locked": "Đã khóa. Chỉ có thể thay đổi ô nhập liệu.",
+		"viewOnly": "Chỉ xem",
+		"unsaved": "Thay đổi chưa lưu",
+		"undo": "Hoàn tác",
+		"redo": "Làm lại",
+		"zoomIn": "Phóng to",
+		"zoomOut": "Thu nhỏ",
+		"zoomReset": "Đặt lại thu phóng",
+		"find": "Tìm trong sổ làm việc",
+		"findCount": "{current} trên {total}",
+		"noMatches": "Không có kết quả",
+		"sum": "Tổng",
+		"average": "Trung bình",
+		"count": "Số lượng",
+		"calculating": "Đang tính…",
+		"editFailed": "Không thể thay đổi {cell}: {message}",
+		"saveFailed": "Không thể lưu: {message}",
+		"changedSheet": "Đã thay đổi",
+		"inputCell": "Ô nhập liệu"
 	}
 }

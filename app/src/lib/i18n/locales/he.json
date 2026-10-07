@@ -3876,5 +3876,29 @@
 		"question": "להעביר את Nebo לשעון {city}?",
 		"switch": "להעביר",
 		"keep": "להשאיר את שעון {city}"
+	},
+	"sheet": {
+		"sheets": "גיליונות",
+		"cellName": "תא או שם",
+		"formula": "נוסחה",
+		"locked": "נעול. אפשר לשנות רק תאי קלט.",
+		"viewOnly": "לצפייה בלבד",
+		"unsaved": "שינויים שלא נשמרו",
+		"undo": "ביטול",
+		"redo": "ביצוע מחדש",
+		"zoomIn": "הגדלה",
+		"zoomOut": "הקטנה",
+		"zoomReset": "איפוס זום",
+		"find": "חיפוש בחוברת העבודה",
+		"findCount": "{current} מתוך {total}",
+		"noMatches": "אין תוצאות",
+		"sum": "סכום",
+		"average": "ממוצע",
+		"count": "ספירה",
+		"calculating": "מחשב…",
+		"editFailed": "לא ניתן לשנות את {cell}: {message}",
+		"saveFailed": "השמירה נכשלה: {message}",
+		"changedSheet": "שונה",
+		"inputCell": "תא קלט"
 	}
 }

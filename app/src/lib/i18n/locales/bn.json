@@ -3876,5 +3876,29 @@
 		"question": "Nebo-কে {city}-এর সময়ে বদলাবেন?",
 		"switch": "বদলান",
 		"keep": "{city}-এর সময় রাখুন"
+	},
+	"sheet": {
+		"sheets": "শিট",
+		"cellName": "সেল বা নাম",
+		"formula": "সূত্র",
+		"locked": "লক করা। শুধু ইনপুট সেল পরিবর্তন করা যায়।",
+		"viewOnly": "শুধু দেখার জন্য",
+		"unsaved": "অসংরক্ষিত পরিবর্তন",
+		"undo": "পূর্বাবস্থায় ফেরান",
+		"redo": "পুনরায় করুন",
+		"zoomIn": "জুম ইন",
+		"zoomOut": "জুম আউট",
+		"zoomReset": "জুম রিসেট",
+		"find": "ওয়ার্কবুকে খুঁজুন",
+		"findCount": "{total}-এর মধ্যে {current}",
+		"noMatches": "কোনো মিল নেই",
+		"sum": "যোগফল",
+		"average": "গড়",
+		"count": "সংখ্যা",
+		"calculating": "হিসাব করা হচ্ছে…",
+		"editFailed": "{cell} পরিবর্তন করা যায়নি: {message}",
+		"saveFailed": "সংরক্ষণ করা যায়নি: {message}",
+		"changedSheet": "পরিবর্তিত",
+		"inputCell": "ইনপুট সেল"
 	}
 }

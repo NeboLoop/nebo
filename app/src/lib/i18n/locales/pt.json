@@ -3876,5 +3876,29 @@
 		"question": "Mudar o Nebo para a hora de {city}?",
 		"switch": "Mudar",
 		"keep": "Manter a hora de {city}"
+	},
+	"sheet": {
+		"sheets": "Folhas",
+		"cellName": "Célula ou nome",
+		"formula": "Fórmula",
+		"locked": "Bloqueada. Só as células de entrada podem ser alteradas.",
+		"viewOnly": "Só de leitura",
+		"unsaved": "Alterações não guardadas",
+		"undo": "Anular",
+		"redo": "Refazer",
+		"zoomIn": "Ampliar",
+		"zoomOut": "Reduzir",
+		"zoomReset": "Repor zoom",
+		"find": "Procurar no livro",
+		"findCount": "{current} de {total}",
+		"noMatches": "Sem resultados",
+		"sum": "Soma",
+		"average": "Média",
+		"count": "Contagem",
+		"calculating": "A calcular…",
+		"editFailed": "Não foi possível alterar {cell}: {message}",
+		"saveFailed": "Não foi possível guardar: {message}",
+		"changedSheet": "Alterada",
+		"inputCell": "Célula de entrada"
 	}
 }

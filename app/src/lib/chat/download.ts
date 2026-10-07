@@ -1,13 +1,26 @@
+import { backendUrl } from '$lib/api/base';
+
 /**
  * Download a Work-panel artifact. In a browser the anchor's `download`
  * attribute handles it — this is a no-op. In the Tauri desktop build,
  * WKWebView ignores that attribute, so we intercept the click and save
  * natively to ~/Downloads (revealing the file in the file manager).
+ *
+ * `e` is null when the download starts from script rather than a click on the
+ * file's own link (a sheet saves its edits first, then downloads the new
+ * version): in a browser that clicks a temporary anchor for the same effect.
  */
-export async function downloadArtifact(e: MouseEvent, fileUrl: string, saveName?: string): Promise<void> {
+export async function downloadArtifact(e: MouseEvent | null, fileUrl: string, saveName?: string): Promise<void> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  if (!(window as any).__TAURI_INTERNALS__) return;
-  e.preventDefault();
+  if (!(window as any).__TAURI_INTERNALS__) {
+    if (e) return;
+    const a = document.createElement('a');
+    a.href = backendUrl(fileUrl);
+    a.download = saveName || '';
+    a.click();
+    return;
+  }
+  e?.preventDefault();
   // Path within the server's files dir, e.g. "work/blobs/<hash>.md" — the blob
   // lives there, not at the bare last segment. Strip origin, /files/ prefix, query.
   const path = fileUrl.split('?')[0];

@@ -3876,5 +3876,29 @@
 		"question": "Ställa om Nebo till tiden i {city}?",
 		"switch": "Ställ om",
 		"keep": "Behåll tiden i {city}"
+	},
+	"sheet": {
+		"sheets": "Blad",
+		"cellName": "Cell eller namn",
+		"formula": "Formel",
+		"locked": "Låst. Endast indataceller kan ändras.",
+		"viewOnly": "Endast visning",
+		"unsaved": "Osparade ändringar",
+		"undo": "Ångra",
+		"redo": "Gör om",
+		"zoomIn": "Zooma in",
+		"zoomOut": "Zooma ut",
+		"zoomReset": "Återställ zoom",
+		"find": "Sök i arbetsboken",
+		"findCount": "{current} av {total}",
+		"noMatches": "Inga träffar",
+		"sum": "Summa",
+		"average": "Medelvärde",
+		"count": "Antal",
+		"calculating": "Beräknar…",
+		"editFailed": "Kunde inte ändra {cell}: {message}",
+		"saveFailed": "Kunde inte spara: {message}",
+		"changedSheet": "Ändrad",
+		"inputCell": "Indatacell"
 	}
 }
