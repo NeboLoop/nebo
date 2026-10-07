@@ -6295,6 +6295,7 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "chrono-tz",
+ "crc32fast",
  "cron",
  "dirs",
  "flate2",

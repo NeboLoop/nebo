@@ -6,7 +6,7 @@
 //! Janus answers images inline (`b64_json`), speech, music and sound as the
 //! audio file's bytes (each tagged AI-generated here, `audio::tag_ai_generated`),
 //! and video as a job: submit, poll until it has finished, download
-//! the MP4. A film meant for
+//! the MP4. Made images and video are tagged AI-generated too (`tag`). A film meant for
 //! scroll-scrubbing is re-encoded here with every frame a keyframe, because
 //! Janus has no encoder and the bot has the file on disk anyway.
 //!
@@ -22,6 +22,7 @@
 
 mod audio;
 mod cast;
+mod tag;
 
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
@@ -1231,7 +1232,7 @@ impl GenerateMediaTool {
         )];
         let mut revised = None;
         let mut written = Vec::new();
-        for (image, (name, path)) in images.iter().zip(names.iter().zip(&paths)) {
+        for (image, (name, path)) in images.into_iter().zip(names.iter().zip(&paths)) {
             // The bytes decide the extension: a model can answer JPEG for a
             // PNG request, and a `.png` holding a JPEG is a broken file.
             let asked = path.extension().and_then(|e| e.to_str()).unwrap_or(ext);
@@ -1247,11 +1248,13 @@ impl GenerateMediaTool {
                     path.with_extension(real),
                 )
             };
-            std::fs::write(&path, &image.bytes)
+            let (bytes, tagged) = tag::image(image.bytes);
+            std::fs::write(&path, &bytes)
                 .map_err(|e| format!("Could not write {}: {e}", path.display()))?;
             let mut line = format!(
-                "- {name} ({} bytes) at {}",
-                image.bytes.len(),
+                "- {name} ({} bytes{}) at {}",
+                bytes.len(),
+                if tagged { ", tagged AI-generated" } else { "" },
                 path.display()
             );
             if real != asked {
@@ -1263,7 +1266,7 @@ impl GenerateMediaTool {
             }
             lines.push(line);
             written.push(path);
-            revised = revised.or(image.revised_prompt.clone());
+            revised = revised.or(image.revised_prompt);
         }
         if let Some(r) = revised {
             lines.push(format!("Prompt as Janus used it: {r}"));
@@ -1526,6 +1529,16 @@ impl GenerateMediaTool {
         }
         waited?;
         let size = self.media.download_video(&job.id, &path).await?;
+        // Re-encoded first, so the tag is on the file that stays.
+        let scrubbed = match input.get("scrub").and_then(Value::as_bool).unwrap_or(false) {
+            true => Some(scrub(&path).await),
+            false => None,
+        };
+        let tagging = path.clone();
+        let tagged = tokio::task::spawn_blocking(move || tag::mp4(&tagging))
+            .await
+            .map_err(|e| e.to_string())
+            .and_then(|r| r.map_err(|e| e.to_string()));
         let mut lines = vec![format!(
             "Made a video into {}: {name} ({size} bytes) at {}",
             target.place(&path),
@@ -1542,7 +1555,13 @@ impl GenerateMediaTool {
             about.push(format!("cast {c}"));
         }
         about.push(format!("job {}", job.id));
+        if tagged == Ok(true) {
+            about.push("tagged AI-generated".to_string());
+        }
         lines.push(format!("({})", about.join(", ")));
+        if let Err(e) = &tagged {
+            lines.push(format!("Not tagged AI-generated ({e}): tag it with the Nebo Media plugin before it goes anywhere."));
+        }
         if replace {
             lines.push(
                 "Before it goes anywhere: put the original clip's sound back and tag it AI-generated with the Nebo Media \
@@ -1551,8 +1570,8 @@ impl GenerateMediaTool {
                     .to_string(),
             );
         }
-        if input.get("scrub").and_then(Value::as_bool).unwrap_or(false) {
-            lines.push(scrub(&path).await);
+        if let Some(scrubbed) = scrubbed {
+            lines.push(scrubbed);
             if let Ok(meta) = std::fs::metadata(&path) {
                 lines.push(format!("Size now {} bytes.", meta.len()));
             }
