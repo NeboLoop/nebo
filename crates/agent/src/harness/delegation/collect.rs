@@ -100,28 +100,38 @@ fn best_words(report: &str, last_words: &str) -> String {
 /// Read a helper turn's events to the end. `on_event` sees every event (the
 /// owner's progress line is built from it); nothing is forwarded to the
 /// parent. The turn ends at `Done`, at a closed stream, when `cancel`
-/// fires, or after `inactivity` without an event.
+/// fires, or after `inactivity` without an event while none of its calls
+/// is waiting (`waiting`, the turn's `ToolContext::waiting`): a clip that
+/// renders for ten minutes is not silence (audit 2026-10-07: shot helpers
+/// were ended as stalled just as their clips landed).
 pub async fn collect(
     mut events: mpsc::Receiver<StreamEvent>,
     cancel: &CancellationToken,
     inactivity: Duration,
+    waiting: &tools::Waiting,
     mut on_event: impl FnMut(&StreamEvent),
 ) -> Collected {
+    use crate::guardrails::{Next, next_event};
     let mut out = Collected::default();
     let mut current = String::new();
+    let mut last_event = tokio::time::Instant::now();
     loop {
         tokio::select! {
             _ = cancel.cancelled() => {
                 out.cancelled = true;
                 break;
             }
-            next = tokio::time::timeout(inactivity, events.recv()) => {
-                let Ok(event) = next else {
-                    cancel.cancel();
-                    out.stalled = Some(inactivity);
-                    break;
+            next = next_event(&mut events, last_event, waiting, inactivity) => {
+                let event = match next {
+                    Next::Event(event) => event,
+                    Next::Closed => break,
+                    Next::Stalled => {
+                        cancel.cancel();
+                        out.stalled = Some(inactivity);
+                        break;
+                    }
                 };
-                let Some(event) = event else { break };
+                last_event = tokio::time::Instant::now();
                 on_event(&event);
                 match event.event_type {
                     StreamEventType::Text => current.push_str(&event.text),
@@ -204,7 +214,7 @@ mod tests {
             tx.send(e).await.unwrap();
         }
         drop(tx);
-        collect(rx, &CancellationToken::new(), Duration::from_secs(5), |_| {}).await
+        collect(rx, &CancellationToken::new(), Duration::from_secs(5), &tools::Waiting::default(), |_| {}).await
     }
 
     #[tokio::test]
@@ -270,7 +280,7 @@ mod tests {
         let (_tx, rx) = mpsc::channel::<StreamEvent>(1);
         let cancel = CancellationToken::new();
         cancel.cancel();
-        let got = collect(rx, &cancel, Duration::from_secs(5), |_| {}).await;
+        let got = collect(rx, &cancel, Duration::from_secs(5), &tools::Waiting::default(), |_| {}).await;
         assert_eq!(got.into_completion("h-1", "d", dir.path()).status, CompletionStatus::Stopped);
     }
 
@@ -293,11 +303,46 @@ mod tests {
         let (tx, rx) = mpsc::channel(4);
         tx.send(StreamEvent::text("Half way.")).await.unwrap();
         let cancel = CancellationToken::new();
-        let got = collect(rx, &cancel, Duration::from_secs(600), |_| {}).await;
+        let got = collect(rx, &cancel, Duration::from_secs(600), &tools::Waiting::default(), |_| {}).await;
         assert!(cancel.is_cancelled(), "a stalled helper is ended");
         let c = got.into_completion("h-1", "d", dir.path());
         assert_eq!(c.status, CompletionStatus::Partial { why: "no activity for 600s".into() });
         assert!(c.result.ends_with("Half way."));
+        drop(tx);
+    }
+
+    /// A helper whose call waits on a clip that renders longer than the
+    /// inactivity bound is not stalled: the clip lands and its report comes
+    /// back whole. Once the wait ends, silence past the bound is a stall
+    /// again. Audit 2026-10-07: video waits run up to 600 s, the bound is
+    /// 600 s, and shot helpers were ended just as their clips landed.
+    #[tokio::test(start_paused = true)]
+    async fn a_call_waiting_on_a_render_is_not_silence() {
+        let dir = tempfile::tempdir().unwrap();
+        let waiting = std::sync::Arc::new(tools::Waiting::default());
+        let (tx, rx) = mpsc::channel(4);
+        tx.send(tool_call()).await.unwrap();
+        let rendering = waiting.enter();
+        let helper = tokio::spawn(async move {
+            // Twice the bound with no event at all, waiting on the render.
+            tokio::time::sleep(Duration::from_secs(1_200)).await;
+            drop(rendering);
+            tx.send(StreamEvent::text("Shot 2 is at clips/s2.mp4.")).await.unwrap();
+            tx.send(StreamEvent::done_with_reason("end_turn")).await.unwrap();
+        });
+        let cancel = CancellationToken::new();
+        let got = collect(rx, &cancel, Duration::from_secs(600), &waiting, |_| {}).await;
+        helper.await.unwrap();
+        assert!(!cancel.is_cancelled(), "a helper waiting on a render is never ended");
+        let c = got.into_completion("h-1", "shot 2", dir.path());
+        assert_eq!(c.status, CompletionStatus::Done);
+        assert_eq!(c.result, "Shot 2 is at clips/s2.mp4.");
+
+        // The wait over, silence past the bound ends the helper as before.
+        let (tx, rx) = mpsc::channel::<StreamEvent>(4);
+        let got = collect(rx, &cancel, Duration::from_secs(600), &waiting, |_| {}).await;
+        assert!(cancel.is_cancelled(), "silence with nothing waited on is a stall");
+        assert!(got.stalled.is_some());
         drop(tx);
     }
 

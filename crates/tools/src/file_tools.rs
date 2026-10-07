@@ -714,7 +714,8 @@ impl DynTool for ShareFileTool {
          - `paths` lists every file to show, in one call: {\"paths\": [\"/a.png\", \"/b.png\"]}. One file is a list of one. \
            Never one call per file.\n\
          - Use it for a finished deck, PDF, spreadsheet or any file already on disk.\n\
-         - Files you write or convert this turn already show as cards; don't share them again or copy a file to make one."
+         - Files you write or convert, generate_media files and plugin `Result:` files already show as cards; don't share \
+           or copy them."
             .to_string()
     }
 

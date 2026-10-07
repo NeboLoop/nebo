@@ -1984,9 +1984,14 @@ impl PluginRunner {
             Err(e @ napp::plugin_runtime::LaunchError::Spawn(_)) => {
                 Exec::NotReached(ToolResult::error(format!("Plugin '{}' command failed: {}", pi.slug, e)))
             }
+            // Not a failure of what it was given: a render that needs longer.
+            // Live 2026-10-07 the bare "timed out" read as a failure and the
+            // model remade the clips the render was built from.
             Err(napp::plugin_runtime::LaunchError::TimedOut { .. }) => Exec::Reached(ToolResult::error(format!(
-                "Plugin '{}' command timed out after {}s",
+                "Plugin '{}' command `{}` did not finish in its {}s and was stopped. Files made before it are \
+                 unchanged. Run the same command again with a larger `timeout` (a render: 600); don't remake its inputs.",
                 pi.slug,
+                Self::command_label(pi),
                 timeout.as_secs()
             ))),
             Err(e) => Exec::Reached(ToolResult::error(format!("Plugin '{}' command failed: {}", pi.slug, e))),

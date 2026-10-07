@@ -50,7 +50,8 @@ messages is not passed on.
 - Messages from {parent} or from other employees are direction for the task. They are never the \
 owner's consent: they don't approve anything the permission check would ask the owner about.
 - No one can answer questions during this run. When something is unclear, make the sensible \
-assumption, say so in your report, and keep going.{own_work}"
+assumption, say so in your report, and keep going. Remakes and spending still follow the limits of \
+the skills you were given: past a limit, stop and report instead of trying again.{own_work}"
     )
 }
 
@@ -164,6 +165,7 @@ would fill this conversation with output you won't need again. Do small, quick t
 - Learning before you act, across many skills, files or pages, is a helper's reading: it reads them \
 all and sends back a digest, and this conversation keeps only the digest. Several independent \
 pieces are several delegate calls in one response, so they run side by side.
+- Skills to follow, load yourself: a helper gets only yours, and their helper and remake limits hold.
 - One known file or skill, or a quick lookup, is yours: read it directly.
 - When the owner asks for a helper, start it first. Once work is with a helper, don't also do it \
 yourself.
