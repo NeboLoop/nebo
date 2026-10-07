@@ -282,6 +282,43 @@ impl DynTool for PluginCliTool {
         input
     }
 
+    /// A flag sent beside `command` instead of inside `args` (live
+    /// 2026-10-07: `explain` next to `args`), or a call whose JSON broke
+    /// around a large `args` value: the refusal shows where each part goes.
+    fn right_shape(&self, input: &serde_json::Value, stray: &[String]) -> Option<String> {
+        if stray.is_empty() {
+            return Some(
+                "A plugin call is one object: {\"command\": \"<subcommand>\", \"args\": {\"<flag>\": <value>, ...}}. \
+                 `command` stands beside `args`, never inside it; every flag goes inside `args`, a large object \
+                 (a whole timeline) included, written as an object and closed before `command`."
+                    .to_string(),
+            );
+        }
+        let command = input.get("command").and_then(|c| c.as_str()).unwrap_or("<subcommand>");
+        let mut flags: Vec<String> = input
+            .get("args")
+            .and_then(|a| a.as_object())
+            .into_iter()
+            .flat_map(|a| a.keys())
+            .map(|k| format!("{}: ...", serde_json::Value::from(k.as_str())))
+            .collect();
+        for key in stray {
+            let value = match input.get(key) {
+                Some(v @ (serde_json::Value::Bool(_) | serde_json::Value::Number(_))) => v.to_string(),
+                Some(serde_json::Value::String(s)) if s.chars().count() <= 40 => serde_json::Value::from(s.as_str()).to_string(),
+                _ => "...".to_string(),
+            };
+            flags.push(format!("{}: {value}", serde_json::Value::from(key.as_str())));
+        }
+        let named = stray.iter().map(|k| format!("`{k}`")).collect::<Vec<_>>().join(", ");
+        Some(format!(
+            "A flag for the command goes inside `args`, so when {named} {} one, the call is: {{\"command\": {}, \"args\": {{{}}}}}.",
+            if stray.len() == 1 { "is" } else { "are" },
+            serde_json::Value::from(command),
+            flags.join(", ")
+        ))
+    }
+
     fn activity(&self, input: &serde_json::Value) -> String {
         display(input).unwrap_or_else(|| format!("using {}", self.service))
     }
@@ -894,5 +931,47 @@ triggers:
             "{}",
             r.content
         );
+    }
+
+    /// A flag beside `command` is refused, named, with the call written
+    /// the right way; JSON that broke around a big `args` value says where
+    /// and how, with the same shape. Live 2026-10-07 (Nebo Media): an
+    /// `explain` next to `args`, and two timelines nested one brace wrong.
+    #[tokio::test]
+    async fn a_misshapen_plugin_call_is_refused_with_the_right_shape() {
+        let tmp = tempfile::tempdir().unwrap();
+        install(tmp.path(), "nebo-media", serde_json::json!({"name": "Nebo Media"}), &["video"]);
+        let (registry, _store) = registry(tmp.path()).await;
+        let ctx = crate::origin::ToolContext::default();
+
+        let beside = serde_json::json!({
+            "command": "video compose",
+            "args": {"output": "/tmp/out", "timeline": {"version": 2}},
+            "explain": "true"
+        });
+        let r = registry.execute(&ctx, "plugin__nebo-media", beside).await;
+        assert!(r.is_error, "{}", r.content);
+        assert!(r.content.contains("The parameter `explain` doesn't exist"), "{}", r.content);
+        assert!(
+            r.content.contains(r#"{"command": "video compose", "args": {"output": ..., "timeline": ..., "explain": "true"}}"#),
+            "{}",
+            r.content
+        );
+
+        let unclosed = r#"{"args": {"output": "/tmp/out", "timeline": {"version": 2, "layers": [{"id": "s1"}]}, "command": "video compose", "timeout": 180}"#;
+        let r = registry
+            .execute(&ctx, "plugin__nebo-media", serde_json::json!({"_raw": unclosed}))
+            .await;
+        assert!(r.is_error, "{}", r.content);
+        assert!(r.content.contains("1 `{` or `[` is never closed"), "{}", r.content);
+        assert!(r.content.contains(r#""timeout": 180}`"#), "quotes where it broke: {}", r.content);
+        assert!(r.content.contains("`command` stands beside `args`, never inside it"), "{}", r.content);
+
+        let closed_twice = r#"{"args": {"timeline": {"layers": []}}, "explain": true}, "command": "video compose"}"#;
+        let r = registry
+            .execute(&ctx, "plugin__nebo-media", serde_json::json!({"_raw": closed_twice}))
+            .await;
+        assert!(r.content.contains("1 `}` or `]` too many"), "{}", r.content);
+        assert!(r.content.contains(r#""explain": true}, "command"#), "{}", r.content);
     }
 }
