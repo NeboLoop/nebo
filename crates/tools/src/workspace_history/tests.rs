@@ -40,7 +40,7 @@ impl Home {
     }
 
     fn sh(&self, script: &str) {
-        let status = std::process::Command::new("sh").arg("-c").arg(script).current_dir(&self.files).status().unwrap();
+        let status = command::new::<std::process::Command>("sh", command::Console::Hidden).arg("-c").arg(script).current_dir(&self.files).status().unwrap();
         assert!(status.success(), "{script}");
     }
 }

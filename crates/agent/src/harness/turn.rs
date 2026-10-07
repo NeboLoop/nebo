@@ -8251,7 +8251,7 @@ mod tests {
         ) -> Pin<Box<dyn Future<Output = tools::ToolResult> + Send + 'a>> {
             Box::pin(async move {
                 let command = input["command"].as_str().unwrap_or_default().to_string();
-                let out = tokio::process::Command::new("sh").arg("-c").arg(&command).current_dir(&self.dir).output().await;
+                let out = command::new::<tokio::process::Command>("sh", command::Console::Hidden).arg("-c").arg(&command).current_dir(&self.dir).output().await;
                 match out {
                     Ok(o) if o.status.success() => tools::ToolResult::ok("ran"),
                     _ => tools::ToolResult::error("failed"),
