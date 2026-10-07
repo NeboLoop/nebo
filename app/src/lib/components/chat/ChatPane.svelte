@@ -1681,7 +1681,7 @@
                   <img src={attSrc(att)} alt={att.filename} class="h-20 w-20 rounded-lg border border-base-content/15 object-cover" loading="lazy" />
                 </button>
               {:else if attType === 'video'}
-                <video src={firstFrame(attSrc(att))} controls muted preload="metadata" class="h-20 max-w-[160px] rounded-lg border border-base-content/15 bg-base-200">
+                <video src={firstFrame(attSrc(att))} controls preload="metadata" class="block w-auto h-auto max-w-full max-h-[60vh] rounded-lg border border-base-content/15 bg-base-200">
                   <track kind="captions" />
                 </video>
               {:else if attType === 'audio'}
@@ -1953,7 +1953,7 @@
                         src={firstFrame(attSrc(att))}
                         controls
                         preload="metadata"
-                        class="max-w-[320px] max-h-[240px] rounded-lg border border-base-content/15"
+                        class="block w-auto h-auto max-w-full max-h-[60vh] rounded-lg border border-base-content/15 bg-base-200"
                       >
                         <track kind="captions" />
                       </video>
@@ -2102,7 +2102,7 @@
                     src={firstFrame(attSrc(att))}
                     controls
                     preload="metadata"
-                    class="max-w-[320px] max-h-[240px] rounded-lg border border-base-content/15"
+                    class="block w-auto h-auto max-w-full max-h-[60vh] rounded-lg border border-base-content/15 bg-base-200"
                   >
                     <track kind="captions" />
                   </video>
