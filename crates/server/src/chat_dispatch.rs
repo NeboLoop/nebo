@@ -1084,6 +1084,10 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                 Some(tc) => spec_tools.labels(&tc.name, &tc.input).await.1,
                                 None => tools::humanize::raw_name(tool_name).1,
                             };
+                            // The files this call hands the owner, as app URLs: on
+                            // the event so the chat shows each one under its row
+                            // the moment the call ends, mid-run.
+                            let files = owner_artifact_urls(&spec_tools, &event).await;
                             hub.broadcast(
                                 "tool_result",
                                 ws_payload!(
@@ -1094,6 +1098,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                     "outcome": outcome,
                                     "payload": event.payload,
                                     "duration_ms": event.widgets.as_ref().and_then(|w| w.get("duration_ms")).cloned(),
+                                    "files": &files,
                                 ),
                             );
                             // A call parked on the owner, in a run from the
@@ -1149,7 +1154,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                             // Run-produced media for the LOCAL app (always, rendered
                             // inline) and comm replies (when replying to a channel;
                             // resolve_comm_attachments maps the same /api/v1/files prefix).
-                            for app_url in owner_artifact_urls(&spec_tools, &event).await {
+                            for app_url in files {
                                 if !app_file_artifacts.contains(&app_url) {
                                     app_file_artifacts.push(app_url.clone());
                                 }

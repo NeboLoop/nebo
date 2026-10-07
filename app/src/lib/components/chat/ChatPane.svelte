@@ -8,7 +8,7 @@
   import DesktopView from './DesktopView.svelte';
   import { teachStart, teachStop, getToolOutput, locateWorkFile, fileHistory, restoreFileHistory } from '$lib/api/nebo';
   import { historyItems, workspacePathOf, type FileHistoryItem } from '$lib/chat/fileHistory';
-  import { kindForExt } from '$lib/chat/controller.svelte';
+  import { kindForExt, artifactsToAttachments } from '$lib/chat/controller.svelte';
   import { locateFileMention } from '$lib/chat/fileMentions';
   import { watchesComputer, offersVirtualComputer, teachFailure, SCREEN_RECORDING_SETTINGS } from '$lib/chat/teach';
   import { ownScreen } from '$lib/stores/ownScreen';
@@ -98,6 +98,8 @@
     /** The stored result was cut to a preview; opening the row fetches the
      *  rest instead of every transcript page carrying every byte. */
     truncated?: boolean;
+    /** The files the call handed the owner (app URLs), from its live result. */
+    files?: string[];
   }
 
   type TeamPost = { teamId: string; teamName: string; from: string; fromOwner?: boolean; text: string };
@@ -1653,9 +1655,12 @@
     <!-- One activity group: notes and tool calls in order, folded under a
          summary line until it is clicked, live or not. Rows open on click;
          a page's address is a link. -->
-    {#snippet activityPanel(steps: ActivityStep[], tools: ToolMsg[], keyId: string, live: boolean)}
+    {#snippet activityPanel(steps: ActivityStep[], tools: ToolMsg[], keyId: string, live: boolean, unkept: boolean)}
       {@const open = activityOpen[keyId] ?? false}
       {@const rows = open ? steps : []}
+      <!-- What the run has made so far, shown the moment each call ends,
+           until the turn's own attachments carry it at the run's end. -->
+      {@const made = unkept ? artifactsToAttachments(tools.flatMap((tl) => (tl.status === 'success' ? (tl.files ?? []) : []))) : []}
       <div class="max-w-[640px] my-1.5">
         <button
           type="button"
@@ -1666,6 +1671,25 @@
           <span class="truncate max-w-[60vw] md:max-w-md {live ? 'activity-live' : ''}">{tools.length ? workLineLabel(tools) : $t('chat.working')}</span>
           <span class="shrink-0 transition-transform {open ? 'rotate-90' : ''}">&rsaquo;</span>
         </button>
+
+        {#if made.length}
+          <div class="flex flex-wrap items-center gap-2 mt-1.5">
+            {#each made as att (att.url)}
+              {@const attType = getAttachmentType(att.mimeType)}
+              {#if attType === 'image'}
+                <button type="button" class="block p-0 bg-transparent border-0 cursor-zoom-in" onclick={() => (lightboxUrl = attSrc(att))} aria-label={$t('chat.viewImage')}>
+                  <img src={attSrc(att)} alt={att.filename} class="h-20 w-20 rounded-lg border border-base-content/15 object-cover" loading="lazy" />
+                </button>
+              {:else if attType === 'video'}
+                <video src={attSrc(att)} controls muted preload="metadata" class="h-20 max-w-[160px] rounded-lg border border-base-content/15 bg-base-200">
+                  <track kind="captions" />
+                </video>
+              {:else if attType === 'audio'}
+                <audio src={attSrc(att)} controls preload="metadata" class="h-10 max-w-[240px]"></audio>
+              {/if}
+            {/each}
+          </div>
+        {/if}
 
         {#if rows.length}
           <div class="mt-1.5 rounded-xl border border-base-300 bg-base-100 divide-y divide-base-300 overflow-hidden">
@@ -2035,7 +2059,7 @@
             {/if}
             {#each blocks as block, bi (block.key)}
               {#if block.kind === 'group'}
-                {@render activityPanel(block.steps, block.tools, block.key, !isTurnEnd && bi === blocks.length - 1)}
+                {@render activityPanel(block.steps, block.tools, block.key, !isTurnEnd && bi === blocks.length - 1, !turnAttachments.length)}
               {:else}
                 <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
                 <div dir="auto" class="text-sm leading-relaxed prose prose-sm max-w-none" onclick={handleWorkMentionClick}>
