@@ -33,7 +33,7 @@
   import Presentation from 'lucide-svelte/icons/presentation';
   import type { UploadedAttachment } from '$lib/types/attachment';
   import type { SessionGoalStatus } from '$lib/api/neboComponents';
-  import { attSrc, stripAttachmentNotes } from '$lib/types/attachment';
+  import { attSrc, firstFrame, stripAttachmentNotes } from '$lib/types/attachment';
   import { flushSync, tick } from 'svelte';
   import type { Snippet } from 'svelte';
   import { getAttachmentType, formatFileSize, attachmentMediaUrl } from '$lib/types/attachment';
@@ -1681,7 +1681,7 @@
                   <img src={attSrc(att)} alt={att.filename} class="h-20 w-20 rounded-lg border border-base-content/15 object-cover" loading="lazy" />
                 </button>
               {:else if attType === 'video'}
-                <video src={attSrc(att)} controls muted preload="metadata" class="h-20 max-w-[160px] rounded-lg border border-base-content/15 bg-base-200">
+                <video src={firstFrame(attSrc(att))} controls muted preload="metadata" class="h-20 max-w-[160px] rounded-lg border border-base-content/15 bg-base-200">
                   <track kind="captions" />
                 </video>
               {:else if attType === 'audio'}
@@ -1950,7 +1950,7 @@
                       </button>
                     {:else if attType === 'video'}
                       <video
-                        src={attSrc(att)}
+                        src={firstFrame(attSrc(att))}
                         controls
                         preload="metadata"
                         class="max-w-[320px] max-h-[240px] rounded-lg border border-base-content/15"
@@ -2099,7 +2099,7 @@
                   </button>
                 {:else if attType === 'video'}
                   <video
-                    src={attSrc(att)}
+                    src={firstFrame(attSrc(att))}
                     controls
                     preload="metadata"
                     class="max-w-[320px] max-h-[240px] rounded-lg border border-base-content/15"

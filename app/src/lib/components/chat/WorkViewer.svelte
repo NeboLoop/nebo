@@ -17,6 +17,7 @@
   import { t } from 'svelte-i18n';
   import { backendUrl } from '$lib/api/base';
   import { UPLOAD_KEEP_DAYS } from '$lib/api/upload';
+  import { firstFrame } from '$lib/types/attachment';
   import { downloadArtifact } from '$lib/chat/download';
   import SheetView from '$lib/components/sheet/SheetView.svelte';
 
@@ -406,7 +407,7 @@
     <img src={src} alt={title} class="max-w-full h-auto rounded-lg border border-base-300" />
   {:else if mode === 'video'}
     <!-- svelte-ignore a11y_media_has_caption -->
-    <video src={src} controls class="max-w-full rounded-lg border border-base-300"></video>
+    <video src={firstFrame(src)} controls preload="metadata" class="max-w-full rounded-lg border border-base-300"></video>
   {:else if mode === 'audio'}
     <audio src={src} controls preload="metadata" class="w-full"></audio>
   {:else}
