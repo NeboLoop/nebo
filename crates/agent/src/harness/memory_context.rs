@@ -48,17 +48,30 @@ pub struct EmployeeMemory {
     pub identity_ids: Vec<i64>,
 }
 
+/// Nebo Recall's tool. The plugin's slug, `ballast`, is its identity
+/// (installs, permissions and indexes ride it); "Nebo Recall" is its name.
+const RECALL_TOOL: &str = "plugin__ballast";
+
+/// Whether this run can reach Nebo Recall: the plugin is installed (its tool
+/// is registered) and the employee's scope doesn't withhold it.
+pub async fn recall_in_reach(tools: &tools::Registry, withheld: &HashSet<String>) -> bool {
+    !withheld.contains(RECALL_TOOL) && tools.get(RECALL_TOOL).await.is_some()
+}
+
 /// Load the employee-memory section once per turn. `user_id` and
 /// `inherit_scopes` come from the seat's memory scope, so an isolated seat
-/// never sees a sibling's memories.
+/// never sees a sibling's memories. `recall` is [`recall_in_reach`]: the
+/// section names Nebo Recall only when the run has it.
 pub fn load_employee_memory(
     store: &db::Store,
     user_id: &str,
     agent_id: &str,
     inherit_scopes: &[InheritScope],
     agent_name: &str,
+    recall: bool,
 ) -> EmployeeMemory {
-    let ctx = db_context::load_db_context(store, user_id, agent_id, inherit_scopes);
+    let mut ctx = db_context::load_db_context(store, user_id, agent_id, inherit_scopes);
+    ctx.recall = recall;
     let timezone = ctx.user.as_ref().and_then(|u| u.timezone.clone()).filter(|tz| !tz.is_empty());
     let identity_ids = ctx.tacit_memories.iter().map(|m| m.memory.id).collect();
     let mut section = db_context::format_for_system_prompt(&ctx, agent_name);

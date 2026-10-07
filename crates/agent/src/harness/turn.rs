@@ -815,15 +815,6 @@ pub(crate) async fn prepare(
         .map(|a| a.name.clone())
         .or_else(|| h.store.get_agent(&req.seat.agent_id).ok().flatten().map(|a| a.name))
         .unwrap_or_else(|| "Nebo".to_string());
-    let memory = super::memory_context::load_employee_memory(
-        &h.store,
-        &seat.memory.user_id,
-        &req.seat.agent_id,
-        &seat.inherit_scopes,
-        &name,
-    );
-    super::memory_context::record_access(&h.store, memory.identity_ids.clone());
-    let memory_timezone = memory.timezone.clone();
     let role = match &req.mode {
         TurnMode::Helper { parent_session_key, kind, .. } => {
             prompt::Role::Helper { parent: parent_name(h, parent_session_key).await, kind: *kind }
@@ -845,6 +836,16 @@ pub(crate) async fn prepare(
     // A2UI surfaces: only an app's own page draws them.
     withheld.extend(tools::a2ui_tool::withheld(&h.store, &req.seat.agent_id));
     let withheld_tools = Arc::new(withheld);
+    let memory = super::memory_context::load_employee_memory(
+        &h.store,
+        &seat.memory.user_id,
+        &req.seat.agent_id,
+        &seat.inherit_scopes,
+        &name,
+        super::memory_context::recall_in_reach(&h.tools, &withheld_tools).await,
+    );
+    super::memory_context::record_access(&h.store, memory.identity_ids.clone());
+    let memory_timezone = memory.timezone.clone();
     let preloaded_tools: Arc<HashSet<String>> = Arc::new(
         tools::app_dev::preloaded(&h.store, &req.seat.agent_id)
             .into_iter()
@@ -1948,6 +1949,7 @@ async fn step_events(
         cx.agent_id(),
         &cx.seat.inherit_scopes,
         &cx.name,
+        super::memory_context::recall_in_reach(&h.tools, &cx.withheld_tools).await,
     );
     let facts = events::SessionFacts {
         identity: cx.identity.clone(),
@@ -5356,6 +5358,32 @@ mod tests {
         let listing = texts(&model.calls()[0]).into_iter().find(|t| t.contains("available through find_tools")).expect("the listing");
         assert!(listing.contains("\nremind: set a reminder for later"), "{listing}");
         assert!(listing.contains("\nweather\n") || listing.ends_with("\nweather"), "a tool with no hint is its name: {listing}");
+    }
+
+    /// "What do you remember?" is answered from both halves when Nebo
+    /// Recall is installed: the employee's memory names Recall (the
+    /// `ballast` plugin) beside the memory. Without it, nothing claims
+    /// Recall. Live 2026-10-07: asked about its memory, Nebo never mentioned
+    /// the owner's documents.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn what_you_remember_names_nebo_recall_only_when_it_is_installed() {
+        let prompt_of = |req: &ChatRequest| texts(req).join("\n");
+
+        let model = Scripted::new(vec![Step::Say("Your preferences, and nothing else yet.")]);
+        let h = harness(&model).await;
+        run_turn(&h, owner("What do you remember?")).await;
+        let without = prompt_of(&model.calls()[0]);
+        assert!(without.contains("When the owner asks what you remember or what you know"), "{without}");
+        assert!(!without.contains("Nebo Recall is installed"), "{without}");
+
+        let model = Scripted::new(vec![Step::Say("Your preferences, and your documents in Nebo Recall.")]);
+        let recall = Box::new(Echo { name: "plugin__ballast", deferred: true, read_only: true });
+        let h = harness_with(&model, vec![recall]).await;
+        run_turn(&h, owner("What do you remember?")).await;
+        let with = prompt_of(&model.calls()[0]);
+        assert!(with.contains("When the owner asks what you remember or what you know"), "{with}");
+        assert!(with.contains("Nebo Recall is installed"), "{with}");
+        assert!(with.contains("Your memory remembers the owner; Recall knows their business"), "{with}");
     }
 
     /// An installed plugin's tool as the registry holds it: deferred, with
