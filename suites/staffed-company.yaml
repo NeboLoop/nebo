@@ -64,6 +64,8 @@ fixtures:
   - ../fixtures/staffed-company/connections/sc88-the-defaults-install-once-after-sign-in-and-an-installed-one-is-skipped.yaml
   - ../fixtures/staffed-company/connections/sc89-a-default-the-owner-removed-is-not-reinstalled-at-startup.yaml
   - ../fixtures/staffed-company/connections/sc90-concurrent-triggers-install-a-default-once.yaml
+  - ../fixtures/staffed-company/connections/sc91-a-restored-cloud-bot-fetches-the-plugin-packages-its-state-left-out.yaml
+  - ../fixtures/staffed-company/connections/sc92-a-cloud-pass-waits-its-spread-and-a-request-that-needs-a-default-does-not.yaml
   - ../fixtures/staffed-company/company/sc55-the-point-person-sees-what-everyone-is-doing.yaml
   - ../fixtures/staffed-company/company/sc56-the-point-person-relays-into-a-linked-employees-conversation.yaml
   - ../fixtures/staffed-company/company/sc57-a-busy-linked-conversation-is-never-sent-a-second-prompt.yaml

@@ -2585,6 +2585,20 @@ impl PluginStore {
         })
     }
 
+    /// Whether any version of `slug` is on disk, in either root: a whole one,
+    /// or a quarantined one (a revoked plugin keeps its marker, and is never
+    /// fetched again for want of a binary). False is a registered plugin
+    /// whose package is not here, which a cloud bot's saved state leaves out
+    /// ([`package_entries`]) and its default pass fetches again.
+    pub fn package_on_disk(&self, slug: &str) -> bool {
+        self.resolve(slug, "*").is_some()
+            || [&self.user_dir, &self.installed_dir].into_iter().any(|root| {
+                std::fs::read_dir(root.join(slug))
+                    .map(|rd| rd.flatten().any(|e| e.path().join(".quarantined").exists()))
+                    .unwrap_or(false)
+            })
+    }
+
     /// What a rescan sees: each plugin's binary, and enough of its files'
     /// state that a version copied over itself in place reads as a change.
     fn scan_snapshot(&self) -> HashMap<String, PluginSnapshot> {
@@ -3016,6 +3030,40 @@ fn interpret_auth_status_output(stdout: &[u8]) -> bool {
 // ── Tests ───────────────────────────────────────────────────────────
 
 
+/// The names in a marketplace plugin's slug directory that are its package:
+/// what the marketplace can always send again. Each version directory, each
+/// `.napp`, and an install's `<version>.staging` / `<version>.prev` copies.
+/// A quarantined version is not: it is the record of a revocation, small
+/// (its binary is gone), and a plugin without it would be fetched again.
+/// Everything else in the slug directory is the plugin's own data — a
+/// database, an OAuth token cache (see [`remove_store_artifacts`]) — and is
+/// never a package. A symlink is never a package either. Sorted.
+pub fn package_entries(slug_dir: &Path) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(slug_dir) else {
+        return Vec::new();
+    };
+    let is_version = |name: &str| semver::Version::parse(name).is_ok();
+    let mut out: Vec<String> = entries
+        .flatten()
+        .filter_map(|entry| {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let ft = entry.file_type().ok()?;
+            let package = if ft.is_dir() {
+                let copy = name.strip_suffix(".staging").or_else(|| name.strip_suffix(".prev"));
+                match copy {
+                    Some(version) => is_version(version),
+                    None => is_version(&name) && !entry.path().join(".quarantined").exists(),
+                }
+            } else {
+                ft.is_file() && name.ends_with(".napp")
+            };
+            package.then_some(name)
+        })
+        .collect();
+    out.sort();
+    out
+}
+
 /// Delete only the store-owned artifacts inside a plugin slug directory —
 /// semver version dirs and `.napp` archives — and keep everything else.
 ///
@@ -3099,6 +3147,49 @@ mod tests {
         assert!(!slug_dir.join("0.1.0.napp").exists(), "napp must be removed");
         assert!(slug_dir.join("kb.db").exists(), "plugin data must survive");
         assert!(slug_dir.join("cache/state.json").exists(), "plugin dirs must survive");
+    }
+
+    /// A plugin's package is its version dirs, its `.napp`s and an install's
+    /// staging/backup copies; its data in the same slug dir, a quarantined
+    /// version and a symlink are not. With the package gone, a registered
+    /// plugin has nothing on disk; a quarantined one still does.
+    #[test]
+    fn the_package_is_what_the_marketplace_sends_and_never_the_plugins_data() {
+        let tmp = tempfile::tempdir().unwrap();
+        let installed = tmp.path().join("plugins");
+        let slug_dir = installed.join("ballast");
+        for dir in ["0.2.0", "0.1.0.staging", "0.1.0.prev", "index", "cache"] {
+            std::fs::create_dir_all(slug_dir.join(dir)).unwrap();
+        }
+        std::fs::write(slug_dir.join("0.2.0/ballast"), b"#!/bin/sh\n").unwrap();
+        std::fs::write(slug_dir.join("0.2.0.napp"), b"NAPP").unwrap();
+        std::fs::write(slug_dir.join("ballast.db"), b"the customer's index").unwrap();
+        std::fs::write(slug_dir.join("index/segments"), b"data").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(slug_dir.join("0.2.0"), slug_dir.join("9.9.9")).unwrap();
+        assert_eq!(
+            package_entries(&slug_dir),
+            vec!["0.1.0.prev", "0.1.0.staging", "0.2.0", "0.2.0.napp"]
+        );
+
+        let revoked = installed.join("revoked");
+        std::fs::create_dir_all(revoked.join("1.0.0")).unwrap();
+        std::fs::write(revoked.join("1.0.0/.quarantined"), "revoked by NeboAI").unwrap();
+        assert!(package_entries(&revoked).is_empty(), "a quarantined version is kept");
+        assert!(package_entries(&installed.join("absent")).is_empty());
+
+        let user_dir = tmp.path().join("user_plugins");
+        std::fs::create_dir_all(&user_dir).unwrap();
+        let store = PluginStore::new(installed.clone(), user_dir, None);
+        assert!(store.package_on_disk("revoked"), "a revoked plugin is not fetched again");
+        for name in package_entries(&slug_dir) {
+            let p = slug_dir.join(name);
+            if p.is_dir() { std::fs::remove_dir_all(p).unwrap() } else { std::fs::remove_file(p).unwrap() }
+        }
+        #[cfg(unix)]
+        std::fs::remove_file(slug_dir.join("9.9.9")).unwrap();
+        assert!(!store.package_on_disk("ballast"), "data alone is not a package");
+        assert!(slug_dir.join("ballast.db").exists());
     }
 
     /// Both manifest spellings must populate interface_bindings — the field is
