@@ -609,8 +609,10 @@ fn speech_format(into: Option<&str>, output_format: Option<&str>) -> &'static st
         .unwrap_or("mp3")
 }
 
-/// The `/v1/audio/speech` body for a call: the words, the format, and the
-/// voice only when one was named (Janus has its own default).
+/// The `/v1/audio/speech` body for a call: the words, the format, the
+/// voice only when one was named (Janus has its own default), and the
+/// delivery (`direction`: tone, pace, emotion) sent as the model's
+/// `instructions`.
 pub fn speech_body(input: &Value) -> Value {
     let mut body = json!({
         "model": str_of(input, "model").unwrap_or(SPEECH_MODEL),
@@ -619,6 +621,9 @@ pub fn speech_body(input: &Value) -> Value {
     });
     if let Some(voice) = str_of(input, "voice") {
         body["voice"] = json!(voice.to_ascii_lowercase());
+    }
+    if let Some(direction) = str_of(input, "direction") {
+        body["instructions"] = json!(direction);
     }
     body
 }
@@ -1807,6 +1812,7 @@ impl DynTool for GenerateMediaTool {
                 "prompt": { "type": "string", "description": "Image or video: what it shows, in detail: subject, style, light, framing, motion. Music: genre, mood, instruments, tempo, what it is for. Sound: the sound, its source, place and movement." },
                 "text": { "type": "string", "description": "Speech: the exact words to say, up to about 4,000 characters." },
                 "voice": { "type": "string", "description": "Speech: the voice id from kind `voices` (e.g. alloy, coral, nova). Use the same id for the same character every time. Left out: the default voice." },
+                "direction": { "type": "string", "description": "Speech: how the words are said: tone, pace, warmth, emotion, accent, e.g. \"deep, warm, unhurried documentary narrator; calm authority, slight gravel, pauses between phrases\". Describe the qualities; never name a real person to imitate." },
                 "lyrics": { "type": "string", "description": "Music: the words to sing, lines separated by newlines; [Verse], [Chorus], [Bridge] tags allowed. Left out: instrumental." },
                 "instrumental": { "type": "boolean", "description": "Music: no vocals (the default without `lyrics`). false without `lyrics`: words are written for it." },
                 "file": { "type": "string", "description": "Transcript: the audio or video file to transcribe (an absolute, `~/` or relative path)." },
@@ -2578,6 +2584,9 @@ mod tests {
         assert_eq!(speech_format(None, Some("png")), "mp3");
         let body = speech_body(&json!({"text": "hi", "output_format": "wav", "model": "m"}));
         assert_eq!(body, json!({"model": "m", "input": "hi", "response_format": "wav"}));
+        let body = speech_body(&json!({"text": "hi", "voice": "Onyx", "direction": "slow, warm narrator"}));
+        assert_eq!(body["voice"], "onyx");
+        assert_eq!(body["instructions"], "slow, warm narrator");
         let tool = GenerateMediaTool::new(
             Media::new(String::new(), String::new(), None),
             Arc::new(db::Store::new(":memory:").unwrap()),
