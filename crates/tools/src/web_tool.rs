@@ -1638,7 +1638,7 @@ impl WebCore {
         match result {
             Ok(result) => {
                 // Check for post-action screenshot in result: { text: "...", screenshot: { data, format } }
-                let (mut text_result, mut screenshot_b64) =
+                let (mut text_result, screenshot_b64) =
                     if let Some(text) = result.get("text").and_then(|v| v.as_str()) {
                         (text.to_string(), extract_screenshot_b64(&result))
                     } else if action == "snapshot" || action == "read_page" {
@@ -1679,16 +1679,12 @@ impl WebCore {
                     "scroll", "scroll_to", "drag", "hover", "file_upload",
                     "go_back", "go_forward",
                 ];
+                // No screenshot rides along with opening a page: the vision
+                // helper reads every picture before the next step (23 s for
+                // Google Maps, measured 2026-10-07), and the snapshot above is
+                // already the page. browser_act screenshot is there to look.
                 if SNAPSHOT_ACTIONS.contains(&action) {
                     auto_snapshot(executor, session_id, &mut text_result, AUTO_SNAPSHOT_MAX_CHARS).await;
-
-                    // Auto-screenshot after navigate
-                    if action == "navigate" && screenshot_b64.is_none() {
-                        let shot_args = serde_json::json!({});
-                        if let Ok(shot_result) = executor.execute("screenshot", &shot_args, session_id).await {
-                            screenshot_b64 = extract_screenshot_b64(&shot_result);
-                        }
-                    }
                 }
 
                 // Navigate-specific: error page + auth detection + loop detection
@@ -1908,7 +1904,7 @@ impl Kind {
                 - To read a page, use fetch_url.\n\
                 - Returns the status and the response body (a web page as its text)."
                 .to_string(),
-            Kind::BrowserOpen => "Opens a URL in this conversation's browser tab and returns the page's interactive elements with refs, and a screenshot.\n\
+            Kind::BrowserOpen => "Opens a URL in this conversation's browser tab and returns the page's interactive elements with refs.\n\
                 - Use the browser for pages that need JavaScript, a sign-in or interaction; to just read a page, fetch_url is faster.\n\
                 - A URL loaded in the last few minutes returns that load; pass fresh: true to reload it.\n\
                 - Don't put a search in the URL: open the site and use its search box.\n\
@@ -2367,15 +2363,41 @@ fn str_field<'a>(input: &'a serde_json::Value, key: &str) -> Option<&'a str> {
 pub struct WebTool {
     core: Arc<WebCore>,
     kind: Kind,
+    triggers: Vec<String>,
 }
+
+/// What an owner says when a task needs the browser. A request that says
+/// one has browser_open, browser_act and browser_read loaded in its first
+/// step (`find_tools::triggered`, three at most): loading them mid-task
+/// changed the tool list, every cached token was dropped and the next step
+/// waited 21.7 s for its first word (Google Maps task, 2026-10-07).
+const BROWSER_TRIGGERS: &[&str] = &[
+    "browser", "chrome", "website", "web site", "webpage", "web page", "site", "url",
+    "google maps", "maps", "directions", "google flights", "flight", "hotel", "airbnb", "expedia",
+    "kayak", "delta", "united airlines", "zillow", "redfin", "yelp", "amazon", "log in", "login",
+    "sign in", "checkout", "check out", "book a", "reservation",
+];
 
 /// Every tool of the web and browser family, sharing one core.
 pub fn tools(core: WebCore) -> Vec<WebTool> {
     let core = Arc::new(core);
-    KINDS.iter().map(|&kind| WebTool { core: core.clone(), kind }).collect()
+    KINDS
+        .iter()
+        .map(|&kind| {
+            let triggers = match kind {
+                Kind::BrowserOpen | Kind::BrowserAct | Kind::BrowserRead => BROWSER_TRIGGERS.iter().map(|t| t.to_string()).collect(),
+                _ => Vec::new(),
+            };
+            WebTool { core: core.clone(), kind, triggers }
+        })
+        .collect()
 }
 
 impl DynTool for WebTool {
+    fn triggers(&self) -> &[String] {
+        &self.triggers
+    }
+
     fn name(&self) -> &str {
         self.kind.name()
     }
@@ -3901,6 +3923,33 @@ mod interface_tests {
 
     fn tool(name: &str) -> WebTool {
         tools(WebCore::new()).into_iter().find(|t| t.name() == name).unwrap()
+    }
+
+    /// A browser request loads open, act and read in its first step, so the
+    /// tool list never changes mid-task; other requests load none of them.
+    #[test]
+    fn a_browser_request_loads_the_browser_up_front() {
+        let catalog: Vec<crate::find_tools::DeferredEntry> = tools(WebCore::new())
+            .into_iter()
+            .map(|t| crate::find_tools::DeferredEntry {
+                definition: ai::ToolDefinition { name: t.name().to_string(), description: String::new(), input_schema: json!({}) },
+                search_hint: String::new(),
+                triggers: t.triggers().to_vec(),
+            })
+            .collect();
+        let picked = |request: &str| -> Vec<String> {
+            let mut names: Vec<String> = crate::find_tools::triggered(&catalog, request, crate::find_tools::TRIGGERED_MAX)
+                .into_iter()
+                .map(|e| e.definition.name.clone())
+                .collect();
+            names.sort();
+            names
+        };
+        let browser = vec!["browser_act".to_string(), "browser_open".to_string(), "browser_read".to_string()];
+        assert_eq!(picked("Use my Chrome browser. Open Google Maps and find a coffee shop in Provo"), browser);
+        assert_eq!(picked("look up homes on Zillow in Orem"), browser);
+        assert_eq!(picked("search flights from SLC to JFK next Friday"), browser);
+        assert!(picked("what did we decide about pricing yesterday?").is_empty());
     }
 
     /// Reads run together; every write runs alone. A web POST, PUT, PATCH
