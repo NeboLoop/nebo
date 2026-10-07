@@ -3903,5 +3903,20 @@
 		"saveFailed": "सहेजा नहीं जा सका: {message}",
 		"changedSheet": "बदला गया",
 		"inputCell": "इनपुट सेल"
+	},
+	"settingsPacks": {
+		"title": "इंटेलिजेंस पैक",
+		"description": "अपना AI लाएँ: हर प्रयास स्तर को एक मॉडल से जोड़ें। परीक्षणाधीन एक डेवलपर सुविधा।",
+		"loading": "पैक लोड हो रहे हैं…",
+		"packs": "पैक",
+		"newPack": "नया पैक",
+		"editPack": "पैक संपादित करें",
+		"builtIn": "बिल्ट-इन · ऑटो स्तर चुनता है",
+		"neverNeboAi": "कभी Nebo AI का उपयोग नहीं करता",
+		"editNamed": "{name} संपादित करें",
+		"removeNamed": "{name} हटाएँ",
+		"name": "नाम",
+		"namePlaceholder": "मेरा Claude",
+		"fallback": "अगर इस पैक का AI कनेक्ट नहीं है, तो उसकी जगह Nebo AI का उपयोग करें (और यह बताएँ)"
 	}
 }

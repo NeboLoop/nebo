@@ -3903,5 +3903,20 @@
 		"saveFailed": "저장할 수 없습니다: {message}",
 		"changedSheet": "변경됨",
 		"inputCell": "입력 셀"
+	},
+	"settingsPacks": {
+		"title": "인텔리전스 팩",
+		"description": "직접 가져온 AI 사용: 각 노력 수준에 모델을 지정하세요. 테스트 중인 개발자 기능입니다.",
+		"loading": "팩 불러오는 중…",
+		"packs": "팩",
+		"newPack": "새 팩",
+		"editPack": "팩 편집",
+		"builtIn": "기본 제공 · 자동이 수준 선택",
+		"neverNeboAi": "Nebo AI를 사용하지 않음",
+		"editNamed": "{name} 편집",
+		"removeNamed": "{name} 제거",
+		"name": "이름",
+		"namePlaceholder": "내 Claude",
+		"fallback": "이 팩의 AI가 연결되어 있지 않으면 대신 Nebo AI 사용 (그리고 알림)"
 	}
 }

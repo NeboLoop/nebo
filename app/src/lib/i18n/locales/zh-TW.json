@@ -3903,5 +3903,20 @@
 		"saveFailed": "無法儲存：{message}",
 		"changedSheet": "已變更",
 		"inputCell": "輸入儲存格"
+	},
+	"settingsPacks": {
+		"title": "智慧包",
+		"description": "使用你自己的 AI：為每個投入等級指定一個模型。一項正在測試的開發者功能。",
+		"loading": "正在載入智慧包…",
+		"packs": "智慧包",
+		"newPack": "新增智慧包",
+		"editPack": "編輯智慧包",
+		"builtIn": "內建 · 自動選擇等級",
+		"neverNeboAi": "從不使用 Nebo AI",
+		"editNamed": "編輯 {name}",
+		"removeNamed": "移除 {name}",
+		"name": "名稱",
+		"namePlaceholder": "我的 Claude",
+		"fallback": "如果此智慧包的 AI 未連線，則改用 Nebo AI（並說明）"
 	}
 }

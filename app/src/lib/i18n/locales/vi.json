@@ -3903,5 +3903,20 @@
 		"saveFailed": "Không thể lưu: {message}",
 		"changedSheet": "Đã thay đổi",
 		"inputCell": "Ô nhập liệu"
+	},
+	"settingsPacks": {
+		"title": "Gói trí tuệ",
+		"description": "Dùng AI của riêng bạn: gán một mô hình cho mỗi mức nỗ lực. Một tính năng dành cho nhà phát triển đang thử nghiệm.",
+		"loading": "Đang tải gói…",
+		"packs": "Gói",
+		"newPack": "Gói mới",
+		"editPack": "Sửa gói",
+		"builtIn": "Tích hợp sẵn · Tự động chọn mức",
+		"neverNeboAi": "Không bao giờ dùng Nebo AI",
+		"editNamed": "Sửa {name}",
+		"removeNamed": "Xóa {name}",
+		"name": "Tên",
+		"namePlaceholder": "Claude của tôi",
+		"fallback": "Nếu AI của gói này chưa được kết nối, dùng Nebo AI thay thế (và báo cho biết)"
 	}
 }

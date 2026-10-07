@@ -3903,5 +3903,20 @@
 		"saveFailed": "无法保存：{message}",
 		"changedSheet": "已更改",
 		"inputCell": "输入单元格"
+	},
+	"settingsPacks": {
+		"title": "智能包",
+		"description": "使用你自己的 AI：为每个投入级别指定一个模型。一项正在测试的开发者功能。",
+		"loading": "正在加载智能包…",
+		"packs": "智能包",
+		"newPack": "新建智能包",
+		"editPack": "编辑智能包",
+		"builtIn": "内置 · 自动选择级别",
+		"neverNeboAi": "从不使用 Nebo AI",
+		"editNamed": "编辑 {name}",
+		"removeNamed": "移除 {name}",
+		"name": "名称",
+		"namePlaceholder": "我的 Claude",
+		"fallback": "如果此智能包的 AI 未连接，则改用 Nebo AI（并说明）"
 	}
 }

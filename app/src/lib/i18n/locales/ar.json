@@ -3903,5 +3903,20 @@
 		"saveFailed": "تعذّر الحفظ: {message}",
 		"changedSheet": "تم التغيير",
 		"inputCell": "خلية إدخال"
+	},
+	"settingsPacks": {
+		"title": "حزم الذكاء",
+		"description": "استخدم ذكاءك الاصطناعي الخاص: اربط كل مستوى جهد بنموذج. ميزة للمطورين قيد الاختبار.",
+		"loading": "جارٍ تحميل الحزم…",
+		"packs": "الحزم",
+		"newPack": "حزمة جديدة",
+		"editPack": "تعديل الحزمة",
+		"builtIn": "مدمجة · الوضع التلقائي يختار المستوى",
+		"neverNeboAi": "لا تستخدم Nebo AI أبدًا",
+		"editNamed": "تعديل {name}",
+		"removeNamed": "إزالة {name}",
+		"name": "الاسم",
+		"namePlaceholder": "Claude الخاص بي",
+		"fallback": "إذا لم يكن ذكاء هذه الحزمة متصلًا، فاستخدم Nebo AI بدلًا منه (وأخبرني بذلك)"
 	}
 }

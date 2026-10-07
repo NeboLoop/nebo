@@ -3903,5 +3903,20 @@
 		"saveFailed": "השמירה נכשלה: {message}",
 		"changedSheet": "שונה",
 		"inputCell": "תא קלט"
+	},
+	"settingsPacks": {
+		"title": "חבילות בינה",
+		"description": "הביאו AI משלכם: שייכו מודל לכל רמת מאמץ. תכונת מפתחים בבדיקה.",
+		"loading": "טוען חבילות…",
+		"packs": "חבילות",
+		"newPack": "חבילה חדשה",
+		"editPack": "עריכת חבילה",
+		"builtIn": "מובנית · אוטומטי בוחר את הרמה",
+		"neverNeboAi": "אף פעם לא משתמשת ב-Nebo AI",
+		"editNamed": "עריכת {name}",
+		"removeNamed": "הסרת {name}",
+		"name": "שם",
+		"namePlaceholder": "ה-Claude שלי",
+		"fallback": "אם ה-AI של החבילה הזו לא מחובר, השתמשו ב-Nebo AI במקומו (וציינו זאת)"
 	}
 }

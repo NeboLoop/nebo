@@ -3903,5 +3903,20 @@
 		"saveFailed": "Não foi possível salvar: {message}",
 		"changedSheet": "Alterada",
 		"inputCell": "Célula de entrada"
+	},
+	"settingsPacks": {
+		"title": "Pacotes de inteligência",
+		"description": "Use sua própria IA: associe um modelo a cada nível de esforço. Um recurso para desenvolvedores em teste.",
+		"loading": "Carregando pacotes…",
+		"packs": "Pacotes",
+		"newPack": "Novo pacote",
+		"editPack": "Editar pacote",
+		"builtIn": "Integrado · Auto escolhe o nível",
+		"neverNeboAi": "Nunca usa o Nebo AI",
+		"editNamed": "Editar {name}",
+		"removeNamed": "Remover {name}",
+		"name": "Nome",
+		"namePlaceholder": "Meu Claude",
+		"fallback": "Se a IA deste pacote não estiver conectada, usar o Nebo AI no lugar (e avisar)"
 	}
 }
