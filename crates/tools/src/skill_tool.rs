@@ -346,14 +346,15 @@ impl SkillCore {
                 Ok(d) => d,
                 Err(e) => return ToolResult::error(e),
             };
-            if !skill_dir.join("SKILL.md.disabled").exists() {
+            if skill_dir.join("SKILL.md.disabled").exists() {
+                if let Err(e) = std::fs::rename(skill_dir.join("SKILL.md.disabled"), skill_dir.join("SKILL.md")) {
+                    return ToolResult::error(format!("Failed to enable skill: {}. Do not retry — this is a filesystem error.", e));
+                }
+                // Make it live now instead of waiting for the watcher.
+                self.loader.reload_from_disk().await;
+            } else if !self.install_default_skill(ctx, scope, name).await {
                 return ToolResult::error(self.load_miss(scope, name).await);
             }
-            if let Err(e) = std::fs::rename(skill_dir.join("SKILL.md.disabled"), skill_dir.join("SKILL.md")) {
-                return ToolResult::error(format!("Failed to enable skill: {}. Do not retry — this is a filesystem error.", e));
-            }
-            // Make it live now instead of waiting for the watcher.
-            self.loader.reload_from_disk().await;
         }
         let Some(skill) = self.loader.get(name, scope.agent).await.filter(|s| s.enabled) else {
             return ToolResult::error(self.load_miss(scope, name).await);
@@ -730,6 +731,30 @@ impl SkillCore {
             return ToolResult::error(format!("Failed to delete skill '{}': {}", name, e));
         }
         ToolResult::ok(format!("Deleted skill '{}'", name))
+    }
+
+    /// Install the first-party default skill `name` on the spot when it is
+    /// one and is missing: the safety net for a load that needs it
+    /// (`default_artifacts::install_on_request`). False for any other skill,
+    /// and for a default that is here but switched off.
+    async fn install_default_skill(&self, ctx: &ToolContext, scope: Scope<'_>, name: &str) -> bool {
+        let Some(d) = crate::default_artifacts::default_artifact(name).filter(|d| !d.is_plugin()) else {
+            return false;
+        };
+        if self.loader.get(d.slug, scope.agent).await.is_some() {
+            return false;
+        }
+        let Some(installer) = self.code_installer.read().unwrap_or_else(|e| e.into_inner()).clone() else {
+            return false;
+        };
+        crate::default_artifacts::install_on_request(
+            installer.as_ref(),
+            d,
+            crate::InstalledBy::of(ctx),
+            ctx.platform.as_deref(),
+            || async { self.loader.get(d.slug, scope.agent).await.is_some_and(|s| s.enabled) },
+        )
+        .await
     }
 
     async fn install(&self, ctx: &ToolContext, code: &str) -> ToolResult {

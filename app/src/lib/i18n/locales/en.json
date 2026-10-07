@@ -2775,11 +2775,7 @@
 		"skipTour": "Skip tour",
 		"startTour": "Start the tour",
 		"skip": "Skip",
-		"finish": "Finish",
-		"finaleTitle": "That's the lay of the land.",
-		"finaleBody": "Want me to set up your core tools now? I'll add document editing (Word, Excel, PowerPoint, PDF), design, and publishing — so you can start making real things right away.",
-		"maybeLater": "Maybe later",
-		"setMeUp": "Set me up"
+		"finish": "Finish"
 	},
 	"installFlow": {
 		"installedTitle": "{name} Installed",

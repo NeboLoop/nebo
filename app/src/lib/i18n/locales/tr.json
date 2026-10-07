@@ -2775,11 +2775,7 @@
 		"skipTour": "Turu atla",
 		"startTour": "Tura başla",
 		"skip": "Atla",
-		"finish": "Bitir",
-		"finaleTitle": "İşte genel görünüm bu.",
-		"finaleBody": "Temel araçlarınızı şimdi kurmamı ister misiniz? Belge düzenleme (Word, Excel, PowerPoint, PDF), tasarım ve yayınlama ekleyeceğim — böylece hemen gerçek işler yapmaya başlayabilirsiniz.",
-		"maybeLater": "Belki daha sonra",
-		"setMeUp": "Kurulumu başlat"
+		"finish": "Bitir"
 	},
 	"installFlow": {
 		"installedTitle": "{name} Yüklendi",

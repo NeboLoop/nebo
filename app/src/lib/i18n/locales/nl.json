@@ -2775,11 +2775,7 @@
 		"skipTour": "Rondleiding overslaan",
 		"startTour": "Start de rondleiding",
 		"skip": "Overslaan",
-		"finish": "Voltooien",
-		"finaleTitle": "Dat is in grote lijnen alles.",
-		"finaleBody": "Zal ik nu je basistools instellen? Ik voeg documentbewerking (Word, Excel, PowerPoint, PDF), design en publiceren toe — zodat je meteen echte dingen kunt maken.",
-		"maybeLater": "Misschien later",
-		"setMeUp": "Stel me in"
+		"finish": "Voltooien"
 	},
 	"installFlow": {
 		"installedTitle": "{name} geïnstalleerd",

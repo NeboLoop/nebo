@@ -221,6 +221,10 @@ pub struct PluginRunner {
     plugin_store: Arc<napp::plugin::PluginStore>,
     db_store: Arc<db::Store>,
     broadcaster: Option<crate::web_tool::Broadcaster>,
+    /// The canonical marketplace-code installer cell (server-injected, shared
+    /// with the registry): a first-party default a search needs is installed
+    /// through it on the spot (`default_artifacts::install_on_request`).
+    code_installer: Arc<std::sync::RwLock<Option<Arc<dyn crate::bot_tool::CodeInstaller>>>>,
 }
 
 /// `args` as the binary receives them: text as given, any other value
@@ -420,12 +424,44 @@ impl PluginRunner {
             plugin_store,
             db_store,
             broadcaster: None,
+            code_installer: Arc::new(std::sync::RwLock::new(None)),
         }
     }
 
     pub fn with_broadcaster(mut self, broadcaster: crate::web_tool::Broadcaster) -> Self {
         self.broadcaster = Some(broadcaster);
         self
+    }
+
+    /// Inject the shared canonical-installer cell (from the `Registry`).
+    pub fn with_code_installer(
+        mut self,
+        installer: Arc<std::sync::RwLock<Option<Arc<dyn crate::bot_tool::CodeInstaller>>>>,
+    ) -> Self {
+        self.code_installer = installer;
+        self
+    }
+
+    /// Install the first-party default plugin `slug` on the spot when it is
+    /// one and is missing: the safety net for a request that needs it
+    /// (`default_artifacts::install_on_request`). False for any other
+    /// plugin, which is offered as it always was, and when no installer is
+    /// wired or the install did not land.
+    pub(crate) async fn install_default_plugin(&self, ctx: &ToolContext, slug: &str) -> bool {
+        let Some(d) = crate::default_artifacts::default_artifact(slug).filter(|d| d.is_plugin()) else {
+            return false;
+        };
+        let Some(installer) = self.code_installer.read().unwrap_or_else(|e| e.into_inner()).clone() else {
+            return false;
+        };
+        crate::default_artifacts::install_on_request(
+            installer.as_ref(),
+            d,
+            crate::InstalledBy::of(ctx),
+            ctx.platform.as_deref(),
+            || async { self.plugin_store.resolve(d.slug, "*").is_some() },
+        )
+        .await
     }
 
     pub(crate) fn plugin_store(&self) -> &napp::plugin::PluginStore {
@@ -732,7 +768,11 @@ impl PluginRunner {
                         let top_slug = top.get("slug").and_then(|x| x.as_str()).unwrap_or("");
                         let already_installed =
                             !top_slug.is_empty() && self.plugin_store.resolve(top_slug, "*").is_some();
-                        if already_installed || (interactive && !top_code.is_empty()) {
+                        // A first-party default is installed on the spot, with
+                        // no card, in any run: the turn goes on with it.
+                        let installed_here =
+                            !already_installed && self.install_default_plugin(ctx, top_slug).await;
+                        if already_installed || installed_here || (interactive && !top_code.is_empty()) {
                             let top_name =
                                 top.get("name").and_then(|x| x.as_str()).unwrap_or("plugin");
                             let top_desc = top
@@ -740,7 +780,7 @@ impl PluginRunner {
                                 .and_then(|x| x.as_str())
                                 .unwrap_or("");
                             // Installed already: no card, the answer is known.
-                            let answer = if already_installed {
+                            let answer = if already_installed || installed_here {
                                 Some(INSTALL_CARD_INSTALLED.to_string())
                             } else {
                                 ctx.ask_user(
@@ -3374,6 +3414,82 @@ mod budget_and_install_tests {
             assert!(!r.is_error, "{}", r.content);
             assert!(r.content.ends_with(NO_PLUGIN_NEXT), "{matched} matched: {}", r.content);
         }
+    }
+
+    /// An interactive chat's context: a card raised in it arrives on the
+    /// returned stream.
+    fn chat_with_cards() -> (ToolContext, tokio::sync::mpsc::Receiver<ai::StreamEvent>, crate::origin::AskChannels) {
+        let (stream_tx, stream_rx) = tokio::sync::mpsc::channel(4);
+        let channels: crate::origin::AskChannels = Default::default();
+        let mut ctx = ToolContext::new(crate::origin::Origin::User);
+        ctx.session_key = "agent:defaults:main".into();
+        ctx.stream_tx = Some(stream_tx);
+        ctx.ask_channels = Some(channels.clone());
+        (ctx, stream_rx, channels)
+    }
+
+    /// The safety net: a search whose best match is a first-party default
+    /// this bot lacks installs it on the spot, through the install door, with
+    /// no card, and the same call goes on with the plugin's tool. Asked again,
+    /// it is already installed and the door is not knocked twice.
+    #[tokio::test]
+    async fn a_search_that_needs_a_missing_default_installs_it_and_goes_on() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (plugin_store, db_store) = stores(tmp.path());
+        let door = crate::default_artifacts::FakeDoor::new(&tmp.path().join("plugins"));
+        let cell: Arc<std::sync::RwLock<Option<Arc<dyn crate::bot_tool::CodeInstaller>>>> =
+            Arc::new(std::sync::RwLock::new(Some(door.clone())));
+        let tool = PluginRunner::new(plugin_store.clone(), db_store).with_code_installer(cell);
+        let (ctx, mut cards, _channels) = chat_with_cards();
+        let products = vec![serde_json::json!({
+            "name": "Nebo Office", "slug": "nebo-office", "code": "PLUG-BHVY-A96N",
+            "description": "Documents", "type": "plugin"
+        })];
+
+        let r = tool.offer("powerpoint", &ctx, &products, 1).await;
+        assert!(!r.is_error, "{}", r.content);
+        assert!(r.content.contains("Nebo Office is installed"), "{}", r.content);
+        assert!(r.content.contains("plugin__nebo-office"), "{}", r.content);
+        assert!(cards.try_recv().is_err(), "no install card for a default");
+        assert_eq!(door.calls(), ["PLUG-BHVY-A96N"]);
+        assert!(plugin_store.resolve("nebo-office", "*").is_some());
+
+        let again = tool.offer("powerpoint", &ctx, &products, 1).await;
+        assert!(again.content.contains("was already installed"), "{}", again.content);
+        assert_eq!(door.calls().len(), 1, "an installed default is not installed again");
+    }
+
+    /// Anything that is not a first-party default is never installed
+    /// unasked: unattended it is recommended, in a chat it is the card.
+    #[tokio::test]
+    async fn a_missing_third_party_plugin_is_never_installed_unasked() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (plugin_store, db_store) = stores(tmp.path());
+        let door = crate::default_artifacts::FakeDoor::new(&tmp.path().join("plugins"));
+        let cell: Arc<std::sync::RwLock<Option<Arc<dyn crate::bot_tool::CodeInstaller>>>> =
+            Arc::new(std::sync::RwLock::new(Some(door.clone())));
+        let tool = Arc::new(PluginRunner::new(plugin_store.clone(), db_store).with_code_installer(cell));
+        let products = vec![serde_json::json!({
+            "name": "QuickBooks Online", "slug": "quickbooks", "code": "PLUG-ABCD-1234",
+            "description": "Books", "type": "plugin"
+        })];
+
+        let unattended = tool.offer("quickbooks", &ToolContext::default(), &products, 1).await;
+        assert!(unattended.content.contains("Installing needs the owner's approval"), "{}", unattended.content);
+
+        let (ctx, mut cards, _channels) = chat_with_cards();
+        let cancel = ctx.cancel_token.clone();
+        let offering = {
+            let tool = tool.clone();
+            let products = products.clone();
+            tokio::spawn(async move { tool.offer("quickbooks", &ctx, &products, 1).await })
+        };
+        cards.recv().await.expect("the install card is shown");
+        cancel.cancel();
+        offering.await.unwrap();
+
+        assert!(door.calls().is_empty(), "the door was never knocked: {:?}", door.calls());
+        assert!(plugin_store.resolve("quickbooks", "*").is_none());
     }
 
     /// Offer an install card in an interactive chat and end it the given

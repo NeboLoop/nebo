@@ -1,0 +1,8 @@
+id: sc89-a-default-the-owner-removed-is-not-reinstalled-at-startup
+name: "SC89 — A default the owner removed is not reinstalled at startup"
+description: |
+  A default the owner removes through the settings page's removal door is
+  recorded, and a pass never puts it back; nothing is fetched for it.
+target_component: staffed-company
+proof: staffed_proof::connections::a_default_the_owner_removed_is_not_reinstalled_at_startup
+conversation: []

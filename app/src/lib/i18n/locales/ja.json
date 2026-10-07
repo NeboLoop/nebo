@@ -2775,11 +2775,7 @@
 		"skipTour": "ツアーをスキップ",
 		"startTour": "ツアーを開始",
 		"skip": "スキップ",
-		"finish": "完了",
-		"finaleTitle": "これで全体像はつかめましたね。",
-		"finaleBody": "今すぐコアツールをセットアップしましょうか?文書編集(Word、Excel、PowerPoint、PDF)、デザイン、パブリッシングを追加します — すぐに実際のものづくりを始められます。",
-		"maybeLater": "あとで",
-		"setMeUp": "セットアップする"
+		"finish": "完了"
 	},
 	"installFlow": {
 		"installedTitle": "{name}をインストールしました",

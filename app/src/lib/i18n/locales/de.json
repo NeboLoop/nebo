@@ -2775,11 +2775,7 @@
 		"skipTour": "Tour überspringen",
 		"startTour": "Tour starten",
 		"skip": "Überspringen",
-		"finish": "Fertig",
-		"finaleTitle": "Das war der Überblick.",
-		"finaleBody": "Soll ich jetzt deine Kern-Tools einrichten? Ich füge Dokumentbearbeitung (Word, Excel, PowerPoint, PDF), Design und Publishing hinzu — damit du sofort echte Dinge erstellen kannst.",
-		"maybeLater": "Vielleicht später",
-		"setMeUp": "Richte mich ein"
+		"finish": "Fertig"
 	},
 	"installFlow": {
 		"installedTitle": "{name} installiert",

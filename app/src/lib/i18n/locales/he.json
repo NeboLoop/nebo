@@ -2775,11 +2775,7 @@
 		"skipTour": "דלג על הסיור",
 		"startTour": "התחל את הסיור",
 		"skip": "דלג",
-		"finish": "סיים",
-		"finaleTitle": "זה כל הסיפור.",
-		"finaleBody": "רוצה שאגדיר לך עכשיו את הכלים המרכזיים? אוסיף עריכת מסמכים (Word, Excel, PowerPoint, PDF), עיצוב ופרסום — כדי שתוכל להתחיל ליצור דברים אמיתיים מיד.",
-		"maybeLater": "אולי אחר כך",
-		"setMeUp": "הגדר אותי"
+		"finish": "סיים"
 	},
 	"installFlow": {
 		"installedTitle": "{name} הותקן",

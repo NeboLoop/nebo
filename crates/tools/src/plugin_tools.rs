@@ -974,4 +974,31 @@ triggers:
         assert!(r.content.contains("1 `}` or `]` too many"), "{}", r.content);
         assert!(r.content.contains(r#""explain": true}, "command"#), "{}", r.content);
     }
+
+    /// The safety net: a call to the tool of a first-party default this bot
+    /// lacks installs it on the spot through the install door and the call
+    /// runs. The tool of any other missing plugin stays missing, and the
+    /// door is never knocked for it.
+    #[tokio::test]
+    async fn a_call_to_a_missing_defaults_tool_installs_it_and_runs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (registry, _store) = registry(tmp.path()).await;
+        let door = crate::default_artifacts::FakeDoor::new(&tmp.path().join("plugins"));
+        registry.set_code_installer(door.clone());
+        let ctx = crate::origin::ToolContext::default();
+
+        let r = registry
+            .execute(&ctx, "plugin__nebo-office", serde_json::json!({"command": "version"}))
+            .await;
+        assert!(!r.content.contains("There is no tool named"), "{}", r.content);
+        assert!(!r.is_error, "{}", r.content);
+        assert!(r.content.contains("ok"), "the call ran: {}", r.content);
+        assert_eq!(door.calls(), ["PLUG-BHVY-A96N"]);
+
+        let other = registry
+            .execute(&ctx, "plugin__quickbooks", serde_json::json!({"command": "version"}))
+            .await;
+        assert!(other.is_error && other.content.contains("There is no tool named"), "{}", other.content);
+        assert_eq!(door.calls().len(), 1, "no install for a plugin that is not a default");
+    }
 }

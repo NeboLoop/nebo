@@ -61,6 +61,9 @@ fixtures:
   - ../fixtures/staffed-company/connections/sc54-an-open-approval-outlives-its-turn-and-reaches-a-client-that-connects-later.yaml
   - ../fixtures/staffed-company/connections/sc77-a-list-of-codes-installs-one-by-one-and-a-failure-is-its-own-line.yaml
   - ../fixtures/staffed-company/connections/sc87-a-phone-turn-is-never-handed-a-checkout-link.yaml
+  - ../fixtures/staffed-company/connections/sc88-the-defaults-install-once-after-sign-in-and-an-installed-one-is-skipped.yaml
+  - ../fixtures/staffed-company/connections/sc89-a-default-the-owner-removed-is-not-reinstalled-at-startup.yaml
+  - ../fixtures/staffed-company/connections/sc90-concurrent-triggers-install-a-default-once.yaml
   - ../fixtures/staffed-company/company/sc55-the-point-person-sees-what-everyone-is-doing.yaml
   - ../fixtures/staffed-company/company/sc56-the-point-person-relays-into-a-linked-employees-conversation.yaml
   - ../fixtures/staffed-company/company/sc57-a-busy-linked-conversation-is-never-sent-a-second-prompt.yaml

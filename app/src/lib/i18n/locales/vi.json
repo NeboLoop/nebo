@@ -2775,11 +2775,7 @@
 		"skipTour": "Bỏ qua chuyến tham quan",
 		"startTour": "Bắt đầu tham quan",
 		"skip": "Bỏ qua",
-		"finish": "Hoàn tất",
-		"finaleTitle": "Đó là toàn cảnh.",
-		"finaleBody": "Bạn muốn tôi thiết lập các công cụ cốt lõi ngay bây giờ chứ? Tôi sẽ thêm chỉnh sửa tài liệu (Word, Excel, PowerPoint, PDF), thiết kế và xuất bản — để bạn có thể bắt đầu tạo ra những thứ thật sự ngay lập tức.",
-		"maybeLater": "Để sau",
-		"setMeUp": "Thiết lập cho tôi"
+		"finish": "Hoàn tất"
 	},
 	"installFlow": {
 		"installedTitle": "Đã cài {name}",

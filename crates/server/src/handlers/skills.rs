@@ -352,6 +352,8 @@ pub async fn delete_skill(
     if let Some(id) = artifact_id {
         let _ = state.store.delete_artifact_update_pref(&id, "skill");
     }
+    // A default the owner removes stays removed at startup.
+    crate::default_artifacts::record_removal(&state.store, &name);
 
     // Reconcile the in-memory loader (which list_extensions reads from) with the
     // filesystem. Without this the skill stays loaded and reappears on refresh;

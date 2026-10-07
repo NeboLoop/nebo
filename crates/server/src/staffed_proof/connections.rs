@@ -838,3 +838,125 @@ async fn a_phone_turn_is_never_handed_a_checkout_link() {
     assert!(nebo.store().get_agent("sold-AGNT-PAYD-0001").unwrap().is_none());
     nebo.store().delete_auth_profile(&profile).unwrap();
 }
+
+/// The first-party default plugins, offered by the hub stand-in under their
+/// real codes, and the owner signed in to NeboAI (the profile to remove).
+fn defaults_signed_in(nebo: &Nebo) -> (Vec<tools::default_artifacts::DefaultArtifact>, String) {
+    let defaults: Vec<_> =
+        tools::default_artifacts::DEFAULT_ARTIFACTS.iter().filter(|d| d.is_plugin()).copied().collect();
+    for d in &defaults {
+        hub_offers_plugin(d.code, d.slug, d.slug);
+    }
+    let profile = uuid::Uuid::new_v4().to_string();
+    nebo.store()
+        .create_auth_profile(&profile, "NeboAI", "neboai", "proof-token", None, None, 0, 1, Some("token"), None)
+        .unwrap();
+    (defaults, profile)
+}
+
+/// Take the defaults off this bot again, with the owner's removals and the
+/// sign-in, so the next scenario starts from a fresh bot.
+async fn forget_defaults(nebo: &Nebo, defaults: &[tools::default_artifacts::DefaultArtifact], profile: &str) {
+    for d in defaults {
+        let _ = nebo.state.plugin_store.remove(d.slug);
+        let _ = std::fs::remove_dir_all(nebo.home.join("user").join("plugins").join(d.slug));
+        let _ = nebo.store().delete_installed_plugin(d.slug);
+    }
+    nebo.state.tools.refresh_plugin_tools().await;
+    crate::default_artifacts::forget_removals(nebo.store());
+    nebo.store().delete_auth_profile(profile).unwrap();
+}
+
+/// Signed in, a pass installs every default this bot lacks, once each,
+/// through the one code door; a default already on the bot is skipped (its
+/// `.napp` is never fetched). The next connect's pass finds them all and
+/// installs nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_defaults_install_once_after_sign_in_and_an_installed_one_is_skipped() {
+    let nebo = session().await;
+    let (defaults, profile) = defaults_signed_in(&nebo);
+    let (kept, missing) = defaults.split_last().expect("default plugins");
+    install_fake_plugin(&nebo.home, kept.slug, json!({}));
+    nebo.wait_until(10, "the kept default resolves", || nebo.state.plugin_store.resolve(kept.slug, "*").is_some())
+        .await;
+    let before: Vec<usize> = defaults.iter().map(|d| napp_downloads_of(d.slug)).collect();
+
+    crate::default_artifacts::spawn_pass(&nebo.state, defaults.clone(), &[]).expect("no pass was running").await.unwrap();
+    for (d, before) in defaults.iter().zip(&before) {
+        assert!(nebo.state.plugin_store.resolve(d.slug, "*").is_some(), "{} is installed", d.slug);
+        let fetched = napp_downloads_of(d.slug) - before;
+        assert_eq!(fetched, usize::from(missing.contains(d)), "{} fetched {fetched} times", d.slug);
+    }
+    assert!(!nebo.state.codes_in_flight.busy(), "nothing is left installing");
+    let after: Vec<usize> = defaults.iter().map(|d| napp_downloads_of(d.slug)).collect();
+
+    crate::default_artifacts::spawn_pass(&nebo.state, defaults.clone(), &[]).expect("the pass ended").await.unwrap();
+    let again: Vec<usize> = defaults.iter().map(|d| napp_downloads_of(d.slug)).collect();
+    assert_eq!(again, after, "the next pass installed nothing");
+
+    forget_defaults(&nebo, &defaults, &profile).await;
+}
+
+/// A default the owner removes (the settings page's one removal door) is
+/// recorded, and a pass never puts it back.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_default_the_owner_removed_is_not_reinstalled_at_startup() {
+    let nebo = session().await;
+    let (defaults, profile) = defaults_signed_in(&nebo);
+    let office = defaults[0];
+    crate::default_artifacts::spawn_pass(&nebo.state, vec![office], &[]).expect("no pass was running").await.unwrap();
+    assert!(nebo.state.plugin_store.resolve(office.slug, "*").is_some(), "the pass installed it");
+
+    let (status, body) = nebo.delete(&format!("/plugins/{}", office.slug)).await;
+    assert_eq!(status, 200, "{body}");
+    assert!(nebo.state.plugin_store.resolve(office.slug, "*").is_none(), "the owner removed it");
+    let fetched = napp_downloads_of(office.slug);
+
+    crate::default_artifacts::spawn_pass(&nebo.state, vec![office], &[]).expect("the pass ended").await.unwrap();
+    assert!(nebo.state.plugin_store.resolve(office.slug, "*").is_none(), "the pass left it removed");
+    assert_eq!(napp_downloads_of(office.slug), fetched, "nothing was fetched for it");
+
+    forget_defaults(&nebo, &defaults, &profile).await;
+}
+
+/// Every trigger at once installs a default once: a second pass asked for
+/// while one runs starts nothing, a code door asked for it is refused while
+/// the pass holds the code, and a request that needs it waits for that
+/// install and then has it. Its `.napp` is fetched once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_triggers_install_a_default_once() {
+    let nebo = session().await;
+    let (defaults, profile) = defaults_signed_in(&nebo);
+    let office = defaults[0];
+    let before = napp_downloads_of(office.slug);
+    let release = hub_holds_download(office.slug);
+
+    let pass = crate::default_artifacts::spawn_pass(&nebo.state, vec![office], &[]).expect("no pass was running");
+    nebo.wait_until(10, "the pass's install is in flight", || nebo.state.codes_in_flight.busy()).await;
+    assert!(
+        crate::default_artifacts::spawn_pass(&nebo.state, vec![office], &[]).is_none(),
+        "a second trigger while a pass runs starts nothing"
+    );
+    let door = Arc::new(crate::channel_dispatch::CodeInstallerImpl::new(nebo.state.clone()));
+    let refused = tools::CodeInstaller::install(door.as_ref(), office.code, tools::InstalledBy::Owner, None).await;
+    assert!(refused.contains(tools::bot_tool::ALREADY_INSTALLING), "{refused}");
+    let needed = {
+        let door = door.clone();
+        let plugins = nebo.state.plugin_store.clone();
+        tokio::spawn(async move {
+            tools::default_artifacts::install_on_request(door.as_ref(), &office, tools::InstalledBy::Owner, None, || {
+                let plugins = plugins.clone();
+                async move { plugins.resolve(office.slug, "*").is_some() }
+            })
+            .await
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    release();
+    pass.await.unwrap();
+    assert!(needed.await.unwrap(), "the request that needed it has it");
+    assert_eq!(napp_downloads_of(office.slug) - before, 1, "one fetch for every trigger");
+
+    forget_defaults(&nebo, &defaults, &profile).await;
+}

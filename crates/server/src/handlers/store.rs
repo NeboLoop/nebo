@@ -510,6 +510,10 @@ pub async fn uninstall_store_product(
                 let _ = std::fs::remove_dir_all(&artifact_dir);
             }
         }
+        // A default skill the owner removes stays removed at startup.
+        if !is_agent {
+            crate::default_artifacts::record_removal(&state.store, &slug);
+        }
     }
 
     // Reload the loader for the removed artifact BEFORE notifying the frontend,

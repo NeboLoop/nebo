@@ -2775,11 +2775,7 @@
 		"skipTour": "Passer la visite",
 		"startTour": "Commencer la visite",
 		"skip": "Passer",
-		"finish": "Terminer",
-		"finaleTitle": "Voilà le tour du propriétaire.",
-		"finaleBody": "Voulez-vous que je configure vos outils essentiels maintenant ? J'ajouterai l'édition de documents (Word, Excel, PowerPoint, PDF), le design et la publication — pour que vous puissiez créer de vraies choses tout de suite.",
-		"maybeLater": "Peut-être plus tard",
-		"setMeUp": "Configurez-moi"
+		"finish": "Terminer"
 	},
 	"installFlow": {
 		"installedTitle": "{name} installé",

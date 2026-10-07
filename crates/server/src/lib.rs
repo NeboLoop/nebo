@@ -14,6 +14,7 @@ pub mod company;
 pub mod coworker;
 pub mod team;
 pub mod deps;
+mod default_artifacts;
 pub mod entity_config;
 pub mod handlers;
 mod engine;
