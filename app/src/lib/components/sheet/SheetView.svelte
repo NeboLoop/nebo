@@ -21,7 +21,7 @@
    */
   import { onDestroy, onMount, tick } from 'svelte';
   import { t } from 'svelte-i18n';
-  import { editSheet, getSheet, saveSheet } from '$lib/sheet/client';
+  import { SheetApiError, editSheet, getSheet, saveSheet } from '$lib/sheet/client';
   import { sheetFromFile } from '$lib/sheet/sheetjs';
   import { beginSave, endSave, setPendingSave } from '$lib/sheet/pending';
   import { vars } from '$lib/sheet/vars';
@@ -55,6 +55,8 @@
     src,
     changedSheets = [],
     onsaved,
+    agentId,
+    sessionKey,
   }: {
     /** The work document; a `path:` id (a file opened by its path) renders read-only. */
     documentId?: string;
@@ -65,6 +67,9 @@
     changedSheets?: string[];
     /** A save wrote a new version. */
     onsaved?: (version: number) => void;
+    /** Who the chat's "Saved …" message is from, and the conversation it lands in. */
+    agentId?: string;
+    sessionKey?: string;
   } = $props();
 
   const ZOOMS = [0.5, 0.67, 0.75, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2];
@@ -97,7 +102,8 @@
       let vm: SheetViewModel | null = null;
       if (engineDoc && documentId) {
         try {
-          vm = await getSheet(documentId, { version, rows: [1, PAGE_ROWS] });
+          // A reload after a 409 asks for the latest version.
+          vm = await getSheet(documentId, { version: stale ? undefined : version, rows: [1, PAGE_ROWS] });
         } catch (e) {
           // No engine for this file (an older backend, an unsupported file):
           // still show it, read-only, from the file itself.
@@ -113,8 +119,15 @@
         if (readOnly) s.fullyLoaded = true;
         else s.markPage(0, s.data.cells);
       }
-      session = vm.session ?? crypto.randomUUID();
+      session = vm.session;
       currentVersion = vm.version || version;
+      stale = false;
+      editError = null;
+      saveError = '';
+      dirty = false;
+      history.past = [];
+      history.future = [];
+      historyRev++;
       book = b;
       activeName = (b.visibleSheets[0] ?? b.sheets[0])?.name ?? '';
       loading = false;
@@ -238,7 +251,7 @@
       const key = `${s.name}:${p}`;
       if (inflightPages.has(key)) continue;
       inflightPages.add(key);
-      getSheet(documentId, { version: currentVersion, rows: [p * PAGE_ROWS + 1, (p + 1) * PAGE_ROWS], sheet: s.name })
+      getSheet(documentId, { version: currentVersion, rows: [p * PAGE_ROWS + 1, (p + 1) * PAGE_ROWS], sheet: s.name, session })
         .then((vm) => {
           const page = vm.sheets.find((x) => x.name === s.name);
           if (!page) return;
@@ -390,7 +403,9 @@
 
   /** Begin editing the active cell — only an editable one; locked cells never enter edit mode. */
   function startEdit(mode: 'enter' | 'edit', initial?: string, inBar = false): boolean {
-    if (!sheet || readOnly) return false;
+    if (!sheet || readOnly || stale) return false;
+    // A cell the view doesn't list (unlocked only by a row/column style) is
+    // treated as locked until the engine reports it.
     if (!sheet.isEditable(anchor.r, anchor.c)) {
       hint = $t('sheet.locked');
       return false;
@@ -434,17 +449,14 @@
       if (!book || !documentId) return false;
       busy++;
       try {
-        const res = await editSheet(documentId, session, edits);
+        const res = await editSheet(documentId, session, currentVersion ?? 0, edits);
         if (res.changed.length) {
           book.applyChanged(res.changed);
           rev++;
         }
         if (res.errors.length) {
           const err = res.errors[0];
-          editError =
-            typeof err === 'string'
-              ? { sheet: edits[0].sheet, cell: edits[0].cell, message: err }
-              : { sheet: err.sheet ?? edits[0].sheet, cell: err.cell ?? edits[0].cell, message: err.error ?? err.message ?? '' };
+          editError = { sheet: err.sheet, cell: err.cell, message: err.error };
           return false;
         }
         editError = null;
@@ -452,6 +464,7 @@
         return true;
       } catch (e) {
         editError = { sheet: edits[0].sheet, cell: edits[0].cell, message: e instanceof Error ? e.message : String(e) };
+        noteStale(e);
         return false;
       } finally {
         busy--;
@@ -525,7 +538,7 @@
       beginSave(doc);
       let saved: number | null = null;
       try {
-        const res = await saveSheet(doc, session);
+        const res = await saveSheet(doc, session, { agentId, sessionKey });
         saved = res.version;
         currentVersion = saved;
         if (editSeq === seq) {
@@ -535,6 +548,7 @@
         onsaved?.(saved);
       } catch (e) {
         saveError = e instanceof Error ? e.message : String(e);
+        noteStale(e);
       } finally {
         endSave(doc, saved);
         saving = false;
@@ -544,6 +558,21 @@
     return savePromise;
   }
 
+  /** The document moved on (409) or the session expired (404): edits stop
+   *  until a reload opens the latest version in a fresh session. */
+  let stale = $state(false);
+  function noteStale(e: unknown) {
+    if (e instanceof SheetApiError && (e.status === 409 || e.status === 404)) {
+      stale = true;
+      clearTimeout(autosaveTimer);
+    }
+  }
+
+  function reload() {
+    currentVersion = undefined;
+    void load();
+  }
+
   /** Last chance (panel closed, page hidden): a keepalive request that outlives this view. */
   function saveOnLeave() {
     if (!dirty || readOnly || !documentId || savePromise) return;
@@ -551,7 +580,7 @@
     clearTimeout(autosaveTimer);
     dirty = false;
     beginSave(doc);
-    saveSheet(doc, session, true)
+    saveSheet(doc, session, { agentId, sessionKey, keepalive: true })
       .then((r) => endSave(doc, r.version))
       .catch(() => endSave(doc, null));
   }
@@ -756,7 +785,7 @@
     if (e.key !== 'Enter' || !book || !sheet) return;
     e.preventDefault();
     const text = (e.currentTarget as HTMLInputElement).value.trim();
-    const ref = book.names[text] ?? text;
+    const ref = book.resolveName(sheet.name, text) ?? text;
     const at = parseAddr(ref);
     if (at) void goto(at.sheet && book.sheet(at.sheet) ? at.sheet : sheet.name, at.r, at.c).then(focusGrid);
   }
@@ -1021,6 +1050,11 @@
       <div class="flex-1 min-w-0 truncate">
         {#if hint}
           <span class="text-base-content/70">{hint}</span>
+        {:else if stale}
+          <span class="text-error inline-flex items-center gap-2" role="alert">
+            <span class="truncate">{editError?.message || saveError}</span>
+            <button class="btn btn-xs btn-outline" onclick={reload}>{$t('common.refresh')}</button>
+          </span>
         {:else if editError}
           <span class="text-error inline-flex items-center gap-1" role="alert">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>

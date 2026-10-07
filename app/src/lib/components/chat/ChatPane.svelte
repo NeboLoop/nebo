@@ -2417,6 +2417,8 @@
             title={activeArtifact.title}
             documentId={activeArtifact.documentId}
             version={activeArtifact.version}
+            {agentId}
+            sessionKey={chatSessionKey || undefined}
             renderHtml={renderMarkdown}
             oncontentclick={handleWorkMentionClick}
             sourceView={viewSource}

@@ -532,13 +532,28 @@ export class WorkbookModel {
 		return touched;
 	}
 
-	/** A single-cell defined name for (sheet, r, c), for the formula bar's name box. */
+	/**
+	 * A single-cell defined name for (sheet, r, c), for the formula bar's name
+	 * box. Sheet-scoped names are keyed "Sheet!Name" and only count on that
+	 * sheet; a workbook name loses to a sheet-scoped one.
+	 */
 	nameFor(sheet: string, r: number, c: number): string | undefined {
-		for (const [name, ref] of Object.entries(this.names)) {
+		let found: string | undefined;
+		for (const [key, ref] of Object.entries(this.names)) {
+			const bang = key.lastIndexOf('!');
+			const scope = bang >= 0 ? key.slice(0, bang).replace(/^'|'$/g, '') : undefined;
+			if (scope !== undefined && scope !== sheet) continue;
 			const p = parseAddr(ref);
-			if (p && p.r === r && p.c === c && (p.sheet ?? sheet) === sheet) return name;
+			if (!p || p.r !== r || p.c !== c || (p.sheet ?? sheet) !== sheet) continue;
+			if (scope !== undefined) return key.slice(bang + 1);
+			found ??= key;
 		}
-		return undefined;
+		return found;
+	}
+
+	/** Where a defined name points, as typed in the name box on `sheet`. */
+	resolveName(sheet: string, name: string): string | undefined {
+		return this.names[`${sheet}!${name}`] ?? this.names[`'${sheet}'!${name}`] ?? this.names[name];
 	}
 
 	/** Find across every visible sheet's loaded cells: display text and formulas, case-insensitive, in tab then row then column order. */

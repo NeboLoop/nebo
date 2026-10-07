@@ -57,5 +57,5 @@ export async function sheetFromFile(url: string, documentId: string): Promise<Sh
 			cells
 		};
 	});
-	return { documentId, version: 0, sheets, styles: [], names: {} };
+	return { documentId, version: 0, session: '', sheets, styles: [], names: {} };
 }

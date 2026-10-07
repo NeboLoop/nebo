@@ -204,6 +204,13 @@ describe('workbook', () => {
 		const b = book();
 		expect(b.nameFor('Inputs', 9, 2)).toBe('ARPU');
 		expect(b.nameFor('Monthly Model', 9, 2)).toBeUndefined();
+		// Sheet-scoped: keyed Sheet!Name, shown only on its sheet, ahead of a workbook name.
+		const scoped = new WorkbookModel({ ...structuredClone(vm), names: { ARPU: 'Inputs!$B$9', 'Inputs!Price': 'Inputs!$B$9', 'Monthly Model!Start': "'Monthly Model'!$B$2" } });
+		expect(scoped.nameFor('Inputs', 9, 2)).toBe('Price');
+		expect(scoped.nameFor('Monthly Model', 2, 2)).toBe('Start');
+		expect(scoped.resolveName('Monthly Model', 'Start')).toBe("'Monthly Model'!$B$2");
+		expect(scoped.resolveName('Inputs', 'Start')).toBeUndefined();
+		expect(scoped.resolveName('Inputs', 'ARPU')).toBe('Inputs!$B$9');
 	});
 
 	it('finds display text and formulas across sheets in order', () => {

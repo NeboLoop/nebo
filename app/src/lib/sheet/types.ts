@@ -26,7 +26,7 @@ export interface SheetChart {
 	type: string;
 	title?: string;
 	anchor: string;
-	series: { name?: string; ref: string }[];
+	series: { name?: string | null; ref: string; categories?: string | null }[];
 }
 
 export interface SheetData {
@@ -67,11 +67,11 @@ export interface CellStyle {
 export interface SheetViewModel {
 	documentId: string;
 	version: number;
-	/** Edit session id. Optional in the contract; the client mints one when absent. */
-	session?: string;
+	/** Edit session id: edits, paging and save all carry it. */
+	session: string;
 	sheets: SheetData[];
 	styles: CellStyle[];
-	/** Defined names → "Sheet!$B$9". */
+	/** Defined names → "Sheet!$B$9". A sheet-scoped name is keyed "Sheet!Name". */
 	names?: Record<string, string>;
 }
 
@@ -91,15 +91,15 @@ export interface ChangedCell {
 
 /** An edit the engine refused (a locked cell, a bad formula). */
 export interface EditError {
-	sheet?: string;
-	cell?: string;
-	error?: string;
-	message?: string;
+	sheet: string;
+	cell: string;
+	/** A plain sentence: locked, calculated by a formula, no such sheet, not a cell. */
+	error: string;
 }
 
 export interface EditResponse {
 	changed: ChangedCell[];
-	errors: (EditError | string)[];
+	errors: EditError[];
 }
 
 export interface SaveResponse {

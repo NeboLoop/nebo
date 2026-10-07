@@ -30,6 +30,8 @@
     documentId,
     version,
     onsaved,
+    agentId,
+    sessionKey,
   }: {
     url: string;
     title: string;
@@ -38,6 +40,9 @@
     version?: number;
     /** A spreadsheet's edits were saved as a new version. */
     onsaved?: (version: number) => void;
+    /** The chat a spreadsheet's "Saved …" message lands in (its agent and session key). */
+    agentId?: string;
+    sessionKey?: string;
     /** Markdown → HTML renderer shared with the chat (mention chips + code-copy buttons). */
     renderHtml: (md: string) => string;
     oncontentclick?: (e: MouseEvent) => void;
@@ -367,7 +372,7 @@
   {:else if mode === 'pdf' || mode === 'pptx'}
     <div bind:this={pdfContainer}></div>
   {:else if mode === 'sheet'}
-    <SheetView {documentId} {version} {src} {onsaved} />
+    <SheetView {documentId} {version} {src} {onsaved} {agentId} {sessionKey} />
   {:else if mode === 'csv'}
     {#each sheets as sheet}
       {#if sheets.length > 1}
