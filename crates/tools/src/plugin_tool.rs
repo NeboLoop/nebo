@@ -1954,6 +1954,8 @@ impl PluginRunner {
                 let mut text = String::new();
 
                 let stdout = String::from_utf8_lossy(&output.stdout);
+                // Read before any cut below: the `Result:` line comes last.
+                let reported = reported_result_files(&stdout, started);
                 if !stdout.is_empty() {
                     text.push_str(&stdout);
                 }
@@ -2006,11 +2008,14 @@ impl PluginRunner {
                 // exactly like an `os` write does, or it never reaches the Work
                 // panel / chat cards. Same is_work_document gate; the mtime check
                 // keeps inputs the plugin only read (a spec, a template) out.
-                let result = ToolResult::ok(text);
-                Exec::Reached(match produced_work_document(&args, None, started) {
-                    Some(path) => result.with_image_url(path),
-                    None => result,
-                })
+                // A plugin names the file it made on a `Result: <path>` line
+                // (Nebo Media's contract), so the file reaches the owner
+                // without the model having to remember share_file.
+                let mut result = ToolResult::ok(text);
+                for path in reported.into_iter().chain(produced_work_document(&args, None, started)) {
+                    result = result.with_image_url(path);
+                }
+                Exec::Reached(result)
             }
         }
     }
@@ -2253,6 +2258,36 @@ pub(crate) fn produced_work_document(
             .unwrap_or(false);
         fresh.then(|| path.to_string_lossy().to_string())
     })
+}
+
+/// The files a plugin reports on its `Result: <path>` lines (an optional
+/// ` (<detail>)` after the path), each an existing file written during this
+/// run. A `Result:` naming a folder, a missing file or an input the plugin
+/// only looked at (older than the run) is not a file it made.
+pub(crate) fn reported_result_files(stdout: &str, started: std::time::SystemTime) -> Vec<String> {
+    let cutoff = started - std::time::Duration::from_secs(1);
+    let made = |p: &str| {
+        std::fs::metadata(p)
+            .ok()
+            .filter(|m| m.is_file())
+            .and_then(|m| m.modified().ok())
+            .is_some_and(|m| m >= cutoff)
+    };
+    let mut out: Vec<String> = Vec::new();
+    for line in stdout.lines() {
+        let Some(rest) = line.trim().strip_prefix("Result: ") else { continue };
+        let rest = rest.trim();
+        // Paths may hold spaces and parentheses: try the bare path first.
+        let path = std::iter::once(rest)
+            .chain(rest.rsplit_once(" (").map(|(p, _)| p))
+            .find(|p| std::path::Path::new(p).is_absolute() && made(p));
+        if let Some(p) = path {
+            if !out.iter().any(|o| o == p) {
+                out.push(p.to_string());
+            }
+        }
+    }
+    out
 }
 
 /// Fire the one-time "reconnect this account" notification (bell + toast) and
@@ -2886,6 +2921,30 @@ mod tests {
         // A work doc that predates the run (an input) is excluded.
         let stale = started + std::time::Duration::from_secs(5);
         assert_eq!(produced_work_document(&args, None, stale), None);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Nebo Media's `Result: <path> (<detail>)` line is the file the owner
+    /// gets: a fresh file attaches (a path with spaces and parentheses
+    /// too); a folder, a missing path or a file older than the run doesn't.
+    #[test]
+    fn test_reported_result_files() {
+        let dir = std::env::temp_dir().join(format!("nebo-result-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let old = dir.join("input.mp4");
+        std::fs::write(&old, "old").unwrap();
+        let started = std::time::SystemTime::now();
+        let cut = dir.join("demo (final) v3.mp4");
+        std::fs::write(&cut, "mp4").unwrap();
+        let s = |p: &std::path::Path| p.to_string_lossy().into_owned();
+        let out = format!(
+            "Checked: opens\nResult: {} (1920×1080, 15.00 s, 13.4 MB)\nResult: {}\nResult: {} — 2 files\nResult: /nope/x.mp4 (1 MB)\nResult: relative.mp4\n",
+            s(&cut), s(&cut), s(&dir)
+        );
+        assert_eq!(reported_result_files(&out, started), vec![s(&cut)]);
+        let looked = format!("Result: {} (0.5 s)\n", s(&old));
+        let later = started + std::time::Duration::from_secs(5);
+        assert!(reported_result_files(&looked, later).is_empty(), "an input the plugin only read is not its output");
         std::fs::remove_dir_all(&dir).ok();
     }
 

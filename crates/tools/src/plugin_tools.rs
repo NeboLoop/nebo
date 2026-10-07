@@ -290,6 +290,12 @@ impl DynTool for PluginCliTool {
         display(input).unwrap_or_else(|| format!("Used {}", self.service))
     }
 
+    /// A file on this result is one the plugin made for the owner (its
+    /// `Result:` line or a fresh output arg), never the tool's eyes.
+    fn emits_image(&self, _input: &serde_json::Value) -> bool {
+        true
+    }
+
     fn execute_dyn<'a>(
         &'a self,
         ctx: &'a ToolContext,
