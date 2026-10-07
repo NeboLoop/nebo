@@ -90,6 +90,9 @@ export interface ToolUse {
   /** The stored result was cut to a preview; `response` is its first
    *  characters. Opening the row fetches the rest by `toolId`. */
   truncated?: boolean;
+  /** The files the call handed the owner (app URLs, /api/v1/files/...), from
+   *  its result event: the chat shows its media under the group mid-run. */
+  files?: string[];
 }
 
 /** A post that reached this employee through a team: who said it and in
@@ -624,6 +627,7 @@ export function createChatController(config: ChatControllerConfig) {
         response,
         outcome: data.outcome,
         ...(data.payload && typeof data.payload === 'object' ? { payload: data.payload } : {}),
+        ...(Array.isArray(data.files) && data.files.length ? { files: data.files.filter((f: unknown): f is string => typeof f === 'string') } : {}),
         durationMs: typeof data.duration_ms === 'number' ? data.duration_ms : (started ? Date.now() - started : undefined),
       };
       messages[i] = { ...m, tools };

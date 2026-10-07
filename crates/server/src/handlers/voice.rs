@@ -871,6 +871,7 @@ async fn drain_voice_run(
                     Some(tc) => state.tools.labels(&tc.name, &tc.input).await.1,
                     None => tools::humanize::raw_name(tool_name).1,
                 };
+                let files = owner_artifact_urls(&state.tools, &event).await;
                 state.hub.broadcast(
                     "tool_result",
                     serde_json::json!({
@@ -883,11 +884,12 @@ async fn drain_voice_run(
                         "is_error": event.error.is_some(),
                         "outcome": outcome,
                         "payload": event.payload,
+                        "files": &files,
                     }),
                 );
                 // A file the run hands the owner (share_file, a capture, a
                 // document it made) reaches every client as a typed chat's does.
-                for url in owner_artifact_urls(&state.tools, &event).await {
+                for url in files {
                     if !artifacts.contains(&url) {
                         artifacts.push(url);
                     }
