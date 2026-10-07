@@ -139,6 +139,9 @@ pub enum TurnEvent {
     /// Skills whose instructions apply, (name, content): after a checkpoint,
     /// the ones loaded before it; for a helper, the ones its parent loaded.
     InvokedSkills(Vec<(String, String)>),
+    /// After a checkpoint: the files tool results reported making before
+    /// it, each the result's own line, word for word (`restore::files_made`).
+    FilesMade(Vec<String>),
     /// After a checkpoint: work started before it that is still running.
     RunningWork(super::compact::restore::RunningWork),
 }
@@ -242,6 +245,7 @@ pub const NAMES: &[&str] = &[
     "app_hook",
     "restored_file",
     "invoked_skills",
+    "files_made",
     "running_work",
 ];
 
@@ -251,6 +255,10 @@ pub const MAX_RECALLED: usize = 5;
 /// The key an `invoked_skills` row carries its skills under, `[{name,
 /// content}]`, so every later checkpoint restores them again.
 pub const SKILLS_KEY: &str = "skills";
+
+/// The key a `files_made` row carries its lines under, so every later
+/// checkpoint restores them again.
+pub const FILES_MADE_KEY: &str = "files";
 
 const MICROCENTS_PER_DOLLAR: f64 = 100_000_000.0;
 
@@ -537,6 +545,23 @@ pub fn attachment_for(e: &TurnEvent) -> Option<Attachment> {
             return Some(Attachment {
                 kind: "invoked_skills",
                 text: format!("Skills loaded for this work. Their instructions apply:\n\n{}", sections.join("\n\n")),
+                data,
+            });
+        }
+        TurnEvent::FilesMade(lines) => {
+            if lines.is_empty() {
+                return None;
+            }
+            let mut data = serde_json::Map::new();
+            data.insert(FILES_MADE_KEY.into(), serde_json::json!(lines));
+            return Some(Attachment {
+                kind: "files_made",
+                text: format!(
+                    "Files made before the checkpoint, as the tool results reported them, word for word; each is on \
+                     disk now. These are facts: anything the summary calls built or done that is not here was only \
+                     planned.\n{}",
+                    lines.join("\n")
+                ),
                 data,
             });
         }
@@ -1286,6 +1311,7 @@ mod tests {
                 content: "a".into(),
             },
             TurnEvent::InvokedSkills(vec![("letters".into(), "write plainly".into())]),
+            TurnEvent::FilesMade(vec!["Result: /tmp/cut.mp4 (1920×1080, 18.50 s)".into()]),
             TurnEvent::RunningWork(crate::harness::compact::restore::RunningWork {
                 id: "task-1".into(),
                 description: "research".into(),
