@@ -1338,6 +1338,7 @@
 		"adding": "追加中...",
 		"nameRequired": "名前は必須です",
 		"apiKeyRequired": "APIキーは必須です",
+		"keysLocalOnly": "API キーは Nebo を実行しているコンピューターで追加します。キーはそのコンピューターからプロバイダーへ直接送られ、NeboAI を経由することはありません。",
 		"loadFailed": "プロバイダーの読み込みに失敗しました",
 		"toggleFailed": "プロバイダーの切り替えに失敗しました",
 		"updateFailed": "モデルの更新に失敗しました",

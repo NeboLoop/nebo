@@ -98,4 +98,29 @@ mod tests {
         assert!(meta(&store).contains("janus_provider"));
         let _ = std::fs::remove_file(&path);
     }
+
+    /// Every call to Janus or the hub presents this token and nothing else.
+    /// A user's own provider keys sit in the same table, ahead of it by
+    /// priority; none of them is ever the token, and without a NeboAI
+    /// account there is no token at all — never a fallback to theirs.
+    #[test]
+    fn the_janus_token_is_never_a_users_own_key() {
+        const SENTINEL: &str = "sk-SENTINEL-byo-key-0000000000000000";
+        let path = std::env::temp_dir().join(format!("nebo-auth-byo-{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let store = db::Store::new(path.to_str().unwrap()).unwrap();
+        for provider in ["anthropic", "openai", "google", "xai", "openrouter", "deepseek", "search-brave"] {
+            store
+                .create_auth_profile(&format!("byo-{provider}"), provider, provider, SENTINEL, None, None, 100, 1, Some("api_key"), None)
+                .unwrap();
+        }
+        assert_eq!(neboai_token(&store), None, "no NeboAI account: no token, never a BYO key");
+
+        store
+            .create_auth_profile("p1", "NeboAI", "neboai", "tok", None, None, 0, 1, Some("token"), None)
+            .unwrap();
+        let token = neboai_token(&store).expect("signed in");
+        assert!(!token.contains(SENTINEL), "a BYO key became the Janus token");
+        let _ = std::fs::remove_file(&path);
+    }
 }

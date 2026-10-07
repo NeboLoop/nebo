@@ -1338,6 +1338,7 @@
 		"adding": "Menambahkan...",
 		"nameRequired": "Nama wajib diisi",
 		"apiKeyRequired": "Kunci API wajib diisi",
+		"keysLocalOnly": "Kunci API ditambahkan di komputer yang menjalankan Nebo, jadi kunci Anda hanya berjalan dari komputer itu ke penyedia dan tidak pernah melalui NeboAI.",
 		"loadFailed": "Gagal memuat penyedia",
 		"toggleFailed": "Gagal mengubah penyedia",
 		"updateFailed": "Gagal memperbarui model",

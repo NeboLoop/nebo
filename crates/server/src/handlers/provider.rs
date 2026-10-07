@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use axum::extract::{Path, State};
+use axum::http::HeaderMap;
 use axum::response::Json;
 use tracing::{info, warn};
 
@@ -27,20 +28,51 @@ pub(crate) async fn reload_providers(
     crate::inject_db_models(store, harness.selector(), "janus");
 }
 
+/// Whether a provider API key may arrive on this request. A key typed into a
+/// remote console (the phone, or the web console through NeboAI's tunnel)
+/// would cross NeboLoop's hub readable on its way here, and a user's own key
+/// goes only from this computer to its provider — so it is entered on the
+/// computer running Nebo. A cloud bot is the exception: it runs on NeboLoop's
+/// machine, so the tunnel is its only door and adds no new holder.
+fn keys_local_only(headers: &HeaderMap) -> bool {
+    crate::middleware::came_through_tunnel(headers) && !tools::cloud_bot()
+}
+
+/// Refuse a provider key that came in through the tunnel (see
+/// [`keys_local_only`]). A body without `apiKey` — a toggle, a rename, a
+/// model pin — passes.
+fn refuse_remote_key(headers: &HeaderMap, body: &serde_json::Value) -> Result<(), types::NeboError> {
+    let has_key = body["apiKey"].as_str().is_some_and(|k| !k.trim().is_empty());
+    if has_key && keys_local_only(headers) {
+        return Err(types::NeboError::Validation(
+            "API keys are added on the computer running Nebo, so they never pass through NeboAI".into(),
+        ));
+    }
+    Ok(())
+}
+
 /// GET /api/v1/providers
-pub async fn list_providers(State(state): State<AppState>) -> HandlerResult<serde_json::Value> {
+pub async fn list_providers(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> HandlerResult<serde_json::Value> {
     let profiles = state
         .store
         .list_auth_profiles()
         .map_err(to_error_response)?;
-    Ok(Json(serde_json::json!({"profiles": profiles})))
+    Ok(Json(serde_json::json!({
+        "profiles": profiles,
+        "keysLocalOnly": keys_local_only(&headers),
+    })))
 }
 
 /// POST /api/v1/providers
 pub async fn create_provider(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(body): Json<serde_json::Value>,
 ) -> HandlerResult<serde_json::Value> {
+    refuse_remote_key(&headers, &body).map_err(to_error_response)?;
     let name = body["name"]
         .as_str()
         .ok_or_else(|| to_error_response(types::NeboError::Validation("name required".into())))?;
@@ -93,9 +125,11 @@ pub async fn get_provider(
 /// PUT /api/v1/providers/:id
 pub async fn update_provider(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Path(id): Path<String>,
     Json(body): Json<serde_json::Value>,
 ) -> HandlerResult<serde_json::Value> {
+    refuse_remote_key(&headers, &body).map_err(to_error_response)?;
     let existing = state
         .store
         .get_auth_profile(&id)
@@ -1000,5 +1034,65 @@ mod pack_tests {
         assert!(pack_of("p".into(), body("Mine", "claude-x")).is_err(), "provider/model");
         assert!(pack_of("p".into(), body("Mine", "pack/other")).is_err(), "never another pack");
         assert!(pack_of("p".into(), body("Mine", "")).is_ok(), "an empty level is empty");
+    }
+}
+
+/// A user's own provider key goes from this computer to its provider and
+/// nowhere else: never back out of the API, never in through NeboAI's tunnel.
+#[cfg(test)]
+mod key_egress_tests {
+    use super::*;
+
+    /// A sentinel no real provider issues; any appearance is a leak.
+    const SENTINEL: &str = "sk-SENTINEL-byo-key-0000000000000000";
+
+    fn tunneled() -> HeaderMap {
+        let mut h = HeaderMap::new();
+        h.insert("x-nebo-tunnel-auth", comm::tunnel::tunnel_auth_secret().parse().unwrap());
+        h
+    }
+
+    #[test]
+    fn a_key_typed_through_the_tunnel_is_refused() {
+        let body = serde_json::json!({"name": "Mine", "provider": "xai", "apiKey": SENTINEL});
+        let err = refuse_remote_key(&tunneled(), &body).unwrap_err();
+        assert!(!err.to_string().contains(SENTINEL), "the refusal does not echo the key: {err}");
+        assert!(refuse_remote_key(&HeaderMap::new(), &body).is_ok(), "a key typed on this computer is taken");
+    }
+
+    #[test]
+    fn a_tunneled_edit_without_a_key_passes() {
+        for body in [
+            serde_json::json!({"isActive": false}),
+            serde_json::json!({"name": "Renamed", "model": "grok-4"}),
+            serde_json::json!({"apiKey": "  "}),
+        ] {
+            assert!(refuse_remote_key(&tunneled(), &body).is_ok(), "{body}");
+        }
+    }
+
+    #[test]
+    fn a_forged_tunnel_stamp_is_not_the_tunnel() {
+        let mut h = HeaderMap::new();
+        h.insert("x-nebo-tunnel-auth", "forged".parse().unwrap());
+        assert!(!keys_local_only(&h));
+    }
+
+    /// Every response that carries a profile (list, get, create, update) is
+    /// this struct serialized: the key is left out, not masked.
+    #[test]
+    fn no_profile_response_carries_the_key() {
+        let store = db::Store::new(":memory:").unwrap();
+        for provider in ["anthropic", "openai", "google", "xai", "openrouter", "deepseek", "search-serpapi"] {
+            store
+                .create_auth_profile(&format!("p-{provider}"), provider, provider, SENTINEL, None, None, 0, 1, Some("api_key"), Some("{}"))
+                .unwrap();
+        }
+        let list = serde_json::json!({"profiles": store.list_auth_profiles().unwrap(), "keysLocalOnly": false}).to_string();
+        let one = serde_json::to_string(&store.get_auth_profile("p-xai").unwrap()).unwrap();
+        for out in [list, one] {
+            assert!(!out.contains(SENTINEL), "a provider key reached an API response: {out}");
+            assert!(!out.contains("apiKey"), "an apiKey field reached an API response: {out}");
+        }
     }
 }

@@ -1338,6 +1338,7 @@
 		"adding": "Đang thêm...",
 		"nameRequired": "Tên là bắt buộc",
 		"apiKeyRequired": "Khóa API là bắt buộc",
+		"keysLocalOnly": "Khóa API được thêm trên máy tính đang chạy Nebo, nên khóa của bạn chỉ đi từ máy tính đó đến nhà cung cấp và không bao giờ qua NeboAI.",
 		"loadFailed": "Không thể tải nhà cung cấp",
 		"toggleFailed": "Không thể chuyển đổi nhà cung cấp",
 		"updateFailed": "Không thể cập nhật mô hình",

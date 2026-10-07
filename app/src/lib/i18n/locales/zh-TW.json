@@ -1338,6 +1338,7 @@
 		"adding": "新增中...",
 		"nameRequired": "名稱為必填項",
 		"apiKeyRequired": "API 金鑰為必填項",
+		"keysLocalOnly": "API 金鑰需在執行 Nebo 的電腦上新增，這樣你的金鑰只會從那台電腦直接傳給服務商，絕不經過 NeboAI。",
 		"loadFailed": "載入供應商失敗",
 		"toggleFailed": "切換供應商失敗",
 		"updateFailed": "更新模型失敗",

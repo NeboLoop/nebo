@@ -1029,7 +1029,9 @@ impl WebCore {
         Ok(parse_tavily_results(&result))
     }
 
-    /// Google Custom Search Engine API (key + cx params).
+    /// Google Custom Search Engine API (`cx` param; the key rides the
+    /// `x-goog-api-key` header, never the URL — a transport error prints its
+    /// URL, and that error becomes tool output the model reads).
     async fn search_google_cse(
         &self,
         api_key: &str,
@@ -1040,15 +1042,7 @@ impl WebCore {
             .ok()
             .and_then(|m| m["cx"].as_str().map(String::from))
             .ok_or("Google CSE requires 'cx' in metadata")?;
-        let url = format!(
-            "https://www.googleapis.com/customsearch/v1?key={}&cx={}&q={}",
-            api_key,
-            cx,
-            urlencoding::encode(query)
-        );
-        let resp = self
-            .client
-            .get(&url)
+        let resp = google_cse_request(&self.client, api_key, &cx, query)
             .send()
             .await
             .map_err(|e| e.to_string())?;
@@ -1059,7 +1053,8 @@ impl WebCore {
         Ok(parse_google_cse_results(&body))
     }
 
-    /// SerpAPI (api_key as query param).
+    /// SerpAPI (api_key as query param — SerpAPI takes it nowhere else — so
+    /// a transport error drops its URL before it becomes tool output).
     async fn search_serpapi(
         &self,
         api_key: &str,
@@ -1075,7 +1070,7 @@ impl WebCore {
             .get(&url)
             .send()
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(keyed_url_error)?;
         if !resp.status().is_success() {
             return Err(format!("SerpAPI returned status {}", resp.status()));
         }
@@ -3078,6 +3073,25 @@ fn cached_search_result(cached: &VisitedPage) -> ToolResult {
     }
 }
 
+/// The Google CSE call: the key in the `x-goog-api-key` header, never the
+/// URL (see `WebCore::search_google_cse`).
+fn google_cse_request(client: &reqwest::Client, api_key: &str, cx: &str, query: &str) -> reqwest::RequestBuilder {
+    client
+        .get(format!(
+            "https://www.googleapis.com/customsearch/v1?cx={}&q={}",
+            cx,
+            urlencoding::encode(query)
+        ))
+        .header("x-goog-api-key", api_key)
+}
+
+/// A transport error from a call whose URL holds the user's key: reqwest
+/// prints the URL in its message, and the message becomes tool output the
+/// model (Janus, when it is the model) reads — so the URL is dropped.
+fn keyed_url_error(e: reqwest::Error) -> String {
+    e.without_url().to_string()
+}
+
 /// Format search results into a ToolResult (the payload the model sees).
 /// Contract: numbered `title / url / snippet`
 /// with title ≤200 chars and snippet ≤600, an untrusted-content guard in the header,
@@ -3473,6 +3487,30 @@ fn sanitize_html(html: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A user's own search key never reaches tool output — what the model
+    /// (Janus, when it is the model) reads — through a printed URL.
+    const SENTINEL: &str = "SENTINEL-byo-search-key-0000000000";
+
+    #[test]
+    fn the_google_cse_key_rides_a_header_not_the_url() {
+        let req = google_cse_request(&reqwest::Client::new(), SENTINEL, "cx-1", "q").build().unwrap();
+        assert!(!req.url().as_str().contains(SENTINEL), "key in URL: {}", req.url());
+        assert_eq!(req.headers()["x-goog-api-key"], SENTINEL);
+    }
+
+    #[tokio::test]
+    async fn a_keyed_url_transport_error_drops_the_key() {
+        // Port 1 on loopback refuses at once: a real transport error, no network.
+        let err = reqwest::Client::new()
+            .get(format!("http://127.0.0.1:1/search.json?api_key={SENTINEL}&q=x"))
+            .send()
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains(SENTINEL), "reqwest prints the URL — the guard is needed");
+        let out = keyed_url_error(err);
+        assert!(!out.contains(SENTINEL), "key survived: {out}");
+    }
 
     // Site tools ride the same extension pathway as every other browser action:
     // both actions map to their extension tool, and a call forwards exactly

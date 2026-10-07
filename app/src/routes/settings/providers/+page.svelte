@@ -31,6 +31,10 @@
   let newProvider = $state({ name: '', provider: 'anthropic', apiKey: '', baseUrl: '' });
   let isAdding = $state(false);
   let addError = $state('');
+  // Opened remotely (phone, or the web console through NeboAI's tunnel): a
+  // key typed here would cross NeboAI on its way, so keys are added only on
+  // the computer running Nebo. The server says which this is.
+  let keysLocalOnly = $state(false);
 
   const providerOptions = $derived([
     { value: 'anthropic', label: $t('settingsProviders.providerOptions.anthropic') },
@@ -115,6 +119,7 @@
       const api = await import('$lib/api/nebo');
       const resp = await api.listProviders();
       providers = resp.profiles || [];
+      keysLocalOnly = !!resp.keysLocalOnly;
     } catch (err: any) {
       error = err?.message || $t('settingsProviders.loadFailed');
     } finally { loading = false; }
@@ -221,6 +226,7 @@
 
   async function addProvider() {
     if (!newProvider.name) { addError = $t('settingsProviders.nameRequired'); return; }
+    if (!isLocalProvider && keysLocalOnly) { addError = $t('settingsProviders.keysLocalOnly'); return; }
     if (!isLocalProvider && !newProvider.apiKey) { addError = $t('settingsProviders.apiKeyRequired'); return; }
 
     isAdding = true;
@@ -473,7 +479,9 @@
           <label class="text-xs font-medium text-base-content/70 mb-1 block" for="provider-name">{$t('settingsProviders.nameLabel')}</label>
           <input id="provider-name" type="text" bind:value={newProvider.name} placeholder={$t('settingsProviders.namePlaceholderExample')} class="input input-bordered input-sm w-full" />
         </div>
-        {#if !isLocalProvider}
+        {#if !isLocalProvider && keysLocalOnly}
+          <Alert type="info">{$t('settingsProviders.keysLocalOnly')}</Alert>
+        {:else if !isLocalProvider}
           <div>
             <label class="text-xs font-medium text-base-content/70 mb-1 block" for="api-key">{$t('onboarding.apiKey.apiKeyLabel')}</label>
             <input id="api-key" type="password" bind:value={newProvider.apiKey} placeholder={$t('settingsProviders.apiKeyPlaceholder')} class="input input-bordered input-sm w-full font-mono" />
@@ -493,7 +501,7 @@
       <!-- Footer -->
       <div class="flex items-center justify-end gap-2 px-5 py-4 border-t border-base-content/10">
         <button type="button" class="btn btn-ghost btn-sm" onclick={closeAddModal}>{$t('common.cancel')}</button>
-        <button type="button" class="btn btn-primary btn-sm" onclick={addProvider} disabled={isAdding}>
+        <button type="button" class="btn btn-primary btn-sm" onclick={addProvider} disabled={isAdding || (!isLocalProvider && keysLocalOnly)}>
           {#if isAdding}<Spinner size={14} /> {$t('settingsProviders.adding')}{:else}{$t('settingsProviders.addProviderModal')}{/if}
         </button>
       </div>

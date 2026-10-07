@@ -173,6 +173,26 @@ impl GeminiProvider {
     }
 }
 
+impl GeminiProvider {
+    /// The streaming call. The key rides the `x-goog-api-key` header, never
+    /// the URL: a transport error prints its URL, and that error reaches the
+    /// chat, the log and a workflow run's error the hub is told about.
+    fn stream_request(
+        &self,
+        client: &reqwest::Client,
+        model: &str,
+        body: &serde_json::Value,
+    ) -> reqwest::RequestBuilder {
+        client
+            .post(format!(
+                "https://generativelanguage.googleapis.com/v1beta/models/{model}:streamGenerateContent?alt=sse"
+            ))
+            .header("Content-Type", "application/json")
+            .header("x-goog-api-key", &self.api_key)
+            .json(body)
+    }
+}
+
 #[async_trait]
 impl Provider for GeminiProvider {
     fn id(&self) -> &str {
@@ -239,11 +259,6 @@ impl Provider for GeminiProvider {
             body["generationConfig"] = serde_json::Value::Object(gen_config);
         }
 
-        let url = format!(
-            "https://generativelanguage.googleapis.com/v1beta/models/{}:streamGenerateContent?key={}&alt=sse",
-            model, self.api_key
-        );
-
         info!(
             model = model,
             contents = contents.len(),
@@ -252,10 +267,8 @@ impl Provider for GeminiProvider {
         );
 
         let client = crate::http::streaming_client();
-        let response = client
-            .post(&url)
-            .header("Content-Type", "application/json")
-            .json(&body)
+        let response = self
+            .stream_request(&client, model, &body)
             .send()
             .await
             .map_err(|e| ProviderError::Request(e.to_string()))?;
@@ -726,6 +739,20 @@ struct SessionToolResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The user's key goes to Google in a header, so no error, log line or
+    /// run report that prints the request URL can carry it.
+    #[test]
+    fn the_key_is_never_in_the_request_url() {
+        const SENTINEL: &str = "AIzaSENTINEL-byo-key-000000000000000";
+        let p = GeminiProvider::new(SENTINEL.into(), "gemini-2.5-flash".into());
+        let req = p
+            .stream_request(&reqwest::Client::new(), "gemini-2.5-flash", &serde_json::json!({}))
+            .build()
+            .unwrap();
+        assert!(!req.url().as_str().contains(SENTINEL), "key in URL: {}", req.url());
+        assert_eq!(req.headers()["x-goog-api-key"], SENTINEL);
+    }
 
     #[test]
     fn test_gemini_history_normalization() {

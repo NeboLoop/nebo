@@ -1338,6 +1338,7 @@
 		"adding": "추가 중...",
 		"nameRequired": "이름은 필수입니다",
 		"apiKeyRequired": "API 키는 필수입니다",
+		"keysLocalOnly": "API 키는 Nebo가 실행 중인 컴퓨터에서 추가합니다. 키는 그 컴퓨터에서 제공업체로만 전송되며 NeboAI를 거치지 않습니다.",
 		"loadFailed": "제공업체 로딩에 실패했습니다",
 		"toggleFailed": "제공업체 전환에 실패했습니다",
 		"updateFailed": "모델 업데이트에 실패했습니다",
