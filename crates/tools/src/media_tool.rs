@@ -751,12 +751,14 @@ fn str_of<'a>(input: &'a Value, key: &str) -> Option<&'a str> {
 }
 
 /// The start frame Janus is sent: an https or data URL as given, else a
-/// file inside `base`, sent as a data URL.
-fn first_frame(base: &Path, image: &str) -> Result<String, String> {
+/// file read as `readable` reads it (absolute, `~/`, or inside `base`), sent
+/// as a data URL. Live 2026-10-07: frames `generate_media` had just written
+/// to `~/NeboAI/Media/...` were refused as the next clip's start frame.
+fn first_frame(ctx: &ToolContext, base: &Path, image: &str) -> Result<String, String> {
     if image.starts_with("https://") || image.starts_with("data:") {
         return Ok(image.to_string());
     }
-    let path = contained(base, image)?;
+    let path = readable(ctx, base, image)?;
     let mime = match path
         .extension()
         .and_then(|e| e.to_str())
@@ -1506,7 +1508,7 @@ impl GenerateMediaTool {
                     return Err("Give a `prompt` for the video.".to_string());
                 }
                 let frame = match str_of(input, "image") {
-                    Some(img) => Some(first_frame(&target.base, img)?),
+                    Some(img) => Some(first_frame(ctx, &target.base, img)?),
                     None => None,
                 };
                 self.media.submit_video(&video_body(input, frame)).await?
@@ -1819,7 +1821,7 @@ impl DynTool for GenerateMediaTool {
                 "seconds": { "type": "integer", "minimum": 1, "maximum": audio::MAX_MUSIC_SECONDS, "description": "Video: length, 1-30 (default 5). Music: length wanted, up to 300. Sound: up to 30." },
                 "resolution": { "type": "string", "description": "Video: e.g. 720p, 1080p." },
                 "aspect_ratio": { "type": "string", "description": "Video: e.g. 16:9, 9:16, 1:1." },
-                "image": { "type": "string", "description": "Video: the first frame. A file in the same folder, an https URL or a data URL. Kind cast: a photo of `cast` to add." },
+                "image": { "type": "string", "description": "Video: the first frame. A file (absolute, `~/`, or relative to the folder), an https URL or a data URL. Kind cast: a photo of `cast` to add." },
                 "scrub": { "type": "boolean", "description": "Video: re-encode with every frame a keyframe for scroll-scrubbing (needs ffmpeg)." },
                 "job": { "type": "string", "description": "Video: a job id from an earlier call that did not finish; picks it up instead of making a new one." },
                 "mode": { "type": "string", "enum": ["replace"], "description": "Video: `replace` puts cast member `cast` in place of the person in `video` (720p unless `resolution` says otherwise; `prompt` optional; up to 30 minutes). Prepare the clip with the Nebo Media plugin first; afterwards its `audio mix` with `audio-from` the clip and `ai-generated` puts the sound back and tags the file, before share_file." },
@@ -2769,16 +2771,25 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join("assets")).unwrap();
         std::fs::write(dir.path().join("assets/start.png"), b"png").unwrap();
+        let ctx = ToolContext::default();
         assert_eq!(
-            first_frame(dir.path(), "assets/start.png").unwrap(),
+            first_frame(&ctx, dir.path(), "assets/start.png").unwrap(),
             "data:image/png;base64,cG5n"
         );
         assert_eq!(
-            first_frame(dir.path(), "https://x/y.png").unwrap(),
+            first_frame(&ctx, dir.path(), "https://x/y.png").unwrap(),
             "https://x/y.png"
         );
-        assert!(first_frame(dir.path(), "../start.png").is_err());
-        assert!(first_frame(dir.path(), "assets/start.gif").is_err());
+        assert!(first_frame(&ctx, dir.path(), "../start.png").is_err());
+        assert!(first_frame(&ctx, dir.path(), "assets/start.gif").is_err());
+        // A frame outside the folder, named by its absolute path.
+        let out = tempfile::tempdir().unwrap();
+        let elsewhere = out.path().join("s2-start.jpg");
+        std::fs::write(&elsewhere, b"jpg").unwrap();
+        assert_eq!(
+            first_frame(&ctx, dir.path(), &elsewhere.to_string_lossy()).unwrap(),
+            "data:image/jpeg;base64,anBn"
+        );
     }
 
     // ── Character swap ──────────────────────────────────────────────
