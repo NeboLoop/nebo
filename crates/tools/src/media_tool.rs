@@ -1829,6 +1829,30 @@ fn real_image_ext<'a>(bytes: &[u8], asked: &'a str) -> &'a str {
     if same { asked } else { real }
 }
 
+// ponytail: sound effects are off until Janus has a sound model; set this
+// to `true` to offer kind "sound" again (schema, descriptions, validate_input).
+const SOUND_EFFECTS: bool = false;
+
+/// The kinds offered to the model: kind "sound" only while [`SOUND_EFFECTS`].
+fn kinds() -> Vec<&'static str> {
+    ["image", "video", "speech", "music", "sound", "transcript", "voices", "cast"]
+        .into_iter()
+        .filter(|k| SOUND_EFFECTS || *k != "sound")
+        .collect()
+}
+
+/// `text` when sound effects are offered, else nothing.
+fn if_sound(text: &str) -> &str {
+    if SOUND_EFFECTS { text } else { "" }
+}
+
+/// The answer to a kind that isn't offered.
+fn unknown_kind() -> String {
+    let kinds = kinds();
+    let (last, rest) = kinds.split_last().expect("kinds");
+    format!("`kind` is {} or {last}.", rest.join(", "))
+}
+
 /// Seconds since the epoch, for default file names.
 fn now() -> i64 {
     chrono::Utc::now().timestamp()
@@ -1840,7 +1864,7 @@ impl DynTool for GenerateMediaTool {
     }
 
     fn description(&self) -> String {
-        "Makes new media with AI through NeboAI and saves it as a file, billed to the owner's plan; also transcribes.\n\
+        format!("Makes new media with AI through NeboAI and saves it as a file, billed to the owner's plan; also transcribes.\n\
          - kind \"image\": 1-4 images. kind \"video\": one MP4 of 1-30 s, taking minutes. `image` sets the first frame \
            (image to video): a picture the owner approved. `scrub: true` re-encodes it for scroll-scrubbing.\n\
          - Someone speaking on camera: the line is made inside the clip (see `prompt`), never as kind \"speech\"; keep that \
@@ -1849,7 +1873,7 @@ impl DynTool for GenerateMediaTool {
            adds who a swap may use (the owner confirms each once). Recipe: the character-swap skill. One character across \
            new shots: approved start frames.\n\
          - kind \"speech\": `text` read aloud, for an off-screen narrator or voice-over only; stock voices, never a real \
-           person's. kind \"music\": a track from `prompt`. kind \"sound\": a sound effect. kind \"transcript\": `file` to JSON \
+           person's. kind \"music\": a track from `prompt`.{} kind \"transcript\": `file` to JSON \
            with word timings, speakers.\n\
          - Remake only what failed, once at most without asking. What it makes is tagged AI-generated and reaches the owner \
            as a card by itself; don't share_file it.\n\
@@ -1857,16 +1881,20 @@ impl DynTool for GenerateMediaTool {
            workspace; project work inside `~/NeboAI/Media/Projects/<project>/`. Then use the path the result gives.\n\
          - It only makes new media; a media plugin such as Nebo Media only edits (mix, trim, resize, convert, inspect).\n\
          - The result gives paths, never pictures; to look at one, use the vision helper.\n\
-         - Leave `model` out unless the owner named one."
-            .to_string()
+         - Leave `model` out unless the owner named one.",
+            if_sound(" kind \"sound\": a sound effect.")
+        )
     }
 
     fn schema(&self) -> Value {
+        let sound_prompt = if_sound(" Sound: the sound, its source, place and movement.");
+        let audio_formats = if SOUND_EFFECTS { "Speech, music, sound" } else { "Speech, music" };
+        let sound_seconds = if_sound(" Sound: up to 30.");
         json!({
             "type": "object",
             "properties": {
-                "kind": { "type": "string", "enum": ["image", "video", "speech", "music", "sound", "transcript", "voices", "cast"], "description": "What to make; `transcript` to transcribe `file`; `voices` to list the speech voices; `cast` to manage the people a swap may use." },
-                "prompt": { "type": "string", "description": "Image or video: what it shows, in detail: subject, style, light, framing, motion. Someone speaking on camera: one speaker per clip, a medium or close shot, the exact line in quotes, the voice described in the same words in every clip of that person, and \"Only her voice. No music, no background sound.\" (his, for a man). Music: the style the brief asks for, never a house style (none given: offer 2-3 contrasting takes), mood, instruments, tempo, what it is for. Sound: the sound, its source, place and movement." },
+                "kind": { "type": "string", "enum": kinds(), "description": "What to make; `transcript` to transcribe `file`; `voices` to list the speech voices; `cast` to manage the people a swap may use." },
+                "prompt": { "type": "string", "description": format!("Image or video: what it shows, in detail: subject, style, light, framing, motion. Someone speaking on camera: one speaker per clip, a medium or close shot, the exact line in quotes, the voice described in the same words in every clip of that person, and \"Only her voice. No music, no background sound.\" (his, for a man). Music: the style the brief asks for, never a house style (none given: offer 2-3 contrasting takes), mood, instruments, tempo, what it is for.{sound_prompt}") },
                 "text": { "type": "string", "description": "Speech: the exact words to say, up to about 4,000 characters. Only for an off-screen narrator or voice-over, never a person seen speaking: their line goes in the video `prompt`." },
                 "voice": { "type": "string", "description": "Speech (an off-screen narrator or voice-over): a voice id from kind `voices`. Left out: the default voice." },
                 "direction": { "type": "string", "description": "Speech: how the words are said: tone, pace, warmth, emotion, accent, e.g. \"deep, warm, unhurried documentary narrator; calm authority, slight gravel, pauses between phrases\". Describe the qualities; never name a real person to imitate." },
@@ -1881,8 +1909,8 @@ impl DynTool for GenerateMediaTool {
                 "size": { "type": "string", "description": "Image: e.g. 1024x1024, 1536x1024, 1024x1536." },
                 "quality": { "type": "string", "description": "Image: low, medium, high." },
                 "background": { "type": "string", "description": "Image: transparent or opaque." },
-                "output_format": { "type": "string", "enum": ["png", "webp", "jpeg", "mp3", "wav"], "description": "File format. Image: png, webp or jpeg. Speech, music, sound: mp3 (default) or wav." },
-                "seconds": { "type": "number", "minimum": 1, "maximum": audio::MAX_MUSIC_SECONDS, "description": "Video: length in whole seconds, 1-30 (default 5); a fraction is rounded up. Music: the length the owner chose (suggest the piece's length), up to 300; fractions such as 11.1 are kept. Sound: up to 30." },
+                "output_format": { "type": "string", "enum": ["png", "webp", "jpeg", "mp3", "wav"], "description": format!("File format. Image: png, webp or jpeg. {audio_formats}: mp3 (default) or wav.") },
+                "seconds": { "type": "number", "minimum": 1, "maximum": audio::MAX_MUSIC_SECONDS, "description": format!("Video: length in whole seconds, 1-30 (default 5); a fraction is rounded up. Music: the length the owner chose (suggest the piece's length), up to 300; fractions such as 11.1 are kept.{sound_seconds}") },
                 "resolution": { "type": "string", "description": "Video: e.g. 720p, 1080p." },
                 "aspect_ratio": { "type": "string", "description": "Video: e.g. 16:9, 9:16, 1:1." },
                 "image": { "type": "string", "description": "Video: the first frame, a picture the owner approved: make each shot's start frame as an image, show it and get the owner's yes, then make the clip from it. A file (absolute, `~/`, or relative to the folder), an https URL or a data URL. Kind cast: a photo of `cast` to add." },
@@ -1928,6 +1956,7 @@ impl DynTool for GenerateMediaTool {
 
     fn validate_input(&self, input: &Value) -> Result<(), String> {
         match str_of(input, "kind") {
+            Some("sound") if !SOUND_EFFECTS => return Err("Sound effects aren't available yet.".to_string()),
             Some("speech") => {
                 if str_of(input, "text").is_none() {
                     return Err("Give the `text` to speak.".to_string());
@@ -2036,7 +2065,7 @@ impl DynTool for GenerateMediaTool {
                         Err(e) => ToolResult::error(e),
                     };
                 }
-                _ => Err("`kind` is image, video, speech, music, sound, transcript, voices or cast.".to_string()),
+                _ => Err(unknown_kind()),
             };
             match made {
                 // Every file is its own card: the first on `image_url`,
@@ -2783,7 +2812,19 @@ mod tests {
         assert!(said.contains("not available on NeboAI yet") && said.contains("Do not try again"), "{said}");
         assert!(said.contains("Do not name or recommend other apps"), "{said}");
         assert!(said.contains("unless a call for it succeeded"), "{said}");
-        assert!(tool.validate_input(&json!({"kind": "sound"})).unwrap_err().contains("`prompt`"));
+        // Offered to the model only while SOUND_EFFECTS; until then refused plainly.
+        let offered = tool.schema()["properties"]["kind"]["enum"].as_array().unwrap().contains(&json!("sound"));
+        assert_eq!(offered, SOUND_EFFECTS);
+        assert_eq!(tool.description().contains("kind \"sound\""), SOUND_EFFECTS);
+        assert_eq!(unknown_kind().contains("sound"), SOUND_EFFECTS);
+        let checked = tool.validate_input(&json!({"kind": "sound", "prompt": "a door creaks"}));
+        if SOUND_EFFECTS {
+            assert!(checked.is_ok());
+            assert!(tool.validate_input(&json!({"kind": "sound"})).unwrap_err().contains("`prompt`"));
+        } else {
+            assert_eq!(checked.unwrap_err(), "Sound effects aren't available yet.");
+            assert_eq!(unknown_kind(), "`kind` is image, video, speech, music, transcript, voices or cast.");
+        }
     }
 
     /// kind "voices": the list as lines, ids first; nothing is made.
