@@ -421,9 +421,13 @@ fn failure(kind: &str, status: u16, body: &str, signed_in: bool) -> String {
         ),
         401 | 403 if !signed_in => crate::janus::NOT_SIGNED_IN.to_string(),
         // No model serves this kind yet (Janus's `kind_unavailable`): a
-        // retry cannot help.
+        // retry cannot help. Live 2026-10-07 the model answered this by
+        // sending the owner to outside music services by name, and offered
+        // sound effects that had failed the same way minutes before.
         503 if janus_code(body) == "kind_unavailable" => format!(
-            "This kind of media ({kind}) is not available on NeboAI yet. Tell the owner plainly, and do not try again in this task."
+            "This kind of media ({kind}) is not available on NeboAI yet. Tell the owner that in one plain sentence. Do not \
+             name or recommend other apps, websites or services for it, and do not say another kind of media works unless \
+             a call for it succeeded in this task. Do not try again in this task."
         ),
         _ => {
             let said = janus_message(body);
@@ -2619,7 +2623,9 @@ mod tests {
             r#"{"error":{"code":"kind_unavailable","message":"This request couldn't be completed. Try again.","type":"server_error"}}"#,
             true,
         );
-        assert!(said.contains("not available on NeboAI yet") && said.contains("do not try again"), "{said}");
+        assert!(said.contains("not available on NeboAI yet") && said.contains("Do not try again"), "{said}");
+        assert!(said.contains("Do not name or recommend other apps"), "{said}");
+        assert!(said.contains("unless a call for it succeeded"), "{said}");
         assert!(tool.validate_input(&json!({"kind": "sound"})).unwrap_err().contains("`prompt`"));
     }
 
