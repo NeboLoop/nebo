@@ -2011,8 +2011,14 @@ impl PluginRunner {
                 // A plugin names the file it made on a `Result: <path>` line
                 // (Nebo Media's contract), so the file reaches the owner
                 // without the model having to remember share_file.
+                // Only deliverables: a look frame, a preview or a file in a
+                // `work/` folder is a step on the way, named in the text alone.
                 let mut result = ToolResult::ok(text);
-                for path in reported.into_iter().chain(produced_work_document(&args, None, started)) {
+                for path in reported
+                    .into_iter()
+                    .chain(produced_work_document(&args, None, started))
+                    .filter(|p| is_deliverable(p))
+                {
                     result = result.with_image_url(path);
                 }
                 Exec::Reached(result)
@@ -2288,6 +2294,21 @@ pub(crate) fn reported_result_files(stdout: &str, started: std::time::SystemTime
         }
     }
     out
+}
+
+/// Whether a file a plugin made is one for the owner, not a step on the
+/// way: Nebo Media names its look frames `*-look.png` and its previews
+/// `*-preview.mp4`, and keeps in-between files in the project's `work/`
+/// folder. Those stay on disk, named in the result's text, and never reach
+/// the owner as a card.
+pub(crate) fn is_deliverable(path: &str) -> bool {
+    let path = std::path::Path::new(path);
+    let name = path.file_name().map(|n| n.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+    let step = name.ends_with("-look.png") || name.ends_with("-preview.mp4");
+    let in_work = path
+        .parent()
+        .is_some_and(|dir| dir.components().any(|c| c.as_os_str().eq_ignore_ascii_case("work")));
+    !step && !in_work
 }
 
 /// Fire the one-time "reconnect this account" notification (bell + toast) and
@@ -2946,6 +2967,28 @@ mod tests {
         let later = started + std::time::Duration::from_secs(5);
         assert!(reported_result_files(&looked, later).is_empty(), "an input the plugin only read is not its output");
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A plugin's in-between files never reach the owner as cards: look
+    /// frames, previews and anything in a `work/` folder; the cut does.
+    #[test]
+    fn test_is_deliverable() {
+        for made in [
+            "/Users/a/NeboAI/Media/outputs/wingsuit-demo/nebo-wingsuit-v7.mp4",
+            "/Users/a/NeboAI/Media/outputs/wingsuit-demo/thumbnails/thumb-landscape.jpg",
+            "/Users/a/NeboAI/Media/outputs/teamwork/cut.mp4",
+            "/Users/a/work-notes/cut-look.png.mp4",
+        ] {
+            assert!(is_deliverable(made), "{made}");
+        }
+        for step in [
+            "/Users/a/NeboAI/Media/outputs/wingsuit-demo/nebo-wingsuit-v7-look.png",
+            "/Users/a/NeboAI/Media/outputs/wingsuit-demo/nebo-wingsuit-v7-Preview.MP4",
+            "/Users/a/NeboAI/Media/outputs/wingsuit-demo/work/scene1-trim.mp4",
+            "/Users/a/NeboAI/Media/outputs/wingsuit-demo/Work/thumb/intro.png",
+        ] {
+            assert!(!is_deliverable(step), "{step}");
+        }
     }
 
     /// An exec that writes a picture hands the picture back: the raster a
