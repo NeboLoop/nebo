@@ -146,7 +146,7 @@ impl Media {
             .timeout(Duration::from_secs(300))
             .send()
             .await
-            .map_err(|e| format!("Could not reach Janus to make the image: {e}"))?;
+            .map_err(|e| format!("Could not reach NeboAI to make the image: {e}"))?;
         let status = resp.status();
         if !status.is_success() {
             let text = resp.text().await.unwrap_or_default();
@@ -155,7 +155,7 @@ impl Media {
         let parsed: Value = resp
             .json()
             .await
-            .map_err(|e| format!("Janus's answer for the image could not be read: {e}"))?;
+            .map_err(|e| format!("NeboAI's answer for the image could not be read: {e}"))?;
         let model = parsed
             .get("model")
             .and_then(Value::as_str)
@@ -174,7 +174,7 @@ impl Media {
             };
             let bytes = base64::engine::general_purpose::STANDARD
                 .decode(b64.trim())
-                .map_err(|e| format!("Janus's image could not be decoded: {e}"))?;
+                .map_err(|e| format!("NeboAI's image could not be decoded: {e}"))?;
             out.push(Image {
                 bytes,
                 revised_prompt: item
@@ -185,7 +185,7 @@ impl Media {
             });
         }
         if out.is_empty() {
-            return Err("Janus answered with no image.".to_string());
+            return Err("NeboAI answered with no image.".to_string());
         }
         Ok((out, model))
     }
@@ -200,7 +200,7 @@ impl Media {
             .timeout(Duration::from_secs(600))
             .send()
             .await
-            .map_err(|e| format!("Could not reach Janus to make the {what}: {e}"))?;
+            .map_err(|e| format!("Could not reach NeboAI to make the {what}: {e}"))?;
         let status = resp.status();
         if !status.is_success() {
             let text = resp.text().await.unwrap_or_default();
@@ -215,9 +215,9 @@ impl Media {
         let bytes = resp
             .bytes()
             .await
-            .map_err(|e| format!("The {what} from Janus stopped part way: {e}"))?;
+            .map_err(|e| format!("The {what} from NeboAI stopped part way: {e}"))?;
         if bytes.is_empty() {
-            return Err("Janus answered with no audio.".to_string());
+            return Err("NeboAI answered with no audio.".to_string());
         }
         Ok((bytes.to_vec(), content_type))
     }
@@ -230,7 +230,7 @@ impl Media {
             .timeout(Duration::from_secs(30))
             .send()
             .await
-            .map_err(|e| format!("Could not reach Janus for the voices: {e}"))?;
+            .map_err(|e| format!("Could not reach NeboAI for the voices: {e}"))?;
         let status = resp.status();
         if !status.is_success() {
             let text = resp.text().await.unwrap_or_default();
@@ -239,7 +239,7 @@ impl Media {
         let parsed: Value = resp
             .json()
             .await
-            .map_err(|e| format!("Janus's voice list could not be read: {e}"))?;
+            .map_err(|e| format!("NeboAI's voice list could not be read: {e}"))?;
         Ok(parsed.get("data").and_then(Value::as_array).cloned().unwrap_or_default())
     }
 
@@ -261,7 +261,7 @@ impl Media {
             .timeout(Duration::from_secs(600))
             .send()
             .await
-            .map_err(|e| format!("Could not reach Janus to transcribe {filename}: {e}"))?;
+            .map_err(|e| format!("Could not reach NeboAI to transcribe {filename}: {e}"))?;
         let status = resp.status();
         if !status.is_success() {
             let text = resp.text().await.unwrap_or_default();
@@ -269,7 +269,7 @@ impl Media {
         }
         resp.json()
             .await
-            .map_err(|e| format!("Janus's transcript could not be read: {e}"))
+            .map_err(|e| format!("NeboAI's transcript could not be read: {e}"))
     }
 
     /// Submits a video job for `body` (a `/v1/videos` request).
@@ -280,7 +280,7 @@ impl Media {
             .timeout(Duration::from_secs(120))
             .send()
             .await
-            .map_err(|e| format!("Could not reach Janus to make the video: {e}"))?;
+            .map_err(|e| format!("Could not reach NeboAI to make the video: {e}"))?;
         let status = resp.status();
         if !status.is_success() {
             let text = resp.text().await.unwrap_or_default();
@@ -289,12 +289,12 @@ impl Media {
         let parsed: Value = resp
             .json()
             .await
-            .map_err(|e| format!("Janus's answer for the video could not be read: {e}"))?;
+            .map_err(|e| format!("NeboAI's answer for the video could not be read: {e}"))?;
         let id = parsed
             .get("id")
             .and_then(Value::as_str)
             .filter(|s| !s.is_empty())
-            .ok_or("Janus answered the video request with no job id.")?
+            .ok_or("NeboAI answered the video request with no job id.")?
             .to_string();
         if parsed.get("status").and_then(Value::as_str) == Some("failed") {
             return Err(job_failed(&parsed));
@@ -365,7 +365,7 @@ impl Media {
             .timeout(Duration::from_secs(600))
             .send()
             .await
-            .map_err(|e| format!("Could not download the video from Janus: {e}"))?;
+            .map_err(|e| format!("Could not download the video from NeboAI: {e}"))?;
         let status = resp.status();
         if !status.is_success() {
             let text = resp.text().await.unwrap_or_default();
@@ -389,7 +389,7 @@ impl Media {
                 Err(e) => {
                     let _ = tokio::fs::remove_file(&part).await;
                     return Err(format!(
-                        "The video download from Janus stopped part way: {e}"
+                        "The video download from NeboAI stopped part way: {e}"
                     ));
                 }
             }
@@ -413,9 +413,18 @@ fn part_path(path: &Path) -> PathBuf {
 }
 
 /// The sentence a Janus refusal becomes. A 429 is the plan or balance not
-/// covering the work; the owner reads it, so it says what to do.
+/// covering the work; the owner reads it, so it says what to do. Only a
+/// category, or NeboAI's own words about the request (`seconds must be
+/// between 1 and 30`), reach the model: a refusal passed on from the
+/// service behind NeboAI can name that service or its model, and the owner
+/// never sees those (owner rule 2026-10-05). Its words stay in the log.
 fn failure(kind: &str, status: u16, body: &str, signed_in: bool) -> String {
+    let code = janus_code(body);
     match status {
+        429 if code == "provider_rate_limit" => format!(
+            "NeboAI is busy making {kind}s right now. Wait a minute and try once more; if it is still busy, tell the \
+             owner plainly."
+        ),
         429 | 402 => format!(
             "The owner's NeboAI plan is used up this month and does not cover this {kind}. Tell the owner plainly; they \
              can upgrade their plan under Settings > Account, then ask again."
@@ -425,20 +434,55 @@ fn failure(kind: &str, status: u16, body: &str, signed_in: bool) -> String {
         // retry cannot help. Live 2026-10-07 the model answered this by
         // sending the owner to outside music services by name, and offered
         // sound effects that had failed the same way minutes before.
-        503 if janus_code(body) == "kind_unavailable" => format!(
+        503 if code == "kind_unavailable" => format!(
             "This kind of media ({kind}) is not available on NeboAI yet. Tell the owner that in one plain sentence. Do not \
              name or recommend other apps, websites or services for it, and do not say another kind of media works unless \
              a call for it succeeded in this task. Do not try again in this task."
         ),
         _ => {
             let said = janus_message(body);
-            if said.is_empty() {
-                format!("Janus did not make the {kind} (status {status}).")
+            tracing::warn!(kind, status, code = %code, said = %said, "NeboAI did not make the media");
+            let request = (400..500).contains(&status);
+            // NeboAI's own check of the request: its words say what to fix.
+            let own = request && !code.starts_with("upstream") && !code.starts_with("provider");
+            if own && !said.is_empty() && !names_a_provider(&said) {
+                format!("NeboAI did not make the {kind}: {said}")
+            } else if request {
+                format!(
+                    "NeboAI did not make the {kind}: the request was refused. Change the prompt or the settings and try \
+                     once more; if it is refused again, tell the owner plainly."
+                )
             } else {
-                format!("Janus did not make the {kind} (status {status}): {said}")
+                format!(
+                    "NeboAI could not make the {kind} just now (a service error). Try once more; if it fails again, tell \
+                     the owner plainly."
+                )
             }
         }
     }
+}
+
+/// Words that name a company or model behind NeboAI's media. Text that
+/// holds one is never passed on: the category is said instead.
+const PROVIDER_WORDS: &[&str] = &[
+    "openai", "gpt", "dall-e", "dalle", "sora", "whisper", "xai", "grok", "aurora", "google", "gemini", "imagen", "veo",
+    "lyria", "vertex", "deepmind", "anthropic", "claude", "elevenlabs", "fal", "runway", "kling", "luma", "pika",
+    "minimax", "hailuo", "seedance", "bytedance", "alibaba", "wan", "qwen", "stability", "flux", "midjourney", "suno",
+    "udio", "replicate", "openrouter", "cartesia", "deepgram", "azure", "bedrock", "mistral",
+];
+
+/// Whether `text` names a company or model behind NeboAI's media: one of
+/// [`PROVIDER_WORDS`] as a word, or followed by a version (`veo3`,
+/// `gpt-image-1`).
+fn names_a_provider(text: &str) -> bool {
+    text.to_ascii_lowercase()
+        .split(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
+        .any(|word| {
+            PROVIDER_WORDS.iter().any(|p| {
+                word.strip_prefix(p)
+                    .is_some_and(|rest| rest.is_empty() || rest.starts_with(|c: char| c == '-' || c.is_ascii_digit()))
+            })
+        })
 }
 
 /// The code in a Janus error body (`{"error": {"code"}}`), or "".
@@ -466,7 +510,8 @@ fn janus_message(body: &str) -> String {
     said.chars().take(300).collect()
 }
 
-/// What a failed video job says.
+/// What a failed video job says: NeboAI's sentence for it, never words
+/// that name the service behind it (`failure`).
 fn job_failed(job: &Value) -> String {
     let said = job
         .pointer("/error/message")
@@ -475,6 +520,9 @@ fn job_failed(job: &Value) -> String {
         .unwrap_or("");
     if said.is_empty() {
         "The video could not be made.".to_string()
+    } else if names_a_provider(said) {
+        tracing::warn!(said, "a video job failed");
+        "The video could not be made: it was refused. Change the prompt and try once more.".to_string()
     } else {
         format!("The video could not be made: {said}")
     }
@@ -507,9 +555,16 @@ pub fn contained(base: &Path, into: &str) -> Result<PathBuf, String> {
     Ok(out)
 }
 
+/// A relative path that leads out of `base` (by `..` or a link). Absolute
+/// and `~/` paths never come here (`written_at`, `readable`), so the way out
+/// it names is one that is taken. Live 2026-10-07: "is outside …/Nebo/files.
+/// Give a path inside that folder… or an absolute or `~/` path" refused the
+/// absolute path it offered, and the model copied a whole project into
+/// Nebo/files instead.
 fn outside(into: &str, base: &Path) -> String {
     format!(
-        "`{into}` is outside {}. Give a path inside that folder, such as `assets/hero.png`, or an absolute or `~/` path.",
+        "`{into}` leads out of {}, where relative paths stay. Name the file by its absolute or `~/` path instead \
+         (e.g. `~/NeboAI/Media/Projects/lighthouse/frames/s1-start.png`); never copy files into this folder to reach them.",
         base.display()
     )
 }
@@ -716,7 +771,9 @@ pub fn video_body(input: &Value, first_frame: Option<String>) -> Value {
     let mut body = json!({
         "model": str_of(input, "model").unwrap_or(""),
         "prompt": str_of(input, "prompt").unwrap_or(""),
-        "seconds": input.get("seconds").and_then(Value::as_u64).unwrap_or(5).clamp(1, MAX_SECONDS),
+        // Janus makes whole seconds of video: a fraction is rounded up, so
+        // the clip is never shorter than asked.
+        "seconds": input.get("seconds").and_then(Value::as_f64).map(|s| s.ceil() as u64).unwrap_or(5).clamp(1, MAX_SECONDS),
     });
     for key in ["resolution", "aspect_ratio"] {
         if let Some(v) = str_of(input, key) {
@@ -884,7 +941,7 @@ impl Lent {
         let share = match self.hub.create_file_share(file_id, "", &settings).await {
             Ok(s) => s,
             Err(comm::CommError::Http { status: 404, .. }) => return Err(LinkError::Gone),
-            Err(e) => return Err(LinkError::Other(format!("Could not make a link for Janus: {e}"))),
+            Err(e) => return Err(LinkError::Other(format!("Could not make a link for NeboAI: {e}"))),
         };
         self.shares.push(share.id.clone());
         let token = share.url.rsplit('/').next().unwrap_or_default();
@@ -892,9 +949,9 @@ impl Lent {
             .hub
             .open_file_share(token)
             .await
-            .map_err(|e| LinkError::Other(format!("Could not open the link for Janus: {e}")))?;
+            .map_err(|e| LinkError::Other(format!("Could not open the link for NeboAI: {e}")))?;
         if opened.state != "ok" || opened.file_url.is_empty() {
-            return Err(LinkError::Other(format!("The link for Janus did not open ({}).", opened.state)));
+            return Err(LinkError::Other(format!("The link for NeboAI did not open ({}).", opened.state)));
         }
         Ok(if opened.file_url.starts_with("https://") || opened.file_url.starts_with("http://") {
             opened.file_url
@@ -1227,16 +1284,14 @@ impl GenerateMediaTool {
             .map(|n| destination(&target.base, n))
             .collect::<Result<Vec<_>, _>>()?;
         let (images, model) = self.media.images(&body).await?;
+        // The model stays in the log: a result line can reach the owner,
+        // who never sees what made it.
+        tracing::info!(model = %model, count = images.len(), "made images");
         let mut lines = vec![format!(
-            "Made {} image{} into {}{}:",
+            "Made {} image{} into {}:",
             images.len(),
             if images.len() == 1 { "" } else { "s" },
             paths.first().map(|p| target.place(p)).unwrap_or_default(),
-            if model.is_empty() {
-                String::new()
-            } else {
-                format!(" with {model}")
-            }
         )];
         let mut revised = None;
         let mut written = Vec::new();
@@ -1277,11 +1332,11 @@ impl GenerateMediaTool {
             revised = revised.or(image.revised_prompt);
         }
         if let Some(r) = revised {
-            lines.push(format!("Prompt as Janus used it: {r}"));
+            lines.push(format!("Prompt as it was used: {r}"));
         }
         lines.push("To look at an image, use the vision helper on its path.".to_string());
         if written.is_empty() {
-            return Err("Janus answered with no image.".to_string());
+            return Err("NeboAI answered with no image.".to_string());
         }
         Ok((lines.join("\n"), written))
     }
@@ -1340,8 +1395,10 @@ impl GenerateMediaTool {
             lines.push(format!("(It came back as {}, so it is saved as .{real}.)", real.to_ascii_uppercase()));
         }
         lines.push(match kind {
-            "speech" => "To put it under a video, use an installed media plugin's audio mix on this file and the video. \
-                         Keep the same `voice` for the same character every time."
+            "speech" => "Speech is for an off-screen narrator or voice-over only, never a person seen speaking: an on-camera \
+                         line is made inside its video clip (put the line in the video prompt and keep the clip's sound). \
+                         To lay this voice-over under a video, use an installed media plugin's audio mix on this file and \
+                         the video."
                 .to_string(),
             _ => "To trim it, fade it or mix it under a video or voice-over, use an installed media plugin's audio \
                   commands (the Nebo Media plugin has them)."
@@ -1357,7 +1414,7 @@ impl GenerateMediaTool {
             return Ok("No voices are listed right now; leave `voice` out for the default.".to_string());
         }
         let mut lines = vec![format!(
-            "{} voices. Give one's id as `voice` with kind \"speech\"; ids never change, so keep one per character:",
+            "{} voices. Give one's id as `voice` with kind \"speech\" (an off-screen narrator or voice-over); ids never change:",
             voices.len()
         )];
         for v in &voices {
@@ -1465,7 +1522,13 @@ impl GenerateMediaTool {
 
     /// Makes the video and answers the result text and its file, which the
     /// chat shows as a card.
+    ///
+    /// The whole call counts as waiting (`ctx.waiting`): a clip can take its
+    /// full wait (10 minutes, a swap 30) with no event at all, and a helper
+    /// ended for silence at its own 10-minute bound was ended just as its
+    /// clip landed, so the director made it again (audit 2026-10-07).
     async fn video(&self, ctx: &ToolContext, target: &Target, input: &Value) -> Result<(String, Vec<PathBuf>), String> {
+        let _waiting = ctx.waiting.enter();
         let replace = str_of(input, "mode") == Some("replace");
         // A swap with no prompt is named for its cast member.
         let named_for = match (str_of(input, "prompt"), str_of(input, "cast")) {
@@ -1521,9 +1584,6 @@ impl GenerateMediaTool {
             }
         };
         let waited = if replace {
-            // A swap can outlast the run's idle bound with no event at all:
-            // it is waiting on Janus, bounded by its own limit, not stalled.
-            let _waiting = ctx.waiting.enter();
             self.media.wait_video(&job.id, self.media.polling.limit * SWAP_WAIT_FACTOR).await
         } else {
             self.media.wait_video(&job.id, self.media.polling.limit).await
@@ -1552,10 +1612,9 @@ impl GenerateMediaTool {
             target.place(&path),
             path.display()
         )];
+        // The model stays in the log; the owner never sees what made it.
+        tracing::info!(model = %job.model, job = %job.id, "made a video");
         let mut about = Vec::new();
-        if !job.model.is_empty() {
-            about.push(format!("model {}", job.model));
-        }
         if let Some(s) = job.seconds {
             about.push(format!("{s} seconds"));
         }
@@ -1573,8 +1632,8 @@ impl GenerateMediaTool {
         if replace {
             lines.push(
                 "Before it goes anywhere: put the original clip's sound back and tag it AI-generated with the Nebo Media \
-                 plugin's `audio mix` (`audio-from` the clip you sent, `ai-generated` \"true\"), then give the owner \
-                 that result with share_file."
+                 plugin's `audio mix` (`audio-from` the clip you sent, `ai-generated` \"true\"). That result reaches \
+                 the owner as a card by itself; don't share_file it again."
                     .to_string(),
             );
         }
@@ -1782,24 +1841,22 @@ impl DynTool for GenerateMediaTool {
 
     fn description(&self) -> String {
         "Makes new media with AI through NeboAI and saves it as a file, billed to the owner's plan; also transcribes.\n\
-         - kind \"image\": 1-4 images from `prompt`.\n\
-         - kind \"video\": one MP4 of 1-30 seconds from `prompt`; it can take minutes. `image` sets the first frame \
-           (image to video); `scrub: true` re-encodes it for scroll-scrubbing.\n\
-         - Character swap: kind \"video\", `mode` \"replace\", `video` and `cast`. kind \"cast\" lists and adds the \
-           people a swap may use; the owner confirms each once. Recipe: the character-swap skill.\n\
-         - kind \"speech\": `text` read aloud (voiceover, narration). `voice` is an id from kind \"voices\"; keep one per \
-           character. Stock voices only, never a real person's.\n\
-         - kind \"music\": a track from `prompt`, with `seconds` and `lyrics` (else instrumental). kind \"sound\": a sound \
-           effect from `prompt`.\n\
-         - kind \"transcript\": `file` (audio or video) to JSON with word timings and speakers, for captions and edit by \
-           transcript.\n\
-         - Made audio is tagged AI-generated.\n\
-         - `into` is the file to write. An absolute or `~/` path is saved exactly there (e.g. `~/NeboAI/Media/voiceover.mp3`); \
-           a relative one (`assets/hero.png`) is inside the app's folder when you are an app or name one with `app`, else \
-           the workspace. Use the absolute path the result gives from then on.\n\
-         - It only makes new media; a media plugin such as Nebo Media only edits. To edit, mix, trim, resize, convert or \
-           inspect a file, use it (its audio mix puts speech or music under a video).\n\
-         - The result gives paths, never pictures; to look at one, use the vision helper on its path.\n\
+         - kind \"image\": 1-4 images. kind \"video\": one MP4 of 1-30 s, taking minutes. `image` sets the first frame \
+           (image to video): a picture the owner approved. `scrub: true` re-encodes it for scroll-scrubbing.\n\
+         - Someone speaking on camera: the line is made inside the clip (see `prompt`), never as kind \"speech\"; keep that \
+           clip's sound, never extract or join its dialogue.\n\
+         - Swap the person in an existing video: kind \"video\", `mode` \"replace\", `video`, `cast`; kind \"cast\" lists and \
+           adds who a swap may use (the owner confirms each once). Recipe: the character-swap skill. One character across \
+           new shots: approved start frames.\n\
+         - kind \"speech\": `text` read aloud, for an off-screen narrator or voice-over only; stock voices, never a real \
+           person's. kind \"music\": a track from `prompt`. kind \"sound\": a sound effect. kind \"transcript\": `file` to JSON \
+           with word timings, speakers.\n\
+         - Remake only what failed, once at most without asking. What it makes is tagged AI-generated and reaches the owner \
+           as a card by itself; don't share_file it.\n\
+         - `into`: an absolute or `~/` path is saved there, a relative one inside the app's folder (yours or `app`) or the \
+           workspace; project work inside `~/NeboAI/Media/Projects/<project>/`. Then use the path the result gives.\n\
+         - It only makes new media; a media plugin such as Nebo Media only edits (mix, trim, resize, convert, inspect).\n\
+         - The result gives paths, never pictures; to look at one, use the vision helper.\n\
          - Leave `model` out unless the owner named one."
             .to_string()
     }
@@ -1809,15 +1866,15 @@ impl DynTool for GenerateMediaTool {
             "type": "object",
             "properties": {
                 "kind": { "type": "string", "enum": ["image", "video", "speech", "music", "sound", "transcript", "voices", "cast"], "description": "What to make; `transcript` to transcribe `file`; `voices` to list the speech voices; `cast` to manage the people a swap may use." },
-                "prompt": { "type": "string", "description": "Image or video: what it shows, in detail: subject, style, light, framing, motion. Music: genre, mood, instruments, tempo, what it is for. Sound: the sound, its source, place and movement." },
-                "text": { "type": "string", "description": "Speech: the exact words to say, up to about 4,000 characters." },
-                "voice": { "type": "string", "description": "Speech: the voice id from kind `voices` (e.g. alloy, coral, nova). Use the same id for the same character every time. Left out: the default voice." },
+                "prompt": { "type": "string", "description": "Image or video: what it shows, in detail: subject, style, light, framing, motion. Someone speaking on camera: one speaker per clip, a medium or close shot, the exact line in quotes, the voice described in the same words in every clip of that person, and \"Only her voice. No music, no background sound.\" (his, for a man). Music: the style the brief asks for, never a house style (none given: offer 2-3 contrasting takes), mood, instruments, tempo, what it is for. Sound: the sound, its source, place and movement." },
+                "text": { "type": "string", "description": "Speech: the exact words to say, up to about 4,000 characters. Only for an off-screen narrator or voice-over, never a person seen speaking: their line goes in the video `prompt`." },
+                "voice": { "type": "string", "description": "Speech (an off-screen narrator or voice-over): a voice id from kind `voices`. Left out: the default voice." },
                 "direction": { "type": "string", "description": "Speech: how the words are said: tone, pace, warmth, emotion, accent, e.g. \"deep, warm, unhurried documentary narrator; calm authority, slight gravel, pauses between phrases\". Describe the qualities; never name a real person to imitate." },
                 "lyrics": { "type": "string", "description": "Music: the words to sing, lines separated by newlines; [Verse], [Chorus], [Bridge] tags allowed. Left out: instrumental." },
                 "instrumental": { "type": "boolean", "description": "Music: no vocals (the default without `lyrics`). false without `lyrics`: words are written for it." },
                 "file": { "type": "string", "description": "Transcript: the audio or video file to transcribe (an absolute, `~/` or relative path)." },
                 "language": { "type": "string", "description": "Transcript: the spoken language code (e.g. en, es) when known. Left out: detected." },
-                "into": { "type": "string", "description": "The file to write: an absolute or `~/` path is saved there; a relative one (e.g. `assets/hero.png`) is inside the app's folder or the workspace. Left out: a name from the prompt." },
+                "into": { "type": "string", "description": "The file to write: an absolute or `~/` path is saved there; a relative one (e.g. `assets/hero.png`) is inside the app's folder or the workspace. Project work always goes inside its project, `~/NeboAI/Media/Projects/<project>/`, in sources/, voice/, music/, frames/, clips/, work/, versions/ or deliver/ (finals), e.g. `~/NeboAI/Media/Projects/lighthouse/frames/s1-start.png`. Left out: a name from the prompt, loose in the workspace." },
                 "app": { "type": "string", "description": "The app whose folder the file goes in. Leave out when you are the app, or for the workspace." },
                 "model": { "type": "string", "description": "A NeboAI media model. Leave out for the default." },
                 "n": { "type": "integer", "minimum": 1, "maximum": MAX_IMAGES, "description": "Image: how many (1-4)." },
@@ -1825,13 +1882,13 @@ impl DynTool for GenerateMediaTool {
                 "quality": { "type": "string", "description": "Image: low, medium, high." },
                 "background": { "type": "string", "description": "Image: transparent or opaque." },
                 "output_format": { "type": "string", "enum": ["png", "webp", "jpeg", "mp3", "wav"], "description": "File format. Image: png, webp or jpeg. Speech, music, sound: mp3 (default) or wav." },
-                "seconds": { "type": "integer", "minimum": 1, "maximum": audio::MAX_MUSIC_SECONDS, "description": "Video: length, 1-30 (default 5). Music: length wanted, up to 300. Sound: up to 30." },
+                "seconds": { "type": "number", "minimum": 1, "maximum": audio::MAX_MUSIC_SECONDS, "description": "Video: length in whole seconds, 1-30 (default 5); a fraction is rounded up. Music: the length the owner chose (suggest the piece's length), up to 300; fractions such as 11.1 are kept. Sound: up to 30." },
                 "resolution": { "type": "string", "description": "Video: e.g. 720p, 1080p." },
                 "aspect_ratio": { "type": "string", "description": "Video: e.g. 16:9, 9:16, 1:1." },
-                "image": { "type": "string", "description": "Video: the first frame. A file (absolute, `~/`, or relative to the folder), an https URL or a data URL. Kind cast: a photo of `cast` to add." },
+                "image": { "type": "string", "description": "Video: the first frame, a picture the owner approved: make each shot's start frame as an image, show it and get the owner's yes, then make the clip from it. A file (absolute, `~/`, or relative to the folder), an https URL or a data URL. Kind cast: a photo of `cast` to add." },
                 "scrub": { "type": "boolean", "description": "Video: re-encode with every frame a keyframe for scroll-scrubbing (needs ffmpeg)." },
                 "job": { "type": "string", "description": "Video: a job id from an earlier call that did not finish; picks it up instead of making a new one." },
-                "mode": { "type": "string", "enum": ["replace"], "description": "Video: `replace` puts cast member `cast` in place of the person in `video` (720p unless `resolution` says otherwise; `prompt` optional; up to 30 minutes). Prepare the clip with the Nebo Media plugin first; afterwards its `audio mix` with `audio-from` the clip and `ai-generated` puts the sound back and tags the file, before share_file." },
+                "mode": { "type": "string", "enum": ["replace"], "description": "Video: `replace` puts cast member `cast` in place of the person in `video` (720p unless `resolution` says otherwise; `prompt` optional; up to 30 minutes). Prepare the clip with the Nebo Media plugin first; afterwards its `audio mix` with `audio-from` the clip and `ai-generated` puts the sound back and tags the file, which reaches the owner as a card by itself." },
                 "video": { "type": "string", "description": "Video replace: the clip (30 s or less, 24 fps, up to 100 MB), a file or an https URL." },
                 "cast": { "type": "string", "description": "Video replace: the cast member who plays the person; the person comes only from the cast, never from an image. Kind cast: the member to add `image` to (a new one gets it as their hero: front-facing, full body, good light; then the owner confirms them once on a card; a new image of a confirmed one shows him the card again) or to show (one not confirmed yet gets the card again). Left out: the cast is listed." },
                 "hero": { "type": "boolean", "description": "Kind cast: `image` replaces their hero image instead of adding an angle." }
@@ -2175,6 +2232,8 @@ mod tests {
         assert_eq!(body["image"], "https://x/y.png");
         assert!(body.get("resolution").is_none());
         assert_eq!(video_body(&json!({"prompt": "p"}), None)["seconds"], 5);
+        assert_eq!(video_body(&json!({"prompt": "p", "seconds": 5.2}), None)["seconds"], 6);
+        assert_eq!(video_body(&json!({"prompt": "p", "seconds": 8.0}), None)["seconds"], 8);
     }
 
     #[test]
@@ -2366,6 +2425,73 @@ mod tests {
             .filter(|(l, _, _)| l.starts_with("GET /v1/videos/vid_1 "))
             .count();
         assert_eq!(polls, 3);
+    }
+
+    /// Every video call counts as waiting (`ctx.waiting`) while it runs, not
+    /// only a swap: a shot helper waiting on its clip is not silent, so its
+    /// collector never ends it as stalled (audit 2026-10-07: helpers were
+    /// ended at their 10-minute bound just as their clips landed). The
+    /// result line never names the model that made it.
+    #[tokio::test]
+    async fn a_video_call_counts_as_waiting_and_names_no_model() {
+        let waiting = Arc::new(crate::Waiting::default());
+        let seen_waiting = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (w, seen) = (waiting.clone(), seen_waiting.clone());
+        let janus = mock(Box::new(move |path, _| match path {
+            "/v1/videos" => (200, "application/json", br#"{"id":"vid_w","object":"video","status":"running","model":"vendor-video-9","seconds":5}"#.to_vec()),
+            "/v1/videos/vid_w" => {
+                seen.store(!w.is_idle(), std::sync::atomic::Ordering::SeqCst);
+                (200, "application/json", br#"{"id":"vid_w","status":"succeeded"}"#.to_vec())
+            }
+            "/v1/videos/vid_w/content" => (200, "video/mp4", b"MP4DATA".to_vec()),
+            _ => (404, "text/plain", b"no".to_vec()),
+        }))
+        .await;
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Arc::new(db::Store::new(&tmp.path().join("t.db").to_string_lossy()).unwrap());
+        let tool = GenerateMediaTool::new(Media::new(janus.url.clone(), "bot-1".into(), None).with_polling(fast()), store);
+        let target = Target { base: tmp.path().to_path_buf(), label: "the workspace".into(), default_folder: "media" };
+        let ctx = ToolContext { waiting: waiting.clone(), ..Default::default() };
+        assert!(waiting.is_idle());
+        let (text, files) = tool
+            .video(&ctx, &target, &json!({"kind": "video", "prompt": "a lighthouse at dusk", "into": "clips/s1.mp4"}))
+            .await
+            .unwrap();
+        assert!(seen_waiting.load(std::sync::atomic::Ordering::SeqCst), "the wait counted as waiting");
+        assert!(waiting.is_idle(), "the wait ends with the call");
+        assert_eq!(files, [tmp.path().join("clips/s1.mp4")]);
+        assert!(!text.contains("vendor-video-9") && !text.contains("model"), "{text}");
+        assert!(text.contains("5 seconds"), "{text}");
+    }
+
+    /// A refusal from the service behind NeboAI never reaches the model in
+    /// its own words when they could name it: a category is said, and the
+    /// words stay in the log. NeboAI's own check of a request keeps its
+    /// words, which say what to fix.
+    #[test]
+    fn refusals_name_no_provider_or_model() {
+        let upstream = failure("video", 400, r#"{"error":{"code":"upstream_rejected","message":"Veo3 rejected the prompt"}}"#, true);
+        assert!(!upstream.to_lowercase().contains("veo"), "{upstream}");
+        assert!(upstream.contains("request was refused"), "{upstream}");
+        let named = failure("image", 400, r#"{"error":{"message":"gpt-image-1 does not take size 9x9"}}"#, true);
+        assert!(!named.contains("gpt"), "{named}");
+        let server = failure("music", 502, r#"{"error":{"code":"upstream_error","message":"Lyria timed out"}}"#, true);
+        assert!(!server.contains("Lyria") && server.contains("service error"), "{server}");
+        let busy = failure("video", 429, r#"{"error":{"code":"provider_rate_limit","message":""}}"#, true);
+        assert!(busy.contains("busy") && !busy.contains("plan"), "{busy}");
+        for said in [&upstream, &named, &server, &busy] {
+            assert!(!said.contains("Janus"), "{said}");
+        }
+        assert_eq!(
+            job_failed(&json!({"error": {"message": "Kling refused: content filter"}})),
+            "The video could not be made: it was refused. Change the prompt and try once more."
+        );
+        assert_eq!(
+            job_failed(&json!({"error": "the prompt was refused by the safety check"})),
+            "The video could not be made: the prompt was refused by the safety check"
+        );
+        assert!(!names_a_provider("Falls of light; a wandering fox at dusk."));
+        assert!(names_a_provider("made with veo3") && names_a_provider("OpenAI said no") && names_a_provider("flux-pro"));
     }
 
     #[tokio::test]

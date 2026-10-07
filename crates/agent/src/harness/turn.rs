@@ -334,14 +334,7 @@ pub(crate) async fn start(h: Harness, mut req: TurnRequest) -> Result<TurnHandle
         .sessions
         .get_or_create(&req.session_key, &req.seat.user_id)
         .map_err(|e| HarnessError::Failed(format!("session error: {e}")))?;
-    let progress = req.progress.clone().unwrap_or_else(|| RunProgress {
-        run_id: uuid::Uuid::new_v4().to_string(),
-        iteration_count: Default::default(),
-        tool_call_count: Default::default(),
-        current_tool: Default::default(),
-        waiting: Default::default(),
-        stalled: Default::default(),
-    });
+    let progress = req.progress.clone().unwrap_or_else(RunProgress::fresh);
     let turn_id = progress.run_id.clone();
     if owner_speaks(&req) {
         resume_goal(&h, &session.id);

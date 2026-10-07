@@ -801,7 +801,7 @@ async fn drain_voice_run(
     // The run's files, kept on the reply and sent with `chat_complete`.
     let mut artifacts: Vec<String> = Vec::new();
     loop {
-        let event = match agent::guardrails::next_event(&mut rx, last_event, &run_handle.waiting).await {
+        let event = match agent::guardrails::next_event(&mut rx, last_event, &run_handle.waiting, agent::guardrails::RUN_IDLE_LIMIT).await {
             agent::guardrails::Next::Event(e) => e,
             agent::guardrails::Next::Closed => break,
             agent::guardrails::Next::Stalled => {

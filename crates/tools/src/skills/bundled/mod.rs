@@ -170,11 +170,15 @@ mod bundled_skill_tests {
     }
 
     /// The character-swap skill fires on the words an owner uses for AI
-    /// characters, not only on "character swap"; ordinary chat doesn't
-    /// fire it. Live 2026-10-04: asked about an article on AI creators with
-    /// the same face across clips, the employee never named the swap.
+    /// creators and for a swap, not only on "character swap"; ordinary chat
+    /// doesn't fire it. Live 2026-10-04: asked about an article on AI
+    /// creators with the same face across clips, the employee never named
+    /// the swap. Audit 2026-10-07: "the same character across shots" is not
+    /// a swap but approved start frames, and the skill fired on it and
+    /// steered a film to the cast, so "consistent character", "same face",
+    /// "ai character" and "reference photo" no longer fire it.
     #[test]
-    fn the_character_swap_skill_fires_on_ai_character_talk_only() {
+    fn the_character_swap_skill_fires_on_ai_creator_and_swap_talk_only() {
         let (_, content) = BUNDLED_SKILLS
             .iter()
             .find(|(k, _)| *k == "character-swap")
@@ -183,14 +187,16 @@ mod bundled_skill_tests {
         for request in [
             "Are we able to do this? Five AI creators, the same face across hundreds of clips, built from \
              reference photos, image-to-video and voice.",
-            "Can we make a consistent character for our ads?",
             "I want an AI influencer for the brand.",
+            "Swap the person in this clip for Maya.",
         ] {
             assert!(skill.matches_trigger(request), "{request}");
         }
         for request in [
             "Put together a summary of this week's sales calls for the team.",
             "Find the reference books for the tax filing and face the deadline head on.",
+            "Can we make a consistent character for our ads?",
+            "Keep the same face for Mara in every shot; here is a reference photo.",
         ] {
             assert!(!skill.matches_trigger(request), "{request}");
         }

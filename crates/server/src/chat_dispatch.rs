@@ -841,7 +841,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                             }
                             continue;
                         }
-                        next = agent::guardrails::next_event(&mut rx, last_event, &_run_handle.waiting) => match next {
+                        next = agent::guardrails::next_event(&mut rx, last_event, &_run_handle.waiting, agent::guardrails::RUN_IDLE_LIMIT) => match next {
                             agent::guardrails::Next::Event(e) => e,
                             agent::guardrails::Next::Closed => break,
                             // Nothing has moved for the idle limit and nothing is waited on:
@@ -1906,7 +1906,7 @@ pub async fn run_chat_events(
                 loop {
                 let event = tokio::select! {
                     _ = cancel_token.cancelled() => break,
-                    next = agent::guardrails::next_event(&mut events, last_event, &_run_handle.waiting) => match next {
+                    next = agent::guardrails::next_event(&mut events, last_event, &_run_handle.waiting, agent::guardrails::RUN_IDLE_LIMIT) => match next {
                         agent::guardrails::Next::Event(e) => e,
                         agent::guardrails::Next::Closed => break,
                         agent::guardrails::Next::Stalled => {

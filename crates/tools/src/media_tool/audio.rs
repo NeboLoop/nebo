@@ -36,8 +36,12 @@ pub fn generation_body(kind: &str, input: &Value, format: &str) -> Value {
     } else {
         MAX_SOUND_SECONDS
     };
-    if let Some(s) = input.get("seconds").and_then(Value::as_u64) {
-        body["seconds"] = json!(s.clamp(1, max));
+    // Janus takes fractional seconds here: a creator's 11.1 s stays 11.1
+    // (live 2026-10-07 an integer-only `seconds` refused it). Whole
+    // seconds go as an integer.
+    if let Some(s) = input.get("seconds").and_then(Value::as_f64) {
+        let s = s.clamp(1.0, max as f64);
+        body["seconds"] = if s.fract() == 0.0 { json!(s as u64) } else { json!(s) };
     }
     if kind == "music" {
         let lyrics = str_of("lyrics");
@@ -370,6 +374,11 @@ mod tests {
             b,
             json!({"kind": "sound", "prompt": "door creak", "response_format": "mp3", "seconds": 1, "model": "m"})
         );
+        // The length the creator chose, to the tenth: never dropped for being a fraction.
+        let b = generation_body("music", &json!({"prompt": "lofi", "seconds": 11.1}), "mp3");
+        assert_eq!(b["seconds"], json!(11.1));
+        let b = generation_body("music", &json!({"prompt": "lofi", "seconds": 12.0}), "mp3");
+        assert_eq!(b["seconds"], json!(12));
     }
 
     #[test]

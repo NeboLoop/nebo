@@ -397,15 +397,15 @@ mod tests {
                 args.extend(["-movflags".into(), "+faststart".into()]);
             }
             args.push(path.to_string_lossy().into_owned());
-            assert!(std::process::Command::new(&ffmpeg).args(&args).status().unwrap().success());
+            assert!(command::new::<std::process::Command>(&ffmpeg, command::Console::Hidden).args(&args).status().unwrap().success());
             assert!(mp4(&path).unwrap());
-            let probe = std::process::Command::new(&ffprobe)
+            let probe = command::new::<std::process::Command>(&ffprobe, command::Console::Hidden)
                 .args(["-v", "error", "-show_entries", "format_tags=comment", "-of", "default=nw=1:nk=1"])
                 .arg(&path)
                 .output()
                 .unwrap();
             assert_eq!(String::from_utf8_lossy(&probe.stdout).trim(), AI_TAG, "faststart {faststart}");
-            let decode = std::process::Command::new(&ffmpeg)
+            let decode = command::new::<std::process::Command>(&ffmpeg, command::Console::Hidden)
                 .args(["-v", "error", "-xerror", "-i"])
                 .arg(&path)
                 .args(["-f", "null", "-"])

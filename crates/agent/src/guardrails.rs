@@ -24,11 +24,13 @@ pub fn stall_notice() -> String {
 }
 
 /// The next event of a run's stream, or `Stalled` once nothing has arrived
-/// for [`RUN_IDLE_LIMIT`] while nothing is waited on. The clock counts from
-/// the later of `last_event` and the end of the last wait: a question the
-/// owner takes an hour to answer, or a day, never ends the run. The ONE idle
-/// bound for every loop that drains a run (both chat dispatchers and voice),
-/// so a third copy of the select arm cannot drift. Cancel-safe: every arm is.
+/// for `limit` ([`RUN_IDLE_LIMIT`] for a run, `delegation::INACTIVITY_LIMIT`
+/// for a helper) while nothing is waited on. The clock counts from the
+/// later of `last_event` and the end of the last wait: a question the
+/// owner takes an hour to answer, or a day, or a video that renders for ten
+/// minutes, never ends the run. The ONE idle bound for every loop that
+/// drains a run (both chat dispatchers, voice and a helper's collector), so
+/// another copy of the select arm cannot drift. Cancel-safe: every arm is.
 pub enum Next<T> {
     Event(T),
     Closed,
@@ -39,6 +41,7 @@ pub async fn next_event<T>(
     rx: &mut tokio::sync::mpsc::Receiver<T>,
     last_event: tokio::time::Instant,
     waiting: &tools::Waiting,
+    limit: std::time::Duration,
 ) -> Next<T> {
     let mut quiet_since = last_event;
     loop {
@@ -56,7 +59,7 @@ pub async fn next_event<T>(
                     quiet_since = tokio::time::Instant::now();
                 }
             }
-            _ = tokio::time::sleep_until(quiet_since + RUN_IDLE_LIMIT), if idle => return Next::Stalled,
+            _ = tokio::time::sleep_until(quiet_since + limit), if idle => return Next::Stalled,
         }
     }
 }
@@ -71,11 +74,11 @@ mod next_event_tests {
         let waiting = tools::Waiting::default();
         let (tx, mut rx) = tokio::sync::mpsc::channel::<u8>(1);
         tx.send(7).await.expect("channel open");
-        assert!(matches!(next_event(&mut rx, tokio::time::Instant::now(), &waiting).await, Next::Event(7)));
+        assert!(matches!(next_event(&mut rx, tokio::time::Instant::now(), &waiting, RUN_IDLE_LIMIT).await, Next::Event(7)));
         // Sender alive, nothing sent: paused time jumps straight to the limit.
-        assert!(matches!(next_event(&mut rx, tokio::time::Instant::now(), &waiting).await, Next::Stalled));
+        assert!(matches!(next_event(&mut rx, tokio::time::Instant::now(), &waiting, RUN_IDLE_LIMIT).await, Next::Stalled));
         drop(tx);
-        assert!(matches!(next_event(&mut rx, tokio::time::Instant::now(), &waiting).await, Next::Closed));
+        assert!(matches!(next_event(&mut rx, tokio::time::Instant::now(), &waiting, RUN_IDLE_LIMIT).await, Next::Closed));
     }
 
     /// A question the owner answers a day later is not a stall, and the
@@ -95,11 +98,11 @@ mod next_event_tests {
             })
         };
         let start = tokio::time::Instant::now();
-        assert!(matches!(next_event(&mut rx, start, &waiting).await, Next::Event(1)), "the answer arrived; the run was never ended");
+        assert!(matches!(next_event(&mut rx, start, &waiting, RUN_IDLE_LIMIT).await, Next::Event(1)), "the answer arrived; the run was never ended");
         answered.await.unwrap();
         // With nothing waited on, silence past the limit is a stall again.
         let quiet = tokio::time::Instant::now();
-        assert!(matches!(next_event(&mut rx, quiet, &waiting).await, Next::Stalled));
+        assert!(matches!(next_event(&mut rx, quiet, &waiting, RUN_IDLE_LIMIT).await, Next::Stalled));
         assert!(tokio::time::Instant::now() - quiet >= RUN_IDLE_LIMIT);
     }
 }
