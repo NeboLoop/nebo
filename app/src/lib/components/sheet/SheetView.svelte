@@ -34,6 +34,7 @@
     cellLook,
     colName,
     expandForMerges,
+    fitDisplay,
     inputOf,
     paneBoxes,
     parseAddr,
@@ -797,6 +798,32 @@
     node.setSelectionRange(n, n);
   }
 
+  // ── Text measure (for #### on numbers too wide for their column) ─────
+  /** One canvas measures text in the grid's own font, per weight/style/size,
+   *  cached; only drawn (visible) number cells ask. */
+  let measureCtx: CanvasRenderingContext2D | null = null;
+  const widths = new Map<string, number>();
+  let fontFamily: string | undefined;
+  function measurer(look: ReturnType<typeof cellLook>): (text: string) => number {
+    const px = look.size ? Math.round(((look.size * 4) / 3) * zoom) : Math.round(FONT_PX * zoom);
+    fontFamily ??= scroller ? getComputedStyle(scroller).fontFamily : undefined;
+    const family = fontFamily ?? 'sans-serif';
+    const font = `${look.italic ? 'italic ' : ''}${look.bold ? 600 : 400} ${px}px ${family}`;
+    return (text) => {
+      const key = `${font}|${text}`;
+      let w = widths.get(key);
+      if (w === undefined) {
+        measureCtx ??= document.createElement('canvas').getContext('2d');
+        if (!measureCtx) return 0;
+        measureCtx.font = font;
+        w = measureCtx.measureText(text).width;
+        if (widths.size > 20000) widths.clear();
+        widths.set(key, w);
+      }
+      return w;
+    };
+  }
+
   // ── Cell rendering ────────────────────────────────────────────────────
   const ALIGN = { left: 'justify-start text-left', center: 'justify-center text-center', right: 'justify-end text-right' };
   const VALIGN = { top: 'items-start', center: 'items-center', bottom: 'items-end' };
@@ -858,7 +885,7 @@
       {:else if editing?.inBar && editing.sheet === activeName && editing.r === b.r && editing.c === b.c}
         {editText}
       {:else}
-        {b.cell?.display ?? ''}
+        {fitDisplay(b.cell, b.w, measurer(look))}
       {/if}
     </div>
   {/each}

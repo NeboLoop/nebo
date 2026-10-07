@@ -11,6 +11,8 @@ import {
 	WorkbookModel,
 	addr,
 	cellLook,
+	CELL_PAD_PX,
+	fitDisplay,
 	colIndex,
 	colName,
 	expandForMerges,
@@ -252,6 +254,37 @@ describe('paging', () => {
 		const s = bigSheet(30, 5);
 		s.markPage(0, []);
 		expect(s.fullyLoaded).toBe(true);
+	});
+});
+
+describe('number overflow', () => {
+	// A monospace stand-in for the grid's font: 7px per character.
+	const measure = (t: string) => t.length * 7;
+	const num = (display: string) => ({ r: 1, c: 1, display, value: 1, formula: null, editable: false });
+
+	it('shows a number that fits as is', () => {
+		expect(fitDisplay(num('$12,400.00'), 10 * 7 + CELL_PAD_PX, measure)).toBe('$12,400.00');
+	});
+
+	it('fills a too-narrow number cell with #, as many as fit', () => {
+		expect(fitDisplay(num('$12,400.00'), 9 * 7 + CELL_PAD_PX, measure)).toBe('#########');
+		expect(fitDisplay(num('$12,400.00'), 64, measure)).toBe('#'.repeat(Math.floor((64 - CELL_PAD_PX) / 7)));
+		expect(fitDisplay(num('123'), 2, measure)).toBe('#');
+	});
+
+	it('follows zoom through the box width', () => {
+		const s = new SheetModel({ name: 'Z', dims: { rows: 1, cols: 1 }, cells: [] });
+		s.layout(0.5);
+		expect(fitDisplay(num('$12,400.00'), s.cols.size(1), measure)).toMatch(/^#+$/);
+		s.layout(2);
+		expect(fitDisplay(num('$12,400.00'), s.cols.size(1), measure)).toBe('$12,400.00');
+	});
+
+	it('leaves text, booleans and errors to clip as before', () => {
+		expect(fitDisplay({ ...num('A long label'), value: 'A long label' }, 20, measure)).toBe('A long label');
+		expect(fitDisplay({ ...num('#DIV/0!'), value: '#DIV/0!' }, 20, measure)).toBe('#DIV/0!');
+		expect(fitDisplay({ ...num('TRUE'), value: true }, 10, measure)).toBe('TRUE');
+		expect(fitDisplay(undefined, 10, measure)).toBe('');
 	});
 });
 

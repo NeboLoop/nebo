@@ -573,6 +573,25 @@ export class WorkbookModel {
 	}
 }
 
+// ── Number overflow ──────────────────────────────────────────────────
+
+/** Horizontal space a cell's padding and gridline take (px-1 each side + the 1px border). */
+export const CELL_PAD_PX = 9;
+
+/**
+ * The text a cell shows in a box `width` px wide. A number that doesn't fit
+ * shows as #### filling the box, like Excel (a clipped number reads as a
+ * different number). Text keeps its display and clips. `measure` is the
+ * grid's own text measure at the cell's font and zoom.
+ */
+export function fitDisplay(cell: SheetCell | undefined, width: number, measure: (text: string) => number): string {
+	const text = cell?.display ?? '';
+	if (!text || typeof cell?.value !== 'number') return text;
+	const room = width - CELL_PAD_PX;
+	if (measure(text) <= room) return text;
+	return '#'.repeat(Math.max(1, Math.floor(room / Math.max(1, measure('#')))));
+}
+
 // ── Cell look ────────────────────────────────────────────────────────────
 
 function luminance(hex: string): number | null {
