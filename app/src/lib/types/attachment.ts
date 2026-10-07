@@ -44,6 +44,12 @@ export function attSrc(att: UploadedAttachment): string {
 	return att.fileId ? attachmentMediaUrl(att, backendBase()) : backendUrl(att.url);
 }
 
+/** A video's src that makes WebKit draw its first frame before play: the
+ *  desktop's webview shows a blank grey box for preload="metadata" alone. */
+export function firstFrame(src: string): string {
+	return src.includes('#') ? src : `${src}#t=0.001`;
+}
+
 /** The "[Attached: …]" notes the server appends for the model's context are
  *  not for people: the bubble shows chips instead. Stored content is untouched. */
 const ATTACHMENT_NOTE_RE = /\n?\[(?:Attached|Audio): [^\]]*\]|\n?\[The audio file is saved at [^\]]*\]/g;
