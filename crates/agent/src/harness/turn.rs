@@ -629,7 +629,8 @@ async fn run(
 /// it always has (`ModelSelector::resolve`).
 fn turn_model(h: &Harness, chosen: &str) -> Result<(String, Option<String>), String> {
     use types::packs::{DEFAULT_EFFORT, nebo_ai, parse_ref};
-    let pick = if chosen.trim().is_empty() { h.selector.configured() } else { chosen };
+    let configured = h.selector.configured();
+    let pick = if chosen.trim().is_empty() { configured.as_str() } else { chosen };
     let Some((id, effort)) = parse_ref(pick) else {
         return Ok((h.selector.resolve(chosen), None));
     };
