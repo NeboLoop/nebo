@@ -168,7 +168,10 @@ fn heartbeat_period_hours(config: &str) -> f64 {
 
 /// One run receipt. The run's agent comes from its workflow id (the
 /// "agent:{id}" convention list_agent_runs already relies on); cost and
-/// outcome join from run_usage when the receipt exists.
+/// outcome join from run_usage when the receipt exists. `activities` are the
+/// steps the run completed: the platform clears a failure only with a run
+/// that got past the step that failed, never with one that exited early at a
+/// filter in front of it.
 fn run_report(state: &AppState, run: &db::models::WorkflowRun) -> serde_json::Value {
     let agent_id = types::keyparser::agent_id_from_workflow_id(&run.workflow_id)
         .unwrap_or("")
@@ -185,6 +188,10 @@ fn run_report(state: &AppState, run: &db::models::WorkflowRun) -> serde_json::Va
             .unwrap_or_default()
     };
     let usage = state.store.usage_for_run(&run.id).ok().flatten();
+    let steps = state
+        .store
+        .list_activity_results(&run.id)
+        .unwrap_or_default();
     json!({
         "agentId": agent_id,
         "agentName": agent_name,
@@ -193,10 +200,24 @@ fn run_report(state: &AppState, run: &db::models::WorkflowRun) -> serde_json::Va
         "status": run.status,
         "outcome": usage.as_ref().and_then(|u| u.outcome.clone()),
         "error": run.error,
+        "activities": completed_steps(&steps),
         "startedAt": chrono::DateTime::from_timestamp(run.started_at, 0),
         "finishedAt": run.completed_at.and_then(|t| chrono::DateTime::from_timestamp(t, 0)),
         "costMicrocents": usage.map(|u| u.cost_microcents).unwrap_or(0),
     })
+}
+
+/// The steps a run completed, in the order they first completed, each once (a
+/// loop body records one result per item). Exited, stopped and failed steps
+/// are not completed work.
+fn completed_steps(results: &[db::models::WorkflowActivityResult]) -> Vec<String> {
+    let mut steps: Vec<String> = Vec::new();
+    for r in results {
+        if r.status == "completed" && !steps.contains(&r.activity_id) {
+            steps.push(r.activity_id.clone());
+        }
+    }
+    steps
 }
 
 fn hash_duties(duties: &[serde_json::Value]) -> u64 {
@@ -223,6 +244,39 @@ mod tests {
         assert!((167.0..=169.0).contains(&weekly), "weekly = {weekly}");
         // Unparseable falls back to daily — surveilled, never exempt.
         assert_eq!(cron_period_hours("not a cron"), 24.0);
+    }
+
+    // A run that exited at its filter completed nothing past it: the
+    // platform must not read it as the step that failed getting done.
+    #[test]
+    fn completed_steps_are_completed_work_once_in_order() {
+        let step = |id: &str, status: &str| db::models::WorkflowActivityResult {
+            id: 0,
+            run_id: "r".into(),
+            activity_id: id.into(),
+            status: status.into(),
+            tokens_used: None,
+            attempts: None,
+            error: None,
+            started_at: 0,
+            completed_at: None,
+        };
+        let exited = [
+            step("fetch-mail", "completed"),
+            step("gate-sender", "exited"),
+        ];
+        assert_eq!(completed_steps(&exited), vec!["fetch-mail"]);
+        let full = [
+            step("gate-sender", "completed"),
+            step("parse-report", "completed"),
+            step("post-order", "completed"),
+            step("post-order", "completed"),
+        ];
+        assert_eq!(
+            completed_steps(&full),
+            vec!["gate-sender", "parse-report", "post-order"]
+        );
+        assert!(completed_steps(&[step("parse-report", "failed")]).is_empty());
     }
 
     #[test]
