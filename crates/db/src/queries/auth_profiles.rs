@@ -230,6 +230,91 @@ impl Store {
     }
 }
 
+impl Store {
+    /// Rewrite every stored provider key that `seal` changes (`Some(new)`),
+    /// in the live database and in every local copy of it: the ring and the
+    /// migrator's `.pre-vNNNN.bak` files. A file a key changed in is
+    /// compacted (`VACUUM`, and the live WAL truncated) so the old value is
+    /// not left behind in a free page. Returns how many keys the live
+    /// database had changed; a copy that can't be opened is logged and left.
+    pub fn reseal_profile_keys(
+        &self,
+        seal: impl Fn(&str) -> Result<Option<String>, String>,
+    ) -> Result<usize, NeboError> {
+        let changed = {
+            let conn = self.conn()?;
+            reseal_in(&conn, &seal)?
+        };
+        if changed > 0 {
+            let conn = self.conn()?;
+            conn.execute_batch("VACUUM; PRAGMA wal_checkpoint(TRUNCATE);")
+                .map_err(|e| NeboError::Database(format!("compact after resealing keys: {e}")))?;
+        }
+        for path in self.local_copies() {
+            let done = rusqlite::Connection::open(&path)
+                .map_err(|e| e.to_string())
+                .and_then(|conn| {
+                    let n = reseal_in(&conn, &seal).map_err(|e| e.to_string())?;
+                    if n > 0 {
+                        conn.execute_batch("VACUUM;").map_err(|e| e.to_string())?;
+                    }
+                    Ok(n)
+                });
+            if let Err(e) = done {
+                tracing::warn!(path = %path.display(), error = %e, "provider keys in a database copy could not be resealed");
+            }
+        }
+        Ok(changed)
+    }
+
+    /// Every local copy of the database: ring entries and the migrator's
+    /// pre-migration files (adopted into the ring or not yet).
+    fn local_copies(&self) -> Vec<std::path::PathBuf> {
+        let mut out: Vec<std::path::PathBuf> = self
+            .list_backups()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|b| std::path::PathBuf::from(b.path))
+            .filter(|p| p.is_file())
+            .collect();
+        let db = std::path::Path::new(&self.path);
+        if let (Some(dir), Some(stem)) = (db.parent(), db.file_name()) {
+            let prefix = format!("{}.pre-v", stem.to_string_lossy());
+            for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if name.starts_with(&prefix) && name.ends_with(".bak") && !out.contains(&entry.path()) {
+                    out.push(entry.path());
+                }
+            }
+        }
+        out
+    }
+}
+
+/// `seal` over every key in one database; how many it changed. A database
+/// without the table (older than it) has nothing to change.
+fn reseal_in(
+    conn: &rusqlite::Connection,
+    seal: &impl Fn(&str) -> Result<Option<String>, String>,
+) -> Result<usize, NeboError> {
+    let keys: Vec<(String, String)> = match conn.prepare("SELECT id, api_key FROM auth_profiles") {
+        Ok(mut stmt) => stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .and_then(|rows| rows.collect())
+            .map_err(|e| NeboError::Database(e.to_string()))?,
+        Err(_) => return Ok(0),
+    };
+    let mut changed = 0;
+    for (id, key) in keys {
+        if let Some(sealed) = seal(&key).map_err(NeboError::Internal)? {
+            conn.execute("UPDATE auth_profiles SET api_key = ?2 WHERE id = ?1", params![id, sealed])
+                .map_err(|e| NeboError::Database(e.to_string()))?;
+            changed += 1;
+        }
+    }
+    Ok(changed)
+}
+
 fn row_to_auth_profile(row: &rusqlite::Row) -> rusqlite::Result<AuthProfile> {
     Ok(AuthProfile {
         id: row.get("id")?,

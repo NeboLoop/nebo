@@ -492,7 +492,7 @@ fn build_embedding_provider(
         }
         match profile.provider.as_str() {
             "openai" => {
-                let ep = ai::OpenAIEmbeddingProvider::new(profile.api_key.clone());
+                let ep = ai::OpenAIEmbeddingProvider::new(auth::credential::profile_key(profile));
                 let cached = ai::CachedEmbeddingProvider::new(Box::new(ep), store.clone());
                 info!("embedding provider: OpenAI text-embedding-3-small (cached)");
                 return Some(Arc::new(cached));
@@ -618,7 +618,7 @@ pub fn build_providers(
                     .default_model_for_provider("anthropic")
                     .unwrap_or_default();
                 Some(Arc::new(ai::AnthropicProvider::new(
-                    profile.api_key.clone(),
+                    auth::credential::profile_key(profile),
                     profile.model.clone().unwrap_or(default_model),
                 )))
             }
@@ -627,7 +627,7 @@ pub fn build_providers(
                     .default_model_for_provider("openai")
                     .unwrap_or_default();
                 Some(Arc::new(ai::OpenAIProvider::new(
-                    profile.api_key.clone(),
+                    auth::credential::profile_key(profile),
                     profile.model.clone().unwrap_or(default_model),
                 )))
             }
@@ -636,7 +636,7 @@ pub fn build_providers(
                     .default_model_for_provider("deepseek")
                     .unwrap_or_default();
                 let mut p = ai::OpenAIProvider::with_base_url(
-                    profile.api_key.clone(),
+                    auth::credential::profile_key(profile),
                     profile.model.clone().unwrap_or(default_model),
                     profile
                         .base_url
@@ -651,7 +651,7 @@ pub fn build_providers(
                     .default_model_for_provider("google")
                     .unwrap_or_default();
                 Some(Arc::new(ai::GeminiProvider::new(
-                    profile.api_key.clone(),
+                    auth::credential::profile_key(profile),
                     profile.model.clone().unwrap_or(default_model),
                 )))
             }
@@ -1094,6 +1094,45 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
 
     // Initialize database
     let store = Arc::new(db::Store::new(&cfg.database.sqlite_path)?);
+
+    // Initialize encryption: try OS keyring → file key → generate new
+    let encryptor = if let Some(key_hex) = auth::keyring::get() {
+        // Keyring has the master key
+        if key_hex.len() == 64 {
+            // Hex-encoded 32-byte key
+            let mut key = [0u8; 32];
+            if hex::decode_to_slice(&key_hex, &mut key).is_ok() {
+                mcp::crypto::Encryptor::new(key)
+            } else {
+                mcp::crypto::Encryptor::from_passphrase(&key_hex)
+            }
+        } else {
+            mcp::crypto::Encryptor::from_passphrase(&key_hex)
+        }
+    } else {
+        // Resolve from env/file or generate new
+        let enc = mcp::crypto::resolve_encryption_key(&config::data_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")));
+        // Try to store in keyring for next time
+        if auth::keyring::available() {
+            let key_hex = hex::encode(enc.key_bytes());
+            if let Err(e) = auth::keyring::set(&key_hex) {
+                warn!("failed to store master key in keyring: {}", e);
+            } else {
+                info!("stored master encryption key in OS keyring");
+            }
+        }
+        enc
+    };
+
+    // Initialize credential system with the resolved key
+    auth::credential::init(mcp::crypto::Encryptor::new(*encryptor.key_bytes()));
+    // Provider keys are stored encrypted: any still in the clear (written
+    // before keys were encrypted) are encrypted now, before anything reads them.
+    match auth::credential::encrypt_stored_profile_keys(&store) {
+        Ok(0) => {}
+        Ok(n) => info!(count = n, "encrypted provider keys stored in the clear"),
+        Err(e) => warn!(error = %e, "provider keys could not be encrypted at rest"),
+    }
     handlers::apps::serve_desktop_from(store.clone(), port);
     // The old permission settings become rules once, before anything runs a
     // tool: every call is decided by the rules from here on.
@@ -1207,18 +1246,18 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
             // Seed failure means the pod can't authenticate to the loop, so surface it
             // rather than discarding — the cloud bot would silently never connect.
             let id = uuid::Uuid::new_v4().to_string();
-            match store.create_auth_profile(
+            match auth::credential::encrypt(&tok).map_err(NeboError::Internal).and_then(|sealed| store.create_auth_profile(
                 &id,
                 "NeboAI",
                 "neboai",
-                &tok,
+                &sealed,
                 None,
                 Some(&cfg.neboai.api_url),
                 0,
                 1,
                 Some("token"),
                 Some(&meta_json),
-            ) {
+            )) {
                 Ok(_) => info!("seeded NeboAI auth profile from NEBO_BOT_TOKEN (first boot)"),
                 Err(e) => warn!(error = %e, "failed to seed NeboAI auth profile from NEBO_BOT_TOKEN"),
             }
@@ -1838,37 +1877,6 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
         .register(Box::new(tools::FindToolsTool::new(tool_registry.clone())))
         .await;
 
-    // Initialize encryption: try OS keyring → file key → generate new
-    let encryptor = if let Some(key_hex) = auth::keyring::get() {
-        // Keyring has the master key
-        if key_hex.len() == 64 {
-            // Hex-encoded 32-byte key
-            let mut key = [0u8; 32];
-            if hex::decode_to_slice(&key_hex, &mut key).is_ok() {
-                mcp::crypto::Encryptor::new(key)
-            } else {
-                mcp::crypto::Encryptor::from_passphrase(&key_hex)
-            }
-        } else {
-            mcp::crypto::Encryptor::from_passphrase(&key_hex)
-        }
-    } else {
-        // Resolve from env/file or generate new
-        let enc = mcp::crypto::resolve_encryption_key(&data_dir);
-        // Try to store in keyring for next time
-        if auth::keyring::available() {
-            let key_hex = hex::encode(enc.key_bytes());
-            if let Err(e) = auth::keyring::set(&key_hex) {
-                warn!("failed to store master key in keyring: {}", e);
-            } else {
-                info!("stored master encryption key in OS keyring");
-            }
-        }
-        enc
-    };
-
-    // Initialize credential system with the resolved key
-    auth::credential::init(mcp::crypto::Encryptor::new(*encryptor.key_bytes()));
 
     let encryptor = Arc::new(encryptor);
     let mcp_client = Arc::new(mcp::McpClient::new(encryptor));
@@ -3054,9 +3062,9 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
                         if let Some(new_token) =
                             reconnect_state.comm_manager.take_rotated_token().await
                         {
-                            if let Err(e) = reconnect_state
-                                .store
-                                .update_auth_profile_token_by_provider("neboai", &new_token)
+                            if let Err(e) = auth::credential::encrypt(&new_token)
+                                .map_err(NeboError::Internal)
+                                .and_then(|sealed| reconnect_state.store.update_auth_profile_token_by_provider("neboai", &sealed))
                             {
                                 warn!("neboai: failed to persist rotated token: {}", e);
                             }
@@ -4787,11 +4795,13 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
                         .store
                         .list_all_active_auth_profiles_by_provider("neboai")
                     {
-                        if let Some(profile) = profiles.first() {
+                        if let Some(profile) = profiles.first()
+                            && let Ok(sealed) = auth::credential::encrypt(token)
+                        {
                             let _ = state.store.update_auth_profile(
                                 &profile.id,
                                 &profile.name,
-                                token,
+                                &sealed,
                                 profile.model.as_deref(),
                                 profile.base_url.as_deref(),
                                 profile.priority.unwrap_or(0),
@@ -6903,9 +6913,13 @@ fn transcription_endpoint(state: &state::AppState) -> Option<(String, String, St
     let profiles = state.store.list_auth_profiles().ok()?;
     let active = || profiles.iter().filter(|p| p.is_active.unwrap_or(0) == 1);
 
-    if let Some(p) = active().find(|p| p.provider == "openai" && !p.api_key.is_empty()) {
+    if let Some((p, key)) = active()
+        .filter(|p| p.provider == "openai")
+        .map(|p| (p, auth::credential::profile_key(p)))
+        .find(|(_, key)| !key.is_empty())
+    {
         return Some((
-            p.api_key.clone(),
+            key,
             p.base_url
                 .clone()
                 .unwrap_or_else(|| "https://api.openai.com/v1".into()),

@@ -576,7 +576,7 @@ impl WebCore {
                         match self
                             .search_via_api(
                                 provider,
-                                &profile.api_key,
+                                &auth::credential::profile_key(profile),
                                 query,
                                 profile.metadata.as_deref().unwrap_or(""),
                             )
