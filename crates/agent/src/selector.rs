@@ -297,16 +297,22 @@ impl ModelSelector {
             warn!(chosen, resolved = %id, "the chosen model is not a chat model this bot can send to; sending {DEFAULT_CHAT_MODEL}");
             return DEFAULT_CHAT_MODEL.to_string();
         }
-        let configured = self
-            .config
+        let configured = self.configured();
+        if self.sendable(configured) {
+            return configured.to_string();
+        }
+        DEFAULT_CHAT_MODEL.to_string()
+    }
+
+    /// The bot's default as configured (Settings → Routing → General, else
+    /// the catalog's primary): a model, or an intelligence pack
+    /// (`types::packs::parse_ref`) the turn resolves through its pack.
+    pub fn configured(&self) -> &str {
+        self.config
             .task_routing
             .get("general")
             .filter(|m| !m.is_empty())
-            .unwrap_or(&self.config.default_model);
-        if self.sendable(configured) {
-            return configured.clone();
-        }
-        DEFAULT_CHAT_MODEL.to_string()
+            .unwrap_or(&self.config.default_model)
     }
 
     /// The model background work runs on (chat titles and the other chores
@@ -323,7 +329,7 @@ impl ModelSelector {
     /// A model a turn may be sent to: its provider is loaded (when the
     /// loaded set is known) and it is a known chat model, or a model of a
     /// loaded CLI provider.
-    fn sendable(&self, model_id: &str) -> bool {
+    pub fn sendable(&self, model_id: &str) -> bool {
         let (provider_id, model_name) = parse_model_id(model_id);
         if provider_id.is_empty() || model_name.is_empty() {
             return false;

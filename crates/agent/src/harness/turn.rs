@@ -619,6 +619,47 @@ async fn run(
     }
 }
 
+/// The model a turn runs on, resolved once at its start, and the line the
+/// owner reads when an intelligence pack's AI couldn't take it. A pack
+/// reference (`pack/<id>[/<level>]`, chosen or the bot's default) runs on
+/// the pack's model for that level (`types::packs::Pack::model_for_ref`);
+/// when that model isn't one this bot can send to, the turn runs on Nebo AI
+/// at the same level and says so, or — the pack set not to fall back — is
+/// refused with that line. Never a silent swap. Anything else resolves as
+/// it always has (`ModelSelector::resolve`).
+fn turn_model(h: &Harness, chosen: &str) -> Result<(String, Option<String>), String> {
+    use types::packs::{DEFAULT_EFFORT, nebo_ai, parse_ref};
+    let pick = if chosen.trim().is_empty() { h.selector.configured() } else { chosen };
+    let Some((id, effort)) = parse_ref(pick) else {
+        return Ok((h.selector.resolve(chosen), None));
+    };
+    let nebo = nebo_ai();
+    let on_nebo = |why: String| -> (String, Option<String>) {
+        let level = effort.or(Some(DEFAULT_EFFORT));
+        let model = nebo.model_for_ref(level).unwrap_or(crate::selector::DEFAULT_CHAT_MODEL);
+        (h.selector.resolve(model), Some(why))
+    };
+    let Some(pack) = h.store.get_intelligence_pack(id).ok().flatten() else {
+        return Ok(on_nebo("The intelligence pack this was set to is gone, so this reply used Nebo AI.".to_string()));
+    };
+    let want = pack.model_for_ref(effort);
+    if let Some(model) = want.filter(|m| h.selector.sendable(m)) {
+        return Ok((model.to_string(), None));
+    }
+    // The built-in pack is Janus's: the selector's own default covers it.
+    if pack.built_in {
+        return Ok((h.selector.resolve(want.unwrap_or_default()), None));
+    }
+    let what = match want {
+        Some(model) => format!("{} couldn't use {model}: it isn't connected", pack.name),
+        None => format!("{} has no AI set for this", pack.name),
+    };
+    if !pack.fallback {
+        return Err(format!("{what}, and it is set not to use Nebo AI instead."));
+    }
+    Ok(on_nebo(format!("{what}, so this reply used Nebo AI.")))
+}
+
 /// The owner's workspace keeps the history of its files
 /// (`tools::workspace_history`): a turn looks at it when it starts, before
 /// each tool round (a round can overwrite what an earlier one made) and when
@@ -802,8 +843,8 @@ pub(crate) async fn prepare(
     } else {
         req.seat.model_preference.clone().or(employee.preference).unwrap_or_default()
     };
-    let model = if raw_model.is_empty() {
-        String::new()
+    let model = if raw_model.is_empty() || types::packs::parse_ref(&raw_model).is_some() {
+        raw_model
     } else {
         h.selector.resolve_fuzzy(&raw_model).unwrap_or(raw_model)
     };
@@ -885,7 +926,10 @@ pub(crate) async fn prepare(
     .filter(|p| !p.trim().is_empty())
     .collect::<Vec<_>>()
     .join("\n\n");
-    let turn_model = h.selector.resolve(&model);
+    let (turn_model, pack_notice) = turn_model(h, &model)?;
+    if let Some(notice) = &pack_notice {
+        warn!(session_id, %notice, "intelligence pack fell back to Nebo AI");
+    }
     let mode_facts = events::ModeFacts {
         model: turn_model.clone(),
         permission_mode: permission_mode_name(grant.mode).to_string(),
@@ -3080,6 +3124,73 @@ mod tests {
 
     async fn harness_with(model: &Arc<Scripted>, extra: Vec<Box<dyn tools::registry::DynTool>>) -> Harness {
         harness_selecting(model, extra, crate::selector::ModelSelector::new(Default::default())).await
+    }
+
+    /// A selector that knows Janus's speeds and one Anthropic model.
+    fn pack_selector() -> crate::selector::ModelSelector {
+        let info = |id: &str| crate::selector::ModelInfo {
+            id: id.into(),
+            display_name: id.into(),
+            context_window: 200_000,
+            input_price: 0.0,
+            output_price: 0.0,
+            cached_input_price: 0.0,
+            capabilities: vec![],
+            kind: vec![],
+            preferred: false,
+            active: true,
+        };
+        let mut config = crate::selector::ModelRoutingConfig::default();
+        config.provider_models.insert(
+            "janus".into(),
+            ["nebo-1", "nebo-1-flash", "nebo-1-medium", "nebo-1-pro"].map(info).to_vec(),
+        );
+        config.provider_models.insert("anthropic".into(), vec![info("claude-x")]);
+        crate::selector::ModelSelector::new(config)
+    }
+
+    /// An intelligence pack resolves once at the turn's start: its level's
+    /// model when this bot can send to it; else Nebo AI at the same level,
+    /// said in a line; refused with that line when the pack is set not to
+    /// fall back. Nebo AI's own reference runs on Janus's Auto or a speed.
+    #[tokio::test]
+    async fn a_pack_resolves_to_its_level_or_says_it_used_nebo_ai() {
+        use types::packs::{Pack, PackLevels};
+        let h = harness_selecting(&Scripted::new(vec![]), vec![], pack_selector()).await;
+        // The harness loads its scripted provider; this bot also sends to these.
+        h.selector.set_loaded_providers(vec!["janus".into(), "anthropic".into()]);
+        let save = |id: &str, model: &str, fallback: bool| {
+            h.store
+                .save_intelligence_pack(&Pack {
+                    id: id.into(),
+                    name: format!("Pack {id}"),
+                    levels: PackLevels { medium: Some(model.into()), ..Default::default() },
+                    fallback,
+                    built_in: false,
+                })
+                .unwrap()
+        };
+        save("mine", "anthropic/claude-x", true);
+        save("gone-key", "openai/gpt-x", true);
+        save("strict", "openai/gpt-x", false);
+
+        assert_eq!(turn_model(&h, "pack/mine").unwrap(), ("anthropic/claude-x".to_string(), None));
+        assert_eq!(turn_model(&h, "pack/mine/max").unwrap().0, "anthropic/claude-x", "nearest level");
+        let (model, notice) = turn_model(&h, "pack/gone-key/high").unwrap();
+        assert_eq!(model, "janus/nebo-1-pro", "Nebo AI at the same level");
+        assert!(notice.unwrap().contains("couldn't use openai/gpt-x: it isn't connected, so this reply used Nebo AI"));
+        let (model, notice) = turn_model(&h, "pack/gone-key").unwrap();
+        assert_eq!(model, "janus/nebo-1-medium", "no level: the default level");
+        assert!(notice.is_some());
+        let refused = turn_model(&h, "pack/strict").unwrap_err();
+        assert!(refused.contains("set not to use Nebo AI"), "{refused}");
+        let (model, notice) = turn_model(&h, "pack/deleted/low").unwrap();
+        assert_eq!(model, "janus/nebo-1-flash");
+        assert!(notice.unwrap().contains("is gone"));
+
+        assert_eq!(turn_model(&h, "pack/nebo-ai").unwrap(), ("janus/nebo-1".to_string(), None), "Auto: Janus picks");
+        assert_eq!(turn_model(&h, "pack/nebo-ai/high").unwrap(), ("janus/nebo-1-pro".to_string(), None));
+        assert_eq!(turn_model(&h, "anthropic/claude-x").unwrap(), ("anthropic/claude-x".to_string(), None), "a model, as before");
     }
 
     async fn harness_selecting(

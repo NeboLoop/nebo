@@ -35,6 +35,14 @@ pub fn routes() -> Router<AppState> {
             axum::routing::get(handlers::provider::list_models),
         )
         .route(
+            "/intelligence-packs",
+            axum::routing::get(handlers::provider::list_packs).post(handlers::provider::create_pack),
+        )
+        .route(
+            "/intelligence-packs/{id}",
+            axum::routing::put(handlers::provider::update_pack).delete(handlers::provider::delete_pack),
+        )
+        .route(
             "/models/config",
             axum::routing::put(handlers::provider::update_model_config),
         )
