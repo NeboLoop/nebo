@@ -1231,6 +1231,8 @@ pub async fn remove_plugin_by_slug(state: &AppState, slug: &str) -> Result<(), N
 
     state.hooks.unregister_app(slug);
     state.tools.refresh_plugin_tools().await;
+    // A default the owner removes stays removed at startup.
+    crate::default_artifacts::record_removal(&state.store, slug);
     info!(plugin = %slug, "plugin removed");
     Ok(())
 }

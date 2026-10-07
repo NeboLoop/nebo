@@ -2775,11 +2775,7 @@
 		"skipTour": "Langkau lawatan",
 		"startTour": "Mulakan lawatan",
 		"skip": "Langkau",
-		"finish": "Selesai",
-		"finaleTitle": "Itulah keseluruhannya.",
-		"finaleBody": "Mahu saya sediakan alat teras anda sekarang? Saya akan tambah penyuntingan dokumen (Word, Excel, PowerPoint, PDF), reka bentuk, dan penerbitan — supaya anda boleh mula menghasilkan sesuatu yang sebenar dengan serta-merta.",
-		"maybeLater": "Mungkin kemudian",
-		"setMeUp": "Sediakan saya"
+		"finish": "Selesai"
 	},
 	"installFlow": {
 		"installedTitle": "{name} Dipasang",

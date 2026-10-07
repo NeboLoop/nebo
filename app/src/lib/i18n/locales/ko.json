@@ -2775,11 +2775,7 @@
 		"skipTour": "투어 건너뛰기",
 		"startTour": "투어 시작",
 		"skip": "건너뛰기",
-		"finish": "완료",
-		"finaleTitle": "이제 전체 구조를 아셨습니다.",
-		"finaleBody": "지금 핵심 도구를 설정해 드릴까요? 문서 편집(Word, Excel, PowerPoint, PDF), 디자인, 퍼블리싱을 추가해 드릴게요 — 바로 실제 결과물을 만들 수 있도록요.",
-		"maybeLater": "나중에",
-		"setMeUp": "설정해 주세요"
+		"finish": "완료"
 	},
 	"installFlow": {
 		"installedTitle": "{name} 설치 완료",

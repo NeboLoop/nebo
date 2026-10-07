@@ -323,7 +323,7 @@ pub async fn handle_code(state: &AppState, code_type: CodeType, code: &str, orig
     let session_id = origin.session_id.as_str();
     let Some(claim) = state.codes_in_flight.begin(code) else {
         info!(code, session_id, "code is already being handled; the first run reports the result");
-        return format!("{code} is already being installed.");
+        return format!("{code} {}", tools::bot_tool::ALREADY_INSTALLING);
     };
     let code_type_str = code_type_name(code_type);
     let status_message = match code_type {
@@ -447,7 +447,7 @@ pub async fn handle_code_text(
     platform: Option<&str>,
 ) -> String {
     let Some(claim) = state.codes_in_flight.begin(code) else {
-        return format!("{code} is already being installed.");
+        return format!("{code} {}", tools::bot_tool::ALREADY_INSTALLING);
     };
     let code_type_str = match code_type {
         CodeType::Nebo => "NeboAI connection",
@@ -1963,7 +1963,7 @@ pub async fn submit_code(
         return Err((
             axum::http::StatusCode::CONFLICT,
             axum::response::Json(types::api::ErrorResponse {
-                error: format!("{validated_code} is already being installed."),
+                error: format!("{validated_code} {}", tools::bot_tool::ALREADY_INSTALLING),
             }),
         ));
     };
@@ -2489,6 +2489,10 @@ pub async fn activate_neboai(state: &AppState) -> Result<(), NeboError> {
     // Every successful connect reconciles the employee roster (debounced,
     // one pass per connect) — the platform only knows the employees we tell it.
     request_agent_reconcile(state, "gateway connect");
+
+    // Signed in: the first-party defaults this bot lacks install in the
+    // background (one pass at a time; nothing pops up).
+    crate::default_artifacts::request(state);
 
     // Refresh the bot's address and license keys in background (non-blocking)
     {

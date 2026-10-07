@@ -32,6 +32,12 @@ pub trait CodeInstaller: Send + Sync {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = String> + Send + 'a>>;
 }
 
+/// What the install door answers for a code another door is installing
+/// right now (`server::codes::InFlightCodes`): `"<code> is already being
+/// installed."`. The first install reports the result; a caller that needs
+/// the artifact waits for it to land.
+pub const ALREADY_INSTALLING: &str = "is already being installed.";
+
 /// Whose act an install is. The owner consents to jobs: an employee hired
 /// by the owner's own act (a Hire tap, a code the owner pasted in their app,
 /// a hire on their account, a call in a run the owner started from their

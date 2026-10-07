@@ -2775,11 +2775,7 @@
 		"skipTour": "Hoppa över rundturen",
 		"startTour": "Starta rundturen",
 		"skip": "Hoppa över",
-		"finish": "Slutför",
-		"finaleTitle": "Nu vet du var allt finns.",
-		"finaleBody": "Vill du att jag ställer in dina kärnverktyg nu? Jag lägger till dokumentredigering (Word, Excel, PowerPoint, PDF), design och publicering — så att du kan börja skapa riktiga saker direkt.",
-		"maybeLater": "Kanske senare",
-		"setMeUp": "Sätt igång"
+		"finish": "Slutför"
 	},
 	"installFlow": {
 		"installedTitle": "{name} installerad",

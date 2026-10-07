@@ -2775,11 +2775,7 @@
 		"skipTour": "Salta il tour",
 		"startTour": "Inizia il tour",
 		"skip": "Salta",
-		"finish": "Fine",
-		"finaleTitle": "Questo è il quadro generale.",
-		"finaleBody": "Vuoi che configuri subito i tuoi strumenti principali? Aggiungerò modifica di documenti (Word, Excel, PowerPoint, PDF), design e pubblicazione — così puoi iniziare subito a creare cose vere.",
-		"maybeLater": "Magari più tardi",
-		"setMeUp": "Configura tutto"
+		"finish": "Fine"
 	},
 	"installFlow": {
 		"installedTitle": "{name} installato",

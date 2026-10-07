@@ -2775,11 +2775,7 @@
 		"skipTour": "Saltar a visita",
 		"startTour": "Começar a visita",
 		"skip": "Saltar",
-		"finish": "Terminar",
-		"finaleTitle": "E é assim que tudo está organizado.",
-		"finaleBody": "Quer que configure já as suas ferramentas essenciais? Adiciono edição de documentos (Word, Excel, PowerPoint, PDF), design e publicação — para poder começar a criar coisas a sério desde já.",
-		"maybeLater": "Talvez mais tarde",
-		"setMeUp": "Configura-me tudo"
+		"finish": "Terminar"
 	},
 	"installFlow": {
 		"installedTitle": "{name} instalado",

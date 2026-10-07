@@ -1001,6 +1001,28 @@ impl Registry {
         !self.read_only(tool_name, input).await
     }
 
+    /// The tool `name`, or, when it is the `plugin__<slug>` tool of a
+    /// first-party default this bot lacks, that tool once the default is
+    /// installed on the spot (the safety net, `default_artifacts`): the call
+    /// that needed it runs. Any other missing tool stays missing.
+    async fn tool_or_default(&self, ctx: &ToolContext, name: &str) -> Option<Arc<dyn DynTool>> {
+        if let Some(tool) = self.get(name).await {
+            return Some(tool);
+        }
+        let slug = crate::plugin_tools::plugin_slug(name)?;
+        // Not while another running copy may be this bot (the lease gate).
+        if self.lease.frozen() {
+            return None;
+        }
+        let runner = self.plugin_runner.read().unwrap_or_else(|e| e.into_inner()).clone()?;
+        if !runner.install_default_plugin(ctx, slug).await {
+            return None;
+        }
+        // The install re-registers the plugin tools; this makes sure.
+        self.refresh_plugin_tools().await;
+        self.get(name).await
+    }
+
     /// Execute a tool and return the result, shaped for the model.
     ///
     /// The one door every call goes through, in order: resolve the tool,
@@ -1018,7 +1040,7 @@ impl Registry {
 
         let name = tool_name;
 
-        let Some(tool) = self.get(name).await else {
+        let Some(tool) = self.tool_or_default(ctx, name).await else {
             warn!(tool = %name, "unknown tool");
             return ToolResult::error(crate::result_shape::unknown_tool(name));
         };
@@ -1494,7 +1516,8 @@ impl Registry {
         // tool per installed plugin and per operation a connected one binds.
         let ps_opt = self.plugin_store.read().unwrap().clone();
         if let Some(ps) = ps_opt {
-            let mut runner = crate::plugin_tool::PluginRunner::new(ps, store.clone());
+            let mut runner = crate::plugin_tool::PluginRunner::new(ps, store.clone())
+                .with_code_installer(self.code_installer.clone());
             if let Some(ref bc) = broadcaster {
                 runner = runner.with_broadcaster(bc.clone());
             }

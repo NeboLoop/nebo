@@ -2775,11 +2775,7 @@
 		"skipTour": "Lewati tur",
 		"startTour": "Mulai tur",
 		"skip": "Lewati",
-		"finish": "Selesai",
-		"finaleTitle": "Itulah gambaran umumnya.",
-		"finaleBody": "Mau saya siapkan alat inti Anda sekarang? Saya akan menambahkan pengeditan dokumen (Word, Excel, PowerPoint, PDF), desain, dan penerbitan — agar Anda bisa langsung mulai membuat hal-hal nyata.",
-		"maybeLater": "Nanti saja",
-		"setMeUp": "Siapkan untuk saya"
+		"finish": "Selesai"
 	},
 	"installFlow": {
 		"installedTitle": "{name} Terpasang",

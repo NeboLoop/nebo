@@ -38,6 +38,7 @@ pub mod coworker;
 /// is still cut to it (its own package moves it onto the spill path).
 pub(crate) const MAX_SUBPROCESS_OUTPUT: usize = 30_000;
 pub mod deep_research;
+pub mod default_artifacts;
 pub mod desktop_daemon;
 pub mod desktop_session;
 pub mod ax_native;

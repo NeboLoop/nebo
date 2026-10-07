@@ -2775,11 +2775,7 @@
 		"skipTour": "跳过导览",
 		"startTour": "开始导览",
 		"skip": "跳过",
-		"finish": "完成",
-		"finaleTitle": "大致就是这些了。",
-		"finaleBody": "要我现在为你设置核心工具吗？我会添加文档编辑（Word、Excel、PowerPoint、PDF）、设计和发布——让你可以立刻开始做真正的东西。",
-		"maybeLater": "以后再说",
-		"setMeUp": "帮我设置"
+		"finish": "完成"
 	},
 	"installFlow": {
 		"installedTitle": "{name} 已安装",

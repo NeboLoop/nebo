@@ -2775,11 +2775,7 @@
 		"skipTour": "تخطي الجولة",
 		"startTour": "بدء الجولة",
 		"skip": "تخطي",
-		"finish": "إنهاء",
-		"finaleTitle": "هذه هي الصورة الكاملة.",
-		"finaleBody": "أتريد أن أجهّز أدواتك الأساسية الآن؟ سأضيف تحرير المستندات (Word وExcel وPowerPoint وPDF) والتصميم والنشر — لتبدأ في إنجاز أشياء حقيقية فوراً.",
-		"maybeLater": "ربما لاحقاً",
-		"setMeUp": "جهّزني"
+		"finish": "إنهاء"
 	},
 	"installFlow": {
 		"installedTitle": "تم تثبيت {name}",

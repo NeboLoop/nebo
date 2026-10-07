@@ -2775,11 +2775,7 @@
 		"skipTour": "Omitir recorrido",
 		"startTour": "Comenzar el recorrido",
 		"skip": "Omitir",
-		"finish": "Finalizar",
-		"finaleTitle": "Ese es el panorama general.",
-		"finaleBody": "¿Quieres que configure tus herramientas principales ahora? Agregaré edición de documentos (Word, Excel, PowerPoint, PDF), diseño y publicación — para que empieces a crear cosas reales de inmediato.",
-		"maybeLater": "Quizás luego",
-		"setMeUp": "Configúrame"
+		"finish": "Finalizar"
 	},
 	"installFlow": {
 		"installedTitle": "{name} instalado",
