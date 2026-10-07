@@ -30,6 +30,7 @@ pub fn retry_after_secs(headers: &reqwest::header::HeaderMap) -> Option<u64> {
 /// pool entries so we never hand out a stale half-closed socket.
 pub fn streaming_client() -> reqwest::Client {
     tls::http_client()
+        .user_agent(types::constants::USER_AGENT)
         .connect_timeout(Duration::from_secs(10))
         // Close idle keep-alives well before typical LB idle reap (~60-120s).
         .pool_idle_timeout(Duration::from_secs(30))
@@ -59,6 +60,7 @@ pub fn streaming_client() -> reqwest::Client {
 /// a dead one fails its ping and leaves the pool instead of being handed out.
 pub fn request_client() -> reqwest::Client {
     tls::http_client()
+        .user_agent(types::constants::USER_AGENT)
         .connect_timeout(Duration::from_secs(10))
         .timeout(Duration::from_secs(30))
         .pool_idle_timeout(Duration::from_secs(110))
@@ -68,4 +70,41 @@ pub fn request_client() -> reqwest::Client {
         .http2_keep_alive_while_idle(true)
         .build()
         .expect("reqwest request client builder is infallible with these options")
+}
+
+#[cfg(test)]
+mod tests {
+    /// The request line and headers one call sends to a local listener.
+    async fn headers_sent_by(client: reqwest::Client) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/v1/models", listener.local_addr().unwrap());
+        let seen = tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 8192];
+            let mut got = Vec::new();
+            while !got.windows(4).any(|w| w == b"\r\n\r\n") {
+                let n = sock.read(&mut buf).await.unwrap();
+                if n == 0 {
+                    break;
+                }
+                got.extend_from_slice(&buf[..n]);
+            }
+            let _ = sock.write_all(b"HTTP/1.1 204 No Content\r\ncontent-length: 0\r\n\r\n").await;
+            String::from_utf8_lossy(&got).to_ascii_lowercase()
+        });
+        let _ = client.get(&url).send().await;
+        seen.await.unwrap()
+    }
+
+    /// Every call to Janus through these clients names this Nebo and its
+    /// version, which Janus logs per session.
+    #[tokio::test]
+    async fn both_clients_name_nebo_and_its_version() {
+        let want = format!("user-agent: nebo/{}", env!("CARGO_PKG_VERSION"));
+        for client in [super::request_client(), super::streaming_client()] {
+            let sent = headers_sent_by(client).await;
+            assert!(sent.contains(&want), "no {want} in: {sent}");
+        }
+    }
 }

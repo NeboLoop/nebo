@@ -572,6 +572,7 @@ async fn fetch_janus_usage(state: &AppState) -> Result<crate::state::JanusUsage,
     let bot_id = config::read_bot_id().unwrap_or_default();
 
     let resp = tls::http_client()
+        .user_agent(types::constants::USER_AGENT)
         .build()
         .map_err(|e| NeboError::Internal(format!("janus usage fetch: {e}")))?
         .get(format!("{janus_url}/v1/usage"))

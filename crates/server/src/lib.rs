@@ -361,6 +361,7 @@ pub async fn sync_janus_models(store: &db::Store, cfg: &Config) -> Result<usize,
     };
     let url = format!("{}/v1/models", cfg.neboai.janus_url);
     let resp = tls::http_client()
+        .user_agent(types::constants::USER_AGENT)
         .build()
         .map_err(|e| e.to_string())?
         .get(&url)
@@ -3443,7 +3444,7 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
         let api_url = cfg.neboai.janus_url.clone();
         if !api_url.is_empty() {
             tokio::spawn(async move {
-                if let Ok(client) = tls::http_client().build() {
+                if let Ok(client) = tls::http_client().user_agent(types::constants::USER_AGENT).build() {
                     let _ = client.head(&api_url).send().await;
                 }
             });

@@ -61,6 +61,7 @@ pub async fn transcribe(
 
     let url = format!("{}/audio/transcriptions", base_url.trim_end_matches('/'));
     let response = tls::http_client()
+        .user_agent(types::constants::USER_AGENT)
         .build()
         .map_err(|e| ProviderError::Request(e.to_string()))?
         .post(&url)
