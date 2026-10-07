@@ -3876,5 +3876,29 @@
 		"question": "Przełączyć Nebo na czas lokalny: {city}?",
 		"switch": "Przełącz",
 		"keep": "Zachowaj czas lokalny: {city}"
+	},
+	"sheet": {
+		"sheets": "Arkusze",
+		"cellName": "Komórka lub nazwa",
+		"formula": "Formuła",
+		"locked": "Zablokowana. Można zmieniać tylko komórki wejściowe.",
+		"viewOnly": "Tylko do odczytu",
+		"unsaved": "Niezapisane zmiany",
+		"undo": "Cofnij",
+		"redo": "Ponów",
+		"zoomIn": "Powiększ",
+		"zoomOut": "Pomniejsz",
+		"zoomReset": "Resetuj powiększenie",
+		"find": "Znajdź w skoroszycie",
+		"findCount": "{current} z {total}",
+		"noMatches": "Brak wyników",
+		"sum": "Suma",
+		"average": "Średnia",
+		"count": "Liczba",
+		"calculating": "Obliczanie…",
+		"editFailed": "Nie udało się zmienić {cell}: {message}",
+		"saveFailed": "Nie udało się zapisać: {message}",
+		"changedSheet": "Zmieniono",
+		"inputCell": "Komórka wejściowa"
 	}
 }

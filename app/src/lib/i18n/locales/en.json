@@ -3876,5 +3876,29 @@
 		"question": "Switch Nebo to {city} time?",
 		"switch": "Switch",
 		"keep": "Keep {city} time"
+	},
+	"sheet": {
+		"sheets": "Sheets",
+		"cellName": "Cell or name",
+		"formula": "Formula",
+		"locked": "Locked. Only input cells can be changed.",
+		"viewOnly": "View only",
+		"unsaved": "Unsaved changes",
+		"undo": "Undo",
+		"redo": "Redo",
+		"zoomIn": "Zoom in",
+		"zoomOut": "Zoom out",
+		"zoomReset": "Reset zoom",
+		"find": "Find in workbook",
+		"findCount": "{current} of {total}",
+		"noMatches": "No matches",
+		"sum": "Sum",
+		"average": "Average",
+		"count": "Count",
+		"calculating": "Calculating…",
+		"editFailed": "Couldn't change {cell}: {message}",
+		"saveFailed": "Couldn't save: {message}",
+		"changedSheet": "Changed",
+		"inputCell": "Input cell"
 	}
 }

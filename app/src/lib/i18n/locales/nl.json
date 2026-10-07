@@ -3876,5 +3876,29 @@
 		"question": "Nebo overzetten naar de tijd van {city}?",
 		"switch": "Overzetten",
 		"keep": "Tijd van {city} houden"
+	},
+	"sheet": {
+		"sheets": "Werkbladen",
+		"cellName": "Cel of naam",
+		"formula": "Formule",
+		"locked": "Vergrendeld. Alleen invoercellen kunnen worden gewijzigd.",
+		"viewOnly": "Alleen bekijken",
+		"unsaved": "Niet-opgeslagen wijzigingen",
+		"undo": "Ongedaan maken",
+		"redo": "Opnieuw",
+		"zoomIn": "Inzoomen",
+		"zoomOut": "Uitzoomen",
+		"zoomReset": "Zoom herstellen",
+		"find": "Zoeken in werkmap",
+		"findCount": "{current} van {total}",
+		"noMatches": "Geen overeenkomsten",
+		"sum": "Som",
+		"average": "Gemiddelde",
+		"count": "Aantal",
+		"calculating": "Berekenen…",
+		"editFailed": "Kan {cell} niet wijzigen: {message}",
+		"saveFailed": "Opslaan mislukt: {message}",
+		"changedSheet": "Gewijzigd",
+		"inputCell": "Invoercel"
 	}
 }

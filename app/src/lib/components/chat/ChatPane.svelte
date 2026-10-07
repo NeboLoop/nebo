@@ -20,6 +20,7 @@
   import type { AskWidgetDef } from './AskWidget.svelte';
   import { renderMentionChips } from '$lib/mentions';
   import { downloadArtifact } from '$lib/chat/download';
+  import { flushPendingSave, hasPendingSave, viewerKey } from '$lib/sheet/pending';
   import { backendUrl, backendBase } from '$lib/api/base';
   import { addToast } from '$lib/stores/toast';
   import { parseMarkdown } from '$lib/markdown';
@@ -345,6 +346,31 @@
     }
     return activeVersionList[activeVersionList.length - 1];
   });
+
+  // The viewer remounts per document:version (a new version refreshes it in
+  // place, and the version-specific URL defeats the browser cache) — except a
+  // version a spreadsheet viewer just saved itself, which it already shows.
+  let lastViewerKey = '';
+  const workViewerKey = $derived.by(() => {
+    const a = activeArtifact;
+    if (!a) return '';
+    lastViewerKey = viewerKey(lastViewerKey, a.documentId, a.version, String(viewSource));
+    return lastViewerKey;
+  });
+
+  /** Download the open file. A spreadsheet with unsaved edits saves first, so
+   *  the download carries them. */
+  async function downloadActive(e: MouseEvent) {
+    const a = activeArtifact;
+    if (!a?.url) return;
+    if (!hasPendingSave(a.documentId)) {
+      await downloadArtifact(e, a.url, a.title);
+      return;
+    }
+    e.preventDefault();
+    const url = (await flushPendingSave(a.documentId)) ?? a.url;
+    await downloadArtifact(null, url, a.title);
+  }
 
   // Turn an inline `filename` mention (rendered as <code>filename</code>) into a clickable
   // chip when that filename is one of the message's produced Work items.
@@ -2347,7 +2373,7 @@
               <a
                 href={backendUrl(activeArtifact.url)}
                 download={activeArtifact.title}
-                onclick={(e) => { downloadArtifact(e, activeArtifact?.url ?? '', activeArtifact?.title); (document.activeElement as HTMLElement | null)?.blur(); }}
+                onclick={(e) => { void downloadActive(e); (document.activeElement as HTMLElement | null)?.blur(); }}
                 class="text-xs"
               >{$t('common.download')}</a>
             </li>
@@ -2384,12 +2410,13 @@
       {#if paneView === 'flows'}
         {#if flowsPane}{@render flowsPane()}{/if}
       {:else if activeArtifact?.url}
-        <!-- Key on documentId:version so a new version re-mounts the viewer in
-             place (and the version-specific URL also defeats the browser cache). -->
-        {#key `${activeArtifact.documentId}:${activeArtifact.version}:${viewSource}`}
+        <!-- Keyed per document:version (see workViewerKey). -->
+        {#key workViewerKey}
           <WorkViewer
             url={activeArtifact.url}
             title={activeArtifact.title}
+            documentId={activeArtifact.documentId}
+            version={activeArtifact.version}
             renderHtml={renderMarkdown}
             oncontentclick={handleWorkMentionClick}
             sourceView={viewSource}

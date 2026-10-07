@@ -3876,5 +3876,29 @@
 		"question": "เปลี่ยน Nebo เป็นเวลาของ {city} ไหม",
 		"switch": "เปลี่ยน",
 		"keep": "ใช้เวลาของ {city} ต่อ"
+	},
+	"sheet": {
+		"sheets": "แผ่นงาน",
+		"cellName": "เซลล์หรือชื่อ",
+		"formula": "สูตร",
+		"locked": "ถูกล็อก เปลี่ยนได้เฉพาะเซลล์ป้อนข้อมูล",
+		"viewOnly": "ดูอย่างเดียว",
+		"unsaved": "การเปลี่ยนแปลงที่ยังไม่บันทึก",
+		"undo": "เลิกทำ",
+		"redo": "ทำซ้ำ",
+		"zoomIn": "ขยาย",
+		"zoomOut": "ย่อ",
+		"zoomReset": "รีเซ็ตการซูม",
+		"find": "ค้นหาในเวิร์กบุ๊ก",
+		"findCount": "{current} จาก {total}",
+		"noMatches": "ไม่พบรายการที่ตรงกัน",
+		"sum": "ผลรวม",
+		"average": "ค่าเฉลี่ย",
+		"count": "จำนวน",
+		"calculating": "กำลังคำนวณ…",
+		"editFailed": "เปลี่ยน {cell} ไม่ได้: {message}",
+		"saveFailed": "บันทึกไม่ได้: {message}",
+		"changedSheet": "เปลี่ยนแล้ว",
+		"inputCell": "เซลล์ป้อนข้อมูล"
 	}
 }

@@ -3876,5 +3876,29 @@
 		"question": "Passare Nebo all'ora di {city}?",
 		"switch": "Cambia",
 		"keep": "Mantieni l'ora di {city}"
+	},
+	"sheet": {
+		"sheets": "Fogli",
+		"cellName": "Cella o nome",
+		"formula": "Formula",
+		"locked": "Bloccata. Solo le celle di input possono essere modificate.",
+		"viewOnly": "Sola lettura",
+		"unsaved": "Modifiche non salvate",
+		"undo": "Annulla",
+		"redo": "Ripeti",
+		"zoomIn": "Aumenta zoom",
+		"zoomOut": "Riduci zoom",
+		"zoomReset": "Reimposta zoom",
+		"find": "Cerca nella cartella di lavoro",
+		"findCount": "{current} di {total}",
+		"noMatches": "Nessuna corrispondenza",
+		"sum": "Somma",
+		"average": "Media",
+		"count": "Conteggio",
+		"calculating": "Calcolo in corso…",
+		"editFailed": "Impossibile modificare {cell}: {message}",
+		"saveFailed": "Impossibile salvare: {message}",
+		"changedSheet": "Modificato",
+		"inputCell": "Cella di input"
 	}
 }

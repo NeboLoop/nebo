@@ -26,7 +26,8 @@ const ALLOWED = new Set([
 	'neboai.com/app/manage/phone',
 	'AM',
 	'PM',
-	'(Esc)' // a key name beside a translated label
+	'(Esc)', // a key name beside a translated label
+	'fx' // the formula bar's function symbol, as in every spreadsheet
 ]);
 
 function svelteFiles(dir: string, out: string[] = []): string[] {

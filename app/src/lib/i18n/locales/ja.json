@@ -3876,5 +3876,29 @@
 		"question": "Nebo を{city}の時刻に切り替えますか？",
 		"switch": "切り替える",
 		"keep": "{city}の時刻のままにする"
+	},
+	"sheet": {
+		"sheets": "シート",
+		"cellName": "セルまたは名前",
+		"formula": "数式",
+		"locked": "ロックされています。入力セルのみ変更できます。",
+		"viewOnly": "表示のみ",
+		"unsaved": "未保存の変更",
+		"undo": "元に戻す",
+		"redo": "やり直す",
+		"zoomIn": "拡大",
+		"zoomOut": "縮小",
+		"zoomReset": "ズームをリセット",
+		"find": "ブック内を検索",
+		"findCount": "{current} / {total}",
+		"noMatches": "一致なし",
+		"sum": "合計",
+		"average": "平均",
+		"count": "個数",
+		"calculating": "計算中…",
+		"editFailed": "{cell} を変更できませんでした: {message}",
+		"saveFailed": "保存できませんでした: {message}",
+		"changedSheet": "変更あり",
+		"inputCell": "入力セル"
 	}
 }

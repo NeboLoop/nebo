@@ -3876,5 +3876,29 @@
 		"question": "هل تريد تبديل Nebo إلى توقيت {city}؟",
 		"switch": "تبديل",
 		"keep": "الإبقاء على توقيت {city}"
+	},
+	"sheet": {
+		"sheets": "الأوراق",
+		"cellName": "الخلية أو الاسم",
+		"formula": "الصيغة",
+		"locked": "مقفلة. يمكن تغيير خلايا الإدخال فقط.",
+		"viewOnly": "للعرض فقط",
+		"unsaved": "تغييرات غير محفوظة",
+		"undo": "تراجع",
+		"redo": "إعادة",
+		"zoomIn": "تكبير",
+		"zoomOut": "تصغير",
+		"zoomReset": "إعادة ضبط التكبير",
+		"find": "البحث في المصنف",
+		"findCount": "{current} من {total}",
+		"noMatches": "لا توجد نتائج",
+		"sum": "المجموع",
+		"average": "المتوسط",
+		"count": "العدد",
+		"calculating": "جارٍ الحساب…",
+		"editFailed": "تعذّر تغيير {cell}: {message}",
+		"saveFailed": "تعذّر الحفظ: {message}",
+		"changedSheet": "تم التغيير",
+		"inputCell": "خلية إدخال"
 	}
 }

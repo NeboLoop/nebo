@@ -3876,5 +3876,29 @@
 		"question": "क्या Nebo को {city} के समय पर कर दें?",
 		"switch": "बदलें",
 		"keep": "{city} का समय रखें"
+	},
+	"sheet": {
+		"sheets": "शीट",
+		"cellName": "सेल या नाम",
+		"formula": "सूत्र",
+		"locked": "लॉक है। केवल इनपुट सेल बदले जा सकते हैं।",
+		"viewOnly": "केवल देखने के लिए",
+		"unsaved": "बिना सहेजे बदलाव",
+		"undo": "पूर्ववत करें",
+		"redo": "फिर से करें",
+		"zoomIn": "ज़ूम इन",
+		"zoomOut": "ज़ूम आउट",
+		"zoomReset": "ज़ूम रीसेट करें",
+		"find": "वर्कबुक में खोजें",
+		"findCount": "{total} में से {current}",
+		"noMatches": "कोई मिलान नहीं",
+		"sum": "योग",
+		"average": "औसत",
+		"count": "गिनती",
+		"calculating": "गणना हो रही है…",
+		"editFailed": "{cell} नहीं बदला जा सका: {message}",
+		"saveFailed": "सहेजा नहीं जा सका: {message}",
+		"changedSheet": "बदला गया",
+		"inputCell": "इनपुट सेल"
 	}
 }

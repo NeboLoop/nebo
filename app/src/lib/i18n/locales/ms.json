@@ -3876,5 +3876,29 @@
 		"question": "Tukar Nebo kepada waktu {city}?",
 		"switch": "Tukar",
 		"keep": "Kekalkan waktu {city}"
+	},
+	"sheet": {
+		"sheets": "Helaian",
+		"cellName": "Sel atau nama",
+		"formula": "Formula",
+		"locked": "Dikunci. Hanya sel input boleh diubah.",
+		"viewOnly": "Lihat sahaja",
+		"unsaved": "Perubahan belum disimpan",
+		"undo": "Buat asal",
+		"redo": "Buat semula",
+		"zoomIn": "Zum masuk",
+		"zoomOut": "Zum keluar",
+		"zoomReset": "Tetapkan semula zum",
+		"find": "Cari dalam buku kerja",
+		"findCount": "{current} daripada {total}",
+		"noMatches": "Tiada padanan",
+		"sum": "Jumlah",
+		"average": "Purata",
+		"count": "Kiraan",
+		"calculating": "Mengira…",
+		"editFailed": "Tidak dapat mengubah {cell}: {message}",
+		"saveFailed": "Tidak dapat menyimpan: {message}",
+		"changedSheet": "Diubah",
+		"inputCell": "Sel input"
 	}
 }

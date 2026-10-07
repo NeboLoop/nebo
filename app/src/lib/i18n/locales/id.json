@@ -3876,5 +3876,29 @@
 		"question": "Ganti Nebo ke waktu {city}?",
 		"switch": "Ganti",
 		"keep": "Tetap pakai waktu {city}"
+	},
+	"sheet": {
+		"sheets": "Lembar",
+		"cellName": "Sel atau nama",
+		"formula": "Rumus",
+		"locked": "Terkunci. Hanya sel input yang dapat diubah.",
+		"viewOnly": "Hanya lihat",
+		"unsaved": "Perubahan belum disimpan",
+		"undo": "Urungkan",
+		"redo": "Ulangi",
+		"zoomIn": "Perbesar",
+		"zoomOut": "Perkecil",
+		"zoomReset": "Atur ulang zoom",
+		"find": "Cari di buku kerja",
+		"findCount": "{current} dari {total}",
+		"noMatches": "Tidak ada yang cocok",
+		"sum": "Jumlah",
+		"average": "Rata-rata",
+		"count": "Hitungan",
+		"calculating": "Menghitung…",
+		"editFailed": "Tidak dapat mengubah {cell}: {message}",
+		"saveFailed": "Tidak dapat menyimpan: {message}",
+		"changedSheet": "Diubah",
+		"inputCell": "Sel input"
 	}
 }
