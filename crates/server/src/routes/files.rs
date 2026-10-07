@@ -46,6 +46,14 @@ pub fn routes(max_upload_bytes: usize) -> Router<AppState> {
             axum::routing::get(handlers::files::locate_work_file),
         )
         .route(
+            "/work/history",
+            axum::routing::get(handlers::files::file_history),
+        )
+        .route(
+            "/work/history/restore",
+            axum::routing::post(handlers::files::restore_file_history),
+        )
+        .route(
             "/work/{id}/sheet",
             axum::routing::get(handlers::sheet::view),
         )

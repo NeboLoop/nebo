@@ -6,7 +6,8 @@
   import AgentAvatar from '$lib/components/AgentAvatar.svelte';
   import WorkViewer from './WorkViewer.svelte';
   import DesktopView from './DesktopView.svelte';
-  import { teachStart, teachStop, getToolOutput, locateWorkFile } from '$lib/api/nebo';
+  import { teachStart, teachStop, getToolOutput, locateWorkFile, fileHistory, restoreFileHistory } from '$lib/api/nebo';
+  import { historyItems, workspacePathOf, type FileHistoryItem } from '$lib/chat/fileHistory';
   import { kindForExt } from '$lib/chat/controller.svelte';
   import { locateFileMention } from '$lib/chat/fileMentions';
   import { watchesComputer, offersVirtualComputer, teachFailure, SCREEN_RECORDING_SETTINGS } from '$lib/chat/teach';
@@ -269,6 +270,12 @@
   let activeArtifactId = $state<string | null>(null);
   // Pinned version of the active document; null = follow the latest version.
   let activeVersion = $state<number | null>(null);
+  // A file opened by its path: its earlier versions (`fileHistory`), the one
+  // shown instead of the file (null = the file as it is now), and a count of
+  // restores so the viewer reloads the file after one.
+  let pathHistory = $state<{ id: string; items: FileHistoryItem[] }>({ id: '', items: [] });
+  let activeHistoryId = $state<number | null>(null);
+  let historyRestores = $state(0);
 
   // Render assistant message content with basic markdown + mention chips.
   // Code blocks get a copy affordance: each <pre> is wrapped with a positioned
@@ -347,14 +354,55 @@
     return activeVersionList[activeVersionList.length - 1];
   });
 
+  // A file opened by its path keeps its earlier versions: listed under
+  // History, one shown in place of the file, and put back with Restore.
+  const activePathUrl = $derived(activeArtifact?.documentId.startsWith('path:') ? (activeArtifact.url ?? '') : '');
+  const pathHistoryItems = $derived(activeArtifact && pathHistory.id === activeArtifact.documentId ? pathHistory.items : []);
+  const activeHistory = $derived(pathHistoryItems.find((h) => h.id === activeHistoryId));
+  // The URL the viewer shows: an earlier version of a path file, or the file.
+  const shownUrl = $derived(activeHistory?.url ?? activeArtifact?.url ?? '');
+
+  async function loadPathHistory(id: string, url: string) {
+    const path = workspacePathOf(url);
+    if (!path) return;
+    try {
+      const items = historyItems(await fileHistory(path));
+      if (activeArtifact?.documentId === id) pathHistory = { id, items };
+    } catch {
+      if (activeArtifact?.documentId === id) pathHistory = { id, items: [] };
+    }
+  }
+
+  $effect(() => {
+    const a = activeArtifact;
+    if (a && activePathUrl && pathHistory.id !== a.documentId) void loadPathHistory(a.documentId, activePathUrl);
+  });
+
+  async function restoreHistory(item: FileHistoryItem) {
+    const a = activeArtifact;
+    if (!a) return;
+    try {
+      await restoreFileHistory({ id: item.id, agentId, sessionId: chatSessionKey || undefined });
+      addToast($t('chat.restoredFile', { values: { title: a.title } }), 'success');
+    } catch {
+      addToast($t('chat.restoreFailed', { values: { title: a.title } }), 'error');
+      return;
+    }
+    activeHistoryId = null;
+    historyRestores += 1;
+    await loadPathHistory(a.documentId, a.url ?? '');
+  }
+
   // The viewer remounts per document:version (a new version refreshes it in
   // place, and the version-specific URL defeats the browser cache) — except a
-  // version a spreadsheet viewer just saved itself, which it already shows.
+  // version a spreadsheet viewer just saved itself, which it already shows. A
+  // path file's earlier version, or the file after a restore, remounts it too.
   let lastViewerKey = '';
   const workViewerKey = $derived.by(() => {
     const a = activeArtifact;
     if (!a) return '';
-    lastViewerKey = viewerKey(lastViewerKey, a.documentId, a.version, String(viewSource));
+    const shown = `${viewSource}:${activeHistoryId ?? 'now'}:${historyRestores}`;
+    lastViewerKey = viewerKey(lastViewerKey, a.documentId, a.version, shown);
     return lastViewerKey;
   });
 
@@ -491,6 +539,7 @@
     openPane('work');
     activeArtifactId = id;
     activeVersion = null; // follow latest; the version dropdown pins an older one
+    activeHistoryId = null;
     viewSource = false;
     const a = artifacts.find(x => x.documentId === id);
     if (a) creationsTitle = a.title;
@@ -2331,6 +2380,31 @@
                 </li>
               {/each}
             {/if}
+            {#if pathHistoryItems.length > 0}
+              <li class="menu-title"><span class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('chat.fileHistory')}</span></li>
+              <li>
+                <button
+                  class="flex items-center justify-between gap-2 {activeHistoryId == null ? 'bg-base-200 font-medium' : ''}"
+                  onclick={() => { activeHistoryId = null; (document.activeElement as HTMLElement | null)?.blur(); }}
+                >
+                  <span class="text-xs">{$t('chat.fileNow')}</span>
+                </button>
+              </li>
+              {#each pathHistoryItems as h (h.id)}
+                <li>
+                  <button
+                    class="flex items-center justify-between gap-2 {activeHistoryId === h.id ? 'bg-base-200 font-medium' : ''}"
+                    onclick={() => { activeHistoryId = h.id; (document.activeElement as HTMLElement | null)?.blur(); }}
+                  >
+                    <span class="flex flex-col items-start min-w-0">
+                      <span class="text-xs font-mono">{new Date(h.capturedAt * 1000).toLocaleString()}</span>
+                      {#if h.reason === 'deleted'}<span class="text-xs text-base-content/70">{$t('chat.beforeDeleted')}</span>{/if}
+                    </span>
+                    <span class="text-xs text-base-content/50 font-mono shrink-0">{formatFileSize(h.sizeBytes)}</span>
+                  </button>
+                </li>
+              {/each}
+            {/if}
           </ul>
         </div>
       {:else}
@@ -2357,6 +2431,13 @@
           class="py-1 px-2 rounded-md text-xs font-medium cursor-pointer bg-base-200 hover:bg-base-300 text-base-content/80 hover:text-base-content transition-colors shrink-0 border-none"
           onclick={() => { if (activeArtifact) onrestoreversion?.(activeArtifact.documentId, activeArtifact.version); activeVersion = null; }}
           title={$t('chat.makeVersionCurrent')}
+        >{$t('chat.restore')}</button>
+      {/if}
+      {#if activeHistory}
+        <button
+          class="py-1 px-2 rounded-md text-xs font-medium cursor-pointer bg-base-200 hover:bg-base-300 text-base-content/80 hover:text-base-content transition-colors shrink-0 border-none"
+          onclick={() => { if (activeHistory) void restoreHistory(activeHistory); }}
+          title={$t('chat.restoreEarlierVersion')}
         >{$t('chat.restore')}</button>
       {/if}
       {#if activeArtifact?.url}
@@ -2413,7 +2494,7 @@
         <!-- Keyed per document:version (see workViewerKey). -->
         {#key workViewerKey}
           <WorkViewer
-            url={activeArtifact.url}
+            url={shownUrl}
             title={activeArtifact.title}
             documentId={activeArtifact.documentId}
             version={activeArtifact.version}

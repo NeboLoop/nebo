@@ -509,6 +509,76 @@ pub async fn locate_work_file(
     Ok(Json(found))
 }
 
+#[derive(serde::Deserialize)]
+pub struct HistoryQuery {
+    /// The file's place in the workspace (`reports/q3.xlsx`), or its
+    /// absolute path inside it.
+    pub path: String,
+}
+
+/// An earlier content as the app reads it: the entry, with the URL its kept
+/// bytes are served at.
+fn history_json(e: &db::FileHistoryEntry) -> serde_json::Value {
+    let mut v = serde_json::to_value(e).unwrap_or_default();
+    v["url"] = serde_json::Value::String(tools::workspace_history::blob_url(&e.hash, &e.ext));
+    v
+}
+
+/// GET /api/v1/work/history?path= — a workspace file's earlier contents,
+/// newest first (`tools::workspace_history`). A path outside the workspace
+/// is 404.
+pub async fn file_history(
+    State(state): State<AppState>,
+    axum::extract::Query(q): axum::extract::Query<HistoryQuery>,
+) -> HandlerResult<serde_json::Value> {
+    let files_root = config::data_dir().map_err(to_error_response)?.join("files");
+    let rel = tools::workspace_history::workspace_path(&files_root, &q.path)
+        .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
+    let entries = tools::workspace_history::history(&state.store, &rel)
+        .map_err(|e| to_error_response(types::NeboError::Internal(e)))?;
+    let entries: Vec<serde_json::Value> = entries.iter().map(history_json).collect();
+    Ok(Json(serde_json::json!({ "path": rel, "entries": entries })))
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RestoreHistoryRequest {
+    /// The earlier content to put back.
+    pub id: i64,
+    /// Who the "Restored …" message is from, and the conversation it lands
+    /// in, when the file is a work document there (as `restore_version`
+    /// takes them).
+    #[serde(default)]
+    pub agent_id: String,
+    pub session_id: Option<String>,
+}
+
+/// POST /api/v1/work/history/restore — put an earlier content back. The
+/// file's current content is kept as history first, so the restore can be
+/// undone the same way. A file that is a work document of the conversation
+/// that changed it gets the restored content as its next version.
+pub async fn restore_file_history(
+    State(state): State<AppState>,
+    Json(req): Json<RestoreHistoryRequest>,
+) -> HandlerResult<serde_json::Value> {
+    let files_root = config::data_dir().map_err(to_error_response)?.join("files");
+    let store = state.store.clone();
+    let id = req.id;
+    let restored = tokio::task::spawn_blocking(move || tools::workspace_history::restore(&store, &files_root, id, None))
+        .await
+        .map_err(|e| to_error_response(types::NeboError::Internal(format!("restore task: {e}"))))?
+        .map_err(|e| to_error_response(types::NeboError::Validation(e)))?;
+    if let Some((doc, version)) = &restored.work {
+        let content = format!("Restored {} to its earlier content", doc.filename);
+        crate::chat_dispatch::announce_work_version(&state, doc, version, &content, &req.agent_id, req.session_id.as_deref());
+    }
+    Ok(Json(serde_json::json!({
+        "path": restored.to.path,
+        "restored": history_json(&restored.to),
+        "saved": restored.saved.as_ref().map(history_json),
+    })))
+}
+
 /// The Content-Type a served file goes out with, by extension.
 pub(crate) fn content_type_for(path: &std::path::Path) -> &'static str {
     // Guess content type from extension. Text types carry charset=utf-8:
@@ -1013,5 +1083,46 @@ mod locate_tests {
             locate_mention(&files, None, &abs(&files.join("up/settings.json"))).await,
             None
         );
+    }
+}
+
+#[cfg(test)]
+mod history_tests {
+    use serde_json::json;
+
+    /// Through the real server: a workspace file a command overwrote lists
+    /// its earlier content, and the restore puts it back while keeping what
+    /// it replaced.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_app_lists_and_restores_a_files_earlier_content() {
+        let nebo = crate::staffed_proof::session().await;
+        let files = nebo.home.join("files");
+        let dir = files.join(format!("history-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let rel = format!("{}/growth model.xlsx", dir.file_name().unwrap().to_string_lossy());
+        std::fs::write(files.join(&rel), "nine sheets").unwrap();
+        tools::workspace_history::look(nebo.store(), &files, Some("c1")).unwrap();
+        std::fs::write(files.join(&rel), "partial").unwrap();
+        tools::workspace_history::look(nebo.store(), &files, Some("c1")).unwrap();
+
+        let path = urlencoding::encode(&rel).into_owned();
+        let listed = nebo.get_ok(&format!("/work/history?path={path}")).await;
+        assert_eq!(listed["path"], rel);
+        let entries = listed["entries"].as_array().unwrap();
+        assert_eq!(entries.len(), 1);
+        let url = entries[0]["url"].as_str().unwrap().to_string();
+        assert!(url.starts_with("/api/v1/files/work/blobs/") && url.ends_with(".xlsx"), "{url}");
+
+        let restored = nebo.post_ok("/work/history/restore", &json!({ "id": entries[0]["id"] })).await;
+        assert_eq!(restored["path"], rel);
+        assert_eq!(std::fs::read_to_string(files.join(&rel)).unwrap(), "nine sheets");
+        let saved_url = restored["saved"]["url"].as_str().unwrap();
+        let saved = saved_url.strip_prefix("/api/v1/files/").unwrap();
+        assert_eq!(std::fs::read_to_string(files.join(saved)).unwrap(), "partial");
+
+        let (status, _) = nebo.get("/work/history?path=..%2Fsettings.json").await;
+        assert_eq!(status, 404);
+        let (status, _) = nebo.post("/work/history/restore", &json!({ "id": 999_999 })).await;
+        assert_eq!(status, 400);
     }
 }

@@ -583,7 +583,9 @@ async fn run(
             }
         };
         tools::app_history::begin_turn(&session_id, &asked(&cx.request.input));
+        keep_workspace(&h, &session_id).await;
         exit = drive_turn(&cx, &mut st).await;
+        keep_workspace(&h, &session_id).await;
         finish(&cx, &mut st, &exit).await;
         tools::app_history::end_turn(&session_id, || last_reply(&h, &session_id)).await;
         taint.extend(cx.taint.lock().unwrap_or_else(|p| p.into_inner()).iter().copied());
@@ -614,6 +616,34 @@ async fn run(
             }
             None => warn!(session_id, "no app runs a turn for the messages carried past the stop; they wait for his next one"),
         }
+    }
+}
+
+/// The owner's workspace keeps the history of its files
+/// (`tools::workspace_history`): a turn looks at it when it starts, before
+/// each tool round (a round can overwrite what an earlier one made) and when
+/// it ends, however it ends. A shell's `>` or a script is seen the same as a
+/// file tool's write.
+async fn keep_workspace(h: &Harness, session_id: &str) {
+    let Some(files) = h.workspace.clone() else {
+        return;
+    };
+    let store = h.store.clone();
+    let chat_id = h.sessions.active_chat_id(session_id);
+    let started = std::time::Instant::now();
+    let looked =
+        tokio::task::spawn_blocking(move || tools::workspace_history::look(&store, &files, Some(&chat_id))).await;
+    match looked {
+        Ok(Ok(look)) => {
+            let ms = started.elapsed().as_millis() as u64;
+            if look.kept > 0 {
+                info!(session_id, kept = look.kept, hashed = look.hashed, ms, "workspace history: earlier contents kept");
+            } else {
+                tracing::debug!(session_id, files = look.files, hashed = look.hashed, ms, "workspace history: looked");
+            }
+        }
+        Ok(Err(e)) => warn!(session_id, error = %e, "workspace history: the look failed"),
+        Err(e) => warn!(session_id, error = %e, "workspace history: the look stopped"),
     }
 }
 
@@ -2315,6 +2345,7 @@ async fn tool_round(
     tool_calls: &mut [ai::ToolCall],
 ) -> Option<TurnExit> {
     let h = &cx.harness;
+    keep_workspace(h, &cx.session_id).await;
     // A memory write that names local memory: whether the owner asked to
     // share is what takes it there from a Confidential conversation. Asked
     // only then, so no other round waits on the decision.
@@ -8192,5 +8223,112 @@ mod tests {
         let (_, _, first) = wire(&calls[0]);
         let (_, _, next) = wire(&calls[1]);
         assert!(next.starts_with(&first), "the next request starts with this one");
+    }
+
+    /// A command the turn runs in the owner's workspace (`sh -c`): Nebo
+    /// never sees its writes, as with `run_command`.
+    struct Sh {
+        dir: std::path::PathBuf,
+    }
+
+    impl tools::registry::DynTool for Sh {
+        fn name(&self) -> &str {
+            "sh"
+        }
+        fn description(&self) -> String {
+            "runs a command".into()
+        }
+        fn schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object", "properties": {"command": {"type": "string"}}})
+        }
+        fn should_defer(&self) -> bool {
+            false
+        }
+        fn execute_dyn<'a>(
+            &'a self,
+            _ctx: &'a tools::ToolContext,
+            input: serde_json::Value,
+        ) -> Pin<Box<dyn Future<Output = tools::ToolResult> + Send + 'a>> {
+            Box::pin(async move {
+                let command = input["command"].as_str().unwrap_or_default().to_string();
+                let out = command::new::<tokio::process::Command>("sh", command::Console::Hidden).arg("-c").arg(&command).current_dir(&self.dir).output().await;
+                match out {
+                    Ok(o) if o.status.success() => tools::ToolResult::ok("ran"),
+                    _ => tools::ToolResult::error("failed"),
+                }
+            })
+        }
+    }
+
+    async fn workspace_harness(model: &Arc<Scripted>) -> (tempfile::TempDir, std::path::PathBuf, Harness) {
+        let home = tempfile::tempdir().unwrap();
+        let files = home.path().join("files");
+        std::fs::create_dir_all(&files).unwrap();
+        let h = harness_with(model, vec![Box::new(Sh { dir: files.clone() })]).await.with_workspace_history(files.clone());
+        (home, files, h)
+    }
+
+    fn kept(files: &std::path::Path, e: &db::FileHistoryEntry) -> String {
+        std::fs::read_to_string(files.join(tools::workspace_history::blob_rel(&e.hash, &e.ext))).unwrap()
+    }
+
+    /// 2026-10-06: a command overwrote the owner's workbook; what it was is
+    /// kept, under the conversation whose turn changed it, and so is what an
+    /// earlier round of the same turn made before a later one overwrote it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_turn_keeps_what_its_commands_overwrote_and_deleted() {
+        let model = Scripted::new(vec![
+            Step::Call("sh", serde_json::json!({"command": "echo partial > model.xlsx && echo draft one > report.md && rm notes.md"})),
+            Step::Call("sh", serde_json::json!({"command": "echo draft two > report.md"})),
+            Step::Say("Done."),
+        ]);
+        let (_home, files, h) = workspace_harness(&model).await;
+        std::fs::write(files.join("model.xlsx"), "nine sheets").unwrap();
+        std::fs::write(files.join("notes.md"), "notes").unwrap();
+        std::fs::write(files.join("untouched.md"), "same").unwrap();
+        let events = run_turn(&h, owner("Fix the model")).await;
+        assert_eq!(exit_of(&events), "text_response");
+
+        let sid = h.sessions.resolve_session_id_by_key(KEY).unwrap();
+        let chat = h.sessions.active_chat_id(&sid);
+        let model_xlsx = h.store.list_file_history("model.xlsx", 10).unwrap();
+        assert_eq!(model_xlsx.len(), 1);
+        assert_eq!(kept(&files, &model_xlsx[0]), "nine sheets");
+        assert_eq!(model_xlsx[0].chat_id.as_deref(), Some(chat.as_str()));
+        let report = h.store.list_file_history("report.md", 10).unwrap();
+        assert_eq!(report.len(), 1);
+        assert_eq!(kept(&files, &report[0]), "draft one\n");
+        let notes = h.store.list_file_history("notes.md", 10).unwrap();
+        assert_eq!((notes.len(), notes[0].reason.as_str()), (1, "deleted"));
+        assert!(h.store.list_file_history("untouched.md", 10).unwrap().is_empty());
+    }
+
+    /// A turn the owner stops mid-command still keeps what the command
+    /// overwrote.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_stopped_turn_keeps_what_it_overwrote() {
+        let model = Scripted::new(vec![
+            Step::Call("sh", serde_json::json!({"command": "echo partial > model.xlsx; sleep 3"})),
+            Step::Say("never reached"),
+        ]);
+        let (_home, files, h) = workspace_harness(&model).await;
+        std::fs::write(files.join("model.xlsx"), "nine sheets").unwrap();
+        let req = owner("Fix the model");
+        let cancel = req.cancel.clone();
+        let watched = files.join("model.xlsx");
+        tokio::spawn(async move {
+            for _ in 0..300 {
+                if std::fs::read_to_string(&watched).unwrap_or_default() == "partial\n" {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            cancel.cancel();
+        });
+        let events = run_turn(&h, req).await;
+        assert_eq!(exit_of(&events), super::super::delegation::collect::STOP_CANCELLED);
+        let entries = h.store.list_file_history("model.xlsx", 10).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(kept(&files, &entries[0]), "nine sheets");
     }
 }

@@ -291,7 +291,7 @@ pub async fn save(
             return Ok(None);
         };
         let hash = hex::encode(Sha256::digest(&bytes));
-        let url = crate::chat_dispatch::put_work_blob(&store, &files_dir, &hash, &ext, &bytes)
+        let url = tools::workspace_history::put_work_blob(&store, &files_dir, &hash, &ext, &bytes)
             .map_err(to_error_response)?;
         let added = store
             .add_work_version(
@@ -380,7 +380,7 @@ mod tests {
             .upsert_work_document(&chat, "model.xlsx", "table")
             .unwrap();
         let hash = hex::encode(Sha256::digest(FIXTURE));
-        let url = crate::chat_dispatch::put_work_blob(
+        let url = tools::workspace_history::put_work_blob(
             &store,
             &nebo.home.join("files"),
             &hash,
