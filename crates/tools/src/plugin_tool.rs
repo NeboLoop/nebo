@@ -2292,6 +2292,23 @@ pub fn notify_plugin_needs_reauth(
 }
 
 
+/// The arguments a call hands the plugin binary, as `run_plugin_command`
+/// builds them: the command split as a shell would (a leading plugin name
+/// dropped), each `args` entry as `--key value`, and Nebo's own `--account`
+/// selector taken out. `None` when the command does not split.
+pub(crate) fn call_argv(call: &PluginCall) -> Option<Vec<String>> {
+    let mut argv = shlex::split(&call.command)?;
+    if argv.first().is_some_and(|a| a.eq_ignore_ascii_case(&call.slug)) {
+        argv.remove(0);
+    }
+    for (key, value) in &call.args {
+        argv.push(format!("--{key}"));
+        argv.push(value.clone());
+    }
+    extract_and_strip_flag(&mut argv, "account");
+    Some(argv)
+}
+
 /// Find `--<name> <value>` in an arg vector, remove both tokens, and return
 /// the value. Used to consume Nebo-level selectors (e.g. `--account`) that
 /// must not be forwarded to the plugin binary.
