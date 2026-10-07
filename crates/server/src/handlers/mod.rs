@@ -25,6 +25,7 @@ pub mod phone_location;
 pub mod plugins;
 pub mod provider;
 pub mod setup;
+pub mod sheet;
 pub mod telemetry;
 pub mod dashboard;
 pub mod skills;

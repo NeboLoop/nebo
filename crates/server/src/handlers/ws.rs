@@ -661,43 +661,17 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState, ua: String, pl
                                     {
                                         match state.store.restore_work_version(&document_id, version) {
                                             Ok(new_v) => {
-                                                let artifact = serde_json::json!({
-                                                    "documentId": doc.id,
-                                                    "filename": doc.filename,
-                                                    "kind": doc.kind,
-                                                    "version": new_v.version_number,
-                                                    "url": new_v.url,
-                                                });
                                                 let content = format!(
                                                     "Restored {} to version {}",
                                                     doc.filename, version
                                                 );
-                                                let msg_id = uuid::Uuid::new_v4().to_string();
-                                                let metadata = serde_json::json!({
-                                                    "artifacts": [artifact.clone()]
-                                                })
-                                                .to_string();
-                                                let created_at = state
-                                                    .store
-                                                    .create_chat_message(
-                                                        &msg_id,
-                                                        &doc.chat_id,
-                                                        "assistant",
-                                                        &content,
-                                                        Some(&metadata),
-                                                    )
-                                                    .map(|m| m.created_at)
-                                                    .unwrap_or(0);
-                                                state.hub.broadcast(
-                                                    "chat_message",
-                                                    serde_json::json!({
-                                                        "id": msg_id,
-                                                        "content": content,
-                                                        "createdAt": created_at * 1000,
-                                                        "agentId": agent_id,
-                                                        "session_id": session_id,
-                                                        "artifacts": [artifact],
-                                                    }),
+                                                crate::chat_dispatch::announce_work_version(
+                                                    &state,
+                                                    &doc,
+                                                    &new_v,
+                                                    &content,
+                                                    &agent_id,
+                                                    session_id.as_deref(),
                                                 );
                                             }
                                             Err(e) => warn!(

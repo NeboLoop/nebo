@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 command = { workspace = true }
+sheet = { workspace = true }
 tls = { workspace = true }
 types = { workspace = true }
 config = { workspace = true }

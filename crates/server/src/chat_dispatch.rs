@@ -2419,26 +2419,7 @@ fn version_app_artifacts(
                     }
                 }
 
-                // Content-addressed blob: store the bytes ONCE keyed by hash, so a
-                // revert or the same content across documents reuses one file. The
-                // ext keeps serve_file's content-type detection working.
-                let blob_name = if ext.is_empty() {
-                    hash.clone()
-                } else {
-                    format!("{}.{}", hash, ext)
-                };
-                let rel = format!("work/blobs/{}", blob_name);
-                let dest = files_dir.join(&rel);
-                if !dest.exists() {
-                    if let Some(parent) = dest.parent() {
-                        std::fs::create_dir_all(parent)
-                            .map_err(|e| types::NeboError::Internal(format!("mkdir blobs dir: {e}")))?;
-                    }
-                    std::fs::copy(&flat_path, &dest)
-                        .map_err(|e| types::NeboError::Internal(format!("copy blob: {e}")))?;
-                }
-                let _ = store.register_content_blob(&hash, &ext, bytes.len() as i64);
-                let versioned_url = format!("/api/v1/files/{}", rel);
+                let versioned_url = put_work_blob(store, &files_dir, &hash, &ext, &bytes)?;
                 let parent_id = latest.as_ref().map(|v| v.id.as_str());
                 let version = store.add_work_version(
                     &doc.id,
@@ -2466,6 +2447,77 @@ fn version_app_artifacts(
             }
         })
         .collect()
+}
+
+/// Content-addressed blob: store the bytes ONCE keyed by hash, so a revert or
+/// the same content across documents reuses one file. The ext keeps
+/// serve_file's content-type detection working. Answers the URL a work
+/// version points at.
+pub(crate) fn put_work_blob(
+    store: &db::Store,
+    files_dir: &std::path::Path,
+    hash: &str,
+    ext: &str,
+    bytes: &[u8],
+) -> Result<String, types::NeboError> {
+    let blob_name = if ext.is_empty() {
+        hash.to_string()
+    } else {
+        format!("{}.{}", hash, ext)
+    };
+    let rel = format!("work/blobs/{}", blob_name);
+    let dest = files_dir.join(&rel);
+    if !dest.exists() {
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| types::NeboError::Internal(format!("mkdir blobs dir: {e}")))?;
+        }
+        std::fs::write(&dest, bytes)
+            .map_err(|e| types::NeboError::Internal(format!("write blob: {e}")))?;
+    }
+    let _ = store.register_content_blob(hash, ext, bytes.len() as i64);
+    Ok(format!("/api/v1/files/{}", rel))
+}
+
+/// Surface a work version made outside a turn (a restore, a save from the
+/// sheet view) as an assistant message carrying the artifact, so it joins the
+/// document's chain in the transcript and the open viewer moves to it.
+pub(crate) fn announce_work_version(
+    state: &AppState,
+    doc: &db::WorkDocument,
+    version: &db::WorkDocumentVersion,
+    content: &str,
+    agent_id: &str,
+    session_id: Option<&str>,
+) {
+    let artifact = serde_json::json!({
+        "documentId": doc.id,
+        "filename": doc.filename,
+        "kind": doc.kind,
+        "version": version.version_number,
+        "url": version.url,
+    });
+    let msg_id = uuid::Uuid::new_v4().to_string();
+    let metadata = serde_json::json!({
+        "artifacts": [artifact.clone()]
+    })
+    .to_string();
+    let created_at = state
+        .store
+        .create_chat_message(&msg_id, &doc.chat_id, "assistant", content, Some(&metadata))
+        .map(|m| m.created_at)
+        .unwrap_or(0);
+    state.hub.broadcast(
+        "chat_message",
+        serde_json::json!({
+            "id": msg_id,
+            "content": content,
+            "createdAt": created_at * 1000,
+            "agentId": agent_id,
+            "session_id": session_id,
+            "artifacts": [artifact],
+        }),
+    );
 }
 
 /// Save a `data:` URI (base64 image) to `<data_dir>/files/` and return the

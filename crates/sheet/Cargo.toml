@@ -1,0 +1,17 @@
+[package]
+name = "nebo-sheet"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+# Pre-1.0: pinned exactly; a minor bump is a deliberate upgrade with the
+# spike's checks re-run (values against Excel's stored results, recalc time).
+ironcalc = "=0.8.3"
+roxmltree = "0.20"
+serde = { workspace = true }
+thiserror = { workspace = true }
+zip = { version = "8", default-features = false, features = ["deflate-flate2"] }
+
+[dev-dependencies]
+serde_json = { workspace = true }
