@@ -292,9 +292,9 @@ impl Book {
             .iter()
             .enumerate()
             .flat_map(|(s, ws)| {
-                ws.sheet_data.iter().flat_map(move |(r, row)| {
-                    row.iter().map(move |(c, cell)| ((s as u32, *r, *c), cell))
-                })
+                ws.sheet_data
+                    .cells()
+                    .map(move |(r, c, cell)| ((s as u32, r, c), cell))
             })
     }
 
@@ -350,7 +350,7 @@ impl Book {
         if excel {
             return Some(to_excel_string(node, &context));
         }
-        let mut node = node.clone();
+        let mut node = node.as_ref().clone();
         remove_redundant_implicit_intersection(&mut node, true);
         Some(format!("={}", to_english_string(&node, &context)))
     }
@@ -383,14 +383,7 @@ impl Book {
         for (s, ws) in self.model.workbook.worksheets.iter().enumerate() {
             let mut cells: Vec<CellView> = Vec::new();
             let (mut max_r, mut max_c) = (0, 0);
-            let mut keys: Vec<(i32, i32)> = ws
-                .sheet_data
-                .iter()
-                .flat_map(|(r, row)| row.keys().map(move |c| (*r, *c)))
-                .collect();
-            keys.sort_unstable();
-            for (r, c) in keys {
-                let Some(cell) = ws.cell(r, c) else { continue };
+            for (r, c, cell) in ws.sheet_data.cells() {
                 let key = (s as u32, r, c);
                 let value = self.value(cell);
                 let editable = self.editable(key) && !self.formulas.contains(&key);
@@ -462,7 +455,17 @@ impl Book {
                 },
                 col_widths,
                 row_heights,
-                merges: ws.merge_cells.clone(),
+                merges: ws
+                    .merged_cells
+                    .iter()
+                    .map(|m| {
+                        format!(
+                            "{}:{}",
+                            cell_name(m.row, m.column),
+                            cell_name(m.row + m.height - 1, m.column + m.width - 1)
+                        )
+                    })
+                    .collect(),
                 cells,
                 charts,
             });
