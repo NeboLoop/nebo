@@ -29,6 +29,7 @@ members = [
     "crates/syntax",
     "crates/tls",
     "crates/command",
+    "crates/sheet",
 ]
 
 [workspace.package]
@@ -160,6 +161,7 @@ vm = { path = "crates/vm", package = "nebo-vm" }
 syntax = { path = "crates/syntax", package = "nebo-syntax" }
 tls = { path = "crates/tls", package = "nebo-tls", version = "0.1" }
 command = { path = "crates/command", package = "nebo-command" }
+sheet = { path = "crates/sheet", package = "nebo-sheet" }
 # Hosting coding agents on this computer (Nebo is the host where it runs).
 # Pinned to a nebo-link commit, as nebo-link pins nebo-comm to a nebo one.
 link-core = { git = "https://github.com/NeboLoop/nebo-link", rev = "9559c1d793f236cb2dfd0c2c9bd097ecb7c349fd" }

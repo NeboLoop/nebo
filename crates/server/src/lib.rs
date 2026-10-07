@@ -2549,6 +2549,7 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
         local_host,
         linked_apps: Default::default(),
         live_calls: Default::default(),
+        sheets: Default::default(),
     };
 
     // An ask's card and its answers reach the owner through the hub, the

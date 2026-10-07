@@ -66,6 +66,6 @@ pub use session_goals::SessionGoal;
 pub use owner_needs::{OwnerNeedRow, ToldNeed};
 pub use plugin_account_profiles::PluginAccountProfile;
 pub use upgrade::{ToolNamingCell, tool_naming_places};
-pub use work::WorkDocumentListing;
+pub use work::{WorkDocument, WorkDocumentListing, WorkDocumentVersion};
 pub use teams::{team_thread_key, Team, TeamMember, TeamMessage, TEAM_THREAD_PREFIX};
 pub use temporary_work::{TemporaryClaim, TemporaryKind, TemporaryWork};

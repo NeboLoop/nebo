@@ -1,0 +1,51 @@
+{
+  "version": 1,
+  "metadata": { "title": "Formula Spike" },
+  "named_ranges": [
+    { "name": "growth", "range": "Inputs!$B$3" },
+    { "name": "price", "range": "Inputs!$B$2" }
+  ],
+  "sheets": [
+    {
+      "name": "Inputs",
+      "tab_color": "4472C4",
+      "freeze": { "row": 1, "col": 1 },
+      "protection": {},
+      "columns": [{ "width": 24 }, { "width": 12 }],
+      "rows": [
+        { "height": 24, "cells": [{ "value": "Input", "bold": true, "shading": "EDD8A0" }, { "value": "Value", "bold": true }] },
+        { "cells": ["Price", { "value": 30, "format": "$#,##0", "locked": false }] },
+        { "cells": ["Monthly growth", { "value": 0.1, "format": "0.0%", "locked": false }] },
+        { "cells": ["Start customers", { "value": 100, "locked": false }] },
+        { "cells": ["Tier", { "value": "Pro", "locked": false }] }
+      ],
+      "validations": [{ "range": "B5", "type": "list", "values": ["Basic", "Pro", "Max"] }]
+    },
+    {
+      "name": "Lookups",
+      "rows": [
+        { "cells": ["Tier", "Discount", "Seats"] },
+        { "cells": ["Basic", 0, 1] },
+        { "cells": ["Pro", 0.1, 5] },
+        { "cells": ["Max", 0.2, 20] }
+      ]
+    },
+    {
+      "name": "Model",
+      "merged": ["A1:D1"],
+      "rows": [
+        { "cells": [{ "value": "Monthly Model", "bold": true }] },
+        { "cells": ["Month", "Customers", "Revenue", "Flag"] },
+        { "cells": [1, { "formula": "=Inputs!B4" }, { "formula": "=B3*price*(1-INDEX(Lookups!B2:B4,MATCH(Inputs!B5,Lookups!A2:A4,0)))", "format": "$#,##0.00" }, { "formula": "=IF(C3>5000,\"big\",\"small\")" }] },
+        { "cells": [2, { "formula": "=ROUNDUP(B3*(1+growth),0)" }, { "formula": "=B4*price*(1-XLOOKUP(Inputs!B5,Lookups!A2:A4,Lookups!B2:B4))", "format": "$#,##0.00" }, { "formula": "=IF(C4>5000,\"big\",\"small\")" }] },
+        { "cells": [3, { "formula": "=ROUNDUP(B4*(1+growth),0)" }, { "formula": "=B5*price", "format": "$#,##0.00" }, { "formula": "=CHOOSE(MATCH(Inputs!B5,Lookups!A2:A4,0),\"one\",\"two\",\"three\")" }] },
+        { "cells": ["Total", { "formula": "=SUM(B3:B5)" }, { "formula": "=SUM(C3:C5)", "format": "$#,##0.00", "bold": true }] },
+        { "cells": ["Min/Max", { "formula": "=MIN(B3:B5)" }, { "formula": "=MAX(C3:C5)", "format": "$#,##0.00" }] },
+        { "cells": ["Seats", { "formula": "=VLOOKUP(Inputs!B5,Lookups!A2:C4,3,FALSE)" }, { "formula": "=SUMIF(D3:D5,\"small\",C3:C5)" }] }
+      ],
+      "charts": [
+        { "type": "line", "data": "Model!C3:C5", "labels": "Model!A3:A5", "title": "Revenue", "position": "F2", "width": 5, "height": 3 }
+      ]
+    }
+  ]
+}
