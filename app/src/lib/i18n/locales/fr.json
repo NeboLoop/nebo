@@ -1338,6 +1338,7 @@
 		"adding": "Ajout...",
 		"nameRequired": "Le nom est obligatoire",
 		"apiKeyRequired": "La clé API est obligatoire",
+		"keysLocalOnly": "Les clés API s'ajoutent sur l'ordinateur où tourne Nebo : votre clé va uniquement de cet ordinateur au fournisseur et ne passe jamais par NeboAI.",
 		"loadFailed": "Impossible de charger les fournisseurs",
 		"toggleFailed": "Impossible de basculer le fournisseur",
 		"updateFailed": "Impossible de mettre à jour le modèle",

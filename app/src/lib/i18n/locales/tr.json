@@ -1338,6 +1338,7 @@
 		"adding": "Ekleniyor...",
 		"nameRequired": "Ad gerekli",
 		"apiKeyRequired": "API anahtarı gerekli",
+		"keysLocalOnly": "API anahtarları Nebo'nun çalıştığı bilgisayarda eklenir; böylece anahtarınız yalnızca o bilgisayardan sağlayıcıya gider ve asla NeboAI üzerinden geçmez.",
 		"loadFailed": "Sağlayıcılar yüklenemedi",
 		"toggleFailed": "Sağlayıcı değiştirilemedi",
 		"updateFailed": "Model güncellenemedi",

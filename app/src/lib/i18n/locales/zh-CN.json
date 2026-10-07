@@ -1338,6 +1338,7 @@
 		"adding": "添加中...",
 		"nameRequired": "名称为必填项",
 		"apiKeyRequired": "API 密钥为必填项",
+		"keysLocalOnly": "API 密钥需在运行 Nebo 的电脑上添加，这样你的密钥只会从那台电脑直接发送给服务商，绝不经过 NeboAI。",
 		"loadFailed": "加载提供商失败",
 		"toggleFailed": "切换提供商失败",
 		"updateFailed": "更新模型失败",

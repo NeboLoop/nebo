@@ -1338,6 +1338,7 @@
 		"adding": "Toevoegen...",
 		"nameRequired": "Naam is verplicht",
 		"apiKeyRequired": "API-sleutel is verplicht",
+		"keysLocalOnly": "API-sleutels voeg je toe op de computer waarop Nebo draait, zodat je sleutel alleen van die computer naar de provider gaat en nooit via NeboAI.",
 		"loadFailed": "Laden van providers mislukt",
 		"toggleFailed": "Schakelen van provider mislukt",
 		"updateFailed": "Bijwerken van model mislukt",

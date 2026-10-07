@@ -19,3 +19,29 @@ pub fn bearer(store: Option<&db::Store>, bot_id: &str) -> (String, bool) {
 
 /// What a caller adds to a Janus failure when the bot is not signed in.
 pub const NOT_SIGNED_IN: &str = "Nebo is not signed in to NeboAI; ask the owner to sign in under Settings > Account, then retry.";
+
+#[cfg(test)]
+mod tests {
+    /// The bearer every tool sends Janus is the NeboAI token or the bot id —
+    /// never a user's own provider or search key from the same table.
+    #[test]
+    fn the_tool_bearer_is_never_a_users_own_key() {
+        const SENTINEL: &str = "sk-SENTINEL-byo-key-0000000000000000";
+        let dir = tempfile::tempdir().unwrap();
+        let store = db::Store::new(&dir.path().join("nebo.db").to_string_lossy()).unwrap();
+        for provider in ["openai", "xai", "search-serpapi", "search-google"] {
+            store
+                .create_auth_profile(&format!("byo-{provider}"), provider, provider, SENTINEL, None, None, 100, 1, Some("api_key"), None)
+                .unwrap();
+        }
+        let (bearer, signed_in) = super::bearer(Some(&store), "bot-1");
+        assert_eq!((bearer.as_str(), signed_in), ("bot-1", false));
+
+        store
+            .create_auth_profile("p1", "NeboAI", "neboai", "tok", None, None, 0, 1, Some("token"), None)
+            .unwrap();
+        let (bearer, signed_in) = super::bearer(Some(&store), "bot-1");
+        assert!(signed_in);
+        assert!(!bearer.contains(SENTINEL), "a BYO key became the Janus bearer");
+    }
+}

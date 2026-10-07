@@ -1338,6 +1338,7 @@
 		"adding": "Wird hinzugefügt...",
 		"nameRequired": "Name ist erforderlich",
 		"apiKeyRequired": "API-Schlüssel ist erforderlich",
+		"keysLocalOnly": "API-Schlüssel werden auf dem Computer hinzugefügt, auf dem Nebo läuft. So geht Ihr Schlüssel nur von diesem Computer direkt zum Anbieter und nie über NeboAI.",
 		"loadFailed": "Anbieter konnten nicht geladen werden",
 		"toggleFailed": "Anbieter konnte nicht umgeschaltet werden",
 		"updateFailed": "Modell konnte nicht aktualisiert werden",

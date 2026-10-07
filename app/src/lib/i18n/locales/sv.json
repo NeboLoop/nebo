@@ -1338,6 +1338,7 @@
 		"adding": "Lägger till...",
 		"nameRequired": "Namn krävs",
 		"apiKeyRequired": "API-nyckel krävs",
+		"keysLocalOnly": "API-nycklar läggs till på datorn där Nebo körs, så din nyckel går bara från den datorn till leverantören och aldrig via NeboAI.",
 		"loadFailed": "Kunde inte ladda leverantörer",
 		"toggleFailed": "Kunde inte växla leverantör",
 		"updateFailed": "Kunde inte uppdatera modell",

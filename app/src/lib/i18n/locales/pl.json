@@ -1338,6 +1338,7 @@
 		"adding": "Dodawanie...",
 		"nameRequired": "Nazwa jest wymagana",
 		"apiKeyRequired": "Klucz API jest wymagany",
+		"keysLocalOnly": "Klucze API dodaje się na komputerze, na którym działa Nebo, więc Twój klucz trafia tylko z tego komputera do dostawcy i nigdy nie przechodzi przez NeboAI.",
 		"loadFailed": "Nie udało się załadować dostawców",
 		"toggleFailed": "Nie udało się przełączyć dostawcy",
 		"updateFailed": "Nie udało się zaktualizować modelu",

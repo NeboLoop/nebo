@@ -1338,6 +1338,7 @@
 		"adding": "Adding...",
 		"nameRequired": "Name is required",
 		"apiKeyRequired": "API key is required",
+		"keysLocalOnly": "API keys are added on the computer running Nebo, so your key goes only from that computer to the provider and never through NeboAI.",
 		"loadFailed": "Failed to load providers",
 		"toggleFailed": "Failed to toggle provider",
 		"updateFailed": "Failed to update model",

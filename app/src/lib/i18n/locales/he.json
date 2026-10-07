@@ -1338,6 +1338,7 @@
 		"adding": "מוסיף...",
 		"nameRequired": "שם הוא שדה חובה",
 		"apiKeyRequired": "מפתח API הוא שדה חובה",
+		"keysLocalOnly": "מפתחות API מוסיפים במחשב שבו Nebo פועל, כך שהמפתח שלך עובר רק מהמחשב הזה לספק ולעולם לא דרך NeboAI.",
 		"loadFailed": "טעינת ספקים נכשלה",
 		"toggleFailed": "הפעלת/השבתת ספק נכשלה",
 		"updateFailed": "עדכון מודל נכשל",
