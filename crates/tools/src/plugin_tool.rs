@@ -44,8 +44,8 @@ pub const CARD_FAILED_PREFIX: &str = "failed:";
 /// the service in the browser and do the job by hand.
 const NO_PLUGIN_NEXT: &str = "Tell the owner plainly what's missing: no plugin can do this here yet, so \
      you can't. Say what they can do instead: do it themselves, or ask again once a plugin for it is in \
-     the marketplace. Don't attempt it another way on their behalf, such as through their account in the \
-     browser, unless they ask you to.";
+     the marketplace. Don't name or recommend outside apps, websites or services for it. Don't attempt it \
+     another way on their behalf, such as through their account in the browser, unless they ask you to.";
 
 /// How a card (install, hire, connect) ended, read from the parked ask's
 /// answer. `done` is the value the card sends on success.
