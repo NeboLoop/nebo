@@ -3903,5 +3903,20 @@
 		"saveFailed": "Speichern fehlgeschlagen: {message}",
 		"changedSheet": "Geändert",
 		"inputCell": "Eingabezelle"
+	},
+	"settingsPacks": {
+		"title": "Intelligenzpakete",
+		"description": "Eigene KI verwenden: Ordne jeder Aufwandsstufe ein Modell zu. Eine Entwicklerfunktion im Test.",
+		"loading": "Pakete werden geladen…",
+		"packs": "Pakete",
+		"newPack": "Neues Paket",
+		"editPack": "Paket bearbeiten",
+		"builtIn": "Integriert · Auto wählt die Stufe",
+		"neverNeboAi": "Nutzt nie Nebo AI",
+		"editNamed": "{name} bearbeiten",
+		"removeNamed": "{name} entfernen",
+		"name": "Name",
+		"namePlaceholder": "Mein Claude",
+		"fallback": "Wenn die KI dieses Pakets nicht verbunden ist, stattdessen Nebo AI verwenden (und das sagen)"
 	}
 }

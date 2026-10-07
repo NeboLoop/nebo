@@ -3903,5 +3903,20 @@
 		"saveFailed": "Échec de l'enregistrement : {message}",
 		"changedSheet": "Modifiée",
 		"inputCell": "Cellule de saisie"
+	},
+	"settingsPacks": {
+		"title": "Packs d'intelligence",
+		"description": "Utilisez votre propre IA : associez un modèle à chaque niveau d'effort. Une fonctionnalité développeur en test.",
+		"loading": "Chargement des packs…",
+		"packs": "Packs",
+		"newPack": "Nouveau pack",
+		"editPack": "Modifier le pack",
+		"builtIn": "Intégré · Auto choisit le niveau",
+		"neverNeboAi": "N'utilise jamais Nebo AI",
+		"editNamed": "Modifier {name}",
+		"removeNamed": "Retirer {name}",
+		"name": "Nom",
+		"namePlaceholder": "Mon Claude",
+		"fallback": "Si l'IA de ce pack n'est pas connectée, utiliser Nebo AI à la place (et le signaler)"
 	}
 }

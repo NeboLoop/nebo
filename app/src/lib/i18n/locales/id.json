@@ -3903,5 +3903,20 @@
 		"saveFailed": "Tidak dapat menyimpan: {message}",
 		"changedSheet": "Diubah",
 		"inputCell": "Sel input"
+	},
+	"settingsPacks": {
+		"title": "Paket kecerdasan",
+		"description": "Gunakan AI Anda sendiri: petakan setiap tingkat upaya ke sebuah model. Fitur pengembang yang sedang diuji.",
+		"loading": "Memuat paket…",
+		"packs": "Paket",
+		"newPack": "Paket baru",
+		"editPack": "Edit paket",
+		"builtIn": "Bawaan · Otomatis memilih tingkat",
+		"neverNeboAi": "Tidak pernah memakai Nebo AI",
+		"editNamed": "Edit {name}",
+		"removeNamed": "Hapus {name}",
+		"name": "Nama",
+		"namePlaceholder": "Claude saya",
+		"fallback": "Jika AI paket ini tidak terhubung, gunakan Nebo AI sebagai gantinya (dan beri tahu)"
 	}
 }

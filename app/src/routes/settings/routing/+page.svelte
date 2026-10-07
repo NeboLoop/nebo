@@ -272,7 +272,7 @@
                   <select bind:value={routingForm[mode.key]} onchange={scheduleAutoSave} class="select select-bordered select-sm w-full">
                     <option value="auto">{$t('settingsRouting.auto')}</option>
                     {#if mode.key === 'general' && packOpts.length > 0}
-                      <optgroup label="Intelligence packs">
+                      <optgroup label={$t('settingsPacks.title')}>
                         {#each packOpts as opt}
                           <option value={opt.value}>{opt.label}</option>
                         {/each}

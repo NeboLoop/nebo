@@ -3903,5 +3903,20 @@
 		"saveFailed": "Kunde inte spara: {message}",
 		"changedSheet": "Ändrad",
 		"inputCell": "Indatacell"
+	},
+	"settingsPacks": {
+		"title": "Intelligenspaket",
+		"description": "Använd din egen AI: koppla varje ansträngningsnivå till en modell. En utvecklarfunktion under test.",
+		"loading": "Läser in paket…",
+		"packs": "Paket",
+		"newPack": "Nytt paket",
+		"editPack": "Redigera paket",
+		"builtIn": "Inbyggt · Auto väljer nivån",
+		"neverNeboAi": "Använder aldrig Nebo AI",
+		"editNamed": "Redigera {name}",
+		"removeNamed": "Ta bort {name}",
+		"name": "Namn",
+		"namePlaceholder": "Min Claude",
+		"fallback": "Om paketets AI inte är ansluten, använd Nebo AI i stället (och säg det)"
 	}
 }

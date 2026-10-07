@@ -3903,5 +3903,20 @@
 		"saveFailed": "Opslaan mislukt: {message}",
 		"changedSheet": "Gewijzigd",
 		"inputCell": "Invoercel"
+	},
+	"settingsPacks": {
+		"title": "Intelligentiepakketten",
+		"description": "Gebruik je eigen AI: koppel elk inspanningsniveau aan een model. Een ontwikkelaarsfunctie in test.",
+		"loading": "Pakketten laden…",
+		"packs": "Pakketten",
+		"newPack": "Nieuw pakket",
+		"editPack": "Pakket bewerken",
+		"builtIn": "Ingebouwd · Auto kiest het niveau",
+		"neverNeboAi": "Gebruikt nooit Nebo AI",
+		"editNamed": "{name} bewerken",
+		"removeNamed": "{name} verwijderen",
+		"name": "Naam",
+		"namePlaceholder": "Mijn Claude",
+		"fallback": "Als de AI van dit pakket niet verbonden is, gebruik dan Nebo AI (en meld dat)"
 	}
 }

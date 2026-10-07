@@ -3903,5 +3903,20 @@
 		"saveFailed": "Couldn't save: {message}",
 		"changedSheet": "Changed",
 		"inputCell": "Input cell"
+	},
+	"settingsPacks": {
+		"title": "Intelligence packs",
+		"description": "Bring your own AI: map each Effort level to a model. A developer feature under test.",
+		"loading": "Loading packs…",
+		"packs": "Packs",
+		"newPack": "New pack",
+		"editPack": "Edit pack",
+		"builtIn": "Built in · Auto picks the level",
+		"neverNeboAi": "Never uses Nebo AI",
+		"editNamed": "Edit {name}",
+		"removeNamed": "Remove {name}",
+		"name": "Name",
+		"namePlaceholder": "My Claude",
+		"fallback": "If this pack's AI isn't connected, use Nebo AI instead (and say so)"
 	}
 }
