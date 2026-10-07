@@ -816,6 +816,7 @@
 		"closeSettings": "关闭设置",
 		"settingsNav": "设置导航",
 		"navItems": {
+			"intelligencePacks": "智能包",
 			"account": "账户",
 			"profile": "关于你",
 			"billing": "计费",

@@ -816,6 +816,7 @@
 		"closeSettings": "Stäng inställningar",
 		"settingsNav": "Inställningsnavigering",
 		"navItems": {
+			"intelligencePacks": "Intelligenspaket",
 			"account": "Konto",
 			"profile": "Om dig",
 			"billing": "Fakturering",

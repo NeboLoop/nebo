@@ -10,6 +10,7 @@
   import Spinner from '$lib/components/ui/Spinner.svelte';
   import Alert from '$lib/components/ui/Alert.svelte';
   import type { AuthProfile } from '$lib/api/neboComponents';
+  import { packOptions, type ModelOption } from '$lib/models/speeds';
 
   let loading = $state(true);
   let error = $state('');
@@ -19,6 +20,8 @@
   let janusStatus = $state<any>(null);
   let cliProviderInfo = $state<Record<string, { id: string; name: string; command: string; models: string[] }>>({});
   let saving = $state(false);
+  // Developer mode: the intelligence packs the bot's default (General) may be.
+  let packOpts = $state<ModelOption[]>([]);
 
   // Routing form state
   let routingForm = $state({ vision: 'auto', audio: 'auto', reasoning: 'auto', code: 'auto', general: 'auto' });
@@ -109,11 +112,13 @@
     error = '';
     try {
       const api = await import('$lib/api/nebo');
-      const [modelsRes, profilesRes, janusRes] = await Promise.all([
+      const [modelsRes, profilesRes, janusRes, packs] = await Promise.all([
         api.listModels(),
         api.listProviders(),
         api.neboAIAccountStatus().catch(() => null),
+        packOptions(),
       ]);
+      packOpts = packs;
 
       models = (modelsRes.models as Record<string, any[]>) || {};
       providers = profilesRes.profiles || [];
@@ -132,7 +137,10 @@
       // Populate task routing form
       const taskRouting = modelsRes.taskRouting as Record<string, any> | undefined;
       if (taskRouting) {
-        const validValues = new Set(getGroupedModelOptions().flatMap(g => g.models.map((m: any) => m.value)));
+        const validValues = new Set([
+          ...getGroupedModelOptions().flatMap(g => g.models.map((m: any) => m.value)),
+          ...packOpts.map(p => p.value),
+        ]);
         const norm = (v: string | undefined) => (v && validValues.has(v)) ? v : 'auto';
         const normB = (v: string | undefined) => (v && validValues.has(v)) ? v : 'none';
 
@@ -263,6 +271,13 @@
                   <label class="text-xs text-base-content/50 mb-1 block">{$t('settingsRouting.primary')}</label>
                   <select bind:value={routingForm[mode.key]} onchange={scheduleAutoSave} class="select select-bordered select-sm w-full">
                     <option value="auto">{$t('settingsRouting.auto')}</option>
+                    {#if mode.key === 'general' && packOpts.length > 0}
+                      <optgroup label="Intelligence packs">
+                        {#each packOpts as opt}
+                          <option value={opt.value}>{opt.label}</option>
+                        {/each}
+                      </optgroup>
+                    {/if}
                     {#each groups as group}
                       <optgroup label={group.label}>
                         {#each group.models as opt}

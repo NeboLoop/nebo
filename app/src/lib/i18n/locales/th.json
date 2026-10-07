@@ -816,6 +816,7 @@
 		"closeSettings": "ปิดการตั้งค่า",
 		"settingsNav": "เมนูการตั้งค่า",
 		"navItems": {
+			"intelligencePacks": "แพ็กอินเทลลิเจนซ์",
 			"account": "บัญชี",
 			"profile": "เกี่ยวกับคุณ",
 			"billing": "การเรียกเก็บเงิน",

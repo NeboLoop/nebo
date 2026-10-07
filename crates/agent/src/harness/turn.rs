@@ -927,8 +927,9 @@ pub(crate) async fn prepare(
     .collect::<Vec<_>>()
     .join("\n\n");
     let (turn_model, pack_notice) = turn_model(h, &model)?;
-    if let Some(notice) = &pack_notice {
+    if let Some(notice) = pack_notice {
         warn!(session_id, %notice, "intelligence pack fell back to Nebo AI");
+        let _ = tx.send(StreamEvent::notice(notice)).await;
     }
     let mode_facts = events::ModeFacts {
         model: turn_model.clone(),

@@ -820,7 +820,8 @@ pub(crate) async fn call_model(call: ModelCall<'_>, st: &mut CallState, state: &
             StreamEventType::ApprovalRequest
             | StreamEventType::ControlNotice
             | StreamEventType::TextVerdict
-            | StreamEventType::TakenIn => {
+            | StreamEventType::TakenIn
+            | StreamEventType::Notice => {
                 // Approval/ControlNotice: only sent by the runner, not
                 // received from a provider.
             }

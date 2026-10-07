@@ -816,6 +816,7 @@
 		"closeSettings": "إغلاق الإعدادات",
 		"settingsNav": "تنقل الإعدادات",
 		"navItems": {
+			"intelligencePacks": "حزم الذكاء",
 			"account": "الحساب",
 			"profile": "معلومات عنك",
 			"billing": "الفواتير",

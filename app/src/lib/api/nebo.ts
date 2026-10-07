@@ -1238,6 +1238,34 @@ export function deleteMemory(id: string) {
 }
 
 /**
+ * @description "List packs"
+ */
+export function listPacks() {
+	return webapi.get<components.ListPacksResponse>(`/api/v1/intelligence-packs`)
+}
+
+/**
+ * @description "Create pack"
+ */
+export function createPack(req: Record<string, unknown> = {}) {
+	return webapi.post<components.CreatePackResponse>(`/api/v1/intelligence-packs`, req)
+}
+
+/**
+ * @description "Update pack"
+ */
+export function updatePack(id: string, req: Record<string, unknown> = {}) {
+	return webapi.put<components.UpdatePackResponse>(`/api/v1/intelligence-packs/${id}`, req)
+}
+
+/**
+ * @description "Delete pack"
+ */
+export function deletePack(id: string) {
+	return webapi.delete<components.DeletePackResponse>(`/api/v1/intelligence-packs/${id}`)
+}
+
+/**
  * @description "List models"
  */
 export function listModels() {

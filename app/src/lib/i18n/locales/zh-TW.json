@@ -816,6 +816,7 @@
 		"closeSettings": "關閉設定",
 		"settingsNav": "設定導覽",
 		"navItems": {
+			"intelligencePacks": "智慧包",
 			"account": "帳戶",
 			"profile": "關於你",
 			"billing": "帳單",

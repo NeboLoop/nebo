@@ -816,6 +816,7 @@
 		"closeSettings": "Fechar definições",
 		"settingsNav": "Navegação de definições",
 		"navItems": {
+			"intelligencePacks": "Pacotes de inteligência",
 			"account": "Conta",
 			"profile": "Sobre si",
 			"billing": "Faturação",

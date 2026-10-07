@@ -97,6 +97,10 @@ pub enum StreamEventType {
     /// `{"segment": n}`, the segment's index in the turn). Sent by the
     /// harness, never by a provider ([`StreamEvent::text_verdict`]).
     TextVerdict,
+    /// A line the owner reads about the turn that is neither reply text nor
+    /// a stop (`text`): an intelligence pack's AI couldn't take the turn, so
+    /// it ran on Nebo AI. Sent by the harness ([`StreamEvent::notice`]).
+    Notice,
     /// The owner's messages queued behind running work that a step took in,
     /// by the ids their clients sent them under (`payload`:
     /// `{"message_ids": [...]}`). Sent by the harness, never by a provider
@@ -228,6 +232,12 @@ impl StreamEvent {
     }
 
     /// The owner's queued messages a step took in, by their client ids.
+    pub fn notice(text: impl Into<String>) -> Self {
+        let mut event = Self::text(text);
+        event.event_type = StreamEventType::Notice;
+        event
+    }
+
     pub fn taken_in(message_ids: Vec<String>) -> Self {
         let mut event = Self::text("");
         event.event_type = StreamEventType::TakenIn;

@@ -667,6 +667,14 @@ export function createChatController(config: ChatControllerConfig) {
     quotaWarning = get(t)('chat.planUsageWarning', { values: { percent: Math.round(percent) } });
   }
 
+  // A line about the turn that is neither reply nor stop (an intelligence
+  // pack's AI couldn't take it, so it ran on Nebo AI): shown in the same strip
+  // as the plan warning, worded by the bot.
+  function handleChatNotice(data: any) {
+    if (!isMyEvent(data) || typeof data.text !== 'string' || !data.text) return;
+    quotaWarning = data.text;
+  }
+
   // Sent while the employee was still working: the server appended it to the
   // thread for the running turn's next step and ends its own stream with this
   // typed stop on chat_complete, no words. The message itself shows as
@@ -884,6 +892,7 @@ export function createChatController(config: ChatControllerConfig) {
   unsubs.push(ws.on('agent_progress', handleAgentProgress));
   unsubs.push(onServer('usage', handleUsage));
   unsubs.push(onServer('quota_warning', handleQuotaWarning));
+  unsubs.push(onServer('chat_notice', handleChatNotice));
   unsubs.push(onServer('chat_error', handleChatError));
   unsubs.push(onServer('ask_request', handleAskRequest));
   unsubs.push(onServer('ask_answered', handleAskAnswered));
