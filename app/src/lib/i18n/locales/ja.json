@@ -816,6 +816,7 @@
 		"closeSettings": "設定を閉じる",
 		"settingsNav": "設定ナビゲーション",
 		"navItems": {
+			"intelligencePacks": "インテリジェンスパック",
 			"account": "アカウント",
 			"profile": "あなたについて",
 			"billing": "お支払い",

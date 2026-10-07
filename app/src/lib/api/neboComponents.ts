@@ -2940,3 +2940,37 @@ export type WSClientMessageType =
 	| "session_reset"
 	| "session_compact"
 
+export interface Pack {
+	id: string
+	name: string
+	levels: PackLevels
+	fallback: boolean
+	builtIn: boolean
+}
+
+export interface PackLevels {
+	auto?: string
+	instant?: string
+	low?: string
+	medium?: string
+	high?: string
+	max?: string
+	vision?: string
+	voice?: string
+}
+
+export interface ListPacksResponse {
+	packs: Pack[]
+}
+
+export interface CreatePackResponse {
+	pack: unknown
+}
+
+export interface UpdatePackResponse {
+	pack: unknown
+}
+
+export interface DeletePackResponse {
+	deleted: unknown
+}

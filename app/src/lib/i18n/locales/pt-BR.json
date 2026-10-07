@@ -816,6 +816,7 @@
 		"closeSettings": "Fechar configurações",
 		"settingsNav": "Navegação de configurações",
 		"navItems": {
+			"intelligencePacks": "Pacotes de inteligência",
 			"account": "Conta",
 			"profile": "Sobre você",
 			"billing": "Faturamento",

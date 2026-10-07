@@ -816,6 +816,7 @@
 		"closeSettings": "설정 닫기",
 		"settingsNav": "설정 내비게이션",
 		"navItems": {
+			"intelligencePacks": "인텔리전스 팩",
 			"account": "계정",
 			"profile": "내 정보",
 			"billing": "결제",

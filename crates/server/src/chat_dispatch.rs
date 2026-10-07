@@ -1390,6 +1390,9 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                 );
                             }
                         }
+                        StreamEventType::Notice => {
+                            hub.broadcast("chat_notice", ws_payload!("text": &event.text,));
+                        }
                         StreamEventType::SubagentStart => {
                             let mut payload = ws_payload!();
                             if let Some(ref w) = event.widgets {

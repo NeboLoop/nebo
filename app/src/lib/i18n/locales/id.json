@@ -816,6 +816,7 @@
 		"closeSettings": "Tutup pengaturan",
 		"settingsNav": "Navigasi pengaturan",
 		"navItems": {
+			"intelligencePacks": "Paket kecerdasan",
 			"account": "Akun",
 			"profile": "Tentang Anda",
 			"billing": "Tagihan",

@@ -816,6 +816,7 @@
 		"closeSettings": "Закрити налаштування",
 		"settingsNav": "Навігація налаштувань",
 		"navItems": {
+			"intelligencePacks": "Пакети інтелекту",
 			"account": "Акаунт",
 			"profile": "Про вас",
 			"billing": "Оплата",

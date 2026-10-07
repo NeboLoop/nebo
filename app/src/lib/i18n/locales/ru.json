@@ -816,6 +816,7 @@
 		"closeSettings": "Закрыть настройки",
 		"settingsNav": "Навигация настроек",
 		"navItems": {
+			"intelligencePacks": "Пакеты интеллекта",
 			"account": "Аккаунт",
 			"profile": "О вас",
 			"billing": "Оплата",
