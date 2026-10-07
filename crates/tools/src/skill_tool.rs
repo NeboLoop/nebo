@@ -376,7 +376,11 @@ impl SkillCore {
                 skill.name, raw
             ));
         }
-        let body = with_args(&self.loader.expand_template(&skill, self.store.as_deref()), args);
+        let agent_id = match &ctx.grant {
+            Some(g) => g.agent_id.clone(),
+            None => types::keyparser::extract_agent_id(&ctx.session_key),
+        };
+        let body = with_args(&self.loader.expand_template(&skill, self.store.as_deref(), &agent_id), args);
         let base = skill
             .base_dir
             .as_deref()

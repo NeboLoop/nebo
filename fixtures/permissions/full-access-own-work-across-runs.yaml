@@ -1,0 +1,17 @@
+id: full-access-own-work-across-runs
+name: "Full Access: what an employee made stays its own in every later run"
+description: |
+  Vivid, 2026-10-01 on: the order-intake workflow's command step begins
+  `rm -f ${NEBO_DATA_DIR}/last_run_log.jsonl`, the log the same employee's
+  skill script wrote on its last run, and was refused every day as "this
+  employee didn't make it". A script's writes name no file, so the created
+  ledger never held it. Now the data folder of a skill expanded for an
+  employee (a workflow step, a chat, a helper) is recorded as the
+  employee's own, so what its skill writes there is its own on the next
+  run; anything the employee made on one run is its own on the next. The
+  owner's files, another employee's, and another skill's data folder are
+  still refused. Purely code: a deterministic proof rather than a
+  conversation.
+target_component: permissions
+proof: harness::permissions::proof::full_access_own_work_is_its_own_across_runs
+conversation: []

@@ -317,10 +317,15 @@ impl WorkflowManagerImpl {
     /// unknown `${VAR}` silently expands to "" and the operator gets a
     /// misleading "python3: can't open file '/scripts/x.py'" three layers
     /// below the actual cause (observed live).
+    ///
+    /// `agent_id` is the employee the workflow runs as (empty for a
+    /// standalone workflow): a step working in its skill's data folder makes
+    /// that folder the employee's own (`skills::Loader::expand_template`).
     async fn expand_command_params(
         &self,
         def: &mut workflow::WorkflowDef,
         store: &db::Store,
+        agent_id: &str,
     ) -> Result<(), String> {
         for activity in def.activities.iter_mut() {
             if activity.activity_type != "command" {
@@ -352,7 +357,7 @@ impl WorkflowManagerImpl {
                 // expand_template expands the skill's own body; reuse its
                 // context by temporarily making the command the body.
                 skill.template = command.to_string();
-                expanded = loader.expand_template(&skill, Some(store));
+                expanded = loader.expand_template(&skill, Some(store), agent_id);
             }
             if let Some(start) = expanded.find("${") {
                 let end = expanded[start..].find('}').map(|i| start + i + 1).unwrap_or(expanded.len());
@@ -732,7 +737,7 @@ impl WorkflowManager for WorkflowManagerImpl {
             let mut def = self
                 .load_workflow_def(&wf)
                 .map_err(|e| format!("parse error: {}", e))?;
-            self.expand_command_params(&mut def, &self.store).await?;
+            self.expand_command_params(&mut def, &self.store, "").await?;
 
             // Create run record
             let run_id = uuid::Uuid::new_v4().to_string();
@@ -833,7 +838,7 @@ impl WorkflowManager for WorkflowManagerImpl {
                                 // and not declarable in workflow activities.
                                 if let Some(skill) = loader.get(skill_name, None).await {
                                     if !skill.template.is_empty() {
-                                        let expanded = loader.expand_template(&skill, Some(&store));
+                                        let expanded = loader.expand_template(&skill, Some(&store), "");
                                         map.insert(skill_name.clone(), expanded);
                                     }
                                 }
@@ -1242,7 +1247,7 @@ impl WorkflowManager for WorkflowManagerImpl {
 
             let mut def = workflow::parser::parse_workflow(&definition_json)
                 .map_err(|e| format!("parse inline workflow: {}", e))?;
-            self.expand_command_params(&mut def, &self.store).await?;
+            self.expand_command_params(&mut def, &self.store, agent_id).await?;
 
             // Merge agent-level input_values into workflow inputs
             let inputs = {
@@ -1631,7 +1636,7 @@ impl WorkflowManager for WorkflowManagerImpl {
                                 // and not declarable in workflow activities.
                                 if let Some(skill) = loader.get(skill_name, None).await {
                                     if !skill.template.is_empty() {
-                                        let expanded = loader.expand_template(&skill, Some(&store));
+                                        let expanded = loader.expand_template(&skill, Some(&store), &agent_id_owned);
                                         map.insert(skill_name.clone(), expanded);
                                     }
                                 }
