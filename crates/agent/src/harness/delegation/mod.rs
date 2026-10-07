@@ -52,6 +52,12 @@ pub const FOREGROUND_BUDGET: Duration = Duration::from_secs(120);
 /// had as partial.
 pub const INACTIVITY_LIMIT: Duration = Duration::from_secs(10 * 60);
 
+/// A helper turn's waits, as its calls enter them (`ToolContext::waiting`,
+/// the request's progress) and its collector reads them.
+fn waits_of(req: &TurnRequest) -> Arc<tools::Waiting> {
+    req.progress.as_ref().map(|p| p.waiting.clone()).unwrap_or_default()
+}
+
 /// The rule key of the helper tool: what Explore and Plan helpers, and a
 /// helper at the depth cap, can never call.
 pub const HELPER_TOOL: &str = "delegate";
@@ -787,9 +793,10 @@ impl Helpers {
         if let TurnMode::Helper { answer, .. } = &mut req.mode {
             *answer = Some(Arc::new(schema.clone()));
         }
+        let waiting = waits_of(&req);
         let collected = match self.starter.start_turn(req).await {
             Ok(handle) => {
-                collect::collect(handle.events, &cancel, INACTIVITY_LIMIT, |_| {
+                collect::collect(handle.events, &cancel, INACTIVITY_LIMIT, &waiting, |_| {
                     if let Some(a) = &activity {
                         a.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     }
@@ -1119,9 +1126,10 @@ impl Helpers {
         self.emit(&parent_key, ai::StreamEvent::subagent_start(task_id, description.as_str()));
 
         let progress = self.progress_forwarder(&parent_key, task_id);
+        let waiting = waits_of(&req);
         let collected = match self.starter.start_turn(req).await {
             Ok(handle) => {
-                collect::collect(handle.events, &cancel, INACTIVITY_LIMIT, |e| {
+                collect::collect(handle.events, &cancel, INACTIVITY_LIMIT, &waiting, |e| {
                     if let Some(tx) = &progress
                         && let Some(tc) = &e.tool_call
                     {

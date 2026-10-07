@@ -153,7 +153,10 @@ impl PluginCliTool {
                     entry.join(", ")
                 ));
             }
-            out.push_str("To survey many of them, delegate a helper to read them and report back.");
+            out.push_str(
+                "To survey many of them, delegate a helper to read them and report back. Skills you will follow, \
+                 load yourself: a helper receives only the skills you loaded.",
+            );
             match (entry.is_empty(), listed.is_empty()) {
                 (true, _) => out.push_str(&format!(" Its skills: {listed}.\n")),
                 (false, false) => out.push_str(&format!(" Its other skills: {listed}.\n")),
@@ -233,7 +236,7 @@ impl DynTool for PluginCliTool {
                 },
                 "timeout": {
                     "type": "integer",
-                    "description": "Seconds the command may take (default 120)."
+                    "description": "Seconds the command may take (default 120; a video render: 600)."
                 },
                 "display": {
                     "type": "string",
@@ -873,7 +876,8 @@ triggers:
         let line = "Start with ledgerly-query, ledgerly-reports, ledgerly-shared to find records, run \
                     reports and learn the commands; load the skill for the specific record before \
                     creating or changing one. To survey many of them, delegate a helper to read them \
-                    and report back. Its other skills: ledgerly-account, ledgerly-attachable, \
+                    and report back. Skills you will follow, load yourself: a helper receives only the \
+                    skills you loaded. Its other skills: ledgerly-account, ledgerly-attachable, \
                     ledgerly-batch, ledgerly-bill, ledgerly-billpayment, ledgerly-budget, \
                     ledgerly-changedata, ledgerly-class, ledgerly-companycurrency (and 34 more).";
         assert!(d.contains(line), "missing:\n{line}\nfrom:\n{d}");

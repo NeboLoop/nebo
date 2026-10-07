@@ -630,7 +630,7 @@ pub async fn update_model_config(
 
 /// PUT /api/v1/models/task-routing — update routing config in YAML.
 pub async fn update_task_routing(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     Json(body): Json<serde_json::Value>,
 ) -> HandlerResult<serde_json::Value> {
     let mut cfg = config::ModelsConfig::load();
@@ -718,6 +718,9 @@ pub async fn update_task_routing(
 
     cfg.save()
         .map_err(|e| to_error_response(types::NeboError::Server(e)))?;
+    // The running bot takes the new routes now: the next turn runs on the
+    // new default (a model or an intelligence pack), with no restart.
+    state.harness.selector().set_task_routing(agent::selector::task_routes(&cfg));
 
     Ok(Json(serde_json::json!({
         "message": "Task routing updated successfully",

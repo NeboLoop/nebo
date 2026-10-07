@@ -334,14 +334,7 @@ pub(crate) async fn start(h: Harness, mut req: TurnRequest) -> Result<TurnHandle
         .sessions
         .get_or_create(&req.session_key, &req.seat.user_id)
         .map_err(|e| HarnessError::Failed(format!("session error: {e}")))?;
-    let progress = req.progress.clone().unwrap_or_else(|| RunProgress {
-        run_id: uuid::Uuid::new_v4().to_string(),
-        iteration_count: Default::default(),
-        tool_call_count: Default::default(),
-        current_tool: Default::default(),
-        waiting: Default::default(),
-        stalled: Default::default(),
-    });
+    let progress = req.progress.clone().unwrap_or_else(RunProgress::fresh);
     let turn_id = progress.run_id.clone();
     if owner_speaks(&req) {
         resume_goal(&h, &session.id);
@@ -629,7 +622,8 @@ async fn run(
 /// it always has (`ModelSelector::resolve`).
 fn turn_model(h: &Harness, chosen: &str) -> Result<(String, Option<String>), String> {
     use types::packs::{DEFAULT_EFFORT, nebo_ai, parse_ref};
-    let pick = if chosen.trim().is_empty() { h.selector.configured() } else { chosen };
+    let configured = h.selector.configured();
+    let pick = if chosen.trim().is_empty() { configured.as_str() } else { chosen };
     let Some((id, effort)) = parse_ref(pick) else {
         return Ok((h.selector.resolve(chosen), None));
     };

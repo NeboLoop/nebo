@@ -3903,5 +3903,20 @@
 		"saveFailed": "সংরক্ষণ করা যায়নি: {message}",
 		"changedSheet": "পরিবর্তিত",
 		"inputCell": "ইনপুট সেল"
+	},
+	"settingsPacks": {
+		"title": "ইন্টেলিজেন্স প্যাক",
+		"description": "নিজের AI আনুন: প্রতিটি প্রচেষ্টা স্তরকে একটি মডেলের সাথে যুক্ত করুন। পরীক্ষাধীন একটি ডেভেলপার ফিচার।",
+		"loading": "প্যাক লোড হচ্ছে…",
+		"packs": "প্যাক",
+		"newPack": "নতুন প্যাক",
+		"editPack": "প্যাক সম্পাদনা",
+		"builtIn": "বিল্ট-ইন · অটো স্তর বেছে নেয়",
+		"neverNeboAi": "কখনো Nebo AI ব্যবহার করে না",
+		"editNamed": "{name} সম্পাদনা",
+		"removeNamed": "{name} সরান",
+		"name": "নাম",
+		"namePlaceholder": "আমার Claude",
+		"fallback": "এই প্যাকের AI সংযুক্ত না থাকলে, এর বদলে Nebo AI ব্যবহার করুন (এবং তা জানান)"
 	}
 }

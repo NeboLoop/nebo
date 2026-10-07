@@ -141,14 +141,7 @@ impl ModelRoutingConfig {
             provider_models.insert(provider_name.clone(), infos);
         }
 
-        let mut task_routing = HashMap::new();
-        if let Some(tr) = models_cfg.task_routing.as_ref() {
-            for (route, model) in [("general", &tr.general), ("aux", &tr.aux)] {
-                if !model.is_empty() {
-                    task_routing.insert(route.to_string(), model.clone());
-                }
-            }
-        }
+        let task_routing = task_routes(models_cfg);
 
         // Default model from config
         let default_model = models_cfg
@@ -166,9 +159,28 @@ impl ModelRoutingConfig {
     }
 }
 
+/// The routes a turn reads from `models.yaml`: "general" (the bot's default,
+/// Settings → Routing → General) and "aux" (background work). The ONE
+/// mapping, read at startup and again whenever Routing is saved.
+pub fn task_routes(models_cfg: &ModelsConfig) -> HashMap<String, String> {
+    let mut routes = HashMap::new();
+    if let Some(tr) = models_cfg.task_routing.as_ref() {
+        for (route, model) in [("general", &tr.general), ("aux", &tr.aux)] {
+            if !model.is_empty() {
+                routes.insert(route.to_string(), model.clone());
+            }
+        }
+    }
+    routes
+}
+
 /// Thread-safe model resolution.
 pub struct ModelSelector {
     config: ModelRoutingConfig,
+    /// The configured routes as they are now: seeded from `config` and
+    /// replaced when Routing is saved ([`ModelSelector::set_task_routing`]),
+    /// so a new default applies to the next turn, not after a restart.
+    task_routing: RwLock<HashMap<String, String>>,
     fuzzy: RwLock<Option<FuzzyMatcher>>,
     /// Provider IDs that are actually loaded (have running Provider instances).
     loaded_providers: RwLock<Vec<String>>,
@@ -184,6 +196,7 @@ impl ModelSelector {
             &config.provider_credentials,
         );
         Self {
+            task_routing: RwLock::new(config.task_routing.clone()),
             config,
             fuzzy: RwLock::new(Some(fuzzy)),
             loaded_providers: RwLock::new(Vec::new()),
@@ -298,8 +311,8 @@ impl ModelSelector {
             return DEFAULT_CHAT_MODEL.to_string();
         }
         let configured = self.configured();
-        if self.sendable(configured) {
-            return configured.to_string();
+        if self.sendable(&configured) {
+            return configured;
         }
         DEFAULT_CHAT_MODEL.to_string()
     }
@@ -307,12 +320,20 @@ impl ModelSelector {
     /// The bot's default as configured (Settings → Routing → General, else
     /// the catalog's primary): a model, or an intelligence pack
     /// (`types::packs::parse_ref`) the turn resolves through its pack.
-    pub fn configured(&self) -> &str {
-        self.config
-            .task_routing
+    pub fn configured(&self) -> String {
+        self.task_routing
+            .read()
+            .unwrap()
             .get("general")
             .filter(|m| !m.is_empty())
-            .unwrap_or(&self.config.default_model)
+            .cloned()
+            .unwrap_or_else(|| self.config.default_model.clone())
+    }
+
+    /// Replace the configured routes ([`task_routes`]) when Routing is saved:
+    /// the next turn and the next background chore read them.
+    pub fn set_task_routing(&self, routes: HashMap<String, String>) {
+        *self.task_routing.write().unwrap() = routes;
     }
 
     /// The model background work runs on (chat titles and the other chores
@@ -320,8 +341,9 @@ impl ModelSelector {
     /// is a chat model this bot can send to, else [`DEFAULT_CHAT_MODEL`].
     /// Never the cheapest row: the embedding models are the cheapest rows.
     pub fn background_model(&self) -> String {
-        match self.config.task_routing.get("aux").filter(|m| self.sendable(m)) {
-            Some(aux) => aux.clone(),
+        let aux = self.task_routing.read().unwrap().get("aux").cloned();
+        match aux.filter(|m| self.sendable(m)) {
+            Some(aux) => aux,
             None => DEFAULT_CHAT_MODEL.to_string(),
         }
     }
@@ -396,6 +418,31 @@ mod tests {
         assert_eq!(selector.context_window("janus/nebo-1-pro"), 131_072);
         assert_eq!(selector.context_window("janus/nebo-1"), 200_000, "the synced row wins over the boot floor");
         assert_eq!(selector.context_window("anthropic/claude-opus-4-6"), 1_000_000, "a direct provider keeps its catalog value");
+    }
+
+    /// Saving Routing reaches the running selector: the next turn's default
+    /// and the next chore's model are the new routes, with no restart — an
+    /// intelligence pack as the default included.
+    #[test]
+    fn a_saved_route_applies_without_a_restart() {
+        let mut config = ModelRoutingConfig::default();
+        config.provider_models.insert(
+            "janus".into(),
+            vec![info("nebo-1", 0), info("nebo-1-flash", 0), info("nebo-1-pro", 0)],
+        );
+        config.task_routing.insert("general".into(), "janus/nebo-1".into());
+        let selector = ModelSelector::new(config);
+        assert_eq!(selector.resolve(""), "janus/nebo-1");
+
+        selector.set_task_routing(
+            [("general".to_string(), "janus/nebo-1-pro".to_string()), ("aux".to_string(), "janus/nebo-1-flash".to_string())].into(),
+        );
+        assert_eq!(selector.resolve(""), "janus/nebo-1-pro");
+        assert_eq!(selector.background_model(), "janus/nebo-1-flash");
+
+        selector.set_task_routing([("general".to_string(), "pack/mine/high".to_string())].into());
+        assert_eq!(selector.configured(), "pack/mine/high", "the turn resolves it through the pack");
+        assert_eq!(selector.background_model(), DEFAULT_CHAT_MODEL, "no aux route any more");
     }
 
     /// A model whose window nothing reported gets the 200k default.

@@ -108,7 +108,9 @@ pub fn child_request(
             mention_briefing: None,
         },
         cancel: parent.cancel.clone(),
-        progress: None,
+        // Its own progress, so its calls' waits are the ones its collector
+        // reads (`collect::collect`).
+        progress: Some(crate::RunProgress::fresh()),
     }
 }
 

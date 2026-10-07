@@ -20,4 +20,5 @@ When the owner wants a video of the app (a motion post, a trailer):
    is not installed: tell the owner a video needs it and ask whether to
    install it from the marketplace; until then, share the folder of frames.
    Never try ffmpeg or another encoder from the shell: it is not installed.
-4. `share_file` the mp4 to the owner.
+4. The mp4 reaches the owner as a card by itself (the plugin names it on
+   its `Result:` line); don't share it again.

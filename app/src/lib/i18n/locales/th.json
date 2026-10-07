@@ -3903,5 +3903,20 @@
 		"saveFailed": "บันทึกไม่ได้: {message}",
 		"changedSheet": "เปลี่ยนแล้ว",
 		"inputCell": "เซลล์ป้อนข้อมูล"
+	},
+	"settingsPacks": {
+		"title": "แพ็กอินเทลลิเจนซ์",
+		"description": "ใช้ AI ของคุณเอง: กำหนดโมเดลให้แต่ละระดับความพยายาม ฟีเจอร์สำหรับนักพัฒนาที่อยู่ระหว่างทดสอบ",
+		"loading": "กำลังโหลดแพ็ก…",
+		"packs": "แพ็ก",
+		"newPack": "แพ็กใหม่",
+		"editPack": "แก้ไขแพ็ก",
+		"builtIn": "ในตัว · อัตโนมัติเลือกระดับ",
+		"neverNeboAi": "ไม่ใช้ Nebo AI เลย",
+		"editNamed": "แก้ไข {name}",
+		"removeNamed": "ลบ {name}",
+		"name": "ชื่อ",
+		"namePlaceholder": "Claude ของฉัน",
+		"fallback": "หาก AI ของแพ็กนี้ไม่ได้เชื่อมต่อ ให้ใช้ Nebo AI แทน (และแจ้งให้ทราบ)"
 	}
 }

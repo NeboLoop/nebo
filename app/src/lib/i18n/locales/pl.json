@@ -3903,5 +3903,20 @@
 		"saveFailed": "Nie udało się zapisać: {message}",
 		"changedSheet": "Zmieniono",
 		"inputCell": "Komórka wejściowa"
+	},
+	"settingsPacks": {
+		"title": "Pakiety inteligencji",
+		"description": "Użyj własnej AI: przypisz model do każdego poziomu wysiłku. Funkcja dla programistów w fazie testów.",
+		"loading": "Ładowanie pakietów…",
+		"packs": "Pakiety",
+		"newPack": "Nowy pakiet",
+		"editPack": "Edytuj pakiet",
+		"builtIn": "Wbudowany · Auto wybiera poziom",
+		"neverNeboAi": "Nigdy nie używa Nebo AI",
+		"editNamed": "Edytuj {name}",
+		"removeNamed": "Usuń {name}",
+		"name": "Nazwa",
+		"namePlaceholder": "Mój Claude",
+		"fallback": "Jeśli AI tego pakietu nie jest połączona, użyj zamiast niej Nebo AI (i poinformuj o tym)"
 	}
 }

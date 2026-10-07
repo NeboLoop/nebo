@@ -3903,5 +3903,20 @@
 		"saveFailed": "Tidak dapat menyimpan: {message}",
 		"changedSheet": "Diubah",
 		"inputCell": "Sel input"
+	},
+	"settingsPacks": {
+		"title": "Pek kecerdasan",
+		"description": "Bawa AI anda sendiri: padankan setiap tahap usaha dengan model. Ciri pembangun yang sedang diuji.",
+		"loading": "Memuatkan pek…",
+		"packs": "Pek",
+		"newPack": "Pek baharu",
+		"editPack": "Edit pek",
+		"builtIn": "Terbina dalam · Auto memilih tahap",
+		"neverNeboAi": "Tidak pernah menggunakan Nebo AI",
+		"editNamed": "Edit {name}",
+		"removeNamed": "Alih keluar {name}",
+		"name": "Nama",
+		"namePlaceholder": "Claude saya",
+		"fallback": "Jika AI pek ini tidak bersambung, gunakan Nebo AI sebagai ganti (dan maklumkan)"
 	}
 }

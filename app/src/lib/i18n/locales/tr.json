@@ -3903,5 +3903,20 @@
 		"saveFailed": "Kaydedilemedi: {message}",
 		"changedSheet": "Değişti",
 		"inputCell": "Giriş hücresi"
+	},
+	"settingsPacks": {
+		"title": "Zekâ paketleri",
+		"description": "Kendi yapay zekânı kullan: her çaba düzeyini bir modelle eşleştir. Test aşamasında bir geliştirici özelliği.",
+		"loading": "Paketler yükleniyor…",
+		"packs": "Paketler",
+		"newPack": "Yeni paket",
+		"editPack": "Paketi düzenle",
+		"builtIn": "Yerleşik · Otomatik düzeyi seçer",
+		"neverNeboAi": "Nebo AI'ı hiç kullanmaz",
+		"editNamed": "{name} düzenle",
+		"removeNamed": "{name} kaldır",
+		"name": "Ad",
+		"namePlaceholder": "Claude'um",
+		"fallback": "Bu paketin yapay zekâsı bağlı değilse yerine Nebo AI'ı kullan (ve bunu söyle)"
 	}
 }

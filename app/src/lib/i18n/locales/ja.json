@@ -3903,5 +3903,20 @@
 		"saveFailed": "保存できませんでした: {message}",
 		"changedSheet": "変更あり",
 		"inputCell": "入力セル"
+	},
+	"settingsPacks": {
+		"title": "インテリジェンスパック",
+		"description": "独自のAIを使用：各労力レベルにモデルを割り当てます。テスト中の開発者向け機能です。",
+		"loading": "パックを読み込み中…",
+		"packs": "パック",
+		"newPack": "新しいパック",
+		"editPack": "パックを編集",
+		"builtIn": "組み込み · 自動でレベルを選択",
+		"neverNeboAi": "Nebo AI を使用しない",
+		"editNamed": "{name} を編集",
+		"removeNamed": "{name} を削除",
+		"name": "名前",
+		"namePlaceholder": "マイ Claude",
+		"fallback": "このパックのAIが接続されていない場合は、代わりに Nebo AI を使う（その旨を伝える）"
 	}
 }

@@ -277,12 +277,27 @@ pub struct RunProgress {
     pub iteration_count: Arc<std::sync::atomic::AtomicU32>,
     pub tool_call_count: Arc<std::sync::atomic::AtomicU32>,
     pub current_tool: Arc<std::sync::Mutex<String>>,
-    /// The run's calls waiting on the owner. The dispatcher's idle bound
-    /// never ends a run while one is (`guardrails::next_event`).
+    /// The run's calls waiting on the owner, or on work outside the run
+    /// (a video render). The dispatcher's idle bound, and a helper's
+    /// collector, never end a run while one is (`guardrails::next_event`).
     pub waiting: Arc<tools::Waiting>,
     /// Set by the dispatcher that ends the run as stalled, before it
     /// cancels: the turn then records a stall, not the owner's stop.
     pub stalled: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl RunProgress {
+    /// A new run's progress: its own id, nothing counted or waited on.
+    pub fn fresh() -> Self {
+        Self {
+            run_id: uuid::Uuid::new_v4().to_string(),
+            iteration_count: Default::default(),
+            tool_call_count: Default::default(),
+            current_tool: Default::default(),
+            waiting: Default::default(),
+            stalled: Default::default(),
+        }
+    }
 }
 
 #[cfg(test)]

@@ -8,12 +8,8 @@ triggers:
   - replace the actor
   - cast member
   - add to the cast
-  - same face
-  - consistent character
-  - ai character
   - ai influencer
   - ai creator
-  - reference photo
 ---
 
 # Character Swap
@@ -21,6 +17,11 @@ triggers:
 A swap puts a cast member in place of the person in a clip. The person
 comes only from the cast, never from an image you pass. Nobody goes in a
 video until the owner has confirmed them once.
+
+A swap is only for replacing the person in a video that already exists.
+The same character across new shots is not a swap: make each shot's start
+frame of them as an image, get the owner's yes, and make each clip from its
+approved frame.
 
 ## The cast
 
@@ -49,7 +50,7 @@ The cast is shared by every employee on this Nebo.
 3. Put the original sound back and tag the file AI-generated: Nebo Media's
    `audio mix` with `audio-from` the prepared clip and `ai-generated`
    "true".
-4. Give the owner that result with one `share_file` call.
+4. That result reaches the owner as a card by itself; don't share it again.
 
 Never present a swapped person as a real customer's testimonial unless it
 is one. Where the law requires it, the ad says it is AI-generated.
