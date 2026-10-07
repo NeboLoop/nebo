@@ -490,7 +490,9 @@
   const canRedo = $derived.by(() => { historyRev; return history.canRedo; });
 
   // ── Save ──────────────────────────────────────────────────────────────
-  const AUTOSAVE_MS = 5000;
+  // Every save cuts a version: idle autosave waits a minute so one editing
+  // session makes one version (Save, Ctrl+S, panel close and Download still save at once).
+  const AUTOSAVE_MS = 60_000;
   let dirty = $state(false);
   let saving = $state(false);
   let saveError = $state('');
