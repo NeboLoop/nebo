@@ -403,8 +403,7 @@ pub async fn serve_file(
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
     request: axum::extract::Request,
 ) -> Result<axum::response::Response, (axum::http::StatusCode, Json<types::api::ErrorResponse>)> {
-    let data_dir = config::data_dir().map_err(to_error_response)?;
-    let files_root = data_dir.join("files");
+    let files_root = served_root(&file_path).map_err(to_error_response)?;
     let (canonical, canonical_root) = within_files_root(&files_root, &files_root.join(&file_path))
         .await
         .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
@@ -419,6 +418,30 @@ pub async fn serve_file(
     }
 
     Ok(stream_file(&canonical, content_type_for(&canonical), request).await)
+}
+
+/// Where `/api/v1/files/<rel>` is on disk. Nebo's own entries (`.shared`,
+/// `work/blobs`, uploads, previews: `workspace_history::store_own`) are in the
+/// file store; the owner's files are in his workspace (`~/NeboAI`) when the
+/// file is there, else in the store, where every older link points. Hidden
+/// files and the coding agents' own folders in the workspace are never served.
+pub fn served_root(rel: &str) -> Result<std::path::PathBuf, types::NeboError> {
+    let files = config::files_dir()?;
+    let workspace = config::workspace_dir()?;
+    if workspace == files || workspace_private(rel) {
+        return Ok(files);
+    }
+    Ok(if workspace.join(rel).exists() { workspace } else { files })
+}
+
+/// A workspace path that is never served or located: Nebo's own names, a
+/// hidden part, or a coding agent's folder.
+fn workspace_private(rel: &str) -> bool {
+    let mut parts = rel.split(['/', '\\']).filter(|p| !p.is_empty());
+    let Some(first) = parts.next() else { return true };
+    tools::workspace_history::store_own(first)
+        || tools::workspace_history::agent_folder(first)
+        || parts.any(|p| p.starts_with('.'))
 }
 
 /// The ONE containment check for anything read out of `<data_dir>/files`:
@@ -502,8 +525,19 @@ pub struct LocateQuery {
 pub async fn locate_work_file(
     axum::extract::Query(q): axum::extract::Query<LocateQuery>,
 ) -> HandlerResult<LocatedFile> {
-    let files_root = config::data_dir().map_err(to_error_response)?.join("files");
-    let found = locate_mention(&files_root, dirs::home_dir().as_deref(), &q.path)
+    let home = dirs::home_dir();
+    // The owner's workspace first, then the file store; a found workspace
+    // file is only answered when `served_root` serves it from there.
+    let workspace = config::workspace_dir().map_err(to_error_response)?;
+    if let Some(found) = locate_mention(&workspace, home.as_deref(), &q.path).await
+        && let Some(rel) = found.url.strip_prefix("/api/v1/files/")
+        && let Ok(rel) = urlencoding::decode(rel)
+        && (found.directory || served_root(&rel).is_ok_and(|r| r == workspace))
+    {
+        return Ok(Json(found));
+    }
+    let files_root = config::files_dir().map_err(to_error_response)?;
+    let found = locate_mention(&files_root, home.as_deref(), &q.path)
         .await
         .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
     Ok(Json(found))
@@ -531,8 +565,8 @@ pub async fn file_history(
     State(state): State<AppState>,
     axum::extract::Query(q): axum::extract::Query<HistoryQuery>,
 ) -> HandlerResult<serde_json::Value> {
-    let files_root = config::data_dir().map_err(to_error_response)?.join("files");
-    let rel = tools::workspace_history::workspace_path(&files_root, &q.path)
+    let workspace = config::workspace_dir().map_err(to_error_response)?;
+    let rel = tools::workspace_history::workspace_path(&workspace, &q.path)
         .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
     let entries = tools::workspace_history::history(&state.store, &rel)
         .map_err(|e| to_error_response(types::NeboError::Internal(e)))?;
@@ -561,10 +595,11 @@ pub async fn restore_file_history(
     State(state): State<AppState>,
     Json(req): Json<RestoreHistoryRequest>,
 ) -> HandlerResult<serde_json::Value> {
-    let files_root = config::data_dir().map_err(to_error_response)?.join("files");
+    let workspace = config::workspace_dir().map_err(to_error_response)?;
+    let files_root = config::files_dir().map_err(to_error_response)?;
     let store = state.store.clone();
     let id = req.id;
-    let restored = tokio::task::spawn_blocking(move || tools::workspace_history::restore(&store, &files_root, id, None))
+    let restored = tokio::task::spawn_blocking(move || tools::workspace_history::restore(&store, &workspace, &files_root, id, None))
         .await
         .map_err(|e| to_error_response(types::NeboError::Internal(format!("restore task: {e}"))))?
         .map_err(|e| to_error_response(types::NeboError::Validation(e)))?;
@@ -675,7 +710,12 @@ pub(crate) async fn ensure_pdf_preview(
         .strip_prefix(files_root)
         .map(|r| r.to_string_lossy().into_owned())
         .unwrap_or_else(|_| name.to_string());
-    let cache = files_root.join(".previews").join(format!("{rel}.pdf"));
+    // Previews are Nebo's own: a workspace file's goes in the file store too
+    // (`.previews/workspace/…`), never into the owner's folder.
+    let cache = match config::files_dir() {
+        Ok(store) if store != files_root => store.join(".previews").join("workspace").join(format!("{rel}.pdf")),
+        _ => files_root.join(".previews").join(format!("{rel}.pdf")),
+    };
     let previews_dir = cache.parent().unwrap_or(files_root).to_path_buf();
 
     let src_mtime = tokio::fs::metadata(source)
@@ -1101,9 +1141,9 @@ mod history_tests {
         std::fs::create_dir_all(&dir).unwrap();
         let rel = format!("{}/growth model.xlsx", dir.file_name().unwrap().to_string_lossy());
         std::fs::write(files.join(&rel), "nine sheets").unwrap();
-        tools::workspace_history::look(nebo.store(), &files, Some("c1")).unwrap();
+        tools::workspace_history::look(nebo.store(), &files, &files, Some("c1")).unwrap();
         std::fs::write(files.join(&rel), "partial").unwrap();
-        tools::workspace_history::look(nebo.store(), &files, Some("c1")).unwrap();
+        tools::workspace_history::look(nebo.store(), &files, &files, Some("c1")).unwrap();
 
         let path = urlencoding::encode(&rel).into_owned();
         let listed = nebo.get_ok(&format!("/work/history?path={path}")).await;

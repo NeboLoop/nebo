@@ -8,12 +8,12 @@
  * tables (`fileMentions.test.ts`, `file_mentions_test.dart`) are kept row for
  * row. The rule:
  *
- * - an absolute path (`/…`), a home path (`~/…`), or a `file://` link to an
- *   absolute path (percent-decoded);
- * - inside a `files` folder — every bot keeps what it makes under
- *   `<its data folder>/files` (`/data/files/…` on a cloud bot,
- *   `…/Nebo/files/…` on a computer), so a path with no `/files/` segment
- *   cannot be one of its files and stays text;
+ * - an absolute path (`/…`, or `C:\…` on Windows), a home path (`~/…`), or a
+ *   `file://` link to an absolute path (percent-decoded);
+ * - inside a `files` or `NeboAI` folder — a bot keeps the owner's work in
+ *   `~/NeboAI` on a computer and its own files under `<its data folder>/files`
+ *   (`/data/files/…` on a cloud bot, `…/Nebo/files/…` on a computer), so a
+ *   path with neither segment cannot be one of its files and stays text;
  * - ending in a file name with an extension (`report.md`, not `BUG/` or
  *   `.env`), so folders and code snippets don't light up.
  *
@@ -23,8 +23,9 @@
  * a folder or is gone.
  */
 
-const FILES_SEGMENT = /\/files\//;
-const FILE_NAME = /^[^/.][^/]*\.[A-Za-z0-9]{1,10}$/;
+const FILES_SEGMENT = /[\\/](files|NeboAI)[\\/]/;
+const WINDOWS_ABSOLUTE = /^[A-Za-z]:[\\/]/;
+const FILE_NAME = /^[^/\\.][^/\\]*\.[A-Za-z0-9]{1,10}$/;
 
 /** The path a mention names (absolute or `~/…`), or null when it is not a
  *  file in a bot's files. `raw` is the whole of an inline code span or a
@@ -40,9 +41,9 @@ export function fileMention(raw: string): string | null {
 		}
 		if (!path.startsWith('/')) return null;
 	}
-	if (!path.startsWith('/') && !path.startsWith('~/')) return null;
+	if (!path.startsWith('/') && !path.startsWith('~/') && !WINDOWS_ABSOLUTE.test(path)) return null;
 	if (!FILES_SEGMENT.test(path)) return null;
-	const name = path.slice(path.lastIndexOf('/') + 1);
+	const name = path.slice(Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\')) + 1);
 	return FILE_NAME.test(name) ? path : null;
 }
 

@@ -27,7 +27,7 @@ impl Home {
     }
 
     fn look(&self, chat: &str) -> Look {
-        look(&self.store, &self.files, Some(chat)).unwrap()
+        look(&self.store, &self.files, &self.files, Some(chat)).unwrap()
     }
 
     fn history(&self, rel: &str) -> Vec<FileHistoryEntry> {
@@ -197,7 +197,7 @@ fn a_restore_keeps_the_current_content_first_and_can_be_undone() {
     h.look("c1");
     let before = h.history("model.xlsx")[0].clone();
 
-    let restored = restore(&h.store, &h.files, before.id, Some("c1")).unwrap();
+    let restored = restore(&h.store, &h.files, &h.files, before.id, Some("c1")).unwrap();
     assert_eq!(h.read("model.xlsx"), "36 KB nine sheets");
     let saved = restored.saved.expect("the content restored over is kept");
     assert_eq!(h.kept(&saved), "partial\n");
@@ -206,7 +206,7 @@ fn a_restore_keeps_the_current_content_first_and_can_be_undone() {
     assert_eq!(h.look("c1").kept, 0);
 
     // Restoring the content it replaced undoes it.
-    restore(&h.store, &h.files, saved.id, None).unwrap();
+    restore(&h.store, &h.files, &h.files, saved.id, None).unwrap();
     assert_eq!(h.read("model.xlsx"), "partial\n");
     assert_eq!(h.history("model.xlsx").len(), 2);
 }
@@ -222,7 +222,7 @@ fn a_deleted_file_is_restored_and_a_work_document_gets_the_version() {
     h.sh("rm plan.md");
     h.look("c1");
     let gone = h.history("plan.md")[0].clone();
-    let restored = restore(&h.store, &h.files, gone.id, None).unwrap();
+    let restored = restore(&h.store, &h.files, &h.files, gone.id, None).unwrap();
     assert_eq!(h.read("plan.md"), "the plan");
     assert!(restored.saved.is_none(), "nothing was there to keep");
     let (d, v) = restored.work.expect("the work document gets the restored content");
@@ -257,9 +257,9 @@ fn the_employee_lists_and_restores_a_files_earlier_version() {
     std::fs::create_dir_all(&files).unwrap();
     let store = std::sync::Arc::new(db::Store::new(&root.path().join("t.db").to_string_lossy()).unwrap());
     std::fs::write(files.join("model.xlsx"), "nine sheets").unwrap();
-    look(&store, &files, Some("c1")).unwrap();
+    look(&store, &files, &files, Some("c1")).unwrap();
     std::fs::write(files.join("model.xlsx"), "partial").unwrap();
-    look(&store, &files, Some("c1")).unwrap();
+    look(&store, &files, &files, Some("c1")).unwrap();
 
     let machine = std::sync::Arc::new(
         crate::file_tools::Machine::new(std::sync::Arc::new(crate::process::ProcessRegistry::new()), None).with_store(Some(store.clone())),
@@ -316,4 +316,64 @@ fn measure_a_look_at_a_2gb_workspace() {
         std::fs::write(h.files.join(format!("folder-{}/file-{i}.bin", i % 40)), format!("changed {i}")).unwrap();
     }
     timed("ten files changed");
+}
+
+/// The owner's workspace outside the file store (`~/NeboAI`): blobs stay in
+/// the store, and the coding agents' own folders keep no history of ours.
+#[test]
+fn a_workspace_outside_the_store_keeps_its_blobs_in_the_store_and_skips_agent_folders() {
+    let h = home();
+    let ws = h._dir.path().join("NeboAI");
+    for rel in ["report.md", "claude-code/notes.md", "codex-2/x.md", "gemini-cli/y.md", "work/plan.md"] {
+        let p = ws.join(rel);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, rel).unwrap();
+    }
+    let look = look(&h.store, &ws, &h.files, Some("c1")).unwrap();
+    // The owner's own `work` folder is his: only the store's is Nebo's.
+    assert_eq!(look.files, 2, "report.md and work/plan.md: {look:?}");
+    assert!(h.files.join(BLOBS_DIR).read_dir().unwrap().count() >= 2, "blobs in the store");
+    assert!(!ws.join(BLOBS_DIR).exists(), "never in the owner's folder");
+}
+
+/// Moving the workspace copies the owner's work, adopts what the new folder
+/// already has (never overwritten), leaves Nebo's own entries behind, and
+/// carries what an employee created over for exactly the copies.
+#[test]
+fn moving_the_workspace_adopts_what_is_there_and_copies_the_rest() {
+    let h = home();
+    h.write("report.md", "old report");
+    h.write("site/index.html", "<h1>");
+    h.write("clash.md", "nebo's");
+    h.write(".shared/abc/x.png", "png");
+    h.write("work/blobs/h.md", "blob");
+    h.write("uploads/u.pdf", "pdf");
+    h.write("capture-1.png", "eyes");
+    h.look("c1");
+    let ws = h._dir.path().join("NeboAI");
+    std::fs::create_dir_all(&ws).unwrap();
+    std::fs::write(ws.join("clash.md"), "the owner's").unwrap();
+    let created = |p: &Path| format!("file:{}", p.to_string_lossy());
+    h.store.add_employee_created("emp", &created(&h.files.join("report.md"))).unwrap();
+    h.store.add_employee_created("emp", &created(&h.files.join("clash.md"))).unwrap();
+
+    let moved = move_workspace(&h.store, &h.files, &ws).unwrap();
+    assert_eq!(moved, Moved { copied: 2, adopted: 1 });
+    assert_eq!(std::fs::read_to_string(ws.join("report.md")).unwrap(), "old report");
+    assert_eq!(std::fs::read_to_string(ws.join("site/index.html")).unwrap(), "<h1>");
+    assert_eq!(std::fs::read_to_string(ws.join("clash.md")).unwrap(), "the owner's", "never overwritten");
+    for own in [".shared", "work", "uploads", "capture-1.png"] {
+        assert!(!ws.join(own).exists(), "{own} is Nebo's own");
+    }
+    assert!(h.files.join("report.md").exists(), "the original stays: its links keep working");
+    let mine = vec![created(&ws.join("report.md")), created(&ws.join("clash.md"))];
+    let by = h.store.created_by("emp", &mine).unwrap();
+    assert!(by.contains(&mine[0]), "the copy is still the employee's");
+    assert!(!by.contains(&mine[1]), "an adopted file stays the owner's");
+
+    // The history starts over at the new root: nothing reads as deleted.
+    let after = look(&h.store, &ws, &h.files, Some("c1")).unwrap();
+    assert_eq!(after.kept, 0, "{after:?}");
+    // Moving again changes nothing.
+    assert_eq!(move_workspace(&h.store, &h.files, &ws).unwrap(), Moved { copied: 0, adopted: 3 });
 }

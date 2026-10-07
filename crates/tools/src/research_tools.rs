@@ -147,7 +147,7 @@ impl Research {
         let work: crate::orchestrator::Work = Box::new(move |cancel, progress, session_key| {
             Box::pin(async move {
                 let report_src = data_dir.join("research").join(&run_id).join("report.md");
-                let files_dir = data_dir.join("files");
+                let files_dir = config::workspace_dir().unwrap_or_else(|_| data_dir.join("files"));
                 let started = std::time::Instant::now();
                 let report = crate::deep_research::run(agent, data_dir, run_id, session_key, question, cfg, cancel, Some(progress.clone())).await?;
                 // The research card's final state.

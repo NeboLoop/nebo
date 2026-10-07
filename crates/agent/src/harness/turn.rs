@@ -625,14 +625,14 @@ async fn run(
 /// it ends, however it ends. A shell's `>` or a script is seen the same as a
 /// file tool's write.
 async fn keep_workspace(h: &Harness, session_id: &str) {
-    let Some(files) = h.workspace.clone() else {
+    let Some((workspace, files)) = h.workspace.clone() else {
         return;
     };
     let store = h.store.clone();
     let chat_id = h.sessions.active_chat_id(session_id);
     let started = std::time::Instant::now();
     let looked =
-        tokio::task::spawn_blocking(move || tools::workspace_history::look(&store, &files, Some(&chat_id))).await;
+        tokio::task::spawn_blocking(move || tools::workspace_history::look(&store, &workspace, &files, Some(&chat_id))).await;
     match looked {
         Ok(Ok(look)) => {
             let ms = started.elapsed().as_millis() as u64;
@@ -892,9 +892,9 @@ pub(crate) async fn prepare(
     };
     let environment = h.environment_fields(&req.seat.agent_id, req.seat.cwd.as_deref(), &channel, seat.execution_mode.into());
     let channel_plugin = h.tools.get(&format!("{}{channel}", tools::plugin_tools::PLUGIN_PREFIX)).await.is_some();
-    let files_dir = config::data_dir()
-        .map(|d| d.join("files").to_string_lossy().into_owned())
-        .unwrap_or_else(|_| "~/Documents".to_string());
+    let files_dir = config::workspace_dir()
+        .map(|d| d.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| "~/NeboAI".to_string());
     let channel_rules = sections::channel_rules(&channel, channel_plugin, &files_dir);
     let coworker_access = sections::coworker_access(seat.audience_restricted);
     let identity = Identity {
@@ -8315,7 +8315,7 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         let files = home.path().join("files");
         std::fs::create_dir_all(&files).unwrap();
-        let h = harness_with(model, vec![Box::new(Sh { dir: files.clone() })]).await.with_workspace_history(files.clone());
+        let h = harness_with(model, vec![Box::new(Sh { dir: files.clone() })]).await.with_workspace_history(files.clone(), files.clone());
         (home, files, h)
     }
 

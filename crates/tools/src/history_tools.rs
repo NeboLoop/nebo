@@ -268,8 +268,8 @@ fn write_transcript(name: &str, msgs: &[&db::models::ChatMessage], offset: usize
     let Some(file) = std::path::Path::new(name.trim()).file_name() else {
         return ToolResult::error("to_file is a file name, like transcript.md.");
     };
-    let dir = match config::data_dir() {
-        Ok(d) => d.join("files"),
+    let dir = match config::workspace_dir() {
+        Ok(d) => d,
         Err(e) => return ToolResult::error(format!("Cannot find the files folder: {e}")),
     };
     let text: String = msgs
