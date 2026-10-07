@@ -23,6 +23,7 @@ mod engine;
 mod event_dedup;
 mod file_history;
 mod inbound_mail;
+mod intelligence_packs;
 mod entity_config;
 mod license_keys;
 mod mcp_integrations;

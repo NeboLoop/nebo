@@ -6,6 +6,7 @@ pub mod labels;
 pub mod language;
 pub mod own_ports;
 pub mod owner_need;
+pub mod packs;
 pub mod pathres;
 pub mod permissions;
 pub mod provenance;

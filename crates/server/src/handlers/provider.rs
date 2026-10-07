@@ -893,3 +893,109 @@ mod reload_tests {
         assert!(ids.iter().any(|id| id == ai::providers::linked::ID), "the reload keeps the linked provider: {ids:?}");
     }
 }
+
+// ── Intelligence packs (`types::packs`) ─────────────────────────────
+
+/// What the app sends to make or change a pack.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PackBody {
+    pub name: String,
+    #[serde(default)]
+    pub levels: types::packs::PackLevels,
+    #[serde(default = "fallback_on")]
+    pub fallback: bool,
+}
+
+fn fallback_on() -> bool {
+    true
+}
+
+/// The pack a body describes, or why it can't be one: a name, and every
+/// level a `provider/model` (never another pack).
+fn pack_of(id: String, body: PackBody) -> Result<types::packs::Pack, types::NeboError> {
+    let name = body.name.trim().to_string();
+    if name.is_empty() {
+        return Err(types::NeboError::Validation("A pack needs a name.".into()));
+    }
+    let l = &body.levels;
+    for model in [&l.instant, &l.low, &l.medium, &l.high, &l.max, &l.vision, &l.voice].into_iter().flatten() {
+        let model = model.trim();
+        let well_formed = model.split_once('/').is_some_and(|(p, m)| !p.is_empty() && !m.is_empty());
+        if !model.is_empty() && (!well_formed || types::packs::parse_ref(model).is_some()) {
+            return Err(types::NeboError::Validation(format!("{model} isn't a model (provider/model).")));
+        }
+    }
+    // Auto is Janus's alone: a pack the owner makes runs at the level he set.
+    let levels = types::packs::PackLevels { auto: None, ..body.levels };
+    Ok(types::packs::Pack { id, name, levels, fallback: body.fallback, built_in: false })
+}
+
+/// GET /api/v1/intelligence-packs — every pack, Nebo AI first.
+pub async fn list_packs(State(state): State<AppState>) -> HandlerResult<serde_json::Value> {
+    let packs = state.store.list_intelligence_packs().map_err(to_error_response)?;
+    Ok(Json(serde_json::json!({ "packs": packs })))
+}
+
+/// POST /api/v1/intelligence-packs — make a pack.
+pub async fn create_pack(
+    State(state): State<AppState>,
+    Json(body): Json<PackBody>,
+) -> HandlerResult<serde_json::Value> {
+    let pack = pack_of(uuid::Uuid::new_v4().to_string(), body).map_err(to_error_response)?;
+    state.store.save_intelligence_pack(&pack).map_err(to_error_response)?;
+    Ok(Json(serde_json::json!({ "pack": pack })))
+}
+
+/// PUT /api/v1/intelligence-packs/{id} — change one of the owner's packs.
+/// Nebo AI is built in: refused.
+pub async fn update_pack(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<PackBody>,
+) -> HandlerResult<serde_json::Value> {
+    if state.store.get_intelligence_pack(&id).map_err(to_error_response)?.is_none() {
+        return Err(to_error_response(types::NeboError::NotFound));
+    }
+    let pack = pack_of(id, body).map_err(to_error_response)?;
+    state.store.save_intelligence_pack(&pack).map_err(to_error_response)?;
+    Ok(Json(serde_json::json!({ "pack": pack })))
+}
+
+/// DELETE /api/v1/intelligence-packs/{id} — remove one of the owner's packs.
+/// An employee still on it runs on Nebo AI, and is told so.
+pub async fn delete_pack(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> HandlerResult<serde_json::Value> {
+    if !state.store.delete_intelligence_pack(&id).map_err(to_error_response)? {
+        return Err(to_error_response(types::NeboError::NotFound));
+    }
+    Ok(Json(serde_json::json!({ "deleted": id })))
+}
+
+#[cfg(test)]
+mod pack_tests {
+    use super::{PackBody, pack_of};
+    use types::packs::PackLevels;
+
+    fn body(name: &str, medium: &str) -> PackBody {
+        PackBody {
+            name: name.into(),
+            levels: PackLevels { medium: Some(medium.into()), auto: Some("janus/nebo-1".into()), ..Default::default() },
+            fallback: true,
+        }
+    }
+
+    #[test]
+    fn a_pack_needs_a_name_and_real_models_and_never_gets_auto() {
+        let pack = pack_of("p".into(), body(" Mine ", "anthropic/claude-x")).unwrap();
+        assert_eq!(pack.name, "Mine");
+        assert_eq!(pack.levels.auto, None, "Auto is Janus's alone");
+        assert!(!pack.built_in);
+        assert!(pack_of("p".into(), body("  ", "anthropic/claude-x")).is_err());
+        assert!(pack_of("p".into(), body("Mine", "claude-x")).is_err(), "provider/model");
+        assert!(pack_of("p".into(), body("Mine", "pack/other")).is_err(), "never another pack");
+        assert!(pack_of("p".into(), body("Mine", "")).is_ok(), "an empty level is empty");
+    }
+}
