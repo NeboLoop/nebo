@@ -664,6 +664,17 @@ export interface ExtensionInfo {
 	needsConfiguration: boolean
 }
 
+export interface FileHistoryEntry {
+	id: number
+	path: string
+	hash: string
+	ext: string
+	sizeBytes: number
+	reason: string
+	chatId?: string
+	capturedAt: number
+}
+
 export interface HandleAvailableResponse {
 	available: boolean
 }
@@ -1692,6 +1703,11 @@ export interface EnableAgentChannelResponse {
 	ok: boolean
 }
 
+export interface FileHistoryResponse {
+	path: string
+	entries: unknown[]
+}
+
 export interface GetAgentOperationsResponse {
 	default: unknown
 	configured: unknown
@@ -2247,6 +2263,12 @@ export interface RemoveTeamResponse {
 
 export interface ResolveLearningResponse {
 	status: string
+}
+
+export interface RestoreFileHistoryResponse {
+	path: string
+	restored: unknown
+	saved: unknown
 }
 
 export interface RevertLearningResponse {

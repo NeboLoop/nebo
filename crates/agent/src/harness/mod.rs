@@ -90,6 +90,10 @@ pub struct Harness {
     /// decide (PRD-Permissions §4.7); `None` goes straight to the aux
     /// classifier.
     pub(crate) decide: Option<Arc<ai::DecideClient>>,
+    /// The owner's workspace (`<data_dir>/files`) whose files keep their
+    /// history around every turn (`tools::workspace_history`); `None` keeps
+    /// none.
+    pub(crate) workspace: Option<std::path::PathBuf>,
 }
 
 impl Harness {
@@ -126,6 +130,7 @@ impl Harness {
             active_turns: Default::default(),
             phone_locations: Default::default(),
             decide: None,
+            workspace: None,
         }
     }
 
@@ -139,6 +144,12 @@ impl Harness {
     /// Jev: the permission judge's first reader.
     pub fn with_decide(mut self, decide: Arc<ai::DecideClient>) -> Self {
         self.decide = Some(decide);
+        self
+    }
+
+    /// The owner's workspace: every turn keeps the history of its files.
+    pub fn with_workspace_history(mut self, files_dir: std::path::PathBuf) -> Self {
+        self.workspace = Some(files_dir);
         self
     }
 

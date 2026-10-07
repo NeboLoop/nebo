@@ -42,6 +42,54 @@ impl Machine {
         self
     }
 
+    /// A workspace file's earlier versions (`workspace_history`).
+    fn file_history(&self, ctx: &ToolContext, path: &str) -> ToolResult {
+        let Some(store) = self.store.as_ref() else {
+            return ToolResult::error("File history isn't available here.");
+        };
+        let files = crate::checkpoint::data_dir().join("files");
+        let path = match ctx.cwd.as_deref() {
+            Some(cwd) if std::path::Path::new(path).is_relative() => std::path::Path::new(cwd).join(path),
+            _ => types::pathres::expand(path),
+        };
+        let Some(rel) = crate::workspace_history::workspace_path(&files, &path.to_string_lossy()) else {
+            return ToolResult::error(format!(
+                "{} is not in the workspace ({}): only its files keep earlier versions.",
+                path.display(),
+                files.display()
+            ));
+        };
+        match crate::workspace_history::history(store, &rel) {
+            Ok(entries) => ToolResult::ok(crate::workspace_history::describe(&rel, &entries)),
+            Err(e) => ToolResult::error(e),
+        }
+    }
+
+    /// Put a workspace file's earlier version back; the read ledger learns
+    /// the file, so the next edit is not warned about a change it made.
+    fn restore_file_history(&self, ctx: &ToolContext, id: i64) -> ToolResult {
+        let Some(store) = self.store.as_ref() else {
+            return ToolResult::error("File history isn't available here.");
+        };
+        let files = crate::checkpoint::data_dir().join("files");
+        let target = match store.get_file_history(id) {
+            Ok(Some(e)) => files.join(&e.path),
+            Ok(None) => return ToolResult::error(format!("No earlier version {}{id} is kept.", crate::workspace_history::ID_PREFIX)),
+            Err(e) => return ToolResult::error(e.to_string()),
+        };
+        let target = target.to_string_lossy().into_owned();
+        if let Some(blocked) = ctx.outside_folders("restore", std::slice::from_ref(&target)) {
+            return ToolResult::error(blocked);
+        }
+        match crate::workspace_history::restore(store, &files, id, None) {
+            Ok(restored) => {
+                self.file.note_shell_write(ctx.session_key.as_str(), &target);
+                ToolResult::ok(crate::workspace_history::describe_restore(&restored))
+            }
+            Err(e) => ToolResult::error(e),
+        }
+    }
+
     /// A written file's result, with the app location note when the file is
     /// a web file for an app but outside the folder the app is served from.
     fn with_app_note(&self, ctx: &ToolContext, input: &Value, result: ToolResult) -> ToolResult {
@@ -915,15 +963,23 @@ impl DynTool for ListCheckpointsTool {
     }
 
     fn description(&self) -> String {
-        "Lists the restore points saved in this conversation, newest first, with their ids and files.".to_string()
+        "Lists the restore points saved in this conversation, newest first, with their ids and files.\n\
+         - With `path`, lists that workspace file's earlier versions instead: every file in the workspace keeps \
+         what it was before any change or delete (by a tool, a command or a script), with ids like fh-12."
+            .to_string()
     }
 
     fn schema(&self) -> Value {
-        json!({ "type": "object", "properties": {} })
+        json!({
+            "type": "object",
+            "properties": {
+                "path": { "type": "string", "description": "A workspace file whose earlier versions to list." }
+            }
+        })
     }
 
     fn search_hint(&self) -> &str {
-        "list saved file restore points"
+        "list restore points or a file's earlier versions"
     }
 
     fn read_only(&self, _input: &Value) -> bool {
@@ -942,8 +998,13 @@ impl DynTool for ListCheckpointsTool {
         "Listed restore points".to_string()
     }
 
-    fn execute_dyn<'a>(&'a self, ctx: &'a ToolContext, _input: Value) -> Fut<'a> {
-        Box::pin(async move { self.0.file.execute(ctx, json!({"action": "checkpoints"})) })
+    fn execute_dyn<'a>(&'a self, ctx: &'a ToolContext, input: Value) -> Fut<'a> {
+        Box::pin(async move {
+            match input.get("path").and_then(Value::as_str).filter(|p| !p.trim().is_empty()) {
+                Some(path) => self.0.file_history(ctx, path),
+                None => self.0.file.execute(ctx, json!({"action": "checkpoints"})),
+            }
+        })
     }
 }
 
@@ -956,7 +1017,9 @@ impl DynTool for RestoreCheckpointTool {
 
     fn description(&self) -> String {
         "Puts files back as they were at a restore point from checkpoint_files.\n\
-         - Leave out `paths` to restore every file the checkpoint saved."
+         - Leave out `paths` to restore every file the checkpoint saved.\n\
+         - An fh-… id from list_checkpoints(path) puts that workspace file's earlier version back; what it is \
+         now is kept first."
             .to_string()
     }
 
@@ -964,7 +1027,7 @@ impl DynTool for RestoreCheckpointTool {
         json!({
             "type": "object",
             "properties": {
-                "checkpoint": { "type": "string", "description": "The checkpoint id (cp-…) from checkpoint_files or list_checkpoints." },
+                "checkpoint": { "type": "string", "description": "The checkpoint id (cp-…) from checkpoint_files or list_checkpoints, or a file's earlier version (fh-…) from list_checkpoints(path)." },
                 "paths": { "type": "array", "items": { "type": "string" }, "description": "Only these of the checkpoint's files." }
             },
             "required": ["checkpoint"]
@@ -972,7 +1035,7 @@ impl DynTool for RestoreCheckpointTool {
     }
 
     fn search_hint(&self) -> &str {
-        "undo file changes from restore point"
+        "undo changes, restore a file's previous version"
     }
 
     fn capability(&self, _input: &Value) -> Option<&'static str> {
@@ -989,6 +1052,10 @@ impl DynTool for RestoreCheckpointTool {
 
     fn execute_dyn<'a>(&'a self, ctx: &'a ToolContext, input: Value) -> Fut<'a> {
         Box::pin(async move {
+            let named = input.get("checkpoint").and_then(Value::as_str).unwrap_or_default();
+            if let Some(id) = crate::workspace_history::parse_id(named) {
+                return self.0.restore_file_history(ctx, id);
+            }
             let mut call = input;
             call["action"] = json!("restore");
             self.0.file.execute(ctx, call)

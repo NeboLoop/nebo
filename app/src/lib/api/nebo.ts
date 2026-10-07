@@ -2337,6 +2337,20 @@ export function listWorkDocuments() {
 }
 
 /**
+ * @description "File history"
+ */
+export function fileHistory(path: string) {
+	return webapi.get<components.FileHistoryResponse>(`/api/v1/work/history`, { path })
+}
+
+/**
+ * @description "Restore file history"
+ */
+export function restoreFileHistory(req: Record<string, unknown> = {}) {
+	return webapi.post<components.RestoreFileHistoryResponse>(`/api/v1/work/history/restore`, req)
+}
+
+/**
  * @description "Locate work file"
  */
 export function locateWorkFile(path: string) {

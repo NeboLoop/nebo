@@ -2095,6 +2095,18 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
     if let Some(ep) = embedding_provider.clone() {
         harness = harness.with_embedding_provider(ep);
     }
+    // Nothing in the owner's workspace is lost without history: every turn
+    // looks at it (`tools::workspace_history`). The first look after a start
+    // runs now, in the background, so no turn waits on hashing it whole.
+    if let Ok(dir) = config::data_dir() {
+        let files = dir.join("files");
+        harness = harness.with_workspace_history(files.clone());
+        let store = store.clone();
+        tokio::task::spawn_blocking(move || match tools::workspace_history::look(&store, &files, None) {
+            Ok(look) => info!(files = look.files, hashed = look.hashed, kept = look.kept, "workspace history: looked at start"),
+            Err(e) => warn!(error = %e, "workspace history: the look at start failed"),
+        });
+    }
 
     // Spawn background memory consolidation sweep (30-min interval, per-scope
     // dedup/prune); the embedding provider keeps merged values' vectors fresh

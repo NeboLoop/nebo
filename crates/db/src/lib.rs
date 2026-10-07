@@ -29,6 +29,7 @@ pub use queries::SessionGoal;
 pub use queries::{ToolNamingCell, tool_naming_places};
 pub use queries::{OwnerNeedRow, ToldNeed};
 pub use queries::PluginAccountProfile;
+pub use queries::{FileHistoryEntry, NewFileHistory, WorkspaceIndexRow};
 pub use queries::{WorkDocument, WorkDocumentListing, WorkDocumentVersion};
 pub use queries::{team_thread_key, Team, TeamMember, TeamMessage, TEAM_THREAD_PREFIX};
 pub use queries::{TemporaryClaim, TemporaryKind, TemporaryWork};

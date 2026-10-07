@@ -110,6 +110,7 @@ pub mod spotlight_tool;
 pub mod store_app;
 pub mod vm_tool;
 pub mod walk_bounds;
+pub mod workspace_history;
 pub mod web_tool;
 pub mod system_packages;
 pub mod task_tools;

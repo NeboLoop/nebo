@@ -2419,7 +2419,7 @@ fn version_app_artifacts(
                     }
                 }
 
-                let versioned_url = put_work_blob(store, &files_dir, &hash, &ext, &bytes)?;
+                let versioned_url = tools::workspace_history::put_work_blob(store, &files_dir, &hash, &ext, &bytes)?;
                 let parent_id = latest.as_ref().map(|v| v.id.as_str());
                 let version = store.add_work_version(
                     &doc.id,
@@ -2447,36 +2447,6 @@ fn version_app_artifacts(
             }
         })
         .collect()
-}
-
-/// Content-addressed blob: store the bytes ONCE keyed by hash, so a revert or
-/// the same content across documents reuses one file. The ext keeps
-/// serve_file's content-type detection working. Answers the URL a work
-/// version points at.
-pub(crate) fn put_work_blob(
-    store: &db::Store,
-    files_dir: &std::path::Path,
-    hash: &str,
-    ext: &str,
-    bytes: &[u8],
-) -> Result<String, types::NeboError> {
-    let blob_name = if ext.is_empty() {
-        hash.to_string()
-    } else {
-        format!("{}.{}", hash, ext)
-    };
-    let rel = format!("work/blobs/{}", blob_name);
-    let dest = files_dir.join(&rel);
-    if !dest.exists() {
-        if let Some(parent) = dest.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| types::NeboError::Internal(format!("mkdir blobs dir: {e}")))?;
-        }
-        std::fs::write(&dest, bytes)
-            .map_err(|e| types::NeboError::Internal(format!("write blob: {e}")))?;
-    }
-    let _ = store.register_content_blob(hash, ext, bytes.len() as i64);
-    Ok(format!("/api/v1/files/{}", rel))
 }
 
 /// Surface a work version made outside a turn (a restore, a save from the
