@@ -73,6 +73,16 @@ pub fn expand_variables(body: &str, ctx: &SkillContext) -> String {
     result
 }
 
+/// The skill's own data folder (`<appdata>/skills/<name>`), when its name
+/// is one plain folder name: a name such as `..` never claims the folder
+/// above it.
+pub fn own_data_dir(skill: &super::Skill, ctx: &SkillContext) -> Option<PathBuf> {
+    let mut parts = std::path::Path::new(&skill.name).components();
+    let named = matches!((parts.next(), parts.next()), (Some(std::path::Component::Normal(_)), None));
+    let dir = PathBuf::from(&ctx.data_dir);
+    (named && dir.is_absolute() && dir.file_name() == Some(std::ffi::OsStr::new(&skill.name))).then_some(dir)
+}
+
 /// Build a `SkillContext` for a given skill at activation time.
 ///
 /// Resolves the skill directory, data directory, user name, platform info,

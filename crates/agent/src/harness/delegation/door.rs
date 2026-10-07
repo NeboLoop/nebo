@@ -39,7 +39,7 @@ impl HelperDoor {
         for name in names {
             match loader.get(name, scope).await {
                 Some(skill) if skill.enabled => {
-                    let content = loader.expand_template(&skill, Some(&self.harness.store));
+                    let content = loader.expand_template(&skill, Some(&self.harness.store), agent_id);
                     if !content.is_empty() {
                         out.push((name.clone(), content));
                     }

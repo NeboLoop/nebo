@@ -1223,8 +1223,22 @@ impl Loader {
     ///
     /// Resolves `${NEBO_SKILL_DIR}`, `${NEBO_DATA_DIR}`, `${NEBO_USER_NAME}`,
     /// `${NEBO_OS}`, `${NEBO_ARCH}`, `${plugin.SLUG_BIN}`, and `${secret.KEY}`.
-    pub fn expand_template(&self, skill: &Skill, store: Option<&db::Store>) -> String {
+    ///
+    /// `agent_id` is the employee the skill is expanded for (empty: none).
+    /// A body that works in the skill's data folder makes that folder the
+    /// employee's own work: what the skill's scripts write there (a run
+    /// log, its state) is the employee's to replace on its next run, in a
+    /// chat, a schedule or a workflow alike. Nothing outside it is claimed.
+    pub fn expand_template(&self, skill: &Skill, store: Option<&db::Store>, agent_id: &str) -> String {
         let ctx = super::expand::build_context(skill, self.plugin_store.as_deref(), store);
+        if let Some(store) = store
+            && !agent_id.is_empty()
+            && skill.template.contains("${NEBO_DATA_DIR}")
+            && let Some(folder) = super::expand::own_data_dir(skill, &ctx)
+            && let Err(e) = store.add_employee_created(agent_id, &format!("file:{}", folder.display()))
+        {
+            warn!(skill = %skill.name, error = %e, "skill data folder not recorded as the employee's own");
+        }
         super::expand::expand_variables(&skill.template, &ctx)
     }
 }
@@ -1828,6 +1842,48 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
+    /// A skill expanded for an employee, whose body works in its data
+    /// folder, makes that folder the employee's own in the created ledger
+    /// (Vivid 2026-10: `rm -f ${NEBO_DATA_DIR}/last_run_log.jsonl`, the log
+    /// its own script wrote last run, was refused daily as not its own).
+    /// Expanded for no one, or a body that never names the folder, claims
+    /// nothing; a name that is not one plain folder name claims nothing.
+    #[test]
+    fn a_skill_working_in_its_data_folder_makes_it_the_employees_own() {
+        let _g = crate::TEST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let home = TempDir::new().unwrap();
+        // SAFETY: serialized by the crate-wide env lock.
+        unsafe { std::env::set_var("NEBO_HOME", home.path()) };
+        let store = db::Store::new(&home.path().join("t.db").to_string_lossy()).unwrap();
+        let loader = Loader::new(home.path().join("installed"), home.path().join("user"));
+        let skill = |name: &str, body: &str| {
+            super::super::skill::parse_skill_md(format!("---\nname: {name}\ndescription: d\n---\n{body}\n").as_bytes()).unwrap()
+        };
+        let folder = home.path().join("appdata").join("skills").join("vw-order-intake");
+        let named = format!("file:{}", folder.display());
+        let log = skill("vw-order-intake", "rm -f ${NEBO_DATA_DIR}/last_run_log.jsonl; python3 x.py");
+
+        loader.expand_template(&log, Some(&store), "");
+        assert!(store.created_by("emp", std::slice::from_ref(&named)).unwrap().is_empty(), "no employee, no claim");
+
+        let expanded = loader.expand_template(&log, Some(&store), "emp");
+        assert!(expanded.contains(&format!("rm -f {}/last_run_log.jsonl", folder.display())));
+        assert!(store.created_by("emp", std::slice::from_ref(&named)).unwrap().contains(&named));
+        assert!(store.created_by("other", std::slice::from_ref(&named)).unwrap().is_empty(), "only the employee it ran for");
+
+        let plain = skill("notes", "Write a summary.");
+        loader.expand_template(&plain, Some(&store), "emp");
+        let notes = format!("file:{}", home.path().join("appdata/skills/notes").display());
+        assert!(store.created_by("emp", &[notes]).unwrap().is_empty(), "a body that never works in its folder claims nothing");
+
+        let mut up = skill("up", "ls ${NEBO_DATA_DIR}");
+        up.name = "..".into();
+        let ctx = super::super::expand::build_context(&up, None, None);
+        assert_eq!(super::super::expand::own_data_dir(&up, &ctx), None, "`..` never claims the folder above");
+        // SAFETY: serialized by the crate-wide env lock.
+        unsafe { std::env::remove_var("NEBO_HOME") };
+    }
+
     #[test]
     fn qualified_short_name_resolves_marketplace_refs_only() {
         assert_eq!(qualified_short_name("@org/skills/my-skill"), Some("my-skill"));
@@ -2301,7 +2357,7 @@ Triage instructions.
             "relative scripts must still be found under base_dir"
         );
         assert!(base.starts_with(agents.path()), "base_dir stays in the package");
-        let expanded = loader.expand_template(&mine, None);
+        let expanded = loader.expand_template(&mine, None, "");
         assert!(
             expanded.contains(base.join("scripts").join("run.py").to_str().unwrap()),
             "${{NEBO_SKILL_DIR}} must expand to the package's skill directory"

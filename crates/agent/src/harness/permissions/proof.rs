@@ -454,6 +454,77 @@ async fn full_access_unattended_never_removes_others_work() {
     assert!(matches!(run("cargo build --release", Origin::Workflow, Door::Workflow, false), Decision::Allow { .. }));
 }
 
+/// `full-access-own-work-across-runs` (Vivid, 2026-10-01 on): a workflow's
+/// command step begins `rm -f ${NEBO_DATA_DIR}/last_run_log.jsonl`, the log
+/// the same employee's skill script wrote on its last run, and was refused
+/// every day as not its own: a script's writes name no file, so nothing was
+/// in the created ledger. What an employee made is its own in every later
+/// run, and the data folder of a skill it runs (recorded when the skill is
+/// expanded for it, `skills::Loader::expand_template`) holds its own work. The
+/// owner's files, another employee's, and another skill's folder are still
+/// refused.
+#[tokio::test]
+async fn full_access_own_work_is_its_own_across_runs() {
+    use types::permissions::{Door, Mode, Why};
+    let (_d, store) = store();
+    for agent in ["inv", "acct"] {
+        store.set_permission_mode(&Scope::Employee(agent.into()), Mode::FullAccess).unwrap();
+    }
+    let run = |agent: &str, run_id: &str, command: &str| -> Decision {
+        let grant = resolve_grant(&store, agent, None);
+        let ctx = ToolContext {
+            origin: Origin::Workflow,
+            door: Door::Workflow,
+            session_key: format!("agent:{agent}:workflow:{run_id}"),
+            grant: Some(Arc::new(grant.clone())),
+            ..Default::default()
+        };
+        let input = serde_json::json!({ "command": command });
+        let t = Target {
+            tool: "run_command".into(),
+            key: "run_command".into(),
+            operation: None,
+            capability: Some("shell".into()),
+            field: Some(types::permissions::RuleField::CommandPrefix(command.into())),
+            subject: None,
+            read_only: false,
+            effects: tools::policy::shell_effects(command, None).anchored(std::path::Path::new("/")),
+        };
+        decide(&CheckCx { ctx: &ctx, input: &input, grant: &grant, store: &store }, &t)
+    };
+    let refused = |d: &Decision| matches!(d, Decision::Deny { why: Why::HardLimit { limit }, .. } if limit == "not_its_own");
+    let allowed = |d: &Decision| matches!(d, Decision::Allow { .. });
+
+    // The step exactly as Vivid's order-intake runs it.
+    let data = "/data/appdata/skills/vw-order-intake";
+    let parse = format!(
+        "rm -f {data}/last_run_log.jsonl; python3 /data/nebo/skills/vw-order-intake/scripts/parse_report.py parse \
+         /data/appdata/skills/vw-order-intake/inbox/1a-Open_Order_Report.xls --state {data}/fo_state.json \
+         --outdir {data}/chunks --chunk-size 4"
+    );
+    assert!(refused(&run("inv", "r1", &parse)), "before the skill is expanded for it, the folder is no one's");
+
+    // The workflow expands its skill for the employee: the row it writes.
+    store.add_employee_created("inv", &format!("file:{data}")).unwrap();
+    assert!(allowed(&run("inv", "r2", &parse)), "{:?}", run("inv", "r2", &parse));
+    // Whatever its skill script wrote there, on any run, is its own.
+    assert!(allowed(&run("inv", "r3", &format!("rm -rf {data}/chunks/chunk_0.json {data}/state"))));
+    // Another employee never inherits it.
+    assert!(refused(&run("acct", "r1", &parse)));
+
+    // A file the employee made on run N is its own on run N+1.
+    let made = "/Users/owner/reports/intake-summary.csv";
+    assert!(refused(&run("inv", "r4", &format!("rm {made}"))));
+    store.add_employee_created("inv", &format!("file:{made}")).unwrap();
+    assert!(allowed(&run("inv", "r5", &format!("rm {made}"))));
+    assert!(refused(&run("acct", "r2", &format!("rm {made}"))), "another employee's file stays refused");
+
+    // The owner's files and another skill's data folder stay refused.
+    assert!(refused(&run("inv", "r6", "rm -f /Users/owner/reports/q3.xlsx")));
+    assert!(refused(&run("inv", "r7", "rm -f /data/appdata/skills/vw-job-costing/last_run_log.jsonl")));
+    assert!(refused(&run("inv", "r8", "rm -rf /data/appdata/skills")), "the folder above the skill's is not its own");
+}
+
 /// A server on this computer that answers every request with a page titled
 /// "Example Domain", and counts the connections it took.
 fn page_server() -> (u16, Arc<std::sync::atomic::AtomicUsize>) {
