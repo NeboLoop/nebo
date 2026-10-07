@@ -1,0 +1,11 @@
+id: sc91-a-restored-cloud-bot-fetches-the-plugin-packages-its-state-left-out
+name: "SC91 — A restored cloud bot fetches the plugin packages its state left out"
+description: |
+  A cloud bot's saved state leaves plugin packages out. Restored with the
+  plugin's records and data but no package, its pass fetches the package
+  once through the one plugin installer, and the plugin's data beside its
+  versions and in its data directory is untouched. A desktop's pass leaves
+  it alone; a pass with nothing to fetch ends at once.
+target_component: staffed-company
+proof: staffed_proof::connections::a_restored_cloud_bot_fetches_the_plugin_packages_its_state_left_out
+conversation: []
