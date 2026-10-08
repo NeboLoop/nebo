@@ -87,6 +87,45 @@ pub fn encrypt_stored_profile_keys(store: &db::Store) -> Result<usize, String> {
         .map_err(|e| e.to_string())
 }
 
+/// A plugin setting's value in the clear, for the plugin's env. A secret
+/// setting is stored encrypted (`enc:`): one that will not decrypt, or one
+/// still in the clear (never after `encrypt_stored_plugin_secrets`), is no
+/// value: logged, and empty.
+pub fn plugin_setting_value(setting: &db::models::PluginSetting) -> String {
+    if setting.is_secret == 0 || setting.setting_value.is_empty() {
+        return setting.setting_value.clone();
+    }
+    if !is_encrypted(&setting.setting_value) {
+        tracing::warn!(plugin = %setting.plugin_id, key = %setting.setting_key, "secret plugin setting is not encrypted; ignored");
+        return String::new();
+    }
+    decrypt(&setting.setting_value).unwrap_or_else(|e| {
+        tracing::warn!(plugin = %setting.plugin_id, key = %setting.setting_key, error = %e, "secret plugin setting could not be decrypted");
+        String::new()
+    })
+}
+
+/// Encrypt every secret plugin setting still stored in the clear, in place,
+/// in the live database and its local copies (`db::Store::reseal_plugin_secrets`).
+/// `declared` is the (slug, key) pairs the installed plugins declare secret
+/// (`napp::plugin::PluginManifest::is_secret_setting`). Run on every start,
+/// after `init` and before any plugin's env is built: a second run changes
+/// nothing. Returns how many settings the live database had changed.
+pub fn encrypt_stored_plugin_secrets(
+    store: &db::Store,
+    declared: &[(String, String)],
+) -> Result<usize, String> {
+    store
+        .reseal_plugin_secrets(declared, |value| {
+            if value.is_empty() || is_encrypted(value) {
+                Ok(None)
+            } else {
+                encrypt(value).map(Some)
+            }
+        })
+        .map_err(|e| e.to_string())
+}
+
 /// Check if a value is encrypted (has the `enc:` prefix).
 pub fn is_encrypted(value: &str) -> bool {
     value.starts_with(ENCRYPTED_PREFIX)
@@ -187,6 +226,86 @@ mod tests {
         let sealed = get("a").api_key;
         assert_eq!(encrypt_stored_profile_keys(&store).unwrap(), 0, "a second start changes nothing");
         assert_eq!(get("a").api_key, sealed);
+        drop(store);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn setting(value: &str, is_secret: i64) -> db::models::PluginSetting {
+        db::models::PluginSetting {
+            id: "napp-odoo:K".into(),
+            plugin_id: "napp-odoo".into(),
+            setting_key: "K".into(),
+            setting_value: value.into(),
+            is_secret,
+            created_at: 0,
+            updated_at: 0,
+        }
+    }
+
+    /// A secret plugin setting opens to what was typed; a setting that isn't
+    /// secret is its value; a secret still in the clear is not read at all.
+    #[test]
+    fn a_plugin_secret_round_trips_and_plaintext_is_not_read() {
+        setup_encryptor();
+        let sealed = encrypt("odoo-key-123").unwrap();
+        assert!(is_encrypted(&sealed));
+        assert_eq!(plugin_setting_value(&setting(&sealed, 1)), "odoo-key-123");
+        assert_eq!(plugin_setting_value(&setting("https://acme.odoo.com", 0)), "https://acme.odoo.com");
+        assert_eq!(plugin_setting_value(&setting("odoo-key-123", 1)), "", "no legacy read path");
+        assert_eq!(plugin_setting_value(&setting("", 1)), "");
+    }
+
+    /// Plugin secrets typed before they were encrypted are encrypted in place
+    /// on the next start — in the live database and the ring's copy — and
+    /// open to the same value for the plugin's env. A setting the plugin
+    /// declares secret is sealed and marked secret even when it was saved as
+    /// not secret; one that is neither stays as it is. A second start
+    /// changes nothing.
+    #[test]
+    fn plugin_secrets_stored_in_the_clear_are_encrypted_in_place_once() {
+        setup_encryptor();
+        const SENTINEL: &str = "odoo-SENTINEL-at-rest-5151515151";
+        const DECLARED: &str = "odoo-SENTINEL-declared-6262626262";
+        let dir = std::env::temp_dir().join(format!("nebo-reseal-plugin-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = db::Store::new(dir.join("nebo.db").to_str().unwrap()).unwrap();
+        store.upsert_installed_plugin("odoo", "Odoo", "1.0.0", "", "", "", "unverified").unwrap();
+        store.upsert_plugin_setting_by_slug("odoo", "ODOO_API_KEY", SENTINEL, true).unwrap();
+        store.upsert_plugin_setting_by_slug("odoo", "ODOO_PASSWORD", DECLARED, false).unwrap();
+        store.upsert_plugin_setting_by_slug("odoo", "ODOO_REGION", "eu", false).unwrap();
+        store.upsert_plugin_setting_by_slug("odoo", "ODOO_EMPTY", "", true).unwrap();
+        store.snapshot("manual").unwrap();
+        assert!(
+            bytes_under(&dir).iter().any(|(_, b)| b.windows(SENTINEL.len()).any(|w| w == SENTINEL.as_bytes())),
+            "the fixture really starts with the secret in the clear"
+        );
+
+        let declared = vec![("odoo".to_string(), "ODOO_PASSWORD".to_string())];
+        assert_eq!(encrypt_stored_plugin_secrets(&store, &declared).unwrap(), 2);
+        let get = |key: &str| {
+            store.list_plugin_settings_by_slug("odoo").unwrap().into_iter().find(|s| s.setting_key == key).unwrap()
+        };
+        assert!(is_encrypted(&get("ODOO_API_KEY").setting_value));
+        assert_eq!(plugin_setting_value(&get("ODOO_API_KEY")), SENTINEL, "the plugin still gets the key");
+        assert_eq!(get("ODOO_PASSWORD").is_secret, 1, "a declared secret is marked secret");
+        assert_eq!(plugin_setting_value(&get("ODOO_PASSWORD")), DECLARED);
+        assert_eq!(get("ODOO_REGION").setting_value, "eu", "a setting that isn't secret is left alone");
+        assert_eq!(get("ODOO_EMPTY").setting_value, "", "no value stays no value");
+
+        for (path, bytes) in bytes_under(&dir) {
+            for secret in [SENTINEL, DECLARED] {
+                assert!(
+                    !bytes.windows(secret.len()).any(|w| w == secret.as_bytes()),
+                    "a plugin secret is in the clear at rest in {}",
+                    path.display()
+                );
+            }
+        }
+
+        let sealed = get("ODOO_API_KEY").setting_value;
+        assert_eq!(encrypt_stored_plugin_secrets(&store, &declared).unwrap(), 0, "a second start changes nothing");
+        assert_eq!(get("ODOO_API_KEY").setting_value, sealed);
         drop(store);
         let _ = std::fs::remove_dir_all(&dir);
     }

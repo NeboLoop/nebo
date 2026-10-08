@@ -1430,47 +1430,11 @@ pub async fn get_plugin_config(
         .get_manifest(&slug)
         .ok_or_else(|| to_error_response(NeboError::NotFound))?;
 
-    let schema = manifest
-        .capabilities
-        .as_ref()
-        .map(|c| &c.config_schema[..])
-        .unwrap_or(&[]);
-
     let stored = state
         .store
         .list_plugin_settings_by_slug(&slug)
         .unwrap_or_default();
-
-    let stored_map: HashMap<String, (String, bool)> = stored
-        .into_iter()
-        .map(|s| (s.setting_key, (s.setting_value, s.is_secret != 0)))
-        .collect();
-
-    let fields: Vec<serde_json::Value> = schema
-        .iter()
-        .map(|field| {
-            let (value, is_secret) = stored_map
-                .get(&field.key)
-                .cloned()
-                .unwrap_or_else(|| (field.default.clone().unwrap_or_default(), field.secret));
-            let display_value = if is_secret && !value.is_empty() {
-                "********".to_string()
-            } else {
-                value
-            };
-            serde_json::json!({
-                "key": field.key,
-                "label": field.label,
-                "description": field.description,
-                "fieldType": field.field_type,
-                "default": field.default,
-                "required": field.required,
-                "secret": field.secret,
-                "options": field.options,
-                "value": display_value,
-            })
-        })
-        .collect();
+    let fields = config_fields(&manifest, stored);
 
     Ok(Json(serde_json::json!({
         "plugin": slug,
@@ -1507,43 +1471,19 @@ pub async fn set_plugin_config(
         ))));
     }
 
-    // Collect allowed env var keys from auth.env (any auth type)
-    let auth_env_keys: HashSet<&str> = manifest
-        .auth
-        .as_ref()
-        .map(|a| a.env.keys().map(|k| k.as_str()).collect())
-        .unwrap_or_default();
-
-    let schema_map: HashMap<&str, &napp::plugin::PluginConfigField> =
-        schema.iter().map(|f| (f.key.as_str(), f)).collect();
-
-    // Store each value (keys declared in schema OR auth.env)
     for (key, value) in &body {
-        if let Some(field) = schema_map.get(key.as_str()) {
-            if let Err(e) = state
-                .store
-                .upsert_plugin_setting_by_slug(&slug, key, value, field.secret)
-            {
-                warn!(plugin = %slug, key = %key, error = %e, "failed to save plugin config");
-                return Err(to_error_response(NeboError::Internal(e.to_string())));
-            }
-        } else if auth_env_keys.contains(key.as_str()) {
-            // Auth env vars are always secrets
-            if let Err(e) = state
-                .store
-                .upsert_plugin_setting_by_slug(&slug, key, value, true)
-            {
-                warn!(plugin = %slug, key = %key, error = %e, "failed to save plugin env var");
-                return Err(to_error_response(NeboError::Internal(e.to_string())));
-            }
+        let Some((at_rest, secret)) =
+            setting_at_rest(&manifest, key, value).map_err(|e| to_error_response(NeboError::Internal(e)))?
+        else {
+            continue;
+        };
+        if let Err(e) = state.store.upsert_plugin_setting_by_slug(&slug, key, &at_rest, secret) {
+            warn!(plugin = %slug, key = %key, error = %e, "failed to save plugin config");
+            return Err(to_error_response(NeboError::Internal(e.to_string())));
         }
-    }
-
-    // Update in-memory env var cache so plugin commands get the new values immediately
-    for (key, value) in &body {
-        if auth_env_keys.contains(key.as_str()) || schema_map.contains_key(key.as_str()) {
-            state.plugin_store.set_env_var(&slug, key, value);
-        }
+        // The in-memory env cache holds the clear value, so plugin commands
+        // get it immediately.
+        state.plugin_store.set_env_var(&slug, key, value);
     }
 
     // Readiness may have changed — refresh plugin tool definition
@@ -1551,6 +1491,76 @@ pub async fn set_plugin_config(
 
     info!(plugin = %slug, keys = body.len(), "updated plugin config");
     Ok(Json(serde_json::json!({ "success": true })))
+}
+
+/// The plugin's config schema with each field's stored value, as the API
+/// shows it: a secret (stored as one, or declared one) is masked.
+fn config_fields(
+    manifest: &napp::plugin::PluginManifest,
+    stored: Vec<db::models::PluginSetting>,
+) -> Vec<serde_json::Value> {
+    let schema = manifest.capabilities.as_ref().map(|c| &c.config_schema[..]).unwrap_or(&[]);
+    let secret_keys = manifest.secret_setting_keys();
+    let stored_map: HashMap<String, (String, bool)> = stored
+        .into_iter()
+        .map(|s| (s.setting_key, (s.setting_value, s.is_secret != 0)))
+        .collect();
+    schema
+        .iter()
+        .map(|field| {
+            let (value, stored_secret) = stored_map
+                .get(&field.key)
+                .cloned()
+                .unwrap_or_else(|| (field.default.clone().unwrap_or_default(), false));
+            let display_value = secret_display(value, stored_secret || secret_keys.contains(&field.key));
+            serde_json::json!({
+                "key": field.key,
+                "label": field.label,
+                "description": field.description,
+                "fieldType": field.field_type,
+                "default": field.default,
+                "required": field.required,
+                "secret": field.secret,
+                "options": field.options,
+                "value": display_value,
+            })
+        })
+        .collect()
+}
+
+/// How a value sent for a plugin setting is stored: `(value at rest,
+/// secret)`, or `None` when it is not stored — a key the plugin does not
+/// declare, or a secret sent back as the mask GET gave (that keeps the
+/// stored value). A secret the plugin declares is stored encrypted.
+fn setting_at_rest(
+    manifest: &napp::plugin::PluginManifest,
+    key: &str,
+    value: &str,
+) -> Result<Option<(String, bool)>, String> {
+    let in_schema = manifest
+        .capabilities
+        .as_ref()
+        .is_some_and(|c| c.config_schema.iter().any(|f| f.key == key));
+    let in_auth_env = manifest.auth.as_ref().is_some_and(|a| a.env.contains_key(key));
+    if !in_schema && !in_auth_env {
+        return Ok(None);
+    }
+    if !manifest.secret_setting_keys().iter().any(|k| k == key) {
+        return Ok(Some((value.to_string(), false)));
+    }
+    if value == SECRET_MASK {
+        return Ok(None);
+    }
+    auth::credential::encrypt(value).map(|v| Some((v, true)))
+}
+
+/// What a secret setting shows through the API in place of its value.
+const SECRET_MASK: &str = "********";
+
+/// A setting's value as the API shows it: a secret that is set is the mask,
+/// never the value (clear or encrypted).
+fn secret_display(value: String, secret: bool) -> String {
+    if secret && !value.is_empty() { SECRET_MASK.to_string() } else { value }
 }
 
 /// The first required field a save would leave without a value, if any. A
@@ -2234,6 +2244,68 @@ mod tests {
         assert_eq!(extract_url(plain, false).as_deref(), Some("https://example.com/device"));
         // Streaming: a URL still being written is not taken yet.
         assert_eq!(extract_url("visit https://appcenter.intuit.com/connect?client_id=", false), None);
+    }
+
+    /// A plugin that reads two credentials from auth.env (one also in its
+    /// configSchema without `secret`), plus a secret schema field and a plain one.
+    fn secret_manifest() -> napp::plugin::PluginManifest {
+        serde_json::from_value(serde_json::json!({
+            "id": "p", "slug": "odoo", "name": "Odoo", "version": "1.0.0", "platforms": {},
+            "auth": { "type": "env", "env": { "ODOO_API_KEY": "", "ODOO_USERNAME": "" } },
+            "capabilities": { "configSchema": [
+                { "key": "ODOO_USERNAME", "label": "User" },
+                { "key": "WEBHOOK_TOKEN", "label": "Token", "secret": true },
+                { "key": "REGION", "label": "Region" },
+            ] },
+        }))
+        .unwrap()
+    }
+
+    /// `GET /plugins/{slug}/config` never carries a secret, clear or
+    /// encrypted: what the plugin declares secret is the mask.
+    #[test]
+    fn no_config_response_carries_a_secret() {
+        const SENTINEL: &str = "SENTINEL-plugin-secret-7373737373";
+        auth::credential::init(mcp::crypto::Encryptor::generate());
+        let m = secret_manifest();
+        let stored = |key: &str, value: &str, is_secret: i64| db::models::PluginSetting {
+            id: key.into(),
+            plugin_id: "napp-odoo".into(),
+            setting_key: key.into(),
+            setting_value: value.into(),
+            is_secret,
+            created_at: 0,
+            updated_at: 0,
+        };
+        let sealed = auth::credential::encrypt(SENTINEL).unwrap();
+        let out = serde_json::json!({ "config": config_fields(&m, vec![
+            stored("ODOO_USERNAME", SENTINEL, 0),
+            stored("WEBHOOK_TOKEN", &sealed, 1),
+            stored("REGION", "eu", 0),
+        ]) })
+        .to_string();
+        assert!(!out.contains(SENTINEL), "a secret reached an API response: {out}");
+        assert!(!out.contains(&sealed), "an encrypted secret reached an API response: {out}");
+        assert!(out.contains(SECRET_MASK), "{out}");
+        assert!(out.contains("\"eu\""), "a setting that isn't secret still shows: {out}");
+    }
+
+    /// `PUT /plugins/{slug}/config` stores what the plugin declares secret
+    /// encrypted and marked secret; the mask sent back keeps what is stored;
+    /// a key the plugin doesn't declare is not stored.
+    #[test]
+    fn a_declared_secret_is_stored_encrypted() {
+        auth::credential::init(mcp::crypto::Encryptor::generate());
+        let m = secret_manifest();
+        for key in ["ODOO_API_KEY", "ODOO_USERNAME", "WEBHOOK_TOKEN"] {
+            let (at_rest, secret) = setting_at_rest(&m, key, "s3cret").unwrap().unwrap();
+            assert!(secret, "{key}");
+            assert!(auth::credential::is_encrypted(&at_rest), "{key} stored in the clear");
+            assert_eq!(auth::credential::decrypt(&at_rest).unwrap(), "s3cret");
+            assert_eq!(setting_at_rest(&m, key, SECRET_MASK).unwrap(), None);
+        }
+        assert_eq!(setting_at_rest(&m, "REGION", "eu").unwrap(), Some(("eu".into(), false)));
+        assert_eq!(setting_at_rest(&m, "UNDECLARED", "x").unwrap(), None);
     }
 
     #[test]
