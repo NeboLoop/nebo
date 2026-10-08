@@ -440,6 +440,7 @@ async fn run_curation_prompt(
         system: "You are a precise memory curator. Return only valid JSON.".to_string(),
         model: model.to_string(),
         enable_thinking: false,
+        effort: None,
         metadata: None,
         cache_breakpoints: vec![],
         cancel_token: None,

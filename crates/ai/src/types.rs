@@ -662,6 +662,10 @@ pub struct ChatRequest {
     pub model: String,
     #[serde(default)]
     pub enable_thinking: bool,
+    /// The provider's own reasoning effort, from the intelligence pack's
+    /// level; sent only with `enable_thinking` (a model that thinks).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<types::packs::ProviderEffort>,
     /// Provider metadata echoed back for Janus tool stickiness routing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<HashMap<String, String>>,
@@ -767,6 +771,7 @@ impl ChatRequest {
             system: String::new(),
             model: String::new(),
             enable_thinking: false,
+            effort: None,
             metadata: None,
             cache_breakpoints: Vec::new(),
             cancel_token: None,

@@ -16,6 +16,17 @@ pub struct AnthropicProvider {
     base_url: String,
 }
 
+/// The thinking budget a pack level's provider effort asks for; 10,000
+/// tokens (today's) when none is set.
+fn thinking_budget(effort: Option<types::packs::ProviderEffort>) -> i32 {
+    use types::packs::ProviderEffort::*;
+    match effort {
+        Some(Low) => 4_000,
+        Some(Medium) | None => 10_000,
+        Some(High) => 24_000,
+    }
+}
+
 impl AnthropicProvider {
     pub fn new(api_key: String, model: String) -> Self {
         Self {
@@ -36,6 +47,7 @@ impl AnthropicProvider {
             req.model.clone()
         };
 
+        let budget = thinking_budget(req.effort);
         let max_tokens = if req.max_tokens > 0 {
             req.max_tokens
         } else if req.enable_thinking {
@@ -43,6 +55,8 @@ impl AnthropicProvider {
         } else {
             8192
         };
+        // The answer needs room beyond the thinking budget.
+        let max_tokens = if req.enable_thinking { max_tokens.max(budget + 4096) } else { max_tokens };
 
         // Build system blocks with caching.
         //
@@ -162,7 +176,7 @@ impl AnthropicProvider {
             thinking: if req.enable_thinking {
                 Some(ThinkingConfig {
                     thinking_type: "enabled".to_string(),
-                    budget_tokens: 10000,
+                    budget_tokens: budget,
                 })
             } else {
                 None
@@ -866,6 +880,21 @@ struct AnthropicError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A pack level's provider effort sets the thinking budget, and the
+    /// answer keeps room beyond it; no effort keeps today's 10,000.
+    #[test]
+    fn provider_effort_sets_the_thinking_budget() {
+        let p = AnthropicProvider::new("k".into(), "claude-x".into());
+        let req = |effort| ChatRequest { enable_thinking: true, effort, ..ChatRequest::new(RequestTrace::new("test")) };
+        let budget = |r: &AnthropicApiRequest| r.thinking.as_ref().map(|t| t.budget_tokens);
+        let high = p.api_request(&req(Some(types::packs::ProviderEffort::High)));
+        assert_eq!(budget(&high), Some(24_000));
+        assert!(high.max_tokens >= 24_000 + 4_096, "{}", high.max_tokens);
+        assert_eq!(budget(&p.api_request(&req(Some(types::packs::ProviderEffort::Low)))), Some(4_000));
+        let none = p.api_request(&req(None));
+        assert_eq!((budget(&none), none.max_tokens), (Some(10_000), 16_384), "today's request, unchanged");
+    }
 
     fn request(messages: Vec<Message>) -> ChatRequest {
         ChatRequest {
