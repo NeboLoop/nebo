@@ -79,7 +79,8 @@ pub async fn create_provider(
     let provider = body["provider"].as_str().ok_or_else(|| {
         to_error_response(types::NeboError::Validation("provider required".into()))
     })?;
-    let api_key = body["apiKey"].as_str().unwrap_or("");
+    let api_key = auth::credential::encrypt(body["apiKey"].as_str().unwrap_or(""))
+        .map_err(|e| to_error_response(types::NeboError::Internal(e)))?;
     let model = body["model"].as_str();
     let base_url = body["baseUrl"].as_str();
     let priority = body["priority"].as_i64().unwrap_or(50);
@@ -93,7 +94,7 @@ pub async fn create_provider(
             &id,
             name,
             provider,
-            api_key,
+            &api_key,
             model,
             base_url,
             priority,
@@ -137,7 +138,8 @@ pub async fn update_provider(
         .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
 
     let name = body["name"].as_str().unwrap_or(&existing.name);
-    let api_key = body["apiKey"].as_str().unwrap_or(&existing.api_key);
+    let api_key = auth::credential::encrypt(body["apiKey"].as_str().unwrap_or(&existing.api_key))
+        .map_err(|e| to_error_response(types::NeboError::Internal(e)))?;
     // Absent key = keep the stored value; explicit null or "" = CLEAR the
     // model pin (writes NULL). Before this, a model could be set but never
     // unset — a bot-profile pin would shadow account-level routing policy
@@ -175,7 +177,7 @@ pub async fn update_provider(
         .update_auth_profile(
             &id,
             name,
-            api_key,
+            &api_key,
             model,
             base_url,
             priority,
@@ -228,7 +230,8 @@ pub async fn test_provider(
         .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
 
     // Basic validation first
-    if profile.api_key.is_empty() && profile.auth_type.as_deref() != Some("local") {
+    let api_key = auth::credential::profile_key(&profile);
+    if api_key.is_empty() && profile.auth_type.as_deref() != Some("local") {
         return Ok(Json(serde_json::json!({
             "success": false,
             "provider": profile.provider,
@@ -240,11 +243,11 @@ pub async fn test_provider(
     let model = profile.model.clone().unwrap_or_default();
     let test_result: Result<String, String> = match profile.provider.as_str() {
         "anthropic" => {
-            let provider = ai::AnthropicProvider::new(profile.api_key.clone(), model);
+            let provider = ai::AnthropicProvider::new(api_key.clone(), model);
             test_provider_connection(&provider).await
         }
         "openai" => {
-            let provider = ai::OpenAIProvider::new(profile.api_key.clone(), model);
+            let provider = ai::OpenAIProvider::new(api_key.clone(), model);
             test_provider_connection(&provider).await
         }
         "deepseek" => {
@@ -253,11 +256,11 @@ pub async fn test_provider(
                 .clone()
                 .unwrap_or_else(|| "https://api.deepseek.com/v1".into());
             let provider =
-                ai::OpenAIProvider::with_base_url(profile.api_key.clone(), model, base_url);
+                ai::OpenAIProvider::with_base_url(api_key.clone(), model, base_url);
             test_provider_connection(&provider).await
         }
         "google" => {
-            let provider = ai::GeminiProvider::new(profile.api_key.clone(), model);
+            let provider = ai::GeminiProvider::new(api_key.clone(), model);
             test_provider_connection(&provider).await
         }
         "ollama" => {
@@ -1111,5 +1114,53 @@ mod key_egress_tests {
             assert!(!out.contains(SENTINEL), "a provider key reached an API response: {out}");
             assert!(!out.contains("apiKey"), "an apiKey field reached an API response: {out}");
         }
+    }
+}
+
+/// Provider keys are stored encrypted and opened only where a client that
+/// presents them is built: the provider still sends the key the owner typed.
+#[cfg(test)]
+mod key_at_rest_tests {
+    use std::sync::Arc;
+
+    const SENTINEL: &str = "sk-SENTINEL-at-rest-provider-0000";
+
+    #[tokio::test]
+    async fn a_provider_built_from_an_encrypted_key_sends_the_key() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        auth::credential::init(mcp::crypto::Encryptor::generate());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base_url = format!("http://{}/v1", listener.local_addr().unwrap());
+        let seen = tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 16384];
+            let mut got = Vec::new();
+            while !got.windows(4).any(|w| w == b"\r\n\r\n") {
+                let n = sock.read(&mut buf).await.unwrap();
+                if n == 0 {
+                    break;
+                }
+                got.extend_from_slice(&buf[..n]);
+            }
+            let _ = sock.write_all(b"HTTP/1.1 401 Unauthorized\r\ncontent-length: 0\r\nconnection: close\r\n\r\n").await;
+            String::from_utf8_lossy(&got).to_string()
+        });
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(db::Store::new(&dir.path().join("nebo.db").to_string_lossy()).unwrap());
+        let sealed = auth::credential::encrypt(SENTINEL).unwrap();
+        store
+            .create_auth_profile("d", "Mine", "deepseek", &sealed, Some("deepseek-chat"), Some(&base_url), 0, 1, None, None)
+            .unwrap();
+        assert!(!store.get_auth_profile("d").unwrap().unwrap().api_key.contains(SENTINEL));
+
+        let providers = crate::build_providers(&store, &config::Config::default(), None, None);
+        let deepseek = providers.iter().find(|p| p.id() == "deepseek").expect("the deepseek provider is built");
+        let _ = super::test_provider_connection(deepseek.as_ref()).await;
+        let request = seen.await.unwrap();
+        assert!(
+            request.to_ascii_lowercase().contains(&format!("authorization: bearer {}", SENTINEL.to_ascii_lowercase())),
+            "the provider did not send the key the owner typed: {request}"
+        );
     }
 }

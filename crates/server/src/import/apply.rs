@@ -603,7 +603,7 @@ fn import_provider_env(
                     &id,
                     &format!("Imported from {source_label} ({provider})"),
                     provider,
-                    value,
+                    &auth::credential::encrypt(value).map_err(NeboError::Internal)?,
                     None,
                     None,
                     50,
@@ -724,6 +724,8 @@ mod tests {
     }
 
     fn setup_with(source: tempfile::TempDir) -> Fixture {
+        // Imported keys are stored encrypted, as the running server does.
+        auth::credential::init(mcp::crypto::Encryptor::generate());
         let nebo = tempdir().unwrap();
         let store = db::Store::new(nebo.path().join("nebo.db").to_str().unwrap()).unwrap();
         let agents_dir = nebo.path().join("user/agents");
@@ -836,7 +838,8 @@ mod tests {
         // Provider key imported to the matching profile; channel token deferred.
         let profiles = f.store.list_auth_profiles().unwrap();
         let anthropic = profiles.iter().find(|p| p.provider == "anthropic").unwrap();
-        assert_eq!(anthropic.api_key, "sk-secretxxx");
+        assert!(auth::credential::is_encrypted(&anthropic.api_key), "an imported key is stored encrypted");
+        assert_eq!(auth::credential::profile_key(anthropic), "sk-secretxxx");
         assert!(out.skipped.iter().any(|s| s.starts_with("TELEGRAM_TOKEN")));
 
         // Deferred slices are named, not silently dropped — including auth.json.

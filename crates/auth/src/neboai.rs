@@ -10,7 +10,7 @@ pub fn neboai_token(store: &db::Store) -> Option<String> {
     let profiles = store
         .list_all_active_auth_profiles_by_provider("neboai")
         .unwrap_or_default();
-    let mut token = profiles.first().map(|p| p.api_key.clone())?;
+    let mut token = profiles.first().map(crate::credential::profile_key)?;
     if token.is_empty() {
         return None;
     }

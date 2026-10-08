@@ -2466,11 +2466,13 @@ pub async fn activate_neboai(state: &AppState) -> Result<(), NeboError> {
             .store
             .list_all_active_auth_profiles_by_provider("neboai")
         {
-            if let Some(p) = profs.first() {
+            if let Some(p) = profs.first()
+                && let Ok(sealed) = auth::credential::encrypt(&new_token)
+            {
                 let _ = state.store.update_auth_profile(
                     &p.id,
                     &p.name,
-                    &new_token,
+                    &sealed,
                     p.model.as_deref(),
                     p.base_url.as_deref(),
                     p.priority.unwrap_or(0),
@@ -2984,16 +2986,18 @@ async fn refresh_neboai_token(
     new_metadata.insert("refresh_token".to_string(), new_refresh.to_string());
     let metadata_json = serde_json::to_string(&new_metadata).unwrap_or_default();
 
-    let _ = state.store.update_auth_profile(
-        &profile.id,
-        &profile.name,
-        &token_resp.access_token,
-        profile.model.as_deref(),
-        profile.base_url.as_deref(),
-        profile.priority.unwrap_or(0),
-        profile.auth_type.as_deref(),
-        Some(&metadata_json),
-    );
+    if let Ok(sealed) = auth::credential::encrypt(&token_resp.access_token) {
+        let _ = state.store.update_auth_profile(
+            &profile.id,
+            &profile.name,
+            &sealed,
+            profile.model.as_deref(),
+            profile.base_url.as_deref(),
+            profile.priority.unwrap_or(0),
+            profile.auth_type.as_deref(),
+            Some(&metadata_json),
+        );
+    }
     info!("NeboAI OAuth token refreshed successfully");
 
     Some(token_resp.access_token)

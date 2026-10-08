@@ -1353,7 +1353,7 @@ pub(crate) fn store_neboai_profile(
             .update_auth_profile(
                 &existing.id,
                 email,
-                token,
+                &auth::credential::encrypt(token)?,
                 None,
                 Some(api_url),
                 0,
@@ -1375,7 +1375,7 @@ pub(crate) fn store_neboai_profile(
                 &id,
                 email,
                 "neboai",
-                token,
+                &auth::credential::encrypt(token)?,
                 None,
                 Some(api_url),
                 0,
@@ -1569,10 +1569,10 @@ pub async fn force_reconnect(State(state): State<AppState>) -> HandlerResult<ser
 
     match crate::codes::activate_neboai(&state).await {
         Ok(()) => {
-            if let Some(new_token) = state.comm_manager.take_rotated_token().await {
-                let _ = state
-                    .store
-                    .update_auth_profile_token_by_provider("neboai", &new_token);
+            if let Some(new_token) = state.comm_manager.take_rotated_token().await
+                && let Ok(sealed) = auth::credential::encrypt(&new_token)
+            {
+                let _ = state.store.update_auth_profile_token_by_provider("neboai", &sealed);
             }
             Ok(Json(serde_json::json!({"reconnected": true})))
         }

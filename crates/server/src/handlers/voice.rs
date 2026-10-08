@@ -109,9 +109,10 @@ pub async fn conversation_ws_handler(
 /// relay with the user's Janus JWT.
 fn resolve_realtime_leg(state: &AppState) -> Option<(String, String)> {
     if let Ok(Some(profile)) = state.store.get_best_auth_profile("xai")
-        && !profile.api_key.is_empty()
+        && let key = auth::credential::profile_key(&profile)
+        && !key.is_empty()
     {
-        return Some(("wss://api.x.ai/v1/realtime".into(), profile.api_key));
+        return Some(("wss://api.x.ai/v1/realtime".into(), key));
     }
     let token = crate::codes::neboai_token(state)?;
     let url = state
