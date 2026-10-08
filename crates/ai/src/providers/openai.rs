@@ -685,10 +685,12 @@ impl Provider for OpenAIProvider {
                 map.insert("tool_choice".to_string(), tc);
             }
         }
-        // The pack level's provider effort, only for a model that thinks:
-        // OpenRouter normalizes it as `reasoning.effort`; the OpenAI format
-        // names it `reasoning_effort`.
-        if let (Some(effort), true, serde_json::Value::Object(map)) = (req.effort, req.enable_thinking, &mut body_val) {
+        // The pack level's provider effort, only for a model that thinks —
+        // or for Janus, which applies it per model of its pool and drops it
+        // where a model can't take it: OpenRouter normalizes it as
+        // `reasoning.effort`; the OpenAI format names it `reasoning_effort`.
+        let thinks = req.enable_thinking || self.provider_id == "janus";
+        if let (Some(effort), true, serde_json::Value::Object(map)) = (req.effort, thinks, &mut body_val) {
             let e = serde_json::json!(effort);
             if self.provider_id == "openrouter" {
                 map.insert("reasoning".to_string(), serde_json::json!({ "effort": e }));
@@ -1638,6 +1640,41 @@ mod tests {
         assert!(head.contains("x-purpose: memory_extract"), "{head}");
         assert!(head.contains("x-agent-id: agent-1"), "{head}");
         assert!(!head.contains("x-run-id"), "empty ids stay off the wire: {head}");
+    }
+
+    // Janus takes the pack level's effort whatever the model's capabilities
+    // say (it decides per model); any other provider only for a model that
+    // thinks.
+    #[tokio::test]
+    async fn janus_receives_the_effort_without_the_thinking_flag() {
+        async fn body_for(provider_id: &str) -> String {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                let (mut sock, _) = listener.accept().await.unwrap();
+                let mut buf = vec![0u8; 16384];
+                let n = sock.read(&mut buf).await.unwrap();
+                let resp = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\ndata: [DONE]\n\n";
+                sock.write_all(resp.as_bytes()).await.unwrap();
+                String::from_utf8_lossy(&buf[..n]).to_string()
+            });
+            let mut provider =
+                OpenAIProvider::with_base_url(String::new(), "m".into(), format!("http://{addr}"));
+            provider.set_provider_id(provider_id);
+            let req = ChatRequest {
+                messages: vec![Message { role: "user".into(), content: "hi".into(), ..Default::default() }],
+                effort: Some(types::packs::ProviderEffort::High),
+                enable_thinking: false,
+                ..ChatRequest::new(RequestTrace::new("chat"))
+            };
+            let mut rx = provider.stream(&req).await.unwrap();
+            while rx.recv().await.is_some() {}
+            server.await.unwrap()
+        }
+        let janus = body_for("janus").await;
+        assert!(janus.contains(r#""reasoning_effort":"high""#), "{janus}");
+        let other = body_for("openai").await;
+        assert!(!other.contains("reasoning"), "{other}");
     }
 
     // The hub rotates the NeboAI token on every comms connect, so a Janus

@@ -206,7 +206,13 @@ pub fn nebo_ai() -> Pack {
         built_in: true,
         route_through_janus: false,
         lanes: PackLanes::default(),
-        level_effort: LevelEffort::default(),
+        // Low is Fast with a little thinking; Max is Deep at its highest
+        // effort until Janus has a speed above Deep.
+        level_effort: LevelEffort {
+            low: Some(ProviderEffort::Low),
+            max: Some(ProviderEffort::High),
+            ..LevelEffort::default()
+        },
     }
 }
 
@@ -282,7 +288,7 @@ mod tests {
     use super::*;
 
     fn byo(levels: PackLevels) -> Pack {
-        Pack { id: "mine".into(), name: "Mine".into(), levels, fallback: true, built_in: false, ..nebo_ai() }
+        Pack { id: "mine".into(), name: "Mine".into(), levels, fallback: true, built_in: false, level_effort: LevelEffort::default(), ..nebo_ai() }
     }
 
     #[test]
@@ -323,6 +329,9 @@ mod tests {
         assert_eq!(nebo.model_for_ref(Some(Effort::Instant)), Some("janus/nebo-1-flash"));
         assert_eq!(nebo.model_for_ref(Some(Effort::Medium)), Some("janus/nebo-1-medium"));
         assert_eq!(nebo.model_for_ref(Some(Effort::Max)), Some("janus/nebo-1-pro"));
+        assert_eq!(nebo.effort_for(Effort::Low), Some(ProviderEffort::Low), "Fast, thinking a little");
+        assert_eq!(nebo.effort_for(Effort::High), None, "Deep at its default");
+        assert_eq!(nebo.effort_for(Effort::Max), Some(ProviderEffort::High), "Deep at its highest");
         let mine = byo(PackLevels {
             low: Some("a/low".into()),
             medium: Some("a/mid".into()),
