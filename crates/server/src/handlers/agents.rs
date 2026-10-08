@@ -5236,7 +5236,14 @@ pub async fn start_workflow_chat(
          custom, research (params: depth, sources), email (params: to, subject), notify, \
          code (params: language, code), http (params: method, url, headers, body — runs deterministically, no AI), \
          transform, condition, loop, wait (params: duration e.g. \"5m\"), \
-         agent (params: agentId — delegation), connector (params: serverId, tool, input — MCP)\n\n\
+         agent (params: agentId — delegation), connector (params: serverId, tool, input — MCP), \
+         expert (params: expert — a coworker from the Experts list, task, input — an object of explicit \
+         references like {{\"leads\":\"{{{{nodes.fetch}}}}\"}}, output — the JSON shape or a short description \
+         of what comes back, timeout e.g. \"2h\" or \"1d\" REQUIRED. Another employee does the work; the run \
+         waits for the reply, which becomes the node output with a short `summary`. An expert that refuses \
+         or times out yields {{failed:true, reason}} and the run goes on; on_error.fallback \"abort\" fails the \
+         run instead. Works as parallel branches into one join, and as a loop body with \
+         expert \"{{{{item.expert}}}}\")\n\n\
          ## Execution semantics (the engine owns ALL control flow — deterministic, repeatable)\n\
          - Activities run sequentially along connections (__trigger__ → ... → __emit__); a node with \
            multiple outgoing edges runs its branches IN PARALLEL; a join waits for all active branches.\n\
@@ -5285,6 +5292,14 @@ pub async fn start_workflow_chat(
     system_parts.push(format!(
         "## Current Workflows for \"{agent_name}\"\n\n```json\n{workflows_pretty}\n```"
     ));
+
+    // The experts an `expert` activity may name: the coworkers on this bot.
+    let experts = workflow::expert::catalog(&state.store, &id);
+    system_parts.push(if experts.is_empty() {
+        "## Experts\nNo coworker on this bot can take an expert step yet.".to_string()
+    } else {
+        format!("## Experts (for `expert` activities)\n{}", workflow::expert::catalog_lines(&experts))
+    });
 
     if !selected_workflow.is_empty() {
         system_parts.push(format!(

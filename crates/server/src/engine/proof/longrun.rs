@@ -222,6 +222,7 @@ fn e16_a_temporary_team_is_due_to_disband_when_its_lead_closes_its_work() {
         subject: "Find the marketing budget and what it buys",
         done_means: "A number and a plan",
         due: None,
+        workflow_reply: None,
     };
     let assignment = workflow::cases::open_assignment(&w.s, &req, w.t).unwrap();
     let case = w.s.engine_run_for_key("case:assignment", &assignment).unwrap().expect("the lead's case");

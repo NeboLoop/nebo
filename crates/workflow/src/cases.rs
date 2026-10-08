@@ -916,6 +916,17 @@ pub struct NewAssignmentRequest<'a> {
     pub subject: &'a str,
     pub done_means: &'a str,
     pub due: Option<&'a str>,
+    /// Set when a workflow's `expert` step is the assigner: the close is
+    /// recorded as that step's reply (`expert::record_reply`), which wakes
+    /// the run parked on it.
+    pub workflow_reply: Option<WorkflowReply<'a>>,
+}
+
+/// The workflow run and request an assignment answers (see
+/// `NewAssignmentRequest::workflow_reply`).
+pub struct WorkflowReply<'a> {
+    pub run_id: &'a str,
+    pub key: &'a str,
 }
 
 /// The inline definition an assignment runs under when the assignee's own
@@ -958,6 +969,7 @@ pub fn open_assignment(store: &Store, req: &NewAssignmentRequest<'_>, t: i64) ->
         "subject": req.subject,
         "done_means": req.done_means,
         "due": req.due,
+        "workflow_reply": req.workflow_reply.as_ref().map(|w| serde_json::json!({ "run_id": w.run_id, "key": w.key })),
     });
     let inputs = serde_json::json!({
         "subject": req.subject,
@@ -1081,6 +1093,9 @@ pub fn settle_assignment(store: &Store, case_inputs: &serde_json::Value, status:
         "assignee_agent_id": assignee,
         "assigner_agent_id": a["assigner_agent_id"],
     });
+    if let (Some(run_id), Some(key)) = (a["workflow_reply"]["run_id"].as_str(), a["workflow_reply"]["key"].as_str()) {
+        crate::expert::record_reply(store, run_id, key, state, summary, assignee)?;
+    }
     let name = format!("assignment.{state}");
     if let Some(session) = a["assigner_session_key"].as_str().filter(|s| !s.is_empty())
         && store.engine_enqueue_wake(session, &name, &payload.to_string(), "[]", 0).is_ok()
@@ -1110,6 +1125,7 @@ impl tools::assignments::AssignmentOpener for CaseAssignmentOpener {
             subject: &req.subject,
             done_means: &req.done_means,
             due: req.due.as_deref(),
+            workflow_reply: None,
         };
         open_assignment(&self.store, &r, chrono::Utc::now().timestamp()).map_err(|e| e.to_string())
     }
@@ -1137,6 +1153,7 @@ mod assignment_tests {
             subject: "Close the books",
             done_means: "Reports posted",
             due: Some("2026-10-05"),
+            workflow_reply: None,
         };
         let id = open_assignment(&s, &req, t).expect("opened");
         let row = s.get_assignment(&id).unwrap().expect("row");
@@ -1186,6 +1203,7 @@ mod assignment_tests {
             subject: "Find the budget",
             done_means: "A number",
             due: None,
+            workflow_reply: None,
         };
         let id = open_assignment(&s, &req, 1_700_000_000).expect("opened from a chat turn");
         let case = s.engine_run_for_key("case:assignment", &id).unwrap().expect("case bound");

@@ -3718,6 +3718,32 @@
 					}
 				}
 			},
+			"expert": {
+				"label": "Uzman",
+				"description": "Bu adımı başka bir çalışan yapar; çalıştırma yanıtı bekler",
+				"params": {
+					"expert": {
+						"label": "Uzman",
+						"description": "İşi yapan iş arkadaşı: kimlik, kullanıcı adı veya ad"
+					},
+					"task": {
+						"label": "Görev",
+						"description": "Uzmanın yapması gereken"
+					},
+					"input": {
+						"label": "Girdi",
+						"description": "Uzmanın aldığı tek bir referans, örneğin '{{'nodes.fetch'}}'"
+					},
+					"output": {
+						"label": "Beklenen yanıt",
+						"description": "Geri gelmesi gereken: bir JSON yapısı veya kısa bir açıklama"
+					},
+					"timeout": {
+						"label": "Zaman aşımı",
+						"description": "Yanıtın ne kadar bekleneceği, örneğin 30m, 4h veya 2d"
+					}
+				}
+			},
 			"transform": {
 				"label": "Dönüştür",
 				"description": "Verileri yeniden biçimlendir veya filtrele",
@@ -3796,6 +3822,10 @@
 				"activityDecide": {
 					"label": "Karar ver",
 					"desc": "Verileri sınıflandır veya değerlendir"
+				},
+				"activityExpert": {
+					"label": "Uzman",
+					"desc": "Adımı başka bir çalışan yapar"
 				},
 				"activityTransform": {
 					"label": "Dönüştür",
@@ -3918,6 +3948,7 @@
 			"loopSource": "\"{id}\" döngüsü bir veri kaynağına ihtiyaç duyuyor (örn. inputs.items)",
 			"httpUrl": "\"{id}\" HTTP düğümü bir URL’ye ihtiyaç duyuyor",
 			"decideQuestions": "\"{id}\" karar düğümü sorulara ihtiyaç duyuyor (türlendirilmiş soruların JSON nesnesi)",
+			"expertFields": "\"{id}\" uzman düğümü bir uzmana, bir göreve ve bir zaman aşımına ihtiyaç duyuyor",
 			"waitDuration": "\"{id}\" bekleme düğümü bir süreye ihtiyaç duyuyor",
 			"needsIntent": "\"{workflow}\" içindeki \"{id}\" aktivitesi bir amaca veya adımlara ihtiyaç duyuyor",
 			"targetsTrigger": "Bir bağlantı tetikleyiciyi hedefliyor",

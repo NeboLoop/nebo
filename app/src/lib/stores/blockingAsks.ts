@@ -27,6 +27,15 @@ export function newBlockingAsks(asks: WaitingAsk[]): WaitingAsk[] {
   return fresh;
 }
 
+/** Whether `pathname` is the chat ask waits in: its card is already on that
+ *  screen, so no toast for it (live 2026-10-08: the bar popped up under the
+ *  card the owner was looking at). */
+export function inAsksChat(ask: WaitingAsk, pathname: string): boolean {
+  if (!ask.chatId) return false;
+  const home = askPath(ask);
+  return pathname === home || pathname.startsWith(home + '/');
+}
+
 /** What is already waiting when the app starts is its pinned bar's and its
  *  Inbox's: no burst of notices for it. */
 export function seedBlockingAsks(asks: WaitingAsk[]): void {

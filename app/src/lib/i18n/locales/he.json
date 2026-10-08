@@ -3718,6 +3718,32 @@
 					}
 				}
 			},
+			"expert": {
+				"label": "מומחה",
+				"description": "עובד אחר מבצע את השלב הזה; ההרצה ממתינה לתשובה",
+				"params": {
+					"expert": {
+						"label": "מומחה",
+						"description": "העמית שמבצע את העבודה: מזהה, כינוי או שם"
+					},
+					"task": {
+						"label": "משימה",
+						"description": "מה המומחה צריך לעשות"
+					},
+					"input": {
+						"label": "קלט",
+						"description": "הפניה אחת שהמומחה מקבל, למשל '{{'nodes.fetch'}}'"
+					},
+					"output": {
+						"label": "תשובה צפויה",
+						"description": "מה צריך לחזור: מבנה JSON או תיאור קצר"
+					},
+					"timeout": {
+						"label": "זמן קצוב",
+						"description": "כמה זמן לחכות לתשובה, למשל 30m, 4h או 2d"
+					}
+				}
+			},
 			"transform": {
 				"label": "המרה",
 				"description": "שנה מבנה של נתונים או סנן אותם",
@@ -3796,6 +3822,10 @@
 				"activityDecide": {
 					"label": "החלטה",
 					"desc": "סווג או שפוט נתונים"
+				},
+				"activityExpert": {
+					"label": "מומחה",
+					"desc": "עובד אחר מבצע את השלב"
 				},
 				"activityTransform": {
 					"label": "המרה",
@@ -3918,6 +3948,7 @@
 			"loopSource": "הלולאה \"{id}\" צריכה מקור נתונים (למשל inputs.items)",
 			"httpUrl": "צומת ה-HTTP \"{id}\" צריך URL",
 			"decideQuestions": "צומת ההחלטה \"{id}\" צריך שאלות (אובייקט JSON של שאלות מוגדרות)",
+			"expertFields": "צומת המומחה \"{id}\" צריך מומחה, משימה וזמן קצוב",
 			"waitDuration": "צומת ההמתנה \"{id}\" צריך משך",
 			"needsIntent": "הפעילות \"{id}\" ב-\"{workflow}\" צריכה כוונה או שלבים",
 			"targetsTrigger": "חיבור מכוון אל הטריגר",

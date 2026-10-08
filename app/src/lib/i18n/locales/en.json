@@ -3718,6 +3718,32 @@
 					}
 				}
 			},
+			"expert": {
+				"label": "Expert",
+				"description": "Another employee does this step; the run waits for the reply",
+				"params": {
+					"expert": {
+						"label": "Expert",
+						"description": "The coworker who does the work: an id, handle or name"
+					},
+					"task": {
+						"label": "Task",
+						"description": "What the expert should do"
+					},
+					"input": {
+						"label": "Input",
+						"description": "One reference the expert receives, such as '{{'nodes.fetch'}}'"
+					},
+					"output": {
+						"label": "Expected reply",
+						"description": "What should come back: a JSON shape or a short description"
+					},
+					"timeout": {
+						"label": "Timeout",
+						"description": "How long to wait for the reply, such as 30m, 4h or 2d"
+					}
+				}
+			},
 			"transform": {
 				"label": "Transform",
 				"description": "Reshape or filter data",
@@ -3796,6 +3822,10 @@
 				"activityDecide": {
 					"label": "Decide",
 					"desc": "Classify or judge data"
+				},
+				"activityExpert": {
+					"label": "Expert",
+					"desc": "Another employee does the step"
 				},
 				"activityTransform": {
 					"label": "Transform",
@@ -3918,6 +3948,7 @@
 			"loopSource": "Loop \"{id}\" needs a data source (e.g. inputs.items)",
 			"httpUrl": "HTTP node \"{id}\" needs a URL",
 			"decideQuestions": "Decide node \"{id}\" needs questions (a JSON object of typed questions)",
+			"expertFields": "Expert node \"{id}\" needs an expert, a task and a timeout",
 			"waitDuration": "Wait node \"{id}\" needs a duration",
 			"needsIntent": "Activity \"{id}\" in \"{workflow}\" needs an intent or steps",
 			"targetsTrigger": "A connection targets the trigger",
