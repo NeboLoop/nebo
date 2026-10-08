@@ -95,10 +95,8 @@ async fn read_request(sock: &mut tokio::net::TcpStream) -> Option<(String, Value
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_chat_message_runs_a_turn_through_the_one_loop() {
-    // No hub is reachable: nothing here can act as anyone's bot.
-    for var in ["NEBOAI_API_URL", "NEBOAI_JANUS_URL", "NEBOAI_COMMS_URL", "NEBOAI_TUNNEL_URL"] {
-        // SAFETY: set before the server starts, like NEBO_HOME in `boot`.
-        unsafe { std::env::set_var(var, "http://127.0.0.1:9") };
+    if !common::in_own_process().await {
+        return;
     }
     let (model_port, calls) = fake_model().await;
     let server = TestServer::boot().await;

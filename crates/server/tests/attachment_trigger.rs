@@ -116,6 +116,9 @@ async fn run_after_arrival(server: &TestServer, agent_id: &str, what: &str) -> d
 
 #[tokio::test]
 async fn an_attachment_starts_the_flow_that_waits_for_its_kind() {
+    if !common::in_own_process().await {
+        return;
+    }
     let server = TestServer::boot().await;
 
     let recordings = hire_waiting_for(&server, "Recording Listener", "attachment.audio").await;

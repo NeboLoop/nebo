@@ -57,6 +57,9 @@ async fn run_and_answer(server: &TestServer, agent_id: &str, target: &std::path:
 /// from a button on the phone's notification.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_parked_workflow_step_resumes_when_answered_from_the_web_inbox_or_the_hub() {
+    if !common::in_own_process().await {
+        return;
+    }
     let out = tempfile::tempdir().unwrap();
     let target = out.path().join("ledger-close.txt");
     let path = target.to_string_lossy().into_owned();
@@ -113,6 +116,9 @@ async fn a_parked_workflow_step_resumes_when_answered_from_the_web_inbox_or_the_
 /// U3: an employee's scheduled job runs as the employee.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_scheduled_job_runs_as_its_employee_with_its_rules_and_instructions() {
+    if !common::in_own_process().await {
+        return;
+    }
     let out = tempfile::tempdir().unwrap();
     let path = out.path().join("overnight.txt").to_string_lossy().into_owned();
     let (server, calls) = server_with(Arc::new(move |purpose, messages| {
@@ -171,6 +177,9 @@ async fn a_scheduled_job_runs_as_its_employee_with_its_rules_and_instructions() 
 /// (2026-10-02).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn each_run_of_a_schedule_starts_a_fresh_conversation() {
+    if !common::in_own_process().await {
+        return;
+    }
     use std::sync::atomic::{AtomicUsize, Ordering};
     const ASK: &str = "Report the cash position.";
     const REPLIES: [&str; 3] = ["Cash report one.", "Cash report two.", "Cash report three."];
@@ -237,6 +246,9 @@ async fn each_run_of_a_schedule_starts_a_fresh_conversation() {
 /// `staffed_proof::conversation`.)
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_coworker_acts_under_its_own_permissions_not_the_askers() {
+    if !common::in_own_process().await {
+        return;
+    }
     let out = tempfile::tempdir().unwrap();
     let target = out.path().join("vat-rate.txt");
     let path = target.to_string_lossy().into_owned();

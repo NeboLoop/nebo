@@ -92,6 +92,9 @@ async fn call(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_protected_routes_are_protected() {
+    if !common::in_own_process().await {
+        return;
+    }
     let server = TestServer::boot().await;
 
     // A real account, and the real token the server minted for it.
