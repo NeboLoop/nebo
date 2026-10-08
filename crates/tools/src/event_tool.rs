@@ -179,12 +179,21 @@ impl DynTool for ScheduleTool {
     /// A schedule is the employee's own work; a scheduled prompt runs later
     /// with the employee's own permissions. What a shell command does can't
     /// be known from its text.
+    ///
+    /// Creating a schedule, resuming one and firing one now arm scheduled
+    /// work: only an attended run may (`CallEffects::arms_schedule`).
     fn effects(&self, input: &serde_json::Value) -> types::permissions::CallEffects {
-        if self.kind == Kind::Create && !str_field(input, "command").is_empty() {
+        let mut effects = if self.kind == Kind::Create && !str_field(input, "command").is_empty() {
             types::permissions::CallEffects::unknown()
         } else {
             types::permissions::CallEffects::none()
-        }
+        };
+        effects.arms_schedule = match self.kind {
+            Kind::Create | Kind::RunNow => true,
+            Kind::SetPaused => input["paused"].as_bool() == Some(false),
+            Kind::List | Kind::Delete | Kind::History => false,
+        };
+        effects
     }
 
     fn validate_input(&self, input: &serde_json::Value) -> Result<(), String> {
@@ -341,6 +350,7 @@ impl ScheduleTool {
             Err(e) if e.to_string().contains("UNIQUE constraint failed: cron_jobs.name") => ToolResult::error(format!(
                 "A schedule named '{name}' already exists. Delete it first with delete_schedule or pick another name."
             )),
+            Err(types::NeboError::Validation(cap)) => ToolResult::error(cap),
             Err(e) => ToolResult::error(format!("Failed to create schedule: {e}")),
         }
     }
@@ -607,11 +617,21 @@ mod tests {
             create.rule_field(&cmd),
             Some(types::permissions::RuleField::CommandPrefix("rm -rf /tmp/cache".into()))
         );
-        assert_eq!(create.effects(&cmd), types::permissions::CallEffects::unknown());
+        let arming = |mut e: types::permissions::CallEffects| {
+            e.arms_schedule = true;
+            e
+        };
+        assert_eq!(create.effects(&cmd), arming(types::permissions::CallEffects::unknown()));
         let prompt = json!({"name": "x", "at": "in 1 hour", "prompt": "check the calendar"});
         assert_eq!(create.capability(&prompt), None);
         assert_eq!(create.rule_field(&prompt), None);
-        assert_eq!(create.effects(&prompt), types::permissions::CallEffects::none());
+        assert_eq!(create.effects(&prompt), arming(types::permissions::CallEffects::none()));
+        // Resuming and firing arm scheduled work; pausing, deleting and reading don't.
+        assert!(tool(&s, "run_schedule_now").effects(&json!({"name": "x"})).arms_schedule);
+        assert!(tool(&s, "set_schedule_paused").effects(&json!({"name": "x", "paused": false})).arms_schedule);
+        assert!(!tool(&s, "set_schedule_paused").effects(&json!({"name": "x", "paused": true})).arms_schedule);
+        assert!(!tool(&s, "delete_schedule").effects(&json!({"name": "x"})).arms_schedule);
+        assert!(!tool(&s, "list_schedules").effects(&json!({})).arms_schedule);
         assert!(tool(&s, "list_schedules").read_only(&json!({})));
         assert!(!tool(&s, "delete_schedule").read_only(&json!({"name": "x"})));
     }

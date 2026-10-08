@@ -174,7 +174,7 @@ pub fn truncate_str(s: &str, max_bytes: usize) -> &str {
 
 pub use a2ui_tool::{A2UIDomainTool, A2UIHost};
 pub use agent_tool::{
-    ActiveAgent, ActiveAgentState, AgentRegistry, PersonaTool, validate_agent_dependencies,
+    ActiveAgent, ActiveAgentState, AgentRegistry, PersonaTool, apply_seat_declaration, validate_agent_dependencies,
 };
 pub use app_tool::AppTool;
 pub use bot_tool::{

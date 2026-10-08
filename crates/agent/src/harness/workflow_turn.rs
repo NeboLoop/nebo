@@ -151,6 +151,12 @@ pub struct WorkflowTurns {
     sessions_by_run: Mutex<HashMap<String, Vec<String>>>,
 }
 
+/// What a workflow step is told when it calls a tool its activity didn't
+/// declare.
+const STEP_TOOL_DENIAL: &str = "This workflow step may use only the tools its activity declares. Do not try \
+    another way. If the step can't be done with them, stop with exit and say what was missing, or tell the \
+    owner with message_owner.";
+
 impl WorkflowTurns {
     pub fn new(harness: Harness) -> Self {
         Self {
@@ -359,8 +365,10 @@ impl ActivityLoop for WorkflowTurns {
                 cwd: None,
                 seed_taint: Vec::new(),
                 audience: None,
-                tool_allowlist: None,
-                tool_denial_hint: None,
+                // A declared activity's step may call only its tools; a call
+                // outside them pauses the run for the owner.
+                tool_allowlist: workflow::enforced_tools(turn.activity, &turn.advertised_tools),
+                tool_denial_hint: Some(STEP_TOOL_DENIAL.to_string()),
                 handoff_depth: 0,
                 model_override: turn.model.clone(),
                 model_preference: None,

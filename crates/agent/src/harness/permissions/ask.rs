@@ -255,7 +255,20 @@ impl Ask {
     /// Whether "This once" can be offered: an employee's extra needs are
     /// part of its job, so they are granted for good or not at all.
     pub fn this_once_offered(&self) -> bool {
-        !matches!(self.case, AskCase::CreatedExtras { .. } | AskCase::UnconfirmedSend { .. })
+        // A step's tool is added to the step for good or not at all: one
+        // allow.
+        !matches!(self.case, AskCase::CreatedExtras { .. } | AskCase::UnconfirmedSend { .. } | AskCase::StepTool { .. })
+    }
+
+    /// Why it asked, for the card: a step's missing tool names the step and
+    /// the tool.
+    pub fn reason_text(&self) -> String {
+        match &self.case {
+            AskCase::StepTool { step, tool } => format!(
+                "The workflow step \u{201c}{step}\u{201d} wasn't given {tool}. Allowing it adds {tool} to that step and the run continues."
+            ),
+            _ => self.reason().to_string(),
+        }
     }
 
     /// What this ask asks.
@@ -297,6 +310,7 @@ pub fn reason_of(case: &AskCase) -> &'static str {
         AskCase::UnconfirmedSend { .. } => {
             "Nebo couldn't confirm it went out. Check the sent items, then say whether it did."
         }
+        AskCase::StepTool { .. } => "It isn't one of the tools this workflow step was given.",
     }
 }
 
@@ -651,6 +665,21 @@ impl Asks {
             self.settle_without_running(&ask, outcome);
             return Ok(None);
         }
+        // A step's missing tool: the one allow adds it to the step's
+        // declaration (the run's own definition and the employee's
+        // workflow), then the run continues at the call. No rule is written.
+        if let AskCase::StepTool { tool, .. } = &ask.case {
+            if answer == Answer::No {
+                self.settle_without_running(&ask, AskOutcome::Declined);
+                return Ok(None);
+            }
+            if let Some(run) = &ask.run_id
+                && let Err(e) = self.store.add_step_tool(run, tool)
+            {
+                tracing::warn!(ask = %ask.id, error = %e, "the step's tool was not added; it runs this once");
+            }
+            return Ok(self.run(registry, ask, true));
+        }
         let mut always = false;
         if answer == Answer::AllowAlways {
             always = true;
@@ -875,6 +904,7 @@ pub fn allow_always_rules(store: &db::Store, ask: &Ask) -> Option<Vec<Rule>> {
             | AskCase::RemovesEmployee
             | AskCase::CreatedExtras { .. }
             | AskCase::UnconfirmedSend { .. }
+            | AskCase::StepTool { .. }
     );
     if per_command && matches!(t.field, Some(RuleField::CommandPrefix(_))) {
         return command_rules(ask);
@@ -987,6 +1017,7 @@ fn allow_always_rule(store: &db::Store, ask: &Ask) -> Rule {
         | AskCase::RemovesEmployee
         | AskCase::CreatedExtras { .. }
         | AskCase::UnconfirmedSend { .. }
+        | AskCase::StepTool { .. }
         | AskCase::CompanyMoney { .. } => (call_key(), t.field.clone(), None),
     };
     standing_allow(ask, key, field, money)
@@ -1029,6 +1060,7 @@ pub fn parked_text(sentence: &str, case: &AskCase, door: &Door, origin: tools::O
         AskCase::CompanyMoney { .. } => " It is over what the company may spend unattended today.",
         AskCase::OutsideJob { .. } => " It is outside this employee's job.",
         AskCase::UntrustedInput { .. } => " It acts on words that came from outside.",
+        AskCase::StepTool { .. } => " It isn't one of the tools this workflow step was given; the owner can add it.",
         _ => "",
     };
     format!("Waiting for the owner to allow: {sentence}.{why} {}", where_to_answer(door, origin))

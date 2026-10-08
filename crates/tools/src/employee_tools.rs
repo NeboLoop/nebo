@@ -82,6 +82,10 @@ fn draft_param() -> serde_json::Value {
     serde_json::json!({ "type": "string", "description": "The draft the owner said yes to, from the first call's result. Send it alone." })
 }
 
+/// What an automation's `tools` say: a duty runs with only the tools it
+/// lists (`workflow::engine::scoped_activity_tools`).
+const AUTOMATION_TOOLS: &str = "Every tool the steps call, by exact name (plugin__<slug> for a plugin, e.g. plugin__odoo; read_file, run_command, send_message, push_notification). It runs with only these, plus exit, emit_event and message_owner; anything else is refused. Scheduling tools are refused in every automation.";
+
 /// One recurring or triggered duty, the item `automations` and
 /// `add_automations` take.
 fn automation_item() -> serde_json::Value {
@@ -95,6 +99,7 @@ fn automation_item() -> serde_json::Value {
             "window": { "type": "string", "description": "With interval: the hours it runs in, e.g. \"08:00-18:00\"." },
             "sources": { "type": "array", "items": { "type": "string" }, "minItems": 1, "description": "Instead of a schedule: the events that start it, e.g. \"email.received\"." },
             "steps": { "type": "array", "items": { "type": "string" }, "description": "Concrete ordered steps, run in order in one run: what to do, with which tool or data, producing what." },
+            "tools": { "type": "array", "items": { "type": "string" }, "description": AUTOMATION_TOOLS },
             "activities": {
                 "type": "array",
                 "description": "Instead of steps, for a duty in stages: each stage runs on its own and sees the earlier stages' outputs.",
@@ -104,7 +109,8 @@ fn automation_item() -> serde_json::Value {
                         "id": { "type": "string" },
                         "intent": { "type": "string", "description": "What this stage accomplishes, in a line." },
                         "steps": { "type": "array", "items": { "type": "string" } },
-                        "skills": { "type": "array", "items": { "type": "string" }, "description": "Skills this stage may use." }
+                        "skills": { "type": "array", "items": { "type": "string" }, "description": "Skills this stage may use." },
+                        "tools": { "type": "array", "items": { "type": "string" }, "description": AUTOMATION_TOOLS }
                     },
                     "required": ["id", "intent", "steps"]
                 }
@@ -122,6 +128,11 @@ fn job_properties() -> serde_json::Map<String, serde_json::Value> {
         "description": { "type": "string", "description": "What the employee does, in a sentence or two." },
         "agent_md": { "type": "string", "description": "The whole AGENT.md (frontmatter and instructions). Rarely needed: description and instructions cover most employees." },
         "automations": { "type": "array", "items": automation_item(), "description": "The employee's recurring or triggered duties; each becomes its own workflow, run as the employee." },
+        "ceiling": {
+            "type": "object",
+            "additionalProperties": { "type": "string", "enum": ["approval"] },
+            "description": "What it must never do without asking the owner first: operation → \"approval\", e.g. {\"ledger.payment.create\": \"approval\"}. Each one asks the owner every time until they say otherwise. Goes with automations in the same call."
+        },
         "app": {
             "type": "object",
             "description": "Make the employee an app with its own page. {} is fine.",
@@ -212,7 +223,7 @@ impl Kind {
                 - The first call drafts it and returns one plain line of what it will be able to do; nothing is created yet. Say that line to the owner and ask them to confirm, unless their latest message already told you to create it now.\n\
                 - On their yes, or at once when they already told you to create it, call again with only the `draft_id`: that creates exactly the drafted job. If they want it different, draft again.\n\
                 - Every recurring duty goes in `automations`: each becomes the employee's own workflow, run as it. Never make separate schedules for it.\n\
-                - Steps must be concrete — which tools, files and destinations, what to check, what to produce — because the workflow runs unattended on these words alone.\n\
+                - Steps must be concrete — which tools, files and destinations, what to check, what to produce — because the workflow runs unattended on these words alone. List every tool the steps call in the automation's `tools`: it runs with only those.\n\
                 - `app` or `ui`/`ui_jsx` makes it an app with its own page; load the app-studio skill before writing one.\n\
                 - To change an employee that exists, its name included, use update_employee."
                 .to_string(),
@@ -323,6 +334,7 @@ impl Kind {
                             "name": { "type": "string" },
                             "description": { "type": "string" },
                             "steps": { "type": "array", "items": { "type": "string" } },
+                            "tools": { "type": "array", "items": { "type": "string" }, "description": AUTOMATION_TOOLS },
                             "schedule": { "type": "string" },
                             "interval": { "type": "string" },
                             "window": { "type": "string" },
@@ -390,6 +402,35 @@ impl Kind {
     }
 
     fn effects(self, input: &serde_json::Value) -> CallEffects {
+        let mut effects = self.change(input);
+        effects.arms_schedule = self.arms_schedule(input);
+        effects
+    }
+
+    /// Whether the call brings an employee's automations into being or
+    /// starts them: a new or hired employee, an edit to its workflows,
+    /// turning one on. Only an attended run may
+    /// (`CallEffects::arms_schedule`).
+    fn arms_schedule(self, input: &serde_json::Value) -> bool {
+        // A drafted edit (`draft_id`) may carry any of these.
+        const AUTOMATION_KEYS: [&str; 7] = [
+            "automations",
+            "add_automations",
+            "update_automation",
+            "toggle_automation",
+            "agent_json",
+            "agent_md",
+            "draft_id",
+        ];
+        match self {
+            Kind::CreateEmployee | Kind::HireEmployee => true,
+            Kind::UpdateEmployee => AUTOMATION_KEYS.iter().any(|k| input.get(*k).is_some_and(|v| !v.is_null())),
+            Kind::SetEmployeeActive => input.get("active").and_then(|v| v.as_bool()) != Some(false),
+            _ => false,
+        }
+    }
+
+    fn change(self, input: &serde_json::Value) -> CallEffects {
         let named = || str_field(input, "name").map(str::to_string).into_iter().collect::<Vec<_>>();
         match self {
             Kind::DeleteEmployee => {
@@ -871,6 +912,22 @@ mod tests {
         assert_eq!((row.name.as_str(), row.description.as_str()), ("Tweet", "A game."), "nothing was changed");
         assert_eq!(row.napp_path.as_deref(), Some(folder.to_str().unwrap()));
         assert!(folder.join("src").join("App.tsx").exists());
+    }
+
+    /// What brings an employee's automations into being or starts them arms
+    /// scheduled work; renames, instructions and turning one off don't.
+    #[test]
+    fn automations_arm_scheduled_work() {
+        let arms = |k: Kind, input: serde_json::Value| k.effects(&input).arms_schedule;
+        assert!(arms(Kind::CreateEmployee, json!({"name": "Ops"})));
+        assert!(arms(Kind::HireEmployee, json!({"code": "AGNT-XXXX-XXXX"})));
+        assert!(arms(Kind::UpdateEmployee, json!({"name": "Ops", "add_automations": []})));
+        assert!(arms(Kind::UpdateEmployee, json!({"draft_id": "d-1"})));
+        assert!(arms(Kind::SetEmployeeActive, json!({"name": "Ops", "active": true})));
+        assert!(!arms(Kind::UpdateEmployee, json!({"name": "Ops", "new_name": "Ops Desk"})));
+        assert!(!arms(Kind::SetEmployeeActive, json!({"name": "Ops", "active": false})));
+        assert!(!arms(Kind::DeleteEmployee, json!({"name": "Ops"})));
+        assert!(Kind::DeleteEmployee.effects(&json!({"name": "Ops"})).removes_employee, "the rest of the effects stay");
     }
 
     /// A delete never wipes an app's files: they are moved whole into the

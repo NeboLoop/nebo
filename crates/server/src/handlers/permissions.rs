@@ -84,7 +84,7 @@ pub(crate) fn card(state: &AppState, ask: &Ask) -> PermissionAskCard {
         employee: employee_name(state, &ask.agent_id),
         session_key: ask.session_key.clone(),
         sentence: ask.sentence.clone(),
-        reason: ask.reason().to_string(),
+        reason: ask.reason_text(),
         command: match &ask.target.field {
             Some(RuleField::CommandPrefix(c)) => Some(c.clone()),
             _ => None,
@@ -1121,6 +1121,7 @@ fn why_sentence(store: &db::Store, decision: &str, why: &str, door: &str) -> (St
             "origin" => "Someone outside your company started this, so it can only reply".into(),
             "coworker" => "Another employee asked for this, and a coworker's request can only reply".into(),
             "credentials" => "It would have shared a password or key".into(),
+            "unattended_schedule" => "It would have scheduled more work from a run nobody was watching; only you schedule work, from your chat".into(),
             "not_its_own" => "It would have removed or replaced something it didn't make, and you didn't ask for it".into(),
             _ => "A safety limit".into(),
         },
@@ -1191,6 +1192,7 @@ fn ask_sentence(store: &db::Store, case: &AskCase) -> String {
             format!("An employee it made needs more than it holds: {}", needs.join(", "))
         }
         AskCase::UnconfirmedSend { .. } => "A send whose outcome never came back: did it go out?".into(),
+        AskCase::StepTool { step, tool } => format!("The workflow step \u{201c}{step}\u{201d} called {tool}, which it wasn't given"),
     }
 }
 
