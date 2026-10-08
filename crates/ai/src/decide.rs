@@ -244,11 +244,36 @@ pub fn clip(text: &str, max_bytes: usize) -> std::borrow::Cow<'_, str> {
     ))
 }
 
-/// Client for Janus `/v1/systemone`.
+/// The owner's own decision model: an Intelligence Pack's Decisions slot
+/// naming one of his SystemOne-compatible connections
+/// (`systemone_compatible@<connection>/<model>`), TypeSafe with his key or
+/// another SystemOne-compatible service. Same API as Janus's door.
+pub struct DecideEndpoint {
+    /// The API root (`https://api.typesafe.ai`); `/v1/systemone` is added.
+    pub base_url: String,
+    /// His key, sent as the bearer. Never logged.
+    pub key: String,
+    /// The model id the slot names, sent as `model`.
+    pub model: String,
+    /// The connection the endpoint came from: what the logs name.
+    pub profile_id: String,
+}
+
+/// Client for `/v1/systemone`: Janus's (Nebo AI's Jev), or the owner's own
+/// endpoint when his pack points the Decisions slot there.
 pub struct DecideClient {
     url: String,
     auth: Box<dyn Fn() -> Option<Bearer> + Send + Sync>,
+    /// Resolved on every call, before Janus: `Some` sends the decision to
+    /// the owner's endpoint instead. Cheap and local (no network).
+    endpoint: Box<dyn Fn() -> Option<DecideEndpoint> + Send + Sync>,
     http: reqwest::Client,
+}
+
+/// `{base}/v1/systemone`, whether or not the base already ends in `/v1`.
+fn systemone_url(base: &str) -> String {
+    let base = base.trim().trim_end_matches('/');
+    format!("{}/v1/systemone", base.strip_suffix("/v1").unwrap_or(base))
 }
 
 impl DecideClient {
@@ -258,19 +283,45 @@ impl DecideClient {
         Self {
             url: format!("{}/v1/systemone", janus_url.trim_end_matches('/')),
             auth: Box::new(auth),
+            endpoint: Box::new(|| None),
             http: crate::http::request_client(),
         }
     }
 
+    /// Where the owner's pack sends decisions, resolved per call; `None`
+    /// keeps the call on Janus. Without it every call goes to Janus.
+    pub fn with_endpoint(mut self, endpoint: impl Fn() -> Option<DecideEndpoint> + Send + Sync + 'static) -> Self {
+        self.endpoint = Box::new(endpoint);
+        self
+    }
+
     /// Ask every question in `questions` about `state` in one round trip.
-    /// `trace` names what the decision is for, sent as `X-Purpose` with the
-    /// ids in scope, the same headers the chat path sends.
+    /// `trace` names what the decision is for, sent to Janus as `X-Purpose`
+    /// with the ids in scope, the same headers the chat path sends (the
+    /// owner's endpoint gets the decision alone).
     pub async fn decide(
         &self,
         trace: &RequestTrace,
         state: &serde_json::Value,
         questions: &BTreeMap<&str, Question>,
     ) -> Result<Decision, ProviderError> {
+        if let Some(endpoint) = (self.endpoint)() {
+            // The owner pointed this slot at his own endpoint: a failure there
+            // fails to the caller's safe default like a Janus failure, never
+            // a retry on Janus (that would bill Nebo for his slot).
+            let body = serde_json::json!({
+                "model": endpoint.model,
+                "state": state,
+                "questions": questions,
+            });
+            let url = systemone_url(&endpoint.base_url);
+            let req = || self.http.post(&url).timeout(DECIDE_TIMEOUT).bearer_auth(&endpoint.key).json(&body);
+            let result = self.send(req).await;
+            if let Err(e) = &result {
+                tracing::warn!(profile = %endpoint.profile_id, model = %endpoint.model, error = %e, "the owner's decision endpoint failed");
+            }
+            return result;
+        }
         let body = serde_json::json!({
             "model": JEV_MODEL,
             "state": state,
@@ -279,19 +330,29 @@ impl DecideClient {
         let Some(bearer) = (self.auth)() else {
             return Err(ProviderError::Auth("no NeboAI token".into()));
         };
-        let mut attempt = 0;
-        loop {
-            attempt += 1;
-            let mut req = self
+        let req = || {
+            let req = self
                 .http
                 .post(&self.url)
                 .timeout(DECIDE_TIMEOUT)
                 .bearer_auth(&bearer.token)
                 .headers(trace.headers())
                 .json(&body);
-            if let Some(bot_id) = &bearer.bot_id {
-                req = req.header("X-Bot-ID", bot_id);
+            match &bearer.bot_id {
+                Some(bot_id) => req.header("X-Bot-ID", bot_id),
+                None => req,
             }
+        };
+        self.send(req).await
+    }
+
+    /// Send one decision request (built fresh per attempt), retrying once
+    /// after a rate limit or an overload.
+    async fn send(&self, req: impl Fn() -> reqwest::RequestBuilder) -> Result<Decision, ProviderError> {
+        let mut attempt = 0;
+        loop {
+            attempt += 1;
+            let req = req();
             let resp = req
                 .send()
                 .await
@@ -455,5 +516,121 @@ mod tests {
         let c = DecideClient::new("https://janus.example.com/", || None);
         assert_eq!(c.url, "https://janus.example.com/v1/systemone");
         assert!((c.auth)().is_none());
+    }
+
+    #[test]
+    fn an_owner_endpoint_is_reached_at_its_systemone_path() {
+        assert_eq!(systemone_url("https://api.typesafe.ai"), "https://api.typesafe.ai/v1/systemone");
+        assert_eq!(systemone_url(" https://api.typesafe.ai/ "), "https://api.typesafe.ai/v1/systemone");
+        assert_eq!(systemone_url("https://clef.example/v1/"), "https://clef.example/v1/systemone");
+        let c = DecideClient::new("https://janus.example.com/", || None);
+        assert!((c.endpoint)().is_none(), "without a resolver every call is Janus's");
+    }
+
+    /// A one-shot HTTP stub: answers every request with `status` and `body`
+    /// and keeps the raw requests it read.
+    async fn stub(status: u16, body: &'static str) -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = seen.clone();
+        tokio::spawn(async move {
+            while let Ok((mut sock, _)) = listener.accept().await {
+                let log = log.clone();
+                tokio::spawn(async move {
+                    let mut buf = Vec::new();
+                    let mut chunk = [0u8; 4096];
+                    loop {
+                        let n = sock.read(&mut chunk).await.unwrap_or(0);
+                        if n == 0 {
+                            break;
+                        }
+                        buf.extend_from_slice(&chunk[..n]);
+                        let text = String::from_utf8_lossy(&buf);
+                        if let Some(end) = text.find("\r\n\r\n") {
+                            let len = text[..end]
+                                .lines()
+                                .find_map(|l| l.to_ascii_lowercase().strip_prefix("content-length:").map(|v| v.trim().parse::<usize>().unwrap_or(0)))
+                                .unwrap_or(0);
+                            if buf.len() >= end + 4 + len {
+                                break;
+                            }
+                        }
+                    }
+                    log.lock().unwrap().push(String::from_utf8_lossy(&buf).into_owned());
+                    let reply = format!(
+                        "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = sock.write_all(reply.as_bytes()).await;
+                });
+            }
+        });
+        (format!("http://{addr}"), seen)
+    }
+
+    const ANSWER: &str = r#"{"model":"jev-1.13.0","answers":{"done":{"type":"noul","noul":0.9}}}"#;
+
+    fn one_question() -> BTreeMap<&'static str, Question> {
+        BTreeMap::from([("done", Question::noul("The turn finished"))])
+    }
+
+    #[tokio::test]
+    async fn the_owner_endpoint_gets_his_url_key_and_model_and_janus_nothing() {
+        let (owner, owner_seen) = stub(200, ANSWER).await;
+        let (janus, janus_seen) = stub(200, ANSWER).await;
+        let client = DecideClient::new(&janus, || Some(Bearer { token: "nebo-token".into(), bot_id: Some("bot-1".into()) }))
+            .with_endpoint(move || {
+                Some(DecideEndpoint { base_url: owner.clone(), key: "owner-key".into(), model: "jev-owner".into(), profile_id: "p1".into() })
+            });
+        let d = client
+            .decide(&RequestTrace::new("test"), &serde_json::json!({"text": "hi"}), &one_question())
+            .await
+            .unwrap();
+        assert_eq!(d.model, "jev-1.13.0", "the versioned model that answered");
+        let seen = owner_seen.lock().unwrap().clone();
+        assert_eq!(seen.len(), 1);
+        let req = seen[0].to_ascii_lowercase();
+        assert!(req.starts_with("post /v1/systemone "), "{req}");
+        assert!(req.contains("authorization: bearer owner-key"), "{req}");
+        assert!(!req.contains("x-bot-id"), "{req}");
+        let body: serde_json::Value = serde_json::from_str(seen[0].split("\r\n\r\n").nth(1).unwrap()).unwrap();
+        assert_eq!(body["model"], "jev-owner");
+        assert_eq!(body["questions"]["done"]["type"], "noul");
+        assert!(janus_seen.lock().unwrap().is_empty(), "nothing reaches Janus");
+    }
+
+    #[tokio::test]
+    async fn a_failing_owner_endpoint_fails_without_trying_janus() {
+        let (owner, owner_seen) = stub(401, r#"{"error":{"message":"bad key"}}"#).await;
+        let (janus, janus_seen) = stub(200, ANSWER).await;
+        let client = DecideClient::new(&janus, || Some(Bearer { token: "nebo-token".into(), bot_id: None }))
+            .with_endpoint(move || {
+                Some(DecideEndpoint { base_url: owner.clone(), key: "stale".into(), model: "jev-latest".into(), profile_id: "p1".into() })
+            });
+        let err = client
+            .decide(&RequestTrace::new("test"), &serde_json::json!({}), &one_question())
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ProviderError::Auth(_)), "{err:?}");
+        assert_eq!(owner_seen.lock().unwrap().len(), 1);
+        assert!(janus_seen.lock().unwrap().is_empty(), "never billed to Nebo");
+    }
+
+    #[tokio::test]
+    async fn no_owner_endpoint_keeps_the_janus_path() {
+        let (janus, janus_seen) = stub(200, ANSWER).await;
+        let client = DecideClient::new(&janus, || Some(Bearer { token: "nebo-token".into(), bot_id: Some("bot-1".into()) }))
+            .with_endpoint(|| None);
+        client
+            .decide(&RequestTrace::new("test"), &serde_json::json!({}), &one_question())
+            .await
+            .unwrap();
+        let seen = janus_seen.lock().unwrap().clone();
+        let req = seen[0].to_ascii_lowercase();
+        assert!(req.contains("authorization: bearer nebo-token") && req.contains("x-bot-id: bot-1"), "{req}");
+        let body: serde_json::Value = serde_json::from_str(seen[0].split("\r\n\r\n").nth(1).unwrap()).unwrap();
+        assert_eq!(body["model"], JEV_MODEL);
     }
 }

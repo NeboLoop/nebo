@@ -269,7 +269,7 @@ impl Harness {
         &self.tools
     }
 
-    pub fn selector(&self) -> &ModelSelector {
+    pub fn selector(&self) -> &Arc<ModelSelector> {
         &self.selector
     }
 
