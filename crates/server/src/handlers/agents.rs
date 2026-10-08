@@ -5257,7 +5257,9 @@ pub async fn start_workflow_chat(
          - Activities run sequentially along connections (__trigger__ → ... → __emit__); a node with \
            multiple outgoing edges runs its branches IN PARALLEL; a join waits for all active branches.\n\
          - condition REQUIRES params.expression + params.mode (expression|contains|exists|regex) and \
-           routes via edges labeled \"True\"/\"False\". Routing is never decided by the AI.\n\
+           routes via edges labeled \"True\"/\"False\". Routing is never decided by the AI. \
+           An expression joins comparisons with && || ! and parentheses over inputs.<field>, \
+           nodes.<step>.<field> or a bare field of the one step feeding it; text is quoted ('won').\n\
          - loop REQUIRES params.source (data path, e.g. \"inputs.items\") and uses edges labeled \
            \"Each item\" (body) and \"Done\". Items run in parallel. After Done, the loop's output is \
            {{summary, results:[{{item, outputs:{{<body-id>: ...}}}}]}} — EVERY item's result in item order. \
