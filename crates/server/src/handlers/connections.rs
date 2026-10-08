@@ -331,7 +331,7 @@ async fn fetch_catalog(p: &db::models::AuthProfile) -> Option<Vec<CatalogModel>>
     {
         return Some(list);
     }
-    let client = reqwest::Client::builder().timeout(Duration::from_secs(15)).build().ok()?;
+    let client = tls::http_client().timeout(Duration::from_secs(15)).build().ok()?;
     let list = match p.provider.as_str() {
         "openrouter" => {
             let body: serde_json::Value = client.get("https://openrouter.ai/api/v1/models").send().await.ok()?.json().await.ok()?;
