@@ -18,7 +18,7 @@ import { opensHere } from './origin';
 import { notifications, pushNotification, loadNotifications, settleUpdateNotices } from '$lib/stores/notifications';
 import { askRaised, askSettled, loadOpenAsks } from '$lib/stores/permissionAsks';
 import { loadWaitingAsks, setWaitingAsks, waitingAsks } from '$lib/stores/waitingAsks';
-import { newBlockingAsks, seedBlockingAsks, openAsk, answerById } from '$lib/stores/blockingAsks';
+import { newBlockingAsks, seedBlockingAsks, openAsk, answerById, inAsksChat } from '$lib/stores/blockingAsks';
 import type { WaitingAsk } from '$lib/api/neboComponents';
 import { addToast, removeToast } from '$lib/stores/toast';
 import { onUpdateAvailable, onUpdateProgress, onUpdateReady, onUpdateError } from '$lib/stores/update';
@@ -47,13 +47,19 @@ function blockingAskOf(notificationId: string): WaitingAsk | undefined {
 
 /** A blocking ask reaches the owner wherever he is in the app, never inside
  *  the chat he is in: a toast that fades on its own, and the OS notification.
- *  A click on either opens its card over the current screen. */
+ *  A click on either opens its card over the current screen. In the ask's
+ *  own chat its card is already there: no toast, and no OS notification
+ *  while the window has his attention. */
 function tellBlockingAsk(ask: WaitingAsk): void {
+  const here = inAsksChat(ask, window.location.pathname);
+  if (here && document.hasFocus()) return;
   const title = get(t)('chat.waitingOnYou', { values: { name: ask.employee } });
-  addToast(`${title}: ${ask.question}`, 'warning', 10000, {
-    label: get(t)('chat.waitingOpen'),
-    onClick: () => openAsk(ask.id),
-  });
+  if (!here) {
+    addToast(`${title}: ${ask.question}`, 'warning', 10000, {
+      label: get(t)('chat.waitingOpen'),
+      onClick: () => openAsk(ask.id),
+    });
+  }
   void (async () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     if (!(window as any).__TAURI_INTERNALS__) return;

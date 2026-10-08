@@ -22,7 +22,8 @@ import {
 	newBlockingAsks,
 	seedBlockingAsks,
 	askHome,
-	answerById
+	answerById,
+	inAsksChat
 } from './blockingAsks';
 import type { WaitingAsk } from '$lib/api/neboComponents';
 
@@ -85,6 +86,15 @@ describe('blocking asks', () => {
 		waitingAsks.set([]);
 		await answerById('ask-bk', 0);
 		expect(answered).toEqual([]);
+	});
+
+	it('is in its chat only on that chat, never on another or with no chat', () => {
+		const inChat = { ...bookkeeper, chatId: 'c-9' };
+		expect(inAsksChat(inChat, '/bookkeeper/threads/c-9')).toBe(true);
+		expect(inAsksChat(inChat, '/bookkeeper/threads/c-9/files')).toBe(true);
+		expect(inAsksChat(inChat, '/bookkeeper/threads/c-90')).toBe(false);
+		expect(inAsksChat(inChat, '/flip-flap/threads/c-1')).toBe(false);
+		expect(inAsksChat(bookkeeper, '/bookkeeper')).toBe(false);
 	});
 
 	it('See conversation goes to the chat it waits in, or its Inbox item when no chat raised it', () => {
