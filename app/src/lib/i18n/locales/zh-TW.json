@@ -3718,6 +3718,32 @@
 					}
 				}
 			},
+			"expert": {
+				"label": "專家",
+				"description": "由另一位員工完成此步驟，執行會等待其回覆",
+				"params": {
+					"expert": {
+						"label": "專家",
+						"description": "完成工作的同事：ID、帳號名稱或姓名"
+					},
+					"task": {
+						"label": "任務",
+						"description": "專家要做的事"
+					},
+					"input": {
+						"label": "輸入",
+						"description": "專家收到的一個參照，例如 '{{'nodes.fetch'}}'"
+					},
+					"output": {
+						"label": "預期回覆",
+						"description": "應傳回的內容：JSON 結構或簡短描述"
+					},
+					"timeout": {
+						"label": "逾時",
+						"description": "等待回覆的時間，例如 30m、4h 或 2d"
+					}
+				}
+			},
 			"transform": {
 				"label": "轉換",
 				"description": "重整或篩選資料",
@@ -3796,6 +3822,10 @@
 				"activityDecide": {
 					"label": "判斷",
 					"desc": "分類或評判資料"
+				},
+				"activityExpert": {
+					"label": "專家",
+					"desc": "由另一位員工完成此步驟"
 				},
 				"activityTransform": {
 					"label": "轉換",
@@ -3918,6 +3948,7 @@
 			"loopSource": "迴圈「{id}」需要資料來源（例如 inputs.items）",
 			"httpUrl": "HTTP 節點「{id}」需要 URL",
 			"decideQuestions": "判斷節點「{id}」需要問題（具型別問題的 JSON 物件）",
+			"expertFields": "專家節點「{id}」需要專家、任務和逾時",
 			"waitDuration": "等待節點「{id}」需要等待時間",
 			"needsIntent": "「{workflow}」中的活動「{id}」需要意圖或步驟",
 			"targetsTrigger": "有連線指向觸發器",

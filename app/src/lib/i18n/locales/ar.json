@@ -3718,6 +3718,32 @@
 					}
 				}
 			},
+			"expert": {
+				"label": "خبير",
+				"description": "موظف آخر ينفذ هذه الخطوة، وينتظر التشغيل رده",
+				"params": {
+					"expert": {
+						"label": "الخبير",
+						"description": "الزميل الذي ينفذ العمل: معرّف أو اسم مستخدم أو اسم"
+					},
+					"task": {
+						"label": "المهمة",
+						"description": "ما يجب أن يفعله الخبير"
+					},
+					"input": {
+						"label": "المُدخل",
+						"description": "مرجع واحد يتسلمه الخبير، مثل '{{'nodes.fetch'}}'"
+					},
+					"output": {
+						"label": "الرد المتوقع",
+						"description": "ما يجب أن يعود: بنية JSON أو وصف قصير"
+					},
+					"timeout": {
+						"label": "المهلة",
+						"description": "مدة انتظار الرد، مثل 30m أو 4h أو 2d"
+					}
+				}
+			},
 			"transform": {
 				"label": "تحويل",
 				"description": "إعادة تشكيل البيانات أو تصفيتها",
@@ -3796,6 +3822,10 @@
 				"activityDecide": {
 					"label": "قرار",
 					"desc": "تصنيف البيانات أو تقييمها"
+				},
+				"activityExpert": {
+					"label": "خبير",
+					"desc": "موظف آخر ينفذ الخطوة"
 				},
 				"activityTransform": {
 					"label": "تحويل",
@@ -3918,6 +3948,7 @@
 			"loopSource": "التكرار “{id}” يحتاج إلى مصدر بيانات (مثال: inputs.items)",
 			"httpUrl": "عقدة HTTP “{id}” تحتاج إلى URL",
 			"decideQuestions": "عقدة القرار “{id}” تحتاج إلى أسئلة (كائن JSON من الأسئلة محددة النوع)",
+			"expertFields": "عقدة الخبير “{id}” تحتاج إلى خبير ومهمة ومهلة",
 			"waitDuration": "عقدة الانتظار “{id}” تحتاج إلى مدة",
 			"needsIntent": "النشاط “{id}” في “{workflow}” يحتاج إلى قصد أو خطوات",
 			"targetsTrigger": "اتصال يستهدف المشغّل",

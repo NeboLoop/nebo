@@ -3718,6 +3718,32 @@
 					}
 				}
 			},
+			"expert": {
+				"label": "Expert",
+				"description": "Een andere medewerker doet deze stap; de run wacht op het antwoord",
+				"params": {
+					"expert": {
+						"label": "Expert",
+						"description": "De collega die het werk doet: een id, handle of naam"
+					},
+					"task": {
+						"label": "Taak",
+						"description": "Wat de expert moet doen"
+					},
+					"input": {
+						"label": "Invoer",
+						"description": "Eén verwijzing die de expert krijgt, zoals '{{'nodes.fetch'}}'"
+					},
+					"output": {
+						"label": "Verwacht antwoord",
+						"description": "Wat er terug moet komen: een JSON-vorm of een korte beschrijving"
+					},
+					"timeout": {
+						"label": "Time-out",
+						"description": "Hoelang op het antwoord wordt gewacht, zoals 30m, 4h of 2d"
+					}
+				}
+			},
 			"transform": {
 				"label": "Omzetten",
 				"description": "Gegevens omvormen of filteren",
@@ -3796,6 +3822,10 @@
 				"activityDecide": {
 					"label": "Beslissen",
 					"desc": "Gegevens classificeren of beoordelen"
+				},
+				"activityExpert": {
+					"label": "Expert",
+					"desc": "Een andere medewerker doet de stap"
 				},
 				"activityTransform": {
 					"label": "Omzetten",
@@ -3918,6 +3948,7 @@
 			"loopSource": "Lus \"{id}\" heeft een gegevensbron nodig (bijv. inputs.items)",
 			"httpUrl": "HTTP-node \"{id}\" heeft een URL nodig",
 			"decideQuestions": "Beslissingsnode \"{id}\" heeft vragen nodig (een JSON-object met getypeerde vragen)",
+			"expertFields": "Expertnode \"{id}\" heeft een expert, een taak en een time-out nodig",
 			"waitDuration": "Wachtnode \"{id}\" heeft een duur nodig",
 			"needsIntent": "Activiteit \"{id}\" in \"{workflow}\" heeft een intentie of stappen nodig",
 			"targetsTrigger": "Een verbinding wijst naar de trigger",
