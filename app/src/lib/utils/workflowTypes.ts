@@ -9,6 +9,7 @@
  * - Flow control: condition, loop, wait
  * - Integrations: connector (MCP), http
  * - Decisions: decide (typed questions, engine-executed)
+ * - Expert: another employee does the step; the run waits for the reply
  * - Composition: agent (delegation), transform
  *
  * The English text in ACTIVITY_TYPES is the source and the fallback;
@@ -34,6 +35,7 @@ export type ActivityType =
 	| 'connector'
 	| 'http'
 	| 'decide'
+	| 'expert'
 	| 'transform'
 	// Call-tree nodes — only legal inside a call_tree binding; never
 	// executed by the workflow engine (the voice session consumes them).
@@ -579,6 +581,52 @@ export const ACTIVITY_TYPES: Record<ActivityType, ActivityTypeDefinition> = {
 			},
 		],
 	},
+	expert: {
+		type: 'expert',
+		label: 'Expert',
+		description: 'Another employee does this step; the run waits for the reply',
+		icon: '✪',
+		accentClass: 'border-primary',
+		defaultSkills: [],
+		defaultSteps: [],
+		parameters: [
+			{
+				key: 'expert',
+				label: 'Expert',
+				type: 'text',
+				placeholder: 'ana',
+				description: 'The coworker who does the work: an id, handle or name',
+			},
+			{
+				key: 'task',
+				label: 'Task',
+				type: 'textarea',
+				placeholder: 'Price the order for {{inputs.customer}}',
+				description: 'What the expert should do',
+			},
+			{
+				key: 'input',
+				label: 'Input',
+				type: 'text',
+				placeholder: '{{nodes.fetch}}',
+				description: 'One reference the expert receives, such as {{nodes.fetch}}',
+			},
+			{
+				key: 'output',
+				label: 'Expected reply',
+				type: 'textarea',
+				placeholder: '{ "total": "number" }',
+				description: 'What should come back: a JSON shape or a short description',
+			},
+			{
+				key: 'timeout',
+				label: 'Timeout',
+				type: 'text',
+				placeholder: '4h',
+				description: 'How long to wait for the reply, such as 30m, 4h or 2d',
+			},
+		],
+	},
 	transform: {
 		type: 'transform',
 		label: 'Transform',
@@ -735,6 +783,9 @@ export function createTypedActivity(
 	let intent = catalogItem.desc || typeDef.description;
 	if (isAgent) intent = `Delegate to ${catalogItem.label}`;
 	if (isConnector && catalogItem.serverName) intent = `Use ${catalogItem.serverName}`;
+	// The engine sends an expert its intent when params.task is empty, so a
+	// new expert step starts blank rather than with the catalog blurb.
+	if (actType === 'expert') intent = '';
 
 	return {
 		id,

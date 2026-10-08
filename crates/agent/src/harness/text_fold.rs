@@ -8,6 +8,12 @@
 //! the answer and stays in view. When the turn ends with every segment folded
 //! and no answer after them, the longest folded segment is shown instead, so
 //! a turn always leaves something to read.
+//!
+//! A segment that says again what an earlier one in the turn said folds, and
+//! an answer that repeats an earlier shown segment folds that one: one owner
+//! message, one reply. Live 2026-10-08: the owner sent one clip and read
+//! "Four clips in, still holding" four times, the model having written it
+//! again beside each of four identical `remember` calls.
 
 use serde::{Deserialize, Serialize};
 
@@ -125,12 +131,44 @@ fn announces_next_step(text: &str) -> bool {
     })
 }
 
+/// The share of a segment's words another must hold for the segment to say
+/// nothing new beside it.
+const REPEAT_SHARE: f64 = 0.8;
+
+/// A segment's words, lowercased, for telling a repeat.
+fn words(text: &str) -> Vec<String> {
+    text.split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .map(str::to_lowercase)
+        .collect()
+}
+
+/// Whether the segment `said` says nothing new beside `before`: the same
+/// words when it is short, else most of its words already in `before`
+/// ("Got it — four clips in, still holding." after "Four clips in, still
+/// holding."). One way only: a long report that holds a short note's words
+/// says plenty the note does not.
+fn nothing_new(said: &[String], before: &[String]) -> bool {
+    if said.is_empty() || before.is_empty() {
+        return false;
+    }
+    if said.len().min(before.len()) < 3 {
+        return said == before;
+    }
+    let before: std::collections::HashSet<&str> = before.iter().map(String::as_str).collect();
+    let said: std::collections::HashSet<&str> = said.iter().map(String::as_str).collect();
+    let held = said.iter().filter(|w| before.contains(*w)).count();
+    held as f64 >= REPEAT_SHARE * said.len() as f64
+}
+
 /// One text segment of the turn.
 #[derive(Debug, Default)]
 struct Segment {
     /// Its length, in characters other than whitespace.
     chars: usize,
     text: String,
+    /// Its words, once it is closed (for telling a later repeat of it).
+    words: Vec<String>,
     fold: Option<Fold>,
     /// Where it is stored (the safety net rewrites its verdict there).
     row: Option<StoredRow>,
@@ -178,9 +216,12 @@ impl TurnFolds {
             self.open = false;
             let index = self.segments.len() - 1;
             let first = index == 0;
+            let said = words(&self.segments[index].text);
+            let again = self.segments[..index].iter().any(|s| nothing_new(&said, &s.words));
             let seg = &mut self.segments[index];
-            let fold = verdict(&seg.text, first, self.tools);
+            let fold = if again { Fold::Folded } else { verdict(&seg.text, first, self.tools) };
             seg.fold = Some(fold);
+            seg.words = said;
             seg.text.clear();
             Some((index, fold))
         } else {
@@ -201,6 +242,31 @@ impl TurnFolds {
         {
             seg.row = Some(row);
         }
+    }
+
+    /// At the end of the turn: the earlier shown segments the answer (the
+    /// segment still open) says again fold, so the turn shows it once.
+    /// Returns each one's index and the row to rewrite.
+    pub fn fold_repeats_of_the_answer(&mut self) -> Vec<(usize, Option<StoredRow>)> {
+        let Some(answer) = self.segments.last().filter(|s| self.open && s.fold.is_none()) else {
+            return Vec::new();
+        };
+        let said = words(&answer.text);
+        let last = self.segments.len() - 1;
+        self.segments[..last]
+            .iter_mut()
+            .enumerate()
+            .filter(|(_, s)| {
+                // A short note the answer says again, or says part of, folds;
+                // a long one folds only when the answer holds it all.
+                let short = s.words.len() < SUBSTANTIAL_WORDS;
+                s.fold == Some(Fold::Shown) && (nothing_new(&s.words, &said) || (short && nothing_new(&said, &s.words)))
+            })
+            .map(|(i, s)| {
+                s.fold = Some(Fold::Folded);
+                (i, s.row.clone())
+            })
+            .collect()
     }
 
     /// At the end of the turn: when every segment folded and nothing
@@ -308,6 +374,70 @@ mod tests {
         assert_eq!(t.safety_net().map(|v| v.0), Some(1));
         // Once shown, the net has nothing left to do.
         assert_eq!(t.safety_net(), None);
+    }
+
+    /// Live 2026-10-08: one clip, and "Four clips in, still holding" four
+    /// times, each beside the same `remember` call. A segment saying again
+    /// what an earlier one said folds.
+    #[test]
+    fn a_segment_that_says_it_again_folds() {
+        let mut t = TurnFolds::default();
+        t.text("Four clips in, still holding. Let me know when you're done.");
+        assert_eq!(t.tool_call(), Some((0, Fold::Shown)));
+        t.text("Got it — four clips in, still holding. Let me know when you're done.");
+        assert_eq!(t.tool_call(), Some((1, Fold::Folded)));
+        t.text("Got it — four clips in, still holding. Let me know when you're done.");
+        assert_eq!(t.tool_call(), Some((2, Fold::Folded)));
+        // Something new still shows.
+        t.text("Want me to start on the first four now?");
+        assert_eq!(t.tool_call(), Some((3, Fold::Shown)));
+    }
+
+    /// Live 2026-10-08: "Five clips in, still holding." beside a call, then
+    /// again as the answer. The answer stays; the earlier copy folds, where
+    /// it is stored too.
+    #[test]
+    fn an_answer_that_repeats_an_earlier_segment_folds_that_one() {
+        let mut t = TurnFolds::default();
+        t.text("Five clips in, still holding. Let me know when you're done.");
+        assert_eq!(t.tool_call(), Some((0, Fold::Shown)));
+        let row = StoredRow { message_id: "m1".into(), block: 0 };
+        t.stored(row.clone());
+        t.text("Five clips in, still holding.");
+        assert_eq!(t.fold_repeats_of_the_answer(), vec![(0, Some(row))]);
+        // The answer itself is still there to read: the net has nothing to do.
+        assert_eq!(t.safety_net(), None);
+        assert_eq!(t.fold_repeats_of_the_answer(), vec![]);
+    }
+
+    #[test]
+    fn an_answer_that_says_something_new_folds_nothing() {
+        let mut t = TurnFolds::default();
+        t.text("Five clips in, still holding.");
+        t.tool_call();
+        t.text("All eight clips are in: here is the plan.");
+        assert_eq!(t.fold_repeats_of_the_answer(), vec![]);
+        // A turn that ended on a call has no answer to compare.
+        let mut t = TurnFolds::default();
+        t.text("Five clips in, still holding.");
+        t.tool_call();
+        assert_eq!(t.fold_repeats_of_the_answer(), vec![]);
+    }
+
+    #[test]
+    fn a_short_answer_never_folds_the_report_before_it() {
+        let mut t = TurnFolds::default();
+        t.text("The export has 212 rows: 180 paid, 30 open and 2 refunded. The open ones are all from March.");
+        t.tool_call();
+        t.text("Done, the export is ready.");
+        assert_eq!(t.fold_repeats_of_the_answer(), vec![]);
+    }
+
+    #[test]
+    fn short_segments_repeat_only_word_for_word() {
+        assert!(nothing_new(&words("Done."), &words("done")));
+        assert!(!nothing_new(&words("Done."), &words("Done twice.")));
+        assert!(!nothing_new(&words("Checked the first invoice."), &words("Now the tax filings for March.")));
     }
 
     #[test]

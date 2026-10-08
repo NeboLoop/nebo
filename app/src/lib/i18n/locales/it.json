@@ -3718,6 +3718,32 @@
 					}
 				}
 			},
+			"expert": {
+				"label": "Esperto",
+				"description": "Un altro dipendente svolge questo passaggio; l’esecuzione attende la risposta",
+				"params": {
+					"expert": {
+						"label": "Esperto",
+						"description": "Il collega che svolge il lavoro: un id, un handle o un nome"
+					},
+					"task": {
+						"label": "Compito",
+						"description": "Cosa deve fare l’esperto"
+					},
+					"input": {
+						"label": "Input",
+						"description": "Un riferimento che l’esperto riceve, ad esempio '{{'nodes.fetch'}}'"
+					},
+					"output": {
+						"label": "Risposta attesa",
+						"description": "Cosa deve tornare: una struttura JSON o una breve descrizione"
+					},
+					"timeout": {
+						"label": "Timeout",
+						"description": "Quanto attendere la risposta, ad esempio 30m, 4h o 2d"
+					}
+				}
+			},
 			"transform": {
 				"label": "Trasforma",
 				"description": "Rimodella o filtra i dati",
@@ -3796,6 +3822,10 @@
 				"activityDecide": {
 					"label": "Decidi",
 					"desc": "Classifica o valuta i dati"
+				},
+				"activityExpert": {
+					"label": "Esperto",
+					"desc": "Un altro dipendente svolge il passaggio"
 				},
 				"activityTransform": {
 					"label": "Trasforma",
@@ -3918,6 +3948,7 @@
 			"loopSource": "Il ciclo «{id}» richiede un’origine dati (es. inputs.items)",
 			"httpUrl": "Il nodo HTTP «{id}» richiede un URL",
 			"decideQuestions": "Il nodo Decidi «{id}» richiede delle domande (un oggetto JSON di domande tipizzate)",
+			"expertFields": "Il nodo Esperto «{id}» richiede un esperto, un compito e un timeout",
 			"waitDuration": "Il nodo Attendi «{id}» richiede una durata",
 			"needsIntent": "L’attività «{id}» in «{workflow}» richiede un intento o dei passaggi",
 			"targetsTrigger": "Un collegamento punta al trigger",

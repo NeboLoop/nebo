@@ -242,6 +242,19 @@ pub fn hard_limits(cx: &CheckCx<'_>, t: &Target) -> Option<Decision> {
     if denied_for_origin(cx.ctx.origin, &t.key) || denied_operation_for_origin(cx.ctx.origin, t) {
         return Some(origin_refusal(cx, t));
     }
+    if let Some(d) = arms_schedule(cx, t) {
+        return Some(d);
+    }
+    // A workflow step's declared tools: a call outside them pauses the run
+    // for the owner, whose allow adds the tool to the step and resumes it.
+    if !cx.ctx.whitelist_allows(t) && matches!(cx.ctx.door, Door::Workflow) {
+        return Some(Decision::Ask {
+            case: types::permissions::AskCase::StepTool {
+                step: step_of(&cx.ctx.session_key).to_string(),
+                tool: t.tool.clone(),
+            },
+        });
+    }
     // The restricted run's allowlist (the review fork, phone callers).
     if !cx.ctx.whitelist_allows(t) {
         return Some(deny(
@@ -280,6 +293,48 @@ pub fn hard_limits(cx: &CheckCx<'_>, t: &Target) -> Option<Decision> {
     None
 }
 
+/// The activity a workflow step's session belongs to:
+/// `[agent:<id>:]workflow:<run>:<activity>:<iteration>…` (`WorkflowTurns`).
+pub fn step_of(session_key: &str) -> &str {
+    let parts: Vec<&str> = session_key.split(':').collect();
+    parts.iter().position(|p| *p == "workflow").and_then(|i| parts.get(i + 2)).copied().unwrap_or("")
+}
+
+/// Whether someone is attending the run the call came from: the owner's own
+/// request, or a door a person is talking through (a chat, a call, an MCP
+/// client, the local API). A schedule, a workflow, a heartbeat, a helper and
+/// a coworker's request are unattended, and so is any run the system or a
+/// workflow started, whatever door it names.
+pub fn attended(ctx: &tools::ToolContext) -> bool {
+    ctx.owner_request
+        || (!matches!(ctx.origin, Origin::System | Origin::Workflow)
+            && matches!(ctx.door, Door::Chat | Door::Voice | Door::Mcp | Door::LocalApi))
+}
+
+/// An unattended run never creates, re-arms or fires scheduled work
+/// (`CallEffects::arms_schedule`): a scheduled run that schedules more runs
+/// multiplies without end, and no one is there to stop it (2026-10-08: a
+/// workflow step met an Odoo rate limit and "retried in 30 seconds" with
+/// create_schedule; each scheduled run did the same, ~60 schedules and 15
+/// sessions writing to Odoo at once). The owner can still schedule anything
+/// from his own chat. Never asked, never lifted, Full Access included.
+fn arms_schedule(cx: &CheckCx<'_>, t: &Target) -> Option<Decision> {
+    if !t.effects.arms_schedule || attended(cx.ctx) {
+        return None;
+    }
+    Some(deny(
+        "unattended_schedule",
+        format!(
+            "'{}' isn't allowed here: a run nobody is attending ({}) can't create, turn on or start \
+             scheduled work. Do not retry it another way, and don't schedule a retry or a check: if something \
+             has to wait, wait in this run or stop and say what is left. Tell the owner what you would \
+             schedule and why (message_owner); they can set it up from their chat.",
+            t.tool,
+            cx.ctx.door.label()
+        ),
+    ))
+}
+
 /// Rule keys that carry content out of this machine to someone else's
 /// server, whatever their recipients say.
 const OUTBOUND_KEYS: &[&str] = &["http_request"];
@@ -309,6 +364,13 @@ fn credentials(cx: &CheckCx<'_>, t: &Target) -> Option<Decision> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_steps_activity_is_read_from_its_session() {
+        assert_eq!(step_of("agent:emp:workflow:run-1:resolve-and-record:3:0"), "resolve-and-record");
+        assert_eq!(step_of("workflow:run-1:digest:0"), "digest");
+        assert_eq!(step_of("agent:emp:web"), "");
+    }
 
     #[test]
     fn shell_session_control_is_shell_and_helper_control_is_not() {

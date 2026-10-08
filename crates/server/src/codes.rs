@@ -1051,56 +1051,9 @@ pub(crate) async fn finalize_skill_install(
     state.skill_loader.reload_from_disk().await;
 }
 
-/// Land a seat's declaration on its permission rules.
-///
-/// The ONE routine for it (CODE_AUDITOR 8.1). Two entry points reach it, and
-/// they must not drift: `finalize_agent_install`, when a package arrives, and
-/// `update_agent`, when an owner authors the same declaration by hand on the
-/// settings page. A packaged employee and an owner-built one are the same
-/// object — so the thing that gives their declaration effect is one function,
-/// not two copies that forget different steps.
-///
-/// The package's `ceiling` is its own DECLARATION of what this employee
-/// performs and must not perform unattended — including operations no list
-/// of ours has ever heard of (an owner's own employee, built around their own
-/// capability). Each entry lands as an ask rule on the operation, written by
-/// the package: it asks until the owner says otherwise, and a package never
-/// replaces a rule the owner has written for the operation. A declaration
-/// restricts; it never grants (`napp` refuses any ceiling value but
-/// "approval" when it parses the manifest).
-pub(crate) fn apply_seat_declaration(
-    store: &db::Store,
-    agent_id: &str,
-    config: &napp::agent::AgentConfig,
-) {
-    use types::permissions::{Effect, Rule, RuleKey, RuleSource, Scope, Writer};
-    let by = Writer::Package { package: agent_id.to_string() };
-    let mut landed = 0usize;
-    for op in config.ceiling.keys() {
-        let suffix = tools::plugin_tool::port_suffix(op);
-        if suffix.is_empty() {
-            continue;
-        }
-        let rule = Rule {
-            id: uuid::Uuid::new_v4().to_string(),
-            scope: Scope::Employee(agent_id.to_string()),
-            key: RuleKey::Operation(suffix),
-            field: None,
-            effect: Effect::Ask,
-            money: None,
-            source: RuleSource::Package { package: agent_id.to_string() },
-            locked: false,
-            created_at: chrono::Utc::now().timestamp(),
-        };
-        match store.write_permission_rule(&rule, &by) {
-            Ok(_) => landed += 1,
-            Err(e) => tracing::warn!(agent = agent_id, error = %e, "the declared ceiling did not land"),
-        }
-    }
-    if landed > 0 {
-        tracing::info!(agent = agent_id, declared = landed, "the employee's declared ceiling landed as operations that ask");
-    }
-}
+/// Give an employee's declared `ceiling` effect: the one routine is
+/// `tools::apply_seat_declaration`, shared with the employee tools.
+pub(crate) use tools::apply_seat_declaration;
 
 /// A declaration's needs, through the one needs step.
 async fn declared_needs(

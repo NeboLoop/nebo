@@ -14,7 +14,8 @@ use types::NeboError;
 const STATUS_EXPR: &str = "CASE r.state
           WHEN 'done' THEN CASE WHEN r.summary = 'exited' THEN 'exited' ELSE 'completed' END
           WHEN 'cancelled' THEN CASE WHEN r.summary = 'denied' THEN 'denied' ELSE 'cancelled' END
-          WHEN 'waiting' THEN 'awaiting_approval'
+          WHEN 'waiting' THEN CASE WHEN EXISTS (SELECT 1 FROM engine_waits ew WHERE ew.id = r.current_wait_id AND ew.on_kind = 'expert_reply')
+               THEN 'waiting' ELSE 'awaiting_approval' END
           WHEN 'queued' THEN 'interrupted'
           ELSE r.state END";
 
@@ -915,6 +916,62 @@ impl Store {
         Ok(())
     }
 
+    /// The owner allowed a tool a parked workflow step called without
+    /// declaring it: the tool joins that activity's `tools`, in the run's
+    /// own definition (what the resume runs) and in the employee's workflow
+    /// (every later run; the row is marked the owner's, so a package sync
+    /// never takes it back). Returns whether the step was found.
+    pub fn add_step_tool(&self, run_id: &str, tool: &str) -> Result<bool, NeboError> {
+        let Some((agent_id, binding, activity_id, ..)) = self.get_workflow_suspension(run_id)? else {
+            return Ok(false);
+        };
+        let add = |activities: &mut serde_json::Value| -> bool {
+            let Some(list) = activities.as_array_mut() else { return false };
+            let mut found = false;
+            for a in list.iter_mut().filter(|a| a["id"].as_str() == Some(activity_id.as_str())) {
+                found = true;
+                let tools = a.as_object_mut().map(|o| o.entry("tools").or_insert_with(|| serde_json::json!([])));
+                if let Some(arr) = tools.and_then(|t| t.as_array_mut())
+                    && !arr.iter().any(|t| t.as_str() == Some(tool))
+                {
+                    arr.push(serde_json::Value::String(tool.to_string()));
+                }
+            }
+            found
+        };
+        let mut found = false;
+        if let Some(run) = self.engine_get_run(run_id)?
+            && let Some(mut def) = run.definition.as_deref().and_then(|d| serde_json::from_str::<serde_json::Value>(d).ok())
+            && add(&mut def["activities"])
+        {
+            self.engine_set_run_definition(run_id, &def.to_string())?;
+            found = true;
+        }
+        if !agent_id.is_empty() && !binding.is_empty() {
+            let conn = self.conn()?;
+            let stored: Option<String> = conn
+                .query_row(
+                    "SELECT activities FROM agent_workflows WHERE agent_id = ?1 AND binding_name = ?2",
+                    params![agent_id, binding],
+                    |r| r.get(0),
+                )
+                .optional()
+                .map_err(|e| NeboError::Database(e.to_string()))?
+                .flatten();
+            if let Some(mut activities) = stored.and_then(|a| serde_json::from_str::<serde_json::Value>(&a).ok())
+                && add(&mut activities)
+            {
+                conn.execute(
+                    "UPDATE agent_workflows SET activities = ?3, owner_modified = 1 WHERE agent_id = ?1 AND binding_name = ?2",
+                    params![agent_id, binding, activities.to_string()],
+                )
+                .map_err(|e| NeboError::Database(e.to_string()))?;
+                found = true;
+            }
+        }
+        Ok(found)
+    }
+
     /// The approval was resolved (resume or deny): the wait is released.
     /// The caller sets the run's next state.
     pub fn delete_workflow_suspension(&self, run_id: &str) -> Result<(), NeboError> {
@@ -1159,6 +1216,37 @@ mod durability_tests {
         let run = s.get_workflow_run("r1").unwrap().unwrap();
         assert_eq!(run.status, "failed");
         assert!(run.error.as_deref().unwrap_or("").contains("poison"));
+    }
+
+    /// The owner allows a tool a parked step called undeclared: it joins
+    /// that activity's `tools` in the run's definition and in the employee's
+    /// workflow, once, and the row becomes the owner's.
+    #[test]
+    fn an_allowed_step_tool_joins_the_steps_declaration() {
+        let s = store();
+        s.create_agent("a1", None, "Inventory", "x", "x", "{}", None, None).unwrap();
+        let activities = r#"[{"id":"fetch","intent":"x"},{"id":"resolve","intent":"x","tools":["plugin__odoo"]}]"#;
+        s.upsert_agent_workflow("a1", "order-intake", "manual", "{}", None, None, None, Some(activities), None, false).unwrap();
+        let def = format!(r#"{{"id":"wf","name":"wf","activities":{activities}}}"#);
+        s.create_workflow_run("r1", "agent:a1", "watch", None, None, None, Some(&def)).unwrap();
+        s.create_workflow_suspension("r1", "a1", "order-intake", "resolve", "", None, "[]", r#"{"name":"read_file"}"#, "", "Read a file")
+            .unwrap();
+        assert!(s.add_step_tool("r1", "read_file").unwrap());
+        assert!(s.add_step_tool("r1", "read_file").unwrap(), "again: nothing more is added");
+        let tools_of = |json: &str| -> Vec<serde_json::Value> {
+            let v: serde_json::Value = serde_json::from_str(json).unwrap();
+            let list = v.get("activities").cloned().unwrap_or(v);
+            list.as_array().unwrap().iter().map(|a| a["tools"].clone()).collect()
+        };
+        let run_def = s.engine_get_run("r1").unwrap().unwrap().definition.unwrap();
+        assert_eq!(tools_of(&run_def), [serde_json::Value::Null, serde_json::json!(["plugin__odoo", "read_file"])]);
+        let row = s.list_agent_workflows("a1").unwrap().into_iter().find(|w| w.binding_name == "order-intake").unwrap();
+        assert_eq!(tools_of(&row.activities.unwrap().to_string()), [serde_json::Value::Null, serde_json::json!(["plugin__odoo", "read_file"])]);
+        // A package sync no longer takes it back.
+        s.upsert_agent_workflow("a1", "order-intake", "manual", "{}", None, None, None, Some(activities), None, false).unwrap();
+        let row = s.list_agent_workflows("a1").unwrap().into_iter().find(|w| w.binding_name == "order-intake").unwrap();
+        assert!(row.activities.unwrap().to_string().contains("read_file"));
+        assert!(!s.add_step_tool("nope", "read_file").unwrap(), "no parked step");
     }
 
     /// A parked approval is the run's live wait: the run reads as awaiting

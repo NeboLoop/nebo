@@ -3718,6 +3718,32 @@
 					}
 				}
 			},
+			"expert": {
+				"label": "Chuyên gia",
+				"description": "Một nhân viên khác làm bước này; lượt chạy chờ phản hồi",
+				"params": {
+					"expert": {
+						"label": "Chuyên gia",
+						"description": "Đồng nghiệp làm việc này: id, tên người dùng hoặc tên"
+					},
+					"task": {
+						"label": "Nhiệm vụ",
+						"description": "Việc chuyên gia cần làm"
+					},
+					"input": {
+						"label": "Đầu vào",
+						"description": "Một tham chiếu chuyên gia nhận được, ví dụ '{{'nodes.fetch'}}'"
+					},
+					"output": {
+						"label": "Phản hồi mong đợi",
+						"description": "Những gì cần trả về: một cấu trúc JSON hoặc mô tả ngắn"
+					},
+					"timeout": {
+						"label": "Thời gian chờ",
+						"description": "Chờ phản hồi bao lâu, ví dụ 30m, 4h hoặc 2d"
+					}
+				}
+			},
 			"transform": {
 				"label": "Biến đổi",
 				"description": "Định dạng lại hoặc lọc dữ liệu",
@@ -3796,6 +3822,10 @@
 				"activityDecide": {
 					"label": "Quyết định",
 					"desc": "Phân loại hoặc đánh giá dữ liệu"
+				},
+				"activityExpert": {
+					"label": "Chuyên gia",
+					"desc": "Một nhân viên khác làm bước này"
 				},
 				"activityTransform": {
 					"label": "Biến đổi",
@@ -3918,6 +3948,7 @@
 			"loopSource": "Vòng lặp “{id}” cần một nguồn dữ liệu (vd. inputs.items)",
 			"httpUrl": "Nút HTTP “{id}” cần một URL",
 			"decideQuestions": "Nút Quyết định “{id}” cần câu hỏi (một đối tượng JSON gồm các câu hỏi có kiểu)",
+			"expertFields": "Nút Chuyên gia “{id}” cần một chuyên gia, một nhiệm vụ và thời gian chờ",
 			"waitDuration": "Nút Chờ “{id}” cần thời gian chờ",
 			"needsIntent": "Hoạt động “{id}” trong “{workflow}” cần một ý định hoặc các bước",
 			"targetsTrigger": "Một kết nối trỏ tới nút kích hoạt",

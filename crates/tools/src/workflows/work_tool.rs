@@ -81,8 +81,9 @@ impl Kind {
                 "Creates a workflow: work the engine carries until it has an outcome, through waits, answers and restarts.\n\
                 When to use: the owner gives a direction that spans employees, teams or days (\"have marketing work with sales and bring me a recommendation\"). Make it temporary: its activities ask each employee or team, wait for the results, follow up on a stated day, and bring one outcome back. You hear the outcome; don't track it by hand.\n\
                 When not to use: a quick question you can answer from a coworker or two in this conversation (send_message, or a helper with delegate), or a single step you can take yourself.\n\
-                - `definition` is the workflow JSON: {{\"trigger\": {{\"type\": \"schedule\", \"cron\": \"0 9 * * MON-FRI\"}}, \"activities\": [{{\"id\": \"run\", \"intent\": \"what this accomplishes\", \"steps\": [\"concrete step\"]}}]}}. Leave out the trigger for a workflow run by hand.\n\
+                - `definition` is the workflow JSON: {{\"trigger\": {{\"type\": \"schedule\", \"cron\": \"0 9 * * MON-FRI\"}}, \"activities\": [{{\"id\": \"run\", \"intent\": \"what this accomplishes\", \"steps\": [\"concrete step\"], \"tools\": [\"send_message\"]}}]}}. Leave out the trigger for a workflow run by hand.\n\
                 - Activities are the only executable unit; each runs its intent and steps on its own. A top-level `steps` array is one activity.\n\
+                - Each activity's `tools` lists every tool it calls, by exact name (`plugin__<slug>` for a plugin, `send_message` to ask a coworker). It runs with only those, plus exit, emit_event and message_owner: a tool it doesn't list is refused. A scheduling tool is refused in every workflow.\n\
                 - The name goes in `name`, or as \"name\" inside the definition.\n\
                 - `lifetime: \"temporary\"` makes it for one piece of work: it runs once (at once when it has no trigger; on its first fire otherwise), and after it ends and its outcome reaches the owner it is deleted. Its runs, receipts and cost stay, and you hear the outcome. Left out, it is saved and runs on its trigger until deleted.\n\
                 - \"Tell me when the order ships\": a temporary workflow with {{\"trigger\": {{\"type\": \"event\", \"sources\": [\"<the event>\"]}}}}. It fires once, reports and disappears; nothing polls.\n\
@@ -249,6 +250,26 @@ fn workflow_ref(input: &serde_json::Value) -> String {
 /// deleting removes one. Each names the workflow the same way, so a delete
 /// of a workflow the employee created is its own work.
 fn workflow_effects(kind: Kind, input: &serde_json::Value) -> types::permissions::CallEffects {
+    let mut effects = workflow_change(kind, input);
+    effects.arms_schedule = arms_schedule(kind, input);
+    effects
+}
+
+/// Whether the call creates, re-arms or installs a trigger: a new or
+/// installed workflow (a temporary one with no trigger runs at once), an
+/// update that sets a trigger, turning one on. Only an attended run may
+/// (`types::permissions::CallEffects::arms_schedule`).
+fn arms_schedule(kind: Kind, input: &serde_json::Value) -> bool {
+    match kind {
+        Kind::Create | Kind::Install => true,
+        Kind::Update => serde_json::from_str::<serde_json::Value>(str_field(input, "definition"))
+            .map_or(true, |d| d.get("trigger").is_some()),
+        Kind::SetEnabled => input["enabled"].as_bool().unwrap_or(true),
+        _ => false,
+    }
+}
+
+fn workflow_change(kind: Kind, input: &serde_json::Value) -> types::permissions::CallEffects {
     use types::permissions::{CallEffects, Knowable};
     if kind.read_only() {
         return CallEffects::none();
@@ -671,6 +692,22 @@ pub(crate) mod tests {
         fn calls(&self) -> Vec<String> {
             std::mem::take(&mut *self.manager.calls.lock().unwrap())
         }
+    }
+
+    /// A new, installed or switched-on workflow, or one given a trigger,
+    /// arms scheduled work; editing steps, deleting and reading don't.
+    #[test]
+    fn triggers_arm_scheduled_work() {
+        let arms = |k: Kind, input: serde_json::Value| workflow_effects(k, &input).arms_schedule;
+        assert!(arms(Kind::Create, json!({"name": "retry", "definition": "{}"})));
+        assert!(arms(Kind::Install, json!({"code": "WORK-XXXX-XXXX"})));
+        assert!(arms(Kind::SetEnabled, json!({"workflow": "w", "enabled": true})));
+        assert!(arms(Kind::Update, json!({"name": "w", "definition": r#"{"trigger":{"type":"schedule","cron":"* * * * *"}}"#})));
+        assert!(!arms(Kind::Update, json!({"name": "w", "definition": r#"{"activities":[]}"#})));
+        assert!(!arms(Kind::SetEnabled, json!({"workflow": "w", "enabled": false})));
+        assert!(!arms(Kind::Delete, json!({"name": "w"})));
+        assert!(!arms(Kind::Run, json!({"workflow": "w"})));
+        assert!(workflow_effects(Kind::Create, &json!({"name": "retry"})).creates == ["workflow:retry"], "the rest stays");
     }
 
     #[test]

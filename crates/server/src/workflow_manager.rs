@@ -829,26 +829,7 @@ impl WorkflowManager for WorkflowManagerImpl {
 
                 // Load skill content for activities that reference skills
                 // Template variables are expanded at activation time.
-                let skill_content = if let Some(ref loader) = skill_loader {
-                    let mut map = HashMap::new();
-                    for activity in &def.activities {
-                        for skill_name in &activity.skills {
-                            if !map.contains_key(skill_name) {
-                                // Global scope: Learned skills are per-employee
-                                // and not declarable in workflow activities.
-                                if let Some(skill) = loader.get(skill_name, None).await {
-                                    if !skill.template.is_empty() {
-                                        let expanded = loader.expand_template(&skill, Some(&store), "");
-                                        map.insert(skill_name.clone(), expanded);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    if map.is_empty() { None } else { Some(map) }
-                } else {
-                    None
-                };
+                let skill_content = load_activity_skills(skill_loader.as_deref(), &store, &mut def, "").await;
 
                 // Deferred tool names (MCP proxies etc.): activities only get
                 // their schemas when they declare or reference them.
@@ -1627,26 +1608,7 @@ impl WorkflowManager for WorkflowManagerImpl {
                     }),
                 );
 
-                let skill_content = if let Some(ref loader) = skill_loader {
-                    let mut map = HashMap::new();
-                    for activity in &def.activities {
-                        for skill_name in &activity.skills {
-                            if !map.contains_key(skill_name) {
-                                // Global scope: Learned skills are per-employee
-                                // and not declarable in workflow activities.
-                                if let Some(skill) = loader.get(skill_name, None).await {
-                                    if !skill.template.is_empty() {
-                                        let expanded = loader.expand_template(&skill, Some(&store), &agent_id_owned);
-                                        map.insert(skill_name.clone(), expanded);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    if map.is_empty() { None } else { Some(map) }
-                } else {
-                    None
-                };
+                let skill_content = load_activity_skills(skill_loader.as_deref(), &store, &mut def, &agent_id_owned).await;
 
                 // Create progress channel for live activity + task updates
                 let (progress_tx, mut progress_rx) =
@@ -1779,6 +1741,21 @@ impl WorkflowManager for WorkflowManagerImpl {
                         let installed = agent::agent_worker::installed_interfaces(&plugin_store);
                         tell_owner_if_blocked(&store, &hub, &neboai_api_url, &installed, &agent_id_owned, &binding_name, &run_id_clone);
                         info!(role = %agent_id_owned, run_id = %run_id_clone, "inline workflow completed");
+                    }
+                    Err(workflow::WorkflowError::AwaitingExpert(waiting)) => {
+                        // Not a failure: the run is parked on one engine wait
+                        // that the next reply or the earliest deadline wakes
+                        // (engine::resume_after_expert).
+                        hub.broadcast(
+                            "workflow_run_waiting",
+                            serde_json::json!({
+                                "agentId": agent_id_owned,
+                                "runId": run_id_clone,
+                                "bindingName": binding_name,
+                                "experts": waiting,
+                            }),
+                        );
+                        info!(role = %agent_id_owned, run_id = %run_id_clone, waiting, "inline workflow waiting on experts");
                     }
                     Err(workflow::WorkflowError::AwaitingApproval { operation, display }) => {
                         // Not a failure: the run is parked (engine persisted the
@@ -1946,6 +1923,20 @@ impl WorkflowManager for WorkflowManagerImpl {
         agent_id: &'a str,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
         Box::pin(async move { self.cancel_runs_for_agent_impl(agent_id).await })
+    }
+
+    fn cancel_all_runs(&self) -> std::pin::Pin<Box<dyn std::future::Future<Output = usize> + Send + '_>> {
+        Box::pin(async move {
+            let run_ids: Vec<String> = self.active_runs.lock().unwrap().keys().cloned().collect();
+            let mut count = 0;
+            for run_id in &run_ids {
+                match self.cancel_run(run_id).await {
+                    Ok(()) => count += 1,
+                    Err(e) => warn!(run_id = %run_id, error = %e, "emergency stop: workflow run not cancelled"),
+                }
+            }
+            count
+        })
     }
 }
 
@@ -3271,6 +3262,66 @@ fn post_automation_message(store: &db::Store, hub: &ClientHub, session_key: &str
     }
 }
 
+
+/// The declared skills of a run's activities: each skill's expanded body
+/// (injected into the activity's prompt, keyed by the name it is declared
+/// by), and — for an activity that declares its tools — the tools the skill
+/// brings, added to its declaration: the `plugin__<slug>` of every plugin it
+/// depends on (a plugin's own skill depends on its plugin) and its
+/// `allowed-tools`. Global scope: learned skills are per-employee and not
+/// declarable in workflow activities.
+async fn load_activity_skills(
+    loader: Option<&tools::skills::Loader>,
+    store: &db::Store,
+    def: &mut workflow::WorkflowDef,
+    agent_id: &str,
+) -> Option<HashMap<String, String>> {
+    let loader = loader?;
+    let mut bodies = HashMap::new();
+    let mut brought: HashMap<String, Vec<String>> = HashMap::new();
+    for activity in &def.activities {
+        for skill_name in &activity.skills {
+            if brought.contains_key(skill_name) {
+                continue;
+            }
+            let Some(skill) = loader.get(skill_name, None).await else {
+                brought.insert(skill_name.clone(), Vec::new());
+                continue;
+            };
+            if !skill.template.is_empty() {
+                bodies.insert(skill_name.clone(), loader.expand_template(&skill, Some(store), agent_id));
+            }
+            brought.insert(skill_name.clone(), skill_tools(&skill));
+        }
+    }
+    add_skill_tools(def, &brought);
+    (!bodies.is_empty()).then_some(bodies)
+}
+
+/// The tools a skill brings to an activity that declares it.
+fn skill_tools(skill: &tools::skills::Skill) -> Vec<String> {
+    skill
+        .plugins
+        .iter()
+        .map(|p| tools::plugin_tools::plugin_tool_name(&p.name))
+        .chain(skill.allowed_tools.split_whitespace().map(str::to_string))
+        .collect()
+}
+
+/// Add each declared skill's tools to the declaration of every activity
+/// that declares its tools. An undeclared activity is left as it is.
+fn add_skill_tools(def: &mut workflow::WorkflowDef, brought: &HashMap<String, Vec<String>>) {
+    for activity in &mut def.activities {
+        let skills = activity.skills.clone();
+        let Some(tools) = activity.tools.as_mut() else { continue };
+        for tool in skills.iter().filter_map(|s| brought.get(s)).flatten() {
+            if !tools.contains(tool) {
+                tools.push(tool.clone());
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod trigger_tests {
     use super::{loadable_binding, resolve_tool_trigger};
@@ -3558,5 +3609,39 @@ mod list_tests {
         let err = mgr.create("bd-1", "create-estimate", objects, SaveOptions::default()).await.unwrap_err();
         assert!(err.starts_with("invalid workflow definition: "), "{err}");
         assert_eq!(mgr.list("bd-1").await.len(), 2, "nothing was stored");
+    }
+
+    /// The emergency stop reaches workflow runs: every running run's token
+    /// is cancelled (its activity turns stop with it), and they are counted.
+    #[tokio::test]
+    async fn cancel_all_runs_stops_every_running_workflow() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(db::Store::new(&dir.path().join("nebo.db").to_string_lossy()).unwrap());
+        let mgr = manager(store);
+        let (a, b) = (tokio_util::sync::CancellationToken::new(), tokio_util::sync::CancellationToken::new());
+        mgr.active_runs.lock().unwrap().insert("run-a".into(), a.clone());
+        mgr.active_runs.lock().unwrap().insert("run-b".into(), b.clone());
+        assert_eq!(mgr.cancel_all_runs().await, 2);
+        assert!(a.is_cancelled() && b.is_cancelled(), "every run's turns stop");
+    }
+
+    /// A declared skill brings its plugin's tool and its allowed-tools to an
+    /// activity that declares its tools; an undeclared one is left as it is.
+    #[test]
+    fn declared_skills_bring_their_tools() {
+        let mut def = workflow::parser::parse_workflow(
+            r#"{"version":"1.0","id":"wf","name":"wf","activities":[
+                {"id":"declared","intent":"x","skills":["fo"],"tools":["read_file"]},
+                {"id":"undeclared","intent":"x","skills":["fo"]},
+                {"id":"plain","intent":"x"}
+            ]}"#,
+        )
+        .unwrap();
+        let brought: std::collections::HashMap<String, Vec<String>> =
+            [("fo".to_string(), vec!["plugin__odoo".to_string(), "read_file".to_string()])].into();
+        super::add_skill_tools(&mut def, &brought);
+        assert_eq!(def.activities[0].tools, Some(vec!["read_file".to_string(), "plugin__odoo".to_string()]));
+        assert_eq!(def.activities[1].tools, None);
+        assert_eq!(def.activities[2].tools, None);
     }
 }

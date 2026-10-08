@@ -3718,6 +3718,32 @@
 					}
 				}
 			},
+			"expert": {
+				"label": "专家",
+				"description": "由另一位员工完成此步骤，运行会等待其回复",
+				"params": {
+					"expert": {
+						"label": "专家",
+						"description": "完成工作的同事：ID、账号名或姓名"
+					},
+					"task": {
+						"label": "任务",
+						"description": "专家要做的事"
+					},
+					"input": {
+						"label": "输入",
+						"description": "专家收到的一个引用，例如 '{{'nodes.fetch'}}'"
+					},
+					"output": {
+						"label": "预期回复",
+						"description": "应返回的内容：JSON 结构或简短描述"
+					},
+					"timeout": {
+						"label": "超时",
+						"description": "等待回复的时长，例如 30m、4h 或 2d"
+					}
+				}
+			},
 			"transform": {
 				"label": "转换",
 				"description": "重塑或筛选数据",
@@ -3796,6 +3822,10 @@
 				"activityDecide": {
 					"label": "判断",
 					"desc": "对数据进行分类或判断"
+				},
+				"activityExpert": {
+					"label": "专家",
+					"desc": "由另一位员工完成此步骤"
 				},
 				"activityTransform": {
 					"label": "转换",
@@ -3918,6 +3948,7 @@
 			"loopSource": "循环“{id}”需要一个数据来源（例如 inputs.items）",
 			"httpUrl": "HTTP 节点“{id}”需要一个 URL",
 			"decideQuestions": "判断节点“{id}”需要问题（一个带类型问题的 JSON 对象）",
+			"expertFields": "专家节点“{id}”需要专家、任务和超时",
 			"waitDuration": "等待节点“{id}”需要一个时长",
 			"needsIntent": "“{workflow}”中的活动“{id}”需要一个意图或步骤",
 			"targetsTrigger": "有一条连线指向了触发器",

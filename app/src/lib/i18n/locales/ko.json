@@ -3718,6 +3718,32 @@
 					}
 				}
 			},
+			"expert": {
+				"label": "전문가",
+				"description": "다른 직원이 이 단계를 수행하고, 실행은 답장을 기다립니다",
+				"params": {
+					"expert": {
+						"label": "전문가",
+						"description": "작업할 동료: ID, 핸들 또는 이름"
+					},
+					"task": {
+						"label": "작업",
+						"description": "전문가가 할 일"
+					},
+					"input": {
+						"label": "입력",
+						"description": "전문가가 받는 참조 하나(예: '{{'nodes.fetch'}}')"
+					},
+					"output": {
+						"label": "예상 답장",
+						"description": "돌아와야 할 내용: JSON 형태 또는 짧은 설명"
+					},
+					"timeout": {
+						"label": "제한 시간",
+						"description": "답장을 기다릴 시간(예: 30m, 4h, 2d)"
+					}
+				}
+			},
 			"transform": {
 				"label": "변환",
 				"description": "데이터 형태 변경 또는 필터링",
@@ -3796,6 +3822,10 @@
 				"activityDecide": {
 					"label": "판단",
 					"desc": "데이터 분류 또는 판단"
+				},
+				"activityExpert": {
+					"label": "전문가",
+					"desc": "다른 직원이 단계를 수행"
 				},
 				"activityTransform": {
 					"label": "변환",
@@ -3918,6 +3948,7 @@
 			"loopSource": "반복 \"{id}\"에 데이터 출처가 필요합니다(예: inputs.items)",
 			"httpUrl": "HTTP 노드 \"{id}\"에 URL이 필요합니다",
 			"decideQuestions": "판단 노드 \"{id}\"에 질문이 필요합니다(유형이 지정된 질문의 JSON 객체)",
+			"expertFields": "전문가 노드 \"{id}\"에 전문가, 작업, 제한 시간이 필요합니다",
 			"waitDuration": "대기 노드 \"{id}\"에 대기 시간이 필요합니다",
 			"needsIntent": "\"{workflow}\"의 활동 \"{id}\"에 의도나 단계가 필요합니다",
 			"targetsTrigger": "트리거로 들어오는 연결이 있습니다",

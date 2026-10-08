@@ -636,7 +636,12 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState, ua: String, pl
                                     }));
                                 }
                                 "cancel_all" => {
-                                    let count = apply_cancel_all(&state.helpers, &state.run_registry).await;
+                                    // Workflow runs aren't in the run registry: their activity
+                                    // turns stop with their run's token (2026-10-08: an
+                                    // emergency stop counted 0 while a workflow step kept
+                                    // calling Odoo).
+                                    let count = apply_cancel_all(&state.helpers, &state.run_registry).await
+                                        + tools::workflows::WorkflowManager::cancel_all_runs(&*state.workflow_manager).await;
                                     info!(count, "emergency cancel_all");
                                     state.hub.broadcast("chat_cancelled", serde_json::json!({
                                         "session_id": "all",

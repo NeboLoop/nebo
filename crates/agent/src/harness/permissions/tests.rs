@@ -840,3 +840,131 @@ async fn deleting_an_employee_asks_the_owner_every_time() {
     assert!(!ran.is_error, "{}", ran.content);
     assert!(store.get_agent("tweet").unwrap().is_none());
 }
+
+/// Rule 2: a run nobody attends never creates, re-arms or fires scheduled
+/// work, Full Access included; the owner's own chat still schedules. The
+/// real schedule tools, through the one check (2026-10-08: a workflow step
+/// "retried in 30 seconds" with create_schedule, and every scheduled run did
+/// the same).
+#[tokio::test]
+async fn an_unattended_run_never_schedules_work() {
+    let (_d, store) = store();
+    let reg = registry(&store, vec![]).await;
+    for tool in tools::event_tool::tools(store.clone()) {
+        reg.register(Box::new(tool)).await;
+    }
+    let once = |name: &str| json!({ "name": name, "at": "in 30 seconds", "prompt": "Retry the Odoo write." });
+    let unattended = [
+        (Origin::Workflow, Door::Workflow, "agent:emp:workflow:run-1:resolve-and-record:0:0"),
+        (Origin::System, Door::Schedule, "agent:emp:cron:odoo-retry"),
+        (Origin::System, Door::Heartbeat, "agent:emp:heartbeat"),
+        (Origin::System, Door::Helper, "subagent:agent:emp:web:h-1"),
+        (Origin::Comm, Door::Coworker { from: "boss".into() }, "agent:emp:coworker"),
+        // A system run that names the chat door is still the system's.
+        (Origin::System, Door::Chat, "agent:emp:web"),
+    ];
+    for (i, (origin, door, key)) in unattended.into_iter().enumerate() {
+        let mut c = with_mode(ctx(&store, "emp", origin), Mode::FullAccess);
+        c.door = door.clone();
+        c.session_key = key.into();
+        let r = reg.execute(&c, "create_schedule", once(&format!("retry-{i}"))).await;
+        assert!(r.is_error && r.content.contains("can't create, turn on or start"), "{door:?}: {}", r.content);
+        assert!(r.content.contains("message_owner"), "the refusal says how to report the need: {}", r.content);
+        for (tool, input) in [
+            ("run_schedule_now", json!({ "name": "x" })),
+            ("set_schedule_paused", json!({ "name": "x", "paused": false })),
+        ] {
+            let r = reg.execute(&c, tool, input).await;
+            assert!(r.is_error && r.content.contains("can't create, turn on or start"), "{door:?} {tool}: {}", r.content);
+        }
+    }
+    assert_eq!(store.count_cron_jobs().unwrap(), 0, "nothing was scheduled");
+    let rows = store.permission_activity(&activity_of("emp")).unwrap().0;
+    assert!(rows.iter().any(|r| serde_json::from_str::<Why>(&r.why).ok()
+        == Some(Why::HardLimit { limit: "unattended_schedule".into() })));
+
+    // The owner's own chat schedules, and an unattended run may still
+    // pause, list and delete.
+    let mut owner = with_mode(ctx(&store, "emp", Origin::User), Mode::FullAccess);
+    owner.owner_request = true;
+    let r = reg.execute(&owner, "create_schedule", once("call-back-kristi")).await;
+    assert!(!r.is_error, "{}", r.content);
+    let mut sched = with_mode(ctx(&store, "emp", Origin::System), Mode::FullAccess);
+    sched.door = Door::Schedule;
+    let r = reg.execute(&sched, "set_schedule_paused", json!({ "name": "call-back-kristi", "paused": true })).await;
+    assert!(!r.is_error, "pausing is always allowed: {}", r.content);
+    let r = reg.execute(&sched, "delete_schedule", json!({ "name": "call-back-kristi" })).await;
+    assert!(!r.is_error, "deleting is always allowed: {}", r.content);
+}
+
+/// Rule 1 at dispatch: a workflow step whose activity declares its tools
+/// runs those; a call to another tool pauses the run for the owner, naming
+/// the step and the tool, with one allow (no "this once"). A scheduling
+/// tool stays refused, whatever the declaration (Rule 2). Other restricted
+/// runs (a phone caller's allowlist) are still refused, not asked.
+#[tokio::test]
+async fn a_declared_workflow_step_pauses_on_a_tool_it_wasnt_given() {
+    let (_d, store) = store();
+    let (odoo, odoo_ran) = Probe::new("plugin__odoo", "plugin__odoo", None);
+    let (fetch, fetch_ran) = Probe::new("fetch_url", "fetch_url", Some("web"));
+    put(&store, rule(Scope::Company, cap("web"), None, Effect::Allow));
+    let reg = registry(&store, vec![odoo, fetch]).await;
+    for tool in tools::event_tool::tools(store.clone()) {
+        reg.register(Box::new(tool)).await;
+    }
+    let mut c = with_mode(ctx(&store, "emp", Origin::Workflow), Mode::FullAccess);
+    c.door = Door::Workflow;
+    c.session_key = "agent:emp:workflow:run-1:resolve-and-record:0:0".into();
+    c.tool_whitelist = Some(["plugin__odoo".to_string(), "message_owner".to_string(), "exit".to_string()].into());
+    assert_eq!(reg.execute(&c, "plugin__odoo", json!({})).await.content, "RAN");
+    let parked = reg.execute(&c, "fetch_url", json!({})).await;
+    let ask_id = parked.parked_ask.clone().expect("the run pauses for the owner");
+    assert!(parked.content.contains("isn't one of the tools this workflow step was given"), "{}", parked.content);
+    let ask = Check::new(store.clone()).asks().get(&ask_id).unwrap().unwrap();
+    assert_eq!(ask.case, AskCase::StepTool { step: "resolve-and-record".into(), tool: "fetch_url".into() });
+    assert!(!ask.this_once_offered(), "one allow");
+    assert!(ask.reason_text().contains("resolve-and-record") && ask.reason_text().contains("fetch_url"), "{}", ask.reason_text());
+    let r = reg.execute(&c, "create_schedule", json!({ "name": "retry", "at": "in 30 seconds", "prompt": "x" })).await;
+    assert!(r.is_error && r.parked_ask.is_none() && r.content.contains("can't create, turn on or start"), "{}", r.content);
+    assert_eq!((odoo_ran.load(Ordering::SeqCst), fetch_ran.load(Ordering::SeqCst)), (1, 0));
+
+    // A phone caller's allowlist is refused outright, never asked.
+    let mut caller = with_mode(ctx(&store, "emp", Origin::User), Mode::FullAccess);
+    caller.tool_whitelist = Some(["plugin__odoo".to_string()].into());
+    let r = reg.execute(&caller, "fetch_url", json!({})).await;
+    assert!(r.is_error && r.parked_ask.is_none(), "{}", r.content);
+}
+
+/// The owner's allow on a step's missing tool adds the tool to that step's
+/// declaration (the run's definition and the employee's workflow) and
+/// releases the run to continue at the call.
+#[tokio::test]
+async fn allowing_a_steps_missing_tool_adds_it_to_the_step() {
+    let (_d, store) = store();
+    store.create_agent("emp", None, "Inventory", "x", "x", "{}", None, None).unwrap();
+    let activities = r#"[{"id":"resolve-and-record","intent":"x","tools":["plugin__odoo"]}]"#;
+    store.upsert_agent_workflow("emp", "order-intake", "manual", "{}", None, None, None, Some(activities), None, false).unwrap();
+    let def = format!(r#"{{"id":"wf","name":"wf","activities":{activities}}}"#);
+    store.create_workflow_run("run-1", "agent:emp", "watch", None, None, None, Some(&def)).unwrap();
+    let (fetch, _) = Probe::new("fetch_url", "fetch_url", Some("web"));
+    let reg = Arc::new(registry(&store, vec![fetch]).await);
+    let check = Check::new(store.clone());
+    let asks = check.asks();
+    let mut c = with_mode(ctx(&store, "emp", Origin::Workflow), Mode::FullAccess);
+    c.door = Door::Workflow;
+    c.session_key = "agent:emp:workflow:run-1:resolve-and-record:0:0".into();
+    c.tool_whitelist = Some(["plugin__odoo".to_string()].into());
+    let parked = reg.execute(&c, "fetch_url", json!({ "url": "https://example.com" })).await;
+    let ask_id = parked.parked_ask.expect("parked");
+    store
+        .create_workflow_suspension("run-1", "emp", "order-intake", "resolve-and-record", "", None, "[]", r#"{"name":"fetch_url"}"#, "", "fetch")
+        .unwrap();
+    store.link_permission_ask_run(&ask_id, "run-1").unwrap();
+    asks.answer(&ask_id, Answer::AllowAlways, AnsweredVia::Inbox).unwrap();
+    asks.resume(&reg, &ask_id, chrono::Utc::now().timestamp()).unwrap();
+    let run_def = store.engine_get_run("run-1").unwrap().unwrap().definition.unwrap();
+    assert!(run_def.contains(r#""tools":["plugin__odoo","fetch_url"]"#), "{run_def}");
+    let row = store.list_agent_workflows("emp").unwrap().into_iter().find(|w| w.binding_name == "order-intake").unwrap();
+    assert!(row.activities.unwrap().to_string().contains("fetch_url"));
+    assert!(store.permission_rules("emp").unwrap().is_empty(), "no permission rule is written");
+}

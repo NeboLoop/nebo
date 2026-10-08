@@ -228,4 +228,11 @@ pub trait WorkflowManager: Send + Sync {
     ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
         Box::pin(async {})
     }
+
+    /// Cancel every running workflow (the owner's emergency stop): each
+    /// run's token stops its activity turns. Returns how many were running.
+    /// Default no-op.
+    fn cancel_all_runs(&self) -> Pin<Box<dyn Future<Output = usize> + Send + '_>> {
+        Box::pin(async { 0 })
+    }
 }

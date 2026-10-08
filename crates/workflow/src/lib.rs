@@ -2,12 +2,13 @@ pub mod cases;
 pub mod engine;
 pub mod loop_contract;
 pub mod events;
+pub mod expert;
 mod graph;
 pub mod loader;
 pub mod parser;
 pub mod triggers;
 
-pub use engine::{WorkflowProgress, execute_activity, execute_workflow};
+pub use engine::{RUNTIME_TOOLS, WorkflowProgress, enforced_tools, execute_activity, execute_workflow};
 pub use loop_contract::{ActivityLoop, LoopOutcome, LoopTurn};
 pub use parser::{Activity, WorkflowDef};
 
@@ -68,6 +69,13 @@ pub enum WorkflowError {
     /// and the run resumes (or aborts) via the approval endpoint.
     #[error("awaiting owner approval for operation: {operation}")]
     AwaitingApproval { operation: String, display: String },
+    /// The run reached `expert` steps whose experts have not answered yet.
+    /// Not a failure: the run parks on one engine wait (`expert_reply` on
+    /// `expert:<run>`, deadline the earliest timeout) and re-enters under its
+    /// own id when a reply or a deadline wakes it.
+    /// The count is of the requests still out across the whole run.
+    #[error("waiting on {0} expert(s)")]
+    AwaitingExpert(usize),
     #[error("circuit breaker tripped: {0}")]
     CircuitBreak(String),
     #[error("{0}")]

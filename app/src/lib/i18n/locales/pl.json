@@ -3718,6 +3718,32 @@
 					}
 				}
 			},
+			"expert": {
+				"label": "Ekspert",
+				"description": "Ten krok wykonuje inny pracownik; przebieg czeka na odpowiedź",
+				"params": {
+					"expert": {
+						"label": "Ekspert",
+						"description": "Współpracownik, który wykona pracę: id, nazwa użytkownika lub imię"
+					},
+					"task": {
+						"label": "Zadanie",
+						"description": "Co ma zrobić ekspert"
+					},
+					"input": {
+						"label": "Wejście",
+						"description": "Jedno odwołanie, które otrzymuje ekspert, np. '{{'nodes.fetch'}}'"
+					},
+					"output": {
+						"label": "Oczekiwana odpowiedź",
+						"description": "Co ma wrócić: struktura JSON lub krótki opis"
+					},
+					"timeout": {
+						"label": "Limit czasu",
+						"description": "Jak długo czekać na odpowiedź, np. 30m, 4h lub 2d"
+					}
+				}
+			},
 			"transform": {
 				"label": "Przekształć",
 				"description": "Zmień kształt lub przefiltruj dane",
@@ -3796,6 +3822,10 @@
 				"activityDecide": {
 					"label": "Zdecyduj",
 					"desc": "Klasyfikuj lub oceniaj dane"
+				},
+				"activityExpert": {
+					"label": "Ekspert",
+					"desc": "Krok wykonuje inny pracownik"
 				},
 				"activityTransform": {
 					"label": "Przekształć",
@@ -3918,6 +3948,7 @@
 			"loopSource": "Pętla „{id}” potrzebuje źródła danych (np. inputs.items)",
 			"httpUrl": "Węzeł HTTP „{id}” potrzebuje adresu URL",
 			"decideQuestions": "Węzeł decyzji „{id}” potrzebuje pytań (obiekt JSON z pytaniami o określonych typach)",
+			"expertFields": "Węzeł eksperta „{id}” potrzebuje eksperta, zadania i limitu czasu",
 			"waitDuration": "Węzeł oczekiwania „{id}” potrzebuje czasu trwania",
 			"needsIntent": "Aktywność „{id}” w „{workflow}” potrzebuje zamiaru lub kroków",
 			"targetsTrigger": "Połączenie prowadzi do wyzwalacza",

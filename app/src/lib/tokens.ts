@@ -198,6 +198,7 @@ export const NODE_CATALOG_ITEMS = [
       { type: 'activity-code', label: 'Run Code', desc: 'Execute a code snippet', icon: '⌘' },
       { type: 'activity-http', label: 'HTTP Request', desc: 'Make an API call', icon: '⇄' },
       { type: 'activity-decide', label: 'Decide', desc: 'Classify or judge data', icon: '⚖' },
+      { type: 'activity-expert', label: 'Expert', desc: 'Another employee does the step', icon: '✪' },
       { type: 'activity-transform', label: 'Transform', desc: 'Reshape or filter data', icon: '⊿' },
     ],
   },

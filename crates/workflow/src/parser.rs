@@ -59,7 +59,7 @@ pub struct InputParam {
 pub struct Activity {
     pub id: String,
     /// Activity type from the builder: custom, research, email, notify, code,
-    /// condition, loop, wait, agent, connector, http, command, decide, transform.
+    /// condition, loop, wait, agent, connector, http, command, decide, transform, expert.
     /// Empty = custom.
     #[serde(rename = "type", default)]
     pub activity_type: String,
@@ -106,16 +106,17 @@ pub struct Activity {
     /// worse than none (the ballast interfaceBindings incident).
     #[serde(default, alias = "requiresTools")]
     pub requires_tools: Vec<String>,
-    /// Explicit tool allowlist for this activity. When non-empty it REPLACES
-    /// the referenced-in-text detection in `scoped_activity_tools`: only the
-    /// named tools (exact name, or a prefix — `"odoo"` covers every
-    /// `odoo.*` tool) plus the always-on `message` tool ship their schemas.
-    /// The text sniffing keys on `name(` patterns, so skills that write
-    /// dotted tool names in prose silently fall back to the FULL roster —
-    /// tens of KB of schemas resent every turn (a 13-chunk Vivid run paid
-    /// ~18M input tokens for it). Declaring is deterministic and auditable.
-    #[serde(default)]
-    pub tools: Vec<String>,
+    /// The tools this activity may use. Declared (`Some`, `[]` included),
+    /// it is the activity's whole toolset and a limit at dispatch: the named
+    /// tools (exact name, a dotted prefix — `"odoo"` covers every `odoo.*`
+    /// tool — or a `prefix*` family), what its `mcps`, `cmds` and skills
+    /// bring, and the minimal runtime set (`engine::RUNTIME_TOOLS`). A call
+    /// to anything else pauses the run for the owner, who can add the tool
+    /// (`AskCase::StepTool`) (2026-10-08: a Vivid step created schedules to
+    /// "retry in 30 seconds", and those runs created more). Undeclared
+    /// (`None`): see `engine::enforced_tools`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tools: Option<Vec<String>>,
 }
 
 /// Token budget for an activity.
@@ -490,6 +491,17 @@ fn validate_activities(def: &WorkflowDef) -> Result<(), WorkflowError> {
             "decide" => {
                 let questions = decide_questions(activity).map_err(WorkflowError::Validation)?;
                 decide_defaults(activity, &questions).map_err(WorkflowError::Validation)?;
+            }
+            // Done by another agent; the engine waits durably for its reply.
+            "expert" => {
+                crate::expert::validate(activity).map_err(WorkflowError::Validation)?;
+                // Only the graph executor waits durably on a reply.
+                if def.connections.is_empty() {
+                    return Err(WorkflowError::Validation(format!(
+                        "expert activity '{}' needs a connected workflow (connections from __trigger__)",
+                        activity.id
+                    )));
+                }
             }
             "wait" => {
                 if !param_str(activity, "waitUntil").trim().is_empty() {
@@ -1183,10 +1195,16 @@ mod declared_tools_tests {
         let a: Activity =
             serde_json::from_str(r#"{"id":"resolve","intent":"match rows","tools":["odoo","os"]}"#)
                 .expect("parse with tools");
-        assert_eq!(a.tools, vec!["odoo".to_string(), "os".to_string()]);
+        assert_eq!(a.tools, Some(vec!["odoo".to_string(), "os".to_string()]));
 
         let b: Activity = serde_json::from_str(r#"{"id":"resolve","intent":"match rows"}"#)
             .expect("parse without tools");
-        assert!(b.tools.is_empty());
+        assert!(b.tools.is_none());
+
+        // `[]` is a declaration: the minimal runtime set and nothing else.
+        let c: Activity = serde_json::from_str(r#"{"id":"resolve","intent":"match rows","tools":[]}"#)
+            .expect("parse with empty tools");
+        assert_eq!(c.tools, Some(Vec::new()));
+        assert!(serde_json::to_string(&c).unwrap().contains(r#""tools":[]"#), "an empty declaration survives a round trip");
     }
 }

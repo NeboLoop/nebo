@@ -13,6 +13,7 @@ pub mod linked_handoff;
 pub mod memory_context;
 pub mod memory_save;
 pub mod model_call;
+pub mod named_pictures;
 pub mod opening;
 pub mod owner_command;
 pub mod owner_intent;

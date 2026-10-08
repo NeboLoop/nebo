@@ -3718,6 +3718,32 @@
 					}
 				}
 			},
+			"expert": {
+				"label": "Experto",
+				"description": "Otro empleado hace este paso; la ejecución espera su respuesta",
+				"params": {
+					"expert": {
+						"label": "Experto",
+						"description": "El compañero que hace el trabajo: un id, usuario o nombre"
+					},
+					"task": {
+						"label": "Tarea",
+						"description": "Lo que debe hacer el experto"
+					},
+					"input": {
+						"label": "Entrada",
+						"description": "Una referencia que recibe el experto, como '{{'nodes.fetch'}}'"
+					},
+					"output": {
+						"label": "Respuesta esperada",
+						"description": "Lo que debe volver: una estructura JSON o una descripción breve"
+					},
+					"timeout": {
+						"label": "Tiempo límite",
+						"description": "Cuánto esperar la respuesta, como 30m, 4h o 2d"
+					}
+				}
+			},
 			"transform": {
 				"label": "Transformar",
 				"description": "Reestructura o filtra datos",
@@ -3796,6 +3822,10 @@
 				"activityDecide": {
 					"label": "Decidir",
 					"desc": "Clasifica o evalúa datos"
+				},
+				"activityExpert": {
+					"label": "Experto",
+					"desc": "Otro empleado hace el paso"
 				},
 				"activityTransform": {
 					"label": "Transformar",
@@ -3918,6 +3948,7 @@
 			"loopSource": "El bucle «{id}» necesita un origen de datos (p. ej. inputs.items)",
 			"httpUrl": "El nodo HTTP «{id}» necesita una URL",
 			"decideQuestions": "El nodo Decidir «{id}» necesita preguntas (un objeto JSON de preguntas tipadas)",
+			"expertFields": "El nodo Experto «{id}» necesita un experto, una tarea y un tiempo límite",
 			"waitDuration": "El nodo Esperar «{id}» necesita una duración",
 			"needsIntent": "La actividad «{id}» de «{workflow}» necesita una intención o pasos",
 			"targetsTrigger": "Una conexión apunta al disparador",

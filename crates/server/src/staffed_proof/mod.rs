@@ -215,6 +215,16 @@ impl Nebo {
         // The hub is the stand-in on loopback: an install through the
         // product's own doors never leaves this machine.
         cfg.neboai.api_url = hub_stand_in();
+        // The gateway and the tunnel are on loopback too. A connection
+        // scenario puts a NeboAI credential in place, and the server's
+        // reconnect watcher (a minute after boot, then every 30 s) and its
+        // tunnel watcher dial whatever these name; left at their defaults
+        // they dialed the real NeboAI from the test with the proof's token.
+        // The stand-in has no socket at these paths, so each dial is refused
+        // here, at once.
+        let loopback_ws = cfg.neboai.api_url.replacen("http://", "ws://", 1);
+        cfg.neboai.comms_url = format!("{loopback_ws}/ws");
+        cfg.neboai.tunnel_url = format!("{loopback_ws}/tunnel/connect");
         // The server lives on a runtime of its own: a test's runtime is torn
         // down when the test returns, and this server outlives every test.
         server_runtime().spawn(async move {
@@ -248,6 +258,16 @@ impl Nebo {
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         };
+        // The proof's Nebo is a desktop on every machine that runs it. Boot
+        // decides fencing from the host (`tools::server_mode()`: a Linux box
+        // with no display is a server), so on a headless CI runner this
+        // process was fenced like a cloud bot. Any dial of the gateway claims
+        // the lease (`comm::lease::Lease::claim`), no hub here ever grants
+        // it, and a fenced process with an ungranted lease is frozen for
+        // good: every later scenario's side effects answered "Paused: this
+        // bot lost its connection to NeboAI". Boot has set fencing by now
+        // (before `booted`), so this is the last word on it.
+        comm::lease::process().set_fenced(false);
         let port = state.config.port;
         let health = format!("http://127.0.0.1:{port}/health");
         loop {
