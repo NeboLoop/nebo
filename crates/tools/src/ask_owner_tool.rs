@@ -112,6 +112,21 @@ impl AskOwnerTool {
     }
 }
 
+/// How many lines of `question` are list items ("- ", "* ", "• ", "1. ",
+/// "2) "): choices set out in text.
+fn listed_choices(question: &str) -> usize {
+    question
+        .lines()
+        .map(str::trim_start)
+        .filter(|l| {
+            ["- ", "* ", "• "].iter().any(|b| l.starts_with(b)) || {
+                let digits = l.chars().take_while(char::is_ascii_digit).count();
+                digits > 0 && (l[digits..].starts_with(". ") || l[digits..].starts_with(") "))
+            }
+        })
+        .count()
+}
+
 /// The owner's answer as the employee reads it. On a card with options,
 /// only an answer that is one of them (on a multi-select card, several
 /// joined by ", ") is a pick; anything else is his own words and picks
@@ -186,6 +201,18 @@ impl DynTool for AskOwnerTool {
             .is_none_or(|q| q.trim().is_empty())
         {
             return Err("question can't be empty.".to_string());
+        }
+        // Choices written into the question show as text the owner can't
+        // tap (live 2026-10-08: three video lengths as a bullet list, a card
+        // with only Other… and Skip). Send them back to be buttons.
+        let no_options = input["options"].as_array().is_none_or(|o| o.is_empty());
+        if no_options && listed_choices(input["question"].as_str().unwrap_or("")) >= 2 {
+            return Err(
+                "The question lists choices in its text, where the owner can't tap them. Put \
+                 each choice in `options` as a short label (the recommended one first) and keep \
+                 `question` to the question itself."
+                    .to_string(),
+            );
         }
         Ok(())
     }
@@ -294,6 +321,27 @@ mod tests {
         // A free question has no options to pick from: the answer is the answer.
         let (_, r) = asked(json!({"question": "What's the client's name?"}), "Acme").await;
         assert_eq!(serde_json::from_str::<Value>(&r.content).unwrap(), json!({"response": "Acme"}));
+    }
+
+    /// Live 2026-10-08: three video lengths written as a bullet list in the
+    /// question left a card with nothing to tap. Listed choices without
+    /// `options` go back to the employee; with `options`, or one list line,
+    /// or a plain question, the ask goes out.
+    #[test]
+    fn choices_listed_in_the_question_go_back_as_options() {
+        let tool = AskOwnerTool::new(
+            Arc::new(Store::new(&tempfile::tempdir().unwrap().path().join("a.db").to_string_lossy()).unwrap()),
+            crate::coworker::new_rail_cell(),
+        );
+        let listed = "How long should the video be?\n\n- **30 seconds** — tight cut\n- **45 seconds** — most clips\n- **60 seconds** — all clips";
+        let err = tool.validate_input(&json!({"question": listed})).unwrap_err();
+        assert!(err.contains("`options`"), "{err}");
+        let numbered = "Which one?\n1. Acme\n2) Globex";
+        assert!(tool.validate_input(&json!({"question": numbered})).is_err());
+        assert!(tool.validate_input(&json!({"question": listed, "options": ["30 seconds", "45 seconds", "60 seconds"]})).is_ok());
+        assert!(tool.validate_input(&json!({"question": "What's the client's name?"})).is_ok());
+        assert!(tool.validate_input(&json!({"question": "I found one:\n- Acme\nIs that the client?"})).is_ok());
+        assert!(tool.validate_input(&json!({"question": "Budget for 2026?"})).is_ok());
     }
 
     /// The model is told where the card shows and that it is the way to have
