@@ -39,6 +39,12 @@ const STUCK_NOTE: &str = "This exact call has now failed the same way 3 times th
      and it will not run again as it is. Do not send it again: try a different approach (different input, \
      another tool, or the work in smaller pieces), or tell the owner what is in the way.";
 
+/// What the model reads on a call that succeeded before in the turn with
+/// the same input and the same answer. Live 2026-10-08: one clip, four
+/// identical `remember` calls in a row, each with the same reply beside it.
+pub(crate) const REPEAT_NOTE: &str = "You already made this exact call earlier this turn and it gave this same answer. \
+     Don't send it again unless something has changed since: carry on with the work, or answer the owner.";
+
 /// What the owner reads when the turn stops on a repeated failure: what is
 /// stuck, in plain words, with no tool or path in it.
 pub(crate) const STUCK_NOTICE: &str = "I stopped here: one step kept failing the same way, three times in a row, \
@@ -223,8 +229,9 @@ pub(crate) struct RoundState<'a> {
     pub plan_touch: &'a mut Option<(usize, String)>,
     pub edits_since_check: &'a mut usize,
     pub last_desktop_act: &'a mut Option<String>,
-    /// How often each failure (tool, input and error) came back this turn
-    /// ([`MAX_IDENTICAL_FAILURES`]).
+    /// How often each outcome (tool, input, success or failure, and the
+    /// result) came back this turn ([`MAX_IDENTICAL_FAILURES`],
+    /// [`REPEAT_NOTE`]).
     pub failures: &'a mut HashMap<u64, usize>,
 }
 
@@ -420,17 +427,21 @@ pub(crate) async fn run_tool_round(
         let Some((tc, mut result)) = entry else { continue };
         // The same call failing the same way again: on the third time the
         // model is told to change course and the turn stops after this
-        // batch, the owner told what is stuck.
-        if result.is_error {
-            let failure = crate::harness::simple_hash(format!("{}\0{}\0{}", tc.name, tc.input, result.content).as_bytes());
-            let seen = failures.entry(failure).or_insert(0);
-            *seen += 1;
-            if *seen >= MAX_IDENTICAL_FAILURES {
-                warn!(session_id, tool = %tc.name, times = *seen, "the same call failed the same way again: the turn stops");
-                result.content.push_str("\n\n");
-                result.content.push_str(STUCK_NOTE);
-                terminal_error.get_or_insert_with(|| (STUCK_NOTICE.to_string(), None));
-            }
+        // batch, the owner told what is stuck. The same call answered the
+        // same way again: the model is told it already has that answer. A
+        // result with a picture or files is never "the same".
+        let outcome = crate::harness::simple_hash(format!("{}\0{}\0{}\0{}", result.is_error, tc.name, tc.input, result.content).as_bytes());
+        let seen = failures.entry(outcome).or_insert(0);
+        *seen += 1;
+        if !result.is_error && *seen >= 2 && result.image_url.is_none() && result.more_files.is_empty() {
+            result.content.push_str("\n\n");
+            result.content.push_str(REPEAT_NOTE);
+        }
+        if result.is_error && *seen >= MAX_IDENTICAL_FAILURES {
+            warn!(session_id, tool = %tc.name, times = *seen, "the same call failed the same way again: the turn stops");
+            result.content.push_str("\n\n");
+            result.content.push_str(STUCK_NOTE);
+            terminal_error.get_or_insert_with(|| (STUCK_NOTICE.to_string(), None));
         }
         let target = targets[idx].as_ref();
         if let Some(t) = target

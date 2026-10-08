@@ -1660,8 +1660,10 @@ fn download_from_icloud(path: &Path) {
     let _ = child.wait();
 }
 
-/// Validate that a file path is safe to access.
-fn validate_file_path(raw_path: &str, action: &str) -> Result<(), String> {
+/// Validate that a file path is safe to access: the sensitive-path limit
+/// every `read_file` meets, and anything else that reads a file for the
+/// model on its behalf (a picture the owner names by path).
+pub fn validate_file_path(raw_path: &str, action: &str) -> Result<(), String> {
     let expanded = expand_path(raw_path);
     let abs_path =
         std::path::absolute(Path::new(&expanded)).map_err(|e| format!("invalid path: {}", e))?;
