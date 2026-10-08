@@ -1780,6 +1780,21 @@ impl WorkflowManager for WorkflowManagerImpl {
                         tell_owner_if_blocked(&store, &hub, &neboai_api_url, &installed, &agent_id_owned, &binding_name, &run_id_clone);
                         info!(role = %agent_id_owned, run_id = %run_id_clone, "inline workflow completed");
                     }
+                    Err(workflow::WorkflowError::AwaitingExpert(waiting)) => {
+                        // Not a failure: the run is parked on one engine wait
+                        // that the next reply or the earliest deadline wakes
+                        // (engine::resume_after_expert).
+                        hub.broadcast(
+                            "workflow_run_waiting",
+                            serde_json::json!({
+                                "agentId": agent_id_owned,
+                                "runId": run_id_clone,
+                                "bindingName": binding_name,
+                                "experts": waiting,
+                            }),
+                        );
+                        info!(role = %agent_id_owned, run_id = %run_id_clone, waiting, "inline workflow waiting on experts");
+                    }
                     Err(workflow::WorkflowError::AwaitingApproval { operation, display }) => {
                         // Not a failure: the run is parked (engine persisted the
                         // suspension + awaiting_approval status) on an ask whose

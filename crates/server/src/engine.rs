@@ -1228,7 +1228,9 @@ async fn drive(state: &AppState) {
     // call is the same.
     let queued = store.engine_queued_runs_of_kind("workflow", TURNS_PER_TICK).unwrap_or_default();
     for run in queued {
-        if let Some(event_id) = run.woken_by() {
+        if let Some(event_id) = run.woken_by().filter(|id| woke_for_expert(store, *id)) {
+            resume_after_expert(state, &run, event_id, t).await;
+        } else if let Some(event_id) = run.woken_by() {
             resume_after_approval(state, &run, event_id, t).await;
         } else if run.parent_run_id.is_some() {
             start_turn(state, &run, t).await;
@@ -1818,6 +1820,50 @@ async fn start_turn(state: &AppState, run: &EngineRun, t: i64) {
         Err(e) => {
             warn!(run = %run.id, error = %e, "engine: case turn failed to start");
             let _ = settle_turn(store, run, Some(&format!("turn failed to start: {e}")), true, t);
+        }
+    }
+}
+
+/// Whether the event that woke a run is an expert's: a reply, or the
+/// deadline timer of a run's expert wait.
+fn woke_for_expert(store: &Store, event_id: i64) -> bool {
+    let Some(e) = store.engine_get_event(event_id).ok().flatten() else {
+        return false;
+    };
+    if e.kind == workflow::expert::REPLY_KIND {
+        return true;
+    }
+    e.target_type == "wait"
+        && e.target_id
+            .parse::<i64>()
+            .ok()
+            .and_then(|id| store.engine_get_wait(id).ok().flatten())
+            .is_some_and(|w| w.on_kind == workflow::expert::REPLY_KIND)
+}
+
+/// An expert's reply (or its deadline) woke a run parked on experts: it
+/// re-enters under its own id with the definition it launched with; the
+/// nodes it finished replay, and each expert step reads its reply, times
+/// out, or parks the run again.
+async fn resume_after_expert(state: &AppState, run: &EngineRun, event_id: i64, t: i64) {
+    let store = &state.store;
+    let Some(definition) = run.definition.clone() else {
+        let _ = store.engine_set_run_state(&run.id, "failed", t, Some("parked run has no definition snapshot to resume"));
+        return;
+    };
+    let detail = store.get_workflow_run(&run.id).ok().flatten().and_then(|r| r.trigger_detail);
+    let mut inputs: serde_json::Value = run.inputs.as_deref().and_then(|s| serde_json::from_str(s).ok()).unwrap_or_default();
+    inputs.as_object_mut().map(|m| m.remove("woken_by"));
+    inputs["_relaunch_run"] = serde_json::json!(run.id);
+    match state
+        .workflow_manager
+        .run_inline(definition, inputs, "expert", detail, &run.agent_id, Vec::new())
+        .await
+    {
+        Ok(_) => info!(run = %run.id, event = event_id, "engine: an expert answered or timed out; parked run resumed"),
+        Err(e) => {
+            warn!(run = %run.id, error = %e, "engine: run parked on experts failed to resume");
+            let _ = store.update_workflow_run(&run.id, Some("failed"), None, None, Some(&format!("resume after expert failed: {e}")), None);
         }
     }
 }
