@@ -235,6 +235,40 @@ fn start_fresh(state: &AppState, job: &CronJob, session_key: &str) {
     }
 }
 
+/// How often a running scheduled turn checks that its schedule still exists.
+const SCHEDULE_WATCH: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Stops a scheduled turn when its schedule is deleted, whichever way it was
+/// deleted (the tasks API, delete_schedule, an employee's removal): the
+/// turn's token is cancelled, so its tool calls stop with it (2026-10-08: two
+/// scheduled turns kept writing to Odoo for minutes after their schedules
+/// were deleted). Dropping the watch ends it.
+struct ScheduleWatch(tokio::task::JoinHandle<()>);
+
+impl ScheduleWatch {
+    fn start(store: Arc<Store>, job_id: i64, cancel: tokio_util::sync::CancellationToken) -> Self {
+        Self(tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    _ = cancel.cancelled() => return,
+                    _ = tokio::time::sleep(SCHEDULE_WATCH) => {}
+                }
+                if let Ok(None) = store.get_cron_job(job_id) {
+                    info!(job_id, "scheduler: the schedule was deleted; stopping its running turn");
+                    cancel.cancel();
+                    return;
+                }
+            }
+        }))
+    }
+}
+
+impl Drop for ScheduleWatch {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
 async fn execute_agent(state: &AppState, job: &CronJob) -> (bool, String, Option<String>) {
     let prompt = job.message.as_deref().unwrap_or(&job.command);
 
@@ -277,6 +311,7 @@ async fn execute_agent(state: &AppState, job: &CronJob) -> (bool, String, Option
         })
         .await;
 
+    let _watch = ScheduleWatch::start(state.store.clone(), job.id, cancel_token.clone());
     let req = scheduled_turn(job, prompt, &session_key, agent_id.unwrap_or_default(), "cron", None, cancel_token);
 
     match state.harness.start_turn(req).await {
@@ -374,6 +409,7 @@ async fn execute_agent_channel_bound(
         })
         .await;
 
+    let _watch = ScheduleWatch::start(state.store.clone(), job.id, cancel_token.clone());
     let req = scheduled_turn(job, prompt, &session_key, agent_id, &saved.kind, Some(channel_ctx.clone()), cancel_token);
 
     let mut full_text = String::new();
@@ -683,6 +719,25 @@ fn now_secs() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Deleting a schedule stops its running turn; a schedule that stays
+    /// leaves its turn running, and ending the watch stops nothing.
+    #[tokio::test]
+    async fn deleting_a_schedule_stops_its_running_turn() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::new(&dir.path().join("w.db").to_string_lossy()).unwrap());
+        let job = store.create_cron_job("retry", "0 9 * * *", "", "agent", Some("x"), None, None, true, Some("emp"), None, None).unwrap();
+        let kept = store.create_cron_job("kept", "0 9 * * *", "", "agent", Some("x"), None, None, true, Some("emp"), None, None).unwrap();
+        let (turn, other) = (tokio_util::sync::CancellationToken::new(), tokio_util::sync::CancellationToken::new());
+        let _w1 = ScheduleWatch::start(store.clone(), job.id, turn.clone());
+        let _w2 = ScheduleWatch::start(store.clone(), kept.id, other.clone());
+        tokio::time::sleep(SCHEDULE_WATCH * 2).await;
+        assert!(!turn.is_cancelled(), "a schedule that exists keeps its turn");
+        store.delete_cron_job_by_name("retry").unwrap();
+        tokio::time::sleep(SCHEDULE_WATCH + SCHEDULE_WATCH / 2).await;
+        assert!(turn.is_cancelled(), "the deleted schedule's turn stops");
+        assert!(!other.is_cancelled(), "another schedule's turn runs on");
+    }
 
     fn row(agent_id: &str, door: &str, activity: &str, unreviewed: bool, at: i64) -> db::PermissionActivityRow {
         db::PermissionActivityRow {

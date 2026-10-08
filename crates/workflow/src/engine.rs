@@ -49,51 +49,117 @@ pub(crate) fn producer_slug(store: &Store, agent_id: &str) -> String {
         .unwrap_or_else(|| agent_id.to_string())
 }
 
-/// Scope an activity's toolset to what it declares and references.
-///
-/// The full registry (~38 tools, ~21k tokens of schemas) went out with EVERY
-/// LLM turn and invited small models to wander — web-searching for
-/// instructions the step already spells out, or shelling out to plugin
-/// binaries via `os` instead of the plugin's own tool. A tool is included when:
-///
-/// - the activity DECLARES it in agent.json — `mcps` entries select that
-///   server's proxy tools (`mcp__<server>__*`), `cmds` (plugin commands,
-///   the plugin's slug first) select that plugin's `plugin__<slug>` tool —
-///   the authored contract comes first;
-/// - or its intent/steps/skill docs REFERENCE it — `<tool>(` (stored
-///   workflows name the current tools: the upgrade moved every old name,
-///   `server::stored_tool_names`);
-/// - or it is a delivery primitive ([`DELIVERY_TOOLS`] — steps often say
-///   "alert" or "tell the owner" without naming a tool).
-///
-/// When nothing is declared or referenced, fall back to the NON-DEFERRED
-/// roster only. Deferred tools (MCP proxies, heavyweight domain tools) are
-/// deferred precisely so their schemas don't ship until needed — the old
-/// fail-open-with-everything sent every connected MCP server's full schemas
-/// (~20k tokens/call) to activities whose agent.json declared `mcps: []`.
-/// What an activity always gets: the tools that deliver its result.
-/// A coworker is reached with send_message; the owner with message_owner or
-/// push_notification.
+/// What an undeclared activity always gets: the tools that deliver its
+/// result. A coworker is reached with send_message; the owner with
+/// message_owner or push_notification.
 const DELIVERY_TOOLS: [&str; 3] = ["send_message", "message_owner", "push_notification"];
 
+/// What a declared activity gets beyond its declaration — kept tiny, each
+/// one a thing no activity can work without:
+/// - `exit`: the step ends itself (success or a reasoned stop); it is the
+///   loop's control primitive, not a capability.
+/// - `emit_event`: the step's events are the workflow's output to whatever
+///   listens (listed where the activity emits: `event_bus` present, terminal
+///   node on the graph path).
+/// - `message_owner`: the one way to report a need to the owner. Every
+///   refusal an unattended step meets ("tell the owner instead") points at
+///   it, so a step without it could only fail silently.
+pub const RUNTIME_TOOLS: [&str; 3] = ["exit", "emit_event", "message_owner"];
+
+/// The hard tool allowlist for an activity's turns, or `None` for no
+/// dispatch limit. A declared activity (`tools` present, `[]` included) is
+/// held to its scoped toolset and the runtime set; a call outside it pauses
+/// the run for the owner (`AskCase::StepTool`). An undeclared activity
+/// keeps the old behavior until the employees declare their tools: its
+/// scoped list is a listing, not a limit.
+pub fn enforced_tools(activity: &Activity, scoped: &[String]) -> Option<HashSet<String>> {
+    activity.tools.as_ref()?;
+    Some(scoped.iter().cloned().chain(RUNTIME_TOOLS.iter().map(|t| t.to_string())).collect())
+}
+
+/// Declared `mcps` → proxy-name prefixes (server keys normalized the same
+/// way proxy names are built: lowercase, non-alphanumeric → `_`).
+fn mcp_prefixes(activity: &Activity) -> Vec<String> {
+    activity
+        .mcps
+        .iter()
+        .map(|s| {
+            let norm: String = s
+                .to_lowercase()
+                .chars()
+                .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+                .collect();
+            format!("mcp__{norm}")
+        })
+        .collect()
+}
+
+/// Declared plugin commands run through that plugin's tool ("emit" is the
+/// event primitive, injected separately — it declares no plugin need).
+fn cmd_plugin_tools(activity: &Activity) -> Vec<String> {
+    activity
+        .cmds
+        .iter()
+        .filter(|c| c.as_str() != "emit")
+        .filter_map(|c| c.split_whitespace().next())
+        .map(tools::plugin_tools::plugin_tool_name)
+        .collect()
+}
+
+/// Whether an `mcps`/`cmds` declaration selects tool `n`.
+fn selected_by_mcps_or_cmds(activity: &Activity, mcp_prefixes: &[String], plugin_tools: &[String], n: &str) -> bool {
+    plugin_tools.iter().any(|p| p == n)
+        || mcp_prefixes.iter().any(|p| n.to_lowercase().starts_with(p.as_str()))
+        || activity.mcps.iter().any(|m| m == n)
+}
+
+/// Whether a `tools` entry names tool `n`: its exact name, a dotted prefix
+/// (`"odoo"` covers every `odoo.*` tool) or a `prefix*` family
+/// (`"mcp__github__*"` covers that server's tools).
+fn names_tool(entry: &str, n: &str) -> bool {
+    n == entry
+        || n.strip_prefix(entry).is_some_and(|r| r.starts_with('.'))
+        || entry.strip_suffix('*').is_some_and(|p| !p.is_empty() && n.starts_with(p))
+}
+
+/// Scope an activity's toolset.
+///
+/// A DECLARED activity (`tools` present, `[]` included) gets exactly what it
+/// declares: its `tools` entries ([`names_tool`]), the tools its `mcps` and
+/// `cmds` select, the tools its skills bring (added to `tools` when the run
+/// starts, `server::workflow_manager::add_skill_tools`), and
+/// [`RUNTIME_TOOLS`]. No delivery tools, no text sniffing, no roster;
+/// [`enforced_tools`] makes it a limit at dispatch.
+///
+/// An UNDECLARED activity gets what it references:
+///
+/// - `mcps` entries select that server's proxy tools (`mcp__<server>__*`),
+///   `cmds` (plugin commands, the plugin's slug first) select that plugin's
+///   `plugin__<slug>` tool;
+/// - its intent/steps/skill docs REFERENCE it — `<tool>(` (stored
+///   workflows name the current tools: the upgrade moved every old name,
+///   `server::stored_tool_names`);
+/// - or it is a delivery primitive ([`DELIVERY_TOOLS`]).
+///
+/// When nothing is referenced, it falls back to the NON-DEFERRED roster
+/// only. Deferred tools (MCP proxies, heavyweight domain tools) are deferred
+/// precisely so their schemas don't ship until needed.
 pub(crate) fn scoped_activity_tools<'a>(
     activity: &Activity,
     resolved_tools: &'a [Box<dyn DynTool>],
     skill_content: Option<&HashMap<String, String>>,
     deferred: Option<&HashSet<String>>,
 ) -> Vec<&'a Box<dyn DynTool>> {
-    // Explicit declaration wins outright: deterministic, auditable, immune to
-    // the text-sniffing gap below (dotted tool names in prose never match
-    // `name(` and silently fall back to the full roster).
-    if !activity.tools.is_empty() {
+    let mcp_prefixes = mcp_prefixes(activity);
+    let plugin_tools = cmd_plugin_tools(activity);
+    if let Some(declared_names) = &activity.tools {
         let declared: Vec<&'a Box<dyn DynTool>> = resolved_tools
             .iter()
             .filter(|t| {
                 let n = t.name();
-                DELIVERY_TOOLS.contains(&n)
-                    || activity.tools.iter().any(|d| {
-                        n == d || n.strip_prefix(d.as_str()).is_some_and(|r| r.starts_with('.'))
-                    })
+                RUNTIME_TOOLS.contains(&n)
+                    || selected_by_mcps_or_cmds(activity, &mcp_prefixes, &plugin_tools, n)
+                    || declared_names.iter().any(|d| names_tool(d, n))
             })
             .collect();
         info!(
@@ -116,38 +182,13 @@ pub(crate) fn scoped_activity_tools<'a>(
         }
     }
 
-    // Declared MCP servers → proxy-name prefixes (server keys are normalized
-    // the same way proxy names are built: lowercase, non-alphanumeric → `_`).
-    let mcp_prefixes: Vec<String> = activity
-        .mcps
-        .iter()
-        .map(|s| {
-            let norm: String = s
-                .to_lowercase()
-                .chars()
-                .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
-                .collect();
-            format!("mcp__{norm}")
-        })
-        .collect();
-    // Declared plugin commands run through that plugin's tool ("emit" is the
-    // event primitive, injected separately — it declares no plugin need).
-    let plugin_tools: Vec<String> = activity
-        .cmds
-        .iter()
-        .filter(|c| c.as_str() != "emit")
-        .filter_map(|c| c.split_whitespace().next())
-        .map(tools::plugin_tools::plugin_tool_name)
-        .collect();
     let referenced: Vec<&'a Box<dyn DynTool>> = resolved_tools
         .iter()
         .filter(|t| {
             let n = t.name();
             DELIVERY_TOOLS.contains(&n)
                 || text.contains(&format!("{n}("))
-                || plugin_tools.iter().any(|p| p == n)
-                || mcp_prefixes.iter().any(|p| n.to_lowercase().starts_with(p.as_str()))
-                || activity.mcps.iter().any(|m| m == n)
+                || selected_by_mcps_or_cmds(activity, &mcp_prefixes, &plugin_tools, n)
         })
         .collect();
     if referenced.iter().any(|t| !DELIVERY_TOOLS.contains(&t.name())) {
@@ -1830,6 +1871,134 @@ mod engine_tests {
         let scoped = scoped_activity_tools(&activity, &registry, Some(&skills), None);
         let names: Vec<&str> = scoped.iter().map(|t| t.name()).collect();
         assert_eq!(names, vec!["plugin__gws", "send_message", "message_owner", "push_notification"]);
+    }
+
+    // The shape `scoped_activity_tools` returns.
+    #[allow(clippy::borrowed_box)]
+    fn names_of(scoped: &[&Box<dyn DynTool>]) -> Vec<String> {
+        scoped.iter().map(|t| t.name().to_string()).collect()
+    }
+
+    fn registry_of(names: &[&'static str]) -> Vec<Box<dyn DynTool>> {
+        names.iter().map(|n| Box::new(FakeTool(n)) as Box<dyn DynTool>).collect()
+    }
+
+    /// A declared activity gets what it declares, what its mcps and cmds
+    /// select, and the runtime set: no delivery tools, no text sniffing.
+    #[test]
+    fn a_declared_activity_gets_exactly_its_declaration() {
+        let activity: Activity = serde_json::from_value(serde_json::json!({
+            "id": "file",
+            "intent": "File the changes",
+            "tools": ["remember"],
+            "mcps": ["monument"],
+            "cmds": ["gws gmail +triage"],
+            "steps": ["Tell them with send_message(to: \"x\") and browser(open)"]
+        }))
+        .unwrap();
+        let mut registry = fake_registry();
+        registry.extend(registry_of(&["create_schedule", "mcp__monument__project"]));
+        let scoped = names_of(&scoped_activity_tools(&activity, &registry, None, None));
+        assert_eq!(scoped, ["plugin__gws", "remember", "message_owner", "mcp__monument__project"]);
+        let enforced = enforced_tools(&activity, &scoped).expect("a declaration is enforced");
+        for t in ["plugin__gws", "remember", "message_owner", "mcp__monument__project", "exit", "emit_event"] {
+            assert!(enforced.contains(t), "{t} in {enforced:?}");
+        }
+        for t in ["create_schedule", "send_message", "push_notification", "browser", "os", "web"] {
+            assert!(!enforced.contains(t), "{t} must not be allowed: {enforced:?}");
+        }
+    }
+
+    /// `tools: []` is a declaration: only the runtime set.
+    #[test]
+    fn an_empty_declaration_gets_only_the_runtime_set() {
+        let activity: Activity =
+            serde_json::from_value(serde_json::json!({"id": "think", "intent": "Use remember(x)", "tools": []})).unwrap();
+        let mut registry = fake_registry();
+        registry.extend(registry_of(&["create_schedule"]));
+        let scoped = names_of(&scoped_activity_tools(&activity, &registry, None, None));
+        assert_eq!(scoped, ["message_owner"]);
+        let mut got: Vec<String> = enforced_tools(&activity, &scoped).unwrap().into_iter().collect();
+        got.sort();
+        assert_eq!(got, ["emit_event", "exit", "message_owner"]);
+    }
+
+    /// An undeclared activity keeps today's behavior: no limit at dispatch.
+    #[test]
+    fn an_undeclared_activity_is_not_limited() {
+        let activity: Activity =
+            serde_json::from_value(serde_json::json!({"id": "think", "intent": "Summarize"})).unwrap();
+        assert!(enforced_tools(&activity, &["remember".to_string()]).is_none());
+    }
+
+    /// A `tools` entry can name any tool the bot has, of every kind: a
+    /// plugin's tool, a connected MCP server's tools (one by name, or the
+    /// server's family with `mcp__<server>__*`), an app's tools, and the
+    /// internal data tools (memory, files, sessions, app data, skills).
+    #[test]
+    fn a_declaration_names_any_kind_of_tool() {
+        let registry = registry_of(&[
+            "plugin__odoo", "mcp__github__create_issue", "mcp__github__list_issues", "mcp__notion__search",
+            "app__crm__list_deals", "recall", "remember", "read_file", "read_session", "search_history",
+            "app_data", "use_skill", "read_skill_file", "create_schedule", "message_owner",
+        ]);
+        let cases: [(&str, &[&str]); 9] = [
+            ("plugin__odoo", &["plugin__odoo"]),
+            ("mcp__github__create_issue", &["mcp__github__create_issue"]),
+            ("mcp__github__*", &["mcp__github__create_issue", "mcp__github__list_issues"]),
+            ("app__crm__list_deals", &["app__crm__list_deals"]),
+            ("recall", &["recall"]),
+            ("read_file", &["read_file"]),
+            ("read_session", &["read_session"]),
+            ("app_data", &["app_data"]),
+            ("use_skill", &["use_skill"]),
+        ];
+        for (entry, expected) in cases {
+            let activity: Activity =
+                serde_json::from_value(serde_json::json!({"id": "a", "intent": "x", "tools": [entry]})).unwrap();
+            let enforced = enforced_tools(&activity, &names_of(&scoped_activity_tools(&activity, &registry, None, None))).unwrap();
+            for t in expected {
+                assert!(enforced.contains(*t), "{entry} must allow {t}: {enforced:?}");
+            }
+            assert!(!enforced.contains("mcp__notion__search"), "{entry} names no other server");
+            assert!(!enforced.contains("create_schedule"), "{entry}");
+        }
+        // A connected MCP server declared by `mcps` brings all its tools.
+        let activity: Activity =
+            serde_json::from_value(serde_json::json!({"id": "a", "intent": "x", "tools": [], "mcps": ["github"]})).unwrap();
+        let enforced = enforced_tools(&activity, &names_of(&scoped_activity_tools(&activity, &registry, None, None))).unwrap();
+        assert!(enforced.contains("mcp__github__create_issue") && enforced.contains("mcp__github__list_issues"));
+        assert!(!enforced.contains("mcp__notion__search"));
+    }
+
+    /// Vivid's order-intake `resolve-and-record` (inventory-administrator),
+    /// as republished: the Odoo plugin and its skill, its chunk files, the
+    /// shell for the known-matches script and waiting; nothing that
+    /// schedules.
+    #[test]
+    fn vivid_resolve_and_record_resolves_to_its_tools_and_nothing_that_schedules() {
+        let activity: Activity = serde_json::from_value(serde_json::json!({
+            "id": "resolve-and-record",
+            "intent": "Resolve each row in this chunk to its CRM lead and record the FO number + load date",
+            "skills": ["@nebo-official/skills/vw-fo-matching"],
+            "tools": ["plugin__odoo", "use_skill", "read_skill_file", "read_file", "run_command"]
+        }))
+        .unwrap();
+        let registry = registry_of(&[
+            "plugin__odoo", "plugin__gws", "use_skill", "read_skill_file", "read_file", "write_file", "run_command",
+            "create_schedule", "run_schedule_now", "set_schedule_paused", "create_workflow", "delegate", "send_message",
+            "ask_owner", "fetch_url", "message_owner", "push_notification", "emit_event", "exit",
+        ]);
+        let enforced = enforced_tools(&activity, &names_of(&scoped_activity_tools(&activity, &registry, None, None))).unwrap();
+        for t in ["plugin__odoo", "use_skill", "read_skill_file", "read_file", "run_command", "message_owner", "exit"] {
+            assert!(enforced.contains(t), "{t} in {enforced:?}");
+        }
+        for t in [
+            "create_schedule", "run_schedule_now", "set_schedule_paused", "create_workflow", "delegate",
+            "send_message", "ask_owner", "fetch_url", "write_file", "plugin__gws",
+        ] {
+            assert!(!enforced.contains(t), "{t} must not reach resolve-and-record: {enforced:?}");
+        }
     }
 
     fn prompt_with_tools(tool_names: &[&str]) -> String {

@@ -53,6 +53,14 @@ pub struct CallEffects {
     /// time, in every mode: never "Allow always".
     #[serde(default)]
     pub removes_employee: bool,
+    /// The call creates, re-arms or fires scheduled work: a schedule, a
+    /// workflow trigger, an employee's automations. Only a run someone is
+    /// attending may do that (`limits::arms_schedule`): an unattended run
+    /// that schedules more runs can multiply without end (2026-10-08: a
+    /// workflow step "retried in 30 seconds" with schedules whose runs
+    /// scheduled more, ~60 of them).
+    #[serde(default)]
+    pub arms_schedule: bool,
     /// The call watches the owner (his screen, microphone or camera) or
     /// drives his other apps: a command such as `screencapture`, `osascript`
     /// telling an app what to do, or `open -a Safari`. It asks in every
@@ -589,6 +597,10 @@ pub enum AskCase {
     /// row `effect_id` is held): only the owner can say whether it went
     /// out. Not a permission; nothing runs on the answer.
     UnconfirmedSend { effect_id: i64 },
+    /// A workflow step called a tool its activity doesn't declare. The run
+    /// pauses; the owner's allow adds the tool to that activity's
+    /// declaration and the run continues at the call.
+    StepTool { step: String, tool: String },
 }
 
 /// What the check decided for one call.

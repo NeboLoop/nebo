@@ -227,6 +227,70 @@ fn extract_skill_name_from_ref(skill_ref: &str) -> String {
 }
 
 /// PersonaTool manages the agent's personas — the top of the hierarchy.
+/// Land a seat's declaration on its permission rules.
+///
+/// The ONE routine for it (CODE_AUDITOR 8.1). Three entry points reach it, and
+/// they must not drift: `finalize_agent_install`, when a package arrives,
+/// `update_agent`, when an owner authors the same declaration by hand on the
+/// settings page, and create_employee / update_employee, when the builder
+/// writes it. A packaged employee and an owner-built one are the same
+/// object — so the thing that gives their declaration effect is one function,
+/// not two copies that forget different steps.
+///
+/// The package's `ceiling` is its own DECLARATION of what this employee
+/// performs and must not perform unattended — including operations no list
+/// of ours has ever heard of (an owner's own employee, built around their own
+/// capability). Each entry lands as an ask rule on the operation, written by
+/// the package: it asks until the owner says otherwise, and a package never
+/// replaces a rule the owner has written for the operation. A declaration
+/// restricts; it never grants (`napp` refuses any ceiling value but
+/// "approval" when it parses the manifest).
+pub fn apply_seat_declaration(
+    store: &db::Store,
+    agent_id: &str,
+    config: &napp::agent::AgentConfig,
+) {
+    use types::permissions::{Effect, Rule, RuleKey, RuleSource, Scope, Writer};
+    let by = Writer::Package { package: agent_id.to_string() };
+    let mut landed = 0usize;
+    for op in config.ceiling.keys() {
+        let suffix = crate::plugin_tool::port_suffix(op);
+        if suffix.is_empty() {
+            continue;
+        }
+        let rule = Rule {
+            id: uuid::Uuid::new_v4().to_string(),
+            scope: Scope::Employee(agent_id.to_string()),
+            key: RuleKey::Operation(suffix),
+            field: None,
+            effect: Effect::Ask,
+            money: None,
+            source: RuleSource::Package { package: agent_id.to_string() },
+            locked: false,
+            created_at: chrono::Utc::now().timestamp(),
+        };
+        match store.write_permission_rule(&rule, &by) {
+            Ok(_) => landed += 1,
+            Err(e) => tracing::warn!(agent = agent_id, error = %e, "the declared ceiling did not land"),
+        }
+    }
+    if landed > 0 {
+        tracing::info!(agent = agent_id, declared = landed, "the employee's declared ceiling landed as operations that ask");
+    }
+}
+
+/// Add a `ceiling` given to create_employee or update_employee to the
+/// employee's agent.json: each operation it names asks the owner first.
+fn merge_ceiling(agent_json: &mut serde_json::Value, ceiling: &serde_json::Value) {
+    let Some(given) = ceiling.as_object() else { return };
+    if !agent_json["ceiling"].is_object() {
+        agent_json["ceiling"] = serde_json::json!({});
+    }
+    for (op, value) in given {
+        agent_json["ceiling"][op] = value.clone();
+    }
+}
+
 /// A persona defines who the agent is: persona, workflows, skills, triggers.
 pub struct PersonaTool {
     store: Arc<Store>,
@@ -1488,7 +1552,18 @@ impl PersonaTool {
         if let Some(requires) = input.get("requires").filter(|r| r.is_object()) {
             agent_json.get_or_insert_with(|| serde_json::json!({}))["requires"] = requires.clone();
         }
+        // What it must not do unattended: it sits beside its duties, so one
+        // call carries both (`automations` and `ceiling`).
+        if let Some(ceiling) = input.get("ceiling").filter(|c| c.is_object()) {
+            let json = agent_json.get_or_insert_with(|| serde_json::json!({}));
+            merge_ceiling(json, ceiling);
+        }
         let agent_json_str = agent_json.map(|v| v.to_string());
+        if let Some(rj) = &agent_json_str
+            && let Err(e) = napp::agent::parse_agent_config(rj)
+        {
+            return ToolResult::error(format!("agent.json is invalid and was not saved: {e}. Fix it and retry."));
+        }
 
         // Auto-generate AGENT.md if not provided but name/description exist
         let agent_md_raw = input["agent_md"].as_str().unwrap_or("");
@@ -1626,6 +1701,7 @@ impl PersonaTool {
             match napp::agent::parse_agent_config(rj) {
                 Ok(config) => {
                     self.register_config_triggers(&id, &config);
+                    apply_seat_declaration(&self.store, &id, &config);
 
                     // Describe what was registered
                     let trigger_descs: Vec<String> = config
@@ -1715,6 +1791,7 @@ impl PersonaTool {
         "automations",
         "add_automations",
         "remove_automations",
+        "ceiling",
         "app",
         "ui",
         "ui_jsx",
@@ -2035,11 +2112,23 @@ impl PersonaTool {
                         existing_binding["emit"] = emit.clone();
                     }
                     if let Some(steps) = update_obj["steps"].as_array() {
+                        let tools = update_obj.get("tools").filter(|t| t.is_array());
                         let activities: Vec<serde_json::Value> = steps.iter().enumerate().map(|(i, step)| {
                             let intent = step.as_str().unwrap_or("Execute step");
-                            serde_json::json!({ "id": format!("step-{}", i + 1), "intent": intent })
+                            let mut activity = serde_json::json!({ "id": format!("step-{}", i + 1), "intent": intent });
+                            if let Some(tools) = tools {
+                                activity["tools"] = tools.clone();
+                            }
+                            activity
                         }).collect();
                         existing_binding["activities"] = serde_json::Value::Array(activities);
+                    } else if let Some(tools) = update_obj.get("tools").filter(|t| t.is_array())
+                        && let Some(acts) = existing_binding.get_mut("activities").and_then(|a| a.as_array_mut())
+                    {
+                        // New tools alone: every activity of the duty uses them.
+                        for activity in acts {
+                            activity["tools"] = tools.clone();
+                        }
                     }
 
                     // Update trigger if any trigger field is provided
@@ -2278,6 +2367,26 @@ impl PersonaTool {
             }
         }
 
+        // What it must not do unattended: added to (or changing) its
+        // ceiling, then given effect below.
+        let ceiling_changed = if let Some(ceiling) = input.get("ceiling").filter(|c| c.is_object()) {
+            let mut existing: serde_json::Value =
+                serde_json::from_str(&current_frontmatter).unwrap_or(serde_json::json!({}));
+            merge_ceiling(&mut existing, ceiling);
+            current_frontmatter = existing.to_string();
+            if let Err(e) = Self::validated_frontmatter(&current_frontmatter) {
+                return ToolResult::error(e);
+            }
+            if agent_dir.exists() {
+                let _ = std::fs::write(agent_dir.join("agent.json"), &current_frontmatter);
+            }
+            let ops: Vec<&String> = ceiling.as_object().map(|o| o.keys().collect()).unwrap_or_default();
+            changes.push(format!("asks you first before: {}", ops.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")));
+            true
+        } else {
+            false
+        };
+
         // Persist DB update
         if let Err(e) = Self::validated_frontmatter(&current_frontmatter) {
             return ToolResult::error(e);
@@ -2300,6 +2409,9 @@ impl PersonaTool {
             None,
         ) {
             return ToolResult::error(format!("Failed to update agent in DB: {}", e));
+        }
+        if ceiling_changed && let Ok(config) = napp::agent::parse_agent_config(&current_frontmatter) {
+            apply_seat_declaration(&self.store, agent_id, &config);
         }
 
         if let Some(new_name) = new_name {
@@ -3642,11 +3754,15 @@ impl PersonaTool {
                     .as_str()
                     .filter(|s| !s.is_empty())
                     .unwrap_or(binding_name);
-                vec![serde_json::json!({
+                let mut activity = serde_json::json!({
                     "id": "run",
                     "intent": intent,
                     "steps": steps
-                })]
+                });
+                if let Some(tools) = auto.get("tools").filter(|t| t.is_array()) {
+                    activity["tools"] = tools.clone();
+                }
+                vec![activity]
             } else {
                 vec![]
             };
@@ -3927,6 +4043,78 @@ fn install_text_is_failure(text: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+
+    /// A ceiling the builder gives — with the duties on create, or later on
+    /// update — lands in agent.json and takes effect at once: each operation
+    /// asks the owner. A ceiling value other than "approval" is refused and
+    /// nothing is made.
+    #[tokio::test]
+    async fn a_ceiling_the_builder_gives_takes_effect_on_create_and_update() {
+        use std::sync::Arc;
+        use types::permissions::{Effect, RuleKey};
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(db::Store::new(&dir.path().join("c.db").to_string_lossy()).unwrap());
+        let loader = Arc::new(napp::AgentLoader::new(dir.path().join("a"), dir.path().join("b")));
+        let live = Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new()));
+        let persona = super::PersonaTool::new(store.clone(), live, loader);
+        let asks_on = |id: &str| -> Vec<String> {
+            store
+                .permission_rules(id)
+                .unwrap()
+                .into_iter()
+                .filter(|r| r.effect == Effect::Ask)
+                .filter_map(|r| match r.key {
+                    RuleKey::Operation(op) => Some(op),
+                    _ => None,
+                })
+                .collect()
+        };
+
+        let refused = persona
+            .handle_create(
+                &serde_json::json!({"name": "payables", "description": "Pays bills", "ceiling": {"ledger.payment.create": "always"}}),
+                "emp-bad",
+            )
+            .await;
+        assert!(refused.is_error, "{}", refused.content);
+        assert!(store.get_agent("emp-bad").unwrap().is_none(), "nothing was made");
+
+        let made = persona
+            .handle_create(
+                &serde_json::json!({
+                    "name": "payables",
+                    "description": "Pays bills",
+                    "automations": [{"name": "pay-run", "trigger": "manual", "steps": ["Pay the approved bills"]}],
+                    "ceiling": {"ledger.payment.create": "approval"}
+                }),
+                "emp-1",
+            )
+            .await;
+        assert!(!made.is_error, "{}", made.content);
+        let row = store.get_agent("emp-1").unwrap().unwrap();
+        let fm: serde_json::Value = serde_json::from_str(&row.frontmatter).unwrap();
+        assert_eq!(fm["ceiling"]["ledger.payment.create"], "approval");
+        assert!(fm["workflows"]["pay-run"].is_object(), "duties and ceiling in one call: {fm}");
+        let asks = asks_on("emp-1");
+        assert_eq!(asks.len(), 1, "{asks:?}");
+        assert_eq!(asks[0], crate::plugin_tool::port_suffix("ledger.payment.create"));
+
+        let updated = persona
+            .handle_update(&serde_json::json!({"name": "payables", "ceiling": {"ledger.invoice.void": "approval"}}))
+            .await;
+        assert!(!updated.is_error, "{}", updated.content);
+        let fm: serde_json::Value = serde_json::from_str(&store.get_agent("emp-1").unwrap().unwrap().frontmatter).unwrap();
+        assert_eq!(fm["ceiling"]["ledger.payment.create"], "approval", "the earlier entry stays");
+        assert_eq!(fm["ceiling"]["ledger.invoice.void"], "approval");
+        let mut asks = asks_on("emp-1");
+        asks.sort();
+        let mut want = vec![
+            crate::plugin_tool::port_suffix("ledger.payment.create"),
+            crate::plugin_tool::port_suffix("ledger.invoice.void"),
+        ];
+        want.sort();
+        assert_eq!(asks, want);
+    }
 
     // The owner's rule: NeboAI's employees first. The hub's own order is
     // kept inside each group, so a third-party listing never jumps ahead and

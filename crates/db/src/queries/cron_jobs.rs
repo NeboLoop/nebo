@@ -19,6 +19,25 @@ const JOB_SELECT: &str = "SELECT j.id, j.name, j.schedule, j.command, j.task_typ
         (SELECT r.error FROM engine_runs r WHERE r.external_ref = 'cron:' || j.id ORDER BY r.created_at DESC, r.rowid DESC LIMIT 1) AS last_error
  FROM cron_jobs j";
 
+/// Most enabled schedules one employee may hold (owner-wide schedules, no
+/// employee, count as one holder). The live fleet's busiest employee held 6
+/// (2026-10-08, 15 cloud bots); 50 is room for any real job and a stop for
+/// a runaway.
+pub const MAX_ACTIVE_SCHEDULES_PER_EMPLOYEE: i64 = 50;
+
+/// Most one-shot schedules ("in 5 minutes") one employee may create in an
+/// hour. The fleet's most in any hour was 3, outside the Vivid incident
+/// (82 in one hour, 2026-10-08).
+pub const MAX_ONE_SHOTS_PER_HOUR: i64 = 10;
+
+/// A one-shot schedule: seven fields with a fixed year (`sec min hour dom
+/// mon * 2026`, what `at` resolves to). Repeating schedules have five or six
+/// fields, or `*` for the year.
+pub fn is_one_shot(schedule: &str) -> bool {
+    let fields: Vec<&str> = schedule.split_whitespace().collect();
+    fields.len() == 7 && fields[6].len() == 4 && fields[6].chars().all(|c| c.is_ascii_digit())
+}
+
 /// The engine ref every fire of a job carries.
 pub fn cron_ref(job_id: i64) -> String {
     format!("cron:{job_id}")
@@ -67,6 +86,38 @@ impl Store {
         overlap: Option<OverlapPolicy>,
     ) -> Result<CronJob, NeboError> {
         let conn = self.conn()?;
+        if enabled {
+            let active: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM cron_jobs WHERE enabled = 1 AND agent_id IS ?1",
+                    params![agent_id],
+                    |r| r.get(0),
+                )
+                .map_err(|e| NeboError::Database(e.to_string()))?;
+            if active >= MAX_ACTIVE_SCHEDULES_PER_EMPLOYEE {
+                return Err(NeboError::Validation(format!(
+                    "This employee already has {active} active schedules, the most one may have \
+                     ({MAX_ACTIVE_SCHEDULES_PER_EMPLOYEE}). Nothing was scheduled. Delete or pause ones it no \
+                     longer needs, or tell the owner."
+                )));
+            }
+        }
+        if is_one_shot(schedule) {
+            let recent: Vec<String> = conn
+                .prepare(
+                    "SELECT schedule FROM cron_jobs WHERE agent_id IS ?1 AND created_at >= datetime('now', '-1 hour')",
+                )
+                .and_then(|mut st| st.query_map(params![agent_id], |r| r.get(0))?.collect())
+                .map_err(|e| NeboError::Database(e.to_string()))?;
+            let one_shots = recent.iter().filter(|s| is_one_shot(s)).count() as i64;
+            if one_shots >= MAX_ONE_SHOTS_PER_HOUR {
+                return Err(NeboError::Validation(format!(
+                    "This employee made {one_shots} one-time schedules in the last hour, the most it may \
+                     ({MAX_ONE_SHOTS_PER_HOUR}). Nothing was scheduled. Don't schedule retries or checks: \
+                     tell the owner what is waiting."
+                )));
+            }
+        }
         conn.execute(
             "INSERT INTO cron_jobs (name, schedule, command, task_type, message, deliver, instructions, enabled, agent_id, channel_ctx_json, overlap_policy)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, COALESCE(?11, 'skip'))",
@@ -296,7 +347,9 @@ impl<T> OptionalExt<T> for rusqlite::Result<T> {
 
 #[cfg(test)]
 mod tests {
+    use super::{MAX_ACTIVE_SCHEDULES_PER_EMPLOYEE, MAX_ONE_SHOTS_PER_HOUR, is_one_shot};
     use crate::Store;
+    use types::NeboError;
 
     fn temp_store() -> Store {
         let path = std::env::temp_dir().join(format!(
@@ -308,6 +361,43 @@ mod tests {
                 .as_nanos()
         ));
         Store::new(path.to_str().unwrap()).unwrap()
+    }
+
+    #[test]
+    fn one_shots_are_seven_fields_with_a_year() {
+        assert!(is_one_shot("16 12 16 8 10 * 2026"));
+        assert!(!is_one_shot("0 0 9 * * * *"));
+        assert!(!is_one_shot("0 9 * * 1-5"));
+        assert!(!is_one_shot("0 0 9 * * *"));
+    }
+
+    /// The caps: active schedules per employee, one-shots per hour. Another
+    /// employee is counted on its own.
+    #[test]
+    fn caps_hold_per_employee() {
+        let store = temp_store();
+        for i in 0..MAX_ONE_SHOTS_PER_HOUR {
+            store
+                .create_cron_job(&format!("retry-{i}"), "16 12 16 8 10 * 2099", "", "agent", Some("x"), None, None, true, Some("emp"), None, None)
+                .unwrap();
+        }
+        let refused = store
+            .create_cron_job("retry-more", "16 12 16 8 10 * 2099", "", "agent", Some("x"), None, None, true, Some("emp"), None, None)
+            .unwrap_err();
+        assert!(matches!(refused, NeboError::Validation(ref m) if m.contains("one-time schedules")), "{refused}");
+        // A repeating schedule isn't a one-shot; another employee has its own count.
+        store.create_cron_job("daily", "0 9 * * *", "", "agent", Some("x"), None, None, true, Some("emp"), None, None).unwrap();
+        store
+            .create_cron_job("other-once", "16 12 16 8 10 * 2099", "", "agent", Some("x"), None, None, true, Some("other"), None, None)
+            .unwrap();
+
+        for i in 0..(MAX_ACTIVE_SCHEDULES_PER_EMPLOYEE - MAX_ONE_SHOTS_PER_HOUR - 1) {
+            store.create_cron_job(&format!("d-{i}"), "0 9 * * *", "", "agent", Some("x"), None, None, true, Some("emp"), None, None).unwrap();
+        }
+        let full = store.create_cron_job("one-too-many", "0 9 * * *", "", "agent", Some("x"), None, None, true, Some("emp"), None, None).unwrap_err();
+        assert!(matches!(full, NeboError::Validation(ref m) if m.contains("active schedules")), "{full}");
+        // A paused one doesn't count against it.
+        store.create_cron_job("paused", "0 9 * * *", "", "agent", Some("x"), None, None, false, Some("emp"), None, None).unwrap();
     }
 
     /// A job's last run, run count, last error and history are its engine

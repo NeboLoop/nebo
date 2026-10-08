@@ -7,7 +7,7 @@ pub mod loader;
 pub mod parser;
 pub mod triggers;
 
-pub use engine::{WorkflowProgress, execute_activity, execute_workflow};
+pub use engine::{RUNTIME_TOOLS, WorkflowProgress, enforced_tools, execute_activity, execute_workflow};
 pub use loop_contract::{ActivityLoop, LoopOutcome, LoopTurn};
 pub use parser::{Activity, WorkflowDef};
 
