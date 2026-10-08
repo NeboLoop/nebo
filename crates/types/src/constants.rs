@@ -1,3 +1,7 @@
+/// How Nebo names itself to the services it calls (`User-Agent`): Janus
+/// logs it per session, so it can tell which Nebo versions are still out.
+pub const USER_AGENT: &str = concat!("nebo/", env!("CARGO_PKG_VERSION"));
+
 /// Default HTTP server port.
 pub const DEFAULT_PORT: u16 = 27895;
 

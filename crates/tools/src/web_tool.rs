@@ -675,6 +675,8 @@ impl WebCore {
             .post(&url)
             .bearer_auth(&bearer)
             .header("X-Bot-ID", &cfg.bot_id)
+            // The shared client speaks as a browser to web pages; to Janus, as Nebo.
+            .header(reqwest::header::USER_AGENT, types::constants::USER_AGENT)
             .json(&body)
             .timeout(std::time::Duration::from_secs(12))
             .send()
