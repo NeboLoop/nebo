@@ -60,7 +60,9 @@ async fn a_temporary_team_takes_its_one_piece_of_work_and_disbands() {
         if !main_call(purpose) {
             return Reply::Text("ok");
         }
-        if fresh(messages, "MARK-TEAM") {
+        // The owner's request only: the assignment's subject says
+        // MARK-TEAMWORK, and the lead's turn must not take it for this.
+        if fresh(messages, "MARK-TEAM have") {
             return Reply::Call(vec![(
                 "create_team",
                 json!({"name": "Budget team", "members": ["Marketer"], "lead": "Bookkeeper", "lifetime": "temporary"}),
