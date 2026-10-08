@@ -86,9 +86,12 @@ struct GraphCtx<'a> {
     index_of: HashMap<String, usize>,
     outgoing: HashMap<String, Vec<Edge>>,
     /// Static transitive predecessors per node, in activity-array order —
-    /// each node's prior context is built from these deterministically,
-    /// independent of parallel completion timing.
+    /// a condition's match text is built from these, deterministic
+    /// regardless of parallel completion timing.
     ancestors: HashMap<String, Vec<String>>,
+    /// Per node, the predecessors whose results its model reads
+    /// ([`result_parents`]), in activity-array order.
+    parents: HashMap<String, Vec<String>>,
     /// Nodes with an edge to __emit__ — these get the emit tool.
     terminal_emit: HashSet<String>,
     /// Per-loop body node sets (validated self-contained).
@@ -350,6 +353,11 @@ fn build_ctx<'a>(
         ordered.sort_by_key(|id| index_of.get(id).copied().unwrap_or(usize::MAX));
         ancestors.insert(a.id.clone(), ordered);
     }
+    let parents: HashMap<String, Vec<String>> = def
+        .activities
+        .iter()
+        .map(|a| (a.id.clone(), result_parents(&a.id, &incoming, &by_id, &index_of)))
+        .collect();
 
     let loop_bodies: HashMap<String, HashSet<String>> = def
         .activities
@@ -381,6 +389,7 @@ fn build_ctx<'a>(
         index_of,
         outgoing,
         ancestors,
+        parents,
         terminal_emit,
         loop_bodies,
         state: Mutex::new(GraphState {
@@ -390,6 +399,43 @@ fn build_ctx<'a>(
             total_output_tokens: 0,
         }),
     }
+}
+
+/// The predecessors whose results reach a node's model context: its direct
+/// parents, looking through routing nodes. A `condition` or `wait` produces
+/// no content of its own ("True", a sleep) — it only gates what came before
+/// it — so in its place stand its own parents, recursively. Every other
+/// parent counts as itself, a `loop` included: a body node sees its own item,
+/// never what came before the loop, and a node after "Done" sees the loop.
+fn result_parents(
+    node: &str,
+    incoming: &HashMap<String, Vec<String>>,
+    by_id: &HashMap<String, &Activity>,
+    index_of: &HashMap<String, usize>,
+) -> Vec<String> {
+    let mut seen: HashSet<&str> = HashSet::new();
+    let mut found: Vec<String> = Vec::new();
+    let mut queue: Vec<&str> = incoming
+        .get(node)
+        .map(|v| v.iter().map(String::as_str).collect())
+        .unwrap_or_default();
+    while let Some(p) = queue.pop() {
+        if p == node || !seen.insert(p) {
+            continue;
+        }
+        let routing = by_id
+            .get(p)
+            .is_some_and(|a| matches!(a.activity_type.as_str(), "condition" | "wait"));
+        if routing {
+            if let Some(more) = incoming.get(p) {
+                queue.extend(more.iter().map(String::as_str));
+            }
+        } else {
+            found.push(p.to_string());
+        }
+    }
+    found.sort_by_key(|id| index_of.get(id).copied().unwrap_or(usize::MAX));
+    found
 }
 
 /// Top-scope indegree: edges among top-level nodes. Loop bodies are excluded —
@@ -1038,7 +1084,7 @@ async fn run_condition<'a>(
 ) -> Result<(), WorkflowError> {
     let started_at = chrono::Utc::now().timestamp();
     let data = data_context(ctx, scope);
-    let context_text = prior_context_for(ctx, scope, &activity.id);
+    let context_text = ancestor_text(ctx, scope, &activity.id);
 
     match evaluate_condition(activity, &data, &context_text) {
         Ok(verdict) => {
@@ -1408,10 +1454,9 @@ async fn run_llm_activity<'a>(
     scope: &WalkScope,
     activity: &Activity,
 ) -> Result<(), WorkflowError> {
-    let mut prior_context = prior_context_for(ctx, scope, &activity.id);
-    if let Some(item) = &scope.item {
-        prior_context.push_str(&format!("\n[Current item]: {}\n", item));
-    }
+    let parents = ctx.parents.get(&activity.id).map(Vec::as_slice).unwrap_or_default();
+    let (resolved, prior_context) =
+        step_context(activity, parents, &scope_outputs(ctx, scope), ctx.inputs, scope.item.as_ref());
 
     // Tool assembly mirrors the sequential path (same scoping — see
     // scoped_activity_tools); the emit tool is injected only on terminal
@@ -1449,7 +1494,7 @@ async fn run_llm_activity<'a>(
     // Output tokens only — the unit token budgets are enforced in.
     let mut spent_output: u32 = 0;
     match execute_activity_with_retry(
-        activity,
+        &resolved,
         &prior_context,
         &ctx.memory_user_id,
         ctx.memory_writes_disabled,
@@ -1577,10 +1622,90 @@ async fn run_llm_activity<'a>(
     }
 }
 
-/// Prior context for a node: outputs of its STATIC transitive predecessors
-/// that have executed, in activity-array order — deterministic regardless of
-/// parallel completion timing.
-fn prior_context_for(ctx: &GraphCtx, scope: &WalkScope, node: &str) -> String {
+/// Most chars of one parent's result that reach a step's Prior Results,
+/// about 2k tokens. Within it a result goes whole — a rendered report, a
+/// verdict, a short list — so a step that reads its parent's work keeps
+/// reading all of it. Past it the step gets the result's `summary`
+/// when it is JSON that carries one (a loop's does), then as much of the
+/// result as fits, and a note naming the reference that carries all of it.
+const PRIOR_RESULT_CAP: usize = 8_000;
+
+/// What an AI activity's model reads of earlier steps, in both executors:
+/// the activity with its references resolved, and its Prior Results.
+///
+/// - References: `{{nodes.<id>}}`, `{{nodes.<id>.field}}`, `{{item.x}}`,
+///   `{{inputs.x}}` in its intent and steps resolve the way a command
+///   step's do ([`interpolate_context`]), from ANY earlier step. This is how
+///   full data reaches a step.
+/// - Prior Results: one entry per parent that has run, each within
+///   [`PRIOR_RESULT_CAP`] ([`prior_result`]), then the loop item. Nothing
+///   from further back — a step that needs it names it. A parent the step
+///   references is left out: the reference already put what the step needs
+///   into its text.
+///
+/// `parents` are the graph's result parents ([`result_parents`]), or the
+/// previous activity on the sequential path; `outputs` every result this
+/// step can see, by activity id.
+pub(crate) fn step_context(
+    activity: &Activity,
+    parents: &[String],
+    outputs: &HashMap<String, String>,
+    inputs: &serde_json::Value,
+    item: Option<&serde_json::Value>,
+) -> (Activity, String) {
+    let texts = || std::iter::once(&activity.intent).chain(&activity.steps);
+    let referenced = |id: &str| {
+        let open = format!("{{{{nodes.{id}");
+        texts().any(|t| {
+            t.match_indices(&open)
+                .any(|(i, _)| matches!(t[i + open.len()..].chars().next(), Some('.' | '}')))
+        })
+    };
+    let mut prior = String::new();
+    for id in parents {
+        if let Some(result) = outputs.get(id).filter(|_| !referenced(id)) {
+            prior.push_str(&prior_result(id, result));
+        }
+    }
+    if let Some(item) = item {
+        prior.push_str(&format!("\n[Current item]: {}\n", item));
+    }
+
+    let mut resolved = activity.clone();
+    if texts().any(|t| t.contains("{{")) {
+        let data = data_of(outputs, inputs, item);
+        resolved.intent = interpolate_context(&activity.intent, &data);
+        for step in &mut resolved.steps {
+            *step = interpolate_context(step, &data);
+        }
+    }
+    (resolved, prior)
+}
+
+/// One parent's entry in a step's Prior Results (see [`PRIOR_RESULT_CAP`]).
+fn prior_result(id: &str, result: &str) -> String {
+    if result.len() <= PRIOR_RESULT_CAP {
+        return format!("\n[Activity '{id}' result]: {result}\n");
+    }
+    let summary = serde_json::from_str::<serde_json::Value>(result)
+        .ok()
+        .and_then(|v| v.get("summary")?.as_str().map(str::to_string));
+    let mut text = match summary {
+        Some(s) => format!("summary: {s}\n"),
+        None => String::new(),
+    };
+    let room = PRIOR_RESULT_CAP.saturating_sub(text.len());
+    text.push_str(&result[..types::strutil::floor_char_boundary(result, room)]);
+    text.truncate(types::strutil::floor_char_boundary(&text, PRIOR_RESULT_CAP));
+    format!(
+        "\n[Activity '{id}' result — clipped; the whole of it is {} chars, and a step that needs all of it says {{{{nodes.{id}}}}}]: {text}…\n",
+        result.len()
+    )
+}
+
+/// The text a `contains` / `regex` condition matches: every executed static
+/// ancestor's whole output. No model reads it, so nothing is clipped.
+fn ancestor_text(ctx: &GraphCtx, scope: &WalkScope, node: &str) -> String {
     let global = ctx.state.lock().unwrap();
     let local = scope.outputs.as_ref().map(|l| l.lock().unwrap());
     let mut out = String::new();
@@ -1612,16 +1737,29 @@ fn final_context(def: &WorkflowDef, outputs: &HashMap<String, String>) -> String
 /// The data context expressions resolve against:
 /// `{ inputs, item, nodes: { <activity-id>: <parsed output or string> } }`.
 fn data_context(ctx: &GraphCtx, scope: &WalkScope) -> serde_json::Value {
-    let mut merged: HashMap<String, String> =
-        ctx.state.lock().unwrap().outputs.clone();
-    // Iteration-local values shadow the global map — a body node reads its
-    // OWN iteration, never a racing sibling's.
+    data_of(&scope_outputs(ctx, scope), ctx.inputs, scope.item.as_ref())
+}
+
+/// Every result a node in this scope can see, by activity id.
+/// Iteration-local values shadow the global map — a body node reads its
+/// OWN iteration, never a racing sibling's.
+fn scope_outputs(ctx: &GraphCtx, scope: &WalkScope) -> HashMap<String, String> {
+    let mut merged: HashMap<String, String> = ctx.state.lock().unwrap().outputs.clone();
     if let Some(local) = &scope.outputs {
         for (k, v) in local.lock().unwrap().iter() {
             merged.insert(k.clone(), v.clone());
         }
     }
-    let nodes: serde_json::Map<String, serde_json::Value> = merged
+    merged
+}
+
+/// `{ inputs, item, nodes: { <activity-id>: <parsed output or string> } }`.
+fn data_of(
+    outputs: &HashMap<String, String>,
+    inputs: &serde_json::Value,
+    item: Option<&serde_json::Value>,
+) -> serde_json::Value {
+    let nodes: serde_json::Map<String, serde_json::Value> = outputs
         .iter()
         .map(|(id, out)| {
             let parsed = serde_json::from_str::<serde_json::Value>(out)
@@ -1630,8 +1768,8 @@ fn data_context(ctx: &GraphCtx, scope: &WalkScope) -> serde_json::Value {
         })
         .collect();
     serde_json::json!({
-        "inputs": ctx.inputs,
-        "item": scope.item.clone().unwrap_or(serde_json::Value::Null),
+        "inputs": inputs,
+        "item": item.cloned().unwrap_or(serde_json::Value::Null),
         "nodes": serde_json::Value::Object(nodes),
     })
 }
@@ -3559,6 +3697,159 @@ mod walk_tests {
             .unwrap()
             .status;
         assert_eq!(status, "failed");
+    }
+
+    /// The system prompt of the first call for the activity whose intent is
+    /// `intent` (per-step activities send their steps as the user message,
+    /// so the match is on the prompt's Task section).
+    fn system_of(provider: &MockProvider, intent: &str) -> String {
+        let task = format!("## Task\n{intent}\n");
+        provider
+            .calls()
+            .into_iter()
+            .filter_map(|c| c.split("###SYSTEM###").nth(1).map(str::to_string))
+            .find(|sys| sys.contains(&task))
+            .unwrap_or_else(|| panic!("no call for {intent}"))
+    }
+
+    /// a → gate (condition) → b → c.
+    const CHAIN: &str = r#"{
+        "version":"1.0","id":"t","name":"T",
+        "activities":[
+            {"id":"a","intent":"task-a"},
+            {"id":"gate","type":"condition","params":{"mode":"exists","expression":"nodes.a"}},
+            {"id":"b","intent":"task-b"},
+            {"id":"c","intent":"task-c"}],
+        "connections":[
+            {"from":"__trigger__","to":"a"},
+            {"from":"a","to":"gate"},
+            {"from":"gate","to":"b","label":"True"},
+            {"from":"b","to":"c"},
+            {"from":"c","to":"__emit__"}]
+    }"#;
+
+    /// A step reads its direct parents only, and a condition stands aside
+    /// for its own parents (it produced "True", not content).
+    #[tokio::test]
+    async fn prior_results_are_direct_parents_through_routing_nodes() {
+        let provider = MockProvider::new(&[("task-a", "A-OUT"), ("task-b", "B-OUT")]);
+        let (result, _, _) = run_graph(CHAIN, serde_json::json!({}), &provider).await;
+        result.expect("run ok");
+        let b = system_of(&provider, "task-b");
+        assert!(b.contains("[Activity 'a' result]: A-OUT"), "b reads a through the gate: {b}");
+        assert!(!b.contains("[Activity 'gate' result]"), "{b}");
+        let c = system_of(&provider, "task-c");
+        assert!(c.contains("[Activity 'b' result]: B-OUT"), "{c}");
+        assert!(!c.contains("A-OUT"), "c must not read its grandparent: {c}");
+    }
+
+    /// Full data flows by reference: `{{nodes.<id>...}}` in a step resolves
+    /// into its text from ANY earlier step — a grandparent here — and a
+    /// parent it references is not repeated in Prior Results.
+    #[tokio::test]
+    async fn a_reference_carries_an_earlier_steps_data() {
+        let provider = MockProvider::new(&[
+            ("task-a", r#"{"rows":[1,2,3],"summary":"three rows"}"#),
+            ("task-b", "B-OUT"),
+        ]);
+        let def = r#"{
+            "version":"1.0","id":"t","name":"T",
+            "activities":[
+                {"id":"a","intent":"task-a"},
+                {"id":"b","intent":"task-b"},
+                {"id":"c","intent":"task-c","steps":["Use rows {{nodes.a.rows}} and {{nodes.b}} for {{inputs.who}}"]}],
+            "connections":[
+                {"from":"__trigger__","to":"a"},
+                {"from":"a","to":"b"},
+                {"from":"b","to":"c"},
+                {"from":"c","to":"__emit__"}]
+        }"#;
+        let (result, _, _) = run_graph(def, serde_json::json!({"who": "Dana"}), &provider).await;
+        result.expect("run ok");
+        let all = provider.calls().join("\n");
+        assert!(all.contains("Use rows [1,2,3] and B-OUT for Dana"), "{all}");
+        let c = system_of(&provider, "task-c");
+        assert!(!c.contains("[Activity 'b' result]"), "referenced parent repeated: {c}");
+        assert!(!c.contains("three rows"), "{c}");
+    }
+
+    /// A loop body reads its own item and its own iteration's parents, never
+    /// what came before the loop.
+    #[tokio::test]
+    async fn a_loop_body_reads_only_its_item() {
+        let provider = MockProvider::new(&[("task-fetch", "FETCHED-EVERYTHING")]);
+        let def = r#"{
+            "version":"1.0","id":"t","name":"T",
+            "activities":[
+                {"id":"fetch","intent":"task-fetch"},
+                {"id":"l","type":"loop","params":{"source":"inputs.items"}},
+                {"id":"body","intent":"task-body"}],
+            "connections":[
+                {"from":"__trigger__","to":"fetch"},
+                {"from":"fetch","to":"l"},
+                {"from":"l","to":"body","label":"Each item"},
+                {"from":"body","to":"l"}]
+        }"#;
+        let (result, _, _) = run_graph(def, serde_json::json!({"items": ["ONE"]}), &provider).await;
+        result.expect("run ok");
+        let body = system_of(&provider, "task-body");
+        assert!(body.contains("[Current item]: \"ONE\""), "{body}");
+        assert!(!body.contains("FETCHED-EVERYTHING"), "{body}");
+    }
+
+    /// The sequential path (no connections) is a chain: a step reads the one
+    /// before it, and anything further back only by reference.
+    #[tokio::test]
+    async fn a_sequential_step_reads_the_one_before_it() {
+        let provider = MockProvider::new(&[("task-a", "A-OUT"), ("task-b", "B-OUT")]);
+        let def = parse_workflow(
+            r#"{
+            "version":"1.0","id":"t","name":"T",
+            "activities":[
+                {"id":"a","intent":"task-a"},
+                {"id":"b","intent":"task-b"},
+                {"id":"c","intent":"task-c"},
+                {"id":"d","intent":"task-d","steps":["Compare {{nodes.a}} with what came before"]}]
+        }"#,
+        )
+        .expect("valid def");
+        let store = test_store();
+        let looper = ScriptedLoop::new(&provider);
+        crate::engine::execute_workflow(
+            &def, "", "test-owner", false, serde_json::json!({}), "manual", None, &store, None, &looper, &[],
+            None, None, None, None, None, Vec::new(), None, None, None,
+        )
+        .await
+        .expect("run ok");
+        let c = system_of(&provider, "task-c");
+        assert!(c.contains("[Activity 'b' result]: B-OUT"), "{c}");
+        assert!(!c.contains("A-OUT"), "{c}");
+        let all = provider.calls().join("\n");
+        assert!(all.contains("Compare A-OUT with what came before"), "{all}");
+    }
+
+    /// A result within the cap goes whole; past it, a JSON result's
+    /// `summary` leads, then as much of the result as fits, and the note
+    /// names the reference that carries all of it.
+    #[test]
+    fn prior_result_clips_past_the_cap() {
+        assert_eq!(prior_result("a", "short"), "\n[Activity 'a' result]: short\n");
+        let at_cap = "x".repeat(PRIOR_RESULT_CAP);
+        assert!(prior_result("a", &at_cap).contains(&at_cap));
+
+        let long = "y".repeat(PRIOR_RESULT_CAP * 3);
+        let entry = prior_result("big", &long);
+        assert!(entry.contains("{{nodes.big}}"), "{entry}");
+        assert!(entry.contains(&format!("{} chars", long.len())), "{entry}");
+        assert!(entry.len() < PRIOR_RESULT_CAP + 300, "clipped to the cap: {}", entry.len());
+
+        let rows: Vec<String> = (0..2_000).map(|i| format!("row-{i}")).collect();
+        let loop_out = serde_json::json!({ "summary": "2000 items processed", "results": rows }).to_string();
+        let entry = prior_result("each", &loop_out);
+        assert!(entry.contains("summary: 2000 items processed\n"), "{entry}");
+        assert!(entry.contains("row-0"), "the head of the results follows: {entry}");
+        assert!(!entry.contains("row-1999"), "{entry}");
+        assert!(entry.len() < PRIOR_RESULT_CAP + 300, "{}", entry.len());
     }
 }
 

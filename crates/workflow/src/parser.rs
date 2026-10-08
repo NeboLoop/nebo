@@ -114,8 +114,10 @@ pub struct Activity {
     /// dotted tool names in prose silently fall back to the FULL roster —
     /// tens of KB of schemas resent every turn (a 13-chunk Vivid run paid
     /// ~18M input tokens for it). Declaring is deterministic and auditable.
-    #[serde(default)]
-    pub tools: Vec<String>,
+    /// `None` is undeclared; `Some([])` declares no tools — a lean activity
+    /// (`engine::is_lean`), so an empty declaration survives a round trip.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tools: Option<Vec<String>>,
 }
 
 /// Token budget for an activity.
@@ -1183,10 +1185,15 @@ mod declared_tools_tests {
         let a: Activity =
             serde_json::from_str(r#"{"id":"resolve","intent":"match rows","tools":["odoo","os"]}"#)
                 .expect("parse with tools");
-        assert_eq!(a.tools, vec!["odoo".to_string(), "os".to_string()]);
+        assert_eq!(a.tools, Some(vec!["odoo".to_string(), "os".to_string()]));
 
         let b: Activity = serde_json::from_str(r#"{"id":"resolve","intent":"match rows"}"#)
             .expect("parse without tools");
-        assert!(b.tools.is_empty());
+        assert!(b.tools.is_none());
+
+        let c: Activity = serde_json::from_str(r#"{"id":"resolve","intent":"match rows","tools":[]}"#)
+            .expect("parse with empty tools");
+        assert_eq!(c.tools, Some(Vec::new()));
+        assert!(serde_json::to_string(&c).unwrap().contains(r#""tools":[]"#), "an empty declaration survives a round trip");
     }
 }

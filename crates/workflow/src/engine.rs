@@ -14,9 +14,28 @@ const MAX_ITERATIONS: u32 = 50;
 
 use crate::loop_contract::{ActivityLoop, LoopTurn};
 
-/// Per-activity turn budget: params.maxIterations overrides the default —
-/// the same shape the graph loop node accepts (graph.rs).
+/// A lean activity declares `tools: []`: it thinks over what it is handed
+/// and answers in one reply ([`LEAN_MAX_ITERATIONS`]). Its instructions
+/// carry only what that reply needs: no tool list and no memory slice, just
+/// its own skills, task, inputs and prior results
+/// (`build_activity_prompt_with_context`).
+pub(crate) fn is_lean(activity: &Activity) -> bool {
+    activity.tools.as_ref().is_some_and(|t| t.is_empty())
+}
+
+/// Turn budget of a lean activity ([`is_lean`]): the one call that
+/// answers, and one more only when that call used a workflow control that
+/// returns (emit_event, message_owner) and the reply comes after it. `exit`
+/// ends the turn on the call itself.
+const LEAN_MAX_ITERATIONS: u32 = 2;
+
+/// Per-activity turn budget: [`LEAN_MAX_ITERATIONS`] for a lean activity,
+/// else params.maxIterations over the default — the same shape the graph
+/// loop node accepts (graph.rs).
 fn activity_max_iterations(activity: &Activity) -> u32 {
+    if is_lean(activity) {
+        return LEAN_MAX_ITERATIONS;
+    }
     activity
         .params
         .as_ref()
@@ -85,13 +104,13 @@ pub(crate) fn scoped_activity_tools<'a>(
     // Explicit declaration wins outright: deterministic, auditable, immune to
     // the text-sniffing gap below (dotted tool names in prose never match
     // `name(` and silently fall back to the full roster).
-    if !activity.tools.is_empty() {
+    if let Some(declared_names) = &activity.tools {
         let declared: Vec<&'a Box<dyn DynTool>> = resolved_tools
             .iter()
             .filter(|t| {
                 let n = t.name();
                 DELIVERY_TOOLS.contains(&n)
-                    || activity.tools.iter().any(|d| {
+                    || declared_names.iter().any(|d| {
                         n == d || n.strip_prefix(d.as_str()).is_some_and(|r| r.starts_with('.'))
                     })
             })
@@ -299,7 +318,8 @@ pub async fn execute_workflow(
 
     // Explicit connections → deterministic graph execution (forks parallel,
     // joins barriered, condition/loop routing engine-evaluated). No
-    // connections → the sequential array-order path below, unchanged.
+    // connections → the sequential array-order path below, a chain: each
+    // activity's parent is the one before it.
     if !def.connections.is_empty() {
         return crate::graph::execute_graph(
             def,
@@ -330,7 +350,11 @@ pub async fn execute_workflow(
     // dominated by fixed per-turn overhead (tool schemas, context) resent every
     // call, so metering the run budget in input+output made small budgets trip
     // on the first call regardless of how much work the model actually did.
+    // The run's record: every activity's result, in order.
     let mut prior_context = String::new();
+    // What later activities read from: each result by activity id. An
+    // activity's parent is the one before it (`graph::step_context`).
+    let mut outputs: HashMap<String, String> = HashMap::new();
     let activity_count = def.activities.len();
 
     // Circuit breaker: abort if 3+ consecutive activities fail with the same error pattern
@@ -406,9 +430,11 @@ pub async fn execute_workflow(
         // Output tokens only — the unit token budgets are enforced in.
         let mut activity_spent_output: u32 = 0;
 
+        let parents: Vec<String> = idx.checked_sub(1).map(|p| def.activities[p].id.clone()).into_iter().collect();
+        let (resolved, step_prior) = crate::graph::step_context(activity, &parents, &outputs, &inputs, None);
         match execute_activity_with_retry(
-            activity,
-            &prior_context,
+            &resolved,
+            &step_prior,
             memory_user_id,
             memory_writes_disabled,
             &inputs,
@@ -480,6 +506,7 @@ pub async fn execute_workflow(
                     "\n[Activity '{}' result]: {}\n",
                     activity.id, result_text
                 ));
+                outputs.insert(activity.id.clone(), result_text);
             }
             // A standing outcome (an exit, a terminal refusal) ends the run
             // cleanly with its reason — never a failure.
@@ -802,7 +829,7 @@ pub async fn execute_activity(
     // Memory continuity for agent-bound runs. Computed per activity so
     // mid-run memory writes surface in later activities. The employee's
     // identity is the loop's `identity` row, not part of the instructions.
-    let agent_ctx = build_agent_context(store, agent_id, memory_user_id);
+    let agent_ctx = if is_lean(activity) { None } else { build_agent_context(store, agent_id, memory_user_id) };
 
     // If activity has steps, execute per-step. Otherwise, single-turn legacy path.
     if activity.steps.is_empty() {
@@ -1395,29 +1422,39 @@ fn build_activity_prompt_with_context(
     agent_context: Option<&str>,
 ) -> String {
     let mut prompt = String::new();
+    let lean = is_lean(activity);
 
-    // Execution behavior rules — same action-bias as the chat agent
-    prompt.push_str("## Execution Rules\n\
+    // Execution behavior rules — same action-bias as the chat agent; a lean
+    // activity has no tool work to steer, only the answer to give.
+    prompt.push_str(if lean {
+        "## Execution Rules\n\
+        You are an autonomous agent executing one workflow activity in a single reply. You have \
+        no tools beyond the workflow controls below. Work only from the task, inputs and prior \
+        results here; there is no human to answer questions. Reply with the result itself — the \
+        next step sees only your reply, so if it is long, end it with a one-line summary.\n\n"
+    } else {
+        "## Execution Rules\n\
         You are an autonomous agent executing a workflow activity. Bias toward action:\n\
-        - ZERO text when making tool calls. If you are calling a tool, output ONLY the tool call — no text.\n\
-        - After a tool returns results, take the NEXT action immediately. Do not re-read data you already have.\n\
-        - Do not call the same tool with identical parameters twice. If you got a result, act on it.\n\
-        - When processing a collection (emails, files, records), use batch operations if available. \
-          Do NOT process items one at a time when a batch call exists.\n\
-        - Track your progress. Do not re-fetch the full list after every single operation.\n\
-        - If something fails, diagnose why before retrying. Do not retry the identical call blindly.\n\
-        - Complete the ENTIRE task. Do not stop at 10% and ask whether to continue.\n\
-        - Do NOT repeat information you already told the user. Each response must contain NEW information only.\n\
-        - Report the final result only. No status updates, no intermediate summaries.\n\
-        - If a prior step already resolved the task (e.g., 'no meeting found', 'not applicable', \
-          'nothing to do'), call the exit tool immediately instead of repeating the same conclusion. \
-          Do not waste steps re-analyzing data you already evaluated.\n\
-        - After completing all tool calls for a step, always end with a brief text summary of what \
-          you found or did. Never end a step with zero text output — downstream activities depend \
-          on your summary.\n\n");
+            - ZERO text when making tool calls. If you are calling a tool, output ONLY the tool call — no text.\n\
+            - After a tool returns results, take the NEXT action immediately. Do not re-read data you already have.\n\
+            - Do not call the same tool with identical parameters twice. If you got a result, act on it.\n\
+            - When processing a collection (emails, files, records), use batch operations if available. \
+              Do NOT process items one at a time when a batch call exists.\n\
+            - Track your progress. Do not re-fetch the full list after every single operation.\n\
+            - If something fails, diagnose why before retrying. Do not retry the identical call blindly.\n\
+            - Complete the ENTIRE task. Do not stop at 10% and ask whether to continue.\n\
+            - Do NOT repeat information you already told the user. Each response must contain NEW information only.\n\
+            - Report the final result only. No status updates, no intermediate summaries.\n\
+            - If a prior step already resolved the task (e.g., 'no meeting found', 'not applicable', \
+              'nothing to do'), call the exit tool immediately instead of repeating the same conclusion. \
+              Do not waste steps re-analyzing data you already evaluated.\n\
+            - After completing all tool calls for a step, always end with a brief text summary of what \
+              you found or did. Never end a step with zero text output — downstream activities see \
+              only your final reply (clipped when long), so put what they need in it.\n\n"
+    });
 
     // Memory continuity for agent-bound runs (recent and most-used).
-    if let Some(ctx) = agent_context {
+    if let Some(ctx) = agent_context.filter(|_| !lean) {
         prompt.push_str(ctx);
     }
 
@@ -1438,7 +1475,7 @@ fn build_activity_prompt_with_context(
     }
 
     // Available tools — explicit list prevents hallucination
-    if !tool_names.is_empty() {
+    if !lean && !tool_names.is_empty() {
         prompt.push_str("## Available Tools\n");
         prompt.push_str("Your tools (case-sensitive, call ONLY these): ");
         prompt.push_str(&tool_names.join(", "));
@@ -1928,6 +1965,55 @@ mod engine_tests {
         assert!(!prompt.contains("## Activity Type"));
         assert!(!prompt.contains("## Parameters"));
         assert!(prompt.contains("## Task\nDo the thing"));
+    }
+
+    /// `tools: []` makes a lean activity: one model call (plus one only
+    /// after a returning workflow control), and instructions with no tool
+    /// list and no memory slice — its own skills, task and prior results
+    /// only. An undeclared activity keeps the full prompt and budget.
+    #[test]
+    fn a_lean_activity_gets_one_call_and_a_tiny_prompt() {
+        let lean: Activity = serde_json::from_value(serde_json::json!({
+            "id": "judge", "intent": "Pick the best match", "tools": [], "skills": ["matching"]
+        }))
+        .unwrap();
+        let full: Activity =
+            serde_json::from_value(serde_json::json!({"id": "judge", "intent": "Pick the best match"})).unwrap();
+        assert!(is_lean(&lean) && !is_lean(&full));
+        assert_eq!(activity_max_iterations(&lean), LEAN_MAX_ITERATIONS);
+        assert_eq!(activity_max_iterations(&full), MAX_ITERATIONS);
+
+        let skills = HashMap::from([
+            ("matching".to_string(), "MATCHING SKILL BODY".to_string()),
+            ("other".to_string(), "OTHER SKILL BODY".to_string()),
+        ]);
+        let tools = ["plugin__odoo".to_string(), "message_owner".to_string()];
+        let memory = "## Your Memory (recent and most-used)\n\n- [x/y] remembered\n\n";
+        let prompt = |a: &Activity| {
+            build_activity_prompt_with_context(
+                a,
+                "\n[Activity 'read' result]: ROWS\n",
+                &serde_json::json!({}),
+                Some(&skills),
+                &[],
+                false,
+                &tools,
+                Some(memory),
+            )
+        };
+        let tiny = prompt(&lean);
+        assert!(tiny.contains("in a single reply"), "{tiny}");
+        assert!(tiny.contains("MATCHING SKILL BODY") && !tiny.contains("OTHER SKILL BODY"), "{tiny}");
+        assert!(tiny.contains("## Task\nPick the best match"), "{tiny}");
+        assert!(tiny.contains("[Activity 'read' result]: ROWS"), "{tiny}");
+        for absent in ["## Available Tools", "plugin__odoo", "## Your Memory", "Bias toward action"] {
+            assert!(!tiny.contains(absent), "lean prompt carries {absent}: {tiny}");
+        }
+        let whole = prompt(&full);
+        for present in ["## Available Tools", "## Your Memory", "Bias toward action"] {
+            assert!(whole.contains(present), "{present} missing: {whole}");
+        }
+        assert!(tiny.len() * 2 < whole.len(), "lean {} vs full {}", tiny.len(), whole.len());
     }
 
     #[test]
