@@ -1622,9 +1622,10 @@ async fn run_llm_activity<'a>(
     }
 }
 
-/// Most chars of one parent's result that reach a step's Prior Results, about 2k tokens. Within it a result goes whole — a rendered
-/// report, a verdict, a short list — so a step that reads its parent's work
-/// keeps reading all of it. Past it the step gets the result's `summary`
+/// Most chars of one parent's result that reach a step's Prior Results,
+/// about 2k tokens. Within it a result goes whole — a rendered report, a
+/// verdict, a short list — so a step that reads its parent's work keeps
+/// reading all of it. Past it the step gets the result's `summary`
 /// when it is JSON that carries one (a loop's does), then as much of the
 /// result as fits, and a note naming the reference that carries all of it.
 const PRIOR_RESULT_CAP: usize = 8_000;
@@ -1708,13 +1709,15 @@ fn ancestor_text(ctx: &GraphCtx, scope: &WalkScope, node: &str) -> String {
     let global = ctx.state.lock().unwrap();
     let local = scope.outputs.as_ref().map(|l| l.lock().unwrap());
     let mut out = String::new();
-    for id in ctx.ancestors.get(node).into_iter().flatten() {
-        let result = local
-            .as_ref()
-            .and_then(|l| l.get(id))
-            .or_else(|| global.outputs.get(id));
-        if let Some(result) = result {
-            out.push_str(&format!("\n[Activity '{}' result]: {}\n", id, result));
+    if let Some(ancestors) = ctx.ancestors.get(node) {
+        for id in ancestors {
+            let result = local
+                .as_ref()
+                .and_then(|l| l.get(id))
+                .or_else(|| global.outputs.get(id));
+            if let Some(result) = result {
+                out.push_str(&format!("\n[Activity '{}' result]: {}\n", id, result));
+            }
         }
     }
     out

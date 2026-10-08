@@ -15,9 +15,10 @@ const MAX_ITERATIONS: u32 = 50;
 use crate::loop_contract::{ActivityLoop, LoopTurn};
 
 /// A lean activity declares `tools: []`: it thinks over what it is handed
-/// and answers in one model call. Its instructions carry only what that
-/// call reads: no tool list and no memory slice, just its own skills, task,
-/// inputs and prior results (`build_activity_prompt_with_context`).
+/// and answers in one reply ([`LEAN_MAX_ITERATIONS`]). Its instructions
+/// carry only what that reply needs: no tool list and no memory slice, just
+/// its own skills, task, inputs and prior results
+/// (`build_activity_prompt_with_context`).
 pub(crate) fn is_lean(activity: &Activity) -> bool {
     activity.tools.as_ref().is_some_and(|t| t.is_empty())
 }
