@@ -96,6 +96,27 @@ pub struct PackLanes {
     pub helpers: Option<Effort>,
 }
 
+/// Background work a pack can pin to a level.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Lane {
+    Heartbeat,
+    Scheduled,
+    Communication,
+    Helpers,
+}
+
+impl PackLanes {
+    /// The level `lane` is pinned to, if any.
+    pub fn level(&self, lane: Lane) -> Option<Effort> {
+        match lane {
+            Lane::Heartbeat => self.heartbeat,
+            Lane::Scheduled => self.scheduled,
+            Lane::Communication => self.communication,
+            Lane::Helpers => self.helpers,
+        }
+    }
+}
+
 /// A provider's own reasoning effort, set per level.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -197,6 +218,18 @@ impl Pack {
         let above = Effort::ALL.into_iter().filter(|e| *e >= effort);
         let below = Effort::ALL.into_iter().rev().filter(|e| *e < effort);
         above.chain(below).find_map(|e| self.levels.level(e))
+    }
+
+    /// The provider effort `effort` runs at, when the pack sets one.
+    pub fn effort_for(&self, effort: Effort) -> Option<ProviderEffort> {
+        let e = &self.level_effort;
+        match effort {
+            Effort::Instant => e.instant,
+            Effort::Low => e.low,
+            Effort::Medium => e.medium,
+            Effort::High => e.high,
+            Effort::Max => e.max,
+        }
     }
 
     /// The model a reference to this pack runs on: the level it names; with

@@ -1691,6 +1691,7 @@ async fn start_janus_stream(
         system: body.system.unwrap_or_default(),
         model: body.model.unwrap_or_default(),
         enable_thinking: false,
+        effort: None,
         metadata: None,
         cache_breakpoints: vec![],
         cancel_token: Some(CancellationToken::new()),

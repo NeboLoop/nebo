@@ -135,6 +135,7 @@ pub async fn synthesize_directive(
             .to_string(),
         model: String::new(),
         enable_thinking: false,
+        effort: None,
         metadata: None,
         cache_breakpoints: vec![],
         cancel_token: None,

@@ -685,6 +685,17 @@ impl Provider for OpenAIProvider {
                 map.insert("tool_choice".to_string(), tc);
             }
         }
+        // The pack level's provider effort, only for a model that thinks:
+        // OpenRouter normalizes it as `reasoning.effort`; the OpenAI format
+        // names it `reasoning_effort`.
+        if let (Some(effort), true, serde_json::Value::Object(map)) = (req.effort, req.enable_thinking, &mut body_val) {
+            let e = serde_json::json!(effort);
+            if self.provider_id == "openrouter" {
+                map.insert("reasoning".to_string(), serde_json::json!({ "effort": e }));
+            } else {
+                map.insert("reasoning_effort".to_string(), e);
+            }
+        }
 
         // LLM payload breakdown — logged on every request so we can MEASURE where the
         // input tokens actually go (tool defs vs system vs conversation) instead of

@@ -190,6 +190,9 @@ pub struct TurnState {
     /// cached prefix and change the voice of the answer, and Nebo has no
     /// configured fallback model to switch to.
     pub model: String,
+    /// The provider's own reasoning effort for the turn, from its
+    /// intelligence pack level; fixed for the turn like `model`.
+    pub effort: Option<types::packs::ProviderEffort>,
     /// Checkpoints taken this turn.
     pub checkpoints: usize,
     /// Checkpoints taken since the last call that changed something
@@ -612,37 +615,66 @@ async fn run(
     }
 }
 
-/// The model a turn runs on, resolved once at its start, and the line the
-/// owner reads when an intelligence pack's AI couldn't take it. A pack
-/// reference (`pack/<id>[/<level>]`, chosen or the bot's default) runs on
-/// the pack's model for that level (`types::packs::Pack::model_for_ref`);
-/// when that model isn't one this bot can send to, the turn runs on Nebo AI
-/// at the same level and says so, or — the pack set not to fall back — is
-/// refused with that line. Never a silent swap. Anything else resolves as
-/// it always has (`ModelSelector::resolve`).
-fn turn_model(h: &Harness, chosen: &str) -> Result<(String, Option<String>), String> {
+/// The model a turn runs on, resolved once at its start, its provider effort,
+/// and the line the owner reads when an intelligence pack's AI couldn't take
+/// it.
+#[derive(Debug)]
+struct TurnModel {
+    model: String,
+    notice: Option<String>,
+    effort: Option<types::packs::ProviderEffort>,
+}
+
+/// The background lane a turn runs in, which a pack can pin to a level:
+/// heartbeat, a schedule, a helper's run, or a message from a channel.
+fn lane_of(seat: &super::SeatRequest) -> Option<types::packs::Lane> {
+    use types::packs::Lane;
+    use types::permissions::Door;
+    match (&seat.door, seat.origin) {
+        (Door::Heartbeat, _) => Some(Lane::Heartbeat),
+        (Door::Schedule, _) => Some(Lane::Scheduled),
+        (Door::Helper, _) => Some(Lane::Helpers),
+        (_, tools::Origin::Comm) => Some(Lane::Communication),
+        _ => None,
+    }
+}
+
+/// The model a turn runs on (see [`TurnModel`]). A pack reference
+/// (`pack/<id>[/<level>]`, chosen or the bot's default) runs on the pack's
+/// model for its level — the level the turn's lane is pinned to when the pack
+/// pins one, else the level the reference names (`types::packs::Pack::
+/// model_for_ref`) — at that level's provider effort. When that model isn't
+/// one this bot can send to, the turn runs on Nebo AI at the same level and
+/// says so, or — the pack set not to fall back — is refused with that line.
+/// Never a silent swap. Anything else resolves as it always has
+/// (`ModelSelector::resolve`).
+fn turn_model(h: &Harness, chosen: &str, lane: Option<types::packs::Lane>) -> Result<TurnModel, String> {
     use types::packs::{DEFAULT_EFFORT, nebo_ai, parse_ref};
     let configured = h.selector.configured();
     let pick = if chosen.trim().is_empty() { configured.as_str() } else { chosen };
-    let Some((id, effort)) = parse_ref(pick) else {
-        return Ok((h.selector.resolve(chosen), None));
+    let Some((id, named)) = parse_ref(pick) else {
+        return Ok(TurnModel { model: h.selector.resolve(chosen), notice: None, effort: None });
     };
     let nebo = nebo_ai();
-    let on_nebo = |why: String| -> (String, Option<String>) {
-        let level = effort.or(Some(DEFAULT_EFFORT));
-        let model = nebo.model_for_ref(level).unwrap_or(crate::selector::DEFAULT_CHAT_MODEL);
-        (h.selector.resolve(model), Some(why))
+    let on_nebo = |level: Option<types::packs::Effort>, why: String| -> TurnModel {
+        let model = nebo.model_for_ref(level.or(Some(DEFAULT_EFFORT))).unwrap_or(crate::selector::DEFAULT_CHAT_MODEL);
+        TurnModel { model: h.selector.resolve(model), notice: Some(why), effort: None }
     };
     let Some(pack) = h.store.get_intelligence_pack(id).ok().flatten() else {
-        return Ok(on_nebo("The intelligence pack this was set to is gone, so this reply used Nebo AI.".to_string()));
+        return Ok(on_nebo(named, "The intelligence pack this was set to is gone, so this reply used Nebo AI.".to_string()));
     };
-    let want = pack.model_for_ref(effort);
+    // A lane the pack pins wins over the reference's level.
+    let level = lane.and_then(|l| pack.lanes.level(l)).or(named);
+    let want = pack.model_for_ref(level);
+    // Auto (Nebo AI's, no level) carries no provider effort of ours.
+    let at = level.or(pack.levels.auto.is_none().then_some(DEFAULT_EFFORT));
+    let effort = at.and_then(|e| pack.effort_for(e));
     if let Some(model) = want.filter(|m| h.selector.sendable(m)) {
-        return Ok((model.to_string(), None));
+        return Ok(TurnModel { model: model.to_string(), notice: None, effort });
     }
     // The built-in pack is Janus's: the selector's own default covers it.
     if pack.built_in {
-        return Ok((h.selector.resolve(want.unwrap_or_default()), None));
+        return Ok(TurnModel { model: h.selector.resolve(want.unwrap_or_default()), notice: None, effort: None });
     }
     let what = match want {
         Some(model) => format!("{} couldn't use {model}: it isn't connected", pack.name),
@@ -651,7 +683,7 @@ fn turn_model(h: &Harness, chosen: &str) -> Result<(String, Option<String>), Str
     if !pack.fallback {
         return Err(format!("{what}, and it is set not to use Nebo AI instead."));
     }
-    Ok(on_nebo(format!("{what}, so this reply used Nebo AI.")))
+    Ok(on_nebo(level, format!("{what}, so this reply used Nebo AI.")))
 }
 
 /// The owner's workspace keeps the history of its files
@@ -920,7 +952,8 @@ pub(crate) async fn prepare(
     .filter(|p| !p.trim().is_empty())
     .collect::<Vec<_>>()
     .join("\n\n");
-    let (turn_model, pack_notice) = turn_model(h, &model)?;
+    let TurnModel { model: turn_model, notice: pack_notice, effort: turn_effort } =
+        turn_model(h, &model, lane_of(&req.seat))?;
     if let Some(notice) = pack_notice {
         warn!(session_id, %notice, "intelligence pack fell back to Nebo AI");
         let _ = tx.send(StreamEvent::notice(notice)).await;
@@ -1044,6 +1077,7 @@ pub(crate) async fn prepare(
             .unwrap_or_default(),
         seen: Vec::new(),
         model: turn_model,
+        effort: turn_effort,
         checkpoints: 0,
         checkpoints_since_progress: 0,
         answered_owner: false,
@@ -2200,6 +2234,7 @@ fn build_request(
         // back with their
         // turn (`conversation::convert_messages`).
         enable_thinking: cx.harness.selector.thinks(&st.model),
+        effort: st.effort,
         metadata: st.call.sticky_metadata.clone(),
         cache_breakpoints: prompt::cache_breakpoints(),
         cancel_token: Some(cx.request.cancel.clone()),
@@ -3169,24 +3204,61 @@ mod tests {
         save("mine", "anthropic/claude-x", true);
         save("gone-key", "openai/gpt-x", true);
         save("strict", "openai/gpt-x", false);
+        let tm = |chosen: &str| {
+            let t = turn_model(&h, chosen, None).unwrap();
+            (t.model, t.notice)
+        };
 
-        assert_eq!(turn_model(&h, "pack/mine").unwrap(), ("anthropic/claude-x".to_string(), None));
-        assert_eq!(turn_model(&h, "pack/mine/max").unwrap().0, "anthropic/claude-x", "nearest level");
-        let (model, notice) = turn_model(&h, "pack/gone-key/high").unwrap();
+        assert_eq!(tm("pack/mine"), ("anthropic/claude-x".to_string(), None));
+        assert_eq!(tm("pack/mine/max").0, "anthropic/claude-x", "nearest level");
+        let (model, notice) = tm("pack/gone-key/high");
         assert_eq!(model, "janus/nebo-1-pro", "Nebo AI at the same level");
         assert!(notice.unwrap().contains("couldn't use openai/gpt-x: it isn't connected, so this reply used Nebo AI"));
-        let (model, notice) = turn_model(&h, "pack/gone-key").unwrap();
+        let (model, notice) = tm("pack/gone-key");
         assert_eq!(model, "janus/nebo-1-medium", "no level: the default level");
         assert!(notice.is_some());
-        let refused = turn_model(&h, "pack/strict").unwrap_err();
+        let refused = turn_model(&h, "pack/strict", None).unwrap_err();
         assert!(refused.contains("set not to use Nebo AI"), "{refused}");
-        let (model, notice) = turn_model(&h, "pack/deleted/low").unwrap();
+        let (model, notice) = tm("pack/deleted/low");
         assert_eq!(model, "janus/nebo-1-flash");
         assert!(notice.unwrap().contains("is gone"));
 
-        assert_eq!(turn_model(&h, "pack/nebo-ai").unwrap(), ("janus/nebo-1".to_string(), None), "Auto: Janus picks");
-        assert_eq!(turn_model(&h, "pack/nebo-ai/high").unwrap(), ("janus/nebo-1-pro".to_string(), None));
-        assert_eq!(turn_model(&h, "anthropic/claude-x").unwrap(), ("anthropic/claude-x".to_string(), None), "a model, as before");
+        assert_eq!(tm("pack/nebo-ai"), ("janus/nebo-1".to_string(), None), "Auto: Janus picks");
+        assert_eq!(tm("pack/nebo-ai/high"), ("janus/nebo-1-pro".to_string(), None));
+        assert_eq!(tm("anthropic/claude-x"), ("anthropic/claude-x".to_string(), None), "a model, as before");
+    }
+
+    /// A pack pins background lanes to a level, and each level carries its
+    /// provider effort: a heartbeat runs at the pinned level, a chat at the
+    /// reference's (or the default) level and its effort; Auto carries none.
+    #[tokio::test]
+    async fn a_pack_lane_wins_and_a_level_carries_its_provider_effort() {
+        use types::packs::{Lane, LevelEffort, Pack, PackLanes, PackLevels, ProviderEffort};
+        let h = harness_selecting(&Scripted::new(vec![]), vec![], pack_selector()).await;
+        h.selector.set_loaded_providers(vec!["janus".into(), "anthropic".into()]);
+        h.store
+            .save_intelligence_pack(&Pack {
+                id: "l".into(),
+                name: "Laned".into(),
+                levels: PackLevels {
+                    instant: Some("janus/nebo-1-flash".into()),
+                    medium: Some("anthropic/claude-x".into()),
+                    ..Default::default()
+                },
+                fallback: true,
+                built_in: false,
+                route_through_janus: false,
+                lanes: PackLanes { heartbeat: Some(types::packs::Effort::Instant), ..Default::default() },
+                level_effort: LevelEffort { medium: Some(ProviderEffort::High), ..Default::default() },
+            })
+            .unwrap();
+        let chat = turn_model(&h, "pack/l", None).unwrap();
+        assert_eq!((chat.model.as_str(), chat.effort), ("anthropic/claude-x", Some(ProviderEffort::High)));
+        let beat = turn_model(&h, "pack/l/high", Some(Lane::Heartbeat)).unwrap();
+        assert_eq!((beat.model.as_str(), beat.effort), ("janus/nebo-1-flash", None), "the pinned lane wins");
+        let sched = turn_model(&h, "pack/l", Some(Lane::Scheduled)).unwrap();
+        assert_eq!(sched.model, "anthropic/claude-x", "an unpinned lane keeps the reference's level");
+        assert_eq!(turn_model(&h, "pack/nebo-ai", Some(Lane::Heartbeat)).unwrap().effort, None, "Auto: no effort of ours");
     }
 
     async fn harness_selecting(

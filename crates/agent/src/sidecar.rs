@@ -148,6 +148,7 @@ async fn read(
         system: system.to_string(),
         model: sidecar_model(provider.id()),
         enable_thinking: false,
+        effort: None,
         metadata: None,
         cache_breakpoints: vec![],
         cancel_token: None,

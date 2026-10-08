@@ -193,6 +193,7 @@ pub async fn extract_facts(
         system: "You are a precise fact extractor. Return only valid JSON.".to_string(),
         model: model.to_string(),
         enable_thinking: false,
+        effort: None,
         metadata: None,
         cache_breakpoints: vec![],
         cancel_token: None,

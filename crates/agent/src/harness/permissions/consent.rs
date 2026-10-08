@@ -314,6 +314,7 @@ impl AuxReader {
             system: Self::SYSTEM.to_string(),
             model,
             enable_thinking: false,
+            effort: None,
             metadata: None,
             cache_breakpoints: vec![],
             cancel_token: None,

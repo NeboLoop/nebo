@@ -255,6 +255,16 @@ impl Provider for GeminiProvider {
         if req.max_tokens > 0 {
             gen_config.insert("maxOutputTokens".into(), serde_json::json!(req.max_tokens));
         }
+        // The pack level's provider effort, only for a model that thinks.
+        if let (Some(effort), true) = (req.effort, req.enable_thinking) {
+            use types::packs::ProviderEffort::*;
+            let budget = match effort {
+                Low => 1_024,
+                Medium => 8_192,
+                High => 24_576,
+            };
+            gen_config.insert("thinkingConfig".into(), serde_json::json!({ "thinkingBudget": budget }));
+        }
         if !gen_config.is_empty() {
             body["generationConfig"] = serde_json::Value::Object(gen_config);
         }
