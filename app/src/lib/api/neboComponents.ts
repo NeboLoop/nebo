@@ -2947,6 +2947,9 @@ export interface Pack {
 	levels: PackLevels
 	fallback: boolean
 	builtIn: boolean
+	routeThroughJanus?: boolean
+	lanes?: PackLanes
+	levelEffort?: LevelEffort
 }
 
 export interface PackLevels {
@@ -2958,10 +2961,27 @@ export interface PackLevels {
 	max?: string
 	vision?: string
 	voice?: string
+	decisions?: string
+}
+
+export interface PackLanes {
+	heartbeat?: string
+	scheduled?: string
+	communication?: string
+	helpers?: string
+}
+
+export interface LevelEffort {
+	instant?: string
+	low?: string
+	medium?: string
+	high?: string
+	max?: string
 }
 
 export interface ListPacksResponse {
 	packs: Pack[]
+	default: string
 }
 
 export interface CreatePackResponse {
@@ -2974,4 +2994,72 @@ export interface UpdatePackResponse {
 
 export interface DeletePackResponse {
 	deleted: unknown
+}
+
+export interface SetDefaultPackResponse {
+	default: string
+}
+
+export interface PackChoice {
+	value: string
+	provider: string
+	connection: string
+	modelId: string
+	capabilities?: string[]
+	local: boolean
+}
+
+export interface ListPackChoicesResponse {
+	chat: PackChoice[]
+	decision: PackChoice[]
+}
+
+export interface ConnectionModel {
+	modelId: string
+	displayName: string
+	kind: string
+	contextWindow?: number
+	capabilities: string[]
+	source: string
+	isActive: boolean
+}
+
+export interface ListConnectionModelsResponse {
+	models: ConnectionModel[]
+}
+
+export interface AddConnectionModelResponse {
+	model: ConnectionModel
+}
+
+export interface UpdateConnectionModelResponse {
+	model: ConnectionModel
+}
+
+export interface DeleteConnectionModelResponse {
+	deleted: string
+}
+
+export interface Pricing {
+	input: number
+	output: number
+}
+
+export interface CatalogModel {
+	modelId: string
+	displayName: string
+	family: string
+	kind: string
+	contextWindow?: number
+	capabilities: string[]
+	pricing?: Pricing
+	created?: number
+	added: boolean
+}
+
+export interface BrowseConnectionCatalogResponse {
+	browsable: boolean
+	total: number
+	refreshedAt?: number
+	models: CatalogModel[]
 }
