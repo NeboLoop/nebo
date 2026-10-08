@@ -52,6 +52,8 @@ struct GraphState {
     /// Output tokens only — the unit `budget.total_per_run` is enforced in
     /// (input is dominated by fixed tool-schema overhead resent every turn).
     total_output_tokens: u32,
+    /// Expert requests this pass found still out: (request key, deadline).
+    pending_experts: Vec<(String, i64)>,
 }
 
 struct GraphCtx<'a> {
@@ -238,6 +240,13 @@ pub(crate) async fn execute_graph(
             Ok((run_id.to_string(), final_context))
         }
         Err(WorkflowError::Cancelled) => Err(WorkflowError::Cancelled),
+        // Parked on experts: one wait for every request still out.
+        Err(WorkflowError::AwaitingExpert(_)) => {
+            let pending = std::mem::take(&mut ctx.state.lock().unwrap().pending_experts);
+            park_on_experts(store, run_id, &pending)?;
+            info!(workflow = def.id.as_str(), run_id, experts = pending.len(), "workflow waiting on experts (graph)");
+            Err(WorkflowError::AwaitingExpert(pending.len()))
+        }
         // Parked on the owner's answer: the suspension already set the run
         // awaiting_approval, and the answer resumes it. Not a failure.
         Err(e @ WorkflowError::AwaitingApproval { .. }) => Err(e),
@@ -388,6 +397,7 @@ fn build_ctx<'a>(
             visits: HashMap::new(),
             total_tokens: 0,
             total_output_tokens: 0,
+            pending_experts: Vec::new(),
         }),
     }
 }
@@ -441,12 +451,21 @@ fn scoped_edges(ctx: &GraphCtx, scope: &WalkScope, node: &str) -> Vec<Edge> {
 }
 
 /// Deterministic error aggregation: branches settle (join_all), then the
-/// first error in edge order wins.
+/// first error in edge order wins. A branch parked on an expert is not an
+/// error of its own: a sibling's real error wins over it, and only when every
+/// other branch finished does the walk park.
 fn first_error(results: Vec<Result<(), WorkflowError>>) -> Result<(), WorkflowError> {
+    let mut parked = None;
     for r in results {
-        r?;
+        match r {
+            Ok(()) => {}
+            Err(e @ WorkflowError::AwaitingExpert(_)) => {
+                parked.get_or_insert(e);
+            }
+            Err(e) => return Err(e),
+        }
     }
-    Ok(())
+    parked.map_or(Ok(()), Err)
 }
 
 /// A walker arrives at `node` over one incoming edge. The join barrier
@@ -563,6 +582,7 @@ async fn execute_node<'a>(
         "http" => run_http(ctx, scope, activity).await,
         "command" => run_command(ctx, scope, activity).await,
         "decide" => run_decide(ctx, scope, activity).await,
+        "expert" => run_expert(ctx, scope, activity).await,
         _ => run_llm_activity(ctx, scope, activity).await,
     }
 }
@@ -1029,6 +1049,153 @@ fn cap_decide_state(activity_id: &str, state: serde_json::Value) -> serde_json::
     serde_json::Value::String(ai::decide::clip(&text, DECIDE_STATE_CAP).into_owned())
 }
 
+/// Expert step: the work is done by another agent (`params.expert`), asked
+/// once per attempt and waited on durably (see `crate::expert`). No model
+/// turn here; the reply becomes the node output, always with a `summary`.
+///
+/// `params.task` (or the intent) and `params.expert` interpolate from the
+/// data context, so a loop body can name `{{item.expert}}`; `params.input`
+/// hands the expert explicit references (`{"leads": "{{nodes.fetch}}"}`)
+/// as JSON; `params.output` is the contract; `params.timeout` is required.
+///
+/// A request still out parks the walk at this node (the run parks once every
+/// other branch is done). A refusal, an unreachable expert or a timeout is
+/// tried again under `on_error.retry`; after that `on_error.fallback: abort`
+/// fails the run, and otherwise (the default) the node completes with
+/// `{failed: true, reason, summary}` so a join or a loop carries it and the
+/// run goes on. An expert on another bot blocks the run: nothing leaves the
+/// owner's bot without his approval.
+async fn run_expert<'a>(
+    ctx: &GraphCtx<'a>,
+    scope: &WalkScope,
+    activity: &Activity,
+) -> Result<(), WorkflowError> {
+    use crate::expert::{self, Standing, Unsent};
+    if let Some(content) = replay_completed(ctx, scope, activity) {
+        info!(activity = activity.id.as_str(), "resume: replaying completed expert node");
+        record_output(ctx, scope, &activity.id, content);
+        return route(ctx, scope, &activity.id, |_| true).await;
+    }
+    let started_at = chrono::Utc::now().timestamp();
+    let data = data_context(ctx, scope);
+    let expert_label = interpolate_context(param_str(activity, "expert"), &data).trim().to_string();
+    let task = {
+        let t = param_str(activity, "task");
+        interpolate_context(if t.trim().is_empty() { &activity.intent } else { t }, &data)
+    };
+    // Validation requires a timeout; an unreadable one waits an hour.
+    let timeout_secs = expert::parse_timeout(param_str(activity, "timeout")).map_or(3_600, |d| d.as_secs());
+    let input = expert::resolve_input(activity, &|path| resolve_path(&data, path));
+    let contract = expert::output_contract(activity);
+    let finish = |status: &str, error: Option<&str>, content: Option<&str>| {
+        let _ = ctx.store.create_activity_result(
+            &ctx.run_id,
+            &activity.id,
+            &scope.iteration,
+            status,
+            0,
+            1,
+            error,
+            started_at,
+            Some(chrono::Utc::now().timestamp()),
+        );
+        if let Some(content) = content {
+            let _ = ctx.store.set_activity_result_content(&ctx.run_id, &activity.id, &scope.iteration, content);
+        }
+    };
+
+    let mut failure = String::new();
+    for attempt in 0..activity.on_error.retry.max(1) {
+        let key = expert::request_key(&ctx.run_id, &activity.id, &scope.iteration, attempt);
+        let now = chrono::Utc::now().timestamp();
+        let standing = match expert::standing(ctx.store, &ctx.run_id, &key, timeout_secs, now) {
+            Some(standing) => standing,
+            None => {
+                let target = match expert::resolve(ctx.store, &ctx.agent_id, &expert_label) {
+                    Ok(target) => target,
+                    Err(Unsent::NeedsOwner(why)) => {
+                        finish("exited", Some(&why), None);
+                        return Err(WorkflowError::Blocked(why, None));
+                    }
+                    // Naming nobody is not fixed by asking again.
+                    Err(Unsent::Unreachable(why)) => {
+                        failure = why;
+                        break;
+                    }
+                };
+                let req = expert::Request {
+                    run_id: &ctx.run_id,
+                    key: &key,
+                    owner_agent_id: &ctx.agent_id,
+                    workflow_name: &ctx.def.name,
+                    task: &task,
+                    input: &input,
+                    contract: &contract,
+                    timeout_secs,
+                };
+                match expert::send(ctx.store, &target, &req, now) {
+                    Ok(standing) => standing,
+                    Err(Unsent::Unreachable(why) | Unsent::NeedsOwner(why)) => {
+                        failure = why;
+                        continue;
+                    }
+                }
+            }
+        };
+        match standing {
+            Standing::Answered(output) => {
+                let output = output.to_string();
+                finish("completed", None, Some(&output));
+                info!(activity = activity.id.as_str(), expert = %expert_label, "expert node answered");
+                record_output(ctx, scope, &activity.id, output);
+                return route(ctx, scope, &activity.id, |_| true).await;
+            }
+            Standing::Waiting { deadline } => {
+                ctx.state.lock().unwrap().pending_experts.push((key, deadline));
+                return Err(WorkflowError::AwaitingExpert(1));
+            }
+            Standing::Failed(why) => failure = why,
+        }
+    }
+
+    warn!(activity = activity.id.as_str(), expert = %expert_label, reason = %failure, "expert node failed");
+    if matches!(activity.on_error.fallback, crate::parser::Fallback::Abort) {
+        finish("failed", Some(&failure), None);
+        return Err(WorkflowError::ActivityFailed(activity.id.clone(), failure));
+    }
+    let output = expert::failure(&expert_label, &failure).to_string();
+    finish("completed", Some(&failure), Some(&output));
+    record_output(ctx, scope, &activity.id, output);
+    route(ctx, scope, &activity.id, |_| true).await
+}
+
+/// Park the run on its experts: one `resume` wait on `expert:<run>` with the
+/// earliest deadline, so the first reply or the first timeout wakes it. A
+/// reply that landed while the run was still busy woke nothing; it wakes
+/// the run now.
+fn park_on_experts(store: &Store, run_id: &str, pending: &[(String, i64)]) -> Result<(), WorkflowError> {
+    let now = chrono::Utc::now().timestamp();
+    let reason = format!("waiting on {} expert(s)", pending.len());
+    let target = crate::expert::run_target(run_id);
+    let wait_id = store.engine_declare_wait(
+        run_id,
+        &db::NewWait {
+            action: "resume",
+            on_kind: crate::expert::REPLY_KIND,
+            key: &target,
+            deadline: pending.iter().map(|(_, d)| *d).min(),
+            parked: None,
+            reason: &reason,
+        },
+        now,
+    )?;
+    let keys: Vec<String> = pending.iter().map(|(k, _)| k.clone()).collect();
+    if let Some(event_id) = crate::expert::any_reply(store, run_id, &keys) {
+        store.engine_resume_from_wait(wait_id, event_id, now)?;
+    }
+    Ok(())
+}
+
 /// Deterministic condition: evaluate params against the data context and
 /// activate only the matching branch. No tokens, no model.
 async fn run_condition<'a>(
@@ -1242,6 +1409,7 @@ async fn run_loop<'a>(
     // So it ends the ITERATION; siblings keep going and the loop still routes
     // to Done. Surfaced below, never silent.
     let mut exited: Vec<(u64, String)> = Vec::new();
+    let mut parked: Option<WorkflowError> = None;
 
     if declared_concurrency.is_some_and(|c| c <= 1) {
         for (idx, item) in taken {
@@ -1256,6 +1424,7 @@ async fn run_loop<'a>(
                     );
                     exited.push((idx, reason));
                 }
+                // Strictly sequential: the next item waits for this one.
                 Err(e) => return Err(e),
             }
         }
@@ -1309,9 +1478,17 @@ async fn run_loop<'a>(
                     );
                     queue.push_back((idx, item, attempt + 1));
                 }
+                // An iteration parked on an expert: its siblings keep going;
+                // the loop parks once they are all done.
+                Err(e @ WorkflowError::AwaitingExpert(_)) => {
+                    parked.get_or_insert(e);
+                }
                 Err(e) => return Err(e),
             }
         }
+    }
+    if let Some(e) = parked {
+        return Err(e);
     }
 
     // Fan-in: the loop's output carries EVERY iteration's body outputs in
@@ -3559,6 +3736,354 @@ mod walk_tests {
             .unwrap()
             .status;
         assert_eq!(status, "failed");
+    }
+
+    // ── expert nodes ────────────────────────────────────────────────────
+
+    /// A store with the owner and its coworkers installed.
+    fn expert_store(coworkers: &[&str]) -> Arc<Store> {
+        let store = test_store();
+        store.create_agent("owner", None, "Owner", "Runs the workflow.", "", "{}", None, None).unwrap();
+        for c in coworkers {
+            store
+                .create_agent(c, None, &format!("{c} expert"), &format!("Prices things for {c}. Fast."), "", "{}", None, None)
+                .unwrap();
+        }
+        store
+    }
+
+    fn new_run(store: &Arc<Store>, def_json: &str) -> String {
+        let def = parse_workflow(def_json).expect("valid def");
+        let run_id = uuid::Uuid::new_v4().to_string();
+        store
+            .create_workflow_run(&run_id, &def.id, "manual", None, None, None, Some(def_json))
+            .expect("run row");
+        run_id
+    }
+
+    /// One pass of the run under its own id — a first launch, or the
+    /// re-entry a reply, a deadline or a restart causes (`_relaunch_run`).
+    /// Every pass builds its context from nothing: what survives is the store.
+    async fn pass(
+        store: &Arc<Store>,
+        run_id: &str,
+        def_json: &str,
+        inputs: serde_json::Value,
+        provider: &MockProvider,
+    ) -> Result<(String, String), WorkflowError> {
+        let def = parse_workflow(def_json).expect("valid def");
+        let looper = ScriptedLoop::new(provider);
+        execute_graph(
+            &def, "owner", "test-owner", false, &inputs, store, None, &looper, &[], None, run_id, None, None,
+            None, Vec::new(), None, None, None,
+        )
+        .await
+    }
+
+    /// The coworker closes the assignment a request opened, as its case
+    /// would: `status` and `summary` are its close.
+    fn coworker_closes(store: &Store, run_id: &str, expert: &str, status: &str, summary: &str) {
+        let effect = store
+            .engine_effects_for_run(run_id)
+            .unwrap()
+            .into_iter()
+            .find(|e| e.class == crate::expert::EFFECT_CLASS && e.counterparty.as_deref() == Some(expert))
+            .expect("a request to that expert");
+        let assignment = effect.provider_ref.expect("the assignment it opened");
+        let case = store.engine_run_for_key("case:assignment", &assignment).unwrap().expect("the expert's case");
+        let inputs: serde_json::Value = serde_json::from_str(case.inputs.as_deref().unwrap()).unwrap();
+        crate::cases::settle_assignment(store, &inputs, status, summary, chrono::Utc::now().timestamp()).unwrap();
+    }
+
+    /// Make one expert's request older than its timeout: the clock moved.
+    fn age_request(store: &Store, run_id: &str, expert: &str, secs: i64) {
+        store.conn_exec_for_test(&format!(
+            "UPDATE engine_effects SET created_at = created_at - {secs} WHERE run_id = '{run_id}' AND counterparty = '{expert}'"
+        ));
+    }
+
+    fn expert_requests(store: &Store, run_id: &str) -> usize {
+        store
+            .engine_effects_for_run(run_id)
+            .unwrap()
+            .iter()
+            .filter(|e| e.class == crate::expert::EFFECT_CLASS)
+            .count()
+    }
+
+    fn live_wait(store: &Store, run_id: &str) -> db::EngineWait {
+        let run = store.engine_get_run(run_id).unwrap().unwrap();
+        assert_eq!(run.state, "waiting", "the run is parked");
+        store.engine_get_wait(run.current_wait_id.expect("a live wait")).unwrap().unwrap()
+    }
+
+    fn node_output(store: &Store, run_id: &str, node: &str, iteration: &str) -> serde_json::Value {
+        let done = store.completed_activity_contents(run_id).unwrap();
+        serde_json::from_str(&done[&(node.to_string(), iteration.to_string())]).unwrap()
+    }
+
+    const SAME_BOT: &str = r#"{
+        "version": "1.0", "id": "quote", "name": "quote",
+        "activities": [
+            {"id": "ask", "type": "expert", "params": {
+                "expert": "ana", "task": "Price the order",
+                "input": {"order": "{{inputs.order}}"},
+                "output": {"total": "number"}, "timeout": "2h"}},
+            {"id": "report", "intent": "Write the quote"}
+        ],
+        "connections": [
+            {"from": "__trigger__", "to": "ask"},
+            {"from": "ask", "to": "report"}
+        ]
+    }"#;
+
+    #[tokio::test]
+    async fn an_expert_on_this_bot_answers_and_the_run_goes_on() {
+        let store = expert_store(&["ana"]);
+        let provider = MockProvider::new(&[]);
+        let run_id = new_run(&store, SAME_BOT);
+        let inputs = serde_json::json!({ "order": { "sku": "A-1", "qty": 3 } });
+
+        let first = pass(&store, &run_id, SAME_BOT, inputs.clone(), &provider).await;
+        assert!(matches!(first, Err(WorkflowError::AwaitingExpert(1))), "{first:?}");
+        assert_eq!(expert_requests(&store, &run_id), 1);
+        assert!(provider.calls().is_empty(), "nothing after the expert ran yet");
+        let wait = live_wait(&store, &run_id);
+        assert_eq!(run_status(&store, &run_id), "waiting", "waiting on an expert, not on the owner");
+        assert_eq!(wait.on_kind, crate::expert::REPLY_KIND);
+        assert_eq!(wait.key, crate::expert::run_target(&run_id));
+        assert!(wait.deadline.is_some(), "the timeout wakes the run");
+        // The expert was handed the task and the referenced data.
+        let effect = &store.engine_effects_for_run(&run_id).unwrap()[0];
+        let assignment = store.get_assignment(effect.provider_ref.as_deref().unwrap()).unwrap().unwrap();
+        assert_eq!(assignment.assignee_agent_id, "ana");
+        assert!(assignment.subject.contains("Price the order"));
+        assert!(assignment.done_means.contains("\"sku\":\"A-1\""), "{}", assignment.done_means);
+        assert!(assignment.done_means.contains("total"));
+
+        coworker_closes(&store, &run_id, "ana", "done", "Priced the order. {\"total\": 42}");
+        // The reply is the event that wakes the parked run.
+        let reply = store
+            .engine_events_for("run", &crate::expert::run_target(&run_id), 10)
+            .unwrap()
+            .pop()
+            .expect("reply recorded");
+        assert_eq!(store.engine_match_wait(&reply).unwrap().map(|w| w.id), Some(wait.id));
+
+        let second = pass(&store, &run_id, SAME_BOT, inputs, &provider).await;
+        assert!(second.is_ok(), "{second:?}");
+        assert_eq!(run_status(&store, &run_id), "completed");
+        let out = node_output(&store, &run_id, "ask", "");
+        assert_eq!(out["summary"], "Priced the order.");
+        assert_eq!(out["reply"]["total"], 42);
+        assert_eq!(expert_requests(&store, &run_id), 1, "never asked twice");
+        let calls = provider.calls();
+        assert_eq!(calls.len(), 1);
+        assert!(calls[0].contains("Priced the order."), "the next step reads the reply");
+    }
+
+    #[tokio::test]
+    async fn an_expert_that_does_not_answer_in_time_follows_on_error() {
+        let store = expert_store(&["ana"]);
+        let provider = MockProvider::new(&[]);
+        let run_id = new_run(&store, SAME_BOT);
+        let inputs = serde_json::json!({ "order": 1 });
+        assert!(matches!(
+            pass(&store, &run_id, SAME_BOT, inputs.clone(), &provider).await,
+            Err(WorkflowError::AwaitingExpert(1))
+        ));
+        // A pass before the deadline only parks again.
+        assert!(matches!(
+            pass(&store, &run_id, SAME_BOT, inputs.clone(), &provider).await,
+            Err(WorkflowError::AwaitingExpert(1))
+        ));
+        age_request(&store, &run_id, "ana", 3 * 3600);
+
+        // Default: the failure is carried and the run goes on.
+        let done = pass(&store, &run_id, SAME_BOT, inputs.clone(), &provider).await;
+        assert!(done.is_ok(), "{done:?}");
+        let out = node_output(&store, &run_id, "ask", "");
+        assert_eq!(out["failed"], true);
+        assert!(out["reason"].as_str().unwrap().contains("did not answer within 2h"));
+        assert!(out["summary"].as_str().is_some());
+        assert_eq!(provider.calls().len(), 1, "the next step still ran");
+
+        // on_error abort: the same timeout fails the run.
+        let abort = SAME_BOT.replace(r#""timeout": "2h"}}"#, r#""timeout": "2h"}, "on_error": {"fallback": "abort"}}"#);
+        let run_id = new_run(&store, &abort);
+        let _ = pass(&store, &run_id, &abort, inputs.clone(), &provider).await;
+        age_request(&store, &run_id, "ana", 3 * 3600);
+        let failed = pass(&store, &run_id, &abort, inputs, &provider).await;
+        assert!(matches!(failed, Err(WorkflowError::ActivityFailed(ref id, _)) if id == "ask"), "{failed:?}");
+        assert_eq!(run_status(&store, &run_id), "failed");
+    }
+
+    #[tokio::test]
+    async fn an_expert_on_another_bot_is_blocked_without_the_owners_approval() {
+        let store = expert_store(&[]);
+        let provider = MockProvider::new(&[]);
+        let def = SAME_BOT.replace(r#""expert": "ana""#, r#""expert": "loop:acme/pricing""#);
+        let run_id = new_run(&store, &def);
+        let out = pass(&store, &run_id, &def, serde_json::json!({ "order": 1 }), &provider).await;
+        assert!(out.is_ok(), "a block is a standing outcome, not a failure: {out:?}");
+        assert_eq!(run_status(&store, &run_id), "exited");
+        let run = store.get_workflow_run(&run_id).unwrap().unwrap();
+        assert!(run.error.unwrap_or_default().contains("approval"));
+        assert_eq!(expert_requests(&store, &run_id), 0, "nothing left the bot");
+        assert!(provider.calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_unknown_or_paused_expert_is_a_failure_the_run_carries() {
+        let store = expert_store(&["ana"]);
+        store.set_agent_enabled("ana", false).unwrap();
+        let provider = MockProvider::new(&[]);
+        let run_id = new_run(&store, SAME_BOT);
+        let out = pass(&store, &run_id, SAME_BOT, serde_json::json!({ "order": 1 }), &provider).await;
+        assert!(out.is_ok(), "{out:?}");
+        let node = node_output(&store, &run_id, "ask", "");
+        assert_eq!(node["failed"], true);
+        assert!(node["reason"].as_str().unwrap().contains("paused"));
+        assert_eq!(expert_requests(&store, &run_id), 0);
+    }
+
+    const FAN_OUT: &str = r#"{
+        "version": "1.0", "id": "panel", "name": "panel",
+        "activities": [
+            {"id": "a", "type": "expert", "params": {"expert": "ana", "task": "Price it", "timeout": "1h"}},
+            {"id": "b", "type": "expert", "params": {"expert": "ben", "task": "Check stock", "timeout": "30m"}},
+            {"id": "join", "intent": "Combine the answers"}
+        ],
+        "connections": [
+            {"from": "__trigger__", "to": "a"},
+            {"from": "__trigger__", "to": "b"},
+            {"from": "a", "to": "join"},
+            {"from": "b", "to": "join"}
+        ]
+    }"#;
+
+    #[tokio::test]
+    async fn parallel_experts_wait_together_survive_a_restart_and_the_join_gets_each_summary() {
+        let store = expert_store(&["ana", "ben"]);
+        let provider = MockProvider::new(&[]);
+        let run_id = new_run(&store, FAN_OUT);
+
+        let first = pass(&store, &run_id, FAN_OUT, serde_json::json!({}), &provider).await;
+        assert!(matches!(first, Err(WorkflowError::AwaitingExpert(2))), "{first:?}");
+        assert_eq!(expert_requests(&store, &run_id), 2, "both asked at once");
+        let wait = live_wait(&store, &run_id);
+        let ben_deadline = store
+            .engine_effects_for_run(&run_id)
+            .unwrap()
+            .iter()
+            .find(|e| e.counterparty.as_deref() == Some("ben"))
+            .map(|e| e.created_at + 1800)
+            .unwrap();
+        assert_eq!(wait.deadline, Some(ben_deadline), "the earliest timeout wakes the run");
+
+        // A restart: nothing in memory, both requests still out. The run
+        // re-enters, sends nothing again, and parks on both.
+        let restarted = pass(&store, &run_id, FAN_OUT, serde_json::json!({}), &provider).await;
+        assert!(matches!(restarted, Err(WorkflowError::AwaitingExpert(2))), "{restarted:?}");
+        assert_eq!(expert_requests(&store, &run_id), 2);
+        assert!(provider.calls().is_empty(), "the join waits for both branches");
+
+        // Ana answers; Ben runs out of time.
+        coworker_closes(&store, &run_id, "ana", "done", "Price is 40.");
+        let one_left = pass(&store, &run_id, FAN_OUT, serde_json::json!({}), &provider).await;
+        assert!(matches!(one_left, Err(WorkflowError::AwaitingExpert(1))), "{one_left:?}");
+        age_request(&store, &run_id, "ben", 3600);
+
+        let done = pass(&store, &run_id, FAN_OUT, serde_json::json!({}), &provider).await;
+        assert!(done.is_ok(), "{done:?}");
+        let calls = provider.calls();
+        assert_eq!(calls.len(), 1, "the join ran once");
+        assert!(calls[0].contains("Price is 40."), "the join reads a's summary");
+        assert!(calls[0].contains("\"failed\":true"), "and b's failure, marked");
+        assert_eq!(node_output(&store, &run_id, "b", "")["failed"], true);
+    }
+
+    #[tokio::test]
+    async fn a_reply_that_lands_before_the_run_parks_wakes_it_at_once() {
+        let store = expert_store(&["ana"]);
+        let run_id = new_run(&store, SAME_BOT);
+        let key = crate::expert::request_key(&run_id, "ask", "", 0);
+        crate::expert::record_reply(&store, &run_id, &key, "done", "fast", "ana").unwrap();
+        park_on_experts(&store, &run_id, &[(key, chrono::Utc::now().timestamp() + 60)]).unwrap();
+        let run = store.engine_get_run(&run_id).unwrap().unwrap();
+        assert_eq!(run.state, "queued", "woken, not left waiting for the deadline");
+        assert!(run.woken_by().is_some());
+    }
+
+    const PER_ITEM: &str = r#"{
+        "version": "1.0", "id": "fan", "name": "fan",
+        "activities": [
+            {"id": "each", "type": "loop", "params": {"source": "inputs.items", "concurrency": 2}},
+            {"id": "ask", "type": "expert", "params": {"expert": "{{item.expert}}", "task": "Review {{item.doc}}", "timeout": "1h"}},
+            {"id": "report", "intent": "Report"}
+        ],
+        "connections": [
+            {"from": "__trigger__", "to": "each"},
+            {"from": "each", "to": "ask", "label": "Each item"},
+            {"from": "ask", "to": "each"},
+            {"from": "each", "to": "report", "label": "Done"}
+        ]
+    }"#;
+
+    #[tokio::test]
+    async fn a_loop_asks_an_expert_per_item_and_collects_every_answer_in_order() {
+        let store = expert_store(&["ana", "ben", "cy"]);
+        let provider = MockProvider::new(&[]);
+        let run_id = new_run(&store, PER_ITEM);
+        let inputs = serde_json::json!({ "items": [
+            { "expert": "ana", "doc": "one" },
+            { "expert": "ben", "doc": "two" },
+            { "expert": "cy", "doc": "three" }
+        ]});
+
+        let first = pass(&store, &run_id, PER_ITEM, inputs.clone(), &provider).await;
+        assert!(matches!(first, Err(WorkflowError::AwaitingExpert(_))), "{first:?}");
+        assert_eq!(expert_requests(&store, &run_id), 3, "every item asked its own expert");
+
+        coworker_closes(&store, &run_id, "cy", "done", "Three is fine.");
+        coworker_closes(&store, &run_id, "ana", "done", "One is fine.");
+        coworker_closes(&store, &run_id, "ben", "blocked", "I do not review contracts.");
+
+        let (_, final_context) = pass(&store, &run_id, PER_ITEM, inputs, &provider).await.expect("completes");
+        let out: serde_json::Value = final_context
+            .lines()
+            .find_map(|l| l.strip_prefix("[Activity 'each' result]: "))
+            .map(|j| serde_json::from_str(j).unwrap())
+            .expect("the loop's output");
+        let results = out["results"].as_array().unwrap();
+        assert_eq!(results.len(), 3);
+        assert_eq!(results[0]["outputs"]["ask"]["summary"], "One is fine.");
+        assert_eq!(results[1]["outputs"]["ask"]["failed"], true);
+        assert!(results[1]["outputs"]["ask"]["reason"].as_str().unwrap().contains("blocked"));
+        assert_eq!(results[2]["outputs"]["ask"]["summary"], "Three is fine.");
+        assert_eq!(expert_requests(&store, &run_id), 3);
+        assert_eq!(provider.calls().len(), 1, "the report ran once, after every item");
+    }
+
+    #[test]
+    fn an_expert_node_needs_its_expert_task_and_timeout() {
+        let missing = SAME_BOT.replace(r#", "timeout": "2h""#, "");
+        let err = parse_workflow(&missing).unwrap_err().to_string();
+        assert!(err.contains("params.timeout"), "{err}");
+        let loose = SAME_BOT.replace(r#""{{inputs.order}}""#, r#""the order""#);
+        let err = parse_workflow(&loose).unwrap_err().to_string();
+        assert!(err.contains("explicit reference"), "{err}");
+    }
+
+    #[test]
+    fn the_catalog_lists_enabled_coworkers_with_a_capability_each() {
+        let store = expert_store(&["ana", "ben"]);
+        store.set_agent_enabled("ben", false).unwrap();
+        let cat = crate::expert::catalog(&store, "owner");
+        assert_eq!(cat.len(), 1, "not the owner, not a paused coworker");
+        assert_eq!(cat[0].name, "ana expert");
+        assert_eq!(cat[0].capability, "Prices things for ana.");
+        assert!(crate::expert::catalog_lines(&cat).contains("expert: \"ana\""));
     }
 }
 

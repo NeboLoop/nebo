@@ -14,7 +14,8 @@ use types::NeboError;
 const STATUS_EXPR: &str = "CASE r.state
           WHEN 'done' THEN CASE WHEN r.summary = 'exited' THEN 'exited' ELSE 'completed' END
           WHEN 'cancelled' THEN CASE WHEN r.summary = 'denied' THEN 'denied' ELSE 'cancelled' END
-          WHEN 'waiting' THEN 'awaiting_approval'
+          WHEN 'waiting' THEN CASE WHEN EXISTS (SELECT 1 FROM engine_waits ew WHERE ew.id = r.current_wait_id AND ew.on_kind = 'expert_reply')
+               THEN 'waiting' ELSE 'awaiting_approval' END
           WHEN 'queued' THEN 'interrupted'
           ELSE r.state END";
 

@@ -59,7 +59,7 @@ pub struct InputParam {
 pub struct Activity {
     pub id: String,
     /// Activity type from the builder: custom, research, email, notify, code,
-    /// condition, loop, wait, agent, connector, http, command, decide, transform.
+    /// condition, loop, wait, agent, connector, http, command, decide, transform, expert.
     /// Empty = custom.
     #[serde(rename = "type", default)]
     pub activity_type: String,
@@ -490,6 +490,17 @@ fn validate_activities(def: &WorkflowDef) -> Result<(), WorkflowError> {
             "decide" => {
                 let questions = decide_questions(activity).map_err(WorkflowError::Validation)?;
                 decide_defaults(activity, &questions).map_err(WorkflowError::Validation)?;
+            }
+            // Done by another agent; the engine waits durably for its reply.
+            "expert" => {
+                crate::expert::validate(activity).map_err(WorkflowError::Validation)?;
+                // Only the graph executor waits durably on a reply.
+                if def.connections.is_empty() {
+                    return Err(WorkflowError::Validation(format!(
+                        "expert activity '{}' needs a connected workflow (connections from __trigger__)",
+                        activity.id
+                    )));
+                }
             }
             "wait" => {
                 if !param_str(activity, "waitUntil").trim().is_empty() {
