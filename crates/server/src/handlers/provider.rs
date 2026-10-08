@@ -1071,6 +1071,23 @@ mod key_egress_tests {
         }
     }
 
+    /// `GET /api/v1/providers` answers the phone over the tunnel too: the
+    /// NeboAI account's refresh token (and its access token) never go with it.
+    #[test]
+    fn no_profile_response_carries_the_neboai_refresh_token() {
+        const REFRESH: &str = "rt-SENTINEL-neboai-refresh-0000";
+        auth::credential::init(mcp::crypto::Encryptor::generate());
+        let store = db::Store::new(":memory:").unwrap();
+        super::super::neboai::store_neboai_profile(
+            &store, "https://api.example.com", "owner-1", "owner@example.com", "Owner", SENTINEL, REFRESH, true,
+        )
+        .unwrap();
+        let list = serde_json::json!({"profiles": store.list_auth_profiles().unwrap(), "keysLocalOnly": true}).to_string();
+        assert!(!list.contains(REFRESH), "the refresh token reached an API response: {list}");
+        assert!(!list.contains(SENTINEL), "the access token reached an API response: {list}");
+        assert!(list.contains("janus_provider"), "what the app reads still goes: {list}");
+    }
+
     #[test]
     fn a_forged_tunnel_stamp_is_not_the_tunnel() {
         let mut h = HeaderMap::new();
