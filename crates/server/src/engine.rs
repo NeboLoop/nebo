@@ -1794,12 +1794,107 @@ fn current_binding(store: &Store, agent_id: &str, binding: &str) -> Option<(Stri
     wb.has_activities().then(|| (wb.to_workflow_json(binding), wb.clone()))
 }
 
+/// The internal data tools an employee's open-ended work uses: its memory,
+/// its files, its conversations, its app's data, and its skills.
+const EMPLOYEE_DATA_TOOLS: &[&str] = &[
+    "recall",
+    "remember",
+    "read_file",
+    "write_file",
+    "edit_file",
+    "read_session",
+    "search_history",
+    "app_data",
+    "use_skill",
+    "read_skill_file",
+];
+
+/// Tools that create, turn on or start scheduled work: never part of a
+/// derived declaration (Rule 2 refuses them in an unattended run anyway).
+const SCHEDULING_TOOLS: &[&str] = &[
+    "create_schedule",
+    "set_schedule_paused",
+    "run_schedule_now",
+    "create_workflow",
+    "update_workflow",
+    "install_workflow",
+    "set_workflow_enabled",
+    "create_employee",
+    "hire_employee",
+    "update_employee",
+    "set_employee_active",
+];
+
+/// The default assignment step, declared with the employee's OWN tools: an
+/// assignment is open-ended work, so it gets what the employee works with,
+/// spelled out by name — its plugins (`requires.plugins`), the tools it
+/// requires and its own sidecar tools, each connected MCP server's family,
+/// its skills (which bring their plugins), and the internal data tools
+/// ([`EMPLOYEE_DATA_TOOLS`]). Only names this bot has registered; never a
+/// scheduling tool. One explicit list per employee, held to like any
+/// declaration — not a bypass of the step's allowlist.
+fn assignment_definition(
+    store: &Store,
+    agent_id: &str,
+    registered: &HashSet<String>,
+    own: &HashSet<String>,
+) -> String {
+    let config = store
+        .get_agent(agent_id)
+        .ok()
+        .flatten()
+        .and_then(|a| napp::agent::parse_agent_config(if a.frontmatter.trim().is_empty() { "{}" } else { &a.frontmatter }).ok());
+    let (required_plugins, required_tools, skills) = match &config {
+        Some(c) => (c.requires.plugins.clone(), c.requires.tools.clone(), c.skills.clone()),
+        None => Default::default(),
+    };
+    let mut tools: Vec<String> = Vec::new();
+    let mut add = |name: String| {
+        if registered.contains(&name) && !SCHEDULING_TOOLS.contains(&name.as_str()) && !tools.contains(&name) {
+            tools.push(name);
+        }
+    };
+    EMPLOYEE_DATA_TOOLS.iter().for_each(|t| add(t.to_string()));
+    required_plugins
+        .iter()
+        .filter_map(|p| tools::plugin_tools::plugin_slug_of(store, p))
+        .for_each(|slug| add(tools::plugin_tools::plugin_tool_name(&slug)));
+    required_tools.into_iter().for_each(&mut add);
+    let mut own: Vec<&String> = own.iter().collect();
+    own.sort();
+    own.into_iter().cloned().for_each(&mut add);
+    let mut servers: Vec<String> = registered
+        .iter()
+        .filter_map(|n| n.strip_prefix("mcp__").and_then(|rest| rest.split_once("__")).map(|(server, _)| format!("mcp__{server}__*")))
+        .collect();
+    servers.sort();
+    servers.dedup();
+    tools.extend(servers);
+    let mut def: serde_json::Value =
+        serde_json::from_str(&workflow::cases::default_assignment_definition()).unwrap_or_default();
+    if let Some(work) = def["activities"].as_array_mut().and_then(|a| a.first_mut()) {
+        work["tools"] = serde_json::json!(tools);
+        work["skills"] = serde_json::json!(skills);
+    }
+    def.to_string()
+}
+
 /// Relaunch a queued case turn under its own id.
 async fn start_turn(state: &AppState, run: &EngineRun, t: i64) {
     let store = &state.store;
     let mut inputs: serde_json::Value = run.inputs.as_deref().and_then(|s| serde_json::from_str(s).ok()).unwrap_or_default();
     let binding = inputs["_case"]["binding"].as_str().map(str::to_string);
     let fresh = binding.as_deref().and_then(|b| current_definition(store, &run.agent_id, b));
+    // An assignment the employee declares no procedure for runs the
+    // platform's default step, declared with the employee's own tools.
+    let fresh = match fresh {
+        None if inputs["_case"]["case_type"].as_str() == Some(workflow::cases::ASSIGNMENT_CASE_TYPE) => {
+            let registered: HashSet<String> = state.tools.list().await.into_iter().map(|d| d.name).collect();
+            let own = state.tools.agent_tool_names(&run.agent_id).await;
+            Some(assignment_definition(store, &run.agent_id, &registered, &own))
+        }
+        other => other,
+    };
     let Some(definition) = fresh.or_else(|| run.definition.clone()) else {
         let _ = store.engine_set_run_state(&run.id, "failed", t, Some("case turn has no definition"));
         return;
@@ -1966,6 +2061,45 @@ mod tests {
     use chrono::Local;
     use db::{NewEvent, NewRun, NewWait};
     use workflow::cases::{normalize_phone, open_case_for, parse_turn, relative_secs, resolve_aliases, route_signal, signal_or_open, CaseBinding, Routed};
+
+    /// The default assignment step is declared with the employee's own
+    /// tools, by name: its plugins, required and own tools, each connected
+    /// MCP server's family, its skills and the internal data tools; never a
+    /// scheduling tool, and never a tool this bot doesn't have.
+    #[test]
+    fn an_assignment_runs_with_the_employees_own_tools_declared() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(&dir.path().join("a.db").to_string_lossy()).unwrap();
+        let fm = r#"{"requires":{"plugins":["@acme/plugins/odoo@^1"],"tools":["fetch_url","create_schedule"]},"skills":["@acme/skills/fo-matching"]}"#;
+        store.create_agent("emp", None, "Inventory", "x", "x", fm, None, None).unwrap();
+        let registered: HashSet<String> = [
+            "plugin__odoo", "plugin__gws", "recall", "remember", "read_file", "read_session", "app_data", "use_skill",
+            "fetch_url", "create_schedule", "run_schedule_now", "send_message", "list_projects",
+            "mcp__github__create_issue", "mcp__github__list_issues", "mcp__notion__search",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let own: HashSet<String> = ["list_projects".to_string()].into();
+        let def: serde_json::Value = serde_json::from_str(&assignment_definition(&store, "emp", &registered, &own)).unwrap();
+        let work = &def["activities"][0];
+        let tools: Vec<&str> = work["tools"].as_array().unwrap().iter().map(|t| t.as_str().unwrap()).collect();
+        for t in ["plugin__odoo", "recall", "remember", "read_file", "read_session", "app_data", "use_skill", "fetch_url", "list_projects", "mcp__github__*", "mcp__notion__*"] {
+            assert!(tools.contains(&t), "{t} in {tools:?}");
+        }
+        for t in ["create_schedule", "run_schedule_now", "send_message", "plugin__gws", "write_file"] {
+            assert!(!tools.contains(&t), "{t} must not be declared: {tools:?}");
+        }
+        assert_eq!(work["skills"], serde_json::json!(["@acme/skills/fo-matching"]));
+        // It parses as a workflow whose step declares exactly these.
+        let parsed = workflow::parser::parse_workflow(&def.to_string()).unwrap();
+        assert_eq!(parsed.activities[0].tools.len(), tools.len());
+
+        // An employee with no agent.json still gets the data tools.
+        store.create_agent("bare", None, "Bare", "x", "x", "", None, None).unwrap();
+        let def: serde_json::Value = serde_json::from_str(&assignment_definition(&store, "bare", &registered, &HashSet::new())).unwrap();
+        assert!(def["activities"][0]["tools"].as_array().unwrap().iter().any(|t| t == "recall"));
+    }
 
     fn store() -> Store {
         let path = std::env::temp_dir().join(format!("nebo-engine-loop-{}.db", uuid::Uuid::new_v4()));
