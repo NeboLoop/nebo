@@ -61,6 +61,21 @@ pub trait ChannelDispatcher: Send + Sync {
 /// copies used to exist and could drift independently.
 const AUTH_PAUSE_THRESHOLD: u32 = 3;
 const AUTH_PAUSED_RETRY_SECS: u64 = 900;
+/// A plugin process that ran this long before it exited ran healthily.
+const HEALTHY_RUN_SECS: u64 = 300;
+
+/// The consecutive auth-failure count after a plugin process exits. Only
+/// auth exits with no healthy run between them add up: a process that ran
+/// healthily (`HEALTHY_RUN_SECS`, or delivered an event) and then hit one
+/// auth exit — an hourly token expiry — starts a new streak at 1, so it
+/// never reaches the pause on its third healthy hour.
+fn auth_failures_after_exit(prior: u32, auth_error: bool, healthy_run: bool) -> u32 {
+    match (auth_error, healthy_run) {
+        (false, _) => 0,
+        (true, true) => 1,
+        (true, false) => prior + 1,
+    }
+}
 
 pub struct AgentWorker {
     pub agent_id: String,
@@ -1237,6 +1252,8 @@ async fn watch_loop(
 
         // Track spawn time so we only reset backoff if process ran long enough
         let spawn_time = std::time::Instant::now();
+        // Whether this process delivered an event: a run that did ran healthily.
+        let mut delivered_event = false;
 
         // Hold the stdin write end open for the child's lifetime — dropping it
         // closes the pipe and the watcher self-exits (stdin-EOF orphan guard).
@@ -1298,6 +1315,7 @@ async fn watch_loop(
                                     continue;
                                 }
                             };
+                            delivered_event = true;
 
                             // Auto-emit into EventBus if event-based watch
                             // Skip error payloads — plugins may output errors (e.g. DNS
@@ -1461,8 +1479,10 @@ async fn watch_loop(
         // Check if the process failed due to a plugin auth error
         {
             let stderr_text = stderr_collected.lock().await;
-            if tools::plugin_tool::is_auth_error(&stderr_text) {
-                consecutive_auth_failures += 1;
+            let auth_error = tools::plugin_tool::is_auth_error(&stderr_text);
+            let healthy_run = delivered_event || spawn_time.elapsed() >= std::time::Duration::from_secs(HEALTHY_RUN_SECS);
+            consecutive_auth_failures = auth_failures_after_exit(consecutive_auth_failures, auth_error, healthy_run);
+            if auth_error {
                 if consecutive_auth_failures < AUTH_PAUSE_THRESHOLD {
                     warn!(
                         agent = %agent_id,
@@ -1516,8 +1536,6 @@ async fn watch_loop(
                 // plugin_auth_complete.
                 backoff_secs = AUTH_PAUSED_RETRY_SECS;
                 }
-            } else {
-                consecutive_auth_failures = 0;
             }
         }
 
@@ -2602,8 +2620,10 @@ async fn channel_loop(
         // Check for auth errors
         {
             let stderr_text = stderr_collected.lock().await;
-            if tools::plugin_tool::is_auth_error(&stderr_text) {
-                consecutive_auth_failures += 1;
+            let auth_error = tools::plugin_tool::is_auth_error(&stderr_text);
+            let healthy_run = spawn_time.elapsed() >= std::time::Duration::from_secs(HEALTHY_RUN_SECS);
+            consecutive_auth_failures = auth_failures_after_exit(consecutive_auth_failures, auth_error, healthy_run);
+            if auth_error {
                 if consecutive_auth_failures < AUTH_PAUSE_THRESHOLD {
                     warn!(
                         agent = %agent_id,
@@ -2652,8 +2672,6 @@ async fn channel_loop(
                 // reconnect still resumes immediately via plugin_auth_complete.
                 backoff_secs = AUTH_PAUSED_RETRY_SECS;
                 }
-            } else {
-                consecutive_auth_failures = 0;
             }
         }
 
@@ -3067,8 +3085,10 @@ async fn shared_channel_loop(
         // Check for auth errors
         {
             let stderr_text = stderr_collected.lock().await;
-            if tools::plugin_tool::is_auth_error(&stderr_text) {
-                consecutive_auth_failures += 1;
+            let auth_error = tools::plugin_tool::is_auth_error(&stderr_text);
+            let healthy_run = spawn_time.elapsed() >= std::time::Duration::from_secs(HEALTHY_RUN_SECS);
+            consecutive_auth_failures = auth_failures_after_exit(consecutive_auth_failures, auth_error, healthy_run);
+            if auth_error {
                 if consecutive_auth_failures < AUTH_PAUSE_THRESHOLD {
                     warn!(
                         plugin = %plugin_slug,
@@ -3104,8 +3124,6 @@ async fn shared_channel_loop(
                 // parking; reconnecting still resumes via plugin_auth_complete.
                 backoff_secs = AUTH_PAUSED_RETRY_SECS;
                 }
-            } else {
-                consecutive_auth_failures = 0;
             }
         }
 
@@ -3654,5 +3672,54 @@ mod capability_trigger_tests {
         b.insert("mail.message.list".to_string(), "list".to_string());
         b.insert("calendar.event.create".to_string(), "create".to_string());
         assert_eq!(interfaces_of(&b), vec!["calendar".to_string(), "mail".to_string()]);
+    }
+}
+
+#[cfg(test)]
+mod auth_streak_tests {
+    use super::{AUTH_PAUSE_THRESHOLD, auth_failures_after_exit};
+
+    /// Exits as `(auth_error, healthy_run)`; the count after each, and
+    /// whether the watch paused and told the owner (the count reached the
+    /// threshold on an auth exit).
+    fn run(exits: &[(bool, bool)]) -> (u32, bool) {
+        let mut count = 0;
+        let mut paused = false;
+        for &(auth_error, healthy) in exits {
+            count = auth_failures_after_exit(count, auth_error, healthy);
+            paused |= auth_error && count >= AUTH_PAUSE_THRESHOLD;
+        }
+        (count, paused)
+    }
+
+    /// The old gmail watch: an hour of healthy running, then one auth exit
+    /// when its token expires, every hour. Three such hours never pause it
+    /// or notify the owner.
+    #[test]
+    fn hourly_token_expiry_after_healthy_runs_never_pauses() {
+        let hour = (true, true);
+        let (count, paused) = run(&[hour, hour, hour, hour, hour]);
+        assert_eq!(count, 1, "each healthy run starts the streak over");
+        assert!(!paused);
+    }
+
+    /// Three auth exits with no healthy run between them still pause.
+    #[test]
+    fn three_quick_auth_exits_in_a_row_pause() {
+        let quick = (true, false);
+        assert_eq!(run(&[quick, quick]), (2, false));
+        assert_eq!(run(&[quick, quick, quick]), (3, true));
+        // A healthy run, then three quick ones: the healthy run counts as the
+        // first of the streak only when it ended on an auth exit.
+        assert_eq!(run(&[(true, true), quick, quick]), (3, true));
+        assert_eq!(run(&[(false, true), quick, quick]), (2, false));
+    }
+
+    /// A healthy run in the middle breaks the streak; so does a clean exit.
+    #[test]
+    fn a_healthy_run_or_a_clean_exit_breaks_the_streak() {
+        let quick = (true, false);
+        assert_eq!(run(&[quick, quick, (true, true), quick]), (2, false));
+        assert_eq!(run(&[quick, quick, (false, false), quick, quick]), (2, false));
     }
 }
