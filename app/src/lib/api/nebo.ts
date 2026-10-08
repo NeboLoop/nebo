@@ -1119,6 +1119,48 @@ export function testIntegration(id: string, req: Record<string, unknown> = {}) {
 }
 
 /**
+ * @description "List packs"
+ */
+export function listPacks() {
+	return webapi.get<components.ListPacksResponse>(`/api/v1/intelligence-packs`)
+}
+
+/**
+ * @description "Create pack"
+ */
+export function createPack(req: Record<string, unknown> = {}) {
+	return webapi.post<components.CreatePackResponse>(`/api/v1/intelligence-packs`, req)
+}
+
+/**
+ * @description "List pack choices"
+ */
+export function listPackChoices() {
+	return webapi.get<components.ListPackChoicesResponse>(`/api/v1/intelligence-packs/choices`)
+}
+
+/**
+ * @description "Set default pack"
+ */
+export function setDefaultPack(req: Record<string, unknown> = {}) {
+	return webapi.put<components.SetDefaultPackResponse>(`/api/v1/intelligence-packs/default`, req)
+}
+
+/**
+ * @description "Update pack"
+ */
+export function updatePack(id: string, req: Record<string, unknown> = {}) {
+	return webapi.put<components.UpdatePackResponse>(`/api/v1/intelligence-packs/${id}`, req)
+}
+
+/**
+ * @description "Delete pack"
+ */
+export function deletePack(id: string) {
+	return webapi.delete<components.DeletePackResponse>(`/api/v1/intelligence-packs/${id}`)
+}
+
+/**
  * @description "List layers"
  */
 export function listLayers() {
@@ -1235,34 +1277,6 @@ export function updateMemory(id: string, req: Record<string, unknown> = {}) {
  */
 export function deleteMemory(id: string) {
 	return webapi.delete<components.DeleteMemoryResponse>(`/api/v1/memories/${id}`)
-}
-
-/**
- * @description "List packs"
- */
-export function listPacks() {
-	return webapi.get<components.ListPacksResponse>(`/api/v1/intelligence-packs`)
-}
-
-/**
- * @description "Create pack"
- */
-export function createPack(req: Record<string, unknown> = {}) {
-	return webapi.post<components.CreatePackResponse>(`/api/v1/intelligence-packs`, req)
-}
-
-/**
- * @description "Update pack"
- */
-export function updatePack(id: string, req: Record<string, unknown> = {}) {
-	return webapi.put<components.UpdatePackResponse>(`/api/v1/intelligence-packs/${id}`, req)
-}
-
-/**
- * @description "Delete pack"
- */
-export function deletePack(id: string) {
-	return webapi.delete<components.DeletePackResponse>(`/api/v1/intelligence-packs/${id}`)
 }
 
 /**
@@ -1844,6 +1858,41 @@ export function updateProvider(id: string, req: Record<string, unknown> = {}) {
  */
 export function deleteProvider(id: string) {
 	return webapi.delete<components.DeleteProviderResponse>(`/api/v1/providers/${id}`)
+}
+
+/**
+ * @description "Browse connection catalog"
+ */
+export function browseConnectionCatalog(id: string, search?: string, kind?: string) {
+	return webapi.get<components.BrowseConnectionCatalogResponse>(`/api/v1/providers/${id}/catalog`, { search, kind })
+}
+
+/**
+ * @description "List connection models"
+ */
+export function listConnectionModels(id: string) {
+	return webapi.get<components.ListConnectionModelsResponse>(`/api/v1/providers/${id}/models`)
+}
+
+/**
+ * @description "Add connection model"
+ */
+export function addConnectionModel(id: string, req: Record<string, unknown> = {}) {
+	return webapi.post<components.AddConnectionModelResponse>(`/api/v1/providers/${id}/models`, req)
+}
+
+/**
+ * @description "Update connection model"
+ */
+export function updateConnectionModel(id: string, modelId: string, req: Record<string, unknown> = {}) {
+	return webapi.put<components.UpdateConnectionModelResponse>(`/api/v1/providers/${id}/models/${modelId}`, req)
+}
+
+/**
+ * @description "Delete connection model"
+ */
+export function deleteConnectionModel(id: string, modelId: string) {
+	return webapi.delete<components.DeleteConnectionModelResponse>(`/api/v1/providers/${id}/models/${modelId}`)
 }
 
 /**

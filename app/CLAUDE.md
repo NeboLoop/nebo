@@ -123,8 +123,8 @@ All routes must work on direct navigation / browser refresh.
 - `/settings/skills` — Installed skills
 - `/settings/plugins` — Plugin auth status
 - `/settings/mcp` — MCP server management (remote servers, OAuth/API Key/None)
-- `/settings/providers` — LLM provider config (dev-only)
-- `/settings/routing` — Task & lane routing (dev-only)
+- `/settings/providers` — Connections (one per key) and their models (dev-only)
+- `/settings/intelligence-packs` — Intelligence Packs: what runs on what, bot default, lanes (dev-only)
 - `/settings/secrets` — API keys by skill (dev-only)
 - `/settings/permissions` — Capabilities & auto-approval
 - `/settings/sessions` — Session history
