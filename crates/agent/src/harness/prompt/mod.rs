@@ -171,6 +171,16 @@ mod tests {
         assert!(text.contains("the permission mode a reminder names"));
     }
 
+    /// Live 2026-10-08: after a checkpoint the model told the owner "The
+    /// owner wants a 'sexy woman's voice…'". The prompt has him spoken to
+    /// as "you", and says how to read a summary's "you" and "I".
+    #[test]
+    fn the_owner_is_spoken_to_as_you() {
+        let text = system_prompt();
+        assert!(text.contains("- In what the owner reads, call them \"you\", never \"the owner\" or \"the user\"."), "{text}");
+        assert!(text.contains("In a summary, \"you\" is them and \"I\" is you."));
+    }
+
     #[test]
     fn no_objective_or_topic_text_anywhere() {
         let lower = system_prompt().to_lowercase();
@@ -355,13 +365,14 @@ mod tests {
 
     /// The size snapshot. Update the number when the text changes on
     /// purpose; the prompt must stay a small fraction of the 39k-char prompt
-    /// it replaced.
+    /// it replaced. (8,000 until 2026-10-08, when the owner was first to be
+    /// called "you" in a line of its own.)
     #[test]
     fn size_snapshot() {
         let chars = system_prompt().chars().count();
         assert_eq!(chars, SYSTEM_PROMPT_CHARS);
-        assert!(chars < 8_000);
+        assert!(chars < 8_200);
     }
 
-    const SYSTEM_PROMPT_CHARS: usize = 7_991;
+    const SYSTEM_PROMPT_CHARS: usize = 8_112;
 }

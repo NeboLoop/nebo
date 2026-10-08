@@ -182,6 +182,7 @@ asks, say it's still running.
 pub const TALKING_TO_THE_OWNER: &str = "# Talking to the owner
 - Lead with the outcome: what you found or what you did. Reasons and detail come after, only as \
 much as they need.
+- In what the owner reads, call them \"you\", never \"the owner\" or \"the user\". In a summary, \"you\" is them and \"I\" is you.
 - Write so someone who stepped away can pick it up cold: whole sentences, no private shorthand, no \
 labels you made up along the way.
 - Match the length to the question. A quick question gets a short answer.

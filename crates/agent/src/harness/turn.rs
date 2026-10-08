@@ -486,7 +486,10 @@ fn queue_input(h: &Harness, session_id: &str, req: &TurnRequest) -> Option<Strin
                     Some(&meta.to_string()),
                 )
                 .map(|row| {
-                    if !images.is_empty() || attachments.iter().any(|a| crate::video::is_video(&a.filename, &a.mime_type)) {
+                    if !images.is_empty()
+                        || attachments.iter().any(|a| crate::video::is_video(&a.filename, &a.mime_type))
+                        || !named_pictures(req, text).is_empty()
+                    {
                         pictures_row = Some(row.id);
                     }
                 })
@@ -1214,7 +1217,12 @@ async fn read_pictures(
 ) -> Vec<String> {
     let videos: Vec<&comm::wire::Attachment> =
         attachments.iter().filter(|a| crate::video::is_video(&a.filename, &a.mime_type)).collect();
-    if images.is_empty() && videos.is_empty() {
+    let mut named = named_pictures(req, text);
+    if !named.is_empty() {
+        let reader = picture_reader(h, req);
+        named.retain(|p| super::named_pictures::readable(&reader, p));
+    }
+    if images.is_empty() && videos.is_empty() && named.is_empty() {
         return Vec::new();
     }
     let provider = ai::default_provider(&h.providers.read().await);
@@ -1251,9 +1259,56 @@ async fn read_pictures(
         let (provider, context, trace) = (provider.clone(), context.clone(), trace("video_read"));
         async move { crate::video::read(trace, provider.as_deref(), file.as_deref(), &a.file_id, &reference, &context).await }
     });
-    let (mut readings, watched) = futures::future::join(pictures, futures::future::join_all(watches)).await;
+    // A picture the owner named by path is looked at as an attached one is,
+    // its reading naming the file.
+    let context = format!("The owner named this image in their message: \"{}\"", tools::truncate_str(text, 500));
+    let looks = named.iter().map(|path| {
+        let reference = path.to_string_lossy().into_owned();
+        let (provider, context, trace) = (provider.clone(), context.clone(), trace("image_read"));
+        async move {
+            let picture = ai::image_norm::Picture::load(&reference);
+            let reading = match (&provider, &picture) {
+                (Some(provider), Some(picture)) => crate::sidecar::look(trace, provider.as_ref(), picture, &context, None).await,
+                _ => None,
+            };
+            crate::sidecar::note(&reference, picture.map(|p| (p.width, p.height)), reading.as_deref())
+        }
+    });
+    let ((mut readings, watched), looked) =
+        futures::future::join(futures::future::join(pictures, futures::future::join_all(watches)), futures::future::join_all(looks)).await;
     readings.extend(watched);
+    readings.extend(looked);
     readings
+}
+
+/// The pictures the owner's own message names by path
+/// (`named_pictures::in_text`): none for anyone else's words, or for a run
+/// whose tools are fenced to a list.
+fn named_pictures(req: &TurnRequest, text: &str) -> Vec<std::path::PathBuf> {
+    if !owner_speaks(req) || req.seat.tool_allowlist.is_some() {
+        return Vec::new();
+    }
+    super::named_pictures::in_text(text, crate::uploads::dir().as_deref())
+}
+
+/// The context a `read_file` of the turn would run in: its session and its
+/// grant, for the limits a named picture meets.
+fn picture_reader(h: &Harness, req: &TurnRequest) -> tools::ToolContext {
+    let grant = seat::run_grant(
+        &h.store,
+        GrantRequest {
+            agent_id: &req.seat.agent_id,
+            origin: req.seat.origin,
+            mode: req.seat.mode,
+            ceiling: req.seat.ceiling.as_ref(),
+            cwd: req.seat.cwd.as_deref(),
+        },
+    );
+    let session_id = h.sessions.resolve_session_id_by_key(&req.session_key).unwrap_or_default();
+    let mut ctx = tools::ToolContext::new(req.seat.origin).with_session(req.session_key.clone(), session_id);
+    ctx.grant = Some(Arc::new(grant));
+    ctx.cwd = req.seat.cwd.clone();
+    ctx
 }
 
 /// The name of the employee a helper works for.
@@ -2728,19 +2783,21 @@ pub(crate) async fn finish(cx: &TurnContext, st: &mut TurnState, exit: &TurnExit
     }
 }
 
-/// The turn ended with every text segment folded and no answer after them:
-/// the longest is shown, on the stream and where it is stored, so the turn
-/// leaves something to read.
+/// The turn's last verdicts, on the stream and where each segment is
+/// stored: the earlier paragraphs the answer says again fold, so the owner
+/// reads it once; and when every segment folded and no answer followed, the
+/// longest is shown, so the turn leaves something to read.
 async fn show_a_folded_answer(cx: &TurnContext, folds: &mut text_fold::TurnFolds) {
-    let Some((segment, row)) = folds.safety_net() else {
-        return;
-    };
-    let shown = text_fold::Fold::Shown.as_str();
-    let _ = cx.tx.send(StreamEvent::text_verdict(segment, shown)).await;
-    if let Some(row) = row {
-        let path = format!("$.contentBlocks[{}].fold", row.block);
-        if let Err(e) = cx.harness.store.set_chat_message_metadata(&row.message_id, &path, &serde_json::json!(shown)) {
-            warn!(session_id = %cx.session_id, error = %e, "failed to store the shown segment");
+    let repeated = folds.fold_repeats_of_the_answer().into_iter().map(|(segment, row)| (segment, row, text_fold::Fold::Folded));
+    let net = folds.safety_net().map(|(segment, row)| (segment, row, text_fold::Fold::Shown));
+    for (segment, row, fold) in repeated.chain(net) {
+        let fold = fold.as_str();
+        let _ = cx.tx.send(StreamEvent::text_verdict(segment, fold)).await;
+        if let Some(row) = row {
+            let path = format!("$.contentBlocks[{}].fold", row.block);
+            if let Err(e) = cx.harness.store.set_chat_message_metadata(&row.message_id, &path, &serde_json::json!(fold)) {
+                warn!(session_id = %cx.session_id, error = %e, "failed to store a segment's last verdict");
+            }
         }
     }
 }
@@ -3425,6 +3482,64 @@ mod tests {
             }
         }
         assert_eq!(stored_folds(&h), vec!["shown", "folded", "shown"]);
+    }
+
+    /// Live 2026-10-08: the owner sent one clip and read "Four clips in,
+    /// still holding" four times, the model writing it again beside each of
+    /// four identical `remember` calls. One owner message, one reply: the
+    /// repeats fold, the answer that says it again folds the first copy,
+    /// and the second identical call is told it already has its answer.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn one_message_one_reply_when_the_model_says_it_again() {
+        let input = serde_json::json!({});
+        let model = Scripted::new(vec![
+            Step::NarratedCall("Four clips in, still holding. Let me know when you're done.", "echo", input.clone()),
+            Step::NarratedCall("Got it — four clips in, still holding. Let me know when you're done.", "echo", input.clone()),
+            Step::NarratedCall("Got it — four clips in, still holding. Let me know when you're done.", "echo", input.clone()),
+            Step::Say("Four clips in, still holding."),
+        ]);
+        let h = harness(&model).await;
+        let events = run_turn(&h, owner("[Attached: clip4.MOV]")).await;
+        assert_eq!(exit_of(&events), "text_response");
+        assert_eq!(
+            verdicts(&events),
+            vec![
+                (0, "shown".to_string()),
+                (1, "folded".to_string()),
+                (2, "folded".to_string()),
+                (0, "folded".to_string()),
+            ]
+        );
+        assert_eq!(stored_folds(&h), vec!["folded", "folded", "folded"], "only the answer is left to read");
+        let results: Vec<String> =
+            stored(&h).iter().filter(|m| m.role == "tool").map(|m| m.tool_results.clone().unwrap_or_default()).collect();
+        assert_eq!(results.len(), 3, "{results:#?}");
+        assert!(!results[0].contains("already made this exact call"), "{}", results[0]);
+        assert!(results[1].contains("already made this exact call") && results[2].contains("already made this exact call"));
+    }
+
+    /// Live 2026-10-08: "I don't want these in the video: /Users/…/Desktop/
+    /// Screenshot 2026-10-08 at 2.26.29 PM.png", answered without a look.
+    /// A picture the owner names by path is looked at as an attached one is:
+    /// the step reads its note, under the file's own path.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_picture_named_by_path_is_looked_at() {
+        let dir = tempfile::tempdir().unwrap();
+        let shot = dir.path().join("Screenshot 2026-10-08 at 2.26.29 PM.png");
+        image::RgbImage::new(4, 4).save(&shot).unwrap();
+        let model = Scripted::new(vec![Step::Say("Those black cards come out.")]);
+        let h = harness(&model).await;
+        run_turn(&h, owner(&format!("I don't want these in the video: {}", shot.display()))).await;
+        let read = texts(&model.calls()[0]).join("\n");
+        assert!(read.contains(&format!("[Image: {}, 4×4 px.", shot.display())), "{read}");
+
+        // Someone else's words naming the same file are not looked at.
+        let model = Scripted::new(vec![Step::Say("Noted.")]);
+        let h = harness(&model).await;
+        let mut visitor = owner(&format!("Look at {}", shot.display()));
+        visitor.seat.origin = tools::Origin::Comm;
+        run_turn(&h, visitor).await;
+        assert!(!texts(&model.calls()[0]).join("\n").contains("[Image: "), "a visitor's path is never read");
     }
 
     /// Dictation that cut out (live 2026-10-07, the work started on "…And if
