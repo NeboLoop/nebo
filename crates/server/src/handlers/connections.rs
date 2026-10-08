@@ -506,6 +506,25 @@ mod tests {
         assert_eq!(ids.iter().filter(|(id, _, _)| *id == "claude-opus-5").count(), 1);
     }
 
+    /// OpenRouter's model ids hold a slash (`anthropic/claude-sonnet-5`):
+    /// the app sends it encoded (`%2F`) in the path, and the route hands the
+    /// handler the decoded id.
+    #[tokio::test]
+    async fn a_model_id_with_a_slash_reaches_the_handler_whole() {
+        use tower::ServiceExt;
+        let app = axum::Router::new().route(
+            "/providers/{id}/models/{modelId}",
+            axum::routing::put(|Path((id, model)): Path<(String, String)>| async move { format!("{id}|{model}") }),
+        );
+        let req = axum::http::Request::put("/providers/or/models/anthropic%2Fclaude-sonnet-5")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), 200);
+        let body = axum::body::to_bytes(resp.into_body(), 1024).await.unwrap();
+        assert_eq!(&body[..], b"or|anthropic/claude-sonnet-5");
+    }
+
     #[test]
     fn abilities_keep_only_what_a_row_shows() {
         let caps: Vec<String> = ["streaming", "reasoning", "vision", "tools", "code"].iter().map(|s| s.to_string()).collect();
