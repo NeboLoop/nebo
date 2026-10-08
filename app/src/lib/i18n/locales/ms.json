@@ -3718,6 +3718,32 @@
 					}
 				}
 			},
+			"expert": {
+				"label": "Pakar",
+				"description": "Pekerja lain melakukan langkah ini; larian menunggu balasannya",
+				"params": {
+					"expert": {
+						"label": "Pakar",
+						"description": "Rakan sekerja yang melakukan kerja: id, pemegang atau nama"
+					},
+					"task": {
+						"label": "Tugas",
+						"description": "Apa yang perlu dilakukan oleh pakar"
+					},
+					"input": {
+						"label": "Input",
+						"description": "Satu rujukan yang diterima pakar, seperti '{{'nodes.fetch'}}'"
+					},
+					"output": {
+						"label": "Balasan dijangka",
+						"description": "Apa yang patut kembali: bentuk JSON atau penerangan ringkas"
+					},
+					"timeout": {
+						"label": "Had masa",
+						"description": "Berapa lama menunggu balasan, seperti 30m, 4h atau 2d"
+					}
+				}
+			},
 			"transform": {
 				"label": "Ubah",
 				"description": "Bentuk semula atau tapis data",
@@ -3796,6 +3822,10 @@
 				"activityDecide": {
 					"label": "Putuskan",
 					"desc": "Kelaskan atau nilai data"
+				},
+				"activityExpert": {
+					"label": "Pakar",
+					"desc": "Pekerja lain melakukan langkah ini"
 				},
 				"activityTransform": {
 					"label": "Ubah",
@@ -3918,6 +3948,7 @@
 			"loopSource": "Gelung “{id}” memerlukan sumber data (cth. inputs.items)",
 			"httpUrl": "Nod HTTP “{id}” memerlukan URL",
 			"decideQuestions": "Nod Putuskan “{id}” memerlukan soalan (objek JSON soalan bertaip)",
+			"expertFields": "Nod Pakar “{id}” memerlukan pakar, tugas dan had masa",
 			"waitDuration": "Nod Tunggu “{id}” memerlukan tempoh",
 			"needsIntent": "Aktiviti “{id}” dalam “{workflow}” memerlukan niat atau langkah",
 			"targetsTrigger": "Satu sambungan menghala ke pencetus",

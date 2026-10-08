@@ -3718,6 +3718,32 @@
 					}
 				}
 			},
+			"expert": {
+				"label": "エキスパート",
+				"description": "別の従業員がこのステップを行い、実行はその返信を待ちます",
+				"params": {
+					"expert": {
+						"label": "エキスパート",
+						"description": "作業する同僚：ID、ハンドル、または名前"
+					},
+					"task": {
+						"label": "タスク",
+						"description": "エキスパートにしてほしいこと"
+					},
+					"input": {
+						"label": "入力",
+						"description": "エキスパートに渡す参照を1つ（例：'{{'nodes.fetch'}}'）"
+					},
+					"output": {
+						"label": "期待する返信",
+						"description": "返ってくるべきもの：JSONの形または短い説明"
+					},
+					"timeout": {
+						"label": "タイムアウト",
+						"description": "返信を待つ時間（例：30m、4h、2d）"
+					}
+				}
+			},
 			"transform": {
 				"label": "変換",
 				"description": "データを整形またはフィルター",
@@ -3796,6 +3822,10 @@
 				"activityDecide": {
 					"label": "判断",
 					"desc": "データを分類・判断"
+				},
+				"activityExpert": {
+					"label": "エキスパート",
+					"desc": "別の従業員がステップを行う"
 				},
 				"activityTransform": {
 					"label": "変換",
@@ -3918,6 +3948,7 @@
 			"loopSource": "ループ「{id}」にはデータソースが必要です（例: inputs.items）",
 			"httpUrl": "HTTPノード「{id}」にはURLが必要です",
 			"decideQuestions": "判断ノード「{id}」には質問が必要です（型付きの質問のJSONオブジェクト）",
+			"expertFields": "エキスパートノード「{id}」にはエキスパート、タスク、タイムアウトが必要です",
 			"waitDuration": "待機ノード「{id}」には待機時間が必要です",
 			"needsIntent": "「{workflow}」のアクティビティ「{id}」にはインテントまたはステップが必要です",
 			"targetsTrigger": "トリガーに向かう接続があります",

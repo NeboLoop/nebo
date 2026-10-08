@@ -3718,6 +3718,32 @@
 					}
 				}
 			},
+			"expert": {
+				"label": "Experte",
+				"description": "Ein anderer Mitarbeiter erledigt diesen Schritt; der Lauf wartet auf die Antwort",
+				"params": {
+					"expert": {
+						"label": "Experte",
+						"description": "Der Kollege, der die Arbeit erledigt: ID, Handle oder Name"
+					},
+					"task": {
+						"label": "Aufgabe",
+						"description": "Was der Experte tun soll"
+					},
+					"input": {
+						"label": "Eingabe",
+						"description": "Eine Referenz, die der Experte erhält, z. B. '{{'nodes.fetch'}}'"
+					},
+					"output": {
+						"label": "Erwartete Antwort",
+						"description": "Was zurückkommen soll: eine JSON-Struktur oder eine kurze Beschreibung"
+					},
+					"timeout": {
+						"label": "Zeitlimit",
+						"description": "Wie lange auf die Antwort gewartet wird, z. B. 30m, 4h oder 2d"
+					}
+				}
+			},
 			"transform": {
 				"label": "Umwandeln",
 				"description": "Daten umformen oder filtern",
@@ -3796,6 +3822,10 @@
 				"activityDecide": {
 					"label": "Entscheiden",
 					"desc": "Daten einordnen oder bewerten"
+				},
+				"activityExpert": {
+					"label": "Experte",
+					"desc": "Ein anderer Mitarbeiter erledigt den Schritt"
 				},
 				"activityTransform": {
 					"label": "Umwandeln",
@@ -3918,6 +3948,7 @@
 			"loopSource": "Schleife „{id}“ braucht eine Datenquelle (z. B. inputs.items)",
 			"httpUrl": "HTTP-Knoten „{id}“ braucht eine URL",
 			"decideQuestions": "Entscheidungsknoten „{id}“ braucht Fragen (ein JSON-Objekt mit typisierten Fragen)",
+			"expertFields": "Expertenknoten „{id}“ braucht einen Experten, eine Aufgabe und ein Zeitlimit",
 			"waitDuration": "Warteknoten „{id}“ braucht eine Dauer",
 			"needsIntent": "Aktivität „{id}“ in „{workflow}“ braucht ein Anliegen oder Schritte",
 			"targetsTrigger": "Eine Verbindung zeigt auf den Auslöser",

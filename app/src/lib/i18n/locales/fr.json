@@ -3718,6 +3718,32 @@
 					}
 				}
 			},
+			"expert": {
+				"label": "Expert",
+				"description": "Un autre employé effectue cette étape ; l’exécution attend sa réponse",
+				"params": {
+					"expert": {
+						"label": "Expert",
+						"description": "Le collègue qui fait le travail : un id, un identifiant ou un nom"
+					},
+					"task": {
+						"label": "Tâche",
+						"description": "Ce que l’expert doit faire"
+					},
+					"input": {
+						"label": "Entrée",
+						"description": "Une référence que reçoit l’expert, par exemple '{{'nodes.fetch'}}'"
+					},
+					"output": {
+						"label": "Réponse attendue",
+						"description": "Ce qui doit revenir : une structure JSON ou une courte description"
+					},
+					"timeout": {
+						"label": "Délai",
+						"description": "Combien de temps attendre la réponse, par exemple 30m, 4h ou 2d"
+					}
+				}
+			},
 			"transform": {
 				"label": "Transformer",
 				"description": "Remodeler ou filtrer des données",
@@ -3796,6 +3822,10 @@
 				"activityDecide": {
 					"label": "Décider",
 					"desc": "Classer ou juger des données"
+				},
+				"activityExpert": {
+					"label": "Expert",
+					"desc": "Un autre employé effectue l’étape"
 				},
 				"activityTransform": {
 					"label": "Transformer",
@@ -3918,6 +3948,7 @@
 			"loopSource": "La boucle « {id} » a besoin d’une source de données (ex. inputs.items)",
 			"httpUrl": "Le nœud HTTP « {id} » a besoin d’une URL",
 			"decideQuestions": "Le nœud Décider « {id} » a besoin de questions (un objet JSON de questions typées)",
+			"expertFields": "Le nœud Expert « {id} » a besoin d’un expert, d’une tâche et d’un délai",
 			"waitDuration": "Le nœud Attendre « {id} » a besoin d’une durée",
 			"needsIntent": "L’activité « {id} » de « {workflow} » a besoin d’une intention ou d’étapes",
 			"targetsTrigger": "Une connexion pointe vers le déclencheur",

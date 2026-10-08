@@ -3718,6 +3718,32 @@
 					}
 				}
 			},
+			"expert": {
+				"label": "Especialista",
+				"description": "Outro funcionário faz esta etapa; a execução espera a resposta",
+				"params": {
+					"expert": {
+						"label": "Especialista",
+						"description": "O colega que faz o trabalho: um id, usuário ou nome"
+					},
+					"task": {
+						"label": "Tarefa",
+						"description": "O que o especialista deve fazer"
+					},
+					"input": {
+						"label": "Entrada",
+						"description": "Uma referência que o especialista recebe, como '{{'nodes.fetch'}}'"
+					},
+					"output": {
+						"label": "Resposta esperada",
+						"description": "O que deve voltar: uma estrutura JSON ou uma descrição curta"
+					},
+					"timeout": {
+						"label": "Tempo limite",
+						"description": "Quanto tempo esperar a resposta, como 30m, 4h ou 2d"
+					}
+				}
+			},
 			"transform": {
 				"label": "Transformar",
 				"description": "Remodelar ou filtrar dados",
@@ -3796,6 +3822,10 @@
 				"activityDecide": {
 					"label": "Decidir",
 					"desc": "Classificar ou avaliar dados"
+				},
+				"activityExpert": {
+					"label": "Especialista",
+					"desc": "Outro funcionário faz a etapa"
 				},
 				"activityTransform": {
 					"label": "Transformar",
@@ -3918,6 +3948,7 @@
 			"loopSource": "A repetição “{id}” precisa de uma fonte de dados (ex.: inputs.items)",
 			"httpUrl": "O nó HTTP “{id}” precisa de uma URL",
 			"decideQuestions": "O nó Decidir “{id}” precisa de perguntas (um objeto JSON de perguntas tipadas)",
+			"expertFields": "O nó Especialista “{id}” precisa de um especialista, uma tarefa e um tempo limite",
 			"waitDuration": "O nó Esperar “{id}” precisa de um tempo de espera",
 			"needsIntent": "A atividade “{id}” em “{workflow}” precisa de uma intenção ou de passos",
 			"targetsTrigger": "Uma conexão aponta para o gatilho",

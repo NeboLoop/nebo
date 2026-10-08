@@ -3718,6 +3718,32 @@
 					}
 				}
 			},
+			"expert": {
+				"label": "Expert",
+				"description": "En annan medarbetare gör det här steget; körningen väntar på svaret",
+				"params": {
+					"expert": {
+						"label": "Expert",
+						"description": "Kollegan som gör arbetet: ett id, användarnamn eller namn"
+					},
+					"task": {
+						"label": "Uppgift",
+						"description": "Vad experten ska göra"
+					},
+					"input": {
+						"label": "Indata",
+						"description": "En referens som experten får, till exempel '{{'nodes.fetch'}}'"
+					},
+					"output": {
+						"label": "Förväntat svar",
+						"description": "Vad som ska komma tillbaka: en JSON-form eller en kort beskrivning"
+					},
+					"timeout": {
+						"label": "Tidsgräns",
+						"description": "Hur länge svaret väntas in, till exempel 30m, 4h eller 2d"
+					}
+				}
+			},
 			"transform": {
 				"label": "Omvandla",
 				"description": "Omforma eller filtrera data",
@@ -3796,6 +3822,10 @@
 				"activityDecide": {
 					"label": "Avgör",
 					"desc": "Klassificera eller bedöm data"
+				},
+				"activityExpert": {
+					"label": "Expert",
+					"desc": "En annan medarbetare gör steget"
 				},
 				"activityTransform": {
 					"label": "Omvandla",
@@ -3918,6 +3948,7 @@
 			"loopSource": "Loopen ”{id}” behöver en datakälla (t.ex. inputs.items)",
 			"httpUrl": "HTTP-noden ”{id}” behöver en URL",
 			"decideQuestions": "Avgör-noden ”{id}” behöver frågor (ett JSON-objekt med typade frågor)",
+			"expertFields": "Expertnoden ”{id}” behöver en expert, en uppgift och en tidsgräns",
 			"waitDuration": "Vänta-noden ”{id}” behöver en väntetid",
 			"needsIntent": "Aktiviteten ”{id}” i ”{workflow}” behöver en avsikt eller steg",
 			"targetsTrigger": "En koppling leder till utlösaren",
