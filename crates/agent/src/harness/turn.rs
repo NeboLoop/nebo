@@ -3162,6 +3162,7 @@ mod tests {
                     levels: PackLevels { medium: Some(model.into()), ..Default::default() },
                     fallback,
                     built_in: false,
+                    ..types::packs::nebo_ai()
                 })
                 .unwrap()
         };

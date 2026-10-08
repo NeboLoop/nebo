@@ -676,6 +676,11 @@ pub struct ProviderModel {
     #[serde(serialize_with = "opt_i64_as_bool")]
     pub preferred: Option<i64>,
     pub seeded_version: Option<String>,
+    /// `chat` or `decision` (a SystemOne-compatible decision model).
+    pub model_kind: String,
+    /// `catalog`, `added` (typed by hand) or `browsed` (picked from the
+    /// provider's list).
+    pub source: String,
     pub created_at: i64,
     pub updated_at: i64,
 }

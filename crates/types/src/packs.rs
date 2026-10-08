@@ -75,6 +75,50 @@ pub struct PackLevels {
     /// Calls and spoken replies.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub voice: Option<String>,
+    /// Quick yes/no and pick-one judgments (permissions, triage, memory):
+    /// a decision model (Jev or a SystemOne-compatible one). Empty: Nebo
+    /// AI's Jev through Janus.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub decisions: Option<String>,
+}
+
+/// Background work pinned to an Effort level. Absent: the work chooses.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PackLanes {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub heartbeat: Option<Effort>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scheduled: Option<Effort>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub communication: Option<Effort>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub helpers: Option<Effort>,
+}
+
+/// A provider's own reasoning effort, set per level.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ProviderEffort {
+    Low,
+    Medium,
+    High,
+}
+
+/// The provider effort each level runs at. Absent: the provider's default.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LevelEffort {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub instant: Option<ProviderEffort>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub low: Option<ProviderEffort>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub medium: Option<ProviderEffort>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub high: Option<ProviderEffort>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max: Option<ProviderEffort>,
 }
 
 impl PackLevels {
@@ -104,6 +148,14 @@ pub struct Pack {
     pub fallback: bool,
     /// The built-in Nebo AI pack: never edited or deleted.
     pub built_in: bool,
+    /// Janus Auto picks the level per step across this pack's models, with
+    /// the owner's keys passed per request (stored now; Janus routes later).
+    #[serde(default)]
+    pub route_through_janus: bool,
+    #[serde(default)]
+    pub lanes: PackLanes,
+    #[serde(default)]
+    pub level_effort: LevelEffort,
 }
 
 /// The built-in pack's id.
@@ -126,10 +178,14 @@ pub fn nebo_ai() -> Pack {
             high: janus("nebo-1-pro"),
             max: janus("nebo-1-pro"),
             vision: None,
-            voice: None,
+            voice: janus("nebo-1-voice"),
+            decisions: janus("jev-latest"),
         },
         fallback: false,
         built_in: true,
+        route_through_janus: false,
+        lanes: PackLanes::default(),
+        level_effort: LevelEffort::default(),
     }
 }
 
@@ -193,7 +249,7 @@ mod tests {
     use super::*;
 
     fn byo(levels: PackLevels) -> Pack {
-        Pack { id: "mine".into(), name: "Mine".into(), levels, fallback: true, built_in: false }
+        Pack { id: "mine".into(), name: "Mine".into(), levels, fallback: true, built_in: false, ..nebo_ai() }
     }
 
     #[test]
@@ -264,5 +320,21 @@ mod tests {
         assert_eq!(v["levels"], serde_json::json!({"medium": "a/m", "vision": "a/v"}));
         let back: PackLevels = serde_json::from_value(serde_json::json!({"high": "a/h"})).unwrap();
         assert_eq!(back.high.as_deref(), Some("a/h"));
+    }
+
+    #[test]
+    fn lanes_effort_and_routing_carry_as_the_contract_names_them() {
+        let mut p = byo(PackLevels { decisions: Some("systemone_compatible@k1/jev-latest".into()), ..Default::default() });
+        p.route_through_janus = true;
+        p.lanes.heartbeat = Some(Effort::Instant);
+        p.level_effort.max = Some(ProviderEffort::High);
+        let v = serde_json::to_value(&p).unwrap();
+        assert_eq!(v["routeThroughJanus"], true);
+        assert_eq!(v["lanes"], serde_json::json!({"heartbeat": "instant"}));
+        assert_eq!(v["levelEffort"], serde_json::json!({"max": "high"}));
+        assert_eq!(v["levels"]["decisions"], "systemone_compatible@k1/jev-latest");
+        // A pack saved before these fields reads with their defaults.
+        let old: Pack = serde_json::from_value(serde_json::json!({"id": "o", "name": "Old", "levels": {}, "fallback": true, "builtIn": false})).unwrap();
+        assert!(!old.route_through_janus && old.lanes == PackLanes::default());
     }
 }

@@ -26,6 +26,7 @@ pub(crate) async fn reload_providers(
     // Refresh the DB-held models in the selector (they're not in yaml)
     crate::inject_db_models(store, harness.selector(), "ollama");
     crate::inject_db_models(store, harness.selector(), "janus");
+    crate::inject_connection_models(store, harness.selector());
 }
 
 /// Whether a provider API key may arrive on this request. A key typed into a
@@ -83,6 +84,12 @@ pub async fn create_provider(
         .map_err(|e| to_error_response(types::NeboError::Internal(e)))?;
     let model = body["model"].as_str();
     let base_url = body["baseUrl"].as_str();
+    // A compatible URL is the whole point of those two kinds.
+    if matches!(provider, "openai_compatible" | "systemone_compatible")
+        && base_url.map(str::trim).is_none_or(str::is_empty)
+    {
+        return Err(to_error_response(types::NeboError::Validation("This provider needs its base URL.".into())));
+    }
     let priority = body["priority"].as_i64().unwrap_or(50);
     let auth_type = body["authType"].as_str();
     let metadata = body.get("metadata").map(|v| v.to_string());
@@ -864,6 +871,8 @@ mod picker_tests {
             kind: None,
             preferred: None,
             seeded_version: None,
+            model_kind: "chat".into(),
+            source: "catalog".into(),
             created_at: 0,
             updated_at: 0,
         }
@@ -945,6 +954,12 @@ pub struct PackBody {
     pub levels: types::packs::PackLevels,
     #[serde(default = "fallback_on")]
     pub fallback: bool,
+    #[serde(default)]
+    pub route_through_janus: bool,
+    #[serde(default)]
+    pub lanes: types::packs::PackLanes,
+    #[serde(default)]
+    pub level_effort: types::packs::LevelEffort,
 }
 
 fn fallback_on() -> bool {
@@ -959,7 +974,7 @@ fn pack_of(id: String, body: PackBody) -> Result<types::packs::Pack, types::Nebo
         return Err(types::NeboError::Validation("A pack needs a name.".into()));
     }
     let l = &body.levels;
-    for model in [&l.instant, &l.low, &l.medium, &l.high, &l.max, &l.vision, &l.voice].into_iter().flatten() {
+    for model in [&l.instant, &l.low, &l.medium, &l.high, &l.max, &l.vision, &l.voice, &l.decisions].into_iter().flatten() {
         let model = model.trim();
         let well_formed = model.split_once('/').is_some_and(|(p, m)| !p.is_empty() && !m.is_empty());
         if !model.is_empty() && (!well_formed || types::packs::parse_ref(model).is_some()) {
@@ -968,13 +983,121 @@ fn pack_of(id: String, body: PackBody) -> Result<types::packs::Pack, types::Nebo
     }
     // Auto is Janus's alone: a pack the owner makes runs at the level he set.
     let levels = types::packs::PackLevels { auto: None, ..body.levels };
-    Ok(types::packs::Pack { id, name, levels, fallback: body.fallback, built_in: false })
+    Ok(types::packs::Pack {
+        id,
+        name,
+        levels,
+        fallback: body.fallback,
+        built_in: false,
+        route_through_janus: body.route_through_janus,
+        lanes: body.lanes,
+        level_effort: body.level_effort,
+    })
 }
 
 /// GET /api/v1/intelligence-packs — every pack, Nebo AI first.
 pub async fn list_packs(State(state): State<AppState>) -> HandlerResult<serde_json::Value> {
     let packs = state.store.list_intelligence_packs().map_err(to_error_response)?;
-    Ok(Json(serde_json::json!({ "packs": packs })))
+    let default = state.harness.selector().configured();
+    Ok(Json(serde_json::json!({ "packs": packs, "default": default })))
+}
+
+#[derive(serde::Deserialize)]
+pub struct DefaultBody {
+    pub value: String,
+}
+
+/// PUT /api/v1/intelligence-packs/default — the bot's default (a pack ref
+/// `pack/<id>[/<level>]` or a model). Applies to the next turn.
+pub async fn set_default_pack(
+    State(state): State<AppState>,
+    Json(body): Json<DefaultBody>,
+) -> HandlerResult<serde_json::Value> {
+    let value = body.value.trim().to_string();
+    let known_pack = |id: &str| state.store.get_intelligence_pack(id).ok().flatten().is_some();
+    let valid = match types::packs::parse_ref(&value) {
+        Some((id, _)) => known_pack(id),
+        None => value.split_once('/').is_some_and(|(p, m)| !p.is_empty() && !m.is_empty()),
+    };
+    if !valid {
+        return Err(to_error_response(types::NeboError::Validation(format!("{value} isn't a pack or a model."))));
+    }
+    let mut cfg = config::ModelsConfig::load();
+    cfg.task_routing
+        .get_or_insert_with(|| config::models::TaskRouting {
+            vision: String::new(),
+            audio: String::new(),
+            reasoning: String::new(),
+            code: String::new(),
+            general: String::new(),
+            aux: String::new(),
+            fallbacks: std::collections::HashMap::new(),
+        })
+        .general = value.clone();
+    cfg.save().map_err(|e| to_error_response(types::NeboError::Server(e)))?;
+    state.harness.selector().set_task_routing(agent::selector::task_routes(&cfg));
+    Ok(Json(serde_json::json!({ "default": value })))
+}
+
+/// The label a provider kind reads as.
+fn kind_label(kind: &str) -> &str {
+    match kind {
+        "anthropic" => "Anthropic",
+        "openai" => "OpenAI",
+        "google" => "Google",
+        "openrouter" => "OpenRouter",
+        "deepseek" => "DeepSeek",
+        "openai_compatible" => "OpenAI-compatible",
+        "systemone_compatible" => "SystemOne-compatible",
+        other => other,
+    }
+}
+
+/// GET /api/v1/intelligence-packs/choices — every active model a pack slot
+/// may name, grouped by kind: Nebo AI's speeds, each connection's models,
+/// Ollama and the agents on this computer (`local`). Decisions always offers
+/// Nebo AI's Jev first.
+pub async fn list_pack_choices(State(state): State<AppState>) -> HandlerResult<serde_json::Value> {
+    let choice = |value: String, provider: &str, connection: &str, model: &str, caps: &[String], local: bool| {
+        serde_json::json!({ "value": value, "provider": provider, "connection": connection, "modelId": model, "capabilities": caps, "local": local })
+    };
+    let mut chat = Vec::new();
+    let mut decision = vec![choice("janus/jev-latest".into(), "Nebo AI", "", "jev-latest", &[], false)];
+    for m in state.store.list_active_provider_models("janus").unwrap_or_default() {
+        let caps: Vec<String> = m.capabilities.as_deref().and_then(|c| serde_json::from_str(c).ok()).unwrap_or_default();
+        if agent::selector::is_chat_model(&m.model_id, &caps, &[]) {
+            chat.push(choice(format!("janus/{}", m.model_id), "Nebo AI", "", &m.model_id, &[], false));
+        }
+    }
+    let catalog = config::ModelsConfig::load();
+    for p in state.store.list_auth_profiles().unwrap_or_default() {
+        if p.is_active.unwrap_or(0) == 0 || matches!(p.provider.as_str(), "neboai" | "ollama") {
+            continue;
+        }
+        let key = super::connections::connection_key(&p);
+        for m in super::connections::connection_models(&state.store, &catalog, &p).into_iter().filter(|m| m.is_active) {
+            let c = choice(format!("{key}/{}", m.model_id), kind_label(&p.provider), &p.name, &m.model_id, &m.capabilities, false);
+            if m.kind == "decision" { decision.push(c) } else { chat.push(c) }
+        }
+    }
+    for m in state.store.list_active_provider_models("ollama").unwrap_or_default() {
+        chat.push(choice(format!("ollama/{}", m.model_id), "Ollama", "", &m.model_id, &[], true));
+    }
+    let clis = config::detect_all_clis();
+    for cp in catalog.cli_providers.iter().filter(|c| c.is_active()) {
+        let installed = match cp.command.as_str() {
+            "claude" => clis.claude.installed,
+            "codex" => clis.codex.installed,
+            "gemini" => clis.gemini.installed,
+            _ => false,
+        };
+        if installed {
+            for model in &cp.models {
+                chat.push(choice(format!("{}/{model}", cp.id), &cp.display_name, "", model, &[], true));
+            }
+        }
+    }
+    Ok(Json(serde_json::json!({ "chat": chat, "decision": decision })))
 }
 
 /// POST /api/v1/intelligence-packs — make a pack.
@@ -1024,6 +1147,9 @@ mod pack_tests {
             name: name.into(),
             levels: PackLevels { medium: Some(medium.into()), auto: Some("janus/nebo-1".into()), ..Default::default() },
             fallback: true,
+            route_through_janus: false,
+            lanes: Default::default(),
+            level_effort: Default::default(),
         }
     }
 

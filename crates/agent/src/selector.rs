@@ -34,6 +34,9 @@ const NOT_CHAT: &[&str] = &[
     "image_generation",
     "image-generation",
     "rerank",
+    // A decision model (Jev and other SystemOne-compatible ones) judges; it
+    // never answers a conversation.
+    "decision",
 ];
 
 /// The CLI providers: their models are the CLI's own names, not catalog rows.
@@ -254,14 +257,17 @@ impl ModelSelector {
         *lock = Some(new_fuzzy);
     }
 
-    /// Get model info by "provider/model" ID.
+    /// Get model info by "provider/model" ID. A connection's model
+    /// (`<kind>@<profile>/<model>`) is one of its own (typed or browsed),
+    /// else the vendor's catalog entry for that model.
     pub fn get_model_info(&self, model_id: &str) -> Option<ModelInfo> {
         let (provider_id, model_name) = parse_model_id(model_id);
+        let kind = provider_id.split('@').next().unwrap_or(provider_id);
         let runtime = self.runtime_models.read().unwrap();
-        runtime
-            .get(provider_id)
-            .and_then(|models| models.iter().find(|m| m.id == model_name))
-            .or_else(|| self.config.provider_models.get(provider_id)?.iter().find(|m| m.id == model_name))
+        [provider_id, kind]
+            .into_iter()
+            .find_map(|p| runtime.get(p).and_then(|models| models.iter().find(|m| m.id == model_name)))
+            .or_else(|| self.config.provider_models.get(kind)?.iter().find(|m| m.id == model_name))
             .cloned()
     }
 
@@ -360,7 +366,7 @@ impl ModelSelector {
         if !loaded.is_empty() && !loaded.iter().any(|p| p == provider_id) {
             return false;
         }
-        if CLI_PROVIDERS.contains(&provider_id) {
+        if CLI_PROVIDERS.contains(&provider_id.split('@').next().unwrap_or(provider_id)) {
             return !loaded.is_empty();
         }
         self.get_model_info(model_id).is_some_and(|m| m.chats())

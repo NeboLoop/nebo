@@ -434,6 +434,19 @@ fn store_janus_listing(store: &db::Store, listing: JanusListing) -> Result<usize
 /// in models.yaml, so the selector (and its fuzzy matcher, which would
 /// otherwise map an unknown "janus/nebo-1-pro" to the nearest known name)
 /// needs them injected separately.
+/// Every connection's own models (`<kind>@<profile>` rows: typed by hand or
+/// picked while browsing), so a turn may send to them.
+/// ponytail: a connection whose last model was removed keeps its stale list
+/// until restart; clear per key if that ever matters.
+pub fn inject_connection_models(store: &db::Store, selector: &agent::ModelSelector) {
+    let Ok(all) = store.list_all_provider_models() else { return };
+    let keys: std::collections::BTreeSet<String> =
+        all.into_iter().map(|m| m.provider).filter(|p| p.contains('@')).collect();
+    for key in keys {
+        inject_db_models(store, selector, &key);
+    }
+}
+
 pub fn inject_db_models(store: &db::Store, selector: &agent::ModelSelector, provider: &str) {
     if let Ok(db_models) = store.list_active_provider_models(provider) {
         if !db_models.is_empty() {
@@ -447,11 +460,17 @@ pub fn inject_db_models(store: &db::Store, selector: &agent::ModelSelector, prov
                     input_price: 0.0,
                     output_price: 0.0,
                     cached_input_price: 0.0,
-                    capabilities: m
-                        .capabilities
-                        .as_ref()
-                        .and_then(|c| serde_json::from_str(c).ok())
-                        .unwrap_or_default(),
+                    capabilities: {
+                        let mut caps: Vec<String> = m
+                            .capabilities
+                            .as_ref()
+                            .and_then(|c| serde_json::from_str(c).ok())
+                            .unwrap_or_default();
+                        if m.model_kind == "decision" {
+                            caps.push("decision".into());
+                        }
+                        caps
+                    },
                     kind: m
                         .kind
                         .as_ref()
@@ -655,6 +674,36 @@ pub fn build_providers(
                     profile.model.clone().unwrap_or(default_model),
                 )))
             }
+            // OpenRouter speaks the OpenAI format at its own fixed URL.
+            "openrouter" => {
+                let mut p = ai::OpenAIProvider::with_base_url(
+                    auth::credential::profile_key(profile),
+                    profile.model.clone().unwrap_or_default(),
+                    "https://openrouter.ai/api/v1".into(),
+                );
+                p.set_provider_id("openrouter");
+                Some(Arc::new(p))
+            }
+            // Any OpenAI-compatible URL (Groq, Together, DeepSeek, xAI,
+            // Mistral, Azure, LM Studio, vLLM…): the owner's base URL.
+            "openai_compatible" => match profile.base_url.as_deref().map(str::trim).filter(|u| !u.is_empty()) {
+                Some(url) => {
+                    let mut p = ai::OpenAIProvider::with_base_url(
+                        auth::credential::profile_key(profile),
+                        profile.model.clone().unwrap_or_default(),
+                        url.to_string(),
+                    );
+                    p.set_provider_id("openai_compatible");
+                    Some(Arc::new(p))
+                }
+                None => {
+                    warn!(profile_id = %profile.id, "OpenAI-compatible provider has no base URL, skipping");
+                    None
+                }
+            },
+            // Decision models (Jev and other SystemOne-compatible ones) are
+            // not chat providers: the decide client reaches them.
+            "systemone_compatible" => None,
             "ollama" => {
                 let default_model = models_cfg
                     .default_model_for_provider("ollama")
@@ -745,7 +794,13 @@ pub fn build_providers(
             if profile.provider == "neboai" {
                 gateway_providers.push(p);
             } else {
-                providers.push(p);
+                // Every key is its own connection (`<kind>@<profile id>`), so
+                // two keys of one vendor are told apart; the first of each
+                // kind also answers to the bare kind, as before.
+                providers.push(Arc::new(ai::Connection::new(&profile.provider, &profile.id, p.clone())));
+                if !providers.iter().any(|q| q.id() == p.id()) {
+                    providers.push(p);
+                }
             }
         }
     }
@@ -2056,6 +2111,7 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // Inject the DB-held models (Ollama auto-discovery, the Janus speed sync)
     inject_db_models(&store, &selector, "ollama");
     inject_db_models(&store, &selector, "janus");
+    inject_connection_models(&store, &selector);
 
     // Set loaded providers and rebuild fuzzy with user aliases
     selector.set_loaded_providers(active_provider_ids);
