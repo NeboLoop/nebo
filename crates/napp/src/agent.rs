@@ -591,8 +591,10 @@ pub struct AgentActivity {
     /// yet never reached it (Vivid resolve-and-record kept the full roster),
     /// and the same silent-drop class as the ballast interfaceBindings
     /// incident.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub tools: Vec<String>,
+    /// `None` (undeclared) and `Some([])` (only the minimal runtime set)
+    /// differ, so an empty declaration must survive the round trip.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tools: Option<Vec<String>>,
     /// Mirrors `Activity::requires_tools` (both spellings, like the engine).
     #[serde(default, alias = "requiresTools", skip_serializing_if = "Vec::is_empty")]
     pub requires_tools: Vec<String>,
