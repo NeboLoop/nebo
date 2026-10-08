@@ -24,6 +24,7 @@ pub mod permissions;
 pub mod phone_location;
 pub mod plugins;
 pub mod provider;
+pub mod connections;
 pub mod setup;
 pub mod sheet;
 pub mod telemetry;
