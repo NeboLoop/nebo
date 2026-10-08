@@ -10,6 +10,31 @@ fn opt_i64_as_bool<S: Serializer>(val: &Option<i64>, s: S) -> Result<S::Ok, S::E
     s.serialize_bool(val.unwrap_or(0) != 0)
 }
 
+/// A metadata key whose value is a credential: a token, a secret, a
+/// password or a key.
+fn is_secret_key(key: &str) -> bool {
+    let k = key.to_ascii_lowercase();
+    ["token", "secret", "password", "api_key", "apikey"].iter().any(|s| k.contains(s))
+}
+
+/// Serialize an auth profile's metadata (a JSON object string) without its
+/// credentials: a refresh token never leaves through the API, to this
+/// computer's own app or to anyone on the tunnel. Metadata that isn't a JSON
+/// object can't be told apart from a secret, so it is left out whole.
+fn metadata_without_secrets<S: Serializer>(val: &Option<String>, s: S) -> Result<S::Ok, S::Error> {
+    let public = val
+        .as_deref()
+        .and_then(|raw| serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(raw).ok())
+        .map(|mut meta| {
+            meta.retain(|k, _| !is_secret_key(k));
+            serde_json::Value::Object(meta).to_string()
+        });
+    match public {
+        Some(m) => s.serialize_some(&m),
+        None => s.serialize_none(),
+    }
+}
+
 /// Serialize an Option<String> that contains a JSON array string as a proper JSON array.
 /// Falls back to null if the string isn't valid JSON array.
 fn json_string_as_array<S: Serializer>(val: &Option<String>, s: S) -> Result<S::Ok, S::Error> {
@@ -139,6 +164,7 @@ pub struct AuthProfile {
     pub last_used_at: Option<i64>,
     pub usage_count: Option<i64>,
     pub error_count: Option<i64>,
+    #[serde(serialize_with = "metadata_without_secrets")]
     pub metadata: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
@@ -1145,4 +1171,49 @@ pub struct OutcomeCount {
     pub outcome: String,
     pub count: i64,
     pub cost_microcents: i64,
+}
+
+#[cfg(test)]
+mod auth_profile_serialize_tests {
+    /// A sentinel no hub issues; any appearance in a response is a leak.
+    const REFRESH: &str = "rt-SENTINEL-refresh-0000000000";
+    const ACCESS: &str = "at-SENTINEL-access-0000000000";
+
+    /// Every API response that carries a profile is this struct serialized
+    /// (`GET /api/v1/providers`, get, create, update): the NeboAI refresh
+    /// token, the key and any other credential in the metadata stay home;
+    /// the account facts the app shows still go.
+    #[test]
+    fn a_serialized_profile_carries_no_credential() {
+        let store = crate::Store::new(":memory:").unwrap();
+        let meta = serde_json::json!({
+            "owner_id": "owner-1",
+            "email": "owner@example.com",
+            "janus_provider": "true",
+            "refresh_token": REFRESH,
+            "access_token": ACCESS,
+            "client_secret": REFRESH,
+        })
+        .to_string();
+        store
+            .create_auth_profile("n", "NeboAI", "neboai", ACCESS, None, None, 0, 1, Some("oauth"), Some(&meta))
+            .unwrap();
+        store
+            .create_auth_profile("raw", "Odd", "search-google", "k", None, None, 0, 1, None, Some(REFRESH))
+            .unwrap();
+        let list = serde_json::json!({ "profiles": store.list_auth_profiles().unwrap() }).to_string();
+        let one = serde_json::to_string(&store.get_auth_profile("n").unwrap()).unwrap();
+        for out in [&list, &one] {
+            assert!(!out.contains(REFRESH), "a refresh token reached an API response: {out}");
+            assert!(!out.contains(ACCESS), "a token reached an API response: {out}");
+            assert!(!out.contains("refresh_token"), "{out}");
+        }
+        let profile: serde_json::Value = serde_json::from_str(&one).unwrap();
+        let shown: serde_json::Value = serde_json::from_str(profile["metadata"].as_str().unwrap()).unwrap();
+        assert_eq!(shown["janus_provider"], "true", "what the app reads still goes");
+        assert_eq!(shown["email"], "owner@example.com");
+        // Stored as it was: only the response leaves the secret out.
+        let stored = store.get_auth_profile("n").unwrap().unwrap().metadata.unwrap();
+        assert!(stored.contains(REFRESH));
+    }
 }
