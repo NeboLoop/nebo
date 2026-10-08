@@ -222,6 +222,30 @@ pub(crate) fn param_str<'a>(activity: &'a Activity, key: &str) -> &'a str {
         .unwrap_or("")
 }
 
+/// How long a `command` activity's step may run when it names no
+/// `params.timeout_secs`, and the most it may name (the `run_command` tool's
+/// own cap). Past it the step is stopped and the activity fails.
+pub(crate) const COMMAND_TIMEOUT_DEFAULT_SECS: u64 = 120;
+pub(crate) const COMMAND_TIMEOUT_MAX_SECS: u64 = 600;
+
+/// A `command` activity's timeout in seconds: `params.timeout_secs`, a
+/// positive whole number, capped at `COMMAND_TIMEOUT_MAX_SECS`; absent, the
+/// default. The same function validates at parse time and sets the step's
+/// timeout at run time.
+pub(crate) fn command_timeout_secs(activity: &Activity) -> Result<u64, String> {
+    let Some(raw) = activity.params.as_ref().and_then(|p| p.get("timeout_secs")) else {
+        return Ok(COMMAND_TIMEOUT_DEFAULT_SECS);
+    };
+    match raw.as_u64().filter(|s| *s > 0) {
+        Some(secs) => Ok(secs.min(COMMAND_TIMEOUT_MAX_SECS)),
+        None => Err(format!(
+            "command activity '{}': params.timeout_secs must be a whole number of seconds \
+             from 1 to {COMMAND_TIMEOUT_MAX_SECS} (default {COMMAND_TIMEOUT_DEFAULT_SECS}), got {raw}",
+            activity.id
+        )),
+    }
+}
+
 /// The questions a `decide` activity asks, in the Jev wire shape
 /// (`{ "<name>": { "type": "choice"|"score"|"noul", "instructions", "criteria" } }`).
 /// Accepts an object or a JSON string (the builder's textarea). The same
@@ -484,6 +508,7 @@ fn validate_activities(def: &WorkflowDef) -> Result<(), WorkflowError> {
                         activity.id
                     )));
                 }
+                command_timeout_secs(activity).map_err(WorkflowError::Validation)?;
             }
             // Typed decision — the questions are the contract; routing on the
             // answer stays in a condition node.
@@ -1097,6 +1122,21 @@ mod tests {
             "[]"
         )
         .is_ok());
+        // command: timeout_secs, when named, is a positive whole number of seconds.
+        assert!(wf(
+            r#"[{"id":"c","type":"command","params":{"command":"echo hi","timeout_secs":300}}]"#,
+            "[]"
+        )
+        .is_ok());
+        for bad in ["0", "-5", "1.5", "\"300\"", "null"] {
+            let acts = format!(
+                r#"[{{"id":"c","type":"command","params":{{"command":"echo hi","timeout_secs":{bad}}}}}]"#
+            );
+            assert!(
+                wf(&acts, "[]").is_err(),
+                "timeout_secs {bad} must be refused"
+            );
+        }
         assert!(wf(
             r#"[{"id":"h","type":"http","params":{"url":"https://example.com"}}]"#,
             "[]"

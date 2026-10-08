@@ -623,10 +623,15 @@ async fn run_command<'a>(
 
     let data = data_context(ctx, scope);
     let command = interpolate_context(param_str(activity, "command"), &data);
+    // `params.timeout_secs` (default 120, at most 600): past it the step is
+    // stopped and the activity fails. Validated at parse time.
+    let timeout_secs = crate::parser::command_timeout_secs(activity)
+        .unwrap_or(crate::parser::COMMAND_TIMEOUT_DEFAULT_SECS);
 
     let input = serde_json::json!({
         "command": command,
         "description": format!("Workflow step {}", activity.id),
+        "timeout": timeout_secs * 1000,
     });
     // The step runs as the employee that owns the workflow, through the one
     // door every command takes (`run_command` in the registry): the
@@ -2920,6 +2925,90 @@ mod walk_tests {
             peak.load(Ordering::SeqCst),
             1,
             "commands must queue on the tool permit, not all run at once"
+        );
+    }
+
+    /// A command node's `params.timeout_secs` reaches the step as its
+    /// timeout (the tool takes milliseconds): 120 s when unnamed, capped at
+    /// 600 s.
+    #[tokio::test]
+    async fn test_command_node_timeout_secs_reaches_the_step() {
+        struct RecordingShell {
+            timeouts: Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
+        }
+        impl DynTool for RecordingShell {
+            fn name(&self) -> &str {
+                "run_command"
+            }
+            fn description(&self) -> String {
+                String::new()
+            }
+            fn schema(&self) -> serde_json::Value {
+                serde_json::json!({})
+            }
+            fn execute_dyn<'a>(
+                &'a self,
+                _ctx: &'a tools::ToolContext,
+                input: serde_json::Value,
+            ) -> std::pin::Pin<Box<dyn std::future::Future<Output = tools::ToolResult> + Send + 'a>>
+            {
+                self.timeouts.lock().unwrap().push(input["timeout"].clone());
+                Box::pin(async move { tools::ToolResult::ok("done") })
+            }
+        }
+
+        let provider = MockProvider::new(&[]);
+        let def = parse_workflow(
+            r#"{
+            "version":"1.0","id":"t","name":"T",
+            "activities":[
+                {"id":"a","type":"command","params":{"command":"echo a"}},
+                {"id":"b","type":"command","params":{"command":"echo b","timeout_secs":300}},
+                {"id":"c","type":"command","params":{"command":"echo c","timeout_secs":900}}],
+            "connections":[
+                {"from":"__trigger__","to":"a"},{"from":"a","to":"b"},
+                {"from":"b","to":"c"},{"from":"c","to":"__emit__"}]
+        }"#,
+        )
+        .expect("valid def");
+        let store = test_store();
+        let run_id = uuid::Uuid::new_v4().to_string();
+        store
+            .create_workflow_run(&run_id, &def.id, "manual", None, None, None, None)
+            .expect("run row");
+        let timeouts = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let tools: Vec<Box<dyn DynTool>> = vec![Box::new(RecordingShell {
+            timeouts: timeouts.clone(),
+        })];
+        let result = execute_graph(
+            &def,
+            "",
+            "test-owner",
+            false,
+            &serde_json::json!({}),
+            &store,
+            None,
+            &ScriptedLoop::new(&provider),
+            &tools,
+            None,
+            &run_id,
+            None,
+            None,
+            None,
+            Vec::new(),
+            None,
+            None,
+            None,
+        )
+        .await;
+        result.expect("run ok");
+        assert_eq!(
+            *timeouts.lock().unwrap(),
+            vec![
+                serde_json::json!(120_000),
+                serde_json::json!(300_000),
+                serde_json::json!(600_000)
+            ]
         );
     }
 
