@@ -1524,7 +1524,7 @@ impl PersonaTool {
             ));
         }
         if let Some(ref rj) = agent_json_str {
-            if let Err(e) = Self::validated_frontmatter(rj) {
+            if let Err(e) = Self::validated_frontmatter("", rj) {
                 return ToolResult::error(e);
             }
         }
@@ -1763,10 +1763,24 @@ impl PersonaTool {
     /// agent.json is parsed before it is written, never after: a file the
     /// loader rejects must not reach the disk or the DB, or the employee is
     /// refused on every scan from then on.
-    fn validated_frontmatter(frontmatter: &str) -> Result<(), String> {
-        napp::agent::parse_agent_config(frontmatter)
-            .map(|_| ())
-            .map_err(|e| format!("agent.json would be invalid and was not saved: {}", e))
+    /// `before` is the agent.json being replaced ("" for a new employee):
+    /// workflow errors it already had do not block this save, new ones do.
+    fn validated_frontmatter(before: &str, frontmatter: &str) -> Result<(), String> {
+        let config = napp::agent::parse_agent_config(frontmatter)
+            .map_err(|e| format!("agent.json would be invalid and was not saved: {}", e))?;
+        // Workflow wiring (conditions, placeholders, upstream data,
+        // reachability): new errors refuse the save, warnings are logged.
+        let issues = napp::workflow_check::check_agent(&config);
+        let prior = napp::agent::parse_agent_config(before)
+            .map(|c| napp::workflow_check::check_agent(&c))
+            .unwrap_or_default();
+        if let Some(errors) = napp::workflow_check::new_error_text(&prior, &issues) {
+            return Err(format!("agent.json was not saved; fix these workflow steps:\n{errors}"));
+        }
+        for issue in &issues {
+            tracing::warn!(%issue, "workflow check");
+        }
+        Ok(())
     }
 
     async fn handle_update(&self, input: &serde_json::Value) -> ToolResult {
@@ -1897,7 +1911,7 @@ impl PersonaTool {
                     serde_json::from_str(&current_frontmatter).unwrap_or(serde_json::json!({}));
                 fm["inputs"] = schema.clone();
                 current_frontmatter = fm.to_string();
-                if let Err(e) = Self::validated_frontmatter(&current_frontmatter) {
+                if let Err(e) = Self::validated_frontmatter(&db_agent.frontmatter, &current_frontmatter) {
                     return ToolResult::error(e);
                 }
                 if agent_dir.exists() {
@@ -2098,7 +2112,7 @@ impl PersonaTool {
                     }
 
                     current_frontmatter = fm.to_string();
-                    if let Err(e) = Self::validated_frontmatter(&current_frontmatter) {
+                    if let Err(e) = Self::validated_frontmatter(&db_agent.frontmatter, &current_frontmatter) {
                         return ToolResult::error(e);
                     }
                     if agent_dir.exists() {
@@ -2197,7 +2211,7 @@ impl PersonaTool {
                 current_frontmatter = existing.to_string();
 
                 // Write to filesystem
-                if let Err(e) = Self::validated_frontmatter(&current_frontmatter) {
+                if let Err(e) = Self::validated_frontmatter(&db_agent.frontmatter, &current_frontmatter) {
                     return ToolResult::error(e);
                 }
                 if agent_dir.exists() {
@@ -2218,7 +2232,7 @@ impl PersonaTool {
                 current_frontmatter = existing.to_string();
 
                 // Write to filesystem so agent.json matches the DB
-                if let Err(e) = Self::validated_frontmatter(&current_frontmatter) {
+                if let Err(e) = Self::validated_frontmatter(&db_agent.frontmatter, &current_frontmatter) {
                     return ToolResult::error(e);
                 }
                 if agent_dir.exists() {
@@ -2269,7 +2283,7 @@ impl PersonaTool {
                 current_frontmatter = existing.to_string();
 
                 // Write merged agent.json to filesystem
-                if let Err(e) = Self::validated_frontmatter(&current_frontmatter) {
+                if let Err(e) = Self::validated_frontmatter(&db_agent.frontmatter, &current_frontmatter) {
                     return ToolResult::error(e);
                 }
                 if agent_dir.exists() {
@@ -2279,7 +2293,7 @@ impl PersonaTool {
         }
 
         // Persist DB update
-        if let Err(e) = Self::validated_frontmatter(&current_frontmatter) {
+        if let Err(e) = Self::validated_frontmatter(&db_agent.frontmatter, &current_frontmatter) {
             return ToolResult::error(e);
         }
         if let Err(e) = self.store.update_agent(
@@ -4014,10 +4028,10 @@ mod tests {
     /// column is an empty config, which validates; the raw empty string does not.
     #[test]
     fn empty_frontmatter_is_an_empty_config_not_an_invalid_one() {
-        assert!(PersonaTool::validated_frontmatter("").is_err());
+        assert!(PersonaTool::validated_frontmatter("", "").is_err());
         let fm = PersonaTool::stored_frontmatter("");
         assert_eq!(fm, "{}");
-        assert!(PersonaTool::validated_frontmatter(&fm).is_ok());
+        assert!(PersonaTool::validated_frontmatter("", &fm).is_ok());
         assert_eq!(PersonaTool::stored_frontmatter("{\"workflows\":{}}"), "{\"workflows\":{}}");
     }
 
@@ -4032,8 +4046,8 @@ mod tests {
 
     #[test]
     fn invalid_agent_json_is_refused_before_any_write() {
-        assert!(PersonaTool::validated_frontmatter("{").is_err());
-        assert!(PersonaTool::validated_frontmatter("{}").is_ok());
+        assert!(PersonaTool::validated_frontmatter("", "{").is_err());
+        assert!(PersonaTool::validated_frontmatter("", "{}").is_ok());
     }
 
     fn loaded(name: &str, agent_md: &str, napp_path: Option<&str>) -> napp::agent_loader::LoadedAgent {
@@ -4318,7 +4332,7 @@ export default function App({ label }: Props = { label: "hi" }) { return <div>{l
         .unwrap();
         assert_eq!(valid["workflows"]["inbox"]["trigger"]["sources"], json!(["email.received"]));
         assert_eq!(valid["workflows"]["brief"]["trigger"]["type"], "schedule");
-        assert!(PersonaTool::validated_frontmatter(&valid.to_string()).is_ok());
+        assert!(PersonaTool::validated_frontmatter("", &valid.to_string()).is_ok());
     }
 
     #[test]

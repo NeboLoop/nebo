@@ -275,8 +275,8 @@ pub(crate) fn decide_questions(
 ///
 /// A defaulted answer carries confidence 0, so a downstream condition that
 /// checks `.confidence` treats it as unsure. A question with no declared
-/// default gets no answer at all: every `.choice == ...` condition on it
-/// takes its False edge. Choice options are stored sorted, so there is no
+/// default is recorded unanswered (null fields, confidence 0): every
+/// `.choice == ...` condition on it takes its False edge. Choice options are stored sorted, so there is no
 /// "first declared" option to fall back on, and an arbitrary option could
 /// route a run down an action branch nobody chose.
 pub(crate) fn decide_defaults(
@@ -436,6 +436,16 @@ pub fn validate_workflow(def: &WorkflowDef) -> Result<(), WorkflowError> {
     validate_activities(def)?;
     if !def.connections.is_empty() {
         validate_connections(def)?;
+    }
+
+    // Wiring: conditions that cannot parse, `${nodes...}` placeholders, data
+    // read from steps that are not upstream, unreachable steps. Errors only:
+    // warnings are for the author at save and publish time.
+    let value = serde_json::to_value(def).map_err(|e| WorkflowError::Validation(e.to_string()))?;
+    if let Some(errors) =
+        napp::workflow_check::error_text(&napp::workflow_check::check_workflow(&def.id, &value))
+    {
+        return Err(WorkflowError::Validation(errors));
     }
 
     Ok(())

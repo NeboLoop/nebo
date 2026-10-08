@@ -943,6 +943,14 @@ async fn run_decide<'a>(
                     output.insert(name.clone(), v);
                 }
             }
+            // A question with no default is recorded as unanswered: null
+            // fields at confidence 0. A condition reads them (a `.choice ==`
+            // test is False) instead of failing on a missing field.
+            for name in questions.keys() {
+                output.entry(name.to_string()).or_insert_with(|| {
+                    serde_json::json!({"choice": null, "score": null, "noul": null, "confidence": 0.0})
+                });
+            }
             output.insert("model".into(), serde_json::Value::String(String::new()));
             output.insert("defaulted".into(), serde_json::Value::Bool(true));
             let _ = ctx.store.create_activity_result(
@@ -1039,8 +1047,14 @@ async fn run_condition<'a>(
     let started_at = chrono::Utc::now().timestamp();
     let data = data_context(ctx, scope);
     let context_text = prior_context_for(ctx, scope, &activity.id);
+    let mut parents: Vec<&str> = Vec::new();
+    for c in &ctx.def.connections {
+        if c.to == activity.id && c.from != TRIGGER_NODE && !parents.contains(&c.from.as_str()) {
+            parents.push(c.from.as_str());
+        }
+    }
 
-    match evaluate_condition(activity, &data, &context_text) {
+    match evaluate_condition(activity, &data, &context_text, &parents) {
         Ok(verdict) => {
             let completed_at = chrono::Utc::now().timestamp();
             let _ = ctx.store.create_activity_result(
@@ -1671,14 +1685,7 @@ fn resolve_path(root: &serde_json::Value, path: &str) -> Option<serde_json::Valu
 }
 
 fn truthy(v: &serde_json::Value) -> bool {
-    match v {
-        serde_json::Value::Null => false,
-        serde_json::Value::Bool(b) => *b,
-        serde_json::Value::Number(n) => n.as_f64().map(|f| f != 0.0).unwrap_or(true),
-        serde_json::Value::String(s) => !s.trim().is_empty(),
-        serde_json::Value::Array(a) => !a.is_empty(),
-        serde_json::Value::Object(o) => !o.is_empty(),
-    }
+    napp::condition::truthy(v)
 }
 
 fn value_as_string(v: &serde_json::Value) -> String {
@@ -1689,26 +1696,29 @@ fn value_as_string(v: &serde_json::Value) -> String {
 }
 
 /// Deterministic condition evaluation. Modes:
+/// - `expression` (default, or empty): the condition language in
+///   [`napp::condition`]: `&&`, `||`, `!`, parentheses and comparisons over
+///   `inputs.`, `nodes.`, `item` paths and bare names (fields of the one
+///   direct parent's output). Text is quoted. Anything it cannot parse, and
+///   any reference that does not resolve, fails the step; it is never a
+///   silent False.
 /// - `exists`:   expression is a data path; true if it resolves truthy.
 /// - `contains`: "left contains needle" resolves `left` as a path (falling
 ///   back to the literal text) and substring-matches; a bare expression is
 ///   substring-matched against the upstream context text.
 /// - `regex`:    pattern matched against the upstream context text.
-/// - `expression` (default): `<path> <op> <value>` with ==, !=, >=, <=, >, <
-///   (numeric when both sides are numeric, else string equality), or a bare
-///   path evaluated for truthiness.
+///
+/// `parents` are the condition's direct parent steps (trigger excluded).
 fn evaluate_condition(
     activity: &Activity,
     data: &serde_json::Value,
     context_text: &str,
+    parents: &[&str],
 ) -> Result<bool, WorkflowError> {
     let expression = param_str(activity, "expression").trim().to_string();
-    let mode = {
-        let m = param_str(activity, "mode").trim().to_string();
-        if m.is_empty() { "expression".to_string() } else { m }
-    };
+    let fail = |msg: String| WorkflowError::ActivityFailed(activity.id.clone(), msg);
 
-    match mode.as_str() {
+    match param_str(activity, "mode").trim() {
         "exists" => Ok(resolve_path(data, &expression)
             .map(|v| truthy(&v))
             .unwrap_or(false)),
@@ -1723,55 +1733,74 @@ fn evaluate_condition(
             }
         }
         "regex" => {
-            let re = regex::Regex::new(&expression).map_err(|e| {
-                WorkflowError::ActivityFailed(
-                    activity.id.clone(),
-                    format!("invalid regex '{}': {}", expression, e),
-                )
-            })?;
+            let re = regex::Regex::new(&expression)
+                .map_err(|e| fail(format!("invalid regex '{}': {}", expression, e)))?;
             Ok(re.is_match(context_text))
         }
-        _ => {
-            // expression mode: find a comparator (longest first).
-            for op in ["==", "!=", ">=", "<=", ">", "<"] {
-                if let Some((left, right)) = expression.split_once(op) {
-                    let left_val = resolve_path(data, left.trim());
-                    let right_raw = right.trim().trim_matches('"').trim_matches('\'');
-                    let left_num = left_val.as_ref().and_then(|v| match v {
-                        serde_json::Value::Number(n) => n.as_f64(),
-                        serde_json::Value::String(s) => s.trim().parse::<f64>().ok(),
-                        _ => None,
-                    });
-                    let right_num = right_raw.parse::<f64>().ok();
-                    if let (Some(l), Some(r)) = (left_num, right_num) {
-                        return Ok(match op {
-                            "==" => l == r,
-                            "!=" => l != r,
-                            ">=" => l >= r,
-                            "<=" => l <= r,
-                            ">" => l > r,
-                            _ => l < r,
-                        });
-                    }
-                    let left_str = left_val.map(|v| value_as_string(&v)).unwrap_or_default();
-                    return Ok(match op {
-                        "==" => left_str == right_raw,
-                        "!=" => left_str != right_raw,
-                        // Ordering comparators on non-numeric values compare
-                        // lexicographically — deterministic, documented.
-                        ">=" => left_str.as_str() >= right_raw,
-                        "<=" => left_str.as_str() <= right_raw,
-                        ">" => left_str.as_str() > right_raw,
-                        _ => left_str.as_str() < right_raw,
-                    });
-                }
-            }
-            // Bare path: truthiness.
-            Ok(resolve_path(data, &expression)
-                .map(|v| truthy(&v))
-                .unwrap_or(false))
+        "" | "expression" => {
+            let parsed = napp::condition::parse(&expression)
+                .map_err(|e| fail(format!("condition `{expression}` does not parse: {e}")))?;
+            napp::condition::eval(&parsed, &|r| resolve_condition_ref(data, parents, r))
+                .map_err(|e| fail(format!("condition `{expression}`: {e}")))
         }
+        other => Err(fail(format!(
+            "condition mode '{other}' is not one of expression, contains, exists, regex"
+        ))),
     }
+}
+
+/// Resolve one condition reference. Rooted paths read the data context
+/// directly; a bare name is a field of the single direct parent's output.
+fn resolve_condition_ref(
+    data: &serde_json::Value,
+    parents: &[&str],
+    reference: &napp::condition::Reference,
+) -> Result<serde_json::Value, String> {
+    use napp::condition::Reference;
+    let path = match reference {
+        Reference::Rooted(p) => p.clone(),
+        Reference::Parent(field) => match parents {
+            [one] => format!("nodes.{one}.{field}"),
+            [] => {
+                return Err(format!(
+                    "'{field}' names a field of the step feeding this condition, but no step feeds it; \
+                     write inputs.{field}"
+                ));
+            }
+            many => {
+                return Err(format!(
+                    "'{field}' names a field of the step feeding this condition, but {} steps feed it; \
+                     write nodes.<step>.{field}",
+                    many.len()
+                ));
+            }
+        },
+    };
+    let segments: Vec<&str> = path.split('.').collect();
+    let mut current = data;
+    for (i, seg) in segments.iter().enumerate() {
+        current = match current {
+            serde_json::Value::Object(map) => map.get(*seg),
+            serde_json::Value::Array(items) => seg.parse::<usize>().ok().and_then(|n| items.get(n)),
+            _ => None,
+        }
+        .ok_or_else(|| {
+            let shown = match reference {
+                Reference::Rooted(p) => p.clone(),
+                Reference::Parent(f) => format!("{f} (read as {path})"),
+            };
+            if i == 0 || (segments[0] == "nodes" && i == 1) {
+                format!("{shown} did not resolve: '{}' has no output yet", segments[..=i].join("."))
+            } else {
+                format!(
+                    "{shown} did not resolve: {} has no '{}'; test for presence with mode \"exists\"",
+                    segments[..i].join("."),
+                    seg
+                )
+            }
+        })?;
+    }
+    Ok(current.clone())
 }
 
 #[cfg(test)]
@@ -3072,6 +3101,57 @@ mod walk_tests {
         assert_eq!(run_status(&store, &run_id), "completed");
     }
 
+    /// A compound gate on bare names (the shape that silently routed False
+    /// in 42 published conditions) opens on the parent's JSON fields; a gate
+    /// reading a field the parent never wrote fails the run loudly.
+    #[tokio::test]
+    async fn test_compound_bare_name_condition_routes_and_missing_field_fails() {
+        let def = |expr: &str| {
+            format!(
+                r#"{{
+            "version":"1.0","id":"t","name":"T",
+            "activities":[
+                {{"id":"verify","intent":"task-verify"}},
+                {{"id":"decide","type":"condition","params":{{"expression":"{expr}"}}}},
+                {{"id":"release","intent":"task-release"}},
+                {{"id":"hold","intent":"task-hold"}}],
+            "connections":[
+                {{"from":"__trigger__","to":"verify"}},
+                {{"from":"verify","to":"decide"}},
+                {{"from":"decide","to":"release","label":"True"}},
+                {{"from":"decide","to":"hold","label":"False"}}]
+        }}"#
+            )
+        };
+        let user_part = |c: &String| c.split("###SYSTEM###").next().unwrap_or("").to_string();
+
+        let provider = MockProvider::new(&[("task-verify", r#"{"verified": true, "calledBack": true, "flags": 0}"#)]);
+        let (result, store, run_id) = run_graph(
+            &def("verified && (calledBack || flags > 0) && !nodes.verify.flags"),
+            serde_json::json!({}),
+            &provider,
+        )
+        .await;
+        result.expect("run ok");
+        let calls = provider.calls();
+        assert!(calls.iter().any(|c| user_part(c).contains("task-release")), "{calls:?}");
+        assert!(!calls.iter().any(|c| user_part(c).contains("task-hold")), "{calls:?}");
+        assert_eq!(run_status(&store, &run_id), "completed");
+
+        let provider = MockProvider::new(&[("task-verify", r#"{"verified": true}"#)]);
+        let (result, _store, _run_id) = run_graph(
+            &def("verified && calledBack"),
+            serde_json::json!({}),
+            &provider,
+        )
+        .await;
+        let err = result.expect_err("a missing field fails the gate, never routes False").to_string();
+        assert!(err.contains("calledBack"), "{err}");
+        let calls = provider.calls();
+        assert!(!calls.iter().any(|c| user_part(c).contains("task-hold")), "{calls:?}");
+        assert!(!calls.iter().any(|c| user_part(c).contains("task-release")), "{calls:?}");
+    }
+
     /// A decide node's output shape — the `answers` map plus `model` — drives
     /// condition routing on `.choice` and `.confidence` with the existing
     /// expression syntax. Hand-written here because the live call is
@@ -3601,29 +3681,49 @@ mod graph_tests {
     #[test]
     fn test_condition_expression_mode() {
         let d = data();
-        let c = |expr: &str| {
+        let eval = |expr: &str, parents: &[&str]| {
             evaluate_condition(
                 &act("c", serde_json::json!({"expression": expr, "mode": "expression"})),
                 &d,
                 "",
+                parents,
             )
-            .unwrap()
         };
+        let c = |expr: &str| eval(expr, &[]).unwrap();
         assert!(c("inputs.priority == 5"));
         assert!(c("inputs.priority >= 5"));
         assert!(!c("inputs.priority > 5"));
         assert!(c("inputs.priority != 3"));
-        assert!(c("inputs.subject == URGENT: server down"));
-        assert!(c("nodes.fetch.ok")); // bare path truthiness
+        assert!(c("inputs.subject == 'URGENT: server down'"));
+        assert!(c("nodes.fetch.ok")); // path truthiness
         assert!(!c("nodes.fetch.count")); // 0 is falsy
-        assert!(!c("inputs.missing")); // unresolved path is false
+        // Compound conditions: the shapes 42 published gates use.
+        assert!(c("inputs.priority >= 5 && nodes.fetch.ok == true"));
+        assert!(c("inputs.priority > 9 || (nodes.fetch.ok && !nodes.fetch.count)"));
+        assert!(!c("!(inputs.priority == 5)"));
+        // Bare names read the one direct parent's output.
+        assert!(eval("ok && count == 0", &["fetch"]).unwrap());
+        assert!(eval("ok", &[]).is_err());
+        assert!(eval("ok", &["fetch", "other"]).is_err());
+        // Unresolved and unparseable are loud failures, never False.
+        let err = eval("inputs.missing", &[]).unwrap_err().to_string();
+        assert!(err.contains("inputs.missing") && err.contains("exists"), "{err}");
+        let err = eval("nodes.ghost.ok", &[]).unwrap_err().to_string();
+        assert!(err.contains("nodes.ghost") && err.contains("no output"), "{err}");
+        let err = eval("inputs.priority > 3 and nodes.fetch.ok", &[]).unwrap_err().to_string();
+        assert!(err.contains("does not parse") && err.contains("&&"), "{err}");
+        // Unknown modes are refused, not treated as expressions.
+        assert!(
+            evaluate_condition(&act("c", serde_json::json!({"expression": "x", "mode": "fuzzy"})), &d, "", &[])
+                .is_err()
+        );
     }
 
     #[test]
     fn test_condition_contains_exists_regex() {
         let d = data();
         let eval = |params: serde_json::Value, text: &str| {
-            evaluate_condition(&act("c", params), &d, text).unwrap()
+            evaluate_condition(&act("c", params), &d, text, &[]).unwrap()
         };
         assert!(eval(
             serde_json::json!({"expression": "inputs.subject contains URGENT", "mode": "contains"}),
@@ -3654,7 +3754,8 @@ mod graph_tests {
             evaluate_condition(
                 &act("c", serde_json::json!({"expression": "(unclosed", "mode": "regex"})),
                 &d,
-                ""
+                "",
+                &[]
             )
             .is_err()
         );

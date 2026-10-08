@@ -38,6 +38,7 @@ serde_yaml = { workspace = true }
 semver = { workspace = true }
 async-trait = "0.1"
 shlex = "1"
+regex = { workspace = true }
 tempfile = "3"
 notify = "7"
 futures = { workspace = true }

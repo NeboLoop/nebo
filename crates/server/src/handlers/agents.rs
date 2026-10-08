@@ -1376,10 +1376,26 @@ pub async fn update_agent(
     // ceiling entry that is anything but "approval" are refused here, not only
     // in the form. These are safety rules — a form is a convenience, the
     // backend is the gate.
-    if let Err(e) = napp::agent::parse_agent_config(&frontmatter_json.to_string()) {
-        return Err(to_error_response(types::NeboError::Validation(
-            e.to_string(),
-        )));
+    match napp::agent::parse_agent_config(&frontmatter_json.to_string()) {
+        Err(e) => {
+            return Err(to_error_response(types::NeboError::Validation(
+                e.to_string(),
+            )));
+        }
+        // Workflow wiring: new errors refuse the save (ones the employee
+        // already had do not block an unrelated edit); warnings are logged.
+        Ok(config) => {
+            let issues = napp::workflow_check::check_agent(&config);
+            let prior = napp::agent::parse_agent_config(&existing.frontmatter)
+                .map(|c| napp::workflow_check::check_agent(&c))
+                .unwrap_or_default();
+            if let Some(errors) = napp::workflow_check::new_error_text(&prior, &issues) {
+                return Err(to_error_response(types::NeboError::Validation(errors)));
+            }
+            for issue in &issues {
+                warn!(agent = %id, %issue, "workflow check");
+            }
+        }
     }
 
     let pricing_model = fm.pricing.as_ref().map(|p| p.model.as_str());
