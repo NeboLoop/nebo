@@ -600,13 +600,56 @@ fn helper_event_to_hub(hub: &handlers::ws::ClientHub, ev: agent::harness::delega
     hub.broadcast(name, payload);
 }
 
-pub fn build_decide_client(store: Arc<db::Store>, cfg: &Config) -> Arc<ai::DecideClient> {
-    Arc::new(ai::DecideClient::new(&cfg.neboai.janus_url, move || {
-        Some(ai::Bearer {
-            token: auth::neboai_token(&store)?,
-            bot_id: config::read_bot_id(),
+/// The decide client. `default_model` reads the bot's default (a model or
+/// a pack reference) on every call; when it names a pack whose Decisions
+/// slot points at the owner's own endpoint ([`decision_endpoint`]), the
+/// decision goes there, else to Janus.
+pub fn build_decide_client(
+    store: Arc<db::Store>,
+    cfg: &Config,
+    default_model: impl Fn() -> Option<String> + Send + Sync + 'static,
+) -> Arc<ai::DecideClient> {
+    let janus_store = store.clone();
+    Arc::new(
+        ai::DecideClient::new(&cfg.neboai.janus_url, move || {
+            Some(ai::Bearer {
+                token: auth::neboai_token(&janus_store)?,
+                bot_id: config::read_bot_id(),
+            })
         })
-    }))
+        .with_endpoint(move || decision_endpoint(&store, &default_model()?)),
+    )
+}
+
+/// The kind of connection a pack's Decisions slot names to send decisions
+/// to the owner's own endpoint: `systemone_compatible@<connection>/<model>`.
+const SYSTEMONE_COMPATIBLE: &str = "systemone_compatible";
+
+/// Where decisions go when the bot's default is a pack whose Decisions slot
+/// names one of the owner's SystemOne-compatible connections that exists
+/// and is active: its base URL, its key, the slot's model. `None` (the
+/// default is not a pack, the slot is empty or Nebo AI's `janus/…`, the
+/// connection is gone or off) keeps decisions on Janus. Local reads only.
+pub fn decision_endpoint(store: &db::Store, default_model: &str) -> Option<ai::DecideEndpoint> {
+    let (pack_id, _) = types::packs::parse_ref(default_model)?;
+    let pack = store.get_intelligence_pack(pack_id).ok()??;
+    let slot = pack.levels.decisions.as_deref()?.trim();
+    let (profile_id, model) = slot.strip_prefix(SYSTEMONE_COMPATIBLE)?.strip_prefix('@')?.split_once('/')?;
+    let model = model.trim();
+    if profile_id.is_empty() || model.is_empty() {
+        return None;
+    }
+    let profile = store.get_auth_profile(profile_id).ok()??;
+    if profile.provider != SYSTEMONE_COMPATIBLE || profile.is_active.unwrap_or(0) == 0 {
+        return None;
+    }
+    let base_url = profile.base_url.as_deref().map(str::trim).filter(|u| !u.is_empty())?.to_string();
+    Some(ai::DecideEndpoint {
+        base_url,
+        key: auth::credential::profile_key(&profile),
+        model: model.to_string(),
+        profile_id: profile.id,
+    })
 }
 
 pub fn build_providers(
@@ -2137,7 +2180,14 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
     let approval_channels: tools::ApprovalChannels =
         Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()));
 
-    let decide_client = build_decide_client(store.clone(), &cfg);
+    // The decide client reads the bot's default through the selector, which
+    // the harness owns; it is handed over once the harness is built (until
+    // then, at start, decisions go to Janus).
+    let decide_selector: Arc<std::sync::OnceLock<Arc<agent::ModelSelector>>> = Default::default();
+    let decide_client = build_decide_client(store.clone(), &cfg, {
+        let selector = decide_selector.clone();
+        move || selector.get().map(|s| s.configured())
+    });
     // Desktop control asks Jev which element "the Save button" is, and an
     // employee's `decide` tool asks it typed questions.
     tools::decide_tool::set_decider(decide_client.clone());
@@ -2158,6 +2208,7 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // Same adapter instance as the memory tool — one search pathway, one
     // TurboVec index cache — powering the turn's recall.
     .with_hybrid_searcher(hybrid_searcher);
+    let _ = decide_selector.set(harness.selector().clone());
     if let Some(ep) = embedding_provider.clone() {
         harness = harness.with_embedding_provider(ep);
     }
@@ -7272,4 +7323,79 @@ fn cors_layer() -> CorsLayer {
         ])
         .allow_headers(tower_http::cors::AllowHeaders::mirror_request())
         .allow_credentials(true)
+}
+
+#[cfg(test)]
+mod decision_endpoint_tests {
+    use super::decision_endpoint;
+    use types::packs::{nebo_ai, Pack, PackLevels};
+
+    fn store() -> (tempfile::TempDir, db::Store) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = db::Store::new(&dir.path().join("nebo.db").to_string_lossy()).unwrap();
+        (dir, store)
+    }
+
+    fn save_pack(store: &db::Store, id: &str, decisions: Option<&str>) {
+        let pack = Pack {
+            id: id.into(),
+            name: id.into(),
+            levels: PackLevels { medium: Some("anthropic/claude".into()), decisions: decisions.map(Into::into), ..Default::default() },
+            fallback: true,
+            built_in: false,
+            ..nebo_ai()
+        };
+        store.save_intelligence_pack(&pack).unwrap();
+    }
+
+    #[test]
+    fn a_default_that_is_not_a_pack_stays_on_janus() {
+        let (_d, store) = store();
+        assert!(decision_endpoint(&store, "janus/nebo-1").is_none());
+        assert!(decision_endpoint(&store, "").is_none());
+        assert!(decision_endpoint(&store, "pack/nebo-ai").is_none(), "Nebo AI's slot is Janus's Jev");
+        assert!(decision_endpoint(&store, "pack/gone").is_none(), "a missing pack");
+    }
+
+    #[test]
+    fn a_pack_without_an_owner_slot_stays_on_janus() {
+        let (_d, store) = store();
+        save_pack(&store, "empty", None);
+        save_pack(&store, "janus", Some("janus/jev-latest"));
+        save_pack(&store, "chat", Some("anthropic@p1/claude"));
+        for id in ["empty", "janus", "chat"] {
+            assert!(decision_endpoint(&store, &format!("pack/{id}/high")).is_none(), "{id}");
+        }
+    }
+
+    #[test]
+    fn an_active_owner_connection_takes_the_decisions() {
+        let (_d, store) = store();
+        store
+            .create_auth_profile("p1", "TypeSafe", "systemone_compatible", "owner-key", None, Some("https://api.typesafe.ai"), 0, 1, None, None)
+            .unwrap();
+        save_pack(&store, "mine", Some("systemone_compatible@p1/jev-latest"));
+        let ep = decision_endpoint(&store, "pack/mine").expect("the owner's endpoint");
+        assert_eq!(ep.base_url, "https://api.typesafe.ai");
+        assert_eq!(ep.key, "owner-key");
+        assert_eq!(ep.model, "jev-latest");
+        assert_eq!(ep.profile_id, "p1");
+        assert!(decision_endpoint(&store, "pack/mine/low").is_some(), "any level of the pack");
+    }
+
+    #[test]
+    fn an_off_missing_or_other_kind_of_connection_stays_on_janus() {
+        let (_d, store) = store();
+        store
+            .create_auth_profile("off", "Off", "systemone_compatible", "k", None, Some("https://api.typesafe.ai"), 0, 0, None, None)
+            .unwrap();
+        store.create_auth_profile("chat", "Chat", "anthropic", "k", None, None, 0, 1, None, None).unwrap();
+        save_pack(&store, "off", Some("systemone_compatible@off/jev-latest"));
+        save_pack(&store, "missing", Some("systemone_compatible@nope/jev-latest"));
+        save_pack(&store, "kind", Some("systemone_compatible@chat/jev-latest"));
+        save_pack(&store, "nomodel", Some("systemone_compatible@off/"));
+        for id in ["off", "missing", "kind", "nomodel"] {
+            assert!(decision_endpoint(&store, &format!("pack/{id}")).is_none(), "{id}");
+        }
+    }
 }
