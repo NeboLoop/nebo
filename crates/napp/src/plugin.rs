@@ -2831,9 +2831,18 @@ pub fn plugin_base_env() -> Vec<(String, String)> {
     )]
 }
 
+/// The port this process's Nebo bound and serves its local API on, set once
+/// by the server the moment it holds the port. With port 0 the system picks
+/// it, and only this says which.
+pub static SERVING_PORT: std::sync::OnceLock<u16> = std::sync::OnceLock::new();
+
 /// The port this Nebo's local API listens on, by the one rule every local
-/// caller uses: `NEBO_PORT`, else the default.
+/// caller uses: the port this process serves on ([`SERVING_PORT`]), else
+/// `NEBO_PORT`, else the default.
 pub fn local_port() -> u16 {
+    if let Some(port) = SERVING_PORT.get() {
+        return *port;
+    }
     std::env::var("NEBO_PORT")
         .ok()
         .and_then(|v| v.parse::<u16>().ok())
