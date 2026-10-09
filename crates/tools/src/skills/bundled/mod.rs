@@ -176,7 +176,10 @@ mod bundled_skill_tests {
     /// the swap. Audit 2026-10-07: "the same character across shots" is not
     /// a swap but approved start frames, and the skill fired on it and
     /// steered a film to the cast, so "consistent character", "same face",
-    /// "ai character" and "reference photo" no longer fire it.
+    /// "ai character" and "reference photo" no longer fire it. 2026-10-09: a
+    /// film's own characters (a project's `cast/`, a portrait and a voice
+    /// each) are not the swap cast, so "cast member" and "add to the cast"
+    /// no longer fire it either.
     #[test]
     fn the_character_swap_skill_fires_on_ai_creator_and_swap_talk_only() {
         let (_, content) = BUNDLED_SKILLS
@@ -197,6 +200,8 @@ mod bundled_skill_tests {
             "Find the reference books for the tax filing and face the deadline head on.",
             "Can we make a consistent character for our ads?",
             "Keep the same face for Mara in every shot; here is a reference photo.",
+            "Make a portrait and a voice description for each cast member of the film.",
+            "Add Mara to the cast with her portrait.",
         ] {
             assert!(!skill.matches_trigger(request), "{request}");
         }
