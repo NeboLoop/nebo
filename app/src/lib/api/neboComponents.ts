@@ -2692,8 +2692,8 @@ export interface AppWindow {
 	openOnWork: boolean
 	/** window.isolated: the page is served cross-origin isolated (SharedArrayBuffer for threaded engine exports). */
 	isolated: boolean
-	/** window.share_menu: the header's Share button entries, each say sent into the app's chat. */
-	shareMenu: { label: string; say: string }[]
+	/** window.share_menu: the header's Share button entries, each say sent into the app's chat; share: the answer's file opens in the Share dialog. */
+	shareMenu: { label: string; say: string; share?: boolean }[]
 }
 
 export interface AppWindowConfig {

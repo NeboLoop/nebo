@@ -44,7 +44,7 @@
   import ApprovalAskCard from '$lib/components/chat/ApprovalAskCard.svelte';
   import { publishRequest } from '$lib/stores/appPublish';
   import { shareRequest, answersShareRequest } from '$lib/stores/appShare';
-  import { shareEntries } from '$lib/apps/shareMenu';
+  import { shareEntries, linkFile, type ShareEntry, type LinkAsk } from '$lib/apps/shareMenu';
   import type { AppWindow } from '$lib/api/neboComponents';
   import PermissionAskCard from '$lib/components/PermissionAskCard.svelte';
   import type { HelperLine } from '$lib/chat/helpers';
@@ -1218,16 +1218,35 @@
   // any app, installed or the owner's own: an entry says its words in this
   // chat the way Publish says its starter.
   const shareMenu = $derived(shareEntries(isApp ? appWindow : null, !readOnly && !!onsend));
-  function shareVia(say: string) {
+  // A link entry (`share: true`) asked here: the Share dialog opens on the
+  // file its answer hands over, once the answer is done.
+  let linkAsk = $state<LinkAsk | null>(null);
+  function shareVia(entry: ShareEntry) {
     (document.activeElement as HTMLElement)?.blur();
-    handleSend(say, []);
+    linkAsk = entry.share ? { chat: threadId || sessionId, from: messages.length } : null;
+    handleSend(entry.say, []);
   }
+  $effect(() => {
+    const ask = linkAsk;
+    if (!ask) return;
+    if (ask.chat !== (threadId || sessionId)) {
+      linkAsk = null;
+      return;
+    }
+    if (isLoading) return;
+    const file = linkFile(messages, ask.from);
+    if (!file) return;
+    linkAsk = null;
+    openWorkFile(file.url, file.title);
+    shareOpen = true;
+  });
   // A file this app's page handed the owner to share (`nebo.share`): open
   // it in Work and show the one Share dialog on it.
   $effect(() => {
     const req = $shareRequest;
     if (!answersShareRequest(req, agentId, threadId) || !req) return;
     shareRequest.set(null);
+    linkAsk = null;
     openWorkFile(req.artifact, req.title);
     shareOpen = true;
   });
@@ -1450,7 +1469,7 @@
         {#snippet shareList()}
           <ul class="dropdown-content menu z-[55] mt-1 w-56 rounded-box border border-base-300 bg-base-100 p-1.5 shadow-lg">
             {#each shareMenu as entry, i (i)}
-              <li><button onclick={() => shareVia(entry.say)}>{entry.label}</button></li>
+              <li><button onclick={() => shareVia(entry)}>{entry.label}</button></li>
             {/each}
           </ul>
         {/snippet}

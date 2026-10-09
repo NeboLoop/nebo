@@ -6774,6 +6774,12 @@ mod app_window_tests {
             serde_json::to_value(stored_app_window(Some(menu))).unwrap()["shareMenu"],
             serde_json::json!([{"label": "Make it an app", "say": "Make this design a Nebo app."}])
         );
+        // A link entry reaches every client as `share: true`.
+        let link = r#"{"title":"Studio","share_menu":[{"label":"Share a link","say":"Share this design as a link.","share":true}]}"#;
+        assert_eq!(
+            serde_json::to_value(stored_app_window(Some(link))).unwrap()["shareMenu"],
+            serde_json::json!([{"label": "Share a link", "say": "Share this design as a link.", "share": true}])
+        );
         let today = serde_json::json!({"fullscreen": false, "orientation": "portrait", "motion": false, "pullToRefresh": false, "voice": false, "openOnWork": false, "isolated": false, "shareMenu": []});
         assert_eq!(serde_json::to_value(stored_app_window(None)).unwrap(), today);
         assert_eq!(serde_json::to_value(stored_app_window(Some("not json"))).unwrap(), today);
