@@ -42,6 +42,7 @@ mod shared_files;
 pub mod wake;
 mod reply_route;
 pub mod layers_update;
+mod liveness;
 #[cfg(test)]
 mod staffed_proof;
 #[cfg(all(test, unix))]
@@ -1196,6 +1197,7 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
 
     // Initialize database
     let store = Arc::new(db::Store::new(&cfg.database.sqlite_path)?);
+    liveness::start(store.clone());
 
     // Initialize encryption: try OS keyring → file key → generate new
     let encryptor = if let Some(key_hex) = auth::keyring::get() {
@@ -7267,11 +7269,36 @@ async fn process_comm_attachments(
     images
 }
 
-async fn health_handler() -> Json<HealthResponse> {
-    Json(HealthResponse {
-        status: "ok".into(),
-        version: VERSION.into(),
-    })
+/// Liveness: 200 while the runtime and the database both answer, 503 once
+/// either has been silent past `liveness::STALE_AFTER` (a cloud bot's
+/// liveness probe restarts it on that). A runtime with no free worker cannot
+/// answer at all, which a probe's timeout reads the same way.
+async fn health_handler() -> (axum::http::StatusCode, Json<HealthResponse>) {
+    health_response(liveness::LIVENESS.stall(std::time::Instant::now()).is_some())
+}
+
+fn health_response(stalled: bool) -> (axum::http::StatusCode, Json<HealthResponse>) {
+    let (code, status) = if stalled {
+        (axum::http::StatusCode::SERVICE_UNAVAILABLE, "stalled")
+    } else {
+        (axum::http::StatusCode::OK, "ok")
+    };
+    (code, Json(HealthResponse { status: status.into(), version: VERSION.into() }))
+}
+
+#[cfg(test)]
+mod health_tests {
+    use super::*;
+
+    #[test]
+    fn stalled_server_reports_unhealthy() {
+        let (code, Json(body)) = health_response(true);
+        assert_eq!(code, axum::http::StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(body.status, "stalled");
+        let (code, Json(body)) = health_response(false);
+        assert_eq!(code, axum::http::StatusCode::OK);
+        assert_eq!(body.status, "ok");
+    }
 }
 
 /// Readiness = the hub gateway actually accepts us, not just process liveness.
