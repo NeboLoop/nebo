@@ -8,6 +8,13 @@ use types::NeboError;
 
 pub type DbPool = Pool<SqliteConnectionManager>;
 
+/// The longest a caller waits for a free connection before it gets an error.
+/// Every query runs synchronously on the thread that asked, so a wait here
+/// holds that thread; all ten connections busy this long is a stall, not
+/// load (a long write holds one connection, not the pool). Bounded so the
+/// caller fails loudly (`Store::conn` names it) instead of freezing.
+pub(crate) const POOL_WAIT: Duration = Duration::from_secs(10);
+
 /// Create a connection pool for SQLite with WAL mode and recommended pragmas.
 pub fn create_pool(db_path: &str) -> Result<DbPool, NeboError> {
     // Ensure parent directory exists
@@ -21,7 +28,7 @@ pub fn create_pool(db_path: &str) -> Result<DbPool, NeboError> {
     let pool = Pool::builder()
         .max_size(10)
         .min_idle(Some(1))
-        .connection_timeout(Duration::from_secs(30))
+        .connection_timeout(POOL_WAIT)
         .connection_customizer(Box::new(SqlitePragmas))
         .build(manager)
         .map_err(|e| NeboError::Database(format!("failed to create pool: {e}")))?;
