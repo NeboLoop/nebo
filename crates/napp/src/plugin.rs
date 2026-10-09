@@ -746,6 +746,19 @@ impl PluginManifest {
             .unwrap_or(false)
     }
 
+    /// The settings the plugin declares secret: the credentials it reads
+    /// from `auth.env`, and the `configSchema` fields marked `secret`.
+    /// Secret settings are stored encrypted and never returned by the API.
+    pub fn secret_setting_keys(&self) -> Vec<String> {
+        let mut keys: Vec<String> = self.auth.iter().flat_map(|a| a.env.keys().cloned()).collect();
+        for f in self.capabilities.iter().flat_map(|c| c.config_schema.iter()) {
+            if f.secret && !keys.contains(&f.key) {
+                keys.push(f.key.clone());
+            }
+        }
+        keys
+    }
+
     /// Number of declared tool capabilities.
     pub fn tool_count(&self) -> usize {
         self.capabilities

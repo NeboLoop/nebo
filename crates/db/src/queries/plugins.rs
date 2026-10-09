@@ -280,4 +280,59 @@ impl Store {
 
         Ok(())
     }
+
+    /// Seal every secret plugin setting still stored in the clear, in the
+    /// live database and its local copies (`reseal_everywhere`). A setting is
+    /// secret when its row says so, or when its plugin declares the key
+    /// secret (`declared`: slug and key pairs from the installed manifests);
+    /// a declared secret is marked secret as it is sealed. `seal` returns the
+    /// new value for one that needs it. Returns how many rows the live
+    /// database had changed.
+    pub fn reseal_plugin_secrets(
+        &self,
+        declared: &[(String, String)],
+        seal: impl Fn(&str) -> Result<Option<String>, String>,
+    ) -> Result<usize, NeboError> {
+        let declared: std::collections::HashSet<(String, String)> = declared
+            .iter()
+            .map(|(slug, key)| Ok((self.resolve_plugin_id(slug)?, key.clone())))
+            .collect::<Result<_, NeboError>>()?;
+        self.reseal_everywhere("plugin secrets", |conn| reseal_plugin_secrets_in(conn, &declared, &seal))
+    }
+}
+
+/// Seal the secret plugin settings in one database; how many rows changed.
+/// A database without the table has nothing to change.
+fn reseal_plugin_secrets_in(
+    conn: &rusqlite::Connection,
+    declared: &std::collections::HashSet<(String, String)>,
+    seal: &impl Fn(&str) -> Result<Option<String>, String>,
+) -> Result<usize, NeboError> {
+    let rows: Vec<(String, String, String, String, i64)> = match conn
+        .prepare("SELECT id, plugin_id, setting_key, setting_value, is_secret FROM plugin_settings")
+    {
+        Ok(mut stmt) => stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))
+            .and_then(|rows| rows.collect())
+            .map_err(|e| NeboError::Database(e.to_string()))?,
+        Err(_) => return Ok(0),
+    };
+    let mut changed = 0;
+    for (id, plugin_id, key, value, is_secret) in rows {
+        let declared_secret = declared.contains(&(plugin_id, key));
+        if is_secret == 0 && !declared_secret {
+            continue;
+        }
+        let sealed = seal(&value).map_err(NeboError::Internal)?;
+        if sealed.is_none() && is_secret != 0 {
+            continue;
+        }
+        conn.execute(
+            "UPDATE plugin_settings SET setting_value = ?2, is_secret = 1 WHERE id = ?1",
+            params![id, sealed.unwrap_or(value)],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))?;
+        changed += 1;
+    }
+    Ok(changed)
 }
