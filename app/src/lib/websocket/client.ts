@@ -48,6 +48,14 @@ export interface RewriteError {
 
 type MessageHandler<T = any> = (data: T) => void | Promise<void>;
 
+/** How long a socket that has heard the bot's heartbeat (a `ping` every 20 s)
+ *  may go silent before it is taken for dead. Through the tunnel a socket can
+ *  die on the far side and stay open here, hearing nothing: the conversation
+ *  froze until a refresh (2026-10-08, a browser sat ten minutes on a socket
+ *  the bot had closed). Three missed beats and it is dropped and dialled
+ *  again, and the open conversation reloads (the controller's resync). */
+export const SILENCE_MS = 60_000;
+
 /** Time in ms before "unfocused" transitions to "away". */
 const AWAY_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 
@@ -76,6 +84,12 @@ class WebSocketClient {
 	// queued frame survives and flushes on reconnect.
 	private disruptions = 0;
 	private visibilityHooked = false;
+	// The silence watchdog (SILENCE_MS): armed once the bot has pinged on this
+	// socket — an older bot that never pings is never taken for dead — and
+	// re-armed by every frame. One timer, never a loop.
+	private lastFrameAt = 0;
+	private botPings = false;
+	private silenceTimer: ReturnType<typeof setTimeout> | null = null;
 	private authToken: string | null = null;
 
 	// Presence tracking state
@@ -159,18 +173,7 @@ class WebSocketClient {
 					detail: `${event.reason || ''} clean=${event.wasClean} byUser=${this.closedByUser} visible=${document.visibilityState}`,
 					durationMs: Date.now() - attemptStarted
 				});
-				this.setStatus('disconnected');
-				this.ws = null;
-
-				// Auto-reconnect if not closed by user
-				if (!this.closedByUser) {
-					this.disruptions++;
-					const delay = Math.min(2000 * Math.pow(2, this.reconnectAttempts), 30000);
-					this.reconnectTimeout = setTimeout(() => {
-						this.reconnectAttempts++;
-						this.connect();
-					}, delay);
-				}
+				this.closed();
 			};
 
 			this.ws.onerror = (event) => {
@@ -182,6 +185,7 @@ class WebSocketClient {
 				log.info('WS onmessage received, data type: ' + typeof event.data + ', length: ' + (event.data as string).length);
 				// Backend may batch multiple JSON messages into one frame separated by newlines
 				const rawData = event.data as string;
+				this.heard();
 				log.info('WS raw message: ' + rawData.substring(0, 200));
 				const lines = rawData.split('\n').filter((line) => line.trim());
 
@@ -218,6 +222,8 @@ class WebSocketClient {
 
 						// Handle ping/pong
 						if (message.type === 'ping') {
+							this.botPings = true;
+							this.heard();
 							this.send('pong', { timestamp: new Date().toISOString() });
 							continue;
 						}
@@ -248,6 +254,64 @@ class WebSocketClient {
 		}
 	}
 
+	/** The socket ended (closed, or let go as dead): status, and the redial
+	 *  unless the owner closed it. The ONE place a lost socket is handled. */
+	private closed(): void {
+		this.clearSilence();
+		this.botPings = false;
+		this.setStatus('disconnected');
+		this.ws = null;
+
+		// Auto-reconnect if not closed by user
+		if (!this.closedByUser) {
+			this.disruptions++;
+			const delay = Math.min(2000 * Math.pow(2, this.reconnectAttempts), 30000);
+			this.reconnectTimeout = setTimeout(() => {
+				this.reconnectAttempts++;
+				this.connect();
+			}, delay);
+		}
+	}
+
+	/** A frame arrived: the line is alive. Re-arms the silence watchdog once
+	 *  the bot has shown it keeps a heartbeat. */
+	private heard(): void {
+		this.lastFrameAt = Date.now();
+		if (!this.botPings || this.silenceTimer) return;
+		this.silenceTimer = setTimeout(() => this.checkSilence(), SILENCE_MS);
+	}
+
+	/** The watchdog fired: re-arm while frames still come (a throttled timer
+	 *  can fire late), otherwise let the dead socket go and dial again. */
+	private checkSilence(): void {
+		this.silenceTimer = null;
+		const ws = this.ws;
+		if (!ws || !this.botPings) return;
+		const quiet = Date.now() - this.lastFrameAt;
+		if (quiet < SILENCE_MS) {
+			this.silenceTimer = setTimeout(() => this.checkSilence(), SILENCE_MS - quiet);
+			return;
+		}
+		log.warn('WS silent for ' + quiet + ' ms; dropping it and dialling again');
+		sendClientEvent('ws_silent', { durationMs: quiet, code: this.disruptions });
+		// A dead socket's close never completes: stop listening to it and
+		// treat it as closed now.
+		ws.onopen = ws.onclose = ws.onerror = ws.onmessage = null;
+		try {
+			ws.close();
+		} catch {
+			/* already gone */
+		}
+		this.closed();
+	}
+
+	private clearSilence(): void {
+		if (this.silenceTimer) {
+			clearTimeout(this.silenceTimer);
+			this.silenceTimer = null;
+		}
+	}
+
 	/**
 	 * Disconnect from the WebSocket server
 	 */
@@ -265,6 +329,8 @@ class WebSocketClient {
 			this.awayTimer = null;
 		}
 
+		this.clearSilence();
+		this.botPings = false;
 		if (this.ws) {
 			this.ws.close();
 			this.ws = null;
