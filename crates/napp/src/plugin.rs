@@ -2722,13 +2722,23 @@ impl PluginStore {
                     })
             };
 
-            while let Some(result) = rx.recv().await {
-                match result {
-                    Ok(event) if relevant(&event) => {}
-                    Ok(_) => continue,
-                    Err(e) => {
-                        warn!(error = %e, "filesystem watch error (plugins)");
-                        continue;
+            // Setting up the watch is not instant (seconds, on a loaded
+            // machine), and nothing written to the trees before it is in
+            // place is ever reported: a plugin copied in then was never
+            // loaded. `prev` was taken before the watch began, so the first
+            // pass looks once without waiting for an event, the way an
+            // event would, and finds whatever landed meanwhile.
+            let mut look_now = true;
+            loop {
+                if !std::mem::take(&mut look_now) {
+                    match rx.recv().await {
+                        None => return,
+                        Some(Ok(event)) if relevant(&event) => {}
+                        Some(Ok(_)) => continue,
+                        Some(Err(e)) => {
+                            warn!(error = %e, "filesystem watch error (plugins)");
+                            continue;
+                        }
                     }
                 }
 
