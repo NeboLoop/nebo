@@ -6,6 +6,7 @@
  */
 
 import { withBase } from '$lib/nav';
+import { clientId } from '$lib/websocket/origin';
 
 export interface AppWindowConfig {
 	width: number;
@@ -24,7 +25,9 @@ export interface AppWindowConfig {
 	isolated?: boolean;
 }
 
-/** The chat each open app window shows, by window label. */
+/** The chat each open app window shows, by window label, for the windows
+ *  this page opened (a window left from before a reload names an old
+ *  `clientId` and is reopened). */
 const shownThread = new Map<string, string | undefined>();
 
 const DEFAULT_CONFIG: AppWindowConfig = {
@@ -53,8 +56,9 @@ export async function launchApp(
 			const { invoke } = await import('@tauri-apps/api/core');
 			const label = `app-${agentId}`;
 			const existing = await mod.WebviewWindow.getByLabel(label);
-			if (existing && cfg.thread && shownThread.get(label) !== cfg.thread) {
-				// Open on another chat: reopen it on this one
+			if (existing && ((cfg.thread && shownThread.get(label) !== cfg.thread) || !shownThread.has(label))) {
+				// Open on another chat, or by this page before a reload:
+				// reopen it on this chat, naming this page
 				try { await existing.destroy(); } catch { /* already gone */ }
 			} else if (existing) {
 				try {
@@ -114,6 +118,14 @@ function httpAppPath(agentId: string, thread?: string): string {
 	return withBase(`/apps/${agentId}/ui/index.html${query(thread)}`);
 }
 
-function query(thread?: string): string {
-	return thread ? `?thread=${encodeURIComponent(thread)}` : '';
+/**
+ * The page's query: `?thread=` (the chat it is opened from) and `?client=`
+ * (this screen, `clientId`). A surface the page asks for (`nebo.share`'s
+ * Share dialog) opens on the screen that opened it, never another device.
+ */
+export function query(thread?: string): string {
+	const q = new URLSearchParams();
+	if (thread) q.set('thread', thread);
+	q.set('client', clientId);
+	return `?${q.toString()}`;
 }
