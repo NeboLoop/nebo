@@ -135,8 +135,8 @@ create_employee(draft_id: "<the id it returned>")
   pull-down reload, never on a canvas); `voice: true` (the chat's dictate
   and voice buttons in the mobile app's bar, for an app run by talking).
 - `isolated: true` only for a threaded engine export (games.md).
-- `share_menu`: the header's Share button, up to 6 `{label, say}`: the app's
-  own ways to share or export its work, each `say` sent into its chat.
+- `share_menu`: the header's Share button, up to 6 `{label, say}`, ways to
+  share or export the work, each `say` sent to its chat (link: sdk-more.md).
 - `permissions`: `storage:readwrite`, `subagent:<employee-id>`, `network:<host>`
   or `network:*` (the proxy fetch), `device:motion` (tilt).
 
