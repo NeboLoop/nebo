@@ -309,7 +309,7 @@ the top level (`NeboAppSDK.identity` is `NeboAppSDK.nebo.identity`), but two
 are renamed there so they don't shadow the browser's: `nebo.fetch` is
 `NeboAppSDK.neboFetch`, `nebo.WebSocket` is `NeboAppSDK.NeboWebSocket`.
 The full top-level list is `nebo`, `identity`, `storage`, `agents`,
-`janus`, `decide`, `surfaces`, `chat`, `a2ui`, `neboFetch`, `NeboWebSocket`,
+`janus`, `decide`, `share`, `surfaces`, `chat`, `a2ui`, `neboFetch`, `NeboWebSocket`,
 `NeboSDK`, `NeboSurfaces`, `NeboA2UI`, `getAppId`, `getBaseUrl`, `setAppId`,
 `setBaseUrl`. The canonical address is `/sdk/nebo.global.js`; from
 `ui/index.html` it is loaded as `../../../sdk/nebo.global.js`.

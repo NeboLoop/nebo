@@ -4,7 +4,7 @@ use tower_http::cors::{Any, CorsLayer};
 use crate::handlers::apps;
 use crate::state::AppState;
 
-pub fn routes() -> Router<AppState> {
+pub fn routes(max_upload_bytes: usize) -> Router<AppState> {
     // App SDK fetches from neboapp:// pages (opaque origin) need permissive
     // CORS so WebKit allows the cross-origin response through to JS.
     let cors = CorsLayer::new()
@@ -66,6 +66,12 @@ pub fn routes() -> Router<AppState> {
         .route(
             "/apps/{agent_id}/http/proxy",
             routing::post(apps::http_proxy),
+        )
+        // nebo.share: a file into Work, and the Share dialog on it. As big
+        // as any upload (a presentation carries its images).
+        .route(
+            "/apps/{agent_id}/share",
+            routing::post(apps::share_file).layer(super::files::upload_limit(max_upload_bytes)),
         )
         .route(
             "/apps/{agent_id}/identity",
