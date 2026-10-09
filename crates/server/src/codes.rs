@@ -1734,14 +1734,68 @@ pub(crate) async fn fetch_and_install_plugin(
     Ok(())
 }
 
+/// Load the owner's stored settings for these plugins into the env each
+/// one runs with. Secret settings still in the clear (written before they
+/// were encrypted) are encrypted first; which keys are secret is each
+/// plugin's own declaration, so a plugin is resealed once its manifest is
+/// on disk. Then every setting is read from the database, the one source of
+/// truth, and decrypted. Startup runs it for every installed plugin, and
+/// `activate_plugin` for each one that arrives later: a restored bot's
+/// plugins are fetched minutes after it starts, and without this ran with
+/// no credentials until the next restart.
+pub(crate) fn load_plugin_settings(
+    store: &db::Store,
+    plugins: &napp::plugin::PluginStore,
+    slugs: &[String],
+) {
+    let declared: Vec<(String, String)> = slugs
+        .iter()
+        .filter_map(|slug| plugins.get_manifest(slug).map(|m| (slug.clone(), m)))
+        .flat_map(|(slug, m)| m.secret_setting_keys().into_iter().map(move |k| (slug.clone(), k)))
+        .collect();
+    match auth::credential::encrypt_stored_plugin_secrets(store, &declared) {
+        Ok(0) => {}
+        Ok(n) => info!(count = n, "encrypted plugin secrets stored in the clear"),
+        Err(e) => warn!(error = %e, "plugin secrets could not be encrypted at rest"),
+    }
+    for slug in slugs {
+        match store.list_plugin_settings_by_slug(slug) {
+            Ok(settings) => {
+                let vars: HashMap<String, String> = settings
+                    .iter()
+                    .map(|s| (s.setting_key.clone(), auth::credential::plugin_setting_value(s)))
+                    .filter(|(_, v)| !v.is_empty())
+                    .collect();
+                plugins.set_env_vars(slug, vars);
+            }
+            Err(e) => warn!(plugin = %slug, error = %e, "the plugin's stored settings could not be read"),
+        }
+    }
+}
+
 /// Make a plugin that just landed on disk usable: its tool and the
 /// operations it binds, its hooks, the workers running its old binary, and
 /// any chat parked on an install card for it. The ONE path for every way a
 /// plugin arrives: a marketplace install and a copy by hand into the
 /// plugins folder (the filesystem watcher) both end here.
 pub(crate) async fn activate_plugin(state: &AppState, slug: &str) {
+    // It runs with the owner's stored settings, as it would have at startup.
+    load_plugin_settings(&state.store, &state.plugin_store, &[slug.to_string()]);
     // The new plugin's tool and the operations it binds are usable immediately.
     state.tools.refresh_plugin_tools().await;
+    // Its readiness, as startup warms it: a plugin with an auth status probe
+    // reads as not ready until the probe has run, and the probe runs with the
+    // settings just loaded. Off this path, as at startup: a probe can take
+    // up to its timeout. The plugin tools are re-derived once it is known.
+    if state.plugin_store.get_manifest(slug).and_then(|m| m.auth).is_some_and(|a| a.commands.status.is_some()) {
+        let ps = state.plugin_store.clone();
+        let tools = state.tools.clone();
+        let slug = slug.to_string();
+        tokio::spawn(async move {
+            ps.update_auth_status(&slug).await;
+            tools.refresh_plugin_tools().await;
+        });
+    }
     if let Some(manifest) = state.plugin_store.get_manifest(slug) {
         if let Some(binary) = state.plugin_store.resolve(slug, "*") {
             let count =

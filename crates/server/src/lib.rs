@@ -1686,34 +1686,14 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // scan / skill load below so resumed plugins are picked up.
     plugin_store.reconcile_orphaned_staging().await;
 
-    // Populate plugin env var cache from DB (stored API keys, tokens, etc.)
+    // Every installed plugin runs with the owner's stored settings (API keys,
+    // tokens, …): the same load a plugin that arrives later gets.
     {
-        let installed = plugin_store.list_installed();
-        // Secret settings are stored encrypted: any still in the clear
-        // (written before they were) are encrypted now, before the env is
-        // built. Which keys are secret is each plugin's own declaration.
-        let declared: Vec<(String, String)> = installed
-            .iter()
-            .filter_map(|(slug, ..)| plugin_store.get_manifest(slug).map(|m| (slug.clone(), m)))
-            .flat_map(|(slug, m)| m.secret_setting_keys().into_iter().map(move |k| (slug.clone(), k)))
-            .collect();
-        match auth::credential::encrypt_stored_plugin_secrets(&store, &declared) {
-            Ok(0) => {}
-            Ok(n) => info!(count = n, "encrypted plugin secrets stored in the clear"),
-            Err(e) => warn!(error = %e, "plugin secrets could not be encrypted at rest"),
-        }
-        for (slug, _, _, _) in &installed {
-            if let Ok(settings) = store.list_plugin_settings_by_slug(slug) {
-                let vars: std::collections::HashMap<String, String> = settings
-                    .iter()
-                    .map(|s| (s.setting_key.clone(), auth::credential::plugin_setting_value(s)))
-                    .filter(|(_, v)| !v.is_empty())
-                    .collect();
-                if !vars.is_empty() {
-                    plugin_store.set_env_vars(slug, vars);
-                }
-            }
-        }
+        let mut slugs: Vec<String> =
+            plugin_store.list_installed().into_iter().map(|(slug, ..)| slug).collect();
+        slugs.sort();
+        slugs.dedup();
+        codes::load_plugin_settings(&store, &plugin_store, &slugs);
     }
 
     // Warm the readiness cache. Nothing else fills it until a plugin's first

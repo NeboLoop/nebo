@@ -1,0 +1,10 @@
+id: sc95-a-plugin-copied-in-after-startup-gets-its-stored-settings-sealed
+name: "SC95 — A plugin copied in after startup gets its stored settings, sealed"
+description: |
+  A plugin copied in by hand after startup, with settings already stored
+  for it, gets them as a plugin present at startup does: the secret one
+  decrypted, and one its manifest declares secret but still stored in the
+  clear encrypted at rest first. With both in place it is ready.
+target_component: staffed-company
+proof: staffed_proof::connections::a_plugin_copied_in_after_startup_gets_its_stored_settings_sealed
+conversation: []
