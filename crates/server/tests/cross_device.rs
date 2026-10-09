@@ -54,6 +54,9 @@ async fn new_chat(server: &common::TestServer) -> String {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_turn_the_phone_starts_reaches_the_desktop_watching_the_thread() {
+    if !common::in_own_process().await {
+        return;
+    }
     let (server, _calls) = server_with(Arc::new(|purpose: &str, _: &[Value]| {
         Reply::Text(if main_call(purpose) { REPLY } else { "ok" })
     }))
@@ -96,6 +99,9 @@ async fn a_turn_the_phone_starts_reaches_the_desktop_watching_the_thread() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_client_that_was_away_catches_up_from_the_thread_once_it_is_back() {
+    if !common::in_own_process().await {
+        return;
+    }
     let (server, _calls) = server_with(Arc::new(|purpose: &str, _: &[Value]| {
         Reply::Text(if main_call(purpose) { REPLY } else { "ok" })
     }))
@@ -127,6 +133,9 @@ async fn a_client_that_was_away_catches_up_from_the_thread_once_it_is_back() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_quiet_socket_hears_the_heartbeat_its_clients_watch_for() {
+    if !common::in_own_process().await {
+        return;
+    }
     let (server, _calls) = server_with(Arc::new(|_: &str, _: &[Value]| Reply::Text("ok"))).await;
     let mut ws = connect(&server.ws_url(), "desktop-window").await;
     // Nothing happens on the bot; within a beat (20 s) the socket still hears
