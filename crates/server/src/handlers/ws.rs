@@ -178,6 +178,14 @@ pub(crate) fn from_its_desktop_window(headers: &axum::http::HeaderMap, agent_id:
         .is_some_and(|host| !agent_id.is_empty() && host.trim_end_matches('/').eq_ignore_ascii_case(agent_id))
 }
 
+/// How often a client socket hears from the bot when nothing else is
+/// happening: a `ping` frame, answered with `pong`. Through the tunnel a
+/// socket can die on the far side and leave its client open and silent
+/// (2026-10-08: a browser sat on a socket the bot had closed for ten
+/// minutes, its conversation frozen). A client that has heard the heartbeat
+/// treats three missed beats as a dead line, dials again and reloads.
+pub(crate) const HEARTBEAT: std::time::Duration = std::time::Duration::from_secs(20);
+
 /// GET /ws — Main client WebSocket endpoint.
 pub async fn client_ws_handler(
     State(state): State<AppState>,
@@ -565,6 +573,12 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState, ua: String, pl
         }
     }
 
+    // The line's heartbeat (`HEARTBEAT`): a client that hears nothing for
+    // several beats knows its socket is dead and dials again, which reloads
+    // the conversation it shows.
+    let mut heartbeat = tokio::time::interval_at(tokio::time::Instant::now() + HEARTBEAT, HEARTBEAT);
+    heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
     loop {
         tokio::select! {
             // Broadcast events to client
@@ -585,12 +599,28 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState, ua: String, pl
                         sent += 1;
                     }
                     Err(broadcast::error::RecvError::Lagged(n)) => {
+                        // Events this client never got are gone for good:
+                        // carrying on left its conversation showing a turn
+                        // with holes in it, and nothing ever told it. The
+                        // socket closes instead; the client dials again and
+                        // reads the conversation afresh, as after any drop.
                         lagged += n;
-                        warn!("ws client lagged by {} messages, continuing", n);
+                        warn!(lagged = n, ua = %ua, "ws client fell behind the broadcast; closing so it reloads");
+                        break;
                     }
                     Err(broadcast::error::RecvError::Closed) => {
                         break;
                     }
+                }
+            }
+            _ = heartbeat.tick() => {
+                let ping = serde_json::json!({"type": "ping"});
+                if socket
+                    .send(Message::Text(serde_json::to_string(&ping).unwrap().into()))
+                    .await
+                    .is_err()
+                {
+                    break;
                 }
             }
             // Handle incoming messages from client
@@ -707,6 +737,8 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState, ua: String, pl
                                         }
                                     }
                                 }
+                                // A client's answer to the heartbeat.
+                                "pong" => {}
                                 "ping" => {
                                     let pong = serde_json::json!({"type": "pong"});
                                     if socket
@@ -2372,6 +2404,10 @@ fn log_client_frame(text: &str) {
             .to_string()
     };
     let msg_type = field("type");
+    // The heartbeat's answer, every beat from every client: not news.
+    if msg_type == "pong" {
+        return;
+    }
     info!(
         msg_type = %msg_type,
         bytes = text.len(),
