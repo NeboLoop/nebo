@@ -2328,9 +2328,13 @@ pub(crate) fn reported_result_files(stdout: &str, started: std::time::SystemTime
     for line in stdout.lines() {
         let Some(rest) = line.trim().strip_prefix("Result: ") else { continue };
         let rest = rest.trim();
-        // Paths may hold spaces and parentheses: try the bare path first.
+        // Paths may hold spaces and parentheses, and so may the detail
+        // (`… LUFS (target -14); …`): try the bare path, then the text
+        // before each ` (`, longest first. Splitting only at the last one
+        // lost every rendered reel whose detail named its loudness target
+        // (2026-10-09).
         let path = std::iter::once(rest)
-            .chain(rest.rsplit_once(" (").map(|(p, _)| p))
+            .chain(rest.rmatch_indices(" (").map(|(at, _)| &rest[..at]))
             .find(|p| std::path::Path::new(p).is_absolute() && made(p));
         if let Some(p) = path {
             if !out.iter().any(|o| o == p) {
@@ -3011,6 +3015,38 @@ mod tests {
         let looked = format!("Result: {} (0.5 s)\n", s(&old));
         let later = started + std::time::Duration::from_secs(5);
         assert!(reported_result_files(&looked, later).is_empty(), "an input the plugin only read is not its output");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A detail that holds its own ` (` still names the file: live
+    /// 2026-10-09 every rendered reel (`… LUFS (target -14); …`) was
+    /// dropped, so a turn that rendered a reel and then its cover ended
+    /// with only the cover, and a turn that rendered only the reel ended
+    /// with no card at all. Each call's file is reported, in order.
+    #[test]
+    fn test_reported_result_files_detail_with_parentheses() {
+        let dir = std::env::temp_dir().join(format!("nebo-result-paren-test-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("deliver")).unwrap();
+        let started = std::time::SystemTime::now();
+        let reel = dir.join("deliver/jos-jon-v2-reel.mp4");
+        let cover = dir.join("deliver/jos-jon-v2-cover.jpg");
+        let named = dir.join("deliver/cut (final).mp4");
+        for f in [&reel, &cover, &named] {
+            std::fs::write(f, "made").unwrap();
+        }
+        let s = |p: &std::path::Path| p.to_string_lossy().into_owned();
+        let render = format!(
+            "Checked: opens · 1080×1920\nResult: {} (1080×1920, 30.00 s, 27.9 MB; 7 layers; sound soundtrack -14.0 LUFS (target -14); fades out over 1.2 s)\n",
+            s(&reel)
+        );
+        let thumbnail = format!("Checked: opens · 1080×1920 · JPEG · 109.6 KB\nResult: {} (1080×1920, 109.6 KB)\n", s(&cover));
+        let calls: Vec<String> = [render, thumbnail]
+            .iter()
+            .flat_map(|out| reported_result_files(out, started))
+            .collect();
+        assert_eq!(calls, vec![s(&reel), s(&cover)]);
+        let both = format!("Result: {} (2.00 s (trimmed), 1 MB)\n", s(&named));
+        assert_eq!(reported_result_files(&both, started), vec![s(&named)]);
         std::fs::remove_dir_all(&dir).ok();
     }
 
