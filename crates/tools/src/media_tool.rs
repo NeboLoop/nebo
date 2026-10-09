@@ -1967,8 +1967,7 @@ impl DynTool for GenerateMediaTool {
            clip's sound, never extract or join its dialogue.\n\
          - Swap the person in an existing video: kind \"video\", `mode` \"replace\", `video`, `cast`; kind \"cast\" lists and \
            adds who a swap may use (the owner confirms each once). Recipe: the character-swap skill. One character across \
-           new shots: `references` with their cast portrait on each start frame image, then the clip from that approved \
-           start frame (or from `references` when there is none).\n\
+           new shots: start frames from their portrait (`references`).\n\
          - kind \"speech\": `text` read aloud, for an off-screen narrator or voice-over only; stock voices, never a real \
            person's. kind \"music\": a track from `prompt`.{} kind \"transcript\": `file` to JSON \
            with word timings, speakers.\n\
