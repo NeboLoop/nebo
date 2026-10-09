@@ -251,6 +251,20 @@ pub(crate) fn plan_usage_warning(store: &db::Store, rl: &ai::RateLimitMeta) -> O
     first.then_some((percent, reset_at))
 }
 
+/// The purchased-credit balance to keep after a completion's rate-limit
+/// headers. Janus reads the balance only when credit pays for the request
+/// (active pool "credits"); on a request the plan, the free grant or a gift
+/// pays for, its `X-Budget-Credits-Cents` is 0, which is not the balance.
+/// The balance last known (from `/v1/usage` or a credit-paid request) is
+/// kept then; before one is known, the header's value.
+fn credits_after(known: Option<u64>, header: Option<u64>, active_pool: Option<&str>) -> u64 {
+    match (active_pool, header, known) {
+        (Some("credits"), Some(cents), _) => cents,
+        (_, _, Some(cents)) => cents,
+        (_, header, None) => header.unwrap_or(0),
+    }
+}
+
 fn record_run_error(harness: &agent::Harness, session_key: &str, error: &str) {
     if error.is_empty() {
         return;
@@ -1324,12 +1338,13 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                     // The header carries no "included" flag
                                     // (a plan with no work reads 0%): keep what
                                     // /v1/usage said, or infer it from use.
-                                    let plan_included = janus_usage
+                                    let (known_included, known_credits) = janus_usage
                                         .read()
                                         .await
                                         .as_ref()
-                                        .is_some_and(|u| u.plan_included)
-                                        || rl.plan_used_percent.unwrap_or(0) > 0;
+                                        .map_or((false, None), |u| (u.plan_included, Some(u.budget_credits_cents)));
+                                    let plan_included =
+                                        known_included || rl.plan_used_percent.unwrap_or(0) > 0;
                                     let usage = crate::state::JanusUsage {
                                         session_limit_credits: rl
                                             .session_limit_credits
@@ -1364,7 +1379,11 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                         budget_gift_available: rl
                                             .budget_gift_available
                                             .unwrap_or(0),
-                                        budget_credits_cents: rl.budget_credits_cents.unwrap_or(0),
+                                        budget_credits_cents: credits_after(
+                                            known_credits,
+                                            rl.budget_credits_cents,
+                                            rl.budget_active_pool.as_deref(),
+                                        ),
                                         budget_active_pool: rl
                                             .budget_active_pool
                                             .clone()
@@ -3171,6 +3190,33 @@ mod session_key_contract_tests {
         assert_eq!(types::keyparser::agent_id_from_workflow_id(&wf), Some("a1"));
         assert_eq!(types::keyparser::agent_id_from_workflow_id("agent:"), None);
         assert_eq!(types::keyparser::agent_id_from_workflow_id("wf-123"), None);
+    }
+}
+
+#[cfg(test)]
+mod credits_after_tests {
+    use super::credits_after;
+
+    /// A plan-paid completion says 0 credits; the $100 bought is still
+    /// there (2026-10-09: the usage page showed $0 after a credit pack).
+    #[test]
+    fn a_plan_paid_request_keeps_the_known_balance() {
+        assert_eq!(credits_after(Some(10_000), Some(0), Some("plan")), 10_000);
+        assert_eq!(credits_after(Some(10_000), Some(0), Some("free")), 10_000);
+        assert_eq!(credits_after(Some(10_000), None, None), 10_000);
+    }
+
+    /// A credit-paid completion reads the balance: it is the news.
+    #[test]
+    fn a_credit_paid_request_sets_the_balance() {
+        assert_eq!(credits_after(Some(10_000), Some(8_120), Some("credits")), 8_120);
+        assert_eq!(credits_after(None, Some(8_120), Some("credits")), 8_120);
+    }
+
+    #[test]
+    fn with_no_balance_known_the_header_is_all_there_is() {
+        assert_eq!(credits_after(None, Some(0), Some("plan")), 0);
+        assert_eq!(credits_after(None, None, None), 0);
     }
 }
 

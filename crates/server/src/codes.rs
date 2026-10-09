@@ -2042,6 +2042,43 @@ async fn find_product_by_code(api: &NeboAIApi, kind: &str, code: &str) -> Option
     Some((field("id"), field("name"), field("slug")))
 }
 
+/// Reads the account's plan from NeboAI and sets it (`apply_plan`). The app
+/// holds the plan only in memory, and the hub's tokenRefresh only says when
+/// it changes: without this read a restart showed Free on a paid plan until
+/// the next plan change (2026-10-09, a Business upgrade).
+pub(crate) async fn sync_plan(state: &AppState) {
+    let Ok(api) = build_api_client(state) else {
+        return;
+    };
+    match api.billing_subscription().await {
+        Ok(resp) => {
+            let plan = resp.get("plan").and_then(|v| v.as_str()).unwrap_or("");
+            apply_plan(state, plan).await;
+        }
+        Err(e) => warn!(error = %e, "plan sync: the account's plan could not be read"),
+    }
+}
+
+/// Sets the plan the app shows (`plan_tier`, read by account status). The UI
+/// is told (`plan_changed`, which shows the upgrade notice) only when a plan
+/// it already knew changes.
+pub(crate) async fn apply_plan(state: &AppState, plan: &str) {
+    let plan = if plan.is_empty() { "free" } else { plan };
+    let prev = std::mem::replace(&mut *state.plan_tier.write().await, plan.to_string());
+    if plan_changed(&prev, plan) {
+        state
+            .hub
+            .broadcast("plan_changed", serde_json::json!({"plan": plan}));
+    }
+}
+
+/// Whether `next` over `prev` is a plan change to announce. "" is the plan
+/// not yet read since startup: reading it is not a change, and neither is
+/// the hub repeating the plan the app has.
+fn plan_changed(prev: &str, next: &str) -> bool {
+    !prev.is_empty() && prev != next
+}
+
 pub(crate) fn build_api_client(state: &AppState) -> Result<NeboAIApi, NeboError> {
     let bot_id =
         config::read_bot_id().ok_or_else(|| NeboError::Internal("no bot_id configured".into()))?;
@@ -2456,6 +2493,9 @@ pub async fn activate_neboai(state: &AppState) -> Result<(), NeboError> {
             // The account's time zone and language: the clock and language
             // every turn, schedule and reminder of this bot follows.
             crate::owner_locale::sync(&st).await;
+            // The account's plan: kept only in memory, so read on every
+            // connect (a restart, or a plan changed while the bot was away).
+            sync_plan(&st).await;
             // The bot's own hosted address, as a sender of mail_message_send.
             crate::mail_intake::refresh_bot_address(&st).await;
             // Refresh content protection license keys for sealed .napp files
@@ -3079,6 +3119,18 @@ pub(crate) async fn refresh_license_keys(state: &AppState) -> Result<(), NeboErr
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The plan read on connect after a restart is not announced (the
+    /// upgrade notice would pop on every launch); a plan the app knew that
+    /// changes is, and the hub repeating the same plan is not.
+    #[test]
+    fn only_a_known_plan_that_changes_is_announced() {
+        assert!(!plan_changed("", "business"), "first read since startup");
+        assert!(!plan_changed("", "free"), "first read since startup");
+        assert!(plan_changed("free", "business"), "upgrade while running");
+        assert!(plan_changed("business", "free"), "plan ended while running");
+        assert!(!plan_changed("business", "business"), "same plan again");
+    }
 
     /// The phone's card reads the `POST /codes` reply to configure what it
     /// just hired, so the reply names the employee and whether a plugin it
