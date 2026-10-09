@@ -1561,6 +1561,35 @@ impl Store {
 mod tests {
     use crate::Store;
 
+    /// The reads the apps poll — each conversation's newest reply (the unread
+    /// dots), each chat's last activity and newest rows (the roster) — seek
+    /// one chat's messages newest first and stop. Without
+    /// idx_chat_messages_chat_time each fetched and sorted every message of
+    /// every chat on every poll, holding SQLite's shared page cache until the
+    /// desktop server answered in seconds (2026-10-09).
+    #[test]
+    fn newest_first_reads_of_a_chat_seek_its_messages_in_order() {
+        let (_dir, store) = store();
+        let conn = store.conn().unwrap();
+        let reads = [
+            format!("SELECT {} FROM chats", super::latest_reply_sql("chats.id")),
+            format!("SELECT {} FROM chats", super::last_visible_message_sql("chats.id")),
+            "SELECT (SELECT MAX(m.created_at) FROM chat_messages m WHERE m.chat_id = chats.id) FROM chats".to_string(),
+            "SELECT *, rowid AS _rn FROM chat_messages WHERE chat_id = 'c' ORDER BY created_at DESC, _rn DESC LIMIT 6".to_string(),
+        ];
+        for sql in reads {
+            let plan: Vec<String> = conn
+                .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
+                .unwrap()
+                .query_map([], |row| row.get::<_, String>(3))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap();
+            assert!(plan.iter().all(|step| !step.contains("TEMP B-TREE")), "{sql}: {plan:#?}");
+            assert!(plan.iter().any(|step| step.contains("idx_chat_messages_chat_time")), "{sql}: {plan:#?}");
+        }
+    }
+
     /// The owner's conversations with an employee are the only ones counted
     /// or chosen as its latest: its thread with a colleague and its seat for
     /// a team are listed as conversations, but never picked, even when they

@@ -361,6 +361,27 @@ pub async fn list_agents(
     // roster's "Waiting for you" marker (desktop and phone).
     let waiting_for_you = crate::handlers::asks::blocking_by_employee(&state).await;
 
+    // Each row reads its employee's latest thread and parses its stored
+    // config: blocking work, kept off the runtime workers — the apps poll
+    // this, and on a long-used desktop it held them for seconds (2026-10-09).
+    let store = state.store.clone();
+    let body = tokio::task::spawn_blocking(move || roster(&store, fs_agents, db_rows, db_map, offline, waiting_for_you))
+        .await
+        .map_err(|e| to_error_response(types::NeboError::Internal(e.to_string())))?;
+    Ok(Json(body))
+}
+
+/// The body of `GET /agents`: a row per employee (the loaded ones, then the
+/// database-only ones), the first-contact gate and the unread conversations.
+/// Blocks on the store.
+fn roster(
+    store: &db::Store,
+    fs_agents: Vec<napp::LoadedAgent>,
+    db_rows: Vec<db::models::Agent>,
+    db_map: std::collections::HashMap<String, db::models::Agent>,
+    offline: std::collections::HashMap<String, bool>,
+    waiting_for_you: std::collections::HashMap<String, usize>,
+) -> serde_json::Value {
     let mut agents = Vec::with_capacity(fs_agents.len());
     let mut matched_db_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
     for loaded in &fs_agents {
@@ -418,7 +439,7 @@ pub async fn list_agents(
             })
             .unwrap_or_else(|| name.clone());
 
-        let latest_thread = latest_thread_status(&state.store, &agent_id);
+        let latest_thread = latest_thread_status(store, &agent_id);
         let memory_mode = match db_row {
             Some(r) => crate::workflow_manager::memory_mode_of(&r.frontmatter),
             None => loaded.config.as_ref().map(|c| c.memory.mode).unwrap_or_default(),
@@ -520,9 +541,10 @@ pub async fn list_agents(
         if matched_db_ids.contains(&r.id) {
             continue;
         }
-        let latest_thread = latest_thread_status(&state.store, &r.id);
+        let latest_thread = latest_thread_status(store, &r.id);
         let files_expected = r.napp_path.as_deref().is_some_and(|p| !p.is_empty());
         let app_window = (r.is_app.unwrap_or(0) != 0).then(|| stored_app_window(r.app_window_config.as_deref()));
+        let memory_mode = crate::workflow_manager::memory_mode_of(&r.frontmatter);
         agents.push(serde_json::json!({
             "id": r.id,
             "name": r.name,
@@ -546,8 +568,8 @@ pub async fn list_agents(
             // hid every sealed employee whose files failed to load (a name
             // with "/" nests its folder and the loader misses it) — the rail
             // then showed no drill affordance until a click resolved it.
-            "memoryMode": crate::workflow_manager::memory_mode_of(&r.frontmatter),
-            "isolated": crate::workflow_manager::memory_mode_of(&r.frontmatter).separates_conversations(),
+            "memoryMode": memory_mode,
+            "isolated": memory_mode.separates_conversations(),
             "needsSetup": false,
             "latestPreview": latest_thread.as_ref().and_then(|t| t.preview.clone()),
             "restarted": latest_thread.as_ref().is_some_and(|t| t.restarted),
@@ -567,14 +589,12 @@ pub async fn list_agents(
     // workspace is usable (owner decision — not skippable). Christened = the
     // ceremony ran, or the primary already carries a non-default name (an
     // existing install that renamed long ago must never see the modal).
-    let primary_christened = state
-        .store
+    let primary_christened = store
         .get_plugin_setting("core", "primary_christened")
         .ok()
         .flatten()
         .is_some()
-        || state
-            .store
+        || store
             .get_agent("assistant")
             .ok()
             .flatten()
@@ -583,8 +603,7 @@ pub async fn list_agents(
     // The owner's conversations with a reply he has not read, by session key
     // (`agent:<id>:…`): the roster's "New reply" dots, an employee's row lit
     // when any of its conversations is. Cleared by `PUT /chats/{id}/read`.
-    let unread_sessions: Vec<String> = state
-        .store
+    let unread_sessions: Vec<String> = store
         .unread_conversations()
         .unwrap_or_else(|e| {
             warn!(error = %e, "roster: could not read the unread conversations");
@@ -593,12 +612,12 @@ pub async fn list_agents(
         .into_iter()
         .filter(|key| !key.starts_with(db::TEAM_THREAD_PREFIX))
         .collect();
-    Ok(Json(serde_json::json!({
+    serde_json::json!({
         "agents": agents,
         "total": total,
         "primaryChristened": primary_christened,
         "unreadSessions": unread_sessions,
-    })))
+    })
 }
 
 /// The directory a NEW user-owned employee's package goes in: `user/agents/
@@ -5974,6 +5993,33 @@ mod shown_title_tests {
         assert_eq!(shown_title("agent:x:thread:y", ""), "");
         assert_eq!(shown_title("Ten levels for the game", "Flip-Flap"), "Ten levels for the game");
         assert_eq!(shown_title("agent: who owns billing", "Flip-Flap"), "agent: who owns billing");
+    }
+}
+
+#[cfg(test)]
+mod roster_tests {
+    use std::collections::HashMap;
+
+    /// The roster's rows are built by a plain function on the store — what
+    /// `GET /agents` runs off the runtime workers — with each employee's
+    /// stored memory mode, its latest thread's line and its unread dot.
+    #[test]
+    fn roster_rows_come_from_the_store_without_a_runtime() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = db::Store::new(dir.path().join("t.db").to_str().unwrap()).unwrap();
+        store
+            .create_agent("e1", None, "Ada", "", "", r#"{"memory":{"mode":"separate"}}"#, None, None)
+            .unwrap();
+        store.create_chat_for_session("c1", "agent:e1:web", "t", None).unwrap();
+        store.create_chat_message("m1", "c1", "assistant", "The report is ready.", None).unwrap();
+
+        let rows = store.list_agents(1000, 0).unwrap();
+        let body = super::roster(&store, Vec::new(), rows, HashMap::new(), HashMap::new(), HashMap::new());
+        let ada = body["agents"].as_array().unwrap().iter().find(|a| a["id"] == "e1").unwrap();
+        assert_eq!(ada["memoryMode"], "separate");
+        assert_eq!(ada["isolated"], true);
+        assert_eq!(ada["latestPreview"], "The report is ready.");
+        assert_eq!(body["unreadSessions"], serde_json::json!(["agent:e1:web"]));
     }
 }
 
