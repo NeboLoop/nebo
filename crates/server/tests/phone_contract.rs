@@ -15,6 +15,9 @@ use common::TestServer;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_phones_calls_are_answered() {
+    if !common::in_own_process().await {
+        return;
+    }
     let server = TestServer::boot().await;
 
     // The heartbeat: a reading shared with one employee, then the revocation
@@ -70,6 +73,9 @@ async fn the_phones_calls_are_answered() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_bots_location_round_trips() {
+    if !common::in_own_process().await {
+        return;
+    }
     let server = TestServer::boot().await;
 
     let unset = server.get("/agent/location").await;
@@ -113,6 +119,9 @@ async fn the_bots_location_round_trips() {
 /// linked computer, and a blank name is refused.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_linked_employee_is_renamed_from_its_identity_page() {
+    if !common::in_own_process().await {
+        return;
+    }
     let server = TestServer::boot().await;
     let store = server.db_store();
     // The row and brain a linked hire writes.

@@ -91,6 +91,9 @@ fn print_report(results: &[TestResult]) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn mvp_readiness() {
+    if !common::in_own_process().await {
+        return;
+    }
     let server = TestServer::boot().await;
     let mut results = Vec::new();
 

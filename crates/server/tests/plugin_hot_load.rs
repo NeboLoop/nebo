@@ -54,6 +54,9 @@ async fn copy_in_by_hand(server: &TestServer) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_plugin_copied_in_by_hand_is_callable_right_after_hot_load_and_its_toggle_is_honest() {
+    if !common::in_own_process().await {
+        return;
+    }
     let (server, calls) = server_with(Arc::new(|purpose, messages| {
         if !main_call(purpose) {
             return Reply::Text("ok");

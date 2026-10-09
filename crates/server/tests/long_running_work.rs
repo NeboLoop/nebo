@@ -81,6 +81,9 @@ fn heard(calls: &Calls, text: &str) -> bool {
 /// or a weekly workflow rebuilt from scratch.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_temporary_workflow_reports_disappears_and_is_saved_to_run_every_monday() {
+    if !common::in_own_process().await {
+        return;
+    }
     let direction = json!({
         "name": "Budget check",
         "lifetime": "temporary",
@@ -165,6 +168,9 @@ async fn a_temporary_workflow_reports_disappears_and_is_saved_to_run_every_monda
 /// that polls, fires twice, or stays after it reported.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_one_time_watch_fires_once_reports_and_disappears() {
+    if !common::in_own_process().await {
+        return;
+    }
     let (server, calls) = server_with(Arc::new(|purpose, messages| {
         if !main_call(purpose) {
             return Reply::Text("ok");

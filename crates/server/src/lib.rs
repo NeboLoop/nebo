@@ -1171,6 +1171,9 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
         .map_err(|e| NeboError::Server(format!("failed to bind: {e}")))?
         .port();
     let port = cfg.port;
+    // Every local caller in this process (in-process tools, the plugins it
+    // starts) addresses the port actually held, not the configured one.
+    let _ = napp::plugin::SERVING_PORT.set(port);
     let bind_addr = format!("{host}:{port}");
 
     if !quiet {

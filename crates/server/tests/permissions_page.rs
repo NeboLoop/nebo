@@ -23,6 +23,9 @@ fn switch<'a>(page: &'a Value, id: &str) -> &'a Value {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_permissions_page_is_one_switch_through_one_api() {
+    if !common::in_own_process().await {
+        return;
+    }
     let server = TestServer::boot().await;
 
     // The page's shape: switches and plain lines, none of the old lists.
