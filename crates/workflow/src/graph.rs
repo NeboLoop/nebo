@@ -581,6 +581,7 @@ async fn execute_node<'a>(
         "wait" => run_wait(ctx, scope, activity).await,
         "http" => run_http(ctx, scope, activity).await,
         "command" => run_command(ctx, scope, activity).await,
+        "operation" => run_operation(ctx, scope, activity).await,
         "decide" => run_decide(ctx, scope, activity).await,
         "expert" => run_expert(ctx, scope, activity).await,
         _ => run_llm_activity(ctx, scope, activity).await,
@@ -666,6 +667,17 @@ async fn run_command<'a>(
     // Owner-authored deterministic step: plugin auth env rides along so
     // env-auth plugin binaries work in command nodes (see ToolContext docs).
     tool_ctx.trusted_plugin_env = true;
+    // `params.stdin` names data the command reads on its standard input
+    // (`nodes.fetch.records`): a list of any size, quotes and all, which a
+    // `{{...}}` in the command line cannot carry (one argument is capped at
+    // 128 KiB on Linux, and a quote in a name ends the shell string).
+    let stdin = param_str(activity, "stdin");
+    if !stdin.trim().is_empty() {
+        tool_ctx.stdin = Some(match resolve_path(&data, stdin) {
+            Some(v) => value_as_string(&v).into_bytes(),
+            None => return fail(format!("params.stdin '{stdin}' names no data in this run")),
+        });
+    }
     let tool_ctx = tool_ctx;
     let result = {
         let _permit = ctx.loop_impl.acquire_tool_permit().await;
@@ -695,6 +707,231 @@ async fn run_command<'a>(
     info!(activity = activity.id.as_str(), "command node completed");
     record_output(ctx, scope, &activity.id, result.content);
     route(ctx, scope, &activity.id, |_| true).await
+}
+
+/// Pages one `operation` read follows before it stops: a plugin that never
+/// stops naming a next page is a broken plugin, not a long list.
+const MAX_OPERATION_PAGES: usize = 1_000;
+
+/// Deterministic interface step: perform a catalog operation
+/// (`params.operation`, e.g. `ledger.invoice.search`) through its operation
+/// tool, which resolves to whichever connected plugin binds it. The call goes
+/// through the same door as a model's call to that tool: the employee's
+/// permission check (a call that needs the owner's OK is refused — nobody
+/// waits on a code step), the write ledger and the lease.
+///
+/// Two shapes, by whether `params.rows` is set:
+/// - **read every page** — one call with `params.input`; while the answer
+///   names a `nextCursor`, the next call carries it as `cursor`. Each page's
+///   records are the answer's one list. Output:
+///   `{"operation", "records": [...], "pages": n}`.
+/// - **one call per row** — `params.rows` is a data path to a list of
+///   objects; each row's fields over `params.input` make one call, serially.
+///   A write row without a `clientKey` gets one from the run, the step and
+///   the row, so a resumed run never performs a row twice. Output:
+///   `{"operation", "results": [{"index", "ok", "result"|"error"}],
+///   "succeeded": n, "failed": m}`; a failed row does not stop the others.
+///
+/// `{{...}}` in `params.input`'s text values interpolates like a command.
+async fn run_operation<'a>(
+    ctx: &GraphCtx<'a>,
+    scope: &WalkScope,
+    activity: &Activity,
+) -> Result<(), WorkflowError> {
+    if let Some(content) = replay_completed(ctx, scope, activity) {
+        info!(activity = activity.id.as_str(), "resume: replaying completed operation node");
+        record_output(ctx, scope, &activity.id, content);
+        return route(ctx, scope, &activity.id, |_| true).await;
+    }
+    let started_at = chrono::Utc::now().timestamp();
+
+    let fail = |err_msg: String| {
+        let _ = ctx.store.create_activity_result(
+            &ctx.run_id,
+            &activity.id,
+            &scope.iteration,
+            "failed",
+            0,
+            1,
+            Some(&err_msg),
+            started_at,
+            Some(chrono::Utc::now().timestamp()),
+        );
+        Err(WorkflowError::ActivityFailed(activity.id.clone(), err_msg))
+    };
+
+    let operation = param_str(activity, "operation").trim();
+    let tool_name = tools::operation_tools::operation_tool_name(operation);
+    let Some(tool) = ctx.resolved_tools.iter().find(|t| t.name() == tool_name) else {
+        return fail(format!(
+            "No connected plugin performs {operation}. Connect a plugin that binds it, then run this again."
+        ));
+    };
+
+    let data = data_context(ctx, scope);
+    let mut base = activity
+        .params
+        .as_ref()
+        .and_then(|p| p.get("input"))
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
+    interpolate_strings(&mut base, &data);
+
+    // As the employee that owns the workflow, like a command step.
+    let mut tool_ctx = tools::ToolContext::new(tools::Origin::Workflow).with_session(
+        tools::workflow_session_key(&ctx.agent_id, &ctx.run_id),
+        ctx.run_id.clone(),
+    );
+    tool_ctx.door = types::permissions::Door::Workflow;
+    tool_ctx.cannot_wait = true;
+    tool_ctx.user_id = ctx.memory_user_id.clone();
+    tool_ctx.memory_writes_disabled = ctx.memory_writes_disabled;
+    let tool_ctx = tool_ctx;
+    let call = |input: serde_json::Value| {
+        let tool_ctx = &tool_ctx;
+        async move {
+            let _permit = ctx.loop_impl.acquire_tool_permit().await;
+            tool.execute_dyn(tool_ctx, input).await
+        }
+    };
+    let cancelled = || ctx.cancel_token.is_some_and(|t| t.is_cancelled());
+
+    let rows_path = param_str(activity, "rows");
+    let output = if rows_path.trim().is_empty() {
+        let mut records = Vec::new();
+        let mut cursor: Option<String> = None;
+        let mut pages = 0;
+        loop {
+            if cancelled() {
+                return Err(WorkflowError::Cancelled);
+            }
+            if pages == MAX_OPERATION_PAGES {
+                return fail(format!("{operation} named a next page after {MAX_OPERATION_PAGES} pages; stopped"));
+            }
+            let mut input = base.clone();
+            if let (Some(c), Some(obj)) = (&cursor, input.as_object_mut()) {
+                obj.insert("cursor".into(), serde_json::Value::String(c.clone()));
+            }
+            let result = call(input).await;
+            pages += 1;
+            if result.is_error {
+                return fail(format!("{operation}, page {pages}: {}", result.content));
+            }
+            let (page, next) = match page_records(&result.content) {
+                Ok(p) => p,
+                Err(e) => return fail(format!("{operation}, page {pages}: {e}")),
+            };
+            records.extend(page);
+            match next {
+                Some(n) if cursor.as_deref() == Some(n.as_str()) => {
+                    return fail(format!("{operation} named page {n} as the next page twice; stopped"));
+                }
+                Some(n) => cursor = Some(n),
+                None => break,
+            }
+        }
+        serde_json::json!({ "operation": operation, "records": records, "pages": pages })
+    } else {
+        let rows = match resolve_path(&data, rows_path) {
+            None | Some(serde_json::Value::Null) => Vec::new(),
+            Some(serde_json::Value::Array(rows)) => rows,
+            Some(_) => return fail(format!("params.rows '{rows_path}' is not a list")),
+        };
+        let keyed = !tools::operation_tools::reads_only(operation);
+        let mut results = Vec::with_capacity(rows.len());
+        let (mut succeeded, mut failed) = (0, 0);
+        for (index, row) in rows.into_iter().enumerate() {
+            if cancelled() {
+                return Err(WorkflowError::Cancelled);
+            }
+            let serde_json::Value::Object(fields) = row else {
+                failed += 1;
+                results.push(serde_json::json!({ "index": index, "ok": false, "error": "the row is not an object of fields" }));
+                continue;
+            };
+            let mut input = base.clone();
+            if let Some(obj) = input.as_object_mut() {
+                obj.extend(fields);
+                if keyed && !obj.contains_key("clientKey") {
+                    let key = format!("{}:{}:{}:{index}", ctx.run_id, activity.id, scope.iteration);
+                    obj.insert("clientKey".into(), serde_json::Value::String(key));
+                }
+            }
+            let result = call(input).await;
+            if result.is_error {
+                failed += 1;
+                results.push(serde_json::json!({ "index": index, "ok": false, "error": result.content }));
+            } else {
+                succeeded += 1;
+                let parsed = serde_json::from_str::<serde_json::Value>(&result.content)
+                    .unwrap_or(serde_json::Value::String(result.content));
+                results.push(serde_json::json!({ "index": index, "ok": true, "result": parsed }));
+            }
+        }
+        serde_json::json!({
+            "operation": operation,
+            "results": results,
+            "succeeded": succeeded,
+            "failed": failed,
+        })
+    };
+
+    let content = output.to_string();
+    let _ = ctx.store.create_activity_result(
+        &ctx.run_id,
+        &activity.id,
+        &scope.iteration,
+        "completed",
+        0,
+        1,
+        None,
+        started_at,
+        Some(chrono::Utc::now().timestamp()),
+    );
+    let _ = ctx.store.set_activity_result_content(&ctx.run_id, &activity.id, &scope.iteration, &content);
+    info!(activity = activity.id.as_str(), operation, "operation node completed");
+    record_output(ctx, scope, &activity.id, content);
+    route(ctx, scope, &activity.id, |_| true).await
+}
+
+/// One page of a list read: its records and the cursor of the next page.
+/// The answer is a list, or an object whose one list holds the records
+/// (`{"invoices": [...]}`, `{"items": [...], "count": 3}`), with
+/// `nextCursor` naming the next page when there is one.
+fn page_records(content: &str) -> Result<(Vec<serde_json::Value>, Option<String>), String> {
+    let page: serde_json::Value = serde_json::from_str(content.trim())
+        .map_err(|_| format!("the answer is not JSON: {}", types::strutil::safe_prefix(content.trim(), 200)))?;
+    let obj = match page {
+        serde_json::Value::Array(records) => return Ok((records, None)),
+        serde_json::Value::Object(obj) => obj,
+        _ => return Err("the answer is neither a list nor an object holding one".into()),
+    };
+    let next = match obj.get("nextCursor") {
+        None | Some(serde_json::Value::Null) => None,
+        Some(serde_json::Value::String(s)) if s.is_empty() => None,
+        Some(serde_json::Value::String(s)) => Some(s.clone()),
+        Some(serde_json::Value::Number(n)) => Some(n.to_string()),
+        Some(_) => return Err("nextCursor is not text".into()),
+    };
+    let mut lists = obj.into_iter().filter_map(|(k, v)| match v {
+        serde_json::Value::Array(records) => Some((k, records)),
+        _ => None,
+    });
+    match (lists.next(), lists.next()) {
+        (Some((_, records)), None) => Ok((records, next)),
+        (None, _) => Err("the answer holds no list of records".into()),
+        (Some((a, _)), Some((b, _))) => Err(format!("the answer holds more than one list ({a}, {b}); return the records as its only list")),
+    }
+}
+
+/// Interpolate `{{...}}` in every text value of `value`, in place.
+fn interpolate_strings(value: &mut serde_json::Value, data: &serde_json::Value) {
+    match value {
+        serde_json::Value::String(s) => *s = interpolate_context(s, data),
+        serde_json::Value::Array(items) => items.iter_mut().for_each(|v| interpolate_strings(v, data)),
+        serde_json::Value::Object(map) => map.values_mut().for_each(|v| interpolate_strings(v, data)),
+        _ => {}
+    }
 }
 
 /// Replace `{{path}}` placeholders with values from the data context. String
@@ -4084,6 +4321,258 @@ mod walk_tests {
         assert_eq!(cat[0].name, "ana expert");
         assert_eq!(cat[0].capability, "Prices things for ana.");
         assert!(crate::expert::catalog_lines(&cat).contains("expert: \"ana\""));
+    }
+
+    /// A stand-in for an operation tool (`ledger_invoice_search`): answers
+    /// each call with `answer(input)` and records every input it was given,
+    /// with the stdin the call carried.
+    struct Recorded {
+        name: &'static str,
+        answer: fn(&serde_json::Value) -> tools::ToolResult,
+        seen: Arc<StdMutex<Vec<(serde_json::Value, Option<String>)>>>,
+    }
+
+    impl DynTool for Recorded {
+        fn name(&self) -> &str {
+            self.name
+        }
+        fn description(&self) -> String {
+            String::new()
+        }
+        fn schema(&self) -> serde_json::Value {
+            serde_json::json!({})
+        }
+        fn execute_dyn<'a>(
+            &'a self,
+            ctx: &'a tools::ToolContext,
+            input: serde_json::Value,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = tools::ToolResult> + Send + 'a>> {
+            let stdin = ctx.stdin.as_ref().map(|b| String::from_utf8_lossy(b).into_owned());
+            self.seen.lock().unwrap().push((input.clone(), stdin));
+            let r = (self.answer)(&input);
+            Box::pin(async move { r })
+        }
+    }
+
+    fn recorded(
+        name: &'static str,
+        answer: fn(&serde_json::Value) -> tools::ToolResult,
+    ) -> (Box<dyn DynTool>, Arc<StdMutex<Vec<(serde_json::Value, Option<String>)>>>) {
+        let seen = Arc::new(StdMutex::new(Vec::new()));
+        (Box::new(Recorded { name, answer, seen: seen.clone() }), seen)
+    }
+
+    /// Run `def_json` with `tools` as the run's roster.
+    async fn run_with_tools(
+        def_json: &str,
+        inputs: serde_json::Value,
+        tools: &[Box<dyn DynTool>],
+    ) -> (Result<(String, String), WorkflowError>, Arc<Store>, String) {
+        let provider = MockProvider::new(&[]);
+        let def = parse_workflow(def_json).expect("valid def");
+        let store = test_store();
+        let run_id = uuid::Uuid::new_v4().to_string();
+        store
+            .create_workflow_run(&run_id, &def.id, "manual", None, None, None, None)
+            .expect("run row");
+        let result = execute_graph(
+            &def,
+            "clerk",
+            "test-owner",
+            false,
+            &inputs,
+            &store,
+            None,
+            &ScriptedLoop::new(&provider),
+            tools,
+            None,
+            &run_id,
+            None,
+            None,
+            None,
+            Vec::new(),
+            None,
+            None,
+            None,
+        )
+        .await;
+        (result, store, run_id)
+    }
+
+    fn one_step(id: &str, kind: &str, params: serde_json::Value) -> String {
+        serde_json::json!({
+            "version": "1.0", "id": "t", "name": "T",
+            "activities": [{ "id": id, "type": kind, "params": params }],
+            "connections": [{ "from": "__trigger__", "to": id }, { "from": id, "to": "__emit__" }],
+        })
+        .to_string()
+    }
+
+    /// FETCH: a read follows `nextCursor` until the plugin names none, and
+    /// the records of every page land in one list. Each page's records are
+    /// the answer's one list, whatever the plugin calls it.
+    #[tokio::test]
+    async fn an_operation_read_collects_every_page() {
+        let (tool, seen) = recorded("ledger_invoice_search", |input| {
+            tools::ToolResult::ok(match input.get("cursor").and_then(|c| c.as_str()) {
+                None => r#"{"count":2,"items":[{"id":"1"},{"id":"2"}],"nextCursor":"p2","note":"x"}"#,
+                Some("p2") => r#"{"count":2,"items":[{"id":"3"},{"id":"4"}],"nextCursor":"p3"}"#,
+                Some(_) => r#"{"count":1,"items":[{"id":"5"}],"nextCursor":null}"#,
+            })
+        });
+        let def = one_step(
+            "fetch",
+            "operation",
+            serde_json::json!({"operation": "ledger.invoice.search", "input": {"status": "{{inputs.status}}"}}),
+        );
+        let (result, store, run_id) = run_with_tools(&def, serde_json::json!({"status": "open"}), &[tool]).await;
+        result.expect("run ok");
+        let out = node_output(&store, &run_id, "fetch", "");
+        assert_eq!(out["pages"], 3);
+        let ids: Vec<&str> = out["records"].as_array().unwrap().iter().map(|r| r["id"].as_str().unwrap()).collect();
+        assert_eq!(ids, ["1", "2", "3", "4", "5"]);
+        let calls: Vec<serde_json::Value> = seen.lock().unwrap().iter().map(|(i, _)| i.clone()).collect();
+        assert_eq!(
+            calls,
+            [
+                serde_json::json!({"status": "open"}),
+                serde_json::json!({"status": "open", "cursor": "p2"}),
+                serde_json::json!({"status": "open", "cursor": "p3"}),
+            ],
+            "the input is interpolated and each next page carries its cursor"
+        );
+    }
+
+    /// A plugin that answers with a bare list, or never pages, is one page.
+    #[tokio::test]
+    async fn an_operation_read_of_a_plugin_that_does_not_page_is_one_page() {
+        let (tool, seen) = recorded("ledger_account_list", |_| tools::ToolResult::ok(r#"[{"id":"a"},{"id":"b"}]"#));
+        let def = one_step("fetch", "operation", serde_json::json!({"operation": "ledger.account.list"}));
+        let (result, store, run_id) = run_with_tools(&def, serde_json::json!({}), &[tool]).await;
+        result.expect("run ok");
+        let out = node_output(&store, &run_id, "fetch", "");
+        assert_eq!((out["pages"].as_u64(), out["records"].as_array().unwrap().len()), (Some(1), 2));
+        assert_eq!(seen.lock().unwrap().len(), 1);
+    }
+
+    /// A page that can't be read, or a cursor that never moves, fails the
+    /// step with the reason; it never loops or guesses.
+    #[tokio::test]
+    async fn an_operation_read_fails_on_a_page_it_cannot_follow() {
+        for (answer, says) in [
+            (
+                (|_: &serde_json::Value| tools::ToolResult::ok(r#"{"items":[1],"nextCursor":"same"}"#))
+                    as fn(&serde_json::Value) -> tools::ToolResult,
+                "named page same as the next page twice",
+            ),
+            (|_| tools::ToolResult::ok(r#"{"bills":[1],"invoices":[2]}"#), "more than one list (bills, invoices)"),
+            (|_| tools::ToolResult::ok("Here are your invoices"), "not JSON"),
+            (|_| tools::ToolResult::error("QuickBooks refused the call"), "page 1: QuickBooks refused the call"),
+        ] {
+            let (tool, _) = recorded("ledger_invoice_search", answer);
+            let def = one_step("fetch", "operation", serde_json::json!({"operation": "ledger.invoice.search"}));
+            let (result, _, _) = run_with_tools(&def, serde_json::json!({}), &[tool]).await;
+            match result {
+                Err(WorkflowError::ActivityFailed(id, msg)) => {
+                    assert_eq!(id, "fetch");
+                    assert!(msg.contains(says), "{msg}");
+                }
+                other => panic!("expected the step to fail with '{says}', got {other:?}"),
+            }
+        }
+    }
+
+    /// APPLY: one call per row, serially, each row's fields over the shared
+    /// input. A failed row is a row result, not the end of the batch. A write
+    /// row without a key gets one from the run, the step and the row; a row's
+    /// own key is kept.
+    #[tokio::test]
+    async fn an_operation_write_reports_every_row() {
+        let (tool, seen) = recorded("ledger_invoice_update", |input| {
+            if input["invoiceId"] == "bad" {
+                tools::ToolResult::error("QuickBooks: no invoice bad")
+            } else {
+                tools::ToolResult::ok(format!(r#"{{"id":{},"updated":true}}"#, input["invoiceId"]))
+            }
+        });
+        let def = one_step(
+            "apply",
+            "operation",
+            serde_json::json!({"operation": "ledger.invoice.update", "input": {"terms": "Net 30"}, "rows": "inputs.decisions"}),
+        );
+        let decisions = serde_json::json!({"decisions": [
+            {"invoiceId": "101", "dueDate": "2026-11-01"},
+            {"invoiceId": "bad"},
+            {"invoiceId": "103", "clientKey": "mine-103"},
+            "not a row",
+        ]});
+        let (result, store, run_id) = run_with_tools(&def, decisions, &[tool]).await;
+        result.expect("a failed row does not fail the step");
+        let out = node_output(&store, &run_id, "apply", "");
+        assert_eq!((out["succeeded"].as_u64(), out["failed"].as_u64()), (Some(2), Some(2)));
+        let results = out["results"].as_array().unwrap();
+        assert_eq!(results[0], serde_json::json!({"index": 0, "ok": true, "result": {"id": "101", "updated": true}}));
+        assert_eq!(results[1], serde_json::json!({"index": 1, "ok": false, "error": "QuickBooks: no invoice bad"}));
+        assert_eq!(results[2]["ok"], true);
+        assert_eq!(results[3]["ok"], false);
+        let calls: Vec<serde_json::Value> = seen.lock().unwrap().iter().map(|(i, _)| i.clone()).collect();
+        assert_eq!(calls.len(), 3, "the non-object row never reached the tool");
+        assert_eq!(
+            calls[0],
+            serde_json::json!({"terms": "Net 30", "invoiceId": "101", "dueDate": "2026-11-01", "clientKey": format!("{run_id}:apply::0")})
+        );
+        assert_eq!(calls[1]["clientKey"], format!("{run_id}:apply::1"));
+        assert_eq!(calls[2]["clientKey"], "mine-103", "the row's own key is kept");
+    }
+
+    /// VERIFY: one read per row (a get by id) carries no key: a read is never
+    /// put in the write ledger.
+    #[tokio::test]
+    async fn an_operation_read_per_row_carries_no_key() {
+        let (tool, seen) = recorded("ledger_invoice_get", |input| {
+            tools::ToolResult::ok(format!(r#"{{"id":{},"dueDate":"2026-11-01"}}"#, input["invoiceId"]))
+        });
+        let def = one_step("verify", "operation", serde_json::json!({"operation": "ledger.invoice.get", "rows": "inputs.ids"}));
+        let ids = serde_json::json!({"ids": [{"invoiceId": "101"}, {"invoiceId": "103"}]});
+        let (result, store, run_id) = run_with_tools(&def, ids, &[tool]).await;
+        result.expect("run ok");
+        assert_eq!(node_output(&store, &run_id, "verify", "")["succeeded"], 2);
+        assert!(seen.lock().unwrap().iter().all(|(i, _)| i.get("clientKey").is_none()));
+    }
+
+    /// No connected plugin binds the operation: the step fails and says so.
+    #[tokio::test]
+    async fn an_operation_no_plugin_performs_fails_the_step() {
+        let def = one_step("fetch", "operation", serde_json::json!({"operation": "crm.contact.find"}));
+        let (result, _, _) = run_with_tools(&def, serde_json::json!({}), &[]).await;
+        match result {
+            Err(WorkflowError::ActivityFailed(_, msg)) => {
+                assert!(msg.contains("No connected plugin performs crm.contact.find"), "{msg}")
+            }
+            other => panic!("expected the step to fail, got {other:?}"),
+        }
+    }
+
+    /// MATCH: a command step reads a step's data on stdin — a list with a
+    /// quote in a name, which a command line could not carry.
+    #[tokio::test]
+    async fn a_command_step_reads_its_stdin_from_the_run() {
+        let (tool, seen) = recorded("run_command", |_| tools::ToolResult::ok("[]"));
+        let def = one_step(
+            "match",
+            "command",
+            serde_json::json!({"command": "jq length", "stdin": "inputs.records"}),
+        );
+        let records = serde_json::json!({"records": [{"name": "O'Brien & Sons"}]});
+        let (result, _, _) = run_with_tools(&def, records, &[tool]).await;
+        result.expect("run ok");
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen[0].1.as_deref(), Some(r#"[{"name":"O'Brien & Sons"}]"#));
+
+        let (tool, _) = recorded("run_command", |_| tools::ToolResult::ok("[]"));
+        let def = one_step("match", "command", serde_json::json!({"command": "jq length", "stdin": "nodes.nothing"}));
+        let (result, _, _) = run_with_tools(&def, serde_json::json!({}), &[tool]).await;
+        assert!(matches!(result, Err(WorkflowError::ActivityFailed(_, m)) if m.contains("names no data")));
     }
 }
 

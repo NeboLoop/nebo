@@ -116,6 +116,28 @@ Two tools are always available inside activities:
 
 **Same-tool loop detection:** If the LLM calls the same tool 3+ times in a row, a steering hint is injected to break the loop.
 
+### Interface Steps (`operation`)
+
+An `operation` step performs a catalog operation with no model, through whichever connected plugin binds it, under the same approval rules as the employee's own call. A step that needs the owner's OK is refused, because nobody waits on a code step. This is how a bulk workflow's FETCH, APPLY and VERIFY steps are written once for any ledger, CRM or helpdesk.
+
+```json
+{ "id": "fetch",  "type": "operation", "params": { "operation": "ledger.invoice.search", "input": { "status": "open" } } },
+{ "id": "match",  "type": "command",   "params": { "command": "python3 match.py", "stdin": "nodes.fetch.records" } },
+{ "id": "apply",  "type": "operation", "params": { "operation": "ledger.invoice.update", "rows": "nodes.judge.decisions" } },
+{ "id": "verify", "type": "operation", "params": { "operation": "ledger.invoice.get", "rows": "nodes.judge.checks" } }
+```
+
+| Param | Description |
+|-------|-------------|
+| `operation` | The catalog operation. |
+| `input` | The call's fields; `{{...}}` in text values interpolates. `"provider": "<slug>"` picks the plugin when more than one connected plugin binds the operation. |
+| `rows` | A data path to a list of objects. Set: one call per row (each row's fields over `input`), serially. Unset: one read, following every page. |
+
+- **Read** output: `{"operation", "records": [...], "pages": n}`, all pages joined.
+- **Rows** output: `{"operation", "results": [{"index", "ok", "result" or "error"}], "succeeded", "failed"}`. A failed row does not stop the others; route on `nodes.apply.failed`. A write row without a `clientKey` gets one from the run, the step and the row, so a resumed run never performs a row twice.
+- A `command` step's `params.stdin` names data it reads on standard input. Use it for lists rather than `{{...}}` in the command line, which cannot carry large or quoted data.
+
+
 ### Cancellation
 
 Workflows support graceful cancellation via a cancellation token. When cancelled:

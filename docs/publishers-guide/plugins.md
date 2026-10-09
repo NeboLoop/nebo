@@ -868,6 +868,22 @@ Declare user-configurable settings that render as a form in the UI. Values are s
 
 ---
 
+## Interface Bindings
+
+`interfaceBindings` maps catalog operations (`<capability>.<resource>.<action>`, e.g. `ledger.invoice.search`) to your commands, so an employee written against an interface such as `ledger` works on your plugin unchanged:
+
+```json
+"interfaceBindings": {
+  "ledger.invoice.search": "ledger invoice-search {customerId?:--customer-id} {status?:--status}",
+  "ledger.invoice.update": "ledger invoice-update --invoice-id {invoiceId} {dueDate?:--due-date}"
+}
+```
+
+Each `{field}` is a parameter of the operation; fields the template does not name reach your binary as `--name value` flags. `clientKey` never reaches you: Nebo keeps it and runs a write under one key once.
+
+**Lists that page.** Answer a list operation with JSON whose one list holds the records (`{"items": [...], "count": 50}` or a bare list). When more records remain, add `"nextCursor": "<opaque text>"`; Nebo asks for the next page with the same call plus `--cursor <that text>`, until an answer has no `nextCursor`. Choose your own page size, and keep a page well under 30 KB. Pacing and rate limits are yours: a workflow reads pages one at a time.
+
+
 ## Permissions
 
 Plugins can declare a permissions manifest that controls environment variable access, network needs, and execution limits. These are enforced at exec time.

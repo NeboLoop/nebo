@@ -251,8 +251,8 @@ impl OperationTool {
 }
 
 /// An operation that reads: the catalog doesn't gate it and its action is a
-/// read.
-fn reads_only(operation: &str) -> bool {
+/// read. A workflow's `operation` step keys only the others to a `clientKey`.
+pub fn reads_only(operation: &str) -> bool {
     !crate::interface_catalog::is_gated(operation)
         && operation.rsplit('.').next().is_some_and(|a| READ_ACTIONS.contains(&a))
 }

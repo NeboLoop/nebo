@@ -51,6 +51,8 @@ mod sidecar_proof;
 mod harness;
 #[cfg(test)]
 mod nebo_files_proof;
+#[cfg(all(test, unix))]
+mod interface_bulk_proof;
 mod spa;
 mod app_listing;
 mod state;
