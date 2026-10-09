@@ -4,7 +4,7 @@ The calls SKILL.md's table leaves out: sharing a file, streaming, cards, the emb
 
 | Call | Does |
 |------|------|
-| `share({name, content}): Promise<{artifact}>` | Hand the owner a file to share (a presentation, a report): it goes into his Work and Nebo opens its Share dialog on it, where he picks who can open the link. Never build a share link yourself. |
+| `share({name, content}): Promise<{artifact}>` | Hand the owner a file to share (a presentation, a report): it goes into his Work and Nebo opens its Share dialog on it, where he picks who can open the link, on the device the page is open on. Never build a share link yourself. |
 | `agents.stream(message, {agent?, data?}): AsyncGenerator<{text, done}>` | The same, streamed. |
 | `janus.stream(same): AsyncGenerator<string>` | The same, streamed. |
 | `surfaces.connect()`, `surfaces.on(type, handler)`, `surfaces.send(name, payload)`, `surfaces.state` | Cards from the employee's `a2ui` tool. |

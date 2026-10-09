@@ -1800,6 +1800,26 @@ pub struct ShareRequest {
     /// The chat the app is open on (`?thread=`); empty when none.
     #[serde(default)]
     pub thread: String,
+    /// The client that opened the app's page (`?client=`): the desktop
+    /// window, the web app or the phone app. Empty when the page names none.
+    #[serde(default)]
+    pub client: String,
+}
+
+/// The `app_share_requested` event for a file the page handed over, stamped
+/// with who asked ([`EventOrigin`](crate::handlers::ws::EventOrigin)): the
+/// Share dialog is an interactive surface, so it opens only on the client
+/// whose page asked. A share started on the phone never pops it on the
+/// desktop. A page that names no client claims no device, and the dialog
+/// opens nowhere (the file is in Work all the same).
+fn share_requested_event(agent_id: &str, req: &ShareRequest, artifact: &str, title: &str) -> serde_json::Value {
+    let client = req.client.trim();
+    let origin = crate::handlers::ws::EventOrigin {
+        client_id: (!client.is_empty()).then(|| client.to_string()),
+        session_id: req.thread.clone(),
+        platform: None,
+    };
+    origin.stamp(serde_json::json!({ "agentId": agent_id, "chatId": req.thread, "artifact": artifact, "title": title }))
 }
 
 /// A file or folder name an app may write into Work: one plain segment,
@@ -1856,10 +1876,7 @@ pub async fn share_file(
     }
     // The same unencoded reference a run's own Work files carry.
     let artifact = format!("/api/v1/files/{folder}/{name}");
-    state.hub.broadcast(
-        SHARE_REQUESTED_EVENT,
-        serde_json::json!({ "agentId": agent_id, "chatId": body.thread, "artifact": artifact, "title": name }),
-    );
+    state.hub.broadcast(SHARE_REQUESTED_EVENT, share_requested_event(&agent_id, &body, &artifact, &name));
     axum::Json(serde_json::json!({ "artifact": artifact })).into_response()
 }
 
@@ -3047,5 +3064,37 @@ mod share_tests {
             assert_eq!(work_segment(bad, true), None, "{bad:?}");
         }
         assert_eq!(work_segment(&format!("{}.html", "a".repeat(120)), true), None);
+    }
+
+    fn asked(client: &str) -> ShareRequest {
+        ShareRequest { name: "Deck.html".into(), content: "<h1>x</h1>".into(), thread: "chat-1".into(), client: client.into() }
+    }
+
+    /// The Share dialog opens only where the page that asked is open: the
+    /// event names that client, so the phone's share never opens on the
+    /// desktop and the desktop's never on the phone.
+    #[test]
+    fn a_share_names_the_client_whose_page_asked() {
+        let from_phone = share_requested_event("app-1", &asked("phone-b"), "/api/v1/files/App/Deck.html", "Deck.html");
+        assert_eq!(from_phone["client_id"], "phone-b");
+        assert_eq!(from_phone["session_id"], "chat-1");
+        assert_eq!(from_phone["agentId"], "app-1");
+        assert_eq!(from_phone["chatId"], "chat-1");
+        assert_eq!(from_phone["artifact"], "/api/v1/files/App/Deck.html");
+        assert_eq!(from_phone["title"], "Deck.html");
+        let from_desktop = share_requested_event("app-1", &asked(" desktop-a "), "/api/v1/files/App/Deck.html", "Deck.html");
+        assert_eq!(from_desktop["client_id"], "desktop-a");
+    }
+
+    /// A page that names no client (an SDK copy from before `?client=`)
+    /// claims no device: `client_id` is null, so no client opens a dialog.
+    #[test]
+    fn a_share_naming_no_client_is_unclaimed() {
+        for client in ["", "   "] {
+            let ev = share_requested_event("app-1", &asked(client), "/api/v1/files/App/Deck.html", "Deck.html");
+            assert!(ev.get("client_id").is_some_and(|c| c.is_null()), "{ev}");
+        }
+        let old_page: ShareRequest = serde_json::from_str(r#"{"name":"Deck.html","content":"x","thread":"chat-1"}"#).unwrap();
+        assert!(old_page.client.is_empty());
     }
 }
