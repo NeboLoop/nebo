@@ -15,6 +15,9 @@
 		label?: string;
 		options?: AskOption[];
 		multiSelect?: boolean;
+		/** 'select': one pick from a long list, shown as a dropdown. Absent or
+		 *  'buttons': a button per option. */
+		style?: 'buttons' | 'select';
 		default?: string;
 		/** connect_account: plugin slug + agent whose account list the OAuth targets.
 		 *  install_plugin: same `plugin` slug, plus the marketplace install code. */
@@ -361,6 +364,13 @@
 					</label>
 				{/each}
 			</div>
+		{:else if widget?.style === 'select'}
+			<select class="select select-bordered select-sm ask-select" onchange={(e) => e.currentTarget.value && submit(e.currentTarget.value)}>
+				<option value="" selected disabled>{$t('chat.chooseOne')}</option>
+				{#each options as option}
+					<option value={option.label}>{option.label}{option.recommended ? ` · ${$t('chat.recommended')}` : ''}</option>
+				{/each}
+			</select>
 		{:else}
 			<div class="flex flex-col gap-1.5">
 				{#each options as option}

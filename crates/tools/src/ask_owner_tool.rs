@@ -96,8 +96,13 @@ impl AskOwnerTool {
             .as_array()
             .map(|a| a.iter().filter_map(|o| o.as_str().map(str::to_string)).collect())
             .unwrap_or_default();
-        let widgets =
+        let mut widgets =
             json!([{ "type": "options", "multiSelect": multi_select, "options": options }]);
+        // A long list shows as a dropdown. The card keeps `options`, so an
+        // app that doesn't know `style` still shows the choices as buttons.
+        if input["style"].as_str() == Some("select") {
+            widgets[0]["style"] = json!("select");
+        }
         match ctx.ask_user(question, widgets).await {
             Some(response) if response == crate::origin::SKIP_SENTINEL => ToolResult::ok(
                 "The owner skipped this question. Make a reasonable assumption and carry on, but \
@@ -161,7 +166,8 @@ impl DynTool for AskOwnerTool {
         "Asks the owner one question; the work waits for the answer.\n\
          - Only for real ambiguity you can't resolve: readings that lead to different work, or a choice only the owner can make.\n\
          - A clear instruction your permission mode allows is carried out, never asked back to confirm it or how you'll do it.\n\
-         - To have the owner pick, give `options`: buttons in his chat on desktop and in the mobile app. Never list them in text or draw a panel. Leave them out for a free answer."
+         - To have the owner pick, give `options`: buttons in his chat on desktop and in the mobile app. Never list them in text or draw a panel. Leave them out for a free answer.\n\
+         - 6 or more options: set `style` to \"select\" for a dropdown."
             .to_string()
     }
 
@@ -171,7 +177,8 @@ impl DynTool for AskOwnerTool {
             "properties": {
                 "question": { "type": "string", "description": "The question, complete enough to answer without scrolling back." },
                 "options": { "type": "array", "items": { "type": "string" }, "description": "Short labels to choose from, the recommended one first. Leave out for a free answer." },
-                "multi_select": { "type": "boolean", "description": "Allow more than one option." }
+                "multi_select": { "type": "boolean", "description": "Allow more than one option." },
+                "style": { "type": "string", "enum": ["buttons", "select"] }
             },
             "required": ["question"]
         })
@@ -298,6 +305,22 @@ mod tests {
         let v: Value = serde_json::from_str(&r.content).unwrap();
         assert_eq!(v["picked"], "Marketing", "{v}");
 
+        // A long list asked as a dropdown: the same options, marked
+        // `style: "select"`; an app that doesn't know it still has them as
+        // buttons. The pick comes back the same way.
+        let kits = ["Acme", "Globex", "Initech", "Umbrella", "Hooli", "Stark", "Wayne"];
+        let q = json!({"question": "Which brand?", "options": kits, "style": "select"});
+        let (card, r) = asked(q, "Hooli").await;
+        let widgets = card.widgets.expect("the card has its options");
+        assert_eq!(widgets[0]["type"], "options");
+        assert_eq!(widgets[0]["style"], "select");
+        assert_eq!(widgets[0]["options"], json!(kits));
+        assert_eq!(serde_json::from_str::<Value>(&r.content).unwrap()["picked"], "Hooli");
+        // Left out, the card is exactly what it was: no `style`.
+        let q = json!({"question": "Which one?", "options": ["A", "B"]});
+        let (card, _) = asked(q, "A").await;
+        assert!(card.widgets.unwrap()[0].get("style").is_none());
+
         // Several, on a multi-select card.
         let q = json!({"question": "Which days?", "options": ["Mon", "Tue", "Wed"], "multi_select": true});
         let (_, r) = asked(q, "Mon, Wed").await;
@@ -356,5 +379,7 @@ mod tests {
         let d = tool.description();
         assert!(d.contains("To have the owner pick, give `options`: buttons in his chat on desktop and in the mobile app"), "{d}");
         assert!(d.contains("Never list them in text or draw a panel"), "{d}");
+        assert!(d.contains("set `style` to \"select\""), "{d}");
+        assert_eq!(tool.schema()["properties"]["style"]["enum"], json!(["buttons", "select"]));
     }
 }

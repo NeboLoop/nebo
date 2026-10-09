@@ -2773,8 +2773,10 @@ pub(crate) mod tests {
     /// failed; it moved into the core (share_file 588): 17,194. The owner,
     /// 2026-10-05: our app is "the mobile app", never "phone", so
     /// ask_owner's buttons are in his chat on desktop and in the mobile app
-    /// (ask_owner 865, +12): 17,206.
-    const CORE_DEFINITION_CHARS_BUDGET: usize = 17_206;
+    /// (ask_owner 865, +12): 17,206. The owner, 2026-10-09: a long list of
+    /// options (a dozen brand kits) is a dropdown, not a wall of buttons;
+    /// ask_owner's `style: "select"` (ask_owner 980, +115): 17,321.
+    const CORE_DEFINITION_CHARS_BUDGET: usize = 17_321;
 
     #[tokio::test]
     async fn the_always_loaded_set_stays_within_its_budget() {

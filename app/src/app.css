@@ -581,6 +581,9 @@
   border-color: color-mix(in srgb, var(--color-primary) 40%, var(--color-base-100));
   box-shadow: none;
 }
+.ask-select {
+  @apply w-full;
+}
 .ask-receipt {
   @apply mb-1 max-w-md text-xs text-base-content/70;
 }
