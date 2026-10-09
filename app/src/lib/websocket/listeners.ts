@@ -109,6 +109,27 @@ export function attachWebSocketListeners(): void {
     })
   );
 
+  // --- An app's page handed the owner a file to share (`nebo.share`): bring
+  // this window forward on the app's chat, which opens the Share dialog. ---
+  unsubs.push(
+    ws.on('app_share_requested', async (data: any) => {
+      if (!data?.agentId || !data?.artifact) return;
+      const { shareRequest, shareRequestPath } = await import('$lib/stores/appShare');
+      const req = { agentId: data.agentId, chatId: data.chatId ?? '', artifact: data.artifact, title: data.title ?? '' };
+      shareRequest.set(req);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      if ((window as any).__TAURI_INTERNALS__) {
+        try {
+          const { getCurrentWindow } = await import('@tauri-apps/api/window');
+          await getCurrentWindow().setFocus();
+        } catch (e) {
+          log.debug(`share request: window not focused: ${String(e)}`);
+        }
+      }
+      await goto(shareRequestPath(req));
+    })
+  );
+
   // --- Notifications: store + toast ---
   unsubs.push(
     ws.on('notification', (data: any) => {

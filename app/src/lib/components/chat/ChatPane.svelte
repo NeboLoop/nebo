@@ -43,6 +43,7 @@
   import { approvals, chatApprovalsOf } from '$lib/stores/approvals';
   import ApprovalAskCard from '$lib/components/chat/ApprovalAskCard.svelte';
   import { publishRequest } from '$lib/stores/appPublish';
+  import { shareRequest, answersShareRequest } from '$lib/stores/appShare';
   import { shareEntries } from '$lib/apps/shareMenu';
   import type { AppWindow } from '$lib/api/neboComponents';
   import PermissionAskCard from '$lib/components/PermissionAskCard.svelte';
@@ -526,10 +527,15 @@
     if (target.kind === 'gone') addToast($t('chat.fileGone'), 'error');
     if (target.kind === 'failed') addToast($t('chat.failedToLoadStatus', { values: { status: target.status } }), 'error');
     if (target.kind !== 'file') return;
-    const id = `path:${target.url}`;
+    openWorkFile(target.url, target.filename);
+  }
+
+  /** Open a Work file by its `/api/v1/files/` URL in this thread's Work panel. */
+  function openWorkFile(url: string, filename: string) {
+    const id = `path:${url}`;
     if (!openedPathFiles.some((a) => a.id === id)) {
-      const ext = (target.filename.split('.').pop() || '').toLowerCase();
-      const item: Artifact = { id, documentId: id, version: 1, title: target.filename, kind: kindForExt(ext), url: target.url };
+      const ext = (filename.split('.').pop() || '').toLowerCase();
+      const item: Artifact = { id, documentId: id, version: 1, title: filename, kind: kindForExt(ext), url };
       pathFiles = { chat: threadId || sessionId, items: [...openedPathFiles, item] };
     }
     openArtifact(id);
@@ -1216,6 +1222,15 @@
     (document.activeElement as HTMLElement)?.blur();
     handleSend(say, []);
   }
+  // A file this app's page handed the owner to share (`nebo.share`): open
+  // it in Work and show the one Share dialog on it.
+  $effect(() => {
+    const req = $shareRequest;
+    if (!answersShareRequest(req, agentId, threadId) || !req) return;
+    shareRequest.set(null);
+    openWorkFile(req.artifact, req.title);
+    shareOpen = true;
+  });
   $effect(() => {
     if (canPublish && agentId && $publishRequest === agentId) {
       publishRequest.set(null);

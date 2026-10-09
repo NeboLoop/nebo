@@ -847,12 +847,11 @@ fn app_employee_name(state: &AppState, agent_id: &str) -> String {
 
 /// GET /sdk/nebo.global.js — serve the app SDK IIFE build for vanilla/HTMX apps.
 pub async fn serve_sdk_iife() -> Response {
-    // Dev freshness first (live node_modules on a source checkout), then the
-    // copy embedded with the SPA (app/static/sdk/ → build/sdk/) — the ONLY
-    // form that exists in the shipped image; the node_modules path 404'd on
-    // every cloud bot.
-    let path =
-        StdPath::new(env!("CARGO_MANIFEST_DIR")).join("../../app/node_modules/@neboai/app-sdk/dist/nebo.global.js");
+    // The one copy, app/static/sdk/ (the app-sdk dist build): read live on a
+    // source checkout so an edit shows at once, else embedded with the SPA
+    // (build/sdk/) — the ONLY form in the shipped image. Never node_modules:
+    // that is the npm release, which lagged it (no decide, no share).
+    let path = StdPath::new(env!("CARGO_MANIFEST_DIR")).join("../../app/static/sdk/nebo.global.js");
     let contents: Option<Vec<u8>> = match fs::read(&path).await {
         Ok(c) => Some(c),
         Err(_) => crate::spa::embedded_asset("sdk/nebo.global.js").map(|f| f.data.into_owned()),
@@ -1788,6 +1787,80 @@ pub async fn http_proxy(
         }
         Err(e) => (StatusCode::BAD_GATEWAY, format!("proxy error: {}", e)).into_response(),
     }
+}
+
+/// The WS event that asks the owner's open chat to show the Share dialog on
+/// a file an app put into Work (`nebo.share`).
+pub const SHARE_REQUESTED_EVENT: &str = "app_share_requested";
+
+#[derive(Deserialize)]
+pub struct ShareRequest {
+    pub name: String,
+    pub content: String,
+    /// The chat the app is open on (`?thread=`); empty when none.
+    #[serde(default)]
+    pub thread: String,
+}
+
+/// A file or folder name an app may write into Work: one plain segment,
+/// no separators, not hidden, at most 120 characters. The file needs an
+/// extension so it opens in the right viewer.
+fn work_segment(name: &str, needs_ext: bool) -> Option<String> {
+    let name = name.trim();
+    let ok = !name.is_empty()
+        && name.chars().count() <= 120
+        && !name.starts_with('.')
+        && !name.contains(['/', '\\', '\0'])
+        && (!needs_ext || name.rsplit_once('.').is_some_and(|(stem, ext)| !stem.is_empty() && !ext.is_empty()));
+    ok.then(|| name.to_string())
+}
+
+/// POST /apps/{agent_id}/share — `nebo.share`: an app's page hands the owner
+/// a file to share. The file goes into Work (`<files>/<app name>/<name>`,
+/// replaced when shared again), and the owner's open chat shows the one
+/// Share dialog on it. The page never calls the share API: who can open the
+/// link, and until when, is his choice there.
+pub async fn share_file(
+    State(state): State<AppState>,
+    Path(agent_id): Path<String>,
+    headers: axum::http::HeaderMap,
+    axum::Json(body): axum::Json<ShareRequest>,
+) -> Response {
+    if let Err(r) = validate_app_token(&state, &agent_id, &headers).await {
+        return r;
+    }
+    let app_name = match validate_app_agent(&state.store, &agent_id, None) {
+        Ok((_, name)) => name,
+        Err(e) => return to_error_response(e).into_response(),
+    };
+    let Some(name) = work_segment(&body.name, true) else {
+        return (StatusCode::BAD_REQUEST, axum::Json(serde_json::json!({
+            "error": "name must be a file name with an extension, like \"Launch deck.html\""
+        }))).into_response();
+    };
+    if body.content.is_empty() {
+        return (StatusCode::BAD_REQUEST, axum::Json(serde_json::json!({ "error": "content is empty" }))).into_response();
+    }
+    let folder = work_segment(&app_name, false).unwrap_or_else(|| agent_id.clone());
+    let dir = match config::files_dir() {
+        Ok(d) => d.join(&folder),
+        Err(e) => return to_error_response(e).into_response(),
+    };
+    if let Err(e) = fs::create_dir_all(&dir).await {
+        warn!(error = %e, "app share: cannot make the Work folder");
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    }
+    if let Err(e) = fs::write(dir.join(&name), body.content.as_bytes()).await {
+        warn!(error = %e, "app share: cannot write the file");
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    }
+    // The same unencoded reference a run's own Work files carry.
+    let artifact = format!("/api/v1/files/{folder}/{name}");
+    state.hub.broadcast(
+        SHARE_REQUESTED_EVENT,
+        serde_json::json!({ "agentId": agent_id, "chatId": body.thread, "artifact": artifact, "title": name }),
+    );
+    axum::Json(serde_json::json!({ "artifact": artifact })).into_response()
 }
 
 /// GET /apps/{agent_id}/identity — expose agent context for the app SDK.
@@ -2957,5 +3030,22 @@ mod developer_console_tests {
             r.contains("<canvas id=\"minimap\"> drawn at 150\u{d7}150 is stretched to ") && r.contains("over the canvas under it")
         });
         assert!(named, "{shown}");
+    }
+}
+
+#[cfg(test)]
+mod share_tests {
+    use super::*;
+
+    /// `nebo.share` writes one plain file into the app's Work folder:
+    /// nothing that climbs out of it, hides, or has no extension.
+    #[test]
+    fn a_shared_file_is_one_plain_named_file() {
+        assert_eq!(work_segment("  Launch deck.html ", true).as_deref(), Some("Launch deck.html"));
+        assert_eq!(work_segment("Design Studio", false).as_deref(), Some("Design Studio"));
+        for bad in ["", "   ", "../x.html", "a/b.html", "a\\b.html", ".env", "deck", "deck.", ".html", "x\0.html"] {
+            assert_eq!(work_segment(bad, true), None, "{bad:?}");
+        }
+        assert_eq!(work_segment(&format!("{}.html", "a".repeat(120)), true), None);
     }
 }

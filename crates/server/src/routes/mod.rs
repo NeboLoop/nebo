@@ -88,7 +88,7 @@ pub fn api_routes(jwt_secret: JwtSecret, max_upload_bytes: usize) -> Router<AppS
         .merge(store::routes())
         .merge(entity_config::routes())
         .merge(notifications::routes())
-        .merge(apps::routes())
+        .merge(apps::routes(max_upload_bytes))
         .merge(artifact_updates::routes())
         .merge(user::public_routes())
         .merge(self::codes_and_deps());

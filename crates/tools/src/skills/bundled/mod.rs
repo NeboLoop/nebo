@@ -245,7 +245,7 @@ mod bundled_skill_tests {
         let bundle = std::fs::read_to_string(&bundle)
             .unwrap_or_else(|e| panic!("the served SDK bundle must be readable at {}: {e}", bundle.display()));
         for name in [
-            "nebo", "identity", "storage", "agents", "janus", "decide", "surfaces", "chat", "a2ui",
+            "nebo", "identity", "storage", "agents", "janus", "decide", "share", "surfaces", "chat", "a2ui",
             "neboFetch", "NeboWebSocket", "NeboSDK", "NeboSurfaces", "NeboA2UI", "getAppId",
             "getBaseUrl", "setAppId", "setBaseUrl",
         ] {
@@ -271,6 +271,14 @@ mod bundled_skill_tests {
         assert!(content.contains("`decide({state, questions})"), "the skill names decide");
         assert!(content.contains("decide(state:"), "the skill shows the employee's decide tool");
         assert!(bundle.contains("/janus/decide"), "the bundle must post decisions to the app's janus/decide route");
+        // Sharing: the page hands a file to the one Share dialog through the
+        // app's share route; it never makes a link itself.
+        let more = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/skills/bundled/app-studio/references/sdk-more.md"),
+        )
+        .expect("sdk-more.md");
+        assert!(more.contains("`share({name, content})"), "the SDK reference names share");
+        assert!(bundle.contains("/share`"), "the bundle must post to the app's share route");
         // The two renamed at the top level, said as such.
         assert!(content.contains("NeboAppSDK.neboFetch"), "nebo.fetch is exported as neboFetch");
         assert!(content.contains("NeboAppSDK.NeboWebSocket"), "nebo.WebSocket is exported as NeboWebSocket");
