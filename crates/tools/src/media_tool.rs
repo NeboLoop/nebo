@@ -53,6 +53,11 @@ const SWAP_RESOLUTION: &str = "720p";
 const SWAP_WAIT_FACTOR: u32 = 3;
 /// The largest file the upload path takes (the edge's limit).
 const MAX_UPLOAD_BYTES: u64 = 100 * 1024 * 1024;
+/// The most reference images one image or clip is sent; NeboAI says when a
+/// model takes fewer.
+const MAX_REFERENCES: usize = 4;
+/// The largest reference image file sent (as a data URL).
+const MAX_REFERENCE_BYTES: u64 = 8 * 1024 * 1024;
 /// How long a file lent to Janus stays reachable by its link.
 const LEND_FOR: chrono::TimeDelta = chrono::TimeDelta::hours(1);
 /// How a wait that ran out begins (`Media::wait_video`): the job may still
@@ -844,6 +849,70 @@ fn first_frame(ctx: &ToolContext, base: &Path, image: &str) -> Result<String, St
     ))
 }
 
+/// The reference images a call sends (`references`): pictures whose subjects
+/// the image or clip keeps, such as a character's cast portrait. Each is a
+/// file read as `readable` reads it (absolute, `~/`, or inside `base`) and
+/// sent as a data URL, or a data URL as given. Empty when none were given.
+fn references(ctx: &ToolContext, base: &Path, input: &Value) -> Result<Vec<String>, String> {
+    let Some(given) = input.get("references") else {
+        return Ok(Vec::new());
+    };
+    let given: Vec<&str> = match given {
+        Value::Null => return Ok(Vec::new()),
+        Value::String(one) => vec![one.as_str()],
+        Value::Array(many) => many
+            .iter()
+            .map(|v| v.as_str().ok_or("`references` is a list of picture files."))
+            .collect::<Result<_, _>>()?,
+        _ => return Err("`references` is a list of picture files.".to_string()),
+    };
+    let given: Vec<&str> = given.into_iter().map(str::trim).filter(|g| !g.is_empty()).collect();
+    if given.len() > MAX_REFERENCES {
+        return Err(format!("`references` takes up to {MAX_REFERENCES} pictures; got {}.", given.len()));
+    }
+    given
+        .into_iter()
+        .map(|g| {
+            if g.starts_with("data:image/") {
+                return Ok(g.to_string());
+            }
+            if g.starts_with("https://") || g.starts_with("http://") {
+                return Err(format!("`references` are picture files; save `{g}` to a file first and give its path."));
+            }
+            let path = readable(ctx, base, g)?;
+            let mime = match path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).as_deref() {
+                Some("png") => "image/png",
+                Some("webp") => "image/webp",
+                Some("jpg" | "jpeg") => "image/jpeg",
+                _ => return Err(format!("Each of `references` must be a PNG, WebP or JPEG file; got `{g}`.")),
+            };
+            let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+            if size > MAX_REFERENCE_BYTES {
+                return Err(format!(
+                    "{} is {} MB; a reference picture takes up to {} MB. Save a smaller copy (2048 px on the long side is plenty).",
+                    path.display(),
+                    size.div_ceil(1024 * 1024),
+                    MAX_REFERENCE_BYTES / (1024 * 1024)
+                ));
+            }
+            let bytes = std::fs::read(&path).map_err(|e| format!("Could not read {}: {e}", path.display()))?;
+            Ok(format!("data:{mime};base64,{}", base64::engine::general_purpose::STANDARD.encode(bytes)))
+        })
+        .collect()
+}
+
+/// What a refusal of reference images becomes while NeboAI cannot take
+/// them yet: one that predates them refuses the request's size (images) or
+/// its mode (video). Any other failure is passed on as it is.
+fn without_references(e: String) -> String {
+    if e.contains("request body too large") || e.contains("mode must be generate or replace") {
+        "Reference images aren't available on NeboAI yet. Make it without `references`: describe the character in          the same words as before, and start each clip from an approved start frame. Don't try `references` again in          this task."
+            .to_string()
+    } else {
+        e
+    }
+}
+
 /// A file this call reads, named by `given`: an absolute or `~/` path as it
 /// is, a relative one inside `base`. It meets the limits and folders a
 /// `read_file` of it meets, so nothing the run may not read is sent out.
@@ -1266,10 +1335,14 @@ impl GenerateMediaTool {
 
     /// Makes the images and answers the result text and every file, each
     /// of which the chat shows as a card.
-    async fn image(&self, target: &Target, input: &Value) -> Result<(String, Vec<PathBuf>), String> {
+    async fn image(&self, ctx: &ToolContext, target: &Target, input: &Value) -> Result<(String, Vec<PathBuf>), String> {
         let into = str_of(input, "into");
         let (_, ext) = image_format(into, str_of(input, "output_format"));
-        let body = image_body(input);
+        let refs = references(ctx, &target.base, input)?;
+        let mut body = image_body(input);
+        if !refs.is_empty() {
+            body["references"] = json!(refs);
+        }
         let count = body["n"].as_u64().unwrap_or(1) as usize;
         let names = file_names(
             into,
@@ -1283,14 +1356,23 @@ impl GenerateMediaTool {
             .iter()
             .map(|n| destination(&target.base, n))
             .collect::<Result<Vec<_>, _>>()?;
-        let (images, model) = self.media.images(&body).await?;
+        let (images, model) = match self.media.images(&body).await {
+            Ok(made) => made,
+            Err(e) if !refs.is_empty() => return Err(without_references(e)),
+            Err(e) => return Err(e),
+        };
         // The model stays in the log: a result line can reach the owner,
         // who never sees what made it.
-        tracing::info!(model = %model, count = images.len(), "made images");
+        tracing::info!(model = %model, count = images.len(), references = refs.len(), "made images");
         let mut lines = vec![format!(
-            "Made {} image{} into {}:",
+            "Made {} image{}{} into {}:",
             images.len(),
             if images.len() == 1 { "" } else { "s" },
+            match refs.len() {
+                0 => String::new(),
+                1 => " from 1 reference picture".to_string(),
+                n => format!(" from {n} reference pictures"),
+            },
             paths.first().map(|p| target.place(p)).unwrap_or_default(),
         )];
         let mut revised = None;
@@ -1414,7 +1496,9 @@ impl GenerateMediaTool {
             return Ok("No voices are listed right now; leave `voice` out for the default.".to_string());
         }
         let mut lines = vec![format!(
-            "{} voices. Give one's id as `voice` with kind \"speech\" (an off-screen narrator or voice-over); ids never change:",
+            "{} voices. Give one's id as `voice` with kind \"speech\" (an off-screen narrator or voice-over); ids never change. \
+             Cast by the description: a woman's voice for a woman, a man's for a man, and a different voice for each \
+             character:",
             voices.len()
         )];
         for v in &voices {
@@ -1580,7 +1664,19 @@ impl GenerateMediaTool {
                     Some(img) => Some(first_frame(ctx, &target.base, img)?),
                     None => None,
                 };
-                self.media.submit_video(&video_body(input, frame)).await?
+                // References in place of a first frame: the clip keeps
+                // their subjects through it (mode "reference").
+                let refs = references(ctx, &target.base, input)?;
+                let mut body = video_body(input, frame);
+                if !refs.is_empty() {
+                    body["mode"] = json!("reference");
+                    body["references"] = json!(refs);
+                }
+                match self.media.submit_video(&body).await {
+                    Ok(job) => job,
+                    Err(e) if !refs.is_empty() => return Err(without_references(e)),
+                    Err(e) => return Err(e),
+                }
             }
         };
         let waited = if replace {
@@ -1871,7 +1967,8 @@ impl DynTool for GenerateMediaTool {
            clip's sound, never extract or join its dialogue.\n\
          - Swap the person in an existing video: kind \"video\", `mode` \"replace\", `video`, `cast`; kind \"cast\" lists and \
            adds who a swap may use (the owner confirms each once). Recipe: the character-swap skill. One character across \
-           new shots: approved start frames.\n\
+           new shots: `references` with their cast portrait on each start frame image, then the clip from that approved \
+           start frame (or from `references` when there is none).\n\
          - kind \"speech\": `text` read aloud, for an off-screen narrator or voice-over only; stock voices, never a real \
            person's. kind \"music\": a track from `prompt`.{} kind \"transcript\": `file` to JSON \
            with word timings, speakers.\n\
@@ -1896,8 +1993,8 @@ impl DynTool for GenerateMediaTool {
                 "kind": { "type": "string", "enum": kinds(), "description": "What to make; `transcript` to transcribe `file`; `voices` to list the speech voices; `cast` to manage the people a swap may use." },
                 "prompt": { "type": "string", "description": format!("Image or video: what it shows, in detail: subject, style, light, framing, motion. Someone speaking on camera: one speaker per clip, a medium or close shot, the exact line in quotes, the voice described in the same words in every clip of that person, and \"Only her voice. No music, no background sound.\" (his, for a man). Music: the style the brief asks for, never a house style (none given: offer 2-3 contrasting takes), mood, instruments, tempo, what it is for.{sound_prompt}") },
                 "text": { "type": "string", "description": "Speech: the exact words to say, up to about 4,000 characters. Only for an off-screen narrator or voice-over, never a person seen speaking: their line goes in the video `prompt`." },
-                "voice": { "type": "string", "description": "Speech (an off-screen narrator or voice-over): a voice id from kind `voices`. Left out: the default voice." },
-                "direction": { "type": "string", "description": "Speech: how the words are said: tone, pace, warmth, emotion, accent, e.g. \"deep, warm, unhurried documentary narrator; calm authority, slight gravel, pauses between phrases\". Describe the qualities; never name a real person to imitate." },
+                "voice": { "type": "string", "description": "Speech (an off-screen narrator or voice-over): a voice id from kind `voices`, chosen by its description: a woman's voice for a woman, a man's for a man, and a different voice for each character, kept for that character every time. Left out: the default voice." },
+                "direction": { "type": "string", "description": "Speech: how the words are said: tone, pace, warmth, emotion, accent, e.g. \"deep, warm, unhurried documentary narrator; calm authority, slight gravel, pauses between phrases\". Describe the qualities; never name a real person to imitate. It shapes how the chosen voice speaks, not whose voice it is: pick the voice for the character first, and give each character their own direction." },
                 "lyrics": { "type": "string", "description": "Music: the words to sing, lines separated by newlines; [Verse], [Chorus], [Bridge] tags allowed. Left out: instrumental." },
                 "instrumental": { "type": "boolean", "description": "Music: no vocals (the default without `lyrics`). false without `lyrics`: words are written for it." },
                 "file": { "type": "string", "description": "Transcript: the audio or video file to transcribe (an absolute, `~/` or relative path)." },
@@ -1914,6 +2011,7 @@ impl DynTool for GenerateMediaTool {
                 "resolution": { "type": "string", "description": "Video: e.g. 720p, 1080p." },
                 "aspect_ratio": { "type": "string", "description": "Video: e.g. 16:9, 9:16, 1:1." },
                 "image": { "type": "string", "description": "Video: the first frame, a picture the owner approved: make each shot's start frame as an image, show it and get the owner's yes, then make the clip from it. A file (absolute, `~/`, or relative to the folder), an https URL or a data URL. Kind cast: a photo of `cast` to add." },
+                "references": { "type": "array", "items": { "type": "string" }, "maxItems": MAX_REFERENCES, "description": "Image or video: up to 4 pictures whose people, products or places the result keeps, such as a character's cast portrait: files (absolute, `~/` or relative to the folder). Name them in the prompt by order: \"the woman in Image 1\", \"Image 2's red kart\". Video: the clip keeps them throughout and starts from no `image`; prefer an approved start frame made with them." },
                 "scrub": { "type": "boolean", "description": "Video: re-encode with every frame a keyframe for scroll-scrubbing (needs ffmpeg)." },
                 "job": { "type": "string", "description": "Video: a job id from an earlier call that did not finish; picks it up instead of making a new one." },
                 "mode": { "type": "string", "enum": ["replace"], "description": "Video: `replace` puts cast member `cast` in place of the person in `video` (720p unless `resolution` says otherwise; `prompt` optional; up to 30 minutes). Prepare the clip with the Nebo Media plugin first; afterwards its `audio mix` with `audio-from` the clip and `ai-generated` puts the sound back and tags the file, which reaches the owner as a card by itself." },
@@ -1988,6 +2086,24 @@ impl DynTool for GenerateMediaTool {
             _ => {}
         }
         let video = str_of(input, "kind") == Some("video");
+        let has_refs = match input.get("references") {
+            None | Some(Value::Null) => false,
+            Some(Value::Array(a)) => !a.is_empty(),
+            Some(Value::String(s)) => !s.trim().is_empty(),
+            Some(_) => return Err("`references` is a list of picture files.".to_string()),
+        };
+        if has_refs {
+            if str_of(input, "mode").is_some() {
+                return Err("`references` is not used with `mode` replace: the person comes from `cast`.".to_string());
+            }
+            if str_of(input, "image").is_some() {
+                return Err(
+                    "Give `image` (an approved start frame) or `references`, not both: a clip from a start frame keeps \
+                     what the frame shows."
+                        .to_string(),
+                );
+            }
+        }
         match str_of(input, "mode") {
             Some("replace") if video => {
                 if str_of(input, "job").is_some() {
@@ -2049,7 +2165,7 @@ impl DynTool for GenerateMediaTool {
                 Err(e) => return ToolResult::error(e),
             };
             let made = match str_of(&input, "kind") {
-                Some("image") => self.image(&target, &input).await,
+                Some("image") => self.image(ctx, &target, &input).await,
                 Some("video") => self.video(ctx, &target, &input).await,
                 Some(kind @ ("speech" | "music" | "sound")) => self.audio_file(&target, &input, kind).await,
                 Some("transcript") => self.transcript(ctx, &target, &input).await,
@@ -2381,6 +2497,7 @@ mod tests {
 
         let (text, files) = tool
             .image(
+                &ToolContext::default(),
                 &target,
                 &json!({"prompt": "a red kart", "into": "hero.png"}),
             )
@@ -2491,6 +2608,117 @@ mod tests {
         assert_eq!(files, [tmp.path().join("clips/s1.mp4")]);
         assert!(!text.contains("vendor-video-9") && !text.contains("model"), "{text}");
         assert!(text.contains("5 seconds"), "{text}");
+    }
+
+    /// Reference pictures (a character's cast portrait) go to Janus as data
+    /// URLs, read the way a start frame is read, in the order given; the
+    /// result says how many were used.
+    #[tokio::test]
+    async fn image_references_go_to_janus_as_data_urls_in_order() {
+        let png = b"\x89PNG\r\n\x1a\nmade".to_vec();
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&png);
+        let answer: &'static str = Box::leak(format!(r#"{{"created":1,"data":[{{"b64_json":"{b64}"}}]}}"#).into_boxed_str());
+        let janus = mock(Box::new(move |_, _| (200, "application/json", answer.as_bytes().to_vec()))).await;
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Arc::new(db::Store::new(&tmp.path().join("t.db").to_string_lossy()).unwrap());
+        let tool = GenerateMediaTool::new(Media::new(janus.url.clone(), "bot-1".into(), None), store);
+        std::fs::create_dir_all(tmp.path().join("cast/mara")).unwrap();
+        std::fs::write(tmp.path().join("cast/mara/portrait.png"), b"mara-png").unwrap();
+        let elsewhere = tempfile::tempdir().unwrap();
+        let kart = elsewhere.path().join("kart.jpg");
+        std::fs::write(&kart, b"kart-jpg").unwrap();
+        let target = Target { base: tmp.path().to_path_buf(), label: "the workspace".into(), default_folder: "media" };
+        let (text, files) = tool
+            .image(
+                &ToolContext::default(),
+                &target,
+                &json!({"prompt": "The woman in Image 1 beside Image 2's kart", "into": "frames/s1.png",
+                        "references": ["cast/mara/portrait.png", kart.to_string_lossy()]}),
+            )
+            .await
+            .unwrap();
+        assert_eq!(files, [tmp.path().join("frames/s1.png")]);
+        assert!(text.contains("from 2 reference pictures"), "{text}");
+        let seen = janus.seen.lock().unwrap();
+        let body: Value = serde_json::from_str(&seen[0].1).unwrap();
+        let enc = |b: &[u8]| base64::engine::general_purpose::STANDARD.encode(b);
+        assert_eq!(
+            body["references"],
+            json!([format!("data:image/png;base64,{}", enc(b"mara-png")), format!("data:image/jpeg;base64,{}", enc(b"kart-jpg"))])
+        );
+        assert_eq!(body["prompt"], "The woman in Image 1 beside Image 2's kart");
+        assert!(body.get("mode").is_none());
+    }
+
+    /// A clip from references is mode "reference" with no first frame.
+    /// While NeboAI cannot take them yet (it refuses the mode, or an image
+    /// request's size), the model is told plainly to go on without them,
+    /// and nothing else changes for a call without references.
+    #[tokio::test]
+    async fn references_are_refused_cleanly_until_janus_takes_them() {
+        let janus = mock(Box::new(|path, _| match path {
+            "/v1/videos" => (400, "application/json", br#"{"error":{"message":"mode must be generate or replace","type":"invalid_request_error","code":"invalid_request"}}"#.to_vec()),
+            _ => (400, "application/json", br#"{"error":{"message":"Invalid JSON: http: request body too large","type":"invalid_request_error","code":"invalid_json"}}"#.to_vec()),
+        }))
+        .await;
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Arc::new(db::Store::new(&tmp.path().join("t.db").to_string_lossy()).unwrap());
+        let tool = GenerateMediaTool::new(Media::new(janus.url.clone(), "bot-1".into(), None).with_polling(fast()), store);
+        std::fs::write(tmp.path().join("mara.png"), b"mara-png").unwrap();
+        let target = Target { base: tmp.path().to_path_buf(), label: "the workspace".into(), default_folder: "media" };
+        let ctx = ToolContext::default();
+
+        let video = tool
+            .video(&ctx, &target, &json!({"kind": "video", "prompt": "Image 1 waves", "references": ["mara.png"]}))
+            .await
+            .unwrap_err();
+        assert!(video.starts_with("Reference images aren't available on NeboAI yet."), "{video}");
+        let image = tool
+            .image(&ctx, &target, &json!({"prompt": "Image 1 on a porch", "references": ["mara.png"]}))
+            .await
+            .unwrap_err();
+        assert!(image.starts_with("Reference images aren't available on NeboAI yet."), "{image}");
+        {
+            let seen = janus.seen.lock().unwrap();
+            let body: Value = serde_json::from_str(&seen[0].1).unwrap();
+            assert_eq!(body["mode"], "reference");
+            assert!(body.get("image").is_none());
+            assert_eq!(body["references"].as_array().map(Vec::len), Some(1));
+        }
+        // Without references the same refusal is passed on as it is.
+        let plain = tool.image(&ctx, &target, &json!({"prompt": "a porch"})).await.unwrap_err();
+        assert!(!plain.contains("Reference images"), "{plain}");
+    }
+
+    #[test]
+    fn references_are_checked_before_anything_is_sent() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("a.gif"), b"gif").unwrap();
+        std::fs::write(tmp.path().join("a.png"), b"png").unwrap();
+        let ctx = ToolContext::default();
+        let refs = |v: Value| references(&ctx, tmp.path(), &json!({ "references": v }));
+        assert_eq!(refs(json!([])).unwrap(), Vec::<String>::new());
+        assert_eq!(refs(json!("a.png")).unwrap().len(), 1);
+        assert!(refs(json!(["a.gif"])).unwrap_err().contains("PNG, WebP or JPEG"));
+        assert!(refs(json!(["https://x/y.png"])).unwrap_err().contains("save `https://x/y.png` to a file"));
+        assert!(refs(json!(["../a.png"])).is_err());
+        assert!(refs(json!(["a.png", "a.png", "a.png", "a.png", "a.png"])).unwrap_err().contains("up to 4"));
+        assert_eq!(refs(json!(["data:image/png;base64,eA=="])).unwrap(), ["data:image/png;base64,eA=="]);
+
+        let tool_ok = |v: Value| {
+            let tmp = tempfile::tempdir().unwrap();
+            let store = Arc::new(db::Store::new(&tmp.path().join("t.db").to_string_lossy()).unwrap());
+            GenerateMediaTool::new(Media::new("http://127.0.0.1:9".into(), "bot-1".into(), None), store).validate_input(&v)
+        };
+        assert!(tool_ok(json!({"kind": "image", "prompt": "p", "references": ["a.png"]})).is_ok());
+        assert!(tool_ok(json!({"kind": "video", "prompt": "p", "references": ["a.png"]})).is_ok());
+        assert!(tool_ok(json!({"kind": "video", "prompt": "p", "image": "s1.png", "references": ["a.png"]}))
+            .unwrap_err()
+            .contains("not both"));
+        assert!(tool_ok(json!({"kind": "video", "mode": "replace", "cast": "mara", "video": "v.mp4", "references": ["a.png"]}))
+            .unwrap_err()
+            .contains("comes from `cast`"));
+        assert!(tool_ok(json!({"kind": "image", "prompt": "p", "references": 3})).unwrap_err().contains("list of picture files"));
     }
 
     /// A refusal from the service behind NeboAI never reaches the model in
